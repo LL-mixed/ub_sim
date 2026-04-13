@@ -29,7 +29,8 @@
 #define EXPORT_REGION_SIZE (2UL * 1024UL * 1024UL)
 #define DEMO_SIZE (256UL * 1024UL)
 #define IMPORT_ALIGN 0x1000UL
-#define DEMO_PAYLOAD "obmm-export-metadata-ready"
+#define DEMO_PAYLOAD_A "obmm-export-payload-from-nodeA"
+#define DEMO_PAYLOAD_B "obmm-import-payload-from-nodeB"
 #define OBMM_SIM_DEC_PRIV_MAGIC 0x53444950U
 #define OBMM_SIM_DEC_PRIV_VER_1 1
 
@@ -48,6 +49,13 @@ struct obmm_demo_meta {
     uint64_t size;
     uint32_t token_id;
     uint32_t export_cna;
+};
+
+struct mapped_region {
+    int fd;
+    void *addr;
+    size_t len;
+    uint64_t mem_id;
 };
 
 static volatile sig_atomic_t g_alarm_fired;
@@ -451,6 +459,96 @@ static int open_region_dev(uint64_t mem_id)
     return open(path, O_RDWR);
 }
 
+static int map_region_device(uint64_t mem_id, size_t len, struct mapped_region *region)
+{
+    memset(region, 0, sizeof(*region));
+    region->fd = -1;
+    region->mem_id = mem_id;
+    region->len = len;
+
+    region->fd = open_region_dev(mem_id);
+    if (region->fd < 0) {
+        fprintf(stderr, "[ub_obmm] open shmdev%" PRIu64 " failed: %s\n",
+                mem_id, strerror(errno));
+        return -1;
+    }
+
+    region->addr = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED, region->fd, 0);
+    if (region->addr == MAP_FAILED) {
+        fprintf(stderr, "[ub_obmm] mmap shmdev%" PRIu64 " failed: %s\n",
+                mem_id, strerror(errno));
+        close(region->fd);
+        region->fd = -1;
+        region->addr = NULL;
+        return -1;
+    }
+
+    fprintf(stderr, "[ub_obmm] shmdev open/mmap -> ok mem_id=%" PRIu64 "\n", mem_id);
+    return 0;
+}
+
+static void unmap_region_device(struct mapped_region *region)
+{
+    if (region->addr && region->addr != MAP_FAILED) {
+        munmap(region->addr, region->len);
+        region->addr = NULL;
+    }
+    if (region->fd >= 0) {
+        close(region->fd);
+        region->fd = -1;
+    }
+}
+
+static int stamp_payload(struct mapped_region *region, const char *payload)
+{
+    size_t payload_len = strlen(payload) + 1;
+
+    if (payload_len > region->len) {
+        fprintf(stderr, "[ub_obmm] payload too large for shmdev%" PRIu64 "\n",
+                region->mem_id);
+        return -1;
+    }
+
+    memset(region->addr, 0, payload_len);
+    memcpy(region->addr, payload, payload_len);
+    __sync_synchronize();
+    if (msync(region->addr, region->len, MS_SYNC) != 0) {
+        if (errno == EINVAL || errno == ENOSYS || errno == EOPNOTSUPP) {
+            fprintf(stderr,
+                    "[ub_obmm] msync shmdev%" PRIu64 " unsupported (%s), continue\n",
+                    region->mem_id, strerror(errno));
+            return 0;
+        }
+        fprintf(stderr, "[ub_obmm] msync shmdev%" PRIu64 " failed: %s\n",
+                region->mem_id, strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
+static bool region_matches_payload(const struct mapped_region *region, const char *payload)
+{
+    return memcmp(region->addr, payload, strlen(payload) + 1) == 0;
+}
+
+static int wait_for_payload(const struct mapped_region *region, const char *payload,
+                            long timeout_ms, const char *label)
+{
+    long deadline = now_ms() + timeout_ms;
+
+    while (!g_alarm_fired && now_ms() < deadline) {
+        if (region_matches_payload(region, payload)) {
+            fprintf(stderr, "[ub_obmm] %s -> ok payload=\"%s\"\n", label, payload);
+            return 0;
+        }
+        usleep(100000);
+    }
+
+    fprintf(stderr, "[ub_obmm] fail: timeout waiting for %s payload=\"%s\"\n",
+            label, payload);
+    return -1;
+}
+
 static int do_export_region(int obmm_fd, struct obmm_demo_meta *meta)
 {
     struct obmm_cmd_export cmd;
@@ -488,37 +586,6 @@ static int do_unexport_region(int obmm_fd, uint64_t mem_id)
     }
 
     fprintf(stderr, "[ub_obmm] unexport -> ok mem_id=%" PRIu64 "\n", mem_id);
-    return 0;
-}
-
-static int mmap_region_device(uint64_t mem_id, size_t len, bool stamp)
-{
-    int fd;
-    void *addr;
-
-    fd = open_region_dev(mem_id);
-    if (fd < 0) {
-        fprintf(stderr, "[ub_obmm] open shmdev%" PRIu64 " failed: %s\n",
-                mem_id, strerror(errno));
-        return -1;
-    }
-
-    addr = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (addr == MAP_FAILED) {
-        fprintf(stderr, "[ub_obmm] mmap shmdev%" PRIu64 " failed: %s\n",
-                mem_id, strerror(errno));
-        close(fd);
-        return -1;
-    }
-
-    if (stamp) {
-        memset(addr, 0, len);
-        memcpy(addr, DEMO_PAYLOAD, sizeof(DEMO_PAYLOAD));
-    }
-
-    munmap(addr, len);
-    close(fd);
-    fprintf(stderr, "[ub_obmm] shmdev open/mmap -> ok mem_id=%" PRIu64 "\n", mem_id);
     return 0;
 }
 
@@ -598,21 +665,23 @@ static int run_nodeA(int sockfd, const struct sockaddr_in *peer,
                      int obmm_fd, uint32_t local_cna)
 {
     struct obmm_demo_meta meta;
+    struct mapped_region region;
     long deadline = now_ms() + RUN_TIMEOUT_S * 1000L;
     char ack[64];
     struct sockaddr_in from;
 
     memset(&meta, 0, sizeof(meta));
+    memset(&region, 0, sizeof(region));
+    region.fd = -1;
     meta.export_cna = local_cna;
 
     if (do_export_region(obmm_fd, &meta) != 0) {
         return 1;
     }
-    if (mmap_region_device(meta.export_mem_id, DEMO_SIZE, true) != 0) {
+    if (map_region_device(meta.export_mem_id, DEMO_SIZE, &region) != 0) {
         (void)do_unexport_region(obmm_fd, meta.export_mem_id);
         return 1;
     }
-
     while (!g_alarm_fired && now_ms() < deadline) {
         if (send_msg(sockfd, peer, &meta, sizeof(meta)) == 0) {
             ssize_t n;
@@ -621,8 +690,8 @@ static int run_nodeA(int sockfd, const struct sockaddr_in *peer,
             n = recv_msg(sockfd, ack, sizeof(ack) - 1, &from);
             if (n > 0) {
                 ack[n] = '\0';
-                if (strcmp(ack, "IMPORT_OK") == 0) {
-                    fprintf(stderr, "[ub_obmm] sync: nodeB import acknowledged\n");
+                if (strcmp(ack, "IMPORT_READY") == 0) {
+                    fprintf(stderr, "[ub_obmm] sync: nodeB import ready\n");
                     break;
                 }
             }
@@ -631,7 +700,54 @@ static int run_nodeA(int sockfd, const struct sockaddr_in *peer,
     }
 
     if (g_alarm_fired || now_ms() >= deadline) {
+        fprintf(stderr, "[ub_obmm] fail: timeout waiting for IMPORT_READY\n");
+        unmap_region_device(&region);
+        (void)do_unexport_region(obmm_fd, meta.export_mem_id);
+        return 1;
+    }
+
+    if (stamp_payload(&region, DEMO_PAYLOAD_A) != 0) {
+        unmap_region_device(&region);
+        (void)do_unexport_region(obmm_fd, meta.export_mem_id);
+        return 1;
+    }
+
+    if (send_msg(sockfd, peer, "WRITE_A_DONE", strlen("WRITE_A_DONE")) != 0) {
+        fprintf(stderr, "[ub_obmm] fail: send WRITE_A_DONE failed\n");
+        unmap_region_device(&region);
+        (void)do_unexport_region(obmm_fd, meta.export_mem_id);
+        return 1;
+    }
+
+    deadline = now_ms() + RUN_TIMEOUT_S * 1000L;
+    while (!g_alarm_fired && now_ms() < deadline) {
+        ssize_t n = recv_msg(sockfd, ack, sizeof(ack) - 1, &from);
+        if (n > 0) {
+            ack[n] = '\0';
+            if (strcmp(ack, "IMPORT_OK") == 0) {
+                fprintf(stderr, "[ub_obmm] sync: nodeB import acknowledged\n");
+                break;
+            }
+        }
+        usleep(200000);
+    }
+
+    if (g_alarm_fired || now_ms() >= deadline) {
         fprintf(stderr, "[ub_obmm] fail: timeout waiting for IMPORT_OK\n");
+        unmap_region_device(&region);
+        (void)do_unexport_region(obmm_fd, meta.export_mem_id);
+        return 1;
+    }
+
+    if (wait_for_payload(&region, DEMO_PAYLOAD_B, 5000, "nodeA verify nodeB write") != 0) {
+        unmap_region_device(&region);
+        (void)do_unexport_region(obmm_fd, meta.export_mem_id);
+        return 1;
+    }
+
+    if (send_msg(sockfd, peer, "WRITEBACK_OK", strlen("WRITEBACK_OK")) != 0) {
+        fprintf(stderr, "[ub_obmm] fail: send WRITEBACK_OK failed\n");
+        unmap_region_device(&region);
         (void)do_unexport_region(obmm_fd, meta.export_mem_id);
         return 1;
     }
@@ -651,10 +767,12 @@ static int run_nodeA(int sockfd, const struct sockaddr_in *peer,
 
     if (g_alarm_fired || now_ms() >= deadline) {
         fprintf(stderr, "[ub_obmm] fail: timeout waiting for UNIMPORT_OK\n");
+        unmap_region_device(&region);
         (void)do_unexport_region(obmm_fd, meta.export_mem_id);
         return 1;
     }
 
+    unmap_region_device(&region);
     if (do_unexport_region(obmm_fd, meta.export_mem_id) != 0) {
         return 1;
     }
@@ -667,9 +785,15 @@ static int run_nodeB(int sockfd, const struct sockaddr_in *peer, int obmm_fd,
                      uint32_t local_cna)
 {
     struct obmm_demo_meta meta;
+    struct mapped_region region;
     long deadline = now_ms() + RUN_TIMEOUT_S * 1000L;
+    long writeback_deadline;
+    char ack[64];
     struct sockaddr_in from;
     uint64_t local_pa = 0, window_size = 0, import_mem_id = 0;
+
+    memset(&region, 0, sizeof(region));
+    region.fd = -1;
 
     while (!g_alarm_fired && now_ms() < deadline) {
         ssize_t n = recv_msg(sockfd, &meta, sizeof(meta), &from);
@@ -695,17 +819,78 @@ static int run_nodeB(int sockfd, const struct sockaddr_in *peer, int obmm_fd,
     if (do_import_region(obmm_fd, &meta, local_cna, local_pa, &import_mem_id) != 0) {
         return 1;
     }
-    if (mmap_region_device(import_mem_id, DEMO_SIZE, false) != 0) {
+    if (map_region_device(import_mem_id, DEMO_SIZE, &region) != 0) {
+        (void)do_unimport_region(obmm_fd, import_mem_id);
+        return 1;
+    }
+
+    if (send_msg(sockfd, peer, "IMPORT_READY", strlen("IMPORT_READY")) != 0) {
+        fprintf(stderr, "[ub_obmm] fail: send IMPORT_READY failed\n");
+        unmap_region_device(&region);
+        (void)do_unimport_region(obmm_fd, import_mem_id);
+        return 1;
+    }
+
+    deadline = now_ms() + RUN_TIMEOUT_S * 1000L;
+    while (!g_alarm_fired && now_ms() < deadline) {
+        ssize_t n = recv_msg(sockfd, ack, sizeof(ack) - 1, &from);
+        if (n > 0) {
+            ack[n] = '\0';
+            if (strcmp(ack, "WRITE_A_DONE") == 0) {
+                fprintf(stderr, "[ub_obmm] sync: nodeA write published\n");
+                break;
+            }
+        }
+        usleep(200000);
+    }
+
+    if (g_alarm_fired || now_ms() >= deadline) {
+        fprintf(stderr, "[ub_obmm] fail: timeout waiting for WRITE_A_DONE\n");
+        unmap_region_device(&region);
+        (void)do_unimport_region(obmm_fd, import_mem_id);
+        return 1;
+    }
+
+    if (wait_for_payload(&region, DEMO_PAYLOAD_A, 5000, "nodeB verify nodeA write") != 0) {
+        unmap_region_device(&region);
+        (void)do_unimport_region(obmm_fd, import_mem_id);
+        return 1;
+    }
+
+    if (stamp_payload(&region, DEMO_PAYLOAD_B) != 0) {
+        unmap_region_device(&region);
         (void)do_unimport_region(obmm_fd, import_mem_id);
         return 1;
     }
 
     if (send_msg(sockfd, peer, "IMPORT_OK", strlen("IMPORT_OK")) != 0) {
         fprintf(stderr, "[ub_obmm] fail: send IMPORT_OK failed\n");
+        unmap_region_device(&region);
         (void)do_unimport_region(obmm_fd, import_mem_id);
         return 1;
     }
 
+    writeback_deadline = now_ms() + RUN_TIMEOUT_S * 1000L;
+    while (!g_alarm_fired && now_ms() < writeback_deadline) {
+        ssize_t n = recv_msg(sockfd, ack, sizeof(ack) - 1, &from);
+        if (n > 0) {
+            ack[n] = '\0';
+            if (strcmp(ack, "WRITEBACK_OK") == 0) {
+                fprintf(stderr, "[ub_obmm] sync: nodeA writeback acknowledged\n");
+                break;
+            }
+        }
+        usleep(200000);
+    }
+
+    if (g_alarm_fired || now_ms() >= writeback_deadline) {
+        fprintf(stderr, "[ub_obmm] fail: timeout waiting for WRITEBACK_OK\n");
+        unmap_region_device(&region);
+        (void)do_unimport_region(obmm_fd, import_mem_id);
+        return 1;
+    }
+
+    unmap_region_device(&region);
     if (do_unimport_region(obmm_fd, import_mem_id) != 0) {
         return 1;
     }
