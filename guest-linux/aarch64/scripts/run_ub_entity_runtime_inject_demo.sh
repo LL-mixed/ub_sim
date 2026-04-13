@@ -42,7 +42,7 @@ echo
 echo "Step 2: 启动 QEMU 时指定 entity plan"
 echo "  UB_SIM_ENTITY_COUNT=2 \\"
 echo "  UB_FM_ENTITY_PLAN_FILE=/path/to/entity_plan.ini \\"
-echo "  ./run_ub_dual_node_ubcore_urma_e2e.sh"
+echo "  guest-linux/aarch64/scripts/run_ub_dual_node_ubcore_urma_e2e.sh"
 echo
 echo "Step 3: 运行期动态修改（当前需要重启 QEMU）"
 echo "  修改 entity plan 文件中的 state=present/absent"

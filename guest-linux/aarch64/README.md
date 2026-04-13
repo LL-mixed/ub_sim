@@ -163,8 +163,7 @@ shell instead of auto-running the demo harness.
 Example:
 
 ```sh
-cd guest-linux/aarch64
-./scripts/launch_ub_dual_node_tmux.sh
+guest-linux/aarch64/scripts/launch_ub_dual_node_tmux.sh
 ```
 
 Default behavior:
@@ -191,17 +190,17 @@ Useful overrides:
 
 ```sh
 # custom session name
-TMUX_SESSION_NAME=ub-dev ./scripts/launch_ub_dual_node_tmux.sh
+TMUX_SESSION_NAME=ub-dev guest-linux/aarch64/scripts/launch_ub_dual_node_tmux.sh
 
 # boot guest directly into run_demo instead of shell
 RDINIT=/bin/run_demo \
 APPEND_EXTRA="linqu_probe_skip=1 linqu_probe_load_helper=1 linqu_ub_chat=1 linqu_ub_rpc_demo=1" \
-./scripts/launch_ub_dual_node_tmux.sh
+guest-linux/aarch64/scripts/launch_ub_dual_node_tmux.sh
 
 # force legacy /init dispatch into probe mode
 RDINIT=/init \
 APPEND_EXTRA="linqu_init_action=probe" \
-./scripts/launch_ub_dual_node_tmux.sh
+guest-linux/aarch64/scripts/launch_ub_dual_node_tmux.sh
 ```
 
 Cleanup:

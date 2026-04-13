@@ -25,7 +25,7 @@ Usage: run_linux_probe.sh --legacy [--help]
 
 This is a legacy linqu-ub probe script and is intentionally guarded.
 Set QEMU_DIR explicitly, for example:
-  QEMU_DIR=/path/to/legacy/qemu ./run_linux_probe.sh --legacy
+  QEMU_DIR=/path/to/legacy/qemu guest-linux/aarch64/scripts/run_linux_probe.sh --legacy
 EOF
 }
 
@@ -68,7 +68,7 @@ if [[ ! -f "$KERNEL_IMAGE" ]]; then
 fi
 
 if [[ ! -f "$INITRAMFS_IMAGE" ]]; then
-  bash "$SCRIPT_DIR/build_initramfs.sh" >/dev/null
+  "$SCRIPT_DIR/build_initramfs.sh" >/dev/null
   INITRAMFS_IMAGE="$OUT_DIR/initramfs.cpio.gz"
 fi
 
