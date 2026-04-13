@@ -229,6 +229,115 @@ Cleanup:
 - the launcher prints a per-run cleanup script under `out/`
 - running that script stops both QEMU processes and removes the QMP sockets
 
+## Manual Demo Order In tmux
+
+After `guest-linux/aarch64/scripts/launch_ub_dual_node_tmux.sh` boots both guests
+into interactive shells, use these windows:
+
+- `3:nodeA-guest`
+- `4:nodeB-guest`
+
+Recommended rule:
+
+- start the passive / server side on `nodeB` first
+- then start the active / client side on `nodeA`
+
+Useful pre-checks in each guest:
+
+```sh
+mount | head
+ls /sys/bus/ub/devices
+ls /sys/class/net
+ls /dev/uburma
+```
+
+Expected minimum signs:
+
+- `/sys/bus/ub/devices/00001`
+- `ipourma0` under `/sys/class/net`
+- `/dev/uburma` for `rdma`
+
+### chat
+
+Run on `nodeB` first, then `nodeA`:
+
+```sh
+/bin/linqu_ub_chat
+```
+
+Success criteria:
+
+- `nodeA` sends the greeting payload
+- `nodeB` receives the expected payload and replies
+- `nodeA` receives the reply payload intact
+
+### rpc
+
+Run on `nodeB` first, then `nodeA`:
+
+```sh
+/bin/linqu_ub_rpc
+```
+
+Success criteria:
+
+- `nodeA` sends the RPC request buffer
+- `nodeB` computes the expected result
+- `nodeA` receives the returned result and validates it
+
+### rdma
+
+Run on `nodeB` first, then `nodeA`:
+
+```sh
+/bin/linqu_ub_rdma_demo
+```
+
+Success criteria:
+
+- `nodeA` sends the request payload over the URMA/UDMA path
+- `nodeB` receives the request payload intact
+- `nodeB` sends the reply payload back
+- `nodeA` receives the reply payload intact
+
+### obmm
+
+Run on both nodes:
+
+```sh
+/bin/linqu_ub_obmm_demo
+```
+
+Recommended order:
+
+- start `nodeA` first so it can perform `export`
+- then start `nodeB` so it can perform `import`
+
+Success criteria:
+
+- `nodeA` completes `export`
+- `nodeB` completes `import`
+- QEMU side reports decoder `MAP`
+- `nodeB` completes `unimport`
+- `nodeA` completes `unexport`
+- QEMU side reports decoder `UNMAP`
+
+### run_demo wrapper
+
+Instead of calling the binaries directly, you can also use:
+
+```sh
+/bin/run_demo chat
+/bin/run_demo rpc
+/bin/run_demo rdma
+/bin/run_demo obmm
+/bin/run_demo all
+```
+
+`run_demo all` is less precise for interactive debugging.
+For bring-up and issue isolation, prefer invoking the single demo binaries in
+the order listed above.
+
 ## Initramfs Entry Model
 
 Current initramfs entrypoints are intentionally separated:
