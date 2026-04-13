@@ -7,6 +7,9 @@ THIRD_PARTY_DIR="$ROOT_DIR/third_party"
 OUT_BIN="$ROOT_DIR/busybox-aarch64"
 THIRD_PARTY_BIN="$THIRD_PARTY_DIR/busybox-aarch64"
 SRC_DIR="$THIRD_PARTY_DIR/busybox-src"
+BUSYBOX_VERSION="${BUSYBOX_VERSION:-1.36.1}"
+BUSYBOX_TARBALL="$THIRD_PARTY_DIR/busybox-${BUSYBOX_VERSION}.tar.bz2"
+BUSYBOX_URL="${BUSYBOX_URL:-https://busybox.net/downloads/busybox-${BUSYBOX_VERSION}.tar.bz2}"
 VM_HOST="${VM_HOST:-ll@192.168.64.3}"
 VM_BUSYBOX_PATH="${VM_BUSYBOX_PATH:-/usr/bin/busybox_aarch64}"
 
@@ -63,6 +66,23 @@ build_from_source_dir() {
   chmod +x "$OUT_BIN"
 }
 
+download_busybox_tarball() {
+  if [[ -f "$BUSYBOX_TARBALL" ]]; then
+    return 0
+  fi
+
+  echo "[prepare_busybox] downloading busybox source: $BUSYBOX_URL" >&2
+  if command -v curl >/dev/null 2>&1; then
+    curl -L "$BUSYBOX_URL" -o "$BUSYBOX_TARBALL"
+    return 0
+  fi
+  if command -v wget >/dev/null 2>&1; then
+    wget -O "$BUSYBOX_TARBALL" "$BUSYBOX_URL"
+    return 0
+  fi
+  return 1
+}
+
 if [[ -n "${BUSYBOX:-}" && -x "${BUSYBOX:-}" ]]; then
   echo "$BUSYBOX"
   exit 0
@@ -89,6 +109,9 @@ if [[ -d "$SRC_DIR" ]]; then
 fi
 
 tarball="$(find "$THIRD_PARTY_DIR" -maxdepth 1 -type f -name 'busybox-*.tar.bz2' | head -n 1)"
+if [[ -z "${tarball:-}" ]] && download_busybox_tarball; then
+  tarball="$BUSYBOX_TARBALL"
+fi
 if [[ -n "${tarball:-}" ]]; then
   echo "[prepare_busybox] extracting busybox source from $tarball" >&2
   tar -xf "$tarball" -C "$THIRD_PARTY_DIR"
@@ -120,6 +143,7 @@ cat >&2 <<EOF
 [prepare_busybox]   - $THIRD_PARTY_BIN
 [prepare_busybox]   - $SRC_DIR
 [prepare_busybox]   - $THIRD_PARTY_DIR/busybox-*.tar.bz2
+[prepare_busybox]   - automatic download via curl/wget from $BUSYBOX_URL
 [prepare_busybox]   - reachable VM with $VM_BUSYBOX_PATH
 EOF
 exit 1

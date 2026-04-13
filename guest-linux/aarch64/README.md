@@ -78,6 +78,22 @@ guest-linux/aarch64/scripts/run_linux_probe.sh
 If you need a full busybox rootfs and no local cross toolchain package has a
 ready-made ARM64 busybox binary, you have two options:
 
+Preferred entry:
+
+```sh
+cd guest-linux/aarch64
+AARCH64_LINUX_CC=aarch64-linux-gnu-gcc ./scripts/prepare_busybox.sh
+```
+
+`prepare_busybox.sh` tries, in order:
+
+1. existing `busybox-aarch64`
+2. `third_party/busybox-aarch64`
+3. `third_party/busybox-src`
+4. `third_party/busybox-*.tar.bz2`
+5. automatic download from `busybox.net` via `curl` or `wget`
+6. copy from VM (`/usr/bin/busybox_aarch64`) when reachable
+
 ### Option 1: Build locally (recommended if SSH is unavailable)
 
 ```sh
