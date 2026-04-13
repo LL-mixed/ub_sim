@@ -16,8 +16,6 @@ LOCAL_KERNEL_IMAGE="${LOCAL_KERNEL_IMAGE:-}"
 LOCAL_MODULES_DIR="${LOCAL_MODULES_DIR:-}"
 CC="$(detect_aarch64_linux_cc)"
 BUSYBOX_BIN="${BUSYBOX:-}"
-REQUIRED_MODULES=("hisi_ubus.ko" "udma.ko")
-
 if [[ -z "$CC" ]]; then
   echo "[build_guest_artifacts] error: AARCH64_LINUX_CC is required" >&2
   exit 1
@@ -35,18 +33,14 @@ ensure_dirs() {
   mkdir -p "$OUT_DIR" "$MODULES_DIR"
 }
 
-have_required_modules() {
-  local dir="$1"
-  local mod=""
-  for mod in "${REQUIRED_MODULES[@]}"; do
-    [[ -f "$dir/$mod" ]] || return 1
-  done
-  return 0
+reset_module_artifacts() {
+  ensure_dirs
+  rm -f "$MODULES_DIR"/*.ko(N)
+  rm -f "$OUT_DIR"/*.ko(N)
 }
 
 have_default_artifacts() {
-  [[ -f "$OUT_DIR/Image" && -f "$OUT_DIR/initramfs.cpio.gz" ]] || return 1
-  have_required_modules "$MODULES_DIR"
+  [[ -f "$OUT_DIR/Image" && -f "$OUT_DIR/initramfs.cpio.gz" ]]
 }
 
 import_local_artifacts() {
@@ -62,12 +56,8 @@ import_local_artifacts() {
     echo "[build_guest_artifacts] error: local modules dir not found: $LOCAL_MODULES_DIR" >&2
     return 1
   fi
-  if ! have_required_modules "$LOCAL_MODULES_DIR"; then
-    echo "[build_guest_artifacts] error: local modules dir missing required modules (need hisi_ubus.ko and udma.ko): $LOCAL_MODULES_DIR" >&2
-    return 1
-  fi
-
   ensure_dirs
+  reset_module_artifacts
   cp "$LOCAL_KERNEL_IMAGE" "$OUT_DIR/Image"
   local mod=""
   for mod in "$LOCAL_MODULES_DIR"/*.ko; do
@@ -85,6 +75,7 @@ sync_from_vm() {
   echo "[build_guest_artifacts] syncing guest kernel artifacts from VM" >&2
   (
     cd "$ROOT_DIR"
+    reset_module_artifacts
     BUILD_IN_VM="$BUILD_IN_VM" \
     BUILD_LINQU_DRIVER_IN_VM="$BUILD_LINQU_DRIVER_IN_VM" \
     ./scripts/sync_ub_kernel_artifacts_from_vm.sh
@@ -131,7 +122,7 @@ case "$ARTIFACT_SOURCE" in
     ;;
   none)
     if ! have_default_artifacts; then
-      echo "[build_guest_artifacts] error: ARTIFACT_SOURCE=none requires existing out/Image, out/initramfs.cpio.gz, and required modules" >&2
+      echo "[build_guest_artifacts] error: ARTIFACT_SOURCE=none requires existing out/Image and out/initramfs.cpio.gz" >&2
       print_build_guest_help
       exit 1
     fi

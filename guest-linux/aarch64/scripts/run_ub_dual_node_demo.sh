@@ -4,11 +4,11 @@ setopt null_glob
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-REPO_ROOT="$(cd "$ROOT_DIR/../.." && pwd)"
+WORKSPACE_ROOT="$(cd "$ROOT_DIR/../../.." && pwd)"
 KERNEL_IMAGE="${KERNEL_IMAGE:-$ROOT_DIR/out/Image}"
 INITRAMFS_IMAGE="${INITRAMFS_IMAGE:-$ROOT_DIR/out/initramfs.cpio.gz}"
 RDINIT="${RDINIT:-/bin/run_demo}"
-TOPOLOGY_FILE="${TOPOLOGY_FILE:-$REPO_ROOT/vendor/ub_topology_two_node_v0.ini}"
+TOPOLOGY_FILE="${TOPOLOGY_FILE:-/Volumes/repos/pypto_workspace/simulator/vendor/ub_topology_two_node_v0.ini}"
 SHARED_DIR="${UB_FM_SHARED_DIR:-/tmp/ub-qemu-links-dual}"
 RUN_SECS="${RUN_SECS:-180}"
 ITERATIONS="${ITERATIONS:-1}"
@@ -16,7 +16,7 @@ START_GAP_SECS="${START_GAP_SECS:-3}"
 LINK_WAIT_SECS="${LINK_WAIT_SECS:-45}"
 QEMU_KEEP_ALIVE_ON_POWEROFF="${QEMU_KEEP_ALIVE_ON_POWEROFF:-0}"
 APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1 linqu_ub_chat=1 linqu_ub_rpc_demo=1}"
-ENTITY_PLAN_FILE="${UB_FM_ENTITY_PLAN_FILE:-$REPO_ROOT/vendor/ub_topology_two_node_v2_entity.ini}"
+ENTITY_PLAN_FILE="${UB_FM_ENTITY_PLAN_FILE:-/Volumes/repos/pypto_workspace/simulator/vendor/ub_topology_two_node_v2_entity.ini}"
 ENTITY_COUNT="${UB_SIM_ENTITY_COUNT:-2}"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
@@ -29,7 +29,7 @@ MAIN_PID=$$
 
 source "$SCRIPT_DIR/qemu_ub_common.sh"
 APPEND_EXTRA="$(ensure_sim_kernel_append_defaults "$APPEND_EXTRA")"
-QEMU_BIN="$(ensure_qemu_ub_binary "$REPO_ROOT")"
+QEMU_BIN="$(ensure_qemu_ub_binary "$WORKSPACE_ROOT")"
 ensure_ub_guest_artifacts "$ROOT_DIR" "$KERNEL_IMAGE" "$INITRAMFS_IMAGE"
 
 # Keep init alive after probes so the harness can terminate QEMU directly.
@@ -228,6 +228,8 @@ validate_obmm_log() {
       "${node_name} obmm export" || return 1
     assert_log_has "$log_file" "\\[ub_obmm\\] sync: nodeB import acknowledged" \
       "${node_name} obmm import ack" || return 1
+    assert_log_has "$log_file" "\\[ub_obmm\\] nodeA verify nodeB write -> ok payload=\"obmm-import-payload-from-nodeB\"" \
+      "${node_name} obmm verify nodeB write" || return 1
     assert_log_has "$log_file" "\\[ub_obmm\\] sync: nodeB unimport acknowledged" \
       "${node_name} obmm unimport ack" || return 1
     assert_log_has "$log_file" "\\[ub_obmm\\] unexport -> ok mem_id=[0-9]+" \
@@ -237,6 +239,10 @@ validate_obmm_log() {
       "${node_name} obmm mem window" || return 1
     assert_log_has "$log_file" "\\[ub_obmm\\] import -> ok mem_id=[0-9]+ local_pa=0x[0-9a-f]+ local_cna=0x[0-9a-f]+ remote_cna=0x[0-9a-f]+" \
       "${node_name} obmm import" || return 1
+    assert_log_has "$log_file" "\\[ub_obmm\\] nodeB verify nodeA write -> ok payload=\"obmm-export-payload-from-nodeA\"" \
+      "${node_name} obmm verify nodeA write" || return 1
+    assert_log_has "$log_file" "\\[ub_obmm\\] sync: nodeA writeback acknowledged" \
+      "${node_name} obmm writeback ack" || return 1
     assert_log_has "$log_file" "\\[ub_obmm\\] unimport -> ok mem_id=[0-9]+" \
       "${node_name} obmm unimport" || return 1
   fi
@@ -532,10 +538,18 @@ run_iteration() {
   local nodeb_pid_file="$OUT_DIR/ub_nodeB.demo.${iter}.pid"
   local nodea_qmp="$QMP_DIR/nodeA.${iter}.sock"
   local nodeb_qmp="$QMP_DIR/nodeB.${iter}.sock"
+  local chat_enabled=0
+  local rpc_enabled=0
   local rdma_enabled=0
   local obmm_enabled=0
   local stale_files=()
 
+  if [[ "$APPEND_EXTRA" == *"linqu_ub_chat=1"* ]]; then
+    chat_enabled=1
+  fi
+  if [[ "$APPEND_EXTRA" == *"linqu_ub_rpc_demo=1"* ]]; then
+    rpc_enabled=1
+  fi
   if [[ "$APPEND_EXTRA" == *"linqu_ub_rdma_demo=1"* ]]; then
     rdma_enabled=1
   fi
@@ -603,57 +617,61 @@ run_iteration() {
     return 1
   fi
 
-  wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub chat pass" "\\[init\\] ub chat fail" "$RUN_SECS"
-  case "$?" in
-    0) ;;
-    1)
-      echo "iteration ${iter}: nodeA chat demo reported failure" >&2
-      return 15
-      ;;
-    *)
-      echo "iteration ${iter}: nodeA chat demo did not pass within ${RUN_SECS}s" >&2
-      return 15
-      ;;
-  esac
+  if [[ "$chat_enabled" -eq 1 ]]; then
+    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub chat pass" "\\[init\\] ub chat fail" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeA chat demo reported failure" >&2
+        return 15
+        ;;
+      *)
+        echo "iteration ${iter}: nodeA chat demo did not pass within ${RUN_SECS}s" >&2
+        return 15
+        ;;
+    esac
 
-  wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub chat pass" "\\[init\\] ub chat fail" "$RUN_SECS"
-  case "$?" in
-    0) ;;
-    1)
-      echo "iteration ${iter}: nodeB chat demo reported failure" >&2
-      return 15
-      ;;
-    *)
-      echo "iteration ${iter}: nodeB chat demo did not pass within ${RUN_SECS}s" >&2
-      return 15
-      ;;
-  esac
+    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub chat pass" "\\[init\\] ub chat fail" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeB chat demo reported failure" >&2
+        return 15
+        ;;
+      *)
+        echo "iteration ${iter}: nodeB chat demo did not pass within ${RUN_SECS}s" >&2
+        return 15
+        ;;
+    esac
+  fi
 
-  wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub rpc demo pass" "\\[init\\] ub rpc demo fail" "$RUN_SECS"
-  case "$?" in
-    0) ;;
-    1)
-      echo "iteration ${iter}: nodeA rpc demo reported failure" >&2
-      return 13
-      ;;
-    *)
-      echo "iteration ${iter}: nodeA rpc demo did not pass within ${RUN_SECS}s" >&2
-      return 13
-      ;;
-  esac
+  if [[ "$rpc_enabled" -eq 1 ]]; then
+    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub rpc demo pass" "\\[init\\] ub rpc demo fail" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeA rpc demo reported failure" >&2
+        return 13
+        ;;
+      *)
+        echo "iteration ${iter}: nodeA rpc demo did not pass within ${RUN_SECS}s" >&2
+        return 13
+        ;;
+    esac
 
-  wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub rpc demo pass" "\\[init\\] ub rpc demo fail" "$RUN_SECS"
-  case "$?" in
-    0) ;;
-    1)
-      echo "iteration ${iter}: nodeB rpc demo reported failure" >&2
-      return 13
-      ;;
-    *)
-      echo "iteration ${iter}: nodeB rpc demo did not pass within ${RUN_SECS}s" >&2
-      return 13
-      ;;
-  esac
+    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub rpc demo pass" "\\[init\\] ub rpc demo fail" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeB rpc demo reported failure" >&2
+        return 13
+        ;;
+      *)
+        echo "iteration ${iter}: nodeB rpc demo did not pass within ${RUN_SECS}s" >&2
+        return 13
+        ;;
+    esac
+  fi
 
   if [[ "$rdma_enabled" -eq 1 ]]; then
     wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub rdma demo pass" "\\[init\\] ub rdma demo fail" "$RUN_SECS"
@@ -724,10 +742,14 @@ run_iteration() {
   echo "=== nodeB qemu(demo:${iter}) ==="
   tail -n 80 "$nodeb_qemu_log"
 
-  validate_chat_log "nodeA" "$nodea_guest_log" || return 1
-  validate_chat_log "nodeB" "$nodeb_guest_log" || return 1
-  validate_rpc_log "nodeA" "$nodea_guest_log" || return 1
-  validate_rpc_log "nodeB" "$nodeb_guest_log" || return 1
+  if [[ "$chat_enabled" -eq 1 ]]; then
+    validate_chat_log "nodeA" "$nodea_guest_log" || return 1
+    validate_chat_log "nodeB" "$nodeb_guest_log" || return 1
+  fi
+  if [[ "$rpc_enabled" -eq 1 ]]; then
+    validate_rpc_log "nodeA" "$nodea_guest_log" || return 1
+    validate_rpc_log "nodeB" "$nodeb_guest_log" || return 1
+  fi
   if [[ "$APPEND_EXTRA" == *"linqu_ub_rdma_demo=1"* ]]; then
     validate_rdma_log "nodeA" "$nodea_guest_log" || return 1
     validate_rdma_log "nodeB" "$nodeb_guest_log" || return 1

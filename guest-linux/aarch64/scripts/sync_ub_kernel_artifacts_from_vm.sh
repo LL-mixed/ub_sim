@@ -89,6 +89,8 @@ if [[ "$BUILD_IN_VM" == "1" ]]; then
 fi
 
 mkdir -p "$OUT_DIR" "$MODULES_DIR"
+rm -f "$MODULES_DIR"/*.ko(N)
+rm -f "$OUT_DIR"/*.ko(N)
 
 scp "$VM_HOST:$VM_IMAGE_PATH" "$OUT_DIR/Image"
 
