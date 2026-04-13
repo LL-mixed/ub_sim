@@ -63,6 +63,10 @@ need_cmd tmux
 need_cmd nc
 need_cmd python3
 
+# Fail before creating tmux windows when required artifacts are not ready.
+QEMU_BIN_PRECHECK="$(ensure_qemu_ub_binary "$REPO_ROOT")"
+ensure_ub_guest_artifacts "$ROOT_DIR" "$KERNEL_IMAGE" "$INITRAMFS_IMAGE"
+
 mkdir -p "$OUT_DIR" "$LOG_DIR/${RUN_ID}_tmux" "$QMP_DIR"
 
 if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then

@@ -30,6 +30,47 @@ qemu_ub_supports_required_opts() {
   "$bin" -M virt,help 2>/dev/null | rg -q "ub-cluster-mode|ummu"
 }
 
+print_qemu_preflight_help() {
+  local repo_root="$1"
+  local src_dir="$2"
+  local build_dir="$3"
+  local bin="$4"
+
+  cat >&2 <<EOF
+[ub_common] qemu preflight failed
+[ub_common] expected source: $src_dir
+[ub_common] expected build dir: $build_dir
+[ub_common] expected binary: $bin
+[ub_common] suggested commands:
+[ub_common]   cd $src_dir
+[ub_common]   mkdir -p build
+[ub_common]   cd build
+[ub_common]   ../configure --target-list=aarch64-softmmu
+[ub_common]   ninja -j8 qemu-system-aarch64
+EOF
+}
+
+print_guest_preflight_help() {
+  local guest_root="$1"
+  local kernel_image="$2"
+  local initramfs_image="$3"
+  local modules_dir="$4"
+  local cc_hint="${5:-aarch64-unknown-linux-gnu-gcc}"
+
+  cat >&2 <<EOF
+[ub_common] guest artifact preflight failed
+[ub_common] expected kernel image: $kernel_image
+[ub_common] expected initramfs: $initramfs_image
+[ub_common] expected modules dir: $modules_dir
+[ub_common] suggested commands:
+[ub_common]   cd $guest_root
+[ub_common]   BUILD_IN_VM=1 BUILD_LINQU_DRIVER_IN_VM=1 ./scripts/sync_ub_kernel_artifacts_from_vm.sh
+[ub_common]   AARCH64_LINUX_CC=$cc_hint BUSYBOX=\$PWD/busybox-aarch64 ./scripts/build_initramfs.sh
+[ub_common] or pass explicit overrides:
+[ub_common]   KERNEL_IMAGE=/path/to/Image INITRAMFS_IMAGE=/path/to/initramfs.cpio.gz ./scripts/launch_ub_dual_node_tmux.sh
+EOF
+}
+
 detect_aarch64_linux_cc() {
   if [[ -n "${AARCH64_LINUX_CC:-}" ]]; then
     echo "$AARCH64_LINUX_CC"
@@ -62,10 +103,12 @@ ensure_ub_guest_artifacts() {
   if [[ "$kernel_image" != "$default_kernel" || "$initramfs_image" != "$default_initramfs" ]]; then
     if [[ ! -f "$kernel_image" ]]; then
       echo "KERNEL_IMAGE not found: $kernel_image" >&2
+      print_guest_preflight_help "$guest_root" "$kernel_image" "$initramfs_image" "$modules_dir" "$(detect_aarch64_linux_cc)"
       return 1
     fi
     if [[ ! -f "$initramfs_image" ]]; then
       echo "INITRAMFS_IMAGE not found: $initramfs_image" >&2
+      print_guest_preflight_help "$guest_root" "$kernel_image" "$initramfs_image" "$modules_dir" "$(detect_aarch64_linux_cc)"
       return 1
     fi
     return 0
@@ -83,12 +126,16 @@ ensure_ub_guest_artifacts() {
 
     if (( need_sync )); then
       echo "[ub_common] syncing guest kernel artifacts from VM" >&2
-      (
+      if ! (
         cd "$guest_root"
         BUILD_IN_VM="${UB_SYNC_BUILD_IN_VM:-1}" \
         BUILD_LINQU_DRIVER_IN_VM="${UB_SYNC_BUILD_LINQU_IN_VM:-1}" \
         ./scripts/sync_ub_kernel_artifacts_from_vm.sh
-      )
+      ); then
+        echo "[ub_common] sync_ub_kernel_artifacts_from_vm.sh failed" >&2
+        print_guest_preflight_help "$guest_root" "$default_kernel" "$default_initramfs" "$modules_dir" "$(detect_aarch64_linux_cc)"
+        return 1
+      fi
     fi
   fi
 
@@ -96,6 +143,7 @@ ensure_ub_guest_artifacts() {
     cc="$(detect_aarch64_linux_cc)"
     if [[ -z "$cc" ]]; then
       echo "AARCH64_LINUX_CC is required to rebuild initramfs" >&2
+      print_guest_preflight_help "$guest_root" "$default_kernel" "$default_initramfs" "$modules_dir"
       return 1
     fi
     local busybox_bin="${BUSYBOX:-}"
@@ -103,18 +151,24 @@ ensure_ub_guest_artifacts() {
       busybox_bin="$guest_root/busybox-aarch64"
     fi
     echo "[ub_common] rebuilding initramfs" >&2
-    (
+    if ! (
       cd "$guest_root"
       AARCH64_LINUX_CC="$cc" BUSYBOX="$busybox_bin" ./scripts/build_initramfs.sh >/dev/null
-    )
+    ); then
+      echo "[ub_common] build_initramfs.sh failed" >&2
+      print_guest_preflight_help "$guest_root" "$default_kernel" "$default_initramfs" "$modules_dir" "$cc"
+      return 1
+    fi
   fi
 
   if [[ ! -f "$default_kernel" ]]; then
     echo "KERNEL_IMAGE not found: $default_kernel" >&2
+    print_guest_preflight_help "$guest_root" "$default_kernel" "$default_initramfs" "$modules_dir" "$(detect_aarch64_linux_cc)"
     return 1
   fi
   if [[ ! -f "$default_initramfs" ]]; then
     echo "INITRAMFS_IMAGE not found: $default_initramfs" >&2
+    print_guest_preflight_help "$guest_root" "$default_kernel" "$default_initramfs" "$modules_dir" "$(detect_aarch64_linux_cc)"
     return 1
   fi
 }
@@ -133,25 +187,32 @@ ensure_qemu_ub_binary() {
 
   if [[ ! -d "$src_dir" ]]; then
     echo "QEMU source dir not found: $src_dir" >&2
+    print_qemu_preflight_help "$workspace_root" "$src_dir" "$build_dir" "$bin"
     return 1
   fi
   if [[ ! -f "$build_dir/build.ninja" ]]; then
     echo "QEMU build.ninja missing: $build_dir/build.ninja" >&2
-    echo "Run configure first in $src_dir (out-of-tree build dir: $build_dir)." >&2
+    print_qemu_preflight_help "$workspace_root" "$src_dir" "$build_dir" "$bin"
     return 1
   fi
 
-  (
+  if ! (
     cd "$build_dir"
     ninja -j"$jobs" qemu-system-aarch64 >/dev/null
-  )
+  ); then
+    echo "[ub_common] ninja qemu-system-aarch64 failed" >&2
+    print_qemu_preflight_help "$workspace_root" "$src_dir" "$build_dir" "$bin"
+    return 1
+  fi
 
   if [[ ! -x "$bin" ]]; then
     echo "QEMU binary not found after build: $bin" >&2
+    print_qemu_preflight_help "$workspace_root" "$src_dir" "$build_dir" "$bin"
     return 1
   fi
   if ! qemu_ub_supports_required_opts "$bin"; then
     echo "QEMU binary missing UB machine options (ummu/ub-cluster-mode): $bin" >&2
+    print_qemu_preflight_help "$workspace_root" "$src_dir" "$build_dir" "$bin"
     return 1
   fi
 
