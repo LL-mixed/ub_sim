@@ -1,0 +1,7 @@
+# Generated artifacts under guest-linux trees
+**/out/
+
+# Runtime logs and downloaded toolchains/assets for aarch64 guest harness
+aarch64/logs/
+aarch64/third_party/
+aarch64/busybox-aarch64

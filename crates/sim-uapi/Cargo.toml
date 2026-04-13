@@ -1,0 +1,15 @@
+[package]
+name = "sim-uapi"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+sim-core = { path = "../sim-core" }
+sim-runtime = { path = "../sim-runtime" }
+sim-services = { path = "../sim-services" }
+sim-topology = { path = "../sim-topology" }
+
+[dev-dependencies]
+sim-config = { path = "../sim-config" }

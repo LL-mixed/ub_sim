@@ -1,0 +1,80 @@
+#!/bin/busybox sh
+set -eu
+
+read_cmdline() {
+  if [ -r /proc/cmdline ]; then
+    /bin/busybox cat /proc/cmdline
+  else
+    echo ""
+  fi
+}
+
+get_cmdline_value() {
+  key="$1"
+  for tok in $(read_cmdline); do
+    case "$tok" in
+      ${key}=*)
+        echo "${tok#${key}=}"
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+mount_fs() {
+  fstype="$1"
+  target="$2"
+  /bin/busybox mkdir -p "$target" >/dev/null 2>&1 || true
+  /bin/busybox mount -t "$fstype" none "$target" >/dev/null 2>&1 || true
+}
+
+enter_shell() {
+  echo "[init] entering interactive shell"
+  if [ -x /bin/busybox ]; then
+    exec /bin/busybox sh
+  fi
+  if [ -x /bin/sh ]; then
+    exec /bin/sh -i
+  fi
+  exec /bin/busybox sleep 3600
+}
+
+mount_fs proc /proc
+mount_fs sysfs /sys
+mount_fs devtmpfs /dev
+mount_fs devpts /dev/pts
+
+action="$(get_cmdline_value linqu_init_action || true)"
+echo "[init] linqu_init_action=${action:-shell}"
+
+case "${action:-shell}" in
+  run_demo)
+    if [ -x /bin/run_demo ]; then
+      exec /bin/run_demo "$@"
+    fi
+    echo "[init] /bin/run_demo missing"
+    enter_shell
+    ;;
+  probe)
+    if [ -x /bin/linqu_probe ]; then
+      exec /bin/linqu_probe "$@"
+    fi
+    echo "[init] /bin/linqu_probe missing"
+    enter_shell
+    ;;
+  linqu_init)
+    if [ -x /bin/linqu_init ]; then
+      exec /bin/linqu_init "$@"
+    fi
+    echo "[init] /bin/linqu_init missing"
+    enter_shell
+    ;;
+  shell|"")
+    enter_shell
+    ;;
+  *)
+    echo "[init] unknown linqu_init_action=$action"
+    enter_shell
+    ;;
+esac

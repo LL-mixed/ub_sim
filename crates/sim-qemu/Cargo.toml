@@ -1,0 +1,18 @@
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[package]
+name = "sim-qemu"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+sim-config = { path = "../sim-config" }
+sim-core = { path = "../sim-core" }
+sim-services = { path = "../sim-services" }
+sim-topology = { path = "../sim-topology" }
+sim-uapi = { path = "../sim-uapi" }
+
+[dev-dependencies]

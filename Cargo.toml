@@ -1,0 +1,27 @@
+[workspace]
+members = [
+    "crates/sim-core",
+    "crates/sim-config",
+    "crates/sim-report",
+    "crates/sim-topology",
+    "crates/sim-runtime",
+    "crates/sim-services",
+    "crates/sim-qemu",
+    "crates/sim-uapi",
+    "crates/sim-workloads",
+    "crates/sim-cli",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+authors = ["PyPTO Workspace"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+thiserror = "2"
+anyhow = "1"

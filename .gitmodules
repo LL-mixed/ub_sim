@@ -1,0 +1,6 @@
+[submodule "vendor/qemu_8.2.0_ub"]
+	path = vendor/qemu_8.2.0_ub
+	url = git@gitcode.com:liliang_euler/qemu.git
+[submodule "guest-linux/kernel_ub"]
+	path = guest-linux/kernel_ub
+	url = https://atomgit.com/openeuler/kernel.git

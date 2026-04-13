@@ -1,0 +1,10 @@
+[package]
+name = "sim-topology"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+sim-core = { path = "../sim-core" }
+sim-config = { path = "../sim-config" }

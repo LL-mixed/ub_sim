@@ -1,0 +1,35 @@
+#!/bin/sh
+set -u
+
+bb=""
+if [ -x /bin/busybox ]; then
+  bb=/bin/busybox
+fi
+
+mount_fs() {
+  local fstype="$1"
+  local target="$2"
+  if [ -n "$bb" ]; then
+    "$bb" mkdir -p "$target" >/dev/null 2>&1 || true
+    "$bb" mount -t "$fstype" none "$target" >/dev/null 2>&1 || true
+  fi
+}
+
+mount_fs proc /proc
+mount_fs sysfs /sys
+mount_fs devtmpfs /dev
+mount_fs devpts /dev/pts
+
+echo "[rdinit_interactive] booted into interactive shell"
+echo "[rdinit_interactive] cmdline: $(cat /proc/cmdline 2>/dev/null || echo unavailable)"
+
+if [ -x /bin/sh ]; then
+  exec /bin/sh -i
+fi
+
+if [ -n "$bb" ]; then
+  exec "$bb" sh
+fi
+
+echo "[rdinit_interactive] no shell available"
+exec /bin/false

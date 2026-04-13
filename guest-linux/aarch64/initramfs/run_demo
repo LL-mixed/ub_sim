@@ -1,0 +1,183 @@
+#!/bin/busybox sh
+set -u
+
+log() {
+  echo "[run_demo] $*"
+}
+
+mount_fs() {
+  local fstype="$1"
+  local target="$2"
+  /bin/busybox mkdir -p "$target" >/dev/null 2>&1 || true
+  /bin/busybox mount -t "$fstype" none "$target" >/dev/null 2>&1 || true
+}
+
+bootstrap_fs() {
+  mount_fs proc /proc
+  mount_fs sysfs /sys
+  mount_fs devtmpfs /dev
+  mount_fs devpts /dev/pts
+}
+
+read_cmdline() {
+if [ -r /proc/cmdline ]; then
+    cmdline="$(/bin/busybox cat /proc/cmdline)"
+  else
+    cmdline=""
+  fi
+}
+
+has_flag() {
+  local key="$1"
+  read_cmdline
+  case " $cmdline " in
+    *" $key "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+run_binary() {
+  local name="$1"
+  local path="$2"
+
+  if [ ! -x "$path" ]; then
+    log "missing executable: $path"
+    return 0
+  fi
+
+  log "run $name"
+  if "$path"; then
+    log "$name done"
+    return 0
+  fi
+
+  local rc=$?
+  log "$name failed rc=$rc"
+  return "$rc"
+}
+
+run_default_actions() {
+  local ran_any="0"
+  local rc=0
+
+  if ! has_flag "linqu_probe_skip=1"; then
+    run_binary "linqu_probe" /bin/linqu_probe || rc=$?
+    ran_any="1"
+  fi
+
+  if has_flag "linqu_ub_chat=1"; then
+    run_binary "linqu_ub_chat" /bin/linqu_ub_chat || rc=$?
+    ran_any="1"
+  fi
+
+  if has_flag "linqu_ub_rpc_demo=1"; then
+    run_binary "linqu_ub_rpc" /bin/linqu_ub_rpc || rc=$?
+    ran_any="1"
+  fi
+
+  if has_flag "linqu_ub_rdma_demo=1"; then
+    run_binary "linqu_ub_rdma_demo" /bin/linqu_ub_rdma_demo || rc=$?
+    ran_any="1"
+  fi
+
+  if has_flag "linqu_obmm_demo=1"; then
+    run_binary "linqu_ub_obmm_demo" /bin/linqu_ub_obmm_demo || rc=$?
+    ran_any="1"
+  fi
+
+  if [ "$rc" -ne 0 ]; then
+    return "$rc"
+  fi
+
+  if [ "$ran_any" = "0" ]; then
+    log "no demo flags matched; nothing to run"
+  fi
+
+  return 0
+}
+
+run_single_action() {
+  case "$1" in
+    probe)
+      run_binary "linqu_probe" /bin/linqu_probe
+      ;;
+    chat)
+      run_binary "linqu_ub_chat" /bin/linqu_ub_chat
+      ;;
+    rpc)
+      run_binary "linqu_ub_rpc" /bin/linqu_ub_rpc
+      ;;
+    rdma)
+      run_binary "linqu_ub_rdma_demo" /bin/linqu_ub_rdma_demo
+      ;;
+    obmm)
+      run_binary "linqu_ub_obmm_demo" /bin/linqu_ub_obmm_demo
+      ;;
+    all)
+      run_default_actions
+      ;;
+    shell)
+      if [ -x /bin/busybox ]; then
+        exec /bin/busybox sh
+      fi
+      if [ -x /bin/sh ]; then
+        exec /bin/sh
+      fi
+      return 1
+      ;;
+    *)
+      log "unknown action: $1"
+      return 1
+      ;;
+  esac
+}
+
+enter_shell() {
+  if [ -x /bin/busybox ]; then
+    exec /bin/busybox sh
+  fi
+  if [ -x /bin/sh ]; then
+    exec /bin/sh
+  fi
+  log "no shell available (busybox missing)"
+  return 1
+}
+
+bootstrap_fs
+
+if [ "${UB_RUN_DEMO_FROM_INIT:-0}" != "1" ] && [ "${1-}" != "--resume" ]; then
+  log "bootstrap phase: launching /bin/linqu_init"
+  UB_RUN_DEMO_FROM_INIT=1
+  export UB_RUN_DEMO_FROM_INIT
+  exec /bin/linqu_init "$@"
+fi
+
+shift_args=0
+if [ "${1-}" = "--resume" ]; then
+  shift_args=1
+fi
+
+if [ "$shift_args" = "1" ]; then
+  shift
+fi
+
+if [ "${UB_RUN_DEMO_FROM_INIT:-0}" = "1" ] && [ "$#" -eq 0 ]; then
+  log "boot flow completed, dropping to shell"
+  enter_shell
+fi
+
+if [ "$#" -gt 0 ]; then
+  for action in "$@"; do
+    if ! run_single_action "$action"; then
+      log "action failed: $action"
+      exit 1
+    fi
+  done
+else
+  if ! run_default_actions; then
+    exit 1
+  fi
+fi
+
+log "entering interactive shell"
+enter_shell
