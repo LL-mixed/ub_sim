@@ -68,10 +68,8 @@ static void try_insmod(const char *path)
     f = popen(cmd, "r");
     if (f) {
         char buf[256];
-        int has_output = 0;
         while (fgets(buf, sizeof(buf), f)) {
             printf("[insmod] %s", buf);
-            has_output = 1;
         }
         status = pclose(f);
         if (status == 0) {

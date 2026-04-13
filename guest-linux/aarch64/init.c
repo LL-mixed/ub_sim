@@ -1,4 +1,7 @@
 #define _GNU_SOURCE
+#include <arpa/inet.h>
+#include <net/if.h>
+#include <net/if_arp.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <sched.h>
@@ -8,8 +11,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/mount.h>
 #include <sys/reboot.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -48,71 +53,6 @@ static bool read_file_line(const char *path, char *buf, size_t buf_size)
 }
 
 static bool should_enter_demo_boot_flow(void);
-
-static void format_guid_be_hex(const unsigned char *guid, char *out, size_t out_size)
-{
-    size_t i;
-    size_t off = 0;
-
-    if (!out_size) {
-        return;
-    }
-
-    out[0] = '\0';
-    for (i = 0; i < UBC_PORT_GUID_SIZE && off + 2 < out_size; i++) {
-        int written = snprintf(out + off, out_size - off, "%02x", guid[i]);
-
-        if (written < 0) {
-            out[0] = '\0';
-            return;
-        }
-        off += (size_t)written;
-    }
-}
-
-static bool find_ubc_resource_base(uint64_t *base_out)
-{
-    DIR *dir;
-    struct dirent *ent;
-    char resource_path[512];
-    char line[256];
-
-    dir = opendir("/sys/bus/platform/devices");
-    if (!dir) {
-        fprintf(stderr, "[init] opendir /sys/bus/platform/devices failed: %s\n",
-                strerror(errno));
-        return false;
-    }
-
-    while ((ent = readdir(dir)) != NULL) {
-        char *space;
-        uint64_t start = 0;
-        if (!strstr(ent->d_name, ".ubc")) {
-            continue;
-        }
-
-        snprintf(resource_path, sizeof(resource_path),
-                 "/sys/bus/platform/devices/%s/resource", ent->d_name);
-        if (read_file_line(resource_path, line, sizeof(line))) {
-            space = strchr(line, ' ');
-            if (space) {
-                *space = '\0';
-            }
-            errno = 0;
-            start = strtoull(line, NULL, 16);
-            if (errno == 0) {
-                *base_out = start;
-                closedir(dir);
-                return true;
-            }
-        }
-
-    }
-
-    *base_out = UBC_RESOURCE_BASE_FALLBACK;
-    closedir(dir);
-    return true;
-}
 
 static void dump_raw_ubc_port1_state(void)
 {
@@ -170,6 +110,40 @@ static bool cmdline_has_option(const char *needle)
 
     buf[n] = '\0';
     return strstr(buf, needle) != NULL;
+}
+
+static bool cmdline_get_value(const char *key, char *out, size_t out_len)
+{
+    int fd;
+    ssize_t n;
+    char buf[2048];
+    char *saveptr = NULL;
+    char *tok;
+    size_t key_len;
+
+    fd = open("/proc/cmdline", O_RDONLY);
+    if (fd < 0) {
+        return false;
+    }
+
+    n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0) {
+        return false;
+    }
+
+    buf[n] = '\0';
+    key_len = strlen(key);
+    tok = strtok_r(buf, " \t\n", &saveptr);
+    while (tok != NULL) {
+        if (strncmp(tok, key, key_len) == 0 && tok[key_len] == '=') {
+            snprintf(out, out_len, "%s", tok + key_len + 1);
+            return true;
+        }
+        tok = strtok_r(NULL, " \t\n", &saveptr);
+    }
+
+    return false;
 }
 
 static bool should_run_linqu_probe(void)
@@ -555,6 +529,209 @@ static bool is_ipourma_ready(void)
     return found;
 }
 
+static bool find_ipourma_iface(char *name, size_t name_len, unsigned int *ifindex_out)
+{
+    DIR *dir;
+    struct dirent *entry;
+
+    dir = opendir("/sys/class/net");
+    if (!dir) {
+        return false;
+    }
+
+    while ((entry = readdir(dir)) != NULL) {
+        size_t n;
+
+        if (strncmp(entry->d_name, "ipourma", strlen("ipourma")) != 0) {
+            continue;
+        }
+
+        n = strcspn(entry->d_name, " \t\r\n");
+        if (name_len == 0) {
+            closedir(dir);
+            return false;
+        }
+        if (n >= name_len) {
+            n = name_len - 1;
+        }
+        memcpy(name, entry->d_name, n);
+        name[n] = '\0';
+        if (ifindex_out != NULL) {
+            *ifindex_out = if_nametoindex(name);
+        }
+        closedir(dir);
+        return true;
+    }
+
+    closedir(dir);
+    return false;
+}
+
+static bool set_ipv4_addr(const char *ifname, const struct in_addr *addr)
+{
+    struct ifreq ifr;
+    struct sockaddr_in *sin;
+    int fd;
+
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        fprintf(stderr, "[init] set_ipv4 socket failed: %s\n", strerror(errno));
+        return false;
+    }
+
+    memset(&ifr, 0, sizeof(ifr));
+    snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), "%s", ifname);
+    sin = (struct sockaddr_in *)&ifr.ifr_addr;
+    sin->sin_family = AF_INET;
+    sin->sin_addr = *addr;
+
+    if (ioctl(fd, SIOCSIFADDR, &ifr) != 0) {
+        fprintf(stderr, "[init] set_ipv4 SIOCSIFADDR %s failed: %s\n",
+                ifname, strerror(errno));
+        close(fd);
+        return false;
+    }
+
+    memset(&ifr.ifr_netmask, 0, sizeof(ifr.ifr_netmask));
+    sin = (struct sockaddr_in *)&ifr.ifr_netmask;
+    sin->sin_family = AF_INET;
+    inet_pton(AF_INET, "255.255.255.0", &sin->sin_addr);
+    if (ioctl(fd, SIOCSIFNETMASK, &ifr) != 0) {
+        fprintf(stderr, "[init] set_ipv4 SIOCSIFNETMASK %s failed: %s\n",
+                ifname, strerror(errno));
+        close(fd);
+        return false;
+    }
+
+    close(fd);
+    return true;
+}
+
+static bool get_local_ipv4(const char *ifname, struct in_addr *addr)
+{
+    struct ifreq ifr;
+    int fd;
+
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        return false;
+    }
+
+    memset(&ifr, 0, sizeof(ifr));
+    snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), "%s", ifname);
+    if (ioctl(fd, SIOCGIFADDR, &ifr) != 0) {
+        close(fd);
+        return false;
+    }
+
+    close(fd);
+    *addr = ((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr;
+    return addr->s_addr != 0;
+}
+
+static void install_static_arp(const char *ifname, const struct in_addr *peer_addr)
+{
+    struct arpreq req;
+    struct sockaddr_in *pa;
+    uint32_t peer = ntohl(peer_addr->s_addr);
+    unsigned char mac[6] = {
+        0x02, 0x00, 0x00, 0x00,
+        (unsigned char)((peer >> 8) & 0xff),
+        (unsigned char)(peer & 0xff),
+    };
+    int fd;
+
+    memset(&req, 0, sizeof(req));
+    pa = (struct sockaddr_in *)&req.arp_pa;
+    pa->sin_family = AF_INET;
+    pa->sin_addr = *peer_addr;
+    req.arp_ha.sa_family = ARPHRD_ETHER;
+    memcpy(req.arp_ha.sa_data, mac, sizeof(mac));
+    req.arp_flags = ATF_PERM | ATF_COM;
+    snprintf(req.arp_dev, sizeof(req.arp_dev), "%s", ifname);
+
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        fprintf(stderr, "[init] static_arp socket failed: %s\n", strerror(errno));
+        return;
+    }
+
+    if (ioctl(fd, SIOCSARP, &req) != 0) {
+        fprintf(stderr, "[init] static_arp SIOCSARP %s failed: %s\n",
+                ifname, strerror(errno));
+    }
+
+    close(fd);
+}
+
+static bool ipourma_role_ipv4_defaults(const char *role, char *local, size_t local_len,
+                                       char *peer, size_t peer_len)
+{
+    if (strcmp(role, "nodeA") == 0) {
+        snprintf(local, local_len, "%s", "10.0.0.1");
+        snprintf(peer, peer_len, "%s", "10.0.0.2");
+        return true;
+    }
+    if (strcmp(role, "nodeB") == 0) {
+        snprintf(local, local_len, "%s", "10.0.0.2");
+        snprintf(peer, peer_len, "%s", "10.0.0.1");
+        return true;
+    }
+    return false;
+}
+
+static bool resolve_ipourma_ipv4_config(char *local, size_t local_len,
+                                        char *peer, size_t peer_len,
+                                        bool *have_peer)
+{
+    char role[32] = {0};
+    bool have_local = cmdline_get_value("linqu_ipourma_ipv4", local, local_len);
+    bool peer_present = cmdline_get_value("linqu_ipourma_peer_ipv4", peer, peer_len);
+
+    if ((!have_local || !peer_present) &&
+        cmdline_get_value("linqu_urma_dp_role", role, sizeof(role))) {
+        char default_local[INET_ADDRSTRLEN];
+        char default_peer[INET_ADDRSTRLEN];
+
+        if (ipourma_role_ipv4_defaults(role, default_local, sizeof(default_local),
+                                       default_peer, sizeof(default_peer))) {
+            if (!have_local) {
+                snprintf(local, local_len, "%s", default_local);
+                have_local = true;
+            }
+            if (!peer_present) {
+                snprintf(peer, peer_len, "%s", default_peer);
+                peer_present = true;
+            }
+        }
+    }
+
+    if (!have_local) {
+        if (have_peer != NULL) {
+            *have_peer = false;
+        }
+        return false;
+    }
+
+    if (inet_pton(AF_INET, local, &(struct in_addr){0}) != 1) {
+        fprintf(stderr, "[init] invalid linqu_ipourma_ipv4=%s\n", local);
+        if (have_peer != NULL) {
+            *have_peer = false;
+        }
+        return false;
+    }
+
+    if (peer_present && inet_pton(AF_INET, peer, &(struct in_addr){0}) != 1) {
+        fprintf(stderr, "[init] invalid linqu_ipourma_peer_ipv4=%s\n", peer);
+        peer_present = false;
+    }
+
+    if (have_peer != NULL) {
+        *have_peer = peer_present;
+    }
+    return true;
+}
+
 static void dump_file(const char *path);
 
 static void dump_ipourma_stats(void)
@@ -562,6 +739,7 @@ static void dump_ipourma_stats(void)
     DIR *dir = opendir("/sys/class/net");
     struct dirent *entry;
     char path[256];
+    int written;
 
     if (!dir) {
         fprintf(stderr, "[init] opendir /sys/class/net failed: %s\n", strerror(errno));
@@ -572,7 +750,13 @@ static void dump_ipourma_stats(void)
         if (strncmp(entry->d_name, "ipourma", strlen("ipourma")) != 0) {
             continue;
         }
-        snprintf(path, sizeof(path), "/sys/class/net/%s/query_ipourma_stats", entry->d_name);
+        written = snprintf(path, sizeof(path), "/sys/class/net/%s/query_ipourma_stats",
+                           entry->d_name);
+        if (written < 0 || (size_t)written >= sizeof(path)) {
+            fprintf(stderr, "[init] skip oversized ipourma stats path for %s\n",
+                    entry->d_name);
+            continue;
+        }
         dump_file(path);
     }
 
@@ -593,6 +777,52 @@ static void wait_for_ipourma_interface(int timeout_secs)
         usleep(500000); /* 500ms */
     }
     fprintf(stderr, "[init] TIMEOUT waiting for ipourma interface\n");
+}
+
+static bool configure_ipourma_network(int timeout_secs)
+{
+    char ifname[IFNAMSIZ] = {0};
+    char local_ip[INET_ADDRSTRLEN] = {0};
+    char peer_ip[INET_ADDRSTRLEN] = {0};
+    struct in_addr desired_local = {0};
+    struct in_addr current_local = {0};
+    struct in_addr peer_addr = {0};
+    unsigned int ifindex = 0;
+    bool have_peer = false;
+
+    if (!resolve_ipourma_ipv4_config(local_ip, sizeof(local_ip),
+                                     peer_ip, sizeof(peer_ip),
+                                     &have_peer)) {
+        return false;
+    }
+
+    wait_for_ipourma_interface(timeout_secs);
+    if (!find_ipourma_iface(ifname, sizeof(ifname), &ifindex)) {
+        fprintf(stderr, "[init] ipourma bootstrap failed: interface not found\n");
+        return false;
+    }
+
+    if (inet_pton(AF_INET, local_ip, &desired_local) != 1) {
+        fprintf(stderr, "[init] ipourma bootstrap failed: local ip parse %s\n", local_ip);
+        return false;
+    }
+
+    if (!set_ipv4_addr(ifname, &desired_local) || !get_local_ipv4(ifname, &current_local)) {
+        fprintf(stderr, "[init] ipourma bootstrap failed: local ip apply %s on %s\n",
+                local_ip, ifname);
+        return false;
+    }
+
+    if (have_peer && inet_pton(AF_INET, peer_ip, &peer_addr) == 1) {
+        install_static_arp(ifname, &peer_addr);
+        fprintf(stderr, "[init] ipourma bootstrap iface=%s ifindex=%u local=%s peer=%s\n",
+                ifname, ifindex, local_ip, peer_ip);
+    } else {
+        fprintf(stderr, "[init] ipourma bootstrap iface=%s ifindex=%u local=%s peer=(none)\n",
+                ifname, ifindex, local_ip);
+    }
+
+    return true;
 }
 
 static void run_urma_dp_probe(void)
@@ -1177,6 +1407,7 @@ int main(void)
     }
     force_bind_ubase_for_qemu();
     dump_ub_state();
+    (void)configure_ipourma_network(30);
     if (should_run_urma_dp_verify()) {
         /* Wait up to 30 seconds for asynchronous device registration to complete */
         wait_for_ipourma_interface(30);

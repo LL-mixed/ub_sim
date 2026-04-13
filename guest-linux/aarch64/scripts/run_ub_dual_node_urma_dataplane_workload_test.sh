@@ -125,6 +125,20 @@ extract_metric_from_summary() {
   printf '%s\n' "$summary" | sed -nE "s/.*${key}=([0-9]+).*/\\1/p"
 }
 
+ipourma_ipv4_args_for_role() {
+  local role="$1"
+  case "$role" in
+    nodeA)
+      echo "linqu_ipourma_ipv4=10.0.0.1 linqu_ipourma_peer_ipv4=10.0.0.2"
+      ;;
+    nodeB)
+      echo "linqu_ipourma_ipv4=10.0.0.2 linqu_ipourma_peer_ipv4=10.0.0.1"
+      ;;
+    *)
+      ;;
+  esac
+}
+
 start_node() {
   local node_id="$1"
   local role="$2"
@@ -133,9 +147,16 @@ start_node() {
   local pid_file="$5"
   local qmp_socket="$6"
   local qemu_extra=()
+  local node_append_extra="$APPEND_EXTRA"
+  local ipourma_args=""
 
   if [[ "$QEMU_KEEP_ALIVE_ON_POWEROFF" == "1" ]]; then
     qemu_extra=(-no-shutdown)
+  fi
+
+  ipourma_args="$(ipourma_ipv4_args_for_role "$role")"
+  if [[ -n "$ipourma_args" ]]; then
+    node_append_extra="${node_append_extra} ${ipourma_args}"
   fi
 
   mkdir -p "$(dirname "$qmp_socket")"
@@ -160,7 +181,7 @@ start_node() {
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
       -initrd "$INITRAMFS_IMAGE" \
-      -append "console=ttyAMA0 rdinit=${RDINIT} linqu_urma_dp_role=${role} ${APPEND_EXTRA}" \
+      -append "console=ttyAMA0 rdinit=${RDINIT} linqu_urma_dp_role=${role} ${node_append_extra}" \
       >"$qemu_log" 2>&1 &
   echo $! > "$pid_file"
 }

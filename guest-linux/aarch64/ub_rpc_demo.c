@@ -93,6 +93,58 @@ static bool cmdline_get_value(const char *key, char *out, size_t out_len)
     return false;
 }
 
+static bool role_default_ipv4_pair(const char *role, char *local, size_t local_len,
+                                   char *peer, size_t peer_len)
+{
+    if (strcmp(role, "nodeA") == 0) {
+        snprintf(local, local_len, "%s", "10.0.0.1");
+        snprintf(peer, peer_len, "%s", "10.0.0.2");
+        return true;
+    }
+    if (strcmp(role, "nodeB") == 0) {
+        snprintf(local, local_len, "%s", "10.0.0.2");
+        snprintf(peer, peer_len, "%s", "10.0.0.1");
+        return true;
+    }
+    return false;
+}
+
+static bool resolve_ipv4_pair(const char *role, char *local, size_t local_len,
+                              char *peer, size_t peer_len)
+{
+    bool have_local = cmdline_get_value("linqu_ipourma_ipv4", local, local_len);
+    bool have_peer = cmdline_get_value("linqu_ipourma_peer_ipv4", peer, peer_len);
+
+    if (!have_local || !have_peer) {
+        char default_local[INET_ADDRSTRLEN];
+        char default_peer[INET_ADDRSTRLEN];
+
+        if (!role_default_ipv4_pair(role, default_local, sizeof(default_local),
+                                    default_peer, sizeof(default_peer))) {
+            return false;
+        }
+        if (!have_local) {
+            snprintf(local, local_len, "%s", default_local);
+            have_local = true;
+        }
+        if (!have_peer) {
+            snprintf(peer, peer_len, "%s", default_peer);
+            have_peer = true;
+        }
+    }
+
+    if (!have_local || !have_peer) {
+        return false;
+    }
+
+    if (inet_pton(AF_INET, local, &(struct in_addr){0}) != 1 ||
+        inet_pton(AF_INET, peer, &(struct in_addr){0}) != 1) {
+        return false;
+    }
+
+    return true;
+}
+
 /* ---------- helper: interface discovery -------------------------------- */
 
 static bool find_ipourma_iface(char *name, size_t name_len)
@@ -1005,10 +1057,11 @@ int main(void)
     char role[32] = "unknown";
     char ifname[IFNAMSIZ] = {0};
     struct in_addr local_addr = {0};
+    struct in_addr desired_local = {0};
     struct in_addr peer_addr = {0};
     unsigned int ifindex = 0;
-    const char *my_ip;
-    const char *peer_ip;
+    char my_ip[INET_ADDRSTRLEN] = {0};
+    char peer_ip[INET_ADDRSTRLEN] = {0};
     int rpc_sock = -1;
     int sync_sock = -1;
     struct sockaddr_in peer_sin;
@@ -1035,21 +1088,19 @@ int main(void)
         return 1;
     }
 
-    /* assign IP */
-    if (strcmp(role, "nodeA") == 0) {
-        my_ip = "10.0.0.1";
-        peer_ip = "10.0.0.2";
-    } else if (strcmp(role, "nodeB") == 0) {
-        my_ip = "10.0.0.2";
-        peer_ip = "10.0.0.1";
-    } else {
-        fprintf(stderr, "[ub_rpc] fail: unknown role '%s'\n", role);
+    if (!resolve_ipv4_pair(role, my_ip, sizeof(my_ip), peer_ip, sizeof(peer_ip))) {
+        fprintf(stderr, "[ub_rpc] fail: missing ip config for role '%s'\n", role);
         return 1;
     }
 
-    if (!set_ipv4_addr(ifname, my_ip)) {
-        fprintf(stderr, "[ub_rpc] fail: set ipv4 %s on %s failed\n", my_ip, ifname);
-        return 1;
+    inet_pton(AF_INET, my_ip, &desired_local);
+    if (!get_local_ipv4(ifname, &local_addr) || local_addr.s_addr != desired_local.s_addr) {
+        fprintf(stderr, "[ub_rpc] warn: bootstrap ipv4 missing or mismatched on %s, applying %s\n",
+                ifname, my_ip);
+        if (!set_ipv4_addr(ifname, my_ip)) {
+            fprintf(stderr, "[ub_rpc] fail: set ipv4 %s on %s failed\n", my_ip, ifname);
+            return 1;
+        }
     }
 
     if (!get_local_ipv4(ifname, &local_addr)) {
@@ -1057,7 +1108,10 @@ int main(void)
         return 1;
     }
 
-    inet_pton(AF_INET, peer_ip, &peer_addr);
+    if (inet_pton(AF_INET, peer_ip, &peer_addr) != 1) {
+        fprintf(stderr, "[ub_rpc] fail: peer ip parse failed for %s\n", peer_ip);
+        return 1;
+    }
     install_static_arp(ifname, &peer_addr);
 
     memset(&peer_sin, 0, sizeof(peer_sin));

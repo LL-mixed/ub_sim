@@ -7,7 +7,7 @@ REPO_ROOT="$(cd "$ROOT_DIR/../.." && pwd)"
 
 KERNEL_IMAGE="${KERNEL_IMAGE:-$ROOT_DIR/out/Image}"
 INITRAMFS_IMAGE="${INITRAMFS_IMAGE:-$ROOT_DIR/out/initramfs.cpio.gz}"
-RDINIT="${RDINIT:-/init}"
+RDINIT="${RDINIT:-/bin/run_demo}"
 TOPOLOGY_FILE="${TOPOLOGY_FILE:-$REPO_ROOT/vendor/ub_topology_two_node_v0.ini}"
 ENTITY_PLAN_FILE="${UB_FM_ENTITY_PLAN_FILE:-$REPO_ROOT/vendor/ub_topology_two_node_v2_entity.ini}"
 ENTITY_COUNT="${UB_SIM_ENTITY_COUNT:-2}"
@@ -17,7 +17,7 @@ OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_tmux_${RANDOM}}"
 SESSION_NAME="${TMUX_SESSION_NAME:-ub-dual-node-${RUN_ID}}"
-APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1 linqu_probe_hold=1 linqu_init_action=shell}"
+APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 PORT_BASE="${TMUX_PORT_BASE:-$((45000 + RANDOM % 10000))}"
 NODEA_MON_PORT="${NODEA_MON_PORT:-$((PORT_BASE + 0))}"
 NODEB_MON_PORT="${NODEB_MON_PORT:-$((PORT_BASE + 1))}"
@@ -131,6 +131,20 @@ log() {
   echo "[tmux-control] \$*" | tee -a "\$CONTROL_LOG"
 }
 
+ipourma_ipv4_args_for_role() {
+  local role="\$1"
+  case "\$role" in
+    nodeA)
+      echo "linqu_ipourma_ipv4=10.0.0.1 linqu_ipourma_peer_ipv4=10.0.0.2"
+      ;;
+    nodeB)
+      echo "linqu_ipourma_ipv4=10.0.0.2 linqu_ipourma_peer_ipv4=10.0.0.1"
+      ;;
+    *)
+      ;;
+  esac
+}
+
 cont_qemu() {
   local qmp_socket="\$1"
   python3 - <<PY
@@ -157,6 +171,13 @@ start_node() {
   local guest_log="\$6"
   local pid_file="\$7"
   local qmp_socket="\$8"
+  local node_append_extra="\$APPEND_EXTRA"
+  local ipourma_args=""
+
+  ipourma_args="\$(ipourma_ipv4_args_for_role "\$role")"
+  if [[ -n "\$ipourma_args" ]]; then
+    node_append_extra="\${node_append_extra} \${ipourma_args}"
+  fi
 
   mkdir -p "\$(dirname "\$qemu_log")" "\$(dirname "\$guest_log")" "\$(dirname "\$qmp_socket")"
 
@@ -180,7 +201,7 @@ start_node() {
       -serial chardev:ser0 \\
       -kernel "\$KERNEL_IMAGE" \\
       -initrd "\$INITRAMFS_IMAGE" \\
-      -append "console=ttyAMA0 rdinit=\${RDINIT} linqu_urma_dp_role=\${role} \${APPEND_EXTRA}" \\
+      -append "console=ttyAMA0 rdinit=\${RDINIT} linqu_urma_dp_role=\${role} \${node_append_extra}" \\
       >"\$qemu_log" 2>&1 &
   echo \$! > "\$pid_file"
 }

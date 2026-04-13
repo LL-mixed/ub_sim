@@ -112,6 +112,58 @@ static bool cmdline_get_value(const char *key, char *out, size_t out_len)
     return false;
 }
 
+static bool role_default_ipv4_pair(const char *role, char *local, size_t local_len,
+                                   char *peer, size_t peer_len)
+{
+    if (strcmp(role, "nodeA") == 0) {
+        snprintf(local, local_len, "%s", "10.0.0.1");
+        snprintf(peer, peer_len, "%s", "10.0.0.2");
+        return true;
+    }
+    if (strcmp(role, "nodeB") == 0) {
+        snprintf(local, local_len, "%s", "10.0.0.2");
+        snprintf(peer, peer_len, "%s", "10.0.0.1");
+        return true;
+    }
+    return false;
+}
+
+static bool resolve_ipv4_pair(const char *role, char *local, size_t local_len,
+                              char *peer, size_t peer_len)
+{
+    bool have_local = cmdline_get_value("linqu_ipourma_ipv4", local, local_len);
+    bool have_peer = cmdline_get_value("linqu_ipourma_peer_ipv4", peer, peer_len);
+
+    if (!have_local || !have_peer) {
+        char default_local[INET_ADDRSTRLEN];
+        char default_peer[INET_ADDRSTRLEN];
+
+        if (!role_default_ipv4_pair(role, default_local, sizeof(default_local),
+                                    default_peer, sizeof(default_peer))) {
+            return false;
+        }
+        if (!have_local) {
+            snprintf(local, local_len, "%s", default_local);
+            have_local = true;
+        }
+        if (!have_peer) {
+            snprintf(peer, peer_len, "%s", default_peer);
+            have_peer = true;
+        }
+    }
+
+    if (!have_local || !have_peer) {
+        return false;
+    }
+
+    if (inet_pton(AF_INET, local, &(struct in_addr){0}) != 1 ||
+        inet_pton(AF_INET, peer, &(struct in_addr){0}) != 1) {
+        return false;
+    }
+
+    return true;
+}
+
 static bool find_ipourma_iface(char *name, size_t name_len)
 {
     FILE *fp;
@@ -228,6 +280,29 @@ static bool set_ipv4_addr(const char *ifname, const char *addr_str)
 
     close(fd);
     return true;
+}
+
+static bool get_local_ipv4(const char *ifname, struct in_addr *addr)
+{
+    struct ifreq ifr;
+    int fd;
+
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        return false;
+    }
+
+    memset(&ifr, 0, sizeof(ifr));
+    snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), "%s", ifname);
+
+    if (ioctl(fd, SIOCGIFADDR, &ifr) != 0) {
+        close(fd);
+        return false;
+    }
+
+    close(fd);
+    *addr = ((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr;
+    return (addr->s_addr != 0);
 }
 
 static void install_static_arp(const char *ifname, const struct in_addr *peer_addr)
@@ -648,8 +723,10 @@ int main(void)
 {
     char role[32] = "unknown";
     char ifname[IFNAMSIZ] = {0};
-    const char *my_ip = NULL;
-    const char *peer_ip = NULL;
+    char my_ip[INET_ADDRSTRLEN] = {0};
+    char peer_ip[INET_ADDRSTRLEN] = {0};
+    struct in_addr local_addr = {0};
+    struct in_addr desired_local = {0};
     struct in_addr peer_addr;
     struct sockaddr_in peer_sockaddr;
     unsigned int ifindex = 0;
@@ -664,14 +741,8 @@ int main(void)
         return 1;
     }
 
-    if (strcmp(role, "nodeA") == 0) {
-        my_ip = "10.0.0.1";
-        peer_ip = "10.0.0.2";
-    } else if (strcmp(role, "nodeB") == 0) {
-        my_ip = "10.0.0.2";
-        peer_ip = "10.0.0.1";
-    } else {
-        fprintf(stderr, "[ub_obmm] fail: unknown role=%s\n", role);
+    if (!resolve_ipv4_pair(role, my_ip, sizeof(my_ip), peer_ip, sizeof(peer_ip))) {
+        fprintf(stderr, "[ub_obmm] fail: missing ip config for role=%s\n", role);
         return 1;
     }
 
@@ -687,9 +758,14 @@ int main(void)
         fprintf(stderr, "[ub_obmm] fail: ipourma iface not ready\n");
         goto out;
     }
-    if (!set_ipv4_addr(ifname, my_ip)) {
-        fprintf(stderr, "[ub_obmm] fail: set_ipv4 failed\n");
-        goto out;
+    inet_pton(AF_INET, my_ip, &desired_local);
+    if (!get_local_ipv4(ifname, &local_addr) || local_addr.s_addr != desired_local.s_addr) {
+        fprintf(stderr, "[ub_obmm] warn: bootstrap ipv4 missing or mismatched on %s, applying %s\n",
+                ifname, my_ip);
+        if (!set_ipv4_addr(ifname, my_ip)) {
+            fprintf(stderr, "[ub_obmm] fail: set_ipv4 failed\n");
+            goto out;
+        }
     }
     if (inet_pton(AF_INET, peer_ip, &peer_addr) != 1) {
         fprintf(stderr, "[ub_obmm] fail: inet_pton peer failed\n");

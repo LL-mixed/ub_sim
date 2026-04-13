@@ -534,6 +534,58 @@ static bool cmdline_get_value(const char *key, char *out, size_t out_len)
     return false;
 }
 
+static bool role_default_ipv4_pair(const char *role, char *local, size_t local_len,
+                                   char *peer, size_t peer_len)
+{
+    if (strcmp(role, "nodeA") == 0) {
+        snprintf(local, local_len, "%s", "10.0.0.1");
+        snprintf(peer, peer_len, "%s", "10.0.0.2");
+        return true;
+    }
+    if (strcmp(role, "nodeB") == 0) {
+        snprintf(local, local_len, "%s", "10.0.0.2");
+        snprintf(peer, peer_len, "%s", "10.0.0.1");
+        return true;
+    }
+    return false;
+}
+
+static bool resolve_ipv4_pair(const char *role, char *local, size_t local_len,
+                              char *peer, size_t peer_len)
+{
+    bool have_local = cmdline_get_value("linqu_ipourma_ipv4", local, local_len);
+    bool have_peer = cmdline_get_value("linqu_ipourma_peer_ipv4", peer, peer_len);
+
+    if (!have_local || !have_peer) {
+        char default_local[INET_ADDRSTRLEN];
+        char default_peer[INET_ADDRSTRLEN];
+
+        if (!role_default_ipv4_pair(role, default_local, sizeof(default_local),
+                                    default_peer, sizeof(default_peer))) {
+            return false;
+        }
+        if (!have_local) {
+            snprintf(local, local_len, "%s", default_local);
+            have_local = true;
+        }
+        if (!have_peer) {
+            snprintf(peer, peer_len, "%s", default_peer);
+            have_peer = true;
+        }
+    }
+
+    if (!have_local || !have_peer) {
+        return false;
+    }
+
+    if (inet_pton(AF_INET, local, &(struct in_addr){0}) != 1 ||
+        inet_pton(AF_INET, peer, &(struct in_addr){0}) != 1) {
+        return false;
+    }
+
+    return true;
+}
+
 static bool cmdline_get_bool(const char *key)
 {
     char val[32];
@@ -1827,8 +1879,13 @@ static int open_uburma_device(const char *dev_name)
 {
     char path[256];
     int fd;
+    int written;
 
-    snprintf(path, sizeof(path), "/dev/uburma/%s", dev_name);
+    written = snprintf(path, sizeof(path), "/dev/uburma/%s", dev_name);
+    if (written < 0 || (size_t)written >= sizeof(path)) {
+        fprintf(stderr, "[ub_rdma] device path too long for %s\n", dev_name);
+        return -1;
+    }
     fd = open(path, O_RDWR);
     if (fd < 0) {
         fprintf(stderr, "[ub_rdma] open %s failed: %s\n", path, strerror(errno));
@@ -1848,6 +1905,18 @@ static int open_ummu_tid_device(void)
         return -1;
     }
     return fd;
+}
+
+static int copy_dev_name(char *dst, size_t dst_size, const char *dev_name)
+{
+    int written;
+
+    written = snprintf(dst, dst_size, "%s", dev_name);
+    if (written < 0 || (size_t)written >= dst_size) {
+        fprintf(stderr, "[ub_rdma] device name too long: %s\n", dev_name);
+        return -1;
+    }
+    return 0;
 }
 
 static int alloc_ummu_tid(int fd, uint32_t *tid_out)
@@ -1907,6 +1976,7 @@ static int udp_send_all(int fd, const void *buf, size_t len,
 static int udp_recv_all(int fd, void *buf, size_t len,
                         const struct sockaddr_in *expected_src)
 {
+    (void)expected_src;
     char *p = (char *)buf;
     size_t remaining = len;
 
@@ -2170,11 +2240,12 @@ int main(void)
     char role[32] = "unknown";
     char ifname[IFNAMSIZ] = {0};
     struct in_addr local_addr = {0};
+    struct in_addr desired_local = {0};
     struct in_addr peer_addr = {0};
     char dev_name[256];
     unsigned int ifindex = 0;
-    const char *my_ip;
-    const char *peer_ip;
+    char my_ip[INET_ADDRSTRLEN] = {0};
+    char peer_ip[INET_ADDRSTRLEN] = {0};
     struct sockaddr_in sync_addr;
     struct sockaddr_in data_addr;
     int udp_fd;
@@ -2194,14 +2265,8 @@ int main(void)
     }
     printf("[ub_rdma] role=%s\n", role);
 
-    if (strcmp(role, "nodeA") == 0) {
-        my_ip = "10.0.0.1";
-        peer_ip = "10.0.0.2";
-    } else if (strcmp(role, "nodeB") == 0) {
-        my_ip = "10.0.0.2";
-        peer_ip = "10.0.0.1";
-    } else {
-        fprintf(stderr, "[ub_rdma] fail: unknown role '%s'\n", role);
+    if (!resolve_ipv4_pair(role, my_ip, sizeof(my_ip), peer_ip, sizeof(peer_ip))) {
+        fprintf(stderr, "[ub_rdma] fail: missing ip config for role '%s'\n", role);
         return 1;
     }
 
@@ -2210,15 +2275,23 @@ int main(void)
         fprintf(stderr, "[ub_rdma] fail: ipourma iface not ready\n");
         return 1;
     }
-    if (!set_ipv4_addr(ifname, my_ip)) {
-        fprintf(stderr, "[ub_rdma] fail: set ipv4 %s on %s failed\n", my_ip, ifname);
-        return 1;
+    inet_pton(AF_INET, my_ip, &desired_local);
+    if (!get_local_ipv4(ifname, &local_addr) || local_addr.s_addr != desired_local.s_addr) {
+        fprintf(stderr, "[ub_rdma] warn: bootstrap ipv4 missing or mismatched on %s, applying %s\n",
+                ifname, my_ip);
+        if (!set_ipv4_addr(ifname, my_ip)) {
+            fprintf(stderr, "[ub_rdma] fail: set ipv4 %s on %s failed\n", my_ip, ifname);
+            return 1;
+        }
     }
     if (!get_local_ipv4(ifname, &local_addr)) {
         fprintf(stderr, "[ub_rdma] fail: get ipv4 addr on %s failed\n", ifname);
         return 1;
     }
-    inet_pton(AF_INET, peer_ip, &peer_addr);
+    if (inet_pton(AF_INET, peer_ip, &peer_addr) != 1) {
+        fprintf(stderr, "[ub_rdma] fail: peer ip parse failed for %s\n", peer_ip);
+        return 1;
+    }
     install_static_arp(ifname, &peer_addr);
 
     {
@@ -2255,7 +2328,11 @@ int main(void)
         int ret;
 
         memset(&cmd, 0, sizeof(cmd));
-        snprintf(cmd.in.dev_name, sizeof(cmd.in.dev_name), "%s", dev_name);
+        if (copy_dev_name(cmd.in.dev_name, sizeof(cmd.in.dev_name), dev_name) != 0) {
+            cleanup_resources(&g_res);
+            fprintf(stderr, "[ub_rdma] fail\n");
+            return 1;
+        }
 
         ret = ub_ioctl(g_res.fd, UBURMA_CMD_QUERY_DEV_ATTR, &cmd, sizeof(cmd));
         if (ret < 0) {

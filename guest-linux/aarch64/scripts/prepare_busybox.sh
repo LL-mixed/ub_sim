@@ -16,9 +16,32 @@ VM_BUSYBOX_PATH="${VM_BUSYBOX_PATH:-/usr/bin/busybox_aarch64}"
 source "$SCRIPT_DIR/qemu_ub_common.sh"
 
 CC="${AARCH64_LINUX_CC:-$(detect_aarch64_linux_cc)}"
+REQUIRED_APPLETS=(sh ifconfig route netstat ip arp ping ping6)
 
 detect_jobs() {
   getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8
+}
+
+busybox_has_applets() {
+  local bin="$1"
+  local applet=""
+  local applets=""
+
+  if [[ ! -x "$bin" ]]; then
+    return 1
+  fi
+
+  applets="$("$bin" --list 2>/dev/null || true)"
+  if [[ -z "$applets" ]]; then
+    return 1
+  fi
+
+  for applet in "${REQUIRED_APPLETS[@]}"; do
+    if ! printf '%s\n' "$applets" | grep -qx "$applet"; then
+      return 1
+    fi
+  done
+  return 0
 }
 
 ensure_busybox_static_config() {
@@ -41,6 +64,26 @@ ensure_busybox_static_config() {
   perl -0pi -e 's/^CONFIG_EXTRA_CFLAGS=.*\n//mg' "$src_dir/.config"
   printf 'CONFIG_CROSS_COMPILER_PREFIX="%s"\n' "$cc_prefix" >> "$src_dir/.config"
   printf 'CONFIG_EXTRA_CFLAGS="-static"\n' >> "$src_dir/.config"
+  for key in \
+    CONFIG_IFCONFIG \
+    CONFIG_FEATURE_IFCONFIG_STATUS \
+    CONFIG_FEATURE_IFCONFIG_HW \
+    CONFIG_FEATURE_IFCONFIG_BROADCAST_PLUS \
+    CONFIG_ROUTE \
+    CONFIG_NETSTAT \
+    CONFIG_IP \
+    CONFIG_FEATURE_IP_ADDRESS \
+    CONFIG_FEATURE_IP_LINK \
+    CONFIG_FEATURE_IP_ROUTE \
+    CONFIG_ARP \
+    CONFIG_PING \
+    CONFIG_PING6
+  do
+    perl -0pi -e "s/^# ${key} is not set$/${key}=y/m" "$src_dir/.config"
+    if ! grep -q "^${key}=y$" "$src_dir/.config"; then
+      printf '%s\n' "${key}=y" >> "$src_dir/.config"
+    fi
+  done
 }
 
 build_from_source_dir() {
@@ -84,13 +127,20 @@ download_busybox_tarball() {
 }
 
 if [[ -n "${BUSYBOX:-}" && -x "${BUSYBOX:-}" ]]; then
+  if ! busybox_has_applets "$BUSYBOX"; then
+    echo "[prepare_busybox] error: BUSYBOX is missing required applets: ${REQUIRED_APPLETS[*]}" >&2
+    exit 1
+  fi
   echo "$BUSYBOX"
   exit 0
 fi
 
 if [[ -x "$OUT_BIN" ]]; then
-  echo "$OUT_BIN"
-  exit 0
+  if busybox_has_applets "$OUT_BIN"; then
+    echo "$OUT_BIN"
+    exit 0
+  fi
+  rm -f "$OUT_BIN"
 fi
 
 mkdir -p "$THIRD_PARTY_DIR"
@@ -98,12 +148,19 @@ mkdir -p "$THIRD_PARTY_DIR"
 if [[ -x "$THIRD_PARTY_BIN" ]]; then
   cp "$THIRD_PARTY_BIN" "$OUT_BIN"
   chmod +x "$OUT_BIN"
-  echo "$OUT_BIN"
-  exit 0
+  if busybox_has_applets "$OUT_BIN"; then
+    echo "$OUT_BIN"
+    exit 0
+  fi
+  rm -f "$OUT_BIN"
 fi
 
 if [[ -d "$SRC_DIR" ]]; then
   build_from_source_dir "$SRC_DIR"
+  if ! busybox_has_applets "$OUT_BIN"; then
+    echo "[prepare_busybox] error: built busybox still missing required applets: ${REQUIRED_APPLETS[*]}" >&2
+    exit 1
+  fi
   echo "$OUT_BIN"
   exit 0
 fi
@@ -123,6 +180,10 @@ if [[ -n "${tarball:-}" ]]; then
   rm -rf "$SRC_DIR"
   mv "$extracted_dir" "$SRC_DIR"
   build_from_source_dir "$SRC_DIR"
+  if ! busybox_has_applets "$OUT_BIN"; then
+    echo "[prepare_busybox] error: built busybox still missing required applets: ${REQUIRED_APPLETS[*]}" >&2
+    exit 1
+  fi
   echo "$OUT_BIN"
   exit 0
 fi
@@ -131,6 +192,10 @@ if ssh -o BatchMode=yes -o ConnectTimeout=5 "$VM_HOST" "test -x '$VM_BUSYBOX_PAT
   echo "[prepare_busybox] copying busybox from VM: $VM_HOST:$VM_BUSYBOX_PATH" >&2
   scp "$VM_HOST:$VM_BUSYBOX_PATH" "$OUT_BIN" >/dev/null
   chmod +x "$OUT_BIN"
+  if ! busybox_has_applets "$OUT_BIN"; then
+    echo "[prepare_busybox] error: VM busybox is missing required applets: ${REQUIRED_APPLETS[*]}" >&2
+    exit 1
+  fi
   echo "$OUT_BIN"
   exit 0
 fi
