@@ -35,13 +35,16 @@ print_qemu_preflight_help() {
   local src_dir="$2"
   local build_dir="$3"
   local bin="$4"
+  local helper_script="$repo_root/guest-linux/aarch64/scripts/build_qemu_binary.sh"
 
   cat >&2 <<EOF
 [ub_common] qemu preflight failed
 [ub_common] expected source: $src_dir
 [ub_common] expected build dir: $build_dir
 [ub_common] expected binary: $bin
-[ub_common] suggested commands:
+[ub_common] suggested script:
+[ub_common]   $helper_script
+[ub_common] manual fallback:
 [ub_common]   cd $src_dir
 [ub_common]   mkdir -p build
 [ub_common]   cd build
@@ -56,13 +59,17 @@ print_guest_preflight_help() {
   local initramfs_image="$3"
   local modules_dir="$4"
   local cc_hint="${5:-aarch64-unknown-linux-gnu-gcc}"
+  local helper_script="$guest_root/scripts/build_guest_artifacts.sh"
 
   cat >&2 <<EOF
 [ub_common] guest artifact preflight failed
 [ub_common] expected kernel image: $kernel_image
 [ub_common] expected initramfs: $initramfs_image
 [ub_common] expected modules dir: $modules_dir
-[ub_common] suggested commands:
+[ub_common] suggested script:
+[ub_common]   cd $guest_root
+[ub_common]   AARCH64_LINUX_CC=$cc_hint BUSYBOX=\$PWD/busybox-aarch64 ./scripts/build_guest_artifacts.sh
+[ub_common] manual fallback:
 [ub_common]   cd $guest_root
 [ub_common]   BUILD_IN_VM=1 BUILD_LINQU_DRIVER_IN_VM=1 ./scripts/sync_ub_kernel_artifacts_from_vm.sh
 [ub_common]   AARCH64_LINUX_CC=$cc_hint BUSYBOX=\$PWD/busybox-aarch64 ./scripts/build_initramfs.sh
