@@ -69,6 +69,9 @@ print_guest_preflight_help() {
 [ub_common] suggested script:
 [ub_common]   cd $guest_root
 [ub_common]   AARCH64_LINUX_CC=$cc_hint BUSYBOX=\$PWD/busybox-aarch64 ./scripts/build_guest_artifacts.sh
+[ub_common] busybox helper:
+[ub_common]   cd $guest_root
+[ub_common]   AARCH64_LINUX_CC=$cc_hint ./scripts/prepare_busybox.sh
 [ub_common] manual fallback:
 [ub_common]   cd $guest_root
 [ub_common]   BUILD_IN_VM=1 BUILD_LINQU_DRIVER_IN_VM=1 ./scripts/sync_ub_kernel_artifacts_from_vm.sh
@@ -104,6 +107,7 @@ ensure_ub_guest_artifacts() {
   local modules_dir="${UB_GUEST_MODULES_DIR:-$out_dir/modules}"
   local need_sync=0
   local cc
+  local artifact_source="${UB_GUEST_ARTIFACT_SOURCE:-auto}"
   local required_modules=("hisi_ubus.ko" "udma.ko")
   local mod=""
 
@@ -132,21 +136,26 @@ ensure_ub_guest_artifacts() {
     done
 
     if (( need_sync )); then
-      echo "[ub_common] syncing guest kernel artifacts from VM" >&2
+      echo "[ub_common] preparing guest artifacts via build_guest_artifacts.sh (source=$artifact_source)" >&2
       if ! (
         cd "$guest_root"
+        ARTIFACT_SOURCE="$artifact_source" \
         BUILD_IN_VM="${UB_SYNC_BUILD_IN_VM:-1}" \
         BUILD_LINQU_DRIVER_IN_VM="${UB_SYNC_BUILD_LINQU_IN_VM:-1}" \
-        ./scripts/sync_ub_kernel_artifacts_from_vm.sh
+        AARCH64_LINUX_CC="$(detect_aarch64_linux_cc)" \
+        BUSYBOX="${BUSYBOX:-}" \
+        LOCAL_KERNEL_IMAGE="${UB_LOCAL_KERNEL_IMAGE:-}" \
+        LOCAL_MODULES_DIR="${UB_LOCAL_MODULES_DIR:-}" \
+        ./scripts/build_guest_artifacts.sh
       ); then
-        echo "[ub_common] sync_ub_kernel_artifacts_from_vm.sh failed" >&2
+        echo "[ub_common] build_guest_artifacts.sh failed" >&2
         print_guest_preflight_help "$guest_root" "$default_kernel" "$default_initramfs" "$modules_dir" "$(detect_aarch64_linux_cc)"
         return 1
       fi
     fi
   fi
 
-  if [[ "${UB_REBUILD_INITRAMFS:-1}" == "1" ]]; then
+  if [[ "${UB_REBUILD_INITRAMFS:-1}" == "1" && ! -f "$default_initramfs" ]]; then
     cc="$(detect_aarch64_linux_cc)"
     if [[ -z "$cc" ]]; then
       echo "AARCH64_LINUX_CC is required to rebuild initramfs" >&2
