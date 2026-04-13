@@ -31,8 +31,11 @@ environment variables:
   - optional path to a static ARM64 busybox binary
   - if provided, the initramfs becomes a small userspace image with a shell
   - `run_demo` is copied to `/bin/run_demo` and can be used as `rdinit`
-  - if not provided, `scripts/build_initramfs.sh` falls back to local
+  - if not provided, `scripts/build_initramfs.sh` first reuses local
     `guest-linux/aarch64/busybox-aarch64` when present
+  - if no local binary exists, `scripts/build_initramfs.sh` will try to build
+    one from `guest-linux/aarch64/third_party/busybox-src` or a local
+    `guest-linux/aarch64/third_party/busybox-*.tar.bz2`
 
 ## Files
 
@@ -103,7 +106,9 @@ chmod +x ./busybox-aarch64
 export BUSYBOX=$PWD/busybox-aarch64
 ```
 
-Then rebuild the initramfs (`build_initramfs.sh`).
+Then rebuild the initramfs (`build_initramfs.sh`). If you keep the tarball or
+source tree under `guest-linux/aarch64/third_party`, the script can also build
+and cache `busybox-aarch64` automatically.
 
 Inside guest, you can run:
 

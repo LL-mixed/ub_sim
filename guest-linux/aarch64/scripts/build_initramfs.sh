@@ -55,6 +55,121 @@ if [[ -z "$BUSYBOX" ]] && [[ -x "$ROOT_DIR/busybox-aarch64" ]]; then
   BUSYBOX="$ROOT_DIR/busybox-aarch64"
 fi
 
+detect_make_jobs() {
+  getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8
+}
+
+ensure_busybox_static_config() {
+  local src_dir="$1"
+  local cc_path="$2"
+  local cc_name=""
+  local cc_prefix=""
+
+  cc_name="$(basename "$cc_path")"
+  cc_prefix="${cc_name%gcc}"
+  if [[ -z "$cc_prefix" || "$cc_prefix" == "$cc_name" ]]; then
+    echo "[build_initramfs] error: cannot derive CROSS_COMPILER_PREFIX from $cc_path" >&2
+    return 1
+  fi
+
+  make -C "$src_dir" defconfig >/dev/null
+
+  perl -0pi -e 's/^# CONFIG_STATIC is not set$/CONFIG_STATIC=y/m' "$src_dir/.config"
+  perl -0pi -e 's/^CONFIG_STATIC=.*$/CONFIG_STATIC=y/m' "$src_dir/.config"
+  perl -0pi -e 's/^CONFIG_CROSS_COMPILER_PREFIX=.*\n//mg' "$src_dir/.config"
+  perl -0pi -e 's/^CONFIG_EXTRA_CFLAGS=.*\n//mg' "$src_dir/.config"
+  printf 'CONFIG_CROSS_COMPILER_PREFIX="%s"\n' "$cc_prefix" >> "$src_dir/.config"
+  printf 'CONFIG_EXTRA_CFLAGS="-static"\n' >> "$src_dir/.config"
+}
+
+build_busybox_from_source_dir() {
+  local src_dir="$1"
+  local out_bin="$2"
+  local cc_path="$3"
+  local jobs
+
+  jobs="$(detect_make_jobs)"
+  echo "[build_initramfs] building busybox from source: $src_dir" >&2
+
+  ensure_busybox_static_config "$src_dir" "$cc_path"
+  make -C "$src_dir" -j"$jobs" >/dev/null
+
+  if [[ ! -x "$src_dir/busybox" ]]; then
+    echo "[build_initramfs] error: busybox build did not produce $src_dir/busybox" >&2
+    return 1
+  fi
+
+  cp "$src_dir/busybox" "$out_bin"
+  chmod +x "$out_bin"
+}
+
+ensure_busybox_binary() {
+  local third_party_dir="$ROOT_DIR/third_party"
+  local local_bin="$ROOT_DIR/busybox-aarch64"
+  local third_party_bin="$third_party_dir/busybox-aarch64"
+  local src_dir="$third_party_dir/busybox-src"
+  local extracted_dir=""
+  local tarball=""
+
+  if [[ -n "$BUSYBOX" ]]; then
+    if [[ ! -x "$BUSYBOX" ]]; then
+      echo "[build_initramfs] error: BUSYBOX is set but not executable: $BUSYBOX" >&2
+      return 1
+    fi
+    return 0
+  fi
+
+  if [[ -x "$local_bin" ]]; then
+    BUSYBOX="$local_bin"
+    return 0
+  fi
+
+  if [[ -x "$third_party_bin" ]]; then
+    cp "$third_party_bin" "$local_bin"
+    chmod +x "$local_bin"
+    BUSYBOX="$local_bin"
+    return 0
+  fi
+
+  if [[ -z "$AARCH64_LINUX_CC" ]]; then
+    echo "[build_initramfs] error: AARCH64_LINUX_CC is required to build busybox" >&2
+    return 1
+  fi
+
+  mkdir -p "$third_party_dir"
+
+  if [[ -d "$src_dir" ]]; then
+    build_busybox_from_source_dir "$src_dir" "$local_bin" "$AARCH64_LINUX_CC"
+    BUSYBOX="$local_bin"
+    return 0
+  fi
+
+  tarball="$(find "$third_party_dir" -maxdepth 1 -type f -name 'busybox-*.tar.bz2' | head -n 1)"
+  if [[ -n "$tarball" ]]; then
+    echo "[build_initramfs] extracting busybox source from $tarball" >&2
+    tar -xf "$tarball" -C "$third_party_dir"
+    extracted_dir="$(find "$third_party_dir" -maxdepth 1 -type d -name 'busybox-*' ! -name 'busybox-src' | head -n 1)"
+    if [[ -z "$extracted_dir" ]]; then
+      echo "[build_initramfs] error: failed to locate extracted busybox source under $third_party_dir" >&2
+      return 1
+    fi
+    rm -rf "$src_dir"
+    mv "$extracted_dir" "$src_dir"
+    build_busybox_from_source_dir "$src_dir" "$local_bin" "$AARCH64_LINUX_CC"
+    BUSYBOX="$local_bin"
+    return 0
+  fi
+
+  echo "[build_initramfs] error: missing ARM64 busybox binary and no local busybox source/tarball available" >&2
+  echo "[build_initramfs] expected one of:" >&2
+  echo "[build_initramfs]   - BUSYBOX=/path/to/busybox-aarch64" >&2
+  echo "[build_initramfs]   - $ROOT_DIR/busybox-aarch64" >&2
+  echo "[build_initramfs]   - $third_party_bin" >&2
+  echo "[build_initramfs]   - $src_dir" >&2
+  echo "[build_initramfs]   - $third_party_dir/busybox-*.tar.bz2" >&2
+  return 1
+}
+
 resolve_module_path() {
   local explicit_path="$1"
   local module_name="$2"
@@ -125,6 +240,8 @@ if [[ -z "$AARCH64_LINUX_CC" ]]; then
   exit 1
 fi
 
+ensure_busybox_binary
+
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$PROBE_SRC" -o "$PROBE_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$URMA_DP_SRC" -o "$URMA_DP_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$INIT_SRC" -o "$INIT_BIN"
@@ -153,22 +270,20 @@ cp "$RPC_BIN" "$INITRAMFS_DIR/bin/linqu_ub_rpc"
 cp "$RDMA_BIN" "$INITRAMFS_DIR/bin/linqu_ub_rdma_demo"
 cp "$OBMM_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_demo"
 
-if [[ -n "$BUSYBOX" ]]; then
-  cp "$BUSYBOX" "$INITRAMFS_DIR/bin/busybox"
-  chmod +x "$INITRAMFS_DIR/bin/busybox"
-  link_busybox_applet sh
-  link_busybox_applet ls
-  link_busybox_applet mount
-  link_busybox_applet mkdir
-  link_busybox_applet cat
-  link_busybox_applet sleep
-  link_busybox_applet dmesg
-  link_busybox_applet head
-  link_busybox_applet tail
-  link_busybox_applet grep
-  link_busybox_applet ps
-  link_busybox_applet uname
-fi
+cp "$BUSYBOX" "$INITRAMFS_DIR/bin/busybox"
+chmod +x "$INITRAMFS_DIR/bin/busybox"
+link_busybox_applet sh
+link_busybox_applet ls
+link_busybox_applet mount
+link_busybox_applet mkdir
+link_busybox_applet cat
+link_busybox_applet sleep
+link_busybox_applet dmesg
+link_busybox_applet head
+link_busybox_applet tail
+link_busybox_applet grep
+link_busybox_applet ps
+link_busybox_applet uname
 
 if [[ -f "$RUN_DEMO_SRC" ]]; then
   cp "$RUN_DEMO_SRC" "$RUN_DEMO_BIN"
