@@ -215,7 +215,7 @@ TMUX_SESSION_NAME=ub-dev guest-linux/aarch64/scripts/launch_ub_dual_node_tmux.sh
 
 # boot guest directly into run_demo instead of shell
 RDINIT=/bin/run_demo \
-APPEND_EXTRA="linqu_probe_skip=1 linqu_probe_load_helper=1 linqu_ub_chat=1 linqu_ub_rpc_demo=1" \
+APPEND_EXTRA="linqu_probe_skip=1 linqu_probe_load_helper=1 linqu_ub_chat=1 linqu_ub_rpc_demo=1 linqu_ub_tcp_each_server_demo=1" \
 guest-linux/aarch64/scripts/launch_ub_dual_node_tmux.sh
 
 # force legacy /init dispatch into probe mode
@@ -291,6 +291,26 @@ Success criteria:
 - `nodeB` computes the expected result
 - `nodeA` receives the returned result and validates it
 
+### tcp each-server
+
+Run on both nodes:
+
+```sh
+/bin/linqu_ub_tcp_each_server
+```
+
+Recommended order:
+
+- start `nodeA` and `nodeB` within the same timeout window
+- order does not matter because each node both `listen`s and `connect`s
+
+Success criteria:
+
+- each node's client connects to the peer server
+- each node's server accepts the peer client connection
+- each node's server receives the peer request payload and returns an ACK
+- each node's client receives the peer ACK intact
+
 ### rdma
 
 Run on `nodeB` first, then `nodeA`:
@@ -335,6 +355,7 @@ Instead of calling the binaries directly, you can also use:
 ```sh
 /bin/run_demo chat
 /bin/run_demo rpc
+/bin/run_demo tcp
 /bin/run_demo rdma
 /bin/run_demo obmm
 /bin/run_demo all

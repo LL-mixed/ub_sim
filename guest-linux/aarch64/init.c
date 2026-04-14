@@ -179,6 +179,11 @@ static bool should_run_ub_rdma_demo(void)
     return cmdline_has_option("linqu_ub_rdma_demo=1");
 }
 
+static bool should_run_ub_tcp_each_server_demo(void)
+{
+    return cmdline_has_option("linqu_ub_tcp_each_server_demo=1");
+}
+
 static bool should_run_obmm_demo(void)
 {
     return cmdline_has_option("linqu_obmm_demo=1");
@@ -991,6 +996,45 @@ static void run_ub_rpc_demo_probe(void)
     }
 }
 
+static void run_ub_tcp_each_server_demo_probe(void)
+{
+    pid_t pid;
+    int status = 0;
+
+    pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "[init] fork for ub_tcp_each_server failed: %s\n",
+                strerror(errno));
+        return;
+    }
+    if (pid == 0) {
+        execl("/bin/linqu_ub_tcp_each_server", "/bin/linqu_ub_tcp_each_server",
+              (char *)NULL);
+        fprintf(stderr, "[init] exec /bin/linqu_ub_tcp_each_server failed: %s\n",
+                strerror(errno));
+        _exit(127);
+    }
+
+    if (waitpid(pid, &status, 0) < 0) {
+        fprintf(stderr, "[init] waitpid ub_tcp_each_server failed: %s\n",
+                strerror(errno));
+        return;
+    }
+
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        fprintf(stderr, "[init] ub tcp each server demo pass\n");
+        return;
+    }
+
+    if (WIFEXITED(status)) {
+        fprintf(stderr, "[init] ub tcp each server demo fail exit=%d\n",
+                WEXITSTATUS(status));
+    } else if (WIFSIGNALED(status)) {
+        fprintf(stderr, "[init] ub tcp each server demo fail signal=%d\n",
+                WTERMSIG(status));
+    }
+}
+
 static void run_obmm_demo_probe(void)
 {
     pid_t pid;
@@ -1420,6 +1464,10 @@ int main(void)
     if (should_run_ub_rpc_demo()) {
         wait_for_ipourma_interface(30);
         run_ub_rpc_demo_probe();
+    }
+    if (should_run_ub_tcp_each_server_demo()) {
+        wait_for_ipourma_interface(30);
+        run_ub_tcp_each_server_demo_probe();
     }
     if (should_run_ub_rdma_demo()) {
         wait_for_ipourma_interface(30);

@@ -15,7 +15,7 @@ ITERATIONS="${ITERATIONS:-1}"
 START_GAP_SECS="${START_GAP_SECS:-3}"
 LINK_WAIT_SECS="${LINK_WAIT_SECS:-45}"
 QEMU_KEEP_ALIVE_ON_POWEROFF="${QEMU_KEEP_ALIVE_ON_POWEROFF:-0}"
-APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1 linqu_ub_chat=1 linqu_ub_rpc_demo=1}"
+APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1 linqu_ub_chat=1 linqu_ub_rpc_demo=1 linqu_ub_tcp_each_server_demo=1}"
 ENTITY_PLAN_FILE="${UB_FM_ENTITY_PLAN_FILE:-/Volumes/repos/pypto_workspace/simulator/vendor/ub_topology_two_node_v2_entity.ini}"
 ENTITY_COUNT="${UB_SIM_ENTITY_COUNT:-2}"
 OUT_DIR="$ROOT_DIR/out"
@@ -157,6 +157,34 @@ validate_rpc_log() {
       "${node_name} rpc server echo handled" || return 1
     assert_log_has "$log_file" "\\[RPC\\] server handled op=CRC32 msg_id=2" \
       "${node_name} rpc server crc handled" || return 1
+  fi
+}
+
+validate_tcp_each_server_log() {
+  local node_name="$1"
+  local log_file="$2"
+  assert_log_has "$log_file" "\\[ub_tcp_each_server\\] pass" \
+    "${node_name} tcp each server pass" || return 1
+  assert_log_absent "$log_file" "\\[ub_tcp_each_server\\] fail" \
+    "${node_name} tcp each server fail" || return 1
+  if [[ "$node_name" == "nodeA" ]]; then
+    assert_log_has "$log_file" "\\[TCP_EACH_SERVER\\] nodeA client sent=\"tcp hello from nodeA client\"" \
+      "${node_name} tcp client request" || return 1
+    assert_log_has "$log_file" "\\[TCP_EACH_SERVER\\] nodeA server received=\"tcp hello from nodeB client\"" \
+      "${node_name} tcp server received peer request" || return 1
+    assert_log_has "$log_file" "\\[TCP_EACH_SERVER\\] nodeA server ack=\"tcp ack from nodeA server\"" \
+      "${node_name} tcp server ack" || return 1
+    assert_log_has "$log_file" "\\[TCP_EACH_SERVER\\] nodeA client received_ack=\"tcp ack from nodeB server\"" \
+      "${node_name} tcp client ack" || return 1
+  else
+    assert_log_has "$log_file" "\\[TCP_EACH_SERVER\\] nodeB client sent=\"tcp hello from nodeB client\"" \
+      "${node_name} tcp client request" || return 1
+    assert_log_has "$log_file" "\\[TCP_EACH_SERVER\\] nodeB server received=\"tcp hello from nodeA client\"" \
+      "${node_name} tcp server received peer request" || return 1
+    assert_log_has "$log_file" "\\[TCP_EACH_SERVER\\] nodeB server ack=\"tcp ack from nodeB server\"" \
+      "${node_name} tcp server ack" || return 1
+    assert_log_has "$log_file" "\\[TCP_EACH_SERVER\\] nodeB client received_ack=\"tcp ack from nodeA server\"" \
+      "${node_name} tcp client ack" || return 1
   fi
 }
 
@@ -540,6 +568,7 @@ run_iteration() {
   local nodeb_qmp="$QMP_DIR/nodeB.${iter}.sock"
   local chat_enabled=0
   local rpc_enabled=0
+  local tcp_enabled=0
   local rdma_enabled=0
   local obmm_enabled=0
   local stale_files=()
@@ -549,6 +578,9 @@ run_iteration() {
   fi
   if [[ "$APPEND_EXTRA" == *"linqu_ub_rpc_demo=1"* ]]; then
     rpc_enabled=1
+  fi
+  if [[ "$APPEND_EXTRA" == *"linqu_ub_tcp_each_server_demo=1"* ]]; then
+    tcp_enabled=1
   fi
   if [[ "$APPEND_EXTRA" == *"linqu_ub_rdma_demo=1"* ]]; then
     rdma_enabled=1
@@ -673,6 +705,34 @@ run_iteration() {
     esac
   fi
 
+  if [[ "$tcp_enabled" -eq 1 ]]; then
+    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub tcp each server demo pass" "\\[init\\] ub tcp each server demo fail" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeA tcp each server demo reported failure" >&2
+        return 17
+        ;;
+      *)
+        echo "iteration ${iter}: nodeA tcp each server demo did not pass within ${RUN_SECS}s" >&2
+        return 17
+        ;;
+    esac
+
+    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub tcp each server demo pass" "\\[init\\] ub tcp each server demo fail" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeB tcp each server demo reported failure" >&2
+        return 17
+        ;;
+      *)
+        echo "iteration ${iter}: nodeB tcp each server demo did not pass within ${RUN_SECS}s" >&2
+        return 17
+        ;;
+    esac
+  fi
+
   if [[ "$rdma_enabled" -eq 1 ]]; then
     wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub rdma demo pass" "\\[init\\] ub rdma demo fail" "$RUN_SECS"
     case "$?" in
@@ -749,6 +809,10 @@ run_iteration() {
   if [[ "$rpc_enabled" -eq 1 ]]; then
     validate_rpc_log "nodeA" "$nodea_guest_log" || return 1
     validate_rpc_log "nodeB" "$nodeb_guest_log" || return 1
+  fi
+  if [[ "$tcp_enabled" -eq 1 ]]; then
+    validate_tcp_each_server_log "nodeA" "$nodea_guest_log" || return 1
+    validate_tcp_each_server_log "nodeB" "$nodeb_guest_log" || return 1
   fi
   if [[ "$APPEND_EXTRA" == *"linqu_ub_rdma_demo=1"* ]]; then
     validate_rdma_log "nodeA" "$nodea_guest_log" || return 1
