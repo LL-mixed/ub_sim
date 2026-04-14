@@ -20,12 +20,16 @@
 #include <unistd.h>
 
 #define RPC_PORT       18557
-#define SYNC_PORT      18559
 #define WAIT_IFACE_MS  90000
-#define SYNC_TIMEOUT_S 30
 #define SERVER_TIMEOUT_S 60
-#define RPC_ECHO_TEXT  "greeting from NodeA"
-#define RPC_CRC_PAYLOAD "buffer from NodeA for CRC verification over ub_link"
+#define RPC_ECHO_TEXT_FMT "greeting from rpc client %s"
+#define RPC_CRC_PAYLOAD_FMT "rpc crc payload from %s to %s over ub_link"
+
+enum rpc_mode {
+    RPC_MODE_UNKNOWN = 0,
+    RPC_MODE_CLIENT,
+    RPC_MODE_SERVER,
+};
 
 static volatile sig_atomic_t g_alarm_fired;
 
@@ -93,8 +97,52 @@ static bool cmdline_get_value(const char *key, char *out, size_t out_len)
     return false;
 }
 
-static bool role_default_ipv4_pair(const char *role, char *local, size_t local_len,
-                                   char *peer, size_t peer_len)
+static bool get_env_value(const char *key, char *out, size_t out_len)
+{
+    const char *env = getenv(key);
+
+    if (env != NULL && env[0] != '\0') {
+        snprintf(out, out_len, "%s", env);
+        return true;
+    }
+    return false;
+}
+
+static enum rpc_mode parse_rpc_mode(const char *value)
+{
+    if (strcmp(value, "client") == 0 || strcmp(value, "initiator") == 0 ||
+        strcmp(value, "nodeA") == 0) {
+        return RPC_MODE_CLIENT;
+    }
+    if (strcmp(value, "server") == 0 || strcmp(value, "responder") == 0 ||
+        strcmp(value, "nodeB") == 0) {
+        return RPC_MODE_SERVER;
+    }
+    return RPC_MODE_UNKNOWN;
+}
+
+static const char *rpc_mode_name(enum rpc_mode mode)
+{
+    switch (mode) {
+    case RPC_MODE_CLIENT:
+        return "client";
+    case RPC_MODE_SERVER:
+        return "server";
+    default:
+        return "unknown";
+    }
+}
+
+static bool get_config_value(const char *env_key, const char *cmd_key,
+                             char *out, size_t out_len)
+{
+    return get_env_value(env_key, out, out_len) ||
+           cmdline_get_value(cmd_key, out, out_len);
+}
+
+static bool legacy_role_ipv4_defaults(const char *role,
+                                      char *local, size_t local_len,
+                                      char *peer, size_t peer_len)
 {
     if (strcmp(role, "nodeA") == 0) {
         snprintf(local, local_len, "%s", "10.0.0.1");
@@ -109,40 +157,102 @@ static bool role_default_ipv4_pair(const char *role, char *local, size_t local_l
     return false;
 }
 
-static bool resolve_ipv4_pair(const char *role, char *local, size_t local_len,
-                              char *peer, size_t peer_len)
+static bool resolve_local_ipv4(const char *legacy_role, char *local, size_t local_len)
 {
-    bool have_local = cmdline_get_value("linqu_ipourma_ipv4", local, local_len);
-    bool have_peer = cmdline_get_value("linqu_ipourma_peer_ipv4", peer, peer_len);
+    bool have_local = get_config_value("LINQU_UB_LOCAL_IP", "linqu_ipourma_ipv4",
+                                       local, local_len);
 
-    if (!have_local || !have_peer) {
+    if (!have_local) {
         char default_local[INET_ADDRSTRLEN];
-        char default_peer[INET_ADDRSTRLEN];
 
-        if (!role_default_ipv4_pair(role, default_local, sizeof(default_local),
-                                    default_peer, sizeof(default_peer))) {
+        if (!legacy_role_ipv4_defaults(legacy_role, default_local, sizeof(default_local),
+                                       (char[INET_ADDRSTRLEN]){0}, INET_ADDRSTRLEN)) {
             return false;
         }
-        if (!have_local) {
-            snprintf(local, local_len, "%s", default_local);
-            have_local = true;
-        }
-        if (!have_peer) {
-            snprintf(peer, peer_len, "%s", default_peer);
-            have_peer = true;
-        }
+        snprintf(local, local_len, "%s", default_local);
+        have_local = true;
     }
 
-    if (!have_local || !have_peer) {
+    if (!have_local) {
         return false;
     }
 
-    if (inet_pton(AF_INET, local, &(struct in_addr){0}) != 1 ||
-        inet_pton(AF_INET, peer, &(struct in_addr){0}) != 1) {
+    if (inet_pton(AF_INET, local, &(struct in_addr){0}) != 1) {
         return false;
     }
 
     return true;
+}
+
+static bool resolve_peer_ipv4(const char *legacy_role, char *peer, size_t peer_len)
+{
+    bool have_peer = get_config_value("LINQU_UB_PEER_IP", "linqu_ipourma_peer_ipv4",
+                                      peer, peer_len);
+
+    if (!have_peer) {
+        char default_peer[INET_ADDRSTRLEN];
+
+        if (!legacy_role_ipv4_defaults(legacy_role,
+                                       (char[INET_ADDRSTRLEN]){0}, INET_ADDRSTRLEN,
+                                       default_peer, sizeof(default_peer))) {
+            return false;
+        }
+        snprintf(peer, peer_len, "%s", default_peer);
+        have_peer = true;
+    }
+
+    if (!have_peer || inet_pton(AF_INET, peer, &(struct in_addr){0}) != 1) {
+        return false;
+    }
+
+    return true;
+}
+
+static bool get_rpc_mode(enum rpc_mode *mode_out, char *legacy_role, size_t legacy_role_len)
+{
+    char value[32];
+    enum rpc_mode mode;
+
+    if (get_config_value("LINQU_RPC_MODE", "linqu_rpc_mode", value, sizeof(value))) {
+        mode = parse_rpc_mode(value);
+        if (mode != RPC_MODE_UNKNOWN) {
+            snprintf(legacy_role, legacy_role_len, "%s", value);
+            *mode_out = mode;
+            return true;
+        }
+    }
+
+    if (!cmdline_get_value("linqu_urma_dp_role", legacy_role, legacy_role_len)) {
+        return false;
+    }
+    mode = parse_rpc_mode(legacy_role);
+    if (mode == RPC_MODE_UNKNOWN) {
+        return false;
+    }
+    *mode_out = mode;
+    return true;
+}
+
+static unsigned int get_expected_call_count(enum rpc_mode mode)
+{
+    char value[32];
+    char *end;
+    unsigned long parsed;
+    const char *env = getenv("LINQU_RPC_EXPECT_CALLS");
+
+    if ((env != NULL && env[0] != '\0' && snprintf(value, sizeof(value), "%s", env) > 0) ||
+        cmdline_get_value("linqu_rpc_expected_calls", value, sizeof(value))) {
+        errno = 0;
+        parsed = strtoul(value, &end, 10);
+        if (errno == 0 && end != value && *end == '\0' && parsed <= UINT_MAX) {
+            return (unsigned int)parsed;
+        }
+    }
+
+    if (mode == RPC_MODE_SERVER) {
+        return 2;
+    }
+    return 0;
 }
 
 /* ---------- helper: interface discovery -------------------------------- */
@@ -724,90 +834,6 @@ static bool read_meminfo(char *out, size_t out_len)
     return true;
 }
 
-/* ---------- startup synchronization ------------------------------------ */
-
-static bool do_sync_server(int sync_sock)
-{
-    /* nodeB: listen for RPC_SYNC_REQ, reply RPC_SYNC_ACK */
-    long deadline = now_ms() + (long)SYNC_TIMEOUT_S * 1000L;
-    char buf[256];
-
-    printf("[ub_rpc] sync server waiting for RPC_SYNC_REQ on port %d\n", SYNC_PORT);
-
-    while (!g_alarm_fired && now_ms() < deadline) {
-        struct sockaddr_in src;
-        socklen_t slen = sizeof(src);
-        ssize_t n;
-
-        memset(&src, 0, sizeof(src));
-        n = recvfrom(sync_sock, buf, sizeof(buf) - 1, 0,
-                     (struct sockaddr *)&src, &slen);
-        if (n < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                usleep(50000);
-                continue;
-            }
-            fprintf(stderr, "[ub_rpc] sync recvfrom failed: %s\n", strerror(errno));
-            return false;
-        }
-        buf[n] = '\0';
-
-        if (strcmp(buf, "RPC_SYNC_REQ") == 0 ||
-            (n >= 14 && strncmp(buf + 2, "RPC_SYNC_REQ", 12) == 0)) {
-            const char *rsp = "RPC_SYNC_ACK";
-            sendto(sync_sock, rsp, strlen(rsp), 0,
-                   (struct sockaddr *)&src, slen);
-            printf("[ub_rpc] sync server received RPC_SYNC_REQ, sent RPC_SYNC_ACK\n");
-            return true;
-        }
-    }
-
-    fprintf(stderr, "[ub_rpc] fail: sync server timeout\n");
-    return false;
-}
-
-static bool do_sync_client(int sync_sock,
-                           const struct sockaddr_in *peer_addr)
-{
-    /* nodeA: send RPC_SYNC_REQ, wait for RPC_SYNC_ACK */
-    long deadline = now_ms() + (long)SYNC_TIMEOUT_S * 1000L;
-    char buf[256];
-    const char *req = "RPC_SYNC_REQ";
-
-    printf("[ub_rpc] sync client sending RPC_SYNC_REQ to port %d\n", SYNC_PORT);
-
-    while (!g_alarm_fired && now_ms() < deadline) {
-        ssize_t sn;
-        struct sockaddr_in src;
-        socklen_t slen = sizeof(src);
-        ssize_t n;
-
-        sn = sendto(sync_sock, req, strlen(req), 0,
-                    (const struct sockaddr *)peer_addr, sizeof(*peer_addr));
-        if (sn < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-            fprintf(stderr, "[ub_rpc] sync sendto failed: %s\n", strerror(errno));
-            return false;
-        }
-
-        memset(&src, 0, sizeof(src));
-        n = recvfrom(sync_sock, buf, sizeof(buf) - 1, 0,
-                     (struct sockaddr *)&src, &slen);
-        if (n > 0) {
-            buf[n] = '\0';
-            if (strcmp(buf, "RPC_SYNC_ACK") == 0 ||
-                (n >= 14 && strncmp(buf + 2, "RPC_SYNC_ACK", 12) == 0)) {
-                printf("[ub_rpc] sync client received RPC_SYNC_ACK\n");
-                return true;
-            }
-        }
-
-        usleep(200000);
-    }
-
-    fprintf(stderr, "[ub_rpc] fail: sync client timeout\n");
-    return false;
-}
-
 /* ---------- nonblocking recv with retry -------------------------------- */
 
 static ssize_t recv_with_retry(int sockfd, char *buf, size_t buf_len,
@@ -832,18 +858,18 @@ static ssize_t recv_with_retry(int sockfd, char *buf, size_t buf_len,
     return 0; /* timeout */
 }
 
-/* ---------- RPC server (nodeB) ----------------------------------------- */
+/* ---------- RPC server ------------------------------------------------- */
 
-static int run_rpc_server(int rpc_sock,
-                          const struct sockaddr_in *peer_addr)
+static int run_rpc_server(int rpc_sock, const char *local_ip,
+                          unsigned int expected_calls)
 {
     long start_ms = now_ms();
     unsigned int rpc_count = 0;
-    bool shutdown_requested = false;
 
-    printf("[ub_rpc] server started, waiting for requests\n");
+    printf("[ub_rpc] mode=server local=%s peer=<dynamic> expected_calls=%u started\n",
+           local_ip, expected_calls);
 
-    while (!g_alarm_fired && !shutdown_requested) {
+    while (!g_alarm_fired) {
         char buf[1024];
         ssize_t n;
         int req_msg_id;
@@ -852,17 +878,23 @@ static int run_rpc_server(int rpc_sock,
         char req_payload[512];
         char rsp_buf[1024];
         char rsp_payload[512];
+        struct sockaddr_in src;
+        socklen_t src_len = sizeof(src);
+        char peer_ip[INET_ADDRSTRLEN] = {0};
         int rsp_len;
 
-        n = recv_with_retry(rpc_sock, buf, sizeof(buf), 2000);
+        n = recvfrom(rpc_sock, buf, sizeof(buf) - 1, MSG_DONTWAIT,
+                     (struct sockaddr *)&src, &src_len);
         if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                usleep(50000);
+                continue;
+            }
             fprintf(stderr, "[ub_rpc] server recv error: %s\n", strerror(errno));
             return 1;
         }
-        if (n == 0) {
-            /* timeout, loop again to check alarm */
-            continue;
-        }
+        buf[n] = '\0';
+        inet_ntop(AF_INET, &src.sin_addr, peer_ip, sizeof(peer_ip));
 
         if (rpc_parse_request(buf, &req_msg_id, req_op, sizeof(req_op),
                               &req_plen, req_payload, sizeof(req_payload)) != 0) {
@@ -894,9 +926,6 @@ static int run_rpc_server(int rpc_sock,
             if (!read_meminfo(rsp_payload, sizeof(rsp_payload))) {
                 snprintf(rsp_payload, sizeof(rsp_payload), "ERR");
             }
-        } else if (strcmp(req_op, "SHUTDOWN") == 0) {
-            shutdown_requested = true;
-            snprintf(rsp_payload, sizeof(rsp_payload), "OK");
         } else {
             snprintf(rsp_payload, sizeof(rsp_payload), "UNKNOWN_OP");
         }
@@ -905,23 +934,29 @@ static int run_rpc_server(int rpc_sock,
                                      req_msg_id, "OK", rsp_payload);
         if (rsp_len > 0) {
             sendto(rpc_sock, rsp_buf, (size_t)rsp_len, 0,
-                   (const struct sockaddr *)peer_addr, sizeof(*peer_addr));
+                   (const struct sockaddr *)&src, src_len);
         }
 
         rpc_count++;
-        printf("[RPC] server handled op=%s msg_id=%d\n", req_op, req_msg_id);
+        printf("[RPC] server local=%s peer=%s handled op=%s msg_id=%d rpc_count=%u\n",
+               local_ip, peer_ip, req_op, req_msg_id, rpc_count);
+        if (expected_calls > 0 && rpc_count >= expected_calls) {
+            break;
+        }
     }
 
-    if (g_alarm_fired && !shutdown_requested) {
-        fprintf(stderr, "[ub_rpc] fail: server alarm timeout\n");
+    if (g_alarm_fired) {
+        fprintf(stderr, "[ub_rpc] fail: mode=server local=%s alarm timeout after %u calls\n",
+                local_ip, rpc_count);
         return 1;
     }
 
-    printf("[ub_rpc] server exiting, handled %u rpcs\n", rpc_count);
+    printf("[ub_rpc] mode=server local=%s exiting handled=%u\n",
+           local_ip, rpc_count);
     return 0;
 }
 
-/* ---------- RPC client (nodeA) ----------------------------------------- */
+/* ---------- RPC client ------------------------------------------------- */
 
 static int rpc_client_send_recv(int rpc_sock,
                                 const struct sockaddr_in *peer_addr,
@@ -980,72 +1015,63 @@ static int rpc_client_send_recv(int rpc_sock,
     return -1; /* timeout or max retries */
 }
 
-static int run_rpc_client(int rpc_sock,
-                          const struct sockaddr_in *peer_addr)
+static int run_rpc_client(int rpc_sock, const struct sockaddr_in *peer_addr,
+                          const char *local_ip, const char *peer_ip)
 {
     int fail_count = 0;
     char rsp_payload[512];
+    char echo_text[128];
+    char crc_payload[192];
     char expected_crc[32];
     uint32_t expected_crc_value;
 
-    printf("[ub_rpc] client started\n");
+    snprintf(echo_text, sizeof(echo_text), RPC_ECHO_TEXT_FMT, local_ip);
+    snprintf(crc_payload, sizeof(crc_payload), RPC_CRC_PAYLOAD_FMT, local_ip, peer_ip);
 
-    /* msg_id=1: ECHO(RPC_ECHO_TEXT) */
+    printf("[ub_rpc] mode=client local=%s peer=%s started\n", local_ip, peer_ip);
+
     {
-        const char *expected = RPC_ECHO_TEXT;
+        const char *expected = echo_text;
 
         if (rpc_client_send_recv(rpc_sock, peer_addr, 1, "ECHO",
                                  expected, rsp_payload, sizeof(rsp_payload)) != 0) {
-            fprintf(stderr, "[RPC] client op=ECHO msg_id=1 status=FAIL result=\"timeout\"\n");
+            fprintf(stderr, "[RPC] client local=%s peer=%s op=ECHO msg_id=1 status=FAIL result=\"timeout\"\n",
+                    local_ip, peer_ip);
             fail_count++;
         } else if (strcmp(rsp_payload, expected) != 0) {
-            fprintf(stderr, "[RPC] client op=ECHO msg_id=1 status=FAIL result=\"%s\" expected=\"%s\"\n",
-                    rsp_payload, expected);
+            fprintf(stderr,
+                    "[RPC] client local=%s peer=%s op=ECHO msg_id=1 status=FAIL result=\"%s\" expected=\"%s\"\n",
+                    local_ip, peer_ip, rsp_payload, expected);
             fail_count++;
         } else {
-            printf("[RPC] client op=ECHO msg_id=1 status=OK result=\"%s\" expected=\"%s\" verified=1\n",
-                   rsp_payload, expected);
+            printf("[RPC] client local=%s peer=%s op=ECHO msg_id=1 status=OK result=\"%s\" expected=\"%s\" verified=1\n",
+                   local_ip, peer_ip, rsp_payload, expected);
         }
     }
 
-    /* msg_id=2: CRC32(RPC_CRC_PAYLOAD) */
     {
-        expected_crc_value = crc32_ieee((const unsigned char *)RPC_CRC_PAYLOAD,
-                                        strlen(RPC_CRC_PAYLOAD));
+        expected_crc_value = crc32_ieee((const unsigned char *)crc_payload,
+                                        strlen(crc_payload));
         snprintf(expected_crc, sizeof(expected_crc), "0x%08" PRIx32, expected_crc_value);
 
         if (rpc_client_send_recv(rpc_sock, peer_addr, 2, "CRC32",
-                                 RPC_CRC_PAYLOAD, rsp_payload, sizeof(rsp_payload)) != 0) {
-            fprintf(stderr, "[RPC] client op=CRC32 msg_id=2 status=FAIL result=\"timeout\"\n");
+                                 crc_payload, rsp_payload, sizeof(rsp_payload)) != 0) {
+            fprintf(stderr, "[RPC] client local=%s peer=%s op=CRC32 msg_id=2 status=FAIL result=\"timeout\"\n",
+                    local_ip, peer_ip);
             fail_count++;
         } else if (strcmp(rsp_payload, expected_crc) != 0) {
-            fprintf(stderr, "[RPC] client op=CRC32 msg_id=2 status=FAIL result=\"%s\" expected=\"%s\"\n",
-                    rsp_payload, expected_crc);
+            fprintf(stderr,
+                    "[RPC] client local=%s peer=%s op=CRC32 msg_id=2 status=FAIL result=\"%s\" expected=\"%s\"\n",
+                    local_ip, peer_ip, rsp_payload, expected_crc);
             fail_count++;
         } else {
-            printf("[RPC] client op=CRC32 msg_id=2 status=OK payload=\"%s\" result=\"%s\" expected=\"%s\" verified=1\n",
-                   RPC_CRC_PAYLOAD, rsp_payload, expected_crc);
+            printf("[RPC] client local=%s peer=%s op=CRC32 msg_id=2 status=OK payload=\"%s\" result=\"%s\" expected=\"%s\" verified=1\n",
+                   local_ip, peer_ip, crc_payload, rsp_payload, expected_crc);
         }
     }
 
-    /* msg_id=3: SHUTDOWN("") */
-    {
-        if (rpc_client_send_recv(rpc_sock, peer_addr, 3, "SHUTDOWN",
-                                 "", rsp_payload, sizeof(rsp_payload)) != 0) {
-            fprintf(stderr, "[RPC] client op=SHUTDOWN msg_id=3 status=FAIL result=\"timeout\"\n");
-            fail_count++;
-        } else if (strcmp(rsp_payload, "OK") != 0) {
-            fprintf(stderr, "[RPC] client op=SHUTDOWN msg_id=3 status=FAIL result=\"%s\" expected=\"OK\"\n",
-                    rsp_payload);
-            fail_count++;
-        } else {
-            printf("[RPC] client op=SHUTDOWN msg_id=3 status=OK result=\"%s\"\n", rsp_payload);
-        }
-    }
-
-    /* summary */
-    printf("[ub_rpc] client completed %d ops, %d failures\n",
-           3, fail_count);
+    printf("[ub_rpc] mode=client local=%s peer=%s completed_ops=2 failures=%d\n",
+           local_ip, peer_ip, fail_count);
 
     return (fail_count > 0) ? 1 : 0;
 }
@@ -1054,7 +1080,8 @@ static int run_rpc_client(int rpc_sock,
 
 int main(void)
 {
-    char role[32] = "unknown";
+    char role_hint[32] = "unknown";
+    enum rpc_mode mode = RPC_MODE_UNKNOWN;
     char ifname[IFNAMSIZ] = {0};
     struct in_addr local_addr = {0};
     struct in_addr desired_local = {0};
@@ -1063,17 +1090,18 @@ int main(void)
     char my_ip[INET_ADDRSTRLEN] = {0};
     char peer_ip[INET_ADDRSTRLEN] = {0};
     int rpc_sock = -1;
-    int sync_sock = -1;
     struct sockaddr_in peer_sin;
     struct sigaction sa;
+    unsigned int expected_calls;
     int ret;
 
-    if (!cmdline_get_value("linqu_urma_dp_role", role, sizeof(role))) {
-        fprintf(stderr, "[ub_rpc] fail: no linqu_urma_dp_role in cmdline\n");
+    if (!get_rpc_mode(&mode, role_hint, sizeof(role_hint))) {
+        fprintf(stderr, "[ub_rpc] fail: unable to resolve rpc mode from LINQU_RPC_MODE/linqu_rpc_mode/linqu_urma_dp_role\n");
         return 1;
     }
+    expected_calls = get_expected_call_count(mode);
 
-    printf("[ub_rpc] start role=%s\n", role);
+    printf("[ub_rpc] start mode=%s role_hint=%s\n", rpc_mode_name(mode), role_hint);
 
     /* setup alarm */
     memset(&sa, 0, sizeof(sa));
@@ -1088,8 +1116,15 @@ int main(void)
         return 1;
     }
 
-    if (!resolve_ipv4_pair(role, my_ip, sizeof(my_ip), peer_ip, sizeof(peer_ip))) {
-        fprintf(stderr, "[ub_rpc] fail: missing ip config for role '%s'\n", role);
+    if (!resolve_local_ipv4(role_hint, my_ip, sizeof(my_ip))) {
+        fprintf(stderr, "[ub_rpc] fail: missing local ip config for mode=%s role_hint=%s\n",
+                rpc_mode_name(mode), role_hint);
+        return 1;
+    }
+    if (mode == RPC_MODE_CLIENT &&
+        !resolve_peer_ipv4(role_hint, peer_ip, sizeof(peer_ip))) {
+        fprintf(stderr, "[ub_rpc] fail: missing peer ip config for mode=%s role_hint=%s\n",
+                rpc_mode_name(mode), role_hint);
         return 1;
     }
 
@@ -1108,65 +1143,42 @@ int main(void)
         return 1;
     }
 
-    if (inet_pton(AF_INET, peer_ip, &peer_addr) != 1) {
-        fprintf(stderr, "[ub_rpc] fail: peer ip parse failed for %s\n", peer_ip);
-        return 1;
+    if (mode == RPC_MODE_CLIENT) {
+        if (inet_pton(AF_INET, peer_ip, &peer_addr) != 1) {
+            fprintf(stderr, "[ub_rpc] fail: peer ip parse failed for %s\n", peer_ip);
+            return 1;
+        }
+        install_static_arp(ifname, &peer_addr);
     }
-    install_static_arp(ifname, &peer_addr);
 
     memset(&peer_sin, 0, sizeof(peer_sin));
-    peer_sin.sin_family = AF_INET;
-    peer_sin.sin_port = htons(RPC_PORT);
-    peer_sin.sin_addr = peer_addr;
+    if (mode == RPC_MODE_CLIENT) {
+        peer_sin.sin_family = AF_INET;
+        peer_sin.sin_port = htons(RPC_PORT);
+        peer_sin.sin_addr = peer_addr;
+    }
 
     {
         char buf_local[INET_ADDRSTRLEN];
-        char buf_peer[INET_ADDRSTRLEN];
         printf("[ub_rpc] iface=%s ifindex=%u local=%s peer=%s\n",
                ifname, ifindex,
                inet_ntop(AF_INET, &local_addr, buf_local, sizeof(buf_local)),
-               inet_ntop(AF_INET, &peer_addr, buf_peer, sizeof(buf_peer)));
-    }
-
-    /* create sync socket */
-    sync_sock = create_udp_socket(ifname, SYNC_PORT);
-    if (sync_sock < 0) {
-        return 1;
+               (mode == RPC_MODE_CLIENT) ? peer_ip : "<dynamic>");
     }
 
     /* create rpc socket */
-    rpc_sock = create_udp_socket(ifname, RPC_PORT);
+    rpc_sock = create_udp_socket(ifname, (mode == RPC_MODE_SERVER) ? RPC_PORT : 0);
     if (rpc_sock < 0) {
-        close(sync_sock);
         return 1;
     }
 
-    /* startup synchronization */
-    if (strcmp(role, "nodeB") == 0) {
-        if (!do_sync_server(sync_sock)) {
-            close(rpc_sock);
-            close(sync_sock);
-            return 1;
-        }
-        ret = run_rpc_server(rpc_sock, &peer_sin);
+    if (mode == RPC_MODE_SERVER) {
+        ret = run_rpc_server(rpc_sock, my_ip, expected_calls);
     } else {
-        struct sockaddr_in sync_peer;
-
-        memset(&sync_peer, 0, sizeof(sync_peer));
-        sync_peer.sin_family = AF_INET;
-        sync_peer.sin_port = htons(SYNC_PORT);
-        sync_peer.sin_addr = peer_addr;
-
-        if (!do_sync_client(sync_sock, &sync_peer)) {
-            close(rpc_sock);
-            close(sync_sock);
-            return 1;
-        }
-        ret = run_rpc_client(rpc_sock, &peer_sin);
+        ret = run_rpc_client(rpc_sock, &peer_sin, my_ip, peer_ip);
     }
 
     close(rpc_sock);
-    close(sync_sock);
 
     if (ret == 0) {
         printf("[ub_rpc] pass\n");

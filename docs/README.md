@@ -1,15 +1,10 @@
 # Simulator Docs
 
-- `docs/*.md` contains current workspace-local design notes.
-- `docs/plans/` contains migrated implementation plans from the former
-  super-project.
-- `docs/drafts/` contains migrated historical drafts and architecture notes.
+Workspace-local notes and implementation-specific design material can live here.
 
-Some migrated documents still reference:
+Current validation entry points:
 
-- legacy paths like `simulator/...`
-- external background material from `ub_docs`
-- top-level PyPTO/Linqu design documents that are not vendored into this repo
-
-Treat those references as historical context, not as the standalone repo's
-required directory layout.
+- [2026-04-14-four-node-matrix-validation.md](/Volumes/repos/pypto_workspace/ub_sim.git/docs/2026-04-14-four-node-matrix-validation.md)
+  - current four-node full-mesh matrix status for `chat`, `rpc`, `rdma`, and `obmm-pool`
+- [sim_ub_eight_node_full_mesh_design.md](/Volumes/repos/pypto_workspace/ub_sim.git/docs/sim_ub_eight_node_full_mesh_design.md)
+  - eight-node scale-up design notes, including configurable `port_num` and FM-owned `EID/CNA` constraints

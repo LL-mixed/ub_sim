@@ -229,6 +229,56 @@ Cleanup:
 - the launcher prints a per-run cleanup script under `out/`
 - running that script stops both QEMU processes and removes the QMP sockets
 
+## Four-Node Interactive tmux Session
+
+Use the four-node tmux wrapper when you want a full-mesh `nodeA/nodeB/nodeC/nodeD`
+interactive environment instead of auto-running a matrix harness.
+
+Example:
+
+```sh
+guest-linux/aarch64/scripts/launch_ub_four_node_tmux.sh
+```
+
+Default behavior:
+
+- topology: `vendor/ub_topology_four_node_full_mesh.ini`
+- guest kernel cmdline uses `rdinit=/bin/run_demo`
+- each guest completes `/bin/run_demo` bootstrap first
+- the control window waits until all four guest logs reach
+  `[run_demo] boot flow completed, dropping to shell`
+- only after that does the session report the interactive shells as ready
+
+Useful overrides:
+
+```sh
+# launch without monitor/guest side windows, keep only the control window
+TMUX_QEMU_WINDOWS=0 TMUX_GUEST_WINDOWS=0 \
+guest-linux/aarch64/scripts/launch_ub_four_node_tmux.sh
+
+# custom session name
+TMUX_SESSION_NAME=ub-four-dev \
+guest-linux/aarch64/scripts/launch_ub_four_node_tmux.sh
+
+# increase bootstrap wait budget if guest bring-up is slower
+BOOT_WAIT_SECS=300 \
+guest-linux/aarch64/scripts/launch_ub_four_node_tmux.sh
+```
+
+tmux windows:
+
+- `0:control`
+  - QEMU launch progress, QMP resume, per-node log paths, bootstrap shell-gate status, cleanup script
+- `nodeX-qemu`
+  - per-node QEMU monitor windows when `TMUX_QEMU_WINDOWS=1`
+- `nodeX-guest`
+  - per-node guest serial console windows when `TMUX_GUEST_WINDOWS=1`
+
+Cleanup:
+
+- the launcher prints a per-run cleanup script under `out/`
+- running that script stops all four QEMU processes and removes the per-run QMP sockets
+
 ## Manual Demo Order In tmux
 
 After `guest-linux/aarch64/scripts/launch_ub_dual_node_tmux.sh` boots both guests
@@ -328,25 +378,36 @@ Success criteria:
 
 ### obmm
 
+`obmm` now uses the pool-style demo entrypoint even in dual-node mode.
+With `N=2`, the same binary degenerates into a two-slot pool:
+
+- each node exports one region
+- each node imports the peer region
+- each node verifies shared visibility before the round advances
+
 Run on both nodes:
 
 ```sh
 /bin/linqu_ub_obmm_demo
 ```
 
-Recommended order:
-
-- start `nodeA` first so it can perform `export`
-- then start `nodeB` so it can perform `import`
-
 Success criteria:
 
-- `nodeA` completes `export`
-- `nodeB` completes `import`
-- QEMU side reports decoder `MAP`
-- `nodeB` completes `unimport`
-- `nodeA` completes `unexport`
-- QEMU side reports decoder `UNMAP`
+- both nodes complete `export`
+- both nodes complete `import`
+- each node verifies the current owner slot payload
+- each node publishes ACK on its own slot
+- the owner emits `ROUND_COMMIT` only after all ACKs arrive
+- all imports are cleaned up and both exports are unexported
+
+For four-node automated validation, use the dedicated full-pool harness:
+
+```sh
+guest-linux/aarch64/scripts/run_ub_four_node_obmm_pool.sh
+```
+
+That run performs one shared pool bring-up across `nodeA/nodeB/nodeC/nodeD`
+instead of pairwise OBMM checks.
 
 ### run_demo wrapper
 

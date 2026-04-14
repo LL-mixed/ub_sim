@@ -1,8 +1,8 @@
 /*
- * ub_rdma_demo.c - Dual-node URMA RDMA resource lifecycle demo.
+ * ub_rdma_demo.c - URMA RDMA resource lifecycle demo.
  *
  * Demonstrates the full URMA resource creation and binding pipeline
- * over a simulated UB network between two QEMU VMs (nodeA/nodeB).
+ * over a simulated UB network between two QEMU VMs.
  *
  * Steps:
  *   1. Query device attributes
@@ -132,6 +132,37 @@ struct rdma_resources {
 };
 
 static struct rdma_resources g_res;
+
+static int ub_ioctl(int fd, uint32_t cmd, void *arg, size_t arg_size);
+
+enum rdma_role {
+    RDMA_ROLE_UNKNOWN = 0,
+    RDMA_ROLE_INITIATOR,
+    RDMA_ROLE_RESPONDER,
+};
+
+static enum rdma_role parse_rdma_role(const char *role)
+{
+    if (strcmp(role, "initiator") == 0 || strcmp(role, "nodeA") == 0) {
+        return RDMA_ROLE_INITIATOR;
+    }
+    if (strcmp(role, "responder") == 0 || strcmp(role, "nodeB") == 0) {
+        return RDMA_ROLE_RESPONDER;
+    }
+    return RDMA_ROLE_UNKNOWN;
+}
+
+static const char *rdma_role_name(enum rdma_role role)
+{
+    switch (role) {
+    case RDMA_ROLE_INITIATOR:
+        return "initiator";
+    case RDMA_ROLE_RESPONDER:
+        return "responder";
+    default:
+        return "unknown";
+    }
+}
 
 enum udma_sq_opcode_local {
     UDMA_OPC_SEND_LOCAL = 0x0,
@@ -384,7 +415,7 @@ static int rdma_post_send_one(struct rdma_resources *res, const void *buf, uint3
     return 0;
 }
 
-static int sync_datapath_ready(int udp_fd, const char *role,
+static int sync_datapath_ready(int udp_fd, enum rdma_role role,
                                const struct sockaddr_in *peer)
 {
     static const char ready_msg[] = "RDMA_DEMO_READY";
@@ -394,7 +425,7 @@ static int sync_datapath_ready(int udp_fd, const char *role,
     socklen_t from_len = sizeof(from);
     ssize_t n;
 
-    if (strcmp(role, "nodeA") == 0) {
+    if (role == RDMA_ROLE_INITIATOR) {
         if (sendto(udp_fd, ready_msg, sizeof(ready_msg), 0,
                    (const struct sockaddr *)peer, sizeof(*peer)) < 0) {
             return -errno;
@@ -446,48 +477,19 @@ static bool read_file(const char *path, char *buf, size_t len)
     return true;
 }
 
-static int parse_hex_nibble(char c)
+static bool read_eid_from_uburma(int fd, uint8_t eid[UBCORE_EID_SIZE])
 {
-    if (c >= '0' && c <= '9') {
-        return c - '0';
-    }
-    if (c >= 'a' && c <= 'f') {
-        return c - 'a' + 10;
-    }
-    if (c >= 'A' && c <= 'F') {
-        return c - 'A' + 10;
-    }
-    return -1;
-}
+    struct uburma_cmd_get_eid_list cmd;
 
-static bool read_eid_from_sysfs(uint8_t eid[UBCORE_EID_SIZE])
-{
-    char raw[256];
-    char hex[UBCORE_EID_SIZE * 2];
-    size_t i;
-    size_t h = 0;
-
-    if (!read_file("/sys/class/uburma/uburma0/device/eid", raw, sizeof(raw))) {
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.in.max_eid_cnt = UBCORE_MAX_EID_CNT;
+    if (ub_ioctl(fd, UBURMA_CMD_GET_EID_LIST, &cmd, sizeof(cmd)) != 0) {
         return false;
     }
-
-    for (i = 0; raw[i] != '\0' && h < sizeof(hex); i++) {
-        if (isxdigit((unsigned char)raw[i])) {
-            hex[h++] = raw[i];
-        }
-    }
-    if (h < sizeof(hex)) {
+    if (cmd.out.eid_cnt == 0) {
         return false;
     }
-
-    for (i = 0; i < UBCORE_EID_SIZE; i++) {
-        int hi = parse_hex_nibble(hex[i * 2]);
-        int lo = parse_hex_nibble(hex[i * 2 + 1]);
-        if (hi < 0 || lo < 0) {
-            return false;
-        }
-        eid[i] = (uint8_t)((hi << 4) | lo);
-    }
+    memcpy(eid, cmd.out.eid_list[0].eid.raw, UBCORE_EID_SIZE);
     return true;
 }
 
@@ -537,12 +539,12 @@ static bool cmdline_get_value(const char *key, char *out, size_t out_len)
 static bool role_default_ipv4_pair(const char *role, char *local, size_t local_len,
                                    char *peer, size_t peer_len)
 {
-    if (strcmp(role, "nodeA") == 0) {
+    if (strcmp(role, "initiator") == 0 || strcmp(role, "nodeA") == 0) {
         snprintf(local, local_len, "%s", "10.0.0.1");
         snprintf(peer, peer_len, "%s", "10.0.0.2");
         return true;
     }
-    if (strcmp(role, "nodeB") == 0) {
+    if (strcmp(role, "responder") == 0 || strcmp(role, "nodeB") == 0) {
         snprintf(local, local_len, "%s", "10.0.0.2");
         snprintf(peer, peer_len, "%s", "10.0.0.1");
         return true;
@@ -553,8 +555,24 @@ static bool role_default_ipv4_pair(const char *role, char *local, size_t local_l
 static bool resolve_ipv4_pair(const char *role, char *local, size_t local_len,
                               char *peer, size_t peer_len)
 {
-    bool have_local = cmdline_get_value("linqu_ipourma_ipv4", local, local_len);
-    bool have_peer = cmdline_get_value("linqu_ipourma_peer_ipv4", peer, peer_len);
+    const char *env_local = getenv("LINQU_UB_LOCAL_IP");
+    const char *env_peer = getenv("LINQU_UB_PEER_IP");
+    bool have_local = false;
+    bool have_peer = false;
+
+    if (env_local != NULL && env_local[0] != '\0') {
+        snprintf(local, local_len, "%s", env_local);
+        have_local = true;
+    } else {
+        have_local = cmdline_get_value("linqu_ipourma_ipv4", local, local_len);
+    }
+
+    if (env_peer != NULL && env_peer[0] != '\0') {
+        snprintf(peer, peer_len, "%s", env_peer);
+        have_peer = true;
+    } else {
+        have_peer = cmdline_get_value("linqu_ipourma_peer_ipv4", peer, peer_len);
+    }
 
     if (!have_local || !have_peer) {
         char default_local[INET_ADDRSTRLEN];
@@ -1006,6 +1024,14 @@ enum uburma_cmd_unregister_seg_type {
     UNREGISTER_SEG_IN_NUM,
 };
 
+enum uburma_cmd_get_eid_list_type {
+    GET_EID_LIST_IN_MAX_EID_CNT,
+    GET_EID_LIST_IN_NUM,
+    GET_EID_LIST_OUT_EID_CNT = UBURMA_CMD_OUT_TYPE_INIT,
+    GET_EID_LIST_OUT_EID_LIST,
+    GET_EID_LIST_OUT_NUM,
+};
+
 enum uburma_cmd_alloc_jfs_type {
     ALLOC_JFS_IN_DEPTH,
     ALLOC_JFS_IN_FLAG,
@@ -1314,6 +1340,21 @@ static void uburma_unregister_seg_fill_spec_in(void *arg_addr, struct uburma_cmd
     struct uburma_cmd_unregister_seg *arg = arg_addr;
     struct uburma_cmd_spec *s = spec;
     SPEC(s++, UNREGISTER_SEG_IN_HANDLE, arg->in.handle);
+}
+
+static void uburma_get_eid_list_fill_spec_in(void *arg_addr, struct uburma_cmd_spec *spec)
+{
+    struct uburma_cmd_get_eid_list *arg = arg_addr;
+    struct uburma_cmd_spec *s = spec;
+    SPEC(s++, GET_EID_LIST_IN_MAX_EID_CNT, arg->in.max_eid_cnt);
+}
+
+static void uburma_get_eid_list_fill_spec_out(void *arg_addr, struct uburma_cmd_spec *spec)
+{
+    struct uburma_cmd_get_eid_list *arg = arg_addr;
+    struct uburma_cmd_spec *s = spec;
+    SPEC(s++, GET_EID_LIST_OUT_EID_CNT, arg->out.eid_cnt);
+    SPEC(s++, GET_EID_LIST_OUT_EID_LIST, arg->out.eid_list);
 }
 
 static void uburma_register_seg_fill_spec_in(void *arg_addr, struct uburma_cmd_spec *spec)
@@ -1717,6 +1758,12 @@ static int build_tlv_specs(uint32_t cmd, void *arg,
         *in_count = UNREGISTER_SEG_IN_NUM;
         *out_count = 0;
         return 0;
+    case UBURMA_CMD_GET_EID_LIST:
+        uburma_get_eid_list_fill_spec_in(arg, in_specs);
+        uburma_get_eid_list_fill_spec_out(arg, out_specs);
+        *in_count = GET_EID_LIST_IN_NUM;
+        *out_count = GET_EID_LIST_OUT_NUM - UBURMA_CMD_OUT_TYPE_INIT;
+        return 0;
     case UBURMA_CMD_ALLOC_JFC:
         uburma_alloc_jfc_fill_spec_in(arg, in_specs);
         uburma_alloc_jfc_fill_spec_out(arg, out_specs);
@@ -1976,7 +2023,6 @@ static int udp_send_all(int fd, const void *buf, size_t len,
 static int udp_recv_all(int fd, void *buf, size_t len,
                         const struct sockaddr_in *expected_src)
 {
-    (void)expected_src;
     char *p = (char *)buf;
     size_t remaining = len;
 
@@ -1993,19 +2039,39 @@ static int udp_recv_all(int fd, void *buf, size_t len,
             }
             return -1;
         }
+        if (expected_src != NULL &&
+            (src.sin_family != expected_src->sin_family ||
+             src.sin_port != expected_src->sin_port ||
+             src.sin_addr.s_addr != expected_src->sin_addr.s_addr)) {
+            continue;
+        }
         p += n;
         remaining -= (size_t)n;
     }
     return 0;
 }
 
-static int do_startup_sync(int udp_fd, const char *role,
+static void format_eid_hex(const uint8_t eid[UBCORE_EID_SIZE], char *out, size_t out_len)
+{
+    size_t i;
+    size_t pos = 0;
+
+    if (out_len == 0) {
+        return;
+    }
+    out[0] = '\0';
+    for (i = 0; i < UBCORE_EID_SIZE && pos + 2 < out_len; i++) {
+        pos += (size_t)snprintf(out + pos, out_len - pos, "%02x", eid[i]);
+    }
+}
+
+static int do_startup_sync(int udp_fd, enum rdma_role role,
                            const struct sockaddr_in *peer_addr)
 {
     long deadline;
     char sync_buf[64];
 
-    if (strcmp(role, "nodeA") == 0) {
+    if (role == RDMA_ROLE_INITIATOR) {
         snprintf(sync_buf, sizeof(sync_buf), "RDMA_SYNC_REQ");
         if (udp_send_all(udp_fd, sync_buf, strlen(sync_buf), peer_addr) < 0) {
             fprintf(stderr, "[ub_rdma] sync: send REQ failed\n");
@@ -2070,12 +2136,12 @@ static int do_startup_sync(int udp_fd, const char *role,
     }
 }
 
-static int exchange_peer_info(int udp_fd, const char *role,
+static int exchange_peer_info(int udp_fd, enum rdma_role role,
                               const struct sockaddr_in *peer_addr,
                               const struct peer_info *local,
                               struct peer_info *remote)
 {
-    if (strcmp(role, "nodeA") == 0) {
+    if (role == RDMA_ROLE_INITIATOR) {
         if (udp_send_all(udp_fd, local, sizeof(*local), peer_addr) < 0) {
             fprintf(stderr, "[ub_rdma] exchange: send local info failed\n");
             return -1;
@@ -2238,6 +2304,7 @@ static void cleanup_resources(struct rdma_resources *res)
 int main(void)
 {
     char role[32] = "unknown";
+    enum rdma_role parsed_role = RDMA_ROLE_UNKNOWN;
     char ifname[IFNAMSIZ] = {0};
     struct in_addr local_addr = {0};
     struct in_addr desired_local = {0};
@@ -2258,12 +2325,22 @@ int main(void)
 
     printf("[ub_rdma] start\n");
 
-    /* --- parse role from cmdline --- */
-    if (!cmdline_get_value("linqu_urma_dp_role", role, sizeof(role))) {
-        fprintf(stderr, "[ub_rdma] fail: no linqu_urma_dp_role in cmdline\n");
+    /* --- parse role from env/cmdline --- */
+    {
+        const char *env_role = getenv("LINQU_UB_ROLE");
+        if (env_role != NULL && env_role[0] != '\0') {
+            snprintf(role, sizeof(role), "%s", env_role);
+        } else if (!cmdline_get_value("linqu_urma_dp_role", role, sizeof(role))) {
+            fprintf(stderr, "[ub_rdma] fail: no role specified (set LINQU_UB_ROLE or linqu_urma_dp_role)\n");
+            return 1;
+        }
+    }
+    parsed_role = parse_rdma_role(role);
+    if (parsed_role == RDMA_ROLE_UNKNOWN) {
+        fprintf(stderr, "[ub_rdma] fail: unsupported role=%s\n", role);
         return 1;
     }
-    printf("[ub_rdma] role=%s\n", role);
+    printf("[ub_rdma] role=%s\n", rdma_role_name(parsed_role));
 
     if (!resolve_ipv4_pair(role, my_ip, sizeof(my_ip), peer_ip, sizeof(peer_ip))) {
         fprintf(stderr, "[ub_rdma] fail: missing ip config for role '%s'\n", role);
@@ -2365,7 +2442,7 @@ int main(void)
 
         memset(&cmd, 0, sizeof(cmd));
         memset(ctx_resp, 0, sizeof(ctx_resp));
-        if (!read_eid_from_sysfs(cmd.in.eid)) {
+        if (!read_eid_from_uburma(g_res.fd, cmd.in.eid)) {
             memset(cmd.in.eid, 0, sizeof(cmd.in.eid));
         }
         cmd.in.eid_index = 0;
@@ -2795,7 +2872,7 @@ int main(void)
     setsockopt(udp_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
 
     printf("[ub_rdma] step 8: starting sync on port %d\n", SYNC_PORT);
-    if (do_startup_sync(udp_fd, role, &data_addr) < 0) {
+    if (do_startup_sync(udp_fd, parsed_role, &data_addr) < 0) {
         fprintf(stderr, "[ub_rdma] step 8: startup sync failed\n");
         close(udp_fd);
         cleanup_resources(&g_res);
@@ -2812,7 +2889,7 @@ int main(void)
         memset(&local_info, 0, sizeof(local_info));
         memset(&remote_info, 0, sizeof(remote_info));
 
-        if (!read_eid_from_sysfs(local_info.eid)) {
+        if (!read_eid_from_uburma(g_res.fd, local_info.eid)) {
             memset(local_info.eid, 0, sizeof(local_info.eid));
         }
         /*
@@ -2858,7 +2935,7 @@ int main(void)
         data_addr.sin_port = htons(RDMA_PORT);
         data_addr.sin_addr = peer_addr;
 
-        if (exchange_peer_info(udp_fd, role, &data_addr,
+        if (exchange_peer_info(udp_fd, parsed_role, &data_addr,
                                &local_info, &remote_info) < 0) {
             fprintf(stderr, "[ub_rdma] step 8: exchange peer info failed\n");
             close(udp_fd);
@@ -2867,6 +2944,15 @@ int main(void)
             return 1;
         }
         printf("[ub_rdma] step 8: exchange info -> ok\n");
+        {
+            char local_eid_hex[UBCORE_EID_SIZE * 2 + 1];
+            char remote_eid_hex[UBCORE_EID_SIZE * 2 + 1];
+
+            format_eid_hex(local_info.eid, local_eid_hex, sizeof(local_eid_hex));
+            format_eid_hex(remote_info.eid, remote_eid_hex, sizeof(remote_eid_hex));
+            printf("[ub_rdma]   local_eid=%s remote_eid=%s\n",
+                   local_eid_hex, remote_eid_hex);
+        }
         printf("[ub_rdma]   peer jetty_id=%u token=%u\n",
                remote_info.jetty_id, remote_info.token);
         memcpy(g_res.peer_eid, remote_info.eid, sizeof(g_res.peer_eid));
@@ -2919,8 +3005,8 @@ int main(void)
             struct udma_jfc_cqe_local cqe;
             uint8_t *tx_buf = g_res.seg_buf;
             uint8_t *rx_buf = (uint8_t *)g_res.seg_buf + 2048;
-            const char req_msg[] = "rdma request payload from NodeA";
-            const char reply_msg[] = "rdma reply payload from NodeB";
+            const char req_msg[] = "rdma request payload from initiator";
+            const char reply_msg[] = "rdma reply payload from responder";
             int ret;
 
             memset(rx_buf, 0, RDMA_MAX_PAYLOAD);
@@ -2934,7 +3020,7 @@ int main(void)
             }
             printf("[ub_rdma] step 9.5: post_recv -> ok\n");
 
-            ret = sync_datapath_ready(udp_fd, role, &data_addr);
+            ret = sync_datapath_ready(udp_fd, parsed_role, &data_addr);
             if (ret < 0) {
                 fprintf(stderr, "[ub_rdma] step 9.5: ready sync failed: %d\n", ret);
                 close(udp_fd);
@@ -2944,7 +3030,7 @@ int main(void)
             }
             printf("[ub_rdma] step 9.5: ready_sync -> ok\n");
 
-            if (strcmp(role, "nodeA") == 0) {
+            if (parsed_role == RDMA_ROLE_INITIATOR) {
                 memcpy(tx_buf, req_msg, sizeof(req_msg));
                 ret = rdma_post_send_one(&g_res, tx_buf, sizeof(req_msg));
                 if (ret < 0) {

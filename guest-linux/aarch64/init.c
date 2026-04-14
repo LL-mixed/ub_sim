@@ -672,12 +672,18 @@ static void install_static_arp(const char *ifname, const struct in_addr *peer_ad
 static bool ipourma_role_ipv4_defaults(const char *role, char *local, size_t local_len,
                                        char *peer, size_t peer_len)
 {
-    if (strcmp(role, "nodeA") == 0) {
+    if (strcmp(role, "nodeA") == 0 ||
+        strcmp(role, "initiator") == 0 ||
+        strcmp(role, "client") == 0 ||
+        strcmp(role, "exporter") == 0) {
         snprintf(local, local_len, "%s", "10.0.0.1");
         snprintf(peer, peer_len, "%s", "10.0.0.2");
         return true;
     }
-    if (strcmp(role, "nodeB") == 0) {
+    if (strcmp(role, "nodeB") == 0 ||
+        strcmp(role, "responder") == 0 ||
+        strcmp(role, "server") == 0 ||
+        strcmp(role, "importer") == 0) {
         snprintf(local, local_len, "%s", "10.0.0.2");
         snprintf(peer, peer_len, "%s", "10.0.0.1");
         return true;

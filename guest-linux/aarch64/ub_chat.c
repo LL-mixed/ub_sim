@@ -24,8 +24,8 @@
 #define CHAT_ROUNDS     5
 #define RUN_TIMEOUT_S   30
 #define WAIT_IFACE_MS   90000
-#define CHAT_REQ_TEXT   "greeting from NodeA"
-#define CHAT_RSP_TEXT   "copy, greeting back from NodeB"
+#define CHAT_REQ_TEXT   "greeting from initiator"
+#define CHAT_RSP_TEXT   "copy, greeting back from responder"
 
 static volatile sig_atomic_t g_alarm_fired;
 
@@ -89,15 +89,105 @@ static bool cmdline_get_value(const char *key, char *out, size_t out_len)
     return false;
 }
 
+static bool env_get_value(const char *key, char *out, size_t out_len)
+{
+    const char *val = getenv(key);
+
+    if (val == NULL || *val == '\0') {
+        return false;
+    }
+
+    snprintf(out, out_len, "%s", val);
+    return true;
+}
+
+static unsigned int resolve_timeout_s(void)
+{
+    char buf[32];
+    unsigned long value;
+    char *end = NULL;
+
+    if (!env_get_value("LINQU_UB_TIMEOUT_S", buf, sizeof(buf)) &&
+        !cmdline_get_value("linqu_ub_chat_timeout_s", buf, sizeof(buf))) {
+        return RUN_TIMEOUT_S;
+    }
+
+    errno = 0;
+    value = strtoul(buf, &end, 10);
+    if (errno != 0 || end == buf || *end != '\0') {
+        return RUN_TIMEOUT_S;
+    }
+    if (value < 5) {
+        value = 5;
+    }
+    if (value > 600) {
+        value = 600;
+    }
+    return (unsigned int)value;
+}
+
+static unsigned int resolve_post_sync_settle_ms(void)
+{
+    char buf[32];
+    unsigned long value;
+    char *end = NULL;
+
+    if (!env_get_value("LINQU_UB_POST_SYNC_SETTLE_MS", buf, sizeof(buf)) &&
+        !cmdline_get_value("linqu_ub_chat_post_sync_settle_ms", buf, sizeof(buf))) {
+        return 0;
+    }
+
+    errno = 0;
+    value = strtoul(buf, &end, 10);
+    if (errno != 0 || end == buf || *end != '\0') {
+        return 0;
+    }
+    if (value > 30000) {
+        value = 30000;
+    }
+    return (unsigned int)value;
+}
+
+static bool resolve_shared_socket_mode(void)
+{
+    char buf[16];
+
+    if (!env_get_value("LINQU_UB_CHAT_SHARED_SOCKET", buf, sizeof(buf)) &&
+        !cmdline_get_value("linqu_ub_chat_shared_socket", buf, sizeof(buf))) {
+        return false;
+    }
+
+    return strcmp(buf, "1") == 0 || strcasecmp(buf, "true") == 0 ||
+           strcasecmp(buf, "yes") == 0;
+}
+
+static bool normalize_role(const char *in, char *out, size_t out_len)
+{
+    if (strcmp(in, "initiator") == 0 || strcmp(in, "nodeA") == 0) {
+        snprintf(out, out_len, "%s", "initiator");
+        return true;
+    }
+    if (strcmp(in, "responder") == 0 || strcmp(in, "nodeB") == 0) {
+        snprintf(out, out_len, "%s", "responder");
+        return true;
+    }
+    return false;
+}
+
+static bool role_is_initiator(const char *role)
+{
+    return strcmp(role, "initiator") == 0;
+}
+
 static bool role_default_ipv4_pair(const char *role, char *local, size_t local_len,
                                    char *peer, size_t peer_len)
 {
-    if (strcmp(role, "nodeA") == 0) {
+    if (role_is_initiator(role)) {
         snprintf(local, local_len, "%s", "10.0.0.1");
         snprintf(peer, peer_len, "%s", "10.0.0.2");
         return true;
     }
-    if (strcmp(role, "nodeB") == 0) {
+    if (strcmp(role, "responder") == 0) {
         snprintf(local, local_len, "%s", "10.0.0.2");
         snprintf(peer, peer_len, "%s", "10.0.0.1");
         return true;
@@ -108,8 +198,10 @@ static bool role_default_ipv4_pair(const char *role, char *local, size_t local_l
 static bool resolve_ipv4_pair(const char *role, char *local, size_t local_len,
                               char *peer, size_t peer_len)
 {
-    bool have_local = cmdline_get_value("linqu_ipourma_ipv4", local, local_len);
-    bool have_peer = cmdline_get_value("linqu_ipourma_peer_ipv4", peer, peer_len);
+    bool have_local = env_get_value("LINQU_UB_LOCAL_IP", local, local_len) ||
+                      cmdline_get_value("linqu_ipourma_ipv4", local, local_len);
+    bool have_peer = env_get_value("LINQU_UB_PEER_IP", peer, peer_len) ||
+                     cmdline_get_value("linqu_ipourma_peer_ipv4", peer, peer_len);
 
     if (!have_local || !have_peer) {
         char default_local[INET_ADDRSTRLEN];
@@ -426,10 +518,13 @@ static int create_sync_socket(const char *ifname)
     return sockfd;
 }
 
-static int do_startup_sync_nodeA(int sync_fd,
-                                 const struct sockaddr_in *peer_addr)
+static int do_startup_sync_initiator(int sync_fd,
+                                     const struct sockaddr_in *peer_addr,
+                                     const char *local_ip,
+                                     const char *peer_ip,
+                                     unsigned int timeout_s)
 {
-    long deadline = now_ms() + (long)(RUN_TIMEOUT_S * 1000L);
+    long deadline = now_ms() + (long)(timeout_s * 1000L);
     const char *req = "SYNC_REQ";
     struct sockaddr_in sync_peer = *peer_addr;
 
@@ -460,7 +555,8 @@ static int do_startup_sync_nodeA(int sync_fd,
             buf[rn] = '\0';
             if (strncmp(buf, "SYNC_ACK", 8) == 0 ||
                 (rn >= 10 && strncmp(buf + 2, "SYNC_ACK", 8) == 0)) {
-                printf("[ub_chat] startup sync complete (nodeA)\n");
+                printf("[ub_chat] startup sync complete role=initiator local=%s peer=%s\n",
+                       local_ip, peer_ip);
                 return 0;
             }
         }
@@ -468,13 +564,17 @@ static int do_startup_sync_nodeA(int sync_fd,
         usleep(200000);
     }
 
-    fprintf(stderr, "[ub_chat] fail: startup sync timeout (nodeA)\n");
+    fprintf(stderr, "[ub_chat] fail: startup sync timeout role=initiator local=%s peer=%s\n",
+            local_ip, peer_ip);
     return -1;
 }
 
-static int do_startup_sync_nodeB(int sync_fd)
+static int do_startup_sync_responder(int sync_fd,
+                                     const char *local_ip,
+                                     const char *peer_ip,
+                                     unsigned int timeout_s)
 {
-    long deadline = now_ms() + (long)(RUN_TIMEOUT_S * 1000L);
+    long deadline = now_ms() + (long)(timeout_s * 1000L);
 
     while (!g_alarm_fired && now_ms() < deadline) {
         char buf[64];
@@ -492,7 +592,8 @@ static int do_startup_sync_nodeB(int sync_fd)
                 const char *ack = "SYNC_ACK";
                 sendto(sync_fd, ack, strlen(ack), MSG_DONTWAIT,
                        (const struct sockaddr *)&from, sizeof(from));
-                printf("[ub_chat] startup sync complete (nodeB)\n");
+                printf("[ub_chat] startup sync complete role=responder local=%s peer=%s\n",
+                       local_ip, peer_ip);
                 return 0;
             }
         }
@@ -500,7 +601,8 @@ static int do_startup_sync_nodeB(int sync_fd)
         usleep(200000);
     }
 
-    fprintf(stderr, "[ub_chat] fail: startup sync timeout (nodeB)\n");
+    fprintf(stderr, "[ub_chat] fail: startup sync timeout role=responder local=%s peer=%s\n",
+            local_ip, peer_ip);
     return -1;
 }
 
@@ -532,11 +634,32 @@ static ssize_t recv_chat_msg(int sockfd, char *buf, size_t buflen,
     return n;
 }
 
+static char *find_chat_payload_start(char *buf, size_t len)
+{
+    size_t i;
+
+    if (len >= 5 && strncmp(buf, "CHAT:", 5) == 0) {
+        return buf;
+    }
+
+    for (i = 0; i + 5 <= len; i++) {
+        if (memcmp(buf + i, "CHAT:", 5) == 0) {
+            if (i != 0) {
+                fprintf(stderr, "[ub_chat] recv raw adjusted by +%zu bytes\n", i);
+            }
+            return buf + i;
+        }
+    }
+
+    return NULL;
+}
+
 static int wait_for_peer_chat(int sockfd, const char *local_role,
                               char *peer_text, size_t peer_text_len,
-                              int *peer_seq, long *peer_ts_ms)
+                              int *peer_seq, long *peer_ts_ms,
+                              unsigned int timeout_s)
 {
-    long deadline = now_ms() + (long)(RUN_TIMEOUT_S * 1000L);
+    long deadline = now_ms() + (long)(timeout_s * 1000L);
 
     while (!g_alarm_fired && now_ms() < deadline) {
         char buf[512];
@@ -550,23 +673,34 @@ static int wait_for_peer_chat(int sockfd, const char *local_role,
             char *field;
             int fields = 0;
             char saved[sizeof(buf)];
-            char *payload = saved;
+            char *payload;
 
             memcpy(saved, buf, (size_t)n + 1);
-            if (n >= 7 && strncmp(saved, "CHAT:", 5) != 0 &&
-                strncmp(saved + 2, "CHAT:", 5) == 0) {
-                payload = saved + 2;
+            fprintf(stderr, "[ub_chat] recv raw len=%zd head=\"%.*s\"\n",
+                    n, (int)((n < 64) ? n : 64), saved);
+
+            if ((n >= 8 && strncmp(saved, "SYNC_REQ", 8) == 0) ||
+                (n >= 8 && strncmp(saved, "SYNC_ACK", 8) == 0)) {
+                fprintf(stderr, "[ub_chat] recv control packet ignored\n");
+                continue;
             }
 
+            payload = find_chat_payload_start(saved, (size_t)n);
+            if (payload == NULL) {
+                fprintf(stderr, "[ub_chat] recv parse skip: missing CHAT tag\n");
+                continue;
+            }
             p = payload;
             field = strsep(&p, ":");
             if (!field || strcmp(field, "CHAT") != 0) {
+                fprintf(stderr, "[ub_chat] recv parse skip: invalid CHAT tag\n");
                 continue;
             }
             fields++;
 
             field = strsep(&p, ":");
             if (!field) {
+                fprintf(stderr, "[ub_chat] recv parse skip: missing role\n");
                 continue;
             }
             snprintf(peer_role, sizeof(peer_role), "%s", field);
@@ -578,6 +712,7 @@ static int wait_for_peer_chat(int sockfd, const char *local_role,
 
             field = strsep(&p, ":");
             if (!field) {
+                fprintf(stderr, "[ub_chat] recv parse skip: missing text\n");
                 continue;
             }
             snprintf(peer_text, peer_text_len, "%s", field);
@@ -585,6 +720,7 @@ static int wait_for_peer_chat(int sockfd, const char *local_role,
 
             field = strsep(&p, ":");
             if (!field) {
+                fprintf(stderr, "[ub_chat] recv parse skip: missing seq\n");
                 continue;
             }
             *peer_seq = atoi(field);
@@ -592,6 +728,7 @@ static int wait_for_peer_chat(int sockfd, const char *local_role,
 
             field = strsep(&p, ":");
             if (!field) {
+                fprintf(stderr, "[ub_chat] recv parse skip: missing timestamp\n");
                 continue;
             }
             *peer_ts_ms = atol(field);
@@ -614,19 +751,28 @@ static int wait_for_peer_chat(int sockfd, const char *local_role,
     return -1;
 }
 
-static int run_nodeA(int chat_fd, int sync_fd,
-                     const struct sockaddr_in *peer_addr,
-                     const char *role)
+static int run_initiator(int chat_fd, int sync_fd,
+                         const struct sockaddr_in *peer_addr,
+                         const char *role,
+                         const char *local_ip,
+                         const char *peer_ip,
+                         unsigned int timeout_s)
 {
     int i;
     unsigned int tx_count = 0;
     unsigned int rx_count = 0;
+    unsigned int settle_ms = resolve_post_sync_settle_ms();
     long total_latency = 0;
     long min_latency = LONG_MAX;
     long max_latency = LONG_MIN;
 
-    if (do_startup_sync_nodeA(sync_fd, peer_addr) != 0) {
+    if (do_startup_sync_initiator(sync_fd, peer_addr, local_ip, peer_ip, timeout_s) != 0) {
         return 1;
+    }
+    if (settle_ms > 0) {
+        fprintf(stderr, "[ub_chat] post-sync settle %u ms role=initiator local=%s peer=%s\n",
+                settle_ms, local_ip, peer_ip);
+        usleep((useconds_t)settle_ms * 1000U);
     }
 
     for (i = 0; i < CHAT_ROUNDS && !g_alarm_fired; i++) {
@@ -643,16 +789,18 @@ static int run_nodeA(int chat_fd, int sync_fd,
                  role, CHAT_REQ_TEXT, i, now_ms());
 
         send_ts = now_ms();
+        fprintf(stderr, "[ub_chat] send seq=%d payload=\"%s\"\n", i, tx);
         sn = sendto(chat_fd, tx, strlen(tx), MSG_DONTWAIT,
                     (const struct sockaddr *)peer_addr, sizeof(*peer_addr));
         if (sn < 0) {
             fprintf(stderr, "[ub_chat] fail: send seq %d: %s\n", i, strerror(errno));
             return 1;
         }
+        fprintf(stderr, "[ub_chat] send seq=%d ok len=%zd\n", i, sn);
         tx_count++;
 
         if (wait_for_peer_chat(chat_fd, role, peer_text, sizeof(peer_text),
-                               &peer_seq, &peer_ts) != 0) {
+                               &peer_seq, &peer_ts, timeout_s) != 0) {
             fprintf(stderr, "[ub_chat] fail: no reply for seq %d\n", i);
             return 1;
         }
@@ -698,9 +846,12 @@ static int run_nodeA(int chat_fd, int sync_fd,
     return 0;
 }
 
-static int run_nodeB(int chat_fd, int sync_fd,
-                     const struct sockaddr_in *peer_addr,
-                     const char *role)
+static int run_responder(int chat_fd, int sync_fd,
+                         const struct sockaddr_in *peer_addr,
+                         const char *role,
+                         const char *local_ip,
+                         const char *peer_ip,
+                         unsigned int timeout_s)
 {
     unsigned int tx_count = 0;
     unsigned int rx_count = 0;
@@ -708,9 +859,15 @@ static int run_nodeB(int chat_fd, int sync_fd,
     long min_latency = LONG_MAX;
     long max_latency = LONG_MIN;
     int rounds = 0;
+    unsigned int settle_ms = resolve_post_sync_settle_ms();
 
-    if (do_startup_sync_nodeB(sync_fd) != 0) {
+    if (do_startup_sync_responder(sync_fd, local_ip, peer_ip, timeout_s) != 0) {
         return 1;
+    }
+    if (settle_ms > 0) {
+        fprintf(stderr, "[ub_chat] post-sync settle %u ms role=responder local=%s peer=%s\n",
+                settle_ms, local_ip, peer_ip);
+        usleep((useconds_t)settle_ms * 1000U);
     }
 
     while (rounds < CHAT_ROUNDS && !g_alarm_fired) {
@@ -723,18 +880,19 @@ static int run_nodeB(int chat_fd, int sync_fd,
         ssize_t sn;
 
         if (wait_for_peer_chat(chat_fd, role, peer_text, sizeof(peer_text),
-                               &peer_seq, &peer_ts) != 0) {
-            fprintf(stderr, "[ub_chat] fail: nodeB timeout waiting msg\n");
+                               &peer_seq, &peer_ts, timeout_s) != 0) {
+            fprintf(stderr, "[ub_chat] fail: responder timeout waiting msg local=%s peer=%s\n",
+                    local_ip, peer_ip);
             return 1;
         }
         if (peer_seq != rounds) {
-            fprintf(stderr, "[ub_chat] fail: nodeB req seq mismatch got=%d expect=%d\n",
-                    peer_seq, rounds);
+            fprintf(stderr, "[ub_chat] fail: responder req seq mismatch got=%d expect=%d local=%s peer=%s\n",
+                    peer_seq, rounds, local_ip, peer_ip);
             return 1;
         }
         if (strcmp(peer_text, CHAT_REQ_TEXT) != 0) {
-            fprintf(stderr, "[ub_chat] fail: nodeB req payload mismatch got=\"%s\" expect=\"%s\"\n",
-                    peer_text, CHAT_REQ_TEXT);
+            fprintf(stderr, "[ub_chat] fail: responder req payload mismatch got=\"%s\" expect=\"%s\" local=%s peer=%s\n",
+                    peer_text, CHAT_REQ_TEXT, local_ip, peer_ip);
             return 1;
         }
         recv_ts = now_ms();
@@ -755,13 +913,15 @@ static int run_nodeB(int chat_fd, int sync_fd,
         snprintf(tx, sizeof(tx), "CHAT:%s:%s:%d:%ld",
                  role, CHAT_RSP_TEXT, peer_seq, now_ms());
 
+        fprintf(stderr, "[ub_chat] send reply seq=%d payload=\"%s\"\n", peer_seq, tx);
         sn = sendto(chat_fd, tx, strlen(tx), MSG_DONTWAIT,
                     (const struct sockaddr *)peer_addr, sizeof(*peer_addr));
         if (sn < 0) {
-            fprintf(stderr, "[ub_chat] fail: nodeB send reply seq %d: %s\n",
-                    peer_seq, strerror(errno));
+            fprintf(stderr, "[ub_chat] fail: responder send reply seq %d local=%s peer=%s: %s\n",
+                    peer_seq, local_ip, peer_ip, strerror(errno));
             return 1;
         }
+        fprintf(stderr, "[ub_chat] send reply seq=%d ok len=%zd\n", peer_seq, sn);
         tx_count++;
         rounds++;
     }
@@ -789,6 +949,7 @@ static int run_nodeB(int chat_fd, int sync_fd,
 int main(void)
 {
     char role[32] = "unknown";
+    char normalized_role[32] = {0};
     char ifname[IFNAMSIZ] = {0};
     struct in_addr local_addr = {0};
     struct in_addr desired_local = {0};
@@ -800,20 +961,35 @@ int main(void)
     int chat_fd = -1;
     int sync_fd = -1;
     int result;
+    unsigned int timeout_s;
+    bool shared_socket;
+    bool close_chat_fd = true;
     struct sigaction sa;
 
-    if (!cmdline_get_value("linqu_urma_dp_role", role, sizeof(role))) {
+    if (!env_get_value("LINQU_UB_ROLE", role, sizeof(role)) &&
+        !cmdline_get_value("linqu_urma_dp_role", role, sizeof(role))) {
         fprintf(stderr, "[ub_chat] fail: missing linqu_urma_dp_role in cmdline\n");
         return 1;
     }
 
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+
+    if (!normalize_role(role, normalized_role, sizeof(normalized_role))) {
+        fprintf(stderr, "[ub_chat] fail: invalid role '%s', expected initiator/responder\n", role);
+        return 1;
+    }
+    snprintf(role, sizeof(role), "%s", normalized_role);
+
     printf("[ub_chat] start role=%s\n", role);
+    timeout_s = resolve_timeout_s();
+    shared_socket = resolve_shared_socket_mode();
 
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = alarm_handler;
     sigemptyset(&sa.sa_mask);
     sigaction(SIGALRM, &sa, NULL);
-    alarm(RUN_TIMEOUT_S);
+    alarm(timeout_s);
 
     if (!wait_iface_ready(ifname, sizeof(ifname), &ifindex)) {
         fprintf(stderr, "[ub_chat] fail: ipourma iface not ready\n");
@@ -857,27 +1033,35 @@ int main(void)
 
     memset(&peer_sockaddr, 0, sizeof(peer_sockaddr));
     peer_sockaddr.sin_family = AF_INET;
-    peer_sockaddr.sin_port = htons(CHAT_PORT);
+    peer_sockaddr.sin_port = htons(shared_socket ? SYNC_PORT : CHAT_PORT);
     peer_sockaddr.sin_addr = peer_addr;
-
-    chat_fd = create_chat_socket(ifname);
-    if (chat_fd < 0) {
-        return 1;
-    }
 
     sync_fd = create_sync_socket(ifname);
     if (sync_fd < 0) {
-        close(chat_fd);
         return 1;
     }
 
-    if (strcmp(role, "nodeA") == 0) {
-        result = run_nodeA(chat_fd, sync_fd, &peer_sockaddr, role);
+    if (shared_socket) {
+        chat_fd = sync_fd;
+        close_chat_fd = false;
+        fprintf(stderr, "[ub_chat] using shared sync/chat socket on port=%d\n", SYNC_PORT);
     } else {
-        result = run_nodeB(chat_fd, sync_fd, &peer_sockaddr, role);
+        chat_fd = create_chat_socket(ifname);
+        if (chat_fd < 0) {
+            close(sync_fd);
+            return 1;
+        }
+    }
+
+    if (role_is_initiator(role)) {
+        result = run_initiator(chat_fd, sync_fd, &peer_sockaddr, role, my_ip, peer_ip, timeout_s);
+    } else {
+        result = run_responder(chat_fd, sync_fd, &peer_sockaddr, role, my_ip, peer_ip, timeout_s);
     }
 
     close(sync_fd);
-    close(chat_fd);
+    if (close_chat_fd) {
+        close(chat_fd);
+    }
     return result;
 }

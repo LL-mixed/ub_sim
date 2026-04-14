@@ -3,13 +3,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-REPO_ROOT="$(cd "$ROOT_DIR/../.." && pwd)"
+WORKSPACE_ROOT="$(cd "$ROOT_DIR/../../.." && pwd)"
 
 KERNEL_IMAGE="${KERNEL_IMAGE:-$ROOT_DIR/out/Image}"
 INITRAMFS_IMAGE="${INITRAMFS_IMAGE:-$ROOT_DIR/out/initramfs.cpio.gz}"
 RDINIT="${RDINIT:-/bin/run_demo}"
-TOPOLOGY_FILE="${TOPOLOGY_FILE:-$REPO_ROOT/vendor/ub_topology_two_node_v0.ini}"
-ENTITY_PLAN_FILE="${UB_FM_ENTITY_PLAN_FILE:-$REPO_ROOT/vendor/ub_topology_two_node_v2_entity.ini}"
+TOPOLOGY_FILE="${TOPOLOGY_FILE:-$WORKSPACE_ROOT/simulator/vendor/ub_topology_two_node_v0.ini}"
+ENTITY_PLAN_FILE="${UB_FM_ENTITY_PLAN_FILE:-$WORKSPACE_ROOT/simulator/vendor/ub_topology_two_node_v2_entity.ini}"
 ENTITY_COUNT="${UB_SIM_ENTITY_COUNT:-2}"
 SHARED_DIR="${UB_FM_SHARED_DIR:-/tmp/ub-qemu-links-dual}"
 QMP_DIR="${SHARED_DIR}/qmp"
@@ -64,7 +64,7 @@ need_cmd nc
 need_cmd python3
 
 # Fail before creating tmux windows when required artifacts are not ready.
-QEMU_BIN_PRECHECK="$(ensure_qemu_ub_binary "$REPO_ROOT")"
+QEMU_BIN_PRECHECK="$(ensure_qemu_ub_binary "$WORKSPACE_ROOT")"
 ensure_ub_guest_artifacts "$ROOT_DIR" "$KERNEL_IMAGE" "$INITRAMFS_IMAGE"
 
 mkdir -p "$OUT_DIR" "$LOG_DIR/${RUN_ID}_tmux" "$QMP_DIR"
@@ -100,7 +100,7 @@ set -euo pipefail
 source "$SCRIPT_DIR/qemu_ub_common.sh"
 
 APPEND_EXTRA='$APPEND_EXTRA'
-REPO_ROOT='$REPO_ROOT'
+WORKSPACE_ROOT='$WORKSPACE_ROOT'
 ROOT_DIR='$ROOT_DIR'
 KERNEL_IMAGE='$KERNEL_IMAGE'
 INITRAMFS_IMAGE='$INITRAMFS_IMAGE'
@@ -206,7 +206,7 @@ start_node() {
   echo \$! > "\$pid_file"
 }
 
-QEMU_BIN="\$(ensure_qemu_ub_binary "\$REPO_ROOT")"
+QEMU_BIN="\$(ensure_qemu_ub_binary "\$WORKSPACE_ROOT")"
 ensure_ub_guest_artifacts "\$ROOT_DIR" "\$KERNEL_IMAGE" "\$INITRAMFS_IMAGE"
 
 rm -f /tmp/ub-qemu/ub-bus-instance-*.lock

@@ -3,11 +3,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-REPO_ROOT="$(cd "$ROOT_DIR/../.." && pwd)"
+WORKSPACE_ROOT="$(cd "$ROOT_DIR/../../.." && pwd)"
 QEMU_DIR="${QEMU_DIR:-}"
-SCENARIO="$REPO_ROOT/scenarios/mvp_2host_single_domain.yaml"
-DEFAULT_KERNEL_IMAGE="$ROOT_DIR/out/Image"
-DEFAULT_INITRAMFS_IMAGE="$ROOT_DIR/out/initramfs.cpio.gz"
+SCENARIO="$WORKSPACE_ROOT/simulator/scenarios/mvp_2host_single_domain.yaml"
+DEFAULT_KERNEL_IMAGE="$WORKSPACE_ROOT/simulator/archive/guest-probe-legacy/aarch64/linux_blobs/Image"
+DEFAULT_INITRAMFS_IMAGE="$WORKSPACE_ROOT/simulator/archive/guest-probe-legacy/aarch64/linux_blobs/initramfs.cpio.gz"
 OUT_DIR="$ROOT_DIR/out"
 PID_FILE="$OUT_DIR/linux_probe.qemu.pid"
 SERIAL_LOG="$OUT_DIR/linux_probe.serial.log"
@@ -25,7 +25,7 @@ Usage: run_linux_probe.sh --legacy [--help]
 
 This is a legacy linqu-ub probe script and is intentionally guarded.
 Set QEMU_DIR explicitly, for example:
-  QEMU_DIR=/path/to/legacy/qemu guest-linux/aarch64/scripts/run_linux_probe.sh --legacy
+  QEMU_DIR=/path/to/legacy/qemu ./run_linux_probe.sh --legacy
 EOF
 }
 
@@ -58,7 +58,7 @@ fi
 
 if [[ -z "$QEMU_DIR" ]]; then
   echo "QEMU_DIR is required for legacy linqu-ub probe script." >&2
-  echo "Active dual-node flow uses vendor/qemu_8.2.0_ub plus the guest harness scripts in this repo." >&2
+  echo "Active dual-node flow uses simulator/vendor/qemu_8.2.0_ub scripts." >&2
   exit 2
 fi
 
@@ -68,7 +68,7 @@ if [[ ! -f "$KERNEL_IMAGE" ]]; then
 fi
 
 if [[ ! -f "$INITRAMFS_IMAGE" ]]; then
-  "$SCRIPT_DIR/build_initramfs.sh" >/dev/null
+  bash "$SCRIPT_DIR/build_initramfs.sh" >/dev/null
   INITRAMFS_IMAGE="$OUT_DIR/initramfs.cpio.gz"
 fi
 

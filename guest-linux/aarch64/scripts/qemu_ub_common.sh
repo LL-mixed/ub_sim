@@ -12,7 +12,19 @@ ensure_sim_kernel_append_defaults() {
 
 qemu_ub_bin_path() {
   local workspace_root="$1"
-  echo "$workspace_root/simulator/vendor/qemu_8.2.0_ub/build/qemu-system-aarch64"
+  local build_dir="$workspace_root/simulator/vendor/qemu_8.2.0_ub/build"
+  local signed_bin="$build_dir/qemu-system-aarch64"
+  local unsigned_bin="$build_dir/qemu-system-aarch64-unsigned"
+
+  if [[ -x "$signed_bin" ]]; then
+    echo "$signed_bin"
+    return 0
+  fi
+  if [[ -x "$unsigned_bin" ]]; then
+    echo "$unsigned_bin"
+    return 0
+  fi
+  echo "$signed_bin"
 }
 
 qemu_ub_build_path() {
