@@ -132,9 +132,18 @@ Inside guest, you can run:
 /bin/run_demo chat
 /bin/run_demo rpc
 /bin/run_demo rdma
+/bin/run_demo obmm
 /bin/run_demo all
 /bin/run_demo shell
 ```
+
+`obmm` now runs the pool-based validation path. It is no longer the old
+pairwise exporter/importer demo. The current guest binary behind this entry is
+`/bin/linqu_ub_obmm_demo`, built from
+`[ub_obmm_pool_demo.c](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/ub_obmm_pool_demo.c)`.
+For `N=2` it validates the dual-node pool case; for `N=4` and `N=8` it validates
+that every node exports one slot, imports all remote slots, and completes the
+round-based pool touch/update barrier.
 
 `run_demo` can also be used as `rdinit` (`rdinit=/bin/run_demo`) so the guest
 enters this entrypoint immediately after boot and keeps dropping to an interactive

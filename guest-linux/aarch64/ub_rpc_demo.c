@@ -22,6 +22,7 @@
 #define RPC_PORT       18557
 #define WAIT_IFACE_MS  90000
 #define SERVER_TIMEOUT_S 60
+#define RPC_SERVER_MAX_SEEN 256
 #define RPC_ECHO_TEXT_FMT "greeting from rpc client %s"
 #define RPC_CRC_PAYLOAD_FMT "rpc crc payload from %s to %s over ub_link"
 
@@ -29,6 +30,14 @@ enum rpc_mode {
     RPC_MODE_UNKNOWN = 0,
     RPC_MODE_CLIENT,
     RPC_MODE_SERVER,
+};
+
+struct rpc_seen_entry {
+    bool valid;
+    char peer_ip[INET_ADDRSTRLEN];
+    int msg_id;
+    char op[64];
+    char rsp_payload[512];
 };
 
 static volatile sig_atomic_t g_alarm_fired;
@@ -865,6 +874,7 @@ static int run_rpc_server(int rpc_sock, const char *local_ip,
 {
     long start_ms = now_ms();
     unsigned int rpc_count = 0;
+    struct rpc_seen_entry seen[RPC_SERVER_MAX_SEEN] = {0};
 
     printf("[ub_rpc] mode=server local=%s peer=<dynamic> expected_calls=%u started\n",
            local_ip, expected_calls);
@@ -882,6 +892,9 @@ static int run_rpc_server(int rpc_sock, const char *local_ip,
         socklen_t src_len = sizeof(src);
         char peer_ip[INET_ADDRSTRLEN] = {0};
         int rsp_len;
+        size_t i;
+        struct rpc_seen_entry *slot = NULL;
+        bool duplicate = false;
 
         n = recvfrom(rpc_sock, buf, sizeof(buf) - 1, MSG_DONTWAIT,
                      (struct sockaddr *)&src, &src_len);
@@ -902,32 +915,60 @@ static int run_rpc_server(int rpc_sock, const char *local_ip,
             continue;
         }
 
+        for (i = 0; i < RPC_SERVER_MAX_SEEN; i++) {
+            if (!seen[i].valid) {
+                if (!slot) {
+                    slot = &seen[i];
+                }
+                continue;
+            }
+            if (seen[i].msg_id == req_msg_id &&
+                strcmp(seen[i].peer_ip, peer_ip) == 0 &&
+                strcmp(seen[i].op, req_op) == 0) {
+                slot = &seen[i];
+                duplicate = true;
+                break;
+            }
+        }
+
         rsp_payload[0] = '\0';
 
-        if (strcmp(req_op, "ECHO") == 0) {
-            snprintf(rsp_payload, sizeof(rsp_payload), "%s", req_payload);
-        } else if (strcmp(req_op, "CRC32") == 0) {
-            uint32_t crc = crc32_ieee((const unsigned char *)req_payload,
-                                      strlen(req_payload));
-
-            snprintf(rsp_payload, sizeof(rsp_payload), "0x%08" PRIx32, crc);
-        } else if (strcmp(req_op, "COMPUTE") == 0) {
-            long result;
-            if (compute_eval(req_payload, &result)) {
-                snprintf(rsp_payload, sizeof(rsp_payload), "%ld", result);
-            } else {
-                snprintf(rsp_payload, sizeof(rsp_payload), "ERR");
-            }
-        } else if (strcmp(req_op, "STATUS") == 0) {
-            long elapsed_s = (now_ms() - start_ms) / 1000L;
-            snprintf(rsp_payload, sizeof(rsp_payload),
-                     "rpcs:%u uptime:%lds", rpc_count, elapsed_s);
-        } else if (strcmp(req_op, "MEMINFO") == 0) {
-            if (!read_meminfo(rsp_payload, sizeof(rsp_payload))) {
-                snprintf(rsp_payload, sizeof(rsp_payload), "ERR");
-            }
+        if (duplicate) {
+            snprintf(rsp_payload, sizeof(rsp_payload), "%s", slot->rsp_payload);
         } else {
-            snprintf(rsp_payload, sizeof(rsp_payload), "UNKNOWN_OP");
+            if (strcmp(req_op, "ECHO") == 0) {
+                snprintf(rsp_payload, sizeof(rsp_payload), "%s", req_payload);
+            } else if (strcmp(req_op, "CRC32") == 0) {
+                uint32_t crc = crc32_ieee((const unsigned char *)req_payload,
+                                          strlen(req_payload));
+
+                snprintf(rsp_payload, sizeof(rsp_payload), "0x%08" PRIx32, crc);
+            } else if (strcmp(req_op, "COMPUTE") == 0) {
+                long result;
+                if (compute_eval(req_payload, &result)) {
+                    snprintf(rsp_payload, sizeof(rsp_payload), "%ld", result);
+                } else {
+                    snprintf(rsp_payload, sizeof(rsp_payload), "ERR");
+                }
+            } else if (strcmp(req_op, "STATUS") == 0) {
+                long elapsed_s = (now_ms() - start_ms) / 1000L;
+                snprintf(rsp_payload, sizeof(rsp_payload),
+                         "rpcs:%u uptime:%lds", rpc_count, elapsed_s);
+            } else if (strcmp(req_op, "MEMINFO") == 0) {
+                if (!read_meminfo(rsp_payload, sizeof(rsp_payload))) {
+                    snprintf(rsp_payload, sizeof(rsp_payload), "ERR");
+                }
+            } else {
+                snprintf(rsp_payload, sizeof(rsp_payload), "UNKNOWN_OP");
+            }
+
+            if (slot) {
+                slot->valid = true;
+                snprintf(slot->peer_ip, sizeof(slot->peer_ip), "%s", peer_ip);
+                slot->msg_id = req_msg_id;
+                snprintf(slot->op, sizeof(slot->op), "%s", req_op);
+                snprintf(slot->rsp_payload, sizeof(slot->rsp_payload), "%s", rsp_payload);
+            }
         }
 
         rsp_len = rpc_build_response(rsp_buf, sizeof(rsp_buf),
@@ -937,11 +978,16 @@ static int run_rpc_server(int rpc_sock, const char *local_ip,
                    (const struct sockaddr *)&src, src_len);
         }
 
-        rpc_count++;
-        printf("[RPC] server local=%s peer=%s handled op=%s msg_id=%d rpc_count=%u\n",
-               local_ip, peer_ip, req_op, req_msg_id, rpc_count);
-        if (expected_calls > 0 && rpc_count >= expected_calls) {
-            break;
+        if (!duplicate) {
+            rpc_count++;
+            printf("[RPC] server local=%s peer=%s handled op=%s msg_id=%d rpc_count=%u\n",
+                   local_ip, peer_ip, req_op, req_msg_id, rpc_count);
+            if (expected_calls > 0 && rpc_count >= expected_calls) {
+                break;
+            }
+        } else {
+            printf("[RPC] server local=%s peer=%s duplicate op=%s msg_id=%d rpc_count=%u\n",
+                   local_ip, peer_ip, req_op, req_msg_id, rpc_count);
         }
     }
 

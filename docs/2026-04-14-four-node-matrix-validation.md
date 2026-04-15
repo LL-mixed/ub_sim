@@ -15,11 +15,11 @@ Validated demo families:
 
 ## Component Revisions
 
-- `vendor/qemu_8.2.0_ub`
+- `simulator/vendor/qemu_8.2.0_ub`
   - `a793c7a3f5` `ubc: fix four-node full-mesh chat routing and link roles`
   - `8502960958` `ubc: fix four-node rdma identity and rx completions`
   - `6afc68f9f4` `ubc: make sim decoder pool reads honor mapped dcna`
-- `guest-linux/kernel_ub`
+- `simulator/guest-linux/kernel_ub`
   - `c750da90172c` `ipourma: reschedule rx work by budget instead of draining`
   - `1591eab00e42` `ubcore: fix initiator bind_jetty compat tp state`
 - `simulator`
@@ -48,9 +48,10 @@ Properties:
 
 ### Four-Node Smoke
 
-Validated main-repo run id:
-
-- `2026-04-14_10-00-35_smoke4_3634_iter1_tmux4`
+- Run:
+  - [2026-04-14_10-00-35_smoke4_3634_iter1_tmux4](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/logs/2026-04-14_10-00-35_smoke4_3634_iter1_tmux4)
+- Summary:
+  - [four_node_smoke_report.latest.txt](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/out/four_node_smoke_report.latest.txt)
 
 Validated:
 
@@ -61,9 +62,10 @@ Validated:
 
 ### Chat Matrix
 
-Validated main-repo run id:
-
-- `2026-04-14_19-58-32_chat4_27617_headless4`
+- Run:
+  - [2026-04-14_19-58-32_chat4_27617_headless4](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/logs/2026-04-14_19-58-32_chat4_27617_headless4)
+- Summary:
+  - [four_node_chat_matrix.latest.txt](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/out/four_node_chat_matrix.latest.txt)
 
 Result:
 
@@ -71,9 +73,10 @@ Result:
 
 ### RPC Matrix
 
-Validated main-repo run id:
-
-- `2026-04-14_19-59-41_rpc4_27222_headless4`
+- Run:
+  - [2026-04-14_19-59-41_rpc4_27222_headless4](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/logs/2026-04-14_19-59-41_rpc4_27222_headless4)
+- Summary:
+  - [four_node_rpc_matrix.latest.txt](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/out/four_node_rpc_matrix.latest.txt)
 
 Result:
 
@@ -82,9 +85,10 @@ Result:
 
 ### RDMA Matrix
 
-Validated main-repo run id:
-
-- `2026-04-14_20-27-17_rdma4_1513_headless4`
+- Run:
+  - [2026-04-14_20-27-17_rdma4_1513_headless4](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/logs/2026-04-14_20-27-17_rdma4_1513_headless4)
+- Summary:
+  - [four_node_rdma_matrix.latest.txt](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/out/four_node_rdma_matrix.latest.txt)
 
 Result:
 
@@ -98,9 +102,8 @@ Important constraints proven by this run:
 
 ### OBMM Pool
 
-Validated main-repo run id:
-
-- `2026-04-14_22-23-24_obmmpool4_28163_headless4`
+- Run:
+  - [2026-04-14_22-23-24_obmmpool4_28163_headless4](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/logs/2026-04-14_22-23-24_obmmpool4_28163_headless4)
 
 Result:
 
