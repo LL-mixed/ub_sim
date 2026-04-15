@@ -34,6 +34,8 @@ RDINIT_INTERACTIVE_SRC="$ROOT_DIR/initramfs/rdinit_interactive"
 RDINIT_INTERACTIVE_BIN="$INITRAMFS_DIR/bin/rdinit_interactive"
 INIT_BIN_TO_USE="${INIT_TO_USE:-$INIT_BIN}"
 INITRAMFS_IMG="$OUT_DIR/initramfs.cpio.gz"
+INITRAMFS_STAMP_FILE="$OUT_DIR/.initramfs.inputs.stamp"
+KERNEL_STAMP_FILE="$OUT_DIR/.kernel_image.kernel_ub_head"
 
 LINQU_MODULE="${LINQU_UB_GUEST_MODULE:-}"
 HISI_UBUS_MODULE="${HISI_UBUS_GUEST_MODULE:-}"
@@ -59,6 +61,73 @@ fi
 
 detect_make_jobs() {
   getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8
+}
+
+hash_file() {
+  local path="$1"
+  if [[ -x /usr/bin/shasum ]]; then
+    /usr/bin/shasum -a 256 "$path" | /usr/bin/awk '{print $1}'
+    return 0
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$path" | awk '{print $1}'
+    return 0
+  fi
+  sha256sum "$path" | awk '{print $1}'
+}
+
+write_signature_line() {
+  local label="$1"
+  local path="$2"
+  if [[ -e "$path" ]]; then
+    printf '%s=%s:%s\n' "$label" "$path" "$(hash_file "$path")"
+  else
+    printf '%s=%s:MISSING\n' "$label" "$path"
+  fi
+}
+
+current_kernel_signature() {
+  if [[ -f "$KERNEL_STAMP_FILE" ]]; then
+    cat "$KERNEL_STAMP_FILE"
+    return 0
+  fi
+  git -C "$ROOT_DIR/../kernel_ub" rev-parse HEAD 2>/dev/null || echo ""
+}
+
+current_initramfs_signature() {
+  local applet=""
+  printf 'kernel_head=%s\n' "$(current_kernel_signature)"
+  printf 'cc=%s\n' "$AARCH64_LINUX_CC"
+  write_signature_line "build_initramfs_script" "$SCRIPT_DIR/build_initramfs.sh"
+  write_signature_line "busybox" "$BUSYBOX"
+  write_signature_line "probe_src" "$PROBE_SRC"
+  write_signature_line "urma_dp_src" "$URMA_DP_SRC"
+  write_signature_line "init_src" "$INIT_SRC"
+  write_signature_line "insmod_src" "$INSMOD_SRC"
+  write_signature_line "init_manual_bind_src" "$INIT_MANUAL_BIND_SRC"
+  write_signature_line "chat_src" "$CHAT_SRC"
+  write_signature_line "rpc_src" "$RPC_SRC"
+  write_signature_line "tcp_each_server_src" "$TCP_EACH_SERVER_SRC"
+  write_signature_line "rdma_src" "$RDMA_SRC"
+  write_signature_line "obmm_src" "$OBMM_SRC"
+  write_signature_line "run_demo_src" "$RUN_DEMO_SRC"
+  write_signature_line "init_script_src" "$INIT_SCRIPT_SRC"
+  write_signature_line "rdinit_interactive_src" "$RDINIT_INTERACTIVE_SRC"
+  for applet in "$ROOT_DIR"/*.h(N); do
+    write_signature_line "header" "$applet"
+  done
+  for applet in "$OUT_DIR/modules"/*.ko(N) "$OUT_DIR"/*.ko(N); do
+    write_signature_line "module" "$applet"
+  done
+}
+
+initramfs_stamp_matches() {
+  [[ -f "$INITRAMFS_STAMP_FILE" && -f "$INITRAMFS_IMG" ]] || return 1
+  [[ "$(cat "$INITRAMFS_STAMP_FILE" 2>/dev/null)" == "$(current_initramfs_signature)" ]]
+}
+
+write_initramfs_stamp() {
+  current_initramfs_signature > "$INITRAMFS_STAMP_FILE"
 }
 
 ensure_busybox_static_config() {
@@ -244,6 +313,12 @@ fi
 
 ensure_busybox_binary
 
+if initramfs_stamp_matches; then
+  echo "[build_initramfs] initramfs is up to date: $INITRAMFS_IMG" >&2
+  echo "$INITRAMFS_IMG"
+  exit 0
+fi
+
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$PROBE_SRC" -o "$PROBE_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$URMA_DP_SRC" -o "$URMA_DP_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$INIT_SRC" -o "$INIT_BIN"
@@ -343,6 +418,8 @@ ls -1 "$INITRAMFS_DIR/lib/modules" | sed 's/^/[build_initramfs]   /'
   cd "$INITRAMFS_DIR"
   find . -print | cpio -o -H newc --quiet | gzip -9 > "$INITRAMFS_IMG"
 )
+
+write_initramfs_stamp
 
 echo "$INITRAMFS_IMG"
 echo "built $INITRAMFS_IMG"

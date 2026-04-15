@@ -1,8 +1,8 @@
 /*
  * User-space compatible header for URMA ioctl commands.
  *
- * Source: guest-linux/kernel_ub/drivers/ub/urma/uburma/uburma_cmd.h
- *         guest-linux/kernel_ub/include/ub/urma/ubcore_types.h
+ * Source: simulator/guest-linux/kernel_ub/drivers/ub/urma/uburma/uburma_cmd.h
+ *         simulator/guest-linux/kernel_ub/include/ub/urma/ubcore_types.h
  *
  * This header copies struct definitions from the kernel's uburma_cmd.h
  * for use in user-space demo applications. All struct layouts (field order,
@@ -33,6 +33,10 @@
 #define UBCORE_MAX_PRIORITY_CNT 16
 #endif
 
+#ifndef UBCORE_MAX_EID_CNT
+#define UBCORE_MAX_EID_CNT 1024
+#endif
+
 #ifndef UBCORE_JETTY_GRP_MAX_NAME
 #define UBCORE_JETTY_GRP_MAX_NAME 64
 #endif
@@ -61,6 +65,24 @@ enum ubcore_tp_type_user {
     UBCORE_RTP_USER = 0,
     UBCORE_CTP_USER,
     UBCORE_UTP_USER,
+};
+
+union ubcore_eid_user {
+    uint8_t raw[UBCORE_EID_SIZE];
+    struct {
+        uint64_t reserved;
+        uint32_t prefix;
+        uint32_t addr;
+    } in4;
+    struct {
+        uint64_t subnet_prefix;
+        uint64_t interface_id;
+    } in6;
+};
+
+struct ubcore_eid_info_user {
+    union ubcore_eid_user eid;
+    uint32_t eid_index;
 };
 
 /* ---------- Feature / flag unions from ubcore_types.h ---------- */
@@ -509,6 +531,18 @@ struct uburma_cmd_unregister_seg {
     struct {
         uint64_t handle;
     } in;
+};
+
+/* ---------- get_eid_list ---------- */
+
+struct uburma_cmd_get_eid_list {
+    struct {
+        uint32_t max_eid_cnt;
+    } in;
+    struct {
+        uint32_t eid_cnt;
+        struct ubcore_eid_info_user eid_list[UBCORE_MAX_EID_CNT];
+    } out;
 };
 
 /* ---------- import_jetty ---------- */

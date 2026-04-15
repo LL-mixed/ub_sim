@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUT_DIR="$ROOT_DIR/out"
 MODULES_DIR="${MODULES_DIR:-$OUT_DIR/modules}"
+KERNEL_STAMP_FILE="$OUT_DIR/.kernel_image.kernel_ub_head"
 
 source "$SCRIPT_DIR/qemu_ub_common.sh"
 
@@ -43,6 +44,25 @@ have_default_artifacts() {
   [[ -f "$OUT_DIR/Image" && -f "$OUT_DIR/initramfs.cpio.gz" ]]
 }
 
+current_kernel_submodule_head() {
+  git -C "$ROOT_DIR/../kernel_ub" rev-parse HEAD 2>/dev/null || echo ""
+}
+
+kernel_image_stamp_matches() {
+  local current_head=""
+  current_head="$(current_kernel_submodule_head)"
+  [[ -n "$current_head" ]] || return 1
+  [[ -f "$KERNEL_STAMP_FILE" ]] || return 1
+  [[ "$(cat "$KERNEL_STAMP_FILE" 2>/dev/null)" == "$current_head" ]]
+}
+
+write_kernel_image_stamp() {
+  local current_head=""
+  current_head="$(current_kernel_submodule_head)"
+  [[ -n "$current_head" ]] || return 1
+  printf '%s\n' "$current_head" > "$KERNEL_STAMP_FILE"
+}
+
 import_local_artifacts() {
   if [[ -z "$LOCAL_KERNEL_IMAGE" || -z "$LOCAL_MODULES_DIR" ]]; then
     echo "[build_guest_artifacts] error: local mode requires LOCAL_KERNEL_IMAGE and LOCAL_MODULES_DIR" >&2
@@ -64,6 +84,7 @@ import_local_artifacts() {
     [[ -f "$mod" ]] || continue
     cp "$mod" "$MODULES_DIR/"
   done
+  write_kernel_image_stamp || true
 }
 
 vm_host_reachable() {
@@ -80,6 +101,7 @@ sync_from_vm() {
     BUILD_LINQU_DRIVER_IN_VM="$BUILD_LINQU_DRIVER_IN_VM" \
     ./scripts/sync_ub_kernel_artifacts_from_vm.sh
   )
+  write_kernel_image_stamp || true
 }
 
 print_build_guest_help() {
@@ -101,8 +123,19 @@ EOF
 
 case "$ARTIFACT_SOURCE" in
   auto)
-    if have_default_artifacts; then
+    if have_default_artifacts && kernel_image_stamp_matches; then
       echo "[build_guest_artifacts] using existing local out/ artifacts" >&2
+    elif have_default_artifacts; then
+      echo "[build_guest_artifacts] existing Image/initramfs are stale for current kernel_ub HEAD" >&2
+      if [[ -n "$LOCAL_KERNEL_IMAGE" || -n "$LOCAL_MODULES_DIR" ]]; then
+        echo "[build_guest_artifacts] importing refreshed guest artifacts from local paths" >&2
+        import_local_artifacts
+      elif [[ "$SYNC_ARTIFACTS" == "1" ]] && vm_host_reachable; then
+        sync_from_vm
+      else
+        print_build_guest_help
+        exit 1
+      fi
     elif [[ -n "$LOCAL_KERNEL_IMAGE" || -n "$LOCAL_MODULES_DIR" ]]; then
       echo "[build_guest_artifacts] importing guest artifacts from local paths" >&2
       import_local_artifacts
@@ -123,6 +156,11 @@ case "$ARTIFACT_SOURCE" in
   none)
     if ! have_default_artifacts; then
       echo "[build_guest_artifacts] error: ARTIFACT_SOURCE=none requires existing out/Image and out/initramfs.cpio.gz" >&2
+      print_build_guest_help
+      exit 1
+    fi
+    if ! kernel_image_stamp_matches; then
+      echo "[build_guest_artifacts] error: ARTIFACT_SOURCE=none requires an Image matching current kernel_ub HEAD" >&2
       print_build_guest_help
       exit 1
     fi

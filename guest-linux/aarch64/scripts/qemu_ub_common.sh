@@ -12,7 +12,7 @@ ensure_sim_kernel_append_defaults() {
 
 qemu_ub_bin_path() {
   local workspace_root="$1"
-  local build_dir="$workspace_root/simulator/vendor/qemu_8.2.0_ub/build"
+  local build_dir="$workspace_root/vendor/qemu_8.2.0_ub/build"
   local signed_bin="$build_dir/qemu-system-aarch64"
   local unsigned_bin="$build_dir/qemu-system-aarch64-unsigned"
 
@@ -29,17 +29,20 @@ qemu_ub_bin_path() {
 
 qemu_ub_build_path() {
   local workspace_root="$1"
-  echo "$workspace_root/simulator/vendor/qemu_8.2.0_ub/build"
+  echo "$workspace_root/vendor/qemu_8.2.0_ub/build"
 }
 
 qemu_ub_source_path() {
   local workspace_root="$1"
-  echo "$workspace_root/simulator/vendor/qemu_8.2.0_ub"
+  echo "$workspace_root/vendor/qemu_8.2.0_ub"
 }
 
 qemu_ub_supports_required_opts() {
   local bin="$1"
-  "$bin" -M virt,help 2>/dev/null | rg -q "ub-cluster-mode|ummu"
+  local help=""
+  help="$("$bin" -M virt,help 2>/dev/null || true)"
+  [[ -n "$help" ]] || return 1
+  print -r -- "$help" | rg -q "ub-cluster-mode|ummu"
 }
 
 print_qemu_preflight_help() {
@@ -47,7 +50,7 @@ print_qemu_preflight_help() {
   local src_dir="$2"
   local build_dir="$3"
   local bin="$4"
-  local helper_script="$workspace_root/simulator/guest-linux/aarch64/scripts/build_qemu_binary.sh"
+  local helper_script="$workspace_root/guest-linux/aarch64/scripts/build_qemu_binary.sh"
 
   cat >&2 <<EOF
 [ub_common] qemu preflight failed
@@ -117,7 +120,6 @@ ensure_ub_guest_artifacts() {
   local default_kernel="$out_dir/Image"
   local default_initramfs="$out_dir/initramfs.cpio.gz"
   local modules_dir="${UB_GUEST_MODULES_DIR:-$out_dir/modules}"
-  local need_sync=0
   local cc
   local artifact_source="${UB_GUEST_ARTIFACT_SOURCE:-auto}"
 
@@ -136,30 +138,21 @@ ensure_ub_guest_artifacts() {
   fi
 
   if [[ "${UB_SYNC_ARTIFACTS:-1}" == "1" ]]; then
-    if [[ "${UB_FORCE_SYNC_ARTIFACTS:-0}" == "1" || ! -f "$default_kernel" ]]; then
-      need_sync=1
-    fi
-    if [[ ! -d "$modules_dir" ]]; then
-      need_sync=1
-    fi
-
-    if (( need_sync )); then
-      echo "[ub_common] preparing guest artifacts via build_guest_artifacts.sh (source=$artifact_source)" >&2
-      if ! (
-        cd "$guest_root"
-        ARTIFACT_SOURCE="$artifact_source" \
-        BUILD_IN_VM="${UB_SYNC_BUILD_IN_VM:-1}" \
-        BUILD_LINQU_DRIVER_IN_VM="${UB_SYNC_BUILD_LINQU_IN_VM:-1}" \
-        AARCH64_LINUX_CC="$(detect_aarch64_linux_cc)" \
-        BUSYBOX="${BUSYBOX:-}" \
-        LOCAL_KERNEL_IMAGE="${UB_LOCAL_KERNEL_IMAGE:-}" \
-        LOCAL_MODULES_DIR="${UB_LOCAL_MODULES_DIR:-}" \
-        ./scripts/build_guest_artifacts.sh
-      ); then
-        echo "[ub_common] build_guest_artifacts.sh failed" >&2
-        print_guest_preflight_help "$guest_root" "$default_kernel" "$default_initramfs" "$modules_dir" "$(detect_aarch64_linux_cc)"
-        return 1
-      fi
+    echo "[ub_common] preparing guest artifacts via build_guest_artifacts.sh (source=$artifact_source)" >&2
+    if ! (
+      cd "$guest_root"
+      ARTIFACT_SOURCE="$artifact_source" \
+      BUILD_IN_VM="${UB_SYNC_BUILD_IN_VM:-1}" \
+      BUILD_LINQU_DRIVER_IN_VM="${UB_SYNC_BUILD_LINQU_IN_VM:-1}" \
+      AARCH64_LINUX_CC="$(detect_aarch64_linux_cc)" \
+      BUSYBOX="${BUSYBOX:-}" \
+      LOCAL_KERNEL_IMAGE="${UB_LOCAL_KERNEL_IMAGE:-}" \
+      LOCAL_MODULES_DIR="${UB_LOCAL_MODULES_DIR:-}" \
+      ./scripts/build_guest_artifacts.sh
+    ); then
+      echo "[ub_common] build_guest_artifacts.sh failed" >&2
+      print_guest_preflight_help "$guest_root" "$default_kernel" "$default_initramfs" "$modules_dir" "$(detect_aarch64_linux_cc)"
+      return 1
     fi
   fi
 
@@ -214,17 +207,11 @@ ensure_qemu_ub_binary() {
     print_qemu_preflight_help "$workspace_root" "$src_dir" "$build_dir" "$bin"
     return 1
   fi
-  if [[ ! -f "$build_dir/build.ninja" ]]; then
-    echo "QEMU build.ninja missing: $build_dir/build.ninja" >&2
-    print_qemu_preflight_help "$workspace_root" "$src_dir" "$build_dir" "$bin"
-    return 1
-  fi
-
   if ! (
-    cd "$build_dir"
-    ninja -j"$jobs" qemu-system-aarch64 >/dev/null
+    cd "$workspace_root/guest-linux/aarch64"
+    QEMU_BUILD_JOBS="$jobs" ./scripts/build_qemu_binary.sh >/dev/null
   ); then
-    echo "[ub_common] ninja qemu-system-aarch64 failed" >&2
+    echo "[ub_common] build_qemu_binary.sh failed" >&2
     print_qemu_preflight_help "$workspace_root" "$src_dir" "$build_dir" "$bin"
     return 1
   fi
