@@ -149,6 +149,33 @@ round-based pool touch/update barrier.
 enters this entrypoint immediately after boot and keeps dropping to an interactive
 shell after startup tasks.
 
+## Artifact Freshness
+
+`ub_sim.git` validation is responsible for rebuilding stale artifacts after sync.
+This is not intended to depend on a human remembering to rerun build steps by hand.
+
+Current freshness rules:
+
+- `scripts/build_qemu_binary.sh`
+  - records a QEMU build stamp under `vendor/qemu_8.2.0_ub/build/`
+  - rebuilds only when:
+    - QEMU submodule `HEAD` changed
+    - target list changed
+    - configure args changed
+- `scripts/build_guest_artifacts.sh`
+  - records the guest kernel image against `guest-linux/kernel_ub` `HEAD`
+  - refreshes stale `out/Image` automatically instead of silently reusing it
+- `scripts/build_initramfs.sh`
+  - records an initramfs input signature
+  - rebuilds only when guest demo/script/header/module/busybox inputs changed
+
+This means:
+
+- after `ub_sim.git` is updated, validation tools can detect stale outputs
+- fresh artifacts are reused
+- stale artifacts are rebuilt automatically
+- rebuild is input-driven, not unconditional
+
 ## Minimal ubcore/urma E2E (Dual Node)
 
 For the ubcore/urma minimal send/recv loop, use this order:
