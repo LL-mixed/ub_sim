@@ -1,16 +1,16 @@
-# UB Simulator Workspace
+# UB Data System Simulator
 
-这个仓库的目标不是只放代码，而是让你能从零把 UB/Linqu 仿真环境拉起来，并且能稳定地做双节点、4 节点、8 节点验证。
+这个仓库是从零把 UB/Linqu 数据系统仿真环境拉起来的 meta repo，使用本 repo 中的 artifacts，可以稳定地模拟 UB full-mesh 互联的2节点、4 节点、8 节点运行环境。
 
-如果你只想最快跑通，按下面顺序做：
+按下面顺序做：
 
 1. clone 仓库并初始化 submodule
 2. 准备 guest kernel artifact 和 ARM64 busybox
 3. 让脚本自动构建 QEMU + initramfs
 4. 启动双节点 / 4 节点 / 8 节点
-5. 通过 tmux 或串口端口进入 guest 交互
+5. 通过 tmux 或串口端口与 guest 交互
 
-## 目录
+## 目录说明
 
 - `guest-linux/aarch64/`
   guest 启动、initramfs、demo、QEMU 启动脚本都在这里
@@ -83,6 +83,21 @@ export AARCH64_LINUX_CC=/opt/homebrew/bin/aarch64-unknown-linux-gnu-gcc
 export BUSYBOX=$PWD/guest-linux/aarch64/busybox-aarch64
 ```
 
+`BUSYBOX` 指向的是 ARM64 静态 busybox 可执行文件，不是源码目录。
+脚本会按下面顺序找它：
+
+1. 显式传入的 `BUSYBOX`
+2. `guest-linux/aarch64/busybox-aarch64`
+3. `guest-linux/aarch64/third_party/busybox-aarch64`
+4. `guest-linux/aarch64/third_party/busybox-src`
+5. `guest-linux/aarch64/third_party/busybox-*.tar.bz2`
+
+也就是说，如果你不想每次 export `BUSYBOX`，最简单的做法就是把最终二进制放在：
+
+```bash
+guest-linux/aarch64/busybox-aarch64
+```
+
 ### 3.1 本地导入 kernel artifact
 
 如果你已经有现成的 `Image` 和模块目录，这是最直接的方式：
@@ -111,11 +126,13 @@ BUSYBOX="$BUSYBOX" \
 
 ```bash
 cd guest-linux/aarch64
-VM_HOST=ll@192.168.64.3 \
+VM_HOST=<your-vm-host> \
 AARCH64_LINUX_CC="$AARCH64_LINUX_CC" \
 BUSYBOX="$BUSYBOX" \
 ./scripts/build_guest_artifacts.sh
 ```
+
+其中 `VM_HOST` 是你自己的 SSH 目标，例如 `user@vm-host`。
 
 默认 `ARTIFACT_SOURCE=auto`，行为是：
 
@@ -131,6 +148,21 @@ BUSYBOX="$BUSYBOX" \
 cd guest-linux/aarch64
 AARCH64_LINUX_CC="$AARCH64_LINUX_CC" ./scripts/prepare_busybox.sh
 ```
+
+这个脚本的目标是生成可直接被 initramfs 使用的 `busybox-aarch64`。准备完成后，推荐：
+
+```bash
+export BUSYBOX=$PWD/busybox-aarch64
+```
+
+如果你已经把 `busybox-aarch64` 放在 `guest-linux/aarch64/` 下，后续执行：
+
+```bash
+./scripts/build_guest_artifacts.sh
+./scripts/launch_ub_dual_node_tmux.sh
+```
+
+即使不再显式传 `BUSYBOX`，脚本也会自动复用它。
 
 ## 4. 显式构建 QEMU
 
