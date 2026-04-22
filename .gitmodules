@@ -3,4 +3,5 @@
 	url = git@gitcode.com:liliang_euler/qemu.git
 [submodule "guest-linux/kernel_ub"]
 	path = guest-linux/kernel_ub
-	url = https://atomgit.com/openeuler/kernel.git
+	url = git@gitcode.com:liliang_euler/kernel.git
+	branch = ub_sim
