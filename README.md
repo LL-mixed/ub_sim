@@ -19,12 +19,12 @@ Standalone repository for the UB/Linqu simulator work.
 
 ## Documentation Entry Points
 
-- [guest-linux/aarch64/README.md](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/README.md)
+- [guest-linux/aarch64/README.md](guest-linux/aarch64/README.md)
   Main entry for guest harness usage, initramfs layout, dual-node launchers,
   tmux interactive bring-up, and demo execution order.
-- [docs/README.md](/Volumes/repos/pypto_workspace/ub_sim.git/docs/README.md)
+- [docs/README.md](docs/README.md)
   Index for workspace-local design notes, migrated plans, and draft material.
-- [scenarios/README.md](/Volumes/repos/pypto_workspace/ub_sim.git/scenarios/README.md)
+- [scenarios/README.md](scenarios/README.md)
   Scenario input overview for simulator runs.
 - `vendor/qemu_8.2.0_ub`
   Active QEMU fork submodule; build and runtime usage is referenced from the

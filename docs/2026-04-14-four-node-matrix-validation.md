@@ -35,7 +35,7 @@ Validated demo families:
 
 Topology file:
 
-- [ub_topology_four_node_full_mesh.ini](/Volumes/repos/pypto_workspace/ub_sim.git/vendor/ub_topology_four_node_full_mesh.ini)
+- [ub_topology_four_node_full_mesh.ini](../vendor/ub_topology_four_node_full_mesh.ini)
 
 Properties:
 
@@ -49,9 +49,9 @@ Properties:
 ### Four-Node Smoke
 
 - Run:
-  - [2026-04-14_10-00-35_smoke4_3634_iter1_tmux4](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/logs/2026-04-14_10-00-35_smoke4_3634_iter1_tmux4)
+  - [2026-04-14_10-00-35_smoke4_3634_iter1_tmux4](../guest-linux/aarch64/logs/2026-04-14_10-00-35_smoke4_3634_iter1_tmux4)
 - Summary:
-  - [four_node_smoke_report.latest.txt](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/out/four_node_smoke_report.latest.txt)
+  - [four_node_smoke_report.latest.txt](../guest-linux/aarch64/out/four_node_smoke_report.latest.txt)
 
 Validated:
 
@@ -63,9 +63,9 @@ Validated:
 ### Chat Matrix
 
 - Run:
-  - [2026-04-14_19-58-32_chat4_27617_headless4](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/logs/2026-04-14_19-58-32_chat4_27617_headless4)
+  - [2026-04-14_19-58-32_chat4_27617_headless4](../guest-linux/aarch64/logs/2026-04-14_19-58-32_chat4_27617_headless4)
 - Summary:
-  - [four_node_chat_matrix.latest.txt](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/out/four_node_chat_matrix.latest.txt)
+  - [four_node_chat_matrix.latest.txt](../guest-linux/aarch64/out/four_node_chat_matrix.latest.txt)
 
 Result:
 
@@ -74,9 +74,9 @@ Result:
 ### RPC Matrix
 
 - Run:
-  - [2026-04-14_19-59-41_rpc4_27222_headless4](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/logs/2026-04-14_19-59-41_rpc4_27222_headless4)
+  - [2026-04-14_19-59-41_rpc4_27222_headless4](../guest-linux/aarch64/logs/2026-04-14_19-59-41_rpc4_27222_headless4)
 - Summary:
-  - [four_node_rpc_matrix.latest.txt](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/out/four_node_rpc_matrix.latest.txt)
+  - [four_node_rpc_matrix.latest.txt](../guest-linux/aarch64/out/four_node_rpc_matrix.latest.txt)
 
 Result:
 
@@ -86,9 +86,9 @@ Result:
 ### RDMA Matrix
 
 - Run:
-  - [2026-04-14_20-27-17_rdma4_1513_headless4](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/logs/2026-04-14_20-27-17_rdma4_1513_headless4)
+  - [2026-04-14_20-27-17_rdma4_1513_headless4](../guest-linux/aarch64/logs/2026-04-14_20-27-17_rdma4_1513_headless4)
 - Summary:
-  - [four_node_rdma_matrix.latest.txt](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/out/four_node_rdma_matrix.latest.txt)
+  - [four_node_rdma_matrix.latest.txt](../guest-linux/aarch64/out/four_node_rdma_matrix.latest.txt)
 
 Result:
 
@@ -103,7 +103,7 @@ Important constraints proven by this run:
 ### OBMM Pool
 
 - Run:
-  - [2026-04-14_22-23-24_obmmpool4_28163_headless4](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/logs/2026-04-14_22-23-24_obmmpool4_28163_headless4)
+  - [2026-04-14_22-23-24_obmmpool4_28163_headless4](../guest-linux/aarch64/logs/2026-04-14_22-23-24_obmmpool4_28163_headless4)
 
 Result:
 

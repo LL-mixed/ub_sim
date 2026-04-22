@@ -102,7 +102,7 @@ Working out-of-tree build example:
 rm -rf /tmp/ub-qemu-build-verify
 mkdir -p /tmp/ub-qemu-build-verify
 cd /tmp/ub-qemu-build-verify
-/Volumes/repos/pypto_workspace/simulator/vendor/qemu_8.2.0_ub/configure \
+../ub_sim.git/vendor/qemu_8.2.0_ub/configure \
   --target-list=aarch64-softmmu \
   --disable-vmnet \
   --disable-coreaudio \

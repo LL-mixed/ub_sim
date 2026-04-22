@@ -59,9 +59,9 @@ requiring manual rebuild steps after sync.
 ### 1. Eight-Node Smoke
 
 - report:
-  - [eight_node_smoke_report.latest.txt](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/out/eight_node_smoke_report.latest.txt)
+  - [eight_node_smoke_report.latest.txt](../guest-linux/aarch64/out/eight_node_smoke_report.latest.txt)
 - run dir:
-  - [2026-04-15_15-58-44_smoke8_3473_headless8](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/logs/2026-04-15_15-58-44_smoke8_3473_headless8)
+  - [2026-04-15_15-58-44_smoke8_3473_headless8](../guest-linux/aarch64/logs/2026-04-15_15-58-44_smoke8_3473_headless8)
 - result:
   - `PASS`
 
@@ -74,9 +74,9 @@ Validated:
 ### 2. Eight-Node Chat Matrix
 
 - report:
-  - [eight_node_chat_matrix.latest.txt](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/out/eight_node_chat_matrix.latest.txt)
+  - [eight_node_chat_matrix.latest.txt](../guest-linux/aarch64/out/eight_node_chat_matrix.latest.txt)
 - run dir:
-  - [2026-04-15_15-59-08_chat8_17708_headless8](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/logs/2026-04-15_15-59-08_chat8_17708_headless8)
+  - [2026-04-15_15-59-08_chat8_17708_headless8](../guest-linux/aarch64/logs/2026-04-15_15-59-08_chat8_17708_headless8)
 - result:
   - `PASS`
 
@@ -87,9 +87,9 @@ Validated:
 ### 3. Eight-Node RPC Matrix
 
 - report:
-  - [eight_node_rpc_matrix.latest.txt](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/out/eight_node_rpc_matrix.latest.txt)
+  - [eight_node_rpc_matrix.latest.txt](../guest-linux/aarch64/out/eight_node_rpc_matrix.latest.txt)
 - run dir:
-  - [2026-04-15_16-01-52_rpc8_16415_headless8](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/logs/2026-04-15_16-01-52_rpc8_16415_headless8)
+  - [2026-04-15_16-01-52_rpc8_16415_headless8](../guest-linux/aarch64/logs/2026-04-15_16-01-52_rpc8_16415_headless8)
 - result:
   - `PASS`
 
@@ -101,9 +101,9 @@ Validated:
 ### 4. Eight-Node RDMA Matrix
 
 - report:
-  - [eight_node_rdma_matrix.latest.txt](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/out/eight_node_rdma_matrix.latest.txt)
+  - [eight_node_rdma_matrix.latest.txt](../guest-linux/aarch64/out/eight_node_rdma_matrix.latest.txt)
 - run dir:
-  - [2026-04-15_16-03-54_rdma8_27148_headless8](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/logs/2026-04-15_16-03-54_rdma8_27148_headless8)
+  - [2026-04-15_16-03-54_rdma8_27148_headless8](../guest-linux/aarch64/logs/2026-04-15_16-03-54_rdma8_27148_headless8)
 - result:
   - `PASS`
 
@@ -115,9 +115,9 @@ Validated:
 ### 5. Eight-Node OBMM Pool
 
 - report:
-  - [eight_node_obmm_pool.latest.txt](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/out/eight_node_obmm_pool.latest.txt)
+  - [eight_node_obmm_pool.latest.txt](../guest-linux/aarch64/out/eight_node_obmm_pool.latest.txt)
 - run dir:
-  - [2026-04-15_16-09-01_obmmpool8_6225_headless8](/Volumes/repos/pypto_workspace/ub_sim.git/guest-linux/aarch64/logs/2026-04-15_16-09-01_obmmpool8_6225_headless8)
+  - [2026-04-15_16-09-01_obmmpool8_6225_headless8](../guest-linux/aarch64/logs/2026-04-15_16-09-01_obmmpool8_6225_headless8)
 - result:
   - `PASS`
 
