@@ -1,6 +1,7 @@
 [submodule "vendor/qemu_8.2.0_ub"]
 	path = vendor/qemu_8.2.0_ub
 	url = git@gitcode.com:liliang_euler/qemu.git
+	branch = qemu-8.2.0
 [submodule "guest-linux/kernel_ub"]
 	path = guest-linux/kernel_ub
 	url = git@gitcode.com:liliang_euler/kernel.git
