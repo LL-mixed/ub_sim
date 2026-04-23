@@ -4,7 +4,7 @@ setopt null_glob
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-WORKSPACE_ROOT="$(cd "$ROOT_DIR/../../.." && pwd)"
+WORKSPACE_ROOT="$(cd "$ROOT_DIR/../.." && pwd)"
 KERNEL_IMAGE="${KERNEL_IMAGE:-$ROOT_DIR/out/Image}"
 INITRAMFS_IMAGE="${INITRAMFS_IMAGE:-$ROOT_DIR/out/initramfs.cpio.gz}"
 RDINIT="${RDINIT:-/bin/run_demo}"
@@ -31,6 +31,17 @@ source "$SCRIPT_DIR/qemu_ub_common.sh"
 APPEND_EXTRA="$(ensure_sim_kernel_append_defaults "$APPEND_EXTRA")"
 QEMU_BIN="$(ensure_qemu_ub_binary "$WORKSPACE_ROOT")"
 ensure_ub_guest_artifacts "$ROOT_DIR" "$KERNEL_IMAGE" "$INITRAMFS_IMAGE"
+
+# Reserve 25% of guest RAM for the kernel pfn_range contiguous memory pool.
+# OBMM needs large contiguous physical allocations (2MB per segment). Without
+# this reservation the buddy allocator fragments over time and OBMM export
+# fails with "allocate_memory_contiguous: failed to alloc 0x200000 bytes".
+# The pool size is aligned down to PUD_SIZE (1GB on ARM64 4K pages), so 25%
+# of 8GB yields 2GB usable.  Must not be set lower than 13% with 8GB guests
+# (otherwise ALIGN_DOWN produces 0).
+if [[ "$APPEND_EXTRA" != *"pmd_mapping="* ]]; then
+  APPEND_EXTRA="${APPEND_EXTRA} pmd_mapping=25%"
+fi
 
 # Keep init alive after probes so the harness can terminate QEMU directly.
 # This avoids guest shutdown/remove path stacktraces that are unrelated to
@@ -78,7 +89,7 @@ wait_for_log_pattern() {
   local timeout_s="$3"
   local deadline=$((SECONDS + timeout_s))
   while (( SECONDS < deadline )); do
-    if [[ -f "$file" ]] && rg -q "$pattern" "$file"; then
+    if [[ -f "$file" ]] && grep -qE "$pattern" "$file"; then
       return 0
     fi
     sleep 0.2
@@ -95,10 +106,10 @@ wait_for_log_pass_or_fail() {
 
   while (( SECONDS < deadline )); do
     if [[ -f "$file" ]]; then
-      if rg -q "$pass_pattern" "$file"; then
+      if grep -qE "$pass_pattern" "$file"; then
         return 0
       fi
-      if rg -q "$fail_pattern" "$file"; then
+      if grep -qE "$fail_pattern" "$file"; then
         return 1
       fi
     fi
@@ -111,7 +122,7 @@ assert_log_has() {
   local file="$1"
   local pattern="$2"
   local label="$3"
-  if ! rg -q "$pattern" "$file"; then
+  if ! grep -qE "$pattern" "$file"; then
     echo "missing log marker: $label in $file" >&2
     return 1
   fi
@@ -121,7 +132,7 @@ assert_log_absent() {
   local file="$1"
   local pattern="$2"
   local label="$3"
-  if rg -q "$pattern" "$file"; then
+  if grep -qE "$pattern" "$file"; then
     echo "unexpected log marker: $label in $file" >&2
     return 1
   fi
@@ -364,7 +375,7 @@ wait_for_fm_links_ready() {
       fi
     fi
     if [[ "$nodea_ready" == "false" ]] && [[ -f "$nodea_log" ]] && \
-       rg -q "marked connected for ubcdev0:1 state=1 socket=1 guid_valid=1 snapshot_reconciled=1" "$nodea_log"; then
+       grep -qE "marked connected for ubcdev0:1 state=1 socket=1 guid_valid=1 snapshot_reconciled=1" "$nodea_log"; then
       nodea_ready=true
     fi
 
@@ -375,7 +386,7 @@ wait_for_fm_links_ready() {
       fi
     fi
     if [[ "$nodeb_ready" == "false" ]] && [[ -f "$nodeb_log" ]] && \
-       rg -q "marked connected for ubcdev0:1 state=1 socket=1 guid_valid=1 snapshot_reconciled=1" "$nodeb_log"; then
+       grep -qE "marked connected for ubcdev0:1 state=1 socket=1 guid_valid=1 snapshot_reconciled=1" "$nodeb_log"; then
       nodeb_ready=true
     fi
 
@@ -414,7 +425,7 @@ check_entity_ready() {
   local elapsed=0
   while [ $elapsed -lt $timeout_sec ]; do
     if [[ -f "$log_file" ]]; then
-      local count=$(rg -c "entity_reg inject SUCCESS|entity_table_init:.*state=present|entity_plan: loaded entity .* state=present" "$log_file" 2>/dev/null || echo "0")
+      local count=$(grep -cE "entity_reg inject SUCCESS|entity_table_init:.*state=present|entity_plan: loaded entity .* state=present" "$log_file" 2>/dev/null || echo "0")
       if [ "$count" -ge "$expected_count" ]; then
         echo "PASS: Entities ready on ${node} (${count} entities)"
         return 0
@@ -461,9 +472,9 @@ dump_link_diagnostics() {
 
   echo "=== Recent log markers ===" >&2
   echo "nodeA:" >&2
-  rg -n "ub_link:|ub_fm:" "$nodea_log" 2>/dev/null | tail -10 >&2 || true
+  grep -nE "ub_link:|ub_fm:" "$nodea_log" 2>/dev/null | tail -10 >&2 || true
   echo "nodeB:" >&2
-  rg -n "ub_link:|ub_fm:" "$nodeb_log" 2>/dev/null | tail -10 >&2 || true
+  grep -nE "ub_link:|ub_fm:" "$nodeb_log" 2>/dev/null | tail -10 >&2 || true
 }
 
 cont_qemu() {
@@ -526,20 +537,20 @@ check_link_early_or_fail() {
   local ok_pat="ub_link: connected to remote server|ub_link: accepted connection|remote snapshot load done|remote cfg notify done"
 
   while (( SECONDS < deadline )); do
-    if [[ -f "$nodea_log" ]] && rg -q "$fail_pat" "$nodea_log"; then
+    if [[ -f "$nodea_log" ]] && grep -qE "$fail_pat" "$nodea_log"; then
       echo "early qemu/link failure detected on nodeA" >&2
       dump_link_diagnostics "$nodea_log" "$nodeb_log"
       return 1
     fi
-    if [[ -f "$nodeb_log" ]] && rg -q "$fail_pat" "$nodeb_log"; then
+    if [[ -f "$nodeb_log" ]] && grep -qE "$fail_pat" "$nodeb_log"; then
       echo "early qemu/link failure detected on nodeB" >&2
       dump_link_diagnostics "$nodea_log" "$nodeb_log"
       return 1
     fi
 
     if [[ -f "$nodea_log" && -f "$nodeb_log" ]] &&
-       rg -q "$ok_pat" "$nodea_log" &&
-       rg -q "$ok_pat" "$nodeb_log"; then
+       grep -qE "$ok_pat" "$nodea_log" &&
+       grep -qE "$ok_pat" "$nodeb_log"; then
       return 0
     fi
 

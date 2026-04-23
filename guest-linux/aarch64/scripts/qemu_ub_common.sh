@@ -42,7 +42,7 @@ qemu_ub_supports_required_opts() {
   local help=""
   help="$("$bin" -M virt,help 2>/dev/null || true)"
   [[ -n "$help" ]] || return 1
-  print -r -- "$help" | rg -q "ub-cluster-mode|ummu"
+  print -r -- "$help" | grep -Eq "ub-cluster-mode|ummu"
 }
 
 print_qemu_preflight_help() {
