@@ -2,3 +2,4 @@ target/
 archive/qemu-device-legacy/qemu/
 archive/guest-probe-legacy/
 .DS_Store
+.codex
