@@ -33,7 +33,8 @@ busybox_has_applets() {
 
   applets="$("$bin" --list 2>/dev/null || true)"
   if [[ -z "$applets" ]]; then
-    return 1
+    busybox_config_has_applets
+    return $?
   fi
 
   for applet in "${REQUIRED_APPLETS[@]}"; do
@@ -41,6 +42,40 @@ busybox_has_applets() {
       return 1
     fi
   done
+  return 0
+}
+
+busybox_config_has_applets() {
+  local config_file="$SRC_DIR/.config"
+  local applet=""
+  local key=""
+
+  [[ -f "$config_file" ]] || return 1
+
+  for applet in "${REQUIRED_APPLETS[@]}"; do
+    case "$applet" in
+      sh)
+        if grep -q '^CONFIG_SH_IS_NONE=y$' "$config_file"; then
+          return 1
+        fi
+        if ! grep -Eq '^CONFIG_(SH_IS_ASH|SH_IS_HUSH|ASH|HUSH)=y$' "$config_file"; then
+          return 1
+        fi
+        ;;
+      ip)
+        if ! grep -Eq '^CONFIG_(IP|IPADDR|IPLINK|IPROUTE)=y$' "$config_file"; then
+          return 1
+        fi
+        ;;
+      *)
+        key="CONFIG_${(U)applet}"
+        if ! grep -q "^${key}=y$" "$config_file"; then
+          return 1
+        fi
+        ;;
+    esac
+  done
+
   return 0
 }
 

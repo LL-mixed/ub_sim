@@ -6,10 +6,12 @@ members = [
     "crates/sim-topology",
     "crates/sim-runtime",
     "crates/sim-services",
+    "crates/sim-models",
     "crates/sim-qemu",
     "crates/sim-uapi",
     "crates/sim-workloads",
     "crates/sim-cli",
+    "crates/sim-chipbackend-simpler",
 ]
 resolver = "2"
 

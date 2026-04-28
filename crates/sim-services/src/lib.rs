@@ -3,8 +3,8 @@
 use std::collections::{HashMap, VecDeque};
 
 use sim_core::{
-    BlockHash, CompletionEvent, CompletionSource, CompletionStatus, SegmentHandle,
-    ServiceOpHandle, SimTimestamp, TaskKey,
+    BlockHash, CompletionEvent, CompletionSource, CompletionStatus, SegmentHandle, ServiceOpHandle,
+    SimTimestamp, TaskKey,
 };
 use sim_runtime::{BlockReadReq, BlockService, BlockWriteReq};
 
@@ -14,10 +14,7 @@ struct QueuedCompletion {
     event: CompletionEvent,
 }
 
-fn drain_ready(
-    queue: &mut VecDeque<QueuedCompletion>,
-    now: SimTimestamp,
-) -> Vec<CompletionEvent> {
+fn drain_ready(queue: &mut VecDeque<QueuedCompletion>, now: SimTimestamp) -> Vec<CompletionEvent> {
     let mut ready = Vec::new();
 
     while matches!(queue.front(), Some(item) if item.ready_at <= now) {
@@ -285,12 +282,18 @@ pub mod shmem {
             bytes: u64,
         ) -> Result<(), sim_core::SimError> {
             if bytes == 0 {
-                return Err(sim_core::SimError::InvalidInput("shmem segment bytes must be positive"));
+                return Err(sim_core::SimError::InvalidInput(
+                    "shmem segment bytes must be positive",
+                ));
             }
             if bytes > self.profile.max_segment_bytes {
-                return Err(sim_core::SimError::InvalidInput("shmem segment exceeds size limit"));
+                return Err(sim_core::SimError::InvalidInput(
+                    "shmem segment exceeds size limit",
+                ));
             }
-            if !self.segments.contains_key(&segment) && self.segments.len() >= self.profile.max_segments {
+            if !self.segments.contains_key(&segment)
+                && self.segments.len() >= self.profile.max_segments
+            {
                 return Err(sim_core::SimError::InvalidInput("shmem segment table full"));
             }
             self.segments.insert(
@@ -497,7 +500,9 @@ pub mod dfs {
                     };
                     (
                         CompletionStatus::Success,
-                        now + self.profile.metadata_latency_us + self.profile.data_latency_us + penalty,
+                        now + self.profile.metadata_latency_us
+                            + self.profile.data_latency_us
+                            + penalty,
                     )
                 }
                 None => (
@@ -682,13 +687,340 @@ pub mod db {
     }
 }
 
+pub mod weights {
+    use super::block::{BlockServiceProfile, BlockServiceStub};
+    use super::db::{DbPutReq, DbServiceProfile, DbServiceStub};
+    use super::shmem::{ShmemPutReq, ShmemServiceProfile, ShmemServiceStub};
+    use super::*;
+
+    #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+    pub enum WeightStorageKind {
+        Block,
+        Shmem,
+    }
+
+    #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+    pub enum ServiceObjectKind {
+        WeightShard,
+        KvCacheBlock,
+        ActivationTile,
+        PartialResultTile,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct WeightMetadataPut {
+        pub key: String,
+        pub bytes: u64,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct WeightPayloadWrite {
+        pub storage_ref: String,
+        pub storage_kind: WeightStorageKind,
+        pub segment: SegmentHandle,
+        pub offset: u64,
+        pub bytes: u64,
+        pub checksum: u64,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct WeightsLoadReq {
+        pub task: Option<TaskKey>,
+        pub requester_entity: u32,
+        pub metadata_puts: Vec<WeightMetadataPut>,
+        pub payload_writes: Vec<WeightPayloadWrite>,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct ServiceObjectMetadataPut {
+        pub key: String,
+        pub object_kind: ServiceObjectKind,
+        pub bytes: u64,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct ServiceObjectPayloadWrite {
+        pub storage_ref: String,
+        pub object_kind: ServiceObjectKind,
+        pub storage_kind: WeightStorageKind,
+        pub segment: SegmentHandle,
+        pub offset: u64,
+        pub bytes: u64,
+        pub checksum: u64,
+        pub producer_entity: u32,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct ServiceObjectPublishReq {
+        pub task: Option<TaskKey>,
+        pub requester_entity: u32,
+        pub metadata_puts: Vec<ServiceObjectMetadataPut>,
+        pub payload_writes: Vec<ServiceObjectPayloadWrite>,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct WeightsResolveReq {
+        pub task: Option<TaskKey>,
+        pub requester_entity: u32,
+        pub metadata_key: String,
+        pub storage_ref: String,
+        pub storage_kind: WeightStorageKind,
+        pub segment: SegmentHandle,
+        pub bytes: u64,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct ServiceObjectResolveReq {
+        pub task: Option<TaskKey>,
+        pub requester_entity: u32,
+        pub metadata_key: String,
+        pub object_kind: ServiceObjectKind,
+        pub storage_ref: String,
+        pub storage_kind: WeightStorageKind,
+        pub segment: SegmentHandle,
+        pub bytes: u64,
+    }
+
+    #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+    pub struct WeightsLoadStats {
+        pub metadata_puts: usize,
+        pub block_writes: usize,
+        pub shmem_writes: usize,
+        pub payload_bytes: u64,
+    }
+
+    #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+    pub struct WeightsResolveStats {
+        pub metadata_gets: usize,
+        pub block_reads: usize,
+        pub shmem_reads: usize,
+    }
+
+    #[derive(Debug)]
+    pub struct WeightsServiceStub {
+        db_service: DbServiceStub,
+        block_service: BlockServiceStub,
+        shmem_service: ShmemServiceStub,
+        loaded_payloads: HashMap<String, ServiceObjectPayloadWrite>,
+    }
+
+    impl WeightsServiceStub {
+        pub fn new() -> Self {
+            Self::with_profiles(
+                DbServiceProfile {
+                    queue_depth: 4096,
+                    pipeline_batch_limit: 4096,
+                    ..DbServiceProfile::default()
+                },
+                BlockServiceProfile {
+                    queue_depth: 4096,
+                    ..BlockServiceProfile::default()
+                },
+                ShmemServiceProfile {
+                    queue_depth: 4096,
+                    max_segments: 4096,
+                    ..ShmemServiceProfile::default()
+                },
+            )
+        }
+
+        pub fn with_profiles(
+            db_profile: DbServiceProfile,
+            block_profile: BlockServiceProfile,
+            shmem_profile: ShmemServiceProfile,
+        ) -> Self {
+            Self {
+                db_service: DbServiceStub::new(db_profile),
+                block_service: BlockServiceStub::with_profile(block_profile),
+                shmem_service: ShmemServiceStub::new(shmem_profile),
+                loaded_payloads: HashMap::new(),
+            }
+        }
+
+        pub fn submit_load(
+            &mut self,
+            req: WeightsLoadReq,
+            now: SimTimestamp,
+        ) -> Result<WeightsLoadStats, sim_core::SimError> {
+            let publish_req = ServiceObjectPublishReq {
+                task: req.task,
+                requester_entity: req.requester_entity,
+                metadata_puts: req
+                    .metadata_puts
+                    .into_iter()
+                    .map(|metadata| ServiceObjectMetadataPut {
+                        key: metadata.key,
+                        object_kind: ServiceObjectKind::WeightShard,
+                        bytes: metadata.bytes,
+                    })
+                    .collect(),
+                payload_writes: req
+                    .payload_writes
+                    .into_iter()
+                    .map(|payload| ServiceObjectPayloadWrite {
+                        storage_ref: payload.storage_ref,
+                        object_kind: ServiceObjectKind::WeightShard,
+                        storage_kind: payload.storage_kind,
+                        segment: payload.segment,
+                        offset: payload.offset,
+                        bytes: payload.bytes,
+                        checksum: payload.checksum,
+                        producer_entity: req.requester_entity,
+                    })
+                    .collect(),
+            };
+            self.submit_publish_object(publish_req, now)
+        }
+
+        pub fn submit_publish_object(
+            &mut self,
+            req: ServiceObjectPublishReq,
+            now: SimTimestamp,
+        ) -> Result<WeightsLoadStats, sim_core::SimError> {
+            let mut stats = WeightsLoadStats {
+                metadata_puts: 0,
+                block_writes: 0,
+                shmem_writes: 0,
+                payload_bytes: 0,
+            };
+            for metadata in req.metadata_puts {
+                self.db_service.submit_put(
+                    DbPutReq {
+                        task: req.task.clone(),
+                        key: metadata.key,
+                        bytes: metadata.bytes,
+                    },
+                    now,
+                )?;
+                stats.metadata_puts += 1;
+            }
+            for payload in req.payload_writes {
+                match payload.storage_kind {
+                    WeightStorageKind::Block => {
+                        self.block_service.submit_write(
+                            BlockWriteReq {
+                                task: req.task.clone(),
+                                block: BlockHash(payload.storage_ref.clone()),
+                            },
+                            now,
+                        )?;
+                        stats.block_writes += 1;
+                    }
+                    WeightStorageKind::Shmem => {
+                        self.shmem_service.register_segment(
+                            payload.segment,
+                            req.requester_entity,
+                            payload.bytes,
+                        )?;
+                        self.shmem_service.submit_put(
+                            ShmemPutReq {
+                                task: req.task.clone(),
+                                requester_entity: req.requester_entity,
+                                segment: payload.segment,
+                                bytes: payload.bytes,
+                            },
+                            now,
+                        )?;
+                        stats.shmem_writes += 1;
+                    }
+                }
+                stats.payload_bytes += payload.bytes;
+                self.loaded_payloads
+                    .insert(payload.storage_ref.clone(), payload);
+            }
+            Ok(stats)
+        }
+
+        pub fn submit_resolve(
+            &mut self,
+            req: WeightsResolveReq,
+            now: SimTimestamp,
+        ) -> Result<WeightsResolveStats, sim_core::SimError> {
+            self.submit_resolve_object(
+                ServiceObjectResolveReq {
+                    task: req.task,
+                    requester_entity: req.requester_entity,
+                    metadata_key: req.metadata_key,
+                    object_kind: ServiceObjectKind::WeightShard,
+                    storage_ref: req.storage_ref,
+                    storage_kind: req.storage_kind,
+                    segment: req.segment,
+                    bytes: req.bytes,
+                },
+                now,
+            )
+        }
+
+        pub fn submit_resolve_object(
+            &mut self,
+            req: ServiceObjectResolveReq,
+            now: SimTimestamp,
+        ) -> Result<WeightsResolveStats, sim_core::SimError> {
+            self.db_service.submit_get(
+                super::db::DbGetReq {
+                    task: req.task.clone(),
+                    key: req.metadata_key,
+                },
+                now,
+            )?;
+            let mut stats = WeightsResolveStats {
+                metadata_gets: 1,
+                block_reads: 0,
+                shmem_reads: 0,
+            };
+            match req.storage_kind {
+                WeightStorageKind::Block => {
+                    self.block_service.submit_read(
+                        BlockReadReq {
+                            task: req.task.clone(),
+                            block: BlockHash(req.storage_ref),
+                        },
+                        now,
+                    )?;
+                    stats.block_reads += 1;
+                }
+                WeightStorageKind::Shmem => {
+                    self.shmem_service.submit_get(
+                        super::shmem::ShmemGetReq {
+                            task: req.task,
+                            requester_entity: req.requester_entity,
+                            segment: req.segment,
+                            bytes: req.bytes,
+                        },
+                        now,
+                    )?;
+                    stats.shmem_reads += 1;
+                }
+            }
+            Ok(stats)
+        }
+
+        pub fn payload_loaded(&self, storage_ref: &str) -> bool {
+            self.loaded_payloads.contains_key(storage_ref)
+        }
+
+        pub fn poll_ready(&mut self, now: SimTimestamp) -> Vec<CompletionEvent> {
+            let mut events = Vec::new();
+            events.extend(self.db_service.poll_ready(now));
+            events.extend(self.block_service.poll_ready(now));
+            events.extend(self.shmem_service.poll_ready(now));
+            events
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::block::{BlockServiceProfile, BlockServiceStub};
     use super::db::{DbGetReq, DbPutReq, DbServiceProfile, DbServiceStub};
     use super::dfs::{DfsReadReq, DfsServiceProfile, DfsServiceStub, DfsWriteReq};
     use super::shmem::{ShmemGetReq, ShmemPutReq, ShmemServiceProfile, ShmemServiceStub};
-    use sim_core::{BlockHash, CompletionStatus, SegmentHandle};
+    use super::weights::{
+        ServiceObjectKind, ServiceObjectMetadataPut, ServiceObjectPayloadWrite,
+        ServiceObjectPublishReq, ServiceObjectResolveReq, WeightMetadataPut, WeightPayloadWrite,
+        WeightStorageKind, WeightsLoadReq, WeightsResolveReq, WeightsServiceStub,
+    };
+    use sim_core::{BlockHash, CompletionSource, CompletionStatus, SegmentHandle};
     use sim_runtime::{BlockReadReq, BlockWriteReq};
 
     #[test]
@@ -860,7 +1192,10 @@ mod tests {
                 1,
             )
             .expect_err("queue full");
-        assert!(matches!(err, sim_core::SimError::InvalidInput("shmem queue full")));
+        assert!(matches!(
+            err,
+            sim_core::SimError::InvalidInput("shmem queue full")
+        ));
     }
 
     #[test]
@@ -962,7 +1297,10 @@ mod tests {
                 1,
             )
             .expect_err("queue full");
-        assert!(matches!(err, sim_core::SimError::InvalidInput("dfs queue full")));
+        assert!(matches!(
+            err,
+            sim_core::SimError::InvalidInput("dfs queue full")
+        ));
     }
 
     #[test]
@@ -1121,6 +1459,234 @@ mod tests {
                 1,
             )
             .expect_err("queue full");
-        assert!(matches!(err, sim_core::SimError::InvalidInput("db queue full")));
+        assert!(matches!(
+            err,
+            sim_core::SimError::InvalidInput("db queue full")
+        ));
+    }
+
+    #[test]
+    fn weights_service_supports_host_load_and_multi_node_resolve_entries() {
+        let mut svc = WeightsServiceStub::new();
+        let load_stats = svc
+            .submit_load(
+                WeightsLoadReq {
+                    task: None,
+                    requester_entity: 0,
+                    metadata_puts: vec![WeightMetadataPut {
+                        key: "qwen3/layer0/shard0/q_proj".to_string(),
+                        bytes: 256,
+                    }],
+                    payload_writes: vec![
+                        WeightPayloadWrite {
+                            storage_ref: "qwen3/block/layer0/shard0/q_proj".to_string(),
+                            storage_kind: WeightStorageKind::Block,
+                            segment: SegmentHandle(100),
+                            offset: 0,
+                            bytes: 4096,
+                            checksum: 11,
+                        },
+                        WeightPayloadWrite {
+                            storage_ref: "qwen3/shmem/layer0/shard0/q_proj_hot".to_string(),
+                            storage_kind: WeightStorageKind::Shmem,
+                            segment: SegmentHandle(101),
+                            offset: 0,
+                            bytes: 1024,
+                            checksum: 12,
+                        },
+                    ],
+                },
+                0,
+            )
+            .expect("host load weights");
+        assert_eq!(load_stats.metadata_puts, 1);
+        assert_eq!(load_stats.block_writes, 1);
+        assert_eq!(load_stats.shmem_writes, 1);
+        assert_eq!(load_stats.payload_bytes, 5120);
+        assert!(svc.payload_loaded("qwen3/block/layer0/shard0/q_proj"));
+        assert!(svc.payload_loaded("qwen3/shmem/layer0/shard0/q_proj_hot"));
+
+        for node in 0..8 {
+            let stats = svc
+                .submit_resolve(
+                    WeightsResolveReq {
+                        task: None,
+                        requester_entity: node,
+                        metadata_key: "qwen3/layer0/shard0/q_proj".to_string(),
+                        storage_ref: "qwen3/block/layer0/shard0/q_proj".to_string(),
+                        storage_kind: WeightStorageKind::Block,
+                        segment: SegmentHandle(100),
+                        bytes: 4096,
+                    },
+                    20 + node as u64,
+                )
+                .expect("node block resolve");
+            assert_eq!(stats.metadata_gets, 1);
+            assert_eq!(stats.block_reads, 1);
+            assert_eq!(stats.shmem_reads, 0);
+        }
+
+        let shmem_stats = svc
+            .submit_resolve(
+                WeightsResolveReq {
+                    task: None,
+                    requester_entity: 7,
+                    metadata_key: "qwen3/layer0/shard0/q_proj".to_string(),
+                    storage_ref: "qwen3/shmem/layer0/shard0/q_proj_hot".to_string(),
+                    storage_kind: WeightStorageKind::Shmem,
+                    segment: SegmentHandle(101),
+                    bytes: 1024,
+                },
+                40,
+            )
+            .expect("node shmem resolve");
+        assert_eq!(shmem_stats.metadata_gets, 1);
+        assert_eq!(shmem_stats.block_reads, 0);
+        assert_eq!(shmem_stats.shmem_reads, 1);
+
+        let ready = svc.poll_ready(1000);
+        assert!(ready
+            .iter()
+            .any(|event| event.source == CompletionSource::DbService));
+        assert!(ready
+            .iter()
+            .any(|event| event.source == CompletionSource::BlockService));
+        assert!(ready
+            .iter()
+            .any(|event| event.source == CompletionSource::ShmemService));
+    }
+
+    #[test]
+    fn weights_service_allows_each_node_entry_to_load_and_publish_weights() {
+        let mut svc = WeightsServiceStub::new();
+        for node in 0..8 {
+            let block_ref = format!("qwen3/block/layer0/shard{node}/q_proj");
+            let metadata_key = format!("qwen3/layer0/shard{node}/q_proj");
+            let stats = svc
+                .submit_load(
+                    WeightsLoadReq {
+                        task: None,
+                        requester_entity: node,
+                        metadata_puts: vec![WeightMetadataPut {
+                            key: metadata_key.clone(),
+                            bytes: 256 + node as u64,
+                        }],
+                        payload_writes: vec![WeightPayloadWrite {
+                            storage_ref: block_ref.clone(),
+                            storage_kind: WeightStorageKind::Block,
+                            segment: SegmentHandle(200 + node as u64),
+                            offset: 0,
+                            bytes: 4096 + node as u64,
+                            checksum: 1000 + node as u64,
+                        }],
+                    },
+                    node as u64,
+                )
+                .expect("node load weights");
+            assert_eq!(stats.metadata_puts, 1);
+            assert_eq!(stats.block_writes, 1);
+            assert_eq!(stats.shmem_writes, 0);
+            assert!(svc.payload_loaded(&block_ref));
+
+            let resolver = (node + 1) % 8;
+            let resolve_stats = svc
+                .submit_resolve(
+                    WeightsResolveReq {
+                        task: None,
+                        requester_entity: resolver,
+                        metadata_key,
+                        storage_ref: block_ref,
+                        storage_kind: WeightStorageKind::Block,
+                        segment: SegmentHandle(200 + node as u64),
+                        bytes: 4096 + node as u64,
+                    },
+                    100 + node as u64,
+                )
+                .expect("cross-node resolve");
+            assert_eq!(resolve_stats.metadata_gets, 1);
+            assert_eq!(resolve_stats.block_reads, 1);
+            assert_eq!(resolve_stats.shmem_reads, 0);
+        }
+
+        let ready = svc.poll_ready(1000);
+        assert!(ready
+            .iter()
+            .filter(|event| event.source == CompletionSource::DbService)
+            .count()
+            >= 16);
+        assert!(ready
+            .iter()
+            .filter(|event| event.source == CompletionSource::BlockService)
+            .count()
+            >= 16);
+    }
+
+    #[test]
+    fn weights_service_publishes_and_resolves_runtime_tiles_from_any_node() {
+        let mut svc = WeightsServiceStub::new();
+        for node in 0..8 {
+            let producer = node;
+            let consumer = (node + 3) % 8;
+            let key = format!("qwen3/layer0/producer{producer}/activation_tile0");
+            let storage_ref = format!("qwen3/runtime/producer{producer}/activation_tile0");
+            let publish_stats = svc
+                .submit_publish_object(
+                    ServiceObjectPublishReq {
+                        task: None,
+                        requester_entity: producer,
+                        metadata_puts: vec![ServiceObjectMetadataPut {
+                            key: key.clone(),
+                            object_kind: ServiceObjectKind::ActivationTile,
+                            bytes: 192,
+                        }],
+                        payload_writes: vec![ServiceObjectPayloadWrite {
+                            storage_ref: storage_ref.clone(),
+                            object_kind: ServiceObjectKind::ActivationTile,
+                            storage_kind: WeightStorageKind::Shmem,
+                            segment: SegmentHandle(300 + producer as u64),
+                            offset: 0,
+                            bytes: 2048,
+                            checksum: 2000 + producer as u64,
+                            producer_entity: producer,
+                        }],
+                    },
+                    10 + producer as u64,
+                )
+                .expect("node publish activation tile");
+            assert_eq!(publish_stats.metadata_puts, 1);
+            assert_eq!(publish_stats.shmem_writes, 1);
+            assert!(svc.payload_loaded(&storage_ref));
+
+            let resolve_stats = svc
+                .submit_resolve_object(
+                    ServiceObjectResolveReq {
+                        task: None,
+                        requester_entity: consumer,
+                        metadata_key: key,
+                        object_kind: ServiceObjectKind::ActivationTile,
+                        storage_ref,
+                        storage_kind: WeightStorageKind::Shmem,
+                        segment: SegmentHandle(300 + producer as u64),
+                        bytes: 2048,
+                    },
+                    50 + consumer as u64,
+                )
+                .expect("consumer resolve activation tile");
+            assert_eq!(resolve_stats.metadata_gets, 1);
+            assert_eq!(resolve_stats.block_reads, 0);
+            assert_eq!(resolve_stats.shmem_reads, 1);
+        }
+
+        let ready = svc.poll_ready(1000);
+        assert!(ready
+            .iter()
+            .filter(|event| event.source == CompletionSource::DbService)
+            .count()
+            >= 16);
+        assert!(ready
+            .iter()
+            .filter(|event| event.source == CompletionSource::ShmemService)
+            .count()
+            >= 16);
     }
 }

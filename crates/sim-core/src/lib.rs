@@ -1,5 +1,7 @@
 //! Core shared types for the simulator workspace.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 pub type SimTimestamp = u64;
@@ -151,13 +153,251 @@ pub struct MemoryEndpoint {
     pub offset: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TensorDType {
+    U8,
+    U32,
+    U64,
+    F32,
+    Opaque,
+}
+
+impl TensorDType {
+    pub fn byte_width(self) -> Option<u64> {
+        match self {
+            Self::U8 => Some(1),
+            Self::U32 | Self::F32 => Some(4),
+            Self::U64 => Some(8),
+            Self::Opaque => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TensorLayout {
+    Contiguous,
+    Strided,
+    Opaque,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BufferUsage {
+    Input,
+    Output,
+    Inout,
+    Workspace,
+    Cache,
+    Control,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DispatchBufferBinding {
+    pub name: String,
+    pub usage: BufferUsage,
+    pub endpoint: MemoryEndpoint,
+    pub bytes: u64,
+    pub dtype: TensorDType,
+    pub shape: Vec<u64>,
+    pub layout: TensorLayout,
+    pub strides: Option<Vec<u64>>,
+    pub resident: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestCorrelation {
+    pub request_id: String,
+    pub trace_id: Option<String>,
+    pub op_name: Option<String>,
+    pub step_index: Option<u32>,
+    pub sequence_no: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExecutionLifecycle {
+    Init,
+    Warmup,
+    Reuse,
+    Reset,
+    Teardown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExecutionStepKind {
+    RequestControl,
+    CacheResolve,
+    CacheFill,
+    Compute,
+    Finalize,
+    Generic,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionPlanRef {
+    pub plan_id: String,
+    pub step_id: String,
+    pub step_kind: ExecutionStepKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionContextRef {
+    pub device_context_id: String,
+    pub runtime_context_id: Option<String>,
+    pub lifecycle: ExecutionLifecycle,
+    pub warm: bool,
+    pub reusable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionContextCommand {
+    pub device_context_id: String,
+    pub runtime_context_id: Option<String>,
+    pub lifecycle: ExecutionLifecycle,
+    pub warm: bool,
+    pub reusable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackendExecutionRequest {
+    pub correlation: RequestCorrelation,
+    pub plan: Option<ExecutionPlanRef>,
+    pub context: Option<ExecutionContextRef>,
+    pub bindings: Vec<DispatchBufferBinding>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DispatchBackendProfile {
+    HostVector,
+    TmrbVector,
+    HostMatmul,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DispatchRuntimeVariant {
+    HostBuildGraph,
+    TensormapAndRingbuffer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DispatchExecutionContext {
+    pub block_hash: Option<String>,
+    pub request_index: Option<u64>,
+    pub block_index: Option<u64>,
+    pub request_blocks_total: Option<u64>,
+    pub blocks_remaining_in_request: Option<u64>,
+    pub is_first_block_in_request: bool,
+    pub is_last_block_in_request: bool,
+    pub request_control_phase: Option<String>,
+    pub request_control_epoch: Option<u64>,
+    pub request_control_result_kind: Option<String>,
+    pub request_control_result_value: Option<u64>,
+    pub request_control_view_kind: Option<String>,
+    pub kvcache_resolution_kind: Option<String>,
+    pub kvcache_view_kind: Option<String>,
+    pub kvcache_transition_kind: Option<String>,
+    pub logical_system_id: Option<u32>,
+    pub scope_depth: Option<u32>,
+    pub prefix_group: Option<u64>,
+    pub route_from_level: Option<String>,
+    pub route_to_level: Option<String>,
+    pub route_selected_node: Option<NodeId>,
+    pub route_reason: Option<String>,
+    pub placement_level: Option<String>,
+    pub placement_node: Option<NodeId>,
+    pub capacity_pressure_active: bool,
+    pub evictions_seen: u64,
+    pub block_writebacks_seen: u64,
+    pub promoted_this_access: bool,
+    pub reloaded_after_eviction: bool,
+    pub uses_dfs_fallback: bool,
+    pub includes_request_control: bool,
+    pub includes_prefix_shared: bool,
+    pub hot_segment: Option<u64>,
+    pub request_segment: Option<u64>,
+    pub control_segment: Option<u64>,
+    pub prefix_segment: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BinaryArtifactRef {
+    pub id: String,
+    pub format: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SimplerKernelArtifact {
+    pub func_id: i32,
+    pub binary: BinaryArtifactRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DispatchLaunchParams {
+    pub aicpu_thread_num: u32,
+    pub block_dim: u32,
+    pub device_id: u32,
+    pub orch_thread_num: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SimplerRuntimeArg {
+    ScalarU64(u64),
+    InputSegment {
+        endpoint: MemoryEndpoint,
+        bytes: u64,
+    },
+    OutputSegment {
+        endpoint: MemoryEndpoint,
+        bytes: u64,
+    },
+    InoutSegment {
+        endpoint: MemoryEndpoint,
+        bytes: u64,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SimplerRuntimeArtifacts {
+    pub host_runtime_library: BinaryArtifactRef,
+    pub orch_shared_object: BinaryArtifactRef,
+    pub orch_function_name: String,
+    pub aicpu_binary: Option<BinaryArtifactRef>,
+    pub aicore_binary: Option<BinaryArtifactRef>,
+    pub kernels: Vec<SimplerKernelArtifact>,
+    pub launch: DispatchLaunchParams,
+    pub runtime_env: BTreeMap<String, String>,
+    pub args: Vec<SimplerRuntimeArg>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DispatchBackendSpec {
+    pub profile: DispatchBackendProfile,
+    pub platform: String,
+    pub runtime_variant: DispatchRuntimeVariant,
+    pub callable_hint: Option<String>,
+    pub context: Option<DispatchExecutionContext>,
+    pub simpler_runtime: Option<SimplerRuntimeArtifacts>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DispatchRequest {
     pub task: TaskKey,
     pub function: FunctionLabel,
+    pub backend_spec: Option<DispatchBackendSpec>,
+    pub request: Option<BackendExecutionRequest>,
     pub target_level: PlLevel,
     pub target_node: NodeId,
     pub input_segments: Vec<SegmentHandle>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackendDispatchOperation {
+    pub task: TaskKey,
+    pub function: FunctionLabel,
+    pub backend_spec: DispatchBackendSpec,
+    pub request: BackendExecutionRequest,
+    pub target_level: PlLevel,
+    pub target_node: NodeId,
+    pub legacy_input_segments: Vec<SegmentHandle>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -254,6 +494,31 @@ pub enum SimEvent {
         at: SimTimestamp,
         op_id: OpId,
         reason: String,
+    },
+    W4ResultHandled {
+        at: SimTimestamp,
+        task: TaskKey,
+        function_name: String,
+        block_hash: Option<BlockHash>,
+        request_index: Option<u64>,
+        block_index: Option<u64>,
+        result_segment: SegmentHandle,
+        payload_validated: bool,
+        request_control_phase: Option<String>,
+        request_control_result_kind: Option<String>,
+        request_control_view_kind: Option<String>,
+        kvcache_resolution_kind: Option<String>,
+        kvcache_view_kind: Option<String>,
+        kvcache_transition_kind: Option<String>,
+    },
+    W4ServiceResultApplied {
+        at: SimTimestamp,
+        task: TaskKey,
+        service_kind: String,
+        action_kind: String,
+        block_hash: Option<BlockHash>,
+        target_segment: SegmentHandle,
+        result_segment: SegmentHandle,
     },
     FaultInjected {
         at: SimTimestamp,

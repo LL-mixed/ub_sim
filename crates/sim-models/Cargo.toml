@@ -1,17 +1,14 @@
 [package]
-name = "sim-uapi"
+name = "sim-models"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 authors.workspace = true
 
 [dependencies]
-libc = "0.2"
 serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
+serde_json.workspace = true
 sim-config = { path = "../sim-config" }
 sim-core = { path = "../sim-core" }
-sim-models = { path = "../sim-models" }
-sim-runtime = { path = "../sim-runtime" }
 sim-services = { path = "../sim-services" }
 sim-topology = { path = "../sim-topology" }

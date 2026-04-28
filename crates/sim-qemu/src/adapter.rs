@@ -49,7 +49,11 @@ impl QemuBackendAdapter {
             .execute(UapiCommand::RegisterCq { owner: entity })?
         {
             UapiResponse::CqRegistered(cq) => cq,
-            _ => return Err(SimError::InvalidInput("unexpected cq registration response")),
+            _ => {
+                return Err(SimError::InvalidInput(
+                    "unexpected cq registration response",
+                ))
+            }
         };
         let cmdq = match self.surface.execute(UapiCommand::CreateCmdQueue {
             cq,
@@ -76,6 +80,24 @@ impl QemuBackendAdapter {
             UapiResponse::SegmentCreated(segment) => Ok(segment),
             _ => Err(SimError::InvalidInput("unexpected segment response")),
         }
+    }
+
+    pub fn write_segment_payload(
+        &mut self,
+        segment: SegmentHandle,
+        offset: usize,
+        bytes: &[u8],
+    ) -> Result<(), SimError> {
+        self.surface.write_segment_payload(segment, offset, bytes)
+    }
+
+    pub fn read_segment_payload(
+        &self,
+        segment: SegmentHandle,
+        offset: usize,
+        out: &mut [u8],
+    ) -> Result<(), SimError> {
+        self.surface.read_segment_payload(segment, offset, out)
     }
 
     pub fn enqueue_descriptor(

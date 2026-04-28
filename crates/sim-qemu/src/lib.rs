@@ -11,9 +11,9 @@ pub use adapter::QemuBackendAdapter;
 pub use device::{LinquDeviceModel, MmioDevice};
 pub use mmio::QemuMmioHandler;
 pub use types::{
-    DeviceErrorCode, DeviceInterruptStatus, DeviceQueueStatus, DoorbellWrite, EndpointId, GuestDescriptor,
-    GuestEndpointLayout, GuestEndpointSession, GuestIoDescriptor, GuestServiceDescriptor,
-    MachineProfile, MmioRegisterMap,
+    DeviceErrorCode, DeviceInterruptStatus, DeviceQueueStatus, DoorbellWrite, EndpointId,
+    GuestDescriptor, GuestEndpointLayout, GuestEndpointSession, GuestIoDescriptor,
+    GuestServiceDescriptor, MachineProfile, MmioRegisterMap,
 };
 
 #[cfg(test)]
@@ -69,6 +69,32 @@ mod tests {
         let events = adapter.drain_cq(&session).expect("drain");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].source, CompletionSource::BlockService);
+    }
+
+    #[test]
+    fn qemu_backend_adapter_maps_guest_dispatch_to_chipbackend_completion() {
+        let mut adapter = test_adapter();
+        let session = adapter.register_endpoint(0).expect("register endpoint");
+        let segment = adapter.create_segment(&session, 4096).expect("segment");
+
+        let _ = adapter
+            .enqueue_descriptor(
+                &session,
+                GuestDescriptor::Io(GuestIoDescriptor {
+                    op_id: 11,
+                    task: None,
+                    entity: 0,
+                    opcode: IoOpcode::Dispatch,
+                    segment: Some(segment),
+                    block: None,
+                }),
+            )
+            .expect("enqueue");
+        let _ = adapter.ring_doorbell(&session, Some(1)).expect("doorbell");
+
+        let events = adapter.drain_cq(&session).expect("drain");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].source, CompletionSource::ChipBackend);
     }
 
     #[test]
@@ -416,7 +442,10 @@ mod tests {
         let mut handler = QemuMmioHandler::new(LinquDeviceModel::new(topology));
 
         let mmio = handler.device().mmio();
-        let (endpoint, _) = handler.device_mut().realize_endpoint(0).expect("realize endpoint");
+        let (endpoint, _) = handler
+            .device_mut()
+            .realize_endpoint(0)
+            .expect("realize endpoint");
         let segment = handler
             .device_mut()
             .create_segment(endpoint, 4096)
@@ -450,7 +479,10 @@ mod tests {
         assert_ne!(irq & DeviceInterruptStatus::COMPLETION, 0);
 
         handler
-            .write(mmio.irq_ack_addr(endpoint), DeviceInterruptStatus::COMPLETION)
+            .write(
+                mmio.irq_ack_addr(endpoint),
+                DeviceInterruptStatus::COMPLETION,
+            )
             .expect("irq ack");
         let irq_after_ack = handler
             .read(mmio.irq_status_addr(endpoint))
@@ -466,12 +498,18 @@ mod tests {
         let topology = SimTopology::from_config(&config).expect("topology");
         let mut handler = QemuMmioHandler::new(LinquDeviceModel::new(topology));
         let mmio = handler.device().mmio();
-        let (endpoint, _) = handler.device_mut().realize_endpoint(0).expect("realize endpoint");
+        let (endpoint, _) = handler
+            .device_mut()
+            .realize_endpoint(0)
+            .expect("realize endpoint");
 
         let err = handler
             .write(mmio.cmdq_head_addr(endpoint), 1)
             .expect_err("cmdq head is read-only");
-        assert!(matches!(err, sim_core::SimError::InvalidInput("mmio register is read-only")));
+        assert!(matches!(
+            err,
+            sim_core::SimError::InvalidInput("mmio register is read-only")
+        ));
 
         let irq = handler
             .read(mmio.irq_status_addr(endpoint))
@@ -542,9 +580,15 @@ mod tests {
 
         let events = device.drain_cq(endpoint).expect("drain");
         assert_eq!(events.len(), 6);
-        assert!(events.iter().any(|event| event.source == CompletionSource::ShmemService));
-        assert!(events.iter().any(|event| event.source == CompletionSource::DfsService));
-        assert!(events.iter().any(|event| event.source == CompletionSource::DbService));
+        assert!(events
+            .iter()
+            .any(|event| event.source == CompletionSource::ShmemService));
+        assert!(events
+            .iter()
+            .any(|event| event.source == CompletionSource::DfsService));
+        assert!(events
+            .iter()
+            .any(|event| event.source == CompletionSource::DbService));
     }
 
     #[test]

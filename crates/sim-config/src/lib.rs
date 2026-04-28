@@ -50,7 +50,9 @@ impl ScenarioConfig {
             return Err(ConfigError::EmptyField("ub_runtime.active_levels"));
         }
         if self.pypto.scope_runtime.max_scope_depth == 0 {
-            return Err(ConfigError::NonPositive("pypto.scope_runtime.max_scope_depth"));
+            return Err(ConfigError::NonPositive(
+                "pypto.scope_runtime.max_scope_depth",
+            ));
         }
 
         for domain in &self.topology.ub_domains {
@@ -69,11 +71,16 @@ impl ScenarioConfig {
 
         self.levels.l2_ubpu_tier.validate("levels.l2_ubpu_tier")?;
         self.levels.l3_host_tier.validate("levels.l3_host_tier")?;
-        self.levels.l4_domain_tier.validate("levels.l4_domain_tier")?;
+        self.levels
+            .l4_domain_tier
+            .validate("levels.l4_domain_tier")?;
 
         match &self.workload {
             WorkloadConfig::HotsetLoop(cfg) => cfg.validate()?,
             WorkloadConfig::TraceReplay(cfg) => cfg.validate()?,
+            WorkloadConfig::DualNodeShmemMailbox(cfg) => cfg.validate()?,
+            WorkloadConfig::DualNodeBlockCompute(cfg) => cfg.validate()?,
+            WorkloadConfig::DualNodeCacheFill(cfg) => cfg.validate()?,
             WorkloadConfig::RustLlmMvp(cfg) => cfg.validate()?,
         }
 
@@ -309,6 +316,52 @@ impl TraceReplayWorkloadConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DualNodeShmemMailboxWorkloadConfig {
+    pub rounds: u64,
+    pub payload_bytes: u64,
+}
+
+impl DualNodeShmemMailboxWorkloadConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.rounds == 0 {
+            return Err(ConfigError::NonPositive("workload.rounds"));
+        }
+        if self.payload_bytes == 0 {
+            return Err(ConfigError::NonPositive("workload.payload_bytes"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DualNodeBlockComputeWorkloadConfig {
+    pub rounds: u64,
+}
+
+impl DualNodeBlockComputeWorkloadConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.rounds == 0 {
+            return Err(ConfigError::NonPositive("workload.rounds"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DualNodeCacheFillWorkloadConfig {
+    pub rounds: u64,
+}
+
+impl DualNodeCacheFillWorkloadConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.rounds == 0 {
+            return Err(ConfigError::NonPositive("workload.rounds"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RustLlmMvpWorkloadConfig {
     pub profile: String,
     pub qps: u64,
@@ -342,6 +395,12 @@ pub enum WorkloadConfig {
     HotsetLoop(HotsetLoopWorkloadConfig),
     #[serde(rename = "trace_replay")]
     TraceReplay(TraceReplayWorkloadConfig),
+    #[serde(rename = "dual_node_shmem_mailbox")]
+    DualNodeShmemMailbox(DualNodeShmemMailboxWorkloadConfig),
+    #[serde(rename = "dual_node_block_compute")]
+    DualNodeBlockCompute(DualNodeBlockComputeWorkloadConfig),
+    #[serde(rename = "dual_node_cache_fill")]
+    DualNodeCacheFill(DualNodeCacheFillWorkloadConfig),
     #[serde(rename = "rust_llm_server_mvp")]
     RustLlmMvp(RustLlmMvpWorkloadConfig),
 }

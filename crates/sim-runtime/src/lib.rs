@@ -1,12 +1,20 @@
 //! Runtime traits and orchestration glue.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::ffi::OsString;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
+use sim_chipbackend_simpler as simpler_capi;
 use sim_config::ScenarioConfig;
 use sim_core::{
-    BlockHash, BlockPlacement, CompletionEvent, CompletionSource, CompletionStatus, CopyDirection,
-    CopyRequest, DispatchHandle, DispatchRequest, OpId, PlLevel, RouteDecision, RouteReason,
-    ServiceOpHandle, SimEvent, SimTimestamp, TaskKey, TransferHandle,
+    BackendDispatchOperation, BackendExecutionRequest, BinaryArtifactRef, BlockHash,
+    BlockPlacement, CompletionEvent, CompletionSource, CompletionStatus, CopyDirection,
+    CopyRequest, DispatchBackendProfile, DispatchBackendSpec, DispatchBufferBinding,
+    DispatchHandle, DispatchRequest, DispatchRuntimeVariant, ExecutionContextCommand,
+    MemoryEndpoint, NodeId, OpId, PlLevel, RouteDecision, RouteReason, ServiceOpHandle,
+    SimEvent, SimTimestamp, SimplerRuntimeArg, TaskKey, TransferHandle,
 };
 use sim_topology::SimTopology;
 
@@ -326,7 +334,21 @@ pub enum RuntimeOpState {
 pub struct RuntimeOpRecord {
     pub op_id: OpId,
     pub kind: RuntimeOpKind,
+    pub backend_spec: Option<DispatchBackendSpec>,
+    pub request: Option<BackendExecutionRequest>,
+    pub copy_req: Option<CopyRequest>,
     pub task: TaskKey,
+    pub function_name: Option<String>,
+    pub request_id: Option<String>,
+    pub trace_id: Option<String>,
+    pub plan_id: Option<String>,
+    pub step_id: Option<String>,
+    pub step_kind: Option<String>,
+    pub device_context_id: Option<String>,
+    pub runtime_context_id: Option<String>,
+    pub target_level: Option<PlLevel>,
+    pub target_node: Option<NodeId>,
+    pub input_segment_count: usize,
     pub state: RuntimeOpState,
     pub submitted_at: SimTimestamp,
     pub issued_at: Option<SimTimestamp>,
@@ -339,6 +361,7 @@ pub struct RuntimeOpRecord {
 pub struct LocalRuntimeEngine {
     now: SimTimestamp,
     next_op_id: OpId,
+    backend_mode: ChipBackendMode,
     dispatch_latency_us: SimTimestamp,
     copy_latency_us: SimTimestamp,
     timeout_us: SimTimestamp,
@@ -346,17 +369,983 @@ pub struct LocalRuntimeEngine {
     submission_queue: SharedRuntimeExecutor<RuntimeWorkItem<()>>,
     inflight: Vec<RuntimeOpRecord>,
     completed: VecDeque<CompletionEvent>,
+    simpler_capi: SimplerCapiBackendState,
+    host_payloads: HostPayloadRegistry,
+    execution_contexts: ExecutionContextRegistry,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChipBackendMode {
+    LocalRuntime,
+    SimplerProcess,
+    SimplerCapi,
+}
+
+#[derive(Debug, Clone)]
+struct SimplerProcessRunner {
+    adapter_script: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SimplerDeviceAlloc {
+    #[allow(dead_code)]
+    ptr: simpler_capi::DevicePtr,
+    bytes: u64,
+}
+
+#[derive(Debug, Default)]
+struct SimplerCapiBackendState {
+    runtime_library: Option<SimplerLoadedRuntimeLibrary>,
+    device_allocs: HashMap<(NodeId, sim_core::SegmentHandle), SimplerDeviceAlloc>,
+}
+
+impl Drop for SimplerCapiBackendState {
+    fn drop(&mut self) {
+        if let Some(runtime_library) = self.runtime_library.take() {
+            std::mem::forget(runtime_library);
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct HostPayloadRegistry {
+    segments: HashMap<(NodeId, sim_core::SegmentHandle), Vec<u8>>,
+}
+
+#[derive(Debug, Clone)]
+struct DeviceContextRecord {
+    id: String,
+    state: ContextState,
+    generation: u64,
+    warm: bool,
+    reusable: bool,
+    created_at: SimTimestamp,
+    last_used_at: SimTimestamp,
+    dispatch_count: u64,
+    reset_count: u64,
+    teardown_count: u64,
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeContextRecord {
+    id: String,
+    device_context_id: String,
+    state: ContextState,
+    generation: u64,
+    warm: bool,
+    reusable: bool,
+    created_at: SimTimestamp,
+    last_used_at: SimTimestamp,
+    dispatch_count: u64,
+    reset_count: u64,
+    teardown_count: u64,
+    resident_bindings: HashMap<String, DispatchBufferBinding>,
+}
+
+#[derive(Debug, Default)]
+struct ExecutionContextRegistry {
+    device_contexts: HashMap<String, DeviceContextRecord>,
+    runtime_contexts: HashMap<String, RuntimeContextRecord>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextState {
+    Active,
+    Closed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceContextSnapshot {
+    pub id: String,
+    pub state: ContextState,
+    pub generation: u64,
+    pub warm: bool,
+    pub reusable: bool,
+    pub created_at: SimTimestamp,
+    pub last_used_at: SimTimestamp,
+    pub dispatch_count: u64,
+    pub reset_count: u64,
+    pub teardown_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeContextSnapshot {
+    pub id: String,
+    pub device_context_id: String,
+    pub state: ContextState,
+    pub generation: u64,
+    pub warm: bool,
+    pub reusable: bool,
+    pub created_at: SimTimestamp,
+    pub last_used_at: SimTimestamp,
+    pub dispatch_count: u64,
+    pub reset_count: u64,
+    pub teardown_count: u64,
+    pub resident_binding_count: usize,
+}
+
+#[derive(Debug)]
+struct SimplerLoadedRuntimeLibrary {
+    path: PathBuf,
+    api: simpler_capi::RuntimeLibrary,
+}
+
+struct EnvGuard {
+    saved: Vec<(OsString, Option<OsString>)>,
+}
+
+impl EnvGuard {
+    fn apply(overrides: &std::collections::BTreeMap<String, String>) -> Self {
+        let mut saved = Vec::with_capacity(overrides.len());
+        for (key, value) in overrides {
+            let key_os = OsString::from(key);
+            saved.push((key_os.clone(), std::env::var_os(key)));
+            unsafe {
+                std::env::set_var(key_os, value);
+            }
+        }
+        Self { saved }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        for (key, previous) in self.saved.drain(..).rev() {
+            match previous {
+                Some(value) => unsafe {
+                    std::env::set_var(&key, value);
+                },
+                None => unsafe {
+                    std::env::remove_var(&key);
+                },
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SimplerDispatchManifest {
+    version: u32,
+    op_id: OpId,
+    task: String,
+    request_id: Option<String>,
+    trace_id: Option<String>,
+    plan_id: Option<String>,
+    step_id: Option<String>,
+    step_kind: Option<String>,
+    device_context_id: Option<String>,
+    runtime_context_id: Option<String>,
+    function_name: Option<String>,
+    target_level: Option<String>,
+    target_node: Option<NodeId>,
+    input_segment_count: usize,
+    binding_count: usize,
+    profile: Option<String>,
+    platform: String,
+    runtime_variant: Option<String>,
+    callable_hint: Option<String>,
+    block_hash: Option<String>,
+    request_index: Option<u64>,
+    block_index: Option<u64>,
+    request_blocks_total: Option<u64>,
+    blocks_remaining_in_request: Option<u64>,
+    is_first_block_in_request: bool,
+    is_last_block_in_request: bool,
+    request_control_phase: Option<String>,
+    request_control_epoch: Option<u64>,
+    request_control_result_kind: Option<String>,
+    request_control_result_value: Option<u64>,
+    request_control_view_kind: Option<String>,
+    kvcache_resolution_kind: Option<String>,
+    kvcache_view_kind: Option<String>,
+    logical_system_id: Option<u32>,
+    scope_depth: Option<u32>,
+    prefix_group: Option<u64>,
+    route_from_level: Option<String>,
+    route_to_level: Option<String>,
+    route_selected_node: Option<NodeId>,
+    route_reason: Option<String>,
+    placement_level: Option<String>,
+    placement_node: Option<NodeId>,
+    capacity_pressure_active: bool,
+    evictions_seen: u64,
+    block_writebacks_seen: u64,
+    promoted_this_access: bool,
+    reloaded_after_eviction: bool,
+    uses_dfs_fallback: bool,
+    includes_request_control: bool,
+    includes_prefix_shared: bool,
+    hot_segment: Option<u64>,
+    request_segment: Option<u64>,
+    control_segment: Option<u64>,
+    prefix_segment: Option<u64>,
+}
+
+impl SimplerProcessRunner {
+    fn from_env() -> Self {
+        Self {
+            adapter_script: default_simpler_dispatch_script(),
+        }
+    }
+
+    fn run_dispatch_example(
+        &self,
+        op_id: OpId,
+        op: &RuntimeOpRecord,
+        backend_spec: Option<&DispatchBackendSpec>,
+    ) -> Result<(), String> {
+        validate_simpler_dispatch_spec(backend_spec)?;
+        validate_simpler_capi_dispatch_spec(backend_spec, op.request.as_ref())?;
+        let manifest = simpler_dispatch_manifest(op_id, op, backend_spec);
+        let manifest_path = write_simpler_dispatch_manifest(op_id, &manifest)?;
+        let mut command = Command::new(&self.adapter_script);
+        if let Ok(python_bin) = std::env::var("SIMPLER_PYTHON") {
+            command.env("SIMPLER_PYTHON", python_bin);
+        }
+        if let Ok(simpler_root) = std::env::var("SIMPLER_PROJECT_ROOT") {
+            command.env("SIMPLER_PROJECT_ROOT", simpler_root);
+        }
+        let status = command
+            .arg("--manifest")
+            .arg(&manifest_path)
+            .status()
+            .map_err(|err| format!("spawn_failed:{err}"))?;
+        let _ = fs::remove_file(&manifest_path);
+
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("runner_exit:{status}"))
+        }
+    }
+}
+
+fn default_simpler_dispatch_script() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(3)
+        .unwrap_or_else(|| Path::new("."))
+        .join("simulator")
+        .join("scripts")
+        .join("run_simpler_dispatch.sh")
+}
+
+fn load_binary_artifact(artifact: &BinaryArtifactRef) -> Result<Vec<u8>, String> {
+    fs::read(&artifact.source)
+        .map_err(|err| format!("artifact_read_failed:{}:{err}", artifact.source))
+}
+
+fn ensure_simpler_runtime_library<'a>(
+    state: &'a mut SimplerCapiBackendState,
+    artifact: &BinaryArtifactRef,
+) -> Result<&'a simpler_capi::RuntimeLibrary, String> {
+    let expected = PathBuf::from(&artifact.source);
+    let path_changed = match state.runtime_library.as_ref() {
+        Some(loaded) => loaded.path != expected,
+        None => false,
+    };
+    if path_changed {
+        if let Some(runtime_library) = state.runtime_library.take() {
+            std::mem::forget(runtime_library);
+        }
+    }
+    if state.runtime_library.is_none() {
+        let api = simpler_capi::RuntimeLibrary::load(&expected)
+            .map_err(|err| format!("simpler_capi_load_runtime_library_failed:{err}"))?;
+        state.runtime_library = Some(SimplerLoadedRuntimeLibrary {
+            path: expected,
+            api,
+        });
+    }
+    Ok(&state.runtime_library.as_ref().expect("runtime library").api)
+}
+
+fn validate_simpler_capi_dispatch_spec(
+    backend_spec: Option<&DispatchBackendSpec>,
+    request: Option<&BackendExecutionRequest>,
+) -> Result<(), String> {
+    let backend_spec = backend_spec.ok_or_else(|| "missing_backend_spec".to_string())?;
+    let runtime = backend_spec
+        .simpler_runtime
+        .as_ref()
+        .ok_or_else(|| "missing_simpler_runtime_artifacts".to_string())?;
+    if runtime.args.is_empty() {
+        return Err("missing_simpler_runtime_args".to_string());
+    }
+    if let Some(request) = request {
+        let request_bindings: Vec<_> = request
+            .bindings
+            .iter()
+            .filter(|binding| !binding.resident)
+            .collect();
+        if request_bindings.is_empty() {
+            return Err("missing_request_bindings".to_string());
+        }
+        let runtime_buffer_args = runtime
+            .args
+            .iter()
+            .filter(|arg| {
+                matches!(
+                    arg,
+                    SimplerRuntimeArg::InputSegment { .. }
+                        | SimplerRuntimeArg::OutputSegment { .. }
+                        | SimplerRuntimeArg::InoutSegment { .. }
+                )
+            })
+            .count();
+        if request_bindings.len() != runtime_buffer_args {
+            return Err(format!(
+                "binding_arg_count_mismatch:{}:{runtime_buffer_args}",
+                request_bindings.len()
+            ));
+        }
+        for (binding, arg) in request_bindings
+            .into_iter()
+            .zip(runtime.args.iter().filter(|arg| {
+                matches!(
+                    arg,
+                    SimplerRuntimeArg::InputSegment { .. }
+                        | SimplerRuntimeArg::OutputSegment { .. }
+                        | SimplerRuntimeArg::InoutSegment { .. }
+                )
+            }))
+        {
+            let (endpoint, bytes, usage_ok) = match arg {
+                SimplerRuntimeArg::InputSegment { endpoint, bytes } => (
+                    endpoint,
+                    *bytes,
+                    matches!(binding.usage, sim_core::BufferUsage::Input),
+                ),
+                SimplerRuntimeArg::OutputSegment { endpoint, bytes } => (
+                    endpoint,
+                    *bytes,
+                    matches!(binding.usage, sim_core::BufferUsage::Output),
+                ),
+                SimplerRuntimeArg::InoutSegment { endpoint, bytes } => (
+                    endpoint,
+                    *bytes,
+                    matches!(binding.usage, sim_core::BufferUsage::Inout),
+                ),
+                SimplerRuntimeArg::ScalarU64(_) => unreachable!(),
+            };
+            if !usage_ok {
+                return Err(format!("binding_usage_mismatch:{}", binding.name));
+            }
+            if binding.endpoint != *endpoint {
+                return Err(format!("binding_endpoint_mismatch:{}", binding.name));
+            }
+            if binding.bytes != bytes {
+                return Err(format!("binding_size_mismatch:{}", binding.name));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn simpler_dispatch_manifest(
+    op_id: OpId,
+    op: &RuntimeOpRecord,
+    backend_spec: Option<&DispatchBackendSpec>,
+) -> SimplerDispatchManifest {
+    SimplerDispatchManifest {
+        version: 1,
+        op_id,
+        task: op.task.task_id.to_string(),
+        request_id: op.request_id.clone(),
+        trace_id: op.trace_id.clone(),
+        plan_id: op.plan_id.clone(),
+        step_id: op.step_id.clone(),
+        step_kind: op.step_kind.clone(),
+        device_context_id: op.device_context_id.clone(),
+        runtime_context_id: op.runtime_context_id.clone(),
+        function_name: op.function_name.clone(),
+        target_level: op.target_level.map(|level| format!("{level:?}")),
+        target_node: op.target_node,
+        input_segment_count: op.input_segment_count,
+        binding_count: op
+            .request
+            .as_ref()
+            .map(|request| request.bindings.len())
+            .unwrap_or(0),
+        profile: backend_spec
+            .map(|dispatch_spec| backend_profile_name(dispatch_spec.profile).into()),
+        platform: backend_spec
+            .map(|dispatch_spec| dispatch_spec.platform.clone())
+            .unwrap_or_else(|| "a2a3sim".to_string()),
+        runtime_variant: backend_spec
+            .map(|dispatch_spec| runtime_variant_name(dispatch_spec.runtime_variant).into()),
+        callable_hint: backend_spec.and_then(|dispatch_spec| dispatch_spec.callable_hint.clone()),
+        block_hash: backend_spec.and_then(|dispatch_spec| {
+            dispatch_spec
+                .context
+                .as_ref()
+                .and_then(|context| context.block_hash.clone())
+        }),
+        request_index: backend_spec.and_then(|dispatch_spec| {
+            dispatch_spec
+                .context
+                .as_ref()
+                .and_then(|context| context.request_index)
+        }),
+        block_index: backend_spec.and_then(|dispatch_spec| {
+            dispatch_spec
+                .context
+                .as_ref()
+                .and_then(|context| context.block_index)
+        }),
+        request_blocks_total: backend_spec.and_then(|dispatch_spec| {
+            dispatch_spec
+                .context
+                .as_ref()
+                .and_then(|context| context.request_blocks_total)
+        }),
+        blocks_remaining_in_request: backend_spec.and_then(|dispatch_spec| {
+            dispatch_spec
+                .context
+                .as_ref()
+                .and_then(|context| context.blocks_remaining_in_request)
+        }),
+        is_first_block_in_request: backend_spec
+            .and_then(|dispatch_spec| {
+                dispatch_spec
+                    .context
+                    .as_ref()
+                    .map(|context| context.is_first_block_in_request)
+            })
+            .unwrap_or(false),
+        is_last_block_in_request: backend_spec
+            .and_then(|dispatch_spec| {
+                dispatch_spec
+                    .context
+                    .as_ref()
+                    .map(|context| context.is_last_block_in_request)
+            })
+            .unwrap_or(false),
+        request_control_phase: backend_spec.and_then(|dispatch_spec| {
+            dispatch_spec
+                .context
+                .as_ref()
+                .and_then(|context| context.request_control_phase.clone())
+        }),
+        request_control_epoch: backend_spec.and_then(|dispatch_spec| {
+            dispatch_spec
+                .context
+                .as_ref()
+                .and_then(|context| context.request_control_epoch)
+        }),
+        request_control_result_kind: backend_spec.and_then(|dispatch_spec| {
+            dispatch_spec
+                .context
+                .as_ref()
+                .and_then(|context| context.request_control_result_kind.clone())
+        }),
+        request_control_result_value: backend_spec.and_then(|dispatch_spec| {
+            dispatch_spec
+                .context
+                .as_ref()
+                .and_then(|context| context.request_control_result_value)
+        }),
+        request_control_view_kind: backend_spec.and_then(|dispatch_spec| {
+            dispatch_spec
+                .context
+                .as_ref()
+                .and_then(|context| context.request_control_view_kind.clone())
+        }),
+        kvcache_resolution_kind: backend_spec.and_then(|dispatch_spec| {
+            dispatch_spec
+                .context
+                .as_ref()
+                .and_then(|context| context.kvcache_resolution_kind.clone())
+        }),
+        kvcache_view_kind: backend_spec.and_then(|dispatch_spec| {
+            dispatch_spec
+                .context
+                .as_ref()
+                .and_then(|context| context.kvcache_view_kind.clone())
+        }),
+        logical_system_id: backend_spec.and_then(|dispatch_spec| {
+            dispatch_spec
+                .context
+                .as_ref()
+                .and_then(|context| context.logical_system_id)
+        }),
+        scope_depth: backend_spec.and_then(|dispatch_spec| {
+            dispatch_spec
+                .context
+                .as_ref()
+                .and_then(|context| context.scope_depth)
+        }),
+        prefix_group: backend_spec.and_then(|dispatch_spec| {
+            dispatch_spec
+                .context
+                .as_ref()
+                .and_then(|context| context.prefix_group)
+        }),
+        route_from_level: backend_spec.and_then(|dispatch_spec| {
+            dispatch_spec
+                .context
+                .as_ref()
+                .and_then(|context| context.route_from_level.clone())
+        }),
+        route_to_level: backend_spec.and_then(|dispatch_spec| {
+            dispatch_spec
+                .context
+                .as_ref()
+                .and_then(|context| context.route_to_level.clone())
+        }),
+        route_selected_node: backend_spec.and_then(|dispatch_spec| {
+            dispatch_spec
+                .context
+                .as_ref()
+                .and_then(|context| context.route_selected_node)
+        }),
+        route_reason: backend_spec.and_then(|dispatch_spec| {
+            dispatch_spec
+                .context
+                .as_ref()
+                .and_then(|context| context.route_reason.clone())
+        }),
+        placement_level: backend_spec.and_then(|dispatch_spec| {
+            dispatch_spec
+                .context
+                .as_ref()
+                .and_then(|context| context.placement_level.clone())
+        }),
+        placement_node: backend_spec.and_then(|dispatch_spec| {
+            dispatch_spec
+                .context
+                .as_ref()
+                .and_then(|context| context.placement_node)
+        }),
+        capacity_pressure_active: backend_spec
+            .and_then(|dispatch_spec| {
+                dispatch_spec
+                    .context
+                    .as_ref()
+                    .map(|context| context.capacity_pressure_active)
+            })
+            .unwrap_or(false),
+        evictions_seen: backend_spec
+            .and_then(|dispatch_spec| {
+                dispatch_spec
+                    .context
+                    .as_ref()
+                    .map(|context| context.evictions_seen)
+            })
+            .unwrap_or(0),
+        block_writebacks_seen: backend_spec
+            .and_then(|dispatch_spec| {
+                dispatch_spec
+                    .context
+                    .as_ref()
+                    .map(|context| context.block_writebacks_seen)
+            })
+            .unwrap_or(0),
+        promoted_this_access: backend_spec
+            .and_then(|dispatch_spec| {
+                dispatch_spec
+                    .context
+                    .as_ref()
+                    .map(|context| context.promoted_this_access)
+            })
+            .unwrap_or(false),
+        reloaded_after_eviction: backend_spec
+            .and_then(|dispatch_spec| {
+                dispatch_spec
+                    .context
+                    .as_ref()
+                    .map(|context| context.reloaded_after_eviction)
+            })
+            .unwrap_or(false),
+        uses_dfs_fallback: backend_spec
+            .and_then(|dispatch_spec| {
+                dispatch_spec
+                    .context
+                    .as_ref()
+                    .map(|context| context.uses_dfs_fallback)
+            })
+            .unwrap_or(false),
+        includes_request_control: backend_spec
+            .and_then(|dispatch_spec| {
+                dispatch_spec
+                    .context
+                    .as_ref()
+                    .map(|context| context.includes_request_control)
+            })
+            .unwrap_or(false),
+        includes_prefix_shared: backend_spec
+            .and_then(|dispatch_spec| {
+                dispatch_spec
+                    .context
+                    .as_ref()
+                    .map(|context| context.includes_prefix_shared)
+            })
+            .unwrap_or(false),
+        hot_segment: backend_spec.and_then(|dispatch_spec| {
+            dispatch_spec
+                .context
+                .as_ref()
+                .and_then(|context| context.hot_segment)
+        }),
+        request_segment: backend_spec.and_then(|dispatch_spec| {
+            dispatch_spec
+                .context
+                .as_ref()
+                .and_then(|context| context.request_segment)
+        }),
+        control_segment: backend_spec.and_then(|dispatch_spec| {
+            dispatch_spec
+                .context
+                .as_ref()
+                .and_then(|context| context.control_segment)
+        }),
+        prefix_segment: backend_spec.and_then(|dispatch_spec| {
+            dispatch_spec
+                .context
+                .as_ref()
+                .and_then(|context| context.prefix_segment)
+        }),
+    }
+}
+
+fn write_simpler_dispatch_manifest(
+    op_id: OpId,
+    manifest: &SimplerDispatchManifest,
+) -> Result<PathBuf, String> {
+    let path = std::env::temp_dir().join(format!("simpler-dispatch-{op_id}.env"));
+    let mut content = String::new();
+    content.push_str("MANIFEST_VERSION=");
+    content.push_str(&manifest.version.to_string());
+    content.push('\n');
+    content.push_str("OP_ID=");
+    content.push_str(&manifest.op_id.to_string());
+    content.push('\n');
+    content.push_str("TASK_ID=");
+    content.push_str(&manifest.task);
+    content.push('\n');
+    if let Some(request_id) = manifest.request_id.as_deref() {
+        content.push_str("REQUEST_ID=");
+        content.push_str(request_id);
+        content.push('\n');
+    }
+    if let Some(trace_id) = manifest.trace_id.as_deref() {
+        content.push_str("TRACE_ID=");
+        content.push_str(trace_id);
+        content.push('\n');
+    }
+    if let Some(plan_id) = manifest.plan_id.as_deref() {
+        content.push_str("PLAN_ID=");
+        content.push_str(plan_id);
+        content.push('\n');
+    }
+    if let Some(step_id) = manifest.step_id.as_deref() {
+        content.push_str("STEP_ID=");
+        content.push_str(step_id);
+        content.push('\n');
+    }
+    if let Some(step_kind) = manifest.step_kind.as_deref() {
+        content.push_str("STEP_KIND=");
+        content.push_str(step_kind);
+        content.push('\n');
+    }
+    if let Some(device_context_id) = manifest.device_context_id.as_deref() {
+        content.push_str("DEVICE_CONTEXT_ID=");
+        content.push_str(device_context_id);
+        content.push('\n');
+    }
+    if let Some(runtime_context_id) = manifest.runtime_context_id.as_deref() {
+        content.push_str("RUNTIME_CONTEXT_ID=");
+        content.push_str(runtime_context_id);
+        content.push('\n');
+    }
+    if let Some(function_name) = manifest.function_name.as_deref() {
+        content.push_str("FUNCTION_NAME=");
+        content.push_str(function_name);
+        content.push('\n');
+    }
+    if let Some(target_level) = manifest.target_level.as_deref() {
+        content.push_str("TARGET_LEVEL=");
+        content.push_str(target_level);
+        content.push('\n');
+    }
+    if let Some(target_node) = manifest.target_node {
+        content.push_str("TARGET_NODE=");
+        content.push_str(&target_node.to_string());
+        content.push('\n');
+    }
+    content.push_str("INPUT_SEGMENT_COUNT=");
+    content.push_str(&manifest.input_segment_count.to_string());
+    content.push('\n');
+    content.push_str("BINDING_COUNT=");
+    content.push_str(&manifest.binding_count.to_string());
+    content.push('\n');
+    if let Some(profile) = manifest.profile.as_deref() {
+        content.push_str("PROFILE=");
+        content.push_str(profile);
+        content.push('\n');
+    }
+    content.push_str("PLATFORM=");
+    content.push_str(&manifest.platform);
+    content.push('\n');
+    if let Some(runtime_variant) = manifest.runtime_variant.as_deref() {
+        content.push_str("RUNTIME_VARIANT=");
+        content.push_str(runtime_variant);
+        content.push('\n');
+    }
+    if let Some(callable_hint) = manifest.callable_hint.as_deref() {
+        content.push_str("CALLABLE_HINT=");
+        content.push_str(callable_hint);
+        content.push('\n');
+    }
+    if let Some(block_hash) = manifest.block_hash.as_deref() {
+        content.push_str("BLOCK_HASH=");
+        content.push_str(block_hash);
+        content.push('\n');
+    }
+    if let Some(request_index) = manifest.request_index {
+        content.push_str("REQUEST_INDEX=");
+        content.push_str(&request_index.to_string());
+        content.push('\n');
+    }
+    if let Some(block_index) = manifest.block_index {
+        content.push_str("BLOCK_INDEX=");
+        content.push_str(&block_index.to_string());
+        content.push('\n');
+    }
+    if let Some(request_blocks_total) = manifest.request_blocks_total {
+        content.push_str("REQUEST_BLOCKS_TOTAL=");
+        content.push_str(&request_blocks_total.to_string());
+        content.push('\n');
+    }
+    if let Some(blocks_remaining_in_request) = manifest.blocks_remaining_in_request {
+        content.push_str("BLOCKS_REMAINING_IN_REQUEST=");
+        content.push_str(&blocks_remaining_in_request.to_string());
+        content.push('\n');
+    }
+    content.push_str("IS_FIRST_BLOCK_IN_REQUEST=");
+    content.push_str(if manifest.is_first_block_in_request {
+        "1"
+    } else {
+        "0"
+    });
+    content.push('\n');
+    content.push_str("IS_LAST_BLOCK_IN_REQUEST=");
+    content.push_str(if manifest.is_last_block_in_request {
+        "1"
+    } else {
+        "0"
+    });
+    content.push('\n');
+    if let Some(request_control_phase) = manifest.request_control_phase.as_deref() {
+        content.push_str("REQUEST_CONTROL_PHASE=");
+        content.push_str(request_control_phase);
+        content.push('\n');
+    }
+    if let Some(request_control_epoch) = manifest.request_control_epoch {
+        content.push_str("REQUEST_CONTROL_EPOCH=");
+        content.push_str(&request_control_epoch.to_string());
+        content.push('\n');
+    }
+    if let Some(request_control_result_kind) = manifest.request_control_result_kind.as_deref() {
+        content.push_str("REQUEST_CONTROL_RESULT_KIND=");
+        content.push_str(request_control_result_kind);
+        content.push('\n');
+    }
+    if let Some(request_control_result_value) = manifest.request_control_result_value {
+        content.push_str("REQUEST_CONTROL_RESULT_VALUE=");
+        content.push_str(&request_control_result_value.to_string());
+        content.push('\n');
+    }
+    if let Some(request_control_view_kind) = manifest.request_control_view_kind.as_deref() {
+        content.push_str("REQUEST_CONTROL_VIEW_KIND=");
+        content.push_str(request_control_view_kind);
+        content.push('\n');
+    }
+    if let Some(kvcache_resolution_kind) = manifest.kvcache_resolution_kind.as_deref() {
+        content.push_str("KVCACHE_RESOLUTION_KIND=");
+        content.push_str(kvcache_resolution_kind);
+        content.push('\n');
+    }
+    if let Some(kvcache_view_kind) = manifest.kvcache_view_kind.as_deref() {
+        content.push_str("KVCACHE_VIEW_KIND=");
+        content.push_str(kvcache_view_kind);
+        content.push('\n');
+    }
+    if let Some(logical_system_id) = manifest.logical_system_id {
+        content.push_str("LOGICAL_SYSTEM_ID=");
+        content.push_str(&logical_system_id.to_string());
+        content.push('\n');
+    }
+    if let Some(scope_depth) = manifest.scope_depth {
+        content.push_str("SCOPE_DEPTH=");
+        content.push_str(&scope_depth.to_string());
+        content.push('\n');
+    }
+    if let Some(prefix_group) = manifest.prefix_group {
+        content.push_str("PREFIX_GROUP=");
+        content.push_str(&prefix_group.to_string());
+        content.push('\n');
+    }
+    if let Some(route_from_level) = manifest.route_from_level.as_deref() {
+        content.push_str("ROUTE_FROM_LEVEL=");
+        content.push_str(route_from_level);
+        content.push('\n');
+    }
+    if let Some(route_to_level) = manifest.route_to_level.as_deref() {
+        content.push_str("ROUTE_TO_LEVEL=");
+        content.push_str(route_to_level);
+        content.push('\n');
+    }
+    if let Some(route_selected_node) = manifest.route_selected_node {
+        content.push_str("ROUTE_SELECTED_NODE=");
+        content.push_str(&route_selected_node.to_string());
+        content.push('\n');
+    }
+    if let Some(route_reason) = manifest.route_reason.as_deref() {
+        content.push_str("ROUTE_REASON=");
+        content.push_str(route_reason);
+        content.push('\n');
+    }
+    if let Some(placement_level) = manifest.placement_level.as_deref() {
+        content.push_str("PLACEMENT_LEVEL=");
+        content.push_str(placement_level);
+        content.push('\n');
+    }
+    if let Some(placement_node) = manifest.placement_node {
+        content.push_str("PLACEMENT_NODE=");
+        content.push_str(&placement_node.to_string());
+        content.push('\n');
+    }
+    content.push_str("CAPACITY_PRESSURE_ACTIVE=");
+    content.push_str(if manifest.capacity_pressure_active {
+        "1"
+    } else {
+        "0"
+    });
+    content.push('\n');
+    content.push_str("EVICTIONS_SEEN=");
+    content.push_str(&manifest.evictions_seen.to_string());
+    content.push('\n');
+    content.push_str("BLOCK_WRITEBACKS_SEEN=");
+    content.push_str(&manifest.block_writebacks_seen.to_string());
+    content.push('\n');
+    content.push_str("PROMOTED_THIS_ACCESS=");
+    content.push_str(if manifest.promoted_this_access {
+        "1"
+    } else {
+        "0"
+    });
+    content.push('\n');
+    content.push_str("RELOADED_AFTER_EVICTION=");
+    content.push_str(if manifest.reloaded_after_eviction {
+        "1"
+    } else {
+        "0"
+    });
+    content.push('\n');
+    content.push_str("USES_DFS_FALLBACK=");
+    content.push_str(if manifest.uses_dfs_fallback { "1" } else { "0" });
+    content.push('\n');
+    content.push_str("INCLUDES_REQUEST_CONTROL=");
+    content.push_str(if manifest.includes_request_control {
+        "1"
+    } else {
+        "0"
+    });
+    content.push('\n');
+    content.push_str("INCLUDES_PREFIX_SHARED=");
+    content.push_str(if manifest.includes_prefix_shared {
+        "1"
+    } else {
+        "0"
+    });
+    content.push('\n');
+    if let Some(hot_segment) = manifest.hot_segment {
+        content.push_str("HOT_SEGMENT=");
+        content.push_str(&hot_segment.to_string());
+        content.push('\n');
+    }
+    if let Some(request_segment) = manifest.request_segment {
+        content.push_str("REQUEST_SEGMENT=");
+        content.push_str(&request_segment.to_string());
+        content.push('\n');
+    }
+    if let Some(control_segment) = manifest.control_segment {
+        content.push_str("CONTROL_SEGMENT=");
+        content.push_str(&control_segment.to_string());
+        content.push('\n');
+    }
+    if let Some(prefix_segment) = manifest.prefix_segment {
+        content.push_str("PREFIX_SEGMENT=");
+        content.push_str(&prefix_segment.to_string());
+        content.push('\n');
+    }
+    fs::write(&path, content).map_err(|err| format!("manifest_write_failed:{err}"))?;
+    Ok(path)
+}
+
+fn backend_profile_name(profile: DispatchBackendProfile) -> &'static str {
+    match profile {
+        DispatchBackendProfile::HostVector => "host_vector",
+        DispatchBackendProfile::TmrbVector => "tmrb_vector",
+        DispatchBackendProfile::HostMatmul => "host_matmul",
+    }
+}
+
+fn runtime_variant_name(runtime_variant: DispatchRuntimeVariant) -> &'static str {
+    match runtime_variant {
+        DispatchRuntimeVariant::HostBuildGraph => "host_build_graph",
+        DispatchRuntimeVariant::TensormapAndRingbuffer => "tensormap_and_ringbuffer",
+    }
+}
+
+fn validate_simpler_dispatch_spec(
+    backend_spec: Option<&DispatchBackendSpec>,
+) -> Result<(), String> {
+    if let Some(spec) = backend_spec {
+        if spec.platform != "a2a3sim" {
+            return Err(format!("unsupported_platform:{}", spec.platform));
+        }
+    }
+
+    if let Some(dispatch_spec) = backend_spec {
+        match (&dispatch_spec.profile, &dispatch_spec.runtime_variant) {
+            (
+                DispatchBackendProfile::TmrbVector,
+                DispatchRuntimeVariant::TensormapAndRingbuffer,
+            )
+            | (DispatchBackendProfile::HostMatmul, DispatchRuntimeVariant::HostBuildGraph)
+            | (DispatchBackendProfile::HostVector, DispatchRuntimeVariant::HostBuildGraph) => {}
+            (profile, runtime_variant) => {
+                return Err(format!(
+                    "unsupported_runtime_variant:{profile:?}:{runtime_variant:?}"
+                ));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 impl LocalRuntimeEngine {
     pub fn from_config(config: &ScenarioConfig) -> Self {
-        Self::with_policy(
-            config.pypto.simpler_boundary.dispatch_latency_us.unwrap_or(1),
+        let mut engine = Self::with_policy(
+            config
+                .pypto
+                .simpler_boundary
+                .dispatch_latency_us
+                .unwrap_or(1),
             config.levels.l3_host_tier.fetch_latency_us.unwrap_or(1),
             config.levels.l4_domain_tier.fetch_latency_us.unwrap_or(80),
             (config.topology.hosts * config.topology.ubpus_per_host) as usize,
             1,
-        )
+        );
+        engine.backend_mode = match config.pypto.simpler_boundary.chip_backend_mode.as_str() {
+            "simpler_process" => ChipBackendMode::SimplerProcess,
+            "simpler_capi" => ChipBackendMode::SimplerCapi,
+            _ => ChipBackendMode::LocalRuntime,
+        };
+        engine
     }
 
     pub fn with_policy(
@@ -369,6 +1358,7 @@ impl LocalRuntimeEngine {
         Self {
             now: 0,
             next_op_id: 0,
+            backend_mode: ChipBackendMode::LocalRuntime,
             dispatch_latency_us,
             copy_latency_us,
             timeout_us,
@@ -376,11 +1366,773 @@ impl LocalRuntimeEngine {
             submission_queue: SharedRuntimeExecutor::with_policy(0, 0, max_inflight, max_retries),
             inflight: Vec::new(),
             completed: VecDeque::new(),
+            simpler_capi: SimplerCapiBackendState::default(),
+            host_payloads: HostPayloadRegistry::default(),
+            execution_contexts: ExecutionContextRegistry::default(),
         }
     }
 
     pub fn now(&self) -> SimTimestamp {
         self.now
+    }
+
+    pub fn seed_host_segment(
+        &mut self,
+        node: NodeId,
+        segment: sim_core::SegmentHandle,
+        bytes: Vec<u8>,
+    ) {
+        self.host_payloads.segments.insert((node, segment), bytes);
+    }
+
+    pub fn host_segment_payload(
+        &self,
+        node: NodeId,
+        segment: sim_core::SegmentHandle,
+    ) -> Option<&[u8]> {
+        self.host_payloads
+            .segments
+            .get(&(node, segment))
+            .map(Vec::as_slice)
+    }
+
+    pub fn device_context_snapshot(&self, id: &str) -> Option<DeviceContextSnapshot> {
+        self.execution_contexts
+            .device_contexts
+            .get(id)
+            .map(|record| DeviceContextSnapshot {
+                id: record.id.clone(),
+                state: record.state,
+                generation: record.generation,
+                warm: record.warm,
+                reusable: record.reusable,
+                created_at: record.created_at,
+                last_used_at: record.last_used_at,
+                dispatch_count: record.dispatch_count,
+                reset_count: record.reset_count,
+                teardown_count: record.teardown_count,
+            })
+    }
+
+    pub fn runtime_context_snapshot(&self, id: &str) -> Option<RuntimeContextSnapshot> {
+        self.execution_contexts
+            .runtime_contexts
+            .get(id)
+            .map(|record| RuntimeContextSnapshot {
+                id: record.id.clone(),
+                device_context_id: record.device_context_id.clone(),
+                state: record.state,
+                generation: record.generation,
+                warm: record.warm,
+                reusable: record.reusable,
+                created_at: record.created_at,
+                last_used_at: record.last_used_at,
+                dispatch_count: record.dispatch_count,
+                reset_count: record.reset_count,
+                teardown_count: record.teardown_count,
+                resident_binding_count: record.resident_bindings.len(),
+            })
+    }
+
+    pub fn apply_execution_context_command(
+        &mut self,
+        cmd: ExecutionContextCommand,
+    ) -> Result<(), sim_core::SimError> {
+        let request = BackendExecutionRequest {
+            correlation: sim_core::RequestCorrelation {
+                request_id: format!("context-cmd-{}", self.next_op_id.saturating_add(1)),
+                trace_id: None,
+                op_name: Some("execution_context_command".into()),
+                step_index: None,
+                sequence_no: None,
+            },
+            plan: None,
+            context: Some(sim_core::ExecutionContextRef {
+                device_context_id: cmd.device_context_id,
+                runtime_context_id: cmd.runtime_context_id,
+                lifecycle: cmd.lifecycle,
+                warm: cmd.warm,
+                reusable: cmd.reusable,
+            }),
+            bindings: Vec::new(),
+        };
+        self.touch_execution_contexts(Some(&request))
+    }
+
+    fn update_resident_bindings(
+        &mut self,
+        request: &BackendExecutionRequest,
+    ) -> Result<(), sim_core::SimError> {
+        let Some(context) = request.context.as_ref() else {
+            return Ok(());
+        };
+        let Some(runtime_context_id) = context.runtime_context_id.as_ref() else {
+            return Ok(());
+        };
+        let Some(runtime_context) = self
+            .execution_contexts
+            .runtime_contexts
+            .get_mut(runtime_context_id)
+        else {
+            return Ok(());
+        };
+
+        match context.lifecycle {
+            sim_core::ExecutionLifecycle::Reset | sim_core::ExecutionLifecycle::Teardown => {
+                runtime_context.resident_bindings.clear();
+                return Ok(());
+            }
+            _ => {}
+        }
+
+        for binding in request.bindings.iter().filter(|binding| binding.resident) {
+            if let Some(existing) = runtime_context.resident_bindings.get(&binding.name) {
+                if existing.endpoint != binding.endpoint
+                    || existing.bytes != binding.bytes
+                    || existing.dtype != binding.dtype
+                    || existing.shape != binding.shape
+                    || existing.layout != binding.layout
+                    || existing.strides != binding.strides
+                {
+                    return Err(sim_core::SimError::InvalidInput(
+                        "resident_binding_mismatch",
+                    ));
+                }
+            } else {
+                runtime_context
+                    .resident_bindings
+                    .insert(binding.name.clone(), binding.clone());
+            }
+        }
+
+        Ok(())
+    }
+
+    fn touch_execution_contexts(
+        &mut self,
+        request: Option<&BackendExecutionRequest>,
+    ) -> Result<(), sim_core::SimError> {
+        let Some(request) = request else {
+            return Ok(());
+        };
+        let Some(context) = request.context.as_ref() else {
+            return Ok(());
+        };
+
+        let device_context = self
+            .execution_contexts
+            .device_contexts
+            .entry(context.device_context_id.clone())
+            .or_insert_with(|| DeviceContextRecord {
+                id: context.device_context_id.clone(),
+                state: ContextState::Active,
+                generation: 0,
+                warm: false,
+                reusable: context.reusable,
+                created_at: self.now,
+                last_used_at: self.now,
+                dispatch_count: 0,
+                reset_count: 0,
+                teardown_count: 0,
+            });
+
+        match context.lifecycle {
+            sim_core::ExecutionLifecycle::Init => {
+                if device_context.state == ContextState::Closed {
+                    device_context.state = ContextState::Active;
+                    device_context.generation = device_context.generation.saturating_add(1);
+                }
+                device_context.warm = context.warm;
+            }
+            sim_core::ExecutionLifecycle::Warmup => {
+                if device_context.state != ContextState::Active {
+                    return Err(sim_core::SimError::InvalidInput(
+                        "device_context_not_active_for_warmup",
+                    ));
+                }
+                device_context.warm = true;
+            }
+            sim_core::ExecutionLifecycle::Reuse => {
+                if device_context.state != ContextState::Active {
+                    return Err(sim_core::SimError::InvalidInput(
+                        "device_context_not_active_for_reuse",
+                    ));
+                }
+            }
+            sim_core::ExecutionLifecycle::Reset => {
+                if device_context.state != ContextState::Active {
+                    return Err(sim_core::SimError::InvalidInput(
+                        "device_context_not_active_for_reset",
+                    ));
+                }
+                device_context.generation = device_context.generation.saturating_add(1);
+                device_context.reset_count = device_context.reset_count.saturating_add(1);
+                device_context.warm = false;
+            }
+            sim_core::ExecutionLifecycle::Teardown => {
+                if device_context.state != ContextState::Active {
+                    return Err(sim_core::SimError::InvalidInput(
+                        "device_context_not_active_for_teardown",
+                    ));
+                }
+                device_context.state = ContextState::Closed;
+                device_context.teardown_count = device_context.teardown_count.saturating_add(1);
+                device_context.warm = false;
+            }
+        }
+        device_context.reusable = context.reusable;
+        device_context.last_used_at = self.now;
+        device_context.dispatch_count = device_context.dispatch_count.saturating_add(1);
+
+        if let Some(runtime_context_id) = context.runtime_context_id.as_ref() {
+            let runtime_context = self
+                .execution_contexts
+                .runtime_contexts
+                .entry(runtime_context_id.clone())
+                .or_insert_with(|| RuntimeContextRecord {
+                    id: runtime_context_id.clone(),
+                    device_context_id: context.device_context_id.clone(),
+                    state: ContextState::Active,
+                    generation: 0,
+                    warm: false,
+                    reusable: context.reusable,
+                    created_at: self.now,
+                    last_used_at: self.now,
+                dispatch_count: 0,
+                reset_count: 0,
+                teardown_count: 0,
+                resident_bindings: HashMap::new(),
+            });
+            if runtime_context.device_context_id != context.device_context_id {
+                return Err(sim_core::SimError::InvalidInput(
+                    "runtime_context_device_mismatch",
+                ));
+            }
+            match context.lifecycle {
+                sim_core::ExecutionLifecycle::Init => {
+                    if runtime_context.state == ContextState::Closed {
+                        runtime_context.state = ContextState::Active;
+                        runtime_context.generation = runtime_context.generation.saturating_add(1);
+                    }
+                    runtime_context.warm = context.warm;
+                }
+                sim_core::ExecutionLifecycle::Warmup => {
+                    if runtime_context.state != ContextState::Active {
+                        return Err(sim_core::SimError::InvalidInput(
+                            "runtime_context_not_active_for_warmup",
+                        ));
+                    }
+                    runtime_context.warm = true;
+                }
+                sim_core::ExecutionLifecycle::Reuse => {
+                    if runtime_context.state != ContextState::Active {
+                        return Err(sim_core::SimError::InvalidInput(
+                            "runtime_context_not_active_for_reuse",
+                        ));
+                    }
+                }
+                sim_core::ExecutionLifecycle::Reset => {
+                    if runtime_context.state != ContextState::Active {
+                        return Err(sim_core::SimError::InvalidInput(
+                            "runtime_context_not_active_for_reset",
+                        ));
+                    }
+                    runtime_context.generation = runtime_context.generation.saturating_add(1);
+                    runtime_context.reset_count =
+                        runtime_context.reset_count.saturating_add(1);
+                    runtime_context.warm = false;
+                    runtime_context.resident_bindings.clear();
+                }
+                sim_core::ExecutionLifecycle::Teardown => {
+                    if runtime_context.state != ContextState::Active {
+                        return Err(sim_core::SimError::InvalidInput(
+                            "runtime_context_not_active_for_teardown",
+                        ));
+                    }
+                    runtime_context.state = ContextState::Closed;
+                    runtime_context.teardown_count =
+                        runtime_context.teardown_count.saturating_add(1);
+                    runtime_context.warm = false;
+                    runtime_context.resident_bindings.clear();
+                }
+            }
+            runtime_context.reusable = context.reusable;
+            runtime_context.last_used_at = self.now;
+            runtime_context.dispatch_count = runtime_context.dispatch_count.saturating_add(1);
+        }
+
+        Ok(())
+    }
+
+    fn validate_execution_request(
+        request: &BackendExecutionRequest,
+    ) -> Result<(), sim_core::SimError> {
+        if request.bindings.is_empty() {
+            return Err(sim_core::SimError::InvalidInput("missing_request_bindings"));
+        }
+
+        let mut binding_names = HashSet::new();
+        for binding in &request.bindings {
+            if binding.bytes == 0 {
+                return Err(sim_core::SimError::InvalidInput("binding_zero_bytes"));
+            }
+            if !binding_names.insert(binding.name.as_str()) {
+                return Err(sim_core::SimError::InvalidInput(
+                    "duplicate_request_binding_name",
+                ));
+            }
+
+            match binding.layout {
+                sim_core::TensorLayout::Contiguous => {
+                    if binding.strides.is_some() {
+                        return Err(sim_core::SimError::InvalidInput(
+                            "contiguous_binding_has_strides",
+                        ));
+                    }
+                    if let Some(byte_width) = binding.dtype.byte_width() {
+                        let elem_count = binding
+                            .shape
+                            .iter()
+                            .try_fold(1u64, |acc, dim| acc.checked_mul(*dim))
+                            .ok_or(sim_core::SimError::InvalidInput(
+                                "binding_shape_overflow",
+                            ))?;
+                        let expected_bytes = elem_count.checked_mul(byte_width).ok_or(
+                            sim_core::SimError::InvalidInput("binding_size_overflow"),
+                        )?;
+                        if expected_bytes != binding.bytes {
+                            return Err(sim_core::SimError::InvalidInput(
+                                "binding_bytes_shape_mismatch",
+                            ));
+                        }
+                    }
+                }
+                sim_core::TensorLayout::Strided => {
+                    let Some(strides) = binding.strides.as_ref() else {
+                        return Err(sim_core::SimError::InvalidInput(
+                            "strided_binding_missing_strides",
+                        ));
+                    };
+                    if strides.len() != binding.shape.len() {
+                        return Err(sim_core::SimError::InvalidInput(
+                            "strided_binding_rank_mismatch",
+                        ));
+                    }
+                    if binding.dtype.byte_width().is_none() {
+                        return Err(sim_core::SimError::InvalidInput(
+                            "strided_binding_requires_typed_dtype",
+                        ));
+                    }
+                }
+                sim_core::TensorLayout::Opaque => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    fn infer_input_segments_from_request(
+        request: &BackendExecutionRequest,
+    ) -> Vec<sim_core::SegmentHandle> {
+        let mut seen = HashSet::new();
+        let mut segments = Vec::new();
+        for binding in &request.bindings {
+            if matches!(
+                binding.usage,
+                sim_core::BufferUsage::Input | sim_core::BufferUsage::Inout
+            ) && !binding.resident
+                && seen.insert(binding.endpoint.segment)
+            {
+                segments.push(binding.endpoint.segment);
+            }
+        }
+        segments
+    }
+
+    pub fn submit_backend_dispatch(
+        &mut self,
+        op: BackendDispatchOperation,
+        sink: &mut dyn EventSink,
+    ) -> Result<DispatchHandle, sim_core::SimError> {
+        let mut input_segments = Self::infer_input_segments_from_request(&op.request);
+        if input_segments.is_empty() {
+            input_segments = op.legacy_input_segments;
+        }
+        self.submit_dispatch(
+            DispatchRequest {
+                task: op.task,
+                function: op.function,
+                backend_spec: Some(op.backend_spec),
+                request: Some(op.request),
+                target_level: op.target_level,
+                target_node: op.target_node,
+                input_segments,
+            },
+            sink,
+        )
+    }
+
+    fn simpler_alloc_for_segment(
+        simpler_capi: &mut SimplerCapiBackendState,
+        endpoint: MemoryEndpoint,
+        bytes: u64,
+    ) -> Result<SimplerDeviceAlloc, String> {
+        let key = (endpoint.node, endpoint.segment);
+        if let Some(existing) = simpler_capi.device_allocs.get(&key).copied() {
+            if existing.bytes < bytes {
+                return Err("simpler_capi_segment_too_small".to_string());
+            }
+            return Ok(existing);
+        }
+        let api = simpler_capi
+            .runtime_library
+            .as_ref()
+            .ok_or_else(|| "simpler_capi_missing_runtime_library".to_string())?;
+        let ptr = api
+            .api
+            .alloc_device(bytes as usize)
+            .map_err(|err| format!("simpler_capi_alloc_failed:{err}"))?;
+        let alloc = SimplerDeviceAlloc { ptr, bytes };
+        simpler_capi.device_allocs.insert(key, alloc);
+        Ok(alloc)
+    }
+
+    fn simpler_copy_completion(
+        simpler_capi: &mut SimplerCapiBackendState,
+        host_payloads: &mut HostPayloadRegistry,
+        op: &RuntimeOpRecord,
+        now: SimTimestamp,
+    ) -> CompletionEvent {
+        let Some(copy_req) = op.copy_req.as_ref() else {
+            return CompletionEvent {
+                op_id: op.op_id,
+                task: Some(op.task.clone()),
+                source: CompletionSource::ChipBackend,
+                status: CompletionStatus::FatalFailure {
+                    code: "simpler_capi_missing_copy_request".to_string(),
+                },
+                finished_at: now,
+            };
+        };
+
+        let result = match copy_req.direction {
+            CopyDirection::HostToDevice => {
+                let alloc = match Self::simpler_alloc_for_segment(
+                    simpler_capi,
+                    copy_req.dst.clone(),
+                    copy_req.bytes,
+                ) {
+                    Ok(alloc) => alloc,
+                    Err(code) => {
+                        return CompletionEvent {
+                            op_id: op.op_id,
+                            task: Some(op.task.clone()),
+                            source: CompletionSource::ChipBackend,
+                            status: CompletionStatus::FatalFailure { code },
+                            finished_at: now,
+                        }
+                    }
+                };
+                let api = match simpler_capi.runtime_library.as_ref() {
+                    Some(api) => api,
+                    None => {
+                        return CompletionEvent {
+                            op_id: op.op_id,
+                            task: Some(op.task.clone()),
+                            source: CompletionSource::ChipBackend,
+                            status: CompletionStatus::FatalFailure {
+                                code: "simpler_capi_missing_runtime_library".to_string(),
+                            },
+                            finished_at: now,
+                        }
+                    }
+                };
+                let key = (copy_req.src.node, copy_req.src.segment);
+                match host_payloads.segments.get(&key) {
+                    None => Err("simpler_capi_missing_host_payload".to_string()),
+                    Some(payload) => {
+                        let start = copy_req.src.offset as usize;
+                        let end = start.saturating_add(copy_req.bytes as usize);
+                        if end > payload.len() {
+                            Err("simpler_capi_host_payload_too_short".to_string())
+                        } else {
+                            api.api
+                                .host_to_device(
+                                    alloc.ptr,
+                                    payload[start..end].as_ptr() as *const _,
+                                    copy_req.bytes as usize,
+                                )
+                                .map_err(|err| format!("simpler_capi_h2d_failed:{err}"))
+                        }
+                    }
+                }
+            }
+            CopyDirection::DeviceToHost => {
+                let api = match simpler_capi.runtime_library.as_ref() {
+                    Some(api) => api,
+                    None => {
+                        return CompletionEvent {
+                            op_id: op.op_id,
+                            task: Some(op.task.clone()),
+                            source: CompletionSource::ChipBackend,
+                            status: CompletionStatus::FatalFailure {
+                                code: "simpler_capi_missing_runtime_library".to_string(),
+                            },
+                            finished_at: now,
+                        }
+                    }
+                };
+                let key = (copy_req.src.node, copy_req.src.segment);
+                if let Some(alloc) = simpler_capi.device_allocs.get(&key).copied() {
+                    let dst_key = (copy_req.dst.node, copy_req.dst.segment);
+                    let payload = host_payloads.segments.entry(dst_key).or_insert_with(|| {
+                        vec![0u8; (copy_req.dst.offset + copy_req.bytes) as usize]
+                    });
+                    let start = copy_req.dst.offset as usize;
+                    let end = start.saturating_add(copy_req.bytes as usize);
+                    if end > payload.len() {
+                        payload.resize(end, 0);
+                    }
+                    api.api
+                        .device_to_host(
+                            payload[start..end].as_mut_ptr() as *mut _,
+                            alloc.ptr,
+                            copy_req.bytes as usize,
+                        )
+                        .map_err(|err| format!("simpler_capi_d2h_failed:{err}"))
+                } else {
+                    Err("simpler_capi_missing_device_allocation".to_string())
+                }
+            }
+        };
+
+        match result {
+            Ok(()) => CompletionEvent {
+                op_id: op.op_id,
+                task: Some(op.task.clone()),
+                source: CompletionSource::ChipBackend,
+                status: CompletionStatus::Success,
+                finished_at: op.ready_at,
+            },
+            Err(code) => CompletionEvent {
+                op_id: op.op_id,
+                task: Some(op.task.clone()),
+                source: CompletionSource::ChipBackend,
+                status: CompletionStatus::FatalFailure { code },
+                finished_at: now,
+            },
+        }
+    }
+
+    fn simpler_dispatch_completion(
+        simpler_capi: &mut SimplerCapiBackendState,
+        host_payloads: &mut HostPayloadRegistry,
+        op: &RuntimeOpRecord,
+        now: SimTimestamp,
+    ) -> CompletionEvent {
+        let backend_spec = match op.backend_spec.as_ref() {
+            Some(spec) => spec,
+            None => {
+                return CompletionEvent {
+                    op_id: op.op_id,
+                    task: Some(op.task.clone()),
+                    source: CompletionSource::ChipBackend,
+                    status: CompletionStatus::FatalFailure {
+                        code: "missing_backend_spec".to_string(),
+                    },
+                    finished_at: now,
+                }
+            }
+        };
+        let runtime_artifacts = match backend_spec.simpler_runtime.as_ref() {
+            Some(runtime) => runtime,
+            None => {
+                return CompletionEvent {
+                    op_id: op.op_id,
+                    task: Some(op.task.clone()),
+                    source: CompletionSource::ChipBackend,
+                    status: CompletionStatus::FatalFailure {
+                        code: "missing_simpler_runtime_artifacts".to_string(),
+                    },
+                    finished_at: now,
+                }
+            }
+        };
+
+        let result: Result<(), String> = (|| {
+            let _runtime_env = EnvGuard::apply(&runtime_artifacts.runtime_env);
+            let api = ensure_simpler_runtime_library(
+                simpler_capi,
+                &runtime_artifacts.host_runtime_library,
+            )?;
+            api.bind_device(runtime_artifacts.launch.device_id as i32)
+                .map_err(|err| format!("simpler_capi_set_device_failed:{err}"))?;
+
+            let runtime = simpler_capi::RuntimeBuffer::allocate(api)
+                .map_err(|err| format!("simpler_capi_runtime_alloc_failed:{err}"))?;
+            let runtime_handle = runtime.handle();
+
+            let orch_binary = load_binary_artifact(&runtime_artifacts.orch_shared_object)?;
+            let aicpu_binary = match runtime_artifacts.aicpu_binary.as_ref() {
+                Some(artifact) => load_binary_artifact(artifact)?,
+                None => Vec::new(),
+            };
+            let aicore_binary = match runtime_artifacts.aicore_binary.as_ref() {
+                Some(artifact) => load_binary_artifact(artifact)?,
+                None => Vec::new(),
+            };
+            let mut kernel_binaries = Vec::with_capacity(runtime_artifacts.kernels.len());
+            for kernel in &runtime_artifacts.kernels {
+                kernel_binaries.push(load_binary_artifact(&kernel.binary)?);
+            }
+
+            for arg in &runtime_artifacts.args {
+                match arg {
+                    SimplerRuntimeArg::OutputSegment { endpoint, bytes }
+                    | SimplerRuntimeArg::InoutSegment { endpoint, bytes } => {
+                        let key = (endpoint.node, endpoint.segment);
+                        let payload = host_payloads
+                            .segments
+                            .entry(key)
+                            .or_insert_with(|| vec![0u8; (endpoint.offset + *bytes) as usize]);
+                        let end = endpoint.offset as usize + *bytes as usize;
+                        if end > payload.len() {
+                            payload.resize(end, 0);
+                        }
+                    }
+                    SimplerRuntimeArg::InputSegment { endpoint, bytes } => {
+                        let key = (endpoint.node, endpoint.segment);
+                        let payload = host_payloads
+                            .segments
+                            .get(&key)
+                            .ok_or_else(|| "simpler_capi_missing_input_payload".to_string())?;
+                        let end = endpoint.offset as usize + *bytes as usize;
+                        if end > payload.len() {
+                            return Err("simpler_capi_input_payload_too_short".to_string());
+                        }
+                    }
+                    SimplerRuntimeArg::ScalarU64(_) => {}
+                }
+            }
+
+            let mut func_args = Vec::with_capacity(runtime_artifacts.args.len());
+            let mut arg_types = Vec::with_capacity(runtime_artifacts.args.len());
+            let mut arg_sizes = Vec::with_capacity(runtime_artifacts.args.len());
+
+            for arg in &runtime_artifacts.args {
+                match arg {
+                    SimplerRuntimeArg::ScalarU64(value) => {
+                        func_args.push(*value);
+                        arg_types.push(simpler_capi::SimplerArgType::Scalar as i32);
+                        arg_sizes.push(0);
+                    }
+                    SimplerRuntimeArg::InputSegment { endpoint, bytes } => {
+                        let key = (endpoint.node, endpoint.segment);
+                        let payload = host_payloads
+                            .segments
+                            .get(&key)
+                            .ok_or_else(|| "simpler_capi_missing_input_payload".to_string())?;
+                        let start = endpoint.offset as usize;
+                        let end = start.saturating_add(*bytes as usize);
+                        func_args.push(payload[start..end].as_ptr() as u64);
+                        arg_types.push(simpler_capi::SimplerArgType::InputPtr as i32);
+                        arg_sizes.push(*bytes);
+                    }
+                    SimplerRuntimeArg::OutputSegment { endpoint, bytes } => {
+                        let key = (endpoint.node, endpoint.segment);
+                        let payload = host_payloads
+                            .segments
+                            .get_mut(&key)
+                            .ok_or_else(|| "simpler_capi_missing_output_payload".to_string())?;
+                        let start = endpoint.offset as usize;
+                        let end = start.saturating_add(*bytes as usize);
+                        func_args.push(payload[start..end].as_mut_ptr() as u64);
+                        arg_types.push(simpler_capi::SimplerArgType::OutputPtr as i32);
+                        arg_sizes.push(*bytes);
+                    }
+                    SimplerRuntimeArg::InoutSegment { endpoint, bytes } => {
+                        let key = (endpoint.node, endpoint.segment);
+                        let payload = host_payloads
+                            .segments
+                            .get_mut(&key)
+                            .ok_or_else(|| "simpler_capi_missing_inout_payload".to_string())?;
+                        let start = endpoint.offset as usize;
+                        let end = start.saturating_add(*bytes as usize);
+                        func_args.push(payload[start..end].as_mut_ptr() as u64);
+                        arg_types.push(simpler_capi::SimplerArgType::InoutPtr as i32);
+                        arg_sizes.push(*bytes);
+                    }
+                }
+            }
+
+            let kernel_ids: Vec<i32> = runtime_artifacts
+                .kernels
+                .iter()
+                .map(|k| k.func_id)
+                .collect();
+            let kernel_ptrs: Vec<*const u8> =
+                kernel_binaries.iter().map(|blob| blob.as_ptr()).collect();
+            let kernel_sizes: Vec<usize> = kernel_binaries.iter().map(Vec::len).collect();
+
+            api.init_runtime(
+                runtime_handle,
+                orch_binary.as_ptr(),
+                orch_binary.len(),
+                &runtime_artifacts.orch_function_name,
+                func_args.as_mut_ptr(),
+                func_args.len() as i32,
+                arg_types.as_mut_ptr(),
+                arg_sizes.as_mut_ptr(),
+                kernel_ids.as_ptr(),
+                kernel_ptrs.as_ptr(),
+                kernel_sizes.as_ptr(),
+                kernel_ids.len() as i32,
+            )
+            .map_err(|err| format!("simpler_capi_init_runtime_failed:{err}"))?;
+
+            api.launch_runtime(
+                runtime_handle,
+                runtime_artifacts.launch.aicpu_thread_num as i32,
+                runtime_artifacts.launch.block_dim as i32,
+                runtime_artifacts.launch.device_id as i32,
+                if aicpu_binary.is_empty() {
+                    std::ptr::null()
+                } else {
+                    aicpu_binary.as_ptr()
+                },
+                aicpu_binary.len(),
+                if aicore_binary.is_empty() {
+                    std::ptr::null()
+                } else {
+                    aicore_binary.as_ptr()
+                },
+                aicore_binary.len(),
+                runtime_artifacts.launch.orch_thread_num as i32,
+            )
+            .map_err(|err| format!("simpler_capi_launch_runtime_failed:{err}"))?;
+
+            api.finalize(runtime_handle)
+                .map_err(|err| format!("simpler_capi_finalize_runtime_failed:{err}"))?;
+
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => CompletionEvent {
+                op_id: op.op_id,
+                task: Some(op.task.clone()),
+                source: CompletionSource::ChipBackend,
+                status: CompletionStatus::Success,
+                finished_at: op.ready_at,
+            },
+            Err(code) => CompletionEvent {
+                op_id: op.op_id,
+                task: Some(op.task.clone()),
+                source: CompletionSource::ChipBackend,
+                status: CompletionStatus::FatalFailure { code },
+                finished_at: now,
+            },
+        }
     }
 
     pub fn submit_dispatch(
@@ -389,11 +2141,73 @@ impl LocalRuntimeEngine {
         sink: &mut dyn EventSink,
     ) -> Result<DispatchHandle, sim_core::SimError> {
         self.ensure_capacity()?;
+        if let Some(request) = req.request.as_ref() {
+            Self::validate_execution_request(request)?;
+        }
+        self.touch_execution_contexts(req.request.as_ref())?;
+        if let Some(request) = req.request.as_ref() {
+            self.update_resident_bindings(request)?;
+        }
         let op_id = self.next_op();
         self.inflight.push(RuntimeOpRecord {
             op_id,
             kind: RuntimeOpKind::Dispatch,
+            backend_spec: req.backend_spec.clone(),
+            request: req.request.clone(),
+            copy_req: None,
             task: req.task.clone(),
+            function_name: Some(req.function.name.clone()),
+            request_id: req
+                .request
+                .as_ref()
+                .map(|request| request.correlation.request_id.clone()),
+            trace_id: req
+                .request
+                .as_ref()
+                .and_then(|request| request.correlation.trace_id.clone()),
+            plan_id: req
+                .request
+                .as_ref()
+                .and_then(|request| request.plan.as_ref())
+                .map(|plan| plan.plan_id.clone()),
+            step_id: req
+                .request
+                .as_ref()
+                .and_then(|request| request.plan.as_ref())
+                .map(|plan| plan.step_id.clone()),
+            step_kind: req
+                .request
+                .as_ref()
+                .and_then(|request| request.plan.as_ref())
+                .map(|plan| format!("{:?}", plan.step_kind)),
+            device_context_id: req
+                .request
+                .as_ref()
+                .and_then(|request| request.context.as_ref())
+                .map(|context| context.device_context_id.clone()),
+            runtime_context_id: req
+                .request
+                .as_ref()
+                .and_then(|request| request.context.as_ref())
+                .and_then(|context| context.runtime_context_id.clone()),
+            target_level: Some(req.target_level),
+            target_node: Some(req.target_node),
+            input_segment_count: req
+                .request
+                .as_ref()
+                .map(|request| {
+                    request
+                        .bindings
+                        .iter()
+                        .filter(|binding| {
+                            matches!(
+                                binding.usage,
+                                sim_core::BufferUsage::Input | sim_core::BufferUsage::Inout
+                            ) && !binding.resident
+                        })
+                        .count()
+                })
+                .unwrap_or(req.input_segments.len()),
             state: RuntimeOpState::Queued,
             submitted_at: self.now,
             issued_at: None,
@@ -425,7 +2239,21 @@ impl LocalRuntimeEngine {
         self.inflight.push(RuntimeOpRecord {
             op_id,
             kind,
+            backend_spec: None,
+            request: None,
+            copy_req: Some(req.clone()),
             task,
+            function_name: None,
+            request_id: None,
+            trace_id: None,
+            plan_id: None,
+            step_id: None,
+            step_kind: None,
+            device_context_id: None,
+            runtime_context_id: None,
+            target_level: None,
+            target_node: None,
+            input_segment_count: 0,
             state: RuntimeOpState::Queued,
             submitted_at: self.now,
             issued_at: None,
@@ -447,40 +2275,111 @@ impl LocalRuntimeEngine {
 
     pub fn advance_to(&mut self, now: SimTimestamp, sink: &mut dyn EventSink) {
         self.now = now;
+        let backend_mode = self.backend_mode;
         let dispatch_latency_us = self.dispatch_latency_us;
         let copy_latency_us = self.copy_latency_us;
         let timeout_us = self.timeout_us;
 
-        let _ = self.submission_queue.drive_ready(now, |ready| {
-            if let Some(op) = self
-                .inflight
-                .iter_mut()
-                .find(|op| op.op_id == ready.payload.op_id && op.state == RuntimeOpState::Queued)
-            {
-                op.state = RuntimeOpState::Issued;
-                op.issued_at = Some(now);
-                let latency = match op.kind {
-                    RuntimeOpKind::Dispatch => dispatch_latency_us,
-                    RuntimeOpKind::HostToDeviceCopy | RuntimeOpKind::DeviceToHostCopy => {
-                        copy_latency_us
-                    }
-                    _ => 0,
-                };
-                op.ready_at = op.submitted_at + latency;
-                op.timeout_at = op.submitted_at + timeout_us;
-            }
-            RuntimeDriveAction::<()>::Complete
-        });
+        let _ =
+            self.submission_queue.drive_ready(now, |ready| {
+                if let Some(op) = self.inflight.iter_mut().find(|op| {
+                    op.op_id == ready.payload.op_id && op.state == RuntimeOpState::Queued
+                }) {
+                    op.state = RuntimeOpState::Issued;
+                    op.issued_at = Some(now);
+                    let latency = match op.kind {
+                        RuntimeOpKind::Dispatch => dispatch_latency_us,
+                        RuntimeOpKind::HostToDeviceCopy | RuntimeOpKind::DeviceToHostCopy => {
+                            copy_latency_us
+                        }
+                        _ => 0,
+                    };
+                    op.ready_at = op.submitted_at + latency;
+                    op.timeout_at = op.submitted_at + timeout_us;
+                }
+                RuntimeDriveAction::<()>::Complete
+            });
 
         for op in &mut self.inflight {
             if op.state == RuntimeOpState::Issued && op.ready_at <= now {
-                op.state = RuntimeOpState::Completed;
-                let completion = CompletionEvent {
-                    op_id: op.op_id,
-                    task: Some(op.task.clone()),
-                    source: CompletionSource::ChipBackend,
-                    status: CompletionStatus::Success,
-                    finished_at: op.ready_at,
+                let completion = match (backend_mode, op.kind) {
+                    (
+                        ChipBackendMode::SimplerCapi,
+                        RuntimeOpKind::HostToDeviceCopy | RuntimeOpKind::DeviceToHostCopy,
+                    ) => Self::simpler_copy_completion(
+                        &mut self.simpler_capi,
+                        &mut self.host_payloads,
+                        op,
+                        now,
+                    ),
+                    (ChipBackendMode::SimplerCapi, RuntimeOpKind::Dispatch) => {
+                        let completion = match validate_simpler_capi_dispatch_spec(
+                            op.backend_spec.as_ref(),
+                            op.request.as_ref(),
+                        ) {
+                            Ok(()) => Self::simpler_dispatch_completion(
+                                &mut self.simpler_capi,
+                                &mut self.host_payloads,
+                                op,
+                                now,
+                            ),
+                            Err(code) => CompletionEvent {
+                                op_id: op.op_id,
+                                task: Some(op.task.clone()),
+                                source: CompletionSource::ChipBackend,
+                                status: CompletionStatus::FatalFailure { code },
+                                finished_at: now,
+                            },
+                        };
+                        if let CompletionStatus::RetryableFailure { code }
+                        | CompletionStatus::FatalFailure { code } = &completion.status
+                        {
+                            sink.emit(SimEvent::RuntimeFailed {
+                                at: now,
+                                op_id: op.op_id,
+                                reason: code.clone(),
+                            });
+                        }
+                        completion
+                    }
+                    (ChipBackendMode::SimplerProcess, RuntimeOpKind::Dispatch) => {
+                        let runner = SimplerProcessRunner::from_env();
+                        match runner.run_dispatch_example(op.op_id, &op, op.backend_spec.as_ref()) {
+                            Ok(()) => CompletionEvent {
+                                op_id: op.op_id,
+                                task: Some(op.task.clone()),
+                                source: CompletionSource::ChipBackend,
+                                status: CompletionStatus::Success,
+                                finished_at: op.ready_at,
+                            },
+                            Err(code) => {
+                                sink.emit(SimEvent::RuntimeFailed {
+                                    at: now,
+                                    op_id: op.op_id,
+                                    reason: code.clone(),
+                                });
+                                CompletionEvent {
+                                    op_id: op.op_id,
+                                    task: Some(op.task.clone()),
+                                    source: CompletionSource::ChipBackend,
+                                    status: CompletionStatus::FatalFailure { code },
+                                    finished_at: now,
+                                }
+                            }
+                        }
+                    }
+                    _ => CompletionEvent {
+                        op_id: op.op_id,
+                        task: Some(op.task.clone()),
+                        source: CompletionSource::ChipBackend,
+                        status: CompletionStatus::Success,
+                        finished_at: op.ready_at,
+                    },
+                };
+                op.state = match &completion.status {
+                    CompletionStatus::Success => RuntimeOpState::Completed,
+                    CompletionStatus::RetryableFailure { .. }
+                    | CompletionStatus::FatalFailure { .. } => RuntimeOpState::Failed,
                 };
                 sink.emit(SimEvent::CompletionObserved {
                     at: completion.finished_at,
@@ -740,15 +2639,18 @@ impl SimBlockStore for InMemoryBlockStore {
 #[cfg(test)]
 mod tests {
     use super::{
-        EvictionPlan, InMemoryBlockStore, LocalRuntimeEngine, PromotionPlan, RecursiveRoutePlanner,
-        RoutePlanner, RouteRequest, RuntimeCompletionTracker, RuntimeOpKind, RuntimeOpState,
-        SharedRuntimeQueue, SimBlockStore, VecEventSink,
+        ContextState, EvictionPlan, InMemoryBlockStore, LocalRuntimeEngine, PromotionPlan,
+        RecursiveRoutePlanner, RoutePlanner, RouteRequest, RuntimeCompletionTracker, RuntimeOpKind,
+        RuntimeOpState, SharedRuntimeQueue, SimBlockStore, VecEventSink,
     };
     use sim_config::ScenarioConfig;
     use sim_core::{
-        BlockHash, CompletionEvent, CompletionSource, CompletionStatus, CopyDirection,
-        CopyRequest, DispatchRequest, FunctionLabel, HierarchyCoord, LogicalSystemId,
-        MemoryEndpoint, PlLevel, SegmentHandle, SimEvent, TaskKey,
+        BackendDispatchOperation, BackendExecutionRequest, BlockHash, BufferUsage,
+        CompletionEvent, CompletionSource, CompletionStatus, CopyDirection, CopyRequest,
+        DispatchBackendSpec, DispatchBufferBinding, DispatchRequest, ExecutionContextCommand,
+        ExecutionContextRef, ExecutionLifecycle, ExecutionPlanRef, ExecutionStepKind,
+        FunctionLabel, HierarchyCoord, LogicalSystemId, MemoryEndpoint, PlLevel,
+        RequestCorrelation, SegmentHandle, SimEvent, TaskKey, TensorDType, TensorLayout,
     };
     use sim_topology::SimTopology;
 
@@ -933,6 +2835,8 @@ outputs:
                         name: "decode_step".into(),
                         level: PlLevel::L4,
                     },
+                    backend_spec: None,
+                    request: None,
                     target_level: PlLevel::L4,
                     target_node: 19,
                     input_segments: vec![SegmentHandle(1)],
@@ -955,6 +2859,743 @@ outputs:
         assert_eq!(completions[0].op_id, 1);
         assert!(runtime.inflight().is_empty());
         assert!(!sink.into_events().is_empty());
+    }
+
+    #[test]
+    fn runtime_engine_reuses_execution_contexts_across_dispatches() {
+        let config = ScenarioConfig::from_yaml_str(VALID_YAML).expect("valid config");
+        let mut runtime = LocalRuntimeEngine::from_config(&config);
+        let mut sink = VecEventSink::default();
+
+        let request = |lifecycle| BackendExecutionRequest {
+            correlation: RequestCorrelation {
+                request_id: "req-1".into(),
+                trace_id: Some("trace-1".into()),
+                op_name: Some("decode_step".into()),
+                step_index: Some(0),
+                sequence_no: Some(1),
+            },
+            plan: None,
+            context: Some(ExecutionContextRef {
+                device_context_id: "device-ctx-0".into(),
+                runtime_context_id: Some("runtime-ctx-0".into()),
+                lifecycle,
+                warm: true,
+                reusable: true,
+            }),
+            bindings: vec![DispatchBufferBinding {
+                name: "input".into(),
+                usage: BufferUsage::Input,
+                endpoint: MemoryEndpoint {
+                    node: 0,
+                    segment: SegmentHandle(1),
+                    offset: 0,
+                },
+                bytes: 4096,
+                dtype: TensorDType::Opaque,
+                shape: vec![4096],
+                layout: TensorLayout::Opaque,
+                strides: None,
+                resident: false,
+            }],
+        };
+
+        for (task_id, lifecycle) in [
+            (71u64, ExecutionLifecycle::Init),
+            (72u64, ExecutionLifecycle::Reuse),
+        ] {
+            runtime
+                .submit_dispatch(
+                    DispatchRequest {
+                        task: TaskKey {
+                            logical_system: LogicalSystemId(1),
+                            coord: HierarchyCoord { levels: [0; 8] },
+                            scope_depth: 0,
+                            task_id,
+                        },
+                        function: FunctionLabel {
+                            name: "decode_step".into(),
+                            level: PlLevel::L4,
+                        },
+                        backend_spec: None,
+                        request: Some(request(lifecycle)),
+                        target_level: PlLevel::L4,
+                        target_node: 19,
+                        input_segments: vec![SegmentHandle(1)],
+                    },
+                    &mut sink,
+                )
+                .expect("dispatch");
+        }
+
+        let device = runtime
+            .device_context_snapshot("device-ctx-0")
+            .expect("device context");
+        let runtime_ctx = runtime
+            .runtime_context_snapshot("runtime-ctx-0")
+            .expect("runtime context");
+
+        assert_eq!(device.dispatch_count, 2);
+        assert_eq!(runtime_ctx.dispatch_count, 2);
+        assert_eq!(runtime_ctx.device_context_id, "device-ctx-0");
+        assert!(device.warm);
+        assert!(runtime_ctx.reusable);
+        assert_eq!(device.state, ContextState::Active);
+        assert_eq!(runtime_ctx.state, ContextState::Active);
+    }
+
+    #[test]
+    fn runtime_engine_submit_backend_dispatch_infers_input_segments() {
+        let config = ScenarioConfig::from_yaml_str(VALID_YAML).expect("valid config");
+        let mut runtime = LocalRuntimeEngine::from_config(&config);
+        let mut sink = VecEventSink::default();
+
+        let handle = runtime
+            .submit_backend_dispatch(
+                BackendDispatchOperation {
+                    task: TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 73,
+                    },
+                    function: FunctionLabel {
+                        name: "decode_step".into(),
+                        level: PlLevel::L4,
+                    },
+                    backend_spec: DispatchBackendSpec {
+                        profile: sim_core::DispatchBackendProfile::HostVector,
+                        platform: "test".into(),
+                        runtime_variant: sim_core::DispatchRuntimeVariant::HostBuildGraph,
+                        callable_hint: None,
+                        context: None,
+                        simpler_runtime: None,
+                    },
+                    request: BackendExecutionRequest {
+                        correlation: RequestCorrelation {
+                            request_id: "req-backend".into(),
+                            trace_id: None,
+                            op_name: Some("decode_step".into()),
+                            step_index: Some(0),
+                            sequence_no: Some(1),
+                        },
+                        plan: None,
+                        context: Some(ExecutionContextRef {
+                            device_context_id: "device-ctx-backend".into(),
+                            runtime_context_id: Some("runtime-ctx-backend".into()),
+                            lifecycle: ExecutionLifecycle::Init,
+                            warm: true,
+                            reusable: true,
+                        }),
+                        bindings: vec![
+                            DispatchBufferBinding {
+                                name: "kv-cache".into(),
+                                usage: BufferUsage::Inout,
+                                endpoint: MemoryEndpoint {
+                                    node: 0,
+                                    segment: SegmentHandle(99),
+                                    offset: 0,
+                                },
+                                bytes: 4096,
+                                dtype: TensorDType::Opaque,
+                                shape: vec![4096],
+                                layout: TensorLayout::Opaque,
+                                strides: None,
+                                resident: true,
+                            },
+                            DispatchBufferBinding {
+                                name: "input".into(),
+                                usage: BufferUsage::Input,
+                                endpoint: MemoryEndpoint {
+                                    node: 0,
+                                    segment: SegmentHandle(10),
+                                    offset: 0,
+                                },
+                                bytes: 4096,
+                                dtype: TensorDType::Opaque,
+                                shape: vec![4096],
+                                layout: TensorLayout::Opaque,
+                                strides: None,
+                                resident: false,
+                            },
+                            DispatchBufferBinding {
+                                name: "state".into(),
+                                usage: BufferUsage::Inout,
+                                endpoint: MemoryEndpoint {
+                                    node: 0,
+                                    segment: SegmentHandle(11),
+                                    offset: 0,
+                                },
+                                bytes: 4096,
+                                dtype: TensorDType::Opaque,
+                                shape: vec![4096],
+                                layout: TensorLayout::Opaque,
+                                strides: None,
+                                resident: false,
+                            },
+                            DispatchBufferBinding {
+                                name: "output".into(),
+                                usage: BufferUsage::Output,
+                                endpoint: MemoryEndpoint {
+                                    node: 0,
+                                    segment: SegmentHandle(12),
+                                    offset: 0,
+                                },
+                                bytes: 4096,
+                                dtype: TensorDType::Opaque,
+                                shape: vec![4096],
+                                layout: TensorLayout::Opaque,
+                                strides: None,
+                                resident: false,
+                            },
+                        ],
+                    },
+                    target_level: PlLevel::L4,
+                    target_node: 19,
+                    legacy_input_segments: vec![],
+                },
+                &mut sink,
+            )
+            .expect("dispatch");
+
+        assert_eq!(handle.0, 1);
+        assert_eq!(runtime.inflight()[0].input_segment_count, 2);
+    }
+
+    #[test]
+    fn runtime_engine_records_execution_plan_metadata() {
+        let config = ScenarioConfig::from_yaml_str(VALID_YAML).expect("valid config");
+        let mut runtime = LocalRuntimeEngine::from_config(&config);
+        let mut sink = VecEventSink::default();
+
+        let handle = runtime
+            .submit_backend_dispatch(
+                BackendDispatchOperation {
+                    task: TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 74,
+                    },
+                    function: FunctionLabel {
+                        name: "decode_step".into(),
+                        level: PlLevel::L4,
+                    },
+                    backend_spec: DispatchBackendSpec {
+                        profile: sim_core::DispatchBackendProfile::HostVector,
+                        platform: "test".into(),
+                        runtime_variant: sim_core::DispatchRuntimeVariant::HostBuildGraph,
+                        callable_hint: None,
+                        context: None,
+                        simpler_runtime: None,
+                    },
+                    request: BackendExecutionRequest {
+                        correlation: RequestCorrelation {
+                            request_id: "req-plan".into(),
+                            trace_id: Some("trace-plan".into()),
+                            op_name: Some("decode_step".into()),
+                            step_index: Some(3),
+                            sequence_no: Some(9),
+                        },
+                        plan: Some(ExecutionPlanRef {
+                            plan_id: "plan-1".into(),
+                            step_id: "step-3".into(),
+                            step_kind: ExecutionStepKind::Compute,
+                        }),
+                        context: None,
+                        bindings: vec![DispatchBufferBinding {
+                            name: "input".into(),
+                            usage: BufferUsage::Input,
+                            endpoint: MemoryEndpoint {
+                                node: 0,
+                                segment: SegmentHandle(13),
+                                offset: 0,
+                            },
+                            bytes: 4096,
+                            dtype: TensorDType::Opaque,
+                            shape: vec![4096],
+                            layout: TensorLayout::Opaque,
+                            strides: None,
+                            resident: false,
+                        }],
+                    },
+                    target_level: PlLevel::L4,
+                    target_node: 19,
+                    legacy_input_segments: vec![],
+                },
+                &mut sink,
+            )
+            .expect("dispatch");
+
+        assert_eq!(handle.0, 1);
+        assert_eq!(runtime.inflight()[0].plan_id.as_deref(), Some("plan-1"));
+        assert_eq!(runtime.inflight()[0].step_id.as_deref(), Some("step-3"));
+        assert_eq!(runtime.inflight()[0].step_kind.as_deref(), Some("Compute"));
+    }
+
+    #[test]
+    fn runtime_engine_supports_explicit_context_commands() {
+        let config = ScenarioConfig::from_yaml_str(VALID_YAML).expect("valid config");
+        let mut runtime = LocalRuntimeEngine::from_config(&config);
+
+        runtime
+            .apply_execution_context_command(ExecutionContextCommand {
+                device_context_id: "device-ctx-cmd".into(),
+                runtime_context_id: Some("runtime-ctx-cmd".into()),
+                lifecycle: ExecutionLifecycle::Init,
+                warm: false,
+                reusable: true,
+            })
+            .expect("init context");
+
+        runtime
+            .apply_execution_context_command(ExecutionContextCommand {
+                device_context_id: "device-ctx-cmd".into(),
+                runtime_context_id: Some("runtime-ctx-cmd".into()),
+                lifecycle: ExecutionLifecycle::Warmup,
+                warm: true,
+                reusable: true,
+            })
+            .expect("warmup context");
+
+        let runtime_ctx = runtime
+            .runtime_context_snapshot("runtime-ctx-cmd")
+            .expect("runtime context");
+        assert_eq!(runtime_ctx.state, ContextState::Active);
+        assert!(runtime_ctx.warm);
+
+        runtime
+            .apply_execution_context_command(ExecutionContextCommand {
+                device_context_id: "device-ctx-cmd".into(),
+                runtime_context_id: Some("runtime-ctx-cmd".into()),
+                lifecycle: ExecutionLifecycle::Teardown,
+                warm: false,
+                reusable: true,
+            })
+            .expect("teardown context");
+
+        let runtime_ctx = runtime
+            .runtime_context_snapshot("runtime-ctx-cmd")
+            .expect("runtime context after teardown");
+        assert_eq!(runtime_ctx.state, ContextState::Closed);
+        assert_eq!(runtime_ctx.teardown_count, 1);
+    }
+
+    #[test]
+    fn runtime_engine_applies_context_lifecycle_transitions() {
+        let config = ScenarioConfig::from_yaml_str(VALID_YAML).expect("valid config");
+        let mut runtime = LocalRuntimeEngine::from_config(&config);
+        let mut sink = VecEventSink::default();
+
+        let make_request = |task_id: u64, lifecycle: ExecutionLifecycle| BackendExecutionRequest {
+            correlation: RequestCorrelation {
+                request_id: format!("req-{task_id}"),
+                trace_id: None,
+                op_name: Some("decode_step".into()),
+                step_index: Some(task_id as u32),
+                sequence_no: Some(task_id),
+            },
+            plan: None,
+            context: Some(ExecutionContextRef {
+                device_context_id: "device-ctx-1".into(),
+                runtime_context_id: Some("runtime-ctx-1".into()),
+                lifecycle,
+                warm: true,
+                reusable: true,
+            }),
+            bindings: vec![DispatchBufferBinding {
+                name: "input".into(),
+                usage: BufferUsage::Input,
+                endpoint: MemoryEndpoint {
+                    node: 0,
+                    segment: SegmentHandle(9),
+                    offset: 0,
+                },
+                bytes: 4096,
+                dtype: TensorDType::Opaque,
+                shape: vec![4096],
+                layout: TensorLayout::Opaque,
+                strides: None,
+                resident: false,
+            }],
+        };
+
+        for (task_id, lifecycle) in [
+            (1u64, ExecutionLifecycle::Init),
+            (2u64, ExecutionLifecycle::Reset),
+            (3u64, ExecutionLifecycle::Teardown),
+        ] {
+            runtime
+                .submit_dispatch(
+                    DispatchRequest {
+                        task: TaskKey {
+                            logical_system: LogicalSystemId(1),
+                            coord: HierarchyCoord { levels: [0; 8] },
+                            scope_depth: 0,
+                            task_id,
+                        },
+                        function: FunctionLabel {
+                            name: "decode_step".into(),
+                            level: PlLevel::L4,
+                        },
+                        backend_spec: None,
+                        request: Some(make_request(task_id, lifecycle)),
+                        target_level: PlLevel::L4,
+                        target_node: 19,
+                        input_segments: vec![SegmentHandle(9)],
+                    },
+                    &mut sink,
+                )
+                .expect("dispatch");
+        }
+
+        let runtime_ctx = runtime
+            .runtime_context_snapshot("runtime-ctx-1")
+            .expect("runtime context");
+        assert_eq!(runtime_ctx.generation, 1);
+        assert_eq!(runtime_ctx.reset_count, 1);
+        assert_eq!(runtime_ctx.teardown_count, 1);
+        assert_eq!(runtime_ctx.state, ContextState::Closed);
+
+        let err = runtime.submit_dispatch(
+            DispatchRequest {
+                task: TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord { levels: [0; 8] },
+                    scope_depth: 0,
+                    task_id: 4,
+                },
+                function: FunctionLabel {
+                    name: "decode_step".into(),
+                    level: PlLevel::L4,
+                },
+                backend_spec: None,
+                request: Some(make_request(4, ExecutionLifecycle::Reuse)),
+                target_level: PlLevel::L4,
+                target_node: 19,
+                input_segments: vec![SegmentHandle(9)],
+            },
+            &mut sink,
+        );
+        assert!(matches!(
+            err,
+            Err(sim_core::SimError::InvalidInput(
+                "device_context_not_active_for_reuse"
+            ))
+        ));
+    }
+
+    #[test]
+    fn runtime_engine_rejects_duplicate_binding_names() {
+        let config = ScenarioConfig::from_yaml_str(VALID_YAML).expect("valid config");
+        let mut runtime = LocalRuntimeEngine::from_config(&config);
+        let mut sink = VecEventSink::default();
+
+        let err = runtime.submit_dispatch(
+            DispatchRequest {
+                task: TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord { levels: [0; 8] },
+                    scope_depth: 0,
+                    task_id: 88,
+                },
+                function: FunctionLabel {
+                    name: "decode_step".into(),
+                    level: PlLevel::L4,
+                },
+                backend_spec: None,
+                request: Some(BackendExecutionRequest {
+                    correlation: RequestCorrelation {
+                        request_id: "req-dup".into(),
+                        trace_id: None,
+                        op_name: Some("decode_step".into()),
+                        step_index: Some(0),
+                        sequence_no: Some(88),
+                    },
+                    plan: None,
+                    context: None,
+                    bindings: vec![
+                        DispatchBufferBinding {
+                            name: "input".into(),
+                            usage: BufferUsage::Input,
+                            endpoint: MemoryEndpoint {
+                                node: 0,
+                                segment: SegmentHandle(1),
+                                offset: 0,
+                            },
+                            bytes: 4096,
+                            dtype: TensorDType::Opaque,
+                            shape: vec![4096],
+                            layout: TensorLayout::Opaque,
+                            strides: None,
+                            resident: false,
+                        },
+                        DispatchBufferBinding {
+                            name: "input".into(),
+                            usage: BufferUsage::Output,
+                            endpoint: MemoryEndpoint {
+                                node: 0,
+                                segment: SegmentHandle(2),
+                                offset: 0,
+                            },
+                            bytes: 4096,
+                            dtype: TensorDType::Opaque,
+                            shape: vec![4096],
+                            layout: TensorLayout::Opaque,
+                            strides: None,
+                            resident: false,
+                        },
+                    ],
+                }),
+                target_level: PlLevel::L4,
+                target_node: 19,
+                input_segments: vec![SegmentHandle(1)],
+            },
+            &mut sink,
+        );
+
+        assert!(matches!(
+            err,
+            Err(sim_core::SimError::InvalidInput(
+                "duplicate_request_binding_name"
+            ))
+        ));
+    }
+
+    #[test]
+    fn runtime_engine_rejects_contiguous_binding_size_mismatch() {
+        let config = ScenarioConfig::from_yaml_str(VALID_YAML).expect("valid config");
+        let mut runtime = LocalRuntimeEngine::from_config(&config);
+        let mut sink = VecEventSink::default();
+
+        let err = runtime.submit_dispatch(
+            DispatchRequest {
+                task: TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord { levels: [0; 8] },
+                    scope_depth: 0,
+                    task_id: 89,
+                },
+                function: FunctionLabel {
+                    name: "decode_step".into(),
+                    level: PlLevel::L4,
+                },
+                backend_spec: None,
+                request: Some(BackendExecutionRequest {
+                    correlation: RequestCorrelation {
+                        request_id: "req-size".into(),
+                        trace_id: None,
+                        op_name: Some("decode_step".into()),
+                        step_index: Some(0),
+                        sequence_no: Some(89),
+                    },
+                    plan: None,
+                    context: None,
+                    bindings: vec![DispatchBufferBinding {
+                        name: "input".into(),
+                        usage: BufferUsage::Input,
+                        endpoint: MemoryEndpoint {
+                            node: 0,
+                            segment: SegmentHandle(1),
+                            offset: 0,
+                        },
+                        bytes: 8,
+                        dtype: TensorDType::F32,
+                        shape: vec![4],
+                        layout: TensorLayout::Contiguous,
+                        strides: None,
+                        resident: false,
+                    }],
+                }),
+                target_level: PlLevel::L4,
+                target_node: 19,
+                input_segments: vec![SegmentHandle(1)],
+            },
+            &mut sink,
+        );
+
+        assert!(matches!(
+            err,
+            Err(sim_core::SimError::InvalidInput(
+                "binding_bytes_shape_mismatch"
+            ))
+        ));
+    }
+
+    #[test]
+    fn runtime_engine_tracks_and_clears_resident_bindings() {
+        let config = ScenarioConfig::from_yaml_str(VALID_YAML).expect("valid config");
+        let mut runtime = LocalRuntimeEngine::from_config(&config);
+        let mut sink = VecEventSink::default();
+
+        let make_request = |task_id: u64, lifecycle: ExecutionLifecycle, resident: bool| {
+            BackendExecutionRequest {
+                correlation: RequestCorrelation {
+                    request_id: format!("req-res-{task_id}"),
+                    trace_id: None,
+                    op_name: Some("decode_step".into()),
+                    step_index: Some(task_id as u32),
+                    sequence_no: Some(task_id),
+                },
+                plan: None,
+                context: Some(ExecutionContextRef {
+                    device_context_id: "device-ctx-res".into(),
+                    runtime_context_id: Some("runtime-ctx-res".into()),
+                    lifecycle,
+                    warm: true,
+                    reusable: true,
+                }),
+                bindings: vec![DispatchBufferBinding {
+                    name: "kv-cache".into(),
+                    usage: BufferUsage::Inout,
+                    endpoint: MemoryEndpoint {
+                        node: 0,
+                        segment: SegmentHandle(21),
+                        offset: 0,
+                    },
+                    bytes: 4096,
+                    dtype: TensorDType::Opaque,
+                    shape: vec![4096],
+                    layout: TensorLayout::Opaque,
+                    strides: None,
+                    resident,
+                }],
+            }
+        };
+
+        runtime
+            .submit_dispatch(
+                DispatchRequest {
+                    task: TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 91,
+                    },
+                    function: FunctionLabel {
+                        name: "decode_step".into(),
+                        level: PlLevel::L4,
+                    },
+                    backend_spec: None,
+                    request: Some(make_request(91, ExecutionLifecycle::Init, true)),
+                    target_level: PlLevel::L4,
+                    target_node: 19,
+                    input_segments: vec![SegmentHandle(21)],
+                },
+                &mut sink,
+            )
+            .expect("init dispatch");
+
+        let runtime_ctx = runtime
+            .runtime_context_snapshot("runtime-ctx-res")
+            .expect("runtime context after init");
+        assert_eq!(runtime_ctx.resident_binding_count, 1);
+
+        runtime
+            .apply_execution_context_command(ExecutionContextCommand {
+                device_context_id: "device-ctx-res".into(),
+                runtime_context_id: Some("runtime-ctx-res".into()),
+                lifecycle: ExecutionLifecycle::Reset,
+                warm: false,
+                reusable: true,
+            })
+            .expect("reset context");
+
+        let runtime_ctx = runtime
+            .runtime_context_snapshot("runtime-ctx-res")
+            .expect("runtime context after reset");
+        assert_eq!(runtime_ctx.resident_binding_count, 0);
+    }
+
+    #[test]
+    fn runtime_engine_rejects_resident_binding_mismatch() {
+        let config = ScenarioConfig::from_yaml_str(VALID_YAML).expect("valid config");
+        let mut runtime = LocalRuntimeEngine::from_config(&config);
+        let mut sink = VecEventSink::default();
+
+        let make_request = |task_id: u64, lifecycle: ExecutionLifecycle, segment: u64| {
+            BackendExecutionRequest {
+                correlation: RequestCorrelation {
+                    request_id: format!("req-res-mismatch-{task_id}"),
+                    trace_id: None,
+                    op_name: Some("decode_step".into()),
+                    step_index: Some(task_id as u32),
+                    sequence_no: Some(task_id),
+                },
+                plan: None,
+                context: Some(ExecutionContextRef {
+                    device_context_id: "device-ctx-res-mismatch".into(),
+                    runtime_context_id: Some("runtime-ctx-res-mismatch".into()),
+                    lifecycle,
+                    warm: true,
+                    reusable: true,
+                }),
+                bindings: vec![DispatchBufferBinding {
+                    name: "kv-cache".into(),
+                    usage: BufferUsage::Inout,
+                    endpoint: MemoryEndpoint {
+                        node: 0,
+                        segment: SegmentHandle(segment),
+                        offset: 0,
+                    },
+                    bytes: 4096,
+                    dtype: TensorDType::Opaque,
+                    shape: vec![4096],
+                    layout: TensorLayout::Opaque,
+                    strides: None,
+                    resident: true,
+                }],
+            }
+        };
+
+        runtime
+            .submit_dispatch(
+                DispatchRequest {
+                    task: TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 92,
+                    },
+                    function: FunctionLabel {
+                        name: "decode_step".into(),
+                        level: PlLevel::L4,
+                    },
+                    backend_spec: None,
+                    request: Some(make_request(92, ExecutionLifecycle::Init, 30)),
+                    target_level: PlLevel::L4,
+                    target_node: 19,
+                    input_segments: vec![SegmentHandle(30)],
+                },
+                &mut sink,
+            )
+            .expect("init dispatch");
+
+        let err = runtime.submit_dispatch(
+            DispatchRequest {
+                task: TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord { levels: [0; 8] },
+                    scope_depth: 0,
+                    task_id: 93,
+                },
+                function: FunctionLabel {
+                    name: "decode_step".into(),
+                    level: PlLevel::L4,
+                },
+                backend_spec: None,
+                request: Some(make_request(93, ExecutionLifecycle::Reuse, 31)),
+                target_level: PlLevel::L4,
+                target_node: 19,
+                input_segments: vec![SegmentHandle(31)],
+            },
+            &mut sink,
+        );
+
+        assert!(matches!(
+            err,
+            Err(sim_core::SimError::InvalidInput("resident_binding_mismatch"))
+        ));
     }
 
     #[test]
@@ -1003,6 +3644,8 @@ outputs:
                         name: "decode_step".into(),
                         level: PlLevel::L4,
                     },
+                    backend_spec: None,
+                    request: None,
                     target_level: PlLevel::L4,
                     target_node: 19,
                     input_segments: vec![SegmentHandle(1)],
@@ -1039,6 +3682,8 @@ outputs:
                         name: "decode_step".into(),
                         level: PlLevel::L4,
                     },
+                    backend_spec: None,
+                    request: None,
                     target_level: PlLevel::L4,
                     target_node: 19,
                     input_segments: vec![SegmentHandle(1)],
@@ -1057,10 +3702,9 @@ outputs:
         );
 
         let events = sink.into_events();
-        assert!(events.iter().any(|event| matches!(
-            event,
-            SimEvent::RuntimeFailed { op_id: 1, .. }
-        )));
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, SimEvent::RuntimeFailed { op_id: 1, .. })));
     }
 
     #[test]
@@ -1076,6 +3720,8 @@ outputs:
                         name: "decode_step".into(),
                         level: PlLevel::L4,
                     },
+                    backend_spec: None,
+                    request: None,
                     target_level: PlLevel::L4,
                     target_node: 19,
                     input_segments: vec![SegmentHandle(1)],

@@ -1,0 +1,11 @@
+[package]
+name = "sim-chipbackend-simpler"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+libc = "0.2"
+libloading = "0.8"
+thiserror.workspace = true

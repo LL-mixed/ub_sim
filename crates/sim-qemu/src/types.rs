@@ -113,7 +113,9 @@ impl GuestDescriptor {
                         IoOpcode::WriteBlock => 2,
                         IoOpcode::Dispatch => 3,
                         IoOpcode::RemoteFetch | IoOpcode::RemoteStore => {
-                            return Err("remote fetch/store not yet supported in guest descriptor encoding")
+                            return Err(
+                                "remote fetch/store not yet supported in guest descriptor encoding",
+                            )
                         }
                     },
                 );
@@ -191,10 +193,12 @@ impl GuestDescriptor {
                     block,
                 }))
             }
-            2 => Ok(GuestDescriptor::Service(GuestServiceDescriptor::BlockWriteback {
-                task: decode_task(&mut cursor)?,
-                block: BlockHash(decode_string(&mut cursor)?),
-            })),
+            2 => Ok(GuestDescriptor::Service(
+                GuestServiceDescriptor::BlockWriteback {
+                    task: decode_task(&mut cursor)?,
+                    block: BlockHash(decode_string(&mut cursor)?),
+                },
+            )),
             3 => Ok(GuestDescriptor::Service(GuestServiceDescriptor::ShmemPut(
                 ShmemPutReq {
                     task: decode_task(&mut cursor)?,
@@ -366,10 +370,19 @@ impl DeviceInterruptStatus {
     pub const CQ_OVERFLOW: u64 = 1 << 2;
 }
 
-pub fn encode_completion(event: &CompletionEvent, slot_bytes: usize) -> Result<Vec<u8>, &'static str> {
+pub fn encode_completion(
+    event: &CompletionEvent,
+    slot_bytes: usize,
+) -> Result<Vec<u8>, &'static str> {
     let mut buf = Vec::with_capacity(slot_bytes);
     write_u64(&mut buf, event.op_id);
-    encode_task(&mut buf, &event.task);
+    /*
+     * Guest CQ slots are intentionally compact: the fixed 64B ABI carries
+     * op_id/source/status/finished_at, not the full TaskKey. The richer task
+     * identity remains in the simulator event before it crosses the QEMU
+     * guest ABI boundary.
+     */
+    write_u8(&mut buf, 0);
     write_u8(
         &mut buf,
         match event.source {
@@ -386,11 +399,11 @@ pub fn encode_completion(event: &CompletionEvent, slot_bytes: usize) -> Result<V
         CompletionStatus::Success => write_u8(&mut buf, 1),
         CompletionStatus::RetryableFailure { code } => {
             write_u8(&mut buf, 2);
-            encode_string(&mut buf, code)?;
+            encode_bounded_string(&mut buf, code, slot_bytes.saturating_sub(8))?;
         }
         CompletionStatus::FatalFailure { code } => {
             write_u8(&mut buf, 3);
-            encode_string(&mut buf, code)?;
+            encode_bounded_string(&mut buf, code, slot_bytes.saturating_sub(8))?;
         }
     }
     write_u64(&mut buf, event.finished_at);
@@ -487,6 +500,27 @@ fn encode_string(buf: &mut Vec<u8>, value: &str) -> Result<(), &'static str> {
     }
     write_u8(buf, value.len() as u8);
     buf.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+
+fn encode_bounded_string(
+    buf: &mut Vec<u8>,
+    value: &str,
+    reserved_tail: usize,
+) -> Result<(), &'static str> {
+    if buf.len() + 1 + reserved_tail > u8::MAX as usize + buf.len() + 1 {
+        return Err("invalid bounded string reservation");
+    }
+    let available = reserved_tail
+        .checked_sub(buf.len() + 1)
+        .ok_or("encoded payload exceeds slot size")?;
+    let max_len = available.min(u8::MAX as usize);
+    let mut len = value.len().min(max_len);
+    while !value.is_char_boundary(len) {
+        len -= 1;
+    }
+    write_u8(buf, len as u8);
+    buf.extend_from_slice(&value.as_bytes()[..len]);
     Ok(())
 }
 

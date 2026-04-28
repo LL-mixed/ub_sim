@@ -103,14 +103,19 @@ impl SimTopology {
 
         let mut next_node_id: NodeId = 1;
         let mut hosts = Vec::with_capacity(config.topology.hosts as usize);
-        let mut ubpus = Vec::with_capacity((config.topology.hosts * config.topology.ubpus_per_host) as usize);
-        let mut ubcs = Vec::with_capacity((config.topology.hosts * config.topology.ubpus_per_host) as usize);
+        let mut ubpus =
+            Vec::with_capacity((config.topology.hosts * config.topology.ubpus_per_host) as usize);
+        let mut ubcs =
+            Vec::with_capacity((config.topology.hosts * config.topology.ubpus_per_host) as usize);
         let mut ummus = Vec::with_capacity(config.topology.ub_domains.len());
         let mut entities = Vec::with_capacity(
-            (config.topology.hosts * config.topology.ubpus_per_host * config.topology.entities_per_ubpu)
-                as usize,
+            (config.topology.hosts
+                * config.topology.ubpus_per_host
+                * config.topology.entities_per_ubpu) as usize,
         );
-        let mut decoders = Vec::with_capacity((config.topology.hosts * config.topology.ubpus_per_host * 2) as usize);
+        let mut decoders = Vec::with_capacity(
+            (config.topology.hosts * config.topology.ubpus_per_host * 2) as usize,
+        );
         let mut domains = Vec::with_capacity(config.topology.ub_domains.len());
         let mut routes = Vec::new();
 

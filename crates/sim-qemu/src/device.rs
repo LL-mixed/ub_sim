@@ -233,10 +233,7 @@ impl LinquDeviceModel {
         })
     }
 
-    pub fn mmio_ring_doorbell(
-        &mut self,
-        write: DoorbellWrite,
-    ) -> Result<(usize, usize), SimError> {
+    pub fn mmio_ring_doorbell(&mut self, write: DoorbellWrite) -> Result<(usize, usize), SimError> {
         let (session, enqueued, pending_after_submit) = {
             let state = self
                 .endpoints
@@ -249,7 +246,10 @@ impl LinquDeviceModel {
             let mut enqueued = 0usize;
             for _ in 0..to_submit {
                 let slot = state.cmdq_head;
-                let desc = state.memory.take_cmd_slot(slot).map_err(SimError::InvalidInput)?;
+                let desc = state
+                    .memory
+                    .take_cmd_slot(slot)
+                    .map_err(SimError::InvalidInput)?;
                 let _ = self.adapter.enqueue_descriptor(&state.session, desc)?;
                 state.cmdq_head = (state.cmdq_head + 1) % depth;
                 state.cmdq_count -= 1;
@@ -280,7 +280,10 @@ impl LinquDeviceModel {
         let depth = state.memory.cq_depth();
         for _ in 0..limit {
             let slot = state.cq_head;
-            let completion = state.memory.take_cq_slot(slot).map_err(SimError::InvalidInput)?;
+            let completion = state
+                .memory
+                .take_cq_slot(slot)
+                .map_err(SimError::InvalidInput)?;
             state.cq_head = (state.cq_head + 1) % depth;
             state.cq_count -= 1;
             events.push(completion);
@@ -317,7 +320,9 @@ impl LinquDeviceModel {
             depth - state.cq_head + new_head
         };
         if advance > state.cq_count {
-            return Err(SimError::InvalidInput("cq head exceeds pending completions"));
+            return Err(SimError::InvalidInput(
+                "cq head exceeds pending completions",
+            ));
         }
         for _ in 0..advance {
             state.cq_head = (state.cq_head + 1) % depth;

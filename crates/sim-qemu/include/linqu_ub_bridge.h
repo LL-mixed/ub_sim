@@ -22,6 +22,18 @@ int linqu_ub_bridge_submit_slot(LinquUbBridge *bridge,
                                 const uint8_t *slot,
                                 size_t slot_len);
 
+int linqu_ub_bridge_write_segment_payload(LinquUbBridge *bridge,
+                                          uint64_t segment,
+                                          size_t offset,
+                                          const uint8_t *data,
+                                          size_t data_len);
+
+int linqu_ub_bridge_read_segment_payload(LinquUbBridge *bridge,
+                                         uint64_t segment,
+                                         size_t offset,
+                                         uint8_t *out,
+                                         size_t out_len);
+
 int linqu_ub_bridge_ring_doorbell(LinquUbBridge *bridge,
                                   uint16_t endpoint_id,
                                   uint32_t max_batch,

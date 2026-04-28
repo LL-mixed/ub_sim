@@ -35,7 +35,7 @@ impl LinquUbBridge {
             .map_err(|_| "register endpoint failed")?;
         let default_segment = self
             .adapter
-            .create_segment(&session, 4096)
+            .create_segment(&session, 8192)
             .map_err(|_| "create default segment failed")?;
         self.sessions.insert(
             endpoint_id,
@@ -54,11 +54,7 @@ impl LinquUbBridge {
             .ok_or("unknown endpoint")
     }
 
-    fn submit_slot(
-        &mut self,
-        endpoint_id: u16,
-        slot: &[u8],
-    ) -> Result<(), &'static str> {
+    fn submit_slot(&mut self, endpoint_id: u16, slot: &[u8]) -> Result<(), &'static str> {
         let session = self
             .sessions
             .get(&endpoint_id)
@@ -71,6 +67,28 @@ impl LinquUbBridge {
             .enqueue_descriptor(&session, desc)
             .map_err(|_| "enqueue failed")?;
         Ok(())
+    }
+
+    fn write_segment_payload(
+        &mut self,
+        segment: u64,
+        offset: usize,
+        bytes: &[u8],
+    ) -> Result<(), &'static str> {
+        self.adapter
+            .write_segment_payload(sim_core::SegmentHandle(segment), offset, bytes)
+            .map_err(|_| "write segment payload failed")
+    }
+
+    fn read_segment_payload(
+        &self,
+        segment: u64,
+        offset: usize,
+        out: &mut [u8],
+    ) -> Result<(), &'static str> {
+        self.adapter
+            .read_segment_payload(sim_core::SegmentHandle(segment), offset, out)
+            .map_err(|_| "read segment payload failed")
     }
 
     fn ring_doorbell(
@@ -206,6 +224,52 @@ pub extern "C" fn linqu_ub_bridge_submit_slot(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn linqu_ub_bridge_write_segment_payload(
+    ptr: *mut LinquUbBridge,
+    segment: u64,
+    offset: usize,
+    data: *const u8,
+    data_len: usize,
+) -> c_int {
+    if data.is_null() {
+        return -1;
+    }
+    let data = unsafe { std::slice::from_raw_parts(data, data_len) };
+    match bridge_mut(ptr).and_then(|bridge| {
+        bridge
+            .write_segment_payload(segment, offset, data)
+            .map(|_| 0)
+            .map_err(|_| -1)
+    }) {
+        Ok(code) => code,
+        Err(code) => code,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn linqu_ub_bridge_read_segment_payload(
+    ptr: *mut LinquUbBridge,
+    segment: u64,
+    offset: usize,
+    out: *mut u8,
+    out_len: usize,
+) -> c_int {
+    if out.is_null() {
+        return -1;
+    }
+    let out = unsafe { std::slice::from_raw_parts_mut(out, out_len) };
+    match bridge_mut(ptr).and_then(|bridge| {
+        bridge
+            .read_segment_payload(segment, offset, out)
+            .map(|_| 0)
+            .map_err(|_| -1)
+    }) {
+        Ok(code) => code,
+        Err(code) => code,
+    }
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn linqu_ub_bridge_ring_doorbell(
     ptr: *mut LinquUbBridge,
     endpoint_id: u16,
@@ -216,11 +280,9 @@ pub extern "C" fn linqu_ub_bridge_ring_doorbell(
     if submitted_out.is_null() || pending_out.is_null() {
         return -1;
     }
-    match bridge_mut(ptr).and_then(|bridge| {
-        bridge
-            .ring_doorbell(endpoint_id, max_batch)
-            .map_err(|_| -1)
-    }) {
+    match bridge_mut(ptr)
+        .and_then(|bridge| bridge.ring_doorbell(endpoint_id, max_batch).map_err(|_| -1))
+    {
         Ok((submitted, pending)) => {
             unsafe {
                 *submitted_out = submitted;

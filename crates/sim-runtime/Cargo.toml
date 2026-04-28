@@ -7,5 +7,6 @@ authors.workspace = true
 
 [dependencies]
 sim-config = { path = "../sim-config" }
+sim-chipbackend-simpler = { path = "../sim-chipbackend-simpler" }
 sim-core = { path = "../sim-core" }
 sim-topology = { path = "../sim-topology" }

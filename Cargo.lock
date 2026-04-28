@@ -9,6 +9,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "cfg-if"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -35,6 +41,22 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "libc"
+version = "0.2.186"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
+
+[[package]]
+name = "libloading"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
 
 [[package]]
 name = "memchr"
@@ -123,6 +145,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-chipbackend-simpler"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "libloading",
+ "thiserror",
+]
+
+[[package]]
 name = "sim-cli"
 version = "0.1.0"
 dependencies = [
@@ -158,6 +189,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-models"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sim-config",
+ "sim-core",
+ "sim-services",
+ "sim-topology",
+]
+
+[[package]]
 name = "sim-qemu"
 version = "0.1.0"
 dependencies = [
@@ -180,6 +223,7 @@ dependencies = [
 name = "sim-runtime"
 version = "0.1.0"
 dependencies = [
+ "sim-chipbackend-simpler",
  "sim-config",
  "sim-core",
  "sim-topology",
@@ -206,8 +250,12 @@ dependencies = [
 name = "sim-uapi"
 version = "0.1.0"
 dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
  "sim-config",
  "sim-core",
+ "sim-models",
  "sim-runtime",
  "sim-services",
  "sim-topology",
@@ -268,6 +316,12 @@ name = "unsafe-libyaml"
 version = "0.2.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
+
+[[package]]
+name = "windows-link"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
 
 [[package]]
 name = "zmij"
