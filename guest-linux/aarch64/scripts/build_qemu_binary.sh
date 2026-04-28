@@ -12,10 +12,27 @@ BUILD_DIR="$(qemu_ub_build_path "$REPO_ROOT")"
 BIN="$(qemu_ub_bin_path "$REPO_ROOT")"
 TARGET_LIST="${QEMU_TARGET_LIST:-aarch64-softmmu}"
 JOBS="${QEMU_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}"
-CONFIGURE_ARGS="${QEMU_CONFIGURE_ARGS:-}"
+CONFIGURE_ARGS="${QEMU_CONFIGURE_ARGS:---disable-werror}"
 RECONFIGURE="${RECONFIGURE:-0}"
 STAMP_FILE="$BUILD_DIR/.qemu_build.stamp"
-SIM_QEMU_STATICLIB="$REPO_ROOT/target/release/libsim_qemu.a"
+SIM_QEMU_STATICLIB="${SIM_QEMU_STATICLIB:-}"
+
+find_sim_qemu_staticlib() {
+  local candidate
+  if [[ -n "$SIM_QEMU_STATICLIB" ]]; then
+    echo "$SIM_QEMU_STATICLIB"
+    return 0
+  fi
+  for candidate in \
+    "$REPO_ROOT/target/release/libsim_qemu.a" \
+    "$REPO_ROOT"/target/*/release/libsim_qemu.a; do
+    if [[ -f "$candidate" ]]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  echo "$REPO_ROOT/target/release/libsim_qemu.a"
+}
 
 build_sim_qemu_staticlib() {
   (
@@ -26,6 +43,7 @@ build_sim_qemu_staticlib() {
 
 ensure_sim_qemu_link_args() {
   build_sim_qemu_staticlib
+  SIM_QEMU_STATICLIB="$(find_sim_qemu_staticlib)"
   if [[ ! -f "$SIM_QEMU_STATICLIB" ]]; then
     echo "[build_qemu_binary] error: missing sim-qemu staticlib: $SIM_QEMU_STATICLIB" >&2
     exit 1
