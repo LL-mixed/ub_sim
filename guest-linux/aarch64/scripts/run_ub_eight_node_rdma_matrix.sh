@@ -148,6 +148,7 @@ while time.time() < deadline:
     try:
         s.connect(("127.0.0.1", port))
         s.sendall(payload.encode("utf-8"))
+        time.sleep(0.2)
         s.close()
         sys.exit(0)
     except OSError as exc:
@@ -197,6 +198,8 @@ send_rdma_cmd() {
   payload+=$'export LINQU_UB_LOCAL_IP='"${local_ip}"$'\n'
   payload+=$'export LINQU_UB_PEER_IP='"${peer_ip}"$'\n'
   payload+=$'echo '"${start_marker}"$'\n'
+  payload+=$'/bin/insmod /lib/modules/uburma.ko 2>/dev/null || true\n'
+  payload+=$'i=0; while [ ! -d /sys/class/uburma ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done\n'
   payload+=$'/bin/linqu_ub_rdma_demo\n'
 
   send_serial_block "$serial_port" "$payload"

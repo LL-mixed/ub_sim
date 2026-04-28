@@ -167,6 +167,7 @@ while time.time() < deadline:
     try:
         s.connect(("127.0.0.1", port))
         s.sendall(line.encode("utf-8") + b"\n")
+        time.sleep(0.2)
         s.close()
         sys.exit(0)
     except OSError as exc:
@@ -197,6 +198,7 @@ while time.time() < deadline:
     try:
         s.connect(("127.0.0.1", port))
         s.sendall(payload.encode("utf-8"))
+        time.sleep(0.2)
         s.close()
         sys.exit(0)
     except OSError as exc:

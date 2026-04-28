@@ -13,7 +13,7 @@ RUN_DIR="$LOG_DIR/${RUN_ID_BASE}_headless8"
 BOOT_WAIT_SECS="${BOOT_WAIT_SECS:-180}"
 DEMO_WAIT_SECS="${DEMO_WAIT_SECS:-180}"
 START_GAP_SECS="${START_GAP_SECS:-1}"
-APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
+APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1 pmd_mapping=25%}"
 PORT_BASE_START="${PORT_BASE_START:-$((53600 + (RANDOM % 300)))}"
 PORT_BASE="$PORT_BASE_START"
 
@@ -127,6 +127,7 @@ while time.time() < deadline:
     try:
         s.connect(("127.0.0.1", port))
         s.sendall(payload.encode("utf-8"))
+        time.sleep(0.2)
         s.close()
         sys.exit(0)
     except OSError as exc:

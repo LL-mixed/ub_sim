@@ -41,6 +41,15 @@ log() {
   echo "[headless8] $*" | tee -a "$CONTROL_LOG"
 }
 
+qemu_pid_alive() {
+  local pid_file="$1"
+  local pid
+  [[ -f "$pid_file" ]] || return 1
+  pid="$(cat "$pid_file" 2>/dev/null || true)"
+  [[ -n "$pid" ]] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
 cont_qemu() {
   local qmp_socket="$1"
   local attempt=0
@@ -170,10 +179,24 @@ done
 log "waiting for QMP sockets"
 for node_id in "${NODE_IDS[@]}"; do
   qmp_socket="$QMP_DIR/${node_id}.${RUN_ID}.sock"
+  pid_file="$OUT_DIR/ub_${node_id}.headless.${RUN_ID}.pid"
+  qmp_wait_attempt=0
   while [[ ! -S "$qmp_socket" ]]; do
+    if ! qemu_pid_alive "$pid_file"; then
+      log "qemu exited before QMP socket was ready: ${node_id}"
+      exit 1
+    fi
+    if (( qmp_wait_attempt >= 150 )); then
+      log "timeout waiting for QMP socket: ${qmp_socket}"
+      exit 1
+    fi
     sleep 0.1
+    qmp_wait_attempt=$((qmp_wait_attempt + 1))
   done
-  cont_qemu "$qmp_socket"
+  if ! cont_qemu "$qmp_socket"; then
+    log "failed to resume ${node_id} via QMP"
+    exit 1
+  fi
   log "resumed ${node_id}"
 done
 
