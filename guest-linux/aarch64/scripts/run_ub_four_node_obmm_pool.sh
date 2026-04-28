@@ -12,7 +12,7 @@ RUN_ID_BASE="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_obmmpool4_${RANDOM}}"
 RUN_DIR="$LOG_DIR/${RUN_ID_BASE}_headless4"
 BOOT_WAIT_SECS="${BOOT_WAIT_SECS:-180}"
 DEMO_WAIT_SECS="${DEMO_WAIT_SECS:-180}"
-APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
+APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1 pmd_mapping=25%}"
 PORT_BASE_START="${PORT_BASE_START:-$((53600 + (RANDOM % 300)))}"
 PORT_BASE="$PORT_BASE_START"
 
@@ -102,7 +102,7 @@ node_serial_port() {
   local node_id="$1"
   local port_base="$2"
   local idx="$(node_index "$node_id")"
-  echo $((port_base + 15 + idx))
+  echo $((port_base + 31 + idx))
 }
 
 send_serial_block() {
@@ -122,6 +122,7 @@ while time.time() < deadline:
     try:
         s.connect(("127.0.0.1", port))
         s.sendall(payload.encode("utf-8"))
+        time.sleep(0.2)
         s.close()
         sys.exit(0)
     except OSError as exc:

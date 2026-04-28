@@ -216,17 +216,17 @@
 ```bash
 # 1) 双节点 probe（含 FE1 枚举断言）
 cd simulator/guest-linux/aarch64
-AARCH64_LINUX_CC=/opt/homebrew/bin/aarch64-unknown-linux-gnu-gcc \
+AARCH64_LINUX_CC=/path/to/aarch64-*-gnu-gcc \
 UB_SIM_MULTI_ENTITY=1 UB_SIM_ENTITY_COUNT=2 \
 ./scripts/run_ub_dual_node_probe.sh
 
 # 2) ubcore + URMA e2e
-AARCH64_LINUX_CC=/opt/homebrew/bin/aarch64-unknown-linux-gnu-gcc \
+AARCH64_LINUX_CC=/path/to/aarch64-*-gnu-gcc \
 UB_SIM_MULTI_ENTITY=1 UB_SIM_ENTITY_COUNT=2 ITERATIONS=20 RUN_SECS=180 \
 ./scripts/run_ub_dual_node_ubcore_urma_e2e.sh
 
 # 3) dataplane workload
-AARCH64_LINUX_CC=/opt/homebrew/bin/aarch64-unknown-linux-gnu-gcc \
+AARCH64_LINUX_CC=/path/to/aarch64-*-gnu-gcc \
 UB_SIM_MULTI_ENTITY=1 UB_SIM_ENTITY_COUNT=2 ITERATIONS=20 RUN_SECS=180 \
 ./scripts/run_ub_dual_node_urma_dataplane_workload_test.sh
 ```

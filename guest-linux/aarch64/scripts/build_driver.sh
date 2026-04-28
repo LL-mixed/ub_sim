@@ -7,7 +7,7 @@ DRIVER_DIR="$ROOT_DIR/driver"
 OUT_DIR="$ROOT_DIR/out/driver"
 
 : "${KERNEL_BUILD_DIR:=}"
-: "${CROSS_COMPILE:=aarch64-unknown-linux-gnu-}"
+: "${CROSS_COMPILE:=aarch64-linux-gnu-}"
 : "${ARCH:=arm64}"
 
 if [[ -z "$KERNEL_BUILD_DIR" ]]; then

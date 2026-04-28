@@ -89,13 +89,11 @@ cleanup_session() {
 run_iteration() {
   local iter="$1"
   local run_id="${RUN_ID_BASE}_iter${iter}"
-  local session_name="ub-four-node-${run_id}"
-  local run_dir="$LOG_DIR/${run_id}_tmux4"
-  local cleanup_script="$OUT_DIR/tmux_four_node_cleanup.${run_id}.sh"
+  local run_dir="$LOG_DIR/${run_id}_headless4"
+  local cleanup_script="$OUT_DIR/headless_four_node_cleanup.${run_id}.sh"
   local result=0
 
-  TMUX_ATTACH=0 RUN_ID="$run_id" TMUX_SESSION_NAME="$session_name" \
-    "$SCRIPT_DIR/launch_ub_four_node_tmux.sh"
+  RUN_ID="$run_id" "$SCRIPT_DIR/launch_ub_four_node_headless.sh" >/dev/null
 
   for idx in {1..4}; do
     local guest_log="$run_dir/${NODE_IDS[$idx]}_guest.log"

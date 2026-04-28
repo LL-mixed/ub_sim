@@ -73,7 +73,7 @@ print_guest_preflight_help() {
   local kernel_image="$2"
   local initramfs_image="$3"
   local modules_dir="$4"
-  local cc_hint="${5:-aarch64-unknown-linux-gnu-gcc}"
+  local cc_hint="${5:-aarch64-*-gnu-gcc}"
   local helper_script="$guest_root/scripts/build_guest_artifacts.sh"
 
   cat >&2 <<EOF
@@ -97,18 +97,23 @@ EOF
 }
 
 detect_aarch64_linux_cc() {
+  emulate -L zsh
+  setopt null_glob
+  local cc
   if [[ -n "${AARCH64_LINUX_CC:-}" ]]; then
     echo "$AARCH64_LINUX_CC"
     return 0
   fi
-  if command -v aarch64-unknown-linux-gnu-gcc >/dev/null 2>&1; then
-    command -v aarch64-unknown-linux-gnu-gcc
-    return 0
-  fi
-  if [[ -x /opt/homebrew/bin/aarch64-unknown-linux-gnu-gcc ]]; then
-    echo "/opt/homebrew/bin/aarch64-unknown-linux-gnu-gcc"
-    return 0
-  fi
+  for cc in aarch64-*-gnu-gcc /usr/bin/aarch64-*-gnu-gcc /opt/homebrew/bin/aarch64-*-gnu-gcc /opt/local/bin/aarch64-*-gnu-gcc; do
+    if command -v "$cc" >/dev/null 2>&1; then
+      command -v "$cc"
+      return 0
+    fi
+    if [[ -x "$cc" ]]; then
+      echo "$cc"
+      return 0
+    fi
+  done
   echo ""
 }
 

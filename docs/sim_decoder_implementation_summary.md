@@ -167,7 +167,7 @@ ninja -j8
 ### Guest Kernel Build
 ```bash
 export KERNEL_BUILD_DIR=/path/to/kernel_build
-export CROSS_COMPILE=aarch64-unknown-linux-gnu-
+export CROSS_COMPILE=aarch64-linux-gnu-
 export ARCH=arm64
 make -C $KERNEL_BUILD_DIR M=drivers/ub/ubus modules
 ```

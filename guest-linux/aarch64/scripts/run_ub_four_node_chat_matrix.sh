@@ -135,7 +135,7 @@ node_serial_port() {
   local node_id="$1"
   local port_base="$2"
   local idx="$(node_index "$node_id")"
-  echo $((port_base + 15 + idx))
+  echo $((port_base + 31 + idx))
 }
 
 send_serial_line() {
@@ -155,6 +155,7 @@ while time.time() < deadline:
     try:
         s.connect(("127.0.0.1", port))
         s.sendall(line.encode("utf-8") + b"\n")
+        time.sleep(0.2)
         s.close()
         sys.exit(0)
     except OSError as exc:
@@ -185,6 +186,7 @@ while time.time() < deadline:
     try:
         s.connect(("127.0.0.1", port))
         s.sendall(payload.encode("utf-8"))
+        time.sleep(0.2)
         s.close()
         sys.exit(0)
     except OSError as exc:

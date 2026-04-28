@@ -104,7 +104,7 @@ cd busybox-1.36.1
 make defconfig
 sed -i 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
 sed -i '/^CONFIG_CROSS_COMPILER_PREFIX=/d' .config
-printf 'CONFIG_CROSS_COMPILER_PREFIX="aarch64-unknown-linux-gnu-"\n' >> .config
+printf 'CONFIG_CROSS_COMPILER_PREFIX="aarch64-linux-gnu-"\n' >> .config
 sed -i '/^CONFIG_EXTRA_CFLAGS=/d' .config
 printf 'CONFIG_EXTRA_CFLAGS="-static"\n' >> .config
 make -j8
@@ -212,6 +212,14 @@ guest-linux/aarch64/scripts/run_ub_dual_node_ubcore_urma_e2e.sh
 - guest workload `/bin/linqu_urma_dp` does bidirectional socket send/recv over `ipourma`
 - both guests emit `[urma_dp] rx peer src=...` and `[init] urma dataplane pass`
 
+## Automation Mode
+
+Autotest, demo validation, matrix harness, and CI-style regression runs must use
+the headless control path. Do not use tmux as the automation control plane.
+
+Use tmux launchers only for manual interaction and debugging, where a human
+needs QEMU monitor windows or live guest serial consoles.
+
 ## Dual-Node Interactive tmux Session
 
 Use the tmux wrapper when you want both nodes booted into an interactive guest
@@ -269,6 +277,10 @@ Cleanup:
 
 Use the four-node tmux wrapper when you want a full-mesh `nodeA/nodeB/nodeC/nodeD`
 interactive environment instead of auto-running a matrix harness.
+
+Do not use this launcher from autotest/demo/harness code. Four-node automated
+validation should launch a headless environment and drive guest serial ports/logs
+directly.
 
 Example:
 

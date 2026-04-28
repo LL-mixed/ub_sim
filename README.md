@@ -8,7 +8,7 @@
 2. 准备 guest kernel artifact 和 ARM64 busybox
 3. 让脚本自动构建 QEMU + initramfs
 4. 启动双节点 / 4 节点 / 8 节点
-5. 通过 tmux 或串口端口与 guest 交互
+5. 自动化验证使用 headless 模式；人工调试时可通过 tmux 或串口端口与 guest 交互
 
 ## 目录说明
 
@@ -52,7 +52,7 @@ git submodule update --init vendor/qemu_8.2.0_ub guest-linux/kernel_ub
 - `nc`
 - `rg`
 - `ninja`
-- ARM64 Linux 交叉编译器，例如 `aarch64-unknown-linux-gnu-gcc`
+- ARM64 Linux 交叉编译器，匹配 `aarch64-*-gnu-gcc`
 
 还需要两类 guest 输入：
 
@@ -67,6 +67,12 @@ git submodule update --init vendor/qemu_8.2.0_ub guest-linux/kernel_ub
 - `out/Image` 或 `out/initramfs.cpio.gz` 过期时自动刷新
 - 已经新鲜的产物会复用，不会每次全量重建
 
+自动化运行约定：
+
+- autotest、demo validation、matrix harness、CI 回归都必须使用 headless 启动/控制路径。
+- `tmux` launcher 只用于人工交互、串口观察和临时 debug，不作为 harness control plane。
+- 如果某个验证脚本仍依赖 tmux，它应先迁移到 headless，再纳入自动化回归。
+
 ## 3. 准备 Guest Artifact
 
 所有 guest 相关脚本默认都在 [guest-linux/aarch64](guest-linux/aarch64) 下工作。最重要的环境变量是：
@@ -79,7 +85,7 @@ git submodule update --init vendor/qemu_8.2.0_ub guest-linux/kernel_ub
 推荐先设置：
 
 ```bash
-export AARCH64_LINUX_CC=/opt/homebrew/bin/aarch64-unknown-linux-gnu-gcc
+export AARCH64_LINUX_CC=/path/to/aarch64-*-gnu-gcc
 export BUSYBOX=$PWD/guest-linux/aarch64/busybox-aarch64
 ```
 
@@ -230,9 +236,9 @@ tmux attach -t <session-name>
 - log 路径
 - cleanup 脚本路径
 
-### 5.3 双节点无交互 demo 验证
+### 5.3 双节点 headless demo 验证
 
-如果你要直接跑双节点 demo 验证，而不是先手动进 shell：
+如果你要直接跑双节点 demo 验证，而不是先手动进 shell，使用无交互/headless harness：
 
 ```bash
 cd guest-linux/aarch64
@@ -280,6 +286,9 @@ BUSYBOX="$BUSYBOX" \
 
 ### 6.3 四节点验证脚本
 
+四节点 autotest/demo/matrix 验证应走 headless harness，不应通过
+`launch_ub_four_node_tmux.sh` 作为控制平面。tmux 仅用于上一节的人工交互环境。
+
 四节点常用脚本：
 
 ```bash
@@ -291,11 +300,13 @@ cd guest-linux/aarch64
 ./scripts/run_ub_four_node_obmm_pool.sh
 ```
 
-这些脚本会生成各自 report，并把详细日志落到 `logs/` 和 `out/`。
+这些脚本会生成各自 report，并把详细日志落到 `logs/` 和 `out/`。用于自动化时，日志目录名应带
+`headless4`/`headless8` 这类 headless run id，而不是 `tmux` run id。
 
 ## 7. 八节点
 
-当前仓库里八节点主路径是 headless，不是 tmux 交互优先。
+当前仓库里八节点主路径是 headless，不是 tmux 交互优先。八节点 autotest、demo validation
+和 matrix harness 都必须保持 headless。
 
 ### 7.1 启动八节点 headless 环境
 
