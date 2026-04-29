@@ -421,40 +421,92 @@ static int sync_datapath_ready(int udp_fd, enum udma_role role,
     static const char ready_msg[] = "UDMA_DEMO_READY";
     static const char ack_msg[] = "UDMA_DEMO_READY_ACK";
     char buf[64];
-    struct sockaddr_in from;
-    socklen_t from_len = sizeof(from);
-    ssize_t n;
+    long deadline = now_ms() + SYNC_TIMEOUT_MS;
+    long next_send = 0;
 
     if (role == UDMA_ROLE_INITIATOR) {
-        if (sendto(udp_fd, ready_msg, sizeof(ready_msg), 0,
-                   (const struct sockaddr *)peer, sizeof(*peer)) < 0) {
-            return -errno;
+        while (now_ms() < deadline) {
+            struct sockaddr_in from;
+            socklen_t from_len = sizeof(from);
+            ssize_t n;
+            long now = now_ms();
+
+            if (now >= next_send) {
+                if (sendto(udp_fd, ready_msg, sizeof(ready_msg), 0,
+                           (const struct sockaddr *)peer, sizeof(*peer)) < 0) {
+                    return -errno;
+                }
+                next_send = now + 100;
+            }
+
+            memset(&from, 0, sizeof(from));
+            n = recvfrom(udp_fd, buf, sizeof(buf), MSG_DONTWAIT,
+                         (struct sockaddr *)&from, &from_len);
+            if (n < 0) {
+                if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+                    usleep(10000);
+                    continue;
+                }
+                return -errno;
+            }
+            if (from.sin_family != peer->sin_family ||
+                from.sin_port != peer->sin_port ||
+                from.sin_addr.s_addr != peer->sin_addr.s_addr) {
+                continue;
+            }
+            if ((size_t)n == sizeof(ack_msg) &&
+                memcmp(buf, ack_msg, sizeof(ack_msg)) == 0) {
+                return 0;
+            }
         }
-        n = recvfrom(udp_fd, buf, sizeof(buf), 0,
-                     (struct sockaddr *)&from, &from_len);
-        if (n < 0) {
-            return -errno;
-        }
-        if ((size_t)n != sizeof(ack_msg) ||
-            memcmp(buf, ack_msg, sizeof(ack_msg)) != 0) {
-            return -EPROTO;
-        }
+        return -ETIMEDOUT;
     } else {
-        n = recvfrom(udp_fd, buf, sizeof(buf), 0,
-                     (struct sockaddr *)&from, &from_len);
-        if (n < 0) {
-            return -errno;
+        bool ready_seen = false;
+        long quiet_deadline = 0;
+
+        while (now_ms() < deadline) {
+            struct sockaddr_in from;
+            socklen_t from_len = sizeof(from);
+            ssize_t n;
+            long now = now_ms();
+
+            if (ready_seen && now >= next_send) {
+                if (sendto(udp_fd, ack_msg, sizeof(ack_msg), 0,
+                           (const struct sockaddr *)peer, sizeof(*peer)) < 0) {
+                    return -errno;
+                }
+                next_send = now + 20;
+            }
+            if (ready_seen && now >= quiet_deadline) {
+                return 0;
+            }
+
+            memset(&from, 0, sizeof(from));
+            n = recvfrom(udp_fd, buf, sizeof(buf), MSG_DONTWAIT,
+                         (struct sockaddr *)&from, &from_len);
+            if (n < 0) {
+                if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+                    usleep(10000);
+                    continue;
+                }
+                return -errno;
+            }
+            if (from.sin_family != peer->sin_family ||
+                from.sin_port != peer->sin_port ||
+                from.sin_addr.s_addr != peer->sin_addr.s_addr) {
+                continue;
+            }
+            if ((size_t)n == sizeof(ready_msg) &&
+                memcmp(buf, ready_msg, sizeof(ready_msg)) == 0) {
+                if (!ready_seen) {
+                    ready_seen = true;
+                    quiet_deadline = now_ms() + 250;
+                    next_send = 0;
+                }
+            }
         }
-        if ((size_t)n != sizeof(ready_msg) ||
-            memcmp(buf, ready_msg, sizeof(ready_msg)) != 0) {
-            return -EPROTO;
-        }
-        if (sendto(udp_fd, ack_msg, sizeof(ack_msg), 0,
-                   (const struct sockaddr *)peer, sizeof(*peer)) < 0) {
-            return -errno;
-        }
+        return -ETIMEDOUT;
     }
-    return 0;
 }
 
 /* ---------- helper: file read ---------- */
@@ -2020,37 +2072,6 @@ static int udp_send_all(int fd, const void *buf, size_t len,
     return 0;
 }
 
-static int udp_recv_all(int fd, void *buf, size_t len,
-                        const struct sockaddr_in *expected_src)
-{
-    char *p = (char *)buf;
-    size_t remaining = len;
-
-    while (remaining > 0) {
-        struct sockaddr_in src;
-        socklen_t slen = sizeof(src);
-        ssize_t n;
-
-        n = recvfrom(fd, p, remaining, 0,
-                     (struct sockaddr *)&src, &slen);
-        if (n < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            return -1;
-        }
-        if (expected_src != NULL &&
-            (src.sin_family != expected_src->sin_family ||
-             src.sin_port != expected_src->sin_port ||
-             src.sin_addr.s_addr != expected_src->sin_addr.s_addr)) {
-            continue;
-        }
-        p += n;
-        remaining -= (size_t)n;
-    }
-    return 0;
-}
-
 static void format_eid_hex(const uint8_t eid[UBCORE_EID_SIZE], char *out, size_t out_len)
 {
     size_t i;
@@ -2141,26 +2162,60 @@ static int exchange_peer_info(int udp_fd, enum udma_role role,
                               const struct peer_info *local,
                               struct peer_info *remote)
 {
-    if (role == UDMA_ROLE_INITIATOR) {
-        if (udp_send_all(udp_fd, local, sizeof(*local), peer_addr) < 0) {
-            fprintf(stderr, "[ub_udma] exchange: send local info failed\n");
-            return -1;
+    long deadline = now_ms() + SYNC_TIMEOUT_MS;
+    long next_send = 0;
+    unsigned int sends = 0;
+    bool received = false;
+    long quiet_deadline = 0;
+
+    (void)role;
+    while (now_ms() < deadline) {
+        struct sockaddr_in src;
+        socklen_t slen = sizeof(src);
+        ssize_t n;
+        long now = now_ms();
+
+        if (now >= next_send) {
+            if (udp_send_all(udp_fd, local, sizeof(*local), peer_addr) < 0) {
+                fprintf(stderr, "[ub_udma] exchange: send local info failed\n");
+                return -1;
+            }
+            sends += 1;
+            next_send = now + (received ? 20 : 100);
         }
-        if (udp_recv_all(udp_fd, remote, sizeof(*remote), peer_addr) < 0) {
+
+        if (received && now >= quiet_deadline) {
+            printf("[ub_udma] exchange: peer info received after %u announce(s)\n", sends);
+            return 0;
+        }
+
+        memset(&src, 0, sizeof(src));
+        n = recvfrom(udp_fd, remote, sizeof(*remote), MSG_DONTWAIT,
+                     (struct sockaddr *)&src, &slen);
+        if (n < 0) {
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+                usleep(10000);
+                continue;
+            }
             fprintf(stderr, "[ub_udma] exchange: recv remote info failed\n");
             return -1;
         }
-    } else {
-        if (udp_recv_all(udp_fd, remote, sizeof(*remote), peer_addr) < 0) {
-            fprintf(stderr, "[ub_udma] exchange: recv remote info failed\n");
-            return -1;
+        if (n != (ssize_t)sizeof(*remote)) {
+            continue;
         }
-        if (udp_send_all(udp_fd, local, sizeof(*local), peer_addr) < 0) {
-            fprintf(stderr, "[ub_udma] exchange: send local info failed\n");
-            return -1;
+        if (src.sin_family != peer_addr->sin_family ||
+            src.sin_port != peer_addr->sin_port ||
+            src.sin_addr.s_addr != peer_addr->sin_addr.s_addr) {
+            continue;
+        }
+        if (!received) {
+            received = true;
+            quiet_deadline = now_ms() + 250;
+            next_send = 0;
         }
     }
-    return 0;
+    fprintf(stderr, "[ub_udma] exchange: recv remote info failed\n");
+    return -1;
 }
 
 /* ---------- cleanup ---------- */
@@ -2305,6 +2360,22 @@ int main(void)
 {
     char role[32] = "unknown";
     enum udma_role parsed_role = UDMA_ROLE_UNKNOWN;
+    const char *stop_after_ctx_env = getenv("LINQU_UB_UDMA_STOP_AFTER_CTX");
+    const char *stop_after_seg_env = getenv("LINQU_UB_UDMA_STOP_AFTER_SEG");
+    const bool stop_after_ctx =
+        ((stop_after_ctx_env != NULL) &&
+         (strcmp(stop_after_ctx_env, "1") == 0 ||
+          strcmp(stop_after_ctx_env, "true") == 0 ||
+          strcmp(stop_after_ctx_env, "yes") == 0 ||
+          strcmp(stop_after_ctx_env, "on") == 0)) ||
+        cmdline_get_bool("linqu_udma_stop_after_ctx");
+    const bool stop_after_seg =
+        ((stop_after_seg_env != NULL) &&
+         (strcmp(stop_after_seg_env, "1") == 0 ||
+          strcmp(stop_after_seg_env, "true") == 0 ||
+          strcmp(stop_after_seg_env, "yes") == 0 ||
+          strcmp(stop_after_seg_env, "on") == 0)) ||
+        cmdline_get_bool("linqu_udma_stop_after_seg");
     char ifname[IFNAMSIZ] = {0};
     struct in_addr local_addr = {0};
     struct in_addr desired_local = {0};
@@ -2454,6 +2525,11 @@ int main(void)
                     ub_ioctl(g_res.fd, UBURMA_CMD_CREATE_CTX,
                              &cmd, sizeof(cmd)));
         g_res.ctx_created = true;
+        if (stop_after_ctx) {
+            printf("[ub_udma] step 2: stop_after_ctx -> ok\n");
+            cleanup_resources(&g_res);
+            return 0;
+        }
     }
     {
         struct uburma_cmd_alloc_token_id cmd;
@@ -2833,6 +2909,12 @@ int main(void)
         g_res.token_id = cmd.out.token_id;
         g_res.seg_handle = cmd.out.handle;
         g_res.seg_registered = true;
+        if (stop_after_seg) {
+            printf("[ub_udma] step 7: stop_after_seg -> ok handle=0x%016" PRIx64 "\n",
+                   g_res.seg_handle);
+            cleanup_resources(&g_res);
+            return 0;
+        }
     }
 
     /* --- step 8: UDP sync + info exchange + import jetty --- */
