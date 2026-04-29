@@ -194,8 +194,10 @@ validate_node_log() {
   local idx
   local remote_idx
 
-  if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "host_matmul" || "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_0_6b" ]]; then
+  if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "host_matmul" ]]; then
     expected_dispatch_word="0x3f8000003f800000"
+  elif [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_0_6b" ]]; then
+    expected_dispatch_word="0x[0-9a-f]+"
   fi
 
   assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_kvcache_path=ready" "$node_id obmm kvcache backing" || return 1

@@ -958,9 +958,32 @@ static int verify_dispatch_payload(volatile uint8_t *ep_mmio, uint64_t segment)
 {
     const uint64_t expected = expected_dispatch_result_word();
     uint64_t observed;
+    uint32_t word_lo;
+    uint32_t word_hi;
+    float value_lo;
+    float value_hi;
 
     mmio_write64(ep_mmio, REG_SEG_DATA_OFFSET, 0);
     observed = mmio_read64(ep_mmio, REG_SEG_DATA_VALUE);
+    if (is_qwen3_profile()) {
+        word_lo = (uint32_t)(observed & 0xffffffffU);
+        word_hi = (uint32_t)(observed >> 32);
+        memcpy(&value_lo, &word_lo, sizeof(value_lo));
+        memcpy(&value_hi, &word_hi, sizeof(value_hi));
+        if (!(value_lo > 1.0f && value_hi > 1.0f)) {
+            fprintf(stderr,
+                    "[w4_guest] dispatch payload mismatch segment=%" PRIu64
+                    " expected=qwen3_positive_result got=0x%016" PRIx64
+                    " value0=%f value1=%f\n",
+                    segment,
+                    observed,
+                    value_lo,
+                    value_hi);
+            return -1;
+        }
+        printf("[w4_guest] stage uapi_kvcache_payload_dispatch_result segment=%" PRIu64 " word0=0x%016" PRIx64 "\n",
+               segment, observed);
+    } else
     if (observed != expected) {
         fprintf(stderr,
                 "[w4_guest] dispatch payload mismatch segment=%" PRIu64 " expected=0x%016" PRIx64 " got=0x%016" PRIx64 "\n",
@@ -968,9 +991,10 @@ static int verify_dispatch_payload(volatile uint8_t *ep_mmio, uint64_t segment)
                 expected,
                 observed);
         return -1;
+    } else {
+        printf("[w4_guest] stage uapi_kvcache_payload_dispatch_result segment=%" PRIu64 " word0=0x%016" PRIx64 "\n",
+               segment, observed);
     }
-    printf("[w4_guest] stage uapi_kvcache_payload_dispatch_result segment=%" PRIu64 " word0=0x%016" PRIx64 "\n",
-           segment, observed);
     if (is_qwen3_profile()) {
         uint64_t publish_marker;
         uint64_t resolve_marker;

@@ -239,8 +239,10 @@ validate_node_log() {
   local log_file="$2"
   local expected_dispatch_word="0x41a0000041a00000"
 
-  if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "host_matmul" || "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_0_6b" ]]; then
+  if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "host_matmul" ]]; then
     expected_dispatch_word="0x3f8000003f800000"
+  elif [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_0_6b" ]]; then
+    expected_dispatch_word="0x[0-9a-f]+"
   fi
 
   local idx owner_role

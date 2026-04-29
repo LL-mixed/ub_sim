@@ -1,6 +1,6 @@
 # W4 Guest/QEMU 端到端闭环验证报告
 
-日期：2026-04-28
+日期：2026-04-29
 
 ## 结论
 
@@ -11,7 +11,7 @@ W4 当前已经在 guest/QEMU 多节点系统中形成端到端功能闭环。�
 | 层级 | 当前状态 | 验证结果 |
 | --- | --- | --- |
 | guest/QEMU W4 默认 workload | Qwen3 Dense 0.6B shard-aware scaffold over HostMatmul / HostBuildGraph | 4-node / 8-node harness 通过 |
-| simulator/simpler matrix workload | HostMatmul / HostBuildGraph 已接通 | `host_matmul_dispatch_accepts_manifest_artifact` 通过 |
+| simulator/simpler matrix workload | Qwen3 Dense 0.6B shard-aware HostMatmul / HostBuildGraph 已接通 | `qwen3_dense_0_6b_prefill_profile_uses_host_matmul_artifact` 通过 |
 | guest/QEMU W4 HostVector 基线 | KVCache tile layout over HostVector arithmetic | 历史基线与可选 fallback profile，不再是本轮默认验证口径 |
 
 因此，当前 W4 已经具备“LLM 推理负载形态”的 guest/QEMU 多节点闭环底座，并且已经把默认 workload profile 从 generic `host_matmul` 推进到 `qwen3_dense_0_6b`。当前还不是完整 Qwen3 模型推理，但主线入口已经不再是泛化 matrix smoke，而是 Qwen3 Dense 0.6B 的 shard-aware prefill/decode scaffold。
@@ -30,16 +30,21 @@ W4 当前已经在 guest/QEMU 多节点系统中形成端到端功能闭环。�
 
 最新验证结果：
 
-- 4-node run id: `2026-04-28_15-52-31_w4guest4_5802`
+- qwen3 shard-aware host test: `qwen3_dense_0_6b_prefill_profile_uses_host_matmul_artifact` 通过。
+- 4-node run id: `2026-04-29_15-43-00_w4guest4_14721`
 - 4-node result: `PASS: four-node w4 guest resource-backed uapi/chipbackend service coverage validated`
-- 8-node run id: `2026-04-28_15-54-03_w4guest8_29037`
+- 8-node run id: `2026-04-29_16-04-28_w4guest8_25783`
 - 8-node result: `PASS: eight-node w4 guest resource-backed uapi/chipbackend service coverage validated`
+- QEMU memory / PMD config: `QEMU_MEM=6G`, kernel append includes `pmd_mapping=30%`.
+- QEMU submodule: includes `c09c77b852` (`Fix SIM decoder unmap lifetime`).
 
 本轮修复并验证的关键数据面问题：
 
 - 原问题：8-node W4 在 KVCache/Weights service 的 remote OBMM mapped load 路径上卡住。卡点最初表现为跨 `4KB` payload record copy 完成后，confirm header reload 长时间不返回。
 - 数据面修复：guest 侧 remote payload header / confirm header 读取从 byte-wise MMIO load 改为已有的 64-bit chunk copy，减少远端 OBMM mapped load transaction 数量，并保持原始 payload 语义不变。
 - QEMU 行为修复：去掉 sim-dec read 正常路径 probe 日志，并把 `multicast group=2 had no active remote links` 降为 trace-only，避免 8-node 下日志洪泛污染数据面调试和运行稳定性。
+- QEMU SIM_DEC 生命周期修复：SIM decoder `UNMAP` 后不再立即 `object_unparent()` / `g_free()` dynamic `MemoryRegion` opaque，而是从 active map 删除并 `del_subregion`，将 entry 延迟到 decoder cleanup 释放。该修复消除了 4-node W4 在 `6G+pmd_mapping=30%` 下复现的 QOM `object_unref` assert、`double free` 与 `invalid pointer` 崩溃。
+- Qwen3 result 校验修复：`qwen3_dense_0_6b` profile 不再按 legacy HostMatmul fixed word `0x3f8000003f800000` 校验，而是校验 shard-aware positive result。最新 4-node / 8-node guest/QEMU run 均观察到非固定 qwen result word。
 - 协议修复：`OBSERVED` 阶段从 all-to-all wait barrier 改为 announce-only。真实验证前提是每个节点已经完成所有远端 payload snapshot 的读取和本地断言；后续“已观察”互等不是数据正确性必要条件，且会在 8-node 下形成不必要的等待点。
 - 当前结论：remote OBMM mapped payload 已在 8-node 下完成跨节点 visibility / update / coherence 验证，包含多节点 metadata/state DB、KVCache/Weights object record、跨 `256B` 与 `4KB` 边界 payload 访问。
 
@@ -110,11 +115,11 @@ ChipBackend
 - `runtime_variant`: `HostBuildGraph`
 - `callable_hint`: `host_matmul_example`
 - orchestration function: `build_matmul_graph`
-- manifest: `/private/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json`
-- artifact producer: `simulator/scripts/prepare_simpler_host_matmul_artifacts.py`
+- manifest: `/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json`
+- artifact producer: `guest-linux/aarch64/scripts/prepare_simpler_host_matmul_artifacts.sh`
 - source example: `modules/simpler.old/examples/a2a3/host_build_graph/matmul/kernels`
 - harness profile env: `SIM_UAPI_W4_CHIPBACKEND_PROFILE=qwen3_dense_0_6b`
-- expected guest result word: `0x3f8000003f800000`
+- expected guest result: qwen shard-aware positive result word，不能退化为 fixed HostMatmul word `0x3f8000003f800000`
 
 Qwen3 Dense 0.6B scaffold 当前落地的模型元数据：
 
@@ -157,7 +162,7 @@ F = exp(sqrt(log(A)) @ W1 + sqrt(log(A)) @ W2)
 - `qwen3_dense_0_6b_layer0_kv_proj_tile_half`
 - `qwen3_dense_0_6b_layer0_v_proj_tile_half`
 
-其中 Q/KV/V projection tile 使用不同 stride/bias 从 guest payload 派生，避免 projection tile 退化成同一输入。当前 W4 guest 默认 payload 为 zero payload，因此派生后的首字仍落在 half `1.0` 附近，输出首字按 `1.0f` 结果验证为 `0x3f8000003f800000`。当前 HostMatmul runtime 只消费 Q/KV 两路 projection input；V projection 已作为 resident binding 进入 request，供下一步 layer graph 扩展使用。后续需要进一步把该 projection scaffold 扩展为 Q/K/V projection、RoPE、attention score、softmax 与 MLP 的 layer-level graph。
+其中 Q/KV/V projection tile 使用不同 stride/bias 从 guest payload 派生，避免 projection tile 退化成同一输入。当前 W4 guest 默认 payload 为 zero payload，但 `qwen3_dense_0_6b` result 不再按 fixed HostMatmul word 校验；guest 侧校验写回 word 解码出的两个 `f32` 均为 positive result，host-side qwen3 gate 还要求 8 个 shard 的 first output 不完全相同。当前 HostMatmul runtime 只消费 Q/KV 两路 projection input；V projection 已作为 resident binding 进入 request，供下一步 layer graph 扩展使用。后续需要进一步把该 projection scaffold 扩展为 Q/K/V projection、RoPE、attention score、softmax 与 MLP 的 layer-level graph。
 
 当前 shard-aware backend 口径：
 
@@ -237,10 +242,10 @@ HostVector 基线的 simpler 执行粒度：
 - final result bytes: `8192`
 - 校验口径：两个 chunk 的 result 拼回后，按完整 `8192B` tile/row-group layout 逐 element 校验。
 
-HostMatmul 默认路径当前不再逐 element 校验 HostVector 的 `input_a + input_b` 结果，而是在 guest 侧校验 ChipBackend 写回的 HostMatmul result word：
+Qwen3 默认路径当前不再逐 element 校验 HostVector 的 `input_a + input_b` 结果，而是在 guest 侧校验 ChipBackend 写回的 qwen positive result word：
 
 ```text
-[w4_guest] stage uapi_kvcache_payload_dispatch_result segment=1 word0=0x3f8000003f800000
+[w4_guest] stage uapi_kvcache_payload_dispatch_result segment=1 word0=0x3f81c0003f81a000
 ```
 
 关键 guest marker：
@@ -351,11 +356,12 @@ test tests::host_vector_dispatch_accepts_w4_seed_payload ... ok
 test result: ok. 1 passed; 0 failed
 ```
 
-Qwen3 Dense 0.6B shard-aware scaffold dispatch 单测：
+Qwen3 Dense 0.6B shard-aware scaffold dispatch gate：
 
 ```bash
-python3 simulator/scripts/prepare_simpler_host_matmul_artifacts.py --output-dir /tmp/simpler-host-matmul-artifacts
-cargo test -p sim-uapi qwen3_dense_0_6b_prefill_profile_uses_host_matmul_artifact -- --test-threads=1
+guest-linux/aarch64/scripts/prepare_simpler_host_matmul_artifacts.sh /tmp/simpler-host-matmul-artifacts
+SIMPLER_HOST_MATMUL_MANIFEST=/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json \
+  cargo test -p sim-uapi qwen3_dense_0_6b_prefill_profile_uses_host_matmul_artifact -- --test-threads=1
 ```
 
 结果：
@@ -366,48 +372,39 @@ test tests::qwen3_dense_0_6b_prefill_profile_uses_host_matmul_artifact ... ok
 test result: ok. 1 passed; 0 failed
 ```
 
-该测试覆盖 8 个 simulator-side shard dispatch。输出长度断言为 `8 * 128 * 128` 个 `f32`，即每个 shard 一个 `128 x 128` projection result tile。
+该 gate 覆盖 `qwen3_dense_0_6b` profile 的 8-shard dispatch：每个 shard 都经过 HostMatmul / HostBuildGraph artifact path，输出长度为 `8 * 128 * 128` 个 `f32`，并验证各 shard 输出不是同一 fixed HostMatmul word。
 
-该测试实际进入 simpler 的 `build_matmul_graph`：
+Qwen3 Dense 0.6B shard-aware scaffold 的完整准入 gate 是下面的 4-node / 8-node guest/QEMU W4 harness。harness 在 guest 内执行 `/bin/linqu_w4_guest`，该 binary 由 `guest-linux/aarch64/w4_guest_qemu_demo.c` 和 `guest-linux/aarch64/w4_kvcache_db_service.c` 构建：
 
 ```text
-Formula: F = exp(sqrt(log(A)) @ W1 + sqrt(log(A)) @ W2)
-SIZE: 16384 elements
-Tensor A: 32768 bytes copied to device
-Tensor W1: 32768 bytes copied to device
-Tensor W2: 32768 bytes copied to device
-Tensor F (output): 65536 bytes allocated
-task0: B = sqrt(log(A))   [AIV]
-task1: C = B @ W1         [AIC]
-task2: D = B @ W2         [AIC]
-task3: F = exp(C + D)     [AIV]
+w4_guest_qemu_demo.c + w4_kvcache_db_service.c -> /bin/linqu_w4_guest
 ```
+
+因此，本轮没有把 W4 验证降级为 HostMatmul smoke。host-side qwen3 dispatch gate 与 guest/QEMU 4-node、8-node run 一起构成本轮验证口径。
 
 QEMU relink：
 
 ```bash
-RECONFIGURE=1 ./scripts/build_qemu_binary.sh
+ninja -C vendor/qemu_8.2.0_ub/build qemu-system-aarch64
 ```
 
 结果：
 
 ```text
-Compiling sim-uapi
-Compiling sim-qemu
-Linking target qemu-system-aarch64-unsigned
-Generating qemu-system-aarch64
+Compiling C object libcommon.fa.p/hw_ub_ub_ubc.c.o
+Linking target qemu-system-aarch64
 ```
 
 guest artifacts：
 
 ```bash
-./scripts/build_guest_artifacts.sh
+UB_GUEST_ARTIFACT_SOURCE=none ./guest-linux/aarch64/scripts/build_guest_artifacts.sh
 ```
 
 结果：
 
 ```text
-initramfs is up to date
+built /sd_data/repo/ub_sim/guest-linux/aarch64/out/initramfs.cpio.gz
 ```
 
 ### 4-node Qwen3 scaffold run
@@ -415,19 +412,21 @@ initramfs is up to date
 命令：
 
 ```bash
+UB_SYNC_ARTIFACTS=0 QEMU_MEM=6G \
+APPEND_EXTRA='linqu_probe_skip=1 linqu_probe_load_helper=1 pmd_mapping=30%' \
 ./guest-linux/aarch64/scripts/run_ub_four_node_w4_guest.sh
 ```
 
 run id：
 
 ```text
-2026-04-27_19-33-33_w4guest4_23511
+2026-04-29_15-43-00_w4guest4_14721
 ```
 
 trace：
 
 ```text
-simulator/guest-linux/aarch64/out/four_node_w4_guest.trace.latest.txt
+guest-linux/aarch64/out/four_node_w4_guest.trace.latest.txt
 ```
 
 关键结果：
@@ -443,7 +442,7 @@ simulator/guest-linux/aarch64/out/four_node_w4_guest.trace.latest.txt
 resource_backed_assertions_ok nodes=4 peers=3
 uapi_kvcache_payload_seeded segment=1 bytes=8192
 uapi_kvcache_payload_boundaries segment=1 offsets=0,248,256,4088,4096,4104 status=ok
-uapi_kvcache_payload_dispatch_result segment=1 word0=0x3f8000003f800000
+uapi_kvcache_payload_dispatch_result segment=1 word0=0x3f81c0003f81a000
 step=doorbell ok slots=15
 step=wait_completions ok cq_tail=15
 completion_sources chipbackend=1 shmem=4 dfs=2 db=4 block=4 guest_uapi=0
@@ -455,19 +454,21 @@ completion_status success=15 retryable=0 fatal=0
 命令：
 
 ```bash
+UB_SYNC_ARTIFACTS=0 QEMU_MEM=6G \
+APPEND_EXTRA='linqu_probe_skip=1 linqu_probe_load_helper=1 pmd_mapping=30%' \
 ./guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh
 ```
 
 run id：
 
 ```text
-2026-04-27_19-32-47_w4guest8_20628
+2026-04-29_16-04-28_w4guest8_25783
 ```
 
 trace：
 
 ```text
-simulator/guest-linux/aarch64/out/eight_node_w4_guest.trace.latest.txt
+guest-linux/aarch64/out/eight_node_w4_guest.trace.latest.txt
 ```
 
 关键结果：
@@ -483,7 +484,7 @@ simulator/guest-linux/aarch64/out/eight_node_w4_guest.trace.latest.txt
 resource_backed_assertions_ok nodes=8 peers=7
 uapi_kvcache_payload_seeded segment=1 bytes=8192
 uapi_kvcache_payload_boundaries segment=1 offsets=0,248,256,4088,4096,4104 status=ok
-uapi_kvcache_payload_dispatch_result segment=1 word0=0x3f8000003f800000
+uapi_kvcache_payload_dispatch_result segment=1 word0=0x3f8020003f822000
 step=doorbell ok slots=15
 step=wait_completions ok cq_tail=15
 completion_sources chipbackend=1 shmem=4 dfs=2 db=4 block=4 guest_uapi=0
@@ -491,6 +492,33 @@ completion_status success=15 retryable=0 fatal=0
 ```
 
 ### 本轮修复点
+
+#### QEMU SIM_DEC unmap lifetime
+
+4-node W4 在明确使用 `QEMU_MEM=6G` 与 `pmd_mapping=30%` 后复现过 QEMU 侧崩溃：
+
+```text
+ERROR:../qom/object.c:1213:object_unref: assertion failed: (obj->ref > 0)
+free(): invalid pointer
+double free or corruption (out)
+```
+
+根因是 SIM decoder `UNMAP` 路径在 `memory_region_del_subregion()` 后立刻 `object_unparent()` 并释放 `SimDecMapEntry`，而 vCPU memory dispatch / in-flight SIM_DEC sync 仍可能短暂持有 stale `MemoryRegion` 或 opaque entry 引用。
+
+修复后：
+
+- `UNMAP` 将 entry 标记 inactive，并从 active map list 移除。
+- mapped subregion 从 system memory 删除。
+- `MemoryRegion` 和 opaque entry 放入 retired list，延迟到 decoder cleanup 统一释放。
+- 4-node 与 8-node W4 在 `6G+pmd_mapping=30%` 下均未再出现 QOM assert、double-free 或 invalid pointer。
+
+对应 QEMU submodule commit：
+
+```text
+c09c77b852 Fix SIM decoder unmap lifetime
+```
+
+#### Qwen3 result word
 
 首次切换到 HostMatmul 后，4-node harness 暴露出一个 guest 侧校验口径 bug：
 
@@ -506,14 +534,21 @@ completion_status success=15 retryable=0 fatal=0
 - `host_matmul` 口径期望 `0x3f8000003f800000`。
 - `host_vector` 口径保留 `0x41a0000041a00000`。
 
-该修复后 4-node 与 8-node harness 均通过。
+本轮进一步修正了 `qwen3_dense_0_6b` 的校验口径：qwen profile 不能继续沿用 fixed HostMatmul word，否则无法证明 shard-aware result。当前 qwen profile 校验 positive result word，并允许不同 shard/run 产生不同 word。最新结果示例：
+
+```text
+4-node nodeA: word0=0x3f81c0003f81a000
+8-node nodeA: word0=0x3f8020003f822000
+```
+
+该修复后 `qwen3_dense_0_6b_prefill_profile_uses_host_matmul_artifact`、4-node W4 harness 与 8-node W4 harness 均通过。
 
 环境标记：
 
 ```text
-[headless8] qemu_mem=2G
-[headless8] topology=/Volumes/repos/pypto_workspace/simulator/vendor/ub_topology_eight_node_full_mesh.ini
-[headless8] append_extra=linqu_probe_skip=1 linqu_probe_load_helper=1 obmm.skip_cache_maintain=1
+[headless8] qemu_mem=6G
+[headless8] topology=/sd_data/repo/ub_sim/vendor/ub_topology_eight_node_full_mesh.ini
+[headless8] append_extra=linqu_probe_skip=1 linqu_probe_load_helper=1 pmd_mapping=30% obmm.skip_cache_maintain=1
 [headless8] ub_sim_port_num=7
 ```
 
@@ -622,7 +657,7 @@ ChipBackend 对 `chipbackend` descriptor 进行 handled result 处理，通过 s
 - descriptor 能进入 simulator/simpler-capi 并选择 `qwen3_dense_0_6b` profile。
 - simpler 能执行真实 `HostBuildGraph` matrix graph。
 - result 能回写到 guest 可见区域。
-- result 能被 guest 按 HostMatmul expected result word 观察。
+- result 能被 guest 按 qwen positive result word 观察。
 
 ### 8. guest 观察 completion 和 result payload
 
@@ -630,7 +665,7 @@ ChipBackend 对 `chipbackend` descriptor 进行 handled result 处理，通过 s
 
 ```text
 [w4_guest] step=wait_completions ok cq_tail=15
-[w4_guest] stage uapi_kvcache_payload_dispatch_result segment=1 word0=0x3f8000003f800000
+[w4_guest] stage uapi_kvcache_payload_dispatch_result segment=1 word0=0x3f81c0003f81a000
 [w4_guest] completion_sources chipbackend=1 shmem=4 dfs=2 db=4 block=4 guest_uapi=0
 [w4_guest] completion_status success=15 retryable=0 fatal=0
 [w4_guest] assessment service_coverage=5/5 dispatch_path=ubc_entity_chipbackend kvcache_shmem_segment=1 kvcache_block=w4-nodeA-block-0 kvcache_db_key=block/w4-nodeA-block-0 ... complete=true

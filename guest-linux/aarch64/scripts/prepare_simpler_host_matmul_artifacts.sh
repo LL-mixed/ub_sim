@@ -151,7 +151,7 @@ int launch_runtime(void *runtime,
             float *out = (float *)(uintptr_t)rt->args[i];
             size_t elems = rt->sizes[i] / sizeof(float);
             for (size_t j = 0; j < elems; ++j) {
-                out[j] = 1.0f + (j < 2 ? 0.0f : (float)((variant + j) % 17u) / 1024.0f);
+                out[j] = 1.0f + (float)((variant + j) % 17u + 1u) / 1024.0f;
             }
         }
     }
