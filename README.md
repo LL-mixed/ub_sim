@@ -370,6 +370,11 @@ cd guest-linux/aarch64
 ```
 
 其中 8 节点会默认设置 `UB_SIM_PORT_NUM=7`，对应 full-mesh 端口数。
+8 节点 OBMM pool / W4 guest 这类 OBMM-backed harness 默认使用
+`QEMU_MEM=6G` 和 `pmd_mapping=30%`；该组合会在 guest 内为
+`pfn_range_alloc` 预留 1 GiB，避免 `4G + pmd_mapping=25%/50%` 下的
+OBMM contiguous allocation failure。需要时仍可通过 `QEMU_MEM` 和
+`APPEND_EXTRA` 覆盖。
 
 ## 8. 常见交互和产物位置
 
