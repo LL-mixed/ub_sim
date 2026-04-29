@@ -126,25 +126,31 @@ BUSYBOX="$BUSYBOX" \
 
 会被准备好，后续所有启动脚本默认都用这套产物。
 
-### 3.2 从 VM 同步 kernel artifact
+### 3.2 从显式 remote Linux build host 同步 kernel artifact
 
-如果你的 kernel 构建发生在远端 VM，脚本支持自动拉取：
+如果你的 kernel 构建发生在远端 Linux build host/build farm，必须显式提供 SSH 目标并开启 remote artifact 同步：
 
 ```bash
 cd guest-linux/aarch64
-VM_HOST=<your-vm-host> \
+ARTIFACT_SOURCE=remote \
+ALLOW_REMOTE_LINUX_ARTIFACTS=1 \
+REMOTE_LINUX_HOST=<your-build-host> \
+REMOTE_KERNEL_SRC=/path/to/kernel_ub \
+REMOTE_KERNEL_BUILD=/path/to/kernel_build \
 AARCH64_LINUX_CC="$AARCH64_LINUX_CC" \
 BUSYBOX="$BUSYBOX" \
 ./scripts/build_guest_artifacts.sh
 ```
 
-其中 `VM_HOST` 是你自己的 SSH 目标，例如 `user@vm-host`。
+其中 `REMOTE_LINUX_HOST` 是你自己的 SSH 目标，例如 `user@build-host`。
 
 默认 `ARTIFACT_SOURCE=auto`，行为是：
 
 - 先复用本地新鲜的 `out/` 产物
 - 本地产物过期时，优先导入 `LOCAL_KERNEL_IMAGE` / `LOCAL_MODULES_DIR`
-- 没有本地导入参数且 VM 可达时，自动从 VM 同步
+- 如果当前环境是 Linux 且有 `aarch64-*-gnu-gcc`，走本机 native cross build
+- native guest kernel 目标架构是 `arm64`，默认使用 `openeuler_defconfig` 作为 defconfig，再叠加 UB demo/harness 需要的 kernel config
+- 没有本地导入参数且无法 native cross build 时失败并提示；不会自动访问 remote Linux build host
 
 ### 3.3 只准备 busybox
 

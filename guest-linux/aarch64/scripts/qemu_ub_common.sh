@@ -89,7 +89,7 @@ print_guest_preflight_help() {
 [ub_common]   AARCH64_LINUX_CC=$cc_hint ./scripts/prepare_busybox.sh
 [ub_common] manual fallback:
 [ub_common]   cd $guest_root
-[ub_common]   BUILD_IN_VM=1 BUILD_LINQU_DRIVER_IN_VM=1 ./scripts/sync_ub_kernel_artifacts_from_vm.sh
+[ub_common]   REMOTE_LINUX_HOST=user@build-host REMOTE_KERNEL_SRC=/path/to/kernel_ub REMOTE_KERNEL_BUILD=/path/to/kernel_build BUILD_ON_REMOTE=1 BUILD_LINQU_DRIVER_ON_REMOTE=1 ./scripts/sync_ub_kernel_artifacts_from_remote_linux.sh
 [ub_common]   AARCH64_LINUX_CC=$cc_hint BUSYBOX=\$PWD/busybox-aarch64 ./scripts/build_initramfs.sh
 [ub_common] or pass explicit overrides:
 [ub_common]   KERNEL_IMAGE=/path/to/Image INITRAMFS_IMAGE=/path/to/initramfs.cpio.gz ./scripts/launch_ub_dual_node_tmux.sh
@@ -147,8 +147,12 @@ ensure_ub_guest_artifacts() {
     if ! (
       cd "$guest_root"
       ARTIFACT_SOURCE="$artifact_source" \
-      BUILD_IN_VM="${UB_SYNC_BUILD_IN_VM:-1}" \
-      BUILD_LINQU_DRIVER_IN_VM="${UB_SYNC_BUILD_LINQU_IN_VM:-1}" \
+      BUILD_ON_REMOTE="${UB_SYNC_BUILD_ON_REMOTE:-0}" \
+      BUILD_LINQU_DRIVER_ON_REMOTE="${UB_SYNC_BUILD_LINQU_ON_REMOTE:-0}" \
+      ALLOW_REMOTE_LINUX_ARTIFACTS="${UB_ALLOW_REMOTE_LINUX_ARTIFACTS:-0}" \
+      REMOTE_LINUX_HOST="${UB_REMOTE_LINUX_HOST:-}" \
+      REMOTE_KERNEL_SRC="${UB_REMOTE_KERNEL_SRC:-}" \
+      REMOTE_KERNEL_BUILD="${UB_REMOTE_KERNEL_BUILD:-}" \
       AARCH64_LINUX_CC="$(detect_aarch64_linux_cc)" \
       BUSYBOX="${BUSYBOX:-}" \
       LOCAL_KERNEL_IMAGE="${UB_LOCAL_KERNEL_IMAGE:-}" \

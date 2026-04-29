@@ -10,8 +10,9 @@ SRC_DIR="$THIRD_PARTY_DIR/busybox-src"
 BUSYBOX_VERSION="${BUSYBOX_VERSION:-1.36.1}"
 BUSYBOX_TARBALL="$THIRD_PARTY_DIR/busybox-${BUSYBOX_VERSION}.tar.bz2"
 BUSYBOX_URL="${BUSYBOX_URL:-https://busybox.net/downloads/busybox-${BUSYBOX_VERSION}.tar.bz2}"
-VM_HOST="${VM_HOST:-ll@192.168.64.3}"
-VM_BUSYBOX_PATH="${VM_BUSYBOX_PATH:-/usr/bin/busybox_aarch64}"
+REMOTE_LINUX_HOST="${REMOTE_LINUX_HOST:-}"
+REMOTE_BUSYBOX_PATH="${REMOTE_BUSYBOX_PATH:-/usr/bin/busybox_aarch64}"
+ALLOW_REMOTE_LINUX_BUSYBOX="${ALLOW_REMOTE_LINUX_BUSYBOX:-0}"
 
 source "$SCRIPT_DIR/qemu_ub_common.sh"
 
@@ -223,12 +224,13 @@ if [[ -n "${tarball:-}" ]]; then
   exit 0
 fi
 
-if ssh -o BatchMode=yes -o ConnectTimeout=5 "$VM_HOST" "test -x '$VM_BUSYBOX_PATH'" >/dev/null 2>&1; then
-  echo "[prepare_busybox] copying busybox from VM: $VM_HOST:$VM_BUSYBOX_PATH" >&2
-  scp "$VM_HOST:$VM_BUSYBOX_PATH" "$OUT_BIN" >/dev/null
+if [[ "$ALLOW_REMOTE_LINUX_BUSYBOX" == "1" && -n "$REMOTE_LINUX_HOST" ]] && \
+  ssh -o BatchMode=yes -o ConnectTimeout=5 "$REMOTE_LINUX_HOST" "test -x '$REMOTE_BUSYBOX_PATH'" >/dev/null 2>&1; then
+  echo "[prepare_busybox] copying busybox from remote Linux: $REMOTE_LINUX_HOST:$REMOTE_BUSYBOX_PATH" >&2
+  scp "$REMOTE_LINUX_HOST:$REMOTE_BUSYBOX_PATH" "$OUT_BIN" >/dev/null
   chmod +x "$OUT_BIN"
   if ! busybox_has_applets "$OUT_BIN"; then
-    echo "[prepare_busybox] error: VM busybox is missing required applets: ${REQUIRED_APPLETS[*]}" >&2
+    echo "[prepare_busybox] error: remote Linux busybox is missing required applets: ${REQUIRED_APPLETS[*]}" >&2
     exit 1
   fi
   echo "$OUT_BIN"
@@ -244,6 +246,6 @@ cat >&2 <<EOF
 [prepare_busybox]   - $SRC_DIR
 [prepare_busybox]   - $THIRD_PARTY_DIR/busybox-*.tar.bz2
 [prepare_busybox]   - automatic download via curl/wget from $BUSYBOX_URL
-[prepare_busybox]   - reachable VM with $VM_BUSYBOX_PATH
+[prepare_busybox]   - explicit remote Linux copy with ALLOW_REMOTE_LINUX_BUSYBOX=1 REMOTE_LINUX_HOST=<ssh-target> and $REMOTE_BUSYBOX_PATH
 EOF
 exit 1

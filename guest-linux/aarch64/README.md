@@ -92,7 +92,7 @@ AARCH64_LINUX_CC=aarch64-linux-gnu-gcc ./scripts/prepare_busybox.sh
 3. `third_party/busybox-src`
 4. `third_party/busybox-*.tar.bz2`
 5. automatic download from `busybox.net` via `curl` or `wget`
-6. copy from VM (`/usr/bin/busybox_aarch64`) when reachable
+6. explicit remote Linux copy when `ALLOW_REMOTE_LINUX_BUSYBOX=1` and `REMOTE_LINUX_HOST` are set
 
 ### Option 1: Build locally (recommended if SSH is unavailable)
 
@@ -112,12 +112,13 @@ cp busybox ../busybox-aarch64
 chmod +x ../busybox-aarch64
 ```
 
-### Option 2: Copy from Linux VM
+### Option 2: Copy from an explicit remote Linux host
 
-If you can access the VM, copy an existing ARM64 static busybox:
+If you can access a remote Linux host, provide the SSH target explicitly and
+copy an existing ARM64 static busybox:
 
 ```sh
-scp ll@192.168.64.3:/usr/bin/busybox_aarch64 ./busybox-aarch64
+scp user@build-host:/usr/bin/busybox_aarch64 ./busybox-aarch64
 chmod +x ./busybox-aarch64
 export BUSYBOX=$PWD/busybox-aarch64
 ```
@@ -165,6 +166,9 @@ Current freshness rules:
 - `scripts/build_guest_artifacts.sh`
   - records the guest kernel image against `guest-linux/kernel_ub` `HEAD`
   - refreshes stale `out/Image` automatically instead of silently reusing it
+  - on Linux, uses native cross build with `aarch64-*-gnu-gcc` when local artifacts are stale
+  - builds the guest kernel for `arm64`
+  - uses `openeuler_defconfig` as the default guest kernel defconfig, then enables the UB demo/harness config options
 - `scripts/build_initramfs.sh`
   - records an initramfs input signature
   - rebuilds only when guest demo/script/header/module/busybox inputs changed
@@ -180,15 +184,30 @@ This means:
 
 For the ubcore/urma minimal send/recv loop, use this order:
 
-1. Build kernel artifacts in VM (`ll@192.168.64.3`) and sync to local workspace
+1. Build kernel artifacts locally on Linux, or sync from an explicitly configured remote Linux build host
 2. Rebuild initramfs with synced modules
 3. Run dual-node e2e validation
 
 Example:
 
 ```sh
-# 1) Build in VM and pull Image + hisi_ubus.ko + udma.ko (+linqu_ub_drv.ko if available)
-guest-linux/aarch64/scripts/sync_ub_kernel_artifacts_from_vm.sh
+# 1) Native Linux cross build
+cd guest-linux/aarch64
+ARTIFACT_SOURCE=native \
+  KERNEL_ARCH=arm64 \
+  KERNEL_DEFCONFIG=openeuler_defconfig \
+  AARCH64_LINUX_CC=aarch64-linux-gnu-gcc \
+  BUSYBOX=$PWD/busybox-aarch64 \
+  ./scripts/build_guest_artifacts.sh
+
+# Optional: explicit remote Linux sync, if you intentionally use a remote kernel build
+REMOTE_LINUX_HOST=user@build-host \
+  REMOTE_KERNEL_SRC=/path/to/kernel_ub \
+  REMOTE_KERNEL_BUILD=/path/to/kernel_build \
+  REMOTE_ARCH=arm64 \
+  REMOTE_KERNEL_DEFCONFIG=openeuler_defconfig \
+  BUILD_ON_REMOTE=1 BUILD_LINQU_DRIVER_ON_REMOTE=1 \
+  ./scripts/sync_ub_kernel_artifacts_from_remote_linux.sh
 
 # 2) Build guest initramfs
 export AARCH64_LINUX_CC=aarch64-linux-gnu-gcc

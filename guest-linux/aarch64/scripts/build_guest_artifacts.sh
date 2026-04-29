@@ -6,19 +6,29 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUT_DIR="$ROOT_DIR/out"
 MODULES_DIR="${MODULES_DIR:-$OUT_DIR/modules}"
 KERNEL_STAMP_FILE="$OUT_DIR/.kernel_image.kernel_ub_head"
+KERNEL_SRC_DIR="$ROOT_DIR/../kernel_ub"
+KERNEL_BUILD_DIR="${KERNEL_BUILD_DIR:-$OUT_DIR/kernel_build}"
 
 source "$SCRIPT_DIR/qemu_ub_common.sh"
 
-ARTIFACT_SOURCE="${ARTIFACT_SOURCE:-auto}"   # auto|vm|local|none
+ARTIFACT_SOURCE="${ARTIFACT_SOURCE:-auto}"   # auto|native|remote|local|none
 SYNC_ARTIFACTS="${SYNC_ARTIFACTS:-1}"
-BUILD_IN_VM="${BUILD_IN_VM:-1}"
-BUILD_LINQU_DRIVER_IN_VM="${BUILD_LINQU_DRIVER_IN_VM:-1}"
+BUILD_ON_REMOTE="${BUILD_ON_REMOTE:-0}"
+BUILD_LINQU_DRIVER_ON_REMOTE="${BUILD_LINQU_DRIVER_ON_REMOTE:-0}"
+ALLOW_REMOTE_LINUX_ARTIFACTS="${ALLOW_REMOTE_LINUX_ARTIFACTS:-0}"
 LOCAL_KERNEL_IMAGE="${LOCAL_KERNEL_IMAGE:-}"
 LOCAL_MODULES_DIR="${LOCAL_MODULES_DIR:-}"
+KERNEL_DEFCONFIG="${KERNEL_DEFCONFIG:-openeuler_defconfig}"
+KERNEL_ARCH="${KERNEL_ARCH:-arm64}"
+KERNEL_JOBS="${KERNEL_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}"
 CC="$(detect_aarch64_linux_cc)"
 BUSYBOX_BIN="${BUSYBOX:-}"
 if [[ -z "$CC" ]]; then
   echo "[build_guest_artifacts] error: AARCH64_LINUX_CC is required" >&2
+  exit 1
+fi
+if [[ "$KERNEL_ARCH" != "arm64" ]]; then
+  echo "[build_guest_artifacts] error: this guest target requires KERNEL_ARCH=arm64" >&2
   exit 1
 fi
 
@@ -45,7 +55,7 @@ have_default_artifacts() {
 }
 
 current_kernel_submodule_head() {
-  git -C "$ROOT_DIR/../kernel_ub" rev-parse HEAD 2>/dev/null || echo ""
+  git -C "$KERNEL_SRC_DIR" rev-parse HEAD 2>/dev/null || echo ""
 }
 
 kernel_image_stamp_matches() {
@@ -87,19 +97,132 @@ import_local_artifacts() {
   write_kernel_image_stamp || true
 }
 
-vm_host_reachable() {
-  local host="${VM_HOST:-ll@192.168.64.3}"
+host_is_linux() {
+  [[ "$(uname -s 2>/dev/null || echo "")" == "Linux" ]]
+}
+
+cross_compile_prefix() {
+  local cc_path="$1"
+  local cc_name=""
+  cc_name="$(basename "$cc_path")"
+  if [[ "$cc_name" != *gcc ]]; then
+    echo "[build_guest_artifacts] error: cannot derive CROSS_COMPILE from $cc_path" >&2
+    return 1
+  fi
+  echo "${cc_name%gcc}"
+}
+
+native_build_available() {
+  host_is_linux || return 1
+  [[ -d "$KERNEL_SRC_DIR" ]] || return 1
+  [[ -x "$KERNEL_SRC_DIR/scripts/config" ]] || return 1
+  command -v make >/dev/null 2>&1 || return 1
+  [[ -n "$CC" ]] || return 1
+}
+
+copy_module_if_present() {
+  local src="$1"
+  local dst_name="$2"
+  if [[ -f "$src" ]]; then
+    cp "$src" "$MODULES_DIR/$dst_name"
+  fi
+}
+
+copy_kernel_module_if_enabled() {
+  local config_key="$1"
+  local src="$2"
+  local dst_name="$3"
+
+  if grep -q "^${config_key}=m$" "$KERNEL_BUILD_DIR/.config"; then
+    copy_module_if_present "$src" "$dst_name"
+  else
+    rm -f "$MODULES_DIR/$dst_name"
+  fi
+}
+
+copy_native_modules() {
+  copy_kernel_module_if_enabled "CONFIG_UB_HISI_UBUS" "$KERNEL_BUILD_DIR/drivers/ub/ubus/vendor/hisilicon/hisi_ubus.ko" "hisi_ubus.ko"
+  copy_kernel_module_if_enabled "CONFIG_UB_UBUS_BUS" "$KERNEL_BUILD_DIR/drivers/ub/ubus/ubus.ko" "ubus.ko"
+  copy_kernel_module_if_enabled "CONFIG_UB_UBUS_SIM_DECODER" "$KERNEL_BUILD_DIR/drivers/ub/ubus/sim/ub-sim-decoder.ko" "ub-sim-decoder.ko"
+  copy_kernel_module_if_enabled "CONFIG_OBMM" "$KERNEL_BUILD_DIR/drivers/ub/obmm/obmm.ko" "obmm.ko"
+  copy_kernel_module_if_enabled "CONFIG_UB_UBASE" "$KERNEL_BUILD_DIR/drivers/ub/ubase/ubase.ko" "ubase.ko"
+  copy_kernel_module_if_enabled "CONFIG_UB_URMA" "$KERNEL_BUILD_DIR/drivers/ub/urma/ubcore/ubcore.ko" "ubcore.ko"
+  copy_kernel_module_if_enabled "CONFIG_UB_UDMA" "$KERNEL_BUILD_DIR/drivers/ub/urma/hw/udma/udma.ko" "udma.ko"
+  copy_kernel_module_if_enabled "CONFIG_UB_URMA" "$KERNEL_BUILD_DIR/drivers/ub/urma/ulp/ipourma/ipourma.ko" "ipourma.ko"
+  copy_kernel_module_if_enabled "CONFIG_UB_URMA" "$KERNEL_BUILD_DIR/drivers/ub/urma/uburma/uburma.ko" "uburma.ko"
+  copy_kernel_module_if_enabled "CONFIG_UB_UMMU_CORE_DRIVER" "$KERNEL_BUILD_DIR/drivers/iommu/hisilicon/ummu-core/ummu-core.ko" "ummu-core.ko"
+  copy_kernel_module_if_enabled "CONFIG_UB_UMMU" "$KERNEL_BUILD_DIR/drivers/iommu/hisilicon/ummu.ko" "ummu.ko"
+  copy_module_if_present "$ROOT_DIR/driver/linqu_ub_drv.ko" "linqu_ub_drv.ko"
+}
+
+configure_native_kernel() {
+  local cross_prefix="$1"
+  mkdir -p "$KERNEL_BUILD_DIR"
+  make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR" ARCH="$KERNEL_ARCH" CROSS_COMPILE="$cross_prefix" "$KERNEL_DEFCONFIG"
+  "$KERNEL_SRC_DIR/scripts/config" --file "$KERNEL_BUILD_DIR/.config" \
+    -e UB \
+    -e UB_UBUS \
+    -e UB_UBUS_BUS \
+    -e UB_UBUS_USI \
+    -e UB_HISI_UBUS \
+    -e HISI_SOC_CACHE \
+    -e OBMM \
+    -e UB_UBUS_SIM_DECODER \
+    -e IPV6 \
+    -e UB_UBASE \
+    -e UB_URMA \
+    -e UB_UDMA \
+    -e UB_UBFI \
+    -e ARCH_HISI \
+    -e UB_UMMU \
+    -e UB_UMMU_CORE \
+    -e UB_UMMU_CORE_DRIVER \
+    -d DEBUG_INFO_BTF \
+    -d PAHOLE_HAS_SPLIT_BTF
+  make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR" ARCH="$KERNEL_ARCH" CROSS_COMPILE="$cross_prefix" olddefconfig
+}
+
+build_native_artifacts() {
+  local cross_prefix=""
+  if ! native_build_available; then
+    echo "[build_guest_artifacts] error: native build requires Linux, make, kernel_ub, scripts/config, and AARCH64_LINUX_CC" >&2
+    return 1
+  fi
+  cross_prefix="$(cross_compile_prefix "$CC")"
+  echo "[build_guest_artifacts] native cross build: kernel=$KERNEL_SRC_DIR build=$KERNEL_BUILD_DIR arch=$KERNEL_ARCH defconfig=$KERNEL_DEFCONFIG cc=$CC" >&2
+  ensure_dirs
+  reset_module_artifacts
+  configure_native_kernel "$cross_prefix"
+  make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR" ARCH="$KERNEL_ARCH" CROSS_COMPILE="$cross_prefix" KALLSYMS_EXTRA_PASS=1 -j"$KERNEL_JOBS" Image modules
+  if [[ -d "$ROOT_DIR/driver" && -f "$ROOT_DIR/driver/Makefile" ]]; then
+    make -C "$KERNEL_BUILD_DIR" M="$ROOT_DIR/driver" O="$KERNEL_BUILD_DIR" ARCH="$KERNEL_ARCH" CROSS_COMPILE="$cross_prefix" modules
+  fi
+  cp "$KERNEL_BUILD_DIR/arch/arm64/boot/Image" "$OUT_DIR/Image"
+  copy_native_modules
+  write_kernel_image_stamp || true
+}
+
+remote_linux_host_reachable() {
+  local host="${REMOTE_LINUX_HOST:-}"
+  [[ "$ALLOW_REMOTE_LINUX_ARTIFACTS" == "1" && -n "$host" ]] || return 1
   ssh -o BatchMode=yes -o ConnectTimeout=5 "$host" true >/dev/null 2>&1
 }
 
-sync_from_vm() {
-  echo "[build_guest_artifacts] syncing guest kernel artifacts from VM" >&2
+sync_from_remote_linux() {
+  if [[ "$ALLOW_REMOTE_LINUX_ARTIFACTS" != "1" || -z "${REMOTE_LINUX_HOST:-}" ]]; then
+    echo "[build_guest_artifacts] error: remote Linux artifact sync requires ALLOW_REMOTE_LINUX_ARTIFACTS=1 and REMOTE_LINUX_HOST=<ssh-target>" >&2
+    return 1
+  fi
+  echo "[build_guest_artifacts] syncing guest kernel artifacts from remote Linux" >&2
   (
     cd "$ROOT_DIR"
     reset_module_artifacts
-    BUILD_IN_VM="$BUILD_IN_VM" \
-    BUILD_LINQU_DRIVER_IN_VM="$BUILD_LINQU_DRIVER_IN_VM" \
-    ./scripts/sync_ub_kernel_artifacts_from_vm.sh
+    BUILD_ON_REMOTE="$BUILD_ON_REMOTE" \
+    BUILD_LINQU_DRIVER_ON_REMOTE="$BUILD_LINQU_DRIVER_ON_REMOTE" \
+    REMOTE_LINUX_HOST="${REMOTE_LINUX_HOST:-}" \
+    REMOTE_KERNEL_SRC="${REMOTE_KERNEL_SRC:-}" \
+    REMOTE_KERNEL_BUILD="${REMOTE_KERNEL_BUILD:-}" \
+    ./scripts/sync_ub_kernel_artifacts_from_remote_linux.sh
   )
   write_kernel_image_stamp || true
 }
@@ -108,16 +231,18 @@ print_build_guest_help() {
   cat >&2 <<EOF
 [build_guest_artifacts] no usable guest artifact source found
 [build_guest_artifacts] supported modes:
-[build_guest_artifacts]   ARTIFACT_SOURCE=auto  : reuse out/, then local import, then VM if reachable
+[build_guest_artifacts]   ARTIFACT_SOURCE=auto   : reuse out/, local import, then native Linux cross build; never contacts a remote Linux host
+[build_guest_artifacts]   ARTIFACT_SOURCE=native : build arm64 kernel/modules locally on Linux with KERNEL_DEFCONFIG=openeuler_defconfig and AARCH64_LINUX_CC
 [build_guest_artifacts]   ARTIFACT_SOURCE=local : require LOCAL_KERNEL_IMAGE + LOCAL_MODULES_DIR
-[build_guest_artifacts]   ARTIFACT_SOURCE=vm    : force ./scripts/sync_ub_kernel_artifacts_from_vm.sh
+[build_guest_artifacts]   ARTIFACT_SOURCE=remote: requires ALLOW_REMOTE_LINUX_ARTIFACTS=1 and REMOTE_LINUX_HOST=<ssh-target>
 [build_guest_artifacts]   ARTIFACT_SOURCE=none  : only rebuild initramfs from existing out/
 [build_guest_artifacts] busybox:
 [build_guest_artifacts]   ./scripts/prepare_busybox.sh
 [build_guest_artifacts] examples:
 [build_guest_artifacts]   AARCH64_LINUX_CC=$CC BUSYBOX=\$PWD/busybox-aarch64 ./scripts/build_guest_artifacts.sh
+[build_guest_artifacts]   ARTIFACT_SOURCE=native AARCH64_LINUX_CC=$CC BUSYBOX=\$PWD/busybox-aarch64 ./scripts/build_guest_artifacts.sh
 [build_guest_artifacts]   ARTIFACT_SOURCE=local LOCAL_KERNEL_IMAGE=/path/to/Image LOCAL_MODULES_DIR=/path/to/modules AARCH64_LINUX_CC=$CC ./scripts/build_guest_artifacts.sh
-[build_guest_artifacts]   ARTIFACT_SOURCE=vm VM_HOST=\${VM_HOST:-ll@192.168.64.3} AARCH64_LINUX_CC=$CC ./scripts/build_guest_artifacts.sh
+[build_guest_artifacts]   ARTIFACT_SOURCE=remote ALLOW_REMOTE_LINUX_ARTIFACTS=1 REMOTE_LINUX_HOST=user@build-host REMOTE_KERNEL_SRC=/path/to/kernel_ub REMOTE_KERNEL_BUILD=/path/to/kernel_build AARCH64_LINUX_CC=$CC ./scripts/build_guest_artifacts.sh
 EOF
 }
 
@@ -130,8 +255,8 @@ case "$ARTIFACT_SOURCE" in
       if [[ -n "$LOCAL_KERNEL_IMAGE" || -n "$LOCAL_MODULES_DIR" ]]; then
         echo "[build_guest_artifacts] importing refreshed guest artifacts from local paths" >&2
         import_local_artifacts
-      elif [[ "$SYNC_ARTIFACTS" == "1" ]] && vm_host_reachable; then
-        sync_from_vm
+      elif native_build_available; then
+        build_native_artifacts
       else
         print_build_guest_help
         exit 1
@@ -139,19 +264,22 @@ case "$ARTIFACT_SOURCE" in
     elif [[ -n "$LOCAL_KERNEL_IMAGE" || -n "$LOCAL_MODULES_DIR" ]]; then
       echo "[build_guest_artifacts] importing guest artifacts from local paths" >&2
       import_local_artifacts
-    elif [[ "$SYNC_ARTIFACTS" == "1" ]] && vm_host_reachable; then
-      sync_from_vm
+    elif native_build_available; then
+      build_native_artifacts
     else
       print_build_guest_help
       exit 1
     fi
     ;;
+  native)
+    build_native_artifacts
+    ;;
   local)
     echo "[build_guest_artifacts] importing guest artifacts from local paths" >&2
     import_local_artifacts
     ;;
-  vm)
-    sync_from_vm
+  remote)
+    sync_from_remote_linux
     ;;
   none)
     if ! have_default_artifacts; then
