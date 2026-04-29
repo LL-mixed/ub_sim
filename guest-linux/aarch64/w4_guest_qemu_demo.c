@@ -55,6 +55,7 @@
 #define CMDQ_SLOT_BYTES 64U
 #define MAX_SLOTS 16U
 #define W4_TIMEOUT_MS 5000
+#define W4_DOORBELL_BATCH_SLOTS 4U
 #define W4_KVCACHE_PAYLOAD_BYTES 8192U
 #define W4_DISPATCH_INPUT_WORD 0x0000000000000000ULL
 #define W4_DISPATCH_RESULT_WORD 0x41a0000041a00000ULL
@@ -2630,30 +2631,45 @@ int main(void)
     mmio_write64(ep_mmio, REG_CMDQ_BASE_LO, cmdq_phys);
     mmio_write64(ep_mmio, REG_CQ_BASE_LO, cq_phys);
     mmio_write64(ep_mmio, REG_CQ_HEAD, 0);
-    mmio_write64(ep_mmio, REG_CMDQ_TAIL, slot);
-    mmio_write64(ep_mmio, REG_DOORBELL, slot);
+    for (size_t submitted = 0; submitted < slot;) {
+        size_t next = submitted + W4_DOORBELL_BATCH_SLOTS;
+
+        if (next > slot) {
+            next = slot;
+        }
+        mmio_write64(ep_mmio, REG_CMDQ_TAIL, next);
+        mmio_write64(ep_mmio, REG_DOORBELL, next);
+        clock_gettime(CLOCK_MONOTONIC, &start_ts);
+        for (;;) {
+            struct timespec now;
+            uint64_t elapsed_ms;
+
+            cq_tail = mmio_read64(ep_mmio, REG_CQ_TAIL);
+            if (cq_tail >= next) {
+                break;
+            }
+
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            elapsed_ms = (uint64_t)(now.tv_sec - start_ts.tv_sec) * 1000ULL +
+                         (uint64_t)(now.tv_nsec - start_ts.tv_nsec) / 1000000ULL;
+            if (elapsed_ms > W4_TIMEOUT_MS) {
+                fprintf(stderr,
+                        "[w4_guest] timeout waiting completions cq_tail=%" PRIu64
+                        " expected=%zu\n",
+                        cq_tail,
+                        next);
+                goto out;
+            }
+            usleep(10000);
+        }
+        printf("[w4_guest] step=doorbell_batch ok submitted=%zu cq_tail=%" PRIu64 "\n",
+               next,
+               cq_tail);
+        usleep(1000);
+        submitted = next;
+    }
     printf("[w4_guest] step=doorbell ok slots=%zu\n", slot);
 
-    clock_gettime(CLOCK_MONOTONIC, &start_ts);
-    for (;;) {
-        struct timespec now;
-        uint64_t elapsed_ms;
-
-        cq_tail = mmio_read64(ep_mmio, REG_CQ_TAIL);
-        if (cq_tail >= slot) {
-            break;
-        }
-
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        elapsed_ms = (uint64_t)(now.tv_sec - start_ts.tv_sec) * 1000ULL +
-                     (uint64_t)(now.tv_nsec - start_ts.tv_nsec) / 1000000ULL;
-        if (elapsed_ms > W4_TIMEOUT_MS) {
-            fprintf(stderr, "[w4_guest] timeout waiting completions cq_tail=%" PRIu64 " expected=%zu\n",
-                    cq_tail, slot);
-            goto out;
-        }
-        usleep(10000);
-    }
     printf("[w4_guest] step=wait_completions ok cq_tail=%" PRIu64 "\n", cq_tail);
 
     for (size_t i = 0; i < slot; ++i) {

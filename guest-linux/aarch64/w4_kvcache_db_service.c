@@ -7,6 +7,7 @@
 #include <net/if.h>
 #include <net/if_arp.h>
 #include <netinet/in.h>
+#include <sched.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -73,6 +74,24 @@ struct w4_db_cluster_payload_header {
     uint32_t publish_seq;
     uint32_t publish_done_seq;
 };
+
+struct w4_db_cluster_payload_compact_summary {
+    uint16_t record_count;
+    uint16_t prefix_count;
+    uint16_t block_count;
+    uint16_t group_count;
+    uint16_t weight_tile_count;
+    uint16_t kvcache_object_count;
+    uint16_t flags;
+    uint16_t reserved0;
+    uint64_t block_version_floor;
+    uint64_t block_result_floor;
+    uint64_t prefix_version_floor;
+    uint64_t prefix_result_floor;
+};
+
+#define W4_DB_COMPACT_PREFIX_STATE_READY 0x0001U
+#define W4_DB_COMPACT_PREFIX_VIEW_READY 0x0002U
 
 struct w4_db_mapped_region {
     int fd;
@@ -672,10 +691,67 @@ static uint16_t w4_db_snapshot_metadata_records(struct w4_db_service *svc,
     return count;
 }
 
+static void w4_db_build_compact_summary(const struct w4_db_record *records,
+                                        uint16_t record_count,
+                                        struct w4_db_cluster_payload_compact_summary *summary)
+{
+    uint16_t i;
+
+    memset(summary, 0, sizeof(*summary));
+    summary->record_count = record_count;
+    summary->flags = W4_DB_COMPACT_PREFIX_STATE_READY | W4_DB_COMPACT_PREFIX_VIEW_READY;
+    for (i = 0; i < record_count; ++i) {
+        const struct w4_db_record *rec = &records[i];
+
+        if (!rec->in_use) {
+            summary->flags &= (uint16_t)~(W4_DB_COMPACT_PREFIX_STATE_READY |
+                                          W4_DB_COMPACT_PREFIX_VIEW_READY);
+            continue;
+        }
+        if (rec->kind == W4_DB_RECORD_REQUEST_PREFIX) {
+            summary->prefix_count += 1;
+            if (summary->prefix_version_floor == 0 ||
+                rec->version < summary->prefix_version_floor) {
+                summary->prefix_version_floor = rec->version;
+            }
+            if (summary->prefix_result_floor == 0 ||
+                rec->last_result_segment < summary->prefix_result_floor) {
+                summary->prefix_result_floor = rec->last_result_segment;
+            }
+            if (rec->state != W4_KVCACHE_STATE_RELOADED) {
+                summary->flags &= (uint16_t)~W4_DB_COMPACT_PREFIX_STATE_READY;
+            }
+            if (rec->hot_segment_id == 0 || rec->last_result_segment == 0) {
+                summary->flags &= (uint16_t)~W4_DB_COMPACT_PREFIX_VIEW_READY;
+            }
+        } else if (rec->kind == W4_DB_RECORD_PREFIX_GROUP) {
+            summary->group_count += 1;
+        } else if (rec->kind == W4_DB_RECORD_BLOCK_META) {
+            summary->block_count += 1;
+            if (summary->block_version_floor == 0 ||
+                rec->version < summary->block_version_floor) {
+                summary->block_version_floor = rec->version;
+            }
+            if (summary->block_result_floor == 0 ||
+                rec->last_result_segment < summary->block_result_floor) {
+                summary->block_result_floor = rec->last_result_segment;
+            }
+        } else if (rec->kind == W4_DB_RECORD_WEIGHT_TILE) {
+            summary->weight_tile_count += 1;
+        } else if (rec->kind == W4_DB_RECORD_KVCACHE_OBJECT) {
+            summary->kvcache_object_count += 1;
+        } else {
+            summary->flags &= (uint16_t)~(W4_DB_COMPACT_PREFIX_STATE_READY |
+                                          W4_DB_COMPACT_PREFIX_VIEW_READY);
+        }
+    }
+}
+
 static int w4_db_write_cluster_payload(struct w4_db_service *svc,
                                        struct w4_db_cluster_slot *slot)
 {
     struct w4_db_cluster_payload payload;
+    struct w4_db_cluster_payload_compact_summary compact;
     struct w4_db_cluster_runtime *rt = &g_w4_db_cluster_runtime;
     uint32_t seq;
 
@@ -692,6 +768,8 @@ static int w4_db_write_cluster_payload(struct w4_db_service *svc,
     payload.record_count = w4_db_snapshot_metadata_records(svc,
                                                            payload.records,
                                                            W4_DB_CLUSTER_MAX_RECORDS);
+    w4_db_build_compact_summary(payload.records, payload.record_count, &compact);
+    memcpy(payload.record_pad, &compact, sizeof(compact));
     payload.publish_seq = seq;
     payload.publish_done_seq = 0;
     memset(slot->region.addr, 0, sizeof(payload));
@@ -879,14 +957,21 @@ static void w4_db_copy_from_mapped_volatile(void *dst,
 {
     size_t i = 0;
     uint8_t *out = (uint8_t *)dst;
+    struct timespec pause_ts = {
+        .tv_sec = 0,
+        .tv_nsec = 100000L,
+    };
 
     for (; i + sizeof(uint64_t) <= len; i += sizeof(uint64_t)) {
         uint64_t word = *(const volatile uint64_t *)(src + i);
         memcpy(out + i, &word, sizeof(word));
+        (void)sched_yield();
+        (void)nanosleep(&pause_ts, NULL);
     }
     for (; i < len; ++i) {
         out[i] = src[i];
     }
+    (void)sched_yield();
 }
 
 static bool w4_db_try_read_stable_payload_region(const struct w4_db_cluster_slot *slot,
@@ -994,6 +1079,103 @@ static bool w4_db_try_read_stable_payload_region(const struct w4_db_cluster_slot
     return true;
 }
 
+static bool w4_db_try_read_stable_compact_summary_region(
+    const struct w4_db_cluster_slot *slot,
+    struct w4_db_cluster_payload_compact_summary *summary,
+    struct w4_db_cluster_payload_header *seen_out)
+{
+    struct w4_db_cluster_payload_header header;
+    struct w4_db_cluster_payload_header confirm;
+    const volatile uint8_t *mapped_bytes;
+    size_t summary_off = offsetof(struct w4_db_cluster_payload, record_pad);
+
+    if (!slot || !summary || !slot->region.addr) {
+        return false;
+    }
+    if (slot->is_local) {
+        const struct w4_db_cluster_payload *payload =
+            (const struct w4_db_cluster_payload *)slot->region.addr;
+
+        if (!w4_db_try_read_stable_payload(payload,
+                                           &(struct w4_db_cluster_payload){ 0 })) {
+            return false;
+        }
+        memcpy(summary, payload->record_pad, sizeof(*summary));
+        if (seen_out) {
+            seen_out->magic = payload->magic;
+            seen_out->version = payload->version;
+            seen_out->record_count = payload->record_count;
+            seen_out->publish_seq = payload->publish_seq;
+            seen_out->publish_done_seq = payload->publish_done_seq;
+        }
+        return true;
+    }
+    mapped_bytes = (const volatile uint8_t *)slot->region.addr;
+    if (slot->region.fd < 0) {
+        return false;
+    }
+    w4_db_copy_from_mapped_volatile(&header, mapped_bytes, sizeof(header));
+    if (seen_out) {
+        *seen_out = header;
+    }
+    if (header.publish_seq == 0 ||
+        header.publish_seq != header.publish_done_seq ||
+        header.magic != W4_DB_CLUSTER_PAYLOAD_MAGIC ||
+        header.version != W4_DB_CLUSTER_VERSION ||
+        header.record_count == 0 ||
+        header.record_count > W4_DB_CLUSTER_MAX_RECORDS) {
+        return false;
+    }
+    memset(summary, 0, sizeof(*summary));
+    w4_db_copy_from_mapped_volatile(summary, mapped_bytes + summary_off, sizeof(*summary));
+    __sync_synchronize();
+    w4_db_copy_from_mapped_volatile(&confirm, mapped_bytes, sizeof(confirm));
+    if (confirm.publish_seq != header.publish_seq ||
+        confirm.publish_done_seq != header.publish_done_seq ||
+        confirm.magic != header.magic ||
+        confirm.version != header.version ||
+        confirm.record_count != header.record_count ||
+        summary->record_count != header.record_count) {
+        return false;
+    }
+    return true;
+}
+
+static bool w4_db_wait_compact_summary_region_at_least(
+    const struct w4_db_cluster_slot *slot,
+    uint32_t min_publish_done_seq,
+    long timeout_ms,
+    struct w4_db_cluster_payload_compact_summary *summary,
+    struct w4_db_cluster_payload_header *seen_out)
+{
+    long deadline;
+    unsigned int relax_attempt = 0;
+    struct w4_db_cluster_payload_compact_summary local_summary;
+    struct w4_db_cluster_payload_header local_seen;
+
+    if (!slot || !summary) {
+        return false;
+    }
+    deadline = w4_db_now_ms() + timeout_ms;
+    while (w4_db_now_ms() < deadline) {
+        memset(&local_summary, 0, sizeof(local_summary));
+        memset(&local_seen, 0, sizeof(local_seen));
+        if (w4_db_try_read_stable_compact_summary_region(slot, &local_summary, &local_seen)) {
+            if (seen_out) {
+                *seen_out = local_seen;
+            }
+            if (local_seen.publish_done_seq >= min_publish_done_seq) {
+                *summary = local_summary;
+                return true;
+            }
+        } else if (seen_out) {
+            *seen_out = local_seen;
+        }
+        w4_db_cpu_relax_wait(&relax_attempt);
+    }
+    return false;
+}
+
 static bool w4_db_read_stable_payload_region(const struct w4_db_cluster_slot *slot,
                                              struct w4_db_cluster_payload *snapshot,
                                              struct w4_db_cluster_payload_header *seen_out)
@@ -1095,23 +1277,94 @@ static bool w4_db_slot_find_record(const struct w4_db_cluster_slot *slot,
                                    const char *key,
                                    struct w4_db_record *resolved_out)
 {
-    struct w4_db_cluster_payload snapshot;
+    struct w4_db_cluster_payload_header header;
+    struct w4_db_cluster_payload_header confirm;
+    const volatile uint8_t *mapped_bytes;
     uint16_t i;
 
     if (!slot || !key || !resolved_out) {
         return false;
     }
-    if (!w4_db_read_stable_payload_region(slot, &snapshot, NULL)) {
+    if (slot->is_local) {
+        struct w4_db_cluster_payload snapshot;
+
+        if (!w4_db_read_stable_payload_region(slot, &snapshot, NULL)) {
+            return false;
+        }
+        for (i = 0; i < snapshot.record_count; ++i) {
+            if (!snapshot.records[i].in_use) {
+                continue;
+            }
+            if (strncmp(snapshot.records[i].key, key, sizeof(snapshot.records[i].key)) == 0) {
+                *resolved_out = snapshot.records[i];
+                return true;
+            }
+        }
         return false;
     }
-    for (i = 0; i < snapshot.record_count; ++i) {
-        if (!snapshot.records[i].in_use) {
+    if (!slot->region.addr || slot->region.fd < 0) {
+        return false;
+    }
+    mapped_bytes = (const volatile uint8_t *)slot->region.addr;
+    w4_db_copy_from_mapped_volatile(&header, mapped_bytes, sizeof(header));
+    if (header.publish_seq == 0 ||
+        header.publish_seq != header.publish_done_seq ||
+        header.magic != W4_DB_CLUSTER_PAYLOAD_MAGIC ||
+        header.version != W4_DB_CLUSTER_VERSION ||
+        header.record_count == 0 ||
+        header.record_count > W4_DB_CLUSTER_MAX_RECORDS) {
+        return false;
+    }
+    for (i = 0; i < header.record_count; ++i) {
+        bool in_use = false;
+        enum w4_db_record_kind kind = 0;
+        char record_key[sizeof(resolved_out->key)];
+        size_t record_off = offsetof(struct w4_db_cluster_payload, records) +
+                            ((size_t)i * sizeof(struct w4_db_record));
+
+        memset(record_key, 0, sizeof(record_key));
+        w4_db_copy_from_mapped_volatile(&in_use,
+                                        mapped_bytes + record_off +
+                                            offsetof(struct w4_db_record, in_use),
+                                        sizeof(in_use));
+        if (!in_use) {
             continue;
         }
-        if (strncmp(snapshot.records[i].key, key, sizeof(snapshot.records[i].key)) == 0) {
-            *resolved_out = snapshot.records[i];
+        w4_db_copy_from_mapped_volatile(&kind,
+                                        mapped_bytes + record_off +
+                                            offsetof(struct w4_db_record, kind),
+                                        sizeof(kind));
+        if (kind < W4_DB_RECORD_PREFIX_GROUP || kind > W4_DB_RECORD_KVCACHE_OBJECT) {
+            return false;
+        }
+        w4_db_copy_from_mapped_volatile(record_key,
+                                        mapped_bytes + record_off +
+                                            offsetof(struct w4_db_record, key),
+                                        sizeof(record_key));
+        if (strncmp(record_key, key, sizeof(record_key)) == 0) {
+            w4_db_copy_from_mapped_volatile(resolved_out,
+                                            mapped_bytes + record_off,
+                                            sizeof(*resolved_out));
+            __sync_synchronize();
+            w4_db_copy_from_mapped_volatile(&confirm, mapped_bytes, sizeof(confirm));
+            if (confirm.publish_seq != header.publish_seq ||
+                confirm.publish_done_seq != header.publish_done_seq ||
+                confirm.magic != header.magic ||
+                confirm.version != header.version ||
+                confirm.record_count != header.record_count) {
+                return false;
+            }
             return true;
         }
+    }
+    __sync_synchronize();
+    w4_db_copy_from_mapped_volatile(&confirm, mapped_bytes, sizeof(confirm));
+    if (confirm.publish_seq != header.publish_seq ||
+        confirm.publish_done_seq != header.publish_done_seq ||
+        confirm.magic != header.magic ||
+        confirm.version != header.version ||
+        confirm.record_count != header.record_count) {
+        return false;
     }
     return false;
 }
@@ -2385,6 +2638,7 @@ int w4_db_publish_observe_cluster(struct w4_db_service *svc,
     struct w4_db_cluster_runtime *rt = &g_w4_db_cluster_runtime;
     struct w4_db_cluster_payload snapshot;
     struct w4_db_cluster_payload peer_snapshots[W4_DB_CLUSTER_MAX_NODES];
+    struct w4_db_cluster_payload_compact_summary peer_compact[W4_DB_CLUSTER_MAX_NODES];
     struct w4_db_cluster_payload_header seen_header;
     bool peer_ready[W4_DB_CLUSTER_MAX_NODES] = { false };
     uint16_t ready_seq[W4_DB_CLUSTER_MAX_NODES] = { 0 };
@@ -2434,6 +2688,9 @@ int w4_db_publish_observe_cluster(struct w4_db_service *svc,
         printf("[w4_guest] gap db_service_cluster_stage=read_local_payload_failed\n");
         goto out;
     }
+    w4_db_build_compact_summary(peer_snapshots[rt->local_idx].records,
+                                peer_snapshots[rt->local_idx].record_count,
+                                &peer_compact[rt->local_idx]);
     printf("[w4_guest] stage db_service_cluster_debug owner=node%d step=read_local_payload_ok seq=%u\n",
            rt->local_idx + 1,
            rt->publish_seq);
@@ -2487,17 +2744,17 @@ int w4_db_publish_observe_cluster(struct w4_db_service *svc,
                rt->slots[i].mem_id,
                rt->slots[i].map_osync ? 1 : 0,
                rt->slots[i].region.addr);
-        if (!w4_db_try_read_stable_payload_region(&rt->slots[i],
-                                                  &peer_snapshots[i],
-                                                  NULL) ||
-            peer_snapshots[i].publish_done_seq < owner_publish_seq) {
+        memset(&seen_header, 0, sizeof(seen_header));
+        if (!w4_db_try_read_stable_compact_summary_region(&rt->slots[i],
+                                                          &peer_compact[i],
+                                                          &seen_header) ||
+            seen_header.publish_done_seq < owner_publish_seq) {
             memset(&seen_header, 0, sizeof(seen_header));
-            if (w4_db_wait_stable_payload_region_at_least(&rt->slots[i],
-                                                          owner_publish_seq,
-                                                          W4_DB_CLUSTER_WAIT_MS,
-                                                          &snapshot,
-                                                          &seen_header)) {
-                peer_snapshots[i] = snapshot;
+            if (w4_db_wait_compact_summary_region_at_least(&rt->slots[i],
+                                                           owner_publish_seq,
+                                                           W4_DB_CLUSTER_WAIT_MS,
+                                                           &peer_compact[i],
+                                                           &seen_header)) {
             } else {
                 printf("[w4_guest] gap db_service_cluster_stage=payload_not_ready owner=node%d reader=node%d expect_seq=%u seen_seq=%u seen_done=%u magic=0x%08x version=%u count=%u\n",
                        i + 1,
@@ -2517,7 +2774,7 @@ int w4_db_publish_observe_cluster(struct w4_db_service *svc,
         printf("[w4_guest] stage db_service_cluster_debug owner=node%d reader=node%d step=remote_payload_read_ok seq=%u expect_seq=%u\n",
                i + 1,
                rt->local_idx + 1,
-               peer_snapshots[i].publish_done_seq,
+               seen_header.publish_done_seq,
                owner_publish_seq);
         fflush(stdout);
         peer_ready[i] = true;
@@ -2549,23 +2806,76 @@ int w4_db_publish_observe_cluster(struct w4_db_service *svc,
 
     for (i = 0; i < rt->node_count; ++i) {
         uint16_t r;
-        uint32_t peer_prefix_count = 0;
-        uint32_t peer_block_count = 0;
-        uint32_t peer_group_count = 0;
+        struct w4_db_cluster_payload_compact_summary compact = peer_compact[i];
 
         if (!peer_ready[i]) {
             printf("[w4_guest] gap db_service_cluster_stage=payload_not_ready owner=node%d\n",
                    i + 1);
             goto out;
         }
-        snapshot = peer_snapshots[i];
+        if (compact.record_count == 0 || compact.record_count > W4_DB_CLUSTER_MAX_RECORDS) {
+            printf("[w4_guest] gap db_service_cluster_stage=compact_summary_invalid owner=node%d count=%u\n",
+                   i + 1,
+                   compact.record_count);
+            goto out;
+        }
         if (summary->peer_record_count_floor == 0 ||
-            snapshot.record_count < summary->peer_record_count_floor) {
-            summary->peer_record_count_floor = snapshot.record_count;
+            compact.record_count < summary->peer_record_count_floor) {
+            summary->peer_record_count_floor = compact.record_count;
         }
         if (i != rt->local_idx) {
             summary->peers_observed += 1;
         }
+        if (compact.block_version_floor != 0 &&
+            compact.block_version_floor < summary->peer_version_floor) {
+            summary->peer_version_floor = compact.block_version_floor;
+        }
+        if (compact.block_result_floor != 0 &&
+            compact.block_result_floor < summary->peer_result_floor) {
+            summary->peer_result_floor = compact.block_result_floor;
+        }
+        if (summary->peer_prefix_version_floor == 0 ||
+            (compact.prefix_version_floor != 0 &&
+             compact.prefix_version_floor < summary->peer_prefix_version_floor)) {
+            summary->peer_prefix_version_floor = compact.prefix_version_floor;
+        }
+        if (summary->peer_prefix_result_floor == 0 ||
+            (compact.prefix_result_floor != 0 &&
+             compact.prefix_result_floor < summary->peer_prefix_result_floor)) {
+            summary->peer_prefix_result_floor = compact.prefix_result_floor;
+        }
+        if ((compact.flags & W4_DB_COMPACT_PREFIX_STATE_READY) == 0) {
+            summary->prefix_state_ready = false;
+        }
+        if ((compact.flags & W4_DB_COMPACT_PREFIX_VIEW_READY) == 0) {
+            summary->prefix_view_ready = false;
+        }
+        if (summary->peer_prefix_count_floor == 0 ||
+            compact.prefix_count < summary->peer_prefix_count_floor) {
+            summary->peer_prefix_count_floor = compact.prefix_count;
+        }
+        if (summary->peer_block_count_floor == 0 ||
+            compact.block_count < summary->peer_block_count_floor) {
+            summary->peer_block_count_floor = compact.block_count;
+        }
+        if (summary->peer_group_count_floor == 0 ||
+            compact.group_count < summary->peer_group_count_floor) {
+            summary->peer_group_count_floor = compact.group_count;
+        }
+        printf("[w4_guest] stage db_service_cluster_observe_compact owner=node%d records=%u prefixes=%u blocks=%u groups=%u weight_tiles=%u kvcache_objects=%u block_version_floor=%" PRIu64 " prefix_version_floor=%" PRIu64 "\n",
+               i + 1,
+               compact.record_count,
+               compact.prefix_count,
+               compact.block_count,
+               compact.group_count,
+               compact.weight_tile_count,
+               compact.kvcache_object_count,
+               compact.block_version_floor,
+               compact.prefix_version_floor);
+        if (i != rt->local_idx) {
+            continue;
+        }
+        snapshot = peer_snapshots[i];
         for (r = 0; r < snapshot.record_count; ++r) {
             struct w4_db_record *rec = &snapshot.records[r];
 
@@ -2573,27 +2883,11 @@ int w4_db_publish_observe_cluster(struct w4_db_service *svc,
                 goto out;
             }
             if (rec->kind == W4_DB_RECORD_REQUEST_PREFIX) {
-                peer_prefix_count += 1;
-                if (summary->peer_prefix_version_floor == 0 ||
-                    rec->version < summary->peer_prefix_version_floor) {
-                    summary->peer_prefix_version_floor = rec->version;
-                }
-                if (summary->peer_prefix_result_floor == 0 ||
-                    rec->last_result_segment < summary->peer_prefix_result_floor) {
-                    summary->peer_prefix_result_floor = rec->last_result_segment;
-                }
-                if (rec->state != W4_KVCACHE_STATE_RELOADED) {
-                    summary->prefix_state_ready = false;
-                }
-                if (rec->hot_segment_id == 0 || rec->last_result_segment == 0) {
-                    summary->prefix_view_ready = false;
-                }
                 printf("[w4_guest] stage db_service_cluster_observe owner=node%d kind=request_prefix key=%s version=%" PRIu64 "\n",
                        i + 1,
                        rec->key,
                        rec->version);
             } else if (rec->kind == W4_DB_RECORD_PREFIX_GROUP) {
-                peer_group_count += 1;
                 printf("[w4_guest] stage db_service_cluster_observe owner=node%d kind=prefix_group key=%s group=%s members=%u state=%s version=%" PRIu64 " last_result_segment=0x%016" PRIx64 "\n",
                        i + 1,
                        rec->key,
@@ -2603,13 +2897,6 @@ int w4_db_publish_observe_cluster(struct w4_db_service *svc,
                        rec->version,
                        rec->last_result_segment);
             } else if (rec->kind == W4_DB_RECORD_BLOCK_META) {
-                peer_block_count += 1;
-                if (rec->version < summary->peer_version_floor) {
-                    summary->peer_version_floor = rec->version;
-                }
-                if (rec->last_result_segment < summary->peer_result_floor) {
-                    summary->peer_result_floor = rec->last_result_segment;
-                }
                 if (strncmp(rec->key, local_record->key, sizeof(rec->key)) == 0 &&
                     (rec->placement_node != local_record->placement_node ||
                      rec->placement_level != local_record->placement_level ||
@@ -2639,18 +2926,6 @@ int w4_db_publish_observe_cluster(struct w4_db_service *svc,
             } else {
                 goto out;
             }
-        }
-        if (summary->peer_prefix_count_floor == 0 ||
-            peer_prefix_count < summary->peer_prefix_count_floor) {
-            summary->peer_prefix_count_floor = peer_prefix_count;
-        }
-        if (summary->peer_block_count_floor == 0 ||
-            peer_block_count < summary->peer_block_count_floor) {
-            summary->peer_block_count_floor = peer_block_count;
-        }
-        if (summary->peer_group_count_floor == 0 ||
-            peer_group_count < summary->peer_group_count_floor) {
-            summary->peer_group_count_floor = peer_group_count;
         }
     }
 
@@ -2839,22 +3114,22 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
     remote_slot = &rt->slots[remote_node];
     deadline = w4_db_now_ms() + W4_DB_OBMM_SERVICE_WAIT_MS;
     while (w4_db_now_ms() < deadline) {
-        struct w4_db_cluster_payload snapshot;
         struct w4_db_cluster_payload_header seen;
 
-        memset(&snapshot, 0, sizeof(snapshot));
         memset(&seen, 0, sizeof(seen));
-        if (w4_db_read_stable_payload_region(remote_slot, &snapshot, &seen)) {
+        if (w4_db_try_read_stable_compact_summary_region(remote_slot,
+                                                         &(struct w4_db_cluster_payload_compact_summary){ 0 },
+                                                         &seen)) {
             last_seen_seq = seen.publish_seq;
             last_seen_done_seq = seen.publish_done_seq;
             last_seen_record_count = seen.record_count;
             saw_remote_snapshot = true;
-            got_remote_weight = w4_db_payload_snapshot_find_record(&snapshot,
-                                                                   remote_weight_key,
-                                                                   &remote_weight);
-            got_remote_kvcache = w4_db_payload_snapshot_find_record(&snapshot,
-                                                                    remote_kvcache_key,
-                                                                    &remote_kvcache);
+            got_remote_weight = w4_db_slot_find_record(remote_slot,
+                                                       remote_weight_key,
+                                                       &remote_weight);
+            got_remote_kvcache = w4_db_slot_find_record(remote_slot,
+                                                        remote_kvcache_key,
+                                                        &remote_kvcache);
         }
         if (got_remote_weight && got_remote_kvcache) {
             break;

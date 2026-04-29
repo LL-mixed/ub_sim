@@ -17,6 +17,8 @@ PORT_BASE="$PORT_BASE_START"
 PORT_NUM="${UB_SIM_PORT_NUM:-7}"
 SIMPLER_HOST_MATMUL_MANIFEST="${SIMPLER_HOST_MATMUL_MANIFEST:-/private/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json}"
 SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-qwen3_dense_0_6b}"
+FATAL_GUEST_PATTERN="rcu_preempt|RCU grace-period|self-detected stall|detected stalls on CPUs/tasks|rx msg plen invalid|poller rx msg failed, ret=-22|\\[w4_guest\\] fail"
+FATAL_QEMU_PATTERN="sim_dec read: timeout|SIM_DEC: cpu read failed|ub_link write failed|bounded write timed out|rx msg plen invalid|poller rx msg failed"
 
 NODE_IDS=(nodeA nodeB nodeC nodeD nodeE nodeF nodeG nodeH)
 NODE_IPS=(10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4 10.0.0.5 10.0.0.6 10.0.0.7 10.0.0.8)
@@ -83,6 +85,18 @@ assert_log_absent() {
     echo "unexpected log marker: $label in $file" >&2
     return 1
   fi
+}
+
+assert_no_fatal_runtime_logs() {
+  local node_id guest_log qemu_log
+
+  for node_id in "${NODE_IDS[@]}"; do
+    guest_log="$RUN_DIR/${node_id}_guest.log"
+    qemu_log="$RUN_DIR/${node_id}_qemu.log"
+    assert_log_absent "$guest_log" "$FATAL_GUEST_PATTERN" "$node_id fatal guest runtime marker" || return 1
+    assert_log_absent "$qemu_log" "$FATAL_QEMU_PATTERN" "$node_id fatal qemu runtime marker" || return 1
+  done
+  return 0
 }
 
 node_index() {
@@ -168,7 +182,6 @@ while time.time() < deadline:
         for line in payload.splitlines(True):
             s.sendall(line.encode("utf-8"))
             time.sleep(0.05)
-        time.sleep(0.2)
         s.close()
         sys.exit(0)
     except OSError as exc:
@@ -305,6 +318,8 @@ run_w4_demo() {
     fi
     validate_node_log "$node_id" "$guest_log" || return 1
   done
+  sleep 5
+  assert_no_fatal_runtime_logs || return 1
   return 0
 }
 

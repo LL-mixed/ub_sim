@@ -25,7 +25,7 @@ find_sim_qemu_staticlib() {
   fi
   for candidate in \
     "$REPO_ROOT/target/release/libsim_qemu.a" \
-    "$REPO_ROOT"/target/*/release/libsim_qemu.a; do
+    "$REPO_ROOT"/target/*/release/libsim_qemu.a(N); do
     if [[ -f "$candidate" ]]; then
       echo "$candidate"
       return 0

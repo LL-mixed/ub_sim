@@ -16,6 +16,8 @@ PORT_BASE_START="${PORT_BASE_START:-$((54100 + (RANDOM % 300)))}"
 PORT_BASE="$PORT_BASE_START"
 SIMPLER_HOST_MATMUL_MANIFEST="${SIMPLER_HOST_MATMUL_MANIFEST:-/private/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json}"
 SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-qwen3_dense_0_6b}"
+FATAL_GUEST_PATTERN="rcu_preempt|RCU grace-period|self-detected stall|detected stalls on CPUs/tasks|rx msg plen invalid|poller rx msg failed, ret=-22|\\[w4_guest\\] fail"
+FATAL_QEMU_PATTERN="sim_dec read: timeout|SIM_DEC: cpu read failed|ub_link write failed|bounded write timed out|rx msg plen invalid|poller rx msg failed"
 
 NODE_IDS=(nodeA nodeB nodeC nodeD)
 NODE_IPS=(10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4)
@@ -84,6 +86,18 @@ assert_log_absent() {
   fi
 }
 
+assert_no_fatal_runtime_logs() {
+  local node_id guest_log qemu_log
+
+  for node_id in "${NODE_IDS[@]}"; do
+    guest_log="$RUN_DIR/${node_id}_guest.log"
+    qemu_log="$RUN_DIR/${node_id}_qemu.log"
+    assert_log_absent "$guest_log" "$FATAL_GUEST_PATTERN" "$node_id fatal guest runtime marker" || return 1
+    assert_log_absent "$qemu_log" "$FATAL_QEMU_PATTERN" "$node_id fatal qemu runtime marker" || return 1
+  done
+  return 0
+}
+
 node_index() {
   case "$1" in
     nodeA) echo 1 ;;
@@ -103,7 +117,7 @@ node_serial_port() {
   local node_id="$1"
   local port_base="$2"
   local idx="$(node_index "$node_id")"
-  echo $((port_base + 31 + idx))
+  echo $((port_base + 15 + idx))
 }
 
 send_serial_block() {
@@ -123,7 +137,6 @@ while time.time() < deadline:
     try:
         s.connect(("127.0.0.1", port))
         s.sendall(payload.encode("utf-8"))
-        time.sleep(0.2)
         s.close()
         sys.exit(0)
     except OSError as exc:
@@ -257,6 +270,8 @@ run_w4_demo() {
     fi
     validate_node_log "$node_id" "$guest_log" || return 1
   done
+  sleep 5
+  assert_no_fatal_runtime_logs || return 1
   return 0
 }
 
