@@ -476,11 +476,11 @@ guest-linux/aarch64/scripts/run_ub_four_node_obmm_pool.sh
 That run performs one shared pool bring-up across `nodeA/nodeB/nodeC/nodeD`
 instead of pairwise OBMM checks.
 
-For eight-node OBMM-backed validation, the eight-node OBMM pool and W4 guest
-harnesses default to `QEMU_MEM=6G` and `pmd_mapping=30%`. This reserves a
-1 GiB PFN range on the guest and avoids the OBMM pool allocation failure seen
-with smaller guest memory settings such as `4G` plus `pmd_mapping=25%` or
-`50%`. Both values remain overridable through `QEMU_MEM` and `APPEND_EXTRA`.
+All eight-node headless workloads default to `QEMU_MEM=6G` and
+`pmd_mapping=30%`. This reserves a 1 GiB PFN range on the guest and avoids the
+OBMM pool allocation failure seen with smaller guest memory settings such as
+`4G` plus `pmd_mapping=25%` or `50%`. Both values remain overridable through
+`QEMU_MEM` and `APPEND_EXTRA`.
 
 ### run_demo wrapper
 

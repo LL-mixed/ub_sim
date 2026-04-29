@@ -13,8 +13,7 @@ RUN_DIR="$LOG_DIR/${RUN_ID_BASE}_headless8"
 BOOT_WAIT_SECS="${BOOT_WAIT_SECS:-180}"
 DEMO_WAIT_SECS="${DEMO_WAIT_SECS:-180}"
 START_GAP_SECS="${START_GAP_SECS:-1}"
-QEMU_MEM="${QEMU_MEM:-6G}"
-APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1 pmd_mapping=30%}"
+APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 PORT_BASE_START="${PORT_BASE_START:-$((53600 + (RANDOM % 300)))}"
 PORT_BASE="$PORT_BASE_START"
 
@@ -177,7 +176,7 @@ prepare_environment() {
   mkdir -p "$RUN_DIR"
   : > "$TRACE_FILE"
   trace "prepare: launch headless env run_id=$RUN_ID_BASE"
-  ENV_FILE="$OUT_DIR/headless_eight_node_env.${RUN_ID_BASE}.sh" PORT_BASE="$PORT_BASE" RUN_ID="$RUN_ID_BASE" QEMU_MEM="$QEMU_MEM" APPEND_EXTRA="$APPEND_BASE" \
+  ENV_FILE="$OUT_DIR/headless_eight_node_env.${RUN_ID_BASE}.sh" PORT_BASE="$PORT_BASE" RUN_ID="$RUN_ID_BASE" APPEND_EXTRA="$APPEND_BASE" \
     "$SCRIPT_DIR/launch_ub_eight_node_headless.sh" >/dev/null
   source "$OUT_DIR/headless_eight_node_env.${RUN_ID_BASE}.sh"
 

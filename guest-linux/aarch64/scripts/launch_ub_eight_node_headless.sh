@@ -23,7 +23,7 @@ LOG_DIR="$ROOT_DIR/logs"
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_headless8_${RANDOM}}"
 APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 PORT_BASE="${PORT_BASE:-$((56000 + RANDOM % 2000))}"
-QEMU_MEM="${QEMU_MEM:-2G}"
+QEMU_MEM="${QEMU_MEM:-6G}"
 CONTROL_LOG="$LOG_DIR/${RUN_ID}_headless8/control.log"
 CLEANUP_SCRIPT="$OUT_DIR/headless_eight_node_cleanup.${RUN_ID}.sh"
 ENV_FILE="${ENV_FILE:-$OUT_DIR/headless_eight_node_env.${RUN_ID}.sh}"
@@ -33,6 +33,9 @@ NODE_IPS=(10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4 10.0.0.5 10.0.0.6 10.0.0.7 10.0.0.
 
 source "$SCRIPT_DIR/qemu_ub_common.sh"
 APPEND_EXTRA="$(ensure_sim_kernel_append_defaults "$APPEND_EXTRA")"
+if [[ "$APPEND_EXTRA" != *"pmd_mapping="* ]]; then
+  APPEND_EXTRA="${APPEND_EXTRA} pmd_mapping=30%"
+fi
 
 need_cmd() {
   local cmd="$1"
