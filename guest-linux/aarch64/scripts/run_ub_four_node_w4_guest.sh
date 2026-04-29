@@ -14,7 +14,7 @@ DEMO_WAIT_SECS="${DEMO_WAIT_SECS:-300}"
 APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 PORT_BASE_START="${PORT_BASE_START:-$((54100 + (RANDOM % 300)))}"
 PORT_BASE="$PORT_BASE_START"
-SIMPLER_HOST_MATMUL_MANIFEST="${SIMPLER_HOST_MATMUL_MANIFEST:-/private/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json}"
+SIMPLER_HOST_MATMUL_MANIFEST="${SIMPLER_HOST_MATMUL_MANIFEST:-/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json}"
 SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-qwen3_dense_0_6b}"
 FATAL_GUEST_PATTERN="rcu_preempt|RCU grace-period|self-detected stall|detected stalls on CPUs/tasks|rx msg plen invalid|poller rx msg failed, ret=-22|\\[w4_guest\\] fail"
 FATAL_QEMU_PATTERN="sim_dec read: timeout|SIM_DEC: cpu read failed|ub_link write failed|bounded write timed out|rx msg plen invalid|poller rx msg failed"
@@ -117,7 +117,7 @@ node_serial_port() {
   local node_id="$1"
   local port_base="$2"
   local idx="$(node_index "$node_id")"
-  echo $((port_base + 15 + idx))
+  echo $((port_base + 31 + idx))
 }
 
 send_serial_block() {
@@ -278,6 +278,9 @@ run_w4_demo() {
 prepare_environment() {
   local guest_log node_id
 
+  if [[ ! -f "$SIMPLER_HOST_MATMUL_MANIFEST" ]]; then
+    SIMPLER_HOST_MATMUL_MANIFEST="$("$SCRIPT_DIR/prepare_simpler_host_matmul_artifacts.sh" "$(dirname "$SIMPLER_HOST_MATMUL_MANIFEST")")"
+  fi
   mkdir -p "$RUN_DIR"
   : > "$TRACE_FILE"
   trace "prepare: launch headless env run_id=$RUN_ID_BASE"
