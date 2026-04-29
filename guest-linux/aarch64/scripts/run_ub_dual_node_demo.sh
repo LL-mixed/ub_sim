@@ -45,7 +45,7 @@ fi
 
 # Keep init alive after probes so the harness can terminate QEMU directly.
 # This avoids guest shutdown/remove path stacktraces that are unrelated to
-# chat/rpc/rdma dataplane validation.
+# chat/rpc/udma dataplane validation.
 if [[ "$APPEND_EXTRA" != *"linqu_probe_hold="* ]]; then
   APPEND_EXTRA="${APPEND_EXTRA} linqu_probe_hold=1"
 fi
@@ -199,62 +199,62 @@ validate_tcp_each_server_log() {
   fi
 }
 
-validate_rdma_log() {
+validate_udma_log() {
   local node_name="$1"
   local log_file="$2"
-  assert_log_has "$log_file" "\\[ub_rdma\\] pass" "${node_name} rdma pass" || return 1
-  assert_log_absent "$log_file" "\\[ub_rdma\\] fail" "${node_name} rdma fail" || return 1
-  assert_log_has "$log_file" "\\[ub_rdma\\] step 2: alloc_ummu_tid -> ok" \
-    "${node_name} rdma alloc ummu tid" || return 1
-  assert_log_has "$log_file" "\\[ub_rdma\\] step 2: alloc_token_id -> ok" \
-    "${node_name} rdma alloc token id" || return 1
-  assert_log_has "$log_file" "\\[ub_rdma\\] step 7: register_seg -> ok" \
-    "${node_name} rdma register seg" || return 1
-  assert_log_has "$log_file" "\\[ub_rdma\\] step 8: import_jetty -> ok" \
-    "${node_name} rdma import jetty" || return 1
-  assert_log_has "$log_file" "\\[ub_rdma\\] step 9: bind_jetty -> ok" \
-    "${node_name} rdma bind jetty" || return 1
-  assert_log_has "$log_file" "\\[ub_rdma\\] step 9\\.5: post_recv -> ok" \
-    "${node_name} rdma post recv" || return 1
-  assert_log_has "$log_file" "\\[ub_rdma\\] step 9\\.5: ready_sync -> ok" \
-    "${node_name} rdma ready sync" || return 1
+  assert_log_has "$log_file" "\\[ub_udma\\] pass" "${node_name} udma pass" || return 1
+  assert_log_absent "$log_file" "\\[ub_udma\\] fail" "${node_name} udma fail" || return 1
+  assert_log_has "$log_file" "\\[ub_udma\\] step 2: alloc_ummu_tid -> ok" \
+    "${node_name} udma alloc ummu tid" || return 1
+  assert_log_has "$log_file" "\\[ub_udma\\] step 2: alloc_token_id -> ok" \
+    "${node_name} udma alloc token id" || return 1
+  assert_log_has "$log_file" "\\[ub_udma\\] step 7: register_seg -> ok" \
+    "${node_name} udma register seg" || return 1
+  assert_log_has "$log_file" "\\[ub_udma\\] step 8: import_jetty -> ok" \
+    "${node_name} udma import jetty" || return 1
+  assert_log_has "$log_file" "\\[ub_udma\\] step 9: bind_jetty -> ok" \
+    "${node_name} udma bind jetty" || return 1
+  assert_log_has "$log_file" "\\[ub_udma\\] step 9\\.5: post_recv -> ok" \
+    "${node_name} udma post recv" || return 1
+  assert_log_has "$log_file" "\\[ub_udma\\] step 9\\.5: ready_sync -> ok" \
+    "${node_name} udma ready sync" || return 1
   if [[ "$node_name" == "nodeA" ]]; then
-    assert_log_has "$log_file" "\\[ub_rdma\\] step 9\\.5: send_request -> ok len=[0-9]+" \
-      "${node_name} rdma send request" || return 1
-    assert_log_has "$log_file" "\\[ub_rdma\\] step 9\\.5: recv_reply -> ok payload=\"rdma reply payload from responder\"" \
-      "${node_name} rdma reply payload" || return 1
+    assert_log_has "$log_file" "\\[ub_udma\\] step 9\\.5: send_request -> ok len=[0-9]+" \
+      "${node_name} udma send request" || return 1
+    assert_log_has "$log_file" "\\[ub_udma\\] step 9\\.5: recv_reply -> ok payload=\"udma reply payload from responder\"" \
+      "${node_name} udma reply payload" || return 1
   else
-    assert_log_has "$log_file" "\\[ub_rdma\\] step 9\\.5: recv_request -> ok payload=\"rdma request payload from initiator\"" \
-      "${node_name} rdma request payload" || return 1
-    assert_log_has "$log_file" "\\[ub_rdma\\] step 9\\.5: send_reply -> ok len=[0-9]+" \
-      "${node_name} rdma send reply" || return 1
+    assert_log_has "$log_file" "\\[ub_udma\\] step 9\\.5: recv_request -> ok payload=\"udma request payload from initiator\"" \
+      "${node_name} udma request payload" || return 1
+    assert_log_has "$log_file" "\\[ub_udma\\] step 9\\.5: send_reply -> ok len=[0-9]+" \
+      "${node_name} udma send reply" || return 1
   fi
-  assert_log_has "$log_file" "\\[ub_rdma\\] step 10: unbind_jetty -> ok" \
-    "${node_name} rdma unbind jetty" || return 1
-  assert_log_has "$log_file" "\\[ub_rdma\\] step 10: unimport_jetty -> ok" \
-    "${node_name} rdma unimport jetty" || return 1
-  assert_log_has "$log_file" "\\[ub_rdma\\] cleanup: unregister_seg -> ok" \
-    "${node_name} rdma unregister seg cleanup" || return 1
-  assert_log_has "$log_file" "\\[ub_rdma\\] cleanup: free_token_id -> ok" \
-    "${node_name} rdma free token id cleanup" || return 1
-  assert_log_has "$log_file" "\\[ub_rdma\\] cleanup: free_ummu_tid -> ok" \
-    "${node_name} rdma free ummu tid cleanup" || return 1
+  assert_log_has "$log_file" "\\[ub_udma\\] step 10: unbind_jetty -> ok" \
+    "${node_name} udma unbind jetty" || return 1
+  assert_log_has "$log_file" "\\[ub_udma\\] step 10: unimport_jetty -> ok" \
+    "${node_name} udma unimport jetty" || return 1
+  assert_log_has "$log_file" "\\[ub_udma\\] cleanup: unregister_seg -> ok" \
+    "${node_name} udma unregister seg cleanup" || return 1
+  assert_log_has "$log_file" "\\[ub_udma\\] cleanup: free_token_id -> ok" \
+    "${node_name} udma free token id cleanup" || return 1
+  assert_log_has "$log_file" "\\[ub_udma\\] cleanup: free_ummu_tid -> ok" \
+    "${node_name} udma free ummu tid cleanup" || return 1
   assert_log_absent "$log_file" "UDMA: invalid port speed = 0" \
-    "${node_name} rdma invalid port speed" || return 1
+    "${node_name} udma invalid port speed" || return 1
   assert_log_absent "$log_file" "failed to query device status" \
-    "${node_name} rdma query device status failure" || return 1
+    "${node_name} udma query device status failure" || return 1
   assert_log_absent "$log_file" "ubcore topo map doesn't exist" \
-    "${node_name} rdma topo map missing" || return 1
+    "${node_name} udma topo map missing" || return 1
   assert_log_absent "$log_file" "UDMA: wait resp timeout" \
-    "${node_name} rdma wait response timeout" || return 1
+    "${node_name} udma wait response timeout" || return 1
   assert_log_absent "$log_file" "fail to notify mue save tp" \
-    "${node_name} rdma save tp failure" || return 1
+    "${node_name} udma save tp failure" || return 1
   assert_log_absent "$log_file" "ubcore_unimport_jetty_async failed" \
-    "${node_name} rdma unimport jetty async failure" || return 1
+    "${node_name} udma unimport jetty async failure" || return 1
   assert_log_absent "$log_file" "failed to remove uobject" \
-    "${node_name} rdma uobject cleanup failure" || return 1
+    "${node_name} udma uobject cleanup failure" || return 1
   assert_log_absent "$log_file" "invalidate cfg_table failed" \
-    "${node_name} rdma cfg table cleanup failure" || return 1
+    "${node_name} udma cfg table cleanup failure" || return 1
 }
 
 validate_obmm_log() {
@@ -578,7 +578,7 @@ run_iteration() {
   local chat_enabled=0
   local rpc_enabled=0
   local tcp_enabled=0
-  local rdma_enabled=0
+  local udma_enabled=0
   local obmm_enabled=0
   local stale_files=()
 
@@ -591,8 +591,8 @@ run_iteration() {
   if [[ "$APPEND_EXTRA" == *"linqu_ub_tcp_each_server_demo=1"* ]]; then
     tcp_enabled=1
   fi
-  if [[ "$APPEND_EXTRA" == *"linqu_ub_rdma_demo=1"* ]]; then
-    rdma_enabled=1
+  if [[ "$APPEND_EXTRA" == *"linqu_ub_udma_demo=1"* ]]; then
+    udma_enabled=1
   fi
   if [[ "$APPEND_EXTRA" == *"linqu_obmm_demo=1"* ]]; then
     obmm_enabled=1
@@ -742,29 +742,29 @@ run_iteration() {
     esac
   fi
 
-  if [[ "$rdma_enabled" -eq 1 ]]; then
-    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub rdma demo pass" "\\[init\\] ub rdma demo fail" "$RUN_SECS"
+  if [[ "$udma_enabled" -eq 1 ]]; then
+    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub udma demo pass" "\\[init\\] ub udma demo fail" "$RUN_SECS"
     case "$?" in
       0) ;;
       1)
-        echo "iteration ${iter}: nodeA rdma demo reported failure" >&2
+        echo "iteration ${iter}: nodeA udma demo reported failure" >&2
         return 14
         ;;
       *)
-        echo "iteration ${iter}: nodeA rdma demo did not finish within ${RUN_SECS}s" >&2
+        echo "iteration ${iter}: nodeA udma demo did not finish within ${RUN_SECS}s" >&2
         return 14
         ;;
     esac
 
-    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub rdma demo pass" "\\[init\\] ub rdma demo fail" "$RUN_SECS"
+    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub udma demo pass" "\\[init\\] ub udma demo fail" "$RUN_SECS"
     case "$?" in
       0) ;;
       1)
-        echo "iteration ${iter}: nodeB rdma demo reported failure" >&2
+        echo "iteration ${iter}: nodeB udma demo reported failure" >&2
         return 14
         ;;
       *)
-        echo "iteration ${iter}: nodeB rdma demo did not finish within ${RUN_SECS}s" >&2
+        echo "iteration ${iter}: nodeB udma demo did not finish within ${RUN_SECS}s" >&2
         return 14
         ;;
     esac
@@ -823,9 +823,9 @@ run_iteration() {
     validate_tcp_each_server_log "nodeA" "$nodea_guest_log" || return 1
     validate_tcp_each_server_log "nodeB" "$nodeb_guest_log" || return 1
   fi
-  if [[ "$APPEND_EXTRA" == *"linqu_ub_rdma_demo=1"* ]]; then
-    validate_rdma_log "nodeA" "$nodea_guest_log" || return 1
-    validate_rdma_log "nodeB" "$nodeb_guest_log" || return 1
+  if [[ "$APPEND_EXTRA" == *"linqu_ub_udma_demo=1"* ]]; then
+    validate_udma_log "nodeA" "$nodea_guest_log" || return 1
+    validate_udma_log "nodeB" "$nodeb_guest_log" || return 1
   fi
   if [[ "$APPEND_EXTRA" == *"linqu_obmm_demo=1"* ]]; then
     validate_obmm_log "nodeA" "$nodea_guest_log" || return 1

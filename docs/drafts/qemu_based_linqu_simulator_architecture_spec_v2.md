@@ -1087,7 +1087,7 @@ P2 不是当前 MVP 的 gate，但必须在架构上留好接口：
 ## 16. 非目标
 
 - 不做完整 QEMU 深度设备时序建模
-- 不做真实 GPU/CXL/RDMA 内核执行
+- 不做真实 GPU/CXL/UDMA 内核执行
 - 不做完整 PyPTO compiler integration
 - 不做完整多租户安全隔离实现
 - 不做 TB-scale durability、layer-wise prefetch 等 v8 后续扩展

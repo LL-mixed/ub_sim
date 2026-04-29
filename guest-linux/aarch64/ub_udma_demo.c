@@ -1,5 +1,5 @@
 /*
- * ub_rdma_demo.c - URMA RDMA resource lifecycle demo.
+ * ub_udma_demo.c - URMA UDMA resource lifecycle demo.
  *
  * Demonstrates the full URMA resource creation and binding pipeline
  * over a simulated UB network between two QEMU VMs.
@@ -49,14 +49,14 @@
 
 /* ---------- constants ---------- */
 
-#define RDMA_PORT       18558
+#define UDMA_PORT       18558
 #define SYNC_PORT       18559
 #define WAIT_IFACE_MS   90000
 #define SYNC_TIMEOUT_MS 30000
 #define DEMO_PAGE_SIZE  4096
-#define RDMA_Q_DEPTH    64
-#define RDMA_CQ_SHIFT   6
-#define RDMA_MAX_PAYLOAD 256
+#define UDMA_Q_DEPTH    64
+#define UDMA_CQ_SHIFT   6
+#define UDMA_MAX_PAYLOAD 256
 #define UDMA_JFC_DB_VALID_OWNER_M 1
 #define UDMA_JFC_DB_CI_IDX_M 0x003fffffU
 #define UDMA_JFR_DB_PI_M 0x0000ffffU
@@ -72,7 +72,7 @@ enum {
 
 /* ---------- resource tracking ---------- */
 
-struct rdma_resources {
+struct udma_resources {
     int fd;
     int ummu_fd;
     uint32_t jfc_id;
@@ -131,33 +131,33 @@ struct rdma_resources {
     bool jetty_dsqe_is_mmap;
 };
 
-static struct rdma_resources g_res;
+static struct udma_resources g_res;
 
 static int ub_ioctl(int fd, uint32_t cmd, void *arg, size_t arg_size);
 
-enum rdma_role {
-    RDMA_ROLE_UNKNOWN = 0,
-    RDMA_ROLE_INITIATOR,
-    RDMA_ROLE_RESPONDER,
+enum udma_role {
+    UDMA_ROLE_UNKNOWN = 0,
+    UDMA_ROLE_INITIATOR,
+    UDMA_ROLE_RESPONDER,
 };
 
-static enum rdma_role parse_rdma_role(const char *role)
+static enum udma_role parse_udma_role(const char *role)
 {
     if (strcmp(role, "initiator") == 0 || strcmp(role, "nodeA") == 0) {
-        return RDMA_ROLE_INITIATOR;
+        return UDMA_ROLE_INITIATOR;
     }
     if (strcmp(role, "responder") == 0 || strcmp(role, "nodeB") == 0) {
-        return RDMA_ROLE_RESPONDER;
+        return UDMA_ROLE_RESPONDER;
     }
-    return RDMA_ROLE_UNKNOWN;
+    return UDMA_ROLE_UNKNOWN;
 }
 
-static const char *rdma_role_name(enum rdma_role role)
+static const char *udma_role_name(enum udma_role role)
 {
     switch (role) {
-    case RDMA_ROLE_INITIATOR:
+    case UDMA_ROLE_INITIATOR:
         return "initiator";
-    case RDMA_ROLE_RESPONDER:
+    case UDMA_ROLE_RESPONDER:
         return "responder";
     default:
         return "unknown";
@@ -252,18 +252,18 @@ struct uburma_cmd_unimport_jetty_local {
     do { \
         int ret = (expr); \
         if (ret < 0) { \
-            fprintf(stderr, "[ub_rdma] step %d: %s failed: %d\n", \
+            fprintf(stderr, "[ub_udma] step %d: %s failed: %d\n", \
                     step_num, name, ret); \
             cleanup_resources(&g_res); \
-            fprintf(stderr, "[ub_rdma] fail\n"); \
+            fprintf(stderr, "[ub_udma] fail\n"); \
             return 1; \
         } \
-        printf("[ub_rdma] step %d: %s -> ok\n", step_num, name); \
+        printf("[ub_udma] step %d: %s -> ok\n", step_num, name); \
     } while (0)
 
 /* ---------- forward declarations ---------- */
 
-static void cleanup_resources(struct rdma_resources *res);
+static void cleanup_resources(struct udma_resources *res);
 
 /* ---------- helper: time ---------- */
 
@@ -290,23 +290,23 @@ static void reverse_bytes(const uint8_t *src, uint8_t *dst, size_t len)
     }
 }
 
-static uint32_t rdma_cq_valid_owner(uint32_t ci)
+static uint32_t udma_cq_valid_owner(uint32_t ci)
 {
-    return (ci >> RDMA_CQ_SHIFT) & UDMA_JFC_DB_VALID_OWNER_M;
+    return (ci >> UDMA_CQ_SHIFT) & UDMA_JFC_DB_VALID_OWNER_M;
 }
 
-static struct udma_jfc_cqe_local *rdma_get_cqe(struct rdma_resources *res, uint32_t ci)
+static struct udma_jfc_cqe_local *udma_get_cqe(struct udma_resources *res, uint32_t ci)
 {
     struct udma_jfc_cqe_local *ring = res->jfc_ucmd_buf;
-    struct udma_jfc_cqe_local *cqe = &ring[ci & (RDMA_Q_DEPTH - 1)];
+    struct udma_jfc_cqe_local *cqe = &ring[ci & (UDMA_Q_DEPTH - 1)];
 
-    if (!(cqe->owner ^ rdma_cq_valid_owner(ci))) {
+    if (!(cqe->owner ^ udma_cq_valid_owner(ci))) {
         return NULL;
     }
     return cqe;
 }
 
-static void rdma_consume_cqe(struct rdma_resources *res)
+static void udma_consume_cqe(struct udma_resources *res)
 {
     uint32_t *db = res->jfc_db_buf;
 
@@ -315,17 +315,17 @@ static void rdma_consume_cqe(struct rdma_resources *res)
     *db = res->cq_ci & UDMA_JFC_DB_CI_IDX_M;
 }
 
-static int rdma_poll_one_cqe(struct rdma_resources *res, long timeout_ms,
+static int udma_poll_one_cqe(struct udma_resources *res, long timeout_ms,
                              struct udma_jfc_cqe_local *out)
 {
     long deadline = now_ms() + timeout_ms;
 
     while (now_ms() < deadline) {
-        struct udma_jfc_cqe_local *cqe = rdma_get_cqe(res, res->cq_ci);
+        struct udma_jfc_cqe_local *cqe = udma_get_cqe(res, res->cq_ci);
 
         if (cqe != NULL) {
             memcpy(out, cqe, sizeof(*out));
-            rdma_consume_cqe(res);
+            udma_consume_cqe(res);
             return 0;
         }
         usleep(1000);
@@ -333,14 +333,14 @@ static int rdma_poll_one_cqe(struct rdma_resources *res, long timeout_ms,
     return -ETIMEDOUT;
 }
 
-static int rdma_wait_for_cqe(struct rdma_resources *res, long timeout_ms,
+static int udma_wait_for_cqe(struct udma_resources *res, long timeout_ms,
                              uint32_t expect_s_r,
                              struct udma_jfc_cqe_local *out)
 {
     long deadline = now_ms() + timeout_ms;
 
     while (now_ms() < deadline) {
-        int ret = rdma_poll_one_cqe(res, 50, out);
+        int ret = udma_poll_one_cqe(res, 50, out);
 
         if (ret == -ETIMEDOUT) {
             continue;
@@ -350,7 +350,7 @@ static int rdma_wait_for_cqe(struct rdma_resources *res, long timeout_ms,
         }
         if (out->status != 0) {
             fprintf(stderr,
-                    "[ub_rdma] cqe error: s_r=%u opcode=%u status=%u substatus=%u local=%u remote=%u\n",
+                    "[ub_udma] cqe error: s_r=%u opcode=%u status=%u substatus=%u local=%u remote=%u\n",
                     out->s_r, out->opcode, out->status, out->substatus,
                     (out->local_num_h << UDMA_SRC_IDX_SHIFT) | out->local_num_l,
                     out->rmt_idx);
@@ -363,12 +363,12 @@ static int rdma_wait_for_cqe(struct rdma_resources *res, long timeout_ms,
     return -ETIMEDOUT;
 }
 
-static int rdma_post_recv_one(struct rdma_resources *res, void *buf, uint32_t len)
+static int udma_post_recv_one(struct udma_resources *res, void *buf, uint32_t len)
 {
     struct udma_wqe_sge_local *rq = res->jfr_buf;
     uint32_t *idx_ring = res->jfr_idx_buf;
     uint32_t *db = res->jfr_db_buf;
-    uint32_t slot = res->rq_pi & (RDMA_Q_DEPTH - 1);
+    uint32_t slot = res->rq_pi & (UDMA_Q_DEPTH - 1);
 
     rq[slot].length = len;
     rq[slot].token_id = 0;
@@ -380,14 +380,14 @@ static int rdma_post_recv_one(struct rdma_resources *res, void *buf, uint32_t le
     return 0;
 }
 
-static int rdma_post_send_one(struct rdma_resources *res, const void *buf, uint32_t len)
+static int udma_post_send_one(struct udma_resources *res, const void *buf, uint32_t len)
 {
     struct udma_sqe_ctl_local *sqe;
     struct udma_normal_sge_local *sge;
     uint32_t *db = res->jetty_db_buf;
-    uint32_t slot = res->sq_pi & (RDMA_Q_DEPTH - 1);
+    uint32_t slot = res->sq_pi & (UDMA_Q_DEPTH - 1);
 
-    if (len == 0 || len > RDMA_MAX_PAYLOAD) {
+    if (len == 0 || len > UDMA_MAX_PAYLOAD) {
         return -EINVAL;
     }
 
@@ -397,7 +397,7 @@ static int rdma_post_send_one(struct rdma_resources *res, const void *buf, uint3
 
     sqe->sqe_bb_idx = res->sq_pi;
     sqe->cqe = 1;
-    sqe->owner = ((res->sq_pi & RDMA_Q_DEPTH) == 0) ? 1 : 0;
+    sqe->owner = ((res->sq_pi & UDMA_Q_DEPTH) == 0) ? 1 : 0;
     sqe->opcode = UDMA_OPC_SEND_LOCAL;
     sqe->tpn = res->bound_tpn;
     sqe->sge_num = 1;
@@ -415,17 +415,17 @@ static int rdma_post_send_one(struct rdma_resources *res, const void *buf, uint3
     return 0;
 }
 
-static int sync_datapath_ready(int udp_fd, enum rdma_role role,
+static int sync_datapath_ready(int udp_fd, enum udma_role role,
                                const struct sockaddr_in *peer)
 {
-    static const char ready_msg[] = "RDMA_DEMO_READY";
-    static const char ack_msg[] = "RDMA_DEMO_READY_ACK";
+    static const char ready_msg[] = "UDMA_DEMO_READY";
+    static const char ack_msg[] = "UDMA_DEMO_READY_ACK";
     char buf[64];
     struct sockaddr_in from;
     socklen_t from_len = sizeof(from);
     ssize_t n;
 
-    if (role == RDMA_ROLE_INITIATOR) {
+    if (role == UDMA_ROLE_INITIATOR) {
         if (sendto(udp_fd, ready_msg, sizeof(ready_msg), 0,
                    (const struct sockaddr *)peer, sizeof(*peer)) < 0) {
             return -errno;
@@ -702,7 +702,7 @@ static bool set_ipv4_addr(const char *ifname, const char *addr_str)
 
     fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) {
-        fprintf(stderr, "[ub_rdma] set_ipv4: socket failed: %s\n", strerror(errno));
+        fprintf(stderr, "[ub_udma] set_ipv4: socket failed: %s\n", strerror(errno));
         return false;
     }
     memset(&ifr, 0, sizeof(ifr));
@@ -710,12 +710,12 @@ static bool set_ipv4_addr(const char *ifname, const char *addr_str)
     sin = (struct sockaddr_in *)&ifr.ifr_addr;
     sin->sin_family = AF_INET;
     if (inet_pton(AF_INET, addr_str, &sin->sin_addr) != 1) {
-        fprintf(stderr, "[ub_rdma] set_ipv4: inet_pton failed for %s\n", addr_str);
+        fprintf(stderr, "[ub_udma] set_ipv4: inet_pton failed for %s\n", addr_str);
         close(fd);
         return false;
     }
     if (ioctl(fd, SIOCSIFADDR, &ifr) != 0) {
-        fprintf(stderr, "[ub_rdma] set_ipv4: SIOCSIFADDR failed: %s\n", strerror(errno));
+        fprintf(stderr, "[ub_udma] set_ipv4: SIOCSIFADDR failed: %s\n", strerror(errno));
         close(fd);
         return false;
     }
@@ -724,7 +724,7 @@ static bool set_ipv4_addr(const char *ifname, const char *addr_str)
     sin->sin_family = AF_INET;
     inet_pton(AF_INET, "255.255.255.0", &sin->sin_addr);
     if (ioctl(fd, SIOCSIFNETMASK, &ifr) != 0) {
-        fprintf(stderr, "[ub_rdma] set_ipv4: SIOCSIFNETMASK failed: %s\n", strerror(errno));
+        fprintf(stderr, "[ub_udma] set_ipv4: SIOCSIFNETMASK failed: %s\n", strerror(errno));
         close(fd);
         return false;
     }
@@ -777,7 +777,7 @@ static void install_static_arp(const char *ifname, const struct in_addr *peer_ad
         return;
     }
     if (ioctl(fd, SIOCSARP, &req) != 0) {
-        fprintf(stderr, "[ub_rdma] warn: SIOCSARP failed: %s\n", strerror(errno));
+        fprintf(stderr, "[ub_udma] warn: SIOCSARP failed: %s\n", strerror(errno));
     }
     close(fd);
 }
@@ -859,7 +859,7 @@ static void *map_udma_jetty_dsqe_page(int fd, uint32_t jetty_id)
     return addr;
 }
 
-static int ensure_runtime_buffers(struct rdma_resources *res)
+static int ensure_runtime_buffers(struct udma_resources *res)
 {
     if (res->seg_buf == NULL) {
         res->seg_buf = alloc_aligned_zero(DEMO_PAGE_SIZE);
@@ -1930,12 +1930,12 @@ static int open_uburma_device(const char *dev_name)
 
     written = snprintf(path, sizeof(path), "/dev/uburma/%s", dev_name);
     if (written < 0 || (size_t)written >= sizeof(path)) {
-        fprintf(stderr, "[ub_rdma] device path too long for %s\n", dev_name);
+        fprintf(stderr, "[ub_udma] device path too long for %s\n", dev_name);
         return -1;
     }
     fd = open(path, O_RDWR);
     if (fd < 0) {
-        fprintf(stderr, "[ub_rdma] open %s failed: %s\n", path, strerror(errno));
+        fprintf(stderr, "[ub_udma] open %s failed: %s\n", path, strerror(errno));
         return -1;
     }
     return fd;
@@ -1947,7 +1947,7 @@ static int open_ummu_tid_device(void)
 
     fd = open(TID_DEVICE_NAME, O_RDWR | O_CLOEXEC);
     if (fd < 0) {
-        fprintf(stderr, "[ub_rdma] open %s failed: %s\n",
+        fprintf(stderr, "[ub_udma] open %s failed: %s\n",
                 TID_DEVICE_NAME, strerror(errno));
         return -1;
     }
@@ -1960,7 +1960,7 @@ static int copy_dev_name(char *dst, size_t dst_size, const char *dev_name)
 
     written = snprintf(dst, dst_size, "%s", dev_name);
     if (written < 0 || (size_t)written >= dst_size) {
-        fprintf(stderr, "[ub_rdma] device name too long: %s\n", dev_name);
+        fprintf(stderr, "[ub_udma] device name too long: %s\n", dev_name);
         return -1;
     }
     return 0;
@@ -2065,16 +2065,16 @@ static void format_eid_hex(const uint8_t eid[UBCORE_EID_SIZE], char *out, size_t
     }
 }
 
-static int do_startup_sync(int udp_fd, enum rdma_role role,
+static int do_startup_sync(int udp_fd, enum udma_role role,
                            const struct sockaddr_in *peer_addr)
 {
     long deadline;
     char sync_buf[64];
 
-    if (role == RDMA_ROLE_INITIATOR) {
-        snprintf(sync_buf, sizeof(sync_buf), "RDMA_SYNC_REQ");
+    if (role == UDMA_ROLE_INITIATOR) {
+        snprintf(sync_buf, sizeof(sync_buf), "UDMA_SYNC_REQ");
         if (udp_send_all(udp_fd, sync_buf, strlen(sync_buf), peer_addr) < 0) {
-            fprintf(stderr, "[ub_rdma] sync: send REQ failed\n");
+            fprintf(stderr, "[ub_udma] sync: send REQ failed\n");
             return -1;
         }
         deadline = now_ms() + SYNC_TIMEOUT_MS;
@@ -2094,13 +2094,13 @@ static int do_startup_sync(int udp_fd, enum rdma_role role,
                 return -1;
             }
             resp[n] = '\0';
-            if (strncmp(resp, "RDMA_SYNC_ACK", 13) == 0 ||
-                (n >= 15 && strncmp(resp + 2, "RDMA_SYNC_ACK", 13) == 0)) {
-                printf("[ub_rdma] sync: peer acknowledged\n");
+            if (strncmp(resp, "UDMA_SYNC_ACK", 13) == 0 ||
+                (n >= 15 && strncmp(resp + 2, "UDMA_SYNC_ACK", 13) == 0)) {
+                printf("[ub_udma] sync: peer acknowledged\n");
                 return 0;
             }
         }
-        fprintf(stderr, "[ub_rdma] sync: timeout waiting for ACK\n");
+        fprintf(stderr, "[ub_udma] sync: timeout waiting for ACK\n");
         return -1;
     } else {
         deadline = now_ms() + SYNC_TIMEOUT_MS;
@@ -2119,44 +2119,44 @@ static int do_startup_sync(int udp_fd, enum rdma_role role,
                 return -1;
             }
             sync_buf[n] = '\0';
-            if (strncmp(sync_buf, "RDMA_SYNC_REQ", 13) == 0 ||
-                (n >= 15 && strncmp(sync_buf + 2, "RDMA_SYNC_REQ", 13) == 0)) {
-                snprintf(sync_buf, sizeof(sync_buf), "RDMA_SYNC_ACK");
+            if (strncmp(sync_buf, "UDMA_SYNC_REQ", 13) == 0 ||
+                (n >= 15 && strncmp(sync_buf + 2, "UDMA_SYNC_REQ", 13) == 0)) {
+                snprintf(sync_buf, sizeof(sync_buf), "UDMA_SYNC_ACK");
                 if (udp_send_all(udp_fd, sync_buf, strlen(sync_buf),
                                  &src) < 0) {
-                    fprintf(stderr, "[ub_rdma] sync: send ACK failed\n");
+                    fprintf(stderr, "[ub_udma] sync: send ACK failed\n");
                     return -1;
                 }
-                printf("[ub_rdma] sync: sent ACK to peer\n");
+                printf("[ub_udma] sync: sent ACK to peer\n");
                 return 0;
             }
         }
-        fprintf(stderr, "[ub_rdma] sync: timeout waiting for REQ\n");
+        fprintf(stderr, "[ub_udma] sync: timeout waiting for REQ\n");
         return -1;
     }
 }
 
-static int exchange_peer_info(int udp_fd, enum rdma_role role,
+static int exchange_peer_info(int udp_fd, enum udma_role role,
                               const struct sockaddr_in *peer_addr,
                               const struct peer_info *local,
                               struct peer_info *remote)
 {
-    if (role == RDMA_ROLE_INITIATOR) {
+    if (role == UDMA_ROLE_INITIATOR) {
         if (udp_send_all(udp_fd, local, sizeof(*local), peer_addr) < 0) {
-            fprintf(stderr, "[ub_rdma] exchange: send local info failed\n");
+            fprintf(stderr, "[ub_udma] exchange: send local info failed\n");
             return -1;
         }
         if (udp_recv_all(udp_fd, remote, sizeof(*remote), peer_addr) < 0) {
-            fprintf(stderr, "[ub_rdma] exchange: recv remote info failed\n");
+            fprintf(stderr, "[ub_udma] exchange: recv remote info failed\n");
             return -1;
         }
     } else {
         if (udp_recv_all(udp_fd, remote, sizeof(*remote), peer_addr) < 0) {
-            fprintf(stderr, "[ub_rdma] exchange: recv remote info failed\n");
+            fprintf(stderr, "[ub_udma] exchange: recv remote info failed\n");
             return -1;
         }
         if (udp_send_all(udp_fd, local, sizeof(*local), peer_addr) < 0) {
-            fprintf(stderr, "[ub_rdma] exchange: send local info failed\n");
+            fprintf(stderr, "[ub_udma] exchange: send local info failed\n");
             return -1;
         }
     }
@@ -2165,7 +2165,7 @@ static int exchange_peer_info(int udp_fd, enum rdma_role role,
 
 /* ---------- cleanup ---------- */
 
-static void cleanup_resources(struct rdma_resources *res)
+static void cleanup_resources(struct udma_resources *res)
 {
     if (res->fd >= 0) {
         if (res->seg_registered) {
@@ -2177,9 +2177,9 @@ static void cleanup_resources(struct rdma_resources *res)
             ret = ub_ioctl(res->fd, UBURMA_CMD_UNREGISTER_SEG,
                            &cmd, sizeof(cmd));
             if (ret < 0) {
-                fprintf(stderr, "[ub_rdma] cleanup: unregister_seg failed: %d\n", ret);
+                fprintf(stderr, "[ub_udma] cleanup: unregister_seg failed: %d\n", ret);
             } else {
-                printf("[ub_rdma] cleanup: unregister_seg -> ok\n");
+                printf("[ub_udma] cleanup: unregister_seg -> ok\n");
                 res->seg_registered = false;
                 res->seg_handle = 0;
             }
@@ -2194,9 +2194,9 @@ static void cleanup_resources(struct rdma_resources *res)
             ret = ub_ioctl(res->fd, UBURMA_CMD_FREE_TOKEN_ID,
                            &cmd, sizeof(cmd));
             if (ret < 0) {
-                fprintf(stderr, "[ub_rdma] cleanup: free_token_id failed: %d\n", ret);
+                fprintf(stderr, "[ub_udma] cleanup: free_token_id failed: %d\n", ret);
             } else {
-                printf("[ub_rdma] cleanup: free_token_id -> ok\n");
+                printf("[ub_udma] cleanup: free_token_id -> ok\n");
                 res->token_id = 0;
                 res->token_id_handle = 0;
             }
@@ -2223,9 +2223,9 @@ static void cleanup_resources(struct rdma_resources *res)
             int ret = free_ummu_tid(res->ummu_fd, res->ummu_tid);
 
             if (ret < 0) {
-                fprintf(stderr, "[ub_rdma] cleanup: free_ummu_tid failed: %d\n", ret);
+                fprintf(stderr, "[ub_udma] cleanup: free_ummu_tid failed: %d\n", ret);
             } else {
-                printf("[ub_rdma] cleanup: free_ummu_tid -> ok\n");
+                printf("[ub_udma] cleanup: free_ummu_tid -> ok\n");
                 res->ummu_tid = 0;
                 res->ummu_tid_allocated = false;
             }
@@ -2304,7 +2304,7 @@ static void cleanup_resources(struct rdma_resources *res)
 int main(void)
 {
     char role[32] = "unknown";
-    enum rdma_role parsed_role = RDMA_ROLE_UNKNOWN;
+    enum udma_role parsed_role = UDMA_ROLE_UNKNOWN;
     char ifname[IFNAMSIZ] = {0};
     struct in_addr local_addr = {0};
     struct in_addr desired_local = {0};
@@ -2323,7 +2323,7 @@ int main(void)
     g_res.fd = -1;
     g_res.ummu_fd = -1;
 
-    printf("[ub_rdma] start\n");
+    printf("[ub_udma] start\n");
 
     /* --- parse role from env/cmdline --- */
     {
@@ -2331,49 +2331,49 @@ int main(void)
         if (env_role != NULL && env_role[0] != '\0') {
             snprintf(role, sizeof(role), "%s", env_role);
         } else if (!cmdline_get_value("linqu_urma_dp_role", role, sizeof(role))) {
-            fprintf(stderr, "[ub_rdma] fail: no role specified (set LINQU_UB_ROLE or linqu_urma_dp_role)\n");
+            fprintf(stderr, "[ub_udma] fail: no role specified (set LINQU_UB_ROLE or linqu_urma_dp_role)\n");
             return 1;
         }
     }
-    parsed_role = parse_rdma_role(role);
-    if (parsed_role == RDMA_ROLE_UNKNOWN) {
-        fprintf(stderr, "[ub_rdma] fail: unsupported role=%s\n", role);
+    parsed_role = parse_udma_role(role);
+    if (parsed_role == UDMA_ROLE_UNKNOWN) {
+        fprintf(stderr, "[ub_udma] fail: unsupported role=%s\n", role);
         return 1;
     }
-    printf("[ub_rdma] role=%s\n", rdma_role_name(parsed_role));
+    printf("[ub_udma] role=%s\n", udma_role_name(parsed_role));
 
     if (!resolve_ipv4_pair(role, my_ip, sizeof(my_ip), peer_ip, sizeof(peer_ip))) {
-        fprintf(stderr, "[ub_rdma] fail: missing ip config for role '%s'\n", role);
+        fprintf(stderr, "[ub_udma] fail: missing ip config for role '%s'\n", role);
         return 1;
     }
 
     /* --- network init --- */
     if (!wait_iface_ready(ifname, sizeof(ifname), &ifindex)) {
-        fprintf(stderr, "[ub_rdma] fail: ipourma iface not ready\n");
+        fprintf(stderr, "[ub_udma] fail: ipourma iface not ready\n");
         return 1;
     }
     inet_pton(AF_INET, my_ip, &desired_local);
     if (!get_local_ipv4(ifname, &local_addr) || local_addr.s_addr != desired_local.s_addr) {
-        fprintf(stderr, "[ub_rdma] warn: bootstrap ipv4 missing or mismatched on %s, applying %s\n",
+        fprintf(stderr, "[ub_udma] warn: bootstrap ipv4 missing or mismatched on %s, applying %s\n",
                 ifname, my_ip);
         if (!set_ipv4_addr(ifname, my_ip)) {
-            fprintf(stderr, "[ub_rdma] fail: set ipv4 %s on %s failed\n", my_ip, ifname);
+            fprintf(stderr, "[ub_udma] fail: set ipv4 %s on %s failed\n", my_ip, ifname);
             return 1;
         }
     }
     if (!get_local_ipv4(ifname, &local_addr)) {
-        fprintf(stderr, "[ub_rdma] fail: get ipv4 addr on %s failed\n", ifname);
+        fprintf(stderr, "[ub_udma] fail: get ipv4 addr on %s failed\n", ifname);
         return 1;
     }
     if (inet_pton(AF_INET, peer_ip, &peer_addr) != 1) {
-        fprintf(stderr, "[ub_rdma] fail: peer ip parse failed for %s\n", peer_ip);
+        fprintf(stderr, "[ub_udma] fail: peer ip parse failed for %s\n", peer_ip);
         return 1;
     }
     install_static_arp(ifname, &peer_addr);
 
     {
         char buf[INET_ADDRSTRLEN];
-        printf("[ub_rdma] iface=%s ifindex=%u local=%s peer=%s\n",
+        printf("[ub_udma] iface=%s ifindex=%u local=%s peer=%s\n",
                ifname, ifindex,
                inet_ntop(AF_INET, &local_addr, buf, sizeof(buf)),
                inet_ntop(AF_INET, &peer_addr,
@@ -2382,20 +2382,20 @@ int main(void)
 
     /* --- device discovery --- */
     if (discover_uburma_device(dev_name, sizeof(dev_name)) < 0) {
-        printf("[ub_rdma] skip: no uburma device found\n");
+        printf("[ub_udma] skip: no uburma device found\n");
         return 0;
     }
-    printf("[ub_rdma] found device: %s\n", dev_name);
+    printf("[ub_udma] found device: %s\n", dev_name);
 
     g_res.fd = open_uburma_device(dev_name);
     if (g_res.fd < 0) {
-        fprintf(stderr, "[ub_rdma] fail: cannot open uburma device\n");
+        fprintf(stderr, "[ub_udma] fail: cannot open uburma device\n");
         return 1;
     }
     g_res.ummu_fd = open_ummu_tid_device();
     if (g_res.ummu_fd < 0) {
         cleanup_resources(&g_res);
-        fprintf(stderr, "[ub_rdma] fail\n");
+        fprintf(stderr, "[ub_udma] fail\n");
         return 1;
     }
 
@@ -2407,29 +2407,29 @@ int main(void)
         memset(&cmd, 0, sizeof(cmd));
         if (copy_dev_name(cmd.in.dev_name, sizeof(cmd.in.dev_name), dev_name) != 0) {
             cleanup_resources(&g_res);
-            fprintf(stderr, "[ub_rdma] fail\n");
+            fprintf(stderr, "[ub_udma] fail\n");
             return 1;
         }
 
         ret = ub_ioctl(g_res.fd, UBURMA_CMD_QUERY_DEV_ATTR, &cmd, sizeof(cmd));
         if (ret < 0) {
-            fprintf(stderr, "[ub_rdma] step 1: query_dev_attr unavailable: %d\n",
+            fprintf(stderr, "[ub_udma] step 1: query_dev_attr unavailable: %d\n",
                     ret);
             cleanup_resources(&g_res);
-            fprintf(stderr, "[ub_rdma] fail\n");
+            fprintf(stderr, "[ub_udma] fail\n");
             return 1;
         } else {
-            printf("[ub_rdma] step 1: query_dev_attr -> ok\n");
-            printf("[ub_rdma]   max_jfc=%u max_jfs=%u max_jfr=%u max_jetty=%u\n",
+            printf("[ub_udma] step 1: query_dev_attr -> ok\n");
+            printf("[ub_udma]   max_jfc=%u max_jfs=%u max_jfr=%u max_jetty=%u\n",
                    cmd.out.attr.dev_cap.max_jfc,
                    cmd.out.attr.dev_cap.max_jfs,
                    cmd.out.attr.dev_cap.max_jfr,
                    cmd.out.attr.dev_cap.max_jetty);
-            printf("[ub_rdma]   max_jfc_depth=%u max_jfs_depth=%u max_jfr_depth=%u\n",
+            printf("[ub_udma]   max_jfc_depth=%u max_jfs_depth=%u max_jfr_depth=%u\n",
                    cmd.out.attr.dev_cap.max_jfc_depth,
                    cmd.out.attr.dev_cap.max_jfs_depth,
                    cmd.out.attr.dev_cap.max_jfr_depth);
-            printf("[ub_rdma]   max_msg_size=%" PRIu64 " port_cnt=%u\n",
+            printf("[ub_udma]   max_msg_size=%" PRIu64 " port_cnt=%u\n",
                    cmd.out.attr.dev_cap.max_msg_size,
                    cmd.out.attr.port_cnt);
         }
@@ -2474,16 +2474,16 @@ int main(void)
                     ub_ioctl(g_res.fd, UBURMA_CMD_ALLOC_TOKEN_ID,
                              &cmd, sizeof(cmd)));
         if (cmd.out.handle == 0) {
-            fprintf(stderr, "[ub_rdma] step 2: alloc_token_id returned empty handle\n");
+            fprintf(stderr, "[ub_udma] step 2: alloc_token_id returned empty handle\n");
             cleanup_resources(&g_res);
-            fprintf(stderr, "[ub_rdma] fail\n");
+            fprintf(stderr, "[ub_udma] fail\n");
             return 1;
         }
         g_res.token_id = cmd.out.token_id;
         g_res.token_id_handle = cmd.out.handle;
     }
     if (ensure_runtime_buffers(&g_res) != 0) {
-        fprintf(stderr, "[ub_rdma] fail: alloc runtime buffers failed\n");
+        fprintf(stderr, "[ub_udma] fail: alloc runtime buffers failed\n");
         cleanup_resources(&g_res);
         return 1;
     }
@@ -2557,9 +2557,9 @@ int main(void)
                     ub_ioctl(g_res.fd, UBURMA_CMD_ALLOC_JFR,
                              &cmd, sizeof(cmd)));
         if (cmd.out.handle == 0) {
-            fprintf(stderr, "[ub_rdma] step 4: alloc_jfr returned empty handle\n");
+            fprintf(stderr, "[ub_udma] step 4: alloc_jfr returned empty handle\n");
             cleanup_resources(&g_res);
-            fprintf(stderr, "[ub_rdma] fail\n");
+            fprintf(stderr, "[ub_udma] fail\n");
             return 1;
         }
         g_res.jfr_id = cmd.out.id;
@@ -2607,7 +2607,7 @@ int main(void)
     /* --- step 5: alloc + active JFS (optional standalone probe) --- */
     {
         const bool run_standalone_jfs_probe =
-            cmdline_get_bool("linqu_rdma_probe_standalone_jfs");
+            cmdline_get_bool("linqu_udma_probe_standalone_jfs");
         const uint32_t jfs_modes[] = {
             UBCORE_TP_RM_USER,
             UBCORE_TP_UM_USER,
@@ -2618,7 +2618,7 @@ int main(void)
         size_t mode_idx;
 
         if (!run_standalone_jfs_probe) {
-            printf("[ub_rdma] step 5: standalone jfs probe disabled (set linqu_rdma_probe_standalone_jfs=1 to enable)\n");
+            printf("[ub_udma] step 5: standalone jfs probe disabled (set linqu_udma_probe_standalone_jfs=1 to enable)\n");
         }
 
         for (mode_idx = 0; run_standalone_jfs_probe && mode_idx < ARRAY_SIZE(jfs_modes);
@@ -2647,13 +2647,13 @@ int main(void)
             ret = ub_ioctl(g_res.fd, UBURMA_CMD_ALLOC_JFS,
                            &alloc_cmd, sizeof(alloc_cmd));
             if (ret < 0) {
-                fprintf(stderr, "[ub_rdma] step 5: alloc_jfs(%s) failed: %d\n",
+                fprintf(stderr, "[ub_udma] step 5: alloc_jfs(%s) failed: %d\n",
                         jfs_mode_names[mode_idx], ret);
                 continue;
             }
             if (alloc_cmd.out.handle == 0) {
                 fprintf(stderr,
-                        "[ub_rdma] step 5: alloc_jfs(%s) returned empty handle\n",
+                        "[ub_udma] step 5: alloc_jfs(%s) returned empty handle\n",
                         jfs_mode_names[mode_idx]);
                 continue;
             }
@@ -2699,7 +2699,7 @@ int main(void)
             ret = ub_ioctl(g_res.fd, UBURMA_CMD_ACTIVE_JFS,
                            &active_cmd, sizeof(active_cmd));
             if (ret < 0) {
-                fprintf(stderr, "[ub_rdma] step 5: active_jfs(%s) failed: %d\n",
+                fprintf(stderr, "[ub_udma] step 5: active_jfs(%s) failed: %d\n",
                         jfs_mode_names[mode_idx], ret);
                 g_res.jfs_alloc = false;
                 g_res.jfs_id = 0;
@@ -2707,7 +2707,7 @@ int main(void)
                 continue;
             }
 
-            printf("[ub_rdma] step 5: standalone jfs active in %s mode\n",
+            printf("[ub_udma] step 5: standalone jfs active in %s mode\n",
                    jfs_mode_names[mode_idx]);
             jfs_ready = true;
             break;
@@ -2715,7 +2715,7 @@ int main(void)
 
         if (run_standalone_jfs_probe && !jfs_ready) {
             fprintf(stderr,
-                    "[ub_rdma] step 5: standalone jfs unavailable, continue with jetty path\n");
+                    "[ub_udma] step 5: standalone jfs unavailable, continue with jetty path\n");
         }
     }
 
@@ -2801,16 +2801,16 @@ int main(void)
         g_res.local_hw_jetty_id = cmd.out.jetty_id;
         g_res.jetty_dsqe_page = map_udma_jetty_dsqe_page(g_res.fd, g_res.local_hw_jetty_id);
         if (g_res.jetty_dsqe_page == NULL) {
-            fprintf(stderr, "[ub_rdma] step 6: map jetty dsqe page failed: %s\n",
+            fprintf(stderr, "[ub_udma] step 6: map jetty dsqe page failed: %s\n",
                     strerror(errno));
             cleanup_resources(&g_res);
-            fprintf(stderr, "[ub_rdma] fail\n");
+            fprintf(stderr, "[ub_udma] fail\n");
             return 1;
         }
         g_res.jetty_dsqe_len = DEMO_PAGE_SIZE;
         g_res.jetty_dsqe_is_mmap = true;
         g_res.jetty_db_buf = (uint8_t *)g_res.jetty_dsqe_page + UDMA_DOORBELL_OFFSET_LOCAL;
-        printf("[ub_rdma] step 6: local_hw_jetty_id=%u db=%p\n",
+        printf("[ub_udma] step 6: local_hw_jetty_id=%u db=%p\n",
                g_res.local_hw_jetty_id, g_res.jetty_db_buf);
     }
 
@@ -2838,14 +2838,14 @@ int main(void)
     /* --- step 8: UDP sync + info exchange + import jetty --- */
     udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (udp_fd < 0) {
-        fprintf(stderr, "[ub_rdma] fail: udp socket create failed: %s\n",
+        fprintf(stderr, "[ub_udma] fail: udp socket create failed: %s\n",
                 strerror(errno));
         cleanup_resources(&g_res);
-        fprintf(stderr, "[ub_rdma] fail\n");
+        fprintf(stderr, "[ub_udma] fail\n");
         return 1;
     }
     if (setsockopt(udp_fd, SOL_SOCKET, SO_NO_CHECK, &one, sizeof(one)) != 0) {
-        fprintf(stderr, "[ub_rdma] warn: sync SO_NO_CHECK failed: %s\n", strerror(errno));
+        fprintf(stderr, "[ub_udma] warn: sync SO_NO_CHECK failed: %s\n", strerror(errno));
     }
 
     memset(&sync_addr, 0, sizeof(sync_addr));
@@ -2853,11 +2853,11 @@ int main(void)
     sync_addr.sin_port = htons(SYNC_PORT);
     sync_addr.sin_addr.s_addr = htonl(INADDR_ANY);
     if (bind(udp_fd, (struct sockaddr *)&sync_addr, sizeof(sync_addr)) != 0) {
-        fprintf(stderr, "[ub_rdma] fail: bind sync port %d failed: %s\n",
+        fprintf(stderr, "[ub_udma] fail: bind sync port %d failed: %s\n",
                 SYNC_PORT, strerror(errno));
         close(udp_fd);
         cleanup_resources(&g_res);
-        fprintf(stderr, "[ub_rdma] fail\n");
+        fprintf(stderr, "[ub_udma] fail\n");
         return 1;
     }
 
@@ -2871,12 +2871,12 @@ int main(void)
     setsockopt(udp_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(udp_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
 
-    printf("[ub_rdma] step 8: starting sync on port %d\n", SYNC_PORT);
+    printf("[ub_udma] step 8: starting sync on port %d\n", SYNC_PORT);
     if (do_startup_sync(udp_fd, parsed_role, &data_addr) < 0) {
-        fprintf(stderr, "[ub_rdma] step 8: startup sync failed\n");
+        fprintf(stderr, "[ub_udma] step 8: startup sync failed\n");
         close(udp_fd);
         cleanup_resources(&g_res);
-        fprintf(stderr, "[ub_rdma] fail\n");
+        fprintf(stderr, "[ub_udma] fail\n");
         return 1;
     }
 
@@ -2903,13 +2903,13 @@ int main(void)
         close(udp_fd);
         udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
         if (udp_fd < 0) {
-            fprintf(stderr, "[ub_rdma] fail: udp socket for data failed\n");
+            fprintf(stderr, "[ub_udma] fail: udp socket for data failed\n");
             cleanup_resources(&g_res);
-            fprintf(stderr, "[ub_rdma] fail\n");
+            fprintf(stderr, "[ub_udma] fail\n");
             return 1;
         }
         if (setsockopt(udp_fd, SOL_SOCKET, SO_NO_CHECK, &one, sizeof(one)) != 0) {
-            fprintf(stderr, "[ub_rdma] warn: data SO_NO_CHECK failed: %s\n", strerror(errno));
+            fprintf(stderr, "[ub_udma] warn: data SO_NO_CHECK failed: %s\n", strerror(errno));
         }
         setsockopt(udp_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
         tv.tv_sec = SYNC_TIMEOUT_MS / 1000;
@@ -2918,42 +2918,42 @@ int main(void)
 
         memset(&info_addr, 0, sizeof(info_addr));
         info_addr.sin_family = AF_INET;
-        info_addr.sin_port = htons(RDMA_PORT);
+        info_addr.sin_port = htons(UDMA_PORT);
         info_addr.sin_addr.s_addr = htonl(INADDR_ANY);
         if (bind(udp_fd, (struct sockaddr *)&info_addr,
                  sizeof(info_addr)) != 0) {
-            fprintf(stderr, "[ub_rdma] fail: bind data port %d failed: %s\n",
-                    RDMA_PORT, strerror(errno));
+            fprintf(stderr, "[ub_udma] fail: bind data port %d failed: %s\n",
+                    UDMA_PORT, strerror(errno));
             close(udp_fd);
             cleanup_resources(&g_res);
-            fprintf(stderr, "[ub_rdma] fail\n");
+            fprintf(stderr, "[ub_udma] fail\n");
             return 1;
         }
 
         memset(&data_addr, 0, sizeof(data_addr));
         data_addr.sin_family = AF_INET;
-        data_addr.sin_port = htons(RDMA_PORT);
+        data_addr.sin_port = htons(UDMA_PORT);
         data_addr.sin_addr = peer_addr;
 
         if (exchange_peer_info(udp_fd, parsed_role, &data_addr,
                                &local_info, &remote_info) < 0) {
-            fprintf(stderr, "[ub_rdma] step 8: exchange peer info failed\n");
+            fprintf(stderr, "[ub_udma] step 8: exchange peer info failed\n");
             close(udp_fd);
             cleanup_resources(&g_res);
-            fprintf(stderr, "[ub_rdma] fail\n");
+            fprintf(stderr, "[ub_udma] fail\n");
             return 1;
         }
-        printf("[ub_rdma] step 8: exchange info -> ok\n");
+        printf("[ub_udma] step 8: exchange info -> ok\n");
         {
             char local_eid_hex[UBCORE_EID_SIZE * 2 + 1];
             char remote_eid_hex[UBCORE_EID_SIZE * 2 + 1];
 
             format_eid_hex(local_info.eid, local_eid_hex, sizeof(local_eid_hex));
             format_eid_hex(remote_info.eid, remote_eid_hex, sizeof(remote_eid_hex));
-            printf("[ub_rdma]   local_eid=%s remote_eid=%s\n",
+            printf("[ub_udma]   local_eid=%s remote_eid=%s\n",
                    local_eid_hex, remote_eid_hex);
         }
-        printf("[ub_rdma]   peer jetty_id=%u token=%u\n",
+        printf("[ub_udma]   peer jetty_id=%u token=%u\n",
                remote_info.jetty_id, remote_info.token);
         memcpy(g_res.peer_eid, remote_info.eid, sizeof(g_res.peer_eid));
         reverse_bytes(remote_info.eid, g_res.peer_eid, sizeof(g_res.peer_eid));
@@ -2979,7 +2979,7 @@ int main(void)
                                  &cmd, sizeof(cmd)));
             g_res.tjetty_handle = cmd.out.handle;
             g_res.tjetty_imported = true;
-            printf("[ub_rdma]   imported tjetty handle=0x%" PRIx64
+            printf("[ub_udma]   imported tjetty handle=0x%" PRIx64
                    " tpn=%u\n",
                    g_res.tjetty_handle, cmd.out.tpn);
         }
@@ -2997,7 +2997,7 @@ int main(void)
                         ub_ioctl(g_res.fd, UBURMA_CMD_BIND_JETTY,
                                  &cmd, sizeof(cmd)));
             g_res.bound_tpn = cmd.out.tpn;
-            printf("[ub_rdma]   bound tpn=%u\n", cmd.out.tpn);
+            printf("[ub_udma]   bound tpn=%u\n", cmd.out.tpn);
         }
 
         /* --- step 9.5: actual payload round-trip over bound jetty --- */
@@ -3005,107 +3005,107 @@ int main(void)
             struct udma_jfc_cqe_local cqe;
             uint8_t *tx_buf = g_res.seg_buf;
             uint8_t *rx_buf = (uint8_t *)g_res.seg_buf + 2048;
-            const char req_msg[] = "rdma request payload from initiator";
-            const char reply_msg[] = "rdma reply payload from responder";
+            const char req_msg[] = "udma request payload from initiator";
+            const char reply_msg[] = "udma reply payload from responder";
             int ret;
 
-            memset(rx_buf, 0, RDMA_MAX_PAYLOAD);
-            ret = rdma_post_recv_one(&g_res, rx_buf, RDMA_MAX_PAYLOAD);
+            memset(rx_buf, 0, UDMA_MAX_PAYLOAD);
+            ret = udma_post_recv_one(&g_res, rx_buf, UDMA_MAX_PAYLOAD);
             if (ret < 0) {
-                fprintf(stderr, "[ub_rdma] step 9.5: post_recv failed: %d\n", ret);
+                fprintf(stderr, "[ub_udma] step 9.5: post_recv failed: %d\n", ret);
                 close(udp_fd);
                 cleanup_resources(&g_res);
-                fprintf(stderr, "[ub_rdma] fail\n");
+                fprintf(stderr, "[ub_udma] fail\n");
                 return 1;
             }
-            printf("[ub_rdma] step 9.5: post_recv -> ok\n");
+            printf("[ub_udma] step 9.5: post_recv -> ok\n");
 
             ret = sync_datapath_ready(udp_fd, parsed_role, &data_addr);
             if (ret < 0) {
-                fprintf(stderr, "[ub_rdma] step 9.5: ready sync failed: %d\n", ret);
+                fprintf(stderr, "[ub_udma] step 9.5: ready sync failed: %d\n", ret);
                 close(udp_fd);
                 cleanup_resources(&g_res);
-                fprintf(stderr, "[ub_rdma] fail\n");
+                fprintf(stderr, "[ub_udma] fail\n");
                 return 1;
             }
-            printf("[ub_rdma] step 9.5: ready_sync -> ok\n");
+            printf("[ub_udma] step 9.5: ready_sync -> ok\n");
 
-            if (parsed_role == RDMA_ROLE_INITIATOR) {
+            if (parsed_role == UDMA_ROLE_INITIATOR) {
                 memcpy(tx_buf, req_msg, sizeof(req_msg));
-                ret = rdma_post_send_one(&g_res, tx_buf, sizeof(req_msg));
+                ret = udma_post_send_one(&g_res, tx_buf, sizeof(req_msg));
                 if (ret < 0) {
-                    fprintf(stderr, "[ub_rdma] step 9.5: send request failed: %d\n", ret);
+                    fprintf(stderr, "[ub_udma] step 9.5: send request failed: %d\n", ret);
                     close(udp_fd);
                     cleanup_resources(&g_res);
-                    fprintf(stderr, "[ub_rdma] fail\n");
+                    fprintf(stderr, "[ub_udma] fail\n");
                     return 1;
                 }
-                ret = rdma_wait_for_cqe(&g_res, 5000, CQE_FOR_SEND_LOCAL, &cqe);
+                ret = udma_wait_for_cqe(&g_res, 5000, CQE_FOR_SEND_LOCAL, &cqe);
                 if (ret < 0) {
-                    fprintf(stderr, "[ub_rdma] step 9.5: wait request send cqe failed: %d\n", ret);
+                    fprintf(stderr, "[ub_udma] step 9.5: wait request send cqe failed: %d\n", ret);
                     close(udp_fd);
                     cleanup_resources(&g_res);
-                    fprintf(stderr, "[ub_rdma] fail\n");
+                    fprintf(stderr, "[ub_udma] fail\n");
                     return 1;
                 }
-                printf("[ub_rdma] step 9.5: send_request -> ok len=%u\n", cqe.byte_cnt);
+                printf("[ub_udma] step 9.5: send_request -> ok len=%u\n", cqe.byte_cnt);
 
-                ret = rdma_wait_for_cqe(&g_res, 5000, CQE_FOR_RECEIVE_LOCAL, &cqe);
+                ret = udma_wait_for_cqe(&g_res, 5000, CQE_FOR_RECEIVE_LOCAL, &cqe);
                 if (ret < 0) {
-                    fprintf(stderr, "[ub_rdma] step 9.5: wait reply recv cqe failed: %d\n", ret);
+                    fprintf(stderr, "[ub_udma] step 9.5: wait reply recv cqe failed: %d\n", ret);
                     close(udp_fd);
                     cleanup_resources(&g_res);
-                    fprintf(stderr, "[ub_rdma] fail\n");
+                    fprintf(stderr, "[ub_udma] fail\n");
                     return 1;
                 }
                 if (strcmp((char *)rx_buf, reply_msg) != 0) {
                     fprintf(stderr,
-                            "[ub_rdma] step 9.5: reply payload mismatch got=\"%s\" expected=\"%s\"\n",
+                            "[ub_udma] step 9.5: reply payload mismatch got=\"%s\" expected=\"%s\"\n",
                             (char *)rx_buf, reply_msg);
                     close(udp_fd);
                     cleanup_resources(&g_res);
-                    fprintf(stderr, "[ub_rdma] fail\n");
+                    fprintf(stderr, "[ub_udma] fail\n");
                     return 1;
                 }
-                printf("[ub_rdma] step 9.5: recv_reply -> ok payload=\"%s\"\n", rx_buf);
+                printf("[ub_udma] step 9.5: recv_reply -> ok payload=\"%s\"\n", rx_buf);
             } else {
-                ret = rdma_wait_for_cqe(&g_res, 5000, CQE_FOR_RECEIVE_LOCAL, &cqe);
+                ret = udma_wait_for_cqe(&g_res, 5000, CQE_FOR_RECEIVE_LOCAL, &cqe);
                 if (ret < 0) {
-                    fprintf(stderr, "[ub_rdma] step 9.5: wait request recv cqe failed: %d\n", ret);
+                    fprintf(stderr, "[ub_udma] step 9.5: wait request recv cqe failed: %d\n", ret);
                     close(udp_fd);
                     cleanup_resources(&g_res);
-                    fprintf(stderr, "[ub_rdma] fail\n");
+                    fprintf(stderr, "[ub_udma] fail\n");
                     return 1;
                 }
                 if (strcmp((char *)rx_buf, req_msg) != 0) {
                     fprintf(stderr,
-                            "[ub_rdma] step 9.5: request payload mismatch got=\"%s\" expected=\"%s\"\n",
+                            "[ub_udma] step 9.5: request payload mismatch got=\"%s\" expected=\"%s\"\n",
                             (char *)rx_buf, req_msg);
                     close(udp_fd);
                     cleanup_resources(&g_res);
-                    fprintf(stderr, "[ub_rdma] fail\n");
+                    fprintf(stderr, "[ub_udma] fail\n");
                     return 1;
                 }
-                printf("[ub_rdma] step 9.5: recv_request -> ok payload=\"%s\"\n", rx_buf);
+                printf("[ub_udma] step 9.5: recv_request -> ok payload=\"%s\"\n", rx_buf);
 
                 memcpy(tx_buf, reply_msg, sizeof(reply_msg));
-                ret = rdma_post_send_one(&g_res, tx_buf, sizeof(reply_msg));
+                ret = udma_post_send_one(&g_res, tx_buf, sizeof(reply_msg));
                 if (ret < 0) {
-                    fprintf(stderr, "[ub_rdma] step 9.5: send reply failed: %d\n", ret);
+                    fprintf(stderr, "[ub_udma] step 9.5: send reply failed: %d\n", ret);
                     close(udp_fd);
                     cleanup_resources(&g_res);
-                    fprintf(stderr, "[ub_rdma] fail\n");
+                    fprintf(stderr, "[ub_udma] fail\n");
                     return 1;
                 }
-                ret = rdma_wait_for_cqe(&g_res, 5000, CQE_FOR_SEND_LOCAL, &cqe);
+                ret = udma_wait_for_cqe(&g_res, 5000, CQE_FOR_SEND_LOCAL, &cqe);
                 if (ret < 0) {
-                    fprintf(stderr, "[ub_rdma] step 9.5: wait reply send cqe failed: %d\n", ret);
+                    fprintf(stderr, "[ub_udma] step 9.5: wait reply send cqe failed: %d\n", ret);
                     close(udp_fd);
                     cleanup_resources(&g_res);
-                    fprintf(stderr, "[ub_rdma] fail\n");
+                    fprintf(stderr, "[ub_udma] fail\n");
                     return 1;
                 }
-                printf("[ub_rdma] step 9.5: send_reply -> ok len=%u\n", cqe.byte_cnt);
+                printf("[ub_udma] step 9.5: send_reply -> ok len=%u\n", cqe.byte_cnt);
             }
         }
 
@@ -3137,28 +3137,28 @@ int main(void)
                 break;
             }
             if (ret != -EBUSY && ret != -EAGAIN) {
-                fprintf(stderr, "[ub_rdma] step 10: unimport_jetty failed: %d\n", ret);
+                fprintf(stderr, "[ub_udma] step 10: unimport_jetty failed: %d\n", ret);
                 cleanup_resources(&g_res);
-                fprintf(stderr, "[ub_rdma] fail\n");
+                fprintf(stderr, "[ub_udma] fail\n");
                 return 1;
             }
             usleep(100000);
         }
         if (ret == 0) {
-            printf("[ub_rdma] step 10: unimport_jetty -> ok\n");
+            printf("[ub_udma] step 10: unimport_jetty -> ok\n");
             g_res.tjetty_imported = false;
         } else {
             fprintf(stderr,
-                    "[ub_rdma] step 10: unimport_jetty busy after retries (%d)\n",
+                    "[ub_udma] step 10: unimport_jetty busy after retries (%d)\n",
                     ret);
             cleanup_resources(&g_res);
-            fprintf(stderr, "[ub_rdma] fail\n");
+            fprintf(stderr, "[ub_udma] fail\n");
             return 1;
         }
     }
 
     /* --- success --- */
     cleanup_resources(&g_res);
-    printf("[ub_rdma] pass\n");
+    printf("[ub_udma] pass\n");
     return 0;
 }

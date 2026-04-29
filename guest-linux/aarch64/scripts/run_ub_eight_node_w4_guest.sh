@@ -168,6 +168,7 @@ while time.time() < deadline:
         for line in payload.splitlines(True):
             s.sendall(line.encode("utf-8"))
             time.sleep(0.05)
+        time.sleep(0.2)
         s.close()
         sys.exit(0)
     except OSError as exc:

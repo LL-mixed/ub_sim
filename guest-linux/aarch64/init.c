@@ -174,9 +174,9 @@ static bool should_run_ub_chat(void)
     return cmdline_has_option("linqu_ub_chat=1");
 }
 
-static bool should_run_ub_rdma_demo(void)
+static bool should_run_ub_udma_demo(void)
 {
-    return cmdline_has_option("linqu_ub_rdma_demo=1");
+    return cmdline_has_option("linqu_ub_udma_demo=1");
 }
 
 static bool should_run_ub_tcp_each_server_demo(void)
@@ -909,7 +909,7 @@ static void run_ub_chat_probe(void)
     }
 }
 
-static void run_ub_rdma_demo_probe(void)
+static void run_ub_udma_demo_probe(void)
 {
     pid_t pid;
     int status = 0;
@@ -921,17 +921,17 @@ static void run_ub_rdma_demo_probe(void)
     try_insmod_module("/lib/modules/uburma.ko", "uburma");
     if (!wait_for_path("/dev/uburma", 30, 100) &&
         !wait_for_path("/sys/class/ubcore/udma0", 30, 100)) {
-        fprintf(stderr, "[init] rdma interfaces not ready before demo start\n");
+        fprintf(stderr, "[init] udma interfaces not ready before demo start\n");
     }
 
     pid = fork();
     if (pid < 0) {
-        fprintf(stderr, "[init] fork for ub_rdma_demo failed: %s\n", strerror(errno));
+        fprintf(stderr, "[init] fork for ub_udma_demo failed: %s\n", strerror(errno));
         return;
     }
     if (pid == 0) {
-        execl("/bin/linqu_ub_rdma_demo", "/bin/linqu_ub_rdma_demo", (char *)NULL);
-        fprintf(stderr, "[init] exec /bin/linqu_ub_rdma_demo failed: %s\n", strerror(errno));
+        execl("/bin/linqu_ub_udma_demo", "/bin/linqu_ub_udma_demo", (char *)NULL);
+        fprintf(stderr, "[init] exec /bin/linqu_ub_udma_demo failed: %s\n", strerror(errno));
         _exit(127);
     }
 
@@ -941,11 +941,11 @@ static void run_ub_rdma_demo_probe(void)
             break;
         }
         if (wait_ret < 0) {
-            fprintf(stderr, "[init] waitpid ub_rdma_demo failed: %s\n", strerror(errno));
+            fprintf(stderr, "[init] waitpid ub_udma_demo failed: %s\n", strerror(errno));
             return;
         }
         if (waited_ms >= 60000) {
-            fprintf(stderr, "[init] ub rdma demo timeout, killing pid=%d\n", pid);
+            fprintf(stderr, "[init] ub udma demo timeout, killing pid=%d\n", pid);
             kill(pid, SIGKILL);
             waitpid(pid, &status, 0);
             timed_out = true;
@@ -956,16 +956,16 @@ static void run_ub_rdma_demo_probe(void)
     }
 
     if (!timed_out && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-        fprintf(stderr, "[init] ub rdma demo pass\n");
+        fprintf(stderr, "[init] ub udma demo pass\n");
         return;
     }
 
     if (timed_out) {
-        fprintf(stderr, "[init] ub rdma demo fail timeout\n");
+        fprintf(stderr, "[init] ub udma demo fail timeout\n");
     } else if (WIFEXITED(status)) {
-        fprintf(stderr, "[init] ub rdma demo fail exit=%d\n", WEXITSTATUS(status));
+        fprintf(stderr, "[init] ub udma demo fail exit=%d\n", WEXITSTATUS(status));
     } else if (WIFSIGNALED(status)) {
-        fprintf(stderr, "[init] ub rdma demo fail signal=%d\n", WTERMSIG(status));
+        fprintf(stderr, "[init] ub udma demo fail signal=%d\n", WTERMSIG(status));
     }
 }
 
@@ -1475,9 +1475,9 @@ int main(void)
         wait_for_ipourma_interface(30);
         run_ub_tcp_each_server_demo_probe();
     }
-    if (should_run_ub_rdma_demo()) {
+    if (should_run_ub_udma_demo()) {
         wait_for_ipourma_interface(30);
-        run_ub_rdma_demo_probe();
+        run_ub_udma_demo_probe();
     }
     if (should_run_obmm_demo()) {
         wait_for_ipourma_interface(30);

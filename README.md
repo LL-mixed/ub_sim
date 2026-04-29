@@ -218,7 +218,7 @@ tmux 里你会看到：
 ```bash
 /bin/run_demo chat
 /bin/run_demo rpc
-/bin/run_demo rdma
+/bin/run_demo udma
 /bin/run_demo obmm
 /bin/run_demo all
 /bin/run_demo shell
@@ -279,7 +279,7 @@ BUSYBOX="$BUSYBOX" \
 ```bash
 /bin/run_demo chat
 /bin/run_demo rpc
-/bin/run_demo rdma
+/bin/run_demo udma
 /bin/run_demo obmm
 /bin/run_demo shell
 ```
@@ -296,7 +296,7 @@ cd guest-linux/aarch64
 ./scripts/run_ub_four_node_smoke.sh
 ./scripts/run_ub_four_node_chat_matrix.sh
 ./scripts/run_ub_four_node_rpc_matrix.sh
-./scripts/run_ub_four_node_rdma_matrix.sh
+./scripts/run_ub_four_node_udma_matrix.sh
 ./scripts/run_ub_four_node_obmm_pool.sh
 ```
 
@@ -359,7 +359,7 @@ cd guest-linux/aarch64
 ./scripts/run_ub_eight_node_smoke.sh
 ./scripts/run_ub_eight_node_chat_matrix.sh
 ./scripts/run_ub_eight_node_rpc_matrix.sh
-./scripts/run_ub_eight_node_rdma_matrix.sh
+./scripts/run_ub_eight_node_udma_matrix.sh
 ./scripts/run_ub_eight_node_obmm_pool.sh
 ```
 

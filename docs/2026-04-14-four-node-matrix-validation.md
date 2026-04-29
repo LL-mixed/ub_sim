@@ -10,14 +10,14 @@ Validated demo families:
 
 - `chat`
 - `rpc`
-- `rdma`
+- `udma`
 - `obmm-pool`
 
 ## Component Revisions
 
 - `simulator/vendor/qemu_8.2.0_ub`
   - `a793c7a3f5` `ubc: fix four-node full-mesh chat routing and link roles`
-  - `8502960958` `ubc: fix four-node rdma identity and rx completions`
+  - `8502960958` `ubc: fix four-node udma identity and rx completions`
   - `6afc68f9f4` `ubc: make sim decoder pool reads honor mapped dcna`
 - `simulator/guest-linux/kernel_ub`
   - `c750da90172c` `ipourma: reschedule rx work by budget instead of draining`
@@ -28,7 +28,7 @@ Validated demo families:
   - `a022cc0` `simulator: add headless four-node chat matrix`
   - `1983ac5` `simulator: make four-node tmux wait for guest bootstrap`
   - `e8d62b6` `simulator: add four-node rpc matrix and clean demo roles`
-  - `061a29e` `simulator: add four-node rdma matrix`
+  - `061a29e` `simulator: add four-node udma matrix`
   - `ae7d86f` `simulator: replace obmm demo with pool validation`
 
 ## Topology
@@ -83,12 +83,12 @@ Result:
 - all 12 directed calls passed
 - every node acted as both server and client
 
-### RDMA Matrix
+### UDMA Matrix
 
 - Run:
-  - [2026-04-14_20-27-17_rdma4_1513_headless4](../guest-linux/aarch64/logs/2026-04-14_20-27-17_rdma4_1513_headless4)
+  - [2026-04-14_20-27-17_udma4_1513_headless4](../guest-linux/aarch64/logs/2026-04-14_20-27-17_udma4_1513_headless4)
 - Summary:
-  - [four_node_rdma_matrix.latest.txt](../guest-linux/aarch64/out/four_node_rdma_matrix.latest.txt)
+  - [four_node_udma_matrix.latest.txt](../guest-linux/aarch64/out/four_node_udma_matrix.latest.txt)
 
 Result:
 
@@ -126,7 +126,7 @@ buffer-pool visibility check.
 
 1. Four-node full-mesh bring-up is stable enough to support repeated headless
    demo matrices.
-2. `chat`, `rpc`, and `rdma` already have four-node matrix coverage.
+2. `chat`, `rpc`, and `udma` already have four-node matrix coverage.
 3. `obmm` mainline validation has moved to the pool demo rather than the old
    pairwise demo.
 4. For clustered runs, identity must remain FM-owned:

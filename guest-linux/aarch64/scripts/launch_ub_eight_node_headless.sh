@@ -14,11 +14,16 @@ ENTITY_COUNT="${UB_SIM_ENTITY_COUNT:-2}"
 PORT_NUM="${UB_SIM_PORT_NUM:-7}"
 SHARED_DIR="${UB_FM_SHARED_DIR:-/tmp/ub-qemu-links-eight}"
 QMP_DIR="${SHARED_DIR}/qmp"
+SIMPLER_HOST_VECTOR_MANIFEST="${SIMPLER_HOST_VECTOR_MANIFEST:-/private/tmp/simpler-host-vector-artifacts/host_vector_manifest.json}"
+SIMPLER_HOST_MATMUL_MANIFEST="${SIMPLER_HOST_MATMUL_MANIFEST:-/private/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json}"
+SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-host_vector}"
+SIM_UAPI_SCENARIO_CONFIG="${SIM_UAPI_SCENARIO_CONFIG:-$REPO_ROOT/scenarios/mvp_2host_single_domain.yaml}"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_headless8_${RANDOM}}"
 APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 PORT_BASE="${PORT_BASE:-$((56000 + RANDOM % 2000))}"
+QEMU_MEM="${QEMU_MEM:-2G}"
 CONTROL_LOG="$LOG_DIR/${RUN_ID}_headless8/control.log"
 CLEANUP_SCRIPT="$OUT_DIR/headless_eight_node_cleanup.${RUN_ID}.sh"
 ENV_FILE="${ENV_FILE:-$OUT_DIR/headless_eight_node_env.${RUN_ID}.sh}"
@@ -95,11 +100,15 @@ start_node() {
     UB_SIM_ENTITY_COUNT="$ENTITY_COUNT" \
     UB_SIM_PORT_NUM="$PORT_NUM" \
     UB_FM_ENTITY_PLAN_FILE="$ENTITY_PLAN_FILE" \
+    SIMPLER_HOST_VECTOR_MANIFEST="$SIMPLER_HOST_VECTOR_MANIFEST" \
+    SIMPLER_HOST_MATMUL_MANIFEST="$SIMPLER_HOST_MATMUL_MANIFEST" \
+    SIM_UAPI_W4_CHIPBACKEND_PROFILE="$SIM_UAPI_W4_CHIPBACKEND_PROFILE" \
+    SIM_UAPI_SCENARIO_CONFIG="$SIM_UAPI_SCENARIO_CONFIG" \
     "$QEMU_BIN" \
       -S \
       -M virt,gic-version=3,its=on,ummu=on,ub-cluster-mode=on \
       -cpu cortex-a57 \
-      -m 8G \
+      -m "$QEMU_MEM" \
       -nodefaults \
       -display none \
       -qmp unix:"$qmp_socket",server=on,wait=off \
@@ -155,6 +164,7 @@ touch "$CONTROL_LOG"
 
 log "run_id=$RUN_ID"
 log "qemu_bin=$QEMU_BIN"
+log "qemu_mem=$QEMU_MEM"
 log "topology=$TOPOLOGY_FILE"
 log "append_extra=$APPEND_EXTRA"
 log "ub_sim_port_num=$PORT_NUM"

@@ -131,7 +131,7 @@ Inside guest, you can run:
 ```sh
 /bin/run_demo chat
 /bin/run_demo rpc
-/bin/run_demo rdma
+/bin/run_demo udma
 /bin/run_demo obmm
 /bin/run_demo all
 /bin/run_demo shell
@@ -353,7 +353,7 @@ Expected minimum signs:
 
 - `/sys/bus/ub/devices/00001`
 - `ipourma0` under `/sys/class/net`
-- `/dev/uburma` for `rdma`
+- `/dev/uburma` for `udma`
 
 IPv4 bootstrap:
 
@@ -409,12 +409,12 @@ Success criteria:
 - each node's server receives the peer request payload and returns an ACK
 - each node's client receives the peer ACK intact
 
-### rdma
+### udma
 
 Run on `nodeB` first, then `nodeA`:
 
 ```sh
-/bin/linqu_ub_rdma_demo
+/bin/linqu_ub_udma_demo
 ```
 
 Success criteria:
@@ -465,7 +465,7 @@ Instead of calling the binaries directly, you can also use:
 /bin/run_demo chat
 /bin/run_demo rpc
 /bin/run_demo tcp
-/bin/run_demo rdma
+/bin/run_demo udma
 /bin/run_demo obmm
 /bin/run_demo all
 ```

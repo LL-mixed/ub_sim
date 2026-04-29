@@ -7,7 +7,7 @@ Current headless eight-node full-mesh validation status:
 - `smoke`: pass
 - `chat`: pass
 - `rpc`: pass
-- `rdma`: pass
+- `udma`: pass
 - `obmm-pool`: pass
 
 ## Evidence
@@ -20,9 +20,9 @@ Current headless eight-node full-mesh validation status:
 - `rpc`
   - run: `2026-04-14_23-24-57_rpc8_3369_headless8`
   - report: `guest-linux/aarch64/out/eight_node_rpc_matrix.latest.txt`
-- `rdma`
-  - run: `2026-04-15_08-15-50_rdma8_25223_headless8`
-  - report: `guest-linux/aarch64/out/eight_node_rdma_matrix.latest.txt`
+- `udma`
+  - run: `2026-04-15_08-15-50_udma8_25223_headless8`
+  - report: `guest-linux/aarch64/out/eight_node_udma_matrix.latest.txt`
 - `obmm-pool`
   - run: `2026-04-15_10-19-32_obmmpool8_75_headless8`
   - report: `guest-linux/aarch64/out/eight_node_obmm_pool.latest.txt`

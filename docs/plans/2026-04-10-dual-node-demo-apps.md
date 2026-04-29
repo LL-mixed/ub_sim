@@ -1,6 +1,6 @@
 # Dual-Node Demo Apps Implementation Plan
 
-**Goal:** Create 3 demo apps (chat, URMA RDMA, RPC) that showcase inter-node communication in the dual-node QEMU/UB simulation.
+**Goal:** Create 3 demo apps (chat, URMA UDMA, RPC) that showcase inter-node communication in the dual-node QEMU/UB simulation.
 
 **Architecture:** Each app is a standalone C binary statically compiled for aarch64. They reuse the same network init pattern from `urma_dp.c` (find ipourma, set static IP, install ARP). Apps are triggered by kernel cmdline flags in `init.c`.
 
@@ -148,17 +148,17 @@ git commit -m "feat(demo): add ub_rpc_demo.c — structured RPC demo"
 
 ---
 
-### Task 3: Create ub_rdma_demo.c — URMA RDMA Demo
+### Task 3: Create ub_udma_demo.c — URMA UDMA Demo
 
 **Files:**
-- Create: `simulator/guest-linux/aarch64/ub_rdma_demo.c`
+- Create: `simulator/guest-linux/aarch64/ub_udma_demo.c`
 
-**Step 1: Write ub_rdma_demo.c**
+**Step 1: Write ub_udma_demo.c**
 
 This app demonstrates URMA resource management via ioctl to `/dev/uburma/<dev_name>`.
 
 ```c
-/* URMA RDMA Demo via ioctl
+/* URMA UDMA Demo via ioctl
  *
  * Prerequisite: uburma.ko loaded, /dev/uburma/<dev_name> exists
  *
@@ -197,7 +197,7 @@ Implementation must include:
 - **Error handling and resource cleanup (P1 Fix)**:
   ```c
   /* Resource tracking for cleanup on failure */
-  struct rdma_resources {
+  struct udma_resources {
       int fd;                    /* device fd */
       uint32_t ctx_id;           /* context id */
       uint32_t jfc_id;           /* JFC id */
@@ -214,18 +214,18 @@ Implementation must include:
   };
   
   /* Cleanup all allocated resources on failure */
-  void cleanup_resources(struct rdma_resources *res);
+  void cleanup_resources(struct udma_resources *res);
   
   /* Step execution with error handling */
   #define STEP_CHECK(step_num, name, expr) \
       do { \
           int ret = (expr); \
           if (ret < 0) { \
-              fprintf(stderr, "[ub_rdma] step %d: %s failed: %d\n", step_num, name, ret); \
+              fprintf(stderr, "[ub_udma] step %d: %s failed: %d\n", step_num, name, ret); \
               cleanup_resources(&res); \
               exit(1); \
           } \
-          printf("[ub_rdma] step %d: %s → %d\n", step_num, name, ret); \
+          printf("[ub_udma] step %d: %s → %d\n", step_num, name, ret); \
       } while(0)
   ```
 - Include a minimal subset of struct definitions from `uburma_cmd.h` needed for user-space:
@@ -248,7 +248,7 @@ Implementation must include:
   - Keep command IDs/macros aligned exactly (`UBURMA_CMD`, `UBURMA_CMD_QUERY_DEV_ATTR`, etc.).
 - Each step uses STEP_CHECK macro for consistent error handling and cleanup
 - Graceful handling if uburma device not found: print skip message, exit 0
-- Print `[ub_rdma] pass` or `[ub_rdma] fail`
+- Print `[ub_udma] pass` or `[ub_udma] fail`
 
 **Step 2: Compile test**
 
@@ -257,8 +257,8 @@ Same as Task 1 — syntax check only.
 **Step 3: Commit**
 
 ```bash
-git add simulator/guest-linux/aarch64/ub_rdma_demo.c
-git commit -m "feat(demo): add ub_rdma_demo.c — URMA RDMA ioctl demo"
+git add simulator/guest-linux/aarch64/ub_udma_demo.c
+git commit -m "feat(demo): add ub_udma_demo.c — URMA UDMA ioctl demo"
 ```
 
 ---
@@ -277,8 +277,8 @@ CHAT_SRC="$ROOT_DIR/ub_chat.c"
 CHAT_BIN="$OUT_DIR/linqu_ub_chat"
 RPC_SRC="$ROOT_DIR/ub_rpc_demo.c"
 RPC_BIN="$OUT_DIR/linqu_ub_rpc"
-RDMA_SRC="$ROOT_DIR/ub_rdma_demo.c"
-RDMA_BIN="$OUT_DIR/linqu_ub_rdma_demo"
+UDMA_SRC="$ROOT_DIR/ub_udma_demo.c"
+UDMA_BIN="$OUT_DIR/linqu_ub_udma_demo"
 ```
 
 After line 21 (`IPOURMA_MODULE=...`), add:
@@ -294,7 +294,7 @@ After line 42 (`"$AARCH64_LINUX_CC" ... init_manual_bind`), add:
 ```zsh
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$CHAT_SRC" -o "$CHAT_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$RPC_SRC" -o "$RPC_BIN"
-"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$RDMA_SRC" -o "$RDMA_BIN"
+"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$UDMA_SRC" -o "$UDMA_BIN"
 ```
 
 **Step 3: Add binary copy lines**
@@ -304,7 +304,7 @@ After line 48 (`cp "$INSMOD_BIN" ...`), add:
 ```zsh
 cp "$CHAT_BIN" "$INITRAMFS_DIR/bin/linqu_ub_chat"
 cp "$RPC_BIN" "$INITRAMFS_DIR/bin/linqu_ub_rpc"
-cp "$RDMA_BIN" "$INITRAMFS_DIR/bin/linqu_ub_rdma_demo"
+cp "$UDMA_BIN" "$INITRAMFS_DIR/bin/linqu_ub_udma_demo"
 ```
 
 **Step 4: Add uburma.ko copy**
@@ -321,7 +321,7 @@ fi
 
 ```bash
 git add simulator/guest-linux/aarch64/build_initramfs.sh
-git commit -m "build(initramfs): add chat, rpc, rdma demo binaries and uburma.ko"
+git commit -m "build(initramfs): add chat, rpc, udma demo binaries and uburma.ko"
 ```
 
 ---
@@ -341,9 +341,9 @@ static bool should_run_ub_chat(void)
     return cmdline_has_option("linqu_ub_chat=1");
 }
 
-static bool should_run_ub_rdma_demo(void)
+static bool should_run_ub_udma_demo(void)
 {
-    return cmdline_has_option("linqu_ub_rdma_demo=1");
+    return cmdline_has_option("linqu_ub_udma_demo=1");
 }
 
 static bool should_run_ub_rpc_demo(void)
@@ -390,39 +390,39 @@ static void run_ub_chat_probe(void)
     }
 }
 
-static void run_ub_rdma_demo_probe(void)
+static void run_ub_udma_demo_probe(void)
 {
     pid_t pid;
     int status = 0;
 
-    /* Load uburma.ko before running RDMA demo */
+    /* Load uburma.ko before running UDMA demo */
     try_insmod("/lib/modules/uburma.ko");
 
     pid = fork();
     if (pid < 0) {
-        fprintf(stderr, "[init] fork for ub_rdma_demo failed: %s\n", strerror(errno));
+        fprintf(stderr, "[init] fork for ub_udma_demo failed: %s\n", strerror(errno));
         return;
     }
     if (pid == 0) {
-        execl("/bin/linqu_ub_rdma_demo", "/bin/linqu_ub_rdma_demo", (char *)NULL);
-        fprintf(stderr, "[init] exec /bin/linqu_ub_rdma_demo failed: %s\n", strerror(errno));
+        execl("/bin/linqu_ub_udma_demo", "/bin/linqu_ub_udma_demo", (char *)NULL);
+        fprintf(stderr, "[init] exec /bin/linqu_ub_udma_demo failed: %s\n", strerror(errno));
         _exit(127);
     }
 
     if (waitpid(pid, &status, 0) < 0) {
-        fprintf(stderr, "[init] waitpid ub_rdma_demo failed: %s\n", strerror(errno));
+        fprintf(stderr, "[init] waitpid ub_udma_demo failed: %s\n", strerror(errno));
         return;
     }
 
     if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-        fprintf(stderr, "[init] ub rdma demo pass\n");
+        fprintf(stderr, "[init] ub udma demo pass\n");
         return;
     }
 
     if (WIFEXITED(status)) {
-        fprintf(stderr, "[init] ub rdma demo fail exit=%d\n", WEXITSTATUS(status));
+        fprintf(stderr, "[init] ub udma demo fail exit=%d\n", WEXITSTATUS(status));
     } else if (WIFSIGNALED(status)) {
-        fprintf(stderr, "[init] ub rdma demo fail signal=%d\n", WTERMSIG(status));
+        fprintf(stderr, "[init] ub udma demo fail signal=%d\n", WTERMSIG(status));
     }
 }
 
@@ -469,9 +469,9 @@ After line 893 (`run_urma_dp_probe()` block), add before `should_run_linqu_probe
         wait_for_ipourma_interface(30);
         run_ub_chat_probe();
     }
-    if (should_run_ub_rdma_demo()) {
+    if (should_run_ub_udma_demo()) {
         wait_for_ipourma_interface(30);
-        run_ub_rdma_demo_probe();
+        run_ub_udma_demo_probe();
     }
     if (should_run_ub_rpc_demo()) {
         wait_for_ipourma_interface(30);
@@ -483,7 +483,7 @@ After line 893 (`run_urma_dp_probe()` block), add before `should_run_linqu_probe
 
 ```bash
 git add simulator/guest-linux/aarch64/init.c
-git commit -m "feat(init): add cmdline triggers for chat, rpc, rdma demo apps"
+git commit -m "feat(init): add cmdline triggers for chat, rpc, udma demo apps"
 ```
 
 ---
@@ -501,7 +501,7 @@ Based on `run_ub_dual_node_urma_dataplane_workload_test.sh` (same QEMU launch, F
   ```
   APPEND_EXTRA="linqu_probe_skip=1 linqu_probe_load_helper=1 linqu_force_ubase_bind=1 linqu_ub_chat=1 linqu_ub_rpc_demo=1"
   ```
-  Note: `linqu_ub_rdma_demo=1` is NOT included by default since it requires uburma.ko. Add it manually if uburma.ko is available.
+  Note: `linqu_ub_udma_demo=1` is NOT included by default since it requires uburma.ko. Add it manually if uburma.ko is available.
 
 - Validation functions for each demo (must propagate failure with explicit return):
   ```zsh
@@ -519,11 +519,11 @@ Based on `run_ub_dual_node_urma_dataplane_workload_test.sh` (same QEMU launch, F
       assert_log_absent "$log_file" "\\[ub_rpc\\] fail" "${node_name} rpc fail" || return 1
   }
 
-  validate_rdma_log() {
+  validate_udma_log() {
       local node_name="$1"
       local log_file="$2"
-      assert_log_has "$log_file" "\\[ub_rdma\\] pass" "${node_name} rdma pass" || return 1
-      assert_log_absent "$log_file" "\\[ub_rdma\\] fail" "${node_name} rdma fail" || return 1
+      assert_log_has "$log_file" "\\[ub_udma\\] pass" "${node_name} udma pass" || return 1
+      assert_log_absent "$log_file" "\\[ub_udma\\] fail" "${node_name} udma fail" || return 1
   }
   ```
 
@@ -613,14 +613,14 @@ export AARCH64_LINUX_CC=aarch64-linux-gnu-gcc
 Expected: `out/initramfs.cpio.gz` created successfully, containing:
 - `bin/linqu_ub_chat`
 - `bin/linqu_ub_rpc`
-- `bin/linqu_ub_rdma_demo`
+- `bin/linqu_ub_udma_demo`
 
 Verify:
 ```bash
 ls out/initramfs/bin/ | grep linqu_ub
 ```
 
-**Step 2: Run demo (chat + rpc, without rdma)**
+**Step 2: Run demo (chat + rpc, without udma)**
 
 ```bash
 ./run_ub_dual_node_demo.sh
@@ -629,11 +629,11 @@ ls out/initramfs/bin/ | grep linqu_ub
 Expected: Both nodes boot, FM links come up, chat and rpc demos pass, logs show `[init] ub chat pass` and `[init] ub rpc demo pass`.
 And logs must not include `WARNING: CPU:`, `Call trace:`, or `Kernel panic - not syncing`.
 
-**Step 3: Run with RDMA demo (if uburma.ko available)**
+**Step 3: Run with UDMA demo (if uburma.ko available)**
 
 ```bash
 UB_URMA_GUEST_MODULE=/path/to/uburma.ko \
-APPEND_EXTRA="linqu_probe_skip=1 linqu_probe_load_helper=1 linqu_force_ubase_bind=1 linqu_ub_chat=1 linqu_ub_rpc_demo=1 linqu_ub_rdma_demo=1" \
+APPEND_EXTRA="linqu_probe_skip=1 linqu_probe_load_helper=1 linqu_force_ubase_bind=1 linqu_ub_chat=1 linqu_ub_rpc_demo=1 linqu_ub_udma_demo=1" \
 ./run_ub_dual_node_demo.sh
 ```
 
@@ -678,10 +678,10 @@ This plan was reviewed and the following issues were fixed:
 - Server exits cleanly upon receiving SHUTDOWN
 - Added 60s max timeout for server
 
-### 🟠 P1: RDMA Error Handling
-**Problem:** 12-step RDMA resource allocation had no cleanup on failure.
+### 🟠 P1: UDMA Error Handling
+**Problem:** 12-step UDMA resource allocation had no cleanup on failure.
 **Fix:**
-- Added `struct rdma_resources` to track allocated resources
+- Added `struct udma_resources` to track allocated resources
 - Added `cleanup_resources()` function for proper cleanup
 - Added `STEP_CHECK` macro for consistent error handling:
   ```c

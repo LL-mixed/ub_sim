@@ -15,7 +15,7 @@ Final confirmation in the standalone `ub_sim.git` workspace for:
 - `8-node smoke`
 - `8-node chat`
 - `8-node rpc`
-- `8-node rdma`
+- `8-node udma`
 - `8-node obmm-pool`
 
 The goal of this pass was not only functional validation, but also confirming
@@ -98,19 +98,19 @@ Validated:
 - all `56` directed RPC calls passed
 - each node acted as both server and client
 
-### 4. Eight-Node RDMA Matrix
+### 4. Eight-Node UDMA Matrix
 
 - report:
-  - [eight_node_rdma_matrix.latest.txt](../guest-linux/aarch64/out/eight_node_rdma_matrix.latest.txt)
+  - [eight_node_udma_matrix.latest.txt](../guest-linux/aarch64/out/eight_node_udma_matrix.latest.txt)
 - run dir:
-  - [2026-04-15_16-03-54_rdma8_27148_headless8](../guest-linux/aarch64/logs/2026-04-15_16-03-54_rdma8_27148_headless8)
+  - [2026-04-15_16-03-54_udma8_27148_headless8](../guest-linux/aarch64/logs/2026-04-15_16-03-54_udma8_27148_headless8)
 - result:
   - `PASS`
 
 Validated:
 
-- all `56` directed RDMA calls passed
-- standalone `ub_sim.git` now reproduces the main-repo eight-node RDMA result
+- all `56` directed UDMA calls passed
+- standalone `ub_sim.git` now reproduces the main-repo eight-node UDMA result
 
 ### 5. Eight-Node OBMM Pool
 
@@ -135,7 +135,7 @@ Current standalone `ub_sim.git` status:
 - `8-node smoke`: `PASS`
 - `8-node chat`: `PASS`
 - `8-node rpc`: `PASS`
-- `8-node rdma`: `PASS`
+- `8-node udma`: `PASS`
 - `8-node obmm-pool`: `PASS`
 
 This is the final confirmation that:
@@ -152,4 +152,4 @@ claim:
 
 - long-duration soak coverage
 - randomized topology perturbation coverage
-- acceptance coverage beyond the current scripted smoke/chat/rpc/rdma/obmm-pool matrix
+- acceptance coverage beyond the current scripted smoke/chat/rpc/udma/obmm-pool matrix

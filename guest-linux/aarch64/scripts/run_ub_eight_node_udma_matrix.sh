@@ -6,26 +6,30 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
-REPORT_FILE="${REPORT_FILE:-$OUT_DIR/four_node_rdma_matrix.latest.txt}"
-TRACE_FILE="${TRACE_FILE:-$OUT_DIR/four_node_rdma_matrix.trace.latest.txt}"
-RUN_ID_BASE="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_rdma4_${RANDOM}}"
-RUN_DIR="$LOG_DIR/${RUN_ID_BASE}_headless4"
-CLEANUP_SCRIPT="$OUT_DIR/headless_four_node_cleanup.${RUN_ID_BASE}.sh"
-ENV_FILE="$OUT_DIR/headless_four_node_env.${RUN_ID_BASE}.sh"
+REPORT_FILE="${REPORT_FILE:-$OUT_DIR/eight_node_udma_matrix.latest.txt}"
+TRACE_FILE="${TRACE_FILE:-$OUT_DIR/eight_node_udma_matrix.trace.latest.txt}"
+RUN_ID_BASE="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_udma8_${RANDOM}}"
+RUN_DIR="$LOG_DIR/${RUN_ID_BASE}_headless8"
+CLEANUP_SCRIPT="$OUT_DIR/headless_eight_node_cleanup.${RUN_ID_BASE}.sh"
+ENV_FILE="$OUT_DIR/headless_eight_node_env.${RUN_ID_BASE}.sh"
 BOOT_WAIT_SECS="${BOOT_WAIT_SECS:-180}"
 PAIR_WAIT_SECS="${PAIR_WAIT_SECS:-180}"
 START_GAP_SECS="${START_GAP_SECS:-1}"
 APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
-PORT_BASE_START="${PORT_BASE_START:-$((52600 + (RANDOM % 300)))}"
+PORT_BASE_START="${PORT_BASE_START:-$((59850 + (RANDOM % 300)))}"
 PORT_BASE="$PORT_BASE_START"
 
-NODE_IDS=(nodeA nodeB nodeC nodeD)
-NODE_IPS=(10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4)
+NODE_IDS=(nodeA nodeB nodeC nodeD nodeE nodeF nodeG nodeH)
+NODE_IPS=(10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4 10.0.0.5 10.0.0.6 10.0.0.7 10.0.0.8)
 DEFAULT_CALL_LIST=(
-  "nodeA nodeB" "nodeA nodeC" "nodeA nodeD"
-  "nodeB nodeA" "nodeB nodeC" "nodeB nodeD"
-  "nodeC nodeA" "nodeC nodeB" "nodeC nodeD"
-  "nodeD nodeA" "nodeD nodeB" "nodeD nodeC"
+  "nodeA nodeB" "nodeA nodeC" "nodeA nodeD" "nodeA nodeE" "nodeA nodeF" "nodeA nodeG" "nodeA nodeH"
+  "nodeB nodeA" "nodeB nodeC" "nodeB nodeD" "nodeB nodeE" "nodeB nodeF" "nodeB nodeG" "nodeB nodeH"
+  "nodeC nodeA" "nodeC nodeB" "nodeC nodeD" "nodeC nodeE" "nodeC nodeF" "nodeC nodeG" "nodeC nodeH"
+  "nodeD nodeA" "nodeD nodeB" "nodeD nodeC" "nodeD nodeE" "nodeD nodeF" "nodeD nodeG" "nodeD nodeH"
+  "nodeE nodeA" "nodeE nodeB" "nodeE nodeC" "nodeE nodeD" "nodeE nodeF" "nodeE nodeG" "nodeE nodeH"
+  "nodeF nodeA" "nodeF nodeB" "nodeF nodeC" "nodeF nodeD" "nodeF nodeE" "nodeF nodeG" "nodeF nodeH"
+  "nodeG nodeA" "nodeG nodeB" "nodeG nodeC" "nodeG nodeD" "nodeG nodeE" "nodeG nodeF" "nodeG nodeH"
+  "nodeH nodeA" "nodeH nodeB" "nodeH nodeC" "nodeH nodeD" "nodeH nodeE" "nodeH nodeF" "nodeH nodeG"
 )
 CALL_LIST=()
 if [[ -n "${CALL_LIST_OVERRIDE:-}" ]]; then
@@ -40,7 +44,7 @@ fi
 
 trace() {
   local msg="$1"
-  printf '[rdma4] %s\n' "$msg" | tee -a "$TRACE_FILE" >&2
+  printf '[udma8] %s\n' "$msg" | tee -a "$TRACE_FILE" >&2
 }
 
 wait_for_log_pattern() {
@@ -107,6 +111,10 @@ node_index() {
     nodeB) echo 2 ;;
     nodeC) echo 3 ;;
     nodeD) echo 4 ;;
+    nodeE) echo 5 ;;
+    nodeF) echo 6 ;;
+    nodeG) echo 7 ;;
+    nodeH) echo 8 ;;
     *) return 1 ;;
   esac
 }
@@ -178,7 +186,7 @@ cleanup_headless_env() {
   fi
 }
 
-send_rdma_cmd() {
+send_udma_cmd() {
   local role="$1"
   local local_ip="$2"
   local peer_ip="$3"
@@ -192,7 +200,7 @@ send_rdma_cmd() {
   payload+=$'echo '"${start_marker}"$'\n'
   payload+=$'/bin/insmod /lib/modules/uburma.ko 2>/dev/null || true\n'
   payload+=$'i=0; while [ ! -d /sys/class/uburma ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done\n'
-  payload+=$'/bin/linqu_ub_rdma_demo\n'
+  payload+=$'/bin/linqu_ub_udma_demo\n'
 
   send_serial_block "$serial_port" "$payload"
 }
@@ -203,33 +211,33 @@ capture_guest_diag() {
   send_serial_block "$serial_port" $'echo DIAG_'"${node_id}"$'_START\nifconfig ipourma0\nps\n'
 }
 
-validate_rdma_slice() {
+validate_udma_slice() {
   local src="$1"
   local dst="$2"
   local role="$3"
   local log_file="$4"
 
-  assert_log_has "$log_file" "\\[ub_rdma\\] pass" "$src->$dst $role pass" || return 1
-  assert_log_absent "$log_file" "\\[ub_rdma\\] fail" "$src->$dst $role fail" || return 1
-  assert_log_has "$log_file" "\\[ub_rdma\\] step 2: alloc_ummu_tid -> ok" "$src->$dst $role alloc tid" || return 1
-  assert_log_has "$log_file" "\\[ub_rdma\\] step 2: alloc_token_id -> ok" "$src->$dst $role alloc token" || return 1
-  assert_log_has "$log_file" "\\[ub_rdma\\] step 7: register_seg -> ok" "$src->$dst $role register seg" || return 1
-  assert_log_has "$log_file" "\\[ub_rdma\\] step 8: import_jetty -> ok" "$src->$dst $role import jetty" || return 1
-  assert_log_has "$log_file" "\\[ub_rdma\\] step 9: bind_jetty -> ok" "$src->$dst $role bind jetty" || return 1
-  assert_log_has "$log_file" "\\[ub_rdma\\] step 9\\.5: post_recv -> ok" "$src->$dst $role post recv" || return 1
-  assert_log_has "$log_file" "\\[ub_rdma\\] step 9\\.5: ready_sync -> ok" "$src->$dst $role ready sync" || return 1
+  assert_log_has "$log_file" "\\[ub_udma\\] pass" "$src->$dst $role pass" || return 1
+  assert_log_absent "$log_file" "\\[ub_udma\\] fail" "$src->$dst $role fail" || return 1
+  assert_log_has "$log_file" "\\[ub_udma\\] step 2: alloc_ummu_tid -> ok" "$src->$dst $role alloc tid" || return 1
+  assert_log_has "$log_file" "\\[ub_udma\\] step 2: alloc_token_id -> ok" "$src->$dst $role alloc token" || return 1
+  assert_log_has "$log_file" "\\[ub_udma\\] step 7: register_seg -> ok" "$src->$dst $role register seg" || return 1
+  assert_log_has "$log_file" "\\[ub_udma\\] step 8: import_jetty -> ok" "$src->$dst $role import jetty" || return 1
+  assert_log_has "$log_file" "\\[ub_udma\\] step 9: bind_jetty -> ok" "$src->$dst $role bind jetty" || return 1
+  assert_log_has "$log_file" "\\[ub_udma\\] step 9\\.5: post_recv -> ok" "$src->$dst $role post recv" || return 1
+  assert_log_has "$log_file" "\\[ub_udma\\] step 9\\.5: ready_sync -> ok" "$src->$dst $role ready sync" || return 1
   if [[ "$role" == "initiator" ]]; then
-    assert_log_has "$log_file" "\\[ub_rdma\\] step 9\\.5: send_request -> ok len=[0-9]+" "$src->$dst initiator send request" || return 1
-    assert_log_has "$log_file" "\\[ub_rdma\\] step 9\\.5: recv_reply -> ok payload=\"rdma reply payload from responder\"" "$src->$dst initiator recv reply" || return 1
+    assert_log_has "$log_file" "\\[ub_udma\\] step 9\\.5: send_request -> ok len=[0-9]+" "$src->$dst initiator send request" || return 1
+    assert_log_has "$log_file" "\\[ub_udma\\] step 9\\.5: recv_reply -> ok payload=\"udma reply payload from responder\"" "$src->$dst initiator recv reply" || return 1
   else
-    assert_log_has "$log_file" "\\[ub_rdma\\] step 9\\.5: recv_request -> ok payload=\"rdma request payload from initiator\"" "$src->$dst responder recv request" || return 1
-    assert_log_has "$log_file" "\\[ub_rdma\\] step 9\\.5: send_reply -> ok len=[0-9]+" "$src->$dst responder send reply" || return 1
+    assert_log_has "$log_file" "\\[ub_udma\\] step 9\\.5: recv_request -> ok payload=\"udma request payload from initiator\"" "$src->$dst responder recv request" || return 1
+    assert_log_has "$log_file" "\\[ub_udma\\] step 9\\.5: send_reply -> ok len=[0-9]+" "$src->$dst responder send reply" || return 1
   fi
-  assert_log_has "$log_file" "\\[ub_rdma\\] step 10: unbind_jetty -> ok" "$src->$dst $role unbind" || return 1
-  assert_log_has "$log_file" "\\[ub_rdma\\] step 10: unimport_jetty -> ok" "$src->$dst $role unimport" || return 1
-  assert_log_has "$log_file" "\\[ub_rdma\\] cleanup: unregister_seg -> ok" "$src->$dst $role unregister" || return 1
-  assert_log_has "$log_file" "\\[ub_rdma\\] cleanup: free_token_id -> ok" "$src->$dst $role free token" || return 1
-  assert_log_has "$log_file" "\\[ub_rdma\\] cleanup: free_ummu_tid -> ok" "$src->$dst $role free tid" || return 1
+  assert_log_has "$log_file" "\\[ub_udma\\] step 10: unbind_jetty -> ok" "$src->$dst $role unbind" || return 1
+  assert_log_has "$log_file" "\\[ub_udma\\] step 10: unimport_jetty -> ok" "$src->$dst $role unimport" || return 1
+  assert_log_has "$log_file" "\\[ub_udma\\] cleanup: unregister_seg -> ok" "$src->$dst $role unregister" || return 1
+  assert_log_has "$log_file" "\\[ub_udma\\] cleanup: free_token_id -> ok" "$src->$dst $role free token" || return 1
+  assert_log_has "$log_file" "\\[ub_udma\\] cleanup: free_ummu_tid -> ok" "$src->$dst $role free tid" || return 1
   assert_log_absent "$log_file" "wait resp timeout|failed to query device status|invalidate cfg_table failed|ubcore_unimport_jetty_async failed|failed to remove uobject|WARNING: CPU:|Call trace:|Kernel panic - not syncing" "$src->$dst $role kernel health" || return 1
 }
 
@@ -241,7 +249,7 @@ prepare_single_environment() {
   : > "$TRACE_FILE"
   trace "prepare: launch headless env run_id=$RUN_ID_BASE"
   ENV_FILE="$ENV_FILE" PORT_BASE="$PORT_BASE" RUN_ID="$RUN_ID_BASE" APPEND_EXTRA="$APPEND_BASE" \
-    "$SCRIPT_DIR/launch_ub_four_node_headless.sh" >/dev/null
+    UB_SIM_PORT_NUM=7 "$SCRIPT_DIR/launch_ub_eight_node_headless.sh" >/dev/null
   source "$ENV_FILE"
 
   for node_id in "${NODE_IDS[@]}"; do
@@ -275,16 +283,16 @@ run_directed_call() {
   dst_serial="$(node_serial_port "$dst" "$PORT_BASE")"
   src_log="$RUN_DIR/${src}_guest.log"
   dst_log="$RUN_DIR/${dst}_guest.log"
-  initiator_marker="RDMA_INITIATOR_START_${call_idx}_${src}_${dst}"
-  responder_marker="RDMA_RESPONDER_START_${call_idx}_${src}_${dst}"
-  initiator_slice="$OUT_DIR/four_node_rdma_${src}_${dst}_initiator.slice.log"
-  responder_slice="$OUT_DIR/four_node_rdma_${src}_${dst}_responder.slice.log"
+  initiator_marker="UDMA_INITIATOR_START_${call_idx}_${src}_${dst}"
+  responder_marker="UDMA_RESPONDER_START_${call_idx}_${src}_${dst}"
+  initiator_slice="$OUT_DIR/eight_node_udma_${src}_${dst}_initiator.slice.log"
+  responder_slice="$OUT_DIR/eight_node_udma_${src}_${dst}_responder.slice.log"
 
   [[ -f "$src_log" ]] && src_start_line="$(wc -l < "$src_log")"
   [[ -f "$dst_log" ]] && dst_start_line="$(wc -l < "$dst_log")"
 
   trace "call ${src}->${dst}: launch responder"
-  if ! send_rdma_cmd responder "$dst_ip" "$src_ip" "$dst_serial" "$responder_marker"; then
+  if ! send_udma_cmd responder "$dst_ip" "$src_ip" "$dst_serial" "$responder_marker"; then
     echo "$src->$dst: failed to send responder command" >&2
     return 1
   fi
@@ -295,7 +303,7 @@ run_directed_call() {
   sleep "$START_GAP_SECS"
 
   trace "call ${src}->${dst}: launch initiator"
-  if ! send_rdma_cmd initiator "$src_ip" "$dst_ip" "$src_serial" "$initiator_marker"; then
+  if ! send_udma_cmd initiator "$src_ip" "$dst_ip" "$src_serial" "$initiator_marker"; then
     echo "$src->$dst: failed to send initiator command" >&2
     return 1
   fi
@@ -305,7 +313,7 @@ run_directed_call() {
   fi
 
   rc=0
-  wait_for_log_pass_or_fail_since "$src_log" "$src_start_line" "\\[ub_rdma\\] pass" "\\[ub_rdma\\] fail" "$PAIR_WAIT_SECS" || rc=$?
+  wait_for_log_pass_or_fail_since "$src_log" "$src_start_line" "\\[ub_udma\\] pass" "\\[ub_udma\\] fail" "$PAIR_WAIT_SECS" || rc=$?
   if [[ "$rc" -ne 0 ]]; then
     capture_guest_diag "$src" "$src_serial"
     capture_guest_diag "$dst" "$dst_serial"
@@ -314,7 +322,7 @@ run_directed_call() {
   fi
 
   rc=0
-  wait_for_log_pass_or_fail_since "$dst_log" "$dst_start_line" "\\[ub_rdma\\] pass" "\\[ub_rdma\\] fail" "$PAIR_WAIT_SECS" || rc=$?
+  wait_for_log_pass_or_fail_since "$dst_log" "$dst_start_line" "\\[ub_udma\\] pass" "\\[ub_udma\\] fail" "$PAIR_WAIT_SECS" || rc=$?
   if [[ "$rc" -ne 0 ]]; then
     capture_guest_diag "$src" "$src_serial"
     capture_guest_diag "$dst" "$dst_serial"
@@ -325,15 +333,15 @@ run_directed_call() {
   slice_log_since "$src_log" "$src_start_line" "$initiator_slice"
   slice_log_since "$dst_log" "$dst_start_line" "$responder_slice"
 
-  validate_rdma_slice "$src" "$dst" initiator "$initiator_slice" || return 1
-  validate_rdma_slice "$src" "$dst" responder "$responder_slice" || return 1
+  validate_udma_slice "$src" "$dst" initiator "$initiator_slice" || return 1
+  validate_udma_slice "$src" "$dst" responder "$responder_slice" || return 1
   trace "call ${src}->${dst}: pass"
 }
 
 chmod +x "$0" 2>/dev/null || true
 mkdir -p "$OUT_DIR"
 {
-  echo "four-node rdma matrix"
+  echo "eight-node udma matrix"
   echo "run_id_base=$RUN_ID_BASE"
   echo "run_dir=$RUN_DIR"
   echo "boot_wait_secs=$BOOT_WAIT_SECS"

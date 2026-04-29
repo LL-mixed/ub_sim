@@ -21,10 +21,13 @@ RPC_SRC="$ROOT_DIR/ub_rpc_demo.c"
 RPC_BIN="$OUT_DIR/linqu_ub_rpc"
 TCP_EACH_SERVER_SRC="$ROOT_DIR/ub_tcp_each_server_demo.c"
 TCP_EACH_SERVER_BIN="$OUT_DIR/linqu_ub_tcp_each_server"
-RDMA_SRC="$ROOT_DIR/ub_rdma_demo.c"
-RDMA_BIN="$OUT_DIR/linqu_ub_rdma_demo"
+UDMA_SRC="$ROOT_DIR/ub_udma_demo.c"
+UDMA_BIN="$OUT_DIR/linqu_ub_udma_demo"
 OBMM_SRC="$ROOT_DIR/ub_obmm_pool_demo.c"
 OBMM_BIN="$OUT_DIR/linqu_ub_obmm_demo"
+W4_GUEST_SRC="$ROOT_DIR/w4_guest_qemu_demo.c"
+W4_DB_SERVICE_SRC="$ROOT_DIR/w4_kvcache_db_service.c"
+W4_GUEST_BIN="$OUT_DIR/linqu_w4_guest"
 RUN_DEMO_SRC="$ROOT_DIR/initramfs/run_demo"
 RUN_DEMO_BIN="$INITRAMFS_DIR/bin/run_demo"
 INIT_SCRIPT_SRC="$ROOT_DIR/initramfs/init"
@@ -108,8 +111,10 @@ current_initramfs_signature() {
   write_signature_line "chat_src" "$CHAT_SRC"
   write_signature_line "rpc_src" "$RPC_SRC"
   write_signature_line "tcp_each_server_src" "$TCP_EACH_SERVER_SRC"
-  write_signature_line "rdma_src" "$RDMA_SRC"
+  write_signature_line "udma_src" "$UDMA_SRC"
   write_signature_line "obmm_src" "$OBMM_SRC"
+  write_signature_line "w4_guest_src" "$W4_GUEST_SRC"
+  write_signature_line "w4_db_service_src" "$W4_DB_SERVICE_SRC"
   write_signature_line "run_demo_src" "$RUN_DEMO_SRC"
   write_signature_line "init_script_src" "$INIT_SCRIPT_SRC"
   write_signature_line "rdinit_interactive_src" "$RDINIT_INTERACTIVE_SRC"
@@ -327,8 +332,9 @@ fi
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$CHAT_SRC" -o "$CHAT_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$RPC_SRC" -o "$RPC_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$TCP_EACH_SERVER_SRC" -o "$TCP_EACH_SERVER_BIN"
-"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$RDMA_SRC" -o "$RDMA_BIN"
+"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$UDMA_SRC" -o "$UDMA_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$OBMM_SRC" -o "$OBMM_BIN"
+"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$W4_GUEST_SRC" "$W4_DB_SERVICE_SRC" -o "$W4_GUEST_BIN"
 
 if [[ -f "$INIT_SCRIPT_SRC" ]]; then
   cp "$INIT_SCRIPT_SRC" "$INIT_SCRIPT_BIN"
@@ -346,8 +352,19 @@ cp "$INSMOD_BIN" "$INITRAMFS_DIR/bin/insmod"
 cp "$CHAT_BIN" "$INITRAMFS_DIR/bin/linqu_ub_chat"
 cp "$RPC_BIN" "$INITRAMFS_DIR/bin/linqu_ub_rpc"
 cp "$TCP_EACH_SERVER_BIN" "$INITRAMFS_DIR/bin/linqu_ub_tcp_each_server"
-cp "$RDMA_BIN" "$INITRAMFS_DIR/bin/linqu_ub_rdma_demo"
+cp "$UDMA_BIN" "$INITRAMFS_DIR/bin/linqu_ub_udma_demo"
 cp "$OBMM_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_demo"
+cp "$W4_GUEST_BIN" "$INITRAMFS_DIR/bin/linqu_w4_guest"
+chmod +x \
+  "$INITRAMFS_DIR/bin/linqu_probe" \
+  "$INITRAMFS_DIR/bin/linqu_urma_dp" \
+  "$INITRAMFS_DIR/bin/insmod" \
+  "$INITRAMFS_DIR/bin/linqu_ub_chat" \
+  "$INITRAMFS_DIR/bin/linqu_ub_rpc" \
+  "$INITRAMFS_DIR/bin/linqu_ub_tcp_each_server" \
+  "$INITRAMFS_DIR/bin/linqu_ub_udma_demo" \
+  "$INITRAMFS_DIR/bin/linqu_ub_obmm_demo" \
+  "$INITRAMFS_DIR/bin/linqu_w4_guest"
 
 cp "$BUSYBOX" "$INITRAMFS_DIR/bin/busybox"
 chmod +x "$INITRAMFS_DIR/bin/busybox"

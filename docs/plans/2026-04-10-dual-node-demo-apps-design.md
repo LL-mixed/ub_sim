@@ -15,7 +15,7 @@ and nodeB, communicating via the ipourma virtual network interface.
 | File | Purpose |
 |------|---------|
 | `simulator/guest-linux/aarch64/ub_chat.c` | Chat-style multi-round messaging demo |
-| `simulator/guest-linux/aarch64/ub_rdma_demo.c` | URMA RDMA ioctl operations demo |
+| `simulator/guest-linux/aarch64/ub_udma_demo.c` | URMA UDMA ioctl operations demo |
 | `simulator/guest-linux/aarch64/ub_rpc_demo.c` | Structured RPC request-response demo |
 | `simulator/guest-linux/aarch64/run_ub_dual_node_demo.sh` | Orchestrator script for all 3 demos |
 
@@ -46,9 +46,9 @@ Flow:
 5. Summary: tx/rx counts, avg/min/max latency
 6. Exit 0 on success, exit 1 on failure (timeout after 30s)
 
-## Demo 2: ub_rdma_demo.c
+## Demo 2: ub_udma_demo.c
 
-**cmdline flag**: `linqu_ub_rdma_demo=1`
+**cmdline flag**: `linqu_ub_udma_demo=1`
 **Dependency**: uburma.ko must be loaded (creates /dev/uburma/<dev_name>)
 
 Step-by-step URMA resource lifecycle via ioctl:
@@ -98,7 +98,7 @@ New cmdline flags and corresponding probe functions:
 
 ```
 linqu_ub_chat=1       → run_ub_chat_probe()
-linqu_ub_rdma_demo=1  → run_ub_rdma_demo_probe() + load uburma.ko
+linqu_ub_udma_demo=1  → run_ub_udma_demo_probe() + load uburma.ko
 linqu_ub_rpc_demo=1   → run_ub_rpc_probe()
 ```
 
@@ -109,7 +109,7 @@ Execution order: after `run_urma_dp_probe()`, before `run_probe()`.
 Compile new sources:
 ```
 ub_chat.c    → linqu_ub_chat
-ub_rdma_demo.c → linqu_ub_rdma_demo
+ub_udma_demo.c → linqu_ub_udma_demo
 ub_rpc_demo.c  → linqu_ub_rpc
 ```
 

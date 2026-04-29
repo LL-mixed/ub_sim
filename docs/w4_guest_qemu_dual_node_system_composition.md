@@ -156,7 +156,7 @@ Current guest entry points visible from initramfs are:
 2. `linqu_ub_chat`
 3. `linqu_ub_rpc`
 4. `linqu_ub_tcp_each_server`
-5. `linqu_ub_rdma_demo`
+5. `linqu_ub_udma_demo`
 6. `linqu_ub_obmm_demo`
 
 This comes from:
@@ -206,12 +206,12 @@ The current guest/QEMU `W4` line has moved beyond a host-only placeholder. The f
 1. guest-side `W4` workload entry exists and runs inside both guest nodes
 2. `shmem/kvcache` path is carried by `OBMM`
 3. `block` path is carried by the real `UBURMA` data path
-4. guest dispatch path is carried by `/bin/linqu_ub_rdma_demo`
+4. guest dispatch path is carried by `/bin/linqu_ub_udma_demo`
 5. the dual-node guest harness now validates:
    - `shmem_kvcache_path=obmm_pool`
    - `block_candidate=uburma_data_path_ready`
-   - `dispatch_candidate=uburma_rdma_ready`
-   - `dispatch_path=ub_rdma_demo`
+   - `dispatch_candidate=uburma_udma_ready`
+   - `dispatch_path=ub_udma_demo`
 
 This is the current guest/QEMU `W4` closure floor.
 
@@ -299,7 +299,7 @@ The next real target is:
 4. keep that service participating in `W4` without regressing:
    - `OBMM`-backed `shmem/kvcache`
    - `UBURMA` block data path
-   - real guest dispatch via `ub_rdma_demo`
+   - real guest dispatch via `ub_udma_demo`
 5. keep using multi-node validation for:
    - cross-node visibility
    - update propagation

@@ -287,7 +287,7 @@ QEMU 侧已存在 decoder emu backend 基础，实现上应改为“补强和验
 2. 不能跳过控制面直接改 QEMU 内部表；所有映射必须可追踪到 guest 命令。
 3. 不能只做 capability 暴露；必须有 map/unmap 的执行与数据面命中。
 4. import 侧 `remote_uba` 来源必须显式定义并可审计，避免隐式魔法字段。
-5. 不能为了推进 cross-node memory access 破坏当前已通过的 URMA/chat/rpc/rdma 数据面；每个阶段都必须复跑 dual-node 3-demo 作为回归闸门。
+5. 不能为了推进 cross-node memory access 破坏当前已通过的 URMA/chat/rpc/udma 数据面；每个阶段都必须复跑 dual-node 3-demo 作为回归闸门。
 
 ---
 
@@ -310,7 +310,7 @@ QEMU 侧已存在 decoder emu backend 基础，实现上应改为“补强和验
 
 4. 加回归门槛
    - 每次改动后先跑 cross-node memory access e2e。
-   - 再跑 dual-node `chat -> rpc -> rdma`，确认不破坏既有数据面。
+   - 再跑 dual-node `chat -> rpc -> udma`，确认不破坏既有数据面。
 
 ---
 
