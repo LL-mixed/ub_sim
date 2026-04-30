@@ -306,6 +306,10 @@ cd guest-linux/aarch64
 ./scripts/run_ub_four_node_obmm_pool.sh
 ```
 
+`run_ub_four_node_obmm_pool.sh` 默认使用每节点 `4 vCPU + 8G`、`pmd_mapping=100%`、
+`obmm.mempool_size=0`，并导出 `7680MB` OBMM shmem pool。这个配置用于验证
+4-node full-mesh 下每节点 7.5GB export/import 和 payload round-trip。
+
 这些脚本会生成各自 report，并把详细日志落到 `logs/` 和 `out/`。用于自动化时，日志目录名应带
 `headless4`/`headless8` 这类 headless run id，而不是 `tmux` run id。
 

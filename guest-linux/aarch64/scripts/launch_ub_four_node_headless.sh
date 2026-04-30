@@ -24,6 +24,7 @@ RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_headless4_${RANDOM}}"
 APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 PORT_BASE="${PORT_BASE:-$((52000 + RANDOM % 2000))}"
 QEMU_MEM="${QEMU_MEM:-8G}"
+QEMU_SMP="${QEMU_SMP:-1}"
 CONTROL_LOG="$LOG_DIR/${RUN_ID}_headless4/control.log"
 CLEANUP_SCRIPT="$OUT_DIR/headless_four_node_cleanup.${RUN_ID}.sh"
 ENV_FILE="${ENV_FILE:-$OUT_DIR/headless_four_node_env.${RUN_ID}.sh}"
@@ -108,6 +109,7 @@ start_node() {
       -S \
       -M virt,gic-version=3,its=on,ummu=on,ub-cluster-mode=on \
       -cpu cortex-a57 \
+      -smp "$QEMU_SMP" \
       -m "$QEMU_MEM" \
       -nodefaults \
       -display none \
@@ -165,6 +167,7 @@ touch "$CONTROL_LOG"
 log "run_id=$RUN_ID"
 log "qemu_bin=$QEMU_BIN"
 log "qemu_mem=$QEMU_MEM"
+log "qemu_smp=$QEMU_SMP"
 log "topology=$TOPOLOGY_FILE"
 log "append_extra=$APPEND_EXTRA"
 log "ub_sim_port_num=$PORT_NUM"

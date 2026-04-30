@@ -476,6 +476,12 @@ guest-linux/aarch64/scripts/run_ub_four_node_obmm_pool.sh
 That run performs one shared pool bring-up across `nodeA/nodeB/nodeC/nodeD`
 instead of pairwise OBMM checks.
 
+The four-node OBMM pool harness defaults to `QEMU_SMP=4`, `QEMU_MEM=8G`,
+`pmd_mapping=100%`, `obmm.mempool_size=0`, and
+`OBMM_POOL_EXPORT_SIZE_MB=7680`. This validates a 7.5 GiB exported shmem pool
+per node across the four-node full-mesh topology. The same values remain
+overridable through the matching environment variables.
+
 All eight-node headless workloads default to `QEMU_MEM=6G` and
 `pmd_mapping=30%`. This reserves a 1 GiB PFN range on the guest and avoids the
 OBMM pool allocation failure seen with smaller guest memory settings such as

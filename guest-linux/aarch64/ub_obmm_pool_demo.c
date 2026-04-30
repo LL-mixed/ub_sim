@@ -112,6 +112,7 @@ struct pool_slot_record {
 };
 
 static volatile sig_atomic_t g_alarm_fired;
+static uint64_t g_export_region_size = EXPORT_REGION_SIZE;
 
 static void alarm_handler(int signo)
 {
@@ -561,6 +562,31 @@ static uint64_t align_up_u64(uint64_t v, uint64_t align)
     return (v + align - 1) & ~(align - 1);
 }
 
+static uint64_t parse_export_region_size(void)
+{
+    const char *env = getenv("OBMM_POOL_EXPORT_SIZE_MB");
+    char *end = NULL;
+    unsigned long long mb;
+    uint64_t bytes;
+
+    if (env == NULL || env[0] == '\0') {
+        return EXPORT_REGION_SIZE;
+    }
+
+    errno = 0;
+    mb = strtoull(env, &end, 0);
+    if (errno != 0 || end == env || *end != '\0' || mb == 0) {
+        fprintf(stderr,
+                "[ub_obmm_pool] warn: invalid OBMM_POOL_EXPORT_SIZE_MB=%s, using default=%luMB\n",
+                env, (unsigned long)(EXPORT_REGION_SIZE >> 20));
+        return EXPORT_REGION_SIZE;
+    }
+
+    bytes = (uint64_t)mb << 20;
+    bytes = align_up_u64(bytes, IMPORT_ALIGN);
+    return bytes;
+}
+
 static bool allocate_import_pas(int import_count, uint64_t size_per_import,
                                 uint64_t pas[MAX_NODES], bool map_osync[MAX_NODES])
 {
@@ -649,7 +675,7 @@ static int do_export_region(int obmm_fd, struct obmm_demo_meta *meta)
     memset(&cmd, 0, sizeof(cmd));
 
     cmd.length = 1;
-    cmd.size[0] = EXPORT_REGION_SIZE;
+    cmd.size[0] = g_export_region_size;
     cmd.flags = OBMM_EXPORT_FLAG_ALLOW_MMAP;
     cmd.pxm_numa = 0;
     if (ioctl(obmm_fd, OBMM_CMD_EXPORT, &cmd) != 0) {
@@ -659,11 +685,11 @@ static int do_export_region(int obmm_fd, struct obmm_demo_meta *meta)
 
     meta->export_mem_id = cmd.mem_id;
     meta->remote_uba = cmd.uba;
-    meta->size = EXPORT_REGION_SIZE;
+    meta->size = g_export_region_size;
     meta->token_id = cmd.tokenid;
     fprintf(stderr,
-            "[ub_obmm_pool] export -> ok mem_id=%" PRIu64 " uba=%#" PRIx64 " token=%u\n",
-            meta->export_mem_id, meta->remote_uba, meta->token_id);
+            "[ub_obmm_pool] export -> ok mem_id=%" PRIu64 " uba=%#" PRIx64 " token=%u size=%" PRIu64 "MB\n",
+            meta->export_mem_id, meta->remote_uba, meta->token_id, meta->size >> 20);
     return 0;
 }
 
@@ -880,7 +906,7 @@ static int import_all_peers(int obmm_fd, uint32_t local_cna,
     int i;
     int import_idx = 0;
 
-    if (!allocate_import_pas(import_count, EXPORT_REGION_SIZE, import_pas, import_osync)) {
+    if (!allocate_import_pas(import_count, g_export_region_size, import_pas, import_osync)) {
         fprintf(stderr, "[ub_obmm_pool] fail: unable to allocate import local_pa windows\n");
         return -1;
     }
@@ -1195,8 +1221,11 @@ int main(void)
 
     signal(SIGALRM, alarm_handler);
     alarm(RUN_TIMEOUT_S);
+    g_export_region_size = parse_export_region_size();
 
     fprintf(stderr, "[ub_obmm_pool] start\n");
+    fprintf(stderr, "[ub_obmm_pool] export_size=%" PRIu64 "MB\n",
+            g_export_region_size >> 20);
 
     if (!resolve_pool_nodes(local_ip, ips, &node_count, &local_idx)) {
         fprintf(stderr, "[ub_obmm_pool] fail: resolve pool nodes failed\n");
@@ -1273,7 +1302,10 @@ int main(void)
     if (wait_until_everyone_ready(sockfd, peers, node_count, local_idx) != 0) {
         goto out;
     }
-    fprintf(stderr, "[ub_obmm_pool] pool ready -> ok nodes=%d\n", node_count);
+    fprintf(stderr, "[ub_obmm_pool] pool ready -> ok nodes=%d local_export_mb=%" PRIu64
+            " aggregate_export_mb=%" PRIu64 "\n",
+            node_count, g_export_region_size >> 20,
+            (g_export_region_size >> 20) * (uint64_t)node_count);
     usleep(500000);
 
     if (do_rounds(sockfd, peers, node_count, local_idx, slots) != 0) {

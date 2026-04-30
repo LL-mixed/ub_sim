@@ -12,9 +12,12 @@ RUN_ID_BASE="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_obmmpool4_${RANDOM}}"
 RUN_DIR="$LOG_DIR/${RUN_ID_BASE}_headless4"
 BOOT_WAIT_SECS="${BOOT_WAIT_SECS:-180}"
 DEMO_WAIT_SECS="${DEMO_WAIT_SECS:-180}"
-APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1 pmd_mapping=25%}"
+APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1 pmd_mapping=100% obmm.mempool_size=0}"
+QEMU_MEM="${QEMU_MEM:-8G}"
+QEMU_SMP="${QEMU_SMP:-4}"
 PORT_BASE_START="${PORT_BASE_START:-$((53600 + (RANDOM % 300)))}"
 PORT_BASE="$PORT_BASE_START"
+OBMM_POOL_EXPORT_SIZE_MB="${OBMM_POOL_EXPORT_SIZE_MB:-7680}"
 
 NODE_IDS=(nodeA nodeB nodeC nodeD)
 NODE_IPS=(10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4)
@@ -158,6 +161,7 @@ send_obmm_pool_cmd() {
   payload=$'export LINQU_UB_LOCAL_IP='"${local_ip}"$'\n'
   payload+=$'export LINQU_UB_ALL_IPS='"${ALL_IPS_CSV}"$'\n'
   payload+=$'export LINQU_UB_NODE_COUNT=4\n'
+  payload+=$'export OBMM_POOL_EXPORT_SIZE_MB='"${OBMM_POOL_EXPORT_SIZE_MB}"$'\n'
   payload+=$'echo '"${start_marker}"$'\n'
   payload+=$'/bin/linqu_ub_obmm_demo\n'
 
@@ -170,9 +174,16 @@ prepare_environment() {
 
   mkdir -p "$RUN_DIR"
   : > "$TRACE_FILE"
-  trace "prepare: launch headless env run_id=$RUN_ID_BASE"
-  ENV_FILE="$OUT_DIR/headless_four_node_env.${RUN_ID_BASE}.sh" PORT_BASE="$PORT_BASE" RUN_ID="$RUN_ID_BASE" APPEND_EXTRA="$APPEND_BASE" \
-    "$SCRIPT_DIR/launch_ub_four_node_headless.sh" >/dev/null
+  trace "prepare: launch headless env run_id=$RUN_ID_BASE qemu_mem=$QEMU_MEM qemu_smp=$QEMU_SMP export_size_mb=$OBMM_POOL_EXPORT_SIZE_MB"
+  if ! ENV_FILE="$OUT_DIR/headless_four_node_env.${RUN_ID_BASE}.sh" PORT_BASE="$PORT_BASE" RUN_ID="$RUN_ID_BASE" QEMU_MEM="$QEMU_MEM" QEMU_SMP="$QEMU_SMP" APPEND_EXTRA="$APPEND_BASE" \
+    "$SCRIPT_DIR/launch_ub_four_node_headless.sh" >/dev/null; then
+    trace "FAIL: launch headless env failed"
+    return 1
+  fi
+  if [[ ! -f "$OUT_DIR/headless_four_node_env.${RUN_ID_BASE}.sh" ]]; then
+    trace "FAIL: missing headless env file"
+    return 1
+  fi
   source "$OUT_DIR/headless_four_node_env.${RUN_ID_BASE}.sh"
 
   for node_id in "${NODE_IDS[@]}"; do
