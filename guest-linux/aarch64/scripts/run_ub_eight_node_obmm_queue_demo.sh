@@ -6,10 +6,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
-REPORT_FILE="${REPORT_FILE:-$OUT_DIR/four_node_obmm_queue_demo.latest.txt}"
-TRACE_FILE="${TRACE_FILE:-$OUT_DIR/four_node_obmm_queue_demo.trace.latest.txt}"
-RUN_ID_BASE="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_obmmqueue4_${RANDOM}}"
-RUN_DIR="$LOG_DIR/${RUN_ID_BASE}_headless4"
+REPORT_FILE="${REPORT_FILE:-$OUT_DIR/eight_node_obmm_queue_demo.latest.txt}"
+TRACE_FILE="${TRACE_FILE:-$OUT_DIR/eight_node_obmm_queue_demo.trace.latest.txt}"
+RUN_ID_BASE="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_obmmqueue8_${RANDOM}}"
+RUN_DIR="$LOG_DIR/${RUN_ID_BASE}_headless8"
 BOOT_WAIT_SECS="${BOOT_WAIT_SECS:-180}"
 DEMO_WAIT_SECS="${DEMO_WAIT_SECS:-180}"
 APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1 pmd_mapping=100% obmm.mempool_size=0}"
@@ -21,13 +21,13 @@ OBMM_POOL_EXPORT_SIZE_MB="${OBMM_POOL_EXPORT_SIZE_MB:-512}"
 OBMM_QUEUE_DEPTH="${OBMM_QUEUE_DEPTH:-1024}"
 OBMM_BOOTSTRAP="${OBMM_BOOTSTRAP:-fm}"
 
-NODE_IDS=(nodeA nodeB nodeC nodeD)
-NODE_IPS=(10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4)
+NODE_IDS=(nodeA nodeB nodeC nodeD nodeE nodeF nodeG nodeH)
+NODE_IPS=(10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4 10.0.0.5 10.0.0.6 10.0.0.7 10.0.0.8)
 ALL_IPS_CSV="${(j:,:)NODE_IPS}"
 
 trace() {
   local msg="$1"
-  printf '[obmmqueue4] %s\n' "$msg" | tee -a "$TRACE_FILE" >&2
+  printf '[obmmqueue8] %s\n' "$msg" | tee -a "$TRACE_FILE" >&2
 }
 
 wait_for_log_pattern() {
@@ -94,6 +94,10 @@ node_index() {
     nodeB) echo 2 ;;
     nodeC) echo 3 ;;
     nodeD) echo 4 ;;
+    nodeE) echo 5 ;;
+    nodeF) echo 6 ;;
+    nodeG) echo 7 ;;
+    nodeH) echo 8 ;;
     *) return 1 ;;
   esac
 }
@@ -162,7 +166,7 @@ send_obmm_queue_demo_cmd() {
 
   payload=$'export LINQU_UB_LOCAL_IP='"${local_ip}"$'\n'
   payload+=$'export LINQU_UB_ALL_IPS='"${ALL_IPS_CSV}"$'\n'
-  payload+=$'export LINQU_UB_NODE_COUNT=4\n'
+  payload+=$'export LINQU_UB_NODE_COUNT=8\n'
   payload+=$'export OBMM_POOL_EXPORT_SIZE_MB='"${OBMM_POOL_EXPORT_SIZE_MB}"$'\n'
   payload+=$'export OBMM_QUEUE_DEPTH='"${OBMM_QUEUE_DEPTH}"$'\n'
   payload+=$'export OBMM_BOOTSTRAP='"${OBMM_BOOTSTRAP}"$'\n'
@@ -180,16 +184,16 @@ prepare_environment() {
   mkdir -p "$RUN_DIR"
   : > "$TRACE_FILE"
   trace "prepare: launch headless env run_id=$RUN_ID_BASE qemu_mem=$QEMU_MEM qemu_smp=$QEMU_SMP export_size_mb=$OBMM_POOL_EXPORT_SIZE_MB queue_depth=$OBMM_QUEUE_DEPTH bootstrap=$OBMM_BOOTSTRAP"
-  if ! ENV_FILE="$OUT_DIR/headless_four_node_env.${RUN_ID_BASE}.sh" PORT_BASE="$PORT_BASE" RUN_ID="$RUN_ID_BASE" QEMU_MEM="$QEMU_MEM" QEMU_SMP="$QEMU_SMP" APPEND_EXTRA="$APPEND_BASE" \
-    "$SCRIPT_DIR/launch_ub_four_node_headless.sh" >/dev/null; then
+  if ! ENV_FILE="$OUT_DIR/headless_eight_node_env.${RUN_ID_BASE}.sh" PORT_BASE="$PORT_BASE" RUN_ID="$RUN_ID_BASE" QEMU_MEM="$QEMU_MEM" QEMU_SMP="$QEMU_SMP" APPEND_EXTRA="$APPEND_BASE" \
+    "$SCRIPT_DIR/launch_ub_eight_node_headless.sh" >/dev/null; then
     trace "FAIL: launch headless env failed"
     return 1
   fi
-  if [[ ! -f "$OUT_DIR/headless_four_node_env.${RUN_ID_BASE}.sh" ]]; then
+  if [[ ! -f "$OUT_DIR/headless_eight_node_env.${RUN_ID_BASE}.sh" ]]; then
     trace "FAIL: missing headless env file"
     return 1
   fi
-  source "$OUT_DIR/headless_four_node_env.${RUN_ID_BASE}.sh"
+  source "$OUT_DIR/headless_eight_node_env.${RUN_ID_BASE}.sh"
 
   for node_id in "${NODE_IDS[@]}"; do
     guest_log="$RUN_DIR/${node_id}_guest.log"
@@ -199,7 +203,7 @@ prepare_environment() {
       return 1
     fi
   done
-  trace "shell gate ok for all four nodes"
+  trace "shell gate ok for all eight nodes"
   return 0
 }
 
@@ -214,11 +218,11 @@ validate_node_log() {
     "$node_id export" || return 1
   assert_log_has "$log_file" "\\[obmm_queue_demo\\] export layout -> ok" \
     "$node_id layout" || return 1
-  assert_log_has "$log_file" "\\[obmm_queue_demo\\] bootstrap ${OBMM_BOOTSTRAP} -> ok count=4" \
+  assert_log_has "$log_file" "\\[obmm_queue_demo\\] bootstrap ${OBMM_BOOTSTRAP} -> ok count=8" \
     "$node_id bootstrap exchange" || return 1
-  assert_log_has "$log_file" "\\[obmm_queue_demo\\] pool ready -> ok nodes=4" \
+  assert_log_has "$log_file" "\\[obmm_queue_demo\\] pool ready -> ok nodes=8" \
     "$node_id pool ready" || return 1
-  assert_log_has "$log_file" "\\[obmm_queue_demo\\] rounds -> ok count=4" \
+  assert_log_has "$log_file" "\\[obmm_queue_demo\\] rounds -> ok count=8" \
     "$node_id rounds done" || return 1
   assert_log_has "$log_file" "\\[obmm_queue_demo\\] queue stress -> ok passes=2 depth=${OBMM_QUEUE_DEPTH}" \
     "$node_id queue stress" || return 1

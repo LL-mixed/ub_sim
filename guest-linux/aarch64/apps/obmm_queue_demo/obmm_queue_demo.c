@@ -8,7 +8,7 @@
  *
  * Phase 1: Network setup
  * Phase 2: Export + layout init (pool header, directory, queues, arenas)
- * Phase 3: UDP bootstrap exchange (export/import tokens only)
+ * Phase 3: FM/QEMU bootstrap exchange (UDP fallback for legacy runs)
  * Phase 4: Import peer regions + poll READY state
  * Phase 5: Queue-based rounds (DATA / ACK / COMMIT descriptors)
  * Phase 6: Report + cleanup
@@ -957,6 +957,37 @@ static void cleanup(int obmm_fd, int node_count, int local_idx,
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
+enum bootstrap_mode {
+    BOOTSTRAP_FM,
+    BOOTSTRAP_UDP,
+};
+
+static enum bootstrap_mode parse_bootstrap_mode(void)
+{
+    const char *env = getenv("OBMM_BOOTSTRAP");
+
+    if (!env || env[0] == '\0' || strcmp(env, "fm") == 0)
+        return BOOTSTRAP_FM;
+    if (strcmp(env, "udp") == 0)
+        return BOOTSTRAP_UDP;
+    fprintf(stderr, TAG " unknown OBMM_BOOTSTRAP=%s, using fm\n", env);
+    return BOOTSTRAP_FM;
+}
+
+static uint64_t parse_bootstrap_generation(void)
+{
+    const char *session = getenv("OBMM_BOOTSTRAP_SESSION");
+    uint64_t hash = 1469598103934665603ULL;
+
+    if (!session || session[0] == '\0')
+        session = "default";
+    while (*session) {
+        hash ^= (unsigned char)*session++;
+        hash *= 1099511628211ULL;
+    }
+    return hash ? hash : 1;
+}
+
 int main(void)
 {
     char ifname[IFNAMSIZ];
@@ -975,6 +1006,8 @@ int main(void)
     int obmm_fd = -1;
     uint32_t local_cna = 0;
     uint64_t local_cna_u64 = 0;
+    uint64_t bootstrap_generation = 0;
+    enum bootstrap_mode bootstrap_mode;
     int i;
     int rc = 1;
 
@@ -985,11 +1018,16 @@ int main(void)
     alarm(RUN_TIMEOUT_S);
     g_export_size = obmm_parse_export_size();
     g_queue_depth = parse_queue_depth();
+    bootstrap_mode = parse_bootstrap_mode();
+    bootstrap_generation = parse_bootstrap_generation();
 
-    fprintf(stderr, TAG " start export_size=%" PRIu64 "MB queue_depth=%u\n",
-            g_export_size >> 20, g_queue_depth);
+    fprintf(stderr, TAG " start export_size=%" PRIu64
+            "MB queue_depth=%u bootstrap=%s session=%" PRIx64 "\n",
+            g_export_size >> 20, g_queue_depth,
+            bootstrap_mode == BOOTSTRAP_FM ? "fm" : "udp",
+            bootstrap_generation);
 
-    /* ---- Phase 1: Network setup ---- */
+    /* ---- Phase 1: Node identity and optional UDP setup ---- */
     if (!obmm_resolve_nodes(local_ip, ips, &node_count, &local_idx)) {
         fprintf(stderr, TAG " resolve nodes failed\n");
         return 1;
@@ -1001,32 +1039,34 @@ int main(void)
         return 1;
     }
 
-    if (!obmm_wait_iface(ifname, sizeof(ifname), &ifindex)) {
-        fprintf(stderr, TAG " ipourma iface not ready\n");
-        return 1;
-    }
-    if (!obmm_get_local_ipv4(ifname, &local_addr) ||
-        strcmp(inet_ntoa(local_addr), local_ip) != 0) {
-        if (!obmm_set_ipv4(ifname, local_ip)) {
-            fprintf(stderr, TAG " set ip failed\n");
+    if (bootstrap_mode == BOOTSTRAP_UDP) {
+        if (!obmm_wait_iface(ifname, sizeof(ifname), &ifindex)) {
+            fprintf(stderr, TAG " ipourma iface not ready\n");
             return 1;
         }
-    }
-    for (i = 0; i < node_count; i++) {
-        struct in_addr peer_addr;
-        if (i == local_idx)
-            continue;
-        memset(&peers[i], 0, sizeof(peers[i]));
-        peers[i].sin_family = AF_INET;
-        peers[i].sin_port = htons(OBMM_POOL_HELPERS_PORT);
-        inet_pton(AF_INET, ips[i], &peers[i].sin_addr);
-        peer_addr = peers[i].sin_addr;
-        obmm_install_arp(ifname, &peer_addr);
-    }
-    sockfd = obmm_create_udp(ifname);
-    if (sockfd < 0) {
-        fprintf(stderr, TAG " create socket failed\n");
-        return 1;
+        if (!obmm_get_local_ipv4(ifname, &local_addr) ||
+            strcmp(inet_ntoa(local_addr), local_ip) != 0) {
+            if (!obmm_set_ipv4(ifname, local_ip)) {
+                fprintf(stderr, TAG " set ip failed\n");
+                return 1;
+            }
+        }
+        for (i = 0; i < node_count; i++) {
+            struct in_addr peer_addr;
+            if (i == local_idx)
+                continue;
+            memset(&peers[i], 0, sizeof(peers[i]));
+            peers[i].sin_family = AF_INET;
+            peers[i].sin_port = htons(OBMM_POOL_HELPERS_PORT);
+            inet_pton(AF_INET, ips[i], &peers[i].sin_addr);
+            peer_addr = peers[i].sin_addr;
+            obmm_install_arp(ifname, &peer_addr);
+        }
+        sockfd = obmm_create_udp(ifname);
+        if (sockfd < 0) {
+            fprintf(stderr, TAG " create socket failed\n");
+            return 1;
+        }
     }
 
     /* ---- Phase 2: Export + layout init ---- */
@@ -1067,13 +1107,30 @@ int main(void)
         goto out;
     }
 
-    /* ---- Phase 3: UDP bootstrap exchange for export/import tokens ---- */
-    if (exchange_hello(sockfd, peers, node_count, local_idx,
-                       &local_meta, metas, got_meta) != 0) {
-        fprintf(stderr, TAG " HELLO exchange failed\n");
-        goto out;
+    /* ---- Phase 3: Bootstrap exchange for export/import tokens ---- */
+    if (bootstrap_mode == BOOTSTRAP_FM) {
+        if (obmm_bootstrap_publish(obmm_fd, local_idx, node_count,
+                                   bootstrap_generation, &local_meta) != 0) {
+            fprintf(stderr, TAG " FM bootstrap publish failed: %s\n",
+                    strerror(errno));
+            goto out;
+        }
+        if (obmm_bootstrap_lookup(obmm_fd, local_cna, node_count,
+                                  bootstrap_generation,
+                                  metas, got_meta) != 0) {
+            fprintf(stderr, TAG " FM bootstrap lookup failed: %s\n",
+                    strerror(errno));
+            goto out;
+        }
+        fprintf(stderr, TAG " bootstrap fm -> ok count=%d\n", node_count);
+    } else {
+        if (exchange_hello(sockfd, peers, node_count, local_idx,
+                           &local_meta, metas, got_meta) != 0) {
+            fprintf(stderr, TAG " HELLO exchange failed\n");
+            goto out;
+        }
+        fprintf(stderr, TAG " bootstrap udp -> ok count=%d\n", node_count);
     }
-    fprintf(stderr, TAG " bootstrap exchange -> ok count=%d\n", node_count);
 
     /* ---- Phase 4: Import peer regions ---- */
     {
@@ -1146,9 +1203,11 @@ int main(void)
         }
     }
 
-    if (exchange_ready(sockfd, peers, node_count, local_idx) != 0) {
-        fprintf(stderr, TAG " READY exchange failed\n");
-        goto out;
+    if (bootstrap_mode == BOOTSTRAP_UDP) {
+        if (exchange_ready(sockfd, peers, node_count, local_idx) != 0) {
+            fprintf(stderr, TAG " READY exchange failed\n");
+            goto out;
+        }
     }
     fprintf(stderr, TAG " pool ready -> ok nodes=%d\n", node_count);
     usleep(500000);

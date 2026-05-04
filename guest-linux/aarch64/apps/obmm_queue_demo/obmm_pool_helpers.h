@@ -549,6 +549,72 @@ static int obmm_do_import(int obmm_fd, const struct obmm_helpers_meta *meta,
     return 0;
 }
 
+static int obmm_bootstrap_publish(int obmm_fd, int local_idx, int node_count,
+                                  uint64_t generation,
+                                  const struct obmm_helpers_meta *meta)
+{
+    struct obmm_cmd_bootstrap_publish cmd;
+
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.record.export_mem_id = meta->export_mem_id;
+    cmd.record.remote_uba = meta->remote_uba;
+    cmd.record.size = meta->size;
+    cmd.record.generation = generation;
+    cmd.record.node_id = (uint32_t)local_idx;
+    cmd.record.node_count = (uint32_t)node_count;
+    cmd.record.export_cna = meta->export_cna;
+    cmd.record.token_id = meta->token_id;
+    if (ioctl(obmm_fd, OBMM_CMD_BOOTSTRAP_PUBLISH, &cmd) != 0)
+        return -1;
+    return 0;
+}
+
+static int obmm_bootstrap_lookup(int obmm_fd, uint32_t local_cna,
+                                 int node_count, uint64_t generation,
+                                 struct obmm_helpers_meta metas[
+                                     OBMM_POOL_HELPERS_MAX_NODES],
+                                 bool got[OBMM_POOL_HELPERS_MAX_NODES])
+{
+    long deadline = obmm_now_ms() + OBMM_POOL_HELPERS_WAIT_IFACE_MS;
+    int i;
+
+    while (obmm_now_ms() < deadline) {
+        struct obmm_cmd_bootstrap_lookup cmd;
+        bool all = true;
+
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.generation = generation;
+        cmd.node_count = (uint32_t)node_count;
+        cmd.local_cna = local_cna;
+        if (ioctl(obmm_fd, OBMM_CMD_BOOTSTRAP_LOOKUP, &cmd) != 0)
+            return -1;
+
+        for (i = 0; i < (int)cmd.count; i++) {
+            struct obmm_bootstrap_record *record = &cmd.records[i];
+            if (record->node_id >= (uint32_t)node_count)
+                continue;
+            metas[record->node_id].export_mem_id = record->export_mem_id;
+            metas[record->node_id].remote_uba = record->remote_uba;
+            metas[record->node_id].size = record->size;
+            metas[record->node_id].token_id = record->token_id;
+            metas[record->node_id].export_cna = record->export_cna;
+            got[record->node_id] = true;
+        }
+
+        for (i = 0; i < node_count; i++) {
+            if (!got[i]) {
+                all = false;
+                break;
+            }
+        }
+        if (all)
+            return 0;
+        usleep(100000);
+    }
+    errno = ETIMEDOUT;
+    return -1;
+}
+
 static int obmm_do_unimport(int obmm_fd, uint64_t mem_id)
 {
     struct obmm_cmd_unimport cmd;
