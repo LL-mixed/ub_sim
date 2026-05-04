@@ -42,18 +42,25 @@ The current OBMM shared memory pool is asymmetric:
   mapping.
 
 This cacheability model is a major reason to put `queue[dst][src]` in the
-destination node's exported region:
+destination node's exported region. Queue descriptors are small control records,
+so remote osync stores are acceptable for the producer while the destination
+polls its own ingress queues locally:
 
 ```text
-src producer: remote osync stores into dst queue and payload arena
-dst consumer: local cacheable loads from its own queue and payload arena
+src producer: remote osync stores into dst queue descriptors and tail
+dst consumer: local cacheable loads from its own queue descriptors and tail
 ```
 
-That is a good fit for receiver-owned ingress queues. The producer performs
-ordered non-cacheable remote stores, while the consumer reads from its local
-cacheable memory. The reverse direction, especially consumer updates to `head`,
-must be designed carefully because the producer later reads that field through
-an osync remote mapping.
+For payload data, the preferred demo path is producer-owned: the producer writes
+payload bytes into its own exported region through its local cacheable/bufferable
+mapping, publishes only a descriptor to the destination queue, and the consumer
+remote-reads the payload through its imported osync mapping. This avoids
+multi-producer allocation inside the receiver's exported memory and keeps payload
+lifetime under producer control.
+
+The reverse queue direction, especially consumer updates to `head`, must be
+designed carefully because the producer later reads that field through an osync
+remote mapping.
 
 The design therefore separates producer-owned and consumer-owned fields onto
 different cache lines. This avoids a cacheable local writer and a non-cacheable
@@ -62,7 +69,7 @@ remote writer sharing the same line.
 ## Exported Region Layout
 
 Each node divides its exported OBMM region into control metadata, per-peer
-ingress queues, and optional payload arenas:
+ingress queues, and a producer-owned payload slab:
 
 ```text
 node N exported region
@@ -73,11 +80,7 @@ node N exported region
 | ingress queue from node1     |
 | ...                          |
 +------------------------------+
-| payload arena from node0     |
-| payload arena from node1     |
-| ...                          |
-+------------------------------+
-| producer-owned data slabs    |
+| tx payload arena / data slab |
 +------------------------------+
 ```
 
@@ -85,7 +88,9 @@ The important rule is that high-frequency metadata must be single-writer:
 
 - `queue[dst][src].tail` is written only by `src`.
 - `queue[dst][src].head` is written only by `dst`.
-- payload arenas are partitioned by producer when remote writers are used.
+- producer-owned payload slabs are written only by the exporting node.
+- optional receiver-owned payload arenas must be partitioned by producer when
+  remote writers are used.
 
 Each node is responsible for initializing the queue, metadata, and arena layout
 inside the region that it exports. Peers must treat another node's exported
@@ -95,7 +100,7 @@ typical startup sequence is:
 ```text
 1. node initializes its own exported region header
 2. node creates all local ingress queues queue[node][peer]
-3. node creates per-peer payload arenas owned by this exported region
+3. node creates its producer-owned TX payload slab
 4. node announces the finalized metadata in its own exported region
 5. peers import the region, read the announcement, and resolve region_id -> mapped base + size
 ```
@@ -366,47 +371,9 @@ This prevents one busy peer from starving the others.
 
 ## Payload Placement
 
-There are two useful payload modes.
-
-### Receiver-Owned Payload
-
-The producer writes payload bytes directly into a per-producer arena in the
-destination node's exported region, then publishes a descriptor to the
-destination ingress queue.
-
-```text
-src writes payload -> dst.payload_arena_from_src
-src writes desc    -> dst.queue_from_src
-dst reads payload locally
-```
-
-This is best for control messages, medium-size messages, and data that the
-receiver will process immediately.
-
-For receiver-owned payloads:
-
-```text
-region_id      = dst.arena_from_src
-payload_offset = byte offset inside dst.arena_from_src
-payload_addr   = dst_arena_from_src_base + payload_offset
-```
-
-The source calculates `payload_addr` from its imported osync mapping of the
-destination arena. The destination calculates the same logical payload address
-from its local cacheable mapping of that arena.
-
-To keep this lockless, each destination node reserves one arena per producer:
-
-```text
-nodeB exported region
-| queue_from_nodeA   |
-| arena_from_nodeA   |
-| queue_from_nodeC   |
-| arena_from_nodeC   |
-```
-
-`nodeA` never allocates from `arena_from_nodeC`, so no cross-producer allocator
-lock is needed.
+There are two useful payload modes. The current demo uses producer-owned
+payloads as the default DATA path because it keeps payload allocation local to
+the node that owns and mutates the data.
 
 ### Producer-Owned Payload
 
@@ -414,11 +381,11 @@ The producer stores payload in its own exported region and publishes only a
 descriptor to the destination queue.
 
 ```text
-src writes payload locally
-src writes desc -> dst.queue_from_src
-dst remote-reads payload from src exported memory
-dst sends completion -> src
-src reclaims payload
+src writes payload locally through cacheable/bufferable mapping
+src writes desc -> dst.queue_from_src through imported osync mapping
+dst remote-reads payload from src exported memory through imported osync mapping
+dst sends completion/ACK -> src
+src reclaims or reuses payload slot
 ```
 
 This is best for large payloads and zero-copy sharing. It requires an explicit
@@ -434,6 +401,66 @@ payload_addr   = src_payload_arena_base + payload_offset
 
 The source writes the payload through its local cacheable mapping. The
 destination reads it through its imported osync mapping of the source arena.
+
+The exporter announces the producer-owned slab with an `OBMM_REGION_TX_ARENA`
+directory entry. For the four-node demo, each node currently exports:
+
+```text
+node N exported region
++------------------------------+
+| pool header                  |
++------------------------------+
+| directory                    |
++------------------------------+
+| queue[N][peer0]              |
+| queue[N][peer1]              |
+| queue[N][peer2]              |
++------------------------------+
+| TX_ARENA owned by node N     |
++------------------------------+
+```
+
+The DATA descriptor uses `region_id = src.TX_ARENA` and a byte
+`payload_offset` inside that slab. Each process resolves the descriptor through
+the directory for the exporting node:
+
+```text
+producer payload_addr = local_src_export_base + tx_arena_offset + payload_offset
+consumer payload_addr = imported_src_base     + tx_arena_offset + payload_offset
+```
+
+Because the producer writes the payload locally, there is no cross-node payload
+allocator in the receiver's memory. The producer must not overwrite or reclaim a
+slot until all intended consumers have returned completions.
+
+### Optional Receiver-Owned Payload
+
+Receiver-owned payloads remain useful for small control messages or data that
+the receiver will process immediately. In this mode, the producer writes payload
+bytes directly into a per-producer arena in the destination node's exported
+region, then publishes a descriptor to the destination ingress queue.
+
+```text
+src writes payload -> dst.payload_arena_from_src
+src writes desc    -> dst.queue_from_src
+dst reads payload locally
+```
+
+For receiver-owned payloads:
+
+```text
+region_id      = dst.arena_from_src
+payload_offset = byte offset inside dst.arena_from_src
+payload_addr   = dst_arena_from_src_base + payload_offset
+```
+
+The source calculates `payload_addr` from its imported osync mapping of the
+destination arena. The destination calculates the same logical payload address
+from its local cacheable mapping of that arena.
+
+To keep this lockless, each destination node must reserve one arena per
+producer. If multiple producers shared one receiver-owned arena, the allocation
+cursor would become a multi-writer remote synchronization point.
 
 ## Completion Queues
 
@@ -453,12 +480,15 @@ application protocol needs an acknowledgement.
 
 ## Memory Ordering
 
-At minimum, queue publication needs release/acquire semantics:
+At minimum, queue publication needs release/acquire semantics. For the
+producer-owned payload path:
 
-- Producer writes payload and descriptor.
+- Producer writes payload locally into its own TX arena.
+- Producer writes descriptor remotely into the destination queue.
 - Producer release-stores `tail`.
 - Consumer acquire-loads `tail`.
-- Consumer reads descriptor and payload.
+- Consumer reads descriptor locally from its ingress queue.
+- Consumer remote-reads payload from the producer's TX arena.
 - Consumer release-stores `head`.
 - Producer acquire-loads `head` before reusing slots.
 
@@ -466,15 +496,26 @@ For kernel code, use `smp_store_release()` and `smp_load_acquire()` for queue
 indices. For user-space demos, use C11 atomics with `memory_order_release` and
 `memory_order_acquire`.
 
-The OBMM pool's asymmetric mapping model refines this requirement:
+The OBMM pool's asymmetric mapping model refines this requirement for the
+producer-owned payload path:
 
-- Producer descriptor/payload writes to a peer region are remote osync,
-  non-cacheable stores.
+- Producer payload writes are local cacheable/bufferable stores into the
+  producer's own exported TX arena.
+- Producer descriptor writes to a peer queue are remote osync, non-cacheable
+  stores.
 - Producer `tail` publication is also a remote osync store and must be ordered
-  after the descriptor/payload stores.
+  after the local payload writes and remote descriptor stores.
 - Consumer reads are local cacheable reads from its own exported region.
+- Consumer payload reads are remote osync reads from the producer's exported TX
+  arena.
 - Consumer `head` updates are local cacheable stores that must become visible to
   peer osync readers before the peer reuses queue slots.
+
+The producer's local payload writes must be visible to peer osync readers before
+the descriptor is made visible through the destination queue's `tail` update. If
+the local cacheable/bufferable export mapping does not naturally provide this
+visibility ordering, the producer-owned payload path needs an explicit flush or
+publish barrier before writing the descriptor and release-storing `tail`.
 
 C11 atomics constrain compiler and local CPU ordering, but they do not by
 themselves define the visibility rule between a local cacheable writer and a
@@ -484,10 +525,16 @@ not automatically visible to remote osync readers, `head` publication needs a
 flush/cache-maintenance step, or the queue metadata page should use a mapping
 mode that makes `head` visibility explicit.
 
-For this reason, the first implementation should include a stress test that
-fills and drains queues repeatedly, forcing producer-side `head` reads and slot
-reuse. Passing only a never-full queue test is not enough to prove the
-cacheability contract.
+For this reason, the implementation should include stress tests for both parts
+of the contract:
+
+- fill and drain queues repeatedly, forcing producer-side `head` reads and slot
+  reuse;
+- write producer-owned payload locally, publish descriptors remotely, and verify
+  that consumers can remote-read the expected payload before completion.
+
+Passing only a never-full queue test is not enough to prove the cacheability
+contract.
 
 ## Doorbells and Polling
 
@@ -523,12 +570,14 @@ default queue behavior.
 2. Replace the current UDP ACK/COMMIT path in the four-node OBMM pool demo with
    OBMM queue descriptors.
 3. Validate four-node full mesh with `QEMU_MEM=8G`, `QEMU_SMP=4`,
-   `pmd_mapping=100%`, `obmm.mempool_size=0`, and
-   `OBMM_POOL_EXPORT_SIZE_MB=7680`.
-4. Add receiver-owned payload arenas and verify remote write plus local read.
-5. Add producer-owned payload descriptors and completion queues for large
-   payloads.
-6. Scale the same queue matrix to eight nodes and validate fairness under mixed
+   `pmd_mapping=100%`, `obmm.mempool_size=0`, and a small export size such as
+   `OBMM_POOL_EXPORT_SIZE_MB=8` for the queue demo. Larger exports can be used
+   for payload-capacity tests but are not required for queue correctness.
+4. Add producer-owned TX arenas and verify local producer write plus remote
+   consumer read.
+5. Validate completion/ACK handling before producer payload slot reuse.
+6. Optionally add receiver-owned payload arenas for small control messages.
+7. Scale the same queue matrix to eight nodes and validate fairness under mixed
    producer rates.
 
 ## Key Constraints
@@ -542,5 +591,7 @@ default queue behavior.
 - Keep descriptors fixed-size and cacheline-friendly.
 - Treat the OBMM cacheability asymmetry as part of the queue contract:
   local-owner access is cacheable, peer access is osync/non-cacheable.
+- For the preferred producer-owned payload path, publish descriptors only after
+  local TX arena writes are visible to peer osync readers.
 - Validate `head` visibility from a local cacheable consumer store to a remote
   osync producer load before relying on slot reuse under pressure.

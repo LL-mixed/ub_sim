@@ -90,6 +90,11 @@ run_default_actions() {
     ran_any="1"
   fi
 
+  if has_flag "linqu_obmm_queue_demo=1"; then
+    run_binary "linqu_ub_obmm_queue_demo" /bin/linqu_ub_obmm_queue_demo || rc=$?
+    ran_any="1"
+  fi
+
   if [ "$rc" -ne 0 ]; then
     return "$rc"
   fi
@@ -120,6 +125,9 @@ run_single_action() {
       ;;
     obmm)
       run_binary "linqu_ub_obmm_demo" /bin/linqu_ub_obmm_demo
+      ;;
+    obmm_queue)
+      run_binary "linqu_ub_obmm_queue_demo" /bin/linqu_ub_obmm_queue_demo
       ;;
     all)
       run_default_actions

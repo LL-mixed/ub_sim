@@ -25,6 +25,8 @@ UDMA_SRC="$ROOT_DIR/ub_udma_demo.c"
 UDMA_BIN="$OUT_DIR/linqu_ub_udma_demo"
 OBMM_SRC="$ROOT_DIR/ub_obmm_pool_demo.c"
 OBMM_BIN="$OUT_DIR/linqu_ub_obmm_demo"
+OBMM_QUEUE_DEMO_SRC="$ROOT_DIR/apps/obmm_queue_demo/obmm_queue_demo.c"
+OBMM_QUEUE_DEMO_BIN="$OUT_DIR/linqu_ub_obmm_queue_demo"
 W4_GUEST_SRC="$ROOT_DIR/w4_guest_qemu_demo.c"
 W4_DB_SERVICE_SRC="$ROOT_DIR/w4_kvcache_db_service.c"
 W4_GUEST_BIN="$OUT_DIR/linqu_w4_guest"
@@ -113,6 +115,7 @@ current_initramfs_signature() {
   write_signature_line "tcp_each_server_src" "$TCP_EACH_SERVER_SRC"
   write_signature_line "udma_src" "$UDMA_SRC"
   write_signature_line "obmm_src" "$OBMM_SRC"
+  write_signature_line "obmm_queue_demo_src" "$OBMM_QUEUE_DEMO_SRC"
   write_signature_line "w4_guest_src" "$W4_GUEST_SRC"
   write_signature_line "w4_db_service_src" "$W4_DB_SERVICE_SRC"
   write_signature_line "run_demo_src" "$RUN_DEMO_SRC"
@@ -312,7 +315,7 @@ mkdir -p \
 
 if [[ -z "$AARCH64_LINUX_CC" ]]; then
   echo "AARCH64_LINUX_CC is required" >&2
-  echo "example: export AARCH64_LINUX_CC=aarch64-linux-gnu-gcc" >&2
+  echo "example: export AARCH64_LINUX_CC=/path/to/aarch64-*-gnu-gcc" >&2
   exit 1
 fi
 
@@ -334,6 +337,7 @@ fi
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$TCP_EACH_SERVER_SRC" -o "$TCP_EACH_SERVER_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$UDMA_SRC" -o "$UDMA_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$OBMM_SRC" -o "$OBMM_BIN"
+"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/apps/obmm_queue_demo" "$OBMM_QUEUE_DEMO_SRC" -o "$OBMM_QUEUE_DEMO_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$W4_GUEST_SRC" "$W4_DB_SERVICE_SRC" -o "$W4_GUEST_BIN"
 
 if [[ -f "$INIT_SCRIPT_SRC" ]]; then
@@ -354,6 +358,7 @@ cp "$RPC_BIN" "$INITRAMFS_DIR/bin/linqu_ub_rpc"
 cp "$TCP_EACH_SERVER_BIN" "$INITRAMFS_DIR/bin/linqu_ub_tcp_each_server"
 cp "$UDMA_BIN" "$INITRAMFS_DIR/bin/linqu_ub_udma_demo"
 cp "$OBMM_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_demo"
+cp "$OBMM_QUEUE_DEMO_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_queue_demo"
 cp "$W4_GUEST_BIN" "$INITRAMFS_DIR/bin/linqu_w4_guest"
 chmod +x \
   "$INITRAMFS_DIR/bin/linqu_probe" \
@@ -364,6 +369,7 @@ chmod +x \
   "$INITRAMFS_DIR/bin/linqu_ub_tcp_each_server" \
   "$INITRAMFS_DIR/bin/linqu_ub_udma_demo" \
   "$INITRAMFS_DIR/bin/linqu_ub_obmm_demo" \
+  "$INITRAMFS_DIR/bin/linqu_ub_obmm_queue_demo" \
   "$INITRAMFS_DIR/bin/linqu_w4_guest"
 
 cp "$BUSYBOX" "$INITRAMFS_DIR/bin/busybox"
