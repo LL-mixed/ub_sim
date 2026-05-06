@@ -23,11 +23,15 @@
 #include <unistd.h>
 
 #include "../kernel_ub/include/uapi/ub/obmm.h"
+#include "common/obmm_common.h"
+#include "apps/obmm_queue_demo/obmm_pool_types.h"
+#include "apps/obmm_queue_demo/obmm_queue.h"
 
-#define W4_DB_CLUSTER_PORT 18561
 #define W4_DB_CLUSTER_MAX_NODES 8
 #define W4_DB_CLUSTER_MAX_RECORDS 12
-#define W4_DB_CLUSTER_REGION_SIZE (2ULL * 1024ULL * 1024ULL)
+#define W4_DB_DEFAULT_REGION_SIZE_MB 64
+#define W4_DB_CMDLINE_REGION_SIZE "w4_db_region_size_mb"
+#define W4_DB_CLUSTER_QUEUE_DEPTH 64
 #define W4_DB_CLUSTER_WAIT_MS 20000L
 #define W4_DB_OBMM_SERVICE_WAIT_MS 120000L
 #define W4_DB_CLUSTER_IMPORT_ALIGN (2ULL * 1024ULL * 1024ULL)
@@ -44,17 +48,6 @@ struct w4_db_cluster_meta {
     uint64_t size;
     uint32_t token_id;
     uint32_t export_cna;
-};
-
-struct w4_db_cluster_msg {
-    uint32_t magic;
-    uint16_t version;
-    uint16_t type;
-    uint16_t src_idx;
-    uint16_t dst_idx;
-    uint16_t reserved0;
-    uint16_t reserved1;
-    struct w4_db_cluster_meta meta;
 };
 
 struct w4_db_cluster_payload {
@@ -100,12 +93,6 @@ struct w4_db_mapped_region {
     uint64_t mem_id;
 };
 
-struct w4_db_mem_window {
-    uint64_t base_pa;
-    uint64_t size_bytes;
-    bool is_cacheable;
-};
-
 struct w4_db_cluster_slot {
     int owner_idx;
     bool is_local;
@@ -120,37 +107,27 @@ struct w4_db_cluster_runtime {
     bool active;
     int node_count;
     int local_idx;
-    int sockfd;
     int obmm_fd;
     uint32_t local_cna;
     uint32_t publish_seq;
     uint16_t observe_epoch;
-    struct sockaddr_in peers[W4_DB_CLUSTER_MAX_NODES];
+    uint64_t region_size;
+    uint64_t payload_offset;
     struct w4_db_cluster_meta metas[W4_DB_CLUSTER_MAX_NODES];
     struct w4_db_cluster_slot slots[W4_DB_CLUSTER_MAX_NODES];
+    struct obmm_spsc_queue *ingress_queues[W4_DB_CLUSTER_MAX_NODES];
+    void *ingress_queue_base;
+    struct obmm_spsc_queue *egress_queues[W4_DB_CLUSTER_MAX_NODES];
+    struct obmm_helpers_region egress_import[W4_DB_CLUSTER_MAX_NODES];
 };
 
-#define W4_DB_CLUSTER_MAGIC 0x57344442U
-#define W4_DB_CLUSTER_VERSION 1U
-#define W4_DB_CLUSTER_MSG_HELLO 1U
-#define W4_DB_CLUSTER_MSG_READY 2U
-#define W4_DB_CLUSTER_MSG_OBSERVED 3U
 #define W4_DB_CLUSTER_PAYLOAD_MAGIC 0x57344450U
+#define W4_DB_CLUSTER_PAYLOAD_VERSION 1U
 
 static struct w4_db_cluster_runtime g_w4_db_cluster_runtime;
 
 static struct w4_db_record *w4_db_alloc_record(struct w4_db_service *svc);
 static struct w4_db_record *w4_db_find_record(struct w4_db_service *svc, const char *key);
-
-static long w4_db_now_ms(void)
-{
-    struct timespec ts;
-
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
-        return 0;
-    }
-    return (long)(ts.tv_sec * 1000L + ts.tv_nsec / 1000000L);
-}
 
 static void w4_db_cpu_relax_wait(unsigned int *attempt)
 {
@@ -225,115 +202,6 @@ static bool w4_db_resolve_cluster_nodes(char local_ip[INET_ADDRSTRLEN],
     return false;
 }
 
-static bool w4_db_find_ipourma_iface(char *name, size_t name_len)
-{
-    FILE *fp;
-    char line[512];
-
-    fp = fopen("/proc/net/dev", "r");
-    if (!fp) {
-        return false;
-    }
-    while (fgets(line, sizeof(line), fp) != NULL) {
-        char *colon = strchr(line, ':');
-        char *left;
-        size_t n;
-
-        if (!colon) {
-            continue;
-        }
-        *colon = '\0';
-        left = line;
-        while (*left == ' ' || *left == '\t') {
-            left++;
-        }
-        if (strncmp(left, "ipourma", strlen("ipourma")) != 0) {
-            continue;
-        }
-        n = strcspn(left, " \t\r\n");
-        if (n >= name_len) {
-            n = name_len - 1;
-        }
-        memcpy(name, left, n);
-        name[n] = '\0';
-        fclose(fp);
-        return true;
-    }
-    fclose(fp);
-    return false;
-}
-
-static void w4_db_install_static_arp(const char *ifname, const struct in_addr *peer_addr)
-{
-    struct arpreq req;
-    struct sockaddr_in *pa;
-    uint32_t peer = ntohl(peer_addr->s_addr);
-    unsigned char mac[6] = {
-        0x02, 0x00, 0x00, 0x00,
-        (unsigned char)((peer >> 8) & 0xff),
-        (unsigned char)(peer & 0xff),
-    };
-    int fd;
-
-    memset(&req, 0, sizeof(req));
-    pa = (struct sockaddr_in *)&req.arp_pa;
-    pa->sin_family = AF_INET;
-    pa->sin_addr = *peer_addr;
-    req.arp_ha.sa_family = ARPHRD_ETHER;
-    memcpy(req.arp_ha.sa_data, mac, sizeof(mac));
-    req.arp_flags = ATF_PERM | ATF_COM;
-    snprintf(req.arp_dev, sizeof(req.arp_dev), "%s", ifname);
-
-    fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) {
-        return;
-    }
-    (void)ioctl(fd, SIOCSARP, &req);
-    close(fd);
-}
-
-static int w4_db_create_udp_socket(const char *ifname)
-{
-    int sockfd;
-    int one = 1;
-    int flags;
-    struct sockaddr_in bind_addr;
-
-    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sockfd < 0) {
-        return -1;
-    }
-    (void)setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-    (void)setsockopt(sockfd, SOL_SOCKET, SO_BINDTODEVICE, ifname, strlen(ifname));
-
-    memset(&bind_addr, 0, sizeof(bind_addr));
-    bind_addr.sin_family = AF_INET;
-    bind_addr.sin_port = htons(W4_DB_CLUSTER_PORT);
-    bind_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    if (bind(sockfd, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) != 0) {
-        close(sockfd);
-        return -1;
-    }
-    flags = fcntl(sockfd, F_GETFL, 0);
-    if (flags >= 0) {
-        (void)fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
-    }
-    return sockfd;
-}
-
-static int w4_db_send_msg(int sockfd, const struct sockaddr_in *peer, const void *buf, size_t len)
-{
-    ssize_t n = sendto(sockfd, buf, len, MSG_DONTWAIT,
-                       (const struct sockaddr *)peer, sizeof(*peer));
-    return (n == (ssize_t)len) ? 0 : -1;
-}
-
-static ssize_t w4_db_recv_msg(int sockfd, void *buf, size_t len, struct sockaddr_in *from)
-{
-    socklen_t fromlen = sizeof(*from);
-    return recvfrom(sockfd, buf, len, MSG_DONTWAIT, (struct sockaddr *)from, &fromlen);
-}
-
 static bool w4_db_parse_hex_file_u64(const char *path, uint64_t *value)
 {
     char buf[256];
@@ -356,120 +224,6 @@ static bool w4_db_parse_hex_file_u64(const char *path, uint64_t *value)
     }
     *value = (uint64_t)v;
     return true;
-}
-
-static bool w4_db_parse_windows(struct w4_db_mem_window windows[W4_DB_CLUSTER_MAX_WINDOWS],
-                                int *count_out)
-{
-    FILE *fp;
-    char line[256];
-    int count = 0;
-
-    fp = fopen("/sys/bus/ub/devices/00001/mem_windows", "r");
-    if (!fp) {
-        return false;
-    }
-    while (fgets(line, sizeof(line), fp) != NULL) {
-        unsigned long long mar = 0;
-        unsigned long long decode = 0;
-        unsigned long long cc_base_mb = 0;
-        unsigned long long cc_size_mb = 0;
-        unsigned long long nc_base_mb = 0;
-        unsigned long long nc_size_mb = 0;
-
-        if (sscanf(line,
-                   "mar%llu decode=%llx cc_base_mb=%llx cc_size_mb=%llx nc_base_mb=%llx nc_size_mb=%llx",
-                   &mar, &decode, &cc_base_mb, &cc_size_mb, &nc_base_mb, &nc_size_mb) != 6) {
-            continue;
-        }
-        if (nc_size_mb != 0 && count < W4_DB_CLUSTER_MAX_WINDOWS) {
-            windows[count].base_pa = ((uint64_t)nc_base_mb) << 20;
-            windows[count].size_bytes = ((uint64_t)nc_size_mb) << 20;
-            windows[count].is_cacheable = false;
-            count += 1;
-        } else if (cc_size_mb != 0 && count < W4_DB_CLUSTER_MAX_WINDOWS) {
-            windows[count].base_pa = ((uint64_t)cc_base_mb) << 20;
-            windows[count].size_bytes = ((uint64_t)cc_size_mb) << 20;
-            windows[count].is_cacheable = true;
-            count += 1;
-        }
-    }
-    fclose(fp);
-    *count_out = count;
-    return count > 0;
-}
-
-static uint64_t w4_db_align_up_u64(uint64_t value, uint64_t align)
-{
-    return (value + align - 1U) & ~(align - 1U);
-}
-
-static bool w4_db_allocate_import_pas(int import_count,
-                                      uint64_t size_per_import,
-                                      uint64_t pas[W4_DB_CLUSTER_MAX_NODES],
-                                      bool map_osync[W4_DB_CLUSTER_MAX_NODES])
-{
-    struct w4_db_mem_window windows[W4_DB_CLUSTER_MAX_WINDOWS];
-    int window_count = 0;
-    int import_idx = 0;
-    int wi;
-
-    if (import_count <= 0) {
-        return true;
-    }
-    if (!w4_db_parse_windows(windows, &window_count)) {
-        printf("[w4_guest] gap db_service_cluster_stage=parse_windows_failed\n");
-        return false;
-    }
-    for (wi = 0; wi < window_count && import_idx < import_count; ++wi) {
-        uint64_t cur = w4_db_align_up_u64(windows[wi].base_pa, W4_DB_CLUSTER_IMPORT_ALIGN);
-        uint64_t end = windows[wi].base_pa + windows[wi].size_bytes;
-
-        while (import_idx < import_count && cur + size_per_import <= end) {
-            pas[import_idx] = cur;
-            map_osync[import_idx] = !windows[wi].is_cacheable;
-            import_idx += 1;
-            cur = w4_db_align_up_u64(cur + size_per_import, W4_DB_CLUSTER_IMPORT_ALIGN);
-        }
-    }
-    return import_idx == import_count;
-}
-
-static int w4_db_open_obmm(void)
-{
-    return open("/dev/obmm", O_RDWR);
-}
-
-static int w4_db_open_region_dev(uint64_t mem_id, bool map_osync)
-{
-    char path[128];
-
-    snprintf(path, sizeof(path), "/dev/obmm_shmdev%" PRIu64, mem_id);
-    return open(path, O_RDWR | (map_osync ? O_SYNC : 0));
-}
-
-static int w4_db_map_region_device(uint64_t mem_id,
-                                   size_t len,
-                                   bool map_osync,
-                                   struct w4_db_mapped_region *region)
-{
-    memset(region, 0, sizeof(*region));
-    region->fd = -1;
-    region->mem_id = mem_id;
-    region->len = len;
-
-    region->fd = w4_db_open_region_dev(mem_id, map_osync);
-    if (region->fd < 0) {
-        return -1;
-    }
-    region->addr = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED, region->fd, 0);
-    if (region->addr == MAP_FAILED) {
-        close(region->fd);
-        region->fd = -1;
-        region->addr = NULL;
-        return -1;
-    }
-    return 0;
 }
 
 static int w4_db_update_region_range_at(const struct w4_db_cluster_slot *slot,
@@ -571,107 +325,6 @@ static int w4_db_sync_remote_range(const struct w4_db_cluster_slot *slot,
     return -1;
 }
 
-static void w4_db_unmap_region_device(struct w4_db_mapped_region *region)
-{
-    if (region->addr && region->addr != MAP_FAILED) {
-        munmap(region->addr, region->len);
-        region->addr = NULL;
-    }
-    if (region->fd >= 0) {
-        close(region->fd);
-        region->fd = -1;
-    }
-}
-
-static int w4_db_do_export_region(int obmm_fd, struct w4_db_cluster_meta *meta)
-{
-    struct obmm_cmd_export cmd;
-
-    memset(&cmd, 0, sizeof(cmd));
-    cmd.length = 1;
-    cmd.size[0] = W4_DB_CLUSTER_REGION_SIZE;
-    cmd.flags = OBMM_EXPORT_FLAG_ALLOW_MMAP;
-    cmd.pxm_numa = 0;
-    if (ioctl(obmm_fd, OBMM_CMD_EXPORT, &cmd) != 0) {
-        return -1;
-    }
-    meta->export_mem_id = cmd.mem_id;
-    meta->remote_uba = cmd.uba;
-    meta->size = W4_DB_CLUSTER_REGION_SIZE;
-    meta->token_id = cmd.tokenid;
-    return 0;
-}
-
-static int w4_db_do_unexport_region(int obmm_fd, uint64_t mem_id)
-{
-    struct obmm_cmd_unexport cmd;
-
-    memset(&cmd, 0, sizeof(cmd));
-    cmd.mem_id = mem_id;
-    return ioctl(obmm_fd, OBMM_CMD_UNEXPORT, &cmd);
-}
-
-static int w4_db_do_import_region(int obmm_fd,
-                                  const struct w4_db_cluster_meta *meta,
-                                  uint32_t local_cna,
-                                  uint64_t local_pa,
-                                  uint64_t *import_mem_id)
-{
-    struct obmm_sim_dec_import_priv_v1_user {
-        uint32_t magic;
-        uint16_t version;
-        uint16_t len;
-        uint64_t remote_uba;
-        uint32_t token_value;
-        uint32_t flags;
-    } priv;
-    struct obmm_cmd_import cmd;
-
-    memset(&priv, 0, sizeof(priv));
-    priv.magic = 0x53444950U;
-    priv.version = 1;
-    priv.len = sizeof(priv);
-    priv.remote_uba = meta->remote_uba;
-    priv.token_value = meta->token_id;
-
-    memset(&cmd, 0, sizeof(cmd));
-    cmd.flags = OBMM_IMPORT_FLAG_ALLOW_MMAP;
-    cmd.addr = local_pa;
-    cmd.length = meta->size;
-    cmd.tokenid = meta->token_id;
-    cmd.scna = local_cna;
-    cmd.dcna = meta->export_cna;
-    cmd.priv_len = sizeof(priv);
-    cmd.priv = &priv;
-    if (ioctl(obmm_fd, OBMM_CMD_IMPORT, &cmd) != 0) {
-        return -1;
-    }
-    *import_mem_id = cmd.mem_id;
-    return 0;
-}
-
-static int w4_db_do_unimport_region(int obmm_fd, uint64_t mem_id)
-{
-    struct obmm_cmd_unimport cmd;
-
-    memset(&cmd, 0, sizeof(cmd));
-    cmd.mem_id = mem_id;
-    return ioctl(obmm_fd, OBMM_CMD_UNIMPORT, &cmd);
-}
-
-static void w4_db_init_cluster_msg(struct w4_db_cluster_msg *msg,
-                                   uint16_t type,
-                                   int src_idx,
-                                   int dst_idx)
-{
-    memset(msg, 0, sizeof(*msg));
-    msg->magic = W4_DB_CLUSTER_MAGIC;
-    msg->version = W4_DB_CLUSTER_VERSION;
-    msg->type = type;
-    msg->src_idx = (uint16_t)src_idx;
-    msg->dst_idx = (uint16_t)dst_idx;
-}
-
 static uint16_t w4_db_snapshot_metadata_records(struct w4_db_service *svc,
                                                 struct w4_db_record *out,
                                                 uint16_t max_records)
@@ -764,7 +417,7 @@ static int w4_db_write_cluster_payload(struct w4_db_service *svc,
     }
     memset(&payload, 0, sizeof(payload));
     payload.magic = W4_DB_CLUSTER_PAYLOAD_MAGIC;
-    payload.version = W4_DB_CLUSTER_VERSION;
+    payload.version = W4_DB_CLUSTER_PAYLOAD_VERSION;
     payload.record_count = w4_db_snapshot_metadata_records(svc,
                                                            payload.records,
                                                            W4_DB_CLUSTER_MAX_RECORDS);
@@ -910,7 +563,7 @@ static bool w4_db_try_read_stable_payload(const struct w4_db_cluster_payload *pa
         if (header.publish_seq == 0 ||
             header.publish_seq != header.publish_done_seq ||
             header.magic != W4_DB_CLUSTER_PAYLOAD_MAGIC ||
-            header.version != W4_DB_CLUSTER_VERSION ||
+            header.version != W4_DB_CLUSTER_PAYLOAD_VERSION ||
             header.record_count == 0 ||
             header.record_count > W4_DB_CLUSTER_MAX_RECORDS) {
             return false;
@@ -929,7 +582,7 @@ static bool w4_db_try_read_stable_payload(const struct w4_db_cluster_payload *pa
             snapshot->publish_seq == header.publish_seq &&
             snapshot->publish_done_seq == header.publish_done_seq &&
             snapshot->magic == W4_DB_CLUSTER_PAYLOAD_MAGIC &&
-            snapshot->version == W4_DB_CLUSTER_VERSION &&
+            snapshot->version == W4_DB_CLUSTER_PAYLOAD_VERSION &&
             snapshot->record_count == header.record_count) {
             return true;
         }
@@ -1023,7 +676,7 @@ static bool w4_db_try_read_stable_payload_region(const struct w4_db_cluster_slot
     if (header.publish_seq == 0 ||
         header.publish_seq != header.publish_done_seq ||
         header.magic != W4_DB_CLUSTER_PAYLOAD_MAGIC ||
-        header.version != W4_DB_CLUSTER_VERSION ||
+        header.version != W4_DB_CLUSTER_PAYLOAD_VERSION ||
         header.record_count == 0 ||
         header.record_count > W4_DB_CLUSTER_MAX_RECORDS) {
         return false;
@@ -1121,7 +774,7 @@ static bool w4_db_try_read_stable_compact_summary_region(
     if (header.publish_seq == 0 ||
         header.publish_seq != header.publish_done_seq ||
         header.magic != W4_DB_CLUSTER_PAYLOAD_MAGIC ||
-        header.version != W4_DB_CLUSTER_VERSION ||
+        header.version != W4_DB_CLUSTER_PAYLOAD_VERSION ||
         header.record_count == 0 ||
         header.record_count > W4_DB_CLUSTER_MAX_RECORDS) {
         return false;
@@ -1156,8 +809,8 @@ static bool w4_db_wait_compact_summary_region_at_least(
     if (!slot || !summary) {
         return false;
     }
-    deadline = w4_db_now_ms() + timeout_ms;
-    while (w4_db_now_ms() < deadline) {
+    deadline = obmm_now_ms() + timeout_ms;
+    while (obmm_now_ms() < deadline) {
         memset(&local_summary, 0, sizeof(local_summary));
         memset(&local_seen, 0, sizeof(local_seen));
         if (w4_db_try_read_stable_compact_summary_region(slot, &local_summary, &local_seen)) {
@@ -1207,8 +860,8 @@ static bool w4_db_wait_stable_payload_region_at_least(
     if (!slot || !snapshot) {
         return false;
     }
-    deadline = w4_db_now_ms() + timeout_ms;
-    while (w4_db_now_ms() < deadline) {
+    deadline = obmm_now_ms() + timeout_ms;
+    while (obmm_now_ms() < deadline) {
         memset(&local_snapshot, 0, sizeof(local_snapshot));
         memset(&local_seen, 0, sizeof(local_seen));
         if (w4_db_try_read_stable_payload_region(slot, &local_snapshot, &local_seen)) {
@@ -1310,7 +963,7 @@ static bool w4_db_slot_find_record(const struct w4_db_cluster_slot *slot,
     if (header.publish_seq == 0 ||
         header.publish_seq != header.publish_done_seq ||
         header.magic != W4_DB_CLUSTER_PAYLOAD_MAGIC ||
-        header.version != W4_DB_CLUSTER_VERSION ||
+        header.version != W4_DB_CLUSTER_PAYLOAD_VERSION ||
         header.record_count == 0 ||
         header.record_count > W4_DB_CLUSTER_MAX_RECORDS) {
         return false;
@@ -1383,369 +1036,186 @@ static int w4_db_read_primary_cna(uint32_t *local_cna_out)
     return 0;
 }
 
-static int w4_db_exchange_cluster_meta(int sockfd,
-                                       struct sockaddr_in peers[W4_DB_CLUSTER_MAX_NODES],
-                                       int node_count,
-                                       int local_idx,
-                                       const struct w4_db_cluster_meta *local_meta,
-                                       struct w4_db_cluster_meta metas[W4_DB_CLUSTER_MAX_NODES],
-                                       bool got_meta[W4_DB_CLUSTER_MAX_NODES])
+static int w4_db_exchange_cluster_meta(struct w4_db_cluster_runtime *rt,
+                                       const struct w4_db_cluster_meta *local_meta)
 {
-    struct w4_db_cluster_msg msg;
-    long deadline = w4_db_now_ms() + W4_DB_CLUSTER_WAIT_MS;
-
-    metas[local_idx] = *local_meta;
-    got_meta[local_idx] = true;
-    while (w4_db_now_ms() < deadline) {
-        bool all = true;
-        struct sockaddr_in from;
-        struct w4_db_cluster_msg rx;
-        int i;
-
-        for (i = 0; i < node_count; ++i) {
-            if (!got_meta[i]) {
-                all = false;
-                break;
-            }
-        }
-        if (all) {
-            return 0;
-        }
-        for (i = 0; i < node_count; ++i) {
-            if (i == local_idx) {
-                continue;
-            }
-            w4_db_init_cluster_msg(&msg, W4_DB_CLUSTER_MSG_HELLO, local_idx, i);
-            msg.meta = *local_meta;
-            (void)w4_db_send_msg(sockfd, &peers[i], &msg, sizeof(msg));
-        }
-        while (w4_db_recv_msg(sockfd, &rx, sizeof(rx), &from) == (ssize_t)sizeof(rx)) {
-            if (rx.magic != W4_DB_CLUSTER_MAGIC || rx.version != W4_DB_CLUSTER_VERSION) {
-                continue;
-            }
-            if ((rx.type == W4_DB_CLUSTER_MSG_HELLO ||
-                 rx.type == W4_DB_CLUSTER_MSG_READY) &&
-                rx.src_idx < (uint16_t)node_count) {
-                metas[rx.src_idx] = rx.meta;
-                got_meta[rx.src_idx] = true;
-            }
-        }
-        usleep(100000);
-    }
-    return -1;
-}
-
-static int w4_db_import_cluster_peers(int obmm_fd,
-                                      uint32_t local_cna,
-                                      int node_count,
-                                      int local_idx,
-                                      const struct w4_db_cluster_meta metas[W4_DB_CLUSTER_MAX_NODES],
-                                      struct w4_db_cluster_slot slots[W4_DB_CLUSTER_MAX_NODES])
-{
-    uint64_t import_pas[W4_DB_CLUSTER_MAX_NODES];
-    bool import_osync[W4_DB_CLUSTER_MAX_NODES];
-    int import_count = node_count - 1;
-    int import_idx = 0;
+    struct obmm_helpers_meta publish_meta;
+    struct obmm_helpers_meta peer_metas[OBMM_POOL_HELPERS_MAX_NODES];
+    bool got[OBMM_POOL_HELPERS_MAX_NODES];
     int i;
 
-    if (!w4_db_allocate_import_pas(import_count,
-                                   W4_DB_CLUSTER_REGION_SIZE,
-                                   import_pas,
-                                   import_osync)) {
-        printf("[w4_guest] gap db_service_cluster_stage=import_alloc_failed count=%d size=0x%016" PRIx64 "\n",
-               import_count,
-               (uint64_t)W4_DB_CLUSTER_REGION_SIZE);
+    memset(&publish_meta, 0, sizeof(publish_meta));
+    publish_meta.export_mem_id = local_meta->export_mem_id;
+    publish_meta.remote_uba = local_meta->remote_uba;
+    publish_meta.size = local_meta->size;
+    publish_meta.token_id = local_meta->token_id;
+    publish_meta.export_cna = local_meta->export_cna;
+
+    memset(got, 0, sizeof(got));
+
+    if (obmm_bootstrap_publish(rt->obmm_fd, rt->local_idx, rt->node_count,
+                               1, &publish_meta) != 0) {
+        fprintf(stderr, "[w4_db] FM bootstrap publish failed: %s\n", strerror(errno));
         return -1;
     }
-    for (i = 0; i < node_count; ++i) {
-        if (i == local_idx) {
-            continue;
-        }
-        slots[i].owner_idx = i;
-        slots[i].is_local = false;
-        slots[i].local_pa = import_pas[import_idx];
-        slots[i].map_osync = true;
-        fprintf(stderr,
-                "[w4_guest] remote_slot_map_osync_forced node=%d map_osync=%d\n",
-                i + 1,
-                slots[i].map_osync ? 1 : 0);
-        slots[i].export_cna = metas[i].export_cna;
-        import_idx += 1;
-        slots[i].mem_id = 0;
-        memset(&slots[i].region, 0, sizeof(slots[i].region));
-        slots[i].region.fd = -1;
+
+    if (obmm_bootstrap_lookup(rt->obmm_fd, rt->local_cna, rt->node_count,
+                              1, peer_metas, got) != 0) {
+        fprintf(stderr, "[w4_db] FM bootstrap lookup failed: %s\n", strerror(errno));
+        return -1;
+    }
+
+    for (i = 0; i < rt->node_count; i++) {
+        if (i == rt->local_idx) continue;
+        rt->metas[i].export_mem_id = peer_metas[i].export_mem_id;
+        rt->metas[i].remote_uba = peer_metas[i].remote_uba;
+        rt->metas[i].size = peer_metas[i].size;
+        rt->metas[i].token_id = peer_metas[i].token_id;
+        rt->metas[i].export_cna = peer_metas[i].export_cna;
     }
     return 0;
 }
 
-static int w4_db_wait_until_cluster_barrier(int sockfd,
-                                            struct sockaddr_in peers[W4_DB_CLUSTER_MAX_NODES],
-                                            int node_count,
-                                            int local_idx,
-                                            uint16_t msg_type,
-                                            uint16_t epoch,
-                                            uint16_t local_publish_seq,
-                                            const struct w4_db_cluster_meta metas[W4_DB_CLUSTER_MAX_NODES],
-                                            uint16_t ready_seq[W4_DB_CLUSTER_MAX_NODES],
-                                            const char *gap_stage)
+static int w4_db_init_export_layout(struct w4_db_cluster_runtime *rt, void *base)
 {
-    bool got_ready[W4_DB_CLUSTER_MAX_NODES] = { false };
-    struct w4_db_cluster_msg msg;
-    long deadline = w4_db_now_ms() + W4_DB_CLUSTER_WAIT_MS;
+    int peer_count = rt->node_count - 1;
+    uint64_t queue_size = obmm_queue_region_size(W4_DB_CLUSTER_QUEUE_DEPTH);
+    uint64_t header_offset = 0;
+    uint64_t dir_offset = 64;
+    uint64_t dir_count = peer_count + 1;
+    uint64_t queue_base = obmm_align_up_u64(dir_offset + dir_count * 32, 64);
+    uint64_t payload_offset = obmm_align_up_u64(queue_base + (uint64_t)peer_count * queue_size, 64);
+    struct obmm_pool_header *hdr;
+    int i, peer_idx;
 
-    got_ready[local_idx] = true;
-    ready_seq[local_idx] = local_publish_seq;
-    while (w4_db_now_ms() < deadline) {
-        bool all = true;
-        struct sockaddr_in from;
-        struct w4_db_cluster_msg rx;
-        int i;
+    hdr = (struct obmm_pool_header *)base;
+    memset(hdr, 0, 64);
+    hdr->magic = OBMM_POOL_MAGIC;
+    hdr->layout_version = OBMM_POOL_LAYOUT_VERSION;
+    hdr->node_id = (uint16_t)rt->local_idx;
+    hdr->node_count = (uint16_t)rt->node_count;
+    atomic_store(&hdr->state, OBMM_POOL_STATE_INIT);
+    hdr->region_size = rt->region_size;
+    hdr->directory_offset = dir_offset;
+    hdr->directory_count = (uint32_t)dir_count;
+    hdr->default_queue_depth = W4_DB_CLUSTER_QUEUE_DEPTH;
 
-        for (i = 0; i < node_count; ++i) {
-            if (!got_ready[i]) {
-                all = false;
-                break;
-            }
-        }
-        if (all) {
-            for (i = 0; i < 3; ++i) {
-                int j;
+    peer_idx = 0;
+    for (i = 0; i < rt->node_count; i++) {
+        struct obmm_region_dirent *de;
+        if (i == rt->local_idx) continue;
+        de = (struct obmm_region_dirent *)((uint8_t *)base + dir_offset) + peer_idx;
+        memset(de, 0, 32);
+        de->region_id = (uint32_t)peer_idx;
+        de->kind = OBMM_REGION_QUEUE;
+        de->peer_node_id = (uint16_t)i;
+        de->offset = queue_base + (uint64_t)peer_idx * queue_size;
+        de->size = queue_size;
 
-                for (j = 0; j < node_count; ++j) {
-                    if (j == local_idx) {
-                        continue;
-                    }
-                    w4_db_init_cluster_msg(&msg, msg_type, local_idx, j);
-                    msg.reserved0 = epoch;
-                    msg.reserved1 = local_publish_seq;
-                    msg.meta = metas[local_idx];
-                    (void)w4_db_send_msg(sockfd, &peers[j], &msg, sizeof(msg));
-                }
-                usleep(20000);
-            }
-            return 0;
-        }
-        for (i = 0; i < node_count; ++i) {
-            if (i == local_idx) {
-                continue;
-            }
-            w4_db_init_cluster_msg(&msg, msg_type, local_idx, i);
-            msg.reserved0 = epoch;
-            msg.reserved1 = local_publish_seq;
-            msg.meta = metas[local_idx];
-            (void)w4_db_send_msg(sockfd, &peers[i], &msg, sizeof(msg));
-        }
-        {
-            int recv_budget = 256;
+        rt->ingress_queues[i] = (struct obmm_spsc_queue *)((uint8_t *)base + de->offset);
+        obmm_spsc_queue_init(rt->ingress_queues[i], W4_DB_CLUSTER_QUEUE_DEPTH);
 
-            while (recv_budget-- > 0 &&
-                   w4_db_recv_msg(sockfd, &rx, sizeof(rx), &from) == (ssize_t)sizeof(rx)) {
-            if (rx.magic != W4_DB_CLUSTER_MAGIC || rx.version != W4_DB_CLUSTER_VERSION) {
-                continue;
-            }
-            if (rx.type == msg_type &&
-                rx.reserved0 == epoch &&
-                rx.reserved1 != 0 &&
-                rx.src_idx < (uint16_t)node_count &&
-                rx.meta.export_mem_id == metas[rx.src_idx].export_mem_id &&
-                rx.meta.export_cna == metas[rx.src_idx].export_cna &&
-                rx.meta.remote_uba == metas[rx.src_idx].remote_uba &&
-                rx.meta.token_id == metas[rx.src_idx].token_id &&
-                rx.src_idx < (uint16_t)node_count) {
-                got_ready[rx.src_idx] = true;
-                ready_seq[rx.src_idx] = rx.reserved1;
-            }
-            }
-        }
-        usleep(100000);
+        peer_idx++;
     }
+
     {
-        int i;
-
-        for (i = 0; i < node_count; ++i) {
-            if (i == local_idx) {
-                continue;
-            }
-            if (!got_ready[i]) {
-                printf("[w4_guest] gap db_service_cluster_stage=%s owner=node%d epoch=%u expected_seq=%u\n",
-                       gap_stage,
-                       i + 1,
-                       epoch,
-                       ready_seq[i]);
-            }
-        }
+        struct obmm_region_dirent *de;
+        de = (struct obmm_region_dirent *)((uint8_t *)base + dir_offset) + peer_idx;
+        memset(de, 0, 32);
+        de->region_id = (uint32_t)peer_idx;
+        de->kind = OBMM_REGION_W4_PAYLOAD;
+        de->peer_node_id = (uint16_t)rt->local_idx;
+        de->offset = payload_offset;
+        de->size = rt->region_size - payload_offset;
     }
-    return -1;
+
+    rt->ingress_queue_base = base;
+    atomic_store(&hdr->state, OBMM_POOL_STATE_READY);
+    fprintf(stderr, "[w4_db] export layout -> ok queues=%d queue_depth=%d payload_offset=%luKB\n",
+            peer_count, W4_DB_CLUSTER_QUEUE_DEPTH, (unsigned long)(payload_offset / 1024));
+    (void)header_offset;
+    return 0;
 }
 
-static void w4_db_broadcast_cluster_msg(int sockfd,
-                                        struct sockaddr_in peers[W4_DB_CLUSTER_MAX_NODES],
-                                        int node_count,
-                                        int local_idx,
-                                        uint16_t msg_type,
-                                        uint16_t epoch,
-                                        uint16_t seq,
-                                        const struct w4_db_cluster_meta metas[W4_DB_CLUSTER_MAX_NODES])
+static int w4_db_queue_barrier(struct w4_db_cluster_runtime *rt,
+                               uint16_t desc_type,
+                               uint16_t epoch,
+                               uint32_t publish_seq)
 {
-    struct w4_db_cluster_msg msg;
+    long deadline = obmm_now_ms() + W4_DB_CLUSTER_WAIT_MS;
+    bool got[W4_DB_CLUSTER_MAX_NODES];
+    struct obmm_desc desc;
     int i;
 
-    for (i = 0; i < node_count; ++i) {
-        if (i == local_idx) {
-            continue;
-        }
-        w4_db_init_cluster_msg(&msg, msg_type, local_idx, i);
-        msg.reserved0 = epoch;
-        msg.reserved1 = seq;
-        msg.meta = metas[local_idx];
-        (void)w4_db_send_msg(sockfd, &peers[i], &msg, sizeof(msg));
-    }
-}
+    memset(got, 0, sizeof(got));
+    got[rt->local_idx] = true;
 
-static void w4_db_announce_cluster_msg(int sockfd,
-                                       struct sockaddr_in peers[W4_DB_CLUSTER_MAX_NODES],
-                                       int node_count,
-                                       int local_idx,
-                                       uint16_t msg_type,
-                                       uint16_t epoch,
-                                       uint16_t seq,
-                                       const struct w4_db_cluster_meta metas[W4_DB_CLUSTER_MAX_NODES])
-{
-    int i;
+    memset(&desc, 0, sizeof(desc));
+    desc.type = desc_type;
+    desc.seq = (uint64_t)epoch | ((uint64_t)publish_seq << 16);
+    desc.cookie = (uint32_t)epoch;
 
-    for (i = 0; i < 5; ++i) {
-        w4_db_broadcast_cluster_msg(sockfd, peers, node_count, local_idx,
-                                    msg_type, epoch, seq, metas);
-        usleep(20000);
-    }
-}
-
-static int w4_db_wait_for_target_ready(int sockfd,
-                                       struct sockaddr_in peers[W4_DB_CLUSTER_MAX_NODES],
-                                       int node_count,
-                                       int local_idx,
-                                       int target_idx,
-                                       uint16_t epoch,
-                                       uint16_t local_publish_seq,
-                                       uint16_t expected_target_seq,
-                                       const struct w4_db_cluster_meta metas[W4_DB_CLUSTER_MAX_NODES],
-                                       uint16_t *target_seq_out)
-{
-    long deadline = w4_db_now_ms() + W4_DB_CLUSTER_WAIT_MS;
-    uint16_t last_target_seq = 0;
-
-    if (target_idx == local_idx) {
-        if (target_seq_out) {
-            *target_seq_out = local_publish_seq;
-        }
-        return 0;
-    }
-    while (w4_db_now_ms() < deadline) {
-        struct sockaddr_in from;
-        struct w4_db_cluster_msg rx;
-
-        while (w4_db_recv_msg(sockfd, &rx, sizeof(rx), &from) == (ssize_t)sizeof(rx)) {
-            if (rx.magic != W4_DB_CLUSTER_MAGIC || rx.version != W4_DB_CLUSTER_VERSION) {
-                continue;
+    for (i = 0; i < rt->node_count; i++) {
+        if (i == rt->local_idx) continue;
+        if (rt->egress_queues[i] == NULL) continue;
+        while (obmm_spsc_push(rt->egress_queues[i], &desc) != 0) {
+            if (obmm_now_ms() > deadline) {
+                fprintf(stderr, "[w4_db] queue barrier push timeout type=%d peer=%d\n",
+                        desc_type, i);
+                return -1;
             }
-            if (rx.type == W4_DB_CLUSTER_MSG_READY &&
-                rx.reserved0 == epoch &&
-                rx.reserved1 >= expected_target_seq &&
-                rx.src_idx == (uint16_t)target_idx &&
-                rx.src_idx < (uint16_t)node_count &&
-                rx.meta.export_mem_id == metas[rx.src_idx].export_mem_id &&
-                rx.meta.export_cna == metas[rx.src_idx].export_cna &&
-                rx.meta.remote_uba == metas[rx.src_idx].remote_uba &&
-                rx.meta.token_id == metas[rx.src_idx].token_id) {
-                if (target_seq_out) {
-                    *target_seq_out = rx.reserved1;
+            usleep(1000);
+        }
+    }
+
+    while (obmm_now_ms() < deadline) {
+        bool all = true;
+        for (i = 0; i < rt->node_count; i++) {
+            struct obmm_desc rx;
+            if (got[i]) continue;
+            if (rt->ingress_queues[i] == NULL) continue;
+            while (obmm_spsc_pop(rt->ingress_queues[i], &rx) == 0) {
+                if (rx.type == desc_type && (uint16_t)rx.cookie == epoch) {
+                    got[i] = true;
                 }
-                return 0;
             }
-            if (rx.type == W4_DB_CLUSTER_MSG_READY &&
-                rx.src_idx == (uint16_t)target_idx &&
-                rx.reserved1 > last_target_seq) {
-                last_target_seq = rx.reserved1;
-            }
+            if (!got[i]) all = false;
         }
-        usleep(100000);
+        if (all) return 0;
+        usleep(1000);
     }
-    printf("[w4_guest] gap db_service_cluster_stage=target_ready_timeout target=node%d epoch=%u expected_seq=%u last_seq=%u\n",
-           target_idx + 1,
-           epoch,
-           expected_target_seq,
-           last_target_seq);
+
+    fprintf(stderr, "[w4_db] queue barrier timeout type=%d missing:", desc_type);
+    for (i = 0; i < rt->node_count; i++)
+        if (!got[i]) fprintf(stderr, " %d", i);
+    fprintf(stderr, "\n");
     return -1;
 }
 
-static int w4_db_wait_for_reader_done(int sockfd,
-                                      struct sockaddr_in peers[W4_DB_CLUSTER_MAX_NODES],
-                                      int node_count,
-                                      int local_idx,
-                                      int reader_idx,
-                                      uint16_t epoch,
-                                      uint16_t seq,
-                                      const struct w4_db_cluster_meta metas[W4_DB_CLUSTER_MAX_NODES])
-{
-    long deadline = w4_db_now_ms() + W4_DB_CLUSTER_WAIT_MS;
-
-    if (reader_idx == local_idx) {
-        return 0;
-    }
-    while (w4_db_now_ms() < deadline) {
-        struct sockaddr_in from;
-        struct w4_db_cluster_msg msg;
-        struct w4_db_cluster_msg rx;
-
-        if (reader_idx >= 0 && reader_idx < node_count) {
-            w4_db_init_cluster_msg(&msg, W4_DB_CLUSTER_MSG_READY, local_idx, reader_idx);
-            msg.reserved0 = epoch;
-            msg.reserved1 = seq;
-            msg.meta = metas[local_idx];
-            (void)w4_db_send_msg(sockfd, &peers[reader_idx], &msg, sizeof(msg));
-        }
-
-        while (w4_db_recv_msg(sockfd, &rx, sizeof(rx), &from) == (ssize_t)sizeof(rx)) {
-            if (rx.magic != W4_DB_CLUSTER_MAGIC || rx.version != W4_DB_CLUSTER_VERSION) {
-                continue;
-            }
-            if (rx.type == W4_DB_CLUSTER_MSG_OBSERVED &&
-                rx.reserved0 == epoch &&
-                rx.reserved1 == seq &&
-                rx.src_idx == (uint16_t)reader_idx &&
-                rx.src_idx < (uint16_t)node_count &&
-                rx.meta.export_mem_id == metas[rx.src_idx].export_mem_id &&
-                rx.meta.export_cna == metas[rx.src_idx].export_cna &&
-                rx.meta.remote_uba == metas[rx.src_idx].remote_uba &&
-                rx.meta.token_id == metas[rx.src_idx].token_id) {
-                return 0;
-            }
-        }
-        usleep(100000);
-    }
-    printf("[w4_guest] gap db_service_cluster_stage=reader_done_timeout reader=node%d epoch=%u\n",
-           reader_idx + 1,
-           epoch);
-    return -1;
-}
-
-static void w4_db_cleanup_cluster_slots(int obmm_fd,
-                                        int node_count,
-                                        int local_idx,
-                                        struct w4_db_cluster_slot slots[W4_DB_CLUSTER_MAX_NODES])
+static void w4_db_cleanup_cluster_slots(struct w4_db_cluster_runtime *rt)
 {
     int i;
 
-    for (i = 0; i < node_count; ++i) {
-        if (slots[i].region.addr || slots[i].region.fd >= 0) {
-            w4_db_unmap_region_device(&slots[i].region);
+    for (i = 0; i < rt->node_count; ++i) {
+        /* Undo payload_offset adjustment for local and remote slots */
+        if (rt->slots[i].region.addr && rt->payload_offset > 0 &&
+            (rt->slots[i].is_local || rt->slots[i].mem_id != 0)) {
+            rt->slots[i].region.addr =
+                (uint8_t *)rt->slots[i].region.addr - rt->payload_offset;
+            rt->slots[i].region.len = rt->region_size;
         }
-        if (slots[i].mem_id != 0) {
-            if (i == local_idx) {
-                (void)w4_db_do_unexport_region(obmm_fd, slots[i].mem_id);
+        if (rt->slots[i].region.addr || rt->slots[i].region.fd >= 0) {
+            obmm_unmap_region((struct obmm_helpers_region *)&rt->slots[i].region);
+        }
+        if (rt->slots[i].mem_id != 0) {
+            if (i == rt->local_idx) {
+                (void)obmm_do_unexport(rt->obmm_fd, rt->slots[i].mem_id);
             } else {
-                (void)w4_db_do_unimport_region(obmm_fd, slots[i].mem_id);
+                (void)obmm_do_unimport(rt->obmm_fd, rt->slots[i].mem_id);
             }
+        }
+        if (rt->egress_import[i].addr || rt->egress_import[i].fd >= 0) {
+            obmm_unmap_region(&rt->egress_import[i]);
         }
     }
 }
@@ -1770,27 +1240,82 @@ static int w4_db_activate_remote_slot(struct w4_db_cluster_runtime *rt, int owne
         return 0;
     }
     if (slot->mem_id != 0) {
-        (void)w4_db_do_unimport_region(rt->obmm_fd, slot->mem_id);
+        (void)obmm_do_unimport(rt->obmm_fd, slot->mem_id);
         slot->mem_id = 0;
     }
     if (slot->region.addr || slot->region.fd >= 0) {
-        w4_db_unmap_region_device(&slot->region);
+        obmm_unmap_region((struct obmm_helpers_region *)&slot->region);
     }
-    if (w4_db_do_import_region(rt->obmm_fd,
-                               &rt->metas[owner_idx],
-                               rt->local_cna,
-                               slot->local_pa,
-                               &slot->mem_id) != 0) {
-        return -1;
+    {
+        struct obmm_helpers_meta import_meta;
+        import_meta.export_mem_id = rt->metas[owner_idx].export_mem_id;
+        import_meta.remote_uba = rt->metas[owner_idx].remote_uba;
+        import_meta.size = rt->metas[owner_idx].size;
+        import_meta.token_id = rt->metas[owner_idx].token_id;
+        import_meta.export_cna = rt->metas[owner_idx].export_cna;
+        if (obmm_do_import(rt->obmm_fd, &import_meta,
+                           rt->local_cna, slot->local_pa,
+                           import_meta.token_id, &slot->mem_id) != 0) {
+            return -1;
+        }
     }
-    if (w4_db_map_region_device(slot->mem_id,
-                                W4_DB_CLUSTER_REGION_SIZE,
-                                slot->map_osync,
-                                &slot->region) != 0) {
-        (void)w4_db_do_unimport_region(rt->obmm_fd, slot->mem_id);
+    if (obmm_map_region(slot->mem_id,
+                        rt->region_size,
+                        slot->map_osync,
+                        (struct obmm_helpers_region *)&slot->region) != 0) {
+        (void)obmm_do_unimport(rt->obmm_fd, slot->mem_id);
         slot->mem_id = 0;
         return -1;
     }
+
+    /* Poll peer's pool state until READY -- ensures cacheable writes by the
+     * exporter are visible through our osync import mapping before we read
+     * the directory and queue structures. */
+    {
+        struct obmm_pool_header *phdr =
+            (struct obmm_pool_header *)slot->region.addr;
+        long poll_deadline = obmm_now_ms() + 30000;
+        while (obmm_now_ms() < poll_deadline) {
+            uint32_t st = atomic_load_explicit(&phdr->state,
+                                               memory_order_acquire);
+            if (st == OBMM_POOL_STATE_READY)
+                break;
+            usleep(1000);
+        }
+        if (atomic_load_explicit(
+                &((struct obmm_pool_header *)slot->region.addr)->state,
+                memory_order_acquire) != OBMM_POOL_STATE_READY) {
+            fprintf(stderr, "[w4_db] peer node%d pool not READY\n",
+                    owner_idx + 1);
+            obmm_unmap_region((struct obmm_helpers_region *)&slot->region);
+            (void)obmm_do_unimport(rt->obmm_fd, slot->mem_id);
+            slot->mem_id = 0;
+            return -1;
+        }
+    }
+
+    /* Resolve egress queue (remote node's ingress queue for us) from directory */
+    if (rt->egress_queues[owner_idx] == NULL && slot->region.addr != NULL) {
+        struct obmm_pool_header *hdr = (struct obmm_pool_header *)slot->region.addr;
+        struct obmm_region_dirent *dir = (struct obmm_region_dirent *)
+            ((uint8_t *)slot->region.addr + hdr->directory_offset);
+        int d;
+        for (d = 0; (uint32_t)d < hdr->directory_count; d++) {
+            if (dir[d].kind == OBMM_REGION_QUEUE &&
+                dir[d].peer_node_id == (uint16_t)rt->local_idx) {
+                rt->egress_queues[owner_idx] = (struct obmm_spsc_queue *)
+                    ((uint8_t *)slot->region.addr + dir[d].offset);
+                break;
+            }
+        }
+    }
+
+    /* Adjust slot's region.addr to point at the payload sub-region */
+    if (rt->payload_offset > 0 && slot->region.addr != NULL) {
+        slot->region.addr = (uint8_t *)slot->region.addr + rt->payload_offset;
+        slot->region.len = rt->region_size - rt->payload_offset;
+    }
+
     return 0;
 }
 
@@ -1800,14 +1325,10 @@ static void w4_db_cluster_runtime_reset(struct w4_db_cluster_runtime *rt)
         return;
     }
     if (rt->obmm_fd >= 0) {
-        w4_db_cleanup_cluster_slots(rt->obmm_fd, rt->node_count, rt->local_idx, rt->slots);
+        w4_db_cleanup_cluster_slots(rt);
         close(rt->obmm_fd);
     }
-    if (rt->sockfd >= 0) {
-        close(rt->sockfd);
-    }
     memset(rt, 0, sizeof(*rt));
-    rt->sockfd = -1;
     rt->obmm_fd = -1;
     rt->local_idx = -1;
 }
@@ -1816,11 +1337,16 @@ static int w4_db_cluster_runtime_init(struct w4_db_cluster_runtime *rt)
 {
     char local_ip[INET_ADDRSTRLEN];
     char ips[W4_DB_CLUSTER_MAX_NODES][INET_ADDRSTRLEN];
-    char ifname[IFNAMSIZ];
     struct w4_db_cluster_meta local_meta;
-    struct in_addr peer_addr;
-    bool got_meta[W4_DB_CLUSTER_MAX_NODES] = { false };
-    int i;
+    struct obmm_helpers_meta export_meta;
+    uint64_t import_pas[W4_DB_CLUSTER_MAX_NODES];
+    bool import_osync[W4_DB_CLUSTER_MAX_NODES];
+    int import_count;
+    int import_idx;
+    char region_size_str[32];
+    uint64_t region_size_mb;
+    uint64_t payload_offset;
+    int i, peer_idx;
 
     if (!rt) {
         return -1;
@@ -1834,25 +1360,24 @@ static int w4_db_cluster_runtime_init(struct w4_db_cluster_runtime *rt)
     if (!w4_db_resolve_cluster_nodes(local_ip, ips, &rt->node_count, &rt->local_idx)) {
         return -1;
     }
-    if (!w4_db_find_ipourma_iface(ifname, sizeof(ifname))) {
-        return -1;
-    }
-    for (i = 0; i < rt->node_count; ++i) {
-        if (i == rt->local_idx) {
-            continue;
+
+    /* Read region size from /proc/cmdline, default to 64 MB */
+    if (obmm_cmdline_get(W4_DB_CMDLINE_REGION_SIZE, region_size_str, sizeof(region_size_str))) {
+        errno = 0;
+        region_size_mb = (uint64_t)strtoull(region_size_str, NULL, 0);
+        if (errno != 0 || region_size_mb == 0) {
+            region_size_mb = W4_DB_DEFAULT_REGION_SIZE_MB;
         }
-        memset(&rt->peers[i], 0, sizeof(rt->peers[i]));
-        rt->peers[i].sin_family = AF_INET;
-        rt->peers[i].sin_port = htons(W4_DB_CLUSTER_PORT);
-        inet_pton(AF_INET, ips[i], &rt->peers[i].sin_addr);
-        peer_addr = rt->peers[i].sin_addr;
-        w4_db_install_static_arp(ifname, &peer_addr);
+    } else {
+        region_size_mb = W4_DB_DEFAULT_REGION_SIZE_MB;
     }
-    rt->sockfd = w4_db_create_udp_socket(ifname);
-    if (rt->sockfd < 0) {
-        goto fail;
-    }
-    rt->obmm_fd = w4_db_open_obmm();
+    rt->region_size = obmm_align_up_u64(region_size_mb * 1024ULL * 1024ULL,
+                                         OBMM_POOL_HELPERS_IMPORT_ALIGN);
+    fprintf(stderr, "[w4_db] region_size=%luMB (aligned=%luMB)\n",
+            (unsigned long)region_size_mb,
+            (unsigned long)(rt->region_size / (1024ULL * 1024ULL)));
+
+    rt->obmm_fd = obmm_open_device();
     if (rt->obmm_fd < 0) {
         goto fail;
     }
@@ -1860,40 +1385,104 @@ static int w4_db_cluster_runtime_init(struct w4_db_cluster_runtime *rt)
         goto fail;
     }
     local_meta.export_cna = rt->local_cna;
-    if (w4_db_do_export_region(rt->obmm_fd, &local_meta) != 0) {
+
+    /* Export local region */
+    memset(&export_meta, 0, sizeof(export_meta));
+    export_meta.export_cna = rt->local_cna;
+    if (obmm_do_export(rt->obmm_fd, &export_meta, rt->region_size) != 0) {
         goto fail;
     }
+    local_meta.export_mem_id = export_meta.export_mem_id;
+    local_meta.remote_uba = export_meta.remote_uba;
+    local_meta.size = export_meta.size;
+    local_meta.token_id = export_meta.token_id;
+    local_meta.export_cna = export_meta.export_cna;
+
     rt->slots[rt->local_idx].owner_idx = rt->local_idx;
     rt->slots[rt->local_idx].is_local = true;
     rt->slots[rt->local_idx].mem_id = local_meta.export_mem_id;
     rt->slots[rt->local_idx].export_cna = rt->local_cna;
-    if (w4_db_map_region_device(local_meta.export_mem_id,
-                                W4_DB_CLUSTER_REGION_SIZE,
-                                false,
-                                &rt->slots[rt->local_idx].region) != 0) {
+    if (obmm_map_region(local_meta.export_mem_id,
+                        rt->region_size,
+                        false,
+                        (struct obmm_helpers_region *)&rt->slots[rt->local_idx].region) != 0) {
         printf("[w4_guest] gap db_service_cluster_stage=map_local_failed mem_id=%" PRIu64 "\n",
                local_meta.export_mem_id);
         goto fail;
     }
-    if (w4_db_exchange_cluster_meta(rt->sockfd,
-                                    rt->peers,
-                                    rt->node_count,
-                                    rt->local_idx,
-                                    &local_meta,
-                                    rt->metas,
-                                    got_meta) != 0) {
+
+    /* Initialize export layout with queues and payload region */
+    if (w4_db_init_export_layout(rt, rt->slots[rt->local_idx].region.addr) != 0) {
+        printf("[w4_guest] gap db_service_cluster_stage=export_layout_failed\n");
+        goto fail;
+    }
+
+    /* Find payload offset from directory */
+    payload_offset = 0;
+    {
+        struct obmm_pool_header *hdr = (struct obmm_pool_header *)rt->slots[rt->local_idx].region.addr;
+        struct obmm_region_dirent *dir = (struct obmm_region_dirent *)
+            ((uint8_t *)rt->slots[rt->local_idx].region.addr + hdr->directory_offset);
+        for (i = 0; (uint32_t)i < hdr->directory_count; i++) {
+            if (dir[i].kind == OBMM_REGION_W4_PAYLOAD) {
+                payload_offset = dir[i].offset;
+                break;
+            }
+        }
+    }
+    if (payload_offset == 0) {
+        printf("[w4_guest] gap db_service_cluster_stage=no_payload_entry\n");
+        goto fail;
+    }
+
+    /* Adjust local slot's region.addr to point at the payload sub-region */
+    rt->payload_offset = payload_offset;
+    rt->slots[rt->local_idx].region.addr =
+        (uint8_t *)rt->slots[rt->local_idx].region.addr + payload_offset;
+    rt->slots[rt->local_idx].region.len = rt->region_size - payload_offset;
+
+    /* FM bootstrap for peer discovery */
+    if (w4_db_exchange_cluster_meta(rt, &local_meta) != 0) {
         printf("[w4_guest] gap db_service_cluster_stage=hello_timeout\n");
         goto fail;
     }
-    if (w4_db_import_cluster_peers(rt->obmm_fd,
-                                   rt->local_cna,
-                                   rt->node_count,
-                                   rt->local_idx,
-                                   rt->metas,
-                                   rt->slots) != 0) {
-        printf("[w4_guest] gap db_service_cluster_stage=import_failed\n");
+
+    /* Allocate import PAs for peer regions */
+    import_count = rt->node_count - 1;
+    if (!obmm_alloc_import_pas(import_count, rt->region_size, import_pas, import_osync)) {
+        printf("[w4_guest] gap db_service_cluster_stage=import_alloc_failed count=%d\n",
+               import_count);
         goto fail;
     }
+
+    import_idx = 0;
+    for (i = 0; i < rt->node_count; ++i) {
+        if (i == rt->local_idx) {
+            continue;
+        }
+        rt->slots[i].owner_idx = i;
+        rt->slots[i].is_local = false;
+        rt->slots[i].local_pa = import_pas[import_idx];
+        rt->slots[i].map_osync = true;
+        fprintf(stderr,
+                "[w4_guest] remote_slot_map_osync_forced node=%d map_osync=%d\n",
+                i + 1,
+                rt->slots[i].map_osync ? 1 : 0);
+        rt->slots[i].export_cna = rt->metas[i].export_cna;
+        import_idx += 1;
+        rt->slots[i].mem_id = 0;
+        memset(&rt->slots[i].region, 0, sizeof(rt->slots[i].region));
+        rt->slots[i].region.fd = -1;
+
+        /* Import, map, and resolve egress queue for this peer now so that
+         * SPSC queue barriers can push descriptors immediately. */
+        if (w4_db_activate_remote_slot(rt, i) != 0) {
+            printf("[w4_guest] gap db_service_cluster_stage=activate_remote_failed owner=node%d\n",
+                   i + 1);
+            goto fail;
+        }
+    }
+
     rt->active = true;
     return 0;
 
@@ -2604,8 +2193,8 @@ int w4_db_cluster_fetch_record(struct w4_db_service *svc,
     }
     w4_db_reset_remote_slots_for_publish(rt);
 
-    deadline = w4_db_now_ms() + W4_DB_CLUSTER_WAIT_MS;
-    while (w4_db_now_ms() < deadline) {
+    deadline = obmm_now_ms() + W4_DB_CLUSTER_WAIT_MS;
+    while (obmm_now_ms() < deadline) {
         for (i = 0; i < rt->node_count; ++i) {
             if (!rt->slots[i].region.addr) {
                 if (i != rt->local_idx && w4_db_activate_remote_slot(rt, i) != 0) {
@@ -2641,8 +2230,6 @@ int w4_db_publish_observe_cluster(struct w4_db_service *svc,
     struct w4_db_cluster_payload_compact_summary peer_compact[W4_DB_CLUSTER_MAX_NODES];
     struct w4_db_cluster_payload_header seen_header;
     bool peer_ready[W4_DB_CLUSTER_MAX_NODES] = { false };
-    uint16_t ready_seq[W4_DB_CLUSTER_MAX_NODES] = { 0 };
-    uint16_t publish_ready_seq[W4_DB_CLUSTER_MAX_NODES] = { 0 };
     uint16_t local_publish_seq;
     uint16_t observed_seq;
     int i;
@@ -2699,21 +2286,13 @@ int w4_db_publish_observe_cluster(struct w4_db_service *svc,
     if (local_publish_seq == 0) {
         local_publish_seq = 1;
     }
-    memset(ready_seq, 0, sizeof(ready_seq));
     rt->observe_epoch += 1;
     if (rt->observe_epoch == 0) {
         rt->observe_epoch = 1;
     }
-    if (w4_db_wait_until_cluster_barrier(rt->sockfd,
-                                         rt->peers,
-                                         rt->node_count,
-                                         rt->local_idx,
-                                         W4_DB_CLUSTER_MSG_READY,
-                                         rt->observe_epoch,
-                                         local_publish_seq,
-                                         rt->metas,
-                                         ready_seq,
-                                         "ready_missing") != 0) {
+    if (w4_db_queue_barrier(rt, OBMM_DESC_W4_READY,
+                            rt->observe_epoch,
+                            local_publish_seq) != 0) {
         printf("[w4_guest] gap db_service_cluster_stage=payload_ready_timeout epoch=%u\n",
                rt->observe_epoch);
         goto out;
@@ -2722,10 +2301,9 @@ int w4_db_publish_observe_cluster(struct w4_db_service *svc,
            rt->local_idx + 1,
            rt->observe_epoch,
            local_publish_seq);
-    memcpy(publish_ready_seq, ready_seq, sizeof(publish_ready_seq));
 
     for (i = 0; i < rt->node_count; ++i) {
-        uint16_t owner_publish_seq = publish_ready_seq[i];
+        uint16_t owner_publish_seq = local_publish_seq;
 
         if (i == rt->local_idx) {
             peer_ready[i] = true;
@@ -2790,14 +2368,8 @@ int w4_db_publish_observe_cluster(struct w4_db_service *svc,
            rt->observe_epoch,
            observed_seq);
     fflush(stdout);
-    w4_db_broadcast_cluster_msg(rt->sockfd,
-                                rt->peers,
-                                rt->node_count,
-                                rt->local_idx,
-                                W4_DB_CLUSTER_MSG_OBSERVED,
-                                rt->observe_epoch,
-                                observed_seq,
-                                rt->metas);
+    (void)w4_db_queue_barrier(rt, OBMM_DESC_W4_OBSERVED,
+                              rt->observe_epoch, observed_seq);
     printf("[w4_guest] stage db_service_cluster_debug owner=node%d step=observe_announce_done epoch=%u seq=%u\n",
            rt->local_idx + 1,
            rt->observe_epoch,
@@ -3094,14 +2666,8 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
         rt->observe_epoch = 1;
     }
     object_epoch = rt->observe_epoch;
-    w4_db_announce_cluster_msg(rt->sockfd,
-                               rt->peers,
-                               rt->node_count,
-                               rt->local_idx,
-                               W4_DB_CLUSTER_MSG_READY,
-                               object_epoch,
-                               local_publish_seq,
-                               rt->metas);
+    (void)w4_db_queue_barrier(rt, OBMM_DESC_W4_READY,
+                              object_epoch, local_publish_seq);
     printf("[w4_guest] stage obmm_service_v0_local_ready_announced local=node%u epoch=%u seq=%u\n",
            local_node + 1U,
            object_epoch,
@@ -3112,8 +2678,8 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
         return -1;
     }
     remote_slot = &rt->slots[remote_node];
-    deadline = w4_db_now_ms() + W4_DB_OBMM_SERVICE_WAIT_MS;
-    while (w4_db_now_ms() < deadline) {
+    deadline = obmm_now_ms() + W4_DB_OBMM_SERVICE_WAIT_MS;
+    while (obmm_now_ms() < deadline) {
         struct w4_db_cluster_payload_header seen;
 
         memset(&seen, 0, sizeof(seen));

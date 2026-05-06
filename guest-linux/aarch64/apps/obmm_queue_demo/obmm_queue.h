@@ -24,10 +24,16 @@
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
 
+/*
+ * obmm_align_up_u64 is provided by obmm_common.h when included first.
+ * Define it here only as a fallback for standalone compilation.
+ */
+#ifndef OBMM_COMMON_H
 static inline uint64_t obmm_align_up_u64(uint64_t v, uint64_t align)
 {
     return (v + align - 1) & ~(align - 1);
 }
+#endif
 
 static inline uint64_t obmm_queue_region_size(uint32_t depth)
 {

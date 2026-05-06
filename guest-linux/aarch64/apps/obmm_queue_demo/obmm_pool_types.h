@@ -46,10 +46,11 @@ enum obmm_pool_state {
 /* ------------------------------------------------------------------ */
 
 enum obmm_region_kind {
-    OBMM_REGION_QUEUE     = 1,
-    OBMM_REGION_RX_ARENA  = 2,
-    OBMM_REGION_TX_ARENA  = 3,
-    OBMM_REGION_DATA_SLAB = 4,
+    OBMM_REGION_QUEUE       = 1,
+    OBMM_REGION_RX_ARENA    = 2,
+    OBMM_REGION_TX_ARENA    = 3,
+    OBMM_REGION_DATA_SLAB   = 4,
+    OBMM_REGION_W4_PAYLOAD  = 5,
 };
 
 /* ------------------------------------------------------------------ */
@@ -57,11 +58,13 @@ enum obmm_region_kind {
 /* ------------------------------------------------------------------ */
 
 enum obmm_desc_type {
-    OBMM_DESC_DATA       = 1, /* data payload descriptor */
-    OBMM_DESC_ACK        = 2, /* consumer acknowledgment */
-    OBMM_DESC_COMMIT     = 3, /* owner round commit */
-    OBMM_DESC_STRESS     = 4, /* queue fill/drain visibility probe */
-    OBMM_DESC_STRESS_ACK = 5, /* stress batch completion */
+    OBMM_DESC_DATA         = 1, /* data payload descriptor */
+    OBMM_DESC_ACK          = 2, /* consumer acknowledgment */
+    OBMM_DESC_COMMIT       = 3, /* owner round commit */
+    OBMM_DESC_STRESS       = 4, /* queue fill/drain visibility probe */
+    OBMM_DESC_STRESS_ACK   = 5, /* stress batch completion */
+    OBMM_DESC_W4_READY     = 6, /* w4_db: payload published */
+    OBMM_DESC_W4_OBSERVED  = 7, /* w4_db: payload consumed */
 };
 
 /* ------------------------------------------------------------------ */
