@@ -458,6 +458,7 @@ pub enum ConfigLoadError {
 #[cfg(test)]
 mod tests {
     use super::ScenarioConfig;
+    use std::path::Path;
 
     const VALID_YAML: &str = r#"
 scenario:
@@ -565,5 +566,38 @@ outputs:
         let config = ScenarioConfig::from_yaml_str(VALID_YAML).expect("valid scenario yaml");
         assert_eq!(config.topology.hosts, 2);
         assert_eq!(config.topology.ub_domains.len(), 1);
+    }
+
+    #[test]
+    fn repository_scenarios_match_declared_host_count() {
+        let scenario_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scenarios");
+        let scenarios = [
+            ("mvp_2host_single_domain.yaml", 2, &[0, 1][..]),
+            ("mvp_4host_single_domain.yaml", 4, &[0, 1, 2, 3][..]),
+            (
+                "mvp_8host_single_domain.yaml",
+                8,
+                &[0, 1, 2, 3, 4, 5, 6, 7][..],
+            ),
+        ];
+
+        for (file_name, expected_hosts, expected_domain_hosts) in scenarios {
+            let path = scenario_dir.join(file_name);
+            let config = ScenarioConfig::from_yaml_file(&path)
+                .unwrap_or_else(|err| panic!("failed to parse {}: {err}", path.display()));
+
+            assert_eq!(config.topology.hosts, expected_hosts, "{file_name}");
+            assert_eq!(config.topology.ub_domains.len(), 1, "{file_name}");
+            assert_eq!(
+                config.topology.ub_domains[0].hosts.as_slice(),
+                expected_domain_hosts,
+                "{file_name}"
+            );
+            assert_eq!(
+                config.lingqu_data.shmem.pe_count,
+                Some(expected_hosts),
+                "{file_name}"
+            );
+        }
     }
 }

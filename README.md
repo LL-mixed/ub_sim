@@ -272,6 +272,7 @@ BUSYBOX="$BUSYBOX" \
 这个命令会使用：
 
 - topology: `vendor/ub_topology_four_node_full_mesh.ini`
+- UAPI scenario: `scenarios/mvp_4host_single_domain.yaml`
 - 节点：`nodeA/nodeB/nodeC/nodeD`
 
 和双节点不同的是，四节点脚本会等所有 guest 都完成 `/bin/run_demo` bootstrap，再报告 shell ready。
@@ -330,6 +331,11 @@ BUSYBOX="$BUSYBOX" \
 它会打印一个环境文件路径，例如：
 
 - `out/headless_eight_node_env.<run_id>.sh`
+
+默认使用：
+
+- topology: `vendor/ub_topology_eight_node_full_mesh.ini`
+- UAPI scenario: `scenarios/mvp_8host_single_domain.yaml`
 
 这个文件里会导出：
 

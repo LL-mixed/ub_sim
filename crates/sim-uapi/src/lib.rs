@@ -921,15 +921,15 @@ impl LocalGuestUapiSurface {
         block: &BlockHash,
         segment: SegmentHandle,
     ) -> Result<(), SimError> {
-        let payload = self
-            .block_payloads
-            .get(block)
-            .ok_or(SimError::NotFound("block payload"))?
-            .clone();
         let segment_payload = self
             .segment_payloads
             .get_mut(&segment)
             .ok_or(SimError::NotFound("segment payload"))?;
+        let Some(payload) = self.block_payloads.get(block) else {
+            segment_payload.fill(0);
+            return Ok(());
+        };
+        let payload = payload.clone();
         let copy_len = segment_payload.len().min(payload.len());
         segment_payload[..copy_len].copy_from_slice(&payload[..copy_len]);
         if segment_payload.len() > copy_len {
@@ -2768,6 +2768,25 @@ mod tests {
         shmem::{ShmemGetReq, ShmemPutReq, ShmemServiceProfile},
     };
     use sim_topology::SimTopology;
+    use std::process::Command;
+
+    fn run_simpler_backed_test(test_name: &str, child_env: &str, body: impl FnOnce()) {
+        if std::env::var_os(child_env).is_some() {
+            body();
+            return;
+        }
+
+        let current_exe = std::env::current_exe().expect("current test executable");
+        let status = Command::new(current_exe)
+            .arg(test_name)
+            .arg("--exact")
+            .arg("--nocapture")
+            .env(child_env, "1")
+            .status()
+            .expect("spawn isolated simpler-backed test");
+
+        assert!(status.success(), "{test_name} failed in isolated process");
+    }
 
     #[test]
     fn kvcache_payload_layout_explicitly_maps_blocks_tiles_and_row_groups() {
@@ -2807,74 +2826,86 @@ mod tests {
 
     #[test]
     fn host_matmul_dispatch_accepts_manifest_artifact() {
-        let topology = test_topology();
-        let output = run_host_matmul_smoke(
-            &topology,
-            &TaskKey {
-                logical_system: LogicalSystemId(1),
-                coord: HierarchyCoord { levels: [0; 8] },
-                scope_depth: 0,
-                task_id: 99,
+        run_simpler_backed_test(
+            "tests::host_matmul_dispatch_accepts_manifest_artifact",
+            "SIM_UAPI_CHILD_HOST_MATMUL_TEST",
+            || {
+                let topology = test_topology();
+                let output = run_host_matmul_smoke(
+                    &topology,
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 99,
+                    },
+                )
+                .expect("host matmul dispatch");
+                assert_eq!(output.len(), 128 * 128 * std::mem::size_of::<f32>());
             },
-        )
-        .expect("host matmul dispatch");
-        assert_eq!(output.len(), 128 * 128 * std::mem::size_of::<f32>());
+        );
     }
 
     #[test]
     fn qwen3_dense_0_6b_prefill_profile_uses_host_matmul_artifact() {
-        let topology = test_topology();
-        let output = run_qwen3_dense_0_6b_prefill_smoke(
-            &topology,
-            &TaskKey {
-                logical_system: LogicalSystemId(1),
-                coord: HierarchyCoord { levels: [0; 8] },
-                scope_depth: 0,
-                task_id: 100,
+        run_simpler_backed_test(
+            "tests::qwen3_dense_0_6b_prefill_profile_uses_host_matmul_artifact",
+            "SIM_UAPI_CHILD_QWEN3_TEST",
+            || {
+                let topology = test_topology();
+                let output = run_qwen3_dense_0_6b_prefill_smoke(
+                    &topology,
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 100,
+                    },
+                    &[0xa5; W4_KVCACHE_PAYLOAD_BYTES],
+                )
+                .expect("qwen3 dense 0.6b shard-aware prefill dispatch");
+                let values = bytes_to_f32s(&output);
+                assert_eq!(
+                    values.len(),
+                    QWEN3_DENSE_0_6B_PROFILE.tp_nodes as usize * 128 * 128
+                );
+                let shard_elems = 128 * 128;
+                let mut shard_firsts = Vec::new();
+                for shard in 0..QWEN3_DENSE_0_6B_PROFILE.tp_nodes as usize {
+                    let first = values[shard * shard_elems];
+                    assert!(first.is_finite(), "shard {shard} first output is not finite");
+                    assert!(first > 1.0, "shard {shard} first output is not positive enough");
+                    shard_firsts.push(first.to_bits());
+                }
+                assert!(
+                    shard_firsts.windows(2).any(|pair| pair[0] != pair[1]),
+                    "qwen3 shard-aware dispatch produced identical first outputs for all shards"
+                );
+                assert_eq!(
+                    u64::from_le_bytes(output[8..16].try_into().expect("publish marker")),
+                    0x7133773470756230
+                );
+                assert_eq!(
+                    u64::from_le_bytes(output[16..24].try_into().expect("resolve marker")),
+                    0x7133773472657331
+                );
+                assert_eq!(
+                    u64::from_le_bytes(output[24..32].try_into().expect("compute marker")),
+                    0x71337734636d7031
+                );
+                assert_eq!(
+                    u64::from_le_bytes(output[32..40].try_into().expect("publish count")),
+                    8
+                );
+                assert_eq!(
+                    u64::from_le_bytes(output[40..48].try_into().expect("resolve count")),
+                    8
+                );
+                assert_eq!(
+                    u64::from_le_bytes(output[48..56].try_into().expect("compute count")),
+                    8
+                );
             },
-            &[0xa5; W4_KVCACHE_PAYLOAD_BYTES],
-        )
-        .expect("qwen3 dense 0.6b shard-aware prefill dispatch");
-        let values = bytes_to_f32s(&output);
-        assert_eq!(
-            values.len(),
-            QWEN3_DENSE_0_6B_PROFILE.tp_nodes as usize * 128 * 128
-        );
-        let shard_elems = 128 * 128;
-        let mut shard_firsts = Vec::new();
-        for shard in 0..QWEN3_DENSE_0_6B_PROFILE.tp_nodes as usize {
-            let first = values[shard * shard_elems];
-            assert!(first.is_finite(), "shard {shard} first output is not finite");
-            assert!(first > 1.0, "shard {shard} first output is not positive enough");
-            shard_firsts.push(first.to_bits());
-        }
-        assert!(
-            shard_firsts.windows(2).any(|pair| pair[0] != pair[1]),
-            "qwen3 shard-aware dispatch produced identical first outputs for all shards"
-        );
-        assert_eq!(
-            u64::from_le_bytes(output[8..16].try_into().expect("publish marker")),
-            0x7133773470756230
-        );
-        assert_eq!(
-            u64::from_le_bytes(output[16..24].try_into().expect("resolve marker")),
-            0x7133773472657331
-        );
-        assert_eq!(
-            u64::from_le_bytes(output[24..32].try_into().expect("compute marker")),
-            0x71337734636d7031
-        );
-        assert_eq!(
-            u64::from_le_bytes(output[32..40].try_into().expect("publish count")),
-            8
-        );
-        assert_eq!(
-            u64::from_le_bytes(output[40..48].try_into().expect("resolve count")),
-            8
-        );
-        assert_eq!(
-            u64::from_le_bytes(output[48..56].try_into().expect("compute count")),
-            8
         );
     }
 
@@ -2992,6 +3023,7 @@ outputs:
     fn local_guest_uapi_can_submit_write_and_drain_completion() {
         let mut surface = test_surface();
         let cq = surface.register_cq().expect("register cq");
+        let segment = surface.create_segment(4096).expect("create segment");
 
         surface
             .submit_io(IoSubmitReq {
@@ -2999,7 +3031,7 @@ outputs:
                 task: None,
                 entity: 0,
                 opcode: IoOpcode::WriteBlock,
-                segment: None,
+                segment: Some(segment),
                 block: Some(BlockHash("block-1".into())),
             })
             .expect("submit write");
@@ -3183,6 +3215,7 @@ outputs:
             UapiResponse::CqRegistered(cq) => cq,
             other => panic!("unexpected response: {other:?}"),
         };
+        let segment = surface.create_segment(4096).expect("create segment");
 
         surface
             .execute(UapiCommand::SubmitIo {
@@ -3191,7 +3224,7 @@ outputs:
                     task: None,
                     entity: 0,
                     opcode: IoOpcode::WriteBlock,
-                    segment: None,
+                    segment: Some(segment),
                     block: Some(BlockHash("wb-block".into())),
                 },
             })
@@ -3222,6 +3255,8 @@ outputs:
             },
         );
         let _cq = surface.register_cq().expect("register cq");
+        let first_segment = surface.create_segment(4096).expect("create first segment");
+        let second_segment = surface.create_segment(4096).expect("create second segment");
 
         surface
             .submit_io(IoSubmitReq {
@@ -3229,7 +3264,7 @@ outputs:
                 task: None,
                 entity: 0,
                 opcode: IoOpcode::WriteBlock,
-                segment: None,
+                segment: Some(first_segment),
                 block: Some(BlockHash("queue-0".into())),
             })
             .expect("first write should succeed");
@@ -3240,7 +3275,7 @@ outputs:
                 task: None,
                 entity: 0,
                 opcode: IoOpcode::WriteBlock,
-                segment: None,
+                segment: Some(second_segment),
                 block: Some(BlockHash("queue-1".into())),
             })
             .expect_err("second write should hit queue pressure");
@@ -3368,18 +3403,24 @@ outputs:
 
     #[test]
     fn host_vector_dispatch_accepts_w4_seed_payload() {
-        let config = ScenarioConfig::from_yaml_str(VALID_YAML).expect("valid config");
-        let topology = SimTopology::from_config(&config).expect("topology");
-        let guest_input = vec![0u8; 4096];
-        let task = TaskKey {
-            logical_system: LogicalSystemId(1),
-            coord: HierarchyCoord { levels: [0; 8] },
-            scope_depth: 0,
-            task_id: 31,
-        };
-        let output =
-            super::run_host_vector_chipbackend(&topology, &task, &guest_input).expect("dispatch");
-        assert_eq!(&output[..8], &0x41a0000041a00000u64.to_le_bytes());
+        run_simpler_backed_test(
+            "tests::host_vector_dispatch_accepts_w4_seed_payload",
+            "SIM_UAPI_CHILD_HOST_VECTOR_TEST",
+            || {
+                let config = ScenarioConfig::from_yaml_str(VALID_YAML).expect("valid config");
+                let topology = SimTopology::from_config(&config).expect("topology");
+                let guest_input = vec![0u8; 4096];
+                let task = TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord { levels: [0; 8] },
+                    scope_depth: 0,
+                    task_id: 31,
+                };
+                let output = super::run_host_vector_chipbackend(&topology, &task, &guest_input)
+                    .expect("dispatch");
+                assert_eq!(&output[..8], &0x41a0000041a00000u64.to_le_bytes());
+            },
+        );
     }
 
     #[test]

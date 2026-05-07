@@ -48,6 +48,27 @@ pub fn run_minimal_workload(
             cfg.unique_prefixes.max(1),
         ),
         WorkloadConfig::TraceReplay(_) => ("trace_replay".to_string(), "default".to_string(), 2, 1, 2),
+        WorkloadConfig::DualNodeShmemMailbox(cfg) => (
+            "dual_node_shmem_mailbox".to_string(),
+            "default".to_string(),
+            cfg.rounds.min(4),
+            1,
+            2,
+        ),
+        WorkloadConfig::DualNodeBlockCompute(cfg) => (
+            "dual_node_block_compute".to_string(),
+            "default".to_string(),
+            cfg.rounds.min(4),
+            1,
+            2,
+        ),
+        WorkloadConfig::DualNodeCacheFill(cfg) => (
+            "dual_node_cache_fill".to_string(),
+            "default".to_string(),
+            cfg.rounds.min(4),
+            1,
+            2,
+        ),
         WorkloadConfig::RustLlmMvp(cfg) => {
             let profile = rust_llm_profile(&cfg.profile);
             (
@@ -422,6 +443,7 @@ fn submit_block_read(
     block: BlockHash,
     allow_retry_after_queue_full: bool,
 ) -> Result<(), SimError> {
+    let segment = create_block_payload_segment(surface)?;
     submit_block_io(
         surface,
         cq,
@@ -431,7 +453,7 @@ fn submit_block_read(
             task: Some(task),
             entity: 0,
             opcode: IoOpcode::ReadBlock,
-            segment: None,
+            segment: Some(segment),
             block: Some(block),
         },
         allow_retry_after_queue_full,
@@ -464,6 +486,17 @@ fn enqueue_descriptor_and_ring(
     }
 }
 
+fn create_block_payload_segment(
+    surface: &mut LocalGuestUapiSurface,
+) -> Result<sim_core::SegmentHandle, SimError> {
+    match surface.execute(UapiCommand::CreateSegment { bytes: 4096 })? {
+        UapiResponse::SegmentCreated(segment) => Ok(segment),
+        _ => Err(SimError::InvalidInput(
+            "unexpected block payload segment creation response",
+        )),
+    }
+}
+
 fn submit_block_write(
     surface: &mut LocalGuestUapiSurface,
     cq: sim_core::CqHandle,
@@ -473,6 +506,7 @@ fn submit_block_write(
     allow_retry_after_queue_full: bool,
 ) -> Result<(), SimError> {
     report.block_writes += 1;
+    let segment = create_block_payload_segment(surface)?;
     submit_block_io(
         surface,
         cq,
@@ -482,7 +516,7 @@ fn submit_block_write(
             task: Some(task),
             entity: 0,
             opcode: IoOpcode::WriteBlock,
-            segment: None,
+            segment: Some(segment),
             block: Some(block),
         },
         allow_retry_after_queue_full,
@@ -737,6 +771,7 @@ fn summarize_events(events: &[SimEvent]) -> EventSummary {
             }
             SimEvent::RuntimeRetried { .. } => summary.runtime_retried += 1,
             SimEvent::RuntimeFailed { .. } => summary.runtime_failed += 1,
+            SimEvent::W4ResultHandled { .. } | SimEvent::W4ServiceResultApplied { .. } => {}
             SimEvent::FaultInjected { .. } => summary.faults_injected += 1,
         }
     }

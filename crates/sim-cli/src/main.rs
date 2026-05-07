@@ -164,6 +164,8 @@ fn run_demo(config: &ScenarioConfig, topology: &SimTopology) -> anyhow::Result<V
                     name: "runtime_demo_dispatch".into(),
                     level: PlLevel::L4,
                 },
+                backend_spec: None,
+                request: None,
                 target_level: PlLevel::L4,
                 target_node: decision.selected_node,
                 input_segments: vec![SegmentHandle(1)],
@@ -199,6 +201,8 @@ fn run_demo(config: &ScenarioConfig, topology: &SimTopology) -> anyhow::Result<V
                     name: "runtime_demo_timeout".into(),
                     level: PlLevel::L4,
                 },
+                backend_spec: None,
+                request: None,
                 target_level: PlLevel::L4,
                 target_node: decision.selected_node,
                 input_segments: vec![SegmentHandle(3)],
@@ -1025,6 +1029,7 @@ fn summarize_events(events: &[SimEvent]) -> EventSummary {
             }
             SimEvent::RuntimeRetried { .. } => summary.runtime_retried += 1,
             SimEvent::RuntimeFailed { .. } => summary.runtime_failed += 1,
+            SimEvent::W4ResultHandled { .. } | SimEvent::W4ServiceResultApplied { .. } => {}
             SimEvent::FaultInjected { .. } => summary.faults_injected += 1,
         }
     }
