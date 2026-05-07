@@ -35,11 +35,13 @@ git submodule update --init --recursive
 
 - `vendor/qemu_8.2.0_ub`
 - `guest-linux/kernel_ub`
+- `vendor/simpler`
+- `vendor/pto-isa`
 
 如果你只想单独刷新某个 submodule：
 
 ```bash
-git submodule update --init vendor/qemu_8.2.0_ub guest-linux/kernel_ub
+git submodule update --init vendor/qemu_8.2.0_ub guest-linux/kernel_ub vendor/simpler vendor/pto-isa
 ```
 
 ## 2. 环境要求
@@ -52,6 +54,8 @@ git submodule update --init vendor/qemu_8.2.0_ub guest-linux/kernel_ub
 - `nc`
 - `rg`
 - `ninja`
+- `cmake`
+- host C/C++ 编译器；在 `a2a3sim` simpler kernel 路径上还需要 `g++-15`
 - ARM64 Linux 交叉编译器，匹配 `aarch64-*-gnu-gcc`
 
 还需要两类 guest 输入：
@@ -152,7 +156,47 @@ BUSYBOX="$BUSYBOX" \
 - native guest kernel 目标架构是 `arm64`，默认使用 `openeuler_defconfig` 作为 defconfig，再叠加 UB demo/harness 需要的 kernel config
 - 没有本地导入参数且无法 native cross build 时失败并提示；不会自动访问 remote Linux build host
 
-### 3.3 只准备 busybox
+### 3.3 准备 simpler HostBuildGraph Artifact
+
+W4 workload 的 `host_vector`、`host_matmul`、`qwen3_dense_0_6b` profile 需要 simpler HostBuildGraph
+artifact。新环境里不要依赖已有的 `/tmp/simpler-host-*` 缓存，本 repo 会从 `vendor/simpler` 和
+`vendor/pto-isa` 构造这些产物。
+
+手工生成命令：
+
+```bash
+cd guest-linux/aarch64
+./scripts/prepare_simpler_host_vector_artifacts.sh /tmp/simpler-host-vector-artifacts
+./scripts/prepare_simpler_host_matmul_artifacts.sh /tmp/simpler-host-matmul-artifacts
+```
+
+也可以使用统一 Python CLI：
+
+```bash
+cd guest-linux/aarch64
+./scripts/prepare_simpler_host_artifacts.py --profile host_vector --output-dir /tmp/simpler-host-vector-artifacts
+./scripts/prepare_simpler_host_artifacts.py --profile host_matmul --output-dir /tmp/simpler-host-matmul-artifacts
+```
+
+HostMatmul producer 支持生成 batched tile artifact。为了避免同一进程反复加载不同 simpler runtime，
+`--tile-batch > 1` 必须显式复用基础 manifest 的 runtime：
+
+```bash
+./scripts/prepare_simpler_host_artifacts.py \
+  --profile host_matmul \
+  --output-dir /tmp/simpler-host-matmul-batch2-artifacts \
+  --tile-batch 2 \
+  --reuse-runtime-manifest /tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json
+```
+
+4/8 node headless launcher 和 W4 run 脚本在 manifest 缺失时会自动调用对应 producer。默认 manifest：
+
+- `SIMPLER_HOST_VECTOR_MANIFEST=/tmp/simpler-host-vector-artifacts/host_vector_manifest.json`
+- `SIMPLER_HOST_MATMUL_MANIFEST=/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json`
+
+如果你把 artifact 放在别处，显式传这两个环境变量即可。
+
+### 3.4 只准备 busybox
 
 如果你还没有 busybox，可以让脚本在 `guest-linux/aarch64` 下自动准备：
 

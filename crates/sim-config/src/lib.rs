@@ -459,6 +459,7 @@ pub enum ConfigLoadError {
 mod tests {
     use super::ScenarioConfig;
     use std::path::Path;
+    use std::process::Command;
 
     const VALID_YAML: &str = r#"
 scenario:
@@ -599,5 +600,64 @@ outputs:
                 "{file_name}"
             );
         }
+    }
+
+    #[test]
+    fn simpler_host_artifact_producer_describes_repo_profiles() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let simpler_root = repo_root.join("vendor/simpler");
+        let pto_isa_root = repo_root.join("vendor/pto-isa");
+        if !simpler_root.join("simpler_setup").exists()
+            || !pto_isa_root.join("include/pto/pto-inst.hpp").exists()
+        {
+            return;
+        }
+
+        let script = repo_root.join("guest-linux/aarch64/scripts/prepare_simpler_host_artifacts.py");
+        let output_dir = std::env::temp_dir().join("ub_sim_simpler_host_artifacts_describe");
+        for (profile, manifest) in [
+            ("host_vector", "host_vector_manifest.json"),
+            ("host_matmul", "host_matmul_manifest.json"),
+        ] {
+            let output = Command::new("python3")
+                .arg(&script)
+                .arg("--profile")
+                .arg(profile)
+                .arg("--output-dir")
+                .arg(&output_dir)
+                .arg("--describe")
+                .output()
+                .unwrap_or_else(|err| panic!("failed to run {}: {err}", script.display()));
+
+            assert!(
+                output.status.success(),
+                "{} --profile {profile} failed: {}",
+                script.display(),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(stdout.contains(manifest), "{profile}: {stdout}");
+            assert!(stdout.contains("HostBuildGraph"), "{profile}: {stdout}");
+        }
+
+        let output = Command::new("python3")
+            .arg(&script)
+            .arg("--profile")
+            .arg("host_matmul")
+            .arg("--output-dir")
+            .arg(&output_dir)
+            .arg("--tile-batch")
+            .arg("2")
+            .arg("--describe")
+            .output()
+            .unwrap_or_else(|err| panic!("failed to run {}: {err}", script.display()));
+        assert!(
+            output.status.success(),
+            "{} --profile host_matmul --tile-batch 2 failed: {}",
+            script.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("\"tile_batch\": 2"), "{stdout}");
     }
 }

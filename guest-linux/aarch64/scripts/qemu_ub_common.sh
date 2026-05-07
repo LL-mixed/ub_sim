@@ -10,6 +10,37 @@ ensure_sim_kernel_append_defaults() {
   echo "${append_extra## }"
 }
 
+ensure_simpler_host_manifest() {
+  local script_dir="$1"
+  local profile="$2"
+  local manifest="$3"
+  local producer=""
+
+  if [[ -f "$manifest" ]]; then
+    echo "$manifest"
+    return 0
+  fi
+
+  case "$profile" in
+    host_vector)
+      producer="$script_dir/prepare_simpler_host_vector_artifacts.sh"
+      ;;
+    host_matmul|qwen3_dense_0_6b)
+      producer="$script_dir/prepare_simpler_host_matmul_artifacts.sh"
+      ;;
+    *)
+      echo "[ub_common] unsupported simpler host artifact profile: $profile" >&2
+      return 1
+      ;;
+  esac
+
+  if [[ ! -x "$producer" ]]; then
+    echo "[ub_common] missing executable artifact producer: $producer" >&2
+    return 1
+  fi
+  "$producer" "$(dirname "$manifest")"
+}
+
 qemu_ub_bin_path() {
   local workspace_root="$1"
   local build_dir="$workspace_root/vendor/qemu_8.2.0_ub/build"

@@ -8,3 +8,13 @@
 	url = ../kernel.git
 	branch = ub_sim
 	ignore = all
+[submodule "vendor/simpler"]
+	path = vendor/simpler
+	url = https://github.com/hw-native-sys/simpler.git
+	branch = main
+	ignore = all
+[submodule "vendor/pto-isa"]
+	path = vendor/pto-isa
+	url = https://github.com/hw-native-sys/pto-isa.git
+	branch = main
+	ignore = all

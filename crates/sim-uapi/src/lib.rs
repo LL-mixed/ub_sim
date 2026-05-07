@@ -207,6 +207,15 @@ struct SimplerRuntimeManifest {
     launch: DispatchLaunchParams,
     #[serde(default)]
     runtime_env: BTreeMap<String, String>,
+    #[serde(default)]
+    tile_batch: Option<u64>,
+    #[serde(default)]
+    args_template: Vec<SimplerRuntimeManifestArgTemplate>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct SimplerRuntimeManifestArgTemplate {
+    kind: String,
 }
 
 impl LocalGuestUapiSurface {
@@ -1491,7 +1500,7 @@ fn with_suppressed_stdio<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, 
 
 fn simpler_manifest_path() -> Result<PathBuf, String> {
     let path = std::env::var("SIMPLER_HOST_VECTOR_MANIFEST").unwrap_or_else(|_| {
-        "/private/tmp/simpler-host-vector-artifacts/host_vector_manifest.json".to_string()
+        "/tmp/simpler-host-vector-artifacts/host_vector_manifest.json".to_string()
     });
     let path = PathBuf::from(path);
     if !path.exists() {
@@ -1505,7 +1514,7 @@ fn simpler_manifest_path() -> Result<PathBuf, String> {
 
 fn simpler_matmul_manifest_path() -> Result<PathBuf, String> {
     let path = std::env::var("SIMPLER_HOST_MATMUL_MANIFEST").unwrap_or_else(|_| {
-        "/private/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json".to_string()
+        "/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json".to_string()
     });
     let path = PathBuf::from(path);
     if !path.exists() {
@@ -1616,7 +1625,17 @@ fn host_matmul_backend_spec_from_manifest(
                 manifest_path.display()
             )
         })?;
-    let args = vec![
+    let tile_batch = if manifest
+        .simpler_runtime
+        .args_template
+        .iter()
+        .any(|arg| arg.kind == "scalar_tile_batch")
+    {
+        Some(manifest.simpler_runtime.tile_batch.unwrap_or(1))
+    } else {
+        None
+    };
+    let mut args = vec![
         SimplerRuntimeArg::InputSegment {
             endpoint: input_a,
             bytes: input_bytes,
@@ -1639,6 +1658,9 @@ fn host_matmul_backend_spec_from_manifest(
         SimplerRuntimeArg::ScalarU64(output_bytes),
         SimplerRuntimeArg::ScalarU64(elems),
     ];
+    if let Some(tile_batch) = tile_batch {
+        args.push(SimplerRuntimeArg::ScalarU64(tile_batch));
+    }
     let runtime = SimplerRuntimeArtifacts {
         host_runtime_library: manifest.simpler_runtime.host_runtime_library,
         orch_shared_object: manifest.simpler_runtime.orch_shared_object,
