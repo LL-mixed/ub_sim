@@ -10554,6 +10554,11 @@ fn qwen3_dense_0_6b_write_service_flow_markers(
             RESULT_BLOCK_TABLE_HEADER + 24,
             result_block_table_bytes as u64,
         );
+        write_u64_le_at(
+            output,
+            RESULT_BLOCK_TABLE_HEADER + 32,
+            metadata_table_end as u64,
+        );
         for (index, descriptor) in result_block_descriptors.iter().enumerate() {
             let base = RESULT_BLOCK_TABLE_BASE + index * RESULT_BLOCK_TABLE_ENTRY_BYTES;
             let byte_start = descriptor.tile_id as usize * shard_output_bytes as usize
@@ -14593,6 +14598,14 @@ mod tests {
             ),
             RESULT_BLOCK_TABLE_BYTES as u64
         );
+        assert_eq!(
+            u64::from_le_bytes(
+                output[RESULT_BLOCK_TABLE_HEADER + 32..RESULT_BLOCK_TABLE_HEADER + 40]
+                    .try_into()
+                    .expect("result block metadata end")
+            ),
+            metadata_table_end as u64
+        );
         let mut result_block_checksum_nonzero = 0usize;
         let mut result_block_checksum_matches = 0usize;
         let mut result_block_checksum_first = 0u64;
@@ -15077,6 +15090,9 @@ mod tests {
             .unwrap_or(QWEN3_DENSE_0_6B_PROFILE.vocab_size)
             .min(QWEN3_DENSE_0_6B_PROFILE.vocab_size);
         let real_weights_present = std::env::var("SIM_QWEN3_0_6B_WEIGHTS_PATH").is_ok();
+        let runtime_forward_expected =
+            real_weights_present
+                && !crate::qwen3_dense_0_6b_guest_input_token_ids(guest_input).is_empty();
         let mut logits_text_byte_offset = 0u64;
         for entry in 0..LOGITS_ENTRY_COUNT {
             let base = LOGITS_TABLE_BASE + entry * LOGITS_TABLE_ENTRY_BYTES;
@@ -15192,12 +15208,18 @@ mod tests {
                 assert_ne!(full_vocab_logits_checksum, 0);
                 assert_ne!(top_logit_bits, 0);
                 assert_ne!(runner_up_logit_bits, 0);
-                assert_eq!(
-                    runtime_forward_layer_count,
-                    QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers
-                );
-                assert_ne!(runtime_forward_final_hidden_checksum, 0);
-                assert_ne!(runtime_forward_checksum, 0);
+                if runtime_forward_expected {
+                    assert_eq!(
+                        runtime_forward_layer_count,
+                        QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers
+                    );
+                    assert_ne!(runtime_forward_final_hidden_checksum, 0);
+                    assert_ne!(runtime_forward_checksum, 0);
+                } else {
+                    assert_eq!(runtime_forward_layer_count, 0);
+                    assert_eq!(runtime_forward_final_hidden_checksum, 0);
+                    assert_eq!(runtime_forward_checksum, 0);
+                }
             } else {
                 assert_eq!(qkv_reference_digest, 0);
                 assert_eq!(real_path_digest, 0);
@@ -15793,23 +15815,30 @@ mod tests {
             assert!(real_logits.row_byte_count >= real_logits.candidate_count);
             assert_ne!(real_logits.row_checksum, 0);
             assert_ne!(real_logits.logit_checksum, 0);
-            assert_eq!(
-                real_logits.sampled_pair_count,
-                (TOKEN_TEXT_ENTRY_COUNT * 2) as u64
-            );
-            assert_eq!(
-                real_logits.selection_match_count,
-                TOKEN_TEXT_ENTRY_COUNT as u64
-            );
-            assert_eq!(
-                real_logits.margin_match_count,
-                TOKEN_TEXT_ENTRY_COUNT as u64
-            );
-            assert_eq!(
-                real_logits.checksum_match_count,
-                TOKEN_TEXT_ENTRY_COUNT as u64
-            );
-            assert_eq!(real_logits.max_margin_delta_milli, 0);
+            if runtime_forward_expected {
+                assert_eq!(
+                    real_logits.sampled_pair_count,
+                    (TOKEN_TEXT_ENTRY_COUNT * 2) as u64
+                );
+                assert_eq!(
+                    real_logits.selection_match_count,
+                    TOKEN_TEXT_ENTRY_COUNT as u64
+                );
+                assert_eq!(
+                    real_logits.margin_match_count,
+                    TOKEN_TEXT_ENTRY_COUNT as u64
+                );
+                assert_eq!(
+                    real_logits.checksum_match_count,
+                    TOKEN_TEXT_ENTRY_COUNT as u64
+                );
+                assert_eq!(real_logits.max_margin_delta_milli, 0);
+            } else {
+                assert_eq!(real_logits.sampled_pair_count, 0);
+                assert_eq!(real_logits.selection_match_count, 0);
+                assert_eq!(real_logits.margin_match_count, 0);
+                assert_eq!(real_logits.checksum_match_count, 0);
+            }
             assert_eq!(real_logits.vocab_size, QWEN3_DENSE_0_6B_PROFILE.vocab_size);
             assert_eq!(
                 real_logits.hidden_size,

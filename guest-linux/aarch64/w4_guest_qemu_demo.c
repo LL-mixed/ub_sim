@@ -54,7 +54,7 @@
 
 #define CMDQ_SLOT_BYTES 64U
 #define MAX_SLOTS 16U
-#define W4_TIMEOUT_MS 5000
+#define W4_TIMEOUT_MS 300000
 #define W4_DOORBELL_BATCH_SLOTS 4U
 #define W4_KVCACHE_PAYLOAD_BYTES 8192U
 #define W4_DISPATCH_INPUT_WORD 0x0000000000000000ULL
@@ -63,6 +63,111 @@
 #define W4_QWEN3_MARKER_PUBLISH 0x7133773470756230ULL
 #define W4_QWEN3_MARKER_RESOLVE 0x7133773472657331ULL
 #define W4_QWEN3_MARKER_COMPUTE 0x71337734636d7031ULL
+#define W4_QWEN3_MARKER_SHARD_SUMMARY 0x7133773473686430ULL
+#define W4_QWEN3_MARKER_ROUND1_SUMMARY 0x7133773472643130ULL
+#define W4_QWEN3_MARKER_RESULT_TABLE 0x7133773474626c30ULL
+#define W4_QWEN3_MARKER_PROJECTION_TABLE 0x7133773471767430ULL
+#define W4_QWEN3_MARKER_LAYER_DEP_TABLE 0x7133773464657030ULL
+#define W4_QWEN3_MARKER_RESULT_BLOCK_TABLE 0x71337734626c6b30ULL
+#define W4_QWEN3_MARKER_KVCACHE_TABLE 0x713377346b766330ULL
+#define W4_QWEN3_MARKER_KVCACHE_STATE_TABLE 0x713377346b767331ULL
+#define W4_QWEN3_MARKER_LOGITS_TABLE 0x713377346c6f6730ULL
+#define W4_QWEN3_MARKER_TOKEN_TEXT_TABLE 0x7133773474787430ULL
+#define W4_QWEN3_MARKER_TEXT_OUTPUT_TABLE 0x71337734746f7430ULL
+#define W4_QWEN3_MARKER_TEXT_OUTPUT_BYTES_TABLE 0x71337734746f6230ULL
+#define W4_QWEN3_MARKER_TOKENIZER_ASSET_TABLE 0x71337734746f6b30ULL
+#define W4_QWEN3_MARKER_WEIGHT_REFERENCE_TABLE 0x7133773477667430ULL
+#define W4_QWEN3_MARKER_WEIGHT_STAGE_LINK_TABLE 0x71337734776c6b30ULL
+#define W4_QWEN3_MARKER_MLP_REFERENCE_TABLE 0x713377346d6c7030ULL
+#define W4_QWEN3_MARKER_LOGITS_REFERENCE_TABLE 0x713377346c6d6830ULL
+#define W4_QWEN3_TOKENIZER_POLICY_KIND 1ULL
+#define W4_QWEN3_TOKENIZER_MODEL_ID "Qwen/Qwen3-0.6B"
+#define W4_QWEN3_TOKENIZER_FAMILY "qwen3-tiktoken-compatible-synthetic-piece"
+#define W4_QWEN3_TOKENIZER_PIECE_PREFIX "q3_"
+#define W4_QWEN3_VOCAB_SIZE 151936ULL
+#define W4_QWEN3_EXPECTED_SHARDS 8ULL
+#define W4_QWEN3_TILES_PER_SHARD 2ULL
+#define W4_QWEN3_EXPECTED_TILES \
+    (W4_QWEN3_EXPECTED_SHARDS * W4_QWEN3_TILES_PER_SHARD)
+#define W4_QWEN3_SHARD_OUTPUT_BYTES 65536ULL
+#define W4_QWEN3_SHARD_OUTPUT_ELEMS 16384ULL
+#define W4_QWEN3_KV_BLOCKS_PER_TILE 2ULL
+#define W4_QWEN3_RESULT_TABLE_HEADER 320ULL
+#define W4_QWEN3_RESULT_TABLE_BASE 384ULL
+#define W4_QWEN3_RESULT_TABLE_ENTRY_WORDS 10ULL
+#define W4_QWEN3_RESULT_TABLE_ENTRY_BYTES 80ULL
+#define W4_QWEN3_PROJECTION_TABLE_HEADER 1664ULL
+#define W4_QWEN3_PROJECTION_TABLE_BASE 1728ULL
+#define W4_QWEN3_PROJECTION_TABLE_ENTRY_WORDS 10ULL
+#define W4_QWEN3_PROJECTION_TABLE_ENTRY_BYTES 80ULL
+#define W4_QWEN3_PROJECTIONS_PER_SHARD 3ULL
+#define W4_QWEN3_LAYER_DEP_TABLE_HEADER 5568ULL
+#define W4_QWEN3_LAYER_DEP_TABLE_BASE 5632ULL
+#define W4_QWEN3_LAYER_DEP_TABLE_ENTRY_WORDS 11ULL
+#define W4_QWEN3_LAYER_DEP_TABLE_ENTRY_BYTES 88ULL
+#define W4_QWEN3_LAYER_DEP_STAGES_PER_TILE 24ULL
+#define W4_QWEN3_RESULT_BLOCK_TABLE_HEADER \
+    (W4_QWEN3_LAYER_DEP_TABLE_BASE + \
+     W4_QWEN3_EXPECTED_TILES * W4_QWEN3_LAYER_DEP_STAGES_PER_TILE * \
+     W4_QWEN3_LAYER_DEP_TABLE_ENTRY_BYTES)
+#define W4_QWEN3_RESULT_BLOCK_TABLE_BASE (W4_QWEN3_RESULT_BLOCK_TABLE_HEADER + 64ULL)
+#define W4_QWEN3_RESULT_BLOCK_TABLE_ENTRY_WORDS 16ULL
+#define W4_QWEN3_RESULT_BLOCK_TABLE_ENTRY_BYTES 128ULL
+#define W4_QWEN3_RESULT_BLOCK_SAMPLE_PAIRS 8ULL
+#define W4_QWEN3_KVCACHE_TABLE_HEADER \
+    (W4_QWEN3_RESULT_BLOCK_TABLE_BASE + \
+     W4_QWEN3_EXPECTED_TILES * W4_QWEN3_KV_BLOCKS_PER_TILE * \
+     W4_QWEN3_RESULT_BLOCK_TABLE_ENTRY_BYTES)
+#define W4_QWEN3_KVCACHE_TABLE_BASE (W4_QWEN3_KVCACHE_TABLE_HEADER + 64ULL)
+#define W4_QWEN3_KVCACHE_TABLE_ENTRY_WORDS 14ULL
+#define W4_QWEN3_KVCACHE_TABLE_ENTRY_BYTES 112ULL
+#define W4_QWEN3_KVCACHE_LAYERS 28ULL
+#define W4_QWEN3_KVCACHE_PHASES 2ULL
+#define W4_QWEN3_KVCACHE_BLOCKS_PER_LAYER_TILE \
+    (W4_QWEN3_KV_BLOCKS_PER_TILE + 1ULL)
+#define W4_QWEN3_KVCACHE_ENTRIES \
+    (W4_QWEN3_EXPECTED_TILES * W4_QWEN3_KVCACHE_LAYERS * \
+     W4_QWEN3_KVCACHE_PHASES)
+#define W4_QWEN3_KVCACHE_TABLE_END \
+    (W4_QWEN3_KVCACHE_TABLE_BASE + \
+     W4_QWEN3_KVCACHE_ENTRIES * W4_QWEN3_KVCACHE_TABLE_ENTRY_BYTES)
+#define W4_QWEN3_KVCACHE_STATE_TABLE_HEADER W4_QWEN3_KVCACHE_TABLE_END
+#define W4_QWEN3_KVCACHE_STATE_TABLE_BASE \
+    (W4_QWEN3_KVCACHE_STATE_TABLE_HEADER + 64ULL)
+#define W4_QWEN3_KVCACHE_STATE_TABLE_ENTRY_WORDS 8ULL
+#define W4_QWEN3_KVCACHE_STATE_TABLE_ENTRY_BYTES 64ULL
+#define W4_QWEN3_KVCACHE_STATE_ENTRIES \
+    (W4_QWEN3_EXPECTED_TILES * W4_QWEN3_KVCACHE_LAYERS * \
+     W4_QWEN3_KVCACHE_BLOCKS_PER_LAYER_TILE)
+#define W4_QWEN3_KVCACHE_STATE_TABLE_END \
+    (W4_QWEN3_KVCACHE_STATE_TABLE_BASE + \
+     W4_QWEN3_KVCACHE_STATE_ENTRIES * W4_QWEN3_KVCACHE_STATE_TABLE_ENTRY_BYTES)
+#define W4_QWEN3_LOGITS_TABLE_HEADER W4_QWEN3_KVCACHE_STATE_TABLE_END
+#define W4_QWEN3_LOGITS_TABLE_BASE (W4_QWEN3_LOGITS_TABLE_HEADER + 64ULL)
+#define W4_QWEN3_LOGITS_TABLE_ENTRY_WORDS 20ULL
+#define W4_QWEN3_LOGITS_TABLE_ENTRY_BYTES 160ULL
+#define W4_QWEN3_LOGITS_ENTRIES W4_QWEN3_EXPECTED_TILES
+#define W4_QWEN3_LOGITS_TABLE_END \
+    (W4_QWEN3_LOGITS_TABLE_BASE + \
+     W4_QWEN3_LOGITS_ENTRIES * W4_QWEN3_LOGITS_TABLE_ENTRY_BYTES)
+#define W4_QWEN3_TOKEN_TEXT_TABLE_HEADER W4_QWEN3_LOGITS_TABLE_END
+#define W4_QWEN3_TOKEN_TEXT_TABLE_BASE (W4_QWEN3_TOKEN_TEXT_TABLE_HEADER + 64ULL)
+#define W4_QWEN3_TOKEN_TEXT_TABLE_ENTRY_WORDS 8ULL
+#define W4_QWEN3_TOKEN_TEXT_TABLE_ENTRY_BYTES 64ULL
+#define W4_QWEN3_TOKEN_TEXT_ENTRIES W4_QWEN3_EXPECTED_TILES
+#define W4_QWEN3_TOKEN_TEXT_PIECE_BYTES 9ULL
+#define W4_QWEN3_TOKEN_TEXT_TOTAL_BYTES \
+    (W4_QWEN3_TOKEN_TEXT_ENTRIES * W4_QWEN3_TOKEN_TEXT_PIECE_BYTES)
+#define W4_QWEN3_TOKEN_TEXT_TABLE_END \
+    (W4_QWEN3_TOKEN_TEXT_TABLE_BASE + \
+     W4_QWEN3_TOKEN_TEXT_ENTRIES * W4_QWEN3_TOKEN_TEXT_TABLE_ENTRY_BYTES)
+#define W4_QWEN3_TEXT_OUTPUT_TABLE_HEADER W4_QWEN3_TOKEN_TEXT_TABLE_END
+#define W4_QWEN3_TEXT_OUTPUT_TABLE_END (W4_QWEN3_TEXT_OUTPUT_TABLE_HEADER + 64ULL)
+#define W4_QWEN3_TEXT_OUTPUT_BYTES_TABLE_HEADER W4_QWEN3_TEXT_OUTPUT_TABLE_END
+#define W4_QWEN3_TEXT_OUTPUT_BYTES_TABLE_BASE \
+    (W4_QWEN3_TEXT_OUTPUT_BYTES_TABLE_HEADER + 64ULL)
+#define W4_QWEN3_OUTPUT_PAYLOAD_BYTES \
+    (W4_QWEN3_EXPECTED_TILES * W4_QWEN3_SHARD_OUTPUT_BYTES)
 
 struct linqu_dt_info {
     bool found;
@@ -940,9 +1045,7 @@ static uint64_t expected_dispatch_result_word(void)
 {
     const char *profile = getenv("SIM_UAPI_W4_CHIPBACKEND_PROFILE");
 
-    if (profile &&
-        (strcmp(profile, "host_matmul") == 0 ||
-         strcmp(profile, "qwen3_dense_0_6b") == 0)) {
+    if (profile && strcmp(profile, "host_matmul") == 0) {
         return W4_DISPATCH_RESULT_WORD_HOST_MATMUL;
     }
     return W4_DISPATCH_RESULT_WORD;
@@ -954,73 +1057,297 @@ static bool is_qwen3_profile(void)
     return profile && strcmp(profile, "qwen3_dense_0_6b") == 0;
 }
 
+static uint64_t read_segment_u64(volatile uint8_t *ep_mmio, uint64_t offset)
+{
+    mmio_write64(ep_mmio, REG_SEG_DATA_OFFSET, offset);
+    return mmio_read64(ep_mmio, REG_SEG_DATA_VALUE);
+}
+
+static bool qwen3_is_trailing_metadata_marker(uint64_t marker)
+{
+    return marker == W4_QWEN3_MARKER_TEXT_OUTPUT_BYTES_TABLE ||
+           marker == W4_QWEN3_MARKER_TOKENIZER_ASSET_TABLE ||
+           marker == W4_QWEN3_MARKER_WEIGHT_REFERENCE_TABLE ||
+           marker == W4_QWEN3_MARKER_WEIGHT_STAGE_LINK_TABLE ||
+           marker == W4_QWEN3_MARKER_MLP_REFERENCE_TABLE ||
+           marker == W4_QWEN3_MARKER_LOGITS_REFERENCE_TABLE;
+}
+
+static uint64_t qwen3_result_metadata_table_end(volatile uint8_t *ep_mmio)
+{
+    uint64_t marker = read_segment_u64(ep_mmio, W4_QWEN3_TEXT_OUTPUT_TABLE_HEADER);
+    uint64_t cursor = W4_QWEN3_TOKEN_TEXT_TABLE_END;
+
+    if (marker == W4_QWEN3_MARKER_TEXT_OUTPUT_TABLE) {
+        cursor = W4_QWEN3_TEXT_OUTPUT_TABLE_END;
+    }
+
+    for (;;) {
+        uint64_t table_marker = read_segment_u64(ep_mmio, cursor);
+        uint64_t table_bytes = 0;
+        uint64_t next_cursor = 0;
+
+        if (!qwen3_is_trailing_metadata_marker(table_marker)) {
+            break;
+        }
+
+        table_bytes = read_segment_u64(ep_mmio, cursor + 24);
+        next_cursor = cursor + 64ULL + table_bytes;
+        if (next_cursor <= cursor || next_cursor > W4_QWEN3_OUTPUT_PAYLOAD_BYTES) {
+            break;
+        }
+        cursor = next_cursor;
+    }
+
+    return cursor;
+}
+
+static uint64_t qwen3_canonical_result_block_checksum(volatile uint8_t *ep_mmio,
+                                                      uint64_t start,
+                                                      uint64_t bytes,
+                                                      uint64_t zero_start,
+                                                      uint64_t zero_end)
+{
+    uint64_t acc = 0xcbf29ce484222325ULL;
+
+    for (uint64_t offset = start; offset < start + bytes; offset += sizeof(uint64_t)) {
+        uint64_t word = 0;
+
+        if (offset < zero_start || offset >= zero_end) {
+            word = read_segment_u64(ep_mmio, offset);
+        }
+        acc ^= word;
+        acc *= 0x00000100000001b3ULL;
+    }
+    return acc;
+}
+
+static uint64_t qwen3_rol64(uint64_t value, unsigned int bits)
+{
+    return (value << bits) | (value >> (64U - bits));
+}
+
+static uint64_t qwen3_sampled_token(uint64_t round1_checksum, uint64_t tile_id)
+{
+    return (round1_checksum ^ (tile_id * 0x9e3779b97f4a7c15ULL)) % W4_QWEN3_VOCAB_SIZE;
+}
+
+static uint64_t qwen3_logits_checksum(uint64_t round1_checksum,
+                                      uint64_t tile_id,
+                                      uint64_t sampled_token,
+                                      uint64_t runner_up_token,
+                                      uint64_t margin_milli,
+                                      uint64_t real_top_checksum,
+                                      uint64_t real_runner_checksum,
+                                      uint64_t kvcache_read_digest,
+                                      uint64_t qkv_reference_digest,
+                                      uint64_t real_path_digest)
+{
+    return (round1_checksum * 0x00000100000001b3ULL) ^
+           qwen3_rol64(tile_id, 7) ^
+           qwen3_rol64(sampled_token, 13) ^
+           qwen3_rol64(runner_up_token, 29) ^
+           qwen3_rol64(margin_milli, 43) ^
+           qwen3_rol64(real_top_checksum, 5) ^
+           qwen3_rol64(real_runner_checksum, 17) ^
+           qwen3_rol64(kvcache_read_digest, 31) ^
+           qwen3_rol64(qkv_reference_digest, 47) ^
+           qwen3_rol64(real_path_digest, 53);
+}
+
+static uint64_t qwen3_fnv1a_bytes(uint64_t acc, const void *data, size_t len)
+{
+    const uint8_t *bytes = (const uint8_t *)data;
+
+    for (size_t i = 0; i < len; ++i) {
+        acc ^= bytes[i];
+        acc *= 0x00000100000001b3ULL;
+    }
+    return acc;
+}
+
+static uint64_t qwen3_tokenizer_policy_hash(void)
+{
+    uint64_t acc = 0xcbf29ce484222325ULL;
+    uint64_t value;
+    uint8_t zero = 0;
+
+    acc = qwen3_fnv1a_bytes(acc, W4_QWEN3_TOKENIZER_MODEL_ID,
+                            strlen(W4_QWEN3_TOKENIZER_MODEL_ID));
+    acc = qwen3_fnv1a_bytes(acc, &zero, sizeof(zero));
+    acc = qwen3_fnv1a_bytes(acc, W4_QWEN3_TOKENIZER_FAMILY,
+                            strlen(W4_QWEN3_TOKENIZER_FAMILY));
+    acc = qwen3_fnv1a_bytes(acc, &zero, sizeof(zero));
+    value = W4_QWEN3_VOCAB_SIZE;
+    acc = qwen3_fnv1a_bytes(acc, &value, sizeof(value));
+    acc = qwen3_fnv1a_bytes(acc, W4_QWEN3_TOKENIZER_PIECE_PREFIX,
+                            strlen(W4_QWEN3_TOKENIZER_PIECE_PREFIX));
+    acc = qwen3_fnv1a_bytes(acc, &zero, sizeof(zero));
+    value = 6ULL;
+    acc = qwen3_fnv1a_bytes(acc, &value, sizeof(value));
+    value = W4_QWEN3_TOKEN_TEXT_PIECE_BYTES;
+    acc = qwen3_fnv1a_bytes(acc, &value, sizeof(value));
+    return acc;
+}
+
+static void qwen3_token_piece(uint64_t sampled_token, uint64_t *word0, uint64_t *word1)
+{
+    char piece[16];
+
+    memset(piece, 0, sizeof(piece));
+    snprintf(piece, sizeof(piece), "q3_%06" PRIu64, sampled_token);
+    memcpy(word0, piece, sizeof(*word0));
+    memcpy(word1, piece + sizeof(*word0), sizeof(*word1));
+}
+
+static uint64_t qwen3_token_piece_checksum(uint64_t sampled_token)
+{
+    char piece[16];
+    uint64_t acc = 0xcbf29ce484222325ULL ^ sampled_token;
+
+    memset(piece, 0, sizeof(piece));
+    snprintf(piece, sizeof(piece), "q3_%06" PRIu64, sampled_token);
+    for (uint64_t i = 0; i < W4_QWEN3_TOKEN_TEXT_PIECE_BYTES; ++i) {
+        acc ^= (uint8_t)piece[i];
+        acc *= 0x00000100000001b3ULL;
+    }
+    return acc ^ qwen3_rol64(W4_QWEN3_TOKEN_TEXT_PIECE_BYTES, 17);
+}
+
+static uint64_t qwen3_sample_text_checksum(uint64_t step_index, uint64_t sampled_token)
+{
+    uint64_t piece_word0;
+    uint64_t piece_word1;
+    uint64_t piece_checksum;
+    uint64_t byte_offset = step_index * W4_QWEN3_TOKEN_TEXT_PIECE_BYTES;
+
+    qwen3_token_piece(sampled_token, &piece_word0, &piece_word1);
+    piece_checksum = qwen3_token_piece_checksum(sampled_token);
+    return ((0xcbf29ce484222325ULL * 0x00000100000001b3ULL) +
+            qwen3_rol64(step_index, 11)) ^
+           qwen3_rol64(sampled_token, 31) ^
+           qwen3_rol64(byte_offset, 17) ^
+           qwen3_rol64(W4_QWEN3_TOKEN_TEXT_PIECE_BYTES, 23) ^
+           qwen3_rol64(piece_word0, 37) ^
+           qwen3_rol64(piece_word1, 43) ^
+           qwen3_rol64(piece_checksum, 3);
+}
+
 static int verify_dispatch_payload(volatile uint8_t *ep_mmio, uint64_t segment)
 {
+    const bool qwen3_profile = is_qwen3_profile();
     const uint64_t expected = expected_dispatch_result_word();
     uint64_t observed;
-    uint32_t word_lo;
-    uint32_t word_hi;
-    float value_lo;
-    float value_hi;
 
     mmio_write64(ep_mmio, REG_SEG_DATA_OFFSET, 0);
     observed = mmio_read64(ep_mmio, REG_SEG_DATA_VALUE);
-    if (is_qwen3_profile()) {
-        word_lo = (uint32_t)(observed & 0xffffffffU);
-        word_hi = (uint32_t)(observed >> 32);
-        memcpy(&value_lo, &word_lo, sizeof(value_lo));
-        memcpy(&value_hi, &word_hi, sizeof(value_hi));
-        if (!(value_lo > 1.0f && value_hi > 1.0f)) {
-            fprintf(stderr,
-                    "[w4_guest] dispatch payload mismatch segment=%" PRIu64
-                    " expected=qwen3_positive_result got=0x%016" PRIx64
-                    " value0=%f value1=%f\n",
-                    segment,
-                    observed,
-                    value_lo,
-                    value_hi);
-            return -1;
-        }
-        printf("[w4_guest] stage uapi_kvcache_payload_dispatch_result segment=%" PRIu64 " word0=0x%016" PRIx64 "\n",
-               segment, observed);
-    } else
-    if (observed != expected) {
+    if (!qwen3_profile && observed != expected) {
         fprintf(stderr,
                 "[w4_guest] dispatch payload mismatch segment=%" PRIu64 " expected=0x%016" PRIx64 " got=0x%016" PRIx64 "\n",
                 segment,
                 expected,
                 observed);
         return -1;
-    } else {
-        printf("[w4_guest] stage uapi_kvcache_payload_dispatch_result segment=%" PRIu64 " word0=0x%016" PRIx64 "\n",
-               segment, observed);
     }
-    if (is_qwen3_profile()) {
+    if (qwen3_profile && observed == 0) {
+        fprintf(stderr,
+                "[w4_guest] qwen3 dispatch payload mismatch segment=%" PRIu64
+                " expected=nonzero_rmsnorm_tile got=0x%016" PRIx64 "\n",
+                segment,
+                observed);
+        return -1;
+    }
+    printf("[w4_guest] stage uapi_kvcache_payload_dispatch_result segment=%" PRIu64 " word0=0x%016" PRIx64 "\n",
+           segment, observed);
+    if (qwen3_profile) {
         uint64_t publish_marker;
         uint64_t resolve_marker;
         uint64_t compute_marker;
         uint64_t publish_count;
         uint64_t resolve_count;
         uint64_t compute_count;
+        uint64_t shard_marker;
+        uint64_t shard_count;
+        uint64_t shard_output_bytes;
+        uint64_t shard_output_elems;
+        uint64_t kv_blocks_per_tile;
+        uint64_t round1_marker;
+        uint64_t round1_count;
+        uint64_t round0_distinct;
+        uint64_t round1_distinct;
+        uint64_t first_checksum;
+        uint64_t last_checksum;
+        uint64_t table_marker;
+        uint64_t table_count;
+        uint64_t table_entry_words;
+        uint64_t table_bytes;
+        uint64_t round0_segments[W4_QWEN3_EXPECTED_TILES];
+        uint64_t round1_segments[W4_QWEN3_EXPECTED_TILES];
+        uint64_t round0_segment_distinct = 0;
+        uint64_t round1_segment_distinct = 0;
+        uint64_t table_first_shard = UINT64_MAX;
+        uint64_t table_last_shard = 0;
+        uint64_t table_kv_blocks = 0;
+        uint64_t result_block_count;
+        uint64_t result_block_row_span;
+        uint64_t result_block_table_marker;
+        uint64_t result_block_table_count;
+        uint64_t result_block_table_entry_words;
+        uint64_t result_block_table_bytes;
+        uint64_t kvcache_marker;
+        uint64_t kvcache_count;
+        uint64_t kvcache_entry_words;
+        uint64_t kvcache_table_bytes;
+        uint64_t kvcache_state_marker;
+        uint64_t kvcache_state_count;
+        uint64_t kvcache_state_entry_words;
+        uint64_t kvcache_state_table_bytes;
+        uint64_t logits_marker;
+        uint64_t logits_count;
+        uint64_t logits_entry_words;
+        uint64_t logits_table_bytes;
+        uint64_t token_text_marker;
+        uint64_t token_text_count;
+        uint64_t token_text_entry_words;
+        uint64_t token_text_table_bytes;
+        uint64_t token_text_total_bytes;
+        uint64_t token_text_policy_hash;
+        uint64_t token_text_policy_kind;
+        uint64_t projection_marker;
+        uint64_t projection_count;
+        uint64_t projection_entry_words;
+        uint64_t projection_table_bytes;
+        uint64_t projection_kind_mask[W4_QWEN3_EXPECTED_TILES];
+        uint64_t projection_segments[W4_QWEN3_EXPECTED_TILES * W4_QWEN3_PROJECTIONS_PER_SHARD];
+        uint64_t projection_segment_distinct = 0;
+        uint64_t projection_checksum_nonzero = 0;
+        uint64_t projection_q_entries = 0;
+        uint64_t projection_kv_entries = 0;
+        uint64_t projection_v_entries = 0;
+        uint64_t layer_dep_marker;
+        uint64_t layer_dep_count;
+        uint64_t layer_dep_entry_words;
+        uint64_t layer_dep_table_bytes;
+        uint64_t layer_dep_stage_counts[W4_QWEN3_LAYER_DEP_STAGES_PER_TILE + 1];
+        uint64_t layer_dep_checksum_nonzero = 0;
+        uint64_t layer_dep_segments[W4_QWEN3_EXPECTED_TILES * W4_QWEN3_LAYER_DEP_STAGES_PER_TILE];
+        uint64_t layer_dep_segment_distinct = 0;
+        bool table_ok = true;
+        bool projection_table_ok = true;
+        bool layer_dep_table_ok = true;
 
-        mmio_write64(ep_mmio, REG_SEG_DATA_OFFSET, 8);
-        publish_marker = mmio_read64(ep_mmio, REG_SEG_DATA_VALUE);
-        mmio_write64(ep_mmio, REG_SEG_DATA_OFFSET, 16);
-        resolve_marker = mmio_read64(ep_mmio, REG_SEG_DATA_VALUE);
-        mmio_write64(ep_mmio, REG_SEG_DATA_OFFSET, 24);
-        compute_marker = mmio_read64(ep_mmio, REG_SEG_DATA_VALUE);
-        mmio_write64(ep_mmio, REG_SEG_DATA_OFFSET, 32);
-        publish_count = mmio_read64(ep_mmio, REG_SEG_DATA_VALUE);
-        mmio_write64(ep_mmio, REG_SEG_DATA_OFFSET, 40);
-        resolve_count = mmio_read64(ep_mmio, REG_SEG_DATA_VALUE);
-        mmio_write64(ep_mmio, REG_SEG_DATA_OFFSET, 48);
-        compute_count = mmio_read64(ep_mmio, REG_SEG_DATA_VALUE);
+        publish_marker = read_segment_u64(ep_mmio, 8);
+        resolve_marker = read_segment_u64(ep_mmio, 16);
+        compute_marker = read_segment_u64(ep_mmio, 24);
+        publish_count = read_segment_u64(ep_mmio, 32);
+        resolve_count = read_segment_u64(ep_mmio, 40);
+        compute_count = read_segment_u64(ep_mmio, 48);
         if (publish_marker != W4_QWEN3_MARKER_PUBLISH ||
             resolve_marker != W4_QWEN3_MARKER_RESOLVE ||
             compute_marker != W4_QWEN3_MARKER_COMPUTE ||
-            publish_count != 8 ||
-            resolve_count != 8 ||
-            compute_count != 8) {
+            publish_count != W4_QWEN3_EXPECTED_TILES ||
+            resolve_count != W4_QWEN3_EXPECTED_TILES ||
+            compute_count != W4_QWEN3_EXPECTED_TILES) {
             fprintf(stderr,
                     "[w4_guest] qwen3 service flow mismatch publish_marker=0x%016" PRIx64
                     " resolve_marker=0x%016" PRIx64
@@ -1030,10 +1357,1054 @@ static int verify_dispatch_payload(volatile uint8_t *ep_mmio, uint64_t segment)
                     publish_count, resolve_count, compute_count);
             return -1;
         }
+        shard_marker = read_segment_u64(ep_mmio, 56);
+        shard_count = read_segment_u64(ep_mmio, 64);
+        shard_output_bytes = read_segment_u64(ep_mmio, 72);
+        shard_output_elems = read_segment_u64(ep_mmio, 80);
+        kv_blocks_per_tile = read_segment_u64(ep_mmio, 88);
+        round1_marker = read_segment_u64(ep_mmio, 96);
+        round1_count = read_segment_u64(ep_mmio, 104);
+        round0_distinct = read_segment_u64(ep_mmio, 112);
+        round1_distinct = read_segment_u64(ep_mmio, 120);
+        first_checksum = read_segment_u64(ep_mmio, 128);
+        last_checksum = read_segment_u64(ep_mmio, 128 + ((W4_QWEN3_EXPECTED_TILES - 1) * 8));
+        if (shard_marker != W4_QWEN3_MARKER_SHARD_SUMMARY ||
+            round1_marker != W4_QWEN3_MARKER_ROUND1_SUMMARY ||
+            shard_count != W4_QWEN3_EXPECTED_TILES ||
+            round1_count != W4_QWEN3_EXPECTED_TILES ||
+            shard_output_bytes != W4_QWEN3_SHARD_OUTPUT_BYTES ||
+            shard_output_elems != W4_QWEN3_SHARD_OUTPUT_ELEMS ||
+            kv_blocks_per_tile != W4_QWEN3_KV_BLOCKS_PER_TILE ||
+            round0_distinct < 2 ||
+            round1_distinct < 2 ||
+            first_checksum == 0 ||
+            last_checksum == 0 ||
+            first_checksum == last_checksum) {
+            fprintf(stderr,
+                    "[w4_guest] qwen3 shard summary mismatch shard_marker=0x%016" PRIx64
+                    " round1_marker=0x%016" PRIx64 " shards=%" PRIu64
+                    " round1=%" PRIu64 " bytes=%" PRIu64 " elems=%" PRIu64
+                    " kv_blocks=%" PRIu64 " distinct0=%" PRIu64 " distinct1=%" PRIu64
+                    " checksum0=0x%016" PRIx64 " checksum_last=0x%016" PRIx64 "\n",
+                    shard_marker, round1_marker, shard_count, round1_count,
+                    shard_output_bytes, shard_output_elems, kv_blocks_per_tile,
+                    round0_distinct, round1_distinct, first_checksum, last_checksum);
+            return -1;
+        }
         printf("[w4_guest] stage uapi_qwen3_service_flow object=partial_result_tile publish=%" PRIu64
                " resolve_remote=%" PRIu64 " round1_compute=%" PRIu64
                " storage=block metadata=db status=ok\n",
                publish_count, resolve_count, compute_count);
+        printf("[w4_guest] stage uapi_qwen3_shard_result_summary shards=%" PRIu64
+               " tiles=%" PRIu64 " round1=%" PRIu64 " shard_bytes=%" PRIu64
+               " shard_elems=%" PRIu64
+               " kv_blocks_per_tile=%" PRIu64 " round0_distinct=%" PRIu64
+               " round1_distinct=%" PRIu64 " checksum0=0x%016" PRIx64
+               " checksum_last=0x%016" PRIx64 " status=ok\n",
+               (uint64_t)W4_QWEN3_EXPECTED_SHARDS, shard_count, round1_count,
+               shard_output_bytes, shard_output_elems,
+               kv_blocks_per_tile, round0_distinct, round1_distinct,
+               first_checksum, last_checksum);
+        table_marker = read_segment_u64(ep_mmio, W4_QWEN3_RESULT_TABLE_HEADER);
+        table_count = read_segment_u64(ep_mmio, W4_QWEN3_RESULT_TABLE_HEADER + 8);
+        table_entry_words = read_segment_u64(ep_mmio, W4_QWEN3_RESULT_TABLE_HEADER + 16);
+        table_bytes = read_segment_u64(ep_mmio, W4_QWEN3_RESULT_TABLE_HEADER + 24);
+        if (table_marker != W4_QWEN3_MARKER_RESULT_TABLE ||
+            table_count != W4_QWEN3_EXPECTED_TILES ||
+            table_entry_words != W4_QWEN3_RESULT_TABLE_ENTRY_WORDS ||
+            table_bytes != W4_QWEN3_EXPECTED_TILES * W4_QWEN3_RESULT_TABLE_ENTRY_BYTES) {
+            fprintf(stderr,
+                    "[w4_guest] qwen3 result table header mismatch marker=0x%016" PRIx64
+                    " count=%" PRIu64 " entry_words=%" PRIu64 " bytes=%" PRIu64 "\n",
+                    table_marker, table_count, table_entry_words, table_bytes);
+            return -1;
+        }
+        memset(round0_segments, 0, sizeof(round0_segments));
+        memset(round1_segments, 0, sizeof(round1_segments));
+        for (uint64_t i = 0; i < W4_QWEN3_EXPECTED_TILES; ++i) {
+            uint64_t base = W4_QWEN3_RESULT_TABLE_BASE + i * W4_QWEN3_RESULT_TABLE_ENTRY_BYTES;
+            uint64_t expected_shard = i / W4_QWEN3_TILES_PER_SHARD;
+            uint64_t entry_shard = read_segment_u64(ep_mmio, base);
+            (void)read_segment_u64(ep_mmio, base + 8);
+            (void)read_segment_u64(ep_mmio, base + 16);
+            uint64_t entry_tile = read_segment_u64(ep_mmio, base + 24);
+            uint64_t entry_kv_start = read_segment_u64(ep_mmio, base + 32);
+            uint64_t entry_kv_end = read_segment_u64(ep_mmio, base + 40);
+            uint64_t entry_round0_segment = read_segment_u64(ep_mmio, base + 48);
+            uint64_t entry_round1_segment = read_segment_u64(ep_mmio, base + 56);
+            uint64_t entry_round0_checksum = read_segment_u64(ep_mmio, base + 64);
+            uint64_t entry_round1_checksum = read_segment_u64(ep_mmio, base + 72);
+
+            if (entry_shard != expected_shard ||
+                entry_tile != i ||
+                entry_kv_start != i * W4_QWEN3_KV_BLOCKS_PER_TILE ||
+                entry_kv_end != (i + 1) * W4_QWEN3_KV_BLOCKS_PER_TILE ||
+                entry_round0_segment == 0 ||
+                entry_round1_segment == 0 ||
+                entry_round0_segment == entry_round1_segment ||
+                entry_round0_checksum == 0 ||
+                entry_round1_checksum == 0) {
+                table_ok = false;
+            }
+            if (entry_shard < table_first_shard) {
+                table_first_shard = entry_shard;
+            }
+            if (entry_shard > table_last_shard) {
+                table_last_shard = entry_shard;
+            }
+            table_kv_blocks += entry_kv_end - entry_kv_start;
+            round0_segments[i] = entry_round0_segment;
+            round1_segments[i] = entry_round1_segment;
+        }
+        for (uint64_t i = 0; i < W4_QWEN3_EXPECTED_TILES; ++i) {
+            bool round0_seen = false;
+            bool round1_seen = false;
+
+            for (uint64_t j = 0; j < i; ++j) {
+                if (round0_segments[j] == round0_segments[i]) {
+                    round0_seen = true;
+                }
+                if (round1_segments[j] == round1_segments[i]) {
+                    round1_seen = true;
+                }
+            }
+            if (!round0_seen) {
+                round0_segment_distinct += 1;
+            }
+            if (!round1_seen) {
+                round1_segment_distinct += 1;
+            }
+        }
+        if (!table_ok ||
+            table_first_shard != 0 ||
+            table_last_shard != W4_QWEN3_EXPECTED_SHARDS - 1 ||
+            table_kv_blocks != W4_QWEN3_EXPECTED_TILES * W4_QWEN3_KV_BLOCKS_PER_TILE ||
+            round0_segment_distinct != W4_QWEN3_EXPECTED_TILES ||
+            round1_segment_distinct != W4_QWEN3_EXPECTED_TILES) {
+            fprintf(stderr,
+                    "[w4_guest] qwen3 result table entry mismatch first=%" PRIu64
+                    " last=%" PRIu64 " kv_blocks=%" PRIu64
+                    " round0_segments=%" PRIu64 " round1_segments=%" PRIu64 "\n",
+                    table_first_shard, table_last_shard, table_kv_blocks,
+                    round0_segment_distinct, round1_segment_distinct);
+            return -1;
+        }
+        printf("[w4_guest] stage uapi_qwen3_result_descriptor_table entries=%" PRIu64
+               " entry_words=%" PRIu64 " table_bytes=%" PRIu64
+               " first_shard=%" PRIu64 " last_shard=%" PRIu64
+               " kv_blocks=%" PRIu64 " round0_segments=%" PRIu64
+               " round1_segments=%" PRIu64 " status=ok\n",
+               table_count, table_entry_words, table_bytes,
+               table_first_shard, table_last_shard, table_kv_blocks,
+               round0_segment_distinct, round1_segment_distinct);
+        result_block_count = table_kv_blocks;
+        result_block_row_span = 64ULL;
+        printf("[w4_guest] stage uapi_qwen3_result_block_summary blocks=%" PRIu64
+               " row_span=%" PRIu64 " source=result_descriptor_table status=ok\n",
+               result_block_count, result_block_row_span);
+        {
+            uint64_t block_sample_nonzero = 0;
+            uint64_t block_sample_first = 0;
+            uint64_t block_sample_last = 0;
+            uint64_t block_bytes = W4_QWEN3_SHARD_OUTPUT_BYTES / W4_QWEN3_KV_BLOCKS_PER_TILE;
+            for (uint64_t block = 0; block < result_block_count; ++block) {
+                uint64_t tile = block / W4_QWEN3_KV_BLOCKS_PER_TILE;
+                uint64_t tile_block = block % W4_QWEN3_KV_BLOCKS_PER_TILE;
+                uint64_t offset = tile * W4_QWEN3_SHARD_OUTPUT_BYTES +
+                                  tile_block * block_bytes;
+                uint64_t sample = read_segment_u64(ep_mmio, offset);
+                if (sample != 0) {
+                    block_sample_nonzero += 1;
+                }
+                if (block == 0) {
+                    block_sample_first = sample;
+                }
+                block_sample_last = sample;
+            }
+            if (block_sample_nonzero != result_block_count ||
+                block_sample_first == block_sample_last) {
+                fprintf(stderr,
+                        "[w4_guest] qwen3 result block sample mismatch blocks=%" PRIu64
+                        " nonzero=%" PRIu64 " first=0x%016" PRIx64
+                        " last=0x%016" PRIx64 "\n",
+                        result_block_count, block_sample_nonzero,
+                        block_sample_first, block_sample_last);
+                return -1;
+            }
+            printf("[w4_guest] stage uapi_qwen3_result_block_samples blocks=%" PRIu64
+                   " row_span=%" PRIu64 " nonzero=%" PRIu64
+                   " first=0x%016" PRIx64 " last=0x%016" PRIx64
+                   " status=ok\n",
+                   result_block_count, result_block_row_span, block_sample_nonzero,
+                   block_sample_first, block_sample_last);
+        }
+        result_block_table_marker = read_segment_u64(ep_mmio, W4_QWEN3_RESULT_BLOCK_TABLE_HEADER);
+        result_block_table_count = read_segment_u64(ep_mmio, W4_QWEN3_RESULT_BLOCK_TABLE_HEADER + 8);
+        result_block_table_entry_words = read_segment_u64(ep_mmio, W4_QWEN3_RESULT_BLOCK_TABLE_HEADER + 16);
+        result_block_table_bytes = read_segment_u64(ep_mmio, W4_QWEN3_RESULT_BLOCK_TABLE_HEADER + 24);
+        if (result_block_table_marker != W4_QWEN3_MARKER_RESULT_BLOCK_TABLE ||
+            result_block_table_count != result_block_count ||
+            result_block_table_entry_words != W4_QWEN3_RESULT_BLOCK_TABLE_ENTRY_WORDS ||
+            result_block_table_bytes !=
+                result_block_count * W4_QWEN3_RESULT_BLOCK_TABLE_ENTRY_BYTES) {
+            fprintf(stderr,
+                    "[w4_guest] qwen3 result block table header mismatch marker=0x%016" PRIx64
+                    " count=%" PRIu64 " entry_words=%" PRIu64 " bytes=%" PRIu64 "\n",
+                    result_block_table_marker, result_block_table_count,
+                    result_block_table_entry_words, result_block_table_bytes);
+            return -1;
+        }
+        {
+            uint64_t block_checksum_nonzero = 0;
+            uint64_t block_checksum_match = 0;
+            uint64_t block_element_pair_match = 0;
+            uint64_t block_checksum_first = 0;
+            uint64_t block_checksum_last = 0;
+            uint64_t block_bytes = W4_QWEN3_SHARD_OUTPUT_BYTES / W4_QWEN3_KV_BLOCKS_PER_TILE;
+            uint64_t explicit_metadata_table_end =
+                read_segment_u64(ep_mmio, W4_QWEN3_RESULT_BLOCK_TABLE_HEADER + 32);
+            uint64_t metadata_table_end = qwen3_result_metadata_table_end(ep_mmio);
+            const uint64_t sample_pair_offsets[W4_QWEN3_RESULT_BLOCK_SAMPLE_PAIRS] = {
+                0,
+                64 * sizeof(float),
+                7 * 128 * sizeof(float) + 32 * sizeof(float),
+                31 * 128 * sizeof(float) + 96 * sizeof(float),
+                32 * 128 * sizeof(float),
+                47 * 128 * sizeof(float) + 64 * sizeof(float),
+                63 * 128 * sizeof(float),
+                63 * 128 * sizeof(float) + 120 * sizeof(float),
+            };
+
+            if (explicit_metadata_table_end > metadata_table_end &&
+                explicit_metadata_table_end <= W4_QWEN3_OUTPUT_PAYLOAD_BYTES) {
+                metadata_table_end = explicit_metadata_table_end;
+            }
+            for (uint64_t block = 0; block < result_block_count; ++block) {
+                uint64_t base = W4_QWEN3_RESULT_BLOCK_TABLE_BASE +
+                                block * W4_QWEN3_RESULT_BLOCK_TABLE_ENTRY_BYTES;
+                uint64_t expected_tile = block / W4_QWEN3_KV_BLOCKS_PER_TILE;
+                uint64_t expected_shard = expected_tile / W4_QWEN3_TILES_PER_SHARD;
+                uint64_t expected_block_in_tile = block % W4_QWEN3_KV_BLOCKS_PER_TILE;
+                uint64_t expected_row_start = expected_block_in_tile * result_block_row_span;
+                uint64_t expected_row_end = expected_row_start + result_block_row_span;
+                uint64_t expected_offset = expected_tile * W4_QWEN3_SHARD_OUTPUT_BYTES +
+                                           expected_block_in_tile * block_bytes;
+                uint64_t entry_shard = read_segment_u64(ep_mmio, base);
+                uint64_t entry_kv_block = read_segment_u64(ep_mmio, base + 8);
+                uint64_t entry_tile = read_segment_u64(ep_mmio, base + 16);
+                uint64_t entry_row_start = read_segment_u64(ep_mmio, base + 24);
+                uint64_t entry_row_end = read_segment_u64(ep_mmio, base + 32);
+                uint64_t entry_bytes = read_segment_u64(ep_mmio, base + 40);
+                uint64_t entry_checksum = read_segment_u64(ep_mmio, base + 48);
+                uint64_t entry_segment = read_segment_u64(ep_mmio, base + 56);
+                uint64_t entry_sample_pair = 0;
+                uint64_t observed_sample_pair = 0;
+                uint64_t sample_pair_matches = 0;
+                uint64_t observed_checksum =
+                    qwen3_canonical_result_block_checksum(ep_mmio,
+                                                          expected_offset,
+                                                          block_bytes,
+                                                          W4_QWEN3_RESULT_BLOCK_TABLE_HEADER,
+                                                          metadata_table_end);
+                for (uint64_t sample = 0; sample < W4_QWEN3_RESULT_BLOCK_SAMPLE_PAIRS; ++sample) {
+                    uint64_t sample_source = expected_offset + sample_pair_offsets[sample];
+                    entry_sample_pair = read_segment_u64(ep_mmio, base + 64 + sample * 8);
+                    observed_sample_pair =
+                        (sample_source >= W4_QWEN3_RESULT_BLOCK_TABLE_HEADER &&
+                         sample_source < metadata_table_end)
+                            ? 0
+                            : read_segment_u64(ep_mmio, sample_source);
+                    if (entry_sample_pair == observed_sample_pair) {
+                        sample_pair_matches += 1;
+                    }
+                }
+
+                if (entry_shard != expected_shard ||
+                    entry_kv_block != block ||
+                    entry_tile != expected_tile ||
+                    entry_row_start != expected_row_start ||
+                    entry_row_end != expected_row_end ||
+                    entry_bytes != block_bytes ||
+                    entry_segment == 0 ||
+                    entry_checksum == 0 ||
+                    entry_checksum != observed_checksum ||
+                    sample_pair_matches != W4_QWEN3_RESULT_BLOCK_SAMPLE_PAIRS) {
+                    fprintf(stderr,
+                            "[w4_guest] qwen3 result block checksum mismatch block=%" PRIu64
+                            " shard=%" PRIu64 " kv=%" PRIu64
+                            " bytes=%" PRIu64 " expected=0x%016" PRIx64
+                            " observed=0x%016" PRIx64
+                            " sample_pairs=%" PRIu64 "/%" PRIu64
+                            " last_sample=0x%016" PRIx64 "/0x%016" PRIx64 "\n",
+                            block, entry_shard, entry_kv_block, entry_bytes,
+                            entry_checksum, observed_checksum,
+                            sample_pair_matches, (uint64_t)W4_QWEN3_RESULT_BLOCK_SAMPLE_PAIRS,
+                            entry_sample_pair, observed_sample_pair);
+                    return -1;
+                }
+                if (entry_checksum != 0) {
+                    block_checksum_nonzero += 1;
+                }
+                if (entry_checksum == observed_checksum) {
+                    block_checksum_match += 1;
+                }
+                block_element_pair_match += sample_pair_matches;
+                if (block == 0) {
+                    block_checksum_first = entry_checksum;
+                }
+                block_checksum_last = entry_checksum;
+            }
+            if (block_checksum_nonzero != result_block_count ||
+                block_checksum_match != result_block_count ||
+                block_element_pair_match !=
+                    result_block_count * W4_QWEN3_RESULT_BLOCK_SAMPLE_PAIRS ||
+                block_checksum_first == block_checksum_last) {
+                fprintf(stderr,
+                        "[w4_guest] qwen3 result block checksum summary mismatch blocks=%" PRIu64
+                        " nonzero=%" PRIu64 " matches=%" PRIu64
+                        " element_pairs=%" PRIu64
+                        " first=0x%016" PRIx64 " last=0x%016" PRIx64 "\n",
+                        result_block_count, block_checksum_nonzero, block_checksum_match,
+                        block_element_pair_match, block_checksum_first, block_checksum_last);
+                return -1;
+            }
+            printf("[w4_guest] stage uapi_qwen3_result_block_checksums blocks=%" PRIu64
+                   " row_span=%" PRIu64 " bytes_per_block=%" PRIu64
+                   " nonzero=%" PRIu64 " matches=%" PRIu64
+                   " element_pairs=%" PRIu64
+                   " first=0x%016" PRIx64 " last=0x%016" PRIx64
+                   " status=ok\n",
+                   result_block_count, result_block_row_span, block_bytes,
+                   block_checksum_nonzero, block_checksum_match,
+                   block_element_pair_match,
+                   block_checksum_first, block_checksum_last);
+        }
+        kvcache_marker = read_segment_u64(ep_mmio, W4_QWEN3_KVCACHE_TABLE_HEADER);
+        kvcache_count = read_segment_u64(ep_mmio, W4_QWEN3_KVCACHE_TABLE_HEADER + 8);
+        kvcache_entry_words = read_segment_u64(ep_mmio, W4_QWEN3_KVCACHE_TABLE_HEADER + 16);
+        kvcache_table_bytes = read_segment_u64(ep_mmio, W4_QWEN3_KVCACHE_TABLE_HEADER + 24);
+        if (kvcache_marker != W4_QWEN3_MARKER_KVCACHE_TABLE ||
+            kvcache_count != W4_QWEN3_KVCACHE_ENTRIES ||
+            kvcache_entry_words != W4_QWEN3_KVCACHE_TABLE_ENTRY_WORDS ||
+            kvcache_table_bytes != kvcache_count * W4_QWEN3_KVCACHE_TABLE_ENTRY_BYTES) {
+            fprintf(stderr,
+                    "[w4_guest] qwen3 kvcache table header mismatch marker=0x%016" PRIx64
+                    " count=%" PRIu64 " entry_words=%" PRIu64 " bytes=%" PRIu64 "\n",
+                    kvcache_marker, kvcache_count, kvcache_entry_words, kvcache_table_bytes);
+            return -1;
+        }
+        {
+            uint64_t append_blocks = 0;
+            uint64_t read_window_last = 0;
+            uint64_t update_seq_sum = 0;
+            uint64_t checksum_nonzero = 0;
+            uint64_t prefill_entries = 0;
+            uint64_t decode_entries = 0;
+
+            for (uint64_t entry = 0; entry < kvcache_count; ++entry) {
+                uint64_t base = W4_QWEN3_KVCACHE_TABLE_BASE +
+                                entry * W4_QWEN3_KVCACHE_TABLE_ENTRY_BYTES;
+                uint64_t tile = entry /
+                    (W4_QWEN3_KVCACHE_LAYERS * W4_QWEN3_KVCACHE_PHASES);
+                uint64_t phase_in_tile = entry %
+                    (W4_QWEN3_KVCACHE_LAYERS * W4_QWEN3_KVCACHE_PHASES);
+                uint64_t expected_layer = phase_in_tile / W4_QWEN3_KVCACHE_PHASES;
+                uint64_t expected_phase = phase_in_tile % W4_QWEN3_KVCACHE_PHASES;
+                uint64_t expected_layer_position_base =
+                    expected_layer * W4_QWEN3_EXPECTED_TILES *
+                    W4_QWEN3_KVCACHE_BLOCKS_PER_LAYER_TILE;
+                uint64_t expected_shard = tile / W4_QWEN3_TILES_PER_SHARD;
+                uint64_t expected_kv_start = tile * W4_QWEN3_KV_BLOCKS_PER_TILE;
+                uint64_t expected_kv_end = expected_kv_start + W4_QWEN3_KV_BLOCKS_PER_TILE;
+                uint64_t expected_append_start = expected_phase == 0 ?
+                    expected_layer_position_base + expected_kv_start :
+                    expected_layer_position_base +
+                    W4_QWEN3_EXPECTED_TILES * W4_QWEN3_KV_BLOCKS_PER_TILE + tile;
+                uint64_t expected_append_end = expected_phase == 0 ?
+                    expected_layer_position_base + expected_kv_end :
+                    expected_append_start + 1ULL;
+                uint64_t entry_layer = read_segment_u64(ep_mmio, base);
+                uint64_t entry_shard = read_segment_u64(ep_mmio, base + 8);
+                uint64_t entry_tile = read_segment_u64(ep_mmio, base + 16);
+                uint64_t entry_kv_start = read_segment_u64(ep_mmio, base + 24);
+                uint64_t entry_kv_end = read_segment_u64(ep_mmio, base + 32);
+                uint64_t entry_append_start = read_segment_u64(ep_mmio, base + 40);
+                uint64_t entry_append_end = read_segment_u64(ep_mmio, base + 48);
+                uint64_t entry_read_start = read_segment_u64(ep_mmio, base + 56);
+                uint64_t entry_read_end = read_segment_u64(ep_mmio, base + 64);
+                uint64_t entry_update_seq = read_segment_u64(ep_mmio, base + 72);
+                uint64_t entry_k_segment = read_segment_u64(ep_mmio, base + 80);
+                uint64_t entry_v_segment = read_segment_u64(ep_mmio, base + 88);
+                uint64_t entry_k_checksum = read_segment_u64(ep_mmio, base + 96);
+                uint64_t entry_v_checksum = read_segment_u64(ep_mmio, base + 104);
+
+                uint64_t expected_update_seq = entry + 1ULL;
+
+                if (entry_layer != expected_layer ||
+                    entry_shard != expected_shard ||
+                    entry_tile != tile ||
+                    entry_kv_start != expected_kv_start ||
+                    entry_kv_end != expected_kv_end ||
+                    entry_append_start != expected_append_start ||
+                    entry_append_end != expected_append_end ||
+                    entry_read_start != expected_layer_position_base ||
+                    entry_read_end != expected_append_end ||
+                    entry_update_seq != expected_update_seq ||
+                    entry_k_segment == 0 ||
+                    entry_v_segment == 0 ||
+                    entry_k_segment == entry_v_segment ||
+                    entry_k_checksum == 0 ||
+                    entry_v_checksum == 0 ||
+                    entry_k_checksum == entry_v_checksum) {
+                    fprintf(stderr,
+                            "[w4_guest] qwen3 kvcache table entry mismatch tile=%" PRIu64
+                            " shard=%" PRIu64 " kv=%" PRIu64 "..%" PRIu64
+                            " append=%" PRIu64 "..%" PRIu64
+                            " read=%" PRIu64 "..%" PRIu64
+                            " seq=%" PRIu64 " kseg=%" PRIu64 " vseg=%" PRIu64
+                            " k=0x%016" PRIx64 " v=0x%016" PRIx64 "\n",
+                            tile, entry_shard, entry_kv_start, entry_kv_end,
+                            entry_append_start, entry_append_end,
+                            entry_read_start, entry_read_end, entry_update_seq,
+                            entry_k_segment, entry_v_segment,
+                            entry_k_checksum, entry_v_checksum);
+                    return -1;
+                }
+                append_blocks += entry_append_end - entry_append_start;
+                read_window_last = entry_read_end;
+                update_seq_sum += entry_update_seq;
+                checksum_nonzero += 2;
+                if (expected_phase == 0) {
+                    prefill_entries += 1;
+                } else {
+                    decode_entries += 1;
+                }
+            }
+            if (prefill_entries != W4_QWEN3_EXPECTED_TILES * W4_QWEN3_KVCACHE_LAYERS ||
+                decode_entries != W4_QWEN3_EXPECTED_TILES * W4_QWEN3_KVCACHE_LAYERS ||
+                append_blocks != W4_QWEN3_KVCACHE_STATE_ENTRIES ||
+                read_window_last != W4_QWEN3_KVCACHE_STATE_ENTRIES ||
+                update_seq_sum !=
+                    (W4_QWEN3_KVCACHE_ENTRIES * (W4_QWEN3_KVCACHE_ENTRIES + 1ULL)) / 2ULL ||
+                checksum_nonzero != W4_QWEN3_KVCACHE_ENTRIES * 2ULL) {
+                fprintf(stderr,
+                        "[w4_guest] qwen3 kvcache table summary mismatch append_blocks=%" PRIu64
+                        " read_last=%" PRIu64 " update_seq_sum=%" PRIu64
+                        " checksum_nonzero=%" PRIu64
+                        " prefill=%" PRIu64 " decode=%" PRIu64 "\n",
+                        append_blocks, read_window_last, update_seq_sum, checksum_nonzero,
+                        prefill_entries, decode_entries);
+                return -1;
+            }
+            printf("[w4_guest] stage uapi_qwen3_kvcache_update_table entries=%" PRIu64
+                   " entry_words=%" PRIu64 " table_bytes=%" PRIu64
+                   " layers=%" PRIu64 " prefill=%" PRIu64 " decode=%" PRIu64
+                   " append_blocks=%" PRIu64 " read_window=0..%" PRIu64
+                   " update_seq_sum=%" PRIu64 " checksum_nonzero=%" PRIu64
+                   " status=ok\n",
+                   kvcache_count, kvcache_entry_words, kvcache_table_bytes,
+                   (uint64_t)W4_QWEN3_KVCACHE_LAYERS, prefill_entries, decode_entries,
+                   append_blocks, read_window_last, update_seq_sum, checksum_nonzero);
+        }
+        kvcache_state_marker =
+            read_segment_u64(ep_mmio, W4_QWEN3_KVCACHE_STATE_TABLE_HEADER);
+        kvcache_state_count =
+            read_segment_u64(ep_mmio, W4_QWEN3_KVCACHE_STATE_TABLE_HEADER + 8);
+        kvcache_state_entry_words =
+            read_segment_u64(ep_mmio, W4_QWEN3_KVCACHE_STATE_TABLE_HEADER + 16);
+        kvcache_state_table_bytes =
+            read_segment_u64(ep_mmio, W4_QWEN3_KVCACHE_STATE_TABLE_HEADER + 24);
+        if (kvcache_state_marker != W4_QWEN3_MARKER_KVCACHE_STATE_TABLE ||
+            kvcache_state_count != W4_QWEN3_KVCACHE_STATE_ENTRIES ||
+            kvcache_state_entry_words != W4_QWEN3_KVCACHE_STATE_TABLE_ENTRY_WORDS ||
+            kvcache_state_table_bytes !=
+                kvcache_state_count * W4_QWEN3_KVCACHE_STATE_TABLE_ENTRY_BYTES) {
+            fprintf(stderr,
+                    "[w4_guest] qwen3 kvcache state table header mismatch marker=0x%016" PRIx64
+                    " count=%" PRIu64 " entry_words=%" PRIu64 " bytes=%" PRIu64 "\n",
+                    kvcache_state_marker, kvcache_state_count, kvcache_state_entry_words,
+                    kvcache_state_table_bytes);
+            return -1;
+        }
+        {
+            uint64_t state_seq_sum = 0;
+            uint64_t state_position_sum = 0;
+            uint64_t state_digest_nonzero = 0;
+            uint64_t state_digest_first = 0;
+            uint64_t state_digest_last = 0;
+            uint64_t expected_state_seq_sum = 0;
+            for (uint64_t state = 0; state < kvcache_state_count; ++state) {
+                uint64_t base = W4_QWEN3_KVCACHE_STATE_TABLE_BASE +
+                                state * W4_QWEN3_KVCACHE_STATE_TABLE_ENTRY_BYTES;
+                uint64_t entry_layer = read_segment_u64(ep_mmio, base);
+                uint64_t entry_tile = read_segment_u64(ep_mmio, base + 8);
+                uint64_t entry_position = read_segment_u64(ep_mmio, base + 16);
+                uint64_t entry_update_seq = read_segment_u64(ep_mmio, base + 24);
+                uint64_t entry_k_checksum = read_segment_u64(ep_mmio, base + 32);
+                uint64_t entry_v_checksum = read_segment_u64(ep_mmio, base + 40);
+                uint64_t entry_read_end = read_segment_u64(ep_mmio, base + 48);
+                uint64_t entry_read_digest = read_segment_u64(ep_mmio, base + 56);
+                uint64_t expected_layer;
+                uint64_t expected_tile;
+                uint64_t expected_position;
+                uint64_t expected_update_seq;
+                uint64_t expected_read_end;
+
+                expected_tile = state /
+                    (W4_QWEN3_KVCACHE_LAYERS *
+                     W4_QWEN3_KVCACHE_BLOCKS_PER_LAYER_TILE);
+                {
+                    uint64_t block_in_tile = state %
+                        (W4_QWEN3_KVCACHE_LAYERS *
+                         W4_QWEN3_KVCACHE_BLOCKS_PER_LAYER_TILE);
+                    uint64_t block_in_layer;
+                    uint64_t layer_position_base;
+                    uint64_t update_seq_base;
+
+                    expected_layer =
+                        block_in_tile / W4_QWEN3_KVCACHE_BLOCKS_PER_LAYER_TILE;
+                    block_in_layer =
+                        block_in_tile % W4_QWEN3_KVCACHE_BLOCKS_PER_LAYER_TILE;
+                    layer_position_base =
+                        expected_layer * W4_QWEN3_EXPECTED_TILES *
+                        W4_QWEN3_KVCACHE_BLOCKS_PER_LAYER_TILE;
+                    update_seq_base =
+                        expected_tile * W4_QWEN3_KVCACHE_LAYERS *
+                        W4_QWEN3_KVCACHE_PHASES +
+                        expected_layer * W4_QWEN3_KVCACHE_PHASES;
+                    if (block_in_layer < W4_QWEN3_KV_BLOCKS_PER_TILE) {
+                        expected_position =
+                            layer_position_base +
+                            expected_tile * W4_QWEN3_KV_BLOCKS_PER_TILE +
+                            block_in_layer;
+                        expected_update_seq = update_seq_base + 1ULL;
+                        expected_read_end =
+                            layer_position_base +
+                            expected_tile * W4_QWEN3_KV_BLOCKS_PER_TILE +
+                            W4_QWEN3_KV_BLOCKS_PER_TILE;
+                    } else {
+                        expected_position =
+                            layer_position_base +
+                            W4_QWEN3_EXPECTED_TILES * W4_QWEN3_KV_BLOCKS_PER_TILE +
+                            expected_tile;
+                        expected_update_seq = update_seq_base + 2ULL;
+                        expected_read_end = expected_position + 1ULL;
+                    }
+                }
+                if (entry_layer != expected_layer ||
+                    entry_tile != expected_tile ||
+                    entry_position != expected_position ||
+                    entry_update_seq != expected_update_seq ||
+                    entry_read_end != expected_read_end ||
+                    entry_k_checksum == 0 ||
+                    entry_v_checksum == 0 ||
+                    entry_k_checksum == entry_v_checksum ||
+                    entry_read_digest == 0) {
+                    fprintf(stderr,
+                            "[w4_guest] qwen3 kvcache state mismatch entry=%" PRIu64
+                            " layer=%" PRIu64 "/%" PRIu64
+                            " tile=%" PRIu64 "/%" PRIu64
+                            " position=%" PRIu64 "/%" PRIu64
+                            " seq=%" PRIu64 "/%" PRIu64
+                            " read_end=%" PRIu64 "/%" PRIu64
+                            " digest=0x%016" PRIx64 "\n",
+                            state, entry_layer, expected_layer, entry_tile, expected_tile,
+                            entry_position, expected_position, entry_update_seq,
+                            expected_update_seq, entry_read_end, expected_read_end,
+                            entry_read_digest);
+                    return -1;
+                }
+                if (state == 0) {
+                    state_digest_first = entry_read_digest;
+                }
+                state_digest_last = entry_read_digest;
+                state_seq_sum += entry_update_seq;
+                expected_state_seq_sum += expected_update_seq;
+                state_position_sum += entry_position;
+                state_digest_nonzero += 1;
+            }
+            if (state_seq_sum != expected_state_seq_sum ||
+                state_position_sum !=
+                    (W4_QWEN3_KVCACHE_STATE_ENTRIES *
+                     (W4_QWEN3_KVCACHE_STATE_ENTRIES - 1ULL)) /
+                        2ULL ||
+                state_digest_nonzero != W4_QWEN3_KVCACHE_STATE_ENTRIES ||
+                state_digest_first == state_digest_last) {
+                fprintf(stderr,
+                        "[w4_guest] qwen3 kvcache state summary mismatch seq_sum=%" PRIu64
+                        " position_sum=%" PRIu64 " digest_nonzero=%" PRIu64
+                        " first=0x%016" PRIx64 " last=0x%016" PRIx64 "\n",
+                        state_seq_sum, state_position_sum, state_digest_nonzero,
+                        state_digest_first, state_digest_last);
+                return -1;
+            }
+            printf("[w4_guest] stage uapi_qwen3_kvcache_state_table entries=%" PRIu64
+                   " entry_words=%" PRIu64 " table_bytes=%" PRIu64
+                   " blocks=%" PRIu64 " seq_sum=%" PRIu64
+                   " position_sum=%" PRIu64 " read_digest_nonzero=%" PRIu64
+                   " first=0x%016" PRIx64 " last=0x%016" PRIx64
+                   " status=ok\n",
+                   kvcache_state_count, kvcache_state_entry_words, kvcache_state_table_bytes,
+                   kvcache_state_count, state_seq_sum, state_position_sum,
+                   state_digest_nonzero, state_digest_first, state_digest_last);
+        }
+        logits_marker = read_segment_u64(ep_mmio, W4_QWEN3_LOGITS_TABLE_HEADER);
+        logits_count = read_segment_u64(ep_mmio, W4_QWEN3_LOGITS_TABLE_HEADER + 8);
+        logits_entry_words = read_segment_u64(ep_mmio, W4_QWEN3_LOGITS_TABLE_HEADER + 16);
+        logits_table_bytes = read_segment_u64(ep_mmio, W4_QWEN3_LOGITS_TABLE_HEADER + 24);
+        if (logits_marker != W4_QWEN3_MARKER_LOGITS_TABLE ||
+            logits_count != W4_QWEN3_LOGITS_ENTRIES ||
+            logits_entry_words != W4_QWEN3_LOGITS_TABLE_ENTRY_WORDS ||
+            logits_table_bytes != logits_count * W4_QWEN3_LOGITS_TABLE_ENTRY_BYTES) {
+            fprintf(stderr,
+                    "[w4_guest] qwen3 logits table header mismatch marker=0x%016" PRIx64
+                    " count=%" PRIu64 " entry_words=%" PRIu64 " bytes=%" PRIu64 "\n",
+                    logits_marker, logits_count, logits_entry_words, logits_table_bytes);
+            return -1;
+        }
+        {
+            uint64_t sampled_tokens[W4_QWEN3_LOGITS_ENTRIES];
+            uint64_t sampled_distinct = 0;
+            uint64_t logits_checksum_nonzero = 0;
+            uint64_t text_checksum_nonzero = 0;
+
+            memset(sampled_tokens, 0, sizeof(sampled_tokens));
+            for (uint64_t entry = 0; entry < logits_count; ++entry) {
+                uint64_t base = W4_QWEN3_LOGITS_TABLE_BASE +
+                                entry * W4_QWEN3_LOGITS_TABLE_ENTRY_BYTES;
+                uint64_t result_base = W4_QWEN3_RESULT_TABLE_BASE +
+                                       entry * W4_QWEN3_RESULT_TABLE_ENTRY_BYTES;
+                uint64_t expected_shard = entry / W4_QWEN3_TILES_PER_SHARD;
+                uint64_t round1_checksum = read_segment_u64(ep_mmio, result_base + 72);
+                uint64_t entry_shard = read_segment_u64(ep_mmio, base);
+                uint64_t entry_tile = read_segment_u64(ep_mmio, base + 8);
+                uint64_t entry_segment = read_segment_u64(ep_mmio, base + 16);
+                uint64_t entry_logits_count = read_segment_u64(ep_mmio, base + 24);
+                uint64_t entry_sampled_token = read_segment_u64(ep_mmio, base + 32);
+                uint64_t entry_runner_up_token = read_segment_u64(ep_mmio, base + 40);
+                uint64_t entry_margin_milli = read_segment_u64(ep_mmio, base + 48);
+                uint64_t entry_logits_checksum = read_segment_u64(ep_mmio, base + 56);
+                uint64_t entry_text_checksum = read_segment_u64(ep_mmio, base + 64);
+                uint64_t entry_step = read_segment_u64(ep_mmio, base + 72);
+                uint64_t kvcache_read_digest = read_segment_u64(ep_mmio, base + 80);
+                uint64_t qkv_reference_digest = read_segment_u64(ep_mmio, base + 88);
+                uint64_t real_path_digest = read_segment_u64(ep_mmio, base + 96);
+                uint64_t fallback_logits_seed =
+                    round1_checksum ^
+                    qwen3_rol64(kvcache_read_digest, 13) ^
+                    qwen3_rol64(qkv_reference_digest, 19) ^
+                    qwen3_rol64(real_path_digest, 23);
+                uint64_t expected_sampled_token =
+                    qwen3_sampled_token(fallback_logits_seed, entry);
+                uint64_t expected_runner_up =
+                    (expected_sampled_token + 17ULL + expected_shard + entry +
+                     (kvcache_read_digest & 0x0fULL) +
+                     ((qkv_reference_digest >> 4) & 0x0fULL) +
+                     ((real_path_digest >> 8) & 0x0fULL)) %
+                    W4_QWEN3_VOCAB_SIZE;
+                uint64_t expected_margin = 1000ULL + entry * 7ULL + expected_shard;
+                uint64_t expected_logits_checksum =
+                    qwen3_logits_checksum(round1_checksum,
+                                          entry,
+                                          expected_sampled_token,
+                                          expected_runner_up,
+                                          expected_margin,
+                                          0,
+                                          0,
+                                          kvcache_read_digest,
+                                          qkv_reference_digest,
+                                          real_path_digest);
+                uint64_t expected_text_checksum =
+                    qwen3_sample_text_checksum(entry, expected_sampled_token);
+                bool seen = false;
+
+                if (entry_shard != expected_shard ||
+                    entry_tile != entry ||
+                    entry_segment == 0 ||
+                    entry_logits_count != W4_QWEN3_VOCAB_SIZE ||
+                    entry_sampled_token != expected_sampled_token ||
+                    entry_runner_up_token != expected_runner_up ||
+                    entry_margin_milli != expected_margin ||
+                    entry_logits_checksum != expected_logits_checksum ||
+                    entry_text_checksum != expected_text_checksum ||
+                    entry_step != entry) {
+                    fprintf(stderr,
+                            "[w4_guest] qwen3 logits sampling mismatch entry=%" PRIu64
+                            " shard=%" PRIu64 "/%" PRIu64
+                            " tile=%" PRIu64 " token=%" PRIu64 "/%" PRIu64
+                            " runner_up=%" PRIu64 "/%" PRIu64
+                            " margin=%" PRIu64 "/%" PRIu64
+                            " logits_checksum=0x%016" PRIx64 "/0x%016" PRIx64
+                            " text_checksum=0x%016" PRIx64 "/0x%016" PRIx64 "\n",
+                            entry, entry_shard, expected_shard, entry_tile,
+                            entry_sampled_token, expected_sampled_token,
+                            entry_runner_up_token, expected_runner_up,
+                            entry_margin_milli, expected_margin,
+                            entry_logits_checksum, expected_logits_checksum,
+                            entry_text_checksum, expected_text_checksum);
+                    return -1;
+                }
+                for (uint64_t previous = 0; previous < entry; ++previous) {
+                    if (sampled_tokens[previous] == entry_sampled_token) {
+                        seen = true;
+                    }
+                }
+                if (!seen) {
+                    sampled_distinct += 1;
+                }
+                sampled_tokens[entry] = entry_sampled_token;
+                logits_checksum_nonzero += entry_logits_checksum != 0 ? 1 : 0;
+                text_checksum_nonzero += entry_text_checksum != 0 ? 1 : 0;
+            }
+            if (sampled_distinct < 2 ||
+                logits_checksum_nonzero != logits_count ||
+                text_checksum_nonzero != logits_count) {
+                fprintf(stderr,
+                        "[w4_guest] qwen3 logits sampling summary mismatch distinct=%" PRIu64
+                        " logits_checksum_nonzero=%" PRIu64
+                        " text_checksum_nonzero=%" PRIu64 "\n",
+                        sampled_distinct, logits_checksum_nonzero, text_checksum_nonzero);
+                return -1;
+            }
+            printf("[w4_guest] stage uapi_qwen3_logits_sampling_table entries=%" PRIu64
+                   " entry_words=%" PRIu64 " table_bytes=%" PRIu64
+                   " vocab=%" PRIu64 " sampled_distinct=%" PRIu64
+                   " logits_checksum_nonzero=%" PRIu64
+                   " text_checksum_nonzero=%" PRIu64
+                   " status=ok\n",
+                   logits_count, logits_entry_words, logits_table_bytes,
+                   (uint64_t)W4_QWEN3_VOCAB_SIZE, sampled_distinct,
+                   logits_checksum_nonzero, text_checksum_nonzero);
+        }
+        token_text_marker = read_segment_u64(ep_mmio, W4_QWEN3_TOKEN_TEXT_TABLE_HEADER);
+        token_text_count = read_segment_u64(ep_mmio, W4_QWEN3_TOKEN_TEXT_TABLE_HEADER + 8);
+        token_text_entry_words = read_segment_u64(ep_mmio, W4_QWEN3_TOKEN_TEXT_TABLE_HEADER + 16);
+        token_text_table_bytes = read_segment_u64(ep_mmio, W4_QWEN3_TOKEN_TEXT_TABLE_HEADER + 24);
+        token_text_total_bytes = read_segment_u64(ep_mmio, W4_QWEN3_TOKEN_TEXT_TABLE_HEADER + 32);
+        token_text_policy_hash = read_segment_u64(ep_mmio, W4_QWEN3_TOKEN_TEXT_TABLE_HEADER + 40);
+        token_text_policy_kind = read_segment_u64(ep_mmio, W4_QWEN3_TOKEN_TEXT_TABLE_HEADER + 48);
+        if (token_text_marker != W4_QWEN3_MARKER_TOKEN_TEXT_TABLE ||
+            token_text_count != W4_QWEN3_TOKEN_TEXT_ENTRIES ||
+            token_text_entry_words != W4_QWEN3_TOKEN_TEXT_TABLE_ENTRY_WORDS ||
+            token_text_table_bytes != token_text_count * W4_QWEN3_TOKEN_TEXT_TABLE_ENTRY_BYTES ||
+            token_text_total_bytes != token_text_count * W4_QWEN3_TOKEN_TEXT_PIECE_BYTES ||
+            token_text_policy_hash != qwen3_tokenizer_policy_hash() ||
+            token_text_policy_kind != W4_QWEN3_TOKENIZER_POLICY_KIND) {
+            fprintf(stderr,
+                    "[w4_guest] qwen3 token text table header mismatch marker=0x%016" PRIx64
+                    " count=%" PRIu64 " entry_words=%" PRIu64
+                    " table_bytes=%" PRIu64 " total_bytes=%" PRIu64
+                    " policy_hash=0x%016" PRIx64 "/0x%016" PRIx64
+                    " policy_kind=%" PRIu64 "/%" PRIu64 "\n",
+                    token_text_marker, token_text_count, token_text_entry_words,
+                    token_text_table_bytes, token_text_total_bytes,
+                    token_text_policy_hash, qwen3_tokenizer_policy_hash(),
+                    token_text_policy_kind, (uint64_t)W4_QWEN3_TOKENIZER_POLICY_KIND);
+            return -1;
+        }
+        {
+            uint64_t boundary_first = 0;
+            uint64_t boundary_last = 0;
+            uint64_t checksum_matches = 0;
+            uint64_t packed_matches = 0;
+            uint64_t byte_offset_expected = 0;
+
+            for (uint64_t entry = 0; entry < token_text_count; ++entry) {
+                uint64_t base = W4_QWEN3_TOKEN_TEXT_TABLE_BASE +
+                                entry * W4_QWEN3_TOKEN_TEXT_TABLE_ENTRY_BYTES;
+                uint64_t logits_base = W4_QWEN3_LOGITS_TABLE_BASE +
+                                       entry * W4_QWEN3_LOGITS_TABLE_ENTRY_BYTES;
+                uint64_t sampled_token = read_segment_u64(ep_mmio, logits_base + 32);
+                uint64_t text_checksum = read_segment_u64(ep_mmio, logits_base + 64);
+                uint64_t expected_word0;
+                uint64_t expected_word1;
+                uint64_t expected_flags =
+                    (entry == 0 ? 1ULL : 0ULL) |
+                    (entry + 1 == token_text_count ? 2ULL : 0ULL);
+                uint64_t entry_step = read_segment_u64(ep_mmio, base);
+                uint64_t entry_token = read_segment_u64(ep_mmio, base + 8);
+                uint64_t entry_offset = read_segment_u64(ep_mmio, base + 16);
+                uint64_t entry_bytes = read_segment_u64(ep_mmio, base + 24);
+                uint64_t entry_word0 = read_segment_u64(ep_mmio, base + 32);
+                uint64_t entry_word1 = read_segment_u64(ep_mmio, base + 40);
+                uint64_t entry_checksum = read_segment_u64(ep_mmio, base + 48);
+                uint64_t entry_flags = read_segment_u64(ep_mmio, base + 56);
+
+                qwen3_token_piece(sampled_token, &expected_word0, &expected_word1);
+                if (entry_step != entry ||
+                    entry_token != sampled_token ||
+                    entry_offset != byte_offset_expected ||
+                    entry_bytes != W4_QWEN3_TOKEN_TEXT_PIECE_BYTES ||
+                    entry_word0 != expected_word0 ||
+                    entry_word1 != expected_word1 ||
+                    entry_checksum != text_checksum ||
+                    entry_flags != expected_flags) {
+                    fprintf(stderr,
+                            "[w4_guest] qwen3 token text mismatch entry=%" PRIu64
+                            " step=%" PRIu64 " token=%" PRIu64 "/%" PRIu64
+                            " offset=%" PRIu64 "/%" PRIu64
+                            " bytes=%" PRIu64
+                            " word0=0x%016" PRIx64 "/0x%016" PRIx64
+                            " word1=0x%016" PRIx64 "/0x%016" PRIx64
+                            " checksum=0x%016" PRIx64 "/0x%016" PRIx64
+                            " flags=%" PRIu64 "/%" PRIu64 "\n",
+                            entry, entry_step, entry_token, sampled_token,
+                            entry_offset, byte_offset_expected, entry_bytes,
+                            entry_word0, expected_word0, entry_word1, expected_word1,
+                            entry_checksum, text_checksum, entry_flags, expected_flags);
+                    return -1;
+                }
+                packed_matches += 1;
+                checksum_matches += 1;
+                boundary_first += (entry_flags & 1ULL) != 0 ? 1ULL : 0ULL;
+                boundary_last += (entry_flags & 2ULL) != 0 ? 1ULL : 0ULL;
+                byte_offset_expected += entry_bytes;
+            }
+            if (byte_offset_expected != token_text_total_bytes ||
+                packed_matches != token_text_count ||
+                checksum_matches != token_text_count ||
+                boundary_first != 1 ||
+                boundary_last != 1) {
+                fprintf(stderr,
+                        "[w4_guest] qwen3 token text summary mismatch bytes=%" PRIu64
+                        "/%" PRIu64 " packed=%" PRIu64 " checksum=%" PRIu64
+                        " first=%" PRIu64 " last=%" PRIu64 "\n",
+                        byte_offset_expected, token_text_total_bytes, packed_matches,
+                        checksum_matches, boundary_first, boundary_last);
+                return -1;
+            }
+            printf("[w4_guest] stage uapi_qwen3_token_text_table entries=%" PRIu64
+                   " entry_words=%" PRIu64 " table_bytes=%" PRIu64
+                   " total_bytes=%" PRIu64 " piece_bytes=%" PRIu64
+                   " policy_kind=%" PRIu64 " policy_hash=0x%016" PRIx64
+                   " packed_matches=%" PRIu64 " checksum_matches=%" PRIu64
+                   " boundary_first=%" PRIu64 " boundary_last=%" PRIu64
+                   " status=ok\n",
+                   token_text_count, token_text_entry_words, token_text_table_bytes,
+                   token_text_total_bytes, (uint64_t)W4_QWEN3_TOKEN_TEXT_PIECE_BYTES,
+                   token_text_policy_kind, token_text_policy_hash,
+                   packed_matches, checksum_matches, boundary_first, boundary_last);
+        }
+        projection_marker = read_segment_u64(ep_mmio, W4_QWEN3_PROJECTION_TABLE_HEADER);
+        projection_count = read_segment_u64(ep_mmio, W4_QWEN3_PROJECTION_TABLE_HEADER + 8);
+        projection_entry_words = read_segment_u64(ep_mmio, W4_QWEN3_PROJECTION_TABLE_HEADER + 16);
+        projection_table_bytes = read_segment_u64(ep_mmio, W4_QWEN3_PROJECTION_TABLE_HEADER + 24);
+        if (projection_marker != W4_QWEN3_MARKER_PROJECTION_TABLE ||
+            projection_count != W4_QWEN3_EXPECTED_TILES * W4_QWEN3_PROJECTIONS_PER_SHARD ||
+            projection_entry_words != W4_QWEN3_PROJECTION_TABLE_ENTRY_WORDS ||
+            projection_table_bytes != projection_count * W4_QWEN3_PROJECTION_TABLE_ENTRY_BYTES) {
+            fprintf(stderr,
+                    "[w4_guest] qwen3 projection table header mismatch marker=0x%016" PRIx64
+                    " count=%" PRIu64 " entry_words=%" PRIu64 " bytes=%" PRIu64 "\n",
+                    projection_marker, projection_count, projection_entry_words,
+                    projection_table_bytes);
+            return -1;
+        }
+        memset(projection_kind_mask, 0, sizeof(projection_kind_mask));
+        memset(projection_segments, 0, sizeof(projection_segments));
+        for (uint64_t i = 0; i < projection_count; ++i) {
+            uint64_t base = W4_QWEN3_PROJECTION_TABLE_BASE +
+                            i * W4_QWEN3_PROJECTION_TABLE_ENTRY_BYTES;
+            uint64_t entry_shard = read_segment_u64(ep_mmio, base);
+            uint64_t entry_kind = read_segment_u64(ep_mmio, base + 8);
+            uint64_t entry_segment = read_segment_u64(ep_mmio, base + 16);
+            uint64_t entry_elems = read_segment_u64(ep_mmio, base + 24);
+            uint64_t entry_bytes = read_segment_u64(ep_mmio, base + 32);
+            uint64_t entry_head_start = read_segment_u64(ep_mmio, base + 40);
+            uint64_t entry_head_end = read_segment_u64(ep_mmio, base + 48);
+            uint64_t entry_kv_start = read_segment_u64(ep_mmio, base + 56);
+            uint64_t entry_kv_end = read_segment_u64(ep_mmio, base + 64);
+            uint64_t entry_checksum = read_segment_u64(ep_mmio, base + 72);
+
+            if (entry_shard >= W4_QWEN3_EXPECTED_SHARDS ||
+                entry_kind == 0 ||
+                entry_kind > W4_QWEN3_PROJECTIONS_PER_SHARD ||
+                entry_segment == 0 ||
+                entry_elems != W4_QWEN3_SHARD_OUTPUT_ELEMS ||
+                entry_bytes != W4_QWEN3_SHARD_OUTPUT_ELEMS * 2 ||
+                entry_head_start >= entry_head_end ||
+                entry_kv_start >= W4_QWEN3_EXPECTED_TILES * W4_QWEN3_KV_BLOCKS_PER_TILE ||
+                entry_kv_end != entry_kv_start + W4_QWEN3_KV_BLOCKS_PER_TILE ||
+                entry_kv_start / W4_QWEN3_KV_BLOCKS_PER_TILE / W4_QWEN3_TILES_PER_SHARD != entry_shard ||
+                entry_checksum == 0) {
+                projection_table_ok = false;
+            }
+            projection_kind_mask[entry_kv_start / W4_QWEN3_KV_BLOCKS_PER_TILE] |= 1ULL << (entry_kind - 1);
+            projection_segments[i] = entry_segment;
+            projection_checksum_nonzero += entry_checksum != 0 ? 1 : 0;
+            projection_q_entries += entry_kind == 1 ? 1 : 0;
+            projection_kv_entries += entry_kind == 2 ? 1 : 0;
+            projection_v_entries += entry_kind == 3 ? 1 : 0;
+        }
+        for (uint64_t i = 0; i < projection_count; ++i) {
+            bool seen = false;
+
+            for (uint64_t j = 0; j < i; ++j) {
+                if (projection_segments[j] == projection_segments[i]) {
+                    seen = true;
+                }
+            }
+            if (!seen) {
+                projection_segment_distinct += 1;
+            }
+        }
+        for (uint64_t tile = 0; tile < W4_QWEN3_EXPECTED_TILES; ++tile) {
+            if (projection_kind_mask[tile] != 0x7ULL) {
+                projection_table_ok = false;
+            }
+        }
+        if (!projection_table_ok ||
+            projection_segment_distinct != projection_count ||
+            projection_checksum_nonzero != projection_count ||
+            projection_q_entries != W4_QWEN3_EXPECTED_TILES ||
+            projection_kv_entries != W4_QWEN3_EXPECTED_TILES ||
+            projection_v_entries != W4_QWEN3_EXPECTED_TILES) {
+            fprintf(stderr,
+                    "[w4_guest] qwen3 projection table entry mismatch count=%" PRIu64
+                    " q=%" PRIu64 " kv=%" PRIu64 " v=%" PRIu64
+                    " segments=%" PRIu64 " checksum_nonzero=%" PRIu64 "\n",
+                    projection_count, projection_q_entries, projection_kv_entries,
+                    projection_v_entries, projection_segment_distinct,
+                    projection_checksum_nonzero);
+            return -1;
+        }
+        printf("[w4_guest] stage uapi_qwen3_projection_descriptor_table entries=%" PRIu64
+               " entry_words=%" PRIu64 " table_bytes=%" PRIu64
+               " q=%" PRIu64 " kv=%" PRIu64 " v=%" PRIu64
+               " segments=%" PRIu64 " checksum_nonzero=%" PRIu64
+               " status=ok\n",
+               projection_count, projection_entry_words, projection_table_bytes,
+               projection_q_entries, projection_kv_entries, projection_v_entries,
+               projection_segment_distinct, projection_checksum_nonzero);
+        layer_dep_marker = read_segment_u64(ep_mmio, W4_QWEN3_LAYER_DEP_TABLE_HEADER);
+        layer_dep_count = read_segment_u64(ep_mmio, W4_QWEN3_LAYER_DEP_TABLE_HEADER + 8);
+        layer_dep_entry_words = read_segment_u64(ep_mmio, W4_QWEN3_LAYER_DEP_TABLE_HEADER + 16);
+        layer_dep_table_bytes = read_segment_u64(ep_mmio, W4_QWEN3_LAYER_DEP_TABLE_HEADER + 24);
+        if (layer_dep_marker != W4_QWEN3_MARKER_LAYER_DEP_TABLE ||
+            layer_dep_count != W4_QWEN3_EXPECTED_TILES * W4_QWEN3_LAYER_DEP_STAGES_PER_TILE ||
+            layer_dep_entry_words != W4_QWEN3_LAYER_DEP_TABLE_ENTRY_WORDS ||
+            layer_dep_table_bytes != layer_dep_count * W4_QWEN3_LAYER_DEP_TABLE_ENTRY_BYTES) {
+            fprintf(stderr,
+                    "[w4_guest] qwen3 layer dependency table header mismatch marker=0x%016" PRIx64
+                    " count=%" PRIu64 " entry_words=%" PRIu64 " bytes=%" PRIu64 "\n",
+                    layer_dep_marker, layer_dep_count, layer_dep_entry_words,
+                    layer_dep_table_bytes);
+            return -1;
+        }
+        memset(layer_dep_stage_counts, 0, sizeof(layer_dep_stage_counts));
+        memset(layer_dep_segments, 0, sizeof(layer_dep_segments));
+        for (uint64_t i = 0; i < layer_dep_count; ++i) {
+            uint64_t base = W4_QWEN3_LAYER_DEP_TABLE_BASE +
+                            i * W4_QWEN3_LAYER_DEP_TABLE_ENTRY_BYTES;
+            uint64_t entry_layer = read_segment_u64(ep_mmio, base);
+            uint64_t entry_shard = read_segment_u64(ep_mmio, base + 8);
+            uint64_t entry_stage = read_segment_u64(ep_mmio, base + 16);
+            uint64_t entry_depends_on = read_segment_u64(ep_mmio, base + 24);
+            uint64_t entry_remote_shard = read_segment_u64(ep_mmio, base + 32);
+            uint64_t entry_segment = read_segment_u64(ep_mmio, base + 40);
+            uint64_t entry_elems = read_segment_u64(ep_mmio, base + 48);
+            uint64_t entry_bytes = read_segment_u64(ep_mmio, base + 56);
+            uint64_t entry_head_start = read_segment_u64(ep_mmio, base + 64);
+            uint64_t entry_head_end = read_segment_u64(ep_mmio, base + 72);
+            uint64_t entry_checksum = read_segment_u64(ep_mmio, base + 80);
+
+            if (entry_layer >= W4_QWEN3_EXPECTED_TILES ||
+                entry_shard >= W4_QWEN3_EXPECTED_SHARDS ||
+                entry_shard != entry_layer / W4_QWEN3_TILES_PER_SHARD ||
+                entry_stage == 0 ||
+                entry_stage > W4_QWEN3_LAYER_DEP_STAGES_PER_TILE ||
+                entry_segment == 0 ||
+                entry_elems != W4_QWEN3_SHARD_OUTPUT_ELEMS ||
+                (entry_bytes != W4_QWEN3_SHARD_OUTPUT_ELEMS * 2 &&
+                 entry_bytes != W4_QWEN3_SHARD_OUTPUT_BYTES) ||
+                entry_head_start >= entry_head_end ||
+                entry_checksum == 0 ||
+                (entry_stage == 1 && entry_depends_on != 0) ||
+                (entry_stage > 1 && entry_depends_on == 0) ||
+                entry_remote_shard >= W4_QWEN3_EXPECTED_SHARDS) {
+                layer_dep_table_ok = false;
+            }
+            layer_dep_stage_counts[entry_stage] += 1;
+            layer_dep_segments[i] = entry_segment;
+            layer_dep_checksum_nonzero += entry_checksum != 0 ? 1 : 0;
+        }
+        for (uint64_t i = 0; i < layer_dep_count; ++i) {
+            bool seen = false;
+
+            for (uint64_t j = 0; j < i; ++j) {
+                if (layer_dep_segments[j] == layer_dep_segments[i]) {
+                    seen = true;
+                }
+            }
+            if (!seen) {
+                layer_dep_segment_distinct += 1;
+            }
+        }
+        for (uint64_t stage = 1; stage <= W4_QWEN3_LAYER_DEP_STAGES_PER_TILE; ++stage) {
+            if (layer_dep_stage_counts[stage] != W4_QWEN3_EXPECTED_TILES) {
+                layer_dep_table_ok = false;
+            }
+        }
+        if (!layer_dep_table_ok ||
+            layer_dep_segment_distinct != layer_dep_count ||
+            layer_dep_checksum_nonzero != layer_dep_count) {
+            fprintf(stderr,
+                    "[w4_guest] qwen3 layer dependency table entry mismatch count=%" PRIu64
+                    " rms=%" PRIu64 " q=%" PRIu64 " kv=%" PRIu64 " v=%" PRIu64
+                    " rope_q=%" PRIu64 " rope_kv=%" PRIu64 " attention=%" PRIu64
+                    " softmax=%" PRIu64 " context=%" PRIu64 " mlp=%" PRIu64
+                    " mlp_intermediate=%" PRIu64 " down=%" PRIu64 " residual=%" PRIu64
+                    " next_q=%" PRIu64 " next_kv=%" PRIu64 " next_v=%" PRIu64
+                    " next_rope_q=%" PRIu64 " next_rope_kv=%" PRIu64
+                    " next_attention=%" PRIu64 " next_softmax=%" PRIu64
+                    " next_context=%" PRIu64 " partial=%" PRIu64
+                    " remote=%" PRIu64 " round1=%" PRIu64
+                    " segments=%" PRIu64 " checksum_nonzero=%" PRIu64 "\n",
+                    layer_dep_count,
+                    layer_dep_stage_counts[1], layer_dep_stage_counts[2],
+                    layer_dep_stage_counts[3], layer_dep_stage_counts[4],
+                    layer_dep_stage_counts[5], layer_dep_stage_counts[6],
+                    layer_dep_stage_counts[7], layer_dep_stage_counts[8],
+                    layer_dep_stage_counts[9], layer_dep_stage_counts[10],
+                    layer_dep_stage_counts[11], layer_dep_stage_counts[12],
+                    layer_dep_stage_counts[13], layer_dep_stage_counts[14],
+                    layer_dep_stage_counts[15], layer_dep_stage_counts[16],
+                    layer_dep_stage_counts[17], layer_dep_stage_counts[18],
+                    layer_dep_stage_counts[19], layer_dep_stage_counts[20],
+                    layer_dep_stage_counts[21], layer_dep_stage_counts[22],
+                    layer_dep_stage_counts[23], layer_dep_stage_counts[24],
+                    layer_dep_segment_distinct,
+                    layer_dep_checksum_nonzero);
+            return -1;
+        }
+        printf("[w4_guest] stage uapi_qwen3_layer_dependency_table entries=%" PRIu64
+               " entry_words=%" PRIu64 " table_bytes=%" PRIu64
+               " rms_input=%" PRIu64 " q=%" PRIu64 " kv=%" PRIu64 " v=%" PRIu64
+               " rope_q=%" PRIu64 " rope_kv=%" PRIu64 " attention=%" PRIu64
+               " softmax=%" PRIu64 " context=%" PRIu64 " mlp=%" PRIu64
+               " mlp_intermediate=%" PRIu64 " down=%" PRIu64 " residual=%" PRIu64
+               " next_q=%" PRIu64 " next_kv=%" PRIu64 " next_v=%" PRIu64
+               " next_rope_q=%" PRIu64 " next_rope_kv=%" PRIu64
+               " next_attention=%" PRIu64 " next_softmax=%" PRIu64
+               " next_context=%" PRIu64 " partial=%" PRIu64
+               " remote=%" PRIu64 " round1=%" PRIu64
+               " segments=%" PRIu64 " checksum_nonzero=%" PRIu64
+               " status=ok\n",
+               layer_dep_count, layer_dep_entry_words, layer_dep_table_bytes,
+               layer_dep_stage_counts[1], layer_dep_stage_counts[2],
+               layer_dep_stage_counts[3], layer_dep_stage_counts[4],
+               layer_dep_stage_counts[5], layer_dep_stage_counts[6],
+               layer_dep_stage_counts[7], layer_dep_stage_counts[8],
+               layer_dep_stage_counts[9], layer_dep_stage_counts[10],
+               layer_dep_stage_counts[11], layer_dep_stage_counts[12],
+               layer_dep_stage_counts[13], layer_dep_stage_counts[14],
+               layer_dep_stage_counts[15], layer_dep_stage_counts[16],
+               layer_dep_stage_counts[17], layer_dep_stage_counts[18],
+               layer_dep_stage_counts[19], layer_dep_stage_counts[20],
+               layer_dep_stage_counts[21], layer_dep_stage_counts[22],
+               layer_dep_stage_counts[23], layer_dep_stage_counts[24],
+               layer_dep_segment_distinct,
+               layer_dep_checksum_nonzero);
     }
     return 0;
 }
@@ -2651,6 +4022,21 @@ int main(void)
     printf("[w4_guest] stage uapi_chipbackend_dispatch_descriptor block=%s segment=%" PRIu64 " task_id=31\n",
            block, default_segment);
     build_io_descriptor(cmdq + (slot++ * CMDQ_SLOT_BYTES), 31, 3, default_segment, NULL);
+
+    if (enable_db_cluster && cluster_node_count >= 8U) {
+        uint32_t dispatch_node = 0U;
+
+        if (w4_cluster_role_index(role, cluster_node_count, &dispatch_node)) {
+            unsigned int delay_ms = dispatch_node * 5000U;
+
+            if (delay_ms > 0U) {
+                printf("[w4_guest] stage uapi_dispatch_stagger node=%u delay_ms=%u\n",
+                       dispatch_node + 1U,
+                       delay_ms);
+                usleep(delay_ms * 1000U);
+            }
+        }
+    }
 
     mmio_write64(ep_mmio, REG_CMDQ_BASE_LO, cmdq_phys);
     mmio_write64(ep_mmio, REG_CQ_BASE_LO, cq_phys);

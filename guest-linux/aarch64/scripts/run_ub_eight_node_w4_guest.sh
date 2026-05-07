@@ -15,9 +15,9 @@ APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 PORT_BASE_START="${PORT_BASE_START:-$((56100 + (RANDOM % 300)))}"
 PORT_BASE="$PORT_BASE_START"
 PORT_NUM="${UB_SIM_PORT_NUM:-7}"
-SIMPLER_HOST_MATMUL_MANIFEST="${SIMPLER_HOST_MATMUL_MANIFEST:-/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json}"
+SIMPLER_HOST_MATMUL_MANIFEST="${SIMPLER_HOST_MATMUL_MANIFEST:-/private/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json}"
 SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-qwen3_dense_0_6b}"
-FATAL_GUEST_PATTERN="rcu_preempt|RCU grace-period|self-detected stall|detected stalls on CPUs/tasks|rx msg plen invalid|poller rx msg failed, ret=-22|\\[w4_guest\\] fail"
+FATAL_GUEST_PATTERN="rcu_preempt|RCU grace-period|self-detected stall|detected stalls on CPUs/tasks|rx msg plen invalid|poller rx msg failed, ret=-22|timeout waiting completions|\\[w4_guest\\] fail"
 FATAL_QEMU_PATTERN="sim_dec read: timeout|SIM_DEC: cpu read failed|ub_link write failed|bounded write timed out|rx msg plen invalid|poller rx msg failed"
 
 NODE_IDS=(nodeA nodeB nodeC nodeD nodeE nodeF nodeG nodeH)
@@ -222,6 +222,17 @@ send_w4_cmd() {
   send_serial_block "$serial_port" "$payload"
 }
 
+poweroff_guest_nodes() {
+  local node_id serial_port payload
+
+  payload=$'echo 1 >/proc/sys/kernel/sysrq\n'
+  payload+=$'echo o >/proc/sysrq-trigger\n'
+  for node_id in "${NODE_IDS[@]}"; do
+    serial_port="$(node_serial_port "$node_id" "$PORT_BASE")"
+    send_serial_block "$serial_port" "$payload"
+  done
+}
+
 validate_owner_observed() {
   local node_id="$1"
   local log_file="$2"
@@ -255,6 +266,8 @@ validate_node_log() {
   remote_idx=$((idx % 8 + 1))
   assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_publish kind=weight_tile key=weights/qwen3-0\\.6b/node${idx}/tile0 owner=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm weight publish" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_publish kind=kvcache_block key=kvcache/w4/node${idx}/block0 owner=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm kvcache publish" || return 1
+  assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_object_desc_put local=node${idx} objects=2 queue=obmm_spsc .* status=ok" "$node_id obmm object descriptor put" || return 1
+  assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_object_desc_get remote=node${remote_idx} reader=node${idx} objects=2 queue=obmm_spsc .* status=ok" "$node_id obmm object descriptor get" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_resolve kind=weight_tile key=weights/qwen3-0\\.6b/node${remote_idx}/tile0 owner=node${remote_idx} reader=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm remote weight resolve" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_resolve kind=kvcache_block key=kvcache/w4/node${remote_idx}/block0 owner=node${remote_idx} reader=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm remote kvcache resolve" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0=payload_backing_resolved local=node${idx} remote=node${remote_idx} objects=2 bytes=8192 boundary_offsets=0,248,256,4088,4096 backing=obmm_pool metadata=db status=ok" "$node_id obmm payload backing resolved" || return 1
@@ -277,7 +290,18 @@ validate_node_log() {
   assert_log_has "$log_file" "\\[w4_guest\\] step=decode_completions ok" "$node_id decode completions" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_payload_dispatch_result segment=[0-9]+ word0=${expected_dispatch_word}" "$node_id dispatch payload result" || return 1
   if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_0_6b" ]]; then
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_service_flow object=partial_result_tile publish=8 resolve_remote=8 round1_compute=8 storage=block metadata=db status=ok" "$node_id qwen3 service flow" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_service_flow object=partial_result_tile publish=16 resolve_remote=16 round1_compute=16 storage=block metadata=db status=ok" "$node_id qwen3 service flow" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_shard_result_summary shards=8 tiles=16 round1=16 shard_bytes=65536 shard_elems=16384 kv_blocks_per_tile=2 round0_distinct=16 round1_distinct=16 checksum0=0x[0-9a-f]+ checksum_last=0x[0-9a-f]+ status=ok" "$node_id qwen3 shard result summary" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_result_descriptor_table entries=16 entry_words=10 table_bytes=1280 first_shard=0 last_shard=7 kv_blocks=32 round0_segments=16 round1_segments=16 status=ok" "$node_id qwen3 result descriptor table" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_result_block_summary blocks=32 row_span=64 source=result_descriptor_table status=ok" "$node_id qwen3 result block summary" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_result_block_samples blocks=32 row_span=64 nonzero=32 first=0x[0-9a-f]+ last=0x[0-9a-f]+ status=ok" "$node_id qwen3 result block samples" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_result_block_checksums blocks=32 row_span=64 bytes_per_block=32768 nonzero=32 matches=32 element_pairs=256 first=0x[0-9a-f]+ last=0x[0-9a-f]+ status=ok" "$node_id qwen3 result block checksums" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_kvcache_update_table entries=896 entry_words=14 table_bytes=100352 layers=28 prefill=448 decode=448 append_blocks=1344 read_window=0..1344 update_seq_sum=401856 checksum_nonzero=1792 status=ok" "$node_id qwen3 kvcache update table" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_kvcache_state_table entries=1344 entry_words=8 table_bytes=86016 blocks=1344 seq_sum=602560 position_sum=902496 read_digest_nonzero=1344 first=0x[0-9a-f]+ last=0x[0-9a-f]+ status=ok" "$node_id qwen3 kvcache state table" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_logits_sampling_table entries=16 entry_words=20 table_bytes=2560 vocab=151936 sampled_distinct=16 logits_checksum_nonzero=16 text_checksum_nonzero=16 status=ok" "$node_id qwen3 logits sampling table" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_token_text_table entries=16 entry_words=8 table_bytes=1024 total_bytes=144 piece_bytes=9 policy_kind=1 policy_hash=0x[0-9a-f]+ packed_matches=16 checksum_matches=16 boundary_first=1 boundary_last=1 status=ok" "$node_id qwen3 token text table" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_projection_descriptor_table entries=48 entry_words=10 table_bytes=3840 q=16 kv=16 v=16 segments=48 checksum_nonzero=48 status=ok" "$node_id qwen3 projection descriptor table" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_layer_dependency_table entries=384 entry_words=11 table_bytes=33792 rms_input=16 q=16 kv=16 v=16 rope_q=16 rope_kv=16 attention=16 softmax=16 context=16 mlp=16 mlp_intermediate=16 down=16 residual=16 next_q=16 next_kv=16 next_v=16 next_rope_q=16 next_rope_kv=16 next_attention=16 next_softmax=16 next_context=16 partial=16 remote=16 round1=16 segments=384 checksum_nonzero=384 status=ok" "$node_id qwen3 layer dependency table" || return 1
   fi
   assert_log_has "$log_file" "\\[w4_guest\\] completion_sources chipbackend=[1-9][0-9]* shmem=[2-9][0-9]* dfs=[2-9][0-9]* db=[2-9][0-9]* block=[2-9][0-9]* guest_uapi=[0-9]+" "$node_id completion source coverage" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] completion_status success=15 retryable=0 fatal=0" "$node_id completion status" || return 1
@@ -313,24 +337,22 @@ run_w4_demo() {
     rc=0
     guest_log="$RUN_DIR/${node_id}_guest.log"
     wait_for_log_pass_or_fail_since "$guest_log" "${START_LINES[$node_id]}" \
-      "\\[w4_guest\\] pass" "\\[w4_guest\\] fail" "$DEMO_WAIT_SECS" || rc=$?
+      "\\[w4_guest\\] pass" "$FATAL_GUEST_PATTERN" "$DEMO_WAIT_SECS" || rc=$?
     if [[ "$rc" != "0" ]]; then
       trace "FAIL: w4 guest did not pass on $node_id rc=$rc"
       return 1
     fi
     validate_node_log "$node_id" "$guest_log" || return 1
   done
-  sleep 5
   assert_no_fatal_runtime_logs || return 1
+  poweroff_guest_nodes
+  sleep 5
   return 0
 }
 
 prepare_environment() {
   local guest_log node_id
 
-  if [[ ! -f "$SIMPLER_HOST_MATMUL_MANIFEST" ]]; then
-    SIMPLER_HOST_MATMUL_MANIFEST="$("$SCRIPT_DIR/prepare_simpler_host_matmul_artifacts.sh" "$(dirname "$SIMPLER_HOST_MATMUL_MANIFEST")")"
-  fi
   mkdir -p "$RUN_DIR" "$OUT_DIR"
   : > "$TRACE_FILE"
   choose_port_base

@@ -86,10 +86,16 @@ def repo_root() -> Path:
 
 
 def default_simpler_root() -> Path:
+    workspace_simpler = repo_root().parent / "modules" / "simpler"
+    if workspace_simpler.exists():
+        return workspace_simpler
     return repo_root() / "vendor" / "simpler"
 
 
 def default_pto_isa_root() -> Path:
+    workspace_pto_isa = repo_root().parent / "modules" / "pto-isa"
+    if workspace_pto_isa.exists():
+        return workspace_pto_isa
     return repo_root() / "vendor" / "pto-isa"
 
 

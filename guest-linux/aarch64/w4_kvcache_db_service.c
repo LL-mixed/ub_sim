@@ -32,6 +32,7 @@
 #define W4_DB_DEFAULT_REGION_SIZE_MB 64
 #define W4_DB_CMDLINE_REGION_SIZE "w4_db_region_size_mb"
 #define W4_DB_CLUSTER_QUEUE_DEPTH 64
+#define W4_DB_CLUSTER_PENDING_DESC_DEPTH 16
 #define W4_DB_CLUSTER_WAIT_MS 20000L
 #define W4_DB_OBMM_SERVICE_WAIT_MS 120000L
 #define W4_DB_CLUSTER_IMPORT_ALIGN (2ULL * 1024ULL * 1024ULL)
@@ -119,6 +120,8 @@ struct w4_db_cluster_runtime {
     void *ingress_queue_base;
     struct obmm_spsc_queue *egress_queues[W4_DB_CLUSTER_MAX_NODES];
     struct obmm_helpers_region egress_import[W4_DB_CLUSTER_MAX_NODES];
+    struct obmm_desc pending_descs[W4_DB_CLUSTER_MAX_NODES][W4_DB_CLUSTER_PENDING_DESC_DEPTH];
+    uint8_t pending_desc_count[W4_DB_CLUSTER_MAX_NODES];
 };
 
 #define W4_DB_CLUSTER_PAYLOAD_MAGIC 0x57344450U
@@ -1137,6 +1140,111 @@ static int w4_db_init_export_layout(struct w4_db_cluster_runtime *rt, void *base
     return 0;
 }
 
+static bool w4_db_desc_matches_barrier(const struct obmm_desc *desc,
+                                       uint16_t desc_type,
+                                       uint16_t epoch)
+{
+    return desc && desc->type == desc_type && (uint16_t)desc->cookie == epoch;
+}
+
+static bool w4_db_take_pending_barrier_desc(struct w4_db_cluster_runtime *rt,
+                                            int owner_idx,
+                                            uint16_t desc_type,
+                                            uint16_t epoch)
+{
+    uint8_t count;
+    uint8_t i;
+
+    if (!rt || owner_idx < 0 || owner_idx >= rt->node_count) {
+        return false;
+    }
+    count = rt->pending_desc_count[owner_idx];
+    for (i = 0; i < count; ++i) {
+        if (w4_db_desc_matches_barrier(&rt->pending_descs[owner_idx][i],
+                                       desc_type,
+                                       epoch)) {
+            if (i + 1 < count) {
+                memmove(&rt->pending_descs[owner_idx][i],
+                        &rt->pending_descs[owner_idx][i + 1],
+                        (size_t)(count - i - 1) * sizeof(struct obmm_desc));
+            }
+            rt->pending_desc_count[owner_idx] = (uint8_t)(count - 1);
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool w4_db_pending_object_desc_matches(const struct obmm_desc *desc,
+                                              uint16_t epoch,
+                                              const struct w4_db_record *record,
+                                              uint32_t kind)
+{
+    uint32_t checksum_cookie;
+
+    if (!desc || !record || desc->type != OBMM_DESC_W4_OBJECT_PUT ||
+        (uint16_t)(desc->seq >> 48) != epoch || desc->flags != kind ||
+        desc->payload_offset != record->object_backing_offset ||
+        desc->payload_len != record->object_backing_len) {
+        return false;
+    }
+    checksum_cookie = (uint32_t)(record->object_payload_checksum ^
+                                 (record->object_payload_checksum >> 32));
+    return desc->cookie == checksum_cookie;
+}
+
+static bool w4_db_take_pending_object_desc(struct w4_db_cluster_runtime *rt,
+                                           int owner_idx,
+                                           uint16_t epoch,
+                                           const struct w4_db_record *record,
+                                           uint32_t kind)
+{
+    uint8_t count;
+    uint8_t i;
+
+    if (!rt || owner_idx < 0 || owner_idx >= rt->node_count) {
+        return false;
+    }
+    count = rt->pending_desc_count[owner_idx];
+    for (i = 0; i < count; ++i) {
+        if (w4_db_pending_object_desc_matches(&rt->pending_descs[owner_idx][i],
+                                              epoch,
+                                              record,
+                                              kind)) {
+            if (i + 1 < count) {
+                memmove(&rt->pending_descs[owner_idx][i],
+                        &rt->pending_descs[owner_idx][i + 1],
+                        (size_t)(count - i - 1) * sizeof(struct obmm_desc));
+            }
+            rt->pending_desc_count[owner_idx] = (uint8_t)(count - 1);
+            return true;
+        }
+    }
+    return false;
+}
+
+static void w4_db_stash_pending_desc(struct w4_db_cluster_runtime *rt,
+                                     int owner_idx,
+                                     const struct obmm_desc *desc)
+{
+    uint8_t count;
+
+    if (!rt || !desc || owner_idx < 0 || owner_idx >= rt->node_count) {
+        return;
+    }
+    count = rt->pending_desc_count[owner_idx];
+    if (count >= W4_DB_CLUSTER_PENDING_DESC_DEPTH) {
+        fprintf(stderr,
+                "[w4_db] pending desc overflow owner=%d type=%u cookie=0x%x\n",
+                owner_idx,
+                desc->type,
+                desc->cookie);
+        return;
+    }
+    rt->pending_descs[owner_idx][count] = *desc;
+    rt->pending_desc_count[owner_idx] = (uint8_t)(count + 1);
+}
+
 static int w4_db_queue_barrier(struct w4_db_cluster_runtime *rt,
                                uint16_t desc_type,
                                uint16_t epoch,
@@ -1174,9 +1282,15 @@ static int w4_db_queue_barrier(struct w4_db_cluster_runtime *rt,
             struct obmm_desc rx;
             if (got[i]) continue;
             if (rt->ingress_queues[i] == NULL) continue;
+            if (w4_db_take_pending_barrier_desc(rt, i, desc_type, epoch)) {
+                got[i] = true;
+                continue;
+            }
             while (obmm_spsc_pop(rt->ingress_queues[i], &rx) == 0) {
-                if (rx.type == desc_type && (uint16_t)rx.cookie == epoch) {
+                if (w4_db_desc_matches_barrier(&rx, desc_type, epoch)) {
                     got[i] = true;
+                } else {
+                    w4_db_stash_pending_desc(rt, i, &rx);
                 }
             }
             if (!got[i]) all = false;
@@ -1189,6 +1303,133 @@ static int w4_db_queue_barrier(struct w4_db_cluster_runtime *rt,
     for (i = 0; i < rt->node_count; i++)
         if (!got[i]) fprintf(stderr, " %d", i);
     fprintf(stderr, "\n");
+    return -1;
+}
+
+static int w4_db_push_obmm_object_descs(struct w4_db_cluster_runtime *rt,
+                                        uint32_t payload_kind,
+                                        uint64_t payload_offset,
+                                        uint64_t payload_len,
+                                        uint64_t checksum,
+                                        uint16_t epoch)
+{
+    long deadline = obmm_now_ms() + W4_DB_CLUSTER_WAIT_MS;
+    struct obmm_desc desc;
+    int i;
+
+    if (!rt || payload_len > UINT32_MAX || payload_kind > UINT16_MAX) {
+        return -1;
+    }
+
+    memset(&desc, 0, sizeof(desc));
+    desc.type = OBMM_DESC_W4_OBJECT_PUT;
+    desc.flags = (uint16_t)payload_kind;
+    desc.seq = ((uint64_t)epoch << 48) |
+               ((uint64_t)(rt->local_idx + 1) << 32) |
+               (payload_offset & 0xffffffffULL);
+    desc.region_id = payload_kind;
+    desc.payload_len = (uint32_t)payload_len;
+    desc.payload_offset = payload_offset;
+    desc.cookie = (uint32_t)(checksum ^ (checksum >> 32));
+
+    for (i = 0; i < rt->node_count; i++) {
+        if (i == rt->local_idx || rt->egress_queues[i] == NULL) {
+            continue;
+        }
+        while (obmm_spsc_push(rt->egress_queues[i], &desc) != 0) {
+            if (obmm_now_ms() > deadline) {
+                fprintf(stderr,
+                        "[w4_db] object desc push timeout kind=%u peer=%d offset=%#" PRIx64 "\n",
+                        payload_kind, i + 1, payload_offset);
+                return -1;
+            }
+            usleep(1000);
+        }
+    }
+
+    return 0;
+}
+
+static int w4_db_wait_remote_obmm_object_descs(struct w4_db_cluster_runtime *rt,
+                                              uint32_t owner_node,
+                                              uint16_t epoch,
+                                              const struct w4_db_record *weight,
+                                              const struct w4_db_record *kvcache)
+{
+    long deadline = obmm_now_ms() + W4_DB_OBMM_SERVICE_WAIT_MS;
+    bool saw_weight = false;
+    bool saw_kvcache = false;
+    struct obmm_spsc_queue *q;
+
+    if (!rt || owner_node >= (uint32_t)rt->node_count || !weight || !kvcache) {
+        return -1;
+    }
+    q = rt->ingress_queues[owner_node];
+    if (!q) {
+        return -1;
+    }
+
+    while (obmm_now_ms() < deadline) {
+        struct obmm_desc desc;
+        bool drained = false;
+
+        if (!saw_weight &&
+            w4_db_take_pending_object_desc(rt,
+                                           (int)owner_node,
+                                           epoch,
+                                           weight,
+                                           W4_DB_OBMM_KIND_WEIGHT_TILE)) {
+            saw_weight = true;
+        }
+        if (!saw_kvcache &&
+            w4_db_take_pending_object_desc(rt,
+                                           (int)owner_node,
+                                           epoch,
+                                           kvcache,
+                                           W4_DB_OBMM_KIND_KVCACHE_BLOCK)) {
+            saw_kvcache = true;
+        }
+        while (obmm_spsc_pop(q, &desc) == 0) {
+            bool matched = false;
+            drained = true;
+            if (desc.type != OBMM_DESC_W4_OBJECT_PUT ||
+                (uint16_t)(desc.seq >> 48) != epoch) {
+                w4_db_stash_pending_desc(rt, (int)owner_node, &desc);
+                continue;
+            }
+            if (desc.flags == W4_DB_OBMM_KIND_WEIGHT_TILE &&
+                desc.payload_offset == weight->object_backing_offset &&
+                desc.payload_len == weight->object_backing_len &&
+                desc.cookie == (uint32_t)(weight->object_payload_checksum ^
+                                          (weight->object_payload_checksum >> 32))) {
+                saw_weight = true;
+                matched = true;
+            }
+            if (desc.flags == W4_DB_OBMM_KIND_KVCACHE_BLOCK &&
+                desc.payload_offset == kvcache->object_backing_offset &&
+                desc.payload_len == kvcache->object_backing_len &&
+                desc.cookie == (uint32_t)(kvcache->object_payload_checksum ^
+                                          (kvcache->object_payload_checksum >> 32))) {
+                saw_kvcache = true;
+                matched = true;
+            }
+            if (!matched) {
+                w4_db_stash_pending_desc(rt, (int)owner_node, &desc);
+            }
+        }
+        if (saw_weight && saw_kvcache) {
+            return 0;
+        }
+        if (!drained) {
+            usleep(1000);
+        }
+    }
+
+    printf("[w4_guest] gap obmm_service_v0=object_desc_timeout remote=node%u weight=%u kvcache=%u epoch=%u\n",
+           owner_node + 1U,
+           saw_weight ? 1U : 0U,
+           saw_kvcache ? 1U : 0U,
+           epoch);
     return -1;
 }
 
@@ -1434,6 +1675,17 @@ static int w4_db_cluster_runtime_init(struct w4_db_cluster_runtime *rt)
         printf("[w4_guest] gap db_service_cluster_stage=no_payload_entry\n");
         goto fail;
     }
+
+    if (w4_db_update_region_range_at(&rt->slots[rt->local_idx],
+                                     0,
+                                     payload_offset,
+                                     true) != 0) {
+        printf("[w4_guest] gap db_service_cluster_stage=publish_pool_layout_failed\n");
+        goto fail;
+    }
+    (void)msync(rt->slots[rt->local_idx].region.addr,
+                (size_t)payload_offset,
+                MS_SYNC);
 
     /* Adjust local slot's region.addr to point at the payload sub-region */
     rt->payload_offset = payload_offset;
@@ -2672,6 +2924,26 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
            local_node + 1U,
            object_epoch,
            local_publish_seq);
+    if (w4_db_push_obmm_object_descs(rt,
+                                     W4_DB_OBMM_KIND_WEIGHT_TILE,
+                                     local_weight.object_backing_offset,
+                                     local_weight.object_backing_len,
+                                     local_weight.object_payload_checksum,
+                                     object_epoch) != 0 ||
+        w4_db_push_obmm_object_descs(rt,
+                                     W4_DB_OBMM_KIND_KVCACHE_BLOCK,
+                                     local_kvcache.object_backing_offset,
+                                     local_kvcache.object_backing_len,
+                                     local_kvcache.object_payload_checksum,
+                                     object_epoch) != 0) {
+        printf("[w4_guest] gap obmm_service_v0=object_desc_publish_failed local=node%u epoch=%u\n",
+               local_node + 1U,
+               object_epoch);
+        return -1;
+    }
+    printf("[w4_guest] stage obmm_service_v0_object_desc_put local=node%u objects=2 queue=obmm_spsc epoch=%u status=ok\n",
+           local_node + 1U,
+           object_epoch);
     if (w4_db_activate_remote_slot(rt, (int)remote_node) != 0) {
         printf("[w4_guest] gap obmm_service_v0=remote_slot_import_failed remote=node%u\n",
                remote_node + 1U);
@@ -2722,6 +2994,17 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
                remote_node + 1U);
         return -1;
     }
+    if (w4_db_wait_remote_obmm_object_descs(rt,
+                                           remote_node,
+                                           object_epoch,
+                                           &remote_weight,
+                                           &remote_kvcache) != 0) {
+        return -1;
+    }
+    printf("[w4_guest] stage obmm_service_v0_object_desc_get remote=node%u reader=node%u objects=2 queue=obmm_spsc epoch=%u status=ok\n",
+           remote_node + 1U,
+           local_node + 1U,
+           object_epoch);
     if (!remote_slot->region.addr ||
         remote_weight.object_backing_offset + remote_weight.object_backing_len > remote_slot->region.len ||
         remote_kvcache.object_backing_offset + remote_kvcache.object_backing_len > remote_slot->region.len) {

@@ -65,6 +65,8 @@ enum obmm_desc_type {
     OBMM_DESC_STRESS_ACK   = 5, /* stress batch completion */
     OBMM_DESC_W4_READY     = 6, /* w4_db: payload published */
     OBMM_DESC_W4_OBSERVED  = 7, /* w4_db: payload consumed */
+    OBMM_DESC_W4_OBJECT_PUT = 8, /* w4_db: object payload put */
+    OBMM_DESC_W4_OBJECT_GET = 9, /* w4_db: object payload observed */
 };
 
 /* ------------------------------------------------------------------ */

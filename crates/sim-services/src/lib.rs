@@ -866,6 +866,7 @@ pub mod object {
         pub pool_bytes: u64,
         pub payload_base_offset: u64,
         pub payload_alignment: u64,
+        pub queue_auto_drain: bool,
     }
 
     impl Default for LingquObmmPoolProfile {
@@ -877,6 +878,7 @@ pub mod object {
                 pool_bytes: 256 * 1024 * 1024,
                 payload_base_offset: 2 * 1024 * 1024,
                 payload_alignment: 64,
+                queue_auto_drain: true,
             }
         }
     }
@@ -902,6 +904,75 @@ pub mod object {
         version: u64,
     }
 
+    #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+    #[repr(C)]
+    struct LingquObmmQueueWireDesc {
+        seq: u64,
+        region_id: u32,
+        payload_len: u32,
+        payload_offset: u64,
+        desc_type: u16,
+        flags: u16,
+        cookie: u32,
+    }
+
+    const LINGQU_OBMM_DESC_READY: u16 = 6;
+    const LINGQU_OBMM_QUEUE_MIN_DEPTH: usize = 64;
+    const LINGQU_OBMM_QUEUE_MAX_DEPTH: usize = 65536;
+    const _: [(); 32] = [(); std::mem::size_of::<LingquObmmQueueWireDesc>()];
+
+    #[derive(Debug, Clone)]
+    struct LingquObmmSpscQueue {
+        head: u32,
+        tail: u32,
+        mask: u32,
+        slots: Vec<Option<LingquObmmQueueWireDesc>>,
+    }
+
+    impl LingquObmmSpscQueue {
+        fn new(depth: usize) -> Result<Self, &'static str> {
+            if depth == 0 {
+                return Err("obmm_pool_queue_disabled");
+            }
+            if !(LINGQU_OBMM_QUEUE_MIN_DEPTH..=LINGQU_OBMM_QUEUE_MAX_DEPTH).contains(&depth) {
+                return Err("obmm_pool_queue_depth_out_of_range");
+            }
+            if !depth.is_power_of_two() {
+                return Err("obmm_pool_queue_depth_not_power_of_two");
+            }
+            if depth > u32::MAX as usize {
+                return Err("obmm_pool_queue_depth_too_large");
+            }
+            Ok(Self {
+                head: 0,
+                tail: 0,
+                mask: depth as u32 - 1,
+                slots: vec![None; depth],
+            })
+        }
+
+        fn push(&mut self, desc: LingquObmmQueueWireDesc) -> Result<(), &'static str> {
+            let depth = self.slots.len() as u32;
+            if self.tail.wrapping_sub(self.head) == depth {
+                return Err("obmm_pool_queue_full");
+            }
+            let index = (self.tail & self.mask) as usize;
+            self.slots[index] = Some(desc);
+            self.tail = self.tail.wrapping_add(1);
+            Ok(())
+        }
+
+        fn pop(&mut self) -> Option<LingquObmmQueueWireDesc> {
+            if self.head == self.tail {
+                return None;
+            }
+            let index = (self.head & self.mask) as usize;
+            let desc = self.slots[index].take();
+            self.head = self.head.wrapping_add(1);
+            desc
+        }
+    }
+
     #[derive(Debug, Clone, Copy, Default)]
     struct LingquObmmPoolStats {
         payload_write_count: u64,
@@ -911,12 +982,14 @@ pub mod object {
         bytes_used: u64,
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     struct LingquObmmPoolBackend {
         profile: LingquObmmPoolProfile,
         next_payload_offset: u64,
         payloads: HashMap<String, LingquObmmPoolPayload>,
         delivered_descs: Vec<LingquObmmQueueDesc>,
+        queues: HashMap<(u64, u64), LingquObmmSpscQueue>,
+        pending_descs: HashMap<u64, LingquObmmQueueDesc>,
         stats: LingquObmmPoolStats,
     }
 
@@ -927,11 +1000,33 @@ pub mod object {
                 next_payload_offset: profile.payload_base_offset,
                 payloads: HashMap::new(),
                 delivered_descs: Vec::new(),
+                queues: HashMap::new(),
+                pending_descs: HashMap::new(),
                 stats: LingquObmmPoolStats::default(),
             }
         }
 
         fn publish_payloads(
+            &mut self,
+            placements: &mut [LingquPayloadPlacement],
+            payload: &[u8],
+            producer_entity: u64,
+            owner_entity: Option<u64>,
+            version: u64,
+        ) -> Result<(), &'static str> {
+            let mut staged = self.clone();
+            staged.publish_payloads_in_place(
+                placements,
+                payload,
+                producer_entity,
+                owner_entity,
+                version,
+            )?;
+            *self = staged;
+            Ok(())
+        }
+
+        fn publish_payloads_in_place(
             &mut self,
             placements: &mut [LingquPayloadPlacement],
             payload: &[u8],
@@ -1012,13 +1107,106 @@ pub mod object {
         }
 
         fn enqueue_desc(&mut self, desc: LingquObmmQueueDesc) -> Result<(), &'static str> {
-            if self.profile.queue_depth == 0 {
-                return Err("obmm_pool_queue_disabled");
-            }
+            let seq = self.stats.queue_submit_count.wrapping_add(1);
+            let wire_desc = Self::wire_desc(seq, &desc)?;
+            let queue = self.queue_mut(desc.producer_entity, desc.consumer_entity)?;
+            queue.push(wire_desc)?;
             self.stats.queue_submit_count += 1;
-            self.stats.queue_deliver_count += 1;
-            self.delivered_descs.push(desc);
+            self.pending_descs.insert(seq, desc);
+            if self.profile.queue_auto_drain {
+                self.drain_queue(wire_desc);
+            }
             Ok(())
+        }
+
+        fn drain_consumer(&mut self, consumer_entity: u64) -> Result<(), &'static str> {
+            if !self.profile.enabled {
+                return Ok(());
+            }
+            if consumer_entity >= self.profile.node_count {
+                return Err("obmm_pool_queue_consumer_oob");
+            }
+            let queue_keys = self
+                .queues
+                .keys()
+                .copied()
+                .filter(|(_, consumer)| *consumer == consumer_entity)
+                .collect::<Vec<_>>();
+            let mut delivered = Vec::new();
+            for key in queue_keys {
+                if let Some(queue) = self.queues.get_mut(&key) {
+                    while let Some(wire_desc) = queue.pop() {
+                        delivered.push(wire_desc);
+                    }
+                }
+            }
+            self.deliver_wire_descs(delivered);
+            Ok(())
+        }
+
+        fn queue_mut(
+            &mut self,
+            producer_entity: u64,
+            consumer_entity: u64,
+        ) -> Result<&mut LingquObmmSpscQueue, &'static str> {
+            if producer_entity >= self.profile.node_count
+                || consumer_entity >= self.profile.node_count
+            {
+                return Err("obmm_pool_queue_entity_oob");
+            }
+            if !self
+                .queues
+                .contains_key(&(producer_entity, consumer_entity))
+            {
+                let queue = LingquObmmSpscQueue::new(self.profile.queue_depth)?;
+                self.queues
+                    .insert((producer_entity, consumer_entity), queue);
+            }
+            self.queues
+                .get_mut(&(producer_entity, consumer_entity))
+                .ok_or("obmm_pool_queue_missing")
+        }
+
+        fn drain_queue(&mut self, desc: LingquObmmQueueWireDesc) {
+            let producer_entity = u64::from(desc.flags);
+            let consumer_entity = u64::from(desc.region_id);
+            let mut delivered = Vec::new();
+            if let Some(queue) = self.queues.get_mut(&(producer_entity, consumer_entity)) {
+                while let Some(wire_desc) = queue.pop() {
+                    delivered.push(wire_desc);
+                }
+            }
+            self.deliver_wire_descs(delivered);
+        }
+
+        fn deliver_wire_descs(&mut self, delivered: Vec<LingquObmmQueueWireDesc>) {
+            for wire_desc in delivered {
+                if let Some(desc) = self.pending_descs.remove(&wire_desc.seq) {
+                    self.stats.queue_deliver_count += 1;
+                    self.delivered_descs.push(desc);
+                }
+            }
+        }
+
+        fn wire_desc(
+            seq: u64,
+            desc: &LingquObmmQueueDesc,
+        ) -> Result<LingquObmmQueueWireDesc, &'static str> {
+            let region_id =
+                u32::try_from(desc.consumer_entity).map_err(|_| "obmm_pool_queue_consumer_oob")?;
+            let payload_len =
+                u32::try_from(desc.bytes).map_err(|_| "obmm_pool_payload_too_large")?;
+            let flags =
+                u16::try_from(desc.producer_entity).map_err(|_| "obmm_pool_queue_producer_oob")?;
+            Ok(LingquObmmQueueWireDesc {
+                seq,
+                region_id,
+                payload_len,
+                payload_offset: desc.offset,
+                desc_type: LINGQU_OBMM_DESC_READY,
+                flags,
+                cookie: (desc.checksum ^ desc.version.rotate_left(17)) as u32,
+            })
         }
     }
 
@@ -1113,6 +1301,19 @@ pub mod object {
         ) -> Result<ServiceOpHandle, sim_core::SimError> {
             self.ensure_queue_capacity()?;
             let handle = self.next_handle();
+            if let Err(code) = self.obmm_pool.drain_consumer(req.requester_entity) {
+                self.report.metadata_get_count += 1;
+                self.report.checksum = self.report_checksum();
+                self.queue_completion(
+                    handle,
+                    req.task,
+                    CompletionStatus::RetryableFailure {
+                        code: code.to_string(),
+                    },
+                    now + self.profile.metadata_latency_us,
+                );
+                return Ok(handle);
+            }
             let resolved = self.resolve_record(&req).cloned();
             let (status, latency) = match resolved.as_ref() {
                 Some(record) if record.state == LingquObjectState::Quarantined => {
@@ -2394,6 +2595,103 @@ mod tests {
         assert_eq!(resolve_events[0].status, CompletionStatus::Success);
         assert_eq!(svc.report().shmem_read_count, 1);
         assert_eq!(svc.report().obmm_pool_payload_read_count, 1);
+    }
+
+    #[test]
+    fn object_service_obmm_queue_enforces_spsc_depth() {
+        let mut profile = LingquObjectServiceProfile::default();
+        profile.queue_depth = 128;
+        profile.obmm_pool.queue_depth = 64;
+        profile.obmm_pool.queue_auto_drain = false;
+        let mut svc = LingquObjectServiceStub::new(profile);
+
+        for index in 0..64 {
+            svc.submit_publish(
+                LingquObjectPublishReq {
+                    task: None,
+                    key: format!("qwen3/session/s0/kv/layer/00/tile/0/position/{index:08}/k"),
+                    kind: LingquObjectKind::KvCacheBlock,
+                    producer_entity: 0,
+                    owner_entity: Some(1),
+                    expected_version: None,
+                    metadata: object_metadata(128, 0x1111 + index),
+                    placements: vec![object_placement(LingquPayloadBackend::Shmem, 128)],
+                    payload_bytes: vec![index as u8; 128],
+                },
+                index,
+            )
+            .expect("publish should fit queue until depth is reached");
+        }
+        assert_eq!(svc.report().obmm_pool_queue_submit_count, 64);
+        assert_eq!(svc.report().obmm_pool_queue_deliver_count, 0);
+
+        svc.submit_publish(
+            LingquObjectPublishReq {
+                task: None,
+                key: "qwen3/session/s0/kv/layer/00/tile/0/position/00000064/k".to_string(),
+                kind: LingquObjectKind::KvCacheBlock,
+                producer_entity: 0,
+                owner_entity: Some(1),
+                expected_version: None,
+                metadata: object_metadata(128, 0x2222),
+                placements: vec![object_placement(LingquPayloadBackend::Shmem, 128)],
+                payload_bytes: vec![0x22; 128],
+            },
+            64,
+        )
+        .expect("queue-full publish is reported through completion");
+
+        let events = svc.poll_ready(100);
+        assert_eq!(events.len(), 65);
+        assert!(events[..64]
+            .iter()
+            .all(|event| event.status == CompletionStatus::Success));
+        assert_eq!(
+            events[64].status,
+            CompletionStatus::RetryableFailure {
+                code: "obmm_pool_queue_full".to_string(),
+            }
+        );
+        assert_eq!(svc.report().obmm_pool_queue_submit_count, 64);
+        assert_eq!(svc.report().obmm_pool_queue_deliver_count, 0);
+        assert_eq!(svc.report().obmm_pool_payload_write_count, 64);
+
+        svc.submit_resolve(
+            LingquObjectResolveReq {
+                task: None,
+                key: "qwen3/session/s0/kv/layer/00/tile/0/position/00000000/k".to_string(),
+                requester_entity: 1,
+                version: LingquObjectVersionSelector::LatestCommitted,
+                min_state: LingquObjectState::Committed,
+                preferred_backends: vec![LingquPayloadBackend::Shmem],
+            },
+            100,
+        )
+        .expect("consumer resolve should drain queued descriptors");
+        let resolve_events = svc.poll_ready(111);
+        assert_eq!(resolve_events.len(), 1);
+        assert_eq!(resolve_events[0].status, CompletionStatus::Success);
+        assert_eq!(svc.report().obmm_pool_queue_deliver_count, 64);
+
+        svc.submit_publish(
+            LingquObjectPublishReq {
+                task: None,
+                key: "qwen3/session/s0/kv/layer/00/tile/0/position/00000064/k".to_string(),
+                kind: LingquObjectKind::KvCacheBlock,
+                producer_entity: 0,
+                owner_entity: Some(1),
+                expected_version: None,
+                metadata: object_metadata(128, 0x3333),
+                placements: vec![object_placement(LingquPayloadBackend::Shmem, 128)],
+                payload_bytes: vec![0x33; 128],
+            },
+            112,
+        )
+        .expect("publish should fit after consumer drains queue");
+        let retry_events = svc.poll_ready(123);
+        assert_eq!(retry_events.len(), 1);
+        assert_eq!(retry_events[0].status, CompletionStatus::Success);
+        assert_eq!(svc.report().obmm_pool_queue_submit_count, 65);
     }
 
     #[test]

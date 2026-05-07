@@ -117,7 +117,7 @@ node_serial_port() {
   local node_id="$1"
   local port_base="$2"
   local idx="$(node_index "$node_id")"
-  echo $((port_base + 31 + idx))
+  echo $((port_base + 15 + idx))
 }
 
 send_serial_block() {
@@ -207,6 +207,8 @@ validate_node_log() {
   remote_idx=$((idx % 4 + 1))
   assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_publish kind=weight_tile key=weights/qwen3-0\\.6b/node${idx}/tile0 owner=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm weight publish" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_publish kind=kvcache_block key=kvcache/w4/node${idx}/block0 owner=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm kvcache publish" || return 1
+  assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_object_desc_put local=node${idx} objects=2 queue=obmm_spsc .* status=ok" "$node_id obmm object descriptor put" || return 1
+  assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_object_desc_get remote=node${remote_idx} reader=node${idx} objects=2 queue=obmm_spsc .* status=ok" "$node_id obmm object descriptor get" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_resolve kind=weight_tile key=weights/qwen3-0\\.6b/node${remote_idx}/tile0 owner=node${remote_idx} reader=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm remote weight resolve" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_resolve kind=kvcache_block key=kvcache/w4/node${remote_idx}/block0 owner=node${remote_idx} reader=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm remote kvcache resolve" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0=payload_backing_resolved local=node${idx} remote=node${remote_idx} objects=2 bytes=8192 boundary_offsets=0,248,256,4088,4096 backing=obmm_pool metadata=db status=ok" "$node_id obmm payload backing resolved" || return 1
