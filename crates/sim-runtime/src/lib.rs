@@ -397,6 +397,8 @@ struct SimplerDeviceAlloc {
 #[derive(Debug, Default)]
 struct SimplerCapiBackendState {
     runtime_library: Option<SimplerLoadedRuntimeLibrary>,
+    device_context: Option<simpler_capi::DeviceContext<'static>>,
+    device_context_device_id: Option<i32>,
     device_allocs: HashMap<(NodeId, sim_core::SegmentHandle), SimplerDeviceAlloc>,
 }
 
@@ -632,16 +634,19 @@ fn load_binary_artifact(artifact: &BinaryArtifactRef) -> Result<Vec<u8>, String>
         .map_err(|err| format!("artifact_read_failed:{}:{err}", artifact.source))
 }
 
-fn ensure_simpler_runtime_library<'a>(
-    state: &'a mut SimplerCapiBackendState,
+fn ensure_simpler_runtime_library(
+    state: &mut SimplerCapiBackendState,
     artifact: &BinaryArtifactRef,
-) -> Result<&'a simpler_capi::RuntimeLibrary, String> {
+) -> Result<&'static simpler_capi::RuntimeLibrary, String> {
     let expected = PathBuf::from(&artifact.source);
     let path_changed = match state.runtime_library.as_ref() {
         Some(loaded) => loaded.path != expected,
         None => false,
     };
     if path_changed {
+        state.device_context = None;
+        state.device_context_device_id = None;
+        state.device_allocs.clear();
         state.runtime_library = None;
     }
     if state.runtime_library.is_none() {
@@ -669,6 +674,156 @@ fn cached_simpler_runtime_library(
     let api = Box::leak(Box::new(api));
     cache.insert(expected.to_path_buf(), api);
     Ok(api)
+}
+
+fn ensure_simpler_device_context(
+    state: &mut SimplerCapiBackendState,
+    device_id: i32,
+) -> Result<&simpler_capi::DeviceContext<'static>, String> {
+    let api = state
+        .runtime_library
+        .as_ref()
+        .ok_or_else(|| "simpler_capi_missing_runtime_library".to_string())?
+        .api;
+    if state.device_context.is_none() || state.device_context_device_id != Some(device_id) {
+        state.device_context = Some(
+            api.create_context(device_id)
+                .map_err(|err| format!("simpler_capi_create_device_context_failed:{err}"))?,
+        );
+        state.device_context_device_id = Some(device_id);
+    }
+    Ok(state.device_context.as_ref().expect("device context"))
+}
+
+#[derive(Debug)]
+struct PreparedSimplerCapiArgs {
+    task_args: simpler_capi::ChipStorageTaskArgs,
+    signature: Vec<simpler_capi::ArgDirection>,
+}
+
+fn prepare_simpler_capi_args(
+    profile: DispatchBackendProfile,
+    runtime_args: &[SimplerRuntimeArg],
+    host_payloads: &mut HostPayloadRegistry,
+) -> Result<PreparedSimplerCapiArgs, String> {
+    for arg in runtime_args {
+        match arg {
+            SimplerRuntimeArg::OutputSegment { endpoint, bytes }
+            | SimplerRuntimeArg::InoutSegment { endpoint, bytes } => {
+                let key = (endpoint.node, endpoint.segment);
+                let payload = host_payloads
+                    .segments
+                    .entry(key)
+                    .or_insert_with(|| vec![0u8; (endpoint.offset + *bytes) as usize]);
+                let end = endpoint.offset as usize + *bytes as usize;
+                if end > payload.len() {
+                    payload.resize(end, 0);
+                }
+            }
+            SimplerRuntimeArg::InputSegment { endpoint, bytes } => {
+                let key = (endpoint.node, endpoint.segment);
+                let payload = host_payloads
+                    .segments
+                    .get(&key)
+                    .ok_or_else(|| "simpler_capi_missing_input_payload".to_string())?;
+                let end = endpoint.offset as usize + *bytes as usize;
+                if end > payload.len() {
+                    return Err("simpler_capi_input_payload_too_short".to_string());
+                }
+            }
+            SimplerRuntimeArg::ScalarU64(_) => {}
+        }
+    }
+
+    let mut tensors = Vec::new();
+    let mut scalars = Vec::new();
+    let mut signature = Vec::new();
+    for arg in runtime_args {
+        match arg {
+            SimplerRuntimeArg::ScalarU64(value) => {
+                scalars.push(*value);
+            }
+            SimplerRuntimeArg::InputSegment { endpoint, bytes } => {
+                let tensor_index = tensors.len();
+                let payload = host_payloads
+                    .segments
+                    .get(&(endpoint.node, endpoint.segment))
+                    .ok_or_else(|| "simpler_capi_missing_input_payload".to_string())?;
+                let start = endpoint.offset as usize;
+                let end = start.saturating_add(*bytes as usize);
+                tensors.push(
+                    simpler_capi::ContinuousTensor::new(
+                        payload[start..end].as_ptr() as u64,
+                        *bytes,
+                        simpler_tensor_dtype(profile, tensor_index),
+                    )
+                    .map_err(|err| format!("simpler_capi_tensor_arg_failed:{err}"))?,
+                );
+                signature.push(simpler_capi::ArgDirection::In);
+            }
+            SimplerRuntimeArg::OutputSegment { endpoint, bytes } => {
+                let tensor_index = tensors.len();
+                let payload = host_payloads
+                    .segments
+                    .get_mut(&(endpoint.node, endpoint.segment))
+                    .ok_or_else(|| "simpler_capi_missing_output_payload".to_string())?;
+                let start = endpoint.offset as usize;
+                let end = start.saturating_add(*bytes as usize);
+                tensors.push(
+                    simpler_capi::ContinuousTensor::new(
+                        payload[start..end].as_mut_ptr() as u64,
+                        *bytes,
+                        simpler_tensor_dtype(profile, tensor_index),
+                    )
+                    .map_err(|err| format!("simpler_capi_tensor_arg_failed:{err}"))?,
+                );
+                signature.push(simpler_capi::ArgDirection::Out);
+            }
+            SimplerRuntimeArg::InoutSegment { endpoint, bytes } => {
+                let tensor_index = tensors.len();
+                let payload = host_payloads
+                    .segments
+                    .get_mut(&(endpoint.node, endpoint.segment))
+                    .ok_or_else(|| "simpler_capi_missing_inout_payload".to_string())?;
+                let start = endpoint.offset as usize;
+                let end = start.saturating_add(*bytes as usize);
+                tensors.push(
+                    simpler_capi::ContinuousTensor::new(
+                        payload[start..end].as_mut_ptr() as u64,
+                        *bytes,
+                        simpler_tensor_dtype(profile, tensor_index),
+                    )
+                    .map_err(|err| format!("simpler_capi_tensor_arg_failed:{err}"))?,
+                );
+                signature.push(simpler_capi::ArgDirection::Inout);
+            }
+        }
+    }
+    signature.extend(std::iter::repeat(simpler_capi::ArgDirection::Scalar).take(scalars.len()));
+    let task_args = simpler_capi::ChipStorageTaskArgs::new(&tensors, &scalars)
+        .map_err(|err| format!("simpler_capi_task_args_failed:{err}"))?;
+    Ok(PreparedSimplerCapiArgs {
+        task_args,
+        signature,
+    })
+}
+
+fn simpler_tensor_dtype(
+    profile: DispatchBackendProfile,
+    tensor_index: usize,
+) -> simpler_capi::DataType {
+    match profile {
+        DispatchBackendProfile::HostMatmul => {
+            if tensor_index < 3 {
+                simpler_capi::DataType::Float16
+            } else {
+                simpler_capi::DataType::Float32
+            }
+        }
+        DispatchBackendProfile::HostVector | DispatchBackendProfile::TmrbVector => {
+            simpler_capi::DataType::Float32
+        }
+    }
 }
 
 fn validate_simpler_capi_dispatch_spec(
@@ -1796,9 +1951,10 @@ impl LocalRuntimeEngine {
             .runtime_library
             .as_ref()
             .ok_or_else(|| "simpler_capi_missing_runtime_library".to_string())?;
+        let api = api.api;
+        let ctx = ensure_simpler_device_context(simpler_capi, 0)?;
         let ptr = api
-            .api
-            .alloc_device(bytes as usize)
+            .alloc_device(ctx, bytes as usize)
             .map_err(|err| format!("simpler_capi_alloc_failed:{err}"))?;
         let alloc = SimplerDeviceAlloc { ptr, bytes };
         simpler_capi.device_allocs.insert(key, alloc);
@@ -1842,7 +1998,7 @@ impl LocalRuntimeEngine {
                     }
                 };
                 let api = match simpler_capi.runtime_library.as_ref() {
-                    Some(api) => api,
+                    Some(api) => api.api,
                     None => {
                         return CompletionEvent {
                             op_id: op.op_id,
@@ -1851,6 +2007,18 @@ impl LocalRuntimeEngine {
                             status: CompletionStatus::FatalFailure {
                                 code: "simpler_capi_missing_runtime_library".to_string(),
                             },
+                            finished_at: now,
+                        }
+                    }
+                };
+                let ctx = match ensure_simpler_device_context(simpler_capi, 0) {
+                    Ok(ctx) => ctx,
+                    Err(code) => {
+                        return CompletionEvent {
+                            op_id: op.op_id,
+                            task: Some(op.task.clone()),
+                            source: CompletionSource::ChipBackend,
+                            status: CompletionStatus::FatalFailure { code },
                             finished_at: now,
                         }
                     }
@@ -1864,20 +2032,32 @@ impl LocalRuntimeEngine {
                         if end > payload.len() {
                             Err("simpler_capi_host_payload_too_short".to_string())
                         } else {
-                            api.api
-                                .host_to_device(
-                                    alloc.ptr,
-                                    payload[start..end].as_ptr() as *const _,
-                                    copy_req.bytes as usize,
-                                )
-                                .map_err(|err| format!("simpler_capi_h2d_failed:{err}"))
+                            api.host_to_device(
+                                ctx,
+                                alloc.ptr,
+                                payload[start..end].as_ptr() as *const _,
+                                copy_req.bytes as usize,
+                            )
+                            .map_err(|err| format!("simpler_capi_h2d_failed:{err}"))
                         }
                     }
                 }
             }
             CopyDirection::DeviceToHost => {
+                let key = (copy_req.src.node, copy_req.src.segment);
+                let Some(alloc) = simpler_capi.device_allocs.get(&key).copied() else {
+                    return CompletionEvent {
+                        op_id: op.op_id,
+                        task: Some(op.task.clone()),
+                        source: CompletionSource::ChipBackend,
+                        status: CompletionStatus::FatalFailure {
+                            code: "simpler_capi_missing_device_allocation".to_string(),
+                        },
+                        finished_at: now,
+                    };
+                };
                 let api = match simpler_capi.runtime_library.as_ref() {
-                    Some(api) => api,
+                    Some(api) => api.api,
                     None => {
                         return CompletionEvent {
                             op_id: op.op_id,
@@ -1890,27 +2070,35 @@ impl LocalRuntimeEngine {
                         }
                     }
                 };
-                let key = (copy_req.src.node, copy_req.src.segment);
-                if let Some(alloc) = simpler_capi.device_allocs.get(&key).copied() {
-                    let dst_key = (copy_req.dst.node, copy_req.dst.segment);
-                    let payload = host_payloads.segments.entry(dst_key).or_insert_with(|| {
-                        vec![0u8; (copy_req.dst.offset + copy_req.bytes) as usize]
-                    });
-                    let start = copy_req.dst.offset as usize;
-                    let end = start.saturating_add(copy_req.bytes as usize);
-                    if end > payload.len() {
-                        payload.resize(end, 0);
+                let ctx = match ensure_simpler_device_context(simpler_capi, 0) {
+                    Ok(ctx) => ctx,
+                    Err(code) => {
+                        return CompletionEvent {
+                            op_id: op.op_id,
+                            task: Some(op.task.clone()),
+                            source: CompletionSource::ChipBackend,
+                            status: CompletionStatus::FatalFailure { code },
+                            finished_at: now,
+                        }
                     }
-                    api.api
-                        .device_to_host(
-                            payload[start..end].as_mut_ptr() as *mut _,
-                            alloc.ptr,
-                            copy_req.bytes as usize,
-                        )
-                        .map_err(|err| format!("simpler_capi_d2h_failed:{err}"))
-                } else {
-                    Err("simpler_capi_missing_device_allocation".to_string())
+                };
+                let dst_key = (copy_req.dst.node, copy_req.dst.segment);
+                let payload = host_payloads
+                    .segments
+                    .entry(dst_key)
+                    .or_insert_with(|| vec![0u8; (copy_req.dst.offset + copy_req.bytes) as usize]);
+                let start = copy_req.dst.offset as usize;
+                let end = start.saturating_add(copy_req.bytes as usize);
+                if end > payload.len() {
+                    payload.resize(end, 0);
                 }
+                api.device_to_host(
+                    ctx,
+                    payload[start..end].as_mut_ptr() as *mut _,
+                    alloc.ptr,
+                    copy_req.bytes as usize,
+                )
+                .map_err(|err| format!("simpler_capi_d2h_failed:{err}"))
             }
         };
 
@@ -1973,9 +2161,12 @@ impl LocalRuntimeEngine {
                 simpler_capi,
                 &runtime_artifacts.host_runtime_library,
             )?;
-            api.bind_device(runtime_artifacts.launch.device_id as i32)
-                .map_err(|err| format!("simpler_capi_set_device_failed:{err}"))?;
-
+            // Dispatch gets a fresh context because HostBuildGraph DeviceRunner
+            // state is not reusable without the currently-unsafe device
+            // finalization path. Copy operations keep their own cached context.
+            let ctx = api
+                .create_context(runtime_artifacts.launch.device_id as i32)
+                .map_err(|err| format!("simpler_capi_create_device_context_failed:{err}"))?;
             let runtime = simpler_capi::RuntimeBuffer::allocate(api)
                 .map_err(|err| format!("simpler_capi_runtime_alloc_failed:{err}"))?;
             let runtime_handle = runtime.handle();
@@ -1994,114 +2185,35 @@ impl LocalRuntimeEngine {
                 kernel_binaries.push(load_binary_artifact(&kernel.binary)?);
             }
 
-            for arg in &runtime_artifacts.args {
-                match arg {
-                    SimplerRuntimeArg::OutputSegment { endpoint, bytes }
-                    | SimplerRuntimeArg::InoutSegment { endpoint, bytes } => {
-                        let key = (endpoint.node, endpoint.segment);
-                        let payload = host_payloads
-                            .segments
-                            .entry(key)
-                            .or_insert_with(|| vec![0u8; (endpoint.offset + *bytes) as usize]);
-                        let end = endpoint.offset as usize + *bytes as usize;
-                        if end > payload.len() {
-                            payload.resize(end, 0);
-                        }
-                    }
-                    SimplerRuntimeArg::InputSegment { endpoint, bytes } => {
-                        let key = (endpoint.node, endpoint.segment);
-                        let payload = host_payloads
-                            .segments
-                            .get(&key)
-                            .ok_or_else(|| "simpler_capi_missing_input_payload".to_string())?;
-                        let end = endpoint.offset as usize + *bytes as usize;
-                        if end > payload.len() {
-                            return Err("simpler_capi_input_payload_too_short".to_string());
-                        }
-                    }
-                    SimplerRuntimeArg::ScalarU64(_) => {}
-                }
-            }
-
-            let mut func_args = Vec::with_capacity(runtime_artifacts.args.len());
-            let mut arg_types = Vec::with_capacity(runtime_artifacts.args.len());
-            let mut arg_sizes = Vec::with_capacity(runtime_artifacts.args.len());
-
-            for arg in &runtime_artifacts.args {
-                match arg {
-                    SimplerRuntimeArg::ScalarU64(value) => {
-                        func_args.push(*value);
-                        arg_types.push(simpler_capi::SimplerArgType::Scalar as i32);
-                        arg_sizes.push(0);
-                    }
-                    SimplerRuntimeArg::InputSegment { endpoint, bytes } => {
-                        let key = (endpoint.node, endpoint.segment);
-                        let payload = host_payloads
-                            .segments
-                            .get(&key)
-                            .ok_or_else(|| "simpler_capi_missing_input_payload".to_string())?;
-                        let start = endpoint.offset as usize;
-                        let end = start.saturating_add(*bytes as usize);
-                        func_args.push(payload[start..end].as_ptr() as u64);
-                        arg_types.push(simpler_capi::SimplerArgType::InputPtr as i32);
-                        arg_sizes.push(*bytes);
-                    }
-                    SimplerRuntimeArg::OutputSegment { endpoint, bytes } => {
-                        let key = (endpoint.node, endpoint.segment);
-                        let payload = host_payloads
-                            .segments
-                            .get_mut(&key)
-                            .ok_or_else(|| "simpler_capi_missing_output_payload".to_string())?;
-                        let start = endpoint.offset as usize;
-                        let end = start.saturating_add(*bytes as usize);
-                        func_args.push(payload[start..end].as_mut_ptr() as u64);
-                        arg_types.push(simpler_capi::SimplerArgType::OutputPtr as i32);
-                        arg_sizes.push(*bytes);
-                    }
-                    SimplerRuntimeArg::InoutSegment { endpoint, bytes } => {
-                        let key = (endpoint.node, endpoint.segment);
-                        let payload = host_payloads
-                            .segments
-                            .get_mut(&key)
-                            .ok_or_else(|| "simpler_capi_missing_inout_payload".to_string())?;
-                        let start = endpoint.offset as usize;
-                        let end = start.saturating_add(*bytes as usize);
-                        func_args.push(payload[start..end].as_mut_ptr() as u64);
-                        arg_types.push(simpler_capi::SimplerArgType::InoutPtr as i32);
-                        arg_sizes.push(*bytes);
-                    }
-                }
-            }
-
-            let kernel_ids: Vec<i32> = runtime_artifacts
+            let prepared = prepare_simpler_capi_args(
+                backend_spec.profile,
+                &runtime_artifacts.args,
+                host_payloads,
+            )?;
+            let kernel_inputs: Vec<simpler_capi::KernelCallableInput<'_>> = runtime_artifacts
                 .kernels
                 .iter()
-                .map(|k| k.func_id)
+                .zip(kernel_binaries.iter())
+                .map(|(kernel, binary)| simpler_capi::KernelCallableInput {
+                    func_id: kernel.func_id,
+                    binary: binary.as_slice(),
+                })
                 .collect();
-            let kernel_ptrs: Vec<*const u8> =
-                kernel_binaries.iter().map(|blob| blob.as_ptr()).collect();
-            let kernel_sizes: Vec<usize> = kernel_binaries.iter().map(Vec::len).collect();
-
-            api.init_runtime(
-                runtime_handle,
-                orch_binary.as_ptr(),
-                orch_binary.len(),
+            let callable = simpler_capi::make_chip_callable(
                 &runtime_artifacts.orch_function_name,
-                func_args.as_mut_ptr(),
-                func_args.len() as i32,
-                arg_types.as_mut_ptr(),
-                arg_sizes.as_mut_ptr(),
-                kernel_ids.as_ptr(),
-                kernel_ptrs.as_ptr(),
-                kernel_sizes.as_ptr(),
-                kernel_ids.len() as i32,
+                &orch_binary,
+                &kernel_inputs,
+                &prepared.signature,
             )
-            .map_err(|err| format!("simpler_capi_init_runtime_failed:{err}"))?;
+            .map_err(|err| format!("simpler_capi_make_callable_failed:{err}"))?;
 
-            api.launch_runtime(
+            api.run_runtime(
+                &ctx,
                 runtime_handle,
-                runtime_artifacts.launch.aicpu_thread_num as i32,
+                &callable,
+                &prepared.task_args,
                 runtime_artifacts.launch.block_dim as i32,
+                runtime_artifacts.launch.aicpu_thread_num as i32,
                 runtime_artifacts.launch.device_id as i32,
                 if aicpu_binary.is_empty() {
                     std::ptr::null()
@@ -2115,12 +2227,8 @@ impl LocalRuntimeEngine {
                     aicore_binary.as_ptr()
                 },
                 aicore_binary.len(),
-                runtime_artifacts.launch.orch_thread_num as i32,
             )
-            .map_err(|err| format!("simpler_capi_launch_runtime_failed:{err}"))?;
-
-            api.finalize(runtime_handle)
-                .map_err(|err| format!("simpler_capi_finalize_runtime_failed:{err}"))?;
+            .map_err(|err| format!("simpler_capi_run_runtime_failed:{err}"))?;
 
             Ok(())
         })();

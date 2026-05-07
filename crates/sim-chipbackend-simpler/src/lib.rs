@@ -1,8 +1,8 @@
 //! Thin Rust-side runtime loader for `simpler` host `pto_runtime_c_api`.
 //!
-//! The C API lives inside a platform/runtime-specific dynamic library produced
-//! by `simpler`. This crate keeps `sim-runtime` free from raw symbol loading and
-//! FFI boilerplate.
+//! Current vendored `simpler` exposes the HostBuildGraph runtime through the
+//! worker C API: callers pass a `ChipCallable` plus `ChipStorageTaskArgs` to
+//! `run_runtime`, rather than calling separate init/launch/finalize symbols.
 
 use std::ffi::{c_char, c_int, c_void, CString};
 use std::fs;
@@ -11,53 +11,75 @@ use std::ptr::NonNull;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use libc::{free, malloc};
-use libloading::os::unix::{Library, Symbol, RTLD_GLOBAL, RTLD_NOW};
+use libloading::os::unix::{Library, Symbol, RTLD_GLOBAL, RTLD_LOCAL, RTLD_NOW};
 use thiserror::Error;
 
 pub type RuntimeHandle = *mut c_void;
+pub type DeviceContextHandle = *mut c_void;
 
+type CreateDeviceContextFn = unsafe extern "C" fn() -> DeviceContextHandle;
+type DestroyDeviceContextFn = unsafe extern "C" fn(DeviceContextHandle);
 type GetRuntimeSizeFn = unsafe extern "C" fn() -> usize;
-type InitRuntimeFn = unsafe extern "C" fn(
+type SetDeviceFn = unsafe extern "C" fn(DeviceContextHandle, c_int) -> c_int;
+type DeviceMallocCtxFn = unsafe extern "C" fn(DeviceContextHandle, usize) -> *mut c_void;
+type DeviceFreeCtxFn = unsafe extern "C" fn(DeviceContextHandle, *mut c_void);
+type CopyToDeviceCtxFn =
+    unsafe extern "C" fn(DeviceContextHandle, *mut c_void, *const c_void, usize) -> c_int;
+type CopyFromDeviceCtxFn =
+    unsafe extern "C" fn(DeviceContextHandle, *mut c_void, *const c_void, usize) -> c_int;
+type RunRuntimeFn = unsafe extern "C" fn(
+    DeviceContextHandle,
     RuntimeHandle,
+    *const c_void,
+    *const c_void,
+    c_int,
+    c_int,
+    c_int,
     *const u8,
     usize,
+    *const u8,
+    usize,
+    c_int,
+    c_int,
+    c_int,
     *const c_char,
-    *mut u64,
-    c_int,
-    *mut c_int,
-    *mut u64,
-    *const c_int,
-    *const *const u8,
-    *const usize,
-    c_int,
 ) -> c_int;
-type DeviceMallocFn = unsafe extern "C" fn(usize) -> *mut c_void;
-type DeviceFreeFn = unsafe extern "C" fn(*mut c_void);
-type CopyToDeviceFn = unsafe extern "C" fn(*mut c_void, *const c_void, usize) -> c_int;
-type CopyFromDeviceFn = unsafe extern "C" fn(*mut c_void, *const c_void, usize) -> c_int;
-type LaunchRuntimeFn = unsafe extern "C" fn(
-    RuntimeHandle,
-    c_int,
-    c_int,
-    c_int,
-    *const u8,
-    usize,
-    *const u8,
-    usize,
-    c_int,
-) -> c_int;
-type FinalizeRuntimeFn = unsafe extern "C" fn(RuntimeHandle) -> c_int;
-type SetDeviceFn = unsafe extern "C" fn(c_int) -> c_int;
-type RecordTensorPairFn = unsafe extern "C" fn(RuntimeHandle, *mut c_void, *mut c_void, usize);
-type EnableRuntimeProfilingFn = unsafe extern "C" fn(RuntimeHandle, c_int) -> c_int;
+type FinalizeDeviceFn = unsafe extern "C" fn(DeviceContextHandle) -> c_int;
 
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SimplerArgType {
+pub enum ArgDirection {
     Scalar = 0,
-    InputPtr = 1,
-    OutputPtr = 2,
-    InoutPtr = 3,
+    In = 1,
+    Out = 2,
+    Inout = 3,
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataType {
+    Float32 = 0,
+    Float16 = 1,
+    Int32 = 2,
+    Int16 = 3,
+    Int8 = 4,
+    Uint8 = 5,
+    Bfloat16 = 6,
+    Int64 = 7,
+    Uint64 = 8,
+    Uint16 = 9,
+    Uint32 = 10,
+}
+
+impl DataType {
+    pub fn element_size(self) -> usize {
+        match self {
+            Self::Float32 | Self::Int32 | Self::Uint32 => 4,
+            Self::Float16 | Self::Int16 | Self::Bfloat16 | Self::Uint16 => 2,
+            Self::Int8 | Self::Uint8 => 1,
+            Self::Int64 | Self::Uint64 => 8,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +104,153 @@ impl OwnedRuntime {
     pub fn as_raw(self) -> RuntimeHandle {
         self.ptr.as_ptr()
     }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ContinuousTensor {
+    data: u64,
+    shapes: [u32; 5],
+    ndims: u32,
+    dtype: DataType,
+    child_memory: u8,
+}
+
+impl ContinuousTensor {
+    pub fn new(data: u64, bytes: u64, dtype: DataType) -> Result<Self, SimplerApiError> {
+        let elem_size = dtype.element_size() as u64;
+        if elem_size == 0 || bytes % elem_size != 0 {
+            return Err(SimplerApiError::InvalidTensorShape);
+        }
+        let elems = bytes / elem_size;
+        let elems = u32::try_from(elems).map_err(|_| SimplerApiError::InvalidTensorShape)?;
+        Ok(Self {
+            data,
+            shapes: [elems, 1, 1, 1, 1],
+            ndims: 1,
+            dtype,
+            child_memory: 0,
+        })
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ChipStorageTaskArgs {
+    tensors: [ContinuousTensor; CHIP_MAX_TENSOR_ARGS],
+    scalars: [u64; CHIP_MAX_SCALAR_ARGS],
+    tensor_count: i32,
+    scalar_count: i32,
+}
+
+impl std::fmt::Debug for ChipStorageTaskArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChipStorageTaskArgs")
+            .field("tensor_count", &self.tensor_count)
+            .field("scalar_count", &self.scalar_count)
+            .finish()
+    }
+}
+
+impl ChipStorageTaskArgs {
+    pub fn new(tensors: &[ContinuousTensor], scalars: &[u64]) -> Result<Self, SimplerApiError> {
+        if tensors.len() > CHIP_MAX_TENSOR_ARGS || scalars.len() > CHIP_MAX_SCALAR_ARGS {
+            return Err(SimplerApiError::TooManyArgs);
+        }
+        let zero_tensor = ContinuousTensor {
+            data: 0,
+            shapes: [0; 5],
+            ndims: 0,
+            dtype: DataType::Uint8,
+            child_memory: 0,
+        };
+        let mut out = Self {
+            tensors: [zero_tensor; CHIP_MAX_TENSOR_ARGS],
+            scalars: [0; CHIP_MAX_SCALAR_ARGS],
+            tensor_count: tensors.len() as i32,
+            scalar_count: scalars.len() as i32,
+        };
+        out.tensors[..tensors.len()].copy_from_slice(tensors);
+        out.scalars[..scalars.len()].copy_from_slice(scalars);
+        Ok(out)
+    }
+}
+
+pub struct KernelCallableInput<'a> {
+    pub func_id: i32,
+    pub binary: &'a [u8],
+}
+
+#[derive(Debug, Clone)]
+pub struct CallableBuffer {
+    bytes: Vec<u8>,
+}
+
+impl CallableBuffer {
+    pub fn as_ptr(&self) -> *const c_void {
+        self.bytes.as_ptr() as *const c_void
+    }
+}
+
+pub fn make_chip_callable(
+    orch_function_name: &str,
+    orch_binary: &[u8],
+    kernels: &[KernelCallableInput<'_>],
+    signature: &[ArgDirection],
+) -> Result<CallableBuffer, SimplerApiError> {
+    if signature.len() > CHIP_MAX_TENSOR_ARGS || kernels.len() > CHIP_MAX_CHILDREN {
+        return Err(SimplerApiError::TooManyArgs);
+    }
+    let mut child_buffers = Vec::with_capacity(kernels.len());
+    for kernel in kernels {
+        child_buffers.push(make_core_callable(kernel.binary)?);
+    }
+
+    let mut storage_size = orch_binary.len();
+    let mut child_offsets = Vec::with_capacity(child_buffers.len());
+    for child in &child_buffers {
+        storage_size = align_up(storage_size, CALLABLE_ALIGN);
+        child_offsets.push(storage_size as u32);
+        storage_size += child.len();
+    }
+
+    let mut bytes = vec![0u8; CHIP_CALLABLE_HEADER_SIZE + storage_size];
+    for (index, direction) in signature.iter().enumerate() {
+        write_i32(&mut bytes, index * 4, *direction as i32);
+    }
+    write_i32(&mut bytes, 256, signature.len() as i32);
+    write_u32(&mut bytes, 260, orch_binary.len() as u32);
+    write_cstr(&mut bytes, 264, CALLABLE_FUNC_NAME_MAX, orch_function_name)?;
+    write_u32(
+        &mut bytes,
+        328,
+        orch_function_name.len().min(CALLABLE_FUNC_NAME_MAX - 1) as u32,
+    );
+    for (index, kernel) in kernels.iter().enumerate() {
+        write_i32(&mut bytes, 332 + index * 4, kernel.func_id);
+    }
+    for (index, offset) in child_offsets.iter().enumerate() {
+        write_u32(&mut bytes, 4428 + index * 4, *offset);
+    }
+    write_i32(&mut bytes, 8524, child_buffers.len() as i32);
+    write_u32(&mut bytes, 8592, 0);
+    bytes[CHIP_CALLABLE_HEADER_SIZE..CHIP_CALLABLE_HEADER_SIZE + orch_binary.len()]
+        .copy_from_slice(orch_binary);
+    for (offset, child) in child_offsets.iter().zip(child_buffers.iter()) {
+        let start = CHIP_CALLABLE_HEADER_SIZE + *offset as usize;
+        bytes[start..start + child.len()].copy_from_slice(child);
+    }
+    Ok(CallableBuffer { bytes })
+}
+
+fn make_core_callable(binary: &[u8]) -> Result<Vec<u8>, SimplerApiError> {
+    let binary_size = u32::try_from(binary.len()).map_err(|_| SimplerApiError::CallableTooLarge)?;
+    let mut bytes = vec![0u8; CORE_CALLABLE_BINARY_OFFSET + binary.len()];
+    write_i32(&mut bytes, 64, 0);
+    write_u32(&mut bytes, 68, binary_size);
+    write_u64(&mut bytes, 72, 0);
+    bytes[CORE_CALLABLE_BINARY_OFFSET..].copy_from_slice(binary);
+    Ok(bytes)
 }
 
 #[derive(Debug)]
@@ -115,8 +284,16 @@ pub enum SimplerApiError {
     MissingSymbol(&'static str),
     #[error("invalid runtime symbol name")]
     InvalidSymbolName,
+    #[error("invalid tensor shape")]
+    InvalidTensorShape,
+    #[error("too many simpler runtime args")]
+    TooManyArgs,
+    #[error("callable binary too large")]
+    CallableTooLarge,
     #[error("null runtime pointer")]
     NullRuntime,
+    #[error("null device context")]
+    NullDeviceContext,
     #[error("null device pointer")]
     NullDevicePointer,
     #[error("api returned error code {code}")]
@@ -137,22 +314,55 @@ pub struct RuntimeLibrary {
     _preloaded_libs: Vec<Library>,
     _lib: Library,
     _staged_path: PathBuf,
+    create_device_context: CreateDeviceContextFn,
+    destroy_device_context: DestroyDeviceContextFn,
     get_runtime_size: GetRuntimeSizeFn,
-    init_runtime: InitRuntimeFn,
-    device_malloc: DeviceMallocFn,
-    device_free: DeviceFreeFn,
-    copy_to_device: CopyToDeviceFn,
-    copy_from_device: CopyFromDeviceFn,
-    launch_runtime: LaunchRuntimeFn,
-    finalize_runtime: FinalizeRuntimeFn,
     set_device: SetDeviceFn,
-    record_tensor_pair: RecordTensorPairFn,
-    enable_runtime_profiling: EnableRuntimeProfilingFn,
+    device_malloc_ctx: DeviceMallocCtxFn,
+    device_free_ctx: DeviceFreeCtxFn,
+    copy_to_device_ctx: CopyToDeviceCtxFn,
+    copy_from_device_ctx: CopyFromDeviceCtxFn,
+    run_runtime: RunRuntimeFn,
+    finalize_device: FinalizeDeviceFn,
 }
 
 impl std::fmt::Debug for RuntimeLibrary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RuntimeLibrary").finish_non_exhaustive()
+    }
+}
+
+pub struct DeviceContext<'a> {
+    api: &'a RuntimeLibrary,
+    ctx: NonNull<c_void>,
+}
+
+impl std::fmt::Debug for DeviceContext<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeviceContext").finish_non_exhaustive()
+    }
+}
+
+impl DeviceContext<'_> {
+    pub fn as_raw(&self) -> DeviceContextHandle {
+        self.ctx.as_ptr()
+    }
+}
+
+impl Drop for DeviceContext<'_> {
+    fn drop(&mut self) {
+        // `run_runtime` already performs runtime-level cleanup. The current
+        // simpler sim C API can crash during Rust test-process teardown if
+        // device finalization is repeated here, so native context cleanup stays
+        // opt-in until the upstream teardown contract is stable.
+        unsafe {
+            if std::env::var_os("SIMPLER_CAPI_FINALIZE_DEVICE").is_some() {
+                (self.api.finalize_device)(self.as_raw());
+            }
+            if std::env::var_os("SIMPLER_CAPI_DESTROY_CONTEXT").is_some() {
+                (self.api.destroy_device_context)(self.as_raw());
+            }
+        }
     }
 }
 
@@ -166,27 +376,32 @@ impl RuntimeLibrary {
             preloaded_libs.push(lib);
         }
         let staged_path = stage_runtime_library(path)?;
-        let lib = unsafe { Library::open(Some(&staged_path), RTLD_NOW | RTLD_GLOBAL) }
+        let lib = unsafe { Library::open(Some(&staged_path), RTLD_NOW | RTLD_LOCAL) }
             .map_err(|err| SimplerApiError::LoadLibrary(err.to_string()))?;
         unsafe {
             Ok(Self {
+                create_device_context: *load_symbol::<CreateDeviceContextFn>(
+                    &lib,
+                    b"create_device_context\0",
+                )?,
+                destroy_device_context: *load_symbol::<DestroyDeviceContextFn>(
+                    &lib,
+                    b"destroy_device_context\0",
+                )?,
                 get_runtime_size: *load_symbol::<GetRuntimeSizeFn>(&lib, b"get_runtime_size\0")?,
-                init_runtime: *load_symbol::<InitRuntimeFn>(&lib, b"init_runtime\0")?,
-                device_malloc: *load_symbol::<DeviceMallocFn>(&lib, b"device_malloc\0")?,
-                device_free: *load_symbol::<DeviceFreeFn>(&lib, b"device_free\0")?,
-                copy_to_device: *load_symbol::<CopyToDeviceFn>(&lib, b"copy_to_device\0")?,
-                copy_from_device: *load_symbol::<CopyFromDeviceFn>(&lib, b"copy_from_device\0")?,
-                launch_runtime: *load_symbol::<LaunchRuntimeFn>(&lib, b"launch_runtime\0")?,
-                finalize_runtime: *load_symbol::<FinalizeRuntimeFn>(&lib, b"finalize_runtime\0")?,
                 set_device: *load_symbol::<SetDeviceFn>(&lib, b"set_device\0")?,
-                record_tensor_pair: *load_symbol::<RecordTensorPairFn>(
+                device_malloc_ctx: *load_symbol::<DeviceMallocCtxFn>(&lib, b"device_malloc_ctx\0")?,
+                device_free_ctx: *load_symbol::<DeviceFreeCtxFn>(&lib, b"device_free_ctx\0")?,
+                copy_to_device_ctx: *load_symbol::<CopyToDeviceCtxFn>(
                     &lib,
-                    b"record_tensor_pair\0",
+                    b"copy_to_device_ctx\0",
                 )?,
-                enable_runtime_profiling: *load_symbol::<EnableRuntimeProfilingFn>(
+                copy_from_device_ctx: *load_symbol::<CopyFromDeviceCtxFn>(
                     &lib,
-                    b"enable_runtime_profiling\0",
+                    b"copy_from_device_ctx\0",
                 )?,
+                run_runtime: *load_symbol::<RunRuntimeFn>(&lib, b"run_runtime\0")?,
+                finalize_device: *load_symbol::<FinalizeDeviceFn>(&lib, b"finalize_device\0")?,
                 _preloaded_libs: preloaded_libs,
                 _lib: lib,
                 _staged_path: staged_path,
@@ -198,128 +413,97 @@ impl RuntimeLibrary {
         unsafe { (self.get_runtime_size)() }
     }
 
-    pub fn bind_device(&self, device_id: i32) -> Result<(), SimplerApiError> {
-        unsafe { SimplerApiError::from_code((self.set_device)(device_id as c_int)) }
+    pub fn create_context(&self, device_id: i32) -> Result<DeviceContext<'_>, SimplerApiError> {
+        let ctx = unsafe { (self.create_device_context)() };
+        let ctx = NonNull::new(ctx).ok_or(SimplerApiError::NullDeviceContext)?;
+        let context = DeviceContext { api: self, ctx };
+        unsafe {
+            SimplerApiError::from_code((self.set_device)(context.as_raw(), device_id as c_int))?;
+        }
+        Ok(context)
     }
 
-    pub fn alloc_device(&self, size: usize) -> Result<DevicePtr, SimplerApiError> {
-        let ptr = unsafe { (self.device_malloc)(size) };
+    pub fn alloc_device(
+        &self,
+        ctx: &DeviceContext<'_>,
+        size: usize,
+    ) -> Result<DevicePtr, SimplerApiError> {
+        let ptr = unsafe { (self.device_malloc_ctx)(ctx.as_raw(), size) };
         DevicePtr::from_raw(ptr).ok_or(SimplerApiError::NullDevicePointer)
     }
 
-    pub fn free_device(&self, ptr: DevicePtr) {
-        unsafe { (self.device_free)(ptr.as_ptr()) }
+    pub fn free_device(&self, ctx: &DeviceContext<'_>, ptr: DevicePtr) {
+        unsafe { (self.device_free_ctx)(ctx.as_raw(), ptr.as_ptr()) }
     }
 
     pub fn host_to_device(
         &self,
+        ctx: &DeviceContext<'_>,
         dev_ptr: DevicePtr,
         host_ptr: *const c_void,
         size: usize,
     ) -> Result<(), SimplerApiError> {
         unsafe {
-            SimplerApiError::from_code((self.copy_to_device)(dev_ptr.as_ptr(), host_ptr, size))
+            SimplerApiError::from_code((self.copy_to_device_ctx)(
+                ctx.as_raw(),
+                dev_ptr.as_ptr(),
+                host_ptr,
+                size,
+            ))
         }
     }
 
     pub fn device_to_host(
         &self,
+        ctx: &DeviceContext<'_>,
         host_ptr: *mut c_void,
         dev_ptr: DevicePtr,
         size: usize,
     ) -> Result<(), SimplerApiError> {
         unsafe {
-            SimplerApiError::from_code((self.copy_from_device)(host_ptr, dev_ptr.as_ptr(), size))
-        }
-    }
-
-    pub fn init_runtime(
-        &self,
-        runtime: OwnedRuntime,
-        orch_so_binary: *const u8,
-        orch_so_size: usize,
-        orch_func_name: &str,
-        func_args: *mut u64,
-        func_args_count: i32,
-        arg_types: *mut i32,
-        arg_sizes: *mut u64,
-        kernel_func_ids: *const i32,
-        kernel_binaries: *const *const u8,
-        kernel_sizes: *const usize,
-        kernel_count: i32,
-    ) -> Result<(), SimplerApiError> {
-        let orch_func_name =
-            CString::new(orch_func_name).map_err(|_| SimplerApiError::InvalidSymbolName)?;
-        unsafe {
-            SimplerApiError::from_code((self.init_runtime)(
-                runtime.as_raw(),
-                orch_so_binary,
-                orch_so_size,
-                orch_func_name.as_ptr(),
-                func_args,
-                func_args_count as c_int,
-                arg_types,
-                arg_sizes,
-                kernel_func_ids as *const c_int,
-                kernel_binaries,
-                kernel_sizes,
-                kernel_count as c_int,
+            SimplerApiError::from_code((self.copy_from_device_ctx)(
+                ctx.as_raw(),
+                host_ptr,
+                dev_ptr.as_ptr(),
+                size,
             ))
         }
     }
 
-    pub fn launch_runtime(
+    pub fn run_runtime(
         &self,
+        ctx: &DeviceContext<'_>,
         runtime: OwnedRuntime,
-        aicpu_thread_num: i32,
+        callable: &CallableBuffer,
+        args: &ChipStorageTaskArgs,
         block_dim: i32,
+        aicpu_thread_num: i32,
         device_id: i32,
         aicpu_binary: *const u8,
         aicpu_size: usize,
         aicore_binary: *const u8,
         aicore_size: usize,
-        orch_thread_num: i32,
     ) -> Result<(), SimplerApiError> {
+        let output_prefix = CString::new("").map_err(|_| SimplerApiError::InvalidSymbolName)?;
         unsafe {
-            SimplerApiError::from_code((self.launch_runtime)(
+            SimplerApiError::from_code((self.run_runtime)(
+                ctx.as_raw(),
                 runtime.as_raw(),
-                aicpu_thread_num as c_int,
+                callable.as_ptr(),
+                args as *const _ as *const c_void,
                 block_dim as c_int,
+                aicpu_thread_num as c_int,
                 device_id as c_int,
                 aicpu_binary,
                 aicpu_size,
                 aicore_binary,
                 aicore_size,
-                orch_thread_num as c_int,
+                0,
+                0,
+                0,
+                output_prefix.as_ptr(),
             ))
         }
-    }
-
-    pub fn finalize(&self, runtime: OwnedRuntime) -> Result<(), SimplerApiError> {
-        unsafe { SimplerApiError::from_code((self.finalize_runtime)(runtime.as_raw())) }
-    }
-
-    pub fn set_profiling(
-        &self,
-        runtime: OwnedRuntime,
-        enabled: bool,
-    ) -> Result<(), SimplerApiError> {
-        unsafe {
-            SimplerApiError::from_code((self.enable_runtime_profiling)(
-                runtime.as_raw(),
-                if enabled { 1 } else { 0 },
-            ))
-        }
-    }
-
-    pub fn remember_tensor_pair(
-        &self,
-        runtime: OwnedRuntime,
-        host_ptr: *mut c_void,
-        dev_ptr: DevicePtr,
-        size: usize,
-    ) {
-        unsafe { (self.record_tensor_pair)(runtime.as_raw(), host_ptr, dev_ptr.as_ptr(), size) }
     }
 }
 
@@ -351,3 +535,45 @@ unsafe fn load_symbol<T>(
         SimplerApiError::MissingSymbol(std::str::from_utf8(symbol).unwrap_or("invalid_symbol"))
     })
 }
+
+fn write_i32(bytes: &mut [u8], offset: usize, value: i32) {
+    bytes[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
+}
+
+fn write_u32(bytes: &mut [u8], offset: usize, value: u32) {
+    bytes[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
+}
+
+fn write_u64(bytes: &mut [u8], offset: usize, value: u64) {
+    bytes[offset..offset + 8].copy_from_slice(&value.to_ne_bytes());
+}
+
+fn write_cstr(
+    bytes: &mut [u8],
+    offset: usize,
+    capacity: usize,
+    value: &str,
+) -> Result<(), SimplerApiError> {
+    if value.as_bytes().contains(&0) {
+        return Err(SimplerApiError::InvalidSymbolName);
+    }
+    let len = value.len().min(capacity - 1);
+    bytes[offset..offset + capacity].fill(0);
+    bytes[offset..offset + len].copy_from_slice(&value.as_bytes()[..len]);
+    Ok(())
+}
+
+fn align_up(value: usize, align: usize) -> usize {
+    (value + align - 1) & !(align - 1)
+}
+
+const CHIP_MAX_TENSOR_ARGS: usize = 64;
+const CHIP_MAX_SCALAR_ARGS: usize = 128;
+const CHIP_MAX_CHILDREN: usize = 1024;
+const CALLABLE_ALIGN: usize = 64;
+const CALLABLE_FUNC_NAME_MAX: usize = 64;
+const CORE_CALLABLE_BINARY_OFFSET: usize = 128;
+const CHIP_CALLABLE_HEADER_SIZE: usize = 8596;
+
+const _: () = assert!(std::mem::size_of::<ContinuousTensor>() == 40);
+const _: () = assert!(std::mem::size_of::<ChipStorageTaskArgs>() == 3592);

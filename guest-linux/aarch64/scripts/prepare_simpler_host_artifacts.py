@@ -158,32 +158,128 @@ def read_runtime_binaries(builder, api_kind: str, runtime_name: str, build_dir: 
     return host_binary, aicpu_binary, aicore_binary, None
 
 
+def write_vector_kernel_source(build_dir: Path, func_id: int, tile_rows: int, tile_cols: int) -> Path | None:
+    op_name = {
+        0: "TADD(dstTile, src0Tile, src1Tile);",
+        1: "TADDS(dstTile, src0Tile, scalar);",
+        2: "TMUL(dstTile, src0Tile, src1Tile);",
+    }.get(func_id)
+    if op_name is None:
+        return None
+
+    second_input = ""
+    scalar_input = ""
+    load_second = ""
+    if func_id in (0, 2):
+        second_input = """\
+    __gm__ float* src1 = reinterpret_cast<__gm__ float*>(args[1]);
+    __gm__ float* out = reinterpret_cast<__gm__ float*>(args[2]);
+    int size = static_cast<int>(args[3]);
+"""
+        load_second = """\
+    TileData src1Tile(vRows, vCols);
+    TASSIGN(src1Tile, 0x10000);
+    GlobalData src1Global(src1);
+    TLOAD(src1Tile, src1Global);
+"""
+    else:
+        scalar_input = """\
+    union {
+        uint64_t u64;
+        float f32;
+    } converter;
+    converter.u64 = args[1];
+    float scalar = converter.f32;
+    __gm__ float* out = reinterpret_cast<__gm__ float*>(args[2]);
+    int size = static_cast<int>(args[3]);
+"""
+
+    source = build_dir / f"vector_kernel_func_{func_id}.cpp"
+    source.write_text(
+        f"""\
+#include <cstdint>
+#include <pto/pto-inst.hpp>
+
+using namespace pto;
+
+#include "pipe_sync.h"
+
+#ifndef __gm__
+#define __gm__
+#endif
+
+#ifndef __aicore__
+#define __aicore__ [aicore]
+#endif
+
+extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ int64_t* args) {{
+    __gm__ float* src0 = reinterpret_cast<__gm__ float*>(args[0]);
+{second_input}{scalar_input}
+    constexpr int kTRows_ = {tile_rows};
+    constexpr int kTCols_ = {tile_cols};
+    constexpr int vRows = {tile_rows};
+    constexpr int vCols = {tile_cols};
+
+    using DynShapeDim5 = Shape<1, 1, 1, vRows, vCols>;
+    using DynStridDim5 = Stride<1, 1, 1, kTCols_, 1>;
+    using GlobalData = GlobalTensor<float, DynShapeDim5, DynStridDim5>;
+    using TileData = Tile<TileType::Vec, float, kTRows_, kTCols_, BLayout::RowMajor, -1, -1>;
+
+    TileData src0Tile(vRows, vCols);
+    TileData dstTile(vRows, vCols);
+    TASSIGN(src0Tile, 0x0);
+    TASSIGN(dstTile, 0x20000);
+    GlobalData src0Global(src0);
+    GlobalData dstGlobal(out);
+    TLOAD(src0Tile, src0Global);
+{load_second}
+    set_flag(PIPE_MTE2, PIPE_V, EVENT_ID0);
+    wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID0);
+    {op_name}
+    set_flag(PIPE_V, PIPE_MTE3, EVENT_ID0);
+    wait_flag(PIPE_V, PIPE_MTE3, EVENT_ID0);
+    TSTORE(dstGlobal, dstTile);
+
+    pipe_sync();
+}}
+"""
+    )
+    return source
+
+
 def write_batched_matmul_orchestration(build_dir: Path, tile_batch: int) -> Path:
     source = build_dir / "matmul_batched_orch.cpp"
     source.write_text(
         f"""\
-#include "runtime.h"
+#include "orchestration_api.h"
 #include <cstdint>
 #include <iostream>
 
 extern "C" {{
 
-int build_matmul_graph(Runtime* runtime, uint64_t* args, int arg_count) {{
-    if (arg_count < 10) {{
-        std::cerr << "build_matmul_graph: Expected at least 10 args, got " << arg_count << '\\n';
+int build_matmul_graph(OrchestrationRuntime* runtime, const ChipStorageTaskArgs& orch_args) {{
+    if (orch_args.tensor_count() < 4) {{
+        std::cerr << "build_matmul_graph: Expected at least 4 tensor args, got "
+                  << orch_args.tensor_count() << '\\n';
         return -1;
     }}
 
-    auto* host_a = reinterpret_cast<uint8_t*>(args[0]);
-    auto* host_w1 = reinterpret_cast<uint8_t*>(args[1]);
-    auto* host_w2 = reinterpret_cast<uint8_t*>(args[2]);
-    auto* host_f = reinterpret_cast<uint8_t*>(args[3]);
-    size_t size_a = static_cast<size_t>(args[4]);
-    size_t size_w1 = static_cast<size_t>(args[5]);
-    size_t size_w2 = static_cast<size_t>(args[6]);
-    size_t size_f = static_cast<size_t>(args[7]);
-    int tile_size = static_cast<int>(args[8]);
-    int tile_batch = static_cast<int>(args[9]);
+    auto* host_a = orch_args.tensor(0).data_as<uint8_t>();
+    auto* host_w1 = orch_args.tensor(1).data_as<uint8_t>();
+    auto* host_w2 = orch_args.tensor(2).data_as<uint8_t>();
+    auto* host_f = orch_args.tensor(3).data_as<uint8_t>();
+    size_t size_a = static_cast<size_t>(orch_args.tensor(0).nbytes());
+    size_t size_w1 = static_cast<size_t>(orch_args.tensor(1).nbytes());
+    size_t size_w2 = static_cast<size_t>(orch_args.tensor(2).nbytes());
+    size_t size_f = static_cast<size_t>(orch_args.tensor(3).nbytes());
+    int tile_size = 0;
+    int tile_batch = {tile_batch};
+    if (orch_args.scalar_count() >= 6) {{
+        tile_size = static_cast<int>(orch_args.scalar(4));
+        tile_batch = static_cast<int>(orch_args.scalar(5));
+    }} else if (orch_args.scalar_count() >= 1) {{
+        tile_batch = static_cast<int>(orch_args.scalar(orch_args.scalar_count() - 1));
+    }}
 
     if (tile_batch <= 0 || tile_batch > {tile_batch}) {{
         std::cerr << "build_matmul_graph: invalid tile_batch=" << tile_batch << '\\n';
@@ -196,67 +292,73 @@ int build_matmul_graph(Runtime* runtime, uint64_t* args, int arg_count) {{
         std::cerr << "build_matmul_graph: batch sizes must divide evenly by tile_batch\\n";
         return -1;
     }}
+    if (tile_size <= 0) {{
+        tile_size = static_cast<int>(orch_args.tensor(0).shapes[0] / static_cast<uint32_t>(tile_batch));
+    }}
 
     std::cout << "\\n=== build_matmul_graph: Creating Batched Task Runtime ===\\n";
     std::cout << "Formula: F = exp(sqrt(log(A)) @ W1 + sqrt(log(A)) @ W2)\\n";
     std::cout << "Tile SIZE: " << tile_size << " elements, tile_batch=" << tile_batch << "\\n";
 
-    void* dev_a = runtime->host_api.device_malloc(size_a);
-    void* dev_w1 = runtime->host_api.device_malloc(size_w1);
-    void* dev_w2 = runtime->host_api.device_malloc(size_w2);
-    void* dev_f = runtime->host_api.device_malloc(size_f);
-    void* dev_b = runtime->host_api.device_malloc(size_a);
-    void* dev_c = runtime->host_api.device_malloc(size_f);
-    void* dev_d = runtime->host_api.device_malloc(size_f);
+    void* dev_a = device_malloc(runtime, size_a);
+    void* dev_w1 = device_malloc(runtime, size_w1);
+    void* dev_w2 = device_malloc(runtime, size_w2);
+    void* dev_f = device_malloc(runtime, size_f);
+    void* dev_b = device_malloc(runtime, size_a);
+    void* dev_c = device_malloc(runtime, size_f);
+    void* dev_d = device_malloc(runtime, size_f);
     if (!dev_a || !dev_w1 || !dev_w2 || !dev_f || !dev_b || !dev_c || !dev_d) {{
         std::cerr << "Error: Failed to allocate batched device memory\\n";
-        if (dev_a) runtime->host_api.device_free(dev_a);
-        if (dev_w1) runtime->host_api.device_free(dev_w1);
-        if (dev_w2) runtime->host_api.device_free(dev_w2);
-        if (dev_f) runtime->host_api.device_free(dev_f);
-        if (dev_b) runtime->host_api.device_free(dev_b);
-        if (dev_c) runtime->host_api.device_free(dev_c);
-        if (dev_d) runtime->host_api.device_free(dev_d);
+        if (dev_a) device_free(runtime, dev_a);
+        if (dev_w1) device_free(runtime, dev_w1);
+        if (dev_w2) device_free(runtime, dev_w2);
+        if (dev_f) device_free(runtime, dev_f);
+        if (dev_b) device_free(runtime, dev_b);
+        if (dev_c) device_free(runtime, dev_c);
+        if (dev_d) device_free(runtime, dev_d);
         return -1;
     }}
-    runtime->host_api.copy_to_device(dev_a, host_a, size_a);
-    runtime->host_api.copy_to_device(dev_w1, host_w1, size_w1);
-    runtime->host_api.copy_to_device(dev_w2, host_w2, size_w2);
-    runtime->record_tensor_pair(host_f, dev_f, size_f);
+    if (copy_to_device(runtime, dev_a, host_a, size_a) != 0 ||
+        copy_to_device(runtime, dev_w1, host_w1, size_w1) != 0 ||
+        copy_to_device(runtime, dev_w2, host_w2, size_w2) != 0) {{
+        std::cerr << "Error: Failed to copy batched inputs to device\\n";
+        return -1;
+    }}
+    record_tensor_pair(runtime, host_f, dev_f, size_f);
 
     uint64_t args_t0[3];
     args_t0[0] = reinterpret_cast<uint64_t>(dev_a);
     args_t0[1] = reinterpret_cast<uint64_t>(dev_b);
     args_t0[2] = tile_size;
-    int t0 = runtime->add_task(args_t0, 3, 0, CoreType::AIV);
+    int t0 = add_task(runtime, args_t0, 3, 0, CoreType::AIV);
 
     uint64_t args_t1[4];
     args_t1[0] = reinterpret_cast<uint64_t>(dev_b);
     args_t1[1] = reinterpret_cast<uint64_t>(dev_w1);
     args_t1[2] = reinterpret_cast<uint64_t>(dev_c);
     args_t1[3] = tile_size;
-    int t1 = runtime->add_task(args_t1, 4, 1, CoreType::AIC);
+    int t1 = add_task(runtime, args_t1, 4, 1, CoreType::AIC);
 
     uint64_t args_t2[4];
     args_t2[0] = reinterpret_cast<uint64_t>(dev_b);
     args_t2[1] = reinterpret_cast<uint64_t>(dev_w2);
     args_t2[2] = reinterpret_cast<uint64_t>(dev_d);
     args_t2[3] = tile_size;
-    int t2 = runtime->add_task(args_t2, 4, 1, CoreType::AIC);
+    int t2 = add_task(runtime, args_t2, 4, 1, CoreType::AIC);
 
     uint64_t args_t3[4];
     args_t3[0] = reinterpret_cast<uint64_t>(dev_c);
     args_t3[1] = reinterpret_cast<uint64_t>(dev_d);
     args_t3[2] = reinterpret_cast<uint64_t>(dev_f);
     args_t3[3] = tile_size;
-    int t3 = runtime->add_task(args_t3, 4, 2, CoreType::AIV);
+    int t3 = add_task(runtime, args_t3, 4, 2, CoreType::AIV);
 
-    runtime->add_successor(t0, t1);
-    runtime->add_successor(t0, t2);
-    runtime->add_successor(t1, t3);
-    runtime->add_successor(t2, t3);
+    add_successor(runtime, t0, t1);
+    add_successor(runtime, t0, t2);
+    add_successor(runtime, t1, t3);
+    add_successor(runtime, t2, t3);
 
-    std::cout << "Created batched runtime with " << runtime->get_task_count() << " tasks\\n";
+    std::cout << "Created batched runtime with " << get_task_count(runtime) << " tasks\\n";
     return 0;
 }}
 
@@ -534,12 +636,22 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
 
     kernel_entries = []
     for kernel in spec.kernels:
+        vector_source = (
+            write_vector_kernel_source(
+                build_dir,
+                kernel.func_id,
+                args.vector_tile_rows,
+                args.vector_tile_cols,
+            )
+            if args.profile == "host_vector"
+            else None
+        )
         batched_source = (
             write_batched_matmul_kernel_source(build_dir, kernel.func_id, args.tile_batch)
             if args.profile == "host_matmul" and args.tile_batch > 1
             else None
         )
-        source = Path(batched_source or (example_root / kernel.source)).resolve()
+        source = Path(vector_source or batched_source or (example_root / kernel.source)).resolve()
         wrapped = write_wrapped_kernel(
             build_dir,
             args.profile,
