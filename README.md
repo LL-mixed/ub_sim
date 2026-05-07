@@ -189,6 +189,21 @@ HostMatmul producer 支持生成 batched tile artifact。为了避免同一进�
   --reuse-runtime-manifest /tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json
 ```
 
+`sim-cli qwen3-decode-loop` 可以直接接收 batched matmul 配置。`--matmul-batch N` 会设置
+decode dispatch batch，并在默认 batch manifest 缺失时自动生成对应 artifact：
+
+```bash
+SIM_QWEN3_0_6B_WEIGHTS_PATH=/Volumes/repos/qwen3_mlx_run/Qwen3-0.6B \
+cargo run --release -p sim-cli -- qwen3-decode-loop \
+  --scenario 2host \
+  --steps 32 \
+  --prompt "Capital of China is" \
+  --matmul-batch 4
+```
+
+`--scenario` 可用 `2host`、`4host`、`8host`，也可以传完整 YAML 路径。这个参数同时用于
+`sim-cli` 外层 topology 和 `sim-uapi` 内层 chipbackend runtime，避免两边读取不同 scenario。
+
 4/8 node headless launcher 和 W4 run 脚本在 manifest 缺失时会自动调用对应 producer。默认 manifest：
 
 - `SIMPLER_HOST_VECTOR_MANIFEST=/tmp/simpler-host-vector-artifacts/host_vector_manifest.json`

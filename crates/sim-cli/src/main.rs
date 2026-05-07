@@ -37,13 +37,14 @@ use sim_uapi::{
 use sim_workloads::{run_host_vector_dispatch, run_minimal_workload};
 use std::env;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 fn main() -> anyhow::Result<()> {
     if lingqu_object_service_args() {
         return run_lingqu_object_service_cli();
     }
-    if let Some((scenario_path, step_count, prompt)) = qwen3_decode_loop_args() {
-        return run_qwen3_decode_loop_cli(&scenario_path, step_count, prompt.as_deref());
+    if let Some(args) = qwen3_decode_loop_args()? {
+        return run_qwen3_decode_loop_cli(&args);
     }
     if let Some(scenario_path) = qwen3_text_output_scenario_from_args() {
         return run_qwen3_text_output_cli(&scenario_path);
@@ -126,11 +127,19 @@ fn qwen3_text_output_scenario_from_args() -> Option<PathBuf> {
     }
 }
 
-fn qwen3_decode_loop_args() -> Option<(PathBuf, usize, Option<String>)> {
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Qwen3DecodeLoopCliArgs {
+    scenario_path: PathBuf,
+    step_count: usize,
+    prompt: Option<String>,
+    matmul_batch: Option<usize>,
+}
+
+fn qwen3_decode_loop_args() -> anyhow::Result<Option<Qwen3DecodeLoopCliArgs>> {
     qwen3_decode_loop_args_from(env::args_os().skip(1))
 }
 
-fn qwen3_decode_loop_args_from<I, S>(args: I) -> Option<(PathBuf, usize, Option<String>)>
+fn qwen3_decode_loop_args_from<I, S>(args: I) -> anyhow::Result<Option<Qwen3DecodeLoopCliArgs>>
 where
     I: IntoIterator<Item = S>,
     S: Into<std::ffi::OsString>,
@@ -138,18 +147,113 @@ where
     let mut args = args.into_iter().map(Into::into);
     match args.next() {
         Some(mode) if mode == "qwen3-decode-loop" => {
-            let scenario_path = args
-                .next()
-                .map(PathBuf::from)
-                .unwrap_or_else(default_scenario_path);
-            let step_count = args
-                .next()
-                .and_then(|value| value.to_string_lossy().parse::<usize>().ok())
-                .unwrap_or(2);
-            let prompt = args.next().map(|value| value.to_string_lossy().to_string());
-            Some((scenario_path, step_count, prompt))
+            let mut scenario_path = None;
+            let mut step_count = None;
+            let mut prompt = None;
+            let mut matmul_batch = None;
+            let mut positionals = Vec::new();
+            let mut pending = args.peekable();
+
+            while let Some(value) = pending.next() {
+                let text = value.to_string_lossy();
+                if text == "--scenario" || text == "--nodes" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("{text} requires a value"))?;
+                    scenario_path = Some(qwen3_scenario_path_from_value(&next.to_string_lossy()));
+                } else if let Some(value) = text.strip_prefix("--scenario=") {
+                    scenario_path = Some(qwen3_scenario_path_from_value(value));
+                } else if let Some(value) = text.strip_prefix("--nodes=") {
+                    scenario_path = Some(qwen3_scenario_path_from_value(value));
+                } else if text == "--steps" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--steps requires a value"))?;
+                    step_count = Some(parse_positive_usize("--steps", &next.to_string_lossy())?);
+                } else if let Some(value) = text.strip_prefix("--steps=") {
+                    step_count = Some(parse_positive_usize("--steps", value)?);
+                } else if text == "--prompt" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--prompt requires a value"))?;
+                    prompt = Some(next.to_string_lossy().to_string());
+                } else if let Some(value) = text.strip_prefix("--prompt=") {
+                    prompt = Some(value.to_string());
+                } else if text == "--matmul-batch" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--matmul-batch requires a value"))?;
+                    matmul_batch = Some(parse_positive_usize(
+                        "--matmul-batch",
+                        &next.to_string_lossy(),
+                    )?);
+                } else if let Some(value) = text.strip_prefix("--matmul-batch=") {
+                    matmul_batch = Some(parse_positive_usize("--matmul-batch", value)?);
+                } else if text.starts_with("--") {
+                    anyhow::bail!("unknown qwen3-decode-loop option: {text}");
+                } else {
+                    positionals.push(value);
+                }
+            }
+
+            let mut positional_index = 0usize;
+            if scenario_path.is_none() {
+                if let Some(value) = positionals.get(positional_index) {
+                    scenario_path = Some(qwen3_scenario_path_from_value(&value.to_string_lossy()));
+                    positional_index += 1;
+                }
+            }
+            if step_count.is_none() {
+                if let Some(value) = positionals.get(positional_index) {
+                    let value = value.to_string_lossy();
+                    if let Ok(parsed) = value.parse::<usize>() {
+                        if parsed == 0 {
+                            anyhow::bail!("step count must be > 0");
+                        }
+                        step_count = Some(parsed);
+                        positional_index += 1;
+                    }
+                }
+            }
+            if prompt.is_none() {
+                if let Some(value) = positionals.get(positional_index) {
+                    prompt = Some(value.to_string_lossy().to_string());
+                }
+            }
+
+            Ok(Some(Qwen3DecodeLoopCliArgs {
+                scenario_path: scenario_path.unwrap_or_else(default_scenario_path),
+                step_count: step_count.unwrap_or(2),
+                prompt,
+                matmul_batch,
+            }))
         }
-        _ => None,
+        _ => Ok(None),
+    }
+}
+
+fn parse_positive_usize(label: &str, value: &str) -> anyhow::Result<usize> {
+    let parsed = value
+        .parse::<usize>()
+        .with_context(|| format!("invalid {label}: {value}"))?;
+    if parsed == 0 {
+        anyhow::bail!("{label} must be > 0");
+    }
+    Ok(parsed)
+}
+
+fn qwen3_scenario_path_from_value(value: &str) -> PathBuf {
+    match value {
+        "2" | "2host" | "2-host" | "2node" | "2-node" => {
+            Path::new("scenarios").join("mvp_2host_single_domain.yaml")
+        }
+        "4" | "4host" | "4-host" | "4node" | "4-node" => {
+            Path::new("scenarios").join("mvp_4host_single_domain.yaml")
+        }
+        "8" | "8host" | "8-host" | "8node" | "8-node" => {
+            Path::new("scenarios").join("mvp_8host_single_domain.yaml")
+        }
+        _ => PathBuf::from(value),
     }
 }
 
@@ -365,13 +469,15 @@ mod tests {
             "qwen3-decode-loop",
             "scenarios/mvp_2host_single_domain.yaml",
         ])
+        .expect("parse decode loop args")
         .expect("decode loop args");
         assert_eq!(
-            args.0,
+            args.scenario_path,
             PathBuf::from("scenarios/mvp_2host_single_domain.yaml")
         );
-        assert_eq!(args.1, 2);
-        assert_eq!(args.2, None);
+        assert_eq!(args.step_count, 2);
+        assert_eq!(args.prompt, None);
+        assert_eq!(args.matmul_batch, None);
     }
 
     #[test]
@@ -381,13 +487,14 @@ mod tests {
             "scenarios/mvp_2host_single_domain.yaml",
             "4",
         ])
+        .expect("parse decode loop args")
         .expect("decode loop args");
         assert_eq!(
-            args.0,
+            args.scenario_path,
             PathBuf::from("scenarios/mvp_2host_single_domain.yaml")
         );
-        assert_eq!(args.1, 4);
-        assert_eq!(args.2, None);
+        assert_eq!(args.step_count, 4);
+        assert_eq!(args.prompt, None);
     }
 
     #[test]
@@ -398,13 +505,58 @@ mod tests {
             "2",
             "Hello Qwen3",
         ])
+        .expect("parse decode loop args")
         .expect("decode loop args");
         assert_eq!(
-            args.0,
+            args.scenario_path,
             PathBuf::from("scenarios/mvp_2host_single_domain.yaml")
         );
-        assert_eq!(args.1, 2);
-        assert_eq!(args.2.as_deref(), Some("Hello Qwen3"));
+        assert_eq!(args.step_count, 2);
+        assert_eq!(args.prompt.as_deref(), Some("Hello Qwen3"));
+    }
+
+    #[test]
+    fn qwen3_decode_loop_args_accept_named_options() {
+        let args = qwen3_decode_loop_args_from([
+            "qwen3-decode-loop",
+            "--scenario",
+            "4host",
+            "--steps",
+            "32",
+            "--prompt",
+            "Capital of China is",
+            "--matmul-batch",
+            "4",
+        ])
+        .expect("parse decode loop args")
+        .expect("decode loop args");
+        assert_eq!(
+            args.scenario_path,
+            PathBuf::from("scenarios/mvp_4host_single_domain.yaml")
+        );
+        assert_eq!(args.step_count, 32);
+        assert_eq!(args.prompt.as_deref(), Some("Capital of China is"));
+        assert_eq!(args.matmul_batch, Some(4));
+    }
+
+    #[test]
+    fn qwen3_decode_loop_args_accept_trailing_prompt_with_options() {
+        let args = qwen3_decode_loop_args_from([
+            "qwen3-decode-loop",
+            "--scenario=8host",
+            "--steps=8",
+            "--matmul-batch=2",
+            "Capital of China is",
+        ])
+        .expect("parse decode loop args")
+        .expect("decode loop args");
+        assert_eq!(
+            args.scenario_path,
+            PathBuf::from("scenarios/mvp_8host_single_domain.yaml")
+        );
+        assert_eq!(args.step_count, 8);
+        assert_eq!(args.prompt.as_deref(), Some("Capital of China is"));
+        assert_eq!(args.matmul_batch, Some(2));
     }
 
     #[test]
@@ -442,12 +594,9 @@ mod tests {
     }
 }
 
-fn run_qwen3_decode_loop_cli(
-    scenario_path: &Path,
-    step_count: usize,
-    prompt: Option<&str>,
-) -> anyhow::Result<()> {
+fn run_qwen3_decode_loop_cli(args: &Qwen3DecodeLoopCliArgs) -> anyhow::Result<()> {
     configure_simpler_dispatch_logging();
+    let scenario_path = &args.scenario_path;
     let config = ScenarioConfig::from_yaml_file(scenario_path).with_context(|| {
         format!(
             "failed to load scenario config from {}",
@@ -455,17 +604,21 @@ fn run_qwen3_decode_loop_cli(
         )
     })?;
     let topology = SimTopology::from_config(&config).context("failed to build topology")?;
+    prepare_qwen3_decode_loop_environment(args)?;
     std::env::set_var("SIM_QWEN3_DECODE_PROGRESS", "1");
     eprintln!(
-        "qwen3-decode-loop: scenario={} steps={} prompt_bytes={}",
+        "qwen3-decode-loop: scenario={} steps={} prompt_bytes={} matmul_batch={}",
         scenario_path.display(),
-        step_count,
-        prompt.map(str::len).unwrap_or(0)
+        args.step_count,
+        args.prompt.as_deref().map(str::len).unwrap_or(0),
+        args.matmul_batch
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "default".to_string())
     );
-    let report = if let Some(prompt) = prompt {
-        qwen3_dense_0_6b_decode_loop_report_with_prompt(&topology, step_count, prompt)
+    let report = if let Some(prompt) = args.prompt.as_deref() {
+        qwen3_dense_0_6b_decode_loop_report_with_prompt(&topology, args.step_count, prompt)
     } else {
-        qwen3_dense_0_6b_decode_loop_report(&topology, step_count)
+        qwen3_dense_0_6b_decode_loop_report(&topology, args.step_count)
     }
     .map_err(anyhow::Error::msg)
     .context("failed to run Qwen3 decode loop")?;
@@ -782,6 +935,102 @@ fn print_qwen3_decode_verbose_steps(steps: &[sim_uapi::Qwen3Dense06bDecodeLoopSt
             step.object_service.object_checksum
         );
     }
+}
+
+fn prepare_qwen3_decode_loop_environment(args: &Qwen3DecodeLoopCliArgs) -> anyhow::Result<()> {
+    let scenario_env_path = args
+        .scenario_path
+        .canonicalize()
+        .unwrap_or_else(|_| args.scenario_path.clone());
+    std::env::set_var("SIM_UAPI_SCENARIO_CONFIG", &scenario_env_path);
+
+    let Some(matmul_batch) = args.matmul_batch else {
+        return Ok(());
+    };
+    std::env::set_var("SIM_QWEN3_ROUND1_DISPATCH_BATCH", matmul_batch.to_string());
+    if matmul_batch == 1 {
+        return Ok(());
+    }
+
+    let base_manifest = std::env::var_os("SIMPLER_HOST_MATMUL_MANIFEST")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_simpler_host_matmul_manifest_path);
+    ensure_simpler_host_matmul_manifest(&base_manifest, None)?;
+    std::env::set_var("SIMPLER_HOST_MATMUL_MANIFEST", &base_manifest);
+
+    let batch_manifest = std::env::var_os("SIMPLER_HOST_MATMUL_BATCH_MANIFEST")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_simpler_host_matmul_batch_manifest_path(matmul_batch));
+    ensure_simpler_host_matmul_manifest(&batch_manifest, Some((matmul_batch, &base_manifest)))?;
+    std::env::set_var("SIMPLER_HOST_MATMUL_BATCH_MANIFEST", &batch_manifest);
+    Ok(())
+}
+
+fn ensure_simpler_host_matmul_manifest(
+    manifest_path: &Path,
+    batch: Option<(usize, &Path)>,
+) -> anyhow::Result<()> {
+    if manifest_path.exists() {
+        return Ok(());
+    }
+    let output_dir = manifest_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("manifest has no parent: {}", manifest_path.display()))?;
+    let script = repo_root()
+        .join("guest-linux")
+        .join("aarch64")
+        .join("scripts")
+        .join("prepare_simpler_host_matmul_artifacts.py");
+    if !script.exists() {
+        anyhow::bail!(
+            "missing simpler host matmul artifact producer: {}",
+            script.display()
+        );
+    }
+
+    let mut command = Command::new("python3");
+    command.arg(&script).arg("--output-dir").arg(output_dir);
+    if let Some((tile_batch, base_manifest)) = batch {
+        command
+            .arg("--tile-batch")
+            .arg(tile_batch.to_string())
+            .arg("--reuse-runtime-manifest")
+            .arg(base_manifest);
+    }
+    let status = command
+        .status()
+        .with_context(|| format!("failed to run {}", script.display()))?;
+    if !status.success() {
+        anyhow::bail!(
+            "simpler host matmul artifact producer failed: {} status={status}",
+            script.display()
+        );
+    }
+    if !manifest_path.exists() {
+        anyhow::bail!(
+            "simpler host matmul artifact producer did not create {}",
+            manifest_path.display()
+        );
+    }
+    Ok(())
+}
+
+fn default_simpler_host_matmul_manifest_path() -> PathBuf {
+    Path::new("/tmp")
+        .join("simpler-host-matmul-artifacts")
+        .join("host_matmul_manifest.json")
+}
+
+fn default_simpler_host_matmul_batch_manifest_path(tile_batch: usize) -> PathBuf {
+    Path::new("/tmp")
+        .join(format!(
+            "simpler-host-matmul-batch{tile_batch}-reuse-runtime-artifacts"
+        ))
+        .join("host_matmul_manifest.json")
+}
+
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
 fn configure_simpler_dispatch_logging() {
