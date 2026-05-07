@@ -1,17 +1,17 @@
 use anyhow::Context;
+use sim_config::ScenarioConfig;
 use sim_core::{
     BlockHash, CompletionSource, CompletionStatus, CopyDirection, CopyRequest, DispatchRequest,
-    FunctionLabel, HierarchyCoord, IoOpcode, IoSubmitReq, LogicalSystemId, MemoryEndpoint,
-    PlLevel, SegmentHandle, SimEvent, TaskKey,
+    FunctionLabel, HierarchyCoord, IoOpcode, IoSubmitReq, LogicalSystemId, MemoryEndpoint, PlLevel,
+    SegmentHandle, SimEvent, TaskKey,
 };
-use sim_config::ScenarioConfig;
+use sim_qemu::{
+    GuestDescriptor, GuestIoDescriptor, GuestServiceDescriptor, LinquDeviceModel, QemuMmioHandler,
+};
 use sim_report::{
     AuxiliaryDebugReport, CliReport, CompletionSourceStats, CompletionStatusStats, DecoderReport,
     DomainReport, EntityReport, EventSummary, HostReport, QemuBackendDemoReport, RouteReport,
     TopologyReport, UapiDemoReport, UbcReport, UbpuReport, UmmuReport,
-};
-use sim_qemu::{
-    GuestDescriptor, GuestIoDescriptor, GuestServiceDescriptor, LinquDeviceModel, QemuMmioHandler,
 };
 use sim_runtime::{
     EventSink, EvictionPlan, InMemoryBlockStore, LocalRuntimeEngine, PromotionPlan,
@@ -20,15 +20,37 @@ use sim_runtime::{
 use sim_services::{
     db::{DbGetReq, DbPutReq},
     dfs::{DfsReadReq, DfsWriteReq},
+    object::{
+        LingquObjectKind, LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
+        LingquObjectResolveReq, LingquObjectServiceProfile, LingquObjectServiceStub,
+        LingquObjectState, LingquObjectVersionSelector, LingquPayloadBackend,
+        LingquPayloadPlacement,
+    },
     shmem::{ShmemGetReq, ShmemPutReq},
 };
 use sim_topology::SimTopology;
-use sim_uapi::{LocalGuestUapiSurface, UapiCommand, UapiDescriptor, UapiResponse};
-use sim_workloads::run_minimal_workload;
+use sim_uapi::{
+    qwen3_dense_0_6b_decode_loop_report, qwen3_dense_0_6b_decode_loop_report_with_prompt,
+    qwen3_dense_0_6b_default_guest_input, qwen3_dense_0_6b_prefill_text_output_report,
+    LocalGuestUapiSurface, UapiCommand, UapiDescriptor, UapiResponse,
+};
+use sim_workloads::{run_host_vector_dispatch, run_minimal_workload};
 use std::env;
 use std::path::{Path, PathBuf};
 
 fn main() -> anyhow::Result<()> {
+    if lingqu_object_service_args() {
+        return run_lingqu_object_service_cli();
+    }
+    if let Some((scenario_path, step_count, prompt)) = qwen3_decode_loop_args() {
+        return run_qwen3_decode_loop_cli(&scenario_path, step_count, prompt.as_deref());
+    }
+    if let Some(scenario_path) = qwen3_text_output_scenario_from_args() {
+        return run_qwen3_text_output_cli(&scenario_path);
+    }
+    if let Some(manifest_path) = host_vector_manifest_from_args() {
+        return run_host_vector_cli(&manifest_path);
+    }
     let scenario_path = scenario_path_from_args();
     let config = ScenarioConfig::from_yaml_file(&scenario_path).with_context(|| {
         format!(
@@ -68,7 +90,934 @@ fn main() -> anyhow::Result<()> {
     };
 
     print_report(&report);
+    if let Some(assessment) = compute_w4_assessment(&report.workload_report.summary) {
+        if !assessment.complete {
+            anyhow::bail!("w4 assessment incomplete: {}", assessment.missing.join(","));
+        }
+    }
 
+    Ok(())
+}
+
+fn lingqu_object_service_args() -> bool {
+    lingqu_object_service_args_from(env::args_os().skip(1))
+}
+
+fn lingqu_object_service_args_from<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: Into<std::ffi::OsString>,
+{
+    matches!(
+        args.into_iter().next().map(Into::into),
+        Some(mode) if mode == "lingqu-object-service"
+    )
+}
+
+fn qwen3_text_output_scenario_from_args() -> Option<PathBuf> {
+    let mut args = env::args_os().skip(1);
+    match args.next() {
+        Some(mode) if mode == "qwen3-text-output" => Some(
+            args.next()
+                .map(PathBuf::from)
+                .unwrap_or_else(default_scenario_path),
+        ),
+        _ => None,
+    }
+}
+
+fn qwen3_decode_loop_args() -> Option<(PathBuf, usize, Option<String>)> {
+    qwen3_decode_loop_args_from(env::args_os().skip(1))
+}
+
+fn qwen3_decode_loop_args_from<I, S>(args: I) -> Option<(PathBuf, usize, Option<String>)>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<std::ffi::OsString>,
+{
+    let mut args = args.into_iter().map(Into::into);
+    match args.next() {
+        Some(mode) if mode == "qwen3-decode-loop" => {
+            let scenario_path = args
+                .next()
+                .map(PathBuf::from)
+                .unwrap_or_else(default_scenario_path);
+            let step_count = args
+                .next()
+                .and_then(|value| value.to_string_lossy().parse::<usize>().ok())
+                .unwrap_or(2);
+            let prompt = args.next().map(|value| value.to_string_lossy().to_string());
+            Some((scenario_path, step_count, prompt))
+        }
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Qwen3DecodeReportVerbosity {
+    Summary,
+    Steps,
+    Verbose,
+}
+
+fn qwen3_decode_report_verbosity() -> Qwen3DecodeReportVerbosity {
+    qwen3_decode_report_verbosity_from_env(
+        env::var("SIM_QWEN3_DECODE_REPORT").ok().as_deref(),
+        env::var("SIM_QWEN3_DECODE_VERBOSE").ok().as_deref(),
+    )
+}
+
+fn qwen3_decode_report_verbosity_from_env(
+    report: Option<&str>,
+    verbose: Option<&str>,
+) -> Qwen3DecodeReportVerbosity {
+    if let Some(report) = report {
+        return match report.trim().to_ascii_lowercase().as_str() {
+            "step" | "steps" | "compact" => Qwen3DecodeReportVerbosity::Steps,
+            "1" | "true" | "yes" | "on" | "verbose" | "full" | "detail" | "details" => {
+                Qwen3DecodeReportVerbosity::Verbose
+            }
+            _ => Qwen3DecodeReportVerbosity::Summary,
+        };
+    }
+    if verbose.map(env_flag_enabled).unwrap_or(false) {
+        Qwen3DecodeReportVerbosity::Verbose
+    } else {
+        Qwen3DecodeReportVerbosity::Summary
+    }
+}
+
+fn env_flag_enabled(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn run_lingqu_object_service_cli() -> anyhow::Result<()> {
+    let mut service = LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
+    publish_lingqu_object_cli_sample(
+        &mut service,
+        "qwen3/model/Qwen3-0.6B/layer/00/q_proj/shard/0",
+        LingquObjectKind::WeightShard,
+        LingquPayloadBackend::Block,
+        4096,
+        0x1001,
+        0,
+    )?;
+    publish_lingqu_object_cli_sample(
+        &mut service,
+        "qwen3/session/demo/kv/layer/00/tile/0/position/00000001/k",
+        LingquObjectKind::KvCacheBlock,
+        LingquPayloadBackend::Shmem,
+        2048,
+        0x2002,
+        1,
+    )?;
+    publish_lingqu_object_cli_sample(
+        &mut service,
+        "qwen3/session/demo/hidden/boundary/node/0/to/1/step/0",
+        LingquObjectKind::RuntimeTensor,
+        LingquPayloadBackend::Shmem,
+        2048,
+        0x3003,
+        2,
+    )?;
+    resolve_lingqu_object_cli_sample(
+        &mut service,
+        "qwen3/model/Qwen3-0.6B/layer/00/q_proj/shard/0",
+        &[LingquPayloadBackend::Block],
+        3,
+    )?;
+    resolve_lingqu_object_cli_sample(
+        &mut service,
+        "qwen3/session/demo/kv/layer/00/tile/0/position/00000001/k",
+        &[LingquPayloadBackend::Shmem],
+        4,
+    )?;
+    resolve_lingqu_object_cli_sample(
+        &mut service,
+        "qwen3/session/demo/hidden/boundary/node/0/to/1/step/0",
+        &[LingquPayloadBackend::Shmem],
+        5,
+    )?;
+
+    let events = service.poll_ready(1000);
+    let success_count = events
+        .iter()
+        .filter(|event| event.status == CompletionStatus::Success)
+        .count();
+    let report = service.report();
+    println!("lingqu_object_service");
+    println!("  events: {}", events.len());
+    println!("  success: {}", success_count);
+    println!("  publish_count: {}", report.publish_count);
+    println!("  resolve_count: {}", report.resolve_count);
+    println!("  metadata_put_count: {}", report.metadata_put_count);
+    println!("  metadata_get_count: {}", report.metadata_get_count);
+    println!("  shmem_write_count: {}", report.shmem_write_count);
+    println!("  shmem_read_count: {}", report.shmem_read_count);
+    println!("  block_write_count: {}", report.block_write_count);
+    println!("  block_read_count: {}", report.block_read_count);
+    println!("  obmm_pool_enabled: {}", report.obmm_pool_enabled);
+    println!(
+        "  obmm_pool_payload_write_count: {}",
+        report.obmm_pool_payload_write_count
+    );
+    println!(
+        "  obmm_pool_payload_read_count: {}",
+        report.obmm_pool_payload_read_count
+    );
+    println!(
+        "  obmm_pool_queue_submit_count: {}",
+        report.obmm_pool_queue_submit_count
+    );
+    println!(
+        "  obmm_pool_queue_deliver_count: {}",
+        report.obmm_pool_queue_deliver_count
+    );
+    println!("  obmm_pool_bytes_used: {}", report.obmm_pool_bytes_used);
+    println!(
+        "  committed_object_count: {}",
+        report.committed_object_count
+    );
+    println!("  missing_resolve_count: {}", report.missing_resolve_count);
+    println!("  checksum: {:#x}", report.checksum);
+    Ok(())
+}
+
+fn publish_lingqu_object_cli_sample(
+    service: &mut LingquObjectServiceStub,
+    key: &str,
+    kind: LingquObjectKind,
+    backend: LingquPayloadBackend,
+    bytes: u64,
+    checksum: u64,
+    producer_entity: u64,
+) -> anyhow::Result<()> {
+    service
+        .submit_publish(
+            LingquObjectPublishReq {
+                task: None,
+                key: key.to_string(),
+                kind,
+                producer_entity,
+                owner_entity: Some(producer_entity),
+                expected_version: None,
+                metadata: LingquObjectMetadata {
+                    bytes,
+                    checksum,
+                    dtype: None,
+                    shape: vec![bytes],
+                    layout: None,
+                    expires_at_us: None,
+                },
+                placements: vec![LingquPayloadPlacement {
+                    backend,
+                    storage_ref: format!("{key}/payload"),
+                    segment: None,
+                    offset: 0,
+                    bytes,
+                    checksum,
+                    locality: LingquObjectLocality::DomainShared(0),
+                }],
+                payload_bytes: checksum.to_le_bytes().to_vec(),
+            },
+            producer_entity,
+        )
+        .map(|_| ())
+        .map_err(anyhow::Error::from)
+}
+
+fn resolve_lingqu_object_cli_sample(
+    service: &mut LingquObjectServiceStub,
+    key: &str,
+    preferred_backends: &[LingquPayloadBackend],
+    requester_entity: u64,
+) -> anyhow::Result<()> {
+    service
+        .submit_resolve(
+            LingquObjectResolveReq {
+                task: None,
+                key: key.to_string(),
+                requester_entity,
+                version: LingquObjectVersionSelector::LatestCommitted,
+                min_state: LingquObjectState::Committed,
+                preferred_backends: preferred_backends.to_vec(),
+            },
+            requester_entity,
+        )
+        .map(|_| ())
+        .map_err(anyhow::Error::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        lingqu_object_service_args_from, qwen3_decode_loop_args_from,
+        qwen3_decode_report_verbosity_from_env, Qwen3DecodeReportVerbosity,
+    };
+    use std::path::PathBuf;
+
+    #[test]
+    fn qwen3_decode_loop_args_default_to_two_steps() {
+        let args = qwen3_decode_loop_args_from([
+            "qwen3-decode-loop",
+            "scenarios/mvp_2host_single_domain.yaml",
+        ])
+        .expect("decode loop args");
+        assert_eq!(
+            args.0,
+            PathBuf::from("scenarios/mvp_2host_single_domain.yaml")
+        );
+        assert_eq!(args.1, 2);
+        assert_eq!(args.2, None);
+    }
+
+    #[test]
+    fn qwen3_decode_loop_args_accept_explicit_step_count() {
+        let args = qwen3_decode_loop_args_from([
+            "qwen3-decode-loop",
+            "scenarios/mvp_2host_single_domain.yaml",
+            "4",
+        ])
+        .expect("decode loop args");
+        assert_eq!(
+            args.0,
+            PathBuf::from("scenarios/mvp_2host_single_domain.yaml")
+        );
+        assert_eq!(args.1, 4);
+        assert_eq!(args.2, None);
+    }
+
+    #[test]
+    fn qwen3_decode_loop_args_accept_prompt() {
+        let args = qwen3_decode_loop_args_from([
+            "qwen3-decode-loop",
+            "scenarios/mvp_2host_single_domain.yaml",
+            "2",
+            "Hello Qwen3",
+        ])
+        .expect("decode loop args");
+        assert_eq!(
+            args.0,
+            PathBuf::from("scenarios/mvp_2host_single_domain.yaml")
+        );
+        assert_eq!(args.1, 2);
+        assert_eq!(args.2.as_deref(), Some("Hello Qwen3"));
+    }
+
+    #[test]
+    fn qwen3_decode_report_verbosity_defaults_to_summary() {
+        assert_eq!(
+            qwen3_decode_report_verbosity_from_env(None, None),
+            Qwen3DecodeReportVerbosity::Summary
+        );
+    }
+
+    #[test]
+    fn qwen3_decode_report_verbosity_accepts_steps() {
+        assert_eq!(
+            qwen3_decode_report_verbosity_from_env(Some("steps"), None),
+            Qwen3DecodeReportVerbosity::Steps
+        );
+    }
+
+    #[test]
+    fn qwen3_decode_report_verbosity_accepts_verbose() {
+        assert_eq!(
+            qwen3_decode_report_verbosity_from_env(Some("verbose"), None),
+            Qwen3DecodeReportVerbosity::Verbose
+        );
+        assert_eq!(
+            qwen3_decode_report_verbosity_from_env(None, Some("1")),
+            Qwen3DecodeReportVerbosity::Verbose
+        );
+    }
+
+    #[test]
+    fn lingqu_object_service_args_detects_command() {
+        assert!(lingqu_object_service_args_from(["lingqu-object-service"]));
+        assert!(!lingqu_object_service_args_from(["qwen3-decode-loop"]));
+    }
+}
+
+fn run_qwen3_decode_loop_cli(
+    scenario_path: &Path,
+    step_count: usize,
+    prompt: Option<&str>,
+) -> anyhow::Result<()> {
+    configure_simpler_dispatch_logging();
+    let config = ScenarioConfig::from_yaml_file(scenario_path).with_context(|| {
+        format!(
+            "failed to load scenario config from {}",
+            scenario_path.display()
+        )
+    })?;
+    let topology = SimTopology::from_config(&config).context("failed to build topology")?;
+    std::env::set_var("SIM_QWEN3_DECODE_PROGRESS", "1");
+    eprintln!(
+        "qwen3-decode-loop: scenario={} steps={} prompt_bytes={}",
+        scenario_path.display(),
+        step_count,
+        prompt.map(str::len).unwrap_or(0)
+    );
+    let report = if let Some(prompt) = prompt {
+        qwen3_dense_0_6b_decode_loop_report_with_prompt(&topology, step_count, prompt)
+    } else {
+        qwen3_dense_0_6b_decode_loop_report(&topology, step_count)
+    }
+    .map_err(anyhow::Error::msg)
+    .context("failed to run Qwen3 decode loop")?;
+    println!("qwen3_dense_0_6b_decode_loop");
+    println!("  scenario: {}", scenario_path.display());
+    println!("  steps: {}", report.steps.len());
+    println!(
+        "  final_guest_input_checksum: {:#x}",
+        report.final_guest_input_checksum
+    );
+    println!("  decode_chain: {:#x}", report.decode_chain_checksum);
+    println!(
+        "  generated_text_lossy: {}",
+        report.generated_text_lossy.escape_debug()
+    );
+    println!(
+        "  generated_bytes: len={} checksum={:#x}",
+        report.generated_byte_len, report.generated_byte_checksum
+    );
+    match qwen3_decode_report_verbosity() {
+        Qwen3DecodeReportVerbosity::Summary => {}
+        Qwen3DecodeReportVerbosity::Steps => {
+            for step in &report.steps {
+                println!(
+                    "  step={} runtime_prefill={} input_tokens={} sampled_tokens={} text_bytes={} contract_ready={} blockers={} synthetic_stages={} full_forward_math={} full_vocab_logits={} object_ready={} object_publish={} object_resolve={} object_append={} kv_resolve={} kv_append={} obmm_pool={} obmm_queue={} object_checksum={:#x} input_checksum={:#x} next_input_checksum={:#x}",
+                    step.step_index,
+                    step.runtime_prefill_executed,
+                    step.text_output.guest_input.prompt_token_count,
+                    step.sampled_token_count,
+                    step.text_output.byte_len,
+                    step.real_inference_contract.ready,
+                    step.real_inference_contract.blocker_count,
+                    step.real_inference_contract.synthetic_stage_count,
+                    step.real_inference_contract.full_forward_math,
+                    step.real_inference_contract.full_vocab_logits,
+                    step.object_service.ready,
+                    step.object_service.publish_count,
+                    step.object_service.resolve_count,
+                    step.object_service.append_count,
+                    step.object_service.kv_index_resolve_count,
+                    step.object_service.kv_index_append_count,
+                    step.object_service.obmm_pool_enabled,
+                    step.object_service.obmm_pool_queue_submit_count,
+                    step.object_service.object_checksum,
+                    step.guest_input_checksum,
+                    step.next_guest_input_checksum
+                );
+            }
+        }
+        Qwen3DecodeReportVerbosity::Verbose => {
+            print_qwen3_decode_verbose_steps(&report.steps);
+        }
+    }
+    Ok(())
+}
+
+fn print_qwen3_decode_verbose_steps(steps: &[sim_uapi::Qwen3Dense06bDecodeLoopStepReport]) {
+    for step in steps {
+        let real_logits_tokens = step
+            .text_output
+            .real_logits
+            .as_ref()
+            .map(|real_logits| real_logits.token_count)
+            .unwrap_or(0);
+        let real_logits_candidates = step
+            .text_output
+            .real_logits
+            .as_ref()
+            .map(|real_logits| real_logits.candidate_count)
+            .unwrap_or(0);
+        let real_logits_selection = step
+            .text_output
+            .real_logits
+            .as_ref()
+            .map(|real_logits| real_logits.selection_checksum)
+            .unwrap_or(0);
+        let real_logits_row_bytes = step
+            .text_output
+            .real_logits
+            .as_ref()
+            .map(|real_logits| real_logits.row_byte_count)
+            .unwrap_or(0);
+        let real_logits_rows = step
+            .text_output
+            .real_logits
+            .as_ref()
+            .map(|real_logits| real_logits.row_checksum)
+            .unwrap_or(0);
+        let real_logits_logits = step
+            .text_output
+            .real_logits
+            .as_ref()
+            .map(|real_logits| real_logits.logit_checksum)
+            .unwrap_or(0);
+        let real_logits_selection_matches = step
+            .text_output
+            .real_logits
+            .as_ref()
+            .map(|real_logits| real_logits.selection_match_count)
+            .unwrap_or(0);
+        let real_logits_margin_matches = step
+            .text_output
+            .real_logits
+            .as_ref()
+            .map(|real_logits| real_logits.margin_match_count)
+            .unwrap_or(0);
+        let real_logits_checksum_matches = step
+            .text_output
+            .real_logits
+            .as_ref()
+            .map(|real_logits| real_logits.checksum_match_count)
+            .unwrap_or(0);
+        let real_logits_comparison = step
+            .text_output
+            .real_logits
+            .as_ref()
+            .map(|real_logits| real_logits.comparison_checksum)
+            .unwrap_or(0);
+        let real_qkv_stage_links = step
+            .text_output
+            .real_qkv
+            .as_ref()
+            .map(|real_qkv| real_qkv.stage_link_count)
+            .unwrap_or(0);
+        let real_qkv_value_checksum = step
+            .text_output
+            .real_qkv
+            .as_ref()
+            .map(|real_qkv| real_qkv.real_value_checksum)
+            .unwrap_or(0);
+        let real_mlp_table_checksum = step
+            .text_output
+            .real_mlp
+            .as_ref()
+            .map(|real_mlp| real_mlp.table_checksum)
+            .unwrap_or(0);
+        let real_mlp_output_checksum = step
+            .text_output
+            .real_mlp
+            .as_ref()
+            .map(|real_mlp| real_mlp.real_output_checksum)
+            .unwrap_or(0);
+        let real_path_digest = if step
+            .text_output
+            .samples
+            .iter()
+            .any(|sample| sample.real_path_digest != 0)
+        {
+            step.text_output
+                .samples
+                .iter()
+                .fold(0xcbf2_9ce4_8422_2325u64, |acc, sample| {
+                    acc.wrapping_mul(0x0000_0100_0000_01b3)
+                        ^ sample.step_index
+                        ^ sample.real_path_digest.rotate_left(17)
+                })
+        } else {
+            0
+        };
+        println!(
+            "  step={} runtime_prefill={} input_checksum={:#x} next_input_checksum={:#x} guest_input_real={} guest_prompt_bytes={} guest_prompt_tokens={} guest_prompt_token_checksum={:#x} guest_tokenizer={:#x} transition_writes={} applied_writes={} readback_matches={} transition={:#x} sampled_tokens={} text_bytes={} text_checksum={:#x} logits_checksum={:#x} synthetic_stages={} synthetic_mask={:#x} synthetic_checksum={:#x} qkv_base_real={} attention_score_real={} attention_context_real={} mlp_activation_real={} mlp_output_real={} logits_candidates_real={} token_text_real={} token_readback={:#x} transition_slot={:#x} kv_descriptors={} kv_states={} kv_read_digest={:#x} attention_score={} attention_softmax={} attention_context={} attention={:#x} post_mlp_activation={} post_host_partial={} post_mlp_output={} post_residual={} post_next_partial={} post_attention={:#x} result_publish={} result_resolve={} result_round1_compute={} result_flow={:#x} layers={} layer_execs={} pipeline_nodes={} embedding_real={} embedding_tokens={} embedding_row_bytes={} embedding_rows={:#x} embedding_values={:#x} embedding={:#x} hidden_tensor_bytes={} hidden_tensor_carry={} hidden_tensor_all={} hidden_tensor={:#x} hidden_tensor_real_refs={} hidden_tensor_real_refs_all={} hidden_tensor_real_refs_checksum={:#x} real_qkv_layers={} real_qkv_all_layers={} real_qkv_layer_checksum={:#x} real_mlp_layers={} real_mlp_all_layers={} real_mlp_layer_checksum={:#x} real_layer_execs={} real_layer_execs_all={} real_layer_exec_checksum={:#x} node_range_count={} min_layers_per_node={} max_layers_per_node={} balanced_layers={} node_ranges={:#x} layer_transitions={} layer_boundaries={} final_layer={} final_layer_checksum={:#x} hidden_pipeline={:#x} full_layer_path_count={} full_layer_path_real={} full_layer_path={:#x} full_layer_final={:#x} layer0={:#x} layer1={:#x} logits_path={:#x} layer_progress={:#x} real_qkv_stage_links={} real_qkv_value={:#x} real_mlp_table={:#x} real_mlp_output={:#x} real_path={:#x} real_logits_tokens={} real_logits_candidates={} real_logits_row_bytes={} real_logits_rows={:#x} real_logits_logits={:#x} real_logits_selection_matches={} real_logits_margin_matches={} real_logits_checksum_matches={} real_logits_compare={:#x} real_logits_selection={:#x}",
+            step.step_index,
+            step.runtime_prefill_executed,
+            step.guest_input_checksum,
+            step.next_guest_input_checksum,
+            step.text_output.synthetic.guest_input_real_backed,
+            step.text_output.guest_input.prompt_byte_len,
+            step.text_output.guest_input.prompt_token_count,
+            step.text_output.guest_input.prompt_token_checksum,
+            step.text_output.guest_input.tokenizer_asset_checksum,
+            step.input_transition.write_count,
+            step.input_transition.applied_write_count,
+            step.input_transition.write_readback_match_count,
+            step.input_transition.transition_checksum,
+            step.sampled_token_count,
+            step.text_output.byte_len,
+            step.text_output.text_checksum,
+            step.text_output.logits_checksum,
+            step.text_output.synthetic.stage_count,
+            step.text_output.synthetic.stage_mask,
+            step.text_output.synthetic.stage_checksum,
+            step.text_output.synthetic.qkv_base_tile_real_backed,
+            step.text_output.synthetic.attention_score_real_backed,
+            step.text_output.synthetic.attention_context_real_backed,
+            step.text_output.synthetic.mlp_activation_real_backed,
+            step.text_output.synthetic.mlp_output_real_backed,
+            step.text_output.synthetic.logits_candidates_real_backed,
+            step.text_output.synthetic.token_text_real_backed,
+            step.input_transition.readback_token_checksum,
+            step.input_transition.checksum_slot_value,
+            step.text_output.kvcache.descriptor_count,
+            step.text_output.kvcache.state_count,
+            step.text_output.kvcache.read_digest_checksum,
+            step.text_output.attention.score_count,
+            step.text_output.attention.softmax_count,
+            step.text_output.attention.context_count,
+            step.text_output.attention.aggregate_checksum,
+            step.text_output.post_attention.mlp_activation_count,
+            step.text_output.post_attention.host_partial_count,
+            step.text_output.post_attention.mlp_output_count,
+            step.text_output.post_attention.residual_norm_count,
+            step.text_output.post_attention.next_partial_count,
+            step.text_output.post_attention.aggregate_checksum,
+            step.text_output.result_flow.publish_count,
+            step.text_output.result_flow.resolve_count,
+            step.text_output.result_flow.round1_compute_count,
+            step.text_output.result_flow.aggregate_checksum,
+            step.hidden_layer_pipeline.layer_count,
+            step.hidden_layer_pipeline.layer_executions.len(),
+            step.hidden_layer_pipeline.node_count,
+            step.hidden_layer_pipeline.input_embedding_real_backed,
+            step.hidden_layer_pipeline.input_embedding_token_count,
+            step.hidden_layer_pipeline.input_embedding_row_byte_count,
+            step.hidden_layer_pipeline.input_embedding_row_checksum,
+            step.hidden_layer_pipeline.input_embedding_value_checksum,
+            step.hidden_layer_pipeline.input_embedding_checksum,
+            step.hidden_layer_pipeline.hidden_tensor_byte_count,
+            step.hidden_layer_pipeline.hidden_tensor_carry_count,
+            step.hidden_layer_pipeline.hidden_tensor_carry_all_present,
+            step.hidden_layer_pipeline.hidden_tensor_carry_checksum,
+            step.hidden_layer_pipeline.hidden_tensor_real_reference_count,
+            step.hidden_layer_pipeline
+                .hidden_tensor_real_references_all_present,
+            step.hidden_layer_pipeline.hidden_tensor_real_reference_checksum,
+            step.hidden_layer_pipeline.real_qkv_layer_count,
+            step.hidden_layer_pipeline.real_qkv_all_layers_present,
+            step.hidden_layer_pipeline.real_qkv_layer_checksum,
+            step.hidden_layer_pipeline.real_mlp_layer_count,
+            step.hidden_layer_pipeline.real_mlp_all_layers_present,
+            step.hidden_layer_pipeline.real_mlp_layer_checksum,
+            step.hidden_layer_pipeline.real_layer_execution_count,
+            step.hidden_layer_pipeline.real_layer_executions_all_present,
+            step.hidden_layer_pipeline.real_layer_execution_checksum,
+            step.hidden_layer_pipeline.node_ranges.len(),
+            step.hidden_layer_pipeline.min_layers_per_node,
+            step.hidden_layer_pipeline.max_layers_per_node,
+            step.hidden_layer_pipeline.balanced_layer_spread,
+            step.hidden_layer_pipeline.node_range_checksum,
+            step.hidden_layer_pipeline.transition_count,
+            step.hidden_layer_pipeline.boundary_count,
+            step.hidden_layer_pipeline.last_layer_id,
+            step.hidden_layer_pipeline.final_layer_checksum,
+            step.hidden_layer_pipeline.aggregate_checksum,
+            step.layer_progress.full_layer_path_count,
+            step.layer_progress.full_layer_path_real_backed,
+            step.layer_progress.full_layer_path_checksum,
+            step.layer_progress.full_layer_final_checksum,
+            step.layer_progress.layer0_path_checksum,
+            step.layer_progress.layer1_path_checksum,
+            step.layer_progress.logits_path_checksum,
+            step.layer_progress.aggregate_checksum,
+            real_qkv_stage_links,
+            real_qkv_value_checksum,
+            real_mlp_table_checksum,
+            real_mlp_output_checksum,
+            real_path_digest,
+            real_logits_tokens,
+            real_logits_candidates,
+            real_logits_row_bytes,
+            real_logits_rows,
+            real_logits_logits,
+            real_logits_selection_matches,
+            real_logits_margin_matches,
+            real_logits_checksum_matches,
+            real_logits_comparison,
+            real_logits_selection
+        );
+        println!(
+            "  real_inference_contract step={} ready={} blockers={} checksum={:#x} synthetic_stages={} synthetic_mask={:#x} candidate_logits_only={} deterministic_hidden={} embedding_hidden_proxy={} round1_hidden={} full_forward_math={} full_vocab_logits={} sampled_text_reference_checked={} blocker_list={}",
+            step.step_index,
+            step.real_inference_contract.ready,
+            step.real_inference_contract.blocker_count,
+            step.real_inference_contract.aggregate_checksum,
+            step.real_inference_contract.synthetic_stage_count,
+            step.real_inference_contract.synthetic_stage_mask,
+            step.real_inference_contract.uses_candidate_logits_only,
+            step.real_inference_contract.uses_deterministic_hidden,
+            step.real_inference_contract.uses_embedding_hidden_as_final_hidden,
+            step.real_inference_contract.uses_round1_output_hidden_for_logits,
+            step.real_inference_contract.full_forward_math,
+            step.real_inference_contract.full_vocab_logits,
+            step.real_inference_contract.sampled_text_reference_checked,
+            step.real_inference_contract.blockers.join(",")
+        );
+        println!(
+            "  object_service step={} ready={} publish={} resolve={} append={} kv_resolve={} kv_append={} metadata_put={} metadata_get={} shmem_write={} shmem_read={} block_write={} block_read={} inline_write={} inline_read={} obmm_pool={} obmm_write={} obmm_read={} obmm_queue_submit={} obmm_queue_deliver={} obmm_bytes={} committed={} missing_resolve={} token_objects={} kv_objects={} runtime_tensor_objects={} logits_objects={} checksum={:#x}",
+            step.step_index,
+            step.object_service.ready,
+            step.object_service.publish_count,
+            step.object_service.resolve_count,
+            step.object_service.append_count,
+            step.object_service.kv_index_resolve_count,
+            step.object_service.kv_index_append_count,
+            step.object_service.metadata_put_count,
+            step.object_service.metadata_get_count,
+            step.object_service.shmem_write_count,
+            step.object_service.shmem_read_count,
+            step.object_service.block_write_count,
+            step.object_service.block_read_count,
+            step.object_service.inline_write_count,
+            step.object_service.inline_read_count,
+            step.object_service.obmm_pool_enabled,
+            step.object_service.obmm_pool_payload_write_count,
+            step.object_service.obmm_pool_payload_read_count,
+            step.object_service.obmm_pool_queue_submit_count,
+            step.object_service.obmm_pool_queue_deliver_count,
+            step.object_service.obmm_pool_bytes_used,
+            step.object_service.committed_object_count,
+            step.object_service.missing_resolve_count,
+            step.object_service.token_objects,
+            step.object_service.kv_objects,
+            step.object_service.runtime_tensor_objects,
+            step.object_service.logits_objects,
+            step.object_service.object_checksum
+        );
+    }
+}
+
+fn configure_simpler_dispatch_logging() {
+    if simpler_dispatch_log_enabled() {
+        return;
+    }
+    if std::env::var("PTO_LOG_LEVEL").is_err() {
+        std::env::set_var("PTO_LOG_LEVEL", "off");
+    }
+    if std::env::var("PTO_LOG_FILE").is_err() {
+        std::env::set_var("PTO_LOG_FILE", "/dev/null");
+    }
+}
+
+fn simpler_dispatch_log_enabled() -> bool {
+    std::env::var("SIM_SIMPLER_DISPATCH_LOG")
+        .map(|value| {
+            matches!(
+                value.as_str(),
+                "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn run_qwen3_text_output_cli(scenario_path: &Path) -> anyhow::Result<()> {
+    let config = ScenarioConfig::from_yaml_file(scenario_path).with_context(|| {
+        format!(
+            "failed to load scenario config from {}",
+            scenario_path.display()
+        )
+    })?;
+    let topology = SimTopology::from_config(&config).context("failed to build topology")?;
+    let guest_input = qwen3_dense_0_6b_default_guest_input();
+    let report = qwen3_dense_0_6b_prefill_text_output_report(&topology, &guest_input)
+        .map_err(anyhow::Error::msg)
+        .context("failed to run Qwen3 text output prefill")?;
+    println!("qwen3_dense_0_6b_text_output");
+    println!("  scenario: {}", scenario_path.display());
+    println!("  tokens: {}", report.token_count);
+    println!("  bytes: {}", report.byte_len);
+    println!("  padded_bytes: {}", report.padded_byte_len);
+    println!("  byte_checksum: {:#x}", report.byte_checksum);
+    println!("  sequence_checksum: {:#x}", report.sequence_checksum);
+    println!("  token_checksum: {:#x}", report.token_checksum);
+    println!("  text_checksum: {:#x}", report.text_checksum);
+    println!("  logits_checksum: {:#x}", report.logits_checksum);
+    println!("  tokenizer_policy_kind: {}", report.tokenizer_policy_kind);
+    println!(
+        "  synthetic: stages={} mask={:#x} checksum={:#x} guest_input_real={} qkv_base_real={} attention_score_real={} attention_context_real={} mlp_activation_real={} mlp_output_real={} logits_candidates_real={} token_text_real={}",
+        report.synthetic.stage_count,
+        report.synthetic.stage_mask,
+        report.synthetic.stage_checksum,
+        report.synthetic.guest_input_real_backed,
+        report.synthetic.qkv_base_tile_real_backed,
+        report.synthetic.attention_score_real_backed,
+        report.synthetic.attention_context_real_backed,
+        report.synthetic.mlp_activation_real_backed,
+        report.synthetic.mlp_output_real_backed,
+        report.synthetic.logits_candidates_real_backed,
+        report.synthetic.token_text_real_backed
+    );
+    println!(
+        "  kvcache: descriptors={} states={} append_blocks={} update_seq_sum={} prefill_entries={} decode_entries={} read_window_end_max={} read_digest={:#x}",
+        report.kvcache.descriptor_count,
+        report.kvcache.state_count,
+        report.kvcache.append_block_count,
+        report.kvcache.update_seq_sum,
+        report.kvcache.prefill_entry_count,
+        report.kvcache.decode_entry_count,
+        report.kvcache.read_window_end_max,
+        report.kvcache.read_digest_checksum
+    );
+    println!(
+        "  attention: score={} softmax={} context={} stage_mask={:#x} score_checksum={:#x} softmax_checksum={:#x} context_checksum={:#x} aggregate={:#x}",
+        report.attention.score_count,
+        report.attention.softmax_count,
+        report.attention.context_count,
+        report.attention.stage_mask,
+        report.attention.score_checksum,
+        report.attention.softmax_checksum,
+        report.attention.context_checksum,
+        report.attention.aggregate_checksum
+    );
+    println!(
+        "  post_attention: mlp_activation={} host_partial={} mlp_output={} residual_norm={} next_partial={} stage_mask={:#x} activation_checksum={:#x} host_partial_checksum={:#x} mlp_output_checksum={:#x} residual_norm_checksum={:#x} next_partial_checksum={:#x} aggregate={:#x}",
+        report.post_attention.mlp_activation_count,
+        report.post_attention.host_partial_count,
+        report.post_attention.mlp_output_count,
+        report.post_attention.residual_norm_count,
+        report.post_attention.next_partial_count,
+        report.post_attention.stage_mask,
+        report.post_attention.mlp_activation_checksum,
+        report.post_attention.host_partial_checksum,
+        report.post_attention.mlp_output_checksum,
+        report.post_attention.residual_norm_checksum,
+        report.post_attention.next_partial_checksum,
+        report.post_attention.aggregate_checksum
+    );
+    println!(
+        "  result_flow: publish={} resolve={} round1_compute={} result_count={} round0_distinct={} round1_distinct={} round0_checksum={:#x} round1_checksum={:#x} aggregate={:#x}",
+        report.result_flow.publish_count,
+        report.result_flow.resolve_count,
+        report.result_flow.round1_compute_count,
+        report.result_flow.result_count,
+        report.result_flow.round0_distinct_count,
+        report.result_flow.round1_distinct_count,
+        report.result_flow.round0_checksum,
+        report.result_flow.round1_checksum,
+        report.result_flow.aggregate_checksum
+    );
+    match &report.real_qkv {
+        Some(real_qkv) => println!(
+            "  real_qkv: layer={} reference_layers={} shards={} stage_links={} stage_mask={:#x} weight_bytes={} qkv_rows={} aggregate={:#x} stage_checksum={:#x} layer0_stage={:#x} layer1_stage={:#x} synthetic={:#x} real_weight={:#x} real_value={:#x} real_output={:#x}",
+            real_qkv.layer_id,
+            real_qkv.reference_layer_count,
+            real_qkv.shard_count,
+            real_qkv.stage_link_count,
+            real_qkv.stage_kind_mask,
+            real_qkv.total_weight_bytes,
+            real_qkv.qkv_rows,
+            real_qkv.aggregate_checksum,
+            real_qkv.stage_link_checksum,
+            real_qkv.reference_layer_checksum,
+            real_qkv.next_reference_layer_checksum,
+            real_qkv.synthetic_checksum,
+            real_qkv.real_weight_checksum,
+            real_qkv.real_value_checksum,
+            real_qkv.real_output_checksum
+        ),
+        None => println!("  real_qkv: unavailable"),
+    }
+    match &report.real_mlp {
+        Some(real_mlp) => println!(
+            "  real_mlp: layer={} next_layer={} shards={} next_shards={} weight_bytes={} next_weight_bytes={} intermediate_rows={} next_intermediate_rows={} aggregate={:#x} next_aggregate={:#x} real_weight={:#x} activation={:#x} output={:#x} next_output={:#x} samples={:#x} table={:#x}",
+            real_mlp.layer_id,
+            real_mlp.next_layer_id,
+            real_mlp.shard_count,
+            real_mlp.next_shard_count,
+            real_mlp.total_weight_bytes,
+            real_mlp.next_total_weight_bytes,
+            real_mlp.total_intermediate_rows,
+            real_mlp.next_total_intermediate_rows,
+            real_mlp.aggregate_checksum,
+            real_mlp.next_aggregate_checksum,
+            real_mlp.real_weight_checksum,
+            real_mlp.real_activation_checksum,
+            real_mlp.real_output_checksum,
+            real_mlp.next_real_output_checksum,
+            real_mlp.sample_checksum,
+            real_mlp.table_checksum
+        ),
+        None => println!("  real_mlp: unavailable"),
+    }
+    match &report.real_logits {
+        Some(real_logits) => println!(
+            "  real_logits: tokens={} candidates={} distinct_steps={} distinct_tokens={} row_bytes={} row_checksum={:#x} logit_checksum={:#x} sampled_pairs={} selection_matches={} margin_matches={} checksum_matches={} max_margin_delta={} vocab={} hidden={} aggregate={:#x} final_norm={:#x} top_bits={:#x} runner_bits={:#x} compare={:#x} selection={:#x}",
+            real_logits.token_count,
+            real_logits.candidate_count,
+            real_logits.distinct_step_count,
+            real_logits.distinct_token_count,
+            real_logits.row_byte_count,
+            real_logits.row_checksum,
+            real_logits.logit_checksum,
+            real_logits.sampled_pair_count,
+            real_logits.selection_match_count,
+            real_logits.margin_match_count,
+            real_logits.checksum_match_count,
+            real_logits.max_margin_delta_milli,
+            real_logits.vocab_size,
+            real_logits.hidden_size,
+            real_logits.aggregate_checksum,
+            real_logits.final_norm_checksum,
+            real_logits.top_logit_bits_checksum,
+            real_logits.runner_logit_bits_checksum,
+            real_logits.comparison_checksum,
+            real_logits.selection_checksum
+        ),
+        None => println!("  real_logits: unavailable"),
+    }
+    println!("  text_lossy: {}", report.text_lossy.escape_debug());
+    println!("  samples:");
+    for sample in &report.samples {
+        println!(
+            "    step={} shard={} tile={} token={} runner_up={} margin_milli={} logits_checksum={:#x} kv_read_digest={:#x} qkv_digest={:#x} real_path={:#x} text_checksum={:#x} offset={} bytes={} flags={:#x} piece={}",
+            sample.step_index,
+            sample.shard_id,
+            sample.tile_id,
+            sample.sampled_token,
+            sample.runner_up_token,
+            sample.margin_milli,
+            sample.logits_checksum,
+            sample.kvcache_read_digest,
+            sample.qkv_reference_digest,
+            sample.real_path_digest,
+            sample.text_checksum,
+            sample.text_byte_offset,
+            sample.byte_len,
+            sample.boundary_flags,
+            sample.piece_lossy.escape_debug()
+        );
+    }
+    Ok(())
+}
+
+fn host_vector_manifest_from_args() -> Option<PathBuf> {
+    let mut args = env::args_os().skip(1);
+    match args.next() {
+        Some(mode) if mode == "host-vector" => args.next().map(PathBuf::from),
+        _ => None,
+    }
+}
+
+fn run_host_vector_cli(manifest_path: &Path) -> anyhow::Result<()> {
+    let scenario_path = default_scenario_path();
+    let yaml = std::fs::read_to_string(&scenario_path).with_context(|| {
+        format!(
+            "failed to read scenario config from {}",
+            scenario_path.display()
+        )
+    })?;
+    let yaml = yaml.replace("chip_backend_mode: stub", "chip_backend_mode: simpler_capi");
+    let config = ScenarioConfig::from_yaml_str(&yaml)
+        .context("failed to parse host-vector scenario config")?;
+    let topology = SimTopology::from_config(&config).context("failed to build topology")?;
+    let report = run_host_vector_dispatch(&config, &topology, manifest_path, 16_384)
+        .context("failed to run host_vector via simpler_capi")?;
+    println!("host_vector_simpler_capi");
+    println!("  manifest: {}", manifest_path.display());
+    println!("  elems: {}", report.elems);
+    println!("  completion: {:?}", report.completion_status);
+    println!("  all_match_expected: {}", report.all_match_expected);
+    println!("  first_values: {:?}", report.first_values);
+    if !report.all_match_expected || report.completion_status != CompletionStatus::Success {
+        anyhow::bail!("host_vector_simpler_capi_failed");
+    }
     Ok(())
 }
 
@@ -492,7 +1441,10 @@ fn run_uapi_demo(topology: &SimTopology) -> anyhow::Result<UapiDemoReport> {
         })
         .context("ring service doorbell failed")?
     {
-        UapiResponse::DoorbellRung { submitted: 3, pending: 0 } => {}
+        UapiResponse::DoorbellRung {
+            submitted: 3,
+            pending: 0,
+        } => {}
         response => anyhow::bail!("unexpected service doorbell response: {response:?}"),
     }
 
@@ -661,13 +1613,16 @@ fn run_qemu_backend_demo(topology: &SimTopology) -> anyhow::Result<QemuBackendDe
         .context("read qemu backend status register failed")?;
     let cmdq_head_after_ring = handler
         .read(mmio.cmdq_head_addr(endpoint))
-        .context("read qemu backend cmdq head register failed")? as usize;
+        .context("read qemu backend cmdq head register failed")?
+        as usize;
     let cmdq_tail_after_submit = handler
         .read(mmio.cmdq_tail_addr(endpoint))
-        .context("read qemu backend cmdq tail register failed")? as usize;
+        .context("read qemu backend cmdq tail register failed")?
+        as usize;
     let cq_tail_after_ring = handler
         .read(mmio.cq_tail_addr(endpoint))
-        .context("read qemu backend cq tail register failed")? as usize;
+        .context("read qemu backend cq tail register failed")?
+        as usize;
     let irq_status_after_ring = handler
         .read(mmio.irq_status_addr(endpoint))
         .context("read qemu backend irq status register failed")?;
@@ -684,7 +1639,8 @@ fn run_qemu_backend_demo(topology: &SimTopology) -> anyhow::Result<QemuBackendDe
         .context("qemu backend partial poll failed")?;
     let cq_head_after_partial_poll = handler
         .read(mmio.cq_head_addr(endpoint))
-        .context("read qemu backend cq head register after partial poll failed")? as usize;
+        .context("read qemu backend cq head register after partial poll failed")?
+        as usize;
     for completion in partial_events {
         events.push(SimEvent::CompletionObserved {
             at: completion.finished_at,
@@ -866,6 +1822,42 @@ fn print_report(report: &CliReport) {
         report.workload_report.summary.runtime_retried,
         report.workload_report.summary.runtime_failed
     );
+    if let Some(assessment) = compute_w4_assessment(&report.workload_report.summary) {
+        let w4 = &report.workload_report.summary.w4_results_handled;
+        let service = &report.workload_report.summary.w4_service_results;
+        println!(
+            "  w4_handled: total={} payload_validated={} begin={} active={} finish={} control_only={} hot_hit={} filled_from_block={} stable_hot={} promoted_hot={} reloaded_hot={}",
+            w4.total,
+            w4.payload_validated,
+            w4.begin,
+            w4.active,
+            w4.finish,
+            w4.request_control_only,
+            w4.hot_hit,
+            w4.filled_from_block,
+            w4.stable_hot,
+            w4.promoted_hot,
+            w4.reloaded_hot
+        );
+        println!(
+            "  w4_assessment: payload_coverage={}/{} service_coverage={}/5 complete={}",
+            w4.payload_validated, w4.total, assessment.service_covered, assessment.complete
+        );
+        println!(
+            "  w4_service_results: total={} request_control={} kvcache={} request_republished={} finish_control_refresh={} kv_republished={} hot_hit_refresh={} reload_refresh={}",
+            service.total,
+            service.request_control,
+            service.kvcache,
+            service.request_republished,
+            service.finish_control_refresh,
+            service.kv_republished,
+            service.hot_hit_refresh,
+            service.reload_refresh
+        );
+        if !assessment.missing.is_empty() {
+            println!("  w4_missing: {}", assessment.missing.join(","));
+        }
+    }
     println!("  events:");
     for event in &report.workload_report.events {
         println!("    {:?}", event);
@@ -971,6 +1963,61 @@ fn print_report(report: &CliReport) {
     }
 }
 
+struct W4Assessment {
+    service_covered: usize,
+    complete: bool,
+    missing: Vec<&'static str>,
+}
+
+fn compute_w4_assessment(summary: &EventSummary) -> Option<W4Assessment> {
+    if summary.w4_results_handled.total == 0 && summary.w4_service_results.total == 0 {
+        return None;
+    }
+
+    let w4 = &summary.w4_results_handled;
+    let service = &summary.w4_service_results;
+    let payload_complete = w4.payload_validated == w4.total;
+    let request_republished_complete = w4.total > 0 && service.request_republished >= w4.total;
+    let finish_refresh_complete = w4.finish == 0 || service.finish_control_refresh >= w4.finish;
+    let kv_republished_complete = w4.active == 0 || service.kv_republished >= w4.active;
+    let hot_hit_refresh_complete = w4.hot_hit == 0 || service.hot_hit_refresh > 0;
+    let reload_refresh_complete = w4.reloaded_hot == 0 || service.reload_refresh > 0;
+    let service_checks = [
+        request_republished_complete,
+        finish_refresh_complete,
+        kv_republished_complete,
+        hot_hit_refresh_complete,
+        reload_refresh_complete,
+    ];
+    let service_covered = service_checks.into_iter().filter(|ok| *ok).count();
+    let service_complete = service_checks.into_iter().all(|ok| ok);
+    let mut missing = Vec::new();
+    if !payload_complete {
+        missing.push("payload_validation");
+    }
+    if !request_republished_complete {
+        missing.push("request_republished");
+    }
+    if !finish_refresh_complete {
+        missing.push("finish_control_refresh");
+    }
+    if !kv_republished_complete {
+        missing.push("kv_republished");
+    }
+    if !hot_hit_refresh_complete {
+        missing.push("hot_hit_refresh");
+    }
+    if !reload_refresh_complete {
+        missing.push("reload_refresh");
+    }
+
+    Some(W4Assessment {
+        service_covered,
+        complete: payload_complete && service_complete,
+        missing,
+    })
+}
+
 fn summarize_events(events: &[SimEvent]) -> EventSummary {
     let mut summary = EventSummary {
         total_events: events.len() as u64,
@@ -997,6 +2044,8 @@ fn summarize_events(events: &[SimEvent]) -> EventSummary {
             retryable_failure: 0,
             fatal_failure: 0,
         },
+        w4_results_handled: Default::default(),
+        w4_service_results: Default::default(),
     };
 
     for event in events {
@@ -1009,9 +2058,15 @@ fn summarize_events(events: &[SimEvent]) -> EventSummary {
             SimEvent::CompletionObserved { completion, .. } => {
                 summary.completions_total += 1;
                 match completion.source {
-                    CompletionSource::ChipBackend => summary.completions_by_source.chip_backend += 1,
-                    CompletionSource::BlockService => summary.completions_by_source.block_service += 1,
-                    CompletionSource::ShmemService => summary.completions_by_source.shmem_service += 1,
+                    CompletionSource::ChipBackend => {
+                        summary.completions_by_source.chip_backend += 1
+                    }
+                    CompletionSource::BlockService => {
+                        summary.completions_by_source.block_service += 1
+                    }
+                    CompletionSource::ShmemService => {
+                        summary.completions_by_source.shmem_service += 1
+                    }
                     CompletionSource::DfsService => summary.completions_by_source.dfs_service += 1,
                     CompletionSource::DbService => summary.completions_by_source.db_service += 1,
                     CompletionSource::GuestUapi => summary.completions_by_source.guest_uapi += 1,
@@ -1029,7 +2084,61 @@ fn summarize_events(events: &[SimEvent]) -> EventSummary {
             }
             SimEvent::RuntimeRetried { .. } => summary.runtime_retried += 1,
             SimEvent::RuntimeFailed { .. } => summary.runtime_failed += 1,
-            SimEvent::W4ResultHandled { .. } | SimEvent::W4ServiceResultApplied { .. } => {}
+            SimEvent::W4ResultHandled {
+                payload_validated,
+                request_control_phase,
+                kvcache_resolution_kind,
+                kvcache_transition_kind,
+                ..
+            } => {
+                summary.w4_results_handled.total += 1;
+                if *payload_validated {
+                    summary.w4_results_handled.payload_validated += 1;
+                }
+                match request_control_phase.as_deref() {
+                    Some("Begin") => summary.w4_results_handled.begin += 1,
+                    Some("Active") => summary.w4_results_handled.active += 1,
+                    Some("Finish") => summary.w4_results_handled.finish += 1,
+                    _ => {}
+                }
+                match kvcache_resolution_kind.as_deref() {
+                    Some("RequestControlOnly") => {
+                        summary.w4_results_handled.request_control_only += 1
+                    }
+                    Some("HotHit") => summary.w4_results_handled.hot_hit += 1,
+                    Some("FilledFromBlock") => summary.w4_results_handled.filled_from_block += 1,
+                    _ => {}
+                }
+                match kvcache_transition_kind.as_deref() {
+                    Some("StableHot") => summary.w4_results_handled.stable_hot += 1,
+                    Some("PromotedHot") => summary.w4_results_handled.promoted_hot += 1,
+                    Some("ReloadedHot") => summary.w4_results_handled.reloaded_hot += 1,
+                    Some("ControlOnly") => summary.w4_results_handled.control_only += 1,
+                    _ => {}
+                }
+            }
+            SimEvent::W4ServiceResultApplied {
+                service_kind,
+                action_kind,
+                ..
+            } => {
+                summary.w4_service_results.total += 1;
+                match service_kind.as_str() {
+                    "RequestControl" => summary.w4_service_results.request_control += 1,
+                    "KvCache" => summary.w4_service_results.kvcache += 1,
+                    _ => {}
+                }
+                match action_kind.as_str() {
+                    "RequestRepublished" => summary.w4_service_results.request_republished += 1,
+                    "FinishControlRefreshed" => {
+                        summary.w4_service_results.finish_control_refresh += 1
+                    }
+                    "KvResultRepublished" => summary.w4_service_results.kv_republished += 1,
+                    "HotHitRefreshed" => summary.w4_service_results.hot_hit_refresh += 1,
+                    "ReloadedHotRefreshed" => summary.w4_service_results.reload_refresh += 1,
+                    _ => {}
+                }
+            }
             SimEvent::FaultInjected { .. } => summary.faults_injected += 1,
         }
     }

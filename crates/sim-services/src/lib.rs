@@ -4,7 +4,7 @@ use std::collections::{HashMap, VecDeque};
 
 use sim_core::{
     BlockHash, CompletionEvent, CompletionSource, CompletionStatus, SegmentHandle, ServiceOpHandle,
-    SimTimestamp, TaskKey,
+    SimTimestamp, TaskKey, TensorDType, TensorLayout,
 };
 use sim_runtime::{BlockReadReq, BlockService, BlockWriteReq};
 
@@ -687,6 +687,779 @@ pub mod db {
     }
 }
 
+pub mod object {
+    use super::*;
+
+    #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+    pub enum LingquObjectKind {
+        WeightShard,
+        KvCacheBlock,
+        RuntimeTensor,
+        TokenBuffer,
+        TokenizerAsset,
+        Logits,
+        Metadata,
+    }
+
+    #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+    pub enum LingquPayloadBackend {
+        Inline,
+        Shmem,
+        Block,
+        Dfs,
+        External,
+    }
+
+    #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+    pub enum LingquObjectState {
+        Pending,
+        Committed,
+        Tombstoned,
+        Quarantined,
+    }
+
+    #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+    pub enum LingquObjectLocality {
+        EntityLocal(u64),
+        DomainShared(u64),
+        Global,
+    }
+
+    #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+    pub enum LingquObjectVersionSelector {
+        LatestCommitted,
+        Exact(u64),
+        AtLeast(u64),
+    }
+
+    #[derive(Debug, Clone, Eq, PartialEq)]
+    pub struct LingquPayloadPlacement {
+        pub backend: LingquPayloadBackend,
+        pub storage_ref: String,
+        pub segment: Option<SegmentHandle>,
+        pub offset: u64,
+        pub bytes: u64,
+        pub checksum: u64,
+        pub locality: LingquObjectLocality,
+    }
+
+    #[derive(Debug, Clone, Eq, PartialEq)]
+    pub struct LingquObjectMetadata {
+        pub bytes: u64,
+        pub checksum: u64,
+        pub dtype: Option<TensorDType>,
+        pub shape: Vec<u64>,
+        pub layout: Option<TensorLayout>,
+        pub expires_at_us: Option<u64>,
+    }
+
+    #[derive(Debug, Clone, Eq, PartialEq)]
+    pub struct LingquObjectRecord {
+        pub key: String,
+        pub kind: LingquObjectKind,
+        pub version: u64,
+        pub state: LingquObjectState,
+        pub producer_entity: u64,
+        pub owner_entity: Option<u64>,
+        pub bytes: u64,
+        pub checksum: u64,
+        pub dtype: Option<TensorDType>,
+        pub shape: Vec<u64>,
+        pub layout: Option<TensorLayout>,
+        pub placements: Vec<LingquPayloadPlacement>,
+        pub payload_bytes: Vec<u8>,
+        pub created_at_us: u64,
+        pub committed_at_us: Option<u64>,
+        pub expires_at_us: Option<u64>,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct LingquObjectPublishReq {
+        pub task: Option<TaskKey>,
+        pub key: String,
+        pub kind: LingquObjectKind,
+        pub producer_entity: u64,
+        pub owner_entity: Option<u64>,
+        pub expected_version: Option<u64>,
+        pub metadata: LingquObjectMetadata,
+        pub placements: Vec<LingquPayloadPlacement>,
+        pub payload_bytes: Vec<u8>,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct LingquObjectResolveReq {
+        pub task: Option<TaskKey>,
+        pub key: String,
+        pub requester_entity: u64,
+        pub version: LingquObjectVersionSelector,
+        pub min_state: LingquObjectState,
+        pub preferred_backends: Vec<LingquPayloadBackend>,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct LingquObjectAppendReq {
+        pub task: Option<TaskKey>,
+        pub base_key: String,
+        pub suffix: String,
+        pub kind: LingquObjectKind,
+        pub producer_entity: u64,
+        pub owner_entity: Option<u64>,
+        pub previous_version: Option<u64>,
+        pub metadata: LingquObjectMetadata,
+        pub placements: Vec<LingquPayloadPlacement>,
+        pub payload_bytes: Vec<u8>,
+    }
+
+    #[derive(Debug, Clone, Copy, Eq, PartialEq, Default)]
+    pub struct LingquObjectServiceReport {
+        pub publish_count: u64,
+        pub resolve_count: u64,
+        pub append_count: u64,
+        pub metadata_put_count: u64,
+        pub metadata_get_count: u64,
+        pub shmem_write_count: u64,
+        pub shmem_read_count: u64,
+        pub block_write_count: u64,
+        pub block_read_count: u64,
+        pub inline_write_count: u64,
+        pub inline_read_count: u64,
+        pub committed_object_count: u64,
+        pub quarantined_object_count: u64,
+        pub missing_resolve_count: u64,
+        pub obmm_pool_enabled: bool,
+        pub obmm_pool_payload_write_count: u64,
+        pub obmm_pool_payload_read_count: u64,
+        pub obmm_pool_queue_submit_count: u64,
+        pub obmm_pool_queue_deliver_count: u64,
+        pub obmm_pool_bytes_used: u64,
+        pub checksum: u64,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct LingquObjectServiceProfile {
+        pub metadata_latency_us: SimTimestamp,
+        pub shmem_latency_us: SimTimestamp,
+        pub block_latency_us: SimTimestamp,
+        pub inline_value_limit: u64,
+        pub queue_depth: usize,
+        pub obmm_pool: LingquObmmPoolProfile,
+    }
+
+    impl Default for LingquObjectServiceProfile {
+        fn default() -> Self {
+            Self {
+                metadata_latency_us: 8,
+                shmem_latency_us: 3,
+                block_latency_us: 30,
+                inline_value_limit: 64,
+                queue_depth: 16,
+                obmm_pool: LingquObmmPoolProfile::default(),
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct LingquObmmPoolProfile {
+        pub enabled: bool,
+        pub node_count: u64,
+        pub queue_depth: usize,
+        pub pool_bytes: u64,
+        pub payload_base_offset: u64,
+        pub payload_alignment: u64,
+    }
+
+    impl Default for LingquObmmPoolProfile {
+        fn default() -> Self {
+            Self {
+                enabled: true,
+                node_count: 8,
+                queue_depth: 1024,
+                pool_bytes: 256 * 1024 * 1024,
+                payload_base_offset: 2 * 1024 * 1024,
+                payload_alignment: 64,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Eq, PartialEq)]
+    struct LingquObmmPoolPayload {
+        storage_ref: String,
+        offset: u64,
+        bytes: u64,
+        checksum: u64,
+        owner_entity: u64,
+        payload: Vec<u8>,
+    }
+
+    #[derive(Debug, Clone, Eq, PartialEq)]
+    struct LingquObmmQueueDesc {
+        producer_entity: u64,
+        consumer_entity: u64,
+        storage_ref: String,
+        offset: u64,
+        bytes: u64,
+        checksum: u64,
+        version: u64,
+    }
+
+    #[derive(Debug, Clone, Copy, Default)]
+    struct LingquObmmPoolStats {
+        payload_write_count: u64,
+        payload_read_count: u64,
+        queue_submit_count: u64,
+        queue_deliver_count: u64,
+        bytes_used: u64,
+    }
+
+    #[derive(Debug)]
+    struct LingquObmmPoolBackend {
+        profile: LingquObmmPoolProfile,
+        next_payload_offset: u64,
+        payloads: HashMap<String, LingquObmmPoolPayload>,
+        delivered_descs: Vec<LingquObmmQueueDesc>,
+        stats: LingquObmmPoolStats,
+    }
+
+    impl LingquObmmPoolBackend {
+        fn new(profile: LingquObmmPoolProfile) -> Self {
+            Self {
+                profile,
+                next_payload_offset: profile.payload_base_offset,
+                payloads: HashMap::new(),
+                delivered_descs: Vec::new(),
+                stats: LingquObmmPoolStats::default(),
+            }
+        }
+
+        fn publish_payloads(
+            &mut self,
+            placements: &mut [LingquPayloadPlacement],
+            payload: &[u8],
+            producer_entity: u64,
+            owner_entity: Option<u64>,
+            version: u64,
+        ) -> Result<(), &'static str> {
+            if !self.profile.enabled {
+                return Ok(());
+            }
+            for placement in placements
+                .iter_mut()
+                .filter(|placement| placement.backend == LingquPayloadBackend::Shmem)
+            {
+                let owner = owner_entity.unwrap_or(producer_entity);
+                let storage_ref = if placement.storage_ref.is_empty() {
+                    format!("obmm://node/{owner}/payload/{version}/{}", placement.offset)
+                } else {
+                    placement.storage_ref.clone()
+                };
+                let offset = self.allocate_payload_offset(placement.bytes)?;
+                let segment_id =
+                    0x0b00_0000u64 + owner.min(self.profile.node_count.saturating_sub(1));
+
+                placement.storage_ref = storage_ref.clone();
+                placement.segment = Some(SegmentHandle(segment_id));
+                placement.offset = offset;
+                self.payloads.insert(
+                    storage_ref.clone(),
+                    LingquObmmPoolPayload {
+                        storage_ref: storage_ref.clone(),
+                        offset,
+                        bytes: placement.bytes,
+                        checksum: placement.checksum,
+                        owner_entity: owner,
+                        payload: payload.to_vec(),
+                    },
+                );
+                self.stats.payload_write_count += 1;
+                self.stats.bytes_used = self
+                    .stats
+                    .bytes_used
+                    .max(offset.saturating_add(placement.bytes));
+                self.enqueue_desc(LingquObmmQueueDesc {
+                    producer_entity,
+                    consumer_entity: owner,
+                    storage_ref,
+                    offset,
+                    bytes: placement.bytes,
+                    checksum: placement.checksum,
+                    version,
+                })?;
+            }
+            Ok(())
+        }
+
+        fn get_ref(&self, storage_ref: &str) -> Option<&[u8]> {
+            self.payloads
+                .get(storage_ref)
+                .map(|payload| payload.payload.as_slice())
+        }
+
+        fn stats(&self) -> LingquObmmPoolStats {
+            self.stats
+        }
+
+        fn allocate_payload_offset(&mut self, bytes: u64) -> Result<u64, &'static str> {
+            let align = self.profile.payload_alignment.max(1);
+            let offset = align_up_u64(self.next_payload_offset, align)?;
+            let next = offset
+                .checked_add(bytes)
+                .ok_or("obmm_pool_payload_offset_overflow")?;
+            if next > self.profile.pool_bytes {
+                return Err("obmm_pool_full");
+            }
+            self.next_payload_offset = next;
+            Ok(offset)
+        }
+
+        fn enqueue_desc(&mut self, desc: LingquObmmQueueDesc) -> Result<(), &'static str> {
+            if self.profile.queue_depth == 0 {
+                return Err("obmm_pool_queue_disabled");
+            }
+            self.stats.queue_submit_count += 1;
+            self.stats.queue_deliver_count += 1;
+            self.delivered_descs.push(desc);
+            Ok(())
+        }
+    }
+
+    fn align_up_u64(value: u64, align: u64) -> Result<u64, &'static str> {
+        let mask = align.checked_sub(1).ok_or("obmm_pool_bad_alignment")?;
+        value
+            .checked_add(mask)
+            .map(|value| value & !mask)
+            .ok_or("obmm_pool_alignment_overflow")
+    }
+
+    #[derive(Debug)]
+    pub struct LingquObjectServiceStub {
+        profile: LingquObjectServiceProfile,
+        records: HashMap<String, Vec<LingquObjectRecord>>,
+        completions: VecDeque<QueuedCompletion>,
+        next_op_id: u64,
+        report: LingquObjectServiceReport,
+        obmm_pool: LingquObmmPoolBackend,
+    }
+
+    impl LingquObjectServiceStub {
+        pub fn new(profile: LingquObjectServiceProfile) -> Self {
+            Self {
+                profile,
+                records: HashMap::new(),
+                completions: VecDeque::new(),
+                next_op_id: 0,
+                report: LingquObjectServiceReport {
+                    obmm_pool_enabled: profile.obmm_pool.enabled,
+                    ..LingquObjectServiceReport::default()
+                },
+                obmm_pool: LingquObmmPoolBackend::new(profile.obmm_pool),
+            }
+        }
+
+        fn next_handle(&mut self) -> ServiceOpHandle {
+            self.next_op_id += 1;
+            ServiceOpHandle(self.next_op_id)
+        }
+
+        fn ensure_queue_capacity(&self) -> Result<(), sim_core::SimError> {
+            if self.completions.len() >= self.profile.queue_depth {
+                return Err(sim_core::SimError::InvalidInput("object queue full"));
+            }
+            Ok(())
+        }
+
+        pub fn submit_publish(
+            &mut self,
+            req: LingquObjectPublishReq,
+            now: SimTimestamp,
+        ) -> Result<ServiceOpHandle, sim_core::SimError> {
+            self.ensure_queue_capacity()?;
+            let handle = self.next_handle();
+            let (status, ready_at) = self.publish_record(req.clone(), now);
+            self.queue_completion(handle, req.task, status, ready_at);
+            Ok(handle)
+        }
+
+        pub fn submit_append(
+            &mut self,
+            req: LingquObjectAppendReq,
+            now: SimTimestamp,
+        ) -> Result<ServiceOpHandle, sim_core::SimError> {
+            self.ensure_queue_capacity()?;
+            let key = format!("{}/{}", req.base_key.trim_end_matches('/'), req.suffix);
+            let publish_req = LingquObjectPublishReq {
+                task: req.task.clone(),
+                key,
+                kind: req.kind,
+                producer_entity: req.producer_entity,
+                owner_entity: req.owner_entity,
+                expected_version: req.previous_version,
+                metadata: req.metadata,
+                placements: req.placements,
+                payload_bytes: req.payload_bytes,
+            };
+            let handle = self.next_handle();
+            let (status, ready_at) = self.publish_record(publish_req, now);
+            if matches!(status, CompletionStatus::Success) {
+                self.report.append_count += 1;
+            }
+            self.queue_completion(handle, req.task, status, ready_at);
+            Ok(handle)
+        }
+
+        pub fn submit_resolve(
+            &mut self,
+            req: LingquObjectResolveReq,
+            now: SimTimestamp,
+        ) -> Result<ServiceOpHandle, sim_core::SimError> {
+            self.ensure_queue_capacity()?;
+            let handle = self.next_handle();
+            let resolved = self.resolve_record(&req).cloned();
+            let (status, latency) = match resolved.as_ref() {
+                Some(record) if record.state == LingquObjectState::Quarantined => {
+                    self.report.metadata_get_count += 1;
+                    (
+                        CompletionStatus::RetryableFailure {
+                            code: "object_quarantined".to_string(),
+                        },
+                        self.profile.metadata_latency_us,
+                    )
+                }
+                Some(record) if record.state == LingquObjectState::Committed => {
+                    self.report.resolve_count += 1;
+                    self.report.metadata_get_count += 1;
+                    let placement = self.select_placement(record, &req.preferred_backends);
+                    let payload_latency = self.record_read(placement);
+                    self.report.checksum = self.report_checksum();
+                    (
+                        CompletionStatus::Success,
+                        self.profile.metadata_latency_us + payload_latency,
+                    )
+                }
+                Some(_) => {
+                    self.report.metadata_get_count += 1;
+                    (
+                        CompletionStatus::RetryableFailure {
+                            code: "object_pending".to_string(),
+                        },
+                        self.profile.metadata_latency_us,
+                    )
+                }
+                None => {
+                    self.report.metadata_get_count += 1;
+                    self.report.missing_resolve_count += 1;
+                    self.report.checksum = self.report_checksum();
+                    (
+                        CompletionStatus::RetryableFailure {
+                            code: "object_missing".to_string(),
+                        },
+                        self.profile.metadata_latency_us,
+                    )
+                }
+            };
+            self.queue_completion(handle, req.task, status, now + latency);
+            Ok(handle)
+        }
+
+        pub fn poll_ready(&mut self, now: SimTimestamp) -> Vec<CompletionEvent> {
+            drain_ready(&mut self.completions, now)
+        }
+
+        pub fn report(&self) -> LingquObjectServiceReport {
+            let mut report = self.report;
+            let obmm = self.obmm_pool.stats();
+            report.obmm_pool_enabled = self.profile.obmm_pool.enabled;
+            report.obmm_pool_payload_write_count = obmm.payload_write_count;
+            report.obmm_pool_payload_read_count = obmm.payload_read_count;
+            report.obmm_pool_queue_submit_count = obmm.queue_submit_count;
+            report.obmm_pool_queue_deliver_count = obmm.queue_deliver_count;
+            report.obmm_pool_bytes_used = obmm.bytes_used;
+            report.committed_object_count = self
+                .records
+                .values()
+                .flatten()
+                .filter(|record| record.state == LingquObjectState::Committed)
+                .count() as u64;
+            report.quarantined_object_count = self
+                .records
+                .values()
+                .flatten()
+                .filter(|record| record.state == LingquObjectState::Quarantined)
+                .count() as u64;
+            report.checksum = self.report_checksum();
+            report
+        }
+
+        pub fn latest_record(&self, key: &str) -> Option<&LingquObjectRecord> {
+            self.records
+                .get(key)?
+                .iter()
+                .rev()
+                .find(|record| record.state == LingquObjectState::Committed)
+        }
+
+        pub fn get_copy(&self, key: &str, version: LingquObjectVersionSelector) -> Option<Vec<u8>> {
+            let record = self.record_for_selector(key, version)?;
+            if let Some(placement) = self.select_placement(record, &[LingquPayloadBackend::Shmem]) {
+                if let Some(payload) = self.obmm_pool.payloads.get(&placement.storage_ref) {
+                    return Some(payload.payload.clone());
+                }
+            }
+            Some(record.payload_bytes.clone())
+        }
+
+        pub fn get_ref(&self, key: &str, version: LingquObjectVersionSelector) -> Option<&[u8]> {
+            let record = self.record_for_selector(key, version)?;
+            if let Some(placement) = self.select_placement(record, &[LingquPayloadBackend::Shmem]) {
+                if let Some(payload) = self.obmm_pool.get_ref(&placement.storage_ref) {
+                    return Some(payload);
+                }
+            }
+            Some(record.payload_bytes.as_slice())
+        }
+
+        pub fn quarantine_latest(&mut self, key: &str) -> bool {
+            let Some(record) = self
+                .records
+                .get_mut(key)
+                .and_then(|records| records.iter_mut().rev().next())
+            else {
+                return false;
+            };
+            record.state = LingquObjectState::Quarantined;
+            self.report.checksum = self.report_checksum();
+            true
+        }
+
+        fn publish_record(
+            &mut self,
+            req: LingquObjectPublishReq,
+            now: SimTimestamp,
+        ) -> (CompletionStatus, SimTimestamp) {
+            self.report.publish_count += 1;
+            self.report.metadata_put_count += 1;
+            let next_version = self
+                .records
+                .get(&req.key)
+                .and_then(|records| records.last())
+                .map(|record| record.version + 1)
+                .unwrap_or(1);
+            if let Some(expected) = req.expected_version {
+                let current = next_version.saturating_sub(1);
+                if current != expected {
+                    self.report.checksum = self.report_checksum();
+                    return (
+                        CompletionStatus::RetryableFailure {
+                            code: "object_version_conflict".to_string(),
+                        },
+                        now + self.profile.metadata_latency_us,
+                    );
+                }
+            }
+            if req.metadata.bytes > self.profile.inline_value_limit && req.placements.is_empty() {
+                self.report.checksum = self.report_checksum();
+                return (
+                    CompletionStatus::RetryableFailure {
+                        code: "object_payload_too_large".to_string(),
+                    },
+                    now + self.profile.metadata_latency_us,
+                );
+            }
+            let mut placements = req.placements;
+            if let Err(code) = self.obmm_pool.publish_payloads(
+                &mut placements,
+                &req.payload_bytes,
+                req.producer_entity,
+                req.owner_entity,
+                next_version,
+            ) {
+                self.report.checksum = self.report_checksum();
+                return (
+                    CompletionStatus::RetryableFailure {
+                        code: code.to_string(),
+                    },
+                    now + self.profile.metadata_latency_us,
+                );
+            }
+            let placement_latency = self.record_writes(&placements);
+            let record = LingquObjectRecord {
+                key: req.key.clone(),
+                kind: req.kind,
+                version: next_version,
+                state: LingquObjectState::Committed,
+                producer_entity: req.producer_entity,
+                owner_entity: req.owner_entity,
+                bytes: req.metadata.bytes,
+                checksum: req.metadata.checksum,
+                dtype: req.metadata.dtype,
+                shape: req.metadata.shape,
+                layout: req.metadata.layout,
+                placements,
+                payload_bytes: req.payload_bytes,
+                created_at_us: now,
+                committed_at_us: Some(now + self.profile.metadata_latency_us + placement_latency),
+                expires_at_us: req.metadata.expires_at_us,
+            };
+            self.records.entry(req.key).or_default().push(record);
+            self.report.checksum = self.report_checksum();
+            (
+                CompletionStatus::Success,
+                now + self.profile.metadata_latency_us + placement_latency,
+            )
+        }
+
+        fn resolve_record(&self, req: &LingquObjectResolveReq) -> Option<&LingquObjectRecord> {
+            self.record_for_selector(&req.key, req.version)
+                .filter(|record| self.state_satisfies(record.state, req.min_state))
+        }
+
+        fn record_for_selector(
+            &self,
+            key: &str,
+            version: LingquObjectVersionSelector,
+        ) -> Option<&LingquObjectRecord> {
+            let records = self.records.get(key)?;
+            match version {
+                LingquObjectVersionSelector::LatestCommitted => {
+                    records.iter().rev().find(|record| {
+                        matches!(
+                            record.state,
+                            LingquObjectState::Committed | LingquObjectState::Quarantined
+                        )
+                    })
+                }
+                LingquObjectVersionSelector::Exact(version) => {
+                    records.iter().find(|record| record.version == version)
+                }
+                LingquObjectVersionSelector::AtLeast(version) => {
+                    records.iter().find(|record| record.version >= version)
+                }
+            }
+        }
+
+        fn state_satisfies(&self, state: LingquObjectState, min_state: LingquObjectState) -> bool {
+            match min_state {
+                LingquObjectState::Pending => true,
+                LingquObjectState::Committed => {
+                    matches!(
+                        state,
+                        LingquObjectState::Committed | LingquObjectState::Quarantined
+                    )
+                }
+                LingquObjectState::Tombstoned => state == LingquObjectState::Tombstoned,
+                LingquObjectState::Quarantined => state == LingquObjectState::Quarantined,
+            }
+        }
+
+        fn select_placement<'a>(
+            &self,
+            record: &'a LingquObjectRecord,
+            preferred: &[LingquPayloadBackend],
+        ) -> Option<&'a LingquPayloadPlacement> {
+            preferred
+                .iter()
+                .find_map(|backend| {
+                    record
+                        .placements
+                        .iter()
+                        .find(|placement| placement.backend == *backend)
+                })
+                .or_else(|| record.placements.first())
+        }
+
+        fn record_writes(&mut self, placements: &[LingquPayloadPlacement]) -> SimTimestamp {
+            let mut latency = 0;
+            if placements.is_empty() {
+                self.report.inline_write_count += 1;
+                return latency;
+            }
+            for placement in placements {
+                match placement.backend {
+                    LingquPayloadBackend::Inline => self.report.inline_write_count += 1,
+                    LingquPayloadBackend::Shmem => {
+                        self.report.shmem_write_count += 1;
+                        latency = latency.max(self.profile.shmem_latency_us);
+                    }
+                    LingquPayloadBackend::Block => {
+                        self.report.block_write_count += 1;
+                        latency = latency.max(self.profile.block_latency_us);
+                    }
+                    LingquPayloadBackend::Dfs | LingquPayloadBackend::External => {
+                        latency = latency.max(self.profile.block_latency_us);
+                    }
+                }
+            }
+            latency
+        }
+
+        fn record_read(&mut self, placement: Option<&LingquPayloadPlacement>) -> SimTimestamp {
+            match placement.map(|placement| placement.backend) {
+                Some(LingquPayloadBackend::Inline) | None => {
+                    self.report.inline_read_count += 1;
+                    0
+                }
+                Some(LingquPayloadBackend::Shmem) => {
+                    self.report.shmem_read_count += 1;
+                    self.obmm_pool.stats.payload_read_count += 1;
+                    self.profile.shmem_latency_us
+                }
+                Some(LingquPayloadBackend::Block) => {
+                    self.report.block_read_count += 1;
+                    self.profile.block_latency_us
+                }
+                Some(LingquPayloadBackend::Dfs | LingquPayloadBackend::External) => {
+                    self.profile.block_latency_us
+                }
+            }
+        }
+
+        fn queue_completion(
+            &mut self,
+            handle: ServiceOpHandle,
+            task: Option<TaskKey>,
+            status: CompletionStatus,
+            ready_at: SimTimestamp,
+        ) {
+            self.completions.push_back(QueuedCompletion {
+                ready_at,
+                event: CompletionEvent {
+                    op_id: handle.0,
+                    task,
+                    source: CompletionSource::DbService,
+                    status,
+                    finished_at: ready_at,
+                },
+            });
+        }
+
+        fn report_checksum(&self) -> u64 {
+            let mut acc = 0xcbf2_9ce4_8422_2325u64;
+            let mut keys = self.records.keys().collect::<Vec<_>>();
+            keys.sort();
+            for key in keys {
+                acc = checksum_str(acc, key);
+                if let Some(records) = self.records.get(key) {
+                    for record in records {
+                        acc = acc.wrapping_mul(0x0000_0100_0000_01b3)
+                            ^ record.version
+                            ^ record.bytes.rotate_left(7)
+                            ^ record.checksum.rotate_left(13)
+                            ^ record.producer_entity.rotate_left(17)
+                            ^ record.placements.len() as u64;
+                    }
+                }
+            }
+            acc
+        }
+    }
+
+    fn checksum_str(mut acc: u64, value: &str) -> u64 {
+        for byte in value.as_bytes() {
+            acc = acc.wrapping_mul(0x0000_0100_0000_01b3) ^ u64::from(*byte);
+        }
+        acc
+    }
+}
+
 pub mod weights {
     use super::block::{BlockServiceProfile, BlockServiceStub};
     use super::db::{DbPutReq, DbServiceProfile, DbServiceStub};
@@ -1014,6 +1787,12 @@ mod tests {
     use super::block::{BlockServiceProfile, BlockServiceStub};
     use super::db::{DbGetReq, DbPutReq, DbServiceProfile, DbServiceStub};
     use super::dfs::{DfsReadReq, DfsServiceProfile, DfsServiceStub, DfsWriteReq};
+    use super::object::{
+        LingquObjectKind, LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
+        LingquObjectResolveReq, LingquObjectServiceProfile, LingquObjectServiceStub,
+        LingquObjectState, LingquObjectVersionSelector, LingquObmmPoolProfile,
+        LingquPayloadBackend, LingquPayloadPlacement,
+    };
     use super::shmem::{ShmemGetReq, ShmemPutReq, ShmemServiceProfile, ShmemServiceStub};
     use super::weights::{
         ServiceObjectKind, ServiceObjectMetadataPut, ServiceObjectPayloadWrite,
@@ -1022,6 +1801,29 @@ mod tests {
     };
     use sim_core::{BlockHash, CompletionSource, CompletionStatus, SegmentHandle};
     use sim_runtime::{BlockReadReq, BlockWriteReq};
+
+    fn object_metadata(bytes: u64, checksum: u64) -> LingquObjectMetadata {
+        LingquObjectMetadata {
+            bytes,
+            checksum,
+            dtype: None,
+            shape: Vec::new(),
+            layout: None,
+            expires_at_us: None,
+        }
+    }
+
+    fn object_placement(backend: LingquPayloadBackend, bytes: u64) -> LingquPayloadPlacement {
+        LingquPayloadPlacement {
+            backend,
+            storage_ref: format!("object/{backend:?}/{bytes}"),
+            segment: Some(SegmentHandle(10)),
+            offset: 0,
+            bytes,
+            checksum: bytes ^ 0x55aa,
+            locality: LingquObjectLocality::DomainShared(0),
+        }
+    }
 
     #[test]
     fn block_service_stub_write_then_read_completes() {
@@ -1466,6 +2268,226 @@ mod tests {
     }
 
     #[test]
+    fn object_service_publishes_and_resolves_latest_inline_object() {
+        let mut svc = LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
+        svc.submit_publish(
+            LingquObjectPublishReq {
+                task: None,
+                key: "qwen3/session/s0/tokens/input".to_string(),
+                kind: LingquObjectKind::TokenBuffer,
+                producer_entity: 0,
+                owner_entity: Some(0),
+                expected_version: None,
+                metadata: object_metadata(16, 0x1234),
+                placements: vec![object_placement(LingquPayloadBackend::Inline, 16)],
+                payload_bytes: 0x1234u64.to_le_bytes().to_vec(),
+            },
+            10,
+        )
+        .expect("publish object");
+        let publish_events = svc.poll_ready(18);
+        assert_eq!(publish_events.len(), 1);
+        assert_eq!(publish_events[0].source, CompletionSource::DbService);
+        assert_eq!(publish_events[0].status, CompletionStatus::Success);
+        assert_eq!(
+            svc.latest_record("qwen3/session/s0/tokens/input")
+                .expect("latest record")
+                .version,
+            1
+        );
+        assert_eq!(
+            svc.get_copy(
+                "qwen3/session/s0/tokens/input",
+                LingquObjectVersionSelector::LatestCommitted
+            )
+            .expect("payload copy"),
+            0x1234u64.to_le_bytes().to_vec()
+        );
+        assert_eq!(
+            svc.get_ref(
+                "qwen3/session/s0/tokens/input",
+                LingquObjectVersionSelector::LatestCommitted
+            )
+            .expect("payload ref"),
+            0x1234u64.to_le_bytes().as_slice()
+        );
+
+        svc.submit_resolve(
+            LingquObjectResolveReq {
+                task: None,
+                key: "qwen3/session/s0/tokens/input".to_string(),
+                requester_entity: 1,
+                version: LingquObjectVersionSelector::LatestCommitted,
+                min_state: LingquObjectState::Committed,
+                preferred_backends: vec![LingquPayloadBackend::Inline],
+            },
+            20,
+        )
+        .expect("resolve object");
+        let resolve_events = svc.poll_ready(28);
+        assert_eq!(resolve_events.len(), 1);
+        assert_eq!(resolve_events[0].status, CompletionStatus::Success);
+        let report = svc.report();
+        assert_eq!(report.publish_count, 1);
+        assert_eq!(report.resolve_count, 1);
+        assert_eq!(report.inline_write_count, 1);
+        assert_eq!(report.inline_read_count, 1);
+        assert_eq!(report.committed_object_count, 1);
+        assert_ne!(report.checksum, 0);
+    }
+
+    #[test]
+    fn object_service_tracks_shmem_and_block_placements() {
+        let mut svc = LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
+        svc.submit_publish(
+            LingquObjectPublishReq {
+                task: None,
+                key: "qwen3/model/Qwen3-0.6B/layer/00/q_proj/shard/0".to_string(),
+                kind: LingquObjectKind::WeightShard,
+                producer_entity: 0,
+                owner_entity: None,
+                expected_version: None,
+                metadata: object_metadata(4096, 0x4567),
+                placements: vec![
+                    object_placement(LingquPayloadBackend::Block, 4096),
+                    object_placement(LingquPayloadBackend::Shmem, 1024),
+                ],
+                payload_bytes: 0x4567u64.to_le_bytes().to_vec(),
+            },
+            0,
+        )
+        .expect("publish weight");
+        let events = svc.poll_ready(38);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].status, CompletionStatus::Success);
+        let report = svc.report();
+        assert_eq!(report.block_write_count, 1);
+        assert_eq!(report.shmem_write_count, 1);
+        assert!(report.obmm_pool_enabled);
+        assert_eq!(report.obmm_pool_payload_write_count, 1);
+        assert_eq!(report.obmm_pool_queue_submit_count, 1);
+        let record = svc
+            .latest_record("qwen3/model/Qwen3-0.6B/layer/00/q_proj/shard/0")
+            .expect("latest weight");
+        let shmem = record
+            .placements
+            .iter()
+            .find(|placement| placement.backend == LingquPayloadBackend::Shmem)
+            .expect("shmem placement");
+        assert_eq!(shmem.segment, Some(SegmentHandle(0x0b00_0000)));
+        assert!(shmem.offset >= LingquObmmPoolProfile::default().payload_base_offset);
+
+        svc.submit_resolve(
+            LingquObjectResolveReq {
+                task: None,
+                key: "qwen3/model/Qwen3-0.6B/layer/00/q_proj/shard/0".to_string(),
+                requester_entity: 7,
+                version: LingquObjectVersionSelector::LatestCommitted,
+                min_state: LingquObjectState::Committed,
+                preferred_backends: vec![LingquPayloadBackend::Shmem, LingquPayloadBackend::Block],
+            },
+            40,
+        )
+        .expect("resolve hot weight");
+        let resolve_events = svc.poll_ready(51);
+        assert_eq!(resolve_events.len(), 1);
+        assert_eq!(resolve_events[0].status, CompletionStatus::Success);
+        assert_eq!(svc.report().shmem_read_count, 1);
+        assert_eq!(svc.report().obmm_pool_payload_read_count, 1);
+    }
+
+    #[test]
+    fn object_service_detects_version_conflict_and_missing_key() {
+        let mut svc = LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
+        svc.submit_publish(
+            LingquObjectPublishReq {
+                task: None,
+                key: "qwen3/session/s0/kv/layer/00/tile/0/position/00000001/k".to_string(),
+                kind: LingquObjectKind::KvCacheBlock,
+                producer_entity: 0,
+                owner_entity: Some(0),
+                expected_version: Some(7),
+                metadata: object_metadata(128, 0x9999),
+                placements: vec![object_placement(LingquPayloadBackend::Shmem, 128)],
+                payload_bytes: 0x9999u64.to_le_bytes().to_vec(),
+            },
+            0,
+        )
+        .expect("submit conflicting publish");
+        let conflict = svc.poll_ready(8);
+        assert_eq!(
+            conflict[0].status,
+            CompletionStatus::RetryableFailure {
+                code: "object_version_conflict".to_string()
+            }
+        );
+
+        svc.submit_resolve(
+            LingquObjectResolveReq {
+                task: None,
+                key: "missing".to_string(),
+                requester_entity: 0,
+                version: LingquObjectVersionSelector::LatestCommitted,
+                min_state: LingquObjectState::Committed,
+                preferred_backends: Vec::new(),
+            },
+            10,
+        )
+        .expect("missing resolve");
+        let missing = svc.poll_ready(18);
+        assert_eq!(
+            missing[0].status,
+            CompletionStatus::RetryableFailure {
+                code: "object_missing".to_string()
+            }
+        );
+        assert_eq!(svc.report().missing_resolve_count, 1);
+    }
+
+    #[test]
+    fn object_service_quarantine_blocks_normal_resolve() {
+        let mut svc = LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
+        let key = "qwen3/session/s0/hidden/boundary/node/0/to/1/step/12";
+        svc.submit_publish(
+            LingquObjectPublishReq {
+                task: None,
+                key: key.to_string(),
+                kind: LingquObjectKind::RuntimeTensor,
+                producer_entity: 0,
+                owner_entity: Some(1),
+                expected_version: None,
+                metadata: object_metadata(2048, 0xabcd),
+                placements: vec![object_placement(LingquPayloadBackend::Shmem, 2048)],
+                payload_bytes: 0xabcdu64.to_le_bytes().to_vec(),
+            },
+            0,
+        )
+        .expect("publish hidden boundary");
+        assert_eq!(svc.poll_ready(11)[0].status, CompletionStatus::Success);
+        assert!(svc.quarantine_latest(key));
+        svc.submit_resolve(
+            LingquObjectResolveReq {
+                task: None,
+                key: key.to_string(),
+                requester_entity: 1,
+                version: LingquObjectVersionSelector::LatestCommitted,
+                min_state: LingquObjectState::Committed,
+                preferred_backends: vec![LingquPayloadBackend::Shmem],
+            },
+            20,
+        )
+        .expect("resolve quarantined");
+        let events = svc.poll_ready(28);
+        assert_eq!(
+            events[0].status,
+            CompletionStatus::RetryableFailure {
+                code: "object_quarantined".to_string()
+            }
+        );
+        assert_eq!(svc.report().quarantined_object_count, 1);
+    }
+
+    #[test]
     fn weights_service_supports_host_load_and_multi_node_resolve_entries() {
         let mut svc = WeightsServiceStub::new();
         let load_stats = svc
@@ -1609,16 +2631,20 @@ mod tests {
         }
 
         let ready = svc.poll_ready(1000);
-        assert!(ready
-            .iter()
-            .filter(|event| event.source == CompletionSource::DbService)
-            .count()
-            >= 16);
-        assert!(ready
-            .iter()
-            .filter(|event| event.source == CompletionSource::BlockService)
-            .count()
-            >= 16);
+        assert!(
+            ready
+                .iter()
+                .filter(|event| event.source == CompletionSource::DbService)
+                .count()
+                >= 16
+        );
+        assert!(
+            ready
+                .iter()
+                .filter(|event| event.source == CompletionSource::BlockService)
+                .count()
+                >= 16
+        );
     }
 
     #[test]
@@ -1678,15 +2704,19 @@ mod tests {
         }
 
         let ready = svc.poll_ready(1000);
-        assert!(ready
-            .iter()
-            .filter(|event| event.source == CompletionSource::DbService)
-            .count()
-            >= 16);
-        assert!(ready
-            .iter()
-            .filter(|event| event.source == CompletionSource::ShmemService)
-            .count()
-            >= 16);
+        assert!(
+            ready
+                .iter()
+                .filter(|event| event.source == CompletionSource::DbService)
+                .count()
+                >= 16
+        );
+        assert!(
+            ready
+                .iter()
+                .filter(|event| event.source == CompletionSource::ShmemService)
+                .count()
+                >= 16
+        );
     }
 }

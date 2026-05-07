@@ -5,6 +5,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 
 use sim_chipbackend_simpler as simpler_capi;
 use sim_config::ScenarioConfig;
@@ -13,8 +14,8 @@ use sim_core::{
     BlockPlacement, CompletionEvent, CompletionSource, CompletionStatus, CopyDirection,
     CopyRequest, DispatchBackendProfile, DispatchBackendSpec, DispatchBufferBinding,
     DispatchHandle, DispatchRequest, DispatchRuntimeVariant, ExecutionContextCommand,
-    MemoryEndpoint, NodeId, OpId, PlLevel, RouteDecision, RouteReason, ServiceOpHandle,
-    SimEvent, SimTimestamp, SimplerRuntimeArg, TaskKey, TransferHandle,
+    MemoryEndpoint, NodeId, OpId, PlLevel, RouteDecision, RouteReason, ServiceOpHandle, SimEvent,
+    SimTimestamp, SimplerRuntimeArg, TaskKey, TransferHandle,
 };
 use sim_topology::SimTopology;
 
@@ -399,14 +400,6 @@ struct SimplerCapiBackendState {
     device_allocs: HashMap<(NodeId, sim_core::SegmentHandle), SimplerDeviceAlloc>,
 }
 
-impl Drop for SimplerCapiBackendState {
-    fn drop(&mut self) {
-        if let Some(runtime_library) = self.runtime_library.take() {
-            std::mem::forget(runtime_library);
-        }
-    }
-}
-
 #[derive(Debug, Default)]
 struct HostPayloadRegistry {
     segments: HashMap<(NodeId, sim_core::SegmentHandle), Vec<u8>>,
@@ -487,8 +480,12 @@ pub struct RuntimeContextSnapshot {
 #[derive(Debug)]
 struct SimplerLoadedRuntimeLibrary {
     path: PathBuf,
-    api: simpler_capi::RuntimeLibrary,
+    api: &'static simpler_capi::RuntimeLibrary,
 }
+
+static SIMPLER_RUNTIME_LIBRARY_CACHE: OnceLock<
+    Mutex<HashMap<PathBuf, &'static simpler_capi::RuntimeLibrary>>,
+> = OnceLock::new();
 
 struct EnvGuard {
     saved: Vec<(OsString, Option<OsString>)>,
@@ -645,19 +642,33 @@ fn ensure_simpler_runtime_library<'a>(
         None => false,
     };
     if path_changed {
-        if let Some(runtime_library) = state.runtime_library.take() {
-            std::mem::forget(runtime_library);
-        }
+        state.runtime_library = None;
     }
     if state.runtime_library.is_none() {
-        let api = simpler_capi::RuntimeLibrary::load(&expected)
-            .map_err(|err| format!("simpler_capi_load_runtime_library_failed:{err}"))?;
+        let api = cached_simpler_runtime_library(&expected)?;
         state.runtime_library = Some(SimplerLoadedRuntimeLibrary {
             path: expected,
             api,
         });
     }
     Ok(&state.runtime_library.as_ref().expect("runtime library").api)
+}
+
+fn cached_simpler_runtime_library(
+    expected: &Path,
+) -> Result<&'static simpler_capi::RuntimeLibrary, String> {
+    let cache = SIMPLER_RUNTIME_LIBRARY_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache = cache
+        .lock()
+        .map_err(|_| "simpler_capi_runtime_library_cache_poisoned".to_string())?;
+    if let Some(api) = cache.get(expected).copied() {
+        return Ok(api);
+    }
+    let api = simpler_capi::RuntimeLibrary::load(expected)
+        .map_err(|err| format!("simpler_capi_load_runtime_library_failed:{err}"))?;
+    let api = Box::leak(Box::new(api));
+    cache.insert(expected.to_path_buf(), api);
+    Ok(api)
 }
 
 fn validate_simpler_capi_dispatch_spec(
@@ -1598,11 +1609,11 @@ impl LocalRuntimeEngine {
                     reusable: context.reusable,
                     created_at: self.now,
                     last_used_at: self.now,
-                dispatch_count: 0,
-                reset_count: 0,
-                teardown_count: 0,
-                resident_bindings: HashMap::new(),
-            });
+                    dispatch_count: 0,
+                    reset_count: 0,
+                    teardown_count: 0,
+                    resident_bindings: HashMap::new(),
+                });
             if runtime_context.device_context_id != context.device_context_id {
                 return Err(sim_core::SimError::InvalidInput(
                     "runtime_context_device_mismatch",
@@ -1638,8 +1649,7 @@ impl LocalRuntimeEngine {
                         ));
                     }
                     runtime_context.generation = runtime_context.generation.saturating_add(1);
-                    runtime_context.reset_count =
-                        runtime_context.reset_count.saturating_add(1);
+                    runtime_context.reset_count = runtime_context.reset_count.saturating_add(1);
                     runtime_context.warm = false;
                     runtime_context.resident_bindings.clear();
                 }
@@ -1694,12 +1704,10 @@ impl LocalRuntimeEngine {
                             .shape
                             .iter()
                             .try_fold(1u64, |acc, dim| acc.checked_mul(*dim))
-                            .ok_or(sim_core::SimError::InvalidInput(
-                                "binding_shape_overflow",
-                            ))?;
-                        let expected_bytes = elem_count.checked_mul(byte_width).ok_or(
-                            sim_core::SimError::InvalidInput("binding_size_overflow"),
-                        )?;
+                            .ok_or(sim_core::SimError::InvalidInput("binding_shape_overflow"))?;
+                        let expected_bytes = elem_count
+                            .checked_mul(byte_width)
+                            .ok_or(sim_core::SimError::InvalidInput("binding_size_overflow"))?;
                         if expected_bytes != binding.bytes {
                             return Err(sim_core::SimError::InvalidInput(
                                 "binding_bytes_shape_mismatch",
@@ -2645,12 +2653,12 @@ mod tests {
     };
     use sim_config::ScenarioConfig;
     use sim_core::{
-        BackendDispatchOperation, BackendExecutionRequest, BlockHash, BufferUsage,
-        CompletionEvent, CompletionSource, CompletionStatus, CopyDirection, CopyRequest,
-        DispatchBackendSpec, DispatchBufferBinding, DispatchRequest, ExecutionContextCommand,
-        ExecutionContextRef, ExecutionLifecycle, ExecutionPlanRef, ExecutionStepKind,
-        FunctionLabel, HierarchyCoord, LogicalSystemId, MemoryEndpoint, PlLevel,
-        RequestCorrelation, SegmentHandle, SimEvent, TaskKey, TensorDType, TensorLayout,
+        BackendDispatchOperation, BackendExecutionRequest, BlockHash, BufferUsage, CompletionEvent,
+        CompletionSource, CompletionStatus, CopyDirection, CopyRequest, DispatchBackendSpec,
+        DispatchBufferBinding, DispatchRequest, ExecutionContextCommand, ExecutionContextRef,
+        ExecutionLifecycle, ExecutionPlanRef, ExecutionStepKind, FunctionLabel, HierarchyCoord,
+        LogicalSystemId, MemoryEndpoint, PlLevel, RequestCorrelation, SegmentHandle, SimEvent,
+        TaskKey, TensorDType, TensorLayout,
     };
     use sim_topology::SimTopology;
 
@@ -3428,8 +3436,8 @@ outputs:
         let mut runtime = LocalRuntimeEngine::from_config(&config);
         let mut sink = VecEventSink::default();
 
-        let make_request = |task_id: u64, lifecycle: ExecutionLifecycle, resident: bool| {
-            BackendExecutionRequest {
+        let make_request =
+            |task_id: u64, lifecycle: ExecutionLifecycle, resident: bool| BackendExecutionRequest {
                 correlation: RequestCorrelation {
                     request_id: format!("req-res-{task_id}"),
                     trace_id: None,
@@ -3460,8 +3468,7 @@ outputs:
                     strides: None,
                     resident,
                 }],
-            }
-        };
+            };
 
         runtime
             .submit_dispatch(
@@ -3513,8 +3520,8 @@ outputs:
         let mut runtime = LocalRuntimeEngine::from_config(&config);
         let mut sink = VecEventSink::default();
 
-        let make_request = |task_id: u64, lifecycle: ExecutionLifecycle, segment: u64| {
-            BackendExecutionRequest {
+        let make_request =
+            |task_id: u64, lifecycle: ExecutionLifecycle, segment: u64| BackendExecutionRequest {
                 correlation: RequestCorrelation {
                     request_id: format!("req-res-mismatch-{task_id}"),
                     trace_id: None,
@@ -3545,8 +3552,7 @@ outputs:
                     strides: None,
                     resident: true,
                 }],
-            }
-        };
+            };
 
         runtime
             .submit_dispatch(
@@ -3594,7 +3600,9 @@ outputs:
 
         assert!(matches!(
             err,
-            Err(sim_core::SimError::InvalidInput("resident_binding_mismatch"))
+            Err(sim_core::SimError::InvalidInput(
+                "resident_binding_mismatch"
+            ))
         ));
     }
 

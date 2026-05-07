@@ -116,6 +116,34 @@ pub struct CompletionStatusStats {
     pub fatal_failure: u64,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct W4HandledResultStats {
+    pub total: u64,
+    pub payload_validated: u64,
+    pub begin: u64,
+    pub active: u64,
+    pub finish: u64,
+    pub request_control_only: u64,
+    pub hot_hit: u64,
+    pub filled_from_block: u64,
+    pub stable_hot: u64,
+    pub promoted_hot: u64,
+    pub reloaded_hot: u64,
+    pub control_only: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct W4ServiceResultStats {
+    pub total: u64,
+    pub request_control: u64,
+    pub kvcache: u64,
+    pub request_republished: u64,
+    pub finish_control_refresh: u64,
+    pub kv_republished: u64,
+    pub hot_hit_refresh: u64,
+    pub reload_refresh: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventSummary {
     pub total_events: u64,
@@ -130,6 +158,10 @@ pub struct EventSummary {
     pub faults_injected: u64,
     pub completions_by_source: CompletionSourceStats,
     pub completions_by_status: CompletionStatusStats,
+    #[serde(default)]
+    pub w4_results_handled: W4HandledResultStats,
+    #[serde(default)]
+    pub w4_service_results: W4ServiceResultStats,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

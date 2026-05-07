@@ -7,6 +7,8 @@ use sim_topology::SimTopology;
 
 use crate::{GuestDescriptor, GuestEndpointSession, QemuBackendAdapter};
 
+const DEFAULT_SEGMENT_BYTES: u64 = 1024 * 1024;
+
 pub struct LinquUbBridge {
     adapter: QemuBackendAdapter,
     sessions: HashMap<u16, BridgeEndpointSession>,
@@ -35,7 +37,7 @@ impl LinquUbBridge {
             .map_err(|_| "register endpoint failed")?;
         let default_segment = self
             .adapter
-            .create_segment(&session, 8192)
+            .create_segment(&session, DEFAULT_SEGMENT_BYTES)
             .map_err(|_| "create default segment failed")?;
         self.sessions.insert(
             endpoint_id,
