@@ -127,12 +127,13 @@ fn qwen3_text_output_scenario_from_args() -> Option<PathBuf> {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct Qwen3DecodeLoopCliArgs {
     scenario_path: PathBuf,
     step_count: usize,
     prompt: Option<String>,
     matmul_batch: Option<usize>,
+    temperature: Option<f32>,
 }
 
 fn qwen3_decode_loop_args() -> anyhow::Result<Option<Qwen3DecodeLoopCliArgs>> {
@@ -151,6 +152,7 @@ where
             let mut step_count = None;
             let mut prompt = None;
             let mut matmul_batch = None;
+            let mut temperature = None;
             let mut positionals = Vec::new();
             let mut pending = args.peekable();
 
@@ -189,6 +191,16 @@ where
                     )?);
                 } else if let Some(value) = text.strip_prefix("--matmul-batch=") {
                     matmul_batch = Some(parse_positive_usize("--matmul-batch", value)?);
+                } else if text == "--temperature" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--temperature requires a value"))?;
+                    temperature = Some(parse_non_negative_f32(
+                        "--temperature",
+                        &next.to_string_lossy(),
+                    )?);
+                } else if let Some(value) = text.strip_prefix("--temperature=") {
+                    temperature = Some(parse_non_negative_f32("--temperature", value)?);
                 } else if text.starts_with("--") {
                     anyhow::bail!("unknown qwen3-decode-loop option: {text}");
                 } else {
@@ -226,10 +238,21 @@ where
                 step_count: step_count.unwrap_or(2),
                 prompt,
                 matmul_batch,
+                temperature,
             }))
         }
         _ => Ok(None),
     }
+}
+
+fn parse_non_negative_f32(label: &str, value: &str) -> anyhow::Result<f32> {
+    let parsed = value
+        .parse::<f32>()
+        .with_context(|| format!("{label} must be a finite non-negative number"))?;
+    if !parsed.is_finite() || parsed < 0.0 {
+        anyhow::bail!("{label} must be a finite non-negative number");
+    }
+    Ok(parsed)
 }
 
 fn parse_positive_usize(label: &str, value: &str) -> anyhow::Result<usize> {
@@ -478,6 +501,7 @@ mod tests {
         assert_eq!(args.step_count, 2);
         assert_eq!(args.prompt, None);
         assert_eq!(args.matmul_batch, None);
+        assert_eq!(args.temperature, None);
     }
 
     #[test]
@@ -527,6 +551,8 @@ mod tests {
             "Capital of China is",
             "--matmul-batch",
             "4",
+            "--temperature",
+            "0.7",
         ])
         .expect("parse decode loop args")
         .expect("decode loop args");
@@ -537,6 +563,7 @@ mod tests {
         assert_eq!(args.step_count, 32);
         assert_eq!(args.prompt.as_deref(), Some("Capital of China is"));
         assert_eq!(args.matmul_batch, Some(4));
+        assert_eq!(args.temperature, Some(0.7));
     }
 
     #[test]
@@ -546,6 +573,7 @@ mod tests {
             "--scenario=8host",
             "--steps=8",
             "--matmul-batch=2",
+            "--temperature=0",
             "Capital of China is",
         ])
         .expect("parse decode loop args")
@@ -557,6 +585,18 @@ mod tests {
         assert_eq!(args.step_count, 8);
         assert_eq!(args.prompt.as_deref(), Some("Capital of China is"));
         assert_eq!(args.matmul_batch, Some(2));
+        assert_eq!(args.temperature, Some(0.0));
+    }
+
+    #[test]
+    fn qwen3_decode_loop_args_reject_negative_temperature() {
+        let err = qwen3_decode_loop_args_from([
+            "qwen3-decode-loop",
+            "--scenario=4host",
+            "--temperature=-0.1",
+        ])
+        .expect_err("negative temperature must fail");
+        assert!(err.to_string().contains("--temperature"));
     }
 
     #[test]
@@ -607,13 +647,16 @@ fn run_qwen3_decode_loop_cli(args: &Qwen3DecodeLoopCliArgs) -> anyhow::Result<()
     prepare_qwen3_decode_loop_environment(args)?;
     std::env::set_var("SIM_QWEN3_DECODE_PROGRESS", "1");
     eprintln!(
-        "qwen3-decode-loop: scenario={} steps={} prompt_bytes={} matmul_batch={}",
+        "qwen3-decode-loop: scenario={} steps={} prompt_bytes={} matmul_batch={} temperature={}",
         scenario_path.display(),
         args.step_count,
         args.prompt.as_deref().map(str::len).unwrap_or(0),
         args.matmul_batch
             .map(|value| value.to_string())
-            .unwrap_or_else(|| "default".to_string())
+            .unwrap_or_else(|| "default".to_string()),
+        args.temperature
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "0".to_string())
     );
     let report = if let Some(prompt) = args.prompt.as_deref() {
         qwen3_dense_0_6b_decode_loop_report_with_prompt(&topology, args.step_count, prompt)
@@ -945,8 +988,14 @@ fn prepare_qwen3_decode_loop_environment(args: &Qwen3DecodeLoopCliArgs) -> anyho
     std::env::set_var("SIM_UAPI_SCENARIO_CONFIG", &scenario_env_path);
 
     let Some(matmul_batch) = args.matmul_batch else {
+        if let Some(temperature) = args.temperature {
+            std::env::set_var("SIM_QWEN3_TEMPERATURE", temperature.to_string());
+        }
         return Ok(());
     };
+    if let Some(temperature) = args.temperature {
+        std::env::set_var("SIM_QWEN3_TEMPERATURE", temperature.to_string());
+    }
     std::env::set_var("SIM_QWEN3_ROUND1_DISPATCH_BATCH", matmul_batch.to_string());
     if matmul_batch == 1 {
         return Ok(());

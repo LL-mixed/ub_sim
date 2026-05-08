@@ -985,6 +985,16 @@ pub struct Qwen3Dense06bFullVocabLogitsSummary {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct Qwen3Dense06bFullVocabSample {
+    pub logits: Qwen3Dense06bFullVocabLogitsSummary,
+    pub sampled_token_id: u64,
+    pub sampled_logit_bits: u64,
+    pub temperature_milli: u64,
+    pub sampling_seed: u64,
+    pub sampling_checksum: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Qwen3Dense06bSampledTextReference {
     pub token_id: u64,
     pub byte_len: u64,
@@ -3559,6 +3569,156 @@ pub fn full_vocab_logits_from_hidden_with_chunk(
     })
 }
 
+pub fn full_vocab_sample_from_hidden(
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    hidden: &[f32],
+    temperature: f32,
+    sampling_seed: u64,
+) -> Result<Qwen3Dense06bFullVocabSample, String> {
+    full_vocab_sample_from_hidden_with_chunk(tensors, hidden, temperature, sampling_seed, 4096)
+}
+
+pub fn full_vocab_sample_from_hidden_with_chunk(
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    hidden: &[f32],
+    temperature: f32,
+    sampling_seed: u64,
+    chunk_rows: usize,
+) -> Result<Qwen3Dense06bFullVocabSample, String> {
+    if !temperature.is_finite() || temperature < 0.0 {
+        return Err("qwen3_full_vocab_sample_temperature_invalid".to_string());
+    }
+    let logits = full_vocab_logits_from_hidden_with_chunk(tensors, hidden, chunk_rows)?;
+    let (sampled_token_id, sampled_logit_bits) = if temperature == 0.0 {
+        (logits.top_token_id, logits.top_logit_bits)
+    } else {
+        sample_full_vocab_token_from_hidden_with_chunk(
+            tensors,
+            hidden,
+            temperature,
+            sampling_seed,
+            chunk_rows,
+        )?
+    };
+    let temperature_milli = (temperature as f64 * 1_000.0).round().max(0.0) as u64;
+    let sampling_checksum = checksum_words(&[
+        logits.logits_checksum,
+        logits.top_token_id,
+        logits.top_logit_bits,
+        logits.runner_up_token_id,
+        logits.runner_up_logit_bits,
+        sampled_token_id,
+        sampled_logit_bits,
+        temperature_milli,
+        sampling_seed,
+    ]);
+    Ok(Qwen3Dense06bFullVocabSample {
+        logits,
+        sampled_token_id,
+        sampled_logit_bits,
+        temperature_milli,
+        sampling_seed,
+        sampling_checksum,
+    })
+}
+
+fn sample_full_vocab_token_from_hidden_with_chunk(
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    hidden: &[f32],
+    temperature: f32,
+    sampling_seed: u64,
+    chunk_rows: usize,
+) -> Result<(u64, u64), String> {
+    let hidden_size = QWEN3_DENSE_0_6B_PROFILE.hidden_size as usize;
+    if hidden.len() != hidden_size {
+        return Err(format!(
+            "qwen3_full_vocab_sample_hidden_size_mismatch:got={}:expected={hidden_size}",
+            hidden.len()
+        ));
+    }
+    if chunk_rows == 0 {
+        return Err("qwen3_full_vocab_sample_zero_chunk_rows".to_string());
+    }
+    let norm_weight = load_weight_vector(tensors, "model.norm.weight", hidden_size)?;
+    let normalized = rmsnorm_reference(hidden, &norm_weight);
+    let (head_name, head) = logits_head_tensor(tensors)?;
+    let expected_shape = vec![
+        QWEN3_DENSE_0_6B_PROFILE.vocab_size,
+        QWEN3_DENSE_0_6B_PROFILE.hidden_size,
+    ];
+    if head.shape != expected_shape {
+        return Err(format!(
+            "qwen3_dense_0_6b_weight_shape_mismatch:{head_name}:got={:?}:expected={:?}",
+            head.shape, expected_shape
+        ));
+    }
+
+    let vocab_size = QWEN3_DENSE_0_6B_PROFILE.vocab_size as usize;
+    let mut logits = Vec::with_capacity(vocab_size);
+    let mut max_logit = f32::NEG_INFINITY;
+    for start in (0..vocab_size).step_by(chunk_rows) {
+        let rows = chunk_rows.min(vocab_size - start);
+        let payload = materialize_tensor_row_range_payload(head_name, head, start as u64, rows)?;
+        let weights = decode_weight_vector(
+            head.dtype,
+            &payload,
+            rows.checked_mul(hidden_size)
+                .ok_or_else(|| "qwen3_full_vocab_sample_chunk_elems_overflow".to_string())?,
+        )?;
+        for row in 0..rows {
+            let row_base = row * hidden_size;
+            let logit = normalized
+                .iter()
+                .enumerate()
+                .map(|(col, value)| value * weights[row_base + col])
+                .sum::<f32>();
+            if logit.is_finite() && logit > max_logit {
+                max_logit = logit;
+            }
+            logits.push(logit);
+        }
+    }
+    if logits.is_empty() || !max_logit.is_finite() {
+        return Err("qwen3_full_vocab_sample_logits_invalid".to_string());
+    }
+
+    let temperature = temperature as f64;
+    let mut total = 0.0f64;
+    for logit in &logits {
+        if logit.is_finite() {
+            total += ((*logit as f64 - max_logit as f64) / temperature).exp();
+        }
+    }
+    if !total.is_finite() || total <= 0.0 {
+        return Err("qwen3_full_vocab_sample_probability_invalid".to_string());
+    }
+    let mut target = qwen3_unit_f64_from_seed(sampling_seed) * total;
+    for (token_id, logit) in logits.iter().enumerate() {
+        if !logit.is_finite() {
+            continue;
+        }
+        target -= ((*logit as f64 - max_logit as f64) / temperature).exp();
+        if target <= 0.0 {
+            return Ok((token_id as u64, logit.to_bits() as u64));
+        }
+    }
+    let token_id = logits.len() - 1;
+    Ok((token_id as u64, logits[token_id].to_bits() as u64))
+}
+
+fn qwen3_unit_f64_from_seed(seed: u64) -> f64 {
+    let mixed = qwen3_splitmix64(seed);
+    ((mixed >> 11) as f64) * (1.0 / ((1u64 << 53) as f64))
+}
+
+fn qwen3_splitmix64(mut value: u64) -> u64 {
+    value = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    let mut mixed = value;
+    mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    mixed ^ (mixed >> 31)
+}
+
 pub fn sampled_text_reference_from_logits(
     tokenizer_path: &Path,
     logits: &Qwen3Dense06bFullVocabLogitsSummary,
@@ -4645,6 +4805,28 @@ outputs:
   emit_data_service_trace: true
   emit_qemu_platform_trace: true
 "#;
+
+    #[test]
+    fn full_vocab_sample_rejects_invalid_temperature() {
+        let tensors = BTreeMap::new();
+        let err = full_vocab_sample_from_hidden_with_chunk(&tensors, &[], -0.1, 1, 1)
+            .expect_err("negative temperature must fail");
+        assert_eq!(err, "qwen3_full_vocab_sample_temperature_invalid");
+
+        let err = full_vocab_sample_from_hidden_with_chunk(&tensors, &[], f32::NAN, 1, 1)
+            .expect_err("nan temperature must fail");
+        assert_eq!(err, "qwen3_full_vocab_sample_temperature_invalid");
+    }
+
+    #[test]
+    fn full_vocab_sample_seed_unit_is_deterministic() {
+        let first = qwen3_unit_f64_from_seed(42);
+        let second = qwen3_unit_f64_from_seed(42);
+        let different = qwen3_unit_f64_from_seed(43);
+        assert!((0.0..1.0).contains(&first));
+        assert_eq!(first, second);
+        assert_ne!(first, different);
+    }
 
     #[test]
     fn layer_ir_and_tp_partition_are_explicit() {

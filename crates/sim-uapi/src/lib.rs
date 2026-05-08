@@ -10,7 +10,7 @@ use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sim_config::ScenarioConfig;
 use sim_core::{
@@ -25,7 +25,7 @@ use sim_core::{
 use sim_models::qwen3_dense_0_6b::{
     self, checksum_words, embedding_reference_last_hidden, embedding_reference_summary,
     forward_from_token_ids, forward_incremental_with_kv_cache_from_hidden,
-    forward_with_kv_cache_from_token_ids, full_vocab_logits_from_hidden,
+    forward_with_kv_cache_from_token_ids, full_vocab_sample_from_hidden,
     load_safetensors_path_metadata, load_tokenizer_asset_summary, logits_reference_summary,
     logits_reference_summary_with_hidden, mlp_reference_layer_summary,
     mlp_reference_layer_summary_with_hidden, prompt_token_ids_checksum,
@@ -34,7 +34,7 @@ use sim_models::qwen3_dense_0_6b::{
     token_piece_bytes_from_tokenizer_path, token_piece_decode_bytes, token_piece_from_policy,
     token_piece_from_tokenizer_path, tokenize_prompt_from_tokenizer_path, tokenizer_policy,
     weight_manifest_from_metadata, Qwen3Dense06bEmbeddingReferenceSummary,
-    Qwen3Dense06bForwardReference, Qwen3Dense06bFullVocabLogitsSummary, Qwen3Dense06bLayerKvCache,
+    Qwen3Dense06bForwardReference, Qwen3Dense06bFullVocabSample, Qwen3Dense06bLayerKvCache,
     Qwen3Dense06bLoadedWeights, Qwen3Dense06bLogitsReferenceSummary,
     Qwen3Dense06bMlpReferenceLayerSummary, Qwen3Dense06bMlpReferenceShardSummary,
     Qwen3Dense06bProfile, Qwen3Dense06bQkvReferenceLayerSummary,
@@ -1645,6 +1645,39 @@ fn qwen3_dense_0_6b_cached_loaded_weights(
     Ok(loaded)
 }
 
+fn qwen3_dense_0_6b_decode_temperature() -> Result<f32, String> {
+    let Some(value) = std::env::var("SIM_QWEN3_TEMPERATURE").ok() else {
+        return Ok(0.0);
+    };
+    let parsed = value
+        .parse::<f32>()
+        .map_err(|err| format!("qwen3_temperature_parse_failed:{value}:{err}"))?;
+    if !parsed.is_finite() || parsed < 0.0 {
+        return Err(format!("qwen3_temperature_invalid:{value}"));
+    }
+    Ok(parsed)
+}
+
+fn qwen3_dense_0_6b_decode_sampling_seed(loop_step: u64, position: u64, salt: u64) -> u64 {
+    let base = std::env::var("SIM_QWEN3_SAMPLING_SEED")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or_else(|| {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos() as u64)
+                .unwrap_or(0);
+            nanos ^ u64::from(std::process::id()).rotate_left(31)
+        });
+    checksum_words(&[
+        base,
+        loop_step,
+        position,
+        salt,
+        QWEN3_DENSE_0_6B_PROFILE.vocab_size,
+    ])
+}
+
 fn qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
     topology: &SimTopology,
     step_count: usize,
@@ -2265,10 +2298,13 @@ fn qwen3_dense_0_6b_incremental_decode_text_output_report(
         Some(forward) => Some(forward),
         None => qwen3_dense_0_6b_runtime_incremental_forward_summary_from_guest_input(guest_input)?,
     };
-    let full_vocab = match forward.as_ref() {
-        Some(forward) => {
-            qwen3_dense_0_6b_runtime_full_vocab_logits_summary(Some(&forward.final_hidden))?
-        }
+    let full_vocab_sample = match forward.as_ref() {
+        Some(forward) => qwen3_dense_0_6b_runtime_full_vocab_sample(
+            Some(&forward.final_hidden),
+            loop_step,
+            position,
+            state.cache_digest,
+        )?,
         None => None,
     };
     let tokenizer_path = qwen3_dense_0_6b_real_tokenizer_path();
@@ -2277,7 +2313,7 @@ fn qwen3_dense_0_6b_incremental_decode_text_output_report(
         loop_step,
         position,
         forward.as_ref(),
-        full_vocab.as_ref(),
+        full_vocab_sample.as_ref(),
         tokenizer_path.as_deref(),
     )?;
     let raw_piece =
@@ -2420,7 +2456,7 @@ fn qwen3_dense_0_6b_incremental_decode_sample(
     loop_step: u64,
     position: u64,
     forward: Option<&qwen3_dense_0_6b::Qwen3Dense06bForwardReference>,
-    full_vocab: Option<&Qwen3Dense06bFullVocabLogitsSummary>,
+    full_vocab_sample: Option<&Qwen3Dense06bFullVocabSample>,
     tokenizer_path: Option<&Path>,
 ) -> Result<Qwen3Dense06bTextOutputSample, String> {
     let vocab_size = QWEN3_DENSE_0_6B_PROFILE.vocab_size;
@@ -2439,25 +2475,36 @@ fn qwen3_dense_0_6b_incremental_decode_sample(
         full_vocab_logits_checksum,
         top_logit_bits,
         runner_up_logit_bits,
-    ) = full_vocab
-        .map(|summary| {
-            let top_logit = f32::from_bits(summary.top_logit_bits as u32);
-            let runner_logit = f32::from_bits(summary.runner_up_logit_bits as u32);
-            let margin = if top_logit.is_finite() && runner_logit.is_finite() {
-                ((top_logit - runner_logit).abs() * 1_000.0)
+    ) = full_vocab_sample
+        .map(|sample| {
+            let summary = &sample.logits;
+            let sampled_logit = f32::from_bits(sample.sampled_logit_bits as u32);
+            let runner_up_token = if sample.sampled_token_id == summary.top_token_id {
+                summary.runner_up_token_id
+            } else {
+                summary.top_token_id
+            };
+            let runner_logit_bits = if sample.sampled_token_id == summary.top_token_id {
+                summary.runner_up_logit_bits
+            } else {
+                summary.top_logit_bits
+            };
+            let runner_logit = f32::from_bits(runner_logit_bits as u32);
+            let margin = if sampled_logit.is_finite() && runner_logit.is_finite() {
+                ((sampled_logit - runner_logit).abs() * 1_000.0)
                     .round()
                     .max(1.0) as u64
             } else {
                 1
             };
             (
-                summary.top_token_id,
-                summary.runner_up_token_id,
+                sample.sampled_token_id,
+                runner_up_token,
                 margin,
                 summary.checked_token_count,
                 summary.logits_checksum,
                 summary.top_logit_bits,
-                summary.runner_up_logit_bits,
+                runner_logit_bits,
             )
         })
         .unwrap_or((
@@ -9749,8 +9796,12 @@ fn qwen3_dense_0_6b_logits_descriptors(
         .as_ref()
         .map(|forward| forward.final_hidden.as_slice())
         .or(round1_hidden.as_deref());
-    let runtime_full_vocab =
-        qwen3_dense_0_6b_runtime_full_vocab_logits_summary(runtime_logits_hidden)?;
+    let runtime_full_vocab_sample = qwen3_dense_0_6b_runtime_full_vocab_sample(
+        runtime_logits_hidden,
+        0,
+        0,
+        guest_input.len() as u64,
+    )?;
     for (step_index, (shard, _output, segment, checksum)) in round1_outputs.iter().enumerate() {
         let tile_id = shard.kv_block_start / 2;
         let kvcache_read_digest = kvcache_read_digest_by_tile
@@ -9805,36 +9856,43 @@ fn qwen3_dense_0_6b_logits_descriptors(
             full_vocab_logits_checksum,
             top_logit_bits,
             runner_up_logit_bits,
-        ) = runtime_full_vocab
+        ) = runtime_full_vocab_sample
             .as_ref()
-            .map(|summary| {
-                let top_logit = f32::from_bits(summary.top_logit_bits as u32);
-                let runner_logit = f32::from_bits(summary.runner_up_logit_bits as u32);
-                let margin = if top_logit.is_finite() && runner_logit.is_finite() {
-                    ((top_logit - runner_logit).abs() * 1_000.0)
+            .map(|sample| {
+                let summary = &sample.logits;
+                let sampled_logit = f32::from_bits(sample.sampled_logit_bits as u32);
+                let runner_up_token = if sample.sampled_token_id == summary.top_token_id {
+                    summary.runner_up_token_id
+                } else {
+                    summary.top_token_id
+                };
+                let runner_logit_bits = if sample.sampled_token_id == summary.top_token_id {
+                    summary.runner_up_logit_bits
+                } else {
+                    summary.top_logit_bits
+                };
+                let runner_logit = f32::from_bits(runner_logit_bits as u32);
+                let margin = if sampled_logit.is_finite() && runner_logit.is_finite() {
+                    ((sampled_logit - runner_logit).abs() * 1_000.0)
                         .round()
                         .max(1.0) as u64
                 } else {
                     1
                 };
                 (
-                    summary.top_token_id,
-                    summary.runner_up_token_id,
+                    sample.sampled_token_id,
+                    runner_up_token,
                     margin,
                     checksum_words(&[
-                        summary.top_token_id,
-                        summary.top_logit_bits,
+                        sample.sampled_token_id,
+                        sample.sampled_logit_bits,
                         summary.logits_checksum,
                     ]),
-                    checksum_words(&[
-                        summary.runner_up_token_id,
-                        summary.runner_up_logit_bits,
-                        summary.logits_checksum,
-                    ]),
+                    checksum_words(&[runner_up_token, runner_logit_bits, summary.logits_checksum]),
                     summary.checked_token_count,
                     summary.logits_checksum,
                     summary.top_logit_bits,
-                    summary.runner_up_logit_bits,
+                    runner_logit_bits,
                 )
             })
             .or_else(|| {
@@ -10984,17 +11042,22 @@ fn qwen3_dense_0_6b_real_logits_candidate_summary(
     }
 }
 
-fn qwen3_dense_0_6b_runtime_full_vocab_logits_summary(
+fn qwen3_dense_0_6b_runtime_full_vocab_sample(
     hidden: Option<&[f32]>,
-) -> Result<Option<Qwen3Dense06bFullVocabLogitsSummary>, String> {
+    loop_step: u64,
+    position: u64,
+    salt: u64,
+) -> Result<Option<Qwen3Dense06bFullVocabSample>, String> {
     let Some(hidden) = hidden else {
         return Ok(None);
     };
+    let temperature = qwen3_dense_0_6b_decode_temperature()?;
     let Ok(weights_path) = std::env::var("SIM_QWEN3_0_6B_WEIGHTS_PATH") else {
         return Ok(None);
     };
     let loaded = qwen3_dense_0_6b_cached_loaded_weights(&weights_path)?;
-    full_vocab_logits_from_hidden(&loaded.tensors, hidden).map(Some)
+    let seed = qwen3_dense_0_6b_decode_sampling_seed(loop_step, position, salt);
+    full_vocab_sample_from_hidden(&loaded.tensors, hidden, temperature, seed).map(Some)
 }
 
 fn qwen3_dense_0_6b_runtime_forward_summary_from_guest_input(
@@ -15090,9 +15153,8 @@ mod tests {
             .unwrap_or(QWEN3_DENSE_0_6B_PROFILE.vocab_size)
             .min(QWEN3_DENSE_0_6B_PROFILE.vocab_size);
         let real_weights_present = std::env::var("SIM_QWEN3_0_6B_WEIGHTS_PATH").is_ok();
-        let runtime_forward_expected =
-            real_weights_present
-                && !crate::qwen3_dense_0_6b_guest_input_token_ids(guest_input).is_empty();
+        let runtime_forward_expected = real_weights_present
+            && !crate::qwen3_dense_0_6b_guest_input_token_ids(guest_input).is_empty();
         let mut logits_text_byte_offset = 0u64;
         for entry in 0..LOGITS_ENTRY_COUNT {
             let base = LOGITS_TABLE_BASE + entry * LOGITS_TABLE_ENTRY_BYTES;
