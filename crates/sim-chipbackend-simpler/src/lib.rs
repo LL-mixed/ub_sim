@@ -369,6 +369,17 @@ impl Drop for DeviceContext<'_> {
 impl RuntimeLibrary {
     pub fn load(path: &Path) -> Result<Self, SimplerApiError> {
         let mut preloaded_libs = Vec::new();
+        // Load libsimpler_log.so FIRST with RTLD_GLOBAL so that libcpu_sim_context.so
+        // and the host runtime can resolve unified_log_* symbols against the single
+        // process-wide HostLogger instance.
+        if let Some(log_lib_path) = std::env::var_os("SIMPLER_LOG_LIBRARY") {
+            let log_lib_path = Path::new(&log_lib_path);
+            let lib = unsafe { Library::open(Some(log_lib_path), RTLD_NOW | RTLD_GLOBAL) }
+                .map_err(|err| SimplerApiError::LoadLibrary(err.to_string()))?;
+            preloaded_libs.push(lib);
+        }
+        // Then load libcpu_sim_context.so with RTLD_GLOBAL so the host runtime can
+        // resolve sim_context_set_* and pto_sim_get_* symbols.
         if let Some(sim_context_path) = std::env::var_os("SIMPLER_SIM_CONTEXT_LIBRARY") {
             let sim_context_path = Path::new(&sim_context_path);
             let lib = unsafe { Library::open(Some(sim_context_path), RTLD_NOW | RTLD_GLOBAL) }

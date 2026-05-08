@@ -154,14 +154,16 @@ def read_runtime_binaries(builder, api_kind: str, runtime_name: str, build_dir: 
             if runtime_binaries.sim_context_path is not None
             else None
         )
+        simpler_log = runtime_binaries.simpler_log_path.read_bytes()
         return (
             runtime_binaries.host_path.read_bytes(),
             runtime_binaries.aicpu_path.read_bytes(),
             runtime_binaries.aicore_path.read_bytes(),
             sim_context,
+            simpler_log,
         )
     host_binary, aicpu_binary, aicore_binary = builder.build(runtime_name, str(build_dir))
-    return host_binary, aicpu_binary, aicore_binary, None
+    return host_binary, aicpu_binary, aicore_binary, None, None
 
 
 def write_vector_kernel_source(build_dir: Path, func_id: int, tile_rows: int, tile_cols: int) -> Path | None:
@@ -628,7 +630,7 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
     )
 
     runtime_name = "host_build_graph"
-    host_binary, aicpu_binary, aicore_binary, sim_context_binary = read_runtime_binaries(
+    host_binary, aicpu_binary, aicore_binary, sim_context_binary, simpler_log_binary = read_runtime_binaries(
         builder, api_kind, runtime_name, build_dir
     )
     orch_source = example_root / spec.orch_source
@@ -695,12 +697,18 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
     aicore_path = output_dir / "runtime_aicore.bin"
     orch_path = output_dir / "orchestration.so"
     sim_context_path = output_dir / "libcpu_sim_context.so"
+    simpler_log_path = output_dir / "libsimpler_log.so"
     host_path.write_bytes(host_binary)
     aicpu_path.write_bytes(aicpu_binary)
     aicore_path.write_bytes(aicore_binary)
     orch_path.write_bytes(orch_binary)
 
     runtime_env = dict(reuse_runtime.get("runtime_env", {})) if reuse_runtime is not None else {}
+    # Load libsimpler_log.so FIRST with RTLD_GLOBAL so libcpu_sim_context.so can resolve
+    # unified_log_* symbols against the single process-wide HostLogger instance.
+    if reuse_runtime is None and simpler_log_binary is not None:
+        simpler_log_path.write_bytes(simpler_log_binary)
+        runtime_env["SIMPLER_LOG_LIBRARY"] = str(simpler_log_path)
     if reuse_runtime is None and sim_context_binary is not None:
         sim_context_path.write_bytes(sim_context_binary)
         runtime_env["SIMPLER_SIM_CONTEXT_LIBRARY"] = str(sim_context_path)
