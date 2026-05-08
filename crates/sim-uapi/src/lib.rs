@@ -450,6 +450,12 @@ pub struct Qwen3Dense06bTextOutputSample {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Qwen3Dense06bDecodeLoopReport {
     pub steps: Vec<Qwen3Dense06bDecodeLoopStepReport>,
+    pub max_token_count: u64,
+    pub stop_reason: Option<String>,
+    pub stop_token_id: Option<u64>,
+    pub ttft_micros: Option<u64>,
+    pub tpot_micros: Option<u64>,
+    pub total_duration_micros: u64,
     pub final_guest_input_checksum: u64,
     pub decode_chain_checksum: u64,
     pub generated_byte_len: u64,
@@ -1472,13 +1478,13 @@ pub fn qwen3_dense_0_6b_prefill_text_output_report(
 
 pub fn qwen3_dense_0_6b_decode_loop_report(
     topology: &SimTopology,
-    step_count: usize,
+    max_token_count: usize,
 ) -> Result<Qwen3Dense06bDecodeLoopReport, String> {
     let guest_input = qwen3_dense_0_6b_default_guest_input();
     let guest_input_report = qwen3_dense_0_6b_synthetic_guest_input_report(&guest_input);
     qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
         topology,
-        step_count,
+        max_token_count,
         guest_input,
         guest_input_report,
     )
@@ -1486,7 +1492,7 @@ pub fn qwen3_dense_0_6b_decode_loop_report(
 
 pub fn qwen3_dense_0_6b_decode_loop_report_with_prompt(
     topology: &SimTopology,
-    step_count: usize,
+    max_token_count: usize,
     prompt: &str,
 ) -> Result<Qwen3Dense06bDecodeLoopReport, String> {
     let tokenizer_path = qwen3_dense_0_6b_real_tokenizer_path()
@@ -1498,7 +1504,7 @@ pub fn qwen3_dense_0_6b_decode_loop_report_with_prompt(
         qwen3_dense_0_6b_prompt_guest_input_report(prompt, &prompt_tokens.token_ids, &guest_input)?;
     qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
         topology,
-        step_count,
+        max_token_count,
         guest_input,
         guest_input_report,
     )
@@ -1508,6 +1514,32 @@ fn qwen3_dense_0_6b_decode_progress(args: std::fmt::Arguments<'_>) {
     if std::env::var("SIM_QWEN3_DECODE_PROGRESS").as_deref() == Ok("1") {
         eprintln!("qwen3-decode-loop: {args}");
     }
+}
+
+fn qwen3_dense_0_6b_decode_stream_bytes(bytes: &[u8]) -> Result<(), String> {
+    if bytes.is_empty() || !qwen3_dense_0_6b_decode_stream_enabled() {
+        return Ok(());
+    }
+    let mut stdout = std::io::stdout().lock();
+    stdout
+        .write_all(bytes)
+        .and_then(|_| stdout.flush())
+        .map_err(|err| format!("qwen3_decode_stream_write_failed:{err}"))
+}
+
+fn qwen3_dense_0_6b_decode_stream_enabled() -> bool {
+    std::env::var("SIM_QWEN3_DECODE_STREAM")
+        .ok()
+        .as_deref()
+        .map(qwen3_dense_0_6b_env_flag_enabled)
+        .unwrap_or(false)
+}
+
+fn qwen3_dense_0_6b_env_flag_enabled(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 fn qwen3_dense_0_6b_decode_heartbeat(
@@ -1678,19 +1710,26 @@ fn qwen3_dense_0_6b_decode_sampling_seed(loop_step: u64, position: u64, salt: u6
     ])
 }
 
+const QWEN3_DENSE_0_6B_ENDOFTEXT_TOKEN_ID: u64 = 151643;
+const QWEN3_DENSE_0_6B_IM_END_TOKEN_ID: u64 = 151645;
+
 fn qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
     topology: &SimTopology,
-    step_count: usize,
+    max_token_count: usize,
     mut guest_input: Vec<u8>,
     mut guest_input_report: Qwen3Dense06bGuestInputReport,
 ) -> Result<Qwen3Dense06bDecodeLoopReport, String> {
-    let mut steps = Vec::with_capacity(step_count);
+    let mut steps = Vec::with_capacity(max_token_count);
     let mut generated_text = String::new();
     let mut generated_bytes = Vec::new();
     let mut decode_state: Option<Qwen3Dense06bIncrementalDecodeState> = None;
     let mut object_service = LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
     let session_id = qwen3_dense_0_6b_decode_guest_input_checksum(&guest_input);
-    for step_index in 0..step_count {
+    let mut stop_token_id = None;
+    let mut stop_reason = None;
+    let decode_started_at = Instant::now();
+    let mut first_token_at = None;
+    for step_index in 0..max_token_count {
         let step_started_at = Instant::now();
         let object_service_before = object_service.report();
         let guest_input_checksum = qwen3_dense_0_6b_decode_guest_input_checksum(&guest_input);
@@ -1701,10 +1740,13 @@ fn qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
             qwen3_dense_0_6b_decode_progress(format_args!(
                 "step {}/{}: runtime prefill start",
                 step_index + 1,
-                step_count
+                max_token_count
             ));
-            let _heartbeat =
-                qwen3_dense_0_6b_decode_heartbeat(step_index + 1, step_count, "runtime prefill");
+            let _heartbeat = qwen3_dense_0_6b_decode_heartbeat(
+                step_index + 1,
+                max_token_count,
+                "runtime prefill",
+            );
             qwen3_dense_0_6b_prefill_text_output_report_with_task_id_and_guest_input(
                 topology,
                 &guest_input,
@@ -1715,7 +1757,7 @@ fn qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
             qwen3_dense_0_6b_decode_progress(format_args!(
                 "step {}/{}: incremental decode start",
                 step_index + 1,
-                step_count
+                max_token_count
             ));
             qwen3_dense_0_6b_incremental_decode_text_output_report(
                 decode_state
@@ -1730,17 +1772,26 @@ fn qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
         qwen3_dense_0_6b_decode_progress(format_args!(
             "step {}/{}: runtime output parsed, selecting one token",
             step_index + 1,
-            step_count
+            max_token_count
         ));
         let mut selected_samples =
             qwen3_dense_0_6b_decode_step_selected_samples(&text_output.samples);
-        let selected_bytes = qwen3_dense_0_6b_decode_step_selected_bytes(&selected_samples);
+        let selected_stop_token_id = qwen3_dense_0_6b_decode_stop_token_id(&selected_samples);
+        let selected_bytes = if selected_stop_token_id.is_some() {
+            Vec::new()
+        } else {
+            qwen3_dense_0_6b_decode_step_selected_bytes(&selected_samples)
+        };
+        if first_token_at.is_none() && !selected_samples.is_empty() {
+            first_token_at = Some(Instant::now());
+        }
         for sample in &mut selected_samples {
             sample.byte_len = selected_bytes.len() as u64;
         }
         text_output.samples = selected_samples.clone();
         generated_text.push_str(&String::from_utf8_lossy(&selected_bytes));
         generated_bytes.extend_from_slice(&selected_bytes);
+        qwen3_dense_0_6b_decode_stream_bytes(&selected_bytes)?;
         text_output.real_inference = qwen3_dense_0_6b_real_inference_report_from_runtime_samples(
             &guest_input,
             &selected_samples,
@@ -1806,7 +1857,7 @@ fn qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
         qwen3_dense_0_6b_decode_progress(format_args!(
             "step {}/{}: appended {} token(s), next input tokens={}, duration: {}",
             step_index + 1,
-            step_count,
+            max_token_count,
             selected_samples.len(),
             qwen3_dense_0_6b_guest_input_token_ids(&next_guest_input).len(),
             qwen3_dense_0_6b_decode_duration_label(step_started_at.elapsed())
@@ -1814,10 +1865,42 @@ fn qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
         decode_state = Some(next_decode_state);
         guest_input = next_guest_input;
         guest_input_report = next_guest_input_report;
+        if let Some(token_id) = selected_stop_token_id {
+            stop_token_id = Some(token_id);
+            stop_reason = Some(qwen3_dense_0_6b_decode_stop_reason(token_id).to_string());
+            qwen3_dense_0_6b_decode_progress(format_args!(
+                "step {}/{}: stop token {} observed, stopping decode loop",
+                step_index + 1,
+                max_token_count,
+                token_id
+            ));
+            break;
+        }
     }
+    if stop_reason.is_none() && steps.len() >= max_token_count {
+        stop_reason = Some("max_token".to_string());
+    }
+    let total_duration = decode_started_at.elapsed();
+    let ttft_micros = first_token_at
+        .map(|instant| qwen3_dense_0_6b_duration_micros(instant.duration_since(decode_started_at)));
+    let tpot_micros = ttft_micros.map(|ttft| {
+        let decoded_tokens = steps.len() as u64;
+        if decoded_tokens <= 1 {
+            0
+        } else {
+            qwen3_dense_0_6b_duration_micros(total_duration).saturating_sub(ttft)
+                / (decoded_tokens - 1)
+        }
+    });
     let decode_chain_checksum = qwen3_dense_0_6b_decode_chain_checksum(&steps);
     Ok(Qwen3Dense06bDecodeLoopReport {
         steps,
+        max_token_count: max_token_count as u64,
+        stop_reason,
+        stop_token_id,
+        ttft_micros,
+        tpot_micros,
+        total_duration_micros: qwen3_dense_0_6b_duration_micros(total_duration),
         final_guest_input_checksum: qwen3_dense_0_6b_decode_guest_input_checksum(&guest_input),
         decode_chain_checksum,
         generated_byte_len: generated_bytes.len() as u64,
@@ -1828,6 +1911,35 @@ fn qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
 
 fn qwen3_dense_0_6b_decode_duration_label(duration: Duration) -> String {
     format!("{:.1} seconds", duration.as_secs_f64())
+}
+
+fn qwen3_dense_0_6b_duration_micros(duration: Duration) -> u64 {
+    duration.as_micros().min(u128::from(u64::MAX)) as u64
+}
+
+fn qwen3_dense_0_6b_decode_stop_token_id(samples: &[Qwen3Dense06bTextOutputSample]) -> Option<u64> {
+    samples.iter().find_map(|sample| {
+        if qwen3_dense_0_6b_is_decode_stop_token(sample.sampled_token, &sample.piece_lossy) {
+            Some(sample.sampled_token)
+        } else {
+            None
+        }
+    })
+}
+
+fn qwen3_dense_0_6b_is_decode_stop_token(token_id: u64, piece_lossy: &str) -> bool {
+    matches!(
+        token_id,
+        QWEN3_DENSE_0_6B_ENDOFTEXT_TOKEN_ID | QWEN3_DENSE_0_6B_IM_END_TOKEN_ID
+    ) || matches!(piece_lossy, "<|endoftext|>" | "<|im_end|>")
+}
+
+fn qwen3_dense_0_6b_decode_stop_reason(token_id: u64) -> &'static str {
+    match token_id {
+        QWEN3_DENSE_0_6B_ENDOFTEXT_TOKEN_ID => "endoftext",
+        QWEN3_DENSE_0_6B_IM_END_TOKEN_ID => "im_end",
+        _ => "special_token",
+    }
 }
 
 fn qwen3_dense_0_6b_decode_object_service_report(
@@ -12787,7 +12899,7 @@ mod tests {
         qwen3_dense_0_6b_decode_loop_report_with_prompt,
         qwen3_dense_0_6b_decode_step_selected_samples,
         qwen3_dense_0_6b_final_hidden_from_round1_outputs, qwen3_dense_0_6b_half_at,
-        qwen3_dense_0_6b_hidden_layer_owner_node,
+        qwen3_dense_0_6b_hidden_layer_owner_node, qwen3_dense_0_6b_is_decode_stop_token,
         qwen3_dense_0_6b_kvcache_tile_payload_from_projection, qwen3_dense_0_6b_logits_checksum,
         qwen3_dense_0_6b_mlp_activation_tile_from_attention_context,
         qwen3_dense_0_6b_projection_tile_from_half_input,
@@ -13512,6 +13624,11 @@ mod tests {
                 let report =
                     qwen3_dense_0_6b_decode_loop_report(&topology, 2).expect("decode loop report");
                 assert_eq!(report.steps.len(), 2);
+                assert_eq!(report.max_token_count, 2);
+                assert_eq!(report.stop_reason.as_deref(), Some("max_token"));
+                assert!(report.ttft_micros.is_some());
+                assert!(report.tpot_micros.is_some());
+                assert_ne!(report.total_duration_micros, 0);
                 assert_eq!(
                     report.final_guest_input_checksum,
                     report
@@ -17045,6 +17162,17 @@ outputs:
             qwen3_dense_0_6b_decode_duration_label(Duration::from_millis(3_240)),
             "3.2 seconds"
         );
+    }
+
+    #[test]
+    fn qwen3_decode_stop_token_detection_covers_qwen_special_tokens() {
+        assert!(qwen3_dense_0_6b_is_decode_stop_token(
+            151643,
+            "<|endoftext|>"
+        ));
+        assert!(qwen3_dense_0_6b_is_decode_stop_token(151645, "<|im_end|>"));
+        assert!(qwen3_dense_0_6b_is_decode_stop_token(7, "<|im_end|>"));
+        assert!(!qwen3_dense_0_6b_is_decode_stop_token(7, " Beijing"));
     }
 
     #[test]

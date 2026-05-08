@@ -130,10 +130,11 @@ fn qwen3_text_output_scenario_from_args() -> Option<PathBuf> {
 #[derive(Clone, Debug, PartialEq)]
 struct Qwen3DecodeLoopCliArgs {
     scenario_path: PathBuf,
-    step_count: usize,
+    max_token_count: usize,
     prompt: Option<String>,
     matmul_batch: Option<usize>,
     temperature: Option<f32>,
+    decode_report: Option<Qwen3DecodeReportVerbosity>,
 }
 
 fn qwen3_decode_loop_args() -> anyhow::Result<Option<Qwen3DecodeLoopCliArgs>> {
@@ -149,10 +150,11 @@ where
     match args.next() {
         Some(mode) if mode == "qwen3-decode-loop" => {
             let mut scenario_path = None;
-            let mut step_count = None;
+            let mut max_token_count = None;
             let mut prompt = None;
             let mut matmul_batch = None;
             let mut temperature = None;
+            let mut decode_report = None;
             let mut positionals = Vec::new();
             let mut pending = args.peekable();
 
@@ -167,13 +169,20 @@ where
                     scenario_path = Some(qwen3_scenario_path_from_value(value));
                 } else if let Some(value) = text.strip_prefix("--nodes=") {
                     scenario_path = Some(qwen3_scenario_path_from_value(value));
-                } else if text == "--steps" {
+                } else if text == "--max-token" || text == "--max_token" || text == "--steps" {
                     let next = pending
                         .next()
-                        .ok_or_else(|| anyhow::anyhow!("--steps requires a value"))?;
-                    step_count = Some(parse_positive_usize("--steps", &next.to_string_lossy())?);
+                        .ok_or_else(|| anyhow::anyhow!("{text} requires a value"))?;
+                    max_token_count = Some(parse_positive_usize(
+                        "--max-token",
+                        &next.to_string_lossy(),
+                    )?);
+                } else if let Some(value) = text.strip_prefix("--max-token=") {
+                    max_token_count = Some(parse_positive_usize("--max-token", value)?);
+                } else if let Some(value) = text.strip_prefix("--max_token=") {
+                    max_token_count = Some(parse_positive_usize("--max-token", value)?);
                 } else if let Some(value) = text.strip_prefix("--steps=") {
-                    step_count = Some(parse_positive_usize("--steps", value)?);
+                    max_token_count = Some(parse_positive_usize("--max-token", value)?);
                 } else if text == "--prompt" {
                     let next = pending
                         .next()
@@ -201,6 +210,17 @@ where
                     )?);
                 } else if let Some(value) = text.strip_prefix("--temperature=") {
                     temperature = Some(parse_non_negative_f32("--temperature", value)?);
+                } else if text == "--decode-report" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--decode-report requires a value"))?;
+                    decode_report = Some(parse_qwen3_decode_report_verbosity(
+                        &next.to_string_lossy(),
+                    )?);
+                } else if let Some(value) = text.strip_prefix("--decode-report=") {
+                    decode_report = Some(parse_qwen3_decode_report_verbosity(value)?);
+                } else if text == "--verbose" {
+                    decode_report = Some(Qwen3DecodeReportVerbosity::Verbose);
                 } else if text.starts_with("--") {
                     anyhow::bail!("unknown qwen3-decode-loop option: {text}");
                 } else {
@@ -215,14 +235,14 @@ where
                     positional_index += 1;
                 }
             }
-            if step_count.is_none() {
+            if max_token_count.is_none() {
                 if let Some(value) = positionals.get(positional_index) {
                     let value = value.to_string_lossy();
                     if let Ok(parsed) = value.parse::<usize>() {
                         if parsed == 0 {
-                            anyhow::bail!("step count must be > 0");
+                            anyhow::bail!("max token count must be > 0");
                         }
-                        step_count = Some(parsed);
+                        max_token_count = Some(parsed);
                         positional_index += 1;
                     }
                 }
@@ -235,10 +255,11 @@ where
 
             Ok(Some(Qwen3DecodeLoopCliArgs {
                 scenario_path: scenario_path.unwrap_or_else(default_scenario_path),
-                step_count: step_count.unwrap_or(2),
+                max_token_count: max_token_count.unwrap_or(2),
                 prompt,
                 matmul_batch,
                 temperature,
+                decode_report,
             }))
         }
         _ => Ok(None),
@@ -282,6 +303,7 @@ fn qwen3_scenario_path_from_value(value: &str) -> PathBuf {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Qwen3DecodeReportVerbosity {
+    Stream,
     Summary,
     Steps,
     Verbose,
@@ -299,18 +321,27 @@ fn qwen3_decode_report_verbosity_from_env(
     verbose: Option<&str>,
 ) -> Qwen3DecodeReportVerbosity {
     if let Some(report) = report {
-        return match report.trim().to_ascii_lowercase().as_str() {
-            "step" | "steps" | "compact" => Qwen3DecodeReportVerbosity::Steps,
-            "1" | "true" | "yes" | "on" | "verbose" | "full" | "detail" | "details" => {
-                Qwen3DecodeReportVerbosity::Verbose
-            }
-            _ => Qwen3DecodeReportVerbosity::Summary,
-        };
+        return parse_qwen3_decode_report_verbosity(report)
+            .unwrap_or(Qwen3DecodeReportVerbosity::Stream);
     }
     if verbose.map(env_flag_enabled).unwrap_or(false) {
         Qwen3DecodeReportVerbosity::Verbose
     } else {
-        Qwen3DecodeReportVerbosity::Summary
+        Qwen3DecodeReportVerbosity::Stream
+    }
+}
+
+fn parse_qwen3_decode_report_verbosity(value: &str) -> anyhow::Result<Qwen3DecodeReportVerbosity> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" | "stream" | "text" | "none" | "0" | "false" | "off" => {
+            Ok(Qwen3DecodeReportVerbosity::Stream)
+        }
+        "summary" => Ok(Qwen3DecodeReportVerbosity::Summary),
+        "step" | "steps" | "compact" => Ok(Qwen3DecodeReportVerbosity::Steps),
+        "1" | "true" | "yes" | "on" | "verbose" | "full" | "detail" | "details" => {
+            Ok(Qwen3DecodeReportVerbosity::Verbose)
+        }
+        other => anyhow::bail!("invalid --decode-report: {other}"),
     }
 }
 
@@ -487,7 +518,7 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn qwen3_decode_loop_args_default_to_two_steps() {
+    fn qwen3_decode_loop_args_default_to_two_max_tokens() {
         let args = qwen3_decode_loop_args_from([
             "qwen3-decode-loop",
             "scenarios/mvp_2host_single_domain.yaml",
@@ -498,14 +529,15 @@ mod tests {
             args.scenario_path,
             PathBuf::from("scenarios/mvp_2host_single_domain.yaml")
         );
-        assert_eq!(args.step_count, 2);
+        assert_eq!(args.max_token_count, 2);
         assert_eq!(args.prompt, None);
         assert_eq!(args.matmul_batch, None);
         assert_eq!(args.temperature, None);
+        assert_eq!(args.decode_report, None);
     }
 
     #[test]
-    fn qwen3_decode_loop_args_accept_explicit_step_count() {
+    fn qwen3_decode_loop_args_accept_explicit_max_token_count() {
         let args = qwen3_decode_loop_args_from([
             "qwen3-decode-loop",
             "scenarios/mvp_2host_single_domain.yaml",
@@ -517,7 +549,7 @@ mod tests {
             args.scenario_path,
             PathBuf::from("scenarios/mvp_2host_single_domain.yaml")
         );
-        assert_eq!(args.step_count, 4);
+        assert_eq!(args.max_token_count, 4);
         assert_eq!(args.prompt, None);
     }
 
@@ -535,7 +567,7 @@ mod tests {
             args.scenario_path,
             PathBuf::from("scenarios/mvp_2host_single_domain.yaml")
         );
-        assert_eq!(args.step_count, 2);
+        assert_eq!(args.max_token_count, 2);
         assert_eq!(args.prompt.as_deref(), Some("Hello Qwen3"));
     }
 
@@ -545,7 +577,7 @@ mod tests {
             "qwen3-decode-loop",
             "--scenario",
             "4host",
-            "--steps",
+            "--max-token",
             "32",
             "--prompt",
             "Capital of China is",
@@ -553,6 +585,8 @@ mod tests {
             "4",
             "--temperature",
             "0.7",
+            "--decode-report",
+            "steps",
         ])
         .expect("parse decode loop args")
         .expect("decode loop args");
@@ -560,10 +594,11 @@ mod tests {
             args.scenario_path,
             PathBuf::from("scenarios/mvp_4host_single_domain.yaml")
         );
-        assert_eq!(args.step_count, 32);
+        assert_eq!(args.max_token_count, 32);
         assert_eq!(args.prompt.as_deref(), Some("Capital of China is"));
         assert_eq!(args.matmul_batch, Some(4));
         assert_eq!(args.temperature, Some(0.7));
+        assert_eq!(args.decode_report, Some(Qwen3DecodeReportVerbosity::Steps));
     }
 
     #[test]
@@ -571,7 +606,7 @@ mod tests {
         let args = qwen3_decode_loop_args_from([
             "qwen3-decode-loop",
             "--scenario=8host",
-            "--steps=8",
+            "--max_token=8",
             "--matmul-batch=2",
             "--temperature=0",
             "Capital of China is",
@@ -582,10 +617,24 @@ mod tests {
             args.scenario_path,
             PathBuf::from("scenarios/mvp_8host_single_domain.yaml")
         );
-        assert_eq!(args.step_count, 8);
+        assert_eq!(args.max_token_count, 8);
         assert_eq!(args.prompt.as_deref(), Some("Capital of China is"));
         assert_eq!(args.matmul_batch, Some(2));
         assert_eq!(args.temperature, Some(0.0));
+    }
+
+    #[test]
+    fn qwen3_decode_loop_args_keep_steps_as_compat_alias() {
+        let args = qwen3_decode_loop_args_from([
+            "qwen3-decode-loop",
+            "--scenario=4host",
+            "--steps=8",
+            "Capital of China is",
+        ])
+        .expect("parse decode loop args")
+        .expect("decode loop args");
+        assert_eq!(args.max_token_count, 8);
+        assert_eq!(args.prompt.as_deref(), Some("Capital of China is"));
     }
 
     #[test]
@@ -600,10 +649,10 @@ mod tests {
     }
 
     #[test]
-    fn qwen3_decode_report_verbosity_defaults_to_summary() {
+    fn qwen3_decode_report_verbosity_defaults_to_stream() {
         assert_eq!(
             qwen3_decode_report_verbosity_from_env(None, None),
-            Qwen3DecodeReportVerbosity::Summary
+            Qwen3DecodeReportVerbosity::Stream
         );
     }
 
@@ -645,45 +694,51 @@ fn run_qwen3_decode_loop_cli(args: &Qwen3DecodeLoopCliArgs) -> anyhow::Result<()
     })?;
     let topology = SimTopology::from_config(&config).context("failed to build topology")?;
     prepare_qwen3_decode_loop_environment(args)?;
-    std::env::set_var("SIM_QWEN3_DECODE_PROGRESS", "1");
-    eprintln!(
-        "qwen3-decode-loop: scenario={} steps={} prompt_bytes={} matmul_batch={} temperature={}",
-        scenario_path.display(),
-        args.step_count,
-        args.prompt.as_deref().map(str::len).unwrap_or(0),
-        args.matmul_batch
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "default".to_string()),
-        args.temperature
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "0".to_string())
-    );
+    let verbosity = args
+        .decode_report
+        .unwrap_or_else(qwen3_decode_report_verbosity);
+    if matches!(
+        verbosity,
+        Qwen3DecodeReportVerbosity::Steps | Qwen3DecodeReportVerbosity::Verbose
+    ) && std::env::var("SIM_QWEN3_DECODE_PROGRESS").is_err()
+    {
+        std::env::set_var("SIM_QWEN3_DECODE_PROGRESS", "1");
+    }
+    if std::env::var("SIM_QWEN3_DECODE_STREAM").is_err() {
+        std::env::set_var("SIM_QWEN3_DECODE_STREAM", "1");
+    }
+    if !matches!(verbosity, Qwen3DecodeReportVerbosity::Stream) {
+        eprintln!(
+            "qwen3-decode-loop: scenario={} max_token={} prompt_bytes={} matmul_batch={} temperature={}",
+            scenario_path.display(),
+            args.max_token_count,
+            args.prompt.as_deref().map(str::len).unwrap_or(0),
+            args.matmul_batch
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "default".to_string()),
+            args.temperature
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "0".to_string())
+        );
+    }
     let report = if let Some(prompt) = args.prompt.as_deref() {
-        qwen3_dense_0_6b_decode_loop_report_with_prompt(&topology, args.step_count, prompt)
+        qwen3_dense_0_6b_decode_loop_report_with_prompt(&topology, args.max_token_count, prompt)
     } else {
-        qwen3_dense_0_6b_decode_loop_report(&topology, args.step_count)
+        qwen3_dense_0_6b_decode_loop_report(&topology, args.max_token_count)
     }
     .map_err(anyhow::Error::msg)
     .context("failed to run Qwen3 decode loop")?;
-    println!("qwen3_dense_0_6b_decode_loop");
-    println!("  scenario: {}", scenario_path.display());
-    println!("  steps: {}", report.steps.len());
-    println!(
-        "  final_guest_input_checksum: {:#x}",
-        report.final_guest_input_checksum
-    );
-    println!("  decode_chain: {:#x}", report.decode_chain_checksum);
-    println!(
-        "  generated_text_lossy: {}",
-        report.generated_text_lossy.escape_debug()
-    );
-    println!(
-        "  generated_bytes: len={} checksum={:#x}",
-        report.generated_byte_len, report.generated_byte_checksum
-    );
-    match qwen3_decode_report_verbosity() {
-        Qwen3DecodeReportVerbosity::Summary => {}
+    if qwen3_decode_stream_enabled() {
+        println!();
+    }
+    print_qwen3_decode_timing(&report);
+    match verbosity {
+        Qwen3DecodeReportVerbosity::Stream => {}
+        Qwen3DecodeReportVerbosity::Summary => {
+            print_qwen3_decode_summary(scenario_path, &report);
+        }
         Qwen3DecodeReportVerbosity::Steps => {
+            print_qwen3_decode_summary(scenario_path, &report);
             for step in &report.steps {
                 println!(
                     "  step={} runtime_prefill={} input_tokens={} sampled_tokens={} text_bytes={} contract_ready={} blockers={} synthetic_stages={} full_forward_math={} full_vocab_logits={} object_ready={} object_publish={} object_resolve={} object_append={} kv_resolve={} kv_append={} obmm_pool={} obmm_queue={} object_checksum={:#x} input_checksum={:#x} next_input_checksum={:#x}",
@@ -712,10 +767,66 @@ fn run_qwen3_decode_loop_cli(args: &Qwen3DecodeLoopCliArgs) -> anyhow::Result<()
             }
         }
         Qwen3DecodeReportVerbosity::Verbose => {
+            print_qwen3_decode_summary(scenario_path, &report);
             print_qwen3_decode_verbose_steps(&report.steps);
         }
     }
     Ok(())
+}
+
+fn print_qwen3_decode_timing(report: &sim_uapi::Qwen3Dense06bDecodeLoopReport) {
+    eprintln!(
+        "qwen3-decode-loop: timing stop={} decoded_tokens={} ttft={} tpot_avg={} total={}",
+        report.stop_reason.as_deref().unwrap_or("unknown"),
+        report.steps.len(),
+        qwen3_decode_micros_label(report.ttft_micros),
+        qwen3_decode_micros_label(report.tpot_micros),
+        qwen3_decode_micros_label(Some(report.total_duration_micros))
+    );
+}
+
+fn qwen3_decode_micros_label(value: Option<u64>) -> String {
+    value
+        .map(|micros| format!("{:.1} ms", micros as f64 / 1_000.0))
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
+fn qwen3_decode_stream_enabled() -> bool {
+    std::env::var("SIM_QWEN3_DECODE_STREAM")
+        .ok()
+        .as_deref()
+        .map(env_flag_enabled)
+        .unwrap_or(false)
+}
+
+fn print_qwen3_decode_summary(
+    scenario_path: &Path,
+    report: &sim_uapi::Qwen3Dense06bDecodeLoopReport,
+) {
+    println!("qwen3_dense_0_6b_decode_loop");
+    println!("  scenario: {}", scenario_path.display());
+    println!("  max_token: {}", report.max_token_count);
+    println!("  generated_tokens: {}", report.steps.len());
+    println!(
+        "  stopped: {}",
+        report.stop_reason.as_deref().unwrap_or("none")
+    );
+    if let Some(token_id) = report.stop_token_id {
+        println!("  stop_token_id: {}", token_id);
+    }
+    println!(
+        "  final_guest_input_checksum: {:#x}",
+        report.final_guest_input_checksum
+    );
+    println!("  decode_chain: {:#x}", report.decode_chain_checksum);
+    println!(
+        "  generated_text_lossy: {}",
+        report.generated_text_lossy.escape_debug()
+    );
+    println!(
+        "  generated_bytes: len={} checksum={:#x}",
+        report.generated_byte_len, report.generated_byte_checksum
+    );
 }
 
 fn print_qwen3_decode_verbose_steps(steps: &[sim_uapi::Qwen3Dense06bDecodeLoopStepReport]) {
