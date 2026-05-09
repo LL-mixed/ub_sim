@@ -220,7 +220,7 @@ validate_node_log() {
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_payload_seeded segment=[0-9]+ bytes=8192 checksum=0x[0-9a-f]+" "$node_id uapi kvcache payload seeded" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_payload_boundaries segment=[0-9]+ offsets=0,248,256,4088,4096,4104 status=ok" "$node_id uapi kvcache payload boundaries" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_shmem_descriptor segment=[0-9]+ bytes=128 puts=1 gets=1 role=hot_shared" "$node_id uapi kvcache shmem descriptor" || return 1
-  assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_shmem_descriptor segment=[0-9]+ bytes=8192 puts=1 gets=1 role=multi_block_boundary" "$node_id uapi kvcache boundary shmem descriptor" || return 1
+  assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_shmem_descriptor segment=[0-9]+ bytes=8192 puts=1 gets=1 role=legacy_demo_payload" "$node_id uapi kvcache boundary shmem descriptor" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_db_descriptor key=block/w4-${node_id}-block-0 bytes=[1-9][0-9]*" "$node_id uapi kvcache db descriptor" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_db_descriptor key=block/w4-${node_id}-block-1 bytes=[1-9][0-9]* role=aux_block" "$node_id uapi kvcache aux db descriptor" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_block_descriptor block=w4-${node_id}-block-0 segment=[0-9]+ writes=1 reads=1" "$node_id uapi kvcache block descriptor" || return 1
@@ -236,7 +236,7 @@ validate_node_log() {
   assert_log_has "$log_file" "\\[w4_guest\\] completion_sources chipbackend=[1-9][0-9]* shmem=[2-9][0-9]* dfs=[2-9][0-9]* db=[2-9][0-9]* block=[2-9][0-9]* guest_uapi=[0-9]+" "$node_id completion source coverage" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] completion_status success=15 retryable=0 fatal=0" "$node_id completion status" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_shmem_completion segment=[0-9]+ bytes=128 puts=1 gets=1 source=shmem_service role=hot_shared" "$node_id uapi kvcache shmem completion" || return 1
-  assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_shmem_completion segment=[0-9]+ bytes=8192 puts=1 gets=1 source=shmem_service role=multi_block_boundary" "$node_id uapi kvcache boundary shmem completion" || return 1
+  assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_shmem_completion segment=[0-9]+ bytes=8192 puts=1 gets=1 source=shmem_service role=legacy_demo_payload" "$node_id uapi kvcache boundary shmem completion" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_block_completion block=w4-${node_id}-block-0 writes=1 reads=1 source=block_service" "$node_id uapi kvcache block completion" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_block_completion block=w4-${node_id}-block-1 writes=1 reads=1 source=block_service role=aux_block_boundary" "$node_id uapi kvcache aux block completion" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_db_completion key=block/w4-${node_id}-block-0 bytes=[1-9][0-9]* puts=1 gets=1 source=db_service" "$node_id uapi kvcache db completion" || return 1
@@ -291,6 +291,7 @@ prepare_environment() {
   ENV_FILE="$OUT_DIR/headless_four_node_env.${RUN_ID_BASE}.sh" PORT_BASE="$PORT_BASE" RUN_ID="$RUN_ID_BASE" APPEND_EXTRA="$APPEND_BASE" \
     SIMPLER_HOST_MATMUL_MANIFEST="$SIMPLER_HOST_MATMUL_MANIFEST" \
     SIM_UAPI_W4_CHIPBACKEND_PROFILE="$SIM_UAPI_W4_CHIPBACKEND_PROFILE" \
+    SIM_QWEN3_0_6B_WEIGHTS_PATH="${SIM_QWEN3_0_6B_WEIGHTS_PATH:-}" \
     "$SCRIPT_DIR/launch_ub_four_node_headless.sh" >/dev/null
   if [[ ! -f "$OUT_DIR/headless_four_node_env.${RUN_ID_BASE}.sh" ]]; then
     trace "FAIL: missing headless env file for run_id=$RUN_ID_BASE"

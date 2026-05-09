@@ -38,7 +38,7 @@
 #define W4_DB_QWEN3_RUNTIME_RANGE_WAIT_MS 600000L
 #define W4_DB_CLUSTER_IMPORT_ALIGN (2ULL * 1024ULL * 1024ULL)
 #define W4_DB_CLUSTER_MAX_WINDOWS 16
-#define W4_DB_OBMM_OBJECT_BYTES 8192ULL
+#define W4_DB_OBMM_DEMO_OBJECT_BYTES 8192ULL
 #define W4_DB_OBMM_WEIGHT_OFFSET 0x10000ULL
 #define W4_DB_OBMM_KVCACHE_OFFSET 0x14000ULL
 #define W4_DB_OBMM_HIDDEN_RANGE_INPUT_OFFSET 0x18000ULL
@@ -46,6 +46,9 @@
 #define W4_DB_OBMM_HIDDEN_RANGE_RUNTIME_OUTPUT_OFFSET 0x98000ULL
 #define W4_DB_OBMM_QWEN3_TOKEN_RESULT_OFFSET 0xd9000ULL
 #define W4_DB_OBMM_QWEN3_ROUND_DONE_OFFSET 0xda000ULL
+#define W4_DB_OBMM_QWEN3_KV_STATE_OFFSET 0x100000ULL
+#define W4_DB_OBMM_QWEN3_KV_STATE_SLOT_BYTES 0x200000ULL
+#define W4_DB_OBMM_QWEN3_KV_STATE_SLOTS 16ULL
 #define W4_DB_OBMM_HIDDEN_RANGE_BYTES 262144ULL
 #define W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES 64ULL
 #define W4_DB_OBMM_QWEN3_ROUND_DONE_BYTES 64ULL
@@ -55,8 +58,13 @@
 #define W4_DB_OBMM_KIND_HIDDEN_RANGE_OUTPUT 4U
 #define W4_DB_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT 5U
 #define W4_DB_OBMM_KIND_QWEN3_TOKEN_RESULT 6U
+#define W4_DB_OBMM_KIND_QWEN3_KV_STATE 7U
 #define W4_DB_QWEN3_LAYER_COUNT 28U
 #define W4_DB_QWEN3_RANGE_NODES 8U
+#define W4_DB_QWEN3_KV_HEADS 8ULL
+#define W4_DB_QWEN3_HEAD_DIM 128ULL
+#define W4_DB_QWEN3_KV_STREAMS 2ULL
+#define W4_DB_QWEN3_KV_ELEM_BYTES 4ULL
 
 struct w4_db_cluster_meta {
     uint64_t export_mem_id;
@@ -130,6 +138,7 @@ struct w4_db_cluster_slot {
 
 struct w4_db_cluster_runtime {
     bool active;
+    bool lazy_remote_activation;
     int node_count;
     int local_idx;
     int obmm_fd;
@@ -155,6 +164,7 @@ static struct w4_db_cluster_runtime g_w4_db_cluster_runtime;
 
 static struct w4_db_record *w4_db_alloc_record(struct w4_db_service *svc);
 static struct w4_db_record *w4_db_find_record(struct w4_db_service *svc, const char *key);
+static int w4_db_activate_remote_slot(struct w4_db_cluster_runtime *rt, int owner_idx);
 
 static long w4_db_wallclock_ms(void)
 {
@@ -559,9 +569,36 @@ static const char *w4_db_object_kind_name(uint32_t payload_kind)
         return "hidden_range_runtime_output";
     case W4_DB_OBMM_KIND_QWEN3_TOKEN_RESULT:
         return "qwen3_token_result";
+    case W4_DB_OBMM_KIND_QWEN3_KV_STATE:
+        return "qwen3_kv_state";
     default:
         return "unknown";
     }
+}
+
+static uint64_t w4_db_qwen3_kv_state_slot_offset(uint64_t decode_step)
+{
+    return W4_DB_OBMM_QWEN3_KV_STATE_OFFSET +
+           (decode_step % W4_DB_OBMM_QWEN3_KV_STATE_SLOTS) *
+               W4_DB_OBMM_QWEN3_KV_STATE_SLOT_BYTES;
+}
+
+static uint64_t w4_db_qwen3_range_kv_state_bytes(uint32_t layer_start,
+                                                 uint32_t layer_end,
+                                                 uint64_t token_count)
+{
+    uint64_t layer_count;
+    uint64_t bytes_per_token_per_layer;
+
+    if (layer_end <= layer_start || layer_end > W4_DB_QWEN3_LAYER_COUNT) {
+        return 0;
+    }
+    layer_count = (uint64_t)(layer_end - layer_start);
+    bytes_per_token_per_layer = W4_DB_QWEN3_KV_HEADS *
+                                W4_DB_QWEN3_HEAD_DIM *
+                                W4_DB_QWEN3_KV_STREAMS *
+                                W4_DB_QWEN3_KV_ELEM_BYTES;
+    return layer_count * token_count * bytes_per_token_per_layer;
 }
 
 static void w4_db_qwen3_node_range(uint32_t node,
@@ -1654,8 +1691,15 @@ static int w4_db_push_obmm_object_desc_to(struct w4_db_cluster_runtime *rt,
     struct obmm_desc desc;
 
     if (!rt || target_node >= (uint32_t)rt->node_count ||
-        target_node == (uint32_t)rt->local_idx || !rt->egress_queues[target_node] ||
+        target_node == (uint32_t)rt->local_idx ||
         payload_len > UINT32_MAX || payload_kind > UINT16_MAX) {
+        return -1;
+    }
+    if (!rt->egress_queues[target_node] &&
+        w4_db_activate_remote_slot(rt, (int)target_node) != 0) {
+        return -1;
+    }
+    if (!rt->egress_queues[target_node]) {
         return -1;
     }
 
@@ -1960,7 +2004,7 @@ static int w4_db_cluster_runtime_init(struct w4_db_cluster_runtime *rt)
     char region_size_str[32];
     uint64_t region_size_mb;
     uint64_t payload_offset;
-    int i, peer_idx;
+    int i;
 
     if (!rt) {
         return -1;
@@ -1969,6 +2013,9 @@ static int w4_db_cluster_runtime_init(struct w4_db_cluster_runtime *rt)
         return 0;
     }
     w4_db_cluster_runtime_reset(rt);
+    rt->lazy_remote_activation =
+        getenv("SIM_W4_DB_LAZY_REMOTE_ACTIVATION") != NULL &&
+        strcmp(getenv("SIM_W4_DB_LAZY_REMOTE_ACTIVATION"), "1") == 0;
     memset(&local_meta, 0, sizeof(local_meta));
 
     if (!w4_db_resolve_cluster_nodes(local_ip, ips, &rt->node_count, &rt->local_idx)) {
@@ -2099,16 +2146,23 @@ static int w4_db_cluster_runtime_init(struct w4_db_cluster_runtime *rt)
         memset(&rt->slots[i].region, 0, sizeof(rt->slots[i].region));
         rt->slots[i].region.fd = -1;
 
-        /* Import, map, and resolve egress queue for this peer now so that
-         * SPSC queue barriers can push descriptors immediately. */
-        if (w4_db_activate_remote_slot(rt, i) != 0) {
-            printf("[w4_guest] gap db_service_cluster_stage=activate_remote_failed owner=node%d\n",
-                   i + 1);
-            goto fail;
+        if (!rt->lazy_remote_activation) {
+            /* Import, map, and resolve egress queue for this peer now so that
+             * SPSC queue barriers can push descriptors immediately. */
+            if (w4_db_activate_remote_slot(rt, i) != 0) {
+                printf("[w4_guest] gap db_service_cluster_stage=activate_remote_failed owner=node%d\n",
+                       i + 1);
+                goto fail;
+            }
         }
     }
 
     rt->active = true;
+    if (rt->lazy_remote_activation) {
+        printf("[w4_guest] stage db_service_cluster=local_pool_ready node=%d peers=%d activation=lazy backing=obmm_pool queue=obmm_spsc status=ok\n",
+               rt->local_idx + 1,
+               rt->node_count - 1);
+    }
     return 0;
 
 fail:
@@ -3328,11 +3382,11 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
 
     base = (uint8_t *)local_slot->region.addr;
     w4_db_fill_obmm_object_payload(base + W4_DB_OBMM_WEIGHT_OFFSET,
-                                   W4_DB_OBMM_OBJECT_BYTES,
+                                   W4_DB_OBMM_DEMO_OBJECT_BYTES,
                                    local_node,
                                    W4_DB_OBMM_KIND_WEIGHT_TILE);
     w4_db_fill_obmm_object_payload(base + W4_DB_OBMM_KVCACHE_OFFSET,
-                                   W4_DB_OBMM_OBJECT_BYTES,
+                                   W4_DB_OBMM_DEMO_OBJECT_BYTES,
                                    local_node,
                                    W4_DB_OBMM_KIND_KVCACHE_BLOCK);
     w4_db_fill_obmm_object_payload(base + W4_DB_OBMM_HIDDEN_RANGE_INPUT_OFFSET,
@@ -3344,9 +3398,9 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
                                    local_node,
                                    W4_DB_OBMM_KIND_HIDDEN_RANGE_OUTPUT);
     weight_checksum = w4_db_checksum_bytes(base + W4_DB_OBMM_WEIGHT_OFFSET,
-                                           W4_DB_OBMM_OBJECT_BYTES);
+                                           W4_DB_OBMM_DEMO_OBJECT_BYTES);
     kvcache_checksum = w4_db_checksum_bytes(base + W4_DB_OBMM_KVCACHE_OFFSET,
-                                            W4_DB_OBMM_OBJECT_BYTES);
+                                            W4_DB_OBMM_DEMO_OBJECT_BYTES);
     hidden_input_checksum =
         w4_db_checksum_bytes(base + W4_DB_OBMM_HIDDEN_RANGE_INPUT_OFFSET,
                              W4_DB_OBMM_HIDDEN_RANGE_BYTES);
@@ -3355,11 +3409,11 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
                              W4_DB_OBMM_HIDDEN_RANGE_BYTES);
     if (w4_db_update_region_range_at(local_slot,
                                      W4_DB_OBMM_WEIGHT_OFFSET,
-                                     W4_DB_OBMM_OBJECT_BYTES,
+                                     W4_DB_OBMM_DEMO_OBJECT_BYTES,
                                      true) != 0 ||
         w4_db_update_region_range_at(local_slot,
                                      W4_DB_OBMM_KVCACHE_OFFSET,
-                                     W4_DB_OBMM_OBJECT_BYTES,
+                                     W4_DB_OBMM_DEMO_OBJECT_BYTES,
                                      true) != 0 ||
         w4_db_update_region_range_at(local_slot,
                                      W4_DB_OBMM_HIDDEN_RANGE_INPUT_OFFSET,
@@ -3372,8 +3426,8 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
         printf("[w4_guest] gap obmm_service_v0=local_payload_publish_failed\n");
         return -1;
     }
-    (void)msync(base + W4_DB_OBMM_WEIGHT_OFFSET, W4_DB_OBMM_OBJECT_BYTES, MS_SYNC);
-    (void)msync(base + W4_DB_OBMM_KVCACHE_OFFSET, W4_DB_OBMM_OBJECT_BYTES, MS_SYNC);
+    (void)msync(base + W4_DB_OBMM_WEIGHT_OFFSET, W4_DB_OBMM_DEMO_OBJECT_BYTES, MS_SYNC);
+    (void)msync(base + W4_DB_OBMM_KVCACHE_OFFSET, W4_DB_OBMM_DEMO_OBJECT_BYTES, MS_SYNC);
     (void)msync(base + W4_DB_OBMM_HIDDEN_RANGE_INPUT_OFFSET,
                 W4_DB_OBMM_HIDDEN_RANGE_BYTES,
                 MS_SYNC);
@@ -3387,7 +3441,7 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
                                      local_node,
                                      W4_DB_OBMM_KIND_WEIGHT_TILE,
                                      W4_DB_OBMM_WEIGHT_OFFSET,
-                                     W4_DB_OBMM_OBJECT_BYTES,
+                                     W4_DB_OBMM_DEMO_OBJECT_BYTES,
                                      weight_checksum,
                                      &local_weight) != 0 ||
         w4_db_put_obmm_object_record(svc,
@@ -3396,7 +3450,7 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
                                      local_node,
                                      W4_DB_OBMM_KIND_KVCACHE_BLOCK,
                                      W4_DB_OBMM_KVCACHE_OFFSET,
-                                     W4_DB_OBMM_OBJECT_BYTES,
+                                     W4_DB_OBMM_DEMO_OBJECT_BYTES,
                                      kvcache_checksum,
                                      &local_kvcache) != 0 ||
         w4_db_put_obmm_object_record(svc,
@@ -3460,7 +3514,7 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
            local_hidden_output.object_backing_offset,
            local_hidden_output.object_backing_len,
            local_hidden_output.object_payload_checksum);
-    printf("[w4_guest] stage qwen3_range_forward_contract local=node%u layers=[%u,%u) count=%u next=node%u pipeline_nodes=%u total_layers=%u min_layers=3 max_layers=4 balanced=true placement_source=db_metadata input_key=%s output_key=%s backing=obmm_pool metadata=db status=ok\n",
+    printf("[w4_guest] stage qwen3_range_forward_contract local=node%u layers=[%u,%u) count=%u next=node%u pipeline_nodes=%u total_layers=%u min_layers=3 max_layers=4 balanced=true placement_source=db_metadata input_key=%s output_key=%s kv_state_bytes_per_token=%" PRIu64 " backing=obmm_pool metadata=db status=ok\n",
            local_node + 1U,
            local_range_start,
            local_range_end,
@@ -3469,7 +3523,8 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
            cluster_node_count,
            W4_DB_QWEN3_LAYER_COUNT,
            local_hidden_input.key,
-           local_hidden_output.key);
+           local_hidden_output.key,
+           w4_db_qwen3_range_kv_state_bytes(local_range_start, local_range_end, 1));
 
     if (w4_db_write_cluster_payload(svc, local_slot) != 0) {
         printf("[w4_guest] gap obmm_service_v0=metadata_publish_failed\n");
@@ -3579,8 +3634,8 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
         remote_kvcache.kind != W4_DB_RECORD_KVCACHE_OBJECT ||
         remote_hidden_input.kind != W4_DB_RECORD_HIDDEN_RANGE_INPUT ||
         remote_hidden_output.kind != W4_DB_RECORD_HIDDEN_RANGE_OUTPUT ||
-        remote_weight.object_backing_len != W4_DB_OBMM_OBJECT_BYTES ||
-        remote_kvcache.object_backing_len != W4_DB_OBMM_OBJECT_BYTES ||
+        remote_weight.object_backing_len != W4_DB_OBMM_DEMO_OBJECT_BYTES ||
+        remote_kvcache.object_backing_len != W4_DB_OBMM_DEMO_OBJECT_BYTES ||
         remote_hidden_input.object_backing_len != W4_DB_OBMM_HIDDEN_RANGE_BYTES ||
         remote_hidden_output.object_backing_len != W4_DB_OBMM_HIDDEN_RANGE_BYTES) {
         printf("[w4_guest] gap obmm_service_v0=remote_metadata_incoherent remote=node%u\n",
@@ -3717,7 +3772,7 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
     printf("[w4_guest] stage obmm_service_v0=payload_backing_resolved local=node%u remote=node%u objects=4 bytes=%" PRIu64 " hidden_bytes=%" PRIu64 " boundary_offsets=0,248,256,4088,4096 backing=obmm_pool metadata=db status=ok\n",
            local_node + 1U,
            remote_node + 1U,
-           (uint64_t)W4_DB_OBMM_OBJECT_BYTES,
+           (uint64_t)W4_DB_OBMM_DEMO_OBJECT_BYTES,
            (uint64_t)W4_DB_OBMM_HIDDEN_RANGE_BYTES);
     return 0;
 }
@@ -3923,22 +3978,30 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
                                                        uint64_t decode_step,
                                                        const uint8_t *payload,
                                                        uint64_t payload_len,
-                                                       uint64_t expected_checksum)
+                                                       uint64_t expected_checksum,
+                                                       const uint8_t *kv_payload,
+                                                       uint64_t kv_payload_len,
+                                                       uint64_t expected_kv_checksum)
 {
     struct w4_db_cluster_runtime *rt = &g_w4_db_cluster_runtime;
     struct w4_db_cluster_slot *local_slot;
     struct w4_db_record local_hidden_output;
+    struct w4_db_record local_kv_state;
     struct w4_db_qwen3_layer_range_placement local_placement;
     uint32_t target_node;
     bool terminal_range;
     char local_hidden_output_key[96];
+    char local_kv_state_key[96];
     uint64_t checksum;
+    uint64_t kv_checksum = 0;
+    uint64_t kv_state_offset = 0;
     uint16_t local_publish_seq;
     uint16_t object_epoch;
     long producer_publish_ms;
     uint8_t *base;
 
     if (!svc || !payload || payload_len != W4_DB_OBMM_HIDDEN_RANGE_BYTES ||
+        !kv_payload || kv_payload_len == 0 ||
         cluster_node_count != W4_DB_QWEN3_RANGE_NODES ||
         local_node >= cluster_node_count) {
         return -1;
@@ -3949,6 +4012,15 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
                local_node + 1U,
                checksum,
                expected_checksum);
+        return -1;
+    }
+    kv_checksum = w4_db_qwen3_hidden_payload_checksum(kv_payload, kv_payload_len);
+    if (kv_checksum != expected_kv_checksum) {
+        printf("[w4_guest] gap qwen3_range_forward=runtime_kv_checksum_mismatch local=node%u checksum=0x%016" PRIx64 " expected=0x%016" PRIx64 " bytes=%" PRIu64 "\n",
+               local_node + 1U,
+               kv_checksum,
+               expected_kv_checksum,
+               kv_payload_len);
         return -1;
     }
     if (w4_db_cluster_runtime_init(rt) != 0 ||
@@ -3966,23 +4038,47 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
             W4_DB_OBMM_HIDDEN_RANGE_RUNTIME_OUTPUT_OFFSET + W4_DB_OBMM_HIDDEN_RANGE_BYTES) {
         return -1;
     }
+    kv_state_offset = w4_db_qwen3_kv_state_slot_offset(decode_step);
+    if (kv_payload_len > W4_DB_OBMM_QWEN3_KV_STATE_SLOT_BYTES ||
+        kv_state_offset + kv_payload_len > local_slot->region.len) {
+        printf("[w4_guest] gap qwen3_range_forward=runtime_kv_payload_too_large local=node%u step=%" PRIu64 " bytes=%" PRIu64 " slot_bytes=%" PRIu64 " region_len=%zu\n",
+               local_node + 1U,
+               decode_step,
+               kv_payload_len,
+               (uint64_t)W4_DB_OBMM_QWEN3_KV_STATE_SLOT_BYTES,
+               local_slot->region.len);
+        return -1;
+    }
     base = (uint8_t *)local_slot->region.addr;
     memcpy(base + W4_DB_OBMM_HIDDEN_RANGE_RUNTIME_OUTPUT_OFFSET, payload, payload_len);
+    memcpy(base + kv_state_offset, kv_payload, kv_payload_len);
     if (w4_db_update_region_range_at(local_slot,
                                      W4_DB_OBMM_HIDDEN_RANGE_RUNTIME_OUTPUT_OFFSET,
                                      payload_len,
+                                     true) != 0 ||
+        w4_db_update_region_range_at(local_slot,
+                                     kv_state_offset,
+                                     kv_payload_len,
                                      true) != 0) {
         return -1;
     }
     (void)msync(base + W4_DB_OBMM_HIDDEN_RANGE_RUNTIME_OUTPUT_OFFSET,
                 payload_len,
                 MS_SYNC);
+    (void)msync(base + kv_state_offset, kv_payload_len, MS_SYNC);
     snprintf(local_hidden_output_key,
              sizeof(local_hidden_output_key),
              terminal_range ?
                  "hidden/qwen3-0.6b/node%u/range-runtime-output/decode-step%" PRIu64 :
                  "hidden/qwen3-0.6b/node%u/range-runtime-input/decode-step%" PRIu64,
              target_node + 1U,
+             decode_step);
+    snprintf(local_kv_state_key,
+             sizeof(local_kv_state_key),
+             "kvcache/qwen3-0.6b/node%u/layers-%u-%u/decode-step%" PRIu64,
+             local_node + 1U,
+             local_placement.layer_start,
+             local_placement.layer_end,
              decode_step);
     producer_publish_ms = w4_db_wallclock_ms();
     if (w4_db_put_obmm_object_record(svc,
@@ -3995,7 +4091,16 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
                                      W4_DB_OBMM_HIDDEN_RANGE_RUNTIME_OUTPUT_OFFSET,
                                      payload_len,
                                      checksum,
-                                     &local_hidden_output) != 0) {
+                                     &local_hidden_output) != 0 ||
+        w4_db_put_obmm_object_record(svc,
+                                     W4_DB_RECORD_KVCACHE_OBJECT,
+                                     local_kv_state_key,
+                                     local_node,
+                                     W4_DB_OBMM_KIND_QWEN3_KV_STATE,
+                                     kv_state_offset,
+                                     kv_payload_len,
+                                     kv_checksum,
+                                     &local_kv_state) != 0) {
         return -1;
     }
     {
@@ -4007,6 +4112,16 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
         }
         published_record->last_result_segment = (uint64_t)producer_publish_ms;
         local_hidden_output.last_result_segment = (uint64_t)producer_publish_ms;
+    }
+    {
+        struct w4_db_record *published_record =
+            w4_db_find_record(svc, local_kv_state_key);
+
+        if (!published_record) {
+            return -1;
+        }
+        published_record->last_result_segment = (uint64_t)producer_publish_ms;
+        local_kv_state.last_result_segment = (uint64_t)producer_publish_ms;
     }
     if (w4_db_write_cluster_payload(svc, local_slot) != 0) {
         return -1;
@@ -4056,6 +4171,102 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
            producer_publish_ms,
            object_epoch,
            local_publish_seq);
+    printf("[w4_guest] stage qwen3_range_kv_state_publish local=node%u step=%" PRIu64 " key=%s layers=[%u,%u) count=%u kv_bytes=%" PRIu64 " kv_checksum=0x%016" PRIx64 " offset=0x%016" PRIx64 " slot_bytes=%" PRIu64 " producer_publish_ms=%ld epoch=%u seq=%u backing=obmm_pool metadata=db status=ok\n",
+           local_node + 1U,
+           decode_step,
+           local_kv_state_key,
+           local_placement.layer_start,
+           local_placement.layer_end,
+           local_placement.layer_count,
+           kv_payload_len,
+           kv_checksum,
+           kv_state_offset,
+           (uint64_t)W4_DB_OBMM_QWEN3_KV_STATE_SLOT_BYTES,
+           producer_publish_ms,
+           object_epoch,
+           local_publish_seq);
+    return 0;
+}
+
+int w4_db_obmm_service_v0_resolve_previous_range_kv_state(struct w4_db_service *svc,
+                                                          uint32_t local_node,
+                                                          uint32_t cluster_node_count,
+                                                          uint64_t decode_step)
+{
+    struct w4_db_cluster_runtime *rt = &g_w4_db_cluster_runtime;
+    struct w4_db_cluster_slot *local_slot;
+    struct w4_db_qwen3_layer_range_placement local_placement;
+    struct w4_db_record kv_state;
+    char kv_state_key[96];
+    uint64_t checksum;
+    uint64_t previous_step;
+
+    if (!svc || decode_step == 0 ||
+        cluster_node_count != W4_DB_QWEN3_RANGE_NODES ||
+        local_node >= cluster_node_count) {
+        return 0;
+    }
+    previous_step = decode_step - 1U;
+    if (w4_db_cluster_runtime_init(rt) != 0 ||
+        w4_db_publish_qwen3_layer_range_placements(svc, cluster_node_count) != 0 ||
+        !w4_db_read_qwen3_layer_range_placement(svc,
+                                                local_node,
+                                                &local_placement)) {
+        return -1;
+    }
+    local_slot = &rt->slots[rt->local_idx];
+    if ((uint32_t)rt->local_idx != local_node || !local_slot->region.addr) {
+        return -1;
+    }
+    snprintf(kv_state_key,
+             sizeof(kv_state_key),
+             "kvcache/qwen3-0.6b/node%u/layers-%u-%u/decode-step%" PRIu64,
+             local_node + 1U,
+             local_placement.layer_start,
+             local_placement.layer_end,
+             previous_step);
+    memset(&kv_state, 0, sizeof(kv_state));
+    {
+        struct w4_db_record *local_record = w4_db_find_record(svc, kv_state_key);
+
+        if (local_record) {
+            kv_state = *local_record;
+        }
+    }
+    if (kv_state.kind != W4_DB_RECORD_KVCACHE_OBJECT ||
+        kv_state.object_payload_kind != W4_DB_OBMM_KIND_QWEN3_KV_STATE ||
+        kv_state.object_backing_len == 0 ||
+        kv_state.object_backing_offset + kv_state.object_backing_len >
+            local_slot->region.len) {
+        printf("[w4_guest] gap qwen3_range_kv_state_resolve=missing local=node%u step=%" PRIu64 " key=%s\n",
+               local_node + 1U,
+               decode_step,
+               kv_state_key);
+        return -1;
+    }
+    checksum = w4_db_qwen3_hidden_payload_checksum(
+        (const uint8_t *)local_slot->region.addr + kv_state.object_backing_offset,
+        kv_state.object_backing_len);
+    if (checksum != kv_state.object_payload_checksum) {
+        printf("[w4_guest] gap qwen3_range_kv_state_resolve=checksum_mismatch local=node%u step=%" PRIu64 " key=%s checksum=0x%016" PRIx64 " expected=0x%016" PRIx64 "\n",
+               local_node + 1U,
+               decode_step,
+               kv_state_key,
+               checksum,
+               kv_state.object_payload_checksum);
+        return -1;
+    }
+    printf("[w4_guest] stage qwen3_range_kv_state_resolve local=node%u step=%" PRIu64 " previous_step=%" PRIu64 " key=%s layers=[%u,%u) count=%u kv_bytes=%" PRIu64 " kv_checksum=0x%016" PRIx64 " offset=0x%016" PRIx64 " source=object_service backing=obmm_pool metadata=db status=ok\n",
+           local_node + 1U,
+           decode_step,
+           previous_step,
+           kv_state_key,
+           local_placement.layer_start,
+           local_placement.layer_end,
+           local_placement.layer_count,
+           kv_state.object_backing_len,
+           checksum,
+           kv_state.object_backing_offset);
     return 0;
 }
 

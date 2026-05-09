@@ -59,7 +59,8 @@
 #define MAX_SLOTS 16U
 #define W4_DEFAULT_TIMEOUT_MS 300000
 #define W4_DOORBELL_BATCH_SLOTS 4U
-#define W4_KVCACHE_PAYLOAD_BYTES 8192U
+#define W4_DEMO_KVCACHE_PAYLOAD_BYTES 8192U
+#define W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES 8192U
 #define W4_DISPATCH_INPUT_WORD 0x0000000000000000ULL
 #define W4_DISPATCH_RESULT_WORD 0x41a0000041a00000ULL
 #define W4_DISPATCH_RESULT_WORD_HOST_MATMUL 0x3f8000003f800000ULL
@@ -124,6 +125,8 @@
 #define W4_QWEN3_RESULT_BLOCK_TABLE_ENTRY_WORDS 16ULL
 #define W4_QWEN3_RESULT_BLOCK_TABLE_ENTRY_BYTES 128ULL
 #define W4_QWEN3_RESULT_BLOCK_SAMPLE_PAIRS 8ULL
+#define W4_QWEN3_RESULT_BLOCK_METADATA_END_OFFSET 32ULL
+#define W4_QWEN3_RESULT_BLOCK_RANGE_FORWARD_HEADER_OFFSET 40ULL
 #define W4_QWEN3_KVCACHE_TABLE_HEADER \
     (W4_QWEN3_RESULT_BLOCK_TABLE_BASE + \
      W4_QWEN3_EXPECTED_TILES * W4_QWEN3_KV_BLOCKS_PER_TILE * \
@@ -176,7 +179,7 @@
 #define W4_QWEN3_TEXT_OUTPUT_BYTES_TABLE_HEADER W4_QWEN3_TEXT_OUTPUT_TABLE_END
 #define W4_QWEN3_TEXT_OUTPUT_BYTES_TABLE_BASE \
     (W4_QWEN3_TEXT_OUTPUT_BYTES_TABLE_HEADER + 64ULL)
-#define W4_QWEN3_RANGE_FORWARD_TABLE_ENTRY_WORDS 16ULL
+#define W4_QWEN3_RANGE_FORWARD_TABLE_ENTRY_WORDS 18ULL
 #define W4_QWEN3_RANGE_FORWARD_TABLE_ENTRY_BYTES \
     (W4_QWEN3_RANGE_FORWARD_TABLE_ENTRY_WORDS * 8ULL)
 #define W4_QWEN3_OUTPUT_PAYLOAD_BYTES \
@@ -204,11 +207,15 @@ struct w4_qwen3_range_runtime_forward {
     uint64_t input_checksum;
     uint64_t output_checksum;
     uint64_t payload_checksum;
+    uint64_t kv_payload_checksum;
     uint64_t range_checksum;
     uint64_t real_layers;
     uint64_t payload_offset;
     uint64_t payload_bytes;
+    uint64_t kv_payload_offset;
+    uint64_t kv_payload_bytes;
     uint8_t output_payload[W4_QWEN3_HIDDEN_RANGE_BYTES];
+    uint8_t kv_payload[W4_QWEN3_HIDDEN_RANGE_BYTES * 4ULL];
 };
 
 struct completion_counts {
@@ -1157,7 +1164,8 @@ static int seed_qwen3_prompt_tokens_from_env(volatile uint8_t *ep_mmio)
 
         errno = 0;
         token_id = strtoull(cursor, &end, 10);
-        if (errno != 0 || end == cursor || token_offset + sizeof(uint64_t) > W4_KVCACHE_PAYLOAD_BYTES) {
+        if (errno != 0 || end == cursor ||
+            token_offset + sizeof(uint64_t) > W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES) {
             fprintf(stderr,
                     "[w4_guest] invalid qwen3 prompt token ids token_count=%" PRIu64
                     " cursor=%s\n",
@@ -1212,7 +1220,7 @@ static int append_qwen3_terminal_tokens_to_prompt(volatile uint8_t *ep_mmio,
         uint64_t token_offset;
 
         token_offset = 64 + next_token_count * sizeof(uint64_t);
-        if (token_offset + sizeof(uint64_t) > W4_KVCACHE_PAYLOAD_BYTES) {
+        if (token_offset + sizeof(uint64_t) > W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES) {
             fprintf(stderr,
                     "[w4_guest] fail qwen3 prompt token append overflow tokens=%" PRIu64 "\n",
                     next_token_count + 1U);
@@ -1238,7 +1246,7 @@ static int append_qwen3_terminal_tokens_to_prompt(volatile uint8_t *ep_mmio,
 static int seed_kvcache_payload(volatile uint8_t *ep_mmio, uint64_t segment)
 {
     uint64_t checksum = 0;
-    size_t words = W4_KVCACHE_PAYLOAD_BYTES / sizeof(uint64_t);
+    size_t words = W4_DEMO_KVCACHE_PAYLOAD_BYTES / sizeof(uint64_t);
     static const size_t boundary_offsets[] = {
         0U,
         248U,
@@ -1279,8 +1287,8 @@ static int seed_kvcache_payload(volatile uint8_t *ep_mmio, uint64_t segment)
             return -1;
         }
     }
-    printf("[w4_guest] stage uapi_kvcache_payload_seeded segment=%" PRIu64 " bytes=%u checksum=0x%016" PRIx64 "\n",
-           segment, W4_KVCACHE_PAYLOAD_BYTES, checksum);
+    printf("[w4_guest] stage uapi_kvcache_payload_seeded segment=%" PRIu64 " bytes=%u checksum=0x%016" PRIx64 " role=legacy_demo_payload\n",
+           segment, W4_DEMO_KVCACHE_PAYLOAD_BYTES, checksum);
     printf("[w4_guest] stage uapi_kvcache_payload_boundaries segment=%" PRIu64 " offsets=0,248,256,4088,4096,4104 status=ok\n",
            segment);
     if (seed_qwen3_prompt_tokens_from_env(ep_mmio) != 0) {
@@ -1794,11 +1802,24 @@ static int verify_qwen3_range_forward_table(volatile uint8_t *ep_mmio,
     uint64_t entry_final_output_checksum;
     uint64_t entry_input_bytes;
     uint64_t entry_output_bytes;
+    uint64_t entry_kv_payload_bytes;
+    uint64_t entry_kv_payload_checksum;
     uint64_t payload_offset;
     uint64_t payload_bytes;
     uint64_t payload_checksum;
+    uint64_t kv_payload_offset;
+    uint64_t kv_payload_bytes;
+    uint64_t kv_payload_checksum = 0;
+    uint64_t explicit_table_header =
+        read_segment_u64(ep_mmio,
+                         W4_QWEN3_RESULT_BLOCK_TABLE_HEADER +
+                             W4_QWEN3_RESULT_BLOCK_RANGE_FORWARD_HEADER_OFFSET);
 
-    if (!qwen3_find_trailing_metadata_table(ep_mmio,
+    if (explicit_table_header + 64ULL <= W4_QWEN3_OUTPUT_PAYLOAD_BYTES &&
+        read_segment_u64(ep_mmio, explicit_table_header) ==
+            W4_QWEN3_MARKER_RANGE_FORWARD_TABLE) {
+        table_header = explicit_table_header;
+    } else if (!qwen3_find_trailing_metadata_table(ep_mmio,
                                             W4_QWEN3_MARKER_RANGE_FORWARD_TABLE,
                                             &table_header) &&
         !qwen3_find_metadata_table_by_scan(ep_mmio,
@@ -1823,8 +1844,7 @@ static int verify_qwen3_range_forward_table(volatile uint8_t *ep_mmio,
     if (table_marker != W4_QWEN3_MARKER_RANGE_FORWARD_TABLE ||
         table_count != 1ULL ||
         entry_words != W4_QWEN3_RANGE_FORWARD_TABLE_ENTRY_WORDS ||
-        table_bytes !=
-            W4_QWEN3_RANGE_FORWARD_TABLE_ENTRY_BYTES + W4_QWEN3_HIDDEN_RANGE_BYTES ||
+        table_bytes < W4_QWEN3_RANGE_FORWARD_TABLE_ENTRY_BYTES + W4_QWEN3_HIDDEN_RANGE_BYTES ||
         table_checksum == 0 ||
         table_range_checksum == 0 ||
         table_input_checksum == 0 ||
@@ -1862,8 +1882,12 @@ static int verify_qwen3_range_forward_table(volatile uint8_t *ep_mmio,
     entry_final_output_checksum = read_segment_u64(ep_mmio, base + 104);
     entry_input_bytes = read_segment_u64(ep_mmio, base + 112);
     entry_output_bytes = read_segment_u64(ep_mmio, base + 120);
+    entry_kv_payload_bytes = read_segment_u64(ep_mmio, base + 128);
+    entry_kv_payload_checksum = read_segment_u64(ep_mmio, base + 136);
     payload_offset = base + W4_QWEN3_RANGE_FORWARD_TABLE_ENTRY_BYTES;
     payload_bytes = W4_QWEN3_HIDDEN_RANGE_BYTES;
+    kv_payload_offset = payload_offset + payload_bytes;
+    kv_payload_bytes = table_bytes - W4_QWEN3_RANGE_FORWARD_TABLE_ENTRY_BYTES - payload_bytes;
     if (payload_bytes != W4_QWEN3_HIDDEN_RANGE_BYTES) {
         fprintf(stderr,
                 "[w4_guest] qwen3 range forward payload size mismatch bytes=%" PRIu64
@@ -1880,6 +1904,23 @@ static int verify_qwen3_range_forward_table(volatile uint8_t *ep_mmio,
         payload_checksum =
             w4_qwen3_hidden_payload_checksum(runtime_out->output_payload,
                                              payload_bytes);
+        if (kv_payload_bytes > sizeof(runtime_out->kv_payload)) {
+            fprintf(stderr,
+                    "[w4_guest] qwen3 range kv payload too large bytes=%" PRIu64
+                    " max=%zu\n",
+                    kv_payload_bytes,
+                    sizeof(runtime_out->kv_payload));
+            return -1;
+        }
+        if (kv_payload_bytes > 0) {
+            read_segment_bytes(ep_mmio,
+                               kv_payload_offset,
+                               runtime_out->kv_payload,
+                               kv_payload_bytes);
+            kv_payload_checksum =
+                w4_qwen3_hidden_payload_checksum(runtime_out->kv_payload,
+                                                 kv_payload_bytes);
+        }
     } else {
         uint8_t payload[W4_QWEN3_HIDDEN_RANGE_BYTES];
 
@@ -1897,6 +1938,8 @@ static int verify_qwen3_range_forward_table(volatile uint8_t *ep_mmio,
         entry_real_layers > layer_end - layer_start ||
         entry_input_bytes != W4_QWEN3_HIDDEN_RANGE_BYTES ||
         entry_output_bytes != W4_QWEN3_HIDDEN_RANGE_BYTES ||
+        entry_kv_payload_bytes != kv_payload_bytes ||
+        entry_kv_payload_checksum != kv_payload_checksum ||
         entry_input_checksum != table_input_checksum ||
         entry_output_checksum != table_output_checksum ||
         entry_range_checksum != table_range_checksum ||
@@ -1909,7 +1952,8 @@ static int verify_qwen3_range_forward_table(volatile uint8_t *ep_mmio,
                 " nodes=%" PRIu64 "/%" PRIu32 " total=%" PRIu64
                 " hidden=%" PRIu64 " real=%" PRIu64 " input=0x%016" PRIx64
                 " output=0x%016" PRIx64 " payload=0x%016" PRIx64
-                " range=0x%016" PRIx64 "\n",
+                " kv_bytes=%" PRIu64 "/%" PRIu64 " kv=0x%016" PRIx64
+                "/0x%016" PRIx64 " range=0x%016" PRIx64 "\n",
                 entry_node,
                 dispatch_node,
                 entry_layer_start,
@@ -1927,6 +1971,10 @@ static int verify_qwen3_range_forward_table(volatile uint8_t *ep_mmio,
                 entry_input_checksum,
                 entry_output_checksum,
                 payload_checksum,
+                entry_kv_payload_bytes,
+                kv_payload_bytes,
+                entry_kv_payload_checksum,
+                kv_payload_checksum,
                 entry_range_checksum);
         return -1;
     }
@@ -1939,10 +1987,13 @@ static int verify_qwen3_range_forward_table(volatile uint8_t *ep_mmio,
         runtime_out->input_checksum = entry_input_checksum;
         runtime_out->output_checksum = entry_output_checksum;
         runtime_out->payload_checksum = payload_checksum;
+        runtime_out->kv_payload_checksum = kv_payload_checksum;
         runtime_out->range_checksum = entry_range_checksum;
         runtime_out->real_layers = entry_real_layers;
         runtime_out->payload_offset = payload_offset;
         runtime_out->payload_bytes = payload_bytes;
+        runtime_out->kv_payload_offset = kv_payload_offset;
+        runtime_out->kv_payload_bytes = kv_payload_bytes;
     }
     printf("[w4_guest] stage uapi_qwen3_range_runtime_forward node=%" PRIu64
            " layers=[%" PRIu64 ",%" PRIu64 ") count=%" PRIu64
@@ -1951,6 +2002,8 @@ static int verify_qwen3_range_forward_table(volatile uint8_t *ep_mmio,
            " input_checksum=0x%016" PRIx64 " output_checksum=0x%016" PRIx64
            " range_checksum=0x%016" PRIx64 " real_layers=%" PRIu64
            " payload_offset=0x%016" PRIx64 " payload_bytes=%" PRIu64
+           " kv_payload_offset=0x%016" PRIx64 " kv_payload_bytes=%" PRIu64
+           " kv_payload_checksum=0x%016" PRIx64
            " source=runtime_forward output=metadata status=ok\n",
            entry_node,
            entry_layer_start,
@@ -1965,7 +2018,10 @@ static int verify_qwen3_range_forward_table(volatile uint8_t *ep_mmio,
            entry_range_checksum,
            entry_real_layers,
            payload_offset,
-           payload_bytes);
+           payload_bytes,
+           kv_payload_offset,
+           kv_payload_bytes,
+           kv_payload_checksum);
     return 0;
 }
 
@@ -2353,7 +2409,9 @@ static int verify_dispatch_payload(volatile uint8_t *ep_mmio,
             uint64_t block_checksum_last = 0;
             uint64_t block_bytes = W4_QWEN3_SHARD_OUTPUT_BYTES / W4_QWEN3_KV_BLOCKS_PER_TILE;
             uint64_t explicit_metadata_table_end =
-                read_segment_u64(ep_mmio, W4_QWEN3_RESULT_BLOCK_TABLE_HEADER + 32);
+                read_segment_u64(ep_mmio,
+                                 W4_QWEN3_RESULT_BLOCK_TABLE_HEADER +
+                                     W4_QWEN3_RESULT_BLOCK_METADATA_END_OFFSET);
             uint64_t metadata_table_end = qwen3_result_metadata_table_end(ep_mmio);
             const uint64_t sample_pair_offsets[W4_QWEN3_RESULT_BLOCK_SAMPLE_PAIRS] = {
                 0,
@@ -5133,10 +5191,10 @@ decode_round_start:
            default_segment);
     build_shmem_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 3, default_segment, 128);
     build_shmem_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 4, default_segment, 128);
-    printf("[w4_guest] stage uapi_kvcache_shmem_descriptor segment=%" PRIu64 " bytes=%u puts=1 gets=1 role=multi_block_boundary\n",
-           default_segment, W4_KVCACHE_PAYLOAD_BYTES);
-    build_shmem_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 3, default_segment, W4_KVCACHE_PAYLOAD_BYTES);
-    build_shmem_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 4, default_segment, W4_KVCACHE_PAYLOAD_BYTES);
+    printf("[w4_guest] stage uapi_kvcache_shmem_descriptor segment=%" PRIu64 " bytes=%u puts=1 gets=1 role=legacy_demo_payload\n",
+           default_segment, W4_DEMO_KVCACHE_PAYLOAD_BYTES);
+    build_shmem_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 3, default_segment, W4_DEMO_KVCACHE_PAYLOAD_BYTES);
+    build_shmem_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 4, default_segment, W4_DEMO_KVCACHE_PAYLOAD_BYTES);
     printf("[w4_guest] stage uapi_kvcache_db_descriptor key=%s bytes=%" PRIu64 "\n",
            key, kvcache_db_bytes);
     build_dbput_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), key, kvcache_db_bytes);
@@ -5263,6 +5321,17 @@ decode_round_start:
                    range_input_checksum,
                    (uint64_t)W4_QWEN3_HIDDEN_RANGE_BYTES);
         }
+        if (guest_decode_step > 0 &&
+            w4_db_obmm_service_v0_resolve_previous_range_kv_state(&db_service,
+                                                                  dispatch_node,
+                                                                  cluster_node_count,
+                                                                  guest_decode_step) != 0) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 previous range kv state resolve failed node=%u step=%" PRIu64 "\n",
+                    dispatch_node + 1U,
+                    guest_decode_step);
+            goto out;
+        }
     }
 
     compute_window_ms = monotonic_ms();
@@ -5382,7 +5451,10 @@ decode_round_start:
                 guest_decode_step,
                 runtime_forward.output_payload,
                 runtime_forward.payload_bytes,
-                runtime_forward.payload_checksum) != 0) {
+                runtime_forward.payload_checksum,
+                runtime_forward.kv_payload,
+                runtime_forward.kv_payload_bytes,
+                runtime_forward.kv_payload_checksum) != 0) {
             fprintf(stderr,
                     "[w4_guest] fail qwen3 runtime range output publish failed role=%s\n",
                     role);
@@ -5432,8 +5504,8 @@ decode_round_start:
            counts.success, counts.retryable, counts.fatal);
     printf("[w4_guest] stage uapi_kvcache_shmem_completion segment=%" PRIu64 " bytes=128 puts=1 gets=1 source=shmem_service role=hot_shared\n",
            default_segment);
-    printf("[w4_guest] stage uapi_kvcache_shmem_completion segment=%" PRIu64 " bytes=%u puts=1 gets=1 source=shmem_service role=multi_block_boundary\n",
-           default_segment, W4_KVCACHE_PAYLOAD_BYTES);
+    printf("[w4_guest] stage uapi_kvcache_shmem_completion segment=%" PRIu64 " bytes=%u puts=1 gets=1 source=shmem_service role=legacy_demo_payload\n",
+           default_segment, W4_DEMO_KVCACHE_PAYLOAD_BYTES);
     printf("[w4_guest] stage uapi_kvcache_block_completion block=%s writes=1 reads=1 source=block_service\n",
            block);
     printf("[w4_guest] stage uapi_kvcache_block_completion block=%s writes=1 reads=1 source=block_service role=aux_block_boundary\n",

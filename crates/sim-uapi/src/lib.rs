@@ -6125,7 +6125,7 @@ fn qwen3_dense_0_6b_prefill_text_output_report_with_task_id_guest_input_and_obje
 }
 
 pub fn qwen3_dense_0_6b_default_guest_input() -> Vec<u8> {
-    vec![0xa5; W4_KVCACHE_PAYLOAD_BYTES]
+    vec![0xa5; W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES]
 }
 
 pub fn qwen3_dense_0_6b_prompt_guest_input(prompt: &str) -> Vec<u8> {
@@ -6133,7 +6133,7 @@ pub fn qwen3_dense_0_6b_prompt_guest_input(prompt: &str) -> Vec<u8> {
 }
 
 fn qwen3_dense_0_6b_tokenized_prompt_guest_input(prompt: &str, token_ids: &[u64]) -> Vec<u8> {
-    let mut input = vec![0u8; W4_KVCACHE_PAYLOAD_BYTES];
+    let mut input = vec![0u8; W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES];
     let prompt_bytes = prompt.as_bytes();
     let prompt_checksum = qwen3_dense_0_6b_text_output_bytes_checksum(prompt_bytes);
     let token_checksum = prompt_token_ids_checksum(token_ids);
@@ -6234,7 +6234,7 @@ fn qwen3_dense_0_6b_next_decode_guest_input(
     samples: &[Qwen3Dense06bTextOutputSample],
     loop_step: u64,
 ) -> Vec<u8> {
-    let mut next = qwen3_dense_0_6b_guest_kvcache_payload(previous);
+    let mut next = qwen3_dense_0_6b_guest_input_payload(previous);
     let previous_token_count = qwen3_dense_0_6b_guest_input_token_count(previous);
     for (sample_index, sample) in samples.iter().enumerate() {
         let offset = qwen3_dense_0_6b_decode_input_append_offset(
@@ -8241,7 +8241,7 @@ fn run_host_vector_chipbackend(
 ) -> Result<Vec<u8>, String> {
     let manifest_path = simpler_manifest_path()?;
     let scenario_config = scenario_config_for_chipbackend()?;
-    let elems = W4_KVCACHE_PAYLOAD_BYTES / std::mem::size_of::<f32>();
+    let elems = W4_DEMO_KVCACHE_PAYLOAD_BYTES / std::mem::size_of::<f32>();
     let size_bytes = elems * std::mem::size_of::<f32>();
     let kvcache_layout = KvCachePayloadLayout::new(elems, size_bytes)?;
     let segment_base = 10_000 + task.task_id.saturating_mul(10);
@@ -8439,7 +8439,8 @@ fn run_host_vector_chipbackend(
     Ok(produced)
 }
 
-const W4_KVCACHE_PAYLOAD_BYTES: usize = 8192;
+const W4_DEMO_KVCACHE_PAYLOAD_BYTES: usize = 8192;
+const W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES: usize = 8192;
 const W4_KVCACHE_BLOCKS: usize = 4;
 const W4_KVCACHE_PREFIX_GROUPS: usize = 2;
 const W4_KVCACHE_TILE_ROWS: usize = 16;
@@ -8450,6 +8451,15 @@ const W4_KVCACHE_ROW_GROUP_ROWS: usize = 4;
 const W4_KVCACHE_ROW_GROUP_BYTES: usize =
     W4_KVCACHE_ROW_GROUP_ROWS * W4_KVCACHE_TILE_COLS * std::mem::size_of::<f32>();
 const W4_HOST_VECTOR_CHUNK_BYTES: usize = 4096;
+
+fn qwen3_dense_0_6b_real_kv_state_bytes(layer_count: u64, token_count: u64) -> u64 {
+    layer_count
+        .saturating_mul(token_count)
+        .saturating_mul(QWEN3_DENSE_0_6B_PROFILE.num_key_value_heads)
+        .saturating_mul(QWEN3_DENSE_0_6B_PROFILE.head_dim)
+        .saturating_mul(2)
+        .saturating_mul(std::mem::size_of::<f32>() as u64)
+}
 
 #[derive(Debug, Clone)]
 struct KvCachePayloadLayout {
@@ -8491,8 +8501,8 @@ struct KvCachePayloadRowGroup {
 
 impl KvCachePayloadLayout {
     fn new(elems: usize, size_bytes: usize) -> Result<Self, String> {
-        if size_bytes != W4_KVCACHE_PAYLOAD_BYTES {
-            return Err(format!("invalid_kvcache_payload_bytes:{size_bytes}"));
+        if size_bytes != W4_DEMO_KVCACHE_PAYLOAD_BYTES {
+            return Err(format!("invalid_demo_kvcache_payload_bytes:{size_bytes}"));
         }
         if size_bytes % std::mem::size_of::<f32>() != 0
             || elems * std::mem::size_of::<f32>() != size_bytes
@@ -9708,7 +9718,7 @@ fn run_qwen3_dense_0_6b_prefill_runtime(
     let segment_base = 30_000 + task.task_id.saturating_mul(100);
     let model_meta = SegmentHandle(segment_base + 80);
     let kv_layout = SegmentHandle(segment_base + 81);
-    let guest_kvcache_payload = SegmentHandle(segment_base + 82);
+    let guest_input_payload = SegmentHandle(segment_base + 82);
     let input_bytes = MATMUL_ELEMS * std::mem::size_of::<u16>();
     let output_bytes = MATMUL_ELEMS * std::mem::size_of::<f32>();
     let host_node = topology
@@ -9730,8 +9740,8 @@ fn run_qwen3_dense_0_6b_prefill_runtime(
     );
     runtime.seed_host_segment(
         host_node,
-        guest_kvcache_payload,
-        qwen3_dense_0_6b_guest_kvcache_payload(guest_input),
+        guest_input_payload,
+        qwen3_dense_0_6b_guest_input_payload(guest_input),
     );
 
     let mut sink = VecEventSink::default();
@@ -10571,14 +10581,14 @@ fn run_qwen3_dense_0_6b_prefill_runtime(
                         96,
                     ),
                     opaque_resident_binding(
-                        "qwen3_dense_0_6b_guest_kvcache_payload",
+                        "qwen3_dense_0_6b_guest_input_payload",
                         BufferUsage::Input,
                         MemoryEndpoint {
                             node: host_node,
-                            segment: guest_kvcache_payload,
+                            segment: guest_input_payload,
                             offset: 0,
                         },
-                        W4_KVCACHE_PAYLOAD_BYTES as u64,
+                        W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES as u64,
                     ),
                 ],
             );
@@ -11843,6 +11853,9 @@ struct Qwen3Dense06bRangeForwardSummary {
     input_tensor_bytes: u64,
     output_tensor_bytes: u64,
     output_tensor_payload: Vec<u8>,
+    kv_state_bytes: u64,
+    kv_state_checksum: u64,
+    kv_state_payload: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -13064,8 +13077,16 @@ fn qwen3_dense_0_6b_range_forward_summary_from_contract(
     let mut final_layer_output_checksum = 0;
     let mut real_layer_execution_count = 0;
     let mut output_tensor_payload = Vec::new();
+    let mut kv_state_payload = Vec::new();
 
     if let Some(loaded) = loaded_weights.as_ref() {
+        let full_forward_with_kv =
+            forward_with_kv_cache_from_token_ids(&loaded.tensors, &prompt_token_ids)?;
+        kv_state_payload = qwen3_dense_0_6b_range_kv_payload_from_cache(
+            &full_forward_with_kv.kv_cache,
+            layer_start,
+            layer_end,
+        )?;
         let mut previous_sequence = if layer_start > 0 {
             let Some(payload) = range_input_payload else {
                 return Err(format!(
@@ -13236,6 +13257,9 @@ fn qwen3_dense_0_6b_range_forward_summary_from_contract(
         input_tensor_bytes: HIDDEN_BYTES,
         output_tensor_bytes: HIDDEN_BYTES,
         output_tensor_payload,
+        kv_state_bytes: kv_state_payload.len() as u64,
+        kv_state_checksum: qwen3_dense_0_6b_range_object_payload_checksum(&kv_state_payload),
+        kv_state_payload,
     })
 }
 
@@ -13359,6 +13383,9 @@ fn qwen3_dense_0_6b_range_forward_summary_from_runtime_outputs(
         input_tensor_bytes: HIDDEN_BYTES,
         output_tensor_bytes: HIDDEN_BYTES,
         output_tensor_payload,
+        kv_state_bytes: 0,
+        kv_state_checksum: 0,
+        kv_state_payload: Vec::new(),
     })
 }
 
@@ -13412,6 +13439,68 @@ fn qwen3_dense_0_6b_range_payload_from_round_outputs(
         }
     }
     payload.resize(capacity_bytes, 0);
+    Ok(payload)
+}
+
+fn qwen3_dense_0_6b_range_object_payload_checksum(bytes: &[u8]) -> u64 {
+    let mut acc = 0xcbf2_9ce4_8422_2325u64;
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        acc ^= u64::from(byte) | ((index as u64) << 8);
+        acc = acc.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    acc
+}
+
+fn qwen3_dense_0_6b_range_kv_payload_from_cache(
+    cache: &[Qwen3Dense06bLayerKvCache],
+    layer_start: u64,
+    layer_end: u64,
+) -> Result<Vec<u8>, String> {
+    let mut payload = Vec::new();
+    for layer_id in layer_start..layer_end {
+        let layer = cache
+            .get(layer_id as usize)
+            .ok_or_else(|| format!("qwen3_range_kv_layer_missing:layer={layer_id}"))?;
+        if layer.layer_id != layer_id {
+            return Err(format!(
+                "qwen3_range_kv_layer_id_mismatch:expected={layer_id}:got={}",
+                layer.layer_id
+            ));
+        }
+        payload.extend_from_slice(&layer.layer_id.to_le_bytes());
+        payload.extend_from_slice(&layer.token_count.to_le_bytes());
+        payload.extend_from_slice(&(layer.rope_k_states.len() as u64).to_le_bytes());
+        payload.extend_from_slice(&(layer.v_states.len() as u64).to_le_bytes());
+        let state_len = layer
+            .rope_k_states
+            .first()
+            .map(|state| state.len())
+            .or_else(|| layer.v_states.first().map(|state| state.len()))
+            .unwrap_or(0);
+        payload.extend_from_slice(&(state_len as u64).to_le_bytes());
+        for state in &layer.rope_k_states {
+            if state.len() != state_len {
+                return Err(format!(
+                    "qwen3_range_kv_k_state_len_mismatch:layer={layer_id}:got={}:expected={state_len}",
+                    state.len()
+                ));
+            }
+            for value in state {
+                payload.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        for state in &layer.v_states {
+            if state.len() != state_len {
+                return Err(format!(
+                    "qwen3_range_kv_v_state_len_mismatch:layer={layer_id}:got={}:expected={state_len}",
+                    state.len()
+                ));
+            }
+            for value in state {
+                payload.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+    }
     Ok(payload)
 }
 
@@ -13689,6 +13778,11 @@ fn qwen3_dense_0_6b_write_service_flow_markers(
             output,
             RESULT_BLOCK_TABLE_HEADER + 32,
             metadata_table_end as u64,
+        );
+        write_u64_le_at(
+            output,
+            RESULT_BLOCK_TABLE_HEADER + 40,
+            range_forward_table_header as u64,
         );
         for (index, descriptor) in result_block_descriptors.iter().enumerate() {
             let base = RESULT_BLOCK_TABLE_BASE + index * RESULT_BLOCK_TABLE_ENTRY_BYTES;
@@ -14866,7 +14960,7 @@ fn qwen3_dense_0_6b_range_forward_table_end(
     summary: Option<&Qwen3Dense06bRangeForwardSummary>,
 ) -> usize {
     const TABLE_HEADER_BYTES: usize = 64;
-    const RANGE_FORWARD_ENTRY_WORDS: usize = 16;
+    const RANGE_FORWARD_ENTRY_WORDS: usize = 18;
     const RANGE_FORWARD_ENTRY_BYTES: usize = RANGE_FORWARD_ENTRY_WORDS * 8;
     summary
         .map(|summary| {
@@ -14874,6 +14968,7 @@ fn qwen3_dense_0_6b_range_forward_table_end(
                 + TABLE_HEADER_BYTES
                 + RANGE_FORWARD_ENTRY_BYTES
                 + summary.output_tensor_payload.len()
+                + summary.kv_state_payload.len()
         })
         .unwrap_or(table_header)
 }
@@ -14888,11 +14983,13 @@ fn qwen3_dense_0_6b_write_range_forward_table(
         return;
     };
     const TABLE_HEADER_BYTES: usize = 64;
-    const RANGE_FORWARD_ENTRY_WORDS: u64 = 16;
+    const RANGE_FORWARD_ENTRY_WORDS: u64 = 18;
     const RANGE_FORWARD_ENTRY_BYTES: usize = RANGE_FORWARD_ENTRY_WORDS as usize * 8;
     let table_base = table_header + TABLE_HEADER_BYTES;
     let payload_offset = table_base + RANGE_FORWARD_ENTRY_BYTES;
-    let table_bytes = RANGE_FORWARD_ENTRY_BYTES + summary.output_tensor_payload.len();
+    let table_bytes = RANGE_FORWARD_ENTRY_BYTES
+        + summary.output_tensor_payload.len()
+        + summary.kv_state_payload.len();
     let entry = [
         summary.node,
         summary.layer_start,
@@ -14910,6 +15007,8 @@ fn qwen3_dense_0_6b_write_range_forward_table(
         summary.final_layer_output_checksum,
         summary.input_tensor_bytes,
         summary.output_tensor_bytes,
+        summary.kv_state_bytes,
+        summary.kv_state_checksum,
     ];
 
     write_u64_le_at(output, table_header, marker);
@@ -14926,6 +15025,11 @@ fn qwen3_dense_0_6b_write_range_forward_table(
     if payload_offset + summary.output_tensor_payload.len() <= output.len() {
         output[payload_offset..payload_offset + summary.output_tensor_payload.len()]
             .copy_from_slice(&summary.output_tensor_payload);
+    }
+    let kv_payload_offset = payload_offset + summary.output_tensor_payload.len();
+    if kv_payload_offset + summary.kv_state_payload.len() <= output.len() {
+        output[kv_payload_offset..kv_payload_offset + summary.kv_state_payload.len()]
+            .copy_from_slice(&summary.kv_state_payload);
     }
 }
 
@@ -15037,6 +15141,7 @@ fn qwen3_dense_0_6b_kv_layout_payload(profile: Qwen3Dense06bProfile) -> Vec<u8> 
     let kv_elem_bytes = 2u64;
     let kv_bytes_per_token_per_layer =
         profile.num_key_value_heads * profile.head_dim * kv_elem_bytes * 2;
+    let real_f32_kv_bytes_per_token_per_layer = qwen3_dense_0_6b_real_kv_state_bytes(1, 1);
     [
         profile.prefill_tokens,
         profile.decode_tokens,
@@ -15047,7 +15152,7 @@ fn qwen3_dense_0_6b_kv_layout_payload(profile: Qwen3Dense06bProfile) -> Vec<u8> 
         kv_bytes_per_token_per_layer,
         kv_bytes_per_token_per_layer * profile.prefill_tokens,
         kv_bytes_per_token_per_layer * profile.prefill_tokens * profile.num_hidden_layers,
-        W4_KVCACHE_PAYLOAD_BYTES as u64,
+        real_f32_kv_bytes_per_token_per_layer,
         W4_KVCACHE_BLOCKS as u64,
         W4_KVCACHE_PREFIX_GROUPS as u64,
     ]
@@ -15056,8 +15161,8 @@ fn qwen3_dense_0_6b_kv_layout_payload(profile: Qwen3Dense06bProfile) -> Vec<u8> 
     .collect()
 }
 
-fn qwen3_dense_0_6b_guest_kvcache_payload(guest_input: &[u8]) -> Vec<u8> {
-    let mut payload = vec![0u8; W4_KVCACHE_PAYLOAD_BYTES];
+fn qwen3_dense_0_6b_guest_input_payload(guest_input: &[u8]) -> Vec<u8> {
+    let mut payload = vec![0u8; W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES];
     let copy_len = payload.len().min(guest_input.len());
     payload[..copy_len].copy_from_slice(&guest_input[..copy_len]);
     payload
@@ -16148,8 +16253,8 @@ mod tests {
         QWEN3_SYNTHETIC_GUEST_INPUT, QWEN3_SYNTHETIC_LOGITS_CANDIDATES,
         QWEN3_SYNTHETIC_MLP_ACTIVATION, QWEN3_SYNTHETIC_MLP_OUTPUT, QWEN3_SYNTHETIC_QKV_BASE_TILE,
         QWEN3_SYNTHETIC_TOKEN_TEXT, QWEN3_WEIGHT_REFERENCE_ENTRY_WORDS,
-        QWEN3_WEIGHT_STAGE_LINK_ENTRY_WORDS, W4_KVCACHE_BLOCKS, W4_KVCACHE_PAYLOAD_BYTES,
-        W4_KVCACHE_PREFIX_GROUPS,
+        QWEN3_WEIGHT_STAGE_LINK_ENTRY_WORDS, W4_DEMO_KVCACHE_PAYLOAD_BYTES, W4_KVCACHE_BLOCKS,
+        W4_KVCACHE_PREFIX_GROUPS, W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES,
     };
     use sim_config::ScenarioConfig;
     use sim_core::{
@@ -16340,8 +16445,8 @@ mod tests {
 
     #[test]
     fn kvcache_payload_layout_explicitly_maps_blocks_tiles_and_row_groups() {
-        let elems = W4_KVCACHE_PAYLOAD_BYTES / std::mem::size_of::<f32>();
-        let layout = KvCachePayloadLayout::new(elems, W4_KVCACHE_PAYLOAD_BYTES).unwrap();
+        let elems = W4_DEMO_KVCACHE_PAYLOAD_BYTES / std::mem::size_of::<f32>();
+        let layout = KvCachePayloadLayout::new(elems, W4_DEMO_KVCACHE_PAYLOAD_BYTES).unwrap();
 
         assert_eq!(layout.blocks.len(), W4_KVCACHE_BLOCKS);
         assert_eq!(layout.blocks[0].prefix_group_id, 0);
@@ -16362,8 +16467,8 @@ mod tests {
 
     #[test]
     fn kvcache_input_b_encodes_prefix_block_tile_and_row_group_bias() {
-        let elems = W4_KVCACHE_PAYLOAD_BYTES / std::mem::size_of::<f32>();
-        let layout = KvCachePayloadLayout::new(elems, W4_KVCACHE_PAYLOAD_BYTES).unwrap();
+        let elems = W4_DEMO_KVCACHE_PAYLOAD_BYTES / std::mem::size_of::<f32>();
+        let layout = KvCachePayloadLayout::new(elems, W4_DEMO_KVCACHE_PAYLOAD_BYTES).unwrap();
         let values = bytes_to_f32s(&kvcache_input_b_payload(&layout));
 
         assert_eq!(values.len(), elems);
@@ -16816,7 +16921,7 @@ mod tests {
             "qwen3_dense_0_6b_prefill_profile_uses_host_matmul_artifact",
             || {
                 let topology = test_topology();
-                let guest_input = [0xa5; W4_KVCACHE_PAYLOAD_BYTES];
+                let guest_input = [0xa5; W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES];
                 let output = run_qwen3_dense_0_6b_prefill_runtime(
                     &topology,
                     &TaskKey {
@@ -17950,7 +18055,7 @@ mod tests {
 
     fn assert_qwen3_dense_0_6b_prefill_profile_output(
         output: &[u8],
-        guest_input: &[u8; W4_KVCACHE_PAYLOAD_BYTES],
+        guest_input: &[u8; W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES],
     ) {
         const TILES_PER_SHARD: usize = 2;
         const TILE_COUNT: usize = 16;
