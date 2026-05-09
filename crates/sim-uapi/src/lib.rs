@@ -26,7 +26,8 @@ use sim_models::qwen3_dense_0_6b::{
     self, checksum_words, embedding_reference_hidden_sequence_with_payloads,
     embedding_reference_last_hidden, embedding_reference_last_hidden_with_payloads,
     embedding_reference_summary, forward_from_token_ids,
-    forward_from_token_ids_with_layer_payloads, full_vocab_logits_from_hidden,
+    forward_from_token_ids_with_layer_payloads, forward_incremental_with_kv_cache_from_hidden,
+    forward_with_kv_cache_from_token_ids, full_vocab_logits_from_hidden,
     full_vocab_logits_from_hidden_with_payloads, full_vocab_sample_from_hidden,
     layer_forward_reference_sequence_with_payloads, load_safetensors_path_metadata,
     load_tokenizer_asset_summary, logits_reference_summary, logits_reference_summary_with_hidden,
@@ -37,14 +38,15 @@ use sim_models::qwen3_dense_0_6b::{
     token_piece_bytes_from_tokenizer_path, token_piece_decode_bytes, token_piece_from_policy,
     tokenize_prompt_from_tokenizer_path, tokenizer_policy, weight_bytes_checksum,
     weight_manifest_from_metadata, Qwen3Dense06bEmbeddingReferenceSummary,
-    Qwen3Dense06bFullVocabLogitsSummary, Qwen3Dense06bFullVocabSample, Qwen3Dense06bLoadedWeights,
-    Qwen3Dense06bLogitsReferenceSummary, Qwen3Dense06bMlpReferenceLayerSummary,
-    Qwen3Dense06bMlpReferenceShardSummary, Qwen3Dense06bProfile,
-    Qwen3Dense06bQkvReferenceLayerSummary, Qwen3Dense06bQkvReferenceLayerValues,
-    Qwen3Dense06bQkvReferenceShardSummary, Qwen3Dense06bQkvReferenceShardValues,
-    Qwen3Dense06bReferenceWeightSliceValidation, Qwen3Dense06bShard,
-    Qwen3Dense06bTokenizerAssetSummary, Qwen3Dense06bWeightTensorKind, QWEN3_DENSE_0_6B_PROFILE,
-    QWEN3_DENSE_0_6B_TOKENIZER_ASSET_POLICY_KIND, QWEN3_DENSE_0_6B_TOKENIZER_POLICY_KIND,
+    Qwen3Dense06bFullVocabLogitsSummary, Qwen3Dense06bFullVocabSample, Qwen3Dense06bLayerKvCache,
+    Qwen3Dense06bLoadedWeights, Qwen3Dense06bLogitsReferenceSummary,
+    Qwen3Dense06bMlpReferenceLayerSummary, Qwen3Dense06bMlpReferenceShardSummary,
+    Qwen3Dense06bProfile, Qwen3Dense06bQkvReferenceLayerSummary,
+    Qwen3Dense06bQkvReferenceLayerValues, Qwen3Dense06bQkvReferenceShardSummary,
+    Qwen3Dense06bQkvReferenceShardValues, Qwen3Dense06bReferenceWeightSliceValidation,
+    Qwen3Dense06bShard, Qwen3Dense06bTokenizerAssetSummary, Qwen3Dense06bWeightTensorKind,
+    QWEN3_DENSE_0_6B_PROFILE, QWEN3_DENSE_0_6B_TOKENIZER_ASSET_POLICY_KIND,
+    QWEN3_DENSE_0_6B_TOKENIZER_POLICY_KIND,
 };
 use sim_runtime::{
     LocalRuntimeEngine, RuntimeCompletionTracker, RuntimeDriveAction, RuntimeQueueRecord,
@@ -2095,7 +2097,7 @@ fn qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
         guest_input_report.byte_len = guest_input.len() as u64;
         guest_input_report.checksum = guest_input_checksum;
         let runtime_prefill_executed = decode_state.is_none();
-        let mut text_output = if runtime_prefill_executed {
+        let (mut text_output, step_real_kv_cache) = if runtime_prefill_executed {
             qwen3_dense_0_6b_decode_progress(format_args!(
                 "step {}/{}: runtime prefill start",
                 step_index + 1,
@@ -2106,13 +2108,18 @@ fn qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
                 max_token_count,
                 "runtime prefill",
             );
-            qwen3_dense_0_6b_prefill_text_output_report_with_task_id_guest_input_and_object_service(
+            let text_output =
+                qwen3_dense_0_6b_prefill_text_output_report_with_task_id_guest_input_and_object_service(
                 topology,
                 &guest_input,
                 200 + step_index as u64,
                 guest_input_report.clone(),
                 Some(&mut object_service),
-            )?
+            )?;
+            let real_kv_cache = qwen3_dense_0_6b_real_kv_cache_from_token_ids(
+                &qwen3_dense_0_6b_guest_input_token_ids(&guest_input),
+            )?;
+            (text_output, real_kv_cache)
         } else {
             qwen3_dense_0_6b_decode_progress(format_args!(
                 "step {}/{}: incremental decode start",
@@ -2197,6 +2204,7 @@ fn qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
             &selected_samples,
             &text_output,
             &hidden_layer_pipeline,
+            step_real_kv_cache.as_deref(),
             runtime_weight_resolve_count + hidden_layer_pipeline.boundary_count * 2,
         )?;
         let next_guest_input_checksum =
@@ -2213,6 +2221,7 @@ fn qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
             step_index as u64,
             session_id,
             &object_service,
+            step_real_kv_cache,
         )?;
         steps.push(Qwen3Dense06bDecodeLoopStepReport {
             step_index: step_index as u64,
@@ -3414,6 +3423,7 @@ fn qwen3_dense_0_6b_decode_object_service_report(
     selected_samples: &[Qwen3Dense06bTextOutputSample],
     text_output: &Qwen3Dense06bTextOutputReport,
     hidden_layer_pipeline: &Qwen3Dense06bHiddenLayerPipelineReport,
+    real_kv_cache: Option<&[Qwen3Dense06bLayerKvCache]>,
     runtime_weight_resolve_count: u64,
 ) -> Result<Qwen3Dense06bObjectServiceReport, String> {
     let base = format!("qwen3/session/{session_id:016x}/step/{step_index:08}");
@@ -3448,6 +3458,10 @@ fn qwen3_dense_0_6b_decode_object_service_report(
         .as_ref()
         .map(|logits| logits.aggregate_checksum)
         .unwrap_or(text_output.logits_checksum);
+    let kv_payload = qwen3_dense_0_6b_kv_state_payload_bytes_with_real_cache(
+        &text_output.kvcache.state_snapshots,
+        real_kv_cache,
+    );
     let mut objects = vec![
         (
             format!("{base}/tokens/input"),
@@ -3477,13 +3491,9 @@ fn qwen3_dense_0_6b_decode_object_service_report(
             kv_index_key.clone(),
             LingquObjectKind::KvCacheBlock,
             LingquPayloadBackend::Shmem,
-            text_output
-                .kvcache
-                .state_count
-                .saturating_mul(std::mem::size_of::<Qwen3Dense06bKvCacheStateSnapshot>() as u64)
-                .max(1),
+            (kv_payload.len() as u64).max(1),
             kv_checksum,
-            qwen3_dense_0_6b_kv_state_payload_bytes(&text_output.kvcache.state_snapshots),
+            kv_payload,
         ),
         (
             format!("{base}/hidden/final"),
@@ -3941,6 +3951,17 @@ fn qwen3_dense_0_6b_kv_state_payload_bytes(
     qwen3_dense_0_6b_object_payload_words(&words)
 }
 
+fn qwen3_dense_0_6b_kv_state_payload_bytes_with_real_cache(
+    snapshots: &[Qwen3Dense06bKvCacheStateSnapshot],
+    real_cache: Option<&[Qwen3Dense06bLayerKvCache]>,
+) -> Vec<u8> {
+    let mut bytes = qwen3_dense_0_6b_kv_state_payload_bytes(snapshots);
+    if let Some(real_cache) = real_cache {
+        qwen3_dense_0_6b_append_real_kv_cache_payload(&mut bytes, real_cache);
+    }
+    bytes
+}
+
 fn qwen3_dense_0_6b_kv_state_payload_from_bytes(
     bytes: &[u8],
 ) -> Result<Vec<Qwen3Dense06bKvCacheStateSnapshot>, String> {
@@ -3960,7 +3981,7 @@ fn qwen3_dense_0_6b_kv_state_payload_from_bytes(
     }
     let count = words[0] as usize;
     let expected = 1 + count * 8;
-    if words.len() != expected {
+    if words.len() < expected {
         return Err(format!(
             "qwen3_kv_object_payload_count_mismatch:count={count}:words={}:expected={expected}",
             words.len()
@@ -3981,6 +4002,131 @@ fn qwen3_dense_0_6b_kv_state_payload_from_bytes(
         });
     }
     Ok(snapshots)
+}
+
+const QWEN3_REAL_KV_CACHE_MARKER: u64 = 0x4c41_4552_564b_3351;
+
+fn qwen3_dense_0_6b_append_real_kv_cache_payload(
+    bytes: &mut Vec<u8>,
+    real_cache: &[Qwen3Dense06bLayerKvCache],
+) {
+    qwen3_dense_0_6b_push_u64(bytes, QWEN3_REAL_KV_CACHE_MARKER);
+    qwen3_dense_0_6b_push_u64(bytes, real_cache.len() as u64);
+    for layer in real_cache {
+        qwen3_dense_0_6b_push_u64(bytes, layer.layer_id);
+        qwen3_dense_0_6b_push_u64(bytes, layer.token_count);
+        qwen3_dense_0_6b_push_u64(bytes, layer.rope_k_states.len() as u64);
+        qwen3_dense_0_6b_push_u64(bytes, layer.v_states.len() as u64);
+        let state_len = layer
+            .rope_k_states
+            .first()
+            .map(|state| state.len())
+            .or_else(|| layer.v_states.first().map(|state| state.len()))
+            .unwrap_or(0);
+        qwen3_dense_0_6b_push_u64(bytes, state_len as u64);
+        for state in &layer.rope_k_states {
+            for value in state {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        for state in &layer.v_states {
+            for value in state {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+    }
+}
+
+fn qwen3_dense_0_6b_push_u64(bytes: &mut Vec<u8>, value: u64) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn qwen3_dense_0_6b_read_u64_from_payload(bytes: &[u8], offset: &mut usize) -> Result<u64, String> {
+    let end = offset
+        .checked_add(std::mem::size_of::<u64>())
+        .ok_or_else(|| "qwen3_real_kv_payload_offset_overflow".to_string())?;
+    let chunk = bytes
+        .get(*offset..end)
+        .ok_or_else(|| "qwen3_real_kv_payload_u64_oob".to_string())?;
+    *offset = end;
+    Ok(u64::from_le_bytes(chunk.try_into().map_err(|_| {
+        "qwen3_real_kv_payload_u64_invalid".to_string()
+    })?))
+}
+
+fn qwen3_dense_0_6b_read_f32_vec_from_payload(
+    bytes: &[u8],
+    offset: &mut usize,
+    len: usize,
+) -> Result<Vec<f32>, String> {
+    let byte_len = len
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| "qwen3_real_kv_payload_f32_len_overflow".to_string())?;
+    let end = offset
+        .checked_add(byte_len)
+        .ok_or_else(|| "qwen3_real_kv_payload_f32_offset_overflow".to_string())?;
+    let slice = bytes
+        .get(*offset..end)
+        .ok_or_else(|| "qwen3_real_kv_payload_f32_oob".to_string())?;
+    *offset = end;
+    Ok(bytes_to_f32s(slice))
+}
+
+fn qwen3_dense_0_6b_real_kv_cache_from_payload(
+    bytes: &[u8],
+) -> Result<Option<Vec<Qwen3Dense06bLayerKvCache>>, String> {
+    let snapshots = qwen3_dense_0_6b_kv_state_payload_from_bytes(bytes)?;
+    let mut offset = std::mem::size_of::<u64>() * (1 + snapshots.len() * 8);
+    if offset == bytes.len() {
+        return Ok(None);
+    }
+    let marker = qwen3_dense_0_6b_read_u64_from_payload(bytes, &mut offset)?;
+    if marker != QWEN3_REAL_KV_CACHE_MARKER {
+        return Err(format!("qwen3_real_kv_payload_marker_mismatch:{marker:#x}"));
+    }
+    let layer_count = qwen3_dense_0_6b_read_u64_from_payload(bytes, &mut offset)? as usize;
+    let mut cache = Vec::with_capacity(layer_count);
+    for _ in 0..layer_count {
+        let layer_id = qwen3_dense_0_6b_read_u64_from_payload(bytes, &mut offset)?;
+        let token_count = qwen3_dense_0_6b_read_u64_from_payload(bytes, &mut offset)?;
+        let k_state_count = qwen3_dense_0_6b_read_u64_from_payload(bytes, &mut offset)? as usize;
+        let v_state_count = qwen3_dense_0_6b_read_u64_from_payload(bytes, &mut offset)? as usize;
+        let state_len = qwen3_dense_0_6b_read_u64_from_payload(bytes, &mut offset)? as usize;
+        if k_state_count != token_count as usize || v_state_count != token_count as usize {
+            return Err(format!(
+                "qwen3_real_kv_payload_token_count_mismatch:layer={layer_id}:tokens={token_count}:k={k_state_count}:v={v_state_count}"
+            ));
+        }
+        let mut rope_k_states = Vec::with_capacity(k_state_count);
+        for _ in 0..k_state_count {
+            rope_k_states.push(qwen3_dense_0_6b_read_f32_vec_from_payload(
+                bytes,
+                &mut offset,
+                state_len,
+            )?);
+        }
+        let mut v_states = Vec::with_capacity(v_state_count);
+        for _ in 0..v_state_count {
+            v_states.push(qwen3_dense_0_6b_read_f32_vec_from_payload(
+                bytes,
+                &mut offset,
+                state_len,
+            )?);
+        }
+        cache.push(Qwen3Dense06bLayerKvCache {
+            layer_id,
+            token_count,
+            rope_k_states,
+            v_states,
+        });
+    }
+    if offset != bytes.len() {
+        return Err(format!(
+            "qwen3_real_kv_payload_trailing_bytes:{}",
+            bytes.len() - offset
+        ));
+    }
+    Ok(Some(cache))
 }
 
 fn qwen3_dense_0_6b_kv_index_base_key(session_id: u64) -> String {
@@ -4114,6 +4260,7 @@ struct Qwen3Dense06bIncrementalDecodeState {
     cache_digest: u64,
     last_sampled_token_checksum: u64,
     cache_states: Vec<Qwen3Dense06bKvCacheStateSnapshot>,
+    real_kv_cache: Option<Vec<Qwen3Dense06bLayerKvCache>>,
     kv_object_key: String,
     kv_object_version: u64,
     kv_object_checksum: u64,
@@ -4127,8 +4274,10 @@ impl Qwen3Dense06bIncrementalDecodeState {
         loop_step: u64,
         session_id: u64,
         object_service: &LingquObjectServiceStub,
+        expected_real_kv_cache: Option<Vec<Qwen3Dense06bLayerKvCache>>,
     ) -> Result<Self, String> {
-        let cache_position = qwen3_dense_0_6b_guest_input_token_count(next_guest_input);
+        let cache_position = qwen3_dense_0_6b_guest_input_token_count(next_guest_input)
+            .saturating_sub(selected_samples.len() as u64);
         let last_sampled_token_checksum = checksum_words(
             &selected_samples
                 .iter()
@@ -4179,6 +4328,20 @@ impl Qwen3Dense06bIncrementalDecodeState {
                 text_output.kvcache.state_snapshots.len()
             ));
         }
+        let payload = object_service
+            .get_copy(
+                &kv_object_key,
+                LingquObjectVersionSelector::Exact(kv_record.version),
+            )
+            .ok_or_else(|| format!("qwen3_kv_object_payload_missing:{kv_object_key}"))?;
+        let real_kv_cache = qwen3_dense_0_6b_real_kv_cache_from_payload(&payload)?;
+        if expected_real_kv_cache.is_some() && real_kv_cache != expected_real_kv_cache {
+            return Err(format!(
+                "qwen3_real_kv_object_payload_mismatch:key={kv_object_key}:expected_real={}:actual_real={}",
+                expected_real_kv_cache.as_ref().map(|cache| cache.len()).unwrap_or(0),
+                real_kv_cache.as_ref().map(|cache| cache.len()).unwrap_or(0)
+            ));
+        }
         Ok(Self {
             last_text_output: text_output.clone(),
             cache_position,
@@ -4186,6 +4349,7 @@ impl Qwen3Dense06bIncrementalDecodeState {
             cache_digest,
             last_sampled_token_checksum,
             cache_states,
+            real_kv_cache,
             kv_object_key,
             kv_object_version: kv_record.version,
             kv_object_checksum: kv_record.checksum,
@@ -4199,7 +4363,13 @@ fn qwen3_dense_0_6b_incremental_decode_text_output_report(
     guest_input_report: Qwen3Dense06bGuestInputReport,
     loop_step: u64,
     object_service: &mut LingquObjectServiceStub,
-) -> Result<Qwen3Dense06bTextOutputReport, String> {
+) -> Result<
+    (
+        Qwen3Dense06bTextOutputReport,
+        Option<Vec<Qwen3Dense06bLayerKvCache>>,
+    ),
+    String,
+> {
     let token_ids = qwen3_dense_0_6b_guest_input_token_ids(guest_input);
     let position = token_ids
         .len()
@@ -4207,8 +4377,9 @@ fn qwen3_dense_0_6b_incremental_decode_text_output_report(
         .map(|position| position as u64)
         .unwrap_or(state.cache_position);
     qwen3_dense_0_6b_resolve_incremental_kv_index(object_service, state, loop_step)?;
-    let (forward, weight_payloads) =
+    let (forward, weight_payloads, real_kv_cache) =
         qwen3_dense_0_6b_runtime_incremental_forward_summary_from_guest_input(
+            state,
             guest_input,
             object_service,
             loop_step.saturating_mul(1000) + 300,
@@ -4264,7 +4435,7 @@ fn qwen3_dense_0_6b_incremental_decode_text_output_report(
     report.text_lossy = String::from_utf8_lossy(&report.bytes).to_string();
     report.real_inference =
         qwen3_dense_0_6b_real_inference_report_from_runtime_samples(guest_input, &report.samples)?;
-    Ok(report)
+    Ok((report, real_kv_cache))
 }
 
 fn qwen3_dense_0_6b_resolve_incremental_kv_index(
@@ -4328,10 +4499,34 @@ fn qwen3_dense_0_6b_resolve_incremental_kv_index(
             state.cache_states.len()
         ));
     }
+    let real_kv_cache = qwen3_dense_0_6b_real_kv_cache_from_payload(&payload)?;
+    if real_kv_cache != state.real_kv_cache {
+        return Err(format!(
+            "qwen3_incremental_real_kv_object_payload_mismatch:key={}:payload_real={}:state_real={}",
+            state.kv_object_key,
+            real_kv_cache.as_ref().map(|cache| cache.len()).unwrap_or(0),
+            state.real_kv_cache.as_ref().map(|cache| cache.len()).unwrap_or(0)
+        ));
+    }
     Ok(())
 }
 
+fn qwen3_dense_0_6b_real_kv_cache_from_token_ids(
+    token_ids: &[u64],
+) -> Result<Option<Vec<Qwen3Dense06bLayerKvCache>>, String> {
+    if token_ids.is_empty() {
+        return Ok(None);
+    }
+    let Ok(weights_path) = std::env::var("SIM_QWEN3_0_6B_WEIGHTS_PATH") else {
+        return Ok(None);
+    };
+    let loaded = qwen3_dense_0_6b_cached_loaded_weights(&weights_path)?;
+    let forward = forward_with_kv_cache_from_token_ids(&loaded.tensors, token_ids)?;
+    Ok(Some(forward.kv_cache))
+}
+
 fn qwen3_dense_0_6b_runtime_incremental_forward_summary_from_guest_input(
+    state: &Qwen3Dense06bIncrementalDecodeState,
     guest_input: &[u8],
     runtime_weight_objects: &mut LingquObjectServiceStub,
     event_base: u64,
@@ -4339,26 +4534,41 @@ fn qwen3_dense_0_6b_runtime_incremental_forward_summary_from_guest_input(
     (
         Option<qwen3_dense_0_6b::Qwen3Dense06bForwardReference>,
         BTreeMap<String, Vec<u8>>,
+        Option<Vec<Qwen3Dense06bLayerKvCache>>,
     ),
     String,
 > {
     let token_ids = qwen3_dense_0_6b_guest_input_token_ids(guest_input);
     if token_ids.is_empty() {
-        return Ok((None, BTreeMap::new()));
+        return Ok((None, BTreeMap::new(), None));
     }
     let Ok(weights_path) = std::env::var("SIM_QWEN3_0_6B_WEIGHTS_PATH") else {
-        return Ok((None, BTreeMap::new()));
+        return Ok((None, BTreeMap::new(), None));
     };
     let resolved =
         qwen3_dense_0_6b_resolve_runtime_weight_objects(runtime_weight_objects, event_base)?;
     let loaded = qwen3_dense_0_6b_cached_loaded_weights(&weights_path)?;
-    let forward = forward_from_token_ids_with_layer_payloads(
+    let previous_cache = state
+        .real_kv_cache
+        .as_ref()
+        .ok_or_else(|| "qwen3_incremental_real_kv_cache_missing".to_string())?;
+    let position = token_ids
+        .len()
+        .checked_sub(1)
+        .ok_or_else(|| "qwen3_incremental_token_position_missing".to_string())?
+        as u64;
+    let hidden = embedding_reference_last_hidden(&loaded.tensors, &token_ids)?;
+    let forward_with_cache = forward_incremental_with_kv_cache_from_hidden(
         &loaded.tensors,
-        &resolved.layer_payloads,
-        &token_ids,
-    )
-    .map(Some)?;
-    Ok((forward, resolved.layer_payloads))
+        previous_cache,
+        position,
+        &hidden,
+    )?;
+    Ok((
+        Some(forward_with_cache.forward),
+        resolved.layer_payloads,
+        Some(forward_with_cache.kv_cache),
+    ))
 }
 
 fn qwen3_dense_0_6b_incremental_decode_sample(
