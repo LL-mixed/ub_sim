@@ -241,6 +241,29 @@ impl GuestDescriptor {
                     key: decode_string(&mut cursor)?,
                 },
             ))),
+            9 => {
+                let op_id = read_u64(&mut cursor)?;
+                let segment = SegmentHandle(read_u64(&mut cursor)?);
+                let magic = read_u32(&mut cursor)?;
+                let mut levels = [0u32; 8];
+                levels[0] = magic;
+                for level in levels.iter_mut().skip(1) {
+                    *level = read_u32(&mut cursor)?;
+                }
+                Ok(GuestDescriptor::Io(GuestIoDescriptor {
+                    op_id,
+                    task: Some(TaskKey {
+                        logical_system: sim_core::LogicalSystemId(1),
+                        coord: sim_core::HierarchyCoord { levels },
+                        scope_depth: 8,
+                        task_id: op_id,
+                    }),
+                    entity: 0,
+                    opcode: IoOpcode::Dispatch,
+                    segment: Some(segment),
+                    block: None,
+                }))
+            }
             _ => Err("invalid descriptor kind"),
         }
     }
@@ -374,13 +397,15 @@ pub fn encode_completion(
     event: &CompletionEvent,
     slot_bytes: usize,
 ) -> Result<Vec<u8>, &'static str> {
+    const QWEN3_RANGE_COMPLETION_MARKER: u64 = 0x7133_7734_7267_6330;
+
     let mut buf = Vec::with_capacity(slot_bytes);
     write_u64(&mut buf, event.op_id);
     /*
-     * Guest CQ slots are intentionally compact: the fixed 64B ABI carries
-     * op_id/source/status/finished_at, not the full TaskKey. The richer task
-     * identity remains in the simulator event before it crosses the QEMU
-     * guest ABI boundary.
+     * Guest CQ slots are compact. The fixed prefix carries
+     * op_id/source/status/finished_at. A Qwen3 range dispatch may append a
+     * tiny task sideband after finished_at so the guest can validate the
+     * range contract without mutating the output tensor segment.
      */
     write_u8(&mut buf, 0);
     write_u8(
@@ -407,6 +432,14 @@ pub fn encode_completion(
         }
     }
     write_u64(&mut buf, event.finished_at);
+    if let Some(task) = &event.task {
+        if task.scope_depth == 8 && buf.len() + 8 + (task.coord.levels.len() * 4) <= slot_bytes {
+            write_u64(&mut buf, QWEN3_RANGE_COMPLETION_MARKER);
+            for level in task.coord.levels {
+                write_u32(&mut buf, level);
+            }
+        }
+    }
     pad_slot(buf, slot_bytes)
 }
 

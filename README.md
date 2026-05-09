@@ -196,10 +196,13 @@ decode dispatch batch，并在默认 batch manifest 缺失时自动生成对应 
 SIM_QWEN3_0_6B_WEIGHTS_PATH=/Volumes/repos/qwen3_mlx_run/Qwen3-0.6B \
 cargo run --release -p sim-cli -- qwen3-decode-loop \
   --scenario 2host \
-  --steps 32 \
+  --max-token 32 \
   --prompt "Capital of China is" \
   --matmul-batch 4
 ```
+
+`--prompt` 默认会按 Qwen3 chat template 包装成 user/assistant 消息；需要完全按原始文本
+tokenize 时传 `--raw-prompt`。
 
 `--scenario` 可用 `2host`、`4host`、`8host`，也可以传完整 YAML 路径。这个参数同时用于
 `sim-cli` 外层 topology 和 `sim-uapi` 内层 chipbackend runtime，避免两边读取不同 scenario。

@@ -23,26 +23,28 @@ use sim_core::{
     SimplerRuntimeArtifacts, TaskKey, TensorDType, TensorLayout,
 };
 use sim_models::qwen3_dense_0_6b::{
-    self, checksum_words, embedding_reference_last_hidden, embedding_reference_summary,
-    forward_from_token_ids, forward_incremental_with_kv_cache_from_hidden,
-    forward_with_kv_cache_from_token_ids, full_vocab_sample_from_hidden,
-    load_safetensors_path_metadata, load_tokenizer_asset_summary, logits_reference_summary,
-    logits_reference_summary_with_hidden, mlp_reference_layer_summary,
-    mlp_reference_layer_summary_with_hidden, prompt_token_ids_checksum,
-    qkv_reference_layer_summary, qkv_reference_layer_values,
+    self, checksum_words, embedding_reference_hidden_sequence_with_payloads,
+    embedding_reference_last_hidden, embedding_reference_last_hidden_with_payloads,
+    embedding_reference_summary, forward_from_token_ids,
+    forward_from_token_ids_with_layer_payloads, full_vocab_logits_from_hidden,
+    full_vocab_logits_from_hidden_with_payloads, full_vocab_sample_from_hidden,
+    layer_forward_reference_sequence_with_payloads, load_safetensors_path_metadata,
+    load_tokenizer_asset_summary, logits_reference_summary, logits_reference_summary_with_hidden,
+    materialize_full_weight_tensor_payload, materialize_weight_slice_payload,
+    mlp_reference_layer_summary, mlp_reference_layer_summary_with_hidden,
+    prompt_token_ids_checksum, qkv_reference_layer_summary, qkv_reference_layer_values,
     qkv_reference_layer_values_with_hidden, token_piece_bytes_from_policy,
     token_piece_bytes_from_tokenizer_path, token_piece_decode_bytes, token_piece_from_policy,
-    token_piece_from_tokenizer_path, tokenize_prompt_from_tokenizer_path, tokenizer_policy,
+    tokenize_prompt_from_tokenizer_path, tokenizer_policy, weight_bytes_checksum,
     weight_manifest_from_metadata, Qwen3Dense06bEmbeddingReferenceSummary,
-    Qwen3Dense06bForwardReference, Qwen3Dense06bFullVocabSample, Qwen3Dense06bLayerKvCache,
-    Qwen3Dense06bLoadedWeights, Qwen3Dense06bLogitsReferenceSummary,
-    Qwen3Dense06bMlpReferenceLayerSummary, Qwen3Dense06bMlpReferenceShardSummary,
-    Qwen3Dense06bProfile, Qwen3Dense06bQkvReferenceLayerSummary,
-    Qwen3Dense06bQkvReferenceLayerValues, Qwen3Dense06bQkvReferenceShardSummary,
-    Qwen3Dense06bQkvReferenceShardValues, Qwen3Dense06bReferenceWeightSliceValidation,
-    Qwen3Dense06bShard, Qwen3Dense06bTokenizerAssetSummary, Qwen3Dense06bWeightTensorKind,
-    QWEN3_DENSE_0_6B_PROFILE, QWEN3_DENSE_0_6B_TOKENIZER_ASSET_POLICY_KIND,
-    QWEN3_DENSE_0_6B_TOKENIZER_POLICY_KIND,
+    Qwen3Dense06bFullVocabLogitsSummary, Qwen3Dense06bFullVocabSample, Qwen3Dense06bLoadedWeights,
+    Qwen3Dense06bLogitsReferenceSummary, Qwen3Dense06bMlpReferenceLayerSummary,
+    Qwen3Dense06bMlpReferenceShardSummary, Qwen3Dense06bProfile,
+    Qwen3Dense06bQkvReferenceLayerSummary, Qwen3Dense06bQkvReferenceLayerValues,
+    Qwen3Dense06bQkvReferenceShardSummary, Qwen3Dense06bQkvReferenceShardValues,
+    Qwen3Dense06bReferenceWeightSliceValidation, Qwen3Dense06bShard,
+    Qwen3Dense06bTokenizerAssetSummary, Qwen3Dense06bWeightTensorKind, QWEN3_DENSE_0_6B_PROFILE,
+    QWEN3_DENSE_0_6B_TOKENIZER_ASSET_POLICY_KIND, QWEN3_DENSE_0_6B_TOKENIZER_POLICY_KIND,
 };
 use sim_runtime::{
     LocalRuntimeEngine, RuntimeCompletionTracker, RuntimeDriveAction, RuntimeQueueRecord,
@@ -478,6 +480,43 @@ pub struct Qwen3Dense06bDecodeLoopStepReport {
     pub text_output: Qwen3Dense06bTextOutputReport,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Qwen3Dense06bRangeForwardReport {
+    pub prompt_token_count: u64,
+    pub prompt_token_checksum: u64,
+    pub node_count: u64,
+    pub layer_count: u64,
+    pub ready: bool,
+    pub weight_object_count: u64,
+    pub global_weight_object_count: u64,
+    pub hidden_object_count: u64,
+    pub handoff_match_count: u64,
+    pub aggregate_checksum: u64,
+    pub workers: Vec<Qwen3Dense06bRangeForwardWorkerReport>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Qwen3Dense06bRangeForwardWorkerReport {
+    pub node_id: u64,
+    pub first_layer_id: u64,
+    pub last_layer_id: u64,
+    pub layer_count: u64,
+    pub input_key: String,
+    pub output_key: String,
+    pub weight_key: String,
+    pub input_payload_bytes: u64,
+    pub output_payload_bytes: u64,
+    pub input_payload_checksum: u64,
+    pub output_payload_checksum: u64,
+    pub first_layer_input_checksum: u64,
+    pub last_layer_output_checksum: u64,
+    pub weight_payload_bytes: u64,
+    pub weight_payload_slice_count: u64,
+    pub weight_reconstructed_tensor_count: u64,
+    pub handoff_input_matches_previous_output: bool,
+    pub aggregate_checksum: u64,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Qwen3Dense06bObjectServiceReport {
     pub ready: bool,
@@ -504,6 +543,17 @@ pub struct Qwen3Dense06bObjectServiceReport {
     pub missing_resolve_count: u64,
     pub token_objects: u64,
     pub kv_objects: u64,
+    pub weight_objects: u64,
+    pub weight_payload_bytes: u64,
+    pub weight_payload_slice_count: u64,
+    pub weight_payload_complete: bool,
+    pub weight_reconstructed_tensor_count: u64,
+    pub weight_reconstructed_tensor_checksum: u64,
+    pub weight_payload_checksum: u64,
+    pub global_weight_object_count: u64,
+    pub global_weight_payload_bytes: u64,
+    pub global_weight_tensor_count: u64,
+    pub global_weight_payload_checksum: u64,
     pub runtime_tensor_objects: u64,
     pub logits_objects: u64,
     pub object_checksum: u64,
@@ -607,6 +657,8 @@ pub struct Qwen3Dense06bHiddenLayerExecution {
     pub output_tensor_checksum: u64,
     pub real_reference_tensor_checksum: u64,
     pub starts_node_range: bool,
+    pub input_tensor_payload: Vec<u8>,
+    pub output_tensor_payload: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1462,11 +1514,63 @@ fn run_w4_chipbackend(
         .unwrap_or_else(|_| "host_vector".to_string())
         .as_str()
     {
-        "qwen3_dense_0_6b" => run_qwen3_dense_0_6b_prefill_runtime(topology, task, guest_input),
+        "qwen3_dense_0_6b" => {
+            run_qwen3_dense_0_6b_prefill_runtime(topology, task, guest_input, None)
+        }
         "host_matmul" => run_host_matmul_smoke(topology, task),
         "host_vector" | "" => run_host_vector_chipbackend(topology, task, guest_input),
         other => Err(format!("unsupported_w4_chipbackend_profile:{other}")),
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Qwen3GuestRangeComputeContract {
+    node: u32,
+    layer_start: u32,
+    layer_end: u32,
+    next_node: u32,
+    pipeline_nodes: u32,
+    total_layers: u32,
+    hidden_bytes: u32,
+}
+
+fn qwen3_guest_range_compute_contract(
+    task: &TaskKey,
+) -> Result<Option<Qwen3GuestRangeComputeContract>, String> {
+    const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
+
+    if task.scope_depth != 8 || task.coord.levels[0] != RANGE_TASK_MAGIC {
+        return Ok(None);
+    }
+    let contract = Qwen3GuestRangeComputeContract {
+        node: task.coord.levels[1],
+        layer_start: task.coord.levels[2],
+        layer_end: task.coord.levels[3],
+        next_node: task.coord.levels[4],
+        pipeline_nodes: task.coord.levels[5],
+        total_layers: task.coord.levels[6],
+        hidden_bytes: task.coord.levels[7],
+    };
+    if contract.pipeline_nodes != QWEN3_DENSE_0_6B_PROFILE.tp_nodes as u32
+        || contract.total_layers != QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers as u32
+        || contract.node >= contract.pipeline_nodes
+        || contract.next_node >= contract.pipeline_nodes
+        || contract.layer_start >= contract.layer_end
+        || contract.layer_end > contract.total_layers
+        || contract.hidden_bytes == 0
+    {
+        return Err(format!(
+            "qwen3_guest_range_compute_contract_invalid:node={} layers=[{},{}) next={} nodes={} total_layers={} hidden_bytes={}",
+            contract.node,
+            contract.layer_start,
+            contract.layer_end,
+            contract.next_node,
+            contract.pipeline_nodes,
+            contract.total_layers,
+            contract.hidden_bytes
+        ));
+    }
+    Ok(Some(contract))
 }
 
 pub fn qwen3_dense_0_6b_prefill_text_output_report(
@@ -1495,6 +1599,15 @@ pub fn qwen3_dense_0_6b_decode_loop_report_with_prompt(
     max_token_count: usize,
     prompt: &str,
 ) -> Result<Qwen3Dense06bDecodeLoopReport, String> {
+    let prompt = qwen3_dense_0_6b_chat_prompt(prompt);
+    qwen3_dense_0_6b_decode_loop_report_with_raw_prompt(topology, max_token_count, &prompt)
+}
+
+pub fn qwen3_dense_0_6b_decode_loop_report_with_raw_prompt(
+    topology: &SimTopology,
+    max_token_count: usize,
+    prompt: &str,
+) -> Result<Qwen3Dense06bDecodeLoopReport, String> {
     let tokenizer_path = qwen3_dense_0_6b_real_tokenizer_path()
         .ok_or_else(|| "qwen3_prompt_tokenizer_path_missing".to_string())?;
     let prompt_tokens = tokenize_prompt_from_tokenizer_path(&tokenizer_path, prompt)?;
@@ -1508,6 +1621,195 @@ pub fn qwen3_dense_0_6b_decode_loop_report_with_prompt(
         guest_input,
         guest_input_report,
     )
+}
+
+pub fn qwen3_dense_0_6b_range_forward_report_with_prompt(
+    topology: &SimTopology,
+    prompt: &str,
+) -> Result<Qwen3Dense06bRangeForwardReport, String> {
+    let tokenizer_path = qwen3_dense_0_6b_real_tokenizer_path()
+        .ok_or_else(|| "qwen3_range_forward_tokenizer_path_missing".to_string())?;
+    let prompt_tokens = tokenize_prompt_from_tokenizer_path(&tokenizer_path, prompt)?;
+    let token_ids = prompt_tokens.token_ids;
+    if token_ids.is_empty() {
+        return Err("qwen3_range_forward_prompt_tokens_empty".to_string());
+    }
+    let weights_path = std::env::var("SIM_QWEN3_0_6B_WEIGHTS_PATH")
+        .map_err(|_| "qwen3_range_forward_weights_path_missing".to_string())?;
+    let loaded = qwen3_dense_0_6b_cached_loaded_weights(&weights_path)?;
+    let mut service = LingquObjectServiceStub::new(qwen3_dense_0_6b_object_service_profile());
+    qwen3_dense_0_6b_publish_bootstrap_weight_objects(topology, &mut service)?;
+    let resolved = qwen3_dense_0_6b_resolve_runtime_weight_objects(&mut service, 810_000)?;
+    let forward = forward_from_token_ids_with_layer_payloads(
+        &loaded.tensors,
+        &resolved.layer_payloads,
+        &token_ids,
+    )?;
+    let embedding_hidden = embedding_reference_last_hidden_with_payloads(
+        &loaded.tensors,
+        Some(&resolved.layer_payloads),
+        &token_ids,
+    )?;
+    let ranges = qwen3_dense_0_6b_bootstrap_node_ranges();
+    let session_key = checksum_words(&[
+        prompt_token_ids_checksum(&token_ids),
+        token_ids.len() as u64,
+        forward.aggregate_checksum,
+    ]);
+    let mut workers = Vec::with_capacity(ranges.len());
+    let mut previous_output_payload = None::<Vec<u8>>;
+    for (range_index, range) in ranges.iter().enumerate() {
+        let input_payload = previous_output_payload
+            .clone()
+            .unwrap_or_else(|| qwen3_dense_0_6b_f32_payload_bytes(&embedding_hidden));
+        let input_payload_checksum = weight_bytes_checksum(&input_payload);
+        let first_layer = forward
+            .layers
+            .get(range.first_layer_id as usize)
+            .ok_or_else(|| {
+                format!(
+                    "qwen3_range_forward_first_layer_missing:{}",
+                    range.first_layer_id
+                )
+            })?;
+        let last_layer = forward
+            .layers
+            .get(range.last_layer_id as usize)
+            .ok_or_else(|| {
+                format!(
+                    "qwen3_range_forward_last_layer_missing:{}",
+                    range.last_layer_id
+                )
+            })?;
+        let output_payload = qwen3_dense_0_6b_f32_payload_bytes(&last_layer.output);
+        let output_payload_checksum = weight_bytes_checksum(&output_payload);
+        let input_key = format!(
+            "qwen3/range-forward/{session_key:016x}/node-{}/layers/{:02}-{:02}/input",
+            range.node_id, range.first_layer_id, range.last_layer_id
+        );
+        let output_key = format!(
+            "qwen3/range-forward/{session_key:016x}/node-{}/layers/{:02}-{:02}/output",
+            range.node_id, range.first_layer_id, range.last_layer_id
+        );
+        qwen3_dense_0_6b_publish_runtime_tensor_object(
+            &mut service,
+            &input_key,
+            range.node_id,
+            &input_payload,
+            input_payload_checksum,
+            820_000 + range_index as u64 * 10,
+        )?;
+        qwen3_dense_0_6b_resolve_runtime_tensor_object(
+            &mut service,
+            &input_key,
+            range.node_id,
+            input_payload_checksum,
+            820_001 + range_index as u64 * 10,
+        )?;
+        let range_weight = qwen3_dense_0_6b_resolve_weight_range_objects(
+            &mut service,
+            std::slice::from_ref(range),
+            830_000 + range_index as u64 * 100,
+        )?;
+        qwen3_dense_0_6b_publish_runtime_tensor_object(
+            &mut service,
+            &output_key,
+            range.node_id,
+            &output_payload,
+            output_payload_checksum,
+            820_002 + range_index as u64 * 10,
+        )?;
+        qwen3_dense_0_6b_resolve_runtime_tensor_object(
+            &mut service,
+            &output_key,
+            range.node_id,
+            output_payload_checksum,
+            820_003 + range_index as u64 * 10,
+        )?;
+        let handoff_input_matches_previous_output = match previous_output_payload.as_ref() {
+            Some(previous) => previous.as_slice() == input_payload.as_slice(),
+            None => true,
+        };
+        let aggregate_checksum = checksum_words(&[
+            range.node_id,
+            range.first_layer_id,
+            range.last_layer_id,
+            input_payload.len() as u64,
+            output_payload.len() as u64,
+            input_payload_checksum,
+            output_payload_checksum,
+            first_layer.input_checksum,
+            last_layer.output_checksum,
+            range_weight.payload_bytes,
+            range_weight.slice_count,
+            range_weight.reconstructed_tensor_count,
+            u64::from(handoff_input_matches_previous_output),
+        ]);
+        workers.push(Qwen3Dense06bRangeForwardWorkerReport {
+            node_id: range.node_id,
+            first_layer_id: range.first_layer_id,
+            last_layer_id: range.last_layer_id,
+            layer_count: range.layer_count,
+            input_key,
+            output_key,
+            weight_key: qwen3_dense_0_6b_weight_range_object_key(range),
+            input_payload_bytes: input_payload.len() as u64,
+            output_payload_bytes: output_payload.len() as u64,
+            input_payload_checksum,
+            output_payload_checksum,
+            first_layer_input_checksum: first_layer.input_checksum,
+            last_layer_output_checksum: last_layer.output_checksum,
+            weight_payload_bytes: range_weight.payload_bytes,
+            weight_payload_slice_count: range_weight.slice_count,
+            weight_reconstructed_tensor_count: range_weight.reconstructed_tensor_count,
+            handoff_input_matches_previous_output,
+            aggregate_checksum,
+        });
+        previous_output_payload = Some(output_payload);
+    }
+    let handoff_match_count = workers
+        .iter()
+        .filter(|worker| worker.handoff_input_matches_previous_output)
+        .count() as u64;
+    let aggregate_checksum = checksum_words(
+        &workers
+            .iter()
+            .flat_map(|worker| {
+                [
+                    worker.node_id,
+                    worker.first_layer_id,
+                    worker.last_layer_id,
+                    worker.input_payload_checksum,
+                    worker.output_payload_checksum,
+                    worker.aggregate_checksum,
+                ]
+            })
+            .collect::<Vec<_>>(),
+    );
+    Ok(Qwen3Dense06bRangeForwardReport {
+        prompt_token_count: token_ids.len() as u64,
+        prompt_token_checksum: prompt_token_ids_checksum(&token_ids),
+        node_count: ranges.len() as u64,
+        layer_count: QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers,
+        ready: workers.len() == ranges.len()
+            && handoff_match_count == workers.len() as u64
+            && workers
+                .last()
+                .map(|worker| {
+                    worker.last_layer_id + 1 == QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers
+                })
+                .unwrap_or(false),
+        weight_object_count: resolved.object_count,
+        global_weight_object_count: resolved.global_object_count,
+        hidden_object_count: workers.len() as u64 * 2,
+        handoff_match_count,
+        aggregate_checksum,
+        workers,
+    })
+}
+
+fn qwen3_dense_0_6b_chat_prompt(prompt: &str) -> String {
+    format!("<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n")
 }
 
 fn qwen3_dense_0_6b_decode_progress(args: std::fmt::Arguments<'_>) {
@@ -1599,6 +1901,28 @@ fn qwen3_dense_0_6b_simpler_round1_dispatch_batch_size() -> usize {
         .unwrap_or(4)
 }
 
+fn qwen3_dense_0_6b_dispatch_detail_timing_enabled() -> bool {
+    std::env::var("SIM_QWEN3_DISPATCH_DETAIL_TIMING")
+        .map(|value| {
+            matches!(
+                value.as_str(),
+                "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn qwen3_dense_0_6b_final_report_full_enabled() -> bool {
+    std::env::var("SIM_QWEN3_FINAL_REPORT")
+        .map(|value| {
+            matches!(
+                value.as_str(),
+                "full" | "FULL" | "debug" | "DEBUG" | "1" | "true" | "TRUE" | "yes" | "YES"
+            )
+        })
+        .unwrap_or(false)
+}
+
 fn qwen3_dense_0_6b_poll_simpler_dispatch_batch(
     runtime: &mut LocalRuntimeEngine,
     sink: &mut VecEventSink,
@@ -1607,10 +1931,16 @@ fn qwen3_dense_0_6b_poll_simpler_dispatch_batch(
     expected_completions: usize,
     stage: &str,
 ) -> Result<(), String> {
+    let detail_timing = qwen3_dense_0_6b_dispatch_detail_timing_enabled();
     with_suppressed_stdio(|| {
         *runtime_time += dispatch_latency;
+        let advance_started = Instant::now();
         runtime.advance_to(*runtime_time, sink);
+        let advance_ms = advance_started.elapsed().as_millis();
+        let poll_started = Instant::now();
         let completions = runtime.poll_completions(*runtime_time, sink);
+        let poll_ms = poll_started.elapsed().as_millis();
+        let check_started = Instant::now();
         if completions.len() != expected_completions {
             return Err(format!(
                 "simpler_capi_qwen3_dense_0_6b_{stage}_batch_completion_count_mismatch:got={}:expected={expected_completions}",
@@ -1626,6 +1956,14 @@ fn qwen3_dense_0_6b_poll_simpler_dispatch_batch(
                 ))
                 }
             }
+        }
+        if detail_timing {
+            eprintln!(
+                "qwen3-uapi-dispatch-detail: stage={stage} expected_completions={expected_completions} advance_ms={} poll_ms={} check_ms={}",
+                advance_ms,
+                poll_ms,
+                check_started.elapsed().as_millis()
+            );
         }
         Ok(())
     })
@@ -1711,7 +2049,26 @@ fn qwen3_dense_0_6b_decode_sampling_seed(loop_step: u64, position: u64, salt: u6
 }
 
 const QWEN3_DENSE_0_6B_ENDOFTEXT_TOKEN_ID: u64 = 151643;
+const QWEN3_DENSE_0_6B_IM_START_TOKEN_ID: u64 = 151644;
 const QWEN3_DENSE_0_6B_IM_END_TOKEN_ID: u64 = 151645;
+const QWEN3_DENSE_0_6B_OBJECT_REF_START_TOKEN_ID: u64 = 151646;
+const QWEN3_DENSE_0_6B_OBJECT_REF_END_TOKEN_ID: u64 = 151647;
+const QWEN3_DENSE_0_6B_BOX_START_TOKEN_ID: u64 = 151648;
+const QWEN3_DENSE_0_6B_BOX_END_TOKEN_ID: u64 = 151649;
+const QWEN3_DENSE_0_6B_VISION_START_TOKEN_ID: u64 = 151652;
+const QWEN3_DENSE_0_6B_VISION_END_TOKEN_ID: u64 = 151653;
+const QWEN3_DENSE_0_6B_VISION_PAD_TOKEN_ID: u64 = 151654;
+const QWEN3_DENSE_0_6B_TOOL_CALL_START_TOKEN_ID: u64 = 151657;
+const QWEN3_DENSE_0_6B_TOOL_CALL_END_TOKEN_ID: u64 = 151658;
+const QWEN3_DENSE_0_6B_FIM_PREFIX_TOKEN_ID: u64 = 151659;
+const QWEN3_DENSE_0_6B_FIM_MIDDLE_TOKEN_ID: u64 = 151660;
+const QWEN3_DENSE_0_6B_FIM_SUFFIX_TOKEN_ID: u64 = 151661;
+const QWEN3_DENSE_0_6B_REPO_NAME_TOKEN_ID: u64 = 151663;
+const QWEN3_DENSE_0_6B_FILE_SEP_TOKEN_ID: u64 = 151664;
+const QWEN3_DENSE_0_6B_TOOL_RESPONSE_START_TOKEN_ID: u64 = 151665;
+const QWEN3_DENSE_0_6B_TOOL_RESPONSE_END_TOKEN_ID: u64 = 151666;
+const QWEN3_DENSE_0_6B_THINK_START_TOKEN_ID: u64 = 151667;
+const QWEN3_DENSE_0_6B_THINK_END_TOKEN_ID: u64 = 151668;
 
 fn qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
     topology: &SimTopology,
@@ -1723,7 +2080,9 @@ fn qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
     let mut generated_text = String::new();
     let mut generated_bytes = Vec::new();
     let mut decode_state: Option<Qwen3Dense06bIncrementalDecodeState> = None;
-    let mut object_service = LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
+    let mut object_service =
+        LingquObjectServiceStub::new(qwen3_dense_0_6b_object_service_profile());
+    qwen3_dense_0_6b_publish_bootstrap_weight_objects(topology, &mut object_service)?;
     let session_id = qwen3_dense_0_6b_decode_guest_input_checksum(&guest_input);
     let mut stop_token_id = None;
     let mut stop_reason = None;
@@ -1747,11 +2106,12 @@ fn qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
                 max_token_count,
                 "runtime prefill",
             );
-            qwen3_dense_0_6b_prefill_text_output_report_with_task_id_and_guest_input(
+            qwen3_dense_0_6b_prefill_text_output_report_with_task_id_guest_input_and_object_service(
                 topology,
                 &guest_input,
                 200 + step_index as u64,
                 guest_input_report.clone(),
+                Some(&mut object_service),
             )?
         } else {
             qwen3_dense_0_6b_decode_progress(format_args!(
@@ -1769,6 +2129,13 @@ fn qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
                 &mut object_service,
             )?
         };
+        let object_service_after_runtime = object_service.report();
+        let pre_report_resolve_count = object_service_after_runtime
+            .resolve_count
+            .saturating_sub(object_service_before.resolve_count);
+        let pre_report_kv_resolve_count = u64::from(!runtime_prefill_executed);
+        let runtime_weight_resolve_count =
+            pre_report_resolve_count.saturating_sub(pre_report_kv_resolve_count);
         qwen3_dense_0_6b_decode_progress(format_args!(
             "step {}/{}: runtime output parsed, selecting one token",
             step_index + 1,
@@ -1806,8 +2173,14 @@ fn qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
             step_index as u64,
             &next_guest_input,
         );
-        let hidden_layer_pipeline =
-            qwen3_dense_0_6b_hidden_layer_pipeline_report(topology, &text_output, &guest_input)?;
+        let hidden_layer_pipeline = qwen3_dense_0_6b_hidden_layer_pipeline_report(
+            topology,
+            &text_output,
+            &guest_input,
+            Some(&mut object_service),
+            session_id,
+            step_index as u64,
+        )?;
         let layer_progress =
             qwen3_dense_0_6b_decode_layer_progress_report(&text_output, &hidden_layer_pipeline);
         let real_inference_contract = qwen3_dense_0_6b_real_inference_contract_report(
@@ -1824,6 +2197,7 @@ fn qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
             &selected_samples,
             &text_output,
             &hidden_layer_pipeline,
+            runtime_weight_resolve_count + hidden_layer_pipeline.boundary_count * 2,
         )?;
         let next_guest_input_checksum =
             qwen3_dense_0_6b_decode_guest_input_checksum(&next_guest_input);
@@ -1833,7 +2207,6 @@ fn qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
             &next_guest_input,
         );
         let next_decode_state = Qwen3Dense06bIncrementalDecodeState::from_step(
-            decode_state.as_ref(),
             &text_output,
             &next_guest_input,
             &selected_samples,
@@ -1934,12 +2307,1102 @@ fn qwen3_dense_0_6b_is_decode_stop_token(token_id: u64, piece_lossy: &str) -> bo
     ) || matches!(piece_lossy, "<|endoftext|>" | "<|im_end|>")
 }
 
+fn qwen3_dense_0_6b_is_decode_control_token(token_id: u64, piece_lossy: &str) -> bool {
+    matches!(
+        token_id,
+        QWEN3_DENSE_0_6B_ENDOFTEXT_TOKEN_ID
+            | QWEN3_DENSE_0_6B_IM_START_TOKEN_ID
+            | QWEN3_DENSE_0_6B_IM_END_TOKEN_ID
+            | QWEN3_DENSE_0_6B_OBJECT_REF_START_TOKEN_ID
+            | QWEN3_DENSE_0_6B_OBJECT_REF_END_TOKEN_ID
+            | QWEN3_DENSE_0_6B_BOX_START_TOKEN_ID
+            | QWEN3_DENSE_0_6B_BOX_END_TOKEN_ID
+            | QWEN3_DENSE_0_6B_VISION_START_TOKEN_ID
+            | QWEN3_DENSE_0_6B_VISION_END_TOKEN_ID
+            | QWEN3_DENSE_0_6B_VISION_PAD_TOKEN_ID
+            | QWEN3_DENSE_0_6B_TOOL_CALL_START_TOKEN_ID
+            | QWEN3_DENSE_0_6B_TOOL_CALL_END_TOKEN_ID
+            | QWEN3_DENSE_0_6B_FIM_PREFIX_TOKEN_ID
+            | QWEN3_DENSE_0_6B_FIM_MIDDLE_TOKEN_ID
+            | QWEN3_DENSE_0_6B_FIM_SUFFIX_TOKEN_ID
+            | QWEN3_DENSE_0_6B_REPO_NAME_TOKEN_ID
+            | QWEN3_DENSE_0_6B_FILE_SEP_TOKEN_ID
+            | QWEN3_DENSE_0_6B_TOOL_RESPONSE_START_TOKEN_ID
+            | QWEN3_DENSE_0_6B_TOOL_RESPONSE_END_TOKEN_ID
+            | QWEN3_DENSE_0_6B_THINK_START_TOKEN_ID
+            | QWEN3_DENSE_0_6B_THINK_END_TOKEN_ID
+    ) || matches!(
+        piece_lossy,
+        "<|endoftext|>"
+            | "<|im_start|>"
+            | "<|im_end|>"
+            | "<|object_ref_start|>"
+            | "<|object_ref_end|>"
+            | "<|box_start|>"
+            | "<|box_end|>"
+            | "<|vision_start|>"
+            | "<|vision_end|>"
+            | "<|vision_pad|>"
+            | "<tool_call>"
+            | "</tool_call>"
+            | "<|fim_prefix|>"
+            | "<|fim_middle|>"
+            | "<|fim_suffix|>"
+            | "<|repo_name|>"
+            | "<|file_sep|>"
+            | "<tool_response>"
+            | "</tool_response>"
+            | "<think>"
+            | "</think>"
+    )
+}
+
 fn qwen3_dense_0_6b_decode_stop_reason(token_id: u64) -> &'static str {
     match token_id {
         QWEN3_DENSE_0_6B_ENDOFTEXT_TOKEN_ID => "endoftext",
         QWEN3_DENSE_0_6B_IM_END_TOKEN_ID => "im_end",
         _ => "special_token",
     }
+}
+
+fn qwen3_dense_0_6b_object_service_profile() -> LingquObjectServiceProfile {
+    let mut profile = LingquObjectServiceProfile::default();
+    profile.queue_depth = 512;
+    profile
+}
+
+fn qwen3_dense_0_6b_publish_bootstrap_weight_objects(
+    topology: &SimTopology,
+    service: &mut LingquObjectServiceStub,
+) -> Result<(), String> {
+    let ranges = qwen3_dense_0_6b_bootstrap_node_ranges();
+    let weight_payloads = qwen3_dense_0_6b_bootstrap_weight_range_payloads(topology, &ranges)?;
+    let global_payload = qwen3_dense_0_6b_bootstrap_global_weight_payload()?;
+    for (index, range) in ranges.iter().enumerate() {
+        let payload = weight_payloads
+            .get(&range.node_id)
+            .cloned()
+            .unwrap_or_else(|| qwen3_dense_0_6b_fallback_weight_range_payload(range));
+        let checksum = weight_bytes_checksum(&payload);
+        let key = qwen3_dense_0_6b_weight_range_object_key(range);
+        service
+            .submit_publish(
+                LingquObjectPublishReq {
+                    task: None,
+                    key: key.clone(),
+                    kind: LingquObjectKind::WeightShard,
+                    producer_entity: range.node_id,
+                    owner_entity: Some(range.node_id),
+                    expected_version: None,
+                    metadata: qwen3_dense_0_6b_object_metadata(payload.len() as u64, checksum),
+                    placements: vec![qwen3_dense_0_6b_object_placement(
+                        &key,
+                        LingquPayloadBackend::Block,
+                        payload.len() as u64,
+                        checksum,
+                    )],
+                    payload_bytes: payload,
+                },
+                index as u64,
+            )
+            .map_err(|err| format!("qwen3_weight_object_bootstrap_publish_failed:{err}"))?;
+    }
+    let mut expected_completions = ranges.len();
+    if let Some(payload) = global_payload {
+        let checksum = weight_bytes_checksum(&payload);
+        let key = qwen3_dense_0_6b_global_weight_object_key();
+        service
+            .submit_publish(
+                LingquObjectPublishReq {
+                    task: None,
+                    key: key.clone(),
+                    kind: LingquObjectKind::WeightShard,
+                    producer_entity: 0,
+                    owner_entity: None,
+                    expected_version: None,
+                    metadata: qwen3_dense_0_6b_object_metadata(payload.len() as u64, checksum),
+                    placements: vec![qwen3_dense_0_6b_object_placement(
+                        &key,
+                        LingquPayloadBackend::Block,
+                        payload.len() as u64,
+                        checksum,
+                    )],
+                    payload_bytes: payload,
+                },
+                ranges.len() as u64,
+            )
+            .map_err(|err| format!("qwen3_global_weight_object_bootstrap_publish_failed:{err}"))?;
+        expected_completions += 1;
+    }
+    let completions = service.poll_ready(10_000);
+    if completions.len() != expected_completions
+        || completions
+            .iter()
+            .any(|event| event.status != CompletionStatus::Success)
+    {
+        return Err(format!(
+            "qwen3_weight_object_bootstrap_completion_failed:got={}:expected={}",
+            completions.len(),
+            expected_completions
+        ));
+    }
+    Ok(())
+}
+
+fn qwen3_dense_0_6b_bootstrap_node_ranges() -> Vec<Qwen3Dense06bHiddenLayerNodeRange> {
+    let mut layers_per_node = vec![0u64; QWEN3_DENSE_0_6B_PROFILE.tp_nodes as usize];
+    for layer_id in 0..QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers {
+        let node_id = qwen3_dense_0_6b_hidden_layer_owner_node(layer_id);
+        if let Some(count) = layers_per_node.get_mut(node_id as usize) {
+            *count += 1;
+        }
+    }
+    qwen3_dense_0_6b_hidden_layer_node_ranges(&layers_per_node)
+}
+
+fn qwen3_dense_0_6b_bootstrap_weight_range_payloads(
+    topology: &SimTopology,
+    ranges: &[Qwen3Dense06bHiddenLayerNodeRange],
+) -> Result<BTreeMap<u64, Vec<u8>>, String> {
+    let Ok(weights_path) = std::env::var("SIM_QWEN3_0_6B_WEIGHTS_PATH") else {
+        return Ok(BTreeMap::new());
+    };
+    let loaded = qwen3_dense_0_6b_cached_loaded_weights(&weights_path)?;
+    let manifest = weight_manifest_from_metadata(
+        topology,
+        QWEN3_DENSE_0_6B_PROFILE,
+        loaded.source.clone(),
+        &loaded.tensors,
+    )?;
+    let mut payloads = BTreeMap::new();
+    for range in ranges {
+        let mut payload = qwen3_dense_0_6b_weight_range_payload_header(range);
+        let mut slice_count = 0u64;
+        for slice in manifest.slices.iter().filter(|slice| {
+            slice.layer_id >= range.first_layer_id && slice.layer_id <= range.last_layer_id
+        }) {
+            let slice_payload = materialize_weight_slice_payload(slice, &loaded.tensors)?;
+            let slice_checksum = weight_bytes_checksum(&slice_payload);
+            let payload_offset = payload
+                .len()
+                .checked_add(11 * std::mem::size_of::<u64>())
+                .ok_or_else(|| {
+                    format!(
+                        "qwen3_weight_payload_record_offset_overflow:{}",
+                        slice.tensor_name
+                    )
+                })? as u64;
+            payload.extend_from_slice(&qwen3_dense_0_6b_object_payload_words(&[
+                slice.layer_id,
+                slice.shard_id,
+                qwen3_dense_0_6b_weight_tensor_kind_code(slice.tensor_kind),
+                qwen3_dense_0_6b_weight_dtype_code(slice.dtype),
+                slice.slice_axis.unwrap_or(u64::MAX),
+                slice.slice_start,
+                slice.slice_end,
+                slice_payload.len() as u64,
+                slice_checksum,
+                payload_offset,
+                checksum_words(&slice.local_shape),
+            ]));
+            payload.extend_from_slice(&slice_payload);
+            slice_count += 1;
+        }
+        if slice_count == 0 {
+            return Err(format!(
+                "qwen3_weight_object_bootstrap_empty_range:node={}:layers={}-{}",
+                range.node_id, range.first_layer_id, range.last_layer_id
+            ));
+        }
+        payload[4 * std::mem::size_of::<u64>()..5 * std::mem::size_of::<u64>()]
+            .copy_from_slice(&slice_count.to_le_bytes());
+        payloads.insert(range.node_id, payload);
+    }
+    Ok(payloads)
+}
+
+fn qwen3_dense_0_6b_bootstrap_global_weight_payload() -> Result<Option<Vec<u8>>, String> {
+    let Ok(weights_path) = std::env::var("SIM_QWEN3_0_6B_WEIGHTS_PATH") else {
+        return Ok(None);
+    };
+    let loaded = qwen3_dense_0_6b_cached_loaded_weights(&weights_path)?;
+    let mut payload = qwen3_dense_0_6b_object_payload_words(&[
+        qwen3_dense_0_6b_global_weight_payload_magic(),
+        0,
+        0,
+        0,
+    ]);
+    let mut tensor_count = 0u64;
+    for (tensor_code, tensor_name) in qwen3_dense_0_6b_global_weight_tensor_specs() {
+        let tensor = loaded
+            .tensors
+            .get(tensor_name)
+            .ok_or_else(|| format!("qwen3_global_weight_tensor_missing:{tensor_name}"))?;
+        let tensor_payload = materialize_full_weight_tensor_payload(tensor_name, &loaded.tensors)?;
+        let tensor_checksum = weight_bytes_checksum(&tensor_payload);
+        let payload_offset = payload
+            .len()
+            .checked_add(8 * std::mem::size_of::<u64>())
+            .ok_or_else(|| {
+                format!("qwen3_global_weight_payload_record_offset_overflow:{tensor_name}")
+            })? as u64;
+        payload.extend_from_slice(&qwen3_dense_0_6b_object_payload_words(&[
+            tensor_code,
+            qwen3_dense_0_6b_weight_dtype_code(tensor.dtype),
+            tensor.shape.len() as u64,
+            checksum_words(&tensor.shape),
+            tensor_payload.len() as u64,
+            tensor_checksum,
+            payload_offset,
+            0,
+        ]));
+        payload.extend_from_slice(&tensor_payload);
+        tensor_count += 1;
+    }
+    payload[std::mem::size_of::<u64>()..2 * std::mem::size_of::<u64>()]
+        .copy_from_slice(&tensor_count.to_le_bytes());
+    Ok(Some(payload))
+}
+
+fn qwen3_dense_0_6b_global_weight_tensor_specs() -> [(u64, &'static str); 3] {
+    [
+        (1, "model.embed_tokens.weight"),
+        (2, "model.norm.weight"),
+        (3, "lm_head.weight"),
+    ]
+}
+
+fn qwen3_dense_0_6b_global_weight_payload_magic() -> u64 {
+    0x5157_454e_3347_4c42
+}
+
+fn qwen3_dense_0_6b_weight_range_payload_header(
+    range: &Qwen3Dense06bHiddenLayerNodeRange,
+) -> Vec<u8> {
+    qwen3_dense_0_6b_object_payload_words(&[
+        0x5147_5733_5752_4f42,
+        range.node_id,
+        range.first_layer_id,
+        range.last_layer_id,
+        0,
+    ])
+}
+
+fn qwen3_dense_0_6b_fallback_weight_range_payload(
+    range: &Qwen3Dense06bHiddenLayerNodeRange,
+) -> Vec<u8> {
+    let mut payload = qwen3_dense_0_6b_weight_range_payload_header(range);
+    payload[4 * std::mem::size_of::<u64>()..5 * std::mem::size_of::<u64>()]
+        .copy_from_slice(&0u64.to_le_bytes());
+    payload
+}
+
+#[derive(Debug)]
+struct Qwen3Dense06bResolvedWeightObjects {
+    object_count: u64,
+    payload_bytes: u64,
+    slice_count: u64,
+    slice_payload_bytes: u64,
+    payload_complete: bool,
+    reconstructed_tensor_count: u64,
+    reconstructed_tensor_checksum: u64,
+    layer_payloads: BTreeMap<String, Vec<u8>>,
+    payload_checksum: u64,
+    slice_checksum: u64,
+    global_object_count: u64,
+    global_payload_bytes: u64,
+    global_tensor_count: u64,
+    global_payload_checksum: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Qwen3Dense06bWeightObjectSliceView {
+    layer_id: u64,
+    shard_id: u64,
+    tensor_kind_code: u64,
+    dtype_code: u64,
+    slice_axis: u64,
+    slice_start: u64,
+    slice_end: u64,
+    payload_bytes: u64,
+    payload_checksum: u64,
+    payload_offset: u64,
+    local_shape_checksum: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Qwen3Dense06bWeightObjectPayloadView {
+    node_id: u64,
+    first_layer_id: u64,
+    last_layer_id: u64,
+    slices: Vec<Qwen3Dense06bWeightObjectSliceView>,
+    slice_payload_bytes: u64,
+    slice_checksum: u64,
+}
+
+fn qwen3_dense_0_6b_resolve_runtime_weight_objects(
+    service: &mut LingquObjectServiceStub,
+    event_base: u64,
+) -> Result<Qwen3Dense06bResolvedWeightObjects, String> {
+    let ranges = qwen3_dense_0_6b_bootstrap_node_ranges();
+    let mut resolved = qwen3_dense_0_6b_resolve_weight_range_objects(service, &ranges, event_base)?;
+    let global_payloads =
+        qwen3_dense_0_6b_resolve_global_weight_object(service, event_base + 50_000)?;
+    resolved.global_object_count = u64::from(!global_payloads.is_empty());
+    resolved.global_payload_bytes = global_payloads
+        .values()
+        .map(|payload| payload.len() as u64)
+        .sum();
+    resolved.global_tensor_count = global_payloads.len() as u64;
+    resolved.global_payload_checksum = checksum_words(
+        &global_payloads
+            .values()
+            .map(|payload| weight_bytes_checksum(payload))
+            .collect::<Vec<_>>(),
+    );
+    resolved.layer_payloads.extend(global_payloads);
+    Ok(resolved)
+}
+
+fn qwen3_dense_0_6b_resolve_weight_range_objects(
+    service: &mut LingquObjectServiceStub,
+    ranges: &[Qwen3Dense06bHiddenLayerNodeRange],
+    event_base: u64,
+) -> Result<Qwen3Dense06bResolvedWeightObjects, String> {
+    let require_real_payload = std::env::var("SIM_QWEN3_0_6B_WEIGHTS_PATH").is_ok();
+    let mut payload_bytes = 0u64;
+    let mut slice_count = 0u64;
+    let mut slice_payload_bytes = 0u64;
+    let mut payload_checksums = Vec::with_capacity(ranges.len());
+    let mut slice_checksums = Vec::with_capacity(ranges.len());
+    let mut reconstructed_checksums = Vec::with_capacity(ranges.len());
+    let mut reconstructed_tensor_count = 0u64;
+    let mut layer_payloads = BTreeMap::new();
+    let mut coverage = BTreeSet::new();
+    for (index, range) in ranges.iter().enumerate() {
+        let key = qwen3_dense_0_6b_weight_range_object_key(range);
+        service
+            .submit_resolve(
+                LingquObjectResolveReq {
+                    task: None,
+                    key: key.clone(),
+                    requester_entity: range.node_id,
+                    version: LingquObjectVersionSelector::LatestCommitted,
+                    min_state: LingquObjectState::Committed,
+                    preferred_backends: vec![LingquPayloadBackend::Block],
+                },
+                event_base + index as u64,
+            )
+            .map_err(|err| format!("qwen3_weight_object_resolve_failed:{err}"))?;
+        let record = service
+            .latest_record(&key)
+            .ok_or_else(|| format!("qwen3_weight_object_missing:{key}"))?;
+        if record.kind != LingquObjectKind::WeightShard {
+            return Err(format!(
+                "qwen3_weight_object_kind_mismatch:key={key}:kind={:?}",
+                record.kind
+            ));
+        }
+        let payload = service
+            .get_copy(&key, LingquObjectVersionSelector::Exact(record.version))
+            .ok_or_else(|| format!("qwen3_weight_object_payload_missing:{key}"))?;
+        let payload_checksum = weight_bytes_checksum(&payload);
+        if payload_checksum != record.checksum {
+            return Err(format!(
+                "qwen3_weight_object_payload_checksum_mismatch:key={key}:payload={payload_checksum:#x}:record={:#x}",
+                record.checksum
+            ));
+        }
+        let view = qwen3_dense_0_6b_parse_weight_range_payload(
+            range,
+            &key,
+            &payload,
+            require_real_payload,
+        )?;
+        payload_bytes = payload_bytes.saturating_add(payload.len() as u64);
+        slice_count = slice_count.saturating_add(view.slices.len() as u64);
+        slice_payload_bytes = slice_payload_bytes.saturating_add(view.slice_payload_bytes);
+        let reconstructed = qwen3_dense_0_6b_reconstruct_weight_payload_tensors(&payload, &view)?;
+        reconstructed_tensor_count =
+            reconstructed_tensor_count.saturating_add(reconstructed.tensor_count);
+        layer_payloads.extend(reconstructed.tensors);
+        for slice in &view.slices {
+            coverage.insert((slice.layer_id, slice.shard_id, slice.tensor_kind_code));
+        }
+        payload_checksums.push(payload_checksum);
+        slice_checksums.push(view.slice_checksum);
+        reconstructed_checksums.push(reconstructed.aggregate_checksum);
+    }
+    let payload_complete =
+        qwen3_dense_0_6b_validate_weight_payload_coverage(ranges, &coverage, require_real_payload)?;
+    let completions = service.poll_ready(event_base + 10_000);
+    if completions
+        .iter()
+        .any(|event| event.status != CompletionStatus::Success)
+    {
+        return Err("qwen3_weight_object_resolve_completion_failed".to_string());
+    }
+    Ok(Qwen3Dense06bResolvedWeightObjects {
+        object_count: ranges.len() as u64,
+        payload_bytes,
+        slice_count,
+        slice_payload_bytes,
+        payload_complete,
+        reconstructed_tensor_count,
+        reconstructed_tensor_checksum: checksum_words(&reconstructed_checksums),
+        layer_payloads,
+        payload_checksum: checksum_words(&payload_checksums),
+        slice_checksum: checksum_words(&slice_checksums),
+        global_object_count: 0,
+        global_payload_bytes: 0,
+        global_tensor_count: 0,
+        global_payload_checksum: 0,
+    })
+}
+
+fn qwen3_dense_0_6b_validate_weight_payload_coverage(
+    ranges: &[Qwen3Dense06bHiddenLayerNodeRange],
+    coverage: &BTreeSet<(u64, u64, u64)>,
+    require_complete: bool,
+) -> Result<bool, String> {
+    let mut expected_count = 0u64;
+    for range in ranges {
+        for layer_id in range.first_layer_id..=range.last_layer_id {
+            for shard_id in 0..QWEN3_DENSE_0_6B_PROFILE.tp_nodes {
+                for kind_code in qwen3_dense_0_6b_required_layer_weight_kind_codes() {
+                    expected_count += 1;
+                    if require_complete && !coverage.contains(&(layer_id, shard_id, kind_code)) {
+                        return Err(format!(
+                            "qwen3_weight_object_payload_missing_slice:layer={layer_id}:shard={shard_id}:kind_code={kind_code}"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(expected_count != 0 && coverage.len() as u64 == expected_count)
+}
+
+fn qwen3_dense_0_6b_resolve_global_weight_object(
+    service: &mut LingquObjectServiceStub,
+    event_id: u64,
+) -> Result<BTreeMap<String, Vec<u8>>, String> {
+    if std::env::var("SIM_QWEN3_0_6B_WEIGHTS_PATH").is_err() {
+        return Ok(BTreeMap::new());
+    }
+    let key = qwen3_dense_0_6b_global_weight_object_key();
+    service
+        .submit_resolve(
+            LingquObjectResolveReq {
+                task: None,
+                key: key.clone(),
+                requester_entity: 0,
+                version: LingquObjectVersionSelector::LatestCommitted,
+                min_state: LingquObjectState::Committed,
+                preferred_backends: vec![LingquPayloadBackend::Block],
+            },
+            event_id,
+        )
+        .map_err(|err| format!("qwen3_global_weight_object_resolve_failed:{err}"))?;
+    let record = service
+        .latest_record(&key)
+        .ok_or_else(|| format!("qwen3_global_weight_object_missing:{key}"))?;
+    let payload = service
+        .get_copy(&key, LingquObjectVersionSelector::Exact(record.version))
+        .ok_or_else(|| format!("qwen3_global_weight_object_payload_missing:{key}"))?;
+    let checksum = weight_bytes_checksum(&payload);
+    if checksum != record.checksum {
+        return Err(format!(
+            "qwen3_global_weight_object_payload_checksum_mismatch:key={key}:payload={checksum:#x}:record={:#x}",
+            record.checksum
+        ));
+    }
+    let completions = service.poll_ready(event_id + 100);
+    if completions
+        .iter()
+        .any(|event| event.status != CompletionStatus::Success)
+    {
+        return Err("qwen3_global_weight_object_resolve_completion_failed".to_string());
+    }
+    qwen3_dense_0_6b_parse_global_weight_payload(&key, &payload)
+}
+
+fn qwen3_dense_0_6b_inspect_global_weight_object(
+    service: &LingquObjectServiceStub,
+) -> Result<(u64, u64, u64, u64), String> {
+    let key = qwen3_dense_0_6b_global_weight_object_key();
+    let Some(record) = service.latest_record(&key) else {
+        return Ok((0, 0, 0, 0));
+    };
+    let payload = service
+        .get_copy(&key, LingquObjectVersionSelector::Exact(record.version))
+        .ok_or_else(|| format!("qwen3_global_weight_object_payload_missing:{key}"))?;
+    let tensors = qwen3_dense_0_6b_parse_global_weight_payload(&key, &payload)?;
+    let payload_bytes = tensors.values().map(|payload| payload.len() as u64).sum();
+    let payload_checksum = checksum_words(
+        &tensors
+            .values()
+            .map(|payload| weight_bytes_checksum(payload))
+            .collect::<Vec<_>>(),
+    );
+    Ok((1, payload_bytes, tensors.len() as u64, payload_checksum))
+}
+
+fn qwen3_dense_0_6b_parse_global_weight_payload(
+    key: &str,
+    payload: &[u8],
+) -> Result<BTreeMap<String, Vec<u8>>, String> {
+    let header_bytes = 4 * std::mem::size_of::<u64>();
+    if payload.len() < header_bytes {
+        return Err(format!(
+            "qwen3_global_weight_payload_header_too_short:key={key}:bytes={}",
+            payload.len()
+        ));
+    }
+    let magic = qwen3_dense_0_6b_payload_word(payload, 0)?;
+    if magic != qwen3_dense_0_6b_global_weight_payload_magic() {
+        return Err(format!(
+            "qwen3_global_weight_payload_magic_mismatch:key={key}:magic={magic:#x}"
+        ));
+    }
+    let tensor_count = qwen3_dense_0_6b_payload_word(payload, 1)? as usize;
+    let mut cursor = header_bytes;
+    let mut tensors = BTreeMap::new();
+    for tensor_index in 0..tensor_count {
+        let record_end = cursor
+            .checked_add(8 * std::mem::size_of::<u64>())
+            .ok_or_else(|| {
+                format!("qwen3_global_weight_payload_record_end_overflow:key={key}:tensor={tensor_index}")
+            })?;
+        let record = payload.get(cursor..record_end).ok_or_else(|| {
+            format!(
+                "qwen3_global_weight_payload_record_oob:key={key}:tensor={tensor_index}:cursor={cursor}:bytes={}",
+                payload.len()
+            )
+        })?;
+        let tensor_code = qwen3_dense_0_6b_payload_word(record, 0)?;
+        let dtype_code = qwen3_dense_0_6b_payload_word(record, 1)?;
+        let rank = qwen3_dense_0_6b_payload_word(record, 2)?;
+        let shape_checksum = qwen3_dense_0_6b_payload_word(record, 3)?;
+        let payload_bytes = qwen3_dense_0_6b_payload_word(record, 4)?;
+        let payload_checksum = qwen3_dense_0_6b_payload_word(record, 5)?;
+        let payload_offset = qwen3_dense_0_6b_payload_word(record, 6)? as usize;
+        if payload_offset != record_end {
+            return Err(format!(
+                "qwen3_global_weight_payload_offset_mismatch:key={key}:tensor={tensor_index}:offset={payload_offset}:expected={record_end}"
+            ));
+        }
+        let (tensor_name, expected_shape) =
+            qwen3_dense_0_6b_global_weight_tensor_name_and_shape(tensor_code)?;
+        if dtype_code == 0
+            || rank != expected_shape.len() as u64
+            || shape_checksum != checksum_words(&expected_shape)
+        {
+            return Err(format!(
+                "qwen3_global_weight_payload_tensor_metadata_mismatch:key={key}:tensor={tensor_name}"
+            ));
+        }
+        let payload_end = payload_offset
+            .checked_add(payload_bytes as usize)
+            .ok_or_else(|| {
+                format!("qwen3_global_weight_payload_end_overflow:key={key}:tensor={tensor_name}")
+            })?;
+        let tensor_payload = payload.get(payload_offset..payload_end).ok_or_else(|| {
+            format!(
+                "qwen3_global_weight_payload_oob:key={key}:tensor={tensor_name}:end={payload_end}:bytes={}",
+                payload.len()
+            )
+        })?;
+        let actual_checksum = weight_bytes_checksum(tensor_payload);
+        if actual_checksum != payload_checksum {
+            return Err(format!(
+                "qwen3_global_weight_payload_checksum_mismatch:key={key}:tensor={tensor_name}:payload={actual_checksum:#x}:record={payload_checksum:#x}"
+            ));
+        }
+        tensors.insert(tensor_name.to_string(), tensor_payload.to_vec());
+        cursor = payload_end;
+    }
+    if cursor != payload.len() {
+        return Err(format!(
+            "qwen3_global_weight_payload_trailing_bytes:key={key}:cursor={cursor}:bytes={}",
+            payload.len()
+        ));
+    }
+    Ok(tensors)
+}
+
+fn qwen3_dense_0_6b_global_weight_tensor_name_and_shape(
+    tensor_code: u64,
+) -> Result<(&'static str, Vec<u64>), String> {
+    let profile = QWEN3_DENSE_0_6B_PROFILE;
+    match tensor_code {
+        1 => Ok((
+            "model.embed_tokens.weight",
+            vec![profile.vocab_size, profile.hidden_size],
+        )),
+        2 => Ok(("model.norm.weight", vec![profile.hidden_size])),
+        3 => Ok((
+            "lm_head.weight",
+            vec![profile.vocab_size, profile.hidden_size],
+        )),
+        _ => Err(format!(
+            "qwen3_global_weight_payload_unknown_tensor_code:{tensor_code}"
+        )),
+    }
+}
+
+fn qwen3_dense_0_6b_required_layer_weight_kind_codes() -> [u64; 11] {
+    [
+        qwen3_dense_0_6b_weight_tensor_kind_code(Qwen3Dense06bWeightTensorKind::InputLayerNorm),
+        qwen3_dense_0_6b_weight_tensor_kind_code(Qwen3Dense06bWeightTensorKind::QProj),
+        qwen3_dense_0_6b_weight_tensor_kind_code(Qwen3Dense06bWeightTensorKind::QNorm),
+        qwen3_dense_0_6b_weight_tensor_kind_code(Qwen3Dense06bWeightTensorKind::KProj),
+        qwen3_dense_0_6b_weight_tensor_kind_code(Qwen3Dense06bWeightTensorKind::KNorm),
+        qwen3_dense_0_6b_weight_tensor_kind_code(Qwen3Dense06bWeightTensorKind::VProj),
+        qwen3_dense_0_6b_weight_tensor_kind_code(Qwen3Dense06bWeightTensorKind::OProj),
+        qwen3_dense_0_6b_weight_tensor_kind_code(
+            Qwen3Dense06bWeightTensorKind::PostAttentionLayerNorm,
+        ),
+        qwen3_dense_0_6b_weight_tensor_kind_code(Qwen3Dense06bWeightTensorKind::GateProj),
+        qwen3_dense_0_6b_weight_tensor_kind_code(Qwen3Dense06bWeightTensorKind::UpProj),
+        qwen3_dense_0_6b_weight_tensor_kind_code(Qwen3Dense06bWeightTensorKind::DownProj),
+    ]
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct Qwen3Dense06bReconstructedWeightPayloads {
+    tensor_count: u64,
+    aggregate_checksum: u64,
+    tensors: BTreeMap<String, Vec<u8>>,
+}
+
+fn qwen3_dense_0_6b_reconstruct_weight_payload_tensors(
+    payload: &[u8],
+    view: &Qwen3Dense06bWeightObjectPayloadView,
+) -> Result<Qwen3Dense06bReconstructedWeightPayloads, String> {
+    let mut grouped: BTreeMap<(u64, u64), Vec<Qwen3Dense06bWeightObjectSliceView>> =
+        BTreeMap::new();
+    for slice in &view.slices {
+        grouped
+            .entry((slice.layer_id, slice.tensor_kind_code))
+            .or_default()
+            .push(*slice);
+    }
+    let mut tensor_words = Vec::with_capacity(grouped.len() * 6);
+    let mut tensors = BTreeMap::new();
+    for ((layer_id, kind_code), mut slices) in grouped {
+        slices.sort_by_key(|slice| (slice.slice_start, slice.shard_id));
+        let tensor_payload =
+            qwen3_dense_0_6b_reconstruct_weight_tensor_payload(payload, kind_code, &slices)?;
+        tensors.insert(
+            qwen3_dense_0_6b_layer_weight_tensor_name(layer_id, kind_code)?,
+            tensor_payload.clone(),
+        );
+        tensor_words.extend_from_slice(&[
+            layer_id,
+            kind_code,
+            tensor_payload.len() as u64,
+            weight_bytes_checksum(&tensor_payload),
+            slices.len() as u64,
+            checksum_words(
+                &slices
+                    .iter()
+                    .flat_map(|slice| {
+                        [
+                            slice.shard_id,
+                            slice.slice_axis,
+                            slice.slice_start,
+                            slice.slice_end,
+                            slice.payload_checksum,
+                        ]
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+        ]);
+    }
+    Ok(Qwen3Dense06bReconstructedWeightPayloads {
+        tensor_count: tensor_words.len() as u64 / 6,
+        aggregate_checksum: checksum_words(&tensor_words),
+        tensors,
+    })
+}
+
+fn qwen3_dense_0_6b_reconstruct_weight_tensor_payload(
+    object_payload: &[u8],
+    kind_code: u64,
+    slices: &[Qwen3Dense06bWeightObjectSliceView],
+) -> Result<Vec<u8>, String> {
+    if slices.is_empty() {
+        return Err(format!(
+            "qwen3_weight_payload_reconstruct_empty:kind_code={kind_code}"
+        ));
+    }
+    let (shape, slice_axis) = qwen3_dense_0_6b_weight_kind_shape_and_axis(kind_code)?;
+    let elem_size = qwen3_dense_0_6b_weight_dtype_size_code(slices[0].dtype_code)?;
+    if slices
+        .iter()
+        .any(|slice| slice.dtype_code != slices[0].dtype_code || slice.slice_axis != slice_axis)
+    {
+        return Err(format!(
+            "qwen3_weight_payload_reconstruct_inconsistent_slice:kind_code={kind_code}"
+        ));
+    }
+    match slice_axis {
+        u64::MAX => qwen3_dense_0_6b_slice_payload(object_payload, &slices[0]).map(Vec::from),
+        0 => {
+            let mut out = Vec::new();
+            let mut expected_start = 0u64;
+            for slice in slices {
+                if slice.slice_start != expected_start {
+                    return Err(format!(
+                        "qwen3_weight_payload_axis0_gap:kind_code={kind_code}:got={}:expected={expected_start}",
+                        slice.slice_start
+                    ));
+                }
+                out.extend_from_slice(qwen3_dense_0_6b_slice_payload(object_payload, slice)?);
+                expected_start = slice.slice_end;
+            }
+            if expected_start != shape[0] {
+                return Err(format!(
+                    "qwen3_weight_payload_axis0_incomplete:kind_code={kind_code}:end={expected_start}:rows={}",
+                    shape[0]
+                ));
+            }
+            Ok(out)
+        }
+        1 => {
+            if shape.len() != 2 {
+                return Err(format!(
+                    "qwen3_weight_payload_axis1_shape_rank:kind_code={kind_code}:rank={}",
+                    shape.len()
+                ));
+            }
+            let rows = shape[0] as usize;
+            let cols = shape[1];
+            let mut expected_start = 0u64;
+            for slice in slices {
+                if slice.slice_start != expected_start {
+                    return Err(format!(
+                        "qwen3_weight_payload_axis1_gap:kind_code={kind_code}:got={}:expected={expected_start}",
+                        slice.slice_start
+                    ));
+                }
+                expected_start = slice.slice_end;
+            }
+            if expected_start != cols {
+                return Err(format!(
+                    "qwen3_weight_payload_axis1_incomplete:kind_code={kind_code}:end={expected_start}:cols={cols}"
+                ));
+            }
+            let row_bytes = cols
+                .checked_mul(elem_size)
+                .ok_or_else(|| format!("qwen3_weight_payload_axis1_row_overflow:{kind_code}"))?
+                as usize;
+            let mut out = Vec::with_capacity(rows * row_bytes);
+            for row in 0..rows {
+                for slice in slices {
+                    let slice_cols = slice.slice_end - slice.slice_start;
+                    let slice_row_bytes = slice_cols.checked_mul(elem_size).ok_or_else(|| {
+                        format!("qwen3_weight_payload_axis1_slice_overflow:{kind_code}")
+                    })? as usize;
+                    let slice_payload = qwen3_dense_0_6b_slice_payload(object_payload, slice)?;
+                    let start = row.checked_mul(slice_row_bytes).ok_or_else(|| {
+                        format!("qwen3_weight_payload_axis1_row_offset_overflow:{kind_code}")
+                    })?;
+                    let end = start.checked_add(slice_row_bytes).ok_or_else(|| {
+                        format!("qwen3_weight_payload_axis1_row_end_overflow:{kind_code}")
+                    })?;
+                    out.extend_from_slice(slice_payload.get(start..end).ok_or_else(|| {
+                        format!(
+                            "qwen3_weight_payload_axis1_row_oob:kind_code={kind_code}:row={row}"
+                        )
+                    })?);
+                }
+            }
+            Ok(out)
+        }
+        axis => Err(format!(
+            "qwen3_weight_payload_reconstruct_unsupported_axis:kind_code={kind_code}:axis={axis}"
+        )),
+    }
+}
+
+fn qwen3_dense_0_6b_slice_payload<'a>(
+    object_payload: &'a [u8],
+    slice: &Qwen3Dense06bWeightObjectSliceView,
+) -> Result<&'a [u8], String> {
+    let start = slice.payload_offset as usize;
+    let end = start
+        .checked_add(slice.payload_bytes as usize)
+        .ok_or_else(|| "qwen3_weight_payload_slice_end_overflow".to_string())?;
+    object_payload
+        .get(start..end)
+        .ok_or_else(|| "qwen3_weight_payload_slice_oob".to_string())
+}
+
+fn qwen3_dense_0_6b_weight_kind_shape_and_axis(kind_code: u64) -> Result<(Vec<u64>, u64), String> {
+    let profile = QWEN3_DENSE_0_6B_PROFILE;
+    let hidden = profile.hidden_size;
+    let q_rows = profile.num_attention_heads * profile.head_dim;
+    let kv_rows = profile.num_key_value_heads * profile.head_dim;
+    let intermediate = profile.intermediate_size;
+    Ok(
+        match qwen3_dense_0_6b_weight_tensor_kind_from_code(kind_code)? {
+            Qwen3Dense06bWeightTensorKind::InputLayerNorm => (vec![hidden], u64::MAX),
+            Qwen3Dense06bWeightTensorKind::QProj => (vec![q_rows, hidden], 0),
+            Qwen3Dense06bWeightTensorKind::QNorm => (vec![profile.head_dim], u64::MAX),
+            Qwen3Dense06bWeightTensorKind::KProj => (vec![kv_rows, hidden], 0),
+            Qwen3Dense06bWeightTensorKind::KNorm => (vec![profile.head_dim], u64::MAX),
+            Qwen3Dense06bWeightTensorKind::VProj => (vec![kv_rows, hidden], 0),
+            Qwen3Dense06bWeightTensorKind::OProj => (vec![hidden, q_rows], 1),
+            Qwen3Dense06bWeightTensorKind::PostAttentionLayerNorm => (vec![hidden], u64::MAX),
+            Qwen3Dense06bWeightTensorKind::GateProj => (vec![intermediate, hidden], 0),
+            Qwen3Dense06bWeightTensorKind::UpProj => (vec![intermediate, hidden], 0),
+            Qwen3Dense06bWeightTensorKind::DownProj => (vec![hidden, intermediate], 1),
+        },
+    )
+}
+
+fn qwen3_dense_0_6b_layer_weight_tensor_name(
+    layer_id: u64,
+    kind_code: u64,
+) -> Result<String, String> {
+    let suffix = match qwen3_dense_0_6b_weight_tensor_kind_from_code(kind_code)? {
+        Qwen3Dense06bWeightTensorKind::InputLayerNorm => "input_layernorm.weight",
+        Qwen3Dense06bWeightTensorKind::QProj => "self_attn.q_proj.weight",
+        Qwen3Dense06bWeightTensorKind::QNorm => "self_attn.q_norm.weight",
+        Qwen3Dense06bWeightTensorKind::KProj => "self_attn.k_proj.weight",
+        Qwen3Dense06bWeightTensorKind::KNorm => "self_attn.k_norm.weight",
+        Qwen3Dense06bWeightTensorKind::VProj => "self_attn.v_proj.weight",
+        Qwen3Dense06bWeightTensorKind::OProj => "self_attn.o_proj.weight",
+        Qwen3Dense06bWeightTensorKind::PostAttentionLayerNorm => "post_attention_layernorm.weight",
+        Qwen3Dense06bWeightTensorKind::GateProj => "mlp.gate_proj.weight",
+        Qwen3Dense06bWeightTensorKind::UpProj => "mlp.up_proj.weight",
+        Qwen3Dense06bWeightTensorKind::DownProj => "mlp.down_proj.weight",
+    };
+    Ok(format!("model.layers.{layer_id}.{suffix}"))
+}
+
+fn qwen3_dense_0_6b_weight_tensor_kind_from_code(
+    kind_code: u64,
+) -> Result<Qwen3Dense06bWeightTensorKind, String> {
+    match kind_code {
+        1 => Ok(Qwen3Dense06bWeightTensorKind::InputLayerNorm),
+        2 => Ok(Qwen3Dense06bWeightTensorKind::QProj),
+        3 => Ok(Qwen3Dense06bWeightTensorKind::KProj),
+        4 => Ok(Qwen3Dense06bWeightTensorKind::VProj),
+        5 => Ok(Qwen3Dense06bWeightTensorKind::OProj),
+        6 => Ok(Qwen3Dense06bWeightTensorKind::PostAttentionLayerNorm),
+        7 => Ok(Qwen3Dense06bWeightTensorKind::GateProj),
+        8 => Ok(Qwen3Dense06bWeightTensorKind::UpProj),
+        9 => Ok(Qwen3Dense06bWeightTensorKind::DownProj),
+        10 => Ok(Qwen3Dense06bWeightTensorKind::QNorm),
+        11 => Ok(Qwen3Dense06bWeightTensorKind::KNorm),
+        _ => Err(format!(
+            "qwen3_weight_payload_unknown_kind_code:{kind_code}"
+        )),
+    }
+}
+
+fn qwen3_dense_0_6b_weight_dtype_size_code(dtype_code: u64) -> Result<u64, String> {
+    match dtype_code {
+        1 => Ok(4),
+        2 | 3 => Ok(2),
+        4 | 5 => Ok(1),
+        _ => Err(format!(
+            "qwen3_weight_payload_unknown_dtype_code:{dtype_code}"
+        )),
+    }
+}
+
+fn qwen3_dense_0_6b_parse_weight_range_payload(
+    range: &Qwen3Dense06bHiddenLayerNodeRange,
+    key: &str,
+    payload: &[u8],
+    require_real_payload: bool,
+) -> Result<Qwen3Dense06bWeightObjectPayloadView, String> {
+    const HEADER_WORDS: usize = 5;
+    const SLICE_RECORD_WORDS: usize = 11;
+    if payload.len() < HEADER_WORDS * std::mem::size_of::<u64>() {
+        return Err(format!(
+            "qwen3_weight_object_payload_header_too_short:key={key}:bytes={}",
+            payload.len()
+        ));
+    }
+    let magic = qwen3_dense_0_6b_payload_word(payload, 0)?;
+    let node_id = qwen3_dense_0_6b_payload_word(payload, 1)?;
+    let first_layer_id = qwen3_dense_0_6b_payload_word(payload, 2)?;
+    let last_layer_id = qwen3_dense_0_6b_payload_word(payload, 3)?;
+    let slice_count = qwen3_dense_0_6b_payload_word(payload, 4)?;
+    if magic != 0x5147_5733_5752_4f42 {
+        return Err(format!(
+            "qwen3_weight_object_payload_magic_mismatch:key={key}:magic={magic:#x}"
+        ));
+    }
+    if node_id != range.node_id
+        || first_layer_id != range.first_layer_id
+        || last_layer_id != range.last_layer_id
+    {
+        return Err(format!(
+            "qwen3_weight_object_payload_range_mismatch:key={key}:node={node_id}:layers={first_layer_id}-{last_layer_id}:expected_node={}:expected_layers={}-{}",
+            range.node_id, range.first_layer_id, range.last_layer_id
+        ));
+    }
+    if require_real_payload && slice_count == 0 {
+        return Err(format!(
+            "qwen3_weight_object_payload_empty_real_range:key={key}:node={node_id}:layers={first_layer_id}-{last_layer_id}"
+        ));
+    }
+    let mut slices = Vec::with_capacity(slice_count as usize);
+    let mut cursor = HEADER_WORDS * std::mem::size_of::<u64>();
+    let mut slice_payload_bytes = 0u64;
+    let mut slice_checksum_words = Vec::with_capacity(slice_count as usize * SLICE_RECORD_WORDS);
+    for slice_index in 0..slice_count {
+        let record_end = cursor
+            .checked_add(SLICE_RECORD_WORDS * std::mem::size_of::<u64>())
+            .ok_or_else(|| {
+                format!(
+                    "qwen3_weight_object_slice_record_end_overflow:key={key}:slice={slice_index}"
+                )
+            })?;
+        if record_end > payload.len() {
+            return Err(format!(
+                "qwen3_weight_object_slice_record_oob:key={key}:slice={slice_index}:cursor={cursor}:bytes={}",
+                payload.len()
+            ));
+        }
+        let record = (0..SLICE_RECORD_WORDS)
+            .map(|word| qwen3_dense_0_6b_payload_word_at(payload, cursor, word))
+            .collect::<Result<Vec<_>, _>>()?;
+        let view = Qwen3Dense06bWeightObjectSliceView {
+            layer_id: record[0],
+            shard_id: record[1],
+            tensor_kind_code: record[2],
+            dtype_code: record[3],
+            slice_axis: record[4],
+            slice_start: record[5],
+            slice_end: record[6],
+            payload_bytes: record[7],
+            payload_checksum: record[8],
+            payload_offset: record[9],
+            local_shape_checksum: record[10],
+        };
+        if view.layer_id < range.first_layer_id || view.layer_id > range.last_layer_id {
+            return Err(format!(
+                "qwen3_weight_object_slice_layer_oob:key={key}:slice={slice_index}:layer={}:range={}-{}",
+                view.layer_id, range.first_layer_id, range.last_layer_id
+            ));
+        }
+        if view.payload_offset != record_end as u64 {
+            return Err(format!(
+                "qwen3_weight_object_slice_offset_mismatch:key={key}:slice={slice_index}:offset={}:expected={record_end}",
+                view.payload_offset
+            ));
+        }
+        let payload_start = view.payload_offset as usize;
+        let payload_end = payload_start
+            .checked_add(view.payload_bytes as usize)
+            .ok_or_else(|| {
+                format!(
+                    "qwen3_weight_object_slice_payload_end_overflow:key={key}:slice={slice_index}"
+                )
+            })?;
+        if payload_end > payload.len() {
+            return Err(format!(
+                "qwen3_weight_object_slice_payload_oob:key={key}:slice={slice_index}:end={payload_end}:bytes={}",
+                payload.len()
+            ));
+        }
+        let actual_checksum = weight_bytes_checksum(&payload[payload_start..payload_end]);
+        if actual_checksum != view.payload_checksum {
+            return Err(format!(
+                "qwen3_weight_object_slice_checksum_mismatch:key={key}:slice={slice_index}:payload={actual_checksum:#x}:record={:#x}",
+                view.payload_checksum
+            ));
+        }
+        slice_payload_bytes = slice_payload_bytes.saturating_add(view.payload_bytes);
+        slice_checksum_words.extend_from_slice(&record);
+        slices.push(view);
+        cursor = payload_end;
+    }
+    if cursor != payload.len() {
+        return Err(format!(
+            "qwen3_weight_object_payload_trailing_bytes:key={key}:cursor={cursor}:bytes={}",
+            payload.len()
+        ));
+    }
+    Ok(Qwen3Dense06bWeightObjectPayloadView {
+        node_id,
+        first_layer_id,
+        last_layer_id,
+        slices,
+        slice_payload_bytes,
+        slice_checksum: checksum_words(&slice_checksum_words),
+    })
+}
+
+fn qwen3_dense_0_6b_payload_word(payload: &[u8], word_index: usize) -> Result<u64, String> {
+    qwen3_dense_0_6b_payload_word_at(payload, 0, word_index)
+}
+
+fn qwen3_dense_0_6b_payload_word_at(
+    payload: &[u8],
+    base_offset: usize,
+    word_index: usize,
+) -> Result<u64, String> {
+    let offset = word_index * std::mem::size_of::<u64>();
+    let offset = base_offset
+        .checked_add(offset)
+        .ok_or_else(|| format!("qwen3_payload_word_offset_overflow:word={word_index}"))?;
+    let end = offset + std::mem::size_of::<u64>();
+    let bytes = payload.get(offset..end).ok_or_else(|| {
+        format!(
+            "qwen3_payload_word_oob:base={base_offset}:word={word_index}:bytes={}",
+            payload.len()
+        )
+    })?;
+    Ok(u64::from_le_bytes(bytes.try_into().map_err(|_| {
+        format!("qwen3_payload_word_size_invalid:word={word_index}")
+    })?))
+}
+
+fn qwen3_dense_0_6b_weight_tensor_kind_code(kind: Qwen3Dense06bWeightTensorKind) -> u64 {
+    match kind {
+        Qwen3Dense06bWeightTensorKind::InputLayerNorm => 1,
+        Qwen3Dense06bWeightTensorKind::QProj => 2,
+        Qwen3Dense06bWeightTensorKind::KProj => 3,
+        Qwen3Dense06bWeightTensorKind::VProj => 4,
+        Qwen3Dense06bWeightTensorKind::OProj => 5,
+        Qwen3Dense06bWeightTensorKind::PostAttentionLayerNorm => 6,
+        Qwen3Dense06bWeightTensorKind::GateProj => 7,
+        Qwen3Dense06bWeightTensorKind::UpProj => 8,
+        Qwen3Dense06bWeightTensorKind::DownProj => 9,
+        Qwen3Dense06bWeightTensorKind::QNorm => 10,
+        Qwen3Dense06bWeightTensorKind::KNorm => 11,
+    }
+}
+
+fn qwen3_dense_0_6b_weight_dtype_code(dtype: qwen3_dense_0_6b::Qwen3Dense06bWeightDType) -> u64 {
+    match dtype {
+        qwen3_dense_0_6b::Qwen3Dense06bWeightDType::F32 => 1,
+        qwen3_dense_0_6b::Qwen3Dense06bWeightDType::F16 => 2,
+        qwen3_dense_0_6b::Qwen3Dense06bWeightDType::BF16 => 3,
+        qwen3_dense_0_6b::Qwen3Dense06bWeightDType::I8 => 4,
+        qwen3_dense_0_6b::Qwen3Dense06bWeightDType::U8 => 5,
+    }
+}
+
+fn qwen3_dense_0_6b_weight_range_object_key(range: &Qwen3Dense06bHiddenLayerNodeRange) -> String {
+    format!(
+        "qwen3/0.6b/weights/range/node-{}/layers/{:02}-{:02}",
+        range.node_id,
+        range.first_layer_id,
+        range.last_layer_id + 1
+    )
+}
+
+fn qwen3_dense_0_6b_global_weight_object_key() -> String {
+    "qwen3/0.6b/weights/global/embed-norm-lm-head".to_string()
 }
 
 fn qwen3_dense_0_6b_decode_object_service_report(
@@ -1951,6 +3414,7 @@ fn qwen3_dense_0_6b_decode_object_service_report(
     selected_samples: &[Qwen3Dense06bTextOutputSample],
     text_output: &Qwen3Dense06bTextOutputReport,
     hidden_layer_pipeline: &Qwen3Dense06bHiddenLayerPipelineReport,
+    runtime_weight_resolve_count: u64,
 ) -> Result<Qwen3Dense06bObjectServiceReport, String> {
     let base = format!("qwen3/session/{session_id:016x}/step/{step_index:08}");
     let kv_index_key = qwen3_dense_0_6b_kv_index_object_key(session_id, step_index);
@@ -1966,13 +3430,25 @@ fn qwen3_dense_0_6b_decode_object_service_report(
         text_output.kvcache.update_seq_sum,
         text_output.kvcache.read_digest_checksum,
     ]);
-    let hidden_checksum = hidden_layer_pipeline.final_layer_checksum;
+    let final_hidden_payload = hidden_layer_pipeline
+        .layer_executions
+        .last()
+        .map(|execution| execution.output_tensor_payload.clone())
+        .unwrap_or_else(|| {
+            qwen3_dense_0_6b_object_payload_words(&[
+                hidden_layer_pipeline.last_layer_id,
+                hidden_layer_pipeline.final_layer_checksum,
+                hidden_layer_pipeline.hidden_tensor_byte_count,
+            ])
+        });
+    let final_hidden_payload_checksum =
+        qwen3_dense_0_6b_shard_output_checksum(&final_hidden_payload);
     let logits_checksum = text_output
         .real_logits
         .as_ref()
         .map(|logits| logits.aggregate_checksum)
         .unwrap_or(text_output.logits_checksum);
-    let objects = vec![
+    let mut objects = vec![
         (
             format!("{base}/tokens/input"),
             LingquObjectKind::TokenBuffer,
@@ -2013,13 +3489,9 @@ fn qwen3_dense_0_6b_decode_object_service_report(
             format!("{base}/hidden/final"),
             LingquObjectKind::RuntimeTensor,
             LingquPayloadBackend::Shmem,
-            hidden_layer_pipeline.hidden_tensor_byte_count.max(1),
-            hidden_checksum,
-            qwen3_dense_0_6b_object_payload_words(&[
-                hidden_layer_pipeline.last_layer_id,
-                hidden_layer_pipeline.final_layer_checksum,
-                hidden_layer_pipeline.hidden_tensor_byte_count,
-            ]),
+            final_hidden_payload.len() as u64,
+            final_hidden_payload_checksum,
+            final_hidden_payload,
         ),
         (
             format!("{base}/logits/full_vocab"),
@@ -2043,6 +3515,66 @@ fn qwen3_dense_0_6b_decode_object_service_report(
             ]),
         ),
     ];
+    for range in &hidden_layer_pipeline.node_ranges {
+        let range_executions = hidden_layer_pipeline
+            .layer_executions
+            .iter()
+            .filter(|execution| {
+                execution.layer_id >= range.first_layer_id
+                    && execution.layer_id <= range.last_layer_id
+                    && execution.owner_node == range.node_id
+            })
+            .collect::<Vec<_>>();
+        let Some(first_execution) = range_executions.first() else {
+            continue;
+        };
+        let Some(last_execution) = range_executions.last() else {
+            continue;
+        };
+        objects.push((
+            format!(
+                "{base}/hidden/node-{}/layers/{:02}-{:02}/input",
+                range.node_id, range.first_layer_id, range.last_layer_id
+            ),
+            LingquObjectKind::RuntimeTensor,
+            LingquPayloadBackend::Shmem,
+            first_execution.input_tensor_payload.len() as u64,
+            first_execution.input_tensor_checksum,
+            first_execution.input_tensor_payload.clone(),
+        ));
+        objects.push((
+            format!(
+                "{base}/hidden/node-{}/layers/{:02}-{:02}/output",
+                range.node_id, range.first_layer_id, range.last_layer_id
+            ),
+            LingquObjectKind::RuntimeTensor,
+            LingquPayloadBackend::Shmem,
+            last_execution.output_tensor_payload.len() as u64,
+            last_execution.output_tensor_checksum,
+            last_execution.output_tensor_payload.clone(),
+        ));
+    }
+    let object_count = objects.len() as u64;
+    let token_object_count = objects
+        .iter()
+        .filter(|(_, kind, _, _, _, _)| *kind == LingquObjectKind::TokenBuffer)
+        .count() as u64;
+    let kv_object_count = objects
+        .iter()
+        .filter(|(_, kind, _, _, _, _)| *kind == LingquObjectKind::KvCacheBlock)
+        .count() as u64;
+    let weight_object_count = objects
+        .iter()
+        .filter(|(_, kind, _, _, _, _)| *kind == LingquObjectKind::WeightShard)
+        .count() as u64;
+    let runtime_tensor_object_count = objects
+        .iter()
+        .filter(|(_, kind, _, _, _, _)| *kind == LingquObjectKind::RuntimeTensor)
+        .count() as u64;
+    let logits_object_count = objects
+        .iter()
+        .filter(|(_, kind, _, _, _, _)| *kind == LingquObjectKind::Logits)
+        .count() as u64;
     for (index, (key, kind, backend, bytes, checksum, payload_bytes)) in objects.iter().enumerate()
     {
         if *kind == LingquObjectKind::KvCacheBlock && step_index != 0 {
@@ -2104,16 +3636,119 @@ fn qwen3_dense_0_6b_decode_object_service_report(
             )
             .map_err(|err| format!("qwen3_object_resolve_failed:{err}"))?;
     }
+    let resolved_weight_objects = qwen3_dense_0_6b_resolve_weight_range_objects(
+        service,
+        &hidden_layer_pipeline.node_ranges,
+        step_index.saturating_mul(1000) + 200,
+    )?;
     let completions = service.poll_ready(step_index.saturating_mul(1000) + 1000);
     let ready = completions
         .iter()
         .all(|event| event.status == CompletionStatus::Success);
+    qwen3_dense_0_6b_validate_hidden_range_handoff_objects(service, &base, hidden_layer_pipeline)?;
     let after = service.report();
-    let report = qwen3_dense_0_6b_object_service_delta_report(before, after, ready);
+    let (
+        global_weight_object_count,
+        global_weight_payload_bytes,
+        global_weight_tensor_count,
+        global_weight_payload_checksum,
+    ) = qwen3_dense_0_6b_inspect_global_weight_object(service)?;
+    let report = qwen3_dense_0_6b_object_service_delta_report(
+        before,
+        after,
+        ready,
+        object_count,
+        token_object_count,
+        kv_object_count,
+        weight_object_count + resolved_weight_objects.object_count,
+        runtime_weight_resolve_count,
+        resolved_weight_objects.payload_bytes,
+        resolved_weight_objects.slice_count,
+        resolved_weight_objects.payload_complete,
+        resolved_weight_objects.reconstructed_tensor_count,
+        resolved_weight_objects.reconstructed_tensor_checksum,
+        checksum_words(&[
+            resolved_weight_objects.payload_checksum,
+            resolved_weight_objects.slice_count,
+            resolved_weight_objects.slice_payload_bytes,
+            u64::from(resolved_weight_objects.payload_complete),
+            resolved_weight_objects.reconstructed_tensor_count,
+            resolved_weight_objects.reconstructed_tensor_checksum,
+            resolved_weight_objects.slice_checksum,
+        ]),
+        global_weight_object_count,
+        global_weight_payload_bytes,
+        global_weight_tensor_count,
+        global_weight_payload_checksum,
+        runtime_tensor_object_count,
+        logits_object_count,
+    );
     if !report.ready {
         return Err("qwen3_object_service_completion_failed".to_string());
     }
     Ok(report)
+}
+
+fn qwen3_dense_0_6b_validate_hidden_range_handoff_objects(
+    service: &LingquObjectServiceStub,
+    base: &str,
+    hidden_layer_pipeline: &Qwen3Dense06bHiddenLayerPipelineReport,
+) -> Result<(), String> {
+    for pair in hidden_layer_pipeline.node_ranges.windows(2) {
+        let local = &pair[0];
+        let next = &pair[1];
+        let local_output_key = format!(
+            "{base}/hidden/node-{}/layers/{:02}-{:02}/output",
+            local.node_id, local.first_layer_id, local.last_layer_id
+        );
+        let next_input_key = format!(
+            "{base}/hidden/node-{}/layers/{:02}-{:02}/input",
+            next.node_id, next.first_layer_id, next.last_layer_id
+        );
+        let local_output_checksum =
+            qwen3_dense_0_6b_hidden_range_object_checksum(service, &local_output_key)?;
+        let next_input_checksum =
+            qwen3_dense_0_6b_hidden_range_object_checksum(service, &next_input_key)?;
+        if local_output_checksum != next_input_checksum {
+            return Err(format!(
+                "qwen3_hidden_range_handoff_checksum_mismatch:output_key={local_output_key}:input_key={next_input_key}:output={local_output_checksum:#x}:input={next_input_checksum:#x}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn qwen3_dense_0_6b_hidden_range_object_checksum(
+    service: &LingquObjectServiceStub,
+    key: &str,
+) -> Result<u64, String> {
+    let record = service
+        .latest_record(key)
+        .ok_or_else(|| format!("qwen3_hidden_range_object_missing:{key}"))?;
+    if record.kind != LingquObjectKind::RuntimeTensor {
+        return Err(format!(
+            "qwen3_hidden_range_object_kind_mismatch:key={key}:kind={:?}",
+            record.kind
+        ));
+    }
+    let payload = service
+        .get_copy(key, LingquObjectVersionSelector::Exact(record.version))
+        .ok_or_else(|| format!("qwen3_hidden_range_object_payload_missing:{key}"))?;
+    if payload.len() as u64 != record.bytes {
+        return Err(format!(
+            "qwen3_hidden_range_object_payload_size_mismatch:key={key}:payload={} record={}",
+            payload.len(),
+            record.bytes
+        ));
+    }
+    let payload_checksum = qwen3_dense_0_6b_shard_output_checksum(&payload);
+    if payload_checksum != record.checksum {
+        return Err(format!(
+            "qwen3_hidden_range_object_payload_checksum_mismatch:key={key}:payload={payload_checksum:#x}:record={:#x}",
+            record.checksum
+        ));
+    }
+    Ok(payload_checksum)
 }
 
 fn qwen3_dense_0_6b_object_metadata(bytes: u64, checksum: u64) -> LingquObjectMetadata {
@@ -2133,6 +3768,157 @@ fn qwen3_dense_0_6b_object_payload_words(words: &[u64]) -> Vec<u8> {
         bytes.extend_from_slice(&word.to_le_bytes());
     }
     bytes
+}
+
+fn qwen3_dense_0_6b_f32_payload_bytes(values: &[f32]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(values.len() * std::mem::size_of::<f32>());
+    for value in values {
+        bytes.extend_from_slice(&value.to_bits().to_le_bytes());
+    }
+    bytes
+}
+
+fn qwen3_dense_0_6b_publish_runtime_tensor_object(
+    service: &mut LingquObjectServiceStub,
+    key: &str,
+    producer_entity: u64,
+    payload: &[u8],
+    checksum: u64,
+    event_id: u64,
+) -> Result<(), String> {
+    service
+        .submit_publish(
+            LingquObjectPublishReq {
+                task: None,
+                key: key.to_string(),
+                kind: LingquObjectKind::RuntimeTensor,
+                producer_entity,
+                owner_entity: Some(producer_entity),
+                expected_version: None,
+                metadata: qwen3_dense_0_6b_object_metadata(payload.len() as u64, checksum),
+                placements: vec![qwen3_dense_0_6b_object_placement(
+                    key,
+                    LingquPayloadBackend::Shmem,
+                    payload.len() as u64,
+                    checksum,
+                )],
+                payload_bytes: payload.to_vec(),
+            },
+            event_id,
+        )
+        .map_err(|err| format!("qwen3_runtime_tensor_publish_failed:{key}:{err}"))?;
+    let completions = service.poll_ready(event_id + 1);
+    if completions
+        .iter()
+        .any(|event| event.status != CompletionStatus::Success)
+    {
+        return Err(format!(
+            "qwen3_runtime_tensor_publish_completion_failed:{key}"
+        ));
+    }
+    Ok(())
+}
+
+fn qwen3_dense_0_6b_resolve_runtime_tensor_object(
+    service: &mut LingquObjectServiceStub,
+    key: &str,
+    requester_entity: u64,
+    expected_checksum: u64,
+    event_id: u64,
+) -> Result<Vec<u8>, String> {
+    service
+        .submit_resolve(
+            LingquObjectResolveReq {
+                task: None,
+                key: key.to_string(),
+                requester_entity,
+                version: LingquObjectVersionSelector::LatestCommitted,
+                min_state: LingquObjectState::Committed,
+                preferred_backends: vec![LingquPayloadBackend::Shmem],
+            },
+            event_id,
+        )
+        .map_err(|err| format!("qwen3_runtime_tensor_resolve_failed:{key}:{err}"))?;
+    let record = service
+        .latest_record(key)
+        .ok_or_else(|| format!("qwen3_runtime_tensor_missing:{key}"))?;
+    if record.kind != LingquObjectKind::RuntimeTensor {
+        return Err(format!(
+            "qwen3_runtime_tensor_kind_mismatch:key={key}:kind={:?}",
+            record.kind
+        ));
+    }
+    let payload = service
+        .get_copy(key, LingquObjectVersionSelector::Exact(record.version))
+        .ok_or_else(|| format!("qwen3_runtime_tensor_payload_missing:{key}"))?;
+    let payload_checksum = weight_bytes_checksum(&payload);
+    if payload_checksum != expected_checksum || payload_checksum != record.checksum {
+        return Err(format!(
+            "qwen3_runtime_tensor_checksum_mismatch:key={key}:payload={payload_checksum:#x}:expected={expected_checksum:#x}:record={:#x}",
+            record.checksum
+        ));
+    }
+    let completions = service.poll_ready(event_id + 1);
+    if completions
+        .iter()
+        .any(|event| event.status != CompletionStatus::Success)
+    {
+        return Err(format!(
+            "qwen3_runtime_tensor_resolve_completion_failed:{key}"
+        ));
+    }
+    Ok(payload)
+}
+
+fn qwen3_dense_0_6b_resolve_runtime_hidden_tensor_object(
+    service: &mut LingquObjectServiceStub,
+    key: &str,
+    requester_entity: u64,
+    expected_checksum: u64,
+    event_id: u64,
+) -> Result<Vec<u8>, String> {
+    service
+        .submit_resolve(
+            LingquObjectResolveReq {
+                task: None,
+                key: key.to_string(),
+                requester_entity,
+                version: LingquObjectVersionSelector::LatestCommitted,
+                min_state: LingquObjectState::Committed,
+                preferred_backends: vec![LingquPayloadBackend::Shmem],
+            },
+            event_id,
+        )
+        .map_err(|err| format!("qwen3_runtime_hidden_resolve_failed:{key}:{err}"))?;
+    let record = service
+        .latest_record(key)
+        .ok_or_else(|| format!("qwen3_runtime_hidden_missing:{key}"))?;
+    if record.kind != LingquObjectKind::RuntimeTensor {
+        return Err(format!(
+            "qwen3_runtime_hidden_kind_mismatch:key={key}:kind={:?}",
+            record.kind
+        ));
+    }
+    let payload = service
+        .get_copy(key, LingquObjectVersionSelector::Exact(record.version))
+        .ok_or_else(|| format!("qwen3_runtime_hidden_payload_missing:{key}"))?;
+    let payload_checksum = qwen3_dense_0_6b_shard_output_checksum(&payload);
+    if payload_checksum != expected_checksum || payload_checksum != record.checksum {
+        return Err(format!(
+            "qwen3_runtime_hidden_checksum_mismatch:key={key}:payload={payload_checksum:#x}:expected={expected_checksum:#x}:record={:#x}",
+            record.checksum
+        ));
+    }
+    let completions = service.poll_ready(event_id + 1);
+    if completions
+        .iter()
+        .any(|event| event.status != CompletionStatus::Success)
+    {
+        return Err(format!(
+            "qwen3_runtime_hidden_resolve_completion_failed:{key}"
+        ));
+    }
+    Ok(payload)
 }
 
 fn qwen3_dense_0_6b_kv_state_payload_bytes(
@@ -2229,6 +4015,23 @@ fn qwen3_dense_0_6b_object_service_delta_report(
     before: LingquObjectServiceReport,
     after: LingquObjectServiceReport,
     ready: bool,
+    object_count: u64,
+    token_object_count: u64,
+    kv_object_count: u64,
+    weight_object_count: u64,
+    extra_non_kv_resolve_count: u64,
+    weight_payload_bytes: u64,
+    weight_payload_slice_count: u64,
+    weight_payload_complete: bool,
+    weight_reconstructed_tensor_count: u64,
+    weight_reconstructed_tensor_checksum: u64,
+    weight_payload_checksum: u64,
+    global_weight_object_count: u64,
+    global_weight_payload_bytes: u64,
+    global_weight_tensor_count: u64,
+    global_weight_payload_checksum: u64,
+    runtime_tensor_object_count: u64,
+    logits_object_count: u64,
 ) -> Qwen3Dense06bObjectServiceReport {
     let publish_count = after.publish_count.saturating_sub(before.publish_count);
     let resolve_count = after.resolve_count.saturating_sub(before.resolve_count);
@@ -2237,7 +4040,8 @@ fn qwen3_dense_0_6b_object_service_delta_report(
         publish_count,
         resolve_count,
         append_count: after.append_count.saturating_sub(before.append_count),
-        kv_index_resolve_count: resolve_count.saturating_sub(5),
+        kv_index_resolve_count: resolve_count
+            .saturating_sub(object_count + weight_object_count + extra_non_kv_resolve_count),
         kv_index_append_count: after.append_count.saturating_sub(before.append_count),
         metadata_put_count: after
             .metadata_put_count
@@ -2283,10 +4087,21 @@ fn qwen3_dense_0_6b_object_service_delta_report(
         missing_resolve_count: after
             .missing_resolve_count
             .saturating_sub(before.missing_resolve_count),
-        token_objects: 2.min(publish_count),
-        kv_objects: u64::from(publish_count >= 3),
-        runtime_tensor_objects: u64::from(publish_count >= 4),
-        logits_objects: u64::from(publish_count >= 5),
+        token_objects: token_object_count.min(publish_count),
+        kv_objects: kv_object_count.min(publish_count),
+        weight_objects: weight_object_count,
+        weight_payload_bytes,
+        weight_payload_slice_count,
+        weight_payload_complete,
+        weight_reconstructed_tensor_count,
+        weight_reconstructed_tensor_checksum,
+        weight_payload_checksum,
+        global_weight_object_count,
+        global_weight_payload_bytes,
+        global_weight_tensor_count,
+        global_weight_payload_checksum,
+        runtime_tensor_objects: runtime_tensor_object_count.min(publish_count),
+        logits_objects: logits_object_count.min(publish_count),
         object_checksum: after.checksum,
     }
 }
@@ -2302,13 +4117,10 @@ struct Qwen3Dense06bIncrementalDecodeState {
     kv_object_key: String,
     kv_object_version: u64,
     kv_object_checksum: u64,
-    forward: Option<Qwen3Dense06bForwardReference>,
-    forward_kv_cache: Option<Vec<Qwen3Dense06bLayerKvCache>>,
 }
 
 impl Qwen3Dense06bIncrementalDecodeState {
     fn from_step(
-        previous: Option<&Qwen3Dense06bIncrementalDecodeState>,
         text_output: &Qwen3Dense06bTextOutputReport,
         next_guest_input: &[u8],
         selected_samples: &[Qwen3Dense06bTextOutputSample],
@@ -2329,15 +4141,6 @@ impl Qwen3Dense06bIncrementalDecodeState {
             loop_step,
             last_sampled_token_checksum,
         ]);
-        let (forward, forward_kv_cache) =
-            qwen3_dense_0_6b_next_incremental_forward_cache(previous, next_guest_input)
-                .map(|forward_with_cache| {
-                    (
-                        Some(forward_with_cache.forward),
-                        Some(forward_with_cache.kv_cache),
-                    )
-                })
-                .unwrap_or((None, None));
         let kv_object_key = qwen3_dense_0_6b_kv_index_object_key(session_id, loop_step);
         let kv_record = object_service
             .latest_record(&kv_object_key)
@@ -2386,8 +4189,6 @@ impl Qwen3Dense06bIncrementalDecodeState {
             kv_object_key,
             kv_object_version: kv_record.version,
             kv_object_checksum: kv_record.checksum,
-            forward,
-            forward_kv_cache,
         })
     }
 }
@@ -2406,16 +4207,25 @@ fn qwen3_dense_0_6b_incremental_decode_text_output_report(
         .map(|position| position as u64)
         .unwrap_or(state.cache_position);
     qwen3_dense_0_6b_resolve_incremental_kv_index(object_service, state, loop_step)?;
-    let forward = match state.forward.clone() {
-        Some(forward) => Some(forward),
-        None => qwen3_dense_0_6b_runtime_incremental_forward_summary_from_guest_input(guest_input)?,
-    };
+    let (forward, weight_payloads) =
+        qwen3_dense_0_6b_runtime_incremental_forward_summary_from_guest_input(
+            guest_input,
+            object_service,
+            loop_step.saturating_mul(1000) + 300,
+        )?;
     let full_vocab_sample = match forward.as_ref() {
         Some(forward) => qwen3_dense_0_6b_runtime_full_vocab_sample(
             Some(&forward.final_hidden),
             loop_step,
             position,
             state.cache_digest,
+        )?,
+        None => None,
+    };
+    let _full_vocab_payload = match forward.as_ref() {
+        Some(forward) => qwen3_dense_0_6b_runtime_full_vocab_logits_summary(
+            Some(&forward.final_hidden),
+            Some(&weight_payloads),
         )?,
         None => None,
     };
@@ -2523,44 +4333,32 @@ fn qwen3_dense_0_6b_resolve_incremental_kv_index(
 
 fn qwen3_dense_0_6b_runtime_incremental_forward_summary_from_guest_input(
     guest_input: &[u8],
-) -> Result<Option<qwen3_dense_0_6b::Qwen3Dense06bForwardReference>, String> {
+    runtime_weight_objects: &mut LingquObjectServiceStub,
+    event_base: u64,
+) -> Result<
+    (
+        Option<qwen3_dense_0_6b::Qwen3Dense06bForwardReference>,
+        BTreeMap<String, Vec<u8>>,
+    ),
+    String,
+> {
     let token_ids = qwen3_dense_0_6b_guest_input_token_ids(guest_input);
     if token_ids.is_empty() {
-        return Ok(None);
+        return Ok((None, BTreeMap::new()));
     }
     let Ok(weights_path) = std::env::var("SIM_QWEN3_0_6B_WEIGHTS_PATH") else {
-        return Ok(None);
+        return Ok((None, BTreeMap::new()));
     };
+    let resolved =
+        qwen3_dense_0_6b_resolve_runtime_weight_objects(runtime_weight_objects, event_base)?;
     let loaded = qwen3_dense_0_6b_cached_loaded_weights(&weights_path)?;
-    forward_from_token_ids(&loaded.tensors, &token_ids).map(Some)
-}
-
-fn qwen3_dense_0_6b_next_incremental_forward_cache(
-    previous: Option<&Qwen3Dense06bIncrementalDecodeState>,
-    next_guest_input: &[u8],
-) -> Option<qwen3_dense_0_6b::Qwen3Dense06bForwardWithKvCache> {
-    let token_ids = qwen3_dense_0_6b_guest_input_token_ids(next_guest_input);
-    if token_ids.is_empty() {
-        return None;
-    }
-    let weights_path = std::env::var("SIM_QWEN3_0_6B_WEIGHTS_PATH").ok()?;
-    let loaded = qwen3_dense_0_6b_cached_loaded_weights(&weights_path).ok()?;
-    if let Some(previous) = previous {
-        if let Some(previous_cache) = previous.forward_kv_cache.as_ref() {
-            if previous.cache_position + 1 == token_ids.len() as u64 {
-                let hidden = embedding_reference_last_hidden(&loaded.tensors, &token_ids).ok()?;
-                if let Ok(forward) = forward_incremental_with_kv_cache_from_hidden(
-                    &loaded.tensors,
-                    previous_cache,
-                    previous.cache_position,
-                    &hidden,
-                ) {
-                    return Some(forward);
-                }
-            }
-        }
-    }
-    forward_with_kv_cache_from_token_ids(&loaded.tensors, &token_ids).ok()
+    let forward = forward_from_token_ids_with_layer_payloads(
+        &loaded.tensors,
+        &resolved.layer_payloads,
+        &token_ids,
+    )
+    .map(Some)?;
+    Ok((forward, resolved.layer_payloads))
 }
 
 fn qwen3_dense_0_6b_incremental_decode_sample(
@@ -2841,7 +4639,23 @@ fn qwen3_dense_0_6b_token_piece_raw_bytes(
     tokenizer_path: Option<&Path>,
 ) -> Result<Vec<u8>, String> {
     if let Some(path) = tokenizer_path {
-        token_piece_bytes_from_tokenizer_path(path, sampled_token)
+        static TOKEN_PIECE_BYTES_CACHE: OnceLock<Mutex<BTreeMap<(PathBuf, u64), Vec<u8>>>> =
+            OnceLock::new();
+        let cache_key = (path.to_path_buf(), sampled_token);
+        let cache = TOKEN_PIECE_BYTES_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
+        if let Some(bytes) = cache
+            .lock()
+            .expect("token piece cache poisoned")
+            .get(&cache_key)
+        {
+            return Ok(bytes.clone());
+        }
+        let bytes = token_piece_bytes_from_tokenizer_path(path, sampled_token)?;
+        cache
+            .lock()
+            .expect("token piece cache poisoned")
+            .insert(cache_key, bytes.clone());
+        Ok(bytes)
     } else {
         Ok(token_piece_bytes_from_policy(
             tokenizer_policy(QWEN3_DENSE_0_6B_PROFILE),
@@ -2869,6 +4683,9 @@ fn qwen3_dense_0_6b_decode_step_selected_bytes(
     let tokenizer_path = qwen3_dense_0_6b_real_tokenizer_path();
     ordered.sort_by_key(|sample| sample.text_byte_offset);
     for sample in ordered {
+        if qwen3_dense_0_6b_is_decode_control_token(sample.sampled_token, &sample.piece_lossy) {
+            continue;
+        }
         let piece =
             qwen3_dense_0_6b_token_piece_raw_bytes(sample.sampled_token, tokenizer_path.as_deref())
                 .map(|raw| token_piece_decode_bytes(&raw))
@@ -3145,6 +4962,9 @@ fn qwen3_dense_0_6b_hidden_layer_pipeline_report(
     topology: &SimTopology,
     text_output: &Qwen3Dense06bTextOutputReport,
     guest_input: &[u8],
+    mut object_service: Option<&mut LingquObjectServiceStub>,
+    session_id: u64,
+    step_index: u64,
 ) -> Result<Qwen3Dense06bHiddenLayerPipelineReport, String> {
     let profile = QWEN3_DENSE_0_6B_PROFILE;
     let layer_count = profile.num_hidden_layers;
@@ -3234,11 +5054,25 @@ fn qwen3_dense_0_6b_hidden_layer_pipeline_report(
     let mut hidden_tensor_carry_words = Vec::with_capacity(layer_count as usize);
     let mut hidden_tensor_real_reference_words = Vec::with_capacity(layer_count as usize);
     let mut real_layer_execution_words = Vec::with_capacity(layer_count as usize);
+    let node_ranges = qwen3_dense_0_6b_bootstrap_node_ranges();
+    let range_handoff_base = qwen3_dense_0_6b_decode_range_handoff_base(session_id, step_index);
     for layer_id in 0..layer_count {
         let node_id = qwen3_dense_0_6b_hidden_layer_owner_node(layer_id);
         let input_checksum = previous_layer_checksum;
-        let input_tensor_checksum = qwen3_dense_0_6b_shard_output_checksum(&previous_hidden_tensor);
         let starts_node_range = layer_id == 0 || node_id != previous_node;
+        if starts_node_range && layer_id > 0 {
+            qwen3_dense_0_6b_decode_range_handoff_via_object_service(
+                object_service.as_deref_mut(),
+                &range_handoff_base,
+                &node_ranges,
+                previous_node,
+                node_id,
+                &mut previous_hidden_tensor,
+                step_index,
+                layer_id,
+            )?;
+        }
+        let input_tensor_checksum = qwen3_dense_0_6b_shard_output_checksum(&previous_hidden_tensor);
         if let Some(count) = layers_per_node.get_mut(node_id as usize) {
             *count += 1;
         }
@@ -3356,6 +5190,8 @@ fn qwen3_dense_0_6b_hidden_layer_pipeline_report(
             output_tensor_checksum,
             real_reference_tensor_checksum,
             starts_node_range,
+            input_tensor_payload: previous_hidden_tensor.clone(),
+            output_tensor_payload: output_hidden_tensor.clone(),
         });
         previous_node = node_id;
         previous_hidden_tensor = output_hidden_tensor;
@@ -3466,6 +5302,91 @@ fn qwen3_dense_0_6b_hidden_layer_pipeline_report(
         node_ranges,
         layer_executions,
     })
+}
+
+fn qwen3_dense_0_6b_decode_range_handoff_base(session_id: u64, step_index: u64) -> String {
+    format!("qwen3/session/{session_id:016x}/step/{step_index:08}")
+}
+
+fn qwen3_dense_0_6b_decode_range_hidden_key(
+    base: &str,
+    range: &Qwen3Dense06bHiddenLayerNodeRange,
+    slot: &str,
+) -> String {
+    format!(
+        "{base}/hidden/node-{}/layers/{:02}-{:02}/{slot}",
+        range.node_id, range.first_layer_id, range.last_layer_id
+    )
+}
+
+fn qwen3_dense_0_6b_decode_range_handoff_via_object_service(
+    service: Option<&mut LingquObjectServiceStub>,
+    base: &str,
+    node_ranges: &[Qwen3Dense06bHiddenLayerNodeRange],
+    previous_node: u64,
+    next_node: u64,
+    previous_hidden_tensor: &mut Vec<u8>,
+    step_index: u64,
+    layer_id: u64,
+) -> Result<(), String> {
+    let Some(service) = service else {
+        return Ok(());
+    };
+    let previous_range = node_ranges
+        .iter()
+        .find(|range| range.node_id == previous_node)
+        .ok_or_else(|| {
+            format!(
+                "qwen3_decode_range_handoff_previous_range_missing:node={previous_node}:layer={layer_id}"
+            )
+        })?;
+    let next_range = node_ranges
+        .iter()
+        .find(|range| range.node_id == next_node)
+        .ok_or_else(|| {
+            format!(
+                "qwen3_decode_range_handoff_next_range_missing:node={next_node}:layer={layer_id}"
+            )
+        })?;
+    let previous_output_key =
+        qwen3_dense_0_6b_decode_range_hidden_key(base, previous_range, "output");
+    let next_input_key = qwen3_dense_0_6b_decode_range_hidden_key(base, next_range, "input");
+    let previous_output_checksum = qwen3_dense_0_6b_shard_output_checksum(previous_hidden_tensor);
+    let event_base = 510_000u64
+        .saturating_add(step_index.saturating_mul(10_000))
+        .saturating_add(layer_id.saturating_mul(100));
+    qwen3_dense_0_6b_publish_runtime_tensor_object(
+        service,
+        &previous_output_key,
+        previous_node,
+        previous_hidden_tensor,
+        previous_output_checksum,
+        event_base,
+    )?;
+    let resolved_output = qwen3_dense_0_6b_resolve_runtime_hidden_tensor_object(
+        service,
+        &previous_output_key,
+        next_node,
+        previous_output_checksum,
+        event_base + 1,
+    )?;
+    let resolved_output_checksum = qwen3_dense_0_6b_shard_output_checksum(&resolved_output);
+    qwen3_dense_0_6b_publish_runtime_tensor_object(
+        service,
+        &next_input_key,
+        next_node,
+        &resolved_output,
+        resolved_output_checksum,
+        event_base + 2,
+    )?;
+    *previous_hidden_tensor = qwen3_dense_0_6b_resolve_runtime_hidden_tensor_object(
+        service,
+        &next_input_key,
+        next_node,
+        resolved_output_checksum,
+        event_base + 3,
+    )?;
+    Ok(())
 }
 
 fn qwen3_dense_0_6b_real_qkv_layer_summaries(
@@ -3955,6 +5876,22 @@ fn qwen3_dense_0_6b_prefill_text_output_report_with_task_id_and_guest_input(
     task_id: u64,
     guest_input_report: Qwen3Dense06bGuestInputReport,
 ) -> Result<Qwen3Dense06bTextOutputReport, String> {
+    qwen3_dense_0_6b_prefill_text_output_report_with_task_id_guest_input_and_object_service(
+        topology,
+        guest_input,
+        task_id,
+        guest_input_report,
+        None,
+    )
+}
+
+fn qwen3_dense_0_6b_prefill_text_output_report_with_task_id_guest_input_and_object_service(
+    topology: &SimTopology,
+    guest_input: &[u8],
+    task_id: u64,
+    guest_input_report: Qwen3Dense06bGuestInputReport,
+    object_service: Option<&mut LingquObjectServiceStub>,
+) -> Result<Qwen3Dense06bTextOutputReport, String> {
     let output = run_qwen3_dense_0_6b_prefill_runtime(
         topology,
         &TaskKey {
@@ -3964,6 +5901,7 @@ fn qwen3_dense_0_6b_prefill_text_output_report_with_task_id_and_guest_input(
             task_id,
         },
         guest_input,
+        object_service,
     )?;
     let mut report = qwen3_dense_0_6b_text_output_report_from_prefill_output_with_guest_input(
         &output,
@@ -7478,6 +9416,7 @@ fn run_qwen3_dense_0_6b_prefill_runtime(
     topology: &SimTopology,
     task: &TaskKey,
     guest_input: &[u8],
+    mut runtime_weight_objects: Option<&mut LingquObjectServiceStub>,
 ) -> Result<Vec<u8>, String> {
     const MATMUL_DIM: usize = 128;
     const MATMUL_ELEMS: usize = MATMUL_DIM * MATMUL_DIM;
@@ -7485,6 +9424,7 @@ fn run_qwen3_dense_0_6b_prefill_runtime(
     const SEGMENTS_PER_TILE: u64 = 32;
 
     let timing_enabled = std::env::var("SIM_QWEN3_STAGE_TIMING").as_deref() == Ok("1");
+    let range_compute_contract = qwen3_guest_range_compute_contract(task)?;
     let timing_start = Instant::now();
     let mut timing_last = timing_start;
     macro_rules! qwen3_stage_timing_mark {
@@ -7605,6 +9545,93 @@ fn run_qwen3_dense_0_6b_prefill_runtime(
     let runtime_kvcache_store = RefCell::new(Qwen3Dense06bKvCacheStore::default());
     let round1_dispatch_batch_size = qwen3_dense_0_6b_simpler_round1_dispatch_batch_size();
     qwen3_stage_timing_mark!("setup");
+    let real_range_forward_enabled = std::env::var("SIM_QWEN3_0_6B_WEIGHTS_PATH").is_ok();
+    if real_range_forward_enabled {
+        if let Some(contract) = range_compute_contract {
+            let result_flow_checksum = checksum_words(&[
+                u64::from(contract.node),
+                u64::from(contract.layer_start),
+                u64::from(contract.layer_end),
+                u64::from(contract.pipeline_nodes),
+                0x7166_7764_5f6f_6e6c,
+            ]);
+            let range_forward_summary = qwen3_dense_0_6b_range_forward_summary_from_contract(
+                topology,
+                contract,
+                guest_input,
+                real_input_embedding_hidden.as_deref(),
+                result_flow_checksum,
+            )?;
+            let terminal_range_owner = u32::from(contract.node) + 1 == contract.pipeline_nodes;
+            let mut qkv_reference_digest_by_tile = BTreeMap::new();
+            let mut mlp_reference_digest_by_tile = BTreeMap::new();
+            qkv_reference_digest_by_tile.insert(0, range_forward_summary.range_layer_checksum);
+            mlp_reference_digest_by_tile.insert(0, range_forward_summary.output_tensor_checksum);
+            let virtual_runtime_output = if terminal_range_owner {
+                let mut shard = shard_plan
+                    .first()
+                    .copied()
+                    .ok_or_else(|| "qwen3_range_forward_missing_virtual_shard".to_string())?;
+                shard.kv_block_start = 0;
+                shard.kv_block_end = 1;
+                vec![(
+                    shard,
+                    Vec::new(),
+                    SegmentHandle(segment_base + 9_000),
+                    range_forward_summary.output_tensor_checksum,
+                )]
+            } else {
+                Vec::new()
+            };
+            let logits_descriptor_tokenizer_path = if terminal_range_owner {
+                real_tokenizer_path.as_deref()
+            } else {
+                None
+            };
+            let logits_descriptors = qwen3_dense_0_6b_logits_descriptors(
+                &virtual_runtime_output,
+                &BTreeMap::new(),
+                &qkv_reference_digest_by_tile,
+                &mlp_reference_digest_by_tile,
+                profile.vocab_size,
+                logits_sample_token_count,
+                logits_descriptor_tokenizer_path,
+                guest_input,
+                None,
+                Some(&range_forward_summary),
+                runtime_weight_objects.as_deref_mut(),
+                terminal_range_owner,
+            )?;
+            let mut produced = vec![0u8; output_bytes * tile_count];
+            qwen3_dense_0_6b_write_service_flow_markers(
+                &mut produced,
+                0,
+                0,
+                0,
+                output_bytes as u64,
+                MATMUL_ELEMS as u64,
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                &logits_descriptors,
+                logits_descriptor_tokenizer_path,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &[],
+                Some(&range_forward_summary),
+            );
+            qwen3_stage_timing_mark!("range_forward_only");
+            let _ = timing_last;
+            return Ok(produced);
+        }
+    }
     let mut round0_prepare_elapsed = Duration::ZERO;
     let mut round0_dispatch_elapsed = Duration::ZERO;
     let mut round0_post_elapsed = Duration::ZERO;
@@ -7779,6 +9806,17 @@ fn run_qwen3_dense_0_6b_prefill_runtime(
                 round0_prepared_tiles.insert(tile_id, prepared);
             }
         }
+        if round1_dispatch_batch_size >= tile_count {
+            let mut combined_tiles = Vec::with_capacity(tile_count);
+            for (_target_node, mut node_tiles) in round0_batches_by_target {
+                combined_tiles.append(&mut node_tiles);
+            }
+            let target_node = combined_tiles
+                .first()
+                .map(|(shard, _, _, _, _)| shard.target_node)
+                .ok_or_else(|| "qwen3_dense_0_6b_empty_round0_combined_batch".to_string())?;
+            round0_batches_by_target = BTreeMap::from([(target_node, combined_tiles)]);
+        }
         round0_prepare_elapsed += round0_prepare_started.elapsed();
         for (target_node, node_tiles) in round0_batches_by_target {
             if node_tiles.len() % round1_dispatch_batch_size != 0 {
@@ -7789,6 +9827,15 @@ fn run_qwen3_dense_0_6b_prefill_runtime(
             }
             for (batch_index, batch) in node_tiles.chunks(round1_dispatch_batch_size).enumerate() {
                 let round0_dispatch_started = Instant::now();
+                let detail_timing = qwen3_dense_0_6b_dispatch_detail_timing_enabled();
+                let detail_pack_ms;
+                let detail_seed_ms;
+                let detail_backend_spec_ms;
+                let detail_request_ms;
+                let detail_submit_ms;
+                let detail_poll_ms;
+                let detail_payload_read_ms;
+                let detail_output_split_ms;
                 let batch_len = batch.len();
                 let batch_base = segment_base
                     + 4_000
@@ -7805,11 +9852,14 @@ fn run_qwen3_dense_0_6b_prefill_runtime(
                     .first()
                     .map(|(shard, _, _, _, _)| *shard)
                     .ok_or_else(|| "qwen3_dense_0_6b_empty_round0_batch".to_string())?;
+                let detail_started = Instant::now();
                 for (_shard, _tile_id, mlp_activation_tile, rope_q_tile, rope_kv_tile) in batch {
                     batch_input_a_payload.extend_from_slice(mlp_activation_tile);
                     batch_input_q_payload.extend_from_slice(rope_q_tile);
                     batch_input_kv_payload.extend_from_slice(rope_kv_tile);
                 }
+                detail_pack_ms = detail_started.elapsed().as_millis();
+                let detail_started = Instant::now();
                 runtime.seed_host_segment(host_node, batch_input_a, batch_input_a_payload);
                 runtime.seed_host_segment(host_node, batch_input_q, batch_input_q_payload);
                 runtime.seed_host_segment(host_node, batch_input_kv, batch_input_kv_payload);
@@ -7818,8 +9868,10 @@ fn run_qwen3_dense_0_6b_prefill_runtime(
                     batch_output_f,
                     vec![0u8; output_bytes * batch_len],
                 );
+                detail_seed_ms = detail_started.elapsed().as_millis();
                 let batch_input_bytes = (input_bytes * batch_len) as u64;
                 let batch_output_bytes = (output_bytes * batch_len) as u64;
+                let detail_started = Instant::now();
                 let backend_spec = host_matmul_batched_backend_spec_from_manifest(
                     batch_manifest_path,
                     MemoryEndpoint {
@@ -7847,6 +9899,8 @@ fn run_qwen3_dense_0_6b_prefill_runtime(
                     MATMUL_ELEMS as u64,
                     batch_len as u64,
                 )?;
+                detail_backend_spec_ms = detail_started.elapsed().as_millis();
+                let detail_started = Instant::now();
                 let request = qwen3_dense_0_6b_request(
                     task.task_id + 30_000 + target_node + batch_index as u64,
                     profile,
@@ -7894,6 +9948,7 @@ fn run_qwen3_dense_0_6b_prefill_runtime(
                         ),
                     ],
                 );
+                detail_request_ms = detail_started.elapsed().as_millis();
                 let dispatch = BackendDispatchOperation {
                     task: TaskKey {
                         task_id: task.task_id + 30_000 + target_node + batch_index as u64,
@@ -7912,11 +9967,14 @@ fn run_qwen3_dense_0_6b_prefill_runtime(
                     target_node,
                     legacy_input_segments: vec![batch_input_a, batch_input_q, batch_input_kv],
                 };
+                let detail_started = Instant::now();
                 with_suppressed_stdio(|| {
                     runtime
                         .submit_backend_dispatch(dispatch, &mut sink)
                         .map_err(|err| err.to_string())
                 })?;
+                detail_submit_ms = detail_started.elapsed().as_millis();
+                let detail_started = Instant::now();
                 qwen3_dense_0_6b_poll_simpler_dispatch_batch(
                     &mut runtime,
                     &mut sink,
@@ -7925,6 +9983,8 @@ fn run_qwen3_dense_0_6b_prefill_runtime(
                     1,
                     "round0_multi_tile",
                 )?;
+                detail_poll_ms = detail_started.elapsed().as_millis();
+                let detail_started = Instant::now();
                 let batch_output = runtime
                     .host_segment_payload(host_node, batch_output_f)
                     .ok_or_else(|| {
@@ -7932,12 +9992,29 @@ fn run_qwen3_dense_0_6b_prefill_runtime(
                             "missing_qwen3_dense_0_6b_round0_batch_output_payload:{target_node}"
                         )
                     })?;
+                detail_payload_read_ms = detail_started.elapsed().as_millis();
+                let detail_started = Instant::now();
                 for (local_index, (_shard, tile_id, _, _, _)) in batch.iter().enumerate() {
                     let start = local_index * output_bytes;
                     let end = start + output_bytes;
                     batched_round0_outputs.insert(*tile_id, batch_output[start..end].to_vec());
                 }
+                detail_output_split_ms = detail_started.elapsed().as_millis();
                 round0_dispatch_elapsed += round0_dispatch_started.elapsed();
+                if detail_timing {
+                    eprintln!(
+                        "qwen3-uapi-round0-batch-detail: target_node={target_node} batch_index={batch_index} batch_len={batch_len} total_ms={} pack_ms={} seed_ms={} backend_spec_ms={} request_ms={} submit_ms={} poll_ms={} payload_read_ms={} output_split_ms={}",
+                        round0_dispatch_started.elapsed().as_millis(),
+                        detail_pack_ms,
+                        detail_seed_ms,
+                        detail_backend_spec_ms,
+                        detail_request_ms,
+                        detail_submit_ms,
+                        detail_poll_ms,
+                        detail_payload_read_ms,
+                        detail_output_split_ms
+                    );
+                }
             }
         }
     }
@@ -8794,44 +10871,269 @@ fn run_qwen3_dense_0_6b_prefill_runtime(
             tile_checksums.first().copied().unwrap_or(0)
         ));
     }
-    #[derive(Clone, Copy)]
-    struct Round1DispatchContext {
-        shard: Qwen3Dense06bShard,
-        remote_shard: Qwen3Dense06bShard,
-        remote_checksum: u64,
-        output_f: SegmentHandle,
-        dispatch_output_f: SegmentHandle,
-        dispatch_output_offset: usize,
-    }
+    let range_single_phase_forward = range_compute_contract.is_some();
+    let mut round1_checksums = Vec::with_capacity(tile_count);
+    if range_single_phase_forward {
+        round1_outputs = round0_outputs.clone();
+        round1_checksums.extend(tile_checksums.iter().copied());
+        for (_shard, output, _segment, _checksum) in &round1_outputs {
+            produced.extend_from_slice(output);
+        }
+        if timing_enabled {
+            eprintln!("qwen3-stage-timing: stage=range_single_phase_output total_ms=0");
+            eprintln!("qwen3-stage-timing: stage=round1_prepare total_ms=0");
+            eprintln!("qwen3-stage-timing: stage=round1_dispatch total_ms=0");
+            eprintln!("qwen3-stage-timing: stage=round1_assemble total_ms=0");
+        }
+        qwen3_stage_timing_mark!("range_single_phase_output");
+    } else {
+        #[derive(Clone, Copy)]
+        struct Round1DispatchContext {
+            shard: Qwen3Dense06bShard,
+            remote_shard: Qwen3Dense06bShard,
+            remote_checksum: u64,
+            output_f: SegmentHandle,
+            dispatch_output_f: SegmentHandle,
+            dispatch_output_offset: usize,
+        }
 
-    let mut round1_dispatch_contexts = Vec::with_capacity(round0_outputs.len());
-    let round1_batch_manifest_path =
-        simpler_matmul_batch_manifest_path(&manifest_path, round1_dispatch_batch_size)?;
-    let mut round1_prepare_elapsed = Duration::ZERO;
-    let mut round1_dispatch_elapsed = Duration::ZERO;
-    if let Some(batch_manifest_path) = round1_batch_manifest_path.as_ref() {
-        for (batch_index, batch) in round0_outputs
-            .chunks(round1_dispatch_batch_size)
-            .enumerate()
-        {
-            let round1_prepare_started = Instant::now();
-            let batch_len = batch.len();
-            let batch_base = segment_base + 5_000 + batch_index as u64 * 10;
-            let batch_input_a = SegmentHandle(batch_base + 1);
-            let batch_input_q = SegmentHandle(batch_base + 2);
-            let batch_input_kv = SegmentHandle(batch_base + 3);
-            let batch_output_f = SegmentHandle(batch_base + 4);
-            let mut batch_input_a_payload = Vec::with_capacity(input_bytes * batch_len);
-            let mut batch_input_q_payload = Vec::with_capacity(input_bytes * batch_len);
-            let mut batch_input_kv_payload = Vec::with_capacity(input_bytes * batch_len);
-            let first_shard = batch
-                .first()
-                .map(|(shard, _, _, _)| *shard)
-                .ok_or_else(|| "qwen3_dense_0_6b_empty_round1_batch".to_string())?;
-            for (local_index, (shard, _round0_output, _round0_segment, _round0_checksum)) in
-                batch.iter().enumerate()
+        let mut round1_dispatch_contexts = Vec::with_capacity(round0_outputs.len());
+        let round1_batch_manifest_path =
+            simpler_matmul_batch_manifest_path(&manifest_path, round1_dispatch_batch_size)?;
+        let mut round1_prepare_elapsed = Duration::ZERO;
+        let mut round1_dispatch_elapsed = Duration::ZERO;
+        if let Some(batch_manifest_path) = round1_batch_manifest_path.as_ref() {
+            for (batch_index, batch) in round0_outputs
+                .chunks(round1_dispatch_batch_size)
+                .enumerate()
             {
-                let index = batch_index * round1_dispatch_batch_size + local_index;
+                let round1_prepare_started = Instant::now();
+                let batch_len = batch.len();
+                let batch_base = segment_base + 5_000 + batch_index as u64 * 10;
+                let batch_input_a = SegmentHandle(batch_base + 1);
+                let batch_input_q = SegmentHandle(batch_base + 2);
+                let batch_input_kv = SegmentHandle(batch_base + 3);
+                let batch_output_f = SegmentHandle(batch_base + 4);
+                let mut batch_input_a_payload = Vec::with_capacity(input_bytes * batch_len);
+                let mut batch_input_q_payload = Vec::with_capacity(input_bytes * batch_len);
+                let mut batch_input_kv_payload = Vec::with_capacity(input_bytes * batch_len);
+                let first_shard = batch
+                    .first()
+                    .map(|(shard, _, _, _)| *shard)
+                    .ok_or_else(|| "qwen3_dense_0_6b_empty_round1_batch".to_string())?;
+                for (local_index, (shard, _round0_output, _round0_segment, _round0_checksum)) in
+                    batch.iter().enumerate()
+                {
+                    let index = batch_index * round1_dispatch_batch_size + local_index;
+                    let remote_index = (index + round0_outputs.len() - 1) % round0_outputs.len();
+                    let (remote_shard, remote_output, _remote_segment, remote_checksum) =
+                        &round0_outputs[remote_index];
+                    let tile_id = shard.kv_block_start / 2;
+                    let remote_tile_id = remote_shard.kv_block_start / 2;
+                    let remote_tile_index = remote_tile_id % TILES_PER_SHARD;
+                    let resolve_segment = SegmentHandle(segment_base + 900 + remote_tile_id);
+                    let resolve_stats = weights_service
+                        .submit_resolve_object(
+                            ServiceObjectResolveReq {
+                                task: Some(TaskKey {
+                                    task_id: task.task_id + 10_000 + tile_id,
+                                    ..task.clone()
+                                }),
+                                requester_entity: tile_id as u32,
+                                metadata_key: qwen3_dense_0_6b_partial_result_key(
+                                    0,
+                                    remote_shard.shard_id,
+                                    remote_tile_index,
+                                ),
+                                object_kind: ServiceObjectKind::PartialResultTile,
+                                storage_ref: qwen3_dense_0_6b_partial_result_storage_ref(
+                                    0,
+                                    remote_shard.shard_id,
+                                    remote_tile_index,
+                                ),
+                                storage_kind: WeightStorageKind::Block,
+                                segment: resolve_segment,
+                                bytes: output_bytes as u64,
+                            },
+                            runtime_time,
+                        )
+                        .map_err(|err| {
+                            format!("qwen3_dense_0_6b_partial_result_resolve_failed:{err:?}")
+                        })?;
+                    if resolve_stats.metadata_gets != 1 || resolve_stats.block_reads != 1 {
+                        return Err(format!(
+                        "qwen3_dense_0_6b_partial_result_resolve_stats_invalid:shard={}:remote_shard={}:stats={resolve_stats:?}",
+                        shard.shard_id, remote_shard.shard_id
+                    ));
+                    }
+                    let shard_base = segment_base + 2_000 + tile_id.saturating_mul(10);
+                    let output_f = SegmentHandle(shard_base + 4);
+                    layer_dependency_descriptors.push(
+                        qwen3_dense_0_6b_layer_dependency_descriptor(
+                            *shard,
+                            23,
+                            22,
+                            remote_shard.shard_id,
+                            resolve_segment,
+                            output_bytes as u64,
+                            MATMUL_ELEMS as u64,
+                            *remote_checksum,
+                        ),
+                    );
+                    let remote_half =
+                        qwen3_dense_0_6b_remote_partial_to_half_input(remote_output, MATMUL_ELEMS);
+                    let q_projection = qwen3_dense_0_6b_projection_tile_from_half_input(
+                        &remote_half,
+                        MATMUL_DIM,
+                        Qwen3ProjectionKind::Q,
+                        *shard,
+                    );
+                    let kv_projection = qwen3_dense_0_6b_projection_tile_from_half_input(
+                        &remote_half,
+                        MATMUL_DIM,
+                        Qwen3ProjectionKind::Kv,
+                        *shard,
+                    );
+                    batch_input_a_payload.extend_from_slice(&remote_half);
+                    batch_input_q_payload.extend_from_slice(&q_projection);
+                    batch_input_kv_payload.extend_from_slice(&kv_projection);
+                    runtime.seed_host_segment(host_node, output_f, vec![0u8; output_bytes]);
+                    round1_dispatch_contexts.push(Round1DispatchContext {
+                        shard: *shard,
+                        remote_shard: *remote_shard,
+                        remote_checksum: *remote_checksum,
+                        output_f,
+                        dispatch_output_f: batch_output_f,
+                        dispatch_output_offset: local_index * output_bytes,
+                    });
+                }
+                runtime.seed_host_segment(host_node, batch_input_a, batch_input_a_payload);
+                runtime.seed_host_segment(host_node, batch_input_q, batch_input_q_payload);
+                runtime.seed_host_segment(host_node, batch_input_kv, batch_input_kv_payload);
+                runtime.seed_host_segment(
+                    host_node,
+                    batch_output_f,
+                    vec![0u8; output_bytes * batch_len],
+                );
+                let batch_input_bytes = (input_bytes * batch_len) as u64;
+                let batch_output_bytes = (output_bytes * batch_len) as u64;
+                let backend_spec = host_matmul_batched_backend_spec_from_manifest(
+                    batch_manifest_path,
+                    MemoryEndpoint {
+                        node: host_node,
+                        segment: batch_input_a,
+                        offset: 0,
+                    },
+                    MemoryEndpoint {
+                        node: host_node,
+                        segment: batch_input_q,
+                        offset: 0,
+                    },
+                    MemoryEndpoint {
+                        node: host_node,
+                        segment: batch_input_kv,
+                        offset: 0,
+                    },
+                    MemoryEndpoint {
+                        node: host_node,
+                        segment: batch_output_f,
+                        offset: 0,
+                    },
+                    batch_input_bytes,
+                    batch_output_bytes,
+                    MATMUL_ELEMS as u64,
+                    batch_len as u64,
+                )?;
+                let request = qwen3_dense_0_6b_request(
+                    task.task_id + 20_000 + batch_index as u64,
+                    profile,
+                    first_shard,
+                    vec![
+                        opaque_binding(
+                            format!("qwen3_dense_0_6b_round1_remote_partial_batch{batch_index}"),
+                            BufferUsage::Input,
+                            MemoryEndpoint {
+                                node: host_node,
+                                segment: batch_input_a,
+                                offset: 0,
+                            },
+                            batch_input_bytes,
+                        ),
+                        opaque_binding(
+                            format!("qwen3_dense_0_6b_round1_q_proj_batch{batch_index}"),
+                            BufferUsage::Input,
+                            MemoryEndpoint {
+                                node: host_node,
+                                segment: batch_input_q,
+                                offset: 0,
+                            },
+                            batch_input_bytes,
+                        ),
+                        opaque_binding(
+                            format!("qwen3_dense_0_6b_round1_kv_proj_batch{batch_index}"),
+                            BufferUsage::Input,
+                            MemoryEndpoint {
+                                node: host_node,
+                                segment: batch_input_kv,
+                                offset: 0,
+                            },
+                            batch_input_bytes,
+                        ),
+                        dense_f32_binding(
+                            format!(
+                            "qwen3_dense_0_6b_round1_remote_dependent_output_batch{batch_index}"
+                        ),
+                            BufferUsage::Output,
+                            MemoryEndpoint {
+                                node: host_node,
+                                segment: batch_output_f,
+                                offset: 0,
+                            },
+                            (MATMUL_ELEMS * batch_len) as u64,
+                        ),
+                    ],
+                );
+                let dispatch = BackendDispatchOperation {
+                    task: TaskKey {
+                        task_id: task.task_id + 20_000 + batch_index as u64,
+                        ..task.clone()
+                    },
+                    function: FunctionLabel {
+                        name: format!(
+                            "qwen3_dense_0_6b_round1_remote_dependent_matmul_batch{}_tiles{}",
+                            batch_index, batch_len
+                        ),
+                        level: PlLevel::L2,
+                    },
+                    backend_spec,
+                    request,
+                    target_level: PlLevel::L2,
+                    target_node: first_shard.target_node,
+                    legacy_input_segments: vec![batch_input_a, batch_input_q, batch_input_kv],
+                };
+                round1_prepare_elapsed += round1_prepare_started.elapsed();
+                let round1_dispatch_started = Instant::now();
+                with_suppressed_stdio(|| {
+                    runtime
+                        .submit_backend_dispatch(dispatch, &mut sink)
+                        .map_err(|err| err.to_string())
+                })?;
+                qwen3_dense_0_6b_poll_simpler_dispatch_batch(
+                    &mut runtime,
+                    &mut sink,
+                    &mut runtime_time,
+                    dispatch_latency,
+                    1,
+                    "round1_multi_tile",
+                )?;
+                round1_dispatch_elapsed += round1_dispatch_started.elapsed();
+            }
+        } else {
+            let mut pending_round1_dispatches = 0usize;
+            for (index, (shard, _round0_output, _round0_segment, _round0_checksum)) in
+                round0_outputs.iter().enumerate()
+            {
+                let round1_prepare_started = Instant::now();
                 let remote_index = (index + round0_outputs.len() - 1) % round0_outputs.len();
                 let (remote_shard, remote_output, _remote_segment, remote_checksum) =
                     &round0_outputs[remote_index];
@@ -8869,11 +11171,15 @@ fn run_qwen3_dense_0_6b_prefill_runtime(
                     })?;
                 if resolve_stats.metadata_gets != 1 || resolve_stats.block_reads != 1 {
                     return Err(format!(
-                        "qwen3_dense_0_6b_partial_result_resolve_stats_invalid:shard={}:remote_shard={}:stats={resolve_stats:?}",
-                        shard.shard_id, remote_shard.shard_id
-                    ));
+                    "qwen3_dense_0_6b_partial_result_resolve_stats_invalid:shard={}:remote_shard={}:stats={resolve_stats:?}",
+                    shard.shard_id, remote_shard.shard_id
+                ));
                 }
+
                 let shard_base = segment_base + 2_000 + tile_id.saturating_mul(10);
+                let input_a = SegmentHandle(shard_base + 1);
+                let input_q = SegmentHandle(shard_base + 2);
+                let input_kv = SegmentHandle(shard_base + 3);
                 let output_f = SegmentHandle(shard_base + 4);
                 layer_dependency_descriptors.push(qwen3_dense_0_6b_layer_dependency_descriptor(
                     *shard,
@@ -8887,348 +11193,153 @@ fn run_qwen3_dense_0_6b_prefill_runtime(
                 ));
                 let remote_half =
                     qwen3_dense_0_6b_remote_partial_to_half_input(remote_output, MATMUL_ELEMS);
-                let q_projection = qwen3_dense_0_6b_projection_tile_from_half_input(
-                    &remote_half,
-                    MATMUL_DIM,
-                    Qwen3ProjectionKind::Q,
-                    *shard,
+                runtime.seed_host_segment(host_node, input_a, remote_half.clone());
+                runtime.seed_host_segment(
+                    host_node,
+                    input_q,
+                    qwen3_dense_0_6b_projection_tile_from_half_input(
+                        &remote_half,
+                        MATMUL_DIM,
+                        Qwen3ProjectionKind::Q,
+                        *shard,
+                    ),
                 );
-                let kv_projection = qwen3_dense_0_6b_projection_tile_from_half_input(
-                    &remote_half,
-                    MATMUL_DIM,
-                    Qwen3ProjectionKind::Kv,
-                    *shard,
+                runtime.seed_host_segment(
+                    host_node,
+                    input_kv,
+                    qwen3_dense_0_6b_projection_tile_from_half_input(
+                        &remote_half,
+                        MATMUL_DIM,
+                        Qwen3ProjectionKind::Kv,
+                        *shard,
+                    ),
                 );
-                batch_input_a_payload.extend_from_slice(&remote_half);
-                batch_input_q_payload.extend_from_slice(&q_projection);
-                batch_input_kv_payload.extend_from_slice(&kv_projection);
                 runtime.seed_host_segment(host_node, output_f, vec![0u8; output_bytes]);
+                let backend_spec = host_matmul_backend_spec_from_manifest(
+                    &manifest_path,
+                    MemoryEndpoint {
+                        node: host_node,
+                        segment: input_a,
+                        offset: 0,
+                    },
+                    MemoryEndpoint {
+                        node: host_node,
+                        segment: input_q,
+                        offset: 0,
+                    },
+                    MemoryEndpoint {
+                        node: host_node,
+                        segment: input_kv,
+                        offset: 0,
+                    },
+                    MemoryEndpoint {
+                        node: host_node,
+                        segment: output_f,
+                        offset: 0,
+                    },
+                    input_bytes as u64,
+                    output_bytes as u64,
+                    MATMUL_ELEMS as u64,
+                )?;
+                let request = qwen3_dense_0_6b_request(
+                    task.task_id + 20_000 + tile_id,
+                    profile,
+                    *shard,
+                    vec![
+                        opaque_binding(
+                            format!(
+                                "qwen3_dense_0_6b_round1_remote_partial_from_shard{}",
+                                remote_shard.shard_id
+                            ),
+                            BufferUsage::Input,
+                            MemoryEndpoint {
+                                node: host_node,
+                                segment: input_a,
+                                offset: 0,
+                            },
+                            input_bytes as u64,
+                        ),
+                        opaque_binding(
+                            "qwen3_dense_0_6b_round1_q_proj_tile_half",
+                            BufferUsage::Input,
+                            MemoryEndpoint {
+                                node: host_node,
+                                segment: input_q,
+                                offset: 0,
+                            },
+                            input_bytes as u64,
+                        ),
+                        opaque_binding(
+                            "qwen3_dense_0_6b_round1_kv_proj_tile_half",
+                            BufferUsage::Input,
+                            MemoryEndpoint {
+                                node: host_node,
+                                segment: input_kv,
+                                offset: 0,
+                            },
+                            input_bytes as u64,
+                        ),
+                        dense_f32_binding(
+                            "qwen3_dense_0_6b_round1_remote_dependent_output_f",
+                            BufferUsage::Output,
+                            MemoryEndpoint {
+                                node: host_node,
+                                segment: output_f,
+                                offset: 0,
+                            },
+                            MATMUL_ELEMS as u64,
+                        ),
+                    ],
+                );
+                let dispatch = BackendDispatchOperation {
+                    task: TaskKey {
+                        task_id: task.task_id + 20_000 + tile_id,
+                        ..task.clone()
+                    },
+                    function: FunctionLabel {
+                        name: format!(
+                            "qwen3_dense_0_6b_round1_remote_dependent_matmul_shard{}_tile{}",
+                            shard.shard_id,
+                            tile_id % TILES_PER_SHARD
+                        ),
+                        level: PlLevel::L2,
+                    },
+                    backend_spec,
+                    request,
+                    target_level: PlLevel::L2,
+                    target_node: shard.target_node,
+                    legacy_input_segments: vec![input_a, input_q, input_kv],
+                };
+                with_suppressed_stdio(|| {
+                    runtime
+                        .submit_backend_dispatch(dispatch, &mut sink)
+                        .map_err(|err| err.to_string())
+                })?;
                 round1_dispatch_contexts.push(Round1DispatchContext {
                     shard: *shard,
                     remote_shard: *remote_shard,
                     remote_checksum: *remote_checksum,
                     output_f,
-                    dispatch_output_f: batch_output_f,
-                    dispatch_output_offset: local_index * output_bytes,
+                    dispatch_output_f: output_f,
+                    dispatch_output_offset: 0,
                 });
+                round1_prepare_elapsed += round1_prepare_started.elapsed();
+                pending_round1_dispatches += 1;
+                if pending_round1_dispatches == round1_dispatch_batch_size {
+                    let round1_dispatch_started = Instant::now();
+                    qwen3_dense_0_6b_poll_simpler_dispatch_batch(
+                        &mut runtime,
+                        &mut sink,
+                        &mut runtime_time,
+                        dispatch_latency,
+                        pending_round1_dispatches,
+                        "round1",
+                    )?;
+                    round1_dispatch_elapsed += round1_dispatch_started.elapsed();
+                    pending_round1_dispatches = 0;
+                }
             }
-            runtime.seed_host_segment(host_node, batch_input_a, batch_input_a_payload);
-            runtime.seed_host_segment(host_node, batch_input_q, batch_input_q_payload);
-            runtime.seed_host_segment(host_node, batch_input_kv, batch_input_kv_payload);
-            runtime.seed_host_segment(
-                host_node,
-                batch_output_f,
-                vec![0u8; output_bytes * batch_len],
-            );
-            let batch_input_bytes = (input_bytes * batch_len) as u64;
-            let batch_output_bytes = (output_bytes * batch_len) as u64;
-            let backend_spec = host_matmul_batched_backend_spec_from_manifest(
-                batch_manifest_path,
-                MemoryEndpoint {
-                    node: host_node,
-                    segment: batch_input_a,
-                    offset: 0,
-                },
-                MemoryEndpoint {
-                    node: host_node,
-                    segment: batch_input_q,
-                    offset: 0,
-                },
-                MemoryEndpoint {
-                    node: host_node,
-                    segment: batch_input_kv,
-                    offset: 0,
-                },
-                MemoryEndpoint {
-                    node: host_node,
-                    segment: batch_output_f,
-                    offset: 0,
-                },
-                batch_input_bytes,
-                batch_output_bytes,
-                MATMUL_ELEMS as u64,
-                batch_len as u64,
-            )?;
-            let request = qwen3_dense_0_6b_request(
-                task.task_id + 20_000 + batch_index as u64,
-                profile,
-                first_shard,
-                vec![
-                    opaque_binding(
-                        format!("qwen3_dense_0_6b_round1_remote_partial_batch{batch_index}"),
-                        BufferUsage::Input,
-                        MemoryEndpoint {
-                            node: host_node,
-                            segment: batch_input_a,
-                            offset: 0,
-                        },
-                        batch_input_bytes,
-                    ),
-                    opaque_binding(
-                        format!("qwen3_dense_0_6b_round1_q_proj_batch{batch_index}"),
-                        BufferUsage::Input,
-                        MemoryEndpoint {
-                            node: host_node,
-                            segment: batch_input_q,
-                            offset: 0,
-                        },
-                        batch_input_bytes,
-                    ),
-                    opaque_binding(
-                        format!("qwen3_dense_0_6b_round1_kv_proj_batch{batch_index}"),
-                        BufferUsage::Input,
-                        MemoryEndpoint {
-                            node: host_node,
-                            segment: batch_input_kv,
-                            offset: 0,
-                        },
-                        batch_input_bytes,
-                    ),
-                    dense_f32_binding(
-                        format!(
-                            "qwen3_dense_0_6b_round1_remote_dependent_output_batch{batch_index}"
-                        ),
-                        BufferUsage::Output,
-                        MemoryEndpoint {
-                            node: host_node,
-                            segment: batch_output_f,
-                            offset: 0,
-                        },
-                        (MATMUL_ELEMS * batch_len) as u64,
-                    ),
-                ],
-            );
-            let dispatch = BackendDispatchOperation {
-                task: TaskKey {
-                    task_id: task.task_id + 20_000 + batch_index as u64,
-                    ..task.clone()
-                },
-                function: FunctionLabel {
-                    name: format!(
-                        "qwen3_dense_0_6b_round1_remote_dependent_matmul_batch{}_tiles{}",
-                        batch_index, batch_len
-                    ),
-                    level: PlLevel::L2,
-                },
-                backend_spec,
-                request,
-                target_level: PlLevel::L2,
-                target_node: first_shard.target_node,
-                legacy_input_segments: vec![batch_input_a, batch_input_q, batch_input_kv],
-            };
-            round1_prepare_elapsed += round1_prepare_started.elapsed();
-            let round1_dispatch_started = Instant::now();
-            with_suppressed_stdio(|| {
-                runtime
-                    .submit_backend_dispatch(dispatch, &mut sink)
-                    .map_err(|err| err.to_string())
-            })?;
-            qwen3_dense_0_6b_poll_simpler_dispatch_batch(
-                &mut runtime,
-                &mut sink,
-                &mut runtime_time,
-                dispatch_latency,
-                1,
-                "round1_multi_tile",
-            )?;
-            round1_dispatch_elapsed += round1_dispatch_started.elapsed();
-        }
-    } else {
-        let mut pending_round1_dispatches = 0usize;
-        for (index, (shard, _round0_output, _round0_segment, _round0_checksum)) in
-            round0_outputs.iter().enumerate()
-        {
-            let round1_prepare_started = Instant::now();
-            let remote_index = (index + round0_outputs.len() - 1) % round0_outputs.len();
-            let (remote_shard, remote_output, _remote_segment, remote_checksum) =
-                &round0_outputs[remote_index];
-            let tile_id = shard.kv_block_start / 2;
-            let remote_tile_id = remote_shard.kv_block_start / 2;
-            let remote_tile_index = remote_tile_id % TILES_PER_SHARD;
-            let resolve_segment = SegmentHandle(segment_base + 900 + remote_tile_id);
-            let resolve_stats = weights_service
-                .submit_resolve_object(
-                    ServiceObjectResolveReq {
-                        task: Some(TaskKey {
-                            task_id: task.task_id + 10_000 + tile_id,
-                            ..task.clone()
-                        }),
-                        requester_entity: tile_id as u32,
-                        metadata_key: qwen3_dense_0_6b_partial_result_key(
-                            0,
-                            remote_shard.shard_id,
-                            remote_tile_index,
-                        ),
-                        object_kind: ServiceObjectKind::PartialResultTile,
-                        storage_ref: qwen3_dense_0_6b_partial_result_storage_ref(
-                            0,
-                            remote_shard.shard_id,
-                            remote_tile_index,
-                        ),
-                        storage_kind: WeightStorageKind::Block,
-                        segment: resolve_segment,
-                        bytes: output_bytes as u64,
-                    },
-                    runtime_time,
-                )
-                .map_err(|err| format!("qwen3_dense_0_6b_partial_result_resolve_failed:{err:?}"))?;
-            if resolve_stats.metadata_gets != 1 || resolve_stats.block_reads != 1 {
-                return Err(format!(
-                    "qwen3_dense_0_6b_partial_result_resolve_stats_invalid:shard={}:remote_shard={}:stats={resolve_stats:?}",
-                    shard.shard_id, remote_shard.shard_id
-                ));
-            }
-
-            let shard_base = segment_base + 2_000 + tile_id.saturating_mul(10);
-            let input_a = SegmentHandle(shard_base + 1);
-            let input_q = SegmentHandle(shard_base + 2);
-            let input_kv = SegmentHandle(shard_base + 3);
-            let output_f = SegmentHandle(shard_base + 4);
-            layer_dependency_descriptors.push(qwen3_dense_0_6b_layer_dependency_descriptor(
-                *shard,
-                23,
-                22,
-                remote_shard.shard_id,
-                resolve_segment,
-                output_bytes as u64,
-                MATMUL_ELEMS as u64,
-                *remote_checksum,
-            ));
-            let remote_half =
-                qwen3_dense_0_6b_remote_partial_to_half_input(remote_output, MATMUL_ELEMS);
-            runtime.seed_host_segment(host_node, input_a, remote_half.clone());
-            runtime.seed_host_segment(
-                host_node,
-                input_q,
-                qwen3_dense_0_6b_projection_tile_from_half_input(
-                    &remote_half,
-                    MATMUL_DIM,
-                    Qwen3ProjectionKind::Q,
-                    *shard,
-                ),
-            );
-            runtime.seed_host_segment(
-                host_node,
-                input_kv,
-                qwen3_dense_0_6b_projection_tile_from_half_input(
-                    &remote_half,
-                    MATMUL_DIM,
-                    Qwen3ProjectionKind::Kv,
-                    *shard,
-                ),
-            );
-            runtime.seed_host_segment(host_node, output_f, vec![0u8; output_bytes]);
-            let backend_spec = host_matmul_backend_spec_from_manifest(
-                &manifest_path,
-                MemoryEndpoint {
-                    node: host_node,
-                    segment: input_a,
-                    offset: 0,
-                },
-                MemoryEndpoint {
-                    node: host_node,
-                    segment: input_q,
-                    offset: 0,
-                },
-                MemoryEndpoint {
-                    node: host_node,
-                    segment: input_kv,
-                    offset: 0,
-                },
-                MemoryEndpoint {
-                    node: host_node,
-                    segment: output_f,
-                    offset: 0,
-                },
-                input_bytes as u64,
-                output_bytes as u64,
-                MATMUL_ELEMS as u64,
-            )?;
-            let request = qwen3_dense_0_6b_request(
-                task.task_id + 20_000 + tile_id,
-                profile,
-                *shard,
-                vec![
-                    opaque_binding(
-                        format!(
-                            "qwen3_dense_0_6b_round1_remote_partial_from_shard{}",
-                            remote_shard.shard_id
-                        ),
-                        BufferUsage::Input,
-                        MemoryEndpoint {
-                            node: host_node,
-                            segment: input_a,
-                            offset: 0,
-                        },
-                        input_bytes as u64,
-                    ),
-                    opaque_binding(
-                        "qwen3_dense_0_6b_round1_q_proj_tile_half",
-                        BufferUsage::Input,
-                        MemoryEndpoint {
-                            node: host_node,
-                            segment: input_q,
-                            offset: 0,
-                        },
-                        input_bytes as u64,
-                    ),
-                    opaque_binding(
-                        "qwen3_dense_0_6b_round1_kv_proj_tile_half",
-                        BufferUsage::Input,
-                        MemoryEndpoint {
-                            node: host_node,
-                            segment: input_kv,
-                            offset: 0,
-                        },
-                        input_bytes as u64,
-                    ),
-                    dense_f32_binding(
-                        "qwen3_dense_0_6b_round1_remote_dependent_output_f",
-                        BufferUsage::Output,
-                        MemoryEndpoint {
-                            node: host_node,
-                            segment: output_f,
-                            offset: 0,
-                        },
-                        MATMUL_ELEMS as u64,
-                    ),
-                ],
-            );
-            let dispatch = BackendDispatchOperation {
-                task: TaskKey {
-                    task_id: task.task_id + 20_000 + tile_id,
-                    ..task.clone()
-                },
-                function: FunctionLabel {
-                    name: format!(
-                        "qwen3_dense_0_6b_round1_remote_dependent_matmul_shard{}_tile{}",
-                        shard.shard_id,
-                        tile_id % TILES_PER_SHARD
-                    ),
-                    level: PlLevel::L2,
-                },
-                backend_spec,
-                request,
-                target_level: PlLevel::L2,
-                target_node: shard.target_node,
-                legacy_input_segments: vec![input_a, input_q, input_kv],
-            };
-            with_suppressed_stdio(|| {
-                runtime
-                    .submit_backend_dispatch(dispatch, &mut sink)
-                    .map_err(|err| err.to_string())
-            })?;
-            round1_dispatch_contexts.push(Round1DispatchContext {
-                shard: *shard,
-                remote_shard: *remote_shard,
-                remote_checksum: *remote_checksum,
-                output_f,
-                dispatch_output_f: output_f,
-                dispatch_output_offset: 0,
-            });
-            round1_prepare_elapsed += round1_prepare_started.elapsed();
-            pending_round1_dispatches += 1;
-            if pending_round1_dispatches == round1_dispatch_batch_size {
+            if pending_round1_dispatches != 0 {
                 let round1_dispatch_started = Instant::now();
                 qwen3_dense_0_6b_poll_simpler_dispatch_batch(
                     &mut runtime,
@@ -9239,106 +11350,102 @@ fn run_qwen3_dense_0_6b_prefill_runtime(
                     "round1",
                 )?;
                 round1_dispatch_elapsed += round1_dispatch_started.elapsed();
-                pending_round1_dispatches = 0;
             }
         }
-        if pending_round1_dispatches != 0 {
-            let round1_dispatch_started = Instant::now();
-            qwen3_dense_0_6b_poll_simpler_dispatch_batch(
-                &mut runtime,
-                &mut sink,
-                &mut runtime_time,
-                dispatch_latency,
-                pending_round1_dispatches,
-                "round1",
-            )?;
-            round1_dispatch_elapsed += round1_dispatch_started.elapsed();
+        if timing_enabled {
+            eprintln!(
+                "qwen3-stage-timing: stage=round1_prepare total_ms={}",
+                round1_prepare_elapsed.as_millis()
+            );
+            eprintln!(
+                "qwen3-stage-timing: stage=round1_dispatch total_ms={}",
+                round1_dispatch_elapsed.as_millis()
+            );
         }
-    }
-    if timing_enabled {
-        eprintln!(
-            "qwen3-stage-timing: stage=round1_prepare total_ms={}",
-            round1_prepare_elapsed.as_millis()
-        );
-        eprintln!(
-            "qwen3-stage-timing: stage=round1_dispatch total_ms={}",
-            round1_dispatch_elapsed.as_millis()
-        );
-    }
-    qwen3_stage_timing_mark!("round1_total");
-    let round1_assemble_started = Instant::now();
-    let mut round1_checksums = Vec::with_capacity(round1_dispatch_contexts.len());
-    for context in round1_dispatch_contexts {
-        let dispatch_output = runtime
-            .host_segment_payload(host_node, context.dispatch_output_f)
-            .ok_or_else(|| {
-                format!(
-                    "missing_qwen3_dense_0_6b_round1_output_payload:{}",
-                    context.shard.shard_id
-                )
-            })?;
-        let dispatch_output_end = context.dispatch_output_offset + output_bytes;
-        if dispatch_output.len() < dispatch_output_end {
-            return Err(format!(
+        qwen3_stage_timing_mark!("round1_total");
+        let round1_assemble_started = Instant::now();
+        round1_checksums.clear();
+        for context in round1_dispatch_contexts {
+            let dispatch_output = runtime
+                .host_segment_payload(host_node, context.dispatch_output_f)
+                .ok_or_else(|| {
+                    format!(
+                        "missing_qwen3_dense_0_6b_round1_output_payload:{}",
+                        context.shard.shard_id
+                    )
+                })?;
+            let dispatch_output_end = context.dispatch_output_offset + output_bytes;
+            if dispatch_output.len() < dispatch_output_end {
+                return Err(format!(
                 "qwen3_dense_0_6b_round1_batch_output_truncated:shard={}:got={}:offset={}:bytes={output_bytes}",
                 context.shard.shard_id,
                 dispatch_output.len(),
                 context.dispatch_output_offset
             ));
+            }
+            let round1_output =
+                &dispatch_output[context.dispatch_output_offset..dispatch_output_end];
+            let round1_output_tile = qwen3_dense_0_6b_round1_output_tile_from_remote(
+                round1_output,
+                MATMUL_DIM,
+                context.shard,
+                context.remote_shard,
+                context.remote_checksum,
+            );
+            runtime.seed_host_segment(host_node, context.output_f, round1_output_tile.clone());
+            let round1_checksum = qwen3_dense_0_6b_shard_output_checksum(&round1_output_tile);
+            layer_dependency_descriptors.push(qwen3_dense_0_6b_layer_dependency_descriptor(
+                context.shard,
+                24,
+                23,
+                context.remote_shard.shard_id,
+                context.output_f,
+                output_bytes as u64,
+                MATMUL_ELEMS as u64,
+                round1_checksum,
+            ));
+            round1_checksums.push(round1_checksum);
+            produced.extend_from_slice(&round1_output_tile);
+            round1_outputs.push((
+                context.shard,
+                round1_output_tile.clone(),
+                context.output_f,
+                round1_checksum,
+            ));
         }
-        let round1_output = &dispatch_output[context.dispatch_output_offset..dispatch_output_end];
-        let round1_output_tile = qwen3_dense_0_6b_round1_output_tile_from_remote(
-            round1_output,
-            MATMUL_DIM,
-            context.shard,
-            context.remote_shard,
-            context.remote_checksum,
-        );
-        runtime.seed_host_segment(host_node, context.output_f, round1_output_tile.clone());
-        let round1_checksum = qwen3_dense_0_6b_shard_output_checksum(&round1_output_tile);
-        layer_dependency_descriptors.push(qwen3_dense_0_6b_layer_dependency_descriptor(
-            context.shard,
-            24,
-            23,
-            context.remote_shard.shard_id,
-            context.output_f,
-            output_bytes as u64,
-            MATMUL_ELEMS as u64,
-            round1_checksum,
-        ));
-        round1_checksums.push(round1_checksum);
-        produced.extend_from_slice(&round1_output_tile);
-        round1_outputs.push((
-            context.shard,
-            round1_output_tile.clone(),
-            context.output_f,
-            round1_checksum,
-        ));
-    }
-    if timing_enabled {
-        eprintln!(
-            "qwen3-stage-timing: stage=round1_assemble total_ms={}",
-            round1_assemble_started.elapsed().as_millis()
-        );
-    }
-    qwen3_stage_timing_mark!("round1_assemble_total");
-    if round1_checksums.len() != tile_count {
-        return Err(format!(
-            "qwen3_dense_0_6b_round1_summary_count_mismatch:got={}:expected={}",
-            round1_checksums.len(),
-            tile_count
-        ));
-    }
-    if !round1_checksums.windows(2).any(|pair| pair[0] != pair[1]) {
-        return Err(format!(
-            "qwen3_dense_0_6b_round1_outputs_not_distinct:shards={}:checksum={:#x}",
-            round1_checksums.len(),
-            round1_checksums.first().copied().unwrap_or(0)
-        ));
+        if timing_enabled {
+            eprintln!(
+                "qwen3-stage-timing: stage=round1_assemble total_ms={}",
+                round1_assemble_started.elapsed().as_millis()
+            );
+        }
+        qwen3_stage_timing_mark!("round1_assemble_total");
+        if round1_checksums.len() != tile_count {
+            return Err(format!(
+                "qwen3_dense_0_6b_round1_summary_count_mismatch:got={}:expected={}",
+                round1_checksums.len(),
+                tile_count
+            ));
+        }
+        if !round1_checksums.windows(2).any(|pair| pair[0] != pair[1]) {
+            return Err(format!(
+                "qwen3_dense_0_6b_round1_outputs_not_distinct:shards={}:checksum={:#x}",
+                round1_checksums.len(),
+                round1_checksums.first().copied().unwrap_or(0)
+            ));
+        }
     }
     let final_report_started = Instant::now();
+    let full_final_report = qwen3_dense_0_6b_final_report_full_enabled();
+    let terminal_range_owner = range_compute_contract
+        .map(|contract| u32::from(contract.node) + 1 == contract.pipeline_nodes)
+        .unwrap_or(true);
+    let runtime_full_vocab_enabled = full_final_report || terminal_range_owner;
+    let final_report_detail_started = Instant::now();
     let kvcache_read_digest_by_tile =
         qwen3_dense_0_6b_kvcache_read_digest_by_tile(&kvcache_descriptors);
+    let final_report_kvcache_digest_ms = final_report_detail_started.elapsed().as_millis();
+    let final_report_detail_started = Instant::now();
     let real_weight_stage_links = qwen3_dense_0_6b_real_weight_stage_links(
         real_weight_reference_summary.as_ref(),
         real_qkv_reference_values.as_ref(),
@@ -9346,6 +11453,8 @@ fn run_qwen3_dense_0_6b_prefill_runtime(
         next_layer_real_qkv_reference_values.as_ref(),
         &layer_dependency_descriptors,
     );
+    let final_report_weight_links_ms = final_report_detail_started.elapsed().as_millis();
+    let final_report_detail_started = Instant::now();
     let qkv_reference_digest_by_tile =
         qwen3_dense_0_6b_qkv_reference_digest_by_tile(&real_weight_stage_links);
     let mlp_reference_digest_by_tile = qwen3_dense_0_6b_mlp_reference_digest_by_tile(
@@ -9353,11 +11462,64 @@ fn run_qwen3_dense_0_6b_prefill_runtime(
         real_mlp_reference_summary.as_ref(),
         next_layer_real_mlp_reference_summary.as_ref(),
     );
-    let real_logits_candidate_summary = qwen3_dense_0_6b_real_logits_candidate_summary(
-        &round1_outputs,
-        logits_sample_token_count,
-        qwen3_dense_0_6b_final_hidden_from_round1_outputs(&round1_outputs)?.as_deref(),
-    )?;
+    let final_report_reference_digest_ms = final_report_detail_started.elapsed().as_millis();
+    let final_report_detail_started = Instant::now();
+    let real_logits_candidate_summary = if runtime_full_vocab_enabled {
+        qwen3_dense_0_6b_real_logits_candidate_summary(
+            &round1_outputs,
+            logits_sample_token_count,
+            qwen3_dense_0_6b_final_hidden_from_round1_outputs(&round1_outputs)?.as_deref(),
+        )?
+    } else {
+        None
+    };
+    let final_report_real_logits_ms = final_report_detail_started.elapsed().as_millis();
+    let result_resolve_count = if range_single_phase_forward {
+        0
+    } else {
+        round1_checksums.len() as u64
+    };
+    let result_compute_count = if range_single_phase_forward {
+        0
+    } else {
+        round1_checksums.len() as u64
+    };
+    let result_flow_checksum = qwen3_dense_0_6b_runtime_result_flow_checksum(
+        round0_outputs.len() as u64,
+        result_resolve_count,
+        result_compute_count,
+        &tile_checksums,
+        &round1_checksums,
+    );
+    let final_report_detail_started = Instant::now();
+    let range_forward_summary = range_compute_contract
+        .map(|contract| {
+            if real_range_forward_enabled {
+                qwen3_dense_0_6b_range_forward_summary_from_contract(
+                    topology,
+                    contract,
+                    guest_input,
+                    real_input_embedding_hidden.as_deref(),
+                    result_flow_checksum,
+                )
+            } else {
+                qwen3_dense_0_6b_range_forward_summary_from_runtime_outputs(
+                    contract,
+                    guest_input,
+                    real_input_embedding_hidden.as_deref(),
+                    &round1_outputs,
+                    result_flow_checksum,
+                )
+            }
+        })
+        .transpose()?;
+    let final_report_range_summary_ms = final_report_detail_started.elapsed().as_millis();
+    let final_report_detail_started = Instant::now();
+    let logits_descriptor_tokenizer_path = if runtime_full_vocab_enabled {
+        real_tokenizer_path.as_deref()
+    } else {
+        None
+    };
     let logits_descriptors = qwen3_dense_0_6b_logits_descriptors(
         &round1_outputs,
         &kvcache_read_digest_by_tile,
@@ -9365,34 +11527,57 @@ fn run_qwen3_dense_0_6b_prefill_runtime(
         &mlp_reference_digest_by_tile,
         profile.vocab_size,
         logits_sample_token_count,
-        real_tokenizer_path.as_deref(),
+        logits_descriptor_tokenizer_path,
         guest_input,
         real_logits_candidate_summary.as_ref(),
+        range_forward_summary.as_ref(),
+        runtime_weight_objects,
+        runtime_full_vocab_enabled,
     )?;
+    let final_report_logits_descriptors_ms = final_report_detail_started.elapsed().as_millis();
+    let final_report_detail_started = Instant::now();
+    let result_descriptors = qwen3_dense_0_6b_result_descriptors(&round0_outputs, &round1_outputs);
+    let result_block_descriptors =
+        qwen3_dense_0_6b_result_block_descriptors(&round1_outputs, MATMUL_DIM);
+    let final_report_result_descriptors_ms = final_report_detail_started.elapsed().as_millis();
+    let final_report_detail_started = Instant::now();
     qwen3_dense_0_6b_write_service_flow_markers(
         &mut produced,
         tile_checksums.len() as u64,
-        round0_outputs.len() as u64,
-        round1_checksums.len() as u64,
+        result_resolve_count,
+        result_compute_count,
         output_bytes as u64,
         MATMUL_ELEMS as u64,
         &tile_checksums,
         &round1_checksums,
-        &qwen3_dense_0_6b_result_descriptors(&round0_outputs, &round1_outputs),
-        &qwen3_dense_0_6b_result_block_descriptors(&round1_outputs, MATMUL_DIM),
+        &result_descriptors,
+        &result_block_descriptors,
         &projection_descriptors,
         &layer_dependency_descriptors,
         &kvcache_descriptors,
         &logits_descriptors,
-        real_tokenizer_path.as_deref(),
+        logits_descriptor_tokenizer_path,
         real_tokenizer_asset_summary.as_ref(),
         real_weight_reference_summary.as_ref(),
         real_mlp_reference_summary.as_ref(),
         next_layer_real_mlp_reference_summary.as_ref(),
         real_logits_candidate_summary.as_ref(),
         &real_weight_stage_links,
+        range_forward_summary.as_ref(),
     );
+    let final_report_marker_write_ms = final_report_detail_started.elapsed().as_millis();
     if timing_enabled {
+        eprintln!(
+            "qwen3-stage-timing: stage=final_report_detail kvcache_digest_ms={} weight_links_ms={} reference_digest_ms={} real_logits_ms={} range_summary_ms={} logits_descriptors_ms={} result_descriptors_ms={} marker_write_ms={}",
+            final_report_kvcache_digest_ms,
+            final_report_weight_links_ms,
+            final_report_reference_digest_ms,
+            final_report_real_logits_ms,
+            final_report_range_summary_ms,
+            final_report_logits_descriptors_ms,
+            final_report_result_descriptors_ms,
+            final_report_marker_write_ms
+        );
         eprintln!(
             "qwen3-stage-timing: stage=final_report total_ms={}",
             final_report_started.elapsed().as_millis()
@@ -9427,6 +11612,27 @@ struct Qwen3Dense06bResultBlockDescriptor {
     bytes: u64,
     checksum: u64,
     segment: u64,
+}
+
+#[derive(Clone, Debug)]
+struct Qwen3Dense06bRangeForwardSummary {
+    node: u64,
+    layer_start: u64,
+    layer_end: u64,
+    layer_count: u64,
+    next_node: u64,
+    pipeline_nodes: u64,
+    total_layers: u64,
+    hidden_bytes: u64,
+    input_tensor_checksum: u64,
+    output_tensor_checksum: u64,
+    range_layer_checksum: u64,
+    real_layer_execution_count: u64,
+    first_layer_output_checksum: u64,
+    final_layer_output_checksum: u64,
+    input_tensor_bytes: u64,
+    output_tensor_bytes: u64,
+    output_tensor_payload: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -9899,21 +12105,76 @@ fn qwen3_dense_0_6b_logits_descriptors(
     tokenizer_path: Option<&Path>,
     guest_input: &[u8],
     real_logits_candidate_summary: Option<&Qwen3Dense06bLogitsReferenceSummary>,
+    range_forward_summary: Option<&Qwen3Dense06bRangeForwardSummary>,
+    mut runtime_weight_objects: Option<&mut LingquObjectServiceStub>,
+    runtime_full_vocab_enabled: bool,
 ) -> Result<Vec<Qwen3Dense06bLogitsDescriptor>, String> {
     let mut descriptors = Vec::with_capacity(round1_outputs.len());
     let mut text_byte_offset = 0u64;
-    let runtime_forward = qwen3_dense_0_6b_runtime_forward_summary_from_guest_input(guest_input)?;
-    let round1_hidden = qwen3_dense_0_6b_final_hidden_from_round1_outputs(round1_outputs)?;
+    let range_forward_hidden =
+        qwen3_dense_0_6b_trusted_terminal_range_forward_hidden(range_forward_summary)?;
+    let terminal_range_requires_runtime_hidden = runtime_full_vocab_enabled
+        && range_forward_summary
+            .map(qwen3_dense_0_6b_range_forward_summary_is_terminal)
+            .unwrap_or(false);
+    if terminal_range_requires_runtime_hidden && range_forward_hidden.is_none() {
+        let summary = range_forward_summary.expect("range summary checked above");
+        return Err(format!(
+            "qwen3_terminal_range_hidden_untrusted:node={}:layers={}..{}:real_layers={}:expected_layers={}:payload_bytes={}:total_layers={}",
+            summary.node,
+            summary.layer_start,
+            summary.layer_end,
+            summary.real_layer_execution_count,
+            summary.layer_count,
+            summary.output_tensor_payload.len(),
+            summary.total_layers
+        ));
+    }
+    let (runtime_forward, weight_payloads) = if runtime_full_vocab_enabled {
+        if range_forward_hidden.is_some() {
+            let weight_payloads = if let Some(service) = runtime_weight_objects.as_deref_mut() {
+                qwen3_dense_0_6b_resolve_runtime_weight_objects(service, 700_000)?.layer_payloads
+            } else {
+                BTreeMap::new()
+            };
+            (None, weight_payloads)
+        } else {
+            qwen3_dense_0_6b_runtime_forward_summary_from_guest_input(
+                guest_input,
+                runtime_weight_objects,
+            )?
+        }
+    } else {
+        (None, BTreeMap::new())
+    };
+    let round1_hidden = if runtime_forward.is_none() && range_forward_hidden.is_none() {
+        qwen3_dense_0_6b_final_hidden_from_round1_outputs(round1_outputs)?
+    } else {
+        None
+    };
     let runtime_logits_hidden = runtime_forward
         .as_ref()
         .map(|forward| forward.final_hidden.as_slice())
+        .or(range_forward_hidden.as_deref())
         .or(round1_hidden.as_deref());
-    let runtime_full_vocab_sample = qwen3_dense_0_6b_runtime_full_vocab_sample(
-        runtime_logits_hidden,
-        0,
-        0,
-        guest_input.len() as u64,
-    )?;
+    let runtime_full_vocab_sample = if runtime_full_vocab_enabled {
+        qwen3_dense_0_6b_runtime_full_vocab_sample(
+            runtime_logits_hidden,
+            0,
+            0,
+            guest_input.len() as u64,
+        )?
+    } else {
+        None
+    };
+    let _runtime_full_vocab_payload = if runtime_full_vocab_enabled {
+        qwen3_dense_0_6b_runtime_full_vocab_logits_summary(
+            runtime_logits_hidden,
+            Some(&weight_payloads),
+        )?
+    } else {
+        None
+    };
     for (step_index, (shard, _output, segment, checksum)) in round1_outputs.iter().enumerate() {
         let tile_id = shard.kv_block_start / 2;
         let kvcache_read_digest = kvcache_read_digest_by_tile
@@ -10098,6 +12359,31 @@ fn qwen3_dense_0_6b_logits_descriptors(
     Ok(descriptors)
 }
 
+fn qwen3_dense_0_6b_trusted_terminal_range_forward_hidden(
+    summary: Option<&Qwen3Dense06bRangeForwardSummary>,
+) -> Result<Option<Vec<f32>>, String> {
+    let Some(summary) = summary else {
+        return Ok(None);
+    };
+    if !qwen3_dense_0_6b_range_forward_summary_is_terminal(summary) {
+        return Ok(None);
+    }
+    if summary.layer_count == 0 || summary.real_layer_execution_count != summary.layer_count {
+        return Ok(None);
+    }
+    if summary.output_tensor_payload.len() as u64 != summary.output_tensor_bytes {
+        return Ok(None);
+    }
+    qwen3_dense_0_6b_hidden_from_range_output_payload(summary).map(Some)
+}
+
+fn qwen3_dense_0_6b_range_forward_summary_is_terminal(
+    summary: &Qwen3Dense06bRangeForwardSummary,
+) -> bool {
+    let profile_layers = QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers;
+    summary.layer_end == profile_layers && summary.total_layers == profile_layers
+}
+
 fn qwen3_dense_0_6b_sampled_token(round1_checksum: u64, tile_id: u64, vocab_size: u64) -> u64 {
     debug_assert_ne!(vocab_size, 0);
     (round1_checksum ^ tile_id.wrapping_mul(0x9e37_79b9_7f4a_7c15)) % vocab_size
@@ -10221,14 +12507,42 @@ fn qwen3_dense_0_6b_token_piece(
     sampled_token: u64,
     tokenizer_path: Option<&Path>,
 ) -> Result<sim_models::qwen3_dense_0_6b::Qwen3Dense06bTokenPiece, String> {
-    if let Some(path) = tokenizer_path {
-        token_piece_from_tokenizer_path(path, sampled_token)
-    } else {
-        Ok(token_piece_from_policy(
+    if tokenizer_path.is_none() {
+        return Ok(token_piece_from_policy(
             tokenizer_policy(QWEN3_DENSE_0_6B_PROFILE),
             sampled_token,
-        ))
+        ));
     }
+    let piece = qwen3_dense_0_6b_token_piece_raw_bytes(sampled_token, tokenizer_path)?;
+    Ok(qwen3_dense_0_6b_token_piece_from_bytes(
+        sampled_token,
+        &piece,
+    ))
+}
+
+fn qwen3_dense_0_6b_token_piece_from_bytes(
+    token_id: u64,
+    piece: &[u8],
+) -> sim_models::qwen3_dense_0_6b::Qwen3Dense06bTokenPiece {
+    let mut bytes = [0u8; 16];
+    let copy_len = piece.len().min(bytes.len());
+    bytes[..copy_len].copy_from_slice(&piece[..copy_len]);
+    sim_models::qwen3_dense_0_6b::Qwen3Dense06bTokenPiece {
+        token_id,
+        byte_len: piece.len() as u64,
+        word0: u64::from_le_bytes(bytes[0..8].try_into().expect("token piece word0")),
+        word1: u64::from_le_bytes(bytes[8..16].try_into().expect("token piece word1")),
+        checksum: qwen3_dense_0_6b_token_piece_checksum(token_id, piece),
+    }
+}
+
+fn qwen3_dense_0_6b_token_piece_checksum(token_id: u64, piece: &[u8]) -> u64 {
+    let mut acc = 0xcbf2_9ce4_8422_2325u64 ^ token_id;
+    for byte in piece {
+        acc ^= *byte as u64;
+        acc = acc.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    acc ^ (piece.len() as u64).rotate_left(17)
 }
 
 fn qwen3_dense_0_6b_real_weight_stage_links(
@@ -10459,6 +12773,438 @@ fn qwen3_dense_0_6b_f32_tile_to_half_input(bytes: &[u8], elems: usize) -> Vec<u8
     out
 }
 
+fn qwen3_dense_0_6b_runtime_result_flow_checksum(
+    publish_count: u64,
+    resolve_count: u64,
+    round1_compute_count: u64,
+    round0_checksums: &[u64],
+    round1_checksums: &[u64],
+) -> u64 {
+    let round0_words = round0_checksums
+        .iter()
+        .enumerate()
+        .map(|(tile_id, checksum)| (tile_id as u64).rotate_left(7) ^ checksum.rotate_left(17))
+        .collect::<Vec<_>>();
+    let round1_words = round1_checksums
+        .iter()
+        .enumerate()
+        .map(|(tile_id, checksum)| (tile_id as u64).rotate_left(11) ^ checksum.rotate_left(23))
+        .collect::<Vec<_>>();
+    let result_count = round1_checksums.len() as u64;
+    checksum_words(&[
+        publish_count,
+        resolve_count,
+        round1_compute_count,
+        result_count,
+        distinct_checksum_count(round0_checksums),
+        distinct_checksum_count(round1_checksums),
+        checksum_words(&round0_words),
+        checksum_words(&round1_words),
+    ])
+}
+
+fn qwen3_dense_0_6b_range_forward_summary_from_contract(
+    topology: &SimTopology,
+    contract: Qwen3GuestRangeComputeContract,
+    guest_input: &[u8],
+    real_input_embedding_hidden: Option<&[f32]>,
+    result_flow_checksum: u64,
+) -> Result<Qwen3Dense06bRangeForwardSummary, String> {
+    const MATMUL_DIM: usize = 128;
+    const MATMUL_ELEMS: usize = MATMUL_DIM * MATMUL_DIM;
+    const HIDDEN_BYTES: u64 = 262_144;
+    const RANGE_INPUT_PAYLOAD_OFFSET: usize = 0x08_0000;
+    const RANGE_INPUT_PAYLOAD_BYTES: usize = HIDDEN_BYTES as usize;
+
+    if contract.layer_start >= contract.layer_end {
+        return Err(format!(
+            "qwen3_range_forward_contract_empty:start={}:end={}",
+            contract.layer_start, contract.layer_end
+        ));
+    }
+    let layer_start = u64::from(contract.layer_start);
+    let layer_end = u64::from(contract.layer_end);
+    let node = u64::from(contract.node);
+    let next_node = u64::from(contract.next_node);
+    let pipeline_nodes = u64::from(contract.pipeline_nodes);
+    let total_layers = u64::from(contract.total_layers);
+    let hidden_bytes = u64::from(contract.hidden_bytes);
+    if layer_end > QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers {
+        return Err(format!(
+            "qwen3_range_forward_contract_layer_oob:end={}:layers={}",
+            contract.layer_end, QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers
+        ));
+    }
+
+    let prompt_token_ids = qwen3_dense_0_6b_guest_input_token_ids(guest_input);
+    let weights_path = std::env::var("SIM_QWEN3_0_6B_WEIGHTS_PATH").ok();
+    let loaded_weights = weights_path
+        .as_deref()
+        .map(qwen3_dense_0_6b_cached_loaded_weights)
+        .transpose()?;
+    let input_embedding = qwen3_dense_0_6b_real_input_embedding_summary(&prompt_token_ids)?;
+    let range_input_payload = guest_input
+        .get(RANGE_INPUT_PAYLOAD_OFFSET..RANGE_INPUT_PAYLOAD_OFFSET + RANGE_INPUT_PAYLOAD_BYTES)
+        .filter(|payload| payload.iter().any(|byte| *byte != 0));
+    let real_qkv_layer_summaries = qwen3_dense_0_6b_real_qkv_layer_summaries(topology)?;
+    let real_mlp_layer_summaries = qwen3_dense_0_6b_real_mlp_layer_summaries(topology)?;
+    let mut layer_words = Vec::new();
+    let mut range_input_tensor_checksum = 0;
+    let mut first_layer_output_checksum = 0;
+    let mut final_layer_output_checksum = 0;
+    let mut real_layer_execution_count = 0;
+    let mut output_tensor_payload = Vec::new();
+
+    if let Some(loaded) = loaded_weights.as_ref() {
+        let mut previous_sequence = if layer_start > 0 {
+            let Some(payload) = range_input_payload else {
+                return Err(format!(
+                    "qwen3_range_forward_input_payload_missing:node={}:start={}:offset={}:bytes={}",
+                    contract.node,
+                    contract.layer_start,
+                    RANGE_INPUT_PAYLOAD_OFFSET,
+                    RANGE_INPUT_PAYLOAD_BYTES
+                ));
+            };
+            qwen3_dense_0_6b_hidden_sequence_from_range_payload(payload, prompt_token_ids.len())?
+        } else {
+            embedding_reference_hidden_sequence_with_payloads(
+                &loaded.tensors,
+                None,
+                &prompt_token_ids,
+            )?
+        };
+
+        for layer_id in layer_start..layer_end {
+            let owner_node = qwen3_dense_0_6b_hidden_layer_owner_node(layer_id);
+            let qkv_summary = real_qkv_layer_summaries.get(&layer_id);
+            let mlp_summary = real_mlp_layer_summaries.get(&layer_id);
+            let qkv_checksum = qkv_summary
+                .map(|summary| summary.aggregate_checksum)
+                .unwrap_or(0);
+            let mlp_checksum = mlp_summary
+                .map(|summary| summary.aggregate_checksum)
+                .unwrap_or(0);
+            let input_tensor_checksum =
+                qwen3_dense_0_6b_hidden_sequence_checksum(&previous_sequence);
+            let (next_sequence, layer_reference) = layer_forward_reference_sequence_with_payloads(
+                &loaded.tensors,
+                &BTreeMap::new(),
+                layer_id,
+                &previous_sequence,
+            )?;
+            let output_tensor_checksum = qwen3_dense_0_6b_hidden_sequence_checksum(&next_sequence);
+
+            if layer_id == layer_start {
+                range_input_tensor_checksum = input_tensor_checksum;
+            }
+            real_layer_execution_count += 1;
+            if layer_id == layer_start {
+                first_layer_output_checksum = output_tensor_checksum;
+            }
+            final_layer_output_checksum = output_tensor_checksum;
+            if layer_id + 1 == layer_end {
+                output_tensor_payload = qwen3_dense_0_6b_range_payload_from_hidden_sequence(
+                    &next_sequence,
+                    RANGE_INPUT_PAYLOAD_BYTES,
+                )?;
+            }
+            layer_words.extend_from_slice(&[
+                layer_id,
+                owner_node,
+                layer_reference.input_checksum,
+                qkv_checksum,
+                mlp_checksum,
+                layer_reference.output_checksum,
+                output_tensor_checksum,
+            ]);
+            previous_sequence = next_sequence;
+        }
+    } else {
+        let mut previous_hidden_tensor = if layer_start > 0 {
+            let Some(payload) = range_input_payload else {
+                return Err(format!(
+                    "qwen3_range_forward_input_payload_missing:node={}:start={}:offset={}:bytes={}",
+                    contract.node,
+                    contract.layer_start,
+                    RANGE_INPUT_PAYLOAD_OFFSET,
+                    RANGE_INPUT_PAYLOAD_BYTES
+                ));
+            };
+            payload.to_vec()
+        } else if let Some(hidden) = real_input_embedding_hidden {
+            let mut bytes = Vec::with_capacity(hidden.len() * std::mem::size_of::<f32>());
+            for value in hidden {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            qwen3_dense_0_6b_f32_tile_to_half_input(&bytes, MATMUL_ELEMS)
+        } else {
+            let guest_input_checksum = qwen3_dense_0_6b_decode_guest_input_checksum(guest_input);
+            let embedding_checksum = input_embedding
+                .as_ref()
+                .map(|summary| summary.aggregate_checksum)
+                .unwrap_or(0);
+            let seed = checksum_words(&[
+                guest_input_checksum,
+                embedding_checksum,
+                result_flow_checksum,
+            ]);
+            let mut out = Vec::with_capacity(MATMUL_ELEMS * std::mem::size_of::<u16>());
+            for elem_index in 0..MATMUL_ELEMS {
+                let mixed = seed.rotate_left((elem_index % 63) as u32) ^ elem_index as u64;
+                let value = 1.0 + (((mixed >> 8) & 0x03ff) as f32 / 1024.0) * 0.01;
+                out.extend_from_slice(&f32_to_f16_bits(value).to_le_bytes());
+            }
+            out
+        };
+        for layer_id in layer_start..layer_end {
+            let owner_node = qwen3_dense_0_6b_hidden_layer_owner_node(layer_id);
+            let qkv_summary = real_qkv_layer_summaries.get(&layer_id);
+            let mlp_summary = real_mlp_layer_summaries.get(&layer_id);
+            let qkv_checksum = qkv_summary
+                .map(|summary| summary.aggregate_checksum)
+                .unwrap_or(0);
+            let mlp_checksum = mlp_summary
+                .map(|summary| summary.aggregate_checksum)
+                .unwrap_or(0);
+            let input_tensor_checksum =
+                qwen3_dense_0_6b_shard_output_checksum(&previous_hidden_tensor);
+            let output_hidden_tensor = qwen3_dense_0_6b_next_hidden_tensor_tile(
+                &previous_hidden_tensor,
+                MATMUL_DIM,
+                layer_id,
+                owner_node,
+                qkv_checksum,
+                mlp_checksum,
+                result_flow_checksum,
+                qkv_summary,
+                mlp_summary,
+            );
+            let output_tensor_checksum =
+                qwen3_dense_0_6b_shard_output_checksum(&output_hidden_tensor);
+
+            if layer_id == layer_start {
+                range_input_tensor_checksum = input_tensor_checksum;
+            }
+            if qkv_summary.is_some() && mlp_summary.is_some() {
+                real_layer_execution_count += 1;
+            }
+            if layer_id == layer_start {
+                first_layer_output_checksum = output_tensor_checksum;
+            }
+            final_layer_output_checksum = output_tensor_checksum;
+            if layer_id + 1 == layer_end {
+                output_tensor_payload = output_hidden_tensor.clone();
+            }
+            layer_words.extend_from_slice(&[
+                layer_id,
+                owner_node,
+                input_tensor_checksum,
+                qkv_checksum,
+                mlp_checksum,
+                output_tensor_checksum,
+            ]);
+            previous_hidden_tensor = output_hidden_tensor;
+        }
+    }
+
+    Ok(Qwen3Dense06bRangeForwardSummary {
+        node,
+        layer_start,
+        layer_end,
+        layer_count: layer_end - layer_start,
+        next_node,
+        pipeline_nodes,
+        total_layers,
+        hidden_bytes,
+        input_tensor_checksum: range_input_tensor_checksum,
+        output_tensor_checksum: final_layer_output_checksum,
+        range_layer_checksum: checksum_words(&layer_words),
+        real_layer_execution_count,
+        first_layer_output_checksum,
+        final_layer_output_checksum,
+        input_tensor_bytes: HIDDEN_BYTES,
+        output_tensor_bytes: HIDDEN_BYTES,
+        output_tensor_payload,
+    })
+}
+
+fn qwen3_dense_0_6b_range_forward_summary_from_runtime_outputs(
+    contract: Qwen3GuestRangeComputeContract,
+    guest_input: &[u8],
+    real_input_embedding_hidden: Option<&[f32]>,
+    round1_outputs: &[(Qwen3Dense06bShard, Vec<u8>, SegmentHandle, u64)],
+    result_flow_checksum: u64,
+) -> Result<Qwen3Dense06bRangeForwardSummary, String> {
+    const HIDDEN_BYTES: u64 = 262_144;
+    const RANGE_INPUT_PAYLOAD_OFFSET: usize = 0x08_0000;
+    const RANGE_INPUT_PAYLOAD_BYTES: usize = HIDDEN_BYTES as usize;
+
+    if contract.layer_start >= contract.layer_end {
+        return Err(format!(
+            "qwen3_range_forward_contract_empty:start={}:end={}",
+            contract.layer_start, contract.layer_end
+        ));
+    }
+    let layer_start = u64::from(contract.layer_start);
+    let layer_end = u64::from(contract.layer_end);
+    if layer_end > QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers {
+        return Err(format!(
+            "qwen3_range_forward_contract_layer_oob:end={}:layers={}",
+            contract.layer_end, QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers
+        ));
+    }
+
+    let prompt_token_ids = qwen3_dense_0_6b_guest_input_token_ids(guest_input);
+    let token_count = prompt_token_ids.len().max(1);
+    let output_tensor_payload = qwen3_dense_0_6b_range_payload_from_round_outputs(
+        round1_outputs,
+        token_count,
+        RANGE_INPUT_PAYLOAD_BYTES,
+    )?;
+    let input_tensor_checksum = if layer_start > 0 {
+        let payload = guest_input
+            .get(RANGE_INPUT_PAYLOAD_OFFSET..RANGE_INPUT_PAYLOAD_OFFSET + RANGE_INPUT_PAYLOAD_BYTES)
+            .filter(|payload| payload.iter().any(|byte| *byte != 0))
+            .ok_or_else(|| {
+                format!(
+                    "qwen3_range_forward_input_payload_missing:node={}:start={}:offset={}:bytes={}",
+                    contract.node,
+                    contract.layer_start,
+                    RANGE_INPUT_PAYLOAD_OFFSET,
+                    RANGE_INPUT_PAYLOAD_BYTES
+                )
+            })?;
+        qwen3_dense_0_6b_shard_output_checksum(payload)
+    } else if let Some(hidden) = real_input_embedding_hidden {
+        qwen3_dense_0_6b_f32_values_checksum(hidden)
+    } else {
+        checksum_words(&[
+            qwen3_dense_0_6b_decode_guest_input_checksum(guest_input),
+            result_flow_checksum,
+            token_count as u64,
+        ])
+    };
+    let output_tensor_checksum = qwen3_dense_0_6b_shard_output_checksum(&output_tensor_payload);
+    let mut layer_words = Vec::with_capacity((layer_end - layer_start) as usize * 6 + 4);
+    let mut previous_checksum = input_tensor_checksum;
+    for layer_id in layer_start..layer_end {
+        let owner_node = qwen3_dense_0_6b_hidden_layer_owner_node(layer_id);
+        let qkv_checksum = checksum_words(&[
+            previous_checksum,
+            output_tensor_checksum,
+            result_flow_checksum,
+            layer_id,
+            owner_node,
+            0x716b_765f_7274_0001,
+        ]);
+        let mlp_checksum = checksum_words(&[
+            previous_checksum,
+            output_tensor_checksum,
+            result_flow_checksum,
+            layer_id,
+            owner_node,
+            0x6d6c_705f_7274_0001,
+        ]);
+        let layer_output_checksum = if layer_id + 1 == layer_end {
+            output_tensor_checksum
+        } else {
+            checksum_words(&[
+                previous_checksum,
+                qkv_checksum,
+                mlp_checksum,
+                result_flow_checksum,
+                layer_id,
+            ])
+        };
+        layer_words.extend_from_slice(&[
+            layer_id,
+            owner_node,
+            previous_checksum,
+            qkv_checksum,
+            mlp_checksum,
+            layer_output_checksum,
+        ]);
+        previous_checksum = layer_output_checksum;
+    }
+
+    Ok(Qwen3Dense06bRangeForwardSummary {
+        node: u64::from(contract.node),
+        layer_start,
+        layer_end,
+        layer_count: layer_end - layer_start,
+        next_node: u64::from(contract.next_node),
+        pipeline_nodes: u64::from(contract.pipeline_nodes),
+        total_layers: u64::from(contract.total_layers),
+        hidden_bytes: u64::from(contract.hidden_bytes),
+        input_tensor_checksum,
+        output_tensor_checksum,
+        range_layer_checksum: checksum_words(&layer_words),
+        real_layer_execution_count: layer_end - layer_start,
+        first_layer_output_checksum: layer_words
+            .get(5)
+            .copied()
+            .unwrap_or(output_tensor_checksum),
+        final_layer_output_checksum: output_tensor_checksum,
+        input_tensor_bytes: HIDDEN_BYTES,
+        output_tensor_bytes: HIDDEN_BYTES,
+        output_tensor_payload,
+    })
+}
+
+fn qwen3_dense_0_6b_range_payload_from_round_outputs(
+    round1_outputs: &[(Qwen3Dense06bShard, Vec<u8>, SegmentHandle, u64)],
+    token_count: usize,
+    capacity_bytes: usize,
+) -> Result<Vec<u8>, String> {
+    let hidden_size = QWEN3_DENSE_0_6B_PROFILE.hidden_size as usize;
+    if round1_outputs.is_empty() {
+        return Err("qwen3_range_forward_runtime_outputs_empty".to_string());
+    }
+    if hidden_size % round1_outputs.len() != 0 {
+        return Err(format!(
+            "qwen3_range_forward_runtime_tile_count_mismatch:hidden_size={hidden_size}:tiles={}",
+            round1_outputs.len()
+        ));
+    }
+    let values_per_tile = hidden_size / round1_outputs.len();
+    let required_bytes = token_count * hidden_size * std::mem::size_of::<f32>();
+    if required_bytes > capacity_bytes {
+        return Err(format!(
+            "qwen3_range_forward_runtime_payload_too_large:tokens={token_count}:bytes={required_bytes}:capacity={capacity_bytes}"
+        ));
+    }
+    let mut outputs = round1_outputs.iter().collect::<Vec<_>>();
+    outputs.sort_by_key(|(shard, _output, _segment, _checksum)| shard.kv_block_start / 2);
+
+    let mut payload = Vec::with_capacity(capacity_bytes);
+    for token_index in 0..token_count {
+        let value_start = token_index * values_per_tile;
+        let value_end = value_start + values_per_tile;
+        for (shard, output, _segment, _checksum) in &outputs {
+            let values = bytes_to_f32s(output);
+            if values.len() < value_end {
+                return Err(format!(
+                    "qwen3_range_forward_runtime_tile_too_short:tile={}:token={token_index}:got={}:expected_at_least={value_end}",
+                    shard.kv_block_start / 2,
+                    values.len()
+                ));
+            }
+            for value in &values[value_start..value_end] {
+                if !value.is_finite() {
+                    return Err(format!(
+                        "qwen3_range_forward_runtime_tile_nonfinite:tile={}:token={token_index}",
+                        shard.kv_block_start / 2
+                    ));
+                }
+                payload.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+    }
+    payload.resize(capacity_bytes, 0);
+    Ok(payload)
+}
+
 fn qwen3_dense_0_6b_write_service_flow_markers(
     output: &mut [u8],
     round0_publish_count: u64,
@@ -10481,6 +13227,7 @@ fn qwen3_dense_0_6b_write_service_flow_markers(
     next_layer_real_mlp_reference_summary: Option<&Qwen3Dense06bMlpReferenceLayerSummary>,
     real_logits_reference_summary: Option<&Qwen3Dense06bLogitsReferenceSummary>,
     real_weight_stage_links: &[Qwen3Dense06bRealWeightStageLinkDescriptor],
+    range_forward_summary: Option<&Qwen3Dense06bRangeForwardSummary>,
 ) {
     const TILES_PER_SHARD: usize = 2;
     const LAYER_DEP_STAGES_PER_TILE: usize = 24;
@@ -10504,6 +13251,7 @@ fn qwen3_dense_0_6b_write_service_flow_markers(
     const MARKER_WEIGHT_STAGE_LINK_TABLE: u64 = 0x71337734776c6b30;
     const MARKER_MLP_REFERENCE_TABLE: u64 = 0x713377346d6c7030;
     const MARKER_LOGITS_REFERENCE_TABLE: u64 = 0x713377346c6d6830;
+    const MARKER_RANGE_FORWARD_TABLE: u64 = 0x7133773472667430;
     const RESULT_TABLE_HEADER: usize = 320;
     const RESULT_TABLE_BASE: usize = 384;
     const RESULT_TABLE_ENTRY_WORDS: u64 = 10;
@@ -10598,7 +13346,10 @@ fn qwen3_dense_0_6b_write_service_flow_markers(
         logits_reference_table_header,
         real_logits_reference_summary,
     );
-    let metadata_table_end = logits_reference_table_end;
+    let range_forward_table_header = logits_reference_table_end;
+    let range_forward_table_end =
+        qwen3_dense_0_6b_range_forward_table_end(range_forward_table_header, range_forward_summary);
+    let metadata_table_end = range_forward_table_end;
 
     write_u64_le_at(output, 8, MARKER_PUBLISH);
     write_u64_le_at(output, 16, MARKER_RESOLVE);
@@ -11041,6 +13792,12 @@ fn qwen3_dense_0_6b_write_service_flow_markers(
         MARKER_LOGITS_REFERENCE_TABLE,
         real_logits_reference_summary,
     );
+    qwen3_dense_0_6b_write_range_forward_table(
+        output,
+        range_forward_table_header,
+        MARKER_RANGE_FORWARD_TABLE,
+        range_forward_summary,
+    );
 }
 
 fn qwen3_dense_0_6b_real_weight_reference_summary(
@@ -11172,18 +13929,58 @@ fn qwen3_dense_0_6b_runtime_full_vocab_sample(
     full_vocab_sample_from_hidden(&loaded.tensors, hidden, temperature, seed).map(Some)
 }
 
-fn qwen3_dense_0_6b_runtime_forward_summary_from_guest_input(
-    guest_input: &[u8],
-) -> Result<Option<qwen3_dense_0_6b::Qwen3Dense06bForwardReference>, String> {
-    let token_ids = qwen3_dense_0_6b_guest_input_token_ids(guest_input);
-    if token_ids.is_empty() {
+fn qwen3_dense_0_6b_runtime_full_vocab_logits_summary(
+    hidden: Option<&[f32]>,
+    tensor_payloads: Option<&BTreeMap<String, Vec<u8>>>,
+) -> Result<Option<Qwen3Dense06bFullVocabLogitsSummary>, String> {
+    let Some(hidden) = hidden else {
         return Ok(None);
-    }
+    };
     let Ok(weights_path) = std::env::var("SIM_QWEN3_0_6B_WEIGHTS_PATH") else {
         return Ok(None);
     };
     let loaded = qwen3_dense_0_6b_cached_loaded_weights(&weights_path)?;
-    forward_from_token_ids(&loaded.tensors, &token_ids).map(Some)
+    match tensor_payloads {
+        Some(tensor_payloads) => {
+            full_vocab_logits_from_hidden_with_payloads(&loaded.tensors, tensor_payloads, hidden)
+                .map(Some)
+        }
+        None => full_vocab_logits_from_hidden(&loaded.tensors, hidden).map(Some),
+    }
+}
+
+fn qwen3_dense_0_6b_runtime_forward_summary_from_guest_input(
+    guest_input: &[u8],
+    runtime_weight_objects: Option<&mut LingquObjectServiceStub>,
+) -> Result<
+    (
+        Option<qwen3_dense_0_6b::Qwen3Dense06bForwardReference>,
+        BTreeMap<String, Vec<u8>>,
+    ),
+    String,
+> {
+    let token_ids = qwen3_dense_0_6b_guest_input_token_ids(guest_input);
+    if token_ids.is_empty() {
+        return Ok((None, BTreeMap::new()));
+    }
+    let Ok(weights_path) = std::env::var("SIM_QWEN3_0_6B_WEIGHTS_PATH") else {
+        return Ok((None, BTreeMap::new()));
+    };
+    let loaded = qwen3_dense_0_6b_cached_loaded_weights(&weights_path)?;
+    if let Some(service) = runtime_weight_objects {
+        let resolved = qwen3_dense_0_6b_resolve_runtime_weight_objects(service, 700_000)?;
+        let forward = forward_from_token_ids_with_layer_payloads(
+            &loaded.tensors,
+            &resolved.layer_payloads,
+            &token_ids,
+        )
+        .map(Some)?;
+        Ok((forward, resolved.layer_payloads))
+    } else {
+        forward_from_token_ids(&loaded.tensors, &token_ids)
+            .map(Some)
+            .map(|forward| (forward, BTreeMap::new()))
+    }
 }
 
 fn qwen3_dense_0_6b_final_hidden_from_round1_outputs(
@@ -11232,6 +14029,141 @@ fn qwen3_dense_0_6b_final_hidden_from_round1_outputs(
         ));
     }
     Ok(Some(hidden))
+}
+
+fn qwen3_dense_0_6b_hidden_from_range_output_payload(
+    summary: &Qwen3Dense06bRangeForwardSummary,
+) -> Result<Vec<f32>, String> {
+    let token_count = qwen3_dense_0_6b_range_payload_token_count(&summary.output_tensor_payload)?;
+    let sequence = qwen3_dense_0_6b_hidden_sequence_from_range_payload(
+        &summary.output_tensor_payload,
+        token_count,
+    )?;
+    sequence.last().cloned().ok_or_else(|| {
+        format!(
+            "qwen3_range_forward_logits_hidden_empty:node={}:layers={}..{}",
+            summary.node, summary.layer_start, summary.layer_end
+        )
+    })
+}
+
+fn qwen3_dense_0_6b_range_payload_token_count(payload: &[u8]) -> Result<usize, String> {
+    let hidden_size = QWEN3_DENSE_0_6B_PROFILE.hidden_size as usize;
+    let bytes_per_hidden = hidden_size * std::mem::size_of::<f32>();
+    let used_bytes = payload
+        .chunks_exact(bytes_per_hidden)
+        .take_while(|chunk| chunk.iter().any(|byte| *byte != 0))
+        .count()
+        * bytes_per_hidden;
+    if used_bytes == 0 {
+        return Err("qwen3_range_forward_payload_empty".to_string());
+    }
+    Ok(used_bytes / bytes_per_hidden)
+}
+
+fn qwen3_dense_0_6b_hidden_sequence_from_range_payload(
+    payload: &[u8],
+    token_count: usize,
+) -> Result<Vec<Vec<f32>>, String> {
+    let hidden_size = QWEN3_DENSE_0_6B_PROFILE.hidden_size as usize;
+    let bytes_per_hidden = hidden_size * std::mem::size_of::<f32>();
+    let required_bytes = token_count * bytes_per_hidden;
+    if payload.len() < required_bytes {
+        return Err(format!(
+            "qwen3_range_forward_sequence_payload_too_short:tokens={token_count}:got={}:expected_at_least={required_bytes}",
+            payload.len()
+        ));
+    }
+
+    let mut sequence = Vec::with_capacity(token_count);
+    for token_index in 0..token_count {
+        let mut hidden = Vec::with_capacity(hidden_size);
+        let token_offset = token_index * bytes_per_hidden;
+        for elem_index in 0..hidden_size {
+            let byte_index = token_offset + elem_index * std::mem::size_of::<f32>();
+            let value = f32::from_le_bytes([
+                payload[byte_index],
+                payload[byte_index + 1],
+                payload[byte_index + 2],
+                payload[byte_index + 3],
+            ]);
+            if !value.is_finite() {
+                return Err(format!(
+                    "qwen3_range_forward_sequence_payload_nonfinite:token={token_index}:elem={elem_index}"
+                ));
+            }
+            hidden.push(value);
+        }
+        sequence.push(hidden);
+    }
+    Ok(sequence)
+}
+
+fn qwen3_dense_0_6b_range_payload_from_hidden_sequence(
+    sequence: &[Vec<f32>],
+    capacity_bytes: usize,
+) -> Result<Vec<u8>, String> {
+    let hidden_size = QWEN3_DENSE_0_6B_PROFILE.hidden_size as usize;
+    let required_bytes = sequence.len() * hidden_size * std::mem::size_of::<f32>();
+    if required_bytes > capacity_bytes {
+        return Err(format!(
+            "qwen3_range_forward_sequence_payload_too_large:tokens={}:bytes={required_bytes}:capacity={capacity_bytes}",
+            sequence.len()
+        ));
+    }
+    let mut payload = Vec::with_capacity(capacity_bytes);
+    for (token_index, hidden) in sequence.iter().enumerate() {
+        if hidden.len() != hidden_size {
+            return Err(format!(
+                "qwen3_range_forward_sequence_hidden_size_mismatch:token={token_index}:got={}:expected={hidden_size}",
+                hidden.len()
+            ));
+        }
+        for value in hidden {
+            if !value.is_finite() {
+                return Err(format!(
+                    "qwen3_range_forward_sequence_hidden_nonfinite:token={token_index}"
+                ));
+            }
+            payload.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+    payload.resize(capacity_bytes, 0);
+    Ok(payload)
+}
+
+fn qwen3_dense_0_6b_hidden_sequence_checksum(sequence: &[Vec<f32>]) -> u64 {
+    let mut words = Vec::with_capacity(sequence.len() * 5 + 1);
+    words.push(sequence.len() as u64);
+    for (index, hidden) in sequence.iter().enumerate() {
+        words.push(index as u64);
+        words.push(qwen3_dense_0_6b_f32_values_checksum(hidden));
+        words.extend_from_slice(&qwen3_dense_0_6b_f32_values_sample_words(hidden));
+    }
+    checksum_words(&words)
+}
+
+fn qwen3_dense_0_6b_f32_values_checksum(values: &[f32]) -> u64 {
+    checksum_words(
+        &values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| (index as u64).rotate_left(17) ^ value.to_bits() as u64)
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn qwen3_dense_0_6b_f32_values_sample_words(values: &[f32]) -> [u64; 4] {
+    if values.is_empty() {
+        return [0; 4];
+    }
+    let last = values.len() - 1;
+    [
+        values[0].to_bits() as u64,
+        values[last / 3].to_bits() as u64,
+        values[(last * 2) / 3].to_bits() as u64,
+        values[last].to_bits() as u64,
+    ]
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -11325,14 +14257,7 @@ fn qwen3_dense_0_6b_token_piece_bytes(
     sampled_token: u64,
     tokenizer_path: Option<&Path>,
 ) -> Result<Vec<u8>, String> {
-    if let Some(path) = tokenizer_path {
-        token_piece_bytes_from_tokenizer_path(path, sampled_token)
-    } else {
-        Ok(token_piece_bytes_from_policy(
-            tokenizer_policy(QWEN3_DENSE_0_6B_PROFILE),
-            sampled_token,
-        ))
-    }
+    qwen3_dense_0_6b_token_piece_raw_bytes(sampled_token, tokenizer_path)
 }
 
 fn qwen3_dense_0_6b_text_output_bytes_checksum(bytes: &[u8]) -> u64 {
@@ -11723,6 +14648,74 @@ fn qwen3_dense_0_6b_write_logits_reference_table(
         write_u64_le_at(output, base + 24, token.row_checksum);
         write_u64_le_at(output, base + 32, token.logit_bits);
         write_u64_le_at(output, base + 40, token.logit_checksum);
+    }
+}
+
+fn qwen3_dense_0_6b_range_forward_table_end(
+    table_header: usize,
+    summary: Option<&Qwen3Dense06bRangeForwardSummary>,
+) -> usize {
+    const TABLE_HEADER_BYTES: usize = 64;
+    const RANGE_FORWARD_ENTRY_WORDS: usize = 16;
+    const RANGE_FORWARD_ENTRY_BYTES: usize = RANGE_FORWARD_ENTRY_WORDS * 8;
+    summary
+        .map(|summary| {
+            table_header
+                + TABLE_HEADER_BYTES
+                + RANGE_FORWARD_ENTRY_BYTES
+                + summary.output_tensor_payload.len()
+        })
+        .unwrap_or(table_header)
+}
+
+fn qwen3_dense_0_6b_write_range_forward_table(
+    output: &mut [u8],
+    table_header: usize,
+    marker: u64,
+    summary: Option<&Qwen3Dense06bRangeForwardSummary>,
+) {
+    let Some(summary) = summary else {
+        return;
+    };
+    const TABLE_HEADER_BYTES: usize = 64;
+    const RANGE_FORWARD_ENTRY_WORDS: u64 = 16;
+    const RANGE_FORWARD_ENTRY_BYTES: usize = RANGE_FORWARD_ENTRY_WORDS as usize * 8;
+    let table_base = table_header + TABLE_HEADER_BYTES;
+    let payload_offset = table_base + RANGE_FORWARD_ENTRY_BYTES;
+    let table_bytes = RANGE_FORWARD_ENTRY_BYTES + summary.output_tensor_payload.len();
+    let entry = [
+        summary.node,
+        summary.layer_start,
+        summary.layer_end,
+        summary.layer_count,
+        summary.next_node,
+        summary.pipeline_nodes,
+        summary.total_layers,
+        summary.hidden_bytes,
+        summary.input_tensor_checksum,
+        summary.output_tensor_checksum,
+        summary.range_layer_checksum,
+        summary.real_layer_execution_count,
+        summary.first_layer_output_checksum,
+        summary.final_layer_output_checksum,
+        summary.input_tensor_bytes,
+        summary.output_tensor_bytes,
+    ];
+
+    write_u64_le_at(output, table_header, marker);
+    write_u64_le_at(output, table_header + 8, 1);
+    write_u64_le_at(output, table_header + 16, RANGE_FORWARD_ENTRY_WORDS);
+    write_u64_le_at(output, table_header + 24, table_bytes as u64);
+    write_u64_le_at(output, table_header + 32, checksum_words(&entry));
+    write_u64_le_at(output, table_header + 40, summary.range_layer_checksum);
+    write_u64_le_at(output, table_header + 48, summary.input_tensor_checksum);
+    write_u64_le_at(output, table_header + 56, summary.output_tensor_checksum);
+    for (index, word) in entry.iter().copied().enumerate() {
+        write_u64_le_at(output, table_base + index * 8, word);
+    }
+    if payload_offset + summary.output_tensor_payload.len() <= output.len() {
+        output[payload_offset..payload_offset + summary.output_tensor_payload.len()]
+            .copy_from_slice(&summary.output_tensor_payload);
     }
 }
 
@@ -12894,19 +15887,30 @@ mod tests {
         qwen3_dense_0_6b_attention_score_tile_from_rope,
         qwen3_dense_0_6b_attention_score_tile_from_rope_with_real_qk_and_kvcache_reference,
         qwen3_dense_0_6b_attention_score_tile_from_rope_with_real_qk_reference,
-        qwen3_dense_0_6b_canonical_block_checksum, qwen3_dense_0_6b_decode_chain_checksum,
+        qwen3_dense_0_6b_bootstrap_node_ranges, qwen3_dense_0_6b_canonical_block_checksum,
+        qwen3_dense_0_6b_chat_prompt, qwen3_dense_0_6b_decode_chain_checksum,
         qwen3_dense_0_6b_decode_duration_label, qwen3_dense_0_6b_decode_loop_report,
         qwen3_dense_0_6b_decode_loop_report_with_prompt,
         qwen3_dense_0_6b_decode_step_selected_samples,
+        qwen3_dense_0_6b_fallback_weight_range_payload,
         qwen3_dense_0_6b_final_hidden_from_round1_outputs, qwen3_dense_0_6b_half_at,
-        qwen3_dense_0_6b_hidden_layer_owner_node, qwen3_dense_0_6b_is_decode_stop_token,
+        qwen3_dense_0_6b_hidden_layer_owner_node, qwen3_dense_0_6b_is_decode_control_token,
+        qwen3_dense_0_6b_is_decode_stop_token,
         qwen3_dense_0_6b_kvcache_tile_payload_from_projection, qwen3_dense_0_6b_logits_checksum,
         qwen3_dense_0_6b_mlp_activation_tile_from_attention_context,
+        qwen3_dense_0_6b_object_metadata, qwen3_dense_0_6b_object_payload_words,
+        qwen3_dense_0_6b_object_placement, qwen3_dense_0_6b_object_service_profile,
+        qwen3_dense_0_6b_parse_weight_range_payload,
         qwen3_dense_0_6b_projection_tile_from_half_input,
+        qwen3_dense_0_6b_publish_bootstrap_weight_objects,
+        qwen3_dense_0_6b_range_forward_report_with_prompt,
         qwen3_dense_0_6b_real_mlp_activation_tile_from_attention_context,
         qwen3_dense_0_6b_real_mlp_reference_summary, qwen3_dense_0_6b_real_qkv_reference_values,
         qwen3_dense_0_6b_real_tokenizer_asset_summary, qwen3_dense_0_6b_real_tokenizer_path,
         qwen3_dense_0_6b_real_weight_reference_summary, qwen3_dense_0_6b_real_weight_stage_links,
+        qwen3_dense_0_6b_required_layer_weight_kind_codes,
+        qwen3_dense_0_6b_resolve_runtime_weight_objects,
+        qwen3_dense_0_6b_resolve_weight_range_objects,
         qwen3_dense_0_6b_result_block_sample_offsets,
         qwen3_dense_0_6b_rmsnorm_tile_from_prefill_hidden,
         qwen3_dense_0_6b_rope_tile_from_projection, qwen3_dense_0_6b_sample_text_checksum,
@@ -12918,21 +15922,24 @@ mod tests {
         qwen3_dense_0_6b_tile_with_real_mlp_reference_mix,
         qwen3_dense_0_6b_tile_with_real_qkv_reference_mix,
         qwen3_dense_0_6b_tile_with_real_qkv_reference_values_mix, qwen3_dense_0_6b_token_piece,
-        qwen3_dense_0_6b_tokenizer_sample_token_count, qwen3_dense_0_6b_weight_reference_table_end,
-        qwen3_dense_0_6b_weight_stage_link_table_end,
-        qwen3_dense_0_6b_write_weight_reference_table,
+        qwen3_dense_0_6b_tokenizer_sample_token_count,
+        qwen3_dense_0_6b_validate_weight_payload_coverage,
+        qwen3_dense_0_6b_weight_range_object_key, qwen3_dense_0_6b_weight_range_payload_header,
+        qwen3_dense_0_6b_weight_reference_table_end, qwen3_dense_0_6b_weight_stage_link_table_end,
+        qwen3_dense_0_6b_weight_tensor_kind_code, qwen3_dense_0_6b_write_weight_reference_table,
         qwen3_dense_0_6b_write_weight_stage_link_table, read_u64_le_at,
         run_host_matmul_batched_smoke, run_host_matmul_smoke, run_qwen3_dense_0_6b_prefill_runtime,
         GuestUapiSurface, KvCachePayloadLayout, LocalGuestUapiSurface,
-        Qwen3Dense06bLayerDependencyDescriptor, Qwen3Dense06bShard, Qwen3ProjectionKind,
-        UapiCommand, UapiDescriptor, UapiResponse, QWEN3_DENSE_0_6B_PROFILE,
-        QWEN3_DENSE_0_6B_TOKENIZER_POLICY_KIND, QWEN3_LOGITS_REFERENCE_ENTRY_WORDS,
-        QWEN3_MLP_REFERENCE_ENTRY_WORDS, QWEN3_SYNTHETIC_ATTENTION_CONTEXT,
-        QWEN3_SYNTHETIC_ATTENTION_SCORE, QWEN3_SYNTHETIC_GUEST_INPUT,
-        QWEN3_SYNTHETIC_LOGITS_CANDIDATES, QWEN3_SYNTHETIC_MLP_ACTIVATION,
-        QWEN3_SYNTHETIC_MLP_OUTPUT, QWEN3_SYNTHETIC_QKV_BASE_TILE, QWEN3_SYNTHETIC_TOKEN_TEXT,
-        QWEN3_WEIGHT_REFERENCE_ENTRY_WORDS, QWEN3_WEIGHT_STAGE_LINK_ENTRY_WORDS, W4_KVCACHE_BLOCKS,
-        W4_KVCACHE_PAYLOAD_BYTES, W4_KVCACHE_PREFIX_GROUPS,
+        Qwen3Dense06bHiddenLayerNodeRange, Qwen3Dense06bLayerDependencyDescriptor,
+        Qwen3Dense06bShard, Qwen3ProjectionKind, UapiCommand, UapiDescriptor, UapiResponse,
+        QWEN3_DENSE_0_6B_PROFILE, QWEN3_DENSE_0_6B_TOKENIZER_POLICY_KIND,
+        QWEN3_LOGITS_REFERENCE_ENTRY_WORDS, QWEN3_MLP_REFERENCE_ENTRY_WORDS,
+        QWEN3_SYNTHETIC_ATTENTION_CONTEXT, QWEN3_SYNTHETIC_ATTENTION_SCORE,
+        QWEN3_SYNTHETIC_GUEST_INPUT, QWEN3_SYNTHETIC_LOGITS_CANDIDATES,
+        QWEN3_SYNTHETIC_MLP_ACTIVATION, QWEN3_SYNTHETIC_MLP_OUTPUT, QWEN3_SYNTHETIC_QKV_BASE_TILE,
+        QWEN3_SYNTHETIC_TOKEN_TEXT, QWEN3_WEIGHT_REFERENCE_ENTRY_WORDS,
+        QWEN3_WEIGHT_STAGE_LINK_ENTRY_WORDS, W4_KVCACHE_BLOCKS, W4_KVCACHE_PAYLOAD_BYTES,
+        W4_KVCACHE_PREFIX_GROUPS,
     };
     use sim_config::ScenarioConfig;
     use sim_core::{
@@ -12942,11 +15949,11 @@ mod tests {
     use sim_models::qwen3_dense_0_6b::{
         checksum_words, token_piece_bytes_from_policy, token_piece_bytes_from_tokenizer_path,
         token_piece_from_policy, token_piece_from_tokenizer_path, tokenizer_policy,
-        Qwen3Dense06bMlpReferenceLayerSummary, Qwen3Dense06bMlpReferenceShardSummary,
-        Qwen3Dense06bQkvReferenceLayerSummary, Qwen3Dense06bQkvReferenceLayerValues,
-        Qwen3Dense06bQkvReferenceShardSummary, Qwen3Dense06bQkvReferenceShardValues,
-        Qwen3Dense06bReferenceWeightSliceValidation, Qwen3Dense06bWeightTensorKind,
-        QWEN3_DENSE_0_6B_TOKENIZER_ASSET_POLICY_KIND,
+        weight_bytes_checksum, Qwen3Dense06bMlpReferenceLayerSummary,
+        Qwen3Dense06bMlpReferenceShardSummary, Qwen3Dense06bQkvReferenceLayerSummary,
+        Qwen3Dense06bQkvReferenceLayerValues, Qwen3Dense06bQkvReferenceShardSummary,
+        Qwen3Dense06bQkvReferenceShardValues, Qwen3Dense06bReferenceWeightSliceValidation,
+        Qwen3Dense06bWeightTensorKind, QWEN3_DENSE_0_6B_TOKENIZER_ASSET_POLICY_KIND,
     };
     use sim_services::block::BlockServiceProfile;
     use sim_services::{
@@ -12954,13 +15961,14 @@ mod tests {
         dfs::{DfsReadReq, DfsServiceProfile, DfsWriteReq},
         object::{
             LingquObjectKind, LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
-            LingquObjectResolveReq, LingquObjectState, LingquObjectVersionSelector,
-            LingquPayloadBackend, LingquPayloadPlacement,
+            LingquObjectResolveReq, LingquObjectServiceStub, LingquObjectState,
+            LingquObjectVersionSelector, LingquPayloadBackend, LingquPayloadPlacement,
         },
         shmem::{ShmemGetReq, ShmemPutReq, ShmemServiceProfile},
     };
     use sim_topology::SimTopology;
     use std::collections::BTreeMap;
+    use std::collections::BTreeSet;
     use std::path::PathBuf;
     use std::time::Duration;
 
@@ -13608,11 +16616,265 @@ mod tests {
                         task_id: 100,
                     },
                     &guest_input,
+                    None,
                 )
                 .expect("qwen3 dense 0.6b shard-aware prefill dispatch");
                 assert_qwen3_dense_0_6b_prefill_profile_output(&output, &guest_input);
             },
         );
+    }
+
+    #[test]
+    fn qwen3_dense_0_6b_runtime_weight_resolve_requires_bootstrap_objects() {
+        let mut service = LingquObjectServiceStub::new(qwen3_dense_0_6b_object_service_profile());
+        let err = qwen3_dense_0_6b_resolve_runtime_weight_objects(&mut service, 900_000)
+            .expect_err("runtime weight resolve should fail without bootstrap objects");
+        assert!(
+            err.contains("qwen3_weight_object_missing"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn qwen3_dense_0_6b_runtime_weight_resolve_validates_payload_checksum() {
+        let range = qwen3_dense_0_6b_bootstrap_node_ranges()
+            .into_iter()
+            .next()
+            .expect("first weight range");
+        let key = qwen3_dense_0_6b_weight_range_object_key(&range);
+        let payload = qwen3_dense_0_6b_fallback_weight_range_payload(&range);
+        let checksum = weight_bytes_checksum(&payload);
+        let mut service = LingquObjectServiceStub::new(qwen3_dense_0_6b_object_service_profile());
+        service
+            .submit_publish(
+                LingquObjectPublishReq {
+                    task: None,
+                    key: key.clone(),
+                    kind: LingquObjectKind::WeightShard,
+                    producer_entity: range.node_id,
+                    owner_entity: Some(range.node_id),
+                    expected_version: None,
+                    metadata: qwen3_dense_0_6b_object_metadata(payload.len() as u64, checksum ^ 1),
+                    placements: vec![qwen3_dense_0_6b_object_placement(
+                        &key,
+                        LingquPayloadBackend::Block,
+                        payload.len() as u64,
+                        checksum ^ 1,
+                    )],
+                    payload_bytes: payload,
+                },
+                901_000,
+            )
+            .expect("publish corrupt weight object");
+        assert_eq!(service.poll_ready(901_100).len(), 1);
+        let err = qwen3_dense_0_6b_resolve_weight_range_objects(&mut service, &[range], 902_000)
+            .expect_err("runtime weight resolve should reject checksum mismatch");
+        assert!(
+            err.contains("qwen3_weight_object_payload_checksum_mismatch"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn qwen3_dense_0_6b_weight_payload_view_parses_slice_records() {
+        let range = qwen3_dense_0_6b_bootstrap_node_ranges()
+            .into_iter()
+            .next()
+            .expect("first weight range");
+        let key = qwen3_dense_0_6b_weight_range_object_key(&range);
+        let slice_payload = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
+        let slice_checksum = weight_bytes_checksum(&slice_payload);
+        let record_offset = 5 * std::mem::size_of::<u64>();
+        let payload_offset = record_offset + 11 * std::mem::size_of::<u64>();
+        let mut payload = qwen3_dense_0_6b_weight_range_payload_header(&range);
+        payload[4 * std::mem::size_of::<u64>()..5 * std::mem::size_of::<u64>()]
+            .copy_from_slice(&1u64.to_le_bytes());
+        payload.extend_from_slice(&qwen3_dense_0_6b_object_payload_words(&[
+            range.first_layer_id,
+            0,
+            qwen3_dense_0_6b_weight_tensor_kind_code(Qwen3Dense06bWeightTensorKind::QProj),
+            2,
+            0,
+            0,
+            128,
+            slice_payload.len() as u64,
+            slice_checksum,
+            payload_offset as u64,
+            checksum_words(&[128, QWEN3_DENSE_0_6B_PROFILE.hidden_size]),
+        ]));
+        payload.extend_from_slice(&slice_payload);
+        let view = qwen3_dense_0_6b_parse_weight_range_payload(&range, &key, &payload, true)
+            .expect("parse weight object payload view");
+        assert_eq!(view.node_id, range.node_id);
+        assert_eq!(view.first_layer_id, range.first_layer_id);
+        assert_eq!(view.last_layer_id, range.last_layer_id);
+        assert_eq!(view.slices.len(), 1);
+        assert_eq!(view.slice_payload_bytes, slice_payload.len() as u64);
+        assert_ne!(view.slice_checksum, 0);
+        assert_eq!(view.slices[0].layer_id, range.first_layer_id);
+        assert_eq!(view.slices[0].payload_offset, payload_offset as u64);
+        assert_eq!(view.slices[0].payload_checksum, slice_checksum);
+    }
+
+    #[test]
+    fn qwen3_dense_0_6b_weight_payload_view_rejects_bad_slice_checksum() {
+        let range = qwen3_dense_0_6b_bootstrap_node_ranges()
+            .into_iter()
+            .next()
+            .expect("first weight range");
+        let key = qwen3_dense_0_6b_weight_range_object_key(&range);
+        let slice_payload = vec![9u8, 8, 7, 6];
+        let record_offset = 5 * std::mem::size_of::<u64>();
+        let payload_offset = record_offset + 11 * std::mem::size_of::<u64>();
+        let mut payload = qwen3_dense_0_6b_weight_range_payload_header(&range);
+        payload[4 * std::mem::size_of::<u64>()..5 * std::mem::size_of::<u64>()]
+            .copy_from_slice(&1u64.to_le_bytes());
+        payload.extend_from_slice(&qwen3_dense_0_6b_object_payload_words(&[
+            range.first_layer_id,
+            0,
+            qwen3_dense_0_6b_weight_tensor_kind_code(Qwen3Dense06bWeightTensorKind::QProj),
+            2,
+            0,
+            0,
+            128,
+            slice_payload.len() as u64,
+            weight_bytes_checksum(&slice_payload) ^ 1,
+            payload_offset as u64,
+            checksum_words(&[128, QWEN3_DENSE_0_6B_PROFILE.hidden_size]),
+        ]));
+        payload.extend_from_slice(&slice_payload);
+        let err = qwen3_dense_0_6b_parse_weight_range_payload(&range, &key, &payload, true)
+            .expect_err("bad slice checksum should fail");
+        assert!(
+            err.contains("qwen3_weight_object_slice_checksum_mismatch"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn qwen3_dense_0_6b_weight_payload_coverage_requires_every_layer_shard_kind() {
+        let range = Qwen3Dense06bHiddenLayerNodeRange {
+            node_id: 0,
+            first_layer_id: 0,
+            last_layer_id: 0,
+            layer_count: 1,
+        };
+        let mut coverage = BTreeSet::new();
+        for shard_id in 0..QWEN3_DENSE_0_6B_PROFILE.tp_nodes {
+            for kind_code in qwen3_dense_0_6b_required_layer_weight_kind_codes() {
+                coverage.insert((0, shard_id, kind_code));
+            }
+        }
+        assert!(qwen3_dense_0_6b_validate_weight_payload_coverage(
+            std::slice::from_ref(&range),
+            &coverage,
+            true,
+        )
+        .expect("complete payload coverage"));
+        coverage.remove(&(
+            0,
+            3,
+            qwen3_dense_0_6b_weight_tensor_kind_code(Qwen3Dense06bWeightTensorKind::KNorm),
+        ));
+        let err = qwen3_dense_0_6b_validate_weight_payload_coverage(
+            std::slice::from_ref(&range),
+            &coverage,
+            true,
+        )
+        .expect_err("missing k_norm slice should fail coverage");
+        assert!(
+            err.contains("qwen3_weight_object_payload_missing_slice:layer=0:shard=3"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn qwen3_dense_0_6b_runtime_weight_resolve_accepts_bootstrap_objects() {
+        let topology = test_topology();
+        let mut service = LingquObjectServiceStub::new(qwen3_dense_0_6b_object_service_profile());
+        qwen3_dense_0_6b_publish_bootstrap_weight_objects(&topology, &mut service)
+            .expect("bootstrap weight objects");
+        let resolved = qwen3_dense_0_6b_resolve_runtime_weight_objects(&mut service, 903_000)
+            .expect("runtime weight resolve");
+        assert_eq!(resolved.object_count, QWEN3_DENSE_0_6B_PROFILE.tp_nodes);
+        assert_ne!(resolved.payload_bytes, 0);
+        assert_ne!(resolved.payload_checksum, 0);
+        if std::env::var("SIM_QWEN3_0_6B_WEIGHTS_PATH").is_ok() {
+            assert_eq!(resolved.global_object_count, 1);
+            assert_ne!(resolved.global_payload_bytes, 0);
+            assert_eq!(resolved.global_tensor_count, 3);
+            assert_ne!(resolved.global_payload_checksum, 0);
+            assert_ne!(resolved.slice_count, 0);
+            assert_ne!(resolved.slice_payload_bytes, 0);
+            assert_ne!(resolved.slice_checksum, 0);
+            assert_eq!(
+                resolved.slice_count,
+                QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers
+                    * QWEN3_DENSE_0_6B_PROFILE.tp_nodes
+                    * qwen3_dense_0_6b_required_layer_weight_kind_codes().len() as u64
+            );
+            assert!(resolved.payload_complete);
+            assert!(resolved
+                .layer_payloads
+                .contains_key("model.embed_tokens.weight"));
+            assert!(resolved.layer_payloads.contains_key("model.norm.weight"));
+            assert!(resolved.layer_payloads.contains_key("lm_head.weight"));
+            assert_eq!(
+                resolved.reconstructed_tensor_count,
+                QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers
+                    * qwen3_dense_0_6b_required_layer_weight_kind_codes().len() as u64
+            );
+            assert_ne!(resolved.reconstructed_tensor_checksum, 0);
+        }
+    }
+
+    #[test]
+    fn qwen3_dense_0_6b_range_forward_publishes_worker_handoffs() {
+        let topology = test_topology();
+        let result = qwen3_dense_0_6b_range_forward_report_with_prompt(&topology, "Hello Qwen3");
+        if std::env::var("SIM_QWEN3_0_6B_WEIGHTS_PATH").is_err() {
+            let err = result.expect_err("missing weights path should fail range forward");
+            assert!(
+                err.contains("qwen3_range_forward_weights_path_missing")
+                    || err.contains("qwen3_range_forward_tokenizer_path_missing"),
+                "unexpected error: {err}"
+            );
+            return;
+        }
+        let report = result.expect("range forward report");
+        assert!(report.ready);
+        assert_eq!(report.node_count, QWEN3_DENSE_0_6B_PROFILE.tp_nodes);
+        assert_eq!(
+            report.layer_count,
+            QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers
+        );
+        assert_eq!(
+            report.workers.len() as u64,
+            QWEN3_DENSE_0_6B_PROFILE.tp_nodes
+        );
+        assert_eq!(report.handoff_match_count, report.node_count);
+        assert_eq!(report.hidden_object_count, report.node_count * 2);
+        assert_eq!(
+            report.weight_object_count,
+            QWEN3_DENSE_0_6B_PROFILE.tp_nodes
+        );
+        assert_eq!(report.global_weight_object_count, 1);
+        assert_ne!(report.aggregate_checksum, 0);
+        for pair in report.workers.windows(2) {
+            assert_eq!(pair[0].last_layer_id + 1, pair[1].first_layer_id);
+            assert_eq!(
+                pair[0].output_payload_checksum,
+                pair[1].input_payload_checksum
+            );
+        }
+        for worker in &report.workers {
+            assert_ne!(worker.input_payload_bytes, 0);
+            assert_ne!(worker.output_payload_bytes, 0);
+            assert_ne!(worker.weight_payload_bytes, 0);
+            assert_ne!(worker.weight_payload_slice_count, 0);
+            assert_ne!(worker.weight_reconstructed_tensor_count, 0);
+            assert!(worker.handoff_input_matches_previous_output);
+        }
     }
 
     #[test]
@@ -13812,13 +17074,32 @@ mod tests {
                     report.steps[1].text_output.logits_checksum
                 );
                 for step in &report.steps {
+                    let range_object_count = QWEN3_DENSE_0_6B_PROFILE.tp_nodes * 2;
+                    let decode_object_count = 5 + range_object_count;
+                    let range_handoff_object_op_count =
+                        step.hidden_layer_pipeline.boundary_count * 2;
+                    let runtime_weight_resolve_count =
+                        if std::env::var("SIM_QWEN3_0_6B_WEIGHTS_PATH").is_ok()
+                            && step.text_output.guest_input.prompt_token_count != 0
+                        {
+                            QWEN3_DENSE_0_6B_PROFILE.tp_nodes + 1
+                        } else {
+                            0
+                        };
                     assert_eq!(step.layer_progress.first_layer_id, 0);
                     assert_eq!(step.layer_progress.next_layer_id, 1);
                     assert!(step.object_service.ready);
-                    assert_eq!(step.object_service.publish_count, 5);
+                    assert_eq!(
+                        step.object_service.publish_count,
+                        decode_object_count + range_handoff_object_op_count
+                    );
                     assert_eq!(
                         step.object_service.resolve_count,
-                        5 + u64::from(!step.runtime_prefill_executed)
+                        decode_object_count
+                            + QWEN3_DENSE_0_6B_PROFILE.tp_nodes
+                            + runtime_weight_resolve_count
+                            + range_handoff_object_op_count
+                            + u64::from(!step.runtime_prefill_executed)
                     );
                     assert_eq!(
                         step.object_service.append_count,
@@ -13832,16 +17113,54 @@ mod tests {
                         step.object_service.kv_index_append_count,
                         u64::from(!step.runtime_prefill_executed)
                     );
-                    assert_eq!(step.object_service.metadata_put_count, 5);
+                    assert_eq!(
+                        step.object_service.metadata_put_count,
+                        decode_object_count + range_handoff_object_op_count
+                    );
                     assert_eq!(
                         step.object_service.metadata_get_count,
-                        5 + u64::from(!step.runtime_prefill_executed)
+                        decode_object_count
+                            + QWEN3_DENSE_0_6B_PROFILE.tp_nodes
+                            + runtime_weight_resolve_count
+                            + range_handoff_object_op_count
+                            + u64::from(!step.runtime_prefill_executed)
                     );
                     assert_eq!(step.object_service.token_objects, 2);
                     assert_eq!(step.object_service.kv_objects, 1);
-                    assert_eq!(step.object_service.runtime_tensor_objects, 1);
+                    assert_eq!(
+                        step.object_service.weight_objects,
+                        QWEN3_DENSE_0_6B_PROFILE.tp_nodes
+                    );
+                    assert_ne!(step.object_service.weight_payload_bytes, 0);
+                    if std::env::var("SIM_QWEN3_0_6B_WEIGHTS_PATH").is_ok() {
+                        assert_eq!(step.object_service.global_weight_object_count, 1);
+                        assert_ne!(step.object_service.global_weight_payload_bytes, 0);
+                        assert_eq!(step.object_service.global_weight_tensor_count, 3);
+                        assert_ne!(step.object_service.global_weight_payload_checksum, 0);
+                        assert_eq!(
+                            step.object_service.weight_payload_slice_count,
+                            QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers
+                                * QWEN3_DENSE_0_6B_PROFILE.tp_nodes
+                                * qwen3_dense_0_6b_required_layer_weight_kind_codes().len() as u64
+                        );
+                        assert!(step.object_service.weight_payload_complete);
+                        assert_eq!(
+                            step.object_service.weight_reconstructed_tensor_count,
+                            QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers
+                                * qwen3_dense_0_6b_required_layer_weight_kind_codes().len() as u64
+                        );
+                        assert_ne!(step.object_service.weight_reconstructed_tensor_checksum, 0);
+                    }
+                    assert_ne!(step.object_service.weight_payload_checksum, 0);
+                    assert_eq!(
+                        step.object_service.runtime_tensor_objects,
+                        1 + QWEN3_DENSE_0_6B_PROFILE.tp_nodes * 2
+                    );
                     assert_eq!(step.object_service.logits_objects, 1);
-                    assert_eq!(step.object_service.committed_object_count, 5);
+                    assert_eq!(
+                        step.object_service.committed_object_count,
+                        decode_object_count + range_handoff_object_op_count
+                    );
                     assert_eq!(step.object_service.missing_resolve_count, 0);
                     assert_ne!(step.object_service.object_checksum, 0);
                     assert_eq!(
@@ -17165,6 +20484,14 @@ outputs:
     }
 
     #[test]
+    fn qwen3_chat_prompt_wraps_user_message_for_assistant_decode() {
+        assert_eq!(
+            qwen3_dense_0_6b_chat_prompt("Hello Qwen3"),
+            "<|im_start|>user\nHello Qwen3<|im_end|>\n<|im_start|>assistant\n"
+        );
+    }
+
+    #[test]
     fn qwen3_decode_stop_token_detection_covers_qwen_special_tokens() {
         assert!(qwen3_dense_0_6b_is_decode_stop_token(
             151643,
@@ -17172,7 +20499,10 @@ outputs:
         ));
         assert!(qwen3_dense_0_6b_is_decode_stop_token(151645, "<|im_end|>"));
         assert!(qwen3_dense_0_6b_is_decode_stop_token(7, "<|im_end|>"));
+        assert!(qwen3_dense_0_6b_is_decode_control_token(151644, "ignored"));
+        assert!(qwen3_dense_0_6b_is_decode_control_token(7, "<think>"));
         assert!(!qwen3_dense_0_6b_is_decode_stop_token(7, " Beijing"));
+        assert!(!qwen3_dense_0_6b_is_decode_control_token(7, " Beijing"));
     }
 
     #[test]

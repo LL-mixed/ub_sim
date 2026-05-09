@@ -5,6 +5,10 @@ use sim_core::{
     FunctionLabel, HierarchyCoord, IoOpcode, IoSubmitReq, LogicalSystemId, MemoryEndpoint, PlLevel,
     SegmentHandle, SimEvent, TaskKey,
 };
+use sim_models::qwen3_dense_0_6b::{
+    token_piece_bytes_from_tokenizer_path, token_piece_decode_bytes,
+    tokenize_prompt_from_tokenizer_path,
+};
 use sim_qemu::{
     GuestDescriptor, GuestIoDescriptor, GuestServiceDescriptor, LinquDeviceModel, QemuMmioHandler,
 };
@@ -31,13 +35,15 @@ use sim_services::{
 use sim_topology::SimTopology;
 use sim_uapi::{
     qwen3_dense_0_6b_decode_loop_report, qwen3_dense_0_6b_decode_loop_report_with_prompt,
-    qwen3_dense_0_6b_default_guest_input, qwen3_dense_0_6b_prefill_text_output_report,
+    qwen3_dense_0_6b_decode_loop_report_with_raw_prompt, qwen3_dense_0_6b_default_guest_input,
+    qwen3_dense_0_6b_prefill_text_output_report, qwen3_dense_0_6b_range_forward_report_with_prompt,
     LocalGuestUapiSurface, UapiCommand, UapiDescriptor, UapiResponse,
 };
 use sim_workloads::{run_host_vector_dispatch, run_minimal_workload};
 use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 fn main() -> anyhow::Result<()> {
     if lingqu_object_service_args() {
@@ -45,6 +51,12 @@ fn main() -> anyhow::Result<()> {
     }
     if let Some(args) = qwen3_decode_loop_args()? {
         return run_qwen3_decode_loop_cli(&args);
+    }
+    if let Some(args) = qwen3_guest_decode_loop_args()? {
+        return run_qwen3_guest_decode_loop_cli(&args);
+    }
+    if let Some(args) = qwen3_range_forward_args()? {
+        return run_qwen3_range_forward_cli(&args);
     }
     if let Some(scenario_path) = qwen3_text_output_scenario_from_args() {
         return run_qwen3_text_output_cli(&scenario_path);
@@ -132,13 +144,36 @@ struct Qwen3DecodeLoopCliArgs {
     scenario_path: PathBuf,
     max_token_count: usize,
     prompt: Option<String>,
+    raw_prompt: bool,
     matmul_batch: Option<usize>,
     temperature: Option<f32>,
     decode_report: Option<Qwen3DecodeReportVerbosity>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Qwen3GuestDecodeLoopCliArgs {
+    step_count: usize,
+    prompt: Option<String>,
+    script_path: PathBuf,
+    matmul_batch: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Qwen3RangeForwardCliArgs {
+    scenario_path: PathBuf,
+    prompt: String,
+}
+
 fn qwen3_decode_loop_args() -> anyhow::Result<Option<Qwen3DecodeLoopCliArgs>> {
     qwen3_decode_loop_args_from(env::args_os().skip(1))
+}
+
+fn qwen3_range_forward_args() -> anyhow::Result<Option<Qwen3RangeForwardCliArgs>> {
+    qwen3_range_forward_args_from(env::args_os().skip(1))
+}
+
+fn qwen3_guest_decode_loop_args() -> anyhow::Result<Option<Qwen3GuestDecodeLoopCliArgs>> {
+    qwen3_guest_decode_loop_args_from(env::args_os().skip(1))
 }
 
 fn qwen3_decode_loop_args_from<I, S>(args: I) -> anyhow::Result<Option<Qwen3DecodeLoopCliArgs>>
@@ -152,6 +187,7 @@ where
             let mut scenario_path = None;
             let mut max_token_count = None;
             let mut prompt = None;
+            let mut raw_prompt = false;
             let mut matmul_batch = None;
             let mut temperature = None;
             let mut decode_report = None;
@@ -190,6 +226,10 @@ where
                     prompt = Some(next.to_string_lossy().to_string());
                 } else if let Some(value) = text.strip_prefix("--prompt=") {
                     prompt = Some(value.to_string());
+                } else if text == "--raw-prompt" {
+                    raw_prompt = true;
+                } else if text == "--chat-template" {
+                    raw_prompt = false;
                 } else if text == "--matmul-batch" {
                     let next = pending
                         .next()
@@ -257,6 +297,7 @@ where
                 scenario_path: scenario_path.unwrap_or_else(default_scenario_path),
                 max_token_count: max_token_count.unwrap_or(2),
                 prompt,
+                raw_prompt,
                 matmul_batch,
                 temperature,
                 decode_report,
@@ -274,6 +315,160 @@ fn parse_non_negative_f32(label: &str, value: &str) -> anyhow::Result<f32> {
         anyhow::bail!("{label} must be a finite non-negative number");
     }
     Ok(parsed)
+}
+
+fn qwen3_guest_decode_loop_args_from<I, S>(
+    args: I,
+) -> anyhow::Result<Option<Qwen3GuestDecodeLoopCliArgs>>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<std::ffi::OsString>,
+{
+    let mut args = args.into_iter().map(Into::into);
+    match args.next() {
+        Some(mode) if mode == "qwen3-guest-decode-loop" => {
+            let mut step_count = None;
+            let mut prompt = None;
+            let mut script_path = None;
+            let mut matmul_batch = None;
+            let mut positionals = Vec::new();
+            let mut pending = args.peekable();
+
+            while let Some(value) = pending.next() {
+                let text = value.to_string_lossy();
+                if text == "--steps" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--steps requires a value"))?;
+                    step_count = Some(parse_positive_usize("--steps", &next.to_string_lossy())?);
+                } else if let Some(value) = text.strip_prefix("--steps=") {
+                    step_count = Some(parse_positive_usize("--steps", value)?);
+                } else if text == "--prompt" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--prompt requires a value"))?;
+                    prompt = Some(next.to_string_lossy().to_string());
+                } else if let Some(value) = text.strip_prefix("--prompt=") {
+                    prompt = Some(value.to_string());
+                } else if text == "--script" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--script requires a value"))?;
+                    script_path = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--script=") {
+                    script_path = Some(PathBuf::from(value));
+                } else if text == "--matmul-batch" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--matmul-batch requires a value"))?;
+                    matmul_batch = Some(parse_positive_usize(
+                        "--matmul-batch",
+                        &next.to_string_lossy(),
+                    )?);
+                } else if let Some(value) = text.strip_prefix("--matmul-batch=") {
+                    matmul_batch = Some(parse_positive_usize("--matmul-batch", value)?);
+                } else if text.starts_with("--") {
+                    anyhow::bail!("unknown qwen3-guest-decode-loop option: {text}");
+                } else {
+                    positionals.push(value);
+                }
+            }
+
+            let mut positional_index = 0usize;
+            if step_count.is_none() {
+                if let Some(value) = positionals.get(positional_index) {
+                    let value = value.to_string_lossy();
+                    if let Ok(parsed) = value.parse::<usize>() {
+                        if parsed == 0 {
+                            anyhow::bail!("step count must be > 0");
+                        }
+                        step_count = Some(parsed);
+                        positional_index += 1;
+                    }
+                }
+            }
+            if prompt.is_none() {
+                if let Some(value) = positionals.get(positional_index) {
+                    prompt = Some(value.to_string_lossy().to_string());
+                }
+            }
+
+            Ok(Some(Qwen3GuestDecodeLoopCliArgs {
+                step_count: step_count.unwrap_or(1),
+                prompt,
+                script_path: script_path.unwrap_or_else(default_qwen3_guest_decode_script_path),
+                matmul_batch,
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn qwen3_range_forward_args_from<I, S>(args: I) -> anyhow::Result<Option<Qwen3RangeForwardCliArgs>>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<std::ffi::OsString>,
+{
+    let mut args = args.into_iter().map(Into::into);
+    match args.next() {
+        Some(mode) if mode == "qwen3-range-forward" => {
+            let mut scenario_path = None;
+            let mut prompt = None;
+            let mut positionals = Vec::new();
+            let mut pending = args.peekable();
+
+            while let Some(value) = pending.next() {
+                let text = value.to_string_lossy();
+                if text == "--scenario" || text == "--nodes" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("{text} requires a value"))?;
+                    scenario_path = Some(qwen3_scenario_path_from_value(&next.to_string_lossy()));
+                } else if let Some(value) = text.strip_prefix("--scenario=") {
+                    scenario_path = Some(qwen3_scenario_path_from_value(value));
+                } else if let Some(value) = text.strip_prefix("--nodes=") {
+                    scenario_path = Some(qwen3_scenario_path_from_value(value));
+                } else if text == "--prompt" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--prompt requires a value"))?;
+                    prompt = Some(next.to_string_lossy().to_string());
+                } else if let Some(value) = text.strip_prefix("--prompt=") {
+                    prompt = Some(value.to_string());
+                } else if text.starts_with("--") {
+                    anyhow::bail!("unknown qwen3-range-forward option: {text}");
+                } else {
+                    positionals.push(value);
+                }
+            }
+
+            let mut positional_index = 0usize;
+            if scenario_path.is_none() {
+                if let Some(value) = positionals.get(positional_index) {
+                    scenario_path = Some(qwen3_scenario_path_from_value(&value.to_string_lossy()));
+                    positional_index += 1;
+                }
+            }
+            if prompt.is_none() {
+                if let Some(value) = positionals.get(positional_index) {
+                    prompt = Some(value.to_string_lossy().to_string());
+                }
+            }
+
+            Ok(Some(Qwen3RangeForwardCliArgs {
+                scenario_path: scenario_path.unwrap_or_else(default_scenario_path),
+                prompt: prompt.unwrap_or_else(|| "Hello Qwen3".to_string()),
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn default_qwen3_guest_decode_script_path() -> PathBuf {
+    Path::new("guest-linux")
+        .join("aarch64")
+        .join("scripts")
+        .join("run_ub_eight_node_w4_guest.sh")
 }
 
 fn parse_positive_usize(label: &str, value: &str) -> anyhow::Result<usize> {
@@ -513,8 +708,13 @@ fn resolve_lingqu_object_cli_sample(
 mod tests {
     use super::{
         lingqu_object_service_args_from, qwen3_decode_loop_args_from,
-        qwen3_decode_report_verbosity_from_env, Qwen3DecodeReportVerbosity,
+        qwen3_decode_report_verbosity_from_env, qwen3_guest_decode_loop_args_from,
+        qwen3_guest_log_dir_from_script_output, qwen3_guest_log_match_count,
+        qwen3_guest_terminal_text_lossy_from_tokenizer, qwen3_guest_terminal_tokens,
+        qwen3_guest_timing_summary, qwen3_range_forward_args_from, Qwen3DecodeReportVerbosity,
     };
+    use std::env;
+    use std::fs;
     use std::path::PathBuf;
 
     #[test]
@@ -531,6 +731,7 @@ mod tests {
         );
         assert_eq!(args.max_token_count, 2);
         assert_eq!(args.prompt, None);
+        assert!(!args.raw_prompt);
         assert_eq!(args.matmul_batch, None);
         assert_eq!(args.temperature, None);
         assert_eq!(args.decode_report, None);
@@ -587,6 +788,7 @@ mod tests {
             "0.7",
             "--decode-report",
             "steps",
+            "--raw-prompt",
         ])
         .expect("parse decode loop args")
         .expect("decode loop args");
@@ -596,6 +798,7 @@ mod tests {
         );
         assert_eq!(args.max_token_count, 32);
         assert_eq!(args.prompt.as_deref(), Some("Capital of China is"));
+        assert!(args.raw_prompt);
         assert_eq!(args.matmul_batch, Some(4));
         assert_eq!(args.temperature, Some(0.7));
         assert_eq!(args.decode_report, Some(Qwen3DecodeReportVerbosity::Steps));
@@ -624,6 +827,21 @@ mod tests {
     }
 
     #[test]
+    fn qwen3_decode_loop_args_allow_chat_template_after_raw_prompt() {
+        let args = qwen3_decode_loop_args_from([
+            "qwen3-decode-loop",
+            "--raw-prompt",
+            "--chat-template",
+            "--prompt",
+            "Hello Qwen3",
+        ])
+        .expect("parse decode loop args")
+        .expect("decode loop args");
+        assert_eq!(args.prompt.as_deref(), Some("Hello Qwen3"));
+        assert!(!args.raw_prompt);
+    }
+
+    #[test]
     fn qwen3_decode_loop_args_keep_steps_as_compat_alias() {
         let args = qwen3_decode_loop_args_from([
             "qwen3-decode-loop",
@@ -646,6 +864,144 @@ mod tests {
         ])
         .expect_err("negative temperature must fail");
         assert!(err.to_string().contains("--temperature"));
+    }
+
+    #[test]
+    fn qwen3_range_forward_args_accept_named_options() {
+        let args = qwen3_range_forward_args_from([
+            "qwen3-range-forward",
+            "--scenario=8host",
+            "--prompt",
+            "Capital of China is",
+        ])
+        .expect("parse range forward args")
+        .expect("range forward args");
+        assert_eq!(
+            args.scenario_path,
+            PathBuf::from("scenarios/mvp_8host_single_domain.yaml")
+        );
+        assert_eq!(args.prompt.as_str(), "Capital of China is");
+    }
+
+    #[test]
+    fn qwen3_guest_decode_loop_args_accept_named_options() {
+        let args = qwen3_guest_decode_loop_args_from([
+            "qwen3-guest-decode-loop",
+            "--steps=1",
+            "--prompt",
+            "Capital of China is",
+            "--script",
+            "guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh",
+            "--matmul-batch=16",
+        ])
+        .expect("parse guest decode loop args")
+        .expect("guest decode loop args");
+        assert_eq!(args.step_count, 1);
+        assert_eq!(args.prompt.as_deref(), Some("Capital of China is"));
+        assert_eq!(
+            args.script_path,
+            PathBuf::from("guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh")
+        );
+        assert_eq!(args.matmul_batch, Some(16));
+    }
+
+    #[test]
+    fn qwen3_guest_log_match_count_counts_worker_markers() {
+        let log = "\
+stage uapi_qwen3_range_runtime_forward node=0
+stage qwen3_range_forward_runtime_input_loaded node=2
+stage qwen3_range_forward_runtime_output_publish node=1
+stage uapi_qwen3_range_runtime_forward node=1
+stage qwen3_range_forward_runtime_output_publish node=2
+";
+        assert_eq!(
+            qwen3_guest_log_match_count(log, "stage uapi_qwen3_range_runtime_forward "),
+            2
+        );
+        assert_eq!(
+            qwen3_guest_log_match_count(log, "stage qwen3_range_forward_runtime_input_loaded "),
+            1
+        );
+        assert_eq!(
+            qwen3_guest_log_match_count(log, "stage qwen3_range_forward_runtime_output_publish "),
+            2
+        );
+    }
+
+    #[test]
+    fn qwen3_guest_terminal_tokens_parse_in_step_order() {
+        let log = "\
+[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=1 token=38511 status=ok
+[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=0 token=99710 status=ok
+";
+        assert_eq!(qwen3_guest_terminal_tokens(log), vec![99710, 38511]);
+    }
+
+    #[test]
+    fn qwen3_guest_terminal_text_decodes_tokenizer_bytes() {
+        let dir = env::temp_dir().join(format!(
+            "sim-cli-qwen3-tokenizer-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create tokenizer test dir");
+        fs::write(dir.join("tokenizer_config.json"), "{}").expect("write tokenizer config");
+        fs::write(dir.join("vocab.json"), "{}").expect("write vocab");
+        fs::write(
+            dir.join("tokenizer.json"),
+            r#"{"model":{"vocab":{"Hello":0,"Ġworld":1}}}"#,
+        )
+        .expect("write tokenizer json");
+
+        let text = qwen3_guest_terminal_text_lossy_from_tokenizer(&[0, 1], &dir)
+            .expect("decode terminal text");
+        assert_eq!(text, "Hello world");
+
+        fs::remove_dir_all(&dir).expect("remove tokenizer test dir");
+    }
+
+    #[test]
+    fn qwen3_guest_timing_summary_tracks_slowest_stages() {
+        let log = "\
+[w4_guest] stage qwen3_worker_timing local=nodeA step=0 node=1 layers=[0,4) count=4 next=2 total_ms=100 terminal_gate_ms=0 setup_ms=31 obmm_stage_ms=10 cluster_ms=20 map_ms=1 seed_payload_ms=9 descriptor_ms=6 input_wait_ms=0 compute_window_ms=30 submit_ms=2 base_submit_ms=1 doorbell_submit_ms=1 max_batch_submit_ms=1 dispatch_ms=20 doorbell_log_ms=1 batch_sleep_ms=4 post_batch_ms=1 completion_decode_ms=1 compute_unaccounted_ms=1 publish_ms=4 verify_publish_ms=4 round_done_ms=1 barrier_ms=0 unaccounted_ms=19 dispatch_ms_per_layer_milli=5000
+[w4_guest] stage qwen3_worker_timing local=nodeB step=0 node=2 layers=[4,8) count=4 next=3 total_ms=250 terminal_gate_ms=0 setup_ms=2 obmm_stage_ms=0 cluster_ms=0 map_ms=1 seed_payload_ms=11 descriptor_ms=9 input_wait_ms=90 compute_window_ms=120 submit_ms=3 base_submit_ms=1 doorbell_submit_ms=2 max_batch_submit_ms=2 dispatch_ms=100 doorbell_log_ms=2 batch_sleep_ms=5 post_batch_ms=2 completion_decode_ms=6 compute_unaccounted_ms=2 publish_ms=4 verify_publish_ms=4 round_done_ms=1 barrier_ms=0 unaccounted_ms=13 dispatch_ms_per_layer_milli=25000
+[w4_guest] stage qwen3_worker_barrier_timing local=nodeB step=0 node=2 barrier_ms=77 total_with_barrier_ms=327
+";
+        let summary = qwen3_guest_timing_summary(log);
+
+        assert_eq!(summary.worker_count, 2);
+        assert_eq!(summary.max_total_ms, 250);
+        assert_eq!(summary.max_setup_ms, 31);
+        assert_eq!(summary.max_seed_payload_ms, 11);
+        assert_eq!(summary.max_descriptor_ms, 9);
+        assert_eq!(summary.max_compute_window_ms, 120);
+        assert_eq!(summary.max_submit_ms, 3);
+        assert_eq!(summary.max_base_submit_ms, 1);
+        assert_eq!(summary.max_doorbell_submit_ms, 2);
+        assert_eq!(summary.max_batch_submit_ms, 2);
+        assert_eq!(summary.max_dispatch_ms, 100);
+        assert_eq!(summary.max_doorbell_log_ms, 2);
+        assert_eq!(summary.max_batch_sleep_ms, 5);
+        assert_eq!(summary.max_post_batch_ms, 2);
+        assert_eq!(summary.max_completion_decode_ms, 6);
+        assert_eq!(summary.max_compute_unaccounted_ms, 2);
+        assert_eq!(summary.max_publish_ms, 4);
+        assert_eq!(summary.max_input_wait_ms, 90);
+        assert_eq!(summary.max_unaccounted_ms, 19);
+        assert_eq!(summary.max_barrier_ms, 77);
+    }
+
+    #[test]
+    fn qwen3_guest_log_dir_from_script_output_uses_run_id() {
+        let log_dir = qwen3_guest_log_dir_from_script_output(
+            "[w4guest8] prepare: launch headless env run_id=2026-05-08_09-34-14_w4guest8_9435\n",
+            &PathBuf::from("guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh"),
+        )
+        .expect("log dir");
+        assert_eq!(
+            log_dir,
+            PathBuf::from("guest-linux/aarch64/logs/2026-05-08_09-34-14_w4guest8_9435_headless8")
+        );
     }
 
     #[test]
@@ -709,10 +1065,17 @@ fn run_qwen3_decode_loop_cli(args: &Qwen3DecodeLoopCliArgs) -> anyhow::Result<()
     }
     if !matches!(verbosity, Qwen3DecodeReportVerbosity::Stream) {
         eprintln!(
-            "qwen3-decode-loop: scenario={} max_token={} prompt_bytes={} matmul_batch={} temperature={}",
+            "qwen3-decode-loop: scenario={} max_token={} prompt_bytes={} prompt_mode={} matmul_batch={} temperature={}",
             scenario_path.display(),
             args.max_token_count,
             args.prompt.as_deref().map(str::len).unwrap_or(0),
+            if args.prompt.is_none() {
+                "default"
+            } else if args.raw_prompt {
+                "raw"
+            } else {
+                "chat_template"
+            },
             args.matmul_batch
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "default".to_string()),
@@ -722,7 +1085,15 @@ fn run_qwen3_decode_loop_cli(args: &Qwen3DecodeLoopCliArgs) -> anyhow::Result<()
         );
     }
     let report = if let Some(prompt) = args.prompt.as_deref() {
-        qwen3_dense_0_6b_decode_loop_report_with_prompt(&topology, args.max_token_count, prompt)
+        if args.raw_prompt {
+            qwen3_dense_0_6b_decode_loop_report_with_raw_prompt(
+                &topology,
+                args.max_token_count,
+                prompt,
+            )
+        } else {
+            qwen3_dense_0_6b_decode_loop_report_with_prompt(&topology, args.max_token_count, prompt)
+        }
     } else {
         qwen3_dense_0_6b_decode_loop_report(&topology, args.max_token_count)
     }
@@ -741,7 +1112,7 @@ fn run_qwen3_decode_loop_cli(args: &Qwen3DecodeLoopCliArgs) -> anyhow::Result<()
             print_qwen3_decode_summary(scenario_path, &report);
             for step in &report.steps {
                 println!(
-                    "  step={} runtime_prefill={} input_tokens={} sampled_tokens={} text_bytes={} contract_ready={} blockers={} synthetic_stages={} full_forward_math={} full_vocab_logits={} object_ready={} object_publish={} object_resolve={} object_append={} kv_resolve={} kv_append={} obmm_pool={} obmm_queue={} object_checksum={:#x} input_checksum={:#x} next_input_checksum={:#x}",
+                    "  step={} runtime_prefill={} input_tokens={} sampled_tokens={} text_bytes={} contract_ready={} blockers={} synthetic_stages={} full_forward_math={} full_vocab_logits={} object_ready={} object_publish={} object_resolve={} object_append={} kv_resolve={} kv_append={} obmm_pool={} obmm_queue={} weight_payload_bytes={} weight_payload_slices={} weight_payload_complete={} weight_reconstructed_tensors={} weight_reconstructed_checksum={:#x} weight_payload_checksum={:#x} global_weight_objects={} global_weight_payload_bytes={} global_weight_tensors={} global_weight_checksum={:#x} object_checksum={:#x} input_checksum={:#x} next_input_checksum={:#x}",
                     step.step_index,
                     step.runtime_prefill_executed,
                     step.text_output.guest_input.prompt_token_count,
@@ -760,6 +1131,16 @@ fn run_qwen3_decode_loop_cli(args: &Qwen3DecodeLoopCliArgs) -> anyhow::Result<()
                     step.object_service.kv_index_append_count,
                     step.object_service.obmm_pool_enabled,
                     step.object_service.obmm_pool_queue_submit_count,
+                    step.object_service.weight_payload_bytes,
+                    step.object_service.weight_payload_slice_count,
+                    step.object_service.weight_payload_complete,
+                    step.object_service.weight_reconstructed_tensor_count,
+                    step.object_service.weight_reconstructed_tensor_checksum,
+                    step.object_service.weight_payload_checksum,
+                    step.object_service.global_weight_object_count,
+                    step.object_service.global_weight_payload_bytes,
+                    step.object_service.global_weight_tensor_count,
+                    step.object_service.global_weight_payload_checksum,
                     step.object_service.object_checksum,
                     step.guest_input_checksum,
                     step.next_guest_input_checksum
@@ -827,6 +1208,393 @@ fn print_qwen3_decode_summary(
         "  generated_bytes: len={} checksum={:#x}",
         report.generated_byte_len, report.generated_byte_checksum
     );
+}
+
+fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow::Result<()> {
+    let script_path = if args.script_path.is_absolute() {
+        args.script_path.clone()
+    } else {
+        env::current_dir()
+            .context("failed to read current directory")?
+            .join(&args.script_path)
+    };
+    if !script_path.exists() {
+        anyhow::bail!(
+            "qwen3 guest decode script not found: {}",
+            script_path.display()
+        );
+    }
+    println!("qwen3_guest_decode_loop");
+    println!("  script: {}", script_path.display());
+    println!("  steps: {}", args.step_count);
+    if let Some(prompt) = &args.prompt {
+        println!("  prompt_bytes: {}", prompt.len());
+    }
+    if let Some(matmul_batch) = args.matmul_batch {
+        prepare_qwen3_matmul_batch_environment(matmul_batch)?;
+        println!("  matmul_batch: {}", matmul_batch);
+    }
+    println!("  worker_path: 8-node W4 guest OBMM object-service range forward");
+    let trace_file = env::temp_dir().join(format!(
+        "qwen3_guest_decode_loop_{}.trace",
+        std::process::id()
+    ));
+    let prompt_token_ids = args
+        .prompt
+        .as_deref()
+        .map(qwen3_guest_prompt_token_ids_env)
+        .transpose()?
+        .unwrap_or_default();
+    let status = Command::new(&script_path)
+        .env("SIM_UAPI_W4_CHIPBACKEND_PROFILE", "qwen3_dense_0_6b")
+        .env("SIM_QWEN3_GUEST_DECODE_STEPS", args.step_count.to_string())
+        .env(
+            "SIM_QWEN3_GUEST_PROMPT",
+            args.prompt.clone().unwrap_or_default(),
+        )
+        .env("SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS", prompt_token_ids)
+        .env("TRACE_FILE", &trace_file)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .with_context(|| format!("failed to run {}", script_path.display()))?;
+    let mut combined = fs::read_to_string(&trace_file).unwrap_or_default();
+    if let Some(log_dir) = qwen3_guest_log_dir_from_script_output(&combined, &script_path) {
+        combined.push_str(&qwen3_guest_read_log_dir(&log_dir)?);
+    }
+    let runtime_forward_count =
+        qwen3_guest_log_match_count(&combined, "stage uapi_qwen3_range_runtime_forward ");
+    let runtime_publish_count = qwen3_guest_log_match_count(
+        &combined,
+        "stage qwen3_range_forward_runtime_output_publish ",
+    );
+    let runtime_input_count =
+        qwen3_guest_log_match_count(&combined, "stage qwen3_range_forward_runtime_input_loaded ");
+    let terminal_token_count =
+        qwen3_guest_log_match_count(&combined, "stage qwen3_terminal_token_result_publish ");
+    let expected_runtime_forward_count = 8 * args.step_count;
+    let expected_runtime_input_count = 7 * args.step_count;
+    let expected_runtime_publish_count = 8 * args.step_count;
+    let expected_terminal_token_count = args.step_count;
+    let timing_summary = qwen3_guest_timing_summary(&combined);
+    let terminal_tokens = qwen3_guest_terminal_tokens(&combined);
+    let terminal_text = qwen3_guest_terminal_text_lossy(&terminal_tokens);
+    let pass = combined.contains("eight-node w4 guest validation passed")
+        || combined.contains("PASS: eight-node w4 guest");
+    println!(
+        "  guest_worker_summary: pass={} steps={} range_forwards={} runtime_inputs={} runtime_outputs={} terminal_tokens={}",
+        pass, args.step_count, runtime_forward_count, runtime_input_count, runtime_publish_count, terminal_token_count
+    );
+    if !terminal_tokens.is_empty() {
+        println!("  terminal_tokens: {:?}", terminal_tokens);
+        match terminal_text {
+            Some(text) => println!("  generated_text_lossy: {}", text.escape_debug()),
+            None => println!("  generated_text_lossy: <tokenizer unavailable>"),
+        }
+    }
+    if timing_summary.worker_count > 0 {
+        println!(
+            "  guest_worker_timing: workers={} max_total_ms={} max_setup_ms={} max_seed_payload_ms={} max_descriptor_ms={} max_compute_window_ms={} max_submit_ms={} max_base_submit_ms={} max_doorbell_submit_ms={} max_batch_submit_ms={} max_dispatch_ms={} max_doorbell_log_ms={} max_batch_sleep_ms={} max_post_batch_ms={} max_completion_decode_ms={} max_compute_unaccounted_ms={} max_publish_ms={} max_input_wait_ms={} max_unaccounted_ms={} max_barrier_ms={}",
+            timing_summary.worker_count,
+            timing_summary.max_total_ms,
+            timing_summary.max_setup_ms,
+            timing_summary.max_seed_payload_ms,
+            timing_summary.max_descriptor_ms,
+            timing_summary.max_compute_window_ms,
+            timing_summary.max_submit_ms,
+            timing_summary.max_base_submit_ms,
+            timing_summary.max_doorbell_submit_ms,
+            timing_summary.max_batch_submit_ms,
+            timing_summary.max_dispatch_ms,
+            timing_summary.max_doorbell_log_ms,
+            timing_summary.max_batch_sleep_ms,
+            timing_summary.max_post_batch_ms,
+            timing_summary.max_completion_decode_ms,
+            timing_summary.max_compute_unaccounted_ms,
+            timing_summary.max_publish_ms,
+            timing_summary.max_input_wait_ms,
+            timing_summary.max_unaccounted_ms,
+            timing_summary.max_barrier_ms
+        );
+    }
+    if !status.success() || !pass {
+        anyhow::bail!(
+            "qwen3 guest decode worker failed: status={} pass={}",
+            status,
+            pass
+        );
+    }
+    if runtime_forward_count != expected_runtime_forward_count
+        || runtime_publish_count != expected_runtime_publish_count
+        || runtime_input_count != expected_runtime_input_count
+        || terminal_token_count != expected_terminal_token_count
+    {
+        anyhow::bail!(
+            "qwen3 guest decode worker incomplete: range_forwards={}/{} runtime_inputs={}/{} runtime_outputs={}/{} terminal_tokens={}/{}",
+            runtime_forward_count,
+            expected_runtime_forward_count,
+            runtime_input_count,
+            expected_runtime_input_count,
+            runtime_publish_count,
+            expected_runtime_publish_count,
+            terminal_token_count,
+            expected_terminal_token_count
+        );
+    }
+    Ok(())
+}
+
+fn qwen3_guest_log_match_count(haystack: &str, needle: &str) -> usize {
+    haystack.match_indices(needle).count()
+}
+
+fn qwen3_guest_terminal_tokens(log: &str) -> Vec<u64> {
+    let mut tokens = log
+        .lines()
+        .filter(|line| line.contains("stage qwen3_terminal_token_result_publish "))
+        .map(|line| {
+            (
+                qwen3_guest_log_u64_field(line, "step"),
+                qwen3_guest_log_u64_field(line, "token"),
+            )
+        })
+        .collect::<Vec<_>>();
+    tokens.sort_by_key(|(step, _)| *step);
+    tokens.into_iter().map(|(_, token)| token).collect()
+}
+
+fn qwen3_guest_terminal_text_lossy(tokens: &[u64]) -> Option<String> {
+    let tokenizer_path = qwen3_guest_tokenizer_path()?;
+    qwen3_guest_terminal_text_lossy_from_tokenizer(tokens, &tokenizer_path).ok()
+}
+
+fn qwen3_guest_prompt_token_ids_env(prompt: &str) -> anyhow::Result<String> {
+    let tokenizer_path = qwen3_guest_tokenizer_path()
+        .ok_or_else(|| anyhow::anyhow!("qwen3 guest tokenizer path missing"))?;
+    let tokenized = tokenize_prompt_from_tokenizer_path(&tokenizer_path, prompt)
+        .map_err(anyhow::Error::msg)
+        .context("failed to tokenize Qwen3 guest prompt")?;
+    Ok(tokenized
+        .token_ids
+        .iter()
+        .map(u64::to_string)
+        .collect::<Vec<_>>()
+        .join(","))
+}
+
+fn qwen3_guest_terminal_text_lossy_from_tokenizer(
+    tokens: &[u64],
+    tokenizer_path: &Path,
+) -> Result<String, String> {
+    if tokens.is_empty() {
+        return Ok(String::new());
+    }
+    let mut bytes = Vec::new();
+    for token in tokens {
+        let piece = token_piece_bytes_from_tokenizer_path(tokenizer_path, *token)?;
+        bytes.extend(token_piece_decode_bytes(&piece));
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn qwen3_guest_tokenizer_path() -> Option<PathBuf> {
+    let path = env::var_os("SIM_QWEN3_0_6B_WEIGHTS_PATH")?;
+    let path = PathBuf::from(path);
+    if path.join("tokenizer.json").is_file() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+#[derive(Default)]
+struct Qwen3GuestTimingSummary {
+    worker_count: usize,
+    max_total_ms: u64,
+    max_setup_ms: u64,
+    max_seed_payload_ms: u64,
+    max_descriptor_ms: u64,
+    max_compute_window_ms: u64,
+    max_submit_ms: u64,
+    max_base_submit_ms: u64,
+    max_doorbell_submit_ms: u64,
+    max_batch_submit_ms: u64,
+    max_dispatch_ms: u64,
+    max_doorbell_log_ms: u64,
+    max_batch_sleep_ms: u64,
+    max_post_batch_ms: u64,
+    max_completion_decode_ms: u64,
+    max_compute_unaccounted_ms: u64,
+    max_publish_ms: u64,
+    max_input_wait_ms: u64,
+    max_unaccounted_ms: u64,
+    max_barrier_ms: u64,
+}
+
+fn qwen3_guest_timing_summary(log: &str) -> Qwen3GuestTimingSummary {
+    let mut summary = Qwen3GuestTimingSummary::default();
+
+    for line in log.lines() {
+        if line.contains("stage qwen3_worker_timing ") {
+            summary.worker_count += 1;
+            summary.max_total_ms = summary
+                .max_total_ms
+                .max(qwen3_guest_log_u64_field(line, "total_ms"));
+            summary.max_setup_ms = summary
+                .max_setup_ms
+                .max(qwen3_guest_log_u64_field(line, "setup_ms"));
+            summary.max_seed_payload_ms = summary
+                .max_seed_payload_ms
+                .max(qwen3_guest_log_u64_field(line, "seed_payload_ms"));
+            summary.max_descriptor_ms = summary
+                .max_descriptor_ms
+                .max(qwen3_guest_log_u64_field(line, "descriptor_ms"));
+            summary.max_compute_window_ms = summary
+                .max_compute_window_ms
+                .max(qwen3_guest_log_u64_field(line, "compute_window_ms"));
+            summary.max_submit_ms = summary
+                .max_submit_ms
+                .max(qwen3_guest_log_u64_field(line, "submit_ms"));
+            summary.max_base_submit_ms = summary
+                .max_base_submit_ms
+                .max(qwen3_guest_log_u64_field(line, "base_submit_ms"));
+            summary.max_doorbell_submit_ms = summary
+                .max_doorbell_submit_ms
+                .max(qwen3_guest_log_u64_field(line, "doorbell_submit_ms"));
+            summary.max_batch_submit_ms = summary
+                .max_batch_submit_ms
+                .max(qwen3_guest_log_u64_field(line, "max_batch_submit_ms"));
+            summary.max_dispatch_ms = summary
+                .max_dispatch_ms
+                .max(qwen3_guest_log_u64_field(line, "dispatch_ms"));
+            summary.max_doorbell_log_ms = summary
+                .max_doorbell_log_ms
+                .max(qwen3_guest_log_u64_field(line, "doorbell_log_ms"));
+            summary.max_batch_sleep_ms = summary
+                .max_batch_sleep_ms
+                .max(qwen3_guest_log_u64_field(line, "batch_sleep_ms"));
+            summary.max_post_batch_ms = summary
+                .max_post_batch_ms
+                .max(qwen3_guest_log_u64_field(line, "post_batch_ms"));
+            summary.max_completion_decode_ms = summary
+                .max_completion_decode_ms
+                .max(qwen3_guest_log_u64_field(line, "completion_decode_ms"));
+            summary.max_compute_unaccounted_ms = summary
+                .max_compute_unaccounted_ms
+                .max(qwen3_guest_log_u64_field(line, "compute_unaccounted_ms"));
+            summary.max_publish_ms = summary
+                .max_publish_ms
+                .max(qwen3_guest_log_u64_field(line, "publish_ms"));
+            summary.max_input_wait_ms = summary
+                .max_input_wait_ms
+                .max(qwen3_guest_log_u64_field(line, "input_wait_ms"));
+            summary.max_unaccounted_ms = summary
+                .max_unaccounted_ms
+                .max(qwen3_guest_log_u64_field(line, "unaccounted_ms"));
+        } else if line.contains("stage qwen3_worker_barrier_timing ") {
+            summary.max_barrier_ms = summary
+                .max_barrier_ms
+                .max(qwen3_guest_log_u64_field(line, "barrier_ms"));
+        }
+    }
+    summary
+}
+
+fn qwen3_guest_log_u64_field(line: &str, key: &str) -> u64 {
+    let prefix = format!("{key}=");
+
+    line.split_ascii_whitespace()
+        .find_map(|field| field.strip_prefix(&prefix))
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+fn qwen3_guest_log_dir_from_script_output(output: &str, script_path: &Path) -> Option<PathBuf> {
+    let run_id = output
+        .lines()
+        .find_map(|line| line.split_once("run_id=").map(|(_, run_id)| run_id.trim()))?;
+    let script_dir = script_path.parent()?;
+    let root_dir = script_dir.parent()?;
+    Some(root_dir.join("logs").join(format!("{run_id}_headless8")))
+}
+
+fn qwen3_guest_read_log_dir(log_dir: &Path) -> anyhow::Result<String> {
+    let mut out = String::new();
+    if !log_dir.is_dir() {
+        return Ok(out);
+    }
+    let mut entries = fs::read_dir(log_dir)
+        .with_context(|| format!("failed to read {}", log_dir.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("failed to list {}", log_dir.display()))?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let path = entry.path();
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.ends_with("_guest.log"))
+            .unwrap_or(false)
+        {
+            out.push_str(
+                &fs::read_to_string(&path)
+                    .with_context(|| format!("failed to read guest log {}", path.display()))?,
+            );
+            out.push('\n');
+        }
+    }
+    Ok(out)
+}
+
+fn run_qwen3_range_forward_cli(args: &Qwen3RangeForwardCliArgs) -> anyhow::Result<()> {
+    let scenario_path = &args.scenario_path;
+    let config = ScenarioConfig::from_yaml_file(scenario_path).with_context(|| {
+        format!(
+            "failed to load scenario config from {}",
+            scenario_path.display()
+        )
+    })?;
+    let topology = SimTopology::from_config(&config).context("failed to build topology")?;
+    let report = qwen3_dense_0_6b_range_forward_report_with_prompt(&topology, &args.prompt)
+        .map_err(anyhow::Error::msg)
+        .context("failed to run Qwen3 range forward")?;
+    println!("qwen3_dense_0_6b_range_forward");
+    println!("  scenario: {}", scenario_path.display());
+    println!("  prompt_bytes: {}", args.prompt.len());
+    println!(
+        "  ready={} nodes={} layers={} prompt_tokens={} weight_objects={} global_weight_objects={} hidden_objects={} handoff_matches={} checksum={:#x}",
+        report.ready,
+        report.node_count,
+        report.layer_count,
+        report.prompt_token_count,
+        report.weight_object_count,
+        report.global_weight_object_count,
+        report.hidden_object_count,
+        report.handoff_match_count,
+        report.aggregate_checksum
+    );
+    for worker in &report.workers {
+        println!(
+            "  worker node={} layers=[{}, {}) count={} input_bytes={} output_bytes={} input_checksum={:#x} output_checksum={:#x} weight_bytes={} weight_slices={} tensors={} handoff_match={} checksum={:#x}",
+            worker.node_id,
+            worker.first_layer_id,
+            worker.last_layer_id + 1,
+            worker.layer_count,
+            worker.input_payload_bytes,
+            worker.output_payload_bytes,
+            worker.input_payload_checksum,
+            worker.output_payload_checksum,
+            worker.weight_payload_bytes,
+            worker.weight_payload_slice_count,
+            worker.weight_reconstructed_tensor_count,
+            worker.handoff_input_matches_previous_output,
+            worker.aggregate_checksum
+        );
+    }
+    if !report.ready {
+        anyhow::bail!("qwen3 range forward incomplete");
+    }
+    Ok(())
 }
 
 fn print_qwen3_decode_verbose_steps(steps: &[sim_uapi::Qwen3Dense06bDecodeLoopStepReport]) {
@@ -1058,7 +1826,7 @@ fn print_qwen3_decode_verbose_steps(steps: &[sim_uapi::Qwen3Dense06bDecodeLoopSt
             step.real_inference_contract.blockers.join(",")
         );
         println!(
-            "  object_service step={} ready={} publish={} resolve={} append={} kv_resolve={} kv_append={} metadata_put={} metadata_get={} shmem_write={} shmem_read={} block_write={} block_read={} inline_write={} inline_read={} obmm_pool={} obmm_write={} obmm_read={} obmm_queue_submit={} obmm_queue_deliver={} obmm_bytes={} committed={} missing_resolve={} token_objects={} kv_objects={} runtime_tensor_objects={} logits_objects={} checksum={:#x}",
+            "  object_service step={} ready={} publish={} resolve={} append={} kv_resolve={} kv_append={} metadata_put={} metadata_get={} shmem_write={} shmem_read={} block_write={} block_read={} inline_write={} inline_read={} obmm_pool={} obmm_write={} obmm_read={} obmm_queue_submit={} obmm_queue_deliver={} obmm_bytes={} committed={} missing_resolve={} token_objects={} kv_objects={} weight_objects={} weight_payload_bytes={} weight_payload_slices={} weight_payload_complete={} weight_reconstructed_tensors={} weight_reconstructed_checksum={:#x} weight_payload_checksum={:#x} global_weight_objects={} global_weight_payload_bytes={} global_weight_tensors={} global_weight_checksum={:#x} runtime_tensor_objects={} logits_objects={} checksum={:#x}",
             step.step_index,
             step.object_service.ready,
             step.object_service.publish_count,
@@ -1084,6 +1852,17 @@ fn print_qwen3_decode_verbose_steps(steps: &[sim_uapi::Qwen3Dense06bDecodeLoopSt
             step.object_service.missing_resolve_count,
             step.object_service.token_objects,
             step.object_service.kv_objects,
+            step.object_service.weight_objects,
+            step.object_service.weight_payload_bytes,
+            step.object_service.weight_payload_slice_count,
+            step.object_service.weight_payload_complete,
+            step.object_service.weight_reconstructed_tensor_count,
+            step.object_service.weight_reconstructed_tensor_checksum,
+            step.object_service.weight_payload_checksum,
+            step.object_service.global_weight_object_count,
+            step.object_service.global_weight_payload_bytes,
+            step.object_service.global_weight_tensor_count,
+            step.object_service.global_weight_payload_checksum,
             step.object_service.runtime_tensor_objects,
             step.object_service.logits_objects,
             step.object_service.object_checksum
@@ -1107,6 +1886,10 @@ fn prepare_qwen3_decode_loop_environment(args: &Qwen3DecodeLoopCliArgs) -> anyho
     if let Some(temperature) = args.temperature {
         std::env::set_var("SIM_QWEN3_TEMPERATURE", temperature.to_string());
     }
+    prepare_qwen3_matmul_batch_environment(matmul_batch)
+}
+
+fn prepare_qwen3_matmul_batch_environment(matmul_batch: usize) -> anyhow::Result<()> {
     std::env::set_var("SIM_QWEN3_ROUND1_DISPATCH_BATCH", matmul_batch.to_string());
     if matmul_batch == 1 {
         return Ok(());
@@ -1131,14 +1914,22 @@ fn ensure_simpler_host_matmul_manifest(
     batch: Option<(usize, &Path)>,
 ) -> anyhow::Result<()> {
     if manifest_path.exists() {
-        return Ok(());
+        if let Some((tile_batch, base_manifest)) = batch {
+            if simpler_host_matmul_batch_manifest_is_current(
+                manifest_path,
+                tile_batch,
+                base_manifest,
+            )? {
+                return Ok(());
+            }
+        } else {
+            return Ok(());
+        }
     }
     let output_dir = manifest_path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("manifest has no parent: {}", manifest_path.display()))?;
     let script = repo_root()
-        .join("guest-linux")
-        .join("aarch64")
         .join("scripts")
         .join("prepare_simpler_host_matmul_artifacts.py");
     if !script.exists() {
@@ -1173,6 +1964,27 @@ fn ensure_simpler_host_matmul_manifest(
         );
     }
     Ok(())
+}
+
+fn simpler_host_matmul_batch_manifest_is_current(
+    manifest_path: &Path,
+    tile_batch: usize,
+    base_manifest: &Path,
+) -> anyhow::Result<bool> {
+    let manifest_text = fs::read_to_string(manifest_path)
+        .with_context(|| format!("failed to read {}", manifest_path.display()))?;
+    let base_text = fs::read_to_string(base_manifest)
+        .with_context(|| format!("failed to read {}", base_manifest.display()))?;
+    let manifest: serde_json::Value = serde_json::from_str(&manifest_text)
+        .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
+    let base: serde_json::Value = serde_json::from_str(&base_text)
+        .with_context(|| format!("failed to parse {}", base_manifest.display()))?;
+    let runtime = &manifest["simpler_runtime"];
+    let base_runtime = &base["simpler_runtime"];
+    let actual_tile_batch = runtime["tile_batch"].as_u64();
+    let actual_runtime_env = &runtime["runtime_env"];
+    let base_runtime_env = &base_runtime["runtime_env"];
+    Ok(actual_tile_batch == Some(tile_batch as u64) && actual_runtime_env == base_runtime_env)
 }
 
 fn default_simpler_host_matmul_manifest_path() -> PathBuf {

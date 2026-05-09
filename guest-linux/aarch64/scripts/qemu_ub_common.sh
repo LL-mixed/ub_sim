@@ -6,6 +6,9 @@ ensure_sim_kernel_append_defaults() {
   if [[ "$append_extra" != *"obmm.skip_cache_maintain="* ]]; then
     append_extra="${append_extra} obmm.skip_cache_maintain=1"
   fi
+  if [[ "$append_extra" != *"rcupdate.rcu_cpu_stall_timeout="* ]]; then
+    append_extra="${append_extra} rcupdate.rcu_cpu_stall_timeout=300"
+  fi
 
   echo "${append_extra## }"
 }

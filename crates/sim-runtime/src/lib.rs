@@ -3,9 +3,11 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 
 use sim_chipbackend_simpler as simpler_capi;
 use sim_config::ScenarioConfig;
@@ -37,6 +39,26 @@ impl VecEventSink {
 impl EventSink for VecEventSink {
     fn emit(&mut self, event: SimEvent) {
         self.events.push(event);
+    }
+}
+
+fn qwen3_dispatch_detail_timing_enabled() -> bool {
+    std::env::var("SIM_QWEN3_DISPATCH_DETAIL_TIMING")
+        .map(|value| {
+            matches!(
+                value.as_str(),
+                "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn qwen3_dispatch_detail_log_line(line: &str) {
+    let path = std::env::var_os("SIM_QWEN3_DISPATCH_DETAIL_TIMING_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp/qwen3-dispatch-detail.log"));
+    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{line}");
     }
 }
 
@@ -2155,22 +2177,43 @@ impl LocalRuntimeEngine {
             }
         };
 
+        let detail_timing = qwen3_dispatch_detail_timing_enabled();
+        let detail_total_started = Instant::now();
+        let mut detail_env_ms = 0u128;
+        let mut detail_load_runtime_ms = 0u128;
+        let mut detail_create_context_ms = 0u128;
+        let mut detail_runtime_alloc_ms = 0u128;
+        let mut detail_load_binary_ms = 0u128;
+        let mut detail_prepare_args_ms = 0u128;
+        let mut detail_make_callable_ms = 0u128;
+        let mut detail_run_runtime_ms = 0u128;
+
         let result: Result<(), String> = (|| {
+            let detail_started = Instant::now();
             let _runtime_env = EnvGuard::apply(&runtime_artifacts.runtime_env);
+            detail_env_ms = detail_started.elapsed().as_millis();
+
+            let detail_started = Instant::now();
             let api = ensure_simpler_runtime_library(
                 simpler_capi,
                 &runtime_artifacts.host_runtime_library,
             )?;
+            detail_load_runtime_ms = detail_started.elapsed().as_millis();
             // Dispatch gets a fresh context because HostBuildGraph DeviceRunner
             // state is not reusable without the currently-unsafe device
             // finalization path. Copy operations keep their own cached context.
+            let detail_started = Instant::now();
             let ctx = api
                 .create_context(runtime_artifacts.launch.device_id as i32)
                 .map_err(|err| format!("simpler_capi_create_device_context_failed:{err}"))?;
+            detail_create_context_ms = detail_started.elapsed().as_millis();
+            let detail_started = Instant::now();
             let runtime = simpler_capi::RuntimeBuffer::allocate(api)
                 .map_err(|err| format!("simpler_capi_runtime_alloc_failed:{err}"))?;
             let runtime_handle = runtime.handle();
+            detail_runtime_alloc_ms = detail_started.elapsed().as_millis();
 
+            let detail_started = Instant::now();
             let orch_binary = load_binary_artifact(&runtime_artifacts.orch_shared_object)?;
             let aicpu_binary = match runtime_artifacts.aicpu_binary.as_ref() {
                 Some(artifact) => load_binary_artifact(artifact)?,
@@ -2184,12 +2227,15 @@ impl LocalRuntimeEngine {
             for kernel in &runtime_artifacts.kernels {
                 kernel_binaries.push(load_binary_artifact(&kernel.binary)?);
             }
+            detail_load_binary_ms = detail_started.elapsed().as_millis();
 
+            let detail_started = Instant::now();
             let prepared = prepare_simpler_capi_args(
                 backend_spec.profile,
                 &runtime_artifacts.args,
                 host_payloads,
             )?;
+            detail_prepare_args_ms = detail_started.elapsed().as_millis();
             let kernel_inputs: Vec<simpler_capi::KernelCallableInput<'_>> = runtime_artifacts
                 .kernels
                 .iter()
@@ -2199,6 +2245,7 @@ impl LocalRuntimeEngine {
                     binary: binary.as_slice(),
                 })
                 .collect();
+            let detail_started = Instant::now();
             let callable = simpler_capi::make_chip_callable(
                 &runtime_artifacts.orch_function_name,
                 &orch_binary,
@@ -2206,7 +2253,9 @@ impl LocalRuntimeEngine {
                 &prepared.signature,
             )
             .map_err(|err| format!("simpler_capi_make_callable_failed:{err}"))?;
+            detail_make_callable_ms = detail_started.elapsed().as_millis();
 
+            let detail_started = Instant::now();
             api.run_runtime(
                 &ctx,
                 runtime_handle,
@@ -2229,9 +2278,29 @@ impl LocalRuntimeEngine {
                 aicore_binary.len(),
             )
             .map_err(|err| format!("simpler_capi_run_runtime_failed:{err}"))?;
+            detail_run_runtime_ms = detail_started.elapsed().as_millis();
 
             Ok(())
         })();
+
+        if detail_timing {
+            qwen3_dispatch_detail_log_line(&format!(
+                "qwen3-runtime-detail: op_id={} task_id={} function={} request={} total_ms={} env_ms={} load_runtime_ms={} create_context_ms={} runtime_alloc_ms={} load_binary_ms={} prepare_args_ms={} make_callable_ms={} run_runtime_ms={}",
+                op.op_id,
+                op.task.task_id,
+                op.function_name.as_deref().unwrap_or("-"),
+                op.request_id.as_deref().unwrap_or("-"),
+                detail_total_started.elapsed().as_millis(),
+                detail_env_ms,
+                detail_load_runtime_ms,
+                detail_create_context_ms,
+                detail_runtime_alloc_ms,
+                detail_load_binary_ms,
+                detail_prepare_args_ms,
+                detail_make_callable_ms,
+                detail_run_runtime_ms
+            ));
+        }
 
         match result {
             Ok(()) => CompletionEvent {

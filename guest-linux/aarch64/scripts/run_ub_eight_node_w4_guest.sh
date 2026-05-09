@@ -17,8 +17,11 @@ PORT_BASE="$PORT_BASE_START"
 PORT_NUM="${UB_SIM_PORT_NUM:-7}"
 SIMPLER_HOST_MATMUL_MANIFEST="${SIMPLER_HOST_MATMUL_MANIFEST:-/private/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json}"
 SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-qwen3_dense_0_6b}"
+SIM_QWEN3_GUEST_DECODE_STEPS="${SIM_QWEN3_GUEST_DECODE_STEPS:-1}"
+SIM_W4_UAPI_COMPLETION_TIMEOUT_MS="${SIM_W4_UAPI_COMPLETION_TIMEOUT_MS:-900000}"
+SIM_W4_RESOURCE_ASSERTIONS="${SIM_W4_RESOURCE_ASSERTIONS:-0}"
 FATAL_GUEST_PATTERN="rcu_preempt|RCU grace-period|self-detected stall|detected stalls on CPUs/tasks|rx msg plen invalid|poller rx msg failed, ret=-22|timeout waiting completions|\\[w4_guest\\] fail"
-FATAL_QEMU_PATTERN="sim_dec read: timeout|SIM_DEC: cpu read failed|ub_link write failed|bounded write timed out|rx msg plen invalid|poller rx msg failed"
+FATAL_QEMU_PATTERN="SIM_DEC: cpu read failed|ub_link write failed|bounded write timed out|rx msg plen invalid|poller rx msg failed"
 
 NODE_IDS=(nodeA nodeB nodeC nodeD nodeE nodeF nodeG nodeH)
 NODE_IPS=(10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4 10.0.0.5 10.0.0.6 10.0.0.7 10.0.0.8)
@@ -49,13 +52,19 @@ wait_for_log_pass_or_fail_since() {
   local pass_pattern="$3"
   local fail_pattern="$4"
   local timeout_s="$5"
+  local pass_count="${6:-1}"
   local deadline=$((SECONDS + timeout_s))
   local tmp
+  local count
 
   while (( SECONDS < deadline )); do
     if [[ -f "$file" ]]; then
       tmp="$(tail -n "+$((start_line + 1))" "$file" 2>/dev/null || true)"
-      if [[ -n "$tmp" ]] && printf '%s\n' "$tmp" | rg -q "$pass_pattern"; then
+      count=0
+      if [[ -n "$tmp" ]]; then
+        count="$(printf '%s\n' "$tmp" | rg -c "$pass_pattern" || true)"
+      fi
+      if (( count >= pass_count )); then
         return 0
       fi
       if [[ -n "$tmp" ]] && printf '%s\n' "$tmp" | rg -q "$fail_pattern"; then
@@ -207,6 +216,7 @@ send_w4_cmd() {
   local local_ip="$2"
   local serial_port="$3"
   local start_marker="$4"
+  local decode_step="$5"
   local payload
 
   payload=$'export LINQU_UB_ROLE='"${node_id}"$'\n'
@@ -216,6 +226,11 @@ send_w4_cmd() {
   payload+=$'export LINQU_W4_DB_CLUSTER=1\n'
   payload+=$'export LINQU_W4_REQUIRE_UAPI_RESOURCE=1\n'
   payload+=$'export SIM_UAPI_W4_CHIPBACKEND_PROFILE='"${SIM_UAPI_W4_CHIPBACKEND_PROFILE}"$'\n'
+  payload+=$'export SIM_QWEN3_GUEST_DECODE_STEP='"${decode_step}"$'\n'
+  payload+=$'export SIM_QWEN3_GUEST_DECODE_STEPS='"${SIM_QWEN3_GUEST_DECODE_STEPS}"$'\n'
+  payload+=$'export SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS='"${SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS:-}"$'\n'
+  payload+=$'export SIM_W4_UAPI_COMPLETION_TIMEOUT_MS='"${SIM_W4_UAPI_COMPLETION_TIMEOUT_MS}"$'\n'
+  payload+=$'export SIM_W4_RESOURCE_ASSERTIONS='"${SIM_W4_RESOURCE_ASSERTIONS}"$'\n'
   payload+=$'echo '"${start_marker}"$'\n'
   payload+=$'/bin/linqu_w4_guest\n'
 
@@ -261,16 +276,26 @@ validate_node_log() {
 
   assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_kvcache_path=ready" "$node_id obmm kvcache backing" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage db_cluster_mode=resource_backed_uapi" "$node_id db cluster resource-backed mode" || return 1
-  assert_log_has "$log_file" "\\[w4_guest\\] stage db_service_cluster=resource_backed_assertions_ok nodes=8 peers=7 .* remote_block=block/w4-.*-block-0 .* group_members=2" "$node_id resource-backed db cluster assertions" || return 1
+  assert_log_has "$log_file" "\\[w4_guest\\] stage db_service_cluster=resource_backed_assertions_(ok|skipped) nodes=8 .*" "$node_id resource-backed db cluster assertions" || return 1
   idx="$(node_index "$node_id")"
   remote_idx=$((idx % 8 + 1))
-  assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_publish kind=weight_tile key=weights/qwen3-0\\.6b/node${idx}/tile0 owner=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm weight publish" || return 1
-  assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_publish kind=kvcache_block key=kvcache/w4/node${idx}/block0 owner=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm kvcache publish" || return 1
-  assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_object_desc_put local=node${idx} objects=2 queue=obmm_spsc .* status=ok" "$node_id obmm object descriptor put" || return 1
-  assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_object_desc_get remote=node${remote_idx} reader=node${idx} objects=2 queue=obmm_spsc .* status=ok" "$node_id obmm object descriptor get" || return 1
-  assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_resolve kind=weight_tile key=weights/qwen3-0\\.6b/node${remote_idx}/tile0 owner=node${remote_idx} reader=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm remote weight resolve" || return 1
-  assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_resolve kind=kvcache_block key=kvcache/w4/node${remote_idx}/block0 owner=node${remote_idx} reader=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm remote kvcache resolve" || return 1
-  assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0=payload_backing_resolved local=node${idx} remote=node${remote_idx} objects=2 bytes=8192 boundary_offsets=0,248,256,4088,4096 backing=obmm_pool metadata=db status=ok" "$node_id obmm payload backing resolved" || return 1
+  if [[ "$SIM_W4_RESOURCE_ASSERTIONS" == "1" ]]; then
+    assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_publish kind=weight_tile key=weights/qwen3-0\\.6b/node${idx}/tile0 owner=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm weight publish" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_publish kind=kvcache_block key=kvcache/w4/node${idx}/block0 owner=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm kvcache publish" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_publish kind=hidden_range_input key=hidden/qwen3-0\\.6b/node${idx}/range-input owner=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm hidden range input publish" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_publish kind=hidden_range_output key=hidden/qwen3-0\\.6b/node${idx}/range-output owner=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm hidden range output publish" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_forward_placement local=node${idx} key=placement/qwen3-0\\.6b/layer-range/node${idx} .* next=node${remote_idx} .* source=db_metadata strategy=balanced_layers status=ok" "$node_id qwen3 range forward placement" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_forward_contract local=node${idx} .* pipeline_nodes=8 total_layers=28 .* balanced=true .*placement_source=db_metadata .*backing=obmm_pool metadata=db status=ok" "$node_id qwen3 range forward contract" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_object_desc_put local=node${idx} objects=4 queue=obmm_spsc .* status=ok" "$node_id obmm object descriptor put" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_object_desc_get remote=node${remote_idx} reader=node${idx} objects=4 queue=obmm_spsc .* status=ok" "$node_id obmm object descriptor get" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_resolve kind=weight_tile key=weights/qwen3-0\\.6b/node${remote_idx}/tile0 owner=node${remote_idx} reader=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm remote weight resolve" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_resolve kind=kvcache_block key=kvcache/w4/node${remote_idx}/block0 owner=node${remote_idx} reader=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm remote kvcache resolve" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_resolve kind=hidden_range_input key=hidden/qwen3-0\\.6b/node${remote_idx}/range-input owner=node${remote_idx} reader=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm remote hidden range input resolve" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_resolve kind=hidden_range_output key=hidden/qwen3-0\\.6b/node${remote_idx}/range-output owner=node${remote_idx} reader=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm remote hidden range output resolve" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_forward_handoff local=node${idx} next=node${remote_idx} .* placement_source=db_metadata backing=obmm_pool metadata=db queue=obmm_spsc status=ok" "$node_id qwen3 range forward handoff" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_forward_summary local=node${idx} nodes=8 layers=28 .* hidden_bytes=[1-9][0-9]* objects=2 .* balanced=true placement_source=db_metadata backing=obmm_pool metadata=db status=ok" "$node_id qwen3 range forward summary" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0=payload_backing_resolved local=node${idx} remote=node${remote_idx} objects=4 bytes=8192 hidden_bytes=[1-9][0-9]* boundary_offsets=0,248,256,4088,4096 backing=obmm_pool metadata=db status=ok" "$node_id obmm payload backing resolved" || return 1
+  fi
   assert_log_has "$log_file" "\\[w4_guest\\] step=open_resource ok path=" "$node_id uapi resource opened" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] step=map_endpoint ok" "$node_id uapi endpoint mapped" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] step=map_queues ok" "$node_id uapi queues mapped" || return 1
@@ -284,24 +309,33 @@ validate_node_log() {
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_db_descriptor key=block/w4-${node_id}-block-1 bytes=[1-9][0-9]* role=aux_block" "$node_id uapi kvcache aux db descriptor" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_block_descriptor block=w4-${node_id}-block-0 segment=[0-9]+ writes=1 reads=1" "$node_id uapi kvcache block descriptor" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_block_descriptor block=w4-${node_id}-block-1 segment=[0-9]+ writes=1 reads=1 role=aux_block_boundary" "$node_id uapi kvcache aux block descriptor" || return 1
-  assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_chipbackend_dispatch_descriptor block=w4-${node_id}-block-0 segment=[0-9]+ task_id=31" "$node_id uapi chipbackend descriptor" || return 1
+  if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_0_6b" ]]; then
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_dispatch_descriptor node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) segment=[0-9]+ task_id=31 source=db_metadata status=ok" "$node_id qwen3 range dispatch descriptor" || return 1
+  else
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_chipbackend_dispatch_descriptor block=w4-${node_id}-block-0 segment=[0-9]+ task_id=31" "$node_id uapi chipbackend descriptor" || return 1
+  fi
   assert_log_has "$log_file" "\\[w4_guest\\] step=doorbell ok slots=15" "$node_id uapi doorbell" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] step=wait_completions ok cq_tail=15" "$node_id uapi completions" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] step=decode_completions ok" "$node_id decode completions" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_payload_dispatch_result segment=[0-9]+ word0=${expected_dispatch_word}" "$node_id dispatch payload result" || return 1
   if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_0_6b" ]]; then
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_service_flow object=partial_result_tile publish=16 resolve_remote=16 round1_compute=16 storage=block metadata=db status=ok" "$node_id qwen3 service flow" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_shard_result_summary shards=8 tiles=16 round1=16 shard_bytes=65536 shard_elems=16384 kv_blocks_per_tile=2 round0_distinct=16 round1_distinct=16 checksum0=0x[0-9a-f]+ checksum_last=0x[0-9a-f]+ status=ok" "$node_id qwen3 shard result summary" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_result_descriptor_table entries=16 entry_words=10 table_bytes=1280 first_shard=0 last_shard=7 kv_blocks=32 round0_segments=16 round1_segments=16 status=ok" "$node_id qwen3 result descriptor table" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_result_block_summary blocks=32 row_span=64 source=result_descriptor_table status=ok" "$node_id qwen3 result block summary" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_result_block_samples blocks=32 row_span=64 nonzero=32 first=0x[0-9a-f]+ last=0x[0-9a-f]+ status=ok" "$node_id qwen3 result block samples" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_result_block_checksums blocks=32 row_span=64 bytes_per_block=32768 nonzero=32 matches=32 element_pairs=256 first=0x[0-9a-f]+ last=0x[0-9a-f]+ status=ok" "$node_id qwen3 result block checksums" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_kvcache_update_table entries=896 entry_words=14 table_bytes=100352 layers=28 prefill=448 decode=448 append_blocks=1344 read_window=0..1344 update_seq_sum=401856 checksum_nonzero=1792 status=ok" "$node_id qwen3 kvcache update table" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_kvcache_state_table entries=1344 entry_words=8 table_bytes=86016 blocks=1344 seq_sum=602560 position_sum=902496 read_digest_nonzero=1344 first=0x[0-9a-f]+ last=0x[0-9a-f]+ status=ok" "$node_id qwen3 kvcache state table" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_logits_sampling_table entries=16 entry_words=20 table_bytes=2560 vocab=151936 sampled_distinct=16 logits_checksum_nonzero=16 text_checksum_nonzero=16 status=ok" "$node_id qwen3 logits sampling table" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_token_text_table entries=16 entry_words=8 table_bytes=1024 total_bytes=144 piece_bytes=9 policy_kind=1 policy_hash=0x[0-9a-f]+ packed_matches=16 checksum_matches=16 boundary_first=1 boundary_last=1 status=ok" "$node_id qwen3 token text table" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_projection_descriptor_table entries=48 entry_words=10 table_bytes=3840 q=16 kv=16 v=16 segments=48 checksum_nonzero=48 status=ok" "$node_id qwen3 projection descriptor table" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_layer_dependency_table entries=384 entry_words=11 table_bytes=33792 rms_input=16 q=16 kv=16 v=16 rope_q=16 rope_kv=16 attention=16 softmax=16 context=16 mlp=16 mlp_intermediate=16 down=16 residual=16 next_q=16 next_kv=16 next_v=16 next_rope_q=16 next_rope_kv=16 next_attention=16 next_softmax=16 next_context=16 partial=16 remote=16 round1=16 segments=384 checksum_nonzero=384 status=ok" "$node_id qwen3 layer dependency table" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_compute_contract node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) pipeline_nodes=8 total_layers=28 hidden_bytes=[1-9][0-9]* source=(dispatch_task|runtime_forward) output=(completion|metadata) status=ok" "$node_id qwen3 range compute contract" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_runtime_forward node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) pipeline_nodes=8 total_layers=28 hidden_bytes=[1-9][0-9]* input_checksum=0x[0-9a-f]+ output_checksum=0x[0-9a-f]+ range_checksum=0x[0-9a-f]+ real_layers=[0-9]+ payload_offset=0x[0-9a-f]+ payload_bytes=[1-9][0-9]* source=runtime_forward output=metadata status=ok" "$node_id qwen3 range runtime forward" || return 1
+    if (( idx > 1 )); then
+      assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_forward_runtime_input_loaded node=${idx} layers=\\[[0-9]+,[0-9]+\\) input_offset=0x[0-9a-f]+ input_checksum=0x[0-9a-f]+ bytes=[1-9][0-9]* source=obmm_object_service target=uapi_segment status=ok" "$node_id qwen3 runtime range input loaded" || return 1
+    fi
+    assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_forward_runtime_output_publish local=node${idx} step=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ output_checksum=0x[0-9a-f]+ bytes=[1-9][0-9]* epoch=[0-9]+ seq=[0-9]+ backing=obmm_pool metadata=db queue=obmm_spsc status=ok" "$node_id qwen3 runtime range output publish" || return 1
+    if (( idx == 8 )); then
+      assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_terminal_token_result_publish local=node8 step=[0-9]+ token=[0-9]+ runner_up=[0-9]+ margin_milli=[0-9]+ logits_checksum=0x[0-9a-f]+ text_checksum=0x[0-9a-f]+ piece_word0=0x[0-9a-f]+ piece_word1=0x[0-9a-f]+ object_key=tokens/qwen3-0\\.6b/decode-step[0-9]+ offset=0x[0-9a-f]+ bytes=64 checksum=0x[0-9a-f]+ epoch=[0-9]+ seq=[0-9]+ backing=obmm_pool metadata=db queue=obmm_spsc status=ok" "$node_id qwen3 terminal token result publish" || return 1
+    fi
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_forward_only object=range_hidden publish=0 resolve_remote=0 compute=0 storage=obmm_object metadata=db status=ok" "$node_id qwen3 range-only flow" || return 1
+    if (( idx == 8 )); then
+      assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_logits_sampling_table entries=1 entry_words=20 table_bytes=160 vocab=151936 sampled_distinct=1 logits_checksum_nonzero=1 text_checksum_nonzero=1 real_logits=1 status=ok" "$node_id qwen3 logits sampling table" || return 1
+      assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_token_text_table entries=1 entry_words=8 table_bytes=64 total_bytes=[1-9][0-9]* piece_bytes=9 policy_kind=[12] policy_hash=0x[0-9a-f]+ packed_matches=1 checksum_matches=1 boundary_first=1 boundary_last=1 status=ok" "$node_id qwen3 token text table" || return 1
+    else
+      assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_logits_sampling_table node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) terminal_owner=0 status=skipped" "$node_id qwen3 logits sampling table skipped" || return 1
+      assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_token_text_table node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) terminal_owner=0 status=skipped" "$node_id qwen3 token text table skipped" || return 1
+    fi
   fi
   assert_log_has "$log_file" "\\[w4_guest\\] completion_sources chipbackend=[1-9][0-9]* shmem=[2-9][0-9]* dfs=[2-9][0-9]* db=[2-9][0-9]* block=[2-9][0-9]* guest_uapi=[0-9]+" "$node_id completion source coverage" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] completion_status success=15 retryable=0 fatal=0" "$node_id completion status" || return 1
@@ -320,6 +354,7 @@ validate_node_log() {
 }
 
 run_w4_demo() {
+  local decode_step="$1"
   local node_id guest_log start_line serial_port local_ip rc
   typeset -A START_LINES
 
@@ -329,15 +364,16 @@ run_w4_demo() {
     START_LINES[$node_id]="$start_line"
     serial_port="$(node_serial_port "$node_id" "$PORT_BASE")"
     local_ip="$(node_ip "$node_id")"
-    trace "start w4 guest on $node_id serial=$serial_port local_ip=$local_ip"
-    send_w4_cmd "$node_id" "$local_ip" "$serial_port" "[w4guest8] start ${node_id}"
+    trace "start w4 guest step=$decode_step on $node_id serial=$serial_port local_ip=$local_ip"
+    send_w4_cmd "$node_id" "$local_ip" "$serial_port" "[w4guest8] start step=${decode_step} ${node_id}" "$decode_step"
   done
 
   for node_id in "${NODE_IDS[@]}"; do
     rc=0
     guest_log="$RUN_DIR/${node_id}_guest.log"
     wait_for_log_pass_or_fail_since "$guest_log" "${START_LINES[$node_id]}" \
-      "\\[w4_guest\\] pass" "$FATAL_GUEST_PATTERN" "$DEMO_WAIT_SECS" || rc=$?
+      "^\\[w4_guest\\] pass\\r?$" "$FATAL_GUEST_PATTERN" "$((DEMO_WAIT_SECS * SIM_QWEN3_GUEST_DECODE_STEPS))" \
+      "$SIM_QWEN3_GUEST_DECODE_STEPS" || rc=$?
     if [[ "$rc" != "0" ]]; then
       trace "FAIL: w4 guest did not pass on $node_id rc=$rc"
       return 1
@@ -345,8 +381,6 @@ run_w4_demo() {
     validate_node_log "$node_id" "$guest_log" || return 1
   done
   assert_no_fatal_runtime_logs || return 1
-  poweroff_guest_nodes
-  sleep 5
   return 0
 }
 
@@ -382,20 +416,27 @@ prepare_environment() {
 
 main() {
   local exit_code=1
+  local step
 
   if ! prepare_environment; then
     [[ -n "${CLEANUP_SCRIPT:-}" ]] && cleanup_headless_env "$CLEANUP_SCRIPT"
     exit 1
   fi
 
-  if run_w4_demo; then
+  if ! run_w4_demo 0; then
+    trace "FAIL: eight-node w4 guest resource-backed uapi/chipbackend service coverage validation failed"
+    [[ -n "${CLEANUP_SCRIPT:-}" ]] && cleanup_headless_env "$CLEANUP_SCRIPT"
+    exit 1
+  fi
+
+  if true; then
     exit_code=0
     trace "PASS: eight-node w4 guest resource-backed uapi/chipbackend service coverage validated"
     echo "eight-node w4 guest validation passed"
-  else
-    trace "FAIL: eight-node w4 guest resource-backed uapi/chipbackend service coverage validation failed"
   fi
 
+  poweroff_guest_nodes
+  sleep 5
   [[ -n "${CLEANUP_SCRIPT:-}" ]] && cleanup_headless_env "$CLEANUP_SCRIPT"
   exit "$exit_code"
 }

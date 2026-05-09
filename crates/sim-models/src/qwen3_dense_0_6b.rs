@@ -268,16 +268,27 @@ pub fn tokenize_prompt_from_tokenizer_path(
         .map_err(|err| format!("qwen3_tokenizer_model_vocab_parse_failed:{err}"))?;
     let merge_ranks = qwen3_tokenizer_merge_ranks(model)?;
     let mut token_ids = Vec::new();
-    for segment in qwen3_tokenizer_pretokenize(prompt) {
-        let encoded = qwen3_tokenizer_byte_level_encode(&segment);
-        let pieces = qwen3_tokenizer_bpe_pieces(&encoded, &merge_ranks);
-        for piece in pieces {
-            let token_id = vocab
-                .get(&piece)
-                .copied()
-                .ok_or_else(|| format!("qwen3_tokenizer_piece_missing:{piece}"))?;
+    let special_tokens = qwen3_tokenizer_known_special_tokens();
+    let mut byte_index = 0usize;
+    while byte_index < prompt.len() {
+        let remaining = &prompt[byte_index..];
+        if let Some((literal, token_id)) = qwen3_tokenizer_special_token_at(remaining) {
             token_ids.push(token_id);
+            byte_index += literal.len();
+            continue;
         }
+        let next_special = special_tokens
+            .iter()
+            .filter_map(|(literal, _)| remaining.find(literal).map(|offset| byte_index + offset))
+            .min()
+            .unwrap_or(prompt.len());
+        qwen3_tokenize_plain_prompt_segment(
+            &prompt[byte_index..next_special],
+            &vocab,
+            &merge_ranks,
+            &mut token_ids,
+        )?;
+        byte_index = next_special;
     }
     let token_checksum = prompt_token_ids_checksum(&token_ids);
     Ok(Qwen3Dense06bPromptTokenization {
@@ -285,6 +296,60 @@ pub fn tokenize_prompt_from_tokenizer_path(
         token_ids,
         token_checksum,
     })
+}
+
+fn qwen3_tokenize_plain_prompt_segment(
+    segment: &str,
+    vocab: &BTreeMap<String, u64>,
+    merge_ranks: &BTreeMap<(String, String), usize>,
+    token_ids: &mut Vec<u64>,
+) -> Result<(), String> {
+    for pretokenized in qwen3_tokenizer_pretokenize(segment) {
+        let encoded = qwen3_tokenizer_byte_level_encode(&pretokenized);
+        let pieces = qwen3_tokenizer_bpe_pieces(&encoded, merge_ranks);
+        for piece in pieces {
+            token_ids.push(
+                vocab
+                    .get(&piece)
+                    .copied()
+                    .ok_or_else(|| format!("qwen3_tokenizer_piece_missing:{piece}"))?,
+            );
+        }
+    }
+    Ok(())
+}
+
+fn qwen3_tokenizer_special_token_at(text: &str) -> Option<(&'static str, u64)> {
+    qwen3_tokenizer_known_special_tokens()
+        .iter()
+        .copied()
+        .find(|(literal, _)| text.starts_with(literal))
+}
+
+fn qwen3_tokenizer_known_special_tokens() -> &'static [(&'static str, u64)] {
+    &[
+        ("<|endoftext|>", 151_643),
+        ("<|im_start|>", 151_644),
+        ("<|im_end|>", 151_645),
+        ("<|object_ref_start|>", 151_646),
+        ("<|object_ref_end|>", 151_647),
+        ("<|box_start|>", 151_648),
+        ("<|box_end|>", 151_649),
+        ("<|vision_start|>", 151_652),
+        ("<|vision_end|>", 151_653),
+        ("<|vision_pad|>", 151_654),
+        ("<tool_call>", 151_657),
+        ("</tool_call>", 151_658),
+        ("<|fim_prefix|>", 151_659),
+        ("<|fim_middle|>", 151_660),
+        ("<|fim_suffix|>", 151_661),
+        ("<|repo_name|>", 151_663),
+        ("<|file_sep|>", 151_664),
+        ("<tool_response>", 151_665),
+        ("</tool_response>", 151_666),
+        ("<think>", 151_667),
+        ("</think>", 151_668),
+    ]
 }
 
 pub fn prompt_token_ids_checksum(token_ids: &[u64]) -> u64 {
@@ -623,7 +688,9 @@ pub enum Qwen3Dense06bWeightDType {
 pub enum Qwen3Dense06bWeightTensorKind {
     InputLayerNorm,
     QProj,
+    QNorm,
     KProj,
+    KNorm,
     VProj,
     OProj,
     PostAttentionLayerNorm,
@@ -1579,11 +1646,19 @@ pub fn validate_required_weight_tensors(
                 ],
             ),
             (
+                format!("{layer_prefix}.self_attn.q_norm.weight"),
+                vec![profile.head_dim],
+            ),
+            (
                 format!("{layer_prefix}.self_attn.k_proj.weight"),
                 vec![
                     profile.num_key_value_heads * profile.head_dim,
                     profile.hidden_size,
                 ],
+            ),
+            (
+                format!("{layer_prefix}.self_attn.k_norm.weight"),
+                vec![profile.head_dim],
             ),
             (
                 format!("{layer_prefix}.self_attn.v_proj.weight"),
@@ -1659,6 +1734,14 @@ fn push_layer_weight_slices(
             shard.q_head_end * profile.head_dim,
         ),
         (
+            Qwen3Dense06bWeightTensorKind::QNorm,
+            format!("model.layers.{layer_id}.self_attn.q_norm.weight"),
+            vec![profile.head_dim],
+            None,
+            0,
+            profile.head_dim,
+        ),
+        (
             Qwen3Dense06bWeightTensorKind::KProj,
             format!("model.layers.{layer_id}.self_attn.k_proj.weight"),
             vec![
@@ -1668,6 +1751,14 @@ fn push_layer_weight_slices(
             Some(0),
             shard.kv_head_start * profile.head_dim,
             shard.kv_head_end * profile.head_dim,
+        ),
+        (
+            Qwen3Dense06bWeightTensorKind::KNorm,
+            format!("model.layers.{layer_id}.self_attn.k_norm.weight"),
+            vec![profile.head_dim],
+            None,
+            0,
+            profile.head_dim,
         ),
         (
             Qwen3Dense06bWeightTensorKind::VProj,
@@ -2029,6 +2120,16 @@ pub fn materialize_weight_slice_payload(
             slice.tensor_name
         )),
     }
+}
+
+pub fn materialize_full_weight_tensor_payload(
+    tensor_name: &str,
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+) -> Result<Vec<u8>, String> {
+    let tensor = tensors
+        .get(tensor_name)
+        .ok_or_else(|| format!("qwen3_dense_0_6b_missing_weight_tensor:{tensor_name}"))?;
+    materialize_full_tensor_payload(tensor_name, tensor)
 }
 
 pub fn weight_slice_validation(
@@ -2443,6 +2544,15 @@ pub fn logits_reference_summary_with_hidden(
     token_requests: &[(u64, u64)],
     hidden: Option<&[f32]>,
 ) -> Result<Qwen3Dense06bLogitsReferenceSummary, String> {
+    logits_reference_summary_with_hidden_and_payloads(tensors, None, token_requests, hidden)
+}
+
+pub fn logits_reference_summary_with_hidden_and_payloads(
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensor_payloads: Option<&BTreeMap<String, Vec<u8>>>,
+    token_requests: &[(u64, u64)],
+    hidden: Option<&[f32]>,
+) -> Result<Qwen3Dense06bLogitsReferenceSummary, String> {
     let norm = tensors
         .get("model.norm.weight")
         .ok_or_else(|| "qwen3_dense_0_6b_missing_weight_tensor:model.norm.weight".to_string())?;
@@ -2472,7 +2582,8 @@ pub fn logits_reference_summary_with_hidden(
         ));
     }
     let hidden_size = QWEN3_DENSE_0_6B_PROFILE.hidden_size as usize;
-    let norm_payload = materialize_full_tensor_payload("model.norm.weight", norm)?;
+    let norm_payload =
+        materialize_full_tensor_payload_with_payloads("model.norm.weight", norm, tensor_payloads)?;
     let norm_weight = decode_weight_vector(norm.dtype, &norm_payload, hidden_size)?;
     let hidden = match hidden {
         Some(hidden) if hidden.len() == hidden_size => Some(hidden),
@@ -2492,7 +2603,12 @@ pub fn logits_reference_summary_with_hidden(
         final_norm_checksum,
     ];
     for (step_index, token_id) in token_requests {
-        let row_payload = materialize_tensor_row_payload("lm_head.weight", lm_head, *token_id)?;
+        let row_payload = materialize_tensor_row_payload_with_payloads(
+            "lm_head.weight",
+            lm_head,
+            *token_id,
+            tensor_payloads,
+        )?;
         let row_weights = decode_weight_vector(lm_head.dtype, &row_payload, hidden_size)?;
         let fallback_hidden;
         let hidden = match hidden {
@@ -2554,6 +2670,14 @@ pub fn embedding_reference_summary(
     tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
     token_ids: &[u64],
 ) -> Result<Qwen3Dense06bEmbeddingReferenceSummary, String> {
+    embedding_reference_summary_with_payloads(tensors, None, token_ids)
+}
+
+pub fn embedding_reference_summary_with_payloads(
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensor_payloads: Option<&BTreeMap<String, Vec<u8>>>,
+    token_ids: &[u64],
+) -> Result<Qwen3Dense06bEmbeddingReferenceSummary, String> {
     let embedding = tensors.get("model.embed_tokens.weight").ok_or_else(|| {
         "qwen3_dense_0_6b_missing_weight_tensor:model.embed_tokens.weight".to_string()
     })?;
@@ -2583,8 +2707,12 @@ pub fn embedding_reference_summary(
     let mut row_checksums = Vec::with_capacity(token_ids.len());
     let mut value_checksums = Vec::with_capacity(token_ids.len());
     for (sequence_index, token_id) in token_ids.iter().copied().enumerate() {
-        let row_payload =
-            materialize_tensor_row_payload("model.embed_tokens.weight", embedding, token_id)?;
+        let row_payload = materialize_tensor_row_payload_with_payloads(
+            "model.embed_tokens.weight",
+            embedding,
+            token_id,
+            tensor_payloads,
+        )?;
         let row_values = decode_weight_vector(embedding.dtype, &row_payload, hidden_size)?;
         let row_checksum = weight_bytes_checksum(&row_payload);
         let value_checksum = f32_vector_checksum(&row_values);
@@ -2630,6 +2758,14 @@ pub fn embedding_reference_last_hidden(
     tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
     token_ids: &[u64],
 ) -> Result<Vec<f32>, String> {
+    embedding_reference_last_hidden_with_payloads(tensors, None, token_ids)
+}
+
+pub fn embedding_reference_last_hidden_with_payloads(
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensor_payloads: Option<&BTreeMap<String, Vec<u8>>>,
+    token_ids: &[u64],
+) -> Result<Vec<f32>, String> {
     let token_id = token_ids
         .last()
         .copied()
@@ -2652,8 +2788,12 @@ pub fn embedding_reference_last_hidden(
             ]
         ));
     }
-    let row_payload =
-        materialize_tensor_row_payload("model.embed_tokens.weight", embedding, token_id)?;
+    let row_payload = materialize_tensor_row_payload_with_payloads(
+        "model.embed_tokens.weight",
+        embedding,
+        token_id,
+        tensor_payloads,
+    )?;
     decode_weight_vector(
         embedding.dtype,
         &row_payload,
@@ -2661,8 +2801,16 @@ pub fn embedding_reference_last_hidden(
     )
 }
 
-fn embedding_reference_hidden_sequence(
+pub fn embedding_reference_hidden_sequence(
     tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    token_ids: &[u64],
+) -> Result<Vec<Vec<f32>>, String> {
+    embedding_reference_hidden_sequence_with_payloads(tensors, None, token_ids)
+}
+
+pub fn embedding_reference_hidden_sequence_with_payloads(
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensor_payloads: Option<&BTreeMap<String, Vec<u8>>>,
     token_ids: &[u64],
 ) -> Result<Vec<Vec<f32>>, String> {
     if token_ids.is_empty() {
@@ -2691,8 +2839,12 @@ fn embedding_reference_hidden_sequence(
         .iter()
         .copied()
         .map(|token_id| {
-            let row_payload =
-                materialize_tensor_row_payload("model.embed_tokens.weight", embedding, token_id)?;
+            let row_payload = materialize_tensor_row_payload_with_payloads(
+                "model.embed_tokens.weight",
+                embedding,
+                token_id,
+                tensor_payloads,
+            )?;
             decode_weight_vector(embedding.dtype, &row_payload, hidden_size)
         })
         .collect()
@@ -2855,6 +3007,7 @@ pub fn layer_forward_reference(
 
 fn layer_forward_reference_sequence_with_cache(
     tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    layer_payloads: Option<&BTreeMap<String, Vec<u8>>>,
     layer_id: u64,
     hidden_states: &[Vec<f32>],
 ) -> Result<
@@ -2888,8 +3041,9 @@ fn layer_forward_reference_sequence_with_cache(
     }
 
     let prefix = format!("model.layers.{layer_id}");
-    let input_norm_weight = load_weight_vector(
+    let input_norm_weight = load_weight_vector_with_payloads(
         tensors,
+        layer_payloads,
         &format!("{prefix}.input_layernorm.weight"),
         hidden_size,
     )?;
@@ -2898,34 +3052,39 @@ fn layer_forward_reference_sequence_with_cache(
     let mut v_states = Vec::with_capacity(hidden_states.len());
     let mut rope_q_states = Vec::with_capacity(hidden_states.len());
     let mut rope_k_states = Vec::with_capacity(hidden_states.len());
-    let q_norm_weight = load_weight_vector(
+    let q_norm_weight = load_weight_vector_with_payloads(
         tensors,
+        layer_payloads,
         &format!("{prefix}.self_attn.q_norm.weight"),
         profile.head_dim as usize,
     )?;
-    let k_norm_weight = load_weight_vector(
+    let k_norm_weight = load_weight_vector_with_payloads(
         tensors,
+        layer_payloads,
         &format!("{prefix}.self_attn.k_norm.weight"),
         profile.head_dim as usize,
     )?;
     for (position, hidden) in hidden_states.iter().enumerate() {
         let normed = rmsnorm_reference(hidden, &input_norm_weight);
-        let q_projection = matmul_full_tensor(
+        let q_projection = matmul_full_tensor_with_payloads(
             tensors,
+            layer_payloads,
             &format!("{prefix}.self_attn.q_proj.weight"),
             (profile.num_attention_heads * profile.head_dim) as usize,
             hidden_size,
             &normed,
         )?;
-        let k_projection = matmul_full_tensor(
+        let k_projection = matmul_full_tensor_with_payloads(
             tensors,
+            layer_payloads,
             &format!("{prefix}.self_attn.k_proj.weight"),
             (profile.num_key_value_heads * profile.head_dim) as usize,
             hidden_size,
             &normed,
         )?;
-        let v = matmul_full_tensor(
+        let v = matmul_full_tensor_with_payloads(
             tensors,
+            layer_payloads,
             &format!("{prefix}.self_attn.v_proj.weight"),
             (profile.num_key_value_heads * profile.head_dim) as usize,
             hidden_size,
@@ -2964,8 +3123,9 @@ fn layer_forward_reference_sequence_with_cache(
         rope_k_states.push(rope_k);
     }
 
-    let post_norm_weight = load_weight_vector(
+    let post_norm_weight = load_weight_vector_with_payloads(
         tensors,
+        layer_payloads,
         &format!("{prefix}.post_attention_layernorm.weight"),
         hidden_size,
     )?;
@@ -2981,8 +3141,9 @@ fn layer_forward_reference_sequence_with_cache(
             profile.num_key_value_heads as usize,
             profile.head_dim as usize,
         )?;
-        let attention_output = matmul_full_tensor(
+        let attention_output = matmul_full_tensor_with_payloads(
             tensors,
+            layer_payloads,
             &format!("{prefix}.self_attn.o_proj.weight"),
             hidden_size,
             (profile.num_attention_heads * profile.head_dim) as usize,
@@ -2990,23 +3151,26 @@ fn layer_forward_reference_sequence_with_cache(
         )?;
         let attention_residual = vector_add(&hidden_states[position], &attention_output)?;
         let post_normed = rmsnorm_reference(&attention_residual, &post_norm_weight);
-        let gate = matmul_full_tensor(
+        let gate = matmul_full_tensor_with_payloads(
             tensors,
+            layer_payloads,
             &format!("{prefix}.mlp.gate_proj.weight"),
             profile.intermediate_size as usize,
             hidden_size,
             &post_normed,
         )?;
-        let up = matmul_full_tensor(
+        let up = matmul_full_tensor_with_payloads(
             tensors,
+            layer_payloads,
             &format!("{prefix}.mlp.up_proj.weight"),
             profile.intermediate_size as usize,
             hidden_size,
             &post_normed,
         )?;
         let activation = swiglu_activation(&gate, &up)?;
-        let mlp_down = matmul_full_tensor(
+        let mlp_down = matmul_full_tensor_with_payloads(
             tensors,
+            layer_payloads,
             &format!("{prefix}.mlp.down_proj.weight"),
             hidden_size,
             profile.intermediate_size as usize,
@@ -3056,7 +3220,22 @@ fn layer_forward_reference_sequence(
     hidden_states: &[Vec<f32>],
 ) -> Result<(Vec<Vec<f32>>, Qwen3Dense06bLayerForwardReference), String> {
     let (outputs, reference, _) =
-        layer_forward_reference_sequence_with_cache(tensors, layer_id, hidden_states)?;
+        layer_forward_reference_sequence_with_cache(tensors, None, layer_id, hidden_states)?;
+    Ok((outputs, reference))
+}
+
+pub fn layer_forward_reference_sequence_with_payloads(
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    layer_payloads: &BTreeMap<String, Vec<u8>>,
+    layer_id: u64,
+    hidden_states: &[Vec<f32>],
+) -> Result<(Vec<Vec<f32>>, Qwen3Dense06bLayerForwardReference), String> {
+    let (outputs, reference, _) = layer_forward_reference_sequence_with_cache(
+        tensors,
+        Some(layer_payloads),
+        layer_id,
+        hidden_states,
+    )?;
     Ok((outputs, reference))
 }
 
@@ -3341,6 +3520,67 @@ pub fn forward_from_token_ids(
     forward_reference_from_token_ids(tensors, token_ids)
 }
 
+pub fn forward_from_token_ids_with_layer_payloads(
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    layer_payloads: &BTreeMap<String, Vec<u8>>,
+    token_ids: &[u64],
+) -> Result<Qwen3Dense06bForwardReference, String> {
+    let mut sequence = embedding_reference_hidden_sequence_with_payloads(
+        tensors,
+        Some(layer_payloads),
+        token_ids,
+    )?;
+    let position = token_ids.len().saturating_sub(1) as u64;
+    let input_checksum = f32_vector_checksum(
+        sequence
+            .last()
+            .ok_or_else(|| "qwen3_forward_reference_no_hidden_sequence".to_string())?,
+    );
+    let mut layers = Vec::with_capacity(QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers as usize);
+    let mut aggregate_words = vec![position, token_ids.len() as u64, input_checksum];
+    for layer_id in 0..QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers {
+        let (next_sequence, layer) = layer_forward_reference_sequence_with_payloads(
+            tensors,
+            layer_payloads,
+            layer_id,
+            &sequence,
+        )?;
+        aggregate_words.extend_from_slice(&[
+            layer.layer_id,
+            layer.input_checksum,
+            layer.q_checksum,
+            layer.k_checksum,
+            layer.v_checksum,
+            layer.attention_context_checksum,
+            layer.attention_output_checksum,
+            layer.mlp_down_checksum,
+            layer.output_checksum,
+        ]);
+        aggregate_words.extend_from_slice(&layer.output_sample_words);
+        sequence = next_sequence;
+        layers.push(layer);
+    }
+    let final_hidden = sequence
+        .last()
+        .ok_or_else(|| "qwen3_forward_reference_no_final_hidden".to_string())?
+        .clone();
+    let final_hidden_checksum = f32_vector_checksum(&final_hidden);
+    let final_hidden_sample_words = f32_vector_sample_words(&final_hidden);
+    aggregate_words.push(final_hidden_checksum);
+    aggregate_words.extend_from_slice(&final_hidden_sample_words);
+    Ok(Qwen3Dense06bForwardReference {
+        layer_count: QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers,
+        position,
+        hidden_size: QWEN3_DENSE_0_6B_PROFILE.hidden_size,
+        input_checksum,
+        final_hidden_checksum,
+        final_hidden_sample_words,
+        aggregate_checksum: checksum_words(&aggregate_words),
+        final_hidden,
+        layers,
+    })
+}
+
 pub fn forward_with_kv_cache_from_token_ids(
     tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
     token_ids: &[u64],
@@ -3357,7 +3597,7 @@ pub fn forward_with_kv_cache_from_token_ids(
     let mut aggregate_words = vec![position, token_ids.len() as u64, input_checksum];
     for layer_id in 0..QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers {
         let (next_sequence, layer, layer_cache) =
-            layer_forward_reference_sequence_with_cache(tensors, layer_id, &sequence)?;
+            layer_forward_reference_sequence_with_cache(tensors, None, layer_id, &sequence)?;
         aggregate_words.extend_from_slice(&[
             layer.layer_id,
             layer.input_checksum,
@@ -3466,8 +3706,30 @@ pub fn full_vocab_logits_from_hidden(
     full_vocab_logits_from_hidden_with_chunk(tensors, hidden, 4096)
 }
 
+pub fn full_vocab_logits_from_hidden_with_payloads(
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensor_payloads: &BTreeMap<String, Vec<u8>>,
+    hidden: &[f32],
+) -> Result<Qwen3Dense06bFullVocabLogitsSummary, String> {
+    full_vocab_logits_from_hidden_with_chunk_and_payloads(
+        tensors,
+        Some(tensor_payloads),
+        hidden,
+        4096,
+    )
+}
+
 pub fn full_vocab_logits_from_hidden_with_chunk(
     tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    hidden: &[f32],
+    chunk_rows: usize,
+) -> Result<Qwen3Dense06bFullVocabLogitsSummary, String> {
+    full_vocab_logits_from_hidden_with_chunk_and_payloads(tensors, None, hidden, chunk_rows)
+}
+
+pub fn full_vocab_logits_from_hidden_with_chunk_and_payloads(
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensor_payloads: Option<&BTreeMap<String, Vec<u8>>>,
     hidden: &[f32],
     chunk_rows: usize,
 ) -> Result<Qwen3Dense06bFullVocabLogitsSummary, String> {
@@ -3481,7 +3743,12 @@ pub fn full_vocab_logits_from_hidden_with_chunk(
     if chunk_rows == 0 {
         return Err("qwen3_full_vocab_logits_zero_chunk_rows".to_string());
     }
-    let norm_weight = load_weight_vector(tensors, "model.norm.weight", hidden_size)?;
+    let norm_weight = load_weight_vector_with_payloads(
+        tensors,
+        tensor_payloads,
+        "model.norm.weight",
+        hidden_size,
+    )?;
     let normalized = rmsnorm_reference(hidden, &norm_weight);
     let final_norm_checksum = f32_vector_checksum(&normalized);
     let (head_name, head) = logits_head_tensor(tensors)?;
@@ -3509,7 +3776,13 @@ pub fn full_vocab_logits_from_hidden_with_chunk(
     let vocab_size = QWEN3_DENSE_0_6B_PROFILE.vocab_size as usize;
     for start in (0..vocab_size).step_by(chunk_rows) {
         let rows = chunk_rows.min(vocab_size - start);
-        let payload = materialize_tensor_row_range_payload(head_name, head, start as u64, rows)?;
+        let payload = materialize_tensor_row_range_payload_with_payloads(
+            head_name,
+            head,
+            start as u64,
+            rows,
+            tensor_payloads,
+        )?;
         let weights = decode_weight_vector(
             head.dtype,
             &payload,
@@ -3658,7 +3931,13 @@ fn sample_full_vocab_token_from_hidden_with_chunk(
     let mut max_logit = f32::NEG_INFINITY;
     for start in (0..vocab_size).step_by(chunk_rows) {
         let rows = chunk_rows.min(vocab_size - start);
-        let payload = materialize_tensor_row_range_payload(head_name, head, start as u64, rows)?;
+        let payload = materialize_tensor_row_range_payload_with_payloads(
+            head_name,
+            head,
+            start as u64,
+            rows,
+            None,
+        )?;
         let weights = decode_weight_vector(
             head.dtype,
             &payload,
@@ -4004,6 +4283,15 @@ fn load_weight_vector(
     name: &str,
     expected_elems: usize,
 ) -> Result<Vec<f32>, String> {
+    load_weight_vector_with_payloads(tensors, None, name, expected_elems)
+}
+
+fn load_weight_vector_with_payloads(
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    layer_payloads: Option<&BTreeMap<String, Vec<u8>>>,
+    name: &str,
+    expected_elems: usize,
+) -> Result<Vec<f32>, String> {
     let tensor = tensors
         .get(name)
         .ok_or_else(|| format!("qwen3_dense_0_6b_missing_weight_tensor:{name}"))?;
@@ -4016,12 +4304,23 @@ fn load_weight_vector(
             "qwen3_weight_vector_elems_mismatch:{name}:got={actual_elems}:expected={expected_elems}"
         ));
     }
-    let payload = materialize_full_tensor_payload(name, tensor)?;
+    let payload = materialize_full_tensor_payload_with_payloads(name, tensor, layer_payloads)?;
     decode_weight_vector(tensor.dtype, &payload, expected_elems)
 }
 
 fn matmul_full_tensor(
     tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    name: &str,
+    rows: usize,
+    cols: usize,
+    input: &[f32],
+) -> Result<Vec<f32>, String> {
+    matmul_full_tensor_with_payloads(tensors, None, name, rows, cols, input)
+}
+
+fn matmul_full_tensor_with_payloads(
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    layer_payloads: Option<&BTreeMap<String, Vec<u8>>>,
     name: &str,
     rows: usize,
     cols: usize,
@@ -4043,7 +4342,7 @@ fn matmul_full_tensor(
             tensor.shape, expected_shape
         ));
     }
-    let payload = materialize_full_tensor_payload(name, tensor)?;
+    let payload = materialize_full_tensor_payload_with_payloads(name, tensor, layer_payloads)?;
     matmul_reference_values(tensor.dtype, &payload, rows, input)
 }
 
@@ -4521,6 +4820,28 @@ fn materialize_full_tensor_payload(
     tensor_name: &str,
     metadata: &Qwen3Dense06bWeightTensorMetadata,
 ) -> Result<Vec<u8>, String> {
+    materialize_full_tensor_payload_with_payloads(tensor_name, metadata, None)
+}
+
+fn materialize_full_tensor_payload_with_payloads(
+    tensor_name: &str,
+    metadata: &Qwen3Dense06bWeightTensorMetadata,
+    layer_payloads: Option<&BTreeMap<String, Vec<u8>>>,
+) -> Result<Vec<u8>, String> {
+    if let Some(payload) = layer_payloads.and_then(|payloads| payloads.get(tensor_name)) {
+        let expected_bytes = metadata
+            .shape
+            .iter()
+            .try_fold(dtype_size(metadata.dtype), |acc, dim| acc.checked_mul(*dim))
+            .ok_or_else(|| format!("qwen3_weight_payload_bytes_overflow:{tensor_name}"))?;
+        if payload.len() as u64 != expected_bytes {
+            return Err(format!(
+                "qwen3_weight_payload_override_len_mismatch:{tensor_name}:got={}:expected={expected_bytes}",
+                payload.len()
+            ));
+        }
+        return Ok(payload.clone());
+    }
     let source_file = metadata
         .source_file
         .as_ref()
@@ -4548,10 +4869,11 @@ fn materialize_full_tensor_payload(
     read_file_range(source_file, tensor_base, bytes)
 }
 
-fn materialize_tensor_row_payload(
+fn materialize_tensor_row_payload_with_payloads(
     tensor_name: &str,
     metadata: &Qwen3Dense06bWeightTensorMetadata,
     row: u64,
+    tensor_payloads: Option<&BTreeMap<String, Vec<u8>>>,
 ) -> Result<Vec<u8>, String> {
     if metadata.shape.len() != 2 {
         return Err(format!(
@@ -4565,6 +4887,33 @@ fn materialize_tensor_row_payload(
             metadata.shape[0]
         ));
     }
+    let row_bytes = metadata.shape[1]
+        .checked_mul(dtype_size(metadata.dtype))
+        .ok_or_else(|| format!("qwen3_weight_payload_row_overflow:{tensor_name}"))?;
+    if let Some(payload) = tensor_payloads.and_then(|payloads| payloads.get(tensor_name)) {
+        let expected_bytes = metadata
+            .shape
+            .iter()
+            .try_fold(dtype_size(metadata.dtype), |acc, dim| acc.checked_mul(*dim))
+            .ok_or_else(|| format!("qwen3_weight_payload_bytes_overflow:{tensor_name}"))?;
+        if payload.len() as u64 != expected_bytes {
+            return Err(format!(
+                "qwen3_weight_payload_override_len_mismatch:{tensor_name}:got={}:expected={expected_bytes}",
+                payload.len()
+            ));
+        }
+        let start = row
+            .checked_mul(row_bytes)
+            .ok_or_else(|| format!("qwen3_weight_payload_row_offset_overflow:{tensor_name}"))?
+            as usize;
+        let end = start
+            .checked_add(row_bytes as usize)
+            .ok_or_else(|| format!("qwen3_weight_payload_row_end_overflow:{tensor_name}"))?;
+        return payload
+            .get(start..end)
+            .map(Vec::from)
+            .ok_or_else(|| format!("qwen3_weight_payload_row_oob:{tensor_name}:row={row}"));
+    }
     let source_file = metadata
         .source_file
         .as_ref()
@@ -4572,9 +4921,6 @@ fn materialize_tensor_row_payload(
     let offsets = metadata
         .data_offsets
         .ok_or_else(|| format!("qwen3_weight_payload_offsets_missing:{tensor_name}"))?;
-    let row_bytes = metadata.shape[1]
-        .checked_mul(dtype_size(metadata.dtype))
-        .ok_or_else(|| format!("qwen3_weight_payload_row_overflow:{tensor_name}"))?;
     let tensor_base = metadata
         .data_base_offset
         .checked_add(offsets[0])
@@ -4588,11 +4934,12 @@ fn materialize_tensor_row_payload(
     read_file_range(source_file, start, row_bytes)
 }
 
-fn materialize_tensor_row_range_payload(
+fn materialize_tensor_row_range_payload_with_payloads(
     tensor_name: &str,
     metadata: &Qwen3Dense06bWeightTensorMetadata,
     start_row: u64,
     rows: usize,
+    tensor_payloads: Option<&BTreeMap<String, Vec<u8>>>,
 ) -> Result<Vec<u8>, String> {
     if metadata.shape.len() != 2 {
         return Err(format!(
@@ -4614,6 +4961,40 @@ fn materialize_tensor_row_range_payload(
             metadata.shape[0]
         ));
     }
+    let row_bytes = metadata.shape[1]
+        .checked_mul(dtype_size(metadata.dtype))
+        .ok_or_else(|| format!("qwen3_weight_payload_row_range_row_overflow:{tensor_name}"))?;
+    let bytes = row_bytes
+        .checked_mul(rows as u64)
+        .ok_or_else(|| format!("qwen3_weight_payload_row_range_bytes_overflow:{tensor_name}"))?;
+    if let Some(payload) = tensor_payloads.and_then(|payloads| payloads.get(tensor_name)) {
+        let expected_bytes = metadata
+            .shape
+            .iter()
+            .try_fold(dtype_size(metadata.dtype), |acc, dim| acc.checked_mul(*dim))
+            .ok_or_else(|| format!("qwen3_weight_payload_bytes_overflow:{tensor_name}"))?;
+        if payload.len() as u64 != expected_bytes {
+            return Err(format!(
+                "qwen3_weight_payload_override_len_mismatch:{tensor_name}:got={}:expected={expected_bytes}",
+                payload.len()
+            ));
+        }
+        let start = start_row.checked_mul(row_bytes).ok_or_else(|| {
+            format!("qwen3_weight_payload_row_range_offset_overflow:{tensor_name}")
+        })? as usize;
+        let end = start
+            .checked_add(bytes as usize)
+            .ok_or_else(|| format!("qwen3_weight_payload_row_range_end_overflow:{tensor_name}"))?;
+        return payload
+            .get(start..end)
+            .map(Vec::from)
+            .ok_or_else(|| {
+                format!(
+                    "qwen3_weight_payload_row_range_oob:{tensor_name}:start={start_row}:rows={rows}:total_rows={}",
+                    metadata.shape[0]
+                )
+            });
+    }
     let source_file = metadata
         .source_file
         .as_ref()
@@ -4621,12 +5002,6 @@ fn materialize_tensor_row_range_payload(
     let offsets = metadata
         .data_offsets
         .ok_or_else(|| format!("qwen3_weight_payload_offsets_missing:{tensor_name}"))?;
-    let row_bytes = metadata.shape[1]
-        .checked_mul(dtype_size(metadata.dtype))
-        .ok_or_else(|| format!("qwen3_weight_payload_row_range_row_overflow:{tensor_name}"))?;
-    let bytes = row_bytes
-        .checked_mul(rows as u64)
-        .ok_or_else(|| format!("qwen3_weight_payload_row_range_bytes_overflow:{tensor_name}"))?;
     let tensor_base = metadata
         .data_base_offset
         .checked_add(offsets[0])
@@ -5021,6 +5396,48 @@ outputs:
     }
 
     #[test]
+    fn tokenizer_prompt_encoding_preserves_qwen_special_tokens() {
+        let temp = std::env::temp_dir().join(format!(
+            "qwen3_tokenizer_special_encode_test_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&temp);
+        fs::create_dir_all(&temp).expect("create tokenizer temp dir");
+        fs::write(
+            temp.join("tokenizer_config.json"),
+            r#"{"added_tokens_decoder":{"151644":{"content":"<|im_start|>"},"151645":{"content":"<|im_end|>"}}}"#,
+        )
+        .expect("write tokenizer config");
+        fs::write(
+            temp.join("tokenizer.json"),
+            r#"{"model":{"type":"BPE","vocab":{"u":1,"s":2,"e":3,"r":4,"Ċ":5,"H":6,"i":7,"a":8,"n":9,"t":10},"merges":[]}}"#,
+        )
+        .expect("write tokenizer json");
+        fs::write(
+            temp.join("vocab.json"),
+            r#"{"u":1,"s":2,"e":3,"r":4,"Ċ":5,"H":6,"i":7,"a":8,"n":9,"t":10}"#,
+        )
+        .expect("write vocab json");
+        fs::write(temp.join("merges.txt"), b"#version\n").expect("write merges");
+        fs::write(
+            temp.join("generation_config.json"),
+            r#"{"eos_token_id":151645}"#,
+        )
+        .expect("write generation config");
+
+        let encoded =
+            tokenize_prompt_from_tokenizer_path(&temp, "<|im_start|>user\nHi<|im_end|>\n<think>")
+                .expect("tokenize prompt");
+        assert_eq!(
+            encoded.token_ids,
+            vec![151_644, 1, 2, 3, 4, 5, 6, 7, 151_645, 5, 151_667]
+        );
+        assert_eq!(encoded.token_count, encoded.token_ids.len() as u64);
+
+        fs::remove_dir_all(&temp).expect("remove tokenizer temp dir");
+    }
+
+    #[test]
     fn weight_manifest_builds_tp_slices_and_db_refs() {
         let topology = test_topology();
         let config = r#"{
@@ -5063,7 +5480,7 @@ outputs:
         .expect("weight manifest");
         assert_eq!(manifest.profile.hidden_size, 1024);
         assert_eq!(manifest.profile.tp_nodes, 8);
-        assert_eq!(manifest.slices.len(), 28 * 8 * 9);
+        assert_eq!(manifest.slices.len(), 28 * 8 * 11);
 
         let q_proj = manifest
             .slices
@@ -5126,11 +5543,19 @@ outputs:
                     ],
                 ),
                 (
+                    format!("{layer_prefix}.self_attn.q_norm.weight"),
+                    vec![profile.head_dim],
+                ),
+                (
                     format!("{layer_prefix}.self_attn.k_proj.weight"),
                     vec![
                         profile.num_key_value_heads * profile.head_dim,
                         profile.hidden_size,
                     ],
+                ),
+                (
+                    format!("{layer_prefix}.self_attn.k_norm.weight"),
+                    vec![profile.head_dim],
                 ),
                 (
                     format!("{layer_prefix}.self_attn.v_proj.weight"),

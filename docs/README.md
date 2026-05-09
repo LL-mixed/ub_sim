@@ -14,3 +14,5 @@ Current validation entry points:
   - eight-node scale-up design notes, including configurable `port_num` and FM-owned `EID/CNA` constraints
 - [lingqu_db_object_service_design.md](lingqu_db_object_service_design.md)
   - detailed design for a general Lingqu DB/Object Service that manages Qwen3 weights, KV cache, hidden boundaries, runtime tensors, versions, and shmem/block payload placement before 8-node range forward
+- [drafts/qwen3_0_6b_engram_obmm_simpler_8node_design.md](drafts/qwen3_0_6b_engram_obmm_simpler_8node_design.md)
+  - draft design for combining CPU-side engram policy, OBMM shmem pool transport, and simpler-backed Qwen3 0.6B forward in an 8-node simulation path

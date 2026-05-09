@@ -11,6 +11,10 @@ enum w4_db_record_kind {
     W4_DB_RECORD_BLOCK_META = 3,
     W4_DB_RECORD_WEIGHT_TILE = 4,
     W4_DB_RECORD_KVCACHE_OBJECT = 5,
+    W4_DB_RECORD_HIDDEN_RANGE_INPUT = 6,
+    W4_DB_RECORD_HIDDEN_RANGE_OUTPUT = 7,
+    W4_DB_RECORD_LAYER_RANGE_PLACEMENT = 8,
+    W4_DB_RECORD_QWEN3_TOKEN_RESULT = 9,
 };
 
 enum w4_kvcache_state {
@@ -20,7 +24,7 @@ enum w4_kvcache_state {
     W4_KVCACHE_STATE_RELOADED = 3,
 };
 
-#define W4_DB_MAX_RECORDS 24U
+#define W4_DB_MAX_RECORDS 128U
 #define W4_DB_MAX_GROUP_MEMBERS 4U
 
 struct w4_db_record {
@@ -139,8 +143,48 @@ int w4_db_publish_observe_cluster(struct w4_db_service *svc,
                                   struct w4_db_cluster_summary *summary);
 int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
                                           uint32_t local_node,
-                                          uint32_t remote_node,
                                           uint32_t cluster_node_count);
+int w4_db_obmm_service_v0_wait_runtime_range_input(uint32_t local_node,
+                                                   uint32_t cluster_node_count,
+                                                   uint64_t decode_step,
+                                                   uint8_t *payload_out,
+                                                   uint64_t payload_len,
+                                                   uint64_t *checksum_out);
+int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc,
+                                                       uint32_t local_node,
+                                                       uint32_t cluster_node_count,
+                                                       uint64_t decode_step,
+                                                       const uint8_t *payload,
+                                                       uint64_t payload_len,
+                                                       uint64_t expected_checksum);
+int w4_db_obmm_service_v0_publish_terminal_token_result(struct w4_db_service *svc,
+                                                        uint32_t local_node,
+                                                        uint32_t cluster_node_count,
+                                                        uint64_t decode_step,
+                                                        uint64_t sampled_token,
+                                                        uint64_t runner_up_token,
+                                                        uint64_t margin_milli,
+                                                        uint64_t logits_checksum,
+                                                        uint64_t text_checksum,
+                                                        uint64_t piece_word0,
+                                                        uint64_t piece_word1);
+int w4_db_obmm_service_v0_wait_terminal_token_result(struct w4_db_service *svc,
+                                                     uint64_t decode_step,
+                                                     uint64_t timeout_ms,
+                                                     uint64_t *sampled_token_out);
+int w4_db_obmm_service_v0_publish_decode_round_done(struct w4_db_service *svc,
+                                                    uint32_t local_node,
+                                                    uint32_t cluster_node_count,
+                                                    uint64_t decode_step);
+int w4_db_obmm_service_v0_wait_all_decode_round_done(struct w4_db_service *svc,
+                                                     uint32_t cluster_node_count,
+                                                     uint64_t decode_step,
+                                                     uint64_t timeout_ms);
+int w4_db_qwen3_layer_range_for_node(uint32_t local_node,
+                                     uint32_t cluster_node_count,
+                                     uint32_t *layer_start_out,
+                                     uint32_t *layer_end_out,
+                                     uint32_t *next_node_out);
 int w4_db_get_record(struct w4_db_service *svc, const char *key, struct w4_db_record *out);
 
 #endif

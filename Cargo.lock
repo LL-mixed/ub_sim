@@ -161,6 +161,7 @@ dependencies = [
  "serde_json",
  "sim-config",
  "sim-core",
+ "sim-models",
  "sim-qemu",
  "sim-report",
  "sim-runtime",
