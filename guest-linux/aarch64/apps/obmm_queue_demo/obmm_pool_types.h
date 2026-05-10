@@ -51,6 +51,7 @@ enum obmm_region_kind {
     OBMM_REGION_TX_ARENA    = 3,
     OBMM_REGION_DATA_SLAB   = 4,
     OBMM_REGION_W4_PAYLOAD  = 5,
+    OBMM_REGION_SPMC_STREAM = 6,
 };
 
 /* ------------------------------------------------------------------ */
@@ -148,5 +149,66 @@ struct obmm_spsc_queue {
 
     alignas(64) struct obmm_desc desc[];
 };
+
+/* ------------------------------------------------------------------ */
+/* SPMC broadcast stream -- provider-owned ring with per-consumer      */
+/* cursors.  64-bit monotonic head/tail counters.                      */
+/* ------------------------------------------------------------------ */
+
+#define OBMM_SPMC_MAGIC   0x4f424d53504d4301ULL /* "OBMSPMC" */
+#define OBMM_SPMC_VERSION 1
+#define OBMM_SPMC_MAX_CONSUMERS 64
+
+#define OBMM_SPMC_F_STRICT           (1u << 0)
+#define OBMM_SPMC_F_FIXED_MASK       (1u << 1)
+#define OBMM_SPMC_F_PRODUCER_PAYLOAD (1u << 2)
+
+enum obmm_spmc_cursor_state {
+    OBMM_SPMC_CONSUMER_DETACHED  = 0,
+    OBMM_SPMC_CONSUMER_ATTACHING = 1,
+    OBMM_SPMC_CONSUMER_ACTIVE    = 2,
+    OBMM_SPMC_CONSUMER_PAUSED    = 3,
+    OBMM_SPMC_CONSUMER_DEAD      = 4,
+};
+
+struct obmm_spmc_consumer_cursor {
+    alignas(64) _Atomic uint64_t head;
+    _Atomic uint64_t observed_seq;
+    _Atomic uint64_t drop_count;
+    _Atomic uint32_t state;
+    _Atomic uint32_t generation_seen;
+    uint32_t node_id;
+    uint32_t reserved0;
+    uint8_t reserved[24];
+};
+
+struct obmm_spmc_stream {
+    alignas(64) uint64_t magic;
+    _Atomic uint64_t active_consumer_mask;
+    uint64_t generation;
+    uint32_t version;
+    uint32_t flags;
+    uint32_t header_bytes;
+    uint32_t cursor_offset;
+    uint32_t desc_offset;
+    uint32_t depth;
+    uint32_t mask;
+    uint32_t max_consumers;
+    uint32_t provider_node;
+    uint8_t header_reserved[4];
+
+    alignas(64) _Atomic uint64_t tail;
+    uint8_t tail_pad[56];
+
+    /*
+     * Cursors: struct obmm_spmc_consumer_cursor[cursor_offset]
+     * Ring:    struct obmm_desc[desc_offset]
+     */
+};
+
+static_assert(sizeof(struct obmm_spmc_consumer_cursor) == 64,
+              "SPMC cursor must occupy one cache line");
+static_assert(sizeof(struct obmm_spmc_stream) == 128,
+              "SPMC stream header must occupy two cache lines");
 
 #endif /* OBMM_POOL_TYPES_H */
