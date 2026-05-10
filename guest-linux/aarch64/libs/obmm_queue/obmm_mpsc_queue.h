@@ -14,7 +14,7 @@
 #ifndef OBMM_MPSC_QUEUE_H
 #define OBMM_MPSC_QUEUE_H
 
-#include "obmm_queue.h"
+#include "obmm_spsc_queue.h"
 
 #include <errno.h>
 #include <stdint.h>

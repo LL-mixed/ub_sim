@@ -1,15 +1,17 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * OBMM SPSC queue unit tests.
+ * OBMM queue library unit tests.
  *
  * Compile and run on host (no OBMM dependency):
  *   gcc -O2 -Wall -Wextra -I. -o obmm_queue_test obmm_queue_test.c -lpthread
  *   ./obmm_queue_test
  */
 
-#include "obmm_queue.h"
+#include "obmm_queue_types.h"
+#include "obmm_spsc_queue.h"
 #include "obmm_spmc_queue.h"
 #include "obmm_mpsc_queue.h"
+#include "obmm_mpmc_queue.h"
 
 #include <pthread.h>
 #include <stdint.h>
@@ -1391,8 +1393,260 @@ static int test_mpsc_poll_fairness(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* main                                                                */
+/* MPMC tests                                                          */
 /* ------------------------------------------------------------------ */
+
+static int test_mpmc_send_recv(void)
+{
+    /* 2-node MPMC: node 0 is consumer, node 1 is publisher */
+    uint32_t depth = 64;
+    uint64_t qs = obmm_queue_region_size(depth);
+    void *mq = malloc(qs + 64);
+    struct obmm_spsc_queue *q;
+    uintptr_t base;
+    struct obmm_region_dirent dir[2];
+    struct obmm_mpmc_bus bus;
+    struct obmm_desc desc;
+    int rc;
+
+    CHECK(mq, "malloc");
+
+    /* Align to 64 bytes for alignas(64) in obmm_spsc_queue */
+    base = ((uintptr_t)mq + 63) & ~(uintptr_t)63;
+    obmm_spsc_queue_init((void *)base, depth);
+    q = (struct obmm_spsc_queue *)base;
+
+    /* Build directory: one QUEUE entry from publisher 1 */
+    memset(dir, 0, sizeof(dir));
+    dir[0].kind = OBMM_REGION_QUEUE;
+    dir[0].peer_node_id = 1;
+    dir[0].region_id = 0;
+    dir[0].offset = 0;
+    dir[0].size = qs;
+
+    /* Consumer init (node 0) */
+    rc = obmm_mpmc_consumer_init(&bus, dir, 1, 0);
+    CHECK(rc == 0, "consumer init");
+
+    /* Fill queue pointer manually */
+    bus.rx.lane[0].queue = q;
+
+    /* Publisher init (node 1 → node 0) */
+    rc = obmm_mpmc_publisher_init(&bus, 0, dir, 1, 1);
+    CHECK(rc == 0, "publisher init");
+
+    /* Fill publisher queue pointer */
+    bus.tx[0].queue = q;
+
+    /* Send */
+    memset(&desc, 0, sizeof(desc));
+    desc.seq = 42;
+    desc.type = OBMM_DESC_DATA;
+    rc = obmm_mpmc_send(&bus, 0, &desc);
+    CHECK(rc == 0, "send");
+
+    /* Send to invalid target */
+    rc = obmm_mpmc_send(&bus, 5, &desc);
+    CHECK(rc == -ENOENT, "send invalid target");
+
+    struct obmm_desc out;
+    uint32_t src;
+    rc = obmm_mpmc_recv(&bus, &out, &src);
+    CHECK(rc == 0, "recv");
+    CHECK(out.seq == 42, "recv seq");
+    CHECK(src == 1, "recv src");
+
+    /* Empty */
+    rc = obmm_mpmc_recv(&bus, &out, &src);
+    CHECK(rc == -EAGAIN, "recv empty");
+
+    free(mq);
+    return 0;
+}
+
+static int test_mpmc_multi_producer(void)
+{
+    /* 3-node MPMC: node 0 consumer, nodes 1 & 2 publishers.
+     * Consumer has one bus with MPSC set.
+     * Each publisher has its own bus with a tx lane. */
+    uint32_t depth = 64;
+    uint64_t qs = obmm_queue_region_size(depth);
+    void *raw1 = malloc(qs + 64), *raw2 = malloc(qs + 64);
+    uintptr_t a1, a2;
+    struct obmm_spsc_queue *q1, *q2;
+    struct obmm_region_dirent dir[2];
+    struct obmm_mpmc_bus consumer_bus, pub1_bus, pub2_bus;
+    struct obmm_desc desc, out;
+    uint32_t src;
+    uint32_t count1 = 0, count2 = 0;
+    int rc;
+
+    CHECK(raw1 && raw2, "malloc");
+
+    a1 = ((uintptr_t)raw1 + 63) & ~(uintptr_t)63;
+    a2 = ((uintptr_t)raw2 + 63) & ~(uintptr_t)63;
+    obmm_spsc_queue_init((void *)a1, depth);
+    obmm_spsc_queue_init((void *)a2, depth);
+    q1 = (struct obmm_spsc_queue *)a1;
+    q2 = (struct obmm_spsc_queue *)a2;
+
+    /* Directory for consumer: two QUEUE entries from publishers */
+    memset(dir, 0, sizeof(dir));
+    dir[0].kind = OBMM_REGION_QUEUE;
+    dir[0].peer_node_id = 1;
+    dir[0].size = qs;
+    dir[1].kind = OBMM_REGION_QUEUE;
+    dir[1].peer_node_id = 2;
+    dir[1].size = qs;
+
+    /* Consumer init */
+    rc = obmm_mpmc_consumer_init(&consumer_bus, dir, 2, 0);
+    CHECK(rc == 0, "consumer init");
+    consumer_bus.rx.lane[0].queue = q1;
+    consumer_bus.rx.lane[1].queue = q2;
+
+    /* Publisher 1 bus: tx lane to consumer 0 */
+    memset(&pub1_bus, 0, sizeof(pub1_bus));
+    rc = obmm_mpmc_publisher_init(&pub1_bus, 0, dir, 2, 1);
+    CHECK(rc == 0, "pub1 init");
+    pub1_bus.tx[0].queue = q1;
+
+    /* Publisher 2 bus: tx lane to consumer 0 */
+    memset(&pub2_bus, 0, sizeof(pub2_bus));
+    rc = obmm_mpmc_publisher_init(&pub2_bus, 0, dir, 2, 2);
+    CHECK(rc == 0, "pub2 init");
+    pub2_bus.tx[0].queue = q2;
+
+    /* Each publisher pushes 50 messages */
+    for (uint32_t i = 0; i < 50; i++) {
+        memset(&desc, 0, sizeof(desc));
+        desc.seq = ((uint64_t)1 << 32) | i;
+        desc.type = OBMM_DESC_DATA;
+        rc = obmm_mpmc_send(&pub1_bus, 0, &desc);
+        CHECK(rc == 0, "pub1 send");
+
+        memset(&desc, 0, sizeof(desc));
+        desc.seq = ((uint64_t)2 << 32) | i;
+        desc.type = OBMM_DESC_DATA;
+        rc = obmm_mpmc_send(&pub2_bus, 0, &desc);
+        CHECK(rc == 0, "pub2 send");
+    }
+
+    /* Consumer drains all 100 */
+    for (int n = 0; n < 100; n++) {
+        rc = obmm_mpmc_recv(&consumer_bus, &out, &src);
+        CHECK(rc == 0, "recv");
+        if (src == 1) count1++;
+        else if (src == 2) count2++;
+    }
+
+    CHECK(count1 == 50, "pub1 count");
+    CHECK(count2 == 50, "pub2 count");
+
+    /* Empty now */
+    rc = obmm_mpmc_recv(&consumer_bus, &out, &src);
+    CHECK(rc == -EAGAIN, "empty");
+
+    free(raw1);
+    free(raw2);
+    return 0;
+}
+
+static int test_mpmc_multi_consumer(void)
+{
+    /* 3-node: nodes 0 and 1 are consumers, node 2 is publisher.
+     * Publisher sends to consumer 0 via q0 and to consumer 1 via q1. */
+    uint32_t depth = 64;
+    uint64_t qs = obmm_queue_region_size(depth);
+    void *raw0 = malloc(qs + 64), *raw1 = malloc(qs + 64);
+    uintptr_t a0, a1;
+    struct obmm_spsc_queue *q0, *q1;
+    struct obmm_region_dirent dir0[1], dir1[1], dir_pub[2];
+    struct obmm_mpmc_bus consumer0, consumer1, pub_bus;
+    struct obmm_desc desc, out;
+    uint32_t src;
+    int rc;
+
+    CHECK(raw0 && raw1, "malloc");
+
+    a0 = ((uintptr_t)raw0 + 63) & ~(uintptr_t)63;
+    a1 = ((uintptr_t)raw1 + 63) & ~(uintptr_t)63;
+    obmm_spsc_queue_init((void *)a0, depth);
+    obmm_spsc_queue_init((void *)a1, depth);
+    q0 = (struct obmm_spsc_queue *)a0;
+    q1 = (struct obmm_spsc_queue *)a1;
+
+    /* Consumer 0 directory: publisher 2 → queue q0 */
+    memset(dir0, 0, sizeof(dir0));
+    dir0[0].kind = OBMM_REGION_QUEUE;
+    dir0[0].peer_node_id = 2;
+    dir0[0].size = qs;
+
+    rc = obmm_mpmc_consumer_init(&consumer0, dir0, 1, 0);
+    CHECK(rc == 0, "c0 init");
+    consumer0.rx.lane[0].queue = q0;
+
+    /* Consumer 1 directory: publisher 2 → queue q1 */
+    memset(dir1, 0, sizeof(dir1));
+    dir1[0].kind = OBMM_REGION_QUEUE;
+    dir1[0].peer_node_id = 2;
+    dir1[0].size = qs;
+
+    rc = obmm_mpmc_consumer_init(&consumer1, dir1, 1, 1);
+    CHECK(rc == 0, "c1 init");
+    consumer1.rx.lane[0].queue = q1;
+
+    /* Publisher bus: tx lanes to consumers 0 and 1 */
+    memset(&pub_bus, 0, sizeof(pub_bus));
+    memset(dir_pub, 0, sizeof(dir_pub));
+    dir_pub[0].kind = OBMM_REGION_QUEUE;
+    dir_pub[0].peer_node_id = 2;
+    dir_pub[0].size = qs;
+
+    rc = obmm_mpmc_publisher_init(&pub_bus, 0, dir_pub, 1, 2);
+    CHECK(rc == 0, "pub → c0 init");
+    pub_bus.tx[0].queue = q0;
+
+    rc = obmm_mpmc_publisher_init(&pub_bus, 1, dir_pub, 1, 2);
+    CHECK(rc == 0, "pub → c1 init");
+    pub_bus.tx[1].queue = q1;
+
+    /* Publish to consumer 0 */
+    memset(&desc, 0, sizeof(desc));
+    desc.seq = 100;
+    desc.type = OBMM_DESC_DATA;
+    rc = obmm_mpmc_send(&pub_bus, 0, &desc);
+    CHECK(rc == 0, "send c0");
+
+    /* Publish to consumer 1 */
+    memset(&desc, 0, sizeof(desc));
+    desc.seq = 200;
+    desc.type = OBMM_DESC_DATA;
+    rc = obmm_mpmc_send(&pub_bus, 1, &desc);
+    CHECK(rc == 0, "send c1");
+
+    /* Consumer 0 receives its message */
+    rc = obmm_mpmc_recv(&consumer0, &out, &src);
+    CHECK(rc == 0, "c0 recv");
+    CHECK(out.seq == 100, "c0 seq");
+    CHECK(src == 2, "c0 src");
+
+    /* Consumer 1 receives its message */
+    rc = obmm_mpmc_recv(&consumer1, &out, &src);
+    CHECK(rc == 0, "c1 recv");
+    CHECK(out.seq == 200, "c1 seq");
+    CHECK(src == 2, "c1 src");
+
+    /* Both empty */
+    rc = obmm_mpmc_recv(&consumer0, &out, &src);
+    CHECK(rc == -EAGAIN, "c0 empty");
+    rc = obmm_mpmc_recv(&consumer1, &out, &src);
+    CHECK(rc == -EAGAIN, "c1 empty");
+
+    free(raw0);
+    free(raw1);
+    return 0;
+}
 
 int main(void)
 {
@@ -1437,6 +1691,9 @@ int main(void)
         { "mpsc_pub_dup",      test_mpsc_publisher_lane_duplicate },
         { "mpsc_poll_order",   test_mpsc_poll_order },
         { "mpsc_poll_fair",    test_mpsc_poll_fairness },
+        { "mpmc_send_recv",    test_mpmc_send_recv },
+        { "mpmc_multi_pub",    test_mpmc_multi_producer },
+        { "mpmc_multi_con",    test_mpmc_multi_consumer },
     };
     int pass_count = 0;
     int fail_count = 0;

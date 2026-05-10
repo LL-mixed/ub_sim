@@ -15,8 +15,8 @@
  */
 
 #define _GNU_SOURCE
-#include "obmm_pool_types.h"
-#include "obmm_queue.h"
+#include "obmm_queue_types.h"
+#include "obmm_spsc_queue.h"
 #include "obmm_spmc_queue.h"
 #include "obmm_mpsc_queue.h"
 #include "obmm_pool_helpers.h"

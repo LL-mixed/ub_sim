@@ -1,13 +1,13 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * OBMM shared memory pool lockless queue -- protocol types.
+ * OBMM lockless queue library -- wire-format types.
  *
  * All structures are shared-memory wire format.  Keep fields naturally
  * aligned and do not rely on compiler-specific padding.
  */
 
-#ifndef OBMM_POOL_TYPES_H
-#define OBMM_POOL_TYPES_H
+#ifndef OBMM_QUEUE_TYPES_H
+#define OBMM_QUEUE_TYPES_H
 
 #include <assert.h>
 #include <stdalign.h>
@@ -211,4 +211,4 @@ static_assert(sizeof(struct obmm_spmc_consumer_cursor) == 64,
 static_assert(sizeof(struct obmm_spmc_stream) == 128,
               "SPMC stream header must occupy two cache lines");
 
-#endif /* OBMM_POOL_TYPES_H */
+#endif /* OBMM_QUEUE_TYPES_H */

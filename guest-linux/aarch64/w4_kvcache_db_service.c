@@ -24,8 +24,8 @@
 
 #include "../kernel_ub/include/uapi/ub/obmm.h"
 #include "common/obmm_common.h"
-#include "apps/obmm_queue_demo/obmm_pool_types.h"
-#include "apps/obmm_queue_demo/obmm_queue.h"
+#include "libs/obmm_queue/obmm_queue_types.h"
+#include "libs/obmm_queue/obmm_spsc_queue.h"
 
 #define W4_DB_CLUSTER_MAX_NODES 8
 #define W4_DB_CLUSTER_MAX_RECORDS 128

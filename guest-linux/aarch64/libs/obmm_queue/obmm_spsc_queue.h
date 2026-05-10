@@ -10,10 +10,10 @@
  *   consumer: relaxed head load, acquire tail load, release head store
  */
 
-#ifndef OBMM_QUEUE_H
-#define OBMM_QUEUE_H
+#ifndef OBMM_SPSC_QUEUE_H
+#define OBMM_SPSC_QUEUE_H
 
-#include "obmm_pool_types.h"
+#include "obmm_queue_types.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -176,4 +176,4 @@ static inline void obmm_publish_cursor_for_provider_read(const void *addr,
     atomic_thread_fence(memory_order_release);
 }
 
-#endif /* OBMM_QUEUE_H */
+#endif /* OBMM_SPSC_QUEUE_H */
