@@ -135,4 +135,45 @@ static inline uint32_t obmm_spsc_available(const struct obmm_spsc_queue *q)
     return tail - head;
 }
 
+/* ------------------------------------------------------------------ */
+/* Bitmask iteration                                                   */
+/* ------------------------------------------------------------------ */
+
+#define OBMM_FOR_EACH_NODE_ID(nid, mask)                             \
+    for (uint64_t _m = (mask);                                       \
+         _m != 0 && ((nid) = (uint32_t)(__builtin_ffsll(_m) - 1), 1); \
+         _m &= _m - 1)
+
+/* ------------------------------------------------------------------ */
+/* OBMM visibility helpers                                             */
+/* ------------------------------------------------------------------ */
+
+/*
+ * These stubs wrap the visibility boundary between local cacheable
+ * writes and remote NC reads.  For the first user-space demo they are
+ * release fences.  If validation fails, these become the place to add
+ * cache maintenance or a driver operation.
+ */
+
+static inline void obmm_publish_payload_for_remote_read(const void *addr,
+                                                         uint64_t len)
+{
+    (void)addr; (void)len;
+    atomic_thread_fence(memory_order_release);
+}
+
+static inline void obmm_publish_desc_for_remote_read(const void *addr,
+                                                      uint64_t len)
+{
+    (void)addr; (void)len;
+    atomic_thread_fence(memory_order_release);
+}
+
+static inline void obmm_publish_cursor_for_provider_read(const void *addr,
+                                                          uint64_t len)
+{
+    (void)addr; (void)len;
+    atomic_thread_fence(memory_order_release);
+}
+
 #endif /* OBMM_QUEUE_H */
