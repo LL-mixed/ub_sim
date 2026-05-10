@@ -68,8 +68,9 @@ implementation must be deliberately narrow:
 
 1. MPSC is implemented first as a helper over the existing SPSC queue wire
    format. It adds no new shared-memory ABI.
-2. SPMC is implemented as a strict or masked provider-owned broadcast stream.
-   It uses a new shared-memory ABI and 64-bit monotonic head/tail counters.
+2. SPMC is implemented as a provider-owned broadcast stream with one fixed
+   delivery set per stream. It uses a new shared-memory ABI and 64-bit
+   monotonic head/tail counters.
 3. Loss-tolerant SPMC is not part of the first implementation. It requires
    per-slot sequence validation and should use a later ABI version.
 4. Dynamic hot membership is not part of the fast path. The first
@@ -103,6 +104,45 @@ The expected first code change set is:
     fairness, and ordering.
 - `guest-linux/aarch64/apps/obmm_queue_demo/obmm_queue_demo.c`
   - add guest demo modes for SPMC and MPSC validation.
+
+## Concurrency Model
+
+The first implementation assumes single-threaded access per role:
+
+- One provider thread calls `obmm_spmc_publish()` on a given stream.
+- One consumer thread calls `obmm_spmc_consume()` on a given consumer
+  cursor.
+- One publisher thread calls `obmm_mpsc_push()` on a given lane.
+- One consumer thread calls `obmm_mpsc_poll()` on a given consumer set.
+
+A node may simultaneously be a SPMC provider, a SPMC consumer on a
+different stream, and a MPSC publisher — these are independent roles and
+may use independent threads. The first implementation does not provide
+internal locking. Callers that need multi-threaded access to the same
+role must coordinate externally.
+
+## Utility Macros
+
+The pseudo-code below uses a bitmask iteration macro that must be defined
+once in a shared header:
+
+```c
+/*
+ * Iterate over each node ID set in a uint64_t bitmask.
+ * __builtin_ffsll returns the 1-based index of the lowest set bit,
+ * or 0 if the mask is zero.  The loop clears each processed bit.
+ */
+#define OBMM_FOR_EACH_NODE_ID(nid, mask)                        \
+    for (uint64_t _m = (mask);                                  \
+         _m != 0 && ((nid) = (uint32_t)(__builtin_ffsll(_m) - 1), 1); \
+         _m &= _m - 1)
+```
+
+`nid` is declared as `uint32_t` in the surrounding scope. The macro
+clears the lowest set bit on each iteration so the loop body may not
+modify `mask` through `nid`. The `OBMM_` prefix is intentional; this helper
+belongs in an OBMM queue header and should not use a generic name such as
+`for_each_node_id`.
 
 ## Non-Goals
 
@@ -197,9 +237,18 @@ after ingress queues:  optional SPMC stream(s) owned by this export
 after SPMC streams:    TX arena
 ```
 
-This keeps existing SPSC queue offsets stable relative to the current
-`layout_queue_offset(peer_slot, node_count)` logic. Only `directory_count` and
-`layout_tx_arena_offset(node_count)` need to change when SPMC is enabled.
+This preserves the existing peer-slot order, not the absolute queue offsets.
+The current `layout_queue_offset(peer_slot, node_count)` logic derives
+`queues_base` from `node_count * sizeof(struct obmm_region_dirent)`. Once SPMC
+adds another directory entry, that helper must be refactored to use the actual
+`directory_count` or a precomputed `queues_base`. Otherwise the additional
+`OBMM_REGION_SPMC_STREAM` dirent can overlap the first ingress queue.
+
+Fullmesh mode must keep the current layout exactly. SPMC-enabled modes use a
+larger directory and therefore may shift the absolute offsets of the ingress
+queues, SPMC stream, and TX arena. This is acceptable because same-version
+nodes discover peer layouts by scanning the exported directory rather than by
+recomputing offsets from mode-local assumptions.
 
 For the first demo, allocate at most one SPMC stream per exported pool:
 
@@ -207,14 +256,18 @@ For the first demo, allocate at most one SPMC stream per exported pool:
 spmc_stream_count = OBMM_SPMC_ENABLED ? 1 : 0
 directory_count = peer_count + spmc_stream_count + 1 /* TX arena */
 
-queue_base = align_up(directory_offset +
-                      directory_count * sizeof(struct obmm_region_dirent),
-                      64)
-spmc_stream_offset = queue_base +
-                     peer_count * obmm_queue_region_size(queue_depth)
-tx_arena_offset = spmc_stream_offset +
-                  spmc_stream_count *
-                  obmm_spmc_region_size(spmc_depth, max_consumers)
+queues_base = align_up(directory_offset +
+                       directory_count * sizeof(struct obmm_region_dirent),
+                       64)
+queue_offset(peer_slot) = queues_base +
+                          peer_slot * obmm_queue_region_size(queue_depth)
+spmc_stream_offset = align_up(queues_base +
+                              peer_count * obmm_queue_region_size(queue_depth),
+                              64)
+tx_arena_offset = align_up(spmc_stream_offset +
+                           spmc_stream_count *
+                           obmm_spmc_region_size(spmc_depth, max_consumers),
+                           64)
 ```
 
 `init_export_layout()` must initialize the stream before publishing
@@ -222,6 +275,43 @@ tx_arena_offset = spmc_stream_offset +
 Peer layout validation must stop requiring `directory_count == node_count`;
 SPMC-capable validation should accept at least the existing SPSC/TX entries and
 scan any additional entries by `kind`.
+
+### Export Layout Modification Checklist
+
+When SPMC is enabled, the following existing functions must change:
+
+| Function | Change |
+|----------|--------|
+| `layout_directory_count()` | New. Returns `peer_count + 1` for fullmesh and `peer_count + spmc_stream_count + 1` when SPMC is enabled. |
+| `layout_queues_base()` | New. Computes `align_up(directory_offset + directory_count * sizeof(struct obmm_region_dirent), 64)`. |
+| `layout_queue_offset()` | Must take `queues_base` or `directory_count`; it must not infer directory size from `node_count`. It preserves peer-slot order but may return different absolute offsets in SPMC-enabled modes. |
+| `layout_spmc_stream_offset()` | New. `align_up(queues_base + peer_count * obmm_queue_region_size(queue_depth), 64)`. |
+| `layout_tx_arena_offset()` | Must skip the SPMC stream region: `obmm_align_up(spmc_stream_offset + spmc_stream_count * obmm_spmc_region_size(spmc_depth, max_consumers), 64)`. |
+| `layout_tx_arena_size()` | Adjusts automatically since it subtracts the new arena offset from `g_export_size`. |
+| `validate_export_layout()` | Add space check for the SPMC stream between the last ingress queue and the TX arena. The minimum export size grows by `obmm_spmc_region_size(spmc_depth, max_consumers)` when SPMC is enabled. |
+| `init_export_layout()` | Write an additional `OBMM_REGION_SPMC_STREAM` directory entry after the existing queue and TX arena entries. Keep the TX arena `region_id` stable at `peer_count`; use `peer_count + 1` for the optional SPMC stream. Call `obmm_spmc_stream_init()` at the computed offset. `directory_count` becomes `peer_count + spmc_stream_count + 1`. |
+| `resolve_peer_layout()` | Replace the assumption that `directory_count == node_count` with a directory scan by `kind`. For each dirent, dispatch by kind: `OBMM_REGION_QUEUE` → resolve ingress queue, `OBMM_REGION_TX_ARENA` → resolve TX arena, `OBMM_REGION_SPMC_STREAM` → build view via `obmm_spmc_view_init_from_directory()`. Unknown kinds must be ignored (forward compatibility). |
+| `g_export_size` | The minimum export size increases. The demo must compute the required size from the enabled features and either validate the configured size or adjust upward. The first implementation should compute the minimum required size at startup and fail with a clear message if `OBMM_POOL_EXPORT_SIZE_MB` is too small. |
+
+### Directory Count Compatibility
+
+Enabling SPMC increases `directory_count` from `node_count` to at least
+`node_count + 1`. This has compatibility implications:
+
+- **Same-version nodes**: All nodes run the updated demo binary. No issue;
+  `resolve_peer_layout()` scans by kind and uses each dirent's `offset` and
+  `size`. Nodes must not recompute peer queue offsets from local mode flags.
+- **Mixed-version nodes**: An old binary that checks
+  `directory_count == node_count` will reject the new layout. The first
+  implementation does not need to support mixed versions. If mixed-version
+  compatibility becomes a requirement, the layout version must bump to 2
+  and old binaries must be updated to accept the new version.
+- **Layout version**: The first SPMC implementation keeps
+  `OBMM_POOL_LAYOUT_VERSION` at 1. The pool header's `directory_count`
+  already allows the consumer to iterate the directory without knowing the
+  count in advance. The version should only bump when the header struct
+  layout or the directory entry format changes, not when new region kinds
+  are added.
 
 First-version wire format:
 
@@ -231,7 +321,7 @@ First-version wire format:
 #define OBMM_SPMC_MAX_CONSUMERS 64
 
 #define OBMM_SPMC_F_STRICT          (1u << 0)
-#define OBMM_SPMC_F_MASKED          (1u << 1)
+#define OBMM_SPMC_F_FIXED_MASK      (1u << 1)
 #define OBMM_SPMC_F_PRODUCER_PAYLOAD (1u << 2)
 
 enum obmm_spmc_cursor_state {
@@ -286,11 +376,46 @@ static_assert(sizeof(struct obmm_spmc_stream) == 128,
               "SPMC stream header must occupy two cache lines");
 ```
 
+Field usage notes for `struct obmm_spmc_consumer_cursor`:
+
+- `observed_seq`: In strict mode the consumer reads every slot in order,
+  so `observed_seq` should match the last descriptor sequence accepted by
+  that consumer and provides little additional information when providers
+  set `desc.seq` from the publish counter. It is reserved for future
+  lossy-mode consumers that may skip slots and need to record the last
+  sequence they actually accepted. The first implementation must still
+  store `desc.seq` into it on every successful consume for forward
+  compatibility, but no caller reads it in strict mode.
+- `drop_count`: Incremented by the consumer when it detects overrun
+  (`tail - head > depth`). The provider may periodically acquire-load
+  this field across all cursors for monitoring and logging. It is not
+  used in the fast-path reclaim or backpressure calculation.
+- `generation_seen`: Set to the stream's current `generation` during
+  cursor initialization or attach. The provider may compare this against
+  the current stream generation to detect consumers that have not yet
+  completed a generation transition. The first implementation initializes
+  it but does not otherwise gate on it.
+
 Each high-frequency cache line has one writer:
 
 - provider writes `tail` and descriptor slots;
 - consumer `i` writes only cursor `i` and its own state counters;
 - all other accesses are reads.
+
+SPMC uses 64-bit monotonic head/tail counters instead of the 32-bit
+counters used by the existing SPSC queue. Rationale:
+
+- The existing SPSC `uint32_t` counters wrap at 4G. This is acceptable
+  because SPSC is point-to-point and the ring-index derivation
+  `counter & mask` is correct regardless of wrap. However, SPMC has
+  multiple independent consumers advancing at different rates. A slow
+  consumer that pauses for a long time could see the provider's tail
+  wrap past it, making the `tail - head > depth` overrun check
+  unreliable with 32-bit arithmetic. 64-bit counters eliminate this
+  concern entirely.
+- SPSC stays at 32-bit. Changing SPSC counters would break the existing
+  wire format. If a future SPSC v2 needs 64-bit counters, it should
+  use a separate ABI version.
 
 Depth must be a power of two in the same accepted range as SPSC queue depths.
 The first implementation should reuse `OBMM_QUEUE_MIN_DEPTH`,
@@ -307,6 +432,14 @@ provider_node may appear in the mask only if the provider also consumes
 This wastes at most 64 cursor cache lines and avoids a second mapping table in
 the first ABI. A dense stream-local index can be added later with an explicit
 `node_id -> cursor_idx` directory field.
+
+The first ABI does not store a consumer mask per descriptor. Therefore one SPMC
+stream has one delivery set at a time: the current `active_consumer_mask`.
+Fixed-mask fanout is represented by creating a stream whose initial active mask
+is the desired subset, not by varying the mask on each publish. If the
+application needs two different fanout groups concurrently, it should allocate
+two SPMC streams. A future ABI can add per-slot or sideband masks for true
+per-descriptor masked broadcast.
 
 Layout helpers must be part of the implementation, rather than open-coded:
 
@@ -333,7 +466,9 @@ region_size = desc_offset + depth * sizeof(struct obmm_desc)
 - depth outside the existing SPSC depth range;
 - `max_consumers > OBMM_SPMC_MAX_CONSUMERS`;
 - a `consumer_mask` bit outside `max_consumers`;
-- a first-version request with lossy-mode flags.
+- any first-version caller-visible option that requests lossy mode. The simple
+  first init helper may avoid a flags parameter entirely and always initialize
+  `OBMM_SPMC_F_STRICT`.
 
 The implementation should use a local runtime view for helpers that need both
 the stream and its provider directory. This is not shared-memory wire format:
@@ -341,6 +476,7 @@ the stream and its provider directory. This is not shared-memory wire format:
 ```c
 struct obmm_spmc_stream_view {
     uint8_t *pool_base;
+    uint64_t pool_size;
     const struct obmm_region_dirent *dir;
     uint32_t dir_count;
     uint32_t provider_node;
@@ -393,6 +529,131 @@ Failure handling may mark a stuck consumer `DEAD` and clear its active bit, but
 that is a policy decision outside the fast path. Correctness-critical streams
 should prefer explicit management detach over timeout-based detach.
 
+### Stream Initialization
+
+`obmm_spmc_stream_init()` writes the stream header and all active cursors:
+
+```c
+int obmm_spmc_stream_init(void *base, uint32_t depth,
+                           uint32_t max_consumers,
+                           uint32_t provider_node,
+                           uint64_t consumer_mask)
+{
+    struct obmm_spmc_stream *s = (struct obmm_spmc_stream *)base;
+    uint64_t cursor_off, desc_off;
+
+    if (depth < OBMM_QUEUE_MIN_DEPTH || depth > OBMM_QUEUE_MAX_DEPTH)
+        return -EINVAL;
+    if ((depth & (depth - 1)) != 0)
+        return -EINVAL;
+    if (max_consumers == 0 || max_consumers > OBMM_SPMC_MAX_CONSUMERS)
+        return -EINVAL;
+    if (consumer_mask != 0 &&
+        (63 - __builtin_clzll(consumer_mask)) >= max_consumers)
+        return -EINVAL;
+
+    cursor_off = obmm_align_up_u64(sizeof(struct obmm_spmc_stream), 64);
+    desc_off = obmm_align_up_u64(cursor_off +
+                    (uint64_t)max_consumers * sizeof(struct obmm_spmc_consumer_cursor),
+                    64);
+
+    memset(base, 0, desc_off + (uint64_t)depth * sizeof(struct obmm_desc));
+
+    s->magic = OBMM_SPMC_MAGIC;
+    s->version = OBMM_SPMC_VERSION;
+    s->flags = OBMM_SPMC_F_STRICT;
+    s->generation = 1;
+    s->header_bytes = sizeof(struct obmm_spmc_stream);
+    s->cursor_offset = (uint32_t)cursor_off;
+    s->desc_offset = (uint32_t)desc_off;
+    s->depth = depth;
+    s->mask = depth - 1;
+    s->max_consumers = max_consumers;
+    s->provider_node = provider_node;
+
+    atomic_store_explicit(&s->active_consumer_mask, consumer_mask,
+                          memory_order_relaxed);
+    atomic_store_explicit(&s->tail, 0, memory_order_relaxed);
+
+    uint32_t nid;
+    OBMM_FOR_EACH_NODE_ID(nid, consumer_mask) {
+        struct obmm_spmc_consumer_cursor *c = obmm_spmc_cursor(s, nid);
+        c->node_id = nid;
+        atomic_store_explicit(&c->generation_seen, s->generation,
+                              memory_order_relaxed);
+        atomic_store_explicit(&c->state, OBMM_SPMC_CONSUMER_ACTIVE,
+                              memory_order_release);
+    }
+
+    return 0;
+}
+```
+
+The `memset` zeroes inactive cursors so their state is
+`OBMM_SPMC_CONSUMER_DETACHED` (enum value 0). The release-store on each
+active cursor's state pairs with the acquire-load in `obmm_spmc_consume()`.
+
+### Generation Lifecycle
+
+`generation` in the stream header is a control-plane counter:
+
+- Initialized to 1 during `obmm_spmc_stream_init()`.
+- Incremented by `obmm_spmc_stream_reset()` when the provider reinitializes
+  the stream after a fatal error (e.g. an overrun that invalidated the strict
+  ring). This is a management operation that pauses publication, resets tail
+  to 0, and reinitializes active cursors to head 0.
+- Not incremented on attach or detach. These are mask/state transitions,
+  not stream resets.
+- `uint64_t` avoids wraparound in practice. No overflow handling needed.
+
+Providers compare each cursor's `generation_seen` against the stream
+generation to detect consumers that have not completed a transition.
+In the first implementation this comparison is for monitoring only; the
+provider does not gate publish or reclaim on it.
+
+`obmm_spmc_stream_reset()` is distinct from `obmm_spmc_stream_init()`: init
+constructs a new stream in zeroed storage, while reset preserves the stream
+header placement and directory entry but starts a new generation. First-version
+strict reset always discards in-flight descriptors. It must not attempt to
+resume from `min_head` because the strict slot format has no per-slot sequence
+number and cannot prove that a slow consumer's next slot is still valid.
+
+```c
+int obmm_spmc_stream_reset(struct obmm_spmc_stream *s,
+                           uint64_t consumer_mask)
+{
+    uint64_t new_generation = s->generation + 1;
+    uint32_t nid;
+
+    if (consumer_mask != 0 &&
+        (63 - __builtin_clzll(consumer_mask)) >= s->max_consumers)
+        return -EINVAL;
+
+    atomic_store_explicit(&s->active_consumer_mask, 0, memory_order_release);
+    memset((uint8_t *)s + s->cursor_offset, 0,
+           s->desc_offset - s->cursor_offset +
+           (uint64_t)s->depth * sizeof(struct obmm_desc));
+
+    s->generation = new_generation;
+    atomic_store_explicit(&s->tail, 0, memory_order_relaxed);
+
+    OBMM_FOR_EACH_NODE_ID(nid, consumer_mask) {
+        struct obmm_spmc_consumer_cursor *c = obmm_spmc_cursor(s, nid);
+        c->node_id = nid;
+        atomic_store_explicit(&c->head, 0, memory_order_relaxed);
+        atomic_store_explicit(&c->observed_seq, 0, memory_order_relaxed);
+        atomic_store_explicit(&c->generation_seen, new_generation,
+                              memory_order_relaxed);
+        atomic_store_explicit(&c->state, OBMM_SPMC_CONSUMER_ACTIVE,
+                              memory_order_release);
+    }
+
+    atomic_store_explicit(&s->active_consumer_mask, consumer_mask,
+                          memory_order_release);
+    return 0;
+}
+```
+
 ### Publish Path
 
 The provider publishes one descriptor for all consumers:
@@ -407,7 +668,7 @@ The provider publishes one descriptor for all consumers:
 7. write desc[tail & mask] locally
 8. make descriptor visible to remote NC readers
 9. release-store tail = tail + 1
-10. optionally doorbell selected consumers
+10. optionally doorbell active consumers
 ```
 
 The critical points are steps 6 and 8. C atomics order the local CPU, but they
@@ -434,8 +695,7 @@ Pseudo-code:
 
 ```c
 int obmm_spmc_publish(struct obmm_spmc_stream_view *v,
-                      const struct obmm_desc *desc,
-                      uint64_t consumer_mask)
+                      const struct obmm_desc *desc)
 {
     struct obmm_spmc_stream *s = v->stream;
     struct obmm_desc *ring = obmm_spmc_desc_ring(s);
@@ -443,17 +703,15 @@ int obmm_spmc_publish(struct obmm_spmc_stream_view *v,
     int payload_rc;
     uint64_t active = atomic_load_explicit(&s->active_consumer_mask,
                                            memory_order_acquire);
-    uint64_t wait_mask = consumer_mask;
+    uint64_t wait_mask = active;
     uint64_t tail = atomic_load_explicit(&s->tail, memory_order_relaxed);
     uint64_t min_head = tail;
-
-    if ((consumer_mask & ~active) != 0)
-        return -ENODEV;
+    uint32_t i;
 
     if (wait_mask == 0)
-        return -EINVAL;
+        return -ENODEV;
 
-    for_each_node_id(i, wait_mask) {
+    OBMM_FOR_EACH_NODE_ID(i, wait_mask) {
         struct obmm_spmc_consumer_cursor *c = obmm_spmc_cursor(s, i);
         uint32_t state = atomic_load_explicit(&c->state,
                                               memory_order_acquire);
@@ -480,28 +738,58 @@ int obmm_spmc_publish(struct obmm_spmc_stream_view *v,
 }
 ```
 
-`consumer_mask` is a per-publish mask. It must be a subset of
-`active_consumer_mask` for strict broadcast. Masked broadcast may pass a smaller
-mask, but only the selected consumers participate in backpressure and
-reclamation for that descriptor class.
+`obmm_spmc_publish()` uses the stream's current `active_consumer_mask`.
+The first ABI does not allow the caller to provide a different mask for a
+single descriptor because the ring slot does not record that mask. This keeps
+capacity and reclamation derivable from cursor heads alone.
+
+The publish path has an inherent time-of-check-to-time-of-use (TOCTOU)
+window: between loading `active_consumer_mask` and storing `tail`, a consumer
+may detach or its state may change. This is intentional and benign:
+
+- If a consumer detaches after the active-mask load but before the tail store,
+  the descriptor is written to the ring and the detached consumer will not read
+  it. The descriptor occupies one slot that will be reclaimed when all
+  remaining active consumers advance past it.
+- If a consumer's state changes from ACTIVE to PAUSED/DEAD after the state
+  check, the provider writes the descriptor anyway. The slot is not leaked;
+  it is reclaimed once the provider observes the state change and clears that
+  consumer from `active_consumer_mask`.
+- The provider does not need to hold a lock across publish. Membership
+  changes (attach/detach) are control-plane actions that are serialized
+  outside the fast path.
 
 `obmm_spmc_provider_payload_addr()` is a directory lookup through
 `struct obmm_spmc_stream_view`, not a type-specific guess. The first
-implementation should resolve the descriptor's `region_id` in the provider's
-exported pool directory and report a provider-owned payload only when:
+implementation must resolve the descriptor's `region_id` in the provider's
+exported pool directory and validate the payload range against the matched
+dirent before publication:
 
 ```text
 dirent.region_id == desc->region_id
+dirent.offset <= v->pool_size
+dirent.size <= v->pool_size - dirent.offset
+desc->payload_len == 0
+    OR desc->payload_offset <= dirent.size
+       AND desc->payload_len <= dirent.size - desc->payload_offset
+```
+
+The helper reports a provider-owned payload only when the matched dirent also
+satisfies:
+
+```text
 dirent.kind == OBMM_REGION_TX_ARENA
 dirent.peer_node_id == provider_node
 desc->payload_len > 0
-desc->payload_offset + desc->payload_len <= dirent.size
 ```
 
-If the descriptor references any other region kind, SPMC publish must skip the
-provider-payload visibility helper and rely on that region's own publication
-contract. If `payload_offset + payload_len` is outside the region, publish must
-return `-EINVAL` instead of publishing a bad descriptor.
+If the descriptor references any other valid region kind, SPMC publish must
+skip the provider-payload visibility helper and rely on that region's own
+publication contract. If the region is missing or the payload range is outside
+the matched region, publish must return `-EINVAL` instead of publishing a bad
+descriptor. Range validation must use subtraction as shown above rather than
+`payload_offset + payload_len`, so overflow cannot make an invalid range look
+valid.
 
 Suggested helper signature:
 
@@ -517,7 +805,8 @@ Return values:
 ```text
  1: descriptor references provider TX arena; payload_addr_out is valid
  0: descriptor references another valid region or has no payload
--EINVAL: descriptor references a missing region or an out-of-bounds payload
+-EINVAL: descriptor references a missing region, an out-of-pool dirent, or an
+         out-of-bounds payload
 ```
 
 When it returns 1, `*payload_addr_out` is:
@@ -534,7 +823,7 @@ Each peer consumes independently:
 1. read this consumer cursor head from provider region through remote NC
 2. acquire-load provider tail through remote NC
 3. if head == tail, stream is empty for this consumer
-4. if tail - head > depth, report overrun and do not read the slot
+4. if tail - head >= depth, report overrun and do not read the slot
 5. read descriptor from provider ring through remote NC
 6. read payload through remote NC, if descriptor references provider TX arena
 7. process payload
@@ -561,12 +850,18 @@ int obmm_spmc_consume(struct obmm_spmc_stream_view *v,
     if (head == tail)
         return -EAGAIN;
 
-    if (tail - head > s->depth)
+    if (tail - head >= s->depth) {
+        atomic_fetch_add_explicit(&c->drop_count, 1, memory_order_relaxed);
+        atomic_store_explicit(&c->state, OBMM_SPMC_CONSUMER_PAUSED,
+                              memory_order_release);
+        obmm_publish_cursor_for_provider_read(c, sizeof(*c));
         return -EOVERFLOW;
+    }
 
     *desc = ring[head & s->mask];
+    atomic_store_explicit(&c->observed_seq, desc->seq, memory_order_relaxed);
     atomic_store_explicit(&c->head, head + 1, memory_order_release);
-    obmm_publish_cursor_for_provider_read(&c->head, sizeof(c->head));
+    obmm_publish_cursor_for_provider_read(c, sizeof(*c));
     return 0;
 }
 ```
@@ -579,6 +874,28 @@ Because the first SPMC ABI does not include per-slot sequence numbers,
 `-EOVERFLOW` is fatal for strict streams. The consumer must report the error to
 the control plane instead of attempting to guess a safe resync point.
 
+Overrun recovery is a control-plane decision, not a fast-path action:
+
+1. The consumer increments `drop_count`, stores
+   `state = OBMM_SPMC_CONSUMER_PAUSED`, publishes the cursor cache line for
+   provider visibility, and returns `-EOVERFLOW` to its caller.
+2. The control plane (application-level coordinator) decides:
+   - **Stream reset**: provider pauses publication, calls
+     `obmm_spmc_stream_reset()` with a new generation, resets `tail` to 0,
+     and reinitializes active cursors to head 0. This discards all in-flight
+     descriptors in the strict stream.
+   - **Consumer detach**: provider clears the failed consumer's bit from
+     `active_consumer_mask` and continues with the remaining consumers.
+   - **Full teardown**: destroy the stream and recreate it.
+3. The provider detects the PAUSED state via its next
+   `obmm_spmc_reclaimable_head()` call or an explicit notification from the
+   control plane. It does not auto-recover.
+
+The first implementation must implement consumer PAUSED state storage and
+provider state observation. Full stream reset as a management operation is
+recommended but its mechanism (ioctl, shared memory flag, out-of-band signal)
+is outside the queue layer.
+
 ### Backpressure Modes
 
 SPMC needs an explicit policy because the slowest consumer can hold the whole
@@ -586,13 +903,14 @@ ring:
 
 1. Strict broadcast: provider blocks or returns `-EAGAIN` when any attached
    consumer is slow.
-2. Masked broadcast: provider only waits for consumers in `consumer_mask`.
+2. Fixed-mask broadcast: provider initializes the stream with a subset of
+   consumers and waits only for currently active consumers in that stream.
 3. Loss-tolerant stream: provider may overwrite old slots and mark slow
    consumers overrun. This requires the separate lossy slot format below.
 
-For W4/Qwen correctness paths, use strict or masked broadcast. Loss-tolerant
-mode is only for telemetry or profiling streams and is not part of the first
-ABI.
+For W4/Qwen correctness paths, use strict or fixed-mask broadcast. Do not mix
+different fanout masks in one first-version stream. Loss-tolerant mode is only
+for telemetry or profiling streams and is not part of the first ABI.
 
 Strict-mode publish must use this invariant:
 
@@ -625,31 +943,36 @@ matches the expected `head` before accepting the descriptor. Without this
 per-slot sequence, a slow consumer cannot distinguish a valid old slot from an
 overwritten new slot.
 
+This struct must not appear in the first implementation's header files. When
+lossy mode is implemented in a later version, it should be added to
+`obmm_pool_types.h` alongside a new `OBMM_SPMC_F_LOSSY` flag and a stream
+header version bump. Including it under `#if 0` would create a maintenance
+burden and give the false impression that the layout is frozen.
+
 ### Reclamation
 
-Provider-owned payload reclamation uses the same min-head rule:
+Descriptor-slot reclamation uses the same min-head rule:
 
 ```text
-reclaimable up to min(consumer[i].head for i in active consumer_mask)
+reclaimable up to min(consumer[i].head for i in active_consumer_mask)
 ```
 
 Pseudo-code:
 
 ```c
-uint64_t obmm_spmc_reclaimable_head(struct obmm_spmc_stream_view *v,
-                                    uint64_t consumer_mask)
+uint64_t obmm_spmc_reclaimable_head(struct obmm_spmc_stream_view *v)
 {
     struct obmm_spmc_stream *s = v->stream;
-    uint64_t active = atomic_load_explicit(&s->active_consumer_mask,
-                                           memory_order_acquire);
-    uint64_t wait_mask = active & consumer_mask;
+    uint64_t wait_mask = atomic_load_explicit(&s->active_consumer_mask,
+                                              memory_order_acquire);
     uint64_t tail = atomic_load_explicit(&s->tail, memory_order_acquire);
     uint64_t min_head = tail;
+    uint32_t i;
 
     if (wait_mask == 0)
         return tail;
 
-    for_each_node_id(i, wait_mask) {
+    OBMM_FOR_EACH_NODE_ID(i, wait_mask) {
         struct obmm_spmc_consumer_cursor *c = obmm_spmc_cursor(s, i);
         uint32_t state = atomic_load_explicit(&c->state,
                                               memory_order_acquire);
@@ -665,11 +988,56 @@ uint64_t obmm_spmc_reclaimable_head(struct obmm_spmc_stream_view *v,
 }
 ```
 
-For strict broadcast, callers pass the stream's full active mask. For masked
-broadcast, callers pass the descriptor class mask that was used for
-publication. If ACK-lane mode is enabled, this helper should read the
-provider-local ACK state that is maintained from reverse SPSC ACK descriptors
-instead of reading the cursor lines directly.
+The first ABI has no per-slot consumer mask, so reclaim is always computed
+against the stream's active delivery set. If the application needs independent
+reclaim for different fanout groups, it must use separate SPMC streams. If
+ACK-lane mode is enabled, this helper should read the provider-local ACK state
+that is maintained from reverse SPSC ACK descriptors instead of reading the
+cursor lines directly.
+
+Provider payload reclamation is caller-owned and must be separate from the
+shared-memory stream ABI. The queue layer can provide a helper state for the
+simple first implementation:
+
+```c
+struct obmm_spmc_tx_reclaim_state {
+    uint64_t desc_reclaimed_to;
+    uint64_t tx_reclaim_offset;
+};
+
+int obmm_spmc_reclaim_payloads(struct obmm_spmc_stream_view *v,
+                               struct obmm_spmc_tx_reclaim_state *st)
+{
+    struct obmm_spmc_stream *s = v->stream;
+    struct obmm_desc *ring = obmm_spmc_desc_ring(s);
+    uint64_t reclaim_head = obmm_spmc_reclaimable_head(v);
+
+    while (st->desc_reclaimed_to < reclaim_head) {
+        struct obmm_desc *d = &ring[st->desc_reclaimed_to & s->mask];
+        const void *payload_addr;
+        int rc = obmm_spmc_provider_payload_addr(v, d, &payload_addr);
+
+        if (rc < 0)
+            return rc;
+        if (rc > 0) {
+            uint64_t end = d->payload_offset + d->payload_len;
+            if (end > st->tx_reclaim_offset)
+                st->tx_reclaim_offset = end;
+        }
+        st->desc_reclaimed_to++;
+    }
+
+    return 0;
+}
+```
+
+This helper is valid only for a provider TX arena allocated monotonically by
+offset without wraparound. It advances a high-water reclaim offset; it is not a
+general free-list allocator. Descriptor-indexed fixed payload slots are simpler:
+the provider may reuse `payload_slot = desc_seq & payload_slot_mask` once
+`desc_seq < obmm_spmc_reclaimable_head(v)`. Variable-size wraparound reclaim
+requires a provider-local allocation log or allocator metadata and is outside
+the first queue helper.
 
 The first implementation has two legal reclaim/backpressure modes:
 
@@ -685,15 +1053,16 @@ Cursor mode is simpler and lower overhead. ACK-lane mode is the correctness
 fallback when remote NC writes into provider-owned memory are not reliably
 visible to provider cacheable reads under stress.
 
-Payload slabs can use a descriptor-indexed ring:
+For fixed-size payload slabs, prefer a descriptor-indexed ring:
 
 ```text
 payload_slot = desc_seq & payload_slot_mask
 ```
 
 This works when payload lifetime is tied to descriptor lifetime. For variable
-payload sizes, the provider can use an arena cursor plus per-descriptor
-`payload_offset` and reclaim by walking completed descriptors.
+payload sizes, the first helper only supports monotonic high-water reclaim.
+Wraparound reuse requires provider-local allocator metadata and should be added
+after the basic descriptor/cursor path is validated.
 
 ### Why Not Per-Consumer SPSC For SPMC
 
@@ -732,8 +1101,8 @@ Consumer-side setup:
 7. scan provider directory for OBMM_REGION_SPMC_STREAM;
 8. validate dirent offset/size and stream magic/version/depth/provider_node;
 9. compute stream pointer as imported_base + dirent.offset;
-10. build `struct obmm_spmc_stream_view` from imported base, directory,
-    directory count, provider node, and stream pointer.
+10. build `struct obmm_spmc_stream_view` from imported base, mapped pool size,
+    directory, directory count, provider node, and stream pointer.
 ```
 
 Provider-local setup uses the same directory entry but resolves the stream
@@ -748,6 +1117,87 @@ The consumer cursor lives inside the provider's stream, so a consumer's
 `obmm_spmc_consume()` writes its cursor through the imported NC/osync mapping.
 That write is exactly the visibility path that must be validated before cursor
 mode is used for W4/Qwen correctness traffic.
+
+### View Initialization
+
+`obmm_spmc_view_init_from_directory()` resolves the SPMC stream from a pool
+directory and builds the runtime view. It works for both provider-local and
+consumer-imported mappings:
+
+```c
+int obmm_spmc_view_init_from_directory(struct obmm_spmc_stream_view *v,
+                                        void *pool_base,
+                                        uint64_t pool_size,
+                                        const struct obmm_region_dirent *dir,
+                                        uint32_t dir_count,
+                                        uint32_t provider_node)
+{
+    const struct obmm_region_dirent *spmc_ent = NULL;
+
+    for (uint32_t i = 0; i < dir_count; ++i) {
+        if (dir[i].kind == OBMM_REGION_SPMC_STREAM) {
+            if (spmc_ent != NULL)
+                return -EEXIST;  /* multiple SPMC streams not supported */
+            spmc_ent = &dir[i];
+        }
+    }
+    if (spmc_ent == NULL)
+        return -ENOENT;
+
+    if (spmc_ent->offset > pool_size ||
+        spmc_ent->size > pool_size - spmc_ent->offset)
+        return -EINVAL;
+    if (spmc_ent->size < sizeof(struct obmm_spmc_stream))
+        return -EINVAL;
+
+    struct obmm_spmc_stream *s =
+        (struct obmm_spmc_stream *)((uint8_t *)pool_base + spmc_ent->offset);
+
+    if (s->magic != OBMM_SPMC_MAGIC)
+        return -EINVAL;
+    if (s->version != OBMM_SPMC_VERSION)
+        return -EINVAL;
+    if (s->provider_node != provider_node)
+        return -EINVAL;
+    if (s->max_consumers == 0 || s->max_consumers > OBMM_SPMC_MAX_CONSUMERS)
+        return -EINVAL;
+    if (s->depth < OBMM_QUEUE_MIN_DEPTH || s->depth > OBMM_QUEUE_MAX_DEPTH)
+        return -EINVAL;
+    if ((s->depth & (s->depth - 1)) != 0)
+        return -EINVAL;
+    if (s->cursor_offset < sizeof(*s) || (s->cursor_offset & 63) != 0)
+        return -EINVAL;
+    if (s->desc_offset < s->cursor_offset ||
+        (s->desc_offset & 63) != 0)
+        return -EINVAL;
+    if (s->desc_offset - s->cursor_offset <
+        (uint64_t)s->max_consumers * sizeof(struct obmm_spmc_consumer_cursor))
+        return -EINVAL;
+    if (s->desc_offset > spmc_ent->size ||
+        (uint64_t)s->depth * sizeof(struct obmm_desc) >
+            spmc_ent->size - s->desc_offset)
+        return -EINVAL;
+
+    v->pool_base = (uint8_t *)pool_base;
+    v->pool_size = pool_size;
+    v->dir = dir;
+    v->dir_count = dir_count;
+    v->provider_node = provider_node;
+    v->stream = s;
+    return 0;
+}
+```
+
+`pool_size` must be the mapped exported-region size from the validated pool
+header or import metadata. The view initializer first proves that the SPMC
+dirent is wholly inside that mapping, then validates all stream-internal
+offsets relative to `spmc_ent->size`.
+
+The view does not carry a flag distinguishing provider-local from
+consumer-imported mappings. The difference matters only at the visibility
+boundary, where the existing OBMM publish helpers are called by role
+(provider calls `obmm_publish_desc_for_remote_read()`, consumer calls
+`obmm_publish_cursor_for_provider_read()`), not by mapping type.
 
 ## MPSC: Consumer-Owned Lane Set
 
@@ -817,14 +1267,15 @@ struct obmm_mpsc_publisher_lane {
 };
 ```
 
-Consumer-side initialization scans the local exported pool directory for queues
-whose destination is the local consumer. The pool owner is implicit because this
-directory belongs to the consumer's exported pool:
+Consumer-side initialization scans the local exported pool directory for all
+SPSC queue dirents. The destination is the local consumer by construction
+because this directory belongs to the consumer's exported pool; each queue
+dirent's `peer_node_id` names the publisher:
 
 ```text
 include dirent where:
     kind == OBMM_REGION_QUEUE
-    peer_node_id == publisher_node
+publisher_node = dirent.peer_node_id
 ```
 
 The resulting `queue` pointers are local cacheable mappings because the
@@ -832,7 +1283,9 @@ consumer owns the exported region. Lanes are sorted by `publisher_node` for
 stable logs and deterministic tests.
 
 Consumer-side initialization must return `-ENOENT` if no lanes match, and
-`-E2BIG` if more than `OBMM_MPSC_MAX_LANES` lanes match.
+`-E2BIG` if more than `OBMM_MPSC_MAX_LANES` lanes match. It must also reject
+duplicate queue entries for the same `publisher_node`, because duplicate lanes
+would make per-publisher ordering ambiguous.
 
 Publisher-side initialization resolves exactly one remote queue by scanning the
 target consumer's imported directory:
@@ -987,15 +1440,15 @@ For `OBMM_REGION_SPMC_STREAM`:
 - `peer_node_id` should be `UINT16_MAX` or `0xffff` to indicate broadcast.
 - `offset` points to `struct obmm_spmc_stream` in the provider's exported pool.
 - `size` is the value returned by `obmm_spmc_region_size()`.
-- `flags` should carry strict/masked mode and whether payloads are
+- `flags` should carry strict/fixed-mask mode and whether payloads are
   producer-owned. The first implementation must reject lossy-mode flags.
-- the stream header carries the active `consumer_mask`.
+- the stream header carries the active delivery mask in `active_consumer_mask`.
 
 Suggested directory flags:
 
 ```c
 #define OBMM_REGION_F_SPMC_STRICT           (1u << 0)
-#define OBMM_REGION_F_SPMC_MASKED           (1u << 1)
+#define OBMM_REGION_F_SPMC_FIXED_MASK       (1u << 1)
 #define OBMM_REGION_F_SPMC_PRODUCER_PAYLOAD (1u << 2)
 ```
 
@@ -1014,7 +1467,7 @@ Polling is still the first implementation because node counts are small.
 Doorbells can be added later:
 
 - SPMC: provider batches descriptors, updates `tail`, then rings all consumers
-  in `consumer_mask`.
+  in the stream's current `active_consumer_mask`.
 - MPSC: each publisher batches descriptors, updates its lane `tail`, then rings
   the consumer.
 
@@ -1094,13 +1547,13 @@ a reverse SPSC ACK lane.
 ### SPMC
 
 - Strict stream: slowest active consumer controls capacity.
-- Masked stream: only consumers in `consumer_mask` participate in capacity and
-  reclamation.
+- Fixed-mask stream: only consumers in the stream's active delivery set
+  participate in capacity and reclamation.
 - Detached consumer: provider clears its bit in `active_consumer_mask` after
   timeout or management action.
-- Overrun in first-version strict/masked streams: consumer detects `tail - head
-  > depth`, increments `drop_count`, returns `-EOVERFLOW`, and leaves recovery
-  to the control plane.
+- Overrun in first-version strict/fixed-mask streams: consumer detects `tail - head
+  >= depth` (the slot at `head & mask` has been overwritten), increments
+  `drop_count`, returns `-EOVERFLOW`, and leaves recovery to the control plane.
 - Overrun in future lossy streams: consumer validates per-slot sequence,
   resyncs to a known-good slot, and increments `drop_count`.
 
@@ -1145,8 +1598,12 @@ int obmm_spmc_stream_init(void *base, uint32_t depth,
                           uint32_t provider_node,
                           uint64_t consumer_mask);
 
+int obmm_spmc_stream_reset(struct obmm_spmc_stream *s,
+                           uint64_t consumer_mask);
+
 int obmm_spmc_view_init_from_directory(struct obmm_spmc_stream_view *v,
                                        void *pool_base,
+                                       uint64_t pool_size,
                                        const struct obmm_region_dirent *dir,
                                        uint32_t dir_count,
                                        uint32_t provider_node);
@@ -1157,15 +1614,16 @@ int obmm_spmc_provider_payload_addr(
     const void **payload_addr_out);
 
 int obmm_spmc_publish(struct obmm_spmc_stream_view *v,
-                      const struct obmm_desc *desc,
-                      uint64_t consumer_mask);
+                      const struct obmm_desc *desc);
 
 int obmm_spmc_consume(struct obmm_spmc_stream_view *v,
                       uint32_t consumer_idx,
                       struct obmm_desc *desc);
 
-uint64_t obmm_spmc_reclaimable_head(struct obmm_spmc_stream_view *v,
-                                    uint64_t consumer_mask);
+uint64_t obmm_spmc_reclaimable_head(struct obmm_spmc_stream_view *v);
+
+int obmm_spmc_reclaim_payloads(struct obmm_spmc_stream_view *v,
+                               struct obmm_spmc_tx_reclaim_state *st);
 ```
 
 MPSC:
@@ -1219,6 +1677,112 @@ handoff remains SPSC because each range has one producer and one consumer. SPMC
 becomes useful when the same range output must feed multiple peers. MPSC becomes
 useful when a single coordinator needs to collect events from all workers.
 
+## Demo Integration
+
+### Demo Modes
+
+The demo program must support multiple modes selected at startup:
+
+```c
+enum demo_mode {
+    DEMO_MODE_FULLMESH = 0,   /* existing: all-to-all SPSC rounds */
+    DEMO_MODE_SPMC     = 1,   /* one provider broadcasts to consumers */
+    DEMO_MODE_COMBINED = 2,   /* SPSC + SPMC + MPSC combined validation */
+};
+```
+
+Selection via `OBMM_DEMO_MODE` environment variable (default `fullmesh`).
+
+Each mode reuses the existing Phase 1-4 bootstrap (identity, export, exchange,
+import). Mode differences appear only in Phase 5 (rounds):
+
+- **FULLMESH**: Existing `do_rounds()` + `do_queue_stress()`. No SPMC stream
+  allocated. `directory_count == node_count` as before.
+- **SPMC**: Provider node allocates one SPMC stream. Consumer nodes resolve
+  the stream view from the provider's imported directory. The phase runs the
+  SPMC broadcast protocol described below.
+- **COMBINED**: Same as FULLMESH for SPSC lanes, plus one SPMC stream and one
+  MPSC consumer set active simultaneously. Tests that the three queue types
+  coexist in the same export region.
+
+The SPMC-enabled layout is active whenever `OBMM_DEMO_MODE` is `spmc` or
+`combined`. When the mode is `fullmesh`, no SPMC stream is allocated and the
+layout is identical to the current format.
+
+### SPMC Demo Protocol
+
+```text
+provider (node 0):
+  1. allocate and init SPMC stream in export region
+  2. for batch = 0..N-1:
+       write payload to TX arena
+       build descriptor with seq=batch, payload_offset, payload_len
+       obmm_spmc_publish()
+       if -EAGAIN: spin-wait and retry
+  3. publish TERMINAL descriptor (type = OBMM_DESC_COMMIT, seq = N)
+  4. wait for all consumer ACK descriptors via existing SPSC lanes
+
+consumer (node i, i != 0):
+  1. import provider region, resolve SPMC stream view
+  2. loop:
+       obmm_spmc_consume(view, my_node_id, &desc)
+       if -EAGAIN: spin-wait and retry
+       if descriptor type is COMMIT with seq == N: break
+       verify payload checksum matches provider's published data
+       increment local consumed count
+  3. push ACK descriptor to provider's SPSC lane with consumed count
+```
+
+Completion: provider waits for ACK from every consumer, then prints summary.
+
+### MPSC Demo Protocol
+
+```text
+publishers (nodes 0..N-2):
+  1. resolve MPSC publisher lane to consumer (node N-1)
+  2. for seq = 0..M-1:
+       build descriptor with seq, type = OBMM_DESC_DATA
+       obmm_mpsc_push() with retry on -EAGAIN
+  3. push TERMINAL descriptor (type = OBMM_DESC_COMMIT)
+
+consumer (node N-1):
+  1. resolve MPSC consumer set from local export directory
+  2. loop:
+       obmm_mpsc_poll(&set, &desc, &pub_node, &rx_seq)
+       if -EAGAIN: spin-wait and retry
+       track per-publisher count and rx_seq monotonicity
+       break when TERMINAL received from every publisher
+  3. print per-publisher stats and global ordering summary
+```
+
+### Environment Variables
+
+Full specification of demo knobs:
+
+| Variable | Default | Values | Description |
+|----------|---------|--------|-------------|
+| `OBMM_DEMO_MODE` | `fullmesh` | `fullmesh`, `spmc`, `combined` | Demo phase 5 mode |
+| `OBMM_POOL_EXPORT_SIZE_MB` | `2` | any positive integer | Export region size in MB |
+| `OBMM_QUEUE_DEPTH` | `1024` | power-of-2 in [64, 65536] | SPSC queue depth |
+| `OBMM_BOOTSTRAP` | `fm` | `fm`, `udp` | Bootstrap mode |
+| `OBMM_BOOTSTRAP_SESSION` | `default` | any string | Session identifier |
+| `OBMM_SPMC_DEPTH` | `1024` | power-of-2 in [64, 65536] | SPMC stream ring depth |
+| `OBMM_SPMC_PROVIDER` | `0` | valid node ID | SPMC provider node |
+| `OBMM_SPMC_MAX_CONSUMERS` | `64` | 1..64 | Max consumer slots in stream |
+| `OBMM_SPMC_BATCH_COUNT` | `1000` | any positive integer | Descriptors to publish per demo |
+| `OBMM_SPMC_SLOW_CONSUMER` | (none) | valid node ID | Consumer that sleeps between consumes |
+| `OBMM_MPSC_CONSUMER` | `node_count - 1` | valid node ID | MPSC consumer node |
+| `OBMM_MPSC_BATCH_COUNT` | `1000` | any positive integer | Descriptors per publisher |
+
+Relationships:
+- `OBMM_QUEUE_DEPTH` is shared by SPSC queues and MPSC lanes (MPSC lanes are
+  SPSC queues). `OBMM_SPMC_DEPTH` is independent.
+- When `OBMM_DEMO_MODE=spmc`, only `OBMM_SPMC_*` variables are relevant.
+  Existing SPSC lanes are still initialized for the ACK path.
+- `OBMM_POOL_EXPORT_SIZE_MB` must be large enough for the combined layout.
+  The demo must compute the minimum required size and exit with an error
+  message showing the required MB if the configured value is too small.
+
 ## Validation Plan
 
 1. Host unit tests in `obmm_queue_test.c`:
@@ -1230,25 +1794,49 @@ useful when a single coordinator needs to collect events from all workers.
      places the TX arena after the SPMC stream without changing per-peer queue
      slot ordering.
    - SPMC init rejects invalid depth, invalid consumer mask, too many
-     consumers, and lossy flags.
+     consumers, and any future lossy-mode option.
+   - SPMC init with valid parameters produces correct cursor_offset and
+     desc_offset, zeroes inactive cursors, and sets active cursor state to
+     ACTIVE with the expected generation.
    - SPMC view initialization resolves `OBMM_REGION_SPMC_STREAM` from a local
      or imported pool directory and rejects bad offset/size/magic/version.
+   - SPMC view initialization rejects multiple SPMC stream entries (-EEXIST)
+     and missing entries (-ENOENT).
    - `obmm_spmc_provider_payload_addr()` returns 1 for provider TX arena
      descriptors, 0 for valid non-provider-payload descriptors, and `-EINVAL`
-     for missing or out-of-bounds payload references.
+     for missing regions, out-of-pool dirents, or out-of-bounds payload
+     references.
    - SPMC strict publish/consume preserves descriptor order across ring-index
      wraparound.
    - SPMC full condition returns `-EAGAIN` when `tail - min_head >= depth`.
+   - SPMC publish returns `-ENODEV` when `active_consumer_mask` is empty.
+   - SPMC publish returns `-EPIPE` when a target consumer is not ACTIVE.
    - SPMC overrun returns `-EOVERFLOW` and increments `drop_count`.
-   - MPSC set initialization groups only matching SPSC lanes.
+   - SPMC consumer sets state to PAUSED after detecting overrun.
+   - SPMC reclaimable_head returns the minimum across active consumer heads
+     and skips PAUSED/DEAD consumers.
+   - SPMC payload reclaim advances `desc_reclaimed_to` and
+     `tx_reclaim_offset` for monotonically allocated provider TX payloads.
+   - MPSC consumer set initialization groups local exported SPSC queue dirents,
+     rejects duplicate publisher nodes, returns `-ENOENT` when no lanes match,
+     and returns `-E2BIG` when too many match.
+   - MPSC publisher lane initialization returns `-ENOENT` when the lane is
+     missing and `-EEXIST` when multiple matching lanes exist.
    - MPSC poll preserves per-publisher order and assigns monotonic consumer
      `rx_seq`.
+   - MPSC poll rotates fairly: no publisher starved when all lanes have
+     traffic.
+   - `OBMM_FOR_EACH_NODE_ID()` iterates all set bits in ascending order.
+   - Export layout with SPMC enabled produces directory_count =
+     node_count + 1 and valid offsets for all regions.
+   - Export layout minimum size validation fails with a clear message when
+     OBMM_POOL_EXPORT_SIZE_MB is too small for the enabled features.
 2. Four-node SPMC guest demo:
    - node0 publishes one stream;
    - node1/node2/node3 consume at different rates;
    - strict mode must backpressure node0 when any active consumer is slow;
-   - masked mode must keep publishing when the slow consumer is not in the
-     publish mask.
+   - fixed-mask mode must keep publishing when the slow consumer is not a
+     member of that stream's active delivery set.
 3. Four-node MPSC guest demo:
    - node0/node1/node2 publish to node3;
    - node3 drains with round-robin polling;
@@ -1292,20 +1880,19 @@ obmm-mpsc: rx_seq_monotonic=1 max_fairness_gap=...
 obmm-mpsc: PASS
 ```
 
-Useful knobs:
+Useful knobs (see Demo Integration section for full specification):
 
 ```text
+OBMM_DEMO_MODE=fullmesh|spmc|combined
 OBMM_SPMC_DEPTH=64|1024
-OBMM_SPMC_MODE=strict|masked
 OBMM_SPMC_PROVIDER=0
-OBMM_SPMC_CONSUMER_MASK=0xfe
-OBMM_SPMC_SLOW_CONSUMER=3
-OBMM_SPMC_ACK_MODE=cursor|spsc_ack
-
-OBMM_MPSC_DEPTH=64|1024
-OBMM_MPSC_CONSUMER=7
-OBMM_MPSC_PUBLISHER_MASK=0x7f
-OBMM_MPSC_POLL_BUDGET=1
+OBMM_SPMC_MAX_CONSUMERS=64
+OBMM_SPMC_BATCH_COUNT=1000
+OBMM_SPMC_SLOW_CONSUMER=<node_id>
+OBMM_MPSC_CONSUMER=<node_id>
+OBMM_MPSC_BATCH_COUNT=1000
+OBMM_QUEUE_DEPTH=64|1024
+OBMM_POOL_EXPORT_SIZE_MB=2|...
 ```
 
 Suggested future scripts:
