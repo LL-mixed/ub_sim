@@ -823,7 +823,7 @@ Each peer consumes independently:
 1. read this consumer cursor head from provider region through remote NC
 2. acquire-load provider tail through remote NC
 3. if head == tail, stream is empty for this consumer
-4. if tail - head >= depth, report overrun and do not read the slot
+4. if tail - head > depth, report overrun and do not read the slot
 5. read descriptor from provider ring through remote NC
 6. read payload through remote NC, if descriptor references provider TX arena
 7. process payload
@@ -850,7 +850,7 @@ int obmm_spmc_consume(struct obmm_spmc_stream_view *v,
     if (head == tail)
         return -EAGAIN;
 
-    if (tail - head >= s->depth) {
+    if (tail - head > s->depth) {
         atomic_fetch_add_explicit(&c->drop_count, 1, memory_order_relaxed);
         atomic_store_explicit(&c->state, OBMM_SPMC_CONSUMER_PAUSED,
                               memory_order_release);
@@ -1552,7 +1552,7 @@ a reverse SPSC ACK lane.
 - Detached consumer: provider clears its bit in `active_consumer_mask` after
   timeout or management action.
 - Overrun in first-version strict/fixed-mask streams: consumer detects `tail - head
-  >= depth` (the slot at `head & mask` has been overwritten), increments
+  > depth` (the slot at `head & mask` has been overwritten), increments
   `drop_count`, returns `-EOVERFLOW`, and leaves recovery to the control plane.
 - Overrun in future lossy streams: consumer validates per-slot sequence,
   resyncs to a known-good slot, and increments `drop_count`.
