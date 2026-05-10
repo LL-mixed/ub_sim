@@ -11,7 +11,7 @@ TRACE_FILE="${TRACE_FILE:-$OUT_DIR/eight_node_obmm_queue_demo.trace.latest.txt}"
 RUN_ID_BASE="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_obmmqueue8_${RANDOM}}"
 RUN_DIR="$LOG_DIR/${RUN_ID_BASE}_headless8"
 BOOT_WAIT_SECS="${BOOT_WAIT_SECS:-180}"
-DEMO_WAIT_SECS="${DEMO_WAIT_SECS:-180}"
+DEMO_WAIT_SECS="${DEMO_WAIT_SECS:-300}"
 APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1 pmd_mapping=100% obmm.mempool_size=0}"
 QEMU_MEM="${QEMU_MEM:-8G}"
 QEMU_SMP="${QEMU_SMP:-4}"
@@ -20,6 +20,12 @@ PORT_BASE="$PORT_BASE_START"
 OBMM_POOL_EXPORT_SIZE_MB="${OBMM_POOL_EXPORT_SIZE_MB:-512}"
 OBMM_QUEUE_DEPTH="${OBMM_QUEUE_DEPTH:-1024}"
 OBMM_BOOTSTRAP="${OBMM_BOOTSTRAP:-fm}"
+OBMM_DEMO_MODE="${OBMM_DEMO_MODE:-combined}"
+OBMM_SPMC_PROVIDER="${OBMM_SPMC_PROVIDER:-0}"
+OBMM_SPMC_BATCH_COUNT="${OBMM_SPMC_BATCH_COUNT:-1000}"
+OBMM_MPSC_CONSUMER="${OBMM_MPSC_CONSUMER:-0}"
+OBMM_MPSC_BATCH_COUNT="${OBMM_MPSC_BATCH_COUNT:-1000}"
+OBMM_MPMC_BATCH_COUNT="${OBMM_MPMC_BATCH_COUNT:-500}"
 
 NODE_IDS=(nodeA nodeB nodeC nodeD nodeE nodeF nodeG nodeH)
 NODE_IPS=(10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4 10.0.0.5 10.0.0.6 10.0.0.7 10.0.0.8)
@@ -171,6 +177,12 @@ send_obmm_queue_demo_cmd() {
   payload+=$'export OBMM_QUEUE_DEPTH='"${OBMM_QUEUE_DEPTH}"$'\n'
   payload+=$'export OBMM_BOOTSTRAP='"${OBMM_BOOTSTRAP}"$'\n'
   payload+=$'export OBMM_BOOTSTRAP_SESSION='"${RUN_ID_BASE}"$'\n'
+  payload+=$'export OBMM_DEMO_MODE='"${OBMM_DEMO_MODE}"$'\n'
+  payload+=$'export OBMM_SPMC_PROVIDER='"${OBMM_SPMC_PROVIDER}"$'\n'
+  payload+=$'export OBMM_SPMC_BATCH_COUNT='"${OBMM_SPMC_BATCH_COUNT}"$'\n'
+  payload+=$'export OBMM_MPSC_CONSUMER='"${OBMM_MPSC_CONSUMER}"$'\n'
+  payload+=$'export OBMM_MPSC_BATCH_COUNT='"${OBMM_MPSC_BATCH_COUNT}"$'\n'
+  payload+=$'export OBMM_MPMC_BATCH_COUNT='"${OBMM_MPMC_BATCH_COUNT}"$'\n'
   payload+=$'echo '"${start_marker}"$'\n'
   payload+=$'/bin/linqu_ub_obmm_queue_demo\n'
 
@@ -226,6 +238,12 @@ validate_node_log() {
     "$node_id rounds done" || return 1
   assert_log_has "$log_file" "\\[obmm_queue_demo\\] queue stress -> ok passes=2 depth=${OBMM_QUEUE_DEPTH}" \
     "$node_id queue stress" || return 1
+  assert_log_has "$log_file" "\\[obmm_queue_demo\\] spmc.*-> ok" \
+    "$node_id spmc" || return 1
+  assert_log_has "$log_file" "\\[obmm_queue_demo\\] mpsc.*-> ok" \
+    "$node_id mpsc" || return 1
+  assert_log_has "$log_file" "\\[obmm_queue_demo\\] mpmc -> ok" \
+    "$node_id mpmc" || return 1
   assert_log_has "$log_file" "\\[obmm_queue_demo\\] pass" "$node_id pass" || return 1
   assert_log_absent "$log_file" "\\[obmm_queue_demo\\] .*fail" "$node_id fail" || return 1
   assert_log_absent "$log_file" "WARNING: CPU:" "$node_id kernel warning" || return 1

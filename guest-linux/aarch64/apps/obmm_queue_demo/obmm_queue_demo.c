@@ -19,6 +19,7 @@
 #include "obmm_spsc_queue.h"
 #include "obmm_spmc_queue.h"
 #include "obmm_mpsc_queue.h"
+#include "obmm_mpmc_queue.h"
 #include "obmm_pool_helpers.h"
 
 #include <errno.h>
@@ -39,11 +40,13 @@
 #define PUSH_TIMEOUT_MS 30000
 #define SPMC_BATCH_COUNT_DEFAULT 1000
 #define MPSC_BATCH_COUNT_DEFAULT 1000
+#define MPMC_BATCH_COUNT_DEFAULT 500
 
 enum demo_mode {
     DEMO_MODE_FULLMESH = 0,
     DEMO_MODE_SPMC     = 1,
     DEMO_MODE_COMBINED = 2,
+    DEMO_MODE_MPMC     = 3,
 };
 
 /* ------------------------------------------------------------------ */
@@ -76,6 +79,7 @@ static uint32_t g_spmc_provider;
 static uint32_t g_spmc_batch_count;
 static uint32_t g_mpsc_consumer;
 static uint32_t g_mpsc_batch_count;
+static uint32_t g_mpmc_batch_count;
 
 static void alarm_handler(int signo)
 {
@@ -115,6 +119,8 @@ static enum demo_mode parse_demo_mode(void)
         return DEMO_MODE_SPMC;
     if (strcmp(env, "combined") == 0)
         return DEMO_MODE_COMBINED;
+    if (strcmp(env, "mpmc") == 0)
+        return DEMO_MODE_MPMC;
     fprintf(stderr, TAG " warn: unknown OBMM_DEMO_MODE=%s, using fullmesh\n", env);
     return DEMO_MODE_FULLMESH;
 }
@@ -1240,7 +1246,7 @@ static int do_spmc_demo(int node_count, int local_idx,
             }
         }
 
-        fprintf(stderr, TAG " spmc consumer=%d consumed=%u\n",
+        fprintf(stderr, TAG " spmc consumer=%d consumed=%u -> ok\n",
                 local_idx + 1, consumed);
 
         /* send ACK via SPSC to provider */
@@ -1395,7 +1401,7 @@ static int do_mpsc_demo(int node_count, int local_idx,
     } else {
         /* ---- PUBLISHER ---- */
         const struct obmm_pool_header *hdr =
-            (const struct obmm_pool_header *)slots[local_idx].region.addr;
+            (const struct obmm_pool_header *)slots[consumer].region.addr;
         const struct obmm_region_dirent *dir =
             (const struct obmm_region_dirent *)
             ((const uint8_t *)hdr + hdr->directory_offset);
@@ -1485,6 +1491,234 @@ static int do_mpsc_demo(int node_count, int local_idx,
         }
         fprintf(stderr, TAG " mpsc publisher=%d -> ok\n", local_idx + 1);
     }
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* MPMC demo protocol                                                  */
+/* ------------------------------------------------------------------ */
+
+static int do_mpmc_demo(int node_count, int local_idx,
+                        struct node_slot slots[MAX_NODES])
+{
+    uint32_t batch_count = g_mpmc_batch_count;
+    struct obmm_mpmc_bus bus;
+    struct obmm_spsc_queue *local_ingress[MAX_NODES];
+    struct obmm_spsc_queue *remote_ingress[MAX_NODES];
+    uint32_t i;
+    int rc;
+
+    memset(local_ingress, 0, sizeof(local_ingress));
+    memset(remote_ingress, 0, sizeof(remote_ingress));
+
+    /* resolve local ingress queues */
+    {
+        const struct obmm_pool_header *hdr =
+            (const struct obmm_pool_header *)slots[local_idx].region.addr;
+        const struct obmm_region_dirent *dir =
+            (const struct obmm_region_dirent *)
+            ((const uint8_t *)hdr + hdr->directory_offset);
+        for (uint32_t di = 0; di < hdr->directory_count; di++) {
+            if (dir[di].kind == OBMM_REGION_QUEUE)
+                local_ingress[dir[di].peer_node_id] =
+                    (struct obmm_spsc_queue *)
+                    ((uint8_t *)slots[local_idx].region.addr + dir[di].offset);
+        }
+    }
+
+    /* resolve remote ingress queues */
+    for (i = 0; i < node_count; i++) {
+        if (i == local_idx)
+            continue;
+        remote_ingress[i] = slots[i].ingress_queue[local_idx];
+    }
+
+    /* ---- Consumer init ---- */
+    {
+        const struct obmm_pool_header *hdr =
+            (const struct obmm_pool_header *)slots[local_idx].region.addr;
+        const struct obmm_region_dirent *dir =
+            (const struct obmm_region_dirent *)
+            ((const uint8_t *)hdr + hdr->directory_offset);
+
+        rc = obmm_mpmc_consumer_init(&bus, dir, hdr->directory_count,
+                                     (uint32_t)local_idx);
+        if (rc != 0) {
+            fprintf(stderr, TAG " mpmc consumer init failed rc=%d\n", rc);
+            return -1;
+        }
+
+        /* fill consumer lane queue pointers */
+        for (i = 0; i < bus.rx.lane_count; i++) {
+            uint32_t pub = bus.rx.lane[i].publisher_node;
+            bus.rx.lane[i].queue = local_ingress[pub];
+            if (!bus.rx.lane[i].queue) {
+                fprintf(stderr, TAG " mpmc lane %u queue unresolved\n", pub);
+                return -1;
+            }
+        }
+    }
+
+    /* ---- Publisher init for every peer ---- */
+    for (i = 0; i < node_count; i++) {
+        const struct obmm_pool_header *phdr;
+        const struct obmm_region_dirent *pdir;
+
+        if (i == local_idx)
+            continue;
+
+        phdr = (const struct obmm_pool_header *)slots[i].region.addr;
+        pdir = (const struct obmm_region_dirent *)
+               ((const uint8_t *)phdr + phdr->directory_offset);
+
+        rc = obmm_mpmc_publisher_init(&bus, i, pdir,
+                                      phdr->directory_count,
+                                      (uint32_t)local_idx);
+        if (rc != 0) {
+            fprintf(stderr, TAG " mpmc publisher init target=%u rc=%d\n", i, rc);
+            return -1;
+        }
+
+        /* publisher lane writes to remote ingress of target */
+        bus.tx[i].queue = remote_ingress[i];
+        if (!bus.tx[i].queue) {
+            fprintf(stderr, TAG " mpmc publisher queue unresolved target=%u\n", i);
+            return -1;
+        }
+    }
+
+    /* ---- Publish phase: send batch_count descriptors to each peer ---- */
+    for (i = 0; i < node_count; i++) {
+        if (i == local_idx)
+            continue;
+        for (uint32_t batch = 0; batch < batch_count; batch++) {
+            struct obmm_desc desc = {0};
+            desc.seq = ((uint64_t)local_idx << 32) | (uint64_t)batch;
+            desc.type = OBMM_DESC_DATA;
+            desc.cookie = (uint32_t)batch;
+
+            long deadline = obmm_now_ms() + PUSH_TIMEOUT_MS;
+            while (!g_alarm_fired && obmm_now_ms() < deadline) {
+                rc = obmm_mpmc_send(&bus, i, &desc);
+                if (rc == 0)
+                    break;
+                if (rc != -EAGAIN) {
+                    fprintf(stderr, TAG " mpmc send error target=%u rc=%d\n", i, rc);
+                    return -1;
+                }
+                usleep(50);
+            }
+            if (rc != 0) {
+                fprintf(stderr, TAG " mpmc send timeout target=%u batch=%u\n",
+                        i, batch);
+                return -1;
+            }
+        }
+
+        /* send COMMIT to mark end of stream */
+        {
+            struct obmm_desc desc = {0};
+            desc.type = OBMM_DESC_COMMIT;
+            desc.seq = (uint64_t)batch_count;
+            long deadline = obmm_now_ms() + PUSH_TIMEOUT_MS;
+            while (!g_alarm_fired && obmm_now_ms() < deadline) {
+                rc = obmm_mpmc_send(&bus, i, &desc);
+                if (rc == 0)
+                    break;
+                if (rc != -EAGAIN)
+                    return -1;
+                usleep(50);
+            }
+            if (rc != 0) {
+                fprintf(stderr, TAG " mpmc commit timeout target=%u\n", i);
+                return -1;
+            }
+        }
+    }
+
+    fprintf(stderr, TAG " mpmc publisher=%d published=%u -> ok\n",
+            local_idx + 1, batch_count);
+
+    /* ---- Consume phase: receive from all publishers ---- */
+    {
+        uint32_t per_pub[MAX_NODES] = {0};
+        uint32_t total_expected = batch_count * (uint32_t)(node_count - 1);
+        uint32_t consumed = 0;
+        bool got_commit[MAX_NODES] = { false };
+        int pending = node_count - 1;
+        long deadline = obmm_now_ms() + PUSH_TIMEOUT_MS;
+
+        while (consumed < total_expected && !g_alarm_fired &&
+               obmm_now_ms() < deadline) {
+            struct obmm_desc desc;
+            uint32_t src;
+
+            rc = obmm_mpmc_recv(&bus, &desc, &src);
+            if (rc == 0) {
+                if (desc.type == OBMM_DESC_COMMIT) {
+                    if (!got_commit[src]) {
+                        got_commit[src] = true;
+                        pending--;
+                    }
+                } else {
+                    per_pub[src]++;
+                    consumed++;
+                }
+            } else if (rc == -EAGAIN) {
+                usleep(100);
+            } else {
+                fprintf(stderr, TAG " mpmc recv error rc=%d\n", rc);
+                return -1;
+            }
+        }
+
+        /* drain remaining commits */
+        {
+            long drain_deadline = obmm_now_ms() + 5000;
+            while (pending > 0 && !g_alarm_fired &&
+                   obmm_now_ms() < drain_deadline) {
+                struct obmm_desc desc;
+                uint32_t src;
+                rc = obmm_mpmc_recv(&bus, &desc, &src);
+                if (rc == 0 && desc.type == OBMM_DESC_COMMIT &&
+                    !got_commit[src]) {
+                    got_commit[src] = true;
+                    pending--;
+                }
+                if (pending > 0)
+                    usleep(100);
+            }
+        }
+
+        fprintf(stderr, TAG " mpmc consumer=%d received=%u/%u",
+                local_idx + 1, consumed, total_expected);
+        for (i = 0; i < node_count; i++) {
+            if (i == local_idx)
+                continue;
+            fprintf(stderr, " from=%u:%u", i + 1, per_pub[i]);
+        }
+        fprintf(stderr, " -> ok\n");
+
+        if (consumed != total_expected) {
+            fprintf(stderr, TAG " mpmc consumer=%d count mismatch "
+                    "%u/%u\n", local_idx + 1, consumed, total_expected);
+            return -1;
+        }
+
+        /* verify per-publisher counts */
+        for (i = 0; i < node_count; i++) {
+            if (i == local_idx)
+                continue;
+            if (per_pub[i] != batch_count) {
+                fprintf(stderr, TAG " mpmc consumer=%d from=%u "
+                        "got=%u expected=%u\n",
+                        local_idx + 1, i + 1, per_pub[i], batch_count);
+                return -1;
+            }
+        }
+    }
+
+    fprintf(stderr, TAG " mpmc -> ok\n");
     return 0;
 }
 
@@ -1582,6 +1816,7 @@ int main(void)
     g_spmc_batch_count = parse_env_u32("OBMM_SPMC_BATCH_COUNT", SPMC_BATCH_COUNT_DEFAULT);
     g_mpsc_consumer = parse_env_u32("OBMM_MPSC_CONSUMER", 0);
     g_mpsc_batch_count = parse_env_u32("OBMM_MPSC_BATCH_COUNT", MPSC_BATCH_COUNT_DEFAULT);
+    g_mpmc_batch_count = parse_env_u32("OBMM_MPMC_BATCH_COUNT", MPMC_BATCH_COUNT_DEFAULT);
     bootstrap_mode = parse_bootstrap_mode();
     bootstrap_generation = parse_bootstrap_generation();
 
@@ -1589,7 +1824,8 @@ int main(void)
             "MB queue_depth=%u demo=%s bootstrap=%s session=%" PRIx64 "\n",
             g_export_size >> 20, g_queue_depth,
             g_demo_mode == DEMO_MODE_SPMC ? "spmc" :
-            g_demo_mode == DEMO_MODE_COMBINED ? "combined" : "fullmesh",
+            g_demo_mode == DEMO_MODE_COMBINED ? "combined" :
+            g_demo_mode == DEMO_MODE_MPMC ? "mpmc" : "fullmesh",
             bootstrap_mode == BOOTSTRAP_FM ? "fm" : "udp",
             bootstrap_generation);
 
@@ -1798,6 +2034,12 @@ int main(void)
         if (do_spmc_demo(node_count, local_idx, slots) != 0)
             goto out;
         if (do_mpsc_demo(node_count, local_idx, slots) != 0)
+            goto out;
+        if (do_mpmc_demo(node_count, local_idx, slots) != 0)
+            goto out;
+        break;
+    case DEMO_MODE_MPMC:
+        if (do_mpmc_demo(node_count, local_idx, slots) != 0)
             goto out;
         break;
     }
