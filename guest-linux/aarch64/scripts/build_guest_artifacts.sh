@@ -222,6 +222,9 @@ sync_from_remote_linux() {
     REMOTE_LINUX_HOST="${REMOTE_LINUX_HOST:-}" \
     REMOTE_KERNEL_SRC="${REMOTE_KERNEL_SRC:-}" \
     REMOTE_KERNEL_BUILD="${REMOTE_KERNEL_BUILD:-}" \
+    REMOTE_LINQU_DRIVER_DIR="${REMOTE_LINQU_DRIVER_DIR:-}" \
+    REMOTE_LINQU_MODULE_PATH="${REMOTE_LINQU_MODULE_PATH:-}" \
+    REMOTE_REUSE_KERNEL_CONFIG="${REMOTE_REUSE_KERNEL_CONFIG:-0}" \
     ./scripts/sync_ub_kernel_artifacts_from_remote_linux.sh
   )
   write_kernel_image_stamp || true

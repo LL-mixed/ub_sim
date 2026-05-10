@@ -31,6 +31,7 @@ JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}"
 REMOTE_CROSS_COMPILE="${REMOTE_CROSS_COMPILE:-aarch64-linux-gnu-}"
 REMOTE_ARCH="${REMOTE_ARCH:-arm64}"
 REMOTE_KERNEL_DEFCONFIG="${REMOTE_KERNEL_DEFCONFIG:-openeuler_defconfig}"
+REMOTE_REUSE_KERNEL_CONFIG="${REMOTE_REUSE_KERNEL_CONFIG:-0}"
 
 if [[ -z "$REMOTE_LINUX_HOST" ]]; then
   echo "[sync] error: REMOTE_LINUX_HOST is required; this script never uses an implicit remote target" >&2
@@ -49,8 +50,13 @@ normalize_remote_sim_config() {
   ssh "$REMOTE_LINUX_HOST" "
     set -euo pipefail
     cd '$REMOTE_KERNEL_SRC'
-    make O='$REMOTE_KERNEL_BUILD' ARCH='$REMOTE_ARCH' CROSS_COMPILE='$REMOTE_CROSS_COMPILE' '$REMOTE_KERNEL_DEFCONFIG'
+    if [[ '$REMOTE_REUSE_KERNEL_CONFIG' == '1' ]]; then
+      test -f '$REMOTE_KERNEL_BUILD/.config'
+    else
+      make O='$REMOTE_KERNEL_BUILD' ARCH='$REMOTE_ARCH' CROSS_COMPILE='$REMOTE_CROSS_COMPILE' '$REMOTE_KERNEL_DEFCONFIG'
+    fi
     ./scripts/config --file '$REMOTE_KERNEL_BUILD/.config' \
+      -e UB \
       -e UB_UBUS \
       -e UB_UBUS_BUS \
       -e UB_UBUS_USI \
@@ -58,6 +64,16 @@ normalize_remote_sim_config() {
       -e HISI_SOC_CACHE \
       -e OBMM \
       -e UB_UBUS_SIM_DECODER \
+      -e IPV6 \
+      -e UB_UBASE \
+      -e UB_URMA \
+      -e UB_UDMA \
+      -e UB_UBFI \
+      -e ARCH_HISI \
+      -e AUXILIARY_BUS \
+      -e UB_UMMU \
+      -e UB_UMMU_CORE \
+      -e UB_UMMU_CORE_DRIVER \
       -d DEBUG_INFO_BTF \
       -d PAHOLE_HAS_SPLIT_BTF
     make O='$REMOTE_KERNEL_BUILD' ARCH='$REMOTE_ARCH' CROSS_COMPILE='$REMOTE_CROSS_COMPILE' olddefconfig
