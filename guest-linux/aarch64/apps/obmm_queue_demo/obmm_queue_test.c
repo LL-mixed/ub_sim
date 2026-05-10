@@ -9,6 +9,7 @@
 
 #include "obmm_queue.h"
 #include "obmm_spmc_queue.h"
+#include "obmm_mpsc_queue.h"
 
 #include <pthread.h>
 #include <stdint.h>
@@ -1176,6 +1177,220 @@ static int test_spmc_reclaim_payloads(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* MPSC tests                                                          */
+/* ------------------------------------------------------------------ */
+
+static int test_mpsc_consumer_set_init(void)
+{
+    /* 3 queue entries from different publishers */
+    struct obmm_region_dirent dir[4] = {
+        { 0, OBMM_REGION_QUEUE, 1, 0, 4096, 0, 0 },
+        { 1, OBMM_REGION_QUEUE, 3, 4096, 4096, 0, 0 },
+        { 2, OBMM_REGION_QUEUE, 0, 8192, 4096, 0, 0 },
+        { 3, OBMM_REGION_TX_ARENA, 2, 12288, 4096, 0, 0 },
+    };
+    struct obmm_mpsc_consumer_set set;
+    int rc;
+
+    rc = obmm_mpsc_consumer_set_init_from_directory(&set, dir, 4, 2);
+    CHECK(rc == 0, "init");
+    CHECK(set.lane_count == 3, "3 lanes");
+    /* Sorted by publisher_node */
+    CHECK(set.lane[0].publisher_node == 0, "lane 0 pub=0");
+    CHECK(set.lane[1].publisher_node == 1, "lane 1 pub=1");
+    CHECK(set.lane[2].publisher_node == 3, "lane 2 pub=3");
+
+    return 0;
+}
+
+static int test_mpsc_consumer_set_init_no_lanes(void)
+{
+    struct obmm_region_dirent dir[1] = {
+        { 0, OBMM_REGION_TX_ARENA, 0, 0, 4096, 0, 0 }
+    };
+    struct obmm_mpsc_consumer_set set;
+    int rc = obmm_mpsc_consumer_set_init_from_directory(&set, dir, 1, 0);
+    CHECK(rc == -ENOENT, "no lanes");
+    return 0;
+}
+
+static int test_mpsc_consumer_set_init_duplicate(void)
+{
+    struct obmm_region_dirent dir[2] = {
+        { 0, OBMM_REGION_QUEUE, 1, 0, 4096, 0, 0 },
+        { 1, OBMM_REGION_QUEUE, 1, 4096, 4096, 0, 0 },
+    };
+    struct obmm_mpsc_consumer_set set;
+    int rc = obmm_mpsc_consumer_set_init_from_directory(&set, dir, 2, 0);
+    CHECK(rc == -EEXIST, "duplicate publisher");
+    return 0;
+}
+
+static int test_mpsc_publisher_lane_init(void)
+{
+    struct obmm_region_dirent dir[3] = {
+        { 0, OBMM_REGION_QUEUE, 0, 0, 4096, 0, 0 },
+        { 1, OBMM_REGION_QUEUE, 1, 4096, 4096, 0, 0 },
+        { 2, OBMM_REGION_TX_ARENA, 2, 8192, 4096, 0, 0 },
+    };
+    struct obmm_mpsc_publisher_lane lane;
+    int rc;
+
+    rc = obmm_mpsc_publisher_lane_init_from_directory(&lane, dir, 3, 1, 2);
+    CHECK(rc == 0, "init");
+    CHECK(lane.publisher_node == 1, "publisher");
+    CHECK(lane.consumer_node == 2, "consumer");
+
+    return 0;
+}
+
+static int test_mpsc_publisher_lane_missing(void)
+{
+    struct obmm_region_dirent dir[1] = {
+        { 0, OBMM_REGION_QUEUE, 0, 0, 4096, 0, 0 }
+    };
+    struct obmm_mpsc_publisher_lane lane;
+    int rc = obmm_mpsc_publisher_lane_init_from_directory(&lane, dir, 1, 5, 0);
+    CHECK(rc == -ENOENT, "missing");
+    return 0;
+}
+
+static int test_mpsc_publisher_lane_duplicate(void)
+{
+    struct obmm_region_dirent dir[2] = {
+        { 0, OBMM_REGION_QUEUE, 1, 0, 4096, 0, 0 },
+        { 1, OBMM_REGION_QUEUE, 1, 4096, 4096, 0, 0 },
+    };
+    struct obmm_mpsc_publisher_lane lane;
+    int rc = obmm_mpsc_publisher_lane_init_from_directory(&lane, dir, 2, 1, 0);
+    CHECK(rc == -EEXIST, "duplicate");
+    return 0;
+}
+
+static int test_mpsc_poll_order(void)
+{
+    uint32_t depth = 64;
+    /* 3 lanes, each gets its own queue */
+    uint64_t qs = obmm_queue_region_size(depth);
+    void *m0 = malloc(qs), *m1 = malloc(qs), *m2 = malloc(qs);
+    struct obmm_spsc_queue *q0, *q1, *q2;
+    struct obmm_mpsc_consumer_set set;
+    int rc;
+
+    CHECK(m0 && m1 && m2, "malloc");
+
+    obmm_spsc_queue_init(m0, depth);
+    obmm_spsc_queue_init(m1, depth);
+    obmm_spsc_queue_init(m2, depth);
+    q0 = (struct obmm_spsc_queue *)m0;
+    q1 = (struct obmm_spsc_queue *)m1;
+    q2 = (struct obmm_spsc_queue *)m2;
+
+    /* Build consumer set manually */
+    memset(&set, 0, sizeof(set));
+    set.lane_count = 3;
+    set.budget = 1;
+    set.lane[0].publisher_node = 0;
+    set.lane[0].queue = q0;
+    set.lane[1].publisher_node = 1;
+    set.lane[1].queue = q1;
+    set.lane[2].publisher_node = 2;
+    set.lane[2].queue = q2;
+
+    /* Push 3 items to each lane */
+    for (uint32_t i = 0; i < 3; i++) {
+        struct obmm_desc d = {0};
+        d.seq = (uint64_t)i;
+        d.cookie = i * 10;
+        obmm_spsc_push(q0, &d);
+        d.cookie = i * 20;
+        obmm_spsc_push(q1, &d);
+        d.cookie = i * 30;
+        obmm_spsc_push(q2, &d);
+    }
+
+    /* Poll all 9, verify per-publisher FIFO and rx_seq */
+    uint32_t next_seq[3] = {0, 0, 0};
+    uint64_t last_rx = UINT64_MAX;
+    for (int n = 0; n < 9; n++) {
+        struct obmm_desc out;
+        uint32_t pub;
+        uint64_t rx;
+        rc = obmm_mpsc_poll(&set, &out, &pub, &rx);
+        CHECK(rc == 0, "poll");
+        CHECK(rx > last_rx || last_rx == UINT64_MAX, "rx_seq monotonic");
+        last_rx = rx;
+        CHECK(out.seq == (uint64_t)next_seq[pub],
+              "per-publisher FIFO");
+        next_seq[pub]++;
+    }
+
+    /* All consumed */
+    {
+        struct obmm_desc out;
+        CHECK(obmm_mpsc_poll(&set, &out, NULL, NULL) == -EAGAIN, "empty");
+    }
+
+    free(m0); free(m1); free(m2);
+    return 0;
+}
+
+static int test_mpsc_poll_fairness(void)
+{
+    uint32_t depth = 1024;
+    uint64_t qs = obmm_queue_region_size(depth);
+    void *m0 = malloc(qs), *m1 = malloc(qs), *m2 = malloc(qs);
+    struct obmm_spsc_queue *q0, *q1, *q2;
+    struct obmm_mpsc_consumer_set set;
+    uint32_t counts[3] = {0, 0, 0};
+    int rc;
+
+    CHECK(m0 && m1 && m2, "malloc");
+
+    obmm_spsc_queue_init(m0, depth);
+    obmm_spsc_queue_init(m1, depth);
+    obmm_spsc_queue_init(m2, depth);
+    q0 = (struct obmm_spsc_queue *)m0;
+    q1 = (struct obmm_spsc_queue *)m1;
+    q2 = (struct obmm_spsc_queue *)m2;
+
+    memset(&set, 0, sizeof(set));
+    set.lane_count = 3;
+    set.budget = 1;
+    set.lane[0].publisher_node = 0;
+    set.lane[0].queue = q0;
+    set.lane[1].publisher_node = 1;
+    set.lane[1].queue = q1;
+    set.lane[2].publisher_node = 2;
+    set.lane[2].queue = q2;
+
+    /* Push 100 to each */
+    for (uint32_t i = 0; i < 100; i++) {
+        struct obmm_desc d = {0};
+        d.seq = (uint64_t)i;
+        obmm_spsc_push(q0, &d);
+        obmm_spsc_push(q1, &d);
+        obmm_spsc_push(q2, &d);
+    }
+
+    /* Poll all 300 */
+    for (int n = 0; n < 300; n++) {
+        struct obmm_desc out;
+        uint32_t pub;
+        rc = obmm_mpsc_poll(&set, &out, &pub, NULL);
+        CHECK(rc == 0, "poll");
+        counts[pub]++;
+    }
+
+    /* Each publisher should have ~100 */
+    CHECK(counts[0] == 100 && counts[1] == 100 && counts[2] == 100,
+          "fair distribution");
+
+    free(m0); free(m1); free(m2);
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -1214,6 +1429,14 @@ int main(void)
         { "spmc_reclaim_skip", test_spmc_reclaimable_skips_paused },
         { "spmc_reset",        test_spmc_reset },
         { "spmc_reclaim_pay",  test_spmc_reclaim_payloads },
+        { "mpsc_set_init",     test_mpsc_consumer_set_init },
+        { "mpsc_set_no_lanes", test_mpsc_consumer_set_init_no_lanes },
+        { "mpsc_set_dup",      test_mpsc_consumer_set_init_duplicate },
+        { "mpsc_pub_init",     test_mpsc_publisher_lane_init },
+        { "mpsc_pub_missing",  test_mpsc_publisher_lane_missing },
+        { "mpsc_pub_dup",      test_mpsc_publisher_lane_duplicate },
+        { "mpsc_poll_order",   test_mpsc_poll_order },
+        { "mpsc_poll_fair",    test_mpsc_poll_fairness },
     };
     int pass_count = 0;
     int fail_count = 0;
