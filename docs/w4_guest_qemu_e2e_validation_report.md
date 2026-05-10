@@ -1,6 +1,6 @@
 # W4 Guest/QEMU 端到端闭环验证报告
 
-日期：2026-04-29
+日期：2026-05-10
 
 ## 结论
 
@@ -10,11 +10,11 @@ W4 当前已经在 guest/QEMU 多节点系统中形成端到端功能闭环。�
 
 | 层级 | 当前状态 | 验证结果 |
 | --- | --- | --- |
-| guest/QEMU W4 默认 workload | Qwen3 Dense 0.6B shard-aware scaffold over HostMatmul / HostBuildGraph | 4-node / 8-node harness 通过 |
-| simulator/simpler matrix workload | Qwen3 Dense 0.6B shard-aware HostMatmul / HostBuildGraph 已接通 | `qwen3_dense_0_6b_prefill_profile_uses_host_matmul_artifact` 通过 |
+| guest/QEMU W4 默认 workload | Qwen3 0.6B guest decode-loop：8-node layer-range pipeline + OBMM object service hidden/KV/token publish | 8-node 16-step harness 通过 |
+| simulator/simpler matrix workload | Qwen3 Dense 0.6B range-forward path 通过 HostMatmul / HostBuildGraph artifact 执行 | `qwen3_dense_0_6b_prefill_profile_uses_host_matmul_artifact` 通过 |
 | guest/QEMU W4 HostVector 基线 | KVCache tile layout over HostVector arithmetic | 历史基线与可选 fallback profile，不再是本轮默认验证口径 |
 
-因此，当前 W4 已经具备“LLM 推理负载形态”的 guest/QEMU 多节点闭环底座，并且已经把默认 workload profile 从 generic `host_matmul` 推进到 `qwen3_dense_0_6b`。当前还不是完整 Qwen3 模型推理，但主线入口已经不再是泛化 matrix smoke，而是 Qwen3 Dense 0.6B 的 shard-aware prefill/decode scaffold。
+因此，当前 W4 已经具备“LLM 推理负载形态”的 guest/QEMU 多节点闭环底座，并且主线入口已经从泛化 matrix smoke 推进到 Qwen3 0.6B guest decode-loop。最新 8-node run 中，guest 每轮驱动 8 个 node 的 Qwen3 layer-range forward，节点间通过 OBMM object service 传递 hidden state，逐轮发布/解析 KV state 与 terminal token result，最终 nodeH 作为 terminal owner 输出 token text。
 
 已验证范围：
 
@@ -22,21 +22,26 @@ W4 当前已经在 guest/QEMU 多节点系统中形成端到端功能闭环。�
 - 8-node guest/QEMU W4 workload：通过。
 - dispatch 路径：`ubc_entity_chipbackend`，不是 `guest_uapi_stub`，也不是 observer-only metadata 模式。
 - 服务覆盖：`chipbackend`、`shmem`、`dfs`、`db`、`block`。
-- KVCache 语义覆盖：multi-node KVCache metadata/state DB、prefix/prefix-group/block state、shmem hot/shared segment、block write/read、ChipBackend HostMatmul dispatch result。
-- matrix workload 覆盖：默认通过 `SIM_UAPI_W4_CHIPBACKEND_PROFILE=qwen3_dense_0_6b` 进入 Qwen3 Dense 0.6B scaffold，底层当前复用 `HostMatmul / HostBuildGraph`。
-- shard-aware backend 覆盖：ChipBackend 在 simulator 内部把 Qwen3 Dense 0.6B workload fan-out 为 8 个 shard dispatch，每个 shard 显式携带 `shard_id`、`owner_node`、`target_node`、attention head range 与 KV block range。
+- Qwen3 decode-loop 覆盖：real weights path、range-forward metadata/table、runtime input resolve/load、runtime output publish、KV state publish/resolve、logits sampling table、token text table、terminal token result publish。
+- KVCache 语义覆盖：multi-node KVCache metadata/state DB、prefix/prefix-group/block state、shmem hot/shared segment、block write/read、per-step KV state object。
+- matrix workload 覆盖：默认通过 `SIM_UAPI_W4_CHIPBACKEND_PROFILE=qwen3_dense_0_6b` 进入 Qwen3 Dense 0.6B range-forward path，底层当前仍复用 `HostMatmul / HostBuildGraph` artifact 执行。
+- layer-range pipeline 覆盖：28 层按 8 个 node 分段执行，nodeA-H 依次负责 `[0,4)`、`[4,8)`、`[8,11)`、`[11,15)`、`[15,18)`、`[18,22)`、`[22,25)`、`[25,28)`，每轮由前一 node 发布下一 node 的 runtime input object。
 - payload 边界覆盖：多 segment、多 block、跨 `256B` 与 `4KB` 边界的 `8192B` payload 验证。
 - completion 覆盖：15 个 resource-backed UAPI slots 全部成功完成，无 retryable/fatal failure。
 
 最新验证结果：
 
-- qwen3 shard-aware host test: `qwen3_dense_0_6b_prefill_profile_uses_host_matmul_artifact` 通过。
+- host-side artifact/profile test: `qwen3_dense_0_6b_prefill_profile_uses_host_matmul_artifact` 通过。
 - 4-node run id: `2026-04-29_15-43-00_w4guest4_14721`
 - 4-node result: `PASS: four-node w4 guest resource-backed uapi/chipbackend service coverage validated`
-- 8-node run id: `2026-04-29_16-04-28_w4guest8_25783`
+- 8-node run id: `2026-05-10_19-19-04_w4guest8_26743`
 - 8-node result: `PASS: eight-node w4 guest resource-backed uapi/chipbackend service coverage validated`
-- QEMU memory / PMD config: `QEMU_MEM=6G`, kernel append includes `pmd_mapping=30%`.
-- QEMU submodule: includes `c09c77b852` (`Fix SIM decoder unmap lifetime`).
+- 8-node decode rounds: `SIM_QWEN3_GUEST_DECODE_STEPS=16`，nodeA-H 均完成 `pass=16`，nodeH 完成 `qwen3_terminal_token_result_publish=16`。
+- 8-node decoded terminal text: `, I'm a bit confused about the concept of "reality" in the`
+- 8-node stop reason: 达到 16-step/16-token 上限，本次日志未观察到 EOS。
+- Qwen3 weights: `SIM_QWEN3_0_6B_WEIGHTS_PATH=/Volumes/repos/qwen3_mlx_run/Qwen3-0.6B`。
+- QEMU memory / append config: `qemu_mem=2G`，kernel append includes `obmm.skip_cache_maintain=1 rcupdate.rcu_cpu_stall_timeout=300`。
+- repo / submodule: repo `16fd21c47460e106f1ed1040fdd1e896473a8073`，QEMU `118dded413f1a3fac2657f7638f5f6f6492a6ee5`，kernel_ub `f0010836ed173c0f9d64bacc14b9227aaac77e9e`。
 
 本轮修复并验证的关键数据面问题：
 
@@ -44,7 +49,7 @@ W4 当前已经在 guest/QEMU 多节点系统中形成端到端功能闭环。�
 - 数据面修复：guest 侧 remote payload header / confirm header 读取从 byte-wise MMIO load 改为已有的 64-bit chunk copy，减少远端 OBMM mapped load transaction 数量，并保持原始 payload 语义不变。
 - QEMU 行为修复：去掉 sim-dec read 正常路径 probe 日志，并把 `multicast group=2 had no active remote links` 降为 trace-only，避免 8-node 下日志洪泛污染数据面调试和运行稳定性。
 - QEMU SIM_DEC 生命周期修复：SIM decoder `UNMAP` 后不再立即 `object_unparent()` / `g_free()` dynamic `MemoryRegion` opaque，而是从 active map 删除并 `del_subregion`，将 entry 延迟到 decoder cleanup 释放。该修复消除了 4-node W4 在 `6G+pmd_mapping=30%` 下复现的 QOM `object_unref` assert、`double free` 与 `invalid pointer` 崩溃。
-- Qwen3 result 校验修复：`qwen3_dense_0_6b` profile 不再按 legacy HostMatmul fixed word `0x3f8000003f800000` 校验，而是校验 shard-aware positive result。最新 4-node / 8-node guest/QEMU run 均观察到非固定 qwen result word。
+- Qwen3 result 校验修复：`qwen3_dense_0_6b` profile 不再按 legacy HostMatmul fixed word `0x3f8000003f800000` 校验，而是校验 qwen positive result / runtime table。历史 4-node / 8-node scaffold run 均观察到非固定 qwen result word；最新 16-step run 进一步验证 token result object 与 text piece publish。
 - 协议修复：`OBSERVED` 阶段从 all-to-all wait barrier 改为 announce-only。真实验证前提是每个节点已经完成所有远端 payload snapshot 的读取和本地断言；后续“已观察”互等不是数据正确性必要条件，且会在 8-node 下形成不必要的等待点。
 - 当前结论：remote OBMM mapped payload 已在 8-node 下完成跨节点 visibility / update / coherence 验证，包含多节点 metadata/state DB、KVCache/Weights object record、跨 `256B` 与 `4KB` 边界 payload 访问。
 
@@ -76,13 +81,13 @@ workload 运行流程图：
 
 ![W4 workload flow](./w4_guest_qemu_e2e_workload_flow.svg)
 
-需要明确边界：当前通过 `simpler-capi` 发给 simpler 的默认计算 workload 是 Qwen3 Dense 0.6B shard-aware scaffold，底层仍复用 `HostMatmul/HostBuildGraph` 的 matrix graph。它不是完整 Qwen3 attention kernel，也没有真实权重/tokenizer。W4 当前证明的是 KVCache 形态的 shmem/db/block/chipbackend/dfs descriptors、payload、completion、result 观察已经进入 guest/QEMU/simulator/ChipBackend/simpler-capi/simpler/guest-result 闭环，并且 ChipBackend 计算段已经从 HostVector 基线推进到 Qwen3-named shard-aware matrix scaffold。
+需要明确边界：当前通过 `simpler-capi` 发给 simpler 的默认计算 workload 是 Qwen3 Dense 0.6B range-forward path，底层仍复用 `HostMatmul/HostBuildGraph` 的 matrix graph。本次 16-step 8-node guest decode-loop 显式设置真实 `SIM_QWEN3_0_6B_WEIGHTS_PATH`，覆盖真实 Qwen3 range-forward metadata/table、KV state publish/resolve、logits sampling table、token text table 与 terminal token result publish。尚未覆盖的是“把 transformer layer 内部的 RMSNorm、Q/K/V projection、RoPE、attention score、softmax、V aggregation、MLP 等算子拆成 guest 可见、guest 调度的细粒度 CPU/NPU execution graph”。W4 当前证明的是 Qwen3 decode-loop 形态的 control/data/result 已经进入 guest/QEMU/simulator/ChipBackend/simpler-capi/simpler/guest-result 闭环。
 
-最新验证进展：`qwen3_dense_0_6b` profile 已从单一 HostMatmul dispatch 推进为 8-shard backend。ChipBackend 在 simulator 内部生成 8 个 shard，每个 shard 绑定独立的 hidden/Q/KV/V tile input、独立 output segment、独立 request id / trace id / context，并携带 `owner_node`、`target_node`、attention head range 与 KV block range。16 个 attention heads 按 8 个 shard 切分，每 shard 2 heads；KV block 当前按每 shard 2 block 的 scaffold 口径分配。4-node 与 8-node guest/QEMU harness 均已通过该默认 profile。
+最新验证进展：guest/QEMU harness 已从单轮 Qwen3 scaffold dispatch 推进到 8-node、16-step guest decode-loop。每轮 nodeA-H 依次执行自己的 layer range，nodeH 作为 terminal owner 发布 logits sampling/token text/terminal token result；下一轮 guest 会从 previous terminal token result 扩展 prompt token 列表。历史 host-side `qwen3_dense_0_6b` 8-shard dispatch gate 仍作为 artifact/profile 准入基线保留。
 
-HostVector tile payload 路径仍然保留为基线：ChipBackend 在发起 simpler-capi dispatch 前把 `8192B` KVCache-like payload 显式组织为 `block / prefix group / 16x16 matrix tile / 4x16 row-group`，并在 HostVector profile 下按完整 `8192B` result 做逐 element 校验。当前默认主线路径是 Qwen3 Dense 0.6B shard-aware HostMatmul scaffold。
+HostVector tile payload 路径仍然保留为基线：ChipBackend 在发起 simpler-capi dispatch 前把 `8192B` KVCache-like payload 显式组织为 `block / prefix group / 16x16 matrix tile / 4x16 row-group`，并在 HostVector profile 下按完整 `8192B` result 做逐 element 校验。当前默认主线路径是 Qwen3 guest decode-loop；HostMatmul/HostBuildGraph artifact 仍是 range-forward 的底层执行基座。
 
-下一步主线收敛点是把当前 shard-aware HostMatmul scaffold 继续推进为 Qwen3 layer-level graph：显式 Q/K/V projection、RoPE、attention score、softmax 与 MLP。
+下一步主线收敛点是把当前 range-forward path 下钻为 Qwen3 layer-level graph：显式 Q/K/V projection、RoPE、attention score、softmax 与 MLP。
 
 ## 当前通过 simpler-capi 发给 simpler 的 workload
 
@@ -119,9 +124,9 @@ ChipBackend
 - artifact producer: `guest-linux/aarch64/scripts/prepare_simpler_host_matmul_artifacts.sh`
 - source example: `modules/simpler.old/examples/a2a3/host_build_graph/matmul/kernels`
 - harness profile env: `SIM_UAPI_W4_CHIPBACKEND_PROFILE=qwen3_dense_0_6b`
-- expected guest result: qwen shard-aware positive result word，不能退化为 fixed HostMatmul word `0x3f8000003f800000`
+- expected guest result: Qwen3 range-forward runtime table、KV state object、logits/token text table 与 terminal token result object；历史单轮 scaffold 仍校验 qwen positive result word，不能退化为 fixed HostMatmul word `0x3f8000003f800000`。
 
-Qwen3 Dense 0.6B scaffold 当前落地的模型元数据：
+Qwen3 Dense 0.6B 当前落地的模型元数据：
 
 - `vocab_size`: `151936`
 - `hidden_size`: `1024`
@@ -155,23 +160,23 @@ HostMatmul graph 公式：
 F = exp(sqrt(log(A)) @ W1 + sqrt(log(A)) @ W2)
 ```
 
-当前 Qwen3 scaffold 使用 `128 x 128` half inputs 和 float output，验证 simulator 可以通过 simpler-capi 调起包含 AIV + AIC matmul task 的真实 simpler graph。guest 提交的 `8192B` KVCache payload 已作为 `qwen3_dense_0_6b_guest_kvcache_payload` resident binding 进入 request，并且已经用于确定性派生三个数值输入：
+当前 Qwen3 range-forward path 仍使用 HostMatmul/HostBuildGraph artifact 执行 `128 x 128` half inputs 和 float output，验证 simulator 可以通过 simpler-capi 调起包含 AIV + AIC matmul task 的真实 simpler graph。历史 scaffold 路径中，guest 提交的 `8192B` KVCache payload 已作为 `qwen3_dense_0_6b_guest_kvcache_payload` resident binding 进入 request，并且用于确定性派生以下数值输入：
 
 - `qwen3_dense_0_6b_layer0_prefill_hidden_half`
 - `qwen3_dense_0_6b_layer0_q_proj_tile_half`
 - `qwen3_dense_0_6b_layer0_kv_proj_tile_half`
 - `qwen3_dense_0_6b_layer0_v_proj_tile_half`
 
-其中 Q/KV/V projection tile 使用不同 stride/bias 从 guest payload 派生，避免 projection tile 退化成同一输入。当前 W4 guest 默认 payload 为 zero payload，但 `qwen3_dense_0_6b` result 不再按 fixed HostMatmul word 校验；guest 侧校验写回 word 解码出的两个 `f32` 均为 positive result，host-side qwen3 gate 还要求 8 个 shard 的 first output 不完全相同。当前 HostMatmul runtime 只消费 Q/KV 两路 projection input；V projection 已作为 resident binding 进入 request，供下一步 layer graph 扩展使用。后续需要进一步把该 projection scaffold 扩展为 Q/K/V projection、RoPE、attention score、softmax 与 MLP 的 layer-level graph。
+其中 Q/KV/V projection tile 使用不同 stride/bias 从 guest payload 派生，避免 projection tile 退化成同一输入。历史 scaffold 的 `qwen3_dense_0_6b` result 不再按 fixed HostMatmul word 校验；guest 侧校验写回 word 解码出的两个 `f32` 均为 positive result，host-side qwen3 gate 还要求 8 个 shard 的 first output 不完全相同。最新 guest decode-loop 在此基础上进一步要求每个 decode step 发布 range-forward runtime output、KV state、logits sampling table、token text table 与 terminal token result。
 
-当前 shard-aware backend 口径：
+当前 guest decode-loop 口径：
 
-- guest 侧仍提交 1 个 `chipbackend` descriptor，因此 guest CQ 统计中 `completion_sources chipbackend=1`。
-- simulator ChipBackend 内部将该 workload fan-out 为 8 个 shard dispatch。
-- 每个 shard 的 request 显式携带 `shard_id`、`owner_node`、`target_node`、`head_start/head_end`、`kv_block_start/kv_block_end`。
-- `num_attention_heads=16`，`tp_nodes=8`，因此每 shard 2 个 attention heads。
-- 当前 scaffold 每 shard 分配 2 个 KV blocks。
-- 每个 shard 拥有独立 input/output segment，输出按 shard 顺序拼接。
+- `SIM_QWEN3_GUEST_DECODE_STEPS` 控制 guest decode rounds；最新验证值为 `16`。
+- `SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS` 提供初始 prompt token ids；每轮后续 prompt 由上一轮 terminal token result 扩展。
+- nodeA-H 形成 8-node layer-range pipeline，而不是单个 guest 内的一次性 result-word smoke。
+- 每个 node 通过 OBMM object service 发布自己的 `range-runtime-output` 与 KV state；下游 node 通过 DB metadata + SPSC queue resolve/load runtime input。
+- nodeH 是 terminal owner，负责 logits sampling table、token text table 与 terminal token result publish。
+- guest harness 对每个 node 的 `pass` 次数、runtime input/output publish、nodeH terminal token publish 数量做硬断言。
 
 manifest 里的 runtime artifacts 包括：
 
@@ -356,7 +361,7 @@ test tests::host_vector_dispatch_accepts_w4_seed_payload ... ok
 test result: ok. 1 passed; 0 failed
 ```
 
-Qwen3 Dense 0.6B shard-aware scaffold dispatch gate：
+Qwen3 Dense 0.6B host-side artifact/profile gate：
 
 ```bash
 guest-linux/aarch64/scripts/prepare_simpler_host_matmul_artifacts.sh /tmp/simpler-host-matmul-artifacts
@@ -372,15 +377,15 @@ test tests::qwen3_dense_0_6b_prefill_profile_uses_host_matmul_artifact ... ok
 test result: ok. 1 passed; 0 failed
 ```
 
-该 gate 覆盖 `qwen3_dense_0_6b` profile 的 8-shard dispatch：每个 shard 都经过 HostMatmul / HostBuildGraph artifact path，输出长度为 `8 * 128 * 128` 个 `f32`，并验证各 shard 输出不是同一 fixed HostMatmul word。
+该 gate 覆盖 `qwen3_dense_0_6b` profile 的 host-side artifact path：每个 shard 都经过 HostMatmul / HostBuildGraph artifact path，输出长度为 `8 * 128 * 128` 个 `f32`，并验证各 shard 输出不是同一 fixed HostMatmul word。它是 profile/artifact 准入基线，不等价于 guest decode-loop。
 
-Qwen3 Dense 0.6B shard-aware scaffold 的完整准入 gate 是下面的 4-node / 8-node guest/QEMU W4 harness。harness 在 guest 内执行 `/bin/linqu_w4_guest`，该 binary 由 `guest-linux/aarch64/w4_guest_qemu_demo.c` 和 `guest-linux/aarch64/w4_kvcache_db_service.c` 构建：
+Qwen3 Dense 0.6B guest decode-loop 的完整准入 gate 是下面的 4-node / 8-node guest/QEMU W4 harness。harness 在 guest 内执行 `/bin/linqu_w4_guest`，该 binary 由 `guest-linux/aarch64/w4_guest_qemu_demo.c` 和 `guest-linux/aarch64/w4_kvcache_db_service.c` 构建：
 
 ```text
 w4_guest_qemu_demo.c + w4_kvcache_db_service.c -> /bin/linqu_w4_guest
 ```
 
-因此，本轮没有把 W4 验证降级为 HostMatmul smoke。host-side qwen3 dispatch gate 与 guest/QEMU 4-node、8-node run 一起构成本轮验证口径。
+因此，本轮没有把 W4 验证降级为 HostMatmul smoke。host-side qwen3 dispatch gate 与 guest/QEMU 8-node 16-step decode-loop run 一起构成当前验证口径。
 
 QEMU relink：
 
@@ -407,7 +412,7 @@ UB_GUEST_ARTIFACT_SOURCE=none ./guest-linux/aarch64/scripts/build_guest_artifact
 built /sd_data/repo/ub_sim/guest-linux/aarch64/out/initramfs.cpio.gz
 ```
 
-### 4-node Qwen3 scaffold run
+### Historical 4-node Qwen3 scaffold run
 
 命令：
 
@@ -449,20 +454,20 @@ completion_sources chipbackend=1 shmem=4 dfs=2 db=4 block=4 guest_uapi=0
 completion_status success=15 retryable=0 fatal=0
 ```
 
-### 8-node Qwen3 scaffold run
+### 8-node Qwen3 guest decode-loop run
 
 命令：
 
 ```bash
-UB_SYNC_ARTIFACTS=0 QEMU_MEM=6G \
-APPEND_EXTRA='linqu_probe_skip=1 linqu_probe_load_helper=1 pmd_mapping=30%' \
+SIM_QWEN3_0_6B_WEIGHTS_PATH=/Volumes/repos/qwen3_mlx_run/Qwen3-0.6B \
+SIM_QWEN3_GUEST_DECODE_STEPS=16 \
 ./guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh
 ```
 
 run id：
 
 ```text
-2026-04-29_16-04-28_w4guest8_25783
+2026-05-10_19-19-04_w4guest8_26743
 ```
 
 trace：
@@ -478,17 +483,55 @@ guest-linux/aarch64/out/eight_node_w4_guest.trace.latest.txt
 [w4guest8] PASS: eight-node w4 guest resource-backed uapi/chipbackend service coverage validated
 ```
 
+decoded terminal text：
+
+```text
+, I'm a bit confused about the concept of "reality" in the
+```
+
+terminal token pieces：
+
+```text
+00 token=11    piece=","
+01 token=358   piece=" I"
+02 token=2776  piece="'m"
+03 token=264   piece=" a"
+04 token=2699  piece=" bit"
+05 token=21815 piece=" confused"
+06 token=911   piece=" about"
+07 token=279   piece=" the"
+08 token=7286  piece=" concept"
+09 token=315   piece=" of"
+10 token=330   piece=" \""
+11 token=265   piece="re"
+12 token=2719  piece="ality"
+13 token=1     piece="\""
+14 token=304   piece=" in"
+15 token=279   piece=" the"
+```
+
+stop reason：本次 run 达到 `SIM_QWEN3_GUEST_DECODE_STEPS=16` 上限，未观察到 EOS。
+
 关键断言：
 
 ```text
-resource_backed_assertions_ok nodes=8 peers=7
-uapi_kvcache_payload_seeded segment=1 bytes=8192
-uapi_kvcache_payload_boundaries segment=1 offsets=0,248,256,4088,4096,4104 status=ok
-uapi_kvcache_payload_dispatch_result segment=1 word0=0x3f8020003f822000
-step=doorbell ok slots=15
-step=wait_completions ok cq_tail=15
+nodeA-H pass=16
+nodeH qwen3_terminal_token_result_publish=16
+stage qwen3_terminal_token_result_publish local=node8 step=15 token=279 runner_up=419 margin_milli=1783 logits_checksum=0x540d32835ebee5b9 text_checksum=0x56ef6f4a14a4961c object_key=tokens/qwen3-0.6b/decode-step15 backing=obmm_pool metadata=db queue=obmm_spsc status=ok
+stage qwen3_decode_round_done_publish local=node8 step=15 checksum=0x149818e2a436c0a6 backing=obmm_pool status=ok
+stage qwen3_worker_timing local=nodeH step=15 total_ms=132553 input_wait_ms=116982 compute_window_ms=15466 publish_ms=61
 completion_sources chipbackend=1 shmem=4 dfs=2 db=4 block=4 guest_uapi=0
 completion_status success=15 retryable=0 fatal=0
+```
+
+运行环境：
+
+```text
+qemu_mem=2G
+sim_uapi_scenario_config=scenarios/mvp_8host_single_domain.yaml
+append_extra=linqu_probe_skip=1 linqu_probe_load_helper=1 obmm.skip_cache_maintain=1 rcupdate.rcu_cpu_stall_timeout=300
+ub_sim_port_num=7
+logs_dir=guest-linux/aarch64/logs/2026-05-10_19-19-04_w4guest8_26743_headless8
 ```
 
 ### 本轮修复点
@@ -534,16 +577,16 @@ c09c77b852 Fix SIM decoder unmap lifetime
 - `host_matmul` 口径期望 `0x3f8000003f800000`。
 - `host_vector` 口径保留 `0x41a0000041a00000`。
 
-本轮进一步修正了 `qwen3_dense_0_6b` 的校验口径：qwen profile 不能继续沿用 fixed HostMatmul word，否则无法证明 shard-aware result。当前 qwen profile 校验 positive result word，并允许不同 shard/run 产生不同 word。最新结果示例：
+历史 scaffold 阶段进一步修正了 `qwen3_dense_0_6b` 的校验口径：qwen profile 不能继续沿用 fixed HostMatmul word，否则无法证明 shard-aware result。该阶段 qwen profile 校验 positive result word，并允许不同 shard/run 产生不同 word。历史结果示例：
 
 ```text
 4-node nodeA: word0=0x3f81c0003f81a000
 8-node nodeA: word0=0x3f8020003f822000
 ```
 
-该修复后 `qwen3_dense_0_6b_prefill_profile_uses_host_matmul_artifact`、4-node W4 harness 与 8-node W4 harness 均通过。
+该修复后 `qwen3_dense_0_6b_prefill_profile_uses_host_matmul_artifact`、4-node W4 harness 与历史 8-node scaffold harness 均通过；最新 8-node 16-step decode-loop 已改以 range-forward/KV/token result object 作为主断言。
 
-环境标记：
+历史 8-node scaffold 环境标记：
 
 ```text
 [headless8] qemu_mem=6G
@@ -647,25 +690,29 @@ linqu-uapi kick done cmdq_head=15 cq_tail=15 irq=0x1 last_error=0
 - `last_error=0`。
 - IRQ 被触发。
 
-### 7. simulator ChipBackend 通过 simpler-capi 执行 Qwen3 scaffold workload
+### 7. simulator ChipBackend 通过 simpler-capi 执行 Qwen3 range-forward workload
 
-ChipBackend 对 `chipbackend` descriptor 进行 handled result 处理，通过 simpler-capi 执行 `qwen3_dense_0_6b` workload profile。当前底层 kernel 仍是 HostMatmul workload。
+ChipBackend 对 `chipbackend` descriptor 进行 handled result 处理，通过 simpler-capi 执行 `qwen3_dense_0_6b` workload profile。当前底层 kernel 仍是 HostMatmul workload，但 guest/QEMU 口径已经从单次 result-word smoke 推进到逐 step 的 range-forward/KV/token object flow。
 
-当前验证重点不是证明 LLM kernel 已经完整接入，而是证明：
+当前验证重点是证明：
 
-- guest payload 不是空 metadata。
+- guest payload、prompt tokens、terminal token cache 不是空 metadata。
 - descriptor 能进入 simulator/simpler-capi 并选择 `qwen3_dense_0_6b` profile。
 - simpler 能执行真实 `HostBuildGraph` matrix graph。
-- result 能回写到 guest 可见区域。
-- result 能被 guest 按 qwen positive result word 观察。
+- range-forward output 能以 OBMM object 的形式发布给下一 node。
+- KV state 能按 step/layer range 发布并在下一轮 resolve。
+- nodeH 能发布 logits sampling table、token text table 与 terminal token result。
+- terminal token result 能被下一轮 prompt 扩展逻辑消费。
 
-### 8. guest 观察 completion 和 result payload
+### 8. guest 观察 completion、range-forward 和 token result
 
 代表性日志：
 
 ```text
 [w4_guest] step=wait_completions ok cq_tail=15
-[w4_guest] stage uapi_kvcache_payload_dispatch_result segment=1 word0=0x3f81c0003f81a000
+[w4_guest] stage qwen3_range_forward_runtime_output_publish local=node8 step=15 layers=[25,28) count=3 output_checksum=0xc7e6abc55841c148 bytes=262144 ... backing=obmm_pool metadata=db queue=obmm_spsc status=ok
+[w4_guest] stage qwen3_range_kv_state_publish local=node8 step=15 key=kvcache/qwen3-0.6b/node8/layers-25-28/decode-step15 layers=[25,28) count=3 kv_bytes=467064 ... backing=obmm_pool metadata=db status=ok
+[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=15 token=279 runner_up=419 margin_milli=1783 ... object_key=tokens/qwen3-0.6b/decode-step15 backing=obmm_pool metadata=db queue=obmm_spsc status=ok
 [w4_guest] completion_sources chipbackend=1 shmem=4 dfs=2 db=4 block=4 guest_uapi=0
 [w4_guest] completion_status success=15 retryable=0 fatal=0
 [w4_guest] assessment service_coverage=5/5 dispatch_path=ubc_entity_chipbackend kvcache_shmem_segment=1 kvcache_block=w4-nodeA-block-0 kvcache_db_key=block/w4-nodeA-block-0 ... complete=true
@@ -673,11 +720,12 @@ ChipBackend 对 `chipbackend` descriptor 进行 handled result 处理，通过 s
 [w4_guest] pass
 ```
 
-这里形成四个关键闭环判断：
+这里形成五个关键闭环判断：
 
 - completion 闭环：`cq_tail=15`，所有 descriptor 均完成。
 - service 覆盖闭环：`chipbackend/shmem/dfs/db/block` 均有 completion source。
-- payload 闭环：`uapi_kvcache_payload_dispatch_result` 证明 result payload 回到 guest 可见状态。
+- hidden object 闭环：`qwen3_range_forward_runtime_output_publish` 证明本 node 的 hidden output 通过 OBMM object service 发布。
+- token 闭环：`qwen3_terminal_token_result_publish` 证明 terminal owner 产出 token id、logits checksum、text checksum 与 text piece。
 - multi-node DB 闭环：`resource_backed_assertions_ok` 证明 KVCache metadata/state 在 4-node/8-node 口径下完成 visibility / update / coherence 断言。
 
 ## W4 当前证明了什么
@@ -688,13 +736,15 @@ ChipBackend 对 `chipbackend` descriptor 进行 handled result 处理，通过 s
 - guest 能打开 UB resource 并映射 endpoint/queues。
 - guest 能提交 shmem/db/block/chipbackend/dfs 相关 UAPI descriptors。
 - QEMU 能消费 command queue 并把请求送入 simulator UAPI/ChipBackend。
-- ChipBackend 能通过 `simpler-capi` 调用 simpler 的 `qwen3_dense_0_6b` scaffold workload。
-- ChipBackend 能把一个 guest `chipbackend` workload 解释为 8 个 shard dispatch，并为每个 shard 保留 owner/target/head/KV-block 语义。
-- guest/QEMU 4-node 与 8-node harness 已经覆盖 HostMatmul path，不再只是 host-only smoke test。
+- ChipBackend 能通过 `simpler-capi` 调用 simpler 的 `qwen3_dense_0_6b` range-forward workload。
+- 8-node guest decode-loop 能连续执行 16 个 decode steps；nodeA-H 均完成 `pass=16`。
+- 8 个 node 能按 layer range 组成 hidden-state pipeline，nodeH 能发布 terminal token result。
+- guest/QEMU harness 已经覆盖 HostMatmul/HostBuildGraph artifact path，不再只是 host-only smoke test。
 - KVCache-like payload 已经从单块 4KB 扩展到 8192B、多 block、多 prefix group、matrix tile、row-group。
 - HostVector 基线能在同一 runtime 内将完整 `8192B` tile payload 拆成两个 `4096B` execution chunks，并拼回完整 result。
 - HostVector 基线 result 校验已经从“观察 word0”推进到按完整 tile/row-group layout 逐 element 校验。
-- Qwen3 scaffold 当前校验 result word，并已把 HostMatmul prefill hidden、Q projection tile、KV projection tile、V projection tile 输入绑定到 guest KVCache payload 派生路径；这些输入已经按 shard 派生，但还没有把 RoPE、attention score、softmax 或 MLP 输入绑定到真实 Qwen3 graph。
+- Qwen3 guest decode-loop 当前校验 range-forward table、KV state、logits sampling table、token text table 与 terminal token result；历史 scaffold result word gate 保留为 artifact/profile 基线。
+- 16-step run 的 decoded terminal text 为 `, I'm a bit confused about the concept of "reality" in the`。
 - shmem/block 组合路径已经覆盖 256B 与 4KB 边界访问。
 - KVCache metadata/state DB 已经包含 multi-node visibility / update / coherence 断言。
 - simpler 执行结果能被 simulator 归类为 handled result。
@@ -706,21 +756,21 @@ ChipBackend 对 `chipbackend` descriptor 进行 handled result 处理，通过 s
 
 当前验证结果不应被扩大解释为：
 
-- 不是完整 LLM serving workload。
-- 不是完整 transformer attention/KV attention kernel。
-- 当前 Qwen3 scaffold 的 prefill hidden、Q projection tile、KV projection tile、V projection tile 数值输入已由 guest KVCache payload 和 shard metadata 派生，但仍不是从真实 Qwen3 token embedding、RoPE、attention 或 MLP graph 派生的输入。
+- 尚未把 transformer layer 内部的 RMSNorm、Q/K/V projection、RoPE、attention score、softmax、V aggregation、MLP 等算子拆成 guest 可见、guest 调度的细粒度 CPU/NPU execution graph。
+- 尚未验证完整 serving runtime 的请求队列、会话管理、batching、EOS 停止、prefill/decode 混排和多用户调度。
+- 最新 run 达到 `SIM_QWEN3_GUEST_DECODE_STEPS=16` 上限停止，没有证明 EOS 路径。
 - 不是真实生产级 KVCache eviction/prefetch/coherence 策略验证。
 - 不是 DFS service 的完整语义验证。
 - 不是所有 UB memory/cache/coherence corner case 的证明。
 
-当前 W4-v0 的真实含义是：KVCache 形态的 control/metadata/block/shmem descriptors 已经进入 guest/QEMU/simulator/simpler-capi/guest-result 端到端链路，并在 4-node 与 8-node harness 中通过了 Qwen3 Dense 0.6B shard-aware scaffold dispatch、service completion、multi-node metadata/state DB 断言。主线目标已经切到 Qwen3 Dense 0.6B shard-aware scaffold，但这仍不是完整 Qwen3 模型推理。
+当前 W4-v0 的真实含义是：Qwen3 decode-loop 形态的 control/metadata/block/shmem descriptors、range-forward hidden object、KV state object、logits/token text table 与 terminal token result 已经进入 guest/QEMU/simulator/simpler-capi/guest-result 端到端链路，并在 8-node 16-step harness 中通过了 service completion 与 multi-node metadata/state DB 断言。
 
 ## 后续建议
 
 下一步如果继续推进 W4，优先级应是：
 
-1. 将当前 Q/KV runtime input + V resident binding scaffold 扩展为显式 Q/K/V 三路 runtime projection descriptor 与 per-shard result 校验。
-2. 将当前 Qwen3 scaffold result word 校验推进为多 tile / 多 block / 多 segment / 多 shard 的 matrix result 校验。
-3. 增加 Qwen3 layer-level graph scaffold：RMSNorm、RoPE、attention score、softmax、MLP。
+1. 将当前 range-forward path 继续下钻为 guest 可见的 Q/K/V projection、RoPE、attention score、softmax、V aggregation、MLP 等 layer-level execution graph。
+2. 将 terminal token result publish 的 harness 断言推进到 EOS/BOS/PAD/think 边界、stop reason 和 decoded text 完整性校验。
+3. 将当前 HostMatmul/HostBuildGraph artifact path 扩展为多 tile / 多 block / 多 segment / 多 node 的 matrix result 校验。
 4. 将 DFS 从 completion-source coverage 推进到真实 service-level workload 覆盖。
 5. 增加更多 UB memory/cache/coherence corner case，特别是跨节点 owner publish、observer read、handoff 后旧 owner/new owner 可见性。
