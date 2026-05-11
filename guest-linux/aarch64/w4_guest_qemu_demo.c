@@ -5616,10 +5616,6 @@ decode_round_start:
         guest_decode_step > 0) {
         uint64_t stage_start_ms = monotonic_ms();
 
-        if (!db_service_ready &&
-            w4_db_service_init(&db_service, true, true, true) == 0) {
-            db_service_ready = true;
-        }
         if (!db_service_ready) {
             fprintf(stderr,
                     "[w4_guest] fail qwen3 decode round gate missing step=%" PRIu64 "\n",
@@ -5721,16 +5717,24 @@ decode_round_start:
         obmm_stage_ms = monotonic_ms() - stage_start_ms;
         printf("[w4_guest] stage db_cluster_mode=resource_backed_uapi\n");
         stage_start_ms = monotonic_ms();
-        if (!resource_assertions_enabled) {
-            printf("[w4_guest] stage db_service_cluster=resource_backed_assertions_skipped nodes=%u decode_step=%" PRIu64 " reason=decode_worker_fast_path\n",
-                   cluster_node_count,
-                   guest_decode_step);
-        } else if (guest_decode_step > 0) {
-            printf("[w4_guest] stage db_service_cluster=resource_backed_assertions_reuse decode_step=%" PRIu64 "\n",
-                   guest_decode_step);
-        } else if (w4_resource_backed_db_cluster_assertions(role, cluster_node_count) != 0) {
-            fprintf(stderr, "[w4_guest] fail incomplete resource-backed kvcache db cluster assertions\n");
+        if (resource_assertions_enabled && guest_decode_step == 0) {
+            if (w4_resource_backed_db_cluster_assertions(role, cluster_node_count) != 0) {
+                fprintf(stderr, "[w4_guest] fail incomplete resource-backed kvcache db cluster assertions\n");
+                goto out;
+            }
+        }
+        if (!db_service_ready &&
+            w4_db_service_init(&db_service, true, true, true) == 0) {
+            db_service_ready = true;
+            printf("[w4_guest] stage db_service_cluster=init_ok nodes=%u decode_step=%" PRIu64 "\n",
+                   cluster_node_count, guest_decode_step);
+        } else if (!db_service_ready) {
+            fprintf(stderr, "[w4_guest] fail db_service_cluster init failed decode_step=%" PRIu64 "\n",
+                    guest_decode_step);
             goto out;
+        } else {
+            printf("[w4_guest] stage db_service_cluster=reuse decode_step=%" PRIu64 "\n",
+                   guest_decode_step);
         }
         cluster_stage_ms = monotonic_ms() - stage_start_ms;
     }

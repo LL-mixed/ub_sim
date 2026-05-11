@@ -9,7 +9,7 @@ LOG_DIR="$ROOT_DIR/logs"
 TRACE_FILE="${TRACE_FILE:-$OUT_DIR/eight_node_w4_guest.trace.latest.txt}"
 RUN_ID_BASE="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_w4guest8_${RANDOM}}"
 RUN_DIR="$LOG_DIR/${RUN_ID_BASE}_headless8"
-UB_FM_SHARED_DIR="${UB_FM_SHARED_DIR:-/tmp/ub-qemu-links-eight_${RUN_ID_BASE}}"
+UB_FM_SHARED_DIR="${UB_FM_SHARED_DIR:-/tmp/ub8-${RANDOM}}"
 BOOT_WAIT_SECS="${BOOT_WAIT_SECS:-180}"
 DEMO_WAIT_SECS="${DEMO_WAIT_SECS:-600}"
 APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
@@ -437,7 +437,7 @@ prepare_environment() {
     SIMPLER_HOST_MATMUL_MANIFEST="$SIMPLER_HOST_MATMUL_MANIFEST" \
     SIM_UAPI_W4_CHIPBACKEND_PROFILE="$SIM_UAPI_W4_CHIPBACKEND_PROFILE" \
     SIM_QWEN3_0_6B_WEIGHTS_PATH="${SIM_QWEN3_0_6B_WEIGHTS_PATH:-}" \
-    "$SCRIPT_DIR/launch_ub_eight_node_headless.sh" >/dev/null
+    "$SCRIPT_DIR/launch_ub_eight_node_headless.sh"
   if [[ ! -f "$OUT_DIR/headless_eight_node_env.${RUN_ID_BASE}.sh" ]]; then
     trace "FAIL: headless env file was not created"
     return 1

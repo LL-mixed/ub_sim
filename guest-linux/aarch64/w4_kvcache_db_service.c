@@ -24,8 +24,8 @@
 
 #include "../kernel_ub/include/uapi/ub/obmm.h"
 #include "common/obmm_common.h"
-#include "apps/obmm_queue_demo/obmm_pool_types.h"
-#include "apps/obmm_queue_demo/obmm_queue.h"
+#include "libs/obmm_queue/obmm_queue_types.h"
+#include "libs/obmm_queue/obmm_spsc_queue.h"
 
 #define W4_DB_CLUSTER_MAX_NODES 8
 #define W4_DB_CLUSTER_MAX_RECORDS 128
@@ -2271,7 +2271,8 @@ static int w4_db_cluster_runtime_init(struct w4_db_cluster_runtime *rt)
 
     /* Allocate import PAs for peer regions */
     import_count = rt->node_count - 1;
-    if (!obmm_alloc_import_pas(import_count, rt->region_size, import_pas, import_osync)) {
+    if (!obmm_alloc_import_pas(import_count, rt->region_size, import_pas, import_osync,
+                               obmm_parse_import_cache_mode())) {
         printf("[w4_guest] gap db_service_cluster_stage=import_alloc_failed count=%d\n",
                import_count);
         goto fail;
