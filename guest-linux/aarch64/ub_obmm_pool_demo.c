@@ -1237,7 +1237,7 @@ static unsigned long parse_stress_iters(void)
     unsigned long val;
     char *end;
     if (!env || env[0] == '\0')
-        return STRESS_DEFAULT_ITERS;
+        return 0;
     val = strtoul(env, &end, 10);
     if (*end != '\0' || val == 0 || val > 100000)
         return STRESS_DEFAULT_ITERS;
@@ -1260,6 +1260,11 @@ static int do_stress(int sockfd, struct sockaddr_in peers[MAX_NODES],
     int remote_count = 0;
     (void)sockfd;
     (void)peers;
+
+    if (iters == 0) {
+        fprintf(stderr, "[ub_obmm_pool] stress skip (not requested)\n");
+        return 0;
+    }
 
     /* Count remote slots (non-local, mapped). */
     for (i = 0; i < node_count; i++) {
