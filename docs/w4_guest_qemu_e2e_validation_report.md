@@ -42,6 +42,8 @@ W4 当前已经在 guest/QEMU 多节点系统中形成端到端功能闭环。�
 - Qwen3 weights: `SIM_QWEN3_0_6B_WEIGHTS_PATH=/Volumes/repos/qwen3_mlx_run/Qwen3-0.6B`。
 - QEMU memory / append config: `qemu_mem=2G`，kernel append includes `obmm.skip_cache_maintain=1 rcupdate.rcu_cpu_stall_timeout=300`。
 - repo / submodule: repo `16fd21c47460e106f1ed1040fdd1e896473a8073`，QEMU `118dded413f1a3fac2657f7638f5f6f6492a6ee5`，kernel_ub `f0010836ed173c0f9d64bacc14b9227aaac77e9e`。
+- 统一参数清单：`4-node/8-node` 场景默认参数与覆盖策略请见  
+  [8-node W4 Qwen3 运行参数清单](/Volumes/repos/ub_sim/docs/w4_guest_qemu_8node_run_env.md)
 
 本轮修复并验证的关键数据面问题：
 
@@ -590,6 +592,9 @@ c09c77b852 Fix SIM decoder unmap lifetime
 
 该修复后 `qwen3_dense_0_6b_prefill_profile_uses_host_matmul_artifact`、4-node W4 harness 与历史 8-node scaffold harness 均通过；最新 8-node 16-step decode-loop 已改以 range-forward/KV/token result object 作为主断言。
 
+历史 4-node / 8-node 的参数设置差异见：  
+[8-node W4 Qwen3 运行参数清单](/Volumes/repos/ub_sim/docs/w4_guest_qemu_8node_run_env.md)
+
 历史 8-node scaffold 环境标记：
 
 ```text
@@ -631,6 +636,9 @@ LINQU_W4_DB_CLUSTER=1
 LINQU_W4_REQUIRE_UAPI_RESOURCE=1
 SIM_UAPI_W4_CHIPBACKEND_PROFILE=qwen3_dense_0_6b
 ```
+
+完整注入变量说明与默认值见：  
+[8-node W4 Qwen3 运行参数清单](/Volumes/repos/ub_sim/docs/w4_guest_qemu_8node_run_env.md)
 
 每个 guest 执行：
 
