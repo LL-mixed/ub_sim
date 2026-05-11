@@ -31,6 +31,12 @@
 #define IMPORT_ALIGN (2UL * 1024UL * 1024UL)
 #define MAX_NODES 8
 #define MAX_WINDOWS 16
+
+enum pool_import_cache_mode {
+    POOL_IMPORT_CACHE_AUTO = 0,
+    POOL_IMPORT_CACHE_NC   = 1,
+    POOL_IMPORT_CACHE_CC   = 2,
+};
 #define POOL_MAGIC 0x4f424d50U
 #define POOL_VERSION 1U
 #define MSG_HELLO 1U
@@ -501,7 +507,8 @@ static int create_udp_socket(const char *ifname)
     return sockfd;
 }
 
-static bool parse_windows(struct mem_window windows[MAX_WINDOWS], int *count_out)
+static bool parse_windows(struct mem_window windows[MAX_WINDOWS], int *count_out,
+                         enum pool_import_cache_mode cache_mode)
 {
     FILE *fp;
     char line[256];
@@ -529,19 +536,52 @@ static bool parse_windows(struct mem_window windows[MAX_WINDOWS], int *count_out
         if (matched != 6) {
             continue;
         }
-        if (count >= MAX_WINDOWS) {
-            break;
-        }
         windows[count].mar = (unsigned int)mar;
         windows[count].decode = (uint64_t)decode;
-        if (nc_size_mb != 0) {
+        if (cache_mode == POOL_IMPORT_CACHE_CC) {
+            if (cc_size_mb == 0)
+                continue;
+            windows[count].base_pa = ((uint64_t)cc_base_mb) << 20;
+            windows[count].size_bytes = ((uint64_t)cc_size_mb) << 20;
+            windows[count].is_cacheable = true;
+        } else if (cache_mode == POOL_IMPORT_CACHE_NC) {
+            if (nc_size_mb == 0)
+                continue;
             windows[count].base_pa = ((uint64_t)nc_base_mb) << 20;
             windows[count].size_bytes = ((uint64_t)nc_size_mb) << 20;
             windows[count].is_cacheable = false;
         } else {
-            windows[count].base_pa = ((uint64_t)cc_base_mb) << 20;
-            windows[count].size_bytes = ((uint64_t)cc_size_mb) << 20;
-            windows[count].is_cacheable = true;
+            if (nc_size_mb != 0) {
+                if (count >= MAX_WINDOWS)
+                    break;
+                windows[count].base_pa = ((uint64_t)nc_base_mb) << 20;
+                windows[count].size_bytes = ((uint64_t)nc_size_mb) << 20;
+                windows[count].is_cacheable = false;
+                fprintf(stderr,
+                        "[ub_obmm_pool] mem_window mar=%u decode=%#" PRIx64 " use=[%#" PRIx64 ",%#" PRIx64 "] cc_base_mb=%#llx cc_size_mb=%#llx nc_base_mb=%#llx nc_size_mb=%#llx\n",
+                        windows[count].mar, windows[count].decode,
+                        windows[count].base_pa, windows[count].size_bytes,
+                        cc_base_mb, cc_size_mb,
+                        nc_base_mb, nc_size_mb);
+                count++;
+            }
+            if (cc_size_mb != 0) {
+                if (count >= MAX_WINDOWS)
+                    break;
+                windows[count].mar = (unsigned int)mar;
+                windows[count].decode = (uint64_t)decode;
+                windows[count].base_pa = ((uint64_t)cc_base_mb) << 20;
+                windows[count].size_bytes = ((uint64_t)cc_size_mb) << 20;
+                windows[count].is_cacheable = true;
+                fprintf(stderr,
+                        "[ub_obmm_pool] mem_window mar=%u decode=%#" PRIx64 " use=[%#" PRIx64 ",%#" PRIx64 "] cc_base_mb=%#llx cc_size_mb=%#llx nc_base_mb=%#llx nc_size_mb=%#llx\n",
+                        windows[count].mar, windows[count].decode,
+                        windows[count].base_pa, windows[count].size_bytes,
+                        cc_base_mb, cc_size_mb,
+                        nc_base_mb, nc_size_mb);
+                count++;
+            }
+            continue;
         }
         fprintf(stderr,
                 "[ub_obmm_pool] mem_window mar=%u decode=%#" PRIx64 " use=[%#" PRIx64 ",%#" PRIx64 "] cc_base_mb=%#llx cc_size_mb=%#llx nc_base_mb=%#llx nc_size_mb=%#llx\n",
@@ -587,8 +627,22 @@ static uint64_t parse_export_region_size(void)
     return bytes;
 }
 
+static enum pool_import_cache_mode parse_import_cache_mode(void)
+{
+    const char *env = getenv("OBMM_IMPORT_CACHE_MODE");
+    if (!env || env[0] == '\0' || strcmp(env, "auto") == 0)
+        return POOL_IMPORT_CACHE_AUTO;
+    if (strcmp(env, "nc") == 0)
+        return POOL_IMPORT_CACHE_NC;
+    if (strcmp(env, "cc") == 0)
+        return POOL_IMPORT_CACHE_CC;
+    fprintf(stderr, "[ub_obmm_pool] warn: unknown OBMM_IMPORT_CACHE_MODE=%s, using auto\n", env);
+    return POOL_IMPORT_CACHE_AUTO;
+}
+
 static bool allocate_import_pas(int import_count, uint64_t size_per_import,
-                                uint64_t pas[MAX_NODES], bool map_osync[MAX_NODES])
+                                uint64_t pas[MAX_NODES], bool map_osync[MAX_NODES],
+                                enum pool_import_cache_mode cache_mode)
 {
     struct mem_window windows[MAX_WINDOWS];
     int window_count = 0;
@@ -598,7 +652,7 @@ static bool allocate_import_pas(int import_count, uint64_t size_per_import,
     if (import_count <= 0) {
         return true;
     }
-    if (!parse_windows(windows, &window_count)) {
+    if (!parse_windows(windows, &window_count, cache_mode)) {
         return false;
     }
 
@@ -906,7 +960,8 @@ static int import_all_peers(int obmm_fd, uint32_t local_cna,
     int i;
     int import_idx = 0;
 
-    if (!allocate_import_pas(import_count, g_export_region_size, import_pas, import_osync)) {
+    if (!allocate_import_pas(import_count, g_export_region_size, import_pas, import_osync,
+                             parse_import_cache_mode())) {
         fprintf(stderr, "[ub_obmm_pool] fail: unable to allocate import local_pa windows\n");
         return -1;
     }

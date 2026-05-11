@@ -1941,7 +1941,8 @@ int main(void)
         int import_count = node_count - 1;
         int import_idx = 0;
         if (!obmm_alloc_import_pas(import_count, g_export_size,
-                                   import_pas, import_osync)) {
+                                   import_pas, import_osync,
+                                   obmm_parse_import_cache_mode())) {
             fprintf(stderr, TAG " alloc import PA failed\n");
             goto out;
         }

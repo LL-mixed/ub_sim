@@ -49,6 +49,12 @@
 #define OBMM_POOL_HELPERS_IMPORT_ALIGN  (2UL * 1024UL * 1024UL)
 #define OBMM_POOL_HELPERS_MAX_NODES     8
 #define OBMM_POOL_HELPERS_MAX_WINDOWS   16
+
+enum obmm_import_cache_mode {
+    OBMM_IMPORT_CACHE_AUTO = 0,
+    OBMM_IMPORT_CACHE_NC   = 1,
+    OBMM_IMPORT_CACHE_CC   = 2,
+};
 #define OBMM_POOL_HELPERS_MAGIC         0x4f424d50U
 #define OBMM_POOL_HELPERS_VERSION       1U
 #define OBMM_SIM_DEC_PRIV_MAGIC        0x53444950U
@@ -506,7 +512,8 @@ static int obmm_do_unimport(int obmm_fd, uint64_t mem_id)
 
 static bool obmm_parse_windows(struct obmm_helpers_window windows[
                                    OBMM_POOL_HELPERS_MAX_WINDOWS],
-                               int *count_out)
+                               int *count_out,
+                               enum obmm_import_cache_mode cache_mode)
 {
     FILE *fp;
     char line[256];
@@ -526,29 +533,65 @@ static bool obmm_parse_windows(struct obmm_helpers_window windows[
             &nc_base_mb, &nc_size_mb);
         if (matched != 6)
             continue;
-        if (count >= OBMM_POOL_HELPERS_MAX_WINDOWS)
-            break;
         windows[count].mar = (unsigned int)mar;
         windows[count].decode = (uint64_t)decode;
-        if (nc_size_mb != 0) {
-            windows[count].base_pa = ((uint64_t)nc_base_mb) << 20;
-            windows[count].size_bytes = ((uint64_t)nc_size_mb) << 20;
-            windows[count].is_cacheable = false;
-        } else {
+        if (cache_mode == OBMM_IMPORT_CACHE_CC) {
+            if (cc_size_mb == 0)
+                continue;
             windows[count].base_pa = ((uint64_t)cc_base_mb) << 20;
             windows[count].size_bytes = ((uint64_t)cc_size_mb) << 20;
             windows[count].is_cacheable = true;
+            count++;
+        } else if (cache_mode == OBMM_IMPORT_CACHE_NC) {
+            if (nc_size_mb == 0)
+                continue;
+            windows[count].base_pa = ((uint64_t)nc_base_mb) << 20;
+            windows[count].size_bytes = ((uint64_t)nc_size_mb) << 20;
+            windows[count].is_cacheable = false;
+            count++;
+        } else {
+            if (nc_size_mb != 0) {
+                if (count >= OBMM_POOL_HELPERS_MAX_WINDOWS)
+                    break;
+                windows[count].base_pa = ((uint64_t)nc_base_mb) << 20;
+                windows[count].size_bytes = ((uint64_t)nc_size_mb) << 20;
+                windows[count].is_cacheable = false;
+                count++;
+            }
+            if (cc_size_mb != 0) {
+                if (count >= OBMM_POOL_HELPERS_MAX_WINDOWS)
+                    break;
+                windows[count].mar = (unsigned int)mar;
+                windows[count].decode = (uint64_t)decode;
+                windows[count].base_pa = ((uint64_t)cc_base_mb) << 20;
+                windows[count].size_bytes = ((uint64_t)cc_size_mb) << 20;
+                windows[count].is_cacheable = true;
+                count++;
+            }
         }
-        count++;
     }
     fclose(fp);
     *count_out = count;
     return count > 0;
 }
 
+static enum obmm_import_cache_mode obmm_parse_import_cache_mode(void)
+{
+    const char *env = getenv("OBMM_IMPORT_CACHE_MODE");
+    if (!env || env[0] == '\0' || strcmp(env, "auto") == 0)
+        return OBMM_IMPORT_CACHE_AUTO;
+    if (strcmp(env, "nc") == 0)
+        return OBMM_IMPORT_CACHE_NC;
+    if (strcmp(env, "cc") == 0)
+        return OBMM_IMPORT_CACHE_CC;
+    fprintf(stderr, "[obmm] warn: unknown OBMM_IMPORT_CACHE_MODE=%s, using auto\n", env);
+    return OBMM_IMPORT_CACHE_AUTO;
+}
+
 static bool obmm_alloc_import_pas(int import_count, uint64_t size_per_import,
                                   uint64_t pas[OBMM_POOL_HELPERS_MAX_NODES],
-                                  bool osync[OBMM_POOL_HELPERS_MAX_NODES])
+                                  bool osync[OBMM_POOL_HELPERS_MAX_NODES],
+                                  enum obmm_import_cache_mode cache_mode)
 {
     struct obmm_helpers_window windows[OBMM_POOL_HELPERS_MAX_WINDOWS];
     int window_count = 0;
@@ -556,7 +599,7 @@ static bool obmm_alloc_import_pas(int import_count, uint64_t size_per_import,
     int wi;
     if (import_count <= 0)
         return true;
-    if (!obmm_parse_windows(windows, &window_count))
+    if (!obmm_parse_windows(windows, &window_count, cache_mode))
         return false;
     for (wi = 0; wi < window_count && import_idx < import_count; wi++) {
         uint64_t cur = obmm_align_up_u64(windows[wi].base_pa,
