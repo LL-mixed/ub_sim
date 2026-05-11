@@ -2026,6 +2026,26 @@ mod tests {
         }
     }
 
+    fn payload_checksum_fnv1a(bytes: &[u8]) -> u64 {
+        let mut acc = 0xcbf2_9ce4_8422_2325u64;
+        for byte in bytes {
+            acc ^= u64::from(*byte);
+            acc = acc.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        acc
+    }
+
+    fn growing_payload(seed: u64, len: usize) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(len);
+        for index in 0..len {
+            let value = seed
+                .wrapping_add((index as u64).wrapping_mul(31))
+                .wrapping_add((index as u64) >> 7);
+            payload.push((value & 0xff) as u8);
+        }
+        payload
+    }
+
     #[test]
     fn block_service_stub_write_then_read_completes() {
         let mut svc = BlockServiceStub::new();
@@ -3013,8 +3033,978 @@ mod tests {
             ready
                 .iter()
                 .filter(|event| event.source == CompletionSource::ShmemService)
-                .count()
+            .count()
                 >= 16
         );
+    }
+
+    #[test]
+    fn object_service_stability_multi_node_handoff_progressive_growth() {
+        let mut profile = LingquObjectServiceProfile::default();
+        profile.queue_depth = 4096;
+        profile.obmm_pool.queue_depth = 512;
+        profile.obmm_pool.queue_auto_drain = true;
+        let mut svc = LingquObjectServiceStub::new(profile);
+
+        let node_count: u64 = 8;
+        let steps: u64 = 128;
+        let mut expected_published = 0u64;
+
+        for step in 0..steps {
+            let now = step.saturating_mul(10_000);
+            let mut expected: Vec<(String, Vec<u8>, LingquObjectKind)> = Vec::new();
+
+            for node in 0..node_count {
+                let next_node = (node + 1) % node_count;
+                let hidden_len = 1_024u64 + step.saturating_mul(37) + node.saturating_mul(11);
+                let kv_len = 768u64 + step.saturating_mul(13) + node.saturating_mul(7);
+                let hidden_payload =
+                    growing_payload(node.saturating_mul(0x31).saturating_add(step.saturating_mul(0x17)), hidden_len as usize);
+                let kv_payload =
+                    growing_payload(0x9b_u64.saturating_add(node.saturating_mul(0x7f)).saturating_add(step.saturating_mul(0x41)), kv_len as usize);
+
+                let hidden_key = format!(
+                    "qwen3/stress/step{step}/handoff/node{node}->node{next_node}/hidden"
+                );
+                let kv_key = format!(
+                    "qwen3/stress/step{step}/handoff/node{node}->node{next_node}/kvcache"
+                );
+
+                svc.submit_publish(
+                    LingquObjectPublishReq {
+                        task: None,
+                        key: hidden_key.clone(),
+                        kind: LingquObjectKind::RuntimeTensor,
+                        producer_entity: node,
+                        owner_entity: Some(next_node),
+                        expected_version: None,
+                        metadata: object_metadata(
+                            hidden_len,
+                            payload_checksum_fnv1a(&hidden_payload),
+                        ),
+                        placements: vec![LingquPayloadPlacement {
+                            backend: LingquPayloadBackend::Shmem,
+                            storage_ref: format!("qwen3/stress/payload/hidden/node{node}/step{step}"),
+                            segment: Some(SegmentHandle(32)),
+                            offset: 0,
+                            bytes: hidden_len,
+                            checksum: payload_checksum_fnv1a(&hidden_payload),
+                            locality: LingquObjectLocality::DomainShared(0),
+                        }],
+                        payload_bytes: hidden_payload.clone(),
+                    },
+                    now,
+                )
+                .expect("publish handoff hidden object");
+
+                svc.submit_publish(
+                    LingquObjectPublishReq {
+                        task: None,
+                        key: kv_key.clone(),
+                        kind: LingquObjectKind::KvCacheBlock,
+                        producer_entity: node,
+                        owner_entity: Some(next_node),
+                        expected_version: None,
+                        metadata: object_metadata(kv_len, payload_checksum_fnv1a(&kv_payload)),
+                        placements: vec![LingquPayloadPlacement {
+                            backend: LingquPayloadBackend::Shmem,
+                            storage_ref: format!("qwen3/stress/payload/kv/node{node}/step{step}"),
+                            segment: Some(SegmentHandle(40)),
+                            offset: 0,
+                        bytes: kv_len,
+                            checksum: payload_checksum_fnv1a(&kv_payload),
+                            locality: LingquObjectLocality::DomainShared(0),
+                        }],
+                        payload_bytes: kv_payload.clone(),
+                    },
+                    now,
+                )
+                .expect("publish handoff kvcache object");
+
+                expected.push((hidden_key, hidden_payload, LingquObjectKind::RuntimeTensor));
+                expected.push((kv_key, kv_payload, LingquObjectKind::KvCacheBlock));
+                expected_published += 2;
+            }
+
+            let publish_events = svc.poll_ready(now + 200);
+            assert_eq!(publish_events.len(), (node_count.saturating_mul(2)) as usize);
+            assert!(
+                publish_events
+                    .iter()
+                    .all(|event| event.status == CompletionStatus::Success)
+            );
+
+            for node in 0..node_count {
+                let next_node = (node + 1) % node_count;
+                let hidden_key = format!(
+                    "qwen3/stress/step{step}/handoff/node{node}->node{next_node}/hidden"
+                );
+                let kv_key = format!(
+                    "qwen3/stress/step{step}/handoff/node{node}->node{next_node}/kvcache"
+                );
+
+                svc.submit_resolve(
+                    LingquObjectResolveReq {
+                        task: None,
+                        key: hidden_key,
+                        requester_entity: next_node,
+                        version: LingquObjectVersionSelector::LatestCommitted,
+                        min_state: LingquObjectState::Committed,
+                        preferred_backends: vec![LingquPayloadBackend::Shmem],
+                    },
+                    now + 300,
+                )
+                .expect("resolve hidden handoff");
+
+                svc.submit_resolve(
+                    LingquObjectResolveReq {
+                        task: None,
+                        key: kv_key,
+                        requester_entity: next_node,
+                        version: LingquObjectVersionSelector::LatestCommitted,
+                        min_state: LingquObjectState::Committed,
+                        preferred_backends: vec![LingquPayloadBackend::Shmem],
+                    },
+                    now + 300,
+                )
+                .expect("resolve kv handoff");
+            }
+
+            let resolve_events = svc.poll_ready(now + 450);
+            assert_eq!(resolve_events.len(), (node_count.saturating_mul(2)) as usize);
+            assert!(
+                resolve_events
+                    .iter()
+                    .all(|event| event.status == CompletionStatus::Success)
+            );
+
+            for (key, expected_payload, expected_kind) in expected {
+                let record = svc
+                    .latest_record(&key)
+                    .expect("latest object record should exist");
+                assert_eq!(record.kind, expected_kind);
+                assert_eq!(record.checksum, payload_checksum_fnv1a(&expected_payload));
+                assert_eq!(record.placements.len(), 1);
+                let payload_copy = svc
+                    .get_copy(&key, LingquObjectVersionSelector::LatestCommitted)
+                    .expect("get_copy should find payload");
+                let payload_ref = svc
+                    .get_ref(&key, LingquObjectVersionSelector::LatestCommitted)
+                    .expect("get_ref should find payload");
+                assert_eq!(payload_copy, expected_payload);
+                assert_eq!(payload_ref, expected_payload.as_slice());
+            }
+        }
+
+        let report = svc.report();
+        assert_eq!(report.publish_count, expected_published);
+        assert_eq!(report.resolve_count, expected_published);
+        assert_eq!(report.obmm_pool_payload_write_count, expected_published);
+        assert_eq!(report.obmm_pool_payload_read_count, expected_published);
+        assert_eq!(report.obmm_pool_queue_submit_count, expected_published);
+        assert!(report.obmm_pool_queue_deliver_count > 0);
+        assert_eq!(report.obmm_pool_queue_submit_count, report.obmm_pool_queue_deliver_count);
+        assert_eq!(report.missing_resolve_count, 0);
+    }
+
+    #[test]
+    fn object_service_stability_reused_key_growth_with_versioning() {
+        let mut profile = LingquObjectServiceProfile::default();
+        profile.queue_depth = 4096;
+        profile.obmm_pool.queue_depth = 512;
+        profile.obmm_pool.queue_auto_drain = true;
+        let mut svc = LingquObjectServiceStub::new(profile);
+
+        let steps: u64 = 256;
+        let key = "qwen3/stress/reused/node-range/hidden";
+        let mut expected_version = 0u64;
+        let mut expected_publish_count = 0u64;
+
+        for step in 0..steps {
+            let now = step.saturating_mul(20_000);
+            let payload_len = 1_024u64 + step.saturating_mul(16);
+            let payload = growing_payload(0x55aa_u64 ^ step, payload_len as usize);
+            let checksum = payload_checksum_fnv1a(&payload);
+            svc.submit_publish(
+                LingquObjectPublishReq {
+                    task: None,
+                    key: key.to_string(),
+                    kind: LingquObjectKind::RuntimeTensor,
+                    producer_entity: 0,
+                    owner_entity: None,
+                    expected_version: Some(expected_version),
+                    metadata: object_metadata(payload_len, checksum),
+                    placements: vec![LingquPayloadPlacement {
+                        backend: LingquPayloadBackend::Shmem,
+                        storage_ref: "qwen3/stress/reused/payload/hidden".to_string(),
+                        segment: Some(SegmentHandle(50)),
+                        offset: 0,
+                        bytes: payload_len,
+                        checksum,
+                        locality: LingquObjectLocality::DomainShared(0),
+                    }],
+                    payload_bytes: payload.clone(),
+                },
+                now,
+            )
+            .expect("publish reused hidden object");
+            expected_publish_count += 1;
+
+            let publish_events = svc.poll_ready(now + 200);
+            assert_eq!(publish_events.len(), 1);
+            assert_eq!(publish_events[0].status, CompletionStatus::Success);
+
+            let resolver_entity = step % 8;
+            svc.submit_resolve(
+                LingquObjectResolveReq {
+                    task: None,
+                    key: key.to_string(),
+                    requester_entity: resolver_entity,
+                    version: LingquObjectVersionSelector::LatestCommitted,
+                    min_state: LingquObjectState::Committed,
+                    preferred_backends: vec![LingquPayloadBackend::Shmem],
+                },
+                now + 250,
+            )
+            .expect("resolve reused hidden object");
+            let resolve_events = svc.poll_ready(now + 500);
+            assert_eq!(resolve_events.len(), 1);
+            assert_eq!(resolve_events[0].status, CompletionStatus::Success);
+
+            let record = svc
+                .latest_record(key)
+                .expect("latest record after publish");
+            assert_eq!(record.version, expected_version.saturating_add(1));
+            assert_eq!(record.checksum, checksum);
+            let resolved_copy = svc
+                .get_copy(key, LingquObjectVersionSelector::Exact(record.version))
+                .expect("resolved copy");
+            let resolved_ref = svc
+                .get_ref(key, LingquObjectVersionSelector::Exact(record.version))
+                .expect("resolved ref");
+            assert_eq!(resolved_copy, payload);
+            assert_eq!(resolved_ref, payload.as_slice());
+
+            expected_version = expected_version.saturating_add(1);
+        }
+
+        let report = svc.report();
+        assert_eq!(report.publish_count, expected_publish_count);
+        assert_eq!(report.resolve_count, expected_publish_count);
+        assert_eq!(report.obmm_pool_payload_write_count, expected_publish_count);
+        assert_eq!(report.obmm_pool_payload_read_count, expected_publish_count);
+        assert_eq!(report.obmm_pool_queue_submit_count, expected_publish_count);
+        assert!(report.obmm_pool_queue_deliver_count >= expected_publish_count);
+        assert_eq!(report.missing_resolve_count, 0);
+    }
+
+    #[test]
+    fn object_service_stability_randomized_32mb_range() {
+        let mut profile = LingquObjectServiceProfile::default();
+        profile.queue_depth = 4096;
+        profile.obmm_pool.queue_depth = 1024;
+        profile.obmm_pool.queue_auto_drain = true;
+
+        let range_size_bytes = 32u64 * 1024u64 * 1024u64;
+        let pool_total_bytes = 384u64 * 1024u64 * 1024u64;
+        let min_payload_base = 2u64 * 1024u64 * 1024u64;
+
+        let mut rng_state = 0x4a8d_f6e3_u64;
+        let next_rand = |state: &mut u64| {
+            *state ^= *state << 7;
+            *state ^= *state >> 9;
+            *state ^= *state << 8;
+            *state
+        };
+
+        let span = pool_total_bytes.saturating_sub(range_size_bytes).saturating_sub(min_payload_base);
+        let payload_base_offset = if span > 0 {
+            min_payload_base.saturating_add(next_rand(&mut rng_state) % span)
+        } else {
+            min_payload_base
+        };
+
+        profile.obmm_pool.pool_bytes = payload_base_offset.saturating_add(range_size_bytes);
+        profile.obmm_pool.payload_base_offset = payload_base_offset;
+        let mut svc = LingquObjectServiceStub::new(profile);
+
+        let node_count = 8u64;
+        let mut published = 0u64;
+        let mut remaining = range_size_bytes;
+        let mut published_bytes = 0u64;
+
+        for step in 0..64u64 {
+            let now = 25_000u64 + step.saturating_mul(10_000);
+            let node = step % node_count;
+            let next_node = (node + 1) % node_count;
+
+            let kv_len = {
+                let draw = next_rand(&mut rng_state) % 1000;
+                64u64 * 1024u64 + (draw * (4u64 * 1024u64 * 1024u64 - 64u64 * 1024u64)) / 999
+            };
+            let hidden_len = {
+                let draw = next_rand(&mut rng_state) % 1000;
+                64u64 * 1024u64 + (draw * (2u64 * 1024u64 * 1024u64 - 64u64 * 1024u64)) / 999
+            };
+            let pair_len = kv_len.saturating_add(hidden_len);
+
+            if pair_len.saturating_add(1024) > remaining {
+                break;
+            }
+            remaining -= pair_len;
+            published_bytes = published_bytes.saturating_add(pair_len);
+
+            let kv_payload = growing_payload(0x9e37_u64.saturating_add(step), kv_len as usize);
+            let hidden_payload =
+                growing_payload(0x1a5u64.saturating_add(step.saturating_mul(17)), hidden_len as usize);
+            let kv_checksum = payload_checksum_fnv1a(&kv_payload);
+            let hidden_checksum = payload_checksum_fnv1a(&hidden_payload);
+
+            let kv_key =
+                format!("qwen3/stress/random-range/step{step}/node{node}->node{next_node}/kvcache");
+            let hidden_key =
+                format!("qwen3/stress/random-range/step{step}/node{node}->node{next_node}/hidden");
+
+            svc.submit_publish(
+                LingquObjectPublishReq {
+                    task: None,
+                    key: kv_key.clone(),
+                    kind: LingquObjectKind::KvCacheBlock,
+                    producer_entity: node,
+                    owner_entity: Some(next_node),
+                    expected_version: None,
+                    metadata: object_metadata(kv_len, kv_checksum),
+                    placements: vec![LingquPayloadPlacement {
+                        backend: LingquPayloadBackend::Shmem,
+                        storage_ref: format!("qwen3/stress/random-range/payload/kv/{step}"),
+                        segment: Some(SegmentHandle(77)),
+                        offset: 0,
+                        bytes: kv_len,
+                        checksum: kv_checksum,
+                        locality: LingquObjectLocality::DomainShared(0),
+                    }],
+                    payload_bytes: kv_payload,
+                },
+                now,
+            )
+            .expect("publish random range kv object");
+
+            svc.submit_publish(
+                LingquObjectPublishReq {
+                    task: None,
+                    key: hidden_key.clone(),
+                    kind: LingquObjectKind::RuntimeTensor,
+                    producer_entity: node,
+                    owner_entity: Some(next_node),
+                    expected_version: None,
+                    metadata: object_metadata(hidden_len, hidden_checksum),
+                    placements: vec![LingquPayloadPlacement {
+                        backend: LingquPayloadBackend::Shmem,
+                        storage_ref: format!("qwen3/stress/random-range/payload/hidden/{step}"),
+                        segment: Some(SegmentHandle(80)),
+                        offset: 0,
+                        bytes: hidden_len,
+                        checksum: hidden_checksum,
+                        locality: LingquObjectLocality::DomainShared(0),
+                    }],
+                    payload_bytes: hidden_payload,
+                },
+                now + 100,
+            )
+            .expect("publish random range hidden object");
+
+            published += 2;
+
+            let publish_events = svc.poll_ready(now + 240);
+            assert_eq!(publish_events.len(), 2);
+            assert!(publish_events
+                .iter()
+                .all(|event| event.status == CompletionStatus::Success));
+
+            svc.submit_resolve(
+                LingquObjectResolveReq {
+                    task: None,
+                    key: kv_key.clone(),
+                    requester_entity: next_node,
+                    version: LingquObjectVersionSelector::LatestCommitted,
+                    min_state: LingquObjectState::Committed,
+                    preferred_backends: vec![LingquPayloadBackend::Shmem],
+                },
+                now + 300,
+            )
+            .expect("resolve random range kv object");
+
+            svc.submit_resolve(
+                LingquObjectResolveReq {
+                    task: None,
+                    key: hidden_key.clone(),
+                    requester_entity: next_node,
+                    version: LingquObjectVersionSelector::LatestCommitted,
+                    min_state: LingquObjectState::Committed,
+                    preferred_backends: vec![LingquPayloadBackend::Shmem],
+                },
+                now + 300,
+            )
+            .expect("resolve random range hidden object");
+
+            let resolve_events = svc.poll_ready(now + 460);
+            assert_eq!(resolve_events.len(), 2);
+            assert!(resolve_events
+                .iter()
+                .all(|event| event.status == CompletionStatus::Success));
+
+            let kv_record = svc
+                .latest_record(&kv_key)
+                .expect("kv latest record should exist");
+            assert_eq!(kv_record.kind, LingquObjectKind::KvCacheBlock);
+            assert_eq!(kv_record.checksum, kv_checksum);
+            let kv_copy = svc
+                .get_copy(&kv_key, LingquObjectVersionSelector::LatestCommitted)
+                .expect("kv payload copy");
+            assert_eq!(payload_checksum_fnv1a(&kv_copy), kv_checksum);
+            let kv_ref = svc
+                .get_ref(&kv_key, LingquObjectVersionSelector::LatestCommitted)
+                .expect("kv payload ref");
+            assert_eq!(payload_checksum_fnv1a(kv_ref), kv_checksum);
+
+            let hidden_record = svc
+                .latest_record(&hidden_key)
+                .expect("hidden latest record should exist");
+            assert_eq!(hidden_record.kind, LingquObjectKind::RuntimeTensor);
+            assert_eq!(hidden_record.checksum, hidden_checksum);
+            let hidden_copy = svc
+                .get_copy(&hidden_key, LingquObjectVersionSelector::LatestCommitted)
+                .expect("hidden payload copy");
+            assert_eq!(payload_checksum_fnv1a(&hidden_copy), hidden_checksum);
+            let hidden_ref = svc
+                .get_ref(&hidden_key, LingquObjectVersionSelector::LatestCommitted)
+                .expect("hidden payload ref");
+            assert_eq!(payload_checksum_fnv1a(hidden_ref), hidden_checksum);
+        }
+
+        let report = svc.report();
+        assert!(published > 0);
+        assert!(published_bytes >= range_size_bytes / 2);
+        assert!(published_bytes <= range_size_bytes);
+        assert_eq!(report.publish_count, published);
+        assert_eq!(report.resolve_count, published);
+        assert_eq!(report.obmm_pool_payload_write_count, published);
+        assert_eq!(report.obmm_pool_payload_read_count, published);
+        assert_eq!(report.obmm_pool_queue_submit_count, published);
+        assert!(report.obmm_pool_queue_deliver_count >= published);
+        assert_eq!(report.missing_resolve_count, 0);
+        assert!(report.obmm_pool_bytes_used >= payload_base_offset);
+        assert!(report.obmm_pool_bytes_used <= payload_base_offset + range_size_bytes);
+    }
+
+    #[test]
+    fn object_service_stability_longrun_decode_like_handoff_8node() {
+        let mut profile = LingquObjectServiceProfile::default();
+        profile.queue_depth = 8192;
+        profile.obmm_pool.queue_depth = 2048;
+        profile.obmm_pool.queue_auto_drain = true;
+        profile.obmm_pool.pool_bytes = 700 * 1024u64 * 1024u64;
+
+        let mut svc = LingquObjectServiceStub::new(profile);
+        let node_count = 8u64;
+        let slot_count = 8u64;
+        let steps = 256u64;
+
+        let mut rng_state = 0xcafe_f00d_u64;
+        let next_rand = |state: &mut u64| {
+            *state ^= *state << 5;
+            *state ^= *state >> 11;
+            *state ^= *state << 8;
+            *state
+        };
+
+        let mut expected_kv_versions = vec![vec![0u64; slot_count as usize]; node_count as usize];
+        let mut expected_hidden_versions = vec![vec![0u64; slot_count as usize]; node_count as usize];
+        let mut expected_publish = 0u64;
+        let mut expected_resolve = 0u64;
+        let mut kv_bytes_total = 0u64;
+        let mut hidden_bytes_total = 0u64;
+        let mut max_kv_len = 0u64;
+        let mut max_hidden_len = 0u64;
+        let mut min_kv_len = u64::MAX;
+        let mut min_hidden_len = u64::MAX;
+
+        for step in 0..steps {
+            let now = 40_000u64 + step.saturating_mul(7_500);
+            let mut step_kv_checksums = Vec::with_capacity(node_count as usize);
+            let mut step_hidden_checksums = Vec::with_capacity(node_count as usize);
+
+            for node in 0..node_count {
+                let next_node = (node + 1) % node_count;
+                let slot = (step % slot_count) as usize;
+                let node_idx = node as usize;
+                let growth_factor = step.min(128);
+
+                let kv_len = {
+                    let jitter = next_rand(&mut rng_state) % 768;
+                    (20_000u64 + growth_factor.saturating_mul(180) + jitter).min(96_000)
+                };
+                let hidden_len = {
+                    let jitter = next_rand(&mut rng_state) % 1024;
+                    (12_000u64 + growth_factor.saturating_mul(96) + jitter).min(68_000)
+                };
+
+                let kv_payload = growing_payload(
+                    0x11aa_u64
+                        .saturating_add(node.saturating_mul(11))
+                        .saturating_add(step.saturating_mul(31)),
+                    kv_len as usize,
+                );
+                let hidden_payload = growing_payload(
+                    0x22bb_u64
+                        .saturating_add(node.saturating_mul(17))
+                        .saturating_add(step.saturating_mul(29)),
+                    hidden_len as usize,
+                );
+                let kv_checksum = payload_checksum_fnv1a(&kv_payload);
+                let hidden_checksum = payload_checksum_fnv1a(&hidden_payload);
+
+                let kv_key = format!(
+                    "qwen3/stress/longrun/node{node}->node{next_node}/slot{slot}/kvcache"
+                );
+                let hidden_key = format!(
+                    "qwen3/stress/longrun/node{node}->node{next_node}/slot{slot}/hidden"
+                );
+
+                let kv_expected_version = expected_kv_versions[node_idx][slot];
+                let hidden_expected_version = expected_hidden_versions[node_idx][slot];
+                expected_kv_versions[node_idx][slot] = expected_kv_versions[node_idx][slot].saturating_add(1);
+                expected_hidden_versions[node_idx][slot] = expected_hidden_versions[node_idx][slot]
+                    .saturating_add(1);
+
+                svc.submit_publish(
+                    LingquObjectPublishReq {
+                        task: None,
+                        key: kv_key.clone(),
+                        kind: LingquObjectKind::KvCacheBlock,
+                        producer_entity: node,
+                        owner_entity: Some(next_node),
+                        expected_version: Some(kv_expected_version),
+                        metadata: object_metadata(kv_len, kv_checksum),
+                        placements: vec![LingquPayloadPlacement {
+                            backend: LingquPayloadBackend::Shmem,
+                            storage_ref: format!(
+                                "qwen3/stress/longrun/payload/kv/node{node}/slot{slot}"
+                            ),
+                            segment: Some(SegmentHandle(90)),
+                            offset: 0,
+                            bytes: kv_len,
+                            checksum: kv_checksum,
+                            locality: LingquObjectLocality::DomainShared(0),
+                        }],
+                        payload_bytes: kv_payload,
+                    },
+                    now,
+                )
+                .expect("publish longrun kv object");
+
+                svc.submit_publish(
+                    LingquObjectPublishReq {
+                        task: None,
+                        key: hidden_key.clone(),
+                        kind: LingquObjectKind::RuntimeTensor,
+                        producer_entity: node,
+                        owner_entity: Some(next_node),
+                        expected_version: Some(hidden_expected_version),
+                        metadata: object_metadata(hidden_len, hidden_checksum),
+                        placements: vec![LingquPayloadPlacement {
+                            backend: LingquPayloadBackend::Shmem,
+                            storage_ref: format!(
+                                "qwen3/stress/longrun/payload/hidden/node{node}/slot{slot}"
+                            ),
+                            segment: Some(SegmentHandle(91)),
+                            offset: 0,
+                            bytes: hidden_len,
+                            checksum: hidden_checksum,
+                            locality: LingquObjectLocality::DomainShared(0),
+                        }],
+                        payload_bytes: hidden_payload,
+                    },
+                    now + 50,
+                )
+                .expect("publish longrun hidden object");
+
+                expected_publish = expected_publish.saturating_add(2);
+                kv_bytes_total = kv_bytes_total.saturating_add(kv_len);
+                hidden_bytes_total = hidden_bytes_total.saturating_add(hidden_len);
+                max_kv_len = max_kv_len.max(kv_len);
+                max_hidden_len = max_hidden_len.max(hidden_len);
+                min_kv_len = min_kv_len.min(kv_len);
+                min_hidden_len = min_hidden_len.min(hidden_len);
+
+                step_kv_checksums.push((kv_key, kv_expected_version.saturating_add(1), kv_checksum));
+                step_hidden_checksums.push((hidden_key, hidden_expected_version.saturating_add(1), hidden_checksum));
+            }
+
+            let publish_events = svc.poll_ready(now + 260);
+            assert_eq!(publish_events.len(), (node_count.saturating_mul(2)) as usize);
+            assert!(publish_events
+                .iter()
+                .all(|event| event.status == CompletionStatus::Success));
+
+            for node in 0..node_count {
+                let next_node = (node + 1) % node_count;
+                let slot = (step % slot_count) as usize;
+                let kv_key = format!(
+                    "qwen3/stress/longrun/node{node}->node{next_node}/slot{slot}/kvcache"
+                );
+                let hidden_key = format!(
+                    "qwen3/stress/longrun/node{node}->node{next_node}/slot{slot}/hidden"
+                );
+
+                svc.submit_resolve(
+                    LingquObjectResolveReq {
+                        task: None,
+                        key: kv_key,
+                        requester_entity: next_node,
+                        version: LingquObjectVersionSelector::LatestCommitted,
+                        min_state: LingquObjectState::Committed,
+                        preferred_backends: vec![LingquPayloadBackend::Shmem],
+                    },
+                    now + 300,
+                )
+                .expect("resolve longrun kv object");
+                svc.submit_resolve(
+                    LingquObjectResolveReq {
+                        task: None,
+                        key: hidden_key,
+                        requester_entity: next_node,
+                        version: LingquObjectVersionSelector::LatestCommitted,
+                        min_state: LingquObjectState::Committed,
+                        preferred_backends: vec![LingquPayloadBackend::Shmem],
+                    },
+                    now + 300,
+                )
+                .expect("resolve longrun hidden object");
+            }
+
+            let resolve_events = svc.poll_ready(now + 520);
+            assert_eq!(resolve_events.len(), (node_count.saturating_mul(2)) as usize);
+            assert!(resolve_events
+                .iter()
+                .all(|event| event.status == CompletionStatus::Success));
+
+            expected_resolve += node_count.saturating_mul(2);
+
+            for (kv_key, expected_kv_version, expected_checksum) in step_kv_checksums {
+                let kv_record = svc
+                    .latest_record(&kv_key)
+                    .expect("kv latest record should exist");
+                assert_eq!(kv_record.version, expected_kv_version);
+                assert_eq!(kv_record.kind, LingquObjectKind::KvCacheBlock);
+                assert_eq!(kv_record.checksum, expected_checksum);
+                let kv_copy = svc
+                    .get_copy(&kv_key, LingquObjectVersionSelector::LatestCommitted)
+                    .expect("kv copy");
+                assert_eq!(payload_checksum_fnv1a(&kv_copy), expected_checksum);
+            }
+
+            for (hidden_key, expected_hidden_version, expected_checksum) in step_hidden_checksums {
+                let hidden_record = svc
+                    .latest_record(&hidden_key)
+                    .expect("hidden latest record should exist");
+                assert_eq!(hidden_record.version, expected_hidden_version);
+                assert_eq!(hidden_record.kind, LingquObjectKind::RuntimeTensor);
+                assert_eq!(hidden_record.checksum, expected_checksum);
+                let hidden_copy = svc
+                    .get_copy(&hidden_key, LingquObjectVersionSelector::LatestCommitted)
+                    .expect("hidden copy");
+                assert_eq!(payload_checksum_fnv1a(&hidden_copy), expected_checksum);
+            }
+        }
+
+        let report = svc.report();
+        assert_eq!(report.publish_count, expected_publish);
+        assert_eq!(report.resolve_count, expected_resolve);
+        assert_eq!(report.obmm_pool_payload_write_count, expected_publish);
+        assert_eq!(report.obmm_pool_payload_read_count, expected_resolve);
+        assert_eq!(report.obmm_pool_queue_submit_count, expected_publish);
+        assert!(report.obmm_pool_queue_deliver_count >= expected_publish);
+        assert_eq!(report.missing_resolve_count, 0);
+        assert!(report.obmm_pool_bytes_used > 0);
+        assert_eq!(svc.report().obmm_pool_payload_write_count, expected_publish);
+        assert!(kv_bytes_total > 0);
+        assert!(hidden_bytes_total > 0);
+        assert!(max_kv_len > 0);
+        assert!(max_hidden_len > 0);
+        assert!(min_kv_len > 0);
+        assert!(min_hidden_len > 0);
+        assert!(min_kv_len <= max_kv_len);
+        assert!(min_hidden_len <= max_hidden_len);
+        assert!(kv_bytes_total + hidden_bytes_total > max_kv_len + max_hidden_len);
+    }
+
+    #[test]
+    fn object_service_stability_longrun_decode_like_handoff_8node_500_steps() {
+        let mut profile = LingquObjectServiceProfile::default();
+        profile.queue_depth = 8192;
+        profile.obmm_pool.queue_depth = 4096;
+        profile.obmm_pool.queue_auto_drain = true;
+        profile.obmm_pool.pool_bytes = 900 * 1024u64 * 1024u64;
+
+        let mut svc = LingquObjectServiceStub::new(profile);
+        let node_count = 8u64;
+        let slot_count = 8u64;
+        let steps = 500u64;
+
+        let mut rng_state = 0x55aa_c0de_u64;
+        let next_rand = |state: &mut u64| {
+            *state ^= *state << 13;
+            *state ^= *state >> 7;
+            *state ^= *state << 17;
+            *state
+        };
+
+        let mut expected_kv_versions = vec![vec![0u64; slot_count as usize]; node_count as usize];
+        let mut expected_hidden_versions = vec![vec![0u64; slot_count as usize]; node_count as usize];
+        let mut expected_publish = 0u64;
+        let mut expected_resolve = 0u64;
+        let mut kv_bytes_total = 0u64;
+        let mut hidden_bytes_total = 0u64;
+        let mut max_kv_len = 0u64;
+        let mut max_hidden_len = 0u64;
+        let mut min_kv_len = u64::MAX;
+        let mut min_hidden_len = u64::MAX;
+        let mut throughput_points = Vec::with_capacity(steps as usize);
+
+        for step in 0..steps {
+            let now = 60_000u64 + step.saturating_mul(9_000);
+            let mut step_kv_checksums = Vec::with_capacity(node_count as usize);
+            let mut step_hidden_checksums = Vec::with_capacity(node_count as usize);
+            let mut step_kv_total: u64 = 0;
+            let mut step_hidden_total: u64 = 0;
+
+            for node in 0..node_count {
+                let next_node = (node + 1) % node_count;
+                let slot = (step % slot_count) as usize;
+                let node_idx = node as usize;
+                let growth_factor = 64u64 + (step / 4).min(192);
+
+                let kv_len = {
+                    let jitter = next_rand(&mut rng_state) % 1536;
+                    let base = 24_000u64 + growth_factor.saturating_mul(220);
+                    (base + jitter).min(96_000)
+                };
+                let hidden_len = {
+                    let jitter = next_rand(&mut rng_state) % 2048;
+                    let base = 14_000u64 + growth_factor.saturating_mul(140);
+                    (base + jitter).min(72_000)
+                };
+
+                let kv_payload = growing_payload(
+                    0x0bad_u64
+                        .saturating_add(node.saturating_mul(13))
+                        .saturating_add(step.saturating_mul(17)),
+                    kv_len as usize,
+                );
+                let hidden_payload = growing_payload(
+                    0x00a5_u64
+                        .saturating_add(node.saturating_mul(19))
+                        .saturating_add(step.saturating_mul(23)),
+                    hidden_len as usize,
+                );
+                let kv_checksum = payload_checksum_fnv1a(&kv_payload);
+                let hidden_checksum = payload_checksum_fnv1a(&hidden_payload);
+
+                let kv_key = format!(
+                    "qwen3/stress/longrun-500/node{node}->node{next_node}/slot{slot}/kvcache"
+                );
+                let hidden_key = format!(
+                    "qwen3/stress/longrun-500/node{node}->node{next_node}/slot{slot}/hidden"
+                );
+
+                let kv_expected_version = expected_kv_versions[node_idx][slot];
+                let hidden_expected_version = expected_hidden_versions[node_idx][slot];
+                expected_kv_versions[node_idx][slot] = expected_kv_versions[node_idx][slot].saturating_add(1);
+                expected_hidden_versions[node_idx][slot] = expected_hidden_versions[node_idx][slot]
+                    .saturating_add(1);
+
+                svc.submit_publish(
+                    LingquObjectPublishReq {
+                        task: None,
+                        key: kv_key.clone(),
+                        kind: LingquObjectKind::KvCacheBlock,
+                        producer_entity: node,
+                        owner_entity: Some(next_node),
+                        expected_version: Some(kv_expected_version),
+                        metadata: object_metadata(kv_len, kv_checksum),
+                        placements: vec![LingquPayloadPlacement {
+                            backend: LingquPayloadBackend::Shmem,
+                            storage_ref: format!(
+                                "qwen3/stress/longrun-500/payload/kv/node{node}/slot{slot}"
+                            ),
+                            segment: Some(SegmentHandle(95)),
+                            offset: 0,
+                            bytes: kv_len,
+                            checksum: kv_checksum,
+                            locality: LingquObjectLocality::DomainShared(0),
+                        }],
+                        payload_bytes: kv_payload,
+                    },
+                    now,
+                )
+                .expect("publish longrun-500 kv object");
+
+                svc.submit_publish(
+                    LingquObjectPublishReq {
+                        task: None,
+                        key: hidden_key.clone(),
+                        kind: LingquObjectKind::RuntimeTensor,
+                        producer_entity: node,
+                        owner_entity: Some(next_node),
+                        expected_version: Some(hidden_expected_version),
+                        metadata: object_metadata(hidden_len, hidden_checksum),
+                        placements: vec![LingquPayloadPlacement {
+                            backend: LingquPayloadBackend::Shmem,
+                            storage_ref: format!(
+                                "qwen3/stress/longrun-500/payload/hidden/node{node}/slot{slot}"
+                            ),
+                            segment: Some(SegmentHandle(96)),
+                            offset: 0,
+                            bytes: hidden_len,
+                            checksum: hidden_checksum,
+                            locality: LingquObjectLocality::DomainShared(0),
+                        }],
+                        payload_bytes: hidden_payload,
+                    },
+                    now + 50,
+                )
+                .expect("publish longrun-500 hidden object");
+
+                expected_publish = expected_publish.saturating_add(2);
+                kv_bytes_total = kv_bytes_total.saturating_add(kv_len);
+                hidden_bytes_total = hidden_bytes_total.saturating_add(hidden_len);
+                step_kv_total = step_kv_total.saturating_add(kv_len);
+                step_hidden_total = step_hidden_total.saturating_add(hidden_len);
+                max_kv_len = max_kv_len.max(kv_len);
+                max_hidden_len = max_hidden_len.max(hidden_len);
+                min_kv_len = min_kv_len.min(kv_len);
+                min_hidden_len = min_hidden_len.min(hidden_len);
+
+                step_kv_checksums.push((kv_key, kv_expected_version.saturating_add(1), kv_checksum));
+                step_hidden_checksums.push((hidden_key, hidden_expected_version.saturating_add(1), hidden_checksum));
+            }
+
+            let publish_events = svc.poll_ready(now + 300);
+            assert_eq!(publish_events.len(), (node_count.saturating_mul(2)) as usize);
+            assert!(publish_events
+                .iter()
+                .all(|event| event.status == CompletionStatus::Success));
+
+            for node in 0..node_count {
+                let next_node = (node + 1) % node_count;
+                let slot = (step % slot_count) as usize;
+                let kv_key = format!(
+                    "qwen3/stress/longrun-500/node{node}->node{next_node}/slot{slot}/kvcache"
+                );
+                let hidden_key = format!(
+                    "qwen3/stress/longrun-500/node{node}->node{next_node}/slot{slot}/hidden"
+                );
+
+                svc.submit_resolve(
+                    LingquObjectResolveReq {
+                        task: None,
+                        key: kv_key,
+                        requester_entity: next_node,
+                        version: LingquObjectVersionSelector::LatestCommitted,
+                        min_state: LingquObjectState::Committed,
+                        preferred_backends: vec![LingquPayloadBackend::Shmem],
+                    },
+                    now + 380,
+                )
+                .expect("resolve longrun-500 kv object");
+                svc.submit_resolve(
+                    LingquObjectResolveReq {
+                        task: None,
+                        key: hidden_key,
+                        requester_entity: next_node,
+                        version: LingquObjectVersionSelector::LatestCommitted,
+                        min_state: LingquObjectState::Committed,
+                        preferred_backends: vec![LingquPayloadBackend::Shmem],
+                    },
+                    now + 380,
+                )
+                .expect("resolve longrun-500 hidden object");
+            }
+
+            let resolve_events = svc.poll_ready(now + 680);
+            assert_eq!(resolve_events.len(), (node_count.saturating_mul(2)) as usize);
+            assert!(resolve_events
+                .iter()
+                .all(|event| event.status == CompletionStatus::Success));
+
+            expected_resolve += node_count.saturating_mul(2);
+            throughput_points.push((step, step_kv_total, step_hidden_total));
+
+            for (kv_key, expected_kv_version, expected_checksum) in step_kv_checksums {
+                let kv_record = svc
+                    .latest_record(&kv_key)
+                    .expect("kv latest record should exist");
+                assert_eq!(kv_record.version, expected_kv_version);
+                assert_eq!(kv_record.kind, LingquObjectKind::KvCacheBlock);
+                assert_eq!(kv_record.checksum, expected_checksum);
+                let kv_copy = svc
+                    .get_copy(&kv_key, LingquObjectVersionSelector::LatestCommitted)
+                    .expect("kv copy");
+                assert_eq!(payload_checksum_fnv1a(&kv_copy), expected_checksum);
+            }
+
+            for (hidden_key, expected_hidden_version, expected_checksum) in step_hidden_checksums {
+                let hidden_record = svc
+                    .latest_record(&hidden_key)
+                    .expect("hidden latest record should exist");
+                assert_eq!(hidden_record.version, expected_hidden_version);
+                assert_eq!(hidden_record.kind, LingquObjectKind::RuntimeTensor);
+                assert_eq!(hidden_record.checksum, expected_checksum);
+                let hidden_copy = svc
+                    .get_copy(&hidden_key, LingquObjectVersionSelector::LatestCommitted)
+                    .expect("hidden copy");
+                assert_eq!(payload_checksum_fnv1a(&hidden_copy), expected_checksum);
+            }
+        }
+
+        let report = svc.report();
+        assert_eq!(report.publish_count, expected_publish);
+        assert_eq!(report.resolve_count, expected_resolve);
+        assert_eq!(report.obmm_pool_payload_write_count, expected_publish);
+        assert_eq!(report.obmm_pool_payload_read_count, expected_resolve);
+        assert_eq!(report.obmm_pool_queue_submit_count, expected_publish);
+        assert!(report.obmm_pool_queue_deliver_count >= expected_publish);
+        assert_eq!(report.missing_resolve_count, 0);
+        assert_eq!(svc.report().obmm_pool_payload_write_count, expected_publish);
+
+        let total_payload = kv_bytes_total.saturating_add(hidden_bytes_total);
+        let expected_objects = expected_publish;
+        let mean_step_bytes = total_payload / steps;
+        let mean_object_bytes = total_payload / expected_objects.max(1);
+        let max_step_bytes = throughput_points
+            .iter()
+            .map(|(_, kv_len, hidden_len)| (*kv_len).saturating_add(*hidden_len))
+            .max()
+            .unwrap_or(0);
+        let min_step_bytes = throughput_points
+            .iter()
+            .map(|(_, kv_len, hidden_len)| (*kv_len).saturating_add(*hidden_len))
+            .min()
+            .unwrap_or(u64::MAX);
+
+        assert!(total_payload > 0);
+        assert!(total_payload >= kv_bytes_total);
+        assert!(mean_step_bytes >= min_step_bytes);
+        assert!(mean_step_bytes <= max_step_bytes);
+        assert!(max_kv_len > 0);
+        assert!(max_hidden_len > 0);
+        assert!(min_kv_len > 0);
+        assert!(min_hidden_len > 0);
+        assert!(max_kv_len >= 24_000);
+        assert!(max_hidden_len >= 15_000);
+        assert!(report.obmm_pool_bytes_used <= profile.obmm_pool.pool_bytes);
+        assert!(mean_object_bytes > 10_000);
+        assert_eq!(throughput_points.len() as u64, steps);
     }
 }

@@ -10,7 +10,7 @@ use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use sim_config::ScenarioConfig;
 use sim_core::{
@@ -28,25 +28,24 @@ use sim_models::qwen3_dense_0_6b::{
     embedding_reference_summary, forward_from_token_ids,
     forward_from_token_ids_with_layer_payloads, forward_incremental_with_kv_cache_from_hidden,
     forward_with_kv_cache_from_token_ids, full_vocab_logits_from_hidden,
-    full_vocab_logits_from_hidden_with_payloads, full_vocab_sample_from_hidden,
-    layer_forward_reference_sequence_with_payloads, load_safetensors_path_metadata,
-    load_tokenizer_asset_summary, logits_reference_summary, logits_reference_summary_with_hidden,
-    materialize_full_weight_tensor_payload, materialize_weight_slice_payload,
-    mlp_reference_layer_summary, mlp_reference_layer_summary_with_hidden,
-    prompt_token_ids_checksum, qkv_reference_layer_summary, qkv_reference_layer_values,
+    full_vocab_logits_from_hidden_with_payloads, layer_forward_reference_sequence_with_payloads,
+    load_safetensors_path_metadata, load_tokenizer_asset_summary, logits_reference_summary,
+    logits_reference_summary_with_hidden, materialize_full_weight_tensor_payload,
+    materialize_weight_slice_payload, mlp_reference_layer_summary,
+    mlp_reference_layer_summary_with_hidden, prompt_token_ids_checksum,
+    qkv_reference_layer_summary, qkv_reference_layer_values,
     qkv_reference_layer_values_with_hidden, token_piece_bytes_from_policy,
     token_piece_bytes_from_tokenizer_path, token_piece_decode_bytes, token_piece_from_policy,
     tokenize_prompt_from_tokenizer_path, tokenizer_policy, weight_bytes_checksum,
     weight_manifest_from_metadata, Qwen3Dense06bEmbeddingReferenceSummary,
-    Qwen3Dense06bFullVocabLogitsSummary, Qwen3Dense06bFullVocabSample, Qwen3Dense06bLayerKvCache,
-    Qwen3Dense06bLoadedWeights, Qwen3Dense06bLogitsReferenceSummary,
-    Qwen3Dense06bMlpReferenceLayerSummary, Qwen3Dense06bMlpReferenceShardSummary,
-    Qwen3Dense06bProfile, Qwen3Dense06bQkvReferenceLayerSummary,
-    Qwen3Dense06bQkvReferenceLayerValues, Qwen3Dense06bQkvReferenceShardSummary,
-    Qwen3Dense06bQkvReferenceShardValues, Qwen3Dense06bReferenceWeightSliceValidation,
-    Qwen3Dense06bShard, Qwen3Dense06bTokenizerAssetSummary, Qwen3Dense06bWeightTensorKind,
-    QWEN3_DENSE_0_6B_PROFILE, QWEN3_DENSE_0_6B_TOKENIZER_ASSET_POLICY_KIND,
-    QWEN3_DENSE_0_6B_TOKENIZER_POLICY_KIND,
+    Qwen3Dense06bFullVocabLogitsSummary, Qwen3Dense06bLayerKvCache, Qwen3Dense06bLoadedWeights,
+    Qwen3Dense06bLogitsReferenceSummary, Qwen3Dense06bMlpReferenceLayerSummary,
+    Qwen3Dense06bMlpReferenceShardSummary, Qwen3Dense06bProfile,
+    Qwen3Dense06bQkvReferenceLayerSummary, Qwen3Dense06bQkvReferenceLayerValues,
+    Qwen3Dense06bQkvReferenceShardSummary, Qwen3Dense06bQkvReferenceShardValues,
+    Qwen3Dense06bReferenceWeightSliceValidation, Qwen3Dense06bShard,
+    Qwen3Dense06bTokenizerAssetSummary, Qwen3Dense06bWeightTensorKind, QWEN3_DENSE_0_6B_PROFILE,
+    QWEN3_DENSE_0_6B_TOKENIZER_ASSET_POLICY_KIND, QWEN3_DENSE_0_6B_TOKENIZER_POLICY_KIND,
 };
 use sim_runtime::{
     LocalRuntimeEngine, RuntimeCompletionTracker, RuntimeDriveAction, RuntimeQueueRecord,
@@ -454,12 +453,6 @@ pub struct Qwen3Dense06bTextOutputSample {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Qwen3Dense06bDecodeLoopReport {
     pub steps: Vec<Qwen3Dense06bDecodeLoopStepReport>,
-    pub max_token_count: u64,
-    pub stop_reason: Option<String>,
-    pub stop_token_id: Option<u64>,
-    pub ttft_micros: Option<u64>,
-    pub tpot_micros: Option<u64>,
-    pub total_duration_micros: u64,
     pub final_guest_input_checksum: u64,
     pub decode_chain_checksum: u64,
     pub generated_byte_len: u64,
@@ -1584,13 +1577,13 @@ pub fn qwen3_dense_0_6b_prefill_text_output_report(
 
 pub fn qwen3_dense_0_6b_decode_loop_report(
     topology: &SimTopology,
-    max_token_count: usize,
+    step_count: usize,
 ) -> Result<Qwen3Dense06bDecodeLoopReport, String> {
     let guest_input = qwen3_dense_0_6b_default_guest_input();
     let guest_input_report = qwen3_dense_0_6b_synthetic_guest_input_report(&guest_input);
     qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
         topology,
-        max_token_count,
+        step_count,
         guest_input,
         guest_input_report,
     )
@@ -1598,16 +1591,7 @@ pub fn qwen3_dense_0_6b_decode_loop_report(
 
 pub fn qwen3_dense_0_6b_decode_loop_report_with_prompt(
     topology: &SimTopology,
-    max_token_count: usize,
-    prompt: &str,
-) -> Result<Qwen3Dense06bDecodeLoopReport, String> {
-    let prompt = qwen3_dense_0_6b_chat_prompt(prompt);
-    qwen3_dense_0_6b_decode_loop_report_with_raw_prompt(topology, max_token_count, &prompt)
-}
-
-pub fn qwen3_dense_0_6b_decode_loop_report_with_raw_prompt(
-    topology: &SimTopology,
-    max_token_count: usize,
+    step_count: usize,
     prompt: &str,
 ) -> Result<Qwen3Dense06bDecodeLoopReport, String> {
     let tokenizer_path = qwen3_dense_0_6b_real_tokenizer_path()
@@ -1619,7 +1603,7 @@ pub fn qwen3_dense_0_6b_decode_loop_report_with_raw_prompt(
         qwen3_dense_0_6b_prompt_guest_input_report(prompt, &prompt_tokens.token_ids, &guest_input)?;
     qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
         topology,
-        max_token_count,
+        step_count,
         guest_input,
         guest_input_report,
     )
@@ -1810,40 +1794,10 @@ pub fn qwen3_dense_0_6b_range_forward_report_with_prompt(
     })
 }
 
-fn qwen3_dense_0_6b_chat_prompt(prompt: &str) -> String {
-    format!("<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n")
-}
-
 fn qwen3_dense_0_6b_decode_progress(args: std::fmt::Arguments<'_>) {
     if std::env::var("SIM_QWEN3_DECODE_PROGRESS").as_deref() == Ok("1") {
         eprintln!("qwen3-decode-loop: {args}");
     }
-}
-
-fn qwen3_dense_0_6b_decode_stream_bytes(bytes: &[u8]) -> Result<(), String> {
-    if bytes.is_empty() || !qwen3_dense_0_6b_decode_stream_enabled() {
-        return Ok(());
-    }
-    let mut stdout = std::io::stdout().lock();
-    stdout
-        .write_all(bytes)
-        .and_then(|_| stdout.flush())
-        .map_err(|err| format!("qwen3_decode_stream_write_failed:{err}"))
-}
-
-fn qwen3_dense_0_6b_decode_stream_enabled() -> bool {
-    std::env::var("SIM_QWEN3_DECODE_STREAM")
-        .ok()
-        .as_deref()
-        .map(qwen3_dense_0_6b_env_flag_enabled)
-        .unwrap_or(false)
-}
-
-fn qwen3_dense_0_6b_env_flag_enabled(value: &str) -> bool {
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    )
 }
 
 fn qwen3_dense_0_6b_decode_heartbeat(
@@ -2017,68 +1971,13 @@ fn qwen3_dense_0_6b_cached_loaded_weights(
     Ok(loaded)
 }
 
-fn qwen3_dense_0_6b_decode_temperature() -> Result<f32, String> {
-    let Some(value) = std::env::var("SIM_QWEN3_TEMPERATURE").ok() else {
-        return Ok(0.0);
-    };
-    let parsed = value
-        .parse::<f32>()
-        .map_err(|err| format!("qwen3_temperature_parse_failed:{value}:{err}"))?;
-    if !parsed.is_finite() || parsed < 0.0 {
-        return Err(format!("qwen3_temperature_invalid:{value}"));
-    }
-    Ok(parsed)
-}
-
-fn qwen3_dense_0_6b_decode_sampling_seed(loop_step: u64, position: u64, salt: u64) -> u64 {
-    let base = std::env::var("SIM_QWEN3_SAMPLING_SEED")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or_else(|| {
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|duration| duration.as_nanos() as u64)
-                .unwrap_or(0);
-            nanos ^ u64::from(std::process::id()).rotate_left(31)
-        });
-    checksum_words(&[
-        base,
-        loop_step,
-        position,
-        salt,
-        QWEN3_DENSE_0_6B_PROFILE.vocab_size,
-    ])
-}
-
-const QWEN3_DENSE_0_6B_ENDOFTEXT_TOKEN_ID: u64 = 151643;
-const QWEN3_DENSE_0_6B_IM_START_TOKEN_ID: u64 = 151644;
-const QWEN3_DENSE_0_6B_IM_END_TOKEN_ID: u64 = 151645;
-const QWEN3_DENSE_0_6B_OBJECT_REF_START_TOKEN_ID: u64 = 151646;
-const QWEN3_DENSE_0_6B_OBJECT_REF_END_TOKEN_ID: u64 = 151647;
-const QWEN3_DENSE_0_6B_BOX_START_TOKEN_ID: u64 = 151648;
-const QWEN3_DENSE_0_6B_BOX_END_TOKEN_ID: u64 = 151649;
-const QWEN3_DENSE_0_6B_VISION_START_TOKEN_ID: u64 = 151652;
-const QWEN3_DENSE_0_6B_VISION_END_TOKEN_ID: u64 = 151653;
-const QWEN3_DENSE_0_6B_VISION_PAD_TOKEN_ID: u64 = 151654;
-const QWEN3_DENSE_0_6B_TOOL_CALL_START_TOKEN_ID: u64 = 151657;
-const QWEN3_DENSE_0_6B_TOOL_CALL_END_TOKEN_ID: u64 = 151658;
-const QWEN3_DENSE_0_6B_FIM_PREFIX_TOKEN_ID: u64 = 151659;
-const QWEN3_DENSE_0_6B_FIM_MIDDLE_TOKEN_ID: u64 = 151660;
-const QWEN3_DENSE_0_6B_FIM_SUFFIX_TOKEN_ID: u64 = 151661;
-const QWEN3_DENSE_0_6B_REPO_NAME_TOKEN_ID: u64 = 151663;
-const QWEN3_DENSE_0_6B_FILE_SEP_TOKEN_ID: u64 = 151664;
-const QWEN3_DENSE_0_6B_TOOL_RESPONSE_START_TOKEN_ID: u64 = 151665;
-const QWEN3_DENSE_0_6B_TOOL_RESPONSE_END_TOKEN_ID: u64 = 151666;
-const QWEN3_DENSE_0_6B_THINK_START_TOKEN_ID: u64 = 151667;
-const QWEN3_DENSE_0_6B_THINK_END_TOKEN_ID: u64 = 151668;
-
 fn qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
     topology: &SimTopology,
-    max_token_count: usize,
+    step_count: usize,
     mut guest_input: Vec<u8>,
     mut guest_input_report: Qwen3Dense06bGuestInputReport,
 ) -> Result<Qwen3Dense06bDecodeLoopReport, String> {
-    let mut steps = Vec::with_capacity(max_token_count);
+    let mut steps = Vec::with_capacity(step_count);
     let mut generated_text = String::new();
     let mut generated_bytes = Vec::new();
     let mut decode_state: Option<Qwen3Dense06bIncrementalDecodeState> = None;
@@ -2086,11 +1985,7 @@ fn qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
         LingquObjectServiceStub::new(qwen3_dense_0_6b_object_service_profile());
     qwen3_dense_0_6b_publish_bootstrap_weight_objects(topology, &mut object_service)?;
     let session_id = qwen3_dense_0_6b_decode_guest_input_checksum(&guest_input);
-    let mut stop_token_id = None;
-    let mut stop_reason = None;
-    let decode_started_at = Instant::now();
-    let mut first_token_at = None;
-    for step_index in 0..max_token_count {
+    for step_index in 0..step_count {
         let step_started_at = Instant::now();
         let object_service_before = object_service.report();
         let guest_input_checksum = qwen3_dense_0_6b_decode_guest_input_checksum(&guest_input);
@@ -2101,15 +1996,11 @@ fn qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
             qwen3_dense_0_6b_decode_progress(format_args!(
                 "step {}/{}: runtime prefill start",
                 step_index + 1,
-                max_token_count
+                step_count
             ));
-            let _heartbeat = qwen3_dense_0_6b_decode_heartbeat(
-                step_index + 1,
-                max_token_count,
-                "runtime prefill",
-            );
-            let text_output =
-                qwen3_dense_0_6b_prefill_text_output_report_with_task_id_guest_input_and_object_service(
+            let _heartbeat =
+                qwen3_dense_0_6b_decode_heartbeat(step_index + 1, step_count, "runtime prefill");
+            let text_output = qwen3_dense_0_6b_prefill_text_output_report_with_task_id_guest_input_and_object_service(
                 topology,
                 &guest_input,
                 200 + step_index as u64,
@@ -2124,7 +2015,7 @@ fn qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
             qwen3_dense_0_6b_decode_progress(format_args!(
                 "step {}/{}: incremental decode start",
                 step_index + 1,
-                max_token_count
+                step_count
             ));
             qwen3_dense_0_6b_incremental_decode_text_output_report(
                 decode_state
@@ -2146,26 +2037,17 @@ fn qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
         qwen3_dense_0_6b_decode_progress(format_args!(
             "step {}/{}: runtime output parsed, selecting one token",
             step_index + 1,
-            max_token_count
+            step_count
         ));
         let mut selected_samples =
             qwen3_dense_0_6b_decode_step_selected_samples(&text_output.samples);
-        let selected_stop_token_id = qwen3_dense_0_6b_decode_stop_token_id(&selected_samples);
-        let selected_bytes = if selected_stop_token_id.is_some() {
-            Vec::new()
-        } else {
-            qwen3_dense_0_6b_decode_step_selected_bytes(&selected_samples)
-        };
-        if first_token_at.is_none() && !selected_samples.is_empty() {
-            first_token_at = Some(Instant::now());
-        }
+        let selected_bytes = qwen3_dense_0_6b_decode_step_selected_bytes(&selected_samples);
         for sample in &mut selected_samples {
             sample.byte_len = selected_bytes.len() as u64;
         }
         text_output.samples = selected_samples.clone();
         generated_text.push_str(&String::from_utf8_lossy(&selected_bytes));
         generated_bytes.extend_from_slice(&selected_bytes);
-        qwen3_dense_0_6b_decode_stream_bytes(&selected_bytes)?;
         text_output.real_inference = qwen3_dense_0_6b_real_inference_report_from_runtime_samples(
             &guest_input,
             &selected_samples,
@@ -2239,7 +2121,7 @@ fn qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
         qwen3_dense_0_6b_decode_progress(format_args!(
             "step {}/{}: appended {} token(s), next input tokens={}, duration: {}",
             step_index + 1,
-            max_token_count,
+            step_count,
             selected_samples.len(),
             qwen3_dense_0_6b_guest_input_token_ids(&next_guest_input).len(),
             qwen3_dense_0_6b_decode_duration_label(step_started_at.elapsed())
@@ -2247,42 +2129,10 @@ fn qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
         decode_state = Some(next_decode_state);
         guest_input = next_guest_input;
         guest_input_report = next_guest_input_report;
-        if let Some(token_id) = selected_stop_token_id {
-            stop_token_id = Some(token_id);
-            stop_reason = Some(qwen3_dense_0_6b_decode_stop_reason(token_id).to_string());
-            qwen3_dense_0_6b_decode_progress(format_args!(
-                "step {}/{}: stop token {} observed, stopping decode loop",
-                step_index + 1,
-                max_token_count,
-                token_id
-            ));
-            break;
-        }
     }
-    if stop_reason.is_none() && steps.len() >= max_token_count {
-        stop_reason = Some("max_token".to_string());
-    }
-    let total_duration = decode_started_at.elapsed();
-    let ttft_micros = first_token_at
-        .map(|instant| qwen3_dense_0_6b_duration_micros(instant.duration_since(decode_started_at)));
-    let tpot_micros = ttft_micros.map(|ttft| {
-        let decoded_tokens = steps.len() as u64;
-        if decoded_tokens <= 1 {
-            0
-        } else {
-            qwen3_dense_0_6b_duration_micros(total_duration).saturating_sub(ttft)
-                / (decoded_tokens - 1)
-        }
-    });
     let decode_chain_checksum = qwen3_dense_0_6b_decode_chain_checksum(&steps);
     Ok(Qwen3Dense06bDecodeLoopReport {
         steps,
-        max_token_count: max_token_count as u64,
-        stop_reason,
-        stop_token_id,
-        ttft_micros,
-        tpot_micros,
-        total_duration_micros: qwen3_dense_0_6b_duration_micros(total_duration),
         final_guest_input_checksum: qwen3_dense_0_6b_decode_guest_input_checksum(&guest_input),
         decode_chain_checksum,
         generated_byte_len: generated_bytes.len() as u64,
@@ -2293,85 +2143,6 @@ fn qwen3_dense_0_6b_decode_loop_report_with_initial_guest_input(
 
 fn qwen3_dense_0_6b_decode_duration_label(duration: Duration) -> String {
     format!("{:.1} seconds", duration.as_secs_f64())
-}
-
-fn qwen3_dense_0_6b_duration_micros(duration: Duration) -> u64 {
-    duration.as_micros().min(u128::from(u64::MAX)) as u64
-}
-
-fn qwen3_dense_0_6b_decode_stop_token_id(samples: &[Qwen3Dense06bTextOutputSample]) -> Option<u64> {
-    samples.iter().find_map(|sample| {
-        if qwen3_dense_0_6b_is_decode_stop_token(sample.sampled_token, &sample.piece_lossy) {
-            Some(sample.sampled_token)
-        } else {
-            None
-        }
-    })
-}
-
-fn qwen3_dense_0_6b_is_decode_stop_token(token_id: u64, piece_lossy: &str) -> bool {
-    matches!(
-        token_id,
-        QWEN3_DENSE_0_6B_ENDOFTEXT_TOKEN_ID | QWEN3_DENSE_0_6B_IM_END_TOKEN_ID
-    ) || matches!(piece_lossy, "<|endoftext|>" | "<|im_end|>")
-}
-
-fn qwen3_dense_0_6b_is_decode_control_token(token_id: u64, piece_lossy: &str) -> bool {
-    matches!(
-        token_id,
-        QWEN3_DENSE_0_6B_ENDOFTEXT_TOKEN_ID
-            | QWEN3_DENSE_0_6B_IM_START_TOKEN_ID
-            | QWEN3_DENSE_0_6B_IM_END_TOKEN_ID
-            | QWEN3_DENSE_0_6B_OBJECT_REF_START_TOKEN_ID
-            | QWEN3_DENSE_0_6B_OBJECT_REF_END_TOKEN_ID
-            | QWEN3_DENSE_0_6B_BOX_START_TOKEN_ID
-            | QWEN3_DENSE_0_6B_BOX_END_TOKEN_ID
-            | QWEN3_DENSE_0_6B_VISION_START_TOKEN_ID
-            | QWEN3_DENSE_0_6B_VISION_END_TOKEN_ID
-            | QWEN3_DENSE_0_6B_VISION_PAD_TOKEN_ID
-            | QWEN3_DENSE_0_6B_TOOL_CALL_START_TOKEN_ID
-            | QWEN3_DENSE_0_6B_TOOL_CALL_END_TOKEN_ID
-            | QWEN3_DENSE_0_6B_FIM_PREFIX_TOKEN_ID
-            | QWEN3_DENSE_0_6B_FIM_MIDDLE_TOKEN_ID
-            | QWEN3_DENSE_0_6B_FIM_SUFFIX_TOKEN_ID
-            | QWEN3_DENSE_0_6B_REPO_NAME_TOKEN_ID
-            | QWEN3_DENSE_0_6B_FILE_SEP_TOKEN_ID
-            | QWEN3_DENSE_0_6B_TOOL_RESPONSE_START_TOKEN_ID
-            | QWEN3_DENSE_0_6B_TOOL_RESPONSE_END_TOKEN_ID
-            | QWEN3_DENSE_0_6B_THINK_START_TOKEN_ID
-            | QWEN3_DENSE_0_6B_THINK_END_TOKEN_ID
-    ) || matches!(
-        piece_lossy,
-        "<|endoftext|>"
-            | "<|im_start|>"
-            | "<|im_end|>"
-            | "<|object_ref_start|>"
-            | "<|object_ref_end|>"
-            | "<|box_start|>"
-            | "<|box_end|>"
-            | "<|vision_start|>"
-            | "<|vision_end|>"
-            | "<|vision_pad|>"
-            | "<tool_call>"
-            | "</tool_call>"
-            | "<|fim_prefix|>"
-            | "<|fim_middle|>"
-            | "<|fim_suffix|>"
-            | "<|repo_name|>"
-            | "<|file_sep|>"
-            | "<tool_response>"
-            | "</tool_response>"
-            | "<think>"
-            | "</think>"
-    )
-}
-
-fn qwen3_dense_0_6b_decode_stop_reason(token_id: u64) -> &'static str {
-    match token_id {
-        QWEN3_DENSE_0_6B_ENDOFTEXT_TOKEN_ID => "endoftext",
-        QWEN3_DENSE_0_6B_IM_END_TOKEN_ID => "im_end",
-        _ => "special_token",
-    }
 }
 
 fn qwen3_dense_0_6b_object_service_profile() -> LingquObjectServiceProfile {
@@ -4384,16 +4155,7 @@ fn qwen3_dense_0_6b_incremental_decode_text_output_report(
             object_service,
             loop_step.saturating_mul(1000) + 300,
         )?;
-    let full_vocab_sample = match forward.as_ref() {
-        Some(forward) => qwen3_dense_0_6b_runtime_full_vocab_sample(
-            Some(&forward.final_hidden),
-            loop_step,
-            position,
-            state.cache_digest,
-        )?,
-        None => None,
-    };
-    let _full_vocab_payload = match forward.as_ref() {
+    let full_vocab = match forward.as_ref() {
         Some(forward) => qwen3_dense_0_6b_runtime_full_vocab_logits_summary(
             Some(&forward.final_hidden),
             Some(&weight_payloads),
@@ -4406,7 +4168,7 @@ fn qwen3_dense_0_6b_incremental_decode_text_output_report(
         loop_step,
         position,
         forward.as_ref(),
-        full_vocab_sample.as_ref(),
+        full_vocab.as_ref(),
         tokenizer_path.as_deref(),
     )?;
     let raw_piece =
@@ -4576,7 +4338,7 @@ fn qwen3_dense_0_6b_incremental_decode_sample(
     loop_step: u64,
     position: u64,
     forward: Option<&qwen3_dense_0_6b::Qwen3Dense06bForwardReference>,
-    full_vocab_sample: Option<&Qwen3Dense06bFullVocabSample>,
+    full_vocab: Option<&Qwen3Dense06bFullVocabLogitsSummary>,
     tokenizer_path: Option<&Path>,
 ) -> Result<Qwen3Dense06bTextOutputSample, String> {
     let vocab_size = QWEN3_DENSE_0_6B_PROFILE.vocab_size;
@@ -4595,36 +4357,25 @@ fn qwen3_dense_0_6b_incremental_decode_sample(
         full_vocab_logits_checksum,
         top_logit_bits,
         runner_up_logit_bits,
-    ) = full_vocab_sample
-        .map(|sample| {
-            let summary = &sample.logits;
-            let sampled_logit = f32::from_bits(sample.sampled_logit_bits as u32);
-            let runner_up_token = if sample.sampled_token_id == summary.top_token_id {
-                summary.runner_up_token_id
-            } else {
-                summary.top_token_id
-            };
-            let runner_logit_bits = if sample.sampled_token_id == summary.top_token_id {
-                summary.runner_up_logit_bits
-            } else {
-                summary.top_logit_bits
-            };
-            let runner_logit = f32::from_bits(runner_logit_bits as u32);
-            let margin = if sampled_logit.is_finite() && runner_logit.is_finite() {
-                ((sampled_logit - runner_logit).abs() * 1_000.0)
+    ) = full_vocab
+        .map(|summary| {
+            let top_logit = f32::from_bits(summary.top_logit_bits as u32);
+            let runner_logit = f32::from_bits(summary.runner_up_logit_bits as u32);
+            let margin = if top_logit.is_finite() && runner_logit.is_finite() {
+                ((top_logit - runner_logit).abs() * 1_000.0)
                     .round()
                     .max(1.0) as u64
             } else {
                 1
             };
             (
-                sample.sampled_token_id,
-                runner_up_token,
+                summary.top_token_id,
+                summary.runner_up_token_id,
                 margin,
                 summary.checked_token_count,
                 summary.logits_checksum,
                 summary.top_logit_bits,
-                runner_logit_bits,
+                summary.runner_up_logit_bits,
             )
         })
         .unwrap_or((
@@ -4893,9 +4644,6 @@ fn qwen3_dense_0_6b_decode_step_selected_bytes(
     let tokenizer_path = qwen3_dense_0_6b_real_tokenizer_path();
     ordered.sort_by_key(|sample| sample.text_byte_offset);
     for sample in ordered {
-        if qwen3_dense_0_6b_is_decode_control_token(sample.sampled_token, &sample.piece_lossy) {
-            continue;
-        }
         let piece =
             qwen3_dense_0_6b_token_piece_raw_bytes(sample.sampled_token, tokenizer_path.as_deref())
                 .map(|raw| token_piece_decode_bytes(&raw))
@@ -8104,7 +7852,7 @@ fn qwen3_dense_0_6b_text_output_samples_from_prefill_output(
             "qwen3_text_output_sample_count_mismatch:text={token_count}:logits={logits_count}:token_text={token_text_count}"
         ));
     }
-    if logits_entry_words != 20 || token_text_entry_words != 8 {
+    if logits_entry_words != 45 || token_text_entry_words != 8 {
         return Err(format!(
             "qwen3_text_output_sample_entry_words_invalid:logits={logits_entry_words}:token_text={token_text_entry_words}"
         ));
@@ -9752,7 +9500,7 @@ fn run_qwen3_dense_0_6b_prefill_runtime(
         .unwrap_or(15);
     let mut runtime_time = 0;
     let tile_count = shard_plan.len() * TILES_PER_SHARD as usize;
-    let mut produced = Vec::with_capacity(output_bytes * tile_count);
+    let mut produced = Vec::new();
     let mut tile_checksums = Vec::with_capacity(tile_count);
     let mut weights_service = WeightsServiceStub::new();
     let mut round0_outputs = Vec::with_capacity(tile_count);
@@ -9822,7 +9570,23 @@ fn run_qwen3_dense_0_6b_prefill_runtime(
                 runtime_weight_objects.as_deref_mut(),
                 terminal_range_owner,
             )?;
-            let mut produced = vec![0u8; output_bytes * tile_count];
+            let produced_len = qwen3_dense_0_6b_service_flow_output_len(
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                &logits_descriptors,
+                logits_descriptor_tokenizer_path,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &[],
+                Some(&range_forward_summary),
+            );
+            let mut produced = vec![0u8; produced_len];
             qwen3_dense_0_6b_write_service_flow_markers(
                 &mut produced,
                 0,
@@ -11761,6 +11525,25 @@ fn run_qwen3_dense_0_6b_prefill_runtime(
         qwen3_dense_0_6b_result_block_descriptors(&round1_outputs, MATMUL_DIM);
     let final_report_result_descriptors_ms = final_report_detail_started.elapsed().as_millis();
     let final_report_detail_started = Instant::now();
+    produced = vec![
+        0u8;
+        qwen3_dense_0_6b_service_flow_output_len(
+            &result_descriptors,
+            &result_block_descriptors,
+            &projection_descriptors,
+            &layer_dependency_descriptors,
+            &kvcache_descriptors,
+            &logits_descriptors,
+            logits_descriptor_tokenizer_path,
+            real_tokenizer_asset_summary.as_ref(),
+            real_weight_reference_summary.as_ref(),
+            real_mlp_reference_summary.as_ref(),
+            next_layer_real_mlp_reference_summary.as_ref(),
+            real_logits_candidate_summary.as_ref(),
+            &real_weight_stage_links,
+            range_forward_summary.as_ref(),
+        )
+    ];
     qwen3_dense_0_6b_write_service_flow_markers(
         &mut produced,
         tile_checksums.len() as u64,
@@ -11931,6 +11714,13 @@ struct Qwen3Dense06bLogitsDescriptor {
     full_vocab_logits_checksum: u64,
     top_logit_bits: u64,
     runner_up_logit_bits: u64,
+    candidate_count: u64,
+    candidate_tokens: [u64; 4],
+    candidate_logit_bits: [u64; 4],
+    candidate_text_checksums: [u64; 4],
+    candidate_piece_bytes: [u64; 4],
+    candidate_piece_word0: [u64; 4],
+    candidate_piece_word1: [u64; 4],
     runtime_forward_layer_count: u64,
     runtime_forward_final_hidden_checksum: u64,
     runtime_forward_checksum: u64,
@@ -12380,17 +12170,7 @@ fn qwen3_dense_0_6b_logits_descriptors(
         .map(|forward| forward.final_hidden.as_slice())
         .or(range_forward_hidden.as_deref())
         .or(round1_hidden.as_deref());
-    let runtime_full_vocab_sample = if runtime_full_vocab_enabled {
-        qwen3_dense_0_6b_runtime_full_vocab_sample(
-            runtime_logits_hidden,
-            0,
-            0,
-            guest_input.len() as u64,
-        )?
-    } else {
-        None
-    };
-    let _runtime_full_vocab_payload = if runtime_full_vocab_enabled {
+    let runtime_full_vocab = if runtime_full_vocab_enabled {
         qwen3_dense_0_6b_runtime_full_vocab_logits_summary(
             runtime_logits_hidden,
             Some(&weight_payloads),
@@ -12452,43 +12232,44 @@ fn qwen3_dense_0_6b_logits_descriptors(
             full_vocab_logits_checksum,
             top_logit_bits,
             runner_up_logit_bits,
-        ) = runtime_full_vocab_sample
+            candidate_count,
+            candidate_tokens,
+            candidate_logit_bits,
+        ) = runtime_full_vocab
             .as_ref()
-            .map(|sample| {
-                let summary = &sample.logits;
-                let sampled_logit = f32::from_bits(sample.sampled_logit_bits as u32);
-                let runner_up_token = if sample.sampled_token_id == summary.top_token_id {
-                    summary.runner_up_token_id
-                } else {
-                    summary.top_token_id
-                };
-                let runner_logit_bits = if sample.sampled_token_id == summary.top_token_id {
-                    summary.runner_up_logit_bits
-                } else {
-                    summary.top_logit_bits
-                };
-                let runner_logit = f32::from_bits(runner_logit_bits as u32);
-                let margin = if sampled_logit.is_finite() && runner_logit.is_finite() {
-                    ((sampled_logit - runner_logit).abs() * 1_000.0)
+            .map(|summary| {
+                let top_logit = f32::from_bits(summary.top_logit_bits as u32);
+                let runner_logit = f32::from_bits(summary.runner_up_logit_bits as u32);
+                let margin = if top_logit.is_finite() && runner_logit.is_finite() {
+                    ((top_logit - runner_logit).abs() * 1_000.0)
                         .round()
                         .max(1.0) as u64
                 } else {
                     1
                 };
+                let (candidate_count, candidate_tokens, candidate_logit_bits) =
+                    qwen3_dense_0_6b_top_candidate_arrays(summary);
                 (
-                    sample.sampled_token_id,
-                    runner_up_token,
+                    summary.top_token_id,
+                    summary.runner_up_token_id,
                     margin,
                     checksum_words(&[
-                        sample.sampled_token_id,
-                        sample.sampled_logit_bits,
+                        summary.top_token_id,
+                        summary.top_logit_bits,
                         summary.logits_checksum,
                     ]),
-                    checksum_words(&[runner_up_token, runner_logit_bits, summary.logits_checksum]),
+                    checksum_words(&[
+                        summary.runner_up_token_id,
+                        summary.runner_up_logit_bits,
+                        summary.logits_checksum,
+                    ]),
                     summary.checked_token_count,
                     summary.logits_checksum,
                     summary.top_logit_bits,
-                    runner_logit_bits,
+                    summary.runner_up_logit_bits,
+                    candidate_count,
+                    candidate_tokens,
+                    candidate_logit_bits,
                 )
             })
             .or_else(|| {
@@ -12507,6 +12288,9 @@ fn qwen3_dense_0_6b_logits_descriptors(
                         0,
                         0,
                         0,
+                        2,
+                        [sampled, runner, 0, 0],
+                        [0, 0, 0, 0],
                     )
                 })
             })
@@ -12520,6 +12304,9 @@ fn qwen3_dense_0_6b_logits_descriptors(
                 0,
                 0,
                 0,
+                2,
+                [fallback_sampled_token, fallback_runner_up_token, 0, 0],
+                [0, 0, 0, 0],
             ));
         let (
             runtime_forward_layer_count,
@@ -12547,6 +12334,24 @@ fn qwen3_dense_0_6b_logits_descriptors(
             qkv_reference_digest,
             real_path_digest,
         );
+        let mut candidate_text_checksums = [0u64; 4];
+        let mut candidate_piece_bytes = [0u64; 4];
+        let mut candidate_piece_word0 = [0u64; 4];
+        let mut candidate_piece_word1 = [0u64; 4];
+        for candidate_index in 0..candidate_count.min(4) as usize {
+            let token = candidate_tokens[candidate_index];
+            let candidate_piece = qwen3_dense_0_6b_token_piece(token, tokenizer_path)?;
+
+            candidate_text_checksums[candidate_index] = qwen3_dense_0_6b_sample_text_checksum(
+                step_index as u64,
+                token,
+                text_byte_offset,
+                tokenizer_path,
+            )?;
+            candidate_piece_bytes[candidate_index] = candidate_piece.byte_len;
+            candidate_piece_word0[candidate_index] = candidate_piece.word0;
+            candidate_piece_word1[candidate_index] = candidate_piece.word1;
+        }
         let piece = qwen3_dense_0_6b_token_piece(sampled_token, tokenizer_path)?;
         let text_checksum = qwen3_dense_0_6b_sample_text_checksum(
             step_index as u64,
@@ -12567,6 +12372,13 @@ fn qwen3_dense_0_6b_logits_descriptors(
             full_vocab_logits_checksum,
             top_logit_bits,
             runner_up_logit_bits,
+            candidate_count,
+            candidate_tokens,
+            candidate_logit_bits,
+            candidate_text_checksums,
+            candidate_piece_bytes,
+            candidate_piece_word0,
+            candidate_piece_word1,
             runtime_forward_layer_count,
             runtime_forward_final_hidden_checksum,
             runtime_forward_checksum,
@@ -12676,6 +12488,27 @@ fn qwen3_dense_0_6b_real_logits_selection(
         top.logit_checksum,
         runner.logit_checksum,
     ))
+}
+
+fn qwen3_dense_0_6b_top_candidate_arrays(
+    summary: &Qwen3Dense06bFullVocabLogitsSummary,
+) -> (u64, [u64; 4], [u64; 4]) {
+    let mut tokens = [0u64; 4];
+    let mut logit_bits = [0u64; 4];
+
+    for candidate in summary.top_candidates.iter().take(4) {
+        let index = candidate.rank as usize;
+
+        if index < tokens.len() {
+            tokens[index] = candidate.token_id;
+            logit_bits[index] = candidate.logit_bits;
+        }
+    }
+    (
+        summary.top_candidates.len().min(tokens.len()) as u64,
+        tokens,
+        logit_bits,
+    )
 }
 
 fn qwen3_dense_0_6b_tokenizer_sample_token_count(
@@ -13589,7 +13422,7 @@ fn qwen3_dense_0_6b_write_service_flow_markers(
     const KVCACHE_STATE_TABLE_ENTRY_BYTES: usize =
         KVCACHE_STATE_TABLE_ENTRY_WORDS as usize * std::mem::size_of::<u64>();
     const LOGITS_TABLE_HEADER_BYTES: usize = 64;
-    const LOGITS_TABLE_ENTRY_WORDS: u64 = 20;
+    const LOGITS_TABLE_ENTRY_WORDS: u64 = 45;
     const LOGITS_TABLE_ENTRY_BYTES: usize =
         LOGITS_TABLE_ENTRY_WORDS as usize * std::mem::size_of::<u64>();
     const TOKEN_TEXT_TABLE_HEADER_BYTES: usize = 64;
@@ -13922,6 +13755,40 @@ fn qwen3_dense_0_6b_write_service_flow_markers(
             descriptor.runtime_forward_final_hidden_checksum,
         );
         write_u64_le_at(output, base + 152, descriptor.runtime_forward_checksum);
+        write_u64_le_at(output, base + 160, descriptor.candidate_count);
+        for candidate_index in 0..4 {
+            let candidate_base = base + 168 + candidate_index * 48;
+            write_u64_le_at(
+                output,
+                candidate_base,
+                descriptor.candidate_tokens[candidate_index],
+            );
+            write_u64_le_at(
+                output,
+                candidate_base + 8,
+                descriptor.candidate_logit_bits[candidate_index],
+            );
+            write_u64_le_at(
+                output,
+                candidate_base + 16,
+                descriptor.candidate_text_checksums[candidate_index],
+            );
+            write_u64_le_at(
+                output,
+                candidate_base + 24,
+                descriptor.candidate_piece_bytes[candidate_index],
+            );
+            write_u64_le_at(
+                output,
+                candidate_base + 32,
+                descriptor.candidate_piece_word0[candidate_index],
+            );
+            write_u64_le_at(
+                output,
+                candidate_base + 40,
+                descriptor.candidate_piece_word1[candidate_index],
+            );
+        }
     }
     write_u64_le_at(output, token_text_table_header, MARKER_TOKEN_TEXT_TABLE);
     write_u64_le_at(
@@ -14104,6 +13971,116 @@ fn qwen3_dense_0_6b_write_service_flow_markers(
     );
 }
 
+fn qwen3_dense_0_6b_service_flow_output_len(
+    result_descriptors: &[Qwen3Dense06bResultDescriptor],
+    result_block_descriptors: &[Qwen3Dense06bResultBlockDescriptor],
+    projection_descriptors: &[Qwen3Dense06bProjectionDescriptor],
+    layer_dependency_descriptors: &[Qwen3Dense06bLayerDependencyDescriptor],
+    kvcache_descriptors: &[Qwen3Dense06bKvCacheDescriptor],
+    logits_descriptors: &[Qwen3Dense06bLogitsDescriptor],
+    real_tokenizer_path: Option<&Path>,
+    real_tokenizer_asset_summary: Option<&Qwen3Dense06bTokenizerAssetSummary>,
+    real_weight_reference_summary: Option<&Qwen3Dense06bQkvReferenceLayerSummary>,
+    real_mlp_reference_summary: Option<&Qwen3Dense06bMlpReferenceLayerSummary>,
+    next_layer_real_mlp_reference_summary: Option<&Qwen3Dense06bMlpReferenceLayerSummary>,
+    real_logits_reference_summary: Option<&Qwen3Dense06bLogitsReferenceSummary>,
+    real_weight_stage_links: &[Qwen3Dense06bRealWeightStageLinkDescriptor],
+    range_forward_summary: Option<&Qwen3Dense06bRangeForwardSummary>,
+) -> usize {
+    const TILES_PER_SHARD: usize = 2;
+    const LAYER_DEP_STAGES_PER_TILE: usize = 24;
+    const RESULT_TABLE_BASE: usize = 384;
+    const RESULT_TABLE_ENTRY_BYTES: usize = 10usize * std::mem::size_of::<u64>();
+    const PROJECTION_TABLE_BASE: usize = 1728;
+    const PROJECTION_TABLE_ENTRY_BYTES: usize = 10usize * std::mem::size_of::<u64>();
+    const LAYER_DEP_TABLE_BASE: usize = 5632;
+    const LAYER_DEP_TABLE_ENTRY_BYTES: usize = 11usize * std::mem::size_of::<u64>();
+    const RESULT_BLOCK_TABLE_HEADER: usize = LAYER_DEP_TABLE_BASE
+        + (QWEN3_DENSE_0_6B_PROFILE.tp_nodes as usize
+            * TILES_PER_SHARD
+            * LAYER_DEP_STAGES_PER_TILE
+            * LAYER_DEP_TABLE_ENTRY_BYTES);
+    const RESULT_BLOCK_TABLE_BASE: usize = RESULT_BLOCK_TABLE_HEADER + 64;
+    const RESULT_BLOCK_TABLE_ENTRY_BYTES: usize = 16usize * std::mem::size_of::<u64>();
+    const KVCACHE_TABLE_BASE: usize = RESULT_BLOCK_TABLE_BASE
+        + (QWEN3_DENSE_0_6B_PROFILE.tp_nodes as usize
+            * TILES_PER_SHARD
+            * 2
+            * RESULT_BLOCK_TABLE_ENTRY_BYTES
+            + 64);
+    const KVCACHE_TABLE_ENTRY_BYTES: usize = 14usize * std::mem::size_of::<u64>();
+    const KVCACHE_STATE_TABLE_HEADER_BYTES: usize = 64;
+    const KVCACHE_STATE_TABLE_ENTRY_BYTES: usize = 8usize * std::mem::size_of::<u64>();
+    const LOGITS_TABLE_HEADER_BYTES: usize = 64;
+    const LOGITS_TABLE_ENTRY_BYTES: usize = 45usize * std::mem::size_of::<u64>();
+    const TOKEN_TEXT_TABLE_HEADER_BYTES: usize = 64;
+    const TOKEN_TEXT_TABLE_ENTRY_BYTES: usize = 8usize * std::mem::size_of::<u64>();
+    const TEXT_OUTPUT_TABLE_HEADER_BYTES: usize = 64;
+    const TEXT_OUTPUT_BYTES_TABLE_HEADER_BYTES: usize = 64;
+
+    let result_table_end = RESULT_TABLE_BASE
+        + result_descriptors.len() * RESULT_TABLE_ENTRY_BYTES;
+    let projection_table_end = PROJECTION_TABLE_BASE
+        + projection_descriptors.len() * PROJECTION_TABLE_ENTRY_BYTES;
+    let layer_dep_end = LAYER_DEP_TABLE_BASE
+        + layer_dependency_descriptors.len() * LAYER_DEP_TABLE_ENTRY_BYTES;
+    let result_block_table_bytes = result_block_descriptors.len() * RESULT_BLOCK_TABLE_ENTRY_BYTES;
+    let result_block_table_end = RESULT_BLOCK_TABLE_BASE + result_block_table_bytes;
+    let kvcache_table_bytes = kvcache_descriptors.len() * KVCACHE_TABLE_ENTRY_BYTES;
+    let kvcache_table_end = KVCACHE_TABLE_BASE + kvcache_table_bytes;
+    let kvcache_state_descriptors = qwen3_dense_0_6b_kvcache_state_descriptors(kvcache_descriptors);
+    let kvcache_state_table_end =
+        kvcache_table_end + KVCACHE_STATE_TABLE_HEADER_BYTES + kvcache_state_descriptors.len()
+            * KVCACHE_STATE_TABLE_ENTRY_BYTES;
+    let logits_table_end = kvcache_state_table_end + LOGITS_TABLE_HEADER_BYTES
+        + logits_descriptors.len() * LOGITS_TABLE_ENTRY_BYTES;
+    let token_text_table_end =
+        logits_table_end + TOKEN_TEXT_TABLE_HEADER_BYTES + logits_descriptors.len() * TOKEN_TEXT_TABLE_ENTRY_BYTES;
+    let text_output_bytes =
+        qwen3_dense_0_6b_text_output_bytes(logits_descriptors, real_tokenizer_path);
+    let text_output_bytes_table_bytes = (text_output_bytes.len() + 7) & !7;
+    let tokenizer_asset_table_end = qwen3_dense_0_6b_tokenizer_asset_table_end(
+        token_text_table_end + TEXT_OUTPUT_TABLE_HEADER_BYTES + TEXT_OUTPUT_BYTES_TABLE_HEADER_BYTES
+            + text_output_bytes_table_bytes,
+        real_tokenizer_asset_summary,
+    );
+    let weight_reference_table_end = qwen3_dense_0_6b_weight_reference_table_end(
+        tokenizer_asset_table_end,
+        real_weight_reference_summary,
+    );
+    let weight_stage_link_table_end = qwen3_dense_0_6b_weight_stage_link_table_end(
+        weight_reference_table_end,
+        real_weight_stage_links,
+    );
+    let mlp_reference_table_end = qwen3_dense_0_6b_mlp_reference_table_end(
+        weight_stage_link_table_end,
+        real_mlp_reference_summary,
+        next_layer_real_mlp_reference_summary,
+    );
+    let logits_reference_table_end = qwen3_dense_0_6b_logits_reference_table_end(
+        mlp_reference_table_end,
+        real_logits_reference_summary,
+    );
+    let metadata_table_end = qwen3_dense_0_6b_range_forward_table_end(
+        logits_reference_table_end,
+        range_forward_summary,
+    );
+    [
+        result_table_end,
+        projection_table_end,
+        layer_dep_end,
+        result_block_table_end,
+        kvcache_table_end,
+        kvcache_state_table_end,
+        logits_table_end,
+        token_text_table_end,
+        metadata_table_end,
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or(metadata_table_end)
+}
+
 fn qwen3_dense_0_6b_real_weight_reference_summary(
     topology: &SimTopology,
 ) -> Result<Option<Qwen3Dense06bQkvReferenceLayerSummary>, String> {
@@ -14213,24 +14190,6 @@ fn qwen3_dense_0_6b_real_logits_candidate_summary(
         }
         None => logits_reference_summary(&loaded.tensors, &token_requests).map(Some),
     }
-}
-
-fn qwen3_dense_0_6b_runtime_full_vocab_sample(
-    hidden: Option<&[f32]>,
-    loop_step: u64,
-    position: u64,
-    salt: u64,
-) -> Result<Option<Qwen3Dense06bFullVocabSample>, String> {
-    let Some(hidden) = hidden else {
-        return Ok(None);
-    };
-    let temperature = qwen3_dense_0_6b_decode_temperature()?;
-    let Ok(weights_path) = std::env::var("SIM_QWEN3_0_6B_WEIGHTS_PATH") else {
-        return Ok(None);
-    };
-    let loaded = qwen3_dense_0_6b_cached_loaded_weights(&weights_path)?;
-    let seed = qwen3_dense_0_6b_decode_sampling_seed(loop_step, position, salt);
-    full_vocab_sample_from_hidden(&loaded.tensors, hidden, temperature, seed).map(Some)
 }
 
 fn qwen3_dense_0_6b_runtime_full_vocab_logits_summary(
@@ -14990,6 +14949,12 @@ fn qwen3_dense_0_6b_write_range_forward_table(
     let table_bytes = RANGE_FORWARD_ENTRY_BYTES
         + summary.output_tensor_payload.len()
         + summary.kv_state_payload.len();
+    assert!(
+        table_base + table_bytes <= output.len(),
+        "qwen3 service flow buffer too small for range-forward table: needed={} available={}",
+        table_base + table_bytes,
+        output.len()
+    );
     let entry = [
         summary.node,
         summary.layer_start,
@@ -15022,15 +14987,11 @@ fn qwen3_dense_0_6b_write_range_forward_table(
     for (index, word) in entry.iter().copied().enumerate() {
         write_u64_le_at(output, table_base + index * 8, word);
     }
-    if payload_offset + summary.output_tensor_payload.len() <= output.len() {
-        output[payload_offset..payload_offset + summary.output_tensor_payload.len()]
-            .copy_from_slice(&summary.output_tensor_payload);
-    }
+    output[payload_offset..payload_offset + summary.output_tensor_payload.len()]
+        .copy_from_slice(&summary.output_tensor_payload);
     let kv_payload_offset = payload_offset + summary.output_tensor_payload.len();
-    if kv_payload_offset + summary.kv_state_payload.len() <= output.len() {
-        output[kv_payload_offset..kv_payload_offset + summary.kv_state_payload.len()]
-            .copy_from_slice(&summary.kv_state_payload);
-    }
+    output[kv_payload_offset..kv_payload_offset + summary.kv_state_payload.len()]
+        .copy_from_slice(&summary.kv_state_payload);
 }
 
 fn write_u64_le_at(output: &mut [u8], offset: usize, value: u64) {
@@ -16203,14 +16164,12 @@ mod tests {
         qwen3_dense_0_6b_attention_score_tile_from_rope_with_real_qk_and_kvcache_reference,
         qwen3_dense_0_6b_attention_score_tile_from_rope_with_real_qk_reference,
         qwen3_dense_0_6b_bootstrap_node_ranges, qwen3_dense_0_6b_canonical_block_checksum,
-        qwen3_dense_0_6b_chat_prompt, qwen3_dense_0_6b_decode_chain_checksum,
-        qwen3_dense_0_6b_decode_duration_label, qwen3_dense_0_6b_decode_loop_report,
-        qwen3_dense_0_6b_decode_loop_report_with_prompt,
+        qwen3_dense_0_6b_decode_chain_checksum, qwen3_dense_0_6b_decode_duration_label,
+        qwen3_dense_0_6b_decode_loop_report, qwen3_dense_0_6b_decode_loop_report_with_prompt,
         qwen3_dense_0_6b_decode_step_selected_samples,
         qwen3_dense_0_6b_fallback_weight_range_payload,
         qwen3_dense_0_6b_final_hidden_from_round1_outputs, qwen3_dense_0_6b_half_at,
-        qwen3_dense_0_6b_hidden_layer_owner_node, qwen3_dense_0_6b_is_decode_control_token,
-        qwen3_dense_0_6b_is_decode_stop_token,
+        qwen3_dense_0_6b_hidden_layer_owner_node,
         qwen3_dense_0_6b_kvcache_tile_payload_from_projection, qwen3_dense_0_6b_logits_checksum,
         qwen3_dense_0_6b_mlp_activation_tile_from_attention_context,
         qwen3_dense_0_6b_object_metadata, qwen3_dense_0_6b_object_payload_words,
@@ -17201,11 +17160,6 @@ mod tests {
                 let report =
                     qwen3_dense_0_6b_decode_loop_report(&topology, 2).expect("decode loop report");
                 assert_eq!(report.steps.len(), 2);
-                assert_eq!(report.max_token_count, 2);
-                assert_eq!(report.stop_reason.as_deref(), Some("max_token"));
-                assert!(report.ttft_micros.is_some());
-                assert!(report.tpot_micros.is_some());
-                assert_ne!(report.total_duration_micros, 0);
                 assert_eq!(
                     report.final_guest_input_checksum,
                     report
@@ -18343,7 +18297,7 @@ mod tests {
         const KVCACHE_STATE_TABLE_END: usize = KVCACHE_STATE_TABLE_BASE + KVCACHE_STATE_TABLE_BYTES;
         const LOGITS_TABLE_HEADER: usize = KVCACHE_STATE_TABLE_END;
         const LOGITS_TABLE_BASE: usize = LOGITS_TABLE_HEADER + 64;
-        const LOGITS_TABLE_ENTRY_BYTES: usize = 160;
+        const LOGITS_TABLE_ENTRY_BYTES: usize = 360;
         const LOGITS_ENTRY_COUNT: usize = TILE_COUNT;
         const LOGITS_TABLE_BYTES: usize = LOGITS_ENTRY_COUNT * LOGITS_TABLE_ENTRY_BYTES;
         const LOGITS_TABLE_END: usize = LOGITS_TABLE_BASE + LOGITS_TABLE_BYTES;
@@ -18882,7 +18836,7 @@ mod tests {
                     .try_into()
                     .expect("logits table entry words")
             ),
-            20
+            45
         );
         assert_eq!(
             u64::from_le_bytes(
@@ -18996,6 +18950,63 @@ mod tests {
                     .try_into()
                     .expect("runtime forward checksum"),
             );
+            let candidate_count = u64::from_le_bytes(
+                output[base + 160..base + 168]
+                    .try_into()
+                    .expect("logits candidate count"),
+            );
+            let candidate0_base = base + 168;
+            let candidate1_base = candidate0_base + 48;
+            let candidate0_token = u64::from_le_bytes(
+                output[candidate0_base..candidate0_base + 8]
+                    .try_into()
+                    .expect("logits candidate0 token"),
+            );
+            let candidate0_logit_bits = u64::from_le_bytes(
+                output[candidate0_base + 8..candidate0_base + 16]
+                    .try_into()
+                    .expect("logits candidate0 bits"),
+            );
+            let candidate0_text_checksum = u64::from_le_bytes(
+                output[candidate0_base + 16..candidate0_base + 24]
+                    .try_into()
+                    .expect("logits candidate0 text checksum"),
+            );
+            let candidate0_piece_bytes = u64::from_le_bytes(
+                output[candidate0_base + 24..candidate0_base + 32]
+                    .try_into()
+                    .expect("logits candidate0 piece bytes"),
+            );
+            let candidate0_piece_word0 = u64::from_le_bytes(
+                output[candidate0_base + 32..candidate0_base + 40]
+                    .try_into()
+                    .expect("logits candidate0 piece word0"),
+            );
+            let candidate1_token = u64::from_le_bytes(
+                output[candidate1_base..candidate1_base + 8]
+                    .try_into()
+                    .expect("logits candidate1 token"),
+            );
+            let candidate1_logit_bits = u64::from_le_bytes(
+                output[candidate1_base + 8..candidate1_base + 16]
+                    .try_into()
+                    .expect("logits candidate1 bits"),
+            );
+            let candidate1_text_checksum = u64::from_le_bytes(
+                output[candidate1_base + 16..candidate1_base + 24]
+                    .try_into()
+                    .expect("logits candidate1 text checksum"),
+            );
+            let candidate1_piece_bytes = u64::from_le_bytes(
+                output[candidate1_base + 24..candidate1_base + 32]
+                    .try_into()
+                    .expect("logits candidate1 piece bytes"),
+            );
+            let candidate1_piece_word0 = u64::from_le_bytes(
+                output[candidate1_base + 32..candidate1_base + 40]
+                    .try_into()
+                    .expect("logits candidate1 piece word0"),
+            );
             assert_eq!(
                 u64::from_le_bytes(output[base..base + 8].try_into().expect("logits shard")),
                 shard as u64
@@ -19021,6 +19032,17 @@ mod tests {
                 assert_ne!(full_vocab_logits_checksum, 0);
                 assert_ne!(top_logit_bits, 0);
                 assert_ne!(runner_up_logit_bits, 0);
+                assert_eq!(candidate_count, 4);
+                assert_eq!(candidate0_token, sampled_token);
+                assert_eq!(candidate0_logit_bits, top_logit_bits);
+                assert_eq!(candidate0_text_checksum, text_checksum);
+                assert_ne!(candidate0_piece_bytes, 0);
+                assert_ne!(candidate0_piece_word0, 0);
+                assert_eq!(candidate1_token, runner_up_token);
+                assert_eq!(candidate1_logit_bits, runner_up_logit_bits);
+                assert_ne!(candidate1_text_checksum, 0);
+                assert_ne!(candidate1_piece_bytes, 0);
+                assert_ne!(candidate1_piece_word0, 0);
                 if runtime_forward_expected {
                     assert_eq!(
                         runtime_forward_layer_count,
@@ -19040,6 +19062,15 @@ mod tests {
                 assert_eq!(full_vocab_logits_checksum, 0);
                 assert_eq!(top_logit_bits, 0);
                 assert_eq!(runner_up_logit_bits, 0);
+                assert_eq!(candidate_count, 2);
+                assert_eq!(candidate0_token, sampled_token);
+                assert_eq!(candidate0_text_checksum, text_checksum);
+                assert_ne!(candidate0_piece_bytes, 0);
+                assert_ne!(candidate0_piece_word0, 0);
+                assert_eq!(candidate1_token, runner_up_token);
+                assert_ne!(candidate1_text_checksum, 0);
+                assert_ne!(candidate1_piece_bytes, 0);
+                assert_ne!(candidate1_piece_word0, 0);
                 assert_eq!(runtime_forward_layer_count, 0);
                 assert_eq!(runtime_forward_final_hidden_checksum, 0);
                 assert_eq!(runtime_forward_checksum, 0);
@@ -20796,28 +20827,6 @@ outputs:
             qwen3_dense_0_6b_decode_duration_label(Duration::from_millis(3_240)),
             "3.2 seconds"
         );
-    }
-
-    #[test]
-    fn qwen3_chat_prompt_wraps_user_message_for_assistant_decode() {
-        assert_eq!(
-            qwen3_dense_0_6b_chat_prompt("Hello Qwen3"),
-            "<|im_start|>user\nHello Qwen3<|im_end|>\n<|im_start|>assistant\n"
-        );
-    }
-
-    #[test]
-    fn qwen3_decode_stop_token_detection_covers_qwen_special_tokens() {
-        assert!(qwen3_dense_0_6b_is_decode_stop_token(
-            151643,
-            "<|endoftext|>"
-        ));
-        assert!(qwen3_dense_0_6b_is_decode_stop_token(151645, "<|im_end|>"));
-        assert!(qwen3_dense_0_6b_is_decode_stop_token(7, "<|im_end|>"));
-        assert!(qwen3_dense_0_6b_is_decode_control_token(151644, "ignored"));
-        assert!(qwen3_dense_0_6b_is_decode_control_token(7, "<think>"));
-        assert!(!qwen3_dense_0_6b_is_decode_stop_token(7, " Beijing"));
-        assert!(!qwen3_dense_0_6b_is_decode_control_token(7, " Beijing"));
     }
 
     #[test]

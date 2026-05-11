@@ -35,9 +35,9 @@ use sim_services::{
 use sim_topology::SimTopology;
 use sim_uapi::{
     qwen3_dense_0_6b_decode_loop_report, qwen3_dense_0_6b_decode_loop_report_with_prompt,
-    qwen3_dense_0_6b_decode_loop_report_with_raw_prompt, qwen3_dense_0_6b_default_guest_input,
-    qwen3_dense_0_6b_prefill_text_output_report, qwen3_dense_0_6b_range_forward_report_with_prompt,
-    LocalGuestUapiSurface, UapiCommand, UapiDescriptor, UapiResponse,
+    qwen3_dense_0_6b_default_guest_input, qwen3_dense_0_6b_prefill_text_output_report,
+    qwen3_dense_0_6b_range_forward_report_with_prompt, LocalGuestUapiSurface, UapiCommand,
+    UapiDescriptor, UapiResponse,
 };
 use sim_workloads::{run_host_vector_dispatch, run_minimal_workload};
 use std::env;
@@ -139,29 +139,118 @@ fn qwen3_text_output_scenario_from_args() -> Option<PathBuf> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct Qwen3DecodeLoopCliArgs {
     scenario_path: PathBuf,
-    max_token_count: usize,
+    step_count: usize,
     prompt: Option<String>,
-    raw_prompt: bool,
     matmul_batch: Option<usize>,
-    temperature: Option<f32>,
-    decode_report: Option<Qwen3DecodeReportVerbosity>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Qwen3GuestDecodeLoopCliArgs {
     step_count: usize,
     prompt: Option<String>,
+    prompt_token_ids: Option<String>,
     script_path: PathBuf,
     matmul_batch: Option<usize>,
+    engram: Qwen3EngramConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Qwen3RangeForwardCliArgs {
     scenario_path: PathBuf,
     prompt: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Qwen3EngramMode {
+    Cpu,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Qwen3EngramPool {
+    Inline,
+    Object,
+    Obmm,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Qwen3EngramReport {
+    None,
+    Summary,
+    Steps,
+    Verbose,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Qwen3EngramConfig {
+    enabled: bool,
+    mode: Qwen3EngramMode,
+    pool: Qwen3EngramPool,
+    owner_node: usize,
+    no_repeat_ngram_size: usize,
+    repetition_penalty_milli: u32,
+    history_window: usize,
+    blocked_token_ids: Vec<u64>,
+    report: Qwen3EngramReport,
+}
+
+impl Default for Qwen3EngramConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: Qwen3EngramMode::Cpu,
+            pool: Qwen3EngramPool::Inline,
+            owner_node: 8,
+            no_repeat_ngram_size: 0,
+            repetition_penalty_milli: 1000,
+            history_window: 0,
+            blocked_token_ids: Vec::new(),
+            report: Qwen3EngramReport::Summary,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Qwen3CandidateRecord {
+    step_index: u64,
+    rank: u64,
+    token_id: u64,
+    logit_milli: i32,
+    adjusted_score_milli: i32,
+    token_piece_checksum: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Qwen3EngramState {
+    session_id: u64,
+    step_index: u64,
+    token_count: u64,
+    rolling_hash: u64,
+    ngram_window: u8,
+    repetition_penalty_milli: u32,
+    blocked_token_count: u32,
+    fallback_used: bool,
+    raw_sampled_token: u64,
+    runner_up_token: u64,
+    top_score_milli: i32,
+    runner_up_score_milli: i32,
+    history_window: u64,
+    logits_checksum: u64,
+    text_checksum: u64,
+    selected_token: u64,
+    state_checksum: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Qwen3EngramStepDecision {
+    step_index: u64,
+    candidates: Vec<Qwen3CandidateRecord>,
+    selected_token: u64,
+    blocked_token_count: u32,
+    fallback_used: bool,
+    state: Qwen3EngramState,
 }
 
 fn qwen3_decode_loop_args() -> anyhow::Result<Option<Qwen3DecodeLoopCliArgs>> {
@@ -185,12 +274,9 @@ where
     match args.next() {
         Some(mode) if mode == "qwen3-decode-loop" => {
             let mut scenario_path = None;
-            let mut max_token_count = None;
+            let mut step_count = None;
             let mut prompt = None;
-            let mut raw_prompt = false;
             let mut matmul_batch = None;
-            let mut temperature = None;
-            let mut decode_report = None;
             let mut positionals = Vec::new();
             let mut pending = args.peekable();
 
@@ -205,20 +291,13 @@ where
                     scenario_path = Some(qwen3_scenario_path_from_value(value));
                 } else if let Some(value) = text.strip_prefix("--nodes=") {
                     scenario_path = Some(qwen3_scenario_path_from_value(value));
-                } else if text == "--max-token" || text == "--max_token" || text == "--steps" {
+                } else if text == "--steps" {
                     let next = pending
                         .next()
-                        .ok_or_else(|| anyhow::anyhow!("{text} requires a value"))?;
-                    max_token_count = Some(parse_positive_usize(
-                        "--max-token",
-                        &next.to_string_lossy(),
-                    )?);
-                } else if let Some(value) = text.strip_prefix("--max-token=") {
-                    max_token_count = Some(parse_positive_usize("--max-token", value)?);
-                } else if let Some(value) = text.strip_prefix("--max_token=") {
-                    max_token_count = Some(parse_positive_usize("--max-token", value)?);
+                        .ok_or_else(|| anyhow::anyhow!("--steps requires a value"))?;
+                    step_count = Some(parse_positive_usize("--steps", &next.to_string_lossy())?);
                 } else if let Some(value) = text.strip_prefix("--steps=") {
-                    max_token_count = Some(parse_positive_usize("--max-token", value)?);
+                    step_count = Some(parse_positive_usize("--steps", value)?);
                 } else if text == "--prompt" {
                     let next = pending
                         .next()
@@ -226,10 +305,6 @@ where
                     prompt = Some(next.to_string_lossy().to_string());
                 } else if let Some(value) = text.strip_prefix("--prompt=") {
                     prompt = Some(value.to_string());
-                } else if text == "--raw-prompt" {
-                    raw_prompt = true;
-                } else if text == "--chat-template" {
-                    raw_prompt = false;
                 } else if text == "--matmul-batch" {
                     let next = pending
                         .next()
@@ -240,27 +315,6 @@ where
                     )?);
                 } else if let Some(value) = text.strip_prefix("--matmul-batch=") {
                     matmul_batch = Some(parse_positive_usize("--matmul-batch", value)?);
-                } else if text == "--temperature" {
-                    let next = pending
-                        .next()
-                        .ok_or_else(|| anyhow::anyhow!("--temperature requires a value"))?;
-                    temperature = Some(parse_non_negative_f32(
-                        "--temperature",
-                        &next.to_string_lossy(),
-                    )?);
-                } else if let Some(value) = text.strip_prefix("--temperature=") {
-                    temperature = Some(parse_non_negative_f32("--temperature", value)?);
-                } else if text == "--decode-report" {
-                    let next = pending
-                        .next()
-                        .ok_or_else(|| anyhow::anyhow!("--decode-report requires a value"))?;
-                    decode_report = Some(parse_qwen3_decode_report_verbosity(
-                        &next.to_string_lossy(),
-                    )?);
-                } else if let Some(value) = text.strip_prefix("--decode-report=") {
-                    decode_report = Some(parse_qwen3_decode_report_verbosity(value)?);
-                } else if text == "--verbose" {
-                    decode_report = Some(Qwen3DecodeReportVerbosity::Verbose);
                 } else if text.starts_with("--") {
                     anyhow::bail!("unknown qwen3-decode-loop option: {text}");
                 } else {
@@ -275,14 +329,14 @@ where
                     positional_index += 1;
                 }
             }
-            if max_token_count.is_none() {
+            if step_count.is_none() {
                 if let Some(value) = positionals.get(positional_index) {
                     let value = value.to_string_lossy();
                     if let Ok(parsed) = value.parse::<usize>() {
                         if parsed == 0 {
-                            anyhow::bail!("max token count must be > 0");
+                            anyhow::bail!("step count must be > 0");
                         }
-                        max_token_count = Some(parsed);
+                        step_count = Some(parsed);
                         positional_index += 1;
                     }
                 }
@@ -295,26 +349,13 @@ where
 
             Ok(Some(Qwen3DecodeLoopCliArgs {
                 scenario_path: scenario_path.unwrap_or_else(default_scenario_path),
-                max_token_count: max_token_count.unwrap_or(2),
+                step_count: step_count.unwrap_or(2),
                 prompt,
-                raw_prompt,
                 matmul_batch,
-                temperature,
-                decode_report,
             }))
         }
         _ => Ok(None),
     }
-}
-
-fn parse_non_negative_f32(label: &str, value: &str) -> anyhow::Result<f32> {
-    let parsed = value
-        .parse::<f32>()
-        .with_context(|| format!("{label} must be a finite non-negative number"))?;
-    if !parsed.is_finite() || parsed < 0.0 {
-        anyhow::bail!("{label} must be a finite non-negative number");
-    }
-    Ok(parsed)
 }
 
 fn qwen3_guest_decode_loop_args_from<I, S>(
@@ -329,8 +370,10 @@ where
         Some(mode) if mode == "qwen3-guest-decode-loop" => {
             let mut step_count = None;
             let mut prompt = None;
+            let mut prompt_token_ids = None;
             let mut script_path = None;
             let mut matmul_batch = None;
+            let mut engram = Qwen3EngramConfig::default();
             let mut positionals = Vec::new();
             let mut pending = args.peekable();
 
@@ -350,6 +393,16 @@ where
                     prompt = Some(next.to_string_lossy().to_string());
                 } else if let Some(value) = text.strip_prefix("--prompt=") {
                     prompt = Some(value.to_string());
+                } else if text == "--prompt-token-ids" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--prompt-token-ids requires a value"))?;
+                    let value = next.to_string_lossy().to_string();
+                    qwen3_parse_token_id_csv(&value)?;
+                    prompt_token_ids = Some(value);
+                } else if let Some(value) = text.strip_prefix("--prompt-token-ids=") {
+                    qwen3_parse_token_id_csv(value)?;
+                    prompt_token_ids = Some(value.to_string());
                 } else if text == "--script" {
                     let next = pending
                         .next()
@@ -367,6 +420,87 @@ where
                     )?);
                 } else if let Some(value) = text.strip_prefix("--matmul-batch=") {
                     matmul_batch = Some(parse_positive_usize("--matmul-batch", value)?);
+                } else if text == "--engram" {
+                    engram.enabled = true;
+                } else if text == "--engram-mode" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--engram-mode requires a value"))?;
+                    engram.mode = parse_qwen3_engram_mode(&next.to_string_lossy())?;
+                } else if let Some(value) = text.strip_prefix("--engram-mode=") {
+                    engram.mode = parse_qwen3_engram_mode(value)?;
+                } else if text == "--engram-pool" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--engram-pool requires a value"))?;
+                    engram.pool = parse_qwen3_engram_pool(&next.to_string_lossy())?;
+                } else if let Some(value) = text.strip_prefix("--engram-pool=") {
+                    engram.pool = parse_qwen3_engram_pool(value)?;
+                } else if text == "--engram-owner-node" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--engram-owner-node requires a value"))?;
+                    engram.owner_node = parse_qwen3_engram_owner_node(&next.to_string_lossy())?;
+                } else if let Some(value) = text.strip_prefix("--engram-owner-node=") {
+                    engram.owner_node = parse_qwen3_engram_owner_node(value)?;
+                } else if text == "--no-repeat-ngram-size" {
+                    let next = pending.next().ok_or_else(|| {
+                        anyhow::anyhow!("--no-repeat-ngram-size requires a value")
+                    })?;
+                    engram.no_repeat_ngram_size =
+                        parse_nonnegative_usize("--no-repeat-ngram-size", &next.to_string_lossy())?;
+                } else if let Some(value) = text.strip_prefix("--no-repeat-ngram-size=") {
+                    engram.no_repeat_ngram_size =
+                        parse_nonnegative_usize("--no-repeat-ngram-size", value)?;
+                } else if text == "--repetition-penalty" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--repetition-penalty requires a value"))?;
+                    engram.repetition_penalty_milli =
+                        parse_repetition_penalty_milli(&next.to_string_lossy())?;
+                } else if let Some(value) = text.strip_prefix("--repetition-penalty=") {
+                    engram.repetition_penalty_milli = parse_repetition_penalty_milli(value)?;
+                } else if text == "--engram-block-token-id" {
+                    let next = pending.next().ok_or_else(|| {
+                        anyhow::anyhow!("--engram-block-token-id requires a value")
+                    })?;
+                    engram.blocked_token_ids.push(parse_nonnegative_u64(
+                        "--engram-block-token-id",
+                        &next.to_string_lossy(),
+                    )?);
+                } else if let Some(value) = text.strip_prefix("--engram-block-token-id=") {
+                    engram
+                        .blocked_token_ids
+                        .push(parse_nonnegative_u64("--engram-block-token-id", value)?);
+                } else if text == "--engram-block-token-ids" {
+                    let next = pending.next().ok_or_else(|| {
+                        anyhow::anyhow!("--engram-block-token-ids requires a value")
+                    })?;
+                    engram
+                        .blocked_token_ids
+                        .extend(qwen3_parse_token_id_csv(&next.to_string_lossy())?);
+                } else if let Some(value) = text.strip_prefix("--engram-block-token-ids=") {
+                    engram
+                        .blocked_token_ids
+                        .extend(qwen3_parse_token_id_csv(value)?);
+                } else if text == "--engram-history-window" {
+                    let next = pending.next().ok_or_else(|| {
+                        anyhow::anyhow!("--engram-history-window requires a value")
+                    })?;
+                    engram.history_window = parse_nonnegative_usize(
+                        "--engram-history-window",
+                        &next.to_string_lossy(),
+                    )?;
+                } else if let Some(value) = text.strip_prefix("--engram-history-window=") {
+                    engram.history_window =
+                        parse_nonnegative_usize("--engram-history-window", value)?;
+                } else if text == "--engram-report" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--engram-report requires a value"))?;
+                    engram.report = parse_qwen3_engram_report(&next.to_string_lossy())?;
+                } else if let Some(value) = text.strip_prefix("--engram-report=") {
+                    engram.report = parse_qwen3_engram_report(value)?;
                 } else if text.starts_with("--") {
                     anyhow::bail!("unknown qwen3-guest-decode-loop option: {text}");
                 } else {
@@ -396,8 +530,10 @@ where
             Ok(Some(Qwen3GuestDecodeLoopCliArgs {
                 step_count: step_count.unwrap_or(1),
                 prompt,
+                prompt_token_ids,
                 script_path: script_path.unwrap_or_else(default_qwen3_guest_decode_script_path),
                 matmul_batch,
+                engram,
             }))
         }
         _ => Ok(None),
@@ -481,6 +617,80 @@ fn parse_positive_usize(label: &str, value: &str) -> anyhow::Result<usize> {
     Ok(parsed)
 }
 
+fn parse_nonnegative_usize(label: &str, value: &str) -> anyhow::Result<usize> {
+    value
+        .parse::<usize>()
+        .with_context(|| format!("invalid {label}: {value}"))
+}
+
+fn parse_nonnegative_u64(label: &str, value: &str) -> anyhow::Result<u64> {
+    value
+        .parse::<u64>()
+        .with_context(|| format!("invalid {label}: {value}"))
+}
+
+fn parse_qwen3_engram_mode(value: &str) -> anyhow::Result<Qwen3EngramMode> {
+    match value {
+        "cpu" => Ok(Qwen3EngramMode::Cpu),
+        _ => anyhow::bail!("unsupported --engram-mode: {value}"),
+    }
+}
+
+fn parse_qwen3_engram_pool(value: &str) -> anyhow::Result<Qwen3EngramPool> {
+    match value {
+        "inline" => Ok(Qwen3EngramPool::Inline),
+        "object" => Ok(Qwen3EngramPool::Object),
+        "obmm" => Ok(Qwen3EngramPool::Obmm),
+        _ => anyhow::bail!("unsupported --engram-pool: {value}"),
+    }
+}
+
+fn parse_qwen3_engram_owner_node(value: &str) -> anyhow::Result<usize> {
+    let owner_node = parse_positive_usize("--engram-owner-node", value)?;
+
+    if owner_node > 8 {
+        anyhow::bail!("--engram-owner-node must be in 1..=8");
+    }
+    Ok(owner_node)
+}
+
+fn parse_qwen3_engram_report(value: &str) -> anyhow::Result<Qwen3EngramReport> {
+    match value {
+        "none" => Ok(Qwen3EngramReport::None),
+        "summary" => Ok(Qwen3EngramReport::Summary),
+        "steps" => Ok(Qwen3EngramReport::Steps),
+        "verbose" => Ok(Qwen3EngramReport::Verbose),
+        _ => anyhow::bail!("unsupported --engram-report: {value}"),
+    }
+}
+
+fn parse_repetition_penalty_milli(value: &str) -> anyhow::Result<u32> {
+    let (whole, frac) = value.split_once('.').unwrap_or((value, ""));
+    let whole = whole
+        .parse::<u32>()
+        .with_context(|| format!("invalid --repetition-penalty: {value}"))?;
+    let mut frac_milli = 0u32;
+    let mut scale = 100u32;
+    for ch in frac.chars().take(3) {
+        let digit = ch
+            .to_digit(10)
+            .ok_or_else(|| anyhow::anyhow!("invalid --repetition-penalty: {value}"))?;
+        frac_milli += digit * scale;
+        scale /= 10;
+    }
+    if frac.chars().count() > 3 {
+        anyhow::bail!("--repetition-penalty supports at most 3 decimal places");
+    }
+    let milli = whole
+        .checked_mul(1000)
+        .and_then(|base| base.checked_add(frac_milli))
+        .ok_or_else(|| anyhow::anyhow!("--repetition-penalty is too large"))?;
+    if milli < 1000 {
+        anyhow::bail!("--repetition-penalty must be >= 1.0");
+    }
+    Ok(milli)
+}
+
 fn qwen3_scenario_path_from_value(value: &str) -> PathBuf {
     match value {
         "2" | "2host" | "2-host" | "2node" | "2-node" => {
@@ -498,7 +708,6 @@ fn qwen3_scenario_path_from_value(value: &str) -> PathBuf {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Qwen3DecodeReportVerbosity {
-    Stream,
     Summary,
     Steps,
     Verbose,
@@ -516,27 +725,18 @@ fn qwen3_decode_report_verbosity_from_env(
     verbose: Option<&str>,
 ) -> Qwen3DecodeReportVerbosity {
     if let Some(report) = report {
-        return parse_qwen3_decode_report_verbosity(report)
-            .unwrap_or(Qwen3DecodeReportVerbosity::Stream);
+        return match report.trim().to_ascii_lowercase().as_str() {
+            "step" | "steps" | "compact" => Qwen3DecodeReportVerbosity::Steps,
+            "1" | "true" | "yes" | "on" | "verbose" | "full" | "detail" | "details" => {
+                Qwen3DecodeReportVerbosity::Verbose
+            }
+            _ => Qwen3DecodeReportVerbosity::Summary,
+        };
     }
     if verbose.map(env_flag_enabled).unwrap_or(false) {
         Qwen3DecodeReportVerbosity::Verbose
     } else {
-        Qwen3DecodeReportVerbosity::Stream
-    }
-}
-
-fn parse_qwen3_decode_report_verbosity(value: &str) -> anyhow::Result<Qwen3DecodeReportVerbosity> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "" | "stream" | "text" | "none" | "0" | "false" | "off" => {
-            Ok(Qwen3DecodeReportVerbosity::Stream)
-        }
-        "summary" => Ok(Qwen3DecodeReportVerbosity::Summary),
-        "step" | "steps" | "compact" => Ok(Qwen3DecodeReportVerbosity::Steps),
-        "1" | "true" | "yes" | "on" | "verbose" | "full" | "detail" | "details" => {
-            Ok(Qwen3DecodeReportVerbosity::Verbose)
-        }
-        other => anyhow::bail!("invalid --decode-report: {other}"),
+        Qwen3DecodeReportVerbosity::Summary
     }
 }
 
@@ -708,17 +908,24 @@ fn resolve_lingqu_object_cli_sample(
 mod tests {
     use super::{
         lingqu_object_service_args_from, qwen3_decode_loop_args_from,
-        qwen3_decode_report_verbosity_from_env, qwen3_guest_decode_loop_args_from,
-        qwen3_guest_log_dir_from_script_output, qwen3_guest_log_match_count,
+        qwen3_decode_report_verbosity_from_env, qwen3_engram_policy_checksum,
+        qwen3_engram_select_token, qwen3_engram_state_words, qwen3_guest_candidate_records,
+        qwen3_guest_decode_loop_args_from, qwen3_guest_engram_candidate_counts,
+        qwen3_guest_engram_history_lengths, qwen3_guest_engram_object_transport_report,
+        qwen3_guest_engram_report, qwen3_guest_engram_report_from_guest_log,
+        qwen3_guest_engram_selected_tokens, qwen3_guest_log_dir_from_script_output,
+        qwen3_guest_log_match_count, qwen3_guest_terminal_candidate_records,
         qwen3_guest_terminal_text_lossy_from_tokenizer, qwen3_guest_terminal_tokens,
-        qwen3_guest_timing_summary, qwen3_range_forward_args_from, Qwen3DecodeReportVerbosity,
+        qwen3_guest_timing_summary, qwen3_range_forward_args_from, Qwen3CandidateRecord,
+        Qwen3DecodeReportVerbosity, Qwen3EngramConfig, Qwen3EngramMode, Qwen3EngramPool,
+        Qwen3EngramReport,
     };
     use std::env;
     use std::fs;
     use std::path::PathBuf;
 
     #[test]
-    fn qwen3_decode_loop_args_default_to_two_max_tokens() {
+    fn qwen3_decode_loop_args_default_to_two_steps() {
         let args = qwen3_decode_loop_args_from([
             "qwen3-decode-loop",
             "scenarios/mvp_2host_single_domain.yaml",
@@ -729,16 +936,13 @@ mod tests {
             args.scenario_path,
             PathBuf::from("scenarios/mvp_2host_single_domain.yaml")
         );
-        assert_eq!(args.max_token_count, 2);
+        assert_eq!(args.step_count, 2);
         assert_eq!(args.prompt, None);
-        assert!(!args.raw_prompt);
         assert_eq!(args.matmul_batch, None);
-        assert_eq!(args.temperature, None);
-        assert_eq!(args.decode_report, None);
     }
 
     #[test]
-    fn qwen3_decode_loop_args_accept_explicit_max_token_count() {
+    fn qwen3_decode_loop_args_accept_explicit_step_count() {
         let args = qwen3_decode_loop_args_from([
             "qwen3-decode-loop",
             "scenarios/mvp_2host_single_domain.yaml",
@@ -750,7 +954,7 @@ mod tests {
             args.scenario_path,
             PathBuf::from("scenarios/mvp_2host_single_domain.yaml")
         );
-        assert_eq!(args.max_token_count, 4);
+        assert_eq!(args.step_count, 4);
         assert_eq!(args.prompt, None);
     }
 
@@ -768,7 +972,7 @@ mod tests {
             args.scenario_path,
             PathBuf::from("scenarios/mvp_2host_single_domain.yaml")
         );
-        assert_eq!(args.max_token_count, 2);
+        assert_eq!(args.step_count, 2);
         assert_eq!(args.prompt.as_deref(), Some("Hello Qwen3"));
     }
 
@@ -778,17 +982,12 @@ mod tests {
             "qwen3-decode-loop",
             "--scenario",
             "4host",
-            "--max-token",
+            "--steps",
             "32",
             "--prompt",
             "Capital of China is",
             "--matmul-batch",
             "4",
-            "--temperature",
-            "0.7",
-            "--decode-report",
-            "steps",
-            "--raw-prompt",
         ])
         .expect("parse decode loop args")
         .expect("decode loop args");
@@ -796,12 +995,9 @@ mod tests {
             args.scenario_path,
             PathBuf::from("scenarios/mvp_4host_single_domain.yaml")
         );
-        assert_eq!(args.max_token_count, 32);
+        assert_eq!(args.step_count, 32);
         assert_eq!(args.prompt.as_deref(), Some("Capital of China is"));
-        assert!(args.raw_prompt);
         assert_eq!(args.matmul_batch, Some(4));
-        assert_eq!(args.temperature, Some(0.7));
-        assert_eq!(args.decode_report, Some(Qwen3DecodeReportVerbosity::Steps));
     }
 
     #[test]
@@ -809,9 +1005,8 @@ mod tests {
         let args = qwen3_decode_loop_args_from([
             "qwen3-decode-loop",
             "--scenario=8host",
-            "--max_token=8",
+            "--steps=8",
             "--matmul-batch=2",
-            "--temperature=0",
             "Capital of China is",
         ])
         .expect("parse decode loop args")
@@ -820,50 +1015,9 @@ mod tests {
             args.scenario_path,
             PathBuf::from("scenarios/mvp_8host_single_domain.yaml")
         );
-        assert_eq!(args.max_token_count, 8);
+        assert_eq!(args.step_count, 8);
         assert_eq!(args.prompt.as_deref(), Some("Capital of China is"));
         assert_eq!(args.matmul_batch, Some(2));
-        assert_eq!(args.temperature, Some(0.0));
-    }
-
-    #[test]
-    fn qwen3_decode_loop_args_allow_chat_template_after_raw_prompt() {
-        let args = qwen3_decode_loop_args_from([
-            "qwen3-decode-loop",
-            "--raw-prompt",
-            "--chat-template",
-            "--prompt",
-            "Hello Qwen3",
-        ])
-        .expect("parse decode loop args")
-        .expect("decode loop args");
-        assert_eq!(args.prompt.as_deref(), Some("Hello Qwen3"));
-        assert!(!args.raw_prompt);
-    }
-
-    #[test]
-    fn qwen3_decode_loop_args_keep_steps_as_compat_alias() {
-        let args = qwen3_decode_loop_args_from([
-            "qwen3-decode-loop",
-            "--scenario=4host",
-            "--steps=8",
-            "Capital of China is",
-        ])
-        .expect("parse decode loop args")
-        .expect("decode loop args");
-        assert_eq!(args.max_token_count, 8);
-        assert_eq!(args.prompt.as_deref(), Some("Capital of China is"));
-    }
-
-    #[test]
-    fn qwen3_decode_loop_args_reject_negative_temperature() {
-        let err = qwen3_decode_loop_args_from([
-            "qwen3-decode-loop",
-            "--scenario=4host",
-            "--temperature=-0.1",
-        ])
-        .expect_err("negative temperature must fail");
-        assert!(err.to_string().contains("--temperature"));
     }
 
     #[test]
@@ -890,6 +1044,7 @@ mod tests {
             "--steps=1",
             "--prompt",
             "Capital of China is",
+            "--prompt-token-ids=9707,1207,16948,18,358",
             "--script",
             "guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh",
             "--matmul-batch=16",
@@ -899,10 +1054,44 @@ mod tests {
         assert_eq!(args.step_count, 1);
         assert_eq!(args.prompt.as_deref(), Some("Capital of China is"));
         assert_eq!(
+            args.prompt_token_ids.as_deref(),
+            Some("9707,1207,16948,18,358")
+        );
+        assert_eq!(
             args.script_path,
             PathBuf::from("guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh")
         );
         assert_eq!(args.matmul_batch, Some(16));
+        assert_eq!(args.engram, Qwen3EngramConfig::default());
+    }
+
+    #[test]
+    fn qwen3_guest_decode_loop_args_accept_engram_options() {
+        let args = qwen3_guest_decode_loop_args_from([
+            "qwen3-guest-decode-loop",
+            "--steps=8",
+            "--engram",
+            "--engram-mode=cpu",
+            "--engram-pool=object",
+            "--engram-owner-node=3",
+            "--no-repeat-ngram-size=3",
+            "--repetition-penalty=1.250",
+            "--engram-block-token-id=11",
+            "--engram-block-token-ids=358,1128",
+            "--engram-history-window=64",
+            "--engram-report=steps",
+        ])
+        .expect("parse guest decode loop args")
+        .expect("guest decode loop args");
+        assert!(args.engram.enabled);
+        assert_eq!(args.engram.mode, Qwen3EngramMode::Cpu);
+        assert_eq!(args.engram.pool, Qwen3EngramPool::Object);
+        assert_eq!(args.engram.owner_node, 3);
+        assert_eq!(args.engram.no_repeat_ngram_size, 3);
+        assert_eq!(args.engram.repetition_penalty_milli, 1250);
+        assert_eq!(args.engram.blocked_token_ids, vec![11, 358, 1128]);
+        assert_eq!(args.engram.history_window, 64);
+        assert_eq!(args.engram.report, Qwen3EngramReport::Steps);
     }
 
     #[test]
@@ -935,6 +1124,355 @@ stage qwen3_range_forward_runtime_output_publish node=2
 [w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=0 token=99710 status=ok
 ";
         assert_eq!(qwen3_guest_terminal_tokens(log), vec![99710, 38511]);
+    }
+
+    #[test]
+    fn qwen3_guest_engram_selected_tokens_parse_in_step_order() {
+        let log = "\
+[w4_guest] stage qwen3_engram_token_select local=node8 step=1 history_tokens=5 raw_token=1 runner_up=2 selected_token=358 blocked=0 fallback=0 status=ok
+[w4_guest] stage qwen3_engram_token_select local=node8 step=0 history_tokens=4 raw_token=3 runner_up=4 selected_token=11 blocked=0 fallback=0 status=ok
+";
+        assert_eq!(qwen3_guest_engram_selected_tokens(log), vec![11, 358]);
+    }
+
+    #[test]
+    fn qwen3_guest_engram_history_lengths_parse_in_step_order() {
+        let log = "\
+[w4_guest] stage qwen3_engram_decision_publish local=node8 step=1 objects=3 history_tokens=6 selected_token=358 status=ok
+[w4_guest] stage qwen3_engram_decision_publish local=node8 step=0 objects=3 history_tokens=5 selected_token=11 status=ok
+";
+        assert_eq!(qwen3_guest_engram_history_lengths(log), vec![5, 6]);
+    }
+
+    #[test]
+    fn qwen3_guest_engram_candidate_counts_parse_in_step_order() {
+        let log = "\
+[w4_guest] stage qwen3_engram_candidates_publish local=node8 step=1 candidate_count=2 status=ok
+[w4_guest] stage qwen3_engram_candidates_publish local=node8 step=0 candidate_count=1 status=ok
+";
+        assert_eq!(qwen3_guest_engram_candidate_counts(log), vec![1, 2]);
+    }
+
+    #[test]
+    fn qwen3_guest_candidate_records_parse_terminal_top_and_runner_up() {
+        let log = "\
+[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=0 token=11 runner_up=358 margin_milli=122 text_checksum=0xd47f6aad369a54ea status=ok
+";
+        let records = qwen3_guest_terminal_candidate_records(log);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].len(), 2);
+        assert_eq!(records[0][0].token_id, 11);
+        assert_eq!(records[0][0].logit_milli, 122);
+        assert_eq!(records[0][0].token_piece_checksum, 0xd47f6aad369a54ea);
+        assert_eq!(records[0][1].token_id, 358);
+    }
+
+    #[test]
+    fn qwen3_guest_candidate_records_prefer_engram_raw_candidates() {
+        let log = "\
+[w4_guest] stage qwen3_engram_token_select local=node8 step=0 history_tokens=5 raw_token=2776 runner_up=1079 selected_token=1079 candidate_count=4 candidate2=264 candidate3=11 blocked=1 fallback=0 top_score_milli=606 runner_up_score_milli=0 status=ok
+[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=0 token=1079 runner_up=1079 margin_milli=606 text_checksum=0xea198295636f6f11 status=ok
+";
+        let records = qwen3_guest_candidate_records(log);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].len(), 4);
+        assert_eq!(records[0][0].token_id, 2776);
+        assert_eq!(records[0][0].logit_milli, 606);
+        assert_eq!(records[0][1].token_id, 1079);
+        assert_eq!(records[0][1].logit_milli, 0);
+        assert_eq!(records[0][2].token_id, 264);
+        assert_eq!(records[0][2].rank, 2);
+        assert_eq!(records[0][3].token_id, 11);
+        assert_eq!(records[0][3].rank, 3);
+    }
+
+    #[test]
+    fn qwen3_engram_neutral_policy_preserves_terminal_tokens() {
+        let config = Qwen3EngramConfig {
+            enabled: true,
+            ..Qwen3EngramConfig::default()
+        };
+        let log = "\
+[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=0 token=11 runner_up=0 margin_milli=122 text_checksum=0x1 status=ok
+[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=1 token=358 runner_up=1128 margin_milli=1350 text_checksum=0x2 status=ok
+";
+        let report =
+            qwen3_guest_engram_report(&config, 7, &[9707, 1207], log).expect("build engram report");
+        assert_eq!(report.selected_tokens, vec![11, 358]);
+        assert_eq!(report.candidate_count, 4);
+    }
+
+    #[test]
+    fn qwen3_engram_no_repeat_ngram_blocks_repeated_candidate() {
+        let config = Qwen3EngramConfig {
+            enabled: true,
+            no_repeat_ngram_size: 2,
+            ..Qwen3EngramConfig::default()
+        };
+        let candidates = vec![
+            Qwen3CandidateRecord {
+                step_index: 0,
+                rank: 0,
+                token_id: 2,
+                logit_milli: 100,
+                adjusted_score_milli: 100,
+                token_piece_checksum: 0,
+            },
+            Qwen3CandidateRecord {
+                step_index: 0,
+                rank: 1,
+                token_id: 3,
+                logit_milli: 0,
+                adjusted_score_milli: 0,
+                token_piece_checksum: 0,
+            },
+        ];
+        let decision =
+            qwen3_engram_select_token(&config, 1, &[1, 2, 1], candidates).expect("select token");
+        assert_eq!(decision.selected_token, 3);
+        assert_eq!(decision.blocked_token_count, 1);
+        assert!(!decision.fallback_used);
+    }
+
+    #[test]
+    fn qwen3_engram_block_token_id_selects_runner_up() {
+        let config = Qwen3EngramConfig {
+            enabled: true,
+            blocked_token_ids: vec![2776],
+            ..Qwen3EngramConfig::default()
+        };
+        let candidates = vec![
+            Qwen3CandidateRecord {
+                step_index: 0,
+                rank: 0,
+                token_id: 2776,
+                logit_milli: 606,
+                adjusted_score_milli: 606,
+                token_piece_checksum: 0,
+            },
+            Qwen3CandidateRecord {
+                step_index: 0,
+                rank: 1,
+                token_id: 1079,
+                logit_milli: 0,
+                adjusted_score_milli: 0,
+                token_piece_checksum: 0,
+            },
+        ];
+        let decision =
+            qwen3_engram_select_token(&config, 1, &[9707, 1207], candidates).expect("select token");
+        assert_eq!(decision.selected_token, 1079);
+        assert_eq!(decision.blocked_token_count, 1);
+        assert!(!decision.fallback_used);
+        assert_eq!(decision.state.raw_sampled_token, 2776);
+        assert_eq!(decision.state.runner_up_token, 1079);
+        assert_eq!(decision.state.top_score_milli, 606);
+        assert_eq!(decision.state.runner_up_score_milli, 0);
+        assert_eq!(decision.state.history_window, 0);
+        assert_ne!(decision.state.logits_checksum, 0);
+        let state_words = qwen3_engram_state_words(&decision.state);
+        assert_eq!(state_words.len(), 16);
+        assert_eq!(state_words[2], 1079);
+        assert_eq!(state_words[6], 1);
+        assert_eq!(state_words[7], 0);
+        assert_eq!(state_words[8], 2776);
+        assert_eq!(state_words[9], 1079);
+    }
+
+    #[test]
+    fn qwen3_engram_repetition_penalty_can_downrank_repeated_token() {
+        let config = Qwen3EngramConfig {
+            enabled: true,
+            repetition_penalty_milli: 2000,
+            ..Qwen3EngramConfig::default()
+        };
+        let candidates = vec![
+            Qwen3CandidateRecord {
+                step_index: 4,
+                rank: 0,
+                token_id: 9,
+                logit_milli: 100,
+                adjusted_score_milli: 100,
+                token_piece_checksum: 0,
+            },
+            Qwen3CandidateRecord {
+                step_index: 4,
+                rank: 1,
+                token_id: 10,
+                logit_milli: 0,
+                adjusted_score_milli: 0,
+                token_piece_checksum: 0,
+            },
+        ];
+        let decision =
+            qwen3_engram_select_token(&config, 1, &[7, 9], candidates).expect("select token");
+        assert_eq!(decision.selected_token, 10);
+        assert_eq!(decision.candidates[0].adjusted_score_milli, -900);
+    }
+
+    #[test]
+    fn qwen3_engram_neutral_tie_preserves_top_rank() {
+        let config = Qwen3EngramConfig {
+            enabled: true,
+            ..Qwen3EngramConfig::default()
+        };
+        let candidates = vec![
+            Qwen3CandidateRecord {
+                step_index: 4,
+                rank: 0,
+                token_id: 20,
+                logit_milli: 0,
+                adjusted_score_milli: 0,
+                token_piece_checksum: 0,
+            },
+            Qwen3CandidateRecord {
+                step_index: 4,
+                rank: 1,
+                token_id: 10,
+                logit_milli: 0,
+                adjusted_score_milli: 0,
+                token_piece_checksum: 0,
+            },
+        ];
+        let decision =
+            qwen3_engram_select_token(&config, 1, &[], candidates).expect("select token");
+        assert_eq!(decision.selected_token, 20);
+    }
+
+    #[test]
+    fn qwen3_engram_stop_token_priority_bypasses_policy() {
+        let config = Qwen3EngramConfig {
+            enabled: true,
+            no_repeat_ngram_size: 2,
+            repetition_penalty_milli: 2000,
+            ..Qwen3EngramConfig::default()
+        };
+        let candidates = vec![
+            Qwen3CandidateRecord {
+                step_index: 2,
+                rank: 0,
+                token_id: 151_645,
+                logit_milli: 1,
+                adjusted_score_milli: 1,
+                token_piece_checksum: 0,
+            },
+            Qwen3CandidateRecord {
+                step_index: 2,
+                rank: 1,
+                token_id: 42,
+                logit_milli: 1000,
+                adjusted_score_milli: 1000,
+                token_piece_checksum: 0,
+            },
+        ];
+        let decision =
+            qwen3_engram_select_token(&config, 1, &[151_645], candidates).expect("select token");
+        assert_eq!(decision.selected_token, 151_645);
+        assert_eq!(decision.blocked_token_count, 0);
+    }
+
+    #[test]
+    fn qwen3_engram_policy_checksum_is_deterministic() {
+        let config = Qwen3EngramConfig {
+            enabled: true,
+            repetition_penalty_milli: 1250,
+            ..Qwen3EngramConfig::default()
+        };
+        let log = "\
+[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=0 token=11 runner_up=0 margin_milli=122 text_checksum=0x1 status=ok
+";
+        let first =
+            qwen3_guest_engram_report(&config, 7, &[9707], log).expect("first engram report");
+        let second =
+            qwen3_guest_engram_report(&config, 7, &[9707], log).expect("second engram report");
+        assert_eq!(first.state_checksum, second.state_checksum);
+        assert_eq!(
+            qwen3_engram_policy_checksum(&config, &first.steps),
+            qwen3_engram_policy_checksum(&config, &second.steps)
+        );
+    }
+
+    #[test]
+    fn qwen3_engram_object_pool_publishes_versioned_records() {
+        let config = Qwen3EngramConfig {
+            enabled: true,
+            pool: Qwen3EngramPool::Object,
+            ..Qwen3EngramConfig::default()
+        };
+        let log = "\
+[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=0 token=11 runner_up=0 margin_milli=122 text_checksum=0x1 status=ok
+[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=1 token=358 runner_up=1128 margin_milli=1350 text_checksum=0x2 status=ok
+";
+        let report = qwen3_guest_engram_report(&config, 7, &[9707, 1207], log)
+            .expect("build object-backed engram report");
+        let object = report.object_service.expect("object report");
+        assert_eq!(object.object_puts, 9);
+        assert_eq!(object.object_resolves, 3);
+        assert_eq!(object.token_history_versions, 3);
+        assert_eq!(object.state_versions, 2);
+        assert_eq!(object.candidate_versions, 2);
+        assert_eq!(object.selected_token_versions, 2);
+        assert_eq!(object.history_token_count, 4);
+        assert_eq!(object.obmm_payload_writes, 0);
+        assert_eq!(object.obmm_payload_reads, 0);
+        assert_eq!(object.obmm_queue_submits, 0);
+        assert_eq!(object.obmm_queue_delivers, 0);
+    }
+
+    #[test]
+    fn qwen3_engram_obmm_pool_uses_payload_descriptors() {
+        let config = Qwen3EngramConfig {
+            enabled: true,
+            pool: Qwen3EngramPool::Obmm,
+            ..Qwen3EngramConfig::default()
+        };
+        let log = "\
+[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=0 token=11 runner_up=0 margin_milli=122 text_checksum=0x1 status=ok
+[w4_guest] stage qwen3_engram_candidates_publish local=node8 step=0 candidate_count=4 status=ok
+[w4_guest] stage qwen3_engram_candidates_wait step=0 bytes=256 status=ok
+[w4_guest] stage qwen3_engram_decision_publish local=node8 step=0 objects=3 history_tokens=2 selected_token=11 status=ok
+[w4_guest] stage qwen3_engram_selected_token_wait step=0 bytes=64 token=11 status=ok
+[w4_guest] stage qwen3_engram_selected_writeback local=node8 step=0 selected_token=11 status=ok
+";
+        let report = qwen3_guest_engram_report(&config, 7, &[9707], log)
+            .expect("build obmm-backed engram report");
+        assert!(report.object_service.is_none());
+        let transport = qwen3_guest_engram_object_transport_report(log);
+        assert_eq!(transport.object_puts, 4);
+        assert_eq!(transport.object_waits, 2);
+        assert_eq!(transport.candidate_publishes, 1);
+        assert_eq!(transport.candidate_waits, 1);
+        assert_eq!(transport.decision_publishes, 1);
+        assert_eq!(transport.selected_waits, 1);
+        assert_eq!(transport.selected_writebacks, 1);
+        assert_eq!(transport.payload_write_bytes, 256 + (2 + 2) * 8 + 64 + 128);
+        assert_eq!(transport.payload_read_bytes, 256 + 64);
+        assert_eq!(transport.queue_submits, 4);
+        assert_eq!(transport.queue_delivers, 2);
+    }
+
+    #[test]
+    fn qwen3_guest_engram_report_from_guest_log_uses_guest_decisions() {
+        let config = Qwen3EngramConfig {
+            enabled: true,
+            pool: Qwen3EngramPool::Obmm,
+            blocked_token_ids: vec![2776],
+            ..Qwen3EngramConfig::default()
+        };
+        let log = "\
+[w4_guest] stage qwen3_engram_token_select local=node8 step=0 history_tokens=5 raw_token=2776 runner_up=1079 selected_token=1079 candidate_count=4 candidate2=264 candidate3=11 blocked=1 fallback=0 top_score_milli=606 runner_up_score_milli=101 no_repeat_ngram_size=0 repetition_penalty_milli=1000 history_window=0 candidate_checksum=0x1 source=guest_policy status=ok
+[w4_guest] stage qwen3_engram_decision_publish local=node8 step=0 objects=3 history_tokens=6 selected_token=1079 history_key=qwen3/session/abc/tokens/history history_version=1 selected_key=qwen3/session/abc/step/0/tokens/selected state_key=qwen3/session/abc/step/0/engram/state history_checksum=0x11 selected_checksum=0x22 state_checksum=0x33 status=ok
+[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=0 token=1079 runner_up=1079 margin_milli=606 text_checksum=0x1 status=ok
+";
+        let report = qwen3_guest_engram_report_from_guest_log(&config, 7, &[9707], log)
+            .expect("guest log report");
+        assert_eq!(report.selected_tokens, vec![1079]);
+        assert_eq!(report.history_tokens, vec![9707, 1079]);
+        assert_eq!(report.candidate_count, 4);
+        assert_eq!(report.blocked_token_count, 1);
+        assert_eq!(report.state_checksum, 0x33);
+        assert_eq!(report.steps[0].state.rolling_hash, 0x11);
+        assert!(report.object_service.is_none());
     }
 
     #[test]
@@ -1005,10 +1543,10 @@ stage qwen3_range_forward_runtime_output_publish node=2
     }
 
     #[test]
-    fn qwen3_decode_report_verbosity_defaults_to_stream() {
+    fn qwen3_decode_report_verbosity_defaults_to_summary() {
         assert_eq!(
             qwen3_decode_report_verbosity_from_env(None, None),
-            Qwen3DecodeReportVerbosity::Stream
+            Qwen3DecodeReportVerbosity::Summary
         );
     }
 
@@ -1050,66 +1588,42 @@ fn run_qwen3_decode_loop_cli(args: &Qwen3DecodeLoopCliArgs) -> anyhow::Result<()
     })?;
     let topology = SimTopology::from_config(&config).context("failed to build topology")?;
     prepare_qwen3_decode_loop_environment(args)?;
-    let verbosity = args
-        .decode_report
-        .unwrap_or_else(qwen3_decode_report_verbosity);
-    if matches!(
-        verbosity,
-        Qwen3DecodeReportVerbosity::Steps | Qwen3DecodeReportVerbosity::Verbose
-    ) && std::env::var("SIM_QWEN3_DECODE_PROGRESS").is_err()
-    {
-        std::env::set_var("SIM_QWEN3_DECODE_PROGRESS", "1");
-    }
-    if std::env::var("SIM_QWEN3_DECODE_STREAM").is_err() {
-        std::env::set_var("SIM_QWEN3_DECODE_STREAM", "1");
-    }
-    if !matches!(verbosity, Qwen3DecodeReportVerbosity::Stream) {
-        eprintln!(
-            "qwen3-decode-loop: scenario={} max_token={} prompt_bytes={} prompt_mode={} matmul_batch={} temperature={}",
-            scenario_path.display(),
-            args.max_token_count,
-            args.prompt.as_deref().map(str::len).unwrap_or(0),
-            if args.prompt.is_none() {
-                "default"
-            } else if args.raw_prompt {
-                "raw"
-            } else {
-                "chat_template"
-            },
-            args.matmul_batch
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "default".to_string()),
-            args.temperature
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "0".to_string())
-        );
-    }
+    std::env::set_var("SIM_QWEN3_DECODE_PROGRESS", "1");
+    eprintln!(
+        "qwen3-decode-loop: scenario={} steps={} prompt_bytes={} matmul_batch={}",
+        scenario_path.display(),
+        args.step_count,
+        args.prompt.as_deref().map(str::len).unwrap_or(0),
+        args.matmul_batch
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "default".to_string())
+    );
     let report = if let Some(prompt) = args.prompt.as_deref() {
-        if args.raw_prompt {
-            qwen3_dense_0_6b_decode_loop_report_with_raw_prompt(
-                &topology,
-                args.max_token_count,
-                prompt,
-            )
-        } else {
-            qwen3_dense_0_6b_decode_loop_report_with_prompt(&topology, args.max_token_count, prompt)
-        }
+        qwen3_dense_0_6b_decode_loop_report_with_prompt(&topology, args.step_count, prompt)
     } else {
-        qwen3_dense_0_6b_decode_loop_report(&topology, args.max_token_count)
+        qwen3_dense_0_6b_decode_loop_report(&topology, args.step_count)
     }
     .map_err(anyhow::Error::msg)
     .context("failed to run Qwen3 decode loop")?;
-    if qwen3_decode_stream_enabled() {
-        println!();
-    }
-    print_qwen3_decode_timing(&report);
-    match verbosity {
-        Qwen3DecodeReportVerbosity::Stream => {}
-        Qwen3DecodeReportVerbosity::Summary => {
-            print_qwen3_decode_summary(scenario_path, &report);
-        }
+    println!("qwen3_dense_0_6b_decode_loop");
+    println!("  scenario: {}", scenario_path.display());
+    println!("  steps: {}", report.steps.len());
+    println!(
+        "  final_guest_input_checksum: {:#x}",
+        report.final_guest_input_checksum
+    );
+    println!("  decode_chain: {:#x}", report.decode_chain_checksum);
+    println!(
+        "  generated_text_lossy: {}",
+        report.generated_text_lossy.escape_debug()
+    );
+    println!(
+        "  generated_bytes: len={} checksum={:#x}",
+        report.generated_byte_len, report.generated_byte_checksum
+    );
+    match qwen3_decode_report_verbosity() {
+        Qwen3DecodeReportVerbosity::Summary => {}
         Qwen3DecodeReportVerbosity::Steps => {
-            print_qwen3_decode_summary(scenario_path, &report);
             for step in &report.steps {
                 println!(
                     "  step={} runtime_prefill={} input_tokens={} sampled_tokens={} text_bytes={} contract_ready={} blockers={} synthetic_stages={} full_forward_math={} full_vocab_logits={} object_ready={} object_publish={} object_resolve={} object_append={} kv_resolve={} kv_append={} obmm_pool={} obmm_queue={} weight_payload_bytes={} weight_payload_slices={} weight_payload_complete={} weight_reconstructed_tensors={} weight_reconstructed_checksum={:#x} weight_payload_checksum={:#x} global_weight_objects={} global_weight_payload_bytes={} global_weight_tensors={} global_weight_checksum={:#x} object_checksum={:#x} input_checksum={:#x} next_input_checksum={:#x}",
@@ -1148,66 +1662,10 @@ fn run_qwen3_decode_loop_cli(args: &Qwen3DecodeLoopCliArgs) -> anyhow::Result<()
             }
         }
         Qwen3DecodeReportVerbosity::Verbose => {
-            print_qwen3_decode_summary(scenario_path, &report);
             print_qwen3_decode_verbose_steps(&report.steps);
         }
     }
     Ok(())
-}
-
-fn print_qwen3_decode_timing(report: &sim_uapi::Qwen3Dense06bDecodeLoopReport) {
-    eprintln!(
-        "qwen3-decode-loop: timing stop={} decoded_tokens={} ttft={} tpot_avg={} total={}",
-        report.stop_reason.as_deref().unwrap_or("unknown"),
-        report.steps.len(),
-        qwen3_decode_micros_label(report.ttft_micros),
-        qwen3_decode_micros_label(report.tpot_micros),
-        qwen3_decode_micros_label(Some(report.total_duration_micros))
-    );
-}
-
-fn qwen3_decode_micros_label(value: Option<u64>) -> String {
-    value
-        .map(|micros| format!("{:.1} ms", micros as f64 / 1_000.0))
-        .unwrap_or_else(|| "n/a".to_string())
-}
-
-fn qwen3_decode_stream_enabled() -> bool {
-    std::env::var("SIM_QWEN3_DECODE_STREAM")
-        .ok()
-        .as_deref()
-        .map(env_flag_enabled)
-        .unwrap_or(false)
-}
-
-fn print_qwen3_decode_summary(
-    scenario_path: &Path,
-    report: &sim_uapi::Qwen3Dense06bDecodeLoopReport,
-) {
-    println!("qwen3_dense_0_6b_decode_loop");
-    println!("  scenario: {}", scenario_path.display());
-    println!("  max_token: {}", report.max_token_count);
-    println!("  generated_tokens: {}", report.steps.len());
-    println!(
-        "  stopped: {}",
-        report.stop_reason.as_deref().unwrap_or("none")
-    );
-    if let Some(token_id) = report.stop_token_id {
-        println!("  stop_token_id: {}", token_id);
-    }
-    println!(
-        "  final_guest_input_checksum: {:#x}",
-        report.final_guest_input_checksum
-    );
-    println!("  decode_chain: {:#x}", report.decode_chain_checksum);
-    println!(
-        "  generated_text_lossy: {}",
-        report.generated_text_lossy.escape_debug()
-    );
-    println!(
-        "  generated_bytes: len={} checksum={:#x}",
-        report.generated_byte_len, report.generated_byte_checksum
-    );
 }
 
 fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow::Result<()> {
@@ -1234,18 +1692,34 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         prepare_qwen3_matmul_batch_environment(matmul_batch)?;
         println!("  matmul_batch: {}", matmul_batch);
     }
+    if args.engram.enabled {
+        println!(
+            "  engram: enabled=true mode={} pool={} owner_node={} no_repeat_ngram_size={} repetition_penalty_milli={} history_window={} report={}",
+            qwen3_engram_mode_name(args.engram.mode),
+            qwen3_engram_pool_name(args.engram.pool),
+            args.engram.owner_node,
+            args.engram.no_repeat_ngram_size,
+            args.engram.repetition_penalty_milli,
+            args.engram.history_window,
+            qwen3_engram_report_name(args.engram.report)
+        );
+    }
     println!("  worker_path: 8-node W4 guest OBMM object-service range forward");
     let trace_file = env::temp_dir().join(format!(
         "qwen3_guest_decode_loop_{}.trace",
         std::process::id()
     ));
     let prompt_token_ids = args
-        .prompt
-        .as_deref()
-        .map(qwen3_guest_prompt_token_ids_env)
+        .prompt_token_ids
+        .clone()
+        .map(Ok)
+        .or_else(|| args.prompt.as_deref().map(qwen3_guest_prompt_token_ids_env))
         .transpose()?
         .unwrap_or_default();
-    let status = Command::new(&script_path)
+    let prompt_history_tokens = qwen3_parse_token_id_csv(&prompt_token_ids)?;
+    let engram_session_id = qwen3_guest_session_id(&prompt_history_tokens);
+    let mut command = Command::new(&script_path);
+    command
         .env("SIM_UAPI_W4_CHIPBACKEND_PROFILE", "qwen3_dense_0_6b")
         .env("SIM_QWEN3_GUEST_DECODE_STEPS", args.step_count.to_string())
         .env(
@@ -1255,7 +1729,41 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         .env("SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS", prompt_token_ids)
         .env("TRACE_FILE", &trace_file)
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    if args.engram.enabled {
+        command
+            .env("SIM_QWEN3_GUEST_ENGRAM", "1")
+            .env(
+                "SIM_QWEN3_GUEST_ENGRAM_SESSION_ID",
+                format!("{engram_session_id:016x}"),
+            )
+            .env(
+                "SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE",
+                args.engram.owner_node.to_string(),
+            )
+            .env(
+                "SIM_QWEN3_GUEST_ENGRAM_NO_REPEAT_NGRAM_SIZE",
+                args.engram.no_repeat_ngram_size.to_string(),
+            )
+            .env(
+                "SIM_QWEN3_GUEST_ENGRAM_REPETITION_PENALTY_MILLI",
+                args.engram.repetition_penalty_milli.to_string(),
+            )
+            .env(
+                "SIM_QWEN3_GUEST_ENGRAM_HISTORY_WINDOW",
+                args.engram.history_window.to_string(),
+            )
+            .env(
+                "SIM_QWEN3_GUEST_ENGRAM_BLOCK_TOKEN_IDS",
+                args.engram
+                    .blocked_token_ids
+                    .iter()
+                    .map(u64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+    }
+    let status = command
         .status()
         .with_context(|| format!("failed to run {}", script_path.display()))?;
     let mut combined = fs::read_to_string(&trace_file).unwrap_or_default();
@@ -1272,13 +1780,81 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         qwen3_guest_log_match_count(&combined, "stage qwen3_range_forward_runtime_input_loaded ");
     let terminal_token_count =
         qwen3_guest_log_match_count(&combined, "stage qwen3_terminal_token_result_publish ");
+    let guest_engram_select_count =
+        qwen3_guest_log_match_count(&combined, "stage qwen3_engram_token_select ");
+    let guest_engram_history_wait_count =
+        qwen3_guest_log_match_count(&combined, "stage qwen3_engram_history_wait ");
+    let guest_engram_state_wait_count =
+        qwen3_guest_log_match_count(&combined, "stage qwen3_engram_state_wait ");
+    let guest_engram_state_resolved_count =
+        qwen3_guest_log_match_count(&combined, "stage qwen3_decode_round_engram_state_resolved ");
+    let guest_engram_candidate_publish_count =
+        qwen3_guest_log_match_count(&combined, "stage qwen3_engram_candidates_publish ");
+    let guest_engram_candidate_wait_count =
+        qwen3_guest_log_match_count(&combined, "stage qwen3_engram_candidates_wait ");
+    let guest_engram_selected_wait_count =
+        qwen3_guest_log_match_count(&combined, "stage qwen3_engram_selected_token_wait ");
+    let guest_engram_selected_writeback_count =
+        qwen3_guest_log_match_count(&combined, "stage qwen3_engram_selected_writeback ");
+    let guest_engram_terminal_rewrite_count =
+        qwen3_guest_log_match_count(&combined, "stage qwen3_engram_terminal_record_rewrite ");
     let expected_runtime_forward_count = 8 * args.step_count;
     let expected_runtime_input_count = 7 * args.step_count;
     let expected_runtime_publish_count = 8 * args.step_count;
     let expected_terminal_token_count = args.step_count;
+    let expected_guest_engram_select_count = if args.engram.enabled {
+        args.step_count
+    } else {
+        0
+    };
+    let expected_guest_engram_candidate_publish_count = expected_guest_engram_select_count;
+    let expected_guest_engram_candidate_wait_count = expected_guest_engram_select_count;
+    let expected_guest_engram_selected_wait_count = expected_guest_engram_select_count;
+    let expected_guest_engram_selected_writeback_count = expected_guest_engram_select_count;
+    let expected_guest_engram_history_wait_count = if args.engram.enabled {
+        let mut wait_nodes = [false; 9];
+        wait_nodes[1] = true;
+        wait_nodes[8] = true;
+        wait_nodes[args.engram.owner_node] = true;
+        let wait_node_count = wait_nodes.iter().filter(|enabled| **enabled).count();
+        wait_node_count * args.step_count.saturating_sub(1)
+    } else {
+        0
+    };
+    let expected_guest_engram_state_wait_count = expected_guest_engram_history_wait_count;
+    let expected_guest_engram_state_resolved_count = expected_guest_engram_history_wait_count;
     let timing_summary = qwen3_guest_timing_summary(&combined);
     let terminal_tokens = qwen3_guest_terminal_tokens(&combined);
+    let guest_engram_selected_tokens = qwen3_guest_engram_selected_tokens(&combined);
+    let guest_engram_history_lengths = qwen3_guest_engram_history_lengths(&combined);
+    let guest_engram_candidate_counts = qwen3_guest_engram_candidate_counts(&combined);
     let terminal_text = qwen3_guest_terminal_text_lossy(&terminal_tokens);
+    let engram_report = if args.engram.enabled {
+        let session_id = qwen3_guest_session_id(&prompt_history_tokens);
+        if args.engram.pool == Qwen3EngramPool::Obmm {
+            Some(qwen3_guest_engram_report_from_guest_log(
+                &args.engram,
+                session_id,
+                &prompt_history_tokens,
+                &combined,
+            )?)
+        } else {
+            Some(qwen3_guest_engram_report(
+                &args.engram,
+                session_id,
+                &prompt_history_tokens,
+                &combined,
+            )?)
+        }
+    } else {
+        None
+    };
+    let guest_engram_object_transport =
+        if args.engram.enabled && args.engram.pool == Qwen3EngramPool::Obmm {
+            Some(qwen3_guest_engram_object_transport_report(&combined))
+        } else {
+            None
+        };
     let pass = combined.contains("eight-node w4 guest validation passed")
         || combined.contains("PASS: eight-node w4 guest");
     println!(
@@ -1290,6 +1866,98 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         match terminal_text {
             Some(text) => println!("  generated_text_lossy: {}", text.escape_debug()),
             None => println!("  generated_text_lossy: <tokenizer unavailable>"),
+        }
+    }
+    if let Some(report) = &engram_report {
+        print_qwen3_guest_engram_report(report);
+        if let Some(transport) = &guest_engram_object_transport {
+            println!(
+                "  guest_engram_object_transport: object_puts={} object_waits={} candidate_publishes={} candidate_waits={} decision_publishes={} selected_waits={} selected_writebacks={} history_waits={} state_waits={} state_resolved={} payload_write_bytes={} payload_read_bytes={} queue_submits={} queue_delivers={} checksum={:#x}",
+                transport.object_puts,
+                transport.object_waits,
+                transport.candidate_publishes,
+                transport.candidate_waits,
+                transport.decision_publishes,
+                transport.selected_waits,
+                transport.selected_writebacks,
+                transport.history_waits,
+                transport.state_waits,
+                transport.state_resolved,
+                transport.payload_write_bytes,
+                transport.payload_read_bytes,
+                transport.queue_submits,
+                transport.queue_delivers,
+                transport.checksum
+            );
+        }
+        if report.selected_tokens != terminal_tokens {
+            anyhow::bail!(
+                "engram policy selected tokens are not wired into guest writeback yet: selected={:?} terminal={:?}",
+                report.selected_tokens,
+                terminal_tokens
+            );
+        }
+        if !guest_engram_selected_tokens.is_empty() {
+            let expected_history_lengths = (0..args.step_count)
+                .map(|step| prompt_history_tokens.len() as u64 + step as u64 + 1)
+                .collect::<Vec<_>>();
+            let blocked_writeback_tokens = terminal_tokens
+                .iter()
+                .copied()
+                .filter(|token| args.engram.blocked_token_ids.contains(token))
+                .collect::<Vec<_>>();
+            println!(
+                "  guest_engram_writeback: selected_tokens={:?} terminal_tokens={:?} blocked_token_ids={:?} blocked_writeback_tokens={:?} history_lengths={:?} candidate_counts={:?} candidate_publishes={} candidate_waits={} selected_waits={} selected_writebacks={} terminal_rewrites={} select_logs={} history_waits={} state_waits={} state_resolved={} matches_terminal={}",
+                guest_engram_selected_tokens,
+                terminal_tokens,
+                args.engram.blocked_token_ids,
+                blocked_writeback_tokens,
+                guest_engram_history_lengths,
+                guest_engram_candidate_counts,
+                guest_engram_candidate_publish_count,
+                guest_engram_candidate_wait_count,
+                guest_engram_selected_wait_count,
+                guest_engram_selected_writeback_count,
+                guest_engram_terminal_rewrite_count,
+                guest_engram_select_count,
+                guest_engram_history_wait_count,
+                guest_engram_state_wait_count,
+                guest_engram_state_resolved_count,
+                guest_engram_selected_tokens == terminal_tokens
+            );
+            if guest_engram_selected_tokens != terminal_tokens {
+                anyhow::bail!(
+                    "guest engram selected tokens do not match terminal writeback: selected={:?} terminal={:?}",
+                    guest_engram_selected_tokens,
+                    terminal_tokens
+                );
+            }
+            if guest_engram_history_lengths != expected_history_lengths {
+                anyhow::bail!(
+                    "guest engram history object lengths are wrong: got={:?} expected={:?}",
+                    guest_engram_history_lengths,
+                    expected_history_lengths
+                );
+            }
+            let expected_candidate_counts = report
+                .steps
+                .iter()
+                .map(|step| step.candidates.len() as u64)
+                .collect::<Vec<_>>();
+            if guest_engram_candidate_counts != expected_candidate_counts {
+                anyhow::bail!(
+                    "guest engram candidate object counts are wrong: got={:?} expected={:?}",
+                    guest_engram_candidate_counts,
+                    expected_candidate_counts
+                );
+            }
+            if !blocked_writeback_tokens.is_empty() {
+                anyhow::bail!(
+                    "guest engram blocked tokens reached writeback: blocked={:?} terminal={:?}",
+                    blocked_writeback_tokens,
+                    terminal_tokens
+                );
+            }
         }
     }
     if timing_summary.worker_count > 0 {
@@ -1328,9 +1996,17 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         || runtime_publish_count != expected_runtime_publish_count
         || runtime_input_count != expected_runtime_input_count
         || terminal_token_count != expected_terminal_token_count
+        || guest_engram_select_count != expected_guest_engram_select_count
+        || guest_engram_candidate_publish_count != expected_guest_engram_candidate_publish_count
+        || guest_engram_candidate_wait_count != expected_guest_engram_candidate_wait_count
+        || guest_engram_selected_wait_count != expected_guest_engram_selected_wait_count
+        || guest_engram_selected_writeback_count != expected_guest_engram_selected_writeback_count
+        || guest_engram_history_wait_count != expected_guest_engram_history_wait_count
+        || guest_engram_state_wait_count != expected_guest_engram_state_wait_count
+        || guest_engram_state_resolved_count != expected_guest_engram_state_resolved_count
     {
         anyhow::bail!(
-            "qwen3 guest decode worker incomplete: range_forwards={}/{} runtime_inputs={}/{} runtime_outputs={}/{} terminal_tokens={}/{}",
+            "qwen3 guest decode worker incomplete: range_forwards={}/{} runtime_inputs={}/{} runtime_outputs={}/{} terminal_tokens={}/{} engram_selects={}/{} engram_candidate_publishes={}/{} engram_candidate_waits={}/{} engram_selected_waits={}/{} engram_selected_writebacks={}/{} engram_history_waits={}/{} engram_state_waits={}/{} engram_state_resolved={}/{}",
             runtime_forward_count,
             expected_runtime_forward_count,
             runtime_input_count,
@@ -1338,7 +2014,23 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             runtime_publish_count,
             expected_runtime_publish_count,
             terminal_token_count,
-            expected_terminal_token_count
+            expected_terminal_token_count,
+            guest_engram_select_count,
+            expected_guest_engram_select_count,
+            guest_engram_candidate_publish_count,
+            expected_guest_engram_candidate_publish_count,
+            guest_engram_candidate_wait_count,
+            expected_guest_engram_candidate_wait_count,
+            guest_engram_selected_wait_count,
+            expected_guest_engram_selected_wait_count,
+            guest_engram_selected_writeback_count,
+            expected_guest_engram_selected_writeback_count,
+            guest_engram_history_wait_count,
+            expected_guest_engram_history_wait_count,
+            guest_engram_state_wait_count,
+            expected_guest_engram_state_wait_count,
+            guest_engram_state_resolved_count,
+            expected_guest_engram_state_resolved_count
         );
     }
     Ok(())
@@ -1361,6 +2053,51 @@ fn qwen3_guest_terminal_tokens(log: &str) -> Vec<u64> {
         .collect::<Vec<_>>();
     tokens.sort_by_key(|(step, _)| *step);
     tokens.into_iter().map(|(_, token)| token).collect()
+}
+
+fn qwen3_guest_engram_selected_tokens(log: &str) -> Vec<u64> {
+    let mut tokens = log
+        .lines()
+        .filter(|line| line.contains("stage qwen3_engram_token_select "))
+        .map(|line| {
+            (
+                qwen3_guest_log_u64_field(line, "step"),
+                qwen3_guest_log_u64_field(line, "selected_token"),
+            )
+        })
+        .collect::<Vec<_>>();
+    tokens.sort_by_key(|(step, _)| *step);
+    tokens.into_iter().map(|(_, token)| token).collect()
+}
+
+fn qwen3_guest_engram_history_lengths(log: &str) -> Vec<u64> {
+    let mut lengths = log
+        .lines()
+        .filter(|line| line.contains("stage qwen3_engram_decision_publish "))
+        .map(|line| {
+            (
+                qwen3_guest_log_u64_field(line, "step"),
+                qwen3_guest_log_u64_field(line, "history_tokens"),
+            )
+        })
+        .collect::<Vec<_>>();
+    lengths.sort_by_key(|(step, _)| *step);
+    lengths.into_iter().map(|(_, length)| length).collect()
+}
+
+fn qwen3_guest_engram_candidate_counts(log: &str) -> Vec<u64> {
+    let mut counts = log
+        .lines()
+        .filter(|line| line.contains("stage qwen3_engram_candidates_publish "))
+        .map(|line| {
+            (
+                qwen3_guest_log_u64_field(line, "step"),
+                qwen3_guest_log_u64_field(line, "candidate_count"),
+            )
+        })
+        .collect::<Vec<_>>();
+    counts.sort_by_key(|(step, _)| *step);
+    counts.into_iter().map(|(_, count)| count).collect()
 }
 
 fn qwen3_guest_terminal_text_lossy(tokens: &[u64]) -> Option<String> {
@@ -1395,6 +2132,1107 @@ fn qwen3_guest_terminal_text_lossy_from_tokenizer(
         bytes.extend(token_piece_decode_bytes(&piece));
     }
     Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Qwen3EngramRunReport {
+    config: Qwen3EngramConfig,
+    steps: Vec<Qwen3EngramStepDecision>,
+    selected_tokens: Vec<u64>,
+    history_tokens: Vec<u64>,
+    object_service: Option<Qwen3EngramObjectReport>,
+    candidate_count: usize,
+    blocked_token_count: u32,
+    selected_token: u64,
+    state_checksum: u64,
+    policy_checksum: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Qwen3EngramObjectReport {
+    object_puts: u64,
+    object_resolves: u64,
+    token_history_versions: u64,
+    state_versions: u64,
+    candidate_versions: u64,
+    selected_token_versions: u64,
+    history_token_count: u64,
+    obmm_payload_writes: u64,
+    obmm_payload_reads: u64,
+    obmm_queue_submits: u64,
+    obmm_queue_delivers: u64,
+    obmm_bytes: u64,
+    checksum: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Qwen3GuestEngramObjectTransportReport {
+    object_puts: u64,
+    object_waits: u64,
+    candidate_publishes: u64,
+    candidate_waits: u64,
+    decision_publishes: u64,
+    selected_waits: u64,
+    selected_writebacks: u64,
+    history_waits: u64,
+    state_waits: u64,
+    state_resolved: u64,
+    payload_write_bytes: u64,
+    payload_read_bytes: u64,
+    queue_submits: u64,
+    queue_delivers: u64,
+    checksum: u64,
+}
+
+fn qwen3_guest_engram_report(
+    config: &Qwen3EngramConfig,
+    session_id: u64,
+    prompt_tokens: &[u64],
+    log: &str,
+) -> anyhow::Result<Qwen3EngramRunReport> {
+    let candidates_by_step = qwen3_guest_candidate_records(log);
+    let mut history = prompt_tokens.to_vec();
+    let mut steps = Vec::with_capacity(candidates_by_step.len());
+
+    for candidates in candidates_by_step {
+        if candidates.is_empty() {
+            continue;
+        }
+        let decision = qwen3_engram_select_token(config, session_id, &history, candidates.clone())?;
+        history.push(decision.selected_token);
+        steps.push(decision);
+    }
+
+    let selected_tokens = steps
+        .iter()
+        .map(|step| step.selected_token)
+        .collect::<Vec<_>>();
+    let candidate_count = steps.iter().map(|step| step.candidates.len()).sum();
+    let blocked_token_count = steps
+        .iter()
+        .map(|step| step.blocked_token_count)
+        .sum::<u32>();
+    let selected_token = selected_tokens.last().copied().unwrap_or(0);
+    let state_checksum = steps
+        .last()
+        .map(|step| step.state.state_checksum)
+        .unwrap_or_else(|| qwen3_checksum_words(&[session_id]));
+    let policy_checksum = qwen3_engram_policy_checksum(config, &steps);
+    let object_service = match config.pool {
+        Qwen3EngramPool::Inline => None,
+        Qwen3EngramPool::Object => Some(qwen3_engram_publish_object_records(
+            config.pool,
+            session_id,
+            prompt_tokens,
+            &steps,
+        )?),
+        Qwen3EngramPool::Obmm => None,
+    };
+
+    Ok(Qwen3EngramRunReport {
+        config: config.clone(),
+        steps,
+        selected_tokens,
+        history_tokens: history,
+        object_service,
+        candidate_count,
+        blocked_token_count,
+        selected_token,
+        state_checksum,
+        policy_checksum,
+    })
+}
+
+fn qwen3_guest_engram_report_from_guest_log(
+    config: &Qwen3EngramConfig,
+    session_id: u64,
+    prompt_tokens: &[u64],
+    log: &str,
+) -> anyhow::Result<Qwen3EngramRunReport> {
+    let mut decision_checksums = log
+        .lines()
+        .filter(|line| line.contains("stage qwen3_engram_decision_publish "))
+        .map(|line| {
+            (
+                qwen3_guest_log_u64_field(line, "step"),
+                qwen3_guest_log_u64_field(line, "history_tokens"),
+                qwen3_guest_log_hex_u64_field(line, "history_checksum"),
+                qwen3_guest_log_hex_u64_field(line, "state_checksum"),
+                qwen3_guest_log_hex_u64_field(line, "logits_checksum"),
+                qwen3_guest_log_hex_u64_field(line, "text_checksum"),
+            )
+        })
+        .collect::<Vec<_>>();
+    decision_checksums.sort_by_key(|(step, _, _, _, _, _)| *step);
+
+    let mut steps = log
+        .lines()
+        .filter(|line| line.contains("stage qwen3_engram_token_select "))
+        .map(|line| {
+            let step = qwen3_guest_log_u64_field(line, "step");
+            let candidate_count = qwen3_guest_log_u64_field(line, "candidate_count").clamp(1, 4);
+            let raw_token = qwen3_guest_log_u64_field(line, "raw_token");
+            let runner_up = qwen3_guest_log_u64_field(line, "runner_up");
+            let candidate2 = qwen3_guest_log_u64_field(line, "candidate2");
+            let candidate3 = qwen3_guest_log_u64_field(line, "candidate3");
+            let selected_token = qwen3_guest_log_u64_field(line, "selected_token");
+            let blocked_token_count = qwen3_guest_log_u64_field(line, "blocked") as u32;
+            let fallback_used = qwen3_guest_log_u64_field(line, "fallback") != 0;
+            let top_score = qwen3_guest_log_i64_field(line, "top_score_milli") as i32;
+            let runner_up_score = qwen3_guest_log_i64_field(line, "runner_up_score_milli") as i32;
+            let tokens = [raw_token, runner_up, candidate2, candidate3];
+            let candidates = tokens
+                .into_iter()
+                .take(candidate_count as usize)
+                .enumerate()
+                .map(|(rank, token_id)| Qwen3CandidateRecord {
+                    step_index: step,
+                    rank: rank as u64,
+                    token_id,
+                    logit_milli: match rank {
+                        0 => top_score,
+                        1 => runner_up_score,
+                        _ => -(rank as i32),
+                    },
+                    adjusted_score_milli: 0,
+                    token_piece_checksum: 0,
+                })
+                .collect::<Vec<_>>();
+            let (
+                _,
+                history_tokens,
+                history_checksum,
+                state_checksum,
+                logits_checksum,
+                text_checksum,
+            ) = decision_checksums
+                .iter()
+                .find(|(decision_step, _, _, _, _, _)| *decision_step == step)
+                .copied()
+                .unwrap_or((step, prompt_tokens.len() as u64 + step + 1, 0, 0, 0, 0));
+            let state = Qwen3EngramState {
+                session_id,
+                step_index: step,
+                token_count: history_tokens,
+                rolling_hash: history_checksum,
+                ngram_window: config.no_repeat_ngram_size.min(u8::MAX as usize) as u8,
+                repetition_penalty_milli: config.repetition_penalty_milli,
+                blocked_token_count,
+                fallback_used,
+                raw_sampled_token: raw_token,
+                runner_up_token: runner_up,
+                top_score_milli: top_score,
+                runner_up_score_milli: runner_up_score,
+                history_window: config.history_window as u64,
+                logits_checksum,
+                text_checksum,
+                selected_token,
+                state_checksum,
+            };
+
+            Qwen3EngramStepDecision {
+                step_index: step,
+                candidates,
+                selected_token,
+                blocked_token_count,
+                fallback_used,
+                state,
+            }
+        })
+        .collect::<Vec<_>>();
+    steps.sort_by_key(|step| step.step_index);
+
+    if steps.is_empty() {
+        anyhow::bail!("guest engram decision log is empty");
+    }
+    let selected_tokens = steps
+        .iter()
+        .map(|step| step.selected_token)
+        .collect::<Vec<_>>();
+    let mut history_tokens = prompt_tokens.to_vec();
+    history_tokens.extend(selected_tokens.iter().copied());
+    let candidate_count = steps.iter().map(|step| step.candidates.len()).sum();
+    let blocked_token_count = steps
+        .iter()
+        .map(|step| step.blocked_token_count)
+        .sum::<u32>();
+    let selected_token = selected_tokens.last().copied().unwrap_or(0);
+    let state_checksum = steps
+        .last()
+        .map(|step| step.state.state_checksum)
+        .unwrap_or_else(|| qwen3_checksum_words(&[session_id]));
+    let mut policy_words = vec![
+        config.enabled as u64,
+        config.no_repeat_ngram_size as u64,
+        config.repetition_penalty_milli as u64,
+        config.history_window as u64,
+        qwen3_checksum_words(&config.blocked_token_ids),
+    ];
+    for step in &steps {
+        policy_words.extend_from_slice(&[
+            step.step_index,
+            step.selected_token,
+            step.blocked_token_count as u64,
+            step.fallback_used as u64,
+            step.candidates.len() as u64,
+            step.state.state_checksum,
+        ]);
+    }
+
+    Ok(Qwen3EngramRunReport {
+        config: config.clone(),
+        steps,
+        selected_tokens,
+        history_tokens,
+        object_service: None,
+        candidate_count,
+        blocked_token_count,
+        selected_token,
+        state_checksum,
+        policy_checksum: qwen3_checksum_words(&policy_words),
+    })
+}
+
+fn qwen3_guest_engram_object_transport_report(log: &str) -> Qwen3GuestEngramObjectTransportReport {
+    let candidate_publishes =
+        qwen3_guest_log_match_count(log, "stage qwen3_engram_candidates_publish ") as u64;
+    let candidate_waits =
+        qwen3_guest_log_match_count(log, "stage qwen3_engram_candidates_wait ") as u64;
+    let decision_publishes =
+        qwen3_guest_log_match_count(log, "stage qwen3_engram_decision_publish ") as u64;
+    let selected_waits =
+        qwen3_guest_log_match_count(log, "stage qwen3_engram_selected_token_wait ") as u64;
+    let selected_writebacks =
+        qwen3_guest_log_match_count(log, "stage qwen3_engram_selected_writeback ") as u64;
+    let history_waits = qwen3_guest_log_match_count(log, "stage qwen3_engram_history_wait ") as u64;
+    let state_waits = qwen3_guest_log_match_count(log, "stage qwen3_engram_state_wait ") as u64;
+    let state_resolved =
+        qwen3_guest_log_match_count(log, "stage qwen3_decode_round_engram_state_resolved ") as u64;
+    let history_write_bytes = log
+        .lines()
+        .filter(|line| line.contains("stage qwen3_engram_decision_publish "))
+        .map(|line| {
+            let history_tokens = qwen3_guest_log_u64_field(line, "history_tokens");
+            (history_tokens + 2) * 8 + 64 + 128
+        })
+        .sum::<u64>();
+    let payload_write_bytes = candidate_publishes * 256 + history_write_bytes;
+    let payload_read_bytes =
+        qwen3_guest_log_sum_u64_field(log, "stage qwen3_engram_candidates_wait ", "bytes")
+            + qwen3_guest_log_sum_u64_field(
+                log,
+                "stage qwen3_engram_selected_token_wait ",
+                "bytes",
+            )
+            + qwen3_guest_log_sum_u64_field(log, "stage qwen3_engram_history_wait ", "bytes")
+            + qwen3_guest_log_sum_u64_field(log, "stage qwen3_engram_state_wait ", "bytes");
+    let object_puts = candidate_publishes + decision_publishes * 3;
+    let object_waits = candidate_waits + selected_waits + history_waits + state_waits;
+    let queue_submits = candidate_publishes + decision_publishes * 3;
+    let queue_delivers = object_waits;
+    let checksum = qwen3_checksum_words(&[
+        object_puts,
+        object_waits,
+        candidate_publishes,
+        candidate_waits,
+        decision_publishes,
+        selected_waits,
+        selected_writebacks,
+        history_waits,
+        state_waits,
+        state_resolved,
+        payload_write_bytes,
+        payload_read_bytes,
+        queue_submits,
+        queue_delivers,
+    ]);
+
+    Qwen3GuestEngramObjectTransportReport {
+        object_puts,
+        object_waits,
+        candidate_publishes,
+        candidate_waits,
+        decision_publishes,
+        selected_waits,
+        selected_writebacks,
+        history_waits,
+        state_waits,
+        state_resolved,
+        payload_write_bytes,
+        payload_read_bytes,
+        queue_submits,
+        queue_delivers,
+        checksum,
+    }
+}
+
+fn qwen3_guest_log_sum_u64_field(log: &str, stage: &str, key: &str) -> u64 {
+    log.lines()
+        .filter(|line| line.contains(stage))
+        .map(|line| qwen3_guest_log_u64_field(line, key))
+        .sum()
+}
+
+fn print_qwen3_guest_engram_report(report: &Qwen3EngramRunReport) {
+    if report.config.report == Qwen3EngramReport::None {
+        return;
+    }
+    println!(
+        "  engram_summary: engram_enabled=true engram_mode={} engram_pool={} engram_steps={} engram_history_tokens={} engram_candidate_count={} engram_blocked_token_count={} engram_selected_token={} engram_state_checksum={:#x} engram_policy_checksum={:#x}",
+        qwen3_engram_mode_name(report.config.mode),
+        qwen3_engram_pool_name(report.config.pool),
+        report.steps.len(),
+        report.history_tokens.len(),
+        report.candidate_count,
+        report.blocked_token_count,
+        report.selected_token,
+        report.state_checksum,
+        report.policy_checksum
+    );
+    if let Some(object) = &report.object_service {
+        println!(
+            "  engram_object_service: engram_object_puts={} engram_object_resolves={} engram_token_history_versions={} engram_state_versions={} engram_candidate_versions={} engram_selected_token_versions={} engram_history_tokens={} engram_obmm_payload_writes={} engram_obmm_payload_reads={} engram_queue_submits={} engram_queue_delivers={} engram_obmm_bytes={} checksum={:#x}",
+            object.object_puts,
+            object.object_resolves,
+            object.token_history_versions,
+            object.state_versions,
+            object.candidate_versions,
+            object.selected_token_versions,
+            object.history_token_count,
+            object.obmm_payload_writes,
+            object.obmm_payload_reads,
+            object.obmm_queue_submits,
+            object.obmm_queue_delivers,
+            object.obmm_bytes,
+            object.checksum
+        );
+    }
+    if matches!(
+        report.config.report,
+        Qwen3EngramReport::Steps | Qwen3EngramReport::Verbose
+    ) {
+        for step in &report.steps {
+            println!(
+                "  engram step={} candidates={} blocked={} selected={} fallback_used={} state_checksum={:#x}",
+                step.step_index,
+                step.candidates.len(),
+                step.blocked_token_count,
+                step.selected_token,
+                step.fallback_used,
+                step.state.state_checksum
+            );
+            if report.config.report == Qwen3EngramReport::Verbose {
+                for candidate in &step.candidates {
+                    println!(
+                        "    candidate rank={} token={} logit_milli={} adjusted_score_milli={} piece_checksum={:#x}",
+                        candidate.rank,
+                        candidate.token_id,
+                        candidate.logit_milli,
+                        candidate.adjusted_score_milli,
+                        candidate.token_piece_checksum
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn qwen3_guest_terminal_candidate_records(log: &str) -> Vec<Vec<Qwen3CandidateRecord>> {
+    let mut by_step = log
+        .lines()
+        .filter(|line| line.contains("stage qwen3_terminal_token_result_publish "))
+        .map(|line| {
+            let step = qwen3_guest_log_u64_field(line, "step");
+            let token = qwen3_guest_log_u64_field(line, "token");
+            let runner_up = qwen3_guest_log_u64_field(line, "runner_up");
+            let margin = qwen3_guest_log_u64_field(line, "margin_milli").min(i32::MAX as u64);
+            let text_checksum = qwen3_guest_log_hex_u64_field(line, "text_checksum");
+            let mut candidates = vec![Qwen3CandidateRecord {
+                step_index: step,
+                rank: 0,
+                token_id: token,
+                logit_milli: margin as i32,
+                adjusted_score_milli: margin as i32,
+                token_piece_checksum: text_checksum,
+            }];
+            if runner_up != token {
+                candidates.push(Qwen3CandidateRecord {
+                    step_index: step,
+                    rank: 1,
+                    token_id: runner_up,
+                    logit_milli: 0,
+                    adjusted_score_milli: 0,
+                    token_piece_checksum: 0,
+                });
+            }
+            (step, candidates)
+        })
+        .collect::<Vec<_>>();
+    by_step.sort_by_key(|(step, _)| *step);
+    by_step
+        .into_iter()
+        .map(|(_, candidates)| candidates)
+        .collect()
+}
+
+fn qwen3_guest_candidate_records(log: &str) -> Vec<Vec<Qwen3CandidateRecord>> {
+    let engram_candidates = qwen3_guest_engram_candidate_records(log);
+
+    if engram_candidates.is_empty() {
+        qwen3_guest_terminal_candidate_records(log)
+    } else {
+        engram_candidates
+    }
+}
+
+fn qwen3_guest_engram_candidate_records(log: &str) -> Vec<Vec<Qwen3CandidateRecord>> {
+    let terminal_margins = log
+        .lines()
+        .filter(|line| line.contains("stage qwen3_terminal_token_result_publish "))
+        .map(|line| {
+            (
+                qwen3_guest_log_u64_field(line, "step"),
+                qwen3_guest_log_u64_field(line, "margin_milli").min(i32::MAX as u64),
+                qwen3_guest_log_hex_u64_field(line, "text_checksum"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut by_step = log
+        .lines()
+        .filter(|line| line.contains("stage qwen3_engram_token_select "))
+        .map(|line| {
+            let step = qwen3_guest_log_u64_field(line, "step");
+            let token = qwen3_guest_log_u64_field(line, "raw_token");
+            let runner_up = qwen3_guest_log_u64_field(line, "runner_up");
+            let candidate_count = qwen3_guest_log_u64_field(line, "candidate_count");
+            let candidate2 = qwen3_guest_log_u64_field(line, "candidate2");
+            let candidate3 = qwen3_guest_log_u64_field(line, "candidate3");
+            let (margin, text_checksum) = terminal_margins
+                .iter()
+                .find(|(terminal_step, _, _)| *terminal_step == step)
+                .map(|(_, margin, text_checksum)| (*margin, *text_checksum))
+                .unwrap_or((0, 0));
+            let mut candidates = vec![Qwen3CandidateRecord {
+                step_index: step,
+                rank: 0,
+                token_id: token,
+                logit_milli: margin as i32,
+                adjusted_score_milli: margin as i32,
+                token_piece_checksum: text_checksum,
+            }];
+            if runner_up != 0 && runner_up != token {
+                candidates.push(Qwen3CandidateRecord {
+                    step_index: step,
+                    rank: 1,
+                    token_id: runner_up,
+                    logit_milli: 0,
+                    adjusted_score_milli: 0,
+                    token_piece_checksum: 0,
+                });
+            }
+            if candidate_count > 2
+                && candidate2 != 0
+                && !candidates
+                    .iter()
+                    .any(|candidate| candidate.token_id == candidate2)
+            {
+                candidates.push(Qwen3CandidateRecord {
+                    step_index: step,
+                    rank: candidates.len() as u64,
+                    token_id: candidate2,
+                    logit_milli: -2,
+                    adjusted_score_milli: -2,
+                    token_piece_checksum: 0,
+                });
+            }
+            if candidate_count > 3
+                && candidate3 != 0
+                && !candidates
+                    .iter()
+                    .any(|candidate| candidate.token_id == candidate3)
+            {
+                candidates.push(Qwen3CandidateRecord {
+                    step_index: step,
+                    rank: candidates.len() as u64,
+                    token_id: candidate3,
+                    logit_milli: -3,
+                    adjusted_score_milli: -3,
+                    token_piece_checksum: 0,
+                });
+            }
+            (step, candidates)
+        })
+        .collect::<Vec<_>>();
+    by_step.sort_by_key(|(step, _)| *step);
+    by_step
+        .into_iter()
+        .map(|(_, candidates)| candidates)
+        .collect()
+}
+
+fn qwen3_engram_select_token(
+    config: &Qwen3EngramConfig,
+    session_id: u64,
+    history: &[u64],
+    mut candidates: Vec<Qwen3CandidateRecord>,
+) -> anyhow::Result<Qwen3EngramStepDecision> {
+    let Some(first) = candidates.first() else {
+        anyhow::bail!("engram candidate table is empty");
+    };
+    let step_index = first.step_index;
+    let first_token = first.token_id;
+    if qwen3_engram_is_stop_token(first_token) {
+        let state = qwen3_engram_state(
+            config,
+            session_id,
+            step_index,
+            history,
+            &candidates,
+            first_token,
+            0,
+            false,
+        );
+        return Ok(Qwen3EngramStepDecision {
+            step_index,
+            candidates,
+            selected_token: first_token,
+            blocked_token_count: 0,
+            fallback_used: false,
+            state,
+        });
+    }
+
+    let effective_history = qwen3_engram_effective_history(config, history);
+    let mut blocked_count = 0u32;
+    let mut best: Option<(usize, i32, u64, u64)> = None;
+
+    for (index, candidate) in candidates.iter_mut().enumerate() {
+        let repeated = effective_history.contains(&candidate.token_id);
+        let mut adjusted = candidate.logit_milli;
+        if repeated && config.repetition_penalty_milli > 1000 {
+            adjusted = adjusted.saturating_sub((config.repetition_penalty_milli - 1000) as i32);
+        }
+        candidate.adjusted_score_milli = adjusted;
+
+        if config.blocked_token_ids.contains(&candidate.token_id)
+            || qwen3_engram_repeats_ngram(
+                effective_history,
+                candidate.token_id,
+                config.no_repeat_ngram_size,
+            )
+        {
+            blocked_count += 1;
+            continue;
+        }
+
+        let tie = qwen3_checksum_words(&[
+            step_index,
+            candidate.token_id,
+            qwen3_checksum_words(effective_history),
+        ]);
+        match best {
+            Some((_, best_score, best_rank, best_tie))
+                if adjusted < best_score
+                    || (adjusted == best_score && candidate.rank > best_rank)
+                    || (adjusted == best_score
+                        && candidate.rank == best_rank
+                        && tie >= best_tie) => {}
+            _ => best = Some((index, adjusted, candidate.rank, tie)),
+        }
+    }
+
+    let (selected_index, fallback_used) = best
+        .map(|(index, _, _, _)| (index, false))
+        .unwrap_or((0, true));
+    let selected_token = candidates[selected_index].token_id;
+    let state = qwen3_engram_state(
+        config,
+        session_id,
+        step_index,
+        history,
+        &candidates,
+        selected_token,
+        blocked_count,
+        fallback_used,
+    );
+
+    Ok(Qwen3EngramStepDecision {
+        step_index,
+        candidates,
+        selected_token,
+        blocked_token_count: blocked_count,
+        fallback_used,
+        state,
+    })
+}
+
+fn qwen3_engram_state(
+    config: &Qwen3EngramConfig,
+    session_id: u64,
+    step_index: u64,
+    history: &[u64],
+    candidates: &[Qwen3CandidateRecord],
+    selected_token: u64,
+    blocked_token_count: u32,
+    fallback_used: bool,
+) -> Qwen3EngramState {
+    let token_count = history.len() as u64 + 1;
+    let rolling_hash = qwen3_checksum_words(history);
+    let raw_sampled_token = candidates
+        .first()
+        .map(|candidate| candidate.token_id)
+        .unwrap_or(0);
+    let runner_up_token = candidates
+        .get(1)
+        .map(|candidate| candidate.token_id)
+        .unwrap_or(0);
+    let top_score_milli = candidates
+        .first()
+        .map(|candidate| candidate.logit_milli)
+        .unwrap_or(0);
+    let runner_up_score_milli = candidates
+        .get(1)
+        .map(|candidate| candidate.logit_milli)
+        .unwrap_or(0);
+    let logits_checksum = qwen3_checksum_words(&qwen3_engram_candidate_words(candidates));
+    let text_checksum = qwen3_checksum_words(
+        &candidates
+            .iter()
+            .map(|candidate| candidate.token_piece_checksum)
+            .collect::<Vec<_>>(),
+    );
+    let state_checksum = qwen3_checksum_words(&[
+        step_index,
+        token_count,
+        selected_token,
+        rolling_hash,
+        config.no_repeat_ngram_size as u64,
+        config.repetition_penalty_milli as u64,
+        blocked_token_count as u64,
+        fallback_used as u64,
+        raw_sampled_token,
+        runner_up_token,
+        top_score_milli as i64 as u64,
+        runner_up_score_milli as i64 as u64,
+        config.history_window as u64,
+        logits_checksum,
+        text_checksum,
+    ]);
+    Qwen3EngramState {
+        session_id,
+        step_index,
+        token_count,
+        rolling_hash,
+        ngram_window: config.no_repeat_ngram_size.min(u8::MAX as usize) as u8,
+        repetition_penalty_milli: config.repetition_penalty_milli,
+        blocked_token_count,
+        fallback_used,
+        raw_sampled_token,
+        runner_up_token,
+        top_score_milli,
+        runner_up_score_milli,
+        history_window: config.history_window as u64,
+        logits_checksum,
+        text_checksum,
+        selected_token,
+        state_checksum,
+    }
+}
+
+fn qwen3_engram_effective_history<'a>(config: &Qwen3EngramConfig, history: &'a [u64]) -> &'a [u64] {
+    if config.history_window == 0 || history.len() <= config.history_window {
+        history
+    } else {
+        &history[history.len() - config.history_window..]
+    }
+}
+
+fn qwen3_engram_repeats_ngram(history: &[u64], token: u64, ngram_size: usize) -> bool {
+    if ngram_size == 0 || history.len() + 1 < ngram_size {
+        return false;
+    }
+    let prefix_len = ngram_size - 1;
+    let prefix_start = history.len().saturating_sub(prefix_len);
+    let prefix = &history[prefix_start..];
+    history
+        .windows(ngram_size)
+        .any(|window| window[..prefix_len] == *prefix && window[prefix_len] == token)
+}
+
+fn qwen3_engram_is_stop_token(token: u64) -> bool {
+    matches!(token, 151_643 | 151_645)
+}
+
+fn qwen3_engram_policy_checksum(
+    config: &Qwen3EngramConfig,
+    steps: &[Qwen3EngramStepDecision],
+) -> u64 {
+    let mut words = vec![
+        config.enabled as u64,
+        config.no_repeat_ngram_size as u64,
+        config.repetition_penalty_milli as u64,
+        config.history_window as u64,
+        qwen3_checksum_words(&config.blocked_token_ids),
+    ];
+    for step in steps {
+        words.extend_from_slice(&[
+            step.step_index,
+            step.selected_token,
+            step.blocked_token_count as u64,
+            step.fallback_used as u64,
+            step.state.state_checksum,
+        ]);
+    }
+    qwen3_checksum_words(&words)
+}
+
+fn qwen3_engram_publish_object_records(
+    pool: Qwen3EngramPool,
+    session_id: u64,
+    prompt_tokens: &[u64],
+    steps: &[Qwen3EngramStepDecision],
+) -> anyhow::Result<Qwen3EngramObjectReport> {
+    let mut profile = LingquObjectServiceProfile::default();
+    profile.inline_value_limit = 1 << 20;
+    profile.queue_depth = 4096;
+    profile.obmm_pool.enabled = pool == Qwen3EngramPool::Obmm;
+    let mut service = LingquObjectServiceStub::new(profile);
+    let payload_backend = match pool {
+        Qwen3EngramPool::Inline | Qwen3EngramPool::Object => LingquPayloadBackend::Inline,
+        Qwen3EngramPool::Obmm => LingquPayloadBackend::Shmem,
+    };
+    let session = format!("{session_id:016x}");
+    let history_key = format!("qwen3/session/{session}/tokens/history");
+    let mut history = prompt_tokens.to_vec();
+    let mut clock = 1u64;
+
+    qwen3_engram_object_publish_words(
+        &mut service,
+        &history_key,
+        LingquObjectKind::TokenBuffer,
+        &qwen3_engram_history_words(&history),
+        payload_backend,
+        None,
+        clock,
+    )?;
+    qwen3_engram_object_assert_latest_version(&service, &history_key, 1)?;
+    clock += 1;
+
+    for step in steps {
+        let step_index = step.step_index;
+        let current_history_version = step_index + 1;
+        qwen3_engram_object_resolve_exact(
+            &mut service,
+            &history_key,
+            current_history_version,
+            payload_backend,
+            clock,
+        )?;
+        clock += 1;
+
+        if step_index > 0 {
+            let previous_state_key = format!(
+                "qwen3/session/{session}/step/{}/engram/state",
+                step_index - 1
+            );
+            qwen3_engram_object_resolve_exact(
+                &mut service,
+                &previous_state_key,
+                1,
+                payload_backend,
+                clock,
+            )?;
+            clock += 1;
+        }
+
+        let candidates_key = format!("qwen3/session/{session}/step/{step_index}/candidates/topk");
+        qwen3_engram_object_publish_words(
+            &mut service,
+            &candidates_key,
+            LingquObjectKind::Logits,
+            &qwen3_engram_candidate_words(&step.candidates),
+            payload_backend,
+            None,
+            clock,
+        )?;
+        qwen3_engram_object_assert_latest_version(&service, &candidates_key, 1)?;
+        clock += 1;
+
+        let selected_key = format!("qwen3/session/{session}/step/{step_index}/tokens/selected");
+        qwen3_engram_object_publish_words(
+            &mut service,
+            &selected_key,
+            LingquObjectKind::TokenBuffer,
+            &[step.step_index, step.selected_token],
+            payload_backend,
+            None,
+            clock,
+        )?;
+        qwen3_engram_object_assert_latest_version(&service, &selected_key, 1)?;
+        clock += 1;
+
+        let state_key = format!("qwen3/session/{session}/step/{step_index}/engram/state");
+        qwen3_engram_object_publish_words(
+            &mut service,
+            &state_key,
+            LingquObjectKind::Metadata,
+            &qwen3_engram_state_words(&step.state),
+            payload_backend,
+            None,
+            clock,
+        )?;
+        qwen3_engram_object_assert_latest_version(&service, &state_key, 1)?;
+        clock += 1;
+
+        history.push(step.selected_token);
+        qwen3_engram_object_publish_words(
+            &mut service,
+            &history_key,
+            LingquObjectKind::TokenBuffer,
+            &qwen3_engram_history_words(&history),
+            payload_backend,
+            Some(current_history_version),
+            clock,
+        )?;
+        qwen3_engram_object_assert_latest_version(
+            &service,
+            &history_key,
+            current_history_version + 1,
+        )?;
+        clock += 1;
+    }
+
+    let report = service.report();
+    let object_report = Qwen3EngramObjectReport {
+        object_puts: report.publish_count,
+        object_resolves: report.resolve_count,
+        token_history_versions: steps.len() as u64 + 1,
+        state_versions: steps.len() as u64,
+        candidate_versions: steps.len() as u64,
+        selected_token_versions: steps.len() as u64,
+        history_token_count: history.len() as u64,
+        obmm_payload_writes: report.obmm_pool_payload_write_count,
+        obmm_payload_reads: report.obmm_pool_payload_read_count,
+        obmm_queue_submits: report.obmm_pool_queue_submit_count,
+        obmm_queue_delivers: report.obmm_pool_queue_deliver_count,
+        obmm_bytes: report.obmm_pool_bytes_used,
+        checksum: qwen3_checksum_words(&[
+            report.publish_count,
+            report.resolve_count,
+            steps.len() as u64 + 1,
+            history.len() as u64,
+            report.obmm_pool_payload_write_count,
+            report.obmm_pool_payload_read_count,
+            report.obmm_pool_queue_submit_count,
+            report.obmm_pool_queue_deliver_count,
+            report.checksum,
+        ]),
+    };
+    if object_report.history_token_count != prompt_tokens.len() as u64 + steps.len() as u64 {
+        anyhow::bail!("engram token history object length mismatch");
+    }
+    Ok(object_report)
+}
+
+fn qwen3_engram_object_publish_words(
+    service: &mut LingquObjectServiceStub,
+    key: &str,
+    kind: LingquObjectKind,
+    words: &[u64],
+    backend: LingquPayloadBackend,
+    expected_version: Option<u64>,
+    now: u64,
+) -> anyhow::Result<()> {
+    let payload = qwen3_words_to_bytes(words);
+    let checksum = qwen3_checksum_words(words);
+    service
+        .submit_publish(
+            LingquObjectPublishReq {
+                task: None,
+                key: key.to_string(),
+                kind,
+                producer_entity: 0,
+                owner_entity: Some(0),
+                expected_version,
+                metadata: LingquObjectMetadata {
+                    bytes: payload.len() as u64,
+                    checksum,
+                    dtype: None,
+                    shape: vec![words.len() as u64],
+                    layout: None,
+                    expires_at_us: None,
+                },
+                placements: vec![LingquPayloadPlacement {
+                    backend,
+                    storage_ref: format!("{key}/{}", qwen3_payload_backend_name(backend)),
+                    segment: None,
+                    offset: 0,
+                    bytes: payload.len() as u64,
+                    checksum,
+                    locality: LingquObjectLocality::DomainShared(0),
+                }],
+                payload_bytes: payload,
+            },
+            now,
+        )
+        .map(|_| ())
+        .map_err(anyhow::Error::from)
+}
+
+fn qwen3_engram_object_resolve_exact(
+    service: &mut LingquObjectServiceStub,
+    key: &str,
+    version: u64,
+    backend: LingquPayloadBackend,
+    now: u64,
+) -> anyhow::Result<Vec<u8>> {
+    service
+        .submit_resolve(
+            LingquObjectResolveReq {
+                task: None,
+                key: key.to_string(),
+                requester_entity: 0,
+                version: LingquObjectVersionSelector::Exact(version),
+                min_state: LingquObjectState::Committed,
+                preferred_backends: vec![backend],
+            },
+            now,
+        )
+        .map_err(anyhow::Error::from)?;
+    service
+        .get_copy(key, LingquObjectVersionSelector::Exact(version))
+        .ok_or_else(|| anyhow::anyhow!("engram object exact resolve failed: {key}@{version}"))
+}
+
+fn qwen3_engram_object_assert_latest_version(
+    service: &LingquObjectServiceStub,
+    key: &str,
+    expected_version: u64,
+) -> anyhow::Result<()> {
+    let record = service
+        .latest_record(key)
+        .ok_or_else(|| anyhow::anyhow!("engram object publish missing: {key}"))?;
+    if record.version != expected_version {
+        anyhow::bail!(
+            "engram object version mismatch: {key} got={} expected={}",
+            record.version,
+            expected_version
+        );
+    }
+    Ok(())
+}
+
+fn qwen3_engram_history_words(history: &[u64]) -> Vec<u64> {
+    let mut words = Vec::with_capacity(history.len() + 2);
+    words.push(history.len() as u64);
+    words.extend_from_slice(history);
+    words.push(qwen3_checksum_words(history));
+    words
+}
+
+fn qwen3_engram_candidate_words(candidates: &[Qwen3CandidateRecord]) -> Vec<u64> {
+    let mut words = Vec::with_capacity(1 + candidates.len() * 6);
+    words.push(candidates.len() as u64);
+    for candidate in candidates {
+        words.extend_from_slice(&[
+            candidate.step_index,
+            candidate.rank,
+            candidate.token_id,
+            candidate.logit_milli as i64 as u64,
+            candidate.adjusted_score_milli as i64 as u64,
+            candidate.token_piece_checksum,
+        ]);
+    }
+    words
+}
+
+fn qwen3_engram_state_words(state: &Qwen3EngramState) -> Vec<u64> {
+    vec![
+        state.step_index,
+        state.token_count,
+        state.selected_token,
+        state.rolling_hash,
+        state.ngram_window as u64,
+        state.repetition_penalty_milli as u64,
+        state.blocked_token_count as u64,
+        state.fallback_used as u64,
+        state.raw_sampled_token,
+        state.runner_up_token,
+        state.top_score_milli as i64 as u64,
+        state.runner_up_score_milli as i64 as u64,
+        state.history_window,
+        state.logits_checksum,
+        state.text_checksum,
+        state.state_checksum,
+    ]
+}
+
+fn qwen3_words_to_bytes(words: &[u64]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(words.len() * std::mem::size_of::<u64>());
+    for word in words {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    bytes
+}
+
+fn qwen3_guest_session_id(prompt_tokens: &[u64]) -> u64 {
+    qwen3_checksum_words(prompt_tokens)
+}
+
+fn qwen3_parse_token_id_csv(csv: &str) -> anyhow::Result<Vec<u64>> {
+    if csv.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    csv.split(',')
+        .map(|token| {
+            token
+                .trim()
+                .parse::<u64>()
+                .with_context(|| format!("invalid token id: {token}"))
+        })
+        .collect()
+}
+
+fn qwen3_checksum_words(words: &[u64]) -> u64 {
+    let mut acc = 0xcbf2_9ce4_8422_2325u64;
+    for word in words {
+        acc ^= *word;
+        acc = acc.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    acc
+}
+
+fn qwen3_engram_mode_name(mode: Qwen3EngramMode) -> &'static str {
+    match mode {
+        Qwen3EngramMode::Cpu => "cpu",
+    }
+}
+
+fn qwen3_engram_pool_name(pool: Qwen3EngramPool) -> &'static str {
+    match pool {
+        Qwen3EngramPool::Inline => "inline",
+        Qwen3EngramPool::Object => "object",
+        Qwen3EngramPool::Obmm => "obmm",
+    }
+}
+
+fn qwen3_engram_report_name(report: Qwen3EngramReport) -> &'static str {
+    match report {
+        Qwen3EngramReport::None => "none",
+        Qwen3EngramReport::Summary => "summary",
+        Qwen3EngramReport::Steps => "steps",
+        Qwen3EngramReport::Verbose => "verbose",
+    }
+}
+
+fn qwen3_payload_backend_name(backend: LingquPayloadBackend) -> &'static str {
+    match backend {
+        LingquPayloadBackend::Inline => "inline",
+        LingquPayloadBackend::Shmem => "obmm",
+        LingquPayloadBackend::Block => "block",
+        LingquPayloadBackend::Dfs => "dfs",
+        LingquPayloadBackend::External => "external",
+    }
 }
 
 fn qwen3_guest_tokenizer_path() -> Option<PathBuf> {
@@ -1506,6 +3344,25 @@ fn qwen3_guest_log_u64_field(line: &str, key: &str) -> u64 {
     line.split_ascii_whitespace()
         .find_map(|field| field.strip_prefix(&prefix))
         .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+fn qwen3_guest_log_i64_field(line: &str, key: &str) -> i64 {
+    let prefix = format!("{key}=");
+
+    line.split_ascii_whitespace()
+        .find_map(|field| field.strip_prefix(&prefix))
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(0)
+}
+
+fn qwen3_guest_log_hex_u64_field(line: &str, key: &str) -> u64 {
+    let prefix = format!("{key}=");
+
+    line.split_ascii_whitespace()
+        .find_map(|field| field.strip_prefix(&prefix))
+        .and_then(|value| value.strip_prefix("0x").or(Some(value)))
+        .and_then(|value| u64::from_str_radix(value, 16).ok())
         .unwrap_or(0)
 }
 
@@ -1878,14 +3735,8 @@ fn prepare_qwen3_decode_loop_environment(args: &Qwen3DecodeLoopCliArgs) -> anyho
     std::env::set_var("SIM_UAPI_SCENARIO_CONFIG", &scenario_env_path);
 
     let Some(matmul_batch) = args.matmul_batch else {
-        if let Some(temperature) = args.temperature {
-            std::env::set_var("SIM_QWEN3_TEMPERATURE", temperature.to_string());
-        }
         return Ok(());
     };
-    if let Some(temperature) = args.temperature {
-        std::env::set_var("SIM_QWEN3_TEMPERATURE", temperature.to_string());
-    }
     prepare_qwen3_matmul_batch_environment(matmul_batch)
 }
 

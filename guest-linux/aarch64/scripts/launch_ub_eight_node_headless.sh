@@ -3,21 +3,22 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-REPO_ROOT="$(cd "$ROOT_DIR/../.." && pwd)"
+WORKSPACE_ROOT="$(cd "$ROOT_DIR/../../.." && pwd)"
 
 KERNEL_IMAGE="${KERNEL_IMAGE:-$ROOT_DIR/out/Image}"
 INITRAMFS_IMAGE="${INITRAMFS_IMAGE:-$ROOT_DIR/out/initramfs.cpio.gz}"
 RDINIT="${RDINIT:-/bin/run_demo}"
-TOPOLOGY_FILE="${TOPOLOGY_FILE:-$REPO_ROOT/vendor/ub_topology_eight_node_full_mesh.ini}"
-ENTITY_PLAN_FILE="${UB_FM_ENTITY_PLAN_FILE:-$REPO_ROOT/vendor/ub_topology_two_node_v2_entity.ini}"
+TOPOLOGY_FILE="${TOPOLOGY_FILE:-$WORKSPACE_ROOT/simulator/vendor/ub_topology_eight_node_full_mesh.ini}"
+ENTITY_PLAN_FILE="${UB_FM_ENTITY_PLAN_FILE:-$WORKSPACE_ROOT/simulator/vendor/ub_topology_two_node_v2_entity.ini}"
 ENTITY_COUNT="${UB_SIM_ENTITY_COUNT:-2}"
 PORT_NUM="${UB_SIM_PORT_NUM:-7}"
 SHARED_DIR="${UB_FM_SHARED_DIR:-/tmp/ub-qemu-links-eight}"
 QMP_DIR="${SHARED_DIR}/qmp"
+UB_QEMU_RUNTIME_DIR="${UB_QEMU_RUNTIME_DIR:-${SHARED_DIR}/xdg_runtime}"
 SIMPLER_HOST_VECTOR_MANIFEST="${SIMPLER_HOST_VECTOR_MANIFEST:-/tmp/simpler-host-vector-artifacts/host_vector_manifest.json}"
 SIMPLER_HOST_MATMUL_MANIFEST="${SIMPLER_HOST_MATMUL_MANIFEST:-/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json}"
 SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-host_vector}"
-SIM_UAPI_SCENARIO_CONFIG="${SIM_UAPI_SCENARIO_CONFIG:-$REPO_ROOT/scenarios/mvp_8host_single_domain.yaml}"
+SIM_UAPI_SCENARIO_CONFIG="${SIM_UAPI_SCENARIO_CONFIG:-$WORKSPACE_ROOT/simulator/scenarios/mvp_2host_single_domain.yaml}"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_headless8_${RANDOM}}"
@@ -47,13 +48,37 @@ log() {
   echo "[headless8] $*" | tee -a "$CONTROL_LOG"
 }
 
-qemu_pid_alive() {
-  local pid_file="$1"
-  local pid
-  [[ -f "$pid_file" ]] || return 1
-  pid="$(cat "$pid_file" 2>/dev/null || true)"
-  [[ -n "$pid" ]] || return 1
-  kill -0 "$pid" 2>/dev/null
+wait_for_qemu_socket() {
+  local node_id="$1"
+  local qmp_socket="$2"
+  local pid_file="$3"
+  local max_wait_seconds="${4:-30}"
+  local wait_interval_seconds=0.1
+  local max_attempts=$(( max_wait_seconds * 10 ))
+  local attempt=0
+  local sleep_ms=100
+  local sleep_seconds=$(awk "BEGIN { printf \"%.1f\", $sleep_ms / 1000.0 }")
+
+  while (( attempt < max_attempts )); do
+    if [[ -S "$qmp_socket" ]]; then
+      return 0
+    fi
+
+    if [[ -f "$pid_file" ]]; then
+      local pid
+      pid="$(cat "$pid_file" 2>/dev/null || true)"
+      if [[ -n "${pid:-}" ]] && ! kill -0 "$pid" 2>/dev/null; then
+        log "qemu exited before QMP socket ready: node=$node_id pid=$pid qmp=$qmp_socket"
+        return 1
+      fi
+    fi
+
+    sleep "$sleep_seconds"
+    attempt=$(( attempt + 1 ))
+  done
+
+  log "timeout waiting for QMP socket: node=$node_id qmp=$qmp_socket"
+  return 1
 }
 
 cont_qemu() {
@@ -102,10 +127,11 @@ start_node() {
     UB_SIM_PORT_NUM="$PORT_NUM" \
     UB_FM_ENTITY_PLAN_FILE="$ENTITY_PLAN_FILE" \
     SIMPLER_HOST_VECTOR_MANIFEST="$SIMPLER_HOST_VECTOR_MANIFEST" \
-    SIMPLER_HOST_MATMUL_MANIFEST="$SIMPLER_HOST_MATMUL_MANIFEST" \
-    SIM_UAPI_W4_CHIPBACKEND_PROFILE="$SIM_UAPI_W4_CHIPBACKEND_PROFILE" \
+      SIMPLER_HOST_MATMUL_MANIFEST="$SIMPLER_HOST_MATMUL_MANIFEST" \
+      SIM_UAPI_W4_CHIPBACKEND_PROFILE="$SIM_UAPI_W4_CHIPBACKEND_PROFILE" \
     SIM_QWEN3_0_6B_WEIGHTS_PATH="${SIM_QWEN3_0_6B_WEIGHTS_PATH:-}" \
     SIM_UAPI_SCENARIO_CONFIG="$SIM_UAPI_SCENARIO_CONFIG" \
+    XDG_RUNTIME_DIR="$UB_QEMU_RUNTIME_DIR" \
     "$QEMU_BIN" \
       -S \
       -M virt,gic-version=3,its=on,ummu=on,ub-cluster-mode=on \
@@ -128,16 +154,10 @@ start_node() {
 
 need_cmd python3
 
-QEMU_BIN="$(ensure_qemu_ub_binary "$REPO_ROOT")"
+QEMU_BIN="$(ensure_qemu_ub_binary "$WORKSPACE_ROOT")"
 ensure_ub_guest_artifacts "$ROOT_DIR" "$KERNEL_IMAGE" "$INITRAMFS_IMAGE"
 
 mkdir -p "$OUT_DIR" "$LOG_DIR/${RUN_ID}_headless8" "$QMP_DIR"
-
-if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "host_vector" ]]; then
-  SIMPLER_HOST_VECTOR_MANIFEST="$(ensure_simpler_host_manifest "$SCRIPT_DIR" "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" "$SIMPLER_HOST_VECTOR_MANIFEST")"
-else
-  SIMPLER_HOST_MATMUL_MANIFEST="$(ensure_simpler_host_manifest "$SCRIPT_DIR" "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" "$SIMPLER_HOST_MATMUL_MANIFEST")"
-fi
 
 if [[ ! -f "$TOPOLOGY_FILE" ]]; then
   echo "TOPOLOGY_FILE not found: $TOPOLOGY_FILE" >&2
@@ -161,21 +181,22 @@ for node_id in "${NODE_IDS[@]}"; do
   fi
   rm -f "__QMP_DIR__/${node_id}.__RUN_ID__.sock"
 done
-rm -f /tmp/ub-qemu/ub-bus-instance-*.lock(N)
+rm -rf "__RUNTIME_DIR__"
 echo "cleaned run_id=__RUN_ID__"
 EOC
-perl -0pi -e 's#__OUT_DIR__#'"$OUT_DIR"'#g; s#__RUN_ID__#'"$RUN_ID"'#g; s#__QMP_DIR__#'"$QMP_DIR"'#g' "$CLEANUP_SCRIPT"
+perl -0pi -e 's#__OUT_DIR__#'"$OUT_DIR"'#g; s#__RUN_ID__#'"$RUN_ID"'#g; s#__QMP_DIR__#'"$QMP_DIR"'#g; s#__RUNTIME_DIR__#'"$UB_QEMU_RUNTIME_DIR"'#g' "$CLEANUP_SCRIPT"
 chmod +x "$CLEANUP_SCRIPT"
 
-rm -f /tmp/ub-qemu/ub-bus-instance-*.lock(N)
+rm -rf "$UB_QEMU_RUNTIME_DIR"
+mkdir -p "$UB_QEMU_RUNTIME_DIR"
 rm -f "$QMP_DIR"/*.sock(N)
 touch "$CONTROL_LOG"
 
 log "run_id=$RUN_ID"
 log "qemu_bin=$QEMU_BIN"
 log "qemu_mem=$QEMU_MEM"
+log "qemu_smp=$QEMU_SMP"
 log "topology=$TOPOLOGY_FILE"
-log "sim_uapi_scenario_config=$SIM_UAPI_SCENARIO_CONFIG"
 log "append_extra=$APPEND_EXTRA"
 log "ub_sim_port_num=$PORT_NUM"
 log "logs_dir=$(dirname "$CONTROL_LOG")"
@@ -200,23 +221,12 @@ log "waiting for QMP sockets"
 for node_id in "${NODE_IDS[@]}"; do
   qmp_socket="$QMP_DIR/${node_id}.${RUN_ID}.sock"
   pid_file="$OUT_DIR/ub_${node_id}.headless.${RUN_ID}.pid"
-  qmp_wait_attempt=0
-  while [[ ! -S "$qmp_socket" ]]; do
-    if ! qemu_pid_alive "$pid_file"; then
-      log "qemu exited before QMP socket was ready: ${node_id}"
-      exit 1
-    fi
-    if (( qmp_wait_attempt >= 150 )); then
-      log "timeout waiting for QMP socket: ${qmp_socket}"
-      exit 1
-    fi
-    sleep 0.1
-    qmp_wait_attempt=$((qmp_wait_attempt + 1))
-  done
-  if ! cont_qemu "$qmp_socket"; then
-    log "failed to resume ${node_id} via QMP"
+  if ! wait_for_qemu_socket "$node_id" "$qmp_socket" "$pid_file" 30; then
+    log "failed to get QMP socket for $node_id, aborting"
+    bash "$CLEANUP_SCRIPT" >/dev/null 2>&1 || true
     exit 1
   fi
+  cont_qemu "$qmp_socket"
   log "resumed ${node_id}"
 done
 

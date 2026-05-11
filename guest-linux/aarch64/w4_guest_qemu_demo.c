@@ -157,8 +157,8 @@
      W4_QWEN3_KVCACHE_STATE_ENTRIES * W4_QWEN3_KVCACHE_STATE_TABLE_ENTRY_BYTES)
 #define W4_QWEN3_LOGITS_TABLE_HEADER W4_QWEN3_KVCACHE_STATE_TABLE_END
 #define W4_QWEN3_LOGITS_TABLE_BASE (W4_QWEN3_LOGITS_TABLE_HEADER + 64ULL)
-#define W4_QWEN3_LOGITS_TABLE_ENTRY_WORDS 20ULL
-#define W4_QWEN3_LOGITS_TABLE_ENTRY_BYTES 160ULL
+#define W4_QWEN3_LOGITS_TABLE_ENTRY_WORDS 45ULL
+#define W4_QWEN3_LOGITS_TABLE_ENTRY_BYTES 360ULL
 #define W4_QWEN3_LOGITS_ENTRIES W4_QWEN3_EXPECTED_TILES
 #define W4_QWEN3_LOGITS_TABLE_END \
     (W4_QWEN3_LOGITS_TABLE_BASE + \
@@ -1243,6 +1243,63 @@ static int append_qwen3_terminal_tokens_to_prompt(volatile uint8_t *ep_mmio,
     return 0;
 }
 
+static int write_qwen3_prompt_tokens_from_history(volatile uint8_t *ep_mmio,
+                                                  const uint64_t *history_tokens,
+                                                  uint64_t history_token_count)
+{
+    uint64_t max_tokens;
+
+    if (!history_tokens || history_token_count == 0) {
+        return -1;
+    }
+    max_tokens = (W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES - 64U) / sizeof(uint64_t);
+    if (history_token_count > max_tokens) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 history prompt overflow tokens=%" PRIu64 "\n",
+                history_token_count);
+        return -1;
+    }
+
+    write_segment_u64(ep_mmio, 0, qwen3_prompt_header_word());
+    write_segment_u64(ep_mmio, 8, 0);
+    write_segment_u64(ep_mmio, 16, 0);
+    write_segment_u64(ep_mmio, 24, history_token_count);
+    for (uint64_t i = 0; i < history_token_count; ++i) {
+        write_segment_u64(ep_mmio, 64ULL + i * sizeof(uint64_t), history_tokens[i]);
+    }
+    write_segment_u64(ep_mmio,
+                      32,
+                      qwen3_prompt_token_ids_checksum(ep_mmio, history_token_count));
+    printf("[w4_guest] stage qwen3_prompt_tokens_from_history tokens=%" PRIu64
+           " source=engram_history_object target=uapi_segment status=ok\n",
+           history_token_count);
+    return 0;
+}
+
+static uint64_t read_qwen3_prompt_tokens(volatile uint8_t *ep_mmio,
+                                         uint64_t *tokens,
+                                         uint64_t token_capacity)
+{
+    uint64_t token_count;
+    uint64_t max_tokens;
+
+    if (!tokens || token_capacity == 0) {
+        return 0;
+    }
+    token_count = read_segment_u64(ep_mmio, 24);
+    max_tokens = (W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES - 64U) / sizeof(uint64_t);
+    if (token_count > max_tokens) {
+        token_count = max_tokens;
+    }
+    if (token_count > token_capacity) {
+        token_count = token_capacity;
+    }
+    for (uint64_t i = 0; i < token_count; ++i) {
+        tokens[i] = read_segment_u64(ep_mmio, 64ULL + i * sizeof(uint64_t));
+    }
+    return token_count;
+}
+
 static int seed_kvcache_payload(volatile uint8_t *ep_mmio, uint64_t segment)
 {
     uint64_t checksum = 0;
@@ -1440,16 +1497,35 @@ struct w4_qwen3_terminal_token_record {
     uint64_t margin_milli;
     uint64_t logits_checksum;
     uint64_t text_checksum;
+    uint64_t top_logit_bits;
+    uint64_t runner_up_logit_bits;
     uint64_t piece_word0;
     uint64_t piece_word1;
+    uint64_t candidate_count;
+    uint64_t candidate_tokens[4];
+    uint64_t candidate_logit_bits[4];
+    uint64_t candidate_text_checksums[4];
+    uint64_t candidate_piece_bytes[4];
+    uint64_t candidate_piece_word0[4];
+    uint64_t candidate_piece_word1[4];
 };
 
 _Static_assert(offsetof(struct w4_qwen3_terminal_token_record, text_checksum) ==
                    4ULL * sizeof(uint64_t),
                "terminal token logits fields must stay tightly packed");
 _Static_assert(offsetof(struct w4_qwen3_terminal_token_record, piece_word1) ==
-                   6ULL * sizeof(uint64_t),
+                   8ULL * sizeof(uint64_t),
                "terminal token text fields must stay tightly packed");
+
+struct w4_qwen3_engram_config {
+    bool enabled;
+    uint32_t owner_node;
+    uint64_t no_repeat_ngram_size;
+    uint64_t repetition_penalty_milli;
+    uint64_t history_window;
+    uint64_t blocked_token_ids[16];
+    uint64_t blocked_token_count;
+};
 
 static int qwen3_read_terminal_token_record(volatile uint8_t *ep_mmio,
                                             struct w4_qwen3_terminal_token_record *record)
@@ -1487,10 +1563,442 @@ static int qwen3_read_terminal_token_record(volatile uint8_t *ep_mmio,
                        logits_table_base + 32,
                        (uint8_t *)&record->sampled_token,
                        5ULL * sizeof(uint64_t));
+    record->top_logit_bits = read_segment_u64(ep_mmio, logits_table_base + 120);
+    record->runner_up_logit_bits = read_segment_u64(ep_mmio, logits_table_base + 128);
     read_segment_bytes(ep_mmio,
                        token_text_table_base + 32,
                        (uint8_t *)&record->piece_word0,
                        2ULL * sizeof(uint64_t));
+    record->candidate_count = read_segment_u64(ep_mmio, logits_table_base + 160);
+    if (record->candidate_count == 0 || record->candidate_count > 4) {
+        record->candidate_count = 0;
+    }
+    for (uint64_t i = 0; i < record->candidate_count; ++i) {
+        uint64_t candidate_base = logits_table_base + 168ULL + i * 48ULL;
+
+        record->candidate_tokens[i] = read_segment_u64(ep_mmio, candidate_base);
+        record->candidate_logit_bits[i] = read_segment_u64(ep_mmio, candidate_base + 8);
+        record->candidate_text_checksums[i] = read_segment_u64(ep_mmio, candidate_base + 16);
+        record->candidate_piece_bytes[i] = read_segment_u64(ep_mmio, candidate_base + 24);
+        record->candidate_piece_word0[i] = read_segment_u64(ep_mmio, candidate_base + 32);
+        record->candidate_piece_word1[i] = read_segment_u64(ep_mmio, candidate_base + 40);
+    }
+    if (record->candidate_count == 0) {
+        record->candidate_count = 1;
+        record->candidate_tokens[0] = record->sampled_token;
+        record->candidate_logit_bits[0] = record->top_logit_bits;
+        record->candidate_text_checksums[0] = record->text_checksum;
+        record->candidate_piece_word0[0] = record->piece_word0;
+        record->candidate_piece_word1[0] = record->piece_word1;
+        if (record->runner_up_token != 0 && record->runner_up_token != record->sampled_token) {
+            record->candidate_count = 2;
+            record->candidate_tokens[1] = record->runner_up_token;
+            record->candidate_logit_bits[1] = record->runner_up_logit_bits;
+        }
+    }
+    return 0;
+}
+
+static bool qwen3_guest_engram_is_stop_token(uint64_t token)
+{
+    return token == 151643ULL || token == 151645ULL;
+}
+
+static bool qwen3_guest_engram_history_contains(const uint64_t *history,
+                                                uint64_t history_len,
+                                                uint64_t token)
+{
+    for (uint64_t i = 0; i < history_len; ++i) {
+        if (history[i] == token) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool qwen3_guest_engram_token_blocked(const struct w4_qwen3_engram_config *config,
+                                             uint64_t token)
+{
+    if (!config) {
+        return false;
+    }
+    for (uint64_t i = 0; i < config->blocked_token_count; ++i) {
+        if (config->blocked_token_ids[i] == token) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool qwen3_guest_engram_repeats_ngram(const uint64_t *history,
+                                             uint64_t history_len,
+                                             uint64_t token,
+                                             uint64_t ngram_size)
+{
+    uint64_t prefix_len;
+    uint64_t prefix_start;
+
+    if (!history || ngram_size == 0 || history_len + 1U < ngram_size) {
+        return false;
+    }
+    prefix_len = ngram_size - 1U;
+    prefix_start = history_len - prefix_len;
+    for (uint64_t i = 0; i + ngram_size <= history_len; ++i) {
+        bool prefix_matches = true;
+
+        for (uint64_t j = 0; j < prefix_len; ++j) {
+            if (history[i + j] != history[prefix_start + j]) {
+                prefix_matches = false;
+                break;
+            }
+        }
+        if (prefix_matches && history[i + prefix_len] == token) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static int64_t qwen3_guest_logit_score_milli(uint64_t logit_bits, int64_t fallback)
+{
+    union {
+        uint32_t bits;
+        float value;
+    } logit;
+
+    if (logit_bits == 0) {
+        return fallback;
+    }
+    logit.bits = (uint32_t)logit_bits;
+    if (!(logit.value == logit.value) || logit.value > 9000000.0f ||
+        logit.value < -9000000.0f) {
+        return fallback;
+    }
+    return (int64_t)(logit.value * 1000.0f);
+}
+
+static void qwen3_token_piece(uint64_t sampled_token, uint64_t *word0, uint64_t *word1);
+static uint64_t qwen3_sample_text_checksum(uint64_t step_index, uint64_t sampled_token);
+
+static uint64_t qwen3_guest_engram_select_token(
+    const struct w4_qwen3_engram_config *config,
+    const uint64_t *history,
+    uint64_t history_len,
+    const struct w4_qwen3_terminal_token_record *terminal_token,
+    bool *fallback_used,
+    uint64_t *blocked_count,
+    int64_t *top_score_out,
+    int64_t *runner_up_score_out)
+{
+    uint64_t effective_len = history_len;
+    const uint64_t *effective_history = history;
+    uint64_t candidate_count;
+    uint64_t best_index = UINT64_MAX;
+    int64_t best_score = INT64_MIN;
+    uint64_t local_blocked_count = 0;
+
+    if (fallback_used) {
+        *fallback_used = false;
+    }
+    if (blocked_count) {
+        *blocked_count = 0;
+    }
+    if (!config || !config->enabled || !terminal_token) {
+        return terminal_token ? terminal_token->sampled_token : 0;
+    }
+
+    candidate_count = terminal_token->candidate_count;
+    if (candidate_count == 0 || candidate_count > 4) {
+        candidate_count = 1;
+    }
+    if (qwen3_guest_engram_is_stop_token(terminal_token->candidate_tokens[0])) {
+        return terminal_token->candidate_tokens[0];
+    }
+
+    if (config->history_window > 0 && effective_len > config->history_window) {
+        effective_history = history + (effective_len - config->history_window);
+        effective_len = config->history_window;
+    }
+
+    for (uint64_t i = 0; i < candidate_count; ++i) {
+        uint64_t token = terminal_token->candidate_tokens[i];
+        int64_t fallback_score = i == 0 ? (int64_t)terminal_token->margin_milli : -(int64_t)i;
+        int64_t score =
+            qwen3_guest_logit_score_milli(terminal_token->candidate_logit_bits[i],
+                                          fallback_score);
+        bool blocked;
+
+        if (token == 0 && i > 0) {
+            continue;
+        }
+        if (config->repetition_penalty_milli > 1000 &&
+            qwen3_guest_engram_history_contains(effective_history, effective_len, token)) {
+            score -= (int64_t)(config->repetition_penalty_milli - 1000U);
+        }
+        blocked = qwen3_guest_engram_token_blocked(config, token) ||
+                  qwen3_guest_engram_repeats_ngram(effective_history,
+                                                   effective_len,
+                                                   token,
+                                                   config->no_repeat_ngram_size);
+        if (i == 0 && top_score_out) {
+            *top_score_out = score;
+        } else if (i == 1 && runner_up_score_out) {
+            *runner_up_score_out = score;
+        }
+        if (blocked) {
+            local_blocked_count += 1U;
+            continue;
+        }
+        if (best_index == UINT64_MAX || score > best_score) {
+            best_index = i;
+            best_score = score;
+        }
+    }
+    if (blocked_count) {
+        *blocked_count = local_blocked_count;
+    }
+    if (best_index != UINT64_MAX) {
+        return terminal_token->candidate_tokens[best_index];
+    }
+
+    if (fallback_used) {
+        *fallback_used = true;
+    }
+    return terminal_token->candidate_tokens[0];
+}
+
+static bool qwen3_rewrite_terminal_token_record_for_engram_selection(
+    struct w4_qwen3_terminal_token_record *terminal_token,
+    uint32_t local_node,
+    uint64_t decode_step,
+    uint64_t raw_sampled_token,
+    uint64_t selected_token)
+{
+    uint64_t raw_logit_bits = 0;
+    uint64_t selected_logit_bits = 0;
+    uint64_t selected_text_checksum = 0;
+    uint64_t selected_piece_word0 = 0;
+    uint64_t selected_piece_word1 = 0;
+    uint64_t old_text_checksum;
+    uint64_t old_piece_word0;
+    uint64_t old_piece_word1;
+
+    if (!terminal_token) {
+        return false;
+    }
+    if (selected_token == raw_sampled_token) {
+        terminal_token->sampled_token = selected_token;
+        return true;
+    }
+
+    old_text_checksum = terminal_token->text_checksum;
+    old_piece_word0 = terminal_token->piece_word0;
+    old_piece_word1 = terminal_token->piece_word1;
+    for (uint64_t i = 0; i < terminal_token->candidate_count && i < 4U; ++i) {
+        if (terminal_token->candidate_tokens[i] == raw_sampled_token) {
+            raw_logit_bits = terminal_token->candidate_logit_bits[i];
+        }
+        if (terminal_token->candidate_tokens[i] == selected_token) {
+            selected_logit_bits = terminal_token->candidate_logit_bits[i];
+            selected_text_checksum = terminal_token->candidate_text_checksums[i];
+            selected_piece_word0 = terminal_token->candidate_piece_word0[i];
+            selected_piece_word1 = terminal_token->candidate_piece_word1[i];
+        }
+    }
+
+    if (selected_text_checksum == 0 || (selected_piece_word0 == 0 && selected_piece_word1 == 0)) {
+        printf("[w4_guest] fail qwen3 engram terminal rewrite missing selected candidate"
+               " text metadata local=node%u step=%" PRIu64
+               " raw_token=%" PRIu64 " selected_token=%" PRIu64
+               " candidate_count=%" PRIu64 "\n",
+               local_node + 1U,
+               decode_step,
+               raw_sampled_token,
+               selected_token,
+               terminal_token->candidate_count);
+        return false;
+    }
+    terminal_token->sampled_token = selected_token;
+    terminal_token->runner_up_token = raw_sampled_token;
+    terminal_token->top_logit_bits = selected_logit_bits;
+    terminal_token->runner_up_logit_bits = raw_logit_bits;
+    terminal_token->margin_milli = 0;
+    terminal_token->text_checksum = selected_text_checksum;
+    terminal_token->piece_word0 = selected_piece_word0;
+    terminal_token->piece_word1 = selected_piece_word1;
+    printf("[w4_guest] stage qwen3_engram_terminal_record_rewrite local=node%u"
+           " step=%" PRIu64 " raw_token=%" PRIu64
+           " selected_token=%" PRIu64 " runner_up=%" PRIu64
+           " old_text_checksum=0x%016" PRIx64
+           " new_text_checksum=0x%016" PRIx64
+           " old_piece_word0=0x%016" PRIx64
+           " old_piece_word1=0x%016" PRIx64
+           " new_piece_word0=0x%016" PRIx64
+           " new_piece_word1=0x%016" PRIx64
+           " text_source=%s status=ok\n",
+           local_node + 1U,
+           decode_step,
+           raw_sampled_token,
+           selected_token,
+           terminal_token->runner_up_token,
+           old_text_checksum,
+           terminal_token->text_checksum,
+           old_piece_word0,
+           old_piece_word1,
+           terminal_token->piece_word0,
+           terminal_token->piece_word1,
+           "selected_candidate_text_metadata");
+    return true;
+}
+
+static uint64_t qwen3_terminal_token_candidate_text_checksum(
+    const struct w4_qwen3_terminal_token_record *terminal_token,
+    uint64_t token)
+{
+    if (!terminal_token) {
+        return 0;
+    }
+    for (uint64_t i = 0; i < terminal_token->candidate_count && i < 4U; ++i) {
+        if (terminal_token->candidate_tokens[i] == token) {
+            return terminal_token->candidate_text_checksums[i];
+        }
+    }
+    return 0;
+}
+
+static int qwen3_engram_select_and_publish_step(
+    struct w4_db_service *db_service,
+    const struct w4_qwen3_engram_config *config,
+    uint32_t local_node,
+    uint32_t cluster_node_count,
+    uint64_t decode_step,
+    const uint64_t *history_tokens,
+    uint64_t history_token_count,
+    struct w4_qwen3_terminal_token_record *terminal_token,
+    uint64_t *selected_token_out)
+{
+    uint64_t resolved_candidate_tokens[4] = {0};
+    uint64_t resolved_candidate_logit_bits[4] = {0};
+    uint64_t resolved_candidate_count = 0;
+    uint64_t resolved_candidate_checksum = 0;
+    uint64_t raw_sampled_token;
+    uint64_t selected_token;
+    uint64_t selected_text_checksum;
+    uint64_t engram_blocked_count = 0;
+    int64_t engram_top_score = 0;
+    int64_t engram_runner_up_score = 0;
+    bool engram_fallback_used = false;
+
+    if (!db_service || !config || !config->enabled || !terminal_token ||
+        !history_tokens || !selected_token_out) {
+        return -1;
+    }
+    if (w4_db_obmm_service_v0_wait_engram_candidates(
+            db_service,
+            decode_step,
+            600000,
+            resolved_candidate_tokens,
+            resolved_candidate_logit_bits,
+            terminal_token->candidate_text_checksums,
+            terminal_token->candidate_piece_bytes,
+            terminal_token->candidate_piece_word0,
+            terminal_token->candidate_piece_word1,
+            4U,
+            &resolved_candidate_count,
+            &resolved_candidate_checksum) != 0 ||
+        resolved_candidate_count == 0) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 engram candidates resolve failed local=node%u\n",
+                local_node + 1U);
+        return -1;
+    }
+
+    terminal_token->candidate_count = resolved_candidate_count;
+    memcpy(terminal_token->candidate_tokens,
+           resolved_candidate_tokens,
+           resolved_candidate_count * sizeof(uint64_t));
+    memcpy(terminal_token->candidate_logit_bits,
+           resolved_candidate_logit_bits,
+           resolved_candidate_count * sizeof(uint64_t));
+    terminal_token->sampled_token = terminal_token->candidate_tokens[0];
+    terminal_token->runner_up_token =
+        resolved_candidate_count > 1U ? terminal_token->candidate_tokens[1] : 0U;
+    raw_sampled_token = terminal_token->sampled_token;
+    selected_token =
+        qwen3_guest_engram_select_token(config,
+                                        history_tokens,
+                                        history_token_count,
+                                        terminal_token,
+                                        &engram_fallback_used,
+                                        &engram_blocked_count,
+                                        &engram_top_score,
+                                        &engram_runner_up_score);
+    selected_text_checksum =
+        qwen3_terminal_token_candidate_text_checksum(terminal_token, selected_token);
+    if (selected_text_checksum == 0) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 engram selected text metadata missing local=node%u"
+                " step=%" PRIu64 " selected_token=%" PRIu64 "\n",
+                local_node + 1U,
+                decode_step,
+                selected_token);
+        return -1;
+    }
+    printf("[w4_guest] stage qwen3_engram_token_select local=node%u step=%" PRIu64
+           " history_tokens=%" PRIu64 " raw_token=%" PRIu64
+           " runner_up=%" PRIu64 " selected_token=%" PRIu64
+           " candidate_count=%" PRIu64
+           " candidate2=%" PRIu64 " candidate3=%" PRIu64
+           " blocked=%" PRIu64 " fallback=%u top_score_milli=%" PRId64
+           " runner_up_score_milli=%" PRId64
+           " no_repeat_ngram_size=%" PRIu64
+           " repetition_penalty_milli=%" PRIu64
+           " history_window=%" PRIu64
+           " candidate_checksum=0x%016" PRIx64
+           " source=guest_policy status=ok\n",
+           local_node + 1U,
+           decode_step,
+           history_token_count,
+           raw_sampled_token,
+           terminal_token->runner_up_token,
+           selected_token,
+           terminal_token->candidate_count,
+           terminal_token->candidate_count > 2U ? terminal_token->candidate_tokens[2] : 0U,
+           terminal_token->candidate_count > 3U ? terminal_token->candidate_tokens[3] : 0U,
+           engram_blocked_count,
+           engram_fallback_used ? 1U : 0U,
+           engram_top_score,
+           engram_runner_up_score,
+           config->no_repeat_ngram_size,
+           config->repetition_penalty_milli,
+           config->history_window,
+           resolved_candidate_checksum);
+    if (w4_db_obmm_service_v0_publish_engram_step(
+            db_service,
+            local_node,
+            cluster_node_count,
+            decode_step,
+            history_tokens,
+            history_token_count,
+            raw_sampled_token,
+            terminal_token->runner_up_token,
+            selected_token,
+            engram_blocked_count,
+            engram_fallback_used ? 1U : 0U,
+            engram_top_score,
+            engram_runner_up_score,
+            config->no_repeat_ngram_size,
+            config->repetition_penalty_milli,
+            config->history_window,
+            terminal_token->logits_checksum ? terminal_token->logits_checksum :
+                                              resolved_candidate_checksum,
+            selected_text_checksum) != 0) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 engram object publish failed local=node%u\n",
+                local_node + 1U);
+        return -1;
+    }
+    *selected_token_out = selected_token;
     return 0;
 }
 
@@ -3460,6 +3968,50 @@ static uint64_t env_u64_or_default(const char *key, uint64_t default_value)
     return (uint64_t)parsed;
 }
 
+static bool env_bool_is_one(const char *key)
+{
+    const char *value = getenv(key);
+
+    return value && strcmp(value, "1") == 0;
+}
+
+static void parse_env_u64_csv_bounded(const char *key,
+                                      uint64_t *values,
+                                      uint64_t value_capacity,
+                                      uint64_t *value_count)
+{
+    const char *cursor = getenv(key);
+    uint64_t count = 0;
+
+    if (value_count) {
+        *value_count = 0;
+    }
+    if (!cursor || !values || value_capacity == 0) {
+        return;
+    }
+    while (*cursor != '\0' && count < value_capacity) {
+        char *end = NULL;
+        unsigned long long parsed;
+
+        errno = 0;
+        parsed = strtoull(cursor, &end, 10);
+        if (errno != 0 || end == cursor) {
+            break;
+        }
+        values[count++] = (uint64_t)parsed;
+        if (*end == ',') {
+            cursor = end + 1;
+        } else if (*end == '\0') {
+            cursor = end;
+        } else {
+            break;
+        }
+    }
+    if (value_count) {
+        *value_count = count;
+    }
+}
+
 static int run_obmm_backing_stage(void)
 {
     pid_t pid;
@@ -3867,8 +4419,11 @@ int main(void)
     uint64_t guest_decode_step = 0;
     uint64_t guest_decode_steps = 1;
     uint64_t guest_decode_step_limit = 1;
+    struct w4_qwen3_engram_config qwen3_engram_config;
     uint64_t qwen3_terminal_tokens[256];
     uint64_t qwen3_terminal_token_count = 0;
+    uint64_t qwen3_round_input_tokens[1024];
+    uint64_t qwen3_round_input_token_count = 0;
     uint64_t uapi_completion_timeout_ms = W4_DEFAULT_TIMEOUT_MS;
     uint64_t round_start_ms = 0;
     uint64_t terminal_gate_ms = 0;
@@ -3902,22 +4457,41 @@ int main(void)
     uint32_t round_layer_start = 0;
     uint32_t round_layer_end = 0;
     uint32_t round_next_node = 0;
+    bool qwen3_round_history_loaded = false;
 
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
 
     memset(&counts, 0, sizeof(counts));
     resolve_role(role, sizeof(role));
-    cluster_observer_mode = (getenv("LINQU_W4_ALLOW_OBSERVER_ONLY") != NULL &&
-                             strcmp(getenv("LINQU_W4_ALLOW_OBSERVER_ONLY"), "1") == 0);
-    require_uapi_resource = (getenv("LINQU_W4_REQUIRE_UAPI_RESOURCE") != NULL &&
-                             strcmp(getenv("LINQU_W4_REQUIRE_UAPI_RESOURCE"), "1") == 0);
-    enable_db_cluster = (getenv("LINQU_W4_DB_CLUSTER") != NULL &&
-                         strcmp(getenv("LINQU_W4_DB_CLUSTER"), "1") == 0);
-    resource_assertions_enabled = (getenv("SIM_W4_RESOURCE_ASSERTIONS") != NULL &&
-                                   strcmp(getenv("SIM_W4_RESOURCE_ASSERTIONS"), "1") == 0);
+    memset(&qwen3_engram_config, 0, sizeof(qwen3_engram_config));
+    cluster_observer_mode = env_bool_is_one("LINQU_W4_ALLOW_OBSERVER_ONLY");
+    require_uapi_resource = env_bool_is_one("LINQU_W4_REQUIRE_UAPI_RESOURCE");
+    enable_db_cluster = env_bool_is_one("LINQU_W4_DB_CLUSTER");
+    resource_assertions_enabled = env_bool_is_one("SIM_W4_RESOURCE_ASSERTIONS");
     guest_decode_step = env_u64_or_default("SIM_QWEN3_GUEST_DECODE_STEP", 0);
     guest_decode_steps = env_u64_or_default("SIM_QWEN3_GUEST_DECODE_STEPS", 1);
+    qwen3_engram_config.enabled = env_bool_is_one("SIM_QWEN3_GUEST_ENGRAM");
+    {
+        uint64_t owner_node =
+            env_u64_or_default("SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE", 8);
+
+        if (owner_node == 0 || owner_node > 8) {
+            owner_node = 8;
+        }
+        qwen3_engram_config.owner_node = (uint32_t)(owner_node - 1U);
+    }
+    qwen3_engram_config.no_repeat_ngram_size =
+        env_u64_or_default("SIM_QWEN3_GUEST_ENGRAM_NO_REPEAT_NGRAM_SIZE", 0);
+    qwen3_engram_config.repetition_penalty_milli =
+        env_u64_or_default("SIM_QWEN3_GUEST_ENGRAM_REPETITION_PENALTY_MILLI", 1000);
+    qwen3_engram_config.history_window =
+        env_u64_or_default("SIM_QWEN3_GUEST_ENGRAM_HISTORY_WINDOW", 0);
+    parse_env_u64_csv_bounded("SIM_QWEN3_GUEST_ENGRAM_BLOCK_TOKEN_IDS",
+                              qwen3_engram_config.blocked_token_ids,
+                              sizeof(qwen3_engram_config.blocked_token_ids) /
+                                  sizeof(qwen3_engram_config.blocked_token_ids[0]),
+                              &qwen3_engram_config.blocked_token_count);
     uapi_completion_timeout_ms = env_u64_or_default("SIM_W4_UAPI_COMPLETION_TIMEOUT_MS",
                                                     W4_DEFAULT_TIMEOUT_MS);
     if (guest_decode_steps == 0) {
@@ -5028,9 +5602,12 @@ decode_round_start:
     round_layer_start = 0;
     round_layer_end = 0;
     round_next_node = 0;
+    qwen3_round_history_loaded = false;
     memset(&counts, 0, sizeof(counts));
     memset(&runtime_forward, 0, sizeof(runtime_forward));
     qwen3_runtime_forward_ready = false;
+    qwen3_round_input_token_count = 0;
+    memset(qwen3_round_input_tokens, 0, sizeof(qwen3_round_input_tokens));
     round_start_ms = monotonic_ms();
     printf("[w4_guest] stage qwen3_decode_round_start step=%" PRIu64 " total_steps=%" PRIu64 "\n",
            guest_decode_step,
@@ -5043,11 +5620,80 @@ decode_round_start:
             w4_db_service_init(&db_service, true, true, true) == 0) {
             db_service_ready = true;
         }
-        if (!db_service_ready ||
-            w4_db_obmm_service_v0_wait_terminal_token_result(&db_service,
-                                                             guest_decode_step - 1,
-                                                             600000,
-                                                             &qwen3_terminal_tokens[guest_decode_step - 1]) != 0) {
+        if (!db_service_ready) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 decode round gate missing step=%" PRIu64 "\n",
+                    guest_decode_step);
+            goto out;
+        }
+        if (qwen3_engram_config.enabled) {
+            uint32_t local_decode_node = UINT32_MAX;
+            bool needs_engram_history = false;
+            uint64_t previous_engram_history_checksum = 0;
+            uint64_t previous_engram_state_checksum = 0;
+
+            if (w4_cluster_role_index(role, cluster_node_count, &local_decode_node)) {
+                needs_engram_history =
+                    local_decode_node == 0U ||
+                    local_decode_node + 1U == cluster_node_count ||
+                    local_decode_node == qwen3_engram_config.owner_node;
+            }
+            if (!needs_engram_history) {
+                printf("[w4_guest] stage qwen3_decode_round_engram_state_skip step=%" PRIu64
+                       " local=%s reason=range_worker_stateless status=ok\n",
+                       guest_decode_step,
+                       role);
+            } else {
+                if (w4_db_obmm_service_v0_wait_engram_history(
+                        &db_service,
+                        guest_decode_step - 1,
+                        600000,
+                        qwen3_round_input_tokens,
+                        sizeof(qwen3_round_input_tokens) / sizeof(qwen3_round_input_tokens[0]),
+                        &qwen3_round_input_token_count,
+                        &previous_engram_history_checksum) != 0) {
+                    fprintf(stderr,
+                            "[w4_guest] fail qwen3 decode round engram history missing step=%" PRIu64 "\n",
+                            guest_decode_step);
+                    goto out;
+                }
+                qwen3_terminal_tokens[guest_decode_step - 1] =
+                    qwen3_round_input_tokens[qwen3_round_input_token_count - 1U];
+                if (w4_db_obmm_service_v0_wait_engram_state(
+                        &db_service,
+                        guest_decode_step - 1,
+                        600000,
+                        qwen3_round_input_token_count,
+                        qwen3_terminal_tokens[guest_decode_step - 1],
+                        previous_engram_history_checksum,
+                        qwen3_engram_config.no_repeat_ngram_size,
+                        qwen3_engram_config.repetition_penalty_milli,
+                        &previous_engram_state_checksum) != 0) {
+                    fprintf(stderr,
+                            "[w4_guest] fail qwen3 decode round engram state missing step=%" PRIu64 "\n",
+                            guest_decode_step);
+                    goto out;
+                }
+                qwen3_round_history_loaded = true;
+                printf("[w4_guest] stage qwen3_decode_round_engram_state_resolved step=%" PRIu64
+                       " previous_step=%" PRIu64
+                       " selected_token=%" PRIu64
+                       " history_tokens=%" PRIu64
+                       " history_checksum=0x%016" PRIx64
+                       " state_checksum=0x%016" PRIx64
+                       " target=next_round_input status=ok\n",
+                       guest_decode_step,
+                       guest_decode_step - 1,
+                       qwen3_terminal_tokens[guest_decode_step - 1],
+                       qwen3_round_input_token_count,
+                       previous_engram_history_checksum,
+                       previous_engram_state_checksum);
+            }
+        } else if (w4_db_obmm_service_v0_wait_terminal_token_result(
+                       &db_service,
+                       guest_decode_step - 1,
+                       600000,
+                       &qwen3_terminal_tokens[guest_decode_step - 1]) != 0) {
             fprintf(stderr,
                     "[w4_guest] fail qwen3 decode round gate missing step=%" PRIu64 "\n",
                     guest_decode_step);
@@ -5170,11 +5816,26 @@ decode_round_start:
     if (seed_kvcache_payload(ep_mmio, default_segment) != 0) {
         goto out;
     }
-    if (is_qwen3_profile() && enable_db_cluster && cluster_node_count == 8U &&
-        append_qwen3_terminal_tokens_to_prompt(ep_mmio,
-                                               qwen3_terminal_tokens,
-                                               qwen3_terminal_token_count) != 0) {
-        goto out;
+    if (is_qwen3_profile() && enable_db_cluster && cluster_node_count == 8U) {
+        if (qwen3_engram_config.enabled && guest_decode_step > 0 &&
+            qwen3_round_history_loaded) {
+            if (write_qwen3_prompt_tokens_from_history(ep_mmio,
+                                                       qwen3_round_input_tokens,
+                                                       qwen3_round_input_token_count) != 0) {
+                goto out;
+            }
+        } else if (append_qwen3_terminal_tokens_to_prompt(ep_mmio,
+                                                          qwen3_terminal_tokens,
+                                                          qwen3_terminal_token_count) != 0) {
+            goto out;
+        }
+    }
+    if (is_qwen3_profile() && enable_db_cluster && cluster_node_count == 8U) {
+        qwen3_round_input_token_count =
+            read_qwen3_prompt_tokens(ep_mmio,
+                                     qwen3_round_input_tokens,
+                                     sizeof(qwen3_round_input_tokens) /
+                                         sizeof(qwen3_round_input_tokens[0]));
     }
     seed_payload_ms = monotonic_ms() - seed_payload_ms;
     descriptor_ms = monotonic_ms();
@@ -5460,15 +6121,93 @@ decode_round_start:
                     role);
             goto out;
         }
+        if (qwen3_engram_config.enabled &&
+            dispatch_node == qwen3_engram_config.owner_node &&
+            dispatch_node + 1U != cluster_node_count) {
+            struct w4_qwen3_terminal_token_record owner_candidates;
+            uint64_t owner_selected_token = 0;
+
+            memset(&owner_candidates, 0, sizeof(owner_candidates));
+            if (qwen3_engram_select_and_publish_step(&db_service,
+                                                     &qwen3_engram_config,
+                                                     dispatch_node,
+                                                     cluster_node_count,
+                                                     guest_decode_step,
+                                                     qwen3_round_input_tokens,
+                                                     qwen3_round_input_token_count,
+                                                     &owner_candidates,
+                                                     &owner_selected_token) != 0) {
+                goto out;
+            }
+        }
         if (dispatch_node + 1U == cluster_node_count) {
             uint64_t decode_step = guest_decode_step;
             struct w4_qwen3_terminal_token_record terminal_token;
+            uint64_t raw_sampled_token;
+            uint64_t engram_selected_token;
 
             if (qwen3_read_terminal_token_record(ep_mmio, &terminal_token) != 0) {
                 fprintf(stderr,
                         "[w4_guest] fail qwen3 terminal token record read failed role=%s\n",
                         role);
                 goto out;
+            }
+            raw_sampled_token = terminal_token.sampled_token;
+            if (qwen3_engram_config.enabled) {
+                if (w4_db_obmm_service_v0_publish_engram_candidates(
+                        &db_service,
+                        dispatch_node,
+                        cluster_node_count,
+                        decode_step,
+                        terminal_token.candidate_tokens,
+                        terminal_token.candidate_logit_bits,
+                        terminal_token.candidate_text_checksums,
+                        terminal_token.candidate_piece_bytes,
+                        terminal_token.candidate_piece_word0,
+                        terminal_token.candidate_piece_word1,
+                        terminal_token.candidate_count) != 0) {
+                    fprintf(stderr,
+                            "[w4_guest] fail qwen3 engram candidates publish failed role=%s\n",
+                            role);
+                    goto out;
+                }
+                if (dispatch_node == qwen3_engram_config.owner_node &&
+                    qwen3_engram_select_and_publish_step(&db_service,
+                                                         &qwen3_engram_config,
+                                                         dispatch_node,
+                                                         cluster_node_count,
+                                                         decode_step,
+                                                         qwen3_round_input_tokens,
+                                                         qwen3_round_input_token_count,
+                                                         &terminal_token,
+                                                         &engram_selected_token) != 0) {
+                    goto out;
+                }
+                if (w4_db_obmm_service_v0_wait_engram_selected_token(
+                        &db_service,
+                        decode_step,
+                        600000,
+                        &engram_selected_token) != 0) {
+                    fprintf(stderr,
+                            "[w4_guest] fail qwen3 engram selected token resolve failed role=%s\n",
+                            role);
+                    goto out;
+                }
+                if (!qwen3_rewrite_terminal_token_record_for_engram_selection(
+                        &terminal_token,
+                        dispatch_node,
+                        decode_step,
+                        raw_sampled_token,
+                        engram_selected_token)) {
+                    return 1;
+                }
+                terminal_token.sampled_token = engram_selected_token;
+                printf("[w4_guest] stage qwen3_engram_selected_writeback local=node%u step=%" PRIu64
+                       " selected_token=%" PRIu64
+                       " source=engram_selected_object target=terminal_token_result status=ok\n",
+                       dispatch_node + 1U,
+                       decode_step,
+                       terminal_token.sampled_token);
             }
 
             if (w4_db_obmm_service_v0_publish_terminal_token_result(

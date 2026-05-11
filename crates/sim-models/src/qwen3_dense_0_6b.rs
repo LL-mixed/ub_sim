@@ -268,27 +268,16 @@ pub fn tokenize_prompt_from_tokenizer_path(
         .map_err(|err| format!("qwen3_tokenizer_model_vocab_parse_failed:{err}"))?;
     let merge_ranks = qwen3_tokenizer_merge_ranks(model)?;
     let mut token_ids = Vec::new();
-    let special_tokens = qwen3_tokenizer_known_special_tokens();
-    let mut byte_index = 0usize;
-    while byte_index < prompt.len() {
-        let remaining = &prompt[byte_index..];
-        if let Some((literal, token_id)) = qwen3_tokenizer_special_token_at(remaining) {
+    for segment in qwen3_tokenizer_pretokenize(prompt) {
+        let encoded = qwen3_tokenizer_byte_level_encode(&segment);
+        let pieces = qwen3_tokenizer_bpe_pieces(&encoded, &merge_ranks);
+        for piece in pieces {
+            let token_id = vocab
+                .get(&piece)
+                .copied()
+                .ok_or_else(|| format!("qwen3_tokenizer_piece_missing:{piece}"))?;
             token_ids.push(token_id);
-            byte_index += literal.len();
-            continue;
         }
-        let next_special = special_tokens
-            .iter()
-            .filter_map(|(literal, _)| remaining.find(literal).map(|offset| byte_index + offset))
-            .min()
-            .unwrap_or(prompt.len());
-        qwen3_tokenize_plain_prompt_segment(
-            &prompt[byte_index..next_special],
-            &vocab,
-            &merge_ranks,
-            &mut token_ids,
-        )?;
-        byte_index = next_special;
     }
     let token_checksum = prompt_token_ids_checksum(&token_ids);
     Ok(Qwen3Dense06bPromptTokenization {
@@ -296,60 +285,6 @@ pub fn tokenize_prompt_from_tokenizer_path(
         token_ids,
         token_checksum,
     })
-}
-
-fn qwen3_tokenize_plain_prompt_segment(
-    segment: &str,
-    vocab: &BTreeMap<String, u64>,
-    merge_ranks: &BTreeMap<(String, String), usize>,
-    token_ids: &mut Vec<u64>,
-) -> Result<(), String> {
-    for pretokenized in qwen3_tokenizer_pretokenize(segment) {
-        let encoded = qwen3_tokenizer_byte_level_encode(&pretokenized);
-        let pieces = qwen3_tokenizer_bpe_pieces(&encoded, merge_ranks);
-        for piece in pieces {
-            token_ids.push(
-                vocab
-                    .get(&piece)
-                    .copied()
-                    .ok_or_else(|| format!("qwen3_tokenizer_piece_missing:{piece}"))?,
-            );
-        }
-    }
-    Ok(())
-}
-
-fn qwen3_tokenizer_special_token_at(text: &str) -> Option<(&'static str, u64)> {
-    qwen3_tokenizer_known_special_tokens()
-        .iter()
-        .copied()
-        .find(|(literal, _)| text.starts_with(literal))
-}
-
-fn qwen3_tokenizer_known_special_tokens() -> &'static [(&'static str, u64)] {
-    &[
-        ("<|endoftext|>", 151_643),
-        ("<|im_start|>", 151_644),
-        ("<|im_end|>", 151_645),
-        ("<|object_ref_start|>", 151_646),
-        ("<|object_ref_end|>", 151_647),
-        ("<|box_start|>", 151_648),
-        ("<|box_end|>", 151_649),
-        ("<|vision_start|>", 151_652),
-        ("<|vision_end|>", 151_653),
-        ("<|vision_pad|>", 151_654),
-        ("<tool_call>", 151_657),
-        ("</tool_call>", 151_658),
-        ("<|fim_prefix|>", 151_659),
-        ("<|fim_middle|>", 151_660),
-        ("<|fim_suffix|>", 151_661),
-        ("<|repo_name|>", 151_663),
-        ("<|file_sep|>", 151_664),
-        ("<tool_response>", 151_665),
-        ("</tool_response>", 151_666),
-        ("<think>", 151_667),
-        ("</think>", 151_668),
-    ]
 }
 
 pub fn prompt_token_ids_checksum(token_ids: &[u64]) -> u64 {
@@ -1038,6 +973,13 @@ pub struct Qwen3Dense06bForwardWithKvCache {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct Qwen3Dense06bLogitCandidate {
+    pub rank: u64,
+    pub token_id: u64,
+    pub logit_bits: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Qwen3Dense06bFullVocabLogitsSummary {
     pub vocab_size: u64,
     pub hidden_size: u64,
@@ -1047,18 +989,9 @@ pub struct Qwen3Dense06bFullVocabLogitsSummary {
     pub top_logit_bits: u64,
     pub runner_up_token_id: u64,
     pub runner_up_logit_bits: u64,
+    pub top_candidates: Vec<Qwen3Dense06bLogitCandidate>,
     pub logits_checksum: u64,
     pub aggregate_checksum: u64,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Qwen3Dense06bFullVocabSample {
-    pub logits: Qwen3Dense06bFullVocabLogitsSummary,
-    pub sampled_token_id: u64,
-    pub sampled_logit_bits: u64,
-    pub temperature_milli: u64,
-    pub sampling_seed: u64,
-    pub sampling_checksum: u64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -3733,6 +3666,8 @@ pub fn full_vocab_logits_from_hidden_with_chunk_and_payloads(
     hidden: &[f32],
     chunk_rows: usize,
 ) -> Result<Qwen3Dense06bFullVocabLogitsSummary, String> {
+    const TOP_CANDIDATE_COUNT: usize = 4;
+
     let hidden_size = QWEN3_DENSE_0_6B_PROFILE.hidden_size as usize;
     if hidden.len() != hidden_size {
         return Err(format!(
@@ -3767,6 +3702,7 @@ pub fn full_vocab_logits_from_hidden_with_chunk_and_payloads(
     let mut top_logit = f32::NEG_INFINITY;
     let mut runner_up_token_id = 0u64;
     let mut runner_up_logit = f32::NEG_INFINITY;
+    let mut top_candidates = Vec::<(u64, f32)>::new();
     let mut aggregate_words = vec![
         QWEN3_DENSE_0_6B_PROFILE.vocab_size,
         QWEN3_DENSE_0_6B_PROFILE.hidden_size,
@@ -3808,6 +3744,12 @@ pub fn full_vocab_logits_from_hidden_with_chunk_and_payloads(
                 runner_up_token_id = token_id;
                 runner_up_logit = logit;
             }
+            qwen3_insert_top_logit_candidate(
+                &mut top_candidates,
+                TOP_CANDIDATE_COUNT,
+                token_id,
+                logit,
+            );
             chunk_logit_checksum_words.push(logit.to_bits() as u64 ^ token_id.rotate_left(19));
         }
         let chunk_logit_checksum = checksum_words(&chunk_logit_checksum_words);
@@ -3828,6 +3770,9 @@ pub fn full_vocab_logits_from_hidden_with_chunk_and_payloads(
         runner_up_logit.to_bits() as u64,
         logits_checksum,
     ]);
+    for (rank, (token_id, logit)) in top_candidates.iter().enumerate() {
+        aggregate_words.extend_from_slice(&[rank as u64, *token_id, logit.to_bits() as u64]);
+    }
     Ok(Qwen3Dense06bFullVocabLogitsSummary {
         vocab_size: QWEN3_DENSE_0_6B_PROFILE.vocab_size,
         hidden_size: QWEN3_DENSE_0_6B_PROFILE.hidden_size,
@@ -3837,165 +3782,34 @@ pub fn full_vocab_logits_from_hidden_with_chunk_and_payloads(
         top_logit_bits: top_logit.to_bits() as u64,
         runner_up_token_id,
         runner_up_logit_bits: runner_up_logit.to_bits() as u64,
+        top_candidates: top_candidates
+            .into_iter()
+            .enumerate()
+            .map(|(rank, (token_id, logit))| Qwen3Dense06bLogitCandidate {
+                rank: rank as u64,
+                token_id,
+                logit_bits: logit.to_bits() as u64,
+            })
+            .collect(),
         logits_checksum,
         aggregate_checksum: checksum_words(&aggregate_words),
     })
 }
 
-pub fn full_vocab_sample_from_hidden(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
-    hidden: &[f32],
-    temperature: f32,
-    sampling_seed: u64,
-) -> Result<Qwen3Dense06bFullVocabSample, String> {
-    full_vocab_sample_from_hidden_with_chunk(tensors, hidden, temperature, sampling_seed, 4096)
-}
-
-pub fn full_vocab_sample_from_hidden_with_chunk(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
-    hidden: &[f32],
-    temperature: f32,
-    sampling_seed: u64,
-    chunk_rows: usize,
-) -> Result<Qwen3Dense06bFullVocabSample, String> {
-    if !temperature.is_finite() || temperature < 0.0 {
-        return Err("qwen3_full_vocab_sample_temperature_invalid".to_string());
-    }
-    let logits = full_vocab_logits_from_hidden_with_chunk(tensors, hidden, chunk_rows)?;
-    let (sampled_token_id, sampled_logit_bits) = if temperature == 0.0 {
-        (logits.top_token_id, logits.top_logit_bits)
-    } else {
-        sample_full_vocab_token_from_hidden_with_chunk(
-            tensors,
-            hidden,
-            temperature,
-            sampling_seed,
-            chunk_rows,
-        )?
-    };
-    let temperature_milli = (temperature as f64 * 1_000.0).round().max(0.0) as u64;
-    let sampling_checksum = checksum_words(&[
-        logits.logits_checksum,
-        logits.top_token_id,
-        logits.top_logit_bits,
-        logits.runner_up_token_id,
-        logits.runner_up_logit_bits,
-        sampled_token_id,
-        sampled_logit_bits,
-        temperature_milli,
-        sampling_seed,
-    ]);
-    Ok(Qwen3Dense06bFullVocabSample {
-        logits,
-        sampled_token_id,
-        sampled_logit_bits,
-        temperature_milli,
-        sampling_seed,
-        sampling_checksum,
-    })
-}
-
-fn sample_full_vocab_token_from_hidden_with_chunk(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
-    hidden: &[f32],
-    temperature: f32,
-    sampling_seed: u64,
-    chunk_rows: usize,
-) -> Result<(u64, u64), String> {
-    let hidden_size = QWEN3_DENSE_0_6B_PROFILE.hidden_size as usize;
-    if hidden.len() != hidden_size {
-        return Err(format!(
-            "qwen3_full_vocab_sample_hidden_size_mismatch:got={}:expected={hidden_size}",
-            hidden.len()
-        ));
-    }
-    if chunk_rows == 0 {
-        return Err("qwen3_full_vocab_sample_zero_chunk_rows".to_string());
-    }
-    let norm_weight = load_weight_vector(tensors, "model.norm.weight", hidden_size)?;
-    let normalized = rmsnorm_reference(hidden, &norm_weight);
-    let (head_name, head) = logits_head_tensor(tensors)?;
-    let expected_shape = vec![
-        QWEN3_DENSE_0_6B_PROFILE.vocab_size,
-        QWEN3_DENSE_0_6B_PROFILE.hidden_size,
-    ];
-    if head.shape != expected_shape {
-        return Err(format!(
-            "qwen3_dense_0_6b_weight_shape_mismatch:{head_name}:got={:?}:expected={:?}",
-            head.shape, expected_shape
-        ));
-    }
-
-    let vocab_size = QWEN3_DENSE_0_6B_PROFILE.vocab_size as usize;
-    let mut logits = Vec::with_capacity(vocab_size);
-    let mut max_logit = f32::NEG_INFINITY;
-    for start in (0..vocab_size).step_by(chunk_rows) {
-        let rows = chunk_rows.min(vocab_size - start);
-        let payload = materialize_tensor_row_range_payload_with_payloads(
-            head_name,
-            head,
-            start as u64,
-            rows,
-            None,
-        )?;
-        let weights = decode_weight_vector(
-            head.dtype,
-            &payload,
-            rows.checked_mul(hidden_size)
-                .ok_or_else(|| "qwen3_full_vocab_sample_chunk_elems_overflow".to_string())?,
-        )?;
-        for row in 0..rows {
-            let row_base = row * hidden_size;
-            let logit = normalized
-                .iter()
-                .enumerate()
-                .map(|(col, value)| value * weights[row_base + col])
-                .sum::<f32>();
-            if logit.is_finite() && logit > max_logit {
-                max_logit = logit;
-            }
-            logits.push(logit);
-        }
-    }
-    if logits.is_empty() || !max_logit.is_finite() {
-        return Err("qwen3_full_vocab_sample_logits_invalid".to_string());
-    }
-
-    let temperature = temperature as f64;
-    let mut total = 0.0f64;
-    for logit in &logits {
-        if logit.is_finite() {
-            total += ((*logit as f64 - max_logit as f64) / temperature).exp();
-        }
-    }
-    if !total.is_finite() || total <= 0.0 {
-        return Err("qwen3_full_vocab_sample_probability_invalid".to_string());
-    }
-    let mut target = qwen3_unit_f64_from_seed(sampling_seed) * total;
-    for (token_id, logit) in logits.iter().enumerate() {
-        if !logit.is_finite() {
-            continue;
-        }
-        target -= ((*logit as f64 - max_logit as f64) / temperature).exp();
-        if target <= 0.0 {
-            return Ok((token_id as u64, logit.to_bits() as u64));
-        }
-    }
-    let token_id = logits.len() - 1;
-    Ok((token_id as u64, logits[token_id].to_bits() as u64))
-}
-
-fn qwen3_unit_f64_from_seed(seed: u64) -> f64 {
-    let mixed = qwen3_splitmix64(seed);
-    ((mixed >> 11) as f64) * (1.0 / ((1u64 << 53) as f64))
-}
-
-fn qwen3_splitmix64(mut value: u64) -> u64 {
-    value = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
-    let mut mixed = value;
-    mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    mixed ^ (mixed >> 31)
+fn qwen3_insert_top_logit_candidate(
+    candidates: &mut Vec<(u64, f32)>,
+    capacity: usize,
+    token_id: u64,
+    logit: f32,
+) {
+    candidates.push((token_id, logit));
+    candidates.sort_by(|(left_token, left_logit), (right_token, right_logit)| {
+        right_logit
+            .partial_cmp(left_logit)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left_token.cmp(right_token))
+    });
+    candidates.truncate(capacity);
 }
 
 pub fn sampled_text_reference_from_logits(
@@ -5182,28 +4996,6 @@ outputs:
 "#;
 
     #[test]
-    fn full_vocab_sample_rejects_invalid_temperature() {
-        let tensors = BTreeMap::new();
-        let err = full_vocab_sample_from_hidden_with_chunk(&tensors, &[], -0.1, 1, 1)
-            .expect_err("negative temperature must fail");
-        assert_eq!(err, "qwen3_full_vocab_sample_temperature_invalid");
-
-        let err = full_vocab_sample_from_hidden_with_chunk(&tensors, &[], f32::NAN, 1, 1)
-            .expect_err("nan temperature must fail");
-        assert_eq!(err, "qwen3_full_vocab_sample_temperature_invalid");
-    }
-
-    #[test]
-    fn full_vocab_sample_seed_unit_is_deterministic() {
-        let first = qwen3_unit_f64_from_seed(42);
-        let second = qwen3_unit_f64_from_seed(42);
-        let different = qwen3_unit_f64_from_seed(43);
-        assert!((0.0..1.0).contains(&first));
-        assert_eq!(first, second);
-        assert_ne!(first, different);
-    }
-
-    #[test]
     fn layer_ir_and_tp_partition_are_explicit() {
         let topology = test_topology();
         let graph = layer_graph_ir(QWEN3_DENSE_0_6B_PROFILE, 0);
@@ -5391,48 +5183,6 @@ outputs:
             prompt_token_ids_checksum(&encoded.token_ids)
         );
         assert_ne!(encoded.token_checksum, 0);
-
-        fs::remove_dir_all(&temp).expect("remove tokenizer temp dir");
-    }
-
-    #[test]
-    fn tokenizer_prompt_encoding_preserves_qwen_special_tokens() {
-        let temp = std::env::temp_dir().join(format!(
-            "qwen3_tokenizer_special_encode_test_{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&temp);
-        fs::create_dir_all(&temp).expect("create tokenizer temp dir");
-        fs::write(
-            temp.join("tokenizer_config.json"),
-            r#"{"added_tokens_decoder":{"151644":{"content":"<|im_start|>"},"151645":{"content":"<|im_end|>"}}}"#,
-        )
-        .expect("write tokenizer config");
-        fs::write(
-            temp.join("tokenizer.json"),
-            r#"{"model":{"type":"BPE","vocab":{"u":1,"s":2,"e":3,"r":4,"Ċ":5,"H":6,"i":7,"a":8,"n":9,"t":10},"merges":[]}}"#,
-        )
-        .expect("write tokenizer json");
-        fs::write(
-            temp.join("vocab.json"),
-            r#"{"u":1,"s":2,"e":3,"r":4,"Ċ":5,"H":6,"i":7,"a":8,"n":9,"t":10}"#,
-        )
-        .expect("write vocab json");
-        fs::write(temp.join("merges.txt"), b"#version\n").expect("write merges");
-        fs::write(
-            temp.join("generation_config.json"),
-            r#"{"eos_token_id":151645}"#,
-        )
-        .expect("write generation config");
-
-        let encoded =
-            tokenize_prompt_from_tokenizer_path(&temp, "<|im_start|>user\nHi<|im_end|>\n<think>")
-                .expect("tokenize prompt");
-        assert_eq!(
-            encoded.token_ids,
-            vec![151_644, 1, 2, 3, 4, 5, 6, 7, 151_645, 5, 151_667]
-        );
-        assert_eq!(encoded.token_count, encoded.token_ids.len() as u64);
 
         fs::remove_dir_all(&temp).expect("remove tokenizer temp dir");
     }
@@ -6274,6 +6024,21 @@ outputs:
             reference.logits.top_token_id,
             reference.logits.runner_up_token_id
         );
+        assert_eq!(reference.logits.top_candidates.len(), 4);
+        assert_eq!(
+            reference.logits.top_candidates[0].token_id,
+            reference.logits.top_token_id
+        );
+        assert_eq!(
+            reference.logits.top_candidates[1].token_id,
+            reference.logits.runner_up_token_id
+        );
+        assert!(reference
+            .logits
+            .top_candidates
+            .windows(2)
+            .all(|pair| f32::from_bits(pair[0].logit_bits as u32)
+                >= f32::from_bits(pair[1].logit_bits as u32)));
         assert_eq!(
             reference.sampled_text.token_id,
             reference.logits.top_token_id
