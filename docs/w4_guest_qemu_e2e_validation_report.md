@@ -149,7 +149,7 @@ HostVector 基线仍然保留为可选 profile，用于对照旧的 deterministi
 - `runtime_variant`: `HostBuildGraph`
 - `callable_hint`: `host_vector_example`
 - orchestration function: `build_example_graph`
-- manifest: `/private/tmp/simpler-host-vector-artifacts/host_vector_manifest.json`
+- manifest: `/tmp/simpler-host-vector-artifacts/host_vector_manifest.json`
 - artifact producer: `simulator/scripts/prepare_simpler_host_vector_artifacts.py`
 - source example: `modules/simpler.old/examples/a2a3/host_build_graph/vector_example/kernels`
 - expected guest result word: `0x41a0000041a00000`

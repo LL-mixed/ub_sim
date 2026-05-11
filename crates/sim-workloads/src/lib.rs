@@ -101,14 +101,14 @@ fn simpler_manifest_path(env_var: &str, default_path: &str) -> Option<PathBuf> {
 pub fn host_vector_manifest_path() -> Option<PathBuf> {
     simpler_manifest_path(
         "SIMPLER_HOST_VECTOR_MANIFEST",
-        "/private/tmp/simpler-host-vector-artifacts/host_vector_manifest.json",
+        "/tmp/simpler-host-vector-artifacts/host_vector_manifest.json",
     )
 }
 
 pub fn tmrb_vector_manifest_path() -> Option<PathBuf> {
     simpler_manifest_path(
         "SIMPLER_TMRB_VECTOR_MANIFEST",
-        "/private/tmp/simpler-tmrb-vector-artifacts/tmrb_vector_manifest.json",
+        "/tmp/simpler-tmrb-vector-artifacts/tmrb_vector_manifest.json",
     )
 }
 

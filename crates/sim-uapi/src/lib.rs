@@ -8861,7 +8861,7 @@ impl Drop for ProcessStdioRedirectGuard {
 
 fn simpler_manifest_path() -> Result<PathBuf, String> {
     let path = std::env::var("SIMPLER_HOST_VECTOR_MANIFEST").unwrap_or_else(|_| {
-        "/private/tmp/simpler-host-vector-artifacts/host_vector_manifest.json".to_string()
+        "/tmp/simpler-host-vector-artifacts/host_vector_manifest.json".to_string()
     });
     let path = PathBuf::from(path);
     if !path.exists() {
@@ -8875,7 +8875,7 @@ fn simpler_manifest_path() -> Result<PathBuf, String> {
 
 fn simpler_matmul_manifest_path() -> Result<PathBuf, String> {
     let path = std::env::var("SIMPLER_HOST_MATMUL_MANIFEST").unwrap_or_else(|_| {
-        "/private/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json".to_string()
+        "/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json".to_string()
     });
     let path = PathBuf::from(path);
     if !path.exists() {
