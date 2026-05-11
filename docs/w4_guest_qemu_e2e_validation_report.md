@@ -534,6 +534,10 @@ ub_sim_port_num=7
 logs_dir=guest-linux/aarch64/logs/2026-05-10_19-19-04_w4guest8_26743_headless8
 ```
 
+完整参数快照与默认值说明见：
+
+- [8-node W4 Qwen3 运行参数清单](/Volumes/repos/ub_sim/docs/w4_guest_qemu_8node_run_env.md)
+
 ### 本轮修复点
 
 #### QEMU SIM_DEC unmap lifetime
