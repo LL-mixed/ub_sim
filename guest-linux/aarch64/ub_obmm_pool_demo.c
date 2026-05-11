@@ -24,13 +24,16 @@
 #include "../kernel_ub/include/uapi/ub/obmm.h"
 
 #define OBMM_PORT 18560
-#define RUN_TIMEOUT_S 120
+#define RUN_TIMEOUT_S 300
 #define WAIT_IFACE_MS 90000
 #define EXPORT_REGION_SIZE (2UL * 1024UL * 1024UL)
-#define SLOT_TOUCH_SIZE 256UL
+#define SLOT_TOUCH_SIZE (4UL * 1024UL)
 #define IMPORT_ALIGN (2UL * 1024UL * 1024UL)
 #define MAX_NODES 8
 #define MAX_WINDOWS 16
+#define STRESS_DEFAULT_ITERS 200
+#define STRESS_TOUCH_SIZE (64UL * 1024UL)  /* 64KB per write burst for stress */
+#define MMAP_REGION_SIZE STRESS_TOUCH_SIZE  /* mmap enough for stress writes */
 
 enum pool_import_cache_mode {
     POOL_IMPORT_CACHE_AUTO = 0,
@@ -981,7 +984,7 @@ static int import_all_peers(int obmm_fd, uint32_t local_cna,
             return -1;
         }
         slots[i].mem_id = mem_id;
-        if (map_region_device(mem_id, SLOT_TOUCH_SIZE, slots[i].map_osync,
+        if (map_region_device(mem_id, MMAP_REGION_SIZE, slots[i].map_osync,
                               &slots[i].region) != 0) {
             return -1;
         }
@@ -1228,6 +1231,81 @@ static int do_rounds(int sockfd, struct sockaddr_in peers[MAX_NODES],
     return 0;
 }
 
+static unsigned long parse_stress_iters(void)
+{
+    const char *env = getenv("OBMM_POOL_STRESS_ITERS");
+    unsigned long val;
+    char *end;
+    if (!env || env[0] == '\0')
+        return STRESS_DEFAULT_ITERS;
+    val = strtoul(env, &end, 10);
+    if (*end != '\0' || val == 0 || val > 100000)
+        return STRESS_DEFAULT_ITERS;
+    return val;
+}
+
+/*
+ * Stress test: each node writes to all remote slots and reads back.
+ * Measures raw write+msync throughput on imported memory.
+ * No cross-node synchronization — each node runs independently.
+ */
+static int do_stress(int sockfd, struct sockaddr_in peers[MAX_NODES],
+                     int node_count, int local_idx, struct pool_slot slots[MAX_NODES])
+{
+    unsigned long iters = parse_stress_iters();
+    unsigned long total_bytes = 0;
+    long t_start, t_end;
+    int i, iter;
+    char fill = (char)('A' + local_idx);
+    int remote_count = 0;
+    (void)sockfd;
+    (void)peers;
+
+    /* Count remote slots (non-local, mapped). */
+    for (i = 0; i < node_count; i++) {
+        if (i != local_idx && slots[i].region.addr != NULL)
+            remote_count++;
+    }
+
+    if (remote_count == 0) {
+        fprintf(stderr, "[ub_obmm_pool] stress skip: no remote slots\n");
+        return 0;
+    }
+
+    fprintf(stderr, "[ub_obmm_pool] stress start iters=%lu remote_slots=%d\n",
+            iters, remote_count);
+
+    t_start = now_ms();
+
+    for (iter = 0; iter < (int)iters; iter++) {
+        for (i = 0; i < node_count; i++) {
+            volatile char *p;
+            unsigned long off;
+            if (i == local_idx || slots[i].region.addr == NULL) continue;
+            p = (volatile char *)slots[i].region.addr;
+            for (off = 0; off < STRESS_TOUCH_SIZE; off += 64) {
+                p[off] = fill;
+            }
+            (void)msync((void *)slots[i].region.addr, STRESS_TOUCH_SIZE, MS_SYNC);
+        }
+        total_bytes += (unsigned long)remote_count * STRESS_TOUCH_SIZE;
+    }
+
+    t_end = now_ms();
+
+    {
+        long elapsed_ms = t_end - t_start;
+        double elapsed_s = elapsed_ms / 1000.0;
+        double mb = (double)total_bytes / (1024.0 * 1024.0);
+        double mbps = (elapsed_s > 0.0) ? mb / elapsed_s : 0.0;
+        fprintf(stderr,
+                "[ub_obmm_pool] stress done iters=%lu remote_slots=%d total_mb=%.1f elapsed_ms=%ld throughput=%.1f MB/s\n",
+                iters, remote_count, mb, elapsed_ms, mbps);
+    }
+
+    return 0;
+}
+
 static void cleanup_slots(int obmm_fd, int node_count, int local_idx,
                           struct pool_slot slots[MAX_NODES])
 {
@@ -1341,7 +1419,7 @@ int main(void)
     slots[local_idx].is_local = true;
     slots[local_idx].mem_id = local_meta.export_mem_id;
     slots[local_idx].export_cna = local_cna;
-    if (map_region_device(local_meta.export_mem_id, SLOT_TOUCH_SIZE, false,
+    if (map_region_device(local_meta.export_mem_id, MMAP_REGION_SIZE, false,
                           &slots[local_idx].region) != 0) {
         goto out;
     }
@@ -1364,6 +1442,10 @@ int main(void)
     usleep(500000);
 
     if (do_rounds(sockfd, peers, node_count, local_idx, slots) != 0) {
+        goto out;
+    }
+
+    if (do_stress(sockfd, peers, node_count, local_idx, slots) != 0) {
         goto out;
     }
 

@@ -167,6 +167,7 @@ send_obmm_queue_demo_cmd() {
   payload+=$'export OBMM_QUEUE_DEPTH='"${OBMM_QUEUE_DEPTH}"$'\n'
   payload+=$'export OBMM_BOOTSTRAP='"${OBMM_BOOTSTRAP}"$'\n'
   payload+=$'export OBMM_BOOTSTRAP_SESSION='"${RUN_ID_BASE}"$'\n'
+  payload+=$'export OBMM_IMPORT_CACHE_MODE='"${OBMM_IMPORT_CACHE_MODE:-auto}"$'\n'
   payload+=$'echo '"${start_marker}"$'\n'
   payload+=$'/bin/linqu_ub_obmm_queue_demo\n'
 

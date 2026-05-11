@@ -1961,7 +1961,7 @@ int main(void)
                 goto out;
             }
             slots[i].mem_id = mem_id;
-            if (obmm_map_region(mem_id, g_export_size, true,
+            if (obmm_map_region(mem_id, g_export_size, slots[i].map_osync,
                                 &slots[i].region) != 0) {
                 fprintf(stderr, TAG " map peer region failed peer=%d\n", i);
                 goto out;

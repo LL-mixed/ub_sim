@@ -18,6 +18,8 @@ QEMU_SMP="${QEMU_SMP:-4}"
 PORT_BASE_START="${PORT_BASE_START:-$((53600 + (RANDOM % 300)))}"
 PORT_BASE="$PORT_BASE_START"
 OBMM_POOL_EXPORT_SIZE_MB="${OBMM_POOL_EXPORT_SIZE_MB:-7680}"
+OBMM_IMPORT_CACHE_MODE="${OBMM_IMPORT_CACHE_MODE:-auto}"
+OBMM_POOL_STRESS_ITERS="${OBMM_POOL_STRESS_ITERS:-100}"
 
 NODE_IDS=(nodeA nodeB nodeC nodeD)
 NODE_IPS=(10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4)
@@ -162,6 +164,8 @@ send_obmm_pool_cmd() {
   payload+=$'export LINQU_UB_ALL_IPS='"${ALL_IPS_CSV}"$'\n'
   payload+=$'export LINQU_UB_NODE_COUNT=4\n'
   payload+=$'export OBMM_POOL_EXPORT_SIZE_MB='"${OBMM_POOL_EXPORT_SIZE_MB}"$'\n'
+  payload+=$'export OBMM_IMPORT_CACHE_MODE='"${OBMM_IMPORT_CACHE_MODE}"$'\n'
+  payload+=$'export OBMM_POOL_STRESS_ITERS='"${OBMM_POOL_STRESS_ITERS}"$'\n'
   payload+=$'echo '"${start_marker}"$'\n'
   payload+=$'/bin/linqu_ub_obmm_demo\n'
 
@@ -174,7 +178,7 @@ prepare_environment() {
 
   mkdir -p "$RUN_DIR"
   : > "$TRACE_FILE"
-  trace "prepare: launch headless env run_id=$RUN_ID_BASE qemu_mem=$QEMU_MEM qemu_smp=$QEMU_SMP export_size_mb=$OBMM_POOL_EXPORT_SIZE_MB"
+  trace "prepare: launch headless env run_id=$RUN_ID_BASE qemu_mem=$QEMU_MEM qemu_smp=$QEMU_SMP export_size_mb=$OBMM_POOL_EXPORT_SIZE_MB cache_mode=$OBMM_IMPORT_CACHE_MODE stress_iters=$OBMM_POOL_STRESS_ITERS"
   if ! ENV_FILE="$OUT_DIR/headless_four_node_env.${RUN_ID_BASE}.sh" PORT_BASE="$PORT_BASE" RUN_ID="$RUN_ID_BASE" QEMU_MEM="$QEMU_MEM" QEMU_SMP="$QEMU_SMP" APPEND_EXTRA="$APPEND_BASE" \
     "$SCRIPT_DIR/launch_ub_four_node_headless.sh" >/dev/null; then
     trace "FAIL: launch headless env failed"
@@ -225,6 +229,8 @@ validate_node_log() {
     "$node_id round4 verify" || return 1
   assert_log_has "$log_file" "\\[ub_obmm_pool\\] pool rounds -> ok count=4" \
     "$node_id rounds done" || return 1
+  assert_log_has "$log_file" "\\[ub_obmm_pool\\] stress done" \
+    "$node_id stress done" || return 1
   assert_log_has "$log_file" "\\[ub_obmm_pool\\] pass" "$node_id pass" || return 1
   assert_log_absent "$log_file" "\\[ub_obmm_pool\\] fail" "$node_id fail" || return 1
   assert_log_absent "$log_file" "WARNING: CPU:" "$node_id kernel warning" || return 1
