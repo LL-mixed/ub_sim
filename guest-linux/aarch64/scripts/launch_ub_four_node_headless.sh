@@ -20,6 +20,8 @@ SIM_UAPI_SCENARIO_CONFIG="${SIM_UAPI_SCENARIO_CONFIG:-$WORKSPACE_ROOT/scenarios/
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_headless4_${RANDOM}}"
+# macOS UNIX domain socket path limit is 104 bytes. Use a short suffix for socket file names.
+SOCKET_SUFFIX="${SOCKET_SUFFIX:-$$_${RANDOM}}"
 APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 PORT_BASE="${PORT_BASE:-$((46000 + RANDOM % 10000))}"
 QEMU_MEM="${QEMU_MEM:-2G}"
@@ -153,12 +155,12 @@ for node_id in "${NODE_IDS[@]}"; do
     fi
     rm -f "$pid_file"
   fi
-  rm -f "__QMP_DIR__/${node_id}.__RUN_ID__.sock"
+  rm -f "__QMP_DIR__/${node_id}.__SOCKET_SUFFIX__.sock"
 done
 rm -f /tmp/ub-qemu/ub-bus-instance-*.lock(N)
 echo "cleaned run_id=__RUN_ID__"
 EOC
-perl -0pi -e 's#__OUT_DIR__#'"$OUT_DIR"'#g; s#__RUN_ID__#'"$RUN_ID"'#g; s#__QMP_DIR__#'"$QMP_DIR"'#g' "$CLEANUP_SCRIPT"
+perl -0pi -e 's#__OUT_DIR__#'"$OUT_DIR"'#g; s#__RUN_ID__#'"$RUN_ID"'#g; s#__SOCKET_SUFFIX__#'"$SOCKET_SUFFIX"'#g; s#__QMP_DIR__#'"$QMP_DIR"'#g' "$CLEANUP_SCRIPT"
 chmod +x "$CLEANUP_SCRIPT"
 
 cat > "$ENV_FILE" <<EOF
@@ -196,7 +198,7 @@ for node_id in "${NODE_IDS[@]}"; do
   qemu_log="$(dirname "$CONTROL_LOG")/${node_id}_qemu.log"
   guest_log="$(dirname "$CONTROL_LOG")/${node_id}_guest.log"
   pid_file="$OUT_DIR/ub_${node_id}.headless.${RUN_ID}.pid"
-  qmp_socket="$QMP_DIR/${node_id}.${RUN_ID}.sock"
+  qmp_socket="$QMP_DIR/${node_id}.${SOCKET_SUFFIX}.sock"
 
   log "starting ${node_id} local_ip=${local_ip} mon=${mon_port} serial=${serial_port}"
   start_node "$node_id" "$local_ip" "$mon_port" "$serial_port" "$qemu_log" "$guest_log" "$pid_file" "$qmp_socket"
@@ -206,7 +208,7 @@ done
 
 log "waiting for QMP sockets"
 for node_id in "${NODE_IDS[@]}"; do
-  qmp_socket="$QMP_DIR/${node_id}.${RUN_ID}.sock"
+  qmp_socket="$QMP_DIR/${node_id}.${SOCKET_SUFFIX}.sock"
   while [[ ! -S "$qmp_socket" ]]; do
     sleep 0.1
   done

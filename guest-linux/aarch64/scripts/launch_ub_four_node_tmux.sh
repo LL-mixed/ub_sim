@@ -16,6 +16,8 @@ QMP_DIR="${SHARED_DIR}/qmp"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_tmux4_${RANDOM}}"
+# macOS UNIX domain socket path limit is 104 bytes. Use a short suffix for socket file names.
+SOCKET_SUFFIX="${SOCKET_SUFFIX:-$$_${RANDOM}}"
 SESSION_NAME="${TMUX_SESSION_NAME:-ub-four-node-${RUN_ID}}"
 APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 PORT_BASE="${TMUX_PORT_BASE:-$((46000 + RANDOM % 10000))}"
@@ -91,11 +93,11 @@ for node_id in "${NODE_IDS[@]}"; do
     fi
     rm -f "$pid_file"
   fi
-  rm -f "__QMP_DIR__/${node_id}.__RUN_ID__.sock"
+  rm -f "__QMP_DIR__/${node_id}.__SOCKET_SUFFIX__.sock"
 done
 echo "cleaned session run_id=__RUN_ID__"
 EOC
-perl -0pi -e 's#__OUT_DIR__#'$OUT_DIR'#g; s#__RUN_ID__#'$RUN_ID'#g; s#__QMP_DIR__#'$QMP_DIR'#g' "$CLEANUP_SCRIPT"
+perl -0pi -e 's#__OUT_DIR__#'$OUT_DIR'#g; s#__RUN_ID__#'$RUN_ID'#g; s#__SOCKET_SUFFIX__#'$SOCKET_SUFFIX'#g; s#__QMP_DIR__#'$QMP_DIR'#g' "$CLEANUP_SCRIPT"
 chmod +x "$CLEANUP_SCRIPT"
 
 cat > "$CONTROL_SCRIPT" <<'EOC'
@@ -247,7 +249,7 @@ for node_id in "${NODE_IDS[@]}"; do
   qemu_log="$(dirname "$CONTROL_LOG")/${node_id}_qemu.log"
   guest_log="$(dirname "$CONTROL_LOG")/${node_id}_guest.log"
   pid_file="$ROOT_DIR/out/ub_${node_id}.tmux.${RUN_ID}.pid"
-  qmp_socket="$QMP_DIR/${node_id}.${RUN_ID}.sock"
+  qmp_socket="$QMP_DIR/${node_id}.${SOCKET_SUFFIX}.sock"
 
   log "starting ${node_id} (paused) local_ip=${local_ip} mon=${mon_port} serial=${serial_port}"
   start_node "$node_id" "$local_ip" "$mon_port" "$serial_port" "$qemu_log" "$guest_log" "$pid_file" "$qmp_socket"
@@ -257,7 +259,7 @@ done
 
 log "waiting for QMP sockets"
 for node_id in "${NODE_IDS[@]}"; do
-  qmp_socket="$QMP_DIR/${node_id}.${RUN_ID}.sock"
+  qmp_socket="$QMP_DIR/${node_id}.${SOCKET_SUFFIX}.sock"
   while [[ ! -S "$qmp_socket" ]]; do
     sleep 0.1
   done
