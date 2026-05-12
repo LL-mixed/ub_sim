@@ -29,6 +29,8 @@
 #define EXPORT_REGION_SIZE (2UL * 1024UL * 1024UL)
 #define SLOT_TOUCH_SIZE (4UL * 1024UL)
 #define IMPORT_ALIGN (2UL * 1024UL * 1024UL)
+#define ROUND_TIMEOUT_MS_DEFAULT 60000L
+#define ROUND_TIMEOUT_MS_MIN 1000L
 #define MAX_NODES 8
 #define MAX_WINDOWS 16
 #define STRESS_DEFAULT_ITERS 200
@@ -630,6 +632,29 @@ static uint64_t parse_export_region_size(void)
     return bytes;
 }
 
+static long parse_round_timeout_ms(void)
+{
+    const char *env = getenv("OBMM_POOL_ROUND_TIMEOUT_MS");
+    char *end = NULL;
+    long val;
+
+    if (env == NULL || env[0] == '\0') {
+        return ROUND_TIMEOUT_MS_DEFAULT;
+    }
+
+    errno = 0;
+    val = strtol(env, &end, 0);
+    if (errno != 0 || end == env || *end != '\0' ||
+        val < ROUND_TIMEOUT_MS_MIN || val > (long)RUN_TIMEOUT_S * 1000L) {
+        fprintf(stderr,
+                "[ub_obmm_pool] warn: invalid OBMM_POOL_ROUND_TIMEOUT_MS=%s, using default=%ld\n",
+                env, ROUND_TIMEOUT_MS_DEFAULT);
+        return ROUND_TIMEOUT_MS_DEFAULT;
+    }
+
+    return val;
+}
+
 static enum pool_import_cache_mode parse_import_cache_mode(void)
 {
     const char *env = getenv("OBMM_IMPORT_CACHE_MODE");
@@ -1108,11 +1133,11 @@ static int wait_for_round_msg(int sockfd, uint16_t type, int src_idx, int dst_id
 }
 
 static int wait_for_all_round_acks(int sockfd, int node_count, int local_idx,
-                                   int round_idx)
+                                   int round_idx, long timeout_ms)
 {
     bool got_ack[MAX_NODES] = { false };
     int pending = node_count - 1;
-    long deadline = now_ms() + 10000;
+    long deadline = now_ms() + timeout_ms;
 
     while (!g_alarm_fired && now_ms() < deadline) {
         struct sockaddr_in from;
@@ -1160,7 +1185,8 @@ static int wait_for_all_round_acks(int sockfd, int node_count, int local_idx,
 }
 
 static int do_rounds(int sockfd, struct sockaddr_in peers[MAX_NODES],
-                     int node_count, int local_idx, struct pool_slot slots[MAX_NODES])
+                     int node_count, int local_idx, struct pool_slot slots[MAX_NODES],
+                     long round_timeout_ms)
 {
     int round_idx;
 
@@ -1176,7 +1202,8 @@ static int do_rounds(int sockfd, struct sockaddr_in peers[MAX_NODES],
             }
             fprintf(stderr, "[ub_obmm_pool] round owner=%d write_local -> ok slot=%d\n",
                     round_idx + 1, owner_slot + 1);
-            if (wait_for_slot_payload(&slots[owner_slot], round_idx, owner_slot, 5000) != 0) {
+            if (wait_for_slot_payload(&slots[owner_slot], round_idx, owner_slot,
+                                      round_timeout_ms) != 0) {
                 fprintf(stderr,
                         "[ub_obmm_pool] fail: round=%d verify owner=%d slot=%d timeout\n",
                         round_idx + 1, round_idx + 1, owner_slot + 1);
@@ -1190,7 +1217,8 @@ static int do_rounds(int sockfd, struct sockaddr_in peers[MAX_NODES],
                 }
                 send_round_turn(sockfd, &peers[i], local_idx, i, round_idx);
             }
-            if (wait_for_all_round_acks(sockfd, node_count, local_idx, round_idx) != 0) {
+            if (wait_for_all_round_acks(sockfd, node_count, local_idx, round_idx,
+                                        round_timeout_ms) != 0) {
                 return -1;
             }
             broadcast_round_commit(sockfd, peers, node_count, local_idx, round_idx);
@@ -1198,13 +1226,14 @@ static int do_rounds(int sockfd, struct sockaddr_in peers[MAX_NODES],
                     round_idx + 1, round_idx + 1);
         } else {
             if (wait_for_round_msg(sockfd, MSG_ROUND_TURN, round_idx, local_idx,
-                                   round_idx, 10000) != 0) {
+                                   round_idx, round_timeout_ms) != 0) {
                 fprintf(stderr,
                         "[ub_obmm_pool] fail: round=%d node=%d timeout waiting TURN from owner=%d\n",
                         round_idx + 1, local_idx + 1, round_idx + 1);
                 return -1;
             }
-            if (wait_for_slot_payload(&slots[owner_slot], round_idx, owner_slot, 10000) != 0) {
+            if (wait_for_slot_payload(&slots[owner_slot], round_idx, owner_slot,
+                                      round_timeout_ms) != 0) {
                 fprintf(stderr,
                         "[ub_obmm_pool] fail: round=%d verify owner=%d slot=%d timeout\n",
                         round_idx + 1, round_idx + 1, owner_slot + 1);
@@ -1216,7 +1245,7 @@ static int do_rounds(int sockfd, struct sockaddr_in peers[MAX_NODES],
             fprintf(stderr, "[ub_obmm_pool] round=%d node=%d ACK -> owner=%d\n",
                     round_idx + 1, local_idx + 1, round_idx + 1);
             if (wait_for_round_msg(sockfd, MSG_ROUND_COMMIT, round_idx, local_idx,
-                                   round_idx, 10000) != 0) {
+                                   round_idx, round_timeout_ms) != 0) {
                 fprintf(stderr,
                         "[ub_obmm_pool] fail: round=%d node=%d timeout waiting COMMIT from owner=%d\n",
                         round_idx + 1, local_idx + 1, round_idx + 1);
@@ -1353,6 +1382,7 @@ int main(void)
     uint64_t local_cna_u64 = 0;
     int i;
     int rc = 1;
+    long round_timeout_ms;
 
     memset(slots, 0, sizeof(slots));
     memset(&local_meta, 0, sizeof(local_meta));
@@ -1360,10 +1390,12 @@ int main(void)
     signal(SIGALRM, alarm_handler);
     alarm(RUN_TIMEOUT_S);
     g_export_region_size = parse_export_region_size();
+    round_timeout_ms = parse_round_timeout_ms();
 
     fprintf(stderr, "[ub_obmm_pool] start\n");
     fprintf(stderr, "[ub_obmm_pool] export_size=%" PRIu64 "MB\n",
             g_export_region_size >> 20);
+    fprintf(stderr, "[ub_obmm_pool] round_timeout_ms=%ld\n", round_timeout_ms);
 
     if (!resolve_pool_nodes(local_ip, ips, &node_count, &local_idx)) {
         fprintf(stderr, "[ub_obmm_pool] fail: resolve pool nodes failed\n");
@@ -1446,7 +1478,7 @@ int main(void)
             (g_export_region_size >> 20) * (uint64_t)node_count);
     usleep(500000);
 
-    if (do_rounds(sockfd, peers, node_count, local_idx, slots) != 0) {
+    if (do_rounds(sockfd, peers, node_count, local_idx, slots, round_timeout_ms) != 0) {
         goto out;
     }
 
