@@ -5,6 +5,7 @@ archive/qemu-device-legacy/qemu/
 archive/guest-probe-legacy/
 .DS_Store
 .codex
+CLAUDE.md
 vendor/qemu_8.2.0_ub/
 guest-linux/kernel_ub/
 guest-linux/aarch64/apps/obmm_queue_demo/obmm_queue_demo

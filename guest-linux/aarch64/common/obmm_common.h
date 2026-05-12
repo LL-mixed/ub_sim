@@ -533,11 +533,13 @@ static bool obmm_parse_windows(struct obmm_helpers_window windows[
             &nc_base_mb, &nc_size_mb);
         if (matched != 6)
             continue;
-        windows[count].mar = (unsigned int)mar;
-        windows[count].decode = (uint64_t)decode;
         if (cache_mode == OBMM_IMPORT_CACHE_CC) {
             if (cc_size_mb == 0)
                 continue;
+            if (count >= OBMM_POOL_HELPERS_MAX_WINDOWS)
+                break;
+            windows[count].mar = (unsigned int)mar;
+            windows[count].decode = (uint64_t)decode;
             windows[count].base_pa = ((uint64_t)cc_base_mb) << 20;
             windows[count].size_bytes = ((uint64_t)cc_size_mb) << 20;
             windows[count].is_cacheable = true;
@@ -545,6 +547,10 @@ static bool obmm_parse_windows(struct obmm_helpers_window windows[
         } else if (cache_mode == OBMM_IMPORT_CACHE_NC) {
             if (nc_size_mb == 0)
                 continue;
+            if (count >= OBMM_POOL_HELPERS_MAX_WINDOWS)
+                break;
+            windows[count].mar = (unsigned int)mar;
+            windows[count].decode = (uint64_t)decode;
             windows[count].base_pa = ((uint64_t)nc_base_mb) << 20;
             windows[count].size_bytes = ((uint64_t)nc_size_mb) << 20;
             windows[count].is_cacheable = false;
@@ -553,6 +559,8 @@ static bool obmm_parse_windows(struct obmm_helpers_window windows[
             if (nc_size_mb != 0) {
                 if (count >= OBMM_POOL_HELPERS_MAX_WINDOWS)
                     break;
+                windows[count].mar = (unsigned int)mar;
+                windows[count].decode = (uint64_t)decode;
                 windows[count].base_pa = ((uint64_t)nc_base_mb) << 20;
                 windows[count].size_bytes = ((uint64_t)nc_size_mb) << 20;
                 windows[count].is_cacheable = false;
