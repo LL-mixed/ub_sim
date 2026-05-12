@@ -14,6 +14,8 @@ ENTITY_COUNT="${UB_SIM_ENTITY_COUNT:-2}"
 PORT_NUM="${UB_SIM_PORT_NUM:-7}"
 SHARED_DIR="${UB_FM_SHARED_DIR:-/tmp/ub-qemu-links-eight}"
 QMP_DIR="${SHARED_DIR}/qmp"
+SERIAL_DIR="${SHARED_DIR}/serial"
+MON_DIR="${SHARED_DIR}/mon"
 UB_QEMU_RUNTIME_DIR="${UB_QEMU_RUNTIME_DIR:-${SHARED_DIR}/xdg_runtime}"
 SIMPLER_HOST_VECTOR_MANIFEST="${SIMPLER_HOST_VECTOR_MANIFEST:-/tmp/simpler-host-vector-artifacts/host_vector_manifest.json}"
 SIMPLER_HOST_MATMUL_MANIFEST="${SIMPLER_HOST_MATMUL_MANIFEST:-/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json}"
@@ -25,7 +27,6 @@ RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_headless8_${RANDOM}}"
 # macOS UNIX domain socket path limit is 104 bytes. Use a short suffix for socket file names.
 SOCKET_SUFFIX="${SOCKET_SUFFIX:-$$_${RANDOM}}"
 APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
-PORT_BASE="${PORT_BASE:-$((56000 + RANDOM % 2000))}"
 QEMU_MEM="${QEMU_MEM:-2G}"
 QEMU_SMP="${QEMU_SMP:-2}"
 CONTROL_LOG="$LOG_DIR/${RUN_ID}_headless8/control.log"
@@ -48,6 +49,30 @@ need_cmd() {
 
 log() {
   echo "[headless8] $*" | tee -a "$CONTROL_LOG"
+}
+
+validate_qwen3_weights_path() {
+  if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" != "qwen3_dense_0_6b" ]]; then
+    return 0
+  fi
+  local weights_path="${SIM_QWEN3_0_6B_WEIGHTS_PATH:-}"
+  local required
+
+  if [[ -z "$weights_path" ]]; then
+    echo "[headless8] qwen3_dense_0_6b requires SIM_QWEN3_0_6B_WEIGHTS_PATH" >&2
+    return 1
+  fi
+  if [[ ! -d "$weights_path" ]]; then
+    echo "[headless8] SIM_QWEN3_0_6B_WEIGHTS_PATH is not a directory: $weights_path" >&2
+    return 1
+  fi
+  for required in model.safetensors config.json tokenizer.json; do
+    if [[ ! -f "$weights_path/$required" ]]; then
+      echo "[headless8] SIM_QWEN3_0_6B_WEIGHTS_PATH missing $required in $weights_path" >&2
+      return 1
+    fi
+  done
+  return 0
 }
 
 wait_for_qemu_socket() {
@@ -113,8 +138,8 @@ PY
 start_node() {
   local node_id="$1"
   local local_ip="$2"
-  local mon_port="$3"
-  local serial_port="$4"
+  local mon_socket="$3"
+  local serial_socket="$4"
   local qemu_log="$5"
   local guest_log="$6"
   local pid_file="$7"
@@ -143,9 +168,9 @@ start_node() {
       -nodefaults \
       -display none \
       -qmp unix:"$qmp_socket",server=on,wait=off \
-      -chardev socket,id=mon0,host=127.0.0.1,port="$mon_port",server=on,wait=off,telnet=off \
+      -chardev socket,id=mon0,path="$mon_socket",server=on,wait=off \
       -mon chardev=mon0,mode=readline \
-      -chardev socket,id=ser0,host=127.0.0.1,port="$serial_port",server=on,wait=off,telnet=off,logfile="$guest_log",logappend=on \
+      -chardev socket,id=ser0,path="$serial_socket",server=on,wait=off,logfile="$guest_log",logappend=on \
       -serial chardev:ser0 \
       -kernel "$KERNEL_IMAGE" \
       -initrd "$INITRAMFS_IMAGE" \
@@ -156,10 +181,12 @@ start_node() {
 
 need_cmd python3
 
+mkdir -p "$OUT_DIR" "$LOG_DIR/${RUN_ID}_headless8" "$QMP_DIR" "$SERIAL_DIR" "$MON_DIR"
+touch "$CONTROL_LOG"
+validate_qwen3_weights_path
+
 QEMU_BIN="$(ensure_qemu_ub_binary "$WORKSPACE_ROOT")"
 ensure_ub_guest_artifacts "$ROOT_DIR" "$KERNEL_IMAGE" "$INITRAMFS_IMAGE"
-
-mkdir -p "$OUT_DIR" "$LOG_DIR/${RUN_ID}_headless8" "$QMP_DIR"
 
 if [[ ! -f "$TOPOLOGY_FILE" ]]; then
   echo "TOPOLOGY_FILE not found: $TOPOLOGY_FILE" >&2
@@ -182,16 +209,21 @@ for node_id in "${NODE_IDS[@]}"; do
     rm -f "$pid_file"
   fi
   rm -f "__QMP_DIR__/${node_id}.__SOCKET_SUFFIX__.sock"
+  rm -f "__SERIAL_DIR__/${node_id}.__SOCKET_SUFFIX__.sock"
+  rm -f "__MON_DIR__/${node_id}.__SOCKET_SUFFIX__.sock"
 done
 rm -rf "__RUNTIME_DIR__"
+rmdir "__QMP_DIR__" "__SERIAL_DIR__" "__MON_DIR__" 2>/dev/null || true
 echo "cleaned run_id=__RUN_ID__"
 EOC
-perl -0pi -e 's#__OUT_DIR__#'"$OUT_DIR"'#g; s#__RUN_ID__#'"$RUN_ID"'#g; s#__SOCKET_SUFFIX__#'"$SOCKET_SUFFIX"'#g; s#__QMP_DIR__#'"$QMP_DIR"'#g; s#__RUNTIME_DIR__#'"$UB_QEMU_RUNTIME_DIR"'#g' "$CLEANUP_SCRIPT"
+perl -0pi -e 's#__OUT_DIR__#'"$OUT_DIR"'#g; s#__RUN_ID__#'"$RUN_ID"'#g; s#__SOCKET_SUFFIX__#'"$SOCKET_SUFFIX"'#g; s#__QMP_DIR__#'"$QMP_DIR"'#g; s#__SERIAL_DIR__#'"$SERIAL_DIR"'#g; s#__MON_DIR__#'"$MON_DIR"'#g; s#__RUNTIME_DIR__#'"$UB_QEMU_RUNTIME_DIR"'#g' "$CLEANUP_SCRIPT"
 chmod +x "$CLEANUP_SCRIPT"
 
 rm -rf "$UB_QEMU_RUNTIME_DIR"
 mkdir -p "$UB_QEMU_RUNTIME_DIR"
 rm -f "$QMP_DIR"/*.sock(N)
+rm -f "$SERIAL_DIR"/*.sock(N)
+rm -f "$MON_DIR"/*.sock(N)
 touch "$CONTROL_LOG"
 
 log "run_id=$RUN_ID"
@@ -201,20 +233,23 @@ log "qemu_smp=$QEMU_SMP"
 log "topology=$TOPOLOGY_FILE"
 log "append_extra=$APPEND_EXTRA"
 log "ub_sim_port_num=$PORT_NUM"
+if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_0_6b" ]]; then
+  log "qwen3_weights_path=$SIM_QWEN3_0_6B_WEIGHTS_PATH"
+fi
 log "logs_dir=$(dirname "$CONTROL_LOG")"
 
 integer idx=0
 for node_id in "${NODE_IDS[@]}"; do
   local_ip="${NODE_IPS[$((idx+1))]}"
-  mon_port=$((PORT_BASE + idx))
-  serial_port=$((PORT_BASE + 32 + idx))
   qemu_log="$(dirname "$CONTROL_LOG")/${node_id}_qemu.log"
   guest_log="$(dirname "$CONTROL_LOG")/${node_id}_guest.log"
   pid_file="$OUT_DIR/ub_${node_id}.headless.${RUN_ID}.pid"
   qmp_socket="$QMP_DIR/${node_id}.${SOCKET_SUFFIX}.sock"
+  mon_socket="$MON_DIR/${node_id}.${SOCKET_SUFFIX}.sock"
+  serial_socket="$SERIAL_DIR/${node_id}.${SOCKET_SUFFIX}.sock"
 
-  log "starting ${node_id} local_ip=${local_ip} mon=${mon_port} serial=${serial_port}"
-  start_node "$node_id" "$local_ip" "$mon_port" "$serial_port" "$qemu_log" "$guest_log" "$pid_file" "$qmp_socket"
+  log "starting ${node_id} local_ip=${local_ip} mon_socket=${mon_socket} serial_socket=${serial_socket}"
+  start_node "$node_id" "$local_ip" "$mon_socket" "$serial_socket" "$qemu_log" "$guest_log" "$pid_file" "$qmp_socket"
   idx=$((idx + 1))
   sleep 0.2
 done
@@ -236,15 +271,14 @@ cat > "$ENV_FILE" <<EOF
 export RUN_ID='$RUN_ID'
 export RUN_DIR='$(dirname "$CONTROL_LOG")'
 export CLEANUP_SCRIPT='$CLEANUP_SCRIPT'
-export PORT_BASE='$PORT_BASE'
-export NODEA_SERIAL_PORT='$((PORT_BASE + 32))'
-export NODEB_SERIAL_PORT='$((PORT_BASE + 33))'
-export NODEC_SERIAL_PORT='$((PORT_BASE + 34))'
-export NODED_SERIAL_PORT='$((PORT_BASE + 35))'
-export NODEE_SERIAL_PORT='$((PORT_BASE + 36))'
-export NODEF_SERIAL_PORT='$((PORT_BASE + 37))'
-export NODEG_SERIAL_PORT='$((PORT_BASE + 38))'
-export NODEH_SERIAL_PORT='$((PORT_BASE + 39))'
+export NODEA_SERIAL_SOCKET='$SERIAL_DIR/nodeA.${SOCKET_SUFFIX}.sock'
+export NODEB_SERIAL_SOCKET='$SERIAL_DIR/nodeB.${SOCKET_SUFFIX}.sock'
+export NODEC_SERIAL_SOCKET='$SERIAL_DIR/nodeC.${SOCKET_SUFFIX}.sock'
+export NODED_SERIAL_SOCKET='$SERIAL_DIR/nodeD.${SOCKET_SUFFIX}.sock'
+export NODEE_SERIAL_SOCKET='$SERIAL_DIR/nodeE.${SOCKET_SUFFIX}.sock'
+export NODEF_SERIAL_SOCKET='$SERIAL_DIR/nodeF.${SOCKET_SUFFIX}.sock'
+export NODEG_SERIAL_SOCKET='$SERIAL_DIR/nodeG.${SOCKET_SUFFIX}.sock'
+export NODEH_SERIAL_SOCKET='$SERIAL_DIR/nodeH.${SOCKET_SUFFIX}.sock'
 EOF
 
 log "env_file=$ENV_FILE"

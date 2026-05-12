@@ -526,6 +526,11 @@ where
                     prompt = Some(value.to_string_lossy().to_string());
                 }
             }
+            if engram.enabled && engram.pool != Qwen3EngramPool::Obmm {
+                anyhow::bail!(
+                    "qwen3-guest-decode-loop --engram currently requires --engram-pool=obmm"
+                );
+            }
 
             Ok(Some(Qwen3GuestDecodeLoopCliArgs {
                 step_count: step_count.unwrap_or(1),
@@ -689,6 +694,47 @@ fn parse_repetition_penalty_milli(value: &str) -> anyhow::Result<u32> {
         anyhow::bail!("--repetition-penalty must be >= 1.0");
     }
     Ok(milli)
+}
+
+fn qwen3_guest_engram_env_vars(
+    config: &Qwen3EngramConfig,
+    session_id: u64,
+) -> Vec<(String, String)> {
+    if !config.enabled {
+        return Vec::new();
+    }
+    vec![
+        ("SIM_QWEN3_GUEST_ENGRAM".to_string(), "1".to_string()),
+        (
+            "SIM_QWEN3_GUEST_ENGRAM_SESSION_ID".to_string(),
+            format!("{session_id:016x}"),
+        ),
+        (
+            "SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE".to_string(),
+            config.owner_node.to_string(),
+        ),
+        (
+            "SIM_QWEN3_GUEST_ENGRAM_NO_REPEAT_NGRAM_SIZE".to_string(),
+            config.no_repeat_ngram_size.to_string(),
+        ),
+        (
+            "SIM_QWEN3_GUEST_ENGRAM_REPETITION_PENALTY_MILLI".to_string(),
+            config.repetition_penalty_milli.to_string(),
+        ),
+        (
+            "SIM_QWEN3_GUEST_ENGRAM_HISTORY_WINDOW".to_string(),
+            config.history_window.to_string(),
+        ),
+        (
+            "SIM_QWEN3_GUEST_ENGRAM_BLOCK_TOKEN_IDS".to_string(),
+            config
+                .blocked_token_ids
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+        ),
+    ]
 }
 
 fn qwen3_scenario_path_from_value(value: &str) -> PathBuf {
@@ -911,14 +957,15 @@ mod tests {
         qwen3_decode_report_verbosity_from_env, qwen3_engram_policy_checksum,
         qwen3_engram_select_token, qwen3_engram_state_words, qwen3_guest_candidate_records,
         qwen3_guest_decode_loop_args_from, qwen3_guest_engram_candidate_counts,
-        qwen3_guest_engram_history_lengths, qwen3_guest_engram_object_transport_report,
-        qwen3_guest_engram_report, qwen3_guest_engram_report_from_guest_log,
-        qwen3_guest_engram_selected_tokens, qwen3_guest_log_dir_from_script_output,
-        qwen3_guest_log_match_count, qwen3_guest_terminal_candidate_records,
-        qwen3_guest_terminal_text_lossy_from_tokenizer, qwen3_guest_terminal_tokens,
-        qwen3_guest_timing_summary, qwen3_range_forward_args_from, Qwen3CandidateRecord,
-        Qwen3DecodeReportVerbosity, Qwen3EngramConfig, Qwen3EngramMode, Qwen3EngramPool,
-        Qwen3EngramReport,
+        qwen3_guest_engram_env_vars, qwen3_guest_engram_history_lengths,
+        qwen3_guest_engram_object_transport_report, qwen3_guest_engram_report,
+        qwen3_guest_engram_report_from_guest_log, qwen3_guest_engram_selected_tokens,
+        qwen3_guest_log_dir_from_script_output, qwen3_guest_log_match_count,
+        qwen3_guest_terminal_candidate_records, qwen3_guest_terminal_text_lossy_from_tokenizer,
+        qwen3_guest_terminal_tokens, qwen3_guest_timing_summary, qwen3_range_forward_args_from,
+        simpler_host_matmul_artifact_producer_path, validate_qwen3_0_6b_weights_path,
+        Qwen3CandidateRecord, Qwen3DecodeReportVerbosity, Qwen3EngramConfig, Qwen3EngramMode,
+        Qwen3EngramPool, Qwen3EngramReport,
     };
     use std::env;
     use std::fs;
@@ -1072,7 +1119,7 @@ mod tests {
             "--steps=8",
             "--engram",
             "--engram-mode=cpu",
-            "--engram-pool=object",
+            "--engram-pool=obmm",
             "--engram-owner-node=3",
             "--no-repeat-ngram-size=3",
             "--repetition-penalty=1.250",
@@ -1085,13 +1132,91 @@ mod tests {
         .expect("guest decode loop args");
         assert!(args.engram.enabled);
         assert_eq!(args.engram.mode, Qwen3EngramMode::Cpu);
-        assert_eq!(args.engram.pool, Qwen3EngramPool::Object);
+        assert_eq!(args.engram.pool, Qwen3EngramPool::Obmm);
         assert_eq!(args.engram.owner_node, 3);
         assert_eq!(args.engram.no_repeat_ngram_size, 3);
         assert_eq!(args.engram.repetition_penalty_milli, 1250);
         assert_eq!(args.engram.blocked_token_ids, vec![11, 358, 1128]);
         assert_eq!(args.engram.history_window, 64);
         assert_eq!(args.engram.report, Qwen3EngramReport::Steps);
+    }
+
+    #[test]
+    fn qwen3_guest_decode_loop_engram_requires_obmm_pool() {
+        let err = qwen3_guest_decode_loop_args_from([
+            "qwen3-guest-decode-loop",
+            "--engram",
+            "--engram-pool=object",
+        ])
+        .expect_err("object pool should be rejected for guest engram");
+        assert!(err.to_string().contains("--engram-pool=obmm"));
+    }
+
+    #[test]
+    fn qwen3_guest_engram_env_vars_include_policy_knobs() {
+        let config = Qwen3EngramConfig {
+            enabled: true,
+            pool: Qwen3EngramPool::Obmm,
+            owner_node: 3,
+            no_repeat_ngram_size: 2,
+            repetition_penalty_milli: 3000,
+            history_window: 64,
+            blocked_token_ids: vec![2776, 151645],
+            ..Qwen3EngramConfig::default()
+        };
+        let vars = qwen3_guest_engram_env_vars(&config, 0x1234);
+        assert!(vars.contains(&("SIM_QWEN3_GUEST_ENGRAM".to_string(), "1".to_string())));
+        assert!(vars.contains(&(
+            "SIM_QWEN3_GUEST_ENGRAM_SESSION_ID".to_string(),
+            "0000000000001234".to_string()
+        )));
+        assert!(vars.contains(&(
+            "SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE".to_string(),
+            "3".to_string()
+        )));
+        assert!(vars.contains(&(
+            "SIM_QWEN3_GUEST_ENGRAM_NO_REPEAT_NGRAM_SIZE".to_string(),
+            "2".to_string()
+        )));
+        assert!(vars.contains(&(
+            "SIM_QWEN3_GUEST_ENGRAM_REPETITION_PENALTY_MILLI".to_string(),
+            "3000".to_string()
+        )));
+        assert!(vars.contains(&(
+            "SIM_QWEN3_GUEST_ENGRAM_HISTORY_WINDOW".to_string(),
+            "64".to_string()
+        )));
+        assert!(vars.contains(&(
+            "SIM_QWEN3_GUEST_ENGRAM_BLOCK_TOKEN_IDS".to_string(),
+            "2776,151645".to_string()
+        )));
+    }
+
+    #[test]
+    fn simpler_host_matmul_artifact_producer_path_supports_ub_sim_layout() {
+        let path = simpler_host_matmul_artifact_producer_path();
+        assert!(path.ends_with("prepare_simpler_host_matmul_artifacts.py"));
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn qwen3_weights_path_validation_requires_real_assets() {
+        let dir = env::temp_dir().join(format!(
+            "sim_cli_qwen3_weights_validation_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("temp qwen3 weights dir");
+
+        let err = validate_qwen3_0_6b_weights_path(&dir)
+            .expect_err("empty weights dir should be rejected");
+        assert!(err.to_string().contains("model.safetensors"));
+
+        for file in ["model.safetensors", "config.json", "tokenizer.json"] {
+            fs::write(dir.join(file), b"stub").expect("write required qwen3 asset");
+        }
+        validate_qwen3_0_6b_weights_path(&dir).expect("required qwen3 assets should pass");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1682,8 +1807,10 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             script_path.display()
         );
     }
+    let weights_path = qwen3_0_6b_weights_path_from_env()?;
     println!("qwen3_guest_decode_loop");
     println!("  script: {}", script_path.display());
+    println!("  weights_path: {}", weights_path.display());
     println!("  steps: {}", args.step_count);
     if let Some(prompt) = &args.prompt {
         println!("  prompt_bytes: {}", prompt.len());
@@ -1694,13 +1821,14 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     }
     if args.engram.enabled {
         println!(
-            "  engram: enabled=true mode={} pool={} owner_node={} no_repeat_ngram_size={} repetition_penalty_milli={} history_window={} report={}",
+            "  engram: enabled=true mode={} pool={} owner_node={} no_repeat_ngram_size={} repetition_penalty_milli={} history_window={} blocked_token_ids={:?} report={}",
             qwen3_engram_mode_name(args.engram.mode),
             qwen3_engram_pool_name(args.engram.pool),
             args.engram.owner_node,
             args.engram.no_repeat_ngram_size,
             args.engram.repetition_penalty_milli,
             args.engram.history_window,
+            args.engram.blocked_token_ids,
             qwen3_engram_report_name(args.engram.report)
         );
     }
@@ -1730,38 +1858,8 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         .env("TRACE_FILE", &trace_file)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    if args.engram.enabled {
-        command
-            .env("SIM_QWEN3_GUEST_ENGRAM", "1")
-            .env(
-                "SIM_QWEN3_GUEST_ENGRAM_SESSION_ID",
-                format!("{engram_session_id:016x}"),
-            )
-            .env(
-                "SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE",
-                args.engram.owner_node.to_string(),
-            )
-            .env(
-                "SIM_QWEN3_GUEST_ENGRAM_NO_REPEAT_NGRAM_SIZE",
-                args.engram.no_repeat_ngram_size.to_string(),
-            )
-            .env(
-                "SIM_QWEN3_GUEST_ENGRAM_REPETITION_PENALTY_MILLI",
-                args.engram.repetition_penalty_milli.to_string(),
-            )
-            .env(
-                "SIM_QWEN3_GUEST_ENGRAM_HISTORY_WINDOW",
-                args.engram.history_window.to_string(),
-            )
-            .env(
-                "SIM_QWEN3_GUEST_ENGRAM_BLOCK_TOKEN_IDS",
-                args.engram
-                    .blocked_token_ids
-                    .iter()
-                    .map(u64::to_string)
-                    .collect::<Vec<_>>()
-                    .join(","),
-            );
+    for (key, value) in qwen3_guest_engram_env_vars(&args.engram, engram_session_id) {
+        command.env(key, value);
     }
     let status = command
         .status()
@@ -1829,6 +1927,26 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     let guest_engram_history_lengths = qwen3_guest_engram_history_lengths(&combined);
     let guest_engram_candidate_counts = qwen3_guest_engram_candidate_counts(&combined);
     let terminal_text = qwen3_guest_terminal_text_lossy(&terminal_tokens);
+    let pass = combined.contains("eight-node w4 guest validation passed")
+        || combined.contains("PASS: eight-node w4 guest");
+    println!(
+        "  guest_worker_summary: pass={} steps={} range_forwards={} runtime_inputs={} runtime_outputs={} terminal_tokens={}",
+        pass, args.step_count, runtime_forward_count, runtime_input_count, runtime_publish_count, terminal_token_count
+    );
+    if !terminal_tokens.is_empty() {
+        println!("  terminal_tokens: {:?}", terminal_tokens);
+        match &terminal_text {
+            Some(text) => println!("  generated_text_lossy: {}", text.escape_debug()),
+            None => println!("  generated_text_lossy: <tokenizer unavailable>"),
+        }
+    }
+    if !status.success() || !pass {
+        anyhow::bail!(
+            "qwen3 guest decode worker failed: status={} pass={}",
+            status,
+            pass
+        );
+    }
     let engram_report = if args.engram.enabled {
         let session_id = qwen3_guest_session_id(&prompt_history_tokens);
         if args.engram.pool == Qwen3EngramPool::Obmm {
@@ -1855,19 +1973,6 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         } else {
             None
         };
-    let pass = combined.contains("eight-node w4 guest validation passed")
-        || combined.contains("PASS: eight-node w4 guest");
-    println!(
-        "  guest_worker_summary: pass={} steps={} range_forwards={} runtime_inputs={} runtime_outputs={} terminal_tokens={}",
-        pass, args.step_count, runtime_forward_count, runtime_input_count, runtime_publish_count, terminal_token_count
-    );
-    if !terminal_tokens.is_empty() {
-        println!("  terminal_tokens: {:?}", terminal_tokens);
-        match terminal_text {
-            Some(text) => println!("  generated_text_lossy: {}", text.escape_debug()),
-            None => println!("  generated_text_lossy: <tokenizer unavailable>"),
-        }
-    }
     if let Some(report) = &engram_report {
         print_qwen3_guest_engram_report(report);
         if let Some(transport) = &guest_engram_object_transport {
@@ -1983,13 +2088,6 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             timing_summary.max_input_wait_ms,
             timing_summary.max_unaccounted_ms,
             timing_summary.max_barrier_ms
-        );
-    }
-    if !status.success() || !pass {
-        anyhow::bail!(
-            "qwen3 guest decode worker failed: status={} pass={}",
-            status,
-            pass
         );
     }
     if runtime_forward_count != expected_runtime_forward_count
@@ -3245,6 +3343,37 @@ fn qwen3_guest_tokenizer_path() -> Option<PathBuf> {
     }
 }
 
+fn validate_qwen3_0_6b_weights_path(path: &Path) -> anyhow::Result<()> {
+    if !path.is_dir() {
+        anyhow::bail!(
+            "SIM_QWEN3_0_6B_WEIGHTS_PATH must point to a Qwen3-0.6B directory: {}",
+            path.display()
+        );
+    }
+    for required in ["model.safetensors", "config.json", "tokenizer.json"] {
+        let candidate = path.join(required);
+        if !candidate.is_file() {
+            anyhow::bail!(
+                "SIM_QWEN3_0_6B_WEIGHTS_PATH is missing required file {} in {}",
+                required,
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn qwen3_0_6b_weights_path_from_env() -> anyhow::Result<PathBuf> {
+    let path = env::var_os("SIM_QWEN3_0_6B_WEIGHTS_PATH").ok_or_else(|| {
+        anyhow::anyhow!(
+            "qwen3-guest-decode-loop requires SIM_QWEN3_0_6B_WEIGHTS_PATH for real Qwen3-0.6B weights"
+        )
+    })?;
+    let path = PathBuf::from(path);
+    validate_qwen3_0_6b_weights_path(&path)?;
+    Ok(path)
+}
+
 #[derive(Default)]
 struct Qwen3GuestTimingSummary {
     worker_count: usize,
@@ -3780,9 +3909,7 @@ fn ensure_simpler_host_matmul_manifest(
     let output_dir = manifest_path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("manifest has no parent: {}", manifest_path.display()))?;
-    let script = repo_root()
-        .join("scripts")
-        .join("prepare_simpler_host_matmul_artifacts.py");
+    let script = simpler_host_matmul_artifact_producer_path();
     if !script.exists() {
         anyhow::bail!(
             "missing simpler host matmul artifact producer: {}",
@@ -3815,6 +3942,23 @@ fn ensure_simpler_host_matmul_manifest(
         );
     }
     Ok(())
+}
+
+fn simpler_host_matmul_artifact_producer_path() -> PathBuf {
+    let root = repo_root();
+    let candidates = [
+        root.join("scripts")
+            .join("prepare_simpler_host_matmul_artifacts.py"),
+        root.join("guest-linux")
+            .join("aarch64")
+            .join("scripts")
+            .join("prepare_simpler_host_matmul_artifacts.py"),
+    ];
+    candidates
+        .iter()
+        .find(|path| path.exists())
+        .cloned()
+        .unwrap_or_else(|| candidates[0].clone())
 }
 
 fn simpler_host_matmul_batch_manifest_is_current(

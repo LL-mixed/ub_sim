@@ -15,8 +15,6 @@ UB_FM_SHARED_DIR="${UB_FM_SHARED_DIR:-/tmp/ubqe_${_SHORT_SHARED_SUFFIX}}"
 BOOT_WAIT_SECS="${BOOT_WAIT_SECS:-180}"
 DEMO_WAIT_SECS="${DEMO_WAIT_SECS:-600}"
 APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
-PORT_BASE_START="${PORT_BASE_START:-$((56100 + (RANDOM % 300)))}"
-PORT_BASE="$PORT_BASE_START"
 PORT_NUM="${UB_SIM_PORT_NUM:-7}"
 SIMPLER_HOST_MATMUL_MANIFEST="${SIMPLER_HOST_MATMUL_MANIFEST:-/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json}"
 SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-qwen3_dense_0_6b}"
@@ -30,7 +28,7 @@ SIM_QWEN3_GUEST_ENGRAM_HISTORY_WINDOW="${SIM_QWEN3_GUEST_ENGRAM_HISTORY_WINDOW:-
 SIM_QWEN3_GUEST_ENGRAM_BLOCK_TOKEN_IDS="${SIM_QWEN3_GUEST_ENGRAM_BLOCK_TOKEN_IDS:-}"
 SIM_W4_UAPI_COMPLETION_TIMEOUT_MS="${SIM_W4_UAPI_COMPLETION_TIMEOUT_MS:-900000}"
 SIM_W4_RESOURCE_ASSERTIONS="${SIM_W4_RESOURCE_ASSERTIONS:-0}"
-FATAL_GUEST_PATTERN="rcu_preempt|RCU grace-period|self-detected stall|detected stalls on CPUs/tasks|rx msg plen invalid|poller rx msg failed, ret=-22|timeout waiting completions|\\[w4_guest\\] fail"
+FATAL_GUEST_PATTERN="rcu_preempt|RCU grace-period|self-detected stall|detected stalls on CPUs/tasks|rx msg plen invalid|poller rx msg failed, ret=-22|timeout waiting completions|qwen3 logits table missing|qwen3 logits table header mismatch|\\[w4_guest\\] fail"
 FATAL_QEMU_PATTERN="SIM_DEC: cpu read failed|ub_link write failed|bounded write timed out|rx msg plen invalid|poller rx msg failed"
 
 NODE_IDS=(nodeA nodeB nodeC nodeD nodeE nodeF nodeG nodeH)
@@ -40,6 +38,31 @@ ALL_IPS_CSV="${(j:,:)NODE_IPS}"
 trace() {
   local msg="$1"
   printf '[w4guest8] %s\n' "$msg" | tee -a "$TRACE_FILE" >&2
+}
+
+validate_qwen3_weights_path() {
+  if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" != "qwen3_dense_0_6b" ]]; then
+    return 0
+  fi
+  local weights_path="${SIM_QWEN3_0_6B_WEIGHTS_PATH:-}"
+  local required
+
+  if [[ -z "$weights_path" ]]; then
+    trace "FAIL: qwen3_dense_0_6b requires SIM_QWEN3_0_6B_WEIGHTS_PATH"
+    return 1
+  fi
+  if [[ ! -d "$weights_path" ]]; then
+    trace "FAIL: SIM_QWEN3_0_6B_WEIGHTS_PATH is not a directory path=$weights_path"
+    return 1
+  fi
+  for required in model.safetensors config.json tokenizer.json; do
+    if [[ ! -f "$weights_path/$required" ]]; then
+      trace "FAIL: SIM_QWEN3_0_6B_WEIGHTS_PATH missing $required path=$weights_path"
+      return 1
+    fi
+  done
+  trace "prepare: qwen3 weights path ok path=$weights_path"
+  return 0
 }
 
 wait_for_log_pattern() {
@@ -137,67 +160,37 @@ node_ip() {
   echo "${NODE_IPS[$idx]}"
 }
 
-node_serial_port() {
+node_serial_socket() {
   local node_id="$1"
-  local port_base="$2"
-  local idx="$(node_index "$node_id")"
-  echo $((port_base + 31 + idx))
-}
-
-port_block_available() {
-  local port_base="$1"
-  python3 - "$port_base" <<'PY'
-import socket
-import sys
-
-base = int(sys.argv[1])
-ports = list(range(base, base + 8)) + list(range(base + 32, base + 40))
-sockets = []
-try:
-    for port in ports:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(("127.0.0.1", port))
-        sockets.append(sock)
-except OSError:
-    sys.exit(1)
-finally:
-    for sock in sockets:
-        sock.close()
-PY
-}
-
-choose_port_base() {
-  local candidate="$PORT_BASE_START"
-  local attempt=0
-  while (( attempt < 80 )); do
-    if port_block_available "$candidate"; then
-      PORT_BASE="$candidate"
-      return 0
-    fi
-    candidate=$((candidate + 64))
-    attempt=$((attempt + 1))
-  done
-  echo "failed to find available eight-node port block from base $PORT_BASE_START" >&2
-  return 1
+  case "$node_id" in
+    nodeA) echo "${NODEA_SERIAL_SOCKET:?}" ;;
+    nodeB) echo "${NODEB_SERIAL_SOCKET:?}" ;;
+    nodeC) echo "${NODEC_SERIAL_SOCKET:?}" ;;
+    nodeD) echo "${NODED_SERIAL_SOCKET:?}" ;;
+    nodeE) echo "${NODEE_SERIAL_SOCKET:?}" ;;
+    nodeF) echo "${NODEF_SERIAL_SOCKET:?}" ;;
+    nodeG) echo "${NODEG_SERIAL_SOCKET:?}" ;;
+    nodeH) echo "${NODEH_SERIAL_SOCKET:?}" ;;
+    *) return 1 ;;
+  esac
 }
 
 send_serial_block() {
-  local port="$1"
+  local serial_socket="$1"
   local payload="$2"
-  python3 - "$port" "$payload" <<'PY'
+  python3 - "$serial_socket" "$payload" <<'PY'
 import socket
 import sys
 import time
-port = int(sys.argv[1])
+serial_socket = sys.argv[1]
 payload = sys.argv[2]
 deadline = time.time() + 20.0
 last_err = None
 while time.time() < deadline:
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(5)
     try:
-        s.connect(("127.0.0.1", port))
+        s.connect(serial_socket)
         for line in payload.splitlines(True):
             s.sendall(line.encode("utf-8"))
             time.sleep(0.05)
@@ -224,7 +217,7 @@ cleanup_headless_env() {
 send_w4_cmd() {
   local node_id="$1"
   local local_ip="$2"
-  local serial_port="$3"
+  local serial_socket="$3"
   local start_marker="$4"
   local decode_step="$5"
   local payload
@@ -252,17 +245,17 @@ send_w4_cmd() {
   payload+=$'echo '"${start_marker}"$'\n'
   payload+=$'/bin/linqu_w4_guest\n'
 
-  send_serial_block "$serial_port" "$payload"
+  send_serial_block "$serial_socket" "$payload"
 }
 
 poweroff_guest_nodes() {
-  local node_id serial_port payload
+  local node_id serial_socket payload
 
   payload=$'echo 1 >/proc/sys/kernel/sysrq\n'
   payload+=$'echo o >/proc/sysrq-trigger\n'
   for node_id in "${NODE_IDS[@]}"; do
-    serial_port="$(node_serial_port "$node_id" "$PORT_BASE")"
-    send_serial_block "$serial_port" "$payload"
+    serial_socket="$(node_serial_socket "$node_id")"
+    send_serial_block "$serial_socket" "$payload"
   done
 }
 
@@ -397,17 +390,17 @@ validate_node_log() {
 
 run_w4_demo() {
   local decode_step="$1"
-  local node_id guest_log start_line serial_port local_ip rc
+  local node_id guest_log start_line serial_socket local_ip rc
   typeset -A START_LINES
 
   for node_id in "${NODE_IDS[@]}"; do
     guest_log="$RUN_DIR/${node_id}_guest.log"
     start_line="$(wc -l < "$guest_log" 2>/dev/null || echo 0)"
     START_LINES[$node_id]="$start_line"
-    serial_port="$(node_serial_port "$node_id" "$PORT_BASE")"
+    serial_socket="$(node_serial_socket "$node_id")"
     local_ip="$(node_ip "$node_id")"
-    trace "start w4 guest step=$decode_step on $node_id serial=$serial_port local_ip=$local_ip"
-    send_w4_cmd "$node_id" "$local_ip" "$serial_port" "[w4guest8] start step=${decode_step} ${node_id}" "$decode_step"
+    trace "start w4 guest step=$decode_step on $node_id serial_socket=$serial_socket local_ip=$local_ip"
+    send_w4_cmd "$node_id" "$local_ip" "$serial_socket" "[w4guest8] start step=${decode_step} ${node_id}" "$decode_step"
   done
 
   for node_id in "${NODE_IDS[@]}"; do
@@ -427,24 +420,29 @@ run_w4_demo() {
 }
 
 prepare_environment() {
-  local guest_log node_id
+  local guest_log node_id control_log env_file
 
   mkdir -p "$RUN_DIR" "$OUT_DIR"
   : > "$TRACE_FILE"
-  choose_port_base
+  env_file="$OUT_DIR/headless_eight_node_env.${RUN_ID_BASE}.sh"
+  control_log="$RUN_DIR/control.log"
+  validate_qwen3_weights_path || return 1
   trace "prepare: launch headless env run_id=$RUN_ID_BASE"
-  trace "prepare: port_base=$PORT_BASE"
-  ENV_FILE="$OUT_DIR/headless_eight_node_env.${RUN_ID_BASE}.sh" PORT_BASE="$PORT_BASE" RUN_ID="$RUN_ID_BASE" APPEND_EXTRA="$APPEND_BASE" UB_SIM_PORT_NUM="$PORT_NUM" \
+  ENV_FILE="$env_file" RUN_ID="$RUN_ID_BASE" APPEND_EXTRA="$APPEND_BASE" UB_SIM_PORT_NUM="$PORT_NUM" \
     UB_FM_SHARED_DIR="$UB_FM_SHARED_DIR" \
     SIMPLER_HOST_MATMUL_MANIFEST="$SIMPLER_HOST_MATMUL_MANIFEST" \
     SIM_UAPI_W4_CHIPBACKEND_PROFILE="$SIM_UAPI_W4_CHIPBACKEND_PROFILE" \
     SIM_QWEN3_0_6B_WEIGHTS_PATH="${SIM_QWEN3_0_6B_WEIGHTS_PATH:-}" \
     "$SCRIPT_DIR/launch_ub_eight_node_headless.sh" >/dev/null
-  if [[ ! -f "$OUT_DIR/headless_eight_node_env.${RUN_ID_BASE}.sh" ]]; then
-    trace "FAIL: headless env file was not created"
+  if [[ ! -f "$env_file" ]]; then
+    trace "FAIL: headless env file was not created path=$env_file"
+    if [[ -f "$control_log" ]]; then
+      trace "headless control log tail follows path=$control_log"
+      tail -n 80 "$control_log" | sed 's/^/[w4guest8] control: /' | tee -a "$TRACE_FILE" >&2
+    fi
     return 1
   fi
-  source "$OUT_DIR/headless_eight_node_env.${RUN_ID_BASE}.sh"
+  source "$env_file"
 
   for node_id in "${NODE_IDS[@]}"; do
     guest_log="$RUN_DIR/${node_id}_guest.log"

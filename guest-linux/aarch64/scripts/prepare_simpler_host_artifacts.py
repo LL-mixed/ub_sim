@@ -154,7 +154,8 @@ def read_runtime_binaries(builder, api_kind: str, runtime_name: str, build_dir: 
             if runtime_binaries.sim_context_path is not None
             else None
         )
-        simpler_log = runtime_binaries.simpler_log_path.read_bytes()
+        simpler_log_path = getattr(runtime_binaries, "simpler_log_path", None)
+        simpler_log = simpler_log_path.read_bytes() if simpler_log_path is not None else None
         return (
             runtime_binaries.host_path.read_bytes(),
             runtime_binaries.aicpu_path.read_bytes(),
