@@ -16,7 +16,7 @@ PORT_BASE_START="${PORT_BASE_START:-$((54100 + (RANDOM % 300)))}"
 PORT_BASE="$PORT_BASE_START"
 SIMPLER_HOST_MATMUL_MANIFEST="${SIMPLER_HOST_MATMUL_MANIFEST:-/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json}"
 SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-host_matmul}"
-FATAL_GUEST_PATTERN="rcu_preempt|RCU grace-period|self-detected stall|detected stalls on CPUs/tasks|rx msg plen invalid|poller rx msg failed, ret=-22|\\[w4_guest\\] fail"
+FATAL_GUEST_PATTERN="rcu_preempt|RCU grace-period|self-detected stall|detected stalls on CPUs/tasks|rx msg plen invalid|poller rx msg failed, ret=-22|qwen3 .*missing|qwen3 .*mismatch|\\[w4_guest\\] fail"
 FATAL_QEMU_PATTERN="sim_dec read: timeout|ub_link write failed|bounded write timed out|rx msg plen invalid|poller rx msg failed"
 
 NODE_IDS=(nodeA nodeB nodeC nodeD)

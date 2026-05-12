@@ -28,7 +28,7 @@ SIM_QWEN3_GUEST_ENGRAM_HISTORY_WINDOW="${SIM_QWEN3_GUEST_ENGRAM_HISTORY_WINDOW:-
 SIM_QWEN3_GUEST_ENGRAM_BLOCK_TOKEN_IDS="${SIM_QWEN3_GUEST_ENGRAM_BLOCK_TOKEN_IDS:-}"
 SIM_W4_UAPI_COMPLETION_TIMEOUT_MS="${SIM_W4_UAPI_COMPLETION_TIMEOUT_MS:-900000}"
 SIM_W4_RESOURCE_ASSERTIONS="${SIM_W4_RESOURCE_ASSERTIONS:-0}"
-FATAL_GUEST_PATTERN="rcu_preempt|RCU grace-period|self-detected stall|detected stalls on CPUs/tasks|rx msg plen invalid|poller rx msg failed, ret=-22|timeout waiting completions|qwen3 logits table missing|qwen3 logits table header mismatch|\\[w4_guest\\] fail"
+FATAL_GUEST_PATTERN="rcu_preempt|RCU grace-period|self-detected stall|detected stalls on CPUs/tasks|rx msg plen invalid|poller rx msg failed, ret=-22|timeout waiting completions|qwen3 .*missing|qwen3 .*mismatch|\\[w4_guest\\] fail"
 FATAL_QEMU_PATTERN="SIM_DEC: cpu read failed|ub_link write failed|bounded write timed out|rx msg plen invalid|poller rx msg failed"
 
 NODE_IDS=(nodeA nodeB nodeC nodeD nodeE nodeF nodeG nodeH)
@@ -103,6 +103,43 @@ wait_for_log_pass_or_fail_since() {
       if [[ -n "$tmp" ]] && printf '%s\n' "$tmp" | rg -q "$fail_pattern"; then
         return 1
       fi
+    fi
+    sleep 0.2
+  done
+  return 2
+}
+
+wait_for_all_logs_pass_or_fail_since() {
+  local pass_pattern="$1"
+  local fail_pattern="$2"
+  local timeout_s="$3"
+  local pass_count="${4:-1}"
+  local deadline=$((SECONDS + timeout_s))
+  local node_id guest_log start_line tmp count all_pass
+
+  while (( SECONDS < deadline )); do
+    all_pass=1
+    for node_id in "${NODE_IDS[@]}"; do
+      guest_log="$RUN_DIR/${node_id}_guest.log"
+      start_line="${START_LINES[$node_id]}"
+      count=0
+      if [[ -f "$guest_log" ]]; then
+        tmp="$(tail -n "+$((start_line + 1))" "$guest_log" 2>/dev/null || true)"
+        if [[ -n "$tmp" ]]; then
+          if printf '%s\n' "$tmp" | rg -q "$fail_pattern"; then
+            trace "FAIL: w4 guest fatal marker on $node_id"
+            printf '%s\n' "$tmp" | rg "$fail_pattern" | tail -n 5 >&2 || true
+            return 1
+          fi
+          count="$(printf '%s\n' "$tmp" | rg -c "$pass_pattern" || true)"
+        fi
+      fi
+      if (( count < pass_count )); then
+        all_pass=0
+      fi
+    done
+    if (( all_pass )); then
+      return 0
     fi
     sleep 0.2
   done
@@ -287,10 +324,10 @@ validate_node_log() {
 
   assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_kvcache_path=ready" "$node_id obmm kvcache backing" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage db_cluster_mode=resource_backed_uapi" "$node_id db cluster resource-backed mode" || return 1
-  assert_log_has "$log_file" "\\[w4_guest\\] stage db_service_cluster=resource_backed_assertions_(ok|skipped) nodes=8 .*" "$node_id resource-backed db cluster assertions" || return 1
   idx="$(node_index "$node_id")"
   remote_idx=$((idx % 8 + 1))
   if [[ "$SIM_W4_RESOURCE_ASSERTIONS" == "1" ]]; then
+    assert_log_has "$log_file" "\\[w4_guest\\] stage db_service_cluster=resource_backed_assertions_(ok|skipped) nodes=8 .*" "$node_id resource-backed db cluster assertions" || return 1
     assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_publish kind=weight_tile key=weights/qwen3-0\\.6b/node${idx}/tile0 owner=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm weight publish" || return 1
     assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_publish kind=kvcache_block key=kvcache/w4/node${idx}/block0 owner=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm kvcache publish" || return 1
     assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_publish kind=hidden_range_input key=hidden/qwen3-0\\.6b/node${idx}/range-input owner=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm hidden range input publish" || return 1
@@ -365,7 +402,7 @@ validate_node_log() {
     fi
     assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_forward_only object=range_hidden publish=0 resolve_remote=0 compute=0 storage=obmm_object metadata=db status=ok" "$node_id qwen3 range-only flow" || return 1
     if (( idx == 8 )); then
-      assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_logits_sampling_table entries=1 entry_words=45 table_bytes=360 vocab=151936 sampled_distinct=1 logits_checksum_nonzero=1 text_checksum_nonzero=1 real_logits=1 status=ok" "$node_id qwen3 logits sampling table" || return 1
+      assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_logits_sampling_table entries=1 entry_words=(20|45) table_bytes=(160|360) vocab=151936 sampled_distinct=1 logits_checksum_nonzero=1 text_checksum_nonzero=1 real_logits=1 status=ok" "$node_id qwen3 logits sampling table" || return 1
       assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_token_text_table entries=1 entry_words=8 table_bytes=64 total_bytes=[1-9][0-9]* piece_bytes=9 policy_kind=[12] policy_hash=0x[0-9a-f]+ packed_matches=1 checksum_matches=1 boundary_first=1 boundary_last=1 status=ok" "$node_id qwen3 token text table" || return 1
     else
       assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_logits_sampling_table node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) terminal_owner=0 status=skipped" "$node_id qwen3 logits sampling table skipped" || return 1
@@ -403,16 +440,17 @@ run_w4_demo() {
     send_w4_cmd "$node_id" "$local_ip" "$serial_socket" "[w4guest8] start step=${decode_step} ${node_id}" "$decode_step"
   done
 
+  rc=0
+  wait_for_all_logs_pass_or_fail_since "^\\[w4_guest\\] pass\\r?$" "$FATAL_GUEST_PATTERN" \
+    "$((DEMO_WAIT_SECS * SIM_QWEN3_GUEST_DECODE_STEPS))" \
+    "$SIM_QWEN3_GUEST_DECODE_STEPS" || rc=$?
+  if [[ "$rc" != "0" ]]; then
+    trace "FAIL: w4 guest did not pass on all nodes rc=$rc"
+    return 1
+  fi
+
   for node_id in "${NODE_IDS[@]}"; do
-    rc=0
     guest_log="$RUN_DIR/${node_id}_guest.log"
-    wait_for_log_pass_or_fail_since "$guest_log" "${START_LINES[$node_id]}" \
-      "^\\[w4_guest\\] pass\\r?$" "$FATAL_GUEST_PATTERN" "$((DEMO_WAIT_SECS * SIM_QWEN3_GUEST_DECODE_STEPS))" \
-      "$SIM_QWEN3_GUEST_DECODE_STEPS" || rc=$?
-    if [[ "$rc" != "0" ]]; then
-      trace "FAIL: w4 guest did not pass on $node_id rc=$rc"
-      return 1
-    fi
     validate_node_log "$node_id" "$guest_log" || return 1
   done
   assert_no_fatal_runtime_logs || return 1

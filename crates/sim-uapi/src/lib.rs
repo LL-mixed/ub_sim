@@ -1491,10 +1491,14 @@ impl LocalGuestUapiSurface {
             .segment_payloads
             .get_mut(&segment)
             .ok_or(SimError::NotFound("segment payload"))?;
-        let copy_len = payload.len().min(output.len());
-        payload[..copy_len].copy_from_slice(&output[..copy_len]);
-        if payload.len() > copy_len {
-            payload[copy_len..].fill(0);
+        if output.len() > payload.len() {
+            return Err(SimError::InvalidInput(
+                "dispatch result exceeds segment payload",
+            ));
+        }
+        payload[..output.len()].copy_from_slice(output);
+        if payload.len() > output.len() {
+            payload[output.len()..].fill(0);
         }
         Ok(())
     }
@@ -16285,7 +16289,7 @@ mod tests {
             LingquObjectResolveReq, LingquObjectServiceStub, LingquObjectState,
             LingquObjectVersionSelector, LingquPayloadBackend, LingquPayloadPlacement,
         },
-        shmem::{ShmemGetReq, ShmemPutReq, ShmemServiceProfile},
+        shmem::{ShmemGetReq, ShmemPutReq, ShmemServiceProfile, DEFAULT_MAX_SEGMENT_BYTES},
     };
     use sim_topology::SimTopology;
     use std::collections::BTreeMap;
@@ -20845,6 +20849,28 @@ outputs:
     }
 
     #[test]
+    fn dispatch_result_write_rejects_oversized_output() {
+        let mut surface = test_surface();
+        let segment = surface.create_segment(4).expect("create segment");
+        let err = surface
+            .write_dispatch_result_to_segment(segment, &[1, 2, 3, 4, 5])
+            .expect_err("oversized dispatch output must fail");
+
+        assert!(matches!(
+            err,
+            SimError::InvalidInput("dispatch result exceeds segment payload")
+        ));
+        assert_eq!(
+            surface
+                .segment_payloads
+                .get(&segment)
+                .expect("segment")
+                .as_slice(),
+            &[0, 0, 0, 0]
+        );
+    }
+
+    #[test]
     fn qwen3_decode_duration_label_uses_single_decimal_seconds() {
         assert_eq!(
             qwen3_dense_0_6b_decode_duration_label(Duration::from_millis(3_240)),
@@ -21306,7 +21332,9 @@ outputs:
             other => panic!("unexpected response: {other:?}"),
         };
         let segment = match surface
-            .execute(UapiCommand::CreateSegment { bytes: 4096 })
+            .execute(UapiCommand::CreateSegment {
+                bytes: DEFAULT_MAX_SEGMENT_BYTES,
+            })
             .expect("create segment")
         {
             UapiResponse::SegmentCreated(segment) => segment,
@@ -21337,7 +21365,12 @@ outputs:
 
         let events = surface.drain_cq(cq);
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].source, sim_core::CompletionSource::ChipBackend);
+        assert_eq!(
+            events[0].source,
+            sim_core::CompletionSource::ChipBackend,
+            "{:?}",
+            events[0]
+        );
     }
 
     #[test]

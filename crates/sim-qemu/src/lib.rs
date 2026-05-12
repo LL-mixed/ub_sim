@@ -28,7 +28,7 @@ mod tests {
     use sim_services::{
         db::{DbGetReq, DbPutReq},
         dfs::{DfsReadReq, DfsWriteReq},
-        shmem::{ShmemGetReq, ShmemPutReq},
+        shmem::{ShmemGetReq, ShmemPutReq, DEFAULT_MAX_SEGMENT_BYTES},
     };
     use sim_topology::SimTopology;
 
@@ -75,7 +75,9 @@ mod tests {
     fn qemu_backend_adapter_maps_guest_dispatch_to_chipbackend_completion() {
         let mut adapter = test_adapter();
         let session = adapter.register_endpoint(0).expect("register endpoint");
-        let segment = adapter.create_segment(&session, 4096).expect("segment");
+        let segment = adapter
+            .create_segment(&session, DEFAULT_MAX_SEGMENT_BYTES)
+            .expect("segment");
 
         let _ = adapter
             .enqueue_descriptor(

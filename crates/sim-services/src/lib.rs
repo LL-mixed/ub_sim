@@ -202,6 +202,8 @@ pub mod block {
 pub mod shmem {
     use super::*;
 
+    pub const DEFAULT_MAX_SEGMENT_BYTES: u64 = 8 * 1024 * 1024;
+
     #[derive(Debug, Clone)]
     pub struct ShmemPutReq {
         pub task: Option<TaskKey>,
@@ -231,7 +233,7 @@ pub mod shmem {
         fn default() -> Self {
             Self {
                 default_latency_us: 3,
-                max_segment_bytes: 1 << 20,
+                max_segment_bytes: DEFAULT_MAX_SEGMENT_BYTES,
                 max_segments: 64,
                 peer_count: 2,
                 queue_depth: 16,

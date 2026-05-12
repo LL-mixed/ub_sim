@@ -3,11 +3,25 @@ use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 
 use sim_config::ScenarioConfig;
+use sim_services::shmem::DEFAULT_MAX_SEGMENT_BYTES;
 use sim_topology::SimTopology;
 
 use crate::{GuestDescriptor, GuestEndpointSession, QemuBackendAdapter};
 
-const DEFAULT_SEGMENT_BYTES: u64 = 1024 * 1024;
+const DEFAULT_SEGMENT_BYTES_FALLBACK: u64 = DEFAULT_MAX_SEGMENT_BYTES;
+const DEFAULT_SEGMENT_BYTES_MIN: u64 = 1024 * 1024;
+
+fn parse_default_segment_bytes(value: Option<&str>) -> u64 {
+    value
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|bytes| *bytes >= DEFAULT_SEGMENT_BYTES_MIN)
+        .unwrap_or(DEFAULT_SEGMENT_BYTES_FALLBACK)
+}
+
+fn default_segment_bytes() -> u64 {
+    let value = std::env::var("SIM_QEMU_DEFAULT_SEGMENT_BYTES").ok();
+    parse_default_segment_bytes(value.as_deref())
+}
 
 pub struct LinquUbBridge {
     adapter: QemuBackendAdapter,
@@ -37,7 +51,7 @@ impl LinquUbBridge {
             .map_err(|_| "register endpoint failed")?;
         let default_segment = self
             .adapter
-            .create_segment(&session, DEFAULT_SEGMENT_BYTES)
+            .create_segment(&session, default_segment_bytes())
             .map_err(|_| "create default segment failed")?;
         self.sessions.insert(
             endpoint_id,
@@ -315,5 +329,45 @@ pub extern "C" fn linqu_ub_bridge_poll_completion(
         Ok(true) => 0,
         Ok(false) => 1,
         Err(code) => code,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        parse_default_segment_bytes, DEFAULT_SEGMENT_BYTES_FALLBACK, DEFAULT_SEGMENT_BYTES_MIN,
+    };
+
+    #[test]
+    fn default_segment_bytes_uses_qwen_safe_fallback() {
+        assert_eq!(
+            parse_default_segment_bytes(None),
+            DEFAULT_SEGMENT_BYTES_FALLBACK
+        );
+        assert!(DEFAULT_SEGMENT_BYTES_FALLBACK >= 8 * 1024 * 1024);
+    }
+
+    #[test]
+    fn default_segment_bytes_accepts_explicit_value() {
+        assert_eq!(
+            parse_default_segment_bytes(Some("16777216")),
+            16 * 1024 * 1024
+        );
+    }
+
+    #[test]
+    fn default_segment_bytes_rejects_invalid_or_too_small_value() {
+        assert_eq!(
+            parse_default_segment_bytes(Some("invalid")),
+            DEFAULT_SEGMENT_BYTES_FALLBACK
+        );
+        assert_eq!(
+            parse_default_segment_bytes(Some("4096")),
+            DEFAULT_SEGMENT_BYTES_FALLBACK
+        );
+        assert_eq!(
+            parse_default_segment_bytes(Some("1048576")),
+            DEFAULT_SEGMENT_BYTES_MIN
+        );
     }
 }

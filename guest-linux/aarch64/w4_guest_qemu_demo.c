@@ -159,6 +159,8 @@
 #define W4_QWEN3_LOGITS_TABLE_BASE (W4_QWEN3_LOGITS_TABLE_HEADER + 64ULL)
 #define W4_QWEN3_LOGITS_TABLE_ENTRY_WORDS 45ULL
 #define W4_QWEN3_LOGITS_TABLE_ENTRY_BYTES 360ULL
+#define W4_QWEN3_LOGITS_TABLE_COMPACT_ENTRY_WORDS 20ULL
+#define W4_QWEN3_LOGITS_TABLE_COMPACT_ENTRY_BYTES 160ULL
 #define W4_QWEN3_LOGITS_ENTRIES W4_QWEN3_EXPECTED_TILES
 #define W4_QWEN3_LOGITS_TABLE_END \
     (W4_QWEN3_LOGITS_TABLE_BASE + \
@@ -182,8 +184,9 @@
 #define W4_QWEN3_RANGE_FORWARD_TABLE_ENTRY_WORDS 18ULL
 #define W4_QWEN3_RANGE_FORWARD_TABLE_ENTRY_BYTES \
     (W4_QWEN3_RANGE_FORWARD_TABLE_ENTRY_WORDS * 8ULL)
-#define W4_QWEN3_OUTPUT_PAYLOAD_BYTES \
+#define W4_QWEN3_OUTPUT_SCAN_FALLBACK_BYTES \
     (W4_QWEN3_EXPECTED_TILES * W4_QWEN3_SHARD_OUTPUT_BYTES)
+#define W4_QWEN3_OUTPUT_SCAN_MAX_BYTES (8ULL * 1024ULL * 1024ULL)
 
 struct linqu_dt_info {
     bool found;
@@ -1378,6 +1381,20 @@ static uint64_t read_segment_u64(volatile uint8_t *ep_mmio, uint64_t offset)
     return mmio_read64(ep_mmio, REG_SEG_DATA_VALUE);
 }
 
+static uint64_t qwen3_output_scan_limit(volatile uint8_t *ep_mmio)
+{
+    uint64_t explicit_end =
+        read_segment_u64(ep_mmio,
+                         W4_QWEN3_RESULT_BLOCK_TABLE_HEADER +
+                             W4_QWEN3_RESULT_BLOCK_METADATA_END_OFFSET);
+
+    if (explicit_end > W4_QWEN3_OUTPUT_SCAN_FALLBACK_BYTES &&
+        explicit_end <= W4_QWEN3_OUTPUT_SCAN_MAX_BYTES) {
+        return explicit_end;
+    }
+    return W4_QWEN3_OUTPUT_SCAN_FALLBACK_BYTES;
+}
+
 static void write_segment_bytes(volatile uint8_t *ep_mmio,
                                 uint64_t offset,
                                 const uint8_t *bytes,
@@ -1446,6 +1463,7 @@ static bool qwen3_find_trailing_metadata_table(volatile uint8_t *ep_mmio,
 {
     uint64_t marker = read_segment_u64(ep_mmio, W4_QWEN3_TEXT_OUTPUT_TABLE_HEADER);
     uint64_t cursor = W4_QWEN3_TOKEN_TEXT_TABLE_END;
+    uint64_t scan_limit = qwen3_output_scan_limit(ep_mmio);
 
     if (marker == W4_QWEN3_MARKER_TEXT_OUTPUT_TABLE) {
         cursor = W4_QWEN3_TEXT_OUTPUT_TABLE_END;
@@ -1466,7 +1484,7 @@ static bool qwen3_find_trailing_metadata_table(volatile uint8_t *ep_mmio,
 
         table_bytes = read_segment_u64(ep_mmio, cursor + 24);
         next_cursor = cursor + 64ULL + table_bytes;
-        if (next_cursor <= cursor || next_cursor > W4_QWEN3_OUTPUT_PAYLOAD_BYTES) {
+        if (next_cursor <= cursor || next_cursor > scan_limit) {
             break;
         }
         cursor = next_cursor;
@@ -1480,9 +1498,67 @@ static bool qwen3_find_metadata_table_by_scan(volatile uint8_t *ep_mmio,
                                               uint64_t *table_header)
 {
     uint64_t cursor;
+    uint64_t scan_limit = qwen3_output_scan_limit(ep_mmio);
 
-    for (cursor = 0; cursor + 32ULL <= W4_QWEN3_OUTPUT_PAYLOAD_BYTES; cursor += 8ULL) {
+    for (cursor = 0; cursor + 32ULL <= scan_limit; cursor += 8ULL) {
         if (read_segment_u64(ep_mmio, cursor) == target_marker) {
+            *table_header = cursor;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool qwen3_logits_table_candidate_is_valid(volatile uint8_t *ep_mmio,
+                                                  uint64_t header,
+                                                  bool allow_compact)
+{
+    uint64_t scan_limit = qwen3_output_scan_limit(ep_mmio);
+    uint64_t count;
+    uint64_t entry_words;
+    uint64_t table_bytes;
+    uint64_t token_text_header;
+
+    if (header + 64ULL > scan_limit ||
+        read_segment_u64(ep_mmio, header) != W4_QWEN3_MARKER_LOGITS_TABLE) {
+        return false;
+    }
+    count = read_segment_u64(ep_mmio, header + 8);
+    entry_words = read_segment_u64(ep_mmio, header + 16);
+    table_bytes = read_segment_u64(ep_mmio, header + 24);
+    if (count == 0 || count > W4_QWEN3_LOGITS_ENTRIES) {
+        return false;
+    }
+    if (entry_words != W4_QWEN3_LOGITS_TABLE_ENTRY_WORDS &&
+        !(allow_compact && entry_words == W4_QWEN3_LOGITS_TABLE_COMPACT_ENTRY_WORDS)) {
+        return false;
+    }
+    if (table_bytes != count * entry_words * 8ULL) {
+        return false;
+    }
+    token_text_header = header + 64ULL + table_bytes;
+    if (token_text_header + 64ULL > scan_limit ||
+        read_segment_u64(ep_mmio, token_text_header) != W4_QWEN3_MARKER_TOKEN_TEXT_TABLE ||
+        read_segment_u64(ep_mmio, token_text_header + 8) != count ||
+        read_segment_u64(ep_mmio, token_text_header + 16) !=
+            W4_QWEN3_TOKEN_TEXT_TABLE_ENTRY_WORDS ||
+        read_segment_u64(ep_mmio, token_text_header + 24) !=
+            count * W4_QWEN3_TOKEN_TEXT_TABLE_ENTRY_BYTES) {
+        return false;
+    }
+    return true;
+}
+
+static bool qwen3_find_logits_table_by_scan(volatile uint8_t *ep_mmio,
+                                            bool allow_compact,
+                                            uint64_t *table_header)
+{
+    uint64_t cursor;
+    uint64_t scan_limit = qwen3_output_scan_limit(ep_mmio);
+
+    for (cursor = 0; cursor + 64ULL <= scan_limit; cursor += 8ULL) {
+        if (qwen3_logits_table_candidate_is_valid(ep_mmio, cursor, allow_compact)) {
             *table_header = cursor;
             return true;
         }
@@ -1539,9 +1615,7 @@ static int qwen3_read_terminal_token_record(volatile uint8_t *ep_mmio,
     if (!record) {
         return -1;
     }
-    if (!qwen3_find_metadata_table_by_scan(ep_mmio,
-                                           W4_QWEN3_MARKER_LOGITS_TABLE,
-                                           &logits_table_header)) {
+    if (!qwen3_find_logits_table_by_scan(ep_mmio, true, &logits_table_header)) {
         logits_table_header = W4_QWEN3_LOGITS_TABLE_HEADER;
     }
     if (read_segment_u64(ep_mmio, logits_table_header) != W4_QWEN3_MARKER_LOGITS_TABLE) {
@@ -2006,6 +2080,7 @@ static uint64_t qwen3_result_metadata_table_end(volatile uint8_t *ep_mmio)
 {
     uint64_t marker = read_segment_u64(ep_mmio, W4_QWEN3_TEXT_OUTPUT_TABLE_HEADER);
     uint64_t cursor = W4_QWEN3_TOKEN_TEXT_TABLE_END;
+    uint64_t scan_limit = qwen3_output_scan_limit(ep_mmio);
 
     if (marker == W4_QWEN3_MARKER_TEXT_OUTPUT_TABLE) {
         cursor = W4_QWEN3_TEXT_OUTPUT_TABLE_END;
@@ -2022,7 +2097,7 @@ static uint64_t qwen3_result_metadata_table_end(volatile uint8_t *ep_mmio)
 
         table_bytes = read_segment_u64(ep_mmio, cursor + 24);
         next_cursor = cursor + 64ULL + table_bytes;
-        if (next_cursor <= cursor || next_cursor > W4_QWEN3_OUTPUT_PAYLOAD_BYTES) {
+        if (next_cursor <= cursor || next_cursor > scan_limit) {
             break;
         }
         cursor = next_cursor;
@@ -2318,12 +2393,13 @@ static int verify_qwen3_range_forward_table(volatile uint8_t *ep_mmio,
     uint64_t kv_payload_offset;
     uint64_t kv_payload_bytes;
     uint64_t kv_payload_checksum = 0;
+    uint64_t scan_limit = qwen3_output_scan_limit(ep_mmio);
     uint64_t explicit_table_header =
         read_segment_u64(ep_mmio,
                          W4_QWEN3_RESULT_BLOCK_TABLE_HEADER +
                              W4_QWEN3_RESULT_BLOCK_RANGE_FORWARD_HEADER_OFFSET);
 
-    if (explicit_table_header + 64ULL <= W4_QWEN3_OUTPUT_PAYLOAD_BYTES &&
+    if (explicit_table_header + 64ULL <= scan_limit &&
         read_segment_u64(ep_mmio, explicit_table_header) ==
             W4_QWEN3_MARKER_RANGE_FORWARD_TABLE) {
         table_header = explicit_table_header;
@@ -2607,6 +2683,7 @@ static int verify_dispatch_payload(volatile uint8_t *ep_mmio,
         uint64_t logits_marker;
         uint64_t logits_count;
         uint64_t logits_entry_words;
+        uint64_t logits_entry_bytes = W4_QWEN3_LOGITS_TABLE_ENTRY_BYTES;
         uint64_t logits_table_bytes;
         uint64_t token_text_marker;
         uint64_t token_text_count;
@@ -2933,7 +3010,7 @@ static int verify_dispatch_payload(volatile uint8_t *ep_mmio,
             };
 
             if (explicit_metadata_table_end > metadata_table_end &&
-                explicit_metadata_table_end <= W4_QWEN3_OUTPUT_PAYLOAD_BYTES) {
+                explicit_metadata_table_end <= qwen3_output_scan_limit(ep_mmio)) {
                 metadata_table_end = explicit_metadata_table_end;
             }
             for (uint64_t block = 0; block < result_block_count; ++block) {
@@ -3319,10 +3396,11 @@ qwen3_logits_tables:
                    layer_start,
                    layer_end);
         } else {
-            if (range_only_flow &&
-                !qwen3_find_metadata_table_by_scan(ep_mmio,
-                                                   W4_QWEN3_MARKER_LOGITS_TABLE,
-                                                   &logits_table_header)) {
+            uint64_t expected_logits_entry_words = W4_QWEN3_LOGITS_TABLE_ENTRY_WORDS;
+
+            if (range_only_flow && !qwen3_find_logits_table_by_scan(ep_mmio,
+                                                                    true,
+                                                                    &logits_table_header)) {
                 fprintf(stderr, "[w4_guest] qwen3 logits table missing range_only=1\n");
                 return -1;
             }
@@ -3334,13 +3412,17 @@ qwen3_logits_tables:
             if (range_only_flow) {
                 token_text_table_header = logits_table_base + logits_table_bytes;
                 token_text_table_base = token_text_table_header + 64ULL;
+                if (logits_entry_words == W4_QWEN3_LOGITS_TABLE_COMPACT_ENTRY_WORDS) {
+                    expected_logits_entry_words = W4_QWEN3_LOGITS_TABLE_COMPACT_ENTRY_WORDS;
+                }
             }
+            logits_entry_bytes = logits_entry_words * 8ULL;
             if (logits_marker != W4_QWEN3_MARKER_LOGITS_TABLE ||
                 (range_only_flow ?
-                     logits_count == 0 :
+                     (logits_count == 0 || logits_count > W4_QWEN3_LOGITS_ENTRIES) :
                      logits_count != W4_QWEN3_LOGITS_ENTRIES) ||
-                logits_entry_words != W4_QWEN3_LOGITS_TABLE_ENTRY_WORDS ||
-                logits_table_bytes != logits_count * W4_QWEN3_LOGITS_TABLE_ENTRY_BYTES) {
+                logits_entry_words != expected_logits_entry_words ||
+                logits_table_bytes != logits_count * logits_entry_bytes) {
                 fprintf(stderr,
                         "[w4_guest] qwen3 logits table header mismatch marker=0x%016" PRIx64
                         " count=%" PRIu64 " entry_words=%" PRIu64 " bytes=%" PRIu64 "\n",
@@ -3355,8 +3437,7 @@ qwen3_logits_tables:
 
             memset(sampled_tokens, 0, sizeof(sampled_tokens));
             for (uint64_t entry = 0; entry < logits_count; ++entry) {
-                uint64_t base = logits_table_base +
-                                entry * W4_QWEN3_LOGITS_TABLE_ENTRY_BYTES;
+                uint64_t base = logits_table_base + entry * logits_entry_bytes;
                 uint64_t result_base = W4_QWEN3_RESULT_TABLE_BASE +
                                        entry * W4_QWEN3_RESULT_TABLE_ENTRY_BYTES;
                 uint64_t expected_shard = entry / W4_QWEN3_TILES_PER_SHARD;
@@ -3590,8 +3671,7 @@ qwen3_logits_tables:
             for (uint64_t entry = 0; entry < token_text_count; ++entry) {
                 uint64_t base = token_text_table_base +
                                 entry * W4_QWEN3_TOKEN_TEXT_TABLE_ENTRY_BYTES;
-                uint64_t logits_base = logits_table_base +
-                                       entry * W4_QWEN3_LOGITS_TABLE_ENTRY_BYTES;
+                uint64_t logits_base = logits_table_base + entry * logits_entry_bytes;
                 uint64_t sampled_token = read_segment_u64(ep_mmio, logits_base + 32);
                 uint64_t text_checksum = read_segment_u64(ep_mmio, logits_base + 64);
                 uint64_t expected_word0 = 0;

@@ -16,6 +16,18 @@ CONFIGURE_ARGS="${QEMU_CONFIGURE_ARGS:---disable-werror}"
 RECONFIGURE="${RECONFIGURE:-0}"
 STAMP_FILE="$BUILD_DIR/.qemu_build.stamp"
 SIM_QEMU_STATICLIB="${SIM_QEMU_STATICLIB:-}"
+BUILD_HOST_OS="$(uname -s 2>/dev/null || echo unknown)"
+
+apply_host_qemu_configure_args() {
+  case "$BUILD_HOST_OS" in
+    Darwin)
+      if [[ "$CONFIGURE_ARGS" != *"--disable-zstd"* && "$CONFIGURE_ARGS" != *"--enable-zstd"* ]]; then
+        CONFIGURE_ARGS="${CONFIGURE_ARGS} --disable-zstd"
+        echo "[build_qemu_binary] macOS build host detected; adding --disable-zstd" >&2
+      fi
+      ;;
+  esac
+}
 
 find_sim_qemu_staticlib() {
   local candidate
@@ -82,6 +94,7 @@ if [[ ! -d "$SRC_DIR" ]]; then
   exit 1
 fi
 
+apply_host_qemu_configure_args
 ensure_sim_qemu_link_args
 mkdir -p "$BUILD_DIR"
 
