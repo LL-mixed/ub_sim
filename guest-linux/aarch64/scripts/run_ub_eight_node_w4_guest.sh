@@ -215,26 +215,60 @@ node_serial_socket() {
 send_serial_block() {
   local serial_socket="$1"
   local payload="$2"
-  python3 - "$serial_socket" "$payload" <<'PY'
+  local log_file="${3:-}"
+  python3 - "$serial_socket" "$payload" "$log_file" <<'PY'
+import os
 import socket
 import sys
 import time
 serial_socket = sys.argv[1]
 payload = sys.argv[2]
+log_file = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else None
 char_delay = 0.003
 line_delay = 0.1
+prompt_timeout = 5.0
 deadline = time.time() + 20.0
 last_err = None
+
+def log_size():
+    if not log_file:
+        return None
+    try:
+        return os.path.getsize(log_file)
+    except OSError:
+        return None
+
+def wait_for_prompt(start_size):
+    if not log_file or start_size is None:
+        time.sleep(line_delay)
+        return
+    wait_deadline = time.time() + prompt_timeout
+    while time.time() < wait_deadline:
+        try:
+            with open(log_file, "rb") as log:
+                log.seek(start_size)
+                if b"~ # " in log.read():
+                    return
+        except OSError:
+            pass
+        time.sleep(0.05)
+    raise TimeoutError(f"shell prompt did not return in {log_file}")
+
 while time.time() < deadline:
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(5)
     try:
         s.connect(serial_socket)
-        for line in payload.splitlines(True):
+        lines = payload.splitlines(True)
+        for idx, line in enumerate(lines):
+            start_size = log_size()
             for byte in line.encode("utf-8"):
                 s.sendall(bytes((byte,)))
                 time.sleep(char_delay)
-            time.sleep(line_delay)
+            if idx < len(lines) - 1:
+                wait_for_prompt(start_size)
+            else:
+                time.sleep(line_delay)
         s.close()
         sys.exit(0)
     except OSError as exc:
@@ -258,12 +292,12 @@ cleanup_headless_env() {
 trace_run_artifact_paths() {
   local node_id
 
-  trace "run_dir=$RUN_DIR"
-  trace "control_log=$RUN_DIR/control.log"
-  trace "cleanup_script=${CLEANUP_SCRIPT:-}"
+  trace "run_dir: $RUN_DIR"
+  trace "control_log: $RUN_DIR/control.log"
+  trace "cleanup_script: ${CLEANUP_SCRIPT:-}"
   for node_id in "${NODE_IDS[@]}"; do
-    trace "${node_id}_guest_log=$RUN_DIR/${node_id}_guest.log"
-    trace "${node_id}_qemu_log=$RUN_DIR/${node_id}_qemu.log"
+    trace "${node_id}_guest_log: $RUN_DIR/${node_id}_guest.log"
+    trace "${node_id}_qemu_log: $RUN_DIR/${node_id}_qemu.log"
   done
 }
 
@@ -298,7 +332,7 @@ send_w4_cmd() {
   payload+=$'echo '"${start_marker}"$'\n'
   payload+=$'/bin/linqu_w4_guest\n'
 
-  send_serial_block "$serial_socket" "$payload"
+  send_serial_block "$serial_socket" "$payload" "$RUN_DIR/${node_id}_guest.log"
 }
 
 poweroff_guest_nodes() {
@@ -308,7 +342,7 @@ poweroff_guest_nodes() {
   payload+=$'echo o >/proc/sysrq-trigger\n'
   for node_id in "${NODE_IDS[@]}"; do
     serial_socket="$(node_serial_socket "$node_id")"
-    send_serial_block "$serial_socket" "$payload"
+    send_serial_block "$serial_socket" "$payload" "$RUN_DIR/${node_id}_guest.log"
   done
 }
 
