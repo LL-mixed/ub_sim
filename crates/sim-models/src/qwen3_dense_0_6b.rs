@@ -72,6 +72,25 @@ pub const QWEN3_DENSE_0_6B_PROFILE: Qwen3Dense06bProfile = Qwen3Dense06bProfile 
 pub const QWEN3_DENSE_0_6B_TOKENIZER_POLICY_KIND: u64 = 1;
 pub const QWEN3_DENSE_0_6B_TOKENIZER_ASSET_POLICY_KIND: u64 = 2;
 
+pub fn profile_from_dense_profile(
+    profile: &crate::qwen3_dense::Qwen3DenseProfile,
+) -> Qwen3Dense06bProfile {
+    Qwen3Dense06bProfile {
+        vocab_size: profile.vocab_size,
+        hidden_size: profile.hidden_size,
+        intermediate_size: profile.intermediate_size,
+        num_hidden_layers: profile.num_hidden_layers,
+        num_attention_heads: profile.num_attention_heads,
+        num_key_value_heads: profile.num_key_value_heads,
+        head_dim: profile.head_dim,
+        max_position_embeddings: profile.max_position_embeddings,
+        rope_theta: profile.rope_theta,
+        prefill_tokens: profile.prefill_tokens,
+        decode_tokens: profile.decode_tokens,
+        tp_nodes: profile.tp_nodes,
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Qwen3Dense06bTokenizerAssetFileSummary {
     pub name: String,
@@ -1279,44 +1298,48 @@ pub fn profile_from_config_json(config_json: &str) -> Result<Qwen3Dense06bProfil
 }
 
 pub fn validate_profile(profile: Qwen3Dense06bProfile) -> Result<(), String> {
-    let expected = QWEN3_DENSE_0_6B_PROFILE;
     let checks = [
-        ("vocab_size", profile.vocab_size, expected.vocab_size),
-        ("hidden_size", profile.hidden_size, expected.hidden_size),
-        (
-            "intermediate_size",
-            profile.intermediate_size,
-            expected.intermediate_size,
-        ),
-        (
-            "num_hidden_layers",
-            profile.num_hidden_layers,
-            expected.num_hidden_layers,
-        ),
-        (
-            "num_attention_heads",
-            profile.num_attention_heads,
-            expected.num_attention_heads,
-        ),
-        (
-            "num_key_value_heads",
-            profile.num_key_value_heads,
-            expected.num_key_value_heads,
-        ),
-        ("head_dim", profile.head_dim, expected.head_dim),
-        (
-            "max_position_embeddings",
-            profile.max_position_embeddings,
-            expected.max_position_embeddings,
-        ),
-        ("rope_theta", profile.rope_theta, expected.rope_theta),
+        ("vocab_size", profile.vocab_size),
+        ("hidden_size", profile.hidden_size),
+        ("intermediate_size", profile.intermediate_size),
+        ("num_hidden_layers", profile.num_hidden_layers),
+        ("num_attention_heads", profile.num_attention_heads),
+        ("num_key_value_heads", profile.num_key_value_heads),
+        ("head_dim", profile.head_dim),
+        ("max_position_embeddings", profile.max_position_embeddings),
+        ("rope_theta", profile.rope_theta),
+        ("prefill_tokens", profile.prefill_tokens),
+        ("decode_tokens", profile.decode_tokens),
+        ("tp_nodes", profile.tp_nodes),
     ];
-    for (name, got, expected_value) in checks {
-        if got != expected_value {
-            return Err(format!(
-                "qwen3_dense_0_6b_config_mismatch:{name}:got={got}:expected={expected_value}"
-            ));
+    for (name, value) in checks {
+        if value == 0 {
+            return Err(format!("qwen3_dense_profile_zero:{name}"));
         }
+    }
+    if profile.num_attention_heads % profile.tp_nodes != 0 {
+        return Err(format!(
+            "qwen3_dense_heads_not_divisible:heads={}:tp={}",
+            profile.num_attention_heads, profile.tp_nodes
+        ));
+    }
+    if profile.num_key_value_heads > profile.num_attention_heads {
+        return Err(format!(
+            "qwen3_dense_kv_heads_exceed_attention_heads:kv_heads={}:heads={}",
+            profile.num_key_value_heads, profile.num_attention_heads
+        ));
+    }
+    if profile.num_key_value_heads % profile.tp_nodes != 0 {
+        return Err(format!(
+            "qwen3_dense_kv_heads_not_divisible:kv_heads={}:tp={}",
+            profile.num_key_value_heads, profile.tp_nodes
+        ));
+    }
+    if profile.intermediate_size % profile.tp_nodes != 0 {
+        return Err(format!(
+            "qwen3_dense_intermediate_not_divisible:intermediate={}:tp={}",
+            profile.intermediate_size, profile.tp_nodes
+        ));
     }
     Ok(())
 }
@@ -1525,6 +1548,16 @@ pub fn weight_manifest_from_metadata(
     source: impl Into<String>,
     tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
 ) -> Result<Qwen3Dense06bWeightManifest, String> {
+    weight_manifest_from_metadata_for_model(topology, "Qwen/Qwen3-0.6B", profile, source, tensors)
+}
+
+pub fn weight_manifest_from_metadata_for_model(
+    topology: &SimTopology,
+    model_id: impl Into<String>,
+    profile: Qwen3Dense06bProfile,
+    source: impl Into<String>,
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+) -> Result<Qwen3Dense06bWeightManifest, String> {
     validate_profile(profile)?;
     validate_required_weight_tensors(profile, tensors)?;
     let tp_plan = tensor_parallel_plan(topology, profile)?;
@@ -1535,7 +1568,7 @@ pub fn weight_manifest_from_metadata(
         }
     }
     Ok(Qwen3Dense06bWeightManifest {
-        model_id: "Qwen/Qwen3-0.6B".to_string(),
+        model_id: model_id.into(),
         source: source.into(),
         format: "safetensors".to_string(),
         profile: Qwen3Dense06bWeightManifestProfile {
@@ -5272,6 +5305,69 @@ outputs:
         assert!(String::from_utf8_lossy(&db_value).contains("storage_ref"));
         let db_puts = weight_db_puts(&manifest).expect("db puts");
         assert_eq!(db_puts.len(), manifest.slices.len());
+    }
+
+    #[test]
+    fn weight_manifest_accepts_qwen3_14b_shape() {
+        let topology = test_topology();
+        let profile = Qwen3Dense06bProfile {
+            vocab_size: 151_936,
+            hidden_size: 5_120,
+            intermediate_size: 17_408,
+            num_hidden_layers: 40,
+            num_attention_heads: 40,
+            num_key_value_heads: 8,
+            head_dim: 128,
+            max_position_embeddings: 40_960,
+            rope_theta: 1_000_000,
+            prefill_tokens: 128,
+            decode_tokens: 1,
+            tp_nodes: 8,
+        };
+        let tensors = test_weight_metadata(profile);
+        let manifest = weight_manifest_from_metadata_for_model(
+            &topology,
+            "Qwen/Qwen3-14B",
+            profile,
+            "/models/qwen3-14b/model.safetensors.index.json",
+            &tensors,
+        )
+        .expect("14B weight manifest");
+
+        assert_eq!(manifest.model_id, "Qwen/Qwen3-14B");
+        assert_eq!(manifest.profile.hidden_size, 5_120);
+        assert_eq!(manifest.profile.num_hidden_layers, 40);
+        assert_eq!(manifest.profile.intermediate_size, 17_408);
+        assert_eq!(manifest.slices.len(), 40 * 8 * 11);
+        let q_proj = manifest
+            .slices
+            .iter()
+            .find(|slice| {
+                slice.layer_id == 0
+                    && slice.shard_id == 7
+                    && slice.tensor_kind == Qwen3Dense06bWeightTensorKind::QProj
+            })
+            .expect("layer0 shard7 q_proj slice");
+        assert_eq!(q_proj.global_shape, vec![5_120, 5_120]);
+        assert_eq!(q_proj.local_shape, vec![640, 5_120]);
+        assert_eq!(q_proj.slice_axis, Some(0));
+        assert_eq!(q_proj.slice_start, 4_480);
+        assert_eq!(q_proj.slice_end, 5_120);
+
+        let down_proj = manifest
+            .slices
+            .iter()
+            .find(|slice| {
+                slice.layer_id == 39
+                    && slice.shard_id == 7
+                    && slice.tensor_kind == Qwen3Dense06bWeightTensorKind::DownProj
+            })
+            .expect("layer39 shard7 down_proj slice");
+        assert_eq!(down_proj.global_shape, vec![5_120, 17_408]);
+        assert_eq!(down_proj.local_shape, vec![5_120, 2_176]);
+        assert_eq!(down_proj.slice_axis, Some(1));
+        assert_eq!(down_proj.slice_start, 15_232);
+        assert_eq!(down_proj.slice_end, 17_408);
     }
 
     fn test_weight_metadata(

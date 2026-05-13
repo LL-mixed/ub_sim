@@ -22,6 +22,7 @@ use sim_core::{
     RequestCorrelation, SegmentHandle, SimError, SimplerKernelArtifact, SimplerRuntimeArg,
     SimplerRuntimeArtifacts, TaskKey, TensorDType, TensorLayout,
 };
+use sim_models::qwen3_dense;
 use sim_models::qwen3_dense_0_6b::{
     self, checksum_words, embedding_reference_hidden_sequence_with_payloads,
     embedding_reference_last_hidden, embedding_reference_last_hidden_with_payloads,
@@ -37,15 +38,16 @@ use sim_models::qwen3_dense_0_6b::{
     qkv_reference_layer_values_with_hidden, token_piece_bytes_from_policy,
     token_piece_bytes_from_tokenizer_path, token_piece_decode_bytes, token_piece_from_policy,
     tokenize_prompt_from_tokenizer_path, tokenizer_policy, weight_bytes_checksum,
-    weight_manifest_from_metadata, Qwen3Dense06bEmbeddingReferenceSummary,
-    Qwen3Dense06bFullVocabLogitsSummary, Qwen3Dense06bLayerKvCache, Qwen3Dense06bLoadedWeights,
-    Qwen3Dense06bLogitsReferenceSummary, Qwen3Dense06bMlpReferenceLayerSummary,
-    Qwen3Dense06bMlpReferenceShardSummary, Qwen3Dense06bProfile,
-    Qwen3Dense06bQkvReferenceLayerSummary, Qwen3Dense06bQkvReferenceLayerValues,
-    Qwen3Dense06bQkvReferenceShardSummary, Qwen3Dense06bQkvReferenceShardValues,
-    Qwen3Dense06bReferenceWeightSliceValidation, Qwen3Dense06bShard,
-    Qwen3Dense06bTokenizerAssetSummary, Qwen3Dense06bWeightTensorKind, QWEN3_DENSE_0_6B_PROFILE,
-    QWEN3_DENSE_0_6B_TOKENIZER_ASSET_POLICY_KIND, QWEN3_DENSE_0_6B_TOKENIZER_POLICY_KIND,
+    weight_manifest_from_metadata, weight_manifest_from_metadata_for_model,
+    Qwen3Dense06bEmbeddingReferenceSummary, Qwen3Dense06bFullVocabLogitsSummary,
+    Qwen3Dense06bLayerKvCache, Qwen3Dense06bLoadedWeights, Qwen3Dense06bLogitsReferenceSummary,
+    Qwen3Dense06bMlpReferenceLayerSummary, Qwen3Dense06bMlpReferenceShardSummary,
+    Qwen3Dense06bProfile, Qwen3Dense06bQkvReferenceLayerSummary,
+    Qwen3Dense06bQkvReferenceLayerValues, Qwen3Dense06bQkvReferenceShardSummary,
+    Qwen3Dense06bQkvReferenceShardValues, Qwen3Dense06bReferenceWeightSliceValidation,
+    Qwen3Dense06bShard, Qwen3Dense06bTokenizerAssetSummary, Qwen3Dense06bWeightTensorKind,
+    QWEN3_DENSE_0_6B_PROFILE, QWEN3_DENSE_0_6B_TOKENIZER_ASSET_POLICY_KIND,
+    QWEN3_DENSE_0_6B_TOKENIZER_POLICY_KIND,
 };
 use sim_runtime::{
     LocalRuntimeEngine, RuntimeCompletionTracker, RuntimeDriveAction, RuntimeQueueRecord,
@@ -1561,6 +1563,106 @@ fn qwen3_dense_runtime_kv_payload_bytes(layer_count: u64) -> u64 {
     (layer_count * decode_tokens * kv_heads * head_dim * 2 * 4).max(64)
 }
 
+fn qwen3_dense_weights_config_dir(weights_path: &Path) -> &Path {
+    if weights_path.is_dir() {
+        weights_path
+    } else {
+        weights_path.parent().unwrap_or_else(|| Path::new("."))
+    }
+}
+
+fn qwen3_dense_profile_validate_weights_if_available(topology: &SimTopology) -> Result<(), String> {
+    let Ok(weights_path) = std::env::var("SIM_QWEN3_DENSE_WEIGHTS_PATH") else {
+        return Ok(());
+    };
+    let cache_key = format!(
+        "{}|nodes={}|layers={}|hidden_bytes={}|kv_heads={}|head_dim={}",
+        weights_path,
+        qwen3_dense_runtime_tp_nodes(),
+        qwen3_dense_runtime_total_layers(),
+        qwen3_dense_runtime_hidden_range_bytes(),
+        qwen3_dense_env_u64(
+            "SIM_QWEN3_DENSE_NUM_KEY_VALUE_HEADS",
+            QWEN3_DENSE_0_6B_PROFILE.num_key_value_heads,
+        ),
+        qwen3_dense_env_u64(
+            "SIM_QWEN3_DENSE_HEAD_DIM",
+            QWEN3_DENSE_0_6B_PROFILE.head_dim
+        )
+    );
+    static CACHE: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(BTreeSet::new()));
+    {
+        let cache = cache
+            .lock()
+            .map_err(|_| "qwen3_dense_weight_validation_cache_poisoned".to_string())?;
+        if cache.contains(&cache_key) {
+            return Ok(());
+        }
+    }
+
+    let weights_path_ref = Path::new(&weights_path);
+    let profile = qwen3_dense::profile_from_weights_dir(
+        qwen3_dense_weights_config_dir(weights_path_ref),
+        std::env::var("SIM_QWEN3_DENSE_MODEL_ID").ok().as_deref(),
+        qwen3_dense_runtime_tp_nodes(),
+        qwen3_dense_env_u64(
+            "SIM_QWEN3_DENSE_PREFILL_TOKENS",
+            QWEN3_DENSE_0_6B_PROFILE.prefill_tokens,
+        ),
+        qwen3_dense_env_u64(
+            "SIM_QWEN3_DENSE_DECODE_TOKENS",
+            QWEN3_DENSE_0_6B_PROFILE.decode_tokens,
+        ),
+    )?;
+    let expected_hidden_bytes = profile
+        .prefill_tokens
+        .checked_mul(profile.hidden_size)
+        .and_then(|value| value.checked_mul(2))
+        .ok_or_else(|| "qwen3_dense_profile_hidden_bytes_overflow".to_string())?;
+    if profile.tp_nodes != qwen3_dense_runtime_tp_nodes()
+        || profile.num_hidden_layers != qwen3_dense_runtime_total_layers()
+        || expected_hidden_bytes != qwen3_dense_runtime_hidden_range_bytes()
+        || profile.num_key_value_heads
+            != qwen3_dense_env_u64(
+                "SIM_QWEN3_DENSE_NUM_KEY_VALUE_HEADS",
+                QWEN3_DENSE_0_6B_PROFILE.num_key_value_heads,
+            )
+        || profile.head_dim
+            != qwen3_dense_env_u64(
+                "SIM_QWEN3_DENSE_HEAD_DIM",
+                QWEN3_DENSE_0_6B_PROFILE.head_dim,
+            )
+    {
+        return Err(format!(
+            "qwen3_dense_weight_profile_env_mismatch:model={} tp={} layers={} hidden_bytes={} kv_heads={} head_dim={}",
+            profile.model_id,
+            profile.tp_nodes,
+            profile.num_hidden_layers,
+            expected_hidden_bytes,
+            profile.num_key_value_heads,
+            profile.head_dim
+        ));
+    }
+    let loaded = qwen3_dense_0_6b_cached_loaded_weights(&weights_path)?;
+    let manifest_profile = qwen3_dense_0_6b::profile_from_dense_profile(&profile);
+    let manifest = weight_manifest_from_metadata_for_model(
+        topology,
+        &profile.model_id,
+        manifest_profile,
+        loaded.source.clone(),
+        &loaded.tensors,
+    )?;
+    if manifest.slices.is_empty() {
+        return Err("qwen3_dense_weight_manifest_empty".to_string());
+    }
+    let mut cache = cache
+        .lock()
+        .map_err(|_| "qwen3_dense_weight_validation_cache_poisoned".to_string())?;
+    cache.insert(cache_key);
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Qwen3GuestRangeComputeContract {
     node: u32,
@@ -1613,10 +1715,11 @@ fn qwen3_guest_range_compute_contract(
 }
 
 fn run_qwen3_dense_profile_runtime(
-    _topology: &SimTopology,
+    topology: &SimTopology,
     task: &TaskKey,
     guest_input: &[u8],
 ) -> Result<Vec<u8>, String> {
+    qwen3_dense_profile_validate_weights_if_available(topology)?;
     let Some(contract) = qwen3_guest_range_compute_contract(task)? else {
         return Err("qwen3_dense_profile_runtime_requires_range_contract".to_string());
     };
