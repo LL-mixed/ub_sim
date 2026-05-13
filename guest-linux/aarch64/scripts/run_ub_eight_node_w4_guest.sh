@@ -221,6 +221,8 @@ import sys
 import time
 serial_socket = sys.argv[1]
 payload = sys.argv[2]
+char_delay = 0.003
+line_delay = 0.1
 deadline = time.time() + 20.0
 last_err = None
 while time.time() < deadline:
@@ -229,8 +231,10 @@ while time.time() < deadline:
     try:
         s.connect(serial_socket)
         for line in payload.splitlines(True):
-            s.sendall(line.encode("utf-8"))
-            time.sleep(0.05)
+            for byte in line.encode("utf-8"):
+                s.sendall(bytes((byte,)))
+                time.sleep(char_delay)
+            time.sleep(line_delay)
         s.close()
         sys.exit(0)
     except OSError as exc:
