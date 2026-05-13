@@ -9,6 +9,7 @@ LOG_DIR="$ROOT_DIR/logs"
 TRACE_FILE="${TRACE_FILE:-$OUT_DIR/eight_node_w4_guest.trace.latest.txt}"
 RUN_ID_BASE="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_w4guest8_${RANDOM}}"
 RUN_DIR="$LOG_DIR/${RUN_ID_BASE}_headless8"
+RUN_SUMMARY_FILE="${RUN_SUMMARY_FILE:-$OUT_DIR/eight_node_w4_guest_summary.${RUN_ID_BASE}.txt}"
 RUN_INITRAMFS_DIR="$OUT_DIR/initramfs.${RUN_ID_BASE}"
 RUN_INITRAMFS_IMAGE="$OUT_DIR/initramfs.${RUN_ID_BASE}.cpio.gz"
 # Use a short unique suffix for the shared dir to stay under macOS 104-byte UNIX socket path limit.
@@ -16,6 +17,7 @@ _SHORT_SHARED_SUFFIX="$(printf '%s' "$RUN_ID_BASE" | cksum | cut -d' ' -f1)_${RA
 UB_FM_SHARED_DIR="${UB_FM_SHARED_DIR:-/tmp/ubqe_${_SHORT_SHARED_SUFFIX}}"
 BOOT_WAIT_SECS="${BOOT_WAIT_SECS:-180}"
 DEMO_WAIT_SECS="${DEMO_WAIT_SECS:-600}"
+W4_GUEST_PROGRESS_INTERVAL_SECS="${W4_GUEST_PROGRESS_INTERVAL_SECS:-180}"
 APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 QEMU_MEM="${QEMU_MEM:-8G}"
 PORT_NUM="${UB_SIM_PORT_NUM:-7}"
@@ -133,7 +135,21 @@ wait_for_all_logs_pass_or_fail_since() {
   local timeout_s="$3"
   local pass_count="${4:-1}"
   local deadline=$((SECONDS + timeout_s))
+  local wait_start="$SECONDS"
+  local progress_interval="$W4_GUEST_PROGRESS_INTERVAL_SECS"
+  local next_progress=0
   local node_id guest_log start_line tmp count all_pass
+
+  if [[ ! "$progress_interval" =~ '^[0-9]+$' ]]; then
+    trace "progress: invalid W4_GUEST_PROGRESS_INTERVAL_SECS=$progress_interval; using 180"
+    progress_interval=180
+  fi
+  if (( progress_interval > 0 )); then
+    trace "progress: reporting_interval_s=$progress_interval expected_decode_steps=$pass_count"
+    next_progress=$((SECONDS + progress_interval))
+  else
+    trace "progress: reporting disabled W4_GUEST_PROGRESS_INTERVAL_SECS=0"
+  fi
 
   while (( SECONDS < deadline )); do
     all_pass=1
@@ -159,9 +175,34 @@ wait_for_all_logs_pass_or_fail_since() {
     if (( all_pass )); then
       return 0
     fi
+    if (( progress_interval > 0 && SECONDS >= next_progress )); then
+      emit_w4_wait_progress "$wait_start" "$pass_count" || true
+      next_progress=$((SECONDS + progress_interval))
+    fi
     sleep 0.2
   done
   return 2
+}
+
+emit_w4_wait_progress() {
+  local wait_start="$1"
+  local pass_count="$2"
+  local elapsed_s=$((SECONDS - wait_start))
+  local line
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    trace "progress: unavailable reason=python3_not_found"
+    return 1
+  fi
+
+  if ! python3 "$SCRIPT_DIR/w4_guest_run_summary.py" \
+    --progress "$RUN_DIR" "$pass_count" "$elapsed_s" "${NODE_IDS[@]}" | while IFS= read -r line; do
+      trace "$line"
+    done; then
+    trace "progress: unavailable reason=progress_parser_failed"
+    return 1
+  fi
+  return 0
 }
 
 assert_log_has() {
@@ -228,6 +269,7 @@ trace_run_artifact_paths() {
   trace "run_dir: $RUN_DIR"
   trace "control_log: $RUN_DIR/control.log"
   trace "cleanup_script: ${CLEANUP_SCRIPT:-}"
+  trace "summary_file: $RUN_SUMMARY_FILE"
   for node_id in "${NODE_IDS[@]}"; do
     trace "${node_id}_guest_log: $RUN_DIR/${node_id}_guest.log"
     trace "${node_id}_qemu_log: $RUN_DIR/${node_id}_qemu.log"
@@ -541,6 +583,30 @@ run_w4_demo() {
   return 0
 }
 
+emit_w4_run_summary() {
+  local summary_tmp="$RUN_SUMMARY_FILE.tmp"
+  local line
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    trace "summary: unavailable reason=python3_not_found"
+    return 1
+  fi
+
+  if ! python3 "$SCRIPT_DIR/w4_guest_run_summary.py" \
+    "$RUN_DIR" "$SIM_QWEN3_GUEST_DECODE_STEPS" "${NODE_IDS[@]}" > "$summary_tmp"; then
+    rm -f "$summary_tmp"
+    trace "summary: unavailable reason=summary_parser_failed"
+    return 1
+  fi
+
+  mv "$summary_tmp" "$RUN_SUMMARY_FILE"
+  while IFS= read -r line; do
+    trace "$line"
+  done < "$RUN_SUMMARY_FILE"
+  trace "summary_file: $RUN_SUMMARY_FILE"
+  return 0
+}
+
 prepare_environment() {
   local guest_log node_id control_log env_file
 
@@ -599,6 +665,7 @@ main() {
 
   if true; then
     exit_code=0
+    emit_w4_run_summary || true
     trace "PASS: eight-node w4 guest resource-backed uapi/chipbackend service coverage validated"
     echo "eight-node w4 guest validation passed"
   fi

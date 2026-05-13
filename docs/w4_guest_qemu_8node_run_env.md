@@ -44,6 +44,7 @@ SIM_QWEN3_0_6B_WEIGHTS_PATH=/path/to/Qwen3-0.6B \
 | run（guest wrapper） | `SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS` | `9707,1207,16948,18` | prompt token 版本（脚本会覆盖） | `run_ub_eight_node_w4_guest.sh` |
 | run（guest wrapper） | `SIM_W4_UAPI_COMPLETION_TIMEOUT_MS` | `900000` | completion 超时 | `run_ub_eight_node_w4_guest.sh` |
 | run（guest wrapper） | `SIM_W4_RESOURCE_ASSERTIONS` | `0` | 资源断言严格度 | `run_ub_eight_node_w4_guest.sh` |
+| run（guest wrapper） | `W4_GUEST_PROGRESS_INTERVAL_SECS` | `180` | decode 等待期进度输出间隔；设为 `0` 关闭 | `run_ub_eight_node_w4_guest.sh` |
 | guest 内核 cmdline | `linqu_probe_skip` | `1` | 启动时跳过部分探测 | `launch_ub_eight_node_headless.sh` |
 | guest 内核 cmdline | `linqu_probe_load_helper` | `1` | 加载 helper 行为 | `launch_ub_eight_node_headless.sh` |
 | guest 内核 cmdline | `obmm.skip_cache_maintain` | `1` | 避免额外维护开销 | `ensure_sim_kernel_append_defaults` |
@@ -63,6 +64,7 @@ SIM_QWEN3_0_6B_WEIGHTS_PATH=/path/to/Qwen3-0.6B \
 - `QEMU_MEM=2G`、`QEMU_SMP=2`：当前配置可用（8-node）
 - `SIM_QWEN3_GUEST_DECODE_STEPS`：按需求设置（例如 4/16）
 - `SIM_UAPI_W4_CHIPBACKEND_PROFILE=qwen3_dense_0_6b`：固定此值
+- `W4_GUEST_PROGRESS_INTERVAL_SECS=180`：decode 等待期进度输出间隔；调试时可设为 `30`，设为 `0` 关闭
 - `SIMPLER_HOST_MATMUL_MANIFEST`：按本机 `prepare` 脚本输出路径设置
 - `APPEND_EXTRA`：至少包含 `linqu_probe_skip=1 linqu_probe_load_helper=1 obmm.skip_cache_maintain=1 rcupdate.rcu_cpu_stall_timeout=300`
 
