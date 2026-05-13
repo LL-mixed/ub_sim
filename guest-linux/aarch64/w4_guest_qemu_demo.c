@@ -440,6 +440,18 @@ static uint64_t qwen3_total_layers(void)
                       W4_QWEN3_KVCACHE_LAYERS);
 }
 
+static uint64_t qwen3_vocab_size(void)
+{
+    return env_u64_or("SIM_QWEN3_DENSE_VOCAB_SIZE", W4_QWEN3_VOCAB_SIZE);
+}
+
+static const char *qwen3_model_id(void)
+{
+    const char *model_id = getenv("SIM_QWEN3_DENSE_MODEL_ID");
+
+    return model_id && model_id[0] != '\0' ? model_id : W4_QWEN3_TOKENIZER_MODEL_ID;
+}
+
 static uint64_t qwen3_hidden_range_bytes(void)
 {
     return env_u64_or("SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES",
@@ -2176,7 +2188,7 @@ static uint64_t qwen3_rol64(uint64_t value, unsigned int bits)
 
 static uint64_t qwen3_sampled_token(uint64_t round1_checksum, uint64_t tile_id)
 {
-    return (round1_checksum ^ (tile_id * 0x9e3779b97f4a7c15ULL)) % W4_QWEN3_VOCAB_SIZE;
+    return (round1_checksum ^ (tile_id * 0x9e3779b97f4a7c15ULL)) % qwen3_vocab_size();
 }
 
 static uint64_t qwen3_logits_checksum(uint64_t round1_checksum,
@@ -2219,13 +2231,12 @@ static uint64_t qwen3_tokenizer_policy_hash(void)
     uint64_t value;
     uint8_t zero = 0;
 
-    acc = qwen3_fnv1a_bytes(acc, W4_QWEN3_TOKENIZER_MODEL_ID,
-                            strlen(W4_QWEN3_TOKENIZER_MODEL_ID));
+    acc = qwen3_fnv1a_bytes(acc, qwen3_model_id(), strlen(qwen3_model_id()));
     acc = qwen3_fnv1a_bytes(acc, &zero, sizeof(zero));
     acc = qwen3_fnv1a_bytes(acc, W4_QWEN3_TOKENIZER_FAMILY,
                             strlen(W4_QWEN3_TOKENIZER_FAMILY));
     acc = qwen3_fnv1a_bytes(acc, &zero, sizeof(zero));
-    value = W4_QWEN3_VOCAB_SIZE;
+    value = qwen3_vocab_size();
     acc = qwen3_fnv1a_bytes(acc, &value, sizeof(value));
     acc = qwen3_fnv1a_bytes(acc, W4_QWEN3_TOKENIZER_PIECE_PREFIX,
                             strlen(W4_QWEN3_TOKENIZER_PIECE_PREFIX));
@@ -3541,7 +3552,7 @@ qwen3_logits_tables:
                      (kvcache_read_digest & 0x0fULL) +
                      ((qkv_reference_digest >> 4) & 0x0fULL) +
                      ((real_path_digest >> 8) & 0x0fULL)) %
-                    W4_QWEN3_VOCAB_SIZE;
+                    qwen3_vocab_size();
                 uint64_t expected_margin = 1000ULL + entry * 7ULL + expected_shard;
                 uint64_t expected_logits_checksum =
                     qwen3_logits_checksum(round1_checksum,
@@ -3557,7 +3568,7 @@ qwen3_logits_tables:
                 uint64_t expected_text_checksum =
                     qwen3_sample_text_checksum(entry, expected_sampled_token);
                 bool real_logits =
-                    full_vocab_checked_token_count == W4_QWEN3_VOCAB_SIZE &&
+                    full_vocab_checked_token_count == qwen3_vocab_size() &&
                     full_vocab_logits_checksum != 0 &&
                     top_logit_bits != 0 &&
                     runner_up_logit_bits != 0;
@@ -3567,7 +3578,7 @@ qwen3_logits_tables:
                 if (entry_shard != expected_shard ||
                     entry_tile != entry ||
                     entry_segment == 0 ||
-                    entry_logits_count != W4_QWEN3_VOCAB_SIZE ||
+                    entry_logits_count != qwen3_vocab_size() ||
                     entry_step != entry) {
                     fprintf(stderr,
                             "[w4_guest] qwen3 logits table mismatch entry=%" PRIu64
@@ -3591,11 +3602,11 @@ qwen3_logits_tables:
                         runtime_forward_final_hidden_checksum != 0 ||
                         runtime_forward_checksum != 0;
                     bool runtime_forward_invalid =
-                        runtime_forward_layer_count != W4_QWEN3_KVCACHE_LAYERS ||
+                        runtime_forward_layer_count != qwen3_total_layers() ||
                         runtime_forward_final_hidden_checksum == 0 ||
                         runtime_forward_checksum == 0;
-                    if (entry_sampled_token >= W4_QWEN3_VOCAB_SIZE ||
-                        entry_runner_up_token >= W4_QWEN3_VOCAB_SIZE ||
+                    if (entry_sampled_token >= qwen3_vocab_size() ||
+                        entry_runner_up_token >= qwen3_vocab_size() ||
                         entry_sampled_token == entry_runner_up_token ||
                         entry_margin_milli == 0 ||
                         entry_logits_checksum == 0 ||
@@ -3686,7 +3697,7 @@ qwen3_logits_tables:
                    " real_logits=%" PRIu64
                    " status=ok\n",
                    logits_count, logits_entry_words, logits_table_bytes,
-                   (uint64_t)W4_QWEN3_VOCAB_SIZE, sampled_distinct,
+                   qwen3_vocab_size(), sampled_distinct,
                    logits_checksum_nonzero, text_checksum_nonzero,
                    real_logits_count);
         }
