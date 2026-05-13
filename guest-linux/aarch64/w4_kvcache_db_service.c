@@ -46,6 +46,7 @@
 #define W4_DB_OBMM_HIDDEN_RANGE_RUNTIME_OUTPUT_OFFSET 0x98000ULL
 #define W4_DB_OBMM_QWEN3_TOKEN_RESULT_OFFSET 0xd9000ULL
 #define W4_DB_OBMM_QWEN3_ROUND_DONE_OFFSET 0xda000ULL
+#define W4_DB_OBMM_QWEN3_DYNAMIC_ARENA_OFFSET 0x100000ULL
 #define W4_DB_OBMM_QWEN3_KV_STATE_OFFSET 0x100000ULL
 #define W4_DB_OBMM_QWEN3_KV_STATE_SLOT_BYTES 0x200000ULL
 #define W4_DB_OBMM_QWEN3_KV_STATE_SLOTS 32ULL
@@ -167,6 +168,10 @@ struct w4_db_cluster_runtime {
     uint16_t observe_epoch;
     uint64_t region_size;
     uint64_t payload_offset;
+    uint64_t payload_arena_base;
+    uint64_t payload_arena_next;
+    uint64_t payload_arena_high_water;
+    bool pool_layout_reported;
     struct w4_db_cluster_meta metas[W4_DB_CLUSTER_MAX_NODES];
     struct w4_db_cluster_slot slots[W4_DB_CLUSTER_MAX_NODES];
     struct obmm_spsc_queue *ingress_queues[W4_DB_CLUSTER_MAX_NODES];
@@ -604,24 +609,115 @@ static const char *w4_db_object_kind_name(uint32_t payload_kind)
     }
 }
 
-static uint64_t w4_db_qwen3_kv_state_slot_offset(uint64_t decode_step)
+static int w4_db_payload_arena_alloc(struct w4_db_cluster_runtime *rt,
+                                     uint64_t bytes,
+                                     uint64_t align,
+                                     uint64_t *offset_out)
 {
-    return W4_DB_OBMM_QWEN3_KV_STATE_OFFSET +
-           (decode_step % W4_DB_OBMM_QWEN3_KV_STATE_SLOTS) *
-               W4_DB_OBMM_QWEN3_KV_STATE_SLOT_BYTES;
+    uint64_t offset;
+    uint64_t end;
+
+    if (!rt || !offset_out || rt->local_idx < 0 ||
+        rt->local_idx >= rt->node_count || bytes == 0) {
+        return -1;
+    }
+    if (align == 0) {
+        align = 64;
+    }
+    if (rt->payload_arena_base == 0) {
+        rt->payload_arena_base =
+            obmm_align_up_u64(W4_DB_OBMM_QWEN3_DYNAMIC_ARENA_OFFSET, align);
+        rt->payload_arena_next = rt->payload_arena_base;
+        rt->payload_arena_high_water = rt->payload_arena_base;
+    }
+    offset = obmm_align_up_u64(rt->payload_arena_next, align);
+    end = offset + bytes;
+    if (end < offset ||
+        !rt->slots[rt->local_idx].region.addr ||
+        end > rt->slots[rt->local_idx].region.len) {
+        printf("[w4_guest] gap obmm_pool_allocator=exhausted local=node%d offset=0x%016" PRIx64
+               " bytes=%" PRIu64 " payload_bytes=%zu arena_base=0x%016" PRIx64 "\n",
+               rt->local_idx + 1,
+               offset,
+               bytes,
+               rt->slots[rt->local_idx].region.len,
+               rt->payload_arena_base);
+        return -1;
+    }
+    rt->payload_arena_next = end;
+    if (end > rt->payload_arena_high_water) {
+        rt->payload_arena_high_water = end;
+    }
+    *offset_out = offset;
+    return 0;
 }
 
-static uint64_t w4_db_qwen3_runtime_range_output_slot_offset(uint64_t decode_step)
+static void w4_db_report_obmm_pool_layout_once(struct w4_db_cluster_runtime *rt)
 {
-    return W4_DB_OBMM_QWEN3_RUNTIME_RANGE_OUTPUT_OFFSET +
-           (decode_step % W4_DB_OBMM_QWEN3_RUNTIME_RANGE_OUTPUT_SLOTS) *
-               W4_DB_OBMM_HIDDEN_RANGE_BYTES;
+    struct w4_db_cluster_slot *local_slot;
+
+    if (!rt || rt->pool_layout_reported || rt->local_idx < 0 ||
+        rt->local_idx >= rt->node_count) {
+        return;
+    }
+    local_slot = &rt->slots[rt->local_idx];
+    if (!local_slot->region.addr) {
+        return;
+    }
+    printf("[w4_guest] stage qwen3_obmm_pool_layout local=node%d nodes=%d per_node_region_bytes=%" PRIu64
+           " cluster_region_bytes=%" PRIu64 " payload_offset=%" PRIu64
+           " payload_bytes=%zu arena_base=0x%016" PRIx64
+           " allocator=linear_payload_arena status=ok\n",
+           rt->local_idx + 1,
+           rt->node_count,
+           rt->region_size,
+           rt->region_size * (uint64_t)rt->node_count,
+           rt->payload_offset,
+           local_slot->region.len,
+           (uint64_t)W4_DB_OBMM_QWEN3_DYNAMIC_ARENA_OFFSET);
+    rt->pool_layout_reported = true;
 }
 
-static uint64_t w4_db_qwen3_engram_slot_offset(uint64_t decode_step)
+static void w4_db_report_obmm_pool_usage(struct w4_db_cluster_runtime *rt,
+                                         uint32_t local_node,
+                                         uint64_t decode_step)
 {
-    return W4_DB_OBMM_QWEN3_ENGRAM_BASE_OFFSET +
-           decode_step * W4_DB_OBMM_QWEN3_ENGRAM_SLOT_BYTES;
+    struct w4_db_cluster_slot *local_slot;
+    uint64_t arena_used;
+    uint64_t payload_used;
+
+    if (!rt || local_node >= (uint32_t)rt->node_count ||
+        rt->local_idx < 0 || rt->local_idx >= rt->node_count) {
+        return;
+    }
+    local_slot = &rt->slots[rt->local_idx];
+    if (!local_slot->region.addr) {
+        return;
+    }
+    arena_used =
+        rt->payload_arena_high_water > rt->payload_arena_base ?
+            rt->payload_arena_high_water - rt->payload_arena_base :
+            0;
+    payload_used = rt->payload_arena_high_water;
+    printf("[w4_guest] stage qwen3_obmm_pool_usage local=node%u step=%" PRIu64
+           " per_node_region_bytes=%" PRIu64 " cluster_region_bytes=%" PRIu64
+           " payload_bytes=%zu payload_high_water_bytes=%" PRIu64
+           " payload_used_pct_milli=%" PRIu64 " arena_base=0x%016" PRIx64
+           " arena_used_bytes=%" PRIu64 " arena_next=0x%016" PRIx64
+           " allocator=linear_payload_arena status=ok\n",
+           local_node + 1U,
+           decode_step,
+           rt->region_size,
+           rt->region_size * (uint64_t)rt->node_count,
+           local_slot->region.len,
+           payload_used,
+           local_slot->region.len > 0 ?
+               (uint64_t)((payload_used * 100000ULL) /
+                          (uint64_t)local_slot->region.len) :
+               (uint64_t)0,
+           rt->payload_arena_base,
+           arena_used,
+           rt->payload_arena_next);
 }
 
 static int w4_db_qwen3_engram_owner_index(uint32_t cluster_node_count)
@@ -1627,12 +1723,10 @@ static bool w4_db_pending_object_desc_matches(const struct obmm_desc *desc,
 }
 
 static bool w4_db_runtime_range_input_desc_matches(const struct obmm_desc *desc,
-                                                  uint16_t epoch,
-                                                  uint64_t payload_offset)
+                                                  uint16_t epoch)
 {
     if (!desc || desc->type != OBMM_DESC_W4_OBJECT_PUT ||
         desc->flags != W4_DB_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT ||
-        desc->payload_offset != payload_offset ||
         desc->payload_len != W4_DB_OBMM_HIDDEN_RANGE_BYTES) {
         return false;
     }
@@ -1643,7 +1737,6 @@ static bool w4_db_take_pending_runtime_range_input_desc(
     struct w4_db_cluster_runtime *rt,
     int owner_idx,
     uint16_t epoch,
-    uint64_t payload_offset,
     struct obmm_desc *desc_out)
 {
     uint8_t count;
@@ -1655,8 +1748,7 @@ static bool w4_db_take_pending_runtime_range_input_desc(
     count = rt->pending_desc_count[owner_idx];
     for (i = 0; i < count; ++i) {
         if (w4_db_runtime_range_input_desc_matches(&rt->pending_descs[owner_idx][i],
-                                                   epoch,
-                                                   payload_offset)) {
+                                                   epoch)) {
             if (desc_out) {
                 *desc_out = rt->pending_descs[owner_idx][i];
             }
@@ -2139,6 +2231,10 @@ static void w4_db_cluster_runtime_reset(struct w4_db_cluster_runtime *rt)
     memset(rt, 0, sizeof(*rt));
     rt->obmm_fd = -1;
     rt->local_idx = -1;
+    rt->payload_arena_base = 0;
+    rt->payload_arena_next = 0;
+    rt->payload_arena_high_water = 0;
+    rt->pool_layout_reported = false;
 }
 
 static int w4_db_cluster_runtime_init(struct w4_db_cluster_runtime *rt)
@@ -2262,6 +2358,11 @@ static int w4_db_cluster_runtime_init(struct w4_db_cluster_runtime *rt)
     rt->slots[rt->local_idx].region.addr =
         (uint8_t *)rt->slots[rt->local_idx].region.addr + payload_offset;
     rt->slots[rt->local_idx].region.len = rt->region_size - payload_offset;
+    rt->payload_arena_base =
+        obmm_align_up_u64(W4_DB_OBMM_QWEN3_DYNAMIC_ARENA_OFFSET, 64);
+    rt->payload_arena_next = rt->payload_arena_base;
+    rt->payload_arena_high_water = rt->payload_arena_base;
+    w4_db_report_obmm_pool_layout_once(rt);
 
     /* FM bootstrap for peer discovery */
     if (w4_db_exchange_cluster_meta(rt, &local_meta) != 0) {
@@ -3961,7 +4062,6 @@ int w4_db_obmm_service_v0_wait_runtime_range_input(uint32_t local_node,
     uint64_t metadata_ms = 0;
     uint32_t attempts = 0;
     uint16_t expected_epoch;
-    uint64_t runtime_output_offset = 0;
     unsigned int relax_attempt = 0;
     uint32_t source_node = UINT32_MAX;
 
@@ -3986,8 +4086,6 @@ int w4_db_obmm_service_v0_wait_runtime_range_input(uint32_t local_node,
         return -1;
     }
     source_node = source_placement.owner_node;
-    runtime_output_offset =
-        w4_db_qwen3_runtime_range_output_slot_offset(decode_step);
     if (w4_db_cluster_runtime_init(rt) != 0) {
         return -1;
     }
@@ -4015,14 +4113,12 @@ int w4_db_obmm_service_v0_wait_runtime_range_input(uint32_t local_node,
         if (w4_db_take_pending_runtime_range_input_desc(rt,
                                                         (int)source_node,
                                                         expected_epoch,
-                                                        runtime_output_offset,
                                                         &handoff_desc)) {
             break;
         }
         while (obmm_spsc_pop(rt->ingress_queues[source_node], &rx) == 0) {
             if (w4_db_runtime_range_input_desc_matches(&rx,
-                                                       expected_epoch,
-                                                       runtime_output_offset)) {
+                                                       expected_epoch)) {
                 handoff_desc = rx;
                 break;
             }
@@ -4034,8 +4130,7 @@ int w4_db_obmm_service_v0_wait_runtime_range_input(uint32_t local_node,
         w4_db_cpu_relax_wait(&relax_attempt);
     }
     if (!w4_db_runtime_range_input_desc_matches(&handoff_desc,
-                                                expected_epoch,
-                                                runtime_output_offset)) {
+                                                expected_epoch)) {
         printf("[w4_guest] gap qwen3_range_forward=runtime_ingress_desc_wait_failed local=node%u source=node%u key=%s attempts=%u\n",
                local_node + 1U,
                source_node + 1U,
@@ -4197,15 +4292,18 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
     terminal_range = local_placement.layer_end >= W4_DB_QWEN3_LAYER_COUNT;
     target_node = terminal_range ? local_node : local_placement.next_owner_node;
     local_slot = &rt->slots[rt->local_idx];
-    runtime_output_offset = w4_db_qwen3_runtime_range_output_slot_offset(decode_step);
     if ((uint32_t)rt->local_idx != local_node || !local_slot->region.addr ||
-        local_slot->region.len <
-            runtime_output_offset + W4_DB_OBMM_HIDDEN_RANGE_BYTES) {
+        w4_db_payload_arena_alloc(rt,
+                                  payload_len,
+                                  64,
+                                  &runtime_output_offset) != 0) {
         return -1;
     }
-    kv_state_offset = w4_db_qwen3_kv_state_slot_offset(decode_step);
     if (kv_payload_len > W4_DB_OBMM_QWEN3_KV_STATE_SLOT_BYTES ||
-        kv_state_offset + kv_payload_len > local_slot->region.len) {
+        w4_db_payload_arena_alloc(rt,
+                                  kv_payload_len,
+                                  64,
+                                  &kv_state_offset) != 0) {
         printf("[w4_guest] gap qwen3_range_forward=runtime_kv_payload_too_large local=node%u step=%" PRIu64 " bytes=%" PRIu64 " slot_bytes=%" PRIu64 " region_len=%zu\n",
                local_node + 1U,
                decode_step,
@@ -4611,7 +4709,6 @@ int w4_db_obmm_service_v0_publish_engram_candidates(struct w4_db_service *svc,
     struct w4_db_record candidates_record;
     char candidates_key[96];
     uint64_t candidate_words[32];
-    uint64_t slot_offset;
     uint64_t candidates_offset;
     uint64_t candidates_bytes = W4_DB_OBMM_QWEN3_ENGRAM_CANDIDATES_BYTES;
     uint64_t candidates_checksum;
@@ -4636,10 +4733,11 @@ int w4_db_obmm_service_v0_publish_engram_candidates(struct w4_db_service *svc,
     }
 
     local_slot = &rt->slots[rt->local_idx];
-    slot_offset = w4_db_qwen3_engram_slot_offset(decode_step);
-    candidates_offset = slot_offset + W4_DB_OBMM_QWEN3_ENGRAM_HISTORY_BYTES;
     if ((uint32_t)rt->local_idx != local_node || !local_slot->region.addr ||
-        candidates_offset + candidates_bytes > local_slot->region.len) {
+        w4_db_payload_arena_alloc(rt,
+                                  candidates_bytes,
+                                  64,
+                                  &candidates_offset) != 0) {
         return -1;
     }
     packed_count = w4_db_pack_qwen3_engram_candidates(decode_step,
@@ -4743,9 +4841,7 @@ int w4_db_obmm_service_v0_publish_engram_step(struct w4_db_service *svc,
     uint64_t history_words[1024 + 2];
     uint64_t selected_words[8];
     uint64_t state_words[16];
-    uint64_t slot_offset;
     uint64_t history_offset;
-    uint64_t candidates_offset;
     uint64_t selected_offset;
     uint64_t state_offset;
     uint64_t published_history_token_count;
@@ -4778,16 +4874,13 @@ int w4_db_obmm_service_v0_publish_engram_step(struct w4_db_service *svc,
     }
 
     local_slot = &rt->slots[rt->local_idx];
-    slot_offset = w4_db_qwen3_engram_slot_offset(decode_step);
-    history_offset = slot_offset;
-    candidates_offset = slot_offset + W4_DB_OBMM_QWEN3_ENGRAM_HISTORY_BYTES;
-    selected_offset = candidates_offset + W4_DB_OBMM_QWEN3_ENGRAM_CANDIDATES_BYTES;
-    state_offset = selected_offset + W4_DB_OBMM_QWEN3_ENGRAM_SELECTED_BYTES;
     published_history_token_count = history_token_count + 1U;
     history_bytes = (published_history_token_count + 2U) * sizeof(uint64_t);
     if ((uint32_t)rt->local_idx != local_node || !local_slot->region.addr ||
         history_bytes > W4_DB_OBMM_QWEN3_ENGRAM_HISTORY_BYTES ||
-        state_offset + state_bytes > local_slot->region.len) {
+        w4_db_payload_arena_alloc(rt, history_bytes, 64, &history_offset) != 0 ||
+        w4_db_payload_arena_alloc(rt, selected_bytes, 64, &selected_offset) != 0 ||
+        w4_db_payload_arena_alloc(rt, state_bytes, 64, &state_offset) != 0) {
         return -1;
     }
 
@@ -5463,6 +5556,7 @@ int w4_db_obmm_service_v0_publish_decode_round_done(struct w4_db_service *svc,
            (uint64_t)W4_DB_OBMM_QWEN3_ROUND_DONE_OFFSET,
            (uint64_t)W4_DB_OBMM_QWEN3_ROUND_DONE_BYTES,
            checksum);
+    w4_db_report_obmm_pool_usage(rt, local_node, decode_step);
     return 0;
 }
 
