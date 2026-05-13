@@ -251,6 +251,18 @@ cleanup_headless_env() {
   fi
 }
 
+trace_run_artifact_paths() {
+  local node_id
+
+  trace "run_dir=$RUN_DIR"
+  trace "control_log=$RUN_DIR/control.log"
+  trace "cleanup_script=${CLEANUP_SCRIPT:-}"
+  for node_id in "${NODE_IDS[@]}"; do
+    trace "${node_id}_guest_log=$RUN_DIR/${node_id}_guest.log"
+    trace "${node_id}_qemu_log=$RUN_DIR/${node_id}_qemu.log"
+  done
+}
+
 send_w4_cmd() {
   local node_id="$1"
   local local_ip="$2"
@@ -481,6 +493,7 @@ prepare_environment() {
     return 1
   fi
   source "$env_file"
+  trace_run_artifact_paths
 
   for node_id in "${NODE_IDS[@]}"; do
     guest_log="$RUN_DIR/${node_id}_guest.log"
