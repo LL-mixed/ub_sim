@@ -6,9 +6,10 @@ use sim_core::{
     SegmentHandle, SimEvent, TaskKey,
 };
 use sim_models::qwen3_dense::{
-    hidden_range_bytes, model_key as qwen3_dense_model_key, profile_from_weights_dir,
-    qwen3_dense_0_6b_profile, Qwen3DenseProfile, QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
-    QWEN3_DENSE_DEFAULT_PREFILL_TOKENS, QWEN3_DENSE_DEFAULT_TP_NODES,
+    hidden_range_bytes, kv_state_bytes_for_layer_count, model_key as qwen3_dense_model_key,
+    profile_from_weights_dir, qwen3_dense_0_6b_profile, Qwen3DenseProfile,
+    QWEN3_DENSE_DEFAULT_DECODE_TOKENS, QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
+    QWEN3_DENSE_DEFAULT_TP_NODES,
 };
 use sim_models::qwen3_dense_0_6b::{
     token_piece_bytes_from_tokenizer_path, token_piece_decode_bytes,
@@ -1321,7 +1322,7 @@ mod tests {
     }
 
     #[test]
-    fn qwen3_guest_dense_runtime_rejects_14b_until_runtime_migration() {
+    fn qwen3_guest_dense_runtime_accepts_14b_generic_profile() {
         let dir = env::temp_dir().join(format!(
             "sim_cli_qwen3_guest_dense_14b_runtime_{}",
             std::process::id()
@@ -1357,10 +1358,11 @@ mod tests {
             weights_path: Some(dir.clone()),
             engram: Qwen3EngramConfig::default(),
         };
-        let err = qwen3_guest_dense_runtime(&args).expect_err("14B runtime should be guarded");
-        assert!(err
-            .to_string()
-            .contains("runtime currently supports qwen3_dense_0_6b only"));
+        let runtime = qwen3_guest_dense_runtime(&args).expect("14B generic runtime");
+        assert_eq!(runtime.model_key, "qwen3-14b");
+        assert_eq!(runtime.chipbackend_profile, "qwen3_dense");
+        assert_eq!(runtime.profile.hidden_size, 5120);
+        assert_eq!(runtime.profile.num_hidden_layers, 40);
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -2008,7 +2010,55 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         .env("SIM_QWEN3_DENSE_MODEL_ID", &runtime.profile.model_id)
         .env("SIM_QWEN3_DENSE_MODEL_KEY", &runtime.model_key)
         .env("SIM_QWEN3_DENSE_WEIGHTS_PATH", &runtime.weights_path)
-        .env("SIM_QWEN3_0_6B_WEIGHTS_PATH", &runtime.weights_path)
+        .env(
+            "SIM_QWEN3_DENSE_VOCAB_SIZE",
+            runtime.profile.vocab_size.to_string(),
+        )
+        .env(
+            "SIM_QWEN3_DENSE_HIDDEN_SIZE",
+            runtime.profile.hidden_size.to_string(),
+        )
+        .env(
+            "SIM_QWEN3_DENSE_INTERMEDIATE_SIZE",
+            runtime.profile.intermediate_size.to_string(),
+        )
+        .env(
+            "SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS",
+            runtime.profile.num_hidden_layers.to_string(),
+        )
+        .env(
+            "SIM_QWEN3_DENSE_NUM_ATTENTION_HEADS",
+            runtime.profile.num_attention_heads.to_string(),
+        )
+        .env(
+            "SIM_QWEN3_DENSE_NUM_KEY_VALUE_HEADS",
+            runtime.profile.num_key_value_heads.to_string(),
+        )
+        .env(
+            "SIM_QWEN3_DENSE_HEAD_DIM",
+            runtime.profile.head_dim.to_string(),
+        )
+        .env(
+            "SIM_QWEN3_DENSE_PREFILL_TOKENS",
+            runtime.profile.prefill_tokens.to_string(),
+        )
+        .env(
+            "SIM_QWEN3_DENSE_DECODE_TOKENS",
+            runtime.profile.decode_tokens.to_string(),
+        )
+        .env(
+            "SIM_QWEN3_DENSE_TP_NODES",
+            runtime.profile.tp_nodes.to_string(),
+        )
+        .env(
+            "SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES",
+            hidden_range_bytes(&runtime.profile).to_string(),
+        )
+        .env(
+            "SIM_QWEN3_DENSE_KV_STATE_BYTES",
+            kv_state_bytes_for_layer_count(&runtime.profile, runtime.profile.num_hidden_layers)
+                .to_string(),
+        )
         .env("SIM_QWEN3_GUEST_DECODE_STEPS", args.step_count.to_string())
         .env(
             "SIM_QWEN3_GUEST_PROMPT",
@@ -2018,6 +2068,9 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         .env("TRACE_FILE", &trace_file)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    if runtime.chipbackend_profile == "qwen3_dense_0_6b" {
+        command.env("SIM_QWEN3_0_6B_WEIGHTS_PATH", &runtime.weights_path);
+    }
     for (key, value) in qwen3_guest_engram_env_vars(&args.engram, engram_session_id) {
         command.env(key, value);
     }
@@ -3597,20 +3650,17 @@ fn qwen3_guest_dense_runtime(
     )
     .map_err(anyhow::Error::msg)?;
     let model_key = qwen3_dense_model_key(&profile.model_id);
-    if profile != qwen3_dense_0_6b_profile() {
-        anyhow::bail!(
-            "qwen3-guest-decode-loop parsed model_id={} model_key={} from {}, but W4 guest runtime currently supports qwen3_dense_0_6b only; generic qwen3_dense profile support is present, runtime/weight execution still needs migration for this model",
-            profile.model_id,
-            model_key,
-            weights_path.display()
-        );
-    }
+    let chipbackend_profile = if profile == qwen3_dense_0_6b_profile() {
+        "qwen3_dense_0_6b"
+    } else {
+        "qwen3_dense"
+    };
 
     Ok(Qwen3DenseGuestRuntime {
         profile,
         model_key,
         weights_path,
-        chipbackend_profile: "qwen3_dense_0_6b",
+        chipbackend_profile,
     })
 }
 

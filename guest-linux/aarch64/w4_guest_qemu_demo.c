@@ -89,6 +89,8 @@
 #define W4_QWEN3_RANGE_TASK_MAGIC 0x5133060bU
 #define W4_QWEN3_COMPLETION_TASK_OFFSET 19U
 #define W4_QWEN3_HIDDEN_RANGE_BYTES 262144ULL
+#define W4_QWEN3_MAX_HIDDEN_RANGE_BYTES (2ULL * 1024ULL * 1024ULL)
+#define W4_QWEN3_MAX_KV_PAYLOAD_BYTES (4ULL * 1024ULL * 1024ULL)
 #define W4_QWEN3_RANGE_INPUT_PAYLOAD_OFFSET 0x0000000000080000ULL
 #define W4_QWEN3_TOKENIZER_POLICY_KIND 1ULL
 #define W4_QWEN3_TOKENIZER_ASSET_POLICY_KIND 2ULL
@@ -217,8 +219,8 @@ struct w4_qwen3_range_runtime_forward {
     uint64_t payload_bytes;
     uint64_t kv_payload_offset;
     uint64_t kv_payload_bytes;
-    uint8_t output_payload[W4_QWEN3_HIDDEN_RANGE_BYTES];
-    uint8_t kv_payload[W4_QWEN3_HIDDEN_RANGE_BYTES * 4ULL];
+    uint8_t output_payload[W4_QWEN3_MAX_HIDDEN_RANGE_BYTES];
+    uint8_t kv_payload[W4_QWEN3_MAX_KV_PAYLOAD_BYTES];
 };
 
 struct completion_counts {
@@ -408,6 +410,47 @@ static void write_u8_le(uint8_t *buf, size_t *off, uint8_t value)
 {
     buf[*off] = value;
     *off += 1;
+}
+
+static uint64_t env_u64_or(const char *name, uint64_t fallback)
+{
+    const char *value = getenv(name);
+    char *end = NULL;
+    unsigned long long parsed;
+
+    if (!value || value[0] == '\0') {
+        return fallback;
+    }
+    errno = 0;
+    parsed = strtoull(value, &end, 10);
+    if (errno != 0 || end == value || *end != '\0') {
+        return fallback;
+    }
+    return (uint64_t)parsed;
+}
+
+static uint64_t qwen3_pipeline_nodes(void)
+{
+    return env_u64_or("SIM_QWEN3_DENSE_TP_NODES", W4_QWEN3_EXPECTED_SHARDS);
+}
+
+static uint64_t qwen3_total_layers(void)
+{
+    return env_u64_or("SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS",
+                      W4_QWEN3_KVCACHE_LAYERS);
+}
+
+static uint64_t qwen3_hidden_range_bytes(void)
+{
+    return env_u64_or("SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES",
+                      W4_QWEN3_HIDDEN_RANGE_BYTES);
+}
+
+static bool is_qwen3_profile_name(const char *profile)
+{
+    return profile &&
+           (strcmp(profile, "qwen3_dense_0_6b") == 0 ||
+            strcmp(profile, "qwen3_dense") == 0);
 }
 
 static void write_u32_le(uint8_t *buf, size_t *off, uint32_t value)
@@ -1036,9 +1079,9 @@ static void build_qwen3_range_dispatch_descriptor(uint8_t *slot,
     write_u32_le(slot, &off, layer_start);
     write_u32_le(slot, &off, layer_end);
     write_u32_le(slot, &off, next_node);
-    write_u32_le(slot, &off, (uint32_t)W4_QWEN3_EXPECTED_SHARDS);
-    write_u32_le(slot, &off, (uint32_t)W4_QWEN3_KVCACHE_LAYERS);
-    write_u32_le(slot, &off, (uint32_t)W4_QWEN3_HIDDEN_RANGE_BYTES);
+    write_u32_le(slot, &off, (uint32_t)qwen3_pipeline_nodes());
+    write_u32_le(slot, &off, (uint32_t)qwen3_total_layers());
+    write_u32_le(slot, &off, (uint32_t)qwen3_hidden_range_bytes());
 }
 
 static int decode_completion_preview(const uint8_t *slot, struct completion_preview *preview)
@@ -1150,7 +1193,7 @@ static int seed_qwen3_prompt_tokens_from_env(volatile uint8_t *ep_mmio)
 
     const char *profile = getenv("SIM_UAPI_W4_CHIPBACKEND_PROFILE");
 
-    if (!profile || strcmp(profile, "qwen3_dense_0_6b") != 0 || !csv || csv[0] == '\0') {
+    if (!is_qwen3_profile_name(profile) || !csv || csv[0] == '\0') {
         return 0;
     }
 
@@ -1370,7 +1413,7 @@ static uint64_t expected_dispatch_result_word(void)
 static bool is_qwen3_profile(void)
 {
     const char *profile = getenv("SIM_UAPI_W4_CHIPBACKEND_PROFILE");
-    return profile && strcmp(profile, "qwen3_dense_0_6b") == 0;
+    return is_qwen3_profile_name(profile);
 }
 
 static void resolve_role(char *role, size_t role_len);
@@ -2245,6 +2288,9 @@ static int verify_qwen3_range_completion_contract(const uint8_t *cq,
                                                   uint32_t next_node,
                                                   uint32_t cluster_node_count)
 {
+    const uint64_t expected_total_layers = qwen3_total_layers();
+    const uint64_t expected_hidden_bytes = qwen3_hidden_range_bytes();
+
     for (size_t i = 0; i < slot_count; ++i) {
         const uint8_t *slot = cq + (i * CMDQ_SLOT_BYTES);
         uint64_t op_id = read_u64_le_bytes(slot, 0);
@@ -2288,8 +2334,8 @@ static int verify_qwen3_range_completion_contract(const uint8_t *cq,
             range_layer_end != layer_end ||
             range_next_node != next_node ||
             range_pipeline_nodes != cluster_node_count ||
-            range_total_layers != W4_QWEN3_KVCACHE_LAYERS ||
-            range_hidden_bytes != W4_QWEN3_HIDDEN_RANGE_BYTES) {
+            range_total_layers != expected_total_layers ||
+            range_hidden_bytes != expected_hidden_bytes) {
             fprintf(stderr,
                     "[w4_guest] qwen3 range compute contract mismatch marker=0x%016" PRIx64
                     " magic=0x%08" PRIx32 "/0x%08" PRIx32
@@ -2310,9 +2356,9 @@ static int verify_qwen3_range_completion_contract(const uint8_t *cq,
                     range_pipeline_nodes,
                     cluster_node_count,
                     range_total_layers,
-                    (uint64_t)W4_QWEN3_KVCACHE_LAYERS,
+                    expected_total_layers,
                     range_hidden_bytes,
-                    (uint64_t)W4_QWEN3_HIDDEN_RANGE_BYTES);
+                    expected_hidden_bytes);
             return -1;
         }
         printf("[w4_guest] stage uapi_qwen3_range_compute_contract node=%" PRIu32 " layers=[%" PRIu32 ",%" PRIu32 ") count=%" PRIu32 " next=%" PRIu32 " pipeline_nodes=%" PRIu32 " total_layers=%" PRIu32 " hidden_bytes=%" PRIu32 " source=dispatch_task output=completion status=ok\n",
@@ -2346,8 +2392,8 @@ static int verify_qwen3_range_completion_contract(const uint8_t *cq,
            layer_end - layer_start,
            next_node,
            cluster_node_count,
-           (uint64_t)W4_QWEN3_KVCACHE_LAYERS,
-           (uint64_t)W4_QWEN3_HIDDEN_RANGE_BYTES);
+           expected_total_layers,
+           expected_hidden_bytes);
     return 0;
 }
 
@@ -2394,6 +2440,8 @@ static int verify_qwen3_range_forward_table(volatile uint8_t *ep_mmio,
     uint64_t kv_payload_bytes;
     uint64_t kv_payload_checksum = 0;
     uint64_t scan_limit = qwen3_output_scan_limit(ep_mmio);
+    uint64_t expected_total_layers = qwen3_total_layers();
+    uint64_t expected_hidden_bytes = qwen3_hidden_range_bytes();
     uint64_t explicit_table_header =
         read_segment_u64(ep_mmio,
                          W4_QWEN3_RESULT_BLOCK_TABLE_HEADER +
@@ -2428,7 +2476,8 @@ static int verify_qwen3_range_forward_table(volatile uint8_t *ep_mmio,
     if (table_marker != W4_QWEN3_MARKER_RANGE_FORWARD_TABLE ||
         table_count != 1ULL ||
         entry_words != W4_QWEN3_RANGE_FORWARD_TABLE_ENTRY_WORDS ||
-        table_bytes < W4_QWEN3_RANGE_FORWARD_TABLE_ENTRY_BYTES + W4_QWEN3_HIDDEN_RANGE_BYTES ||
+        table_bytes <
+            W4_QWEN3_RANGE_FORWARD_TABLE_ENTRY_BYTES + expected_hidden_bytes ||
         table_checksum == 0 ||
         table_range_checksum == 0 ||
         table_input_checksum == 0 ||
@@ -2469,15 +2518,25 @@ static int verify_qwen3_range_forward_table(volatile uint8_t *ep_mmio,
     entry_kv_payload_bytes = read_segment_u64(ep_mmio, base + 128);
     entry_kv_payload_checksum = read_segment_u64(ep_mmio, base + 136);
     payload_offset = base + W4_QWEN3_RANGE_FORWARD_TABLE_ENTRY_BYTES;
-    payload_bytes = W4_QWEN3_HIDDEN_RANGE_BYTES;
+    payload_bytes = entry_output_bytes;
+    if (payload_bytes > W4_QWEN3_MAX_HIDDEN_RANGE_BYTES ||
+        table_bytes < W4_QWEN3_RANGE_FORWARD_TABLE_ENTRY_BYTES + payload_bytes) {
+        fprintf(stderr,
+                "[w4_guest] qwen3 range forward payload bounds mismatch bytes=%" PRIu64
+                " max=%" PRIu64 " table_bytes=%" PRIu64 "\n",
+                payload_bytes,
+                (uint64_t)W4_QWEN3_MAX_HIDDEN_RANGE_BYTES,
+                table_bytes);
+        return -1;
+    }
     kv_payload_offset = payload_offset + payload_bytes;
     kv_payload_bytes = table_bytes - W4_QWEN3_RANGE_FORWARD_TABLE_ENTRY_BYTES - payload_bytes;
-    if (payload_bytes != W4_QWEN3_HIDDEN_RANGE_BYTES) {
+    if (payload_bytes != expected_hidden_bytes) {
         fprintf(stderr,
                 "[w4_guest] qwen3 range forward payload size mismatch bytes=%" PRIu64
                 " expected=%" PRIu64 "\n",
                 payload_bytes,
-                (uint64_t)W4_QWEN3_HIDDEN_RANGE_BYTES);
+                expected_hidden_bytes);
         return -1;
     }
     if (runtime_out) {
@@ -2506,10 +2565,17 @@ static int verify_qwen3_range_forward_table(volatile uint8_t *ep_mmio,
                                                  kv_payload_bytes);
         }
     } else {
-        uint8_t payload[W4_QWEN3_HIDDEN_RANGE_BYTES];
+        uint8_t *payload = malloc((size_t)payload_bytes);
 
+        if (!payload) {
+            fprintf(stderr,
+                    "[w4_guest] qwen3 range forward payload malloc failed bytes=%" PRIu64 "\n",
+                    payload_bytes);
+            return -1;
+        }
         read_segment_bytes(ep_mmio, payload_offset, payload, payload_bytes);
         payload_checksum = w4_qwen3_hidden_payload_checksum(payload, payload_bytes);
+        free(payload);
     }
     if (entry_node != dispatch_node ||
         entry_layer_start != layer_start ||
@@ -2517,11 +2583,11 @@ static int verify_qwen3_range_forward_table(volatile uint8_t *ep_mmio,
         entry_layer_count != layer_end - layer_start ||
         entry_next_node != next_node ||
         entry_pipeline_nodes != cluster_node_count ||
-        entry_total_layers != W4_QWEN3_KVCACHE_LAYERS ||
-        entry_hidden_bytes != W4_QWEN3_HIDDEN_RANGE_BYTES ||
+        entry_total_layers != expected_total_layers ||
+        entry_hidden_bytes != expected_hidden_bytes ||
         entry_real_layers > layer_end - layer_start ||
-        entry_input_bytes != W4_QWEN3_HIDDEN_RANGE_BYTES ||
-        entry_output_bytes != W4_QWEN3_HIDDEN_RANGE_BYTES ||
+        entry_input_bytes != expected_hidden_bytes ||
+        entry_output_bytes != expected_hidden_bytes ||
         entry_kv_payload_bytes != kv_payload_bytes ||
         entry_kv_payload_checksum != kv_payload_checksum ||
         entry_input_checksum != table_input_checksum ||
@@ -6036,35 +6102,53 @@ decode_round_start:
             goto out;
         }
         if (layer_start > 0U) {
-            uint8_t range_input_payload[W4_QWEN3_HIDDEN_RANGE_BYTES];
+            uint64_t hidden_range_bytes = qwen3_hidden_range_bytes();
+            uint8_t *range_input_payload = NULL;
             uint64_t range_input_checksum = 0;
             uint64_t stage_start_ms = monotonic_ms();
 
+            if (hidden_range_bytes > W4_QWEN3_MAX_HIDDEN_RANGE_BYTES) {
+                fprintf(stderr,
+                        "[w4_guest] fail qwen3 runtime range input too large bytes=%" PRIu64
+                        " max=%" PRIu64 "\n",
+                        hidden_range_bytes,
+                        (uint64_t)W4_QWEN3_MAX_HIDDEN_RANGE_BYTES);
+                goto out;
+            }
+            range_input_payload = malloc((size_t)hidden_range_bytes);
+            if (!range_input_payload) {
+                fprintf(stderr,
+                        "[w4_guest] fail qwen3 runtime range input malloc failed bytes=%" PRIu64 "\n",
+                        hidden_range_bytes);
+                goto out;
+            }
             if (w4_db_obmm_service_v0_wait_runtime_range_input(dispatch_node,
                                                                cluster_node_count,
                                                                guest_decode_step,
                                                                range_input_payload,
-                                                               W4_QWEN3_HIDDEN_RANGE_BYTES,
+                                                               hidden_range_bytes,
                                                                &range_input_checksum) != 0) {
                 fprintf(stderr,
                         "[w4_guest] fail qwen3 runtime range input resolve failed node=%u layers=[%u,%u)\n",
                         dispatch_node + 1U,
                         layer_start,
                         layer_end);
+                free(range_input_payload);
                 goto out;
             }
             input_wait_ms = monotonic_ms() - stage_start_ms;
             write_segment_bytes(ep_mmio,
                                 W4_QWEN3_RANGE_INPUT_PAYLOAD_OFFSET,
                                 range_input_payload,
-                                W4_QWEN3_HIDDEN_RANGE_BYTES);
+                                hidden_range_bytes);
+            free(range_input_payload);
             printf("[w4_guest] stage qwen3_range_forward_runtime_input_loaded node=%u layers=[%u,%u) input_offset=0x%016" PRIx64 " input_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " source=obmm_object_service target=uapi_segment status=ok\n",
                    dispatch_node + 1U,
                    layer_start,
                    layer_end,
                    (uint64_t)W4_QWEN3_RANGE_INPUT_PAYLOAD_OFFSET,
                    range_input_checksum,
-                   (uint64_t)W4_QWEN3_HIDDEN_RANGE_BYTES);
+                   hidden_range_bytes);
         }
         if (guest_decode_step > 0 &&
             w4_db_obmm_service_v0_resolve_previous_range_kv_state(&db_service,
@@ -6179,7 +6263,7 @@ decode_round_start:
         goto out;
     }
     qwen3_runtime_forward_ready =
-        is_qwen3_profile() && runtime_forward.payload_bytes == W4_QWEN3_HIDDEN_RANGE_BYTES;
+        is_qwen3_profile() && runtime_forward.payload_bytes == qwen3_hidden_range_bytes();
     if (qwen3_runtime_forward_ready && enable_db_cluster && cluster_node_count == 8U) {
         uint32_t dispatch_node = 0U;
 

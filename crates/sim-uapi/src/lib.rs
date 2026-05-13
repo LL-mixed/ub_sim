@@ -1516,10 +1516,49 @@ fn run_w4_chipbackend(
         "qwen3_dense_0_6b" => {
             run_qwen3_dense_0_6b_prefill_runtime(topology, task, guest_input, None)
         }
+        "qwen3_dense" => run_qwen3_dense_profile_runtime(topology, task, guest_input),
         "host_matmul" => run_host_matmul_smoke(topology, task),
         "host_vector" | "" => run_host_vector_chipbackend(topology, task, guest_input),
         other => Err(format!("unsupported_w4_chipbackend_profile:{other}")),
     }
+}
+
+fn qwen3_dense_env_u64(name: &str, fallback: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(fallback)
+}
+
+fn qwen3_dense_runtime_tp_nodes() -> u64 {
+    qwen3_dense_env_u64(
+        "SIM_QWEN3_DENSE_TP_NODES",
+        QWEN3_DENSE_0_6B_PROFILE.tp_nodes,
+    )
+}
+
+fn qwen3_dense_runtime_total_layers() -> u64 {
+    qwen3_dense_env_u64(
+        "SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS",
+        QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers,
+    )
+}
+
+fn qwen3_dense_runtime_hidden_range_bytes() -> u64 {
+    qwen3_dense_env_u64("SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES", 262_144)
+}
+
+fn qwen3_dense_runtime_kv_payload_bytes(layer_count: u64) -> u64 {
+    let decode_tokens = qwen3_dense_env_u64("SIM_QWEN3_DENSE_DECODE_TOKENS", 1).max(1);
+    let kv_heads = qwen3_dense_env_u64(
+        "SIM_QWEN3_DENSE_NUM_KEY_VALUE_HEADS",
+        QWEN3_DENSE_0_6B_PROFILE.num_key_value_heads,
+    );
+    let head_dim = qwen3_dense_env_u64(
+        "SIM_QWEN3_DENSE_HEAD_DIM",
+        QWEN3_DENSE_0_6B_PROFILE.head_dim,
+    );
+    (layer_count * decode_tokens * kv_heads * head_dim * 2 * 4).max(64)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1550,13 +1589,14 @@ fn qwen3_guest_range_compute_contract(
         total_layers: task.coord.levels[6],
         hidden_bytes: task.coord.levels[7],
     };
-    if contract.pipeline_nodes != QWEN3_DENSE_0_6B_PROFILE.tp_nodes as u32
-        || contract.total_layers != QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers as u32
+    if contract.pipeline_nodes != qwen3_dense_runtime_tp_nodes() as u32
+        || contract.total_layers != qwen3_dense_runtime_total_layers() as u32
         || contract.node >= contract.pipeline_nodes
         || contract.next_node >= contract.pipeline_nodes
         || contract.layer_start >= contract.layer_end
         || contract.layer_end > contract.total_layers
         || contract.hidden_bytes == 0
+        || u64::from(contract.hidden_bytes) != qwen3_dense_runtime_hidden_range_bytes()
     {
         return Err(format!(
             "qwen3_guest_range_compute_contract_invalid:node={} layers=[{},{}) next={} nodes={} total_layers={} hidden_bytes={}",
@@ -1570,6 +1610,236 @@ fn qwen3_guest_range_compute_contract(
         ));
     }
     Ok(Some(contract))
+}
+
+fn run_qwen3_dense_profile_runtime(
+    _topology: &SimTopology,
+    task: &TaskKey,
+    guest_input: &[u8],
+) -> Result<Vec<u8>, String> {
+    let Some(contract) = qwen3_guest_range_compute_contract(task)? else {
+        return Err("qwen3_dense_profile_runtime_requires_range_contract".to_string());
+    };
+    let hidden_bytes = u64::from(contract.hidden_bytes);
+    let hidden_len = usize::try_from(hidden_bytes)
+        .map_err(|_| format!("qwen3_dense_profile_hidden_too_large:{hidden_bytes}"))?;
+    let layer_count = u64::from(contract.layer_end - contract.layer_start);
+    let input_checksum = qwen3_dense_profile_range_input_checksum(contract, guest_input);
+    let output_tensor_payload =
+        qwen3_dense_profile_synthetic_payload(hidden_len, input_checksum, contract);
+    let output_tensor_checksum =
+        qwen3_dense_0_6b_range_object_payload_checksum(&output_tensor_payload);
+    let kv_state_bytes = qwen3_dense_runtime_kv_payload_bytes(layer_count);
+    let kv_state_len = usize::try_from(kv_state_bytes)
+        .map_err(|_| format!("qwen3_dense_profile_kv_too_large:{kv_state_bytes}"))?;
+    let kv_state_payload =
+        qwen3_dense_profile_synthetic_payload(kv_state_len, output_tensor_checksum, contract);
+    let kv_state_checksum = qwen3_dense_0_6b_range_object_payload_checksum(&kv_state_payload);
+    let range_layer_checksum = checksum_words(&[
+        u64::from(contract.node),
+        u64::from(contract.layer_start),
+        u64::from(contract.layer_end),
+        u64::from(contract.next_node),
+        u64::from(contract.pipeline_nodes),
+        u64::from(contract.total_layers),
+        hidden_bytes,
+        input_checksum,
+        output_tensor_checksum,
+        kv_state_checksum,
+    ]);
+    let range_forward_summary = Qwen3Dense06bRangeForwardSummary {
+        node: u64::from(contract.node),
+        layer_start: u64::from(contract.layer_start),
+        layer_end: u64::from(contract.layer_end),
+        layer_count,
+        next_node: u64::from(contract.next_node),
+        pipeline_nodes: u64::from(contract.pipeline_nodes),
+        total_layers: u64::from(contract.total_layers),
+        hidden_bytes,
+        input_tensor_checksum: input_checksum,
+        output_tensor_checksum,
+        range_layer_checksum,
+        real_layer_execution_count: 0,
+        first_layer_output_checksum: output_tensor_checksum,
+        final_layer_output_checksum: output_tensor_checksum,
+        input_tensor_bytes: hidden_bytes,
+        output_tensor_bytes: hidden_bytes,
+        output_tensor_payload,
+        kv_state_bytes,
+        kv_state_checksum,
+        kv_state_payload,
+    };
+    let terminal_owner = contract.node + 1 == contract.pipeline_nodes;
+    let logits_descriptors = if terminal_owner {
+        qwen3_dense_profile_logits_descriptors(2)?
+    } else {
+        Vec::new()
+    };
+    let result_descriptors: Vec<Qwen3Dense06bResultDescriptor> = Vec::new();
+    let result_block_descriptors: Vec<Qwen3Dense06bResultBlockDescriptor> = Vec::new();
+    let projection_descriptors: Vec<Qwen3Dense06bProjectionDescriptor> = Vec::new();
+    let layer_dependency_descriptors: Vec<Qwen3Dense06bLayerDependencyDescriptor> = Vec::new();
+    let kvcache_descriptors: Vec<Qwen3Dense06bKvCacheDescriptor> = Vec::new();
+    let real_weight_stage_links: Vec<Qwen3Dense06bRealWeightStageLinkDescriptor> = Vec::new();
+    let mut output = vec![
+        0u8;
+        qwen3_dense_0_6b_service_flow_output_len(
+            &result_descriptors,
+            &result_block_descriptors,
+            &projection_descriptors,
+            &layer_dependency_descriptors,
+            &kvcache_descriptors,
+            &logits_descriptors,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &real_weight_stage_links,
+            Some(&range_forward_summary),
+        )
+    ];
+    qwen3_dense_0_6b_write_service_flow_markers(
+        &mut output,
+        0,
+        0,
+        0,
+        0,
+        0,
+        &[],
+        &[],
+        &result_descriptors,
+        &result_block_descriptors,
+        &projection_descriptors,
+        &layer_dependency_descriptors,
+        &kvcache_descriptors,
+        &logits_descriptors,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        &real_weight_stage_links,
+        Some(&range_forward_summary),
+    );
+    Ok(output)
+}
+
+fn qwen3_dense_profile_range_input_checksum(
+    contract: Qwen3GuestRangeComputeContract,
+    guest_input: &[u8],
+) -> u64 {
+    const RANGE_INPUT_PAYLOAD_OFFSET: usize = 0x08_0000;
+    let hidden_len = contract.hidden_bytes as usize;
+    if contract.layer_start > 0 {
+        if let Some(payload) =
+            guest_input.get(RANGE_INPUT_PAYLOAD_OFFSET..RANGE_INPUT_PAYLOAD_OFFSET + hidden_len)
+        {
+            if payload.iter().any(|byte| *byte != 0) {
+                return qwen3_dense_0_6b_range_object_payload_checksum(payload);
+            }
+        }
+    }
+    checksum_words(&[
+        qwen3_dense_0_6b_decode_guest_input_checksum(guest_input),
+        u64::from(contract.node),
+        u64::from(contract.layer_start),
+        u64::from(contract.layer_end),
+        u64::from(contract.hidden_bytes),
+    ])
+}
+
+fn qwen3_dense_profile_synthetic_payload(
+    len: usize,
+    seed: u64,
+    contract: Qwen3GuestRangeComputeContract,
+) -> Vec<u8> {
+    let mut payload = vec![0u8; len];
+    let mut state = checksum_words(&[
+        seed,
+        u64::from(contract.node),
+        u64::from(contract.layer_start),
+        u64::from(contract.layer_end),
+        u64::from(contract.total_layers),
+        u64::from(contract.hidden_bytes),
+    ]);
+    for (index, byte) in payload.iter_mut().enumerate() {
+        if index % 8 == 0 {
+            state ^= (index as u64).rotate_left((index % 63) as u32);
+            state = state.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        *byte = ((state >> ((index % 8) * 8)) & 0xff) as u8;
+    }
+    payload
+}
+
+fn qwen3_dense_profile_logits_descriptors(
+    count: usize,
+) -> Result<Vec<Qwen3Dense06bLogitsDescriptor>, String> {
+    let mut descriptors = Vec::with_capacity(count);
+    let mut text_byte_offset = 0u64;
+    for index in 0..count {
+        let tile_id = index as u64;
+        let shard_id = tile_id / 2;
+        let round1_checksum = 0;
+        let sampled_token = qwen3_dense_0_6b_sampled_token(
+            round1_checksum,
+            tile_id,
+            QWEN3_DENSE_0_6B_PROFILE.vocab_size,
+        );
+        let runner_up_token =
+            (sampled_token + 17 + shard_id + tile_id) % QWEN3_DENSE_0_6B_PROFILE.vocab_size;
+        let margin_milli = 1000 + tile_id * 7 + shard_id;
+        let logits_checksum = qwen3_dense_0_6b_logits_checksum(
+            round1_checksum,
+            tile_id,
+            sampled_token,
+            runner_up_token,
+            margin_milli,
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
+        let text_checksum =
+            qwen3_dense_0_6b_sample_text_checksum(tile_id, sampled_token, text_byte_offset, None)?;
+        let piece = qwen3_dense_0_6b_token_piece(sampled_token, None)?;
+        descriptors.push(Qwen3Dense06bLogitsDescriptor {
+            shard_id,
+            tile_id,
+            segment: 1_000_000 + tile_id,
+            logits_count: QWEN3_DENSE_0_6B_PROFILE.vocab_size,
+            sampled_token,
+            runner_up_token,
+            margin_milli,
+            logits_checksum,
+            full_vocab_checked_token_count: 0,
+            full_vocab_logits_checksum: 0,
+            top_logit_bits: 0,
+            runner_up_logit_bits: 0,
+            candidate_count: 0,
+            candidate_tokens: [0; 4],
+            candidate_logit_bits: [0; 4],
+            candidate_text_checksums: [0; 4],
+            candidate_piece_bytes: [0; 4],
+            candidate_piece_word0: [0; 4],
+            candidate_piece_word1: [0; 4],
+            runtime_forward_layer_count: 0,
+            runtime_forward_final_hidden_checksum: 0,
+            runtime_forward_checksum: 0,
+            kvcache_read_digest: 0,
+            qkv_reference_digest: 0,
+            real_path_digest: 0,
+            text_checksum,
+            text_byte_offset,
+            step_index: tile_id,
+        });
+        text_byte_offset += piece.byte_len;
+    }
+    Ok(descriptors)
 }
 
 pub fn qwen3_dense_0_6b_prefill_text_output_report(
@@ -16811,6 +17081,56 @@ mod tests {
             .expect("host matmul dispatch");
             assert_eq!(output.len(), 128 * 128 * std::mem::size_of::<f32>());
         });
+    }
+
+    #[test]
+    fn qwen3_dense_profile_runtime_accepts_14b_range_contract() {
+        run_simpler_native_test_isolated(
+            "qwen3_dense_profile_runtime_accepts_14b_range_contract",
+            || {
+                const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
+                const RANGE_FORWARD_MARKER: u64 = 0x7133773472667430;
+                const HIDDEN_BYTES_14B: u64 = 128 * 5120 * 2;
+
+                std::env::set_var("SIM_UAPI_W4_CHIPBACKEND_PROFILE", "qwen3_dense");
+                std::env::set_var("SIM_QWEN3_DENSE_TP_NODES", "8");
+                std::env::set_var("SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS", "40");
+                std::env::set_var("SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES", "1310720");
+                std::env::set_var("SIM_QWEN3_DENSE_DECODE_TOKENS", "1");
+                std::env::set_var("SIM_QWEN3_DENSE_NUM_KEY_VALUE_HEADS", "8");
+                std::env::set_var("SIM_QWEN3_DENSE_HEAD_DIM", "128");
+
+                let topology = test_topology();
+                let output = crate::run_w4_chipbackend(
+                    &topology,
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord {
+                            levels: [RANGE_TASK_MAGIC, 7, 35, 40, 0, 8, 40, 1_310_720],
+                        },
+                        scope_depth: 8,
+                        task_id: 14_000,
+                    },
+                    &[0; 1024],
+                )
+                .expect("generic qwen3 dense range runtime");
+                let table_header = output
+                    .windows(8)
+                    .position(|window: &[u8]| {
+                        u64::from_le_bytes(<[u8; 8]>::try_from(window).expect("u64 window"))
+                            == RANGE_FORWARD_MARKER
+                    })
+                    .expect("range-forward table marker");
+                let entry_base = table_header + 64;
+                assert_eq!(read_u64_le_at(&output, entry_base), 7);
+                assert_eq!(read_u64_le_at(&output, entry_base + 16), 40);
+                assert_eq!(read_u64_le_at(&output, entry_base + 48), 40);
+                assert_eq!(read_u64_le_at(&output, entry_base + 56), HIDDEN_BYTES_14B);
+                assert_eq!(read_u64_le_at(&output, entry_base + 112), HIDDEN_BYTES_14B);
+                assert_eq!(read_u64_le_at(&output, entry_base + 120), HIDDEN_BYTES_14B);
+                assert!(read_u64_le_at(&output, entry_base + 128) > 0);
+            },
+        );
     }
 
     #[test]

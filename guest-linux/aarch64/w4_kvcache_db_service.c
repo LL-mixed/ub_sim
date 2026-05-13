@@ -822,6 +822,37 @@ static void w4_db_qwen3_engram_state_key(uint64_t decode_step,
              decode_step);
 }
 
+static uint64_t w4_db_env_u64_or(const char *name, uint64_t fallback)
+{
+    const char *value = getenv(name);
+    char *end = NULL;
+    unsigned long long parsed;
+
+    if (!value || value[0] == '\0') {
+        return fallback;
+    }
+    errno = 0;
+    parsed = strtoull(value, &end, 10);
+    if (errno != 0 || end == value || *end != '\0') {
+        return fallback;
+    }
+    return (uint64_t)parsed;
+}
+
+static uint32_t w4_db_qwen3_layer_count(void)
+{
+    uint64_t value = w4_db_env_u64_or("SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS",
+                                      W4_DB_QWEN3_LAYER_COUNT);
+
+    return value > UINT32_MAX ? W4_DB_QWEN3_LAYER_COUNT : (uint32_t)value;
+}
+
+static uint64_t w4_db_qwen3_hidden_range_bytes(void)
+{
+    return w4_db_env_u64_or("SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES",
+                            W4_DB_OBMM_HIDDEN_RANGE_BYTES);
+}
+
 static uint64_t w4_db_qwen3_range_kv_state_bytes(uint32_t layer_start,
                                                  uint32_t layer_end,
                                                  uint64_t token_count)
@@ -829,7 +860,7 @@ static uint64_t w4_db_qwen3_range_kv_state_bytes(uint32_t layer_start,
     uint64_t layer_count;
     uint64_t bytes_per_token_per_layer;
 
-    if (layer_end <= layer_start || layer_end > W4_DB_QWEN3_LAYER_COUNT) {
+    if (layer_end <= layer_start || layer_end > w4_db_qwen3_layer_count()) {
         return 0;
     }
     layer_count = (uint64_t)(layer_end - layer_start);
@@ -845,8 +876,9 @@ static void w4_db_qwen3_node_range(uint32_t node,
                                    uint32_t *start_out,
                                    uint32_t *end_out)
 {
-    uint32_t base = W4_DB_QWEN3_LAYER_COUNT / node_count;
-    uint32_t rem = W4_DB_QWEN3_LAYER_COUNT % node_count;
+    uint32_t layer_count = w4_db_qwen3_layer_count();
+    uint32_t base = layer_count / node_count;
+    uint32_t rem = layer_count % node_count;
     uint32_t start = 0;
     uint32_t i;
 
@@ -1727,7 +1759,7 @@ static bool w4_db_runtime_range_input_desc_matches(const struct obmm_desc *desc,
 {
     if (!desc || desc->type != OBMM_DESC_W4_OBJECT_PUT ||
         desc->flags != W4_DB_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT ||
-        desc->payload_len != W4_DB_OBMM_HIDDEN_RANGE_BYTES) {
+        desc->payload_len != w4_db_qwen3_hidden_range_bytes()) {
         return false;
     }
     return (uint16_t)(desc->seq >> 48) == epoch;
@@ -4064,8 +4096,9 @@ int w4_db_obmm_service_v0_wait_runtime_range_input(uint32_t local_node,
     uint16_t expected_epoch;
     unsigned int relax_attempt = 0;
     uint32_t source_node = UINT32_MAX;
+    uint64_t hidden_range_bytes = w4_db_qwen3_hidden_range_bytes();
 
-    if (!payload_out || payload_len != W4_DB_OBMM_HIDDEN_RANGE_BYTES ||
+    if (!payload_out || payload_len != hidden_range_bytes ||
         cluster_node_count != W4_DB_QWEN3_RANGE_NODES ||
         local_node >= cluster_node_count) {
         return -1;
@@ -4169,7 +4202,7 @@ int w4_db_obmm_service_v0_wait_runtime_range_input(uint32_t local_node,
     if (!source_slot ||
         remote_hidden_output.object_payload_kind !=
             W4_DB_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT ||
-        remote_hidden_output.object_backing_len != W4_DB_OBMM_HIDDEN_RANGE_BYTES ||
+        remote_hidden_output.object_backing_len != hidden_range_bytes ||
         remote_hidden_output.object_backing_offset != handoff_desc.payload_offset ||
         remote_hidden_output.object_backing_len != handoff_desc.payload_len ||
         handoff_desc.cookie !=
@@ -4258,8 +4291,9 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
     uint16_t object_epoch;
     long producer_publish_ms;
     uint8_t *base;
+    uint64_t hidden_range_bytes = w4_db_qwen3_hidden_range_bytes();
 
-    if (!svc || !payload || payload_len != W4_DB_OBMM_HIDDEN_RANGE_BYTES ||
+    if (!svc || !payload || payload_len != hidden_range_bytes ||
         !kv_payload || kv_payload_len == 0 ||
         cluster_node_count != W4_DB_QWEN3_RANGE_NODES ||
         local_node >= cluster_node_count) {
@@ -4289,7 +4323,7 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
                                                 &local_placement)) {
         return -1;
     }
-    terminal_range = local_placement.layer_end >= W4_DB_QWEN3_LAYER_COUNT;
+    terminal_range = local_placement.layer_end >= w4_db_qwen3_layer_count();
     target_node = terminal_range ? local_node : local_placement.next_owner_node;
     local_slot = &rt->slots[rt->local_idx];
     if ((uint32_t)rt->local_idx != local_node || !local_slot->region.addr ||
