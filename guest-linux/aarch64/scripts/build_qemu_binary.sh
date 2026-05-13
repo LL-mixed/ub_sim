@@ -17,6 +17,44 @@ RECONFIGURE="${RECONFIGURE:-0}"
 STAMP_FILE="$BUILD_DIR/.qemu_build.stamp"
 SIM_QEMU_STATICLIB="${SIM_QEMU_STATICLIB:-}"
 BUILD_HOST_OS="$(uname -s 2>/dev/null || echo unknown)"
+STAT_BIN="${STAT_BIN:-$(command -v stat 2>/dev/null || echo stat)}"
+
+file_signature() {
+  local path="$1"
+
+  case "$BUILD_HOST_OS" in
+    Darwin|FreeBSD)
+      "$STAT_BIN" -f '%N:%m:%z' "$path"
+      ;;
+    *)
+      "$STAT_BIN" -c '%n:%Y:%s' "$path" 2>/dev/null || "$STAT_BIN" -f '%N:%m:%z' "$path"
+      ;;
+  esac
+}
+
+file_mtime() {
+  local path="$1"
+
+  case "$BUILD_HOST_OS" in
+    Darwin|FreeBSD)
+      "$STAT_BIN" -f '%m' "$path"
+      ;;
+    *)
+      "$STAT_BIN" -c '%Y' "$path" 2>/dev/null || "$STAT_BIN" -f '%m' "$path"
+      ;;
+  esac
+}
+
+qemu_source_signature() {
+  local file
+
+  find "$SRC_DIR/hw/ub" "$SRC_DIR/include/hw/ub" -type f \
+    \( -name '*.c' -o -name '*.h' -o -name 'meson.build' \) -print 2>/dev/null |
+    while IFS= read -r file; do
+      file_signature "$file"
+    done |
+    sort
+}
 
 apply_host_qemu_configure_args() {
   case "$BUILD_HOST_OS" in
@@ -70,11 +108,9 @@ qemu_build_signature() {
   local qemu_src_sig=""
   local rust_lib_sig=""
   qemu_head="$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || echo "")"
-  qemu_src_sig="$(find "$SRC_DIR/hw/ub" "$SRC_DIR/include/hw/ub" -type f \
-    \( -name '*.c' -o -name '*.h' -o -name 'meson.build' \) \
-    -exec stat -f '%N:%m:%z' {} \; 2>/dev/null | sort || true)"
+  qemu_src_sig="$(qemu_source_signature || true)"
   if [[ -f "$SIM_QEMU_STATICLIB" ]]; then
-    rust_lib_sig="$(stat -f '%m:%z' "$SIM_QEMU_STATICLIB" 2>/dev/null || stat -c '%Y:%s' "$SIM_QEMU_STATICLIB" 2>/dev/null || echo "")"
+    rust_lib_sig="$(file_signature "$SIM_QEMU_STATICLIB" 2>/dev/null || echo "")"
   fi
   printf 'qemu_head=%s\nqemu_src_sig=%s\ntarget_list=%s\nconfigure_args=%s\nsim_qemu_staticlib=%s\n' \
     "$qemu_head" "$qemu_src_sig" "$TARGET_LIST" "$CONFIGURE_ARGS" "$rust_lib_sig"
@@ -83,6 +119,17 @@ qemu_build_signature() {
 qemu_build_stamp_matches() {
   [[ -f "$STAMP_FILE" ]] || return 1
   [[ "$(cat "$STAMP_FILE" 2>/dev/null)" == "$(qemu_build_signature)" ]]
+}
+
+staticlib_newer_than_qemu_binary() {
+  local lib_mtime=""
+  local bin_mtime=""
+
+  [[ -n "$SIM_QEMU_STATICLIB" && -f "$SIM_QEMU_STATICLIB" && -e "$BIN" ]] || return 1
+  lib_mtime="$(file_mtime "$SIM_QEMU_STATICLIB" 2>/dev/null || echo 0)"
+  bin_mtime="$(file_mtime "$BIN" 2>/dev/null || echo 0)"
+  [[ "$lib_mtime" == <-> && "$bin_mtime" == <-> ]] || return 1
+  (( lib_mtime > bin_mtime ))
 }
 
 write_qemu_build_stamp() {
@@ -98,18 +145,26 @@ apply_host_qemu_configure_args
 ensure_sim_qemu_link_args
 mkdir -p "$BUILD_DIR"
 
-if [[ "$RECONFIGURE" != "1" && -x "$BIN" && qemu_build_stamp_matches ]] && qemu_ub_supports_required_opts "$BIN"; then
+if [[ "$RECONFIGURE" != "1" && -x "$BIN" ]] &&
+   qemu_build_stamp_matches &&
+   ! staticlib_newer_than_qemu_binary &&
+   qemu_ub_supports_required_opts "$BIN"; then
   echo "[build_qemu_binary] using existing QEMU binary: $BIN" >&2
   echo "$BIN"
   exit 0
 fi
 
-if [[ ! -f "$BUILD_DIR/build.ninja" || "$RECONFIGURE" == "1" || ! qemu_build_stamp_matches ]]; then
+if [[ ! -f "$BUILD_DIR/build.ninja" || "$RECONFIGURE" == "1" ]] || ! qemu_build_stamp_matches; then
   echo "[build_qemu_binary] configuring QEMU in $BUILD_DIR" >&2
   (
     cd "$BUILD_DIR"
     "$SRC_DIR/configure" --target-list="$TARGET_LIST" ${=CONFIGURE_ARGS}
   )
+fi
+
+if staticlib_newer_than_qemu_binary; then
+  echo "[build_qemu_binary] QEMU binary is older than sim-qemu staticlib; forcing relink" >&2
+  rm -f "$BIN"
 fi
 
 echo "[build_qemu_binary] building qemu-system-aarch64" >&2
