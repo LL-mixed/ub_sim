@@ -40,6 +40,29 @@ def shorten(value, limit=220):
     return value[: limit - 3] + "..."
 
 
+def format_duration(seconds):
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def progress_bar(done, total, width=24):
+    if total <= 0:
+        filled = 0
+    else:
+        filled = round((done / total) * width)
+    filled = max(0, min(width, filled))
+    return "[" + "#" * filled + "-" * (width - filled) + "]"
+
+
+def compact_node_name(node_id):
+    if node_id.startswith("node") and len(node_id) > 4:
+        return node_id[4:]
+    return node_id
+
+
 def parse_run_logs(run_dir, expected_steps, node_ids):
     tokens = {}
     timings = []
@@ -178,42 +201,53 @@ def emit_progress(run_dir, expected_steps, elapsed_s, node_ids, output):
     tokens, _timings, _barriers, _pool_usage, passes, missing_logs, latest_status = parse_run_logs(
         run_dir, expected_steps, node_ids
     )
+    pad = max(1, len(str(expected_steps)))
     count_parts = [
-        f"{node_id}={passes.get(node_id, 0)}/{expected_steps}" for node_id in node_ids
+        f"{compact_node_name(node_id)}={passes.get(node_id, 0):0{pad}d}/{expected_steps}"
+        for node_id in node_ids
     ]
     min_passes = min((passes.get(node_id, 0) for node_id in node_ids), default=0)
+    max_passes = max((passes.get(node_id, 0) for node_id in node_ids), default=0)
+    percent = 0 if expected_steps <= 0 else round((min_passes / expected_steps) * 100)
     slowest_node = next(
         (node_id for node_id in node_ids if passes.get(node_id, 0) == min_passes),
         "unknown",
     )
 
-    output.append(
-        "progress: "
-        f"elapsed_s={elapsed_s} "
-        f"expected_decode_steps={expected_steps} "
-        f"node_passes={','.join(count_parts)}"
-    )
+    latest_token = "none"
+    terminal_tokens = len(tokens)
     if tokens:
         latest_step = max(tokens)
         fields = tokens[latest_step]
-        output.append(
-            "progress: "
-            f"terminal_tokens={len(tokens)}/{expected_steps} "
-            f"latest_token_step={latest_step} "
+        latest_token = (
+            f"step={latest_step} "
             f"token={fields.get('token', '0')} "
             f"piece={quote_text(fields.get('_piece', ''))} "
             f"runner_up={fields.get('runner_up', '0')} "
             f"margin_milli={fields.get('margin_milli', '0')}"
         )
-    else:
-        output.append(f"progress: terminal_tokens=0/{expected_steps} latest_token=none")
 
+    output.append(
+        "progress: "
+        f"elapsed={format_duration(elapsed_s)} "
+        f"cluster_decode={min_passes}/{expected_steps} "
+        f"({percent}%) "
+        f"terminal_tokens={terminal_tokens}/{expected_steps} "
+        f"latest_token={latest_token}"
+    )
+    output.append(
+        "progress: "
+        f"cluster_bar={progress_bar(min_passes, expected_steps)} "
+        f"node_range={min_passes}..{max_passes}/{expected_steps} "
+        f"lagging={slowest_node}"
+    )
+    output.append(f"progress: node_passes {' '.join(count_parts)}")
     latest = shorten(latest_status.get(slowest_node, "unknown"))
     output.append(
         "progress: "
-        f"slowest_node={slowest_node} "
-        f"slowest_passes={min_passes}/{expected_steps} "
-        f"latest_status={quote_text(latest)}"
+        f"lagging_status node={slowest_node} "
+        f"passes={min_passes}/{expected_steps} "
+        f"latest={quote_text(latest)}"
     )
     if missing_logs:
         output.append(f"progress: missing_guest_logs={quote_text(missing_logs)}")

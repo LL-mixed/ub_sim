@@ -123,16 +123,23 @@ class W4GuestRunSummaryTest(unittest.TestCase):
             result.stdout,
         )
         self.assertIn(
-            "progress: elapsed_s=180 expected_decode_steps=2 "
-            "node_passes=nodeA=2/2,nodeB=2/2,nodeC=2/2,nodeD=2/2,"
-            "nodeE=2/2,nodeF=2/2,nodeG=2/2,nodeH=2/2",
+            'progress: elapsed=03:00 cluster_decode=2/2 (100%) terminal_tokens=2/2 '
+            'latest_token=step=1 token=358 piece="\u0120I"',
             progress.stdout,
         )
         self.assertIn(
-            'progress: terminal_tokens=2/2 latest_token_step=1 token=358 piece="\u0120I"',
+            "progress: cluster_bar=[########################] node_range=2..2/2 "
+            "lagging=nodeA",
             progress.stdout,
         )
-        self.assertIn("progress: slowest_node=nodeA slowest_passes=2/2", progress.stdout)
+        self.assertIn(
+            "progress: node_passes A=2/2 B=2/2 C=2/2 D=2/2 E=2/2 F=2/2 G=2/2 H=2/2",
+            progress.stdout,
+        )
+        self.assertIn(
+            "progress: lagging_status node=nodeA passes=2/2",
+            progress.stdout,
+        )
 
 
 if __name__ == "__main__":
