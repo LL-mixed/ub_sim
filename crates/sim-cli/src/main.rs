@@ -5,6 +5,11 @@ use sim_core::{
     FunctionLabel, HierarchyCoord, IoOpcode, IoSubmitReq, LogicalSystemId, MemoryEndpoint, PlLevel,
     SegmentHandle, SimEvent, TaskKey,
 };
+use sim_models::qwen3_dense::{
+    hidden_range_bytes, model_key as qwen3_dense_model_key, profile_from_weights_dir,
+    qwen3_dense_0_6b_profile, Qwen3DenseProfile, QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
+    QWEN3_DENSE_DEFAULT_PREFILL_TOKENS, QWEN3_DENSE_DEFAULT_TP_NODES,
+};
 use sim_models::qwen3_dense_0_6b::{
     token_piece_bytes_from_tokenizer_path, token_piece_decode_bytes,
     tokenize_prompt_from_tokenizer_path,
@@ -154,7 +159,17 @@ struct Qwen3GuestDecodeLoopCliArgs {
     prompt_token_ids: Option<String>,
     script_path: PathBuf,
     matmul_batch: Option<usize>,
+    model: Option<String>,
+    weights_path: Option<PathBuf>,
     engram: Qwen3EngramConfig,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Qwen3DenseGuestRuntime {
+    profile: Qwen3DenseProfile,
+    model_key: String,
+    weights_path: PathBuf,
+    chipbackend_profile: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -373,6 +388,8 @@ where
             let mut prompt_token_ids = None;
             let mut script_path = None;
             let mut matmul_batch = None;
+            let mut model = None;
+            let mut weights_path = None;
             let mut engram = Qwen3EngramConfig::default();
             let mut positionals = Vec::new();
             let mut pending = args.peekable();
@@ -420,6 +437,20 @@ where
                     )?);
                 } else if let Some(value) = text.strip_prefix("--matmul-batch=") {
                     matmul_batch = Some(parse_positive_usize("--matmul-batch", value)?);
+                } else if text == "--model" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--model requires a value"))?;
+                    model = Some(next.to_string_lossy().to_string());
+                } else if let Some(value) = text.strip_prefix("--model=") {
+                    model = Some(value.to_string());
+                } else if text == "--weights-path" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--weights-path requires a value"))?;
+                    weights_path = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--weights-path=") {
+                    weights_path = Some(PathBuf::from(value));
                 } else if text == "--engram" {
                     engram.enabled = true;
                 } else if text == "--engram-mode" {
@@ -538,6 +569,8 @@ where
                 prompt_token_ids,
                 script_path: script_path.unwrap_or_else(default_qwen3_guest_decode_script_path),
                 matmul_batch,
+                model,
+                weights_path,
                 engram,
             }))
         }
@@ -956,17 +989,18 @@ mod tests {
         lingqu_object_service_args_from, qwen3_decode_loop_args_from,
         qwen3_decode_report_verbosity_from_env, qwen3_engram_policy_checksum,
         qwen3_engram_select_token, qwen3_engram_state_words, qwen3_guest_candidate_records,
-        qwen3_guest_decode_loop_args_from, qwen3_guest_engram_candidate_counts,
-        qwen3_guest_engram_env_vars, qwen3_guest_engram_expected_terminal_rewrites,
-        qwen3_guest_engram_history_lengths, qwen3_guest_engram_object_transport_report,
-        qwen3_guest_engram_report, qwen3_guest_engram_report_from_guest_log,
-        qwen3_guest_engram_selected_tokens, qwen3_guest_log_dir_from_script_output,
-        qwen3_guest_log_match_count, qwen3_guest_terminal_candidate_records,
-        qwen3_guest_terminal_text_lossy_from_tokenizer, qwen3_guest_terminal_tokens,
-        qwen3_guest_timing_summary, qwen3_range_forward_args_from,
+        qwen3_guest_decode_loop_args_from, qwen3_guest_dense_runtime,
+        qwen3_guest_engram_candidate_counts, qwen3_guest_engram_env_vars,
+        qwen3_guest_engram_expected_terminal_rewrites, qwen3_guest_engram_history_lengths,
+        qwen3_guest_engram_object_transport_report, qwen3_guest_engram_report,
+        qwen3_guest_engram_report_from_guest_log, qwen3_guest_engram_selected_tokens,
+        qwen3_guest_log_dir_from_script_output, qwen3_guest_log_match_count,
+        qwen3_guest_terminal_candidate_records, qwen3_guest_terminal_text_lossy_from_tokenizer,
+        qwen3_guest_terminal_tokens, qwen3_guest_timing_summary, qwen3_range_forward_args_from,
         simpler_host_matmul_artifact_producer_path, validate_qwen3_0_6b_weights_path,
-        Qwen3CandidateRecord, Qwen3DecodeReportVerbosity, Qwen3EngramConfig, Qwen3EngramMode,
-        Qwen3EngramPool, Qwen3EngramReport,
+        validate_qwen3_dense_weights_path, Qwen3CandidateRecord, Qwen3DecodeReportVerbosity,
+        Qwen3EngramConfig, Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport,
+        Qwen3GuestDecodeLoopCliArgs,
     };
     use std::env;
     use std::fs;
@@ -1096,6 +1130,9 @@ mod tests {
             "--script",
             "guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh",
             "--matmul-batch=16",
+            "--model",
+            "Qwen/Qwen3-0.6B",
+            "--weights-path=/models/qwen3-0.6b",
         ])
         .expect("parse guest decode loop args")
         .expect("guest decode loop args");
@@ -1110,6 +1147,8 @@ mod tests {
             PathBuf::from("guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh")
         );
         assert_eq!(args.matmul_batch, Some(16));
+        assert_eq!(args.model.as_deref(), Some("Qwen/Qwen3-0.6B"));
+        assert_eq!(args.weights_path, Some(PathBuf::from("/models/qwen3-0.6b")));
         assert_eq!(args.engram, Qwen3EngramConfig::default());
     }
 
@@ -1217,6 +1256,112 @@ mod tests {
             fs::write(dir.join(file), b"stub").expect("write required qwen3 asset");
         }
         validate_qwen3_0_6b_weights_path(&dir).expect("required qwen3 assets should pass");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn qwen3_dense_weights_path_validation_accepts_sharded_assets() {
+        let dir = env::temp_dir().join(format!(
+            "sim_cli_qwen3_dense_weights_validation_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("temp qwen3 dense weights dir");
+
+        fs::write(dir.join("config.json"), b"{}").expect("write config");
+        fs::write(dir.join("tokenizer.json"), b"{}").expect("write tokenizer");
+        fs::write(dir.join("model.safetensors.index.json"), b"{}").expect("write index");
+
+        validate_qwen3_dense_weights_path(&dir).expect("sharded qwen3 assets should pass");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn qwen3_guest_dense_runtime_accepts_0_6b_profile() {
+        let dir = env::temp_dir().join(format!(
+            "sim_cli_qwen3_guest_dense_0_6b_runtime_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("temp qwen3 runtime dir");
+        fs::write(
+            dir.join("config.json"),
+            r#"{
+                "_name_or_path": "Qwen/Qwen3-0.6B",
+                "vocab_size": 151936,
+                "hidden_size": 1024,
+                "intermediate_size": 3072,
+                "num_hidden_layers": 28,
+                "num_attention_heads": 16,
+                "num_key_value_heads": 8,
+                "head_dim": 128,
+                "max_position_embeddings": 40960,
+                "rope_theta": 1000000
+            }"#,
+        )
+        .expect("write config");
+        fs::write(dir.join("tokenizer.json"), b"{}").expect("write tokenizer");
+        fs::write(dir.join("model.safetensors"), b"stub").expect("write weights");
+
+        let args = Qwen3GuestDecodeLoopCliArgs {
+            step_count: 1,
+            prompt: None,
+            prompt_token_ids: None,
+            script_path: PathBuf::from("guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh"),
+            matmul_batch: None,
+            model: None,
+            weights_path: Some(dir.clone()),
+            engram: Qwen3EngramConfig::default(),
+        };
+        let runtime = qwen3_guest_dense_runtime(&args).expect("0.6B runtime");
+        assert_eq!(runtime.model_key, "qwen3-0-6b");
+        assert_eq!(runtime.chipbackend_profile, "qwen3_dense_0_6b");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn qwen3_guest_dense_runtime_rejects_14b_until_runtime_migration() {
+        let dir = env::temp_dir().join(format!(
+            "sim_cli_qwen3_guest_dense_14b_runtime_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("temp qwen3 runtime dir");
+        fs::write(
+            dir.join("config.json"),
+            r#"{
+                "_name_or_path": "Qwen/Qwen3-14B",
+                "vocab_size": 151936,
+                "hidden_size": 5120,
+                "intermediate_size": 17408,
+                "num_hidden_layers": 40,
+                "num_attention_heads": 40,
+                "num_key_value_heads": 8,
+                "head_dim": 128,
+                "max_position_embeddings": 40960,
+                "rope_theta": 1000000
+            }"#,
+        )
+        .expect("write config");
+        fs::write(dir.join("tokenizer.json"), b"{}").expect("write tokenizer");
+        fs::write(dir.join("model.safetensors.index.json"), b"{}").expect("write index");
+
+        let args = Qwen3GuestDecodeLoopCliArgs {
+            step_count: 1,
+            prompt: None,
+            prompt_token_ids: None,
+            script_path: PathBuf::from("guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh"),
+            matmul_batch: None,
+            model: None,
+            weights_path: Some(dir.clone()),
+            engram: Qwen3EngramConfig::default(),
+        };
+        let err = qwen3_guest_dense_runtime(&args).expect_err("14B runtime should be guarded");
+        assert!(err
+            .to_string()
+            .contains("runtime currently supports qwen3_dense_0_6b only"));
+
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1809,10 +1954,16 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             script_path.display()
         );
     }
-    let weights_path = qwen3_0_6b_weights_path_from_env()?;
+    let runtime = qwen3_guest_dense_runtime(args)?;
     println!("qwen3_guest_decode_loop");
     println!("  script: {}", script_path.display());
-    println!("  weights_path: {}", weights_path.display());
+    println!("  model_id: {}", runtime.profile.model_id);
+    println!("  model_key: {}", runtime.model_key);
+    println!("  weights_path: {}", runtime.weights_path.display());
+    println!(
+        "  hidden_range_bytes: {}",
+        hidden_range_bytes(&runtime.profile)
+    );
     println!("  steps: {}", args.step_count);
     if let Some(prompt) = &args.prompt {
         println!("  prompt_bytes: {}", prompt.len());
@@ -1850,7 +2001,14 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     let engram_session_id = qwen3_guest_session_id(&prompt_history_tokens);
     let mut command = Command::new(&script_path);
     command
-        .env("SIM_UAPI_W4_CHIPBACKEND_PROFILE", "qwen3_dense_0_6b")
+        .env(
+            "SIM_UAPI_W4_CHIPBACKEND_PROFILE",
+            runtime.chipbackend_profile,
+        )
+        .env("SIM_QWEN3_DENSE_MODEL_ID", &runtime.profile.model_id)
+        .env("SIM_QWEN3_DENSE_MODEL_KEY", &runtime.model_key)
+        .env("SIM_QWEN3_DENSE_WEIGHTS_PATH", &runtime.weights_path)
+        .env("SIM_QWEN3_0_6B_WEIGHTS_PATH", &runtime.weights_path)
         .env("SIM_QWEN3_GUEST_DECODE_STEPS", args.step_count.to_string())
         .env(
             "SIM_QWEN3_GUEST_PROMPT",
@@ -3357,7 +3515,8 @@ fn qwen3_payload_backend_name(backend: LingquPayloadBackend) -> &'static str {
 }
 
 fn qwen3_guest_tokenizer_path() -> Option<PathBuf> {
-    let path = env::var_os("SIM_QWEN3_0_6B_WEIGHTS_PATH")?;
+    let path = env::var_os("SIM_QWEN3_DENSE_WEIGHTS_PATH")
+        .or_else(|| env::var_os("SIM_QWEN3_0_6B_WEIGHTS_PATH"))?;
     let path = PathBuf::from(path);
     if path.join("tokenizer.json").is_file() {
         Some(path)
@@ -3386,15 +3545,73 @@ fn validate_qwen3_0_6b_weights_path(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn qwen3_0_6b_weights_path_from_env() -> anyhow::Result<PathBuf> {
-    let path = env::var_os("SIM_QWEN3_0_6B_WEIGHTS_PATH").ok_or_else(|| {
-        anyhow::anyhow!(
-            "qwen3-guest-decode-loop requires SIM_QWEN3_0_6B_WEIGHTS_PATH for real Qwen3-0.6B weights"
-        )
-    })?;
-    let path = PathBuf::from(path);
-    validate_qwen3_0_6b_weights_path(&path)?;
-    Ok(path)
+fn validate_qwen3_dense_weights_path(path: &Path) -> anyhow::Result<()> {
+    if !path.is_dir() {
+        anyhow::bail!(
+            "Qwen3 dense weights path must point to a model directory: {}",
+            path.display()
+        );
+    }
+    for required in ["config.json", "tokenizer.json"] {
+        let candidate = path.join(required);
+        if !candidate.is_file() {
+            anyhow::bail!(
+                "Qwen3 dense weights path is missing required file {} in {}",
+                required,
+                path.display()
+            );
+        }
+    }
+    if !path.join("model.safetensors").is_file()
+        && !path.join("model.safetensors.index.json").is_file()
+    {
+        anyhow::bail!(
+            "Qwen3 dense weights path requires model.safetensors or model.safetensors.index.json in {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn qwen3_guest_dense_runtime(
+    args: &Qwen3GuestDecodeLoopCliArgs,
+) -> anyhow::Result<Qwen3DenseGuestRuntime> {
+    let weights_path = args
+        .weights_path
+        .clone()
+        .or_else(|| env::var_os("SIM_QWEN3_DENSE_WEIGHTS_PATH").map(PathBuf::from))
+        .or_else(|| env::var_os("SIM_QWEN3_0_6B_WEIGHTS_PATH").map(PathBuf::from))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "qwen3-guest-decode-loop requires --weights-path, SIM_QWEN3_DENSE_WEIGHTS_PATH, or SIM_QWEN3_0_6B_WEIGHTS_PATH"
+            )
+        })?;
+    validate_qwen3_dense_weights_path(&weights_path)?;
+
+    let profile = profile_from_weights_dir(
+        &weights_path,
+        args.model.as_deref(),
+        QWEN3_DENSE_DEFAULT_TP_NODES,
+        QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
+        QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
+    )
+    .map_err(anyhow::Error::msg)?;
+    let model_key = qwen3_dense_model_key(&profile.model_id);
+    if profile != qwen3_dense_0_6b_profile() {
+        anyhow::bail!(
+            "qwen3-guest-decode-loop parsed model_id={} model_key={} from {}, but W4 guest runtime currently supports qwen3_dense_0_6b only; generic qwen3_dense profile support is present, runtime/weight execution still needs migration for this model",
+            profile.model_id,
+            model_key,
+            weights_path.display()
+        );
+    }
+
+    Ok(Qwen3DenseGuestRuntime {
+        profile,
+        model_key,
+        weights_path,
+        chipbackend_profile: "qwen3_dense_0_6b",
+    })
 }
 
 #[derive(Default)]
