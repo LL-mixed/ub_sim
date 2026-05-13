@@ -957,12 +957,13 @@ mod tests {
         qwen3_decode_report_verbosity_from_env, qwen3_engram_policy_checksum,
         qwen3_engram_select_token, qwen3_engram_state_words, qwen3_guest_candidate_records,
         qwen3_guest_decode_loop_args_from, qwen3_guest_engram_candidate_counts,
-        qwen3_guest_engram_env_vars, qwen3_guest_engram_history_lengths,
-        qwen3_guest_engram_object_transport_report, qwen3_guest_engram_report,
-        qwen3_guest_engram_report_from_guest_log, qwen3_guest_engram_selected_tokens,
-        qwen3_guest_log_dir_from_script_output, qwen3_guest_log_match_count,
-        qwen3_guest_terminal_candidate_records, qwen3_guest_terminal_text_lossy_from_tokenizer,
-        qwen3_guest_terminal_tokens, qwen3_guest_timing_summary, qwen3_range_forward_args_from,
+        qwen3_guest_engram_env_vars, qwen3_guest_engram_expected_terminal_rewrites,
+        qwen3_guest_engram_history_lengths, qwen3_guest_engram_object_transport_report,
+        qwen3_guest_engram_report, qwen3_guest_engram_report_from_guest_log,
+        qwen3_guest_engram_selected_tokens, qwen3_guest_log_dir_from_script_output,
+        qwen3_guest_log_match_count, qwen3_guest_terminal_candidate_records,
+        qwen3_guest_terminal_text_lossy_from_tokenizer, qwen3_guest_terminal_tokens,
+        qwen3_guest_timing_summary, qwen3_range_forward_args_from,
         simpler_host_matmul_artifact_producer_path, validate_qwen3_0_6b_weights_path,
         Qwen3CandidateRecord, Qwen3DecodeReportVerbosity, Qwen3EngramConfig, Qwen3EngramMode,
         Qwen3EngramPool, Qwen3EngramReport,
@@ -1597,6 +1598,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
         assert_eq!(report.blocked_token_count, 1);
         assert_eq!(report.state_checksum, 0x33);
         assert_eq!(report.steps[0].state.rolling_hash, 0x11);
+        assert_eq!(qwen3_guest_engram_expected_terminal_rewrites(&report), 1);
         assert!(report.object_service.is_none());
     }
 
@@ -2003,6 +2005,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             );
         }
         if !guest_engram_selected_tokens.is_empty() {
+            let expected_terminal_rewrites = qwen3_guest_engram_expected_terminal_rewrites(report);
             let expected_history_lengths = (0..args.step_count)
                 .map(|step| prompt_history_tokens.len() as u64 + step as u64 + 1)
                 .collect::<Vec<_>>();
@@ -2061,6 +2064,13 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
                     "guest engram blocked tokens reached writeback: blocked={:?} terminal={:?}",
                     blocked_writeback_tokens,
                     terminal_tokens
+                );
+            }
+            if guest_engram_terminal_rewrite_count != expected_terminal_rewrites {
+                anyhow::bail!(
+                    "guest engram terminal rewrite count is wrong: rewrites={} expected={}",
+                    guest_engram_terminal_rewrite_count,
+                    expected_terminal_rewrites
                 );
             }
         }
@@ -2196,6 +2206,19 @@ fn qwen3_guest_engram_candidate_counts(log: &str) -> Vec<u64> {
         .collect::<Vec<_>>();
     counts.sort_by_key(|(step, _)| *step);
     counts.into_iter().map(|(_, count)| count).collect()
+}
+
+fn qwen3_guest_engram_expected_terminal_rewrites(report: &Qwen3EngramRunReport) -> usize {
+    report
+        .steps
+        .iter()
+        .filter(|step| {
+            step.candidates
+                .first()
+                .map(|candidate| candidate.token_id != step.selected_token)
+                .unwrap_or(false)
+        })
+        .count()
 }
 
 fn qwen3_guest_terminal_text_lossy(tokens: &[u64]) -> Option<String> {

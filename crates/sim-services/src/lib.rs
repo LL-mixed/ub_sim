@@ -3035,7 +3035,7 @@ mod tests {
             ready
                 .iter()
                 .filter(|event| event.source == CompletionSource::ShmemService)
-            .count()
+                .count()
                 >= 16
         );
     }
@@ -3060,17 +3060,22 @@ mod tests {
                 let next_node = (node + 1) % node_count;
                 let hidden_len = 1_024u64 + step.saturating_mul(37) + node.saturating_mul(11);
                 let kv_len = 768u64 + step.saturating_mul(13) + node.saturating_mul(7);
-                let hidden_payload =
-                    growing_payload(node.saturating_mul(0x31).saturating_add(step.saturating_mul(0x17)), hidden_len as usize);
-                let kv_payload =
-                    growing_payload(0x9b_u64.saturating_add(node.saturating_mul(0x7f)).saturating_add(step.saturating_mul(0x41)), kv_len as usize);
+                let hidden_payload = growing_payload(
+                    node.saturating_mul(0x31)
+                        .saturating_add(step.saturating_mul(0x17)),
+                    hidden_len as usize,
+                );
+                let kv_payload = growing_payload(
+                    0x9b_u64
+                        .saturating_add(node.saturating_mul(0x7f))
+                        .saturating_add(step.saturating_mul(0x41)),
+                    kv_len as usize,
+                );
 
-                let hidden_key = format!(
-                    "qwen3/stress/step{step}/handoff/node{node}->node{next_node}/hidden"
-                );
-                let kv_key = format!(
-                    "qwen3/stress/step{step}/handoff/node{node}->node{next_node}/kvcache"
-                );
+                let hidden_key =
+                    format!("qwen3/stress/step{step}/handoff/node{node}->node{next_node}/hidden");
+                let kv_key =
+                    format!("qwen3/stress/step{step}/handoff/node{node}->node{next_node}/kvcache");
 
                 svc.submit_publish(
                     LingquObjectPublishReq {
@@ -3086,7 +3091,9 @@ mod tests {
                         ),
                         placements: vec![LingquPayloadPlacement {
                             backend: LingquPayloadBackend::Shmem,
-                            storage_ref: format!("qwen3/stress/payload/hidden/node{node}/step{step}"),
+                            storage_ref: format!(
+                                "qwen3/stress/payload/hidden/node{node}/step{step}"
+                            ),
                             segment: Some(SegmentHandle(32)),
                             offset: 0,
                             bytes: hidden_len,
@@ -3113,7 +3120,7 @@ mod tests {
                             storage_ref: format!("qwen3/stress/payload/kv/node{node}/step{step}"),
                             segment: Some(SegmentHandle(40)),
                             offset: 0,
-                        bytes: kv_len,
+                            bytes: kv_len,
                             checksum: payload_checksum_fnv1a(&kv_payload),
                             locality: LingquObjectLocality::DomainShared(0),
                         }],
@@ -3129,21 +3136,20 @@ mod tests {
             }
 
             let publish_events = svc.poll_ready(now + 200);
-            assert_eq!(publish_events.len(), (node_count.saturating_mul(2)) as usize);
-            assert!(
-                publish_events
-                    .iter()
-                    .all(|event| event.status == CompletionStatus::Success)
+            assert_eq!(
+                publish_events.len(),
+                (node_count.saturating_mul(2)) as usize
             );
+            assert!(publish_events
+                .iter()
+                .all(|event| event.status == CompletionStatus::Success));
 
             for node in 0..node_count {
                 let next_node = (node + 1) % node_count;
-                let hidden_key = format!(
-                    "qwen3/stress/step{step}/handoff/node{node}->node{next_node}/hidden"
-                );
-                let kv_key = format!(
-                    "qwen3/stress/step{step}/handoff/node{node}->node{next_node}/kvcache"
-                );
+                let hidden_key =
+                    format!("qwen3/stress/step{step}/handoff/node{node}->node{next_node}/hidden");
+                let kv_key =
+                    format!("qwen3/stress/step{step}/handoff/node{node}->node{next_node}/kvcache");
 
                 svc.submit_resolve(
                     LingquObjectResolveReq {
@@ -3173,12 +3179,13 @@ mod tests {
             }
 
             let resolve_events = svc.poll_ready(now + 450);
-            assert_eq!(resolve_events.len(), (node_count.saturating_mul(2)) as usize);
-            assert!(
-                resolve_events
-                    .iter()
-                    .all(|event| event.status == CompletionStatus::Success)
+            assert_eq!(
+                resolve_events.len(),
+                (node_count.saturating_mul(2)) as usize
             );
+            assert!(resolve_events
+                .iter()
+                .all(|event| event.status == CompletionStatus::Success));
 
             for (key, expected_payload, expected_kind) in expected {
                 let record = svc
@@ -3205,7 +3212,10 @@ mod tests {
         assert_eq!(report.obmm_pool_payload_read_count, expected_published);
         assert_eq!(report.obmm_pool_queue_submit_count, expected_published);
         assert!(report.obmm_pool_queue_deliver_count > 0);
-        assert_eq!(report.obmm_pool_queue_submit_count, report.obmm_pool_queue_deliver_count);
+        assert_eq!(
+            report.obmm_pool_queue_submit_count,
+            report.obmm_pool_queue_deliver_count
+        );
         assert_eq!(report.missing_resolve_count, 0);
     }
 
@@ -3273,9 +3283,7 @@ mod tests {
             assert_eq!(resolve_events.len(), 1);
             assert_eq!(resolve_events[0].status, CompletionStatus::Success);
 
-            let record = svc
-                .latest_record(key)
-                .expect("latest record after publish");
+            let record = svc.latest_record(key).expect("latest record after publish");
             assert_eq!(record.version, expected_version.saturating_add(1));
             assert_eq!(record.checksum, checksum);
             let resolved_copy = svc
@@ -3319,7 +3327,9 @@ mod tests {
             *state
         };
 
-        let span = pool_total_bytes.saturating_sub(range_size_bytes).saturating_sub(min_payload_base);
+        let span = pool_total_bytes
+            .saturating_sub(range_size_bytes)
+            .saturating_sub(min_payload_base);
         let payload_base_offset = if span > 0 {
             min_payload_base.saturating_add(next_rand(&mut rng_state) % span)
         } else {
@@ -3357,8 +3367,10 @@ mod tests {
             published_bytes = published_bytes.saturating_add(pair_len);
 
             let kv_payload = growing_payload(0x9e37_u64.saturating_add(step), kv_len as usize);
-            let hidden_payload =
-                growing_payload(0x1a5u64.saturating_add(step.saturating_mul(17)), hidden_len as usize);
+            let hidden_payload = growing_payload(
+                0x1a5u64.saturating_add(step.saturating_mul(17)),
+                hidden_len as usize,
+            );
             let kv_checksum = payload_checksum_fnv1a(&kv_payload);
             let hidden_checksum = payload_checksum_fnv1a(&hidden_payload);
 
@@ -3521,7 +3533,8 @@ mod tests {
         };
 
         let mut expected_kv_versions = vec![vec![0u64; slot_count as usize]; node_count as usize];
-        let mut expected_hidden_versions = vec![vec![0u64; slot_count as usize]; node_count as usize];
+        let mut expected_hidden_versions =
+            vec![vec![0u64; slot_count as usize]; node_count as usize];
         let mut expected_publish = 0u64;
         let mut expected_resolve = 0u64;
         let mut kv_bytes_total = 0u64;
@@ -3566,18 +3579,17 @@ mod tests {
                 let kv_checksum = payload_checksum_fnv1a(&kv_payload);
                 let hidden_checksum = payload_checksum_fnv1a(&hidden_payload);
 
-                let kv_key = format!(
-                    "qwen3/stress/longrun/node{node}->node{next_node}/slot{slot}/kvcache"
-                );
-                let hidden_key = format!(
-                    "qwen3/stress/longrun/node{node}->node{next_node}/slot{slot}/hidden"
-                );
+                let kv_key =
+                    format!("qwen3/stress/longrun/node{node}->node{next_node}/slot{slot}/kvcache");
+                let hidden_key =
+                    format!("qwen3/stress/longrun/node{node}->node{next_node}/slot{slot}/hidden");
 
                 let kv_expected_version = expected_kv_versions[node_idx][slot];
                 let hidden_expected_version = expected_hidden_versions[node_idx][slot];
-                expected_kv_versions[node_idx][slot] = expected_kv_versions[node_idx][slot].saturating_add(1);
-                expected_hidden_versions[node_idx][slot] = expected_hidden_versions[node_idx][slot]
-                    .saturating_add(1);
+                expected_kv_versions[node_idx][slot] =
+                    expected_kv_versions[node_idx][slot].saturating_add(1);
+                expected_hidden_versions[node_idx][slot] =
+                    expected_hidden_versions[node_idx][slot].saturating_add(1);
 
                 svc.submit_publish(
                     LingquObjectPublishReq {
@@ -3639,12 +3651,23 @@ mod tests {
                 min_kv_len = min_kv_len.min(kv_len);
                 min_hidden_len = min_hidden_len.min(hidden_len);
 
-                step_kv_checksums.push((kv_key, kv_expected_version.saturating_add(1), kv_checksum));
-                step_hidden_checksums.push((hidden_key, hidden_expected_version.saturating_add(1), hidden_checksum));
+                step_kv_checksums.push((
+                    kv_key,
+                    kv_expected_version.saturating_add(1),
+                    kv_checksum,
+                ));
+                step_hidden_checksums.push((
+                    hidden_key,
+                    hidden_expected_version.saturating_add(1),
+                    hidden_checksum,
+                ));
             }
 
             let publish_events = svc.poll_ready(now + 260);
-            assert_eq!(publish_events.len(), (node_count.saturating_mul(2)) as usize);
+            assert_eq!(
+                publish_events.len(),
+                (node_count.saturating_mul(2)) as usize
+            );
             assert!(publish_events
                 .iter()
                 .all(|event| event.status == CompletionStatus::Success));
@@ -3652,12 +3675,10 @@ mod tests {
             for node in 0..node_count {
                 let next_node = (node + 1) % node_count;
                 let slot = (step % slot_count) as usize;
-                let kv_key = format!(
-                    "qwen3/stress/longrun/node{node}->node{next_node}/slot{slot}/kvcache"
-                );
-                let hidden_key = format!(
-                    "qwen3/stress/longrun/node{node}->node{next_node}/slot{slot}/hidden"
-                );
+                let kv_key =
+                    format!("qwen3/stress/longrun/node{node}->node{next_node}/slot{slot}/kvcache");
+                let hidden_key =
+                    format!("qwen3/stress/longrun/node{node}->node{next_node}/slot{slot}/hidden");
 
                 svc.submit_resolve(
                     LingquObjectResolveReq {
@@ -3686,7 +3707,10 @@ mod tests {
             }
 
             let resolve_events = svc.poll_ready(now + 520);
-            assert_eq!(resolve_events.len(), (node_count.saturating_mul(2)) as usize);
+            assert_eq!(
+                resolve_events.len(),
+                (node_count.saturating_mul(2)) as usize
+            );
             assert!(resolve_events
                 .iter()
                 .all(|event| event.status == CompletionStatus::Success));
@@ -3763,7 +3787,8 @@ mod tests {
         };
 
         let mut expected_kv_versions = vec![vec![0u64; slot_count as usize]; node_count as usize];
-        let mut expected_hidden_versions = vec![vec![0u64; slot_count as usize]; node_count as usize];
+        let mut expected_hidden_versions =
+            vec![vec![0u64; slot_count as usize]; node_count as usize];
         let mut expected_publish = 0u64;
         let mut expected_resolve = 0u64;
         let mut kv_bytes_total = 0u64;
@@ -3822,9 +3847,10 @@ mod tests {
 
                 let kv_expected_version = expected_kv_versions[node_idx][slot];
                 let hidden_expected_version = expected_hidden_versions[node_idx][slot];
-                expected_kv_versions[node_idx][slot] = expected_kv_versions[node_idx][slot].saturating_add(1);
-                expected_hidden_versions[node_idx][slot] = expected_hidden_versions[node_idx][slot]
-                    .saturating_add(1);
+                expected_kv_versions[node_idx][slot] =
+                    expected_kv_versions[node_idx][slot].saturating_add(1);
+                expected_hidden_versions[node_idx][slot] =
+                    expected_hidden_versions[node_idx][slot].saturating_add(1);
 
                 svc.submit_publish(
                     LingquObjectPublishReq {
@@ -3888,12 +3914,23 @@ mod tests {
                 min_kv_len = min_kv_len.min(kv_len);
                 min_hidden_len = min_hidden_len.min(hidden_len);
 
-                step_kv_checksums.push((kv_key, kv_expected_version.saturating_add(1), kv_checksum));
-                step_hidden_checksums.push((hidden_key, hidden_expected_version.saturating_add(1), hidden_checksum));
+                step_kv_checksums.push((
+                    kv_key,
+                    kv_expected_version.saturating_add(1),
+                    kv_checksum,
+                ));
+                step_hidden_checksums.push((
+                    hidden_key,
+                    hidden_expected_version.saturating_add(1),
+                    hidden_checksum,
+                ));
             }
 
             let publish_events = svc.poll_ready(now + 300);
-            assert_eq!(publish_events.len(), (node_count.saturating_mul(2)) as usize);
+            assert_eq!(
+                publish_events.len(),
+                (node_count.saturating_mul(2)) as usize
+            );
             assert!(publish_events
                 .iter()
                 .all(|event| event.status == CompletionStatus::Success));
@@ -3935,7 +3972,10 @@ mod tests {
             }
 
             let resolve_events = svc.poll_ready(now + 680);
-            assert_eq!(resolve_events.len(), (node_count.saturating_mul(2)) as usize);
+            assert_eq!(
+                resolve_events.len(),
+                (node_count.saturating_mul(2)) as usize
+            );
             assert!(resolve_events
                 .iter()
                 .all(|event| event.status == CompletionStatus::Success));
