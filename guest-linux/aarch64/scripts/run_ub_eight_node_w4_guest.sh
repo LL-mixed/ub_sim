@@ -9,12 +9,15 @@ LOG_DIR="$ROOT_DIR/logs"
 TRACE_FILE="${TRACE_FILE:-$OUT_DIR/eight_node_w4_guest.trace.latest.txt}"
 RUN_ID_BASE="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_w4guest8_${RANDOM}}"
 RUN_DIR="$LOG_DIR/${RUN_ID_BASE}_headless8"
+RUN_INITRAMFS_DIR="$OUT_DIR/initramfs.${RUN_ID_BASE}"
+RUN_INITRAMFS_IMAGE="$OUT_DIR/initramfs.${RUN_ID_BASE}.cpio.gz"
 # Use a short unique suffix for the shared dir to stay under macOS 104-byte UNIX socket path limit.
 _SHORT_SHARED_SUFFIX="$(printf '%s' "$RUN_ID_BASE" | cksum | cut -d' ' -f1)_${RANDOM}"
 UB_FM_SHARED_DIR="${UB_FM_SHARED_DIR:-/tmp/ubqe_${_SHORT_SHARED_SUFFIX}}"
 BOOT_WAIT_SECS="${BOOT_WAIT_SECS:-180}"
 DEMO_WAIT_SECS="${DEMO_WAIT_SECS:-600}"
 APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
+QEMU_MEM="${QEMU_MEM:-8G}"
 PORT_NUM="${UB_SIM_PORT_NUM:-7}"
 SIMPLER_HOST_MATMUL_MANIFEST="${SIMPLER_HOST_MATMUL_MANIFEST:-/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json}"
 SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-qwen3_dense_0_6b}"
@@ -34,6 +37,21 @@ FATAL_QEMU_PATTERN="SIM_DEC: cpu read failed|ub_link write failed|bounded write 
 NODE_IDS=(nodeA nodeB nodeC nodeD nodeE nodeF nodeG nodeH)
 NODE_IPS=(10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4 10.0.0.5 10.0.0.6 10.0.0.7 10.0.0.8)
 ALL_IPS_CSV="${(j:,:)NODE_IPS}"
+
+source "$SCRIPT_DIR/qemu_ub_common.sh"
+
+append_kernel_arg_if_missing() {
+  local arg="$1"
+  local key="${arg%%=*}"
+
+  if [[ "$APPEND_BASE" != *"$key="* ]]; then
+    APPEND_BASE="${APPEND_BASE} ${arg}"
+  fi
+}
+
+append_kernel_arg_if_missing "pmd_mapping=25%"
+append_kernel_arg_if_missing "obmm.skip_cache_maintain=1"
+append_kernel_arg_if_missing "rcupdate.rcu_cpu_stall_timeout=300"
 
 trace() {
   local msg="$1"
@@ -197,91 +215,6 @@ node_ip() {
   echo "${NODE_IPS[$idx]}"
 }
 
-node_serial_socket() {
-  local node_id="$1"
-  case "$node_id" in
-    nodeA) echo "${NODEA_SERIAL_SOCKET:?}" ;;
-    nodeB) echo "${NODEB_SERIAL_SOCKET:?}" ;;
-    nodeC) echo "${NODEC_SERIAL_SOCKET:?}" ;;
-    nodeD) echo "${NODED_SERIAL_SOCKET:?}" ;;
-    nodeE) echo "${NODEE_SERIAL_SOCKET:?}" ;;
-    nodeF) echo "${NODEF_SERIAL_SOCKET:?}" ;;
-    nodeG) echo "${NODEG_SERIAL_SOCKET:?}" ;;
-    nodeH) echo "${NODEH_SERIAL_SOCKET:?}" ;;
-    *) return 1 ;;
-  esac
-}
-
-send_serial_block() {
-  local serial_socket="$1"
-  local payload="$2"
-  local log_file="${3:-}"
-  python3 - "$serial_socket" "$payload" "$log_file" <<'PY'
-import os
-import socket
-import sys
-import time
-serial_socket = sys.argv[1]
-payload = sys.argv[2]
-log_file = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else None
-char_delay = 0.003
-line_delay = 0.1
-prompt_timeout = 5.0
-deadline = time.time() + 20.0
-last_err = None
-
-def log_size():
-    if not log_file:
-        return None
-    try:
-        return os.path.getsize(log_file)
-    except OSError:
-        return None
-
-def wait_for_prompt(start_size):
-    if not log_file or start_size is None:
-        time.sleep(line_delay)
-        return
-    wait_deadline = time.time() + prompt_timeout
-    while time.time() < wait_deadline:
-        try:
-            with open(log_file, "rb") as log:
-                log.seek(start_size)
-                if b"~ # " in log.read():
-                    return
-        except OSError:
-            pass
-        time.sleep(0.05)
-    raise TimeoutError(f"shell prompt did not return in {log_file}")
-
-while time.time() < deadline:
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(5)
-    try:
-        s.connect(serial_socket)
-        lines = payload.splitlines(True)
-        for idx, line in enumerate(lines):
-            start_size = log_size()
-            for byte in line.encode("utf-8"):
-                s.sendall(bytes((byte,)))
-                time.sleep(char_delay)
-            if idx < len(lines) - 1:
-                wait_for_prompt(start_size)
-            else:
-                time.sleep(line_delay)
-        s.close()
-        sys.exit(0)
-    except OSError as exc:
-        last_err = exc
-        try:
-            s.close()
-        except OSError:
-            pass
-        time.sleep(0.5)
-raise last_err if last_err is not None else TimeoutError("serial connect timeout")
-PY
-}
-
 cleanup_headless_env() {
   local cleanup_script="$1"
   if [[ -x "$cleanup_script" ]]; then
@@ -301,49 +234,154 @@ trace_run_artifact_paths() {
   done
 }
 
-send_w4_cmd() {
-  local node_id="$1"
-  local local_ip="$2"
-  local serial_socket="$3"
-  local start_marker="$4"
-  local decode_step="$5"
-  local payload
+write_w4_initramfs_runner() {
+  local runner="$RUN_INITRAMFS_DIR/bin/run_demo"
 
-  payload=$'export LINQU_UB_ROLE='"${node_id}"$'\n'
-  payload+=$'export LINQU_UB_LOCAL_IP='"${local_ip}"$'\n'
-  payload+=$'export LINQU_UB_ALL_IPS='"${ALL_IPS_CSV}"$'\n'
-  payload+=$'export LINQU_UB_NODE_COUNT=8\n'
-  payload+=$'export LINQU_W4_DB_CLUSTER=1\n'
-  payload+=$'export LINQU_W4_REQUIRE_UAPI_RESOURCE=1\n'
-  payload+=$'export SIM_W4_DB_LAZY_REMOTE_ACTIVATION=1\n'
-  payload+=$'export SIM_UAPI_W4_CHIPBACKEND_PROFILE='"${SIM_UAPI_W4_CHIPBACKEND_PROFILE}"$'\n'
-  payload+=$'export SIM_QWEN3_GUEST_DECODE_STEP='"${decode_step}"$'\n'
-  payload+=$'export SIM_QWEN3_GUEST_DECODE_STEPS='"${SIM_QWEN3_GUEST_DECODE_STEPS}"$'\n'
-  payload+=$'export SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS='"${SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS:-}"$'\n'
-  payload+=$'export SIM_QWEN3_GUEST_ENGRAM='"${SIM_QWEN3_GUEST_ENGRAM}"$'\n'
-  payload+=$'export SIM_QWEN3_GUEST_ENGRAM_SESSION_ID='"${SIM_QWEN3_GUEST_ENGRAM_SESSION_ID:-guest}"$'\n'
-  payload+=$'export SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE='"${SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE}"$'\n'
-  payload+=$'export SIM_QWEN3_GUEST_ENGRAM_NO_REPEAT_NGRAM_SIZE='"${SIM_QWEN3_GUEST_ENGRAM_NO_REPEAT_NGRAM_SIZE}"$'\n'
-  payload+=$'export SIM_QWEN3_GUEST_ENGRAM_REPETITION_PENALTY_MILLI='"${SIM_QWEN3_GUEST_ENGRAM_REPETITION_PENALTY_MILLI}"$'\n'
-  payload+=$'export SIM_QWEN3_GUEST_ENGRAM_HISTORY_WINDOW='"${SIM_QWEN3_GUEST_ENGRAM_HISTORY_WINDOW}"$'\n'
-  payload+=$'export SIM_QWEN3_GUEST_ENGRAM_BLOCK_TOKEN_IDS='"${SIM_QWEN3_GUEST_ENGRAM_BLOCK_TOKEN_IDS}"$'\n'
-  payload+=$'export SIM_W4_UAPI_COMPLETION_TIMEOUT_MS='"${SIM_W4_UAPI_COMPLETION_TIMEOUT_MS}"$'\n'
-  payload+=$'export SIM_W4_RESOURCE_ASSERTIONS='"${SIM_W4_RESOURCE_ASSERTIONS}"$'\n'
-  payload+=$'echo '"${start_marker}"$'\n'
-  payload+=$'/bin/linqu_w4_guest\n'
+  cat > "$runner" <<EOF
+#!/bin/busybox sh
+set -u
 
-  send_serial_block "$serial_socket" "$payload" "$RUN_DIR/${node_id}_guest.log"
+log() {
+  echo "[w4guest8:initramfs] \$*"
 }
 
-poweroff_guest_nodes() {
-  local node_id serial_socket payload
+mount_fs() {
+  local fstype="\$1"
+  local target="\$2"
+  /bin/busybox mkdir -p "\$target" >/dev/null 2>&1 || true
+  /bin/busybox mount -t "\$fstype" none "\$target" >/dev/null 2>&1 || true
+}
 
-  payload=$'echo 1 >/proc/sys/kernel/sysrq\n'
-  payload+=$'echo o >/proc/sysrq-trigger\n'
-  for node_id in "${NODE_IDS[@]}"; do
-    serial_socket="$(node_serial_socket "$node_id")"
-    send_serial_block "$serial_socket" "$payload" "$RUN_DIR/${node_id}_guest.log"
+bootstrap_fs() {
+  mount_fs proc /proc
+  mount_fs sysfs /sys
+  mount_fs devtmpfs /dev
+  mount_fs devpts /dev/pts
+}
+
+cmdline_value() {
+  local key="\$1"
+  local arg
+  for arg in \$(/bin/busybox cat /proc/cmdline 2>/dev/null || true); do
+    case "\$arg" in
+      "\$key"=*)
+        echo "\${arg#*=}"
+        return 0
+        ;;
+    esac
   done
+  return 1
+}
+
+enter_shell() {
+  if [ -x /bin/busybox ]; then
+    exec /bin/busybox sh
+  fi
+  if [ -x /bin/sh ]; then
+    exec /bin/sh
+  fi
+  return 1
+}
+
+node_role_from_ip() {
+  case "\$1" in
+    10.0.0.1) echo nodeA ;;
+    10.0.0.2) echo nodeB ;;
+    10.0.0.3) echo nodeC ;;
+    10.0.0.4) echo nodeD ;;
+    10.0.0.5) echo nodeE ;;
+    10.0.0.6) echo nodeF ;;
+    10.0.0.7) echo nodeG ;;
+    10.0.0.8) echo nodeH ;;
+    *) return 1 ;;
+  esac
+}
+
+bootstrap_fs
+
+if [ "\${UB_RUN_DEMO_FROM_INIT:-0}" != "1" ] && [ "\${1-}" != "--resume" ]; then
+  log "bootstrap phase: launching /bin/linqu_init"
+  UB_RUN_DEMO_FROM_INIT=1
+  export UB_RUN_DEMO_FROM_INIT
+  exec /bin/linqu_init "\$@"
+fi
+
+if [ "\${1-}" = "--resume" ]; then
+  shift
+fi
+
+LINQU_UB_LOCAL_IP="\$(cmdline_value linqu_ipourma_ipv4 || true)"
+if [ -z "\$LINQU_UB_LOCAL_IP" ]; then
+  log "FAIL: missing linqu_ipourma_ipv4 on kernel cmdline"
+  enter_shell
+fi
+
+LINQU_UB_ROLE="\$(node_role_from_ip "\$LINQU_UB_LOCAL_IP" || true)"
+if [ -z "\$LINQU_UB_ROLE" ]; then
+  log "FAIL: unknown linqu_ipourma_ipv4=\$LINQU_UB_LOCAL_IP"
+  enter_shell
+fi
+
+export LINQU_UB_ROLE
+export LINQU_UB_LOCAL_IP
+export LINQU_UB_ALL_IPS="$ALL_IPS_CSV"
+export LINQU_UB_NODE_COUNT=8
+export LINQU_W4_DB_CLUSTER=1
+export LINQU_W4_REQUIRE_UAPI_RESOURCE=1
+export SIM_W4_DB_LAZY_REMOTE_ACTIVATION=1
+export SIM_UAPI_W4_CHIPBACKEND_PROFILE="$SIM_UAPI_W4_CHIPBACKEND_PROFILE"
+export SIM_QWEN3_GUEST_DECODE_STEP=0
+export SIM_QWEN3_GUEST_DECODE_STEPS="$SIM_QWEN3_GUEST_DECODE_STEPS"
+export SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS="$SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS"
+export SIM_QWEN3_GUEST_ENGRAM="$SIM_QWEN3_GUEST_ENGRAM"
+export SIM_QWEN3_GUEST_ENGRAM_SESSION_ID="${SIM_QWEN3_GUEST_ENGRAM_SESSION_ID:-guest}"
+export SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE="$SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE"
+export SIM_QWEN3_GUEST_ENGRAM_NO_REPEAT_NGRAM_SIZE="$SIM_QWEN3_GUEST_ENGRAM_NO_REPEAT_NGRAM_SIZE"
+export SIM_QWEN3_GUEST_ENGRAM_REPETITION_PENALTY_MILLI="$SIM_QWEN3_GUEST_ENGRAM_REPETITION_PENALTY_MILLI"
+export SIM_QWEN3_GUEST_ENGRAM_HISTORY_WINDOW="$SIM_QWEN3_GUEST_ENGRAM_HISTORY_WINDOW"
+export SIM_QWEN3_GUEST_ENGRAM_BLOCK_TOKEN_IDS="$SIM_QWEN3_GUEST_ENGRAM_BLOCK_TOKEN_IDS"
+export SIM_W4_UAPI_COMPLETION_TIMEOUT_MS="$SIM_W4_UAPI_COMPLETION_TIMEOUT_MS"
+export SIM_W4_RESOURCE_ASSERTIONS="$SIM_W4_RESOURCE_ASSERTIONS"
+
+log "start step=0 \$LINQU_UB_ROLE local_ip=\$LINQU_UB_LOCAL_IP"
+if /bin/linqu_w4_guest; then
+  log "linqu_w4_guest completed \$LINQU_UB_ROLE"
+else
+  rc=\$?
+  log "FAIL: linqu_w4_guest failed \$LINQU_UB_ROLE rc=\$rc"
+fi
+
+log "entering shell after w4 guest runner"
+enter_shell
+EOF
+  chmod +x "$runner"
+}
+
+build_w4_initramfs() {
+  local base_initramfs="$OUT_DIR/initramfs.cpio.gz"
+
+  trace "prepare: build per-run initramfs image=$RUN_INITRAMFS_IMAGE"
+  ensure_ub_guest_artifacts "$ROOT_DIR" "$OUT_DIR/Image" "$base_initramfs"
+  rm -rf "$RUN_INITRAMFS_DIR" "$RUN_INITRAMFS_IMAGE"
+  mkdir -p "$RUN_INITRAMFS_DIR"
+  (
+    cd "$RUN_INITRAMFS_DIR"
+    gzip -dc "$base_initramfs" | cpio -id --quiet
+  )
+  write_w4_initramfs_runner
+  (
+    cd "$RUN_INITRAMFS_DIR"
+    find . -print | cpio -o -H newc --quiet | gzip -9 > "$RUN_INITRAMFS_IMAGE"
+  )
+}
+
+append_run_artifact_cleanup() {
+  if [[ -n "${CLEANUP_SCRIPT:-}" && -f "$CLEANUP_SCRIPT" ]]; then
+    cat >> "$CLEANUP_SCRIPT" <<EOF
+rm -rf '$RUN_INITRAMFS_DIR'
+rm -f '$RUN_INITRAMFS_IMAGE'
+EOF
+  fi
 }
 
 validate_owner_observed() {
@@ -477,17 +515,13 @@ validate_node_log() {
 
 run_w4_demo() {
   local decode_step="$1"
-  local node_id guest_log start_line serial_socket local_ip rc
+  local node_id guest_log rc
   typeset -A START_LINES
 
   for node_id in "${NODE_IDS[@]}"; do
     guest_log="$RUN_DIR/${node_id}_guest.log"
-    start_line="$(wc -l < "$guest_log" 2>/dev/null || echo 0)"
-    START_LINES[$node_id]="$start_line"
-    serial_socket="$(node_serial_socket "$node_id")"
-    local_ip="$(node_ip "$node_id")"
-    trace "start w4 guest step=$decode_step on $node_id serial_socket=$serial_socket local_ip=$local_ip"
-    send_w4_cmd "$node_id" "$local_ip" "$serial_socket" "[w4guest8] start step=${decode_step} ${node_id}" "$decode_step"
+    START_LINES[$node_id]=0
+    trace "wait w4 guest step=$decode_step on $node_id log=$guest_log"
   done
 
   rc=0
@@ -515,8 +549,10 @@ prepare_environment() {
   env_file="$OUT_DIR/headless_eight_node_env.${RUN_ID_BASE}.sh"
   control_log="$RUN_DIR/control.log"
   validate_qwen3_weights_path || return 1
+  build_w4_initramfs
   trace "prepare: launch headless env run_id=$RUN_ID_BASE"
-  ENV_FILE="$env_file" RUN_ID="$RUN_ID_BASE" APPEND_EXTRA="$APPEND_BASE" UB_SIM_PORT_NUM="$PORT_NUM" \
+  ENV_FILE="$env_file" RUN_ID="$RUN_ID_BASE" APPEND_EXTRA="$APPEND_BASE" QEMU_MEM="$QEMU_MEM" UB_SIM_PORT_NUM="$PORT_NUM" \
+    INITRAMFS_IMAGE="$RUN_INITRAMFS_IMAGE" RDINIT="/bin/run_demo" \
     UB_FM_SHARED_DIR="$UB_FM_SHARED_DIR" \
     SIMPLER_HOST_MATMUL_MANIFEST="$SIMPLER_HOST_MATMUL_MANIFEST" \
     SIM_UAPI_W4_CHIPBACKEND_PROFILE="$SIM_UAPI_W4_CHIPBACKEND_PROFILE" \
@@ -531,17 +567,18 @@ prepare_environment() {
     return 1
   fi
   source "$env_file"
+  append_run_artifact_cleanup
   trace_run_artifact_paths
 
   for node_id in "${NODE_IDS[@]}"; do
     guest_log="$RUN_DIR/${node_id}_guest.log"
-    trace "wait shell gate: $node_id"
-    if ! wait_for_log_pattern "$guest_log" "\\[run_demo\\] boot flow completed, dropping to shell" "$BOOT_WAIT_SECS"; then
-      trace "FAIL: shell gate timeout for $node_id"
+    trace "wait initramfs runner gate: $node_id"
+    if ! wait_for_log_pattern "$guest_log" "\\[w4guest8:initramfs\\] start step=0 $node_id" "$BOOT_WAIT_SECS"; then
+      trace "FAIL: initramfs runner gate timeout for $node_id"
       return 1
     fi
   done
-  trace "shell gate ok for all eight nodes"
+  trace "initramfs runner gate ok for all eight nodes"
   return 0
 }
 
@@ -566,8 +603,6 @@ main() {
     echo "eight-node w4 guest validation passed"
   fi
 
-  poweroff_guest_nodes
-  sleep 5
   [[ -n "${CLEANUP_SCRIPT:-}" ]] && cleanup_headless_env "$CLEANUP_SCRIPT"
   exit "$exit_code"
 }
