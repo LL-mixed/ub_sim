@@ -29,12 +29,12 @@ use sim_models::qwen3_dense_0_6b::{
     embedding_reference_summary, forward_from_token_ids,
     forward_from_token_ids_with_layer_payloads, forward_incremental_with_kv_cache_from_hidden,
     forward_with_kv_cache_from_token_ids, full_vocab_logits_from_hidden,
-    full_vocab_logits_from_hidden_with_payloads, layer_forward_reference_sequence_with_payloads,
-    load_safetensors_path_metadata, load_tokenizer_asset_summary, logits_reference_summary,
-    logits_reference_summary_with_hidden, materialize_full_weight_tensor_payload,
-    materialize_weight_slice_payload, mlp_reference_layer_summary,
-    mlp_reference_layer_summary_with_hidden, prompt_token_ids_checksum,
-    qkv_reference_layer_summary, qkv_reference_layer_values,
+    full_vocab_logits_from_hidden_for_profile, full_vocab_logits_from_hidden_with_payloads,
+    layer_forward_reference_sequence_with_payloads, load_safetensors_path_metadata,
+    load_tokenizer_asset_summary, logits_reference_summary, logits_reference_summary_with_hidden,
+    materialize_full_weight_tensor_payload, materialize_weight_slice_payload,
+    mlp_reference_layer_summary, mlp_reference_layer_summary_with_hidden,
+    prompt_token_ids_checksum, qkv_reference_layer_summary, qkv_reference_layer_values,
     qkv_reference_layer_values_with_hidden, token_piece_bytes_from_policy,
     token_piece_bytes_from_tokenizer_path, token_piece_decode_bytes, token_piece_from_policy,
     tokenize_prompt_from_tokenizer_path, tokenizer_policy, weight_bytes_checksum,
@@ -1563,6 +1563,47 @@ fn qwen3_dense_runtime_kv_payload_bytes(layer_count: u64) -> u64 {
     (layer_count * decode_tokens * kv_heads * head_dim * 2 * 4).max(64)
 }
 
+fn qwen3_dense_runtime_profile_from_env() -> Qwen3Dense06bProfile {
+    Qwen3Dense06bProfile {
+        vocab_size: qwen3_dense_env_u64(
+            "SIM_QWEN3_DENSE_VOCAB_SIZE",
+            QWEN3_DENSE_0_6B_PROFILE.vocab_size,
+        ),
+        hidden_size: qwen3_dense_env_u64(
+            "SIM_QWEN3_DENSE_HIDDEN_SIZE",
+            QWEN3_DENSE_0_6B_PROFILE.hidden_size,
+        ),
+        intermediate_size: qwen3_dense_env_u64(
+            "SIM_QWEN3_DENSE_INTERMEDIATE_SIZE",
+            QWEN3_DENSE_0_6B_PROFILE.intermediate_size,
+        ),
+        num_hidden_layers: qwen3_dense_runtime_total_layers(),
+        num_attention_heads: qwen3_dense_env_u64(
+            "SIM_QWEN3_DENSE_NUM_ATTENTION_HEADS",
+            QWEN3_DENSE_0_6B_PROFILE.num_attention_heads,
+        ),
+        num_key_value_heads: qwen3_dense_env_u64(
+            "SIM_QWEN3_DENSE_NUM_KEY_VALUE_HEADS",
+            QWEN3_DENSE_0_6B_PROFILE.num_key_value_heads,
+        ),
+        head_dim: qwen3_dense_env_u64(
+            "SIM_QWEN3_DENSE_HEAD_DIM",
+            QWEN3_DENSE_0_6B_PROFILE.head_dim,
+        ),
+        max_position_embeddings: QWEN3_DENSE_0_6B_PROFILE.max_position_embeddings,
+        rope_theta: QWEN3_DENSE_0_6B_PROFILE.rope_theta,
+        prefill_tokens: qwen3_dense_env_u64(
+            "SIM_QWEN3_DENSE_PREFILL_TOKENS",
+            QWEN3_DENSE_0_6B_PROFILE.prefill_tokens,
+        ),
+        decode_tokens: qwen3_dense_env_u64(
+            "SIM_QWEN3_DENSE_DECODE_TOKENS",
+            QWEN3_DENSE_0_6B_PROFILE.decode_tokens,
+        ),
+        tp_nodes: qwen3_dense_runtime_tp_nodes(),
+    }
+}
+
 fn qwen3_dense_weights_config_dir(weights_path: &Path) -> &Path {
     if weights_path.is_dir() {
         weights_path
@@ -1773,8 +1814,14 @@ fn run_qwen3_dense_profile_runtime(
         kv_state_payload,
     };
     let terminal_owner = contract.node + 1 == contract.pipeline_nodes;
+    let runtime_profile = qwen3_dense_runtime_profile_from_env();
+    let real_logits_summary = if terminal_owner {
+        qwen3_dense_profile_real_logits_summary(&runtime_profile, &range_forward_summary)?
+    } else {
+        None
+    };
     let logits_descriptors = if terminal_owner {
-        qwen3_dense_profile_logits_descriptors(2)?
+        qwen3_dense_profile_logits_descriptors(&runtime_profile, real_logits_summary.as_ref())?
     } else {
         Vec::new()
     };
@@ -1878,22 +1925,78 @@ fn qwen3_dense_profile_deterministic_payload(
     payload
 }
 
+fn qwen3_dense_profile_real_logits_summary(
+    profile: &Qwen3Dense06bProfile,
+    range_forward_summary: &Qwen3Dense06bRangeForwardSummary,
+) -> Result<Option<Qwen3Dense06bFullVocabLogitsSummary>, String> {
+    let Ok(weights_path) = std::env::var("SIM_QWEN3_DENSE_WEIGHTS_PATH") else {
+        return Ok(None);
+    };
+    let loaded = qwen3_dense_0_6b_cached_loaded_weights(&weights_path)?;
+    let hidden =
+        qwen3_dense_profile_hidden_from_range_output_payload(profile, range_forward_summary)?;
+    full_vocab_logits_from_hidden_for_profile(*profile, &loaded.tensors, &hidden).map(Some)
+}
+
+fn qwen3_dense_profile_hidden_from_range_output_payload(
+    profile: &Qwen3Dense06bProfile,
+    range_forward_summary: &Qwen3Dense06bRangeForwardSummary,
+) -> Result<Vec<f32>, String> {
+    let hidden_size = usize::try_from(profile.hidden_size).map_err(|_| {
+        format!(
+            "qwen3_dense_profile_hidden_size_too_large:{}",
+            profile.hidden_size
+        )
+    })?;
+    if hidden_size == 0 {
+        return Err("qwen3_dense_profile_hidden_size_zero".to_string());
+    }
+    let elem_count = range_forward_summary.output_tensor_payload.len() / std::mem::size_of::<u16>();
+    if elem_count < hidden_size {
+        return Err(format!(
+            "qwen3_dense_profile_range_output_too_small:elems={elem_count}:hidden={hidden_size}"
+        ));
+    }
+    let token_count = elem_count / hidden_size;
+    let base = (token_count - 1) * hidden_size;
+    let mut hidden = Vec::with_capacity(hidden_size);
+    let fallback_seed = checksum_words(&[
+        range_forward_summary.node,
+        range_forward_summary.layer_start,
+        range_forward_summary.layer_end,
+        range_forward_summary.output_tensor_checksum,
+        range_forward_summary.range_layer_checksum,
+    ]);
+    for index in 0..hidden_size {
+        let value =
+            qwen3_dense_0_6b_half_at(&range_forward_summary.output_tensor_payload, base + index);
+        if value.is_finite() && value.abs() <= 64.0 {
+            hidden.push(value);
+        } else {
+            let mixed = fallback_seed.rotate_left((index % 63) as u32) ^ index as u64;
+            hidden.push((((mixed >> 8) & 0x03ff) as f32 / 1024.0) - 0.5);
+        }
+    }
+    Ok(hidden)
+}
+
 fn qwen3_dense_profile_logits_descriptors(
-    count: usize,
+    profile: &Qwen3Dense06bProfile,
+    real_logits: Option<&Qwen3Dense06bFullVocabLogitsSummary>,
 ) -> Result<Vec<Qwen3Dense06bLogitsDescriptor>, String> {
+    if let Some(summary) = real_logits {
+        return qwen3_dense_profile_real_logits_descriptors(profile, summary);
+    }
+    let count = 2usize;
     let mut descriptors = Vec::with_capacity(count);
     let mut text_byte_offset = 0u64;
     for index in 0..count {
         let tile_id = index as u64;
         let shard_id = tile_id / 2;
         let round1_checksum = 0;
-        let sampled_token = qwen3_dense_0_6b_sampled_token(
-            round1_checksum,
-            tile_id,
-            QWEN3_DENSE_0_6B_PROFILE.vocab_size,
-        );
-        let runner_up_token =
-            (sampled_token + 17 + shard_id + tile_id) % QWEN3_DENSE_0_6B_PROFILE.vocab_size;
+        let sampled_token =
+            qwen3_dense_0_6b_sampled_token(round1_checksum, tile_id, profile.vocab_size);
+        let runner_up_token = (sampled_token + 17 + shard_id + tile_id) % profile.vocab_size;
         let margin_milli = 1000 + tile_id * 7 + shard_id;
         let logits_checksum = qwen3_dense_0_6b_logits_checksum(
             round1_checksum,
@@ -1943,6 +2046,111 @@ fn qwen3_dense_profile_logits_descriptors(
         text_byte_offset += piece.byte_len;
     }
     Ok(descriptors)
+}
+
+fn qwen3_dense_profile_real_logits_descriptors(
+    profile: &Qwen3Dense06bProfile,
+    summary: &Qwen3Dense06bFullVocabLogitsSummary,
+) -> Result<Vec<Qwen3Dense06bLogitsDescriptor>, String> {
+    let tokenizer_path = qwen3_dense_profile_tokenizer_path();
+    let (candidate_count, candidate_tokens, candidate_logit_bits) =
+        qwen3_dense_0_6b_top_candidate_arrays(summary);
+    let sampled_token = summary.top_token_id;
+    let runner_up_token = summary.runner_up_token_id;
+    let top_logit = f32::from_bits(summary.top_logit_bits as u32);
+    let runner_logit = f32::from_bits(summary.runner_up_logit_bits as u32);
+    let margin_milli = if top_logit.is_finite() && runner_logit.is_finite() {
+        ((top_logit - runner_logit).abs() * 1_000.0)
+            .round()
+            .max(1.0) as u64
+    } else {
+        1
+    };
+    let real_top_checksum = checksum_words(&[
+        sampled_token,
+        summary.top_logit_bits,
+        summary.logits_checksum,
+    ]);
+    let real_runner_checksum = checksum_words(&[
+        runner_up_token,
+        summary.runner_up_logit_bits,
+        summary.logits_checksum,
+    ]);
+    let qkv_reference_digest = checksum_words(&[
+        profile.hidden_size,
+        summary.final_norm_checksum,
+        summary.checked_token_count,
+    ]);
+    let real_path_digest = checksum_words(&[
+        summary.aggregate_checksum,
+        summary.logits_checksum,
+        summary.top_logit_bits,
+        summary.runner_up_logit_bits,
+    ]);
+    let logits_checksum = qwen3_dense_0_6b_logits_checksum(
+        0,
+        0,
+        sampled_token,
+        runner_up_token,
+        margin_milli,
+        real_top_checksum,
+        real_runner_checksum,
+        0,
+        qkv_reference_digest,
+        real_path_digest,
+    );
+    let mut candidate_text_checksums = [0u64; 4];
+    let mut candidate_piece_bytes = [0u64; 4];
+    let mut candidate_piece_word0 = [0u64; 4];
+    let mut candidate_piece_word1 = [0u64; 4];
+    for candidate_index in 0..candidate_count.min(4) as usize {
+        let token = candidate_tokens[candidate_index];
+        let candidate_piece = qwen3_dense_0_6b_token_piece(token, tokenizer_path.as_deref())?;
+        candidate_text_checksums[candidate_index] =
+            qwen3_dense_0_6b_sample_text_checksum(0, token, 0, tokenizer_path.as_deref())?;
+        candidate_piece_bytes[candidate_index] = candidate_piece.byte_len;
+        candidate_piece_word0[candidate_index] = candidate_piece.word0;
+        candidate_piece_word1[candidate_index] = candidate_piece.word1;
+    }
+    let text_checksum =
+        qwen3_dense_0_6b_sample_text_checksum(0, sampled_token, 0, tokenizer_path.as_deref())?;
+    Ok(vec![Qwen3Dense06bLogitsDescriptor {
+        shard_id: 0,
+        tile_id: 0,
+        segment: 1_000_000,
+        logits_count: profile.vocab_size,
+        sampled_token,
+        runner_up_token,
+        margin_milli,
+        logits_checksum,
+        full_vocab_checked_token_count: summary.checked_token_count,
+        full_vocab_logits_checksum: summary.logits_checksum,
+        top_logit_bits: summary.top_logit_bits,
+        runner_up_logit_bits: summary.runner_up_logit_bits,
+        candidate_count,
+        candidate_tokens,
+        candidate_logit_bits,
+        candidate_text_checksums,
+        candidate_piece_bytes,
+        candidate_piece_word0,
+        candidate_piece_word1,
+        runtime_forward_layer_count: 0,
+        runtime_forward_final_hidden_checksum: 0,
+        runtime_forward_checksum: 0,
+        kvcache_read_digest: 0,
+        qkv_reference_digest,
+        real_path_digest,
+        text_checksum,
+        text_byte_offset: 0,
+        step_index: 0,
+    }])
+}
+
+fn qwen3_dense_profile_tokenizer_path() -> Option<PathBuf> {
+    let path = std::env::var_os("SIM_QWEN3_DENSE_WEIGHTS_PATH")
+        .or_else(|| std::env::var_os("SIM_QWEN3_0_6B_WEIGHTS_PATH"))?;
+    let path = PathBuf::from(path);
+    path.join("tokenizer.json").is_file().then_some(path)
 }
 
 pub fn qwen3_dense_0_6b_prefill_text_output_report(

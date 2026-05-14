@@ -3672,6 +3672,25 @@ pub fn full_vocab_logits_from_hidden(
     full_vocab_logits_from_hidden_with_chunk(tensors, hidden, 4096)
 }
 
+pub fn full_vocab_logits_from_hidden_for_profile(
+    profile: Qwen3Dense06bProfile,
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    hidden: &[f32],
+) -> Result<Qwen3Dense06bFullVocabLogitsSummary, String> {
+    full_vocab_logits_from_hidden_with_chunk_for_profile(profile, tensors, hidden, 4096)
+}
+
+pub fn full_vocab_logits_from_hidden_with_chunk_for_profile(
+    profile: Qwen3Dense06bProfile,
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    hidden: &[f32],
+    chunk_rows: usize,
+) -> Result<Qwen3Dense06bFullVocabLogitsSummary, String> {
+    full_vocab_logits_from_hidden_with_chunk_and_payloads_for_profile(
+        profile, tensors, None, hidden, chunk_rows,
+    )
+}
+
 pub fn full_vocab_logits_from_hidden_with_payloads(
     tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
     tensor_payloads: &BTreeMap<String, Vec<u8>>,
@@ -3699,9 +3718,26 @@ pub fn full_vocab_logits_from_hidden_with_chunk_and_payloads(
     hidden: &[f32],
     chunk_rows: usize,
 ) -> Result<Qwen3Dense06bFullVocabLogitsSummary, String> {
+    full_vocab_logits_from_hidden_with_chunk_and_payloads_for_profile(
+        QWEN3_DENSE_0_6B_PROFILE,
+        tensors,
+        tensor_payloads,
+        hidden,
+        chunk_rows,
+    )
+}
+
+pub fn full_vocab_logits_from_hidden_with_chunk_and_payloads_for_profile(
+    profile: Qwen3Dense06bProfile,
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensor_payloads: Option<&BTreeMap<String, Vec<u8>>>,
+    hidden: &[f32],
+    chunk_rows: usize,
+) -> Result<Qwen3Dense06bFullVocabLogitsSummary, String> {
     const TOP_CANDIDATE_COUNT: usize = 4;
 
-    let hidden_size = QWEN3_DENSE_0_6B_PROFILE.hidden_size as usize;
+    validate_profile(profile)?;
+    let hidden_size = profile.hidden_size as usize;
     if hidden.len() != hidden_size {
         return Err(format!(
             "qwen3_full_vocab_logits_hidden_size_mismatch:got={}:expected={hidden_size}",
@@ -3720,10 +3756,7 @@ pub fn full_vocab_logits_from_hidden_with_chunk_and_payloads(
     let normalized = rmsnorm_reference(hidden, &norm_weight);
     let final_norm_checksum = f32_vector_checksum(&normalized);
     let (head_name, head) = logits_head_tensor(tensors)?;
-    let expected_shape = vec![
-        QWEN3_DENSE_0_6B_PROFILE.vocab_size,
-        QWEN3_DENSE_0_6B_PROFILE.hidden_size,
-    ];
+    let expected_shape = vec![profile.vocab_size, profile.hidden_size];
     if head.shape != expected_shape {
         return Err(format!(
             "qwen3_dense_0_6b_weight_shape_mismatch:{head_name}:got={:?}:expected={:?}",
@@ -3736,13 +3769,9 @@ pub fn full_vocab_logits_from_hidden_with_chunk_and_payloads(
     let mut runner_up_token_id = 0u64;
     let mut runner_up_logit = f32::NEG_INFINITY;
     let mut top_candidates = Vec::<(u64, f32)>::new();
-    let mut aggregate_words = vec![
-        QWEN3_DENSE_0_6B_PROFILE.vocab_size,
-        QWEN3_DENSE_0_6B_PROFILE.hidden_size,
-        final_norm_checksum,
-    ];
+    let mut aggregate_words = vec![profile.vocab_size, profile.hidden_size, final_norm_checksum];
     let mut logits_words = Vec::new();
-    let vocab_size = QWEN3_DENSE_0_6B_PROFILE.vocab_size as usize;
+    let vocab_size = profile.vocab_size as usize;
     for start in (0..vocab_size).step_by(chunk_rows) {
         let rows = chunk_rows.min(vocab_size - start);
         let payload = materialize_tensor_row_range_payload_with_payloads(
@@ -3807,10 +3836,10 @@ pub fn full_vocab_logits_from_hidden_with_chunk_and_payloads(
         aggregate_words.extend_from_slice(&[rank as u64, *token_id, logit.to_bits() as u64]);
     }
     Ok(Qwen3Dense06bFullVocabLogitsSummary {
-        vocab_size: QWEN3_DENSE_0_6B_PROFILE.vocab_size,
-        hidden_size: QWEN3_DENSE_0_6B_PROFILE.hidden_size,
+        vocab_size: profile.vocab_size,
+        hidden_size: profile.hidden_size,
         final_norm_checksum,
-        checked_token_count: QWEN3_DENSE_0_6B_PROFILE.vocab_size,
+        checked_token_count: profile.vocab_size,
         top_token_id,
         top_logit_bits: top_logit.to_bits() as u64,
         runner_up_token_id,

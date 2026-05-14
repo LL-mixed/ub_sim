@@ -1323,10 +1323,8 @@ mod tests {
 
     #[test]
     fn qwen3_guest_dense_runtime_detects_0_6b_shape_without_model_id() {
-        let dir = env::temp_dir().join(format!(
-            "Qwen3-0.6B-sim-cli-runtime-{}",
-            std::process::id()
-        ));
+        let dir =
+            env::temp_dir().join(format!("Qwen3-0.6B-sim-cli-runtime-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("temp qwen3 runtime dir");
         fs::write(
