@@ -60,27 +60,36 @@ trace() {
   printf '[w4guest8] %s\n' "$msg" | tee -a "$TRACE_FILE" >&2
 }
 
+is_qwen3_dense_profile() {
+  local profile="$1"
+  [[ "$profile" == "qwen3_dense_0_6b" || "$profile" == "qwen3_dense" ]]
+}
+
 validate_qwen3_weights_path() {
-  if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" != "qwen3_dense_0_6b" ]]; then
+  if ! is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
     return 0
   fi
-  local weights_path="${SIM_QWEN3_0_6B_WEIGHTS_PATH:-}"
+  local weights_path="${SIM_QWEN3_DENSE_WEIGHTS_PATH:-${SIM_QWEN3_0_6B_WEIGHTS_PATH:-}}"
   local required
 
   if [[ -z "$weights_path" ]]; then
-    trace "FAIL: qwen3_dense_0_6b requires SIM_QWEN3_0_6B_WEIGHTS_PATH"
+    trace "FAIL: $SIM_UAPI_W4_CHIPBACKEND_PROFILE requires SIM_QWEN3_DENSE_WEIGHTS_PATH or SIM_QWEN3_0_6B_WEIGHTS_PATH"
     return 1
   fi
   if [[ ! -d "$weights_path" ]]; then
-    trace "FAIL: SIM_QWEN3_0_6B_WEIGHTS_PATH is not a directory path=$weights_path"
+    trace "FAIL: qwen3 weights path is not a directory path=$weights_path"
     return 1
   fi
-  for required in model.safetensors config.json tokenizer.json; do
+  for required in config.json tokenizer.json; do
     if [[ ! -f "$weights_path/$required" ]]; then
-      trace "FAIL: SIM_QWEN3_0_6B_WEIGHTS_PATH missing $required path=$weights_path"
+      trace "FAIL: qwen3 weights path missing $required path=$weights_path"
       return 1
     fi
   done
+  if [[ ! -f "$weights_path/model.safetensors" && ! -f "$weights_path/model.safetensors.index.json" ]]; then
+    trace "FAIL: qwen3 weights path missing model.safetensors or model.safetensors.index.json path=$weights_path"
+    return 1
+  fi
   trace "prepare: qwen3 weights path ok path=$weights_path"
   return 0
 }
@@ -372,6 +381,20 @@ export LINQU_W4_DB_CLUSTER=1
 export LINQU_W4_REQUIRE_UAPI_RESOURCE=1
 export SIM_W4_DB_LAZY_REMOTE_ACTIVATION=1
 export SIM_UAPI_W4_CHIPBACKEND_PROFILE="$SIM_UAPI_W4_CHIPBACKEND_PROFILE"
+export SIM_QWEN3_DENSE_MODEL_ID="${SIM_QWEN3_DENSE_MODEL_ID:-}"
+export SIM_QWEN3_DENSE_MODEL_KEY="${SIM_QWEN3_DENSE_MODEL_KEY:-}"
+export SIM_QWEN3_DENSE_VOCAB_SIZE="${SIM_QWEN3_DENSE_VOCAB_SIZE:-}"
+export SIM_QWEN3_DENSE_HIDDEN_SIZE="${SIM_QWEN3_DENSE_HIDDEN_SIZE:-}"
+export SIM_QWEN3_DENSE_INTERMEDIATE_SIZE="${SIM_QWEN3_DENSE_INTERMEDIATE_SIZE:-}"
+export SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS="${SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS:-}"
+export SIM_QWEN3_DENSE_NUM_ATTENTION_HEADS="${SIM_QWEN3_DENSE_NUM_ATTENTION_HEADS:-}"
+export SIM_QWEN3_DENSE_NUM_KEY_VALUE_HEADS="${SIM_QWEN3_DENSE_NUM_KEY_VALUE_HEADS:-}"
+export SIM_QWEN3_DENSE_HEAD_DIM="${SIM_QWEN3_DENSE_HEAD_DIM:-}"
+export SIM_QWEN3_DENSE_PREFILL_TOKENS="${SIM_QWEN3_DENSE_PREFILL_TOKENS:-}"
+export SIM_QWEN3_DENSE_DECODE_TOKENS="${SIM_QWEN3_DENSE_DECODE_TOKENS:-}"
+export SIM_QWEN3_DENSE_TP_NODES="${SIM_QWEN3_DENSE_TP_NODES:-}"
+export SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES="${SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES:-}"
+export SIM_QWEN3_DENSE_KV_STATE_BYTES="${SIM_QWEN3_DENSE_KV_STATE_BYTES:-}"
 export SIM_QWEN3_GUEST_DECODE_STEP=0
 export SIM_QWEN3_GUEST_DECODE_STEPS="$SIM_QWEN3_GUEST_DECODE_STEPS"
 export SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS="$SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS"
@@ -445,7 +468,7 @@ validate_node_log() {
 
   if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "host_matmul" ]]; then
     expected_dispatch_word="0x3f8000003f800000"
-  elif [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_0_6b" ]]; then
+  elif is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
     expected_dispatch_word="0x[0-9a-f]+"
   fi
 
@@ -458,20 +481,20 @@ validate_node_log() {
   remote_idx=$((idx % 8 + 1))
   if [[ "$SIM_W4_RESOURCE_ASSERTIONS" == "1" ]]; then
     assert_log_has "$log_file" "\\[w4_guest\\] stage db_service_cluster=resource_backed_assertions_(ok|skipped) nodes=8 .*" "$node_id resource-backed db cluster assertions" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_publish kind=weight_tile key=weights/qwen3-0\\.6b/node${idx}/tile0 owner=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm weight publish" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_publish kind=weight_tile key=weights/qwen3[-.0-9a-z]*/node${idx}/tile0 owner=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm weight publish" || return 1
     assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_publish kind=kvcache_block key=kvcache/w4/node${idx}/block0 owner=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm kvcache publish" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_publish kind=hidden_range_input key=hidden/qwen3-0\\.6b/node${idx}/range-input owner=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm hidden range input publish" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_publish kind=hidden_range_output key=hidden/qwen3-0\\.6b/node${idx}/range-output owner=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm hidden range output publish" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_forward_placement local=node${idx} key=placement/qwen3-0\\.6b/layer-range/node${idx} .* next=node${remote_idx} .* source=db_metadata strategy=balanced_layers status=ok" "$node_id qwen3 range forward placement" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_forward_contract local=node${idx} .* pipeline_nodes=8 total_layers=28 .* balanced=true .*placement_source=db_metadata .*backing=obmm_pool metadata=db status=ok" "$node_id qwen3 range forward contract" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_publish kind=hidden_range_input key=hidden/qwen3[-.0-9a-z]*/node${idx}/range-input owner=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm hidden range input publish" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_publish kind=hidden_range_output key=hidden/qwen3[-.0-9a-z]*/node${idx}/range-output owner=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm hidden range output publish" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_forward_placement local=node${idx} key=placement/qwen3[-.0-9a-z]*/layer-range/node${idx} .* next=node${remote_idx} .* source=db_metadata strategy=balanced_layers status=ok" "$node_id qwen3 range forward placement" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_forward_contract local=node${idx} .* pipeline_nodes=8 total_layers=[1-9][0-9]* .* balanced=true .*placement_source=db_metadata .*backing=obmm_pool metadata=db status=ok" "$node_id qwen3 range forward contract" || return 1
     assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_object_desc_put local=node${idx} objects=4 queue=obmm_spsc .* status=ok" "$node_id obmm object descriptor put" || return 1
     assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_object_desc_get remote=node${remote_idx} reader=node${idx} objects=4 queue=obmm_spsc .* status=ok" "$node_id obmm object descriptor get" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_resolve kind=weight_tile key=weights/qwen3-0\\.6b/node${remote_idx}/tile0 owner=node${remote_idx} reader=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm remote weight resolve" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_resolve kind=weight_tile key=weights/qwen3[-.0-9a-z]*/node${remote_idx}/tile0 owner=node${remote_idx} reader=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm remote weight resolve" || return 1
     assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_resolve kind=kvcache_block key=kvcache/w4/node${remote_idx}/block0 owner=node${remote_idx} reader=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm remote kvcache resolve" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_resolve kind=hidden_range_input key=hidden/qwen3-0\\.6b/node${remote_idx}/range-input owner=node${remote_idx} reader=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm remote hidden range input resolve" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_resolve kind=hidden_range_output key=hidden/qwen3-0\\.6b/node${remote_idx}/range-output owner=node${remote_idx} reader=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm remote hidden range output resolve" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_resolve kind=hidden_range_input key=hidden/qwen3[-.0-9a-z]*/node${remote_idx}/range-input owner=node${remote_idx} reader=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm remote hidden range input resolve" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0_resolve kind=hidden_range_output key=hidden/qwen3[-.0-9a-z]*/node${remote_idx}/range-output owner=node${remote_idx} reader=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm remote hidden range output resolve" || return 1
     assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_forward_handoff local=node${idx} next=node${remote_idx} .* placement_source=db_metadata backing=obmm_pool metadata=db queue=obmm_spsc status=ok" "$node_id qwen3 range forward handoff" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_forward_summary local=node${idx} nodes=8 layers=28 .* hidden_bytes=[1-9][0-9]* objects=2 .* balanced=true placement_source=db_metadata backing=obmm_pool metadata=db status=ok" "$node_id qwen3 range forward summary" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_forward_summary local=node${idx} nodes=8 layers=[1-9][0-9]* .* hidden_bytes=[1-9][0-9]* objects=2 .* balanced=true placement_source=db_metadata backing=obmm_pool metadata=db status=ok" "$node_id qwen3 range forward summary" || return 1
     assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0=payload_backing_resolved local=node${idx} remote=node${remote_idx} objects=4 bytes=8192 hidden_bytes=[1-9][0-9]* boundary_offsets=0,248,256,4088,4096 backing=obmm_pool metadata=db status=ok" "$node_id obmm payload backing resolved" || return 1
   fi
   assert_log_has "$log_file" "\\[w4_guest\\] step=open_resource ok path=" "$node_id uapi resource opened" || return 1
@@ -487,7 +510,7 @@ validate_node_log() {
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_db_descriptor key=block/w4-${node_id}-block-1 bytes=[1-9][0-9]* role=aux_block" "$node_id uapi kvcache aux db descriptor" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_block_descriptor block=w4-${node_id}-block-0 segment=[0-9]+ writes=1 reads=1" "$node_id uapi kvcache block descriptor" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_block_descriptor block=w4-${node_id}-block-1 segment=[0-9]+ writes=1 reads=1 role=aux_block_boundary" "$node_id uapi kvcache aux block descriptor" || return 1
-  if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_0_6b" ]]; then
+  if is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
     assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_dispatch_descriptor node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) segment=[0-9]+ task_id=31 source=db_metadata status=ok" "$node_id qwen3 range dispatch descriptor" || return 1
   else
     assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_chipbackend_dispatch_descriptor block=w4-${node_id}-block-0 segment=[0-9]+ task_id=31" "$node_id uapi chipbackend descriptor" || return 1
@@ -496,16 +519,16 @@ validate_node_log() {
   assert_log_has "$log_file" "\\[w4_guest\\] step=wait_completions ok cq_tail=15" "$node_id uapi completions" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] step=decode_completions ok" "$node_id decode completions" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_payload_dispatch_result segment=[0-9]+ word0=${expected_dispatch_word}" "$node_id dispatch payload result" || return 1
-  if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_0_6b" ]]; then
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_compute_contract node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) pipeline_nodes=8 total_layers=28 hidden_bytes=[1-9][0-9]* source=(dispatch_task|runtime_forward) output=(completion|metadata) status=ok" "$node_id qwen3 range compute contract" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_runtime_forward node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) pipeline_nodes=8 total_layers=28 hidden_bytes=[1-9][0-9]* input_checksum=0x[0-9a-f]+ output_checksum=0x[0-9a-f]+ range_checksum=0x[0-9a-f]+ real_layers=[0-9]+ payload_offset=0x[0-9a-f]+ payload_bytes=[1-9][0-9]* kv_payload_offset=0x[0-9a-f]+ kv_payload_bytes=[1-9][0-9]* kv_payload_checksum=0x[0-9a-f]+ source=runtime_forward output=metadata status=ok" "$node_id qwen3 range runtime forward" || return 1
+  if is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_compute_contract node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) pipeline_nodes=8 total_layers=[1-9][0-9]* hidden_bytes=[1-9][0-9]* source=(dispatch_task|runtime_forward) output=(completion|metadata) status=ok" "$node_id qwen3 range compute contract" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_runtime_forward node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) pipeline_nodes=8 total_layers=[1-9][0-9]* hidden_bytes=[1-9][0-9]* input_checksum=0x[0-9a-f]+ output_checksum=0x[0-9a-f]+ range_checksum=0x[0-9a-f]+ real_layers=[0-9]+ payload_offset=0x[0-9a-f]+ payload_bytes=[1-9][0-9]* kv_payload_offset=0x[0-9a-f]+ kv_payload_bytes=[1-9][0-9]* kv_payload_checksum=0x[0-9a-f]+ source=runtime_forward output=metadata status=ok" "$node_id qwen3 range runtime forward" || return 1
     if (( idx > 1 )); then
       assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_forward_runtime_input_loaded node=${idx} layers=\\[[0-9]+,[0-9]+\\) input_offset=0x[0-9a-f]+ input_checksum=0x[0-9a-f]+ bytes=[1-9][0-9]* source=obmm_object_service target=uapi_segment status=ok" "$node_id qwen3 runtime range input loaded" || return 1
     fi
     assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_forward_runtime_output_publish local=node${idx} step=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ output_checksum=0x[0-9a-f]+ bytes=[1-9][0-9]* producer_publish_ms=[0-9]+ epoch=[0-9]+ seq=[0-9]+ backing=obmm_pool metadata=db queue=obmm_spsc status=ok" "$node_id qwen3 runtime range output publish" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_kv_state_publish local=node${idx} step=[0-9]+ key=kvcache/qwen3-0\\.6b/node${idx}/layers-[0-9]+-[0-9]+/decode-step[0-9]+ layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ kv_bytes=[1-9][0-9]* kv_checksum=0x[0-9a-f]+ offset=0x[0-9a-f]+ slot_bytes=[1-9][0-9]* producer_publish_ms=[0-9]+ epoch=[0-9]+ seq=[0-9]+ backing=obmm_pool metadata=db status=ok" "$node_id qwen3 range kv state publish" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_kv_state_publish local=node${idx} step=[0-9]+ key=kvcache/qwen3[-.0-9a-z]*/node${idx}/layers-[0-9]+-[0-9]+/decode-step[0-9]+ layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ kv_bytes=[1-9][0-9]* kv_checksum=0x[0-9a-f]+ offset=0x[0-9a-f]+ slot_bytes=[1-9][0-9]* producer_publish_ms=[0-9]+ epoch=[0-9]+ seq=[0-9]+ backing=obmm_pool metadata=db status=ok" "$node_id qwen3 range kv state publish" || return 1
     if (( SIM_QWEN3_GUEST_DECODE_STEPS > 1 )); then
-      assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_kv_state_resolve local=node${idx} step=[1-9][0-9]* previous_step=[0-9]+ key=kvcache/qwen3-0\\.6b/node${idx}/layers-[0-9]+-[0-9]+/decode-step[0-9]+ layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ kv_bytes=[1-9][0-9]* kv_checksum=0x[0-9a-f]+ offset=0x[0-9a-f]+ source=object_service backing=obmm_pool metadata=db status=ok" "$node_id qwen3 range kv state resolve" || return 1
+      assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_kv_state_resolve local=node${idx} step=[1-9][0-9]* previous_step=[0-9]+ key=kvcache/qwen3[-.0-9a-z]*/node${idx}/layers-[0-9]+-[0-9]+/decode-step[0-9]+ layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ kv_bytes=[1-9][0-9]* kv_checksum=0x[0-9a-f]+ offset=0x[0-9a-f]+ source=object_service backing=obmm_pool metadata=db status=ok" "$node_id qwen3 range kv state resolve" || return 1
       if [[ "$SIM_QWEN3_GUEST_ENGRAM" == "1" ]]; then
         if (( idx == 1 || idx == 8 || idx == SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE )); then
           assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_engram_history_wait step=[0-9]+ object_key=qwen3/session/[^/]+/tokens/history owner=node${SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE} version=[0-9]+ history_tokens=[1-9][0-9]* bytes=[1-9][0-9]* checksum=0x[0-9a-f]+ source=obmm_object_service status=ok" "$node_id qwen3 engram history wait" || return 1
@@ -528,11 +551,11 @@ validate_node_log() {
         assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_engram_selected_token_wait step=[0-9]+ object_key=qwen3/session/[^/]+/step/[0-9]+/tokens/selected owner=node${SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE} version=1 bytes=64 token=[0-9]+ checksum=0x[0-9a-f]+ source=obmm_object_service status=ok" "$node_id qwen3 engram selected token wait" || return 1
         assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_engram_selected_writeback local=node8 step=[0-9]+ selected_token=[0-9]+ source=engram_selected_object target=terminal_token_result status=ok" "$node_id qwen3 engram selected writeback" || return 1
       fi
-      assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_terminal_token_result_publish local=node8 step=[0-9]+ token=[0-9]+ runner_up=[0-9]+ margin_milli=[0-9]+ logits_checksum=0x[0-9a-f]+ text_checksum=0x[0-9a-f]+ piece_word0=0x[0-9a-f]+ piece_word1=0x[0-9a-f]+ object_key=tokens/qwen3-0\\.6b/decode-step[0-9]+ offset=0x[0-9a-f]+ bytes=64 checksum=0x[0-9a-f]+ epoch=[0-9]+ seq=[0-9]+ backing=obmm_pool metadata=db queue=obmm_spsc status=ok" "$node_id qwen3 terminal token result publish" || return 1
+      assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_terminal_token_result_publish local=node8 step=[0-9]+ token=[0-9]+ runner_up=[0-9]+ margin_milli=[0-9]+ logits_checksum=0x[0-9a-f]+ text_checksum=0x[0-9a-f]+ piece_word0=0x[0-9a-f]+ piece_word1=0x[0-9a-f]+ object_key=tokens/qwen3[-.0-9a-z]*/decode-step[0-9]+ offset=0x[0-9a-f]+ bytes=64 checksum=0x[0-9a-f]+ epoch=[0-9]+ seq=[0-9]+ backing=obmm_pool metadata=db queue=obmm_spsc status=ok" "$node_id qwen3 terminal token result publish" || return 1
     fi
     assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_forward_only object=range_hidden publish=0 resolve_remote=0 compute=0 storage=obmm_object metadata=db status=ok" "$node_id qwen3 range-only flow" || return 1
     if (( idx == 8 )); then
-      assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_logits_sampling_table entries=1 entry_words=(20|45) table_bytes=(160|360) vocab=151936 sampled_distinct=1 logits_checksum_nonzero=1 text_checksum_nonzero=1 real_logits=1 status=ok" "$node_id qwen3 logits sampling table" || return 1
+      assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_logits_sampling_table entries=1 entry_words=(20|45) table_bytes=(160|360) vocab=[1-9][0-9]* sampled_distinct=1 logits_checksum_nonzero=1 text_checksum_nonzero=1 real_logits=1 status=ok" "$node_id qwen3 logits sampling table" || return 1
       assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_token_text_table entries=1 entry_words=8 table_bytes=64 total_bytes=[1-9][0-9]* piece_bytes=9 policy_kind=[12] policy_hash=0x[0-9a-f]+ packed_matches=1 checksum_matches=1 boundary_first=1 boundary_last=1 status=ok" "$node_id qwen3 token text table" || return 1
     else
       assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_logits_sampling_table node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) terminal_owner=0 status=skipped" "$node_id qwen3 logits sampling table skipped" || return 1
@@ -615,6 +638,10 @@ prepare_environment() {
   env_file="$OUT_DIR/headless_eight_node_env.${RUN_ID_BASE}.sh"
   control_log="$RUN_DIR/control.log"
   validate_qwen3_weights_path || return 1
+  qwen3_dense_apply_config_env
+  if is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+    trace "prepare: qwen3 dense profile=$SIM_UAPI_W4_CHIPBACKEND_PROFILE model_id=${SIM_QWEN3_DENSE_MODEL_ID:-} model_key=${SIM_QWEN3_DENSE_MODEL_KEY:-} layers=${SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS:-} hidden_range_bytes=${SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES:-}"
+  fi
   build_w4_initramfs
   trace "prepare: launch headless env run_id=$RUN_ID_BASE"
   ENV_FILE="$env_file" RUN_ID="$RUN_ID_BASE" APPEND_EXTRA="$APPEND_BASE" QEMU_MEM="$QEMU_MEM" UB_SIM_PORT_NUM="$PORT_NUM" \
@@ -622,6 +649,21 @@ prepare_environment() {
     UB_FM_SHARED_DIR="$UB_FM_SHARED_DIR" \
     SIMPLER_HOST_MATMUL_MANIFEST="$SIMPLER_HOST_MATMUL_MANIFEST" \
     SIM_UAPI_W4_CHIPBACKEND_PROFILE="$SIM_UAPI_W4_CHIPBACKEND_PROFILE" \
+    SIM_QWEN3_DENSE_MODEL_ID="${SIM_QWEN3_DENSE_MODEL_ID:-}" \
+    SIM_QWEN3_DENSE_MODEL_KEY="${SIM_QWEN3_DENSE_MODEL_KEY:-}" \
+    SIM_QWEN3_DENSE_WEIGHTS_PATH="${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}" \
+    SIM_QWEN3_DENSE_VOCAB_SIZE="${SIM_QWEN3_DENSE_VOCAB_SIZE:-}" \
+    SIM_QWEN3_DENSE_HIDDEN_SIZE="${SIM_QWEN3_DENSE_HIDDEN_SIZE:-}" \
+    SIM_QWEN3_DENSE_INTERMEDIATE_SIZE="${SIM_QWEN3_DENSE_INTERMEDIATE_SIZE:-}" \
+    SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS="${SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS:-}" \
+    SIM_QWEN3_DENSE_NUM_ATTENTION_HEADS="${SIM_QWEN3_DENSE_NUM_ATTENTION_HEADS:-}" \
+    SIM_QWEN3_DENSE_NUM_KEY_VALUE_HEADS="${SIM_QWEN3_DENSE_NUM_KEY_VALUE_HEADS:-}" \
+    SIM_QWEN3_DENSE_HEAD_DIM="${SIM_QWEN3_DENSE_HEAD_DIM:-}" \
+    SIM_QWEN3_DENSE_PREFILL_TOKENS="${SIM_QWEN3_DENSE_PREFILL_TOKENS:-}" \
+    SIM_QWEN3_DENSE_DECODE_TOKENS="${SIM_QWEN3_DENSE_DECODE_TOKENS:-}" \
+    SIM_QWEN3_DENSE_TP_NODES="${SIM_QWEN3_DENSE_TP_NODES:-}" \
+    SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES="${SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES:-}" \
+    SIM_QWEN3_DENSE_KV_STATE_BYTES="${SIM_QWEN3_DENSE_KV_STATE_BYTES:-}" \
     SIM_QWEN3_0_6B_WEIGHTS_PATH="${SIM_QWEN3_0_6B_WEIGHTS_PATH:-}" \
     "$SCRIPT_DIR/launch_ub_eight_node_headless.sh" >/dev/null
   if [[ ! -f "$env_file" ]]; then

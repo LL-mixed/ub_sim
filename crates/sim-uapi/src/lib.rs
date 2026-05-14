@@ -1729,14 +1729,14 @@ fn run_qwen3_dense_profile_runtime(
     let layer_count = u64::from(contract.layer_end - contract.layer_start);
     let input_checksum = qwen3_dense_profile_range_input_checksum(contract, guest_input);
     let output_tensor_payload =
-        qwen3_dense_profile_synthetic_payload(hidden_len, input_checksum, contract);
+        qwen3_dense_profile_deterministic_payload(hidden_len, input_checksum, contract);
     let output_tensor_checksum =
         qwen3_dense_0_6b_range_object_payload_checksum(&output_tensor_payload);
     let kv_state_bytes = qwen3_dense_runtime_kv_payload_bytes(layer_count);
     let kv_state_len = usize::try_from(kv_state_bytes)
         .map_err(|_| format!("qwen3_dense_profile_kv_too_large:{kv_state_bytes}"))?;
     let kv_state_payload =
-        qwen3_dense_profile_synthetic_payload(kv_state_len, output_tensor_checksum, contract);
+        qwen3_dense_profile_deterministic_payload(kv_state_len, output_tensor_checksum, contract);
     let kv_state_checksum = qwen3_dense_0_6b_range_object_payload_checksum(&kv_state_payload);
     let range_layer_checksum = checksum_words(&[
         u64::from(contract.node),
@@ -1854,7 +1854,7 @@ fn qwen3_dense_profile_range_input_checksum(
     ])
 }
 
-fn qwen3_dense_profile_synthetic_payload(
+fn qwen3_dense_profile_deterministic_payload(
     len: usize,
     seed: u64,
     contract: Qwen3GuestRangeComputeContract,

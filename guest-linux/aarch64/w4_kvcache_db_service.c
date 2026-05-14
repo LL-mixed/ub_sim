@@ -853,6 +853,25 @@ static uint64_t w4_db_qwen3_hidden_range_bytes(void)
                             W4_DB_OBMM_HIDDEN_RANGE_BYTES);
 }
 
+static uint64_t w4_db_qwen3_kv_heads(void)
+{
+    return w4_db_env_u64_or("SIM_QWEN3_DENSE_NUM_KEY_VALUE_HEADS",
+                            W4_DB_QWEN3_KV_HEADS);
+}
+
+static uint64_t w4_db_qwen3_head_dim(void)
+{
+    return w4_db_env_u64_or("SIM_QWEN3_DENSE_HEAD_DIM",
+                            W4_DB_QWEN3_HEAD_DIM);
+}
+
+static const char *w4_db_qwen3_model_key(void)
+{
+    const char *model_key = getenv("SIM_QWEN3_DENSE_MODEL_KEY");
+
+    return model_key && model_key[0] != '\0' ? model_key : "qwen3-0.6b";
+}
+
 static uint64_t w4_db_qwen3_range_kv_state_bytes(uint32_t layer_start,
                                                  uint32_t layer_end,
                                                  uint64_t token_count)
@@ -864,8 +883,8 @@ static uint64_t w4_db_qwen3_range_kv_state_bytes(uint32_t layer_start,
         return 0;
     }
     layer_count = (uint64_t)(layer_end - layer_start);
-    bytes_per_token_per_layer = W4_DB_QWEN3_KV_HEADS *
-                                W4_DB_QWEN3_HEAD_DIM *
+    bytes_per_token_per_layer = w4_db_qwen3_kv_heads() *
+                                w4_db_qwen3_head_dim() *
                                 W4_DB_QWEN3_KV_STREAMS *
                                 W4_DB_QWEN3_KV_ELEM_BYTES;
     return layer_count * token_count * bytes_per_token_per_layer;
@@ -920,7 +939,8 @@ static void w4_db_qwen3_placement_key(uint32_t owner_node,
 {
     snprintf(out,
              out_len,
-             "placement/qwen3-0.6b/layer-range/node%u",
+             "placement/%s/layer-range/node%u",
+             w4_db_qwen3_model_key(),
              owner_node + 1U);
 }
 
@@ -3558,20 +3578,30 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
     uint32_t hidden_input_seed_owner;
     uint32_t hidden_input_seed_kind;
     uint32_t total_layers;
+    uint32_t min_layers;
+    uint32_t max_layers;
     uint64_t hidden_range_bytes;
     uint64_t local_hidden_input_offset;
     uint64_t local_hidden_output_offset;
     struct w4_db_qwen3_layer_range_placement local_placement;
     struct w4_db_qwen3_layer_range_placement remote_placement;
     struct w4_db_qwen3_layer_range_placement predecessor_placement;
+    const char *qwen3_model_key;
 
     memset(&local_placement, 0, sizeof(local_placement));
     memset(&remote_placement, 0, sizeof(remote_placement));
     memset(&predecessor_placement, 0, sizeof(predecessor_placement));
     total_layers = w4_db_qwen3_layer_count();
+    min_layers = 0;
+    max_layers = 0;
+    if (cluster_node_count != 0) {
+        min_layers = total_layers / cluster_node_count;
+        max_layers = min_layers + (total_layers % cluster_node_count ? 1U : 0U);
+    }
     hidden_range_bytes = w4_db_qwen3_hidden_range_bytes();
     local_hidden_input_offset = 0;
     local_hidden_output_offset = 0;
+    qwen3_model_key = w4_db_qwen3_model_key();
 
     if (!svc || cluster_node_count == 0 || local_node >= cluster_node_count) {
         return -1;
@@ -3645,7 +3675,8 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
 
     snprintf(local_weight_key,
              sizeof(local_weight_key),
-             "weights/qwen3-dense/node%u/tile0",
+             "weights/%s/node%u/tile0",
+             qwen3_model_key,
              local_node + 1U);
     snprintf(local_kvcache_key,
              sizeof(local_kvcache_key),
@@ -3653,15 +3684,18 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
              local_node + 1U);
     snprintf(local_hidden_input_key,
              sizeof(local_hidden_input_key),
-             "hidden/qwen3-dense/node%u/range-input",
+             "hidden/%s/node%u/range-input",
+             qwen3_model_key,
              local_node + 1U);
     snprintf(local_hidden_output_key,
              sizeof(local_hidden_output_key),
-             "hidden/qwen3-dense/node%u/range-output",
+             "hidden/%s/node%u/range-output",
+             qwen3_model_key,
              local_node + 1U);
     snprintf(remote_weight_key,
              sizeof(remote_weight_key),
-             "weights/qwen3-dense/node%u/tile0",
+             "weights/%s/node%u/tile0",
+             qwen3_model_key,
              remote_node + 1U);
     snprintf(remote_kvcache_key,
              sizeof(remote_kvcache_key),
@@ -3669,11 +3703,13 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
              remote_node + 1U);
     snprintf(remote_hidden_input_key,
              sizeof(remote_hidden_input_key),
-             "hidden/qwen3-dense/node%u/range-input",
+             "hidden/%s/node%u/range-input",
+             qwen3_model_key,
              remote_node + 1U);
     snprintf(remote_hidden_output_key,
              sizeof(remote_hidden_output_key),
-             "hidden/qwen3-dense/node%u/range-output",
+             "hidden/%s/node%u/range-output",
+             qwen3_model_key,
              remote_node + 1U);
 
     base = (uint8_t *)local_slot->region.addr;
@@ -3795,8 +3831,9 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
            local_kvcache.object_backing_offset,
            local_kvcache.object_backing_len,
            local_kvcache.object_payload_checksum);
-    printf("[w4_guest] stage qwen3_range_forward_placement local=node%u key=placement/qwen3-0.6b/layer-range/node%u layers=[%u,%u) count=%u next=node%u predecessor=node%u terminal=%s source=db_metadata strategy=%s status=ok\n",
+    printf("[w4_guest] stage qwen3_range_forward_placement local=node%u key=placement/%s/layer-range/node%u layers=[%u,%u) count=%u next=node%u predecessor=node%u terminal=%s source=db_metadata strategy=%s status=ok\n",
            local_node + 1U,
+           qwen3_model_key,
            local_node + 1U,
            local_placement.layer_start,
            local_placement.layer_end,
@@ -3823,7 +3860,7 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
            local_hidden_output.object_backing_offset,
            local_hidden_output.object_backing_len,
            local_hidden_output.object_payload_checksum);
-    printf("[w4_guest] stage qwen3_range_forward_contract local=node%u layers=[%u,%u) count=%u next=node%u pipeline_nodes=%u total_layers=%u min_layers=3 max_layers=4 balanced=true placement_source=db_metadata input_key=%s output_key=%s kv_state_bytes_per_token=%" PRIu64 " backing=obmm_pool metadata=db status=ok\n",
+    printf("[w4_guest] stage qwen3_range_forward_contract local=node%u layers=[%u,%u) count=%u next=node%u pipeline_nodes=%u total_layers=%u min_layers=%u max_layers=%u balanced=true placement_source=db_metadata input_key=%s output_key=%s kv_state_bytes_per_token=%" PRIu64 " backing=obmm_pool metadata=db status=ok\n",
            local_node + 1U,
            local_range_start,
            local_range_end,
@@ -3831,6 +3868,8 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
            remote_node + 1U,
            cluster_node_count,
            total_layers,
+           min_layers,
+           max_layers,
            local_hidden_input.key,
            local_hidden_output.key,
            w4_db_qwen3_range_kv_state_bytes(local_range_start, local_range_end, 1));
@@ -4069,7 +4108,7 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
            hidden_output_checksum,
            remote_hidden_input_checksum,
            local_placement.terminal ? "true" : "false");
-    printf("[w4_guest] stage qwen3_range_forward_summary local=node%u nodes=%u layers=%u assigned_layers=[%u,%u) assigned_count=%u next=node%u hidden_bytes=%" PRIu64 " objects=2 min_layers=3 max_layers=4 balanced=true placement_source=db_metadata backing=obmm_pool metadata=db status=ok\n",
+    printf("[w4_guest] stage qwen3_range_forward_summary local=node%u nodes=%u layers=%u assigned_layers=[%u,%u) assigned_count=%u next=node%u hidden_bytes=%" PRIu64 " objects=2 min_layers=%u max_layers=%u balanced=true placement_source=db_metadata backing=obmm_pool metadata=db status=ok\n",
            local_node + 1U,
            cluster_node_count,
            total_layers,
@@ -4077,7 +4116,9 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
            local_range_end,
            local_range_end - local_range_start,
            remote_node + 1U,
-           hidden_range_bytes);
+           hidden_range_bytes,
+           min_layers,
+           max_layers);
     printf("[w4_guest] stage obmm_service_v0=payload_backing_resolved local=node%u remote=node%u objects=4 bytes=%" PRIu64 " hidden_bytes=%" PRIu64 " hidden_input_offset=0x%016" PRIx64 " hidden_output_offset=0x%016" PRIx64 " backing=obmm_pool allocator=linear_payload_arena metadata=db status=ok\n",
            local_node + 1U,
            remote_node + 1U,
@@ -4150,7 +4191,8 @@ int w4_db_obmm_service_v0_wait_runtime_range_input(uint32_t local_node,
     }
     snprintf(ingress_key,
              sizeof(ingress_key),
-             "hidden/qwen3-0.6b/node%u/range-runtime-input/decode-step%" PRIu64,
+             "hidden/%s/node%u/range-runtime-input/decode-step%" PRIu64,
+             w4_db_qwen3_model_key(),
              local_node + 1U,
              decode_step);
 
@@ -4389,13 +4431,15 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
     snprintf(local_hidden_output_key,
              sizeof(local_hidden_output_key),
              terminal_range ?
-                 "hidden/qwen3-0.6b/node%u/range-runtime-output/decode-step%" PRIu64 :
-                 "hidden/qwen3-0.6b/node%u/range-runtime-input/decode-step%" PRIu64,
+                 "hidden/%s/node%u/range-runtime-output/decode-step%" PRIu64 :
+                 "hidden/%s/node%u/range-runtime-input/decode-step%" PRIu64,
+             w4_db_qwen3_model_key(),
              target_node + 1U,
              decode_step);
     snprintf(local_kv_state_key,
              sizeof(local_kv_state_key),
-             "kvcache/qwen3-0.6b/node%u/layers-%u-%u/decode-step%" PRIu64,
+             "kvcache/%s/node%u/layers-%u-%u/decode-step%" PRIu64,
+             w4_db_qwen3_model_key(),
              local_node + 1U,
              local_placement.layer_start,
              local_placement.layer_end,
@@ -4539,7 +4583,8 @@ int w4_db_obmm_service_v0_resolve_previous_range_kv_state(struct w4_db_service *
     }
     snprintf(kv_state_key,
              sizeof(kv_state_key),
-             "kvcache/qwen3-0.6b/node%u/layers-%u-%u/decode-step%" PRIu64,
+             "kvcache/%s/node%u/layers-%u-%u/decode-step%" PRIu64,
+             w4_db_qwen3_model_key(),
              local_node + 1U,
              local_placement.layer_start,
              local_placement.layer_end,
@@ -4660,7 +4705,8 @@ int w4_db_obmm_service_v0_publish_terminal_token_result(struct w4_db_service *sv
 
     snprintf(token_result_key,
              sizeof(token_result_key),
-             "tokens/qwen3-0.6b/decode-step%" PRIu64,
+             "tokens/%s/decode-step%" PRIu64,
+             w4_db_qwen3_model_key(),
              decode_step);
     if (w4_db_put_obmm_object_record(svc,
                                      W4_DB_RECORD_QWEN3_TOKEN_RESULT,
@@ -5100,7 +5146,8 @@ int w4_db_obmm_service_v0_wait_terminal_token_result(struct w4_db_service *svc,
     }
     snprintf(token_result_key,
              sizeof(token_result_key),
-             "tokens/qwen3-0.6b/decode-step%" PRIu64,
+             "tokens/%s/decode-step%" PRIu64,
+             w4_db_qwen3_model_key(),
              decode_step);
     deadline = obmm_now_ms() + (long)timeout_ms;
     while (obmm_now_ms() < deadline) {

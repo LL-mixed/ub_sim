@@ -52,26 +52,30 @@ log() {
 }
 
 validate_qwen3_weights_path() {
-  if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" != "qwen3_dense_0_6b" ]]; then
+  if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" != "qwen3_dense_0_6b" && "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" != "qwen3_dense" ]]; then
     return 0
   fi
-  local weights_path="${SIM_QWEN3_0_6B_WEIGHTS_PATH:-}"
+  local weights_path="${SIM_QWEN3_DENSE_WEIGHTS_PATH:-${SIM_QWEN3_0_6B_WEIGHTS_PATH:-}}"
   local required
 
   if [[ -z "$weights_path" ]]; then
-    echo "[headless8] qwen3_dense_0_6b requires SIM_QWEN3_0_6B_WEIGHTS_PATH" >&2
+    echo "[headless8] $SIM_UAPI_W4_CHIPBACKEND_PROFILE requires SIM_QWEN3_DENSE_WEIGHTS_PATH or SIM_QWEN3_0_6B_WEIGHTS_PATH" >&2
     return 1
   fi
   if [[ ! -d "$weights_path" ]]; then
-    echo "[headless8] SIM_QWEN3_0_6B_WEIGHTS_PATH is not a directory: $weights_path" >&2
+    echo "[headless8] qwen3 weights path is not a directory: $weights_path" >&2
     return 1
   fi
-  for required in model.safetensors config.json tokenizer.json; do
+  for required in config.json tokenizer.json; do
     if [[ ! -f "$weights_path/$required" ]]; then
-      echo "[headless8] SIM_QWEN3_0_6B_WEIGHTS_PATH missing $required in $weights_path" >&2
+      echo "[headless8] qwen3 weights path missing $required in $weights_path" >&2
       return 1
     fi
   done
+  if [[ ! -f "$weights_path/model.safetensors" && ! -f "$weights_path/model.safetensors.index.json" ]]; then
+    echo "[headless8] qwen3 weights path missing model.safetensors or model.safetensors.index.json in $weights_path" >&2
+    return 1
+  fi
   return 0
 }
 
@@ -156,6 +160,21 @@ start_node() {
     SIMPLER_HOST_VECTOR_MANIFEST="$SIMPLER_HOST_VECTOR_MANIFEST" \
       SIMPLER_HOST_MATMUL_MANIFEST="$SIMPLER_HOST_MATMUL_MANIFEST" \
       SIM_UAPI_W4_CHIPBACKEND_PROFILE="$SIM_UAPI_W4_CHIPBACKEND_PROFILE" \
+    SIM_QWEN3_DENSE_MODEL_ID="${SIM_QWEN3_DENSE_MODEL_ID:-}" \
+    SIM_QWEN3_DENSE_MODEL_KEY="${SIM_QWEN3_DENSE_MODEL_KEY:-}" \
+    SIM_QWEN3_DENSE_WEIGHTS_PATH="${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}" \
+    SIM_QWEN3_DENSE_VOCAB_SIZE="${SIM_QWEN3_DENSE_VOCAB_SIZE:-}" \
+    SIM_QWEN3_DENSE_HIDDEN_SIZE="${SIM_QWEN3_DENSE_HIDDEN_SIZE:-}" \
+    SIM_QWEN3_DENSE_INTERMEDIATE_SIZE="${SIM_QWEN3_DENSE_INTERMEDIATE_SIZE:-}" \
+    SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS="${SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS:-}" \
+    SIM_QWEN3_DENSE_NUM_ATTENTION_HEADS="${SIM_QWEN3_DENSE_NUM_ATTENTION_HEADS:-}" \
+    SIM_QWEN3_DENSE_NUM_KEY_VALUE_HEADS="${SIM_QWEN3_DENSE_NUM_KEY_VALUE_HEADS:-}" \
+    SIM_QWEN3_DENSE_HEAD_DIM="${SIM_QWEN3_DENSE_HEAD_DIM:-}" \
+    SIM_QWEN3_DENSE_PREFILL_TOKENS="${SIM_QWEN3_DENSE_PREFILL_TOKENS:-}" \
+    SIM_QWEN3_DENSE_DECODE_TOKENS="${SIM_QWEN3_DENSE_DECODE_TOKENS:-}" \
+    SIM_QWEN3_DENSE_TP_NODES="${SIM_QWEN3_DENSE_TP_NODES:-}" \
+    SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES="${SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES:-}" \
+    SIM_QWEN3_DENSE_KV_STATE_BYTES="${SIM_QWEN3_DENSE_KV_STATE_BYTES:-}" \
     SIM_QWEN3_0_6B_WEIGHTS_PATH="${SIM_QWEN3_0_6B_WEIGHTS_PATH:-}" \
     SIM_UAPI_SCENARIO_CONFIG="$SIM_UAPI_SCENARIO_CONFIG" \
     XDG_RUNTIME_DIR="$UB_QEMU_RUNTIME_DIR" \
@@ -184,6 +203,10 @@ need_cmd python3
 mkdir -p "$OUT_DIR" "$LOG_DIR/${RUN_ID}_headless8" "$QMP_DIR" "$SERIAL_DIR" "$MON_DIR"
 touch "$CONTROL_LOG"
 validate_qwen3_weights_path
+qwen3_dense_apply_config_env
+if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_0_6b" || "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense" ]]; then
+  log "qwen3_dense_profile=$SIM_UAPI_W4_CHIPBACKEND_PROFILE model_id=${SIM_QWEN3_DENSE_MODEL_ID:-} model_key=${SIM_QWEN3_DENSE_MODEL_KEY:-} layers=${SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS:-} hidden_range_bytes=${SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES:-}"
+fi
 
 QEMU_BIN="$(ensure_qemu_ub_binary "$WORKSPACE_ROOT")"
 ensure_ub_guest_artifacts "$ROOT_DIR" "$KERNEL_IMAGE" "$INITRAMFS_IMAGE"
@@ -233,8 +256,10 @@ log "qemu_smp=$QEMU_SMP"
 log "topology=$TOPOLOGY_FILE"
 log "append_extra=$APPEND_EXTRA"
 log "ub_sim_port_num=$PORT_NUM"
-if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_0_6b" ]]; then
-  log "qwen3_weights_path=$SIM_QWEN3_0_6B_WEIGHTS_PATH"
+if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_0_6b" || "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense" ]]; then
+  log "qwen3_weights_path=${SIM_QWEN3_DENSE_WEIGHTS_PATH:-${SIM_QWEN3_0_6B_WEIGHTS_PATH:-}}"
+  log "qwen3_model_id=${SIM_QWEN3_DENSE_MODEL_ID:-}"
+  log "qwen3_model_key=${SIM_QWEN3_DENSE_MODEL_KEY:-}"
 fi
 log "logs_dir=$(dirname "$CONTROL_LOG")"
 

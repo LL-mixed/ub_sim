@@ -28,7 +28,7 @@ ensure_simpler_host_manifest() {
     host_vector)
       producer="$script_dir/prepare_simpler_host_vector_artifacts.sh"
       ;;
-    host_matmul|qwen3_dense_0_6b)
+    host_matmul|qwen3_dense_0_6b|qwen3_dense)
       producer="$script_dir/prepare_simpler_host_matmul_artifacts.sh"
       ;;
     *)
@@ -42,6 +42,126 @@ ensure_simpler_host_manifest() {
     return 1
   fi
   "$producer" "$(dirname "$manifest")"
+}
+
+is_qwen3_dense_w4_profile() {
+  local profile="$1"
+  [[ "$profile" == "qwen3_dense_0_6b" || "$profile" == "qwen3_dense" ]]
+}
+
+qwen3_dense_apply_config_env() {
+  local profile="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-}"
+  local weights_path="${SIM_QWEN3_DENSE_WEIGHTS_PATH:-${SIM_QWEN3_0_6B_WEIGHTS_PATH:-}}"
+
+  if ! is_qwen3_dense_w4_profile "$profile"; then
+    return 0
+  fi
+  if [[ -z "$weights_path" ]]; then
+    return 0
+  fi
+
+  eval "$(python3 - "$weights_path" "$profile" <<'PY'
+import json
+import os
+import shlex
+import sys
+from pathlib import Path
+
+weights_path = Path(sys.argv[1])
+profile = sys.argv[2]
+config_path = weights_path / "config.json"
+with config_path.open("r", encoding="utf-8") as f:
+    config = json.load(f)
+
+def require_int(key):
+    value = config.get(key)
+    if not isinstance(value, int):
+        raise SystemExit(f"qwen3 config missing integer {key}: {config_path}")
+    return value
+
+def model_key(model_id):
+    tail = model_id.rsplit("/", 1)[-1]
+    out = []
+    previous_dash = False
+    for ch in tail.lower():
+        if ch.isalnum() and ch.isascii():
+            out.append(ch)
+            previous_dash = False
+        elif not previous_dash:
+            out.append("-")
+            previous_dash = True
+    key = "".join(out).rstrip("-")
+    return key or "qwen3-dense"
+
+def env_int(name, fallback):
+    value = os.environ.get(name)
+    if value:
+        try:
+            return int(value)
+        except ValueError:
+            pass
+    return fallback
+
+model_id = (
+    os.environ.get("SIM_QWEN3_DENSE_MODEL_ID")
+    or config.get("_name_or_path")
+    or config.get("model_id")
+    or weights_path.name
+)
+vocab_size = require_int("vocab_size")
+hidden_size = require_int("hidden_size")
+intermediate_size = require_int("intermediate_size")
+num_hidden_layers = require_int("num_hidden_layers")
+num_attention_heads = require_int("num_attention_heads")
+num_key_value_heads = require_int("num_key_value_heads")
+head_dim = require_int("head_dim")
+prefill_tokens = env_int("SIM_QWEN3_DENSE_PREFILL_TOKENS", 128)
+decode_tokens = env_int("SIM_QWEN3_DENSE_DECODE_TOKENS", 1)
+tp_nodes = env_int("SIM_QWEN3_DENSE_TP_NODES", 8)
+hidden_range_bytes = env_int(
+    "SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES",
+    prefill_tokens * hidden_size * 2,
+)
+kv_state_bytes = env_int(
+    "SIM_QWEN3_DENSE_KV_STATE_BYTES",
+    num_hidden_layers * decode_tokens * num_key_value_heads * head_dim * 2 * 4,
+)
+
+is_0_6b = (
+    vocab_size == 151936
+    and hidden_size == 1024
+    and intermediate_size == 3072
+    and num_hidden_layers == 28
+    and num_attention_heads == 16
+    and num_key_value_heads == 8
+    and head_dim == 128
+)
+resolved_profile = "qwen3_dense_0_6b" if profile == "qwen3_dense_0_6b" and is_0_6b else profile
+if profile == "qwen3_dense_0_6b" and not is_0_6b:
+    resolved_profile = "qwen3_dense"
+
+values = {
+    "SIM_UAPI_W4_CHIPBACKEND_PROFILE": resolved_profile,
+    "SIM_QWEN3_DENSE_MODEL_ID": model_id,
+    "SIM_QWEN3_DENSE_MODEL_KEY": os.environ.get("SIM_QWEN3_DENSE_MODEL_KEY") or model_key(model_id),
+    "SIM_QWEN3_DENSE_WEIGHTS_PATH": str(weights_path),
+    "SIM_QWEN3_DENSE_VOCAB_SIZE": str(vocab_size),
+    "SIM_QWEN3_DENSE_HIDDEN_SIZE": str(hidden_size),
+    "SIM_QWEN3_DENSE_INTERMEDIATE_SIZE": str(intermediate_size),
+    "SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS": str(num_hidden_layers),
+    "SIM_QWEN3_DENSE_NUM_ATTENTION_HEADS": str(num_attention_heads),
+    "SIM_QWEN3_DENSE_NUM_KEY_VALUE_HEADS": str(num_key_value_heads),
+    "SIM_QWEN3_DENSE_HEAD_DIM": str(head_dim),
+    "SIM_QWEN3_DENSE_PREFILL_TOKENS": str(prefill_tokens),
+    "SIM_QWEN3_DENSE_DECODE_TOKENS": str(decode_tokens),
+    "SIM_QWEN3_DENSE_TP_NODES": str(tp_nodes),
+    "SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES": str(hidden_range_bytes),
+    "SIM_QWEN3_DENSE_KV_STATE_BYTES": str(kv_state_bytes),
+}
+for key, value in values.items():
+    print(f"export {key}={shlex.quote(value)}")
+PY
+)"
 }
 
 qemu_ub_bin_path() {
