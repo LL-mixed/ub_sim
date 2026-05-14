@@ -555,8 +555,8 @@ validate_node_log() {
     fi
     assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_forward_only object=range_hidden publish=0 resolve_remote=0 compute=0 storage=obmm_object metadata=db status=ok" "$node_id qwen3 range-only flow" || return 1
     if (( idx == 8 )); then
-      assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_logits_sampling_table entries=1 entry_words=(20|45) table_bytes=(160|360) vocab=[1-9][0-9]* sampled_distinct=1 logits_checksum_nonzero=1 text_checksum_nonzero=1 real_logits=1 status=ok" "$node_id qwen3 logits sampling table" || return 1
-      assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_token_text_table entries=1 entry_words=8 table_bytes=64 total_bytes=[1-9][0-9]* piece_bytes=9 policy_kind=[12] policy_hash=0x[0-9a-f]+ packed_matches=1 checksum_matches=1 boundary_first=1 boundary_last=1 status=ok" "$node_id qwen3 token text table" || return 1
+      assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_logits_sampling_table entries=[12] entry_words=(20|45) table_bytes=(160|360|720) vocab=[1-9][0-9]* sampled_distinct=[12] logits_checksum_nonzero=[12] text_checksum_nonzero=[12] real_logits=[01] status=ok" "$node_id qwen3 logits sampling table" || return 1
+      assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_token_text_table entries=[12] entry_words=8 table_bytes=(64|128) total_bytes=[1-9][0-9]* piece_bytes=9 policy_kind=[12] policy_hash=0x[0-9a-f]+ packed_matches=[12] checksum_matches=[12] boundary_first=1 boundary_last=1 status=ok" "$node_id qwen3 token text table" || return 1
     else
       assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_logits_sampling_table node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) terminal_owner=0 status=skipped" "$node_id qwen3 logits sampling table skipped" || return 1
       assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_token_text_table node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) terminal_owner=0 status=skipped" "$node_id qwen3 token text table skipped" || return 1
