@@ -24,17 +24,19 @@ use sim_core::{
 };
 use sim_models::qwen3_dense;
 use sim_models::qwen3_dense_0_6b::{
-    self, checksum_words, embedding_reference_hidden_sequence_with_payloads,
-    embedding_reference_last_hidden, embedding_reference_last_hidden_with_payloads,
-    embedding_reference_summary, forward_from_token_ids,
-    forward_from_token_ids_with_layer_payloads, forward_incremental_with_kv_cache_from_hidden,
-    forward_with_kv_cache_from_token_ids, full_vocab_logits_from_hidden,
-    full_vocab_logits_from_hidden_for_profile, full_vocab_logits_from_hidden_with_payloads,
-    layer_forward_reference_sequence_with_payloads, load_safetensors_path_metadata,
-    load_tokenizer_asset_summary, logits_reference_summary, logits_reference_summary_with_hidden,
-    materialize_full_weight_tensor_payload, materialize_weight_slice_payload,
-    mlp_reference_layer_summary, mlp_reference_layer_summary_with_hidden,
-    prompt_token_ids_checksum, qkv_reference_layer_summary, qkv_reference_layer_values,
+    self, checksum_words, embedding_reference_hidden_sequence_for_profile,
+    embedding_reference_hidden_sequence_with_payloads, embedding_reference_last_hidden,
+    embedding_reference_last_hidden_with_payloads, embedding_reference_summary,
+    forward_from_token_ids, forward_from_token_ids_with_layer_payloads,
+    forward_incremental_with_kv_cache_from_hidden,
+    forward_reference_from_hidden_sequence_range_for_profile, forward_with_kv_cache_from_token_ids,
+    full_vocab_logits_from_hidden, full_vocab_logits_from_hidden_for_profile,
+    full_vocab_logits_from_hidden_with_payloads, layer_forward_reference_sequence_with_payloads,
+    load_safetensors_path_metadata, load_tokenizer_asset_summary, logits_reference_summary,
+    logits_reference_summary_with_hidden, materialize_full_weight_tensor_payload,
+    materialize_weight_slice_payload, mlp_reference_layer_summary,
+    mlp_reference_layer_summary_with_hidden, prompt_token_ids_checksum,
+    qkv_reference_layer_summary, qkv_reference_layer_values,
     qkv_reference_layer_values_with_hidden, token_piece_bytes_from_policy,
     token_piece_bytes_from_tokenizer_path, token_piece_decode_bytes, token_piece_from_policy,
     tokenize_prompt_from_tokenizer_path, tokenizer_policy, weight_bytes_checksum,
@@ -1604,6 +1606,21 @@ fn qwen3_dense_runtime_profile_from_env() -> Qwen3Dense06bProfile {
     }
 }
 
+struct Qwen3DenseProfileRuntimeForward {
+    forward: qwen3_dense_0_6b::Qwen3Dense06bForwardReference,
+    output_tensor_payload: Vec<u8>,
+    output_tensor_checksum: u64,
+    kv_state_payload: Vec<u8>,
+    kv_state_checksum: u64,
+}
+
+struct Qwen3DenseProfileRealTerminal {
+    forward_layer_count: u64,
+    forward_final_hidden_checksum: u64,
+    forward_checksum: u64,
+    logits: Qwen3Dense06bFullVocabLogitsSummary,
+}
+
 fn qwen3_dense_weights_config_dir(weights_path: &Path) -> &Path {
     if weights_path.is_dir() {
         weights_path
@@ -1769,16 +1786,44 @@ fn run_qwen3_dense_profile_runtime(
         .map_err(|_| format!("qwen3_dense_profile_hidden_too_large:{hidden_bytes}"))?;
     let layer_count = u64::from(contract.layer_end - contract.layer_start);
     let input_checksum = qwen3_dense_profile_range_input_checksum(contract, guest_input);
-    let output_tensor_payload =
-        qwen3_dense_profile_deterministic_payload(hidden_len, input_checksum, contract);
-    let output_tensor_checksum =
-        qwen3_dense_0_6b_range_object_payload_checksum(&output_tensor_payload);
     let kv_state_bytes = qwen3_dense_runtime_kv_payload_bytes(layer_count);
     let kv_state_len = usize::try_from(kv_state_bytes)
         .map_err(|_| format!("qwen3_dense_profile_kv_too_large:{kv_state_bytes}"))?;
-    let kv_state_payload =
-        qwen3_dense_profile_deterministic_payload(kv_state_len, output_tensor_checksum, contract);
-    let kv_state_checksum = qwen3_dense_0_6b_range_object_payload_checksum(&kv_state_payload);
+    let runtime_profile = qwen3_dense_runtime_profile_from_env();
+    let real_forward = qwen3_dense_profile_real_range_forward(
+        &runtime_profile,
+        contract,
+        guest_input,
+        hidden_len,
+        kv_state_len,
+    )?;
+    let (output_tensor_payload, output_tensor_checksum, kv_state_payload, kv_state_checksum) =
+        if let Some(forward) = real_forward.as_ref() {
+            (
+                forward.output_tensor_payload.clone(),
+                forward.output_tensor_checksum,
+                forward.kv_state_payload.clone(),
+                forward.kv_state_checksum,
+            )
+        } else {
+            let output_tensor_payload =
+                qwen3_dense_profile_deterministic_payload(hidden_len, input_checksum, contract);
+            let output_tensor_checksum =
+                qwen3_dense_0_6b_range_object_payload_checksum(&output_tensor_payload);
+            let kv_state_payload = qwen3_dense_profile_deterministic_payload(
+                kv_state_len,
+                output_tensor_checksum,
+                contract,
+            );
+            let kv_state_checksum =
+                qwen3_dense_0_6b_range_object_payload_checksum(&kv_state_payload);
+            (
+                output_tensor_payload,
+                output_tensor_checksum,
+                kv_state_payload,
+                kv_state_checksum,
+            )
+        };
     let range_layer_checksum = checksum_words(&[
         u64::from(contract.node),
         u64::from(contract.layer_start),
@@ -1803,9 +1848,20 @@ fn run_qwen3_dense_profile_runtime(
         input_tensor_checksum: input_checksum,
         output_tensor_checksum,
         range_layer_checksum,
-        real_layer_execution_count: 0,
-        first_layer_output_checksum: output_tensor_checksum,
-        final_layer_output_checksum: output_tensor_checksum,
+        real_layer_execution_count: real_forward
+            .as_ref()
+            .map(|forward| forward.forward.layer_count)
+            .unwrap_or(0),
+        first_layer_output_checksum: real_forward
+            .as_ref()
+            .and_then(|forward| forward.forward.layers.first())
+            .map(|layer| layer.output_checksum)
+            .unwrap_or(output_tensor_checksum),
+        final_layer_output_checksum: real_forward
+            .as_ref()
+            .and_then(|forward| forward.forward.layers.last())
+            .map(|layer| layer.output_checksum)
+            .unwrap_or(output_tensor_checksum),
         input_tensor_bytes: hidden_bytes,
         output_tensor_bytes: hidden_bytes,
         output_tensor_payload,
@@ -1814,14 +1870,17 @@ fn run_qwen3_dense_profile_runtime(
         kv_state_payload,
     };
     let terminal_owner = contract.node + 1 == contract.pipeline_nodes;
-    let runtime_profile = qwen3_dense_runtime_profile_from_env();
-    let real_logits_summary = if terminal_owner {
-        qwen3_dense_profile_real_logits_summary(&runtime_profile, &range_forward_summary)?
+    let real_terminal = if terminal_owner {
+        qwen3_dense_profile_real_terminal_summary(
+            &runtime_profile,
+            &range_forward_summary,
+            real_forward.as_ref(),
+        )?
     } else {
         None
     };
     let logits_descriptors = if terminal_owner {
-        qwen3_dense_profile_logits_descriptors(&runtime_profile, real_logits_summary.as_ref())?
+        qwen3_dense_profile_logits_descriptors(&runtime_profile, real_terminal.as_ref())?
     } else {
         Vec::new()
     };
@@ -1925,17 +1984,224 @@ fn qwen3_dense_profile_deterministic_payload(
     payload
 }
 
-fn qwen3_dense_profile_real_logits_summary(
+fn qwen3_dense_profile_real_range_forward(
     profile: &Qwen3Dense06bProfile,
-    range_forward_summary: &Qwen3Dense06bRangeForwardSummary,
-) -> Result<Option<Qwen3Dense06bFullVocabLogitsSummary>, String> {
+    contract: Qwen3GuestRangeComputeContract,
+    guest_input: &[u8],
+    hidden_len: usize,
+    kv_state_len: usize,
+) -> Result<Option<Qwen3DenseProfileRuntimeForward>, String> {
     let Ok(weights_path) = std::env::var("SIM_QWEN3_DENSE_WEIGHTS_PATH") else {
         return Ok(None);
     };
     let loaded = qwen3_dense_0_6b_cached_loaded_weights(&weights_path)?;
-    let hidden =
-        qwen3_dense_profile_hidden_from_range_output_payload(profile, range_forward_summary)?;
-    full_vocab_logits_from_hidden_for_profile(*profile, &loaded.tensors, &hidden).map(Some)
+    let token_ids = qwen3_dense_0_6b_guest_input_token_ids(guest_input);
+    let token_count = token_ids.len();
+    let input_sequence = if contract.layer_start == 0 {
+        if token_ids.is_empty() {
+            return Ok(None);
+        }
+        embedding_reference_hidden_sequence_for_profile(*profile, &loaded.tensors, &token_ids)?
+    } else {
+        qwen3_dense_profile_input_sequence_from_guest_payload(
+            profile,
+            guest_input,
+            hidden_len,
+            token_count,
+        )?
+    };
+    let (forward, output_sequence) = forward_reference_from_hidden_sequence_range_for_profile(
+        *profile,
+        &loaded.tensors,
+        u64::from(contract.layer_start),
+        u64::from(contract.layer_end),
+        &input_sequence,
+    )?;
+    let output_tensor_payload =
+        qwen3_dense_profile_hidden_sequence_range_payload(profile, &output_sequence, hidden_len)?;
+    let output_tensor_checksum =
+        qwen3_dense_0_6b_range_object_payload_checksum(&output_tensor_payload);
+    let kv_state_payload = qwen3_dense_profile_real_kv_state_payload(&forward, kv_state_len);
+    let kv_state_checksum = qwen3_dense_0_6b_range_object_payload_checksum(&kv_state_payload);
+    Ok(Some(Qwen3DenseProfileRuntimeForward {
+        forward,
+        output_tensor_payload,
+        output_tensor_checksum,
+        kv_state_payload,
+        kv_state_checksum,
+    }))
+}
+
+fn qwen3_dense_profile_input_sequence_from_guest_payload(
+    profile: &Qwen3Dense06bProfile,
+    guest_input: &[u8],
+    hidden_len: usize,
+    token_count: usize,
+) -> Result<Vec<Vec<f32>>, String> {
+    const RANGE_INPUT_PAYLOAD_OFFSET: usize = 0x08_0000;
+    let payload = guest_input
+        .get(RANGE_INPUT_PAYLOAD_OFFSET..RANGE_INPUT_PAYLOAD_OFFSET + hidden_len)
+        .ok_or_else(|| {
+            format!(
+                "qwen3_dense_profile_range_input_payload_missing:offset={RANGE_INPUT_PAYLOAD_OFFSET:#x}:bytes={hidden_len}"
+            )
+        })?;
+    qwen3_dense_profile_hidden_sequence_from_payload(profile, payload, token_count)
+}
+
+fn qwen3_dense_profile_hidden_sequence_from_payload(
+    profile: &Qwen3Dense06bProfile,
+    payload: &[u8],
+    token_count: usize,
+) -> Result<Vec<Vec<f32>>, String> {
+    let hidden_size = usize::try_from(profile.hidden_size).map_err(|_| {
+        format!(
+            "qwen3_dense_profile_hidden_size_too_large:{}",
+            profile.hidden_size
+        )
+    })?;
+    if hidden_size == 0 || token_count == 0 {
+        return Err(format!(
+            "qwen3_dense_profile_hidden_sequence_invalid:hidden={hidden_size}:tokens={token_count}"
+        ));
+    }
+    let elem_count = payload.len() / std::mem::size_of::<u16>();
+    let row_capacity = elem_count / hidden_size;
+    if token_count > row_capacity {
+        return Err(format!(
+            "qwen3_dense_profile_hidden_sequence_too_short:tokens={token_count}:rows={row_capacity}"
+        ));
+    }
+    Ok((0..token_count)
+        .map(|row| {
+            let base = row * hidden_size;
+            (0..hidden_size)
+                .map(|index| qwen3_dense_0_6b_half_at(payload, base + index))
+                .collect()
+        })
+        .collect())
+}
+
+fn qwen3_dense_profile_hidden_sequence_range_payload(
+    profile: &Qwen3Dense06bProfile,
+    hidden_states: &[Vec<f32>],
+    hidden_len: usize,
+) -> Result<Vec<u8>, String> {
+    let hidden_size = usize::try_from(profile.hidden_size).map_err(|_| {
+        format!(
+            "qwen3_dense_profile_hidden_size_too_large:{}",
+            profile.hidden_size
+        )
+    })?;
+    if hidden_states.is_empty() {
+        return Err("qwen3_dense_profile_output_hidden_sequence_empty".to_string());
+    }
+    if let Some((index, hidden)) = hidden_states
+        .iter()
+        .enumerate()
+        .find(|(_, hidden)| hidden.len() != hidden_size)
+    {
+        return Err(format!(
+            "qwen3_dense_profile_output_hidden_sequence_size_mismatch:index={index}:got={}:expected={hidden_size}",
+            hidden.len()
+        ));
+    }
+    let row_bytes = hidden_size
+        .checked_mul(std::mem::size_of::<u16>())
+        .ok_or_else(|| "qwen3_dense_profile_hidden_row_bytes_overflow".to_string())?;
+    if row_bytes == 0 || hidden_len % row_bytes != 0 {
+        return Err(format!(
+            "qwen3_dense_profile_hidden_range_len_invalid:bytes={hidden_len}:row_bytes={row_bytes}"
+        ));
+    }
+    let rows = hidden_len / row_bytes;
+    if hidden_states.len() > rows {
+        return Err(format!(
+            "qwen3_dense_profile_output_hidden_sequence_too_long:tokens={}:rows={rows}",
+            hidden_states.len()
+        ));
+    }
+    let final_hidden = hidden_states
+        .last()
+        .ok_or_else(|| "qwen3_dense_profile_output_hidden_sequence_empty".to_string())?;
+    let mut payload = Vec::with_capacity(hidden_len);
+    for row in 0..rows {
+        let hidden = hidden_states.get(row).unwrap_or(final_hidden);
+        for value in hidden {
+            payload.extend_from_slice(&f32_to_f16_bits(*value).to_le_bytes());
+        }
+    }
+    Ok(payload)
+}
+
+fn qwen3_dense_profile_real_kv_state_payload(
+    forward: &qwen3_dense_0_6b::Qwen3Dense06bForwardReference,
+    kv_state_len: usize,
+) -> Vec<u8> {
+    let mut words = vec![
+        forward.layer_count,
+        forward.position,
+        forward.input_checksum,
+        forward.final_hidden_checksum,
+        forward.aggregate_checksum,
+    ];
+    for layer in &forward.layers {
+        words.extend_from_slice(&[
+            layer.layer_id,
+            layer.q_checksum,
+            layer.k_checksum,
+            layer.v_checksum,
+            layer.rope_k_checksum,
+            layer.attention_context_checksum,
+            layer.output_checksum,
+        ]);
+    }
+    let mut payload = Vec::with_capacity(kv_state_len);
+    let mut index = 0usize;
+    while payload.len() < kv_state_len {
+        let word = words[index % words.len()] ^ (index as u64).rotate_left((index % 63) as u32);
+        payload.extend_from_slice(&word.to_le_bytes());
+        index += 1;
+    }
+    payload.truncate(kv_state_len);
+    payload
+}
+
+fn qwen3_dense_profile_real_terminal_summary(
+    profile: &Qwen3Dense06bProfile,
+    range_forward_summary: &Qwen3Dense06bRangeForwardSummary,
+    real_forward: Option<&Qwen3DenseProfileRuntimeForward>,
+) -> Result<Option<Qwen3DenseProfileRealTerminal>, String> {
+    let Ok(weights_path) = std::env::var("SIM_QWEN3_DENSE_WEIGHTS_PATH") else {
+        return Ok(None);
+    };
+    let loaded = qwen3_dense_0_6b_cached_loaded_weights(&weights_path)?;
+    let hidden = real_forward
+        .map(|forward| forward.forward.final_hidden.clone())
+        .unwrap_or_else(|| {
+            qwen3_dense_profile_hidden_from_range_output_payload(profile, range_forward_summary)
+                .unwrap_or_default()
+        });
+    if hidden.is_empty() {
+        return Err("qwen3_dense_profile_real_terminal_hidden_empty".to_string());
+    }
+    let logits = full_vocab_logits_from_hidden_for_profile(*profile, &loaded.tensors, &hidden)?;
+    Ok(Some(Qwen3DenseProfileRealTerminal {
+        forward_layer_count: real_forward.map(|_| profile.num_hidden_layers).unwrap_or(0),
+        forward_final_hidden_checksum: real_forward
+            .map(|forward| forward.forward.final_hidden_checksum)
+            .unwrap_or(0),
+        forward_checksum: real_forward
+            .map(|forward| {
+                checksum_words(&[
+                    range_forward_summary.range_layer_checksum,
+                    forward.forward.aggregate_checksum,
+                    profile.num_hidden_layers,
+                ])
+            })
+            .unwrap_or(0),
+        logits,
+    }))
 }
 
 fn qwen3_dense_profile_hidden_from_range_output_payload(
@@ -1982,9 +2248,9 @@ fn qwen3_dense_profile_hidden_from_range_output_payload(
 
 fn qwen3_dense_profile_logits_descriptors(
     profile: &Qwen3Dense06bProfile,
-    real_logits: Option<&Qwen3Dense06bFullVocabLogitsSummary>,
+    real_terminal: Option<&Qwen3DenseProfileRealTerminal>,
 ) -> Result<Vec<Qwen3Dense06bLogitsDescriptor>, String> {
-    if let Some(summary) = real_logits {
+    if let Some(summary) = real_terminal {
         return qwen3_dense_profile_real_logits_descriptors(profile, summary);
     }
     let count = 2usize;
@@ -2017,7 +2283,7 @@ fn qwen3_dense_profile_logits_descriptors(
             shard_id,
             tile_id,
             segment: 1_000_000 + tile_id,
-            logits_count: QWEN3_DENSE_0_6B_PROFILE.vocab_size,
+            logits_count: profile.vocab_size,
             sampled_token,
             runner_up_token,
             margin_milli,
@@ -2050,8 +2316,9 @@ fn qwen3_dense_profile_logits_descriptors(
 
 fn qwen3_dense_profile_real_logits_descriptors(
     profile: &Qwen3Dense06bProfile,
-    summary: &Qwen3Dense06bFullVocabLogitsSummary,
+    real_terminal: &Qwen3DenseProfileRealTerminal,
 ) -> Result<Vec<Qwen3Dense06bLogitsDescriptor>, String> {
+    let summary = &real_terminal.logits;
     let tokenizer_path = qwen3_dense_profile_tokenizer_path();
     let (candidate_count, candidate_tokens, candidate_logit_bits) =
         qwen3_dense_0_6b_top_candidate_arrays(summary);
@@ -2080,12 +2347,14 @@ fn qwen3_dense_profile_real_logits_descriptors(
         profile.hidden_size,
         summary.final_norm_checksum,
         summary.checked_token_count,
+        real_terminal.forward_checksum,
     ]);
     let real_path_digest = checksum_words(&[
         summary.aggregate_checksum,
         summary.logits_checksum,
         summary.top_logit_bits,
         summary.runner_up_logit_bits,
+        real_terminal.forward_final_hidden_checksum,
     ]);
     let logits_checksum = qwen3_dense_0_6b_logits_checksum(
         0,
@@ -2134,9 +2403,9 @@ fn qwen3_dense_profile_real_logits_descriptors(
         candidate_piece_bytes,
         candidate_piece_word0,
         candidate_piece_word1,
-        runtime_forward_layer_count: 0,
-        runtime_forward_final_hidden_checksum: 0,
-        runtime_forward_checksum: 0,
+        runtime_forward_layer_count: real_terminal.forward_layer_count,
+        runtime_forward_final_hidden_checksum: real_terminal.forward_final_hidden_checksum,
+        runtime_forward_checksum: real_terminal.forward_checksum,
         kvcache_read_digest: 0,
         qkv_reference_digest,
         real_path_digest,

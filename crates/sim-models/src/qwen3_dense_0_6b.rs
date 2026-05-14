@@ -2724,7 +2724,15 @@ pub fn embedding_reference_last_hidden(
     tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
     token_ids: &[u64],
 ) -> Result<Vec<f32>, String> {
-    embedding_reference_last_hidden_with_payloads(tensors, None, token_ids)
+    embedding_reference_last_hidden_for_profile(QWEN3_DENSE_0_6B_PROFILE, tensors, token_ids)
+}
+
+pub fn embedding_reference_last_hidden_for_profile(
+    profile: Qwen3Dense06bProfile,
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    token_ids: &[u64],
+) -> Result<Vec<f32>, String> {
+    embedding_reference_last_hidden_with_payloads_for_profile(profile, tensors, None, token_ids)
 }
 
 pub fn embedding_reference_last_hidden_with_payloads(
@@ -2732,6 +2740,21 @@ pub fn embedding_reference_last_hidden_with_payloads(
     tensor_payloads: Option<&BTreeMap<String, Vec<u8>>>,
     token_ids: &[u64],
 ) -> Result<Vec<f32>, String> {
+    embedding_reference_last_hidden_with_payloads_for_profile(
+        QWEN3_DENSE_0_6B_PROFILE,
+        tensors,
+        tensor_payloads,
+        token_ids,
+    )
+}
+
+pub fn embedding_reference_last_hidden_with_payloads_for_profile(
+    profile: Qwen3Dense06bProfile,
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensor_payloads: Option<&BTreeMap<String, Vec<u8>>>,
+    token_ids: &[u64],
+) -> Result<Vec<f32>, String> {
+    validate_profile(profile)?;
     let token_id = token_ids
         .last()
         .copied()
@@ -2739,18 +2762,13 @@ pub fn embedding_reference_last_hidden_with_payloads(
     let embedding = tensors.get("model.embed_tokens.weight").ok_or_else(|| {
         "qwen3_dense_0_6b_missing_weight_tensor:model.embed_tokens.weight".to_string()
     })?;
-    if embedding.shape
-        != vec![
-            QWEN3_DENSE_0_6B_PROFILE.vocab_size,
-            QWEN3_DENSE_0_6B_PROFILE.hidden_size,
-        ]
-    {
+    if embedding.shape != vec![profile.vocab_size, profile.hidden_size] {
         return Err(format!(
             "qwen3_dense_0_6b_weight_shape_mismatch:model.embed_tokens.weight:got={:?}:expected={:?}",
             embedding.shape,
             vec![
-                QWEN3_DENSE_0_6B_PROFILE.vocab_size,
-                QWEN3_DENSE_0_6B_PROFILE.hidden_size
+                profile.vocab_size,
+                profile.hidden_size
             ]
         ));
     }
@@ -2760,18 +2778,22 @@ pub fn embedding_reference_last_hidden_with_payloads(
         token_id,
         tensor_payloads,
     )?;
-    decode_weight_vector(
-        embedding.dtype,
-        &row_payload,
-        QWEN3_DENSE_0_6B_PROFILE.hidden_size as usize,
-    )
+    decode_weight_vector(embedding.dtype, &row_payload, profile.hidden_size as usize)
 }
 
 pub fn embedding_reference_hidden_sequence(
     tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
     token_ids: &[u64],
 ) -> Result<Vec<Vec<f32>>, String> {
-    embedding_reference_hidden_sequence_with_payloads(tensors, None, token_ids)
+    embedding_reference_hidden_sequence_for_profile(QWEN3_DENSE_0_6B_PROFILE, tensors, token_ids)
+}
+
+pub fn embedding_reference_hidden_sequence_for_profile(
+    profile: Qwen3Dense06bProfile,
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    token_ids: &[u64],
+) -> Result<Vec<Vec<f32>>, String> {
+    embedding_reference_hidden_sequence_with_payloads_for_profile(profile, tensors, None, token_ids)
 }
 
 pub fn embedding_reference_hidden_sequence_with_payloads(
@@ -2779,28 +2801,38 @@ pub fn embedding_reference_hidden_sequence_with_payloads(
     tensor_payloads: Option<&BTreeMap<String, Vec<u8>>>,
     token_ids: &[u64],
 ) -> Result<Vec<Vec<f32>>, String> {
+    embedding_reference_hidden_sequence_with_payloads_for_profile(
+        QWEN3_DENSE_0_6B_PROFILE,
+        tensors,
+        tensor_payloads,
+        token_ids,
+    )
+}
+
+pub fn embedding_reference_hidden_sequence_with_payloads_for_profile(
+    profile: Qwen3Dense06bProfile,
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensor_payloads: Option<&BTreeMap<String, Vec<u8>>>,
+    token_ids: &[u64],
+) -> Result<Vec<Vec<f32>>, String> {
+    validate_profile(profile)?;
     if token_ids.is_empty() {
         return Err("qwen3_embedding_reference_no_tokens".to_string());
     }
     let embedding = tensors.get("model.embed_tokens.weight").ok_or_else(|| {
         "qwen3_dense_0_6b_missing_weight_tensor:model.embed_tokens.weight".to_string()
     })?;
-    if embedding.shape
-        != vec![
-            QWEN3_DENSE_0_6B_PROFILE.vocab_size,
-            QWEN3_DENSE_0_6B_PROFILE.hidden_size,
-        ]
-    {
+    if embedding.shape != vec![profile.vocab_size, profile.hidden_size] {
         return Err(format!(
             "qwen3_dense_0_6b_weight_shape_mismatch:model.embed_tokens.weight:got={:?}:expected={:?}",
             embedding.shape,
             vec![
-                QWEN3_DENSE_0_6B_PROFILE.vocab_size,
-                QWEN3_DENSE_0_6B_PROFILE.hidden_size
+                profile.vocab_size,
+                profile.hidden_size
             ]
         ));
     }
-    let hidden_size = QWEN3_DENSE_0_6B_PROFILE.hidden_size as usize;
+    let hidden_size = profile.hidden_size as usize;
     token_ids
         .iter()
         .copied()
@@ -2822,7 +2854,23 @@ pub fn layer_forward_reference(
     position: u64,
     hidden: &[f32],
 ) -> Result<Qwen3Dense06bLayerForwardReference, String> {
-    let profile = QWEN3_DENSE_0_6B_PROFILE;
+    layer_forward_reference_for_profile(
+        QWEN3_DENSE_0_6B_PROFILE,
+        tensors,
+        layer_id,
+        position,
+        hidden,
+    )
+}
+
+pub fn layer_forward_reference_for_profile(
+    profile: Qwen3Dense06bProfile,
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    layer_id: u64,
+    position: u64,
+    hidden: &[f32],
+) -> Result<Qwen3Dense06bLayerForwardReference, String> {
+    validate_profile(profile)?;
     if layer_id >= profile.num_hidden_layers {
         return Err(format!(
             "qwen3_layer_forward_layer_oob:layer={layer_id}:layers={}",
@@ -2984,7 +3032,30 @@ fn layer_forward_reference_sequence_with_cache(
     ),
     String,
 > {
-    let profile = QWEN3_DENSE_0_6B_PROFILE;
+    layer_forward_reference_sequence_with_cache_for_profile(
+        QWEN3_DENSE_0_6B_PROFILE,
+        tensors,
+        layer_payloads,
+        layer_id,
+        hidden_states,
+    )
+}
+
+fn layer_forward_reference_sequence_with_cache_for_profile(
+    profile: Qwen3Dense06bProfile,
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    layer_payloads: Option<&BTreeMap<String, Vec<u8>>>,
+    layer_id: u64,
+    hidden_states: &[Vec<f32>],
+) -> Result<
+    (
+        Vec<Vec<f32>>,
+        Qwen3Dense06bLayerForwardReference,
+        Qwen3Dense06bLayerKvCache,
+    ),
+    String,
+> {
+    validate_profile(profile)?;
     if hidden_states.is_empty() {
         return Err("qwen3_layer_forward_sequence_empty".to_string());
     }
@@ -3391,11 +3462,42 @@ pub fn forward_reference_from_hidden(
     position: u64,
     hidden: &[f32],
 ) -> Result<Qwen3Dense06bForwardReference, String> {
+    forward_reference_from_hidden_range_for_profile(
+        QWEN3_DENSE_0_6B_PROFILE,
+        tensors,
+        0,
+        QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers,
+        position,
+        hidden,
+    )
+}
+
+pub fn forward_reference_from_hidden_range_for_profile(
+    profile: Qwen3Dense06bProfile,
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    layer_start: u64,
+    layer_end: u64,
+    position: u64,
+    hidden: &[f32],
+) -> Result<Qwen3Dense06bForwardReference, String> {
+    validate_profile(profile)?;
+    if layer_start > layer_end || layer_end > profile.num_hidden_layers {
+        return Err(format!(
+            "qwen3_forward_hidden_range_invalid:start={layer_start}:end={layer_end}:layers={}",
+            profile.num_hidden_layers
+        ));
+    }
     let mut current = hidden.to_vec();
-    let mut layers = Vec::with_capacity(QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers as usize);
-    let mut aggregate_words = vec![position, f32_vector_checksum(hidden)];
-    for layer_id in 0..QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers {
-        let layer = layer_forward_reference(tensors, layer_id, position, &current)?;
+    let mut layers = Vec::with_capacity((layer_end - layer_start) as usize);
+    let mut aggregate_words = vec![
+        position,
+        layer_start,
+        layer_end,
+        f32_vector_checksum(hidden),
+    ];
+    for layer_id in layer_start..layer_end {
+        let layer =
+            layer_forward_reference_for_profile(profile, tensors, layer_id, position, &current)?;
         aggregate_words.extend_from_slice(&[
             layer.layer_id,
             layer.input_checksum,
@@ -3415,9 +3517,9 @@ pub fn forward_reference_from_hidden(
     aggregate_words.push(final_hidden_checksum);
     aggregate_words.extend_from_slice(&final_hidden_sample_words);
     Ok(Qwen3Dense06bForwardReference {
-        layer_count: QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers,
+        layer_count: layer_end - layer_start,
         position,
-        hidden_size: QWEN3_DENSE_0_6B_PROFILE.hidden_size,
+        hidden_size: profile.hidden_size,
         input_checksum: f32_vector_checksum(hidden),
         final_hidden_checksum,
         final_hidden_sample_words,
@@ -3425,6 +3527,81 @@ pub fn forward_reference_from_hidden(
         final_hidden: current,
         layers,
     })
+}
+
+pub fn forward_reference_from_hidden_sequence_range_for_profile(
+    profile: Qwen3Dense06bProfile,
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    layer_start: u64,
+    layer_end: u64,
+    hidden_states: &[Vec<f32>],
+) -> Result<(Qwen3Dense06bForwardReference, Vec<Vec<f32>>), String> {
+    validate_profile(profile)?;
+    if layer_start > layer_end || layer_end > profile.num_hidden_layers {
+        return Err(format!(
+            "qwen3_forward_hidden_sequence_range_invalid:start={layer_start}:end={layer_end}:layers={}",
+            profile.num_hidden_layers
+        ));
+    }
+    if hidden_states.is_empty() {
+        return Err("qwen3_forward_hidden_sequence_empty".to_string());
+    }
+    let position = hidden_states.len().saturating_sub(1) as u64;
+    let input_checksum = f32_vector_checksum(
+        hidden_states
+            .last()
+            .ok_or_else(|| "qwen3_forward_reference_no_hidden_sequence".to_string())?,
+    );
+    let mut sequence = hidden_states.to_vec();
+    let mut layers = Vec::with_capacity((layer_end - layer_start) as usize);
+    let mut aggregate_words = vec![
+        position,
+        hidden_states.len() as u64,
+        layer_start,
+        layer_end,
+        input_checksum,
+    ];
+    for layer_id in layer_start..layer_end {
+        let (next_sequence, layer, _) = layer_forward_reference_sequence_with_cache_for_profile(
+            profile, tensors, None, layer_id, &sequence,
+        )?;
+        aggregate_words.extend_from_slice(&[
+            layer.layer_id,
+            layer.input_checksum,
+            layer.q_checksum,
+            layer.k_checksum,
+            layer.v_checksum,
+            layer.attention_context_checksum,
+            layer.attention_output_checksum,
+            layer.mlp_down_checksum,
+            layer.output_checksum,
+        ]);
+        aggregate_words.extend_from_slice(&layer.output_sample_words);
+        sequence = next_sequence;
+        layers.push(layer);
+    }
+    let final_hidden = sequence
+        .last()
+        .ok_or_else(|| "qwen3_forward_reference_no_final_hidden".to_string())?
+        .clone();
+    let final_hidden_checksum = f32_vector_checksum(&final_hidden);
+    let final_hidden_sample_words = f32_vector_sample_words(&final_hidden);
+    aggregate_words.push(final_hidden_checksum);
+    aggregate_words.extend_from_slice(&final_hidden_sample_words);
+    Ok((
+        Qwen3Dense06bForwardReference {
+            layer_count: layer_end - layer_start,
+            position,
+            hidden_size: profile.hidden_size,
+            input_checksum,
+            final_hidden_checksum,
+            final_hidden_sample_words,
+            aggregate_checksum: checksum_words(&aggregate_words),
+            final_hidden,
+            layers,
+        },
+        sequence,
+    ))
 }
 
 pub fn forward_reference_from_token_ids(
@@ -5397,6 +5574,151 @@ outputs:
         assert_eq!(down_proj.slice_axis, Some(1));
         assert_eq!(down_proj.slice_start, 15_232);
         assert_eq!(down_proj.slice_end, 17_408);
+    }
+
+    #[test]
+    fn generic_profile_sequence_range_forward_runs_real_layers() {
+        let profile = Qwen3Dense06bProfile {
+            vocab_size: 8,
+            hidden_size: 4,
+            intermediate_size: 4,
+            num_hidden_layers: 2,
+            num_attention_heads: 2,
+            num_key_value_heads: 2,
+            head_dim: 2,
+            max_position_embeddings: 32,
+            rope_theta: 10_000,
+            prefill_tokens: 4,
+            decode_tokens: 1,
+            tp_nodes: 1,
+        };
+        let path = std::env::temp_dir().join(format!(
+            "qwen3_generic_profile_forward_{}_{}.bin",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        let mut raw = Vec::new();
+        let mut tensors = BTreeMap::new();
+        let source_file = path.to_string_lossy().to_string();
+        let mut add_tensor = |name: String, shape: Vec<u64>, values: Vec<f32>| {
+            let start = raw.len() as u64;
+            raw.extend_from_slice(&f32_payload(&values));
+            let end = raw.len() as u64;
+            tensors.insert(
+                name,
+                Qwen3Dense06bWeightTensorMetadata {
+                    dtype: Qwen3Dense06bWeightDType::F32,
+                    shape,
+                    data_offsets: Some([start, end]),
+                    source_file: Some(source_file.clone()),
+                    data_base_offset: 0,
+                },
+            );
+        };
+        add_tensor(
+            "model.embed_tokens.weight".to_string(),
+            vec![profile.vocab_size, profile.hidden_size],
+            (0..profile.vocab_size * profile.hidden_size)
+                .map(|index| 0.01 + index as f32 * 0.001)
+                .collect(),
+        );
+        for layer_id in 0..profile.num_hidden_layers {
+            let prefix = format!("model.layers.{layer_id}");
+            add_tensor(
+                format!("{prefix}.input_layernorm.weight"),
+                vec![profile.hidden_size],
+                vec![1.0, 0.9, 1.1, 1.0],
+            );
+            add_tensor(
+                format!("{prefix}.self_attn.q_proj.weight"),
+                vec![
+                    profile.num_attention_heads * profile.head_dim,
+                    profile.hidden_size,
+                ],
+                vec![0.05 + layer_id as f32 * 0.01; 16],
+            );
+            add_tensor(
+                format!("{prefix}.self_attn.q_norm.weight"),
+                vec![profile.head_dim],
+                vec![1.0, 1.0],
+            );
+            add_tensor(
+                format!("{prefix}.self_attn.k_proj.weight"),
+                vec![
+                    profile.num_key_value_heads * profile.head_dim,
+                    profile.hidden_size,
+                ],
+                vec![0.04 + layer_id as f32 * 0.01; 16],
+            );
+            add_tensor(
+                format!("{prefix}.self_attn.k_norm.weight"),
+                vec![profile.head_dim],
+                vec![1.0, 1.0],
+            );
+            add_tensor(
+                format!("{prefix}.self_attn.v_proj.weight"),
+                vec![
+                    profile.num_key_value_heads * profile.head_dim,
+                    profile.hidden_size,
+                ],
+                vec![0.03 + layer_id as f32 * 0.01; 16],
+            );
+            add_tensor(
+                format!("{prefix}.self_attn.o_proj.weight"),
+                vec![
+                    profile.hidden_size,
+                    profile.num_attention_heads * profile.head_dim,
+                ],
+                vec![0.02 + layer_id as f32 * 0.01; 16],
+            );
+            add_tensor(
+                format!("{prefix}.post_attention_layernorm.weight"),
+                vec![profile.hidden_size],
+                vec![1.0, 1.0, 0.95, 1.05],
+            );
+            add_tensor(
+                format!("{prefix}.mlp.gate_proj.weight"),
+                vec![profile.intermediate_size, profile.hidden_size],
+                vec![0.025 + layer_id as f32 * 0.01; 16],
+            );
+            add_tensor(
+                format!("{prefix}.mlp.up_proj.weight"),
+                vec![profile.intermediate_size, profile.hidden_size],
+                vec![0.035 + layer_id as f32 * 0.01; 16],
+            );
+            add_tensor(
+                format!("{prefix}.mlp.down_proj.weight"),
+                vec![profile.hidden_size, profile.intermediate_size],
+                vec![0.045 + layer_id as f32 * 0.01; 16],
+            );
+        }
+        std::fs::write(&path, raw).expect("write generic profile raw weights");
+
+        let sequence =
+            embedding_reference_hidden_sequence_for_profile(profile, &tensors, &[1, 2, 3])
+                .expect("generic embedding sequence");
+        let (forward, output_sequence) = forward_reference_from_hidden_sequence_range_for_profile(
+            profile, &tensors, 0, 2, &sequence,
+        )
+        .expect("generic sequence range forward");
+
+        assert_eq!(forward.layer_count, 2);
+        assert_eq!(forward.layers.len(), 2);
+        assert_eq!(forward.hidden_size, 4);
+        assert_eq!(forward.position, 2);
+        assert_eq!(output_sequence.len(), 3);
+        assert_eq!(forward.final_hidden, output_sequence[2]);
+        assert_ne!(forward.final_hidden_checksum, 0);
+        assert_ne!(forward.aggregate_checksum, 0);
+        assert_ne!(
+            forward.layers[0].output_checksum,
+            forward.layers[1].output_checksum
+        );
+
+        let _ = std::fs::remove_file(path);
     }
 
     fn test_weight_metadata(
