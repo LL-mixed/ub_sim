@@ -167,7 +167,11 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
 int w4_db_obmm_service_v0_resolve_previous_range_kv_state(struct w4_db_service *svc,
                                                           uint32_t local_node,
                                                           uint32_t cluster_node_count,
-                                                          uint64_t decode_step);
+                                                          uint64_t decode_step,
+                                                          uint8_t *payload_out,
+                                                          uint64_t payload_capacity,
+                                                          uint64_t *payload_len_out,
+                                                          uint64_t *checksum_out);
 int w4_db_obmm_service_v0_publish_terminal_token_result(struct w4_db_service *svc,
                                                         uint32_t local_node,
                                                         uint32_t cluster_node_count,

@@ -3290,7 +3290,32 @@ fn layer_forward_incremental_with_cache(
     ),
     String,
 > {
-    let profile = QWEN3_DENSE_0_6B_PROFILE;
+    layer_forward_incremental_with_cache_for_profile(
+        QWEN3_DENSE_0_6B_PROFILE,
+        tensors,
+        layer_id,
+        position,
+        hidden,
+        previous_cache,
+    )
+}
+
+fn layer_forward_incremental_with_cache_for_profile(
+    profile: Qwen3Dense06bProfile,
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    layer_id: u64,
+    position: u64,
+    hidden: &[f32],
+    previous_cache: &Qwen3Dense06bLayerKvCache,
+) -> Result<
+    (
+        Vec<f32>,
+        Qwen3Dense06bLayerForwardReference,
+        Qwen3Dense06bLayerKvCache,
+    ),
+    String,
+> {
+    validate_profile(profile)?;
     if layer_id != previous_cache.layer_id {
         return Err(format!(
             "qwen3_incremental_cache_layer_id_mismatch:got={}:expected={layer_id}",
@@ -3536,6 +3561,24 @@ pub fn forward_reference_from_hidden_sequence_range_for_profile(
     layer_end: u64,
     hidden_states: &[Vec<f32>],
 ) -> Result<(Qwen3Dense06bForwardReference, Vec<Vec<f32>>), String> {
+    let (forward_with_cache, sequence) =
+        forward_reference_from_hidden_sequence_range_with_kv_cache_for_profile(
+            profile,
+            tensors,
+            layer_start,
+            layer_end,
+            hidden_states,
+        )?;
+    Ok((forward_with_cache.forward, sequence))
+}
+
+pub fn forward_reference_from_hidden_sequence_range_with_kv_cache_for_profile(
+    profile: Qwen3Dense06bProfile,
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    layer_start: u64,
+    layer_end: u64,
+    hidden_states: &[Vec<f32>],
+) -> Result<(Qwen3Dense06bForwardWithKvCache, Vec<Vec<f32>>), String> {
     validate_profile(profile)?;
     if layer_start > layer_end || layer_end > profile.num_hidden_layers {
         return Err(format!(
@@ -3554,6 +3597,7 @@ pub fn forward_reference_from_hidden_sequence_range_for_profile(
     );
     let mut sequence = hidden_states.to_vec();
     let mut layers = Vec::with_capacity((layer_end - layer_start) as usize);
+    let mut kv_cache = Vec::with_capacity((layer_end - layer_start) as usize);
     let mut aggregate_words = vec![
         position,
         hidden_states.len() as u64,
@@ -3562,9 +3606,10 @@ pub fn forward_reference_from_hidden_sequence_range_for_profile(
         input_checksum,
     ];
     for layer_id in layer_start..layer_end {
-        let (next_sequence, layer, _) = layer_forward_reference_sequence_with_cache_for_profile(
-            profile, tensors, None, layer_id, &sequence,
-        )?;
+        let (next_sequence, layer, layer_cache) =
+            layer_forward_reference_sequence_with_cache_for_profile(
+                profile, tensors, None, layer_id, &sequence,
+            )?;
         aggregate_words.extend_from_slice(&[
             layer.layer_id,
             layer.input_checksum,
@@ -3579,6 +3624,7 @@ pub fn forward_reference_from_hidden_sequence_range_for_profile(
         aggregate_words.extend_from_slice(&layer.output_sample_words);
         sequence = next_sequence;
         layers.push(layer);
+        kv_cache.push(layer_cache);
     }
     let final_hidden = sequence
         .last()
@@ -3589,19 +3635,108 @@ pub fn forward_reference_from_hidden_sequence_range_for_profile(
     aggregate_words.push(final_hidden_checksum);
     aggregate_words.extend_from_slice(&final_hidden_sample_words);
     Ok((
-        Qwen3Dense06bForwardReference {
-            layer_count: layer_end - layer_start,
-            position,
-            hidden_size: profile.hidden_size,
-            input_checksum,
-            final_hidden_checksum,
-            final_hidden_sample_words,
-            aggregate_checksum: checksum_words(&aggregate_words),
-            final_hidden,
-            layers,
+        Qwen3Dense06bForwardWithKvCache {
+            forward: Qwen3Dense06bForwardReference {
+                layer_count: layer_end - layer_start,
+                position,
+                hidden_size: profile.hidden_size,
+                input_checksum,
+                final_hidden_checksum,
+                final_hidden_sample_words,
+                aggregate_checksum: checksum_words(&aggregate_words),
+                final_hidden,
+                layers,
+            },
+            kv_cache,
         },
         sequence,
     ))
+}
+
+pub fn forward_incremental_range_with_kv_cache_from_hidden_for_profile(
+    profile: Qwen3Dense06bProfile,
+    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    previous_cache: &[Qwen3Dense06bLayerKvCache],
+    layer_start: u64,
+    layer_end: u64,
+    position: u64,
+    hidden: &[f32],
+) -> Result<Qwen3Dense06bForwardWithKvCache, String> {
+    validate_profile(profile)?;
+    if layer_start > layer_end || layer_end > profile.num_hidden_layers {
+        return Err(format!(
+            "qwen3_incremental_range_invalid:start={layer_start}:end={layer_end}:layers={}",
+            profile.num_hidden_layers
+        ));
+    }
+    let expected_layers = (layer_end - layer_start) as usize;
+    if previous_cache.len() != expected_layers {
+        return Err(format!(
+            "qwen3_incremental_range_cache_layer_count_mismatch:got={}:expected={expected_layers}",
+            previous_cache.len()
+        ));
+    }
+    let hidden_size = profile.hidden_size as usize;
+    if hidden.len() != hidden_size {
+        return Err(format!(
+            "qwen3_incremental_range_hidden_size_mismatch:got={}:expected={hidden_size}",
+            hidden.len()
+        ));
+    }
+
+    let mut current = hidden.to_vec();
+    let mut layers = Vec::with_capacity(expected_layers);
+    let mut kv_cache = Vec::with_capacity(expected_layers);
+    let mut aggregate_words = vec![
+        position,
+        position + 1,
+        layer_start,
+        layer_end,
+        f32_vector_checksum(hidden),
+    ];
+    for (index, layer_id) in (layer_start..layer_end).enumerate() {
+        let (next_hidden, layer, layer_cache) = layer_forward_incremental_with_cache_for_profile(
+            profile,
+            tensors,
+            layer_id,
+            position,
+            &current,
+            &previous_cache[index],
+        )?;
+        aggregate_words.extend_from_slice(&[
+            layer.layer_id,
+            layer.input_checksum,
+            layer.q_checksum,
+            layer.k_checksum,
+            layer.v_checksum,
+            layer.attention_context_checksum,
+            layer.attention_output_checksum,
+            layer.mlp_down_checksum,
+            layer.output_checksum,
+        ]);
+        aggregate_words.extend_from_slice(&layer.output_sample_words);
+        current = next_hidden;
+        layers.push(layer);
+        kv_cache.push(layer_cache);
+    }
+    let final_hidden_checksum = f32_vector_checksum(&current);
+    let final_hidden_sample_words = f32_vector_sample_words(&current);
+    aggregate_words.push(final_hidden_checksum);
+    aggregate_words.extend_from_slice(&final_hidden_sample_words);
+    Ok(Qwen3Dense06bForwardWithKvCache {
+        forward: Qwen3Dense06bForwardReference {
+            layer_count: layer_end - layer_start,
+            position,
+            hidden_size: profile.hidden_size,
+            input_checksum: f32_vector_checksum(hidden),
+            final_hidden_checksum,
+            final_hidden_sample_words,
+            aggregate_checksum: checksum_words(&aggregate_words),
+            final_hidden: current,
+            layers,
+        },
+        kv_cache,
+    })
 }
 
 pub fn forward_reference_from_token_ids(
@@ -5717,6 +5852,43 @@ outputs:
             forward.layers[0].output_checksum,
             forward.layers[1].output_checksum
         );
+
+        let prefix_sequence =
+            embedding_reference_hidden_sequence_for_profile(profile, &tensors, &[1, 2])
+                .expect("generic prefix embedding sequence");
+        let (prefix_forward, _) =
+            forward_reference_from_hidden_sequence_range_with_kv_cache_for_profile(
+                profile,
+                &tensors,
+                0,
+                2,
+                &prefix_sequence,
+            )
+            .expect("generic prefix range forward with kv");
+        let incremental = forward_incremental_range_with_kv_cache_from_hidden_for_profile(
+            profile,
+            &tensors,
+            &prefix_forward.kv_cache,
+            0,
+            2,
+            2,
+            &sequence[2],
+        )
+        .expect("generic incremental range forward with kv");
+        assert_eq!(incremental.kv_cache.len(), 2);
+        assert_eq!(incremental.kv_cache[0].token_count, 3);
+        assert_eq!(
+            incremental.forward.final_hidden.len(),
+            forward.final_hidden.len()
+        );
+        for (actual, expected) in incremental
+            .forward
+            .final_hidden
+            .iter()
+            .zip(forward.final_hidden.iter())
+        {
+            assert!((actual - expected).abs() < 1.0e-5);
+        }
 
         let _ = std::fs::remove_file(path);
     }

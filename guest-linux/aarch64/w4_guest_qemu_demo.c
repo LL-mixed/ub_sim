@@ -92,6 +92,9 @@
 #define W4_QWEN3_MAX_HIDDEN_RANGE_BYTES (2ULL * 1024ULL * 1024ULL)
 #define W4_QWEN3_MAX_KV_PAYLOAD_BYTES (4ULL * 1024ULL * 1024ULL)
 #define W4_QWEN3_RANGE_INPUT_PAYLOAD_OFFSET 0x0000000000080000ULL
+#define W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET 0x0000000000280000ULL
+#define W4_QWEN3_PREVIOUS_KV_PAYLOAD_HEADER_BYTES 32ULL
+#define W4_QWEN3_PREVIOUS_KV_PAYLOAD_MARKER 0x45564b5033515750ULL
 #define W4_QWEN3_TOKENIZER_POLICY_KIND 1ULL
 #define W4_QWEN3_TOKENIZER_ASSET_POLICY_KIND 2ULL
 #define W4_QWEN3_TOKENIZER_MODEL_ID "Qwen/Qwen3-0.6B"
@@ -6161,16 +6164,65 @@ decode_round_start:
                    range_input_checksum,
                    hidden_range_bytes);
         }
-        if (guest_decode_step > 0 &&
-            w4_db_obmm_service_v0_resolve_previous_range_kv_state(&db_service,
-                                                                  dispatch_node,
-                                                                  cluster_node_count,
-                                                                  guest_decode_step) != 0) {
-            fprintf(stderr,
-                    "[w4_guest] fail qwen3 previous range kv state resolve failed node=%u step=%" PRIu64 "\n",
-                    dispatch_node + 1U,
-                    guest_decode_step);
-            goto out;
+        if (guest_decode_step > 0) {
+            uint8_t *previous_kv_payload = malloc((size_t)W4_QWEN3_MAX_KV_PAYLOAD_BYTES);
+            uint64_t previous_kv_payload_bytes = 0;
+            uint64_t previous_kv_payload_checksum = 0;
+
+            if (!previous_kv_payload) {
+                fprintf(stderr,
+                        "[w4_guest] fail qwen3 previous range kv malloc failed bytes=%" PRIu64 "\n",
+                        (uint64_t)W4_QWEN3_MAX_KV_PAYLOAD_BYTES);
+                goto out;
+            }
+            if (w4_db_obmm_service_v0_resolve_previous_range_kv_state(
+                    &db_service,
+                    dispatch_node,
+                    cluster_node_count,
+                    guest_decode_step,
+                    previous_kv_payload,
+                    W4_QWEN3_MAX_KV_PAYLOAD_BYTES,
+                    &previous_kv_payload_bytes,
+                    &previous_kv_payload_checksum) != 0) {
+                fprintf(stderr,
+                        "[w4_guest] fail qwen3 previous range kv state resolve failed node=%u step=%" PRIu64 "\n",
+                        dispatch_node + 1U,
+                        guest_decode_step);
+                free(previous_kv_payload);
+                goto out;
+            }
+            if (previous_kv_payload_bytes > 0) {
+                write_segment_u64(ep_mmio,
+                                  W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET,
+                                  W4_QWEN3_PREVIOUS_KV_PAYLOAD_MARKER);
+                write_segment_u64(ep_mmio,
+                                  W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET + 8ULL,
+                                  previous_kv_payload_bytes);
+                write_segment_u64(ep_mmio,
+                                  W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET + 16ULL,
+                                  previous_kv_payload_checksum);
+                write_segment_u64(ep_mmio,
+                                  W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET + 24ULL,
+                                  guest_decode_step - 1U);
+                write_segment_bytes(
+                    ep_mmio,
+                    W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET +
+                        W4_QWEN3_PREVIOUS_KV_PAYLOAD_HEADER_BYTES,
+                    previous_kv_payload,
+                    previous_kv_payload_bytes);
+                printf("[w4_guest] stage qwen3_range_kv_state_loaded node=%u step=%" PRIu64
+                       " previous_step=%" PRIu64
+                       " kv_offset=0x%016" PRIx64 " kv_bytes=%" PRIu64
+                       " kv_checksum=0x%016" PRIx64
+                       " source=object_service target=uapi_segment status=ok\n",
+                       dispatch_node + 1U,
+                       guest_decode_step,
+                       guest_decode_step - 1U,
+                       (uint64_t)W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET,
+                       previous_kv_payload_bytes,
+                       previous_kv_payload_checksum);
+            }
+            free(previous_kv_payload);
         }
     }
 

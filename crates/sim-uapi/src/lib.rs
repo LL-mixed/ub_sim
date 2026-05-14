@@ -26,17 +26,19 @@ use sim_models::qwen3_dense;
 use sim_models::qwen3_dense_0_6b::{
     self, checksum_words, embedding_reference_hidden_sequence_for_profile,
     embedding_reference_hidden_sequence_with_payloads, embedding_reference_last_hidden,
-    embedding_reference_last_hidden_with_payloads, embedding_reference_summary,
-    forward_from_token_ids, forward_from_token_ids_with_layer_payloads,
+    embedding_reference_last_hidden_for_profile, embedding_reference_last_hidden_with_payloads,
+    embedding_reference_summary, forward_from_token_ids,
+    forward_from_token_ids_with_layer_payloads,
+    forward_incremental_range_with_kv_cache_from_hidden_for_profile,
     forward_incremental_with_kv_cache_from_hidden,
-    forward_reference_from_hidden_sequence_range_for_profile, forward_with_kv_cache_from_token_ids,
-    full_vocab_logits_from_hidden, full_vocab_logits_from_hidden_for_profile,
-    full_vocab_logits_from_hidden_with_payloads, layer_forward_reference_sequence_with_payloads,
-    load_safetensors_path_metadata, load_tokenizer_asset_summary, logits_reference_summary,
-    logits_reference_summary_with_hidden, materialize_full_weight_tensor_payload,
-    materialize_weight_slice_payload, mlp_reference_layer_summary,
-    mlp_reference_layer_summary_with_hidden, prompt_token_ids_checksum,
-    qkv_reference_layer_summary, qkv_reference_layer_values,
+    forward_reference_from_hidden_sequence_range_with_kv_cache_for_profile,
+    forward_with_kv_cache_from_token_ids, full_vocab_logits_from_hidden,
+    full_vocab_logits_from_hidden_for_profile, full_vocab_logits_from_hidden_with_payloads,
+    layer_forward_reference_sequence_with_payloads, load_safetensors_path_metadata,
+    load_tokenizer_asset_summary, logits_reference_summary, logits_reference_summary_with_hidden,
+    materialize_full_weight_tensor_payload, materialize_weight_slice_payload,
+    mlp_reference_layer_summary, mlp_reference_layer_summary_with_hidden,
+    prompt_token_ids_checksum, qkv_reference_layer_summary, qkv_reference_layer_values,
     qkv_reference_layer_values_with_hidden, token_piece_bytes_from_policy,
     token_piece_bytes_from_tokenizer_path, token_piece_decode_bytes, token_piece_from_policy,
     tokenize_prompt_from_tokenizer_path, tokenizer_policy, weight_bytes_checksum,
@@ -1621,6 +1623,10 @@ struct Qwen3DenseProfileRealTerminal {
     logits: Qwen3Dense06bFullVocabLogitsSummary,
 }
 
+const QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER: u64 = 0x4556_4b50_3351_5750;
+const QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET: usize = 0x28_0000;
+const QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES: usize = 32;
+
 fn qwen3_dense_weights_config_dir(weights_path: &Path) -> &Path {
     if weights_path.is_dir() {
         weights_path
@@ -1797,33 +1803,39 @@ fn run_qwen3_dense_profile_runtime(
         hidden_len,
         kv_state_len,
     )?;
-    let (output_tensor_payload, output_tensor_checksum, kv_state_payload, kv_state_checksum) =
-        if let Some(forward) = real_forward.as_ref() {
-            (
-                forward.output_tensor_payload.clone(),
-                forward.output_tensor_checksum,
-                forward.kv_state_payload.clone(),
-                forward.kv_state_checksum,
-            )
-        } else {
-            let output_tensor_payload =
-                qwen3_dense_profile_deterministic_payload(hidden_len, input_checksum, contract);
-            let output_tensor_checksum =
-                qwen3_dense_0_6b_range_object_payload_checksum(&output_tensor_payload);
-            let kv_state_payload = qwen3_dense_profile_deterministic_payload(
-                kv_state_len,
-                output_tensor_checksum,
-                contract,
-            );
-            let kv_state_checksum =
-                qwen3_dense_0_6b_range_object_payload_checksum(&kv_state_payload);
-            (
-                output_tensor_payload,
-                output_tensor_checksum,
-                kv_state_payload,
-                kv_state_checksum,
-            )
-        };
+    let (
+        output_tensor_payload,
+        output_tensor_checksum,
+        kv_state_payload,
+        kv_state_checksum,
+        kv_state_bytes,
+    ) = if let Some(forward) = real_forward.as_ref() {
+        (
+            forward.output_tensor_payload.clone(),
+            forward.output_tensor_checksum,
+            forward.kv_state_payload.clone(),
+            forward.kv_state_checksum,
+            forward.kv_state_payload.len() as u64,
+        )
+    } else {
+        let output_tensor_payload =
+            qwen3_dense_profile_deterministic_payload(hidden_len, input_checksum, contract);
+        let output_tensor_checksum =
+            qwen3_dense_0_6b_range_object_payload_checksum(&output_tensor_payload);
+        let kv_state_payload = qwen3_dense_profile_deterministic_payload(
+            kv_state_len,
+            output_tensor_checksum,
+            contract,
+        );
+        let kv_state_checksum = qwen3_dense_0_6b_range_object_payload_checksum(&kv_state_payload);
+        (
+            output_tensor_payload,
+            output_tensor_checksum,
+            kv_state_payload,
+            kv_state_checksum,
+            kv_state_bytes,
+        )
+    };
     let range_layer_checksum = checksum_words(&[
         u64::from(contract.node),
         u64::from(contract.layer_start),
@@ -1997,31 +2009,76 @@ fn qwen3_dense_profile_real_range_forward(
     let loaded = qwen3_dense_0_6b_cached_loaded_weights(&weights_path)?;
     let token_ids = qwen3_dense_0_6b_guest_input_token_ids(guest_input);
     let token_count = token_ids.len();
-    let input_sequence = if contract.layer_start == 0 {
-        if token_ids.is_empty() {
+    let previous_cache =
+        qwen3_dense_profile_previous_kv_cache_from_guest_payload(profile, contract, guest_input)?;
+    let (forward, output_sequence, kv_cache) = if let Some(previous_cache) = previous_cache {
+        if token_count == 0 {
             return Ok(None);
         }
-        embedding_reference_hidden_sequence_for_profile(*profile, &loaded.tensors, &token_ids)?
+        let position = token_count.saturating_sub(1) as u64;
+        let current_hidden = if contract.layer_start == 0 {
+            embedding_reference_last_hidden_for_profile(*profile, &loaded.tensors, &token_ids)?
+        } else {
+            qwen3_dense_profile_current_hidden_from_guest_payload(profile, guest_input, hidden_len)?
+        };
+        let forward_with_cache = forward_incremental_range_with_kv_cache_from_hidden_for_profile(
+            *profile,
+            &loaded.tensors,
+            &previous_cache,
+            u64::from(contract.layer_start),
+            u64::from(contract.layer_end),
+            position,
+            &current_hidden,
+        )?;
+        let output_sequence = vec![forward_with_cache.forward.final_hidden.clone()];
+        (
+            forward_with_cache.forward,
+            output_sequence,
+            forward_with_cache.kv_cache,
+        )
     } else {
-        qwen3_dense_profile_input_sequence_from_guest_payload(
-            profile,
-            guest_input,
-            hidden_len,
-            token_count,
-        )?
+        let input_sequence = if contract.layer_start == 0 {
+            if token_ids.is_empty() {
+                return Ok(None);
+            }
+            embedding_reference_hidden_sequence_for_profile(*profile, &loaded.tensors, &token_ids)?
+        } else {
+            qwen3_dense_profile_input_sequence_from_guest_payload(
+                profile,
+                guest_input,
+                hidden_len,
+                token_count,
+            )?
+        };
+        let (forward_with_cache, output_sequence) =
+            forward_reference_from_hidden_sequence_range_with_kv_cache_for_profile(
+                *profile,
+                &loaded.tensors,
+                u64::from(contract.layer_start),
+                u64::from(contract.layer_end),
+                &input_sequence,
+            )?;
+        (
+            forward_with_cache.forward,
+            output_sequence,
+            forward_with_cache.kv_cache,
+        )
     };
-    let (forward, output_sequence) = forward_reference_from_hidden_sequence_range_for_profile(
-        *profile,
-        &loaded.tensors,
-        u64::from(contract.layer_start),
-        u64::from(contract.layer_end),
-        &input_sequence,
-    )?;
     let output_tensor_payload =
         qwen3_dense_profile_hidden_sequence_range_payload(profile, &output_sequence, hidden_len)?;
     let output_tensor_checksum =
         qwen3_dense_0_6b_range_object_payload_checksum(&output_tensor_payload);
-    let kv_state_payload = qwen3_dense_profile_real_kv_state_payload(&forward, kv_state_len);
+    let kv_state_payload = qwen3_dense_profile_range_kv_payload_from_cache(
+        &kv_cache,
+        u64::from(contract.layer_start),
+        u64::from(contract.layer_end),
+    )?;
+    if kv_state_payload.len() > kv_state_len && token_count <= profile.decode_tokens as usize {
+        return Err(format!(
+            "qwen3_dense_profile_kv_payload_too_large:bytes={}:limit={kv_state_len}",
+            kv_state_payload.len()
+        ));
+    }
     let kv_state_checksum = qwen3_dense_0_6b_range_object_payload_checksum(&kv_state_payload);
     Ok(Some(Qwen3DenseProfileRuntimeForward {
         forward,
@@ -2134,37 +2191,187 @@ fn qwen3_dense_profile_hidden_sequence_range_payload(
     Ok(payload)
 }
 
-fn qwen3_dense_profile_real_kv_state_payload(
-    forward: &qwen3_dense_0_6b::Qwen3Dense06bForwardReference,
-    kv_state_len: usize,
-) -> Vec<u8> {
-    let mut words = vec![
-        forward.layer_count,
-        forward.position,
-        forward.input_checksum,
-        forward.final_hidden_checksum,
-        forward.aggregate_checksum,
-    ];
-    for layer in &forward.layers {
-        words.extend_from_slice(&[
-            layer.layer_id,
-            layer.q_checksum,
-            layer.k_checksum,
-            layer.v_checksum,
-            layer.rope_k_checksum,
-            layer.attention_context_checksum,
-            layer.output_checksum,
-        ]);
+fn qwen3_dense_profile_current_hidden_from_guest_payload(
+    profile: &Qwen3Dense06bProfile,
+    guest_input: &[u8],
+    hidden_len: usize,
+) -> Result<Vec<f32>, String> {
+    const RANGE_INPUT_PAYLOAD_OFFSET: usize = 0x08_0000;
+    let payload = guest_input
+        .get(RANGE_INPUT_PAYLOAD_OFFSET..RANGE_INPUT_PAYLOAD_OFFSET + hidden_len)
+        .ok_or_else(|| {
+            format!(
+                "qwen3_dense_profile_current_hidden_payload_missing:offset={RANGE_INPUT_PAYLOAD_OFFSET:#x}:bytes={hidden_len}"
+            )
+        })?;
+    qwen3_dense_profile_hidden_sequence_from_payload(profile, payload, 1).and_then(|mut rows| {
+        rows.pop()
+            .ok_or_else(|| "qwen3_dense_profile_current_hidden_empty".to_string())
+    })
+}
+
+fn qwen3_dense_profile_previous_kv_cache_from_guest_payload(
+    profile: &Qwen3Dense06bProfile,
+    contract: Qwen3GuestRangeComputeContract,
+    guest_input: &[u8],
+) -> Result<Option<Vec<Qwen3Dense06bLayerKvCache>>, String> {
+    let Some(header) = guest_input.get(
+        QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
+            ..QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES,
+    ) else {
+        return Ok(None);
+    };
+    let marker = read_u64_le_at(header, 0);
+    if marker == 0 {
+        return Ok(None);
     }
-    let mut payload = Vec::with_capacity(kv_state_len);
-    let mut index = 0usize;
-    while payload.len() < kv_state_len {
-        let word = words[index % words.len()] ^ (index as u64).rotate_left((index % 63) as u32);
-        payload.extend_from_slice(&word.to_le_bytes());
-        index += 1;
+    if marker != QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER {
+        return Err(format!(
+            "qwen3_dense_profile_previous_kv_marker_mismatch:{marker:#x}"
+        ));
     }
-    payload.truncate(kv_state_len);
-    payload
+    let payload_len = usize::try_from(read_u64_le_at(header, 8))
+        .map_err(|_| "qwen3_dense_profile_previous_kv_len_too_large".to_string())?;
+    let expected_checksum = read_u64_le_at(header, 16);
+    if payload_len == 0 {
+        return Ok(None);
+    }
+    let payload_start =
+        QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES;
+    let payload_end = payload_start
+        .checked_add(payload_len)
+        .ok_or_else(|| "qwen3_dense_profile_previous_kv_end_overflow".to_string())?;
+    let payload = guest_input
+        .get(payload_start..payload_end)
+        .ok_or_else(|| {
+            format!(
+                "qwen3_dense_profile_previous_kv_payload_missing:offset={payload_start:#x}:bytes={payload_len}"
+            )
+        })?;
+    let checksum = qwen3_dense_0_6b_range_object_payload_checksum(payload);
+    if checksum != expected_checksum {
+        return Err(format!(
+            "qwen3_dense_profile_previous_kv_checksum_mismatch:got={checksum:#x}:expected={expected_checksum:#x}"
+        ));
+    }
+    qwen3_dense_profile_range_kv_payload_to_cache(
+        profile,
+        payload,
+        u64::from(contract.layer_start),
+        u64::from(contract.layer_end),
+    )
+    .map(Some)
+}
+
+fn qwen3_dense_profile_range_kv_payload_from_cache(
+    cache: &[Qwen3Dense06bLayerKvCache],
+    layer_start: u64,
+    layer_end: u64,
+) -> Result<Vec<u8>, String> {
+    let mut payload = Vec::new();
+    for layer_id in layer_start..layer_end {
+        let layer = cache
+            .iter()
+            .find(|layer| layer.layer_id == layer_id)
+            .ok_or_else(|| format!("qwen3_dense_profile_range_kv_layer_missing:{layer_id}"))?;
+        payload.extend_from_slice(&layer.layer_id.to_le_bytes());
+        payload.extend_from_slice(&layer.token_count.to_le_bytes());
+        payload.extend_from_slice(&(layer.rope_k_states.len() as u64).to_le_bytes());
+        payload.extend_from_slice(&(layer.v_states.len() as u64).to_le_bytes());
+        let state_len = layer
+            .rope_k_states
+            .first()
+            .map(|state| state.len())
+            .or_else(|| layer.v_states.first().map(|state| state.len()))
+            .unwrap_or(0);
+        payload.extend_from_slice(&(state_len as u64).to_le_bytes());
+        for state in &layer.rope_k_states {
+            if state.len() != state_len {
+                return Err(format!(
+                    "qwen3_dense_profile_range_kv_k_state_len_mismatch:layer={layer_id}:got={}:expected={state_len}",
+                    state.len()
+                ));
+            }
+            for value in state {
+                payload.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        for state in &layer.v_states {
+            if state.len() != state_len {
+                return Err(format!(
+                    "qwen3_dense_profile_range_kv_v_state_len_mismatch:layer={layer_id}:got={}:expected={state_len}",
+                    state.len()
+                ));
+            }
+            for value in state {
+                payload.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+    }
+    Ok(payload)
+}
+
+fn qwen3_dense_profile_range_kv_payload_to_cache(
+    profile: &Qwen3Dense06bProfile,
+    payload: &[u8],
+    layer_start: u64,
+    layer_end: u64,
+) -> Result<Vec<Qwen3Dense06bLayerKvCache>, String> {
+    let expected_state_len = usize::try_from(profile.num_key_value_heads * profile.head_dim)
+        .map_err(|_| "qwen3_dense_profile_kv_state_len_too_large".to_string())?;
+    let mut offset = 0usize;
+    let mut cache = Vec::with_capacity((layer_end - layer_start) as usize);
+    for expected_layer_id in layer_start..layer_end {
+        let layer_id = qwen3_dense_0_6b_read_u64_from_payload(payload, &mut offset)?;
+        let token_count = qwen3_dense_0_6b_read_u64_from_payload(payload, &mut offset)?;
+        let k_state_count = qwen3_dense_0_6b_read_u64_from_payload(payload, &mut offset)? as usize;
+        let v_state_count = qwen3_dense_0_6b_read_u64_from_payload(payload, &mut offset)? as usize;
+        let state_len = qwen3_dense_0_6b_read_u64_from_payload(payload, &mut offset)? as usize;
+        if layer_id != expected_layer_id {
+            return Err(format!(
+                "qwen3_dense_profile_range_kv_layer_id_mismatch:got={layer_id}:expected={expected_layer_id}"
+            ));
+        }
+        if k_state_count != token_count as usize || v_state_count != token_count as usize {
+            return Err(format!(
+                "qwen3_dense_profile_range_kv_token_count_mismatch:layer={layer_id}:tokens={token_count}:k={k_state_count}:v={v_state_count}"
+            ));
+        }
+        if state_len != expected_state_len {
+            return Err(format!(
+                "qwen3_dense_profile_range_kv_state_len_mismatch:layer={layer_id}:got={state_len}:expected={expected_state_len}"
+            ));
+        }
+        let mut rope_k_states = Vec::with_capacity(k_state_count);
+        for _ in 0..k_state_count {
+            rope_k_states.push(qwen3_dense_0_6b_read_f32_vec_from_payload(
+                payload,
+                &mut offset,
+                state_len,
+            )?);
+        }
+        let mut v_states = Vec::with_capacity(v_state_count);
+        for _ in 0..v_state_count {
+            v_states.push(qwen3_dense_0_6b_read_f32_vec_from_payload(
+                payload,
+                &mut offset,
+                state_len,
+            )?);
+        }
+        cache.push(Qwen3Dense06bLayerKvCache {
+            layer_id,
+            token_count,
+            rope_k_states,
+            v_states,
+        });
+    }
+    if offset != payload.len() {
+        return Err(format!(
+            "qwen3_dense_profile_range_kv_trailing_bytes:{}",
+            payload.len() - offset
+        ));
+    }
+    Ok(cache)
 }
 
 fn qwen3_dense_profile_real_terminal_summary(
@@ -17079,6 +17286,7 @@ mod tests {
         qwen3_dense_0_6b_projection_tile_from_half_input,
         qwen3_dense_0_6b_publish_bootstrap_weight_objects,
         qwen3_dense_0_6b_range_forward_report_with_prompt,
+        qwen3_dense_0_6b_range_object_payload_checksum,
         qwen3_dense_0_6b_real_mlp_activation_tile_from_attention_context,
         qwen3_dense_0_6b_real_mlp_reference_summary, qwen3_dense_0_6b_real_qkv_reference_values,
         qwen3_dense_0_6b_real_tokenizer_asset_summary, qwen3_dense_0_6b_real_tokenizer_path,
@@ -17102,12 +17310,16 @@ mod tests {
         qwen3_dense_0_6b_weight_range_object_key, qwen3_dense_0_6b_weight_range_payload_header,
         qwen3_dense_0_6b_weight_reference_table_end, qwen3_dense_0_6b_weight_stage_link_table_end,
         qwen3_dense_0_6b_weight_tensor_kind_code, qwen3_dense_0_6b_write_weight_reference_table,
-        qwen3_dense_0_6b_write_weight_stage_link_table, read_u64_le_at,
+        qwen3_dense_0_6b_write_weight_stage_link_table,
+        qwen3_dense_profile_previous_kv_cache_from_guest_payload,
+        qwen3_dense_profile_range_kv_payload_from_cache, read_u64_le_at,
         run_host_matmul_batched_smoke, run_host_matmul_smoke, run_qwen3_dense_0_6b_prefill_runtime,
         GuestUapiSurface, KvCachePayloadLayout, LocalGuestUapiSurface,
         Qwen3Dense06bHiddenLayerNodeRange, Qwen3Dense06bLayerDependencyDescriptor,
-        Qwen3Dense06bShard, Qwen3ProjectionKind, UapiCommand, UapiDescriptor, UapiResponse,
-        QWEN3_DENSE_0_6B_PROFILE, QWEN3_DENSE_0_6B_TOKENIZER_POLICY_KIND,
+        Qwen3Dense06bShard, Qwen3GuestRangeComputeContract, Qwen3ProjectionKind, UapiCommand,
+        UapiDescriptor, UapiResponse, QWEN3_DENSE_0_6B_PROFILE,
+        QWEN3_DENSE_0_6B_TOKENIZER_POLICY_KIND, QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES,
+        QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER, QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET,
         QWEN3_LOGITS_REFERENCE_ENTRY_WORDS, QWEN3_MLP_REFERENCE_ENTRY_WORDS,
         QWEN3_SYNTHETIC_ATTENTION_CONTEXT, QWEN3_SYNTHETIC_ATTENTION_SCORE,
         QWEN3_SYNTHETIC_GUEST_INPUT, QWEN3_SYNTHETIC_LOGITS_CANDIDATES,
@@ -17124,11 +17336,12 @@ mod tests {
     use sim_models::qwen3_dense_0_6b::{
         checksum_words, token_piece_bytes_from_policy, token_piece_bytes_from_tokenizer_path,
         token_piece_from_policy, token_piece_from_tokenizer_path, tokenizer_policy,
-        weight_bytes_checksum, Qwen3Dense06bMlpReferenceLayerSummary,
-        Qwen3Dense06bMlpReferenceShardSummary, Qwen3Dense06bQkvReferenceLayerSummary,
-        Qwen3Dense06bQkvReferenceLayerValues, Qwen3Dense06bQkvReferenceShardSummary,
-        Qwen3Dense06bQkvReferenceShardValues, Qwen3Dense06bReferenceWeightSliceValidation,
-        Qwen3Dense06bWeightTensorKind, QWEN3_DENSE_0_6B_TOKENIZER_ASSET_POLICY_KIND,
+        weight_bytes_checksum, Qwen3Dense06bLayerKvCache, Qwen3Dense06bMlpReferenceLayerSummary,
+        Qwen3Dense06bMlpReferenceShardSummary, Qwen3Dense06bProfile,
+        Qwen3Dense06bQkvReferenceLayerSummary, Qwen3Dense06bQkvReferenceLayerValues,
+        Qwen3Dense06bQkvReferenceShardSummary, Qwen3Dense06bQkvReferenceShardValues,
+        Qwen3Dense06bReferenceWeightSliceValidation, Qwen3Dense06bWeightTensorKind,
+        QWEN3_DENSE_0_6B_TOKENIZER_ASSET_POLICY_KIND,
     };
     use sim_services::block::BlockServiceProfile;
     use sim_services::{
@@ -17709,6 +17922,82 @@ mod tests {
                 assert_eq!(read_u64_le_at(&output, entry_base + 112), HIDDEN_BYTES_14B);
                 assert_eq!(read_u64_le_at(&output, entry_base + 120), HIDDEN_BYTES_14B);
                 assert!(read_u64_le_at(&output, entry_base + 128) > 0);
+            },
+        );
+    }
+
+    #[test]
+    fn qwen3_dense_profile_previous_kv_payload_round_trips_real_values() {
+        run_simpler_native_test_isolated(
+            "qwen3_dense_profile_previous_kv_payload_round_trips_real_values",
+            || {
+                let profile = Qwen3Dense06bProfile {
+                    vocab_size: 16,
+                    hidden_size: 4,
+                    intermediate_size: 4,
+                    num_hidden_layers: 4,
+                    num_attention_heads: 2,
+                    num_key_value_heads: 2,
+                    head_dim: 2,
+                    max_position_embeddings: 16,
+                    rope_theta: 10_000,
+                    prefill_tokens: 4,
+                    decode_tokens: 1,
+                    tp_nodes: 2,
+                };
+                let cache = vec![
+                    Qwen3Dense06bLayerKvCache {
+                        layer_id: 2,
+                        token_count: 2,
+                        rope_k_states: vec![vec![0.1, 0.2, 0.3, 0.4], vec![0.5, 0.6, 0.7, 0.8]],
+                        v_states: vec![vec![1.1, 1.2, 1.3, 1.4], vec![1.5, 1.6, 1.7, 1.8]],
+                    },
+                    Qwen3Dense06bLayerKvCache {
+                        layer_id: 3,
+                        token_count: 2,
+                        rope_k_states: vec![vec![2.1, 2.2, 2.3, 2.4], vec![2.5, 2.6, 2.7, 2.8]],
+                        v_states: vec![vec![3.1, 3.2, 3.3, 3.4], vec![3.5, 3.6, 3.7, 3.8]],
+                    },
+                ];
+                let payload =
+                    qwen3_dense_profile_range_kv_payload_from_cache(&cache, 2, 4).expect("payload");
+                let checksum = qwen3_dense_0_6b_range_object_payload_checksum(&payload);
+                let mut guest_input = vec![
+                    0u8;
+                    QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
+                        + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES
+                        + payload.len()
+                ];
+                guest_input[QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
+                    ..QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 8]
+                    .copy_from_slice(&QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER.to_le_bytes());
+                guest_input[QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 8
+                    ..QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 16]
+                    .copy_from_slice(&(payload.len() as u64).to_le_bytes());
+                guest_input[QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 16
+                    ..QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 24]
+                    .copy_from_slice(&checksum.to_le_bytes());
+                let payload_offset = QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
+                    + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES;
+                guest_input[payload_offset..payload_offset + payload.len()]
+                    .copy_from_slice(&payload);
+                let parsed = qwen3_dense_profile_previous_kv_cache_from_guest_payload(
+                    &profile,
+                    Qwen3GuestRangeComputeContract {
+                        node: 1,
+                        layer_start: 2,
+                        layer_end: 4,
+                        next_node: 0,
+                        pipeline_nodes: 2,
+                        total_layers: 4,
+                        hidden_bytes: 32,
+                    },
+                    &guest_input,
+                )
+                .expect("parse previous kv")
+                .expect("previous kv present");
+                assert_eq!(parsed, cache);
+                assert_ne!(checksum, 0);
             },
         );
     }
