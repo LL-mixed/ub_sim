@@ -78,6 +78,22 @@ pub fn qwen3_dense_0_6b_profile() -> Qwen3DenseProfile {
     }
 }
 
+pub fn is_qwen3_dense_0_6b_shape(profile: &Qwen3DenseProfile) -> bool {
+    let expected = qwen3_dense_0_6b_profile();
+    profile.vocab_size == expected.vocab_size
+        && profile.hidden_size == expected.hidden_size
+        && profile.intermediate_size == expected.intermediate_size
+        && profile.num_hidden_layers == expected.num_hidden_layers
+        && profile.num_attention_heads == expected.num_attention_heads
+        && profile.num_key_value_heads == expected.num_key_value_heads
+        && profile.head_dim == expected.head_dim
+        && profile.max_position_embeddings == expected.max_position_embeddings
+        && profile.rope_theta == expected.rope_theta
+        && profile.prefill_tokens == expected.prefill_tokens
+        && profile.decode_tokens == expected.decode_tokens
+        && profile.tp_nodes == expected.tp_nodes
+}
+
 pub fn profile_from_config_json(
     model_id: impl Into<String>,
     config_json: &str,
@@ -150,7 +166,7 @@ pub fn validate_profile(
     variant: Qwen3DenseVariant,
 ) -> Result<(), String> {
     validate_structural_profile(profile)?;
-    if variant == Qwen3DenseVariant::Dense0_6B && *profile != qwen3_dense_0_6b_profile() {
+    if variant == Qwen3DenseVariant::Dense0_6B && !is_qwen3_dense_0_6b_shape(profile) {
         return Err("qwen3_dense_0_6b_config_mismatch".to_string());
     }
     Ok(())
@@ -355,7 +371,25 @@ mod tests {
         .expect("parse 0.6B profile");
 
         assert_eq!(profile, qwen3_dense_0_6b_profile());
+        assert!(is_qwen3_dense_0_6b_shape(&profile));
         validate_profile(&profile, Qwen3DenseVariant::Dense0_6B).expect("0.6B profile");
+    }
+
+    #[test]
+    fn accepts_0_6b_shape_with_local_directory_model_id() {
+        let profile = profile_from_config_json(
+            "Qwen3-0.6B",
+            QWEN3_0_6B_CONFIG,
+            QWEN3_DENSE_DEFAULT_TP_NODES,
+            QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
+            QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
+        )
+        .expect("parse local 0.6B profile");
+
+        assert_ne!(profile, qwen3_dense_0_6b_profile());
+        assert!(is_qwen3_dense_0_6b_shape(&profile));
+        validate_profile(&profile, Qwen3DenseVariant::Dense0_6B)
+            .expect("0.6B shape should not depend on model_id spelling");
     }
 
     #[test]

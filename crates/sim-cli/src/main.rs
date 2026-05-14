@@ -6,8 +6,8 @@ use sim_core::{
     SegmentHandle, SimEvent, TaskKey,
 };
 use sim_models::qwen3_dense::{
-    hidden_range_bytes, kv_state_bytes_for_layer_count, model_key as qwen3_dense_model_key,
-    profile_from_weights_dir, qwen3_dense_0_6b_profile, Qwen3DenseProfile,
+    hidden_range_bytes, is_qwen3_dense_0_6b_shape, kv_state_bytes_for_layer_count,
+    model_key as qwen3_dense_model_key, profile_from_weights_dir, Qwen3DenseProfile,
     QWEN3_DENSE_DEFAULT_DECODE_TOKENS, QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
     QWEN3_DENSE_DEFAULT_TP_NODES,
 };
@@ -1316,6 +1316,49 @@ mod tests {
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("0.6B runtime");
         assert_eq!(runtime.model_key, "qwen3-0-6b");
+        assert_eq!(runtime.chipbackend_profile, "qwen3_dense_0_6b");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn qwen3_guest_dense_runtime_detects_0_6b_shape_without_model_id() {
+        let dir = env::temp_dir().join(format!(
+            "Qwen3-0.6B-sim-cli-runtime-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("temp qwen3 runtime dir");
+        fs::write(
+            dir.join("config.json"),
+            r#"{
+                "vocab_size": 151936,
+                "hidden_size": 1024,
+                "intermediate_size": 3072,
+                "num_hidden_layers": 28,
+                "num_attention_heads": 16,
+                "num_key_value_heads": 8,
+                "head_dim": 128,
+                "max_position_embeddings": 40960,
+                "rope_theta": 1000000
+            }"#,
+        )
+        .expect("write config");
+        fs::write(dir.join("tokenizer.json"), b"{}").expect("write tokenizer");
+        fs::write(dir.join("model.safetensors"), b"stub").expect("write weights");
+
+        let args = Qwen3GuestDecodeLoopCliArgs {
+            step_count: 1,
+            prompt: None,
+            prompt_token_ids: None,
+            script_path: PathBuf::from("guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh"),
+            matmul_batch: None,
+            model: None,
+            weights_path: Some(dir.clone()),
+            engram: Qwen3EngramConfig::default(),
+        };
+        let runtime = qwen3_guest_dense_runtime(&args).expect("0.6B shape runtime");
+        assert!(runtime.model_key.starts_with("qwen3-0-6b-sim-cli-runtime"));
         assert_eq!(runtime.chipbackend_profile, "qwen3_dense_0_6b");
 
         let _ = fs::remove_dir_all(&dir);
@@ -3650,7 +3693,7 @@ fn qwen3_guest_dense_runtime(
     )
     .map_err(anyhow::Error::msg)?;
     let model_key = qwen3_dense_model_key(&profile.model_id);
-    let chipbackend_profile = if profile == qwen3_dense_0_6b_profile() {
+    let chipbackend_profile = if is_qwen3_dense_0_6b_shape(&profile) {
         "qwen3_dense_0_6b"
     } else {
         "qwen3_dense"
