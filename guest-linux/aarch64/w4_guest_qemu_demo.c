@@ -88,6 +88,7 @@
 #define W4_QWEN3_MARKER_RANGE_FORWARD_TABLE 0x7133773472667430ULL
 #define W4_QWEN3_RANGE_TASK_MAGIC 0x5133060bU
 #define W4_QWEN3_COMPLETION_TASK_OFFSET 19U
+#define W4_GUEST_MAYBE_UNUSED __attribute__((unused))
 #define W4_QWEN3_HIDDEN_RANGE_BYTES 262144ULL
 #define W4_QWEN3_MAX_HIDDEN_RANGE_BYTES (2ULL * 1024ULL * 1024ULL)
 #define W4_QWEN3_MAX_KV_PAYLOAD_BYTES (4ULL * 1024ULL * 1024ULL)
@@ -694,7 +695,7 @@ static bool try_wait_guest_uio_irq(volatile uint8_t *ep_mmio)
     return false;
 }
 
-static void try_wait_guest_uapi_irq(volatile uint8_t *ep_mmio)
+static void W4_GUEST_MAYBE_UNUSED try_wait_guest_uapi_irq(volatile uint8_t *ep_mmio)
 {
     if (try_wait_guest_helper_irq(ep_mmio)) {
         return;

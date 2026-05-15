@@ -29,6 +29,7 @@
 
 #define W4_DB_CLUSTER_MAX_NODES 8
 #define W4_DB_CLUSTER_MAX_RECORDS 1024
+#define W4_DB_MAYBE_UNUSED __attribute__((unused))
 #define W4_DB_QWEN3_RECORD_RETAIN_STEPS 16ULL
 #define W4_DB_DEFAULT_REGION_SIZE_MB 512
 #define W4_DB_CMDLINE_REGION_SIZE "w4_db_region_size_mb"
@@ -353,9 +354,10 @@ static int w4_db_update_region_range(const struct w4_db_cluster_slot *slot, bool
     return w4_db_update_region_range_at(slot, 0, sizeof(struct w4_db_cluster_payload), for_write);
 }
 
-static int w4_db_sync_remote_range(const struct w4_db_cluster_slot *slot,
-                                  uint64_t offset,
-                                  uint64_t length)
+static int W4_DB_MAYBE_UNUSED w4_db_sync_remote_range(
+    const struct w4_db_cluster_slot *slot,
+    uint64_t offset,
+    uint64_t length)
 {
     obmm_cmd_sync_remote_range cmd;
     struct stat st;
@@ -1564,7 +1566,7 @@ static bool w4_db_read_stable_payload_region(const struct w4_db_cluster_slot *sl
     return false;
 }
 
-static bool w4_db_wait_stable_payload_region_at_least(
+static bool W4_DB_MAYBE_UNUSED w4_db_wait_stable_payload_region_at_least(
     const struct w4_db_cluster_slot *slot,
     uint32_t min_publish_done_seq,
     long timeout_ms,
@@ -1599,9 +1601,10 @@ static bool w4_db_wait_stable_payload_region_at_least(
     return false;
 }
 
-static bool w4_db_payload_find_record(const struct w4_db_cluster_payload *payload,
-                                      const char *key,
-                                      struct w4_db_record *resolved_out)
+static bool W4_DB_MAYBE_UNUSED w4_db_payload_find_record(
+    const struct w4_db_cluster_payload *payload,
+    const char *key,
+    struct w4_db_record *resolved_out)
 {
     struct w4_db_cluster_payload snapshot;
     uint16_t i;
@@ -1624,9 +1627,10 @@ static bool w4_db_payload_find_record(const struct w4_db_cluster_payload *payloa
     return false;
 }
 
-static bool w4_db_payload_snapshot_find_record(const struct w4_db_cluster_payload *snapshot,
-                                               const char *key,
-                                               struct w4_db_record *resolved_out)
+static bool W4_DB_MAYBE_UNUSED w4_db_payload_snapshot_find_record(
+    const struct w4_db_cluster_payload *snapshot,
+    const char *key,
+    struct w4_db_record *resolved_out)
 {
     uint16_t i;
 

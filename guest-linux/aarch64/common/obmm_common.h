@@ -49,6 +49,7 @@
 #define OBMM_POOL_HELPERS_IMPORT_ALIGN  (2UL * 1024UL * 1024UL)
 #define OBMM_POOL_HELPERS_MAX_NODES     8
 #define OBMM_POOL_HELPERS_MAX_WINDOWS   16
+#define OBMM_MAYBE_UNUSED               __attribute__((unused))
 
 enum obmm_import_cache_mode {
     OBMM_IMPORT_CACHE_AUTO = 0,
@@ -122,7 +123,7 @@ static bool obmm_read_file(const char *path, char *buf, size_t len)
     return true;
 }
 
-static bool obmm_parse_hex_u64(const char *path, uint64_t *value_out)
+static bool OBMM_MAYBE_UNUSED obmm_parse_hex_u64(const char *path, uint64_t *value_out)
 {
     char buf[128];
     char *end = NULL;
@@ -161,8 +162,10 @@ static bool obmm_cmdline_get(const char *key, char *out, size_t out_len)
     return false;
 }
 
-static bool obmm_env_or_cmdline(const char *env_key, const char *cmd_key,
-                                char *out, size_t out_len)
+static bool OBMM_MAYBE_UNUSED obmm_env_or_cmdline(const char *env_key,
+                                                  const char *cmd_key,
+                                                  char *out,
+                                                  size_t out_len)
 {
     const char *env = getenv(env_key);
     if (env && env[0] != '\0') {
@@ -222,7 +225,9 @@ static bool obmm_iface_is_up(const char *ifname)
     return (ifr.ifr_flags & IFF_UP) != 0;
 }
 
-static bool obmm_wait_iface(char *ifname, size_t ifname_len, unsigned int *ifindex)
+static bool OBMM_MAYBE_UNUSED obmm_wait_iface(char *ifname,
+                                              size_t ifname_len,
+                                              unsigned int *ifindex)
 {
     long deadline = obmm_now_ms() + OBMM_POOL_HELPERS_WAIT_IFACE_MS;
     while (obmm_now_ms() < deadline) {
@@ -236,7 +241,7 @@ static bool obmm_wait_iface(char *ifname, size_t ifname_len, unsigned int *ifind
     return false;
 }
 
-static bool obmm_set_ipv4(const char *ifname, const char *addr_str)
+static bool OBMM_MAYBE_UNUSED obmm_set_ipv4(const char *ifname, const char *addr_str)
 {
     struct ifreq ifr;
     struct sockaddr_in *sin;
@@ -267,7 +272,7 @@ static bool obmm_set_ipv4(const char *ifname, const char *addr_str)
     return true;
 }
 
-static bool obmm_get_local_ipv4(const char *ifname, struct in_addr *addr)
+static bool OBMM_MAYBE_UNUSED obmm_get_local_ipv4(const char *ifname, struct in_addr *addr)
 {
     struct ifreq ifr;
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -284,7 +289,8 @@ static bool obmm_get_local_ipv4(const char *ifname, struct in_addr *addr)
     return addr->s_addr != 0;
 }
 
-static void obmm_install_arp(const char *ifname, const struct in_addr *peer_addr)
+static void OBMM_MAYBE_UNUSED obmm_install_arp(const char *ifname,
+                                               const struct in_addr *peer_addr)
 {
     struct arpreq req;
     struct sockaddr_in *pa;
