@@ -31,6 +31,17 @@ class W4DbRecordRecyclingTests(unittest.TestCase):
         self.assertIn("rec = w4_db_alloc_record(svc);", source)
         self.assertIn("rec = w4_db_recycle_qwen3_runtime_record(svc, key);", source)
 
+    def test_qwen3_kv_state_slot_covers_14b_128_step_decode(self):
+        source = SERVICE_C.read_text()
+
+        slot_bytes = re.search(
+            r"#define W4_DB_OBMM_QWEN3_KV_STATE_SLOT_BYTES\s+0x([0-9a-fA-F]+)ULL",
+            source,
+        )
+
+        self.assertIsNotNone(slot_bytes)
+        self.assertGreaterEqual(int(slot_bytes.group(1), 16), 8 * 1024 * 1024)
+
 
 if __name__ == "__main__":
     unittest.main()
