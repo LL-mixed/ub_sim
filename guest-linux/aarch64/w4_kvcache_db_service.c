@@ -49,7 +49,12 @@
 #define W4_DB_OBMM_QWEN3_ROUND_DONE_OFFSET 0xda000ULL
 #define W4_DB_OBMM_QWEN3_DYNAMIC_ARENA_OFFSET 0x100000ULL
 #define W4_DB_OBMM_QWEN3_KV_STATE_OFFSET 0x100000ULL
-#define W4_DB_OBMM_QWEN3_KV_STATE_SLOT_BYTES 0x800000ULL
+#define W4_DB_OBMM_QWEN3_KV_STATE_SLOT_BYTES 0x200000ULL
+#define W4_DB_OBMM_QWEN3_KV_STATE_BLOCK_TIER0_BYTES 0x40000ULL
+#define W4_DB_OBMM_QWEN3_KV_STATE_BLOCK_TIER1_BYTES 0x80000ULL
+#define W4_DB_OBMM_QWEN3_KV_STATE_BLOCK_TIER2_BYTES 0x100000ULL
+#define W4_DB_OBMM_QWEN3_KV_STATE_BLOCK_TIER3_BYTES \
+    W4_DB_OBMM_QWEN3_KV_STATE_SLOT_BYTES
 #define W4_DB_OBMM_QWEN3_KV_STATE_SLOTS 32ULL
 #define W4_DB_OBMM_QWEN3_RUNTIME_RANGE_OUTPUT_SLOTS 32ULL
 #define W4_DB_OBMM_QWEN3_RUNTIME_RANGE_OUTPUT_OFFSET \
@@ -687,6 +692,82 @@ static int w4_db_payload_arena_alloc(struct w4_db_cluster_runtime *rt,
     }
     *offset_out = offset;
     return 0;
+}
+
+static int w4_db_qwen3_kv_state_block_span(uint64_t payload_len,
+                                           uint64_t *block_bytes_out,
+                                           uint64_t *block_count_out,
+                                           uint64_t *reserved_bytes_out)
+{
+    uint64_t block_bytes;
+    uint64_t block_count;
+    uint64_t reserved_bytes;
+
+    if (!block_bytes_out || !block_count_out || !reserved_bytes_out ||
+        payload_len == 0) {
+        return -1;
+    }
+    if (payload_len <= W4_DB_OBMM_QWEN3_KV_STATE_BLOCK_TIER0_BYTES) {
+        block_bytes = W4_DB_OBMM_QWEN3_KV_STATE_BLOCK_TIER0_BYTES;
+        block_count = 1U;
+    } else if (payload_len <= W4_DB_OBMM_QWEN3_KV_STATE_BLOCK_TIER1_BYTES) {
+        block_bytes = W4_DB_OBMM_QWEN3_KV_STATE_BLOCK_TIER1_BYTES;
+        block_count = 1U;
+    } else if (payload_len <= W4_DB_OBMM_QWEN3_KV_STATE_BLOCK_TIER2_BYTES) {
+        block_bytes = W4_DB_OBMM_QWEN3_KV_STATE_BLOCK_TIER2_BYTES;
+        block_count = 1U;
+    } else if (payload_len <= W4_DB_OBMM_QWEN3_KV_STATE_BLOCK_TIER3_BYTES) {
+        block_bytes = W4_DB_OBMM_QWEN3_KV_STATE_BLOCK_TIER3_BYTES;
+        block_count = 1U;
+    } else {
+        block_bytes = W4_DB_OBMM_QWEN3_KV_STATE_BLOCK_TIER3_BYTES;
+        block_count =
+            (payload_len + block_bytes - 1U) / block_bytes;
+    }
+    if (block_count == 0 || block_count > UINT64_MAX / block_bytes) {
+        return -1;
+    }
+    reserved_bytes = block_count * block_bytes;
+    if (reserved_bytes < payload_len) {
+        return -1;
+    }
+    *block_bytes_out = block_bytes;
+    *block_count_out = block_count;
+    *reserved_bytes_out = reserved_bytes;
+    return 0;
+}
+
+static int w4_db_qwen3_kv_state_alloc(struct w4_db_cluster_runtime *rt,
+                                      uint64_t payload_len,
+                                      uint64_t *offset_out,
+                                      uint64_t *block_bytes_out,
+                                      uint64_t *block_count_out,
+                                      uint64_t *reserved_bytes_out)
+{
+    uint64_t block_bytes = 0;
+    uint64_t block_count = 0;
+    uint64_t reserved_bytes = 0;
+
+    if (!offset_out ||
+        w4_db_qwen3_kv_state_block_span(payload_len,
+                                        &block_bytes,
+                                        &block_count,
+                                        &reserved_bytes) != 0) {
+        return -1;
+    }
+    if (block_bytes_out) {
+        *block_bytes_out = block_bytes;
+    }
+    if (block_count_out) {
+        *block_count_out = block_count;
+    }
+    if (reserved_bytes_out) {
+        *reserved_bytes_out = reserved_bytes;
+    }
+    return w4_db_payload_arena_alloc(rt,
+                                     reserved_bytes,
+                                     block_bytes,
+                                     offset_out);
 }
 
 static void w4_db_report_obmm_pool_layout_once(struct w4_db_cluster_runtime *rt)
@@ -2691,11 +2772,100 @@ static int w4_db_add_member(struct w4_db_record *rec, const char *block_hash)
     return 0;
 }
 
-static void w4_db_build_group_key(const struct w4_db_block_ctx *ctx,
-                                  char *out,
-                                  size_t out_len)
+static int w4_db_build_two_part_key(const char *prefix,
+                                    const char *first,
+                                    const char *middle,
+                                    const char *second,
+                                    char *out,
+                                    size_t out_len)
 {
-    snprintf(out, out_len, "request/%s/prefix-group/%s", ctx->request_id, ctx->group_id);
+    size_t prefix_len;
+    size_t first_len;
+    size_t middle_len;
+    size_t second_len;
+    size_t total_len;
+    char *cursor;
+
+    if (!prefix || !first || !middle || !second || !out || out_len == 0) {
+        return -1;
+    }
+    prefix_len = strlen(prefix);
+    first_len = strlen(first);
+    middle_len = strlen(middle);
+    second_len = strlen(second);
+    if (prefix_len > SIZE_MAX - first_len ||
+        prefix_len + first_len > SIZE_MAX - middle_len ||
+        prefix_len + first_len + middle_len > SIZE_MAX - second_len) {
+        out[0] = '\0';
+        return -1;
+    }
+    total_len = prefix_len + first_len + middle_len + second_len;
+    if (total_len + 1U > out_len) {
+        out[0] = '\0';
+        return -1;
+    }
+    cursor = out;
+    memcpy(cursor, prefix, prefix_len);
+    cursor += prefix_len;
+    memcpy(cursor, first, first_len);
+    cursor += first_len;
+    memcpy(cursor, middle, middle_len);
+    cursor += middle_len;
+    memcpy(cursor, second, second_len);
+    cursor += second_len;
+    *cursor = '\0';
+    return 0;
+}
+
+static int w4_db_build_prefix_key_from_parts_checked(const char *request_id,
+                                                     const char *prefix_group,
+                                                     char *out,
+                                                     size_t out_len)
+{
+    return w4_db_build_two_part_key("request/",
+                                    request_id,
+                                    "/prefix/",
+                                    prefix_group,
+                                    out,
+                                    out_len);
+}
+
+static int w4_db_build_group_key_from_parts_checked(const char *request_id,
+                                                    const char *group_id,
+                                                    char *out,
+                                                    size_t out_len)
+{
+    return w4_db_build_two_part_key("request/",
+                                    request_id,
+                                    "/prefix-group/",
+                                    group_id,
+                                    out,
+                                    out_len);
+}
+
+static int w4_db_build_block_key_from_hash_checked(const char *block_hash,
+                                                   char *out,
+                                                   size_t out_len)
+{
+    return w4_db_build_two_part_key("block/",
+                                    block_hash,
+                                    "",
+                                    "",
+                                    out,
+                                    out_len);
+}
+
+static int w4_db_build_group_key(const struct w4_db_block_ctx *ctx,
+                                 char *out,
+                                 size_t out_len)
+{
+    if (!ctx) {
+        return -1;
+    }
+    return w4_db_build_group_key_from_parts_checked(ctx->request_id,
+                                                    ctx->group_id,
+                                                    out,
+                                                    out_len);
 }
 
 void w4_db_build_prefix_key_from_parts(const char *request_id,
@@ -2703,7 +2873,10 @@ void w4_db_build_prefix_key_from_parts(const char *request_id,
                                        char *out,
                                        size_t out_len)
 {
-    snprintf(out, out_len, "request/%s/prefix/%s", request_id, prefix_group);
+    (void)w4_db_build_prefix_key_from_parts_checked(request_id,
+                                                   prefix_group,
+                                                   out,
+                                                   out_len);
 }
 
 void w4_db_build_group_key_from_parts(const char *request_id,
@@ -2711,12 +2884,15 @@ void w4_db_build_group_key_from_parts(const char *request_id,
                                       char *out,
                                       size_t out_len)
 {
-    snprintf(out, out_len, "request/%s/prefix-group/%s", request_id, group_id);
+    (void)w4_db_build_group_key_from_parts_checked(request_id,
+                                                  group_id,
+                                                  out,
+                                                  out_len);
 }
 
 void w4_db_build_block_key_from_hash(const char *block_hash, char *out, size_t out_len)
 {
-    snprintf(out, out_len, "block/%s", block_hash);
+    (void)w4_db_build_block_key_from_hash_checked(block_hash, out, out_len);
 }
 
 static int w4_db_put_request_prefix(struct w4_db_service *svc,
@@ -2901,7 +3077,9 @@ static int w4_db_update_prefix_group_from_block(struct w4_db_service *svc,
     if (!svc || !ctx || !block_record) {
         return -1;
     }
-    w4_db_build_group_key(ctx, group_key, sizeof(group_key));
+    if (w4_db_build_group_key(ctx, group_key, sizeof(group_key)) != 0) {
+        return -1;
+    }
     return w4_db_put_prefix_group(svc,
                                   group_key,
                                   ctx->request_id,
@@ -2956,18 +3134,27 @@ static int w4_db_update_block_owner(struct w4_db_service *svc,
     return 0;
 }
 
-static void w4_db_build_prefix_key(const struct w4_db_block_ctx *ctx,
-                                   char *out,
-                                   size_t out_len)
-{
-    w4_db_build_prefix_key_from_parts(ctx->request_id, ctx->prefix_group, out, out_len);
-}
-
-static void w4_db_build_block_key(const struct w4_db_block_ctx *ctx,
+static int w4_db_build_prefix_key(const struct w4_db_block_ctx *ctx,
                                   char *out,
                                   size_t out_len)
 {
-    w4_db_build_block_key_from_hash(ctx->block_hash, out, out_len);
+    if (!ctx) {
+        return -1;
+    }
+    return w4_db_build_prefix_key_from_parts_checked(ctx->request_id,
+                                                    ctx->prefix_group,
+                                                    out,
+                                                    out_len);
+}
+
+static int w4_db_build_block_key(const struct w4_db_block_ctx *ctx,
+                                 char *out,
+                                 size_t out_len)
+{
+    if (!ctx) {
+        return -1;
+    }
+    return w4_db_build_block_key_from_hash_checked(ctx->block_hash, out, out_len);
 }
 
 bool w4_db_prefix_matches_block_meta(const struct w4_db_record *prefix_meta,
@@ -3065,9 +3252,11 @@ int w4_db_bootstrap_kvcache(struct w4_db_service *svc,
         return -1;
     }
 
-    w4_db_build_prefix_key(ctx, prefix_key, sizeof(prefix_key));
-    w4_db_build_group_key(ctx, group_key, sizeof(group_key));
-    w4_db_build_block_key(ctx, block_key, sizeof(block_key));
+    if (w4_db_build_prefix_key(ctx, prefix_key, sizeof(prefix_key)) != 0 ||
+        w4_db_build_group_key(ctx, group_key, sizeof(group_key)) != 0 ||
+        w4_db_build_block_key(ctx, block_key, sizeof(block_key)) != 0) {
+        return -1;
+    }
 
     if (w4_db_put_prefix_group(svc,
                                group_key,
@@ -3163,7 +3352,9 @@ int w4_db_update_prefix_metadata(struct w4_db_service *svc,
         return -1;
     }
 
-    w4_db_build_prefix_key(ctx, prefix_key, sizeof(prefix_key));
+    if (w4_db_build_prefix_key(ctx, prefix_key, sizeof(prefix_key)) != 0) {
+        return -1;
+    }
     rc = w4_db_update_prefix_result(svc, prefix_key, ctx, block_record);
     if (rc != 0) {
         return rc;
@@ -3186,7 +3377,9 @@ int w4_db_get_prefix_group_metadata(struct w4_db_service *svc,
     if (!svc || !ctx || !resolved_out) {
         return -1;
     }
-    w4_db_build_group_key(ctx, group_key, sizeof(group_key));
+    if (w4_db_build_group_key(ctx, group_key, sizeof(group_key)) != 0) {
+        return -1;
+    }
     return w4_db_get_record(svc, group_key, resolved_out);
 }
 
@@ -3204,7 +3397,9 @@ int w4_db_apply_block_result(struct w4_db_service *svc,
         return -1;
     }
 
-    w4_db_build_block_key(ctx, block_key, sizeof(block_key));
+    if (w4_db_build_block_key(ctx, block_key, sizeof(block_key)) != 0) {
+        return -1;
+    }
     if (w4_db_get_record(svc, block_key, &current) != 0) {
         return -1;
     }
@@ -3238,7 +3433,9 @@ int w4_db_rebind_block_view(struct w4_db_service *svc,
         return -1;
     }
 
-    w4_db_build_block_key(ctx, block_key, sizeof(block_key));
+    if (w4_db_build_block_key(ctx, block_key, sizeof(block_key)) != 0) {
+        return -1;
+    }
     if (w4_db_get_record(svc, block_key, &current) != 0) {
         return -1;
     }
@@ -3273,7 +3470,9 @@ int w4_db_handoff_block_owner(struct w4_db_service *svc,
         return -1;
     }
 
-    w4_db_build_block_key(ctx, block_key, sizeof(block_key));
+    if (w4_db_build_block_key(ctx, block_key, sizeof(block_key)) != 0) {
+        return -1;
+    }
     if (w4_db_get_record(svc, block_key, &current) != 0) {
         return -1;
     }
@@ -4534,6 +4733,9 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
     uint64_t checksum;
     uint64_t kv_checksum = 0;
     uint64_t kv_state_offset = 0;
+    uint64_t kv_state_block_bytes = 0;
+    uint64_t kv_state_block_count = 0;
+    uint64_t kv_state_reserved_bytes = 0;
     uint64_t runtime_output_offset = 0;
     uint16_t local_publish_seq;
     uint16_t object_epoch;
@@ -4583,16 +4785,19 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
                                   &runtime_output_offset) != 0) {
         return -1;
     }
-    if (kv_payload_len > W4_DB_OBMM_QWEN3_KV_STATE_SLOT_BYTES ||
-        w4_db_payload_arena_alloc(rt,
-                                  kv_payload_len,
-                                  64,
-                                  &kv_state_offset) != 0) {
-        printf("[w4_guest] gap qwen3_range_forward=runtime_kv_payload_too_large local=node%u step=%" PRIu64 " bytes=%" PRIu64 " slot_bytes=%" PRIu64 " region_len=%zu\n",
+    if (w4_db_qwen3_kv_state_alloc(rt,
+                                   kv_payload_len,
+                                   &kv_state_offset,
+                                   &kv_state_block_bytes,
+                                   &kv_state_block_count,
+                                   &kv_state_reserved_bytes) != 0) {
+        printf("[w4_guest] gap qwen3_range_forward=runtime_kv_block_span_alloc_failed local=node%u step=%" PRIu64 " bytes=%" PRIu64 " block_bytes=%" PRIu64 " blocks=%" PRIu64 " reserved_bytes=%" PRIu64 " region_len=%zu\n",
                local_node + 1U,
                decode_step,
                kv_payload_len,
-               (uint64_t)W4_DB_OBMM_QWEN3_KV_STATE_SLOT_BYTES,
+               kv_state_block_bytes,
+               kv_state_block_count,
+               kv_state_reserved_bytes,
                local_slot->region.len);
         return -1;
     }
@@ -4727,7 +4932,7 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
            producer_publish_ms,
            object_epoch,
            local_publish_seq);
-    printf("[w4_guest] stage qwen3_range_kv_state_publish local=node%u step=%" PRIu64 " key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) count=%u kv_bytes=%" PRIu64 " kv_checksum=0x%016" PRIx64 " offset=0x%016" PRIx64 " slot_bytes=%" PRIu64 " producer_publish_ms=%ld epoch=%u seq=%u backing=obmm_shmem metadata=lingqu_object_service status=ok\n",
+    printf("[w4_guest] stage qwen3_range_kv_state_publish local=node%u step=%" PRIu64 " key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) count=%u kv_bytes=%" PRIu64 " kv_checksum=0x%016" PRIx64 " offset=0x%016" PRIx64 " slot_bytes=%" PRIu64 " block_bytes=%" PRIu64 " blocks=%" PRIu64 " reserved_bytes=%" PRIu64 " producer_publish_ms=%ld epoch=%u seq=%u backing=obmm_shmem metadata=lingqu_object_service status=ok\n",
            local_node + 1U,
            decode_step,
            local_kv_state_key,
@@ -4740,6 +4945,9 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
            kv_checksum,
            kv_state_offset,
            (uint64_t)W4_DB_OBMM_QWEN3_KV_STATE_SLOT_BYTES,
+           kv_state_block_bytes,
+           kv_state_block_count,
+           kv_state_reserved_bytes,
            producer_publish_ms,
            object_epoch,
            local_publish_seq);

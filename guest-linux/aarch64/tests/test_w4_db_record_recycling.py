@@ -31,16 +31,41 @@ class W4DbRecordRecyclingTests(unittest.TestCase):
         self.assertIn("rec = w4_db_alloc_record(svc);", source)
         self.assertIn("rec = w4_db_recycle_qwen3_runtime_record(svc, key);", source)
 
-    def test_qwen3_kv_state_slot_covers_14b_128_step_decode(self):
+    def test_qwen3_kv_state_uses_tiered_block_spans(self):
         source = SERVICE_C.read_text()
+
+        tier_names = [
+            "W4_DB_OBMM_QWEN3_KV_STATE_BLOCK_TIER0_BYTES",
+            "W4_DB_OBMM_QWEN3_KV_STATE_BLOCK_TIER1_BYTES",
+            "W4_DB_OBMM_QWEN3_KV_STATE_BLOCK_TIER2_BYTES",
+            "W4_DB_OBMM_QWEN3_KV_STATE_BLOCK_TIER3_BYTES",
+        ]
+        tier_values = []
+
+        for tier in tier_names:
+            self.assertIn(tier, source)
+            match = re.search(rf"#define {tier}\s+0x([0-9a-fA-F]+)ULL", source)
+            if match:
+                tier_values.append(int(match.group(1), 16))
 
         slot_bytes = re.search(
             r"#define W4_DB_OBMM_QWEN3_KV_STATE_SLOT_BYTES\s+0x([0-9a-fA-F]+)ULL",
             source,
         )
-
         self.assertIsNotNone(slot_bytes)
-        self.assertGreaterEqual(int(slot_bytes.group(1), 16), 8 * 1024 * 1024)
+        tier_values.append(int(slot_bytes.group(1), 16))
+
+        max_block_bytes = max(tier_values)
+        over_max_payload_bytes = max_block_bytes + 1
+        self.assertEqual(
+            (over_max_payload_bytes + max_block_bytes - 1) // max_block_bytes,
+            2,
+        )
+        self.assertIn("w4_db_qwen3_kv_state_block_span", source)
+        self.assertIn("w4_db_qwen3_kv_state_alloc", source)
+        self.assertIn("block_count =", source)
+        self.assertIn("reserved_bytes = block_count * block_bytes", source)
+        self.assertNotIn("kv_payload_len > W4_DB_OBMM_QWEN3_KV_STATE_SLOT_BYTES", source)
 
 
 if __name__ == "__main__":

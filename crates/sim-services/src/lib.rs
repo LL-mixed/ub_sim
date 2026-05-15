@@ -975,6 +975,10 @@ pub mod object {
         pub obmm_pool_queue_submit_count: u64,
         pub obmm_pool_queue_deliver_count: u64,
         pub obmm_pool_bytes_used: u64,
+        pub obmm_pool_reserved_bytes: u64,
+        pub obmm_pool_block_count: u64,
+        pub obmm_pool_multi_block_write_count: u64,
+        pub obmm_pool_max_blocks_per_payload: u64,
         pub checksum: u64,
     }
 
@@ -1009,6 +1013,7 @@ pub mod object {
         pub pool_bytes: u64,
         pub payload_base_offset: u64,
         pub payload_alignment: u64,
+        pub payload_block_tiers: [u64; 4],
         pub queue_auto_drain: bool,
     }
 
@@ -1021,6 +1026,7 @@ pub mod object {
                 pool_bytes: 256 * 1024 * 1024,
                 payload_base_offset: 2 * 1024 * 1024,
                 payload_alignment: 64,
+                payload_block_tiers: [256 * 1024, 512 * 1024, 1024 * 1024, 2 * 1024 * 1024],
                 queue_auto_drain: true,
             }
         }
@@ -1031,6 +1037,9 @@ pub mod object {
         storage_ref: String,
         offset: u64,
         bytes: u64,
+        reserved_bytes: u64,
+        block_bytes: u64,
+        block_count: u64,
         checksum: u64,
         owner_entity: u64,
         payload: Vec<u8>,
@@ -1123,6 +1132,10 @@ pub mod object {
         queue_submit_count: u64,
         queue_deliver_count: u64,
         bytes_used: u64,
+        reserved_bytes: u64,
+        block_count: u64,
+        multi_block_write_count: u64,
+        max_blocks_per_payload: u64,
     }
 
     #[derive(Debug, Clone)]
@@ -1192,7 +1205,8 @@ pub mod object {
                 } else {
                     placement.storage_ref.clone()
                 };
-                let offset = self.allocate_payload_offset(placement.bytes)?;
+                let (offset, reserved_bytes, block_bytes, block_count) =
+                    self.allocate_payload_span(placement.bytes)?;
                 let segment_id =
                     0x0b00_0000u64 + owner.min(self.profile.node_count.saturating_sub(1));
 
@@ -1205,6 +1219,9 @@ pub mod object {
                         storage_ref: storage_ref.clone(),
                         offset,
                         bytes: placement.bytes,
+                        reserved_bytes,
+                        block_bytes,
+                        block_count,
                         checksum: placement.checksum,
                         owner_entity: owner,
                         payload: payload.to_vec(),
@@ -1214,7 +1231,16 @@ pub mod object {
                 self.stats.bytes_used = self
                     .stats
                     .bytes_used
-                    .max(offset.saturating_add(placement.bytes));
+                    .max(offset.saturating_add(reserved_bytes));
+                self.stats.reserved_bytes =
+                    self.stats.reserved_bytes.saturating_add(reserved_bytes);
+                self.stats.block_count = self.stats.block_count.saturating_add(block_count);
+                if block_count > 1 {
+                    self.stats.multi_block_write_count =
+                        self.stats.multi_block_write_count.saturating_add(1);
+                }
+                self.stats.max_blocks_per_payload =
+                    self.stats.max_blocks_per_payload.max(block_count);
                 self.enqueue_desc(LingquObmmQueueDesc {
                     producer_entity,
                     consumer_entity: owner,
@@ -1238,17 +1264,49 @@ pub mod object {
             self.stats
         }
 
-        fn allocate_payload_offset(&mut self, bytes: u64) -> Result<u64, &'static str> {
+        fn allocate_payload_span(
+            &mut self,
+            bytes: u64,
+        ) -> Result<(u64, u64, u64, u64), &'static str> {
+            let (block_bytes, block_count, reserved_bytes) = self.block_span(bytes)?;
             let align = self.profile.payload_alignment.max(1);
-            let offset = align_up_u64(self.next_payload_offset, align)?;
+            let offset = align_up_u64(self.next_payload_offset, align.max(block_bytes))?;
             let next = offset
-                .checked_add(bytes)
+                .checked_add(reserved_bytes)
                 .ok_or("obmm_pool_payload_offset_overflow")?;
             if next > self.profile.pool_bytes {
                 return Err("obmm_pool_full");
             }
             self.next_payload_offset = next;
-            Ok(offset)
+            Ok((offset, reserved_bytes, block_bytes, block_count))
+        }
+
+        fn block_span(&self, bytes: u64) -> Result<(u64, u64, u64), &'static str> {
+            if bytes == 0 {
+                return Err("obmm_pool_payload_empty");
+            }
+            let mut tiers = self.profile.payload_block_tiers;
+            tiers.sort_unstable();
+            let max_block_bytes = tiers
+                .iter()
+                .copied()
+                .filter(|tier| *tier > 0)
+                .max()
+                .ok_or("obmm_pool_block_tiers_empty")?;
+            let block_bytes = tiers
+                .iter()
+                .copied()
+                .filter(|tier| *tier > 0)
+                .find(|tier| bytes <= *tier)
+                .unwrap_or(max_block_bytes);
+            let block_count = bytes
+                .checked_add(block_bytes - 1)
+                .ok_or("obmm_pool_block_span_overflow")?
+                / block_bytes;
+            let reserved_bytes = block_count
+                .checked_mul(block_bytes)
+                .ok_or("obmm_pool_block_span_overflow")?;
+            Ok((block_bytes, block_count, reserved_bytes))
         }
 
         fn enqueue_desc(&mut self, desc: LingquObmmQueueDesc) -> Result<(), &'static str> {
@@ -1519,6 +1577,10 @@ pub mod object {
             report.obmm_pool_queue_submit_count = obmm.queue_submit_count;
             report.obmm_pool_queue_deliver_count = obmm.queue_deliver_count;
             report.obmm_pool_bytes_used = obmm.bytes_used;
+            report.obmm_pool_reserved_bytes = obmm.reserved_bytes;
+            report.obmm_pool_block_count = obmm.block_count;
+            report.obmm_pool_multi_block_write_count = obmm.multi_block_write_count;
+            report.obmm_pool_max_blocks_per_payload = obmm.max_blocks_per_payload;
             report.committed_object_count = self
                 .records
                 .values()
@@ -3215,6 +3277,7 @@ mod tests {
         profile.queue_depth = 4096;
         profile.obmm_pool.queue_depth = 512;
         profile.obmm_pool.queue_auto_drain = true;
+        profile.obmm_pool.pool_bytes = 700 * 1024u64 * 1024u64;
         let mut svc = LingquObjectServiceStub::new(profile);
 
         let node_count: u64 = 8;
@@ -3484,8 +3547,8 @@ mod tests {
         profile.obmm_pool.queue_depth = 1024;
         profile.obmm_pool.queue_auto_drain = true;
 
-        let range_size_bytes = 32u64 * 1024u64 * 1024u64;
-        let pool_total_bytes = 384u64 * 1024u64 * 1024u64;
+        let range_size_bytes = 96u64 * 1024u64 * 1024u64;
+        let pool_total_bytes = 768u64 * 1024u64 * 1024u64;
         let min_payload_base = 2u64 * 1024u64 * 1024u64;
 
         let mut rng_state = 0x4a8d_f6e3_u64;
@@ -3505,7 +3568,8 @@ mod tests {
             min_payload_base
         };
 
-        profile.obmm_pool.pool_bytes = payload_base_offset.saturating_add(range_size_bytes);
+        profile.obmm_pool.pool_bytes =
+            payload_base_offset.saturating_add(range_size_bytes.saturating_mul(2));
         profile.obmm_pool.payload_base_offset = payload_base_offset;
         let mut svc = LingquObjectServiceStub::new(profile);
 
@@ -3677,7 +3741,169 @@ mod tests {
         assert!(report.obmm_pool_queue_deliver_count >= published);
         assert_eq!(report.missing_resolve_count, 0);
         assert!(report.obmm_pool_bytes_used >= payload_base_offset);
-        assert!(report.obmm_pool_bytes_used <= payload_base_offset + range_size_bytes);
+        assert!(report.obmm_pool_reserved_bytes >= published_bytes);
+        assert!(report.obmm_pool_bytes_used <= profile.obmm_pool.pool_bytes);
+    }
+
+    #[test]
+    fn object_service_obmm_pool_pressure_uses_tiered_block_spans() {
+        let mut profile = LingquObjectServiceProfile::default();
+        profile.queue_depth = 4096;
+        profile.obmm_pool.queue_depth = 4096;
+        profile.obmm_pool.queue_auto_drain = true;
+        profile.obmm_pool.pool_bytes = 96 * 1024 * 1024;
+        profile.obmm_pool.payload_base_offset = 2 * 1024 * 1024;
+        profile.obmm_pool.payload_alignment = 64;
+        profile.obmm_pool.payload_block_tiers =
+            [256 * 1024, 512 * 1024, 1024 * 1024, 2 * 1024 * 1024];
+        let mut svc = LingquObjectServiceStub::new(profile);
+
+        let payload_sizes = [
+            128 * 1024,
+            256 * 1024,
+            256 * 1024 + 1,
+            512 * 1024,
+            512 * 1024 + 1,
+            1024 * 1024,
+            1024 * 1024 + 1,
+            2 * 1024 * 1024,
+            2 * 1024 * 1024 + 1,
+            5 * 1024 * 1024 + 123,
+        ];
+        let expected_reserved = [
+            256 * 1024,
+            256 * 1024,
+            512 * 1024,
+            512 * 1024,
+            1024 * 1024,
+            1024 * 1024,
+            2 * 1024 * 1024,
+            2 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6 * 1024 * 1024,
+        ];
+        let expected_blocks = [1, 1, 1, 1, 1, 1, 1, 1, 2, 3];
+        let expected_block_bytes = [
+            256 * 1024,
+            256 * 1024,
+            512 * 1024,
+            512 * 1024,
+            1024 * 1024,
+            1024 * 1024,
+            2 * 1024 * 1024,
+            2 * 1024 * 1024,
+            2 * 1024 * 1024,
+            2 * 1024 * 1024,
+        ];
+
+        let mut expected_checksums = Vec::new();
+        let mut expected_offsets = Vec::new();
+        let mut expected_offset = profile.obmm_pool.payload_base_offset;
+
+        for (index, bytes) in payload_sizes.iter().copied().enumerate() {
+            let payload = growing_payload(0x5150_u64 + index as u64, bytes as usize);
+            let checksum = payload_checksum_fnv1a(&payload);
+            let key = format!("obmm-pool/stress/tiered-span/{index}");
+            let storage_ref = format!("obmm-pool/stress/tiered-span/payload/{index}");
+
+            expected_offset = ((expected_offset + expected_block_bytes[index] - 1)
+                / expected_block_bytes[index])
+                * expected_block_bytes[index];
+            expected_offsets.push(expected_offset);
+            expected_offset += expected_reserved[index];
+
+            svc.submit_publish(
+                LingquObjectPublishReq {
+                    task: None,
+                    key: key.clone(),
+                    kind: LingquObjectKind::KvCacheBlock,
+                    producer_entity: index as u64 % 4,
+                    owner_entity: Some((index as u64 + 1) % 4),
+                    expected_version: None,
+                    metadata: object_metadata(bytes, checksum),
+                    placements: vec![LingquPayloadPlacement {
+                        backend: LingquPayloadBackend::Shmem,
+                        storage_ref,
+                        segment: Some(SegmentHandle(0x5150)),
+                        offset: 0,
+                        bytes,
+                        checksum,
+                        locality: LingquObjectLocality::DomainShared(0),
+                    }],
+                    payload_bytes: payload,
+                },
+                10 + index as u64,
+            )
+            .expect("publish tiered span object");
+            expected_checksums.push((key, bytes, checksum));
+        }
+
+        let publish_events = svc.poll_ready(1000);
+        assert_eq!(publish_events.len(), payload_sizes.len());
+        assert!(publish_events
+            .iter()
+            .all(|event| event.status == CompletionStatus::Success));
+
+        for (index, (key, bytes, checksum)) in expected_checksums.iter().enumerate() {
+            let record = svc.latest_record(key).expect("tiered span record");
+            assert_eq!(record.kind, LingquObjectKind::KvCacheBlock);
+            assert_eq!(record.bytes, *bytes);
+            assert_eq!(record.checksum, *checksum);
+            let placement = record.placements.first().expect("tiered span placement");
+            assert_eq!(placement.offset, expected_offsets[index]);
+            assert_eq!(placement.bytes, *bytes);
+
+            svc.submit_resolve(
+                LingquObjectResolveReq {
+                    task: None,
+                    key: key.clone(),
+                    requester_entity: ((index as u64) + 1) % 4,
+                    version: LingquObjectVersionSelector::LatestCommitted,
+                    min_state: LingquObjectState::Committed,
+                    preferred_backends: vec![LingquPayloadBackend::Shmem],
+                },
+                2_000 + index as u64,
+            )
+            .expect("resolve tiered span object");
+        }
+
+        let resolve_events = svc.poll_ready(3000);
+        assert_eq!(resolve_events.len(), payload_sizes.len());
+        assert!(resolve_events
+            .iter()
+            .all(|event| event.status == CompletionStatus::Success));
+
+        for (key, _, checksum) in expected_checksums {
+            let copy = svc
+                .get_copy(&key, LingquObjectVersionSelector::LatestCommitted)
+                .expect("tiered span copy");
+            let view = svc
+                .get_ref(&key, LingquObjectVersionSelector::LatestCommitted)
+                .expect("tiered span ref");
+            assert_eq!(payload_checksum_fnv1a(&copy), checksum);
+            assert_eq!(payload_checksum_fnv1a(view), checksum);
+        }
+
+        let report = svc.report();
+        assert_eq!(report.publish_count, payload_sizes.len() as u64);
+        assert_eq!(report.resolve_count, payload_sizes.len() as u64);
+        assert_eq!(
+            report.obmm_pool_payload_write_count,
+            payload_sizes.len() as u64
+        );
+        assert_eq!(
+            report.obmm_pool_payload_read_count,
+            payload_sizes.len() as u64
+        );
+        assert_eq!(
+            report.obmm_pool_reserved_bytes,
+            expected_reserved.iter().sum()
+        );
+        assert_eq!(report.obmm_pool_block_count, expected_blocks.iter().sum());
+        assert_eq!(report.obmm_pool_multi_block_write_count, 2);
+        assert_eq!(report.obmm_pool_max_blocks_per_payload, 3);
+        assert_eq!(report.obmm_pool_bytes_used, expected_offset);
+        assert_eq!(report.missing_resolve_count, 0);
     }
 
     #[test]
@@ -3686,7 +3912,7 @@ mod tests {
         profile.queue_depth = 8192;
         profile.obmm_pool.queue_depth = 2048;
         profile.obmm_pool.queue_auto_drain = true;
-        profile.obmm_pool.pool_bytes = 700 * 1024u64 * 1024u64;
+        profile.obmm_pool.pool_bytes = 1400 * 1024u64 * 1024u64;
 
         let mut svc = LingquObjectServiceStub::new(profile);
         let node_count = 8u64;
@@ -3940,7 +4166,7 @@ mod tests {
         profile.queue_depth = 8192;
         profile.obmm_pool.queue_depth = 4096;
         profile.obmm_pool.queue_auto_drain = true;
-        profile.obmm_pool.pool_bytes = 900 * 1024u64 * 1024u64;
+        profile.obmm_pool.pool_bytes = 2400 * 1024u64 * 1024u64;
 
         let mut svc = LingquObjectServiceStub::new(profile);
         let node_count = 8u64;

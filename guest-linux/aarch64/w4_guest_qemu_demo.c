@@ -310,6 +310,78 @@ static uint32_t be32(const uint8_t *p)
            ((uint32_t)p[3]);
 }
 
+static bool copy_cstr_checked(char *out, size_t out_len, const char *value)
+{
+    size_t value_len;
+
+    if (!out || out_len == 0 || !value) {
+        return false;
+    }
+    value_len = strlen(value);
+    if (value_len + 1U > out_len) {
+        out[0] = '\0';
+        return false;
+    }
+    memcpy(out, value, value_len + 1U);
+    return true;
+}
+
+static bool join_cstr_checked(char *out,
+                              size_t out_len,
+                              const char *prefix,
+                              const char *value,
+                              const char *suffix)
+{
+    size_t prefix_len;
+    size_t value_len;
+    size_t suffix_len;
+    size_t total_len;
+    char *cursor;
+
+    if (!out || out_len == 0 || !prefix || !value || !suffix) {
+        return false;
+    }
+    prefix_len = strlen(prefix);
+    value_len = strlen(value);
+    suffix_len = strlen(suffix);
+    if (prefix_len > SIZE_MAX - value_len ||
+        prefix_len + value_len > SIZE_MAX - suffix_len) {
+        out[0] = '\0';
+        return false;
+    }
+    total_len = prefix_len + value_len + suffix_len;
+    if (total_len + 1U > out_len) {
+        out[0] = '\0';
+        return false;
+    }
+    cursor = out;
+    memcpy(cursor, prefix, prefix_len);
+    cursor += prefix_len;
+    memcpy(cursor, value, value_len);
+    cursor += value_len;
+    memcpy(cursor, suffix, suffix_len);
+    cursor += suffix_len;
+    *cursor = '\0';
+    return true;
+}
+
+static void qwen3_format_token_piece(uint64_t sampled_token, char *piece, size_t piece_len)
+{
+    uint64_t value = sampled_token % 1000000ULL;
+
+    if (!piece || piece_len < 10U) {
+        return;
+    }
+    memset(piece, 0, piece_len);
+    piece[0] = 'q';
+    piece[1] = '3';
+    piece[2] = '_';
+    for (size_t i = 0; i < 6U; ++i) {
+        piece[8U - i] = (char)('0' + (value % 10U));
+        value /= 10U;
+    }
+}
+
 static bool parse_reg_prop(const char *path, uint64_t *base, uint64_t *size)
 {
     uint8_t buf[16];
@@ -824,7 +896,14 @@ static int w4_resource_backed_db_cluster_assertions(const char *role, uint32_t c
     primary_ctx.result_segment_id = primary_ctx.hot_segment_id + 0x80ULL;
 
     snprintf(aux_ctx.request_id, sizeof(aux_ctx.request_id), "%s", primary_ctx.request_id);
-    snprintf(aux_ctx.prefix_group, sizeof(aux_ctx.prefix_group), "%s-aux", primary_ctx.prefix_group);
+    if (!join_cstr_checked(aux_ctx.prefix_group,
+                           sizeof(aux_ctx.prefix_group),
+                           primary_ctx.prefix_group,
+                           "",
+                           "-aux")) {
+        printf("[w4_guest] fail guest_db_service_cluster=aux_prefix_overflow role=%s\n", role);
+        return -1;
+    }
     snprintf(aux_ctx.group_id, sizeof(aux_ctx.group_id), "%s", primary_ctx.group_id);
     snprintf(aux_ctx.block_hash, sizeof(aux_ctx.block_hash), "w4-%s-block-1", role);
     aux_ctx.placement_node = placement_node;
@@ -2285,8 +2364,7 @@ static void qwen3_token_piece(uint64_t sampled_token, uint64_t *word0, uint64_t 
 {
     char piece[16];
 
-    memset(piece, 0, sizeof(piece));
-    snprintf(piece, sizeof(piece), "q3_%06" PRIu64, sampled_token);
+    qwen3_format_token_piece(sampled_token, piece, sizeof(piece));
     memcpy(word0, piece, sizeof(*word0));
     memcpy(word1, piece + sizeof(*word0), sizeof(*word1));
 }
@@ -2296,8 +2374,7 @@ static uint64_t qwen3_token_piece_checksum(uint64_t sampled_token)
     char piece[16];
     uint64_t acc = 0xcbf29ce484222325ULL ^ sampled_token;
 
-    memset(piece, 0, sizeof(piece));
-    snprintf(piece, sizeof(piece), "q3_%06" PRIu64, sampled_token);
+    qwen3_format_token_piece(sampled_token, piece, sizeof(piece));
     for (uint64_t i = 0; i < W4_QWEN3_TOKEN_TEXT_PIECE_BYTES; ++i) {
         acc ^= (uint8_t)piece[i];
         acc *= 0x00000100000001b3ULL;
@@ -4266,9 +4343,10 @@ static bool discover_cdma_device(char *path_out, size_t path_out_len)
             if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) {
                 continue;
             }
-            snprintf(path_out, path_out_len, "/dev/cdma/%s", de->d_name);
-            closedir(dir);
-            return true;
+            if (join_cstr_checked(path_out, path_out_len, "/dev/cdma/", de->d_name, "")) {
+                closedir(dir);
+                return true;
+            }
         }
         closedir(dir);
     }
@@ -4281,9 +4359,10 @@ static bool discover_cdma_device(char *path_out, size_t path_out_len)
         if (strncmp(de->d_name, "cdma", 4) != 0) {
             continue;
         }
-        snprintf(path_out, path_out_len, "/dev/%s", de->d_name);
-        closedir(dir);
-        return true;
+        if (join_cstr_checked(path_out, path_out_len, "/dev/", de->d_name, "")) {
+            closedir(dir);
+            return true;
+        }
     }
     closedir(dir);
     return false;
@@ -4427,9 +4506,10 @@ static bool discover_uburma_device(char *name_out, size_t name_out_len)
         if (de->d_name[0] == '.') {
             continue;
         }
-        snprintf(name_out, name_out_len, "%s", de->d_name);
-        closedir(dir);
-        return true;
+        if (copy_cstr_checked(name_out, name_out_len, de->d_name)) {
+            closedir(dir);
+            return true;
+        }
     }
     closedir(dir);
     return false;
@@ -4448,7 +4528,11 @@ static int probe_uburma_dispatch_candidate(const char *role, bool *seg_ready)
         return -1;
     }
 
-    snprintf(path, sizeof(path), "/dev/uburma/%s", dev_name);
+    if (!join_cstr_checked(path, sizeof(path), "/dev/uburma/", dev_name, "")) {
+        fprintf(stderr, "[w4_guest] uburma path overflow dev=%s\n", dev_name);
+        printf("[w4_guest] gap guest_dispatch_uburma_open=failed\n");
+        return -1;
+    }
     if (access(path, R_OK | W_OK) != 0) {
         fprintf(stderr, "[w4_guest] access uburma failed path=%s err=%s\n",
                 path, strerror(errno));
@@ -4705,8 +4789,12 @@ int main(void)
     snprintf(path, sizeof(path), "/w4/%s/tail-block-0", role);
     snprintf(block, sizeof(block), "w4-%s-block-0", role);
     snprintf(block_aux, sizeof(block_aux), "w4-%s-block-1", role);
-    snprintf(key, sizeof(key), "block/%s", block);
-    snprintf(key_aux, sizeof(key_aux), "block/%s", block_aux);
+    w4_db_build_block_key_from_hash(block, key, sizeof(key));
+    w4_db_build_block_key_from_hash(block_aux, key_aux, sizeof(key_aux));
+    if (key[0] == '\0' || key_aux[0] == '\0') {
+        fprintf(stderr, "[w4_guest] fail db_block_key_overflow role=%s\n", role);
+        return 1;
+    }
     memset(&db_block_ctx, 0, sizeof(db_block_ctx));
     memset(&db_block_ctx_aux, 0, sizeof(db_block_ctx_aux));
     memset(&db_cluster_summary, 0, sizeof(db_cluster_summary));
@@ -4727,7 +4815,14 @@ int main(void)
     snprintf(db_block_ctx.group_id, sizeof(db_block_ctx.group_id), "%s", group_id);
     snprintf(db_block_ctx.block_hash, sizeof(db_block_ctx.block_hash), "%s", block);
     snprintf(db_block_ctx_aux.request_id, sizeof(db_block_ctx_aux.request_id), "%s", request_id);
-    snprintf(db_block_ctx_aux.prefix_group, sizeof(db_block_ctx_aux.prefix_group), "%s-aux", prefix_group);
+    if (!join_cstr_checked(db_block_ctx_aux.prefix_group,
+                           sizeof(db_block_ctx_aux.prefix_group),
+                           prefix_group,
+                           "",
+                           "-aux")) {
+        fprintf(stderr, "[w4_guest] fail db_aux_prefix_overflow role=%s\n", role);
+        return 1;
+    }
     snprintf(db_block_ctx_aux.group_id, sizeof(db_block_ctx_aux.group_id), "%s", group_id);
     snprintf(db_block_ctx_aux.block_hash, sizeof(db_block_ctx_aux.block_hash), "w4-%s-block-1", role);
     remote_block_key[0] = '\0';

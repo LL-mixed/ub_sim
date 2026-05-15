@@ -828,6 +828,13 @@ fn env_flag_enabled(value: &str) -> bool {
 }
 
 fn run_lingqu_object_service_cli() -> anyhow::Result<()> {
+    if env::args_os()
+        .skip(2)
+        .any(|arg| arg == "stress" || arg == "--stress")
+    {
+        return run_lingqu_object_service_stress_cli();
+    }
+
     let mut service = LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
     publish_lingqu_object_cli_sample(
         &mut service,
@@ -911,12 +918,190 @@ fn run_lingqu_object_service_cli() -> anyhow::Result<()> {
     );
     println!("  obmm_pool_bytes_used: {}", report.obmm_pool_bytes_used);
     println!(
+        "  obmm_pool_reserved_bytes: {}",
+        report.obmm_pool_reserved_bytes
+    );
+    println!("  obmm_pool_block_count: {}", report.obmm_pool_block_count);
+    println!(
+        "  obmm_pool_multi_block_write_count: {}",
+        report.obmm_pool_multi_block_write_count
+    );
+    println!(
+        "  obmm_pool_max_blocks_per_payload: {}",
+        report.obmm_pool_max_blocks_per_payload
+    );
+    println!(
         "  committed_object_count: {}",
         report.committed_object_count
     );
     println!("  missing_resolve_count: {}", report.missing_resolve_count);
     println!("  checksum: {:#x}", report.checksum);
     Ok(())
+}
+
+fn run_lingqu_object_service_stress_cli() -> anyhow::Result<()> {
+    let mut profile = LingquObjectServiceProfile::default();
+    profile.queue_depth = 4096;
+    profile.obmm_pool.queue_depth = 4096;
+    profile.obmm_pool.queue_auto_drain = true;
+    profile.obmm_pool.pool_bytes = 96 * 1024 * 1024;
+    profile.obmm_pool.payload_base_offset = 2 * 1024 * 1024;
+    profile.obmm_pool.payload_alignment = 64;
+    profile.obmm_pool.payload_block_tiers = [256 * 1024, 512 * 1024, 1024 * 1024, 2 * 1024 * 1024];
+
+    let mut service = LingquObjectServiceStub::new(profile);
+    let payload_sizes = [
+        128 * 1024,
+        256 * 1024,
+        256 * 1024 + 1,
+        512 * 1024,
+        512 * 1024 + 1,
+        1024 * 1024,
+        1024 * 1024 + 1,
+        2 * 1024 * 1024,
+        2 * 1024 * 1024 + 1,
+        5 * 1024 * 1024 + 123,
+    ];
+    let mut checksums = Vec::new();
+
+    for (index, bytes) in payload_sizes.iter().copied().enumerate() {
+        let payload = lingqu_stress_payload(0x5150_u64 + index as u64, bytes as usize);
+        let checksum = lingqu_stress_checksum(&payload);
+        let key = format!("obmm-pool/stress/tiered-span/{index}");
+        service.submit_publish(
+            LingquObjectPublishReq {
+                task: None,
+                key: key.clone(),
+                kind: LingquObjectKind::KvCacheBlock,
+                producer_entity: index as u64 % 4,
+                owner_entity: Some((index as u64 + 1) % 4),
+                expected_version: None,
+                metadata: LingquObjectMetadata {
+                    bytes,
+                    checksum,
+                    dtype: None,
+                    shape: Vec::new(),
+                    layout: None,
+                    expires_at_us: None,
+                },
+                placements: vec![LingquPayloadPlacement {
+                    backend: LingquPayloadBackend::Shmem,
+                    storage_ref: format!("obmm-pool/stress/tiered-span/payload/{index}"),
+                    segment: Some(SegmentHandle(0x5150)),
+                    offset: 0,
+                    bytes,
+                    checksum,
+                    locality: LingquObjectLocality::DomainShared(0),
+                }],
+                payload_bytes: payload,
+            },
+            10 + index as u64,
+        )?;
+        checksums.push((key, checksum, (index as u64 + 1) % 4));
+    }
+
+    let publish_events = service.poll_ready(1000);
+    if publish_events.len() != payload_sizes.len()
+        || publish_events
+            .iter()
+            .any(|event| event.status != CompletionStatus::Success)
+    {
+        anyhow::bail!("lingqu object service stress publish failed");
+    }
+
+    for (index, (key, _, requester)) in checksums.iter().enumerate() {
+        service.submit_resolve(
+            LingquObjectResolveReq {
+                task: None,
+                key: key.clone(),
+                requester_entity: *requester,
+                version: LingquObjectVersionSelector::LatestCommitted,
+                min_state: LingquObjectState::Committed,
+                preferred_backends: vec![LingquPayloadBackend::Shmem],
+            },
+            2000 + index as u64,
+        )?;
+    }
+
+    let resolve_events = service.poll_ready(3000);
+    if resolve_events.len() != payload_sizes.len()
+        || resolve_events
+            .iter()
+            .any(|event| event.status != CompletionStatus::Success)
+    {
+        anyhow::bail!("lingqu object service stress resolve failed");
+    }
+
+    for (key, checksum, _) in &checksums {
+        let Some(copy) = service.get_copy(key, LingquObjectVersionSelector::LatestCommitted) else {
+            anyhow::bail!("missing stress payload copy for {key}");
+        };
+        let Some(view) = service.get_ref(key, LingquObjectVersionSelector::LatestCommitted) else {
+            anyhow::bail!("missing stress payload view for {key}");
+        };
+        if lingqu_stress_checksum(&copy) != *checksum || lingqu_stress_checksum(view) != *checksum {
+            anyhow::bail!("stress payload checksum mismatch for {key}");
+        }
+    }
+
+    let report = service.report();
+    println!("lingqu_object_service_stress");
+    println!("  objects: {}", payload_sizes.len());
+    println!("  publish_count: {}", report.publish_count);
+    println!("  resolve_count: {}", report.resolve_count);
+    println!(
+        "  obmm_pool_payload_write_count: {}",
+        report.obmm_pool_payload_write_count
+    );
+    println!(
+        "  obmm_pool_payload_read_count: {}",
+        report.obmm_pool_payload_read_count
+    );
+    println!(
+        "  obmm_pool_queue_submit_count: {}",
+        report.obmm_pool_queue_submit_count
+    );
+    println!(
+        "  obmm_pool_queue_deliver_count: {}",
+        report.obmm_pool_queue_deliver_count
+    );
+    println!("  obmm_pool_bytes_used: {}", report.obmm_pool_bytes_used);
+    println!(
+        "  obmm_pool_reserved_bytes: {}",
+        report.obmm_pool_reserved_bytes
+    );
+    println!("  obmm_pool_block_count: {}", report.obmm_pool_block_count);
+    println!(
+        "  obmm_pool_multi_block_write_count: {}",
+        report.obmm_pool_multi_block_write_count
+    );
+    println!(
+        "  obmm_pool_max_blocks_per_payload: {}",
+        report.obmm_pool_max_blocks_per_payload
+    );
+    println!("  checksum: {:#x}", report.checksum);
+    Ok(())
+}
+
+fn lingqu_stress_payload(seed: u64, bytes: usize) -> Vec<u8> {
+    let mut state = seed ^ 0x9e37_79b9_7f4a_7c15;
+    let mut payload = Vec::with_capacity(bytes);
+    for index in 0..bytes {
+        state ^= state << 7;
+        state ^= state >> 9;
+        state ^= state << 8;
+        payload.push((state as u8) ^ (index as u8).wrapping_mul(31));
+    }
+    payload
+}
+
+fn lingqu_stress_checksum(bytes: &[u8]) -> u64 {
+    let mut acc = 0xcbf2_9ce4_8422_2325u64;
+    for byte in bytes {
+        acc ^= u64::from(*byte);
+        acc = acc.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    acc
 }
 
 fn publish_lingqu_object_cli_sample(
