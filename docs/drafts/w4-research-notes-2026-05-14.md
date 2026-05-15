@@ -14,6 +14,8 @@ W4 8-node guest decode 的首要优化对象不是单个 layer 的数值计算�
 
 当前 8-node pipeline 中，step0 是 TTFT，包含 cold init、prefill full hidden handoff、KV cache 初次发布和 round barrier。step1 及之后是 TPOT，已经进入热路径，使用持久化真实数值 KV cache，并只传 decode token hidden slice。
 
+2026-05-15 更新: `88ac70d Use object refs for W4 Qwen3 handoff` 已把 guest handover descriptor 切到 ObjectRef wire contract。guest 侧不再把 hidden/KV 大 payload 写入 UAPI segment；UAPI descriptor 携带 ObjectRef，sim-uapi adapter resolve/materialize object-backed operand。当前仍保留一次 adapter 内部 materialize 为旧 `run_w4_chipbackend(&[u8])` slice 的兼容层，backend trait 完全改成 object-backed operand view 是下一步接口收口。
+
 ## 1. Handover 数据模型
 
 状态: 已完成第一版真实数据模型，提交 `ff85735 Support decode hidden handoff sizing`。
@@ -44,21 +46,27 @@ Handover 传的是真实数值数据，不是 synthetic payload。
 
 ### 1.3 验证结果
 
-0.6B / 8-node / 8 steps:
+0.6B / 8-node / 16 steps:
 
 - PASS。
-- TTFT: `65260ms`。
-- TPOT step1-step6 平均: `3755ms/token`。
-- TPOT step1-step6 中位数: `3808ms/token`。
-- 输出 pieces: `,ĠI'mĠaĠbitĠconfusedĠaboutĠthe`。
+- Summary: `guest-linux/aarch64/out/eight_node_w4_guest_summary.2026-05-15_17-17-46_w4guest8_13949.txt`。
+- TTFT: `8556ms`。
+- TPOT step1-step14 平均: `3360ms/token`。
+- TPOT step1-step14 中位数: `3318ms/token`。
+- TPOT step1-step14 范围: `3033ms-3887ms/token`。
+- 输出 token ids: `[11, 358, 2776, 264, 2699, 21815, 911, 279, 7286, 315, 330, 265, 2719, 1, 304, 279]`。
+- 输出 text: `, I'm a bit confused about the concept of "reality" in the`。
 
-14B / 8-node / 8 steps:
+14B / 8-node / 16 steps:
 
 - PASS。
-- TTFT: `384089ms`。
-- TPOT step1-step6 平均: `25355ms/token`。
-- TPOT step1-step6 中位数: `24896ms/token`。
-- 输出 pieces: `,ĠI'mĠtryingĠtoĠunderstandĠtheĠconcept`。
+- Summary: `guest-linux/aarch64/out/eight_node_w4_guest_summary.2026-05-15_17-20-14_w4guest8_8624.txt`。
+- TTFT: `85364ms`。
+- TPOT step1-step14 平均: `22874ms/token`。
+- TPOT step1-step14 中位数: `22881ms/token`。
+- TPOT step1-step14 范围: `22147ms-23980ms/token`。
+- 输出 token ids: `[11, 358, 2776, 4460, 311, 3535, 279, 7286, 315, 330, 1782, 1879, 374, 264, 1467, 1]`。
+- 输出 text: `, I'm trying to understand the concept of "the world is a text"`。
 
 ### 1.4 判断
 
@@ -67,7 +75,7 @@ Handover 传的是真实数值数据，不是 synthetic payload。
 - 不再走 synthetic hidden handoff。
 - step0/full hidden 与 step1+/decode hidden 的 byte contract 已 profile 化。
 - descriptor、DB service、guest verifier、UAPI contract 都按同一模型校验。
-- 0.6B 和 14B 都通过 8-node 8-step guest decode。
+- 0.6B 和 14B 都通过 8-node 16-step guest decode。
 
 残余工作不再属于“数据模型是否正确”，而是性能优化：
 
@@ -81,49 +89,69 @@ Handover 传的是真实数值数据，不是 synthetic payload。
 
 | step | round_ms | 说明 |
 | ---: | ---: | --- |
-| 0 | 65260 | TTFT，cold init + full hidden prefill handoff |
-| 1 | 3571 | TPOT |
-| 2 | 3859 | TPOT |
-| 3 | 3606 | TPOT |
-| 4 | 3836 | TPOT |
-| 5 | 3780 | TPOT |
-| 6 | 3878 | TPOT |
-| 7 | 2812 | final token，缺少后续 barrier，不适合算稳态 |
+| 0 | 8556 | TTFT，cold init + full hidden prefill handoff |
+| 1 | 3033 | TPOT |
+| 2 | 3076 | TPOT |
+| 3 | 3066 | TPOT |
+| 4 | 3066 | TPOT |
+| 5 | 3130 | TPOT |
+| 6 | 3348 | TPOT |
+| 7 | 3322 | TPOT |
+| 8 | 3270 | TPOT |
+| 9 | 3313 | TPOT |
+| 10 | 3372 | TPOT |
+| 11 | 3538 | TPOT |
+| 12 | 3735 | TPOT |
+| 13 | 3881 | TPOT |
+| 14 | 3887 | TPOT |
+| 15 | 2826 | final token，缺少后续 barrier，不适合算稳态 |
 
 step0 bottleneck:
 
-- `max_input_wait_ms=60732`
-- `max_compute_window_ms=1166`
-- `max_barrier_ms=61697`
+- `max_input_wait_ms=4104`
+- `max_compute_window_ms=1142`
+- `max_barrier_ms=4988`
 
-step1-step6 bottleneck:
+step1-step14 bottleneck:
 
-- `max_input_wait_ms` 约 `2486ms-2884ms`
-- `max_compute_window_ms` 约 `819ms-891ms`
+- `max_input_wait_ms` 平均 `2356ms`
+- `max_compute_window_ms` 平均 `832ms`
+- `max_barrier_ms` 平均 `3116ms`
+- OBMM high-water: `7373792` bytes / node max，`max_payload_used_pct_milli=1373`
 
 ### 2.2 14B timing
 
 | step | round_ms | 说明 |
 | ---: | ---: | --- |
-| 0 | 384089 | TTFT，cold init + full hidden prefill handoff |
-| 1 | 27455 | TPOT |
-| 2 | 24720 | TPOT |
-| 3 | 24835 | TPOT |
-| 4 | 24876 | TPOT |
-| 5 | 24915 | TPOT |
-| 6 | 25330 | TPOT |
-| 7 | 22690 | final token，缺少后续 barrier，不适合算稳态 |
+| 0 | 85364 | TTFT，cold init + full hidden prefill handoff |
+| 1 | 23980 | TPOT |
+| 2 | 22147 | TPOT |
+| 3 | 22491 | TPOT |
+| 4 | 22469 | TPOT |
+| 5 | 22580 | TPOT |
+| 6 | 22675 | TPOT |
+| 7 | 22747 | TPOT |
+| 8 | 22880 | TPOT |
+| 9 | 22882 | TPOT |
+| 10 | 22897 | TPOT |
+| 11 | 23126 | TPOT |
+| 12 | 23116 | TPOT |
+| 13 | 22995 | TPOT |
+| 14 | 23244 | TPOT |
+| 15 | 22083 | final token，缺少后续 barrier，不适合算稳态 |
 
 step0 bottleneck:
 
-- `max_input_wait_ms=365593`
-- `max_compute_window_ms=15070`
-- `max_barrier_ms=371564`
+- `max_input_wait_ms=68935`
+- `max_compute_window_ms=12987`
+- `max_barrier_ms=72785`
 
-step1-step6 bottleneck:
+step1-step14 bottleneck:
 
-- `max_input_wait_ms` 约 `19367ms-21838ms`
-- `max_compute_window_ms` 约 `5053ms-5345ms`
+- `max_input_wait_ms` 平均 `17534ms`
+- `max_compute_window_ms` 平均 `5134ms`
+- `max_barrier_ms` 平均 `20465ms`
+- OBMM high-water: `10053576` bytes / node max，`max_payload_used_pct_milli=1873`
 
 ## 3. 后续优化方向
 
@@ -170,13 +198,18 @@ TPOT 目前不是纯 compute 时间。step1+ 每个 token 主要由前序 node �
 
 ### 3.4 Backend 直接操作 OBMM pool / Object Service
 
-长期方向是让 backend 直接消费 OBMM pool 中的对象，避免 guest/UAPI segment 与 object payload 之间的中间复制。
+第一版 ObjectRef handover 已完成:
 
-需要明确:
+- Handover contract 传 ObjectRef，不再传大 tensor 内容。
+- guest 侧 Lingqu object service 建在 OBMM shmem 上，负责 object metadata、owner、checksum、版本信息。
+- UAPI descriptor 声明 input/output ObjectRef，sim-uapi adapter resolve/materialize。
+- W4 guest decode 不再靠日志和 payload scan 证明“像真的”，数据路径已经进入 object-ref 运行形态。
 
-- backend 是否能获得 object descriptor 的稳定地址和生命周期。
-- object payload 是否允许 backend 原地读写。
-- checksum/metadata 更新由 backend 负责还是 DB service 负责。
+仍未完成的接口收口:
+
+- `run_w4_chipbackend(&[u8])` 仍是 flat slice contract，adapter 内部还要 assemble 一次 host-side input view。
+- backend 还不能直接接收 object-backed operand descriptor。
+- checksum/metadata commit 仍由 adapter/object service 侧承接，backend 还没有直接声明 output object 写入结果。
 
 ## 4. 待跟进事项
 
@@ -184,10 +217,14 @@ TPOT 目前不是纯 compute 时间。step1+ 每个 token 主要由前序 node �
 2. [x] 持久化真实数值 KV cache，并在 decode step resolve previous-step KV state。
 3. [x] 用 0.6B 8-node 8-step 验证 TTFT/TPOT。
 4. [x] 用 14B 8-node 8-step 验证 TTFT/TPOT。
-5. [ ] 拆分 TTFT: cold init、full hidden handoff、barrier 的独立 timing。
-6. [ ] 优化 TPOT input wait: descriptor wait、metadata resolve、copy path。
-7. [ ] 评估单 node 多 layer fusion 的实际收益。
-8. [ ] 评估 backend 直接读写 OBMM pool/object payload 的架构改动。
+5. [x] 用 0.6B 8-node 16-step 验证 TTFT/TPOT。
+6. [x] 用 14B 8-node 16-step 验证 TTFT/TPOT。
+7. [x] ObjectRef handover 第一版: UAPI descriptor carries ObjectRef，adapter resolve/materialize。
+8. [ ] 拆分 TTFT: cold init、full hidden handoff、barrier 的独立 timing。
+9. [ ] 优化 TPOT input wait: descriptor wait、metadata resolve、copy path。
+10. [ ] 将 backend trait 收口为 object-backed operand view，去掉 adapter 内部 flat slice assemble。
+11. [ ] 优化/收敛 14B TPOT 中约 `17.5s` input wait 和约 `20.5s` barrier。
+12. [ ] 评估单 node 多 layer fusion 的实际收益。
 
 # Appendix
 
