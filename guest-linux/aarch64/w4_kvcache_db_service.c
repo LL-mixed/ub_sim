@@ -4501,7 +4501,10 @@ int w4_db_obmm_service_v0_wait_runtime_range_input_view(
     long found_ms = 0;
     long checksum_ms;
     long producer_publish_ms;
+    long producer_publish_monotonic_ms;
+    long producer_clock_offset_ms;
     long producer_to_found_ms = 0;
+    long producer_to_found_monotonic_ms = 0;
     uint64_t activate_ms = 0;
     uint64_t metadata_ms = 0;
     uint32_t attempts = 0;
@@ -4654,8 +4657,16 @@ int w4_db_obmm_service_v0_wait_runtime_range_input_view(
     checksum = remote_hidden_output.object_payload_checksum;
     checksum_ms = 0;
     producer_publish_ms = (long)remote_hidden_output.last_result_segment;
+    producer_publish_monotonic_ms =
+        (long)remote_hidden_output.object_publish_monotonic_ms;
+    producer_clock_offset_ms =
+        (long)remote_hidden_output.object_publish_supernode_offset_ms;
     if (producer_publish_ms > 0 && found_ms > 0) {
         producer_to_found_ms = found_ms - producer_publish_ms;
+    }
+    if (producer_publish_monotonic_ms > 0 && found_local_ms > 0) {
+        producer_to_found_monotonic_ms =
+            found_local_ms - producer_publish_monotonic_ms;
     }
     memset(view_out, 0, sizeof(*view_out));
     view_out->data = payload_view;
@@ -4668,7 +4679,25 @@ int w4_db_obmm_service_v0_wait_runtime_range_input_view(
                                         &view_out->object_ref) != 0) {
         return -1;
     }
-    printf("[w4_guest] stage qwen3_range_forward_runtime_input_resolve local=node%u source=node%u key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) input_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " wait_enter_to_found_ms=%ld producer_publish_ms=%ld producer_to_found_ms=%ld attempts=%u activate_ms=%" PRIu64 " metadata_ms=%" PRIu64 " copy_ms=0 checksum_ms=%ld validation=object_ref_metadata queue=obmm_spsc receive=descriptor metadata=lingqu_object_service backing=obmm_shmem target=mapped_view status=ok\n",
+    view_out->wait_enter_monotonic_ms =
+        wait_enter_ms > 0 ? (uint64_t)wait_enter_ms : 0;
+    view_out->found_monotonic_ms =
+        found_local_ms > 0 ? (uint64_t)found_local_ms : 0;
+    view_out->ready_monotonic_ms = (uint64_t)obmm_now_ms();
+    view_out->producer_publish_supernode_ms =
+        producer_publish_ms > 0 ? (uint64_t)producer_publish_ms : 0;
+    view_out->producer_publish_monotonic_ms =
+        producer_publish_monotonic_ms > 0 ?
+            (uint64_t)producer_publish_monotonic_ms :
+            0;
+    view_out->producer_clock_offset_ms = producer_clock_offset_ms;
+    view_out->producer_to_found_supernode_ms = producer_to_found_ms;
+    view_out->producer_to_found_monotonic_ms = producer_to_found_monotonic_ms;
+    view_out->source_node = source_node;
+    view_out->wait_attempts = attempts;
+    view_out->activate_ms = activate_ms;
+    view_out->metadata_ms = metadata_ms;
+    printf("[w4_guest] stage qwen3_range_forward_runtime_input_resolve local=node%u source=node%u key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) input_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " wait_enter_to_found_ms=%ld producer_publish_ms=%ld producer_publish_mono_ms=%ld producer_clock_offset_ms=%ld producer_to_found_ms=%ld producer_to_found_mono_ms=%ld attempts=%u activate_ms=%" PRIu64 " metadata_ms=%" PRIu64 " copy_ms=0 checksum_ms=%ld validation=object_ref_metadata queue=obmm_spsc receive=descriptor metadata=lingqu_object_service backing=obmm_shmem target=mapped_view status=ok\n",
            local_node + 1U,
            source_node + 1U,
            ingress_key,
@@ -4680,7 +4709,10 @@ int w4_db_obmm_service_v0_wait_runtime_range_input_view(
            hidden_range_bytes,
            found_local_ms > 0 ? found_local_ms - wait_enter_ms : -1L,
            producer_publish_ms,
+           producer_publish_monotonic_ms,
+           producer_clock_offset_ms,
            producer_to_found_ms,
+           producer_to_found_monotonic_ms,
            attempts,
            activate_ms,
            metadata_ms,
@@ -4744,6 +4776,8 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
     uint16_t local_publish_seq;
     uint16_t object_epoch;
     long producer_publish_ms;
+    long producer_publish_monotonic_ms;
+    long producer_clock_offset_ms;
     uint8_t *base;
     uint64_t hidden_range_bytes = w4_db_qwen3_handoff_hidden_bytes(decode_step);
     struct lingqu_obmm_object_ref_wire hidden_ref;
@@ -4838,7 +4872,9 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
              local_placement.layer_start,
              local_placement.layer_end,
              decode_step);
+    producer_publish_monotonic_ms = obmm_now_ms();
     producer_publish_ms = w4_db_wallclock_ms();
+    producer_clock_offset_ms = producer_publish_ms - producer_publish_monotonic_ms;
     if (w4_db_put_obmm_object_record(svc,
                                      terminal_range ?
                                          W4_DB_RECORD_HIDDEN_RANGE_OUTPUT :
@@ -4869,7 +4905,21 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
             return -1;
         }
         published_record->last_result_segment = (uint64_t)producer_publish_ms;
+        published_record->object_publish_monotonic_ms =
+            producer_publish_monotonic_ms > 0 ?
+                (uint64_t)producer_publish_monotonic_ms :
+                0;
+        published_record->object_publish_supernode_ms =
+            producer_publish_ms > 0 ? (uint64_t)producer_publish_ms : 0;
+        published_record->object_publish_supernode_offset_ms =
+            producer_clock_offset_ms;
         local_hidden_output.last_result_segment = (uint64_t)producer_publish_ms;
+        local_hidden_output.object_publish_monotonic_ms =
+            published_record->object_publish_monotonic_ms;
+        local_hidden_output.object_publish_supernode_ms =
+            published_record->object_publish_supernode_ms;
+        local_hidden_output.object_publish_supernode_offset_ms =
+            published_record->object_publish_supernode_offset_ms;
     }
     {
         struct w4_db_record *published_record =
@@ -4879,7 +4929,21 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
             return -1;
         }
         published_record->last_result_segment = (uint64_t)producer_publish_ms;
+        published_record->object_publish_monotonic_ms =
+            producer_publish_monotonic_ms > 0 ?
+                (uint64_t)producer_publish_monotonic_ms :
+                0;
+        published_record->object_publish_supernode_ms =
+            producer_publish_ms > 0 ? (uint64_t)producer_publish_ms : 0;
+        published_record->object_publish_supernode_offset_ms =
+            producer_clock_offset_ms;
         local_kv_state.last_result_segment = (uint64_t)producer_publish_ms;
+        local_kv_state.object_publish_monotonic_ms =
+            published_record->object_publish_monotonic_ms;
+        local_kv_state.object_publish_supernode_ms =
+            published_record->object_publish_supernode_ms;
+        local_kv_state.object_publish_supernode_offset_ms =
+            published_record->object_publish_supernode_offset_ms;
     }
     if (w4_db_write_cluster_payload(svc, local_slot) != 0) {
         return -1;
@@ -4907,7 +4971,7 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
         return -1;
     }
     if (!terminal_range) {
-        printf("[w4_guest] stage qwen3_range_forward_runtime_ingress_publish local=node%u target=node%u step=%" PRIu64 " key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) count=%u checksum=0x%016" PRIx64 " bytes=%" PRIu64 " producer_publish_ms=%ld epoch=%u seq=%u backing=obmm_shmem metadata=lingqu_object_service queue=obmm_spsc status=ok\n",
+        printf("[w4_guest] stage qwen3_range_forward_runtime_ingress_publish local=node%u target=node%u step=%" PRIu64 " key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) count=%u checksum=0x%016" PRIx64 " bytes=%" PRIu64 " producer_publish_ms=%ld producer_publish_mono_ms=%ld producer_clock_offset_ms=%ld epoch=%u seq=%u backing=obmm_shmem metadata=lingqu_object_service queue=obmm_spsc status=ok\n",
                local_node + 1U,
                target_node + 1U,
                decode_step,
@@ -4920,10 +4984,12 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
                checksum,
                payload_len,
                producer_publish_ms,
+               producer_publish_monotonic_ms,
+               producer_clock_offset_ms,
                object_epoch,
                local_publish_seq);
     }
-    printf("[w4_guest] stage qwen3_range_forward_runtime_output_publish local=node%u step=%" PRIu64 " key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) count=%u output_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " producer_publish_ms=%ld epoch=%u seq=%u backing=obmm_shmem metadata=lingqu_object_service queue=obmm_spsc status=ok\n",
+    printf("[w4_guest] stage qwen3_range_forward_runtime_output_publish local=node%u step=%" PRIu64 " key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) count=%u output_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " producer_publish_ms=%ld producer_publish_mono_ms=%ld producer_clock_offset_ms=%ld epoch=%u seq=%u backing=obmm_shmem metadata=lingqu_object_service queue=obmm_spsc status=ok\n",
            local_node + 1U,
            decode_step,
            hidden_ref.key_hash,
@@ -4934,6 +5000,8 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
            checksum,
            payload_len,
            producer_publish_ms,
+           producer_publish_monotonic_ms,
+           producer_clock_offset_ms,
            object_epoch,
            local_publish_seq);
     printf("[w4_guest] stage qwen3_range_kv_state_publish local=node%u step=%" PRIu64 " key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) count=%u kv_bytes=%" PRIu64 " kv_checksum=0x%016" PRIx64 " offset=0x%016" PRIx64 " slot_bytes=%" PRIu64 " block_bytes=%" PRIu64 " blocks=%" PRIu64 " reserved_bytes=%" PRIu64 " producer_publish_ms=%ld epoch=%u seq=%u backing=obmm_shmem metadata=lingqu_object_service status=ok\n",

@@ -52,6 +52,9 @@ struct w4_db_record {
     uint64_t object_backing_offset;
     uint64_t object_backing_len;
     uint64_t object_payload_checksum;
+    uint64_t object_publish_monotonic_ms;
+    uint64_t object_publish_supernode_ms;
+    int64_t object_publish_supernode_offset_ms;
     uint32_t member_count;
     char member_block_hashes[W4_DB_MAX_GROUP_MEMBERS][96];
 };
@@ -72,6 +75,18 @@ struct w4_db_object_payload_view {
     uint32_t payload_kind;
     uint64_t backing_offset;
     struct lingqu_obmm_object_ref_wire object_ref;
+    uint64_t wait_enter_monotonic_ms;
+    uint64_t found_monotonic_ms;
+    uint64_t ready_monotonic_ms;
+    uint64_t producer_publish_supernode_ms;
+    uint64_t producer_publish_monotonic_ms;
+    int64_t producer_clock_offset_ms;
+    int64_t producer_to_found_supernode_ms;
+    int64_t producer_to_found_monotonic_ms;
+    uint32_t source_node;
+    uint32_t wait_attempts;
+    uint64_t activate_ms;
+    uint64_t metadata_ms;
 };
 
 struct w4_db_cluster_summary {

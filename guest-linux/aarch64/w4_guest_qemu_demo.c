@@ -617,6 +617,47 @@ static uint64_t monotonic_ms(void)
     return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
 }
 
+struct w4_guest_supernode_clock {
+    uint64_t bootstrap_monotonic_ms;
+    uint64_t bootstrap_realtime_ms;
+    int64_t monotonic_to_supernode_offset_ms;
+    bool valid;
+};
+
+static uint64_t realtime_ms(void)
+{
+    struct timespec ts;
+
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
+}
+
+static void init_supernode_clock(struct w4_guest_supernode_clock *clock)
+{
+    if (!clock) {
+        return;
+    }
+    clock->bootstrap_monotonic_ms = monotonic_ms();
+    clock->bootstrap_realtime_ms = realtime_ms();
+    clock->monotonic_to_supernode_offset_ms =
+        (int64_t)clock->bootstrap_realtime_ms -
+        (int64_t)clock->bootstrap_monotonic_ms;
+    clock->valid = true;
+}
+
+static uint64_t supernode_ms_from_monotonic(const struct w4_guest_supernode_clock *clock,
+                                            uint64_t local_monotonic_ms)
+{
+    int64_t supernode_ms;
+
+    if (!clock || !clock->valid || local_monotonic_ms == 0) {
+        return 0;
+    }
+    supernode_ms = (int64_t)local_monotonic_ms +
+                   clock->monotonic_to_supernode_offset_ms;
+    return supernode_ms > 0 ? (uint64_t)supernode_ms : 0;
+}
+
 static uint8_t *queue_slot_ptr(uint8_t *queue,
                                size_t queue_depth,
                                size_t base_slot,
@@ -4731,6 +4772,34 @@ int main(void)
     uint64_t publish_ms = 0;
     uint64_t round_done_ms = 0;
     uint64_t barrier_ms = 0;
+    uint64_t input_wait_start_ms = 0;
+    uint64_t input_found_ms = 0;
+    uint64_t input_loaded_ms = 0;
+    uint64_t kv_resolve_start_ms = 0;
+    uint64_t kv_resolved_ms = 0;
+    uint64_t kv_loaded_ms = 0;
+    uint64_t compute_start_ms = 0;
+    uint64_t compute_done_ms = 0;
+    uint64_t publish_start_ms = 0;
+    uint64_t verify_done_ms = 0;
+    uint64_t range_publish_start_ms = 0;
+    uint64_t range_publish_done_ms = 0;
+    uint64_t terminal_publish_start_ms = 0;
+    uint64_t terminal_publish_done_ms = 0;
+    uint64_t publish_done_ms = 0;
+    uint64_t round_done_start_ms = 0;
+    uint64_t round_done_done_ms = 0;
+    uint64_t range_publish_ms = 0;
+    uint64_t terminal_publish_ms = 0;
+    uint64_t input_producer_publish_supernode_ms = 0;
+    uint64_t input_producer_publish_monotonic_ms = 0;
+    int64_t input_producer_clock_offset_ms = 0;
+    int64_t input_producer_to_found_supernode_ms = 0;
+    int64_t input_producer_to_found_monotonic_ms = 0;
+    uint64_t input_activate_ms = 0;
+    uint64_t input_metadata_ms = 0;
+    uint32_t input_source_node = UINT32_MAX;
+    uint32_t input_wait_attempts = 0;
     size_t cmdq_slot_base = 0;
     size_t cq_slot_base = 0;
     size_t cmdq_depth = W4_UAPI_CMDQ_DEPTH;
@@ -4741,11 +4810,13 @@ int main(void)
     uint32_t round_layer_end = 0;
     uint32_t round_next_node = 0;
     bool qwen3_round_history_loaded = false;
+    struct w4_guest_supernode_clock supernode_clock;
 
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
 
     memset(&counts, 0, sizeof(counts));
+    memset(&supernode_clock, 0, sizeof(supernode_clock));
     resolve_role(role, sizeof(role));
     memset(&qwen3_engram_config, 0, sizeof(qwen3_engram_config));
     cluster_observer_mode = env_bool_is_one("LINQU_W4_ALLOW_OBSERVER_ONLY");
@@ -4784,6 +4855,23 @@ int main(void)
     }
     guest_decode_step_limit = guest_decode_step + guest_decode_steps;
     cluster_node_count = w4_cluster_node_count();
+    init_supernode_clock(&supernode_clock);
+    {
+        uint32_t local_node = UINT32_MAX;
+
+        printf("[w4_guest] stage qwen3_supernode_clock local=%s node=%u"
+               " bootstrap_monotonic_ms=%" PRIu64
+               " bootstrap_realtime_ms=%" PRIu64
+               " monotonic_to_supernode_offset_ms=%" PRId64
+               " source=clock_realtime_minus_monotonic status=ok\n",
+               role,
+               w4_cluster_role_index(role, cluster_node_count, &local_node) ?
+                   local_node + 1U :
+                   0U,
+               supernode_clock.bootstrap_monotonic_ms,
+               supernode_clock.bootstrap_realtime_ms,
+               supernode_clock.monotonic_to_supernode_offset_ms);
+    }
     snprintf(request_id, sizeof(request_id), "w4-%s-request-0", role);
     snprintf(prefix_group, sizeof(prefix_group), "%s-prefix-0", role);
     snprintf(group_id, sizeof(group_id), "%s-group-0", role);
@@ -5894,6 +5982,34 @@ decode_round_start:
     publish_ms = 0;
     round_done_ms = 0;
     barrier_ms = 0;
+    input_wait_start_ms = 0;
+    input_found_ms = 0;
+    input_loaded_ms = 0;
+    kv_resolve_start_ms = 0;
+    kv_resolved_ms = 0;
+    kv_loaded_ms = 0;
+    compute_start_ms = 0;
+    compute_done_ms = 0;
+    publish_start_ms = 0;
+    verify_done_ms = 0;
+    range_publish_start_ms = 0;
+    range_publish_done_ms = 0;
+    terminal_publish_start_ms = 0;
+    terminal_publish_done_ms = 0;
+    publish_done_ms = 0;
+    round_done_start_ms = 0;
+    round_done_done_ms = 0;
+    range_publish_ms = 0;
+    terminal_publish_ms = 0;
+    input_producer_publish_supernode_ms = 0;
+    input_producer_publish_monotonic_ms = 0;
+    input_producer_clock_offset_ms = 0;
+    input_producer_to_found_supernode_ms = 0;
+    input_producer_to_found_monotonic_ms = 0;
+    input_activate_ms = 0;
+    input_metadata_ms = 0;
+    input_source_node = UINT32_MAX;
+    input_wait_attempts = 0;
     round_dispatch_node = UINT32_MAX;
     round_layer_start = 0;
     round_layer_end = 0;
@@ -6280,6 +6396,7 @@ decode_round_start:
             struct w4_db_object_payload_view range_input_view;
             uint64_t stage_start_ms = monotonic_ms();
 
+            input_wait_start_ms = stage_start_ms;
             if (hidden_range_bytes > W4_QWEN3_MAX_HIDDEN_RANGE_BYTES) {
                 fprintf(stderr,
                         "[w4_guest] fail qwen3 runtime range input too large bytes=%" PRIu64
@@ -6303,8 +6420,27 @@ decode_round_start:
                         layer_end);
                 goto out;
             }
+            input_found_ms = range_input_view.found_monotonic_ms != 0 ?
+                range_input_view.found_monotonic_ms :
+                monotonic_ms();
+            input_producer_publish_supernode_ms =
+                range_input_view.producer_publish_supernode_ms;
+            input_producer_publish_monotonic_ms =
+                range_input_view.producer_publish_monotonic_ms;
+            input_producer_clock_offset_ms =
+                range_input_view.producer_clock_offset_ms;
+            input_producer_to_found_supernode_ms =
+                range_input_view.producer_to_found_supernode_ms;
+            input_producer_to_found_monotonic_ms =
+                range_input_view.producer_to_found_monotonic_ms;
+            input_activate_ms = range_input_view.activate_ms;
+            input_metadata_ms = range_input_view.metadata_ms;
+            input_source_node = range_input_view.source_node;
+            input_wait_attempts = range_input_view.wait_attempts;
             range_input_checksum = range_input_view.checksum;
-            input_wait_ms = monotonic_ms() - stage_start_ms;
+            input_wait_ms = range_input_view.ready_monotonic_ms > stage_start_ms ?
+                range_input_view.ready_monotonic_ms - stage_start_ms :
+                monotonic_ms() - stage_start_ms;
             write_segment_bytes(ep_mmio,
                                 W4_QWEN3_OBJECT_REF_TABLE_OFFSET +
                                     ((uint64_t)object_ref_write_index *
@@ -6312,6 +6448,7 @@ decode_round_start:
                                 (const uint8_t *)&range_input_view.object_ref,
                                 W4_QWEN3_OBJECT_REF_BYTES);
             object_ref_write_index++;
+            input_loaded_ms = monotonic_ms();
             printf("[w4_guest] stage qwen3_range_forward_runtime_input_loaded node=%u layers=[%u,%u) input_offset=0x%016" PRIx64 " input_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " source=obmm_object_view target=uapi_object_ref materialize=sim_uapi_adapter status=ok\n",
                    dispatch_node + 1U,
                    layer_start,
@@ -6319,11 +6456,16 @@ decode_round_start:
                    (uint64_t)W4_QWEN3_RANGE_INPUT_PAYLOAD_OFFSET,
                    range_input_checksum,
                    hidden_range_bytes);
+        } else {
+            input_wait_start_ms = monotonic_ms();
+            input_found_ms = input_wait_start_ms;
+            input_loaded_ms = input_found_ms;
         }
         if (guest_decode_step > 0) {
             struct w4_db_object_payload_view previous_kv_view;
 
             memset(&previous_kv_view, 0, sizeof(previous_kv_view));
+            kv_resolve_start_ms = monotonic_ms();
             if (w4_db_obmm_service_v0_resolve_previous_range_kv_state_view(
                     &db_service,
                     dispatch_node,
@@ -6336,6 +6478,7 @@ decode_round_start:
                         guest_decode_step);
                 goto out;
             }
+            kv_resolved_ms = monotonic_ms();
             if (previous_kv_view.len > W4_QWEN3_MAX_KV_PAYLOAD_BYTES) {
                 fprintf(stderr,
                         "[w4_guest] fail qwen3 previous range kv state too large node=%u step=%" PRIu64
@@ -6354,6 +6497,7 @@ decode_round_start:
                                     (const uint8_t *)&previous_kv_view.object_ref,
                                     W4_QWEN3_OBJECT_REF_BYTES);
                 object_ref_write_index++;
+                kv_loaded_ms = monotonic_ms();
                 printf("[w4_guest] stage qwen3_range_kv_state_loaded node=%u step=%" PRIu64
                        " previous_step=%" PRIu64
                        " kv_offset=0x%016" PRIx64 " kv_bytes=%" PRIu64
@@ -6368,11 +6512,14 @@ decode_round_start:
                        previous_kv_view.checksum,
                        previous_kv_view.object_ref.key_hash,
                        previous_kv_view.object_ref.object_version);
+            } else {
+                kv_loaded_ms = kv_resolved_ms;
             }
         }
     }
 
-    compute_window_ms = monotonic_ms();
+    compute_start_ms = monotonic_ms();
+    compute_window_ms = compute_start_ms;
     base_submit_ms = monotonic_ms();
     mmio_write64(ep_mmio, REG_CMDQ_BASE_LO, cmdq_phys);
     mmio_write64(ep_mmio, REG_CQ_BASE_LO, cq_phys);
@@ -6462,8 +6609,10 @@ decode_round_start:
     }
     completion_decode_ms = monotonic_ms() - completion_decode_ms;
     printf("[w4_guest] step=decode_completions ok\n");
-    compute_window_ms = monotonic_ms() - compute_window_ms;
-    publish_ms = monotonic_ms();
+    compute_done_ms = monotonic_ms();
+    compute_window_ms = compute_done_ms - compute_window_ms;
+    publish_start_ms = monotonic_ms();
+    publish_ms = publish_start_ms;
     if (verify_dispatch_payload(ep_mmio,
                                 cq_linear,
                                 slot,
@@ -6475,6 +6624,7 @@ decode_round_start:
     qwen3_runtime_forward_ready =
         is_qwen3_profile() &&
         runtime_forward.payload_bytes == qwen3_handoff_hidden_bytes(guest_decode_step);
+    verify_done_ms = monotonic_ms();
     if (qwen3_runtime_forward_ready && enable_db_cluster && cluster_node_count == 8U) {
         uint32_t dispatch_node = 0U;
 
@@ -6482,6 +6632,7 @@ decode_round_start:
             w4_db_service_init(&db_service, true, true, true) == 0) {
             db_service_ready = true;
         }
+        range_publish_start_ms = monotonic_ms();
         if (!w4_cluster_role_index(role, cluster_node_count, &dispatch_node) ||
             !db_service_ready ||
             w4_db_obmm_service_v0_publish_runtime_range_output(
@@ -6500,6 +6651,8 @@ decode_round_start:
                     role);
             goto out;
         }
+        range_publish_done_ms = monotonic_ms();
+        range_publish_ms = range_publish_done_ms - range_publish_start_ms;
         if (qwen3_engram_config.enabled &&
             dispatch_node == qwen3_engram_config.owner_node &&
             dispatch_node + 1U != cluster_node_count) {
@@ -6507,6 +6660,7 @@ decode_round_start:
             uint64_t owner_selected_token = 0;
 
             memset(&owner_candidates, 0, sizeof(owner_candidates));
+            terminal_publish_start_ms = monotonic_ms();
             if (qwen3_engram_select_and_publish_step(&db_service,
                                                      &qwen3_engram_config,
                                                      dispatch_node,
@@ -6518,6 +6672,7 @@ decode_round_start:
                                                      &owner_selected_token) != 0) {
                 goto out;
             }
+            terminal_publish_done_ms = monotonic_ms();
         }
         if (dispatch_node + 1U == cluster_node_count) {
             uint64_t decode_step = guest_decode_step;
@@ -6525,6 +6680,9 @@ decode_round_start:
             uint64_t raw_sampled_token;
             uint64_t engram_selected_token;
 
+            if (terminal_publish_start_ms == 0) {
+                terminal_publish_start_ms = monotonic_ms();
+            }
             if (qwen3_read_terminal_token_record(ep_mmio, &terminal_token) != 0) {
                 fprintf(stderr,
                         "[w4_guest] fail qwen3 terminal token record read failed role=%s\n",
@@ -6606,9 +6764,14 @@ decode_round_start:
                         role);
                 goto out;
             }
+            terminal_publish_done_ms = monotonic_ms();
         }
     }
-    publish_ms = monotonic_ms() - publish_ms;
+    publish_done_ms = monotonic_ms();
+    if (terminal_publish_done_ms > terminal_publish_start_ms) {
+        terminal_publish_ms = terminal_publish_done_ms - terminal_publish_start_ms;
+    }
+    publish_ms = publish_done_ms - publish_ms;
     verify_publish_ms = publish_ms;
 
     mmio_write64(ep_mmio, REG_CQ_HEAD, cq_tail % cq_depth);
@@ -6654,6 +6817,7 @@ decode_round_start:
         uint32_t dispatch_node = 0U;
         uint64_t stage_start_ms = monotonic_ms();
 
+        round_done_start_ms = stage_start_ms;
         if (!db_service_ready &&
             w4_db_service_init(&db_service, true, true, true) == 0) {
             db_service_ready = true;
@@ -6670,7 +6834,8 @@ decode_round_start:
                     guest_decode_step);
             goto out;
         }
-        round_done_ms = monotonic_ms() - stage_start_ms;
+        round_done_done_ms = monotonic_ms();
+        round_done_ms = round_done_done_ms - stage_start_ms;
     }
     {
         uint64_t total_ms = monotonic_ms() - round_start_ms;
@@ -6736,6 +6901,125 @@ decode_round_start:
                barrier_ms,
                unaccounted_ms,
                ms_per_layer_milli);
+        {
+            uint64_t handoff_publish_ms =
+                range_publish_done_ms != 0 ? range_publish_done_ms : publish_done_ms;
+            uint64_t input_found_to_handoff_ms =
+                input_found_ms != 0 && handoff_publish_ms >= input_found_ms ?
+                    handoff_publish_ms - input_found_ms :
+                    0;
+            uint64_t input_loaded_to_handoff_ms =
+                input_loaded_ms != 0 && handoff_publish_ms >= input_loaded_ms ?
+                    handoff_publish_ms - input_loaded_ms :
+                    0;
+            uint64_t kv_resolve_ms =
+                kv_resolved_ms > kv_resolve_start_ms ?
+                    kv_resolved_ms - kv_resolve_start_ms :
+                    0;
+            uint64_t kv_load_ms =
+                kv_loaded_ms > kv_resolved_ms ? kv_loaded_ms - kv_resolved_ms : 0;
+            uint64_t verify_dispatch_ms =
+                verify_done_ms > publish_start_ms ? verify_done_ms - publish_start_ms : 0;
+            uint64_t compute_done_to_handoff_ms =
+                handoff_publish_ms > compute_done_ms ?
+                    handoff_publish_ms - compute_done_ms :
+                    0;
+            uint64_t round_done_publish_ms =
+                round_done_done_ms > round_done_start_ms ?
+                    round_done_done_ms - round_done_start_ms :
+                    0;
+
+            printf("[w4_guest] stage qwen3_worker_handoff_timing local=%s step=%" PRIu64
+                   " node=%u source=%u next=%u layers=[%u,%u)"
+                   " timebase=supernode_epoch_ms clock_offset_ms=%" PRId64
+                   " input_wait_start_mono_ms=%" PRIu64
+                   " input_found_mono_ms=%" PRIu64
+                   " input_loaded_mono_ms=%" PRIu64
+                   " compute_start_mono_ms=%" PRIu64
+                   " compute_done_mono_ms=%" PRIu64
+                   " publish_start_mono_ms=%" PRIu64
+                   " verify_done_mono_ms=%" PRIu64
+                   " range_publish_start_mono_ms=%" PRIu64
+                   " range_publish_done_mono_ms=%" PRIu64
+                   " terminal_publish_start_mono_ms=%" PRIu64
+                   " terminal_publish_done_mono_ms=%" PRIu64
+                   " publish_done_mono_ms=%" PRIu64
+                   " round_done_start_mono_ms=%" PRIu64
+                   " round_done_done_mono_ms=%" PRIu64
+                   " input_found_supernode_ms=%" PRIu64
+                   " handoff_publish_supernode_ms=%" PRIu64
+                   " publish_done_supernode_ms=%" PRIu64
+                   " producer_publish_supernode_ms=%" PRIu64
+                   " producer_publish_mono_ms=%" PRIu64
+                   " producer_clock_offset_ms=%" PRId64
+                   " producer_to_input_found_supernode_ms=%" PRId64
+                   " producer_to_input_found_mono_ms=%" PRId64
+                   " input_wait_ms=%" PRIu64
+                   " input_activate_ms=%" PRIu64
+                   " input_metadata_ms=%" PRIu64
+                   " input_wait_attempts=%u"
+                   " input_found_to_handoff_ms=%" PRIu64
+                   " input_loaded_to_handoff_ms=%" PRIu64
+                   " kv_resolve_ms=%" PRIu64
+                   " kv_load_ms=%" PRIu64
+                   " compute_window_ms=%" PRIu64
+                   " submit_ms=%" PRIu64
+                   " dispatch_ms=%" PRIu64
+                   " completion_decode_ms=%" PRIu64
+                   " verify_dispatch_ms=%" PRIu64
+                   " range_publish_ms=%" PRIu64
+                   " terminal_publish_ms=%" PRIu64
+                   " compute_done_to_handoff_ms=%" PRIu64
+                   " round_done_publish_ms=%" PRIu64
+                   " status=ok\n",
+                   role,
+                   guest_decode_step,
+                   round_dispatch_node == UINT32_MAX ? 0U : round_dispatch_node + 1U,
+                   input_source_node == UINT32_MAX ? 0U : input_source_node + 1U,
+                   round_next_node == UINT32_MAX ? 0U : round_next_node + 1U,
+                   round_layer_start,
+                   round_layer_end,
+                   supernode_clock.monotonic_to_supernode_offset_ms,
+                   input_wait_start_ms,
+                   input_found_ms,
+                   input_loaded_ms,
+                   compute_start_ms,
+                   compute_done_ms,
+                   publish_start_ms,
+                   verify_done_ms,
+                   range_publish_start_ms,
+                   range_publish_done_ms,
+                   terminal_publish_start_ms,
+                   terminal_publish_done_ms,
+                   publish_done_ms,
+                   round_done_start_ms,
+                   round_done_done_ms,
+                   supernode_ms_from_monotonic(&supernode_clock, input_found_ms),
+                   supernode_ms_from_monotonic(&supernode_clock, handoff_publish_ms),
+                   supernode_ms_from_monotonic(&supernode_clock, publish_done_ms),
+                   input_producer_publish_supernode_ms,
+                   input_producer_publish_monotonic_ms,
+                   input_producer_clock_offset_ms,
+                   input_producer_to_found_supernode_ms,
+                   input_producer_to_found_monotonic_ms,
+                   input_wait_ms,
+                   input_activate_ms,
+                   input_metadata_ms,
+                   input_wait_attempts,
+                   input_found_to_handoff_ms,
+                   input_loaded_to_handoff_ms,
+                   kv_resolve_ms,
+                   kv_load_ms,
+                   compute_window_ms,
+                   submit_ms,
+                   dispatch_wait_ms,
+                   completion_decode_ms,
+                   verify_dispatch_ms,
+                   range_publish_ms,
+                   terminal_publish_ms,
+                   compute_done_to_handoff_ms,
+                   round_done_publish_ms);
+        }
     }
     printf("[w4_guest] pass\n");
     rc = 0;

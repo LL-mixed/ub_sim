@@ -23,6 +23,33 @@ def worker_timing(node_id, node_index, step, total_ms, input_wait_ms, compute_wi
     )
 
 
+def handoff_timing(node_id, node_index, step, found_to_handoff_ms, dispatch_ms, publish_ms):
+    return (
+        "[w4_guest] stage qwen3_worker_handoff_timing "
+        f"local={node_id} step={step} node={node_index} source={max(node_index - 1, 0)} "
+        f"next={node_index + 1} layers=[0,1) timebase=supernode_epoch_ms "
+        "clock_offset_ms=1000000 input_wait_start_mono_ms=100 "
+        "input_found_mono_ms=110 input_loaded_mono_ms=120 "
+        "compute_start_mono_ms=130 compute_done_mono_ms=160 "
+        "publish_start_mono_ms=170 verify_done_mono_ms=173 "
+        "range_publish_start_mono_ms=174 range_publish_done_mono_ms=190 "
+        "terminal_publish_start_mono_ms=0 terminal_publish_done_mono_ms=0 "
+        "publish_done_mono_ms=191 round_done_start_mono_ms=192 round_done_done_mono_ms=193 "
+        "input_found_supernode_ms=1000110 handoff_publish_supernode_ms=1000190 "
+        "publish_done_supernode_ms=1000191 producer_publish_supernode_ms=1000100 "
+        "producer_publish_mono_ms=100 producer_clock_offset_ms=1000000 "
+        "producer_to_input_found_supernode_ms=10 producer_to_input_found_mono_ms=10 "
+        "input_wait_ms=10 input_activate_ms=0 "
+        "input_metadata_ms=1 input_wait_attempts=1 "
+        f"input_found_to_handoff_ms={found_to_handoff_ms} "
+        f"input_loaded_to_handoff_ms={max(found_to_handoff_ms - 10, 0)} "
+        "kv_resolve_ms=2 kv_load_ms=1 compute_window_ms=30 submit_ms=7 "
+        f"dispatch_ms={dispatch_ms} completion_decode_ms=0 verify_dispatch_ms=3 "
+        f"range_publish_ms={publish_ms} terminal_publish_ms=0 compute_done_to_handoff_ms=30 "
+        "round_done_publish_ms=1 status=ok"
+    )
+
+
 class W4GuestRunSummaryTest(unittest.TestCase):
     def test_emits_decode_tokens_and_timing_bottlenecks(self):
         script = Path(__file__).resolve().parents[1] / "scripts" / "w4_guest_run_summary.py"
@@ -52,6 +79,7 @@ class W4GuestRunSummaryTest(unittest.TestCase):
                     ),
                     "[w4_guest] pass",
                     worker_timing(node_id, index, 1, total1, 70 * index, 9 * index),
+                    handoff_timing(node_id, index, 1, 80 * index, 11 * index, 5 * index),
                     (
                         "[w4_guest] stage qwen3_obmm_pool_usage "
                         f"local=node{index} step=1 per_node_region_bytes=536870912 "
@@ -64,6 +92,7 @@ class W4GuestRunSummaryTest(unittest.TestCase):
                     ),
                     "[w4_guest] pass",
                 ]
+                lines.insert(1, handoff_timing(node_id, index, 0, 40 * index, 10 * index, 3 * index))
                 if node_id == "nodeH":
                     lines.insert(
                         0,
@@ -101,6 +130,7 @@ class W4GuestRunSummaryTest(unittest.TestCase):
             "worker_timing_records=16 passed_nodes=8/8",
             result.stdout,
         )
+        self.assertIn("handoff_timing_records=16", result.stdout)
         self.assertIn("decode_output: token_ids=[11, 358]", result.stdout)
         self.assertIn('decode_output: token_pieces=", I"', result.stdout)
         self.assertIn('decode_token: step=1 node=nodeH token=358 piece=" I"', result.stdout)
@@ -111,6 +141,16 @@ class W4GuestRunSummaryTest(unittest.TestCase):
         self.assertIn(
             "timing_bottleneck: max_input_wait_step=1 node=nodeH "
             "input_wait_ms=560 worker_total_ms=1600",
+            result.stdout,
+        )
+        self.assertIn(
+            "handoff_step: step=1 workers=8/8 critical_node=nodeH "
+            "input_found_to_handoff_ms=640",
+            result.stdout,
+        )
+        self.assertIn(
+            "handoff_bottleneck: max_handoff_step=1 node=nodeH "
+            "input_found_to_handoff_ms=640",
             result.stdout,
         )
         self.assertIn(

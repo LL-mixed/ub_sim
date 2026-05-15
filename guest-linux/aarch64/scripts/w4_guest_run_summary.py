@@ -70,6 +70,7 @@ def compact_node_name(node_id):
 def parse_run_logs(run_dir, expected_steps, node_ids):
     tokens = {}
     timings = []
+    handoff_timings = []
     barriers = {}
     pool_usage = {}
     passes = {node_id: 0 for node_id in node_ids}
@@ -143,6 +144,50 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                             record[key] = parse_int(fields.get(key), 0)
                         timings.append(record)
 
+                if "qwen3_worker_handoff_timing" in clean_line:
+                    fields = parse_pairs(clean_line)
+                    step = parse_int(fields.get("step"), None)
+                    if step is not None:
+                        record = {
+                            "_log_node": node_id,
+                            "step": step,
+                            "local": fields.get("local", node_id),
+                            "layers": fields.get("layers", ""),
+                        }
+                        for key in (
+                            "node",
+                            "source",
+                            "next",
+                            "clock_offset_ms",
+                            "input_found_supernode_ms",
+                            "handoff_publish_supernode_ms",
+                            "publish_done_supernode_ms",
+                            "producer_publish_supernode_ms",
+                            "producer_publish_mono_ms",
+                            "producer_clock_offset_ms",
+                            "producer_to_input_found_supernode_ms",
+                            "producer_to_input_found_mono_ms",
+                            "input_wait_ms",
+                            "input_activate_ms",
+                            "input_metadata_ms",
+                            "input_wait_attempts",
+                            "input_found_to_handoff_ms",
+                            "input_loaded_to_handoff_ms",
+                            "kv_resolve_ms",
+                            "kv_load_ms",
+                            "compute_window_ms",
+                            "submit_ms",
+                            "dispatch_ms",
+                            "completion_decode_ms",
+                            "verify_dispatch_ms",
+                            "range_publish_ms",
+                            "terminal_publish_ms",
+                            "compute_done_to_handoff_ms",
+                            "round_done_publish_ms",
+                        ):
+                            record[key] = parse_int(fields.get(key), 0)
+                        handoff_timings.append(record)
+
                 if "qwen3_worker_barrier_timing" in clean_line:
                     fields = parse_pairs(clean_line)
                     step = parse_int(fields.get("step"), None)
@@ -170,7 +215,7 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                             record[key] = parse_int(fields.get(key), 0)
                         pool_usage[node_id] = record
 
-    return tokens, timings, barriers, pool_usage, passes, missing_logs, latest_status
+    return tokens, timings, handoff_timings, barriers, pool_usage, passes, missing_logs, latest_status
 
 
 def node_round_ms(record, barriers):
@@ -181,7 +226,7 @@ def node_round_ms(record, barriers):
 
 
 def emit_summary(run_dir, expected_steps, node_ids, output):
-    tokens, timings, barriers, pool_usage, passes, missing_logs, _latest_status = parse_run_logs(
+    tokens, timings, handoff_timings, barriers, pool_usage, passes, missing_logs, _latest_status = parse_run_logs(
         run_dir, expected_steps, node_ids
     )
     passed_nodes = sum(1 for count in passes.values() if count >= expected_steps)
@@ -192,18 +237,20 @@ def emit_summary(run_dir, expected_steps, node_ids, output):
         f"decode_steps_expected={expected_steps} "
         f"decode_steps_observed={len(tokens)} "
         f"worker_timing_records={len(timings)} "
-        f"passed_nodes={passed_nodes}/{len(node_ids)}"
+        f"passed_nodes={passed_nodes}/{len(node_ids)} "
+        f"handoff_timing_records={len(handoff_timings)}"
     )
     if missing_logs:
         output.append(f"summary: missing_guest_logs={quote_text(missing_logs)}")
 
     emit_token_summary(tokens, expected_steps, output)
     emit_timing_summary(timings, barriers, expected_steps, node_ids, output)
+    emit_handoff_timing_summary(handoff_timings, expected_steps, node_ids, output)
     emit_pool_usage_summary(pool_usage, expected_steps, node_ids, output)
 
 
 def emit_progress(run_dir, expected_steps, elapsed_s, node_ids, output):
-    tokens, _timings, _barriers, _pool_usage, passes, missing_logs, latest_status = parse_run_logs(
+    tokens, _timings, _handoff_timings, _barriers, _pool_usage, passes, missing_logs, latest_status = parse_run_logs(
         run_dir, expected_steps, node_ids
     )
     pad = max(1, len(str(expected_steps)))
@@ -378,6 +425,86 @@ def emit_timing_summary(timings, barriers, expected_steps, node_ids, output):
         f"compute_window_ms={max_compute_record['compute_window_ms']} "
         f"worker_total_ms={max_compute_record['total_ms']}"
     )
+
+
+def emit_handoff_timing_summary(handoff_timings, expected_steps, node_ids, output):
+    if not handoff_timings:
+        output.append("handoff_timing: unavailable reason=no_qwen3_worker_handoff_timing_records")
+        return
+
+    handoffs_by_step = collections.defaultdict(list)
+    handoffs_by_node = collections.defaultdict(list)
+    for record in handoff_timings:
+        handoffs_by_step[record["step"]].append(record)
+        handoffs_by_node[record["_log_node"]].append(record)
+
+    for step in sorted(handoffs_by_step):
+        records = handoffs_by_step[step]
+        max_handoff = max(records, key=lambda item: item["input_found_to_handoff_ms"])
+        max_dispatch = max(records, key=lambda item: item["dispatch_ms"])
+        max_publish = max(records, key=lambda item: item["range_publish_ms"])
+        output.append(
+            "handoff_step: "
+            f"step={step} "
+            f"workers={len(records)}/{len(node_ids)} "
+            f"critical_node={max_handoff['_log_node']} "
+            f"input_found_to_handoff_ms={max_handoff['input_found_to_handoff_ms']} "
+            f"input_loaded_to_handoff_ms={max_handoff['input_loaded_to_handoff_ms']} "
+            f"dispatch_node={max_dispatch['_log_node']} "
+            f"dispatch_ms={max_dispatch['dispatch_ms']} "
+            f"publish_node={max_publish['_log_node']} "
+            f"range_publish_ms={max_publish['range_publish_ms']} "
+            f"producer_to_input_found_mono_ms={max_handoff['producer_to_input_found_mono_ms']} "
+            f"producer_to_input_found_supernode_ms={max_handoff['producer_to_input_found_supernode_ms']}"
+        )
+
+    max_handoff_record = max(
+        handoff_timings,
+        key=lambda item: item["input_found_to_handoff_ms"],
+    )
+    max_kv_record = max(handoff_timings, key=lambda item: item["kv_resolve_ms"] + item["kv_load_ms"])
+    max_publish_record = max(handoff_timings, key=lambda item: item["range_publish_ms"])
+    output.append(
+        "handoff_bottleneck: "
+        f"max_handoff_step={max_handoff_record['step']} "
+        f"node={max_handoff_record['_log_node']} "
+        f"input_found_to_handoff_ms={max_handoff_record['input_found_to_handoff_ms']} "
+        f"compute_window_ms={max_handoff_record['compute_window_ms']} "
+        f"dispatch_ms={max_handoff_record['dispatch_ms']} "
+        f"range_publish_ms={max_handoff_record['range_publish_ms']}"
+    )
+    output.append(
+        "handoff_bottleneck: "
+        f"max_kv_step={max_kv_record['step']} "
+        f"node={max_kv_record['_log_node']} "
+        f"kv_resolve_ms={max_kv_record['kv_resolve_ms']} "
+        f"kv_load_ms={max_kv_record['kv_load_ms']}"
+    )
+    output.append(
+        "handoff_bottleneck: "
+        f"max_publish_step={max_publish_record['step']} "
+        f"node={max_publish_record['_log_node']} "
+        f"range_publish_ms={max_publish_record['range_publish_ms']} "
+        f"terminal_publish_ms={max_publish_record['terminal_publish_ms']}"
+    )
+
+    for node_id in node_ids:
+        records = sorted(handoffs_by_node.get(node_id, []), key=lambda item: item["step"])
+        if not records:
+            output.append(f"handoff_node: node={node_id} steps=0/{expected_steps} status=missing")
+            continue
+        total_handoff_ms = sum(record["input_found_to_handoff_ms"] for record in records)
+        total_dispatch_ms = sum(record["dispatch_ms"] for record in records)
+        total_publish_ms = sum(record["range_publish_ms"] for record in records)
+        output.append(
+            "handoff_node: "
+            f"node={node_id} "
+            f"steps={len(records)}/{expected_steps} "
+            f"total_input_found_to_handoff_ms={total_handoff_ms} "
+            f"total_dispatch_ms={total_dispatch_ms} "
+            f"total_range_publish_ms={total_publish_ms} "
+            f"max_input_found_to_handoff_ms={max(record['input_found_to_handoff_ms'] for record in records)}"
+        )
 
 
 def emit_pool_usage_summary(pool_usage, expected_steps, node_ids, output):
