@@ -91,6 +91,9 @@
 #define W4_QWEN3_HIDDEN_RANGE_BYTES 262144ULL
 #define W4_QWEN3_MAX_HIDDEN_RANGE_BYTES (2ULL * 1024ULL * 1024ULL)
 #define W4_QWEN3_MAX_KV_PAYLOAD_BYTES (4ULL * 1024ULL * 1024ULL)
+#define W4_QWEN3_OBJECT_REF_TABLE_OFFSET 0x0000000000070000ULL
+#define W4_QWEN3_OBJECT_REF_BYTES 64ULL
+#define W4_QWEN3_OBJECT_REF_MAX_COUNT 2U
 #define W4_QWEN3_RANGE_INPUT_PAYLOAD_OFFSET 0x0000000000080000ULL
 #define W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET 0x0000000000280000ULL
 #define W4_QWEN3_PREVIOUS_KV_PAYLOAD_HEADER_BYTES 32ULL
@@ -1104,7 +1107,9 @@ static void build_qwen3_range_dispatch_descriptor(uint8_t *slot,
                                                   uint32_t layer_start,
                                                   uint32_t layer_end,
                                                   uint32_t next_node,
-                                                  uint64_t hidden_bytes)
+                                                  uint64_t hidden_bytes,
+                                                  uint32_t object_ref_table_offset,
+                                                  uint32_t object_ref_count)
 {
     size_t off = 0;
 
@@ -1120,6 +1125,8 @@ static void build_qwen3_range_dispatch_descriptor(uint8_t *slot,
     write_u32_le(slot, &off, (uint32_t)qwen3_pipeline_nodes());
     write_u32_le(slot, &off, (uint32_t)qwen3_total_layers());
     write_u32_le(slot, &off, (uint32_t)hidden_bytes);
+    write_u32_le(slot, &off, object_ref_table_offset);
+    write_u32_le(slot, &off, object_ref_count);
 }
 
 static int decode_completion_preview(const uint8_t *slot, struct completion_preview *preview)
@@ -6093,21 +6100,42 @@ decode_round_start:
         round_layer_start = layer_start;
         round_layer_end = layer_end;
         round_next_node = next_node;
-        printf("[w4_guest] stage uapi_qwen3_range_dispatch_descriptor node=%u layers=[%u,%u) count=%u next=%u segment=%" PRIu64 " task_id=31 source=db_metadata status=ok\n",
+        {
+            uint32_t object_ref_count = 0;
+
+            if (layer_start > 0U) {
+                object_ref_count++;
+            }
+            if (guest_decode_step > 0) {
+                object_ref_count++;
+            }
+            if (object_ref_count > W4_QWEN3_OBJECT_REF_MAX_COUNT) {
+                fprintf(stderr,
+                        "[w4_guest] fail qwen3 range dispatch object ref count too large count=%u max=%u\n",
+                        object_ref_count,
+                        W4_QWEN3_OBJECT_REF_MAX_COUNT);
+                goto out;
+            }
+            printf("[w4_guest] stage uapi_qwen3_range_dispatch_descriptor node=%u layers=[%u,%u) count=%u next=%u segment=%" PRIu64 " task_id=31 object_ref_table_offset=0x%016" PRIx64 " object_ref_count=%u source=db_metadata status=ok\n",
                dispatch_node,
                layer_start,
                layer_end,
                layer_end - layer_start,
                next_node,
-               default_segment);
-        build_qwen3_range_dispatch_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++),
-                                              31,
-                                              default_segment,
-                                              dispatch_node,
-                                              layer_start,
-                                              layer_end,
-                                              next_node,
-                                              qwen3_handoff_hidden_bytes(guest_decode_step));
+                   default_segment,
+                   (uint64_t)W4_QWEN3_OBJECT_REF_TABLE_OFFSET,
+                   object_ref_count);
+            build_qwen3_range_dispatch_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++),
+                                                  31,
+                                                  default_segment,
+                                                  dispatch_node,
+                                                  layer_start,
+                                                  layer_end,
+                                                  next_node,
+                                                  qwen3_handoff_hidden_bytes(guest_decode_step),
+                                                  (uint32_t)W4_QWEN3_OBJECT_REF_TABLE_OFFSET,
+                                                  object_ref_count);
+        }
     } else {
         printf("[w4_guest] stage uapi_chipbackend_dispatch_descriptor block=%s segment=%" PRIu64 " task_id=31\n",
                block, default_segment);
@@ -6136,6 +6164,7 @@ decode_round_start:
         uint32_t layer_start = 0U;
         uint32_t layer_end = 0U;
         uint32_t next_node = 0U;
+        uint32_t object_ref_write_index = 0U;
 
         if (!w4_cluster_role_index(role, cluster_node_count, &dispatch_node) ||
             w4_db_qwen3_layer_range_for_node(dispatch_node,
@@ -6151,8 +6180,8 @@ decode_round_start:
         }
         if (layer_start > 0U) {
             uint64_t hidden_range_bytes = qwen3_handoff_hidden_bytes(guest_decode_step);
-            uint8_t *range_input_payload = NULL;
             uint64_t range_input_checksum = 0;
+            struct w4_db_object_payload_view range_input_view;
             uint64_t stage_start_ms = monotonic_ms();
 
             if (hidden_range_bytes > W4_QWEN3_MAX_HIDDEN_RANGE_BYTES) {
@@ -6163,34 +6192,31 @@ decode_round_start:
                         (uint64_t)W4_QWEN3_MAX_HIDDEN_RANGE_BYTES);
                 goto out;
             }
-            range_input_payload = malloc((size_t)hidden_range_bytes);
-            if (!range_input_payload) {
-                fprintf(stderr,
-                        "[w4_guest] fail qwen3 runtime range input malloc failed bytes=%" PRIu64 "\n",
-                        hidden_range_bytes);
-                goto out;
-            }
-            if (w4_db_obmm_service_v0_wait_runtime_range_input(dispatch_node,
-                                                               cluster_node_count,
-                                                               guest_decode_step,
-                                                               range_input_payload,
-                                                               hidden_range_bytes,
-                                                               &range_input_checksum) != 0) {
+            memset(&range_input_view, 0, sizeof(range_input_view));
+            if (w4_db_obmm_service_v0_wait_runtime_range_input_view(
+                    dispatch_node,
+                    cluster_node_count,
+                    guest_decode_step,
+                    &range_input_view) != 0 ||
+                !range_input_view.data ||
+                range_input_view.len != hidden_range_bytes) {
                 fprintf(stderr,
                         "[w4_guest] fail qwen3 runtime range input resolve failed node=%u layers=[%u,%u)\n",
                         dispatch_node + 1U,
                         layer_start,
                         layer_end);
-                free(range_input_payload);
                 goto out;
             }
+            range_input_checksum = range_input_view.checksum;
             input_wait_ms = monotonic_ms() - stage_start_ms;
             write_segment_bytes(ep_mmio,
-                                W4_QWEN3_RANGE_INPUT_PAYLOAD_OFFSET,
-                                range_input_payload,
-                                hidden_range_bytes);
-            free(range_input_payload);
-            printf("[w4_guest] stage qwen3_range_forward_runtime_input_loaded node=%u layers=[%u,%u) input_offset=0x%016" PRIx64 " input_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " source=obmm_object_service target=uapi_segment status=ok\n",
+                                W4_QWEN3_OBJECT_REF_TABLE_OFFSET +
+                                    ((uint64_t)object_ref_write_index *
+                                     W4_QWEN3_OBJECT_REF_BYTES),
+                                (const uint8_t *)&range_input_view.object_ref,
+                                W4_QWEN3_OBJECT_REF_BYTES);
+            object_ref_write_index++;
+            printf("[w4_guest] stage qwen3_range_forward_runtime_input_loaded node=%u layers=[%u,%u) input_offset=0x%016" PRIx64 " input_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " source=obmm_object_view target=uapi_object_ref materialize=sim_uapi_adapter status=ok\n",
                    dispatch_node + 1U,
                    layer_start,
                    layer_end,
@@ -6199,64 +6225,54 @@ decode_round_start:
                    hidden_range_bytes);
         }
         if (guest_decode_step > 0) {
-            uint8_t *previous_kv_payload = malloc((size_t)W4_QWEN3_MAX_KV_PAYLOAD_BYTES);
-            uint64_t previous_kv_payload_bytes = 0;
-            uint64_t previous_kv_payload_checksum = 0;
+            struct w4_db_object_payload_view previous_kv_view;
 
-            if (!previous_kv_payload) {
-                fprintf(stderr,
-                        "[w4_guest] fail qwen3 previous range kv malloc failed bytes=%" PRIu64 "\n",
-                        (uint64_t)W4_QWEN3_MAX_KV_PAYLOAD_BYTES);
-                goto out;
-            }
-            if (w4_db_obmm_service_v0_resolve_previous_range_kv_state(
+            memset(&previous_kv_view, 0, sizeof(previous_kv_view));
+            if (w4_db_obmm_service_v0_resolve_previous_range_kv_state_view(
                     &db_service,
                     dispatch_node,
                     cluster_node_count,
                     guest_decode_step,
-                    previous_kv_payload,
-                    W4_QWEN3_MAX_KV_PAYLOAD_BYTES,
-                    &previous_kv_payload_bytes,
-                    &previous_kv_payload_checksum) != 0) {
+                    &previous_kv_view) != 0) {
                 fprintf(stderr,
                         "[w4_guest] fail qwen3 previous range kv state resolve failed node=%u step=%" PRIu64 "\n",
                         dispatch_node + 1U,
                         guest_decode_step);
-                free(previous_kv_payload);
                 goto out;
             }
-            if (previous_kv_payload_bytes > 0) {
-                write_segment_u64(ep_mmio,
-                                  W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET,
-                                  W4_QWEN3_PREVIOUS_KV_PAYLOAD_MARKER);
-                write_segment_u64(ep_mmio,
-                                  W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET + 8ULL,
-                                  previous_kv_payload_bytes);
-                write_segment_u64(ep_mmio,
-                                  W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET + 16ULL,
-                                  previous_kv_payload_checksum);
-                write_segment_u64(ep_mmio,
-                                  W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET + 24ULL,
-                                  guest_decode_step - 1U);
-                write_segment_bytes(
-                    ep_mmio,
-                    W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET +
-                        W4_QWEN3_PREVIOUS_KV_PAYLOAD_HEADER_BYTES,
-                    previous_kv_payload,
-                    previous_kv_payload_bytes);
+            if (previous_kv_view.len > W4_QWEN3_MAX_KV_PAYLOAD_BYTES) {
+                fprintf(stderr,
+                        "[w4_guest] fail qwen3 previous range kv state too large node=%u step=%" PRIu64
+                        " bytes=%" PRIu64 " max=%" PRIu64 "\n",
+                        dispatch_node + 1U,
+                        guest_decode_step,
+                        previous_kv_view.len,
+                        (uint64_t)W4_QWEN3_MAX_KV_PAYLOAD_BYTES);
+                goto out;
+            }
+            if (previous_kv_view.data && previous_kv_view.len > 0) {
+                write_segment_bytes(ep_mmio,
+                                    W4_QWEN3_OBJECT_REF_TABLE_OFFSET +
+                                        ((uint64_t)object_ref_write_index *
+                                         W4_QWEN3_OBJECT_REF_BYTES),
+                                    (const uint8_t *)&previous_kv_view.object_ref,
+                                    W4_QWEN3_OBJECT_REF_BYTES);
+                object_ref_write_index++;
                 printf("[w4_guest] stage qwen3_range_kv_state_loaded node=%u step=%" PRIu64
                        " previous_step=%" PRIu64
                        " kv_offset=0x%016" PRIx64 " kv_bytes=%" PRIu64
                        " kv_checksum=0x%016" PRIx64
-                       " source=object_service target=uapi_segment status=ok\n",
+                       " key_hash=0x%016" PRIx64 " version=%" PRIu64
+                       " source=obmm_object_view target=uapi_object_ref materialize=sim_uapi_adapter status=ok\n",
                        dispatch_node + 1U,
                        guest_decode_step,
                        guest_decode_step - 1U,
                        (uint64_t)W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET,
-                       previous_kv_payload_bytes,
-                       previous_kv_payload_checksum);
+                       previous_kv_view.len,
+                       previous_kv_view.checksum,
+                       previous_kv_view.object_ref.key_hash,
+                       previous_kv_view.object_ref.object_version);
             }
-            free(previous_kv_payload);
         }
     }
 

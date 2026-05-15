@@ -1,8 +1,10 @@
 //! Guest-visible UAPI surface placeholders.
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::collections::{HashMap, VecDeque};
+use std::fs;
 #[cfg(all(unix, not(test)))]
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -66,7 +68,8 @@ use sim_services::{
         LingquObjectAppendReq, LingquObjectKind, LingquObjectLocality, LingquObjectMetadata,
         LingquObjectPublishReq, LingquObjectResolveReq, LingquObjectServiceProfile,
         LingquObjectServiceReport, LingquObjectServiceStub, LingquObjectState,
-        LingquObjectVersionSelector, LingquPayloadBackend, LingquPayloadPlacement,
+        LingquObjectVersionSelector, LingquObmmObjectRefWire, LingquPayloadBackend,
+        LingquPayloadPlacement,
     },
     shmem::{ShmemGetReq, ShmemPutReq, ShmemServiceProfile, ShmemServiceStub},
     weights::{
@@ -79,6 +82,7 @@ use sim_topology::{SimTopology, TopologySnapshot};
 #[derive(Debug, Clone)]
 pub enum UapiDescriptor {
     Io(IoSubmitReq),
+    Qwen3RangeDispatch(Qwen3RangeDispatchReq),
     BlockWriteback {
         block: BlockHash,
         task: Option<TaskKey>,
@@ -92,6 +96,15 @@ pub enum UapiDescriptor {
     ObjectPublish(LingquObjectPublishReq),
     ObjectResolve(LingquObjectResolveReq),
     ObjectAppend(LingquObjectAppendReq),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Qwen3RangeDispatchReq {
+    pub op_id: u64,
+    pub segment: SegmentHandle,
+    pub task: TaskKey,
+    pub object_ref_table_offset: u32,
+    pub object_ref_count: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -1197,6 +1210,12 @@ impl LocalGuestUapiSurface {
                 self.bind_completion_route(CompletionSource::DbService, handle.0, cq);
                 Ok(handle.0)
             }
+            UapiDescriptor::Qwen3RangeDispatch(req) => {
+                let event = self.run_qwen3_range_dispatch(req)?;
+                let op_id = event.op_id;
+                self.enqueue_to_cq(cq, event)?;
+                Ok(op_id)
+            }
         }
     }
 
@@ -1434,9 +1453,8 @@ impl LocalGuestUapiSurface {
                 let input = self
                     .segment_payloads
                     .get(&segment)
-                    .ok_or_else(|| "missing_dispatch_segment_payload".to_string())?
-                    .clone();
-                run_w4_chipbackend(&self.topology, &task, &input).map(|output| (segment, output))
+                    .ok_or_else(|| "missing_dispatch_segment_payload".to_string())?;
+                run_w4_chipbackend(&self.topology, &task, input).map(|output| (segment, output))
             });
         if let Ok((segment, output)) = &result {
             self.write_dispatch_result_to_segment(*segment, output)?;
@@ -1444,6 +1462,35 @@ impl LocalGuestUapiSurface {
         Ok(CompletionEvent {
             op_id: req.op_id,
             task: Some(task),
+            source: CompletionSource::ChipBackend,
+            status: match result {
+                Ok(_) => CompletionStatus::Success,
+                Err(code) => CompletionStatus::FatalFailure { code },
+            },
+            finished_at: now,
+        })
+    }
+
+    fn run_qwen3_range_dispatch(
+        &mut self,
+        req: Qwen3RangeDispatchReq,
+    ) -> Result<CompletionEvent, SimError> {
+        let now = self.next_service_time();
+        let result = self
+            .segment_payloads
+            .get(&req.segment)
+            .ok_or_else(|| "missing_qwen3_range_dispatch_segment_payload".to_string())
+            .and_then(|input| {
+                let input = materialize_qwen3_range_dispatch_input(&req, input)?;
+                validate_qwen3_range_dispatch_object_refs(&req, input.as_ref())?;
+                run_w4_chipbackend(&self.topology, &req.task, input.as_ref())
+            });
+        if let Ok(output) = &result {
+            self.write_dispatch_result_to_segment(req.segment, output)?;
+        }
+        Ok(CompletionEvent {
+            op_id: req.op_id,
+            task: Some(req.task),
             source: CompletionSource::ChipBackend,
             status: match result {
                 Ok(_) => CompletionStatus::Success,
@@ -1639,6 +1686,316 @@ struct Qwen3DenseProfileRealTerminal {
 const QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER: u64 = 0x4556_4b50_3351_5750;
 const QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET: usize = 0x28_0000;
 const QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES: usize = 32;
+const QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET: usize = 0x08_0000;
+const QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT: u16 = 5;
+const QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE: u16 = 7;
+const SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR: &str = "SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR";
+const SIM_UAPI_QWEN3_OBJECT_REF_PAYLOAD_SCAN: &str = "SIM_UAPI_QWEN3_OBJECT_REF_PAYLOAD_SCAN";
+
+fn materialize_qwen3_range_dispatch_input<'a>(
+    req: &Qwen3RangeDispatchReq,
+    segment_payload: &'a [u8],
+) -> Result<Cow<'a, [u8]>, String> {
+    if req.object_ref_count == 0 {
+        return Ok(Cow::Borrowed(segment_payload));
+    }
+    let contract = qwen3_guest_range_compute_contract(&req.task)?
+        .ok_or_else(|| "qwen3_range_dispatch_object_refs_require_range_contract".to_string())?;
+    let refs = qwen3_range_dispatch_object_refs(req, segment_payload)?;
+    let mut materialized: Option<Vec<u8>> = None;
+
+    for object_ref in refs {
+        match object_ref.object_kind {
+            QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT => {
+                if contract.layer_start == 0 {
+                    continue;
+                }
+                let expected_len = usize::try_from(contract.hidden_bytes)
+                    .map_err(|_| "qwen3_range_dispatch_hidden_bytes_too_large".to_string())?;
+                if object_ref.payload_bytes != expected_len as u64 {
+                    return Err(format!(
+                        "qwen3_range_dispatch_hidden_ref_bytes_mismatch:got={}:expected={expected_len}",
+                        object_ref.payload_bytes
+                    ));
+                }
+                let payload = qwen3_object_registry_get(&object_ref)?;
+                if payload.len() != expected_len {
+                    return Err(format!(
+                        "qwen3_range_dispatch_hidden_object_bytes_mismatch:got={}:expected={expected_len}",
+                        payload.len()
+                    ));
+                }
+                let input = materialized.get_or_insert_with(|| segment_payload.to_vec());
+                let start = QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET;
+                let end = start.checked_add(expected_len).ok_or_else(|| {
+                    "qwen3_range_dispatch_hidden_payload_end_overflow".to_string()
+                })?;
+                if end > input.len() {
+                    input.resize(end, 0);
+                }
+                input[start..end].copy_from_slice(&payload);
+            }
+            QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE => {
+                let payload_len = usize::try_from(object_ref.payload_bytes)
+                    .map_err(|_| "qwen3_range_dispatch_kv_object_bytes_too_large".to_string())?;
+                let payload = qwen3_object_registry_get(&object_ref)?;
+                if payload.len() != payload_len {
+                    return Err(format!(
+                        "qwen3_range_dispatch_kv_object_bytes_mismatch:got={}:expected={payload_len}",
+                        payload.len()
+                    ));
+                }
+                let input = materialized.get_or_insert_with(|| segment_payload.to_vec());
+                let payload_start = QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
+                    + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES;
+                let payload_end = payload_start
+                    .checked_add(payload_len)
+                    .ok_or_else(|| "qwen3_range_dispatch_kv_payload_end_overflow".to_string())?;
+                if payload_end > input.len() {
+                    input.resize(payload_end, 0);
+                }
+                write_u64_le_at(
+                    input,
+                    QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET,
+                    QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER,
+                );
+                write_u64_le_at(
+                    input,
+                    QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 8,
+                    object_ref.payload_bytes,
+                );
+                write_u64_le_at(
+                    input,
+                    QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 16,
+                    object_ref.payload_checksum,
+                );
+                input[payload_start..payload_end].copy_from_slice(&payload);
+            }
+            kind => {
+                return Err(format!(
+                    "qwen3_range_dispatch_object_ref_kind_unsupported:{kind}"
+                ));
+            }
+        }
+    }
+
+    Ok(materialized
+        .map(Cow::Owned)
+        .unwrap_or(Cow::Borrowed(segment_payload)))
+}
+
+fn qwen3_range_dispatch_object_refs(
+    req: &Qwen3RangeDispatchReq,
+    segment_payload: &[u8],
+) -> Result<Vec<LingquObmmObjectRefWire>, String> {
+    let table_offset = usize::try_from(req.object_ref_table_offset)
+        .map_err(|_| "qwen3_range_dispatch_object_ref_offset_too_large".to_string())?;
+    let ref_count = usize::try_from(req.object_ref_count)
+        .map_err(|_| "qwen3_range_dispatch_object_ref_count_too_large".to_string())?;
+    let table_bytes = ref_count
+        .checked_mul(LingquObmmObjectRefWire::BYTE_LEN)
+        .ok_or_else(|| "qwen3_range_dispatch_object_ref_table_overflow".to_string())?;
+    let table_end = table_offset
+        .checked_add(table_bytes)
+        .ok_or_else(|| "qwen3_range_dispatch_object_ref_table_end_overflow".to_string())?;
+    let table = segment_payload
+        .get(table_offset..table_end)
+        .ok_or_else(|| {
+            format!(
+                "qwen3_range_dispatch_object_ref_table_oob:offset={table_offset:#x}:count={ref_count}"
+            )
+        })?;
+    let mut refs = Vec::with_capacity(ref_count);
+    for index in 0..ref_count {
+        let ref_start = index * LingquObmmObjectRefWire::BYTE_LEN;
+        let object_ref = LingquObmmObjectRefWire::from_le_bytes(
+            &table[ref_start..ref_start + LingquObmmObjectRefWire::BYTE_LEN],
+        )
+        .map_err(|err| format!("qwen3_range_dispatch_object_ref_parse:{index}:{err}"))?;
+        object_ref
+            .validate()
+            .map_err(|err| format!("qwen3_range_dispatch_object_ref_invalid:{index}:{err}"))?;
+        refs.push(object_ref);
+    }
+    Ok(refs)
+}
+
+fn qwen3_object_registry_dir() -> PathBuf {
+    std::env::var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR)
+        .ok()
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp/ub_sim_qwen3_object_registry"))
+}
+
+fn qwen3_object_registry_path(object_ref: &LingquObmmObjectRefWire) -> PathBuf {
+    qwen3_object_registry_dir().join(format!(
+        "kind{:04x}_owner{:08x}_producer{:08x}_version{:016x}_key{:016x}_bytes{:016x}_checksum{:016x}.bin",
+        object_ref.object_kind,
+        object_ref.owner_entity,
+        object_ref.producer_entity,
+        object_ref.object_version,
+        object_ref.key_hash,
+        object_ref.payload_bytes,
+        object_ref.payload_checksum
+    ))
+}
+
+fn qwen3_object_registry_put(
+    object_ref: &LingquObmmObjectRefWire,
+    payload: &[u8],
+) -> Result<(), String> {
+    if payload.len() as u64 != object_ref.payload_bytes {
+        return Err(format!(
+            "qwen3_object_registry_put_bytes_mismatch:got={}:expected={}",
+            payload.len(),
+            object_ref.payload_bytes
+        ));
+    }
+    let checksum = qwen3_dense_reference_range_object_payload_checksum(payload);
+    if checksum != object_ref.payload_checksum {
+        return Err(format!(
+            "qwen3_object_registry_put_checksum_mismatch:got={checksum:#x}:expected={:#x}",
+            object_ref.payload_checksum
+        ));
+    }
+    let dir = qwen3_object_registry_dir();
+    fs::create_dir_all(&dir).map_err(|err| {
+        format!(
+            "qwen3_object_registry_create_failed:{}:{err}",
+            dir.display()
+        )
+    })?;
+    let path = qwen3_object_registry_path(object_ref);
+    let tmp_path = path.with_extension(format!(
+        "tmp.{}.{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("thread")
+    ));
+    fs::write(&tmp_path, payload).map_err(|err| {
+        format!(
+            "qwen3_object_registry_write_failed:{}:{err}",
+            tmp_path.display()
+        )
+    })?;
+    fs::rename(&tmp_path, &path).map_err(|err| {
+        format!(
+            "qwen3_object_registry_commit_failed:{}:{}:{err}",
+            tmp_path.display(),
+            path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn qwen3_object_registry_get(object_ref: &LingquObmmObjectRefWire) -> Result<Vec<u8>, String> {
+    let path = qwen3_object_registry_path(object_ref);
+    let payload = fs::read(&path)
+        .map_err(|err| format!("qwen3_object_registry_read_failed:{}:{err}", path.display()))?;
+    if payload.len() as u64 != object_ref.payload_bytes {
+        return Err(format!(
+            "qwen3_object_registry_read_bytes_mismatch:got={}:expected={}",
+            payload.len(),
+            object_ref.payload_bytes
+        ));
+    }
+    let checksum = qwen3_dense_reference_range_object_payload_checksum(&payload);
+    if checksum != object_ref.payload_checksum {
+        return Err(format!(
+            "qwen3_object_registry_read_checksum_mismatch:got={checksum:#x}:expected={:#x}",
+            object_ref.payload_checksum
+        ));
+    }
+    Ok(payload)
+}
+
+fn qwen3_lingqu_key_hash(key: &str) -> u64 {
+    key.as_bytes()
+        .iter()
+        .fold(1_469_598_103_934_665_603u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(1_099_511_628_211)
+        })
+}
+
+fn qwen3_dense_runtime_model_key() -> String {
+    std::env::var("SIM_QWEN3_DENSE_MODEL_KEY")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "qwen3-0.6b".to_string())
+}
+
+fn qwen3_guest_prompt_base_token_count() -> u64 {
+    std::env::var("SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value
+                .split(',')
+                .filter(|token| !token.trim().is_empty())
+                .count() as u64
+        })
+        .unwrap_or(4)
+}
+
+fn qwen3_dense_runtime_decode_step_from_guest_input(guest_input: &[u8]) -> u64 {
+    qwen3_dense_reference_guest_input_token_count(guest_input)
+        .saturating_sub(qwen3_guest_prompt_base_token_count())
+}
+
+fn qwen3_register_range_forward_objects(
+    contract: Qwen3GuestRangeComputeContract,
+    guest_input: &[u8],
+    summary: &Qwen3DenseReferenceRangeForwardSummary,
+) -> Result<(), String> {
+    let model_key = qwen3_dense_runtime_model_key();
+    let decode_step = qwen3_dense_runtime_decode_step_from_guest_input(guest_input);
+    let terminal_range = contract.layer_end >= contract.total_layers;
+    let target_node = if terminal_range {
+        contract.node
+    } else {
+        contract.next_node
+    };
+    let hidden_key = if terminal_range {
+        format!(
+            "hidden/{model_key}/node{}/range-runtime-output/decode-step{decode_step}",
+            target_node + 1
+        )
+    } else {
+        format!(
+            "hidden/{model_key}/node{}/range-runtime-input/decode-step{decode_step}",
+            target_node + 1
+        )
+    };
+    let hidden_ref = LingquObmmObjectRefWire::committed(
+        QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+        contract.node,
+        contract.node,
+        1,
+        qwen3_lingqu_key_hash(&hidden_key),
+        0,
+        summary.output_tensor_payload.len() as u64,
+        summary.output_tensor_checksum,
+    );
+    qwen3_object_registry_put(&hidden_ref, &summary.output_tensor_payload)?;
+
+    let kv_key = format!(
+        "kvcache/{model_key}/node{}/layers-{}-{}/decode-step{decode_step}",
+        contract.node + 1,
+        contract.layer_start,
+        contract.layer_end
+    );
+    let kv_ref = LingquObmmObjectRefWire::committed(
+        QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+        contract.node,
+        contract.node,
+        1,
+        qwen3_lingqu_key_hash(&kv_key),
+        0,
+        summary.kv_state_payload.len() as u64,
+        summary.kv_state_checksum,
+    );
+    qwen3_object_registry_put(&kv_ref, &summary.kv_state_payload)
+}
 
 fn qwen3_dense_weights_config_dir(weights_path: &Path) -> &Path {
     if weights_path.is_dir() {
@@ -1806,6 +2163,140 @@ fn qwen3_guest_range_compute_contract(
     Ok(Some(contract))
 }
 
+fn validate_qwen3_range_dispatch_object_refs(
+    req: &Qwen3RangeDispatchReq,
+    segment_payload: &[u8],
+) -> Result<(), String> {
+    let contract = qwen3_guest_range_compute_contract(&req.task)?
+        .ok_or_else(|| "qwen3_range_dispatch_object_refs_require_range_contract".to_string())?;
+    let previous_kv_header = segment_payload.get(
+        QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
+            ..QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES,
+    );
+    let previous_kv_required = previous_kv_header
+        .map(|header| read_u64_le_at(header, 0) != 0)
+        .unwrap_or(false)
+        || qwen3_dense_runtime_decode_step_from_guest_input(segment_payload) > 0;
+    if req.object_ref_count == 0 {
+        if contract.layer_start > 0 {
+            return Err("qwen3_range_dispatch_hidden_ref_missing".to_string());
+        }
+        if previous_kv_required {
+            return Err("qwen3_range_dispatch_kv_ref_missing".to_string());
+        }
+        return Ok(());
+    }
+    let table_offset = usize::try_from(req.object_ref_table_offset)
+        .map_err(|_| "qwen3_range_dispatch_object_ref_offset_too_large".to_string())?;
+    let ref_count = usize::try_from(req.object_ref_count)
+        .map_err(|_| "qwen3_range_dispatch_object_ref_count_too_large".to_string())?;
+    let table_bytes = ref_count
+        .checked_mul(LingquObmmObjectRefWire::BYTE_LEN)
+        .ok_or_else(|| "qwen3_range_dispatch_object_ref_table_overflow".to_string())?;
+    let table_end = table_offset
+        .checked_add(table_bytes)
+        .ok_or_else(|| "qwen3_range_dispatch_object_ref_table_end_overflow".to_string())?;
+    let table = segment_payload
+        .get(table_offset..table_end)
+        .ok_or_else(|| {
+            format!(
+                "qwen3_range_dispatch_object_ref_table_oob:offset={table_offset:#x}:count={ref_count}"
+            )
+        })?;
+
+    let mut hidden_ref_seen = false;
+    let mut previous_kv_ref_seen = false;
+    for index in 0..ref_count {
+        let ref_start = index * LingquObmmObjectRefWire::BYTE_LEN;
+        let object_ref = LingquObmmObjectRefWire::from_le_bytes(
+            &table[ref_start..ref_start + LingquObmmObjectRefWire::BYTE_LEN],
+        )
+        .map_err(|err| format!("qwen3_range_dispatch_object_ref_parse:{index}:{err}"))?;
+        object_ref
+            .validate()
+            .map_err(|err| format!("qwen3_range_dispatch_object_ref_invalid:{index}:{err}"))?;
+        match object_ref.object_kind {
+            QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT => {
+                let expected_len = u64::from(contract.hidden_bytes);
+                if object_ref.payload_bytes != expected_len {
+                    return Err(format!(
+                        "qwen3_range_dispatch_hidden_ref_bytes_mismatch:got={}:expected={expected_len}",
+                        object_ref.payload_bytes
+                    ));
+                }
+                if object_ref.payload_checksum == 0 {
+                    return Err("qwen3_range_dispatch_hidden_ref_checksum_missing".to_string());
+                }
+                if qwen3_range_object_ref_payload_scan_enabled() {
+                    let hidden_len = usize::try_from(contract.hidden_bytes)
+                        .map_err(|_| "qwen3_range_dispatch_hidden_bytes_too_large".to_string())?;
+                    let payload = segment_payload
+                        .get(
+                            QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET
+                                ..QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + hidden_len,
+                        )
+                        .ok_or_else(|| {
+                            "qwen3_range_dispatch_hidden_ref_payload_missing".to_string()
+                        })?;
+                    let checksum = qwen3_dense_reference_range_object_payload_checksum(payload);
+                    if checksum != object_ref.payload_checksum {
+                        return Err(format!(
+                            "qwen3_range_dispatch_hidden_ref_checksum_mismatch:got={checksum:#x}:expected={:#x}",
+                            object_ref.payload_checksum
+                        ));
+                    }
+                }
+                hidden_ref_seen = true;
+            }
+            QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE => {
+                let header = previous_kv_header
+                    .ok_or_else(|| "qwen3_range_dispatch_kv_ref_header_missing".to_string())?;
+                let marker = read_u64_le_at(header, 0);
+                if marker != QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER {
+                    return Err(format!(
+                        "qwen3_range_dispatch_kv_ref_marker_mismatch:{marker:#x}"
+                    ));
+                }
+                let payload_len = read_u64_le_at(header, 8);
+                let expected_checksum = read_u64_le_at(header, 16);
+                if payload_len != object_ref.payload_bytes {
+                    return Err(format!(
+                        "qwen3_range_dispatch_kv_ref_bytes_mismatch:got={}:expected={}",
+                        object_ref.payload_bytes, payload_len
+                    ));
+                }
+                if expected_checksum != object_ref.payload_checksum {
+                    return Err(format!(
+                        "qwen3_range_dispatch_kv_ref_checksum_header_mismatch:got={:#x}:expected={expected_checksum:#x}",
+                        object_ref.payload_checksum
+                    ));
+                }
+                previous_kv_ref_seen = true;
+            }
+            kind => {
+                return Err(format!(
+                    "qwen3_range_dispatch_object_ref_kind_unsupported:{kind}"
+                ));
+            }
+        }
+    }
+
+    if contract.layer_start > 0 && !hidden_ref_seen {
+        return Err("qwen3_range_dispatch_hidden_ref_missing".to_string());
+    }
+    if previous_kv_required && !previous_kv_ref_seen {
+        return Err("qwen3_range_dispatch_kv_ref_missing".to_string());
+    }
+    Ok(())
+}
+
+fn qwen3_range_object_ref_payload_scan_enabled() -> bool {
+    std::env::var(SIM_UAPI_QWEN3_OBJECT_REF_PAYLOAD_SCAN)
+        .ok()
+        .as_deref()
+        == Some("1")
+}
+
 fn run_qwen3_dense_profile_runtime(
     topology: &SimTopology,
     task: &TaskKey,
@@ -1910,6 +2401,7 @@ fn run_qwen3_dense_profile_runtime(
         kv_state_checksum,
         kv_state_payload,
     };
+    qwen3_register_range_forward_objects(contract, guest_input, &range_forward_summary)?;
     let terminal_owner = contract.node + 1 == contract.pipeline_nodes;
     let real_terminal = if terminal_owner {
         qwen3_dense_profile_real_terminal_summary(
@@ -4403,7 +4895,7 @@ fn qwen3_dense_reference_decode_object_service_report(
         (
             kv_index_key.clone(),
             LingquObjectKind::KvCacheBlock,
-            LingquPayloadBackend::Shmem,
+            LingquPayloadBackend::ObmmShmem,
             (kv_payload.len() as u64).max(1),
             kv_checksum,
             kv_payload,
@@ -4411,7 +4903,7 @@ fn qwen3_dense_reference_decode_object_service_report(
         (
             format!("{base}/hidden/final"),
             LingquObjectKind::RuntimeTensor,
-            LingquPayloadBackend::Shmem,
+            LingquPayloadBackend::ObmmShmem,
             final_hidden_payload.len() as u64,
             final_hidden_payload_checksum,
             final_hidden_payload,
@@ -4460,7 +4952,7 @@ fn qwen3_dense_reference_decode_object_service_report(
                 range.node_id, range.first_layer_id, range.last_layer_id
             ),
             LingquObjectKind::RuntimeTensor,
-            LingquPayloadBackend::Shmem,
+            LingquPayloadBackend::ObmmShmem,
             first_execution.input_tensor_payload.len() as u64,
             first_execution.input_tensor_checksum,
             first_execution.input_tensor_payload.clone(),
@@ -4471,7 +4963,7 @@ fn qwen3_dense_reference_decode_object_service_report(
                 range.node_id, range.first_layer_id, range.last_layer_id
             ),
             LingquObjectKind::RuntimeTensor,
-            LingquPayloadBackend::Shmem,
+            LingquPayloadBackend::ObmmShmem,
             last_execution.output_tensor_payload.len() as u64,
             last_execution.output_tensor_checksum,
             last_execution.output_tensor_payload.clone(),
@@ -4726,7 +5218,7 @@ fn qwen3_dense_reference_publish_runtime_tensor_object(
                 metadata: qwen3_dense_reference_object_metadata(payload.len() as u64, checksum),
                 placements: vec![qwen3_dense_reference_object_placement(
                     key,
-                    LingquPayloadBackend::Shmem,
+                    LingquPayloadBackend::ObmmShmem,
                     payload.len() as u64,
                     checksum,
                 )],
@@ -4762,7 +5254,10 @@ fn qwen3_dense_reference_resolve_runtime_tensor_object(
                 requester_entity,
                 version: LingquObjectVersionSelector::LatestCommitted,
                 min_state: LingquObjectState::Committed,
-                preferred_backends: vec![LingquPayloadBackend::Shmem],
+                preferred_backends: vec![
+                    LingquPayloadBackend::ObmmShmem,
+                    LingquPayloadBackend::Shmem,
+                ],
             },
             event_id,
         )
@@ -4813,7 +5308,10 @@ fn qwen3_dense_reference_resolve_runtime_hidden_tensor_object(
                 requester_entity,
                 version: LingquObjectVersionSelector::LatestCommitted,
                 min_state: LingquObjectState::Committed,
-                preferred_backends: vec![LingquPayloadBackend::Shmem],
+                preferred_backends: vec![
+                    LingquPayloadBackend::ObmmShmem,
+                    LingquPayloadBackend::Shmem,
+                ],
             },
             event_id,
         )
@@ -5389,7 +5887,10 @@ fn qwen3_dense_reference_resolve_incremental_kv_index(
                 requester_entity: 0,
                 version: LingquObjectVersionSelector::Exact(state.kv_object_version),
                 min_state: LingquObjectState::Committed,
-                preferred_backends: vec![LingquPayloadBackend::Shmem],
+                preferred_backends: vec![
+                    LingquPayloadBackend::ObmmShmem,
+                    LingquPayloadBackend::Shmem,
+                ],
             },
             loop_step.saturating_mul(1000) + 10,
         )
@@ -17396,6 +17897,7 @@ fn bytes_to_f32s(bytes: &[u8]) -> Vec<f32> {
 fn runtime_kind_for_descriptor(desc: &UapiDescriptor) -> RuntimeWorkKind {
     match desc {
         UapiDescriptor::Io(_) => RuntimeWorkKind::GuestIo,
+        UapiDescriptor::Qwen3RangeDispatch(_) => RuntimeWorkKind::GuestIo,
         UapiDescriptor::BlockWriteback { .. } => RuntimeWorkKind::BlockWriteback,
         UapiDescriptor::ShmemPut(_) => RuntimeWorkKind::ShmemPut,
         UapiDescriptor::ShmemGet(_) => RuntimeWorkKind::ShmemGet,
@@ -17413,6 +17915,7 @@ fn runtime_kind_for_descriptor(desc: &UapiDescriptor) -> RuntimeWorkKind {
 fn runtime_task_for_descriptor(desc: &UapiDescriptor) -> Option<TaskKey> {
     match desc {
         UapiDescriptor::Io(req) => req.task.clone(),
+        UapiDescriptor::Qwen3RangeDispatch(req) => Some(req.task.clone()),
         UapiDescriptor::BlockWriteback { task, .. } => task.clone(),
         UapiDescriptor::ShmemPut(req) => req.task.clone(),
         UapiDescriptor::ShmemGet(req) => req.task.clone(),
@@ -17430,6 +17933,7 @@ fn runtime_task_for_descriptor(desc: &UapiDescriptor) -> Option<TaskKey> {
 mod tests {
     use super::{
         bytes_to_f32s, f32s_to_bytes, kvcache_input_b_payload,
+        materialize_qwen3_range_dispatch_input,
         qwen3_dense_profile_previous_kv_cache_from_guest_payload,
         qwen3_dense_profile_range_kv_payload_from_cache,
         qwen3_dense_reference_attention_context_tile_from_softmax_and_v,
@@ -17488,21 +17992,24 @@ mod tests {
         qwen3_dense_reference_weight_tensor_kind_code,
         qwen3_dense_reference_write_service_flow_markers,
         qwen3_dense_reference_write_weight_reference_table,
-        qwen3_dense_reference_write_weight_stage_link_table, read_u64_le_at,
-        run_host_matmul_batched_smoke, run_host_matmul_smoke,
-        run_qwen3_dense_reference_prefill_runtime, GuestUapiSurface, KvCachePayloadLayout,
-        LocalGuestUapiSurface, Qwen3DenseReferenceHiddenLayerNodeRange,
-        Qwen3DenseReferenceLayerDependencyDescriptor, Qwen3DenseReferenceLogitsDescriptor,
-        Qwen3DenseReferenceShard, Qwen3GuestRangeComputeContract, Qwen3ProjectionKind, UapiCommand,
-        UapiDescriptor, UapiResponse, QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES,
+        qwen3_dense_reference_write_weight_stage_link_table, qwen3_object_registry_put,
+        read_u64_le_at, run_host_matmul_batched_smoke, run_host_matmul_smoke,
+        run_qwen3_dense_reference_prefill_runtime, validate_qwen3_range_dispatch_object_refs,
+        GuestUapiSurface, KvCachePayloadLayout, LocalGuestUapiSurface,
+        Qwen3DenseReferenceHiddenLayerNodeRange, Qwen3DenseReferenceLayerDependencyDescriptor,
+        Qwen3DenseReferenceLogitsDescriptor, Qwen3DenseReferenceShard,
+        Qwen3GuestRangeComputeContract, Qwen3ProjectionKind, Qwen3RangeDispatchReq, UapiCommand,
+        UapiDescriptor, UapiResponse, QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE, QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES,
         QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER, QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET,
-        QWEN3_DENSE_REFERENCE_PROFILE, QWEN3_DENSE_REFERENCE_TOKENIZER_POLICY_KIND,
-        QWEN3_LOGITS_REFERENCE_ENTRY_WORDS, QWEN3_MLP_REFERENCE_ENTRY_WORDS,
-        QWEN3_SYNTHETIC_ATTENTION_CONTEXT, QWEN3_SYNTHETIC_ATTENTION_SCORE,
-        QWEN3_SYNTHETIC_GUEST_INPUT, QWEN3_SYNTHETIC_LOGITS_CANDIDATES,
-        QWEN3_SYNTHETIC_MLP_ACTIVATION, QWEN3_SYNTHETIC_MLP_OUTPUT, QWEN3_SYNTHETIC_QKV_BASE_TILE,
-        QWEN3_SYNTHETIC_TOKEN_TEXT, QWEN3_WEIGHT_REFERENCE_ENTRY_WORDS,
-        QWEN3_WEIGHT_STAGE_LINK_ENTRY_WORDS, W4_DEMO_KVCACHE_PAYLOAD_BYTES, W4_KVCACHE_BLOCKS,
+        QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET, QWEN3_DENSE_REFERENCE_PROFILE,
+        QWEN3_DENSE_REFERENCE_TOKENIZER_POLICY_KIND, QWEN3_LOGITS_REFERENCE_ENTRY_WORDS,
+        QWEN3_MLP_REFERENCE_ENTRY_WORDS, QWEN3_SYNTHETIC_ATTENTION_CONTEXT,
+        QWEN3_SYNTHETIC_ATTENTION_SCORE, QWEN3_SYNTHETIC_GUEST_INPUT,
+        QWEN3_SYNTHETIC_LOGITS_CANDIDATES, QWEN3_SYNTHETIC_MLP_ACTIVATION,
+        QWEN3_SYNTHETIC_MLP_OUTPUT, QWEN3_SYNTHETIC_QKV_BASE_TILE, QWEN3_SYNTHETIC_TOKEN_TEXT,
+        QWEN3_WEIGHT_REFERENCE_ENTRY_WORDS, QWEN3_WEIGHT_STAGE_LINK_ENTRY_WORDS,
+        SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, W4_DEMO_KVCACHE_PAYLOAD_BYTES, W4_KVCACHE_BLOCKS,
         W4_KVCACHE_PREFIX_GROUPS, W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES,
     };
     use sim_config::ScenarioConfig;
@@ -17528,7 +18035,8 @@ mod tests {
         object::{
             LingquObjectKind, LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
             LingquObjectResolveReq, LingquObjectServiceStub, LingquObjectState,
-            LingquObjectVersionSelector, LingquPayloadBackend, LingquPayloadPlacement,
+            LingquObjectVersionSelector, LingquObmmObjectRefWire, LingquPayloadBackend,
+            LingquPayloadPlacement,
         },
         shmem::{ShmemGetReq, ShmemPutReq, ShmemServiceProfile, DEFAULT_MAX_SEGMENT_BYTES},
     };
@@ -22379,6 +22887,218 @@ mod tests {
         assert_eq!(next_layer_softmax_stage_checks, TILE_COUNT);
         assert_eq!(next_layer_context_stage_checks, TILE_COUNT);
         assert_eq!(partial_stage_checks, TILE_COUNT);
+    }
+
+    fn write_obmm_object_ref_wire(out: &mut [u8], object_ref: LingquObmmObjectRefWire) {
+        assert_eq!(out.len(), LingquObmmObjectRefWire::BYTE_LEN);
+        out[0..8].copy_from_slice(&object_ref.magic.to_le_bytes());
+        out[8..10].copy_from_slice(&object_ref.layout_version.to_le_bytes());
+        out[10..12].copy_from_slice(&object_ref.object_kind.to_le_bytes());
+        out[12..14].copy_from_slice(&object_ref.state.to_le_bytes());
+        out[14..16].copy_from_slice(&object_ref.flags.to_le_bytes());
+        out[16..20].copy_from_slice(&object_ref.owner_entity.to_le_bytes());
+        out[20..24].copy_from_slice(&object_ref.producer_entity.to_le_bytes());
+        out[24..32].copy_from_slice(&object_ref.object_version.to_le_bytes());
+        out[32..40].copy_from_slice(&object_ref.key_hash.to_le_bytes());
+        out[40..48].copy_from_slice(&object_ref.payload_offset.to_le_bytes());
+        out[48..56].copy_from_slice(&object_ref.payload_bytes.to_le_bytes());
+        out[56..64].copy_from_slice(&object_ref.payload_checksum.to_le_bytes());
+    }
+
+    #[test]
+    fn qwen3_range_dispatch_object_ref_sideband_validates_hidden_metadata() {
+        const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
+        const OBJECT_REF_TABLE_OFFSET: usize = 0x07_0000;
+        const HIDDEN_BYTES: usize = 262_144;
+
+        std::env::set_var("SIM_QWEN3_DENSE_TP_NODES", "8");
+        std::env::set_var("SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS", "28");
+        std::env::set_var("SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES", "262144");
+        std::env::set_var("SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES", "2048");
+
+        let task = TaskKey {
+            logical_system: LogicalSystemId(1),
+            coord: HierarchyCoord {
+                levels: [RANGE_TASK_MAGIC, 1, 4, 8, 2, 8, 28, HIDDEN_BYTES as u32],
+            },
+            scope_depth: 8,
+            task_id: 31,
+        };
+        let mut segment_payload =
+            vec![0u8; QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + HIDDEN_BYTES];
+        let hidden_start = QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET;
+        segment_payload[hidden_start..hidden_start + HIDDEN_BYTES].fill(0x5a);
+        let hidden_checksum = qwen3_dense_reference_range_object_payload_checksum(
+            &segment_payload[hidden_start..hidden_start + HIDDEN_BYTES],
+        );
+        let object_ref = LingquObmmObjectRefWire::committed(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+            0,
+            0,
+            1,
+            0x1234,
+            0x98000,
+            HIDDEN_BYTES as u64,
+            hidden_checksum,
+        );
+        write_obmm_object_ref_wire(
+            &mut segment_payload[OBJECT_REF_TABLE_OFFSET
+                ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN],
+            object_ref,
+        );
+        let req = Qwen3RangeDispatchReq {
+            op_id: 31,
+            segment: sim_core::SegmentHandle(1),
+            task,
+            object_ref_table_offset: OBJECT_REF_TABLE_OFFSET as u32,
+            object_ref_count: 1,
+        };
+
+        validate_qwen3_range_dispatch_object_refs(&req, &segment_payload)
+            .expect("object-ref sideband should validate");
+
+        let missing_ref_req = Qwen3RangeDispatchReq {
+            object_ref_count: 0,
+            ..req.clone()
+        };
+        let err = validate_qwen3_range_dispatch_object_refs(&missing_ref_req, &segment_payload)
+            .expect_err("non-first range must carry hidden object ref");
+        assert!(err.contains("hidden_ref_missing"), "{err}");
+
+        let mut bad_ref = object_ref;
+        bad_ref.payload_bytes = HIDDEN_BYTES as u64 - 8;
+        write_obmm_object_ref_wire(
+            &mut segment_payload[OBJECT_REF_TABLE_OFFSET
+                ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN],
+            bad_ref,
+        );
+        let err = validate_qwen3_range_dispatch_object_refs(&req, &segment_payload)
+            .expect_err("corrupt hidden metadata should fail ref validation");
+        assert!(err.contains("hidden_ref_bytes_mismatch"), "{err}");
+
+        let first_range_task = TaskKey {
+            logical_system: LogicalSystemId(1),
+            coord: HierarchyCoord {
+                levels: [RANGE_TASK_MAGIC, 0, 0, 4, 1, 8, 28, HIDDEN_BYTES as u32],
+            },
+            scope_depth: 8,
+            task_id: 31,
+        };
+        let mut previous_kv_segment = vec![0u8; QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 64];
+        previous_kv_segment
+            [QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET..QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 8]
+            .copy_from_slice(&QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER.to_le_bytes());
+        let previous_kv_req = Qwen3RangeDispatchReq {
+            op_id: 31,
+            segment: sim_core::SegmentHandle(1),
+            task: first_range_task,
+            object_ref_table_offset: OBJECT_REF_TABLE_OFFSET as u32,
+            object_ref_count: 0,
+        };
+        let err = validate_qwen3_range_dispatch_object_refs(&previous_kv_req, &previous_kv_segment)
+            .expect_err("previous KV header must carry matching object ref");
+        assert!(err.contains("kv_ref_missing"), "{err}");
+    }
+
+    #[test]
+    fn qwen3_range_dispatch_materializes_object_ref_operands() {
+        const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
+        const OBJECT_REF_TABLE_OFFSET: usize = 0x07_0000;
+        const HIDDEN_BYTES: usize = 2_048;
+        const KV_BYTES: usize = 128;
+
+        std::env::set_var("SIM_QWEN3_DENSE_TP_NODES", "8");
+        std::env::set_var("SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS", "28");
+        std::env::set_var("SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES", "262144");
+        std::env::set_var(
+            "SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES",
+            HIDDEN_BYTES.to_string(),
+        );
+        let registry_dir = std::env::temp_dir().join(format!(
+            "ub_sim_qwen3_object_registry_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&registry_dir);
+        std::env::set_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, &registry_dir);
+
+        let task = TaskKey {
+            logical_system: LogicalSystemId(1),
+            coord: HierarchyCoord {
+                levels: [RANGE_TASK_MAGIC, 1, 4, 8, 2, 8, 28, HIDDEN_BYTES as u32],
+            },
+            scope_depth: 8,
+            task_id: 31,
+        };
+        let segment_len = QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
+            + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES
+            + KV_BYTES;
+        let mut segment_payload = vec![0u8; segment_len];
+        let hidden_payload = vec![0x5au8; HIDDEN_BYTES];
+        let kv_payload = vec![0xa5u8; KV_BYTES];
+        let hidden_ref = LingquObmmObjectRefWire::committed(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+            0,
+            0,
+            1,
+            0x1234,
+            0x98000,
+            HIDDEN_BYTES as u64,
+            qwen3_dense_reference_range_object_payload_checksum(&hidden_payload),
+        );
+        let kv_ref = LingquObmmObjectRefWire::committed(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+            0,
+            0,
+            1,
+            0x5678,
+            0x99000,
+            KV_BYTES as u64,
+            qwen3_dense_reference_range_object_payload_checksum(&kv_payload),
+        );
+        qwen3_object_registry_put(&hidden_ref, &hidden_payload).expect("hidden registry put");
+        qwen3_object_registry_put(&kv_ref, &kv_payload).expect("kv registry put");
+        write_obmm_object_ref_wire(
+            &mut segment_payload[OBJECT_REF_TABLE_OFFSET
+                ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN],
+            hidden_ref,
+        );
+        write_obmm_object_ref_wire(
+            &mut segment_payload[OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN
+                ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN * 2],
+            kv_ref,
+        );
+        let req = Qwen3RangeDispatchReq {
+            op_id: 31,
+            segment: sim_core::SegmentHandle(1),
+            task,
+            object_ref_table_offset: OBJECT_REF_TABLE_OFFSET as u32,
+            object_ref_count: 2,
+        };
+
+        let materialized =
+            materialize_qwen3_range_dispatch_input(&req, &segment_payload).expect("materialize");
+        let hidden_start = QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET;
+        assert_eq!(
+            &materialized[hidden_start..hidden_start + HIDDEN_BYTES],
+            hidden_payload.as_slice()
+        );
+        assert_eq!(
+            read_u64_le_at(&materialized, QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET),
+            QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER
+        );
+        assert_eq!(
+            read_u64_le_at(&materialized, QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 8),
+            KV_BYTES as u64
+        );
+        let kv_start =
+            QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES;
+        assert_eq!(
+            &materialized[kv_start..kv_start + KV_BYTES],
+            kv_payload.as_slice()
+        );
+        validate_qwen3_range_dispatch_object_refs(&req, materialized.as_ref())
+            .expect("materialized refs validate");
+        let _ = std::fs::remove_dir_all(&registry_dir);
     }
 
     const VALID_YAML: &str = r#"

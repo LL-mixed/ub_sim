@@ -707,9 +707,150 @@ pub mod object {
     pub enum LingquPayloadBackend {
         Inline,
         Shmem,
+        ObmmShmem,
         Block,
         Dfs,
         External,
+    }
+
+    pub const LINGQU_OBMM_OBJECT_REF_MAGIC: u64 = 0x514f_424d_4d52_4546;
+    pub const LINGQU_OBMM_OBJECT_REF_LAYOUT_VERSION: u16 = 1;
+    pub const LINGQU_OBJECT_STATE_PENDING_WIRE: u16 = 1;
+    pub const LINGQU_OBJECT_STATE_COMMITTED_WIRE: u16 = 2;
+    pub const LINGQU_OBJECT_STATE_TOMBSTONED_WIRE: u16 = 3;
+    pub const LINGQU_OBJECT_STATE_QUARANTINED_WIRE: u16 = 4;
+
+    #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+    #[repr(C)]
+    pub struct LingquObmmObjectRefWire {
+        pub magic: u64,
+        pub layout_version: u16,
+        pub object_kind: u16,
+        pub state: u16,
+        pub flags: u16,
+        pub owner_entity: u32,
+        pub producer_entity: u32,
+        pub object_version: u64,
+        pub key_hash: u64,
+        pub payload_offset: u64,
+        pub payload_bytes: u64,
+        pub payload_checksum: u64,
+    }
+
+    const _: [(); 64] = [(); std::mem::size_of::<LingquObmmObjectRefWire>()];
+
+    impl LingquObmmObjectRefWire {
+        pub const BYTE_LEN: usize = 64;
+
+        pub fn committed(
+            object_kind: u16,
+            owner_entity: u32,
+            producer_entity: u32,
+            object_version: u64,
+            key_hash: u64,
+            payload_offset: u64,
+            payload_bytes: u64,
+            payload_checksum: u64,
+        ) -> Self {
+            Self {
+                magic: LINGQU_OBMM_OBJECT_REF_MAGIC,
+                layout_version: LINGQU_OBMM_OBJECT_REF_LAYOUT_VERSION,
+                object_kind,
+                state: LINGQU_OBJECT_STATE_COMMITTED_WIRE,
+                flags: 0,
+                owner_entity,
+                producer_entity,
+                object_version,
+                key_hash,
+                payload_offset,
+                payload_bytes,
+                payload_checksum,
+            }
+        }
+
+        pub fn from_le_bytes(bytes: &[u8]) -> Result<Self, &'static str> {
+            if bytes.len() != Self::BYTE_LEN {
+                return Err("lingqu_obmm_object_ref_bad_len");
+            }
+            Ok(Self {
+                magic: u64::from_le_bytes(
+                    bytes[0..8]
+                        .try_into()
+                        .map_err(|_| "lingqu_obmm_object_ref_bad_magic_bytes")?,
+                ),
+                layout_version: u16::from_le_bytes(
+                    bytes[8..10]
+                        .try_into()
+                        .map_err(|_| "lingqu_obmm_object_ref_bad_layout_bytes")?,
+                ),
+                object_kind: u16::from_le_bytes(
+                    bytes[10..12]
+                        .try_into()
+                        .map_err(|_| "lingqu_obmm_object_ref_bad_kind_bytes")?,
+                ),
+                state: u16::from_le_bytes(
+                    bytes[12..14]
+                        .try_into()
+                        .map_err(|_| "lingqu_obmm_object_ref_bad_state_bytes")?,
+                ),
+                flags: u16::from_le_bytes(
+                    bytes[14..16]
+                        .try_into()
+                        .map_err(|_| "lingqu_obmm_object_ref_bad_flags_bytes")?,
+                ),
+                owner_entity: u32::from_le_bytes(
+                    bytes[16..20]
+                        .try_into()
+                        .map_err(|_| "lingqu_obmm_object_ref_bad_owner_bytes")?,
+                ),
+                producer_entity: u32::from_le_bytes(
+                    bytes[20..24]
+                        .try_into()
+                        .map_err(|_| "lingqu_obmm_object_ref_bad_producer_bytes")?,
+                ),
+                object_version: u64::from_le_bytes(
+                    bytes[24..32]
+                        .try_into()
+                        .map_err(|_| "lingqu_obmm_object_ref_bad_version_bytes")?,
+                ),
+                key_hash: u64::from_le_bytes(
+                    bytes[32..40]
+                        .try_into()
+                        .map_err(|_| "lingqu_obmm_object_ref_bad_key_hash_bytes")?,
+                ),
+                payload_offset: u64::from_le_bytes(
+                    bytes[40..48]
+                        .try_into()
+                        .map_err(|_| "lingqu_obmm_object_ref_bad_offset_bytes")?,
+                ),
+                payload_bytes: u64::from_le_bytes(
+                    bytes[48..56]
+                        .try_into()
+                        .map_err(|_| "lingqu_obmm_object_ref_bad_bytes_bytes")?,
+                ),
+                payload_checksum: u64::from_le_bytes(
+                    bytes[56..64]
+                        .try_into()
+                        .map_err(|_| "lingqu_obmm_object_ref_bad_checksum_bytes")?,
+                ),
+            })
+        }
+
+        pub fn validate(&self) -> Result<(), &'static str> {
+            if self.magic != LINGQU_OBMM_OBJECT_REF_MAGIC {
+                return Err("lingqu_obmm_object_ref_bad_magic");
+            }
+            if self.layout_version != LINGQU_OBMM_OBJECT_REF_LAYOUT_VERSION {
+                return Err("lingqu_obmm_object_ref_bad_layout_version");
+            }
+            if self.state != LINGQU_OBJECT_STATE_COMMITTED_WIRE {
+                return Err("lingqu_obmm_object_ref_not_committed");
+            }
+            if self.payload_bytes == 0 {
+                return Err("lingqu_obmm_object_ref_empty_payload");
+            }
+            Ok(())
+        }
     }
 
     #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -1039,10 +1180,12 @@ pub mod object {
             if !self.profile.enabled {
                 return Ok(());
             }
-            for placement in placements
-                .iter_mut()
-                .filter(|placement| placement.backend == LingquPayloadBackend::Shmem)
-            {
+            for placement in placements.iter_mut().filter(|placement| {
+                matches!(
+                    placement.backend,
+                    LingquPayloadBackend::Shmem | LingquPayloadBackend::ObmmShmem
+                )
+            }) {
                 let owner = owner_entity.unwrap_or(producer_entity);
                 let storage_ref = if placement.storage_ref.is_empty() {
                     format!("obmm://node/{owner}/payload/{version}/{}", placement.offset)
@@ -1402,7 +1545,10 @@ pub mod object {
 
         pub fn get_copy(&self, key: &str, version: LingquObjectVersionSelector) -> Option<Vec<u8>> {
             let record = self.record_for_selector(key, version)?;
-            if let Some(placement) = self.select_placement(record, &[LingquPayloadBackend::Shmem]) {
+            if let Some(placement) = self.select_placement(
+                record,
+                &[LingquPayloadBackend::ObmmShmem, LingquPayloadBackend::Shmem],
+            ) {
                 if let Some(payload) = self.obmm_pool.payloads.get(&placement.storage_ref) {
                     return Some(payload.payload.clone());
                 }
@@ -1412,7 +1558,10 @@ pub mod object {
 
         pub fn get_ref(&self, key: &str, version: LingquObjectVersionSelector) -> Option<&[u8]> {
             let record = self.record_for_selector(key, version)?;
-            if let Some(placement) = self.select_placement(record, &[LingquPayloadBackend::Shmem]) {
+            if let Some(placement) = self.select_placement(
+                record,
+                &[LingquPayloadBackend::ObmmShmem, LingquPayloadBackend::Shmem],
+            ) {
                 if let Some(payload) = self.obmm_pool.get_ref(&placement.storage_ref) {
                     return Some(payload);
                 }
@@ -1578,7 +1727,7 @@ pub mod object {
             for placement in placements {
                 match placement.backend {
                     LingquPayloadBackend::Inline => self.report.inline_write_count += 1,
-                    LingquPayloadBackend::Shmem => {
+                    LingquPayloadBackend::Shmem | LingquPayloadBackend::ObmmShmem => {
                         self.report.shmem_write_count += 1;
                         latency = latency.max(self.profile.shmem_latency_us);
                     }
@@ -1600,7 +1749,7 @@ pub mod object {
                     self.report.inline_read_count += 1;
                     0
                 }
-                Some(LingquPayloadBackend::Shmem) => {
+                Some(LingquPayloadBackend::Shmem | LingquPayloadBackend::ObmmShmem) => {
                     self.report.shmem_read_count += 1;
                     self.obmm_pool.stats.payload_read_count += 1;
                     self.profile.shmem_latency_us
@@ -1993,8 +2142,10 @@ mod tests {
     use super::object::{
         LingquObjectKind, LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
         LingquObjectResolveReq, LingquObjectServiceProfile, LingquObjectServiceStub,
-        LingquObjectState, LingquObjectVersionSelector, LingquObmmPoolProfile,
-        LingquPayloadBackend, LingquPayloadPlacement,
+        LingquObjectState, LingquObjectVersionSelector, LingquObmmObjectRefWire,
+        LingquObmmPoolProfile, LingquPayloadBackend, LingquPayloadPlacement,
+        LINGQU_OBJECT_STATE_COMMITTED_WIRE, LINGQU_OBMM_OBJECT_REF_LAYOUT_VERSION,
+        LINGQU_OBMM_OBJECT_REF_MAGIC,
     };
     use super::shmem::{ShmemGetReq, ShmemPutReq, ShmemServiceProfile, ShmemServiceStub};
     use super::weights::{
@@ -2026,6 +2177,24 @@ mod tests {
             checksum: bytes ^ 0x55aa,
             locality: LingquObjectLocality::DomainShared(0),
         }
+    }
+
+    #[test]
+    fn obmm_object_ref_wire_is_stable_and_validates_committed_refs() {
+        assert_eq!(std::mem::size_of::<LingquObmmObjectRefWire>(), 64);
+        let reference =
+            LingquObmmObjectRefWire::committed(5, 2, 1, 7, 0x1234, 0x200000, 4096, 0xfeed);
+
+        assert_eq!(reference.magic, LINGQU_OBMM_OBJECT_REF_MAGIC);
+        assert_eq!(
+            reference.layout_version,
+            LINGQU_OBMM_OBJECT_REF_LAYOUT_VERSION
+        );
+        assert_eq!(reference.state, LINGQU_OBJECT_STATE_COMMITTED_WIRE);
+        assert_eq!(reference.owner_entity, 2);
+        assert_eq!(reference.payload_offset, 0x200000);
+        assert_eq!(reference.payload_bytes, 4096);
+        reference.validate().expect("committed object ref");
     }
 
     fn payload_checksum_fnv1a(bytes: &[u8]) -> u64 {

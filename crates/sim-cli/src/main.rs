@@ -3617,6 +3617,7 @@ fn qwen3_payload_backend_name(backend: LingquPayloadBackend) -> &'static str {
     match backend {
         LingquPayloadBackend::Inline => "inline",
         LingquPayloadBackend::Shmem => "obmm",
+        LingquPayloadBackend::ObmmShmem => "obmm_shmem",
         LingquPayloadBackend::Block => "block",
         LingquPayloadBackend::Dfs => "dfs",
         LingquPayloadBackend::External => "external",

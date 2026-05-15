@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "w4_lingqu_object_service.h"
+
 enum w4_db_record_kind {
     W4_DB_RECORD_PREFIX_GROUP = 1,
     W4_DB_RECORD_REQUEST_PREFIX = 2,
@@ -28,7 +30,7 @@ enum w4_kvcache_state {
     W4_KVCACHE_STATE_RELOADED = 3,
 };
 
-#define W4_DB_MAX_RECORDS 128U
+#define W4_DB_MAX_RECORDS 1024U
 #define W4_DB_MAX_GROUP_MEMBERS 4U
 
 struct w4_db_record {
@@ -60,6 +62,16 @@ struct w4_db_service {
     bool block_ready;
     size_t record_count;
     struct w4_db_record records[W4_DB_MAX_RECORDS];
+};
+
+struct w4_db_object_payload_view {
+    const uint8_t *data;
+    uint64_t len;
+    uint64_t checksum;
+    uint32_t owner_node;
+    uint32_t payload_kind;
+    uint64_t backing_offset;
+    struct lingqu_obmm_object_ref_wire object_ref;
 };
 
 struct w4_db_cluster_summary {
@@ -154,6 +166,11 @@ int w4_db_obmm_service_v0_wait_runtime_range_input(uint32_t local_node,
                                                    uint8_t *payload_out,
                                                    uint64_t payload_len,
                                                    uint64_t *checksum_out);
+int w4_db_obmm_service_v0_wait_runtime_range_input_view(
+    uint32_t local_node,
+    uint32_t cluster_node_count,
+    uint64_t decode_step,
+    struct w4_db_object_payload_view *view_out);
 int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc,
                                                        uint32_t local_node,
                                                        uint32_t cluster_node_count,
@@ -164,6 +181,12 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
                                                        const uint8_t *kv_payload,
                                                        uint64_t kv_payload_len,
                                                        uint64_t expected_kv_checksum);
+int w4_db_obmm_service_v0_resolve_previous_range_kv_state_view(
+    struct w4_db_service *svc,
+    uint32_t local_node,
+    uint32_t cluster_node_count,
+    uint64_t decode_step,
+    struct w4_db_object_payload_view *view_out);
 int w4_db_obmm_service_v0_resolve_previous_range_kv_state(struct w4_db_service *svc,
                                                           uint32_t local_node,
                                                           uint32_t cluster_node_count,
@@ -262,5 +285,7 @@ int w4_db_qwen3_layer_range_for_node(uint32_t local_node,
                                      uint32_t *layer_end_out,
                                      uint32_t *next_node_out);
 int w4_db_get_record(struct w4_db_service *svc, const char *key, struct w4_db_record *out);
+int w4_db_record_to_lingqu_obmm_ref(const struct w4_db_record *record,
+                                    struct lingqu_obmm_object_ref_wire *ref_out);
 
 #endif

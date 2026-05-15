@@ -28,7 +28,8 @@
 #include "libs/obmm_queue/obmm_spsc_queue.h"
 
 #define W4_DB_CLUSTER_MAX_NODES 8
-#define W4_DB_CLUSTER_MAX_RECORDS 128
+#define W4_DB_CLUSTER_MAX_RECORDS 1024
+#define W4_DB_QWEN3_RECORD_RETAIN_STEPS 16ULL
 #define W4_DB_DEFAULT_REGION_SIZE_MB 512
 #define W4_DB_CMDLINE_REGION_SIZE "w4_db_region_size_mb"
 #define W4_DB_CLUSTER_QUEUE_DEPTH 512
@@ -189,6 +190,9 @@ static struct w4_db_cluster_runtime g_w4_db_cluster_runtime;
 
 static struct w4_db_record *w4_db_alloc_record(struct w4_db_service *svc);
 static struct w4_db_record *w4_db_find_record(struct w4_db_service *svc, const char *key);
+static struct w4_db_record *w4_db_recycle_qwen3_runtime_record(
+    struct w4_db_service *svc,
+    const char *incoming_key);
 static int w4_db_activate_remote_slot(struct w4_db_cluster_runtime *rt, int owner_idx);
 
 static long w4_db_wallclock_ms(void)
@@ -480,37 +484,41 @@ static void w4_db_build_compact_summary(const struct w4_db_record *records,
 static int w4_db_write_cluster_payload(struct w4_db_service *svc,
                                        struct w4_db_cluster_slot *slot)
 {
-    struct w4_db_cluster_payload payload;
+    struct w4_db_cluster_payload *payload;
     struct w4_db_cluster_payload_compact_summary compact;
     struct w4_db_cluster_runtime *rt = &g_w4_db_cluster_runtime;
     uint32_t seq;
+    int rc = -1;
 
     if (!svc || !slot || !slot->region.addr) {
+        return -1;
+    }
+    payload = calloc(1, sizeof(*payload));
+    if (!payload) {
         return -1;
     }
     seq = ++rt->publish_seq;
     if (seq == 0) {
         seq = ++rt->publish_seq;
     }
-    memset(&payload, 0, sizeof(payload));
-    payload.magic = W4_DB_CLUSTER_PAYLOAD_MAGIC;
-    payload.version = W4_DB_CLUSTER_PAYLOAD_VERSION;
-    payload.record_count = w4_db_snapshot_metadata_records(svc,
-                                                           payload.records,
-                                                           W4_DB_CLUSTER_MAX_RECORDS);
-    w4_db_build_compact_summary(payload.records, payload.record_count, &compact);
-    memcpy(payload.record_pad, &compact, sizeof(compact));
-    payload.publish_seq = seq;
-    payload.publish_done_seq = 0;
-    memset(slot->region.addr, 0, sizeof(payload));
-    memcpy(slot->region.addr, &payload, sizeof(payload));
+    payload->magic = W4_DB_CLUSTER_PAYLOAD_MAGIC;
+    payload->version = W4_DB_CLUSTER_PAYLOAD_VERSION;
+    payload->record_count = w4_db_snapshot_metadata_records(svc,
+                                                            payload->records,
+                                                            W4_DB_CLUSTER_MAX_RECORDS);
+    w4_db_build_compact_summary(payload->records, payload->record_count, &compact);
+    memcpy(payload->record_pad, &compact, sizeof(compact));
+    payload->publish_seq = seq;
+    payload->publish_done_seq = 0;
+    memset(slot->region.addr, 0, sizeof(*payload));
+    memcpy(slot->region.addr, payload, sizeof(*payload));
     __sync_synchronize();
     ((struct w4_db_cluster_payload *)slot->region.addr)->publish_done_seq = seq;
     __sync_synchronize();
     if (w4_db_update_region_range(slot, true) != 0) {
-        return -1;
+        goto out;
     }
-    (void)msync(slot->region.addr, sizeof(payload), MS_SYNC);
+    (void)msync(slot->region.addr, sizeof(*payload), MS_SYNC);
     {
         const uint8_t *bytes = (const uint8_t *)slot->region.addr;
         uint64_t probe_040 = 0;
@@ -531,7 +539,11 @@ static int w4_db_write_cluster_payload(struct w4_db_service *svc,
            ((const struct w4_db_cluster_payload *)slot->region.addr)->publish_seq,
            ((const struct w4_db_cluster_payload *)slot->region.addr)->publish_done_seq,
            ((const struct w4_db_cluster_payload *)slot->region.addr)->record_count);
-    return 0;
+    rc = 0;
+
+out:
+    free(payload);
+    return rc;
 }
 
 static uint64_t w4_db_checksum_bytes(const uint8_t *bytes, uint64_t len)
@@ -544,6 +556,31 @@ static uint64_t w4_db_checksum_bytes(const uint8_t *bytes, uint64_t len)
         hash *= 1099511628211ULL;
     }
     return hash;
+}
+
+int w4_db_record_to_lingqu_obmm_ref(const struct w4_db_record *record,
+                                    struct lingqu_obmm_object_ref_wire *ref_out)
+{
+    if (!record || !record->in_use || !ref_out ||
+        record->object_backing_len == 0) {
+        return -1;
+    }
+    memset(ref_out, 0, sizeof(*ref_out));
+    ref_out->magic = LINGQU_OBMM_OBJECT_REF_MAGIC;
+    ref_out->layout_version = LINGQU_OBMM_OBJECT_REF_LAYOUT_VERSION;
+    ref_out->object_kind = (uint16_t)record->object_payload_kind;
+    ref_out->state = LINGQU_OBJECT_STATE_COMMITTED_WIRE;
+    ref_out->owner_entity = record->object_owner_node;
+    ref_out->producer_entity = record->object_owner_node;
+    ref_out->object_version = record->version;
+    ref_out->key_hash =
+        w4_db_checksum_bytes((const uint8_t *)record->key,
+                             (uint64_t)strnlen(record->key,
+                                               sizeof(record->key)));
+    ref_out->payload_offset = record->object_backing_offset;
+    ref_out->payload_bytes = record->object_backing_len;
+    ref_out->payload_checksum = record->object_payload_checksum;
+    return 0;
 }
 
 static uint64_t w4_db_qwen3_hidden_payload_checksum(const uint8_t *bytes,
@@ -1124,6 +1161,9 @@ static int w4_db_put_obmm_object_record(struct w4_db_service *svc,
     }
     if (!rec) {
         rec = w4_db_alloc_record(svc);
+    }
+    if (!rec) {
+        rec = w4_db_recycle_qwen3_runtime_record(svc, key);
     }
     if (!rec) {
         return -1;
@@ -2527,6 +2567,95 @@ static struct w4_db_record *w4_db_find_record(struct w4_db_service *svc, const c
     return NULL;
 }
 
+static bool w4_db_qwen3_record_kind_recyclable(enum w4_db_record_kind kind)
+{
+    switch (kind) {
+    case W4_DB_RECORD_HIDDEN_RANGE_INPUT:
+    case W4_DB_RECORD_HIDDEN_RANGE_OUTPUT:
+    case W4_DB_RECORD_KVCACHE_OBJECT:
+    case W4_DB_RECORD_QWEN3_TOKEN_RESULT:
+    case W4_DB_RECORD_QWEN3_ENGRAM_CANDIDATES:
+    case W4_DB_RECORD_QWEN3_ENGRAM_SELECTED:
+    case W4_DB_RECORD_QWEN3_ENGRAM_STATE:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool w4_db_key_decode_step(const char *key, uint64_t *step_out)
+{
+    const char *needle;
+    char *end = NULL;
+    unsigned long long parsed;
+
+    if (!key || !step_out) {
+        return false;
+    }
+    needle = strstr(key, "decode-step");
+    if (needle) {
+        needle += strlen("decode-step");
+    } else {
+        needle = strstr(key, "/step/");
+        if (!needle) {
+            return false;
+        }
+        needle += strlen("/step/");
+    }
+    if (*needle < '0' || *needle > '9') {
+        return false;
+    }
+    errno = 0;
+    parsed = strtoull(needle, &end, 10);
+    if (errno != 0 || end == needle) {
+        return false;
+    }
+    *step_out = (uint64_t)parsed;
+    return true;
+}
+
+static struct w4_db_record *w4_db_recycle_qwen3_runtime_record(
+    struct w4_db_service *svc,
+    const char *incoming_key)
+{
+    struct w4_db_record *candidate = NULL;
+    uint64_t incoming_step;
+    uint64_t candidate_step = UINT64_MAX;
+    size_t i;
+
+    if (!svc || !w4_db_key_decode_step(incoming_key, &incoming_step) ||
+        incoming_step <= W4_DB_QWEN3_RECORD_RETAIN_STEPS) {
+        return NULL;
+    }
+    for (i = 0; i < W4_DB_MAX_RECORDS; ++i) {
+        struct w4_db_record *rec = &svc->records[i];
+        uint64_t rec_step;
+
+        if (!rec->in_use ||
+            !w4_db_qwen3_record_kind_recyclable(rec->kind) ||
+            !w4_db_key_decode_step(rec->key, &rec_step) ||
+            rec_step + W4_DB_QWEN3_RECORD_RETAIN_STEPS >= incoming_step) {
+            continue;
+        }
+        if (!candidate || rec_step < candidate_step) {
+            candidate = rec;
+            candidate_step = rec_step;
+        }
+    }
+    if (candidate) {
+        printf("[w4_guest] stage db_service_record_recycle key=%s old_step=%" PRIu64
+               " incoming_step=%" PRIu64 " retain_steps=%" PRIu64
+               " record_count=%zu status=ok\n",
+               candidate->key,
+               candidate_step,
+               incoming_step,
+               (uint64_t)W4_DB_QWEN3_RECORD_RETAIN_STEPS,
+               svc->record_count);
+        memset(candidate, 0, sizeof(*candidate));
+    }
+    return candidate;
+}
+
 static bool w4_db_record_has_member(const struct w4_db_record *rec, const char *block_hash)
 {
     uint32_t i;
@@ -3226,8 +3355,7 @@ int w4_db_publish_observe_cluster(struct w4_db_service *svc,
                                   struct w4_db_cluster_summary *summary)
 {
     struct w4_db_cluster_runtime *rt = &g_w4_db_cluster_runtime;
-    struct w4_db_cluster_payload snapshot;
-    struct w4_db_cluster_payload peer_snapshots[W4_DB_CLUSTER_MAX_NODES];
+    struct w4_db_cluster_payload *peer_snapshots = NULL;
     struct w4_db_cluster_payload_compact_summary peer_compact[W4_DB_CLUSTER_MAX_NODES];
     struct w4_db_cluster_payload_header seen_header;
     bool peer_ready[W4_DB_CLUSTER_MAX_NODES] = { false };
@@ -3243,6 +3371,10 @@ int w4_db_publish_observe_cluster(struct w4_db_service *svc,
         return -1;
     }
     if (w4_db_cluster_runtime_init(rt) != 0) {
+        goto out;
+    }
+    peer_snapshots = calloc(W4_DB_CLUSTER_MAX_NODES, sizeof(*peer_snapshots));
+    if (!peer_snapshots) {
         goto out;
     }
 
@@ -3448,9 +3580,8 @@ int w4_db_publish_observe_cluster(struct w4_db_service *svc,
         if (i != rt->local_idx) {
             continue;
         }
-        snapshot = peer_snapshots[i];
-        for (r = 0; r < snapshot.record_count; ++r) {
-            struct w4_db_record *rec = &snapshot.records[r];
+        for (r = 0; r < peer_snapshots[i].record_count; ++r) {
+            struct w4_db_record *rec = &peer_snapshots[i].records[r];
 
             if (!rec->in_use) {
                 goto out;
@@ -3539,6 +3670,7 @@ int w4_db_publish_observe_cluster(struct w4_db_service *svc,
     rc = 0;
 
 out:
+    free(peer_snapshots);
     return rc;
 }
 
@@ -4147,15 +4279,13 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
     return 0;
 }
 
-int w4_db_obmm_service_v0_wait_runtime_range_input(uint32_t local_node,
-                                                   uint32_t cluster_node_count,
-                                                   uint64_t decode_step,
-                                                   uint8_t *payload_out,
-                                                   uint64_t payload_len,
-                                                   uint64_t *checksum_out)
+int w4_db_obmm_service_v0_wait_runtime_range_input_view(
+    uint32_t local_node,
+    uint32_t cluster_node_count,
+    uint64_t decode_step,
+    struct w4_db_object_payload_view *view_out)
 {
     struct w4_db_cluster_runtime *rt = &g_w4_db_cluster_runtime;
-    struct w4_db_service svc;
     struct w4_db_qwen3_layer_range_placement local_placement;
     struct w4_db_qwen3_layer_range_placement source_placement;
     struct w4_db_cluster_slot *source_slot = NULL;
@@ -4166,9 +4296,6 @@ int w4_db_obmm_service_v0_wait_runtime_range_input(uint32_t local_node,
     long wait_enter_ms;
     long found_local_ms = 0;
     long found_ms = 0;
-    long copy_start_ms;
-    long copy_ms;
-    long checksum_start_ms;
     long checksum_ms;
     long producer_publish_ms;
     long producer_to_found_ms = 0;
@@ -4179,27 +4306,46 @@ int w4_db_obmm_service_v0_wait_runtime_range_input(uint32_t local_node,
     unsigned int relax_attempt = 0;
     uint32_t source_node = UINT32_MAX;
     uint64_t hidden_range_bytes = w4_db_qwen3_handoff_hidden_bytes(decode_step);
+    const uint8_t *payload_view;
+    uint64_t checksum;
 
-    if (!payload_out || payload_len != hidden_range_bytes ||
+    if (!view_out ||
         cluster_node_count != W4_DB_QWEN3_RANGE_NODES ||
         local_node >= cluster_node_count) {
         return -1;
     }
-    if (w4_db_service_init(&svc, true, true, true) != 0 ||
-        w4_db_publish_qwen3_layer_range_placements(&svc, cluster_node_count) != 0 ||
-        !w4_db_read_qwen3_layer_range_placement(&svc,
-                                                local_node,
-                                                &local_placement)) {
+    memset(&local_placement, 0, sizeof(local_placement));
+    local_placement.owner_node = local_node;
+    local_placement.next_owner_node = (local_node + 1U) % cluster_node_count;
+    local_placement.terminal = (local_node + 1U == cluster_node_count);
+    if (w4_db_qwen3_layer_range_for_node(local_node,
+                                         cluster_node_count,
+                                         &local_placement.layer_start,
+                                         &local_placement.layer_end,
+                                         &local_placement.next_owner_node) != 0) {
         return -1;
     }
+    local_placement.layer_count =
+        local_placement.layer_end - local_placement.layer_start;
+    local_placement.terminal =
+        local_placement.next_owner_node < local_placement.owner_node;
     if (local_placement.layer_start == 0) {
         return 0;
     }
-    if (!w4_db_find_qwen3_layer_range_predecessor(&svc,
-                                                  local_node,
-                                                  &source_placement)) {
+    memset(&source_placement, 0, sizeof(source_placement));
+    source_placement.owner_node = local_node - 1U;
+    source_placement.next_owner_node = local_node;
+    source_placement.terminal = false;
+    if (w4_db_qwen3_layer_range_for_node(source_placement.owner_node,
+                                         cluster_node_count,
+                                         &source_placement.layer_start,
+                                         &source_placement.layer_end,
+                                         &source_placement.next_owner_node) != 0 ||
+        source_placement.next_owner_node != local_node) {
         return -1;
     }
+    source_placement.layer_count =
+        source_placement.layer_end - source_placement.layer_start;
     source_node = source_placement.owner_node;
     if (w4_db_cluster_runtime_init(rt) != 0) {
         return -1;
@@ -4299,50 +4445,69 @@ int w4_db_obmm_service_v0_wait_runtime_range_input(uint32_t local_node,
                ingress_key);
         return -1;
     }
-    copy_start_ms = obmm_now_ms();
-    memcpy(payload_out,
-           (const uint8_t *)source_slot->region.addr +
-               remote_hidden_output.object_backing_offset,
-           payload_len);
-    copy_ms = obmm_now_ms() - copy_start_ms;
-    checksum_start_ms = obmm_now_ms();
-    if (checksum_out) {
-        *checksum_out = w4_db_qwen3_hidden_payload_checksum(payload_out,
-                                                            payload_len);
-    }
-    checksum_ms = obmm_now_ms() - checksum_start_ms;
-    if (!checksum_out ||
-        *checksum_out != remote_hidden_output.object_payload_checksum) {
-        uint64_t checksum =
-            w4_db_qwen3_hidden_payload_checksum(payload_out, payload_len);
-
-        printf("[w4_guest] gap qwen3_range_forward=runtime_ingress_checksum_mismatch local=node%u source=node%u checksum=0x%016" PRIx64 " expected=0x%016" PRIx64 "\n",
-               local_node + 1U,
-               source_node + 1U,
-               checksum,
-               remote_hidden_output.object_payload_checksum);
-        return -1;
-    }
+    payload_view =
+        (const uint8_t *)source_slot->region.addr +
+        remote_hidden_output.object_backing_offset;
+    checksum = remote_hidden_output.object_payload_checksum;
+    checksum_ms = 0;
     producer_publish_ms = (long)remote_hidden_output.last_result_segment;
     if (producer_publish_ms > 0 && found_ms > 0) {
         producer_to_found_ms = found_ms - producer_publish_ms;
     }
-    printf("[w4_guest] stage qwen3_range_forward_runtime_input_resolve local=node%u source=node%u key=%s layers=[%u,%u) input_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " wait_enter_to_found_ms=%ld producer_publish_ms=%ld producer_to_found_ms=%ld attempts=%u activate_ms=%" PRIu64 " metadata_ms=%" PRIu64 " copy_ms=%ld checksum_ms=%ld queue=obmm_spsc receive=descriptor metadata=db backing=obmm_pool status=ok\n",
+    memset(view_out, 0, sizeof(*view_out));
+    view_out->data = payload_view;
+    view_out->len = hidden_range_bytes;
+    view_out->checksum = checksum;
+    view_out->owner_node = source_node;
+    view_out->payload_kind = remote_hidden_output.object_payload_kind;
+    view_out->backing_offset = remote_hidden_output.object_backing_offset;
+    if (w4_db_record_to_lingqu_obmm_ref(&remote_hidden_output,
+                                        &view_out->object_ref) != 0) {
+        return -1;
+    }
+    printf("[w4_guest] stage qwen3_range_forward_runtime_input_resolve local=node%u source=node%u key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) input_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " wait_enter_to_found_ms=%ld producer_publish_ms=%ld producer_to_found_ms=%ld attempts=%u activate_ms=%" PRIu64 " metadata_ms=%" PRIu64 " copy_ms=0 checksum_ms=%ld validation=object_ref_metadata queue=obmm_spsc receive=descriptor metadata=lingqu_object_service backing=obmm_shmem target=mapped_view status=ok\n",
            local_node + 1U,
            source_node + 1U,
            ingress_key,
+           view_out->object_ref.key_hash,
+           view_out->object_ref.object_version,
            local_placement.layer_start,
            local_placement.layer_end,
-           *checksum_out,
-           payload_len,
+           checksum,
+           hidden_range_bytes,
            found_local_ms > 0 ? found_local_ms - wait_enter_ms : -1L,
            producer_publish_ms,
            producer_to_found_ms,
            attempts,
            activate_ms,
            metadata_ms,
-           copy_ms,
            checksum_ms);
+    return 0;
+}
+
+int w4_db_obmm_service_v0_wait_runtime_range_input(uint32_t local_node,
+                                                   uint32_t cluster_node_count,
+                                                   uint64_t decode_step,
+                                                   uint8_t *payload_out,
+                                                   uint64_t payload_len,
+                                                   uint64_t *checksum_out)
+{
+    struct w4_db_object_payload_view view;
+    uint64_t hidden_range_bytes = w4_db_qwen3_handoff_hidden_bytes(decode_step);
+
+    if (!payload_out || payload_len != hidden_range_bytes || !checksum_out) {
+        return -1;
+    }
+    if (w4_db_obmm_service_v0_wait_runtime_range_input_view(local_node,
+                                                            cluster_node_count,
+                                                            decode_step,
+                                                            &view) != 0 ||
+        !view.data ||
+        view.len != payload_len) {
+        return -1;
+    }
+    memcpy(payload_out, view.data, payload_len);
+    *checksum_out = view.checksum;
     return 0;
 }
 
@@ -4375,6 +4540,8 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
     long producer_publish_ms;
     uint8_t *base;
     uint64_t hidden_range_bytes = w4_db_qwen3_handoff_hidden_bytes(decode_step);
+    struct lingqu_obmm_object_ref_wire hidden_ref;
+    struct lingqu_obmm_object_ref_wire kv_ref;
 
     if (!svc || !payload || payload_len != hidden_range_bytes ||
         !kv_payload || kv_payload_len == 0 ||
@@ -4508,6 +4675,10 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
     if (w4_db_write_cluster_payload(svc, local_slot) != 0) {
         return -1;
     }
+    if (w4_db_record_to_lingqu_obmm_ref(&local_hidden_output, &hidden_ref) != 0 ||
+        w4_db_record_to_lingqu_obmm_ref(&local_kv_state, &kv_ref) != 0) {
+        return -1;
+    }
     local_publish_seq = (uint16_t)(rt->publish_seq & 0xffffu);
     if (local_publish_seq == 0) {
         local_publish_seq = 1;
@@ -4527,11 +4698,13 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
         return -1;
     }
     if (!terminal_range) {
-        printf("[w4_guest] stage qwen3_range_forward_runtime_ingress_publish local=node%u target=node%u step=%" PRIu64 " key=%s layers=[%u,%u) count=%u checksum=0x%016" PRIx64 " bytes=%" PRIu64 " producer_publish_ms=%ld epoch=%u seq=%u backing=obmm_pool metadata=db queue=obmm_spsc status=ok\n",
+        printf("[w4_guest] stage qwen3_range_forward_runtime_ingress_publish local=node%u target=node%u step=%" PRIu64 " key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) count=%u checksum=0x%016" PRIx64 " bytes=%" PRIu64 " producer_publish_ms=%ld epoch=%u seq=%u backing=obmm_shmem metadata=lingqu_object_service queue=obmm_spsc status=ok\n",
                local_node + 1U,
                target_node + 1U,
                decode_step,
                local_hidden_output_key,
+               hidden_ref.key_hash,
+               hidden_ref.object_version,
                local_placement.layer_start,
                local_placement.layer_end,
                local_placement.layer_count,
@@ -4541,9 +4714,11 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
                object_epoch,
                local_publish_seq);
     }
-    printf("[w4_guest] stage qwen3_range_forward_runtime_output_publish local=node%u step=%" PRIu64 " layers=[%u,%u) count=%u output_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " producer_publish_ms=%ld epoch=%u seq=%u backing=obmm_pool metadata=db queue=obmm_spsc status=ok\n",
+    printf("[w4_guest] stage qwen3_range_forward_runtime_output_publish local=node%u step=%" PRIu64 " key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) count=%u output_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " producer_publish_ms=%ld epoch=%u seq=%u backing=obmm_shmem metadata=lingqu_object_service queue=obmm_spsc status=ok\n",
            local_node + 1U,
            decode_step,
+           hidden_ref.key_hash,
+           hidden_ref.object_version,
            local_placement.layer_start,
            local_placement.layer_end,
            local_placement.layer_count,
@@ -4552,10 +4727,12 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
            producer_publish_ms,
            object_epoch,
            local_publish_seq);
-    printf("[w4_guest] stage qwen3_range_kv_state_publish local=node%u step=%" PRIu64 " key=%s layers=[%u,%u) count=%u kv_bytes=%" PRIu64 " kv_checksum=0x%016" PRIx64 " offset=0x%016" PRIx64 " slot_bytes=%" PRIu64 " producer_publish_ms=%ld epoch=%u seq=%u backing=obmm_pool metadata=db status=ok\n",
+    printf("[w4_guest] stage qwen3_range_kv_state_publish local=node%u step=%" PRIu64 " key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) count=%u kv_bytes=%" PRIu64 " kv_checksum=0x%016" PRIx64 " offset=0x%016" PRIx64 " slot_bytes=%" PRIu64 " producer_publish_ms=%ld epoch=%u seq=%u backing=obmm_shmem metadata=lingqu_object_service status=ok\n",
            local_node + 1U,
            decode_step,
            local_kv_state_key,
+           kv_ref.key_hash,
+           kv_ref.object_version,
            local_placement.layer_start,
            local_placement.layer_end,
            local_placement.layer_count,
@@ -4569,14 +4746,12 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
     return 0;
 }
 
-int w4_db_obmm_service_v0_resolve_previous_range_kv_state(struct w4_db_service *svc,
-                                                          uint32_t local_node,
-                                                          uint32_t cluster_node_count,
-                                                          uint64_t decode_step,
-                                                          uint8_t *payload_out,
-                                                          uint64_t payload_capacity,
-                                                          uint64_t *payload_len_out,
-                                                          uint64_t *checksum_out)
+int w4_db_obmm_service_v0_resolve_previous_range_kv_state_view(
+    struct w4_db_service *svc,
+    uint32_t local_node,
+    uint32_t cluster_node_count,
+    uint64_t decode_step,
+    struct w4_db_object_payload_view *view_out)
 {
     struct w4_db_cluster_runtime *rt = &g_w4_db_cluster_runtime;
     struct w4_db_cluster_slot *local_slot;
@@ -4586,13 +4761,18 @@ int w4_db_obmm_service_v0_resolve_previous_range_kv_state(struct w4_db_service *
     uint64_t checksum;
     uint64_t previous_step;
 
-    if (!svc || decode_step == 0 || !payload_out || !payload_len_out || !checksum_out ||
-        cluster_node_count != W4_DB_QWEN3_RANGE_NODES ||
-        local_node >= cluster_node_count) {
+    if (!view_out) {
+        return -1;
+    }
+    memset(view_out, 0, sizeof(*view_out));
+    if (decode_step == 0) {
         return 0;
     }
-    *payload_len_out = 0;
-    *checksum_out = 0;
+    if (!svc ||
+        cluster_node_count != W4_DB_QWEN3_RANGE_NODES ||
+        local_node >= cluster_node_count) {
+        return -1;
+    }
     previous_step = decode_step - 1U;
     if (w4_db_cluster_runtime_init(rt) != 0 ||
         w4_db_publish_qwen3_layer_range_placements(svc, cluster_node_count) != 0 ||
@@ -4632,43 +4812,74 @@ int w4_db_obmm_service_v0_resolve_previous_range_kv_state(struct w4_db_service *
                kv_state_key);
         return -1;
     }
-    if (kv_state.object_backing_len > payload_capacity) {
-        printf("[w4_guest] gap qwen3_range_kv_state_resolve=payload_too_large local=node%u step=%" PRIu64 " key=%s bytes=%" PRIu64 " capacity=%" PRIu64 "\n",
-               local_node + 1U,
-               decode_step,
-               kv_state_key,
-               kv_state.object_backing_len,
-               payload_capacity);
+    checksum = kv_state.object_payload_checksum;
+    view_out->data = (const uint8_t *)local_slot->region.addr +
+                     kv_state.object_backing_offset;
+    view_out->len = kv_state.object_backing_len;
+    view_out->checksum = checksum;
+    view_out->owner_node = local_node;
+    view_out->payload_kind = kv_state.object_payload_kind;
+    view_out->backing_offset = kv_state.object_backing_offset;
+    if (w4_db_record_to_lingqu_obmm_ref(&kv_state, &view_out->object_ref) != 0) {
         return -1;
     }
-    checksum = w4_db_qwen3_hidden_payload_checksum(
-        (const uint8_t *)local_slot->region.addr + kv_state.object_backing_offset,
-        kv_state.object_backing_len);
-    if (checksum != kv_state.object_payload_checksum) {
-        printf("[w4_guest] gap qwen3_range_kv_state_resolve=checksum_mismatch local=node%u step=%" PRIu64 " key=%s checksum=0x%016" PRIx64 " expected=0x%016" PRIx64 "\n",
-               local_node + 1U,
-               decode_step,
-               kv_state_key,
-               checksum,
-               kv_state.object_payload_checksum);
-        return -1;
-    }
-    memcpy(payload_out,
-           (const uint8_t *)local_slot->region.addr + kv_state.object_backing_offset,
-           (size_t)kv_state.object_backing_len);
-    *payload_len_out = kv_state.object_backing_len;
-    *checksum_out = checksum;
-    printf("[w4_guest] stage qwen3_range_kv_state_resolve local=node%u step=%" PRIu64 " previous_step=%" PRIu64 " key=%s layers=[%u,%u) count=%u kv_bytes=%" PRIu64 " kv_checksum=0x%016" PRIx64 " offset=0x%016" PRIx64 " source=object_service backing=obmm_pool metadata=db status=ok\n",
+    printf("[w4_guest] stage qwen3_range_kv_state_resolve local=node%u step=%" PRIu64 " previous_step=%" PRIu64 " key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) count=%u kv_bytes=%" PRIu64 " kv_checksum=0x%016" PRIx64 " offset=0x%016" PRIx64 " validation=object_ref_metadata source=obmm_object_view backing=obmm_shmem metadata=lingqu_object_service target=mapped_view status=ok\n",
            local_node + 1U,
            decode_step,
            previous_step,
            kv_state_key,
+           view_out->object_ref.key_hash,
+           view_out->object_ref.object_version,
            local_placement.layer_start,
            local_placement.layer_end,
            local_placement.layer_count,
            kv_state.object_backing_len,
            checksum,
            kv_state.object_backing_offset);
+    return 0;
+}
+
+int w4_db_obmm_service_v0_resolve_previous_range_kv_state(struct w4_db_service *svc,
+                                                          uint32_t local_node,
+                                                          uint32_t cluster_node_count,
+                                                          uint64_t decode_step,
+                                                          uint8_t *payload_out,
+                                                          uint64_t payload_capacity,
+                                                          uint64_t *payload_len_out,
+                                                          uint64_t *checksum_out)
+{
+    struct w4_db_object_payload_view view;
+
+    if (!payload_len_out || !checksum_out) {
+        return -1;
+    }
+    *payload_len_out = 0;
+    *checksum_out = 0;
+    if (!payload_out) {
+        return -1;
+    }
+    if (w4_db_obmm_service_v0_resolve_previous_range_kv_state_view(
+            svc,
+            local_node,
+            cluster_node_count,
+            decode_step,
+            &view) != 0) {
+        return -1;
+    }
+    if (!view.data || view.len == 0) {
+        return 0;
+    }
+    if (view.len > payload_capacity) {
+        printf("[w4_guest] gap qwen3_range_kv_state_resolve=payload_too_large local=node%u step=%" PRIu64 " bytes=%" PRIu64 " capacity=%" PRIu64 "\n",
+               local_node + 1U,
+               decode_step,
+               view.len,
+               payload_capacity);
+        return -1;
+    }
+    memcpy(payload_out, view.data, (size_t)view.len);
+    *payload_len_out = view.len;
+    *checksum_out = view.checksum;
     return 0;
 }
 

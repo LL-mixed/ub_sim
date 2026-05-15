@@ -723,14 +723,44 @@ mod tests {
         }
 
         let desc = GuestDescriptor::decode(&slot).expect("decode compact qwen3 range dispatch");
-        let GuestDescriptor::Io(io) = desc else {
-            panic!("expected io descriptor");
+        let GuestDescriptor::Qwen3RangeDispatch(io) = desc else {
+            panic!("expected qwen3 range dispatch descriptor");
         };
         assert_eq!(io.op_id, 31);
-        assert_eq!(io.opcode, IoOpcode::Dispatch);
-        assert_eq!(io.segment.expect("segment").0, 7);
-        let task = io.task.expect("task");
-        assert_eq!(task.scope_depth, 8);
-        assert_eq!(task.coord.levels, [0x5133_060b, 2, 8, 12, 3, 8, 28, 32768]);
+        assert_eq!(io.segment.0, 7);
+        assert_eq!(io.task.scope_depth, 8);
+        assert_eq!(
+            io.task.coord.levels,
+            [0x5133_060b, 2, 8, 12, 3, 8, 28, 32768]
+        );
+        assert_eq!(io.object_ref_table_offset, 0);
+        assert_eq!(io.object_ref_count, 0);
+    }
+
+    #[test]
+    fn compact_qwen3_range_dispatch_descriptor_decodes_object_ref_sideband() {
+        let mut slot = vec![0u8; 64];
+        let mut offset = 0usize;
+
+        slot[offset] = 9;
+        offset += 1;
+        slot[offset..offset + 8].copy_from_slice(&31u64.to_le_bytes());
+        offset += 8;
+        slot[offset..offset + 8].copy_from_slice(&7u64.to_le_bytes());
+        offset += 8;
+        for value in [0x5133_060b_u32, 2, 8, 12, 3, 8, 28, 32768] {
+            slot[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+            offset += 4;
+        }
+        slot[offset..offset + 4].copy_from_slice(&0x70000u32.to_le_bytes());
+        offset += 4;
+        slot[offset..offset + 4].copy_from_slice(&2u32.to_le_bytes());
+
+        let desc = GuestDescriptor::decode(&slot).expect("decode compact qwen3 range dispatch");
+        let GuestDescriptor::Qwen3RangeDispatch(io) = desc else {
+            panic!("expected qwen3 range dispatch descriptor");
+        };
+        assert_eq!(io.object_ref_table_offset, 0x70000);
+        assert_eq!(io.object_ref_count, 2);
     }
 }

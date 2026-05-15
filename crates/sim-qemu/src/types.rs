@@ -7,7 +7,7 @@ use sim_services::{
     dfs::{DfsReadReq, DfsWriteReq},
     shmem::{ShmemGetReq, ShmemPutReq},
 };
-use sim_uapi::UapiDescriptor;
+use sim_uapi::{Qwen3RangeDispatchReq, UapiDescriptor};
 
 #[derive(Debug, Clone)]
 pub struct MachineProfile {
@@ -46,6 +46,7 @@ impl Default for GuestEndpointLayout {
 #[derive(Debug, Clone)]
 pub enum GuestDescriptor {
     Io(GuestIoDescriptor),
+    Qwen3RangeDispatch(GuestQwen3RangeDispatchDescriptor),
     Service(GuestServiceDescriptor),
 }
 
@@ -57,6 +58,15 @@ pub struct GuestIoDescriptor {
     pub opcode: IoOpcode,
     pub segment: Option<SegmentHandle>,
     pub block: Option<BlockHash>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuestQwen3RangeDispatchDescriptor {
+    pub op_id: u64,
+    pub segment: SegmentHandle,
+    pub task: TaskKey,
+    pub object_ref_table_offset: u32,
+    pub object_ref_count: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -84,6 +94,15 @@ impl GuestDescriptor {
                 segment: io.segment,
                 block: io.block,
             }),
+            GuestDescriptor::Qwen3RangeDispatch(req) => {
+                UapiDescriptor::Qwen3RangeDispatch(Qwen3RangeDispatchReq {
+                    op_id: req.op_id,
+                    segment: req.segment,
+                    task: req.task,
+                    object_ref_table_offset: req.object_ref_table_offset,
+                    object_ref_count: req.object_ref_count,
+                })
+            }
             GuestDescriptor::Service(service) => match service {
                 GuestServiceDescriptor::BlockWriteback { block, task } => {
                     UapiDescriptor::BlockWriteback { block, task }
@@ -121,6 +140,16 @@ impl GuestDescriptor {
                 );
                 encode_opt_segment(&mut buf, io.segment);
                 encode_opt_string(&mut buf, io.block.as_ref().map(|block| block.0.as_str()))?;
+            }
+            GuestDescriptor::Qwen3RangeDispatch(req) => {
+                write_u8(&mut buf, 9);
+                write_u64(&mut buf, req.op_id);
+                write_u64(&mut buf, req.segment.0);
+                for level in req.task.coord.levels {
+                    write_u32(&mut buf, level);
+                }
+                write_u32(&mut buf, req.object_ref_table_offset);
+                write_u32(&mut buf, req.object_ref_count);
             }
             GuestDescriptor::Service(service) => match service {
                 GuestServiceDescriptor::BlockWriteback { block, task } => {
@@ -250,19 +279,22 @@ impl GuestDescriptor {
                 for level in levels.iter_mut().skip(1) {
                     *level = read_u32(&mut cursor)?;
                 }
-                Ok(GuestDescriptor::Io(GuestIoDescriptor {
-                    op_id,
-                    task: Some(TaskKey {
-                        logical_system: sim_core::LogicalSystemId(1),
-                        coord: sim_core::HierarchyCoord { levels },
-                        scope_depth: 8,
-                        task_id: op_id,
-                    }),
-                    entity: 0,
-                    opcode: IoOpcode::Dispatch,
-                    segment: Some(segment),
-                    block: None,
-                }))
+                let object_ref_table_offset = read_u32(&mut cursor).unwrap_or(0);
+                let object_ref_count = read_u32(&mut cursor).unwrap_or(0);
+                Ok(GuestDescriptor::Qwen3RangeDispatch(
+                    GuestQwen3RangeDispatchDescriptor {
+                        op_id,
+                        segment,
+                        task: TaskKey {
+                            logical_system: sim_core::LogicalSystemId(1),
+                            coord: sim_core::HierarchyCoord { levels },
+                            scope_depth: 8,
+                            task_id: op_id,
+                        },
+                        object_ref_table_offset,
+                        object_ref_count,
+                    },
+                ))
             }
             _ => Err("invalid descriptor kind"),
         }
