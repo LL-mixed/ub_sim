@@ -2,7 +2,13 @@
 
 日期: 2026-05-15
 
-## 当前结论
+# multi-node stream decoding 优化方向
+
+待展开
+
+
+
+## 当前进展
 
 W4 8-node guest decode 的首要优化对象不是单个 layer 的数值计算，而是跨 node handover 和 pipeline 等待。
 
@@ -182,3 +188,84 @@ TPOT 目前不是纯 compute 时间。step1+ 每个 token 主要由前序 node �
 6. [ ] 优化 TPOT input wait: descriptor wait、metadata resolve、copy path。
 7. [ ] 评估单 node 多 layer fusion 的实际收益。
 8. [ ] 评估 backend 直接读写 OBMM pool/object payload 的架构改动。
+
+# Appendix
+
+
+
+## 一：单 step 内 node 的多 layer 融合
+
+**核心问题**: 在一个推理 step 内部，单个 node 上多个 layer 的计算是否可以进行融合优化？
+
+**思考方向**:
+
+- 当前 layer-by-layer 的执行模式是否存在冗余？
+- 多 layer 融合能否减少 kernel launch overhead？
+- 对 memory access pattern 的影响？
+- 是否需要在 simpler backend 层面支持 fused kernel？
+
+---
+
+## 二：node 间 hand over 时的数据传递
+
+### 2.1 核心问题
+
+当 node 与 node 之间需要进行 hand over（交接/切换）时，**KV Cache 和 Hidden State 的传递到底传递的是什么？**
+
+### 2.2 关键疑问
+
+- 传递的是**实际数据**（tensor 内容）还是 **Object Service 的 reference**？
+- 如果是 reference，那么：
+  - reference 的生命周期如何管理？
+  - 跨 node 的 reference 如何解析？
+  - 数据一致性如何保证？
+- 如果是实际数据：
+  - 数据量有多大？（KV Cache 通常占显存大头）
+  - 传输延迟是否可接受？
+  - 是否需要压缩/量化？
+
+### 2.3 相关概念
+
+- **Object Service**: W4 中的对象存储服务，可能用于跨 node 共享数据
+- **KV Cache**: Transformer 推理中的键值缓存，存储历史 token 的 key/value
+- **Hidden State**: 模型中间层的隐藏状态表示
+
+---
+
+## 三：Simpler Backend 直接操作共享内存 / Object Service
+
+### 3.1 核心问题
+
+**能否在 simpler 的 backend 那边，直接对 share memory 进行操作，甚至是对 object service 进行操作？**
+
+### 3.2 思考方向
+
+- **Share Memory 直接操作**:
+  - 绕过传统的数据拷贝路径
+  - 零拷贝（zero-copy）数据传输
+  - 对性能的提升预期
+  - 同步/并发控制问题
+
+- **Object Service 直接操作**:
+  - 直接读写 object service 中的对象
+  - 是否需要新的 API 接口？
+  - 与现有 simpler backend 架构的兼容性
+  - 权限/安全模型
+
+### 3.3 潜在收益
+
+- 减少数据搬运开销
+- 降低延迟
+- 提高吞吐量
+- 简化数据流
+
+---
+
+## 待跟进事项
+
+1. [ ] 调研单 step 内多 layer 融合的技术可行性
+2. [ ] 确认 node 间 hand over 的数据传递机制（reference vs 实际数据）
+3. [ ] 评估 simpler backend 直接操作 share memory / object service 的架构影响
+4. [ ] 确认 Object Service 在 host 侧的的具体接口和语义
+
+---
