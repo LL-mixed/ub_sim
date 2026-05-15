@@ -6,10 +6,9 @@ use sim_core::{
     SegmentHandle, SimEvent, TaskKey,
 };
 use sim_models::qwen3_dense::{
-    hidden_range_bytes, is_qwen3_dense_reference_shape, kv_state_bytes_for_layer_count,
-    model_key as qwen3_dense_model_key, profile_from_weights_dir, Qwen3DenseProfile,
-    QWEN3_DENSE_DEFAULT_DECODE_TOKENS, QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
-    QWEN3_DENSE_DEFAULT_TP_NODES,
+    hidden_range_bytes, kv_state_bytes_for_layer_count, model_key as qwen3_dense_model_key,
+    profile_from_weights_dir, Qwen3DenseProfile, QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
+    QWEN3_DENSE_DEFAULT_PREFILL_TOKENS, QWEN3_DENSE_DEFAULT_TP_NODES,
 };
 use sim_models::qwen3_dense_reference::{
     token_piece_bytes_from_tokenizer_path, token_piece_decode_bytes,
@@ -1283,7 +1282,7 @@ mod tests {
     }
 
     #[test]
-    fn qwen3_guest_dense_runtime_accepts_reference_profile() {
+    fn qwen3_guest_dense_runtime_accepts_0_6b_generic_profile() {
         let dir = env::temp_dir().join(format!(
             "sim_cli_qwen3_guest_dense_reference_runtime_{}",
             std::process::id()
@@ -1319,9 +1318,9 @@ mod tests {
             weights_path: Some(dir.clone()),
             engram: Qwen3EngramConfig::default(),
         };
-        let runtime = qwen3_guest_dense_runtime(&args).expect("reference runtime");
+        let runtime = qwen3_guest_dense_runtime(&args).expect("dense runtime");
         assert_eq!(runtime.model_key, "qwen3-0-6b");
-        assert_eq!(runtime.chipbackend_profile, "qwen3_dense_reference");
+        assert_eq!(runtime.chipbackend_profile, "qwen3_dense");
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1366,7 +1365,7 @@ mod tests {
         assert!(runtime
             .model_key
             .starts_with("qwen3-reference-sim-cli-runtime"));
-        assert_eq!(runtime.chipbackend_profile, "qwen3_dense_reference");
+        assert_eq!(runtime.chipbackend_profile, "qwen3_dense");
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -2118,9 +2117,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         .env("TRACE_FILE", &trace_file)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    if runtime.chipbackend_profile == "qwen3_dense_reference" {
-        command.env("SIM_QWEN3_DENSE_WEIGHTS_PATH", &runtime.weights_path);
-    }
+    command.env("SIM_QWEN3_DENSE_WEIGHTS_PATH", &runtime.weights_path);
     for (key, value) in qwen3_guest_engram_env_vars(&args.engram, engram_session_id) {
         command.env(key, value);
     }
@@ -3678,11 +3675,7 @@ fn qwen3_guest_dense_runtime(
     )
     .map_err(anyhow::Error::msg)?;
     let model_key = qwen3_dense_model_key(&profile.model_id);
-    let chipbackend_profile = if is_qwen3_dense_reference_shape(&profile) {
-        "qwen3_dense_reference"
-    } else {
-        "qwen3_dense"
-    };
+    let chipbackend_profile = "qwen3_dense";
 
     Ok(Qwen3DenseGuestRuntime {
         profile,

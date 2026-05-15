@@ -196,7 +196,7 @@ validate_node_log() {
 
   if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "host_matmul" ]]; then
     expected_dispatch_word="0x3f8000003f800000"
-  elif [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_reference" ]]; then
+  elif [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_reference" || "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense" ]]; then
     expected_dispatch_word="0x[0-9a-f]+"
   fi
 
@@ -230,7 +230,7 @@ validate_node_log() {
   assert_log_has "$log_file" "\\[w4_guest\\] step=wait_completions ok cq_tail=15" "$node_id uapi completions" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] step=decode_completions ok" "$node_id decode completions" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_payload_dispatch_result segment=[0-9]+ word0=${expected_dispatch_word}" "$node_id dispatch payload result" || return 1
-  if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_reference" ]]; then
+  if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_reference" || "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense" ]]; then
     assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_service_flow object=partial_result_tile publish=8 resolve_remote=8 round1_compute=8 storage=block metadata=db status=ok" "$node_id qwen3 service flow" || return 1
   fi
   assert_log_has "$log_file" "\\[w4_guest\\] completion_sources chipbackend=[1-9][0-9]* shmem=[2-9][0-9]* dfs=[2-9][0-9]* db=[2-9][0-9]* block=[2-9][0-9]* guest_uapi=[0-9]+" "$node_id completion source coverage" || return 1
