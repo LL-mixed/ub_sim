@@ -196,7 +196,7 @@ validate_node_log() {
 
   if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "host_matmul" ]]; then
     expected_dispatch_word="0x3f8000003f800000"
-  elif [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_0_6b" ]]; then
+  elif [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_reference" ]]; then
     expected_dispatch_word="0x[0-9a-f]+"
   fi
 
@@ -230,7 +230,7 @@ validate_node_log() {
   assert_log_has "$log_file" "\\[w4_guest\\] step=wait_completions ok cq_tail=15" "$node_id uapi completions" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] step=decode_completions ok" "$node_id decode completions" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_payload_dispatch_result segment=[0-9]+ word0=${expected_dispatch_word}" "$node_id dispatch payload result" || return 1
-  if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_0_6b" ]]; then
+  if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_reference" ]]; then
     assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_service_flow object=partial_result_tile publish=8 resolve_remote=8 round1_compute=8 storage=block metadata=db status=ok" "$node_id qwen3 service flow" || return 1
   fi
   assert_log_has "$log_file" "\\[w4_guest\\] completion_sources chipbackend=[1-9][0-9]* shmem=[2-9][0-9]* dfs=[2-9][0-9]* db=[2-9][0-9]* block=[2-9][0-9]* guest_uapi=[0-9]+" "$node_id completion source coverage" || return 1
@@ -291,7 +291,7 @@ prepare_environment() {
   ENV_FILE="$OUT_DIR/headless_four_node_env.${RUN_ID_BASE}.sh" PORT_BASE="$PORT_BASE" RUN_ID="$RUN_ID_BASE" APPEND_EXTRA="$APPEND_BASE" \
     SIMPLER_HOST_MATMUL_MANIFEST="$SIMPLER_HOST_MATMUL_MANIFEST" \
     SIM_UAPI_W4_CHIPBACKEND_PROFILE="$SIM_UAPI_W4_CHIPBACKEND_PROFILE" \
-    SIM_QWEN3_0_6B_WEIGHTS_PATH="${SIM_QWEN3_0_6B_WEIGHTS_PATH:-}" \
+    SIM_QWEN3_DENSE_WEIGHTS_PATH="${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}" \
     "$SCRIPT_DIR/launch_ub_four_node_headless.sh" >/dev/null
   if [[ ! -f "$OUT_DIR/headless_four_node_env.${RUN_ID_BASE}.sh" ]]; then
     trace "FAIL: missing headless env file for run_id=$RUN_ID_BASE"

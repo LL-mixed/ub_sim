@@ -17,7 +17,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
 
             probe = (
                 "source \"$1\"\n"
-                "SIM_UAPI_W4_CHIPBACKEND_PROFILE=qwen3_dense_0_6b\n"
+                "SIM_UAPI_W4_CHIPBACKEND_PROFILE=qwen3_dense_reference\n"
                 "SIM_QWEN3_DENSE_WEIGHTS_PATH=\"$2\"\n"
                 "qwen3_dense_apply_config_env\n"
                 "printf '%s\\n' \"$SIM_UAPI_W4_CHIPBACKEND_PROFILE\"\n"
@@ -52,7 +52,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
 
         self.assertEqual(values, ["qwen3_dense", "qwen3-14b", "40", "1310720", "327680"])
 
-    def test_0_6b_config_keeps_legacy_profile(self):
+    def test_reference_config_keeps_legacy_profile(self):
         values = self.run_env_probe(
             {
                 "_name_or_path": "Qwen/Qwen3-0.6B",
@@ -68,20 +68,32 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             }
         )
 
-        self.assertEqual(values, ["qwen3_dense_0_6b", "qwen3-0-6b", "28", "262144", "229376"])
+        self.assertEqual(values, ["qwen3_dense_reference", "qwen3-0-6b", "28", "262144", "229376"])
 
-    def test_qwen3_0_6b_two_step_wrapper_has_stable_defaults(self):
+    def test_qwen3_dense_reference_two_step_wrapper_has_stable_defaults(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
-        wrapper = script_dir / "run_ub_eight_node_w4_guest_qwen3_0_6b_2step.sh"
+        wrapper = script_dir / "run_ub_eight_node_w4_guest_qwen3_dense_reference_2step.sh"
 
         self.assertTrue(wrapper.exists())
         self.assertTrue(wrapper.stat().st_mode & 0o111)
 
         text = wrapper.read_text(encoding="utf-8")
-        self.assertIn("SIM_UAPI_W4_CHIPBACKEND_PROFILE:-qwen3_dense_0_6b", text)
+        self.assertIn("SIM_UAPI_W4_CHIPBACKEND_PROFILE:-qwen3_dense_reference", text)
         self.assertIn("SIM_QWEN3_GUEST_DECODE_STEPS:-2", text)
-        self.assertIn("/Volumes/repos/qwen3_mlx_run/Qwen3-0.6B", text)
+        self.assertIn("SIM_QWEN3_DENSE_WEIGHTS_PATH:-", text)
         self.assertIn('exec "$SCRIPT_DIR/run_ub_eight_node_w4_guest.sh"', text)
+
+    def test_eight_node_runner_passes_decode_round_barrier_timeout(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        runner = script_dir / "run_ub_eight_node_w4_guest.sh"
+        launcher = script_dir / "launch_ub_eight_node_headless.sh"
+
+        runner_text = runner.read_text(encoding="utf-8")
+        launcher_text = launcher.read_text(encoding="utf-8")
+
+        self.assertIn("SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS", runner_text)
+        self.assertIn("DEMO_WAIT_SECS * 1000", runner_text)
+        self.assertIn("SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS", launcher_text)
 
 
 if __name__ == "__main__":

@@ -49,7 +49,7 @@ pub struct Qwen3DenseTensorParallelShard {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Qwen3DenseVariant {
-    Dense0_6B,
+    ReferenceDefault,
     ConfigDriven,
 }
 
@@ -60,7 +60,7 @@ pub const QWEN3_DENSE_HIDDEN_ELEM_BYTES: u64 = 2;
 pub const QWEN3_DENSE_KV_ELEM_BYTES: u64 = 4;
 pub const QWEN3_DENSE_KV_STREAMS: u64 = 2;
 
-pub fn qwen3_dense_0_6b_profile() -> Qwen3DenseProfile {
+pub fn qwen3_dense_reference_profile() -> Qwen3DenseProfile {
     Qwen3DenseProfile {
         model_id: "Qwen/Qwen3-0.6B".to_string(),
         vocab_size: 151_936,
@@ -78,8 +78,8 @@ pub fn qwen3_dense_0_6b_profile() -> Qwen3DenseProfile {
     }
 }
 
-pub fn is_qwen3_dense_0_6b_shape(profile: &Qwen3DenseProfile) -> bool {
-    let expected = qwen3_dense_0_6b_profile();
+pub fn is_qwen3_dense_reference_shape(profile: &Qwen3DenseProfile) -> bool {
+    let expected = qwen3_dense_reference_profile();
     profile.vocab_size == expected.vocab_size
         && profile.hidden_size == expected.hidden_size
         && profile.intermediate_size == expected.intermediate_size
@@ -166,8 +166,8 @@ pub fn validate_profile(
     variant: Qwen3DenseVariant,
 ) -> Result<(), String> {
     validate_structural_profile(profile)?;
-    if variant == Qwen3DenseVariant::Dense0_6B && !is_qwen3_dense_0_6b_shape(profile) {
-        return Err("qwen3_dense_0_6b_config_mismatch".to_string());
+    if variant == Qwen3DenseVariant::ReferenceDefault && !is_qwen3_dense_reference_shape(profile) {
+        return Err("qwen3_dense_reference_config_mismatch".to_string());
     }
     Ok(())
 }
@@ -335,7 +335,7 @@ mod tests {
     use super::*;
     use std::fs;
 
-    const QWEN3_0_6B_CONFIG: &str = r#"{
+    const QWEN3_REFERENCE_CONFIG: &str = r#"{
         "vocab_size": 151936,
         "hidden_size": 1024,
         "intermediate_size": 3072,
@@ -360,40 +360,40 @@ mod tests {
     }"#;
 
     #[test]
-    fn parses_existing_qwen3_0_6b_config_as_generic_profile() {
+    fn parses_existing_qwen3_dense_reference_config_as_generic_profile() {
         let profile = profile_from_config_json(
             "Qwen/Qwen3-0.6B",
-            QWEN3_0_6B_CONFIG,
+            QWEN3_REFERENCE_CONFIG,
             QWEN3_DENSE_DEFAULT_TP_NODES,
             QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
             QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
         )
-        .expect("parse 0.6B profile");
+        .expect("parse reference profile");
 
-        assert_eq!(profile, qwen3_dense_0_6b_profile());
-        assert!(is_qwen3_dense_0_6b_shape(&profile));
-        validate_profile(&profile, Qwen3DenseVariant::Dense0_6B).expect("0.6B profile");
+        assert_eq!(profile, qwen3_dense_reference_profile());
+        assert!(is_qwen3_dense_reference_shape(&profile));
+        validate_profile(&profile, Qwen3DenseVariant::ReferenceDefault).expect("reference profile");
     }
 
     #[test]
-    fn accepts_0_6b_shape_with_local_directory_model_id() {
+    fn accepts_reference_shape_with_local_directory_model_id() {
         let profile = profile_from_config_json(
-            "Qwen3-0.6B",
-            QWEN3_0_6B_CONFIG,
+            "Qwen3-reference",
+            QWEN3_REFERENCE_CONFIG,
             QWEN3_DENSE_DEFAULT_TP_NODES,
             QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
             QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
         )
-        .expect("parse local 0.6B profile");
+        .expect("parse local reference profile");
 
-        assert_ne!(profile, qwen3_dense_0_6b_profile());
-        assert!(is_qwen3_dense_0_6b_shape(&profile));
-        validate_profile(&profile, Qwen3DenseVariant::Dense0_6B)
-            .expect("0.6B shape should not depend on model_id spelling");
+        assert_ne!(profile, qwen3_dense_reference_profile());
+        assert!(is_qwen3_dense_reference_shape(&profile));
+        validate_profile(&profile, Qwen3DenseVariant::ReferenceDefault)
+            .expect("reference shape should not depend on model_id spelling");
     }
 
     #[test]
-    fn accepts_qwen3_14b_shaped_config_without_0_6b_equality_check() {
+    fn accepts_qwen3_14b_shaped_config_without_reference_equality_check() {
         let profile = profile_from_config_json(
             "Qwen/Qwen3-14B",
             QWEN3_14B_SHAPED_CONFIG,
@@ -424,9 +424,9 @@ mod tests {
     }
 
     #[test]
-    fn computes_existing_0_6b_layer_ranges_and_payload_sizes() {
-        let profile = qwen3_dense_0_6b_profile();
-        let ranges = balanced_layer_ranges(&profile).expect("0.6B layer ranges");
+    fn computes_existing_reference_layer_ranges_and_payload_sizes() {
+        let profile = qwen3_dense_reference_profile();
+        let ranges = balanced_layer_ranges(&profile).expect("reference layer ranges");
 
         assert_eq!(hidden_range_bytes(&profile), 262_144);
         assert_eq!(

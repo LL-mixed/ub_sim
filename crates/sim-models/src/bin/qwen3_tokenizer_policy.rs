@@ -1,7 +1,7 @@
-use sim_models::qwen3_dense_0_6b::{
+use sim_models::qwen3_dense_reference::{
     load_tokenizer_asset_summary, token_piece_from_policy, token_piece_from_tokenizer_path,
-    tokenizer_policy, QWEN3_DENSE_0_6B_PROFILE, QWEN3_DENSE_0_6B_TOKENIZER_ASSET_POLICY_KIND,
-    QWEN3_DENSE_0_6B_TOKENIZER_POLICY_KIND,
+    tokenizer_policy, QWEN3_DENSE_REFERENCE_PROFILE,
+    QWEN3_DENSE_REFERENCE_TOKENIZER_ASSET_POLICY_KIND, QWEN3_DENSE_REFERENCE_TOKENIZER_POLICY_KIND,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let output = serde_json::json!({
             "model": summary.model_id,
             "source": summary.source,
-            "policy_kind": QWEN3_DENSE_0_6B_TOKENIZER_ASSET_POLICY_KIND,
+            "policy_kind": QWEN3_DENSE_REFERENCE_TOKENIZER_ASSET_POLICY_KIND,
             "aggregate_checksum": summary.aggregate_checksum,
             "vocab_size": summary.vocab_size,
             "vocab_entries": summary.vocab_entries,
@@ -41,12 +41,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let policy = tokenizer_policy(QWEN3_DENSE_0_6B_PROFILE);
+    let policy = tokenizer_policy(QWEN3_DENSE_REFERENCE_PROFILE);
     let sample = token_piece_from_policy(policy, 123);
     let summary = serde_json::json!({
         "model": policy.model_id,
         "tokenizer_family": policy.tokenizer_family,
-        "policy_kind": QWEN3_DENSE_0_6B_TOKENIZER_POLICY_KIND,
+        "policy_kind": QWEN3_DENSE_REFERENCE_TOKENIZER_POLICY_KIND,
         "policy_hash": policy.policy_hash,
         "vocab_size": policy.vocab_size,
         "synthetic_piece_prefix": policy.synthetic_piece_prefix,

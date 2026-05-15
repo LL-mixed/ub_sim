@@ -464,8 +464,16 @@ static uint64_t qwen3_hidden_range_bytes(void)
 static bool is_qwen3_profile_name(const char *profile)
 {
     return profile &&
-           (strcmp(profile, "qwen3_dense_0_6b") == 0 ||
+           (strcmp(profile, "qwen3_dense_reference") == 0 ||
             strcmp(profile, "qwen3_dense") == 0);
+}
+
+static bool qwen3_real_tokenizer_required(void)
+{
+    const char *profile = getenv("SIM_UAPI_W4_CHIPBACKEND_PROFILE");
+    const char *weights_path = getenv("SIM_QWEN3_DENSE_WEIGHTS_PATH");
+
+    return is_qwen3_profile_name(profile) && weights_path && weights_path[0] != '\0';
 }
 
 static void write_u32_le(uint8_t *buf, size_t *off, uint32_t value)
@@ -3718,17 +3726,21 @@ qwen3_logits_tables:
             token_text_total_bytes = read_segment_u64(ep_mmio, token_text_table_header + 32);
             token_text_policy_hash = read_segment_u64(ep_mmio, token_text_table_header + 40);
             token_text_policy_kind = read_segment_u64(ep_mmio, token_text_table_header + 48);
+            const bool real_tokenizer_required = qwen3_real_tokenizer_required();
             if (token_text_marker != W4_QWEN3_MARKER_TOKEN_TEXT_TABLE ||
                 token_text_count != (range_only_flow ? logits_count : W4_QWEN3_TOKEN_TEXT_ENTRIES) ||
                 token_text_entry_words != W4_QWEN3_TOKEN_TEXT_TABLE_ENTRY_WORDS ||
                 token_text_table_bytes != token_text_count * W4_QWEN3_TOKEN_TEXT_TABLE_ENTRY_BYTES ||
                 token_text_total_bytes == 0 ||
-                !(range_only_flow ||
+                (real_tokenizer_required ?
+                  !(token_text_policy_kind == W4_QWEN3_TOKENIZER_ASSET_POLICY_KIND &&
+                    token_text_policy_hash != 0) :
+                  !(range_only_flow ||
                   (token_text_policy_kind == W4_QWEN3_TOKENIZER_POLICY_KIND &&
                    token_text_total_bytes == token_text_count * W4_QWEN3_TOKEN_TEXT_PIECE_BYTES &&
                    token_text_policy_hash == qwen3_tokenizer_policy_hash()) ||
                   (token_text_policy_kind == W4_QWEN3_TOKENIZER_ASSET_POLICY_KIND &&
-                   token_text_policy_hash != 0))) {
+                   token_text_policy_hash != 0)))) {
                 fprintf(stderr,
                         "[w4_guest] qwen3 token text table header mismatch marker=0x%016" PRIx64
                         " count=%" PRIu64 " entry_words=%" PRIu64
@@ -4585,6 +4597,7 @@ int main(void)
     uint64_t qwen3_round_input_tokens[1024];
     uint64_t qwen3_round_input_token_count = 0;
     uint64_t uapi_completion_timeout_ms = W4_DEFAULT_TIMEOUT_MS;
+    uint64_t decode_round_barrier_timeout_ms = 600000ULL;
     uint64_t round_start_ms = 0;
     uint64_t terminal_gate_ms = 0;
     uint64_t setup_ms = 0;
@@ -4654,6 +4667,8 @@ int main(void)
                               &qwen3_engram_config.blocked_token_count);
     uapi_completion_timeout_ms = env_u64_or_default("SIM_W4_UAPI_COMPLETION_TIMEOUT_MS",
                                                     W4_DEFAULT_TIMEOUT_MS);
+    decode_round_barrier_timeout_ms =
+        env_u64_or_default("SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS", 600000ULL);
     if (guest_decode_steps == 0) {
         guest_decode_steps = 1;
     }
@@ -6598,7 +6613,7 @@ decode_round_start:
             w4_db_obmm_service_v0_wait_all_decode_round_done(&db_service,
                                                              cluster_node_count,
                                                              guest_decode_step,
-                                                             600000) != 0) {
+                                                             decode_round_barrier_timeout_ms) != 0) {
             fprintf(stderr,
                     "[w4_guest] fail qwen3 decode round barrier failed step=%" PRIu64 "\n",
                     guest_decode_step);

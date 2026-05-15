@@ -28,7 +28,7 @@ ensure_simpler_host_manifest() {
     host_vector)
       producer="$script_dir/prepare_simpler_host_vector_artifacts.sh"
       ;;
-    host_matmul|qwen3_dense_0_6b|qwen3_dense)
+    host_matmul|qwen3_dense_reference|qwen3_dense)
       producer="$script_dir/prepare_simpler_host_matmul_artifacts.sh"
       ;;
     *)
@@ -46,12 +46,12 @@ ensure_simpler_host_manifest() {
 
 is_qwen3_dense_w4_profile() {
   local profile="$1"
-  [[ "$profile" == "qwen3_dense_0_6b" || "$profile" == "qwen3_dense" ]]
+  [[ "$profile" == "qwen3_dense_reference" || "$profile" == "qwen3_dense" ]]
 }
 
 qwen3_dense_apply_config_env() {
   local profile="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-}"
-  local weights_path="${SIM_QWEN3_DENSE_WEIGHTS_PATH:-${SIM_QWEN3_0_6B_WEIGHTS_PATH:-}}"
+  local weights_path="${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}"
 
   if ! is_qwen3_dense_w4_profile "$profile"; then
     return 0
@@ -127,7 +127,7 @@ kv_state_bytes = env_int(
     num_hidden_layers * decode_tokens * num_key_value_heads * head_dim * 2 * 4,
 )
 
-is_0_6b = (
+is_reference = (
     vocab_size == 151936
     and hidden_size == 1024
     and intermediate_size == 3072
@@ -136,8 +136,8 @@ is_0_6b = (
     and num_key_value_heads == 8
     and head_dim == 128
 )
-resolved_profile = "qwen3_dense_0_6b" if profile == "qwen3_dense_0_6b" and is_0_6b else profile
-if profile == "qwen3_dense_0_6b" and not is_0_6b:
+resolved_profile = "qwen3_dense_reference" if profile == "qwen3_dense_reference" and is_reference else profile
+if profile == "qwen3_dense_reference" and not is_reference:
     resolved_profile = "qwen3_dense"
 
 values = {

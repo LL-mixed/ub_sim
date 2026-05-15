@@ -12,7 +12,7 @@ use sim_services::weights::{
 use sim_topology::SimTopology;
 
 #[derive(Clone, Copy, Debug)]
-pub struct Qwen3Dense06bProfile {
+pub struct Qwen3DenseReferenceProfile {
     pub vocab_size: u64,
     pub hidden_size: u64,
     pub intermediate_size: u64,
@@ -28,7 +28,7 @@ pub struct Qwen3Dense06bProfile {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Qwen3Dense06bTokenizerPolicy {
+pub struct Qwen3DenseReferenceTokenizerPolicy {
     pub model_id: &'static str,
     pub tokenizer_family: &'static str,
     pub vocab_size: u64,
@@ -39,7 +39,7 @@ pub struct Qwen3Dense06bTokenizerPolicy {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Qwen3Dense06bTokenPiece {
+pub struct Qwen3DenseReferenceTokenPiece {
     pub token_id: u64,
     pub byte_len: u64,
     pub word0: u64,
@@ -48,13 +48,13 @@ pub struct Qwen3Dense06bTokenPiece {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Qwen3Dense06bPromptTokenization {
+pub struct Qwen3DenseReferencePromptTokenization {
     pub token_ids: Vec<u64>,
     pub token_count: u64,
     pub token_checksum: u64,
 }
 
-pub const QWEN3_DENSE_0_6B_PROFILE: Qwen3Dense06bProfile = Qwen3Dense06bProfile {
+pub const QWEN3_DENSE_REFERENCE_PROFILE: Qwen3DenseReferenceProfile = Qwen3DenseReferenceProfile {
     vocab_size: 151_936,
     hidden_size: 1_024,
     intermediate_size: 3_072,
@@ -69,13 +69,13 @@ pub const QWEN3_DENSE_0_6B_PROFILE: Qwen3Dense06bProfile = Qwen3Dense06bProfile 
     tp_nodes: 8,
 };
 
-pub const QWEN3_DENSE_0_6B_TOKENIZER_POLICY_KIND: u64 = 1;
-pub const QWEN3_DENSE_0_6B_TOKENIZER_ASSET_POLICY_KIND: u64 = 2;
+pub const QWEN3_DENSE_REFERENCE_TOKENIZER_POLICY_KIND: u64 = 1;
+pub const QWEN3_DENSE_REFERENCE_TOKENIZER_ASSET_POLICY_KIND: u64 = 2;
 
 pub fn profile_from_dense_profile(
     profile: &crate::qwen3_dense::Qwen3DenseProfile,
-) -> Qwen3Dense06bProfile {
-    Qwen3Dense06bProfile {
+) -> Qwen3DenseReferenceProfile {
+    Qwen3DenseReferenceProfile {
         vocab_size: profile.vocab_size,
         hidden_size: profile.hidden_size,
         intermediate_size: profile.intermediate_size,
@@ -92,26 +92,26 @@ pub fn profile_from_dense_profile(
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Qwen3Dense06bTokenizerAssetFileSummary {
+pub struct Qwen3DenseReferenceTokenizerAssetFileSummary {
     pub name: String,
     pub bytes: u64,
     pub checksum: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Qwen3Dense06bTokenizerAssetSummary {
+pub struct Qwen3DenseReferenceTokenizerAssetSummary {
     pub model_id: String,
     pub source: String,
     pub vocab_size: u64,
     pub vocab_entries: u64,
     pub added_tokens: u64,
     pub merge_rules: u64,
-    pub files: Vec<Qwen3Dense06bTokenizerAssetFileSummary>,
+    pub files: Vec<Qwen3DenseReferenceTokenizerAssetFileSummary>,
     pub aggregate_checksum: u64,
 }
 
-pub fn tokenizer_policy(profile: Qwen3Dense06bProfile) -> Qwen3Dense06bTokenizerPolicy {
-    let mut policy = Qwen3Dense06bTokenizerPolicy {
+pub fn tokenizer_policy(profile: Qwen3DenseReferenceProfile) -> Qwen3DenseReferenceTokenizerPolicy {
+    let mut policy = Qwen3DenseReferenceTokenizerPolicy {
         model_id: "Qwen/Qwen3-0.6B",
         tokenizer_family: "qwen3-tiktoken-compatible-synthetic-piece",
         vocab_size: profile.vocab_size,
@@ -124,7 +124,7 @@ pub fn tokenizer_policy(profile: Qwen3Dense06bProfile) -> Qwen3Dense06bTokenizer
     policy
 }
 
-pub fn tokenizer_policy_hash(policy: &Qwen3Dense06bTokenizerPolicy) -> u64 {
+pub fn tokenizer_policy_hash(policy: &Qwen3DenseReferenceTokenizerPolicy) -> u64 {
     let mut acc = 0xcbf2_9ce4_8422_2325u64;
     for byte in policy
         .model_id
@@ -145,9 +145,9 @@ pub fn tokenizer_policy_hash(policy: &Qwen3Dense06bTokenizerPolicy) -> u64 {
 }
 
 pub fn token_piece_from_policy(
-    policy: Qwen3Dense06bTokenizerPolicy,
+    policy: Qwen3DenseReferenceTokenizerPolicy,
     token_id: u64,
-) -> Qwen3Dense06bTokenPiece {
+) -> Qwen3DenseReferenceTokenPiece {
     debug_assert_eq!(policy.synthetic_piece_prefix, "q3_");
     debug_assert_eq!(policy.synthetic_piece_digits, 6);
     let piece = token_piece_bytes_from_policy(policy, token_id);
@@ -156,7 +156,7 @@ pub fn token_piece_from_policy(
 }
 
 pub fn token_piece_bytes_from_policy(
-    policy: Qwen3Dense06bTokenizerPolicy,
+    policy: Qwen3DenseReferenceTokenizerPolicy,
     token_id: u64,
 ) -> Vec<u8> {
     debug_assert_eq!(policy.synthetic_piece_prefix, "q3_");
@@ -166,7 +166,7 @@ pub fn token_piece_bytes_from_policy(
 
 pub fn load_tokenizer_asset_summary(
     tokenizer_path: &Path,
-) -> Result<Qwen3Dense06bTokenizerAssetSummary, String> {
+) -> Result<Qwen3DenseReferenceTokenizerAssetSummary, String> {
     let tokenizer_dir = tokenizer_path;
     let tokenizer_config = read_tokenizer_asset_file(tokenizer_dir, "tokenizer_config.json")?;
     let tokenizer_json = read_tokenizer_asset_file(tokenizer_dir, "tokenizer.json")?;
@@ -207,7 +207,7 @@ pub fn load_tokenizer_asset_summary(
         tokenizer_asset_file_summary("generation_config.json", &generation_config),
     ];
     let aggregate_words = [
-        QWEN3_DENSE_0_6B_PROFILE.vocab_size,
+        QWEN3_DENSE_REFERENCE_PROFILE.vocab_size,
         vocab_entries,
         added_tokens,
         merge_rules,
@@ -218,10 +218,10 @@ pub fn load_tokenizer_asset_summary(
                 ^ file.checksum.rotate_left(23)
         }),
     ];
-    Ok(Qwen3Dense06bTokenizerAssetSummary {
+    Ok(Qwen3DenseReferenceTokenizerAssetSummary {
         model_id: "Qwen/Qwen3-0.6B".to_string(),
         source: tokenizer_dir.display().to_string(),
-        vocab_size: QWEN3_DENSE_0_6B_PROFILE.vocab_size,
+        vocab_size: QWEN3_DENSE_REFERENCE_PROFILE.vocab_size,
         vocab_entries,
         added_tokens,
         merge_rules,
@@ -233,7 +233,7 @@ pub fn load_tokenizer_asset_summary(
 pub fn token_piece_from_tokenizer_path(
     tokenizer_path: &Path,
     token_id: u64,
-) -> Result<Qwen3Dense06bTokenPiece, String> {
+) -> Result<Qwen3DenseReferenceTokenPiece, String> {
     let piece_bytes = token_piece_bytes_from_tokenizer_path(tokenizer_path, token_id)?;
     Ok(token_piece_from_bytes(token_id, &piece_bytes))
 }
@@ -273,7 +273,7 @@ pub fn token_piece_decode_bytes(piece: &[u8]) -> Vec<u8> {
 pub fn tokenize_prompt_from_tokenizer_path(
     tokenizer_path: &Path,
     prompt: &str,
-) -> Result<Qwen3Dense06bPromptTokenization, String> {
+) -> Result<Qwen3DenseReferencePromptTokenization, String> {
     let tokenizer_json = read_tokenizer_asset_file(tokenizer_path, "tokenizer.json")?;
     let tokenizer_value: serde_json::Value = serde_json::from_slice(&tokenizer_json)
         .map_err(|err| format!("qwen3_tokenizer_json_parse_failed:{err}"))?;
@@ -299,7 +299,7 @@ pub fn tokenize_prompt_from_tokenizer_path(
         }
     }
     let token_checksum = prompt_token_ids_checksum(&token_ids);
-    Ok(Qwen3Dense06bPromptTokenization {
+    Ok(Qwen3DenseReferencePromptTokenization {
         token_count: token_ids.len() as u64,
         token_ids,
         token_checksum,
@@ -460,8 +460,8 @@ fn qwen3_tokenizer_bpe_pieces(
 fn tokenizer_asset_file_summary(
     name: impl Into<String>,
     bytes: &[u8],
-) -> Qwen3Dense06bTokenizerAssetFileSummary {
-    Qwen3Dense06bTokenizerAssetFileSummary {
+) -> Qwen3DenseReferenceTokenizerAssetFileSummary {
+    Qwen3DenseReferenceTokenizerAssetFileSummary {
         name: name.into(),
         bytes: bytes.len() as u64,
         checksum: weight_bytes_checksum(bytes),
@@ -518,11 +518,11 @@ fn tokenizer_piece_bytes(
         .ok_or_else(|| format!("qwen3_tokenizer_token_missing:{token_id}"))
 }
 
-fn token_piece_from_bytes(token_id: u64, piece: &[u8]) -> Qwen3Dense06bTokenPiece {
+fn token_piece_from_bytes(token_id: u64, piece: &[u8]) -> Qwen3DenseReferenceTokenPiece {
     let mut bytes = [0u8; 16];
     let copy_len = piece.len().min(bytes.len());
     bytes[..copy_len].copy_from_slice(&piece[..copy_len]);
-    Qwen3Dense06bTokenPiece {
+    Qwen3DenseReferenceTokenPiece {
         token_id,
         byte_len: piece.len() as u64,
         word0: u64::from_le_bytes(bytes[0..8].try_into().expect("token piece word0")),
@@ -541,7 +541,7 @@ fn token_piece_checksum(token_id: u64, piece: &[u8]) -> u64 {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct Qwen3Dense06bShard {
+pub struct Qwen3DenseReferenceShard {
     pub shard_id: u64,
     pub owner_node: u64,
     pub target_node: u64,
@@ -552,7 +552,7 @@ pub struct Qwen3Dense06bShard {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Qwen3Dense06bLayerOpKind {
+pub enum Qwen3DenseReferenceLayerOpKind {
     RmsNorm,
     QkvProjection,
     Rope,
@@ -568,7 +568,7 @@ pub enum Qwen3Dense06bLayerOpKind {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Qwen3Dense06bLoweringKind {
+pub enum Qwen3DenseReferenceLoweringKind {
     TiledMatmul,
     MissingRmsNorm,
     MissingRope,
@@ -579,17 +579,17 @@ pub enum Qwen3Dense06bLoweringKind {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct Qwen3Dense06bLayerOp {
-    pub kind: Qwen3Dense06bLayerOpKind,
+pub struct Qwen3DenseReferenceLayerOp {
+    pub kind: Qwen3DenseReferenceLayerOpKind,
     pub input_width: u64,
     pub output_width: u64,
     pub sharded: bool,
     pub requires_collective: bool,
-    pub lowering: Qwen3Dense06bLoweringKind,
+    pub lowering: Qwen3DenseReferenceLoweringKind,
 }
 
 #[derive(Clone, Debug)]
-pub struct Qwen3Dense06bLayerGraphIr {
+pub struct Qwen3DenseReferenceLayerGraphIr {
     pub layer_id: u64,
     pub hidden_size: u64,
     pub intermediate_size: u64,
@@ -597,11 +597,11 @@ pub struct Qwen3Dense06bLayerGraphIr {
     pub kv_heads: u64,
     pub head_dim: u64,
     pub prefill_tokens: u64,
-    pub ops: Vec<Qwen3Dense06bLayerOp>,
+    pub ops: Vec<Qwen3DenseReferenceLayerOp>,
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct Qwen3Dense06bTensorParallelShard {
+pub struct Qwen3DenseReferenceTensorParallelShard {
     pub shard_id: u64,
     pub owner_node: u64,
     pub target_node: u64,
@@ -618,7 +618,7 @@ pub struct Qwen3Dense06bTensorParallelShard {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Qwen3Dense06bLoweringSummary {
+pub struct Qwen3DenseReferenceLoweringSummary {
     pub tiled_matmul_ops: usize,
     pub missing_ops: usize,
     pub missing_rmsnorm: usize,
@@ -630,7 +630,7 @@ pub struct Qwen3Dense06bLoweringSummary {
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub enum Qwen3Dense06bWeightDType {
+pub enum Qwen3DenseReferenceWeightDType {
     F32,
     F16,
     BF16,
@@ -639,7 +639,7 @@ pub enum Qwen3Dense06bWeightDType {
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub enum Qwen3Dense06bWeightTensorKind {
+pub enum Qwen3DenseReferenceWeightTensorKind {
     InputLayerNorm,
     QProj,
     QNorm,
@@ -654,14 +654,14 @@ pub enum Qwen3Dense06bWeightTensorKind {
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub enum Qwen3Dense06bWeightStorageKind {
+pub enum Qwen3DenseReferenceWeightStorageKind {
     Block,
     Shmem,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct Qwen3Dense06bWeightTensorMetadata {
-    pub dtype: Qwen3Dense06bWeightDType,
+pub struct Qwen3DenseReferenceWeightTensorMetadata {
+    pub dtype: Qwen3DenseReferenceWeightDType,
     pub shape: Vec<u64>,
     pub data_offsets: Option<[u64; 2]>,
     #[serde(default)]
@@ -671,8 +671,8 @@ pub struct Qwen3Dense06bWeightTensorMetadata {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct Qwen3Dense06bWeightStorageRef {
-    pub kind: Qwen3Dense06bWeightStorageKind,
+pub struct Qwen3DenseReferenceWeightStorageRef {
+    pub kind: Qwen3DenseReferenceWeightStorageKind,
     pub storage_ref: String,
     pub segment: u64,
     pub offset: u64,
@@ -681,31 +681,31 @@ pub struct Qwen3Dense06bWeightStorageRef {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct Qwen3Dense06bWeightSlice {
+pub struct Qwen3DenseReferenceWeightSlice {
     pub layer_id: u64,
     pub shard_id: u64,
-    pub tensor_kind: Qwen3Dense06bWeightTensorKind,
+    pub tensor_kind: Qwen3DenseReferenceWeightTensorKind,
     pub tensor_name: String,
-    pub dtype: Qwen3Dense06bWeightDType,
+    pub dtype: Qwen3DenseReferenceWeightDType,
     pub global_shape: Vec<u64>,
     pub slice_axis: Option<u64>,
     pub slice_start: u64,
     pub slice_end: u64,
     pub local_shape: Vec<u64>,
-    pub storage: Qwen3Dense06bWeightStorageRef,
+    pub storage: Qwen3DenseReferenceWeightStorageRef,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct Qwen3Dense06bWeightManifest {
+pub struct Qwen3DenseReferenceWeightManifest {
     pub model_id: String,
     pub source: String,
     pub format: String,
-    pub profile: Qwen3Dense06bWeightManifestProfile,
-    pub slices: Vec<Qwen3Dense06bWeightSlice>,
+    pub profile: Qwen3DenseReferenceWeightManifestProfile,
+    pub slices: Vec<Qwen3DenseReferenceWeightSlice>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct Qwen3Dense06bWeightManifestProfile {
+pub struct Qwen3DenseReferenceWeightManifestProfile {
     pub hidden_size: u64,
     pub intermediate_size: u64,
     pub num_hidden_layers: u64,
@@ -716,15 +716,15 @@ pub struct Qwen3Dense06bWeightManifestProfile {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Qwen3Dense06bWeightDbPut {
+pub struct Qwen3DenseReferenceWeightDbPut {
     pub key: String,
     pub bytes: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Qwen3Dense06bWeightPayloadWrite {
+pub struct Qwen3DenseReferenceWeightPayloadWrite {
     pub storage_ref: String,
-    pub storage_kind: Qwen3Dense06bWeightStorageKind,
+    pub storage_kind: Qwen3DenseReferenceWeightStorageKind,
     pub segment: u64,
     pub offset: u64,
     pub bytes: u64,
@@ -732,32 +732,32 @@ pub struct Qwen3Dense06bWeightPayloadWrite {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Qwen3Dense06bWeightServiceLoadPlan {
-    pub manifest: Qwen3Dense06bWeightManifest,
-    pub metadata_db_puts: Vec<Qwen3Dense06bWeightDbPut>,
-    pub payload_writes: Vec<Qwen3Dense06bWeightPayloadWrite>,
+pub struct Qwen3DenseReferenceWeightServiceLoadPlan {
+    pub manifest: Qwen3DenseReferenceWeightManifest,
+    pub metadata_db_puts: Vec<Qwen3DenseReferenceWeightDbPut>,
+    pub payload_writes: Vec<Qwen3DenseReferenceWeightPayloadWrite>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct Qwen3Dense06bSafetensorsIndex {
+pub struct Qwen3DenseReferenceSafetensorsIndex {
     pub metadata: Option<BTreeMap<String, serde_json::Value>>,
     pub weight_map: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Qwen3Dense06bLoadedWeights {
+pub struct Qwen3DenseReferenceLoadedWeights {
     pub source: String,
-    pub tensors: BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    pub tensors: BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Qwen3Dense06bWeightSliceValidation {
+pub struct Qwen3DenseReferenceWeightSliceValidation {
     pub bytes: u64,
     pub checksum: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Qwen3Dense06bQkvReferenceValidation {
+pub struct Qwen3DenseReferenceQkvReferenceValidation {
     pub layer_id: u64,
     pub shard_id: u64,
     pub hidden_size: u64,
@@ -778,8 +778,8 @@ pub struct Qwen3Dense06bQkvReferenceValidation {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct Qwen3Dense06bReferenceWeightSliceValidation {
-    pub kind: Qwen3Dense06bWeightTensorKind,
+pub struct Qwen3DenseReferenceReferenceWeightSliceValidation {
+    pub kind: Qwen3DenseReferenceWeightTensorKind,
     pub shape: Vec<u64>,
     pub slice_axis: Option<u64>,
     pub slice_start: u64,
@@ -789,7 +789,7 @@ pub struct Qwen3Dense06bReferenceWeightSliceValidation {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct Qwen3Dense06bQkvReferenceShardSummary {
+pub struct Qwen3DenseReferenceQkvReferenceShardSummary {
     pub shard_id: u64,
     pub hidden_size: u64,
     pub rmsnorm_checksum: u64,
@@ -806,13 +806,13 @@ pub struct Qwen3Dense06bQkvReferenceShardSummary {
     pub q_rows: u64,
     pub k_rows: u64,
     pub v_rows: u64,
-    pub weight_slices: Vec<Qwen3Dense06bReferenceWeightSliceValidation>,
+    pub weight_slices: Vec<Qwen3DenseReferenceReferenceWeightSliceValidation>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct Qwen3Dense06bQkvReferenceLayerSummary {
+pub struct Qwen3DenseReferenceQkvReferenceLayerSummary {
     pub layer_id: u64,
-    pub shards: Vec<Qwen3Dense06bQkvReferenceShardSummary>,
+    pub shards: Vec<Qwen3DenseReferenceQkvReferenceShardSummary>,
     pub shard_count: u64,
     pub total_weight_bytes: u64,
     pub total_q_rows: u64,
@@ -822,7 +822,7 @@ pub struct Qwen3Dense06bQkvReferenceLayerSummary {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Qwen3Dense06bQkvReferenceShardValues {
+pub struct Qwen3DenseReferenceQkvReferenceShardValues {
     pub shard_id: u64,
     pub hidden_size: u64,
     pub q_rows: u64,
@@ -839,15 +839,15 @@ pub struct Qwen3Dense06bQkvReferenceShardValues {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Qwen3Dense06bQkvReferenceLayerValues {
+pub struct Qwen3DenseReferenceQkvReferenceLayerValues {
     pub layer_id: u64,
     pub shard_count: u64,
-    pub shards: Vec<Qwen3Dense06bQkvReferenceShardValues>,
+    pub shards: Vec<Qwen3DenseReferenceQkvReferenceShardValues>,
     pub aggregate_checksum: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Qwen3Dense06bMlpReferenceValidation {
+pub struct Qwen3DenseReferenceMlpReferenceValidation {
     pub layer_id: u64,
     pub shard_id: u64,
     pub hidden_size: u64,
@@ -866,7 +866,7 @@ pub struct Qwen3Dense06bMlpReferenceValidation {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct Qwen3Dense06bMlpReferenceShardSummary {
+pub struct Qwen3DenseReferenceMlpReferenceShardSummary {
     pub shard_id: u64,
     pub hidden_size: u64,
     pub intermediate_rows: u64,
@@ -881,13 +881,13 @@ pub struct Qwen3Dense06bMlpReferenceShardSummary {
     pub activation_sample_words: [u64; 4],
     pub down_output_checksum: u64,
     pub down_output_sample_words: [u64; 4],
-    pub weight_slices: Vec<Qwen3Dense06bReferenceWeightSliceValidation>,
+    pub weight_slices: Vec<Qwen3DenseReferenceReferenceWeightSliceValidation>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct Qwen3Dense06bMlpReferenceLayerSummary {
+pub struct Qwen3DenseReferenceMlpReferenceLayerSummary {
     pub layer_id: u64,
-    pub shards: Vec<Qwen3Dense06bMlpReferenceShardSummary>,
+    pub shards: Vec<Qwen3DenseReferenceMlpReferenceShardSummary>,
     pub shard_count: u64,
     pub total_weight_bytes: u64,
     pub total_intermediate_rows: u64,
@@ -895,7 +895,7 @@ pub struct Qwen3Dense06bMlpReferenceLayerSummary {
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct Qwen3Dense06bLogitsReferenceTokenSummary {
+pub struct Qwen3DenseReferenceLogitsReferenceTokenSummary {
     pub step_index: u64,
     pub token_id: u64,
     pub row_bytes: u64,
@@ -905,7 +905,7 @@ pub struct Qwen3Dense06bLogitsReferenceTokenSummary {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct Qwen3Dense06bLogitsReferenceSummary {
+pub struct Qwen3DenseReferenceLogitsReferenceSummary {
     pub model_id: String,
     pub source: String,
     pub vocab_size: u64,
@@ -914,11 +914,11 @@ pub struct Qwen3Dense06bLogitsReferenceSummary {
     pub final_norm_checksum: u64,
     pub token_count: u64,
     pub aggregate_checksum: u64,
-    pub tokens: Vec<Qwen3Dense06bLogitsReferenceTokenSummary>,
+    pub tokens: Vec<Qwen3DenseReferenceLogitsReferenceTokenSummary>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct Qwen3Dense06bEmbeddingReferenceTokenSummary {
+pub struct Qwen3DenseReferenceEmbeddingReferenceTokenSummary {
     pub sequence_index: u64,
     pub token_id: u64,
     pub row_bytes: u64,
@@ -928,7 +928,7 @@ pub struct Qwen3Dense06bEmbeddingReferenceTokenSummary {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct Qwen3Dense06bEmbeddingReferenceSummary {
+pub struct Qwen3DenseReferenceEmbeddingReferenceSummary {
     pub model_id: String,
     pub source: String,
     pub vocab_size: u64,
@@ -938,11 +938,11 @@ pub struct Qwen3Dense06bEmbeddingReferenceSummary {
     pub row_checksum: u64,
     pub value_checksum: u64,
     pub aggregate_checksum: u64,
-    pub tokens: Vec<Qwen3Dense06bEmbeddingReferenceTokenSummary>,
+    pub tokens: Vec<Qwen3DenseReferenceEmbeddingReferenceTokenSummary>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Qwen3Dense06bLayerForwardReference {
+pub struct Qwen3DenseReferenceLayerForwardReference {
     pub layer_id: u64,
     pub position: u64,
     pub hidden_size: u64,
@@ -965,7 +965,7 @@ pub struct Qwen3Dense06bLayerForwardReference {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Qwen3Dense06bForwardReference {
+pub struct Qwen3DenseReferenceForwardReference {
     pub layer_count: u64,
     pub position: u64,
     pub hidden_size: u64,
@@ -974,11 +974,11 @@ pub struct Qwen3Dense06bForwardReference {
     pub final_hidden_sample_words: [u64; 4],
     pub aggregate_checksum: u64,
     pub final_hidden: Vec<f32>,
-    pub layers: Vec<Qwen3Dense06bLayerForwardReference>,
+    pub layers: Vec<Qwen3DenseReferenceLayerForwardReference>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Qwen3Dense06bLayerKvCache {
+pub struct Qwen3DenseReferenceLayerKvCache {
     pub layer_id: u64,
     pub token_count: u64,
     pub rope_k_states: Vec<Vec<f32>>,
@@ -986,20 +986,20 @@ pub struct Qwen3Dense06bLayerKvCache {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Qwen3Dense06bForwardWithKvCache {
-    pub forward: Qwen3Dense06bForwardReference,
-    pub kv_cache: Vec<Qwen3Dense06bLayerKvCache>,
+pub struct Qwen3DenseReferenceForwardWithKvCache {
+    pub forward: Qwen3DenseReferenceForwardReference,
+    pub kv_cache: Vec<Qwen3DenseReferenceLayerKvCache>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Qwen3Dense06bLogitCandidate {
+pub struct Qwen3DenseReferenceLogitCandidate {
     pub rank: u64,
     pub token_id: u64,
     pub logit_bits: u64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Qwen3Dense06bFullVocabLogitsSummary {
+pub struct Qwen3DenseReferenceFullVocabLogitsSummary {
     pub vocab_size: u64,
     pub hidden_size: u64,
     pub final_norm_checksum: u64,
@@ -1008,13 +1008,13 @@ pub struct Qwen3Dense06bFullVocabLogitsSummary {
     pub top_logit_bits: u64,
     pub runner_up_token_id: u64,
     pub runner_up_logit_bits: u64,
-    pub top_candidates: Vec<Qwen3Dense06bLogitCandidate>,
+    pub top_candidates: Vec<Qwen3DenseReferenceLogitCandidate>,
     pub logits_checksum: u64,
     pub aggregate_checksum: u64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Qwen3Dense06bSampledTextReference {
+pub struct Qwen3DenseReferenceSampledTextReference {
     pub token_id: u64,
     pub byte_len: u64,
     pub byte_checksum: u64,
@@ -1023,41 +1023,41 @@ pub struct Qwen3Dense06bSampledTextReference {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Qwen3Dense06bRealInferenceReference {
+pub struct Qwen3DenseReferenceRealInferenceReference {
     pub token_ids: Vec<u64>,
-    pub forward: Qwen3Dense06bForwardReference,
-    pub logits: Qwen3Dense06bFullVocabLogitsSummary,
-    pub sampled_text: Qwen3Dense06bSampledTextReference,
+    pub forward: Qwen3DenseReferenceForwardReference,
+    pub logits: Qwen3DenseReferenceFullVocabLogitsSummary,
+    pub sampled_text: Qwen3DenseReferenceSampledTextReference,
     pub aggregate_checksum: u64,
 }
 
 pub fn shard_plan(
     topology: &SimTopology,
-    profile: Qwen3Dense06bProfile,
-) -> Result<Vec<Qwen3Dense06bShard>, String> {
+    profile: Qwen3DenseReferenceProfile,
+) -> Result<Vec<Qwen3DenseReferenceShard>, String> {
     let shard_count = profile.tp_nodes as usize;
     if shard_count == 0 {
-        return Err("qwen3_dense_0_6b_empty_shard_plan".to_string());
+        return Err("qwen3_dense_reference_empty_shard_plan".to_string());
     }
     let heads_per_shard = profile
         .num_attention_heads
         .checked_div(profile.tp_nodes)
-        .ok_or_else(|| "qwen3_dense_0_6b_invalid_tp_nodes".to_string())?;
+        .ok_or_else(|| "qwen3_dense_reference_invalid_tp_nodes".to_string())?;
     if heads_per_shard == 0 || heads_per_shard * profile.tp_nodes != profile.num_attention_heads {
         return Err(format!(
-            "qwen3_dense_0_6b_heads_not_divisible:heads={}:tp={}",
+            "qwen3_dense_reference_heads_not_divisible:heads={}:tp={}",
             profile.num_attention_heads, profile.tp_nodes
         ));
     }
     let hosts: Vec<u64> = topology.hosts.iter().map(|host| host.node_id).collect();
     let ubpus: Vec<u64> = topology.ubpus.iter().map(|ubpu| ubpu.node_id).collect();
     if hosts.is_empty() || ubpus.is_empty() {
-        return Err("qwen3_dense_0_6b_missing_topology_nodes".to_string());
+        return Err("qwen3_dense_reference_missing_topology_nodes".to_string());
     }
     let mut shards = Vec::with_capacity(shard_count);
     for shard_index in 0..shard_count {
         let shard_id = shard_index as u64;
-        shards.push(Qwen3Dense06bShard {
+        shards.push(Qwen3DenseReferenceShard {
             shard_id,
             owner_node: hosts[shard_index % hosts.len()],
             target_node: ubpus[shard_index % ubpus.len()],
@@ -1070,8 +1070,11 @@ pub fn shard_plan(
     Ok(shards)
 }
 
-pub fn layer_graph_ir(profile: Qwen3Dense06bProfile, layer_id: u64) -> Qwen3Dense06bLayerGraphIr {
-    Qwen3Dense06bLayerGraphIr {
+pub fn layer_graph_ir(
+    profile: Qwen3DenseReferenceProfile,
+    layer_id: u64,
+) -> Qwen3DenseReferenceLayerGraphIr {
+    Qwen3DenseReferenceLayerGraphIr {
         layer_id,
         hidden_size: profile.hidden_size,
         intermediate_size: profile.intermediate_size,
@@ -1080,104 +1083,104 @@ pub fn layer_graph_ir(profile: Qwen3Dense06bProfile, layer_id: u64) -> Qwen3Dens
         head_dim: profile.head_dim,
         prefill_tokens: profile.prefill_tokens,
         ops: vec![
-            Qwen3Dense06bLayerOp {
-                kind: Qwen3Dense06bLayerOpKind::RmsNorm,
+            Qwen3DenseReferenceLayerOp {
+                kind: Qwen3DenseReferenceLayerOpKind::RmsNorm,
                 input_width: profile.hidden_size,
                 output_width: profile.hidden_size,
                 sharded: false,
                 requires_collective: false,
-                lowering: Qwen3Dense06bLoweringKind::MissingRmsNorm,
+                lowering: Qwen3DenseReferenceLoweringKind::MissingRmsNorm,
             },
-            Qwen3Dense06bLayerOp {
-                kind: Qwen3Dense06bLayerOpKind::QkvProjection,
+            Qwen3DenseReferenceLayerOp {
+                kind: Qwen3DenseReferenceLayerOpKind::QkvProjection,
                 input_width: profile.hidden_size,
                 output_width: (profile.num_attention_heads + profile.num_key_value_heads * 2)
                     * profile.head_dim,
                 sharded: true,
                 requires_collective: false,
-                lowering: Qwen3Dense06bLoweringKind::TiledMatmul,
+                lowering: Qwen3DenseReferenceLoweringKind::TiledMatmul,
             },
-            Qwen3Dense06bLayerOp {
-                kind: Qwen3Dense06bLayerOpKind::Rope,
+            Qwen3DenseReferenceLayerOp {
+                kind: Qwen3DenseReferenceLayerOpKind::Rope,
                 input_width: (profile.num_attention_heads + profile.num_key_value_heads)
                     * profile.head_dim,
                 output_width: (profile.num_attention_heads + profile.num_key_value_heads)
                     * profile.head_dim,
                 sharded: true,
                 requires_collective: false,
-                lowering: Qwen3Dense06bLoweringKind::MissingRope,
+                lowering: Qwen3DenseReferenceLoweringKind::MissingRope,
             },
-            Qwen3Dense06bLayerOp {
-                kind: Qwen3Dense06bLayerOpKind::AttentionScore,
+            Qwen3DenseReferenceLayerOp {
+                kind: Qwen3DenseReferenceLayerOpKind::AttentionScore,
                 input_width: profile.num_attention_heads * profile.head_dim,
                 output_width: profile.num_attention_heads * profile.prefill_tokens,
                 sharded: true,
                 requires_collective: false,
-                lowering: Qwen3Dense06bLoweringKind::TiledMatmul,
+                lowering: Qwen3DenseReferenceLoweringKind::TiledMatmul,
             },
-            Qwen3Dense06bLayerOp {
-                kind: Qwen3Dense06bLayerOpKind::AttentionSoftmax,
+            Qwen3DenseReferenceLayerOp {
+                kind: Qwen3DenseReferenceLayerOpKind::AttentionSoftmax,
                 input_width: profile.num_attention_heads * profile.prefill_tokens,
                 output_width: profile.num_attention_heads * profile.prefill_tokens,
                 sharded: true,
                 requires_collective: false,
-                lowering: Qwen3Dense06bLoweringKind::MissingSoftmax,
+                lowering: Qwen3DenseReferenceLoweringKind::MissingSoftmax,
             },
-            Qwen3Dense06bLayerOp {
-                kind: Qwen3Dense06bLayerOpKind::AttentionValue,
+            Qwen3DenseReferenceLayerOp {
+                kind: Qwen3DenseReferenceLayerOpKind::AttentionValue,
                 input_width: profile.num_attention_heads * profile.prefill_tokens,
                 output_width: profile.num_attention_heads * profile.head_dim,
                 sharded: true,
                 requires_collective: false,
-                lowering: Qwen3Dense06bLoweringKind::TiledMatmul,
+                lowering: Qwen3DenseReferenceLoweringKind::TiledMatmul,
             },
-            Qwen3Dense06bLayerOp {
-                kind: Qwen3Dense06bLayerOpKind::OProjection,
+            Qwen3DenseReferenceLayerOp {
+                kind: Qwen3DenseReferenceLayerOpKind::OProjection,
                 input_width: profile.num_attention_heads * profile.head_dim,
                 output_width: profile.hidden_size,
                 sharded: true,
                 requires_collective: true,
-                lowering: Qwen3Dense06bLoweringKind::MissingCollective,
+                lowering: Qwen3DenseReferenceLoweringKind::MissingCollective,
             },
-            Qwen3Dense06bLayerOp {
-                kind: Qwen3Dense06bLayerOpKind::AttentionResidualAdd,
+            Qwen3DenseReferenceLayerOp {
+                kind: Qwen3DenseReferenceLayerOpKind::AttentionResidualAdd,
                 input_width: profile.hidden_size,
                 output_width: profile.hidden_size,
                 sharded: false,
                 requires_collective: false,
-                lowering: Qwen3Dense06bLoweringKind::MissingAdd,
+                lowering: Qwen3DenseReferenceLoweringKind::MissingAdd,
             },
-            Qwen3Dense06bLayerOp {
-                kind: Qwen3Dense06bLayerOpKind::MlpUpGateProjection,
+            Qwen3DenseReferenceLayerOp {
+                kind: Qwen3DenseReferenceLayerOpKind::MlpUpGateProjection,
                 input_width: profile.hidden_size,
                 output_width: profile.intermediate_size * 2,
                 sharded: true,
                 requires_collective: false,
-                lowering: Qwen3Dense06bLoweringKind::TiledMatmul,
+                lowering: Qwen3DenseReferenceLoweringKind::TiledMatmul,
             },
-            Qwen3Dense06bLayerOp {
-                kind: Qwen3Dense06bLayerOpKind::MlpSwiGlu,
+            Qwen3DenseReferenceLayerOp {
+                kind: Qwen3DenseReferenceLayerOpKind::MlpSwiGlu,
                 input_width: profile.intermediate_size * 2,
                 output_width: profile.intermediate_size,
                 sharded: true,
                 requires_collective: false,
-                lowering: Qwen3Dense06bLoweringKind::MissingSiluSwiglu,
+                lowering: Qwen3DenseReferenceLoweringKind::MissingSiluSwiglu,
             },
-            Qwen3Dense06bLayerOp {
-                kind: Qwen3Dense06bLayerOpKind::MlpDownProjection,
+            Qwen3DenseReferenceLayerOp {
+                kind: Qwen3DenseReferenceLayerOpKind::MlpDownProjection,
                 input_width: profile.intermediate_size,
                 output_width: profile.hidden_size,
                 sharded: true,
                 requires_collective: true,
-                lowering: Qwen3Dense06bLoweringKind::MissingCollective,
+                lowering: Qwen3DenseReferenceLoweringKind::MissingCollective,
             },
-            Qwen3Dense06bLayerOp {
-                kind: Qwen3Dense06bLayerOpKind::MlpResidualAdd,
+            Qwen3DenseReferenceLayerOp {
+                kind: Qwen3DenseReferenceLayerOpKind::MlpResidualAdd,
                 input_width: profile.hidden_size,
                 output_width: profile.hidden_size,
                 sharded: false,
                 requires_collective: false,
-                lowering: Qwen3Dense06bLoweringKind::MissingAdd,
+                lowering: Qwen3DenseReferenceLoweringKind::MissingAdd,
             },
         ],
     }
@@ -1185,18 +1188,18 @@ pub fn layer_graph_ir(profile: Qwen3Dense06bProfile, layer_id: u64) -> Qwen3Dens
 
 pub fn tensor_parallel_plan(
     topology: &SimTopology,
-    profile: Qwen3Dense06bProfile,
-) -> Result<Vec<Qwen3Dense06bTensorParallelShard>, String> {
+    profile: Qwen3DenseReferenceProfile,
+) -> Result<Vec<Qwen3DenseReferenceTensorParallelShard>, String> {
     let shards = shard_plan(topology, profile)?;
     if profile.num_key_value_heads % profile.tp_nodes != 0 {
         return Err(format!(
-            "qwen3_dense_0_6b_kv_heads_not_divisible:kv_heads={}:tp={}",
+            "qwen3_dense_reference_kv_heads_not_divisible:kv_heads={}:tp={}",
             profile.num_key_value_heads, profile.tp_nodes
         ));
     }
     if profile.intermediate_size % profile.tp_nodes != 0 {
         return Err(format!(
-            "qwen3_dense_0_6b_mlp_intermediate_not_divisible:intermediate={}:tp={}",
+            "qwen3_dense_reference_mlp_intermediate_not_divisible:intermediate={}:tp={}",
             profile.intermediate_size, profile.tp_nodes
         ));
     }
@@ -1208,7 +1211,7 @@ pub fn tensor_parallel_plan(
             let local_q_heads = shard.head_end - shard.head_start;
             let kv_head_start = shard.shard_id * kv_heads_per_shard;
             let kv_head_end = kv_head_start + kv_heads_per_shard;
-            Qwen3Dense06bTensorParallelShard {
+            Qwen3DenseReferenceTensorParallelShard {
                 shard_id: shard.shard_id,
                 owner_node: shard.owner_node,
                 target_node: shard.target_node,
@@ -1227,8 +1230,10 @@ pub fn tensor_parallel_plan(
         .collect())
 }
 
-pub fn lowering_summary(graph: &Qwen3Dense06bLayerGraphIr) -> Qwen3Dense06bLoweringSummary {
-    let mut summary = Qwen3Dense06bLoweringSummary {
+pub fn lowering_summary(
+    graph: &Qwen3DenseReferenceLayerGraphIr,
+) -> Qwen3DenseReferenceLoweringSummary {
+    let mut summary = Qwen3DenseReferenceLoweringSummary {
         tiled_matmul_ops: 0,
         missing_ops: 0,
         missing_rmsnorm: 0,
@@ -1240,28 +1245,28 @@ pub fn lowering_summary(graph: &Qwen3Dense06bLayerGraphIr) -> Qwen3Dense06bLower
     };
     for op in graph.ops.iter() {
         match op.lowering {
-            Qwen3Dense06bLoweringKind::TiledMatmul => summary.tiled_matmul_ops += 1,
-            Qwen3Dense06bLoweringKind::MissingRmsNorm => {
+            Qwen3DenseReferenceLoweringKind::TiledMatmul => summary.tiled_matmul_ops += 1,
+            Qwen3DenseReferenceLoweringKind::MissingRmsNorm => {
                 summary.missing_ops += 1;
                 summary.missing_rmsnorm += 1;
             }
-            Qwen3Dense06bLoweringKind::MissingRope => {
+            Qwen3DenseReferenceLoweringKind::MissingRope => {
                 summary.missing_ops += 1;
                 summary.missing_rope += 1;
             }
-            Qwen3Dense06bLoweringKind::MissingSoftmax => {
+            Qwen3DenseReferenceLoweringKind::MissingSoftmax => {
                 summary.missing_ops += 1;
                 summary.missing_softmax += 1;
             }
-            Qwen3Dense06bLoweringKind::MissingSiluSwiglu => {
+            Qwen3DenseReferenceLoweringKind::MissingSiluSwiglu => {
                 summary.missing_ops += 1;
                 summary.missing_silu_swiglu += 1;
             }
-            Qwen3Dense06bLoweringKind::MissingAdd => {
+            Qwen3DenseReferenceLoweringKind::MissingAdd => {
                 summary.missing_ops += 1;
                 summary.missing_add += 1;
             }
-            Qwen3Dense06bLoweringKind::MissingCollective => {
+            Qwen3DenseReferenceLoweringKind::MissingCollective => {
                 summary.missing_ops += 1;
                 summary.missing_collective += 1;
             }
@@ -1270,7 +1275,7 @@ pub fn lowering_summary(graph: &Qwen3Dense06bLayerGraphIr) -> Qwen3Dense06bLower
     summary
 }
 
-pub fn profile_from_config_json(config_json: &str) -> Result<Qwen3Dense06bProfile, String> {
+pub fn profile_from_config_json(config_json: &str) -> Result<Qwen3DenseReferenceProfile, String> {
     let value: serde_json::Value = serde_json::from_str(config_json)
         .map_err(|err| format!("qwen3_config_json_parse_failed:{err}"))?;
     let get_u64 = |key: &str| -> Result<u64, String> {
@@ -1279,7 +1284,7 @@ pub fn profile_from_config_json(config_json: &str) -> Result<Qwen3Dense06bProfil
             .and_then(serde_json::Value::as_u64)
             .ok_or_else(|| format!("qwen3_config_missing_u64:{key}"))
     };
-    let profile = Qwen3Dense06bProfile {
+    let profile = Qwen3DenseReferenceProfile {
         vocab_size: get_u64("vocab_size")?,
         hidden_size: get_u64("hidden_size")?,
         intermediate_size: get_u64("intermediate_size")?,
@@ -1289,15 +1294,15 @@ pub fn profile_from_config_json(config_json: &str) -> Result<Qwen3Dense06bProfil
         head_dim: get_u64("head_dim")?,
         max_position_embeddings: get_u64("max_position_embeddings")?,
         rope_theta: get_u64("rope_theta")?,
-        prefill_tokens: QWEN3_DENSE_0_6B_PROFILE.prefill_tokens,
-        decode_tokens: QWEN3_DENSE_0_6B_PROFILE.decode_tokens,
-        tp_nodes: QWEN3_DENSE_0_6B_PROFILE.tp_nodes,
+        prefill_tokens: QWEN3_DENSE_REFERENCE_PROFILE.prefill_tokens,
+        decode_tokens: QWEN3_DENSE_REFERENCE_PROFILE.decode_tokens,
+        tp_nodes: QWEN3_DENSE_REFERENCE_PROFILE.tp_nodes,
     };
     validate_profile(profile)?;
     Ok(profile)
 }
 
-pub fn validate_profile(profile: Qwen3Dense06bProfile) -> Result<(), String> {
+pub fn validate_profile(profile: Qwen3DenseReferenceProfile) -> Result<(), String> {
     let checks = [
         ("vocab_size", profile.vocab_size),
         ("hidden_size", profile.hidden_size),
@@ -1346,7 +1351,7 @@ pub fn validate_profile(profile: Qwen3Dense06bProfile) -> Result<(), String> {
 
 pub fn parse_safetensors_metadata_json(
     metadata_json: &str,
-) -> Result<BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>, String> {
+) -> Result<BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>, String> {
     let value: serde_json::Value = serde_json::from_str(metadata_json)
         .map_err(|err| format!("qwen3_safetensors_metadata_parse_failed:{err}"))?;
     let object = value
@@ -1396,7 +1401,7 @@ pub fn parse_safetensors_metadata_json(
         };
         tensors.insert(
             name.clone(),
-            Qwen3Dense06bWeightTensorMetadata {
+            Qwen3DenseReferenceWeightTensorMetadata {
                 dtype,
                 shape,
                 data_offsets,
@@ -1408,20 +1413,20 @@ pub fn parse_safetensors_metadata_json(
     Ok(tensors)
 }
 
-pub fn parse_weight_dtype(dtype: &str) -> Result<Qwen3Dense06bWeightDType, String> {
+pub fn parse_weight_dtype(dtype: &str) -> Result<Qwen3DenseReferenceWeightDType, String> {
     match dtype {
-        "F32" => Ok(Qwen3Dense06bWeightDType::F32),
-        "F16" => Ok(Qwen3Dense06bWeightDType::F16),
-        "BF16" => Ok(Qwen3Dense06bWeightDType::BF16),
-        "I8" => Ok(Qwen3Dense06bWeightDType::I8),
-        "U8" => Ok(Qwen3Dense06bWeightDType::U8),
+        "F32" => Ok(Qwen3DenseReferenceWeightDType::F32),
+        "F16" => Ok(Qwen3DenseReferenceWeightDType::F16),
+        "BF16" => Ok(Qwen3DenseReferenceWeightDType::BF16),
+        "I8" => Ok(Qwen3DenseReferenceWeightDType::I8),
+        "U8" => Ok(Qwen3DenseReferenceWeightDType::U8),
         other => Err(format!("qwen3_safetensors_unsupported_dtype:{other}")),
     }
 }
 
 pub fn load_safetensors_file_metadata(
     path: impl AsRef<Path>,
-) -> Result<Qwen3Dense06bLoadedWeights, String> {
+) -> Result<Qwen3DenseReferenceLoadedWeights, String> {
     let path = path.as_ref();
     let mut file = File::open(path)
         .map_err(|err| format!("qwen3_safetensors_open_failed:{}:{err}", path.display()))?;
@@ -1466,7 +1471,7 @@ pub fn load_safetensors_file_metadata(
         metadata.data_base_offset = data_base_offset;
         validate_safetensors_tensor_range(name, metadata, file_len)?;
     }
-    Ok(Qwen3Dense06bLoadedWeights {
+    Ok(Qwen3DenseReferenceLoadedWeights {
         source: source_file,
         tensors,
     })
@@ -1474,7 +1479,7 @@ pub fn load_safetensors_file_metadata(
 
 pub fn load_safetensors_index_metadata(
     index_path: impl AsRef<Path>,
-) -> Result<Qwen3Dense06bLoadedWeights, String> {
+) -> Result<Qwen3DenseReferenceLoadedWeights, String> {
     let index_path = index_path.as_ref();
     let index_text = fs::read_to_string(index_path).map_err(|err| {
         format!(
@@ -1482,7 +1487,7 @@ pub fn load_safetensors_index_metadata(
             index_path.display()
         )
     })?;
-    let index: Qwen3Dense06bSafetensorsIndex =
+    let index: Qwen3DenseReferenceSafetensorsIndex =
         serde_json::from_str(&index_text).map_err(|err| {
             format!(
                 "qwen3_safetensors_index_parse_failed:{}:{err}",
@@ -1507,7 +1512,7 @@ pub fn load_safetensors_index_metadata(
             })?;
         tensors.insert(tensor_name.clone(), tensor.clone());
     }
-    Ok(Qwen3Dense06bLoadedWeights {
+    Ok(Qwen3DenseReferenceLoadedWeights {
         source: index_path.display().to_string(),
         tensors,
     })
@@ -1515,7 +1520,7 @@ pub fn load_safetensors_index_metadata(
 
 pub fn load_safetensors_path_metadata(
     path: impl AsRef<Path>,
-) -> Result<Qwen3Dense06bLoadedWeights, String> {
+) -> Result<Qwen3DenseReferenceLoadedWeights, String> {
     let path = path.as_ref();
     if path.is_dir() {
         let index_path = path.join("model.safetensors.index.json");
@@ -1544,20 +1549,20 @@ pub fn load_safetensors_path_metadata(
 
 pub fn weight_manifest_from_metadata(
     topology: &SimTopology,
-    profile: Qwen3Dense06bProfile,
+    profile: Qwen3DenseReferenceProfile,
     source: impl Into<String>,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
-) -> Result<Qwen3Dense06bWeightManifest, String> {
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
+) -> Result<Qwen3DenseReferenceWeightManifest, String> {
     weight_manifest_from_metadata_for_model(topology, "Qwen/Qwen3-0.6B", profile, source, tensors)
 }
 
 pub fn weight_manifest_from_metadata_for_model(
     topology: &SimTopology,
     model_id: impl Into<String>,
-    profile: Qwen3Dense06bProfile,
+    profile: Qwen3DenseReferenceProfile,
     source: impl Into<String>,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
-) -> Result<Qwen3Dense06bWeightManifest, String> {
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
+) -> Result<Qwen3DenseReferenceWeightManifest, String> {
     validate_profile(profile)?;
     validate_required_weight_tensors(profile, tensors)?;
     let tp_plan = tensor_parallel_plan(topology, profile)?;
@@ -1567,11 +1572,11 @@ pub fn weight_manifest_from_metadata_for_model(
             push_layer_weight_slices(profile, layer_id, shard, tensors, &mut slices)?;
         }
     }
-    Ok(Qwen3Dense06bWeightManifest {
+    Ok(Qwen3DenseReferenceWeightManifest {
         model_id: model_id.into(),
         source: source.into(),
         format: "safetensors".to_string(),
-        profile: Qwen3Dense06bWeightManifestProfile {
+        profile: Qwen3DenseReferenceWeightManifestProfile {
             hidden_size: profile.hidden_size,
             intermediate_size: profile.intermediate_size,
             num_hidden_layers: profile.num_hidden_layers,
@@ -1586,16 +1591,16 @@ pub fn weight_manifest_from_metadata_for_model(
 
 pub fn weight_manifest_from_safetensors_path(
     topology: &SimTopology,
-    profile: Qwen3Dense06bProfile,
+    profile: Qwen3DenseReferenceProfile,
     path: impl AsRef<Path>,
-) -> Result<Qwen3Dense06bWeightManifest, String> {
+) -> Result<Qwen3DenseReferenceWeightManifest, String> {
     let loaded = load_safetensors_path_metadata(path)?;
     weight_manifest_from_metadata(topology, profile, loaded.source, &loaded.tensors)
 }
 
 pub fn validate_required_weight_tensors(
-    profile: Qwen3Dense06bProfile,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    profile: Qwen3DenseReferenceProfile,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
 ) -> Result<(), String> {
     for layer_id in 0..profile.num_hidden_layers {
         let layer_prefix = format!("model.layers.{layer_id}");
@@ -1660,10 +1665,10 @@ pub fn validate_required_weight_tensors(
         for (name, expected_shape) in required {
             let metadata = tensors
                 .get(&name)
-                .ok_or_else(|| format!("qwen3_dense_0_6b_missing_weight_tensor:{name}"))?;
+                .ok_or_else(|| format!("qwen3_dense_reference_missing_weight_tensor:{name}"))?;
             if metadata.shape != expected_shape {
                 return Err(format!(
-                    "qwen3_dense_0_6b_weight_shape_mismatch:{name}:got={:?}:expected={:?}",
+                    "qwen3_dense_reference_weight_shape_mismatch:{name}:got={:?}:expected={:?}",
                     metadata.shape, expected_shape
                 ));
             }
@@ -1673,15 +1678,15 @@ pub fn validate_required_weight_tensors(
 }
 
 fn push_layer_weight_slices(
-    profile: Qwen3Dense06bProfile,
+    profile: Qwen3DenseReferenceProfile,
     layer_id: u64,
-    shard: &Qwen3Dense06bTensorParallelShard,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
-    out: &mut Vec<Qwen3Dense06bWeightSlice>,
+    shard: &Qwen3DenseReferenceTensorParallelShard,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
+    out: &mut Vec<Qwen3DenseReferenceWeightSlice>,
 ) -> Result<(), String> {
     let specs = [
         (
-            Qwen3Dense06bWeightTensorKind::InputLayerNorm,
+            Qwen3DenseReferenceWeightTensorKind::InputLayerNorm,
             format!("model.layers.{layer_id}.input_layernorm.weight"),
             vec![profile.hidden_size],
             None,
@@ -1689,7 +1694,7 @@ fn push_layer_weight_slices(
             profile.hidden_size,
         ),
         (
-            Qwen3Dense06bWeightTensorKind::QProj,
+            Qwen3DenseReferenceWeightTensorKind::QProj,
             format!("model.layers.{layer_id}.self_attn.q_proj.weight"),
             vec![
                 profile.num_attention_heads * profile.head_dim,
@@ -1700,7 +1705,7 @@ fn push_layer_weight_slices(
             shard.q_head_end * profile.head_dim,
         ),
         (
-            Qwen3Dense06bWeightTensorKind::QNorm,
+            Qwen3DenseReferenceWeightTensorKind::QNorm,
             format!("model.layers.{layer_id}.self_attn.q_norm.weight"),
             vec![profile.head_dim],
             None,
@@ -1708,7 +1713,7 @@ fn push_layer_weight_slices(
             profile.head_dim,
         ),
         (
-            Qwen3Dense06bWeightTensorKind::KProj,
+            Qwen3DenseReferenceWeightTensorKind::KProj,
             format!("model.layers.{layer_id}.self_attn.k_proj.weight"),
             vec![
                 profile.num_key_value_heads * profile.head_dim,
@@ -1719,7 +1724,7 @@ fn push_layer_weight_slices(
             shard.kv_head_end * profile.head_dim,
         ),
         (
-            Qwen3Dense06bWeightTensorKind::KNorm,
+            Qwen3DenseReferenceWeightTensorKind::KNorm,
             format!("model.layers.{layer_id}.self_attn.k_norm.weight"),
             vec![profile.head_dim],
             None,
@@ -1727,7 +1732,7 @@ fn push_layer_weight_slices(
             profile.head_dim,
         ),
         (
-            Qwen3Dense06bWeightTensorKind::VProj,
+            Qwen3DenseReferenceWeightTensorKind::VProj,
             format!("model.layers.{layer_id}.self_attn.v_proj.weight"),
             vec![
                 profile.num_key_value_heads * profile.head_dim,
@@ -1738,7 +1743,7 @@ fn push_layer_weight_slices(
             shard.kv_head_end * profile.head_dim,
         ),
         (
-            Qwen3Dense06bWeightTensorKind::OProj,
+            Qwen3DenseReferenceWeightTensorKind::OProj,
             format!("model.layers.{layer_id}.self_attn.o_proj.weight"),
             vec![
                 profile.hidden_size,
@@ -1749,7 +1754,7 @@ fn push_layer_weight_slices(
             shard.q_head_end * profile.head_dim,
         ),
         (
-            Qwen3Dense06bWeightTensorKind::PostAttentionLayerNorm,
+            Qwen3DenseReferenceWeightTensorKind::PostAttentionLayerNorm,
             format!("model.layers.{layer_id}.post_attention_layernorm.weight"),
             vec![profile.hidden_size],
             None,
@@ -1757,7 +1762,7 @@ fn push_layer_weight_slices(
             profile.hidden_size,
         ),
         (
-            Qwen3Dense06bWeightTensorKind::GateProj,
+            Qwen3DenseReferenceWeightTensorKind::GateProj,
             format!("model.layers.{layer_id}.mlp.gate_proj.weight"),
             vec![profile.intermediate_size, profile.hidden_size],
             Some(0),
@@ -1765,7 +1770,7 @@ fn push_layer_weight_slices(
             (shard.shard_id + 1) * shard.local_mlp_intermediate_width,
         ),
         (
-            Qwen3Dense06bWeightTensorKind::UpProj,
+            Qwen3DenseReferenceWeightTensorKind::UpProj,
             format!("model.layers.{layer_id}.mlp.up_proj.weight"),
             vec![profile.intermediate_size, profile.hidden_size],
             Some(0),
@@ -1773,7 +1778,7 @@ fn push_layer_weight_slices(
             (shard.shard_id + 1) * shard.local_mlp_intermediate_width,
         ),
         (
-            Qwen3Dense06bWeightTensorKind::DownProj,
+            Qwen3DenseReferenceWeightTensorKind::DownProj,
             format!("model.layers.{layer_id}.mlp.down_proj.weight"),
             vec![profile.hidden_size, profile.intermediate_size],
             Some(1),
@@ -1786,10 +1791,10 @@ fn push_layer_weight_slices(
     {
         let metadata = tensors
             .get(&name)
-            .ok_or_else(|| format!("qwen3_dense_0_6b_missing_weight_tensor:{name}"))?;
+            .ok_or_else(|| format!("qwen3_dense_reference_missing_weight_tensor:{name}"))?;
         if metadata.shape != expected_shape {
             return Err(format!(
-                "qwen3_dense_0_6b_weight_shape_mismatch:{name}:got={:?}:expected={:?}",
+                "qwen3_dense_reference_weight_shape_mismatch:{name}:got={:?}:expected={:?}",
                 metadata.shape, expected_shape
             ));
         }
@@ -1812,24 +1817,24 @@ fn weight_slice_from_spec(
     layer_id: u64,
     shard_id: u64,
     ordinal: u64,
-    tensor_kind: Qwen3Dense06bWeightTensorKind,
+    tensor_kind: Qwen3DenseReferenceWeightTensorKind,
     tensor_name: String,
-    metadata: &Qwen3Dense06bWeightTensorMetadata,
+    metadata: &Qwen3DenseReferenceWeightTensorMetadata,
     slice_axis: Option<u64>,
     slice_start: u64,
     slice_end: u64,
-) -> Result<Qwen3Dense06bWeightSlice, String> {
+) -> Result<Qwen3DenseReferenceWeightSlice, String> {
     let mut local_shape = metadata.shape.clone();
     if let Some(axis) = slice_axis {
         let axis_index = axis as usize;
         if axis_index >= local_shape.len() {
             return Err(format!(
-                "qwen3_dense_0_6b_weight_slice_axis_oob:{tensor_name}:axis={axis}"
+                "qwen3_dense_reference_weight_slice_axis_oob:{tensor_name}:axis={axis}"
             ));
         }
         if slice_start >= slice_end || slice_end > local_shape[axis_index] {
             return Err(format!(
-                "qwen3_dense_0_6b_weight_slice_range_invalid:{tensor_name}:start={slice_start}:end={slice_end}:dim={}",
+                "qwen3_dense_reference_weight_slice_range_invalid:{tensor_name}:start={slice_start}:end={slice_end}:dim={}",
                 local_shape[axis_index]
             ));
         }
@@ -1837,7 +1842,7 @@ fn weight_slice_from_spec(
     }
     let bytes = dtype_size(metadata.dtype) * local_shape.iter().product::<u64>();
     let segment = 50_000 + layer_id * 1_000 + shard_id * 100 + ordinal;
-    Ok(Qwen3Dense06bWeightSlice {
+    Ok(Qwen3DenseReferenceWeightSlice {
         layer_id,
         shard_id,
         tensor_kind,
@@ -1848,10 +1853,10 @@ fn weight_slice_from_spec(
         slice_start,
         slice_end,
         local_shape,
-        storage: Qwen3Dense06bWeightStorageRef {
-            kind: Qwen3Dense06bWeightStorageKind::Block,
+        storage: Qwen3DenseReferenceWeightStorageRef {
+            kind: Qwen3DenseReferenceWeightStorageKind::Block,
             storage_ref: format!(
-                "qwen3_dense_0_6b/layer/{layer_id}/shard/{shard_id}/weight/{ordinal}"
+                "qwen3_dense_reference/layer/{layer_id}/shard/{shard_id}/weight/{ordinal}"
             ),
             segment,
             offset: 0,
@@ -1868,11 +1873,11 @@ fn weight_slice_from_spec(
     })
 }
 
-pub fn dtype_size(dtype: Qwen3Dense06bWeightDType) -> u64 {
+pub fn dtype_size(dtype: Qwen3DenseReferenceWeightDType) -> u64 {
     match dtype {
-        Qwen3Dense06bWeightDType::F32 => 4,
-        Qwen3Dense06bWeightDType::F16 | Qwen3Dense06bWeightDType::BF16 => 2,
-        Qwen3Dense06bWeightDType::I8 | Qwen3Dense06bWeightDType::U8 => 1,
+        Qwen3DenseReferenceWeightDType::F32 => 4,
+        Qwen3DenseReferenceWeightDType::F16 | Qwen3DenseReferenceWeightDType::BF16 => 2,
+        Qwen3DenseReferenceWeightDType::I8 | Qwen3DenseReferenceWeightDType::U8 => 1,
     }
 }
 
@@ -1892,26 +1897,26 @@ fn weight_metadata_checksum(
     acc
 }
 
-pub fn weight_db_key(slice: &Qwen3Dense06bWeightSlice) -> String {
+pub fn weight_db_key(slice: &Qwen3DenseReferenceWeightSlice) -> String {
     format!(
-        "qwen3_dense_0_6b/layer/{}/shard/{}/{:?}",
+        "qwen3_dense_reference/layer/{}/shard/{}/{:?}",
         slice.layer_id, slice.shard_id, slice.tensor_kind
     )
 }
 
-pub fn weight_db_value(slice: &Qwen3Dense06bWeightSlice) -> Result<Vec<u8>, String> {
+pub fn weight_db_value(slice: &Qwen3DenseReferenceWeightSlice) -> Result<Vec<u8>, String> {
     serde_json::to_vec(slice).map_err(|err| format!("qwen3_weight_slice_json_encode_failed:{err}"))
 }
 
 pub fn weight_db_puts(
-    manifest: &Qwen3Dense06bWeightManifest,
-) -> Result<Vec<Qwen3Dense06bWeightDbPut>, String> {
+    manifest: &Qwen3DenseReferenceWeightManifest,
+) -> Result<Vec<Qwen3DenseReferenceWeightDbPut>, String> {
     manifest
         .slices
         .iter()
         .map(|slice| {
             let value = weight_db_value(slice)?;
-            Ok(Qwen3Dense06bWeightDbPut {
+            Ok(Qwen3DenseReferenceWeightDbPut {
                 key: weight_db_key(slice),
                 bytes: value.len() as u64,
             })
@@ -1920,13 +1925,13 @@ pub fn weight_db_puts(
 }
 
 pub fn weight_service_load_plan(
-    manifest: Qwen3Dense06bWeightManifest,
-) -> Result<Qwen3Dense06bWeightServiceLoadPlan, String> {
+    manifest: Qwen3DenseReferenceWeightManifest,
+) -> Result<Qwen3DenseReferenceWeightServiceLoadPlan, String> {
     let metadata_db_puts = weight_db_puts(&manifest)?;
     let payload_writes = manifest
         .slices
         .iter()
-        .map(|slice| Qwen3Dense06bWeightPayloadWrite {
+        .map(|slice| Qwen3DenseReferenceWeightPayloadWrite {
             storage_ref: slice.storage.storage_ref.clone(),
             storage_kind: slice.storage.kind,
             segment: slice.storage.segment,
@@ -1935,7 +1940,7 @@ pub fn weight_service_load_plan(
             checksum: slice.storage.checksum,
         })
         .collect();
-    Ok(Qwen3Dense06bWeightServiceLoadPlan {
+    Ok(Qwen3DenseReferenceWeightServiceLoadPlan {
         manifest,
         metadata_db_puts,
         payload_writes,
@@ -1943,7 +1948,7 @@ pub fn weight_service_load_plan(
 }
 
 pub fn weight_service_load_req(
-    plan: &Qwen3Dense06bWeightServiceLoadPlan,
+    plan: &Qwen3DenseReferenceWeightServiceLoadPlan,
     task: Option<TaskKey>,
     requester_entity: u32,
 ) -> WeightsLoadReq {
@@ -1964,8 +1969,8 @@ pub fn weight_service_load_req(
             .map(|write| WeightPayloadWrite {
                 storage_ref: write.storage_ref.clone(),
                 storage_kind: match write.storage_kind {
-                    Qwen3Dense06bWeightStorageKind::Block => WeightStorageKind::Block,
-                    Qwen3Dense06bWeightStorageKind::Shmem => WeightStorageKind::Shmem,
+                    Qwen3DenseReferenceWeightStorageKind::Block => WeightStorageKind::Block,
+                    Qwen3DenseReferenceWeightStorageKind::Shmem => WeightStorageKind::Shmem,
                 },
                 segment: SegmentHandle(write.segment),
                 offset: write.offset,
@@ -1977,8 +1982,8 @@ pub fn weight_service_load_req(
 }
 
 pub fn materialize_weight_slice_payload(
-    slice: &Qwen3Dense06bWeightSlice,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    slice: &Qwen3DenseReferenceWeightSlice,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
 ) -> Result<Vec<u8>, String> {
     let metadata = tensors
         .get(&slice.tensor_name)
@@ -2090,54 +2095,54 @@ pub fn materialize_weight_slice_payload(
 
 pub fn materialize_full_weight_tensor_payload(
     tensor_name: &str,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
 ) -> Result<Vec<u8>, String> {
     let tensor = tensors
         .get(tensor_name)
-        .ok_or_else(|| format!("qwen3_dense_0_6b_missing_weight_tensor:{tensor_name}"))?;
+        .ok_or_else(|| format!("qwen3_dense_reference_missing_weight_tensor:{tensor_name}"))?;
     materialize_full_tensor_payload(tensor_name, tensor)
 }
 
 pub fn weight_slice_validation(
-    slice: &Qwen3Dense06bWeightSlice,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
-) -> Result<Qwen3Dense06bWeightSliceValidation, String> {
+    slice: &Qwen3DenseReferenceWeightSlice,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
+) -> Result<Qwen3DenseReferenceWeightSliceValidation, String> {
     let payload = materialize_weight_slice_payload(slice, tensors)?;
-    Ok(Qwen3Dense06bWeightSliceValidation {
+    Ok(Qwen3DenseReferenceWeightSliceValidation {
         bytes: payload.len() as u64,
         checksum: weight_bytes_checksum(&payload),
     })
 }
 
 pub fn qkv_reference_validation(
-    manifest: &Qwen3Dense06bWeightManifest,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    manifest: &Qwen3DenseReferenceWeightManifest,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     layer_id: u64,
     shard_id: u64,
-) -> Result<Qwen3Dense06bQkvReferenceValidation, String> {
+) -> Result<Qwen3DenseReferenceQkvReferenceValidation, String> {
     let norm_slice = find_weight_slice(
         manifest,
         layer_id,
         shard_id,
-        Qwen3Dense06bWeightTensorKind::InputLayerNorm,
+        Qwen3DenseReferenceWeightTensorKind::InputLayerNorm,
     )?;
     let q_slice = find_weight_slice(
         manifest,
         layer_id,
         shard_id,
-        Qwen3Dense06bWeightTensorKind::QProj,
+        Qwen3DenseReferenceWeightTensorKind::QProj,
     )?;
     let k_slice = find_weight_slice(
         manifest,
         layer_id,
         shard_id,
-        Qwen3Dense06bWeightTensorKind::KProj,
+        Qwen3DenseReferenceWeightTensorKind::KProj,
     )?;
     let v_slice = find_weight_slice(
         manifest,
         layer_id,
         shard_id,
-        Qwen3Dense06bWeightTensorKind::VProj,
+        Qwen3DenseReferenceWeightTensorKind::VProj,
     )?;
     let norm_payload = materialize_weight_slice_payload(norm_slice, tensors)?;
     let q_payload = materialize_weight_slice_payload(q_slice, tensors)?;
@@ -2157,7 +2162,7 @@ pub fn qkv_reference_validation(
         &k_payload,
         &v_payload,
     )?;
-    Ok(Qwen3Dense06bQkvReferenceValidation {
+    Ok(Qwen3DenseReferenceQkvReferenceValidation {
         layer_id,
         shard_id,
         hidden_size: norm_slice.local_shape[0],
@@ -2179,10 +2184,10 @@ pub fn qkv_reference_validation(
 }
 
 pub fn qkv_reference_layer_summary(
-    manifest: &Qwen3Dense06bWeightManifest,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    manifest: &Qwen3DenseReferenceWeightManifest,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     layer_id: u64,
-) -> Result<Qwen3Dense06bQkvReferenceLayerSummary, String> {
+) -> Result<Qwen3DenseReferenceQkvReferenceLayerSummary, String> {
     let mut shards = Vec::new();
     let mut aggregate_words = Vec::new();
     let mut total_weight_bytes = 0u64;
@@ -2209,15 +2214,15 @@ pub fn qkv_reference_layer_summary(
         aggregate_words.extend_from_slice(&reference.v_output_sample_words);
         let mut weight_slices = Vec::new();
         for kind in [
-            Qwen3Dense06bWeightTensorKind::InputLayerNorm,
-            Qwen3Dense06bWeightTensorKind::QProj,
-            Qwen3Dense06bWeightTensorKind::KProj,
-            Qwen3Dense06bWeightTensorKind::VProj,
+            Qwen3DenseReferenceWeightTensorKind::InputLayerNorm,
+            Qwen3DenseReferenceWeightTensorKind::QProj,
+            Qwen3DenseReferenceWeightTensorKind::KProj,
+            Qwen3DenseReferenceWeightTensorKind::VProj,
         ] {
             let slice = find_weight_slice(manifest, layer_id, shard_id, kind)?;
             let validation = weight_slice_validation(slice, tensors)?;
             total_weight_bytes += validation.bytes;
-            weight_slices.push(Qwen3Dense06bReferenceWeightSliceValidation {
+            weight_slices.push(Qwen3DenseReferenceReferenceWeightSliceValidation {
                 kind,
                 shape: slice.local_shape.clone(),
                 slice_axis: slice.slice_axis,
@@ -2227,7 +2232,7 @@ pub fn qkv_reference_layer_summary(
                 checksum: validation.checksum,
             });
         }
-        shards.push(Qwen3Dense06bQkvReferenceShardSummary {
+        shards.push(Qwen3DenseReferenceQkvReferenceShardSummary {
             shard_id: reference.shard_id,
             hidden_size: reference.hidden_size,
             rmsnorm_checksum: reference.rmsnorm_checksum,
@@ -2247,7 +2252,7 @@ pub fn qkv_reference_layer_summary(
             weight_slices,
         });
     }
-    Ok(Qwen3Dense06bQkvReferenceLayerSummary {
+    Ok(Qwen3DenseReferenceQkvReferenceLayerSummary {
         layer_id,
         shard_count: manifest.profile.tp_nodes,
         total_weight_bytes,
@@ -2260,19 +2265,19 @@ pub fn qkv_reference_layer_summary(
 }
 
 pub fn qkv_reference_layer_values(
-    manifest: &Qwen3Dense06bWeightManifest,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    manifest: &Qwen3DenseReferenceWeightManifest,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     layer_id: u64,
-) -> Result<Qwen3Dense06bQkvReferenceLayerValues, String> {
+) -> Result<Qwen3DenseReferenceQkvReferenceLayerValues, String> {
     qkv_reference_layer_values_with_hidden(manifest, tensors, layer_id, None)
 }
 
 pub fn qkv_reference_layer_values_with_hidden(
-    manifest: &Qwen3Dense06bWeightManifest,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    manifest: &Qwen3DenseReferenceWeightManifest,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     layer_id: u64,
     hidden: Option<&[f32]>,
-) -> Result<Qwen3Dense06bQkvReferenceLayerValues, String> {
+) -> Result<Qwen3DenseReferenceQkvReferenceLayerValues, String> {
     let mut shards = Vec::new();
     let mut aggregate_words = Vec::new();
     for shard_id in 0..manifest.profile.tp_nodes {
@@ -2280,25 +2285,25 @@ pub fn qkv_reference_layer_values_with_hidden(
             manifest,
             layer_id,
             shard_id,
-            Qwen3Dense06bWeightTensorKind::InputLayerNorm,
+            Qwen3DenseReferenceWeightTensorKind::InputLayerNorm,
         )?;
         let q_slice = find_weight_slice(
             manifest,
             layer_id,
             shard_id,
-            Qwen3Dense06bWeightTensorKind::QProj,
+            Qwen3DenseReferenceWeightTensorKind::QProj,
         )?;
         let k_slice = find_weight_slice(
             manifest,
             layer_id,
             shard_id,
-            Qwen3Dense06bWeightTensorKind::KProj,
+            Qwen3DenseReferenceWeightTensorKind::KProj,
         )?;
         let v_slice = find_weight_slice(
             manifest,
             layer_id,
             shard_id,
-            Qwen3Dense06bWeightTensorKind::VProj,
+            Qwen3DenseReferenceWeightTensorKind::VProj,
         )?;
         let norm_payload = materialize_weight_slice_payload(norm_slice, tensors)?;
         let q_payload = materialize_weight_slice_payload(q_slice, tensors)?;
@@ -2325,7 +2330,7 @@ pub fn qkv_reference_layer_values_with_hidden(
             values.k_output_checksum,
             values.v_output_checksum,
         ]);
-        shards.push(Qwen3Dense06bQkvReferenceShardValues {
+        shards.push(Qwen3DenseReferenceQkvReferenceShardValues {
             shard_id,
             hidden_size: norm_slice.local_shape[0],
             q_rows: q_slice.local_shape[0],
@@ -2341,7 +2346,7 @@ pub fn qkv_reference_layer_values_with_hidden(
             v_output_checksum: values.v_output_checksum,
         });
     }
-    Ok(Qwen3Dense06bQkvReferenceLayerValues {
+    Ok(Qwen3DenseReferenceQkvReferenceLayerValues {
         layer_id,
         shard_count: manifest.profile.tp_nodes,
         aggregate_checksum: checksum_words(&aggregate_words),
@@ -2350,38 +2355,38 @@ pub fn qkv_reference_layer_values_with_hidden(
 }
 
 pub fn mlp_reference_validation(
-    manifest: &Qwen3Dense06bWeightManifest,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    manifest: &Qwen3DenseReferenceWeightManifest,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     layer_id: u64,
     shard_id: u64,
-) -> Result<Qwen3Dense06bMlpReferenceValidation, String> {
+) -> Result<Qwen3DenseReferenceMlpReferenceValidation, String> {
     mlp_reference_validation_with_hidden(manifest, tensors, layer_id, shard_id, None)
 }
 
 fn mlp_reference_validation_with_hidden(
-    manifest: &Qwen3Dense06bWeightManifest,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    manifest: &Qwen3DenseReferenceWeightManifest,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     layer_id: u64,
     shard_id: u64,
     hidden: Option<&[f32]>,
-) -> Result<Qwen3Dense06bMlpReferenceValidation, String> {
+) -> Result<Qwen3DenseReferenceMlpReferenceValidation, String> {
     let gate_slice = find_weight_slice(
         manifest,
         layer_id,
         shard_id,
-        Qwen3Dense06bWeightTensorKind::GateProj,
+        Qwen3DenseReferenceWeightTensorKind::GateProj,
     )?;
     let up_slice = find_weight_slice(
         manifest,
         layer_id,
         shard_id,
-        Qwen3Dense06bWeightTensorKind::UpProj,
+        Qwen3DenseReferenceWeightTensorKind::UpProj,
     )?;
     let down_slice = find_weight_slice(
         manifest,
         layer_id,
         shard_id,
-        Qwen3Dense06bWeightTensorKind::DownProj,
+        Qwen3DenseReferenceWeightTensorKind::DownProj,
     )?;
     let gate_payload = materialize_weight_slice_payload(gate_slice, tensors)?;
     let up_payload = materialize_weight_slice_payload(up_slice, tensors)?;
@@ -2397,7 +2402,7 @@ fn mlp_reference_validation_with_hidden(
         &down_payload,
         hidden,
     )?;
-    Ok(Qwen3Dense06bMlpReferenceValidation {
+    Ok(Qwen3DenseReferenceMlpReferenceValidation {
         layer_id,
         shard_id,
         hidden_size: gate_slice.local_shape[1],
@@ -2417,19 +2422,19 @@ fn mlp_reference_validation_with_hidden(
 }
 
 pub fn mlp_reference_layer_summary(
-    manifest: &Qwen3Dense06bWeightManifest,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    manifest: &Qwen3DenseReferenceWeightManifest,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     layer_id: u64,
-) -> Result<Qwen3Dense06bMlpReferenceLayerSummary, String> {
+) -> Result<Qwen3DenseReferenceMlpReferenceLayerSummary, String> {
     mlp_reference_layer_summary_with_hidden(manifest, tensors, layer_id, None)
 }
 
 pub fn mlp_reference_layer_summary_with_hidden(
-    manifest: &Qwen3Dense06bWeightManifest,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    manifest: &Qwen3DenseReferenceWeightManifest,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     layer_id: u64,
     hidden: Option<&[f32]>,
-) -> Result<Qwen3Dense06bMlpReferenceLayerSummary, String> {
+) -> Result<Qwen3DenseReferenceMlpReferenceLayerSummary, String> {
     let mut shards = Vec::new();
     let mut aggregate_words = Vec::new();
     let mut total_weight_bytes = 0u64;
@@ -2453,14 +2458,14 @@ pub fn mlp_reference_layer_summary_with_hidden(
         aggregate_words.extend_from_slice(&reference.down_output_sample_words);
         let mut weight_slices = Vec::new();
         for kind in [
-            Qwen3Dense06bWeightTensorKind::GateProj,
-            Qwen3Dense06bWeightTensorKind::UpProj,
-            Qwen3Dense06bWeightTensorKind::DownProj,
+            Qwen3DenseReferenceWeightTensorKind::GateProj,
+            Qwen3DenseReferenceWeightTensorKind::UpProj,
+            Qwen3DenseReferenceWeightTensorKind::DownProj,
         ] {
             let slice = find_weight_slice(manifest, layer_id, shard_id, kind)?;
             let validation = weight_slice_validation(slice, tensors)?;
             total_weight_bytes += validation.bytes;
-            weight_slices.push(Qwen3Dense06bReferenceWeightSliceValidation {
+            weight_slices.push(Qwen3DenseReferenceReferenceWeightSliceValidation {
                 kind,
                 shape: slice.local_shape.clone(),
                 slice_axis: slice.slice_axis,
@@ -2470,7 +2475,7 @@ pub fn mlp_reference_layer_summary_with_hidden(
                 checksum: validation.checksum,
             });
         }
-        shards.push(Qwen3Dense06bMlpReferenceShardSummary {
+        shards.push(Qwen3DenseReferenceMlpReferenceShardSummary {
             shard_id: reference.shard_id,
             hidden_size: reference.hidden_size,
             intermediate_rows: reference.intermediate_rows,
@@ -2488,7 +2493,7 @@ pub fn mlp_reference_layer_summary_with_hidden(
             weight_slices,
         });
     }
-    Ok(Qwen3Dense06bMlpReferenceLayerSummary {
+    Ok(Qwen3DenseReferenceMlpReferenceLayerSummary {
         layer_id,
         shard_count: manifest.profile.tp_nodes,
         total_weight_bytes,
@@ -2499,55 +2504,55 @@ pub fn mlp_reference_layer_summary_with_hidden(
 }
 
 pub fn logits_reference_summary(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     token_requests: &[(u64, u64)],
-) -> Result<Qwen3Dense06bLogitsReferenceSummary, String> {
+) -> Result<Qwen3DenseReferenceLogitsReferenceSummary, String> {
     logits_reference_summary_with_hidden(tensors, token_requests, None)
 }
 
 pub fn logits_reference_summary_with_hidden(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     token_requests: &[(u64, u64)],
     hidden: Option<&[f32]>,
-) -> Result<Qwen3Dense06bLogitsReferenceSummary, String> {
+) -> Result<Qwen3DenseReferenceLogitsReferenceSummary, String> {
     logits_reference_summary_with_hidden_and_payloads(tensors, None, token_requests, hidden)
 }
 
 pub fn logits_reference_summary_with_hidden_and_payloads(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     tensor_payloads: Option<&BTreeMap<String, Vec<u8>>>,
     token_requests: &[(u64, u64)],
     hidden: Option<&[f32]>,
-) -> Result<Qwen3Dense06bLogitsReferenceSummary, String> {
-    let norm = tensors
-        .get("model.norm.weight")
-        .ok_or_else(|| "qwen3_dense_0_6b_missing_weight_tensor:model.norm.weight".to_string())?;
+) -> Result<Qwen3DenseReferenceLogitsReferenceSummary, String> {
+    let norm = tensors.get("model.norm.weight").ok_or_else(|| {
+        "qwen3_dense_reference_missing_weight_tensor:model.norm.weight".to_string()
+    })?;
     let lm_head = tensors
         .get("lm_head.weight")
-        .ok_or_else(|| "qwen3_dense_0_6b_missing_weight_tensor:lm_head.weight".to_string())?;
-    if norm.shape != vec![QWEN3_DENSE_0_6B_PROFILE.hidden_size] {
+        .ok_or_else(|| "qwen3_dense_reference_missing_weight_tensor:lm_head.weight".to_string())?;
+    if norm.shape != vec![QWEN3_DENSE_REFERENCE_PROFILE.hidden_size] {
         return Err(format!(
-            "qwen3_dense_0_6b_weight_shape_mismatch:model.norm.weight:got={:?}:expected={:?}",
+            "qwen3_dense_reference_weight_shape_mismatch:model.norm.weight:got={:?}:expected={:?}",
             norm.shape,
-            vec![QWEN3_DENSE_0_6B_PROFILE.hidden_size]
+            vec![QWEN3_DENSE_REFERENCE_PROFILE.hidden_size]
         ));
     }
     if lm_head.shape
         != vec![
-            QWEN3_DENSE_0_6B_PROFILE.vocab_size,
-            QWEN3_DENSE_0_6B_PROFILE.hidden_size,
+            QWEN3_DENSE_REFERENCE_PROFILE.vocab_size,
+            QWEN3_DENSE_REFERENCE_PROFILE.hidden_size,
         ]
     {
         return Err(format!(
-            "qwen3_dense_0_6b_weight_shape_mismatch:lm_head.weight:got={:?}:expected={:?}",
+            "qwen3_dense_reference_weight_shape_mismatch:lm_head.weight:got={:?}:expected={:?}",
             lm_head.shape,
             vec![
-                QWEN3_DENSE_0_6B_PROFILE.vocab_size,
-                QWEN3_DENSE_0_6B_PROFILE.hidden_size
+                QWEN3_DENSE_REFERENCE_PROFILE.vocab_size,
+                QWEN3_DENSE_REFERENCE_PROFILE.hidden_size
             ]
         ));
     }
-    let hidden_size = QWEN3_DENSE_0_6B_PROFILE.hidden_size as usize;
+    let hidden_size = QWEN3_DENSE_REFERENCE_PROFILE.hidden_size as usize;
     let norm_payload =
         materialize_full_tensor_payload_with_payloads("model.norm.weight", norm, tensor_payloads)?;
     let norm_weight = decode_weight_vector(norm.dtype, &norm_payload, hidden_size)?;
@@ -2564,8 +2569,8 @@ pub fn logits_reference_summary_with_hidden_and_payloads(
     let final_norm_checksum = weight_bytes_checksum(&norm_payload);
     let mut tokens = Vec::with_capacity(token_requests.len());
     let mut aggregate_words = vec![
-        QWEN3_DENSE_0_6B_PROFILE.vocab_size,
-        QWEN3_DENSE_0_6B_PROFILE.hidden_size,
+        QWEN3_DENSE_REFERENCE_PROFILE.vocab_size,
+        QWEN3_DENSE_REFERENCE_PROFILE.hidden_size,
         final_norm_checksum,
     ];
     for (step_index, token_id) in token_requests {
@@ -2607,7 +2612,7 @@ pub fn logits_reference_summary_with_hidden_and_payloads(
             logit_bits,
             logit_checksum,
         ]);
-        tokens.push(Qwen3Dense06bLogitsReferenceTokenSummary {
+        tokens.push(Qwen3DenseReferenceLogitsReferenceTokenSummary {
             step_index: *step_index,
             token_id: *token_id,
             row_bytes: row_payload.len() as u64,
@@ -2616,14 +2621,14 @@ pub fn logits_reference_summary_with_hidden_and_payloads(
             logit_checksum,
         });
     }
-    Ok(Qwen3Dense06bLogitsReferenceSummary {
+    Ok(Qwen3DenseReferenceLogitsReferenceSummary {
         model_id: "Qwen/Qwen3-0.6B".to_string(),
         source: lm_head
             .source_file
             .clone()
             .unwrap_or_else(|| "<memory>".to_string()),
-        vocab_size: QWEN3_DENSE_0_6B_PROFILE.vocab_size,
-        hidden_size: QWEN3_DENSE_0_6B_PROFILE.hidden_size,
+        vocab_size: QWEN3_DENSE_REFERENCE_PROFILE.vocab_size,
+        hidden_size: QWEN3_DENSE_REFERENCE_PROFILE.hidden_size,
         final_norm_bytes: norm_payload.len() as u64,
         final_norm_checksum,
         token_count: tokens.len() as u64,
@@ -2633,40 +2638,40 @@ pub fn logits_reference_summary_with_hidden_and_payloads(
 }
 
 pub fn embedding_reference_summary(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     token_ids: &[u64],
-) -> Result<Qwen3Dense06bEmbeddingReferenceSummary, String> {
+) -> Result<Qwen3DenseReferenceEmbeddingReferenceSummary, String> {
     embedding_reference_summary_with_payloads(tensors, None, token_ids)
 }
 
 pub fn embedding_reference_summary_with_payloads(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     tensor_payloads: Option<&BTreeMap<String, Vec<u8>>>,
     token_ids: &[u64],
-) -> Result<Qwen3Dense06bEmbeddingReferenceSummary, String> {
+) -> Result<Qwen3DenseReferenceEmbeddingReferenceSummary, String> {
     let embedding = tensors.get("model.embed_tokens.weight").ok_or_else(|| {
-        "qwen3_dense_0_6b_missing_weight_tensor:model.embed_tokens.weight".to_string()
+        "qwen3_dense_reference_missing_weight_tensor:model.embed_tokens.weight".to_string()
     })?;
     if embedding.shape
         != vec![
-            QWEN3_DENSE_0_6B_PROFILE.vocab_size,
-            QWEN3_DENSE_0_6B_PROFILE.hidden_size,
+            QWEN3_DENSE_REFERENCE_PROFILE.vocab_size,
+            QWEN3_DENSE_REFERENCE_PROFILE.hidden_size,
         ]
     {
         return Err(format!(
-            "qwen3_dense_0_6b_weight_shape_mismatch:model.embed_tokens.weight:got={:?}:expected={:?}",
+            "qwen3_dense_reference_weight_shape_mismatch:model.embed_tokens.weight:got={:?}:expected={:?}",
             embedding.shape,
             vec![
-                QWEN3_DENSE_0_6B_PROFILE.vocab_size,
-                QWEN3_DENSE_0_6B_PROFILE.hidden_size
+                QWEN3_DENSE_REFERENCE_PROFILE.vocab_size,
+                QWEN3_DENSE_REFERENCE_PROFILE.hidden_size
             ]
         ));
     }
-    let hidden_size = QWEN3_DENSE_0_6B_PROFILE.hidden_size as usize;
+    let hidden_size = QWEN3_DENSE_REFERENCE_PROFILE.hidden_size as usize;
     let mut tokens = Vec::with_capacity(token_ids.len());
     let mut aggregate_words = vec![
-        QWEN3_DENSE_0_6B_PROFILE.vocab_size,
-        QWEN3_DENSE_0_6B_PROFILE.hidden_size,
+        QWEN3_DENSE_REFERENCE_PROFILE.vocab_size,
+        QWEN3_DENSE_REFERENCE_PROFILE.hidden_size,
         token_ids.len() as u64,
     ];
     let mut row_byte_count = 0u64;
@@ -2694,7 +2699,7 @@ pub fn embedding_reference_summary_with_payloads(
             value_checksum,
         ]);
         aggregate_words.extend_from_slice(&sample_words);
-        tokens.push(Qwen3Dense06bEmbeddingReferenceTokenSummary {
+        tokens.push(Qwen3DenseReferenceEmbeddingReferenceTokenSummary {
             sequence_index: sequence_index as u64,
             token_id,
             row_bytes: row_payload.len() as u64,
@@ -2703,14 +2708,14 @@ pub fn embedding_reference_summary_with_payloads(
             sample_words,
         });
     }
-    Ok(Qwen3Dense06bEmbeddingReferenceSummary {
+    Ok(Qwen3DenseReferenceEmbeddingReferenceSummary {
         model_id: "Qwen/Qwen3-0.6B".to_string(),
         source: embedding
             .source_file
             .clone()
             .unwrap_or_else(|| "<memory>".to_string()),
-        vocab_size: QWEN3_DENSE_0_6B_PROFILE.vocab_size,
-        hidden_size: QWEN3_DENSE_0_6B_PROFILE.hidden_size,
+        vocab_size: QWEN3_DENSE_REFERENCE_PROFILE.vocab_size,
+        hidden_size: QWEN3_DENSE_REFERENCE_PROFILE.hidden_size,
         token_count: token_ids.len() as u64,
         row_byte_count,
         row_checksum: checksum_words(&row_checksums),
@@ -2721,27 +2726,27 @@ pub fn embedding_reference_summary_with_payloads(
 }
 
 pub fn embedding_reference_last_hidden(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     token_ids: &[u64],
 ) -> Result<Vec<f32>, String> {
-    embedding_reference_last_hidden_for_profile(QWEN3_DENSE_0_6B_PROFILE, tensors, token_ids)
+    embedding_reference_last_hidden_for_profile(QWEN3_DENSE_REFERENCE_PROFILE, tensors, token_ids)
 }
 
 pub fn embedding_reference_last_hidden_for_profile(
-    profile: Qwen3Dense06bProfile,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    profile: Qwen3DenseReferenceProfile,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     token_ids: &[u64],
 ) -> Result<Vec<f32>, String> {
     embedding_reference_last_hidden_with_payloads_for_profile(profile, tensors, None, token_ids)
 }
 
 pub fn embedding_reference_last_hidden_with_payloads(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     tensor_payloads: Option<&BTreeMap<String, Vec<u8>>>,
     token_ids: &[u64],
 ) -> Result<Vec<f32>, String> {
     embedding_reference_last_hidden_with_payloads_for_profile(
-        QWEN3_DENSE_0_6B_PROFILE,
+        QWEN3_DENSE_REFERENCE_PROFILE,
         tensors,
         tensor_payloads,
         token_ids,
@@ -2749,8 +2754,8 @@ pub fn embedding_reference_last_hidden_with_payloads(
 }
 
 pub fn embedding_reference_last_hidden_with_payloads_for_profile(
-    profile: Qwen3Dense06bProfile,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    profile: Qwen3DenseReferenceProfile,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     tensor_payloads: Option<&BTreeMap<String, Vec<u8>>>,
     token_ids: &[u64],
 ) -> Result<Vec<f32>, String> {
@@ -2760,11 +2765,11 @@ pub fn embedding_reference_last_hidden_with_payloads_for_profile(
         .copied()
         .ok_or_else(|| "qwen3_embedding_reference_no_tokens".to_string())?;
     let embedding = tensors.get("model.embed_tokens.weight").ok_or_else(|| {
-        "qwen3_dense_0_6b_missing_weight_tensor:model.embed_tokens.weight".to_string()
+        "qwen3_dense_reference_missing_weight_tensor:model.embed_tokens.weight".to_string()
     })?;
     if embedding.shape != vec![profile.vocab_size, profile.hidden_size] {
         return Err(format!(
-            "qwen3_dense_0_6b_weight_shape_mismatch:model.embed_tokens.weight:got={:?}:expected={:?}",
+            "qwen3_dense_reference_weight_shape_mismatch:model.embed_tokens.weight:got={:?}:expected={:?}",
             embedding.shape,
             vec![
                 profile.vocab_size,
@@ -2782,27 +2787,31 @@ pub fn embedding_reference_last_hidden_with_payloads_for_profile(
 }
 
 pub fn embedding_reference_hidden_sequence(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     token_ids: &[u64],
 ) -> Result<Vec<Vec<f32>>, String> {
-    embedding_reference_hidden_sequence_for_profile(QWEN3_DENSE_0_6B_PROFILE, tensors, token_ids)
+    embedding_reference_hidden_sequence_for_profile(
+        QWEN3_DENSE_REFERENCE_PROFILE,
+        tensors,
+        token_ids,
+    )
 }
 
 pub fn embedding_reference_hidden_sequence_for_profile(
-    profile: Qwen3Dense06bProfile,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    profile: Qwen3DenseReferenceProfile,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     token_ids: &[u64],
 ) -> Result<Vec<Vec<f32>>, String> {
     embedding_reference_hidden_sequence_with_payloads_for_profile(profile, tensors, None, token_ids)
 }
 
 pub fn embedding_reference_hidden_sequence_with_payloads(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     tensor_payloads: Option<&BTreeMap<String, Vec<u8>>>,
     token_ids: &[u64],
 ) -> Result<Vec<Vec<f32>>, String> {
     embedding_reference_hidden_sequence_with_payloads_for_profile(
-        QWEN3_DENSE_0_6B_PROFILE,
+        QWEN3_DENSE_REFERENCE_PROFILE,
         tensors,
         tensor_payloads,
         token_ids,
@@ -2810,8 +2819,8 @@ pub fn embedding_reference_hidden_sequence_with_payloads(
 }
 
 pub fn embedding_reference_hidden_sequence_with_payloads_for_profile(
-    profile: Qwen3Dense06bProfile,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    profile: Qwen3DenseReferenceProfile,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     tensor_payloads: Option<&BTreeMap<String, Vec<u8>>>,
     token_ids: &[u64],
 ) -> Result<Vec<Vec<f32>>, String> {
@@ -2820,11 +2829,11 @@ pub fn embedding_reference_hidden_sequence_with_payloads_for_profile(
         return Err("qwen3_embedding_reference_no_tokens".to_string());
     }
     let embedding = tensors.get("model.embed_tokens.weight").ok_or_else(|| {
-        "qwen3_dense_0_6b_missing_weight_tensor:model.embed_tokens.weight".to_string()
+        "qwen3_dense_reference_missing_weight_tensor:model.embed_tokens.weight".to_string()
     })?;
     if embedding.shape != vec![profile.vocab_size, profile.hidden_size] {
         return Err(format!(
-            "qwen3_dense_0_6b_weight_shape_mismatch:model.embed_tokens.weight:got={:?}:expected={:?}",
+            "qwen3_dense_reference_weight_shape_mismatch:model.embed_tokens.weight:got={:?}:expected={:?}",
             embedding.shape,
             vec![
                 profile.vocab_size,
@@ -2849,13 +2858,13 @@ pub fn embedding_reference_hidden_sequence_with_payloads_for_profile(
 }
 
 pub fn layer_forward_reference(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     layer_id: u64,
     position: u64,
     hidden: &[f32],
-) -> Result<Qwen3Dense06bLayerForwardReference, String> {
+) -> Result<Qwen3DenseReferenceLayerForwardReference, String> {
     layer_forward_reference_for_profile(
-        QWEN3_DENSE_0_6B_PROFILE,
+        QWEN3_DENSE_REFERENCE_PROFILE,
         tensors,
         layer_id,
         position,
@@ -2864,12 +2873,12 @@ pub fn layer_forward_reference(
 }
 
 pub fn layer_forward_reference_for_profile(
-    profile: Qwen3Dense06bProfile,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    profile: Qwen3DenseReferenceProfile,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     layer_id: u64,
     position: u64,
     hidden: &[f32],
-) -> Result<Qwen3Dense06bLayerForwardReference, String> {
+) -> Result<Qwen3DenseReferenceLayerForwardReference, String> {
     validate_profile(profile)?;
     if layer_id >= profile.num_hidden_layers {
         return Err(format!(
@@ -2996,7 +3005,7 @@ pub fn layer_forward_reference_for_profile(
     )?;
     let output = vector_add(&attention_residual, &mlp_down)?;
 
-    Ok(Qwen3Dense06bLayerForwardReference {
+    Ok(Qwen3DenseReferenceLayerForwardReference {
         layer_id,
         position,
         hidden_size: profile.hidden_size,
@@ -3020,20 +3029,20 @@ pub fn layer_forward_reference_for_profile(
 }
 
 fn layer_forward_reference_sequence_with_cache(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     layer_payloads: Option<&BTreeMap<String, Vec<u8>>>,
     layer_id: u64,
     hidden_states: &[Vec<f32>],
 ) -> Result<
     (
         Vec<Vec<f32>>,
-        Qwen3Dense06bLayerForwardReference,
-        Qwen3Dense06bLayerKvCache,
+        Qwen3DenseReferenceLayerForwardReference,
+        Qwen3DenseReferenceLayerKvCache,
     ),
     String,
 > {
     layer_forward_reference_sequence_with_cache_for_profile(
-        QWEN3_DENSE_0_6B_PROFILE,
+        QWEN3_DENSE_REFERENCE_PROFILE,
         tensors,
         layer_payloads,
         layer_id,
@@ -3042,16 +3051,16 @@ fn layer_forward_reference_sequence_with_cache(
 }
 
 fn layer_forward_reference_sequence_with_cache_for_profile(
-    profile: Qwen3Dense06bProfile,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    profile: Qwen3DenseReferenceProfile,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     layer_payloads: Option<&BTreeMap<String, Vec<u8>>>,
     layer_id: u64,
     hidden_states: &[Vec<f32>],
 ) -> Result<
     (
         Vec<Vec<f32>>,
-        Qwen3Dense06bLayerForwardReference,
-        Qwen3Dense06bLayerKvCache,
+        Qwen3DenseReferenceLayerForwardReference,
+        Qwen3DenseReferenceLayerKvCache,
     ),
     String,
 > {
@@ -3215,7 +3224,7 @@ fn layer_forward_reference_sequence_with_cache_for_profile(
         )?;
         let output = vector_add(&attention_residual, &mlp_down)?;
         if position + 1 == hidden_states.len() {
-            last_reference = Some(Qwen3Dense06bLayerForwardReference {
+            last_reference = Some(Qwen3DenseReferenceLayerForwardReference {
                 layer_id,
                 position: position as u64,
                 hidden_size: profile.hidden_size,
@@ -3242,7 +3251,7 @@ fn layer_forward_reference_sequence_with_cache_for_profile(
     Ok((
         outputs,
         last_reference.ok_or_else(|| "qwen3_layer_forward_missing_last_reference".to_string())?,
-        Qwen3Dense06bLayerKvCache {
+        Qwen3DenseReferenceLayerKvCache {
             layer_id,
             token_count: hidden_states.len() as u64,
             rope_k_states,
@@ -3252,21 +3261,21 @@ fn layer_forward_reference_sequence_with_cache_for_profile(
 }
 
 fn layer_forward_reference_sequence(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     layer_id: u64,
     hidden_states: &[Vec<f32>],
-) -> Result<(Vec<Vec<f32>>, Qwen3Dense06bLayerForwardReference), String> {
+) -> Result<(Vec<Vec<f32>>, Qwen3DenseReferenceLayerForwardReference), String> {
     let (outputs, reference, _) =
         layer_forward_reference_sequence_with_cache(tensors, None, layer_id, hidden_states)?;
     Ok((outputs, reference))
 }
 
 pub fn layer_forward_reference_sequence_with_payloads(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     layer_payloads: &BTreeMap<String, Vec<u8>>,
     layer_id: u64,
     hidden_states: &[Vec<f32>],
-) -> Result<(Vec<Vec<f32>>, Qwen3Dense06bLayerForwardReference), String> {
+) -> Result<(Vec<Vec<f32>>, Qwen3DenseReferenceLayerForwardReference), String> {
     let (outputs, reference, _) = layer_forward_reference_sequence_with_cache(
         tensors,
         Some(layer_payloads),
@@ -3277,21 +3286,21 @@ pub fn layer_forward_reference_sequence_with_payloads(
 }
 
 fn layer_forward_incremental_with_cache(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     layer_id: u64,
     position: u64,
     hidden: &[f32],
-    previous_cache: &Qwen3Dense06bLayerKvCache,
+    previous_cache: &Qwen3DenseReferenceLayerKvCache,
 ) -> Result<
     (
         Vec<f32>,
-        Qwen3Dense06bLayerForwardReference,
-        Qwen3Dense06bLayerKvCache,
+        Qwen3DenseReferenceLayerForwardReference,
+        Qwen3DenseReferenceLayerKvCache,
     ),
     String,
 > {
     layer_forward_incremental_with_cache_for_profile(
-        QWEN3_DENSE_0_6B_PROFILE,
+        QWEN3_DENSE_REFERENCE_PROFILE,
         tensors,
         layer_id,
         position,
@@ -3301,17 +3310,17 @@ fn layer_forward_incremental_with_cache(
 }
 
 fn layer_forward_incremental_with_cache_for_profile(
-    profile: Qwen3Dense06bProfile,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    profile: Qwen3DenseReferenceProfile,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     layer_id: u64,
     position: u64,
     hidden: &[f32],
-    previous_cache: &Qwen3Dense06bLayerKvCache,
+    previous_cache: &Qwen3DenseReferenceLayerKvCache,
 ) -> Result<
     (
         Vec<f32>,
-        Qwen3Dense06bLayerForwardReference,
-        Qwen3Dense06bLayerKvCache,
+        Qwen3DenseReferenceLayerForwardReference,
+        Qwen3DenseReferenceLayerKvCache,
     ),
     String,
 > {
@@ -3452,7 +3461,7 @@ fn layer_forward_incremental_with_cache_for_profile(
     let output = vector_add(&attention_residual, &mlp_down)?;
     Ok((
         output.clone(),
-        Qwen3Dense06bLayerForwardReference {
+        Qwen3DenseReferenceLayerForwardReference {
             layer_id,
             position,
             hidden_size: profile.hidden_size,
@@ -3473,7 +3482,7 @@ fn layer_forward_incremental_with_cache_for_profile(
             output_sample_words: f32_vector_sample_words(&output),
             output: output.clone(),
         },
-        Qwen3Dense06bLayerKvCache {
+        Qwen3DenseReferenceLayerKvCache {
             layer_id,
             token_count: position + 1,
             rope_k_states,
@@ -3483,28 +3492,28 @@ fn layer_forward_incremental_with_cache_for_profile(
 }
 
 pub fn forward_reference_from_hidden(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     position: u64,
     hidden: &[f32],
-) -> Result<Qwen3Dense06bForwardReference, String> {
+) -> Result<Qwen3DenseReferenceForwardReference, String> {
     forward_reference_from_hidden_range_for_profile(
-        QWEN3_DENSE_0_6B_PROFILE,
+        QWEN3_DENSE_REFERENCE_PROFILE,
         tensors,
         0,
-        QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers,
+        QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
         position,
         hidden,
     )
 }
 
 pub fn forward_reference_from_hidden_range_for_profile(
-    profile: Qwen3Dense06bProfile,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    profile: Qwen3DenseReferenceProfile,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     layer_start: u64,
     layer_end: u64,
     position: u64,
     hidden: &[f32],
-) -> Result<Qwen3Dense06bForwardReference, String> {
+) -> Result<Qwen3DenseReferenceForwardReference, String> {
     validate_profile(profile)?;
     if layer_start > layer_end || layer_end > profile.num_hidden_layers {
         return Err(format!(
@@ -3541,7 +3550,7 @@ pub fn forward_reference_from_hidden_range_for_profile(
     let final_hidden_sample_words = f32_vector_sample_words(&current);
     aggregate_words.push(final_hidden_checksum);
     aggregate_words.extend_from_slice(&final_hidden_sample_words);
-    Ok(Qwen3Dense06bForwardReference {
+    Ok(Qwen3DenseReferenceForwardReference {
         layer_count: layer_end - layer_start,
         position,
         hidden_size: profile.hidden_size,
@@ -3555,12 +3564,12 @@ pub fn forward_reference_from_hidden_range_for_profile(
 }
 
 pub fn forward_reference_from_hidden_sequence_range_for_profile(
-    profile: Qwen3Dense06bProfile,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    profile: Qwen3DenseReferenceProfile,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     layer_start: u64,
     layer_end: u64,
     hidden_states: &[Vec<f32>],
-) -> Result<(Qwen3Dense06bForwardReference, Vec<Vec<f32>>), String> {
+) -> Result<(Qwen3DenseReferenceForwardReference, Vec<Vec<f32>>), String> {
     let (forward_with_cache, sequence) =
         forward_reference_from_hidden_sequence_range_with_kv_cache_for_profile(
             profile,
@@ -3573,12 +3582,12 @@ pub fn forward_reference_from_hidden_sequence_range_for_profile(
 }
 
 pub fn forward_reference_from_hidden_sequence_range_with_kv_cache_for_profile(
-    profile: Qwen3Dense06bProfile,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    profile: Qwen3DenseReferenceProfile,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     layer_start: u64,
     layer_end: u64,
     hidden_states: &[Vec<f32>],
-) -> Result<(Qwen3Dense06bForwardWithKvCache, Vec<Vec<f32>>), String> {
+) -> Result<(Qwen3DenseReferenceForwardWithKvCache, Vec<Vec<f32>>), String> {
     validate_profile(profile)?;
     if layer_start > layer_end || layer_end > profile.num_hidden_layers {
         return Err(format!(
@@ -3635,8 +3644,8 @@ pub fn forward_reference_from_hidden_sequence_range_with_kv_cache_for_profile(
     aggregate_words.push(final_hidden_checksum);
     aggregate_words.extend_from_slice(&final_hidden_sample_words);
     Ok((
-        Qwen3Dense06bForwardWithKvCache {
-            forward: Qwen3Dense06bForwardReference {
+        Qwen3DenseReferenceForwardWithKvCache {
+            forward: Qwen3DenseReferenceForwardReference {
                 layer_count: layer_end - layer_start,
                 position,
                 hidden_size: profile.hidden_size,
@@ -3654,14 +3663,14 @@ pub fn forward_reference_from_hidden_sequence_range_with_kv_cache_for_profile(
 }
 
 pub fn forward_incremental_range_with_kv_cache_from_hidden_for_profile(
-    profile: Qwen3Dense06bProfile,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
-    previous_cache: &[Qwen3Dense06bLayerKvCache],
+    profile: Qwen3DenseReferenceProfile,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
+    previous_cache: &[Qwen3DenseReferenceLayerKvCache],
     layer_start: u64,
     layer_end: u64,
     position: u64,
     hidden: &[f32],
-) -> Result<Qwen3Dense06bForwardWithKvCache, String> {
+) -> Result<Qwen3DenseReferenceForwardWithKvCache, String> {
     validate_profile(profile)?;
     if layer_start > layer_end || layer_end > profile.num_hidden_layers {
         return Err(format!(
@@ -3723,8 +3732,8 @@ pub fn forward_incremental_range_with_kv_cache_from_hidden_for_profile(
     let final_hidden_sample_words = f32_vector_sample_words(&current);
     aggregate_words.push(final_hidden_checksum);
     aggregate_words.extend_from_slice(&final_hidden_sample_words);
-    Ok(Qwen3Dense06bForwardWithKvCache {
-        forward: Qwen3Dense06bForwardReference {
+    Ok(Qwen3DenseReferenceForwardWithKvCache {
+        forward: Qwen3DenseReferenceForwardReference {
             layer_count: layer_end - layer_start,
             position,
             hidden_size: profile.hidden_size,
@@ -3740,9 +3749,9 @@ pub fn forward_incremental_range_with_kv_cache_from_hidden_for_profile(
 }
 
 pub fn forward_reference_from_token_ids(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     token_ids: &[u64],
-) -> Result<Qwen3Dense06bForwardReference, String> {
+) -> Result<Qwen3DenseReferenceForwardReference, String> {
     let mut sequence = embedding_reference_hidden_sequence(tensors, token_ids)?;
     let position = token_ids.len().saturating_sub(1) as u64;
     let input_checksum = f32_vector_checksum(
@@ -3750,9 +3759,9 @@ pub fn forward_reference_from_token_ids(
             .last()
             .ok_or_else(|| "qwen3_forward_reference_no_hidden_sequence".to_string())?,
     );
-    let mut layers = Vec::with_capacity(QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers as usize);
+    let mut layers = Vec::with_capacity(QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers as usize);
     let mut aggregate_words = vec![position, token_ids.len() as u64, input_checksum];
-    for layer_id in 0..QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers {
+    for layer_id in 0..QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers {
         let (next_sequence, layer) =
             layer_forward_reference_sequence(tensors, layer_id, &sequence)?;
         aggregate_words.extend_from_slice(&[
@@ -3778,10 +3787,10 @@ pub fn forward_reference_from_token_ids(
     let final_hidden_sample_words = f32_vector_sample_words(&final_hidden);
     aggregate_words.push(final_hidden_checksum);
     aggregate_words.extend_from_slice(&final_hidden_sample_words);
-    Ok(Qwen3Dense06bForwardReference {
-        layer_count: QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers,
+    Ok(Qwen3DenseReferenceForwardReference {
+        layer_count: QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
         position,
-        hidden_size: QWEN3_DENSE_0_6B_PROFILE.hidden_size,
+        hidden_size: QWEN3_DENSE_REFERENCE_PROFILE.hidden_size,
         input_checksum,
         final_hidden_checksum,
         final_hidden_sample_words,
@@ -3792,17 +3801,17 @@ pub fn forward_reference_from_token_ids(
 }
 
 pub fn forward_from_token_ids(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     token_ids: &[u64],
-) -> Result<Qwen3Dense06bForwardReference, String> {
+) -> Result<Qwen3DenseReferenceForwardReference, String> {
     forward_reference_from_token_ids(tensors, token_ids)
 }
 
 pub fn forward_from_token_ids_with_layer_payloads(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     layer_payloads: &BTreeMap<String, Vec<u8>>,
     token_ids: &[u64],
-) -> Result<Qwen3Dense06bForwardReference, String> {
+) -> Result<Qwen3DenseReferenceForwardReference, String> {
     let mut sequence = embedding_reference_hidden_sequence_with_payloads(
         tensors,
         Some(layer_payloads),
@@ -3814,9 +3823,9 @@ pub fn forward_from_token_ids_with_layer_payloads(
             .last()
             .ok_or_else(|| "qwen3_forward_reference_no_hidden_sequence".to_string())?,
     );
-    let mut layers = Vec::with_capacity(QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers as usize);
+    let mut layers = Vec::with_capacity(QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers as usize);
     let mut aggregate_words = vec![position, token_ids.len() as u64, input_checksum];
-    for layer_id in 0..QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers {
+    for layer_id in 0..QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers {
         let (next_sequence, layer) = layer_forward_reference_sequence_with_payloads(
             tensors,
             layer_payloads,
@@ -3846,10 +3855,10 @@ pub fn forward_from_token_ids_with_layer_payloads(
     let final_hidden_sample_words = f32_vector_sample_words(&final_hidden);
     aggregate_words.push(final_hidden_checksum);
     aggregate_words.extend_from_slice(&final_hidden_sample_words);
-    Ok(Qwen3Dense06bForwardReference {
-        layer_count: QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers,
+    Ok(Qwen3DenseReferenceForwardReference {
+        layer_count: QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
         position,
-        hidden_size: QWEN3_DENSE_0_6B_PROFILE.hidden_size,
+        hidden_size: QWEN3_DENSE_REFERENCE_PROFILE.hidden_size,
         input_checksum,
         final_hidden_checksum,
         final_hidden_sample_words,
@@ -3860,9 +3869,9 @@ pub fn forward_from_token_ids_with_layer_payloads(
 }
 
 pub fn forward_with_kv_cache_from_token_ids(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     token_ids: &[u64],
-) -> Result<Qwen3Dense06bForwardWithKvCache, String> {
+) -> Result<Qwen3DenseReferenceForwardWithKvCache, String> {
     let mut sequence = embedding_reference_hidden_sequence(tensors, token_ids)?;
     let position = token_ids.len().saturating_sub(1) as u64;
     let input_checksum = f32_vector_checksum(
@@ -3870,10 +3879,10 @@ pub fn forward_with_kv_cache_from_token_ids(
             .last()
             .ok_or_else(|| "qwen3_forward_reference_no_hidden_sequence".to_string())?,
     );
-    let mut layers = Vec::with_capacity(QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers as usize);
-    let mut kv_cache = Vec::with_capacity(QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers as usize);
+    let mut layers = Vec::with_capacity(QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers as usize);
+    let mut kv_cache = Vec::with_capacity(QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers as usize);
     let mut aggregate_words = vec![position, token_ids.len() as u64, input_checksum];
-    for layer_id in 0..QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers {
+    for layer_id in 0..QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers {
         let (next_sequence, layer, layer_cache) =
             layer_forward_reference_sequence_with_cache(tensors, None, layer_id, &sequence)?;
         aggregate_words.extend_from_slice(&[
@@ -3900,11 +3909,11 @@ pub fn forward_with_kv_cache_from_token_ids(
     let final_hidden_sample_words = f32_vector_sample_words(&final_hidden);
     aggregate_words.push(final_hidden_checksum);
     aggregate_words.extend_from_slice(&final_hidden_sample_words);
-    Ok(Qwen3Dense06bForwardWithKvCache {
-        forward: Qwen3Dense06bForwardReference {
-            layer_count: QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers,
+    Ok(Qwen3DenseReferenceForwardWithKvCache {
+        forward: Qwen3DenseReferenceForwardReference {
+            layer_count: QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
             position,
-            hidden_size: QWEN3_DENSE_0_6B_PROFILE.hidden_size,
+            hidden_size: QWEN3_DENSE_REFERENCE_PROFILE.hidden_size,
             input_checksum,
             final_hidden_checksum,
             final_hidden_sample_words,
@@ -3917,23 +3926,23 @@ pub fn forward_with_kv_cache_from_token_ids(
 }
 
 pub fn forward_incremental_with_kv_cache_from_hidden(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
-    previous_cache: &[Qwen3Dense06bLayerKvCache],
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
+    previous_cache: &[Qwen3DenseReferenceLayerKvCache],
     position: u64,
     hidden: &[f32],
-) -> Result<Qwen3Dense06bForwardWithKvCache, String> {
-    if previous_cache.len() != QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers as usize {
+) -> Result<Qwen3DenseReferenceForwardWithKvCache, String> {
+    if previous_cache.len() != QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers as usize {
         return Err(format!(
             "qwen3_incremental_cache_layer_count_mismatch:got={}:expected={}",
             previous_cache.len(),
-            QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers
+            QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers
         ));
     }
     let mut current = hidden.to_vec();
-    let mut layers = Vec::with_capacity(QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers as usize);
-    let mut kv_cache = Vec::with_capacity(QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers as usize);
+    let mut layers = Vec::with_capacity(QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers as usize);
+    let mut kv_cache = Vec::with_capacity(QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers as usize);
     let mut aggregate_words = vec![position, position + 1, f32_vector_checksum(hidden)];
-    for layer_id in 0..QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers {
+    for layer_id in 0..QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers {
         let (next_hidden, layer, layer_cache) = layer_forward_incremental_with_cache(
             tensors,
             layer_id,
@@ -3961,11 +3970,11 @@ pub fn forward_incremental_with_kv_cache_from_hidden(
     let final_hidden_sample_words = f32_vector_sample_words(&current);
     aggregate_words.push(final_hidden_checksum);
     aggregate_words.extend_from_slice(&final_hidden_sample_words);
-    Ok(Qwen3Dense06bForwardWithKvCache {
-        forward: Qwen3Dense06bForwardReference {
-            layer_count: QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers,
+    Ok(Qwen3DenseReferenceForwardWithKvCache {
+        forward: Qwen3DenseReferenceForwardReference {
+            layer_count: QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
             position,
-            hidden_size: QWEN3_DENSE_0_6B_PROFILE.hidden_size,
+            hidden_size: QWEN3_DENSE_REFERENCE_PROFILE.hidden_size,
             input_checksum: f32_vector_checksum(hidden),
             final_hidden_checksum,
             final_hidden_sample_words,
@@ -3978,36 +3987,36 @@ pub fn forward_incremental_with_kv_cache_from_hidden(
 }
 
 pub fn full_vocab_logits_from_hidden(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     hidden: &[f32],
-) -> Result<Qwen3Dense06bFullVocabLogitsSummary, String> {
+) -> Result<Qwen3DenseReferenceFullVocabLogitsSummary, String> {
     full_vocab_logits_from_hidden_with_chunk(tensors, hidden, 4096)
 }
 
 pub fn full_vocab_logits_from_hidden_for_profile(
-    profile: Qwen3Dense06bProfile,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    profile: Qwen3DenseReferenceProfile,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     hidden: &[f32],
-) -> Result<Qwen3Dense06bFullVocabLogitsSummary, String> {
+) -> Result<Qwen3DenseReferenceFullVocabLogitsSummary, String> {
     full_vocab_logits_from_hidden_with_chunk_for_profile(profile, tensors, hidden, 4096)
 }
 
 pub fn full_vocab_logits_from_hidden_with_chunk_for_profile(
-    profile: Qwen3Dense06bProfile,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    profile: Qwen3DenseReferenceProfile,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     hidden: &[f32],
     chunk_rows: usize,
-) -> Result<Qwen3Dense06bFullVocabLogitsSummary, String> {
+) -> Result<Qwen3DenseReferenceFullVocabLogitsSummary, String> {
     full_vocab_logits_from_hidden_with_chunk_and_payloads_for_profile(
         profile, tensors, None, hidden, chunk_rows,
     )
 }
 
 pub fn full_vocab_logits_from_hidden_with_payloads(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     tensor_payloads: &BTreeMap<String, Vec<u8>>,
     hidden: &[f32],
-) -> Result<Qwen3Dense06bFullVocabLogitsSummary, String> {
+) -> Result<Qwen3DenseReferenceFullVocabLogitsSummary, String> {
     full_vocab_logits_from_hidden_with_chunk_and_payloads(
         tensors,
         Some(tensor_payloads),
@@ -4017,21 +4026,21 @@ pub fn full_vocab_logits_from_hidden_with_payloads(
 }
 
 pub fn full_vocab_logits_from_hidden_with_chunk(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     hidden: &[f32],
     chunk_rows: usize,
-) -> Result<Qwen3Dense06bFullVocabLogitsSummary, String> {
+) -> Result<Qwen3DenseReferenceFullVocabLogitsSummary, String> {
     full_vocab_logits_from_hidden_with_chunk_and_payloads(tensors, None, hidden, chunk_rows)
 }
 
 pub fn full_vocab_logits_from_hidden_with_chunk_and_payloads(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     tensor_payloads: Option<&BTreeMap<String, Vec<u8>>>,
     hidden: &[f32],
     chunk_rows: usize,
-) -> Result<Qwen3Dense06bFullVocabLogitsSummary, String> {
+) -> Result<Qwen3DenseReferenceFullVocabLogitsSummary, String> {
     full_vocab_logits_from_hidden_with_chunk_and_payloads_for_profile(
-        QWEN3_DENSE_0_6B_PROFILE,
+        QWEN3_DENSE_REFERENCE_PROFILE,
         tensors,
         tensor_payloads,
         hidden,
@@ -4040,12 +4049,12 @@ pub fn full_vocab_logits_from_hidden_with_chunk_and_payloads(
 }
 
 pub fn full_vocab_logits_from_hidden_with_chunk_and_payloads_for_profile(
-    profile: Qwen3Dense06bProfile,
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    profile: Qwen3DenseReferenceProfile,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     tensor_payloads: Option<&BTreeMap<String, Vec<u8>>>,
     hidden: &[f32],
     chunk_rows: usize,
-) -> Result<Qwen3Dense06bFullVocabLogitsSummary, String> {
+) -> Result<Qwen3DenseReferenceFullVocabLogitsSummary, String> {
     const TOP_CANDIDATE_COUNT: usize = 4;
 
     validate_profile(profile)?;
@@ -4071,7 +4080,7 @@ pub fn full_vocab_logits_from_hidden_with_chunk_and_payloads_for_profile(
     let expected_shape = vec![profile.vocab_size, profile.hidden_size];
     if head.shape != expected_shape {
         return Err(format!(
-            "qwen3_dense_0_6b_weight_shape_mismatch:{head_name}:got={:?}:expected={:?}",
+            "qwen3_dense_reference_weight_shape_mismatch:{head_name}:got={:?}:expected={:?}",
             head.shape, expected_shape
         ));
     }
@@ -4147,7 +4156,7 @@ pub fn full_vocab_logits_from_hidden_with_chunk_and_payloads_for_profile(
     for (rank, (token_id, logit)) in top_candidates.iter().enumerate() {
         aggregate_words.extend_from_slice(&[rank as u64, *token_id, logit.to_bits() as u64]);
     }
-    Ok(Qwen3Dense06bFullVocabLogitsSummary {
+    Ok(Qwen3DenseReferenceFullVocabLogitsSummary {
         vocab_size: profile.vocab_size,
         hidden_size: profile.hidden_size,
         final_norm_checksum,
@@ -4159,11 +4168,13 @@ pub fn full_vocab_logits_from_hidden_with_chunk_and_payloads_for_profile(
         top_candidates: top_candidates
             .into_iter()
             .enumerate()
-            .map(|(rank, (token_id, logit))| Qwen3Dense06bLogitCandidate {
-                rank: rank as u64,
-                token_id,
-                logit_bits: logit.to_bits() as u64,
-            })
+            .map(
+                |(rank, (token_id, logit))| Qwen3DenseReferenceLogitCandidate {
+                    rank: rank as u64,
+                    token_id,
+                    logit_bits: logit.to_bits() as u64,
+                },
+            )
             .collect(),
         logits_checksum,
         aggregate_checksum: checksum_words(&aggregate_words),
@@ -4188,12 +4199,12 @@ fn qwen3_insert_top_logit_candidate(
 
 pub fn sampled_text_reference_from_logits(
     tokenizer_path: &Path,
-    logits: &Qwen3Dense06bFullVocabLogitsSummary,
-) -> Result<Qwen3Dense06bSampledTextReference, String> {
+    logits: &Qwen3DenseReferenceFullVocabLogitsSummary,
+) -> Result<Qwen3DenseReferenceSampledTextReference, String> {
     let bytes = token_piece_bytes_from_tokenizer_path(tokenizer_path, logits.top_token_id)?;
     let decoded = token_piece_decode_bytes(&bytes);
     let byte_checksum = weight_bytes_checksum(&decoded);
-    Ok(Qwen3Dense06bSampledTextReference {
+    Ok(Qwen3DenseReferenceSampledTextReference {
         token_id: logits.top_token_id,
         byte_len: decoded.len() as u64,
         byte_checksum,
@@ -4203,10 +4214,10 @@ pub fn sampled_text_reference_from_logits(
 }
 
 pub fn real_inference_reference_from_token_ids(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     tokenizer_path: &Path,
     token_ids: &[u64],
-) -> Result<Qwen3Dense06bRealInferenceReference, String> {
+) -> Result<Qwen3DenseReferenceRealInferenceReference, String> {
     let forward = forward_reference_from_token_ids(tensors, token_ids)?;
     let logits = full_vocab_logits_from_hidden(tensors, &forward.final_hidden)?;
     let sampled_text = sampled_text_reference_from_logits(tokenizer_path, &logits)?;
@@ -4219,7 +4230,7 @@ pub fn real_inference_reference_from_token_ids(
         sampled_text.byte_checksum,
     ];
     aggregate_words.extend_from_slice(token_ids);
-    Ok(Qwen3Dense06bRealInferenceReference {
+    Ok(Qwen3DenseReferenceRealInferenceReference {
         token_ids: token_ids.to_vec(),
         forward,
         logits,
@@ -4246,11 +4257,11 @@ pub fn checksum_words(words: &[u64]) -> u64 {
 }
 
 fn find_weight_slice(
-    manifest: &Qwen3Dense06bWeightManifest,
+    manifest: &Qwen3DenseReferenceWeightManifest,
     layer_id: u64,
     shard_id: u64,
-    tensor_kind: Qwen3Dense06bWeightTensorKind,
-) -> Result<&Qwen3Dense06bWeightSlice, String> {
+    tensor_kind: Qwen3DenseReferenceWeightTensorKind,
+) -> Result<&Qwen3DenseReferenceWeightSlice, String> {
     manifest
         .slices
         .iter()
@@ -4304,10 +4315,10 @@ struct MlpReferenceChecksums {
 
 #[allow(clippy::too_many_arguments)]
 fn qkv_reference_from_payloads(
-    norm_dtype: Qwen3Dense06bWeightDType,
-    q_dtype: Qwen3Dense06bWeightDType,
-    k_dtype: Qwen3Dense06bWeightDType,
-    v_dtype: Qwen3Dense06bWeightDType,
+    norm_dtype: Qwen3DenseReferenceWeightDType,
+    q_dtype: Qwen3DenseReferenceWeightDType,
+    k_dtype: Qwen3DenseReferenceWeightDType,
+    v_dtype: Qwen3DenseReferenceWeightDType,
     hidden_size: u64,
     q_rows: u64,
     k_rows: u64,
@@ -4346,10 +4357,10 @@ fn qkv_reference_from_payloads(
 
 #[allow(clippy::too_many_arguments)]
 fn qkv_reference_values_from_payloads(
-    norm_dtype: Qwen3Dense06bWeightDType,
-    q_dtype: Qwen3Dense06bWeightDType,
-    k_dtype: Qwen3Dense06bWeightDType,
-    v_dtype: Qwen3Dense06bWeightDType,
+    norm_dtype: Qwen3DenseReferenceWeightDType,
+    q_dtype: Qwen3DenseReferenceWeightDType,
+    k_dtype: Qwen3DenseReferenceWeightDType,
+    v_dtype: Qwen3DenseReferenceWeightDType,
     hidden_size: u64,
     q_rows: u64,
     k_rows: u64,
@@ -4393,9 +4404,9 @@ fn qkv_reference_values_from_payloads(
 }
 
 fn mlp_reference_from_payloads(
-    gate_dtype: Qwen3Dense06bWeightDType,
-    up_dtype: Qwen3Dense06bWeightDType,
-    down_dtype: Qwen3Dense06bWeightDType,
+    gate_dtype: Qwen3DenseReferenceWeightDType,
+    up_dtype: Qwen3DenseReferenceWeightDType,
+    down_dtype: Qwen3DenseReferenceWeightDType,
     hidden_size: u64,
     intermediate_rows: u64,
     gate_payload: &[u8],
@@ -4467,7 +4478,7 @@ fn rmsnorm_reference(hidden: &[f32], weight: &[f32]) -> Vec<f32> {
 }
 
 fn load_weight_vector(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     name: &str,
     expected_elems: usize,
 ) -> Result<Vec<f32>, String> {
@@ -4475,14 +4486,14 @@ fn load_weight_vector(
 }
 
 fn load_weight_vector_with_payloads(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     layer_payloads: Option<&BTreeMap<String, Vec<u8>>>,
     name: &str,
     expected_elems: usize,
 ) -> Result<Vec<f32>, String> {
     let tensor = tensors
         .get(name)
-        .ok_or_else(|| format!("qwen3_dense_0_6b_missing_weight_tensor:{name}"))?;
+        .ok_or_else(|| format!("qwen3_dense_reference_missing_weight_tensor:{name}"))?;
     let actual_elems = tensor.shape.iter().try_fold(1usize, |acc, dim| {
         acc.checked_mul(*dim as usize)
             .ok_or_else(|| format!("qwen3_weight_vector_elems_overflow:{name}"))
@@ -4497,7 +4508,7 @@ fn load_weight_vector_with_payloads(
 }
 
 fn matmul_full_tensor(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     name: &str,
     rows: usize,
     cols: usize,
@@ -4507,7 +4518,7 @@ fn matmul_full_tensor(
 }
 
 fn matmul_full_tensor_with_payloads(
-    tensors: &BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     layer_payloads: Option<&BTreeMap<String, Vec<u8>>>,
     name: &str,
     rows: usize,
@@ -4522,11 +4533,11 @@ fn matmul_full_tensor_with_payloads(
     }
     let tensor = tensors
         .get(name)
-        .ok_or_else(|| format!("qwen3_dense_0_6b_missing_weight_tensor:{name}"))?;
+        .ok_or_else(|| format!("qwen3_dense_reference_missing_weight_tensor:{name}"))?;
     let expected_shape = vec![rows as u64, cols as u64];
     if tensor.shape != expected_shape {
         return Err(format!(
-            "qwen3_dense_0_6b_weight_shape_mismatch:{name}:got={:?}:expected={:?}",
+            "qwen3_dense_reference_weight_shape_mismatch:{name}:got={:?}:expected={:?}",
             tensor.shape, expected_shape
         ));
     }
@@ -4535,15 +4546,15 @@ fn matmul_full_tensor_with_payloads(
 }
 
 fn logits_head_tensor<'a>(
-    tensors: &'a BTreeMap<String, Qwen3Dense06bWeightTensorMetadata>,
-) -> Result<(&'static str, &'a Qwen3Dense06bWeightTensorMetadata), String> {
+    tensors: &'a BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
+) -> Result<(&'static str, &'a Qwen3DenseReferenceWeightTensorMetadata), String> {
     if let Some(tensor) = tensors.get("lm_head.weight") {
         return Ok(("lm_head.weight", tensor));
     }
     tensors
         .get("model.embed_tokens.weight")
         .map(|tensor| ("model.embed_tokens.weight", tensor))
-        .ok_or_else(|| "qwen3_dense_0_6b_missing_logits_head_tensor".to_string())
+        .ok_or_else(|| "qwen3_dense_reference_missing_logits_head_tensor".to_string())
 }
 
 fn apply_rope(
@@ -4897,7 +4908,7 @@ fn rmsnorm_per_head_reference(
 }
 
 fn matmul_reference_values(
-    dtype: Qwen3Dense06bWeightDType,
+    dtype: Qwen3DenseReferenceWeightDType,
     payload: &[u8],
     rows: usize,
     input: &[f32],
@@ -4920,7 +4931,7 @@ fn matmul_reference_values(
 }
 
 fn decode_weight_vector(
-    dtype: Qwen3Dense06bWeightDType,
+    dtype: Qwen3DenseReferenceWeightDType,
     payload: &[u8],
     expected_elems: usize,
 ) -> Result<Vec<f32>, String> {
@@ -4938,19 +4949,19 @@ fn decode_weight_vector(
     for index in 0..expected_elems {
         let base = index * elem_size;
         let value = match dtype {
-            Qwen3Dense06bWeightDType::F32 => {
+            Qwen3DenseReferenceWeightDType::F32 => {
                 f32::from_le_bytes(payload[base..base + 4].try_into().expect("f32 weight"))
             }
-            Qwen3Dense06bWeightDType::F16 => f16_bits_to_f32(u16::from_le_bytes(
+            Qwen3DenseReferenceWeightDType::F16 => f16_bits_to_f32(u16::from_le_bytes(
                 payload[base..base + 2].try_into().expect("f16 weight"),
             )),
-            Qwen3Dense06bWeightDType::BF16 => f32::from_bits(
+            Qwen3DenseReferenceWeightDType::BF16 => f32::from_bits(
                 (u16::from_le_bytes(payload[base..base + 2].try_into().expect("bf16 weight"))
                     as u32)
                     << 16,
             ),
-            Qwen3Dense06bWeightDType::I8 => payload[base] as i8 as f32,
-            Qwen3Dense06bWeightDType::U8 => payload[base] as f32,
+            Qwen3DenseReferenceWeightDType::I8 => payload[base] as i8 as f32,
+            Qwen3DenseReferenceWeightDType::U8 => payload[base] as f32,
         };
         out.push(value);
     }
@@ -5006,14 +5017,14 @@ fn f32_vector_sample_words(values: &[f32]) -> [u64; 4] {
 
 fn materialize_full_tensor_payload(
     tensor_name: &str,
-    metadata: &Qwen3Dense06bWeightTensorMetadata,
+    metadata: &Qwen3DenseReferenceWeightTensorMetadata,
 ) -> Result<Vec<u8>, String> {
     materialize_full_tensor_payload_with_payloads(tensor_name, metadata, None)
 }
 
 fn materialize_full_tensor_payload_with_payloads(
     tensor_name: &str,
-    metadata: &Qwen3Dense06bWeightTensorMetadata,
+    metadata: &Qwen3DenseReferenceWeightTensorMetadata,
     layer_payloads: Option<&BTreeMap<String, Vec<u8>>>,
 ) -> Result<Vec<u8>, String> {
     if let Some(payload) = layer_payloads.and_then(|payloads| payloads.get(tensor_name)) {
@@ -5059,7 +5070,7 @@ fn materialize_full_tensor_payload_with_payloads(
 
 fn materialize_tensor_row_payload_with_payloads(
     tensor_name: &str,
-    metadata: &Qwen3Dense06bWeightTensorMetadata,
+    metadata: &Qwen3DenseReferenceWeightTensorMetadata,
     row: u64,
     tensor_payloads: Option<&BTreeMap<String, Vec<u8>>>,
 ) -> Result<Vec<u8>, String> {
@@ -5124,7 +5135,7 @@ fn materialize_tensor_row_payload_with_payloads(
 
 fn materialize_tensor_row_range_payload_with_payloads(
     tensor_name: &str,
-    metadata: &Qwen3Dense06bWeightTensorMetadata,
+    metadata: &Qwen3DenseReferenceWeightTensorMetadata,
     start_row: u64,
     rows: usize,
     tensor_payloads: Option<&BTreeMap<String, Vec<u8>>>,
@@ -5204,7 +5215,7 @@ fn materialize_tensor_row_range_payload_with_payloads(
 
 fn validate_safetensors_tensor_range(
     name: &str,
-    metadata: &Qwen3Dense06bWeightTensorMetadata,
+    metadata: &Qwen3DenseReferenceWeightTensorMetadata,
     file_len: u64,
 ) -> Result<(), String> {
     let [start, end] = metadata
@@ -5273,7 +5284,7 @@ mod tests {
 
     const TEST_YAML: &str = r#"
 scenario:
-  name: qwen3_dense_0_6b_test
+  name: qwen3_dense_reference_test
   group: W
   variant: qwen3_tp8
   seed: 42
@@ -5354,7 +5365,7 @@ routing:
   capacity_weight: 1.0
 workload:
   type: rust_llm_server_mvp
-  profile: qwen3_dense_0_6b
+  profile: qwen3_dense_reference
   qps: 1
   unique_prefixes: 1
   blocks_per_request: 4
@@ -5372,23 +5383,24 @@ outputs:
     #[test]
     fn layer_ir_and_tp_partition_are_explicit() {
         let topology = test_topology();
-        let graph = layer_graph_ir(QWEN3_DENSE_0_6B_PROFILE, 0);
-        let op_kinds: Vec<Qwen3Dense06bLayerOpKind> = graph.ops.iter().map(|op| op.kind).collect();
+        let graph = layer_graph_ir(QWEN3_DENSE_REFERENCE_PROFILE, 0);
+        let op_kinds: Vec<Qwen3DenseReferenceLayerOpKind> =
+            graph.ops.iter().map(|op| op.kind).collect();
         assert_eq!(
             op_kinds,
             vec![
-                Qwen3Dense06bLayerOpKind::RmsNorm,
-                Qwen3Dense06bLayerOpKind::QkvProjection,
-                Qwen3Dense06bLayerOpKind::Rope,
-                Qwen3Dense06bLayerOpKind::AttentionScore,
-                Qwen3Dense06bLayerOpKind::AttentionSoftmax,
-                Qwen3Dense06bLayerOpKind::AttentionValue,
-                Qwen3Dense06bLayerOpKind::OProjection,
-                Qwen3Dense06bLayerOpKind::AttentionResidualAdd,
-                Qwen3Dense06bLayerOpKind::MlpUpGateProjection,
-                Qwen3Dense06bLayerOpKind::MlpSwiGlu,
-                Qwen3Dense06bLayerOpKind::MlpDownProjection,
-                Qwen3Dense06bLayerOpKind::MlpResidualAdd,
+                Qwen3DenseReferenceLayerOpKind::RmsNorm,
+                Qwen3DenseReferenceLayerOpKind::QkvProjection,
+                Qwen3DenseReferenceLayerOpKind::Rope,
+                Qwen3DenseReferenceLayerOpKind::AttentionScore,
+                Qwen3DenseReferenceLayerOpKind::AttentionSoftmax,
+                Qwen3DenseReferenceLayerOpKind::AttentionValue,
+                Qwen3DenseReferenceLayerOpKind::OProjection,
+                Qwen3DenseReferenceLayerOpKind::AttentionResidualAdd,
+                Qwen3DenseReferenceLayerOpKind::MlpUpGateProjection,
+                Qwen3DenseReferenceLayerOpKind::MlpSwiGlu,
+                Qwen3DenseReferenceLayerOpKind::MlpDownProjection,
+                Qwen3DenseReferenceLayerOpKind::MlpResidualAdd,
             ]
         );
         assert_eq!(graph.hidden_size, 1024);
@@ -5398,16 +5410,19 @@ outputs:
         assert_eq!(graph.head_dim, 128);
         assert_eq!(graph.prefill_tokens, 128);
         assert_eq!(graph.ops[1].output_width, 4096);
-        assert_eq!(graph.ops[7].lowering, Qwen3Dense06bLoweringKind::MissingAdd);
+        assert_eq!(
+            graph.ops[7].lowering,
+            Qwen3DenseReferenceLoweringKind::MissingAdd
+        );
         assert_eq!(graph.ops[8].output_width, 6144);
         assert_eq!(
             graph.ops[8].lowering,
-            Qwen3Dense06bLoweringKind::TiledMatmul
+            Qwen3DenseReferenceLoweringKind::TiledMatmul
         );
         assert_eq!(graph.ops[9].output_width, 3072);
         assert_eq!(
             graph.ops[9].lowering,
-            Qwen3Dense06bLoweringKind::MissingSiluSwiglu
+            Qwen3DenseReferenceLoweringKind::MissingSiluSwiglu
         );
         assert!(graph.ops[6].requires_collective);
         assert!(graph.ops[10].requires_collective);
@@ -5422,7 +5437,8 @@ outputs:
         assert_eq!(summary.missing_add, 2);
         assert_eq!(summary.missing_collective, 2);
 
-        let tp_plan = tensor_parallel_plan(&topology, QWEN3_DENSE_0_6B_PROFILE).expect("tp plan");
+        let tp_plan =
+            tensor_parallel_plan(&topology, QWEN3_DENSE_REFERENCE_PROFILE).expect("tp plan");
         assert_eq!(tp_plan.len(), 8);
         for (index, shard) in tp_plan.iter().enumerate() {
             assert_eq!(shard.shard_id, index as u64);
@@ -5441,7 +5457,7 @@ outputs:
 
     #[test]
     fn tokenizer_policy_is_explicit_and_stable() {
-        let policy = tokenizer_policy(QWEN3_DENSE_0_6B_PROFILE);
+        let policy = tokenizer_policy(QWEN3_DENSE_REFERENCE_PROFILE);
         assert_eq!(policy.model_id, "Qwen/Qwen3-0.6B");
         assert_eq!(
             policy.tokenizer_family,
@@ -5587,7 +5603,7 @@ outputs:
         let parsed = parse_safetensors_metadata_json(header).expect("metadata parser");
         assert_eq!(
             parsed["model.layers.0.self_attn.q_proj.weight"].dtype,
-            Qwen3Dense06bWeightDType::BF16
+            Qwen3DenseReferenceWeightDType::BF16
         );
         assert_eq!(
             parsed["model.layers.0.self_attn.q_proj.weight"].shape,
@@ -5612,7 +5628,7 @@ outputs:
             .find(|slice| {
                 slice.layer_id == 0
                     && slice.shard_id == 3
-                    && slice.tensor_kind == Qwen3Dense06bWeightTensorKind::QProj
+                    && slice.tensor_kind == Qwen3DenseReferenceWeightTensorKind::QProj
             })
             .expect("layer0 shard3 q_proj slice");
         assert_eq!(q_proj.global_shape, vec![2048, 1024]);
@@ -5628,7 +5644,7 @@ outputs:
             .find(|slice| {
                 slice.layer_id == 0
                     && slice.shard_id == 7
-                    && slice.tensor_kind == Qwen3Dense06bWeightTensorKind::DownProj
+                    && slice.tensor_kind == Qwen3DenseReferenceWeightTensorKind::DownProj
             })
             .expect("layer0 shard7 down_proj slice");
         assert_eq!(down_proj.global_shape, vec![1024, 3072]);
@@ -5639,7 +5655,7 @@ outputs:
 
         assert_eq!(
             weight_db_key(q_proj),
-            "qwen3_dense_0_6b/layer/0/shard/3/QProj"
+            "qwen3_dense_reference/layer/0/shard/3/QProj"
         );
         let db_value = weight_db_value(q_proj).expect("db value");
         assert!(db_value.len() > 128);
@@ -5651,7 +5667,7 @@ outputs:
     #[test]
     fn weight_manifest_accepts_qwen3_14b_shape() {
         let topology = test_topology();
-        let profile = Qwen3Dense06bProfile {
+        let profile = Qwen3DenseReferenceProfile {
             vocab_size: 151_936,
             hidden_size: 5_120,
             intermediate_size: 17_408,
@@ -5686,7 +5702,7 @@ outputs:
             .find(|slice| {
                 slice.layer_id == 0
                     && slice.shard_id == 7
-                    && slice.tensor_kind == Qwen3Dense06bWeightTensorKind::QProj
+                    && slice.tensor_kind == Qwen3DenseReferenceWeightTensorKind::QProj
             })
             .expect("layer0 shard7 q_proj slice");
         assert_eq!(q_proj.global_shape, vec![5_120, 5_120]);
@@ -5701,7 +5717,7 @@ outputs:
             .find(|slice| {
                 slice.layer_id == 39
                     && slice.shard_id == 7
-                    && slice.tensor_kind == Qwen3Dense06bWeightTensorKind::DownProj
+                    && slice.tensor_kind == Qwen3DenseReferenceWeightTensorKind::DownProj
             })
             .expect("layer39 shard7 down_proj slice");
         assert_eq!(down_proj.global_shape, vec![5_120, 17_408]);
@@ -5713,7 +5729,7 @@ outputs:
 
     #[test]
     fn generic_profile_sequence_range_forward_runs_real_layers() {
-        let profile = Qwen3Dense06bProfile {
+        let profile = Qwen3DenseReferenceProfile {
             vocab_size: 8,
             hidden_size: 4,
             intermediate_size: 4,
@@ -5744,8 +5760,8 @@ outputs:
             let end = raw.len() as u64;
             tensors.insert(
                 name,
-                Qwen3Dense06bWeightTensorMetadata {
-                    dtype: Qwen3Dense06bWeightDType::F32,
+                Qwen3DenseReferenceWeightTensorMetadata {
+                    dtype: Qwen3DenseReferenceWeightDType::F32,
                     shape,
                     data_offsets: Some([start, end]),
                     source_file: Some(source_file.clone()),
@@ -5894,8 +5910,8 @@ outputs:
     }
 
     fn test_weight_metadata(
-        profile: Qwen3Dense06bProfile,
-    ) -> BTreeMap<String, Qwen3Dense06bWeightTensorMetadata> {
+        profile: Qwen3DenseReferenceProfile,
+    ) -> BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata> {
         let mut tensors = BTreeMap::new();
         for layer_id in 0..profile.num_hidden_layers {
             let layer_prefix = format!("model.layers.{layer_id}");
@@ -5960,8 +5976,8 @@ outputs:
             for (name, shape) in entries {
                 tensors.insert(
                     name,
-                    Qwen3Dense06bWeightTensorMetadata {
-                        dtype: Qwen3Dense06bWeightDType::BF16,
+                    Qwen3DenseReferenceWeightTensorMetadata {
+                        dtype: Qwen3DenseReferenceWeightDType::BF16,
                         shape,
                         data_offsets: None,
                         source_file: None,
@@ -5988,7 +6004,7 @@ outputs:
             .tensors
             .get("tensor.weight")
             .expect("tensor metadata");
-        assert_eq!(metadata.dtype, Qwen3Dense06bWeightDType::U8);
+        assert_eq!(metadata.dtype, Qwen3DenseReferenceWeightDType::U8);
         assert_eq!(metadata.shape, vec![2, 4]);
         assert_eq!(metadata.data_offsets, Some([0, 8]));
         assert!(metadata
@@ -5997,19 +6013,19 @@ outputs:
             .unwrap()
             .ends_with(".safetensors"));
 
-        let axis0 = Qwen3Dense06bWeightSlice {
+        let axis0 = Qwen3DenseReferenceWeightSlice {
             layer_id: 0,
             shard_id: 0,
-            tensor_kind: Qwen3Dense06bWeightTensorKind::QProj,
+            tensor_kind: Qwen3DenseReferenceWeightTensorKind::QProj,
             tensor_name: "tensor.weight".to_string(),
-            dtype: Qwen3Dense06bWeightDType::U8,
+            dtype: Qwen3DenseReferenceWeightDType::U8,
             global_shape: vec![2, 4],
             slice_axis: Some(0),
             slice_start: 1,
             slice_end: 2,
             local_shape: vec![1, 4],
-            storage: Qwen3Dense06bWeightStorageRef {
-                kind: Qwen3Dense06bWeightStorageKind::Block,
+            storage: Qwen3DenseReferenceWeightStorageRef {
+                kind: Qwen3DenseReferenceWeightStorageKind::Block,
                 storage_ref: "test/axis0".to_string(),
                 segment: 1,
                 offset: 0,
@@ -6022,12 +6038,12 @@ outputs:
             vec![4, 5, 6, 7]
         );
 
-        let axis1 = Qwen3Dense06bWeightSlice {
+        let axis1 = Qwen3DenseReferenceWeightSlice {
             slice_axis: Some(1),
             slice_start: 1,
             slice_end: 3,
             local_shape: vec![2, 2],
-            storage: Qwen3Dense06bWeightStorageRef {
+            storage: Qwen3DenseReferenceWeightStorageRef {
                 storage_ref: "test/axis1".to_string(),
                 bytes: 4,
                 ..axis0.storage.clone()
@@ -6054,10 +6070,10 @@ outputs:
         let v_payload = f32_payload(&[1.0, -0.5, 0.25, -0.125]);
 
         let reference = qkv_reference_from_payloads(
-            Qwen3Dense06bWeightDType::F32,
-            Qwen3Dense06bWeightDType::F32,
-            Qwen3Dense06bWeightDType::F32,
-            Qwen3Dense06bWeightDType::F32,
+            Qwen3DenseReferenceWeightDType::F32,
+            Qwen3DenseReferenceWeightDType::F32,
+            Qwen3DenseReferenceWeightDType::F32,
+            Qwen3DenseReferenceWeightDType::F32,
             hidden_size,
             2,
             1,
@@ -6069,10 +6085,10 @@ outputs:
         )
         .expect("qkv reference");
         let values = qkv_reference_values_from_payloads(
-            Qwen3Dense06bWeightDType::F32,
-            Qwen3Dense06bWeightDType::F32,
-            Qwen3Dense06bWeightDType::F32,
-            Qwen3Dense06bWeightDType::F32,
+            Qwen3DenseReferenceWeightDType::F32,
+            Qwen3DenseReferenceWeightDType::F32,
+            Qwen3DenseReferenceWeightDType::F32,
+            Qwen3DenseReferenceWeightDType::F32,
             hidden_size,
             2,
             1,
@@ -6085,10 +6101,10 @@ outputs:
         )
         .expect("qkv reference values");
         let real_hidden_values = qkv_reference_values_from_payloads(
-            Qwen3Dense06bWeightDType::F32,
-            Qwen3Dense06bWeightDType::F32,
-            Qwen3Dense06bWeightDType::F32,
-            Qwen3Dense06bWeightDType::F32,
+            Qwen3DenseReferenceWeightDType::F32,
+            Qwen3DenseReferenceWeightDType::F32,
+            Qwen3DenseReferenceWeightDType::F32,
+            Qwen3DenseReferenceWeightDType::F32,
             hidden_size,
             2,
             1,
@@ -6154,25 +6170,25 @@ outputs:
             let v = f32_payload(&[1.0, -0.5, 0.25 + shard_id as f32, -0.125]);
             for (kind, name_suffix, shape, payload) in [
                 (
-                    Qwen3Dense06bWeightTensorKind::InputLayerNorm,
+                    Qwen3DenseReferenceWeightTensorKind::InputLayerNorm,
                     "input_layernorm",
                     vec![4],
                     norm,
                 ),
                 (
-                    Qwen3Dense06bWeightTensorKind::QProj,
+                    Qwen3DenseReferenceWeightTensorKind::QProj,
                     "q_proj",
                     vec![2, 4],
                     q,
                 ),
                 (
-                    Qwen3Dense06bWeightTensorKind::KProj,
+                    Qwen3DenseReferenceWeightTensorKind::KProj,
                     "k_proj",
                     vec![1, 4],
                     k,
                 ),
                 (
-                    Qwen3Dense06bWeightTensorKind::VProj,
+                    Qwen3DenseReferenceWeightTensorKind::VProj,
                     "v_proj",
                     vec![1, 4],
                     v,
@@ -6184,27 +6200,27 @@ outputs:
                 let end = raw.len() as u64;
                 tensors.insert(
                     tensor_name.clone(),
-                    Qwen3Dense06bWeightTensorMetadata {
-                        dtype: Qwen3Dense06bWeightDType::F32,
+                    Qwen3DenseReferenceWeightTensorMetadata {
+                        dtype: Qwen3DenseReferenceWeightDType::F32,
                         shape: shape.clone(),
                         data_offsets: Some([start, end]),
                         source_file: Some(path.to_string_lossy().to_string()),
                         data_base_offset: 0,
                     },
                 );
-                slices.push(Qwen3Dense06bWeightSlice {
+                slices.push(Qwen3DenseReferenceWeightSlice {
                     layer_id: 0,
                     shard_id,
                     tensor_kind: kind,
                     tensor_name,
-                    dtype: Qwen3Dense06bWeightDType::F32,
+                    dtype: Qwen3DenseReferenceWeightDType::F32,
                     global_shape: shape.clone(),
                     slice_axis: None,
                     slice_start: 0,
                     slice_end: shape[0],
                     local_shape: shape,
-                    storage: Qwen3Dense06bWeightStorageRef {
-                        kind: Qwen3Dense06bWeightStorageKind::Block,
+                    storage: Qwen3DenseReferenceWeightStorageRef {
+                        kind: Qwen3DenseReferenceWeightStorageKind::Block,
                         storage_ref: format!("test/shard{shard_id}/{kind:?}"),
                         segment: 0,
                         offset: start,
@@ -6215,11 +6231,11 @@ outputs:
             }
         }
         std::fs::write(&path, raw).expect("write test raw weights");
-        let manifest = Qwen3Dense06bWeightManifest {
+        let manifest = Qwen3DenseReferenceWeightManifest {
             model_id: "Qwen/Qwen3-0.6B".to_string(),
             source: path.to_string_lossy().to_string(),
             format: "test-raw".to_string(),
-            profile: Qwen3Dense06bWeightManifestProfile {
+            profile: Qwen3DenseReferenceWeightManifestProfile {
                 hidden_size: 4,
                 intermediate_size: 8,
                 num_hidden_layers: 1,
@@ -6270,7 +6286,7 @@ outputs:
         assert_eq!(summary.shards[0].weight_slices.len(), 4);
         assert_eq!(
             summary.shards[0].weight_slices[1].kind,
-            Qwen3Dense06bWeightTensorKind::QProj
+            Qwen3DenseReferenceWeightTensorKind::QProj
         );
 
         let _ = std::fs::remove_file(path);
@@ -6322,19 +6338,19 @@ outputs:
             ]);
             for (kind, name_suffix, shape, payload) in [
                 (
-                    Qwen3Dense06bWeightTensorKind::GateProj,
+                    Qwen3DenseReferenceWeightTensorKind::GateProj,
                     "gate_proj",
                     vec![2, 4],
                     gate,
                 ),
                 (
-                    Qwen3Dense06bWeightTensorKind::UpProj,
+                    Qwen3DenseReferenceWeightTensorKind::UpProj,
                     "up_proj",
                     vec![2, 4],
                     up,
                 ),
                 (
-                    Qwen3Dense06bWeightTensorKind::DownProj,
+                    Qwen3DenseReferenceWeightTensorKind::DownProj,
                     "down_proj",
                     vec![4, 2],
                     down,
@@ -6346,27 +6362,27 @@ outputs:
                 let end = raw.len() as u64;
                 tensors.insert(
                     tensor_name.clone(),
-                    Qwen3Dense06bWeightTensorMetadata {
-                        dtype: Qwen3Dense06bWeightDType::F32,
+                    Qwen3DenseReferenceWeightTensorMetadata {
+                        dtype: Qwen3DenseReferenceWeightDType::F32,
                         shape: shape.clone(),
                         data_offsets: Some([start, end]),
                         source_file: Some(path.to_string_lossy().to_string()),
                         data_base_offset: 0,
                     },
                 );
-                slices.push(Qwen3Dense06bWeightSlice {
+                slices.push(Qwen3DenseReferenceWeightSlice {
                     layer_id: 0,
                     shard_id,
                     tensor_kind: kind,
                     tensor_name,
-                    dtype: Qwen3Dense06bWeightDType::F32,
+                    dtype: Qwen3DenseReferenceWeightDType::F32,
                     global_shape: shape.clone(),
                     slice_axis: None,
                     slice_start: 0,
                     slice_end: shape[0],
                     local_shape: shape,
-                    storage: Qwen3Dense06bWeightStorageRef {
-                        kind: Qwen3Dense06bWeightStorageKind::Block,
+                    storage: Qwen3DenseReferenceWeightStorageRef {
+                        kind: Qwen3DenseReferenceWeightStorageKind::Block,
                         storage_ref: format!("test/shard{shard_id}/{kind:?}"),
                         segment: 0,
                         offset: start,
@@ -6377,11 +6393,11 @@ outputs:
             }
         }
         std::fs::write(&path, raw).expect("write test raw MLP weights");
-        let manifest = Qwen3Dense06bWeightManifest {
+        let manifest = Qwen3DenseReferenceWeightManifest {
             model_id: "Qwen/Qwen3-0.6B".to_string(),
             source: path.to_string_lossy().to_string(),
             format: "test-raw".to_string(),
-            profile: Qwen3Dense06bWeightManifestProfile {
+            profile: Qwen3DenseReferenceWeightManifestProfile {
                 hidden_size: 4,
                 intermediate_size: 4,
                 num_hidden_layers: 1,
@@ -6414,7 +6430,7 @@ outputs:
         assert_eq!(summary.shards[0].weight_slices.len(), 3);
         assert_eq!(
             summary.shards[0].weight_slices[2].kind,
-            Qwen3Dense06bWeightTensorKind::DownProj
+            Qwen3DenseReferenceWeightTensorKind::DownProj
         );
         assert_ne!(
             real_hidden_summary.shards[0].activation_checksum,
@@ -6451,7 +6467,7 @@ outputs:
                 .expect("system time")
                 .as_nanos()
         ));
-        let hidden_size = QWEN3_DENSE_0_6B_PROFILE.hidden_size as usize;
+        let hidden_size = QWEN3_DENSE_REFERENCE_PROFILE.hidden_size as usize;
         let mut raw = Vec::new();
         let norm_offset = raw.len() as u64;
         raw.extend_from_slice(&f32_payload(&vec![1.0; hidden_size]));
@@ -6466,9 +6482,9 @@ outputs:
         let mut tensors = BTreeMap::new();
         tensors.insert(
             "model.norm.weight".to_string(),
-            Qwen3Dense06bWeightTensorMetadata {
-                dtype: Qwen3Dense06bWeightDType::F32,
-                shape: vec![QWEN3_DENSE_0_6B_PROFILE.hidden_size],
+            Qwen3DenseReferenceWeightTensorMetadata {
+                dtype: Qwen3DenseReferenceWeightDType::F32,
+                shape: vec![QWEN3_DENSE_REFERENCE_PROFILE.hidden_size],
                 data_offsets: Some([norm_offset, norm_end]),
                 source_file: Some(source_file.clone()),
                 data_base_offset: 0,
@@ -6476,17 +6492,17 @@ outputs:
         );
         tensors.insert(
             "lm_head.weight".to_string(),
-            Qwen3Dense06bWeightTensorMetadata {
-                dtype: Qwen3Dense06bWeightDType::F32,
+            Qwen3DenseReferenceWeightTensorMetadata {
+                dtype: Qwen3DenseReferenceWeightDType::F32,
                 shape: vec![
-                    QWEN3_DENSE_0_6B_PROFILE.vocab_size,
-                    QWEN3_DENSE_0_6B_PROFILE.hidden_size,
+                    QWEN3_DENSE_REFERENCE_PROFILE.vocab_size,
+                    QWEN3_DENSE_REFERENCE_PROFILE.hidden_size,
                 ],
                 data_offsets: Some([
                     lm_offset,
                     lm_offset
-                        + QWEN3_DENSE_0_6B_PROFILE.vocab_size
-                            * QWEN3_DENSE_0_6B_PROFILE.hidden_size
+                        + QWEN3_DENSE_REFERENCE_PROFILE.vocab_size
+                            * QWEN3_DENSE_REFERENCE_PROFILE.hidden_size
                             * 4,
                 ]),
                 source_file: Some(source_file),
@@ -6500,8 +6516,11 @@ outputs:
         let real_hidden_summary =
             logits_reference_summary_with_hidden(&tensors, &[(0, 0), (1, 2)], Some(&real_hidden))
                 .expect("logits reference with real hidden");
-        assert_eq!(summary.vocab_size, QWEN3_DENSE_0_6B_PROFILE.vocab_size);
-        assert_eq!(summary.hidden_size, QWEN3_DENSE_0_6B_PROFILE.hidden_size);
+        assert_eq!(summary.vocab_size, QWEN3_DENSE_REFERENCE_PROFILE.vocab_size);
+        assert_eq!(
+            summary.hidden_size,
+            QWEN3_DENSE_REFERENCE_PROFILE.hidden_size
+        );
         assert_eq!(summary.final_norm_bytes, (hidden_size * 4) as u64);
         assert_eq!(summary.token_count, 2);
         assert_eq!(summary.tokens.len(), 2);
@@ -6542,7 +6561,7 @@ outputs:
                 .expect("system time")
                 .as_nanos()
         ));
-        let hidden_size = QWEN3_DENSE_0_6B_PROFILE.hidden_size as usize;
+        let hidden_size = QWEN3_DENSE_REFERENCE_PROFILE.hidden_size as usize;
         let mut raw = Vec::new();
         let embedding_offset = raw.len() as u64;
         raw.extend_from_slice(&f32_payload(&vec![0.125; hidden_size]));
@@ -6553,17 +6572,17 @@ outputs:
         let mut tensors = BTreeMap::new();
         tensors.insert(
             "model.embed_tokens.weight".to_string(),
-            Qwen3Dense06bWeightTensorMetadata {
-                dtype: Qwen3Dense06bWeightDType::F32,
+            Qwen3DenseReferenceWeightTensorMetadata {
+                dtype: Qwen3DenseReferenceWeightDType::F32,
                 shape: vec![
-                    QWEN3_DENSE_0_6B_PROFILE.vocab_size,
-                    QWEN3_DENSE_0_6B_PROFILE.hidden_size,
+                    QWEN3_DENSE_REFERENCE_PROFILE.vocab_size,
+                    QWEN3_DENSE_REFERENCE_PROFILE.hidden_size,
                 ],
                 data_offsets: Some([
                     embedding_offset,
                     embedding_offset
-                        + QWEN3_DENSE_0_6B_PROFILE.vocab_size
-                            * QWEN3_DENSE_0_6B_PROFILE.hidden_size
+                        + QWEN3_DENSE_REFERENCE_PROFILE.vocab_size
+                            * QWEN3_DENSE_REFERENCE_PROFILE.hidden_size
                             * 4,
                 ]),
                 source_file: Some(path.to_string_lossy().to_string()),
@@ -6572,8 +6591,11 @@ outputs:
         );
 
         let summary = embedding_reference_summary(&tensors, &[0, 2]).expect("embedding reference");
-        assert_eq!(summary.vocab_size, QWEN3_DENSE_0_6B_PROFILE.vocab_size);
-        assert_eq!(summary.hidden_size, QWEN3_DENSE_0_6B_PROFILE.hidden_size);
+        assert_eq!(summary.vocab_size, QWEN3_DENSE_REFERENCE_PROFILE.vocab_size);
+        assert_eq!(
+            summary.hidden_size,
+            QWEN3_DENSE_REFERENCE_PROFILE.hidden_size
+        );
         assert_eq!(summary.token_count, 2);
         assert_eq!(summary.tokens.len(), 2);
         assert_eq!(summary.row_byte_count, (hidden_size * 4 * 2) as u64);
@@ -6598,7 +6620,7 @@ outputs:
     #[test]
     fn real_inference_reference_runs_real_layer_stack_full_vocab_and_text_when_assets_are_available(
     ) {
-        let Ok(weights_path) = std::env::var("SIM_QWEN3_0_6B_WEIGHTS_PATH") else {
+        let Ok(weights_path) = std::env::var("SIM_QWEN3_DENSE_WEIGHTS_PATH") else {
             return;
         };
         let tokenizer_path = Path::new(&weights_path);
@@ -6617,28 +6639,28 @@ outputs:
 
         assert_eq!(
             reference.forward.layer_count,
-            QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers
+            QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers
         );
         assert_eq!(
             reference.forward.layers.len(),
-            QWEN3_DENSE_0_6B_PROFILE.num_hidden_layers as usize
+            QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers as usize
         );
         assert_eq!(
             reference.forward.final_hidden.len(),
-            QWEN3_DENSE_0_6B_PROFILE.hidden_size as usize
+            QWEN3_DENSE_REFERENCE_PROFILE.hidden_size as usize
         );
         assert_ne!(reference.forward.final_hidden_checksum, 0);
         assert_eq!(
             reference.logits.checked_token_count,
-            QWEN3_DENSE_0_6B_PROFILE.vocab_size
+            QWEN3_DENSE_REFERENCE_PROFILE.vocab_size
         );
         assert_eq!(
             reference.logits.vocab_size,
-            QWEN3_DENSE_0_6B_PROFILE.vocab_size
+            QWEN3_DENSE_REFERENCE_PROFILE.vocab_size
         );
         assert_ne!(reference.logits.final_norm_checksum, 0);
         assert_ne!(reference.logits.logits_checksum, 0);
-        assert!(reference.logits.top_token_id < QWEN3_DENSE_0_6B_PROFILE.vocab_size);
+        assert!(reference.logits.top_token_id < QWEN3_DENSE_REFERENCE_PROFILE.vocab_size);
         assert_ne!(
             reference.logits.top_token_id,
             reference.logits.runner_up_token_id
@@ -6672,7 +6694,7 @@ outputs:
 
     #[test]
     fn incremental_kv_cache_forward_matches_full_forward_when_assets_are_available() {
-        let Ok(weights_path) = std::env::var("SIM_QWEN3_0_6B_WEIGHTS_PATH") else {
+        let Ok(weights_path) = std::env::var("SIM_QWEN3_DENSE_WEIGHTS_PATH") else {
             return;
         };
         let tokenizer_path = Path::new(&weights_path);

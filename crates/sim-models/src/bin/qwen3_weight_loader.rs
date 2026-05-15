@@ -7,7 +7,7 @@ use sim_models::qwen3_dense::{
     QWEN3_DENSE_DEFAULT_DECODE_TOKENS, QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
     QWEN3_DENSE_DEFAULT_TP_NODES,
 };
-use sim_models::qwen3_dense_0_6b::{
+use sim_models::qwen3_dense_reference::{
     load_safetensors_path_metadata, logits_reference_summary, materialize_weight_slice_payload,
     profile_from_dense_profile, qkv_reference_layer_summary, tensor_parallel_plan,
     weight_manifest_from_metadata_for_model, weight_service_load_plan,

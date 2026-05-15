@@ -52,14 +52,14 @@ log() {
 }
 
 validate_qwen3_weights_path() {
-  if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" != "qwen3_dense_0_6b" && "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" != "qwen3_dense" ]]; then
+  if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" != "qwen3_dense_reference" && "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" != "qwen3_dense" ]]; then
     return 0
   fi
-  local weights_path="${SIM_QWEN3_DENSE_WEIGHTS_PATH:-${SIM_QWEN3_0_6B_WEIGHTS_PATH:-}}"
+  local weights_path="${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}"
   local required
 
   if [[ -z "$weights_path" ]]; then
-    echo "[headless8] $SIM_UAPI_W4_CHIPBACKEND_PROFILE requires SIM_QWEN3_DENSE_WEIGHTS_PATH or SIM_QWEN3_0_6B_WEIGHTS_PATH" >&2
+    echo "[headless8] $SIM_UAPI_W4_CHIPBACKEND_PROFILE requires SIM_QWEN3_DENSE_WEIGHTS_PATH" >&2
     return 1
   fi
   if [[ ! -d "$weights_path" ]]; then
@@ -175,7 +175,8 @@ start_node() {
     SIM_QWEN3_DENSE_TP_NODES="${SIM_QWEN3_DENSE_TP_NODES:-}" \
     SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES="${SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES:-}" \
     SIM_QWEN3_DENSE_KV_STATE_BYTES="${SIM_QWEN3_DENSE_KV_STATE_BYTES:-}" \
-    SIM_QWEN3_0_6B_WEIGHTS_PATH="${SIM_QWEN3_0_6B_WEIGHTS_PATH:-}" \
+    SIM_QWEN3_DENSE_WEIGHTS_PATH="${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}" \
+    SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS="${SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS:-}" \
     SIM_UAPI_SCENARIO_CONFIG="$SIM_UAPI_SCENARIO_CONFIG" \
     XDG_RUNTIME_DIR="$UB_QEMU_RUNTIME_DIR" \
     "$QEMU_BIN" \
@@ -204,7 +205,7 @@ mkdir -p "$OUT_DIR" "$LOG_DIR/${RUN_ID}_headless8" "$QMP_DIR" "$SERIAL_DIR" "$MO
 touch "$CONTROL_LOG"
 validate_qwen3_weights_path
 qwen3_dense_apply_config_env
-if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_0_6b" || "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense" ]]; then
+if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_reference" || "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense" ]]; then
   log "qwen3_dense_profile=$SIM_UAPI_W4_CHIPBACKEND_PROFILE model_id=${SIM_QWEN3_DENSE_MODEL_ID:-} model_key=${SIM_QWEN3_DENSE_MODEL_KEY:-} layers=${SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS:-} hidden_range_bytes=${SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES:-}"
 fi
 
@@ -256,10 +257,11 @@ log "qemu_smp=$QEMU_SMP"
 log "topology=$TOPOLOGY_FILE"
 log "append_extra=$APPEND_EXTRA"
 log "ub_sim_port_num=$PORT_NUM"
-if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_0_6b" || "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense" ]]; then
-  log "qwen3_weights_path=${SIM_QWEN3_DENSE_WEIGHTS_PATH:-${SIM_QWEN3_0_6B_WEIGHTS_PATH:-}}"
+if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_reference" || "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense" ]]; then
+  log "qwen3_weights_path=${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}"
   log "qwen3_model_id=${SIM_QWEN3_DENSE_MODEL_ID:-}"
   log "qwen3_model_key=${SIM_QWEN3_DENSE_MODEL_KEY:-}"
+  log "qwen3_decode_round_barrier_timeout_ms=${SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS:-}"
 fi
 log "logs_dir=$(dirname "$CONTROL_LOG")"
 

@@ -22,7 +22,7 @@ APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 QEMU_MEM="${QEMU_MEM:-8G}"
 PORT_NUM="${UB_SIM_PORT_NUM:-7}"
 SIMPLER_HOST_MATMUL_MANIFEST="${SIMPLER_HOST_MATMUL_MANIFEST:-/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json}"
-SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-qwen3_dense_0_6b}"
+SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-qwen3_dense_reference}"
 SIM_QWEN3_GUEST_DECODE_STEPS="${SIM_QWEN3_GUEST_DECODE_STEPS:-1}"
 SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS="${SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS:-9707,1207,16948,18}"
 SIM_QWEN3_GUEST_ENGRAM="${SIM_QWEN3_GUEST_ENGRAM:-0}"
@@ -31,6 +31,7 @@ SIM_QWEN3_GUEST_ENGRAM_NO_REPEAT_NGRAM_SIZE="${SIM_QWEN3_GUEST_ENGRAM_NO_REPEAT_
 SIM_QWEN3_GUEST_ENGRAM_REPETITION_PENALTY_MILLI="${SIM_QWEN3_GUEST_ENGRAM_REPETITION_PENALTY_MILLI:-1000}"
 SIM_QWEN3_GUEST_ENGRAM_HISTORY_WINDOW="${SIM_QWEN3_GUEST_ENGRAM_HISTORY_WINDOW:-0}"
 SIM_QWEN3_GUEST_ENGRAM_BLOCK_TOKEN_IDS="${SIM_QWEN3_GUEST_ENGRAM_BLOCK_TOKEN_IDS:-}"
+SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS="${SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS:-}"
 SIM_W4_UAPI_COMPLETION_TIMEOUT_MS="${SIM_W4_UAPI_COMPLETION_TIMEOUT_MS:-900000}"
 SIM_W4_RESOURCE_ASSERTIONS="${SIM_W4_RESOURCE_ASSERTIONS:-0}"
 FATAL_GUEST_PATTERN="rcu_preempt|RCU grace-period|self-detected stall|detected stalls on CPUs/tasks|rx msg plen invalid|poller rx msg failed, ret=-22|timeout waiting completions|qwen3 .*missing|qwen3 .*mismatch|\\[w4_guest\\] fail"
@@ -62,18 +63,18 @@ trace() {
 
 is_qwen3_dense_profile() {
   local profile="$1"
-  [[ "$profile" == "qwen3_dense_0_6b" || "$profile" == "qwen3_dense" ]]
+  [[ "$profile" == "qwen3_dense_reference" || "$profile" == "qwen3_dense" ]]
 }
 
 validate_qwen3_weights_path() {
   if ! is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
     return 0
   fi
-  local weights_path="${SIM_QWEN3_DENSE_WEIGHTS_PATH:-${SIM_QWEN3_0_6B_WEIGHTS_PATH:-}}"
+  local weights_path="${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}"
   local required
 
   if [[ -z "$weights_path" ]]; then
-    trace "FAIL: $SIM_UAPI_W4_CHIPBACKEND_PROFILE requires SIM_QWEN3_DENSE_WEIGHTS_PATH or SIM_QWEN3_0_6B_WEIGHTS_PATH"
+    trace "FAIL: $SIM_UAPI_W4_CHIPBACKEND_PROFILE requires SIM_QWEN3_DENSE_WEIGHTS_PATH"
     return 1
   fi
   if [[ ! -d "$weights_path" ]]; then
@@ -405,6 +406,7 @@ export SIM_QWEN3_GUEST_ENGRAM_NO_REPEAT_NGRAM_SIZE="$SIM_QWEN3_GUEST_ENGRAM_NO_R
 export SIM_QWEN3_GUEST_ENGRAM_REPETITION_PENALTY_MILLI="$SIM_QWEN3_GUEST_ENGRAM_REPETITION_PENALTY_MILLI"
 export SIM_QWEN3_GUEST_ENGRAM_HISTORY_WINDOW="$SIM_QWEN3_GUEST_ENGRAM_HISTORY_WINDOW"
 export SIM_QWEN3_GUEST_ENGRAM_BLOCK_TOKEN_IDS="$SIM_QWEN3_GUEST_ENGRAM_BLOCK_TOKEN_IDS"
+export SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS="$SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS"
 export SIM_W4_UAPI_COMPLETION_TIMEOUT_MS="$SIM_W4_UAPI_COMPLETION_TIMEOUT_MS"
 export SIM_W4_RESOURCE_ASSERTIONS="$SIM_W4_RESOURCE_ASSERTIONS"
 
@@ -556,7 +558,7 @@ validate_node_log() {
     assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_forward_only object=range_hidden publish=0 resolve_remote=0 compute=0 storage=obmm_object metadata=db status=ok" "$node_id qwen3 range-only flow" || return 1
     if (( idx == 8 )); then
       assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_logits_sampling_table entries=[12] entry_words=(20|45) table_bytes=(160|360|720) vocab=[1-9][0-9]* sampled_distinct=[12] logits_checksum_nonzero=[12] text_checksum_nonzero=[12] real_logits=[01] status=ok" "$node_id qwen3 logits sampling table" || return 1
-      assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_token_text_table entries=[12] entry_words=8 table_bytes=(64|128) total_bytes=[1-9][0-9]* piece_bytes=9 policy_kind=[12] policy_hash=0x[0-9a-f]+ packed_matches=[12] checksum_matches=[12] boundary_first=1 boundary_last=1 status=ok" "$node_id qwen3 token text table" || return 1
+      assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_token_text_table entries=[12] entry_words=8 table_bytes=(64|128) total_bytes=[1-9][0-9]* piece_bytes=9 policy_kind=2 policy_hash=0x[0-9a-f]+ packed_matches=[12] checksum_matches=[12] boundary_first=1 boundary_last=1 status=ok" "$node_id qwen3 token text table" || return 1
     else
       assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_logits_sampling_table node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) terminal_owner=0 status=skipped" "$node_id qwen3 logits sampling table skipped" || return 1
       assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_token_text_table node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) terminal_owner=0 status=skipped" "$node_id qwen3 token text table skipped" || return 1
@@ -640,7 +642,11 @@ prepare_environment() {
   validate_qwen3_weights_path || return 1
   qwen3_dense_apply_config_env
   if is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+    if [[ -z "$SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS" ]]; then
+      SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS="$((DEMO_WAIT_SECS * 1000))"
+    fi
     trace "prepare: qwen3 dense profile=$SIM_UAPI_W4_CHIPBACKEND_PROFILE model_id=${SIM_QWEN3_DENSE_MODEL_ID:-} model_key=${SIM_QWEN3_DENSE_MODEL_KEY:-} layers=${SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS:-} hidden_range_bytes=${SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES:-}"
+    trace "prepare: qwen3 decode round barrier timeout ms=$SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS"
   fi
   build_w4_initramfs
   trace "prepare: launch headless env run_id=$RUN_ID_BASE"
@@ -664,7 +670,8 @@ prepare_environment() {
     SIM_QWEN3_DENSE_TP_NODES="${SIM_QWEN3_DENSE_TP_NODES:-}" \
     SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES="${SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES:-}" \
     SIM_QWEN3_DENSE_KV_STATE_BYTES="${SIM_QWEN3_DENSE_KV_STATE_BYTES:-}" \
-    SIM_QWEN3_0_6B_WEIGHTS_PATH="${SIM_QWEN3_0_6B_WEIGHTS_PATH:-}" \
+    SIM_QWEN3_DENSE_WEIGHTS_PATH="${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}" \
+    SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS="$SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS" \
     "$SCRIPT_DIR/launch_ub_eight_node_headless.sh" >/dev/null
   if [[ ! -f "$env_file" ]]; then
     trace "FAIL: headless env file was not created path=$env_file"

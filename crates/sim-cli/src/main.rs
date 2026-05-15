@@ -6,12 +6,12 @@ use sim_core::{
     SegmentHandle, SimEvent, TaskKey,
 };
 use sim_models::qwen3_dense::{
-    hidden_range_bytes, is_qwen3_dense_0_6b_shape, kv_state_bytes_for_layer_count,
+    hidden_range_bytes, is_qwen3_dense_reference_shape, kv_state_bytes_for_layer_count,
     model_key as qwen3_dense_model_key, profile_from_weights_dir, Qwen3DenseProfile,
     QWEN3_DENSE_DEFAULT_DECODE_TOKENS, QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
     QWEN3_DENSE_DEFAULT_TP_NODES,
 };
-use sim_models::qwen3_dense_0_6b::{
+use sim_models::qwen3_dense_reference::{
     token_piece_bytes_from_tokenizer_path, token_piece_decode_bytes,
     tokenize_prompt_from_tokenizer_path,
 };
@@ -40,9 +40,9 @@ use sim_services::{
 };
 use sim_topology::SimTopology;
 use sim_uapi::{
-    qwen3_dense_0_6b_decode_loop_report, qwen3_dense_0_6b_decode_loop_report_with_prompt,
-    qwen3_dense_0_6b_default_guest_input, qwen3_dense_0_6b_prefill_text_output_report,
-    qwen3_dense_0_6b_range_forward_report_with_prompt, LocalGuestUapiSurface, UapiCommand,
+    qwen3_dense_reference_decode_loop_report, qwen3_dense_reference_decode_loop_report_with_prompt,
+    qwen3_dense_reference_default_guest_input, qwen3_dense_reference_prefill_text_output_report,
+    qwen3_dense_reference_range_forward_report_with_prompt, LocalGuestUapiSurface, UapiCommand,
     UapiDescriptor, UapiResponse,
 };
 use sim_workloads::{run_host_vector_dispatch, run_minimal_workload};
@@ -831,7 +831,7 @@ fn run_lingqu_object_service_cli() -> anyhow::Result<()> {
     let mut service = LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
     publish_lingqu_object_cli_sample(
         &mut service,
-        "qwen3/model/Qwen3-0.6B/layer/00/q_proj/shard/0",
+        "qwen3/model/reference/layer/00/q_proj/shard/0",
         LingquObjectKind::WeightShard,
         LingquPayloadBackend::Block,
         4096,
@@ -858,7 +858,7 @@ fn run_lingqu_object_service_cli() -> anyhow::Result<()> {
     )?;
     resolve_lingqu_object_cli_sample(
         &mut service,
-        "qwen3/model/Qwen3-0.6B/layer/00/q_proj/shard/0",
+        "qwen3/model/reference/layer/00/q_proj/shard/0",
         &[LingquPayloadBackend::Block],
         3,
     )?;
@@ -998,10 +998,9 @@ mod tests {
         qwen3_guest_log_dir_from_script_output, qwen3_guest_log_match_count,
         qwen3_guest_terminal_candidate_records, qwen3_guest_terminal_text_lossy_from_tokenizer,
         qwen3_guest_terminal_tokens, qwen3_guest_timing_summary, qwen3_range_forward_args_from,
-        simpler_host_matmul_artifact_producer_path, validate_qwen3_0_6b_weights_path,
-        validate_qwen3_dense_weights_path, Qwen3CandidateRecord, Qwen3DecodeReportVerbosity,
-        Qwen3EngramConfig, Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport,
-        Qwen3GuestDecodeLoopCliArgs,
+        simpler_host_matmul_artifact_producer_path, validate_qwen3_dense_weights_path,
+        Qwen3CandidateRecord, Qwen3DecodeReportVerbosity, Qwen3EngramConfig, Qwen3EngramMode,
+        Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
     };
     use std::env;
     use std::fs;
@@ -1132,8 +1131,8 @@ mod tests {
             "guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh",
             "--matmul-batch=16",
             "--model",
-            "Qwen/Qwen3-0.6B",
-            "--weights-path=/models/qwen3-0.6b",
+            "Qwen/Qwen3-14B",
+            "--weights-path=/models/qwen3-14b",
         ])
         .expect("parse guest decode loop args")
         .expect("guest decode loop args");
@@ -1148,8 +1147,8 @@ mod tests {
             PathBuf::from("guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh")
         );
         assert_eq!(args.matmul_batch, Some(16));
-        assert_eq!(args.model.as_deref(), Some("Qwen/Qwen3-0.6B"));
-        assert_eq!(args.weights_path, Some(PathBuf::from("/models/qwen3-0.6b")));
+        assert_eq!(args.model.as_deref(), Some("Qwen/Qwen3-14B"));
+        assert_eq!(args.weights_path, Some(PathBuf::from("/models/qwen3-14b")));
         assert_eq!(args.engram, Qwen3EngramConfig::default());
     }
 
@@ -1249,14 +1248,20 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("temp qwen3 weights dir");
 
-        let err = validate_qwen3_0_6b_weights_path(&dir)
+        let err = validate_qwen3_dense_weights_path(&dir)
             .expect_err("empty weights dir should be rejected");
+        assert!(err.to_string().contains("config.json"));
+
+        fs::write(dir.join("config.json"), b"{}").expect("write config");
+        fs::write(dir.join("tokenizer.json"), b"{}").expect("write tokenizer");
+        let err = validate_qwen3_dense_weights_path(&dir)
+            .expect_err("weights dir without tensor assets should be rejected");
         assert!(err.to_string().contains("model.safetensors"));
 
-        for file in ["model.safetensors", "config.json", "tokenizer.json"] {
+        for file in ["model.safetensors"] {
             fs::write(dir.join(file), b"stub").expect("write required qwen3 asset");
         }
-        validate_qwen3_0_6b_weights_path(&dir).expect("required qwen3 assets should pass");
+        validate_qwen3_dense_weights_path(&dir).expect("required qwen3 assets should pass");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1278,9 +1283,9 @@ mod tests {
     }
 
     #[test]
-    fn qwen3_guest_dense_runtime_accepts_0_6b_profile() {
+    fn qwen3_guest_dense_runtime_accepts_reference_profile() {
         let dir = env::temp_dir().join(format!(
-            "sim_cli_qwen3_guest_dense_0_6b_runtime_{}",
+            "sim_cli_qwen3_guest_dense_reference_runtime_{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&dir);
@@ -1314,17 +1319,19 @@ mod tests {
             weights_path: Some(dir.clone()),
             engram: Qwen3EngramConfig::default(),
         };
-        let runtime = qwen3_guest_dense_runtime(&args).expect("0.6B runtime");
+        let runtime = qwen3_guest_dense_runtime(&args).expect("reference runtime");
         assert_eq!(runtime.model_key, "qwen3-0-6b");
-        assert_eq!(runtime.chipbackend_profile, "qwen3_dense_0_6b");
+        assert_eq!(runtime.chipbackend_profile, "qwen3_dense_reference");
 
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn qwen3_guest_dense_runtime_detects_0_6b_shape_without_model_id() {
-        let dir =
-            env::temp_dir().join(format!("Qwen3-0.6B-sim-cli-runtime-{}", std::process::id()));
+    fn qwen3_guest_dense_runtime_detects_reference_shape_without_model_id() {
+        let dir = env::temp_dir().join(format!(
+            "Qwen3-reference-sim-cli-runtime-{}",
+            std::process::id()
+        ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("temp qwen3 runtime dir");
         fs::write(
@@ -1355,9 +1362,11 @@ mod tests {
             weights_path: Some(dir.clone()),
             engram: Qwen3EngramConfig::default(),
         };
-        let runtime = qwen3_guest_dense_runtime(&args).expect("0.6B shape runtime");
-        assert!(runtime.model_key.starts_with("qwen3-0-6b-sim-cli-runtime"));
-        assert_eq!(runtime.chipbackend_profile, "qwen3_dense_0_6b");
+        let runtime = qwen3_guest_dense_runtime(&args).expect("reference shape runtime");
+        assert!(runtime
+            .model_key
+            .starts_with("qwen3-reference-sim-cli-runtime"));
+        assert_eq!(runtime.chipbackend_profile, "qwen3_dense_reference");
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1914,13 +1923,13 @@ fn run_qwen3_decode_loop_cli(args: &Qwen3DecodeLoopCliArgs) -> anyhow::Result<()
             .unwrap_or_else(|| "default".to_string())
     );
     let report = if let Some(prompt) = args.prompt.as_deref() {
-        qwen3_dense_0_6b_decode_loop_report_with_prompt(&topology, args.step_count, prompt)
+        qwen3_dense_reference_decode_loop_report_with_prompt(&topology, args.step_count, prompt)
     } else {
-        qwen3_dense_0_6b_decode_loop_report(&topology, args.step_count)
+        qwen3_dense_reference_decode_loop_report(&topology, args.step_count)
     }
     .map_err(anyhow::Error::msg)
     .context("failed to run Qwen3 decode loop")?;
-    println!("qwen3_dense_0_6b_decode_loop");
+    println!("qwen3_dense_reference_decode_loop");
     println!("  scenario: {}", scenario_path.display());
     println!("  steps: {}", report.steps.len());
     println!(
@@ -2109,8 +2118,8 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         .env("TRACE_FILE", &trace_file)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    if runtime.chipbackend_profile == "qwen3_dense_0_6b" {
-        command.env("SIM_QWEN3_0_6B_WEIGHTS_PATH", &runtime.weights_path);
+    if runtime.chipbackend_profile == "qwen3_dense_reference" {
+        command.env("SIM_QWEN3_DENSE_WEIGHTS_PATH", &runtime.weights_path);
     }
     for (key, value) in qwen3_guest_engram_env_vars(&args.engram, engram_session_id) {
         command.env(key, value);
@@ -3609,34 +3618,13 @@ fn qwen3_payload_backend_name(backend: LingquPayloadBackend) -> &'static str {
 }
 
 fn qwen3_guest_tokenizer_path() -> Option<PathBuf> {
-    let path = env::var_os("SIM_QWEN3_DENSE_WEIGHTS_PATH")
-        .or_else(|| env::var_os("SIM_QWEN3_0_6B_WEIGHTS_PATH"))?;
+    let path = env::var_os("SIM_QWEN3_DENSE_WEIGHTS_PATH")?;
     let path = PathBuf::from(path);
     if path.join("tokenizer.json").is_file() {
         Some(path)
     } else {
         None
     }
-}
-
-fn validate_qwen3_0_6b_weights_path(path: &Path) -> anyhow::Result<()> {
-    if !path.is_dir() {
-        anyhow::bail!(
-            "SIM_QWEN3_0_6B_WEIGHTS_PATH must point to a Qwen3-0.6B directory: {}",
-            path.display()
-        );
-    }
-    for required in ["model.safetensors", "config.json", "tokenizer.json"] {
-        let candidate = path.join(required);
-        if !candidate.is_file() {
-            anyhow::bail!(
-                "SIM_QWEN3_0_6B_WEIGHTS_PATH is missing required file {} in {}",
-                required,
-                path.display()
-            );
-        }
-    }
-    Ok(())
 }
 
 fn validate_qwen3_dense_weights_path(path: &Path) -> anyhow::Result<()> {
@@ -3674,10 +3662,9 @@ fn qwen3_guest_dense_runtime(
         .weights_path
         .clone()
         .or_else(|| env::var_os("SIM_QWEN3_DENSE_WEIGHTS_PATH").map(PathBuf::from))
-        .or_else(|| env::var_os("SIM_QWEN3_0_6B_WEIGHTS_PATH").map(PathBuf::from))
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "qwen3-guest-decode-loop requires --weights-path, SIM_QWEN3_DENSE_WEIGHTS_PATH, or SIM_QWEN3_0_6B_WEIGHTS_PATH"
+                "qwen3-guest-decode-loop requires --weights-path or SIM_QWEN3_DENSE_WEIGHTS_PATH"
             )
         })?;
     validate_qwen3_dense_weights_path(&weights_path)?;
@@ -3691,8 +3678,8 @@ fn qwen3_guest_dense_runtime(
     )
     .map_err(anyhow::Error::msg)?;
     let model_key = qwen3_dense_model_key(&profile.model_id);
-    let chipbackend_profile = if is_qwen3_dense_0_6b_shape(&profile) {
-        "qwen3_dense_0_6b"
+    let chipbackend_profile = if is_qwen3_dense_reference_shape(&profile) {
+        "qwen3_dense_reference"
     } else {
         "qwen3_dense"
     };
@@ -3872,10 +3859,10 @@ fn run_qwen3_range_forward_cli(args: &Qwen3RangeForwardCliArgs) -> anyhow::Resul
         )
     })?;
     let topology = SimTopology::from_config(&config).context("failed to build topology")?;
-    let report = qwen3_dense_0_6b_range_forward_report_with_prompt(&topology, &args.prompt)
+    let report = qwen3_dense_reference_range_forward_report_with_prompt(&topology, &args.prompt)
         .map_err(anyhow::Error::msg)
         .context("failed to run Qwen3 range forward")?;
-    println!("qwen3_dense_0_6b_range_forward");
+    println!("qwen3_dense_reference_range_forward");
     println!("  scenario: {}", scenario_path.display());
     println!("  prompt_bytes: {}", args.prompt.len());
     println!(
@@ -3914,7 +3901,7 @@ fn run_qwen3_range_forward_cli(args: &Qwen3RangeForwardCliArgs) -> anyhow::Resul
     Ok(())
 }
 
-fn print_qwen3_decode_verbose_steps(steps: &[sim_uapi::Qwen3Dense06bDecodeLoopStepReport]) {
+fn print_qwen3_decode_verbose_steps(steps: &[sim_uapi::Qwen3DenseReferenceDecodeLoopStepReport]) {
     for step in steps {
         let real_logits_tokens = step
             .text_output
@@ -4362,11 +4349,11 @@ fn run_qwen3_text_output_cli(scenario_path: &Path) -> anyhow::Result<()> {
         )
     })?;
     let topology = SimTopology::from_config(&config).context("failed to build topology")?;
-    let guest_input = qwen3_dense_0_6b_default_guest_input();
-    let report = qwen3_dense_0_6b_prefill_text_output_report(&topology, &guest_input)
+    let guest_input = qwen3_dense_reference_default_guest_input();
+    let report = qwen3_dense_reference_prefill_text_output_report(&topology, &guest_input)
         .map_err(anyhow::Error::msg)
         .context("failed to run Qwen3 text output prefill")?;
-    println!("qwen3_dense_0_6b_text_output");
+    println!("qwen3_dense_reference_text_output");
     println!("  scenario: {}", scenario_path.display());
     println!("  tokens: {}", report.token_count);
     println!("  bytes: {}", report.byte_len);
