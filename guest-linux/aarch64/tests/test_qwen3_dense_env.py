@@ -24,6 +24,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "printf '%s\\n' \"$SIM_QWEN3_DENSE_MODEL_KEY\"\n"
                 "printf '%s\\n' \"$SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS\"\n"
                 "printf '%s\\n' \"$SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES\"\n"
+                "printf '%s\\n' \"$SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES\"\n"
                 "printf '%s\\n' \"$SIM_QWEN3_DENSE_KV_STATE_BYTES\"\n"
             )
             result = subprocess.run(
@@ -50,7 +51,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             }
         )
 
-        self.assertEqual(values, ["qwen3_dense", "qwen3-14b", "40", "1310720", "327680"])
+        self.assertEqual(values, ["qwen3_dense", "qwen3-14b", "40", "1310720", "10240", "327680"])
 
     def test_reference_config_uses_generic_profile_by_default(self):
         values = self.run_env_probe(
@@ -68,7 +69,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             }
         )
 
-        self.assertEqual(values, ["qwen3_dense", "qwen3-0-6b", "28", "262144", "229376"])
+        self.assertEqual(values, ["qwen3_dense", "qwen3-0-6b", "28", "262144", "2048", "229376"])
 
     def test_reference_profile_remains_explicit_legacy_alias_for_0_6b(self):
         values = self.run_env_probe(
@@ -88,7 +89,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         )
 
         self.assertEqual(
-            values, ["qwen3_dense_reference", "qwen3-0-6b", "28", "262144", "229376"]
+            values, ["qwen3_dense_reference", "qwen3-0-6b", "28", "262144", "2048", "229376"]
         )
 
     def test_qwen3_dense_two_step_wrapper_has_stable_defaults(self):

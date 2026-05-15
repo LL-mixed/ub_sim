@@ -122,6 +122,10 @@ hidden_range_bytes = env_int(
     "SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES",
     prefill_tokens * hidden_size * 2,
 )
+decode_hidden_bytes = env_int(
+    "SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES",
+    decode_tokens * hidden_size * 2,
+)
 kv_state_bytes = env_int(
     "SIM_QWEN3_DENSE_KV_STATE_BYTES",
     num_hidden_layers * decode_tokens * num_key_value_heads * head_dim * 2 * 4,
@@ -156,6 +160,7 @@ values = {
     "SIM_QWEN3_DENSE_DECODE_TOKENS": str(decode_tokens),
     "SIM_QWEN3_DENSE_TP_NODES": str(tp_nodes),
     "SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES": str(hidden_range_bytes),
+    "SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES": str(decode_hidden_bytes),
     "SIM_QWEN3_DENSE_KV_STATE_BYTES": str(kv_state_bytes),
 }
 for key, value in values.items():

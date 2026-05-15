@@ -853,6 +853,21 @@ static uint64_t w4_db_qwen3_hidden_range_bytes(void)
                             W4_DB_OBMM_HIDDEN_RANGE_BYTES);
 }
 
+static uint64_t w4_db_qwen3_decode_hidden_bytes(void)
+{
+    uint64_t hidden_size = w4_db_env_u64_or("SIM_QWEN3_DENSE_HIDDEN_SIZE", 1024ULL);
+    uint64_t decode_tokens = w4_db_env_u64_or("SIM_QWEN3_DENSE_DECODE_TOKENS", 1ULL);
+
+    return w4_db_env_u64_or("SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES",
+                            hidden_size * decode_tokens * 2ULL);
+}
+
+static uint64_t w4_db_qwen3_handoff_hidden_bytes(uint64_t decode_step)
+{
+    return decode_step > 0 ? w4_db_qwen3_decode_hidden_bytes() :
+                             w4_db_qwen3_hidden_range_bytes();
+}
+
 static uint64_t w4_db_qwen3_kv_heads(void)
 {
     return w4_db_env_u64_or("SIM_QWEN3_DENSE_NUM_KEY_VALUE_HEADS",
@@ -1777,9 +1792,12 @@ static bool w4_db_pending_object_desc_matches(const struct obmm_desc *desc,
 static bool w4_db_runtime_range_input_desc_matches(const struct obmm_desc *desc,
                                                   uint16_t epoch)
 {
+    uint64_t decode_step = epoch > 0 ? (uint64_t)epoch - 1ULL : 0ULL;
+    uint64_t expected_len = w4_db_qwen3_handoff_hidden_bytes(decode_step);
+
     if (!desc || desc->type != OBMM_DESC_W4_OBJECT_PUT ||
         desc->flags != W4_DB_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT ||
-        desc->payload_len != w4_db_qwen3_hidden_range_bytes()) {
+        desc->payload_len != expected_len) {
         return false;
     }
     return (uint16_t)(desc->seq >> 48) == epoch;
@@ -4160,7 +4178,7 @@ int w4_db_obmm_service_v0_wait_runtime_range_input(uint32_t local_node,
     uint16_t expected_epoch;
     unsigned int relax_attempt = 0;
     uint32_t source_node = UINT32_MAX;
-    uint64_t hidden_range_bytes = w4_db_qwen3_hidden_range_bytes();
+    uint64_t hidden_range_bytes = w4_db_qwen3_handoff_hidden_bytes(decode_step);
 
     if (!payload_out || payload_len != hidden_range_bytes ||
         cluster_node_count != W4_DB_QWEN3_RANGE_NODES ||
@@ -4356,7 +4374,7 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
     uint16_t object_epoch;
     long producer_publish_ms;
     uint8_t *base;
-    uint64_t hidden_range_bytes = w4_db_qwen3_hidden_range_bytes();
+    uint64_t hidden_range_bytes = w4_db_qwen3_handoff_hidden_bytes(decode_step);
 
     if (!svc || !payload || payload_len != hidden_range_bytes ||
         !kv_payload || kv_payload_len == 0 ||

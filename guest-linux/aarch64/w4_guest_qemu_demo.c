@@ -461,6 +461,20 @@ static uint64_t qwen3_hidden_range_bytes(void)
                       W4_QWEN3_HIDDEN_RANGE_BYTES);
 }
 
+static uint64_t qwen3_decode_hidden_bytes(void)
+{
+    uint64_t hidden_size = env_u64_or("SIM_QWEN3_DENSE_HIDDEN_SIZE", 1024ULL);
+    uint64_t decode_tokens = env_u64_or("SIM_QWEN3_DENSE_DECODE_TOKENS", 1ULL);
+
+    return env_u64_or("SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES",
+                      hidden_size * decode_tokens * 2ULL);
+}
+
+static uint64_t qwen3_handoff_hidden_bytes(uint64_t decode_step)
+{
+    return decode_step > 0 ? qwen3_decode_hidden_bytes() : qwen3_hidden_range_bytes();
+}
+
 static bool is_qwen3_profile_name(const char *profile)
 {
     return profile &&
@@ -1089,7 +1103,8 @@ static void build_qwen3_range_dispatch_descriptor(uint8_t *slot,
                                                   uint32_t node,
                                                   uint32_t layer_start,
                                                   uint32_t layer_end,
-                                                  uint32_t next_node)
+                                                  uint32_t next_node,
+                                                  uint64_t hidden_bytes)
 {
     size_t off = 0;
 
@@ -1104,7 +1119,7 @@ static void build_qwen3_range_dispatch_descriptor(uint8_t *slot,
     write_u32_le(slot, &off, next_node);
     write_u32_le(slot, &off, (uint32_t)qwen3_pipeline_nodes());
     write_u32_le(slot, &off, (uint32_t)qwen3_total_layers());
-    write_u32_le(slot, &off, (uint32_t)qwen3_hidden_range_bytes());
+    write_u32_le(slot, &off, (uint32_t)hidden_bytes);
 }
 
 static int decode_completion_preview(const uint8_t *slot, struct completion_preview *preview)
@@ -2308,10 +2323,10 @@ static int verify_qwen3_range_completion_contract(const uint8_t *cq,
                                                   uint32_t layer_start,
                                                   uint32_t layer_end,
                                                   uint32_t next_node,
-                                                  uint32_t cluster_node_count)
+                                                  uint32_t cluster_node_count,
+                                                  uint64_t expected_hidden_bytes)
 {
     const uint64_t expected_total_layers = qwen3_total_layers();
-    const uint64_t expected_hidden_bytes = qwen3_hidden_range_bytes();
 
     for (size_t i = 0; i < slot_count; ++i) {
         const uint8_t *slot = cq + (i * CMDQ_SLOT_BYTES);
@@ -2425,6 +2440,7 @@ static int verify_qwen3_range_forward_table(volatile uint8_t *ep_mmio,
                                             uint32_t layer_end,
                                             uint32_t next_node,
                                             uint32_t cluster_node_count,
+                                            uint64_t expected_hidden_bytes,
                                             struct w4_qwen3_range_runtime_forward *runtime_out)
 {
     uint64_t table_header = 0;
@@ -2463,7 +2479,6 @@ static int verify_qwen3_range_forward_table(volatile uint8_t *ep_mmio,
     uint64_t kv_payload_checksum = 0;
     uint64_t scan_limit = qwen3_output_scan_limit(ep_mmio);
     uint64_t expected_total_layers = qwen3_total_layers();
-    uint64_t expected_hidden_bytes = qwen3_hidden_range_bytes();
     uint64_t explicit_table_header =
         read_segment_u64(ep_mmio,
                          W4_QWEN3_RESULT_BLOCK_TABLE_HEADER +
@@ -2701,6 +2716,7 @@ static int verify_dispatch_payload(volatile uint8_t *ep_mmio,
                                    const uint8_t *cq,
                                    size_t slot_count,
                                    uint64_t segment,
+                                   uint64_t expected_hidden_bytes,
                                    struct w4_qwen3_range_runtime_forward *runtime_out)
 {
     const bool qwen3_profile = is_qwen3_profile();
@@ -2827,7 +2843,8 @@ static int verify_dispatch_payload(volatile uint8_t *ep_mmio,
                                                    layer_start,
                                                    layer_end,
                                                    next_node,
-                                                   cluster_node_count) != 0) {
+                                                   cluster_node_count,
+                                                   expected_hidden_bytes) != 0) {
             return -1;
         }
         if (verify_qwen3_range_forward_table(ep_mmio,
@@ -2836,6 +2853,7 @@ static int verify_dispatch_payload(volatile uint8_t *ep_mmio,
                                              layer_end,
                                              next_node,
                                              cluster_node_count,
+                                             expected_hidden_bytes,
                                              runtime_out) != 0) {
             return -1;
         }
@@ -6088,7 +6106,8 @@ decode_round_start:
                                               dispatch_node,
                                               layer_start,
                                               layer_end,
-                                              next_node);
+                                              next_node,
+                                              qwen3_handoff_hidden_bytes(guest_decode_step));
     } else {
         printf("[w4_guest] stage uapi_chipbackend_dispatch_descriptor block=%s segment=%" PRIu64 " task_id=31\n",
                block, default_segment);
@@ -6131,7 +6150,7 @@ decode_round_start:
             goto out;
         }
         if (layer_start > 0U) {
-            uint64_t hidden_range_bytes = qwen3_hidden_range_bytes();
+            uint64_t hidden_range_bytes = qwen3_handoff_hidden_bytes(guest_decode_step);
             uint8_t *range_input_payload = NULL;
             uint64_t range_input_checksum = 0;
             uint64_t stage_start_ms = monotonic_ms();
@@ -6337,11 +6356,13 @@ decode_round_start:
                                 cq_linear,
                                 slot,
                                 default_segment,
+                                qwen3_handoff_hidden_bytes(guest_decode_step),
                                 &runtime_forward) != 0) {
         goto out;
     }
     qwen3_runtime_forward_ready =
-        is_qwen3_profile() && runtime_forward.payload_bytes == qwen3_hidden_range_bytes();
+        is_qwen3_profile() &&
+        runtime_forward.payload_bytes == qwen3_handoff_hidden_bytes(guest_decode_step);
     if (qwen3_runtime_forward_ready && enable_db_cluster && cluster_node_count == 8U) {
         uint32_t dispatch_node = 0U;
 

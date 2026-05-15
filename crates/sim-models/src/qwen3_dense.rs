@@ -199,6 +199,10 @@ pub fn hidden_range_bytes(profile: &Qwen3DenseProfile) -> u64 {
     profile.prefill_tokens * profile.hidden_size * QWEN3_DENSE_HIDDEN_ELEM_BYTES
 }
 
+pub fn decode_hidden_bytes(profile: &Qwen3DenseProfile) -> u64 {
+    profile.decode_tokens * profile.hidden_size * QWEN3_DENSE_HIDDEN_ELEM_BYTES
+}
+
 pub fn kv_state_bytes_for_layer_count(profile: &Qwen3DenseProfile, layer_count: u64) -> u64 {
     layer_count
         * profile.decode_tokens
@@ -411,6 +415,7 @@ mod tests {
         assert_eq!(profile.intermediate_size, 17408);
         assert_eq!(model_key(&profile.model_id), "qwen3-14b");
         assert_eq!(hidden_range_bytes(&profile), 1_310_720);
+        assert_eq!(decode_hidden_bytes(&profile), 10_240);
 
         let ranges = balanced_layer_ranges(&profile).expect("14B layer ranges");
         assert_eq!(ranges.len(), 8);
@@ -429,6 +434,7 @@ mod tests {
         let ranges = balanced_layer_ranges(&profile).expect("reference layer ranges");
 
         assert_eq!(hidden_range_bytes(&profile), 262_144);
+        assert_eq!(decode_hidden_bytes(&profile), 2_048);
         assert_eq!(
             ranges
                 .iter()

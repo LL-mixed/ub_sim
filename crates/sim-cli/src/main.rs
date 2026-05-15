@@ -6,9 +6,10 @@ use sim_core::{
     SegmentHandle, SimEvent, TaskKey,
 };
 use sim_models::qwen3_dense::{
-    hidden_range_bytes, kv_state_bytes_for_layer_count, model_key as qwen3_dense_model_key,
-    profile_from_weights_dir, Qwen3DenseProfile, QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
-    QWEN3_DENSE_DEFAULT_PREFILL_TOKENS, QWEN3_DENSE_DEFAULT_TP_NODES,
+    decode_hidden_bytes, hidden_range_bytes, kv_state_bytes_for_layer_count,
+    model_key as qwen3_dense_model_key, profile_from_weights_dir, Qwen3DenseProfile,
+    QWEN3_DENSE_DEFAULT_DECODE_TOKENS, QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
+    QWEN3_DENSE_DEFAULT_TP_NODES,
 };
 use sim_models::qwen3_dense_reference::{
     token_piece_bytes_from_tokenizer_path, token_piece_decode_bytes,
@@ -2015,6 +2016,10 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         "  hidden_range_bytes: {}",
         hidden_range_bytes(&runtime.profile)
     );
+    println!(
+        "  decode_hidden_bytes: {}",
+        decode_hidden_bytes(&runtime.profile)
+    );
     println!("  steps: {}", args.step_count);
     if let Some(prompt) = &args.prompt {
         println!("  prompt_bytes: {}", prompt.len());
@@ -2102,6 +2107,10 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         .env(
             "SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES",
             hidden_range_bytes(&runtime.profile).to_string(),
+        )
+        .env(
+            "SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES",
+            decode_hidden_bytes(&runtime.profile).to_string(),
         )
         .env(
             "SIM_QWEN3_DENSE_KV_STATE_BYTES",

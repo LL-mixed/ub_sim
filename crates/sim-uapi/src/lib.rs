@@ -1555,6 +1555,18 @@ fn qwen3_dense_runtime_hidden_range_bytes() -> u64 {
     qwen3_dense_env_u64("SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES", 262_144)
 }
 
+fn qwen3_dense_runtime_decode_hidden_bytes() -> u64 {
+    let hidden_size = qwen3_dense_env_u64(
+        "SIM_QWEN3_DENSE_HIDDEN_SIZE",
+        QWEN3_DENSE_REFERENCE_PROFILE.hidden_size,
+    );
+    let decode_tokens = qwen3_dense_env_u64("SIM_QWEN3_DENSE_DECODE_TOKENS", 1).max(1);
+    qwen3_dense_env_u64(
+        "SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES",
+        hidden_size * decode_tokens * 2,
+    )
+}
+
 fn qwen3_dense_runtime_kv_payload_bytes(layer_count: u64) -> u64 {
     let decode_tokens = qwen3_dense_env_u64("SIM_QWEN3_DENSE_DECODE_TOKENS", 1).max(1);
     let kv_heads = qwen3_dense_env_u64(
@@ -1641,11 +1653,12 @@ fn qwen3_dense_profile_validate_weights_if_available(topology: &SimTopology) -> 
         return Ok(());
     };
     let cache_key = format!(
-        "{}|nodes={}|layers={}|hidden_bytes={}|kv_heads={}|head_dim={}",
+        "{}|nodes={}|layers={}|hidden_bytes={}|decode_hidden_bytes={}|kv_heads={}|head_dim={}",
         weights_path,
         qwen3_dense_runtime_tp_nodes(),
         qwen3_dense_runtime_total_layers(),
         qwen3_dense_runtime_hidden_range_bytes(),
+        qwen3_dense_runtime_decode_hidden_bytes(),
         qwen3_dense_env_u64(
             "SIM_QWEN3_DENSE_NUM_KEY_VALUE_HEADS",
             QWEN3_DENSE_REFERENCE_PROFILE.num_key_value_heads,
@@ -1692,9 +1705,15 @@ fn qwen3_dense_profile_validate_weights_if_available(topology: &SimTopology) -> 
         .checked_mul(profile.hidden_size)
         .and_then(|value| value.checked_mul(2))
         .ok_or_else(|| "qwen3_dense_profile_hidden_bytes_overflow".to_string())?;
+    let expected_decode_hidden_bytes = profile
+        .decode_tokens
+        .checked_mul(profile.hidden_size)
+        .and_then(|value| value.checked_mul(2))
+        .ok_or_else(|| "qwen3_dense_profile_decode_hidden_bytes_overflow".to_string())?;
     if profile.tp_nodes != qwen3_dense_runtime_tp_nodes()
         || profile.num_hidden_layers != qwen3_dense_runtime_total_layers()
         || expected_hidden_bytes != qwen3_dense_runtime_hidden_range_bytes()
+        || expected_decode_hidden_bytes != qwen3_dense_runtime_decode_hidden_bytes()
         || profile.num_key_value_heads
             != qwen3_dense_env_u64(
                 "SIM_QWEN3_DENSE_NUM_KEY_VALUE_HEADS",
@@ -1770,7 +1789,8 @@ fn qwen3_guest_range_compute_contract(
         || contract.layer_start >= contract.layer_end
         || contract.layer_end > contract.total_layers
         || contract.hidden_bytes == 0
-        || u64::from(contract.hidden_bytes) != qwen3_dense_runtime_hidden_range_bytes()
+        || (u64::from(contract.hidden_bytes) != qwen3_dense_runtime_hidden_range_bytes()
+            && u64::from(contract.hidden_bytes) != qwen3_dense_runtime_decode_hidden_bytes())
     {
         return Err(format!(
             "qwen3_guest_range_compute_contract_invalid:node={} layers=[{},{}) next={} nodes={} total_layers={} hidden_bytes={}",
@@ -18060,7 +18080,9 @@ mod tests {
                 std::env::set_var("SIM_UAPI_W4_CHIPBACKEND_PROFILE", "qwen3_dense");
                 std::env::set_var("SIM_QWEN3_DENSE_TP_NODES", "8");
                 std::env::set_var("SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS", "40");
+                std::env::set_var("SIM_QWEN3_DENSE_HIDDEN_SIZE", "5120");
                 std::env::set_var("SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES", "1310720");
+                std::env::set_var("SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES", "10240");
                 std::env::set_var("SIM_QWEN3_DENSE_DECODE_TOKENS", "1");
                 std::env::set_var("SIM_QWEN3_DENSE_NUM_KEY_VALUE_HEADS", "8");
                 std::env::set_var("SIM_QWEN3_DENSE_HEAD_DIM", "128");
@@ -18094,6 +18116,63 @@ mod tests {
                 assert_eq!(read_u64_le_at(&output, entry_base + 112), HIDDEN_BYTES_14B);
                 assert_eq!(read_u64_le_at(&output, entry_base + 120), HIDDEN_BYTES_14B);
                 assert!(read_u64_le_at(&output, entry_base + 128) > 0);
+            },
+        );
+    }
+
+    #[test]
+    fn qwen3_dense_profile_runtime_accepts_14b_decode_handoff_contract() {
+        run_simpler_native_test_isolated(
+            "qwen3_dense_profile_runtime_accepts_14b_decode_handoff_contract",
+            || {
+                const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
+                const RANGE_FORWARD_MARKER: u64 = 0x7133773472667430;
+                const DECODE_HIDDEN_BYTES_14B: u64 = 5120 * 2;
+
+                std::env::set_var("SIM_UAPI_W4_CHIPBACKEND_PROFILE", "qwen3_dense");
+                std::env::set_var("SIM_QWEN3_DENSE_TP_NODES", "8");
+                std::env::set_var("SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS", "40");
+                std::env::set_var("SIM_QWEN3_DENSE_HIDDEN_SIZE", "5120");
+                std::env::set_var("SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES", "1310720");
+                std::env::set_var("SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES", "10240");
+                std::env::set_var("SIM_QWEN3_DENSE_DECODE_TOKENS", "1");
+                std::env::set_var("SIM_QWEN3_DENSE_NUM_KEY_VALUE_HEADS", "8");
+                std::env::set_var("SIM_QWEN3_DENSE_HEAD_DIM", "128");
+
+                let topology = test_topology();
+                let output = crate::run_w4_chipbackend(
+                    &topology,
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord {
+                            levels: [RANGE_TASK_MAGIC, 7, 35, 40, 0, 8, 40, 10_240],
+                        },
+                        scope_depth: 8,
+                        task_id: 14_001,
+                    },
+                    &[0; 1024],
+                )
+                .expect("generic qwen3 dense decode handoff runtime");
+                let table_header = output
+                    .windows(8)
+                    .position(|window: &[u8]| {
+                        u64::from_le_bytes(<[u8; 8]>::try_from(window).expect("u64 window"))
+                            == RANGE_FORWARD_MARKER
+                    })
+                    .expect("range-forward table marker");
+                let entry_base = table_header + 64;
+                assert_eq!(
+                    read_u64_le_at(&output, entry_base + 56),
+                    DECODE_HIDDEN_BYTES_14B
+                );
+                assert_eq!(
+                    read_u64_le_at(&output, entry_base + 112),
+                    DECODE_HIDDEN_BYTES_14B
+                );
+                assert_eq!(
+                    read_u64_le_at(&output, entry_base + 120),
+                    DECODE_HIDDEN_BYTES_14B
+                );
             },
         );
     }
