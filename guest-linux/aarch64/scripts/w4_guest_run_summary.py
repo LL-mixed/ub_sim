@@ -30,6 +30,10 @@ def decode_piece(fields):
     return data.decode("utf-8", errors="replace")
 
 
+def display_piece(piece):
+    return piece.replace("Ġ", " ")
+
+
 def quote_text(value):
     return json.dumps(value, ensure_ascii=False)
 
@@ -94,6 +98,7 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                     if step is not None:
                         fields["_log_node"] = node_id
                         fields["_piece"] = decode_piece(fields)
+                        fields["_display_piece"] = display_piece(fields["_piece"])
                         tokens[step] = fields
 
                 if "qwen3_worker_timing" in clean_line:
@@ -222,7 +227,7 @@ def emit_progress(run_dir, expected_steps, elapsed_s, node_ids, output):
         latest_token = (
             f"step={latest_step} "
             f"token={fields.get('token', '0')} "
-            f"piece={quote_text(fields.get('_piece', ''))} "
+            f"piece={quote_text(fields.get('_display_piece', ''))} "
             f"runner_up={fields.get('runner_up', '0')} "
             f"margin_milli={fields.get('margin_milli', '0')}"
         )
@@ -260,7 +265,7 @@ def emit_token_summary(tokens, expected_steps, output):
 
     ordered_steps = sorted(tokens)
     token_ids = [parse_int(tokens[step].get("token"), 0) for step in ordered_steps]
-    token_pieces = [tokens[step].get("_piece", "") for step in ordered_steps]
+    token_pieces = [tokens[step].get("_display_piece", "") for step in ordered_steps]
     missing_steps = [step for step in range(expected_steps) if step not in tokens]
     output.append(f"decode_output: token_ids={json.dumps(token_ids)}")
     output.append(f"decode_output: token_pieces={quote_text(''.join(token_pieces))}")
@@ -273,7 +278,7 @@ def emit_token_summary(tokens, expected_steps, output):
             f"step={step} "
             f"node={fields.get('_log_node', '')} "
             f"token={fields.get('token', '0')} "
-            f"piece={quote_text(fields.get('_piece', ''))} "
+            f"piece={quote_text(fields.get('_display_piece', ''))} "
             f"runner_up={fields.get('runner_up', '0')} "
             f"margin_milli={fields.get('margin_milli', '0')} "
             f"text_checksum={fields.get('text_checksum', '0x0')}"

@@ -102,7 +102,8 @@ class W4GuestRunSummaryTest(unittest.TestCase):
             result.stdout,
         )
         self.assertIn("decode_output: token_ids=[11, 358]", result.stdout)
-        self.assertIn('decode_token: step=1 node=nodeH token=358 piece="\u0120I"', result.stdout)
+        self.assertIn('decode_output: token_pieces=", I"', result.stdout)
+        self.assertIn('decode_token: step=1 node=nodeH token=358 piece=" I"', result.stdout)
         self.assertIn(
             "timing_step: step=0 round_ms=880 critical_node=nodeH workers=8/8",
             result.stdout,
@@ -124,7 +125,7 @@ class W4GuestRunSummaryTest(unittest.TestCase):
         )
         self.assertIn(
             'progress: elapsed=03:00 cluster_decode=2/2 (100%) terminal_tokens=2/2 '
-            'latest_token=step=1 token=358 piece="\u0120I"',
+            'latest_token=step=1 token=358 piece=" I"',
             progress.stdout,
         )
         self.assertIn(
