@@ -1,0 +1,373 @@
+# W5 Engram Simpler-Host Context Op Design
+
+## Goal
+
+Add a runnable W5 inference-cluster Engram context-augmentation backend that
+does not depend on A5/CANN fused-SIMT runtime availability.
+
+The target is a `simpler-host` implementation of the existing
+`EngramContextOp` contract:
+
+```text
+output[p, d] = hidden[p, d]
+             + sigmoid(dot(hidden[p], gate_weight[p]) + bias)
+             * mean(table[indices[p, 0..7], d])
+```
+
+This is a context augmentation before logits. It must not replace the current
+decode-time token policy, stop-token priority, or engram selected-token
+writeback checks.
+
+## Decision
+
+Use a new custom simpler HostBuildGraph profile:
+
+```text
+simpler-host-engram-context
+```
+
+Do not implement the operator by forcing the lookup into existing
+`host_matmul`.
+
+Why:
+
+- The operator is gather/reduce/dot/elementwise, not dense GEMM.
+- A one-hot matmul representation of `table[indices]` would move and compute
+  mostly zeros, which hides the real memory behavior we care about.
+- Existing `host_vector` proves the HostBuildGraph/AIV dispatch path works,
+  but its fixed formula is only an example. The right path is a dedicated AIV
+  kernel/profile with the same operator contract as the CPU reference.
+- `host_matmul` remains useful as a reference for artifact production,
+  manifest wiring, and dispatch integration, not as the core implementation.
+
+## Non-Goals
+
+- Do not emulate SIMT register-forwarding or D-cache behavior exactly. The
+  simpler-host backend is a runnable semantic backend and performance baseline,
+  not a microarchitectural replacement for the vendor fused-SIMT kernel.
+- Do not change the inference workload token policy. Token selection still
+  happens through the existing engram policy path.
+- Do not make W5 inference cluster validation require Ascend tooling by
+  default.
+- Do not implement full 14B optimization in the first patch. The interface must
+  support `D=5120`, but the first acceptance run can target Qwen3-0.6B
+  `D=1024`.
+
+## Existing References
+
+- Vendor operator note:
+  `vendor/pto-isa/kernels/manual/a5/engram_simt/README.md`
+- CPU reference:
+  `crates/sim-models/src/engram_context.rs`
+- Current artifact producer:
+  `guest-linux/aarch64/scripts/prepare_simpler_host_artifacts.py`
+- Current simpler dispatch examples:
+  - `run_host_vector_chipbackend()` in `crates/sim-uapi/src/lib.rs`
+  - `run_host_matmul_smoke()` in `crates/sim-uapi/src/lib.rs`
+
+## Operator Contract
+
+Inputs:
+
+| Name | Type | Shape | Notes |
+| --- | --- | --- | --- |
+| `table` | `f32` | `[R, D]` | Runtime rows. W5 validation defaults can remain small. |
+| `indices` | `u32` | `[B, 8]` | Each value must be `< R`. |
+| `hidden` | `f32` | `[B, D]` | Final hidden from terminal Qwen range. |
+| `gate_weight` | `f32` | `[B, D]` | Deterministic runtime fixture initially. |
+| `output` | `f32` | `[B, D]` | Augmented hidden. |
+| `bias` | `f32` | scalar | Default `0.125`, matching vendor note. |
+
+Initial runtime values:
+
+- `B=1` for W5 decode.
+- `D=1024` for Qwen3-0.6B.
+- `D=5120` must be representable by the descriptor for Qwen3-14B, but may
+  require chunked execution before it is enabled by default.
+- `R=16` default for W5 runtime validation, matching the existing
+  CPU-reference cheap path.
+
+## Data Layout
+
+All tensors are contiguous row-major buffers:
+
+```text
+table[row, dim]       => table[row * D + dim]
+hidden[batch, dim]    => hidden[batch * D + dim]
+gate_weight[batch, d] => gate_weight[batch * D + dim]
+output[batch, dim]    => output[batch * D + dim]
+indices[batch, head]  => indices[batch * 8 + head]
+```
+
+The UAPI descriptor should pass object/segment-backed operands, not inline
+tensor contents. The adapter resolves/maps those buffers before dispatching to
+the simpler backend.
+
+## Simpler HostBuildGraph Plan
+
+Add a new profile to `prepare_simpler_host_artifacts.py`:
+
+```text
+--profile host_engram_context
+```
+
+It emits:
+
+```text
+/tmp/simpler-host-engram-context-artifacts/
+  host_engram_context_manifest.json
+  runtime_host.bin
+  runtime_aicpu.bin
+  runtime_aicore.bin
+  orchestration.so
+  kernel_func_0.bin
+  kernel_func_1.bin
+  kernel_func_2.bin
+```
+
+Manifest profile:
+
+```json
+{
+  "profile": "HostEngramContext",
+  "runtime_variant": "HostBuildGraph",
+  "callable_hint": "host_engram_context_example",
+  "simpler_runtime": {
+    "orch_function_name": "build_engram_context_graph",
+    "args_template": [
+      {"kind": "input", "name": "table"},
+      {"kind": "input", "name": "indices"},
+      {"kind": "input", "name": "hidden"},
+      {"kind": "input", "name": "gate_weight"},
+      {"kind": "output", "name": "output"},
+      {"kind": "scalar_u64", "name": "batch"},
+      {"kind": "scalar_u64", "name": "table_rows"},
+      {"kind": "scalar_u64", "name": "hidden_size"},
+      {"kind": "scalar_u64", "name": "chunk_offset"},
+      {"kind": "scalar_u64", "name": "chunk_elems"},
+      {"kind": "scalar_f32_bits", "name": "bias"}
+    ]
+  }
+}
+```
+
+## Kernel Decomposition
+
+Use a chunked design so the contract can grow from `D=1024` to `D=5120`
+without changing the public interface.
+
+### Stage 0: Gather Mean And Partial Dot
+
+Core type: AIV.
+
+For each `batch` and `[chunk_offset, chunk_offset + chunk_elems)`:
+
+```text
+agg[p, d] = sum(table[indices[p, h], d]) / 8
+partial_dot[p, chunk] = sum(hidden[p, d] * gate_weight[p, d])
+```
+
+Outputs:
+
+- `agg_chunk: f32[B, chunk_elems]`
+- `partial_dot: f32[B, num_chunks]`
+
+For the first MVP, `num_chunks=1` for `D=1024` is acceptable. The code should
+still carry `chunk_offset` and `chunk_elems` in the descriptor.
+
+### Stage 1: Reduce Gate
+
+Core type: AIV.
+
+For each batch:
+
+```text
+dot = sum(partial_dot[p, *]) + bias
+gate[p] = sigmoid(dot)
+```
+
+Output:
+
+- `gate: f32[B]`
+
+For `D=1024` this can be one partial dot. For `D=5120`, this becomes a real
+cross-chunk reduction.
+
+### Stage 2: Apply Residual
+
+Core type: AIV.
+
+For each chunk:
+
+```text
+output[p, d] = hidden[p, d] + gate[p] * agg[p, d]
+```
+
+Output:
+
+- `output_chunk: f32[B, chunk_elems]`
+
+The orchestration can write chunks into the final output buffer at the correct
+offset.
+
+## W5 Integration
+
+Add a context-op mode:
+
+```text
+SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=simpler-host
+```
+
+CLI should accept:
+
+```text
+--engram-context-op=simpler-host
+```
+
+Environment:
+
+```text
+SIMPLER_HOST_ENGRAM_CONTEXT_MANIFEST=/tmp/simpler-host-engram-context-artifacts/host_engram_context_manifest.json
+SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_ROWS=16
+SIM_QWEN3_GUEST_ENGRAM_CONTEXT_CHUNK_ELEMS=1024
+```
+
+`sim-uapi` flow:
+
+1. Terminal Qwen range forward produces final hidden.
+2. If context op is `simpler-host`, materialize/map:
+   - deterministic table fixture;
+   - deterministic indices;
+   - terminal hidden;
+   - deterministic gate weight;
+   - output buffer.
+3. Build a `DispatchBackendSpec` from
+   `host_engram_context_manifest.json`.
+4. Submit simpler backend dispatch.
+5. Replace terminal hidden with the simpler output.
+6. Compute full-vocab logits from the augmented hidden.
+7. Emit the same `qwen3-engram-context` report shape currently used by
+   `cpu-reference`.
+
+The summary parser does not need a new output schema. It already consumes:
+
+```text
+qwen3-engram-context: mode=... table_rows=... output_checksum=...
+```
+
+The only new value should be:
+
+```text
+mode=simpler-host
+```
+
+## CLI And UX
+
+Default remains unchanged:
+
+```text
+--engram-context-op=disabled
+```
+
+CPU reference remains available:
+
+```text
+--engram-context-op=cpu-reference
+```
+
+New mode:
+
+```text
+--engram-context-op=simpler-host
+```
+
+Failure behavior must be explicit:
+
+- missing manifest:
+  `missing_simpler_host_engram_context_manifest:...`
+- unsupported hidden size:
+  `qwen3_engram_context_simpler_hidden_size_unsupported:got=...`
+- unsupported batch:
+  `qwen3_engram_context_simpler_batch_unsupported:got=...`
+- dispatch failure:
+  `simpler_host_engram_context_dispatch_failed:...`
+
+No silent fallback to CPU reference is allowed.
+
+## Test Plan
+
+Unit tests:
+
+- parser accepts `--engram-context-op=simpler-host`;
+- env propagation includes `SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=simpler-host`;
+- missing manifest reports an actionable error;
+- simpler-host output matches `run_engram_context_reference()` for:
+  - `B=1, D=1024, R=16`;
+  - at least one multi-chunk synthetic case if chunk support lands in the same
+    patch.
+
+Python/script tests:
+
+- artifact producer can build or describe `host_engram_context`;
+- manifest has expected `profile`, `callable_hint`, and args template.
+
+W5 validation:
+
+```text
+RUN_ID=w5_engram_simpler_host_context_0_6b_4step_YYYYMMDD
+SIM_UAPI_W5_PROFILE=qwen3_0_6b_engram_decode
+SIM_QWEN3_DENSE_WEIGHTS_PATH=/Volumes/repos/qwen3_mlx_run/Qwen3-0.6B
+SIM_QWEN3_GUEST_DECODE_STEPS=4
+SIM_QWEN3_GUEST_ENGRAM=1
+SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE=8
+SIM_QWEN3_GUEST_ENGRAM_NO_REPEAT_NGRAM_SIZE=3
+SIM_QWEN3_GUEST_ENGRAM_HISTORY_WINDOW=64
+SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=simpler-host
+./guest-linux/aarch64/scripts/run_ub_eight_node_w5_inference_cluster.sh
+```
+
+Until the W5 runner alias lands, the same environment can be executed through
+the legacy-compatible eight-node guest decode runner.
+
+Acceptance:
+
+- run passes;
+- `engram_context_records=4`;
+- `engram_context_summary` reports `modes=simpler-host`;
+- per-step output checksums match CPU-reference mode for the same fixture;
+- token IDs match CPU-reference mode when all fixtures are identical.
+
+## Implementation Order
+
+1. Add `host_engram_context` profile generation in
+   `prepare_simpler_host_artifacts.py`.
+2. Add a unit-level simpler dispatch helper in `sim-uapi`, isolated from the
+   W5 runner.
+3. Compare helper output against `sim-models::engram_context` CPU reference.
+4. Add `simpler-host` parser/env plumbing in `sim-cli` and guest runner
+   scripts.
+5. Wire `simpler-host` into terminal Qwen range forward.
+6. Run W5 0.6B 4-step with `SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=simpler-host`.
+7. Only after 0.6B is stable, enable chunked `D=5120` validation for 14B.
+
+## Risks
+
+- Simpler HostBuildGraph launch overhead may dominate for `B=1`. This backend
+  is primarily a semantic integration step; throughput wins are not guaranteed.
+- A dedicated AIV kernel is still not the same memory path as vendor SIMT. It
+  should be compared against CPU-reference and used to exercise UAPI/backend
+  integration, not used as proof of final SIMT speedup.
+- `D=5120` needs chunking and partial-dot reduction. If the first patch only
+  supports `D=1024`, the failure for 14B must be explicit.
+- Runtime fixture generation must remain deterministic. Otherwise token IDs
+  will drift and W5 comparisons will become noisy.
+
+## Open Questions
+
+- Should MVP implement only `D=1024`, or include multi-chunk `D=5120` from the
+  start?
+- Should `table` and `gate_weight` remain deterministic fixtures for W5
+  validation, or become object-backed operands provided by a higher-level
+  engram state object?
+- Should `simpler-host` eventually replace `cpu-reference` for local W5
+  validation, or remain an opt-in backend used only for backend-path testing?
