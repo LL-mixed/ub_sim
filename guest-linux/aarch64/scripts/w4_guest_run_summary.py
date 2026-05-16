@@ -71,6 +71,7 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
     tokens = {}
     timings = []
     handoff_timings = []
+    engram_timings = []
     barriers = {}
     pool_usage = {}
     passes = {node_id: 0 for node_id in node_ids}
@@ -188,6 +189,31 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                             record[key] = parse_int(fields.get(key), 0)
                         handoff_timings.append(record)
 
+                if "qwen3_engram_timing" in clean_line:
+                    fields = parse_pairs(clean_line)
+                    step = parse_int(fields.get("step"), None)
+                    if step is not None:
+                        record = {
+                            "_log_node": node_id,
+                            "step": step,
+                            "local": fields.get("local", node_id),
+                            "owner": fields.get("owner", ""),
+                        }
+                        for key in (
+                            "node",
+                            "candidate_publish_ms",
+                            "candidate_wait_ms",
+                            "policy_select_ms",
+                            "decision_publish_ms",
+                            "selected_wait_ms",
+                            "selected_writeback_ms",
+                            "history_state_wait_ms",
+                            "qwen3_range_publish_ms",
+                            "qwen3_range_input_wait_ms",
+                        ):
+                            record[key] = parse_int(fields.get(key), 0)
+                        engram_timings.append(record)
+
                 if "qwen3_worker_barrier_timing" in clean_line:
                     fields = parse_pairs(clean_line)
                     step = parse_int(fields.get("step"), None)
@@ -215,7 +241,17 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                             record[key] = parse_int(fields.get(key), 0)
                         pool_usage[node_id] = record
 
-    return tokens, timings, handoff_timings, barriers, pool_usage, passes, missing_logs, latest_status
+    return (
+        tokens,
+        timings,
+        handoff_timings,
+        engram_timings,
+        barriers,
+        pool_usage,
+        passes,
+        missing_logs,
+        latest_status,
+    )
 
 
 def node_round_ms(record, barriers):
@@ -226,7 +262,17 @@ def node_round_ms(record, barriers):
 
 
 def emit_summary(run_dir, expected_steps, node_ids, output):
-    tokens, timings, handoff_timings, barriers, pool_usage, passes, missing_logs, _latest_status = parse_run_logs(
+    (
+        tokens,
+        timings,
+        handoff_timings,
+        engram_timings,
+        barriers,
+        pool_usage,
+        passes,
+        missing_logs,
+        _latest_status,
+    ) = parse_run_logs(
         run_dir, expected_steps, node_ids
     )
     passed_nodes = sum(1 for count in passes.values() if count >= expected_steps)
@@ -238,7 +284,8 @@ def emit_summary(run_dir, expected_steps, node_ids, output):
         f"decode_steps_observed={len(tokens)} "
         f"worker_timing_records={len(timings)} "
         f"passed_nodes={passed_nodes}/{len(node_ids)} "
-        f"handoff_timing_records={len(handoff_timings)}"
+        f"handoff_timing_records={len(handoff_timings)} "
+        f"engram_timing_records={len(engram_timings)}"
     )
     if missing_logs:
         output.append(f"summary: missing_guest_logs={quote_text(missing_logs)}")
@@ -246,11 +293,22 @@ def emit_summary(run_dir, expected_steps, node_ids, output):
     emit_token_summary(tokens, expected_steps, output)
     emit_timing_summary(timings, barriers, expected_steps, node_ids, output)
     emit_handoff_timing_summary(handoff_timings, expected_steps, node_ids, output)
+    emit_engram_timing_summary(engram_timings, expected_steps, node_ids, output)
     emit_pool_usage_summary(pool_usage, expected_steps, node_ids, output)
 
 
 def emit_progress(run_dir, expected_steps, elapsed_s, node_ids, output):
-    tokens, _timings, _handoff_timings, _barriers, _pool_usage, passes, missing_logs, latest_status = parse_run_logs(
+    (
+        tokens,
+        _timings,
+        _handoff_timings,
+        _engram_timings,
+        _barriers,
+        _pool_usage,
+        passes,
+        missing_logs,
+        latest_status,
+    ) = parse_run_logs(
         run_dir, expected_steps, node_ids
     )
     pad = max(1, len(str(expected_steps)))
@@ -556,6 +614,150 @@ def emit_handoff_timing_summary(handoff_timings, expected_steps, node_ids, outpu
             f"total_dispatch_ms={total_dispatch_ms} "
             f"total_range_publish_ms={total_publish_ms} "
             f"max_input_found_to_handoff_ms={max(record['input_found_to_handoff_ms'] for record in records)}"
+        )
+
+
+def emit_engram_timing_summary(engram_timings, expected_steps, node_ids, output):
+    if not engram_timings:
+        output.append("engram_timing: unavailable reason=no_qwen3_engram_timing_records")
+        return
+
+    timing_keys = (
+        "candidate_publish_ms",
+        "candidate_wait_ms",
+        "policy_select_ms",
+        "decision_publish_ms",
+        "selected_wait_ms",
+        "selected_writeback_ms",
+        "history_state_wait_ms",
+        "qwen3_range_publish_ms",
+        "qwen3_range_input_wait_ms",
+    )
+    engram_keys = (
+        "candidate_publish_ms",
+        "candidate_wait_ms",
+        "policy_select_ms",
+        "decision_publish_ms",
+        "selected_wait_ms",
+        "selected_writeback_ms",
+        "history_state_wait_ms",
+    )
+    transport_keys = (
+        "candidate_publish_ms",
+        "candidate_wait_ms",
+        "decision_publish_ms",
+        "selected_wait_ms",
+        "selected_writeback_ms",
+        "history_state_wait_ms",
+    )
+
+    timings_by_step = collections.defaultdict(list)
+    timings_by_node = collections.defaultdict(list)
+    for record in engram_timings:
+        timings_by_step[record["step"]].append(record)
+        timings_by_node[record["_log_node"]].append(record)
+
+    for step in sorted(timings_by_step):
+        records = timings_by_step[step]
+        totals = {key: sum(record[key] for record in records) for key in timing_keys}
+        max_range_input = max(record["qwen3_range_input_wait_ms"] for record in records)
+        max_range_publish = max(record["qwen3_range_publish_ms"] for record in records)
+        engram_total = sum(totals[key] for key in engram_keys)
+        transport_total = sum(totals[key] for key in transport_keys)
+        policy_total = totals["policy_select_ms"]
+        range_pipeline_total = max_range_input + max_range_publish
+        categories = {
+            "cpu_policy": policy_total,
+            "object_transport": transport_total,
+            "range_pipeline": range_pipeline_total,
+        }
+        bottleneck_name, bottleneck_ms = max(categories.items(), key=lambda item: item[1])
+        output.append(
+            "engram_timing_step: "
+            f"step={step} "
+            f"nodes={len(records)}/{len(node_ids)} "
+            f"candidate_publish_ms={totals['candidate_publish_ms']} "
+            f"candidate_wait_ms={totals['candidate_wait_ms']} "
+            f"policy_select_ms={totals['policy_select_ms']} "
+            f"decision_publish_ms={totals['decision_publish_ms']} "
+            f"selected_wait_ms={totals['selected_wait_ms']} "
+            f"selected_writeback_ms={totals['selected_writeback_ms']} "
+            f"history_state_wait_ms={totals['history_state_wait_ms']} "
+            f"engram_total_ms={engram_total} "
+            f"max_qwen3_range_publish_ms={max_range_publish} "
+            f"max_qwen3_range_input_wait_ms={max_range_input} "
+            f"bottleneck={bottleneck_name} "
+            f"bottleneck_ms={bottleneck_ms}"
+        )
+
+    global_totals = {key: sum(record[key] for record in engram_timings) for key in timing_keys}
+    max_policy = max(engram_timings, key=lambda item: item["policy_select_ms"])
+    max_transport = max(
+        engram_timings,
+        key=lambda item: sum(item[key] for key in transport_keys),
+    )
+    max_range = max(
+        engram_timings,
+        key=lambda item: item["qwen3_range_input_wait_ms"] + item["qwen3_range_publish_ms"],
+    )
+    policy_total = global_totals["policy_select_ms"]
+    transport_total = sum(global_totals[key] for key in transport_keys)
+    range_pipeline_total = sum(
+        max(record["qwen3_range_input_wait_ms"] + record["qwen3_range_publish_ms"]
+            for record in records)
+        for records in timings_by_step.values()
+    )
+    categories = {
+        "cpu_policy": policy_total,
+        "object_transport": transport_total,
+        "range_pipeline": range_pipeline_total,
+    }
+    bottleneck_name, bottleneck_ms = max(categories.items(), key=lambda item: item[1])
+    output.append(
+        "engram_bottleneck: "
+        f"dominant={bottleneck_name} "
+        f"dominant_ms={bottleneck_ms} "
+        f"cpu_policy_ms={policy_total} "
+        f"object_transport_ms={transport_total} "
+        f"range_pipeline_ms={range_pipeline_total}"
+    )
+    output.append(
+        "engram_bottleneck: "
+        f"max_policy_step={max_policy['step']} "
+        f"node={max_policy['_log_node']} "
+        f"policy_select_ms={max_policy['policy_select_ms']}"
+    )
+    output.append(
+        "engram_bottleneck: "
+        f"max_transport_step={max_transport['step']} "
+        f"node={max_transport['_log_node']} "
+        f"object_transport_ms={sum(max_transport[key] for key in transport_keys)}"
+    )
+    output.append(
+        "engram_bottleneck: "
+        f"max_range_step={max_range['step']} "
+        f"node={max_range['_log_node']} "
+        f"qwen3_range_input_wait_ms={max_range['qwen3_range_input_wait_ms']} "
+        f"qwen3_range_publish_ms={max_range['qwen3_range_publish_ms']}"
+    )
+
+    for node_id in node_ids:
+        records = sorted(timings_by_node.get(node_id, []), key=lambda item: item["step"])
+        if not records:
+            output.append(f"engram_timing_node: node={node_id} steps=0/{expected_steps} status=missing")
+            continue
+        output.append(
+            "engram_timing_node: "
+            f"node={node_id} "
+            f"steps={len(records)}/{expected_steps} "
+            f"candidate_publish_ms={sum(record['candidate_publish_ms'] for record in records)} "
+            f"candidate_wait_ms={sum(record['candidate_wait_ms'] for record in records)} "
+            f"policy_select_ms={sum(record['policy_select_ms'] for record in records)} "
+            f"decision_publish_ms={sum(record['decision_publish_ms'] for record in records)} "
+            f"selected_wait_ms={sum(record['selected_wait_ms'] for record in records)} "
+            f"selected_writeback_ms={sum(record['selected_writeback_ms'] for record in records)} "
+            f"history_state_wait_ms={sum(record['history_state_wait_ms'] for record in records)} "
+            f"max_qwen3_range_input_wait_ms={max(record['qwen3_range_input_wait_ms'] for record in records)}"
         )
 
 

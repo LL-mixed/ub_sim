@@ -50,6 +50,23 @@ def handoff_timing(node_id, node_index, step, found_to_handoff_ms, dispatch_ms, 
     )
 
 
+def engram_timing(node_id, node_index, step):
+    return (
+        "[w4_guest] stage qwen3_engram_timing "
+        f"local={node_id} step={step} node={node_index} owner=node8 "
+        f"candidate_publish_ms={2 if node_index == 8 else 0} "
+        f"candidate_wait_ms={3 if node_index == 8 else 0} "
+        f"policy_select_ms={4 if node_index == 8 else 0} "
+        f"decision_publish_ms={5 if node_index == 8 else 0} "
+        f"selected_wait_ms={6 if node_index == 8 else 0} "
+        f"selected_writeback_ms={7 if node_index == 8 else 0} "
+        f"history_state_wait_ms={8 if node_index in (1, 8) else 0} "
+        f"qwen3_range_publish_ms={node_index} "
+        f"qwen3_range_input_wait_ms={node_index * 10} "
+        "status=ok"
+    )
+
+
 class W4GuestRunSummaryTest(unittest.TestCase):
     def test_emits_decode_tokens_and_timing_bottlenecks(self):
         script = Path(__file__).resolve().parents[1] / "scripts" / "w4_guest_run_summary.py"
@@ -80,6 +97,7 @@ class W4GuestRunSummaryTest(unittest.TestCase):
                     "[w4_guest] pass",
                     worker_timing(node_id, index, 1, total1, 70 * index, 9 * index),
                     handoff_timing(node_id, index, 1, 80 * index, 11 * index, 5 * index),
+                    engram_timing(node_id, index, 1),
                     (
                         "[w4_guest] stage qwen3_obmm_pool_usage "
                         f"local=node{index} step=1 per_node_region_bytes=536870912 "
@@ -131,6 +149,7 @@ class W4GuestRunSummaryTest(unittest.TestCase):
             result.stdout,
         )
         self.assertIn("handoff_timing_records=16", result.stdout)
+        self.assertIn("engram_timing_records=8", result.stdout)
         self.assertIn("decode_output: token_ids=[11, 358]", result.stdout)
         self.assertIn('decode_output: token_pieces=", I"', result.stdout)
         self.assertIn('decode_token: step=1 node=nodeH token=358 piece=" I"', result.stdout)
@@ -161,6 +180,24 @@ class W4GuestRunSummaryTest(unittest.TestCase):
         self.assertIn(
             "edge_bottleneck: max_edge_step=0 edge=1->2 node=nodeB "
             "producer_to_input_found_mono_ms=10",
+            result.stdout,
+        )
+        self.assertIn(
+            "engram_timing_step: step=1 nodes=8/8 candidate_publish_ms=2 "
+            "candidate_wait_ms=3 policy_select_ms=4 decision_publish_ms=5 "
+            "selected_wait_ms=6 selected_writeback_ms=7 history_state_wait_ms=16 "
+            "engram_total_ms=43 max_qwen3_range_publish_ms=8 "
+            "max_qwen3_range_input_wait_ms=80 bottleneck=range_pipeline bottleneck_ms=88",
+            result.stdout,
+        )
+        self.assertIn(
+            "engram_bottleneck: dominant=range_pipeline dominant_ms=88 "
+            "cpu_policy_ms=4 object_transport_ms=39 range_pipeline_ms=88",
+            result.stdout,
+        )
+        self.assertIn(
+            "engram_timing_node: node=nodeH steps=1/2 candidate_publish_ms=2 "
+            "candidate_wait_ms=3 policy_select_ms=4 decision_publish_ms=5",
             result.stdout,
         )
         self.assertIn(

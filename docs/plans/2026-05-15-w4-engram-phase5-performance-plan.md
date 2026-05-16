@@ -15,15 +15,25 @@ Current completed capabilities:
 - Existing unit tests cover policy behavior and OBMM transport report parsing.
 - A 24-step eight-node run exists as a performance baseline:
   `docs/2026-05-13-eight-node-w4-timing-report.md`.
+- 2026-05-16: P5.0 profiling gate is implemented. W4 guest logs now emit
+  `qwen3_engram_timing`, and `w4_guest_run_summary.py` emits
+  `engram_timing_step` plus `engram_bottleneck`.
+- 2026-05-16: P5.1 CPU/reference `EngramContextOp` is implemented in
+  `sim-models::engram_context`, with a standalone
+  `engram_context_reference` CLI and deterministic checksum tests.
 
 Current gaps:
 
 - `--engram-mode` only supports `cpu`.
-- The engram policy is not represented as a chipbackend/simpler operator.
+- The decode-time token policy is intentionally still CPU/guest-side because
+  P5.0 shows it is not a throughput bottleneck.
+- The hidden/context engram augmentation now has a CPU/reference operator, but
+  it is not yet wired through chipbackend/simpler or W4 decode.
 - The vendor fused Engram SIMT kernel is not connected to the W4 guest decode
   path.
-- Timing reports do not yet isolate engram policy cost from object transport,
-  range handoff, candidate wait, selected-token wait, and publish latency.
+- P5.0 now isolates engram policy cost from object transport, range handoff,
+  candidate wait, selected-token wait, and publish latency. The remaining
+  timing gap is fused-context-op delta reporting after P5.1-P5.3 exists.
 
 ## Goal
 
@@ -71,6 +81,8 @@ block, but it cannot directly replace the existing token policy.
 
 ### P5.0 Profiling Gate
 
+Status: complete as of 2026-05-16.
+
 Purpose: prove where latency is going before adding a fused operator.
 
 Add explicit timings for:
@@ -106,7 +118,48 @@ Acceptance:
 - The summary identifies whether CPU policy, OBMM object transport, or range
   pipeline wait dominates token latency.
 
+Validation run:
+
+```text
+RUN_ID=w4_engram_p5_timing_0_6b_8step_20260516
+SIM_UAPI_W4_CHIPBACKEND_PROFILE=qwen3_dense
+SIM_QWEN3_DENSE_WEIGHTS_PATH=/Volumes/repos/qwen3_mlx_run/Qwen3-0.6B
+SIM_QWEN3_GUEST_DECODE_STEPS=8
+SIM_QWEN3_GUEST_ENGRAM=1
+SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE=8
+SIM_QWEN3_GUEST_ENGRAM_NO_REPEAT_NGRAM_SIZE=3
+SIM_QWEN3_GUEST_ENGRAM_HISTORY_WINDOW=64
+./guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh
+```
+
+Summary:
+
+```text
+guest-linux/aarch64/out/eight_node_w4_guest_summary.w4_engram_p5_timing_0_6b_8step_20260516.txt
+```
+
+Observed result:
+
+- PASS.
+- Output text: `, I'm a bit confused about the`.
+- `engram_timing_records=64`.
+- `engram_bottleneck: dominant=range_pipeline dominant_ms=19557 cpu_policy_ms=0 object_transport_ms=1584 range_pipeline_ms=19557`.
+- Max object transport record: step6 / nodeH, `object_transport_ms=155`.
+- Max range record: step0 / nodeH, `qwen3_range_input_wait_ms=4258`, `qwen3_range_publish_ms=9`.
+
+Interpretation:
+
+- CPU token policy is below current millisecond resolution and is not the
+  throughput limiter.
+- OBMM engram object transport is visible but much smaller than the range
+  pipeline wait.
+- P5.4 token-policy micro-kernel is not justified by current data.
+- P5.1-P5.3 can still proceed as an optional context augmentation path, but
+  expected end-to-end gain is bounded unless range pipeline wait is reduced.
+
 ### P5.1 Reference Operator Boundary
+
+Status: complete as of 2026-05-16.
 
 Purpose: define a stable operator contract before wiring vendor code.
 
@@ -134,6 +187,23 @@ Acceptance:
 - The op can be called without changing the existing token policy.
 - The op is represented in reports as context augmentation, not token
   selection.
+
+Implementation:
+
+- Module: `crates/sim-models/src/engram_context.rs`.
+- CLI: `cargo run -p sim-models --bin engram_context_reference -- --batch=4 --rows=16`.
+- Report kind: `context_augmentation`.
+- Current formula:
+
+```text
+gate = sigmoid(dot(hidden[b], gate_weight[b]))
+output[b, d] = hidden[b, d] + gate * mean(table[indices[b, 0..8], d])
+```
+
+Validation:
+
+- `cargo test -p sim-models engram_context`
+- `cargo run -p sim-models --bin engram_context_reference -- --batch=4 --rows=16`
 
 ### P5.2 Vendor Kernel Adapter
 
@@ -225,17 +295,18 @@ Acceptance:
 
 ## Execution Order
 
-1. Add P5.0 timing instrumentation and summaries.
-2. Run one short eight-node engram decode and compare against the 2026-05-13
+1. [x] Add P5.0 timing instrumentation and summaries.
+2. [x] Run one short eight-node engram decode and compare against the 2026-05-13
    timing report.
-3. Add the CPU/reference `EngramContextOp`.
-4. Add the vendor fused kernel adapter behind an opt-in feature.
-5. Add CLI/env plumbing for `fused-simt` and artifact discovery.
-6. Wire the fused context op into W4 decode behind `--engram-context-op`.
-7. Run CPU/reference parity tests.
-8. Run fused golden tests where A5/CANN runtime is available.
-9. Run eight-node W4 engram decode with and without fused context op.
-10. Decide whether a separate token-policy micro-kernel is justified.
+3. [x] Add the CPU/reference `EngramContextOp`.
+4. [ ] Add the vendor fused kernel adapter behind an opt-in feature.
+5. [ ] Add CLI/env plumbing for `fused-simt` and artifact discovery.
+6. [ ] Wire the fused context op into W4 decode behind `--engram-context-op`.
+7. [ ] Run CPU/reference parity tests.
+8. [ ] Run fused golden tests where A5/CANN runtime is available.
+9. [ ] Run eight-node W4 engram decode with and without fused context op.
+10. [x] Decide whether a separate token-policy micro-kernel is justified:
+    current P5.0 data says no.
 
 ## Validation Matrix
 

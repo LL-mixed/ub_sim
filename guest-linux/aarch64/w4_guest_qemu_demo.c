@@ -1812,6 +1812,12 @@ struct w4_qwen3_engram_config {
     uint64_t blocked_token_count;
 };
 
+struct w4_qwen3_engram_step_timing {
+    uint64_t candidate_wait_ms;
+    uint64_t policy_select_ms;
+    uint64_t decision_publish_ms;
+};
+
 static int qwen3_read_terminal_token_record(volatile uint8_t *ep_mmio,
                                             struct w4_qwen3_terminal_token_record *record)
 {
@@ -2158,7 +2164,8 @@ static int qwen3_engram_select_and_publish_step(
     const uint64_t *history_tokens,
     uint64_t history_token_count,
     struct w4_qwen3_terminal_token_record *terminal_token,
-    uint64_t *selected_token_out)
+    uint64_t *selected_token_out,
+    struct w4_qwen3_engram_step_timing *timing)
 {
     uint64_t resolved_candidate_tokens[4] = {0};
     uint64_t resolved_candidate_logit_bits[4] = {0};
@@ -2171,11 +2178,16 @@ static int qwen3_engram_select_and_publish_step(
     int64_t engram_top_score = 0;
     int64_t engram_runner_up_score = 0;
     bool engram_fallback_used = false;
+    uint64_t stage_start_ms;
 
     if (!db_service || !config || !config->enabled || !terminal_token ||
         !history_tokens || !selected_token_out) {
         return -1;
     }
+    if (timing) {
+        memset(timing, 0, sizeof(*timing));
+    }
+    stage_start_ms = monotonic_ms();
     if (w4_db_obmm_service_v0_wait_engram_candidates(
             db_service,
             decode_step,
@@ -2195,6 +2207,9 @@ static int qwen3_engram_select_and_publish_step(
                 local_node + 1U);
         return -1;
     }
+    if (timing) {
+        timing->candidate_wait_ms = monotonic_ms() - stage_start_ms;
+    }
 
     terminal_token->candidate_count = resolved_candidate_count;
     memcpy(terminal_token->candidate_tokens,
@@ -2207,6 +2222,7 @@ static int qwen3_engram_select_and_publish_step(
     terminal_token->runner_up_token =
         resolved_candidate_count > 1U ? terminal_token->candidate_tokens[1] : 0U;
     raw_sampled_token = terminal_token->sampled_token;
+    stage_start_ms = monotonic_ms();
     selected_token =
         qwen3_guest_engram_select_token(config,
                                         history_tokens,
@@ -2216,6 +2232,9 @@ static int qwen3_engram_select_and_publish_step(
                                         &engram_blocked_count,
                                         &engram_top_score,
                                         &engram_runner_up_score);
+    if (timing) {
+        timing->policy_select_ms = monotonic_ms() - stage_start_ms;
+    }
     selected_text_checksum =
         qwen3_terminal_token_candidate_text_checksum(terminal_token, selected_token);
     if (selected_text_checksum == 0) {
@@ -2256,6 +2275,7 @@ static int qwen3_engram_select_and_publish_step(
            config->repetition_penalty_milli,
            config->history_window,
            resolved_candidate_checksum);
+    stage_start_ms = monotonic_ms();
     if (w4_db_obmm_service_v0_publish_engram_step(
             db_service,
             local_node,
@@ -2280,6 +2300,9 @@ static int qwen3_engram_select_and_publish_step(
                 "[w4_guest] fail qwen3 engram object publish failed local=node%u\n",
                 local_node + 1U);
         return -1;
+    }
+    if (timing) {
+        timing->decision_publish_ms = monotonic_ms() - stage_start_ms;
     }
     *selected_token_out = selected_token;
     return 0;
@@ -4791,6 +4814,13 @@ int main(void)
     uint64_t round_done_done_ms = 0;
     uint64_t range_publish_ms = 0;
     uint64_t terminal_publish_ms = 0;
+    uint64_t engram_candidate_publish_ms = 0;
+    uint64_t engram_candidate_wait_ms = 0;
+    uint64_t engram_policy_select_ms = 0;
+    uint64_t engram_decision_publish_ms = 0;
+    uint64_t engram_selected_wait_ms = 0;
+    uint64_t engram_selected_writeback_ms = 0;
+    uint64_t engram_history_state_wait_ms = 0;
     uint64_t input_producer_publish_supernode_ms = 0;
     uint64_t input_producer_publish_monotonic_ms = 0;
     int64_t input_producer_clock_offset_ms = 0;
@@ -6001,6 +6031,13 @@ decode_round_start:
     round_done_done_ms = 0;
     range_publish_ms = 0;
     terminal_publish_ms = 0;
+    engram_candidate_publish_ms = 0;
+    engram_candidate_wait_ms = 0;
+    engram_policy_select_ms = 0;
+    engram_decision_publish_ms = 0;
+    engram_selected_wait_ms = 0;
+    engram_selected_writeback_ms = 0;
+    engram_history_state_wait_ms = 0;
     input_producer_publish_supernode_ms = 0;
     input_producer_publish_monotonic_ms = 0;
     input_producer_clock_offset_ms = 0;
@@ -6052,6 +6089,8 @@ decode_round_start:
                        guest_decode_step,
                        role);
             } else {
+                uint64_t engram_stage_start_ms = monotonic_ms();
+
                 if (w4_db_obmm_service_v0_wait_engram_history(
                         &db_service,
                         guest_decode_step - 1,
@@ -6082,6 +6121,7 @@ decode_round_start:
                             guest_decode_step);
                     goto out;
                 }
+                engram_history_state_wait_ms = monotonic_ms() - engram_stage_start_ms;
                 qwen3_round_history_loaded = true;
                 printf("[w4_guest] stage qwen3_decode_round_engram_state_resolved step=%" PRIu64
                        " previous_step=%" PRIu64
@@ -6657,9 +6697,11 @@ decode_round_start:
             dispatch_node == qwen3_engram_config.owner_node &&
             dispatch_node + 1U != cluster_node_count) {
             struct w4_qwen3_terminal_token_record owner_candidates;
+            struct w4_qwen3_engram_step_timing owner_engram_timing;
             uint64_t owner_selected_token = 0;
 
             memset(&owner_candidates, 0, sizeof(owner_candidates));
+            memset(&owner_engram_timing, 0, sizeof(owner_engram_timing));
             terminal_publish_start_ms = monotonic_ms();
             if (qwen3_engram_select_and_publish_step(&db_service,
                                                      &qwen3_engram_config,
@@ -6669,9 +6711,13 @@ decode_round_start:
                                                      qwen3_round_input_tokens,
                                                      qwen3_round_input_token_count,
                                                      &owner_candidates,
-                                                     &owner_selected_token) != 0) {
+                                                     &owner_selected_token,
+                                                     &owner_engram_timing) != 0) {
                 goto out;
             }
+            engram_candidate_wait_ms += owner_engram_timing.candidate_wait_ms;
+            engram_policy_select_ms += owner_engram_timing.policy_select_ms;
+            engram_decision_publish_ms += owner_engram_timing.decision_publish_ms;
             terminal_publish_done_ms = monotonic_ms();
         }
         if (dispatch_node + 1U == cluster_node_count) {
@@ -6691,6 +6737,9 @@ decode_round_start:
             }
             raw_sampled_token = terminal_token.sampled_token;
             if (qwen3_engram_config.enabled) {
+                uint64_t engram_stage_start_ms;
+
+                engram_stage_start_ms = monotonic_ms();
                 if (w4_db_obmm_service_v0_publish_engram_candidates(
                         &db_service,
                         dispatch_node,
@@ -6708,18 +6757,29 @@ decode_round_start:
                             role);
                     goto out;
                 }
+                engram_candidate_publish_ms += monotonic_ms() - engram_stage_start_ms;
                 if (dispatch_node == qwen3_engram_config.owner_node &&
-                    qwen3_engram_select_and_publish_step(&db_service,
-                                                         &qwen3_engram_config,
-                                                         dispatch_node,
-                                                         cluster_node_count,
-                                                         decode_step,
-                                                         qwen3_round_input_tokens,
-                                                         qwen3_round_input_token_count,
-                                                         &terminal_token,
-                                                         &engram_selected_token) != 0) {
-                    goto out;
+                    dispatch_node + 1U == cluster_node_count) {
+                    struct w4_qwen3_engram_step_timing terminal_engram_timing;
+
+                    memset(&terminal_engram_timing, 0, sizeof(terminal_engram_timing));
+                    if (qwen3_engram_select_and_publish_step(&db_service,
+                                                             &qwen3_engram_config,
+                                                             dispatch_node,
+                                                             cluster_node_count,
+                                                             decode_step,
+                                                             qwen3_round_input_tokens,
+                                                             qwen3_round_input_token_count,
+                                                             &terminal_token,
+                                                             &engram_selected_token,
+                                                             &terminal_engram_timing) != 0) {
+                        goto out;
+                    }
+                    engram_candidate_wait_ms += terminal_engram_timing.candidate_wait_ms;
+                    engram_policy_select_ms += terminal_engram_timing.policy_select_ms;
+                    engram_decision_publish_ms += terminal_engram_timing.decision_publish_ms;
                 }
+                engram_stage_start_ms = monotonic_ms();
                 if (w4_db_obmm_service_v0_wait_engram_selected_token(
                         &db_service,
                         decode_step,
@@ -6730,6 +6790,8 @@ decode_round_start:
                             role);
                     goto out;
                 }
+                engram_selected_wait_ms += monotonic_ms() - engram_stage_start_ms;
+                engram_stage_start_ms = monotonic_ms();
                 if (!qwen3_rewrite_terminal_token_record_for_engram_selection(
                         &terminal_token,
                         dispatch_node,
@@ -6739,6 +6801,7 @@ decode_round_start:
                     return 1;
                 }
                 terminal_token.sampled_token = engram_selected_token;
+                engram_selected_writeback_ms += monotonic_ms() - engram_stage_start_ms;
                 printf("[w4_guest] stage qwen3_engram_selected_writeback local=node%u step=%" PRIu64
                        " selected_token=%" PRIu64
                        " source=engram_selected_object target=terminal_token_result status=ok\n",
@@ -7019,6 +7082,33 @@ decode_round_start:
                    terminal_publish_ms,
                    compute_done_to_handoff_ms,
                    round_done_publish_ms);
+        }
+        if (qwen3_engram_config.enabled) {
+            printf("[w4_guest] stage qwen3_engram_timing local=%s step=%" PRIu64
+                   " node=%u owner=node%u"
+                   " candidate_publish_ms=%" PRIu64
+                   " candidate_wait_ms=%" PRIu64
+                   " policy_select_ms=%" PRIu64
+                   " decision_publish_ms=%" PRIu64
+                   " selected_wait_ms=%" PRIu64
+                   " selected_writeback_ms=%" PRIu64
+                   " history_state_wait_ms=%" PRIu64
+                   " qwen3_range_publish_ms=%" PRIu64
+                   " qwen3_range_input_wait_ms=%" PRIu64
+                   " status=ok\n",
+                   role,
+                   guest_decode_step,
+                   round_dispatch_node == UINT32_MAX ? 0U : round_dispatch_node + 1U,
+                   qwen3_engram_config.owner_node + 1U,
+                   engram_candidate_publish_ms,
+                   engram_candidate_wait_ms,
+                   engram_policy_select_ms,
+                   engram_decision_publish_ms,
+                   engram_selected_wait_ms,
+                   engram_selected_writeback_ms,
+                   engram_history_state_wait_ms,
+                   range_publish_ms,
+                   input_wait_ms);
         }
     }
     printf("[w4_guest] pass\n");
