@@ -6,6 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SERVICE_C = ROOT / "w4_kvcache_db_service.c"
 SERVICE_H = ROOT / "w4_kvcache_db_service.h"
+GUEST_C = ROOT / "w4_guest_qemu_demo.c"
 
 
 class W4DbRecordRecyclingTests(unittest.TestCase):
@@ -66,6 +67,16 @@ class W4DbRecordRecyclingTests(unittest.TestCase):
         self.assertIn("block_count =", source)
         self.assertIn("reserved_bytes = block_count * block_bytes", source)
         self.assertNotIn("kv_payload_len > W4_DB_OBMM_QWEN3_KV_STATE_SLOT_BYTES", source)
+
+    def test_qwen3_guest_runtime_kv_payload_grows_past_fixed_guard(self):
+        source = GUEST_C.read_text()
+
+        self.assertNotIn("W4_QWEN3_MAX_KV_PAYLOAD_BYTES", source)
+        self.assertNotIn("qwen3 range kv payload too large", source)
+        self.assertIn("uint8_t *kv_payload;", source)
+        self.assertIn("kv_payload_capacity", source)
+        self.assertIn("qwen3_range_runtime_forward_reserve_kv", source)
+        self.assertIn("qwen3 range kv payload reserve failed", source)
 
 
 if __name__ == "__main__":

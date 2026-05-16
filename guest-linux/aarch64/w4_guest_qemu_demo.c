@@ -91,7 +91,6 @@
 #define W4_GUEST_MAYBE_UNUSED __attribute__((unused))
 #define W4_QWEN3_HIDDEN_RANGE_BYTES 262144ULL
 #define W4_QWEN3_MAX_HIDDEN_RANGE_BYTES (2ULL * 1024ULL * 1024ULL)
-#define W4_QWEN3_MAX_KV_PAYLOAD_BYTES (4ULL * 1024ULL * 1024ULL)
 #define W4_QWEN3_OBJECT_REF_TABLE_OFFSET 0x0000000000070000ULL
 #define W4_QWEN3_OBJECT_REF_BYTES 64ULL
 #define W4_QWEN3_OBJECT_REF_MAX_COUNT 2U
@@ -227,8 +226,40 @@ struct w4_qwen3_range_runtime_forward {
     uint64_t kv_payload_offset;
     uint64_t kv_payload_bytes;
     uint8_t output_payload[W4_QWEN3_MAX_HIDDEN_RANGE_BYTES];
-    uint8_t kv_payload[W4_QWEN3_MAX_KV_PAYLOAD_BYTES];
+    uint8_t *kv_payload;
+    uint64_t kv_payload_capacity;
 };
+
+static void qwen3_range_runtime_forward_release(
+    struct w4_qwen3_range_runtime_forward *runtime)
+{
+    if (!runtime) {
+        return;
+    }
+    free(runtime->kv_payload);
+    memset(runtime, 0, sizeof(*runtime));
+}
+
+static int qwen3_range_runtime_forward_reserve_kv(
+    struct w4_qwen3_range_runtime_forward *runtime,
+    uint64_t bytes)
+{
+    uint8_t *next_payload;
+
+    if (!runtime || bytes > SIZE_MAX) {
+        return -1;
+    }
+    if (bytes <= runtime->kv_payload_capacity) {
+        return 0;
+    }
+    next_payload = realloc(runtime->kv_payload, (size_t)bytes);
+    if (!next_payload) {
+        return -1;
+    }
+    runtime->kv_payload = next_payload;
+    runtime->kv_payload_capacity = bytes;
+    return 0;
+}
 
 struct completion_counts {
     uint64_t chipbackend;
@@ -2733,12 +2764,13 @@ static int verify_qwen3_range_forward_table(volatile uint8_t *ep_mmio,
         payload_checksum =
             w4_qwen3_hidden_payload_checksum(runtime_out->output_payload,
                                              payload_bytes);
-        if (kv_payload_bytes > sizeof(runtime_out->kv_payload)) {
+        if (qwen3_range_runtime_forward_reserve_kv(runtime_out,
+                                                   kv_payload_bytes) != 0) {
             fprintf(stderr,
-                    "[w4_guest] qwen3 range kv payload too large bytes=%" PRIu64
-                    " max=%zu\n",
+                    "[w4_guest] qwen3 range kv payload reserve failed bytes=%" PRIu64
+                    " capacity=%" PRIu64 "\n",
                     kv_payload_bytes,
-                    sizeof(runtime_out->kv_payload));
+                    runtime_out->kv_payload_capacity);
             return -1;
         }
         if (kv_payload_bytes > 0) {
@@ -4735,7 +4767,7 @@ int main(void)
     struct w4_db_cluster_summary db_cluster_update_summary;
     struct w4_db_cluster_summary db_cluster_handoff_summary;
     struct w4_compute_roundtrip compute_roundtrip;
-    struct w4_qwen3_range_runtime_forward runtime_forward;
+    struct w4_qwen3_range_runtime_forward runtime_forward = {0};
     char remote_block_key[96];
     char remote_block_key_aux[96];
     char remote_prefix_key[96];
@@ -4946,7 +4978,7 @@ int main(void)
     memset(&db_cluster_update_summary, 0, sizeof(db_cluster_update_summary));
     memset(&db_cluster_handoff_summary, 0, sizeof(db_cluster_handoff_summary));
     memset(&compute_roundtrip, 0, sizeof(compute_roundtrip));
-    memset(&runtime_forward, 0, sizeof(runtime_forward));
+    qwen3_range_runtime_forward_release(&runtime_forward);
     memset(&resolved_prefix_meta, 0, sizeof(resolved_prefix_meta));
     memset(&resolved_prefix_meta_aux, 0, sizeof(resolved_prefix_meta_aux));
     memset(&resolved_prefix_group, 0, sizeof(resolved_prefix_group));
@@ -6545,16 +6577,6 @@ decode_round_start:
                 goto out;
             }
             kv_resolved_ms = monotonic_ms();
-            if (previous_kv_view.len > W4_QWEN3_MAX_KV_PAYLOAD_BYTES) {
-                fprintf(stderr,
-                        "[w4_guest] fail qwen3 previous range kv state too large node=%u step=%" PRIu64
-                        " bytes=%" PRIu64 " max=%" PRIu64 "\n",
-                        dispatch_node + 1U,
-                        guest_decode_step,
-                        previous_kv_view.len,
-                        (uint64_t)W4_QWEN3_MAX_KV_PAYLOAD_BYTES);
-                goto out;
-            }
             if (previous_kv_view.data && previous_kv_view.len > 0) {
                 write_segment_bytes(ep_mmio,
                                     W4_QWEN3_OBJECT_REF_TABLE_OFFSET +
@@ -7186,6 +7208,7 @@ decode_round_start:
     }
 
 out:
+    qwen3_range_runtime_forward_release(&runtime_forward);
     if (cq != MAP_FAILED) {
         munmap(cq, PAGE_SIZE_BYTES);
     }
