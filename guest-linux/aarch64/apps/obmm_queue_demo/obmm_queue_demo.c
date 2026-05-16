@@ -1078,14 +1078,16 @@ static int do_spmc_demo(int node_count, int local_idx,
     struct obmm_spmc_stream_view view;
     struct obmm_spsc_queue *ack_queue[MAX_NODES];
     struct obmm_spsc_queue *remote_ingress[MAX_NODES];
+    uint32_t node_count_u = (uint32_t)node_count;
+    uint32_t local_idx_u = (uint32_t)local_idx;
     uint32_t i;
 
     memset(ack_queue, 0, sizeof(ack_queue));
     memset(remote_ingress, 0, sizeof(remote_ingress));
 
     /* resolve remote ingress queues for ACK path */
-    for (i = 0; i < node_count; i++) {
-        if (i == local_idx)
+    for (i = 0; i < node_count_u; i++) {
+        if (i == local_idx_u)
             continue;
         remote_ingress[i] = slots[i].ingress_queue[local_idx];
     }
@@ -1105,7 +1107,7 @@ static int do_spmc_demo(int node_count, int local_idx,
                     (struct obmm_spsc_queue *)
                     ((uint8_t *)slots[local_idx].region.addr + dir[di].offset);
         }
-        for (i = 0; i < node_count; i++)
+        for (i = 0; i < node_count_u; i++)
             ack_queue[i] = local_ingress[i];
     }
 
@@ -1184,14 +1186,14 @@ static int do_spmc_demo(int node_count, int local_idx,
         {
             bool acked[MAX_NODES] = { false };
             int pending = 0;
-            for (i = 0; i < node_count; i++)
-                if (i != local_idx)
+            for (i = 0; i < node_count_u; i++)
+                if (i != local_idx_u)
                     pending++;
             long deadline = obmm_now_ms() + PUSH_TIMEOUT_MS;
             while (pending > 0 && !g_alarm_fired && obmm_now_ms() < deadline) {
-                for (i = 0; i < node_count; i++) {
+                for (i = 0; i < node_count_u; i++) {
                     struct obmm_desc desc;
-                    if (i == local_idx || acked[i])
+                    if (i == local_idx_u || acked[i])
                         continue;
                     if (ack_queue[i] &&
                         obmm_spsc_pop(ack_queue[i], &desc) == 0 &&
@@ -1274,6 +1276,8 @@ static int do_mpsc_demo(int node_count, int local_idx,
     struct obmm_mpsc_publisher_lane plane;
     struct obmm_spsc_queue *local_ingress[MAX_NODES];
     struct obmm_spsc_queue *remote_ingress[MAX_NODES];
+    uint32_t node_count_u = (uint32_t)node_count;
+    uint32_t local_idx_u = (uint32_t)local_idx;
     uint32_t i;
 
     memset(local_ingress, 0, sizeof(local_ingress));
@@ -1295,8 +1299,8 @@ static int do_mpsc_demo(int node_count, int local_idx,
     }
 
     /* resolve remote ingress queues */
-    for (i = 0; i < node_count; i++) {
-        if (i == local_idx)
+    for (i = 0; i < node_count_u; i++) {
+        if (i == local_idx_u)
             continue;
         remote_ingress[i] = slots[i].ingress_queue[local_idx];
     }
@@ -1346,9 +1350,9 @@ static int do_mpsc_demo(int node_count, int local_idx,
                     consumed++;
                 } else if (rc == -EAGAIN) {
                     /* check for TERMINAL from each publisher */
-                    for (uint32_t p = 0; p < node_count; p++) {
+                    for (uint32_t p = 0; p < node_count_u; p++) {
                         struct obmm_desc tdesc;
-                        if (p == local_idx || acked[p])
+                        if (p == local_idx_u || acked[p])
                             continue;
                         if (obmm_spsc_pop(local_ingress[p], &tdesc) == 0 &&
                             tdesc.type == OBMM_DESC_COMMIT) {
@@ -1368,9 +1372,9 @@ static int do_mpsc_demo(int node_count, int local_idx,
         {
             long deadline = obmm_now_ms() + 5000;
             while (pending > 0 && !g_alarm_fired && obmm_now_ms() < deadline) {
-                for (uint32_t p = 0; p < node_count; p++) {
+                for (uint32_t p = 0; p < node_count_u; p++) {
                     struct obmm_desc tdesc;
-                    if (p == local_idx || acked[p])
+                    if (p == local_idx_u || acked[p])
                         continue;
                     if (obmm_spsc_pop(local_ingress[p], &tdesc) == 0 &&
                         tdesc.type == OBMM_DESC_COMMIT) {
@@ -1387,8 +1391,8 @@ static int do_mpsc_demo(int node_count, int local_idx,
                 local_idx + 1, consumed, expected_total, pending);
 
         /* send ACK to each publisher */
-        for (i = 0; i < node_count; i++) {
-            if (i == local_idx)
+        for (i = 0; i < node_count_u; i++) {
+            if (i == local_idx_u)
                 continue;
             if (remote_ingress[i]) {
                 struct obmm_desc desc = {0};
@@ -1505,6 +1509,8 @@ static int do_mpmc_demo(int node_count, int local_idx,
     struct obmm_mpmc_bus bus;
     struct obmm_spsc_queue *local_ingress[MAX_NODES];
     struct obmm_spsc_queue *remote_ingress[MAX_NODES];
+    uint32_t node_count_u = (uint32_t)node_count;
+    uint32_t local_idx_u = (uint32_t)local_idx;
     uint32_t i;
     int rc;
 
@@ -1527,8 +1533,8 @@ static int do_mpmc_demo(int node_count, int local_idx,
     }
 
     /* resolve remote ingress queues */
-    for (i = 0; i < node_count; i++) {
-        if (i == local_idx)
+    for (i = 0; i < node_count_u; i++) {
+        if (i == local_idx_u)
             continue;
         remote_ingress[i] = slots[i].ingress_queue[local_idx];
     }
@@ -1560,11 +1566,11 @@ static int do_mpmc_demo(int node_count, int local_idx,
     }
 
     /* ---- Publisher init for every peer ---- */
-    for (i = 0; i < node_count; i++) {
+    for (i = 0; i < node_count_u; i++) {
         const struct obmm_pool_header *phdr;
         const struct obmm_region_dirent *pdir;
 
-        if (i == local_idx)
+        if (i == local_idx_u)
             continue;
 
         phdr = (const struct obmm_pool_header *)slots[i].region.addr;
@@ -1588,8 +1594,8 @@ static int do_mpmc_demo(int node_count, int local_idx,
     }
 
     /* ---- Publish phase: send batch_count descriptors to each peer ---- */
-    for (i = 0; i < node_count; i++) {
-        if (i == local_idx)
+    for (i = 0; i < node_count_u; i++) {
+        if (i == local_idx_u)
             continue;
         for (uint32_t batch = 0; batch < batch_count; batch++) {
             struct obmm_desc desc = {0};
@@ -1692,8 +1698,8 @@ static int do_mpmc_demo(int node_count, int local_idx,
 
         fprintf(stderr, TAG " mpmc consumer=%d received=%u/%u",
                 local_idx + 1, consumed, total_expected);
-        for (i = 0; i < node_count; i++) {
-            if (i == local_idx)
+        for (i = 0; i < node_count_u; i++) {
+            if (i == local_idx_u)
                 continue;
             fprintf(stderr, " from=%u:%u", i + 1, per_pub[i]);
         }
@@ -1706,8 +1712,8 @@ static int do_mpmc_demo(int node_count, int local_idx,
         }
 
         /* verify per-publisher counts */
-        for (i = 0; i < node_count; i++) {
-            if (i == local_idx)
+        for (i = 0; i < node_count_u; i++) {
+            if (i == local_idx_u)
                 continue;
             if (per_pub[i] != batch_count) {
                 fprintf(stderr, TAG " mpmc consumer=%d from=%u "
