@@ -74,10 +74,11 @@ Initial profiles:
 | `qwen3_14b_decode` | Qwen3-14B | decode | Large-model handoff/KV/tokenizer validation. |
 | `qwen3_0_6b_engram_decode` | Qwen3-0.6B | decode + engram | Policy/context-op validation. |
 | `qwen3_14b_engram_decode` | Qwen3-14B | decode + engram | Large-model engram validation. |
-| `qwen3_prefill_decode` | Qwen3-* | prefill + decode | Future TTFT/TPOT split validation. |
 
 Future profiles can add long-context, batching, MoE, and other models without
-changing the workload family name.
+changing the workload family name. `qwen3_prefill_decode` is a reserved future
+profile name and must not be accepted by the runner until prefill+decode
+behavior is actually implemented.
 
 ## User-Facing Command Shape
 
@@ -169,21 +170,22 @@ the workload family name, not the timing fields.
 
 ## Code Migration Strategy
 
-Phase 1: Alias, no behavior change.
+Phase 1: Alias, no behavior change. Status: implemented.
 
 - Add W5 runner script that delegates to the existing eight-node implementation.
 - Add W5 summary output filename while keeping existing summary generation.
 - Add docs using W5 names.
 - Keep existing tests unchanged except for any new W5 wrapper tests.
 
-Phase 2: Internal naming cleanup.
+Phase 2: Internal naming cleanup. Status: implemented for user-facing entry
+points; wire/log compatibility names remain intentionally unchanged.
 
 - Add W5 profile parsing in `sim-cli`.
 - Rename user-facing report labels from "w4 guest" to "w5 inference cluster"
   where those labels are not part of a wire/log compatibility contract.
 - Keep legacy script names as wrappers.
 
-Phase 3: Workload profile schema.
+Phase 3: Workload profile schema. Status: documented only.
 
 - Replace ad hoc environment groups with a profile schema:
 
@@ -219,13 +221,23 @@ and their run IDs should remain stable.
 
 Migration is complete when:
 
-- a new W5 runner exists and can execute the same 8-node decode path;
-- summary output has a W5 filename alias;
-- docs describe the mainline workload as W5 inference cluster;
-- legacy W4 commands still work;
-- a W5 Qwen3-0.6B decode run passes;
-- a W5 Qwen3-14B decode run passes;
-- a W5 engram context-op run emits `engram_context_summary`.
+| Item | Status |
+| --- | --- |
+| A new W5 runner exists and can execute the same 8-node decode path. | Implemented: `run_ub_eight_node_w5_inference_cluster.sh`. |
+| Summary output has a W5 filename alias. | Implemented: `eight_node_w5_inference_cluster_summary.<RUN_ID>.txt`. |
+| Docs describe the mainline workload as W5 inference cluster. | Implemented for forward-looking W5 plans. |
+| Legacy W4 commands still work. | Preserved by keeping the legacy runner and compatibility env mapping. |
+| A W5 Qwen3-0.6B decode run passes. | Verified: `w5_migration_0_6b_decode_1step_20260516_170746`. |
+| A W5 Qwen3-14B decode run passes. | Verified: `w5_migration_14b_decode_1step_20260516_170832`. |
+| A W5 engram context-op run emits `engram_context_summary`. | Verified: `w5_migration_0_6b_engram_context_1step_20260516_171046`, `modes=cpu-reference`. |
+
+Latest post-migration validation summaries:
+
+```text
+guest-linux/aarch64/out/eight_node_w5_inference_cluster_summary.w5_migration_0_6b_decode_1step_20260516_170746.txt
+guest-linux/aarch64/out/eight_node_w5_inference_cluster_summary.w5_migration_14b_decode_1step_20260516_170832.txt
+guest-linux/aarch64/out/eight_node_w5_inference_cluster_summary.w5_migration_0_6b_engram_context_1step_20260516_171046.txt
+```
 
 ## Risks
 
@@ -244,6 +256,6 @@ Treat the simpler-host Engram context-op design as a W5 feature:
 W5 Engram Simpler-Host Context Op
 ```
 
-The implementation should target the W5 inference cluster runner once the
-alias exists, while remaining executable through the legacy-compatible script
-during the transition.
+The implementation should target the W5 inference cluster runner. The
+legacy-compatible W4 runner remains available for historical comparisons and
+bisecting old reports.

@@ -6,10 +6,48 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
-TRACE_FILE="${TRACE_FILE:-$OUT_DIR/eight_node_w4_guest.trace.latest.txt}"
-RUN_ID_BASE="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_w4guest8_${RANDOM}}"
+SIM_UAPI_W5_PROFILE="${SIM_UAPI_W5_PROFILE:-}"
+
+w5_profile_default_w4_backend() {
+  case "$1" in
+    ""|qwen3_0_6b_decode|qwen3_14b_decode|qwen3_0_6b_engram_decode|qwen3_14b_engram_decode)
+      echo qwen3_dense
+      ;;
+    *)
+      echo ""
+      ;;
+  esac
+}
+
+w5_profile_default_engram() {
+  case "$1" in
+    qwen3_0_6b_engram_decode|qwen3_14b_engram_decode)
+      echo 1
+      ;;
+    *)
+      echo 0
+      ;;
+  esac
+}
+
+if [[ -n "$SIM_UAPI_W5_PROFILE" && -z "$(w5_profile_default_w4_backend "$SIM_UAPI_W5_PROFILE")" ]]; then
+  echo "unsupported SIM_UAPI_W5_PROFILE=$SIM_UAPI_W5_PROFILE" >&2
+  exit 2
+fi
+
+if [[ -n "$SIM_UAPI_W5_PROFILE" ]]; then
+  TRACE_FILE="${TRACE_FILE:-$OUT_DIR/eight_node_w5_inference_cluster.trace.latest.txt}"
+  RUN_ID_BASE="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_w5_${SIM_UAPI_W5_PROFILE}_${RANDOM}}"
+else
+  TRACE_FILE="${TRACE_FILE:-$OUT_DIR/eight_node_w4_guest.trace.latest.txt}"
+  RUN_ID_BASE="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_w4guest8_${RANDOM}}"
+fi
 RUN_DIR="$LOG_DIR/${RUN_ID_BASE}_headless8"
-RUN_SUMMARY_FILE="${RUN_SUMMARY_FILE:-$OUT_DIR/eight_node_w4_guest_summary.${RUN_ID_BASE}.txt}"
+if [[ -n "$SIM_UAPI_W5_PROFILE" ]]; then
+  RUN_SUMMARY_FILE="${RUN_SUMMARY_FILE:-$OUT_DIR/eight_node_w5_inference_cluster_summary.${RUN_ID_BASE}.txt}"
+else
+  RUN_SUMMARY_FILE="${RUN_SUMMARY_FILE:-$OUT_DIR/eight_node_w4_guest_summary.${RUN_ID_BASE}.txt}"
+fi
 RUN_INITRAMFS_DIR="$OUT_DIR/initramfs.${RUN_ID_BASE}"
 RUN_INITRAMFS_IMAGE="$OUT_DIR/initramfs.${RUN_ID_BASE}.cpio.gz"
 # Use a short unique suffix for the shared dir to stay under macOS 104-byte UNIX socket path limit.
@@ -22,10 +60,11 @@ APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 QEMU_MEM="${QEMU_MEM:-8G}"
 PORT_NUM="${UB_SIM_PORT_NUM:-7}"
 SIMPLER_HOST_MATMUL_MANIFEST="${SIMPLER_HOST_MATMUL_MANIFEST:-/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json}"
+SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-$(w5_profile_default_w4_backend "$SIM_UAPI_W5_PROFILE")}"
 SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-qwen3_dense}"
 SIM_QWEN3_GUEST_DECODE_STEPS="${SIM_QWEN3_GUEST_DECODE_STEPS:-1}"
 SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS="${SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS:-9707,1207,16948,18}"
-SIM_QWEN3_GUEST_ENGRAM="${SIM_QWEN3_GUEST_ENGRAM:-0}"
+SIM_QWEN3_GUEST_ENGRAM="${SIM_QWEN3_GUEST_ENGRAM:-$(w5_profile_default_engram "$SIM_UAPI_W5_PROFILE")}"
 SIM_QWEN3_GUEST_ENGRAM_MODE="${SIM_QWEN3_GUEST_ENGRAM_MODE:-cpu}"
 SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE="${SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE:-8}"
 SIM_QWEN3_GUEST_ENGRAM_NO_REPEAT_NGRAM_SIZE="${SIM_QWEN3_GUEST_ENGRAM_NO_REPEAT_NGRAM_SIZE:-0}"
@@ -67,6 +106,46 @@ trace() {
 is_qwen3_dense_profile() {
   local profile="$1"
   [[ "$profile" == "qwen3_dense_reference" || "$profile" == "qwen3_dense" ]]
+}
+
+validate_w5_profile_runtime() {
+  case "$SIM_UAPI_W5_PROFILE" in
+    "")
+      return 0
+      ;;
+    qwen3_0_6b_decode|qwen3_0_6b_engram_decode)
+      if [[ "${SIM_QWEN3_DENSE_MODEL_KEY:-}" == "qwen3-14b" ]]; then
+        trace "FAIL: SIM_UAPI_W5_PROFILE=$SIM_UAPI_W5_PROFILE requires Qwen3-0.6B-compatible weights, got model_key=${SIM_QWEN3_DENSE_MODEL_KEY:-unknown}"
+        return 1
+      fi
+      ;;
+    qwen3_14b_decode|qwen3_14b_engram_decode)
+      if [[ "${SIM_QWEN3_DENSE_MODEL_KEY:-}" != "qwen3-14b" ]]; then
+        trace "FAIL: SIM_UAPI_W5_PROFILE=$SIM_UAPI_W5_PROFILE requires Qwen3-14B weights, got model_key=${SIM_QWEN3_DENSE_MODEL_KEY:-unknown}"
+        return 1
+      fi
+      ;;
+    *)
+      trace "FAIL: unsupported SIM_UAPI_W5_PROFILE=$SIM_UAPI_W5_PROFILE"
+      return 1
+      ;;
+  esac
+
+  case "$SIM_UAPI_W5_PROFILE" in
+    qwen3_0_6b_engram_decode|qwen3_14b_engram_decode)
+      if [[ "$SIM_QWEN3_GUEST_ENGRAM" != "1" ]]; then
+        trace "FAIL: SIM_UAPI_W5_PROFILE=$SIM_UAPI_W5_PROFILE requires SIM_QWEN3_GUEST_ENGRAM=1"
+        return 1
+      fi
+      ;;
+    qwen3_0_6b_decode|qwen3_14b_decode)
+      if [[ "$SIM_QWEN3_GUEST_ENGRAM" == "1" ]]; then
+        trace "FAIL: SIM_UAPI_W5_PROFILE=$SIM_UAPI_W5_PROFILE requires SIM_QWEN3_GUEST_ENGRAM=0"
+        return 1
+      fi
+      ;;
+  esac
+  return 0
 }
 
 validate_qwen3_weights_path() {
@@ -202,13 +281,18 @@ emit_w4_wait_progress() {
   local pass_count="$2"
   local elapsed_s=$((SECONDS - wait_start))
   local line
+  local summary_parser="$SCRIPT_DIR/w4_guest_run_summary.py"
+
+  if [[ -n "$SIM_UAPI_W5_PROFILE" && -f "$SCRIPT_DIR/w5_inference_cluster_summary.py" ]]; then
+    summary_parser="$SCRIPT_DIR/w5_inference_cluster_summary.py"
+  fi
 
   if ! command -v python3 >/dev/null 2>&1; then
     trace "progress: unavailable reason=python3_not_found"
     return 1
   fi
 
-  if ! python3 "$SCRIPT_DIR/w4_guest_run_summary.py" \
+  if ! python3 "$summary_parser" \
     --progress "$RUN_DIR" "$pass_count" "$elapsed_s" "${NODE_IDS[@]}" | while IFS= read -r line; do
       trace "$line"
     done; then
@@ -279,6 +363,9 @@ cleanup_headless_env() {
 trace_run_artifact_paths() {
   local node_id
 
+  if [[ -n "$SIM_UAPI_W5_PROFILE" ]]; then
+    trace "w5_profile: $SIM_UAPI_W5_PROFILE"
+  fi
   trace "run_dir: $RUN_DIR"
   trace "control_log: $RUN_DIR/control.log"
   trace "cleanup_script: ${CLEANUP_SCRIPT:-}"
@@ -384,6 +471,7 @@ export LINQU_UB_NODE_COUNT=8
 export LINQU_W4_DB_CLUSTER=1
 export LINQU_W4_REQUIRE_UAPI_RESOURCE=1
 export SIM_W4_DB_LAZY_REMOTE_ACTIVATION=1
+export SIM_UAPI_W5_PROFILE="$SIM_UAPI_W5_PROFILE"
 export SIM_UAPI_W4_CHIPBACKEND_PROFILE="$SIM_UAPI_W4_CHIPBACKEND_PROFILE"
 export SIM_QWEN3_DENSE_MODEL_ID="${SIM_QWEN3_DENSE_MODEL_ID:-}"
 export SIM_QWEN3_DENSE_MODEL_KEY="${SIM_QWEN3_DENSE_MODEL_KEY:-}"
@@ -622,13 +710,18 @@ run_w4_demo() {
 emit_w4_run_summary() {
   local summary_tmp="$RUN_SUMMARY_FILE.tmp"
   local line
+  local summary_parser="$SCRIPT_DIR/w4_guest_run_summary.py"
+
+  if [[ -n "$SIM_UAPI_W5_PROFILE" && -f "$SCRIPT_DIR/w5_inference_cluster_summary.py" ]]; then
+    summary_parser="$SCRIPT_DIR/w5_inference_cluster_summary.py"
+  fi
 
   if ! command -v python3 >/dev/null 2>&1; then
     trace "summary: unavailable reason=python3_not_found"
     return 1
   fi
 
-  if ! python3 "$SCRIPT_DIR/w4_guest_run_summary.py" \
+  if ! python3 "$summary_parser" \
     "$RUN_DIR" "$SIM_QWEN3_GUEST_DECODE_STEPS" "${NODE_IDS[@]}" > "$summary_tmp"; then
     rm -f "$summary_tmp"
     trace "summary: unavailable reason=summary_parser_failed"
@@ -652,6 +745,7 @@ prepare_environment() {
   control_log="$RUN_DIR/control.log"
   validate_qwen3_weights_path || return 1
   qwen3_dense_apply_config_env
+  validate_w5_profile_runtime || return 1
   if is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
     if [[ -z "$SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS" ]]; then
       SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS="$((DEMO_WAIT_SECS * 1000))"
@@ -665,6 +759,7 @@ prepare_environment() {
     INITRAMFS_IMAGE="$RUN_INITRAMFS_IMAGE" RDINIT="/bin/run_demo" \
     UB_FM_SHARED_DIR="$UB_FM_SHARED_DIR" \
     SIMPLER_HOST_MATMUL_MANIFEST="$SIMPLER_HOST_MATMUL_MANIFEST" \
+    SIM_UAPI_W5_PROFILE="$SIM_UAPI_W5_PROFILE" \
     SIM_UAPI_W4_CHIPBACKEND_PROFILE="$SIM_UAPI_W4_CHIPBACKEND_PROFILE" \
     SIM_QWEN3_DENSE_MODEL_ID="${SIM_QWEN3_DENSE_MODEL_ID:-}" \
     SIM_QWEN3_DENSE_MODEL_KEY="${SIM_QWEN3_DENSE_MODEL_KEY:-}" \
@@ -727,7 +822,11 @@ main() {
   fi
 
   if ! run_w4_demo 0; then
-    trace "FAIL: eight-node w4 guest resource-backed uapi/chipbackend service coverage validation failed"
+    if [[ -n "$SIM_UAPI_W5_PROFILE" ]]; then
+      trace "FAIL: eight-node w5 inference cluster validation failed profile=$SIM_UAPI_W5_PROFILE"
+    else
+      trace "FAIL: eight-node w4 guest resource-backed uapi/chipbackend service coverage validation failed"
+    fi
     [[ -n "${CLEANUP_SCRIPT:-}" ]] && cleanup_headless_env "$CLEANUP_SCRIPT"
     exit 1
   fi
@@ -735,8 +834,13 @@ main() {
   if true; then
     exit_code=0
     emit_w4_run_summary || true
-    trace "PASS: eight-node w4 guest resource-backed uapi/chipbackend service coverage validated"
-    echo "eight-node w4 guest validation passed"
+    if [[ -n "$SIM_UAPI_W5_PROFILE" ]]; then
+      trace "PASS: eight-node w5 inference cluster profile=$SIM_UAPI_W5_PROFILE"
+      echo "eight-node w5 inference cluster validation passed"
+    else
+      trace "PASS: eight-node w4 guest resource-backed uapi/chipbackend service coverage validated"
+      echo "eight-node w4 guest validation passed"
+    fi
   fi
 
   [[ -n "${CLEANUP_SCRIPT:-}" ]] && cleanup_headless_env "$CLEANUP_SCRIPT"

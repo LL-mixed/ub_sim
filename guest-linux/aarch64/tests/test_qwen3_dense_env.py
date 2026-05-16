@@ -114,9 +114,36 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         launcher_text = launcher.read_text(encoding="utf-8")
 
         self.assertIn("SIM_UAPI_W4_CHIPBACKEND_PROFILE:-qwen3_dense}", runner_text)
+        self.assertIn("SIM_UAPI_W5_PROFILE", runner_text)
+        self.assertIn("w5_profile_default_w4_backend", runner_text)
+        self.assertIn("validate_w5_profile_runtime", runner_text)
         self.assertIn("SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS", runner_text)
         self.assertIn("DEMO_WAIT_SECS * 1000", runner_text)
+        self.assertIn("SIM_UAPI_W5_PROFILE", launcher_text)
         self.assertIn("SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS", launcher_text)
+
+    def test_w5_inference_cluster_runner_delegates_to_legacy_compatible_runner(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        runner = script_dir / "run_ub_eight_node_w5_inference_cluster.sh"
+        generic = script_dir / "run_ub_w5_inference_cluster.sh"
+        summary = script_dir / "w5_inference_cluster_summary.py"
+
+        self.assertTrue(runner.exists())
+        self.assertTrue(runner.stat().st_mode & 0o111)
+        self.assertTrue(generic.exists())
+        self.assertTrue(generic.stat().st_mode & 0o111)
+        self.assertTrue(summary.exists())
+        self.assertTrue(summary.stat().st_mode & 0o111)
+
+        runner_text = runner.read_text(encoding="utf-8")
+        generic_text = generic.read_text(encoding="utf-8")
+        summary_text = summary.read_text(encoding="utf-8")
+
+        self.assertIn("SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode", runner_text)
+        self.assertIn("eight_node_w5_inference_cluster_summary", runner_text)
+        self.assertIn('exec "$SCRIPT_DIR/run_ub_eight_node_w4_guest.sh"', runner_text)
+        self.assertIn('exec "$SCRIPT_DIR/run_ub_eight_node_w5_inference_cluster.sh"', generic_text)
+        self.assertIn("w4_guest_run_summary.py", summary_text)
 
 
 if __name__ == "__main__":

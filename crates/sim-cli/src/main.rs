@@ -187,6 +187,7 @@ struct Qwen3GuestDecodeLoopCliArgs {
     matmul_batch: Option<usize>,
     model: Option<String>,
     weights_path: Option<PathBuf>,
+    w5_profile: Option<String>,
     engram: Qwen3EngramConfig,
 }
 
@@ -418,7 +419,7 @@ where
 {
     let mut args = args.into_iter().map(Into::into);
     match args.next() {
-        Some(mode) if mode == "qwen3-guest-decode-loop" => {
+        Some(mode) if mode == "qwen3-guest-decode-loop" || mode == "w5-inference-cluster" => {
             let mut step_count = None;
             let mut prompt = None;
             let mut prompt_token_ids = None;
@@ -426,6 +427,7 @@ where
             let mut matmul_batch = None;
             let mut model = None;
             let mut weights_path = None;
+            let mut w5_profile = None;
             let mut engram = Qwen3EngramConfig::default();
             let mut positionals = Vec::new();
             let mut pending = args.peekable();
@@ -487,6 +489,13 @@ where
                     weights_path = Some(PathBuf::from(next));
                 } else if let Some(value) = text.strip_prefix("--weights-path=") {
                     weights_path = Some(PathBuf::from(value));
+                } else if text == "--w5-profile" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--w5-profile requires a value"))?;
+                    w5_profile = Some(validate_w5_inference_profile(&next.to_string_lossy())?);
+                } else if let Some(value) = text.strip_prefix("--w5-profile=") {
+                    w5_profile = Some(validate_w5_inference_profile(value)?);
                 } else if text == "--engram" {
                     engram.enabled = true;
                 } else if text == "--engram-mode" {
@@ -614,6 +623,7 @@ where
                 matmul_batch,
                 model,
                 weights_path,
+                w5_profile,
                 engram,
             }))
         }
@@ -685,7 +695,34 @@ fn default_qwen3_guest_decode_script_path() -> PathBuf {
     Path::new("guest-linux")
         .join("aarch64")
         .join("scripts")
-        .join("run_ub_eight_node_w4_guest.sh")
+        .join("run_ub_eight_node_w5_inference_cluster.sh")
+}
+
+fn validate_w5_inference_profile(value: &str) -> anyhow::Result<String> {
+    match value {
+        "qwen3_0_6b_decode"
+        | "qwen3_14b_decode"
+        | "qwen3_0_6b_engram_decode"
+        | "qwen3_14b_engram_decode" => Ok(value.to_string()),
+        _ => anyhow::bail!("unsupported --w5-profile: {value}"),
+    }
+}
+
+fn qwen3_guest_default_w5_profile(
+    runtime: &Qwen3DenseGuestRuntime,
+    engram: &Qwen3EngramConfig,
+) -> String {
+    let model = if runtime.model_key == "qwen3-14b" {
+        "qwen3_14b"
+    } else {
+        "qwen3_0_6b"
+    };
+    let mode = if engram.enabled {
+        "engram_decode"
+    } else {
+        "decode"
+    };
+    format!("{model}_{mode}")
 }
 
 fn parse_positive_usize(label: &str, value: &str) -> anyhow::Result<usize> {
@@ -1236,6 +1273,7 @@ mod tests {
         qwen3_decode_report_verbosity_from_env, qwen3_dense_weights_path_from_env,
         qwen3_engram_policy_checksum, qwen3_engram_select_token, qwen3_engram_state_words,
         qwen3_guest_candidate_records, qwen3_guest_decode_loop_args_from,
+        qwen3_guest_default_w5_profile,
         qwen3_guest_dense_runtime, qwen3_guest_engram_candidate_counts,
         qwen3_guest_engram_env_vars, qwen3_guest_engram_expected_terminal_rewrites,
         qwen3_guest_engram_history_lengths, qwen3_guest_engram_object_transport_report,
@@ -1245,8 +1283,9 @@ mod tests {
         qwen3_guest_terminal_text_lossy_from_tokenizer, qwen3_guest_terminal_tokens,
         qwen3_guest_timing_summary, qwen3_range_forward_args_from,
         simpler_host_matmul_artifact_producer_path, validate_qwen3_dense_weights_path,
-        Qwen3CandidateRecord, Qwen3DecodeReportVerbosity, Qwen3EngramConfig, Qwen3EngramContextOp,
-        Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
+        validate_w5_inference_profile, Qwen3CandidateRecord, Qwen3DecodeReportVerbosity,
+        Qwen3EngramConfig, Qwen3EngramContextOp, Qwen3EngramMode, Qwen3EngramPool,
+        Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
     };
     use std::env;
     use std::fs;
@@ -1411,7 +1450,46 @@ mod tests {
         assert_eq!(args.matmul_batch, Some(16));
         assert_eq!(args.model.as_deref(), Some("Qwen/Qwen3-14B"));
         assert_eq!(args.weights_path, Some(PathBuf::from("/models/qwen3-14b")));
+        assert_eq!(args.w5_profile, None);
         assert_eq!(args.engram, Qwen3EngramConfig::default());
+    }
+
+    #[test]
+    fn qwen3_guest_decode_loop_args_default_to_w5_runner() {
+        let args = qwen3_guest_decode_loop_args_from(["qwen3-guest-decode-loop"])
+            .expect("parse guest decode loop args")
+            .expect("guest decode loop args");
+
+        assert_eq!(
+            args.script_path,
+            PathBuf::from("guest-linux/aarch64/scripts/run_ub_eight_node_w5_inference_cluster.sh")
+        );
+        assert_eq!(args.w5_profile, None);
+    }
+
+    #[test]
+    fn w5_inference_cluster_args_accept_profile() {
+        let args = qwen3_guest_decode_loop_args_from([
+            "w5-inference-cluster",
+            "--w5-profile=qwen3_14b_engram_decode",
+            "--engram",
+            "--engram-pool=obmm",
+        ])
+        .expect("parse w5 inference cluster args")
+        .expect("w5 inference cluster args");
+
+        assert_eq!(args.w5_profile.as_deref(), Some("qwen3_14b_engram_decode"));
+        assert!(args.engram.enabled);
+        assert_eq!(args.engram.pool, Qwen3EngramPool::Obmm);
+    }
+
+    #[test]
+    fn w5_inference_cluster_args_reject_unknown_profile() {
+        let err =
+            qwen3_guest_decode_loop_args_from(["w5-inference-cluster", "--w5-profile=unknown"])
+                .expect_err("unknown w5 profile should fail");
+
+        assert!(err.to_string().contains("unsupported --w5-profile"));
     }
 
     #[test]
@@ -1619,11 +1697,16 @@ mod tests {
             matmul_batch: None,
             model: None,
             weights_path: Some(dir.clone()),
+            w5_profile: None,
             engram: Qwen3EngramConfig::default(),
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("dense runtime");
         assert_eq!(runtime.model_key, "qwen3-0-6b");
         assert_eq!(runtime.chipbackend_profile, "qwen3_dense");
+        assert_eq!(
+            qwen3_guest_default_w5_profile(&runtime, &Qwen3EngramConfig::default()),
+            "qwen3_0_6b_decode"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1662,6 +1745,7 @@ mod tests {
             matmul_batch: None,
             model: None,
             weights_path: Some(dir.clone()),
+            w5_profile: None,
             engram: Qwen3EngramConfig::default(),
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("reference shape runtime");
@@ -1708,6 +1792,7 @@ mod tests {
             matmul_batch: None,
             model: None,
             weights_path: Some(dir.clone()),
+            w5_profile: None,
             engram: Qwen3EngramConfig::default(),
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("14B generic runtime");
@@ -1715,8 +1800,27 @@ mod tests {
         assert_eq!(runtime.chipbackend_profile, "qwen3_dense");
         assert_eq!(runtime.profile.hidden_size, 5120);
         assert_eq!(runtime.profile.num_hidden_layers, 40);
+        let engram = Qwen3EngramConfig {
+            enabled: true,
+            pool: Qwen3EngramPool::Obmm,
+            ..Qwen3EngramConfig::default()
+        };
+        assert_eq!(
+            qwen3_guest_default_w5_profile(&runtime, &engram),
+            "qwen3_14b_engram_decode"
+        );
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_w5_inference_profile_accepts_known_values() {
+        assert_eq!(
+            validate_w5_inference_profile("qwen3_0_6b_decode").expect("valid profile"),
+            "qwen3_0_6b_decode"
+        );
+        assert!(validate_w5_inference_profile("w4_guest").is_err());
+        assert!(validate_w5_inference_profile("qwen3_prefill_decode").is_err());
     }
 
     #[test]
@@ -2310,8 +2414,14 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     }
     let runtime = qwen3_guest_dense_runtime(args)?;
     let engram_simt = qwen3_prepare_engram_simt_mode(&args.engram)?;
+    let w5_profile = args
+        .w5_profile
+        .clone()
+        .unwrap_or_else(|| qwen3_guest_default_w5_profile(&runtime, &args.engram));
     println!("qwen3_guest_decode_loop");
     println!("  script: {}", script_path.display());
+    println!("  workload: w5 inference cluster");
+    println!("  w5_profile: {}", w5_profile);
     println!("  model_id: {}", runtime.profile.model_id);
     println!("  model_key: {}", runtime.model_key);
     println!("  weights_path: {}", runtime.weights_path.display());
@@ -2359,7 +2469,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             );
         }
     }
-    println!("  worker_path: 8-node W4 guest OBMM object-service range forward");
+    println!("  worker_path: 8-node W5 inference cluster OBMM object-service range forward");
     let trace_file = env::temp_dir().join(format!(
         "qwen3_guest_decode_loop_{}.trace",
         std::process::id()
@@ -2379,6 +2489,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             "SIM_UAPI_W4_CHIPBACKEND_PROFILE",
             runtime.chipbackend_profile,
         )
+        .env("SIM_UAPI_W5_PROFILE", &w5_profile)
         .env("SIM_QWEN3_DENSE_MODEL_ID", &runtime.profile.model_id)
         .env("SIM_QWEN3_DENSE_MODEL_KEY", &runtime.model_key)
         .env("SIM_QWEN3_DENSE_WEIGHTS_PATH", &runtime.weights_path)
@@ -2524,7 +2635,9 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     let guest_engram_history_lengths = qwen3_guest_engram_history_lengths(&combined);
     let guest_engram_candidate_counts = qwen3_guest_engram_candidate_counts(&combined);
     let terminal_text = qwen3_guest_terminal_text_lossy(&terminal_tokens);
-    let pass = combined.contains("eight-node w4 guest validation passed")
+    let pass = combined.contains("eight-node w5 inference cluster validation passed")
+        || combined.contains("PASS: eight-node w5 inference cluster")
+        || combined.contains("eight-node w4 guest validation passed")
         || combined.contains("PASS: eight-node w4 guest");
     println!(
         "  guest_worker_summary: pass={} steps={} range_forwards={} runtime_inputs={} runtime_outputs={} terminal_tokens={}",

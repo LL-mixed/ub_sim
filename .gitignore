@@ -11,3 +11,4 @@ guest-linux/kernel_ub/
 guest-linux/aarch64/apps/obmm_queue_demo/obmm_queue_demo
 guest-linux/aarch64/apps/obmm_queue_demo/obmm_queue_test
 guest-linux/aarch64/tests/__pycache__/
+guest-linux/aarch64/scripts/__pycache__/

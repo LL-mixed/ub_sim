@@ -326,8 +326,9 @@ SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=simpler-host
 ./guest-linux/aarch64/scripts/run_ub_eight_node_w5_inference_cluster.sh
 ```
 
-Until the W5 runner alias lands, the same environment can be executed through
-the legacy-compatible eight-node guest decode runner.
+The legacy-compatible eight-node guest decode runner can still execute the
+same environment for historical comparisons, but new validation should use the
+W5 inference cluster runner.
 
 Acceptance:
 
