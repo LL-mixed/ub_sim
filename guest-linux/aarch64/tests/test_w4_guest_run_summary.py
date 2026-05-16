@@ -154,6 +154,16 @@ class W4GuestRunSummaryTest(unittest.TestCase):
             result.stdout,
         )
         self.assertIn(
+            "edge_step: step=1 edges=7/7 total_edge_gap_mono_ms=70 "
+            "total_edge_gap_mono_raw_ms=70 max_edge_gap_mono_ms=10 max_edge=1->2",
+            result.stdout,
+        )
+        self.assertIn(
+            "edge_bottleneck: max_edge_step=0 edge=1->2 node=nodeB "
+            "producer_to_input_found_mono_ms=10",
+            result.stdout,
+        )
+        self.assertIn(
             "obmm_pool: nodes_observed=8/8 expected_steps=2 "
             "per_node_region_bytes=536870912 cluster_region_bytes=4294967296",
             result.stdout,

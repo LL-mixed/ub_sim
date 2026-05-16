@@ -16,6 +16,8 @@ W4 8-node guest decode 的首要优化对象不是单个 layer 的数值计算�
 
 2026-05-15 更新: `88ac70d Use object refs for W4 Qwen3 handoff` 已把 guest handover descriptor 切到 ObjectRef wire contract。guest 侧不再把 hidden/KV 大 payload 写入 UAPI segment；UAPI descriptor 携带 ObjectRef，sim-uapi adapter resolve/materialize object-backed operand。当前仍保留一次 adapter 内部 materialize 为旧 `run_w4_chipbackend(&[u8])` slice 的兼容层，backend trait 完全改成 object-backed operand view 是下一步接口收口。
 
+2026-05-15 追加: terminal token result 也改为按 step 分配 OBMM object，并通过 `tokens/<model>/decode-stepN` 的 object record resolve offset/checksum。此前复用固定 offset 会在多 step decode 中覆盖前一步 token result，8-step 14B run 会卡在 step2 附近；对象化后 14B 8-step W4 guest decode 通过。
+
 ## 1. Handover 数据模型
 
 状态: 已完成第一版真实数据模型，提交 `ff85735 Support decode hidden handoff sizing`。
@@ -153,6 +155,62 @@ step1-step14 bottleneck:
 - `max_barrier_ms` 平均 `20465ms`
 - OBMM high-water: `10053576` bytes / node max，`max_payload_used_pct_milli=1873`
 
+### 2.3 最新 14B 8-step edge timing
+
+Run:
+
+- `RUN_ID=w4_handoff_timing_14b_8step_object_token_20260515`
+- Summary: `guest-linux/aarch64/out/eight_node_w4_guest_summary.w4_handoff_timing_14b_8step_object_token_20260515.txt`
+- PASS。
+- 输出 token ids: `[11, 358, 2776, 4460, 311, 3535, 279, 7286]`。
+- 输出 text: `, I'm trying to understand the concept`。
+
+Step timing:
+
+| step | round_ms | 说明 |
+| ---: | ---: | --- |
+| 0 | 87779 | TTFT |
+| 1 | 25088 | TPOT |
+| 2 | 23357 | TPOT |
+| 3 | 23491 | TPOT |
+| 4 | 23918 | TPOT |
+| 5 | 23818 | TPOT |
+| 6 | 23373 | TPOT |
+| 7 | 22551 | final token，缺少后续 barrier，不适合算稳态 |
+
+TTFT:
+
+- `round_ms=87779`
+- `max_input_wait_ms=71141`
+- `max_compute_window_ms=13245`
+- `max_barrier_ms=74899`
+- step0 `edge_step`: `total_edge_gap_mono_ms=124`，`total_edge_gap_mono_raw_ms=67`，`max_edge_gap_mono_ms=55`
+
+TPOT step1-step6:
+
+- 平均: `23841ms/token`
+- 中位数: `23655ms/token`
+- 范围: `23357ms-25088ms/token`
+- `max_input_wait_ms` 平均: `18314ms`
+- `max_compute_window_ms` 平均: `5276ms`
+- `max_barrier_ms` 平均: `20933ms`
+- `edge_step total_edge_gap_mono_ms` 平均: `132ms`
+- `edge_step total_edge_gap_mono_raw_ms` 平均: `70ms`
+- `edge_step metadata_ms` 平均: `796ms`
+- `edge_step activate_ms`: `0ms`
+
+Edge bottleneck:
+
+- 最大 producer-to-input-found edge: step4 `2->3` / nodeC，`producer_to_input_found_mono_ms=70`。
+- 最大 wait attempts: step0 `7->8` / nodeH，`input_wait_attempts=953`，`producer_to_input_found_mono_ms=10`，`input_metadata_ms=171`，`input_activate_ms=10`。
+
+判断:
+
+- node-to-node edge gap 存在，但当前量级只有约 `0.1s/token`，远小于 14B TPOT 的 `23s-25s/token`。
+- step1+ 的主要成本仍是每个 node 本地从 input found 到 handoff 的处理时间，以及 8-node 串行 pipeline 造成的累计等待。
+- 对 TPOT 最有效的下一步不是继续压 edge gap，而是缩短单 node `input_found_to_handoff` 区间，特别是 nodeH 的 terminal path: 本次 nodeH `total_input_found_to_handoff_ms=51736`，其他 node 约 `26991ms-28187ms`。
+- `edge_step`/`edge_bottleneck` 已能把 producer publish 到 consumer input found 的 gap 从 node 本地 worker timing 中拆出来，后续优化 descriptor wait 或同步策略时可以直接比较。
+
 ## 3. 后续优化方向
 
 ### 3.1 TTFT: 拆冷启动和 prefill handoff
@@ -221,10 +279,12 @@ TPOT 目前不是纯 compute 时间。step1+ 每个 token 主要由前序 node �
 6. [x] 用 14B 8-node 16-step 验证 TTFT/TPOT。
 7. [x] ObjectRef handover 第一版: UAPI descriptor carries ObjectRef，adapter resolve/materialize。
 8. [ ] 拆分 TTFT: cold init、full hidden handoff、barrier 的独立 timing。
-9. [ ] 优化 TPOT input wait: descriptor wait、metadata resolve、copy path。
-10. [ ] 将 backend trait 收口为 object-backed operand view，去掉 adapter 内部 flat slice assemble。
-11. [ ] 优化/收敛 14B TPOT 中约 `17.5s` input wait 和约 `20.5s` barrier。
-12. [ ] 评估单 node 多 layer fusion 的实际收益。
+9. [x] summary 输出补充 `edge_step` / `edge_bottleneck`，拆出跨 node producer-to-input-found gap。
+10. [x] terminal token result 改为 per-step OBMM object record，避免固定 offset 覆盖前一步结果。
+11. [ ] 优化 TPOT input wait: descriptor wait、metadata resolve、copy path。
+12. [ ] 将 backend trait 收口为 object-backed operand view，去掉 adapter 内部 flat slice assemble。
+13. [ ] 优化/收敛 14B TPOT 中约 `18.3s` input wait 和约 `20.9s` barrier。
+14. [ ] 评估单 node 多 layer fusion 的实际收益。
 
 # Appendix
 

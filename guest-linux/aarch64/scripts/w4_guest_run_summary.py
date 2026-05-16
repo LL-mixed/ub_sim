@@ -457,6 +457,35 @@ def emit_handoff_timing_summary(handoff_timings, expected_steps, node_ids, outpu
             f"producer_to_input_found_mono_ms={max_handoff['producer_to_input_found_mono_ms']} "
             f"producer_to_input_found_supernode_ms={max_handoff['producer_to_input_found_supernode_ms']}"
         )
+        edge_records = [record for record in records if record["source"] > 0]
+        if edge_records:
+            max_edge = max(edge_records, key=lambda item: item["producer_to_input_found_mono_ms"])
+            min_edge = min(edge_records, key=lambda item: item["producer_to_input_found_mono_ms"])
+            max_wait = max(edge_records, key=lambda item: item["input_wait_attempts"])
+            total_edge_raw_ms = sum(
+                record["producer_to_input_found_mono_ms"] for record in edge_records
+            )
+            total_edge_clamped_ms = sum(
+                max(0, record["producer_to_input_found_mono_ms"])
+                for record in edge_records
+            )
+            total_metadata_ms = sum(record["input_metadata_ms"] for record in edge_records)
+            total_activate_ms = sum(record["input_activate_ms"] for record in edge_records)
+            output.append(
+                "edge_step: "
+                f"step={step} "
+                f"edges={len(edge_records)}/{max(0, len(node_ids) - 1)} "
+                f"total_edge_gap_mono_ms={total_edge_clamped_ms} "
+                f"total_edge_gap_mono_raw_ms={total_edge_raw_ms} "
+                f"max_edge_gap_mono_ms={max_edge['producer_to_input_found_mono_ms']} "
+                f"max_edge={max_edge['source']}->{max_edge['node']} "
+                f"min_edge_gap_mono_ms={min_edge['producer_to_input_found_mono_ms']} "
+                f"min_edge={min_edge['source']}->{min_edge['node']} "
+                f"metadata_ms={total_metadata_ms} "
+                f"activate_ms={total_activate_ms} "
+                f"max_wait_attempts={max_wait['input_wait_attempts']} "
+                f"max_wait_edge={max_wait['source']}->{max_wait['node']}"
+            )
 
     max_handoff_record = max(
         handoff_timings,
@@ -464,6 +493,7 @@ def emit_handoff_timing_summary(handoff_timings, expected_steps, node_ids, outpu
     )
     max_kv_record = max(handoff_timings, key=lambda item: item["kv_resolve_ms"] + item["kv_load_ms"])
     max_publish_record = max(handoff_timings, key=lambda item: item["range_publish_ms"])
+    edge_records = [record for record in handoff_timings if record["source"] > 0]
     output.append(
         "handoff_bottleneck: "
         f"max_handoff_step={max_handoff_record['step']} "
@@ -487,6 +517,28 @@ def emit_handoff_timing_summary(handoff_timings, expected_steps, node_ids, outpu
         f"range_publish_ms={max_publish_record['range_publish_ms']} "
         f"terminal_publish_ms={max_publish_record['terminal_publish_ms']}"
     )
+    if edge_records:
+        max_edge_record = max(edge_records, key=lambda item: item["producer_to_input_found_mono_ms"])
+        max_wait_record = max(edge_records, key=lambda item: item["input_wait_attempts"])
+        output.append(
+            "edge_bottleneck: "
+            f"max_edge_step={max_edge_record['step']} "
+            f"edge={max_edge_record['source']}->{max_edge_record['node']} "
+            f"node={max_edge_record['_log_node']} "
+            f"producer_to_input_found_mono_ms={max_edge_record['producer_to_input_found_mono_ms']} "
+            f"producer_to_input_found_supernode_ms={max_edge_record['producer_to_input_found_supernode_ms']} "
+            f"input_wait_attempts={max_edge_record['input_wait_attempts']}"
+        )
+        output.append(
+            "edge_bottleneck: "
+            f"max_wait_step={max_wait_record['step']} "
+            f"edge={max_wait_record['source']}->{max_wait_record['node']} "
+            f"node={max_wait_record['_log_node']} "
+            f"input_wait_attempts={max_wait_record['input_wait_attempts']} "
+            f"producer_to_input_found_mono_ms={max_wait_record['producer_to_input_found_mono_ms']} "
+            f"input_metadata_ms={max_wait_record['input_metadata_ms']} "
+            f"input_activate_ms={max_wait_record['input_activate_ms']}"
+        )
 
     for node_id in node_ids:
         records = sorted(handoffs_by_node.get(node_id, []), key=lambda item: item["step"])

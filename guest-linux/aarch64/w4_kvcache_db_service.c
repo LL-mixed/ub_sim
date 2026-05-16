@@ -46,7 +46,6 @@
 #define W4_DB_OBMM_HIDDEN_RANGE_INPUT_OFFSET 0x18000ULL
 #define W4_DB_OBMM_HIDDEN_RANGE_OUTPUT_OFFSET 0x58000ULL
 #define W4_DB_OBMM_HIDDEN_RANGE_RUNTIME_OUTPUT_OFFSET 0x98000ULL
-#define W4_DB_OBMM_QWEN3_TOKEN_RESULT_OFFSET 0xd9000ULL
 #define W4_DB_OBMM_QWEN3_ROUND_DONE_OFFSET 0xda000ULL
 #define W4_DB_OBMM_QWEN3_DYNAMIC_ARENA_OFFSET 0x100000ULL
 #define W4_DB_OBMM_QWEN3_KV_STATE_OFFSET 0x100000ULL
@@ -5181,6 +5180,7 @@ int w4_db_obmm_service_v0_publish_terminal_token_result(struct w4_db_service *sv
     struct w4_db_qwen3_layer_range_placement local_placement;
     char token_result_key[96];
     uint64_t payload_words[8];
+    uint64_t token_result_offset;
     uint64_t checksum;
     uint16_t local_publish_seq;
     uint16_t object_epoch;
@@ -5202,8 +5202,10 @@ int w4_db_obmm_service_v0_publish_terminal_token_result(struct w4_db_service *sv
     }
     local_slot = &rt->slots[rt->local_idx];
     if ((uint32_t)rt->local_idx != local_node || !local_slot->region.addr ||
-        local_slot->region.len <
-            W4_DB_OBMM_QWEN3_TOKEN_RESULT_OFFSET + W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES) {
+        w4_db_payload_arena_alloc(rt,
+                                  W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES,
+                                  64,
+                                  &token_result_offset) != 0) {
         return -1;
     }
 
@@ -5219,18 +5221,14 @@ int w4_db_obmm_service_v0_publish_terminal_token_result(struct w4_db_service *sv
                                     W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES);
 
     base = (uint8_t *)local_slot->region.addr;
-    memcpy(base + W4_DB_OBMM_QWEN3_TOKEN_RESULT_OFFSET,
-           payload_words,
-           W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES);
+    memcpy(base + token_result_offset, payload_words, W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES);
     if (w4_db_update_region_range_at(local_slot,
-                                     W4_DB_OBMM_QWEN3_TOKEN_RESULT_OFFSET,
+                                     token_result_offset,
                                      W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES,
                                      true) != 0) {
         return -1;
     }
-    (void)msync(base + W4_DB_OBMM_QWEN3_TOKEN_RESULT_OFFSET,
-                W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES,
-                MS_SYNC);
+    (void)msync(base + token_result_offset, W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES, MS_SYNC);
 
     snprintf(token_result_key,
              sizeof(token_result_key),
@@ -5242,7 +5240,7 @@ int w4_db_obmm_service_v0_publish_terminal_token_result(struct w4_db_service *sv
                                      token_result_key,
                                      local_node,
                                      W4_DB_OBMM_KIND_QWEN3_TOKEN_RESULT,
-                                     W4_DB_OBMM_QWEN3_TOKEN_RESULT_OFFSET,
+                                     token_result_offset,
                                      W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES,
                                      checksum,
                                      &local_token_result) != 0 ||
@@ -5680,7 +5678,11 @@ int w4_db_obmm_service_v0_wait_terminal_token_result(struct w4_db_service *svc,
              decode_step);
     deadline = obmm_now_ms() + (long)timeout_ms;
     while (obmm_now_ms() < deadline) {
+        struct w4_db_cluster_payload_compact_summary compact;
+        struct w4_db_cluster_payload_header seen;
+        struct w4_db_record token_record;
         uint64_t payload_words[8];
+        uint64_t checksum;
         struct w4_db_cluster_slot *terminal_slot;
 
         if (w4_db_cluster_runtime_init(rt) == 0 &&
@@ -5690,26 +5692,40 @@ int w4_db_obmm_service_v0_wait_terminal_token_result(struct w4_db_service *svc,
              w4_db_activate_remote_slot(rt, terminal_idx) == 0)) {
             terminal_slot = &rt->slots[terminal_idx];
             if (terminal_slot->region.addr &&
-                terminal_slot->region.len >= W4_DB_OBMM_QWEN3_TOKEN_RESULT_OFFSET +
-                                             W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES) {
+                w4_db_try_read_stable_compact_summary_region(terminal_slot,
+                                                             &compact,
+                                                             &seen) &&
+                w4_db_slot_find_record(terminal_slot,
+                                       token_result_key,
+                                       &token_record) &&
+                token_record.kind == W4_DB_RECORD_QWEN3_TOKEN_RESULT &&
+                token_record.object_payload_kind == W4_DB_OBMM_KIND_QWEN3_TOKEN_RESULT &&
+                token_record.object_backing_len == W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES &&
+                token_record.object_backing_offset <= terminal_slot->region.len &&
+                token_record.object_backing_len <=
+                    terminal_slot->region.len - token_record.object_backing_offset) {
                 memcpy(payload_words,
-                       (uint8_t *)terminal_slot->region.addr +
-                           W4_DB_OBMM_QWEN3_TOKEN_RESULT_OFFSET,
+                       (uint8_t *)terminal_slot->region.addr + token_record.object_backing_offset,
                        W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES);
                 if (payload_words[0] == decode_step) {
-                    uint64_t checksum =
-                        w4_db_checksum_bytes((const uint8_t *)payload_words,
-                                             W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES);
+                    checksum = w4_db_checksum_bytes((const uint8_t *)payload_words,
+                                                    W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES);
+                    if (checksum != token_record.object_payload_checksum) {
+                        usleep(10000);
+                        continue;
+                    }
                     if (sampled_token_out) {
                         *sampled_token_out = payload_words[1];
                     }
                     printf("[w4_guest] stage qwen3_terminal_token_result_wait step=%" PRIu64
-                           " object_key=%s owner=node%d bytes=%" PRIu64
+                           " object_key=%s owner=node%d offset=0x%016" PRIx64
+                           " bytes=%" PRIu64
                            " token=%" PRIu64 " checksum=0x%016" PRIx64
-                           " source=obmm_payload status=ok\n",
+                           " source=obmm_object_record status=ok\n",
                            decode_step,
                            token_result_key,
                            terminal_idx + 1,
+                           token_record.object_backing_offset,
                            (uint64_t)W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES,
                            payload_words[1],
                            checksum);
