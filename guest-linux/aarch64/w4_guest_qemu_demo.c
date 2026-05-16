@@ -4905,7 +4905,8 @@ int main(void)
                 strcmp(context_op, "disabled") != 0 &&
                 strcmp(context_op, "none") != 0 &&
                 strcmp(context_op, "cpu") != 0 &&
-                strcmp(context_op, "cpu-reference") != 0) {
+                strcmp(context_op, "cpu-reference") != 0 &&
+                strcmp(context_op, "simpler-host") != 0) {
                 fprintf(stderr,
                         "[w4_guest] fail qwen3 engram context op not wired into guest decode "
                         "context_op=%s hint=fused-simt requires P5.3 runtime launch integration\n",

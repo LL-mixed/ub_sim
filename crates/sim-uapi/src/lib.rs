@@ -25,7 +25,7 @@ use sim_core::{
     SimplerRuntimeArtifacts, TaskKey, TensorDType, TensorLayout,
 };
 use sim_models::engram_context::{
-    run_engram_context_reference, EngramContextOp, EngramContextReport, ENGRAM_CONTEXT_HIDDEN_SIZE,
+    run_engram_context_reference, EngramContextOp, EngramContextReport,
     ENGRAM_CONTEXT_INDICES_PER_BATCH,
 };
 use sim_models::qwen3_dense;
@@ -10401,6 +10401,104 @@ fn simpler_matmul_manifest_path() -> Result<PathBuf, String> {
     Ok(path)
 }
 
+fn simpler_engram_context_manifest_path() -> Result<PathBuf, String> {
+    let path = std::env::var("SIMPLER_HOST_ENGRAM_CONTEXT_MANIFEST").unwrap_or_else(|_| {
+        "/tmp/simpler-host-engram-context-artifacts/host_engram_context_manifest.json".to_string()
+    });
+    let path = PathBuf::from(path);
+    if !simpler_host_engram_context_manifest_current(&path) {
+        ensure_simpler_host_engram_context_manifest(&path)?;
+    }
+    if !path.exists() {
+        return Err(format!(
+            "missing_simpler_host_engram_context_manifest:{}",
+            path.display()
+        ));
+    }
+    Ok(path)
+}
+
+fn simpler_host_engram_context_manifest_current(manifest_path: &Path) -> bool {
+    if !manifest_path.exists() {
+        return false;
+    }
+    let Ok(text) = std::fs::read_to_string(manifest_path) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return false;
+    };
+    value
+        .get("host_engram_context_manifest_version")
+        .and_then(|version| version.as_u64())
+        == Some(3)
+}
+
+fn ensure_simpler_host_engram_context_manifest(manifest_path: &Path) -> Result<(), String> {
+    let output_dir = manifest_path.parent().ok_or_else(|| {
+        format!(
+            "host_engram_context_manifest_has_no_parent:{}",
+            manifest_path.display()
+        )
+    })?;
+    let script = simpler_host_artifact_producer_path();
+    if !script.exists() {
+        return Err(format!(
+            "missing_simpler_host_engram_context_artifact_producer:{}",
+            script.display()
+        ));
+    }
+
+    let mut command = std::process::Command::new("python3");
+    command
+        .arg(&script)
+        .arg("--profile")
+        .arg("host_engram_context")
+        .arg("--output-dir")
+        .arg(output_dir)
+        .args(simpler_engram_context_reuse_runtime_args()?);
+    let status = command
+        .status()
+        .map_err(|err| format!("run_simpler_host_engram_context_artifact_producer_failed:{err}"))?;
+    if !status.success() {
+        return Err(format!(
+            "simpler_host_engram_context_artifact_producer_failed:{}:status={status}",
+            script.display()
+        ));
+    }
+    Ok(())
+}
+
+fn simpler_engram_context_reuse_runtime_args() -> Result<Vec<std::ffi::OsString>, String> {
+    let matmul_manifest = std::env::var("SIMPLER_HOST_MATMUL_MANIFEST")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from("/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json")
+        });
+    if !matmul_manifest.exists() {
+        return Err(format!(
+            "missing_simpler_host_engram_context_reuse_runtime_manifest:{}",
+            matmul_manifest.display()
+        ));
+    }
+    Ok(vec![
+        std::ffi::OsString::from("--reuse-runtime-manifest"),
+        matmul_manifest.into_os_string(),
+    ])
+}
+
+fn simpler_host_artifact_producer_path() -> PathBuf {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    root.join("guest-linux")
+        .join("aarch64")
+        .join("scripts")
+        .join("prepare_simpler_host_artifacts.py")
+}
+
 fn simpler_matmul_batch_manifest_path(
     base_manifest_path: &Path,
     _tile_batch: usize,
@@ -10690,6 +10788,91 @@ fn host_matmul_batched_backend_spec_from_manifest(
     })
 }
 
+fn host_engram_context_backend_spec_from_manifest(
+    manifest_path: &Path,
+    table: MemoryEndpoint,
+    indices: MemoryEndpoint,
+    hidden: MemoryEndpoint,
+    gate_weight: MemoryEndpoint,
+    output: MemoryEndpoint,
+    gate_state: MemoryEndpoint,
+    table_bytes: u64,
+    indices_bytes: u64,
+    hidden_bytes: u64,
+    gate_state_bytes: u64,
+    batch: u64,
+    table_rows: u64,
+    hidden_size: u64,
+    chunk_offset: u64,
+    chunk_elems: u64,
+    bias: f32,
+) -> Result<DispatchBackendSpec, String> {
+    let manifest_text = std::fs::read_to_string(manifest_path).map_err(|err| {
+        format!(
+            "read_simpler_engram_context_manifest_failed:{}:{err}",
+            manifest_path.display()
+        )
+    })?;
+    let manifest: SimplerRuntimeManifestEnvelope =
+        serde_json::from_str(&manifest_text).map_err(|err| {
+            format!(
+                "parse_simpler_engram_context_manifest_failed:{}:{err}",
+                manifest_path.display()
+            )
+        })?;
+    let args = vec![
+        SimplerRuntimeArg::InputSegment {
+            endpoint: table,
+            bytes: table_bytes,
+        },
+        SimplerRuntimeArg::InputSegment {
+            endpoint: indices,
+            bytes: indices_bytes,
+        },
+        SimplerRuntimeArg::InputSegment {
+            endpoint: hidden,
+            bytes: hidden_bytes,
+        },
+        SimplerRuntimeArg::InputSegment {
+            endpoint: gate_weight,
+            bytes: hidden_bytes,
+        },
+        SimplerRuntimeArg::OutputSegment {
+            endpoint: output,
+            bytes: hidden_bytes,
+        },
+        SimplerRuntimeArg::InoutSegment {
+            endpoint: gate_state,
+            bytes: gate_state_bytes,
+        },
+        SimplerRuntimeArg::ScalarU64(batch),
+        SimplerRuntimeArg::ScalarU64(table_rows),
+        SimplerRuntimeArg::ScalarU64(hidden_size),
+        SimplerRuntimeArg::ScalarU64(chunk_offset),
+        SimplerRuntimeArg::ScalarU64(chunk_elems),
+        SimplerRuntimeArg::ScalarU64(bias.to_bits() as u64),
+    ];
+    let runtime = SimplerRuntimeArtifacts {
+        host_runtime_library: manifest.simpler_runtime.host_runtime_library,
+        orch_shared_object: manifest.simpler_runtime.orch_shared_object,
+        orch_function_name: manifest.simpler_runtime.orch_function_name,
+        aicpu_binary: manifest.simpler_runtime.aicpu_binary,
+        aicore_binary: manifest.simpler_runtime.aicore_binary,
+        kernels: manifest.simpler_runtime.kernels,
+        launch: manifest.simpler_runtime.launch,
+        runtime_env: manifest.simpler_runtime.runtime_env,
+        args,
+    };
+    Ok(DispatchBackendSpec {
+        profile: DispatchBackendProfile::HostEngramContext,
+        platform: "a2a3sim".to_string(),
+        runtime_variant: DispatchRuntimeVariant::HostBuildGraph,
+        callable_hint: Some("host_engram_context_example".to_string()),
+        simpler_runtime: Some(runtime),
+        context: None,
+    })
+}
+
 fn kvcache_host_vector_request(
     task_id: u64,
     layout: &KvCachePayloadLayout,
@@ -10744,6 +10927,31 @@ fn kvcache_host_matmul_request(
         context: Some(ExecutionContextRef {
             device_context_id: "device-ctx-uapi-kvcache-host-matmul".to_string(),
             runtime_context_id: Some(format!("runtime-ctx-uapi-kvcache-matmul-{task_id}")),
+            lifecycle: ExecutionLifecycle::Init,
+            warm: true,
+            reusable: true,
+        }),
+        bindings,
+    }
+}
+
+fn engram_context_host_request(
+    task_id: u64,
+    step_index: Option<u32>,
+    bindings: Vec<DispatchBufferBinding>,
+) -> BackendExecutionRequest {
+    BackendExecutionRequest {
+        correlation: RequestCorrelation {
+            request_id: format!("uapi-qwen3-engram-context-host-dispatch-{task_id}"),
+            trace_id: Some("w5-qwen3-engram-context-simpler-host".to_string()),
+            op_name: Some("host_engram_context_example".to_string()),
+            step_index,
+            sequence_no: Some(task_id),
+        },
+        plan: None,
+        context: Some(ExecutionContextRef {
+            device_context_id: "device-ctx-uapi-engram-context-host".to_string(),
+            runtime_context_id: Some(format!("runtime-ctx-uapi-engram-context-{task_id}")),
             lifecycle: ExecutionLifecycle::Init,
             warm: true,
             reusable: true,
@@ -10975,6 +11183,257 @@ fn run_host_matmul_smoke(topology: &SimTopology, task: &TaskKey) -> Result<Vec<u
         ));
     }
     Ok(produced.to_vec())
+}
+
+fn run_simpler_host_engram_context(
+    table: &[f32],
+    indices: &[i32],
+    hidden: &[f32],
+    gate_weight: &[f32],
+    batch: usize,
+    table_rows: usize,
+    hidden_size: usize,
+) -> Result<Vec<f32>, String> {
+    if batch != 1 {
+        return Err(format!(
+            "qwen3_engram_context_simpler_batch_unsupported:got={batch}"
+        ));
+    }
+    if hidden_size == 0 {
+        return Err(format!(
+            "qwen3_engram_context_simpler_hidden_size_unsupported:got={hidden_size}"
+        ));
+    }
+    let expected_table = table_rows * hidden_size;
+    let expected_vectors = batch * hidden_size;
+    let expected_indices = batch * ENGRAM_CONTEXT_INDICES_PER_BATCH;
+    if table.len() != expected_table {
+        return Err(format!(
+            "qwen3_engram_context_simpler_table_len_mismatch:got={}:expected={expected_table}",
+            table.len()
+        ));
+    }
+    if indices.len() != expected_indices {
+        return Err(format!(
+            "qwen3_engram_context_simpler_indices_len_mismatch:got={}:expected={expected_indices}",
+            indices.len()
+        ));
+    }
+    if hidden.len() != expected_vectors || gate_weight.len() != expected_vectors {
+        return Err(format!(
+            "qwen3_engram_context_simpler_vector_len_mismatch:hidden={} gate={} expected={expected_vectors}",
+            hidden.len(),
+            gate_weight.len()
+        ));
+    }
+
+    let manifest_path = simpler_engram_context_manifest_path()?;
+    let scenario_config = scenario_config_for_chipbackend()?;
+    let topology = SimTopology::from_config(&scenario_config)
+        .map_err(|err| format!("qwen3_engram_context_simpler_topology_failed:{err}"))?;
+    let host_node = topology
+        .hosts
+        .first()
+        .map(|host| host.node_id)
+        .ok_or_else(|| "missing_host_node".to_string())?;
+    let ubpu_node = topology
+        .ubpus
+        .first()
+        .map(|ubpu| ubpu.node_id)
+        .ok_or_else(|| "missing_ubpu_node".to_string())?;
+    let chunk_elems = qwen3_dense_reference_engram_context_chunk_elems(hidden_size)?;
+    let task_id = checksum_words(&[
+        table_rows as u64,
+        hidden_size as u64,
+        chunk_elems as u64,
+        prompt_token_ids_checksum(
+            &indices
+                .iter()
+                .map(|value| *value as u64)
+                .collect::<Vec<_>>(),
+        ),
+        qwen3_dense_reference_f32_values_checksum(hidden),
+        qwen3_dense_reference_f32_values_checksum(gate_weight),
+    ]);
+    let segment_base = 50_000 + (task_id % 10_000).saturating_mul(10);
+    let table_segment = SegmentHandle(segment_base + 1);
+    let indices_segment = SegmentHandle(segment_base + 2);
+    let hidden_segment = SegmentHandle(segment_base + 3);
+    let gate_segment = SegmentHandle(segment_base + 4);
+    let output_segment = SegmentHandle(segment_base + 5);
+    let gate_state_segment = SegmentHandle(segment_base + 6);
+    let table_bytes = table.len() * std::mem::size_of::<f32>();
+    let indices_bytes = indices.len() * std::mem::size_of::<i32>();
+    let hidden_bytes = hidden.len() * std::mem::size_of::<f32>();
+    let gate_state_bytes = batch * std::mem::size_of::<f32>();
+
+    let _dispatch_lock = host_vector_dispatch_lock_guard()?;
+    let mut runtime = LocalRuntimeEngine::from_config(&scenario_config);
+    runtime.seed_host_segment(host_node, table_segment, f32s_to_bytes(table));
+    runtime.seed_host_segment(host_node, indices_segment, i32s_to_bytes(indices));
+    runtime.seed_host_segment(host_node, hidden_segment, f32s_to_bytes(hidden));
+    runtime.seed_host_segment(host_node, gate_segment, f32s_to_bytes(gate_weight));
+    runtime.seed_host_segment(host_node, output_segment, f32s_to_bytes(hidden));
+    runtime.seed_host_segment(host_node, gate_state_segment, vec![0u8; gate_state_bytes]);
+
+    let table_endpoint = MemoryEndpoint {
+        node: host_node,
+        segment: table_segment,
+        offset: 0,
+    };
+    let indices_endpoint = MemoryEndpoint {
+        node: host_node,
+        segment: indices_segment,
+        offset: 0,
+    };
+    let hidden_endpoint = MemoryEndpoint {
+        node: host_node,
+        segment: hidden_segment,
+        offset: 0,
+    };
+    let gate_endpoint = MemoryEndpoint {
+        node: host_node,
+        segment: gate_segment,
+        offset: 0,
+    };
+    let mut sink = VecEventSink::default();
+    let dispatch_latency = scenario_config
+        .pypto
+        .simpler_boundary
+        .dispatch_latency_us
+        .unwrap_or(15)
+        .max(1);
+    let output_endpoint = MemoryEndpoint {
+        node: host_node,
+        segment: output_segment,
+        offset: 0,
+    };
+    let gate_state_endpoint = MemoryEndpoint {
+        node: host_node,
+        segment: gate_state_segment,
+        offset: 0,
+    };
+    let mut chunk_offset = 0usize;
+    let mut chunk_index = 0u64;
+    while chunk_offset < hidden_size {
+        let this_chunk = chunk_elems.min(hidden_size - chunk_offset);
+        let backend_spec = host_engram_context_backend_spec_from_manifest(
+            &manifest_path,
+            table_endpoint.clone(),
+            indices_endpoint.clone(),
+            hidden_endpoint.clone(),
+            gate_endpoint.clone(),
+            output_endpoint.clone(),
+            gate_state_endpoint.clone(),
+            table_bytes as u64,
+            indices_bytes as u64,
+            hidden_bytes as u64,
+            gate_state_bytes as u64,
+            batch as u64,
+            table_rows as u64,
+            hidden_size as u64,
+            chunk_offset as u64,
+            this_chunk as u64,
+            0.0,
+        )?;
+        let request = engram_context_host_request(
+            task_id.wrapping_add(chunk_index),
+            None,
+            vec![
+                dense_f32_binding(
+                    "engram_context_table",
+                    BufferUsage::Input,
+                    table_endpoint.clone(),
+                    table.len() as u64,
+                ),
+                opaque_binding(
+                    "engram_context_indices_i32",
+                    BufferUsage::Input,
+                    indices_endpoint.clone(),
+                    indices_bytes as u64,
+                ),
+                dense_f32_binding(
+                    "engram_context_hidden",
+                    BufferUsage::Input,
+                    hidden_endpoint.clone(),
+                    hidden.len() as u64,
+                ),
+                dense_f32_binding(
+                    "engram_context_gate_weight",
+                    BufferUsage::Input,
+                    gate_endpoint.clone(),
+                    gate_weight.len() as u64,
+                ),
+                dense_f32_binding(
+                    "engram_context_output",
+                    BufferUsage::Output,
+                    output_endpoint.clone(),
+                    hidden.len() as u64,
+                ),
+                dense_f32_binding(
+                    "engram_context_gate_state",
+                    BufferUsage::Inout,
+                    gate_state_endpoint.clone(),
+                    batch as u64,
+                ),
+            ],
+        );
+        let dispatch = BackendDispatchOperation {
+            task: TaskKey {
+                logical_system: LogicalSystemId(1),
+                coord: HierarchyCoord { levels: [0; 8] },
+                scope_depth: 0,
+                task_id: task_id.wrapping_add(chunk_index),
+            },
+            function: FunctionLabel {
+                name: "host_engram_context_example".into(),
+                level: PlLevel::L2,
+            },
+            backend_spec,
+            request,
+            target_level: PlLevel::L2,
+            target_node: ubpu_node,
+            legacy_input_segments: vec![
+                table_segment,
+                indices_segment,
+                hidden_segment,
+                gate_segment,
+                gate_state_segment,
+            ],
+        };
+        let complete_at = dispatch_latency.saturating_mul(chunk_index + 1);
+        let completion = with_suppressed_stdio(|| {
+            runtime
+                .submit_backend_dispatch(dispatch, &mut sink)
+                .map_err(|err| err.to_string())?;
+            runtime.advance_to(complete_at, &mut sink);
+            runtime
+                .poll_completions(complete_at, &mut sink)
+                .into_iter()
+                .next()
+                .ok_or_else(|| "simpler_host_engram_context_dispatch_did_not_complete".to_string())
+        })?;
+        match completion.status {
+            CompletionStatus::Success => {}
+            other => {
+                return Err(format!(
+                    "simpler_host_engram_context_dispatch_failed:{other:?}"
+                ))
+            }
+        }
+        chunk_offset += this_chunk;
+        chunk_index += 1;
+    }
+    let produced = runtime
+        .host_segment_payload(host_node, output_segment)
+        .ok_or_else(|| "missing_simpler_host_engram_context_output_payload".to_string())?;
+    if produced.len() != hidden_bytes {
+        return Err(format!(
+            "simpler_host_engram_context_output_len_mismatch:got={}:expected={hidden_bytes}",
+            produced.len()
+        ));
+    }
+    Ok(bytes_to_f32s(produced))
 }
 
 #[cfg(test)]
@@ -13455,6 +13914,7 @@ enum Qwen3DenseReferenceEngramContextMode {
     Disabled,
     CpuReference,
     FusedSimt,
+    SimplerHost,
 }
 
 #[derive(Clone, Debug)]
@@ -14698,6 +15158,7 @@ fn qwen3_dense_reference_engram_context_mode_from_env(
         "" | "disabled" | "none" | "off" => Ok(Qwen3DenseReferenceEngramContextMode::Disabled),
         "cpu" | "cpu-reference" => Ok(Qwen3DenseReferenceEngramContextMode::CpuReference),
         "fused-simt" => Ok(Qwen3DenseReferenceEngramContextMode::FusedSimt),
+        "simpler-host" => Ok(Qwen3DenseReferenceEngramContextMode::SimplerHost),
         value => Err(format!("qwen3_engram_context_op_unsupported:{value}")),
     }
 }
@@ -14722,6 +15183,31 @@ fn qwen3_dense_reference_engram_context_table_rows() -> Result<usize, String> {
     Ok(rows)
 }
 
+fn qwen3_dense_reference_engram_context_chunk_elems(hidden_size: usize) -> Result<usize, String> {
+    let default_chunk = hidden_size.max(1);
+    let value = std::env::var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_CHUNK_ELEMS")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let chunk_elems = value
+        .as_deref()
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .map_err(|_| format!("qwen3_engram_context_chunk_elems_invalid:value={value}"))
+        })
+        .transpose()?
+        .unwrap_or(default_chunk);
+    if chunk_elems == 0 {
+        return Err("qwen3_engram_context_chunk_elems_must_be_positive".to_string());
+    }
+    if chunk_elems > hidden_size {
+        return Err(format!(
+            "qwen3_engram_context_chunk_elems_too_large:chunk_elems={chunk_elems}:hidden_size={hidden_size}"
+        ));
+    }
+    Ok(chunk_elems)
+}
+
 fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
     sequence: &mut [Vec<f32>],
     token_ids: &[u64],
@@ -14737,35 +15223,84 @@ fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
             "qwen3_engram_context_fused_simt_not_wired:hint=use cpu-reference until P5.3 runtime launch lands"
                 .to_string(),
         ),
-        Qwen3DenseReferenceEngramContextMode::CpuReference => {
+        Qwen3DenseReferenceEngramContextMode::CpuReference
+        | Qwen3DenseReferenceEngramContextMode::SimplerHost => {
             let table_rows = qwen3_dense_reference_engram_context_table_rows()?;
             let hidden = sequence
                 .last_mut()
                 .ok_or_else(|| "qwen3_engram_context_hidden_sequence_empty".to_string())?;
-            if hidden.len() != ENGRAM_CONTEXT_HIDDEN_SIZE {
-                return Err(format!(
-                    "qwen3_engram_context_hidden_size_unsupported:got={}:expected={}",
-                    hidden.len(),
-                    ENGRAM_CONTEXT_HIDDEN_SIZE
-                ));
+            let mode = qwen3_dense_reference_engram_context_mode_from_env()?;
+            let hidden_size = hidden.len();
+            if hidden_size == 0 {
+                return Err("qwen3_engram_context_hidden_size_unsupported:got=0".to_string());
             }
             let (table, indices, gate_weight) =
                 qwen3_dense_reference_engram_context_cpu_fixture(hidden, token_ids, table_rows);
             let started = Instant::now();
-            let output = run_engram_context_reference(&EngramContextOp {
+            let reference = run_engram_context_reference(&EngramContextOp {
                 table: &table,
                 table_rows,
                 indices: &indices,
                 hidden,
                 gate_weight: &gate_weight,
                 batch: 1,
+                hidden_size,
             })?;
+            let output_values = match mode {
+                Qwen3DenseReferenceEngramContextMode::CpuReference => reference.output.clone(),
+                Qwen3DenseReferenceEngramContextMode::SimplerHost => {
+                    let produced = run_simpler_host_engram_context(
+                        &table,
+                        &indices,
+                        hidden,
+                        &gate_weight,
+                        1,
+                        table_rows,
+                        hidden_size,
+                    )?;
+                    const SIMPLER_HOST_ENGRAM_CONTEXT_MAX_ULP: u32 = 64;
+                    if !qwen3_engram_context_outputs_match_within_ulp(
+                        &produced,
+                        &reference.output,
+                        SIMPLER_HOST_ENGRAM_CONTEXT_MAX_ULP,
+                    ) {
+                        let mismatch = produced
+                            .iter()
+                            .zip(reference.output.iter())
+                            .position(|(got, expected)| {
+                                !qwen3_engram_context_f32_within_ulp(
+                                    *got,
+                                    *expected,
+                                    SIMPLER_HOST_ENGRAM_CONTEXT_MAX_ULP,
+                                )
+                            })
+                            .unwrap_or(usize::MAX);
+                        let got_bits = produced
+                            .get(mismatch)
+                            .map(|value| value.to_bits())
+                            .unwrap_or(0);
+                        let expected_bits = reference
+                            .output
+                            .get(mismatch)
+                            .map(|value| value.to_bits())
+                            .unwrap_or(0);
+                        return Err(format!(
+                            "simpler_host_engram_context_output_mismatch:index={mismatch}:got_bits=0x{got_bits:08x}:expected_bits=0x{expected_bits:08x}:got=0x{:016x}:expected=0x{:016x}",
+                            qwen3_dense_reference_f32_values_checksum(&produced),
+                            qwen3_dense_reference_f32_values_checksum(&reference.output)
+                        ));
+                    }
+                    reference.output.clone()
+                }
+                _ => unreachable!(),
+            };
             let latency_ms = started.elapsed().as_millis();
-            let report = qwen3_dense_reference_engram_context_report_from_reference(
-                output.report,
-                latency_ms,
-            );
-            hidden.copy_from_slice(&output.output);
+            let mut report =
+                qwen3_dense_reference_engram_context_report_from_reference(reference.report, latency_ms);
+            if mode == Qwen3DenseReferenceEngramContextMode::SimplerHost {
+                report.mode = "simpler-host";
+            }
+            hidden.copy_from_slice(&output_values);
             Ok(Some(report))
         }
     }
@@ -14783,11 +15318,13 @@ fn qwen3_dense_reference_engram_context_cpu_fixture(
         token_checksum,
         token_ids.len() as u64,
         table_rows as u64,
+        hidden.len() as u64,
         0x656e_6772_616d_6378,
     ]);
-    let mut table = Vec::with_capacity(table_rows * ENGRAM_CONTEXT_HIDDEN_SIZE);
+    let hidden_size = hidden.len();
+    let mut table = Vec::with_capacity(table_rows * hidden_size);
     for row in 0..table_rows {
-        for dim in 0..ENGRAM_CONTEXT_HIDDEN_SIZE {
+        for dim in 0..hidden_size {
             let mixed = seed.rotate_left(((row + dim) % 63) as u32)
                 ^ (row as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
                 ^ (dim as u64).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -14795,8 +15332,8 @@ fn qwen3_dense_reference_engram_context_cpu_fixture(
             table.push(value);
         }
     }
-    let mut gate_weight = Vec::with_capacity(ENGRAM_CONTEXT_HIDDEN_SIZE);
-    for dim in 0..ENGRAM_CONTEXT_HIDDEN_SIZE {
+    let mut gate_weight = Vec::with_capacity(hidden_size);
+    for dim in 0..hidden_size {
         let mixed =
             seed.rotate_left((dim % 61) as u32) ^ (dim as u64).wrapping_mul(0x94d0_49bb_1331_11eb);
         let value = ((mixed & 0x3ff) as f32 / 1024.0 - 0.5) / 1024.0;
@@ -14828,6 +15365,31 @@ fn qwen3_dense_reference_engram_context_report_from_reference(
         output_l1_milli: report.output_l1_milli,
         latency_ms,
     }
+}
+
+fn qwen3_engram_context_outputs_match_within_ulp(
+    got: &[f32],
+    expected: &[f32],
+    max_ulp: u32,
+) -> bool {
+    got.len() == expected.len()
+        && got
+            .iter()
+            .zip(expected.iter())
+            .all(|(got, expected)| qwen3_engram_context_f32_within_ulp(*got, *expected, max_ulp))
+}
+
+fn qwen3_engram_context_f32_within_ulp(got: f32, expected: f32, max_ulp: u32) -> bool {
+    if got.to_bits() == expected.to_bits() {
+        return true;
+    }
+    if !got.is_finite() || !expected.is_finite() {
+        return false;
+    }
+    if got.is_sign_negative() != expected.is_sign_negative() {
+        return false;
+    }
+    got.to_bits().abs_diff(expected.to_bits()) <= max_ulp
 }
 
 fn qwen3_dense_reference_range_forward_summary_from_contract(
@@ -18125,6 +18687,13 @@ fn f32s_to_bytes(values: &[f32]) -> Vec<u8> {
         .collect()
 }
 
+fn i32s_to_bytes(values: &[i32]) -> Vec<u8> {
+    values
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect()
+}
+
 fn bytes_to_f32s(bytes: &[u8]) -> Vec<f32> {
     bytes
         .chunks_exact(std::mem::size_of::<f32>())
@@ -18348,6 +18917,76 @@ mod tests {
                 assert_ne!(sequence[1], terminal_before);
             });
         });
+    }
+
+    #[test]
+    fn qwen3_engram_context_simpler_host_supports_multi_chunk_hidden() {
+        run_simpler_native_test_isolated(
+            "qwen3_engram_context_simpler_host_supports_multi_chunk_hidden",
+            || {
+                with_env_var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP", "simpler-host", || {
+                    with_env_var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_ROWS", "8", || {
+                        with_env_var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_CHUNK_ELEMS", "128", || {
+                            let mut sequence = vec![
+                                vec![0.0f32; 256],
+                                (0..256)
+                                    .map(|index| (index as f32 - 128.0) / 2048.0)
+                                    .collect::<Vec<_>>(),
+                            ];
+                            let terminal_before = sequence[1].clone();
+                            let report =
+                                qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
+                                    &mut sequence,
+                                    &[11, 358, 2776, 264],
+                                    QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
+                                    QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
+                                )
+                                .expect("multi-chunk simpler-host context op should run")
+                                .expect("context report");
+
+                            assert_eq!(report.mode, "simpler-host");
+                            assert_eq!(report.table_rows, 8);
+                            assert_ne!(report.output_checksum, 0);
+                            assert_ne!(sequence[1], terminal_before);
+                        });
+                    });
+                });
+            },
+        );
+    }
+
+    #[test]
+    fn qwen3_engram_context_simpler_host_mutates_terminal_hidden() {
+        run_simpler_native_test_isolated(
+            "qwen3_engram_context_simpler_host_mutates_terminal_hidden",
+            || {
+                with_env_var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP", "simpler-host", || {
+                    with_env_var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_ROWS", "8", || {
+                        let mut sequence = vec![
+                            vec![0.0f32; 1024],
+                            (0..1024)
+                                .map(|index| (index as f32 - 512.0) / 4096.0)
+                                .collect::<Vec<_>>(),
+                        ];
+                        let terminal_before = sequence[1].clone();
+                        let report =
+                            qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
+                                &mut sequence,
+                                &[11, 358, 2776, 264],
+                                QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
+                                QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
+                            )
+                            .expect("simpler-host context op should run")
+                            .expect("context report");
+
+                        assert_eq!(report.mode, "simpler-host");
+                        assert_eq!(report.table_rows, 8);
+                        assert_ne!(report.output_checksum, 0);
+                        assert_ne!(sequence[1], terminal_before);
+                    });
+                });
+            },
+        );
     }
 
     fn test_weight_reference_shard(

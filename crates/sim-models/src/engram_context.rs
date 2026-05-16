@@ -12,6 +12,7 @@ pub struct EngramContextOp<'a> {
     pub hidden: &'a [f32],
     pub gate_weight: &'a [f32],
     pub batch: usize,
+    pub hidden_size: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -41,7 +42,7 @@ pub fn run_engram_context_reference(
 ) -> Result<EngramContextOutput, String> {
     validate_engram_context_op(op)?;
 
-    let hidden_size = ENGRAM_CONTEXT_HIDDEN_SIZE;
+    let hidden_size = op.hidden_size;
     let mut output = vec![0.0f32; op.batch * hidden_size];
     let mut gate_values = vec![0.0f32; op.batch];
 
@@ -135,6 +136,7 @@ pub fn deterministic_engram_context_fixture(
         hidden: &hidden,
         gate_weight: &gate_weight,
         batch,
+        hidden_size,
     };
     run_engram_context_reference(&op)
 }
@@ -147,7 +149,10 @@ pub fn validate_engram_context_op(op: &EngramContextOp<'_>) -> Result<(), String
         return Err("engram_context_table_rows_must_be_positive".to_string());
     }
 
-    let hidden_size = ENGRAM_CONTEXT_HIDDEN_SIZE;
+    let hidden_size = op.hidden_size;
+    if hidden_size == 0 {
+        return Err("engram_context_hidden_size_must_be_positive".to_string());
+    }
     let expected_table = op.table_rows * hidden_size;
     let expected_vectors = op.batch * hidden_size;
     let expected_indices = op.batch * ENGRAM_CONTEXT_INDICES_PER_BATCH;
@@ -246,6 +251,7 @@ mod tests {
             hidden: &hidden,
             gate_weight: &gate_weight,
             batch: 1,
+            hidden_size,
         };
 
         let output = run_engram_context_reference(&op).expect("reference op");
@@ -286,6 +292,7 @@ mod tests {
             hidden: &hidden,
             gate_weight: &gate_weight,
             batch: 1,
+            hidden_size,
         };
 
         let err = run_engram_context_reference(&op).expect_err("index should fail");

@@ -269,6 +269,7 @@ pub enum DispatchBackendProfile {
     HostVector,
     TmrbVector,
     HostMatmul,
+    HostEngramContext,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

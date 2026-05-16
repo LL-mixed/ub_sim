@@ -29,6 +29,7 @@ class ProfileSpec:
     orch_function: str
     kernels: tuple[KernelSpec, ...]
     args_template: tuple[dict[str, str], ...]
+    generated: bool = False
 
 
 PROFILE_SPECS = {
@@ -78,6 +79,30 @@ PROFILE_SPECS = {
             {"kind": "scalar_elems", "name": "SIZE"},
         ),
     ),
+    "host_engram_context": ProfileSpec(
+        profile="HostEngramContext",
+        example="generated_host_engram_context",
+        manifest_name="host_engram_context_manifest.json",
+        callable_hint="host_engram_context_example",
+        orch_source="host_engram_context_orch.cpp",
+        orch_function="build_engram_context_graph",
+        kernels=(KernelSpec(0, "host_engram_context_noop.cpp", "aiv"),),
+        args_template=(
+            {"kind": "input", "name": "table"},
+            {"kind": "input", "name": "indices"},
+            {"kind": "input", "name": "hidden"},
+            {"kind": "input", "name": "gate_weight"},
+            {"kind": "output", "name": "output"},
+            {"kind": "inout", "name": "gate_state"},
+            {"kind": "scalar_u64", "name": "batch"},
+            {"kind": "scalar_u64", "name": "table_rows"},
+            {"kind": "scalar_u64", "name": "hidden_size"},
+            {"kind": "scalar_u64", "name": "chunk_offset"},
+            {"kind": "scalar_u64", "name": "chunk_elems"},
+            {"kind": "scalar_f32_bits", "name": "bias"},
+        ),
+        generated=True,
+    ),
 }
 
 
@@ -120,6 +145,8 @@ def resolve_pto_isa_root(simpler_root: Path, explicit: str | None) -> Path:
 
 
 def resolve_example_root(simpler_root: Path, spec: ProfileSpec) -> Path:
+    if spec.generated:
+        return Path(f"generated:{spec.example}")
     candidates = [
         simpler_root / "examples" / "a2a3" / "host_build_graph" / spec.example,
         simpler_root / "tests" / "st" / "a2a3" / "host_build_graph" / spec.example,
@@ -541,6 +568,150 @@ extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ in
     return source
 
 
+def write_host_engram_context_orchestration(build_dir: Path) -> Path:
+    source = build_dir / "host_engram_context_orch.cpp"
+    source.write_text(
+        """\
+#include "orchestration_api.h"
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <iostream>
+
+struct CompatContinuousTensor {
+    uint64_t data;
+    uint32_t shapes[5];
+    uint32_t ndims;
+    uint8_t dtype;
+    uint8_t child_memory;
+    uint8_t reserved[2];
+};
+
+struct CompatChipStorageTaskArgs {
+    CompatContinuousTensor tensors[64];
+    uint64_t scalars[128];
+    int32_t tensor_count;
+    int32_t scalar_count;
+};
+
+extern "C" {
+
+int build_engram_context_graph(OrchestrationRuntime* runtime, const ChipStorageTaskArgs& orch_args) {
+    const CompatChipStorageTaskArgs* args =
+        reinterpret_cast<const CompatChipStorageTaskArgs*>(&orch_args);
+    if (args->tensor_count < 6) {
+        std::cerr << "build_engram_context_graph: Expected 6 tensor args, got "
+                  << args->tensor_count << '\\n';
+        return -1;
+    }
+    if (args->scalar_count < 6) {
+        std::cerr << "build_engram_context_graph: Expected 6 scalar args, got "
+                  << args->scalar_count << '\\n';
+        return -1;
+    }
+
+    const float* table = reinterpret_cast<const float*>(args->tensors[0].data);
+    const int32_t* indices = reinterpret_cast<const int32_t*>(args->tensors[1].data);
+    const float* hidden = reinterpret_cast<const float*>(args->tensors[2].data);
+    const float* gate_weight = reinterpret_cast<const float*>(args->tensors[3].data);
+    float* output = reinterpret_cast<float*>(args->tensors[4].data);
+    float* gate_state = reinterpret_cast<float*>(args->tensors[5].data);
+
+    const uint64_t batch = args->scalars[0];
+    const uint64_t table_rows = args->scalars[1];
+    const uint64_t hidden_size = args->scalars[2];
+    const uint64_t chunk_offset = args->scalars[3];
+    const uint64_t chunk_elems = args->scalars[4];
+    const uint32_t bias_bits = static_cast<uint32_t>(args->scalars[5]);
+    float bias = 0.0f;
+    std::memcpy(&bias, &bias_bits, sizeof(float));
+
+    constexpr uint64_t kIndicesPerBatch = 8;
+    if (batch != 1) {
+        std::cerr << "build_engram_context_graph: batch unsupported, got " << batch << '\\n';
+        return -1;
+    }
+    if (hidden_size == 0 || table_rows < kIndicesPerBatch) {
+        std::cerr << "build_engram_context_graph: invalid table_rows/hidden_size\\n";
+        return -1;
+    }
+    if (chunk_offset > hidden_size || chunk_elems > hidden_size - chunk_offset) {
+        std::cerr << "build_engram_context_graph: invalid chunk range\\n";
+        return -1;
+    }
+    if (args->tensors[0].shapes[0] < table_rows * hidden_size ||
+        args->tensors[1].shapes[0] < batch * kIndicesPerBatch ||
+        args->tensors[2].shapes[0] < batch * hidden_size ||
+        args->tensors[3].shapes[0] < batch * hidden_size ||
+        args->tensors[4].shapes[0] < batch * hidden_size ||
+        args->tensors[5].shapes[0] < batch) {
+        std::cerr << "build_engram_context_graph: tensor bytes too short\\n";
+        return -1;
+    }
+
+    for (uint64_t b = 0; b < batch; ++b) {
+        const uint64_t vector_base = b * hidden_size;
+        const uint64_t index_base = b * kIndicesPerBatch;
+        float gate = gate_state[b];
+        if (chunk_offset == 0) {
+            float dot = 0.0f;
+            for (uint64_t d = 0; d < hidden_size; ++d) {
+                dot += hidden[vector_base + d] * gate_weight[vector_base + d];
+            }
+            gate = 1.0f / (1.0f + expf(-(dot + bias)));
+            gate_state[b] = gate;
+        }
+        for (uint64_t d = chunk_offset; d < chunk_offset + chunk_elems; ++d) {
+            float table_sum = 0.0f;
+            for (uint64_t slot = 0; slot < kIndicesPerBatch; ++slot) {
+                const int32_t row = indices[index_base + slot];
+                if (row < 0 || static_cast<uint64_t>(row) >= table_rows) {
+                    std::cerr << "build_engram_context_graph: index out of bounds\\n";
+                    return -1;
+                }
+                table_sum += table[static_cast<uint64_t>(row) * hidden_size + d];
+            }
+            const float mean = table_sum / static_cast<float>(kIndicesPerBatch);
+            output[vector_base + d] = hidden[vector_base + d] + gate * mean;
+        }
+    }
+
+    uint64_t noop_args[1];
+    noop_args[0] = 0;
+    add_task(runtime, noop_args, 1, 0, CoreType::AIV);
+
+    return 0;
+}
+
+}  // extern "C"
+"""
+    )
+    return source
+
+
+def write_host_engram_context_noop_kernel(build_dir: Path) -> Path:
+    source = build_dir / "host_engram_context_noop.cpp"
+    source.write_text(
+        """\
+#include <cstdint>
+#include <pto/pto-inst.hpp>
+
+#ifndef __gm__
+#define __gm__
+#endif
+
+#ifndef __aicore__
+#define __aicore__ [aicore]
+#endif
+
+extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ int64_t* args) {
+    (void)args;
+}
+"""
+    )
+    return source
+
+
 def write_wrapped_kernel(
     build_dir: Path,
     spec_key: str,
@@ -575,6 +746,9 @@ def describe(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -
     spec = PROFILE_SPECS[args.profile]
     example_root = resolve_example_root(simpler_root, spec)
     manifest_path = Path(args.output_dir).resolve() / spec.manifest_name
+    orchestration = (
+        f"generated://{spec.orch_source}" if spec.generated else str(example_root / spec.orch_source)
+    )
     payload = {
         "profile": spec.profile,
         "runtime_variant": "HostBuildGraph",
@@ -582,13 +756,15 @@ def describe(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -
         "pto_isa_root": str(pto_isa_root),
         "example_root": str(example_root),
         "manifest": str(manifest_path),
-        "orchestration": str(example_root / spec.orch_source),
+        "orchestration": orchestration,
         "tile_batch": args.tile_batch if args.profile == "host_matmul" else None,
         "kernels": [
             {
                 "func_id": kernel.func_id,
                 "core_type": kernel.core_type,
-                "source": str(example_root / kernel.source),
+                "source": f"generated://{kernel.source}"
+                if spec.generated
+                else str(example_root / kernel.source),
             }
             for kernel in spec.kernels
         ],
@@ -635,6 +811,8 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         builder, api_kind, runtime_name, build_dir
     )
     orch_source = example_root / spec.orch_source
+    if args.profile == "host_engram_context":
+        orch_source = write_host_engram_context_orchestration(build_dir)
     if args.profile == "host_matmul" and args.tile_batch > 1:
         orch_source = write_batched_matmul_orchestration(build_dir, args.tile_batch)
     orch_binary = kernel_compiler.compile_orchestration(
@@ -660,7 +838,12 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
             if args.profile == "host_matmul" and args.tile_batch > 1
             else None
         )
-        source = Path(vector_source or batched_source or (example_root / kernel.source)).resolve()
+        engram_source = (
+            write_host_engram_context_noop_kernel(build_dir)
+            if args.profile == "host_engram_context"
+            else None
+        )
+        source = Path(vector_source or batched_source or engram_source or (example_root / kernel.source)).resolve()
         wrapped = write_wrapped_kernel(
             build_dir,
             args.profile,
@@ -762,6 +945,8 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         },
         "note": "args_template is consumed by simulator-side helper to construct SimplerRuntimeArg entries",
     }
+    if args.profile == "host_engram_context":
+        manifest["host_engram_context_manifest_version"] = 3
 
     manifest_path = output_dir / spec.manifest_name
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True))

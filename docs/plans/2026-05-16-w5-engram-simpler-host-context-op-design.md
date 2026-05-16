@@ -140,6 +140,7 @@ Manifest profile:
       {"kind": "input", "name": "hidden"},
       {"kind": "input", "name": "gate_weight"},
       {"kind": "output", "name": "output"},
+      {"kind": "inout", "name": "gate_state"},
       {"kind": "scalar_u64", "name": "batch"},
       {"kind": "scalar_u64", "name": "table_rows"},
       {"kind": "scalar_u64", "name": "hidden_size"},
@@ -155,6 +156,16 @@ Manifest profile:
 
 Use a chunked design so the contract can grow from `D=1024` to `D=5120`
 without changing the public interface.
+
+Current implementation note:
+
+- Default execution uses one dispatch over the full hidden size. This avoids
+  paying HostBuildGraph launch overhead once per chunk.
+- Explicit `SIM_QWEN3_GUEST_ENGRAM_CONTEXT_CHUNK_ELEMS=N` still forces
+  chunked execution for stress and regression validation.
+- Chunked execution carries a small `gate_state: f32[B]` inout buffer. The
+  first chunk computes and stores the gate; later chunks reuse it instead of
+  repeating the full dot product.
 
 ### Stage 0: Gather Mean And Partial Dot
 
@@ -229,7 +240,7 @@ Environment:
 ```text
 SIMPLER_HOST_ENGRAM_CONTEXT_MANIFEST=/tmp/simpler-host-engram-context-artifacts/host_engram_context_manifest.json
 SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_ROWS=16
-SIM_QWEN3_GUEST_ENGRAM_CONTEXT_CHUNK_ELEMS=1024
+SIM_QWEN3_GUEST_ENGRAM_CONTEXT_CHUNK_ELEMS=<optional explicit chunk size>
 ```
 
 `sim-uapi` flow:
@@ -351,6 +362,19 @@ Acceptance:
 6. Run W5 0.6B 4-step with `SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=simpler-host`.
 7. Only after 0.6B is stable, enable chunked `D=5120` validation for 14B.
 
+Status as of 2026-05-16:
+
+- Steps 1-6 are implemented and validated.
+- 14B `D=5120` is implemented and validated.
+- Explicit multi-chunk mode is implemented; the default is now full-hidden
+  single dispatch because measured 14B latency was dominated by repeated
+  HostBuildGraph launch overhead, not by the dot product itself.
+- 14B 2-step W5 validation with explicit `chunk_elems=1024` produced context
+  latencies `5054ms` and `3620ms`.
+- 14B 2-step W5 validation with default full-hidden dispatch produced context
+  latencies `2392ms` and `832ms`, with the same token IDs and output
+  checksums.
+
 ## Risks
 
 - Simpler HostBuildGraph launch overhead may dominate for `B=1`. This backend
@@ -358,15 +382,14 @@ Acceptance:
 - A dedicated AIV kernel is still not the same memory path as vendor SIMT. It
   should be compared against CPU-reference and used to exercise UAPI/backend
   integration, not used as proof of final SIMT speedup.
-- `D=5120` needs chunking and partial-dot reduction. If the first patch only
-  supports `D=1024`, the failure for 14B must be explicit.
+- `D=5120` can run as either one full-hidden dispatch or explicit chunks.
+  Explicit chunks remain useful to validate object/operand ranges, but should
+  not be the default for W5 throughput because launch overhead dominates.
 - Runtime fixture generation must remain deterministic. Otherwise token IDs
   will drift and W5 comparisons will become noisy.
 
 ## Open Questions
 
-- Should MVP implement only `D=1024`, or include multi-chunk `D=5120` from the
-  start?
 - Should `table` and `gate_weight` remain deterministic fixtures for W5
   validation, or become object-backed operands provided by a higher-level
   engram state object?

@@ -223,6 +223,7 @@ enum Qwen3EngramContextOp {
     Disabled,
     CpuReference,
     FusedSimt,
+    SimplerHost,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -769,6 +770,7 @@ fn parse_qwen3_engram_context_op(value: &str) -> anyhow::Result<Qwen3EngramConte
         "disabled" | "none" | "off" => Ok(Qwen3EngramContextOp::Disabled),
         "cpu" | "cpu-reference" => Ok(Qwen3EngramContextOp::CpuReference),
         "fused-simt" => Ok(Qwen3EngramContextOp::FusedSimt),
+        "simpler-host" => Ok(Qwen3EngramContextOp::SimplerHost),
         _ => anyhow::bail!("unsupported --engram-context-op: {value}"),
     }
 }
@@ -1549,6 +1551,25 @@ mod tests {
         .expect("guest decode loop args");
 
         assert_eq!(args.engram.context_op, Qwen3EngramContextOp::FusedSimt);
+    }
+
+    #[test]
+    fn qwen3_guest_decode_loop_args_accept_simpler_host_context_op() {
+        let args = qwen3_guest_decode_loop_args_from([
+            "qwen3-guest-decode-loop",
+            "--engram",
+            "--engram-pool=obmm",
+            "--engram-context-op=simpler-host",
+        ])
+        .expect("parse guest decode loop args")
+        .expect("guest decode loop args");
+
+        assert_eq!(args.engram.context_op, Qwen3EngramContextOp::SimplerHost);
+        let vars = qwen3_guest_engram_env_vars(&args.engram, 0x1234);
+        assert!(vars.contains(&(
+            "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP".to_string(),
+            "simpler-host".to_string()
+        )));
     }
 
     #[test]
@@ -4077,6 +4098,7 @@ fn qwen3_engram_context_op_name(context_op: Qwen3EngramContextOp) -> &'static st
         Qwen3EngramContextOp::Disabled => "disabled",
         Qwen3EngramContextOp::CpuReference => "cpu-reference",
         Qwen3EngramContextOp::FusedSimt => "fused-simt",
+        Qwen3EngramContextOp::SimplerHost => "simpler-host",
     }
 }
 

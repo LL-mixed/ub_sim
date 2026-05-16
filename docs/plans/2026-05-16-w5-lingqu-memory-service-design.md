@@ -1,0 +1,598 @@
+# W5 Lingqu Memory Service Design
+
+## Goal
+
+Define a real long-term memory and semantic-state service for W5 inference
+cluster validation.
+
+This service is not an Engram-owned subsystem. Engram is one consumer. The
+memory service must also be usable later by RAG-style context injection, KV
+summary state, planner state, session recall, and cross-run analysis.
+
+The hard boundary is:
+
+- hot runtime tensors use the OBMM shmem pool and Lingqu Object Service;
+- durable payloads use Lingqu Block;
+- durable namespace and metadata catalogs use Lingqu DFS;
+- W5 decode consumes ready object references and mapped operand views;
+- decode kernels do not ingest, rank, persist, or directly read DFS/Block.
+
+## Core Decision
+
+Use three explicit layers:
+
+```text
+Lingqu Memory Service
+  durable memory records, chunks, embedding segments, vector indexes,
+  retrieval policy, trust policy, and query results
+
+Hot State Materializer
+  converts retrieval results into OBMM-backed tensor objects and publishes
+  them through Lingqu Object Service
+
+W5 Engram Adapter
+  converts hot memory state into the operator-specific EngramStateObject
+  consumed by the W5 engram context op
+```
+
+Lingqu Object Service remains the authority for object identity, placement,
+version, checksum, owner, and lifecycle. It is not the semantic retrieval
+engine.
+
+## Why
+
+Short W5 decode runs can validate wiring and timing, but they cannot create a
+meaningful long-term memory source by themselves. A real memory service gives
+W5 a durable and auditable source of semantic state:
+
+- cross-session records;
+- long-sequence summaries;
+- source provenance;
+- trust and retention policy;
+- persisted embedding/index artifacts;
+- hot OBMM tensor state for low-latency decode consumption;
+- rebuild after OBMM eviction or simulator restart.
+
+The user-facing benefit is that W5 reports can identify exactly which memory
+records, index versions, object refs, and checksums affected a decode run.
+
+## Non-Goals
+
+- Do not build a production vector database in the first slice.
+- Do not put ingestion, ranking, indexing, or persistence into the decode
+  kernel.
+- Do not make deterministic synthetic engram fixtures the default for real W5
+  validation.
+- Do not replace Lingqu Object Service, Lingqu Block, or Lingqu DFS with a
+  separate storage stack.
+- Do not let model output silently become trusted long-term memory.
+- Do not claim quality improvements from two-step or four-step decode runs.
+  Those runs only validate plumbing and timing.
+
+## Storage Roles
+
+### Lingqu DFS
+
+DFS stores durable catalogs and human-meaningful namespaces:
+
+- memory corpus catalogs;
+- source document paths;
+- session and run-log manifests;
+- metadata checkpoints for rebuilding Object Service runtime indexes;
+- vector index manifests;
+- replay manifests.
+
+DFS is the durable namespace and metadata-catalog layer. It should not be used
+as the primary storage path for large dense vector pages when Lingqu Block can
+store those payloads directly.
+
+### Lingqu Block
+
+Block stores durable payload bytes:
+
+- source chunks;
+- normalized text payloads;
+- embedding segment pages;
+- vector index binary pages;
+- table snapshots for replay;
+- run-summary payloads;
+- checksum-addressed artifacts.
+
+Block refs are the durable payload references used by Memory Service records.
+
+### Lingqu Object Service
+
+Object Service owns runtime object semantics:
+
+- object identity;
+- version selection;
+- placement selection;
+- checksum verification;
+- owner and lifecycle state;
+- publish and resolve reports.
+
+Object Service can track `ObmmShmem`, `Block`, and `Dfs` placements, but it
+does not own semantic ranking or memory policy.
+
+### OBMM Shmem Pool
+
+OBMM stores hot runtime tensor bytes:
+
+- selected table tensors;
+- selected index tensors;
+- optional retrieval score tensors;
+- adapter-produced gate feature tensors;
+- per-query hot state;
+- per-node mapped operand caches.
+
+OBMM eviction must never lose durable memory. Eviction only drops a hot
+placement. The Memory Service can rebuild hot state from DFS catalogs and Block
+payloads.
+
+## Architecture
+
+```text
+source docs / session logs / run summaries / user feedback
+  -> Lingqu Memory Ingestion
+  -> DFS MemoryCorpusCatalog + Block chunk payloads
+  -> Embedding Builder
+  -> Block EmbeddingSegment payloads
+  -> DFS VectorIndexObject manifest
+  -> Lingqu Memory Query
+  -> QueryResult with record/chunk ids and vector offsets
+  -> Hot State Materializer
+  -> OBMM-backed HotMemoryStateObject refs via Object Service
+  -> W5 Engram Adapter
+  -> EngramStateObjectRef
+  -> W5 decode resolves refs through UAPI adapter
+  -> backend reads mapped OBMM buffer views
+```
+
+Only the hot materialization path touches OBMM. Durable memory is defined by DFS
+catalogs and Block payloads, not by whether a buffer is currently resident.
+
+## Data Model
+
+### MemoryCorpusCatalog
+
+Durable DFS metadata checkpoint for a corpus or scope.
+
+```text
+catalog_id: string
+scope: tenant | user | project | session | run
+dfs_path: string
+version: u64
+record_count: u64
+chunk_count: u64
+embedding_segments: [embedding_segment_id]
+vector_indexes: [vector_index_id]
+block_refs: [Lingqu Block ref]
+checksum: u64
+created_at_us: u64
+updated_at_us: u64
+```
+
+This catalog is the durable reconstruction source for Memory Service metadata
+after restart. Object Service runtime records can be rebuilt from these DFS
+catalogs plus Block refs.
+
+### MemoryRecord
+
+Logical durable memory item.
+
+```text
+memory_id: string
+scope: tenant | user | project | session | run
+visibility: private | project | shared | system
+source_kind: document | session_log | run_summary | user_feedback | derived
+source_uri: string
+source_checksum: u64
+content_type: text | markdown | json | binary
+language: optional string
+token_count: u32
+trust_level: raw | derived | user_confirmed | system_verified
+confidence: f32
+retention_policy: ephemeral | session | project | durable
+security_label: public | internal | sensitive | restricted
+pii_state: unknown | absent | present | redacted
+chunk_refs: [chunk_id]
+embedding_model_versions: [string]
+created_at_us: u64
+updated_at_us: u64
+expires_at_us: optional u64
+version: u64
+state: committed | tombstoned | quarantined
+```
+
+`metadata: map` can exist as an extension field, but the fields above must be
+first-class because retrieval, permissions, retention, and trust depend on
+them.
+
+### MemoryChunk
+
+Durable chunk of a memory record.
+
+```text
+chunk_id: string
+memory_id: string
+ordinal: u32
+content_block_ref: Lingqu Block ref
+content_checksum: u64
+token_start: u32
+token_count: u32
+created_at_us: u64
+version: u64
+```
+
+Chunk payloads live in Lingqu Block. DFS catalogs name and group them.
+
+### EmbeddingSegment
+
+Durable dense-vector storage unit.
+
+```text
+embedding_segment_id: string
+embedding_model: string
+embedding_model_version: string
+dims: u32
+dtype: f16 | bf16 | f32
+normalized: bool
+row_count: u32
+row_stride_bytes: u32
+vector_block_refs: [Lingqu Block ref]
+row_map: [(chunk_id, row_offset)]
+checksum: u64
+version: u64
+created_at_us: u64
+```
+
+Do not store one tiny Block object per vector as the normal path. The normal
+path is segment/page-based storage so query can read contiguous vector pages and
+hot-promote useful ranges into OBMM.
+
+### VectorIndexObject
+
+Durable index manifest and optional hot placement descriptor.
+
+```text
+vector_index_id: string
+scope: tenant | user | project | session | run
+embedding_model: string
+dims: u32
+index_kind: flat | hnsw | ivf | deterministic_small
+segment_ids: [embedding_segment_id]
+index_manifest_dfs_path: Lingqu DFS path
+index_block_refs: [Lingqu Block ref]
+hot_index_object_ref: optional Lingqu ObjectRef to ObmmShmem payload
+checksum: u64
+version: u64
+created_at_us: u64
+updated_at_us: u64
+```
+
+For the first implementation, `deterministic_small` or `flat` is enough. The
+model still needs this object so future approximate indexes do not require a
+data-model rewrite.
+
+### MemoryQuery
+
+Request handled by Lingqu Memory Service or by a request planner before decode.
+
+```text
+query_id: string
+request_id: string
+session_id: string
+model_key: string
+prompt_ref: Lingqu Block ref or DFS path
+prompt_hash: u64
+scope_filter: [scope]
+visibility_filter: [visibility]
+trust_filter: [trust_level]
+top_k: u32
+embedding_model: string
+rank_policy: string
+created_at_us: u64
+```
+
+This object is not a decode-kernel input. It belongs to the request planning or
+memory query phase.
+
+### QueryResult
+
+Durable and auditable retrieval result.
+
+```text
+query_result_id: string
+query_id: string
+vector_index_id: string
+selected_chunks: [(chunk_id, embedding_segment_id, row_offset, score)]
+selected_memory_ids: [memory_id]
+record_manifest_dfs_path: Lingqu DFS path
+checksum: u64
+version: u64
+created_at_us: u64
+expires_at_us: optional u64
+```
+
+`QueryResult` is semantic. It does not have to be shaped like the engram
+operator.
+
+### HotMemoryStateObject
+
+Hot OBMM-backed state produced by the materializer.
+
+```text
+hot_state_id: string
+query_result_id: string
+table_object_ref: Lingqu ObjectRef to ObmmShmem payload
+indices_object_ref: Lingqu ObjectRef to ObmmShmem payload
+score_object_ref: optional Lingqu ObjectRef to ObmmShmem payload
+record_manifest_ref: Lingqu DFS path
+dtype: f32
+hidden_size: u32
+table_rows: u32
+checksum: u64
+version: u64
+created_at_us: u64
+expires_at_us: u64
+```
+
+This is the memory-facing hot contract. It is still operator-neutral.
+
+### EngramStateObject
+
+W5 Engram Adapter output.
+
+```text
+engram_state_id: string
+hot_state_id: string
+table_object_ref: Lingqu ObjectRef to ObmmShmem payload
+indices_object_ref: Lingqu ObjectRef to ObmmShmem payload
+gate_feature_object_ref: optional Lingqu ObjectRef to ObmmShmem payload
+gate_weight_object_ref: optional Lingqu ObjectRef to ObmmShmem payload
+operator_config_ref: optional Lingqu ObjectRef or inline config
+record_manifest_ref: Lingqu DFS path
+dtype: f32
+hidden_size: u32
+table_rows: u32
+checksum: u64
+version: u64
+created_at_us: u64
+expires_at_us: u64
+```
+
+`gate_weight`, `gate_feature`, bias, and other gating details belong to the W5
+Engram Adapter or operator configuration, not to the core Memory Service.
+
+## Query And Decode Flow
+
+The recommended W5 validation flow is offline/pre-step materialization:
+
+1. Memory ingestion receives source documents, session transcripts, run
+   summaries, or feedback events.
+2. Ingestion writes chunk payloads to Lingqu Block and updates DFS
+   `MemoryCorpusCatalog` records.
+3. The embedding builder writes vector pages to Lingqu Block as
+   `EmbeddingSegment` payloads.
+4. The index builder writes `VectorIndexObject` manifests to DFS and optional
+   index pages to Lingqu Block.
+5. A request planner submits `MemoryQuery`.
+6. Lingqu Memory Service returns `QueryResult`.
+7. Hot State Materializer reads selected segment pages, creates OBMM tensor
+   payloads, and publishes `HotMemoryStateObject` through Object Service.
+8. W5 Engram Adapter converts `HotMemoryStateObject` into
+   `EngramStateObject`.
+9. W5 decode receives `EngramStateObjectRef`.
+10. UAPI adapter resolves ObjectRefs and maps OBMM buffers.
+11. The backend reads mapped views. It does not resolve DFS paths or read
+    Lingqu Block directly.
+12. Decode reports memory record ids, query result version, object refs,
+    checksums, and timing.
+
+Online query is allowed later, but it must be modeled as request planning before
+the decode step. TTFT reports must separate memory query/build-state time from
+decode execution time.
+
+## Feedback And Writeback Policy
+
+Raw interaction logs can be stored as memory sources. Derived long-term memory
+must not be trusted just because a model generated it.
+
+Writeback rules:
+
+- raw decode/session logs can be persisted as `source_kind=session_log`;
+- model-derived summaries start with `trust_level=derived`;
+- high-trust memory requires user confirmation, system verification, or an
+  explicit policy rule;
+- every derived record must keep evidence refs to source chunks or run logs;
+- quarantined or low-confidence records cannot be selected by default queries;
+- feedback ingestion is performed by Memory Service workers, not by the engram
+  context op.
+
+This avoids poisoning long-term memory with model hallucinations.
+
+## W5 Decode Contract
+
+The decode path should accept:
+
+```text
+--engram-state-ref=<object key or wire ref>
+```
+
+or an equivalent environment variable during script compatibility.
+
+When a real `EngramStateObjectRef` is provided:
+
+- missing object resolve fails the run;
+- checksum mismatch fails the run;
+- shape mismatch fails the run;
+- fallback to deterministic fixture state is forbidden;
+- reports must include selected memory ids, query result id, object versions,
+  and checksums.
+
+When no memory service is configured, W5 can still run fixture-backed engram
+operator smoke tests, but the report must label them as fixture-backed.
+
+## Cross-Node Access
+
+The wire contract should reuse the existing object-backed reference model, such
+as `LingquObmmObjectRefWire`.
+
+Target path:
+
+```text
+producer publishes OBMM-backed object
+  -> Lingqu Object Service commits version/checksum/placement
+  -> consumer receives ObjectRef in UAPI descriptor
+  -> adapter resolves/maps OBMM placement
+  -> backend reads mapped buffer view
+  -> output object metadata/checksum is committed
+```
+
+There must not be a second guest-only object library with separate truth. Guest
+code can hold handles and descriptors, but object identity, placement, and
+lifecycle are unified through Lingqu Object Service on top of OBMM shmem.
+
+## Lifecycle And Versioning
+
+- Memory records are append-versioned.
+- Chunk payloads are immutable for a content checksum.
+- Embedding segments are immutable for a chunk set, embedding model, and model
+  version.
+- Vector index objects are versioned and can be rebuilt from embedding
+  segments.
+- Query results are versioned and can expire.
+- Hot OBMM placements can be evicted independently from durable DFS/Block
+  state.
+- Tombstoned records are hidden from latest queries but remain auditable by
+  exact version when policy allows it.
+- Quarantined records cannot satisfy normal query or decode resolve requests.
+
+## CLI Shape
+
+Initial commands should be explicit and testable:
+
+```text
+sim-cli lingqu-memory ingest --scope project --source docs/...
+sim-cli lingqu-memory embed --scope project --embedding-model ...
+sim-cli lingqu-memory build-index --scope project --index-kind flat
+sim-cli lingqu-memory query --prompt-file prompt.txt --top-k 8
+sim-cli lingqu-memory materialize-hot-state --query-result-id ... --hidden-size 1024
+sim-cli w5 inference-cluster --engram-state-ref ...
+```
+
+The command names can still change during implementation. The user-facing flow
+should keep ingestion, embedding, indexing, query, hot materialization, adapter
+state, and decode as separately observable stages.
+
+## Observability
+
+W5 summary should include:
+
+```text
+memory_service=lingqu_memory_service
+memory_fixture_backed=false
+query_id=...
+query_result_id=...
+vector_index_id=...
+hot_state_id=...
+engram_state_ref=...
+selected_memory_count=...
+selected_memory_ids=...
+selected_chunk_ids=...
+table_object_ref=...
+indices_object_ref=...
+score_object_ref=...
+gate_feature_object_ref=...
+object_versions=...
+object_checksums=...
+obmm_hot_bytes=...
+block_read_count=...
+dfs_catalog_reads=...
+```
+
+Timing should separate:
+
+- memory query and ranking;
+- durable DFS catalog reads;
+- durable Block payload reads;
+- OBMM hot materialization;
+- Object Service publish and resolve;
+- UAPI object map;
+- backend context-op dispatch.
+
+## Test Plan
+
+Unit tests:
+
+- `MemoryRecord` rejects missing first-class policy fields.
+- `MemoryChunk` roundtrips DFS catalog refs and Block payload refs.
+- `EmbeddingSegment` maps chunk ids to row offsets.
+- `VectorIndexObject` can resolve segment pages without per-vector Block
+  objects.
+- `HotMemoryStateObject` rejects non-OBMM hot tensor placements.
+- OBMM hot promote and evict keeps durable DFS/Block source valid.
+- stale version and checksum mismatch fail resolve.
+- tombstoned and quarantined memory records are not selected by normal query.
+- model-derived memory cannot become high-trust without evidence and policy.
+
+Integration tests:
+
+- ingest a small corpus, build embeddings, build an index, query, materialize
+  hot state, and resolve all hot tensor refs.
+- rebuild Memory Service runtime metadata from DFS catalogs and Block payloads.
+- run W5 with fixture engram state and verify it is labelled fixture-backed.
+- run W5 with real `EngramStateObjectRef` and verify deterministic fallback is
+  not used.
+- evict OBMM hot tensors, rebuild state from Block/DFS, and rerun W5.
+- replay a prior run from DFS manifests and Block payload checksums.
+
+CLI tests:
+
+- each public command has a smoke test;
+- missing DFS source fails with a structured error;
+- missing Block payload fails with a structured error;
+- `--engram-state-ref` shape/checksum mismatch fails decode.
+
+## Implementation Order
+
+1. Add core Rust data models for `MemoryCorpusCatalog`, `MemoryRecord`,
+   `MemoryChunk`, `EmbeddingSegment`, `VectorIndexObject`, `MemoryQuery`,
+   `QueryResult`, `HotMemoryStateObject`, and `EngramStateObject`.
+2. Add DFS catalog persistence and restart-time catalog reload.
+3. Add Block-backed chunk and embedding segment payload storage.
+4. Add deterministic-small or flat vector index support.
+5. Add `sim-cli lingqu-memory` ingest/embed/build-index/query commands.
+6. Add hot materialization into OBMM shmem through Lingqu Object Service.
+7. Add W5 Engram Adapter from `HotMemoryStateObject` to
+   `EngramStateObject`.
+8. Teach W5 decode to accept `EngramStateObjectRef`.
+9. Make real-memory W5 reject deterministic fallback paths.
+10. Add long-step, cross-session, and restart/rebuild validation runs.
+
+## Acceptance Criteria
+
+- Lingqu Memory Service is usable without Engram.
+- W5 Engram consumes Memory Service through an adapter, not by owning memory
+  persistence.
+- Object Service is not the semantic retrieval engine.
+- Durable metadata can be rebuilt from DFS catalogs.
+- Durable payloads live in Lingqu Block.
+- Hot tensors are OBMM-backed object refs.
+- Real-memory W5 fails on missing object refs, checksum mismatch, or shape
+  mismatch.
+- Reports identify memory records, chunk ids, query result versions, object
+  versions, and checksums that affected decode.
+- Fixture-backed engram validation remains possible only when explicitly
+  requested and clearly labelled.
+
+## Open Questions
+
+- Which embedding model and dimensions should be the first real persistent
+  profile?
+- Should the first ranking policy be flat exact search over
+  `EmbeddingSegment`, or deterministic top-k over small corpora?
+- What retention policy applies to user, project, session, and run scopes?
+- Which node owns hot state materialization for multi-node W5 runs?
+- Should feedback writeback be synchronous after decode or batched by a Memory
+  Service worker?
