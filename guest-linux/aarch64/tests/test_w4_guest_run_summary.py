@@ -129,6 +129,16 @@ class W4GuestRunSummaryTest(unittest.TestCase):
                         "object_key=tokens/qwen3-0.6b/decode-step1 status=ok",
                     )
                 (run_dir / f"{node_id}_guest.log").write_text("\n".join(lines) + "\n")
+                if node_id == "nodeH":
+                    qemu_lines = [
+                        "qwen3-engram-context: mode=cpu-reference table_rows=16 "
+                        "output_checksum=0x11 gate_checksum=0x21 index_checksum=0x31 "
+                        "output_l1_milli=1024 latency_ms=1",
+                        "qwen3-engram-context: mode=cpu-reference table_rows=16 "
+                        "output_checksum=0x22 gate_checksum=0x42 index_checksum=0x62 "
+                        "output_l1_milli=2048 latency_ms=2",
+                    ]
+                    (run_dir / f"{node_id}_qemu.log").write_text("\n".join(qemu_lines) + "\n")
 
             result = subprocess.run(
                 [sys.executable, str(script), str(run_dir), "2", *NODE_IDS],
@@ -150,6 +160,7 @@ class W4GuestRunSummaryTest(unittest.TestCase):
         )
         self.assertIn("handoff_timing_records=16", result.stdout)
         self.assertIn("engram_timing_records=8", result.stdout)
+        self.assertIn("engram_context_records=2", result.stdout)
         self.assertIn("decode_output: token_ids=[11, 358]", result.stdout)
         self.assertIn('decode_output: token_pieces=", I"', result.stdout)
         self.assertIn('decode_token: step=1 node=nodeH token=358 piece=" I"', result.stdout)
@@ -198,6 +209,18 @@ class W4GuestRunSummaryTest(unittest.TestCase):
         self.assertIn(
             "engram_timing_node: node=nodeH steps=1/2 candidate_publish_ms=2 "
             "candidate_wait_ms=3 policy_select_ms=4 decision_publish_ms=5",
+            result.stdout,
+        )
+        self.assertIn(
+            "engram_context_summary: records=2 steps=2/2 modes=cpu-reference "
+            "max_latency_ms=2 max_latency_step=1 max_latency_node=nodeH "
+            "total_latency_ms=3 output_checksum_xor=0x0000000000000033",
+            result.stdout,
+        )
+        self.assertIn(
+            "engram_context_step: step=1 node=nodeH mode=cpu-reference "
+            "table_rows=16 output_checksum=0x22 gate_checksum=0x42 "
+            "index_checksum=0x62 output_l1_milli=2048 latency_ms=2",
             result.stdout,
         )
         self.assertIn(

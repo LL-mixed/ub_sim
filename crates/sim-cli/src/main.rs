@@ -5,15 +5,20 @@ use sim_core::{
     FunctionLabel, HierarchyCoord, IoOpcode, IoSubmitReq, LogicalSystemId, MemoryEndpoint, PlLevel,
     SegmentHandle, SimEvent, TaskKey,
 };
-use sim_models::qwen3_dense::{
-    decode_hidden_bytes, hidden_range_bytes, kv_state_bytes_for_layer_count,
-    model_key as qwen3_dense_model_key, profile_from_weights_dir, Qwen3DenseProfile,
-    QWEN3_DENSE_DEFAULT_DECODE_TOKENS, QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
-    QWEN3_DENSE_DEFAULT_TP_NODES,
-};
 use sim_models::qwen3_dense_reference::{
     token_piece_bytes_from_tokenizer_path, token_piece_decode_bytes,
     tokenize_prompt_from_tokenizer_path,
+};
+use sim_models::{
+    engram_simt_adapter::{
+        artifact_config_from_env, discover_engram_simt_artifact, EngramSimtLaunchSpec,
+    },
+    qwen3_dense::{
+        decode_hidden_bytes, hidden_range_bytes, kv_state_bytes_for_layer_count,
+        model_key as qwen3_dense_model_key, profile_from_weights_dir, Qwen3DenseProfile,
+        QWEN3_DENSE_DEFAULT_DECODE_TOKENS, QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
+        QWEN3_DENSE_DEFAULT_TP_NODES,
+    },
 };
 use sim_qemu::{
     GuestDescriptor, GuestIoDescriptor, GuestServiceDescriptor, LinquDeviceModel, QemuMmioHandler,
@@ -182,6 +187,7 @@ struct Qwen3RangeForwardCliArgs {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Qwen3EngramMode {
     Cpu,
+    FusedSimt,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -189,6 +195,13 @@ enum Qwen3EngramPool {
     Inline,
     Object,
     Obmm,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Qwen3EngramContextOp {
+    Disabled,
+    CpuReference,
+    FusedSimt,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -209,6 +222,7 @@ struct Qwen3EngramConfig {
     repetition_penalty_milli: u32,
     history_window: usize,
     blocked_token_ids: Vec<u64>,
+    context_op: Qwen3EngramContextOp,
     report: Qwen3EngramReport,
 }
 
@@ -223,6 +237,7 @@ impl Default for Qwen3EngramConfig {
             repetition_penalty_milli: 1000,
             history_window: 0,
             blocked_token_ids: Vec::new(),
+            context_op: Qwen3EngramContextOp::Disabled,
             report: Qwen3EngramReport::Summary,
         }
     }
@@ -515,6 +530,13 @@ where
                     engram
                         .blocked_token_ids
                         .extend(qwen3_parse_token_id_csv(value)?);
+                } else if text == "--engram-context-op" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--engram-context-op requires a value"))?;
+                    engram.context_op = parse_qwen3_engram_context_op(&next.to_string_lossy())?;
+                } else if let Some(value) = text.strip_prefix("--engram-context-op=") {
+                    engram.context_op = parse_qwen3_engram_context_op(value)?;
                 } else if text == "--engram-history-window" {
                     let next = pending.next().ok_or_else(|| {
                         anyhow::anyhow!("--engram-history-window requires a value")
@@ -671,6 +693,7 @@ fn parse_nonnegative_u64(label: &str, value: &str) -> anyhow::Result<u64> {
 fn parse_qwen3_engram_mode(value: &str) -> anyhow::Result<Qwen3EngramMode> {
     match value {
         "cpu" => Ok(Qwen3EngramMode::Cpu),
+        "fused-simt" => Ok(Qwen3EngramMode::FusedSimt),
         _ => anyhow::bail!("unsupported --engram-mode: {value}"),
     }
 }
@@ -681,6 +704,15 @@ fn parse_qwen3_engram_pool(value: &str) -> anyhow::Result<Qwen3EngramPool> {
         "object" => Ok(Qwen3EngramPool::Object),
         "obmm" => Ok(Qwen3EngramPool::Obmm),
         _ => anyhow::bail!("unsupported --engram-pool: {value}"),
+    }
+}
+
+fn parse_qwen3_engram_context_op(value: &str) -> anyhow::Result<Qwen3EngramContextOp> {
+    match value {
+        "disabled" | "none" | "off" => Ok(Qwen3EngramContextOp::Disabled),
+        "cpu" | "cpu-reference" => Ok(Qwen3EngramContextOp::CpuReference),
+        "fused-simt" => Ok(Qwen3EngramContextOp::FusedSimt),
+        _ => anyhow::bail!("unsupported --engram-context-op: {value}"),
     }
 }
 
@@ -740,6 +772,10 @@ fn qwen3_guest_engram_env_vars(
     vec![
         ("SIM_QWEN3_GUEST_ENGRAM".to_string(), "1".to_string()),
         (
+            "SIM_QWEN3_GUEST_ENGRAM_MODE".to_string(),
+            qwen3_engram_mode_name(config.mode).to_string(),
+        ),
+        (
             "SIM_QWEN3_GUEST_ENGRAM_SESSION_ID".to_string(),
             format!("{session_id:016x}"),
         ),
@@ -767,6 +803,10 @@ fn qwen3_guest_engram_env_vars(
                 .map(u64::to_string)
                 .collect::<Vec<_>>()
                 .join(","),
+        ),
+        (
+            "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP".to_string(),
+            qwen3_engram_context_op_name(config.context_op).to_string(),
         ),
     ]
 }
@@ -1184,8 +1224,8 @@ mod tests {
         qwen3_guest_terminal_candidate_records, qwen3_guest_terminal_text_lossy_from_tokenizer,
         qwen3_guest_terminal_tokens, qwen3_guest_timing_summary, qwen3_range_forward_args_from,
         simpler_host_matmul_artifact_producer_path, validate_qwen3_dense_weights_path,
-        Qwen3CandidateRecord, Qwen3DecodeReportVerbosity, Qwen3EngramConfig, Qwen3EngramMode,
-        Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
+        Qwen3CandidateRecord, Qwen3DecodeReportVerbosity, Qwen3EngramConfig, Qwen3EngramContextOp,
+        Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
     };
     use std::env;
     use std::fs;
@@ -1350,6 +1390,7 @@ mod tests {
             "--repetition-penalty=1.250",
             "--engram-block-token-id=11",
             "--engram-block-token-ids=358,1128",
+            "--engram-context-op=cpu-reference",
             "--engram-history-window=64",
             "--engram-report=steps",
         ])
@@ -1362,8 +1403,37 @@ mod tests {
         assert_eq!(args.engram.no_repeat_ngram_size, 3);
         assert_eq!(args.engram.repetition_penalty_milli, 1250);
         assert_eq!(args.engram.blocked_token_ids, vec![11, 358, 1128]);
+        assert_eq!(args.engram.context_op, Qwen3EngramContextOp::CpuReference);
         assert_eq!(args.engram.history_window, 64);
         assert_eq!(args.engram.report, Qwen3EngramReport::Steps);
+    }
+
+    #[test]
+    fn qwen3_guest_decode_loop_args_accept_fused_simt_engram_mode() {
+        let args = qwen3_guest_decode_loop_args_from([
+            "qwen3-guest-decode-loop",
+            "--engram",
+            "--engram-mode=fused-simt",
+            "--engram-pool=obmm",
+        ])
+        .expect("parse guest decode loop args")
+        .expect("guest decode loop args");
+
+        assert_eq!(args.engram.mode, Qwen3EngramMode::FusedSimt);
+    }
+
+    #[test]
+    fn qwen3_guest_decode_loop_args_accept_fused_simt_context_op() {
+        let args = qwen3_guest_decode_loop_args_from([
+            "qwen3-guest-decode-loop",
+            "--engram",
+            "--engram-pool=obmm",
+            "--engram-context-op=fused-simt",
+        ])
+        .expect("parse guest decode loop args")
+        .expect("guest decode loop args");
+
+        assert_eq!(args.engram.context_op, Qwen3EngramContextOp::FusedSimt);
     }
 
     #[test]
@@ -1381,16 +1451,22 @@ mod tests {
     fn qwen3_guest_engram_env_vars_include_policy_knobs() {
         let config = Qwen3EngramConfig {
             enabled: true,
+            mode: Qwen3EngramMode::FusedSimt,
             pool: Qwen3EngramPool::Obmm,
             owner_node: 3,
             no_repeat_ngram_size: 2,
             repetition_penalty_milli: 3000,
             history_window: 64,
             blocked_token_ids: vec![2776, 151645],
+            context_op: Qwen3EngramContextOp::FusedSimt,
             ..Qwen3EngramConfig::default()
         };
         let vars = qwen3_guest_engram_env_vars(&config, 0x1234);
         assert!(vars.contains(&("SIM_QWEN3_GUEST_ENGRAM".to_string(), "1".to_string())));
+        assert!(vars.contains(&(
+            "SIM_QWEN3_GUEST_ENGRAM_MODE".to_string(),
+            "fused-simt".to_string()
+        )));
         assert!(vars.contains(&(
             "SIM_QWEN3_GUEST_ENGRAM_SESSION_ID".to_string(),
             "0000000000001234".to_string()
@@ -1414,6 +1490,10 @@ mod tests {
         assert!(vars.contains(&(
             "SIM_QWEN3_GUEST_ENGRAM_BLOCK_TOKEN_IDS".to_string(),
             "2776,151645".to_string()
+        )));
+        assert!(vars.contains(&(
+            "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP".to_string(),
+            "fused-simt".to_string()
         )));
     }
 
@@ -2192,6 +2272,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         );
     }
     let runtime = qwen3_guest_dense_runtime(args)?;
+    let engram_simt = qwen3_prepare_engram_simt_mode(&args.engram)?;
     println!("qwen3_guest_decode_loop");
     println!("  script: {}", script_path.display());
     println!("  model_id: {}", runtime.profile.model_id);
@@ -2215,7 +2296,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     }
     if args.engram.enabled {
         println!(
-            "  engram: enabled=true mode={} pool={} owner_node={} no_repeat_ngram_size={} repetition_penalty_milli={} history_window={} blocked_token_ids={:?} report={}",
+            "  engram: enabled=true mode={} pool={} owner_node={} no_repeat_ngram_size={} repetition_penalty_milli={} history_window={} blocked_token_ids={:?} context_op={} report={}",
             qwen3_engram_mode_name(args.engram.mode),
             qwen3_engram_pool_name(args.engram.pool),
             args.engram.owner_node,
@@ -2223,8 +2304,23 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             args.engram.repetition_penalty_milli,
             args.engram.history_window,
             args.engram.blocked_token_ids,
+            qwen3_engram_context_op_name(args.engram.context_op),
             qwen3_engram_report_name(args.engram.report)
         );
+        if let Some(spec) = &engram_simt {
+            println!(
+                "  engram_simt: artifact_dir={} symbol={} case={} run_mode={} soc_version={}",
+                spec.binary_path
+                    .parent()
+                    .map(Path::display)
+                    .map(|display| display.to_string())
+                    .unwrap_or_else(|| "<unknown>".to_string()),
+                spec.symbol,
+                spec.case_name,
+                spec.run_mode,
+                spec.soc_version
+            );
+        }
     }
     println!("  worker_path: 8-node W4 guest OBMM object-service range forward");
     let trace_file = env::temp_dir().join(format!(
@@ -2314,6 +2410,16 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     command.env("SIM_QWEN3_DENSE_WEIGHTS_PATH", &runtime.weights_path);
     for (key, value) in qwen3_guest_engram_env_vars(&args.engram, engram_session_id) {
         command.env(key, value);
+    }
+    if let Some(spec) = &engram_simt {
+        command
+            .env("SIM_ENGRAM_SIMT_SELECTED_SYMBOL", &spec.symbol)
+            .env("SIM_ENGRAM_SIMT_SELECTED_CASE", &spec.case_name)
+            .env("SIM_ENGRAM_SIMT_BINARY_PATH", &spec.binary_path)
+            .env(
+                "SIM_ENGRAM_SIMT_KERNEL_LIBRARY_PATH",
+                &spec.kernel_library_path,
+            );
     }
     let status = command
         .status()
@@ -2594,6 +2700,32 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         );
     }
     Ok(())
+}
+
+fn qwen3_prepare_engram_simt_mode(
+    config: &Qwen3EngramConfig,
+) -> anyhow::Result<Option<EngramSimtLaunchSpec>> {
+    if !config.enabled
+        || (config.mode != Qwen3EngramMode::FusedSimt
+            && config.context_op != Qwen3EngramContextOp::FusedSimt)
+    {
+        return Ok(None);
+    }
+
+    let artifact_config = artifact_config_from_env(1, 65_536).map_err(|err| {
+        anyhow::anyhow!(
+            "qwen3 fused-simt engram mode requires a vendor artifact: {err}. \
+             Set SIM_ENGRAM_SIMT_ARTIFACT_DIR to vendor/pto-isa/kernels/manual/a5/engram_simt/build \
+             after building it with run.sh -r sim -v Ascend910_9599 -p"
+        )
+    })?;
+    let spec = discover_engram_simt_artifact(&artifact_config).map_err(|err| {
+        anyhow::anyhow!(
+            "qwen3 fused-simt engram artifact is not usable: {err}. \
+             Rebuild vendor/pto-isa/kernels/manual/a5/engram_simt with run.sh -r sim -v Ascend910_9599 -p"
+        )
+    })?;
+    Ok(Some(spec))
 }
 
 fn qwen3_guest_log_match_count(haystack: &str, needle: &str) -> usize {
@@ -3778,6 +3910,7 @@ fn qwen3_checksum_words(words: &[u64]) -> u64 {
 fn qwen3_engram_mode_name(mode: Qwen3EngramMode) -> &'static str {
     match mode {
         Qwen3EngramMode::Cpu => "cpu",
+        Qwen3EngramMode::FusedSimt => "fused-simt",
     }
 }
 
@@ -3786,6 +3919,14 @@ fn qwen3_engram_pool_name(pool: Qwen3EngramPool) -> &'static str {
         Qwen3EngramPool::Inline => "inline",
         Qwen3EngramPool::Object => "object",
         Qwen3EngramPool::Obmm => "obmm",
+    }
+}
+
+fn qwen3_engram_context_op_name(context_op: Qwen3EngramContextOp) -> &'static str {
+    match context_op {
+        Qwen3EngramContextOp::Disabled => "disabled",
+        Qwen3EngramContextOp::CpuReference => "cpu-reference",
+        Qwen3EngramContextOp::FusedSimt => "fused-simt",
     }
 }
 

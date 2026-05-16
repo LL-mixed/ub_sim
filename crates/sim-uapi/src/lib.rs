@@ -24,6 +24,10 @@ use sim_core::{
     RequestCorrelation, SegmentHandle, SimError, SimplerKernelArtifact, SimplerRuntimeArg,
     SimplerRuntimeArtifacts, TaskKey, TensorDType, TensorLayout,
 };
+use sim_models::engram_context::{
+    run_engram_context_reference, EngramContextOp, EngramContextReport, ENGRAM_CONTEXT_HIDDEN_SIZE,
+    ENGRAM_CONTEXT_INDICES_PER_BATCH,
+};
 use sim_models::qwen3_dense;
 use sim_models::qwen3_dense_reference::{
     self, checksum_words, embedding_reference_hidden_sequence_for_profile,
@@ -1674,6 +1678,7 @@ struct Qwen3DenseProfileRuntimeForward {
     output_tensor_checksum: u64,
     kv_state_payload: Vec<u8>,
     kv_state_checksum: u64,
+    engram_context_report: Option<Qwen3DenseReferenceEngramContextReport>,
 }
 
 struct Qwen3DenseProfileRealTerminal {
@@ -2328,6 +2333,7 @@ fn run_qwen3_dense_profile_runtime(
         kv_state_payload,
         kv_state_checksum,
         kv_state_bytes,
+        engram_context_report,
     ) = if let Some(forward) = real_forward.as_ref() {
         (
             forward.output_tensor_payload.clone(),
@@ -2335,6 +2341,7 @@ fn run_qwen3_dense_profile_runtime(
             forward.kv_state_payload.clone(),
             forward.kv_state_checksum,
             forward.kv_state_payload.len() as u64,
+            forward.engram_context_report.clone(),
         )
     } else {
         let output_tensor_payload =
@@ -2354,6 +2361,7 @@ fn run_qwen3_dense_profile_runtime(
             kv_state_payload,
             kv_state_checksum,
             kv_state_bytes,
+            None,
         )
     };
     let range_layer_checksum = checksum_words(&[
@@ -2400,7 +2408,20 @@ fn run_qwen3_dense_profile_runtime(
         kv_state_bytes,
         kv_state_checksum,
         kv_state_payload,
+        engram_context_report,
     };
+    if let Some(report) = range_forward_summary.engram_context_report.as_ref() {
+        eprintln!(
+            "qwen3-engram-context: mode={} table_rows={} output_checksum=0x{:016x} gate_checksum=0x{:016x} index_checksum=0x{:016x} output_l1_milli={} latency_ms={}",
+            report.mode,
+            report.table_rows,
+            report.output_checksum,
+            report.gate_checksum,
+            report.index_checksum,
+            report.output_l1_milli,
+            report.latency_ms
+        );
+    }
     qwen3_register_range_forward_objects(contract, guest_input, &range_forward_summary)?;
     let terminal_owner = contract.node + 1 == contract.pipeline_nodes;
     let real_terminal = if terminal_owner {
@@ -2538,7 +2559,7 @@ fn qwen3_dense_profile_real_range_forward(
     let token_count = token_ids.len();
     let previous_cache =
         qwen3_dense_profile_previous_kv_cache_from_guest_payload(profile, contract, guest_input)?;
-    let (forward, output_sequence, kv_cache) = if let Some(previous_cache) = previous_cache {
+    let (forward, mut output_sequence, kv_cache) = if let Some(previous_cache) = previous_cache {
         if token_count == 0 {
             return Ok(None);
         }
@@ -2591,6 +2612,12 @@ fn qwen3_dense_profile_real_range_forward(
             forward_with_cache.kv_cache,
         )
     };
+    let engram_context_report = qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
+        &mut output_sequence,
+        &token_ids,
+        u64::from(contract.layer_end),
+        u64::from(contract.total_layers),
+    )?;
     let output_tensor_payload =
         qwen3_dense_profile_hidden_sequence_range_payload(profile, &output_sequence, hidden_len)?;
     let output_tensor_checksum =
@@ -2613,6 +2640,7 @@ fn qwen3_dense_profile_real_range_forward(
         output_tensor_checksum,
         kv_state_payload,
         kv_state_checksum,
+        engram_context_report,
     }))
 }
 
@@ -2912,27 +2940,41 @@ fn qwen3_dense_profile_real_terminal_summary(
         return Ok(None);
     };
     let loaded = qwen3_dense_reference_cached_loaded_weights(&weights_path)?;
-    let hidden = real_forward
-        .map(|forward| forward.forward.final_hidden.clone())
-        .unwrap_or_else(|| {
-            qwen3_dense_profile_hidden_from_range_output_payload(profile, range_forward_summary)
-                .unwrap_or_default()
-        });
+    let hidden = if range_forward_summary.engram_context_report.is_some() {
+        qwen3_dense_profile_hidden_from_range_output_payload(profile, range_forward_summary)
+            .unwrap_or_default()
+    } else {
+        real_forward
+            .map(|forward| forward.forward.final_hidden.clone())
+            .unwrap_or_else(|| {
+                qwen3_dense_profile_hidden_from_range_output_payload(profile, range_forward_summary)
+                    .unwrap_or_default()
+            })
+    };
     if hidden.is_empty() {
         return Err("qwen3_dense_profile_real_terminal_hidden_empty".to_string());
     }
     let logits = full_vocab_logits_from_hidden_for_profile(*profile, &loaded.tensors, &hidden)?;
     Ok(Some(Qwen3DenseProfileRealTerminal {
         forward_layer_count: real_forward.map(|_| profile.num_hidden_layers).unwrap_or(0),
-        forward_final_hidden_checksum: real_forward
-            .map(|forward| forward.forward.final_hidden_checksum)
+        forward_final_hidden_checksum: range_forward_summary
+            .engram_context_report
+            .as_ref()
+            .map(|report| report.output_checksum)
+            .or_else(|| real_forward.map(|forward| forward.forward.final_hidden_checksum))
             .unwrap_or(0),
         forward_checksum: real_forward
             .map(|forward| {
+                let context_checksum = range_forward_summary
+                    .engram_context_report
+                    .as_ref()
+                    .map(|report| report.output_checksum)
+                    .unwrap_or(0);
                 checksum_words(&[
                     range_forward_summary.range_layer_checksum,
                     forward.forward.aggregate_checksum,
                     profile.num_hidden_layers,
+                    context_checksum,
                 ])
             })
             .unwrap_or(0),
@@ -11255,6 +11297,18 @@ fn run_qwen3_dense_reference_prefill_runtime(
                 real_input_embedding_hidden.as_deref(),
                 result_flow_checksum,
             )?;
+            if let Some(report) = range_forward_summary.engram_context_report.as_ref() {
+                eprintln!(
+                    "qwen3-engram-context: mode={} table_rows={} output_checksum=0x{:016x} gate_checksum=0x{:016x} index_checksum=0x{:016x} output_l1_milli={} latency_ms={}",
+                    report.mode,
+                    report.table_rows,
+                    report.output_checksum,
+                    report.gate_checksum,
+                    report.index_checksum,
+                    report.output_l1_milli,
+                    report.latency_ms
+                );
+            }
             let terminal_range_owner = u32::from(contract.node) + 1 == contract.pipeline_nodes;
             let mut qkv_reference_digest_by_tile = BTreeMap::new();
             let mut mlp_reference_digest_by_tile = BTreeMap::new();
@@ -13393,6 +13447,25 @@ struct Qwen3DenseReferenceRangeForwardSummary {
     kv_state_bytes: u64,
     kv_state_checksum: u64,
     kv_state_payload: Vec<u8>,
+    engram_context_report: Option<Qwen3DenseReferenceEngramContextReport>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Qwen3DenseReferenceEngramContextMode {
+    Disabled,
+    CpuReference,
+    FusedSimt,
+}
+
+#[derive(Clone, Debug)]
+struct Qwen3DenseReferenceEngramContextReport {
+    mode: &'static str,
+    table_rows: usize,
+    output_checksum: u64,
+    gate_checksum: u64,
+    index_checksum: u64,
+    output_l1_milli: u64,
+    latency_ms: u128,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -14616,6 +14689,147 @@ fn qwen3_dense_reference_runtime_result_flow_checksum(
     ])
 }
 
+fn qwen3_dense_reference_engram_context_mode_from_env(
+) -> Result<Qwen3DenseReferenceEngramContextMode, String> {
+    match std::env::var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP")
+        .unwrap_or_else(|_| "disabled".to_string())
+        .as_str()
+    {
+        "" | "disabled" | "none" | "off" => Ok(Qwen3DenseReferenceEngramContextMode::Disabled),
+        "cpu" | "cpu-reference" => Ok(Qwen3DenseReferenceEngramContextMode::CpuReference),
+        "fused-simt" => Ok(Qwen3DenseReferenceEngramContextMode::FusedSimt),
+        value => Err(format!("qwen3_engram_context_op_unsupported:{value}")),
+    }
+}
+
+fn qwen3_dense_reference_engram_context_table_rows() -> Result<usize, String> {
+    let rows = std::env::var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_ROWS")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .map_err(|_| format!("qwen3_engram_context_table_rows_invalid:value={value}"))
+        })
+        .transpose()?
+        .unwrap_or(16);
+    if rows < ENGRAM_CONTEXT_INDICES_PER_BATCH {
+        return Err(format!(
+            "qwen3_engram_context_table_rows_too_small:rows={rows}:min={}",
+            ENGRAM_CONTEXT_INDICES_PER_BATCH
+        ));
+    }
+    Ok(rows)
+}
+
+fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
+    sequence: &mut [Vec<f32>],
+    token_ids: &[u64],
+    layer_end: u64,
+    total_layers: u64,
+) -> Result<Option<Qwen3DenseReferenceEngramContextReport>, String> {
+    if layer_end != total_layers {
+        return Ok(None);
+    }
+    match qwen3_dense_reference_engram_context_mode_from_env()? {
+        Qwen3DenseReferenceEngramContextMode::Disabled => Ok(None),
+        Qwen3DenseReferenceEngramContextMode::FusedSimt => Err(
+            "qwen3_engram_context_fused_simt_not_wired:hint=use cpu-reference until P5.3 runtime launch lands"
+                .to_string(),
+        ),
+        Qwen3DenseReferenceEngramContextMode::CpuReference => {
+            let table_rows = qwen3_dense_reference_engram_context_table_rows()?;
+            let hidden = sequence
+                .last_mut()
+                .ok_or_else(|| "qwen3_engram_context_hidden_sequence_empty".to_string())?;
+            if hidden.len() != ENGRAM_CONTEXT_HIDDEN_SIZE {
+                return Err(format!(
+                    "qwen3_engram_context_hidden_size_unsupported:got={}:expected={}",
+                    hidden.len(),
+                    ENGRAM_CONTEXT_HIDDEN_SIZE
+                ));
+            }
+            let (table, indices, gate_weight) =
+                qwen3_dense_reference_engram_context_cpu_fixture(hidden, token_ids, table_rows);
+            let started = Instant::now();
+            let output = run_engram_context_reference(&EngramContextOp {
+                table: &table,
+                table_rows,
+                indices: &indices,
+                hidden,
+                gate_weight: &gate_weight,
+                batch: 1,
+            })?;
+            let latency_ms = started.elapsed().as_millis();
+            let report = qwen3_dense_reference_engram_context_report_from_reference(
+                output.report,
+                latency_ms,
+            );
+            hidden.copy_from_slice(&output.output);
+            Ok(Some(report))
+        }
+    }
+}
+
+fn qwen3_dense_reference_engram_context_cpu_fixture(
+    hidden: &[f32],
+    token_ids: &[u64],
+    table_rows: usize,
+) -> (Vec<f32>, Vec<i32>, Vec<f32>) {
+    let hidden_checksum = qwen3_dense_reference_f32_values_checksum(hidden);
+    let token_checksum = prompt_token_ids_checksum(token_ids);
+    let seed = checksum_words(&[
+        hidden_checksum,
+        token_checksum,
+        token_ids.len() as u64,
+        table_rows as u64,
+        0x656e_6772_616d_6378,
+    ]);
+    let mut table = Vec::with_capacity(table_rows * ENGRAM_CONTEXT_HIDDEN_SIZE);
+    for row in 0..table_rows {
+        for dim in 0..ENGRAM_CONTEXT_HIDDEN_SIZE {
+            let mixed = seed.rotate_left(((row + dim) % 63) as u32)
+                ^ (row as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                ^ (dim as u64).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            let value = ((mixed & 0xffff) as f32 / 65_536.0 - 0.5) / 16.0;
+            table.push(value);
+        }
+    }
+    let mut gate_weight = Vec::with_capacity(ENGRAM_CONTEXT_HIDDEN_SIZE);
+    for dim in 0..ENGRAM_CONTEXT_HIDDEN_SIZE {
+        let mixed =
+            seed.rotate_left((dim % 61) as u32) ^ (dim as u64).wrapping_mul(0x94d0_49bb_1331_11eb);
+        let value = ((mixed & 0x3ff) as f32 / 1024.0 - 0.5) / 1024.0;
+        gate_weight.push(value);
+    }
+    let mut indices = Vec::with_capacity(ENGRAM_CONTEXT_INDICES_PER_BATCH);
+    for slot in 0..ENGRAM_CONTEXT_INDICES_PER_BATCH {
+        let token = token_ids
+            .iter()
+            .rev()
+            .nth(slot % token_ids.len().max(1))
+            .copied()
+            .unwrap_or(slot as u64);
+        indices.push(((token as usize + slot * 3) % table_rows) as i32);
+    }
+    (table, indices, gate_weight)
+}
+
+fn qwen3_dense_reference_engram_context_report_from_reference(
+    report: EngramContextReport,
+    latency_ms: u128,
+) -> Qwen3DenseReferenceEngramContextReport {
+    Qwen3DenseReferenceEngramContextReport {
+        mode: report.mode,
+        table_rows: report.table_rows,
+        output_checksum: report.output_checksum,
+        gate_checksum: report.gate_checksum,
+        index_checksum: report.index_checksum,
+        output_l1_milli: report.output_l1_milli,
+        latency_ms,
+    }
+}
+
 fn qwen3_dense_reference_range_forward_summary_from_contract(
     topology: &SimTopology,
     contract: Qwen3GuestRangeComputeContract,
@@ -14668,6 +14882,7 @@ fn qwen3_dense_reference_range_forward_summary_from_contract(
     let mut real_layer_execution_count = 0;
     let mut output_tensor_payload = Vec::new();
     let mut kv_state_payload = Vec::new();
+    let mut engram_context_report = None;
 
     if let Some(loaded) = loaded_weights.as_ref() {
         let full_forward_with_kv =
@@ -14711,14 +14926,35 @@ fn qwen3_dense_reference_range_forward_summary_from_contract(
                 .unwrap_or(0);
             let input_tensor_checksum =
                 qwen3_dense_reference_hidden_sequence_checksum(&previous_sequence);
-            let (next_sequence, layer_reference) = layer_forward_reference_sequence_with_payloads(
-                &loaded.tensors,
-                &BTreeMap::new(),
-                layer_id,
-                &previous_sequence,
-            )?;
-            let output_tensor_checksum =
+            let (mut next_sequence, layer_reference) =
+                layer_forward_reference_sequence_with_payloads(
+                    &loaded.tensors,
+                    &BTreeMap::new(),
+                    layer_id,
+                    &previous_sequence,
+                )?;
+            let mut output_tensor_checksum =
                 qwen3_dense_reference_hidden_sequence_checksum(&next_sequence);
+            if layer_id + 1 == layer_end {
+                engram_context_report =
+                    qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
+                        &mut next_sequence,
+                        &prompt_token_ids,
+                        layer_end,
+                        total_layers,
+                    )?;
+                if let Some(report) = engram_context_report.as_ref() {
+                    output_tensor_checksum =
+                        qwen3_dense_reference_hidden_sequence_checksum(&next_sequence);
+                    layer_words.extend_from_slice(&[
+                        0x656e_6772_616d_6378,
+                        report.output_checksum,
+                        report.gate_checksum,
+                        report.index_checksum,
+                        report.output_l1_milli,
+                    ]);
+                }
+            }
 
             if layer_id == layer_start {
                 range_input_tensor_checksum = input_tensor_checksum;
@@ -14855,6 +15091,7 @@ fn qwen3_dense_reference_range_forward_summary_from_contract(
         kv_state_bytes: kv_state_payload.len() as u64,
         kv_state_checksum: qwen3_dense_reference_range_object_payload_checksum(&kv_state_payload),
         kv_state_payload,
+        engram_context_report,
     })
 }
 
@@ -14982,6 +15219,7 @@ fn qwen3_dense_reference_range_forward_summary_from_runtime_outputs(
         kv_state_bytes: 0,
         kv_state_checksum: 0,
         kv_state_payload: Vec::new(),
+        engram_context_report: None,
     })
 }
 
@@ -17936,6 +18174,7 @@ mod tests {
         materialize_qwen3_range_dispatch_input,
         qwen3_dense_profile_previous_kv_cache_from_guest_payload,
         qwen3_dense_profile_range_kv_payload_from_cache,
+        qwen3_dense_reference_apply_engram_context_to_terminal_sequence,
         qwen3_dense_reference_attention_context_tile_from_softmax_and_v,
         qwen3_dense_reference_attention_context_tile_from_softmax_and_v_with_real_v_and_kvcache_reference,
         qwen3_dense_reference_attention_context_tile_from_softmax_and_v_with_real_v_reference,
@@ -18067,6 +18306,48 @@ mod tests {
             status.success(),
             "isolated simpler native test {test_name} failed with {status}"
         );
+    }
+
+    fn with_env_var(name: &str, value: &str, body: impl FnOnce()) {
+        let previous = std::env::var_os(name);
+        std::env::set_var(name, value);
+        body();
+        match previous {
+            Some(previous) => std::env::set_var(name, previous),
+            None => std::env::remove_var(name),
+        }
+    }
+
+    #[test]
+    fn qwen3_engram_context_cpu_reference_mutates_terminal_hidden() {
+        with_env_var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP", "cpu-reference", || {
+            with_env_var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_ROWS", "8", || {
+                let mut sequence = vec![
+                    vec![0.0f32; 1024],
+                    (0..1024)
+                        .map(|index| (index as f32 - 512.0) / 4096.0)
+                        .collect::<Vec<_>>(),
+                ];
+                let first_before = sequence[0].clone();
+                let terminal_before = sequence[1].clone();
+                let report = qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
+                    &mut sequence,
+                    &[11, 358, 2776, 264],
+                    QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
+                    QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
+                )
+                .expect("context op should run")
+                .expect("context report");
+
+                assert_eq!(report.mode, "cpu-reference");
+                assert_eq!(report.table_rows, 8);
+                assert_ne!(report.output_checksum, 0);
+                assert_ne!(report.gate_checksum, 0);
+                assert_ne!(report.index_checksum, 0);
+                assert_eq!(sequence[0], first_before);
+                assert_ne!(sequence[1], terminal_before);
+            });
+        });
     }
 
     fn test_weight_reference_shard(

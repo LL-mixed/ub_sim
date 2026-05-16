@@ -4856,6 +4856,32 @@ int main(void)
     guest_decode_step = env_u64_or_default("SIM_QWEN3_GUEST_DECODE_STEP", 0);
     guest_decode_steps = env_u64_or_default("SIM_QWEN3_GUEST_DECODE_STEPS", 1);
     qwen3_engram_config.enabled = env_bool_is_one("SIM_QWEN3_GUEST_ENGRAM");
+    if (qwen3_engram_config.enabled) {
+        const char *engram_mode = getenv("SIM_QWEN3_GUEST_ENGRAM_MODE");
+
+        if (engram_mode && engram_mode[0] != '\0' && strcmp(engram_mode, "cpu") != 0) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 engram mode unsupported in guest decode mode=%s "
+                    "hint=fused-simt requires P5.3 context-op integration\n",
+                    engram_mode);
+            return 1;
+        }
+        {
+            const char *context_op = getenv("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP");
+
+            if (context_op && context_op[0] != '\0' &&
+                strcmp(context_op, "disabled") != 0 &&
+                strcmp(context_op, "none") != 0 &&
+                strcmp(context_op, "cpu") != 0 &&
+                strcmp(context_op, "cpu-reference") != 0) {
+                fprintf(stderr,
+                        "[w4_guest] fail qwen3 engram context op not wired into guest decode "
+                        "context_op=%s hint=fused-simt requires P5.3 runtime launch integration\n",
+                        context_op);
+                return 1;
+            }
+        }
+    }
     {
         uint64_t owner_node =
             env_u64_or_default("SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE", 8);

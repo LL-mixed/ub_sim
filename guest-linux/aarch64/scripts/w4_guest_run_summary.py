@@ -72,6 +72,7 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
     timings = []
     handoff_timings = []
     engram_timings = []
+    engram_context_records = []
     barriers = {}
     pool_usage = {}
     passes = {node_id: 0 for node_id in node_ids}
@@ -241,11 +242,38 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                             record[key] = parse_int(fields.get(key), 0)
                         pool_usage[node_id] = record
 
+        qemu_log_path = os.path.join(run_dir, f"{node_id}_qemu.log")
+        if os.path.exists(qemu_log_path):
+            context_step = 0
+            with open(qemu_log_path, "r", encoding="utf-8", errors="replace") as qemu_log_file:
+                for raw_line in qemu_log_file:
+                    clean_line = raw_line.rstrip("\n").rstrip("\r")
+                    if "qwen3-engram-context:" not in clean_line:
+                        continue
+                    fields = parse_pairs(clean_line)
+                    record = {
+                        "_log_node": node_id,
+                        "step": context_step,
+                        "mode": fields.get("mode", ""),
+                        "output_checksum": fields.get("output_checksum", "0x0"),
+                        "gate_checksum": fields.get("gate_checksum", "0x0"),
+                        "index_checksum": fields.get("index_checksum", "0x0"),
+                    }
+                    for key in (
+                        "table_rows",
+                        "output_l1_milli",
+                        "latency_ms",
+                    ):
+                        record[key] = parse_int(fields.get(key), 0)
+                    engram_context_records.append(record)
+                    context_step += 1
+
     return (
         tokens,
         timings,
         handoff_timings,
         engram_timings,
+        engram_context_records,
         barriers,
         pool_usage,
         passes,
@@ -267,6 +295,7 @@ def emit_summary(run_dir, expected_steps, node_ids, output):
         timings,
         handoff_timings,
         engram_timings,
+        engram_context_records,
         barriers,
         pool_usage,
         passes,
@@ -285,7 +314,8 @@ def emit_summary(run_dir, expected_steps, node_ids, output):
         f"worker_timing_records={len(timings)} "
         f"passed_nodes={passed_nodes}/{len(node_ids)} "
         f"handoff_timing_records={len(handoff_timings)} "
-        f"engram_timing_records={len(engram_timings)}"
+        f"engram_timing_records={len(engram_timings)} "
+        f"engram_context_records={len(engram_context_records)}"
     )
     if missing_logs:
         output.append(f"summary: missing_guest_logs={quote_text(missing_logs)}")
@@ -294,6 +324,7 @@ def emit_summary(run_dir, expected_steps, node_ids, output):
     emit_timing_summary(timings, barriers, expected_steps, node_ids, output)
     emit_handoff_timing_summary(handoff_timings, expected_steps, node_ids, output)
     emit_engram_timing_summary(engram_timings, expected_steps, node_ids, output)
+    emit_engram_context_summary(engram_context_records, expected_steps, output)
     emit_pool_usage_summary(pool_usage, expected_steps, node_ids, output)
 
 
@@ -303,6 +334,7 @@ def emit_progress(run_dir, expected_steps, elapsed_s, node_ids, output):
         _timings,
         _handoff_timings,
         _engram_timings,
+        _engram_context_records,
         _barriers,
         _pool_usage,
         passes,
@@ -758,6 +790,48 @@ def emit_engram_timing_summary(engram_timings, expected_steps, node_ids, output)
             f"selected_writeback_ms={sum(record['selected_writeback_ms'] for record in records)} "
             f"history_state_wait_ms={sum(record['history_state_wait_ms'] for record in records)} "
             f"max_qwen3_range_input_wait_ms={max(record['qwen3_range_input_wait_ms'] for record in records)}"
+        )
+
+
+def emit_engram_context_summary(engram_context_records, expected_steps, output):
+    if not engram_context_records:
+        return
+
+    records = sorted(
+        engram_context_records,
+        key=lambda item: (item["step"], item["_log_node"]),
+    )
+    modes = sorted({record["mode"] for record in records if record["mode"]})
+    observed_steps = sorted({record["step"] for record in records})
+    total_latency_ms = sum(record["latency_ms"] for record in records)
+    max_latency = max(records, key=lambda item: item["latency_ms"])
+    checksum_xor = 0
+    for record in records:
+        checksum_xor ^= parse_int(record["output_checksum"], 0)
+
+    output.append(
+        "engram_context_summary: "
+        f"records={len(records)} "
+        f"steps={len(observed_steps)}/{expected_steps} "
+        f"modes={','.join(modes)} "
+        f"max_latency_ms={max_latency['latency_ms']} "
+        f"max_latency_step={max_latency['step']} "
+        f"max_latency_node={max_latency['_log_node']} "
+        f"total_latency_ms={total_latency_ms} "
+        f"output_checksum_xor=0x{checksum_xor:016x}"
+    )
+    for record in records:
+        output.append(
+            "engram_context_step: "
+            f"step={record['step']} "
+            f"node={record['_log_node']} "
+            f"mode={record['mode']} "
+            f"table_rows={record['table_rows']} "
+            f"output_checksum={record['output_checksum']} "
+            f"gate_checksum={record['gate_checksum']} "
+            f"index_checksum={record['index_checksum']} "
+            f"output_l1_milli={record['output_l1_milli']} "
+            f"latency_ms={record['latency_ms']}"
         )
 
 

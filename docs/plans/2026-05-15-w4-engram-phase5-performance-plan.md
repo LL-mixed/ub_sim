@@ -21,14 +21,34 @@ Current completed capabilities:
 - 2026-05-16: P5.1 CPU/reference `EngramContextOp` is implemented in
   `sim-models::engram_context`, with a standalone
   `engram_context_reference` CLI and deterministic checksum tests.
+- 2026-05-16: P5.2/P5.5 host-side fused-SIMT adapter discovery is
+  implemented. `sim-models::engram_simt_adapter` validates artifact layout,
+  selects `runEngram_fused_E{D}_B{B}`, and `sim-cli` accepts
+  `--engram-mode=fused-simt` as an opt-in mode with host-side artifact checks.
+- 2026-05-16: P5.3 external contract scaffolding is implemented:
+  `--engram-context-op=disabled|cpu-reference|fused-simt` parses, exports
+  `SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP`, and guest decode fails fast for context
+  ops that are not actually wired.
+- 2026-05-16: P5.3 CPU-reference range-runtime integration is implemented.
+  With `SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=cpu-reference`, the terminal range
+  forward path augments the final hidden vector before full-vocab logits, so
+  the selected token is driven by the augmented hidden rather than a side
+  report. `fused-simt` remains fail-fast until the A5/CANN runtime launch path
+  is connected.
+- 2026-05-16: W4 run summaries now parse `qwen3-engram-context` records from
+  QEMU logs and emit `engram_context_summary` plus per-step checksum/latency
+  records. This makes context-op execution observable without manual log grep.
 
 Current gaps:
 
-- `--engram-mode` only supports `cpu`.
+- `--engram-mode` supports `cpu` and opt-in `fused-simt` parsing/artifact
+  discovery, but W4 guest decode still rejects `fused-simt` until P5.3 wires a
+  context-op execution path.
 - The decode-time token policy is intentionally still CPU/guest-side because
   P5.0 shows it is not a throughput bottleneck.
-- The hidden/context engram augmentation now has a CPU/reference operator, but
-  it is not yet wired through chipbackend/simpler or W4 decode.
+- The hidden/context engram augmentation now has a CPU/reference operator and a
+  W4 terminal range-runtime integration path for Qwen3-0.6B hidden size
+  (`D=1024`).
 - The vendor fused Engram SIMT kernel is not connected to the W4 guest decode
   path.
 - P5.0 now isolates engram policy cost from object transport, range handoff,
@@ -207,6 +227,9 @@ Validation:
 
 ### P5.2 Vendor Kernel Adapter
 
+Status: host-side discovery and opt-in plumbing complete as of 2026-05-16;
+runtime launch and fused golden parity still require an A5/CANN environment.
+
 Purpose: reuse the vendor exploration without modifying vendor source first.
 
 Add an adapter layer that can:
@@ -240,7 +263,37 @@ Acceptance:
 - CPU/reference and fused outputs match within tolerance for golden cases.
 - Existing `cpu` mode behavior is unchanged.
 
+Implementation:
+
+- Module: `crates/sim-models/src/engram_simt_adapter.rs`.
+- CLI discovery path:
+
+```text
+cargo run -p sim-models --bin engram_context_reference -- \
+  --mode=fused-simt \
+  --batch=4 \
+  --rows=65536 \
+  --artifact-dir=vendor/pto-isa/kernels/manual/a5/engram_simt/build
+```
+
+- `sim-cli qwen3-guest-decode-loop --engram-mode=fused-simt` now parses and
+  validates `SIM_ENGRAM_SIMT_ARTIFACT_DIR` before launching QEMU.
+- Guest C rejects non-`cpu` `SIM_QWEN3_GUEST_ENGRAM_MODE` with an explicit
+  P5.3-required error, so direct shell runs cannot silently fall back to CPU.
+
+Validation:
+
+- `cargo test -p sim-models engram_simt`
+- `cargo test -p sim-models cli_args`
+- `cargo test -p sim-cli qwen3_guest_decode_loop_args_accept_fused_simt_engram_mode`
+- `cargo test -p sim-cli qwen3_guest_engram_env_vars_include_policy_knobs`
+- Missing artifact smoke emits
+  `engram_simt_artifact_dir_missing:path=...:hint=build with ... run.sh`.
+
 ### P5.3 W4 Decode Integration
+
+Status: CPU-reference terminal hidden augmentation is wired as of 2026-05-16;
+fused execution is still pending.
 
 Purpose: introduce the fused op without violating the current decode contract.
 
@@ -260,17 +313,77 @@ Initial integration should be behind a separate flag:
 This avoids overloading `--engram-mode`, which currently describes token policy
 placement.
 
+Current contract:
+
+- `sim-cli qwen3-guest-decode-loop` accepts
+  `--engram-context-op=disabled|cpu-reference|fused-simt`.
+- `fused-simt` context op validates the same `SIM_ENGRAM_SIMT_ARTIFACT_DIR`
+  discovery path used by P5.2 before QEMU launch.
+- `cpu-reference` is allowed in guest decode and is consumed by `sim-uapi`
+  during terminal range forward. The op mutates the final hidden vector before
+  logits are computed.
+- `fused-simt` still fails fast in guest decode with a clear runtime-launch
+  integration-required error, preventing a silent CPU fallback.
+
+Implementation:
+
+- `crates/sim-uapi/src/lib.rs` reads
+  `SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=cpu-reference` in the Qwen3 range-forward
+  path.
+- The CPU-reference op is applied only on the terminal range
+  (`layer_end == total_layers`), after the true transformer range has produced
+  hidden state and before full-vocab logits are derived.
+- Default context table rows for the runtime path are controlled by
+  `SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_ROWS` and default to `16` to keep W4
+  guest verification cheap; the standalone operator still supports larger
+  golden cases such as `65536`.
+- The runtime emits `qwen3-engram-context: ...` with mode, table rows,
+  checksum fields, and latency when the op runs.
+
+Validation:
+
+- `cargo test -p sim-uapi qwen3_engram_context_cpu_reference_mutates_terminal_hidden`
+- `cargo test -p sim-cli qwen3_engram`
+- `python3 -m unittest guest-linux/aarch64/tests/test_w4_guest_run_summary.py guest-linux/aarch64/tests/test_qwen3_dense_env.py`
+- `cargo test --workspace`
+
 Acceptance:
 
 - Eight-node W4 decode passes with `--engram --engram-pool obmm`.
+- Eight-node W4 decode passes with `cpu-reference` context op enabled.
 - Eight-node W4 decode passes with the fused context op enabled where runtime
   support is available.
 - Report includes:
-  - fused op enabled/disabled;
-  - `D`, `B`, table rows;
-  - fused op checksum;
-  - fused op latency;
+  - context op enabled/disabled;
+  - table rows;
+  - context op checksums;
+  - context op latency;
   - total token latency delta versus CPU/reference.
+
+CPU-reference W4 validation:
+
+```text
+RUN_ID=w4_engram_p5_context_cpu_0_6b_4step_runtime2_20260516
+SIM_UAPI_W4_CHIPBACKEND_PROFILE=qwen3_dense
+SIM_QWEN3_DENSE_WEIGHTS_PATH=/Volumes/repos/qwen3_mlx_run/Qwen3-0.6B
+SIM_QWEN3_GUEST_DECODE_STEPS=4
+SIM_QWEN3_GUEST_ENGRAM=1
+SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE=8
+SIM_QWEN3_GUEST_ENGRAM_NO_REPEAT_NGRAM_SIZE=3
+SIM_QWEN3_GUEST_ENGRAM_HISTORY_WINDOW=64
+SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=cpu-reference
+./guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh
+```
+
+Observed result:
+
+- PASS.
+- `engram_context_records=4`.
+- Output token IDs changed to `[11, 108386, 6313, 112169]`, proving the
+  terminal logits used the augmented hidden state rather than the plain decode
+  path.
+- `engram_context_summary` reported `records=4 steps=4/4 modes=cpu-reference`
+  with per-step output/gate/index checksums.
 
 ### P5.4 Token Policy Micro-Kernel Decision
 
@@ -299,13 +412,16 @@ Acceptance:
 2. [x] Run one short eight-node engram decode and compare against the 2026-05-13
    timing report.
 3. [x] Add the CPU/reference `EngramContextOp`.
-4. [ ] Add the vendor fused kernel adapter behind an opt-in feature.
-5. [ ] Add CLI/env plumbing for `fused-simt` and artifact discovery.
-6. [ ] Wire the fused context op into W4 decode behind `--engram-context-op`.
-7. [ ] Run CPU/reference parity tests.
+4. [x] Add the vendor fused kernel adapter behind an opt-in feature.
+5. [x] Add CLI/env plumbing for `fused-simt` and artifact discovery.
+6. [ ] Wire the fused context op runtime launch into W4 decode behind
+   `--engram-context-op`.
+7. [x] Run CPU/reference parity tests.
 8. [ ] Run fused golden tests where A5/CANN runtime is available.
-9. [ ] Run eight-node W4 engram decode with and without fused context op.
-10. [x] Decide whether a separate token-policy micro-kernel is justified:
+9. [x] Run eight-node W4 engram decode with CPU-reference context op.
+10. [ ] Run eight-node W4 engram decode with fused context op where A5/CANN
+    runtime is available.
+11. [x] Decide whether a separate token-policy micro-kernel is justified:
     current P5.0 data says no.
 
 ## Validation Matrix
