@@ -6,8 +6,9 @@ use sim_models::qwen3_dense::{
 };
 use sim_models::qwen3_dense_reference::{
     embedding_reference_hidden_sequence_for_profile, load_safetensors_path_metadata,
-    materialize_full_weight_tensor_payload, token_piece_bytes_from_tokenizer_path,
-    token_piece_decode_bytes, tokenize_prompt_from_tokenizer_path, Qwen3DenseReferenceProfile,
+    materialize_full_weight_tensor_payload, profile_from_dense_profile,
+    token_piece_bytes_from_tokenizer_path, token_piece_decode_bytes,
+    tokenize_prompt_from_tokenizer_path, Qwen3DenseReferenceProfile,
     Qwen3DenseReferenceWeightDType, Qwen3DenseReferenceWeightTensorMetadata,
 };
 use std::collections::BTreeMap;
@@ -17,17 +18,55 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const HIDDEN: usize = 1024;
-const Q_HIDDEN: usize = HIDDEN * 2;
-const INTER: usize = 3072;
-const HEAD_DIM: usize = 128;
-const NUM_LAYERS: usize = 28;
-const NUM_KV_HEADS: usize = 8;
 const PAGE_SIZE: usize = 256;
 const RUNTIME_BATCH: usize = 16;
 const LOGITS_BATCH_TILE: usize = 16;
-const PADDED_VOCAB: usize = 152_064;
-const VOCAB_SIZE: usize = 151_936;
+const VOCAB_PAD_MULTIPLE: usize = 512;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Qwen3SimplerModelSpec {
+    vocab_size: usize,
+    padded_vocab: usize,
+    hidden: usize,
+    q_hidden: usize,
+    kv_hidden: usize,
+    intermediate: usize,
+    num_layers: usize,
+    num_kv_heads: usize,
+    head_dim: usize,
+    page_size: usize,
+    runtime_batch: usize,
+    logits_batch_tile: usize,
+}
+
+impl Qwen3SimplerModelSpec {
+    fn from_profile(profile: Qwen3DenseReferenceProfile) -> anyhow::Result<Self> {
+        let vocab_size = usize_from_u64("vocab_size", profile.vocab_size)?;
+        let hidden = usize_from_u64("hidden_size", profile.hidden_size)?;
+        let intermediate = usize_from_u64("intermediate_size", profile.intermediate_size)?;
+        let num_layers = usize_from_u64("num_hidden_layers", profile.num_hidden_layers)?;
+        let num_attention_heads =
+            usize_from_u64("num_attention_heads", profile.num_attention_heads)?;
+        let num_kv_heads = usize_from_u64("num_key_value_heads", profile.num_key_value_heads)?;
+        let head_dim = usize_from_u64("head_dim", profile.head_dim)?;
+        let q_hidden = checked_mul("q_hidden", num_attention_heads, head_dim)?;
+        let kv_hidden = checked_mul("kv_hidden", num_kv_heads, head_dim)?;
+        Ok(Self {
+            vocab_size,
+            padded_vocab: round_up(vocab_size, VOCAB_PAD_MULTIPLE)?,
+            hidden,
+            q_hidden,
+            kv_hidden,
+            intermediate,
+            num_layers,
+            num_kv_heads,
+            head_dim,
+            page_size: PAGE_SIZE,
+            runtime_batch: RUNTIME_BATCH,
+            logits_batch_tile: LOGITS_BATCH_TILE,
+        })
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Qwen3SimplerGenerateArgs {
@@ -217,6 +256,19 @@ pub fn runtime_name(args: &Qwen3SimplerGenerateArgs) -> anyhow::Result<String> {
     }
 }
 
+fn load_qwen3_reference_profile(model_dir: &Path) -> anyhow::Result<Qwen3DenseReferenceProfile> {
+    let profile = profile_from_weights_dir(
+        model_dir,
+        None,
+        QWEN3_DENSE_DEFAULT_TP_NODES,
+        QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
+        QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
+    )
+    .map_err(anyhow::Error::msg)
+    .context("failed to load Qwen3 profile")?;
+    Ok(profile_from_dense_profile(&profile))
+}
+
 fn run_l3(
     args: Qwen3SimplerGenerateArgs,
     runtime_manifest_path: &Path,
@@ -252,31 +304,23 @@ fn run_l3(
     let weights = load_safetensors_path_metadata(&args.model_dir)
         .map_err(anyhow::Error::msg)
         .context("failed to load model safetensors metadata")?;
-    let profile = profile_from_weights_dir(
-        &args.model_dir,
-        None,
-        QWEN3_DENSE_DEFAULT_TP_NODES,
-        QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
-        QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
-    )
-    .map_err(anyhow::Error::msg)
-    .context("failed to load Qwen3 profile")?;
-    let profile = Qwen3DenseReferenceProfile {
-        vocab_size: profile.vocab_size,
-        hidden_size: profile.hidden_size,
-        intermediate_size: profile.intermediate_size,
-        num_hidden_layers: profile.num_hidden_layers,
-        num_attention_heads: profile.num_attention_heads,
-        num_key_value_heads: profile.num_key_value_heads,
-        head_dim: profile.head_dim,
-        max_position_embeddings: profile.max_position_embeddings,
-        rope_theta: profile.rope_theta,
-        prefill_tokens: QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
-        decode_tokens: QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
-        tp_nodes: QWEN3_DENSE_DEFAULT_TP_NODES,
-    };
+    let profile = load_qwen3_reference_profile(&args.model_dir)?;
+    let spec = Qwen3SimplerModelSpec::from_profile(profile)?;
+    if args.profile_verbose {
+        eprintln!(
+            "  model: vocab={} padded_vocab={} hidden={} q_hidden={} kv_hidden={} inter={} layers={}",
+            spec.vocab_size,
+            spec.padded_vocab,
+            spec.hidden,
+            spec.q_hidden,
+            spec.kv_hidden,
+            spec.intermediate,
+            spec.num_layers,
+        );
+    }
 
-    let mut tensors = Qwen3SimplerTensors::build(&args, profile, &weights.tensors, &token_ids)?;
+    let mut tensors =
+        Qwen3SimplerTensors::build(&args, profile, spec, &weights.tensors, &token_ids)?;
     let _runtime_env = EnvGuard::apply(&runtime.env);
     let api = simpler::RuntimeLibrary::load(&runtime.host)
         .map_err(|err| anyhow::anyhow!("failed to load simpler runtime host library: {err}"))?;
@@ -311,7 +355,7 @@ fn run_l3(
         }
     }
 
-    let mut sampler = SamplerState::new(args.sampling.clone());
+    let mut sampler = SamplerState::new(args.sampling.clone(), spec.vocab_size);
     let mut generated = GenerationTracker::new(
         args.max_new_tokens,
         eos_token_id,
@@ -472,31 +516,23 @@ fn run_l2(
     let weights = load_safetensors_path_metadata(&args.model_dir)
         .map_err(anyhow::Error::msg)
         .context("failed to load model safetensors metadata")?;
-    let profile = profile_from_weights_dir(
-        &args.model_dir,
-        None,
-        QWEN3_DENSE_DEFAULT_TP_NODES,
-        QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
-        QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
-    )
-    .map_err(anyhow::Error::msg)
-    .context("failed to load Qwen3 profile")?;
-    let profile = Qwen3DenseReferenceProfile {
-        vocab_size: profile.vocab_size,
-        hidden_size: profile.hidden_size,
-        intermediate_size: profile.intermediate_size,
-        num_hidden_layers: profile.num_hidden_layers,
-        num_attention_heads: profile.num_attention_heads,
-        num_key_value_heads: profile.num_key_value_heads,
-        head_dim: profile.head_dim,
-        max_position_embeddings: profile.max_position_embeddings,
-        rope_theta: profile.rope_theta,
-        prefill_tokens: QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
-        decode_tokens: QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
-        tp_nodes: QWEN3_DENSE_DEFAULT_TP_NODES,
-    };
+    let profile = load_qwen3_reference_profile(&args.model_dir)?;
+    let spec = Qwen3SimplerModelSpec::from_profile(profile)?;
+    if args.profile_verbose {
+        eprintln!(
+            "  model: vocab={} padded_vocab={} hidden={} q_hidden={} kv_hidden={} inter={} layers={}",
+            spec.vocab_size,
+            spec.padded_vocab,
+            spec.hidden,
+            spec.q_hidden,
+            spec.kv_hidden,
+            spec.intermediate,
+            spec.num_layers,
+        );
+    }
 
-    let mut tensors = Qwen3SimplerTensors::build(&args, profile, &weights.tensors, &token_ids)?;
+    let mut tensors =
+        Qwen3SimplerTensors::build(&args, profile, spec, &weights.tensors, &token_ids)?;
     let _runtime_env = EnvGuard::apply(&runtime.env);
     let api = simpler::RuntimeLibrary::load(&runtime.host)
         .map_err(|err| anyhow::anyhow!("failed to load simpler runtime host library: {err}"))?;
@@ -535,7 +571,7 @@ fn run_l2(
 
     let total_started = Instant::now();
     let prefill_started = Instant::now();
-    for layer in 0..NUM_LAYERS {
+    for layer in 0..spec.num_layers {
         let layer_started = Instant::now();
         dispatch(
             &api,
@@ -564,7 +600,7 @@ fn run_l2(
 
     tensors.copy_prefill_last_to_rms_x(token_ids.len());
     let mut current_decode_elapsed = Duration::ZERO;
-    let mut sampler = SamplerState::new(args.sampling.clone());
+    let mut sampler = SamplerState::new(args.sampling.clone(), spec.vocab_size);
     let mut generated = GenerationTracker::new(
         args.max_new_tokens,
         eos_token_id,
@@ -811,7 +847,7 @@ impl L2BuildOutputs {
         }
         Ok(Self {
             prefill: prefill
-                .ok_or_else(|| anyhow::anyhow!("missing Qwen306BPrefillProgram build_output"))?,
+                .ok_or_else(|| anyhow::anyhow!("missing Qwen3 prefill build_output"))?,
             decode: decode.ok_or_else(|| anyhow::anyhow!("missing Qwen3Decode build_output"))?,
             final_rms: final_rms
                 .ok_or_else(|| anyhow::anyhow!("missing Qwen3FinalRMS build_output"))?,
@@ -1120,29 +1156,31 @@ impl GenerationTracker {
 
 struct SamplerState {
     config: SamplingConfig,
+    vocab_size: usize,
     rng: XorShift64,
     scores: Vec<(usize, f32)>,
     probs: Vec<(usize, f64)>,
 }
 
 impl SamplerState {
-    fn new(config: SamplingConfig) -> Self {
+    fn new(config: SamplingConfig, vocab_size: usize) -> Self {
         Self {
             config,
+            vocab_size,
             rng: XorShift64::from_system_time(),
-            scores: Vec::with_capacity(VOCAB_SIZE),
-            probs: Vec::with_capacity(VOCAB_SIZE),
+            scores: Vec::with_capacity(vocab_size),
+            probs: Vec::with_capacity(vocab_size),
         }
     }
 
     fn sample_from_logits(&mut self, logits: &[u8]) -> anyhow::Result<u64> {
         if self.config.temperature <= 0.0 {
-            return Ok(greedy_token_from_logits(logits));
+            return Ok(greedy_token_from_logits(logits, self.vocab_size));
         }
 
         self.scores.clear();
-        let (floor, ceil) = finite_logit_bounds(logits);
-        for token in 0..VOCAB_SIZE {
+        let (floor, ceil) = finite_logit_bounds(logits, self.vocab_size);
+        for token in 0..self.vocab_size {
             let value = sanitize_logit(read_f32(logits, token), floor, ceil);
             self.scores
                 .push((token, value / self.config.temperature.max(1e-5)));
@@ -1155,7 +1193,7 @@ impl SamplerState {
             }
         }
         if self.scores.is_empty() {
-            return Ok(greedy_token_from_logits(logits));
+            return Ok(greedy_token_from_logits(logits, self.vocab_size));
         }
 
         let max_score = self
@@ -1173,7 +1211,7 @@ impl SamplerState {
             }
         }
         if total <= 0.0 || !total.is_finite() {
-            return Ok(greedy_token_from_logits(logits));
+            return Ok(greedy_token_from_logits(logits, self.vocab_size));
         }
         for (_, prob) in &mut self.probs {
             *prob /= total;
@@ -1195,7 +1233,7 @@ impl SamplerState {
             self.probs.truncate(keep.max(1));
             let total = self.probs.iter().map(|(_, prob)| *prob).sum::<f64>();
             if total <= 0.0 || !total.is_finite() {
-                return Ok(greedy_token_from_logits(logits));
+                return Ok(greedy_token_from_logits(logits, self.vocab_size));
             }
             for (_, prob) in &mut self.probs {
                 *prob /= total;
@@ -1213,7 +1251,7 @@ impl SamplerState {
             .probs
             .last()
             .map(|(token, _)| *token as u64)
-            .unwrap_or_else(|| greedy_token_from_logits(logits)))
+            .unwrap_or_else(|| greedy_token_from_logits(logits, self.vocab_size)))
     }
 }
 
@@ -1250,6 +1288,8 @@ impl XorShift64 {
 }
 
 struct Qwen3SimplerTensors {
+    profile: Qwen3DenseReferenceProfile,
+    spec: Qwen3SimplerModelSpec,
     prefill_hidden: TensorBuf,
     prefill_seq_lens: TensorBuf,
     prefill_slot_mapping: TensorBuf,
@@ -1285,23 +1325,24 @@ impl Qwen3SimplerTensors {
     fn build(
         args: &Qwen3SimplerGenerateArgs,
         profile: Qwen3DenseReferenceProfile,
+        spec: Qwen3SimplerModelSpec,
         tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
         prompt_tokens: &[u64],
     ) -> anyhow::Result<Self> {
         let max_seq = args.max_seq_len;
-        let max_blocks = max_seq.div_ceil(PAGE_SIZE);
-        let total_pages = RUNTIME_BATCH * max_blocks;
-        let kv_rows = NUM_LAYERS * total_pages * NUM_KV_HEADS * PAGE_SIZE;
+        let max_blocks = max_seq.div_ceil(spec.page_size);
+        let total_pages = spec.runtime_batch * max_blocks;
+        let kv_rows = spec.num_layers * total_pages * spec.num_kv_heads * spec.page_size;
 
         let prompt_hidden =
             embedding_reference_hidden_sequence_for_profile(profile, tensors, prompt_tokens)
                 .map_err(anyhow::Error::msg)
                 .context("failed to materialize prompt embeddings")?;
-        let mut prefill_hidden = TensorBuf::zero_bf16(&[1, max_seq, HIDDEN]);
+        let mut prefill_hidden = TensorBuf::zero_bf16(&[1, max_seq, spec.hidden]);
         for (row, hidden) in prompt_hidden.iter().enumerate() {
-            write_f32_as_bf16(&mut prefill_hidden.data, row * HIDDEN, hidden);
+            write_f32_as_bf16(&mut prefill_hidden.data, row * spec.hidden, hidden);
         }
-        let mut decode_hidden = TensorBuf::zero_bf16(&[1, HIDDEN]);
+        let mut decode_hidden = TensorBuf::zero_bf16(&[1, spec.hidden]);
         write_f32_as_bf16(
             &mut decode_hidden.data,
             0,
@@ -1315,7 +1356,7 @@ impl Qwen3SimplerTensors {
 
         let mut block_table = TensorBuf::filled_i32(&[max_blocks], -1);
         for page in
-            0..max_blocks.min((prompt_tokens.len() + args.max_new_tokens).div_ceil(PAGE_SIZE))
+            0..max_blocks.min((prompt_tokens.len() + args.max_new_tokens).div_ceil(spec.page_size))
         {
             write_i32(&mut block_table.data, page, page as i32);
         }
@@ -1330,44 +1371,108 @@ impl Qwen3SimplerTensors {
             (prompt_tokens.len() - 1) as i32,
         );
 
-        let (rope_cos, rope_sin) = rope_tables(max_seq, HEAD_DIM, profile.rope_theta as f32);
+        let (rope_cos, rope_sin) = rope_tables(max_seq, spec.head_dim, profile.rope_theta as f32);
 
         Ok(Self {
+            profile,
+            spec,
             prefill_hidden,
             prefill_seq_lens,
             prefill_slot_mapping,
             decode_hidden,
             decode_seq_lens,
             decode_slot_mapping,
-            input_rms_weight: stack_norm(tensors, "input_layernorm.weight", HIDDEN)?,
-            wq: stack_transposed(tensors, "self_attn.q_proj.weight", HIDDEN, Q_HIDDEN)?,
-            wk: stack_transposed(tensors, "self_attn.k_proj.weight", HIDDEN, HIDDEN)?,
-            wv: stack_transposed(tensors, "self_attn.v_proj.weight", HIDDEN, HIDDEN)?,
-            q_norm_weight: stack_optional_norm(tensors, "self_attn.q_norm.weight", HEAD_DIM)?,
-            k_norm_weight: stack_optional_norm(tensors, "self_attn.k_norm.weight", HEAD_DIM)?,
+            input_rms_weight: stack_norm(
+                tensors,
+                "input_layernorm.weight",
+                spec.num_layers,
+                spec.hidden,
+            )?,
+            wq: stack_transposed(
+                tensors,
+                "self_attn.q_proj.weight",
+                spec.num_layers,
+                spec.hidden,
+                spec.q_hidden,
+            )?,
+            wk: stack_transposed(
+                tensors,
+                "self_attn.k_proj.weight",
+                spec.num_layers,
+                spec.hidden,
+                spec.kv_hidden,
+            )?,
+            wv: stack_transposed(
+                tensors,
+                "self_attn.v_proj.weight",
+                spec.num_layers,
+                spec.hidden,
+                spec.kv_hidden,
+            )?,
+            q_norm_weight: stack_optional_norm(
+                tensors,
+                "self_attn.q_norm.weight",
+                spec.num_layers,
+                spec.head_dim,
+            )?,
+            k_norm_weight: stack_optional_norm(
+                tensors,
+                "self_attn.k_norm.weight",
+                spec.num_layers,
+                spec.head_dim,
+            )?,
             rope_cos,
             rope_sin,
             block_table,
-            k_cache_all: TensorBuf::zero_bf16(&[kv_rows, HEAD_DIM]),
-            v_cache_all: TensorBuf::zero_bf16(&[kv_rows, HEAD_DIM]),
-            wo: stack_transposed(tensors, "self_attn.o_proj.weight", Q_HIDDEN, HIDDEN)?,
-            post_rms_weight: stack_norm(tensors, "post_attention_layernorm.weight", HIDDEN)?,
-            w_gate: stack_transposed(tensors, "mlp.gate_proj.weight", HIDDEN, INTER)?,
-            w_up: stack_transposed(tensors, "mlp.up_proj.weight", HIDDEN, INTER)?,
-            w_down: stack_transposed(tensors, "mlp.down_proj.weight", INTER, HIDDEN)?,
-            prefill_out: TensorBuf::zero_bf16(&[1, max_seq, HIDDEN]),
-            decode_out: TensorBuf::zero_bf16(&[1, HIDDEN]),
-            rms_x: TensorBuf::zero_bf16(&[LOGITS_BATCH_TILE, HIDDEN]),
-            final_norm_weight: full_norm(tensors, "model.norm.weight", HIDDEN)?,
-            rms_normed: TensorBuf::zero_bf16(&[LOGITS_BATCH_TILE, HIDDEN]),
-            lm_head_weight_t: lm_head_weight(tensors)?,
-            logits_padded: TensorBuf::zero_f32(&[LOGITS_BATCH_TILE, PADDED_VOCAB]),
+            k_cache_all: TensorBuf::zero_bf16(&[kv_rows, spec.head_dim]),
+            v_cache_all: TensorBuf::zero_bf16(&[kv_rows, spec.head_dim]),
+            wo: stack_transposed(
+                tensors,
+                "self_attn.o_proj.weight",
+                spec.num_layers,
+                spec.q_hidden,
+                spec.hidden,
+            )?,
+            post_rms_weight: stack_norm(
+                tensors,
+                "post_attention_layernorm.weight",
+                spec.num_layers,
+                spec.hidden,
+            )?,
+            w_gate: stack_transposed(
+                tensors,
+                "mlp.gate_proj.weight",
+                spec.num_layers,
+                spec.hidden,
+                spec.intermediate,
+            )?,
+            w_up: stack_transposed(
+                tensors,
+                "mlp.up_proj.weight",
+                spec.num_layers,
+                spec.hidden,
+                spec.intermediate,
+            )?,
+            w_down: stack_transposed(
+                tensors,
+                "mlp.down_proj.weight",
+                spec.num_layers,
+                spec.intermediate,
+                spec.hidden,
+            )?,
+            prefill_out: TensorBuf::zero_bf16(&[1, max_seq, spec.hidden]),
+            decode_out: TensorBuf::zero_bf16(&[1, spec.hidden]),
+            rms_x: TensorBuf::zero_bf16(&[spec.logits_batch_tile, spec.hidden]),
+            final_norm_weight: full_norm(tensors, "model.norm.weight", spec.hidden)?,
+            rms_normed: TensorBuf::zero_bf16(&[spec.logits_batch_tile, spec.hidden]),
+            lm_head_weight_t: lm_head_weight(tensors, spec)?,
+            logits_padded: TensorBuf::zero_f32(&[spec.logits_batch_tile, spec.padded_vocab]),
         })
     }
 
     fn copy_decode_out_to_rms_x(&mut self) {
         self.rms_x.data.fill(0);
-        let row_bytes = HIDDEN * 2;
+        let row_bytes = self.spec.hidden * 2;
         self.rms_x.data[..row_bytes].copy_from_slice(&self.decode_out.data[..row_bytes]);
     }
 
@@ -1379,7 +1484,7 @@ impl Qwen3SimplerTensors {
 
     fn copy_prefill_last_to_rms_x(&mut self, seq_len: usize) {
         self.rms_x.data.fill(0);
-        let row_bytes = HIDDEN * 2;
+        let row_bytes = self.spec.hidden * 2;
         let start = (seq_len - 1) * row_bytes;
         self.rms_x.data[..row_bytes]
             .copy_from_slice(&self.prefill_hidden.data[start..start + row_bytes]);
@@ -1394,23 +1499,10 @@ impl Qwen3SimplerTensors {
         tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
         token: u64,
     ) -> anyhow::Result<()> {
-        let profile = Qwen3DenseReferenceProfile {
-            vocab_size: VOCAB_SIZE as u64,
-            hidden_size: HIDDEN as u64,
-            intermediate_size: INTER as u64,
-            num_hidden_layers: NUM_LAYERS as u64,
-            num_attention_heads: 16,
-            num_key_value_heads: NUM_KV_HEADS as u64,
-            head_dim: HEAD_DIM as u64,
-            max_position_embeddings: 40_960,
-            rope_theta: 1_000_000,
-            prefill_tokens: 128,
-            decode_tokens: 1,
-            tp_nodes: 8,
-        };
-        let hidden = embedding_reference_hidden_sequence_for_profile(profile, tensors, &[token])
-            .map_err(anyhow::Error::msg)
-            .context("failed to materialize sampled token embedding")?;
+        let hidden =
+            embedding_reference_hidden_sequence_for_profile(self.profile, tensors, &[token])
+                .map_err(anyhow::Error::msg)
+                .context("failed to materialize sampled token embedding")?;
         self.decode_hidden.data.fill(0);
         write_f32_as_bf16(&mut self.decode_hidden.data, 0, &hidden[0]);
         Ok(())
@@ -1621,36 +1713,81 @@ fn rms_lmhead_args(t: &mut Qwen3SimplerTensors) -> anyhow::Result<PreparedArgs> 
 
 fn l2_prefill_args(t: &mut Qwen3SimplerTensors, layer: usize) -> anyhow::Result<PreparedArgs> {
     let max_seq = t.prefill_hidden.shape[1] as usize;
-    let total_pages = RUNTIME_BATCH * max_seq.div_ceil(PAGE_SIZE);
-    let layer_cache_rows = total_pages * NUM_KV_HEADS * PAGE_SIZE;
+    let spec = t.spec;
+    let total_pages = spec.runtime_batch * max_seq.div_ceil(spec.page_size);
+    let layer_cache_rows = total_pages * spec.num_kv_heads * spec.page_size;
     make_args(vec![
         in_arg(&mut t.prefill_hidden),
         in_arg(&mut t.prefill_seq_lens),
-        in_arg_view(&mut t.input_rms_weight, layer * HIDDEN, &[1, HIDDEN]),
-        in_arg_view(&mut t.wq, layer * HIDDEN * Q_HIDDEN, &[HIDDEN, Q_HIDDEN]),
-        in_arg_view(&mut t.wk, layer * HIDDEN * HIDDEN, &[HIDDEN, HIDDEN]),
-        in_arg_view(&mut t.wv, layer * HIDDEN * HIDDEN, &[HIDDEN, HIDDEN]),
-        in_arg_view(&mut t.q_norm_weight, layer * HEAD_DIM, &[1, HEAD_DIM]),
-        in_arg_view(&mut t.k_norm_weight, layer * HEAD_DIM, &[1, HEAD_DIM]),
+        in_arg_view(
+            &mut t.input_rms_weight,
+            layer * spec.hidden,
+            &[1, spec.hidden],
+        ),
+        in_arg_view(
+            &mut t.wq,
+            layer * spec.hidden * spec.q_hidden,
+            &[spec.hidden, spec.q_hidden],
+        ),
+        in_arg_view(
+            &mut t.wk,
+            layer * spec.hidden * spec.kv_hidden,
+            &[spec.hidden, spec.kv_hidden],
+        ),
+        in_arg_view(
+            &mut t.wv,
+            layer * spec.hidden * spec.kv_hidden,
+            &[spec.hidden, spec.kv_hidden],
+        ),
+        in_arg_view(
+            &mut t.q_norm_weight,
+            layer * spec.head_dim,
+            &[1, spec.head_dim],
+        ),
+        in_arg_view(
+            &mut t.k_norm_weight,
+            layer * spec.head_dim,
+            &[1, spec.head_dim],
+        ),
         in_arg(&mut t.rope_cos),
         in_arg(&mut t.rope_sin),
         in_arg(&mut t.block_table),
         in_arg(&mut t.prefill_slot_mapping),
         inout_arg_view(
             &mut t.k_cache_all,
-            layer * layer_cache_rows * HEAD_DIM,
-            &[layer_cache_rows, HEAD_DIM],
+            layer * layer_cache_rows * spec.head_dim,
+            &[layer_cache_rows, spec.head_dim],
         ),
         inout_arg_view(
             &mut t.v_cache_all,
-            layer * layer_cache_rows * HEAD_DIM,
-            &[layer_cache_rows, HEAD_DIM],
+            layer * layer_cache_rows * spec.head_dim,
+            &[layer_cache_rows, spec.head_dim],
         ),
-        in_arg_view(&mut t.wo, layer * Q_HIDDEN * HIDDEN, &[Q_HIDDEN, HIDDEN]),
-        in_arg_view(&mut t.post_rms_weight, layer * HIDDEN, &[1, HIDDEN]),
-        in_arg_view(&mut t.w_gate, layer * HIDDEN * INTER, &[HIDDEN, INTER]),
-        in_arg_view(&mut t.w_up, layer * HIDDEN * INTER, &[HIDDEN, INTER]),
-        in_arg_view(&mut t.w_down, layer * INTER * HIDDEN, &[INTER, HIDDEN]),
+        in_arg_view(
+            &mut t.wo,
+            layer * spec.q_hidden * spec.hidden,
+            &[spec.q_hidden, spec.hidden],
+        ),
+        in_arg_view(
+            &mut t.post_rms_weight,
+            layer * spec.hidden,
+            &[1, spec.hidden],
+        ),
+        in_arg_view(
+            &mut t.w_gate,
+            layer * spec.hidden * spec.intermediate,
+            &[spec.hidden, spec.intermediate],
+        ),
+        in_arg_view(
+            &mut t.w_up,
+            layer * spec.hidden * spec.intermediate,
+            &[spec.hidden, spec.intermediate],
+        ),
+        in_arg_view(
+            &mut t.w_down,
+            layer * spec.intermediate * spec.hidden,
+            &[spec.intermediate, spec.hidden],
+        ),
         out_arg(&mut t.prefill_out),
     ])
 }
@@ -1674,10 +1811,11 @@ fn lm_head_args(t: &mut Qwen3SimplerTensors) -> anyhow::Result<PreparedArgs> {
 fn stack_norm(
     tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     suffix: &str,
+    num_layers: usize,
     width: usize,
 ) -> anyhow::Result<TensorBuf> {
-    let mut out = TensorBuf::zero_f32(&[NUM_LAYERS, width]);
-    for layer in 0..NUM_LAYERS {
+    let mut out = TensorBuf::zero_f32(&[num_layers, width]);
+    for layer in 0..num_layers {
         let name = format!("model.layers.{layer}.{suffix}");
         let values = full_tensor_as_f32(tensors, &name, width)?;
         write_f32(&mut out.data, layer * width, &values);
@@ -1688,10 +1826,11 @@ fn stack_norm(
 fn stack_optional_norm(
     tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     suffix: &str,
+    num_layers: usize,
     width: usize,
 ) -> anyhow::Result<TensorBuf> {
-    let mut out = TensorBuf::zero_f32(&[NUM_LAYERS, width]);
-    for layer in 0..NUM_LAYERS {
+    let mut out = TensorBuf::zero_f32(&[num_layers, width]);
+    for layer in 0..num_layers {
         let name = format!("model.layers.{layer}.{suffix}");
         let values = if tensors.contains_key(&name) {
             full_tensor_as_f32(tensors, &name, width)?
@@ -1706,11 +1845,12 @@ fn stack_optional_norm(
 fn stack_transposed(
     tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     suffix: &str,
+    num_layers: usize,
     in_dim: usize,
     out_dim: usize,
 ) -> anyhow::Result<TensorBuf> {
-    let mut out = TensorBuf::zero_bf16(&[NUM_LAYERS * in_dim, out_dim]);
-    for layer in 0..NUM_LAYERS {
+    let mut out = TensorBuf::zero_bf16(&[num_layers * in_dim, out_dim]);
+    for layer in 0..num_layers {
         let name = format!("model.layers.{layer}.{suffix}");
         let tensor = tensors
             .get(&name)
@@ -1723,12 +1863,22 @@ fn stack_transposed(
                 tensor.shape
             );
         }
-        let values = full_tensor_as_f32(tensors, &name, source_rows * source_cols)?;
+        let payload = materialize_full_weight_tensor_payload(&name, tensors)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("failed to materialize {name}"))?;
+        validate_payload_len(tensor.dtype, &payload, source_rows * source_cols)
+            .with_context(|| format!("payload length mismatch for {name}"))?;
         for i in 0..in_dim {
             for o in 0..out_dim {
-                let value = values[o * in_dim + i];
+                let src_elem = o * in_dim + i;
                 let dst_elem = (layer * in_dim + i) * out_dim + o;
-                write_bf16(&mut out.data, dst_elem, f32_to_bf16(value));
+                write_payload_value_as_bf16(
+                    &mut out.data,
+                    dst_elem,
+                    tensor.dtype,
+                    &payload,
+                    src_elem,
+                );
             }
         }
     }
@@ -1748,6 +1898,7 @@ fn full_norm(
 
 fn lm_head_weight(
     tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
+    spec: Qwen3SimplerModelSpec,
 ) -> anyhow::Result<TensorBuf> {
     let name = if tensors.contains_key("lm_head.weight") {
         "lm_head.weight"
@@ -1757,16 +1908,27 @@ fn lm_head_weight(
     let tensor = tensors
         .get(name)
         .ok_or_else(|| anyhow::anyhow!("missing lm head tensor {name}"))?;
-    if tensor.shape != vec![VOCAB_SIZE as u64, HIDDEN as u64] {
+    if tensor.shape != vec![spec.vocab_size as u64, spec.hidden as u64] {
         anyhow::bail!(
-            "lm head shape mismatch for {name}: got {:?}, expected [{VOCAB_SIZE}, {HIDDEN}]",
-            tensor.shape
+            "lm head shape mismatch for {name}: got {:?}, expected [{}, {}]",
+            tensor.shape,
+            spec.vocab_size,
+            spec.hidden
         );
     }
-    let mut out = TensorBuf::zero_bf16(&[PADDED_VOCAB, HIDDEN]);
-    let values = full_tensor_as_f32(tensors, name, VOCAB_SIZE * HIDDEN)?;
-    for (idx, value) in values.iter().copied().enumerate() {
-        write_bf16(&mut out.data, idx, f32_to_bf16(value));
+    let mut out = TensorBuf::zero_bf16(&[spec.padded_vocab, spec.hidden]);
+    let elems = spec.vocab_size * spec.hidden;
+    let payload = materialize_full_weight_tensor_payload(name, tensors)
+        .map_err(anyhow::Error::msg)
+        .with_context(|| format!("failed to materialize {name}"))?;
+    validate_payload_len(tensor.dtype, &payload, elems)
+        .with_context(|| format!("payload length mismatch for {name}"))?;
+    if tensor.dtype == Qwen3DenseReferenceWeightDType::BF16 {
+        out.data[..payload.len()].copy_from_slice(&payload);
+    } else {
+        for idx in 0..elems {
+            write_payload_value_as_bf16(&mut out.data, idx, tensor.dtype, &payload, idx);
+        }
     }
     Ok(out)
 }
@@ -1791,37 +1953,79 @@ fn decode_payload_as_f32(
     payload: &[u8],
     expected_elems: usize,
 ) -> anyhow::Result<Vec<f32>> {
-    let elem_bytes = match dtype {
-        Qwen3DenseReferenceWeightDType::F32 => 4,
-        Qwen3DenseReferenceWeightDType::F16 | Qwen3DenseReferenceWeightDType::BF16 => 2,
-        Qwen3DenseReferenceWeightDType::I8 | Qwen3DenseReferenceWeightDType::U8 => 1,
-    };
-    if payload.len() != expected_elems * elem_bytes {
+    validate_payload_len(dtype, payload, expected_elems)?;
+    let mut out = Vec::with_capacity(expected_elems);
+    for idx in 0..expected_elems {
+        out.push(read_payload_value_as_f32(dtype, payload, idx));
+    }
+    Ok(out)
+}
+
+fn validate_payload_len(
+    dtype: Qwen3DenseReferenceWeightDType,
+    payload: &[u8],
+    expected_elems: usize,
+) -> anyhow::Result<()> {
+    let expected_bytes = expected_elems
+        .checked_mul(dtype_elem_bytes(dtype))
+        .ok_or_else(|| anyhow::anyhow!("payload expected byte size overflow"))?;
+    if payload.len() != expected_bytes {
         anyhow::bail!(
             "payload length mismatch: got {}, expected {}",
             payload.len(),
-            expected_elems * elem_bytes
+            expected_bytes
         );
     }
-    let mut out = Vec::with_capacity(expected_elems);
-    for idx in 0..expected_elems {
-        let base = idx * elem_bytes;
-        let value = match dtype {
-            Qwen3DenseReferenceWeightDType::F32 => {
-                f32::from_le_bytes(payload[base..base + 4].try_into().expect("f32 payload"))
-            }
-            Qwen3DenseReferenceWeightDType::BF16 => f32::from_bits(
-                (u16::from_le_bytes(payload[base..base + 2].try_into().unwrap()) as u32) << 16,
-            ),
-            Qwen3DenseReferenceWeightDType::F16 => f16_to_f32(u16::from_le_bytes(
-                payload[base..base + 2].try_into().unwrap(),
-            )),
-            Qwen3DenseReferenceWeightDType::I8 => payload[base] as i8 as f32,
-            Qwen3DenseReferenceWeightDType::U8 => payload[base] as f32,
-        };
-        out.push(value);
+    Ok(())
+}
+
+fn dtype_elem_bytes(dtype: Qwen3DenseReferenceWeightDType) -> usize {
+    match dtype {
+        Qwen3DenseReferenceWeightDType::F32 => 4,
+        Qwen3DenseReferenceWeightDType::F16 | Qwen3DenseReferenceWeightDType::BF16 => 2,
+        Qwen3DenseReferenceWeightDType::I8 | Qwen3DenseReferenceWeightDType::U8 => 1,
     }
-    Ok(out)
+}
+
+fn read_payload_value_as_f32(
+    dtype: Qwen3DenseReferenceWeightDType,
+    payload: &[u8],
+    index: usize,
+) -> f32 {
+    let base = index * dtype_elem_bytes(dtype);
+    match dtype {
+        Qwen3DenseReferenceWeightDType::F32 => {
+            f32::from_le_bytes(payload[base..base + 4].try_into().expect("f32 payload"))
+        }
+        Qwen3DenseReferenceWeightDType::BF16 => f32::from_bits(
+            (u16::from_le_bytes(payload[base..base + 2].try_into().unwrap()) as u32) << 16,
+        ),
+        Qwen3DenseReferenceWeightDType::F16 => f16_to_f32(u16::from_le_bytes(
+            payload[base..base + 2].try_into().unwrap(),
+        )),
+        Qwen3DenseReferenceWeightDType::I8 => payload[base] as i8 as f32,
+        Qwen3DenseReferenceWeightDType::U8 => payload[base] as f32,
+    }
+}
+
+fn write_payload_value_as_bf16(
+    data: &mut [u8],
+    dst_index: usize,
+    dtype: Qwen3DenseReferenceWeightDType,
+    payload: &[u8],
+    src_index: usize,
+) {
+    if dtype == Qwen3DenseReferenceWeightDType::BF16 {
+        let src = src_index * 2;
+        let dst = dst_index * 2;
+        data[dst..dst + 2].copy_from_slice(&payload[src..src + 2]);
+    } else {
+        write_bf16(
+            data,
+            dst_index,
+            f32_to_bf16(read_payload_value_as_f32(dtype, payload, src_index)),
+        );
+    }
 }
 
 fn rope_tables(max_seq: usize, head_dim: usize, theta: f32) -> (TensorBuf, TensorBuf) {
@@ -2157,6 +2361,29 @@ fn parse_optional_top_k(value: &str) -> anyhow::Result<Option<usize>> {
     Ok((parsed > 0).then_some(parsed))
 }
 
+fn usize_from_u64(name: &str, value: u64) -> anyhow::Result<usize> {
+    usize::try_from(value).with_context(|| format!("{name} does not fit usize"))
+}
+
+fn checked_mul(name: &str, lhs: usize, rhs: usize) -> anyhow::Result<usize> {
+    lhs.checked_mul(rhs)
+        .ok_or_else(|| anyhow::anyhow!("{name} overflow"))
+}
+
+fn round_up(value: usize, multiple: usize) -> anyhow::Result<usize> {
+    if multiple == 0 {
+        anyhow::bail!("round_up multiple must be > 0");
+    }
+    let rem = value % multiple;
+    if rem == 0 {
+        Ok(value)
+    } else {
+        value
+            .checked_add(multiple - rem)
+            .ok_or_else(|| anyhow::anyhow!("round_up overflow"))
+    }
+}
+
 fn write_i32(data: &mut [u8], index: usize, value: i32) {
     let base = index * 4;
     data[base..base + 4].copy_from_slice(&value.to_le_bytes());
@@ -2174,11 +2401,11 @@ fn read_f32(data: &[u8], index: usize) -> f32 {
     f32::from_le_bytes(data[base..base + 4].try_into().expect("f32 bytes"))
 }
 
-fn greedy_token_from_logits(logits: &[u8]) -> u64 {
-    let (floor, ceil) = finite_logit_bounds(logits);
+fn greedy_token_from_logits(logits: &[u8], vocab_size: usize) -> u64 {
+    let (floor, ceil) = finite_logit_bounds(logits, vocab_size);
     let mut best = 0usize;
     let mut best_value = f32::NEG_INFINITY;
-    for token in 0..VOCAB_SIZE {
+    for token in 0..vocab_size {
         let value = sanitize_logit(read_f32(logits, token), floor, ceil);
         if value > best_value {
             best = token;
@@ -2188,10 +2415,10 @@ fn greedy_token_from_logits(logits: &[u8]) -> u64 {
     best as u64
 }
 
-fn finite_logit_bounds(logits: &[u8]) -> (f32, f32) {
+fn finite_logit_bounds(logits: &[u8], vocab_size: usize) -> (f32, f32) {
     let mut min_value = f32::INFINITY;
     let mut max_value = f32::NEG_INFINITY;
-    for token in 0..VOCAB_SIZE {
+    for token in 0..vocab_size {
         let value = read_f32(logits, token);
         if value.is_finite() {
             min_value = min_value.min(value);
@@ -2368,32 +2595,64 @@ mod tests {
     }
 
     #[test]
+    fn qwen3_simpler_model_spec_accepts_14b_shape() {
+        let profile = Qwen3DenseReferenceProfile {
+            vocab_size: 151_936,
+            hidden_size: 5_120,
+            intermediate_size: 17_408,
+            num_hidden_layers: 40,
+            num_attention_heads: 40,
+            num_key_value_heads: 8,
+            head_dim: 128,
+            max_position_embeddings: 40_960,
+            rope_theta: 1_000_000,
+            prefill_tokens: QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
+            decode_tokens: QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
+            tp_nodes: QWEN3_DENSE_DEFAULT_TP_NODES,
+        };
+        let spec = Qwen3SimplerModelSpec::from_profile(profile).expect("14B spec");
+
+        assert_eq!(spec.vocab_size, 151_936);
+        assert_eq!(spec.padded_vocab, 152_064);
+        assert_eq!(spec.hidden, 5_120);
+        assert_eq!(spec.q_hidden, 5_120);
+        assert_eq!(spec.kv_hidden, 1_024);
+        assert_eq!(spec.intermediate, 17_408);
+        assert_eq!(spec.num_layers, 40);
+    }
+
+    #[test]
     fn qwen3_simpler_sampling_greedy_and_top_k_one_are_stable() {
-        let mut logits = TensorBuf::zero_f32(&[LOGITS_BATCH_TILE, PADDED_VOCAB]);
+        let vocab_size = 16;
+        let mut logits = TensorBuf::zero_f32(&[1, vocab_size]);
         write_f32(&mut logits.data, 7, &[1.0]);
         write_f32(&mut logits.data, 11, &[5.0]);
         write_f32(&mut logits.data, 13, &[4.0]);
 
-        let mut greedy = SamplerState::new(SamplingConfig::default());
+        let mut greedy = SamplerState::new(SamplingConfig::default(), vocab_size);
         assert_eq!(greedy.sample_from_logits(&logits.data).unwrap(), 11);
 
-        let mut top_k_one = SamplerState::new(SamplingConfig {
-            temperature: 0.8,
-            top_p: 1.0,
-            top_k: Some(1),
-            stop: Vec::new(),
-        });
+        let mut top_k_one = SamplerState::new(
+            SamplingConfig {
+                temperature: 0.8,
+                top_p: 1.0,
+                top_k: Some(1),
+                stop: Vec::new(),
+            },
+            vocab_size,
+        );
         assert_eq!(top_k_one.sample_from_logits(&logits.data).unwrap(), 11);
     }
 
     #[test]
     fn qwen3_simpler_sampling_sanitizes_non_finite_logits() {
-        let mut logits = TensorBuf::zero_f32(&[LOGITS_BATCH_TILE, PADDED_VOCAB]);
+        let vocab_size = 8;
+        let mut logits = TensorBuf::zero_f32(&[1, vocab_size]);
         write_f32(&mut logits.data, 3, &[f32::NAN]);
         write_f32(&mut logits.data, 4, &[f32::INFINITY]);
         write_f32(&mut logits.data, 5, &[42.0]);
 
-        let mut sampler = SamplerState::new(SamplingConfig::default());
+        let mut sampler = SamplerState::new(SamplingConfig::default(), vocab_size);
         assert_eq!(sampler.sample_from_logits(&logits.data).unwrap(), 4);
     }
 
