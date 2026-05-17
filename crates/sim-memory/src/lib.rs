@@ -1507,6 +1507,76 @@ impl LingquMemoryService {
         Ok(result)
     }
 
+    pub fn register_query_result(&mut self, result: QueryResult) -> MemoryResult<()> {
+        result.validate()?;
+        for vector_index_id in &result.vector_index_ids {
+            if !self.vector_indexes.contains_key(vector_index_id) {
+                return Err(LingquMemoryError::MissingVectorIndex(
+                    vector_index_id.clone(),
+                ));
+            }
+        }
+        for query_match in &result.matches {
+            if !self
+                .vector_indexes
+                .contains_key(&query_match.vector_index_id)
+            {
+                return Err(LingquMemoryError::MissingVectorIndex(
+                    query_match.vector_index_id.clone(),
+                ));
+            }
+            let chunk = self
+                .chunks
+                .get(&query_match.chunk_id)
+                .ok_or_else(|| LingquMemoryError::MissingChunk(query_match.chunk_id.clone()))?;
+            let record = self
+                .records
+                .get(&query_match.record_id)
+                .ok_or_else(|| LingquMemoryError::MissingRecord(query_match.record_id.clone()))?;
+            if chunk.record_id != record.record_id {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "query_match.record_id",
+                    reason: "query match record must own the matched chunk",
+                });
+            }
+            let segment = self
+                .embedding_segments
+                .get(&query_match.segment_id)
+                .ok_or_else(|| {
+                    LingquMemoryError::MissingEmbeddingSegment(query_match.segment_id.clone())
+                })?;
+            if !segment
+                .row_map
+                .iter()
+                .any(|row| row.chunk_id == query_match.chunk_id && row.row == query_match.row)
+            {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "query_match.row",
+                    reason: "query match row must reference the matched chunk",
+                });
+            }
+        }
+        for segment_version in &result.embedding_segment_versions {
+            let segment = self
+                .embedding_segments
+                .get(&segment_version.segment_id)
+                .ok_or_else(|| {
+                    LingquMemoryError::MissingEmbeddingSegment(segment_version.segment_id.clone())
+                })?;
+            if segment.version != segment_version.version
+                || segment.checksum != segment_version.checksum
+            {
+                return Err(LingquMemoryError::PayloadChecksumMismatch {
+                    id: segment.segment_id.clone(),
+                    expected: segment.checksum,
+                    actual: segment_version.checksum,
+                });
+            }
+        }
+        self.query_results.insert(result.result_id.clone(), result);
+        Ok(())
+    }
+
     pub fn materialize_hot_state(
         &mut self,
         object_service: &mut LingquObjectServiceStub,
@@ -2465,6 +2535,101 @@ mod tests {
         assert!(result_path
             .path
             .starts_with("/lingqu/memory/query-results/query-result_query_flat"));
+    }
+
+    #[test]
+    fn query_result_manifest_registers_after_catalog_reload() {
+        let mut service = LingquMemoryService::new();
+        service
+            .publish_catalog(MemoryCorpusCatalog {
+                catalog_id: "corpus/flat".to_string(),
+                namespace: "project/default".to_string(),
+                dfs_path: LingquDfsPath::new("/lingqu/memory/corpus/flat/catalog.json"),
+                version: 1,
+                record_ids: vec!["record/a".to_string()],
+                vector_index_ids: vec!["index/flat".to_string()],
+                created_at_us: 1,
+                updated_at_us: 1,
+            })
+            .unwrap();
+        service
+            .ingest_record(
+                sample_record("record/a", "chunk/a"),
+                vec![sample_chunk("chunk/a", "record/a")],
+            )
+            .unwrap();
+        let mut durable = LingquMemoryDurableStore::new();
+        let segment_ref = durable
+            .write_block_payload("block/embed/flat", f32_vec_to_le_bytes(&[1.0, 0.0]))
+            .unwrap();
+        let query_ref = durable
+            .write_block_payload("block/query/flat", f32_vec_to_le_bytes(&[1.0, 0.0]))
+            .unwrap();
+        service
+            .register_embedding_segment(EmbeddingSegment {
+                segment_id: "segment/flat".to_string(),
+                model_version: "embed/v1".to_string(),
+                dims: 2,
+                row_count: 1,
+                row_stride_bytes: 8,
+                dtype: TensorDType::F32,
+                vector_block_refs: vec![segment_ref],
+                row_map: vec![EmbeddingRow {
+                    chunk_id: "chunk/a".to_string(),
+                    row: 0,
+                }],
+                checksum: 0x5151,
+                version: 1,
+            })
+            .unwrap();
+        service
+            .register_vector_index(VectorIndexObject {
+                index_id: "index/flat".to_string(),
+                corpus_id: "corpus/flat".to_string(),
+                kind: VectorIndexKind::Flat,
+                embedding_model_version: "embed/v1".to_string(),
+                segment_ids: vec!["segment/flat".to_string()],
+                manifest_path: LingquDfsPath::new("/lingqu/memory/corpus/flat/index.json"),
+                created_at_us: 2,
+                updated_at_us: 2,
+                version: 1,
+            })
+            .unwrap();
+        let result = service
+            .query_memory_flat(
+                &mut durable,
+                MemoryQuery {
+                    query_id: "query/flat".to_string(),
+                    corpus_ids: vec!["corpus/flat".to_string()],
+                    scope_filter: Vec::new(),
+                    visibility_filter: Vec::new(),
+                    min_trust: MemoryTrustLevel::UserConfirmed,
+                    min_confidence: 0.0,
+                    embedding_model_version: "embed/v1".to_string(),
+                    top_k: 1,
+                    query_embedding_ref: Some(query_ref),
+                },
+                100,
+            )
+            .unwrap();
+        let path = service
+            .persist_catalog_to_dfs(&mut durable, "corpus/flat")
+            .unwrap();
+        let result_path = durable.persist_query_result(&result).unwrap();
+
+        let mut restored = LingquMemoryService::new();
+        restored
+            .rebuild_catalog_from_dfs(&mut durable, &path)
+            .expect("rebuild catalog");
+        let restored_result = durable.load_query_result(&result_path).unwrap();
+        restored
+            .register_query_result(restored_result)
+            .expect("register query result");
+
+        assert_eq!(
+            restored.query_result("query-result/query/flat").unwrap(),
+            &result
+        );
     }
 
     #[test]

@@ -639,6 +639,13 @@ sim-cli lingqu-memory query \
   --query-embedding-json <query-vector.json> \
   --query-id <query-id> \
   --top-k <count>
+
+sim-cli lingqu-memory materialize-hot-state \
+  --catalog <catalog-snapshot.json> \
+  --store <durable-store.json> \
+  --query-result-manifest <dfs-query-result-path> \
+  --state-id <hot-state-id> \
+  --hot-state <hot-state.json>
 ```
 
 `ingest` reads a real source file, writes the source bytes into the local
@@ -654,6 +661,12 @@ synthesize embeddings from source text.
 into Lingqu Block, ranks the flat index, persists the resulting `QueryResult`
 manifest into the durable-store DFS snapshot, and reports selected record/chunk
 ids. It intentionally does not embed prompt text inside the query command.
+
+`materialize-hot-state` reloads a persisted `QueryResult` manifest from the
+durable-store DFS snapshot, revalidates it against the current catalog, reads
+selected embedding rows from Lingqu Block, publishes hot table/index/score
+objects through Lingqu Object Service, and writes a `HotMemoryStateObject`
+manifest. It intentionally does not accept inline tensor values.
 
 ## Observability
 
@@ -759,9 +772,10 @@ Current implementation status:
   caller-provided embedding vectors, writes them into Lingqu Block, and
   registers a flat vector index. `query` requires a caller-provided query
   embedding, writes it into Lingqu Block, ranks the flat index, and persists a
-  checksum-validated `QueryResult` manifest into the DFS snapshot. Embed
-  generation and materialize remain validation/smoke modes and still need
-  product CLI entrypoints.
+  checksum-validated `QueryResult` manifest into the DFS snapshot. Step 6 now
+  also has a real `sim-cli lingqu-memory materialize-hot-state` entrypoint that
+  consumes the persisted query result manifest and publishes OBMM hot tensors.
+  Embed generation remains a missing product CLI entrypoint.
 - Step 6 now has two paths: explicit caller-provided tensor materialization and
   QueryResult-driven materialization that reads selected embedding rows from
   Lingqu Block and publishes OBMM-backed table, index, and score tensors through

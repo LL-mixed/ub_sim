@@ -1103,6 +1103,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
     match mode.as_str() {
         "build-index" => run_lingqu_memory_build_index_cli(&args),
         "ingest" => run_lingqu_memory_ingest_cli(&args),
+        "materialize-hot-state" => run_lingqu_memory_materialize_hot_state_cli(&args),
         "query" => run_lingqu_memory_query_cli(&args),
         "validate-service-path" => run_lingqu_memory_validate_service_path(),
         "validate-durable-store" => run_lingqu_memory_validate_durable_store(),
@@ -1110,7 +1111,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "validate-flat-materialize" => run_lingqu_memory_validate_flat_materialize(),
         "validate-w5-engram-object-ref" => run_lingqu_memory_validate_w5_engram_object_ref(),
         _ => anyhow::bail!(
-            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, query, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
+            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, query, materialize-hot-state, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
         ),
     }
 }
@@ -1243,6 +1244,90 @@ fn validate_lingqu_memory_query_embedding_input(
     if input.values.is_empty() {
         anyhow::bail!("query embedding json values must not be empty");
     }
+    Ok(())
+}
+
+fn run_lingqu_memory_materialize_hot_state_cli(args: &[String]) -> anyhow::Result<()> {
+    let catalog_path = PathBuf::from(required_cli_arg(args, "--catalog")?);
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let query_result_manifest = required_cli_arg(args, "--query-result-manifest")?;
+    let state_id = required_cli_arg(args, "--state-id")?;
+    let hot_state_path = PathBuf::from(required_cli_arg(args, "--hot-state")?);
+    let owner_entity = optional_cli_u64(args, "--owner-entity")?.unwrap_or(0);
+    let producer_entity = optional_cli_u64(args, "--producer-entity")?.unwrap_or(0);
+    let now_us = optional_cli_u64(args, "--now-us")?.unwrap_or(1);
+
+    let snapshot =
+        load_lingqu_memory_catalog_snapshot_if_exists(&catalog_path)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "catalog snapshot does not exist: {}",
+                catalog_path.display()
+            )
+        })?;
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let query_result_path = LingquDfsPath::new(query_result_manifest);
+    let query_result = durable_store
+        .load_query_result(&query_result_path)
+        .context("load query result manifest")?;
+
+    let mut memory_service = LingquMemoryService::new();
+    memory_service
+        .import_catalog_snapshot(snapshot.clone())
+        .context("import catalog snapshot")?;
+    memory_service
+        .register_query_result(query_result.clone())
+        .context("register query result")?;
+
+    let mut object_service = LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
+    let hot_state = memory_service
+        .materialize_hot_state_from_query(
+            &mut durable_store,
+            &mut object_service,
+            HotMemoryMaterializeFromQueryReq {
+                state_id: state_id.clone(),
+                query_result_id: query_result.result_id.clone(),
+                owner_entity,
+                producer_entity,
+                now_us,
+            },
+        )
+        .context("materialize hot memory state")?;
+    let hot_state_bytes =
+        serde_json::to_vec_pretty(&hot_state).context("encode hot memory state")?;
+    if let Some(parent) = hot_state_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create hot state dir {}", parent.display()))?;
+    }
+    fs::write(&hot_state_path, hot_state_bytes)
+        .with_context(|| format!("write hot state {}", hot_state_path.display()))?;
+    save_lingqu_memory_durable_store(&store_path, &durable_store)?;
+    let object_report = object_service.report();
+
+    println!("lingqu_memory_service");
+    println!("  mode: materialize-hot-state");
+    println!("  catalog: {}", snapshot.catalog.catalog_id);
+    println!("  catalog_path: {}", catalog_path.display());
+    println!("  store_path: {}", store_path.display());
+    println!("  query_result: {}", query_result.result_id);
+    println!("  query_result_manifest: {}", query_result_path.path);
+    println!("  hot_state: {}", hot_state.state_id);
+    println!("  hot_state_path: {}", hot_state_path.display());
+    println!("  hot_table_object: {}", hot_state.table.object_key);
+    println!("  hot_indices_object: {}", hot_state.indices.object_key);
+    println!("  hot_scores_object: {}", hot_state.scores.object_key);
+    println!("  hot_table_shape: {:?}", hot_state.table.shape);
+    println!(
+        "  selected_chunks: {}",
+        hot_state.selected_chunk_ids.join(",")
+    );
+    println!(
+        "  obmm_payload_writes: {}",
+        object_report.obmm_pool_payload_write_count
+    );
+    println!(
+        "  committed_object_count: {}",
+        object_report.committed_object_count
+    );
     Ok(())
 }
 
@@ -2598,9 +2683,9 @@ mod tests {
         qwen3_guest_terminal_candidate_records, qwen3_guest_terminal_text_lossy_from_tokenizer,
         qwen3_guest_terminal_tokens, qwen3_guest_timing_summary, qwen3_range_forward_args_from,
         run_lingqu_memory_build_index_cli, run_lingqu_memory_ingest_cli,
-        run_lingqu_memory_query_cli, run_lingqu_memory_validate_durable_store,
-        run_lingqu_memory_validate_flat_materialize, run_lingqu_memory_validate_flat_query,
-        run_lingqu_memory_validate_w5_engram_object_ref,
+        run_lingqu_memory_materialize_hot_state_cli, run_lingqu_memory_query_cli,
+        run_lingqu_memory_validate_durable_store, run_lingqu_memory_validate_flat_materialize,
+        run_lingqu_memory_validate_flat_query, run_lingqu_memory_validate_w5_engram_object_ref,
         simpler_host_matmul_artifact_producer_path, validate_qwen3_dense_weights_path,
         validate_w5_inference_profile, LingquMemoryDurableStoreSnapshot, MemoryCatalogSnapshot,
         QueryResult, Qwen3CandidateRecord, Qwen3DecodeReportVerbosity, Qwen3EngramConfig,
@@ -3928,6 +4013,120 @@ stage qwen3_range_forward_runtime_output_publish node=2
         assert_eq!(query_result.selected_chunk_ids, ["chunk/test/0"]);
         assert_eq!(query_result.matches.len(), 1);
         assert_eq!(query_result.matches[0].score, 0.625);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lingqu_memory_materialize_hot_state_cli_uses_query_result_manifest() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_lingqu_memory_materialize_cli_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let source = root.join("note.md");
+        let catalog = root.join("catalog.json");
+        let store = root.join("store.json");
+        let embeddings = root.join("embeddings.json");
+        let query_embedding = root.join("query_embedding.json");
+        let hot_state = root.join("hot_state.json");
+        fs::write(&source, b"# Note\nreal memory source\n").expect("write source");
+        fs::write(
+            &embeddings,
+            serde_json::json!({
+                "model_version": "embed/test/v1",
+                "dims": 2,
+                "vectors": [
+                    {"chunk_id": "chunk/test/0", "values": [0.25, 0.75]}
+                ]
+            })
+            .to_string(),
+        )
+        .expect("write embeddings");
+        fs::write(
+            &query_embedding,
+            serde_json::json!({
+                "model_version": "embed/test/v1",
+                "values": [0.25, 0.75]
+            })
+            .to_string(),
+        )
+        .expect("write query embedding");
+
+        run_lingqu_memory_ingest_cli(&[
+            "--catalog".to_string(),
+            catalog.to_string_lossy().into_owned(),
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--source".to_string(),
+            source.to_string_lossy().into_owned(),
+            "--catalog-id".to_string(),
+            "corpus/test".to_string(),
+            "--namespace".to_string(),
+            "project/test".to_string(),
+            "--record-id".to_string(),
+            "record/test/0".to_string(),
+            "--chunk-id".to_string(),
+            "chunk/test/0".to_string(),
+            "--token-count".to_string(),
+            "4".to_string(),
+            "--embedding-model-version".to_string(),
+            "embed/test/v1".to_string(),
+        ])
+        .expect("ingest");
+        run_lingqu_memory_build_index_cli(&[
+            "--catalog".to_string(),
+            catalog.to_string_lossy().into_owned(),
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--embedding-json".to_string(),
+            embeddings.to_string_lossy().into_owned(),
+            "--index-id".to_string(),
+            "index/test/flat".to_string(),
+            "--segment-id".to_string(),
+            "segment/test/0".to_string(),
+        ])
+        .expect("build index");
+        run_lingqu_memory_query_cli(&[
+            "--catalog".to_string(),
+            catalog.to_string_lossy().into_owned(),
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--query-embedding-json".to_string(),
+            query_embedding.to_string_lossy().into_owned(),
+            "--query-id".to_string(),
+            "query/test/0".to_string(),
+            "--top-k".to_string(),
+            "1".to_string(),
+        ])
+        .expect("query");
+        run_lingqu_memory_materialize_hot_state_cli(&[
+            "--catalog".to_string(),
+            catalog.to_string_lossy().into_owned(),
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--query-result-manifest".to_string(),
+            "/lingqu/memory/query-results/query-result_query_test_0.json".to_string(),
+            "--state-id".to_string(),
+            "hot/test/0".to_string(),
+            "--hot-state".to_string(),
+            hot_state.to_string_lossy().into_owned(),
+        ])
+        .expect("materialize hot state");
+
+        let hot_state_json = fs::read(&hot_state).expect("read hot state");
+        let hot_state_value: serde_json::Value =
+            serde_json::from_slice(&hot_state_json).expect("decode hot state");
+        assert_eq!(hot_state_value["state_id"], "hot/test/0");
+        assert_eq!(
+            hot_state_value["query_result_id"],
+            "query-result/query/test/0"
+        );
+        assert_eq!(hot_state_value["selected_chunk_ids"][0], "chunk/test/0");
+        assert_eq!(hot_state_value["table"]["shape"][0], 1);
+        assert_eq!(hot_state_value["table"]["shape"][1], 2);
+        assert_eq!(hot_state_value["indices"]["shape"][0], 1);
+        assert_eq!(hot_state_value["scores"]["shape"][0], 1);
         let _ = fs::remove_dir_all(&root);
     }
 }
