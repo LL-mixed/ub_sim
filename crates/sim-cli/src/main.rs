@@ -59,7 +59,8 @@ use sim_uapi::{
     qwen3_dense_reference_default_guest_input, qwen3_dense_reference_prefill_text_output_report,
     qwen3_dense_reference_range_forward_report_with_prompt, qwen3_obmm_object_ref_wire_to_hex,
     qwen3_publish_engram_state_registry_payload, qwen3_publish_object_registry_payload,
-    LocalGuestUapiSurface, UapiCommand, UapiDescriptor, UapiResponse,
+    qwen3_validate_engram_state_registry_payload, LocalGuestUapiSurface,
+    Qwen3EngramStateRegistryValidation, UapiCommand, UapiDescriptor, UapiResponse,
     QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
     QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
     QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
@@ -2988,6 +2989,7 @@ mod tests {
         qwen3_guest_engram_expected_terminal_rewrites, qwen3_guest_engram_history_lengths,
         qwen3_guest_engram_object_transport_report, qwen3_guest_engram_report,
         qwen3_guest_engram_report_from_guest_log, qwen3_guest_engram_selected_tokens,
+        qwen3_guest_engram_select_history_lengths,
         qwen3_guest_log_dir_from_script_output, qwen3_guest_log_match_count,
         qwen3_guest_terminal_candidate_records, qwen3_guest_terminal_text_lossy_from_tokenizer,
         qwen3_guest_terminal_tokens, qwen3_guest_timing_summary, qwen3_range_forward_args_from,
@@ -3652,6 +3654,15 @@ stage qwen3_range_forward_runtime_output_publish node=2
 [w4_guest] stage qwen3_engram_token_select local=node8 step=0 history_tokens=4 raw_token=3 runner_up=4 selected_token=11 blocked=0 fallback=0 status=ok
 ";
         assert_eq!(qwen3_guest_engram_selected_tokens(log), vec![11, 358]);
+    }
+
+    #[test]
+    fn qwen3_guest_engram_select_history_lengths_parse_in_step_order() {
+        let log = "\
+[w4_guest] stage qwen3_engram_token_select local=node8 step=1 history_tokens=5 raw_token=1 runner_up=2 selected_token=358 blocked=0 fallback=0 status=ok
+[w4_guest] stage qwen3_engram_token_select local=node8 step=0 history_tokens=4 raw_token=3 runner_up=4 selected_token=11 blocked=0 fallback=0 status=ok
+";
+        assert_eq!(qwen3_guest_engram_select_history_lengths(log), vec![4, 5]);
     }
 
     #[test]
@@ -4654,6 +4665,8 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     }
     let runtime = qwen3_guest_dense_runtime(args)?;
     let engram_simt = qwen3_prepare_engram_simt_mode(&args.engram)?;
+    let engram_registry_validation =
+        qwen3_validate_guest_engram_state_registry(&args.engram, &runtime.profile)?;
     let w5_profile = args
         .w5_profile
         .clone()
@@ -4708,6 +4721,16 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
                 spec.soc_version
             );
         }
+        if let Some(validation) = &engram_registry_validation {
+            println!(
+                "  engram_state_registry: hidden_size={} table_rows={} table_bytes={} indices_bytes={} gate_weight_bytes={}",
+                validation.hidden_size,
+                validation.table_rows,
+                validation.table_bytes,
+                validation.indices_bytes,
+                validation.gate_weight_bytes
+            );
+        }
     }
     println!("  worker_path: 8-node W5 inference cluster OBMM object-service range forward");
     let trace_file = env::temp_dir().join(format!(
@@ -4718,7 +4741,11 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         .prompt_token_ids
         .clone()
         .map(Ok)
-        .or_else(|| args.prompt.as_deref().map(qwen3_guest_prompt_token_ids_env))
+        .or_else(|| {
+            args.prompt
+                .as_deref()
+                .map(|prompt| qwen3_guest_prompt_token_ids_env(prompt, &runtime.weights_path))
+        })
         .transpose()?
         .unwrap_or_default();
     let prompt_history_tokens = qwen3_parse_token_id_csv(&prompt_token_ids)?;
@@ -4872,9 +4899,10 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     let timing_summary = qwen3_guest_timing_summary(&combined);
     let terminal_tokens = qwen3_guest_terminal_tokens(&combined);
     let guest_engram_selected_tokens = qwen3_guest_engram_selected_tokens(&combined);
+    let guest_engram_select_history_lengths = qwen3_guest_engram_select_history_lengths(&combined);
     let guest_engram_history_lengths = qwen3_guest_engram_history_lengths(&combined);
     let guest_engram_candidate_counts = qwen3_guest_engram_candidate_counts(&combined);
-    let terminal_text = qwen3_guest_terminal_text_lossy(&terminal_tokens);
+    let terminal_text = qwen3_guest_terminal_text_lossy(&terminal_tokens, &runtime.weights_path);
     let pass = combined.contains("eight-node w5 inference cluster validation passed")
         || combined.contains("PASS: eight-node w5 inference cluster")
         || combined.contains("eight-node w4 guest validation passed")
@@ -4954,9 +4982,17 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         }
         if !guest_engram_selected_tokens.is_empty() {
             let expected_terminal_rewrites = qwen3_guest_engram_expected_terminal_rewrites(report);
-            let expected_history_lengths = (0..args.step_count)
-                .map(|step| prompt_history_tokens.len() as u64 + step as u64 + 1)
-                .collect::<Vec<_>>();
+            let expected_history_lengths =
+                if guest_engram_select_history_lengths.len() == args.step_count {
+                    guest_engram_select_history_lengths
+                        .iter()
+                        .map(|length| length + 1)
+                        .collect::<Vec<_>>()
+                } else {
+                    (0..args.step_count)
+                        .map(|step| prompt_history_tokens.len() as u64 + step as u64 + 1)
+                        .collect::<Vec<_>>()
+                };
             let blocked_writeback_tokens = terminal_tokens
                 .iter()
                 .copied()
@@ -5092,6 +5128,28 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     Ok(())
 }
 
+fn qwen3_validate_guest_engram_state_registry(
+    engram: &Qwen3EngramConfig,
+    profile: &Qwen3DenseProfile,
+) -> anyhow::Result<Option<Qwen3EngramStateRegistryValidation>> {
+    let (Some(state_ref), Some(registry_dir)) = (&engram.state_ref, &engram.object_registry_dir)
+    else {
+        return Ok(None);
+    };
+    let hidden_size = usize::try_from(profile.hidden_size)
+        .with_context(|| format!("qwen3 hidden_size too large: {}", profile.hidden_size))?;
+    qwen3_validate_engram_state_registry_payload(state_ref, registry_dir, hidden_size)
+        .map(Some)
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "invalid W5 engram state registry for {} hidden_size={}: {}",
+                profile.model_id,
+                hidden_size,
+                err
+            )
+        })
+}
+
 fn qwen3_prepare_engram_simt_mode(
     config: &Qwen3EngramConfig,
 ) -> anyhow::Result<Option<EngramSimtLaunchSpec>> {
@@ -5152,6 +5210,21 @@ fn qwen3_guest_engram_selected_tokens(log: &str) -> Vec<u64> {
     tokens.into_iter().map(|(_, token)| token).collect()
 }
 
+fn qwen3_guest_engram_select_history_lengths(log: &str) -> Vec<u64> {
+    let mut lengths = log
+        .lines()
+        .filter(|line| line.contains("stage qwen3_engram_token_select "))
+        .map(|line| {
+            (
+                qwen3_guest_log_u64_field(line, "step"),
+                qwen3_guest_log_u64_field(line, "history_tokens"),
+            )
+        })
+        .collect::<Vec<_>>();
+    lengths.sort_by_key(|(step, _)| *step);
+    lengths.into_iter().map(|(_, length)| length).collect()
+}
+
 fn qwen3_guest_engram_history_lengths(log: &str) -> Vec<u64> {
     let mut lengths = log
         .lines()
@@ -5195,14 +5268,22 @@ fn qwen3_guest_engram_expected_terminal_rewrites(report: &Qwen3EngramRunReport) 
         .count()
 }
 
-fn qwen3_guest_terminal_text_lossy(tokens: &[u64]) -> Option<String> {
-    let tokenizer_path = qwen3_guest_tokenizer_path()?;
+fn qwen3_guest_terminal_text_lossy(tokens: &[u64], weights_path: &Path) -> Option<String> {
+    let tokenizer_path = if weights_path.join("tokenizer.json").is_file() {
+        weights_path.to_path_buf()
+    } else {
+        qwen3_guest_tokenizer_path()?
+    };
     qwen3_guest_terminal_text_lossy_from_tokenizer(tokens, &tokenizer_path).ok()
 }
 
-fn qwen3_guest_prompt_token_ids_env(prompt: &str) -> anyhow::Result<String> {
-    let tokenizer_path = qwen3_guest_tokenizer_path()
-        .ok_or_else(|| anyhow::anyhow!("qwen3 guest tokenizer path missing"))?;
+fn qwen3_guest_prompt_token_ids_env(prompt: &str, weights_path: &Path) -> anyhow::Result<String> {
+    let tokenizer_path = if weights_path.join("tokenizer.json").is_file() {
+        weights_path.to_path_buf()
+    } else {
+        qwen3_guest_tokenizer_path()
+            .ok_or_else(|| anyhow::anyhow!("qwen3 guest tokenizer path missing"))?
+    };
     let tokenized = tokenize_prompt_from_tokenizer_path(&tokenizer_path, prompt)
         .map_err(anyhow::Error::msg)
         .context("failed to tokenize Qwen3 guest prompt")?;

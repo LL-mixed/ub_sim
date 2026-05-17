@@ -1850,8 +1850,11 @@ fn qwen3_object_registry_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/tmp/ub_sim_qwen3_object_registry"))
 }
 
-fn qwen3_object_registry_path(object_ref: &LingquObmmObjectRefWire) -> PathBuf {
-    qwen3_object_registry_dir().join(format!(
+fn qwen3_object_registry_path_in_dir(
+    registry_dir: &Path,
+    object_ref: &LingquObmmObjectRefWire,
+) -> PathBuf {
+    registry_dir.join(format!(
         "kind{:04x}_owner{:08x}_producer{:08x}_version{:016x}_key{:016x}_bytes{:016x}_checksum{:016x}.bin",
         object_ref.object_kind,
         object_ref.owner_entity,
@@ -1861,6 +1864,10 @@ fn qwen3_object_registry_path(object_ref: &LingquObmmObjectRefWire) -> PathBuf {
         object_ref.payload_bytes,
         object_ref.payload_checksum
     ))
+}
+
+fn qwen3_object_registry_path(object_ref: &LingquObmmObjectRefWire) -> PathBuf {
+    qwen3_object_registry_path_in_dir(&qwen3_object_registry_dir(), object_ref)
 }
 
 fn qwen3_object_registry_put(
@@ -1911,7 +1918,14 @@ fn qwen3_object_registry_put(
 }
 
 fn qwen3_object_registry_get(object_ref: &LingquObmmObjectRefWire) -> Result<Vec<u8>, String> {
-    let path = qwen3_object_registry_path(object_ref);
+    qwen3_object_registry_get_from_dir(&qwen3_object_registry_dir(), object_ref)
+}
+
+fn qwen3_object_registry_get_from_dir(
+    registry_dir: &Path,
+    object_ref: &LingquObmmObjectRefWire,
+) -> Result<Vec<u8>, String> {
+    let path = qwen3_object_registry_path_in_dir(registry_dir, object_ref);
     let payload = fs::read(&path)
         .map_err(|err| format!("qwen3_object_registry_read_failed:{}:{err}", path.display()))?;
     if payload.len() as u64 != object_ref.payload_bytes {
@@ -1929,6 +1943,15 @@ fn qwen3_object_registry_get(object_ref: &LingquObmmObjectRefWire) -> Result<Vec
         ));
     }
     Ok(payload)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Qwen3EngramStateRegistryValidation {
+    pub hidden_size: usize,
+    pub table_rows: usize,
+    pub table_bytes: usize,
+    pub indices_bytes: usize,
+    pub gate_weight_bytes: usize,
 }
 
 fn qwen3_obmm_object_ref_wire_to_le_bytes(object_ref: &LingquObmmObjectRefWire) -> [u8; 64] {
@@ -2054,6 +2077,127 @@ fn qwen3_obmm_object_ref_wire_from_hex(value: &str) -> Result<LingquObmmObjectRe
         .validate()
         .map_err(|err| format!("qwen3_obmm_object_ref_invalid:{err}"))?;
     Ok(object_ref)
+}
+
+fn qwen3_engram_state_manifest_refs_from_payload(
+    payload: &[u8],
+) -> Result<Qwen3DenseReferenceEngramContextObjectRefs, String> {
+    let expected_bytes = LingquObmmObjectRefWire::BYTE_LEN * 3;
+    if payload.len() != expected_bytes {
+        return Err(format!(
+            "qwen3_engram_state_manifest_len_mismatch:got={}:expected={expected_bytes}",
+            payload.len()
+        ));
+    }
+    let table =
+        LingquObmmObjectRefWire::from_le_bytes(&payload[0..LingquObmmObjectRefWire::BYTE_LEN])
+            .map_err(|err| format!("qwen3_engram_state_manifest_table_ref_parse:{err}"))?;
+    let indices = LingquObmmObjectRefWire::from_le_bytes(
+        &payload[LingquObmmObjectRefWire::BYTE_LEN..LingquObmmObjectRefWire::BYTE_LEN * 2],
+    )
+    .map_err(|err| format!("qwen3_engram_state_manifest_indices_ref_parse:{err}"))?;
+    let gate_weight = LingquObmmObjectRefWire::from_le_bytes(
+        &payload[LingquObmmObjectRefWire::BYTE_LEN * 2..LingquObmmObjectRefWire::BYTE_LEN * 3],
+    )
+    .map_err(|err| format!("qwen3_engram_state_manifest_gate_weight_ref_parse:{err}"))?;
+    for (name, object_ref) in [
+        ("table", table),
+        ("indices", indices),
+        ("gate_weight", gate_weight),
+    ] {
+        object_ref
+            .validate()
+            .map_err(|err| format!("qwen3_engram_state_manifest_{name}_ref_invalid:{err}"))?;
+    }
+    Ok(Qwen3DenseReferenceEngramContextObjectRefs {
+        table,
+        indices,
+        gate_weight,
+    })
+}
+
+pub fn qwen3_validate_engram_state_registry_payload(
+    state_ref_hex: &str,
+    registry_dir: &Path,
+    hidden_size: usize,
+) -> Result<Qwen3EngramStateRegistryValidation, String> {
+    if hidden_size == 0 {
+        return Err("qwen3_engram_state_registry_hidden_size_unsupported:got=0".to_string());
+    }
+    let state_ref = qwen3_obmm_object_ref_wire_from_hex(state_ref_hex)?;
+    if state_ref.object_kind != QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE {
+        return Err(format!(
+            "qwen3_engram_state_ref_kind_mismatch:got={}:expected={}",
+            state_ref.object_kind, QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE
+        ));
+    }
+    let state_payload = qwen3_object_registry_get_from_dir(registry_dir, &state_ref)
+        .map_err(|err| format!("qwen3_engram_state_ref_resolve_failed:{err}"))?;
+    let object_refs = qwen3_engram_state_manifest_refs_from_payload(&state_payload)?;
+    if object_refs.table.object_kind != QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE
+        || object_refs.indices.object_kind != QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES
+        || object_refs.gate_weight.object_kind
+            != QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT
+    {
+        return Err("qwen3_engram_context_ref_kind_mismatch".to_string());
+    }
+
+    let table_payload = qwen3_object_registry_get_from_dir(registry_dir, &object_refs.table)
+        .map_err(|err| format!("qwen3_engram_context_table_resolve_failed:{err}"))?;
+    if table_payload.len() % std::mem::size_of::<f32>() != 0 {
+        return Err(format!(
+            "qwen3_engram_context_table_bytes_not_multiple_of_f32:bytes={}",
+            table_payload.len()
+        ));
+    }
+    let table_values = table_payload.len() / std::mem::size_of::<f32>();
+    if table_values % hidden_size != 0 {
+        return Err(format!(
+            "qwen3_engram_context_table_len_mismatch:hidden_size={hidden_size}:values={table_values}"
+        ));
+    }
+    let table_rows = table_values / hidden_size;
+    if table_rows < ENGRAM_CONTEXT_INDICES_PER_BATCH {
+        return Err(format!(
+            "qwen3_engram_context_table_rows_too_small:rows={table_rows}:min={}",
+            ENGRAM_CONTEXT_INDICES_PER_BATCH
+        ));
+    }
+
+    let indices_payload = qwen3_object_registry_get_from_dir(registry_dir, &object_refs.indices)
+        .map_err(|err| format!("qwen3_engram_context_indices_resolve_failed:{err}"))?;
+    let expected_indices_bytes = ENGRAM_CONTEXT_INDICES_PER_BATCH * std::mem::size_of::<i32>();
+    if indices_payload.len() != expected_indices_bytes {
+        return Err(format!(
+            "qwen3_engram_context_indices_len_mismatch:got={}:expected={}",
+            indices_payload.len() / std::mem::size_of::<i32>(),
+            ENGRAM_CONTEXT_INDICES_PER_BATCH
+        ));
+    }
+
+    let gate_weight_payload =
+        qwen3_object_registry_get_from_dir(registry_dir, &object_refs.gate_weight)
+            .map_err(|err| format!("qwen3_engram_context_gate_weight_resolve_failed:{err}"))?;
+    if gate_weight_payload.len() % std::mem::size_of::<f32>() != 0 {
+        return Err(format!(
+            "qwen3_engram_context_gate_weight_bytes_not_multiple_of_f32:bytes={}",
+            gate_weight_payload.len()
+        ));
+    }
+    let gate_weight_values = gate_weight_payload.len() / std::mem::size_of::<f32>();
+    if gate_weight_values != hidden_size {
+        return Err(format!(
+            "qwen3_engram_context_gate_weight_len_mismatch:got={gate_weight_values}:expected={hidden_size}"
+        ));
+    }
+
+    Ok(Qwen3EngramStateRegistryValidation {
+        hidden_size,
+        table_rows,
+        table_bytes: table_payload.len(),
+        indices_bytes: indices_payload.len(),
+        gate_weight_bytes: gate_weight_payload.len(),
+    })
 }
 
 fn qwen3_lingqu_key_hash(key: &str) -> u64 {
@@ -15454,38 +15598,7 @@ fn qwen3_dense_reference_engram_context_refs_from_state_ref(
     }
     let payload = qwen3_object_registry_get(&state_ref)
         .map_err(|err| format!("qwen3_engram_state_ref_resolve_failed:{err}"))?;
-    let expected_bytes = LingquObmmObjectRefWire::BYTE_LEN * 3;
-    if payload.len() != expected_bytes {
-        return Err(format!(
-            "qwen3_engram_state_manifest_len_mismatch:got={}:expected={expected_bytes}",
-            payload.len()
-        ));
-    }
-    let table =
-        LingquObmmObjectRefWire::from_le_bytes(&payload[0..LingquObmmObjectRefWire::BYTE_LEN])
-            .map_err(|err| format!("qwen3_engram_state_manifest_table_ref_parse:{err}"))?;
-    let indices = LingquObmmObjectRefWire::from_le_bytes(
-        &payload[LingquObmmObjectRefWire::BYTE_LEN..LingquObmmObjectRefWire::BYTE_LEN * 2],
-    )
-    .map_err(|err| format!("qwen3_engram_state_manifest_indices_ref_parse:{err}"))?;
-    let gate_weight = LingquObmmObjectRefWire::from_le_bytes(
-        &payload[LingquObmmObjectRefWire::BYTE_LEN * 2..LingquObmmObjectRefWire::BYTE_LEN * 3],
-    )
-    .map_err(|err| format!("qwen3_engram_state_manifest_gate_weight_ref_parse:{err}"))?;
-    for (name, object_ref) in [
-        ("table", table),
-        ("indices", indices),
-        ("gate_weight", gate_weight),
-    ] {
-        object_ref
-            .validate()
-            .map_err(|err| format!("qwen3_engram_state_manifest_{name}_ref_invalid:{err}"))?;
-    }
-    Ok(Qwen3DenseReferenceEngramContextObjectRefs {
-        table,
-        indices,
-        gate_weight,
-    })
+    qwen3_engram_state_manifest_refs_from_payload(&payload)
 }
 
 fn qwen3_dense_reference_engram_context_refs_from_guest_input(
@@ -19275,7 +19388,8 @@ mod tests {
         qwen3_dense_reference_write_weight_reference_table,
         qwen3_dense_reference_write_weight_stage_link_table, qwen3_engram_state_manifest_payload,
         qwen3_lingqu_key_hash, qwen3_object_registry_put, qwen3_obmm_object_ref_wire_to_hex,
-        read_u64_le_at, run_host_matmul_batched_smoke, run_host_matmul_smoke,
+        qwen3_validate_engram_state_registry_payload, read_u64_le_at,
+        run_host_matmul_batched_smoke, run_host_matmul_smoke,
         run_qwen3_dense_reference_prefill_runtime, validate_qwen3_range_dispatch_object_refs,
         GuestUapiSurface, KvCachePayloadLayout, LocalGuestUapiSurface,
         Qwen3DenseReferenceHiddenLayerNodeRange, Qwen3DenseReferenceLayerDependencyDescriptor,
@@ -19453,6 +19567,62 @@ mod tests {
         );
         qwen3_object_registry_put(&state_ref, &state_payload).expect("put state manifest object");
         (table, indices, gate_weight, state_ref)
+    }
+
+    #[test]
+    fn qwen3_engram_state_registry_preflight_rejects_hidden_mismatch() {
+        run_simpler_native_test_isolated(
+            "qwen3_engram_state_registry_preflight_rejects_hidden_mismatch",
+            || {
+                let registry_dir = std::env::temp_dir().join(format!(
+                    "ub_sim_qwen3_engram_registry_preflight_test_{}",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&registry_dir);
+                with_env_var(
+                    SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+                    registry_dir.to_string_lossy().as_ref(),
+                    || {
+                        let (_table, _indices, _gate_weight, state_ref) =
+                            test_publish_engram_context_state_ref(
+                                "engram/context/preflight",
+                                1024,
+                                ENGRAM_CONTEXT_INDICES_PER_BATCH,
+                            );
+                        let state_ref_hex = qwen3_obmm_object_ref_wire_to_hex(&state_ref);
+
+                        let ok = qwen3_validate_engram_state_registry_payload(
+                            &state_ref_hex,
+                            &registry_dir,
+                            1024,
+                        )
+                        .expect("valid hidden size");
+                        assert_eq!(ok.hidden_size, 1024);
+                        assert_eq!(ok.table_rows, ENGRAM_CONTEXT_INDICES_PER_BATCH);
+                        assert_eq!(
+                            ok.table_bytes,
+                            ENGRAM_CONTEXT_INDICES_PER_BATCH * 1024 * std::mem::size_of::<f32>()
+                        );
+                        assert_eq!(
+                            ok.indices_bytes,
+                            ENGRAM_CONTEXT_INDICES_PER_BATCH * std::mem::size_of::<i32>()
+                        );
+                        assert_eq!(ok.gate_weight_bytes, 1024 * std::mem::size_of::<f32>());
+
+                        let err = qwen3_validate_engram_state_registry_payload(
+                            &state_ref_hex,
+                            &registry_dir,
+                            5120,
+                        )
+                        .expect_err("hidden mismatch");
+                        assert!(
+                            err.contains("qwen3_engram_context_table_len_mismatch"),
+                            "{err}"
+                        );
+                    },
+                );
+            },
+        );
     }
 
     #[test]
