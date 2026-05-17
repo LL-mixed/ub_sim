@@ -6,11 +6,11 @@ use sim_core::{
     SegmentHandle, SimEvent, TaskKey,
 };
 use sim_memory::{
-    EmbeddingRow, EmbeddingSegment, HotMemoryMaterializeReq, LingquBlockPayloadRef, LingquDfsPath,
-    LingquMemoryDurableStore, LingquMemoryService, MemoryChunk, MemoryContentType,
-    MemoryCorpusCatalog, MemoryPiiState, MemoryQuery, MemoryRecord, MemoryRecordState,
-    MemoryRetentionPolicy, MemoryScope, MemorySecurityLabel, MemorySourceKind, MemoryTrustLevel,
-    MemoryVisibility, VectorIndexKind, VectorIndexObject,
+    EmbeddingRow, EmbeddingSegment, HotMemoryMaterializeFromQueryReq, HotMemoryMaterializeReq,
+    LingquBlockPayloadRef, LingquDfsPath, LingquMemoryDurableStore, LingquMemoryService,
+    MemoryChunk, MemoryContentType, MemoryCorpusCatalog, MemoryPiiState, MemoryQuery, MemoryRecord,
+    MemoryRecordState, MemoryRetentionPolicy, MemoryScope, MemorySecurityLabel, MemorySourceKind,
+    MemoryTrustLevel, MemoryVisibility, QueryResult, VectorIndexKind, VectorIndexObject,
 };
 use sim_models::qwen3_dense_reference::{
     token_piece_bytes_from_tokenizer_path, token_piece_decode_bytes,
@@ -1073,8 +1073,9 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "validate-service-path" => run_lingqu_memory_validate_service_path(),
         "validate-durable-store" => run_lingqu_memory_validate_durable_store(),
         "validate-flat-query" => run_lingqu_memory_validate_flat_query(),
+        "validate-flat-materialize" => run_lingqu_memory_validate_flat_materialize(),
         _ => anyhow::bail!(
-            "unknown lingqu-memory mode `{mode}`; expected validate-service-path, validate-durable-store, or validate-flat-query"
+            "unknown lingqu-memory mode `{mode}`; expected validate-service-path, validate-durable-store, validate-flat-query, or validate-flat-materialize"
         ),
     }
 }
@@ -1256,7 +1257,8 @@ fn run_lingqu_memory_validate_durable_store() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_lingqu_memory_validate_flat_query() -> anyhow::Result<()> {
+fn build_lingqu_memory_flat_query_sample(
+) -> anyhow::Result<(LingquMemoryService, LingquMemoryDurableStore, QueryResult)> {
     let mut memory_service = LingquMemoryService::new();
     memory_service.publish_catalog(MemoryCorpusCatalog {
         catalog_id: "corpus/flat".to_string(),
@@ -1367,6 +1369,11 @@ fn run_lingqu_memory_validate_flat_query() -> anyhow::Result<()> {
         },
         100,
     )?;
+    Ok((memory_service, durable_store, result))
+}
+
+fn run_lingqu_memory_validate_flat_query() -> anyhow::Result<()> {
+    let (_memory_service, durable_store, result) = build_lingqu_memory_flat_query_sample()?;
     let stats = durable_store.stats();
 
     println!("lingqu_memory_service");
@@ -1379,6 +1386,51 @@ fn run_lingqu_memory_validate_flat_query() -> anyhow::Result<()> {
         println!("  top_score: {:.6}", top.score);
     }
     println!("  block_payload_reads: {}", stats.block_payload_reads);
+    Ok(())
+}
+
+fn run_lingqu_memory_validate_flat_materialize() -> anyhow::Result<()> {
+    let (mut memory_service, mut durable_store, result) = build_lingqu_memory_flat_query_sample()?;
+    let mut object_service = LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
+    let hot_state = memory_service.materialize_hot_state_from_query(
+        &mut durable_store,
+        &mut object_service,
+        HotMemoryMaterializeFromQueryReq {
+            state_id: "hot/flat".to_string(),
+            query_result_id: result.result_id.clone(),
+            owner_entity: 0,
+            producer_entity: 0,
+            now_us: 200,
+        },
+    )?;
+    let engram_state =
+        memory_service.build_engram_state("engram/flat", &hot_state.state_id, None, 300)?;
+    let object_report = object_service.report();
+    let stats = durable_store.stats();
+
+    println!("lingqu_memory_service");
+    println!("  mode: validate-flat-materialize");
+    println!("  query_result: {}", result.result_id);
+    println!("  matches: {}", result.matches.len());
+    println!("  hot_state: {}", hot_state.state_id);
+    println!("  hot_table_object: {}", hot_state.table.object_key);
+    println!("  hot_table_shape: {:?}", hot_state.table.shape);
+    println!("  hot_indices_object: {}", hot_state.indices.object_key);
+    println!("  hot_scores_object: {}", hot_state.scores.object_key);
+    println!(
+        "  selected_chunks: {}",
+        hot_state.selected_chunk_ids.join(",")
+    );
+    println!("  engram_state: {}", engram_state.state_id);
+    println!("  block_payload_reads: {}", stats.block_payload_reads);
+    println!(
+        "  obmm_payload_writes: {}",
+        object_report.obmm_pool_payload_write_count
+    );
+    println!(
+        "  committed_object_count: {}",
+        object_report.committed_object_count
+    );
     Ok(())
 }
 
@@ -1636,11 +1688,11 @@ mod tests {
         qwen3_guest_log_match_count, qwen3_guest_terminal_candidate_records,
         qwen3_guest_terminal_text_lossy_from_tokenizer, qwen3_guest_terminal_tokens,
         qwen3_guest_timing_summary, qwen3_range_forward_args_from,
-        run_lingqu_memory_validate_durable_store, run_lingqu_memory_validate_flat_query,
-        simpler_host_matmul_artifact_producer_path, validate_qwen3_dense_weights_path,
-        validate_w5_inference_profile, Qwen3CandidateRecord, Qwen3DecodeReportVerbosity,
-        Qwen3EngramConfig, Qwen3EngramContextOp, Qwen3EngramMode, Qwen3EngramPool,
-        Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
+        run_lingqu_memory_validate_durable_store, run_lingqu_memory_validate_flat_materialize,
+        run_lingqu_memory_validate_flat_query, simpler_host_matmul_artifact_producer_path,
+        validate_qwen3_dense_weights_path, validate_w5_inference_profile, Qwen3CandidateRecord,
+        Qwen3DecodeReportVerbosity, Qwen3EngramConfig, Qwen3EngramContextOp, Qwen3EngramMode,
+        Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
     };
     use std::env;
     use std::fs;
@@ -2694,6 +2746,11 @@ stage qwen3_range_forward_runtime_output_publish node=2
     #[test]
     fn lingqu_memory_flat_query_cli_smoke_runs() {
         run_lingqu_memory_validate_flat_query().expect("flat query validation");
+    }
+
+    #[test]
+    fn lingqu_memory_flat_materialize_cli_smoke_runs() {
+        run_lingqu_memory_validate_flat_materialize().expect("flat materialize validation");
     }
 }
 

@@ -828,6 +828,15 @@ pub struct HotMemoryMaterializeReq {
     pub now_us: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HotMemoryMaterializeFromQueryReq {
+    pub state_id: String,
+    pub query_result_id: String,
+    pub owner_entity: u64,
+    pub producer_entity: u64,
+    pub now_us: u64,
+}
+
 #[derive(Debug, Default)]
 pub struct LingquMemoryService {
     catalogs: HashMap<String, MemoryCorpusCatalog>,
@@ -1258,6 +1267,91 @@ impl LingquMemoryService {
         self.hot_states
             .insert(state.state_id.clone(), state.clone());
         Ok(state)
+    }
+
+    pub fn materialize_hot_state_from_query(
+        &mut self,
+        durable_store: &mut LingquMemoryDurableStore,
+        object_service: &mut LingquObjectServiceStub,
+        req: HotMemoryMaterializeFromQueryReq,
+    ) -> MemoryResult<HotMemoryStateObject> {
+        required_str(&req.state_id, "hot_state_id")?;
+        required_str(&req.query_result_id, "query_result_id")?;
+        let query_result = self
+            .query_results
+            .get(&req.query_result_id)
+            .ok_or_else(|| LingquMemoryError::MissingQueryResult(req.query_result_id.clone()))?
+            .clone();
+        if query_result.matches.is_empty() {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "query_result_id",
+                reason: "query result has no matches to materialize",
+            });
+        }
+
+        let mut segment_bytes_by_id = HashMap::<String, Vec<u8>>::new();
+        let mut table_values = Vec::new();
+        let mut table_dims = None;
+        let mut indices = Vec::with_capacity(query_result.matches.len());
+        for (selected_row, query_match) in query_result.matches.iter().enumerate() {
+            let segment = self
+                .embedding_segments
+                .get(&query_match.segment_id)
+                .ok_or_else(|| {
+                    LingquMemoryError::MissingEmbeddingSegment(query_match.segment_id.clone())
+                })?;
+            if segment.dtype != TensorDType::F32 {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "embedding_segment.dtype",
+                    reason: "hot memory materialization currently requires f32 embeddings",
+                });
+            }
+            if let Some(expected_dims) = table_dims {
+                if expected_dims != segment.dims {
+                    return Err(LingquMemoryError::InvalidValue {
+                        field: "embedding_segment.dims",
+                        reason: "selected embedding rows must have the same dims",
+                    });
+                }
+            } else {
+                table_dims = Some(segment.dims);
+            }
+            let segment_bytes =
+                if let Some(segment_bytes) = segment_bytes_by_id.get(&query_match.segment_id) {
+                    segment_bytes
+                } else {
+                    let segment_bytes = read_segment_bytes(durable_store, segment)?;
+                    segment_bytes_by_id.insert(query_match.segment_id.clone(), segment_bytes);
+                    segment_bytes_by_id
+                        .get(&query_match.segment_id)
+                        .expect("segment bytes inserted")
+                };
+            let row_values = segment_row_f32_values(segment, segment_bytes, query_match.row)?;
+            table_values.extend_from_slice(&row_values);
+            indices.push(u32::try_from(selected_row).map_err(|_| {
+                LingquMemoryError::InvalidValue {
+                    field: "indices",
+                    reason: "selected row count exceeds u32",
+                }
+            })?);
+        }
+
+        self.materialize_hot_state(
+            object_service,
+            HotMemoryMaterializeReq {
+                state_id: req.state_id,
+                query_result_id: req.query_result_id,
+                table_shape: vec![
+                    query_result.matches.len() as u64,
+                    u64::from(table_dims.unwrap()),
+                ],
+                table_values,
+                indices,
+                owner_entity: req.owner_entity,
+                producer_entity: req.producer_entity,
+                now_us: req.now_us,
+            },
+        )
     }
 
     pub fn build_engram_state(
@@ -1863,6 +1957,129 @@ mod tests {
         assert_eq!(result.matches[0].chunk_id, "chunk/b");
         assert_eq!(result.matches[0].score, 1.0);
         assert_eq!(durable.stats().block_payload_reads, 2);
+    }
+
+    #[test]
+    fn flat_query_materialization_publishes_selected_vectors_to_obmm() {
+        let mut service = LingquMemoryService::new();
+        service
+            .publish_catalog(MemoryCorpusCatalog {
+                catalog_id: "corpus/flat".to_string(),
+                namespace: "project/default".to_string(),
+                dfs_path: LingquDfsPath::new("/lingqu/memory/corpus/flat/catalog.json"),
+                version: 1,
+                record_ids: vec!["record/a".to_string(), "record/b".to_string()],
+                vector_index_ids: vec!["index/flat".to_string()],
+                created_at_us: 1,
+                updated_at_us: 1,
+            })
+            .unwrap();
+        service
+            .ingest_record(
+                sample_record("record/a", "chunk/a"),
+                vec![sample_chunk("chunk/a", "record/a")],
+            )
+            .unwrap();
+        service
+            .ingest_record(
+                sample_record("record/b", "chunk/b"),
+                vec![sample_chunk("chunk/b", "record/b")],
+            )
+            .unwrap();
+
+        let mut durable = LingquMemoryDurableStore::new();
+        let segment_ref = durable
+            .write_block_payload(
+                "block/embed/flat",
+                f32_vec_to_le_bytes(&[1.0, 0.0, 0.0, 1.0]),
+            )
+            .unwrap();
+        let query_ref = durable
+            .write_block_payload("block/query/flat", f32_vec_to_le_bytes(&[1.0, 0.0]))
+            .unwrap();
+        service
+            .register_embedding_segment(EmbeddingSegment {
+                segment_id: "segment/flat".to_string(),
+                model_version: "embed/v1".to_string(),
+                dims: 2,
+                row_count: 2,
+                row_stride_bytes: 8,
+                dtype: TensorDType::F32,
+                vector_block_refs: vec![segment_ref],
+                row_map: vec![
+                    EmbeddingRow {
+                        chunk_id: "chunk/a".to_string(),
+                        row: 0,
+                    },
+                    EmbeddingRow {
+                        chunk_id: "chunk/b".to_string(),
+                        row: 1,
+                    },
+                ],
+                checksum: 0x5151,
+            })
+            .unwrap();
+        service
+            .register_vector_index(VectorIndexObject {
+                index_id: "index/flat".to_string(),
+                corpus_id: "corpus/flat".to_string(),
+                kind: VectorIndexKind::Flat,
+                embedding_model_version: "embed/v1".to_string(),
+                segment_ids: vec!["segment/flat".to_string()],
+                manifest_path: LingquDfsPath::new("/lingqu/memory/corpus/flat/index.json"),
+                created_at_us: 2,
+                updated_at_us: 2,
+                version: 1,
+            })
+            .unwrap();
+        let result = service
+            .query_memory_flat(
+                &mut durable,
+                MemoryQuery {
+                    query_id: "query/flat".to_string(),
+                    corpus_ids: vec!["corpus/flat".to_string()],
+                    scope_filter: Vec::new(),
+                    visibility_filter: Vec::new(),
+                    min_trust: MemoryTrustLevel::UserConfirmed,
+                    min_confidence: 0.0,
+                    embedding_model_version: "embed/v1".to_string(),
+                    top_k: 2,
+                    query_embedding_ref: Some(query_ref),
+                },
+                100,
+            )
+            .unwrap();
+        let mut object_service =
+            LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
+
+        let hot_state = service
+            .materialize_hot_state_from_query(
+                &mut durable,
+                &mut object_service,
+                HotMemoryMaterializeFromQueryReq {
+                    state_id: "hot/flat".to_string(),
+                    query_result_id: result.result_id,
+                    owner_entity: 1,
+                    producer_entity: 0,
+                    now_us: 200,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(hot_state.selected_chunk_ids, ["chunk/a", "chunk/b"]);
+        assert_eq!(hot_state.table.shape, vec![2, 2]);
+        assert_eq!(hot_state.indices.shape, vec![2]);
+        assert_eq!(hot_state.scores.shape, vec![2]);
+        let table_bytes = object_service
+            .get_copy(
+                &hot_state.table.object_key,
+                LingquObjectVersionSelector::LatestCommitted,
+            )
+            .expect("hot table payload");
+        let table_values = f32_values_from_le_bytes(&table_bytes).unwrap();
+        assert_eq!(table_values, vec![1.0, 0.0, 0.0, 1.0]);
+        let stats = durable.stats();
+        assert_eq!(stats.block_payload_reads, 3);
     }
 
     #[test]

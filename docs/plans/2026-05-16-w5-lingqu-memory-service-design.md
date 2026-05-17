@@ -696,6 +696,18 @@ CLI tests:
 9. Make real-memory W5 reject deterministic fallback paths.
 10. Add long-step, cross-session, and restart/rebuild validation runs.
 
+Current implementation status:
+
+- Steps 1-4 have a baseline implementation in `sim-memory`.
+- Step 5 currently exists as validation/smoke CLI modes, not yet as external
+  ingest/embed/build-index commands.
+- Step 6 now has two paths: explicit caller-provided tensor materialization and
+  QueryResult-driven materialization that reads selected embedding rows from
+  Lingqu Block and publishes OBMM-backed table, index, and score tensors through
+  Lingqu Object Service.
+- Step 7 has the baseline adapter object construction, but W5 decode does not
+  yet consume a real `EngramStateObjectRef`.
+
 ## Acceptance Criteria
 
 - Lingqu Memory Service is usable without Engram.
