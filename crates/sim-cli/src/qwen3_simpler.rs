@@ -15,7 +15,7 @@ use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const HIDDEN: usize = 1024;
 const Q_HIDDEN: usize = HIDDEN * 2;
@@ -29,7 +29,7 @@ const LOGITS_BATCH_TILE: usize = 16;
 const PADDED_VOCAB: usize = 152_064;
 const VOCAB_SIZE: usize = 151_936;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Qwen3SimplerGenerateArgs {
     pub build_outputs: Vec<PathBuf>,
     pub l3: bool,
@@ -40,6 +40,7 @@ pub struct Qwen3SimplerGenerateArgs {
     pub platform: String,
     pub device_id: u32,
     pub profile_verbose: bool,
+    pub sampling: SamplingConfig,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -47,6 +48,39 @@ pub struct Qwen3SimplerGenerateResult {
     pub text: String,
     pub token_ids: Vec<u64>,
     pub finish_reason: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SamplingConfig {
+    pub temperature: f32,
+    pub top_p: f32,
+    pub top_k: Option<usize>,
+    pub stop: Vec<String>,
+}
+
+impl Default for SamplingConfig {
+    fn default() -> Self {
+        Self {
+            temperature: 0.0,
+            top_p: 1.0,
+            top_k: None,
+            stop: Vec::new(),
+        }
+    }
+}
+
+impl SamplingConfig {
+    fn describe(&self) -> String {
+        format!(
+            "temperature={} top_p={} top_k={} stop_count={}",
+            self.temperature,
+            self.top_p,
+            self.top_k
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            self.stop.len()
+        )
+    }
 }
 
 pub fn args() -> anyhow::Result<Option<Qwen3SimplerGenerateArgs>> {
@@ -59,16 +93,13 @@ where
     S: Into<std::ffi::OsString>,
 {
     let mut args = args.into_iter().map(Into::into);
-    let mode = match args.next() {
-        Some(mode) if mode == "qwen3-simpler-generate" || mode == "qwen3-simpler-l3-generate" => {
-            mode
-        }
+    match args.next() {
+        Some(mode) if mode == "qwen3-simpler-generate" => {}
         _ => return Ok(None),
     };
-    let legacy_l3 = mode == "qwen3-simpler-l3-generate";
     {
         let mut build_outputs = Vec::new();
-        let mut l3 = legacy_l3;
+        let mut l3 = false;
         let mut model_dir = None;
         let mut prompt = None;
         let mut max_seq_len = 512usize;
@@ -76,6 +107,7 @@ where
         let mut platform = "a2a3".to_string();
         let mut device_id = 0u32;
         let mut profile_verbose = false;
+        let mut sampling = SamplingConfig::default();
         let mut pending = args.peekable();
 
         while let Some(value) = pending.next() {
@@ -118,6 +150,28 @@ where
                 device_id = parse_u32("--device-id", value)?;
             } else if text == "--profile-verbose" {
                 profile_verbose = true;
+            } else if text == "--temperature" {
+                sampling.temperature =
+                    parse_f32("--temperature", &next_value(&mut pending, "--temperature")?)?;
+            } else if let Some(value) = text.strip_prefix("--temperature=") {
+                sampling.temperature = parse_f32("--temperature", value)?;
+            } else if text == "--top-p" {
+                sampling.top_p = parse_f32("--top-p", &next_value(&mut pending, "--top-p")?)?;
+            } else if let Some(value) = text.strip_prefix("--top-p=") {
+                sampling.top_p = parse_f32("--top-p", value)?;
+            } else if text == "--top-k" {
+                sampling.top_k = parse_optional_top_k(&next_value(&mut pending, "--top-k")?)?;
+            } else if let Some(value) = text.strip_prefix("--top-k=") {
+                sampling.top_k = parse_optional_top_k(value)?;
+            } else if text == "--stop" {
+                let stop = next_value(&mut pending, "--stop")?;
+                if !stop.is_empty() {
+                    sampling.stop.push(stop);
+                }
+            } else if let Some(value) = text.strip_prefix("--stop=") {
+                if !value.is_empty() {
+                    sampling.stop.push(value.to_string());
+                }
             } else if text.starts_with("--") {
                 anyhow::bail!("unknown qwen3-simpler-generate option: {text}");
             } else {
@@ -138,6 +192,7 @@ where
             platform,
             device_id,
             profile_verbose,
+            sampling,
         }))
     }
 }
@@ -174,6 +229,7 @@ fn run_l3(
         eprintln!("  runtime_host: {}", runtime.host.display());
         eprintln!("  platform: {}", args.platform);
         eprintln!("  device_id: {}", args.device_id);
+        eprintln!("  sampling: {}", args.sampling.describe());
     }
 
     let tokenized = tokenize_prompt_from_tokenizer_path(&args.model_dir, &args.prompt)
@@ -191,6 +247,7 @@ fn run_l3(
             args.max_seq_len
         );
     }
+    let eos_token_id = load_eos_token_id(&args.model_dir)?;
 
     let weights = load_safetensors_path_metadata(&args.model_dir)
         .map_err(anyhow::Error::msg)
@@ -238,6 +295,7 @@ fn run_l3(
     let ctx = api
         .create_context(args.device_id as i32)
         .map_err(|err| anyhow::anyhow!("failed to create simpler device context: {err}"))?;
+    let dispatch_session = DispatchSession::new(&api)?;
 
     let prefill = PreparedProgram::load(&build.prefill)?;
     let decode = PreparedProgram::load(&build.decode)?;
@@ -247,9 +305,18 @@ fn run_l3(
         eprintln!("  prefill kernels: {}", prefill.kernel_count);
         eprintln!("  decode kernels: {}", decode.kernel_count);
         eprintln!("  rms_lmhead kernels: {}", rms_lmhead.kernel_count);
+        eprintln!("  runtime buffer: reused across dispatches");
+        if let Some(eos_token_id) = eos_token_id {
+            eprintln!("  eos_token_id: {eos_token_id}");
+        }
     }
 
-    let mut generated = Vec::with_capacity(args.max_new_tokens);
+    let mut sampler = SamplerState::new(args.sampling.clone());
+    let mut generated = GenerationTracker::new(
+        args.max_new_tokens,
+        eos_token_id,
+        args.sampling.stop.clone(),
+    );
     let mut seq_len = token_ids.len();
 
     let total_started = Instant::now();
@@ -259,6 +326,7 @@ fn run_l3(
         &ctx,
         &prefill,
         &runtime,
+        &dispatch_session,
         &aicpu,
         &aicore,
         prefill_args(&mut tensors)?,
@@ -277,6 +345,7 @@ fn run_l3(
             &ctx,
             &decode,
             &runtime,
+            &dispatch_session,
             &aicpu,
             &aicore,
             decode_args(&mut tensors)?,
@@ -301,16 +370,17 @@ fn run_l3(
             &ctx,
             &rms_lmhead,
             &runtime,
+            &dispatch_session,
             &aicpu,
             &aicore,
             rms_lmhead_args(&mut tensors)?,
         )?;
         let rms_lmhead_elapsed = rms_lmhead_started.elapsed();
         let sample_started = Instant::now();
-        let token = tensors.greedy_token();
-        generated.push(token);
+        let token = sampler.sample_from_logits(tensors.logits())?;
+        let stop_reason = generated.push_token(&args.model_dir, token)?;
         let reached_length = generated.len() >= args.max_new_tokens;
-        if !reached_length {
+        if stop_reason.is_none() && !reached_length {
             tensors.set_decode_hidden_from_token(&weights.tensors, token)?;
             seq_len += 1;
             tensors.write_decode_position(seq_len);
@@ -326,6 +396,12 @@ fn run_l3(
                 duration_ms(step_elapsed),
             );
         }
+        if let Some(reason) = stop_reason {
+            if args.profile_verbose {
+                eprintln!("[L3-stop] step={step:02} reason={reason}");
+            }
+            break reason;
+        }
         if reached_length {
             break "length".to_string();
         }
@@ -336,6 +412,7 @@ fn run_l3(
             &ctx,
             &decode,
             &runtime,
+            &dispatch_session,
             &aicpu,
             &aicore,
             decode_args(&mut tensors)?,
@@ -343,7 +420,7 @@ fn run_l3(
         current_decode_elapsed = decode_started.elapsed();
     };
 
-    let text = decode_token_text(&args.model_dir, &generated)?;
+    let text = generated.text().to_string();
     if args.profile_verbose {
         eprintln!(
             "[L3-timer] generate total wall-clock: {:.2} ms",
@@ -352,7 +429,7 @@ fn run_l3(
     }
     Ok(Qwen3SimplerGenerateResult {
         text,
-        token_ids: generated,
+        token_ids: generated.token_ids().to_vec(),
         finish_reason,
     })
 }
@@ -372,6 +449,7 @@ fn run_l2(
         eprintln!("  runtime_host: {}", runtime.host.display());
         eprintln!("  platform: {}", args.platform);
         eprintln!("  device_id: {}", args.device_id);
+        eprintln!("  sampling: {}", args.sampling.describe());
     }
 
     let tokenized = tokenize_prompt_from_tokenizer_path(&args.model_dir, &args.prompt)
@@ -389,6 +467,7 @@ fn run_l2(
             args.max_seq_len
         );
     }
+    let eos_token_id = load_eos_token_id(&args.model_dir)?;
 
     let weights = load_safetensors_path_metadata(&args.model_dir)
         .map_err(anyhow::Error::msg)
@@ -436,6 +515,7 @@ fn run_l2(
     let ctx = api
         .create_context(args.device_id as i32)
         .map_err(|err| anyhow::anyhow!("failed to create simpler device context: {err}"))?;
+    let dispatch_session = DispatchSession::new(&api)?;
 
     let prefill = PreparedProgram::load(&build.prefill)?;
     let decode = PreparedProgram::load(&build.decode)?;
@@ -447,6 +527,10 @@ fn run_l2(
         eprintln!("  decode kernels: {}", decode.kernel_count);
         eprintln!("  final_rms kernels: {}", final_rms.kernel_count);
         eprintln!("  lm_head kernels: {}", lm_head.kernel_count);
+        eprintln!("  runtime buffer: reused across dispatches");
+        if let Some(eos_token_id) = eos_token_id {
+            eprintln!("  eos_token_id: {eos_token_id}");
+        }
     }
 
     let total_started = Instant::now();
@@ -458,6 +542,7 @@ fn run_l2(
             &ctx,
             &prefill,
             &runtime,
+            &dispatch_session,
             &aicpu,
             &aicore,
             l2_prefill_args(&mut tensors, layer)?,
@@ -479,7 +564,12 @@ fn run_l2(
 
     tensors.copy_prefill_last_to_rms_x(token_ids.len());
     let mut current_decode_elapsed = Duration::ZERO;
-    let mut generated = Vec::with_capacity(args.max_new_tokens);
+    let mut sampler = SamplerState::new(args.sampling.clone());
+    let mut generated = GenerationTracker::new(
+        args.max_new_tokens,
+        eos_token_id,
+        args.sampling.stop.clone(),
+    );
     let mut seq_len = token_ids.len();
 
     let finish_reason = loop {
@@ -491,6 +581,7 @@ fn run_l2(
             &ctx,
             &final_rms,
             &runtime,
+            &dispatch_session,
             &aicpu,
             &aicore,
             final_rms_args(&mut tensors)?,
@@ -502,16 +593,17 @@ fn run_l2(
             &ctx,
             &lm_head,
             &runtime,
+            &dispatch_session,
             &aicpu,
             &aicore,
             lm_head_args(&mut tensors)?,
         )?;
         let lm_head_elapsed = lm_head_started.elapsed();
         let sample_started = Instant::now();
-        let token = tensors.greedy_token();
-        generated.push(token);
+        let token = sampler.sample_from_logits(tensors.logits())?;
+        let stop_reason = generated.push_token(&args.model_dir, token)?;
         let reached_length = generated.len() >= args.max_new_tokens;
-        if !reached_length {
+        if stop_reason.is_none() && !reached_length {
             tensors.set_decode_hidden_from_token(&weights.tensors, token)?;
             seq_len += 1;
             tensors.write_decode_position(seq_len);
@@ -528,6 +620,12 @@ fn run_l2(
                 duration_ms(step_elapsed),
             );
         }
+        if let Some(reason) = stop_reason {
+            if args.profile_verbose {
+                eprintln!("[L2-stop] step={step:02} reason={reason}");
+            }
+            break reason;
+        }
         if reached_length {
             break "length".to_string();
         }
@@ -538,6 +636,7 @@ fn run_l2(
             &ctx,
             &decode,
             &runtime,
+            &dispatch_session,
             &aicpu,
             &aicore,
             decode_args(&mut tensors)?,
@@ -546,7 +645,7 @@ fn run_l2(
         tensors.copy_decode_out_to_rms_x();
     };
 
-    let text = decode_token_text(&args.model_dir, &generated)?;
+    let text = generated.text().to_string();
     if args.profile_verbose {
         eprintln!(
             "[L2-timer] generate total wall-clock: {:.2} ms",
@@ -555,7 +654,7 @@ fn run_l2(
     }
     Ok(Qwen3SimplerGenerateResult {
         text,
-        token_ids: generated,
+        token_ids: generated.token_ids().to_vec(),
         finish_reason,
     })
 }
@@ -569,6 +668,12 @@ fn validate_args(args: &Qwen3SimplerGenerateArgs) -> anyhow::Result<()> {
     }
     if args.max_new_tokens == 0 {
         anyhow::bail!("--max-new-tokens must be > 0");
+    }
+    if !args.sampling.temperature.is_finite() {
+        anyhow::bail!("--temperature must be finite");
+    }
+    if !args.sampling.top_p.is_finite() || args.sampling.top_p <= 0.0 || args.sampling.top_p > 1.0 {
+        anyhow::bail!("--top-p must satisfy 0 < top_p <= 1");
     }
     Ok(())
 }
@@ -587,20 +692,31 @@ fn duration_ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1000.0
 }
 
+struct DispatchSession {
+    runtime_buf: simpler::RuntimeBuffer,
+}
+
+impl DispatchSession {
+    fn new(api: &simpler::RuntimeLibrary) -> anyhow::Result<Self> {
+        let runtime_buf = simpler::RuntimeBuffer::allocate(api)
+            .map_err(|err| anyhow::anyhow!("simpler runtime allocation failed: {err}"))?;
+        Ok(Self { runtime_buf })
+    }
+}
+
 fn dispatch(
     api: &simpler::RuntimeLibrary,
     ctx: &simpler::DeviceContext<'_>,
     program: &PreparedProgram,
     runtime: &RuntimePaths,
+    session: &DispatchSession,
     aicpu: &[u8],
     aicore: &[u8],
     prepared: PreparedArgs,
 ) -> anyhow::Result<()> {
-    let runtime_buf = simpler::RuntimeBuffer::allocate(api)
-        .map_err(|err| anyhow::anyhow!("simpler runtime allocation failed: {err}"))?;
     api.run_runtime(
         ctx,
-        runtime_buf.handle(),
+        session.runtime_buf.handle(),
         &program.callable,
         &prepared.task_args,
         program.block_dim.unwrap_or(runtime.block_dim) as i32,
@@ -949,6 +1065,190 @@ impl Drop for EnvGuard {
     }
 }
 
+struct GenerationTracker {
+    token_ids: Vec<u64>,
+    text_bytes: Vec<u8>,
+    text: String,
+    eos_token_id: Option<u64>,
+    stop: Vec<String>,
+}
+
+impl GenerationTracker {
+    fn new(max_new_tokens: usize, eos_token_id: Option<u64>, stop: Vec<String>) -> Self {
+        Self {
+            token_ids: Vec::with_capacity(max_new_tokens),
+            text_bytes: Vec::new(),
+            text: String::new(),
+            eos_token_id,
+            stop,
+        }
+    }
+
+    fn push_token(&mut self, model_dir: &Path, token: u64) -> anyhow::Result<Option<String>> {
+        self.token_ids.push(token);
+        let piece = token_piece_bytes_from_tokenizer_path(model_dir, token)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("failed to decode token {token}"))?;
+        self.text_bytes
+            .extend_from_slice(&token_piece_decode_bytes(&piece));
+        self.text = String::from_utf8_lossy(&self.text_bytes).into_owned();
+        if self.eos_token_id == Some(token) {
+            return Ok(Some("eos".to_string()));
+        }
+        if self
+            .stop
+            .iter()
+            .any(|stop| !stop.is_empty() && self.text.ends_with(stop))
+        {
+            return Ok(Some("stop".to_string()));
+        }
+        Ok(None)
+    }
+
+    fn len(&self) -> usize {
+        self.token_ids.len()
+    }
+
+    fn text(&self) -> &str {
+        &self.text
+    }
+
+    fn token_ids(&self) -> &[u64] {
+        &self.token_ids
+    }
+}
+
+struct SamplerState {
+    config: SamplingConfig,
+    rng: XorShift64,
+    scores: Vec<(usize, f32)>,
+    probs: Vec<(usize, f64)>,
+}
+
+impl SamplerState {
+    fn new(config: SamplingConfig) -> Self {
+        Self {
+            config,
+            rng: XorShift64::from_system_time(),
+            scores: Vec::with_capacity(VOCAB_SIZE),
+            probs: Vec::with_capacity(VOCAB_SIZE),
+        }
+    }
+
+    fn sample_from_logits(&mut self, logits: &[u8]) -> anyhow::Result<u64> {
+        if self.config.temperature <= 0.0 {
+            return Ok(greedy_token_from_logits(logits));
+        }
+
+        self.scores.clear();
+        let (floor, ceil) = finite_logit_bounds(logits);
+        for token in 0..VOCAB_SIZE {
+            let value = sanitize_logit(read_f32(logits, token), floor, ceil);
+            self.scores
+                .push((token, value / self.config.temperature.max(1e-5)));
+        }
+        if let Some(top_k) = self.config.top_k {
+            if top_k > 0 && top_k < self.scores.len() {
+                self.scores
+                    .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                self.scores.truncate(top_k);
+            }
+        }
+        if self.scores.is_empty() {
+            return Ok(greedy_token_from_logits(logits));
+        }
+
+        let max_score = self
+            .scores
+            .iter()
+            .map(|(_, score)| *score)
+            .fold(f32::NEG_INFINITY, f32::max);
+        self.probs.clear();
+        let mut total = 0.0f64;
+        for (token, score) in &self.scores {
+            let prob = ((*score - max_score) as f64).exp();
+            if prob.is_finite() && prob > 0.0 {
+                self.probs.push((*token, prob));
+                total += prob;
+            }
+        }
+        if total <= 0.0 || !total.is_finite() {
+            return Ok(greedy_token_from_logits(logits));
+        }
+        for (_, prob) in &mut self.probs {
+            *prob /= total;
+        }
+
+        if self.config.top_p < 1.0 {
+            self.probs
+                .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            let mut cumulative = 0.0f64;
+            let mut keep = 0usize;
+            for (_, prob) in &self.probs {
+                cumulative += *prob;
+                if keep == 0 || cumulative <= self.config.top_p as f64 {
+                    keep += 1;
+                } else {
+                    break;
+                }
+            }
+            self.probs.truncate(keep.max(1));
+            let total = self.probs.iter().map(|(_, prob)| *prob).sum::<f64>();
+            if total <= 0.0 || !total.is_finite() {
+                return Ok(greedy_token_from_logits(logits));
+            }
+            for (_, prob) in &mut self.probs {
+                *prob /= total;
+            }
+        }
+
+        let mut threshold = self.rng.next_f64();
+        for (token, prob) in &self.probs {
+            if threshold <= *prob {
+                return Ok(*token as u64);
+            }
+            threshold -= *prob;
+        }
+        Ok(self
+            .probs
+            .last()
+            .map(|(token, _)| *token as u64)
+            .unwrap_or_else(|| greedy_token_from_logits(logits)))
+    }
+}
+
+struct XorShift64 {
+    state: u64,
+}
+
+impl XorShift64 {
+    fn from_system_time() -> Self {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos() as u64)
+            .unwrap_or(0x9e37_79b9_7f4a_7c15);
+        Self {
+            state: nanos ^ 0xa076_1d64_78bd_642f,
+        }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        let mut x = self.state;
+        if x == 0 {
+            x = 0x9e37_79b9_7f4a_7c15;
+        }
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.state = x;
+        x
+    }
+
+    fn next_f64(&mut self) -> f64 {
+        ((self.next_u64() >> 11) as f64) * (1.0 / ((1u64 << 53) as f64))
+    }
+}
+
 struct Qwen3SimplerTensors {
     prefill_hidden: TensorBuf,
     prefill_seq_lens: TensorBuf,
@@ -1085,17 +1385,8 @@ impl Qwen3SimplerTensors {
             .copy_from_slice(&self.prefill_hidden.data[start..start + row_bytes]);
     }
 
-    fn greedy_token(&self) -> u64 {
-        let mut best = 0usize;
-        let mut best_value = f32::NEG_INFINITY;
-        for token in 0..VOCAB_SIZE {
-            let value = read_f32(&self.logits_padded.data, token);
-            if value > best_value {
-                best = token;
-                best_value = value;
-            }
-        }
-        best as u64
+    fn logits(&self) -> &[u8] {
+        &self.logits_padded.data
     }
 
     fn set_decode_hidden_from_token(
@@ -1552,15 +1843,31 @@ fn rope_tables(max_seq: usize, head_dim: usize, theta: f32) -> (TensorBuf, Tenso
     (cos, sin)
 }
 
-fn decode_token_text(model_dir: &Path, token_ids: &[u64]) -> anyhow::Result<String> {
-    let mut bytes = Vec::new();
-    for token in token_ids {
-        let piece = token_piece_bytes_from_tokenizer_path(model_dir, *token)
-            .map_err(anyhow::Error::msg)
-            .with_context(|| format!("failed to decode token {token}"))?;
-        bytes.extend_from_slice(&token_piece_decode_bytes(&piece));
+fn load_eos_token_id(model_dir: &Path) -> anyhow::Result<Option<u64>> {
+    for file_name in ["generation_config.json", "tokenizer_config.json"] {
+        let path = model_dir.join(file_name);
+        if !path.is_file() {
+            continue;
+        }
+        let text = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let value: serde_json::Value = serde_json::from_str(&text)
+            .with_context(|| format!("failed to parse {}", path.display()))?;
+        if let Some(token) = eos_token_id_from_json(&value) {
+            return Ok(Some(token));
+        }
     }
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    Ok(None)
+}
+
+fn eos_token_id_from_json(value: &serde_json::Value) -> Option<u64> {
+    let token = value.get("eos_token_id")?;
+    if let Some(id) = token.as_u64() {
+        return Some(id);
+    }
+    token
+        .as_array()
+        .and_then(|tokens| tokens.iter().find_map(serde_json::Value::as_u64))
 }
 
 fn parse_function_name(config: &str) -> Option<String> {
@@ -1833,6 +2140,23 @@ fn parse_u32(name: &str, value: &str) -> anyhow::Result<u32> {
         .with_context(|| format!("{name} must be a non-negative integer"))
 }
 
+fn parse_f32(name: &str, value: &str) -> anyhow::Result<f32> {
+    let parsed = value
+        .parse::<f32>()
+        .with_context(|| format!("{name} must be a finite float"))?;
+    if !parsed.is_finite() {
+        anyhow::bail!("{name} must be finite");
+    }
+    Ok(parsed)
+}
+
+fn parse_optional_top_k(value: &str) -> anyhow::Result<Option<usize>> {
+    let parsed = value
+        .parse::<usize>()
+        .with_context(|| "--top-k must be a non-negative integer")?;
+    Ok((parsed > 0).then_some(parsed))
+}
+
 fn write_i32(data: &mut [u8], index: usize, value: i32) {
     let base = index * 4;
     data[base..base + 4].copy_from_slice(&value.to_le_bytes());
@@ -1848,6 +2172,47 @@ fn write_f32(data: &mut [u8], start_index: usize, values: &[f32]) {
 fn read_f32(data: &[u8], index: usize) -> f32 {
     let base = index * 4;
     f32::from_le_bytes(data[base..base + 4].try_into().expect("f32 bytes"))
+}
+
+fn greedy_token_from_logits(logits: &[u8]) -> u64 {
+    let (floor, ceil) = finite_logit_bounds(logits);
+    let mut best = 0usize;
+    let mut best_value = f32::NEG_INFINITY;
+    for token in 0..VOCAB_SIZE {
+        let value = sanitize_logit(read_f32(logits, token), floor, ceil);
+        if value > best_value {
+            best = token;
+            best_value = value;
+        }
+    }
+    best as u64
+}
+
+fn finite_logit_bounds(logits: &[u8]) -> (f32, f32) {
+    let mut min_value = f32::INFINITY;
+    let mut max_value = f32::NEG_INFINITY;
+    for token in 0..VOCAB_SIZE {
+        let value = read_f32(logits, token);
+        if value.is_finite() {
+            min_value = min_value.min(value);
+            max_value = max_value.max(value);
+        }
+    }
+    if min_value.is_finite() {
+        (min_value - 1.0e4, max_value)
+    } else {
+        (0.0, 0.0)
+    }
+}
+
+fn sanitize_logit(value: f32, floor: f32, ceil: f32) -> f32 {
+    if value.is_finite() {
+        value
+    } else if value.is_sign_positive() && value.is_infinite() {
+        ceil
+    } else {
+        floor
+    }
 }
 
 fn write_f32_as_bf16(data: &mut [u8], start_index: usize, values: &[f32]) {
@@ -1912,6 +2277,12 @@ mod tests {
             "--platform",
             "a2a3",
             "--device-id=0",
+            "--temperature=0.7",
+            "--top-p",
+            "0.9",
+            "--top-k=20",
+            "--stop",
+            "technology,",
             "--profile-verbose",
         ])
         .expect("parse args")
@@ -1926,12 +2297,17 @@ mod tests {
         assert_eq!(args.platform, "a2a3");
         assert_eq!(args.device_id, 0);
         assert!(args.profile_verbose);
+        assert_eq!(args.sampling.temperature, 0.7);
+        assert_eq!(args.sampling.top_p, 0.9);
+        assert_eq!(args.sampling.top_k, Some(20));
+        assert_eq!(args.sampling.stop, vec!["technology,".to_string()]);
     }
 
     #[test]
-    fn qwen3_simpler_l3_alias_accepts_named_options() {
+    fn qwen3_simpler_l3_mode_accepts_named_options() {
         let args = args_from([
-            "qwen3-simpler-l3-generate",
+            "qwen3-simpler-generate",
+            "--l3",
             "--build-output",
             "/tmp/Qwen3GenChunked_1",
             "--model-dir=/models/qwen",
@@ -1960,6 +2336,21 @@ mod tests {
         assert_eq!(args.platform, "a2a3");
         assert_eq!(args.device_id, 0);
         assert!(args.profile_verbose);
+        assert_eq!(args.sampling, SamplingConfig::default());
+    }
+
+    #[test]
+    fn qwen3_simpler_l3_legacy_alias_is_not_accepted() {
+        let args = args_from([
+            "qwen3-simpler-l3-generate",
+            "--build-output",
+            "/tmp/Qwen3GenChunked_1",
+            "--model-dir=/models/qwen",
+            "--prompt",
+            "Huawei is",
+        ])
+        .expect("legacy command should be ignored by qwen3_simpler parser");
+        assert!(args.is_none());
     }
 
     #[test]
@@ -1974,5 +2365,98 @@ mod tests {
         let mut tensor = TensorBuf::zero_bf16(&[2, 3, 4]);
         let continuous = tensor.continuous_view(0, None).expect("continuous tensor");
         let _ = continuous;
+    }
+
+    #[test]
+    fn qwen3_simpler_sampling_greedy_and_top_k_one_are_stable() {
+        let mut logits = TensorBuf::zero_f32(&[LOGITS_BATCH_TILE, PADDED_VOCAB]);
+        write_f32(&mut logits.data, 7, &[1.0]);
+        write_f32(&mut logits.data, 11, &[5.0]);
+        write_f32(&mut logits.data, 13, &[4.0]);
+
+        let mut greedy = SamplerState::new(SamplingConfig::default());
+        assert_eq!(greedy.sample_from_logits(&logits.data).unwrap(), 11);
+
+        let mut top_k_one = SamplerState::new(SamplingConfig {
+            temperature: 0.8,
+            top_p: 1.0,
+            top_k: Some(1),
+            stop: Vec::new(),
+        });
+        assert_eq!(top_k_one.sample_from_logits(&logits.data).unwrap(), 11);
+    }
+
+    #[test]
+    fn qwen3_simpler_sampling_sanitizes_non_finite_logits() {
+        let mut logits = TensorBuf::zero_f32(&[LOGITS_BATCH_TILE, PADDED_VOCAB]);
+        write_f32(&mut logits.data, 3, &[f32::NAN]);
+        write_f32(&mut logits.data, 4, &[f32::INFINITY]);
+        write_f32(&mut logits.data, 5, &[42.0]);
+
+        let mut sampler = SamplerState::new(SamplingConfig::default());
+        assert_eq!(sampler.sample_from_logits(&logits.data).unwrap(), 4);
+    }
+
+    #[test]
+    fn qwen3_simpler_generation_tracker_reports_stop_and_eos() {
+        let temp =
+            std::env::temp_dir().join(format!("qwen3_simpler_tracker_test_{}", std::process::id()));
+        fs::create_dir_all(&temp).expect("create tokenizer temp dir");
+        fs::write(
+            temp.join("tokenizer_config.json"),
+            r#"{"added_tokens_decoder":{"151643":{"content":"<|endoftext|>"}}}"#,
+        )
+        .expect("write tokenizer config");
+        fs::write(temp.join("tokenizer.json"), r#"{"model":{"type":"BPE"}}"#)
+            .expect("write tokenizer json");
+        fs::write(temp.join("vocab.json"), r#"{"hello":0," world":1}"#).expect("write vocab json");
+        fs::write(
+            temp.join("generation_config.json"),
+            r#"{"eos_token_id":151643}"#,
+        )
+        .expect("write generation config");
+
+        assert_eq!(load_eos_token_id(&temp).unwrap(), Some(151_643));
+
+        let mut stop_tracker = GenerationTracker::new(4, None, vec!["hello world".to_string()]);
+        assert_eq!(stop_tracker.push_token(&temp, 0).unwrap(), None);
+        assert_eq!(
+            stop_tracker.push_token(&temp, 1).unwrap(),
+            Some("stop".to_string())
+        );
+        assert_eq!(stop_tracker.text(), "hello world");
+
+        let mut eos_tracker = GenerationTracker::new(4, Some(151_643), Vec::new());
+        assert_eq!(
+            eos_tracker.push_token(&temp, 151_643).unwrap(),
+            Some("eos".to_string())
+        );
+
+        fs::remove_dir_all(&temp).expect("remove tokenizer temp dir");
+    }
+
+    #[test]
+    fn qwen3_simpler_rejects_invalid_sampling_args() {
+        let mut args = args_from([
+            "qwen3-simpler-generate",
+            "/tmp/Qwen306BPrefillProgram_1",
+            "--build-output",
+            "/tmp/Qwen3Decode_1",
+            "--build-output=/tmp/Qwen3FinalRMS_1",
+            "/tmp/Qwen3LMHead_1",
+            "--model-dir=/models/qwen",
+            "--prompt",
+            "Huawei is",
+            "--top-p=0",
+        ])
+        .expect("parse args")
+        .expect("some args");
+        let err = validate_args(&args).expect_err("top-p zero is invalid");
+        assert!(err.to_string().contains("--top-p"));
+
+        args.sampling.top_p = 1.0;
+        args.sampling.temperature = f32::INFINITY;
+        let err = validate_args(&args).expect_err("temperature inf is invalid");
+        assert!(err.to_string().contains("--temperature"));
     }
 }
