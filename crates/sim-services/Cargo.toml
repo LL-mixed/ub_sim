@@ -6,6 +6,8 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+serde.workspace = true
+serde_json.workspace = true
 sim-core = { path = "../sim-core" }
 sim-runtime = { path = "../sim-runtime" }
 sim-topology = { path = "../sim-topology" }

@@ -249,6 +249,8 @@ dependencies = [
 name = "sim-services"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "sim-core",
  "sim-runtime",
  "sim-topology",

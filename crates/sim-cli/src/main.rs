@@ -47,9 +47,9 @@ use sim_services::{
     dfs::{DfsReadReq, DfsWriteReq},
     object::{
         LingquObjectKind, LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
-        LingquObjectResolveReq, LingquObjectServiceProfile, LingquObjectServiceStub,
-        LingquObjectState, LingquObjectVersionSelector, LingquPayloadBackend,
-        LingquPayloadPlacement,
+        LingquObjectResolveReq, LingquObjectServiceProfile, LingquObjectServiceSnapshot,
+        LingquObjectServiceStub, LingquObjectState, LingquObjectVersionSelector,
+        LingquPayloadBackend, LingquPayloadPlacement,
     },
     shmem::{ShmemGetReq, ShmemPutReq},
 };
@@ -1250,6 +1250,7 @@ fn validate_lingqu_memory_query_embedding_input(
 fn run_lingqu_memory_materialize_hot_state_cli(args: &[String]) -> anyhow::Result<()> {
     let catalog_path = PathBuf::from(required_cli_arg(args, "--catalog")?);
     let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let object_store_path = PathBuf::from(required_cli_arg(args, "--object-store")?);
     let query_result_manifest = required_cli_arg(args, "--query-result-manifest")?;
     let state_id = required_cli_arg(args, "--state-id")?;
     let hot_state_path = PathBuf::from(required_cli_arg(args, "--hot-state")?);
@@ -1278,7 +1279,13 @@ fn run_lingqu_memory_materialize_hot_state_cli(args: &[String]) -> anyhow::Resul
         .register_query_result(query_result.clone())
         .context("register query result")?;
 
-    let mut object_service = LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
+    let mut object_service =
+        if let Some(snapshot) = load_lingqu_object_service_snapshot(&object_store_path)? {
+            LingquObjectServiceStub::import_snapshot(snapshot)
+                .with_context(|| format!("import object store {}", object_store_path.display()))?
+        } else {
+            LingquObjectServiceStub::new(LingquObjectServiceProfile::default())
+        };
     let hot_state = memory_service
         .materialize_hot_state_from_query(
             &mut durable_store,
@@ -1301,6 +1308,7 @@ fn run_lingqu_memory_materialize_hot_state_cli(args: &[String]) -> anyhow::Resul
     fs::write(&hot_state_path, hot_state_bytes)
         .with_context(|| format!("write hot state {}", hot_state_path.display()))?;
     save_lingqu_memory_durable_store(&store_path, &durable_store)?;
+    save_lingqu_object_service_snapshot(&object_store_path, &object_service)?;
     let object_report = object_service.report();
 
     println!("lingqu_memory_service");
@@ -1308,6 +1316,7 @@ fn run_lingqu_memory_materialize_hot_state_cli(args: &[String]) -> anyhow::Resul
     println!("  catalog: {}", snapshot.catalog.catalog_id);
     println!("  catalog_path: {}", catalog_path.display());
     println!("  store_path: {}", store_path.display());
+    println!("  object_store_path: {}", object_store_path.display());
     println!("  query_result: {}", query_result.result_id);
     println!("  query_result_manifest: {}", query_result_path.path);
     println!("  hot_state: {}", hot_state.state_id);
@@ -1689,6 +1698,31 @@ fn save_lingqu_memory_durable_store(
             .with_context(|| format!("create durable store dir {}", parent.display()))?;
     }
     fs::write(path, bytes).with_context(|| format!("write durable store {}", path.display()))
+}
+
+fn load_lingqu_object_service_snapshot(
+    path: &Path,
+) -> anyhow::Result<Option<LingquObjectServiceSnapshot>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = fs::read(path).with_context(|| format!("read object store {}", path.display()))?;
+    let snapshot = LingquObjectServiceSnapshot::from_json_bytes(&bytes)
+        .with_context(|| format!("decode object store {}", path.display()))?;
+    Ok(Some(snapshot))
+}
+
+fn save_lingqu_object_service_snapshot(
+    path: &Path,
+    service: &LingquObjectServiceStub,
+) -> anyhow::Result<()> {
+    let snapshot = service.export_snapshot();
+    let bytes = snapshot.to_json_bytes().context("encode object store")?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create object store dir {}", parent.display()))?;
+    }
+    fs::write(path, bytes).with_context(|| format!("write object store {}", path.display()))
 }
 
 fn load_lingqu_memory_catalog_snapshot_if_exists(
@@ -2669,11 +2703,11 @@ fn resolve_lingqu_object_cli_sample(
 #[cfg(test)]
 mod tests {
     use super::{
-        lingqu_memory_args_from, lingqu_object_service_args_from, qwen3_decode_loop_args_from,
-        qwen3_decode_report_verbosity_from_env, qwen3_dense_weights_path_from_env,
-        qwen3_engram_policy_checksum, qwen3_engram_select_token, qwen3_engram_state_words,
-        qwen3_guest_candidate_records, qwen3_guest_decode_loop_args_from,
-        qwen3_guest_default_w5_profile,
+        cli_f32_vec_to_le_bytes, lingqu_memory_args_from, lingqu_object_service_args_from,
+        qwen3_decode_loop_args_from, qwen3_decode_report_verbosity_from_env,
+        qwen3_dense_weights_path_from_env, qwen3_engram_policy_checksum,
+        qwen3_engram_select_token, qwen3_engram_state_words, qwen3_guest_candidate_records,
+        qwen3_guest_decode_loop_args_from, qwen3_guest_default_w5_profile,
         qwen3_guest_dense_runtime, qwen3_guest_engram_candidate_counts,
         qwen3_guest_engram_env_vars, qwen3_guest_engram_env_vars_from_lookup,
         qwen3_guest_engram_expected_terminal_rewrites, qwen3_guest_engram_history_lengths,
@@ -2687,10 +2721,11 @@ mod tests {
         run_lingqu_memory_validate_durable_store, run_lingqu_memory_validate_flat_materialize,
         run_lingqu_memory_validate_flat_query, run_lingqu_memory_validate_w5_engram_object_ref,
         simpler_host_matmul_artifact_producer_path, validate_qwen3_dense_weights_path,
-        validate_w5_inference_profile, LingquMemoryDurableStoreSnapshot, MemoryCatalogSnapshot,
-        QueryResult, Qwen3CandidateRecord, Qwen3DecodeReportVerbosity, Qwen3EngramConfig,
-        Qwen3EngramContextOp, Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport,
-        Qwen3GuestDecodeLoopCliArgs, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
+        validate_w5_inference_profile, LingquMemoryDurableStoreSnapshot,
+        LingquObjectServiceSnapshot, LingquObjectServiceStub, LingquObjectVersionSelector,
+        MemoryCatalogSnapshot, QueryResult, Qwen3CandidateRecord, Qwen3DecodeReportVerbosity,
+        Qwen3EngramConfig, Qwen3EngramContextOp, Qwen3EngramMode, Qwen3EngramPool,
+        Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
         SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
     };
     use std::env;
@@ -4027,6 +4062,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
         let source = root.join("note.md");
         let catalog = root.join("catalog.json");
         let store = root.join("store.json");
+        let object_store = root.join("object_store.json");
         let embeddings = root.join("embeddings.json");
         let query_embedding = root.join("query_embedding.json");
         let hot_state = root.join("hot_state.json");
@@ -4105,6 +4141,8 @@ stage qwen3_range_forward_runtime_output_publish node=2
             catalog.to_string_lossy().into_owned(),
             "--store".to_string(),
             store.to_string_lossy().into_owned(),
+            "--object-store".to_string(),
+            object_store.to_string_lossy().into_owned(),
             "--query-result-manifest".to_string(),
             "/lingqu/memory/query-results/query-result_query_test_0.json".to_string(),
             "--state-id".to_string(),
@@ -4127,6 +4165,18 @@ stage qwen3_range_forward_runtime_output_publish node=2
         assert_eq!(hot_state_value["table"]["shape"][1], 2);
         assert_eq!(hot_state_value["indices"]["shape"][0], 1);
         assert_eq!(hot_state_value["scores"]["shape"][0], 1);
+        let object_store_bytes = fs::read(&object_store).expect("read object store");
+        let object_snapshot = LingquObjectServiceSnapshot::from_json_bytes(&object_store_bytes)
+            .expect("decode object store");
+        let object_service =
+            LingquObjectServiceStub::import_snapshot(object_snapshot).expect("import object store");
+        let table_key = hot_state_value["table"]["object_key"]
+            .as_str()
+            .expect("table object key");
+        let table_payload = object_service
+            .get_copy(table_key, LingquObjectVersionSelector::LatestCommitted)
+            .expect("hot table payload after object-store reload");
+        assert_eq!(table_payload, cli_f32_vec_to_le_bytes(&[0.25, 0.75]));
         let _ = fs::remove_dir_all(&root);
     }
 }

@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, VecDeque};
 
+use serde::{Deserialize, Serialize};
 use sim_core::{
     BlockHash, CompletionEvent, CompletionSource, CompletionStatus, SegmentHandle, ServiceOpHandle,
     SimTimestamp, TaskKey, TensorDType, TensorLayout,
@@ -692,7 +693,7 @@ pub mod db {
 pub mod object {
     use super::*;
 
-    #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+    #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
     pub enum LingquObjectKind {
         WeightShard,
         KvCacheBlock,
@@ -703,7 +704,7 @@ pub mod object {
         Metadata,
     }
 
-    #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+    #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
     pub enum LingquPayloadBackend {
         Inline,
         Shmem,
@@ -853,7 +854,7 @@ pub mod object {
         }
     }
 
-    #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+    #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
     pub enum LingquObjectState {
         Pending,
         Committed,
@@ -861,7 +862,7 @@ pub mod object {
         Quarantined,
     }
 
-    #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+    #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
     pub enum LingquObjectLocality {
         EntityLocal(u64),
         DomainShared(u64),
@@ -875,7 +876,7 @@ pub mod object {
         AtLeast(u64),
     }
 
-    #[derive(Debug, Clone, Eq, PartialEq)]
+    #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
     pub struct LingquPayloadPlacement {
         pub backend: LingquPayloadBackend,
         pub storage_ref: String,
@@ -886,7 +887,7 @@ pub mod object {
         pub locality: LingquObjectLocality,
     }
 
-    #[derive(Debug, Clone, Eq, PartialEq)]
+    #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
     pub struct LingquObjectMetadata {
         pub bytes: u64,
         pub checksum: u64,
@@ -896,7 +897,7 @@ pub mod object {
         pub expires_at_us: Option<u64>,
     }
 
-    #[derive(Debug, Clone, Eq, PartialEq)]
+    #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
     pub struct LingquObjectRecord {
         pub key: String,
         pub kind: LingquObjectKind,
@@ -982,7 +983,7 @@ pub mod object {
         pub checksum: u64,
     }
 
-    #[derive(Debug, Clone, Copy)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     pub struct LingquObjectServiceProfile {
         pub metadata_latency_us: SimTimestamp,
         pub shmem_latency_us: SimTimestamp,
@@ -1005,7 +1006,7 @@ pub mod object {
         }
     }
 
-    #[derive(Debug, Clone, Copy)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     pub struct LingquObmmPoolProfile {
         pub enabled: bool,
         pub node_count: u64,
@@ -1029,6 +1030,22 @@ pub mod object {
                 payload_block_tiers: [256 * 1024, 512 * 1024, 1024 * 1024, 2 * 1024 * 1024],
                 queue_auto_drain: true,
             }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct LingquObjectServiceSnapshot {
+        pub profile: LingquObjectServiceProfile,
+        pub records: Vec<LingquObjectRecord>,
+    }
+
+    impl LingquObjectServiceSnapshot {
+        pub fn to_json_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
+            serde_json::to_vec_pretty(self)
+        }
+
+        pub fn from_json_bytes(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+            serde_json::from_slice(bytes)
         }
     }
 
@@ -1258,6 +1275,50 @@ pub mod object {
             self.payloads
                 .get(storage_ref)
                 .map(|payload| payload.payload.as_slice())
+        }
+
+        fn import_record_payload(
+            &mut self,
+            record: &LingquObjectRecord,
+        ) -> Result<(), &'static str> {
+            if !self.profile.enabled || record.payload_bytes.is_empty() {
+                return Ok(());
+            }
+            for placement in record.placements.iter().filter(|placement| {
+                matches!(
+                    placement.backend,
+                    LingquPayloadBackend::Shmem | LingquPayloadBackend::ObmmShmem
+                )
+            }) {
+                if placement.storage_ref.is_empty() {
+                    return Err("obmm_pool_snapshot_missing_storage_ref");
+                }
+                self.payloads.insert(
+                    placement.storage_ref.clone(),
+                    LingquObmmPoolPayload {
+                        storage_ref: placement.storage_ref.clone(),
+                        offset: placement.offset,
+                        bytes: placement.bytes,
+                        reserved_bytes: placement.bytes,
+                        block_bytes: placement.bytes.max(1),
+                        block_count: 1,
+                        checksum: placement.checksum,
+                        owner_entity: record.owner_entity.unwrap_or(record.producer_entity),
+                        payload: record.payload_bytes.clone(),
+                    },
+                );
+                self.stats.bytes_used = self
+                    .stats
+                    .bytes_used
+                    .max(placement.offset.saturating_add(placement.bytes));
+                self.stats.reserved_bytes =
+                    self.stats.reserved_bytes.saturating_add(placement.bytes);
+                self.stats.block_count = self.stats.block_count.saturating_add(1);
+                self.next_payload_offset = self
+                    .next_payload_offset
+                    .max(placement.offset.saturating_add(placement.bytes));
+            }
+            Ok(())
         }
 
         fn stats(&self) -> LingquObmmPoolStats {
@@ -1595,6 +1656,87 @@ pub mod object {
                 .count() as u64;
             report.checksum = self.report_checksum();
             report
+        }
+
+        pub fn export_snapshot(&self) -> LingquObjectServiceSnapshot {
+            let mut records = self.records.values().flatten().cloned().collect::<Vec<_>>();
+            records.sort_by(|lhs, rhs| {
+                lhs.key
+                    .cmp(&rhs.key)
+                    .then_with(|| lhs.version.cmp(&rhs.version))
+            });
+            LingquObjectServiceSnapshot {
+                profile: self.profile,
+                records,
+            }
+        }
+
+        pub fn import_snapshot(
+            snapshot: LingquObjectServiceSnapshot,
+        ) -> Result<Self, sim_core::SimError> {
+            let mut service = Self::new(snapshot.profile);
+            for record in snapshot.records {
+                Self::validate_snapshot_record(&record)?;
+                if service
+                    .records
+                    .get(&record.key)
+                    .map(|records| {
+                        records
+                            .iter()
+                            .any(|existing| existing.version == record.version)
+                    })
+                    .unwrap_or(false)
+                {
+                    return Err(sim_core::SimError::InvalidInput(
+                        "object snapshot duplicate key version",
+                    ));
+                }
+                service
+                    .obmm_pool
+                    .import_record_payload(&record)
+                    .map_err(sim_core::SimError::InvalidInput)?;
+                service
+                    .records
+                    .entry(record.key.clone())
+                    .or_default()
+                    .push(record);
+            }
+            for records in service.records.values_mut() {
+                records.sort_by_key(|record| record.version);
+            }
+            service.report.checksum = service.report_checksum();
+            Ok(service)
+        }
+
+        fn validate_snapshot_record(record: &LingquObjectRecord) -> Result<(), sim_core::SimError> {
+            if record.key.trim().is_empty() {
+                return Err(sim_core::SimError::InvalidInput(
+                    "object snapshot record key is empty",
+                ));
+            }
+            if record.version == 0 {
+                return Err(sim_core::SimError::InvalidInput(
+                    "object snapshot record version is zero",
+                ));
+            }
+            if record.payload_bytes.len() as u64 != record.bytes {
+                return Err(sim_core::SimError::InvalidInput(
+                    "object snapshot payload byte count mismatch",
+                ));
+            }
+            for placement in &record.placements {
+                if placement.bytes != record.bytes {
+                    return Err(sim_core::SimError::InvalidInput(
+                        "object snapshot placement byte count mismatch",
+                    ));
+                }
+                if placement.checksum != record.checksum {
+                    return Err(sim_core::SimError::InvalidInput(
+                        "object snapshot placement checksum mismatch",
+                    ));
+                }
+            }
+            Ok(())
         }
 
         pub fn latest_record(&self, key: &str) -> Option<&LingquObjectRecord> {
@@ -2203,11 +2345,11 @@ mod tests {
     use super::dfs::{DfsReadReq, DfsServiceProfile, DfsServiceStub, DfsWriteReq};
     use super::object::{
         LingquObjectKind, LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
-        LingquObjectResolveReq, LingquObjectServiceProfile, LingquObjectServiceStub,
-        LingquObjectState, LingquObjectVersionSelector, LingquObmmObjectRefWire,
-        LingquObmmPoolProfile, LingquPayloadBackend, LingquPayloadPlacement,
-        LINGQU_OBJECT_STATE_COMMITTED_WIRE, LINGQU_OBMM_OBJECT_REF_LAYOUT_VERSION,
-        LINGQU_OBMM_OBJECT_REF_MAGIC,
+        LingquObjectResolveReq, LingquObjectServiceProfile, LingquObjectServiceSnapshot,
+        LingquObjectServiceStub, LingquObjectState, LingquObjectVersionSelector,
+        LingquObmmObjectRefWire, LingquObmmPoolProfile, LingquPayloadBackend,
+        LingquPayloadPlacement, LINGQU_OBJECT_STATE_COMMITTED_WIRE,
+        LINGQU_OBMM_OBJECT_REF_LAYOUT_VERSION, LINGQU_OBMM_OBJECT_REF_MAGIC,
     };
     use super::shmem::{ShmemGetReq, ShmemPutReq, ShmemServiceProfile, ShmemServiceStub};
     use super::weights::{
@@ -2788,6 +2930,51 @@ mod tests {
         assert_eq!(report.inline_read_count, 1);
         assert_eq!(report.committed_object_count, 1);
         assert_ne!(report.checksum, 0);
+    }
+
+    #[test]
+    fn object_service_snapshot_roundtrips_obmm_payloads() {
+        let mut svc = LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
+        let payload = vec![1, 2, 3, 4, 5, 6, 7, 8];
+        let checksum = payload.len() as u64 ^ 0x55aa;
+        svc.submit_publish(
+            LingquObjectPublishReq {
+                task: None,
+                key: "object/hot/table".to_string(),
+                kind: LingquObjectKind::RuntimeTensor,
+                producer_entity: 0,
+                owner_entity: Some(1),
+                expected_version: None,
+                metadata: object_metadata(payload.len() as u64, checksum),
+                placements: vec![object_placement(
+                    LingquPayloadBackend::ObmmShmem,
+                    payload.len() as u64,
+                )],
+                payload_bytes: payload.clone(),
+            },
+            10,
+        )
+        .unwrap();
+        let encoded = svc.export_snapshot().to_json_bytes().unwrap();
+        let decoded = LingquObjectServiceSnapshot::from_json_bytes(&encoded).unwrap();
+
+        let restored = LingquObjectServiceStub::import_snapshot(decoded).unwrap();
+        let restored_payload = restored
+            .get_copy(
+                "object/hot/table",
+                LingquObjectVersionSelector::LatestCommitted,
+            )
+            .expect("restored payload");
+        let restored_record = restored
+            .latest_record("object/hot/table")
+            .expect("restored record");
+
+        assert_eq!(restored_payload, payload);
+        assert_eq!(restored_record.version, 1);
+        assert_eq!(
+            restored_record.placements[0].backend,
+            LingquPayloadBackend::ObmmShmem
+        );
     }
 
     #[test]
@@ -3897,9 +4084,12 @@ mod tests {
         );
         assert_eq!(
             report.obmm_pool_reserved_bytes,
-            expected_reserved.iter().sum()
+            expected_reserved.iter().sum::<u64>()
         );
-        assert_eq!(report.obmm_pool_block_count, expected_blocks.iter().sum());
+        assert_eq!(
+            report.obmm_pool_block_count,
+            expected_blocks.iter().sum::<u64>()
+        );
         assert_eq!(report.obmm_pool_multi_block_write_count, 2);
         assert_eq!(report.obmm_pool_max_blocks_per_payload, 3);
         assert_eq!(report.obmm_pool_bytes_used, expected_offset);
