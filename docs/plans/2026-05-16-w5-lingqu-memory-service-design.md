@@ -605,7 +605,9 @@ sim-cli lingqu-memory embed --scope project --embedding-model ...
 sim-cli lingqu-memory build-index --scope project --index-kind flat
 sim-cli lingqu-memory query --prompt-file prompt.txt --top-k 8
 sim-cli lingqu-memory materialize-hot-state --query-result-id ... --hidden-size 1024
-sim-cli w5 inference-cluster --engram-state-ref ...
+sim-cli w5-inference-cluster \
+  --engram-state-ref <EngramStateObjectRef wire hex> \
+  --object-registry-dir <qwen3-object-registry-dir>
 ```
 
 The command names can still change during implementation. The user-facing flow
@@ -699,6 +701,11 @@ payloads, and prints the exact `SIM_QWEN3_GUEST_ENGRAM_STATE_REF` plus
 `SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR` environment values needed by the existing
 W5 guest runner. This is a compatibility bridge until W5 resolves the unified
 Lingqu Object Service directly instead of using the qwen3 registry shim.
+
+`sim-cli w5-inference-cluster` also accepts those values directly as
+`--engram-state-ref` and `--object-registry-dir`. Passing them enables W5
+engram OBMM context mode and defaults the context op to `cpu-reference` unless
+the caller explicitly chooses another real context op such as `simpler-host`.
 
 ## Observability
 

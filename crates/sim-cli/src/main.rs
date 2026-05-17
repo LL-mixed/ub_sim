@@ -279,6 +279,8 @@ struct Qwen3EngramConfig {
     blocked_token_ids: Vec<u64>,
     context_op: Qwen3EngramContextOp,
     report: Qwen3EngramReport,
+    state_ref: Option<String>,
+    object_registry_dir: Option<PathBuf>,
 }
 
 impl Default for Qwen3EngramConfig {
@@ -294,6 +296,8 @@ impl Default for Qwen3EngramConfig {
             blocked_token_ids: Vec::new(),
             context_op: Qwen3EngramContextOp::Disabled,
             report: Qwen3EngramReport::Summary,
+            state_ref: None,
+            object_registry_dir: None,
         }
     }
 }
@@ -618,6 +622,21 @@ where
                     engram.report = parse_qwen3_engram_report(&next.to_string_lossy())?;
                 } else if let Some(value) = text.strip_prefix("--engram-report=") {
                     engram.report = parse_qwen3_engram_report(value)?;
+                } else if text == "--engram-state-ref" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--engram-state-ref requires a value"))?;
+                    engram.state_ref =
+                        Some(validate_qwen3_engram_state_ref(&next.to_string_lossy())?);
+                } else if let Some(value) = text.strip_prefix("--engram-state-ref=") {
+                    engram.state_ref = Some(validate_qwen3_engram_state_ref(value)?);
+                } else if text == "--object-registry-dir" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--object-registry-dir requires a value"))?;
+                    engram.object_registry_dir = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--object-registry-dir=") {
+                    engram.object_registry_dir = Some(PathBuf::from(value));
                 } else if text.starts_with("--") {
                     anyhow::bail!("unknown qwen3-guest-decode-loop option: {text}");
                 } else {
@@ -641,6 +660,18 @@ where
             if prompt.is_none() {
                 if let Some(value) = positionals.get(positional_index) {
                     prompt = Some(value.to_string_lossy().to_string());
+                }
+            }
+            if engram.state_ref.is_some() != engram.object_registry_dir.is_some() {
+                anyhow::bail!(
+                    "--engram-state-ref and --object-registry-dir must be provided together"
+                );
+            }
+            if engram.state_ref.is_some() {
+                engram.enabled = true;
+                engram.pool = Qwen3EngramPool::Obmm;
+                if engram.context_op == Qwen3EngramContextOp::Disabled {
+                    engram.context_op = Qwen3EngramContextOp::CpuReference;
                 }
             }
             if engram.enabled && engram.pool != Qwen3EngramPool::Obmm {
@@ -827,6 +858,14 @@ fn parse_qwen3_engram_report(value: &str) -> anyhow::Result<Qwen3EngramReport> {
     }
 }
 
+fn validate_qwen3_engram_state_ref(value: &str) -> anyhow::Result<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("--engram-state-ref must not be empty");
+    }
+    Ok(trimmed.to_string())
+}
+
 fn parse_repetition_penalty_milli(value: &str) -> anyhow::Result<u32> {
     let (whole, frac) = value.split_once('.').unwrap_or((value, ""));
     let whole = whole
@@ -916,7 +955,17 @@ where
         SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
         SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
     ] {
-        if let Some(value) = lookup(key).filter(|value| !value.trim().is_empty()) {
+        let value = match key {
+            SIM_QWEN3_GUEST_ENGRAM_STATE_REF => config.state_ref.clone(),
+            SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR => config
+                .object_registry_dir
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            _ => None,
+        }
+        .or_else(|| lookup(key))
+        .filter(|value| !value.trim().is_empty());
+        if let Some(value) = value {
             vars.push((key.to_string(), value));
         }
     }
@@ -2958,7 +3007,7 @@ mod tests {
     };
     use std::env;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn qwen3_decode_loop_args_default_to_two_steps() {
@@ -3240,6 +3289,38 @@ mod tests {
     }
 
     #[test]
+    fn qwen3_guest_decode_loop_args_accept_explicit_state_ref_entrypoint() {
+        let args = qwen3_guest_decode_loop_args_from([
+            "w5-inference-cluster",
+            "--steps=2",
+            "--engram-state-ref=abcd",
+            "--object-registry-dir=/tmp/qwen3-registry",
+        ])
+        .expect("parse guest decode loop args")
+        .expect("guest decode loop args");
+
+        assert!(args.engram.enabled);
+        assert_eq!(args.engram.pool, Qwen3EngramPool::Obmm);
+        assert_eq!(args.engram.context_op, Qwen3EngramContextOp::CpuReference);
+        assert_eq!(args.engram.state_ref.as_deref(), Some("abcd"));
+        assert_eq!(
+            args.engram.object_registry_dir.as_deref(),
+            Some(Path::new("/tmp/qwen3-registry"))
+        );
+    }
+
+    #[test]
+    fn qwen3_guest_decode_loop_args_require_registry_with_state_ref() {
+        let err =
+            qwen3_guest_decode_loop_args_from(["w5-inference-cluster", "--engram-state-ref=abcd"])
+                .expect_err("state ref without registry should fail");
+
+        assert!(err
+            .to_string()
+            .contains("--engram-state-ref and --object-registry-dir"));
+    }
+
+    #[test]
     fn qwen3_guest_decode_loop_engram_requires_obmm_pool() {
         let err = qwen3_guest_decode_loop_args_from([
             "qwen3-guest-decode-loop",
@@ -3305,13 +3386,11 @@ mod tests {
         let config = Qwen3EngramConfig {
             enabled: true,
             context_op: Qwen3EngramContextOp::CpuReference,
+            state_ref: Some("state-ref".to_string()),
+            object_registry_dir: Some(PathBuf::from("/tmp/qwen3-registry")),
             ..Qwen3EngramConfig::default()
         };
-        let vars = qwen3_guest_engram_env_vars_from_lookup(&config, 0x1234, |key| match key {
-            SIM_QWEN3_GUEST_ENGRAM_STATE_REF => Some("state-ref".to_string()),
-            SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR => Some("/tmp/qwen3-registry".to_string()),
-            _ => None,
-        });
+        let vars = qwen3_guest_engram_env_vars_from_lookup(&config, 0x1234, |_key| None);
 
         assert!(vars.contains(&(
             SIM_QWEN3_GUEST_ENGRAM_STATE_REF.to_string(),
