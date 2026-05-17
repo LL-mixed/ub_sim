@@ -698,7 +698,10 @@ CLI tests:
 
 Current implementation status:
 
-- Steps 1-4 have a baseline implementation in `sim-memory`.
+- Steps 1-4 have a baseline implementation in `sim-memory`. `QueryResult` now
+  carries selected record/chunk ids, vector index ids, embedding segment
+  versions/checksums, evidence refs, and its own checksum/version, so query
+  output is an auditable memory decision rather than only a top-k vector list.
 - Step 5 currently exists as validation/smoke CLI modes, not yet as external
   ingest/embed/build-index commands.
 - Step 6 now has two paths: explicit caller-provided tensor materialization and

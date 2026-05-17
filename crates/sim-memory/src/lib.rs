@@ -647,6 +647,7 @@ pub struct EmbeddingSegment {
     pub vector_block_refs: Vec<LingquBlockPayloadRef>,
     pub row_map: Vec<EmbeddingRow>,
     pub checksum: u64,
+    pub version: u64,
 }
 
 impl EmbeddingSegment {
@@ -676,6 +677,7 @@ impl EmbeddingSegment {
             }
         }
         nonzero(self.checksum, "embedding_segment_checksum")?;
+        nonzero(self.version, "embedding_segment_version")?;
         Ok(())
     }
 }
@@ -747,6 +749,7 @@ impl MemoryQuery {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueryMatch {
+    pub vector_index_id: String,
     pub chunk_id: String,
     pub record_id: String,
     pub segment_id: String,
@@ -756,11 +759,25 @@ pub struct QueryMatch {
     pub confidence: f32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuerySegmentVersion {
+    pub segment_id: String,
+    pub version: u64,
+    pub checksum: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueryResult {
     pub result_id: String,
     pub query_id: String,
+    pub vector_index_ids: Vec<String>,
     pub matches: Vec<QueryMatch>,
+    pub selected_record_ids: Vec<String>,
+    pub selected_chunk_ids: Vec<String>,
+    pub embedding_segment_versions: Vec<QuerySegmentVersion>,
+    pub evidence_refs: Vec<String>,
+    pub checksum: u64,
+    pub version: u64,
     pub created_at_us: u64,
 }
 
@@ -1035,6 +1052,82 @@ impl LingquMemoryService {
         Ok(())
     }
 
+    fn build_query_result(
+        &self,
+        query: &MemoryQuery,
+        matches: Vec<QueryMatch>,
+        now_us: u64,
+    ) -> MemoryResult<QueryResult> {
+        let mut vector_index_ids = BTreeSet::new();
+        let mut selected_record_ids = Vec::new();
+        let mut selected_record_seen = HashSet::new();
+        let mut selected_chunk_ids = Vec::new();
+        let mut selected_chunk_seen = HashSet::new();
+        let mut segment_ids = BTreeSet::new();
+        let mut evidence_refs = BTreeSet::new();
+
+        for query_match in &matches {
+            vector_index_ids.insert(query_match.vector_index_id.clone());
+            if selected_record_seen.insert(query_match.record_id.clone()) {
+                selected_record_ids.push(query_match.record_id.clone());
+            }
+            if selected_chunk_seen.insert(query_match.chunk_id.clone()) {
+                selected_chunk_ids.push(query_match.chunk_id.clone());
+            }
+            segment_ids.insert(query_match.segment_id.clone());
+            let record = self
+                .records
+                .get(&query_match.record_id)
+                .ok_or_else(|| LingquMemoryError::MissingRecord(query_match.record_id.clone()))?;
+            for evidence_ref in &record.evidence_refs {
+                evidence_refs.insert(evidence_ref.clone());
+            }
+        }
+
+        let mut embedding_segment_versions = Vec::with_capacity(segment_ids.len());
+        for segment_id in segment_ids {
+            let segment = self
+                .embedding_segments
+                .get(&segment_id)
+                .ok_or_else(|| LingquMemoryError::MissingEmbeddingSegment(segment_id.clone()))?;
+            embedding_segment_versions.push(QuerySegmentVersion {
+                segment_id,
+                version: segment.version,
+                checksum: segment.checksum,
+            });
+        }
+
+        let result_id = format!("query-result/{}", query.query_id);
+        let vector_index_ids = vector_index_ids.into_iter().collect::<Vec<_>>();
+        let evidence_refs = evidence_refs.into_iter().collect::<Vec<_>>();
+        let checksum = query_result_audit_checksum(
+            &result_id,
+            &query.query_id,
+            &vector_index_ids,
+            &matches,
+            &selected_record_ids,
+            &selected_chunk_ids,
+            &embedding_segment_versions,
+            &evidence_refs,
+            1,
+            now_us,
+        );
+
+        Ok(QueryResult {
+            result_id,
+            query_id: query.query_id.clone(),
+            vector_index_ids,
+            matches,
+            selected_record_ids,
+            selected_chunk_ids,
+            embedding_segment_versions,
+            evidence_refs,
+            checksum,
+            version: 1,
+            created_at_us: now_us,
+        })
+    }
+
     pub fn query_memory(&mut self, query: MemoryQuery, now_us: u64) -> MemoryResult<QueryResult> {
         query.validate()?;
         let corpus_set = query.corpus_ids.iter().cloned().collect::<HashSet<_>>();
@@ -1080,6 +1173,7 @@ impl LingquMemoryService {
                         continue;
                     }
                     matches.push(QueryMatch {
+                        vector_index_id: index.index_id.clone(),
                         chunk_id: row.chunk_id.clone(),
                         record_id: record.record_id.clone(),
                         segment_id: segment.segment_id.clone(),
@@ -1102,12 +1196,7 @@ impl LingquMemoryService {
         });
         matches.truncate(query.top_k);
 
-        let result = QueryResult {
-            result_id: format!("query-result/{}", query.query_id),
-            query_id: query.query_id.clone(),
-            matches,
-            created_at_us: now_us,
-        };
+        let result = self.build_query_result(&query, matches, now_us)?;
         self.query_results
             .insert(result.result_id.clone(), result.clone());
         Ok(result)
@@ -1179,6 +1268,7 @@ impl LingquMemoryService {
                     }
                     let row_vector = segment_row_f32_values(segment, &segment_bytes, row.row)?;
                     matches.push(QueryMatch {
+                        vector_index_id: index.index_id.clone(),
                         chunk_id: row.chunk_id.clone(),
                         record_id: record.record_id.clone(),
                         segment_id: segment.segment_id.clone(),
@@ -1201,12 +1291,7 @@ impl LingquMemoryService {
         });
         matches.truncate(query.top_k);
 
-        let result = QueryResult {
-            result_id: format!("query-result/{}", query.query_id),
-            query_id: query.query_id.clone(),
-            matches,
-            created_at_us: now_us,
-        };
+        let result = self.build_query_result(&query, matches, now_us)?;
         self.query_results
             .insert(result.result_id.clone(), result.clone());
         Ok(result)
@@ -1741,6 +1826,58 @@ fn monotonic_time(created_at_us: u64, updated_at_us: u64) -> MemoryResult<()> {
     Ok(())
 }
 
+fn query_result_audit_checksum(
+    result_id: &str,
+    query_id: &str,
+    vector_index_ids: &[String],
+    matches: &[QueryMatch],
+    selected_record_ids: &[String],
+    selected_chunk_ids: &[String],
+    embedding_segment_versions: &[QuerySegmentVersion],
+    evidence_refs: &[String],
+    version: u64,
+    created_at_us: u64,
+) -> u64 {
+    fn push_str(bytes: &mut Vec<u8>, value: &str) {
+        bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(value.as_bytes());
+    }
+
+    let mut bytes = Vec::new();
+    push_str(&mut bytes, result_id);
+    push_str(&mut bytes, query_id);
+    bytes.extend_from_slice(&version.to_le_bytes());
+    bytes.extend_from_slice(&created_at_us.to_le_bytes());
+    for id in vector_index_ids {
+        push_str(&mut bytes, id);
+    }
+    for query_match in matches {
+        push_str(&mut bytes, &query_match.vector_index_id);
+        push_str(&mut bytes, &query_match.record_id);
+        push_str(&mut bytes, &query_match.chunk_id);
+        push_str(&mut bytes, &query_match.segment_id);
+        bytes.extend_from_slice(&query_match.row.to_le_bytes());
+        bytes.extend_from_slice(&query_match.score.to_bits().to_le_bytes());
+        bytes.extend_from_slice(&(query_match.trust_level as u8).to_le_bytes());
+        bytes.extend_from_slice(&query_match.confidence.to_bits().to_le_bytes());
+    }
+    for id in selected_record_ids {
+        push_str(&mut bytes, id);
+    }
+    for id in selected_chunk_ids {
+        push_str(&mut bytes, id);
+    }
+    for segment in embedding_segment_versions {
+        push_str(&mut bytes, &segment.segment_id);
+        bytes.extend_from_slice(&segment.version.to_le_bytes());
+        bytes.extend_from_slice(&segment.checksum.to_le_bytes());
+    }
+    for evidence_ref in evidence_refs {
+        push_str(&mut bytes, evidence_ref);
+    }
+    checksum64(&bytes)
+}
+
 fn checksum64(bytes: &[u8]) -> u64 {
     let mut acc = 0xcbf2_9ce4_8422_2325u64;
     for byte in bytes {
@@ -2005,6 +2142,7 @@ mod tests {
                     },
                 ],
                 checksum: 0x5151,
+                version: 1,
             })
             .unwrap();
         service
@@ -2040,6 +2178,21 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.matches.len(), 1);
+        assert_eq!(result.version, 1);
+        assert_ne!(result.checksum, 0);
+        assert_eq!(result.vector_index_ids, ["index/flat"]);
+        assert_eq!(result.selected_record_ids, ["record/b"]);
+        assert_eq!(result.selected_chunk_ids, ["chunk/b"]);
+        assert_eq!(result.evidence_refs, ["tool://importer/0"]);
+        assert_eq!(
+            result.embedding_segment_versions,
+            [QuerySegmentVersion {
+                segment_id: "segment/flat".to_string(),
+                version: 1,
+                checksum: 0x5151,
+            }]
+        );
+        assert_eq!(result.matches[0].vector_index_id, "index/flat");
         assert_eq!(result.matches[0].chunk_id, "chunk/b");
         assert_eq!(result.matches[0].score, 1.0);
         assert_eq!(durable.stats().block_payload_reads, 2);
@@ -2103,6 +2256,7 @@ mod tests {
                     },
                 ],
                 checksum: 0x5151,
+                version: 1,
             })
             .unwrap();
         service
@@ -2521,6 +2675,7 @@ mod tests {
                 row: 0,
             }],
             checksum: 0x5005,
+            version: 1,
         }
     }
 }

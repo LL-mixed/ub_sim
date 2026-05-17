@@ -1177,6 +1177,7 @@ fn build_lingqu_memory_cli_sample() -> anyhow::Result<LingquMemoryService> {
             row: 0,
         }],
         checksum: 0x5005,
+        version: 1,
     })?;
     memory_service.register_vector_index(VectorIndexObject {
         index_id: "index/default/flat".to_string(),
@@ -1374,6 +1375,7 @@ fn build_lingqu_memory_flat_query_sample(
             },
         ],
         checksum: 0x5005,
+        version: 1,
     })?;
     memory_service.register_vector_index(VectorIndexObject {
         index_id: "index/flat".to_string(),
@@ -1411,6 +1413,25 @@ fn run_lingqu_memory_validate_flat_query() -> anyhow::Result<()> {
     println!("lingqu_memory_service");
     println!("  mode: validate-flat-query");
     println!("  query_result: {}", result.result_id);
+    println!("  query_result_version: {}", result.version);
+    println!("  query_result_checksum: {:#x}", result.checksum);
+    println!("  vector_indexes: {}", result.vector_index_ids.join(","));
+    println!(
+        "  segment_versions: {}",
+        result
+            .embedding_segment_versions
+            .iter()
+            .map(|segment| format!(
+                "{}@{}:{:#x}",
+                segment.segment_id, segment.version, segment.checksum
+            ))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    println!(
+        "  selected_records: {}",
+        result.selected_record_ids.join(",")
+    );
     println!("  matches: {}", result.matches.len());
     if let Some(top) = result.matches.first() {
         println!("  top_record: {}", top.record_id);
@@ -1443,6 +1464,25 @@ fn run_lingqu_memory_validate_flat_materialize() -> anyhow::Result<()> {
     println!("lingqu_memory_service");
     println!("  mode: validate-flat-materialize");
     println!("  query_result: {}", result.result_id);
+    println!("  query_result_version: {}", result.version);
+    println!("  query_result_checksum: {:#x}", result.checksum);
+    println!("  vector_indexes: {}", result.vector_index_ids.join(","));
+    println!(
+        "  segment_versions: {}",
+        result
+            .embedding_segment_versions
+            .iter()
+            .map(|segment| format!(
+                "{}@{}:{:#x}",
+                segment.segment_id, segment.version, segment.checksum
+            ))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    println!(
+        "  selected_records: {}",
+        result.selected_record_ids.join(",")
+    );
     println!("  matches: {}", result.matches.len());
     println!("  hot_state: {}", hot_state.state_id);
     println!("  hot_table_object: {}", hot_state.table.object_key);
@@ -1561,6 +1601,7 @@ fn run_lingqu_memory_validate_w5_engram_object_ref() -> anyhow::Result<()> {
             })
             .collect(),
         checksum: 0x5005,
+        version: 1,
     })?;
     memory_service.register_vector_index(VectorIndexObject {
         index_id: "index/w5/engram/flat".to_string(),
@@ -1679,6 +1720,26 @@ fn run_lingqu_memory_validate_w5_engram_object_ref() -> anyhow::Result<()> {
     println!("lingqu_memory_service");
     println!("  mode: validate-w5-engram-object-ref");
     println!("  query_result: {}", result.result_id);
+    println!("  query_result_version: {}", result.version);
+    println!("  query_result_checksum: {:#x}", result.checksum);
+    println!("  vector_indexes: {}", result.vector_index_ids.join(","));
+    println!(
+        "  segment_versions: {}",
+        result
+            .embedding_segment_versions
+            .iter()
+            .map(|segment| format!(
+                "{}@{}:{:#x}",
+                segment.segment_id, segment.version, segment.checksum
+            ))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    println!(
+        "  selected_records: {}",
+        result.selected_record_ids.join(",")
+    );
+    println!("  evidence_refs: {}", result.evidence_refs.join(","));
     println!("  matches: {}", result.matches.len());
     println!("  hot_state: {}", hot_state.state_id);
     println!("  hot_table_shape: {:?}", hot_state.table.shape);
