@@ -9,6 +9,7 @@ authors.workspace = true
 anyhow.workspace = true
 sim-config = { path = "../sim-config" }
 sim-core = { path = "../sim-core" }
+sim-memory = { path = "../sim-memory" }
 serde_json.workspace = true
 sim-report = { path = "../sim-report" }
 sim-runtime = { path = "../sim-runtime" }

@@ -6,6 +6,7 @@ members = [
     "crates/sim-topology",
     "crates/sim-runtime",
     "crates/sim-services",
+    "crates/sim-memory",
     "crates/sim-models",
     "crates/sim-qemu",
     "crates/sim-uapi",

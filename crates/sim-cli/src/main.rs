@@ -5,6 +5,13 @@ use sim_core::{
     FunctionLabel, HierarchyCoord, IoOpcode, IoSubmitReq, LogicalSystemId, MemoryEndpoint, PlLevel,
     SegmentHandle, SimEvent, TaskKey,
 };
+use sim_memory::{
+    EmbeddingRow, EmbeddingSegment, HotMemoryMaterializeReq, LingquBlockPayloadRef, LingquDfsPath,
+    LingquMemoryService, MemoryChunk, MemoryContentType, MemoryCorpusCatalog, MemoryPiiState,
+    MemoryQuery, MemoryRecord, MemoryRecordState, MemoryRetentionPolicy, MemoryScope,
+    MemorySecurityLabel, MemorySourceKind, MemoryTrustLevel, MemoryVisibility, VectorIndexKind,
+    VectorIndexObject,
+};
 use sim_models::qwen3_dense_reference::{
     token_piece_bytes_from_tokenizer_path, token_piece_decode_bytes,
     tokenize_prompt_from_tokenizer_path,
@@ -59,6 +66,9 @@ use std::process::{Command, Stdio};
 mod qwen3_simpler;
 
 fn main() -> anyhow::Result<()> {
+    if lingqu_memory_args() {
+        return run_lingqu_memory_cli();
+    }
     if lingqu_object_service_args() {
         return run_lingqu_object_service_cli();
     }
@@ -155,6 +165,21 @@ where
     matches!(
         args.into_iter().next().map(Into::into),
         Some(mode) if mode == "lingqu-object-service"
+    )
+}
+
+fn lingqu_memory_args() -> bool {
+    lingqu_memory_args_from(env::args_os().skip(1))
+}
+
+fn lingqu_memory_args_from<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: Into<std::ffi::OsString>,
+{
+    matches!(
+        args.into_iter().next().map(Into::into),
+        Some(mode) if mode == "lingqu-memory"
     )
 }
 
@@ -1038,6 +1063,144 @@ fn run_lingqu_object_service_cli() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn run_lingqu_memory_cli() -> anyhow::Result<()> {
+    let mut args = env::args_os().skip(2);
+    let mode = args
+        .next()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "validate-service-path".to_string());
+    if mode != "validate-service-path" {
+        anyhow::bail!("unknown lingqu-memory mode `{mode}`; expected validate-service-path");
+    }
+
+    let mut memory_service = LingquMemoryService::new();
+    memory_service.publish_catalog(MemoryCorpusCatalog {
+        catalog_id: "corpus/default".to_string(),
+        namespace: "project/default".to_string(),
+        dfs_path: LingquDfsPath::new("/lingqu/memory/corpus/default/catalog.json"),
+        version: 1,
+        record_ids: vec!["record/default/0".to_string()],
+        vector_index_ids: vec!["index/default/flat".to_string()],
+        created_at_us: 1,
+        updated_at_us: 1,
+    })?;
+    memory_service.ingest_record(
+        MemoryRecord {
+            record_id: "record/default/0".to_string(),
+            corpus_id: "corpus/default".to_string(),
+            scope: MemoryScope::Project,
+            visibility: MemoryVisibility::ProjectShared,
+            source_kind: MemorySourceKind::UserProvided,
+            source_uri: "dfs://lingqu/memory/source/default.md".to_string(),
+            source_checksum: 0x1001,
+            content_type: MemoryContentType::Markdown,
+            token_count: 32,
+            trust_level: MemoryTrustLevel::UserConfirmed,
+            confidence: 0.95,
+            retention_policy: MemoryRetentionPolicy::Durable,
+            security_label: MemorySecurityLabel::Internal,
+            pii_state: MemoryPiiState::None,
+            chunk_refs: vec!["chunk/default/0".to_string()],
+            embedding_model_versions: vec!["embed/default/v1".to_string()],
+            evidence_refs: vec!["import://lingqu-memory-cli/default".to_string()],
+            created_at_us: 1,
+            updated_at_us: 1,
+            expires_at_us: None,
+            version: 1,
+            state: MemoryRecordState::Committed,
+        },
+        vec![MemoryChunk {
+            chunk_id: "chunk/default/0".to_string(),
+            record_id: "record/default/0".to_string(),
+            ordinal: 0,
+            text_block_ref: LingquBlockPayloadRef::new("block/text/default/0", 0, 128, 0x2002),
+            token_start: 0,
+            token_count: 32,
+            checksum: 0x3003,
+        }],
+    )?;
+    memory_service.register_embedding_segment(EmbeddingSegment {
+        segment_id: "segment/default/0".to_string(),
+        model_version: "embed/default/v1".to_string(),
+        dims: 4,
+        row_count: 1,
+        row_stride_bytes: 16,
+        dtype: sim_core::TensorDType::F32,
+        vector_block_refs: vec![LingquBlockPayloadRef::new(
+            "block/embed/default/0",
+            0,
+            16,
+            0x4004,
+        )],
+        row_map: vec![EmbeddingRow {
+            chunk_id: "chunk/default/0".to_string(),
+            row: 0,
+        }],
+        checksum: 0x5005,
+    })?;
+    memory_service.register_vector_index(VectorIndexObject {
+        index_id: "index/default/flat".to_string(),
+        corpus_id: "corpus/default".to_string(),
+        kind: VectorIndexKind::Flat,
+        embedding_model_version: "embed/default/v1".to_string(),
+        segment_ids: vec!["segment/default/0".to_string()],
+        manifest_path: LingquDfsPath::new("/lingqu/memory/corpus/default/index/flat.json"),
+        created_at_us: 2,
+        updated_at_us: 2,
+        version: 1,
+    })?;
+
+    let query_result = memory_service.query_memory(
+        MemoryQuery {
+            query_id: "query/default/0".to_string(),
+            corpus_ids: vec!["corpus/default".to_string()],
+            scope_filter: vec![MemoryScope::Project],
+            visibility_filter: vec![MemoryVisibility::ProjectShared],
+            min_trust: MemoryTrustLevel::UserConfirmed,
+            min_confidence: 0.5,
+            embedding_model_version: "embed/default/v1".to_string(),
+            top_k: 1,
+            query_embedding_ref: None,
+        },
+        100,
+    )?;
+    let mut object_service = LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
+    let hot_state = memory_service.materialize_hot_state(
+        &mut object_service,
+        HotMemoryMaterializeReq {
+            state_id: "hot/default/0".to_string(),
+            query_result_id: query_result.result_id.clone(),
+            table_shape: vec![1, 4],
+            table_values: vec![0.1, 0.2, 0.3, 0.4],
+            indices: vec![0],
+            owner_entity: 0,
+            producer_entity: 0,
+            now_us: 200,
+        },
+    )?;
+    let engram_state =
+        memory_service.build_engram_state("engram/default/0", &hot_state.state_id, None, 300)?;
+    let object_report = object_service.report();
+
+    println!("lingqu_memory_service");
+    println!("  mode: validate-service-path");
+    println!("  query_result: {}", query_result.result_id);
+    println!("  matches: {}", query_result.matches.len());
+    println!("  hot_state: {}", hot_state.state_id);
+    println!("  hot_table_object: {}", hot_state.table.object_key);
+    println!("  hot_indices_object: {}", hot_state.indices.object_key);
+    println!("  engram_state: {}", engram_state.state_id);
+    println!(
+        "  obmm_payload_writes: {}",
+        object_report.obmm_pool_payload_write_count
+    );
+    println!(
+        "  committed_object_count: {}",
+        object_report.committed_object_count
+    );
+    Ok(())
+}
+
 fn run_lingqu_object_service_stress_cli() -> anyhow::Result<()> {
     let mut profile = LingquObjectServiceProfile::default();
     profile.queue_depth = 4096;
@@ -1271,7 +1434,7 @@ fn resolve_lingqu_object_cli_sample(
 #[cfg(test)]
 mod tests {
     use super::{
-        lingqu_object_service_args_from, qwen3_decode_loop_args_from,
+        lingqu_memory_args_from, lingqu_object_service_args_from, qwen3_decode_loop_args_from,
         qwen3_decode_report_verbosity_from_env, qwen3_dense_weights_path_from_env,
         qwen3_engram_policy_checksum, qwen3_engram_select_token, qwen3_engram_state_words,
         qwen3_guest_candidate_records, qwen3_guest_decode_loop_args_from,
@@ -2325,6 +2488,12 @@ stage qwen3_range_forward_runtime_output_publish node=2
     fn lingqu_object_service_args_detects_command() {
         assert!(lingqu_object_service_args_from(["lingqu-object-service"]));
         assert!(!lingqu_object_service_args_from(["qwen3-decode-loop"]));
+    }
+
+    #[test]
+    fn lingqu_memory_args_detects_command() {
+        assert!(lingqu_memory_args_from(["lingqu-memory"]));
+        assert!(!lingqu_memory_args_from(["lingqu-object-service"]));
     }
 }
 

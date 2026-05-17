@@ -162,6 +162,7 @@ dependencies = [
  "sim-chipbackend-simpler",
  "sim-config",
  "sim-core",
+ "sim-memory",
  "sim-models",
  "sim-qemu",
  "sim-report",
@@ -187,6 +188,17 @@ name = "sim-core"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "thiserror",
+]
+
+[[package]]
+name = "sim-memory"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sim-core",
+ "sim-services",
  "thiserror",
 ]
 
