@@ -75,6 +75,10 @@ SIM_QWEN3_GUEST_ENGRAM_BLOCK_TOKEN_IDS="${SIM_QWEN3_GUEST_ENGRAM_BLOCK_TOKEN_IDS
 SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP="${SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP:-disabled}"
 SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_ROWS="${SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_ROWS:-}"
 SIM_QWEN3_GUEST_ENGRAM_CONTEXT_CHUNK_ELEMS="${SIM_QWEN3_GUEST_ENGRAM_CONTEXT_CHUNK_ELEMS:-}"
+SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF="${SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF:-}"
+SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF="${SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF:-}"
+SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF="${SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF:-}"
+SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR="${SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR:-}"
 SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS="${SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS:-}"
 SIM_W4_UAPI_COMPLETION_TIMEOUT_MS="${SIM_W4_UAPI_COMPLETION_TIMEOUT_MS:-900000}"
 SIM_W4_RESOURCE_ASSERTIONS="${SIM_W4_RESOURCE_ASSERTIONS:-0}"
@@ -504,6 +508,10 @@ export SIM_QWEN3_GUEST_ENGRAM_BLOCK_TOKEN_IDS="$SIM_QWEN3_GUEST_ENGRAM_BLOCK_TOK
 export SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP="$SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP"
 export SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_ROWS="$SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_ROWS"
 export SIM_QWEN3_GUEST_ENGRAM_CONTEXT_CHUNK_ELEMS="$SIM_QWEN3_GUEST_ENGRAM_CONTEXT_CHUNK_ELEMS"
+export SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF="$SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF"
+export SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF="$SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF"
+export SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF="$SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF"
+export SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR="$SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR"
 export SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS="$SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS"
 export SIM_W4_UAPI_COMPLETION_TIMEOUT_MS="$SIM_W4_UAPI_COMPLETION_TIMEOUT_MS"
 export SIM_W4_RESOURCE_ASSERTIONS="$SIM_W4_RESOURCE_ASSERTIONS"
@@ -559,6 +567,44 @@ validate_owner_observed() {
   assert_log_has "$log_file" "\\[w4_guest\\] stage db_service_cluster_observe owner=node${owner_idx} kind=request_prefix key=request/w4-${owner_role}-request-0/prefix/${owner_role}-prefix-0 version=[0-9]+" "$node_id saw ${owner_role} prefix" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage db_service_cluster_observe owner=node${owner_idx} kind=block_meta key=block/w4-${owner_role}-block-0 state=hot version=[0-9]+" "$node_id saw ${owner_role} block0" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage db_service_cluster_observe owner=node${owner_idx} kind=block_meta key=block/w4-${owner_role}-block-1 state=reloaded version=[0-9]+" "$node_id saw ${owner_role} block1" || return 1
+}
+
+qwen3_engram_context_refs_configured() {
+  [[ -n "$SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF" &&
+    -n "$SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF" &&
+    -n "$SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF" ]]
+}
+
+qwen3_engram_context_op_enabled() {
+  [[ -n "$SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP" &&
+    "$SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP" != "disabled" &&
+    "$SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP" != "none" ]]
+}
+
+validate_qwen3_engram_context_refs() {
+  if [[ "$SIM_QWEN3_GUEST_ENGRAM" != "1" ]] || ! qwen3_engram_context_op_enabled; then
+    return 0
+  fi
+  if ! qwen3_engram_context_refs_configured; then
+    trace "FAIL: qwen3 engram context op requires object refs context_op=$SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP hint=materialize Lingqu Memory Service context objects and export all SIM_QWEN3_GUEST_ENGRAM_CONTEXT_*_REF vars"
+    return 1
+  fi
+  return 0
+}
+
+validate_w5_engram_context_summary() {
+  if ! qwen3_engram_context_refs_configured; then
+    return 0
+  fi
+  if [[ ! -f "$RUN_SUMMARY_FILE" ]]; then
+    trace "FAIL: qwen3 engram context object-ref summary missing path=$RUN_SUMMARY_FILE"
+    return 1
+  fi
+  if ! rg -q "engram_context_summary: records=${SIM_QWEN3_GUEST_DECODE_STEPS} steps=${SIM_QWEN3_GUEST_DECODE_STEPS}/${SIM_QWEN3_GUEST_DECODE_STEPS} modes=[^ ]*object-ref" "$RUN_SUMMARY_FILE"; then
+    trace "FAIL: qwen3 engram context summary missing object-ref mode path=$RUN_SUMMARY_FILE"
+    return 1
+  fi
+  return 0
 }
 
 validate_node_log() {
@@ -624,6 +670,10 @@ validate_node_log() {
     assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_runtime_forward node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) pipeline_nodes=8 total_layers=[1-9][0-9]* hidden_bytes=[1-9][0-9]* input_checksum=0x[0-9a-f]+ output_checksum=0x[0-9a-f]+ range_checksum=0x[0-9a-f]+ real_layers=[0-9]+ payload_offset=0x[0-9a-f]+ payload_bytes=[1-9][0-9]* kv_payload_offset=0x[0-9a-f]+ kv_payload_bytes=[1-9][0-9]* kv_payload_checksum=0x[0-9a-f]+ source=runtime_forward output=metadata status=ok" "$node_id qwen3 range runtime forward" || return 1
     if (( idx > 1 )); then
       assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_forward_runtime_input_loaded node=${idx} layers=\\[[0-9]+,[0-9]+\\) input_offset=0x[0-9a-f]+ input_checksum=0x[0-9a-f]+ bytes=[1-9][0-9]* source=obmm_object_view target=uapi_object_ref materialize=sim_uapi_adapter status=ok" "$node_id qwen3 runtime range input loaded" || return 1
+    fi
+    if [[ "$SIM_QWEN3_GUEST_ENGRAM" == "1" ]] && qwen3_engram_context_refs_configured; then
+      assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_engram_context_object_refs local=${node_id} node=${idx} table_ref_chars=[1-9][0-9]* indices_ref_chars=[1-9][0-9]* gate_weight_ref_chars=[1-9][0-9]* registry_dir=.* source=env_contract target=sim_uapi status=ok" "$node_id qwen3 engram context refs configured" || return 1
+      assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_engram_context_object_refs_loaded node=${idx} step=[0-9]+ refs=3 table_bytes=[1-9][0-9]* indices_bytes=[1-9][0-9]* gate_weight_bytes=[1-9][0-9]* table_checksum=0x[0-9a-f]+ indices_checksum=0x[0-9a-f]+ gate_weight_checksum=0x[0-9a-f]+ source=env_contract target=uapi_object_ref status=ok" "$node_id qwen3 engram context refs loaded" || return 1
     fi
     assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_forward_runtime_output_publish local=node${idx} step=[0-9]+ key_hash=0x[0-9a-f]+ version=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ output_checksum=0x[0-9a-f]+ bytes=[1-9][0-9]* producer_publish_ms=[0-9]+ producer_publish_mono_ms=[0-9]+ producer_clock_offset_ms=[0-9]+ epoch=[0-9]+ seq=[0-9]+ backing=obmm_shmem metadata=lingqu_object_service queue=obmm_spsc status=ok" "$node_id qwen3 runtime range output publish" || return 1
     assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_worker_handoff_timing local=${node_id} step=[0-9]+ node=${idx} .* producer_to_input_found_mono_ms=-?[0-9]+ .* input_found_to_handoff_ms=[0-9]+ .* status=ok" "$node_id qwen3 worker handoff timing" || return 1
@@ -749,6 +799,7 @@ prepare_environment() {
   validate_qwen3_weights_path || return 1
   qwen3_dense_apply_config_env
   validate_w5_profile_runtime || return 1
+  validate_qwen3_engram_context_refs || return 1
   if is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
     if [[ -z "$SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS" ]]; then
       SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS="$((DEMO_WAIT_SECS * 1000))"
@@ -787,6 +838,10 @@ prepare_environment() {
     SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP="$SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP" \
     SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_ROWS="$SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_ROWS" \
     SIM_QWEN3_GUEST_ENGRAM_CONTEXT_CHUNK_ELEMS="$SIM_QWEN3_GUEST_ENGRAM_CONTEXT_CHUNK_ELEMS" \
+    SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF="$SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF" \
+    SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF="$SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF" \
+    SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF="$SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF" \
+    SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR="$SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR" \
     SIM_ENGRAM_SIMT_ARTIFACT_DIR="${SIM_ENGRAM_SIMT_ARTIFACT_DIR:-}" \
     SIM_ENGRAM_SIMT_SELECTED_SYMBOL="${SIM_ENGRAM_SIMT_SELECTED_SYMBOL:-}" \
     SIM_ENGRAM_SIMT_SELECTED_CASE="${SIM_ENGRAM_SIMT_SELECTED_CASE:-}" \
@@ -839,6 +894,10 @@ main() {
   if true; then
     exit_code=0
     emit_w4_run_summary || true
+    if ! validate_w5_engram_context_summary; then
+      [[ -n "${CLEANUP_SCRIPT:-}" ]] && cleanup_headless_env "$CLEANUP_SCRIPT"
+      exit 1
+    fi
     if [[ -n "$SIM_UAPI_W5_PROFILE" ]]; then
       trace "PASS: eight-node w5 inference cluster profile=$SIM_UAPI_W5_PROFILE"
       echo "eight-node w5 inference cluster validation passed"

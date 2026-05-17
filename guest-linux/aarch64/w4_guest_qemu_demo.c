@@ -93,7 +93,7 @@
 #define W4_QWEN3_MAX_HIDDEN_RANGE_BYTES (2ULL * 1024ULL * 1024ULL)
 #define W4_QWEN3_OBJECT_REF_TABLE_OFFSET 0x0000000000070000ULL
 #define W4_QWEN3_OBJECT_REF_BYTES 64ULL
-#define W4_QWEN3_OBJECT_REF_MAX_COUNT 2U
+#define W4_QWEN3_OBJECT_REF_MAX_COUNT 5U
 #define W4_QWEN3_RANGE_INPUT_PAYLOAD_OFFSET 0x0000000000080000ULL
 #define W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET 0x0000000000280000ULL
 #define W4_QWEN3_PREVIOUS_KV_PAYLOAD_HEADER_BYTES 32ULL
@@ -104,6 +104,9 @@
 #define W4_QWEN3_TOKENIZER_FAMILY "qwen3-tiktoken-compatible-synthetic-piece"
 #define W4_QWEN3_TOKENIZER_PIECE_PREFIX "q3_"
 #define W4_QWEN3_VOCAB_SIZE 151936ULL
+#define W4_QWEN3_OBMM_KIND_ENGRAM_CONTEXT_TABLE 21U
+#define W4_QWEN3_OBMM_KIND_ENGRAM_CONTEXT_INDICES 22U
+#define W4_QWEN3_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT 23U
 #define W4_QWEN3_EXPECTED_SHARDS 8ULL
 #define W4_QWEN3_TILES_PER_SHARD 2ULL
 #define W4_QWEN3_EXPECTED_TILES \
@@ -1835,6 +1838,10 @@ _Static_assert(offsetof(struct w4_qwen3_terminal_token_record, piece_word1) ==
 
 struct w4_qwen3_engram_config {
     bool enabled;
+    bool context_object_refs_enabled;
+    struct lingqu_obmm_object_ref_wire context_table_ref;
+    struct lingqu_obmm_object_ref_wire context_indices_ref;
+    struct lingqu_obmm_object_ref_wire context_gate_weight_ref;
     uint32_t owner_node;
     uint64_t no_repeat_ngram_size;
     uint64_t repetition_penalty_milli;
@@ -4346,6 +4353,116 @@ static bool env_bool_is_one(const char *key)
     return value && strcmp(value, "1") == 0;
 }
 
+static bool env_nonempty(const char *key)
+{
+    const char *value = getenv(key);
+
+    return value && value[0] != '\0';
+}
+
+static int hex_nibble_value(char ch)
+{
+    if (ch >= '0' && ch <= '9') {
+        return ch - '0';
+    }
+    if (ch >= 'a' && ch <= 'f') {
+        return ch - 'a' + 10;
+    }
+    if (ch >= 'A' && ch <= 'F') {
+        return ch - 'A' + 10;
+    }
+    return -1;
+}
+
+static uint16_t qwen3_ref_read_u16_le(const uint8_t *bytes, size_t offset)
+{
+    return (uint16_t)bytes[offset] | ((uint16_t)bytes[offset + 1U] << 8);
+}
+
+static uint32_t qwen3_ref_read_u32_le(const uint8_t *bytes, size_t offset)
+{
+    return (uint32_t)bytes[offset] |
+           ((uint32_t)bytes[offset + 1U] << 8) |
+           ((uint32_t)bytes[offset + 2U] << 16) |
+           ((uint32_t)bytes[offset + 3U] << 24);
+}
+
+static uint64_t qwen3_ref_read_u64_le(const uint8_t *bytes, size_t offset)
+{
+    uint64_t value = 0;
+    size_t i;
+
+    for (i = 0; i < 8U; ++i) {
+        value |= ((uint64_t)bytes[offset + i]) << (i * 8U);
+    }
+    return value;
+}
+
+static int parse_env_lingqu_object_ref(const char *env_name,
+                                       uint16_t expected_kind,
+                                       struct lingqu_obmm_object_ref_wire *ref_out)
+{
+    const char *value = getenv(env_name);
+    uint8_t bytes[W4_QWEN3_OBJECT_REF_BYTES];
+    size_t i;
+
+    if (!value || !ref_out) {
+        return -1;
+    }
+    if (strlen(value) != W4_QWEN3_OBJECT_REF_BYTES * 2U) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 object ref hex length invalid env=%s chars=%zu expected=%u\n",
+                env_name,
+                strlen(value),
+                (unsigned)(W4_QWEN3_OBJECT_REF_BYTES * 2U));
+        return -1;
+    }
+    for (i = 0; i < W4_QWEN3_OBJECT_REF_BYTES; ++i) {
+        int hi = hex_nibble_value(value[i * 2U]);
+        int lo = hex_nibble_value(value[i * 2U + 1U]);
+
+        if (hi < 0 || lo < 0) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 object ref hex invalid env=%s index=%zu\n",
+                    env_name,
+                    i);
+            return -1;
+        }
+        bytes[i] = (uint8_t)((hi << 4) | lo);
+    }
+    memset(ref_out, 0, sizeof(*ref_out));
+    ref_out->magic = qwen3_ref_read_u64_le(bytes, 0);
+    ref_out->layout_version = qwen3_ref_read_u16_le(bytes, 8);
+    ref_out->object_kind = qwen3_ref_read_u16_le(bytes, 10);
+    ref_out->state = qwen3_ref_read_u16_le(bytes, 12);
+    ref_out->flags = qwen3_ref_read_u16_le(bytes, 14);
+    ref_out->owner_entity = qwen3_ref_read_u32_le(bytes, 16);
+    ref_out->producer_entity = qwen3_ref_read_u32_le(bytes, 20);
+    ref_out->object_version = qwen3_ref_read_u64_le(bytes, 24);
+    ref_out->key_hash = qwen3_ref_read_u64_le(bytes, 32);
+    ref_out->payload_offset = qwen3_ref_read_u64_le(bytes, 40);
+    ref_out->payload_bytes = qwen3_ref_read_u64_le(bytes, 48);
+    ref_out->payload_checksum = qwen3_ref_read_u64_le(bytes, 56);
+    if (ref_out->magic != LINGQU_OBMM_OBJECT_REF_MAGIC ||
+        ref_out->layout_version != LINGQU_OBMM_OBJECT_REF_LAYOUT_VERSION ||
+        ref_out->object_kind != expected_kind ||
+        ref_out->state != LINGQU_OBJECT_STATE_COMMITTED_WIRE ||
+        ref_out->payload_bytes == 0 ||
+        ref_out->payload_checksum == 0) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 object ref invalid env=%s kind=%u expected=%u"
+                " state=%u bytes=%" PRIu64 " checksum=0x%016" PRIx64 "\n",
+                env_name,
+                ref_out->object_kind,
+                expected_kind,
+                ref_out->state,
+                ref_out->payload_bytes,
+                ref_out->payload_checksum);
+        return -1;
+    }
+    return 0;
+}
+
 static void parse_env_u64_csv_bounded(const char *key,
                                       uint64_t *values,
                                       uint64_t value_capacity,
@@ -4888,6 +5005,20 @@ int main(void)
     guest_decode_step = env_u64_or_default("SIM_QWEN3_GUEST_DECODE_STEP", 0);
     guest_decode_steps = env_u64_or_default("SIM_QWEN3_GUEST_DECODE_STEPS", 1);
     qwen3_engram_config.enabled = env_bool_is_one("SIM_QWEN3_GUEST_ENGRAM");
+    const char *context_op = getenv("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP");
+    bool has_context_table_ref =
+        env_nonempty("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF");
+    bool has_context_indices_ref =
+        env_nonempty("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF");
+    bool has_context_gate_ref =
+        env_nonempty("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF");
+    if (!qwen3_engram_config.enabled &&
+        (has_context_table_ref || has_context_indices_ref || has_context_gate_ref)) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 engram context object refs require engram "
+                "hint=set SIM_QWEN3_GUEST_ENGRAM=1 or unset SIM_QWEN3_GUEST_ENGRAM_CONTEXT_*_REF\n");
+        return 1;
+    }
     if (qwen3_engram_config.enabled) {
         const char *engram_mode = getenv("SIM_QWEN3_GUEST_ENGRAM_MODE");
 
@@ -4898,21 +5029,63 @@ int main(void)
                     engram_mode);
             return 1;
         }
-        {
-            const char *context_op = getenv("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP");
-
-            if (context_op && context_op[0] != '\0' &&
-                strcmp(context_op, "disabled") != 0 &&
-                strcmp(context_op, "none") != 0 &&
-                strcmp(context_op, "cpu") != 0 &&
-                strcmp(context_op, "cpu-reference") != 0 &&
-                strcmp(context_op, "simpler-host") != 0) {
+        if (context_op && context_op[0] != '\0' &&
+            strcmp(context_op, "disabled") != 0 &&
+            strcmp(context_op, "none") != 0 &&
+            strcmp(context_op, "cpu") != 0 &&
+            strcmp(context_op, "cpu-reference") != 0 &&
+            strcmp(context_op, "simpler-host") != 0) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 engram context op not wired into guest decode "
+                    "context_op=%s hint=fused-simt requires P5.3 runtime launch integration\n",
+                    context_op);
+            return 1;
+        }
+        if (has_context_table_ref || has_context_indices_ref || has_context_gate_ref) {
+            if (!has_context_table_ref || !has_context_indices_ref || !has_context_gate_ref) {
                 fprintf(stderr,
-                        "[w4_guest] fail qwen3 engram context op not wired into guest decode "
-                        "context_op=%s hint=fused-simt requires P5.3 runtime launch integration\n",
-                        context_op);
+                        "[w4_guest] fail qwen3 engram context object refs incomplete "
+                        "table_ref=%u indices_ref=%u gate_weight_ref=%u "
+                        "hint=export all SIM_QWEN3_GUEST_ENGRAM_CONTEXT_*_REF vars\n",
+                        has_context_table_ref ? 1U : 0U,
+                        has_context_indices_ref ? 1U : 0U,
+                        has_context_gate_ref ? 1U : 0U);
                 return 1;
             }
+            if (!context_op || context_op[0] == '\0' ||
+                strcmp(context_op, "disabled") == 0 ||
+                strcmp(context_op, "none") == 0) {
+                fprintf(stderr,
+                        "[w4_guest] fail qwen3 engram context object refs ignored "
+                        "context_op=%s hint=set SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=cpu-reference "
+                        "or simpler-host\n",
+                        context_op && context_op[0] != '\0' ? context_op : "unset");
+                return 1;
+            }
+            if (parse_env_lingqu_object_ref(
+                    "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF",
+                    W4_QWEN3_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
+                    &qwen3_engram_config.context_table_ref) != 0 ||
+                parse_env_lingqu_object_ref(
+                    "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF",
+                    W4_QWEN3_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
+                    &qwen3_engram_config.context_indices_ref) != 0 ||
+                parse_env_lingqu_object_ref(
+                    "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF",
+                    W4_QWEN3_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
+                    &qwen3_engram_config.context_gate_weight_ref) != 0) {
+                return 1;
+            }
+            qwen3_engram_config.context_object_refs_enabled = true;
+        } else if (context_op && context_op[0] != '\0' &&
+                   strcmp(context_op, "disabled") != 0 &&
+                   strcmp(context_op, "none") != 0) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 engram context object refs required "
+                    "context_op=%s hint=materialize Lingqu Memory Service context objects "
+                    "and export all SIM_QWEN3_GUEST_ENGRAM_CONTEXT_*_REF vars\n",
+                    context_op);
+            return 1;
         }
     }
     {
@@ -4960,6 +5133,25 @@ int main(void)
                supernode_clock.bootstrap_monotonic_ms,
                supernode_clock.bootstrap_realtime_ms,
                supernode_clock.monotonic_to_supernode_offset_ms);
+        if (qwen3_engram_config.context_object_refs_enabled) {
+            const char *table_ref = getenv("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF");
+            const char *indices_ref = getenv("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF");
+            const char *gate_ref =
+                getenv("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF");
+            const char *registry_dir = getenv("SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR");
+
+            printf("[w4_guest] stage qwen3_engram_context_object_refs local=%s node=%u"
+                   " table_ref_chars=%zu indices_ref_chars=%zu gate_weight_ref_chars=%zu"
+                   " registry_dir=%s source=env_contract target=sim_uapi status=ok\n",
+                   role,
+                   w4_cluster_role_index(role, cluster_node_count, &local_node) ?
+                       local_node + 1U :
+                       0U,
+                   table_ref ? strlen(table_ref) : (size_t)0,
+                   indices_ref ? strlen(indices_ref) : (size_t)0,
+                   gate_ref ? strlen(gate_ref) : (size_t)0,
+                   registry_dir && registry_dir[0] != '\0' ? registry_dir : "default");
+        }
     }
     snprintf(request_id, sizeof(request_id), "w4-%s-request-0", role);
     snprintf(prefix_group, sizeof(prefix_group), "%s-prefix-0", role);
@@ -6420,6 +6612,9 @@ decode_round_start:
             if (guest_decode_step > 0) {
                 object_ref_count++;
             }
+            if (qwen3_engram_config.context_object_refs_enabled) {
+                object_ref_count += 3U;
+            }
             if (object_ref_count > W4_QWEN3_OBJECT_REF_MAX_COUNT) {
                 fprintf(stderr,
                         "[w4_guest] fail qwen3 range dispatch object ref count too large count=%u max=%u\n",
@@ -6604,6 +6799,44 @@ decode_round_start:
             } else {
                 kv_loaded_ms = kv_resolved_ms;
             }
+        }
+        if (qwen3_engram_config.context_object_refs_enabled) {
+            write_segment_bytes(ep_mmio,
+                                W4_QWEN3_OBJECT_REF_TABLE_OFFSET +
+                                    ((uint64_t)object_ref_write_index *
+                                     W4_QWEN3_OBJECT_REF_BYTES),
+                                (const uint8_t *)&qwen3_engram_config.context_table_ref,
+                                W4_QWEN3_OBJECT_REF_BYTES);
+            object_ref_write_index++;
+            write_segment_bytes(ep_mmio,
+                                W4_QWEN3_OBJECT_REF_TABLE_OFFSET +
+                                    ((uint64_t)object_ref_write_index *
+                                     W4_QWEN3_OBJECT_REF_BYTES),
+                                (const uint8_t *)&qwen3_engram_config.context_indices_ref,
+                                W4_QWEN3_OBJECT_REF_BYTES);
+            object_ref_write_index++;
+            write_segment_bytes(
+                ep_mmio,
+                W4_QWEN3_OBJECT_REF_TABLE_OFFSET +
+                    ((uint64_t)object_ref_write_index * W4_QWEN3_OBJECT_REF_BYTES),
+                (const uint8_t *)&qwen3_engram_config.context_gate_weight_ref,
+                W4_QWEN3_OBJECT_REF_BYTES);
+            object_ref_write_index++;
+            printf("[w4_guest] stage qwen3_engram_context_object_refs_loaded node=%u step=%" PRIu64
+                   " refs=3 table_bytes=%" PRIu64 " indices_bytes=%" PRIu64
+                   " gate_weight_bytes=%" PRIu64
+                   " table_checksum=0x%016" PRIx64
+                   " indices_checksum=0x%016" PRIx64
+                   " gate_weight_checksum=0x%016" PRIx64
+                   " source=env_contract target=uapi_object_ref status=ok\n",
+                   dispatch_node + 1U,
+                   guest_decode_step,
+                   qwen3_engram_config.context_table_ref.payload_bytes,
+                   qwen3_engram_config.context_indices_ref.payload_bytes,
+                   qwen3_engram_config.context_gate_weight_ref.payload_bytes,
+                   qwen3_engram_config.context_table_ref.payload_checksum,
+                   qwen3_engram_config.context_indices_ref.payload_checksum,
+                   qwen3_engram_config.context_gate_weight_ref.payload_checksum);
         }
     }
 

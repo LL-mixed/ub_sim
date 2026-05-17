@@ -855,10 +855,21 @@ fn qwen3_guest_engram_env_vars(
     config: &Qwen3EngramConfig,
     session_id: u64,
 ) -> Vec<(String, String)> {
+    qwen3_guest_engram_env_vars_from_lookup(config, session_id, |key| env::var(key).ok())
+}
+
+fn qwen3_guest_engram_env_vars_from_lookup<F>(
+    config: &Qwen3EngramConfig,
+    session_id: u64,
+    mut lookup: F,
+) -> Vec<(String, String)>
+where
+    F: FnMut(&str) -> Option<String>,
+{
     if !config.enabled {
         return Vec::new();
     }
-    vec![
+    let mut vars = vec![
         ("SIM_QWEN3_GUEST_ENGRAM".to_string(), "1".to_string()),
         (
             "SIM_QWEN3_GUEST_ENGRAM_MODE".to_string(),
@@ -897,7 +908,18 @@ fn qwen3_guest_engram_env_vars(
             "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP".to_string(),
             qwen3_engram_context_op_name(config.context_op).to_string(),
         ),
-    ]
+    ];
+    for key in [
+        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF,
+        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF,
+        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF,
+        SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+    ] {
+        if let Some(value) = lookup(key).filter(|value| !value.trim().is_empty()) {
+            vars.push((key.to_string(), value));
+        }
+    }
+    vars
 }
 
 fn qwen3_scenario_path_from_value(value: &str) -> PathBuf {
@@ -1904,19 +1926,21 @@ mod tests {
         qwen3_guest_candidate_records, qwen3_guest_decode_loop_args_from,
         qwen3_guest_default_w5_profile,
         qwen3_guest_dense_runtime, qwen3_guest_engram_candidate_counts,
-        qwen3_guest_engram_env_vars, qwen3_guest_engram_expected_terminal_rewrites,
-        qwen3_guest_engram_history_lengths, qwen3_guest_engram_object_transport_report,
-        qwen3_guest_engram_report, qwen3_guest_engram_report_from_guest_log,
-        qwen3_guest_engram_selected_tokens, qwen3_guest_log_dir_from_script_output,
-        qwen3_guest_log_match_count, qwen3_guest_terminal_candidate_records,
-        qwen3_guest_terminal_text_lossy_from_tokenizer, qwen3_guest_terminal_tokens,
-        qwen3_guest_timing_summary, qwen3_range_forward_args_from,
+        qwen3_guest_engram_env_vars, qwen3_guest_engram_env_vars_from_lookup,
+        qwen3_guest_engram_expected_terminal_rewrites, qwen3_guest_engram_history_lengths,
+        qwen3_guest_engram_object_transport_report, qwen3_guest_engram_report,
+        qwen3_guest_engram_report_from_guest_log, qwen3_guest_engram_selected_tokens,
+        qwen3_guest_log_dir_from_script_output, qwen3_guest_log_match_count,
+        qwen3_guest_terminal_candidate_records, qwen3_guest_terminal_text_lossy_from_tokenizer,
+        qwen3_guest_terminal_tokens, qwen3_guest_timing_summary, qwen3_range_forward_args_from,
         run_lingqu_memory_validate_durable_store, run_lingqu_memory_validate_flat_materialize,
         run_lingqu_memory_validate_flat_query, run_lingqu_memory_validate_w5_engram_object_ref,
         simpler_host_matmul_artifact_producer_path, validate_qwen3_dense_weights_path,
         validate_w5_inference_profile, Qwen3CandidateRecord, Qwen3DecodeReportVerbosity,
         Qwen3EngramConfig, Qwen3EngramContextOp, Qwen3EngramMode, Qwen3EngramPool,
         Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
+        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF, SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF,
+        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF, SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
     };
     use std::env;
     use std::fs;
@@ -2259,6 +2283,39 @@ mod tests {
         assert!(vars.contains(&(
             "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP".to_string(),
             "fused-simt".to_string()
+        )));
+    }
+
+    #[test]
+    fn qwen3_guest_engram_env_vars_forward_context_object_ref_contract() {
+        let config = Qwen3EngramConfig {
+            enabled: true,
+            context_op: Qwen3EngramContextOp::CpuReference,
+            ..Qwen3EngramConfig::default()
+        };
+        let vars = qwen3_guest_engram_env_vars_from_lookup(&config, 0x1234, |key| match key {
+            SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF => Some("table-ref".to_string()),
+            SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF => Some("indices-ref".to_string()),
+            SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF => Some("gate-ref".to_string()),
+            SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR => Some("/tmp/qwen3-registry".to_string()),
+            _ => None,
+        });
+
+        assert!(vars.contains(&(
+            SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF.to_string(),
+            "table-ref".to_string()
+        )));
+        assert!(vars.contains(&(
+            SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF.to_string(),
+            "indices-ref".to_string()
+        )));
+        assert!(vars.contains(&(
+            SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF.to_string(),
+            "gate-ref".to_string()
+        )));
+        assert!(vars.contains(&(
+            SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR.to_string(),
+            "/tmp/qwen3-registry".to_string()
         )));
     }
 
