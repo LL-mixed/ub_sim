@@ -1216,6 +1216,7 @@ fn run_lingqu_memory_validate_service_path() -> anyhow::Result<()> {
         HotMemoryMaterializeReq {
             state_id: "hot/default/0".to_string(),
             query_result_id: query_result.result_id.clone(),
+            query_result_manifest_ref: None,
             table_shape: vec![1, 4],
             table_values: vec![0.1, 0.2, 0.3, 0.4],
             indices: vec![0],
@@ -1446,7 +1447,6 @@ fn run_lingqu_memory_validate_flat_query() -> anyhow::Result<()> {
 
 fn run_lingqu_memory_validate_flat_materialize() -> anyhow::Result<()> {
     let (mut memory_service, mut durable_store, result) = build_lingqu_memory_flat_query_sample()?;
-    let query_result_path = durable_store.persist_query_result(&result)?;
     let mut object_service = LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
     let hot_state = memory_service.materialize_hot_state_from_query(
         &mut durable_store,
@@ -1459,6 +1459,10 @@ fn run_lingqu_memory_validate_flat_materialize() -> anyhow::Result<()> {
             now_us: 200,
         },
     )?;
+    let query_result_path = hot_state
+        .query_result_manifest_ref
+        .as_ref()
+        .context("missing hot query result manifest ref")?;
     let engram_state =
         memory_service.build_engram_state("engram/flat", &hot_state.state_id, None, 300)?;
     let object_report = object_service.report();
@@ -1633,7 +1637,6 @@ fn run_lingqu_memory_validate_w5_engram_object_ref() -> anyhow::Result<()> {
         },
         100,
     )?;
-    let query_result_path = durable_store.persist_query_result(&result)?;
     let mut object_service = LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
     let hot_state = memory_service.materialize_hot_state_from_query(
         &mut durable_store,
@@ -1646,6 +1649,10 @@ fn run_lingqu_memory_validate_w5_engram_object_ref() -> anyhow::Result<()> {
             now_us: 200,
         },
     )?;
+    let query_result_path = hot_state
+        .query_result_manifest_ref
+        .as_ref()
+        .context("missing hot query result manifest ref")?;
     let gate_values = (0..W5_ENGRAM_HIDDEN_SIZE)
         .map(|dim| ((dim % 29) as f32 - 14.0) / 16384.0)
         .collect::<Vec<_>>();

@@ -703,7 +703,9 @@ Current implementation status:
   versions/checksums, evidence refs, and its own checksum/version, so query
   output is an auditable memory decision rather than only a top-k vector list.
   Query results can be persisted to and restored from DFS manifests with
-  checksum validation.
+  checksum validation, and QueryResult-driven hot materialization now carries
+  that DFS manifest ref into both `HotMemoryStateObject` and
+  `EngramStateObject`.
 - Step 5 currently exists as validation/smoke CLI modes, not yet as external
   ingest/embed/build-index commands.
 - Step 6 now has two paths: explicit caller-provided tensor materialization and

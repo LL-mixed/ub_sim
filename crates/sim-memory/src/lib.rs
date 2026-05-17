@@ -907,6 +907,7 @@ pub struct HotTensorObjectRef {
 pub struct HotMemoryStateObject {
     pub state_id: String,
     pub query_result_id: String,
+    pub query_result_manifest_ref: Option<LingquDfsPath>,
     pub table: HotTensorObjectRef,
     pub indices: HotTensorObjectRef,
     pub scores: HotTensorObjectRef,
@@ -918,6 +919,9 @@ impl HotMemoryStateObject {
     pub fn validate(&self) -> MemoryResult<()> {
         required_str(&self.state_id, "hot_state_id")?;
         required_str(&self.query_result_id, "query_result_id")?;
+        if let Some(path) = &self.query_result_manifest_ref {
+            path.validate("query_result_manifest_ref")?;
+        }
         validate_hot_ref(&self.table)?;
         validate_hot_ref(&self.indices)?;
         validate_hot_ref(&self.scores)?;
@@ -930,6 +934,7 @@ impl HotMemoryStateObject {
 pub struct EngramStateObject {
     pub state_id: String,
     pub hot_memory_state_id: String,
+    pub query_result_manifest_ref: Option<LingquDfsPath>,
     pub table: HotTensorObjectRef,
     pub indices: HotTensorObjectRef,
     pub gate: Option<HotTensorObjectRef>,
@@ -940,6 +945,7 @@ pub struct EngramStateObject {
 pub struct HotMemoryMaterializeReq {
     pub state_id: String,
     pub query_result_id: String,
+    pub query_result_manifest_ref: Option<LingquDfsPath>,
     pub table_shape: Vec<u64>,
     pub table_values: Vec<f32>,
     pub indices: Vec<u32>,
@@ -1409,6 +1415,9 @@ impl LingquMemoryService {
     ) -> MemoryResult<HotMemoryStateObject> {
         required_str(&req.state_id, "hot_state_id")?;
         required_str(&req.query_result_id, "query_result_id")?;
+        if let Some(path) = &req.query_result_manifest_ref {
+            path.validate("query_result_manifest_ref")?;
+        }
         let query_result = self
             .query_results
             .get(&req.query_result_id)
@@ -1463,6 +1472,7 @@ impl LingquMemoryService {
         let state = HotMemoryStateObject {
             state_id: req.state_id,
             query_result_id: req.query_result_id,
+            query_result_manifest_ref: req.query_result_manifest_ref,
             table,
             indices,
             scores,
@@ -1546,11 +1556,13 @@ impl LingquMemoryService {
             })?);
         }
 
+        let query_result_manifest_ref = Some(durable_store.persist_query_result(&query_result)?);
         self.materialize_hot_state(
             object_service,
             HotMemoryMaterializeReq {
                 state_id: req.state_id,
                 query_result_id: req.query_result_id,
+                query_result_manifest_ref,
                 table_shape: vec![
                     query_result.matches.len() as u64,
                     u64::from(table_dims.unwrap()),
@@ -1583,6 +1595,7 @@ impl LingquMemoryService {
         let engram = EngramStateObject {
             state_id,
             hot_memory_state_id: hot_memory_state_id.to_string(),
+            query_result_manifest_ref: hot_state.query_result_manifest_ref.clone(),
             table: hot_state.table.clone(),
             indices: hot_state.indices.clone(),
             gate,
@@ -2437,6 +2450,14 @@ mod tests {
             )
             .unwrap();
 
+        assert_eq!(
+            hot_state
+                .query_result_manifest_ref
+                .as_ref()
+                .expect("query result manifest")
+                .path,
+            "/lingqu/memory/query-results/query-result_query_flat.json"
+        );
         assert_eq!(hot_state.selected_chunk_ids, ["chunk/a", "chunk/b"]);
         assert_eq!(hot_state.table.shape, vec![2, 2]);
         assert_eq!(hot_state.indices.shape, vec![2]);
@@ -2501,6 +2522,7 @@ mod tests {
                 HotMemoryMaterializeReq {
                     state_id: "hot/0".to_string(),
                     query_result_id: result.result_id,
+                    query_result_manifest_ref: None,
                     table_shape: vec![1, 4],
                     table_values: vec![0.1, 0.2, 0.3, 0.4],
                     indices: vec![0],
@@ -2555,6 +2577,7 @@ mod tests {
                 HotMemoryMaterializeReq {
                     state_id: "hot/0".to_string(),
                     query_result_id: result.result_id,
+                    query_result_manifest_ref: None,
                     table_shape: vec![1, 2],
                     table_values: vec![0.1, 0.2],
                     indices: vec![0],
@@ -2569,6 +2592,10 @@ mod tests {
             .build_engram_state("engram/0", &hot_state.state_id, None, 300)
             .unwrap();
 
+        assert_eq!(
+            engram.query_result_manifest_ref,
+            hot_state.query_result_manifest_ref
+        );
         assert_eq!(engram.table.object_key, hot_state.table.object_key);
         assert_eq!(engram.indices.object_key, hot_state.indices.object_key);
     }
@@ -2600,6 +2627,7 @@ mod tests {
                 HotMemoryMaterializeReq {
                     state_id: "hot/0".to_string(),
                     query_result_id: result.result_id,
+                    query_result_manifest_ref: None,
                     table_shape: vec![1, 4],
                     table_values: vec![0.1, 0.2, 0.3, 0.4],
                     indices: vec![0],
@@ -2666,6 +2694,7 @@ mod tests {
                 HotMemoryMaterializeReq {
                     state_id: "hot/0".to_string(),
                     query_result_id: result.result_id,
+                    query_result_manifest_ref: None,
                     table_shape: vec![1, 4],
                     table_values: vec![0.1, 0.2, 0.3, 0.4],
                     indices: vec![0],
