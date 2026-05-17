@@ -1103,13 +1103,14 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
     match mode.as_str() {
         "build-index" => run_lingqu_memory_build_index_cli(&args),
         "ingest" => run_lingqu_memory_ingest_cli(&args),
+        "query" => run_lingqu_memory_query_cli(&args),
         "validate-service-path" => run_lingqu_memory_validate_service_path(),
         "validate-durable-store" => run_lingqu_memory_validate_durable_store(),
         "validate-flat-query" => run_lingqu_memory_validate_flat_query(),
         "validate-flat-materialize" => run_lingqu_memory_validate_flat_materialize(),
         "validate-w5-engram-object-ref" => run_lingqu_memory_validate_w5_engram_object_ref(),
         _ => anyhow::bail!(
-            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
+            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, query, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
         ),
     }
 }
@@ -1125,6 +1126,124 @@ struct LingquMemoryEmbeddingInput {
 struct LingquMemoryEmbeddingVectorInput {
     chunk_id: String,
     values: Vec<f32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LingquMemoryQueryEmbeddingInput {
+    model_version: String,
+    values: Vec<f32>,
+}
+
+fn run_lingqu_memory_query_cli(args: &[String]) -> anyhow::Result<()> {
+    let catalog_path = PathBuf::from(required_cli_arg(args, "--catalog")?);
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let query_embedding_path = PathBuf::from(required_cli_arg(args, "--query-embedding-json")?);
+    let query_id = required_cli_arg(args, "--query-id")?;
+    let top_k = required_cli_u32(args, "--top-k")?;
+    let now_us = optional_cli_u64(args, "--now-us")?.unwrap_or(1);
+
+    if top_k == 0 {
+        anyhow::bail!("--top-k must be non-zero");
+    }
+    let snapshot =
+        load_lingqu_memory_catalog_snapshot_if_exists(&catalog_path)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "catalog snapshot does not exist: {}",
+                catalog_path.display()
+            )
+        })?;
+    let query_embedding_bytes = fs::read(&query_embedding_path).with_context(|| {
+        format!(
+            "read query embedding json {}",
+            query_embedding_path.display()
+        )
+    })?;
+    let query_embedding =
+        serde_json::from_slice::<LingquMemoryQueryEmbeddingInput>(&query_embedding_bytes)
+            .with_context(|| {
+                format!(
+                    "decode query embedding json {}",
+                    query_embedding_path.display()
+                )
+            })?;
+    validate_lingqu_memory_query_embedding_input(&query_embedding)?;
+
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let query_payload = cli_f32_vec_to_le_bytes(&query_embedding.values);
+    let query_block = optional_cli_arg(args, "--query-block")?
+        .unwrap_or_else(|| format!("block/memory/query/{}", cli_path_id(&query_id)));
+    let query_ref = durable_store
+        .write_block_payload(query_block, query_payload)
+        .context("write query embedding payload to Lingqu Block store")?;
+
+    let mut memory_service = LingquMemoryService::new();
+    memory_service
+        .import_catalog_snapshot(snapshot.clone())
+        .context("import catalog snapshot")?;
+    let result = memory_service
+        .query_memory_flat(
+            &mut durable_store,
+            MemoryQuery {
+                query_id: query_id.clone(),
+                corpus_ids: vec![snapshot.catalog.catalog_id.clone()],
+                scope_filter: vec![MemoryScope::Project],
+                visibility_filter: vec![MemoryVisibility::ProjectShared],
+                min_trust: MemoryTrustLevel::UserConfirmed,
+                min_confidence: 0.0,
+                embedding_model_version: query_embedding.model_version.clone(),
+                top_k: usize::try_from(top_k)
+                    .map_err(|_| anyhow::anyhow!("--top-k exceeds usize"))?,
+                query_embedding_ref: Some(query_ref.clone()),
+            },
+            now_us,
+        )
+        .context("query Lingqu memory flat index")?;
+    let query_result_path = durable_store
+        .persist_query_result(&result)
+        .context("persist query result")?;
+    save_lingqu_memory_durable_store(&store_path, &durable_store)?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: query");
+    println!("  catalog: {}", snapshot.catalog.catalog_id);
+    println!("  catalog_path: {}", catalog_path.display());
+    println!("  store_path: {}", store_path.display());
+    println!("  query_id: {query_id}");
+    println!("  query_result: {}", result.result_id);
+    println!("  query_result_manifest: {}", query_result_path.path);
+    println!("  query_result_version: {}", result.version);
+    println!("  query_result_checksum: {:#x}", result.checksum);
+    println!(
+        "  embedding_model_version: {}",
+        query_embedding.model_version
+    );
+    println!("  query_embedding_block: {}", query_ref.block.0);
+    println!("  query_embedding_bytes: {}", query_ref.bytes);
+    println!("  query_embedding_checksum: {:#x}", query_ref.checksum);
+    println!("  matches: {}", result.matches.len());
+    println!(
+        "  selected_records: {}",
+        result.selected_record_ids.join(",")
+    );
+    println!("  selected_chunks: {}", result.selected_chunk_ids.join(","));
+    if let Some(top) = result.matches.first() {
+        println!("  top_record: {}", top.record_id);
+        println!("  top_chunk: {}", top.chunk_id);
+        println!("  top_score: {:.6}", top.score);
+    }
+    Ok(())
+}
+
+fn validate_lingqu_memory_query_embedding_input(
+    input: &LingquMemoryQueryEmbeddingInput,
+) -> anyhow::Result<()> {
+    if input.model_version.trim().is_empty() {
+        anyhow::bail!("query embedding json model_version must not be empty");
+    }
+    if input.values.is_empty() {
+        anyhow::bail!("query embedding json values must not be empty");
+    }
+    Ok(())
 }
 
 fn run_lingqu_memory_build_index_cli(args: &[String]) -> anyhow::Result<()> {
@@ -2479,13 +2598,15 @@ mod tests {
         qwen3_guest_terminal_candidate_records, qwen3_guest_terminal_text_lossy_from_tokenizer,
         qwen3_guest_terminal_tokens, qwen3_guest_timing_summary, qwen3_range_forward_args_from,
         run_lingqu_memory_build_index_cli, run_lingqu_memory_ingest_cli,
-        run_lingqu_memory_validate_durable_store, run_lingqu_memory_validate_flat_materialize,
-        run_lingqu_memory_validate_flat_query, run_lingqu_memory_validate_w5_engram_object_ref,
+        run_lingqu_memory_query_cli, run_lingqu_memory_validate_durable_store,
+        run_lingqu_memory_validate_flat_materialize, run_lingqu_memory_validate_flat_query,
+        run_lingqu_memory_validate_w5_engram_object_ref,
         simpler_host_matmul_artifact_producer_path, validate_qwen3_dense_weights_path,
         validate_w5_inference_profile, LingquMemoryDurableStoreSnapshot, MemoryCatalogSnapshot,
-        Qwen3CandidateRecord, Qwen3DecodeReportVerbosity, Qwen3EngramConfig, Qwen3EngramContextOp,
-        Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
-        SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+        QueryResult, Qwen3CandidateRecord, Qwen3DecodeReportVerbosity, Qwen3EngramConfig,
+        Qwen3EngramContextOp, Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport,
+        Qwen3GuestDecodeLoopCliArgs, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
+        SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
     };
     use std::env;
     use std::fs;
@@ -3704,6 +3825,109 @@ stage qwen3_range_forward_runtime_output_publish node=2
         let store_snapshot =
             LingquMemoryDurableStoreSnapshot::from_json_bytes(&store_bytes).expect("decode store");
         assert_eq!(store_snapshot.block_payloads.len(), 2);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lingqu_memory_query_cli_persists_query_result() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_lingqu_memory_query_cli_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let source = root.join("note.md");
+        let catalog = root.join("catalog.json");
+        let store = root.join("store.json");
+        let embeddings = root.join("embeddings.json");
+        let query_embedding = root.join("query_embedding.json");
+        fs::write(&source, b"# Note\nreal memory source\n").expect("write source");
+        fs::write(
+            &embeddings,
+            serde_json::json!({
+                "model_version": "embed/test/v1",
+                "dims": 2,
+                "vectors": [
+                    {"chunk_id": "chunk/test/0", "values": [0.25, 0.75]}
+                ]
+            })
+            .to_string(),
+        )
+        .expect("write embeddings");
+        fs::write(
+            &query_embedding,
+            serde_json::json!({
+                "model_version": "embed/test/v1",
+                "values": [0.25, 0.75]
+            })
+            .to_string(),
+        )
+        .expect("write query embedding");
+
+        run_lingqu_memory_ingest_cli(&[
+            "--catalog".to_string(),
+            catalog.to_string_lossy().into_owned(),
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--source".to_string(),
+            source.to_string_lossy().into_owned(),
+            "--catalog-id".to_string(),
+            "corpus/test".to_string(),
+            "--namespace".to_string(),
+            "project/test".to_string(),
+            "--record-id".to_string(),
+            "record/test/0".to_string(),
+            "--chunk-id".to_string(),
+            "chunk/test/0".to_string(),
+            "--token-count".to_string(),
+            "4".to_string(),
+            "--embedding-model-version".to_string(),
+            "embed/test/v1".to_string(),
+        ])
+        .expect("ingest");
+        run_lingqu_memory_build_index_cli(&[
+            "--catalog".to_string(),
+            catalog.to_string_lossy().into_owned(),
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--embedding-json".to_string(),
+            embeddings.to_string_lossy().into_owned(),
+            "--index-id".to_string(),
+            "index/test/flat".to_string(),
+            "--segment-id".to_string(),
+            "segment/test/0".to_string(),
+        ])
+        .expect("build index");
+        run_lingqu_memory_query_cli(&[
+            "--catalog".to_string(),
+            catalog.to_string_lossy().into_owned(),
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--query-embedding-json".to_string(),
+            query_embedding.to_string_lossy().into_owned(),
+            "--query-id".to_string(),
+            "query/test/0".to_string(),
+            "--top-k".to_string(),
+            "1".to_string(),
+        ])
+        .expect("query");
+
+        let store_bytes = fs::read(&store).expect("read store");
+        let store_snapshot =
+            LingquMemoryDurableStoreSnapshot::from_json_bytes(&store_bytes).expect("decode store");
+        assert_eq!(store_snapshot.block_payloads.len(), 3);
+        let query_result_payload = store_snapshot
+            .dfs_payloads
+            .iter()
+            .find(|payload| payload.path.contains("query-result_query_test_0"))
+            .expect("query result dfs payload");
+        let query_result =
+            QueryResult::from_json_bytes(&query_result_payload.bytes).expect("query result");
+        assert_eq!(query_result.result_id, "query-result/query/test/0");
+        assert_eq!(query_result.selected_record_ids, ["record/test/0"]);
+        assert_eq!(query_result.selected_chunk_ids, ["chunk/test/0"]);
+        assert_eq!(query_result.matches.len(), 1);
+        assert_eq!(query_result.matches[0].score, 0.625);
         let _ = fs::remove_dir_all(&root);
     }
 }

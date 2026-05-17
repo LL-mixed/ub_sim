@@ -632,6 +632,13 @@ sim-cli lingqu-memory build-index \
   --embedding-json <embedding-vectors.json> \
   --index-id <index-id> \
   --segment-id <segment-id>
+
+sim-cli lingqu-memory query \
+  --catalog <catalog-snapshot.json> \
+  --store <durable-store.json> \
+  --query-embedding-json <query-vector.json> \
+  --query-id <query-id> \
+  --top-k <count>
 ```
 
 `ingest` reads a real source file, writes the source bytes into the local
@@ -642,6 +649,11 @@ committed `MemoryRecord`/`MemoryChunk`.
 payload into the same Lingqu Block durable-store snapshot, and registers a flat
 `VectorIndexObject` plus an `EmbeddingSegment`. It intentionally does not
 synthesize embeddings from source text.
+
+`query` reads an explicit query embedding from JSON, writes that query vector
+into Lingqu Block, ranks the flat index, persists the resulting `QueryResult`
+manifest into the durable-store DFS snapshot, and reports selected record/chunk
+ids. It intentionally does not embed prompt text inside the query command.
 
 ## Observability
 
@@ -740,12 +752,16 @@ Current implementation status:
   that DFS manifest ref into both `HotMemoryStateObject` and
   `EngramStateObject`.
 - Step 5 now has the first real external commands:
-  `sim-cli lingqu-memory ingest` and `sim-cli lingqu-memory build-index`.
+  `sim-cli lingqu-memory ingest`, `sim-cli lingqu-memory build-index`, and
+  `sim-cli lingqu-memory query`.
   `ingest` persists real source bytes into a local Lingqu Block durable-store
   snapshot and writes committed record/chunk metadata. `build-index` requires
   caller-provided embedding vectors, writes them into Lingqu Block, and
-  registers a flat vector index. Embed generation, query, and materialize
-  remain validation/smoke modes and still need product CLI entrypoints.
+  registers a flat vector index. `query` requires a caller-provided query
+  embedding, writes it into Lingqu Block, ranks the flat index, and persists a
+  checksum-validated `QueryResult` manifest into the DFS snapshot. Embed
+  generation and materialize remain validation/smoke modes and still need
+  product CLI entrypoints.
 - Step 6 now has two paths: explicit caller-provided tensor materialization and
   QueryResult-driven materialization that reads selected embedding rows from
   Lingqu Block and publishes OBMM-backed table, index, and score tensors through
