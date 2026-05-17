@@ -39,6 +39,105 @@ Lingqu Object Service remains the authority for object identity, placement,
 version, checksum, owner, and lifecycle. It is not the semantic retrieval
 engine.
 
+## Memory Service Versus Vector Database
+
+If Lingqu Memory Service only stores embedding tables, runs top-k vector
+search, and returns ids plus scores, then it is just a small vector database.
+That is not the target architecture.
+
+A vector database solves this narrower problem:
+
+```text
+vector -> nearest neighbors
+```
+
+Its useful responsibilities are:
+
+- store vector rows;
+- build exact or approximate indexes;
+- run kNN or ANN search;
+- return ids, scores, and metadata.
+
+Lingqu Memory Service solves a broader long-term memory problem:
+
+```text
+durable semantic memory
+  -> audited retrieval result
+  -> hot runtime tensor state
+```
+
+Its responsibilities are:
+
+- decide which source content can become long-term memory;
+- preserve source provenance, evidence refs, trust, retention, security, PII,
+  expiry, quarantine, and version state as first-class fields;
+- persist memory catalogs through Lingqu DFS and payload bytes through Lingqu
+  Block;
+- own retrieval policy and query results, not just vector similarity;
+- convert selected memory into OBMM-backed hot tensor objects through the Hot
+  State Materializer;
+- expose `HotMemoryStateObject` and `EngramStateObject` refs that W5 decode can
+  resolve without reading DFS or Block;
+- report exactly which memory records, chunks, index versions, object refs,
+  checksums, and policies affected a decode run;
+- control feedback/writeback so model-generated content does not silently
+  become trusted memory.
+
+The vector index is an implementation backend inside the Memory Service. It
+can start as flat exact search over `EmbeddingSegment` pages, and later become
+HNSW, IVF, a Lingqu-native index, or an external vector database. Swapping the
+index backend must not change memory policy, audit semantics, hot-state object
+contracts, or W5 decode inputs.
+
+Traditional vector database output looks like:
+
+```text
+[{ id: chunk_id, score, metadata }]
+```
+
+Lingqu Memory Service output must remain structured around memory and runtime
+contracts:
+
+```text
+QueryResult {
+  selected_memory_ids,
+  selected_chunk_ids,
+  vector_index_id,
+  embedding_segment_versions,
+  trust_policy_result,
+  evidence_refs,
+  checksum,
+}
+
+HotMemoryStateObject {
+  table_object_ref,
+  indices_object_ref,
+  score_object_ref,
+  dtype,
+  shape,
+  object_versions,
+  object_checksums,
+}
+
+EngramStateObject {
+  table_object_ref,
+  indices_object_ref,
+  gate_feature_object_ref,
+  operator_config_ref,
+}
+```
+
+Therefore:
+
+- Vector DB is a retrieval engine.
+- Lingqu Memory Service is a long-term memory system.
+- Engram is a consumer of hot memory state, not the owner of memory
+  persistence.
+
+If an implementation only exposes `insert_embedding` and `search_embedding`,
+rename it to `VectorStore`; it is not the Lingqu Memory Service described by
+this design.
+
 ## Why
 
 Short W5 decode runs can validate wiring and timing, but they cannot create a
@@ -59,6 +158,7 @@ records, index versions, object refs, and checksums affected a decode run.
 ## Non-Goals
 
 - Do not build a production vector database in the first slice.
+- Do not let the Memory Service collapse into a generic vector database API.
 - Do not put ingestion, ranking, indexing, or persistence into the decode
   kernel.
 - Do not make deterministic synthetic engram fixtures the default for real W5
@@ -137,9 +237,10 @@ source docs / session logs / run summaries / user feedback
   -> DFS MemoryCorpusCatalog + Block chunk payloads
   -> Embedding Builder
   -> Block EmbeddingSegment payloads
-  -> DFS VectorIndexObject manifest
+  -> Vector Index Backend
+  -> DFS VectorIndexObject manifest + optional Block index pages
   -> Lingqu Memory Query
-  -> QueryResult with record/chunk ids and vector offsets
+  -> QueryResult with memory ids, record/chunk ids, policy result, and vector offsets
   -> Hot State Materializer
   -> OBMM-backed HotMemoryStateObject refs via Object Service
   -> W5 Engram Adapter
@@ -274,6 +375,23 @@ For the first implementation, `deterministic_small` or `flat` is enough. The
 model still needs this object so future approximate indexes do not require a
 data-model rewrite.
 
+### Vector Index Backend
+
+The vector index backend is replaceable. It is not the Memory Service public
+contract.
+
+Allowed backend shapes:
+
+- `flat`: exact scan over Block-backed `EmbeddingSegment` pages;
+- `deterministic_small`: fixture-only index for wiring and timing tests;
+- `hnsw` / `ivf`: future Lingqu-native approximate indexes;
+- external vector database adapter, if needed.
+
+Backend output is normalized into `QueryResult`. The backend must not decide
+memory trust, retention, PII policy, quarantine state, writeback policy, or W5
+hot-state layout. Those decisions stay in Lingqu Memory Service and its
+materializer/adapter boundary.
+
 ### MemoryQuery
 
 Request handled by Lingqu Memory Service or by a request planner before decode.
@@ -307,6 +425,9 @@ query_id: string
 vector_index_id: string
 selected_chunks: [(chunk_id, embedding_segment_id, row_offset, score)]
 selected_memory_ids: [memory_id]
+trust_policy_result: string
+evidence_refs: [Lingqu Block ref or DFS path]
+embedding_segment_versions: [(embedding_segment_id, version)]
 record_manifest_dfs_path: Lingqu DFS path
 checksum: u64
 version: u64
@@ -316,6 +437,10 @@ expires_at_us: optional u64
 
 `QueryResult` is semantic. It does not have to be shaped like the engram
 operator.
+
+Vector scores are only one input to this object. The result must also carry
+memory ids, chunk ids, index and segment versions, evidence, checksum, and the
+policy decision that allowed the selected memories to be used.
 
 ### HotMemoryStateObject
 
@@ -514,6 +639,7 @@ dfs_catalog_reads=...
 Timing should separate:
 
 - memory query and ranking;
+- vector index backend scan/search;
 - durable DFS catalog reads;
 - durable Block payload reads;
 - OBMM hot materialization;

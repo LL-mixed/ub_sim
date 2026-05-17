@@ -8,7 +8,10 @@ use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
-use sim_core::{BlockHash, SegmentHandle, TensorDType};
+use sim_core::{BlockHash, CompletionStatus, SegmentHandle, SimTimestamp, TensorDType};
+use sim_runtime::{BlockReadReq, BlockWriteReq};
+use sim_services::block::{BlockServiceProfile, BlockServiceStub};
+use sim_services::dfs::{DfsReadReq, DfsServiceProfile, DfsServiceStub, DfsWriteReq};
 use sim_services::object::{
     LingquObjectKind, LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
     LingquObjectServiceStub, LingquPayloadBackend, LingquPayloadPlacement,
@@ -38,6 +41,18 @@ pub enum LingquMemoryError {
     MissingVectorIndex(String),
     #[error("missing query result: {0}")]
     MissingQueryResult(String),
+    #[error("missing dfs path: {0}")]
+    MissingDfsPath(String),
+    #[error("missing block payload: {0}")]
+    MissingBlockPayload(String),
+    #[error("durable service operation failed: {0}")]
+    DurableServiceFailed(String),
+    #[error("payload checksum mismatch for {id}: expected {expected:#x}, got {actual:#x}")]
+    PayloadChecksumMismatch {
+        id: String,
+        expected: u64,
+        actual: u64,
+    },
     #[error("object publish failed: {0}")]
     ObjectPublishFailed(String),
     #[error("hot memory state must use OBMM-backed object refs: {0}")]
@@ -282,6 +297,231 @@ impl MemoryCatalogSnapshot {
             .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
         snapshot.validate()?;
         Ok(snapshot)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LingquMemoryDurableStats {
+    pub dfs_catalog_writes: u64,
+    pub dfs_catalog_reads: u64,
+    pub block_payload_writes: u64,
+    pub block_payload_reads: u64,
+    pub dfs_bytes_written: u64,
+    pub dfs_bytes_read: u64,
+    pub block_bytes_written: u64,
+    pub block_bytes_read: u64,
+}
+
+#[derive(Debug)]
+pub struct LingquMemoryDurableStore {
+    dfs_service: DfsServiceStub,
+    block_service: BlockServiceStub,
+    dfs_payloads: HashMap<String, Vec<u8>>,
+    block_payloads: HashMap<BlockHash, Vec<u8>>,
+    now_us: SimTimestamp,
+    stats: LingquMemoryDurableStats,
+}
+
+impl LingquMemoryDurableStore {
+    pub fn new() -> Self {
+        Self::with_profiles(DfsServiceProfile::default(), BlockServiceProfile::default())
+    }
+
+    pub fn with_profiles(
+        dfs_profile: DfsServiceProfile,
+        block_profile: BlockServiceProfile,
+    ) -> Self {
+        Self {
+            dfs_service: DfsServiceStub::new(dfs_profile),
+            block_service: BlockServiceStub::with_profile(block_profile),
+            dfs_payloads: HashMap::new(),
+            block_payloads: HashMap::new(),
+            now_us: 1,
+            stats: LingquMemoryDurableStats::default(),
+        }
+    }
+
+    pub fn stats(&self) -> LingquMemoryDurableStats {
+        self.stats
+    }
+
+    pub fn persist_catalog_snapshot(
+        &mut self,
+        snapshot: &MemoryCatalogSnapshot,
+    ) -> MemoryResult<LingquDfsPath> {
+        let bytes = snapshot.to_json_bytes()?;
+        let path = snapshot.catalog.dfs_path.clone();
+        path.validate("catalog.dfs_path")?;
+        self.submit_dfs_write(path.path.clone(), bytes)?;
+        Ok(path)
+    }
+
+    pub fn load_catalog_snapshot(
+        &mut self,
+        path: &LingquDfsPath,
+    ) -> MemoryResult<MemoryCatalogSnapshot> {
+        path.validate("catalog.dfs_path")?;
+        let bytes = self.submit_dfs_read(&path.path)?;
+        MemoryCatalogSnapshot::from_json_bytes(&bytes)
+    }
+
+    pub fn write_block_payload(
+        &mut self,
+        block: impl Into<String>,
+        bytes: Vec<u8>,
+    ) -> MemoryResult<LingquBlockPayloadRef> {
+        if bytes.is_empty() {
+            return Err(LingquMemoryError::MissingField("block_payload"));
+        }
+        let block = BlockHash(block.into());
+        if block.0.trim().is_empty() {
+            return Err(LingquMemoryError::MissingField("block"));
+        }
+        let checksum = checksum64(&bytes);
+        let payload_ref = LingquBlockPayloadRef {
+            block: block.clone(),
+            offset: 0,
+            bytes: bytes.len() as u64,
+            checksum,
+        };
+        self.submit_block_write(block, bytes)?;
+        Ok(payload_ref)
+    }
+
+    pub fn read_block_payload(
+        &mut self,
+        payload_ref: &LingquBlockPayloadRef,
+    ) -> MemoryResult<Vec<u8>> {
+        payload_ref.validate("block_payload_ref")?;
+        let payload = self.submit_block_read(&payload_ref.block)?;
+        let start = payload_ref.offset as usize;
+        let end = payload_ref.offset.checked_add(payload_ref.bytes).ok_or(
+            LingquMemoryError::InvalidValue {
+                field: "block_payload_ref",
+                reason: "payload range overflow",
+            },
+        )? as usize;
+        if end > payload.len() {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "block_payload_ref",
+                reason: "payload range exceeds block bytes",
+            });
+        }
+        let selected = payload[start..end].to_vec();
+        let actual = checksum64(&selected);
+        if actual != payload_ref.checksum {
+            return Err(LingquMemoryError::PayloadChecksumMismatch {
+                id: payload_ref.block.0.clone(),
+                expected: payload_ref.checksum,
+                actual,
+            });
+        }
+        self.stats.block_bytes_read += selected.len() as u64;
+        Ok(selected)
+    }
+
+    fn submit_dfs_write(&mut self, path: String, bytes: Vec<u8>) -> MemoryResult<()> {
+        let now = self.next_timestamp();
+        let handle = self
+            .dfs_service
+            .submit_write(
+                DfsWriteReq {
+                    task: None,
+                    path: path.clone(),
+                    bytes: bytes.len() as u64,
+                },
+                now,
+            )
+            .map_err(|err| LingquMemoryError::DurableServiceFailed(err.to_string()))?;
+        let events = self.dfs_service.poll_ready(SimTimestamp::MAX);
+        expect_success("dfs_write", handle.0, events)?;
+        self.stats.dfs_catalog_writes += 1;
+        self.stats.dfs_bytes_written += bytes.len() as u64;
+        self.dfs_payloads.insert(path, bytes);
+        Ok(())
+    }
+
+    fn submit_dfs_read(&mut self, path: &str) -> MemoryResult<Vec<u8>> {
+        if !self.dfs_payloads.contains_key(path) {
+            return Err(LingquMemoryError::MissingDfsPath(path.to_string()));
+        }
+        let now = self.next_timestamp();
+        let handle = self
+            .dfs_service
+            .submit_read(
+                DfsReadReq {
+                    task: None,
+                    path: path.to_string(),
+                },
+                now,
+            )
+            .map_err(|err| LingquMemoryError::DurableServiceFailed(err.to_string()))?;
+        let events = self.dfs_service.poll_ready(SimTimestamp::MAX);
+        expect_success("dfs_read", handle.0, events)?;
+        let bytes = self
+            .dfs_payloads
+            .get(path)
+            .cloned()
+            .ok_or_else(|| LingquMemoryError::MissingDfsPath(path.to_string()))?;
+        self.stats.dfs_catalog_reads += 1;
+        self.stats.dfs_bytes_read += bytes.len() as u64;
+        Ok(bytes)
+    }
+
+    fn submit_block_write(&mut self, block: BlockHash, bytes: Vec<u8>) -> MemoryResult<()> {
+        let now = self.next_timestamp();
+        let handle = self
+            .block_service
+            .submit_write(
+                BlockWriteReq {
+                    task: None,
+                    block: block.clone(),
+                },
+                now,
+            )
+            .map_err(|err| LingquMemoryError::DurableServiceFailed(err.to_string()))?;
+        let events = self.block_service.poll_ready(SimTimestamp::MAX);
+        expect_success("block_write", handle.0, events)?;
+        self.stats.block_payload_writes += 1;
+        self.stats.block_bytes_written += bytes.len() as u64;
+        self.block_payloads.insert(block, bytes);
+        Ok(())
+    }
+
+    fn submit_block_read(&mut self, block: &BlockHash) -> MemoryResult<Vec<u8>> {
+        if !self.block_payloads.contains_key(block) {
+            return Err(LingquMemoryError::MissingBlockPayload(block.0.clone()));
+        }
+        let now = self.next_timestamp();
+        let handle = self
+            .block_service
+            .submit_read(
+                BlockReadReq {
+                    task: None,
+                    block: block.clone(),
+                },
+                now,
+            )
+            .map_err(|err| LingquMemoryError::DurableServiceFailed(err.to_string()))?;
+        let events = self.block_service.poll_ready(SimTimestamp::MAX);
+        expect_success("block_read", handle.0, events)?;
+        self.stats.block_payload_reads += 1;
+        self.block_payloads
+            .get(block)
+            .cloned()
+            .ok_or_else(|| LingquMemoryError::MissingBlockPayload(block.0.clone()))
+    }
+
+    fn next_timestamp(&mut self) -> SimTimestamp {
+        let now = self.now_us;
+        self.now_us = self.now_us.saturating_add(1);
+        now
+    }
+}
+
+impl Default for LingquMemoryDurableStore {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -686,6 +926,26 @@ impl LingquMemoryService {
         Ok(())
     }
 
+    pub fn persist_catalog_to_dfs(
+        &self,
+        durable_store: &mut LingquMemoryDurableStore,
+        catalog_id: &str,
+    ) -> MemoryResult<LingquDfsPath> {
+        let snapshot = self.export_catalog_snapshot(catalog_id)?;
+        durable_store.persist_catalog_snapshot(&snapshot)
+    }
+
+    pub fn rebuild_catalog_from_dfs(
+        &mut self,
+        durable_store: &mut LingquMemoryDurableStore,
+        path: &LingquDfsPath,
+    ) -> MemoryResult<MemoryCorpusCatalog> {
+        let snapshot = durable_store.load_catalog_snapshot(path)?;
+        let catalog = snapshot.catalog.clone();
+        self.import_catalog_snapshot(snapshot)?;
+        Ok(catalog)
+    }
+
     pub fn ingest_record(
         &mut self,
         record: MemoryRecord,
@@ -796,6 +1056,105 @@ impl LingquMemoryService {
                         segment_id: segment.segment_id.clone(),
                         row: row.row,
                         score: deterministic_score(record, row.row),
+                        trust_level: record.trust_level,
+                        confidence: record.confidence,
+                    });
+                }
+            }
+        }
+
+        matches.sort_by(|left, right| {
+            right
+                .score
+                .partial_cmp(&left.score)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| left.record_id.cmp(&right.record_id))
+                .then_with(|| left.chunk_id.cmp(&right.chunk_id))
+        });
+        matches.truncate(query.top_k);
+
+        let result = QueryResult {
+            result_id: format!("query-result/{}", query.query_id),
+            query_id: query.query_id.clone(),
+            matches,
+            created_at_us: now_us,
+        };
+        self.query_results
+            .insert(result.result_id.clone(), result.clone());
+        Ok(result)
+    }
+
+    pub fn query_memory_flat(
+        &mut self,
+        durable_store: &mut LingquMemoryDurableStore,
+        query: MemoryQuery,
+        now_us: u64,
+    ) -> MemoryResult<QueryResult> {
+        query.validate()?;
+        let query_embedding_ref = query
+            .query_embedding_ref
+            .as_ref()
+            .ok_or(LingquMemoryError::MissingField("query_embedding_ref"))?;
+        let query_vector = read_f32_payload(durable_store, query_embedding_ref)?;
+        if query_vector.is_empty() {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "query_embedding_ref",
+                reason: "query embedding must not be empty",
+            });
+        }
+
+        let corpus_set = query.corpus_ids.iter().cloned().collect::<HashSet<_>>();
+        let scope_set = query.scope_filter.iter().copied().collect::<HashSet<_>>();
+        let visibility_set = query
+            .visibility_filter
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+        let mut matches = Vec::new();
+
+        for index in self.vector_indexes.values() {
+            if index.kind != VectorIndexKind::Flat
+                || !corpus_set.contains(&index.corpus_id)
+                || index.embedding_model_version != query.embedding_model_version
+            {
+                continue;
+            }
+            for segment_id in &index.segment_ids {
+                let segment = self.embedding_segments.get(segment_id).ok_or_else(|| {
+                    LingquMemoryError::MissingEmbeddingSegment(segment_id.clone())
+                })?;
+                if segment.dtype != TensorDType::F32 {
+                    return Err(LingquMemoryError::InvalidValue {
+                        field: "embedding_segment.dtype",
+                        reason: "flat query currently requires f32 embeddings",
+                    });
+                }
+                if segment.dims as usize != query_vector.len() {
+                    return Err(LingquMemoryError::InvalidValue {
+                        field: "embedding_segment.dims",
+                        reason: "segment dims must match query embedding dims",
+                    });
+                }
+                let segment_bytes = read_segment_bytes(durable_store, segment)?;
+                for row in &segment.row_map {
+                    let chunk = self
+                        .chunks
+                        .get(&row.chunk_id)
+                        .ok_or_else(|| LingquMemoryError::MissingChunk(row.chunk_id.clone()))?;
+                    let record = self
+                        .records
+                        .get(&chunk.record_id)
+                        .ok_or_else(|| LingquMemoryError::MissingRecord(chunk.record_id.clone()))?;
+                    if !record_selectable(record, &query, &scope_set, &visibility_set) {
+                        continue;
+                    }
+                    let row_vector = segment_row_f32_values(segment, &segment_bytes, row.row)?;
+                    matches.push(QueryMatch {
+                        chunk_id: row.chunk_id.clone(),
+                        record_id: record.record_id.clone(),
+                        segment_id: segment.segment_id.clone(),
+                        row: row.row,
+                        score: dot_product(&query_vector, &row_vector),
                         trust_level: record.trust_level,
                         confidence: record.confidence,
                     });
@@ -1042,6 +1401,121 @@ fn validate_table_shape(shape: &[u64], value_count: usize) -> MemoryResult<()> {
     Ok(())
 }
 
+fn expect_success(
+    op_name: &'static str,
+    op_id: u64,
+    events: Vec<sim_core::CompletionEvent>,
+) -> MemoryResult<()> {
+    let event = events
+        .into_iter()
+        .find(|event| event.op_id == op_id)
+        .ok_or_else(|| {
+            LingquMemoryError::DurableServiceFailed(format!("{op_name}:missing_completion"))
+        })?;
+    match event.status {
+        CompletionStatus::Success => Ok(()),
+        CompletionStatus::RetryableFailure { code } | CompletionStatus::FatalFailure { code } => {
+            Err(LingquMemoryError::DurableServiceFailed(format!(
+                "{op_name}:{code}"
+            )))
+        }
+    }
+}
+
+fn record_selectable(
+    record: &MemoryRecord,
+    query: &MemoryQuery,
+    scope_set: &HashSet<MemoryScope>,
+    visibility_set: &HashSet<MemoryVisibility>,
+) -> bool {
+    if record.state != MemoryRecordState::Committed {
+        return false;
+    }
+    if record.trust_level < query.min_trust || record.confidence < query.min_confidence {
+        return false;
+    }
+    if !scope_set.is_empty() && !scope_set.contains(&record.scope) {
+        return false;
+    }
+    if !visibility_set.is_empty() && !visibility_set.contains(&record.visibility) {
+        return false;
+    }
+    true
+}
+
+fn read_f32_payload(
+    durable_store: &mut LingquMemoryDurableStore,
+    payload_ref: &LingquBlockPayloadRef,
+) -> MemoryResult<Vec<f32>> {
+    let bytes = durable_store.read_block_payload(payload_ref)?;
+    f32_values_from_le_bytes(&bytes)
+}
+
+fn read_segment_bytes(
+    durable_store: &mut LingquMemoryDurableStore,
+    segment: &EmbeddingSegment,
+) -> MemoryResult<Vec<u8>> {
+    let mut bytes = Vec::new();
+    for payload_ref in &segment.vector_block_refs {
+        bytes.extend_from_slice(&durable_store.read_block_payload(payload_ref)?);
+    }
+    Ok(bytes)
+}
+
+fn segment_row_f32_values(
+    segment: &EmbeddingSegment,
+    segment_bytes: &[u8],
+    row: u32,
+) -> MemoryResult<Vec<f32>> {
+    let row_start = u64::from(row)
+        .checked_mul(u64::from(segment.row_stride_bytes))
+        .ok_or(LingquMemoryError::InvalidValue {
+            field: "embedding_segment.row_stride_bytes",
+            reason: "row byte offset overflow",
+        })? as usize;
+    let row_bytes = usize::try_from(segment.dims)
+        .ok()
+        .and_then(|dims| dims.checked_mul(4))
+        .ok_or(LingquMemoryError::InvalidValue {
+            field: "embedding_segment.dims",
+            reason: "row byte length overflow",
+        })?;
+    let row_end = row_start
+        .checked_add(row_bytes)
+        .ok_or(LingquMemoryError::InvalidValue {
+            field: "embedding_segment.row_stride_bytes",
+            reason: "row byte range overflow",
+        })?;
+    if row_end > segment_bytes.len() {
+        return Err(LingquMemoryError::InvalidValue {
+            field: "embedding_segment.vector_block_refs",
+            reason: "segment vector page is shorter than row map requires",
+        });
+    }
+    f32_values_from_le_bytes(&segment_bytes[row_start..row_end])
+}
+
+fn f32_values_from_le_bytes(bytes: &[u8]) -> MemoryResult<Vec<f32>> {
+    if bytes.len() % 4 != 0 {
+        return Err(LingquMemoryError::InvalidValue {
+            field: "f32_payload",
+            reason: "payload length must be a multiple of 4",
+        });
+    }
+    let mut values = Vec::with_capacity(bytes.len() / 4);
+    for chunk in bytes.chunks_exact(4) {
+        values.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    }
+    Ok(values)
+}
+
+fn dot_product(left: &[f32], right: &[f32]) -> f32 {
+    left.iter()
+        .zip(right.iter())
+        .map(|(left, right)| left * right)
+        .sum()
+}
+
 fn deterministic_score(record: &MemoryRecord, row: u32) -> f32 {
     let trust = match record.trust_level {
         MemoryTrustLevel::SystemVerified => 1.0,
@@ -1209,6 +1683,206 @@ mod tests {
 
         assert_eq!(result.matches.len(), 1);
         assert_eq!(result.matches[0].chunk_id, "chunk/0");
+    }
+
+    #[test]
+    fn durable_store_persists_catalog_snapshot_through_dfs() {
+        let service = populated_service();
+        let snapshot = service
+            .export_catalog_snapshot("corpus/0")
+            .expect("export catalog snapshot");
+        let mut durable = LingquMemoryDurableStore::new();
+
+        let path = durable
+            .persist_catalog_snapshot(&snapshot)
+            .expect("persist catalog snapshot");
+        let restored = durable
+            .load_catalog_snapshot(&path)
+            .expect("load catalog snapshot");
+        let stats = durable.stats();
+
+        assert_eq!(restored.catalog.catalog_id, "corpus/0");
+        assert_eq!(restored.records.len(), 1);
+        assert_eq!(stats.dfs_catalog_writes, 1);
+        assert_eq!(stats.dfs_catalog_reads, 1);
+        assert!(stats.dfs_bytes_written > 0);
+        assert_eq!(stats.dfs_bytes_written, stats.dfs_bytes_read);
+    }
+
+    #[test]
+    fn memory_service_rebuilds_catalog_from_dfs_snapshot() {
+        let service = populated_service();
+        let mut durable = LingquMemoryDurableStore::new();
+        let path = service
+            .persist_catalog_to_dfs(&mut durable, "corpus/0")
+            .expect("persist catalog through service");
+        let mut restored = LingquMemoryService::new();
+
+        let catalog = restored
+            .rebuild_catalog_from_dfs(&mut durable, &path)
+            .expect("rebuild catalog through service");
+        let result = restored
+            .query_memory(
+                MemoryQuery {
+                    query_id: "q/rebuilt".to_string(),
+                    corpus_ids: vec![catalog.catalog_id],
+                    scope_filter: Vec::new(),
+                    visibility_filter: Vec::new(),
+                    min_trust: MemoryTrustLevel::UserConfirmed,
+                    min_confidence: 0.0,
+                    embedding_model_version: "embed/v1".to_string(),
+                    top_k: 1,
+                    query_embedding_ref: None,
+                },
+                100,
+            )
+            .unwrap();
+
+        assert_eq!(result.matches.len(), 1);
+        assert_eq!(result.matches[0].record_id, "record/0");
+    }
+
+    #[test]
+    fn durable_store_round_trips_block_payload_and_checks_checksum() {
+        let mut durable = LingquMemoryDurableStore::new();
+        let payload_ref = durable
+            .write_block_payload("block/chunk/0", b"persistent chunk".to_vec())
+            .expect("write block payload");
+
+        let bytes = durable
+            .read_block_payload(&payload_ref)
+            .expect("read block payload");
+        let mut bad_ref = payload_ref.clone();
+        bad_ref.checksum ^= 1;
+        let err = durable
+            .read_block_payload(&bad_ref)
+            .expect_err("checksum mismatch should fail");
+
+        assert_eq!(bytes, b"persistent chunk");
+        assert!(matches!(
+            err,
+            LingquMemoryError::PayloadChecksumMismatch { .. }
+        ));
+        assert_eq!(durable.stats().block_payload_writes, 1);
+        assert_eq!(durable.stats().block_payload_reads, 2);
+    }
+
+    #[test]
+    fn flat_query_ranks_block_backed_embedding_vectors() {
+        let mut service = LingquMemoryService::new();
+        service
+            .publish_catalog(MemoryCorpusCatalog {
+                catalog_id: "corpus/flat".to_string(),
+                namespace: "project/default".to_string(),
+                dfs_path: LingquDfsPath::new("/lingqu/memory/corpus/flat/catalog.json"),
+                version: 1,
+                record_ids: vec!["record/a".to_string(), "record/b".to_string()],
+                vector_index_ids: vec!["index/flat".to_string()],
+                created_at_us: 1,
+                updated_at_us: 1,
+            })
+            .unwrap();
+        service
+            .ingest_record(
+                sample_record("record/a", "chunk/a"),
+                vec![sample_chunk("chunk/a", "record/a")],
+            )
+            .unwrap();
+        service
+            .ingest_record(
+                sample_record("record/b", "chunk/b"),
+                vec![sample_chunk("chunk/b", "record/b")],
+            )
+            .unwrap();
+
+        let mut durable = LingquMemoryDurableStore::new();
+        let segment_ref = durable
+            .write_block_payload(
+                "block/embed/flat",
+                f32_vec_to_le_bytes(&[1.0, 0.0, 0.0, 1.0]),
+            )
+            .unwrap();
+        let query_ref = durable
+            .write_block_payload("block/query/flat", f32_vec_to_le_bytes(&[0.0, 1.0]))
+            .unwrap();
+        service
+            .register_embedding_segment(EmbeddingSegment {
+                segment_id: "segment/flat".to_string(),
+                model_version: "embed/v1".to_string(),
+                dims: 2,
+                row_count: 2,
+                row_stride_bytes: 8,
+                dtype: TensorDType::F32,
+                vector_block_refs: vec![segment_ref],
+                row_map: vec![
+                    EmbeddingRow {
+                        chunk_id: "chunk/a".to_string(),
+                        row: 0,
+                    },
+                    EmbeddingRow {
+                        chunk_id: "chunk/b".to_string(),
+                        row: 1,
+                    },
+                ],
+                checksum: 0x5151,
+            })
+            .unwrap();
+        service
+            .register_vector_index(VectorIndexObject {
+                index_id: "index/flat".to_string(),
+                corpus_id: "corpus/flat".to_string(),
+                kind: VectorIndexKind::Flat,
+                embedding_model_version: "embed/v1".to_string(),
+                segment_ids: vec!["segment/flat".to_string()],
+                manifest_path: LingquDfsPath::new("/lingqu/memory/corpus/flat/index.json"),
+                created_at_us: 2,
+                updated_at_us: 2,
+                version: 1,
+            })
+            .unwrap();
+
+        let result = service
+            .query_memory_flat(
+                &mut durable,
+                MemoryQuery {
+                    query_id: "query/flat".to_string(),
+                    corpus_ids: vec!["corpus/flat".to_string()],
+                    scope_filter: Vec::new(),
+                    visibility_filter: Vec::new(),
+                    min_trust: MemoryTrustLevel::UserConfirmed,
+                    min_confidence: 0.0,
+                    embedding_model_version: "embed/v1".to_string(),
+                    top_k: 1,
+                    query_embedding_ref: Some(query_ref),
+                },
+                100,
+            )
+            .unwrap();
+
+        assert_eq!(result.matches.len(), 1);
+        assert_eq!(result.matches[0].chunk_id, "chunk/b");
+        assert_eq!(result.matches[0].score, 1.0);
+        assert_eq!(durable.stats().block_payload_reads, 2);
+    }
+
+    #[test]
+    fn durable_store_reports_missing_dfs_and_block_refs() {
+        let mut durable = LingquMemoryDurableStore::new();
+        let missing_path = LingquDfsPath::new("/lingqu/memory/missing/catalog.json");
+        let missing_block = LingquBlockPayloadRef::new("block/missing", 0, 4, 0x1234);
+
+        assert_eq!(
+            durable.load_catalog_snapshot(&missing_path),
+            Err(LingquMemoryError::MissingDfsPath(
+                "/lingqu/memory/missing/catalog.json".to_string()
+            ))
+        );
+        assert_eq!(
+            durable.read_block_payload(&missing_block),
+            Err(LingquMemoryError::MissingBlockPayload(
+                "block/missing".to_string()
+            ))
+        );
     }
 
     #[test]

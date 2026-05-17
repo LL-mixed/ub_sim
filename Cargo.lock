@@ -198,6 +198,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sim-core",
+ "sim-runtime",
  "sim-services",
  "thiserror",
 ]

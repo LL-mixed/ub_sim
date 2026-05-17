@@ -7,10 +7,10 @@ use sim_core::{
 };
 use sim_memory::{
     EmbeddingRow, EmbeddingSegment, HotMemoryMaterializeReq, LingquBlockPayloadRef, LingquDfsPath,
-    LingquMemoryService, MemoryChunk, MemoryContentType, MemoryCorpusCatalog, MemoryPiiState,
-    MemoryQuery, MemoryRecord, MemoryRecordState, MemoryRetentionPolicy, MemoryScope,
-    MemorySecurityLabel, MemorySourceKind, MemoryTrustLevel, MemoryVisibility, VectorIndexKind,
-    VectorIndexObject,
+    LingquMemoryDurableStore, LingquMemoryService, MemoryChunk, MemoryContentType,
+    MemoryCorpusCatalog, MemoryPiiState, MemoryQuery, MemoryRecord, MemoryRecordState,
+    MemoryRetentionPolicy, MemoryScope, MemorySecurityLabel, MemorySourceKind, MemoryTrustLevel,
+    MemoryVisibility, VectorIndexKind, VectorIndexObject,
 };
 use sim_models::qwen3_dense_reference::{
     token_piece_bytes_from_tokenizer_path, token_piece_decode_bytes,
@@ -1069,10 +1069,17 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         .next()
         .map(|arg| arg.to_string_lossy().into_owned())
         .unwrap_or_else(|| "validate-service-path".to_string());
-    if mode != "validate-service-path" {
-        anyhow::bail!("unknown lingqu-memory mode `{mode}`; expected validate-service-path");
+    match mode.as_str() {
+        "validate-service-path" => run_lingqu_memory_validate_service_path(),
+        "validate-durable-store" => run_lingqu_memory_validate_durable_store(),
+        "validate-flat-query" => run_lingqu_memory_validate_flat_query(),
+        _ => anyhow::bail!(
+            "unknown lingqu-memory mode `{mode}`; expected validate-service-path, validate-durable-store, or validate-flat-query"
+        ),
     }
+}
 
+fn build_lingqu_memory_cli_sample() -> anyhow::Result<LingquMemoryService> {
     let mut memory_service = LingquMemoryService::new();
     memory_service.publish_catalog(MemoryCorpusCatalog {
         catalog_id: "corpus/default".to_string(),
@@ -1149,6 +1156,11 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         updated_at_us: 2,
         version: 1,
     })?;
+    Ok(memory_service)
+}
+
+fn run_lingqu_memory_validate_service_path() -> anyhow::Result<()> {
+    let mut memory_service = build_lingqu_memory_cli_sample()?;
 
     let query_result = memory_service.query_memory(
         MemoryQuery {
@@ -1199,6 +1211,183 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         object_report.committed_object_count
     );
     Ok(())
+}
+
+fn run_lingqu_memory_validate_durable_store() -> anyhow::Result<()> {
+    let memory_service = build_lingqu_memory_cli_sample()?;
+    let mut durable_store = LingquMemoryDurableStore::new();
+    let catalog_path =
+        memory_service.persist_catalog_to_dfs(&mut durable_store, "corpus/default")?;
+    let mut restored_service = LingquMemoryService::new();
+    let restored_catalog =
+        restored_service.rebuild_catalog_from_dfs(&mut durable_store, &catalog_path)?;
+    let restored = restored_service.export_catalog_snapshot(&restored_catalog.catalog_id)?;
+    let chunk_payload_ref = durable_store.write_block_payload(
+        "block/text/default/0",
+        b"durable lingqu memory chunk payload".to_vec(),
+    )?;
+    let chunk_payload = durable_store.read_block_payload(&chunk_payload_ref)?;
+    let embedding_payload_ref = durable_store.write_block_payload(
+        "block/embed/default/0",
+        vec![
+            0, 0, 0, 0, 205, 204, 204, 61, 205, 204, 76, 62, 154, 153, 153, 62,
+        ],
+    )?;
+    let embedding_payload = durable_store.read_block_payload(&embedding_payload_ref)?;
+    let stats = durable_store.stats();
+
+    println!("lingqu_memory_service");
+    println!("  mode: validate-durable-store");
+    println!("  catalog_path: {}", catalog_path.path);
+    println!("  restored_records: {}", restored.records.len());
+    println!("  restored_chunks: {}", restored.chunks.len());
+    println!(
+        "  restored_embedding_segments: {}",
+        restored.embedding_segments.len()
+    );
+    println!("  chunk_block_ref: {}", chunk_payload_ref.block.0);
+    println!("  chunk_payload_bytes: {}", chunk_payload.len());
+    println!("  embedding_block_ref: {}", embedding_payload_ref.block.0);
+    println!("  embedding_payload_bytes: {}", embedding_payload.len());
+    println!("  dfs_catalog_writes: {}", stats.dfs_catalog_writes);
+    println!("  dfs_catalog_reads: {}", stats.dfs_catalog_reads);
+    println!("  block_payload_writes: {}", stats.block_payload_writes);
+    println!("  block_payload_reads: {}", stats.block_payload_reads);
+    Ok(())
+}
+
+fn run_lingqu_memory_validate_flat_query() -> anyhow::Result<()> {
+    let mut memory_service = LingquMemoryService::new();
+    memory_service.publish_catalog(MemoryCorpusCatalog {
+        catalog_id: "corpus/flat".to_string(),
+        namespace: "project/default".to_string(),
+        dfs_path: LingquDfsPath::new("/lingqu/memory/corpus/flat/catalog.json"),
+        version: 1,
+        record_ids: vec!["record/flat/a".to_string(), "record/flat/b".to_string()],
+        vector_index_ids: vec!["index/flat".to_string()],
+        created_at_us: 1,
+        updated_at_us: 1,
+    })?;
+    for (record_id, chunk_id) in [
+        ("record/flat/a", "chunk/flat/a"),
+        ("record/flat/b", "chunk/flat/b"),
+    ] {
+        memory_service.ingest_record(
+            MemoryRecord {
+                record_id: record_id.to_string(),
+                corpus_id: "corpus/flat".to_string(),
+                scope: MemoryScope::Project,
+                visibility: MemoryVisibility::ProjectShared,
+                source_kind: MemorySourceKind::UserProvided,
+                source_uri: format!("dfs://lingqu/memory/source/{record_id}.md"),
+                source_checksum: 0x1001,
+                content_type: MemoryContentType::Markdown,
+                token_count: 16,
+                trust_level: MemoryTrustLevel::UserConfirmed,
+                confidence: 0.95,
+                retention_policy: MemoryRetentionPolicy::Durable,
+                security_label: MemorySecurityLabel::Internal,
+                pii_state: MemoryPiiState::None,
+                chunk_refs: vec![chunk_id.to_string()],
+                embedding_model_versions: vec!["embed/default/v1".to_string()],
+                evidence_refs: vec!["import://lingqu-memory-cli/flat".to_string()],
+                created_at_us: 1,
+                updated_at_us: 1,
+                expires_at_us: None,
+                version: 1,
+                state: MemoryRecordState::Committed,
+            },
+            vec![MemoryChunk {
+                chunk_id: chunk_id.to_string(),
+                record_id: record_id.to_string(),
+                ordinal: 0,
+                text_block_ref: LingquBlockPayloadRef::new(
+                    format!("block/text/{chunk_id}"),
+                    0,
+                    64,
+                    0x2002,
+                ),
+                token_start: 0,
+                token_count: 16,
+                checksum: 0x3003,
+            }],
+        )?;
+    }
+
+    let mut durable_store = LingquMemoryDurableStore::new();
+    let segment_ref = durable_store.write_block_payload(
+        "block/embed/flat",
+        cli_f32_vec_to_le_bytes(&[1.0, 0.0, 0.0, 1.0]),
+    )?;
+    let query_ref = durable_store
+        .write_block_payload("block/query/flat", cli_f32_vec_to_le_bytes(&[0.0, 1.0]))?;
+    memory_service.register_embedding_segment(EmbeddingSegment {
+        segment_id: "segment/flat".to_string(),
+        model_version: "embed/default/v1".to_string(),
+        dims: 2,
+        row_count: 2,
+        row_stride_bytes: 8,
+        dtype: sim_core::TensorDType::F32,
+        vector_block_refs: vec![segment_ref],
+        row_map: vec![
+            EmbeddingRow {
+                chunk_id: "chunk/flat/a".to_string(),
+                row: 0,
+            },
+            EmbeddingRow {
+                chunk_id: "chunk/flat/b".to_string(),
+                row: 1,
+            },
+        ],
+        checksum: 0x5005,
+    })?;
+    memory_service.register_vector_index(VectorIndexObject {
+        index_id: "index/flat".to_string(),
+        corpus_id: "corpus/flat".to_string(),
+        kind: VectorIndexKind::Flat,
+        embedding_model_version: "embed/default/v1".to_string(),
+        segment_ids: vec!["segment/flat".to_string()],
+        manifest_path: LingquDfsPath::new("/lingqu/memory/corpus/flat/index.json"),
+        created_at_us: 2,
+        updated_at_us: 2,
+        version: 1,
+    })?;
+    let result = memory_service.query_memory_flat(
+        &mut durable_store,
+        MemoryQuery {
+            query_id: "query/flat".to_string(),
+            corpus_ids: vec!["corpus/flat".to_string()],
+            scope_filter: vec![MemoryScope::Project],
+            visibility_filter: vec![MemoryVisibility::ProjectShared],
+            min_trust: MemoryTrustLevel::UserConfirmed,
+            min_confidence: 0.5,
+            embedding_model_version: "embed/default/v1".to_string(),
+            top_k: 1,
+            query_embedding_ref: Some(query_ref),
+        },
+        100,
+    )?;
+    let stats = durable_store.stats();
+
+    println!("lingqu_memory_service");
+    println!("  mode: validate-flat-query");
+    println!("  query_result: {}", result.result_id);
+    println!("  matches: {}", result.matches.len());
+    if let Some(top) = result.matches.first() {
+        println!("  top_record: {}", top.record_id);
+        println!("  top_chunk: {}", top.chunk_id);
+        println!("  top_score: {:.6}", top.score);
+    }
+    println!("  block_payload_reads: {}", stats.block_payload_reads);
+    Ok(())
+}
+
+fn cli_f32_vec_to_le_bytes(values: &[f32]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(values.len() * 4);
+    for value in values {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    bytes
 }
 
 fn run_lingqu_object_service_stress_cli() -> anyhow::Result<()> {
@@ -1447,6 +1636,7 @@ mod tests {
         qwen3_guest_log_match_count, qwen3_guest_terminal_candidate_records,
         qwen3_guest_terminal_text_lossy_from_tokenizer, qwen3_guest_terminal_tokens,
         qwen3_guest_timing_summary, qwen3_range_forward_args_from,
+        run_lingqu_memory_validate_durable_store, run_lingqu_memory_validate_flat_query,
         simpler_host_matmul_artifact_producer_path, validate_qwen3_dense_weights_path,
         validate_w5_inference_profile, Qwen3CandidateRecord, Qwen3DecodeReportVerbosity,
         Qwen3EngramConfig, Qwen3EngramContextOp, Qwen3EngramMode, Qwen3EngramPool,
@@ -2494,6 +2684,16 @@ stage qwen3_range_forward_runtime_output_publish node=2
     fn lingqu_memory_args_detects_command() {
         assert!(lingqu_memory_args_from(["lingqu-memory"]));
         assert!(!lingqu_memory_args_from(["lingqu-object-service"]));
+    }
+
+    #[test]
+    fn lingqu_memory_durable_store_cli_smoke_runs() {
+        run_lingqu_memory_validate_durable_store().expect("durable store validation");
+    }
+
+    #[test]
+    fn lingqu_memory_flat_query_cli_smoke_runs() {
+        run_lingqu_memory_validate_flat_query().expect("flat query validation");
     }
 }
 
