@@ -655,6 +655,11 @@ sim-cli lingqu-memory materialize-engram-state \
   --gate-weight-json <gate-weight.json> \
   --state-id <engram-state-id> \
   --engram-state <engram-state.json>
+
+sim-cli lingqu-memory publish-w5-engram-state-ref \
+  --object-store <object-service-snapshot.json> \
+  --engram-state <engram-state.json> \
+  --registry-dir <qwen3-object-registry-dir>
 ```
 
 `ingest` reads a real source file, writes the source bytes into the local
@@ -686,6 +691,14 @@ objects, writes the caller-provided gate-weight JSON payload into Lingqu Block,
 then publishes a gate OBMM object and writes the `EngramStateObject` manifest.
 It intentionally does not accept inline gate values on the command line and
 does not create a default gate if the gate payload is missing.
+
+`publish-w5-engram-state-ref` is the current W5 adapter bridge. It reloads the
+`EngramStateObject` and Object Service snapshot, resolves table/index/gate
+payloads from the Object Service records, writes the qwen3 object registry
+payloads, and prints the exact `SIM_QWEN3_GUEST_ENGRAM_STATE_REF` plus
+`SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR` environment values needed by the existing
+W5 guest runner. This is a compatibility bridge until W5 resolves the unified
+Lingqu Object Service directly instead of using the qwen3 registry shim.
 
 ## Observability
 
@@ -799,7 +812,10 @@ Current implementation status:
   `sim-cli lingqu-memory materialize-engram-state` now consumes that hot-state
   manifest plus object-store snapshot, writes gate weights through Lingqu
   Block, publishes the gate OBMM object, and emits an `EngramStateObject`
-  manifest. Embed generation remains a missing product CLI entrypoint.
+  manifest. `sim-cli lingqu-memory publish-w5-engram-state-ref` then converts
+  that `EngramStateObject` plus Object Service snapshot into the current W5
+  qwen3 object registry state-ref environment contract. Embed generation
+  remains a missing product CLI entrypoint.
 - Step 6 now has two paths: explicit caller-provided tensor materialization and
   QueryResult-driven materialization that reads selected embedding rows from
   Lingqu Block and publishes OBMM-backed table, index, and score tensors through

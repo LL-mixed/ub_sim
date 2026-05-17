@@ -7,7 +7,7 @@ use sim_core::{
     SegmentHandle, SimEvent, TaskKey,
 };
 use sim_memory::{
-    EmbeddingRow, EmbeddingSegment, EngramStateMaterializeFromBlockReq,
+    EmbeddingRow, EmbeddingSegment, EngramStateMaterializeFromBlockReq, EngramStateObject,
     HotMemoryMaterializeFromQueryReq, HotMemoryMaterializeReq, HotMemoryStateObject,
     LingquBlockPayloadRef, LingquDfsPath, LingquMemoryDurableStore,
     LingquMemoryDurableStoreSnapshot, LingquMemoryService, MemoryCatalogSnapshot, MemoryChunk,
@@ -1105,6 +1105,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "ingest" => run_lingqu_memory_ingest_cli(&args),
         "materialize-engram-state" => run_lingqu_memory_materialize_engram_state_cli(&args),
         "materialize-hot-state" => run_lingqu_memory_materialize_hot_state_cli(&args),
+        "publish-w5-engram-state-ref" => run_lingqu_memory_publish_w5_engram_state_ref_cli(&args),
         "query" => run_lingqu_memory_query_cli(&args),
         "validate-service-path" => run_lingqu_memory_validate_service_path(),
         "validate-durable-store" => run_lingqu_memory_validate_durable_store(),
@@ -1112,7 +1113,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "validate-flat-materialize" => run_lingqu_memory_validate_flat_materialize(),
         "validate-w5-engram-object-ref" => run_lingqu_memory_validate_w5_engram_object_ref(),
         _ => anyhow::bail!(
-            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, query, materialize-hot-state, materialize-engram-state, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
+            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, query, materialize-hot-state, materialize-engram-state, publish-w5-engram-state-ref, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
         ),
     }
 }
@@ -1447,6 +1448,121 @@ fn validate_lingqu_memory_gate_weight_input(
     if input.values.is_empty() {
         anyhow::bail!("gate weight json values must not be empty");
     }
+    Ok(())
+}
+
+fn run_lingqu_memory_publish_w5_engram_state_ref_cli(args: &[String]) -> anyhow::Result<()> {
+    let object_store_path = PathBuf::from(required_cli_arg(args, "--object-store")?);
+    let engram_state_path = PathBuf::from(required_cli_arg(args, "--engram-state")?);
+    let registry_dir = PathBuf::from(required_cli_arg(args, "--registry-dir")?);
+    let owner_entity = optional_cli_u64(args, "--owner-entity")?.unwrap_or(0);
+    let producer_entity = optional_cli_u64(args, "--producer-entity")?.unwrap_or(0);
+    let owner_entity =
+        u32::try_from(owner_entity).map_err(|_| anyhow::anyhow!("--owner-entity exceeds u32"))?;
+    let producer_entity = u32::try_from(producer_entity)
+        .map_err(|_| anyhow::anyhow!("--producer-entity exceeds u32"))?;
+
+    let object_snapshot =
+        load_lingqu_object_service_snapshot(&object_store_path)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "object store snapshot does not exist: {}",
+                object_store_path.display()
+            )
+        })?;
+    let object_service = LingquObjectServiceStub::import_snapshot(object_snapshot)
+        .with_context(|| format!("import object store {}", object_store_path.display()))?;
+    let engram_state_bytes = fs::read(&engram_state_path)
+        .with_context(|| format!("read engram state {}", engram_state_path.display()))?;
+    let engram_state = serde_json::from_slice::<EngramStateObject>(&engram_state_bytes)
+        .with_context(|| format!("decode engram state {}", engram_state_path.display()))?;
+    let gate = engram_state
+        .gate
+        .as_ref()
+        .context("engram state is missing gate object ref")?;
+
+    let table_payload = object_service
+        .get_copy(
+            &engram_state.table.object_key,
+            LingquObjectVersionSelector::LatestCommitted,
+        )
+        .with_context(|| format!("resolve table object {}", engram_state.table.object_key))?;
+    let indices_payload = object_service
+        .get_copy(
+            &engram_state.indices.object_key,
+            LingquObjectVersionSelector::LatestCommitted,
+        )
+        .with_context(|| format!("resolve indices object {}", engram_state.indices.object_key))?;
+    let gate_payload = object_service
+        .get_copy(
+            &gate.object_key,
+            LingquObjectVersionSelector::LatestCommitted,
+        )
+        .with_context(|| format!("resolve gate object {}", gate.object_key))?;
+
+    let previous_registry_dir = env::var_os(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR);
+    env::set_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, &registry_dir);
+    let publish_result = (|| -> anyhow::Result<_> {
+        let table_ref = qwen3_publish_object_registry_payload(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
+            owner_entity,
+            producer_entity,
+            &engram_state.table.object_key,
+            &table_payload,
+        )
+        .map_err(anyhow::Error::msg)?;
+        let indices_ref = qwen3_publish_object_registry_payload(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
+            owner_entity,
+            producer_entity,
+            &engram_state.indices.object_key,
+            &indices_payload,
+        )
+        .map_err(anyhow::Error::msg)?;
+        let gate_ref = qwen3_publish_object_registry_payload(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
+            owner_entity,
+            producer_entity,
+            &gate.object_key,
+            &gate_payload,
+        )
+        .map_err(anyhow::Error::msg)?;
+        let state_ref = qwen3_publish_engram_state_registry_payload(
+            owner_entity,
+            producer_entity,
+            &engram_state.state_id,
+            &table_ref,
+            &indices_ref,
+            &gate_ref,
+        )
+        .map_err(anyhow::Error::msg)?;
+        Ok((table_ref, indices_ref, gate_ref, state_ref))
+    })();
+    if let Some(previous) = previous_registry_dir {
+        env::set_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, previous);
+    } else {
+        env::remove_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR);
+    }
+    let (_table_ref, _indices_ref, _gate_ref, state_ref) = publish_result?;
+    let state_ref_hex = qwen3_obmm_object_ref_wire_to_hex(&state_ref);
+
+    println!("lingqu_memory_service");
+    println!("  mode: publish-w5-engram-state-ref");
+    println!("  object_store_path: {}", object_store_path.display());
+    println!("  engram_state: {}", engram_state.state_id);
+    println!("  registry_dir: {}", registry_dir.display());
+    println!("  {}={}", SIM_QWEN3_GUEST_ENGRAM_STATE_REF, state_ref_hex);
+    println!(
+        "  {}={}",
+        SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+        registry_dir.display()
+    );
+    println!("  registry_table_bytes: {}", table_payload.len());
+    println!("  registry_indices_bytes: {}", indices_payload.len());
+    println!("  registry_gate_bytes: {}", gate_payload.len());
+    println!(
+        "  registry_state_manifest_bytes: {}",
+        state_ref.payload_bytes
+    );
     Ok(())
 }
 
@@ -2828,7 +2944,8 @@ mod tests {
         qwen3_guest_terminal_tokens, qwen3_guest_timing_summary, qwen3_range_forward_args_from,
         run_lingqu_memory_build_index_cli, run_lingqu_memory_ingest_cli,
         run_lingqu_memory_materialize_engram_state_cli,
-        run_lingqu_memory_materialize_hot_state_cli, run_lingqu_memory_query_cli,
+        run_lingqu_memory_materialize_hot_state_cli,
+        run_lingqu_memory_publish_w5_engram_state_ref_cli, run_lingqu_memory_query_cli,
         run_lingqu_memory_validate_durable_store, run_lingqu_memory_validate_flat_materialize,
         run_lingqu_memory_validate_flat_query, run_lingqu_memory_validate_w5_engram_object_ref,
         simpler_host_matmul_artifact_producer_path, validate_qwen3_dense_weights_path,
@@ -4179,6 +4296,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
         let hot_state = root.join("hot_state.json");
         let gate_weight = root.join("gate_weight.json");
         let engram_state = root.join("engram_state.json");
+        let registry_dir = root.join("qwen3_registry");
         fs::write(&source, b"# Note\nreal memory source\n").expect("write source");
         fs::write(
             &embeddings,
@@ -4332,6 +4450,20 @@ stage qwen3_range_forward_runtime_output_publish node=2
             .get_copy(gate_key, LingquObjectVersionSelector::LatestCommitted)
             .expect("gate payload after object-store reload");
         assert_eq!(gate_payload, cli_f32_vec_to_le_bytes(&[0.5, 0.75]));
+
+        run_lingqu_memory_publish_w5_engram_state_ref_cli(&[
+            "--object-store".to_string(),
+            object_store.to_string_lossy().into_owned(),
+            "--engram-state".to_string(),
+            engram_state.to_string_lossy().into_owned(),
+            "--registry-dir".to_string(),
+            registry_dir.to_string_lossy().into_owned(),
+        ])
+        .expect("publish w5 engram state ref");
+        let registry_entries = fs::read_dir(&registry_dir)
+            .expect("read registry dir")
+            .count();
+        assert_eq!(registry_entries, 4);
         let _ = fs::remove_dir_all(&root);
     }
 }
