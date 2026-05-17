@@ -837,6 +837,26 @@ pub struct HotMemoryMaterializeFromQueryReq {
     pub now_us: u64,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct EngramStateMaterializeReq {
+    pub state_id: String,
+    pub hot_memory_state_id: String,
+    pub gate_values: Vec<f32>,
+    pub owner_entity: u64,
+    pub producer_entity: u64,
+    pub now_us: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EngramStateMaterializeFromBlockReq {
+    pub state_id: String,
+    pub hot_memory_state_id: String,
+    pub gate_weight_ref: LingquBlockPayloadRef,
+    pub owner_entity: u64,
+    pub producer_entity: u64,
+    pub now_us: u64,
+}
+
 #[derive(Debug, Default)]
 pub struct LingquMemoryService {
     catalogs: HashMap<String, MemoryCorpusCatalog>,
@@ -1381,6 +1401,72 @@ impl LingquMemoryService {
         self.engram_states
             .insert(engram.state_id.clone(), engram.clone());
         Ok(engram)
+    }
+
+    pub fn materialize_engram_state(
+        &mut self,
+        object_service: &mut LingquObjectServiceStub,
+        req: EngramStateMaterializeReq,
+    ) -> MemoryResult<EngramStateObject> {
+        required_str(&req.state_id, "engram_state_id")?;
+        required_str(&req.hot_memory_state_id, "hot_memory_state_id")?;
+        require_nonempty(&req.gate_values, "gate_values")?;
+        let hot_state = self
+            .hot_states
+            .get(&req.hot_memory_state_id)
+            .ok_or_else(|| LingquMemoryError::MissingField("hot_memory_state_id"))?;
+        let table_shape = &hot_state.table.shape;
+        let hidden_size = table_shape
+            .last()
+            .copied()
+            .ok_or(LingquMemoryError::InvalidValue {
+                field: "hot_state.table.shape",
+                reason: "table shape must include hidden dimension",
+            })?;
+        if hidden_size as usize != req.gate_values.len() {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "gate_values",
+                reason: "gate value count must match hot table hidden dimension",
+            });
+        }
+        let gate_key = format!("lingqu/memory/engram/{}/gate_weight", req.state_id);
+        let gate = publish_hot_tensor(
+            object_service,
+            gate_key,
+            f32_vec_to_le_bytes(&req.gate_values),
+            TensorDType::F32,
+            vec![hidden_size],
+            req.producer_entity,
+            req.owner_entity,
+            req.now_us,
+        )?;
+        self.build_engram_state(
+            req.state_id,
+            &req.hot_memory_state_id,
+            Some(gate),
+            req.now_us,
+        )
+    }
+
+    pub fn materialize_engram_state_from_block(
+        &mut self,
+        durable_store: &mut LingquMemoryDurableStore,
+        object_service: &mut LingquObjectServiceStub,
+        req: EngramStateMaterializeFromBlockReq,
+    ) -> MemoryResult<EngramStateObject> {
+        req.gate_weight_ref.validate("gate_weight_ref")?;
+        let gate_values = read_f32_payload(durable_store, &req.gate_weight_ref)?;
+        self.materialize_engram_state(
+            object_service,
+            EngramStateMaterializeReq {
+                state_id: req.state_id,
+                hot_memory_state_id: req.hot_memory_state_id,
+                gate_values,
+                owner_entity: req.owner_entity,
+                producer_entity: req.producer_entity,
+                now_us: req.now_us,
+            },
+        )
     }
 
     pub fn record(&self, record_id: &str) -> Option<&MemoryRecord> {
@@ -2200,6 +2286,147 @@ mod tests {
 
         assert_eq!(engram.table.object_key, hot_state.table.object_key);
         assert_eq!(engram.indices.object_key, hot_state.indices.object_key);
+    }
+
+    #[test]
+    fn engram_state_materialization_publishes_gate_weight_object() {
+        let mut service = populated_service();
+        let result = service
+            .query_memory(
+                MemoryQuery {
+                    query_id: "q0".to_string(),
+                    corpus_ids: vec!["corpus/0".to_string()],
+                    scope_filter: Vec::new(),
+                    visibility_filter: Vec::new(),
+                    min_trust: MemoryTrustLevel::UserConfirmed,
+                    min_confidence: 0.0,
+                    embedding_model_version: "embed/v1".to_string(),
+                    top_k: 1,
+                    query_embedding_ref: None,
+                },
+                100,
+            )
+            .unwrap();
+        let mut object_service =
+            LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
+        let hot_state = service
+            .materialize_hot_state(
+                &mut object_service,
+                HotMemoryMaterializeReq {
+                    state_id: "hot/0".to_string(),
+                    query_result_id: result.result_id,
+                    table_shape: vec![1, 4],
+                    table_values: vec![0.1, 0.2, 0.3, 0.4],
+                    indices: vec![0],
+                    owner_entity: 0,
+                    producer_entity: 0,
+                    now_us: 200,
+                },
+            )
+            .unwrap();
+
+        let engram = service
+            .materialize_engram_state(
+                &mut object_service,
+                EngramStateMaterializeReq {
+                    state_id: "engram/0".to_string(),
+                    hot_memory_state_id: hot_state.state_id.clone(),
+                    gate_values: vec![0.5, 0.6, 0.7, 0.8],
+                    owner_entity: 0,
+                    producer_entity: 0,
+                    now_us: 300,
+                },
+            )
+            .unwrap();
+
+        let gate = engram.gate.expect("gate object ref");
+        assert_eq!(engram.table.object_key, hot_state.table.object_key);
+        assert_eq!(engram.indices.object_key, hot_state.indices.object_key);
+        assert_eq!(gate.backend, HotObjectBackend::ObmmShmem);
+        assert_eq!(gate.shape, vec![4]);
+        let gate_bytes = object_service
+            .get_copy(
+                &gate.object_key,
+                LingquObjectVersionSelector::LatestCommitted,
+            )
+            .expect("gate payload");
+        let gate_values = f32_values_from_le_bytes(&gate_bytes).unwrap();
+        assert_eq!(gate_values, vec![0.5, 0.6, 0.7, 0.8]);
+    }
+
+    #[test]
+    fn engram_state_materialization_reads_gate_weight_from_block() {
+        let mut service = populated_service();
+        let result = service
+            .query_memory(
+                MemoryQuery {
+                    query_id: "q0".to_string(),
+                    corpus_ids: vec!["corpus/0".to_string()],
+                    scope_filter: Vec::new(),
+                    visibility_filter: Vec::new(),
+                    min_trust: MemoryTrustLevel::UserConfirmed,
+                    min_confidence: 0.0,
+                    embedding_model_version: "embed/v1".to_string(),
+                    top_k: 1,
+                    query_embedding_ref: None,
+                },
+                100,
+            )
+            .unwrap();
+        let mut object_service =
+            LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
+        let hot_state = service
+            .materialize_hot_state(
+                &mut object_service,
+                HotMemoryMaterializeReq {
+                    state_id: "hot/0".to_string(),
+                    query_result_id: result.result_id,
+                    table_shape: vec![1, 4],
+                    table_values: vec![0.1, 0.2, 0.3, 0.4],
+                    indices: vec![0],
+                    owner_entity: 0,
+                    producer_entity: 0,
+                    now_us: 200,
+                },
+            )
+            .unwrap();
+        let mut durable = LingquMemoryDurableStore::new();
+        let gate_ref = durable
+            .write_block_payload(
+                "block/engram/gate/0",
+                f32_vec_to_le_bytes(&[1.0, 2.0, 3.0, 4.0]),
+            )
+            .unwrap();
+
+        let engram = service
+            .materialize_engram_state_from_block(
+                &mut durable,
+                &mut object_service,
+                EngramStateMaterializeFromBlockReq {
+                    state_id: "engram/0".to_string(),
+                    hot_memory_state_id: hot_state.state_id.clone(),
+                    gate_weight_ref: gate_ref,
+                    owner_entity: 0,
+                    producer_entity: 0,
+                    now_us: 300,
+                },
+            )
+            .unwrap();
+
+        let gate = engram.gate.expect("gate object ref");
+        let gate_bytes = object_service
+            .get_copy(
+                &gate.object_key,
+                LingquObjectVersionSelector::LatestCommitted,
+            )
+            .expect("gate payload");
+        assert_eq!(
+            f32_values_from_le_bytes(&gate_bytes).unwrap(),
+            vec![1.0, 2.0, 3.0, 4.0]
+        );
+        let stats = durable.stats();
+        assert_eq!(stats.block_payload_writes, 1);
+        assert_eq!(stats.block_payload_reads, 1);
     }
 
     fn populated_service() -> LingquMemoryService {

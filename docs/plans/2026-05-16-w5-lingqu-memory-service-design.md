@@ -705,9 +705,16 @@ Current implementation status:
   QueryResult-driven materialization that reads selected embedding rows from
   Lingqu Block and publishes OBMM-backed table, index, and score tensors through
   Lingqu Object Service.
-- Step 7 has the baseline adapter object construction. The Rust W5 context op
-  can now consume object-ref-backed table, indices, and gate-weight payloads
-  from the qwen3 object registry through
+- Step 7 has the baseline adapter object construction and gate materialization.
+  `LingquMemoryService::materialize_engram_state()` now builds the
+  `EngramStateObject` from a `HotMemoryStateObject` and publishes the
+  gate-weight tensor as an OBMM-backed Lingqu Object Service object.
+  `materialize_engram_state_from_block()` reads the gate-weight payload from
+  Lingqu Block before publishing the hot OBMM object, so the current W5
+  validation path now exercises durable gate config -> hot object
+  materialization instead of passing an in-memory gate vector directly from the
+  CLI. The Rust W5 context op can now consume object-ref-backed table,
+  indices, and gate-weight payloads from the qwen3 object registry through
   `SIM_QWEN3_GUEST_ENGRAM_CONTEXT_*_REF`. The W5 runner now forwards those refs
   and `SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR` through the QEMU environment. The
   guest validates the three refs, writes them into the UAPI object-ref sideband,

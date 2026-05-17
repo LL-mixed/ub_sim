@@ -6,11 +6,12 @@ use sim_core::{
     SegmentHandle, SimEvent, TaskKey,
 };
 use sim_memory::{
-    EmbeddingRow, EmbeddingSegment, HotMemoryMaterializeFromQueryReq, HotMemoryMaterializeReq,
-    LingquBlockPayloadRef, LingquDfsPath, LingquMemoryDurableStore, LingquMemoryService,
-    MemoryChunk, MemoryContentType, MemoryCorpusCatalog, MemoryPiiState, MemoryQuery, MemoryRecord,
-    MemoryRecordState, MemoryRetentionPolicy, MemoryScope, MemorySecurityLabel, MemorySourceKind,
-    MemoryTrustLevel, MemoryVisibility, QueryResult, VectorIndexKind, VectorIndexObject,
+    EmbeddingRow, EmbeddingSegment, EngramStateMaterializeFromBlockReq,
+    HotMemoryMaterializeFromQueryReq, HotMemoryMaterializeReq, LingquBlockPayloadRef,
+    LingquDfsPath, LingquMemoryDurableStore, LingquMemoryService, MemoryChunk, MemoryContentType,
+    MemoryCorpusCatalog, MemoryPiiState, MemoryQuery, MemoryRecord, MemoryRecordState,
+    MemoryRetentionPolicy, MemoryScope, MemorySecurityLabel, MemorySourceKind, MemoryTrustLevel,
+    MemoryVisibility, QueryResult, VectorIndexKind, VectorIndexObject,
 };
 use sim_models::qwen3_dense_reference::{
     token_piece_bytes_from_tokenizer_path, token_piece_decode_bytes,
@@ -1596,11 +1597,25 @@ fn run_lingqu_memory_validate_w5_engram_object_ref() -> anyhow::Result<()> {
             now_us: 200,
         },
     )?;
-    let _engram_state = memory_service.build_engram_state(
-        "engram/w5/object-ref",
-        &hot_state.state_id,
-        None,
-        300,
+    let gate_values = (0..W5_ENGRAM_HIDDEN_SIZE)
+        .map(|dim| ((dim % 29) as f32 - 14.0) / 16384.0)
+        .collect::<Vec<_>>();
+    let gate_weight_ref = durable_store.write_block_payload(
+        "block/engram/w5/object-ref/gate_weight",
+        cli_f32_vec_to_le_bytes(&gate_values),
+    )?;
+    let gate_weight_block = gate_weight_ref.block.0.clone();
+    let engram_state = memory_service.materialize_engram_state_from_block(
+        &mut durable_store,
+        &mut object_service,
+        EngramStateMaterializeFromBlockReq {
+            state_id: "engram/w5/object-ref".to_string(),
+            hot_memory_state_id: hot_state.state_id.clone(),
+            gate_weight_ref,
+            owner_entity: 0,
+            producer_entity: 0,
+            now_us: 300,
+        },
     )?;
     let table_payload = object_service
         .get_copy(
@@ -1614,10 +1629,16 @@ fn run_lingqu_memory_validate_w5_engram_object_ref() -> anyhow::Result<()> {
             LingquObjectVersionSelector::LatestCommitted,
         )
         .context("missing hot indices payload")?;
-    let gate_values = (0..W5_ENGRAM_HIDDEN_SIZE)
-        .map(|dim| ((dim % 29) as f32 - 14.0) / 16384.0)
-        .collect::<Vec<_>>();
-    let gate_payload = cli_f32_vec_to_le_bytes(&gate_values);
+    let gate = engram_state
+        .gate
+        .as_ref()
+        .context("missing materialized engram gate object")?;
+    let gate_payload = object_service
+        .get_copy(
+            &gate.object_key,
+            LingquObjectVersionSelector::LatestCommitted,
+        )
+        .context("missing hot gate payload")?;
     let table_ref = qwen3_publish_object_registry_payload(
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
         0,
@@ -1638,7 +1659,7 @@ fn run_lingqu_memory_validate_w5_engram_object_ref() -> anyhow::Result<()> {
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
         0,
         0,
-        "lingqu/memory/hot/hot/w5/engram/gate_weight",
+        &gate.object_key,
         &gate_payload,
     )
     .map_err(anyhow::Error::msg)?;
@@ -1676,6 +1697,21 @@ fn run_lingqu_memory_validate_w5_engram_object_ref() -> anyhow::Result<()> {
     println!("  registry_table_bytes: {}", table_payload.len());
     println!("  registry_indices_bytes: {}", indices_payload.len());
     println!("  registry_gate_bytes: {}", gate_payload.len());
+    let durable_stats = durable_store.stats();
+    let object_report = object_service.report();
+    println!("  gate_weight_block_ref: {}", gate_weight_block);
+    println!(
+        "  block_payload_writes: {}",
+        durable_stats.block_payload_writes
+    );
+    println!(
+        "  block_payload_reads: {}",
+        durable_stats.block_payload_reads
+    );
+    println!(
+        "  obmm_payload_writes: {}",
+        object_report.obmm_pool_payload_write_count
+    );
     Ok(())
 }
 
