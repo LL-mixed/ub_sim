@@ -702,6 +702,8 @@ Current implementation status:
   carries selected record/chunk ids, vector index ids, embedding segment
   versions/checksums, evidence refs, and its own checksum/version, so query
   output is an auditable memory decision rather than only a top-k vector list.
+  Query results can be persisted to and restored from DFS manifests with
+  checksum validation.
 - Step 5 currently exists as validation/smoke CLI modes, not yet as external
   ingest/embed/build-index commands.
 - Step 6 now has two paths: explicit caller-provided tensor materialization and

@@ -1407,12 +1407,14 @@ fn build_lingqu_memory_flat_query_sample(
 }
 
 fn run_lingqu_memory_validate_flat_query() -> anyhow::Result<()> {
-    let (_memory_service, durable_store, result) = build_lingqu_memory_flat_query_sample()?;
+    let (_memory_service, mut durable_store, result) = build_lingqu_memory_flat_query_sample()?;
+    let query_result_path = durable_store.persist_query_result(&result)?;
     let stats = durable_store.stats();
 
     println!("lingqu_memory_service");
     println!("  mode: validate-flat-query");
     println!("  query_result: {}", result.result_id);
+    println!("  query_result_manifest: {}", query_result_path.path);
     println!("  query_result_version: {}", result.version);
     println!("  query_result_checksum: {:#x}", result.checksum);
     println!("  vector_indexes: {}", result.vector_index_ids.join(","));
@@ -1444,6 +1446,7 @@ fn run_lingqu_memory_validate_flat_query() -> anyhow::Result<()> {
 
 fn run_lingqu_memory_validate_flat_materialize() -> anyhow::Result<()> {
     let (mut memory_service, mut durable_store, result) = build_lingqu_memory_flat_query_sample()?;
+    let query_result_path = durable_store.persist_query_result(&result)?;
     let mut object_service = LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
     let hot_state = memory_service.materialize_hot_state_from_query(
         &mut durable_store,
@@ -1464,6 +1467,7 @@ fn run_lingqu_memory_validate_flat_materialize() -> anyhow::Result<()> {
     println!("lingqu_memory_service");
     println!("  mode: validate-flat-materialize");
     println!("  query_result: {}", result.result_id);
+    println!("  query_result_manifest: {}", query_result_path.path);
     println!("  query_result_version: {}", result.version);
     println!("  query_result_checksum: {:#x}", result.checksum);
     println!("  vector_indexes: {}", result.vector_index_ids.join(","));
@@ -1629,6 +1633,7 @@ fn run_lingqu_memory_validate_w5_engram_object_ref() -> anyhow::Result<()> {
         },
         100,
     )?;
+    let query_result_path = durable_store.persist_query_result(&result)?;
     let mut object_service = LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
     let hot_state = memory_service.materialize_hot_state_from_query(
         &mut durable_store,
@@ -1720,6 +1725,7 @@ fn run_lingqu_memory_validate_w5_engram_object_ref() -> anyhow::Result<()> {
     println!("lingqu_memory_service");
     println!("  mode: validate-w5-engram-object-ref");
     println!("  query_result: {}", result.result_id);
+    println!("  query_result_manifest: {}", query_result_path.path);
     println!("  query_result_version: {}", result.version);
     println!("  query_result_checksum: {:#x}", result.checksum);
     println!("  vector_indexes: {}", result.vector_index_ids.join(","));

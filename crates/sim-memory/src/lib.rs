@@ -365,6 +365,19 @@ impl LingquMemoryDurableStore {
         MemoryCatalogSnapshot::from_json_bytes(&bytes)
     }
 
+    pub fn persist_query_result(&mut self, result: &QueryResult) -> MemoryResult<LingquDfsPath> {
+        let bytes = result.to_json_bytes()?;
+        let path = query_result_dfs_path(&result.result_id)?;
+        self.submit_dfs_write(path.path.clone(), bytes)?;
+        Ok(path)
+    }
+
+    pub fn load_query_result(&mut self, path: &LingquDfsPath) -> MemoryResult<QueryResult> {
+        path.validate("query_result.dfs_path")?;
+        let bytes = self.submit_dfs_read(&path.path)?;
+        QueryResult::from_json_bytes(&bytes)
+    }
+
     pub fn write_block_payload(
         &mut self,
         block: impl Into<String>,
@@ -759,11 +772,42 @@ pub struct QueryMatch {
     pub confidence: f32,
 }
 
+impl QueryMatch {
+    fn validate(&self) -> MemoryResult<()> {
+        required_str(&self.vector_index_id, "query_match.vector_index_id")?;
+        required_str(&self.chunk_id, "query_match.chunk_id")?;
+        required_str(&self.record_id, "query_match.record_id")?;
+        required_str(&self.segment_id, "query_match.segment_id")?;
+        if !self.score.is_finite() {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "query_match.score",
+                reason: "score must be finite",
+            });
+        }
+        if !self.confidence.is_finite() || !(0.0..=1.0).contains(&self.confidence) {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "query_match.confidence",
+                reason: "confidence must be in [0.0, 1.0]",
+            });
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuerySegmentVersion {
     pub segment_id: String,
     pub version: u64,
     pub checksum: u64,
+}
+
+impl QuerySegmentVersion {
+    fn validate(&self) -> MemoryResult<()> {
+        required_str(&self.segment_id, "query_segment_version.segment_id")?;
+        nonzero(self.version, "query_segment_version.version")?;
+        nonzero(self.checksum, "query_segment_version.checksum")?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -779,6 +823,65 @@ pub struct QueryResult {
     pub checksum: u64,
     pub version: u64,
     pub created_at_us: u64,
+}
+
+impl QueryResult {
+    pub fn validate(&self) -> MemoryResult<()> {
+        required_str(&self.result_id, "query_result_id")?;
+        required_str(&self.query_id, "query_id")?;
+        nonzero(self.version, "query_result_version")?;
+        nonzero(self.checksum, "query_result_checksum")?;
+        for vector_index_id in &self.vector_index_ids {
+            required_str(vector_index_id, "query_result.vector_index_ids")?;
+        }
+        for query_match in &self.matches {
+            query_match.validate()?;
+        }
+        for record_id in &self.selected_record_ids {
+            required_str(record_id, "query_result.selected_record_ids")?;
+        }
+        for chunk_id in &self.selected_chunk_ids {
+            required_str(chunk_id, "query_result.selected_chunk_ids")?;
+        }
+        for segment in &self.embedding_segment_versions {
+            segment.validate()?;
+        }
+        for evidence_ref in &self.evidence_refs {
+            required_str(evidence_ref, "query_result.evidence_refs")?;
+        }
+        let actual = query_result_audit_checksum(
+            &self.result_id,
+            &self.query_id,
+            &self.vector_index_ids,
+            &self.matches,
+            &self.selected_record_ids,
+            &self.selected_chunk_ids,
+            &self.embedding_segment_versions,
+            &self.evidence_refs,
+            self.version,
+            self.created_at_us,
+        );
+        if actual != self.checksum {
+            return Err(LingquMemoryError::PayloadChecksumMismatch {
+                id: self.result_id.clone(),
+                expected: self.checksum,
+                actual,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn to_json_bytes(&self) -> MemoryResult<Vec<u8>> {
+        self.validate()?;
+        serde_json::to_vec(self).map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))
+    }
+
+    pub fn from_json_bytes(bytes: &[u8]) -> MemoryResult<Self> {
+        let result = serde_json::from_slice::<Self>(bytes)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+        result.validate()?;
+        Ok(result)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1113,7 +1216,7 @@ impl LingquMemoryService {
             now_us,
         );
 
-        Ok(QueryResult {
+        let result = QueryResult {
             result_id,
             query_id: query.query_id.clone(),
             vector_index_ids,
@@ -1125,7 +1228,9 @@ impl LingquMemoryService {
             checksum,
             version: 1,
             created_at_us: now_us,
-        })
+        };
+        result.validate()?;
+        Ok(result)
     }
 
     pub fn query_memory(&mut self, query: MemoryQuery, now_us: u64) -> MemoryResult<QueryResult> {
@@ -1878,6 +1983,21 @@ fn query_result_audit_checksum(
     checksum64(&bytes)
 }
 
+fn query_result_dfs_path(result_id: &str) -> MemoryResult<LingquDfsPath> {
+    required_str(result_id, "query_result_id")?;
+    let mut escaped = String::with_capacity(result_id.len());
+    for ch in result_id.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+            escaped.push(ch);
+        } else {
+            escaped.push('_');
+        }
+    }
+    Ok(LingquDfsPath::new(format!(
+        "/lingqu/memory/query-results/{escaped}.json"
+    )))
+}
+
 fn checksum64(bytes: &[u8]) -> u64 {
     let mut acc = 0xcbf2_9ce4_8422_2325u64;
     for byte in bytes {
@@ -2196,6 +2316,17 @@ mod tests {
         assert_eq!(result.matches[0].chunk_id, "chunk/b");
         assert_eq!(result.matches[0].score, 1.0);
         assert_eq!(durable.stats().block_payload_reads, 2);
+
+        let result_path = durable
+            .persist_query_result(&result)
+            .expect("persist query result");
+        let restored = durable
+            .load_query_result(&result_path)
+            .expect("load query result");
+        assert_eq!(restored, result);
+        assert!(result_path
+            .path
+            .starts_with("/lingqu/memory/query-results/query-result_query_flat"));
     }
 
     #[test]
