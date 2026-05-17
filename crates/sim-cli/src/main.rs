@@ -54,8 +54,13 @@ use sim_topology::SimTopology;
 use sim_uapi::{
     qwen3_dense_reference_decode_loop_report, qwen3_dense_reference_decode_loop_report_with_prompt,
     qwen3_dense_reference_default_guest_input, qwen3_dense_reference_prefill_text_output_report,
-    qwen3_dense_reference_range_forward_report_with_prompt, LocalGuestUapiSurface, UapiCommand,
-    UapiDescriptor, UapiResponse,
+    qwen3_dense_reference_range_forward_report_with_prompt, qwen3_obmm_object_ref_wire_to_hex,
+    qwen3_publish_object_registry_payload, LocalGuestUapiSurface, UapiCommand, UapiDescriptor,
+    UapiResponse, QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
+    QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
+    QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
+    SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF, SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF,
+    SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF, SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
 };
 use sim_workloads::{run_host_vector_dispatch, run_minimal_workload};
 use std::env;
@@ -1074,8 +1079,9 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "validate-durable-store" => run_lingqu_memory_validate_durable_store(),
         "validate-flat-query" => run_lingqu_memory_validate_flat_query(),
         "validate-flat-materialize" => run_lingqu_memory_validate_flat_materialize(),
+        "validate-w5-engram-object-ref" => run_lingqu_memory_validate_w5_engram_object_ref(),
         _ => anyhow::bail!(
-            "unknown lingqu-memory mode `{mode}`; expected validate-service-path, validate-durable-store, validate-flat-query, or validate-flat-materialize"
+            "unknown lingqu-memory mode `{mode}`; expected validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
         ),
     }
 }
@@ -1434,6 +1440,223 @@ fn run_lingqu_memory_validate_flat_materialize() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn run_lingqu_memory_validate_w5_engram_object_ref() -> anyhow::Result<()> {
+    const W5_ENGRAM_ROWS: usize = 8;
+    const W5_ENGRAM_HIDDEN_SIZE: usize = 1024;
+
+    let mut memory_service = LingquMemoryService::new();
+    let record_ids = (0..W5_ENGRAM_ROWS)
+        .map(|row| format!("record/w5/engram/{row}"))
+        .collect::<Vec<_>>();
+    memory_service.publish_catalog(MemoryCorpusCatalog {
+        catalog_id: "corpus/w5/engram".to_string(),
+        namespace: "project/default".to_string(),
+        dfs_path: LingquDfsPath::new("/lingqu/memory/corpus/w5/engram/catalog.json"),
+        version: 1,
+        record_ids: record_ids.clone(),
+        vector_index_ids: vec!["index/w5/engram/flat".to_string()],
+        created_at_us: 1,
+        updated_at_us: 1,
+    })?;
+    for (row, record_id) in record_ids.iter().enumerate() {
+        let chunk_id = format!("chunk/w5/engram/{row}");
+        memory_service.ingest_record(
+            MemoryRecord {
+                record_id: record_id.clone(),
+                corpus_id: "corpus/w5/engram".to_string(),
+                scope: MemoryScope::Project,
+                visibility: MemoryVisibility::ProjectShared,
+                source_kind: MemorySourceKind::UserProvided,
+                source_uri: format!("dfs://lingqu/memory/source/w5/engram/{row}.md"),
+                source_checksum: 0x1001 + row as u64,
+                content_type: MemoryContentType::Markdown,
+                token_count: 32,
+                trust_level: MemoryTrustLevel::UserConfirmed,
+                confidence: 0.95,
+                retention_policy: MemoryRetentionPolicy::Durable,
+                security_label: MemorySecurityLabel::Internal,
+                pii_state: MemoryPiiState::None,
+                chunk_refs: vec![chunk_id.clone()],
+                embedding_model_versions: vec!["embed/w5/engram/v1".to_string()],
+                evidence_refs: vec![format!("import://lingqu-memory-cli/w5/engram/{row}")],
+                created_at_us: 1,
+                updated_at_us: 1,
+                expires_at_us: None,
+                version: 1,
+                state: MemoryRecordState::Committed,
+            },
+            vec![MemoryChunk {
+                chunk_id,
+                record_id: record_id.clone(),
+                ordinal: 0,
+                text_block_ref: LingquBlockPayloadRef::new(
+                    format!("block/text/w5/engram/{row}"),
+                    0,
+                    128,
+                    0x2002 + row as u64,
+                ),
+                token_start: 0,
+                token_count: 32,
+                checksum: 0x3003 + row as u64,
+            }],
+        )?;
+    }
+
+    let mut durable_store = LingquMemoryDurableStore::new();
+    let mut embedding_values = Vec::with_capacity(W5_ENGRAM_ROWS * W5_ENGRAM_HIDDEN_SIZE);
+    for row in 0..W5_ENGRAM_ROWS {
+        for dim in 0..W5_ENGRAM_HIDDEN_SIZE {
+            embedding_values.push(((row * 31 + dim * 17) % 257) as f32 / 8192.0);
+        }
+    }
+    let segment_ref = durable_store.write_block_payload(
+        "block/embed/w5/engram/table",
+        cli_f32_vec_to_le_bytes(&embedding_values),
+    )?;
+    let query_values = (0..W5_ENGRAM_HIDDEN_SIZE)
+        .map(|dim| ((dim % 23) as f32 + 1.0) / 1024.0)
+        .collect::<Vec<_>>();
+    let query_ref = durable_store.write_block_payload(
+        "block/query/w5/engram",
+        cli_f32_vec_to_le_bytes(&query_values),
+    )?;
+    memory_service.register_embedding_segment(EmbeddingSegment {
+        segment_id: "segment/w5/engram/table".to_string(),
+        model_version: "embed/w5/engram/v1".to_string(),
+        dims: W5_ENGRAM_HIDDEN_SIZE as u32,
+        row_count: W5_ENGRAM_ROWS as u32,
+        row_stride_bytes: (W5_ENGRAM_HIDDEN_SIZE * std::mem::size_of::<f32>()) as u32,
+        dtype: sim_core::TensorDType::F32,
+        vector_block_refs: vec![segment_ref],
+        row_map: (0..W5_ENGRAM_ROWS)
+            .map(|row| EmbeddingRow {
+                chunk_id: format!("chunk/w5/engram/{row}"),
+                row: row as u32,
+            })
+            .collect(),
+        checksum: 0x5005,
+    })?;
+    memory_service.register_vector_index(VectorIndexObject {
+        index_id: "index/w5/engram/flat".to_string(),
+        corpus_id: "corpus/w5/engram".to_string(),
+        kind: VectorIndexKind::Flat,
+        embedding_model_version: "embed/w5/engram/v1".to_string(),
+        segment_ids: vec!["segment/w5/engram/table".to_string()],
+        manifest_path: LingquDfsPath::new("/lingqu/memory/corpus/w5/engram/index.json"),
+        created_at_us: 2,
+        updated_at_us: 2,
+        version: 1,
+    })?;
+    let result = memory_service.query_memory_flat(
+        &mut durable_store,
+        MemoryQuery {
+            query_id: "query/w5/engram".to_string(),
+            corpus_ids: vec!["corpus/w5/engram".to_string()],
+            scope_filter: vec![MemoryScope::Project],
+            visibility_filter: vec![MemoryVisibility::ProjectShared],
+            min_trust: MemoryTrustLevel::UserConfirmed,
+            min_confidence: 0.5,
+            embedding_model_version: "embed/w5/engram/v1".to_string(),
+            top_k: W5_ENGRAM_ROWS,
+            query_embedding_ref: Some(query_ref),
+        },
+        100,
+    )?;
+    let mut object_service = LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
+    let hot_state = memory_service.materialize_hot_state_from_query(
+        &mut durable_store,
+        &mut object_service,
+        HotMemoryMaterializeFromQueryReq {
+            state_id: "hot/w5/engram".to_string(),
+            query_result_id: result.result_id.clone(),
+            owner_entity: 0,
+            producer_entity: 0,
+            now_us: 200,
+        },
+    )?;
+    let _engram_state = memory_service.build_engram_state(
+        "engram/w5/object-ref",
+        &hot_state.state_id,
+        None,
+        300,
+    )?;
+    let table_payload = object_service
+        .get_copy(
+            &hot_state.table.object_key,
+            LingquObjectVersionSelector::LatestCommitted,
+        )
+        .context("missing hot table payload")?;
+    let indices_payload = object_service
+        .get_copy(
+            &hot_state.indices.object_key,
+            LingquObjectVersionSelector::LatestCommitted,
+        )
+        .context("missing hot indices payload")?;
+    let gate_values = (0..W5_ENGRAM_HIDDEN_SIZE)
+        .map(|dim| ((dim % 29) as f32 - 14.0) / 16384.0)
+        .collect::<Vec<_>>();
+    let gate_payload = cli_f32_vec_to_le_bytes(&gate_values);
+    let table_ref = qwen3_publish_object_registry_payload(
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
+        0,
+        0,
+        &hot_state.table.object_key,
+        &table_payload,
+    )
+    .map_err(anyhow::Error::msg)?;
+    let indices_ref = qwen3_publish_object_registry_payload(
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
+        0,
+        0,
+        &hot_state.indices.object_key,
+        &indices_payload,
+    )
+    .map_err(anyhow::Error::msg)?;
+    let gate_ref = qwen3_publish_object_registry_payload(
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
+        0,
+        0,
+        "lingqu/memory/hot/hot/w5/engram/gate_weight",
+        &gate_payload,
+    )
+    .map_err(anyhow::Error::msg)?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: validate-w5-engram-object-ref");
+    println!("  query_result: {}", result.result_id);
+    println!("  matches: {}", result.matches.len());
+    println!("  hot_state: {}", hot_state.state_id);
+    println!("  hot_table_shape: {:?}", hot_state.table.shape);
+    println!(
+        "  selected_chunks: {}",
+        hot_state.selected_chunk_ids.join(",")
+    );
+    println!("  registry_env:");
+    println!(
+        "    {}={}",
+        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF,
+        qwen3_obmm_object_ref_wire_to_hex(&table_ref)
+    );
+    println!(
+        "    {}={}",
+        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF,
+        qwen3_obmm_object_ref_wire_to_hex(&indices_ref)
+    );
+    println!(
+        "    {}={}",
+        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF,
+        qwen3_obmm_object_ref_wire_to_hex(&gate_ref)
+    );
+    println!(
+        "    {}=<optional registry dir override>",
+        SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR
+    );
+    println!("  registry_table_bytes: {}", table_payload.len());
+    println!("  registry_indices_bytes: {}", indices_payload.len());
+    println!("  registry_gate_bytes: {}", gate_payload.len());
+    Ok(())
+}
+
 fn cli_f32_vec_to_le_bytes(values: &[f32]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(values.len() * 4);
     for value in values {
@@ -1689,10 +1912,11 @@ mod tests {
         qwen3_guest_terminal_text_lossy_from_tokenizer, qwen3_guest_terminal_tokens,
         qwen3_guest_timing_summary, qwen3_range_forward_args_from,
         run_lingqu_memory_validate_durable_store, run_lingqu_memory_validate_flat_materialize,
-        run_lingqu_memory_validate_flat_query, simpler_host_matmul_artifact_producer_path,
-        validate_qwen3_dense_weights_path, validate_w5_inference_profile, Qwen3CandidateRecord,
-        Qwen3DecodeReportVerbosity, Qwen3EngramConfig, Qwen3EngramContextOp, Qwen3EngramMode,
-        Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
+        run_lingqu_memory_validate_flat_query, run_lingqu_memory_validate_w5_engram_object_ref,
+        simpler_host_matmul_artifact_producer_path, validate_qwen3_dense_weights_path,
+        validate_w5_inference_profile, Qwen3CandidateRecord, Qwen3DecodeReportVerbosity,
+        Qwen3EngramConfig, Qwen3EngramContextOp, Qwen3EngramMode, Qwen3EngramPool,
+        Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
     };
     use std::env;
     use std::fs;
@@ -2751,6 +2975,11 @@ stage qwen3_range_forward_runtime_output_publish node=2
     #[test]
     fn lingqu_memory_flat_materialize_cli_smoke_runs() {
         run_lingqu_memory_validate_flat_materialize().expect("flat materialize validation");
+    }
+
+    #[test]
+    fn lingqu_memory_w5_engram_object_ref_cli_smoke_runs() {
+        run_lingqu_memory_validate_w5_engram_object_ref().expect("w5 engram object-ref validation");
     }
 }
 

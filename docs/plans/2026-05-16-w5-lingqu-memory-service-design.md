@@ -705,8 +705,12 @@ Current implementation status:
   QueryResult-driven materialization that reads selected embedding rows from
   Lingqu Block and publishes OBMM-backed table, index, and score tensors through
   Lingqu Object Service.
-- Step 7 has the baseline adapter object construction, but W5 decode does not
-  yet consume a real `EngramStateObjectRef`.
+- Step 7 has the baseline adapter object construction. The Rust W5 context op
+  can now consume object-ref-backed table, indices, and gate-weight payloads
+  from the qwen3 object registry through
+  `SIM_QWEN3_GUEST_ENGRAM_CONTEXT_*_REF`; the Linux guest OBMM DB path still
+  needs to be wired to the same object-ref contract instead of its per-step
+  128-byte policy state object.
 
 ## Acceptance Criteria
 

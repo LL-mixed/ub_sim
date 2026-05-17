@@ -1694,8 +1694,17 @@ const QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES: usize = 32;
 const QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET: usize = 0x08_0000;
 const QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT: u16 = 5;
 const QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE: u16 = 7;
-const SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR: &str = "SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR";
+pub const QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE: u16 = 21;
+pub const QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES: u16 = 22;
+pub const QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT: u16 = 23;
+pub const SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR: &str = "SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR";
 const SIM_UAPI_QWEN3_OBJECT_REF_PAYLOAD_SCAN: &str = "SIM_UAPI_QWEN3_OBJECT_REF_PAYLOAD_SCAN";
+pub const SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF: &str =
+    "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF";
+pub const SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF: &str =
+    "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF";
+pub const SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF: &str =
+    "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF";
 
 fn materialize_qwen3_range_dispatch_input<'a>(
     req: &Qwen3RangeDispatchReq,
@@ -1912,6 +1921,83 @@ fn qwen3_object_registry_get(object_ref: &LingquObmmObjectRefWire) -> Result<Vec
         ));
     }
     Ok(payload)
+}
+
+fn qwen3_obmm_object_ref_wire_to_le_bytes(object_ref: &LingquObmmObjectRefWire) -> [u8; 64] {
+    let mut bytes = [0u8; 64];
+    bytes[0..8].copy_from_slice(&object_ref.magic.to_le_bytes());
+    bytes[8..10].copy_from_slice(&object_ref.layout_version.to_le_bytes());
+    bytes[10..12].copy_from_slice(&object_ref.object_kind.to_le_bytes());
+    bytes[12..14].copy_from_slice(&object_ref.state.to_le_bytes());
+    bytes[14..16].copy_from_slice(&object_ref.flags.to_le_bytes());
+    bytes[16..20].copy_from_slice(&object_ref.owner_entity.to_le_bytes());
+    bytes[20..24].copy_from_slice(&object_ref.producer_entity.to_le_bytes());
+    bytes[24..32].copy_from_slice(&object_ref.object_version.to_le_bytes());
+    bytes[32..40].copy_from_slice(&object_ref.key_hash.to_le_bytes());
+    bytes[40..48].copy_from_slice(&object_ref.payload_offset.to_le_bytes());
+    bytes[48..56].copy_from_slice(&object_ref.payload_bytes.to_le_bytes());
+    bytes[56..64].copy_from_slice(&object_ref.payload_checksum.to_le_bytes());
+    bytes
+}
+
+pub fn qwen3_obmm_object_ref_wire_to_hex(object_ref: &LingquObmmObjectRefWire) -> String {
+    let bytes = qwen3_obmm_object_ref_wire_to_le_bytes(object_ref);
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write;
+        let _ = write!(&mut hex, "{byte:02x}");
+    }
+    hex
+}
+
+pub fn qwen3_publish_object_registry_payload(
+    object_kind: u16,
+    owner_entity: u32,
+    producer_entity: u32,
+    key: &str,
+    payload: &[u8],
+) -> Result<LingquObmmObjectRefWire, String> {
+    if key.trim().is_empty() {
+        return Err("qwen3_object_registry_key_missing".to_string());
+    }
+    if payload.is_empty() {
+        return Err("qwen3_object_registry_payload_missing".to_string());
+    }
+    let object_ref = LingquObmmObjectRefWire::committed(
+        object_kind,
+        owner_entity,
+        producer_entity,
+        1,
+        qwen3_lingqu_key_hash(key),
+        0,
+        payload.len() as u64,
+        qwen3_dense_reference_range_object_payload_checksum(payload),
+    );
+    qwen3_object_registry_put(&object_ref, payload)?;
+    Ok(object_ref)
+}
+
+fn qwen3_obmm_object_ref_wire_from_hex(value: &str) -> Result<LingquObmmObjectRefWire, String> {
+    let hex = value.trim().strip_prefix("0x").unwrap_or(value.trim());
+    if hex.len() != LingquObmmObjectRefWire::BYTE_LEN * 2 {
+        return Err(format!(
+            "qwen3_obmm_object_ref_hex_len_mismatch:got={}:expected={}",
+            hex.len(),
+            LingquObmmObjectRefWire::BYTE_LEN * 2
+        ));
+    }
+    let mut bytes = vec![0u8; LingquObmmObjectRefWire::BYTE_LEN];
+    for index in 0..LingquObmmObjectRefWire::BYTE_LEN {
+        let start = index * 2;
+        bytes[index] = u8::from_str_radix(&hex[start..start + 2], 16)
+            .map_err(|_| format!("qwen3_obmm_object_ref_hex_invalid:index={index}"))?;
+    }
+    let object_ref = LingquObmmObjectRefWire::from_le_bytes(&bytes)
+        .map_err(|err| format!("qwen3_obmm_object_ref_parse:{err}"))?;
+    object_ref
+        .validate()
+        .map_err(|err| format!("qwen3_obmm_object_ref_invalid:{err}"))?;
+    Ok(object_ref)
 }
 
 fn qwen3_lingqu_key_hash(key: &str) -> u64 {
@@ -15220,6 +15306,129 @@ fn qwen3_dense_reference_engram_context_chunk_elems(hidden_size: usize) -> Resul
     Ok(chunk_elems)
 }
 
+fn qwen3_dense_reference_engram_context_ref_from_env(
+    env_name: &'static str,
+    expected_kind: u16,
+) -> Result<Option<LingquObmmObjectRefWire>, String> {
+    let Some(value) = std::env::var(env_name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    let object_ref =
+        qwen3_obmm_object_ref_wire_from_hex(&value).map_err(|err| format!("{env_name}:{err}"))?;
+    if object_ref.object_kind != expected_kind {
+        return Err(format!(
+            "{env_name}:qwen3_engram_context_ref_kind_mismatch:got={}:expected={expected_kind}",
+            object_ref.object_kind
+        ));
+    }
+    Ok(Some(object_ref))
+}
+
+fn qwen3_dense_reference_engram_context_object_ref_state(
+    hidden_size: usize,
+) -> Result<Option<(Vec<f32>, Vec<i32>, Vec<f32>, usize)>, String> {
+    let table_ref = qwen3_dense_reference_engram_context_ref_from_env(
+        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
+    )?;
+    let indices_ref = qwen3_dense_reference_engram_context_ref_from_env(
+        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
+    )?;
+    let gate_weight_ref = qwen3_dense_reference_engram_context_ref_from_env(
+        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
+    )?;
+    if table_ref.is_none() && indices_ref.is_none() && gate_weight_ref.is_none() {
+        return Ok(None);
+    }
+    let (Some(table_ref), Some(indices_ref), Some(gate_weight_ref)) =
+        (table_ref, indices_ref, gate_weight_ref)
+    else {
+        return Err(
+            "qwen3_engram_context_object_refs_incomplete:table_indices_and_gate_weight_required"
+                .to_string(),
+        );
+    };
+
+    let table = qwen3_f32_values_from_le_bytes(
+        &qwen3_object_registry_get(&table_ref)
+            .map_err(|err| format!("qwen3_engram_context_table_resolve_failed:{err}"))?,
+        "qwen3_engram_context_table",
+    )?;
+    if table.len() % hidden_size != 0 {
+        return Err(format!(
+            "qwen3_engram_context_table_len_mismatch:hidden_size={hidden_size}:values={}",
+            table.len()
+        ));
+    }
+    let table_rows = table.len() / hidden_size;
+    if table_rows < ENGRAM_CONTEXT_INDICES_PER_BATCH {
+        return Err(format!(
+            "qwen3_engram_context_table_rows_too_small:rows={table_rows}:min={}",
+            ENGRAM_CONTEXT_INDICES_PER_BATCH
+        ));
+    }
+
+    let indices = qwen3_i32_values_from_le_bytes(
+        &qwen3_object_registry_get(&indices_ref)
+            .map_err(|err| format!("qwen3_engram_context_indices_resolve_failed:{err}"))?,
+        "qwen3_engram_context_indices",
+    )?;
+    if indices.len() != ENGRAM_CONTEXT_INDICES_PER_BATCH {
+        return Err(format!(
+            "qwen3_engram_context_indices_len_mismatch:got={}:expected={}",
+            indices.len(),
+            ENGRAM_CONTEXT_INDICES_PER_BATCH
+        ));
+    }
+
+    let gate_weight = qwen3_f32_values_from_le_bytes(
+        &qwen3_object_registry_get(&gate_weight_ref)
+            .map_err(|err| format!("qwen3_engram_context_gate_weight_resolve_failed:{err}"))?,
+        "qwen3_engram_context_gate_weight",
+    )?;
+    if gate_weight.len() != hidden_size {
+        return Err(format!(
+            "qwen3_engram_context_gate_weight_len_mismatch:got={}:expected={hidden_size}",
+            gate_weight.len()
+        ));
+    }
+
+    Ok(Some((table, indices, gate_weight, table_rows)))
+}
+
+fn qwen3_f32_values_from_le_bytes(bytes: &[u8], field: &'static str) -> Result<Vec<f32>, String> {
+    if bytes.len() % std::mem::size_of::<f32>() != 0 {
+        return Err(format!(
+            "{field}_bytes_not_multiple_of_f32:bytes={}",
+            bytes.len()
+        ));
+    }
+    let mut values = Vec::with_capacity(bytes.len() / std::mem::size_of::<f32>());
+    for chunk in bytes.chunks_exact(std::mem::size_of::<f32>()) {
+        values.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    }
+    Ok(values)
+}
+
+fn qwen3_i32_values_from_le_bytes(bytes: &[u8], field: &'static str) -> Result<Vec<i32>, String> {
+    if bytes.len() % std::mem::size_of::<i32>() != 0 {
+        return Err(format!(
+            "{field}_bytes_not_multiple_of_i32:bytes={}",
+            bytes.len()
+        ));
+    }
+    let mut values = Vec::with_capacity(bytes.len() / std::mem::size_of::<i32>());
+    for chunk in bytes.chunks_exact(std::mem::size_of::<i32>()) {
+        values.push(i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    }
+    Ok(values)
+}
+
 fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
     sequence: &mut [Vec<f32>],
     token_ids: &[u64],
@@ -15237,7 +15446,6 @@ fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
         ),
         Qwen3DenseReferenceEngramContextMode::CpuReference
         | Qwen3DenseReferenceEngramContextMode::SimplerHost => {
-            let table_rows = qwen3_dense_reference_engram_context_table_rows()?;
             let hidden = sequence
                 .last_mut()
                 .ok_or_else(|| "qwen3_engram_context_hidden_sequence_empty".to_string())?;
@@ -15246,8 +15454,17 @@ fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
             if hidden_size == 0 {
                 return Err("qwen3_engram_context_hidden_size_unsupported:got=0".to_string());
             }
-            let (table, indices, gate_weight) =
-                qwen3_dense_reference_engram_context_cpu_fixture(hidden, token_ids, table_rows);
+            let object_ref_state =
+                qwen3_dense_reference_engram_context_object_ref_state(hidden_size)?;
+            let object_ref_backed = object_ref_state.is_some();
+            let (table, indices, gate_weight, table_rows) = if let Some(state) = object_ref_state {
+                state
+            } else {
+                let table_rows = qwen3_dense_reference_engram_context_table_rows()?;
+                let (table, indices, gate_weight) =
+                    qwen3_dense_reference_engram_context_cpu_fixture(hidden, token_ids, table_rows);
+                (table, indices, gate_weight, table_rows)
+            };
             let started = Instant::now();
             let reference = run_engram_context_reference(&EngramContextOp {
                 table: &table,
@@ -15310,7 +15527,13 @@ fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
             let mut report =
                 qwen3_dense_reference_engram_context_report_from_reference(reference.report, latency_ms);
             if mode == Qwen3DenseReferenceEngramContextMode::SimplerHost {
-                report.mode = "simpler-host";
+                report.mode = if object_ref_backed {
+                    "simpler-host-object-ref"
+                } else {
+                    "simpler-host"
+                };
+            } else if object_ref_backed {
+                report.mode = "cpu-reference-object-ref";
             }
             hidden.copy_from_slice(&output_values);
             Ok(Some(report))
@@ -18812,14 +19035,18 @@ mod tests {
         qwen3_dense_reference_weight_tensor_kind_code,
         qwen3_dense_reference_write_service_flow_markers,
         qwen3_dense_reference_write_weight_reference_table,
-        qwen3_dense_reference_write_weight_stage_link_table, qwen3_object_registry_put,
-        read_u64_le_at, run_host_matmul_batched_smoke, run_host_matmul_smoke,
+        qwen3_dense_reference_write_weight_stage_link_table, qwen3_lingqu_key_hash,
+        qwen3_object_registry_put, qwen3_obmm_object_ref_wire_to_hex, read_u64_le_at,
+        run_host_matmul_batched_smoke, run_host_matmul_smoke,
         run_qwen3_dense_reference_prefill_runtime, validate_qwen3_range_dispatch_object_refs,
         GuestUapiSurface, KvCachePayloadLayout, LocalGuestUapiSurface,
         Qwen3DenseReferenceHiddenLayerNodeRange, Qwen3DenseReferenceLayerDependencyDescriptor,
         Qwen3DenseReferenceLogitsDescriptor, Qwen3DenseReferenceShard,
         Qwen3GuestRangeComputeContract, Qwen3ProjectionKind, Qwen3RangeDispatchReq, UapiCommand,
-        UapiDescriptor, UapiResponse, QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+        UapiDescriptor, UapiResponse, QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
         QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE, QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES,
         QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER, QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET,
         QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET, QWEN3_DENSE_REFERENCE_PROFILE,
@@ -18829,13 +19056,18 @@ mod tests {
         QWEN3_SYNTHETIC_LOGITS_CANDIDATES, QWEN3_SYNTHETIC_MLP_ACTIVATION,
         QWEN3_SYNTHETIC_MLP_OUTPUT, QWEN3_SYNTHETIC_QKV_BASE_TILE, QWEN3_SYNTHETIC_TOKEN_TEXT,
         QWEN3_WEIGHT_REFERENCE_ENTRY_WORDS, QWEN3_WEIGHT_STAGE_LINK_ENTRY_WORDS,
-        SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, W4_DEMO_KVCACHE_PAYLOAD_BYTES, W4_KVCACHE_BLOCKS,
-        W4_KVCACHE_PREFIX_GROUPS, W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES,
+        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF, SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF,
+        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF, SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+        W4_DEMO_KVCACHE_PAYLOAD_BYTES, W4_KVCACHE_BLOCKS, W4_KVCACHE_PREFIX_GROUPS,
+        W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES,
     };
     use sim_config::ScenarioConfig;
     use sim_core::{
         BlockHash, CompletionStatus, HierarchyCoord, IoOpcode, IoSubmitReq, LogicalSystemId,
         SimError, TaskKey,
+    };
+    use sim_models::engram_context::{
+        run_engram_context_reference, EngramContextOp, ENGRAM_CONTEXT_INDICES_PER_BATCH,
     };
     use sim_models::qwen3_dense_reference::{
         checksum_words, token_piece_bytes_from_policy, token_piece_bytes_from_tokenizer_path,
@@ -18899,6 +19131,22 @@ mod tests {
         }
     }
 
+    fn test_f32_vec_to_le_bytes(values: &[f32]) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(std::mem::size_of_val(values));
+        for value in values {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes
+    }
+
+    fn test_i32_vec_to_le_bytes(values: &[i32]) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(std::mem::size_of_val(values));
+        for value in values {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes
+    }
+
     #[test]
     fn qwen3_engram_context_cpu_reference_mutates_terminal_hidden() {
         with_env_var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP", "cpu-reference", || {
@@ -18929,6 +19177,140 @@ mod tests {
                 assert_ne!(sequence[1], terminal_before);
             });
         });
+    }
+
+    #[test]
+    fn qwen3_engram_context_cpu_reference_consumes_object_ref_state() {
+        run_simpler_native_test_isolated(
+            "qwen3_engram_context_cpu_reference_consumes_object_ref_state",
+            || {
+                let registry_dir = std::env::temp_dir().join(format!(
+                    "ub_sim_qwen3_engram_context_object_ref_test_{}",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&registry_dir);
+                let hidden_size = 1024usize;
+                let table_rows = ENGRAM_CONTEXT_INDICES_PER_BATCH;
+                let table = (0..table_rows * hidden_size)
+                    .map(|index| ((index % 37) as f32 - 18.0) / 4096.0)
+                    .collect::<Vec<_>>();
+                let indices = (0..ENGRAM_CONTEXT_INDICES_PER_BATCH)
+                    .map(|index| index as i32)
+                    .collect::<Vec<_>>();
+                let gate_weight = (0..hidden_size)
+                    .map(|index| ((index % 17) as f32 - 8.0) / 8192.0)
+                    .collect::<Vec<_>>();
+                let table_payload = test_f32_vec_to_le_bytes(&table);
+                let indices_payload = test_i32_vec_to_le_bytes(&indices);
+                let gate_payload = test_f32_vec_to_le_bytes(&gate_weight);
+                let table_ref = LingquObmmObjectRefWire::committed(
+                    QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
+                    0,
+                    0,
+                    1,
+                    qwen3_lingqu_key_hash("engram/context/table"),
+                    0,
+                    table_payload.len() as u64,
+                    qwen3_dense_reference_range_object_payload_checksum(&table_payload),
+                );
+                let indices_ref = LingquObmmObjectRefWire::committed(
+                    QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
+                    0,
+                    0,
+                    1,
+                    qwen3_lingqu_key_hash("engram/context/indices"),
+                    0,
+                    indices_payload.len() as u64,
+                    qwen3_dense_reference_range_object_payload_checksum(&indices_payload),
+                );
+                let gate_ref = LingquObmmObjectRefWire::committed(
+                    QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
+                    0,
+                    0,
+                    1,
+                    qwen3_lingqu_key_hash("engram/context/gate_weight"),
+                    0,
+                    gate_payload.len() as u64,
+                    qwen3_dense_reference_range_object_payload_checksum(&gate_payload),
+                );
+                with_env_var(
+                    SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+                    registry_dir.to_string_lossy().as_ref(),
+                    || {
+                        qwen3_object_registry_put(&table_ref, &table_payload)
+                            .expect("put table object");
+                        qwen3_object_registry_put(&indices_ref, &indices_payload)
+                            .expect("put indices object");
+                        qwen3_object_registry_put(&gate_ref, &gate_payload)
+                            .expect("put gate object");
+                        with_env_var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP", "cpu-reference", || {
+                            with_env_var(
+                                SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF,
+                                &qwen3_obmm_object_ref_wire_to_hex(&table_ref),
+                                || {
+                                    with_env_var(
+                                        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF,
+                                        &qwen3_obmm_object_ref_wire_to_hex(&indices_ref),
+                                        || {
+                                            with_env_var(
+                                                SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF,
+                                                &qwen3_obmm_object_ref_wire_to_hex(&gate_ref),
+                                                || {
+                                                    let terminal_hidden = (0..hidden_size)
+                                                        .map(|index| {
+                                                            (index as f32
+                                                                - hidden_size as f32 / 2.0)
+                                                                / 4096.0
+                                                        })
+                                                        .collect::<Vec<_>>();
+                                                    let expected = run_engram_context_reference(
+                                                        &EngramContextOp {
+                                                            table: &table,
+                                                            table_rows,
+                                                            indices: &indices,
+                                                            hidden: &terminal_hidden,
+                                                            gate_weight: &gate_weight,
+                                                            batch: 1,
+                                                            hidden_size,
+                                                        },
+                                                    )
+                                                    .expect("reference object-ref context");
+                                                    let mut sequence = vec![
+                                                        vec![0.0f32; hidden_size],
+                                                        terminal_hidden,
+                                                    ];
+                                                    let report =
+                                                        qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
+                                                            &mut sequence,
+                                                            &[11, 358, 2776, 264],
+                                                            QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
+                                                            QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
+                                                        )
+                                                        .expect("context op should run")
+                                                        .expect("context report");
+
+                                                    assert_eq!(
+                                                        report.mode,
+                                                        "cpu-reference-object-ref"
+                                                    );
+                                                    assert_eq!(report.table_rows, table_rows);
+                                                    assert_eq!(
+                                                        report.output_checksum,
+                                                        expected.report.output_checksum
+                                                    );
+                                                    assert_eq!(sequence[1], expected.output);
+                                                },
+                                            );
+                                        },
+                                    );
+                                },
+                            );
+                        });
+                    },
+                );
+                let _ = std::fs::remove_dir_all(&registry_dir);
+            },
+        );
     }
 
     #[test]
