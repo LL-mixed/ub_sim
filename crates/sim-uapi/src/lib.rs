@@ -10431,7 +10431,19 @@ fn simpler_host_engram_context_manifest_current(manifest_path: &Path) -> bool {
     value
         .get("host_engram_context_manifest_version")
         .and_then(|version| version.as_u64())
-        == Some(3)
+        == Some(5)
+        && value
+            .get("simpler_runtime")
+            .and_then(|runtime| runtime.get("runtime_env"))
+            .and_then(|env| env.get("SIMPLER_LOG_LIBRARY"))
+            .and_then(|path| path.as_str())
+            .is_some_and(|path| !path.is_empty())
+        && value
+            .get("simpler_runtime")
+            .and_then(|runtime| runtime.get("runtime_env"))
+            .and_then(|env| env.get("SIMPLER_SIM_CONTEXT_LIBRARY"))
+            .and_then(|path| path.as_str())
+            .is_some_and(|path| !path.is_empty())
 }
 
 fn ensure_simpler_host_engram_context_manifest(manifest_path: &Path) -> Result<(), String> {

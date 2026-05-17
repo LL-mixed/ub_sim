@@ -588,7 +588,7 @@ struct CompatContinuousTensor {
 };
 
 struct CompatChipStorageTaskArgs {
-    CompatContinuousTensor tensors[64];
+    CompatContinuousTensor tensors[128];
     uint64_t scalars[128];
     int32_t tensor_count;
     int32_t scalar_count;
@@ -946,7 +946,7 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         "note": "args_template is consumed by simulator-side helper to construct SimplerRuntimeArg entries",
     }
     if args.profile == "host_engram_context":
-        manifest["host_engram_context_manifest_version"] = 3
+        manifest["host_engram_context_manifest_version"] = 5
 
     manifest_path = output_dir / spec.manifest_name
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True))

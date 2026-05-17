@@ -1,10 +1,9 @@
 //! Thin Rust-side runtime loader for `simpler` host `pto_runtime_c_api`.
 //!
 //! Current vendored `simpler` exposes the HostBuildGraph runtime through the
-//! worker C API: callers pass a `ChipCallable` plus `ChipStorageTaskArgs` to
-//! `run_runtime`, rather than calling separate init/launch/finalize symbols.
+//! worker C API: initialize a device context once with `simpler_init`, stage a
+//! `ChipCallable` with `prepare_callable`, then launch it via `run_prepared`.
 
-use std::cell::Cell;
 use std::ffi::{c_char, c_int, c_void, CString};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -21,37 +20,19 @@ pub type DeviceContextHandle = *mut c_void;
 type CreateDeviceContextFn = unsafe extern "C" fn() -> DeviceContextHandle;
 type DestroyDeviceContextFn = unsafe extern "C" fn(DeviceContextHandle);
 type GetRuntimeSizeFn = unsafe extern "C" fn() -> usize;
-type SetDeviceFn = unsafe extern "C" fn(DeviceContextHandle, c_int) -> c_int;
 type DeviceMallocCtxFn = unsafe extern "C" fn(DeviceContextHandle, usize) -> *mut c_void;
 type DeviceFreeCtxFn = unsafe extern "C" fn(DeviceContextHandle, *mut c_void);
 type CopyToDeviceCtxFn =
     unsafe extern "C" fn(DeviceContextHandle, *mut c_void, *const c_void, usize) -> c_int;
 type CopyFromDeviceCtxFn =
     unsafe extern "C" fn(DeviceContextHandle, *mut c_void, *const c_void, usize) -> c_int;
-type RunRuntimeFn = unsafe extern "C" fn(
-    DeviceContextHandle,
-    RuntimeHandle,
-    *const c_void,
-    *const c_void,
-    c_int,
-    c_int,
-    c_int,
-    *const u8,
-    usize,
-    *const u8,
-    usize,
-    c_int,
-    c_int,
-    c_int,
-    *const c_char,
-) -> c_int;
 type SimplerInitFn =
     unsafe extern "C" fn(DeviceContextHandle, c_int, *const u8, usize, *const u8, usize) -> c_int;
-type PrepareCallableFn = unsafe extern "C" fn(DeviceContextHandle, c_int, *const c_void) -> c_int;
+type PrepareCallableFn = unsafe extern "C" fn(DeviceContextHandle, i32, *const c_void) -> c_int;
 type RunPreparedFn = unsafe extern "C" fn(
     DeviceContextHandle,
     RuntimeHandle,
-    c_int,
+    i32,
     *const c_void,
     c_int,
     c_int,
@@ -61,7 +42,7 @@ type RunPreparedFn = unsafe extern "C" fn(
     c_int,
     *const c_char,
 ) -> c_int;
-type UnregisterCallableFn = unsafe extern "C" fn(DeviceContextHandle, c_int) -> c_int;
+type UnregisterCallableFn = unsafe extern "C" fn(DeviceContextHandle, i32) -> c_int;
 type FinalizeDeviceFn = unsafe extern "C" fn(DeviceContextHandle) -> c_int;
 
 #[repr(i32)]
@@ -260,22 +241,47 @@ pub fn make_chip_callable(
     for (index, direction) in signature.iter().enumerate() {
         write_i32(&mut bytes, index * 4, *direction as i32);
     }
-    write_i32(&mut bytes, 256, signature.len() as i32);
-    write_u32(&mut bytes, 260, orch_binary.len() as u32);
-    write_cstr(&mut bytes, 264, CALLABLE_FUNC_NAME_MAX, orch_function_name)?;
+    write_i32(
+        &mut bytes,
+        CHIP_CALLABLE_SIG_COUNT_OFFSET,
+        signature.len() as i32,
+    );
     write_u32(
         &mut bytes,
-        328,
+        CHIP_CALLABLE_BINARY_SIZE_OFFSET,
+        orch_binary.len() as u32,
+    );
+    write_cstr(
+        &mut bytes,
+        CHIP_CALLABLE_FUNC_NAME_OFFSET,
+        CALLABLE_FUNC_NAME_MAX,
+        orch_function_name,
+    )?;
+    write_u32(
+        &mut bytes,
+        CHIP_CALLABLE_FUNC_NAME_LEN_OFFSET,
         orch_function_name.len().min(CALLABLE_FUNC_NAME_MAX - 1) as u32,
     );
     for (index, kernel) in kernels.iter().enumerate() {
-        write_i32(&mut bytes, 332 + index * 4, kernel.func_id);
+        write_i32(
+            &mut bytes,
+            CHIP_CALLABLE_CHILD_FUNC_IDS_OFFSET + index * 4,
+            kernel.func_id,
+        );
     }
     for (index, offset) in child_offsets.iter().enumerate() {
-        write_u32(&mut bytes, 4428 + index * 4, *offset);
+        write_u32(
+            &mut bytes,
+            CHIP_CALLABLE_CHILD_OFFSETS_OFFSET + index * 4,
+            *offset,
+        );
     }
-    write_i32(&mut bytes, 8524, child_buffers.len() as i32);
-    write_u32(&mut bytes, 8592, 0);
+    write_i32(
+        &mut bytes,
+        CHIP_CALLABLE_CHILD_COUNT_OFFSET,
+        child_buffers.len() as i32,
+    );
+    write_u32(&mut bytes, CHIP_CALLABLE_CONFIG_NAME_LEN_OFFSET, 0);
     bytes[CHIP_CALLABLE_HEADER_SIZE..CHIP_CALLABLE_HEADER_SIZE + orch_binary.len()]
         .copy_from_slice(orch_binary);
     for (offset, child) in child_offsets.iter().zip(child_buffers.iter()) {
@@ -340,8 +346,6 @@ pub enum SimplerApiError {
     NullDevicePointer,
     #[error("api returned error code {code}")]
     ApiFailure { code: i32 },
-    #[error("runtime library does not expose a supported launch ABI")]
-    UnsupportedRuntimeAbi,
 }
 
 impl SimplerApiError {
@@ -361,16 +365,14 @@ pub struct RuntimeLibrary {
     create_device_context: CreateDeviceContextFn,
     destroy_device_context: DestroyDeviceContextFn,
     get_runtime_size: GetRuntimeSizeFn,
-    set_device: Option<SetDeviceFn>,
     device_malloc_ctx: DeviceMallocCtxFn,
     device_free_ctx: DeviceFreeCtxFn,
     copy_to_device_ctx: CopyToDeviceCtxFn,
     copy_from_device_ctx: CopyFromDeviceCtxFn,
-    run_runtime: Option<RunRuntimeFn>,
-    simpler_init: Option<SimplerInitFn>,
-    prepare_callable: Option<PrepareCallableFn>,
-    run_prepared: Option<RunPreparedFn>,
-    unregister_callable: Option<UnregisterCallableFn>,
+    simpler_init: SimplerInitFn,
+    prepare_callable: PrepareCallableFn,
+    run_prepared: RunPreparedFn,
+    unregister_callable: UnregisterCallableFn,
     finalize_device: FinalizeDeviceFn,
 }
 
@@ -383,7 +385,6 @@ impl std::fmt::Debug for RuntimeLibrary {
 pub struct DeviceContext<'a> {
     api: &'a RuntimeLibrary,
     ctx: NonNull<c_void>,
-    prepared_runtime_initialized: Cell<bool>,
 }
 
 impl std::fmt::Debug for DeviceContext<'_> {
@@ -400,7 +401,7 @@ impl DeviceContext<'_> {
 
 impl Drop for DeviceContext<'_> {
     fn drop(&mut self) {
-        // `run_runtime` already performs runtime-level cleanup. The current
+        // `run_prepared` already performs runtime-level cleanup. The current
         // simpler sim C API can crash during Rust test-process teardown if
         // device finalization is repeated here, so native context cleanup stays
         // opt-in until the upstream teardown contract is stable.
@@ -449,7 +450,6 @@ impl RuntimeLibrary {
                     b"destroy_device_context\0",
                 )?,
                 get_runtime_size: *load_symbol::<GetRuntimeSizeFn>(&lib, b"get_runtime_size\0")?,
-                set_device: load_optional_symbol::<SetDeviceFn>(&lib, b"set_device\0")?,
                 device_malloc_ctx: *load_symbol::<DeviceMallocCtxFn>(&lib, b"device_malloc_ctx\0")?,
                 device_free_ctx: *load_symbol::<DeviceFreeCtxFn>(&lib, b"device_free_ctx\0")?,
                 copy_to_device_ctx: *load_symbol::<CopyToDeviceCtxFn>(
@@ -460,14 +460,10 @@ impl RuntimeLibrary {
                     &lib,
                     b"copy_from_device_ctx\0",
                 )?,
-                run_runtime: load_optional_symbol::<RunRuntimeFn>(&lib, b"run_runtime\0")?,
-                simpler_init: load_optional_symbol::<SimplerInitFn>(&lib, b"simpler_init\0")?,
-                prepare_callable: load_optional_symbol::<PrepareCallableFn>(
-                    &lib,
-                    b"prepare_callable\0",
-                )?,
-                run_prepared: load_optional_symbol::<RunPreparedFn>(&lib, b"run_prepared\0")?,
-                unregister_callable: load_optional_symbol::<UnregisterCallableFn>(
+                simpler_init: *load_symbol::<SimplerInitFn>(&lib, b"simpler_init\0")?,
+                prepare_callable: *load_symbol::<PrepareCallableFn>(&lib, b"prepare_callable\0")?,
+                run_prepared: *load_symbol::<RunPreparedFn>(&lib, b"run_prepared\0")?,
+                unregister_callable: *load_symbol::<UnregisterCallableFn>(
                     &lib,
                     b"unregister_callable\0",
                 )?,
@@ -483,20 +479,10 @@ impl RuntimeLibrary {
         unsafe { (self.get_runtime_size)() }
     }
 
-    pub fn create_context(&self, device_id: i32) -> Result<DeviceContext<'_>, SimplerApiError> {
+    pub fn create_context(&self) -> Result<DeviceContext<'_>, SimplerApiError> {
         let ctx = unsafe { (self.create_device_context)() };
         let ctx = NonNull::new(ctx).ok_or(SimplerApiError::NullDeviceContext)?;
-        let context = DeviceContext {
-            api: self,
-            ctx,
-            prepared_runtime_initialized: Cell::new(false),
-        };
-        if let Some(set_device) = self.set_device {
-            unsafe {
-                SimplerApiError::from_code((set_device)(context.as_raw(), device_id as c_int))?;
-            }
-        }
-        Ok(context)
+        Ok(DeviceContext { api: self, ctx })
     }
 
     pub fn alloc_device(
@@ -546,7 +532,7 @@ impl RuntimeLibrary {
         }
     }
 
-    pub fn run_runtime(
+    pub fn run_prepared(
         &self,
         ctx: &DeviceContext<'_>,
         runtime: OwnedRuntime,
@@ -561,65 +547,22 @@ impl RuntimeLibrary {
         aicore_size: usize,
     ) -> Result<(), SimplerApiError> {
         let output_prefix = CString::new("").map_err(|_| SimplerApiError::InvalidSymbolName)?;
-        if let Some(run_runtime) = self.run_runtime {
-            unsafe {
-                return SimplerApiError::from_code((run_runtime)(
-                    ctx.as_raw(),
-                    runtime.as_raw(),
-                    callable.as_ptr(),
-                    args as *const _ as *const c_void,
-                    block_dim as c_int,
-                    aicpu_thread_num as c_int,
-                    device_id as c_int,
-                    aicpu_binary,
-                    aicpu_size,
-                    aicore_binary,
-                    aicore_size,
-                    0,
-                    0,
-                    0,
-                    output_prefix.as_ptr(),
-                ));
-            }
-        }
-        let (simpler_init, prepare_callable, run_prepared) =
-            match (self.simpler_init, self.prepare_callable, self.run_prepared) {
-                (Some(simpler_init), Some(prepare_callable), Some(run_prepared)) => {
-                    (simpler_init, prepare_callable, run_prepared)
-                }
-                _ => return Err(SimplerApiError::UnsupportedRuntimeAbi),
-            };
-        let trace = std::env::var_os("SIMPLER_CAPI_TRACE").is_some();
-        if !ctx.prepared_runtime_initialized.get() {
-            if trace {
-                eprintln!("simpler_capi: simpler_init");
-            }
-            unsafe {
-                SimplerApiError::from_code((simpler_init)(
-                    ctx.as_raw(),
-                    device_id as c_int,
-                    aicpu_binary,
-                    aicpu_size,
-                    aicore_binary,
-                    aicore_size,
-                ))?;
-            }
-            ctx.prepared_runtime_initialized.set(true);
-        }
         let callable_id = 0;
         unsafe {
-            if trace {
-                eprintln!("simpler_capi: prepare_callable");
-            }
-            SimplerApiError::from_code((prepare_callable)(
+            SimplerApiError::from_code((self.simpler_init)(
+                ctx.as_raw(),
+                device_id as c_int,
+                aicpu_binary,
+                aicpu_size,
+                aicore_binary,
+                aicore_size,
+            ))?;
+            SimplerApiError::from_code((self.prepare_callable)(
                 ctx.as_raw(),
                 callable_id,
                 callable.as_ptr(),
             ))?;
-            if trace {
-                eprintln!("simpler_capi: run_prepared");
-            }
-            let result = SimplerApiError::from_code((run_prepared)(
+            let run_result = SimplerApiError::from_code((self.run_prepared)(
                 ctx.as_raw(),
                 runtime.as_raw(),
                 callable_id,
@@ -632,13 +575,10 @@ impl RuntimeLibrary {
                 0,
                 output_prefix.as_ptr(),
             ));
-            if trace {
-                eprintln!("simpler_capi: unregister_callable");
-            }
-            if let Some(unregister_callable) = self.unregister_callable {
-                let _ = (unregister_callable)(ctx.as_raw(), callable_id);
-            }
-            result
+            let unregister_result =
+                SimplerApiError::from_code((self.unregister_callable)(ctx.as_raw(), callable_id));
+            run_result?;
+            unregister_result
         }
     }
 }
@@ -672,16 +612,6 @@ unsafe fn load_symbol<T>(
     })
 }
 
-unsafe fn load_optional_symbol<T: Copy>(
-    lib: &Library,
-    symbol: &'static [u8],
-) -> Result<Option<T>, SimplerApiError> {
-    match lib.get::<T>(symbol) {
-        Ok(symbol) => Ok(Some(*symbol)),
-        Err(_) => Ok(None),
-    }
-}
-
 fn write_i32(bytes: &mut [u8], offset: usize, value: i32) {
     bytes[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
 }
@@ -713,13 +643,21 @@ fn align_up(value: usize, align: usize) -> usize {
     (value + align - 1) & !(align - 1)
 }
 
-const CHIP_MAX_TENSOR_ARGS: usize = 64;
+const CHIP_MAX_TENSOR_ARGS: usize = 128;
 const CHIP_MAX_SCALAR_ARGS: usize = 128;
 const CHIP_MAX_CHILDREN: usize = 1024;
 const CALLABLE_ALIGN: usize = 64;
 const CALLABLE_FUNC_NAME_MAX: usize = 64;
 const CORE_CALLABLE_BINARY_OFFSET: usize = 128;
-const CHIP_CALLABLE_HEADER_SIZE: usize = 8596;
+const CHIP_CALLABLE_SIG_COUNT_OFFSET: usize = 512;
+const CHIP_CALLABLE_BINARY_SIZE_OFFSET: usize = 516;
+const CHIP_CALLABLE_FUNC_NAME_OFFSET: usize = 520;
+const CHIP_CALLABLE_FUNC_NAME_LEN_OFFSET: usize = 584;
+const CHIP_CALLABLE_CHILD_FUNC_IDS_OFFSET: usize = 588;
+const CHIP_CALLABLE_CHILD_OFFSETS_OFFSET: usize = 4684;
+const CHIP_CALLABLE_CHILD_COUNT_OFFSET: usize = 8780;
+const CHIP_CALLABLE_CONFIG_NAME_LEN_OFFSET: usize = 8848;
+const CHIP_CALLABLE_HEADER_SIZE: usize = 8852;
 
 const _: () = assert!(std::mem::size_of::<ContinuousTensor>() == 40);
-const _: () = assert!(std::mem::size_of::<ChipStorageTaskArgs>() == 3592);
+const _: () = assert!(std::mem::size_of::<ChipStorageTaskArgs>() == 6152);
