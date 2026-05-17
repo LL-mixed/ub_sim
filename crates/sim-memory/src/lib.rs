@@ -41,6 +41,8 @@ pub enum LingquMemoryError {
     MissingVectorIndex(String),
     #[error("missing query result: {0}")]
     MissingQueryResult(String),
+    #[error("missing execution artifact: {0}")]
+    MissingExecutionArtifact(String),
     #[error("missing dfs path: {0}")]
     MissingDfsPath(String),
     #[error("missing block payload: {0}")]
@@ -1042,6 +1044,304 @@ pub struct EngramStateObject {
     pub created_at_us: u64,
 }
 
+impl EngramStateObject {
+    pub fn validate(&self) -> MemoryResult<()> {
+        required_str(&self.state_id, "engram_state_id")?;
+        required_str(&self.hot_memory_state_id, "hot_memory_state_id")?;
+        if let Some(path) = &self.query_result_manifest_ref {
+            path.validate("engram_state.query_result_manifest_ref")?;
+        }
+        validate_hot_ref(&self.table)?;
+        validate_hot_ref(&self.indices)?;
+        if let Some(gate) = &self.gate {
+            validate_hot_ref(gate)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ExecutionArtifactKind {
+    HiddenState,
+    KvCache,
+    Logits,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ExecutionArtifactState {
+    Candidate,
+    Verified,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ShortpathAction {
+    Continue,
+    JumpToLayer,
+    JumpToTerminal,
+    RequireVerify,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InferenceModelBinding {
+    pub model_id: String,
+    pub model_key: String,
+    pub tokenizer_hash: u64,
+    pub profile_hash: u64,
+}
+
+impl InferenceModelBinding {
+    pub fn validate(&self) -> MemoryResult<()> {
+        required_str(&self.model_id, "model_binding.model_id")?;
+        required_str(&self.model_key, "model_binding.model_key")?;
+        nonzero(self.tokenizer_hash, "model_binding.tokenizer_hash")?;
+        nonzero(self.profile_hash, "model_binding.profile_hash")?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RangeBoundary {
+    pub step_index: u64,
+    pub node_index: u32,
+    pub layer_start: u32,
+    pub layer_end: u32,
+    pub next_node_index: Option<u32>,
+    pub position: u64,
+}
+
+impl RangeBoundary {
+    pub fn validate(&self) -> MemoryResult<()> {
+        if self.layer_end <= self.layer_start {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "range_boundary.layer_end",
+                reason: "layer_end must be greater than layer_start",
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionArtifactObject {
+    pub artifact_id: String,
+    pub kind: ExecutionArtifactKind,
+    pub model: InferenceModelBinding,
+    pub producer_boundary: RangeBoundary,
+    pub target_layer_start: u32,
+    pub target_layer_end: u32,
+    pub dtype: TensorDType,
+    pub shape: Vec<u64>,
+    pub durable_payload_ref: Option<LingquBlockPayloadRef>,
+    pub hot_object_ref: Option<HotTensorObjectRef>,
+    pub source_query_result_id: Option<String>,
+    pub source_engram_state_id: Option<String>,
+    pub confidence_milli: u32,
+    pub state: ExecutionArtifactState,
+    pub checksum: u64,
+    pub version: u64,
+    pub created_at_us: u64,
+    pub expires_at_us: Option<u64>,
+}
+
+impl ExecutionArtifactObject {
+    pub fn validate(&self) -> MemoryResult<()> {
+        required_str(&self.artifact_id, "execution_artifact_id")?;
+        self.model.validate()?;
+        self.producer_boundary.validate()?;
+        if self.target_layer_end < self.target_layer_start
+            || (self.kind != ExecutionArtifactKind::Logits
+                && self.target_layer_end == self.target_layer_start)
+        {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "execution_artifact.target_layer_end",
+                reason: "target_layer_end must be greater than target_layer_start unless artifact is terminal logits",
+            });
+        }
+        require_nonempty(&self.shape, "execution_artifact.shape")?;
+        for dim in &self.shape {
+            nonzero(*dim, "execution_artifact.shape")?;
+        }
+        if self.durable_payload_ref.is_none() && self.hot_object_ref.is_none() {
+            return Err(LingquMemoryError::MissingField(
+                "execution_artifact.payload_ref",
+            ));
+        }
+        if let Some(payload_ref) = &self.durable_payload_ref {
+            payload_ref.validate("execution_artifact.durable_payload_ref")?;
+        }
+        if let Some(hot_ref) = &self.hot_object_ref {
+            validate_hot_ref(hot_ref)?;
+            if hot_ref.dtype != self.dtype || hot_ref.shape != self.shape {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "execution_artifact.hot_object_ref",
+                    reason: "hot object dtype/shape must match artifact metadata",
+                });
+            }
+        }
+        if let Some(query_result_id) = &self.source_query_result_id {
+            required_str(query_result_id, "execution_artifact.source_query_result_id")?;
+        }
+        if let Some(engram_state_id) = &self.source_engram_state_id {
+            required_str(engram_state_id, "execution_artifact.source_engram_state_id")?;
+        }
+        if self.confidence_milli > 1000 {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "execution_artifact.confidence_milli",
+                reason: "confidence_milli must be in [0, 1000]",
+            });
+        }
+        nonzero(self.checksum, "execution_artifact.checksum")?;
+        nonzero(self.version, "execution_artifact.version")?;
+        if let Some(expires_at_us) = self.expires_at_us {
+            if expires_at_us <= self.created_at_us {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "execution_artifact.expires_at_us",
+                    reason: "expires_at_us must be greater than created_at_us",
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoundaryLookupRequest {
+    pub request_id: String,
+    pub model: InferenceModelBinding,
+    pub boundary: RangeBoundary,
+    pub hidden_state: HotTensorObjectRef,
+    pub engram_state_id: Option<String>,
+    pub min_confidence_milli: u32,
+    pub allowed_actions: Vec<ShortpathAction>,
+    pub created_at_us: u64,
+}
+
+impl BoundaryLookupRequest {
+    pub fn validate(&self) -> MemoryResult<()> {
+        required_str(&self.request_id, "boundary_lookup.request_id")?;
+        self.model.validate()?;
+        self.boundary.validate()?;
+        validate_hot_ref(&self.hidden_state)?;
+        if let Some(engram_state_id) = &self.engram_state_id {
+            required_str(engram_state_id, "boundary_lookup.engram_state_id")?;
+        }
+        if self.min_confidence_milli > 1000 {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "boundary_lookup.min_confidence_milli",
+                reason: "min_confidence_milli must be in [0, 1000]",
+            });
+        }
+        require_nonempty(&self.allowed_actions, "boundary_lookup.allowed_actions")?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShortpathDecisionRecord {
+    pub decision_id: String,
+    pub request_id: String,
+    pub action: ShortpathAction,
+    pub artifact_id: Option<String>,
+    pub target_layer_start: Option<u32>,
+    pub target_layer_end: Option<u32>,
+    pub confidence_milli: u32,
+    pub verify_required: bool,
+    pub proof_checksum: u64,
+    pub reason: String,
+    pub created_at_us: u64,
+    pub version: u64,
+}
+
+impl ShortpathDecisionRecord {
+    pub fn validate(&self) -> MemoryResult<()> {
+        required_str(&self.decision_id, "shortpath_decision.decision_id")?;
+        required_str(&self.request_id, "shortpath_decision.request_id")?;
+        required_str(&self.reason, "shortpath_decision.reason")?;
+        if self.confidence_milli > 1000 {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "shortpath_decision.confidence_milli",
+                reason: "confidence_milli must be in [0, 1000]",
+            });
+        }
+        match self.action {
+            ShortpathAction::Continue => {
+                if self.artifact_id.is_some() {
+                    return Err(LingquMemoryError::InvalidValue {
+                        field: "shortpath_decision.artifact_id",
+                        reason: "continue decisions must not reference an artifact",
+                    });
+                }
+            }
+            ShortpathAction::JumpToLayer | ShortpathAction::JumpToTerminal => {
+                if self.artifact_id.as_deref().unwrap_or("").trim().is_empty() {
+                    return Err(LingquMemoryError::MissingField(
+                        "shortpath_decision.artifact_id",
+                    ));
+                }
+                let (Some(start), Some(end)) = (self.target_layer_start, self.target_layer_end)
+                else {
+                    return Err(LingquMemoryError::MissingField(
+                        "shortpath_decision.target_layer_range",
+                    ));
+                };
+                if end < start || (self.action == ShortpathAction::JumpToLayer && end == start) {
+                    return Err(LingquMemoryError::InvalidValue {
+                        field: "shortpath_decision.target_layer_end",
+                        reason: "target_layer_end must be greater than target_layer_start unless action is jump-to-terminal",
+                    });
+                }
+            }
+            ShortpathAction::RequireVerify => {
+                if self.artifact_id.as_deref().unwrap_or("").trim().is_empty() {
+                    return Err(LingquMemoryError::MissingField(
+                        "shortpath_decision.artifact_id",
+                    ));
+                }
+                if !self.verify_required {
+                    return Err(LingquMemoryError::InvalidValue {
+                        field: "shortpath_decision.verify_required",
+                        reason: "require-verify decisions must set verify_required",
+                    });
+                }
+            }
+        }
+        nonzero(self.proof_checksum, "shortpath_decision.proof_checksum")?;
+        nonzero(self.version, "shortpath_decision.version")?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoundaryLookupResponse {
+    pub request_id: String,
+    pub decision: ShortpathDecisionRecord,
+    pub artifact: Option<ExecutionArtifactObject>,
+}
+
+impl BoundaryLookupResponse {
+    pub fn validate(&self) -> MemoryResult<()> {
+        required_str(&self.request_id, "boundary_lookup_response.request_id")?;
+        self.decision.validate()?;
+        if self.decision.request_id != self.request_id {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "boundary_lookup_response.decision",
+                reason: "decision request_id must match response request_id",
+            });
+        }
+        if let Some(artifact) = &self.artifact {
+            artifact.validate()?;
+            if self.decision.artifact_id.as_deref() != Some(artifact.artifact_id.as_str()) {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "boundary_lookup_response.artifact",
+                    reason: "artifact id must match decision artifact id",
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct HotMemoryMaterializeReq {
     pub state_id: String,
@@ -1094,6 +1394,8 @@ pub struct LingquMemoryService {
     query_results: HashMap<String, QueryResult>,
     hot_states: HashMap<String, HotMemoryStateObject>,
     engram_states: HashMap<String, EngramStateObject>,
+    execution_artifacts: HashMap<String, ExecutionArtifactObject>,
+    shortpath_decisions: HashMap<String, ShortpathDecisionRecord>,
 }
 
 impl LingquMemoryService {
@@ -1856,12 +2158,165 @@ impl LingquMemoryService {
         )
     }
 
+    pub fn register_execution_artifact(
+        &mut self,
+        artifact: ExecutionArtifactObject,
+    ) -> MemoryResult<()> {
+        artifact.validate()?;
+        if let Some(query_result_id) = &artifact.source_query_result_id {
+            if !self.query_results.contains_key(query_result_id) {
+                return Err(LingquMemoryError::MissingQueryResult(
+                    query_result_id.clone(),
+                ));
+            }
+        }
+        if let Some(engram_state_id) = &artifact.source_engram_state_id {
+            if !self.engram_states.contains_key(engram_state_id) {
+                return Err(LingquMemoryError::MissingField(
+                    "execution_artifact.source_engram_state_id",
+                ));
+            }
+        }
+        self.execution_artifacts
+            .insert(artifact.artifact_id.clone(), artifact);
+        Ok(())
+    }
+
+    pub fn boundary_lookup(
+        &mut self,
+        req: BoundaryLookupRequest,
+        now_us: u64,
+    ) -> MemoryResult<BoundaryLookupResponse> {
+        req.validate()?;
+        if let Some(engram_state_id) = &req.engram_state_id {
+            if !self.engram_states.contains_key(engram_state_id) {
+                return Err(LingquMemoryError::MissingField(
+                    "boundary_lookup.engram_state_id",
+                ));
+            }
+        }
+
+        let allow_terminal = req
+            .allowed_actions
+            .iter()
+            .any(|action| *action == ShortpathAction::JumpToTerminal);
+        let allow_layer = req
+            .allowed_actions
+            .iter()
+            .any(|action| *action == ShortpathAction::JumpToLayer);
+        let candidate = self
+            .execution_artifacts
+            .values()
+            .filter(|artifact| artifact.state == ExecutionArtifactState::Verified)
+            .filter(|artifact| artifact.model == req.model)
+            .filter(|artifact| artifact.producer_boundary.layer_end == req.boundary.layer_end)
+            .filter(|artifact| artifact.producer_boundary.position == req.boundary.position)
+            .filter(|artifact| artifact.confidence_milli >= req.min_confidence_milli)
+            .filter(|artifact| {
+                if let Some(engram_state_id) = &req.engram_state_id {
+                    artifact.source_engram_state_id.as_deref() == Some(engram_state_id.as_str())
+                } else {
+                    true
+                }
+            })
+            .filter(|artifact| match artifact.kind {
+                ExecutionArtifactKind::Logits => allow_terminal,
+                ExecutionArtifactKind::HiddenState | ExecutionArtifactKind::KvCache => allow_layer,
+            })
+            .max_by(|left, right| {
+                left.confidence_milli
+                    .cmp(&right.confidence_milli)
+                    .then_with(|| left.version.cmp(&right.version))
+                    .then_with(|| left.artifact_id.cmp(&right.artifact_id))
+            })
+            .cloned();
+
+        let decision = if let Some(artifact) = candidate.as_ref() {
+            let action = if artifact.kind == ExecutionArtifactKind::Logits {
+                ShortpathAction::JumpToTerminal
+            } else {
+                ShortpathAction::JumpToLayer
+            };
+            let decision_id = format!("shortpath-decision/{}", req.request_id);
+            let proof_checksum = shortpath_decision_checksum(
+                &decision_id,
+                &req.request_id,
+                action,
+                Some(&artifact.artifact_id),
+                artifact.target_layer_start,
+                artifact.target_layer_end,
+                artifact.confidence_milli,
+                artifact.checksum,
+                now_us,
+            );
+            ShortpathDecisionRecord {
+                decision_id,
+                request_id: req.request_id.clone(),
+                action,
+                artifact_id: Some(artifact.artifact_id.clone()),
+                target_layer_start: Some(artifact.target_layer_start),
+                target_layer_end: Some(artifact.target_layer_end),
+                confidence_milli: artifact.confidence_milli,
+                verify_required: artifact.state != ExecutionArtifactState::Verified,
+                proof_checksum,
+                reason: "verified_execution_artifact_hit".to_string(),
+                created_at_us: now_us,
+                version: 1,
+            }
+        } else {
+            let decision_id = format!("shortpath-decision/{}", req.request_id);
+            let proof_checksum = shortpath_decision_checksum(
+                &decision_id,
+                &req.request_id,
+                ShortpathAction::Continue,
+                None,
+                req.boundary.layer_start,
+                req.boundary.layer_end,
+                0,
+                req.hidden_state.checksum,
+                now_us,
+            );
+            ShortpathDecisionRecord {
+                decision_id,
+                request_id: req.request_id.clone(),
+                action: ShortpathAction::Continue,
+                artifact_id: None,
+                target_layer_start: None,
+                target_layer_end: None,
+                confidence_milli: 0,
+                verify_required: false,
+                proof_checksum,
+                reason: "no_verified_execution_artifact_hit".to_string(),
+                created_at_us: now_us,
+                version: 1,
+            }
+        };
+        decision.validate()?;
+        self.shortpath_decisions
+            .insert(decision.decision_id.clone(), decision.clone());
+        let response = BoundaryLookupResponse {
+            request_id: req.request_id,
+            decision,
+            artifact: candidate,
+        };
+        response.validate()?;
+        Ok(response)
+    }
+
     pub fn record(&self, record_id: &str) -> Option<&MemoryRecord> {
         self.records.get(record_id)
     }
 
     pub fn query_result(&self, result_id: &str) -> Option<&QueryResult> {
         self.query_results.get(result_id)
+    }
+
+    pub fn execution_artifact(&self, artifact_id: &str) -> Option<&ExecutionArtifactObject> {
+        self.execution_artifacts.get(artifact_id)
+    }
+
+    pub fn shortpath_decision(&self, decision_id: &str) -> Option<&ShortpathDecisionRecord> {
+        self.shortpath_decisions.get(decision_id)
     }
 }
 
@@ -2241,6 +2696,35 @@ fn query_result_dfs_path(result_id: &str) -> MemoryResult<LingquDfsPath> {
     )))
 }
 
+fn shortpath_decision_checksum(
+    decision_id: &str,
+    request_id: &str,
+    action: ShortpathAction,
+    artifact_id: Option<&str>,
+    target_layer_start: u32,
+    target_layer_end: u32,
+    confidence_milli: u32,
+    artifact_checksum: u64,
+    created_at_us: u64,
+) -> u64 {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&(decision_id.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(decision_id.as_bytes());
+    bytes.extend_from_slice(&(request_id.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(request_id.as_bytes());
+    bytes.extend_from_slice(&(action as u8).to_le_bytes());
+    if let Some(artifact_id) = artifact_id {
+        bytes.extend_from_slice(&(artifact_id.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(artifact_id.as_bytes());
+    }
+    bytes.extend_from_slice(&target_layer_start.to_le_bytes());
+    bytes.extend_from_slice(&target_layer_end.to_le_bytes());
+    bytes.extend_from_slice(&confidence_milli.to_le_bytes());
+    bytes.extend_from_slice(&artifact_checksum.to_le_bytes());
+    bytes.extend_from_slice(&created_at_us.to_le_bytes());
+    checksum64(&bytes)
+}
+
 fn checksum64(bytes: &[u8]) -> u64 {
     let mut acc = 0xcbf2_9ce4_8422_2325u64;
     for byte in bytes {
@@ -2328,6 +2812,163 @@ mod tests {
 
         assert_eq!(result.matches.len(), 1);
         assert_eq!(result.matches[0].chunk_id, "chunk/0");
+    }
+
+    #[test]
+    fn execution_artifact_requires_model_bound_payload() {
+        let artifact = ExecutionArtifactObject {
+            artifact_id: "artifact/missing-payload".to_string(),
+            kind: ExecutionArtifactKind::HiddenState,
+            model: sample_model_binding(),
+            producer_boundary: sample_range_boundary(),
+            target_layer_start: 8,
+            target_layer_end: 16,
+            dtype: TensorDType::F32,
+            shape: vec![1, 1024],
+            durable_payload_ref: None,
+            hot_object_ref: None,
+            source_query_result_id: None,
+            source_engram_state_id: None,
+            confidence_milli: 900,
+            state: ExecutionArtifactState::Verified,
+            checksum: 0x1234,
+            version: 1,
+            created_at_us: 10,
+            expires_at_us: Some(20),
+        };
+
+        assert_eq!(
+            artifact.validate(),
+            Err(LingquMemoryError::MissingField(
+                "execution_artifact.payload_ref"
+            ))
+        );
+    }
+
+    #[test]
+    fn boundary_lookup_returns_continue_without_verified_artifact() {
+        let mut service = LingquMemoryService::new();
+        let mut object_service =
+            LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
+        let hidden_ref = publish_hot_tensor(
+            &mut object_service,
+            "hidden/range/node2/step0".to_string(),
+            f32_vec_to_le_bytes(&[0.1, 0.2, 0.3, 0.4]),
+            TensorDType::F32,
+            vec![1, 4],
+            1,
+            2,
+            10,
+        )
+        .unwrap();
+
+        let response = service
+            .boundary_lookup(
+                BoundaryLookupRequest {
+                    request_id: "boundary/continue".to_string(),
+                    model: sample_model_binding(),
+                    boundary: sample_range_boundary(),
+                    hidden_state: hidden_ref,
+                    engram_state_id: None,
+                    min_confidence_milli: 900,
+                    allowed_actions: vec![ShortpathAction::JumpToTerminal],
+                    created_at_us: 11,
+                },
+                12,
+            )
+            .unwrap();
+
+        assert_eq!(response.decision.action, ShortpathAction::Continue);
+        assert_eq!(response.artifact, None);
+        assert_eq!(
+            service
+                .shortpath_decision("shortpath-decision/boundary/continue")
+                .unwrap()
+                .reason,
+            "no_verified_execution_artifact_hit"
+        );
+    }
+
+    #[test]
+    fn boundary_lookup_returns_terminal_jump_for_verified_logits_artifact() {
+        let mut service = LingquMemoryService::new();
+        let mut object_service =
+            LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
+        let hidden_ref = publish_hot_tensor(
+            &mut object_service,
+            "hidden/range/node4/step3".to_string(),
+            f32_vec_to_le_bytes(&[0.1, 0.2, 0.3, 0.4]),
+            TensorDType::F32,
+            vec![1, 4],
+            1,
+            2,
+            10,
+        )
+        .unwrap();
+        let logits_ref = publish_hot_tensor(
+            &mut object_service,
+            "logits/shortpath/node4/step3".to_string(),
+            f32_vec_to_le_bytes(&[1.0, 0.0, -1.0, -2.0]),
+            TensorDType::F32,
+            vec![1, 4],
+            1,
+            2,
+            11,
+        )
+        .unwrap();
+        let artifact = ExecutionArtifactObject {
+            artifact_id: "artifact/logits/step3/node4".to_string(),
+            kind: ExecutionArtifactKind::Logits,
+            model: sample_model_binding(),
+            producer_boundary: sample_range_boundary(),
+            target_layer_start: 8,
+            target_layer_end: 8,
+            dtype: TensorDType::F32,
+            shape: vec![1, 4],
+            durable_payload_ref: None,
+            hot_object_ref: Some(logits_ref),
+            source_query_result_id: None,
+            source_engram_state_id: None,
+            confidence_milli: 980,
+            state: ExecutionArtifactState::Verified,
+            checksum: 0x8899,
+            version: 1,
+            created_at_us: 12,
+            expires_at_us: Some(40),
+        };
+        service.register_execution_artifact(artifact).unwrap();
+
+        let response = service
+            .boundary_lookup(
+                BoundaryLookupRequest {
+                    request_id: "boundary/jump-terminal".to_string(),
+                    model: sample_model_binding(),
+                    boundary: sample_range_boundary(),
+                    hidden_state: hidden_ref,
+                    engram_state_id: None,
+                    min_confidence_milli: 900,
+                    allowed_actions: vec![ShortpathAction::JumpToTerminal],
+                    created_at_us: 13,
+                },
+                14,
+            )
+            .unwrap();
+
+        assert_eq!(response.decision.action, ShortpathAction::JumpToTerminal);
+        assert_eq!(
+            response.decision.artifact_id.as_deref(),
+            Some("artifact/logits/step3/node4")
+        );
+        assert_eq!(response.decision.target_layer_start, Some(8));
+        assert_eq!(response.decision.target_layer_end, Some(8));
+        assert_eq!(response.decision.confidence_milli, 980);
+        assert_eq!(
+            service
+                .execution_artifact("artifact/logits/step3/node4")
+                .unwrap()
+                .kind,
+            ExecutionArtifactKind::Logits
+        );
     }
 
     #[test]
@@ -3187,6 +3828,26 @@ mod tests {
             }],
             checksum: 0x5005,
             version: 1,
+        }
+    }
+
+    fn sample_model_binding() -> InferenceModelBinding {
+        InferenceModelBinding {
+            model_id: "Qwen3-0.6B".to_string(),
+            model_key: "qwen3-0.6b".to_string(),
+            tokenizer_hash: 0x6006,
+            profile_hash: 0x7007,
+        }
+    }
+
+    fn sample_range_boundary() -> RangeBoundary {
+        RangeBoundary {
+            step_index: 3,
+            node_index: 4,
+            layer_start: 4,
+            layer_end: 8,
+            next_node_index: Some(5),
+            position: 12,
         }
     }
 }

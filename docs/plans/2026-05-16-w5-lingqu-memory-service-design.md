@@ -2,12 +2,13 @@
 
 ## Goal
 
-Define a real long-term memory and semantic-state service for W5 inference
-cluster validation.
+Define a real long-term memory, semantic-state, and inference execution memory
+service for W5 inference cluster validation.
 
 This service is not an Engram-owned subsystem. Engram is one consumer. The
 memory service must also be usable later by RAG-style context injection, KV
-summary state, planner state, session recall, and cross-run analysis.
+summary state, planner state, session recall, cross-run analysis, and
+shortpath-aware range execution.
 
 The hard boundary is:
 
@@ -16,15 +17,18 @@ The hard boundary is:
 - durable namespace and metadata catalogs use Lingqu DFS;
 - W5 decode consumes ready object references and mapped operand views;
 - decode kernels do not ingest, rank, persist, or directly read DFS/Block.
+- range boundary shortpath decisions consume ObjectRefs and model-bound
+  execution artifacts; they do not consume raw vector database rows.
 
 ## Core Decision
 
-Use three explicit layers:
+Use four explicit layers:
 
 ```text
 Lingqu Memory Service
   durable memory records, chunks, embedding segments, vector indexes,
-  retrieval policy, trust policy, and query results
+  retrieval policy, trust policy, query results, execution artifacts,
+  boundary lookup, and shortpath decision records
 
 Hot State Materializer
   converts retrieval results into OBMM-backed tensor objects and publishes
@@ -33,11 +37,49 @@ Hot State Materializer
 W5 Engram Adapter
   converts hot memory state into the operator-specific EngramStateObject
   consumed by the W5 engram context op
+
+W5 Boundary Planner
+  resolves model-bound execution artifacts at each range exit and returns
+  continue/jump/verify decisions
 ```
 
 Lingqu Object Service remains the authority for object identity, placement,
 version, checksum, owner, and lifecycle. It is not the semantic retrieval
-engine.
+engine and not the shortpath policy engine.
+
+## Shortpath Direction
+
+The service must not stop at:
+
+```text
+query embedding -> hot embedding table -> terminal engram context op
+```
+
+That path is useful for proving real ObjectRef wiring, but it cannot reduce
+TTFT or range compute because it runs after the transformer range pipeline has
+already paid the cost.
+
+The target path is:
+
+```text
+range exit hidden_ref + engram_state_ref
+  -> BoundaryLookupRequest
+  -> model-bound ExecutionArtifact lookup
+  -> ShortpathDecisionRecord
+  -> continue | jump_to_layer | jump_to_terminal | require_verify
+```
+
+The Memory Service therefore owns two related but distinct domains:
+
+- semantic memory: records, chunks, embeddings, indexes, query results, hot
+  memory tensors, and `EngramStateObject`;
+- execution memory: verified hidden/KV/logits artifacts, model/tokenizer
+  bindings, boundary indexes, and shortpath decisions.
+
+Embedding search can help find relevant state, but a shortpath jump must be
+backed by a model-native execution artifact with a model binding, layer range,
+position, shape, checksum, confidence, and verification state. A vector hit by
+itself is not enough to skip downstream transformer ranges.
 
 ## Memory Service Versus Vector Database
 
@@ -251,6 +293,30 @@ source docs / session logs / run summaries / user feedback
 
 Only the hot materialization path touches OBMM. Durable memory is defined by DFS
 catalogs and Block payloads, not by whether a buffer is currently resident.
+
+For shortpath execution, the range pipeline adds a separate boundary path:
+
+```text
+nodeN range compute
+  -> publish hidden_ref / kv_ref through Lingqu Object Service
+  -> BoundaryLookupRequest {
+       model binding,
+       step/layer boundary,
+       hidden_ref,
+       engram_state_ref,
+       allowed_actions
+     }
+  -> Lingqu Memory Service resolves verified ExecutionArtifactObject
+  -> ShortpathDecisionRecord
+  -> continue normal handoff
+     | jump to downstream hidden/KV artifact
+     | jump to terminal logits/token artifact
+     | require shadow verification
+```
+
+This makes every range exit boundary a possible decision point. The decision
+must be auditable; W5 reports need the request id, artifact id, model binding,
+confidence, checksum, and verification policy that affected the run.
 
 ## Data Model
 
@@ -489,6 +555,133 @@ expires_at_us: u64
 `gate_weight`, `gate_feature`, bias, and other gating details belong to the W5
 Engram Adapter or operator configuration, not to the core Memory Service.
 
+### InferenceModelBinding
+
+Model identity attached to every execution artifact and boundary lookup.
+
+```text
+model_id: string
+model_key: string
+tokenizer_hash: u64
+profile_hash: u64
+```
+
+The same semantic memory can be embedded once and queried by many consumers,
+but execution artifacts are model-native. Reusing a hidden/KV/logits artifact
+across different model weights, tokenizer state, or profile layout is invalid.
+
+### RangeBoundary
+
+Range exit point where a shortpath decision can be made.
+
+```text
+step_index: u64
+node_index: u32
+layer_start: u32
+layer_end: u32
+next_node_index: optional u32
+position: u64
+```
+
+For the current 8-node Qwen3 range pipeline, a boundary exists after each node
+publishes its range output. Later pipelines can add finer grain boundaries, but
+the contract should stay the same.
+
+### ExecutionArtifactObject
+
+Durable or hot model-native artifact that can justify a shortpath jump.
+
+```text
+artifact_id: string
+kind: hidden_state | kv_cache | logits
+model: InferenceModelBinding
+producer_boundary: RangeBoundary
+target_layer_start: u32
+target_layer_end: u32
+dtype: f16 | bf16 | f32 | u32 | ...
+shape: [u64]
+durable_payload_ref: optional Lingqu Block ref
+hot_object_ref: optional Lingqu ObjectRef to ObmmShmem payload
+source_query_result_id: optional string
+source_engram_state_id: optional string
+confidence_milli: u32
+state: candidate | verified | rejected
+checksum: u64
+version: u64
+created_at_us: u64
+expires_at_us: optional u64
+```
+
+Artifact kinds:
+
+- `hidden_state`: can skip one or more downstream layer ranges by publishing a
+  downstream hidden object;
+- `kv_cache`: can reuse prefix/session/memory KV blocks during prefill or
+  decode;
+- `logits`: can jump to terminal sampling when the boundary state is verified
+  or accepted by policy.
+
+`candidate` artifacts may be produced by speculative paths, but W5 must not
+use them for non-shadow jumps unless the decision explicitly requires
+verification. `verified` artifacts can be used for direct jumps if policy and
+confidence allow it. `rejected` artifacts remain only for audit.
+
+### BoundaryLookupRequest
+
+Request issued at a range exit boundary.
+
+```text
+request_id: string
+model: InferenceModelBinding
+boundary: RangeBoundary
+hidden_state: HotTensorObjectRef
+engram_state_id: optional string
+min_confidence_milli: u32
+allowed_actions: [continue | jump_to_layer | jump_to_terminal | require_verify]
+created_at_us: u64
+```
+
+This request is control-plane metadata plus object refs. It must not contain
+large tensor payloads. The Memory Service can resolve object metadata and
+artifact indexes; backend kernels still only read mapped buffers.
+
+### ShortpathDecisionRecord
+
+Auditable decision returned by the Memory Service or boundary planner.
+
+```text
+decision_id: string
+request_id: string
+action: continue | jump_to_layer | jump_to_terminal | require_verify
+artifact_id: optional string
+target_layer_start: optional u32
+target_layer_end: optional u32
+confidence_milli: u32
+verify_required: bool
+proof_checksum: u64
+reason: string
+created_at_us: u64
+version: u64
+```
+
+`continue` is a real decision, not a fallback. It means no policy-eligible,
+verified execution artifact was found for this boundary. A jump decision must
+name an `ExecutionArtifactObject`; otherwise the run cannot prove what work was
+skipped.
+
+### BoundaryLookupResponse
+
+Boundary lookup result.
+
+```text
+request_id: string
+decision: ShortpathDecisionRecord
+artifact: optional ExecutionArtifactObject
+```
+
+The response should be small enough to carry in control-plane logs and UAPI
+metadata. Actual hidden/KV/logits bytes remain behind ObjectRefs or Block refs.
+
 ## Query And Decode Flow
 
 The recommended W5 validation flow is offline/pre-step materialization:
@@ -513,6 +706,23 @@ The recommended W5 validation flow is offline/pre-step materialization:
     Lingqu Block directly.
 12. Decode reports memory record ids, query result version, object refs,
     checksums, and timing.
+
+Shortpath-enabled W5 adds a boundary flow inside step execution:
+
+1. A node completes its assigned range and publishes the range output
+   `hidden_ref` and optional KV refs through Lingqu Object Service.
+2. The boundary planner submits a `BoundaryLookupRequest` with the model
+   binding, range boundary, `hidden_ref`, `EngramStateObject` id, and allowed
+   actions.
+3. Lingqu Memory Service resolves only verified and policy-eligible
+   `ExecutionArtifactObject` records for that exact model/boundary state.
+4. The service writes a `ShortpathDecisionRecord`.
+5. `continue` keeps the normal node-to-node handoff.
+6. `jump_to_layer` publishes or forwards a downstream hidden/KV artifact ref
+   and skips the covered range.
+7. `jump_to_terminal` forwards a logits artifact to terminal sampling.
+8. `require_verify` allows a speculative jump only when a shadow/full path will
+   verify the artifact and record the result.
 
 Online query is allowed later, but it must be modeled as request planning before
 the decode step. TTFT reports must separate memory query/build-state time from
@@ -589,6 +799,9 @@ lifecycle are unified through Lingqu Object Service on top of OBMM shmem.
 - Vector index objects are versioned and can be rebuilt from embedding
   segments.
 - Query results are versioned and can expire.
+- Execution artifacts are model-bound, checksum-bound, and append-versioned;
+  reusing them across model/tokenizer/profile changes is invalid.
+- Shortpath decisions are immutable audit records for a boundary request.
 - Hot OBMM placements can be evicted independently from durable DFS/Block
   state.
 - Tombstoned records are hidden from latest queries but remain auditable by
@@ -726,6 +939,11 @@ table_object_ref=...
 indices_object_ref=...
 score_object_ref=...
 gate_feature_object_ref=...
+execution_artifact_id=...
+shortpath_decision_id=...
+shortpath_action=continue|jump_to_layer|jump_to_terminal|require_verify
+shortpath_confidence_milli=...
+shortpath_proof_checksum=...
 object_versions=...
 object_checksums=...
 obmm_hot_bytes=...
@@ -741,6 +959,8 @@ Timing should separate:
 - durable Block payload reads;
 - OBMM hot materialization;
 - Object Service publish and resolve;
+- boundary lookup and artifact-index lookup;
+- shortpath decision write;
 - UAPI object map;
 - backend context-op dispatch.
 
@@ -754,6 +974,11 @@ Unit tests:
 - `VectorIndexObject` can resolve segment pages without per-vector Block
   objects.
 - `HotMemoryStateObject` rejects non-OBMM hot tensor placements.
+- `ExecutionArtifactObject` requires a model binding, boundary, checksum, and
+  at least one durable or hot payload ref.
+- `BoundaryLookupRequest` rejects missing hidden refs and invalid confidence
+  thresholds.
+- `ShortpathDecisionRecord` rejects jump decisions without an artifact id.
 - OBMM hot promote and evict keeps durable DFS/Block source valid.
 - stale version and checksum mismatch fail resolve.
 - tombstoned and quarantined memory records are not selected by normal query.
@@ -769,6 +994,9 @@ Integration tests:
   not reachable.
 - evict OBMM hot tensors, rebuild state from Block/DFS, and rerun W5.
 - replay a prior run from DFS manifests and Block payload checksums.
+- register a verified logits artifact and verify boundary lookup returns
+  `jump_to_terminal`.
+- verify no-hit boundary lookup returns an auditable `continue` decision.
 
 CLI tests:
 
@@ -791,7 +1019,13 @@ CLI tests:
    `EngramStateObject`.
 8. Teach W5 decode to accept `EngramStateObjectRef`.
 9. Make real-memory W5 reject deterministic fallback paths.
-10. Add long-step, cross-session, and restart/rebuild validation runs.
+10. Add core data models for `InferenceModelBinding`, `RangeBoundary`,
+    `ExecutionArtifactObject`, `BoundaryLookupRequest`,
+    `ShortpathDecisionRecord`, and `BoundaryLookupResponse`.
+11. Add Memory Service boundary lookup over verified execution artifacts.
+12. Teach W5 range exit to issue boundary lookups and consume continue/jump
+    decisions.
+13. Add long-step, cross-session, and restart/rebuild validation runs.
 
 Current implementation status:
 
@@ -799,6 +1033,12 @@ Current implementation status:
   carries selected record/chunk ids, vector index ids, embedding segment
   versions/checksums, evidence refs, and its own checksum/version, so query
   output is an auditable memory decision rather than only a top-k vector list.
+  Step 10 also has a baseline data-model implementation in `sim-memory`:
+  `InferenceModelBinding`, `RangeBoundary`, `ExecutionArtifactObject`,
+  `BoundaryLookupRequest`, `ShortpathDecisionRecord`, and
+  `BoundaryLookupResponse` can be validated, registered, and used for a first
+  exact boundary lookup over verified execution artifacts. This is not yet
+  wired into W5 guest range execution.
   Query results can be persisted to and restored from DFS manifests with
   checksum validation, and QueryResult-driven hot materialization now carries
   that DFS manifest ref into both `HotMemoryStateObject` and
@@ -876,6 +1116,9 @@ Current implementation status:
 - Durable metadata can be rebuilt from DFS catalogs.
 - Durable payloads live in Lingqu Block.
 - Hot tensors are OBMM-backed object refs.
+- Execution artifacts are model/tokenizer/profile-bound and cannot be reused
+  without a matching binding.
+- Every shortpath jump has an auditable decision record and artifact id.
 - Real-memory W5 fails on missing object refs, checksum mismatch, or shape
   mismatch.
 - Reports identify memory records, chunk ids, query result versions, object
