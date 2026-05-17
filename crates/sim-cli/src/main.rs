@@ -8,10 +8,11 @@ use sim_core::{
 use sim_memory::{
     EmbeddingRow, EmbeddingSegment, EngramStateMaterializeFromBlockReq,
     HotMemoryMaterializeFromQueryReq, HotMemoryMaterializeReq, LingquBlockPayloadRef,
-    LingquDfsPath, LingquMemoryDurableStore, LingquMemoryService, MemoryChunk, MemoryContentType,
-    MemoryCorpusCatalog, MemoryPiiState, MemoryQuery, MemoryRecord, MemoryRecordState,
-    MemoryRetentionPolicy, MemoryScope, MemorySecurityLabel, MemorySourceKind, MemoryTrustLevel,
-    MemoryVisibility, QueryResult, VectorIndexKind, VectorIndexObject,
+    LingquDfsPath, LingquMemoryDurableStore, LingquMemoryDurableStoreSnapshot, LingquMemoryService,
+    MemoryCatalogSnapshot, MemoryChunk, MemoryContentType, MemoryCorpusCatalog, MemoryPiiState,
+    MemoryQuery, MemoryRecord, MemoryRecordState, MemoryRetentionPolicy, MemoryScope,
+    MemorySecurityLabel, MemorySourceKind, MemoryTrustLevel, MemoryVisibility, QueryResult,
+    VectorIndexKind, VectorIndexObject,
 };
 use sim_models::qwen3_dense_reference::{
     token_piece_bytes_from_tokenizer_path, token_piece_decode_bytes,
@@ -1090,21 +1091,273 @@ fn run_lingqu_object_service_cli() -> anyhow::Result<()> {
 }
 
 fn run_lingqu_memory_cli() -> anyhow::Result<()> {
-    let mut args = env::args_os().skip(2);
-    let mode = args
+    let mut raw_args = env::args_os().skip(2);
+    let mode = raw_args
         .next()
         .map(|arg| arg.to_string_lossy().into_owned())
         .unwrap_or_else(|| "validate-service-path".to_string());
+    let args = raw_args
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
     match mode.as_str() {
+        "ingest" => run_lingqu_memory_ingest_cli(&args),
         "validate-service-path" => run_lingqu_memory_validate_service_path(),
         "validate-durable-store" => run_lingqu_memory_validate_durable_store(),
         "validate-flat-query" => run_lingqu_memory_validate_flat_query(),
         "validate-flat-materialize" => run_lingqu_memory_validate_flat_materialize(),
         "validate-w5-engram-object-ref" => run_lingqu_memory_validate_w5_engram_object_ref(),
         _ => anyhow::bail!(
-            "unknown lingqu-memory mode `{mode}`; expected validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
+            "unknown lingqu-memory mode `{mode}`; expected ingest, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
         ),
     }
+}
+
+fn run_lingqu_memory_ingest_cli(args: &[String]) -> anyhow::Result<()> {
+    let catalog_path = PathBuf::from(required_cli_arg(args, "--catalog")?);
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let source_path = PathBuf::from(required_cli_arg(args, "--source")?);
+    let token_count = required_cli_u32(args, "--token-count")?;
+    let now_us = optional_cli_u64(args, "--now-us")?.unwrap_or(1);
+    let embedding_model_version = required_cli_arg(args, "--embedding-model-version")?;
+
+    let source_bytes = fs::read(&source_path)
+        .with_context(|| format!("read source file {}", source_path.display()))?;
+    if source_bytes.is_empty() {
+        anyhow::bail!("source file must not be empty: {}", source_path.display());
+    }
+
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let source_name = source_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("source");
+    let source_block = optional_cli_arg(args, "--source-block")?
+        .unwrap_or_else(|| format!("block/memory/source/{source_name}"));
+    let text_block_ref = durable_store
+        .write_block_payload(source_block, source_bytes)
+        .context("write source payload to Lingqu Block store")?;
+
+    let existing_snapshot = load_lingqu_memory_catalog_snapshot_if_exists(&catalog_path)?;
+    let catalog_existed = existing_snapshot.is_some();
+    let mut catalog = if let Some(snapshot) = existing_snapshot.as_ref() {
+        if let Some(catalog_id) = optional_cli_arg(args, "--catalog-id")? {
+            if catalog_id != snapshot.catalog.catalog_id {
+                anyhow::bail!(
+                    "catalog id mismatch: file has `{}`, args requested `{}`",
+                    snapshot.catalog.catalog_id,
+                    catalog_id
+                );
+            }
+        }
+        snapshot.catalog.clone()
+    } else {
+        let catalog_id = required_cli_arg(args, "--catalog-id")?;
+        let namespace = required_cli_arg(args, "--namespace")?;
+        MemoryCorpusCatalog {
+            catalog_id: catalog_id.clone(),
+            namespace,
+            dfs_path: LingquDfsPath::new(format!(
+                "/lingqu/memory/corpus/{}/catalog.json",
+                cli_path_id(&catalog_id)
+            )),
+            version: 1,
+            record_ids: Vec::new(),
+            vector_index_ids: Vec::new(),
+            created_at_us: now_us,
+            updated_at_us: now_us,
+        }
+    };
+
+    let record_id = optional_cli_arg(args, "--record-id")?
+        .unwrap_or_else(|| format!("record/{:016x}", text_block_ref.checksum));
+    let chunk_id = optional_cli_arg(args, "--chunk-id")?
+        .unwrap_or_else(|| format!("chunk/{:016x}/0", text_block_ref.checksum));
+    let content_type = memory_content_type_from_path(&source_path);
+
+    let mut memory_service = LingquMemoryService::new();
+    if let Some(snapshot) = existing_snapshot {
+        memory_service
+            .import_catalog_snapshot(snapshot)
+            .context("import existing catalog snapshot")?;
+    } else {
+        memory_service
+            .publish_catalog(catalog.clone())
+            .context("publish new catalog")?;
+    }
+
+    if !catalog.record_ids.iter().any(|id| id == &record_id) {
+        catalog.record_ids.push(record_id.clone());
+    }
+    if catalog_existed {
+        catalog.version = catalog.version.saturating_add(1);
+    }
+    catalog.updated_at_us = now_us;
+
+    let chunk = MemoryChunk {
+        chunk_id: chunk_id.clone(),
+        record_id: record_id.clone(),
+        ordinal: 0,
+        text_block_ref: text_block_ref.clone(),
+        token_start: 0,
+        token_count,
+        checksum: text_block_ref.checksum,
+    };
+    let record = MemoryRecord {
+        record_id: record_id.clone(),
+        corpus_id: catalog.catalog_id.clone(),
+        scope: MemoryScope::Project,
+        visibility: MemoryVisibility::ProjectShared,
+        source_kind: MemorySourceKind::UserProvided,
+        source_uri: format!("file://{}", source_path.display()),
+        source_checksum: text_block_ref.checksum,
+        content_type,
+        token_count,
+        trust_level: MemoryTrustLevel::UserConfirmed,
+        confidence: 1.0,
+        retention_policy: MemoryRetentionPolicy::Durable,
+        security_label: MemorySecurityLabel::Internal,
+        pii_state: MemoryPiiState::Unknown,
+        chunk_refs: vec![chunk_id.clone()],
+        embedding_model_versions: vec![embedding_model_version],
+        evidence_refs: vec![format!("file://{}", source_path.display())],
+        created_at_us: now_us,
+        updated_at_us: now_us,
+        expires_at_us: None,
+        version: 1,
+        state: MemoryRecordState::Committed,
+    };
+    memory_service
+        .ingest_record(record, vec![chunk])
+        .context("ingest memory record")?;
+    memory_service
+        .publish_catalog(catalog.clone())
+        .context("publish updated catalog")?;
+    let snapshot = memory_service
+        .export_catalog_snapshot(&catalog.catalog_id)
+        .context("export updated catalog snapshot")?;
+
+    write_lingqu_memory_catalog_snapshot(&catalog_path, &snapshot)?;
+    save_lingqu_memory_durable_store(&store_path, &durable_store)?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: ingest");
+    println!("  catalog: {}", catalog.catalog_id);
+    println!("  catalog_path: {}", catalog_path.display());
+    println!("  store_path: {}", store_path.display());
+    println!("  record: {record_id}");
+    println!("  chunk: {chunk_id}");
+    println!("  source_block: {}", text_block_ref.block.0);
+    println!("  source_bytes: {}", text_block_ref.bytes);
+    println!("  source_checksum: {:#x}", text_block_ref.checksum);
+    println!("  token_count: {token_count}");
+    Ok(())
+}
+
+fn required_cli_arg(args: &[String], name: &'static str) -> anyhow::Result<String> {
+    optional_cli_arg(args, name)?.ok_or_else(|| anyhow::anyhow!("missing required argument {name}"))
+}
+
+fn optional_cli_arg(args: &[String], name: &'static str) -> anyhow::Result<Option<String>> {
+    let mut index = 0usize;
+    while index < args.len() {
+        if args[index] == name {
+            let value = args
+                .get(index + 1)
+                .ok_or_else(|| anyhow::anyhow!("missing value for argument {name}"))?;
+            if value.starts_with("--") {
+                anyhow::bail!("missing value for argument {name}");
+            }
+            return Ok(Some(value.clone()));
+        }
+        index += 1;
+    }
+    Ok(None)
+}
+
+fn required_cli_u32(args: &[String], name: &'static str) -> anyhow::Result<u32> {
+    let value = required_cli_arg(args, name)?;
+    value
+        .parse::<u32>()
+        .with_context(|| format!("parse {name} as u32"))
+}
+
+fn optional_cli_u64(args: &[String], name: &'static str) -> anyhow::Result<Option<u64>> {
+    optional_cli_arg(args, name)?
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .with_context(|| format!("parse {name} as u64"))
+        })
+        .transpose()
+}
+
+fn load_lingqu_memory_durable_store(path: &Path) -> anyhow::Result<LingquMemoryDurableStore> {
+    if !path.exists() {
+        return Ok(LingquMemoryDurableStore::new());
+    }
+    let bytes = fs::read(path).with_context(|| format!("read durable store {}", path.display()))?;
+    let snapshot = LingquMemoryDurableStoreSnapshot::from_json_bytes(&bytes)
+        .with_context(|| format!("decode durable store {}", path.display()))?;
+    LingquMemoryDurableStore::import_snapshot(snapshot)
+        .with_context(|| format!("import durable store {}", path.display()))
+}
+
+fn save_lingqu_memory_durable_store(
+    path: &Path,
+    store: &LingquMemoryDurableStore,
+) -> anyhow::Result<()> {
+    let snapshot = store.export_snapshot().context("export durable store")?;
+    let bytes = snapshot.to_json_bytes().context("encode durable store")?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create durable store dir {}", parent.display()))?;
+    }
+    fs::write(path, bytes).with_context(|| format!("write durable store {}", path.display()))
+}
+
+fn load_lingqu_memory_catalog_snapshot_if_exists(
+    path: &Path,
+) -> anyhow::Result<Option<MemoryCatalogSnapshot>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = fs::read(path).with_context(|| format!("read catalog {}", path.display()))?;
+    let snapshot = MemoryCatalogSnapshot::from_json_bytes(&bytes)
+        .with_context(|| format!("decode catalog {}", path.display()))?;
+    Ok(Some(snapshot))
+}
+
+fn write_lingqu_memory_catalog_snapshot(
+    path: &Path,
+    snapshot: &MemoryCatalogSnapshot,
+) -> anyhow::Result<()> {
+    let bytes = snapshot.to_json_bytes().context("encode catalog")?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create catalog dir {}", parent.display()))?;
+    }
+    fs::write(path, bytes).with_context(|| format!("write catalog {}", path.display()))
+}
+
+fn memory_content_type_from_path(path: &Path) -> MemoryContentType {
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some("md") | Some("markdown") => MemoryContentType::Markdown,
+        Some("json") => MemoryContentType::Json,
+        Some("txt") | Some("text") => MemoryContentType::PlainText,
+        _ => MemoryContentType::Binary,
+    }
+}
+
+fn cli_path_id(id: &str) -> String {
+    id.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 fn build_lingqu_memory_cli_sample() -> anyhow::Result<LingquMemoryService> {
@@ -2044,13 +2297,14 @@ mod tests {
         qwen3_guest_log_dir_from_script_output, qwen3_guest_log_match_count,
         qwen3_guest_terminal_candidate_records, qwen3_guest_terminal_text_lossy_from_tokenizer,
         qwen3_guest_terminal_tokens, qwen3_guest_timing_summary, qwen3_range_forward_args_from,
-        run_lingqu_memory_validate_durable_store, run_lingqu_memory_validate_flat_materialize,
-        run_lingqu_memory_validate_flat_query, run_lingqu_memory_validate_w5_engram_object_ref,
+        run_lingqu_memory_ingest_cli, run_lingqu_memory_validate_durable_store,
+        run_lingqu_memory_validate_flat_materialize, run_lingqu_memory_validate_flat_query,
+        run_lingqu_memory_validate_w5_engram_object_ref,
         simpler_host_matmul_artifact_producer_path, validate_qwen3_dense_weights_path,
-        validate_w5_inference_profile, Qwen3CandidateRecord, Qwen3DecodeReportVerbosity,
-        Qwen3EngramConfig, Qwen3EngramContextOp, Qwen3EngramMode, Qwen3EngramPool,
-        Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
-        SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+        validate_w5_inference_profile, LingquMemoryDurableStoreSnapshot, MemoryCatalogSnapshot,
+        Qwen3CandidateRecord, Qwen3DecodeReportVerbosity, Qwen3EngramConfig, Qwen3EngramContextOp,
+        Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
+        SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
     };
     use std::env;
     use std::fs;
@@ -3137,6 +3391,61 @@ stage qwen3_range_forward_runtime_output_publish node=2
     #[test]
     fn lingqu_memory_w5_engram_object_ref_cli_smoke_runs() {
         run_lingqu_memory_validate_w5_engram_object_ref().expect("w5 engram object-ref validation");
+    }
+
+    #[test]
+    fn lingqu_memory_ingest_cli_persists_catalog_and_store() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_lingqu_memory_ingest_cli_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let source = root.join("note.md");
+        let catalog = root.join("catalog.json");
+        let store = root.join("store.json");
+        fs::write(&source, b"# Note\nreal memory source\n").expect("write source");
+
+        run_lingqu_memory_ingest_cli(&[
+            "--catalog".to_string(),
+            catalog.to_string_lossy().into_owned(),
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--source".to_string(),
+            source.to_string_lossy().into_owned(),
+            "--catalog-id".to_string(),
+            "corpus/test".to_string(),
+            "--namespace".to_string(),
+            "project/test".to_string(),
+            "--record-id".to_string(),
+            "record/test/0".to_string(),
+            "--chunk-id".to_string(),
+            "chunk/test/0".to_string(),
+            "--token-count".to_string(),
+            "4".to_string(),
+            "--embedding-model-version".to_string(),
+            "embed/test/v1".to_string(),
+        ])
+        .expect("ingest");
+
+        let catalog_bytes = fs::read(&catalog).expect("read catalog");
+        let snapshot =
+            MemoryCatalogSnapshot::from_json_bytes(&catalog_bytes).expect("decode catalog");
+        assert_eq!(snapshot.catalog.catalog_id, "corpus/test");
+        assert_eq!(snapshot.records.len(), 1);
+        assert_eq!(snapshot.chunks.len(), 1);
+        assert_eq!(snapshot.records[0].record_id, "record/test/0");
+        assert_eq!(snapshot.chunks[0].chunk_id, "chunk/test/0");
+
+        let store_bytes = fs::read(&store).expect("read store");
+        let store_snapshot =
+            LingquMemoryDurableStoreSnapshot::from_json_bytes(&store_bytes).expect("decode store");
+        assert_eq!(store_snapshot.block_payloads.len(), 1);
+        assert_eq!(
+            store_snapshot.block_payloads[0].bytes,
+            b"# Note\nreal memory source\n"
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 }
 

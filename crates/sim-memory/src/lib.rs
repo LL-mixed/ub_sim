@@ -312,6 +312,61 @@ pub struct LingquMemoryDurableStats {
     pub block_bytes_read: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LingquMemoryDfsPayloadSnapshot {
+    pub path: String,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LingquMemoryBlockPayloadSnapshot {
+    pub block: String,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LingquMemoryDurableStoreSnapshot {
+    pub dfs_payloads: Vec<LingquMemoryDfsPayloadSnapshot>,
+    pub block_payloads: Vec<LingquMemoryBlockPayloadSnapshot>,
+    pub next_timestamp_us: u64,
+}
+
+impl LingquMemoryDurableStoreSnapshot {
+    pub fn validate(&self) -> MemoryResult<()> {
+        for payload in &self.dfs_payloads {
+            if payload.path.trim().is_empty() {
+                return Err(LingquMemoryError::MissingField("dfs_payload.path"));
+            }
+            if payload.bytes.is_empty() {
+                return Err(LingquMemoryError::MissingField("dfs_payload.bytes"));
+            }
+        }
+        for payload in &self.block_payloads {
+            if payload.block.trim().is_empty() {
+                return Err(LingquMemoryError::MissingField("block_payload.block"));
+            }
+            if payload.bytes.is_empty() {
+                return Err(LingquMemoryError::MissingField("block_payload.bytes"));
+            }
+        }
+        nonzero(self.next_timestamp_us, "next_timestamp_us")?;
+        Ok(())
+    }
+
+    pub fn to_json_bytes(&self) -> MemoryResult<Vec<u8>> {
+        self.validate()?;
+        serde_json::to_vec_pretty(self)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))
+    }
+
+    pub fn from_json_bytes(bytes: &[u8]) -> MemoryResult<Self> {
+        let snapshot = serde_json::from_slice::<Self>(bytes)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+        snapshot.validate()?;
+        Ok(snapshot)
+    }
+}
+
 #[derive(Debug)]
 pub struct LingquMemoryDurableStore {
     dfs_service: DfsServiceStub,
@@ -343,6 +398,50 @@ impl LingquMemoryDurableStore {
 
     pub fn stats(&self) -> LingquMemoryDurableStats {
         self.stats
+    }
+
+    pub fn export_snapshot(&self) -> MemoryResult<LingquMemoryDurableStoreSnapshot> {
+        let mut dfs_payloads = self
+            .dfs_payloads
+            .iter()
+            .map(|(path, bytes)| LingquMemoryDfsPayloadSnapshot {
+                path: path.clone(),
+                bytes: bytes.clone(),
+            })
+            .collect::<Vec<_>>();
+        dfs_payloads.sort_by(|left, right| left.path.cmp(&right.path));
+
+        let mut block_payloads = self
+            .block_payloads
+            .iter()
+            .map(|(block, bytes)| LingquMemoryBlockPayloadSnapshot {
+                block: block.0.clone(),
+                bytes: bytes.clone(),
+            })
+            .collect::<Vec<_>>();
+        block_payloads.sort_by(|left, right| left.block.cmp(&right.block));
+
+        let snapshot = LingquMemoryDurableStoreSnapshot {
+            dfs_payloads,
+            block_payloads,
+            next_timestamp_us: self.now_us,
+        };
+        snapshot.validate()?;
+        Ok(snapshot)
+    }
+
+    pub fn import_snapshot(snapshot: LingquMemoryDurableStoreSnapshot) -> MemoryResult<Self> {
+        snapshot.validate()?;
+        let mut store = Self::new();
+        for payload in snapshot.dfs_payloads {
+            store.submit_dfs_write(payload.path, payload.bytes)?;
+        }
+        for payload in snapshot.block_payloads {
+            store.submit_block_write(BlockHash(payload.block), payload.bytes)?;
+        }
+        store.now_us = snapshot.next_timestamp_us;
+        store.stats = LingquMemoryDurableStats::default();
+        Ok(store)
     }
 
     pub fn persist_catalog_snapshot(
@@ -2215,6 +2314,32 @@ mod tests {
         ));
         assert_eq!(durable.stats().block_payload_writes, 1);
         assert_eq!(durable.stats().block_payload_reads, 2);
+    }
+
+    #[test]
+    fn durable_store_snapshot_round_trips_dfs_and_block_payloads() {
+        let service = populated_service();
+        let mut durable = LingquMemoryDurableStore::new();
+        let catalog_path = service
+            .persist_catalog_to_dfs(&mut durable, "corpus/0")
+            .expect("persist catalog");
+        let block_ref = durable
+            .write_block_payload("block/chunk/snapshot", b"snapshot payload".to_vec())
+            .expect("write block");
+        let snapshot = durable.export_snapshot().expect("export snapshot");
+        let json = snapshot.to_json_bytes().expect("snapshot json");
+        let decoded =
+            LingquMemoryDurableStoreSnapshot::from_json_bytes(&json).expect("decode snapshot");
+        let mut restored =
+            LingquMemoryDurableStore::import_snapshot(decoded).expect("import snapshot");
+
+        let restored_catalog = restored
+            .load_catalog_snapshot(&catalog_path)
+            .expect("load catalog");
+        let restored_block = restored.read_block_payload(&block_ref).expect("read block");
+
+        assert_eq!(restored_catalog.catalog.catalog_id, "corpus/0");
+        assert_eq!(restored_block, b"snapshot payload");
     }
 
     #[test]

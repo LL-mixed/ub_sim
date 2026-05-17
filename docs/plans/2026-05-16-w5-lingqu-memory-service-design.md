@@ -612,6 +612,26 @@ The command names can still change during implementation. The user-facing flow
 should keep ingestion, embedding, indexing, query, hot materialization, adapter
 state, and decode as separately observable stages.
 
+Current CLI contract:
+
+```text
+sim-cli lingqu-memory ingest \
+  --catalog <catalog-snapshot.json> \
+  --store <durable-store.json> \
+  --source <source-file> \
+  --catalog-id <catalog-id> \
+  --namespace <namespace> \
+  --record-id <record-id> \
+  --chunk-id <chunk-id> \
+  --token-count <count> \
+  --embedding-model-version <version>
+```
+
+This command reads a real source file, writes the source bytes into the local
+Lingqu Block durable-store snapshot, and writes a catalog snapshot with a
+committed `MemoryRecord`/`MemoryChunk`. It intentionally does not synthesize
+embeddings or query results.
+
 ## Observability
 
 W5 summary should include:
@@ -708,8 +728,11 @@ Current implementation status:
   checksum validation, and QueryResult-driven hot materialization now carries
   that DFS manifest ref into both `HotMemoryStateObject` and
   `EngramStateObject`.
-- Step 5 currently exists as validation/smoke CLI modes, not yet as external
-  ingest/embed/build-index commands.
+- Step 5 now has the first real external command:
+  `sim-cli lingqu-memory ingest`. It persists real source bytes into a local
+  Lingqu Block durable-store snapshot and writes a catalog snapshot with
+  committed record/chunk metadata. Embed, build-index, query, and materialize
+  remain validation/smoke modes and still need product CLI entrypoints.
 - Step 6 now has two paths: explicit caller-provided tensor materialization and
   QueryResult-driven materialization that reads selected embedding rows from
   Lingqu Block and publishes OBMM-backed table, index, and score tensors through
