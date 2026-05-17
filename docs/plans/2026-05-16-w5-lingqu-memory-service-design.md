@@ -647,6 +647,14 @@ sim-cli lingqu-memory materialize-hot-state \
   --query-result-manifest <dfs-query-result-path> \
   --state-id <hot-state-id> \
   --hot-state <hot-state.json>
+
+sim-cli lingqu-memory materialize-engram-state \
+  --store <durable-store.json> \
+  --object-store <object-service-snapshot.json> \
+  --hot-state <hot-state.json> \
+  --gate-weight-json <gate-weight.json> \
+  --state-id <engram-state-id> \
+  --engram-state <engram-state.json>
 ```
 
 `ingest` reads a real source file, writes the source bytes into the local
@@ -671,6 +679,13 @@ writes a `HotMemoryStateObject` manifest. It intentionally does not accept
 inline tensor values. The Object Service snapshot is required because hot-state
 object refs are not meaningful across CLI stages unless the object metadata and
 OBMM payload placement records are reloadable.
+
+`materialize-engram-state` reloads the hot-state manifest and Object Service
+snapshot, validates that hot table/index/score refs resolve to matching OBMM
+objects, writes the caller-provided gate-weight JSON payload into Lingqu Block,
+then publishes a gate OBMM object and writes the `EngramStateObject` manifest.
+It intentionally does not accept inline gate values on the command line and
+does not create a default gate if the gate payload is missing.
 
 ## Observability
 
@@ -780,8 +795,11 @@ Current implementation status:
   also has a real `sim-cli lingqu-memory materialize-hot-state` entrypoint that
   consumes the persisted query result manifest, publishes OBMM hot tensors, and
   persists a reloadable Lingqu Object Service snapshot so the produced
-  `HotMemoryStateObject` refs can be resolved by later CLI stages. Embed
-  generation remains a missing product CLI entrypoint.
+  `HotMemoryStateObject` refs can be resolved by later CLI stages.
+  `sim-cli lingqu-memory materialize-engram-state` now consumes that hot-state
+  manifest plus object-store snapshot, writes gate weights through Lingqu
+  Block, publishes the gate OBMM object, and emits an `EngramStateObject`
+  manifest. Embed generation remains a missing product CLI entrypoint.
 - Step 6 now has two paths: explicit caller-provided tensor materialization and
   QueryResult-driven materialization that reads selected embedding rows from
   Lingqu Block and publishes OBMM-backed table, index, and score tensors through

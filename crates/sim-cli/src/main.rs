@@ -8,12 +8,12 @@ use sim_core::{
 };
 use sim_memory::{
     EmbeddingRow, EmbeddingSegment, EngramStateMaterializeFromBlockReq,
-    HotMemoryMaterializeFromQueryReq, HotMemoryMaterializeReq, LingquBlockPayloadRef,
-    LingquDfsPath, LingquMemoryDurableStore, LingquMemoryDurableStoreSnapshot, LingquMemoryService,
-    MemoryCatalogSnapshot, MemoryChunk, MemoryContentType, MemoryCorpusCatalog, MemoryPiiState,
-    MemoryQuery, MemoryRecord, MemoryRecordState, MemoryRetentionPolicy, MemoryScope,
-    MemorySecurityLabel, MemorySourceKind, MemoryTrustLevel, MemoryVisibility, QueryResult,
-    VectorIndexKind, VectorIndexObject,
+    HotMemoryMaterializeFromQueryReq, HotMemoryMaterializeReq, HotMemoryStateObject,
+    LingquBlockPayloadRef, LingquDfsPath, LingquMemoryDurableStore,
+    LingquMemoryDurableStoreSnapshot, LingquMemoryService, MemoryCatalogSnapshot, MemoryChunk,
+    MemoryContentType, MemoryCorpusCatalog, MemoryPiiState, MemoryQuery, MemoryRecord,
+    MemoryRecordState, MemoryRetentionPolicy, MemoryScope, MemorySecurityLabel, MemorySourceKind,
+    MemoryTrustLevel, MemoryVisibility, QueryResult, VectorIndexKind, VectorIndexObject,
 };
 use sim_models::qwen3_dense_reference::{
     token_piece_bytes_from_tokenizer_path, token_piece_decode_bytes,
@@ -1103,6 +1103,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
     match mode.as_str() {
         "build-index" => run_lingqu_memory_build_index_cli(&args),
         "ingest" => run_lingqu_memory_ingest_cli(&args),
+        "materialize-engram-state" => run_lingqu_memory_materialize_engram_state_cli(&args),
         "materialize-hot-state" => run_lingqu_memory_materialize_hot_state_cli(&args),
         "query" => run_lingqu_memory_query_cli(&args),
         "validate-service-path" => run_lingqu_memory_validate_service_path(),
@@ -1111,7 +1112,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "validate-flat-materialize" => run_lingqu_memory_validate_flat_materialize(),
         "validate-w5-engram-object-ref" => run_lingqu_memory_validate_w5_engram_object_ref(),
         _ => anyhow::bail!(
-            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, query, materialize-hot-state, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
+            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, query, materialize-hot-state, materialize-engram-state, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
         ),
     }
 }
@@ -1132,6 +1133,11 @@ struct LingquMemoryEmbeddingVectorInput {
 #[derive(Debug, Deserialize)]
 struct LingquMemoryQueryEmbeddingInput {
     model_version: String,
+    values: Vec<f32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LingquMemoryGateWeightInput {
     values: Vec<f32>,
 }
 
@@ -1337,6 +1343,110 @@ fn run_lingqu_memory_materialize_hot_state_cli(args: &[String]) -> anyhow::Resul
         "  committed_object_count: {}",
         object_report.committed_object_count
     );
+    Ok(())
+}
+
+fn run_lingqu_memory_materialize_engram_state_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let object_store_path = PathBuf::from(required_cli_arg(args, "--object-store")?);
+    let hot_state_path = PathBuf::from(required_cli_arg(args, "--hot-state")?);
+    let gate_weight_path = PathBuf::from(required_cli_arg(args, "--gate-weight-json")?);
+    let state_id = required_cli_arg(args, "--state-id")?;
+    let engram_state_path = PathBuf::from(required_cli_arg(args, "--engram-state")?);
+    let owner_entity = optional_cli_u64(args, "--owner-entity")?.unwrap_or(0);
+    let producer_entity = optional_cli_u64(args, "--producer-entity")?.unwrap_or(0);
+    let now_us = optional_cli_u64(args, "--now-us")?.unwrap_or(1);
+
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let object_snapshot =
+        load_lingqu_object_service_snapshot(&object_store_path)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "object store snapshot does not exist: {}",
+                object_store_path.display()
+            )
+        })?;
+    let mut object_service = LingquObjectServiceStub::import_snapshot(object_snapshot)
+        .with_context(|| format!("import object store {}", object_store_path.display()))?;
+
+    let hot_state_bytes = fs::read(&hot_state_path)
+        .with_context(|| format!("read hot state {}", hot_state_path.display()))?;
+    let hot_state = serde_json::from_slice::<HotMemoryStateObject>(&hot_state_bytes)
+        .with_context(|| format!("decode hot state {}", hot_state_path.display()))?;
+    let gate_weight_bytes = fs::read(&gate_weight_path)
+        .with_context(|| format!("read gate weight json {}", gate_weight_path.display()))?;
+    let gate_weight = serde_json::from_slice::<LingquMemoryGateWeightInput>(&gate_weight_bytes)
+        .with_context(|| format!("decode gate weight json {}", gate_weight_path.display()))?;
+    validate_lingqu_memory_gate_weight_input(&gate_weight)?;
+
+    let gate_payload = cli_f32_vec_to_le_bytes(&gate_weight.values);
+    let gate_block = optional_cli_arg(args, "--gate-weight-block")?
+        .unwrap_or_else(|| format!("block/memory/engram-gate/{}", cli_path_id(&state_id)));
+    let gate_weight_ref = durable_store
+        .write_block_payload(gate_block, gate_payload)
+        .context("write gate weight payload to Lingqu Block store")?;
+
+    let mut memory_service = LingquMemoryService::new();
+    memory_service
+        .register_hot_state(&object_service, hot_state.clone())
+        .context("register hot memory state")?;
+    let engram_state = memory_service
+        .materialize_engram_state_from_block(
+            &mut durable_store,
+            &mut object_service,
+            EngramStateMaterializeFromBlockReq {
+                state_id: state_id.clone(),
+                hot_memory_state_id: hot_state.state_id.clone(),
+                gate_weight_ref: gate_weight_ref.clone(),
+                owner_entity,
+                producer_entity,
+                now_us,
+            },
+        )
+        .context("materialize engram state")?;
+
+    let engram_state_bytes =
+        serde_json::to_vec_pretty(&engram_state).context("encode engram state")?;
+    if let Some(parent) = engram_state_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create engram state dir {}", parent.display()))?;
+    }
+    fs::write(&engram_state_path, engram_state_bytes)
+        .with_context(|| format!("write engram state {}", engram_state_path.display()))?;
+    save_lingqu_memory_durable_store(&store_path, &durable_store)?;
+    save_lingqu_object_service_snapshot(&object_store_path, &object_service)?;
+    let object_report = object_service.report();
+
+    println!("lingqu_memory_service");
+    println!("  mode: materialize-engram-state");
+    println!("  store_path: {}", store_path.display());
+    println!("  object_store_path: {}", object_store_path.display());
+    println!("  hot_state: {}", hot_state.state_id);
+    println!("  engram_state: {}", engram_state.state_id);
+    println!("  engram_state_path: {}", engram_state_path.display());
+    println!("  table_object: {}", engram_state.table.object_key);
+    println!("  indices_object: {}", engram_state.indices.object_key);
+    if let Some(gate) = &engram_state.gate {
+        println!("  gate_object: {}", gate.object_key);
+        println!("  gate_shape: {:?}", gate.shape);
+    }
+    println!("  gate_weight_block: {}", gate_weight_ref.block.0);
+    println!(
+        "  obmm_payload_writes: {}",
+        object_report.obmm_pool_payload_write_count
+    );
+    println!(
+        "  committed_object_count: {}",
+        object_report.committed_object_count
+    );
+    Ok(())
+}
+
+fn validate_lingqu_memory_gate_weight_input(
+    input: &LingquMemoryGateWeightInput,
+) -> anyhow::Result<()> {
+    if input.values.is_empty() {
+        anyhow::bail!("gate weight json values must not be empty");
+    }
     Ok(())
 }
 
@@ -2717,6 +2827,7 @@ mod tests {
         qwen3_guest_terminal_candidate_records, qwen3_guest_terminal_text_lossy_from_tokenizer,
         qwen3_guest_terminal_tokens, qwen3_guest_timing_summary, qwen3_range_forward_args_from,
         run_lingqu_memory_build_index_cli, run_lingqu_memory_ingest_cli,
+        run_lingqu_memory_materialize_engram_state_cli,
         run_lingqu_memory_materialize_hot_state_cli, run_lingqu_memory_query_cli,
         run_lingqu_memory_validate_durable_store, run_lingqu_memory_validate_flat_materialize,
         run_lingqu_memory_validate_flat_query, run_lingqu_memory_validate_w5_engram_object_ref,
@@ -4066,6 +4177,8 @@ stage qwen3_range_forward_runtime_output_publish node=2
         let embeddings = root.join("embeddings.json");
         let query_embedding = root.join("query_embedding.json");
         let hot_state = root.join("hot_state.json");
+        let gate_weight = root.join("gate_weight.json");
+        let engram_state = root.join("engram_state.json");
         fs::write(&source, b"# Note\nreal memory source\n").expect("write source");
         fs::write(
             &embeddings,
@@ -4088,6 +4201,14 @@ stage qwen3_range_forward_runtime_output_publish node=2
             .to_string(),
         )
         .expect("write query embedding");
+        fs::write(
+            &gate_weight,
+            serde_json::json!({
+                "values": [0.5, 0.75]
+            })
+            .to_string(),
+        )
+        .expect("write gate weight");
 
         run_lingqu_memory_ingest_cli(&[
             "--catalog".to_string(),
@@ -4177,6 +4298,40 @@ stage qwen3_range_forward_runtime_output_publish node=2
             .get_copy(table_key, LingquObjectVersionSelector::LatestCommitted)
             .expect("hot table payload after object-store reload");
         assert_eq!(table_payload, cli_f32_vec_to_le_bytes(&[0.25, 0.75]));
+
+        run_lingqu_memory_materialize_engram_state_cli(&[
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--object-store".to_string(),
+            object_store.to_string_lossy().into_owned(),
+            "--hot-state".to_string(),
+            hot_state.to_string_lossy().into_owned(),
+            "--gate-weight-json".to_string(),
+            gate_weight.to_string_lossy().into_owned(),
+            "--state-id".to_string(),
+            "engram/test/0".to_string(),
+            "--engram-state".to_string(),
+            engram_state.to_string_lossy().into_owned(),
+        ])
+        .expect("materialize engram state");
+        let engram_state_json = fs::read(&engram_state).expect("read engram state");
+        let engram_state_value: serde_json::Value =
+            serde_json::from_slice(&engram_state_json).expect("decode engram state");
+        assert_eq!(engram_state_value["state_id"], "engram/test/0");
+        assert_eq!(engram_state_value["hot_memory_state_id"], "hot/test/0");
+        assert_eq!(engram_state_value["gate"]["shape"][0], 2);
+        let object_store_bytes = fs::read(&object_store).expect("read updated object store");
+        let object_snapshot = LingquObjectServiceSnapshot::from_json_bytes(&object_store_bytes)
+            .expect("decode updated object store");
+        let object_service = LingquObjectServiceStub::import_snapshot(object_snapshot)
+            .expect("import updated object store");
+        let gate_key = engram_state_value["gate"]["object_key"]
+            .as_str()
+            .expect("gate object key");
+        let gate_payload = object_service
+            .get_copy(gate_key, LingquObjectVersionSelector::LatestCommitted)
+            .expect("gate payload after object-store reload");
+        assert_eq!(gate_payload, cli_f32_vec_to_le_bytes(&[0.5, 0.75]));
         let _ = fs::remove_dir_all(&root);
     }
 }

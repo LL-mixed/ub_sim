@@ -55,6 +55,8 @@ pub enum LingquMemoryError {
     },
     #[error("object publish failed: {0}")]
     ObjectPublishFailed(String),
+    #[error("missing object: {0}")]
+    MissingObject(String),
     #[error("hot memory state must use OBMM-backed object refs: {0}")]
     NonObmmHotPlacement(String),
     #[error("catalog snapshot serialization failed: {0}")]
@@ -1745,6 +1747,19 @@ impl LingquMemoryService {
         )
     }
 
+    pub fn register_hot_state(
+        &mut self,
+        object_service: &LingquObjectServiceStub,
+        state: HotMemoryStateObject,
+    ) -> MemoryResult<()> {
+        state.validate()?;
+        validate_hot_object_record(object_service, &state.table, "hot_state.table")?;
+        validate_hot_object_record(object_service, &state.indices, "hot_state.indices")?;
+        validate_hot_object_record(object_service, &state.scores, "hot_state.scores")?;
+        self.hot_states.insert(state.state_id.clone(), state);
+        Ok(())
+    }
+
     pub fn build_engram_state(
         &mut self,
         state_id: impl Into<String>,
@@ -1928,6 +1943,52 @@ fn validate_hot_ref(hot_ref: &HotTensorObjectRef) -> MemoryResult<()> {
         return Err(LingquMemoryError::NonObmmHotPlacement(
             hot_ref.object_key.clone(),
         ));
+    }
+    Ok(())
+}
+
+fn validate_hot_object_record(
+    object_service: &LingquObjectServiceStub,
+    hot_ref: &HotTensorObjectRef,
+    field: &'static str,
+) -> MemoryResult<()> {
+    validate_hot_ref(hot_ref)?;
+    let record = object_service
+        .latest_record(&hot_ref.object_key)
+        .ok_or_else(|| LingquMemoryError::MissingObject(hot_ref.object_key.clone()))?;
+    if record.version != hot_ref.version {
+        return Err(LingquMemoryError::InvalidValue {
+            field,
+            reason: "object version does not match hot ref",
+        });
+    }
+    if record.bytes != hot_ref.bytes || record.checksum != hot_ref.checksum {
+        return Err(LingquMemoryError::InvalidValue {
+            field,
+            reason: "object bytes/checksum does not match hot ref",
+        });
+    }
+    if record.dtype != Some(hot_ref.dtype) || record.shape != hot_ref.shape {
+        return Err(LingquMemoryError::InvalidValue {
+            field,
+            reason: "object dtype/shape does not match hot ref",
+        });
+    }
+    let placement = record
+        .placements
+        .iter()
+        .find(|placement| placement.backend == LingquPayloadBackend::ObmmShmem)
+        .ok_or_else(|| LingquMemoryError::NonObmmHotPlacement(hot_ref.object_key.clone()))?;
+    if placement.storage_ref != hot_ref.storage_ref
+        || placement.segment != hot_ref.segment
+        || placement.offset != hot_ref.offset
+        || placement.bytes != hot_ref.bytes
+        || placement.checksum != hot_ref.checksum
+    {
+        return Err(LingquMemoryError::InvalidValue {
+            field,
+            reason: "object placement does not match hot ref",
+        });
     }
     Ok(())
 }
