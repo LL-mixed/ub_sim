@@ -1,4 +1,5 @@
 use anyhow::Context;
+use serde::Deserialize;
 use sim_config::ScenarioConfig;
 use sim_core::{
     BlockHash, CompletionSource, CompletionStatus, CopyDirection, CopyRequest, DispatchRequest,
@@ -1100,6 +1101,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect::<Vec<_>>();
     match mode.as_str() {
+        "build-index" => run_lingqu_memory_build_index_cli(&args),
         "ingest" => run_lingqu_memory_ingest_cli(&args),
         "validate-service-path" => run_lingqu_memory_validate_service_path(),
         "validate-durable-store" => run_lingqu_memory_validate_durable_store(),
@@ -1107,9 +1109,179 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "validate-flat-materialize" => run_lingqu_memory_validate_flat_materialize(),
         "validate-w5-engram-object-ref" => run_lingqu_memory_validate_w5_engram_object_ref(),
         _ => anyhow::bail!(
-            "unknown lingqu-memory mode `{mode}`; expected ingest, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
+            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
         ),
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct LingquMemoryEmbeddingInput {
+    model_version: String,
+    dims: u32,
+    vectors: Vec<LingquMemoryEmbeddingVectorInput>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LingquMemoryEmbeddingVectorInput {
+    chunk_id: String,
+    values: Vec<f32>,
+}
+
+fn run_lingqu_memory_build_index_cli(args: &[String]) -> anyhow::Result<()> {
+    let catalog_path = PathBuf::from(required_cli_arg(args, "--catalog")?);
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let embedding_path = PathBuf::from(required_cli_arg(args, "--embedding-json")?);
+    let index_id = required_cli_arg(args, "--index-id")?;
+    let segment_id = required_cli_arg(args, "--segment-id")?;
+    let now_us = optional_cli_u64(args, "--now-us")?.unwrap_or(1);
+
+    let snapshot =
+        load_lingqu_memory_catalog_snapshot_if_exists(&catalog_path)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "catalog snapshot does not exist: {}",
+                catalog_path.display()
+            )
+        })?;
+    let embedding_bytes = fs::read(&embedding_path)
+        .with_context(|| format!("read embedding json {}", embedding_path.display()))?;
+    let embedding_input = serde_json::from_slice::<LingquMemoryEmbeddingInput>(&embedding_bytes)
+        .with_context(|| format!("decode embedding json {}", embedding_path.display()))?;
+    validate_lingqu_memory_embedding_input(&embedding_input)?;
+
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let mut memory_service = LingquMemoryService::new();
+    memory_service
+        .import_catalog_snapshot(snapshot.clone())
+        .context("import catalog snapshot")?;
+
+    let mut embedding_values =
+        Vec::with_capacity(embedding_input.vectors.len() * embedding_input.dims as usize);
+    let mut row_map = Vec::with_capacity(embedding_input.vectors.len());
+    for (row, vector) in embedding_input.vectors.iter().enumerate() {
+        if !snapshot
+            .chunks
+            .iter()
+            .any(|chunk| chunk.chunk_id == vector.chunk_id)
+        {
+            anyhow::bail!(
+                "embedding vector references unknown chunk `{}`",
+                vector.chunk_id
+            );
+        }
+        embedding_values.extend_from_slice(&vector.values);
+        row_map.push(EmbeddingRow {
+            chunk_id: vector.chunk_id.clone(),
+            row: row as u32,
+        });
+    }
+    let embedding_payload = cli_f32_vec_to_le_bytes(&embedding_values);
+    let embedding_checksum = cli_bytes_checksum(&embedding_payload);
+    let embedding_block = optional_cli_arg(args, "--embedding-block")?
+        .unwrap_or_else(|| format!("block/memory/embedding/{}", cli_path_id(&segment_id)));
+    let embedding_ref = durable_store
+        .write_block_payload(embedding_block, embedding_payload)
+        .context("write embedding payload to Lingqu Block store")?;
+    let row_stride_bytes = embedding_input
+        .dims
+        .checked_mul(4)
+        .ok_or_else(|| anyhow::anyhow!("embedding dims overflow row_stride_bytes"))?;
+    let row_count = u32::try_from(embedding_input.vectors.len())
+        .map_err(|_| anyhow::anyhow!("embedding vector count exceeds u32"))?;
+
+    memory_service
+        .register_embedding_segment(EmbeddingSegment {
+            segment_id: segment_id.clone(),
+            model_version: embedding_input.model_version.clone(),
+            dims: embedding_input.dims,
+            row_count,
+            row_stride_bytes,
+            dtype: sim_core::TensorDType::F32,
+            vector_block_refs: vec![embedding_ref.clone()],
+            row_map,
+            checksum: embedding_checksum,
+            version: 1,
+        })
+        .context("register embedding segment")?;
+
+    let mut catalog = snapshot.catalog.clone();
+    if !catalog.vector_index_ids.iter().any(|id| id == &index_id) {
+        catalog.vector_index_ids.push(index_id.clone());
+    }
+    catalog.version = catalog.version.saturating_add(1);
+    catalog.updated_at_us = now_us;
+    memory_service
+        .publish_catalog(catalog.clone())
+        .context("publish updated catalog")?;
+    memory_service
+        .register_vector_index(VectorIndexObject {
+            index_id: index_id.clone(),
+            corpus_id: catalog.catalog_id.clone(),
+            kind: VectorIndexKind::Flat,
+            embedding_model_version: embedding_input.model_version.clone(),
+            segment_ids: vec![segment_id.clone()],
+            manifest_path: LingquDfsPath::new(format!(
+                "/lingqu/memory/corpus/{}/index/{}.json",
+                cli_path_id(&catalog.catalog_id),
+                cli_path_id(&index_id)
+            )),
+            created_at_us: now_us,
+            updated_at_us: now_us,
+            version: 1,
+        })
+        .context("register vector index")?;
+    let updated_snapshot = memory_service
+        .export_catalog_snapshot(&catalog.catalog_id)
+        .context("export updated catalog snapshot")?;
+
+    write_lingqu_memory_catalog_snapshot(&catalog_path, &updated_snapshot)?;
+    save_lingqu_memory_durable_store(&store_path, &durable_store)?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: build-index");
+    println!("  catalog: {}", catalog.catalog_id);
+    println!("  catalog_path: {}", catalog_path.display());
+    println!("  store_path: {}", store_path.display());
+    println!("  index: {index_id}");
+    println!("  segment: {segment_id}");
+    println!(
+        "  embedding_model_version: {}",
+        embedding_input.model_version
+    );
+    println!("  rows: {}", embedding_input.vectors.len());
+    println!("  dims: {}", embedding_input.dims);
+    println!("  embedding_block: {}", embedding_ref.block.0);
+    println!("  embedding_bytes: {}", embedding_ref.bytes);
+    println!("  embedding_checksum: {:#x}", embedding_ref.checksum);
+    Ok(())
+}
+
+fn validate_lingqu_memory_embedding_input(
+    input: &LingquMemoryEmbeddingInput,
+) -> anyhow::Result<()> {
+    if input.model_version.trim().is_empty() {
+        anyhow::bail!("embedding json model_version must not be empty");
+    }
+    if input.dims == 0 {
+        anyhow::bail!("embedding json dims must be non-zero");
+    }
+    if input.vectors.is_empty() {
+        anyhow::bail!("embedding json vectors must not be empty");
+    }
+    let dims = input.dims as usize;
+    for vector in &input.vectors {
+        if vector.chunk_id.trim().is_empty() {
+            anyhow::bail!("embedding json vector chunk_id must not be empty");
+        }
+        if vector.values.len() != dims {
+            anyhow::bail!(
+                "embedding vector for `{}` has {} dims, expected {}",
+                vector.chunk_id,
+                vector.values.len(),
+                dims
+            );
+        }
+    }
+    Ok(())
 }
 
 fn run_lingqu_memory_ingest_cli(args: &[String]) -> anyhow::Result<()> {
@@ -1358,6 +1530,15 @@ fn cli_path_id(id: &str) -> String {
             }
         })
         .collect()
+}
+
+fn cli_bytes_checksum(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 fn build_lingqu_memory_cli_sample() -> anyhow::Result<LingquMemoryService> {
@@ -2297,9 +2478,9 @@ mod tests {
         qwen3_guest_log_dir_from_script_output, qwen3_guest_log_match_count,
         qwen3_guest_terminal_candidate_records, qwen3_guest_terminal_text_lossy_from_tokenizer,
         qwen3_guest_terminal_tokens, qwen3_guest_timing_summary, qwen3_range_forward_args_from,
-        run_lingqu_memory_ingest_cli, run_lingqu_memory_validate_durable_store,
-        run_lingqu_memory_validate_flat_materialize, run_lingqu_memory_validate_flat_query,
-        run_lingqu_memory_validate_w5_engram_object_ref,
+        run_lingqu_memory_build_index_cli, run_lingqu_memory_ingest_cli,
+        run_lingqu_memory_validate_durable_store, run_lingqu_memory_validate_flat_materialize,
+        run_lingqu_memory_validate_flat_query, run_lingqu_memory_validate_w5_engram_object_ref,
         simpler_host_matmul_artifact_producer_path, validate_qwen3_dense_weights_path,
         validate_w5_inference_profile, LingquMemoryDurableStoreSnapshot, MemoryCatalogSnapshot,
         Qwen3CandidateRecord, Qwen3DecodeReportVerbosity, Qwen3EngramConfig, Qwen3EngramContextOp,
@@ -3445,6 +3626,84 @@ stage qwen3_range_forward_runtime_output_publish node=2
             store_snapshot.block_payloads[0].bytes,
             b"# Note\nreal memory source\n"
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lingqu_memory_build_index_cli_persists_flat_index() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_lingqu_memory_build_index_cli_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let source = root.join("note.md");
+        let catalog = root.join("catalog.json");
+        let store = root.join("store.json");
+        let embeddings = root.join("embeddings.json");
+        fs::write(&source, b"# Note\nreal memory source\n").expect("write source");
+        fs::write(
+            &embeddings,
+            serde_json::json!({
+                "model_version": "embed/test/v1",
+                "dims": 2,
+                "vectors": [
+                    {"chunk_id": "chunk/test/0", "values": [0.25, 0.75]}
+                ]
+            })
+            .to_string(),
+        )
+        .expect("write embeddings");
+
+        run_lingqu_memory_ingest_cli(&[
+            "--catalog".to_string(),
+            catalog.to_string_lossy().into_owned(),
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--source".to_string(),
+            source.to_string_lossy().into_owned(),
+            "--catalog-id".to_string(),
+            "corpus/test".to_string(),
+            "--namespace".to_string(),
+            "project/test".to_string(),
+            "--record-id".to_string(),
+            "record/test/0".to_string(),
+            "--chunk-id".to_string(),
+            "chunk/test/0".to_string(),
+            "--token-count".to_string(),
+            "4".to_string(),
+            "--embedding-model-version".to_string(),
+            "embed/test/v1".to_string(),
+        ])
+        .expect("ingest");
+        run_lingqu_memory_build_index_cli(&[
+            "--catalog".to_string(),
+            catalog.to_string_lossy().into_owned(),
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--embedding-json".to_string(),
+            embeddings.to_string_lossy().into_owned(),
+            "--index-id".to_string(),
+            "index/test/flat".to_string(),
+            "--segment-id".to_string(),
+            "segment/test/0".to_string(),
+        ])
+        .expect("build index");
+
+        let catalog_bytes = fs::read(&catalog).expect("read catalog");
+        let snapshot =
+            MemoryCatalogSnapshot::from_json_bytes(&catalog_bytes).expect("decode catalog");
+        assert_eq!(snapshot.vector_indexes.len(), 1);
+        assert_eq!(snapshot.embedding_segments.len(), 1);
+        assert_eq!(snapshot.vector_indexes[0].index_id, "index/test/flat");
+        assert_eq!(snapshot.embedding_segments[0].segment_id, "segment/test/0");
+        assert_eq!(snapshot.embedding_segments[0].row_count, 1);
+        assert_eq!(snapshot.embedding_segments[0].dims, 2);
+
+        let store_bytes = fs::read(&store).expect("read store");
+        let store_snapshot =
+            LingquMemoryDurableStoreSnapshot::from_json_bytes(&store_bytes).expect("decode store");
+        assert_eq!(store_snapshot.block_payloads.len(), 2);
         let _ = fs::remove_dir_all(&root);
     }
 }

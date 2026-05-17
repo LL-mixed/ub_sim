@@ -625,12 +625,23 @@ sim-cli lingqu-memory ingest \
   --chunk-id <chunk-id> \
   --token-count <count> \
   --embedding-model-version <version>
+
+sim-cli lingqu-memory build-index \
+  --catalog <catalog-snapshot.json> \
+  --store <durable-store.json> \
+  --embedding-json <embedding-vectors.json> \
+  --index-id <index-id> \
+  --segment-id <segment-id>
 ```
 
-This command reads a real source file, writes the source bytes into the local
+`ingest` reads a real source file, writes the source bytes into the local
 Lingqu Block durable-store snapshot, and writes a catalog snapshot with a
-committed `MemoryRecord`/`MemoryChunk`. It intentionally does not synthesize
-embeddings or query results.
+committed `MemoryRecord`/`MemoryChunk`.
+
+`build-index` reads explicit embedding vectors from JSON, writes the vector
+payload into the same Lingqu Block durable-store snapshot, and registers a flat
+`VectorIndexObject` plus an `EmbeddingSegment`. It intentionally does not
+synthesize embeddings from source text.
 
 ## Observability
 
@@ -728,10 +739,12 @@ Current implementation status:
   checksum validation, and QueryResult-driven hot materialization now carries
   that DFS manifest ref into both `HotMemoryStateObject` and
   `EngramStateObject`.
-- Step 5 now has the first real external command:
-  `sim-cli lingqu-memory ingest`. It persists real source bytes into a local
-  Lingqu Block durable-store snapshot and writes a catalog snapshot with
-  committed record/chunk metadata. Embed, build-index, query, and materialize
+- Step 5 now has the first real external commands:
+  `sim-cli lingqu-memory ingest` and `sim-cli lingqu-memory build-index`.
+  `ingest` persists real source bytes into a local Lingqu Block durable-store
+  snapshot and writes committed record/chunk metadata. `build-index` requires
+  caller-provided embedding vectors, writes them into Lingqu Block, and
+  registers a flat vector index. Embed generation, query, and materialize
   remain validation/smoke modes and still need product CLI entrypoints.
 - Step 6 now has two paths: explicit caller-provided tensor materialization and
   QueryResult-driven materialization that reads selected embedding rows from
