@@ -714,22 +714,32 @@ Current implementation status:
   validation path now exercises durable gate config -> hot object
   materialization instead of passing an in-memory gate vector directly from the
   CLI. The Rust W5 context op can now consume object-ref-backed table,
-  indices, and gate-weight payloads from the qwen3 object registry through
-  `SIM_QWEN3_GUEST_ENGRAM_CONTEXT_*_REF`. The W5 runner now forwards those refs
-  and `SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR` through the QEMU environment. The
-  guest validates the three refs, writes them into the UAPI object-ref sideband,
-  and fails fast on missing or partial refs instead of silently using fixture
-  state. On guest-input execution, sim-uapi now requires the descriptor
-  sideband when env refs are present, so env can no longer mask a broken guest
-  descriptor. The runner also treats configured context refs as a hard
-  validation contract: every node must log `target=uapi_object_ref`, the W5
-  summary must report an `*-object-ref` context mode.
+  indices, and gate-weight payloads from the qwen3 object registry through a
+  single `SIM_QWEN3_GUEST_ENGRAM_STATE_REF` manifest ref, or through the legacy
+  component refs `SIM_QWEN3_GUEST_ENGRAM_CONTEXT_*_REF`. The W5 runner now
+  forwards those refs and `SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR` through the QEMU
+  environment. The guest validates either the state ref or the three component
+  refs, writes the selected ref contract into the UAPI object-ref sideband, and
+  fails fast on missing, partial, or ambiguous refs instead of silently using
+  fixture state. The guest does not read the host registry directly; sim-uapi
+  resolves the state manifest on the host side and expands it into the
+  table/indices/gate operands. On guest-input execution, sim-uapi now requires
+  the descriptor sideband when env refs are present, so env can no longer mask
+  a broken guest descriptor. The runner also treats configured context refs as
+  a hard validation contract: every node must log `target=uapi_object_ref`, the
+  W5 summary must report an `*-object-ref` context mode.
   A real W5 guest context op is no longer allowed to run fixture-backed:
-  enabling `SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP` without all three context refs
-  fails before QEMU launch, the guest has the same fail-fast check, and sim-uapi
-  rejects guest-input context execution without descriptor refs.
+  enabling `SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP` without either the state ref or
+  the complete legacy three-ref component set fails before QEMU launch, the
+  guest has the same fail-fast check, and sim-uapi rejects guest-input context
+  execution without descriptor refs.
   `w5_engram_object_ref_sideband_0_6b_2step_verify_20260517` passed with
   `engram_context_records=2` and `modes=cpu-reference-object-ref`. The
+  state-manifest path also passed as
+  `w5_engram_state_ref_0_6b_2step_20260517d` with a single
+  `SIM_QWEN3_GUEST_ENGRAM_STATE_REF`, `decode_steps_observed=2`,
+  `engram_context_records=2`, and `modes=cpu-reference-object-ref`.
+  The
   remaining gap is replacing the host qwen3 object registry shim with direct
   guest OBMM DB payload mapping for the long-lived memory context object; the
   existing per-step 128-byte engram policy state remains a separate writeback

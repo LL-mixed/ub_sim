@@ -56,12 +56,14 @@ use sim_uapi::{
     qwen3_dense_reference_decode_loop_report, qwen3_dense_reference_decode_loop_report_with_prompt,
     qwen3_dense_reference_default_guest_input, qwen3_dense_reference_prefill_text_output_report,
     qwen3_dense_reference_range_forward_report_with_prompt, qwen3_obmm_object_ref_wire_to_hex,
-    qwen3_publish_object_registry_payload, LocalGuestUapiSurface, UapiCommand, UapiDescriptor,
-    UapiResponse, QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
+    qwen3_publish_engram_state_registry_payload, qwen3_publish_object_registry_payload,
+    LocalGuestUapiSurface, UapiCommand, UapiDescriptor, UapiResponse,
+    QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
     QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
     QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
     SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF, SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF,
-    SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF, SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+    SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
+    SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
 };
 use sim_workloads::{run_host_vector_dispatch, run_minimal_workload};
 use std::env;
@@ -911,6 +913,7 @@ where
         ),
     ];
     for key in [
+        SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
         SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF,
         SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF,
         SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF,
@@ -1663,6 +1666,15 @@ fn run_lingqu_memory_validate_w5_engram_object_ref() -> anyhow::Result<()> {
         &gate_payload,
     )
     .map_err(anyhow::Error::msg)?;
+    let state_ref = qwen3_publish_engram_state_registry_payload(
+        0,
+        0,
+        &engram_state.state_id,
+        &table_ref,
+        &indices_ref,
+        &gate_ref,
+    )
+    .map_err(anyhow::Error::msg)?;
 
     println!("lingqu_memory_service");
     println!("  mode: validate-w5-engram-object-ref");
@@ -1674,7 +1686,17 @@ fn run_lingqu_memory_validate_w5_engram_object_ref() -> anyhow::Result<()> {
         "  selected_chunks: {}",
         hot_state.selected_chunk_ids.join(",")
     );
-    println!("  registry_env:");
+    println!("  registry_env_recommended:");
+    println!(
+        "    {}={}",
+        SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
+        qwen3_obmm_object_ref_wire_to_hex(&state_ref)
+    );
+    println!(
+        "    {}=<optional registry dir override>",
+        SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR
+    );
+    println!("  registry_env_legacy_component_refs:");
     println!(
         "    {}={}",
         SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF,
@@ -1690,13 +1712,13 @@ fn run_lingqu_memory_validate_w5_engram_object_ref() -> anyhow::Result<()> {
         SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF,
         qwen3_obmm_object_ref_wire_to_hex(&gate_ref)
     );
-    println!(
-        "    {}=<optional registry dir override>",
-        SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR
-    );
     println!("  registry_table_bytes: {}", table_payload.len());
     println!("  registry_indices_bytes: {}", indices_payload.len());
     println!("  registry_gate_bytes: {}", gate_payload.len());
+    println!(
+        "  registry_state_manifest_bytes: {}",
+        state_ref.payload_bytes
+    );
     let durable_stats = durable_store.stats();
     let object_report = object_service.report();
     println!("  gate_weight_block_ref: {}", gate_weight_block);
