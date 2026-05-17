@@ -71,10 +71,10 @@ Inputs:
 
 | Name | Type | Shape | Notes |
 | --- | --- | --- | --- |
-| `table` | `f32` | `[R, D]` | Runtime rows. W5 validation defaults can remain small. |
+| `table` | `f32` | `[R, D]` | Object-backed runtime rows resolved from `EngramStateObjectRef`. |
 | `indices` | `u32` | `[B, 8]` | Each value must be `< R`. |
 | `hidden` | `f32` | `[B, D]` | Final hidden from terminal Qwen range. |
-| `gate_weight` | `f32` | `[B, D]` | Deterministic runtime fixture initially. |
+| `gate_weight` | `f32` | `[B, D]` | Object-backed gate tensor resolved from `EngramStateObjectRef`. |
 | `output` | `f32` | `[B, D]` | Augmented hidden. |
 | `bias` | `f32` | scalar | Default `0.125`, matching vendor note. |
 
@@ -84,8 +84,9 @@ Initial runtime values:
 - `D=1024` for Qwen3-0.6B.
 - `D=5120` must be representable by the descriptor for Qwen3-14B, but may
   require chunked execution before it is enabled by default.
-- `R=16` default for W5 runtime validation, matching the existing
-  CPU-reference cheap path.
+- `R` comes from the memory-service-produced table object. Tests can choose
+  small values, but runtime decode must not create a table from a row-count
+  environment fallback.
 
 ## Data Layout
 
@@ -239,18 +240,18 @@ Environment:
 
 ```text
 SIMPLER_HOST_ENGRAM_CONTEXT_MANIFEST=/tmp/simpler-host-engram-context-artifacts/host_engram_context_manifest.json
-SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_ROWS=16
+SIM_QWEN3_GUEST_ENGRAM_STATE_REF=<EngramStateObjectRef wire hex>
 SIM_QWEN3_GUEST_ENGRAM_CONTEXT_CHUNK_ELEMS=<optional explicit chunk size>
 ```
 
 `sim-uapi` flow:
 
 1. Terminal Qwen range forward produces final hidden.
-2. If context op is `simpler-host`, materialize/map:
-   - deterministic table fixture;
-   - deterministic indices;
+2. If context op is `simpler-host`, resolve/map:
+   - table object from `EngramStateObjectRef`;
+   - indices object from `EngramStateObjectRef`;
    - terminal hidden;
-   - deterministic gate weight;
+   - gate-weight object from `EngramStateObjectRef`;
    - output buffer.
 3. Build a `DispatchBackendSpec` from
    `host_engram_context_manifest.json`.
@@ -314,8 +315,8 @@ Unit tests:
 - missing manifest reports an actionable error;
 - simpler-host output matches `run_engram_context_reference()` for:
   - `B=1, D=1024, R=16`;
-  - at least one multi-chunk synthetic case if chunk support lands in the same
-    patch.
+  - at least one multi-chunk object-ref-backed case if chunk support lands in
+    the same patch.
 
 Python/script tests:
 
@@ -345,9 +346,10 @@ Acceptance:
 
 - run passes;
 - `engram_context_records=4`;
-- `engram_context_summary` reports `modes=simpler-host`;
-- per-step output checksums match CPU-reference mode for the same fixture;
-- token IDs match CPU-reference mode when all fixtures are identical.
+- `engram_context_summary` reports `modes=simpler-host-object-ref`;
+- per-step output checksums match CPU-reference mode for the same
+  `EngramStateObjectRef`;
+- token IDs match CPU-reference mode when object refs are identical.
 
 ## Implementation Order
 
@@ -385,13 +387,11 @@ Status as of 2026-05-16:
 - `D=5120` can run as either one full-hidden dispatch or explicit chunks.
   Explicit chunks remain useful to validate object/operand ranges, but should
   not be the default for W5 throughput because launch overhead dominates.
-- Runtime fixture generation must remain deterministic. Otherwise token IDs
-  will drift and W5 comparisons will become noisy.
+- Runtime validation inputs must be persisted object payloads with stable
+  checksums. Otherwise token IDs will drift and W5 comparisons will become
+  noisy.
 
 ## Open Questions
 
-- Should `table` and `gate_weight` remain deterministic fixtures for W5
-  validation, or become object-backed operands provided by a higher-level
-  engram state object?
 - Should `simpler-host` eventually replace `cpu-reference` for local W5
   validation, or remain an opt-in backend used only for backend-path testing?

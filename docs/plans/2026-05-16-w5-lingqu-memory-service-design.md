@@ -555,8 +555,10 @@ When a real `EngramStateObjectRef` is provided:
 - reports must include selected memory ids, query result id, object versions,
   and checksums.
 
-When no memory service is configured, W5 can still run fixture-backed engram
-operator smoke tests, but the report must label them as fixture-backed.
+When no memory service is configured, W5 must not synthesize a hidden fixture
+state inside the decode path. Unit tests may publish deterministic payloads into
+the object registry, but W5 runtime execution still consumes them only through a
+real `EngramStateObjectRef` and checksum-validated object resolves.
 
 ## Cross-Node Access
 
@@ -667,9 +669,9 @@ Integration tests:
 - ingest a small corpus, build embeddings, build an index, query, materialize
   hot state, and resolve all hot tensor refs.
 - rebuild Memory Service runtime metadata from DFS catalogs and Block payloads.
-- run W5 with fixture engram state and verify it is labelled fixture-backed.
+- run W5 without `EngramStateObjectRef` and verify it fails before decode.
 - run W5 with real `EngramStateObjectRef` and verify deterministic fallback is
-  not used.
+  not reachable.
 - evict OBMM hot tensors, rebuild state from Block/DFS, and rerun W5.
 - replay a prior run from DFS manifests and Block payload checksums.
 

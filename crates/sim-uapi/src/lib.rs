@@ -15381,26 +15381,6 @@ fn qwen3_dense_reference_engram_context_mode_from_env(
     }
 }
 
-fn qwen3_dense_reference_engram_context_table_rows() -> Result<usize, String> {
-    let rows = std::env::var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_ROWS")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .map(|value| {
-            value
-                .parse::<usize>()
-                .map_err(|_| format!("qwen3_engram_context_table_rows_invalid:value={value}"))
-        })
-        .transpose()?
-        .unwrap_or(16);
-    if rows < ENGRAM_CONTEXT_INDICES_PER_BATCH {
-        return Err(format!(
-            "qwen3_engram_context_table_rows_too_small:rows={rows}:min={}",
-            ENGRAM_CONTEXT_INDICES_PER_BATCH
-        ));
-    }
-    Ok(rows)
-}
-
 fn qwen3_dense_reference_engram_context_chunk_elems(hidden_size: usize) -> Result<usize, String> {
     let default_chunk = hidden_size.max(1);
     let value = std::env::var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_CHUNK_ELEMS")
@@ -15721,7 +15701,7 @@ fn qwen3_i32_values_from_le_bytes(bytes: &[u8], field: &'static str) -> Result<V
 
 fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
     sequence: &mut [Vec<f32>],
-    token_ids: &[u64],
+    _token_ids: &[u64],
     layer_end: u64,
     total_layers: u64,
     guest_input: Option<&[u8]>,
@@ -15768,15 +15748,10 @@ fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
             } else {
                 qwen3_dense_reference_engram_context_object_ref_state_from_env(hidden_size)?
             };
-            let object_ref_backed = object_ref_state.is_some();
-            let (table, indices, gate_weight, table_rows) = if let Some(state) = object_ref_state {
-                state
-            } else {
-                let table_rows = qwen3_dense_reference_engram_context_table_rows()?;
-                let (table, indices, gate_weight) =
-                    qwen3_dense_reference_engram_context_cpu_fixture(hidden, token_ids, table_rows);
-                (table, indices, gate_weight, table_rows)
-            };
+            let (table, indices, gate_weight, table_rows) = object_ref_state.ok_or_else(|| {
+                "qwen3_engram_context_object_refs_required:context_op_requires_engram_state_ref"
+                    .to_string()
+            })?;
             let started = Instant::now();
             let reference = run_engram_context_reference(&EngramContextOp {
                 table: &table,
@@ -15839,64 +15814,14 @@ fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
             let mut report =
                 qwen3_dense_reference_engram_context_report_from_reference(reference.report, latency_ms);
             if mode == Qwen3DenseReferenceEngramContextMode::SimplerHost {
-                report.mode = if object_ref_backed {
-                    "simpler-host-object-ref"
-                } else {
-                    "simpler-host"
-                };
-            } else if object_ref_backed {
+                report.mode = "simpler-host-object-ref";
+            } else {
                 report.mode = "cpu-reference-object-ref";
             }
             hidden.copy_from_slice(&output_values);
             Ok(Some(report))
         }
     }
-}
-
-fn qwen3_dense_reference_engram_context_cpu_fixture(
-    hidden: &[f32],
-    token_ids: &[u64],
-    table_rows: usize,
-) -> (Vec<f32>, Vec<i32>, Vec<f32>) {
-    let hidden_checksum = qwen3_dense_reference_f32_values_checksum(hidden);
-    let token_checksum = prompt_token_ids_checksum(token_ids);
-    let seed = checksum_words(&[
-        hidden_checksum,
-        token_checksum,
-        token_ids.len() as u64,
-        table_rows as u64,
-        hidden.len() as u64,
-        0x656e_6772_616d_6378,
-    ]);
-    let hidden_size = hidden.len();
-    let mut table = Vec::with_capacity(table_rows * hidden_size);
-    for row in 0..table_rows {
-        for dim in 0..hidden_size {
-            let mixed = seed.rotate_left(((row + dim) % 63) as u32)
-                ^ (row as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
-                ^ (dim as u64).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-            let value = ((mixed & 0xffff) as f32 / 65_536.0 - 0.5) / 16.0;
-            table.push(value);
-        }
-    }
-    let mut gate_weight = Vec::with_capacity(hidden_size);
-    for dim in 0..hidden_size {
-        let mixed =
-            seed.rotate_left((dim % 61) as u32) ^ (dim as u64).wrapping_mul(0x94d0_49bb_1331_11eb);
-        let value = ((mixed & 0x3ff) as f32 / 1024.0 - 0.5) / 1024.0;
-        gate_weight.push(value);
-    }
-    let mut indices = Vec::with_capacity(ENGRAM_CONTEXT_INDICES_PER_BATCH);
-    for slot in 0..ENGRAM_CONTEXT_INDICES_PER_BATCH {
-        let token = token_ids
-            .iter()
-            .rev()
-            .nth(slot % token_ids.len().max(1))
-            .copied()
-            .unwrap_or(slot as u64);
-        indices.push(((token as usize + slot * 3) % table_rows) as i32);
-    }
-    (table, indices, gate_weight)
 }
 
 fn qwen3_dense_reference_engram_context_report_from_reference(
@@ -19463,37 +19388,157 @@ mod tests {
         bytes
     }
 
+    fn test_publish_engram_context_state_ref(
+        key_prefix: &str,
+        hidden_size: usize,
+        table_rows: usize,
+    ) -> (Vec<f32>, Vec<i32>, Vec<f32>, LingquObmmObjectRefWire) {
+        let table = (0..table_rows * hidden_size)
+            .map(|index| ((index % 37) as f32 - 18.0) / 4096.0)
+            .collect::<Vec<_>>();
+        let indices = (0..ENGRAM_CONTEXT_INDICES_PER_BATCH)
+            .map(|index| (index % table_rows) as i32)
+            .collect::<Vec<_>>();
+        let gate_weight = (0..hidden_size)
+            .map(|index| ((index % 17) as f32 - 8.0) / 8192.0)
+            .collect::<Vec<_>>();
+        let table_payload = test_f32_vec_to_le_bytes(&table);
+        let indices_payload = test_i32_vec_to_le_bytes(&indices);
+        let gate_payload = test_f32_vec_to_le_bytes(&gate_weight);
+        let table_ref = LingquObmmObjectRefWire::committed(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
+            0,
+            0,
+            1,
+            qwen3_lingqu_key_hash(&format!("{key_prefix}/table")),
+            0,
+            table_payload.len() as u64,
+            qwen3_dense_reference_range_object_payload_checksum(&table_payload),
+        );
+        let indices_ref = LingquObmmObjectRefWire::committed(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
+            0,
+            0,
+            1,
+            qwen3_lingqu_key_hash(&format!("{key_prefix}/indices")),
+            0,
+            indices_payload.len() as u64,
+            qwen3_dense_reference_range_object_payload_checksum(&indices_payload),
+        );
+        let gate_ref = LingquObmmObjectRefWire::committed(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
+            0,
+            0,
+            1,
+            qwen3_lingqu_key_hash(&format!("{key_prefix}/gate_weight")),
+            0,
+            gate_payload.len() as u64,
+            qwen3_dense_reference_range_object_payload_checksum(&gate_payload),
+        );
+        qwen3_object_registry_put(&table_ref, &table_payload).expect("put table object");
+        qwen3_object_registry_put(&indices_ref, &indices_payload).expect("put indices object");
+        qwen3_object_registry_put(&gate_ref, &gate_payload).expect("put gate object");
+        let state_payload =
+            qwen3_engram_state_manifest_payload(&table_ref, &indices_ref, &gate_ref)
+                .expect("engram state manifest payload");
+        let state_ref = LingquObmmObjectRefWire::committed(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
+            0,
+            0,
+            1,
+            qwen3_lingqu_key_hash(&format!("{key_prefix}/state")),
+            0,
+            state_payload.len() as u64,
+            qwen3_dense_reference_range_object_payload_checksum(&state_payload),
+        );
+        qwen3_object_registry_put(&state_ref, &state_payload).expect("put state manifest object");
+        (table, indices, gate_weight, state_ref)
+    }
+
     #[test]
-    fn qwen3_engram_context_cpu_reference_mutates_terminal_hidden() {
+    fn qwen3_engram_context_cpu_reference_requires_object_refs() {
         with_env_var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP", "cpu-reference", || {
-            with_env_var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_ROWS", "8", || {
-                let mut sequence = vec![
-                    vec![0.0f32; 1024],
-                    (0..1024)
-                        .map(|index| (index as f32 - 512.0) / 4096.0)
-                        .collect::<Vec<_>>(),
-                ];
-                let first_before = sequence[0].clone();
-                let terminal_before = sequence[1].clone();
-                let report = qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
+            let mut sequence = vec![
+                vec![0.0f32; 1024],
+                (0..1024)
+                    .map(|index| (index as f32 - 512.0) / 4096.0)
+                    .collect::<Vec<_>>(),
+            ];
+            let err = qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
+                &mut sequence,
+                &[11, 358, 2776, 264],
+                QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
+                QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
+                None,
+            )
+            .expect_err("context op without object refs must fail");
+            assert!(err.contains("object_refs_required"), "{err}");
+        });
+    }
+
+    #[test]
+    fn qwen3_engram_context_cpu_reference_mutates_terminal_hidden_with_state_ref() {
+        run_simpler_native_test_isolated(
+            "qwen3_engram_context_cpu_reference_mutates_terminal_hidden_with_state_ref",
+            || {
+                let registry_dir = std::env::temp_dir().join(format!(
+                    "ub_sim_qwen3_engram_context_cpu_state_ref_test_{}",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&registry_dir);
+                with_env_var(
+                    SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+                    registry_dir.to_string_lossy().as_ref(),
+                    || {
+                        let hidden_size = 1024usize;
+                        let table_rows = ENGRAM_CONTEXT_INDICES_PER_BATCH;
+                        let (_table, _indices, _gate_weight, state_ref) =
+                            test_publish_engram_context_state_ref(
+                                "engram/context/cpu",
+                                hidden_size,
+                                table_rows,
+                            );
+                        with_env_var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP", "cpu-reference", || {
+                            with_env_var(
+                                SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
+                                &qwen3_obmm_object_ref_wire_to_hex(&state_ref),
+                                || {
+                                    let mut sequence = vec![
+                                        vec![0.0f32; hidden_size],
+                                        (0..hidden_size)
+                                            .map(|index| {
+                                                (index as f32 - hidden_size as f32 / 2.0) / 4096.0
+                                            })
+                                            .collect::<Vec<_>>(),
+                                    ];
+                                    let first_before = sequence[0].clone();
+                                    let terminal_before = sequence[1].clone();
+                                    let report =
+                                        qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
                     &mut sequence,
                     &[11, 358, 2776, 264],
                     QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
                     QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
                     None,
                 )
-                .expect("context op should run")
-                .expect("context report");
+                                        .expect("context op should run")
+                                        .expect("context report");
 
-                assert_eq!(report.mode, "cpu-reference");
-                assert_eq!(report.table_rows, 8);
-                assert_ne!(report.output_checksum, 0);
-                assert_ne!(report.gate_checksum, 0);
-                assert_ne!(report.index_checksum, 0);
-                assert_eq!(sequence[0], first_before);
-                assert_ne!(sequence[1], terminal_before);
-            });
-        });
+                                    assert_eq!(report.mode, "cpu-reference-object-ref");
+                                    assert_eq!(report.table_rows, table_rows);
+                                    assert_ne!(report.output_checksum, 0);
+                                    assert_ne!(report.gate_checksum, 0);
+                                    assert_ne!(report.index_checksum, 0);
+                                    assert_eq!(sequence[0], first_before);
+                                    assert_ne!(sequence[1], terminal_before);
+                                },
+                            );
+                        });
+                    },
+                );
+                let _ = std::fs::remove_dir_all(&registry_dir);
+            },
+        );
     }
 
     #[test]
@@ -19853,34 +19898,65 @@ mod tests {
         run_simpler_native_test_isolated(
             "qwen3_engram_context_simpler_host_supports_multi_chunk_hidden",
             || {
-                with_env_var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP", "simpler-host", || {
-                    with_env_var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_ROWS", "8", || {
-                        with_env_var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_CHUNK_ELEMS", "128", || {
-                            let mut sequence = vec![
-                                vec![0.0f32; 256],
-                                (0..256)
-                                    .map(|index| (index as f32 - 128.0) / 2048.0)
-                                    .collect::<Vec<_>>(),
-                            ];
-                            let terminal_before = sequence[1].clone();
-                            let report =
-                                qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
-                                    &mut sequence,
-                                    &[11, 358, 2776, 264],
-                                    QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
-                                    QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
-                                    None,
-                                )
-                                .expect("multi-chunk simpler-host context op should run")
-                                .expect("context report");
+                let registry_dir = std::env::temp_dir().join(format!(
+                    "ub_sim_qwen3_engram_context_simpler_chunk_test_{}",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&registry_dir);
+                with_env_var(
+                    SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+                    registry_dir.to_string_lossy().as_ref(),
+                    || {
+                        let hidden_size = 256usize;
+                        let table_rows = ENGRAM_CONTEXT_INDICES_PER_BATCH;
+                        let (_table, _indices, _gate_weight, state_ref) =
+                            test_publish_engram_context_state_ref(
+                                "engram/context/simpler-chunk",
+                                hidden_size,
+                                table_rows,
+                            );
+                        with_env_var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP", "simpler-host", || {
+                            with_env_var(
+                                SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
+                                &qwen3_obmm_object_ref_wire_to_hex(&state_ref),
+                                || {
+                                    with_env_var(
+                                        "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_CHUNK_ELEMS",
+                                        "128",
+                                        || {
+                                            let mut sequence = vec![
+                                                vec![0.0f32; hidden_size],
+                                                (0..hidden_size)
+                                                    .map(|index| {
+                                                        (index as f32 - hidden_size as f32 / 2.0)
+                                                            / 2048.0
+                                                    })
+                                                    .collect::<Vec<_>>(),
+                                            ];
+                                            let terminal_before = sequence[1].clone();
+                                            let report =
+                                                qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
+                                                    &mut sequence,
+                                                    &[11, 358, 2776, 264],
+                                                    QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
+                                                    QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
+                                                    None,
+                                                )
+                                                .expect("multi-chunk simpler-host context op should run")
+                                                .expect("context report");
 
-                            assert_eq!(report.mode, "simpler-host");
-                            assert_eq!(report.table_rows, 8);
-                            assert_ne!(report.output_checksum, 0);
-                            assert_ne!(sequence[1], terminal_before);
+                                            assert_eq!(report.mode, "simpler-host-object-ref");
+                                            assert_eq!(report.table_rows, table_rows);
+                                            assert_ne!(report.output_checksum, 0);
+                                            assert_ne!(sequence[1], terminal_before);
+                                        },
+                                    );
+                                },
+                            );
                         });
-                    });
-                });
+                    },
+                );
+                let _ = std::fs::remove_dir_all(&registry_dir);
             },
         );
     }
@@ -19890,32 +19966,58 @@ mod tests {
         run_simpler_native_test_isolated(
             "qwen3_engram_context_simpler_host_mutates_terminal_hidden",
             || {
-                with_env_var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP", "simpler-host", || {
-                    with_env_var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_ROWS", "8", || {
-                        let mut sequence = vec![
-                            vec![0.0f32; 1024],
-                            (0..1024)
-                                .map(|index| (index as f32 - 512.0) / 4096.0)
-                                .collect::<Vec<_>>(),
-                        ];
-                        let terminal_before = sequence[1].clone();
-                        let report =
-                            qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
-                                &mut sequence,
-                                &[11, 358, 2776, 264],
-                                QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
-                                QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
-                                None,
-                            )
-                            .expect("simpler-host context op should run")
-                            .expect("context report");
+                let registry_dir = std::env::temp_dir().join(format!(
+                    "ub_sim_qwen3_engram_context_simpler_state_ref_test_{}",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&registry_dir);
+                with_env_var(
+                    SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+                    registry_dir.to_string_lossy().as_ref(),
+                    || {
+                        let hidden_size = 1024usize;
+                        let table_rows = ENGRAM_CONTEXT_INDICES_PER_BATCH;
+                        let (_table, _indices, _gate_weight, state_ref) =
+                            test_publish_engram_context_state_ref(
+                                "engram/context/simpler",
+                                hidden_size,
+                                table_rows,
+                            );
+                        with_env_var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP", "simpler-host", || {
+                            with_env_var(
+                                SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
+                                &qwen3_obmm_object_ref_wire_to_hex(&state_ref),
+                                || {
+                                    let mut sequence = vec![
+                                        vec![0.0f32; hidden_size],
+                                        (0..hidden_size)
+                                            .map(|index| {
+                                                (index as f32 - hidden_size as f32 / 2.0) / 4096.0
+                                            })
+                                            .collect::<Vec<_>>(),
+                                    ];
+                                    let terminal_before = sequence[1].clone();
+                                    let report =
+                                        qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
+                                            &mut sequence,
+                                            &[11, 358, 2776, 264],
+                                            QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
+                                            QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
+                                            None,
+                                        )
+                                        .expect("simpler-host context op should run")
+                                        .expect("context report");
 
-                        assert_eq!(report.mode, "simpler-host");
-                        assert_eq!(report.table_rows, 8);
-                        assert_ne!(report.output_checksum, 0);
-                        assert_ne!(sequence[1], terminal_before);
-                    });
-                });
+                                    assert_eq!(report.mode, "simpler-host-object-ref");
+                                    assert_eq!(report.table_rows, table_rows);
+                                    assert_ne!(report.output_checksum, 0);
+                                    assert_ne!(sequence[1], terminal_before);
+                                },
+                            );
+                        });
+                    },
+                );
+                let _ = std::fs::remove_dir_all(&registry_dir);
             },
         );
     }

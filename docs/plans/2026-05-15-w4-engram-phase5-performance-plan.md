@@ -333,10 +333,10 @@ Implementation:
 - The CPU-reference op is applied only on the terminal range
   (`layer_end == total_layers`), after the true transformer range has produced
   hidden state and before full-vocab logits are derived.
-- Default context table rows for the runtime path are controlled by
-  `SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_ROWS` and default to `16` to keep W4
-  guest verification cheap; the standalone operator still supports larger
-  golden cases such as `65536`.
+- The historical runtime table-row fixture path has been removed. Current
+  W5-style guest decode requires `SIM_QWEN3_GUEST_ENGRAM_STATE_REF` and
+  resolves table, indices, and gate tensors through object refs; missing refs
+  fail instead of creating a deterministic table in the decode path.
 - The runtime emits `qwen3-engram-context: ...` with mode, table rows,
   checksum fields, and latency when the op runs.
 
