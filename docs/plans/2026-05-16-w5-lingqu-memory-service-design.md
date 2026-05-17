@@ -722,12 +722,12 @@ Current implementation status:
   materialization instead of passing an in-memory gate vector directly from the
   CLI. The Rust W5 context op can now consume object-ref-backed table,
   indices, and gate-weight payloads from the qwen3 object registry through a
-  single `SIM_QWEN3_GUEST_ENGRAM_STATE_REF` manifest ref, or through the legacy
-  component refs `SIM_QWEN3_GUEST_ENGRAM_CONTEXT_*_REF`. The W5 runner now
-  forwards those refs and `SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR` through the QEMU
-  environment. The guest validates either the state ref or the three component
-  refs, writes the selected ref contract into the UAPI object-ref sideband, and
-  fails fast on missing, partial, or ambiguous refs instead of silently using
+  single `SIM_QWEN3_GUEST_ENGRAM_STATE_REF` manifest ref. The W5 runner now
+  requires that state ref, rejects legacy component refs as a non-real
+  entrypoint, and forwards the state ref plus
+  `SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR` through the QEMU
+  environment. The guest validates the state ref, writes it into the UAPI
+  object-ref sideband, and fails fast on missing refs instead of silently using
   fixture state. The guest does not read the host registry directly; sim-uapi
   resolves the state manifest on the host side and expands it into the
   table/indices/gate operands. On guest-input execution, sim-uapi now requires
@@ -736,8 +736,8 @@ Current implementation status:
   a hard validation contract: every node must log `target=uapi_object_ref`, the
   W5 summary must report an `*-object-ref` context mode.
   A real W5 guest context op is no longer allowed to run fixture-backed:
-  enabling `SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP` without either the state ref or
-  the complete legacy three-ref component set fails before QEMU launch, the
+  enabling `SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP` without the state ref fails
+  before QEMU launch, legacy component refs fail before QEMU launch, the
   guest has the same fail-fast check, and sim-uapi rejects guest-input context
   execution without descriptor refs.
   `w5_engram_object_ref_sideband_0_6b_2step_verify_20260517` passed with

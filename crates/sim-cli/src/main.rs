@@ -60,9 +60,7 @@ use sim_uapi::{
     LocalGuestUapiSurface, UapiCommand, UapiDescriptor, UapiResponse,
     QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
     QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
-    QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
-    SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF, SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF,
-    SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
+    QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
     SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
 };
 use sim_workloads::{run_host_vector_dispatch, run_minimal_workload};
@@ -914,9 +912,6 @@ where
     ];
     for key in [
         SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
-        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF,
-        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF,
-        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF,
         SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
     ] {
         if let Some(value) = lookup(key).filter(|value| !value.trim().is_empty()) {
@@ -1770,22 +1765,6 @@ fn run_lingqu_memory_validate_w5_engram_object_ref() -> anyhow::Result<()> {
         "    {}=<optional registry dir override>",
         SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR
     );
-    println!("  registry_env_legacy_component_refs:");
-    println!(
-        "    {}={}",
-        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF,
-        qwen3_obmm_object_ref_wire_to_hex(&table_ref)
-    );
-    println!(
-        "    {}={}",
-        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF,
-        qwen3_obmm_object_ref_wire_to_hex(&indices_ref)
-    );
-    println!(
-        "    {}={}",
-        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF,
-        qwen3_obmm_object_ref_wire_to_hex(&gate_ref)
-    );
     println!("  registry_table_bytes: {}", table_payload.len());
     println!("  registry_indices_bytes: {}", indices_payload.len());
     println!("  registry_gate_bytes: {}", gate_payload.len());
@@ -2070,9 +2049,8 @@ mod tests {
         simpler_host_matmul_artifact_producer_path, validate_qwen3_dense_weights_path,
         validate_w5_inference_profile, Qwen3CandidateRecord, Qwen3DecodeReportVerbosity,
         Qwen3EngramConfig, Qwen3EngramContextOp, Qwen3EngramMode, Qwen3EngramPool,
-        Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
-        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF, SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF,
-        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF, SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+        Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
+        SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
     };
     use std::env;
     use std::fs;
@@ -2419,31 +2397,21 @@ mod tests {
     }
 
     #[test]
-    fn qwen3_guest_engram_env_vars_forward_context_object_ref_contract() {
+    fn qwen3_guest_engram_env_vars_forward_state_object_ref_contract() {
         let config = Qwen3EngramConfig {
             enabled: true,
             context_op: Qwen3EngramContextOp::CpuReference,
             ..Qwen3EngramConfig::default()
         };
         let vars = qwen3_guest_engram_env_vars_from_lookup(&config, 0x1234, |key| match key {
-            SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF => Some("table-ref".to_string()),
-            SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF => Some("indices-ref".to_string()),
-            SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF => Some("gate-ref".to_string()),
+            SIM_QWEN3_GUEST_ENGRAM_STATE_REF => Some("state-ref".to_string()),
             SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR => Some("/tmp/qwen3-registry".to_string()),
             _ => None,
         });
 
         assert!(vars.contains(&(
-            SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF.to_string(),
-            "table-ref".to_string()
-        )));
-        assert!(vars.contains(&(
-            SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF.to_string(),
-            "indices-ref".to_string()
-        )));
-        assert!(vars.contains(&(
-            SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF.to_string(),
-            "gate-ref".to_string()
+            SIM_QWEN3_GUEST_ENGRAM_STATE_REF.to_string(),
+            "state-ref".to_string()
         )));
         assert!(vars.contains(&(
             SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR.to_string(),
