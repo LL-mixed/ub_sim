@@ -1929,13 +1929,14 @@ fn run_lingqu_memory_materialize_hot_state_cli(args: &[String]) -> anyhow::Resul
         .register_query_result(query_result.clone())
         .context("register query result")?;
 
-    let mut object_service =
-        if let Some(snapshot) = load_lingqu_object_service_snapshot(&object_store_path)? {
-            LingquObjectServiceStub::import_snapshot(snapshot)
-                .with_context(|| format!("import object store {}", object_store_path.display()))?
-        } else {
-            LingquObjectServiceStub::new(LingquObjectServiceProfile::default())
-        };
+    let mut object_service = if let Some(snapshot) =
+        load_lingqu_object_service_snapshot(&object_store_path, &mut durable_store)?
+    {
+        LingquObjectServiceStub::import_snapshot(snapshot)
+            .with_context(|| format!("import object store {}", object_store_path.display()))?
+    } else {
+        LingquObjectServiceStub::new(LingquObjectServiceProfile::default())
+    };
     let hot_state = memory_service
         .materialize_hot_state_from_query(
             &mut durable_store,
@@ -1957,8 +1958,8 @@ fn run_lingqu_memory_materialize_hot_state_cli(args: &[String]) -> anyhow::Resul
     }
     fs::write(&hot_state_path, hot_state_bytes)
         .with_context(|| format!("write hot state {}", hot_state_path.display()))?;
+    save_lingqu_object_service_snapshot(&object_store_path, &mut durable_store, &object_service)?;
     save_lingqu_memory_durable_store(&store_path, &durable_store)?;
-    save_lingqu_object_service_snapshot(&object_store_path, &object_service)?;
     let object_report = object_service.report();
 
     println!("lingqu_memory_service");
@@ -2003,12 +2004,14 @@ fn run_lingqu_memory_materialize_engram_state_cli(args: &[String]) -> anyhow::Re
 
     let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
     let object_snapshot =
-        load_lingqu_object_service_snapshot(&object_store_path)?.ok_or_else(|| {
-            anyhow::anyhow!(
-                "object store snapshot does not exist: {}",
-                object_store_path.display()
-            )
-        })?;
+        load_lingqu_object_service_snapshot(&object_store_path, &mut durable_store)?.ok_or_else(
+            || {
+                anyhow::anyhow!(
+                    "object store snapshot does not exist: {}",
+                    object_store_path.display()
+                )
+            },
+        )?;
     let mut object_service = LingquObjectServiceStub::import_snapshot(object_snapshot)
         .with_context(|| format!("import object store {}", object_store_path.display()))?;
 
@@ -2058,8 +2061,8 @@ fn run_lingqu_memory_materialize_engram_state_cli(args: &[String]) -> anyhow::Re
     }
     fs::write(&engram_state_path, engram_state_bytes)
         .with_context(|| format!("write engram state {}", engram_state_path.display()))?;
+    save_lingqu_object_service_snapshot(&object_store_path, &mut durable_store, &object_service)?;
     save_lingqu_memory_durable_store(&store_path, &durable_store)?;
-    save_lingqu_object_service_snapshot(&object_store_path, &object_service)?;
     let object_report = object_service.report();
 
     println!("lingqu_memory_service");
@@ -2097,6 +2100,7 @@ fn validate_lingqu_memory_gate_weight_input(
 }
 
 fn run_lingqu_memory_publish_w5_engram_state_ref_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = optional_cli_arg(args, "--store")?.map(PathBuf::from);
     let object_store_path = PathBuf::from(required_cli_arg(args, "--object-store")?);
     let engram_state_path = PathBuf::from(required_cli_arg(args, "--engram-state")?);
     let registry_dir = PathBuf::from(required_cli_arg(args, "--registry-dir")?);
@@ -2107,13 +2111,18 @@ fn run_lingqu_memory_publish_w5_engram_state_ref_cli(args: &[String]) -> anyhow:
     let producer_entity = u32::try_from(producer_entity)
         .map_err(|_| anyhow::anyhow!("--producer-entity exceeds u32"))?;
 
-    let object_snapshot =
-        load_lingqu_object_service_snapshot(&object_store_path)?.ok_or_else(|| {
-            anyhow::anyhow!(
-                "object store snapshot does not exist: {}",
-                object_store_path.display()
-            )
-        })?;
+    let object_snapshot = if let Some(store_path) = &store_path {
+        let mut durable_store = load_lingqu_memory_durable_store(store_path)?;
+        load_lingqu_object_service_snapshot(&object_store_path, &mut durable_store)?
+    } else {
+        load_lingqu_object_service_snapshot_file(&object_store_path)?
+    }
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "object store snapshot does not exist: {}",
+            object_store_path.display()
+        )
+    })?;
     let object_service = LingquObjectServiceStub::import_snapshot(object_snapshot)
         .with_context(|| format!("import object store {}", object_store_path.display()))?;
     let engram_state_bytes = fs::read(&engram_state_path)
@@ -2676,6 +2685,18 @@ fn rebuild_lingqu_memory_prefetch_plans(
 
 fn load_lingqu_object_service_snapshot(
     path: &Path,
+    store: &mut LingquMemoryDurableStore,
+) -> anyhow::Result<Option<LingquObjectServiceSnapshot>> {
+    match store.load_object_service_checkpoint() {
+        Ok(snapshot) => return Ok(Some(snapshot)),
+        Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => {}
+        Err(err) => return Err(err).context("load object service checkpoint from durable DFS"),
+    }
+    load_lingqu_object_service_snapshot_file(path)
+}
+
+fn load_lingqu_object_service_snapshot_file(
+    path: &Path,
 ) -> anyhow::Result<Option<LingquObjectServiceSnapshot>> {
     if !path.exists() {
         return Ok(None);
@@ -2688,15 +2709,14 @@ fn load_lingqu_object_service_snapshot(
 
 fn save_lingqu_object_service_snapshot(
     path: &Path,
+    store: &mut LingquMemoryDurableStore,
     service: &LingquObjectServiceStub,
 ) -> anyhow::Result<()> {
-    let snapshot = service.export_snapshot();
-    let bytes = snapshot.to_json_bytes().context("encode object store")?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("create object store dir {}", parent.display()))?;
-    }
-    fs::write(path, bytes).with_context(|| format!("write object store {}", path.display()))
+    let _ = path;
+    store
+        .persist_object_service_checkpoint(service)
+        .context("persist object service checkpoint to durable DFS")?;
+    Ok(())
 }
 
 fn load_lingqu_memory_catalog_snapshot_if_exists(
@@ -3761,11 +3781,10 @@ mod tests {
         save_lingqu_memory_durable_store, simpler_host_matmul_artifact_producer_path,
         validate_qwen3_dense_weights_path, validate_w5_inference_profile, LingquDurableSim,
         LingquDurableSimSnapshot, LingquMemoryDurableStore, LingquMemoryDurableStoreSnapshot,
-        LingquObjectServiceSnapshot, LingquObjectServiceStub, LingquObjectVersionSelector,
-        MemoryCatalogSnapshot, QueryResult, Qwen3CandidateRecord, Qwen3DecodeReportVerbosity,
-        Qwen3EngramConfig, Qwen3EngramContextOp, Qwen3EngramMode, Qwen3EngramPool,
-        Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
-        SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+        LingquObjectServiceStub, LingquObjectVersionSelector, MemoryCatalogSnapshot, QueryResult,
+        Qwen3CandidateRecord, Qwen3DecodeReportVerbosity, Qwen3EngramConfig, Qwen3EngramContextOp,
+        Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
+        SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
     };
     use std::env;
     use std::fs;
@@ -5945,9 +5964,20 @@ stage qwen3_range_forward_runtime_output_publish node=2
         assert_eq!(hot_state_value["table"]["shape"][1], 2);
         assert_eq!(hot_state_value["indices"]["shape"][0], 1);
         assert_eq!(hot_state_value["scores"]["shape"][0], 1);
-        let object_store_bytes = fs::read(&object_store).expect("read object store");
-        let object_snapshot = LingquObjectServiceSnapshot::from_json_bytes(&object_store_bytes)
-            .expect("decode object store");
+        assert!(
+            !object_store.exists(),
+            "object store should be checkpointed into durable DFS"
+        );
+        let durable_snapshot = LingquDurableSimSnapshot::from_json_bytes(
+            &fs::read(&store).expect("read durable store"),
+        )
+        .expect("decode durable store");
+        let mut durable_store =
+            LingquMemoryDurableStore::import_durable_sim_snapshot(durable_snapshot)
+                .expect("import durable store");
+        let object_snapshot = durable_store
+            .load_object_service_checkpoint()
+            .expect("load object checkpoint from durable store");
         let object_service =
             LingquObjectServiceStub::import_snapshot(object_snapshot).expect("import object store");
         let table_key = hot_state_value["table"]["object_key"]
@@ -5979,9 +6009,20 @@ stage qwen3_range_forward_runtime_output_publish node=2
         assert_eq!(engram_state_value["state_id"], "engram/test/0");
         assert_eq!(engram_state_value["hot_memory_state_id"], "hot/test/0");
         assert_eq!(engram_state_value["gate"]["shape"][0], 2);
-        let object_store_bytes = fs::read(&object_store).expect("read updated object store");
-        let object_snapshot = LingquObjectServiceSnapshot::from_json_bytes(&object_store_bytes)
-            .expect("decode updated object store");
+        assert!(
+            !object_store.exists(),
+            "object store should remain a legacy input path only"
+        );
+        let durable_snapshot = LingquDurableSimSnapshot::from_json_bytes(
+            &fs::read(&store).expect("read updated durable store"),
+        )
+        .expect("decode updated durable store");
+        let mut durable_store =
+            LingquMemoryDurableStore::import_durable_sim_snapshot(durable_snapshot)
+                .expect("import updated durable store");
+        let object_snapshot = durable_store
+            .load_object_service_checkpoint()
+            .expect("load updated object checkpoint from durable store");
         let object_service = LingquObjectServiceStub::import_snapshot(object_snapshot)
             .expect("import updated object store");
         let gate_key = engram_state_value["gate"]["object_key"]
@@ -5993,6 +6034,8 @@ stage qwen3_range_forward_runtime_output_publish node=2
         assert_eq!(gate_payload, cli_f32_vec_to_le_bytes(&[0.5, 0.75]));
 
         run_lingqu_memory_publish_w5_engram_state_ref_cli(&[
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
             "--object-store".to_string(),
             object_store.to_string_lossy().into_owned(),
             "--engram-state".to_string(),

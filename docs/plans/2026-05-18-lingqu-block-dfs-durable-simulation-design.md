@@ -552,6 +552,11 @@ Current code status:
   `/lingqu/memory/audit/prefetch-plans.log`. Repeated persistence of the same
   already-logged record is idempotent only when the payload is byte-identical;
   the same record id with different payload is a hard validation error.
+- Object Service checkpoints are written into durable DFS at
+  `/lingqu/object-service/checkpoints/latest.json`. The checkpoint carries
+  object metadata, placement records, versions, and checksums; object payload
+  bytes are written to Lingqu Block and referenced from the checkpoint instead
+  of being inlined into DFS or a standalone object snapshot file.
 - The external `--catalog` JSON file remains as a compatibility output/input,
   but `ingest` and `build-index` persist the catalog into durable DFS, and
   `query` / `materialize-hot-state` can restart from `--store` plus
@@ -572,7 +577,8 @@ Validated coverage:
 - Memory Service tests cover durable snapshot restart for catalog/query/hot
   state materialization, execution artifacts, prefix cache artifacts,
   append-log-backed shortpath decision audits, append-log-backed prefetch plan
-  audits, and hard failure on missing embedding Block payloads.
+  audits, Object Service checkpoint reload from DFS/Block, and hard failure on
+  missing embedding Block payloads.
 - CLI tests cover durable init/stat/list/validate, append-log/read-log, durable
   batch commit, legacy store migration, manifest-backed execution artifact and
   prefix cache flows, durable catalog restart for query and hot-state
@@ -580,10 +586,6 @@ Validated coverage:
 
 Remaining work:
 
-- Object Service still uses its own snapshot file for hot OBMM placements.
-  Durable Block/DFS simulation is now unified for Memory Service bytes, but
-  Object Service placement metadata has not yet been folded into a single
-  durable store file.
 - The external catalog file is still supported for compatibility. The durable
   DFS catalog path is now the recovery source, but the CLI contract should
   eventually make `--catalog-id` the primary selector and make `--catalog`

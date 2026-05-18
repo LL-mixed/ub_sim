@@ -14,7 +14,8 @@ use sim_services::dfs::DfsServiceProfile;
 use sim_services::durable as durable_sim;
 use sim_services::object::{
     LingquObjectKind, LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
-    LingquObjectServiceStub, LingquPayloadBackend, LingquPayloadPlacement,
+    LingquObjectRecord, LingquObjectServiceSnapshot, LingquObjectServiceStub, LingquPayloadBackend,
+    LingquPayloadPlacement,
 };
 use thiserror::Error;
 
@@ -382,6 +383,8 @@ pub const LINGQU_PREFETCH_PLAN_MANIFEST_PATH: &str = "/lingqu/memory/prefetch-pl
 pub const LINGQU_SHORTPATH_DECISION_AUDIT_LOG_PATH: &str =
     "/lingqu/memory/audit/shortpath-decisions.log";
 pub const LINGQU_PREFETCH_PLAN_AUDIT_LOG_PATH: &str = "/lingqu/memory/audit/prefetch-plans.log";
+pub const LINGQU_OBJECT_SERVICE_CHECKPOINT_PATH: &str =
+    "/lingqu/object-service/checkpoints/latest.json";
 
 pub const LINGQU_EXECUTION_ARTIFACT_MANIFEST_KIND: &str =
     "lingqu_memory_execution_artifact_manifest";
@@ -389,7 +392,98 @@ pub const LINGQU_PREFIX_CACHE_MANIFEST_KIND: &str = "lingqu_memory_prefix_cache_
 pub const LINGQU_SHORTPATH_DECISION_MANIFEST_KIND: &str =
     "lingqu_memory_shortpath_decision_manifest";
 pub const LINGQU_PREFETCH_PLAN_MANIFEST_KIND: &str = "lingqu_memory_prefetch_plan_manifest";
+pub const LINGQU_OBJECT_SERVICE_CHECKPOINT_KIND: &str = "lingqu_object_service_checkpoint";
 pub const LINGQU_MEMORY_MANIFEST_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LingquObjectServiceCheckpoint {
+    pub kind: String,
+    pub schema_version: u32,
+    pub profile: sim_services::object::LingquObjectServiceProfile,
+    pub records: Vec<LingquObjectRecordCheckpoint>,
+    pub checksum: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LingquObjectRecordCheckpoint {
+    pub record: LingquObjectRecord,
+    pub payload_ref: Option<LingquBlockPayloadRef>,
+}
+
+impl LingquObjectServiceCheckpoint {
+    fn new(snapshot: LingquObjectServiceSnapshot) -> MemoryResult<Self> {
+        let mut records = snapshot
+            .records
+            .into_iter()
+            .map(|record| LingquObjectRecordCheckpoint {
+                record,
+                payload_ref: None,
+            })
+            .collect::<Vec<_>>();
+        records.sort_by(|left, right| {
+            left.record
+                .key
+                .cmp(&right.record.key)
+                .then_with(|| left.record.version.cmp(&right.record.version))
+        });
+        let mut checkpoint = Self {
+            kind: LINGQU_OBJECT_SERVICE_CHECKPOINT_KIND.to_string(),
+            schema_version: LINGQU_MEMORY_MANIFEST_SCHEMA_VERSION,
+            profile: snapshot.profile,
+            records,
+            checksum: 0,
+        };
+        checkpoint.checksum = object_service_checkpoint_checksum(&checkpoint);
+        Ok(checkpoint)
+    }
+
+    pub fn validate(&self) -> MemoryResult<()> {
+        if self.kind != LINGQU_OBJECT_SERVICE_CHECKPOINT_KIND {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "object_service_checkpoint.kind",
+                reason: "unexpected checkpoint kind",
+            });
+        }
+        if self.schema_version != LINGQU_MEMORY_MANIFEST_SCHEMA_VERSION {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "object_service_checkpoint.schema_version",
+                reason: "unsupported checkpoint schema version",
+            });
+        }
+        let mut versions = HashSet::new();
+        for entry in &self.records {
+            validate_object_record_checkpoint(entry)?;
+            if !versions.insert((entry.record.key.clone(), entry.record.version)) {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "object_service_checkpoint.records",
+                    reason: "duplicate object key version",
+                });
+            }
+        }
+        let actual = object_service_checkpoint_checksum(self);
+        if actual != self.checksum {
+            return Err(LingquMemoryError::PayloadChecksumMismatch {
+                id: LINGQU_OBJECT_SERVICE_CHECKPOINT_PATH.to_string(),
+                expected: self.checksum,
+                actual,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn to_json_bytes(&self) -> MemoryResult<Vec<u8>> {
+        self.validate()?;
+        serde_json::to_vec_pretty(self)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))
+    }
+
+    pub fn from_json_bytes(bytes: &[u8]) -> MemoryResult<Self> {
+        let checkpoint = serde_json::from_slice::<Self>(bytes)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+        checkpoint.validate()?;
+        Ok(checkpoint)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LingquExecutionArtifactManifest {
@@ -950,6 +1044,95 @@ impl LingquMemoryDurableStore {
             .collect())
     }
 
+    pub fn persist_object_service_checkpoint(
+        &mut self,
+        object_service: &LingquObjectServiceStub,
+    ) -> MemoryResult<LingquDfsPath> {
+        let snapshot = object_service.export_snapshot();
+        let mut checkpoint = LingquObjectServiceCheckpoint::new(snapshot)?;
+        let mut ops = Vec::new();
+        let mut block_writes = 0;
+        let mut block_bytes_written = 0;
+        for entry in &mut checkpoint.records {
+            if entry.record.payload_bytes.is_empty() {
+                if entry.record.bytes != 0 {
+                    return Err(LingquMemoryError::MissingField("object_payload"));
+                }
+                continue;
+            }
+            let block = object_payload_block(&entry.record);
+            let bytes = std::mem::take(&mut entry.record.payload_bytes);
+            let payload_ref = LingquBlockPayloadRef {
+                block: block.clone(),
+                offset: 0,
+                bytes: bytes.len() as u64,
+                checksum: checksum64(&bytes),
+            };
+            payload_ref.validate("object_payload_ref")?;
+            if payload_ref.bytes != entry.record.bytes
+                || payload_ref.checksum != entry.record.checksum
+            {
+                return Err(LingquMemoryError::PayloadChecksumMismatch {
+                    id: entry.record.key.clone(),
+                    expected: entry.record.checksum,
+                    actual: payload_ref.checksum,
+                });
+            }
+            entry.payload_ref = Some(payload_ref);
+            block_bytes_written += bytes.len() as u64;
+            block_writes += 1;
+            ops.push(durable_sim::LingquDurableBatchOp::BlockWrite {
+                block: block.0,
+                bytes,
+                options: durable_sim::LingquBlockWriteOptions::default(),
+            });
+        }
+
+        checkpoint.records.sort_by(|left, right| {
+            left.record
+                .key
+                .cmp(&right.record.key)
+                .then_with(|| left.record.version.cmp(&right.record.version))
+        });
+        checkpoint.checksum = object_service_checkpoint_checksum(&checkpoint);
+        let checkpoint_bytes = checkpoint.to_json_bytes()?;
+        let checkpoint_bytes_len = checkpoint_bytes.len() as u64;
+        let path = LingquDfsPath::new(LINGQU_OBJECT_SERVICE_CHECKPOINT_PATH);
+        ops.push(durable_sim::LingquDurableBatchOp::DfsWrite {
+            path: path.path.clone(),
+            bytes: checkpoint_bytes,
+            options: durable_sim::LingquDfsWriteOptions {
+                content_type: durable_sim::LingquDfsContentType::Json,
+                ..durable_sim::LingquDfsWriteOptions::default()
+            },
+        });
+        self.durable
+            .commit_batch(ops)
+            .map_err(memory_error_from_durable)?;
+        self.stats.block_payload_writes += block_writes;
+        self.stats.block_bytes_written += block_bytes_written;
+        self.stats.dfs_catalog_writes += 1;
+        self.stats.dfs_bytes_written += checkpoint_bytes_len;
+        Ok(path)
+    }
+
+    pub fn load_object_service_checkpoint(&mut self) -> MemoryResult<LingquObjectServiceSnapshot> {
+        let bytes = self.submit_dfs_read(LINGQU_OBJECT_SERVICE_CHECKPOINT_PATH)?;
+        let checkpoint = LingquObjectServiceCheckpoint::from_json_bytes(&bytes)?;
+        let mut records = Vec::with_capacity(checkpoint.records.len());
+        for mut entry in checkpoint.records {
+            if let Some(payload_ref) = &entry.payload_ref {
+                entry.record.payload_bytes = self.read_block_payload(payload_ref)?;
+            }
+            validate_object_record_checkpoint_payload(&entry)?;
+            records.push(entry.record);
+        }
+        Ok(LingquObjectServiceSnapshot {
+            profile: checkpoint.profile,
+            records,
+        })
+    }
+
     pub fn write_block_payload(
         &mut self,
         block: impl Into<String>,
@@ -1157,6 +1340,88 @@ fn durable_audit_metadata(record_kind: &'static str) -> BTreeMap<String, String>
     metadata.insert("service".to_string(), "lingqu-memory".to_string());
     metadata.insert("record_kind".to_string(), record_kind.to_string());
     metadata
+}
+
+fn validate_object_record_checkpoint(entry: &LingquObjectRecordCheckpoint) -> MemoryResult<()> {
+    required_str(&entry.record.key, "object_record.key")?;
+    nonzero(entry.record.version, "object_record.version")?;
+    if !entry.record.payload_bytes.is_empty() {
+        return Err(LingquMemoryError::InvalidValue {
+            field: "object_record.payload_bytes",
+            reason: "object checkpoint metadata must not inline hot payload bytes",
+        });
+    }
+    if entry.record.bytes > 0 {
+        let payload_ref = entry
+            .payload_ref
+            .as_ref()
+            .ok_or_else(|| LingquMemoryError::MissingBlockPayload(entry.record.key.clone()))?;
+        payload_ref.validate("object_record.payload_ref")?;
+        if payload_ref.bytes != entry.record.bytes {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "object_record.payload_ref.bytes",
+                reason: "payload ref byte count must match object record",
+            });
+        }
+        if payload_ref.checksum != entry.record.checksum {
+            return Err(LingquMemoryError::PayloadChecksumMismatch {
+                id: entry.record.key.clone(),
+                expected: entry.record.checksum,
+                actual: payload_ref.checksum,
+            });
+        }
+    }
+    for placement in &entry.record.placements {
+        if placement.bytes != entry.record.bytes {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "object_record.placement.bytes",
+                reason: "placement byte count must match object record",
+            });
+        }
+        if placement.checksum != entry.record.checksum {
+            return Err(LingquMemoryError::PayloadChecksumMismatch {
+                id: entry.record.key.clone(),
+                expected: entry.record.checksum,
+                actual: placement.checksum,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_object_record_checkpoint_payload(
+    entry: &LingquObjectRecordCheckpoint,
+) -> MemoryResult<()> {
+    if entry.record.payload_bytes.len() as u64 != entry.record.bytes {
+        return Err(LingquMemoryError::InvalidValue {
+            field: "object_record.payload_bytes",
+            reason: "restored payload byte count must match object record",
+        });
+    }
+    let actual = checksum64(&entry.record.payload_bytes);
+    if actual != entry.record.checksum {
+        return Err(LingquMemoryError::PayloadChecksumMismatch {
+            id: entry.record.key.clone(),
+            expected: entry.record.checksum,
+            actual,
+        });
+    }
+    Ok(())
+}
+
+fn object_payload_block(record: &LingquObjectRecord) -> BlockHash {
+    BlockHash(format!(
+        "block/object-service/payload/{:016x}/v{}",
+        checksum64(record.key.as_bytes()),
+        record.version
+    ))
+}
+
+fn object_service_checkpoint_checksum(checkpoint: &LingquObjectServiceCheckpoint) -> u64 {
+    let mut shadow = checkpoint.clone();
+    shadow.checksum = 0;
+    let bytes = serde_json::to_vec(&shadow).unwrap_or_default();
+    checksum64(&bytes)
 }
 
 fn legacy_dfs_payloads_from_durable_snapshot(
@@ -5668,6 +5933,41 @@ mod tests {
             .expect("hot table payload after restart");
         let table_values = f32_values_from_le_bytes(&table_bytes).unwrap();
         assert_eq!(table_values, vec![0.0, 1.0, 1.0, 0.0]);
+
+        restored_durable
+            .persist_object_service_checkpoint(&object_service)
+            .expect("persist object service checkpoint");
+        let checkpoint_snapshot = restored_durable
+            .export_durable_sim_snapshot()
+            .expect("export object checkpoint durable snapshot");
+        let checkpoint_record = checkpoint_snapshot
+            .dfs
+            .files
+            .iter()
+            .find(|record| record.path == LINGQU_OBJECT_SERVICE_CHECKPOINT_PATH)
+            .expect("object service checkpoint dfs record");
+        let checkpoint_bytes =
+            durable_dfs_record_bytes(checkpoint_record, &checkpoint_snapshot.block.blocks)
+                .expect("checkpoint bytes");
+        let checkpoint = LingquObjectServiceCheckpoint::from_json_bytes(&checkpoint_bytes)
+            .expect("decode object checkpoint");
+        assert_eq!(checkpoint.records.len(), 3);
+        assert!(checkpoint
+            .records
+            .iter()
+            .all(|entry| entry.record.payload_bytes.is_empty() && entry.payload_ref.is_some()));
+        let restored_snapshot = restored_durable
+            .load_object_service_checkpoint()
+            .expect("load object service checkpoint");
+        let restored_object_service =
+            LingquObjectServiceStub::import_snapshot(restored_snapshot).expect("restore objects");
+        let restored_table_bytes = restored_object_service
+            .get_copy(
+                &hot_state.table.object_key,
+                LingquObjectVersionSelector::LatestCommitted,
+            )
+            .expect("hot table payload after object checkpoint reload");
+        assert_eq!(restored_table_bytes, table_bytes);
     }
 
     #[test]

@@ -1065,21 +1065,22 @@ sim-cli lingqu-memory query \
 sim-cli lingqu-memory materialize-hot-state \
   --catalog <catalog-snapshot.json> \
   --store <durable-store.json> \
-  --object-store <object-service-snapshot.json> \
+  --object-store <legacy-object-service-snapshot.json> \
   --query-result-manifest <dfs-query-result-path> \
   --state-id <hot-state-id> \
   --hot-state <hot-state.json>
 
 sim-cli lingqu-memory materialize-engram-state \
   --store <durable-store.json> \
-  --object-store <object-service-snapshot.json> \
+  --object-store <legacy-object-service-snapshot.json> \
   --hot-state <hot-state.json> \
   --gate-weight-json <gate-weight.json> \
   --state-id <engram-state-id> \
   --engram-state <engram-state.json>
 
 sim-cli lingqu-memory publish-w5-engram-state-ref \
-  --object-store <object-service-snapshot.json> \
+  --store <durable-store.json> \
+  --object-store <legacy-object-service-snapshot.json> \
   --engram-state <engram-state.json> \
   --registry-dir <qwen3-object-registry-dir>
 ```
@@ -1101,23 +1102,27 @@ ids. It intentionally does not embed prompt text inside the query command.
 `materialize-hot-state` reloads a persisted `QueryResult` manifest from the
 durable-store DFS snapshot, revalidates it against the current catalog, reads
 selected embedding rows from Lingqu Block, publishes hot table/index/score
-objects through Lingqu Object Service, writes an Object Service snapshot, and
-writes a `HotMemoryStateObject` manifest. It intentionally does not accept
-inline tensor values. The Object Service snapshot is required because hot-state
-object refs are not meaningful across CLI stages unless the object metadata and
-OBMM payload placement records are reloadable.
+objects through Lingqu Object Service, checkpoints Object Service metadata and
+placement records into the same durable-store DFS snapshot, backs object
+payload bytes with Lingqu Block refs, and writes a `HotMemoryStateObject`
+manifest. It intentionally does not accept inline tensor values. The
+checkpoint is required because hot-state object refs are not meaningful across
+CLI stages unless the object metadata, payload refs, and OBMM placement records
+are reloadable.
 
 `materialize-engram-state` reloads the hot-state manifest and Object Service
-snapshot, validates that hot table/index/score refs resolve to matching OBMM
-objects, writes the caller-provided gate-weight JSON payload into Lingqu Block,
-then publishes a gate OBMM object and writes the `EngramStateObject` manifest.
-It intentionally does not accept inline gate values on the command line and
-does not create a default gate if the gate payload is missing.
+checkpoint from the durable store, validates that hot table/index/score refs
+resolve to matching objects, writes the caller-provided gate-weight JSON
+payload into Lingqu Block, then publishes a gate OBMM object, updates the
+Object Service durable checkpoint, and writes the `EngramStateObject`
+manifest. It intentionally does not accept inline gate values on the command
+line and does not create a default gate if the gate payload is missing.
 
 `publish-w5-engram-state-ref` is the current W5 adapter bridge. It reloads the
-`EngramStateObject` and Object Service snapshot, resolves table/index/gate
-payloads from the Object Service records, writes the qwen3 object registry
-payloads, and prints the exact `SIM_QWEN3_GUEST_ENGRAM_STATE_REF` plus
+`EngramStateObject` and Object Service checkpoint, resolves table/index/gate
+payloads from durable Block-backed Object Service records, writes the qwen3
+object registry payloads, and prints the exact
+`SIM_QWEN3_GUEST_ENGRAM_STATE_REF` plus
 `SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR` environment values needed by the existing
 W5 guest runner. This is a compatibility bridge until W5 resolves the unified
 Lingqu Object Service directly instead of using the qwen3 registry shim.
@@ -1306,14 +1311,16 @@ Current implementation status:
   checksum-validated `QueryResult` manifest into the DFS snapshot. Step 6 now
   also has a real `sim-cli lingqu-memory materialize-hot-state` entrypoint that
   consumes the persisted query result manifest, publishes OBMM hot tensors, and
-  persists a reloadable Lingqu Object Service snapshot so the produced
-  `HotMemoryStateObject` refs can be resolved by later CLI stages.
+  persists a reloadable Lingqu Object Service checkpoint into durable DFS with
+  Block-backed object payload refs so the produced `HotMemoryStateObject` refs
+  can be resolved by later CLI stages.
   `sim-cli lingqu-memory materialize-engram-state` now consumes that hot-state
-  manifest plus object-store snapshot, writes gate weights through Lingqu
-  Block, publishes the gate OBMM object, and emits an `EngramStateObject`
-  manifest. `sim-cli lingqu-memory publish-w5-engram-state-ref` then converts
-  that `EngramStateObject` plus Object Service snapshot into the current W5
-  qwen3 object registry state-ref environment contract. Embed generation
+  manifest plus durable Object Service checkpoint, writes gate weights through
+  Lingqu Block, publishes the gate OBMM object, updates the durable checkpoint,
+  and emits an `EngramStateObject` manifest.
+  `sim-cli lingqu-memory publish-w5-engram-state-ref` then converts that
+  `EngramStateObject` plus durable Object Service checkpoint into the current
+  W5 qwen3 object registry state-ref environment contract. Embed generation
   remains a missing product CLI entrypoint.
 - Step 6 now has two paths: explicit caller-provided tensor materialization and
   QueryResult-driven materialization that reads selected embedding rows from
