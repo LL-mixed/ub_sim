@@ -1062,6 +1062,35 @@ sim-cli lingqu-memory query \
   --query-id <query-id> \
   --top-k <count>
 
+sim-cli lingqu-memory list-query-results \
+  --store <durable-store.json> \
+  [--result-id <query-result-id>]
+
+sim-cli lingqu-memory list-record-lifecycle \
+  --store <durable-store.json> \
+  [--record-id <record-id>]
+
+sim-cli lingqu-memory list-shortpath-decisions \
+  --store <durable-store.json> \
+  [--decision-id <shortpath-decision-id>]
+
+sim-cli lingqu-memory list-prefetch-plans \
+  --store <durable-store.json> \
+  [--plan-id <prefetch-plan-id>]
+
+sim-cli lingqu-memory list-prefix-cache-reuse \
+  --store <durable-store.json> \
+  [--plan-id <prefix-cache-reuse-plan-id>]
+
+sim-cli lingqu-memory update-record-state \
+  --catalog <catalog-snapshot.json> \
+  --store <durable-store.json> \
+  --catalog-id <catalog-id> \
+  --record-id <record-id> \
+  --state committed|tombstoned|quarantined \
+  --actor <actor-id> \
+  --reason <mutation-reason>
+
 sim-cli lingqu-memory materialize-hot-state \
   --catalog <catalog-snapshot.json> \
   --store <durable-store.json> \
@@ -1098,6 +1127,12 @@ synthesize embeddings from source text.
 into Lingqu Block, ranks the flat index, persists the resulting `QueryResult`
 manifest into the durable-store DFS snapshot, and reports selected record/chunk
 ids. It intentionally does not embed prompt text inside the query command.
+`list-query-results` reads the append-only durable DFS query audit log and can
+filter by `query-result-id`; it fails if the audit log or requested result is
+missing, so audit inspection cannot silently fall back to per-result manifests.
+The other `list-*` audit commands follow the same rule for record lifecycle,
+shortpath, prefetch, and prefix-cache reuse logs: they inspect the append-only
+DFS audit source directly and fail on missing logs or missing filters.
 
 `materialize-hot-state` reloads a persisted `QueryResult` manifest from the
 durable-store DFS snapshot, revalidates it against the current catalog, reads
@@ -1294,8 +1329,10 @@ Current implementation status:
   `PrefixCacheLookupRequest`, `PrefixCacheLookupResponse`, and
   `PrefixCacheReusePlan` can be validated, registered, and used for a first
   exact boundary lookup over verified execution artifacts, range-start n-step
-  prefetch planning, and auditable prefix cache hit/miss planning. This is not
-  yet wired into W5 guest range execution.
+  prefetch planning, and auditable prefix cache hit/miss planning. Query
+  results, shortpath decisions, prefetch plans, and prefix-cache reuse/miss
+  decisions are persisted as append-only durable DFS audit logs and can be
+  rebuilt after restart. This is not yet wired into W5 guest range execution.
   Query results can be persisted to and restored from DFS manifests with
   checksum validation, and QueryResult-driven hot materialization now carries
   that DFS manifest ref into both `HotMemoryStateObject` and
@@ -1307,9 +1344,18 @@ Current implementation status:
   snapshot and writes committed record/chunk metadata. `build-index` requires
   caller-provided embedding vectors, writes them into Lingqu Block, and
   registers a flat vector index. `query` requires a caller-provided query
-  embedding, writes it into Lingqu Block, ranks the flat index, and persists a
-  checksum-validated `QueryResult` manifest into the DFS snapshot. Step 6 now
-  also has a real `sim-cli lingqu-memory materialize-hot-state` entrypoint that
+  embedding, writes it into Lingqu Block, ranks the flat index, persists a
+  checksum-validated `QueryResult` manifest into the DFS snapshot, and appends
+  the immutable query decision to the durable DFS audit log. Reusing a query
+  result id with different payload is rejected instead of overwriting history.
+  `sim-cli lingqu-memory update-record-state` now provides a durable lifecycle
+  mutation path for committed/tombstoned/quarantined records: it reloads the
+  catalog from DFS when the external catalog file is missing, versions the
+  record and catalog, requires explicit actor/reason metadata, persists the
+  updated catalog back to DFS, appends a checksum-validated immutable
+  `MemoryRecordLifecycleEvent` to the durable DFS audit log, and normal query
+  paths filter non-committed records after restart. Step 6 now also has a real
+  `sim-cli lingqu-memory materialize-hot-state` entrypoint that
   consumes the persisted query result manifest, publishes OBMM hot tensors, and
   persists a reloadable Lingqu Object Service checkpoint into durable DFS with
   Block-backed object payload refs so the produced `HotMemoryStateObject` refs
@@ -1320,8 +1366,15 @@ Current implementation status:
   and emits an `EngramStateObject` manifest.
   `sim-cli lingqu-memory publish-w5-engram-state-ref` then converts that
   `EngramStateObject` plus durable Object Service checkpoint into the current
-  W5 qwen3 object registry state-ref environment contract. Embed generation
-  remains a missing product CLI entrypoint.
+  W5 qwen3 object registry state-ref environment contract.
+  `sim-cli lingqu-memory list-query-results` exposes durable query audit log
+  inspection from the CLI. `list-record-lifecycle`,
+  `list-shortpath-decisions`, `list-prefetch-plans`, and
+  `list-prefix-cache-reuse` expose the remaining durable Memory Service audit
+  logs without reading legacy manifests or synthesizing missing state.
+  `lookup-prefix-cache` persists prefix cache reuse/miss plans into a durable
+  DFS audit log so cache optimization decisions survive restart and remain
+  analyzable. Embed generation remains a missing product CLI entrypoint.
 - Step 6 now has two paths: explicit caller-provided tensor materialization and
   QueryResult-driven materialization that reads selected embedding rows from
   Lingqu Block and publishes OBMM-backed table, index, and score tensors through

@@ -143,6 +143,80 @@ pub enum MemoryRecordState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryRecordLifecycleEvent {
+    pub event_id: String,
+    pub catalog_id: String,
+    pub record_id: String,
+    pub previous_state: MemoryRecordState,
+    pub new_state: MemoryRecordState,
+    pub previous_record_version: u64,
+    pub new_record_version: u64,
+    pub previous_catalog_version: u64,
+    pub new_catalog_version: u64,
+    pub actor: String,
+    pub reason: String,
+    pub checksum: u64,
+    pub created_at_us: u64,
+    pub version: u64,
+}
+
+impl MemoryRecordLifecycleEvent {
+    pub fn validate(&self) -> MemoryResult<()> {
+        required_str(&self.event_id, "record_lifecycle.event_id")?;
+        required_str(&self.catalog_id, "record_lifecycle.catalog_id")?;
+        required_str(&self.record_id, "record_lifecycle.record_id")?;
+        required_str(&self.actor, "record_lifecycle.actor")?;
+        required_str(&self.reason, "record_lifecycle.reason")?;
+        nonzero(
+            self.previous_record_version,
+            "record_lifecycle.previous_record_version",
+        )?;
+        nonzero(
+            self.new_record_version,
+            "record_lifecycle.new_record_version",
+        )?;
+        nonzero(
+            self.previous_catalog_version,
+            "record_lifecycle.previous_catalog_version",
+        )?;
+        nonzero(
+            self.new_catalog_version,
+            "record_lifecycle.new_catalog_version",
+        )?;
+        nonzero(self.checksum, "record_lifecycle.checksum")?;
+        nonzero(self.created_at_us, "record_lifecycle.created_at_us")?;
+        nonzero(self.version, "record_lifecycle.version")?;
+        if self.previous_state == self.new_state {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "record_lifecycle.new_state",
+                reason: "lifecycle event must change state",
+            });
+        }
+        if self.new_record_version <= self.previous_record_version {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "record_lifecycle.new_record_version",
+                reason: "new record version must be greater than previous version",
+            });
+        }
+        if self.new_catalog_version <= self.previous_catalog_version {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "record_lifecycle.new_catalog_version",
+                reason: "new catalog version must be greater than previous version",
+            });
+        }
+        let actual = record_lifecycle_event_checksum(self);
+        if actual != self.checksum {
+            return Err(LingquMemoryError::PayloadChecksumMismatch {
+                id: self.event_id.clone(),
+                expected: self.checksum,
+                actual,
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LingquDfsPath {
     pub path: String,
 }
@@ -377,12 +451,17 @@ impl LingquMemoryDurableStoreSnapshot {
 pub const LINGQU_EXECUTION_ARTIFACT_MANIFEST_PATH: &str =
     "/lingqu/memory/execution-artifacts/manifest.json";
 pub const LINGQU_PREFIX_CACHE_MANIFEST_PATH: &str = "/lingqu/memory/prefix-cache/manifest.json";
+pub const LINGQU_QUERY_RESULT_AUDIT_LOG_PATH: &str = "/lingqu/memory/audit/query-results.log";
+pub const LINGQU_RECORD_LIFECYCLE_AUDIT_LOG_PATH: &str =
+    "/lingqu/memory/audit/record-lifecycle.log";
 pub const LINGQU_SHORTPATH_DECISION_MANIFEST_PATH: &str =
     "/lingqu/memory/shortpath-decisions/audit.json";
 pub const LINGQU_PREFETCH_PLAN_MANIFEST_PATH: &str = "/lingqu/memory/prefetch-plans/audit.json";
 pub const LINGQU_SHORTPATH_DECISION_AUDIT_LOG_PATH: &str =
     "/lingqu/memory/audit/shortpath-decisions.log";
 pub const LINGQU_PREFETCH_PLAN_AUDIT_LOG_PATH: &str = "/lingqu/memory/audit/prefetch-plans.log";
+pub const LINGQU_PREFIX_CACHE_REUSE_AUDIT_LOG_PATH: &str =
+    "/lingqu/memory/audit/prefix-cache-reuse.log";
 pub const LINGQU_OBJECT_SERVICE_CHECKPOINT_PATH: &str =
     "/lingqu/object-service/checkpoints/latest.json";
 
@@ -866,7 +945,57 @@ impl LingquMemoryDurableStore {
     pub fn persist_query_result(&mut self, result: &QueryResult) -> MemoryResult<LingquDfsPath> {
         let bytes = result.to_json_bytes()?;
         let path = query_result_dfs_path(&result.result_id)?;
-        self.submit_dfs_write(path.path.clone(), bytes)?;
+        let existing = self.load_query_result_audit_entries(true, "persist query result")?;
+        let mut existing_by_id = HashMap::new();
+        for (existing_result, existing_bytes) in existing {
+            if existing_by_id
+                .insert(existing_result.result_id.clone(), existing_bytes)
+                .is_some()
+            {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "query_result_id",
+                    reason: "duplicate query result id in durable audit log",
+                });
+            }
+        }
+
+        let mut ops = vec![durable_sim::LingquDurableBatchOp::DfsWrite {
+            path: path.path.clone(),
+            bytes: bytes.clone(),
+            options: durable_sim::LingquDfsWriteOptions {
+                content_type: durable_sim::LingquDfsContentType::Json,
+                ..durable_sim::LingquDfsWriteOptions::default()
+            },
+        }];
+        let mut audit_appends = 0;
+        let mut audit_bytes_written = 0;
+        let next_seq = existing_by_id.len() as u64 + 1;
+        if let Some(existing_bytes) = existing_by_id.get(&result.result_id) {
+            if existing_bytes != &bytes {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "query_result_id",
+                    reason: "query result id already exists with different payload",
+                });
+            }
+        } else {
+            audit_appends = 1;
+            audit_bytes_written = bytes.len() as u64;
+            ops.push(durable_sim::LingquDurableBatchOp::DfsAppendLog {
+                path: LINGQU_QUERY_RESULT_AUDIT_LOG_PATH.to_string(),
+                bytes: bytes.clone(),
+                options: durable_sim::LingquDfsAppendOptions {
+                    expected_next_seq: Some(next_seq),
+                    writer: Some("lingqu-memory-service".to_string()),
+                    metadata: durable_audit_metadata("query_result"),
+                },
+            });
+        }
+        self.durable
+            .commit_batch(ops)
+            .map_err(memory_error_from_durable)?;
+        self.stats.dfs_catalog_writes += 1;
+        self.stats.dfs_bytes_written += bytes.len() as u64 + audit_bytes_written;
+        self.stats.dfs_audit_appends += audit_appends;
         Ok(path)
     }
 
@@ -874,6 +1003,84 @@ impl LingquMemoryDurableStore {
         path.validate("query_result.dfs_path")?;
         let bytes = self.submit_dfs_read(&path.path)?;
         QueryResult::from_json_bytes(&bytes)
+    }
+
+    pub fn load_query_result_audit_manifest(&mut self) -> MemoryResult<Vec<QueryResult>> {
+        Ok(self
+            .load_query_result_audit_entries(false, "load query result audit")?
+            .into_iter()
+            .map(|(result, _bytes)| result)
+            .collect())
+    }
+
+    pub fn persist_record_lifecycle_event_manifest(
+        &mut self,
+        events: Vec<MemoryRecordLifecycleEvent>,
+    ) -> MemoryResult<LingquDfsPath> {
+        let path = LingquDfsPath::new(LINGQU_RECORD_LIFECYCLE_AUDIT_LOG_PATH);
+        let mut events = events;
+        events.sort_by(|left, right| left.event_id.cmp(&right.event_id));
+        let existing =
+            self.load_record_lifecycle_event_audit_entries(true, "persist record lifecycle")?;
+        let mut existing_by_id = HashMap::new();
+        for (event, bytes) in existing {
+            if existing_by_id
+                .insert(event.event_id.clone(), bytes)
+                .is_some()
+            {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "record_lifecycle.event_id",
+                    reason: "duplicate lifecycle event id in durable audit log",
+                });
+            }
+        }
+
+        let mut ops = Vec::new();
+        let mut bytes_written = 0;
+        let mut next_seq = existing_by_id.len() as u64 + 1;
+        for event in events {
+            event.validate()?;
+            let bytes = serde_json::to_vec(&event)
+                .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+            if let Some(existing_bytes) = existing_by_id.get(&event.event_id) {
+                if existing_bytes != &bytes {
+                    return Err(LingquMemoryError::InvalidValue {
+                        field: "record_lifecycle.event_id",
+                        reason: "lifecycle event id already exists with different payload",
+                    });
+                }
+                continue;
+            }
+            bytes_written += bytes.len() as u64;
+            ops.push(durable_sim::LingquDurableBatchOp::DfsAppendLog {
+                path: path.path.clone(),
+                bytes,
+                options: durable_sim::LingquDfsAppendOptions {
+                    expected_next_seq: Some(next_seq),
+                    writer: Some("lingqu-memory-service".to_string()),
+                    metadata: durable_audit_metadata("record_lifecycle"),
+                },
+            });
+            next_seq += 1;
+        }
+        if !ops.is_empty() {
+            self.durable
+                .commit_batch(ops)
+                .map_err(memory_error_from_durable)?;
+            self.stats.dfs_audit_appends += next_seq - existing_by_id.len() as u64 - 1;
+            self.stats.dfs_bytes_written += bytes_written;
+        }
+        Ok(path)
+    }
+
+    pub fn load_record_lifecycle_event_manifest(
+        &mut self,
+    ) -> MemoryResult<Vec<MemoryRecordLifecycleEvent>> {
+        Ok(self
+            .load_record_lifecycle_event_audit_entries(false, "load record lifecycle")?
+            .into_iter()
+            .map(|(event, _bytes)| event)
+            .collect())
     }
 
     pub fn persist_execution_artifact_manifest(
@@ -1044,6 +1251,73 @@ impl LingquMemoryDurableStore {
             .collect())
     }
 
+    pub fn persist_prefix_cache_reuse_plan_manifest(
+        &mut self,
+        plans: Vec<PrefixCacheReusePlan>,
+    ) -> MemoryResult<LingquDfsPath> {
+        let path = LingquDfsPath::new(LINGQU_PREFIX_CACHE_REUSE_AUDIT_LOG_PATH);
+        let mut plans = plans;
+        plans.sort_by(|left, right| left.plan_id.cmp(&right.plan_id));
+        let existing =
+            self.load_prefix_cache_reuse_plan_audit_entries(true, "persist prefix cache reuse")?;
+        let mut existing_by_id = HashMap::new();
+        for (plan, bytes) in existing {
+            if existing_by_id.insert(plan.plan_id.clone(), bytes).is_some() {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "prefix_cache_reuse.plan_id",
+                    reason: "duplicate reuse plan id in durable audit log",
+                });
+            }
+        }
+
+        let mut ops = Vec::new();
+        let mut bytes_written = 0;
+        let mut next_seq = existing_by_id.len() as u64 + 1;
+        for plan in plans {
+            plan.validate()?;
+            let bytes = serde_json::to_vec(&plan)
+                .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+            if let Some(existing_bytes) = existing_by_id.get(&plan.plan_id) {
+                if existing_bytes != &bytes {
+                    return Err(LingquMemoryError::InvalidValue {
+                        field: "prefix_cache_reuse.plan_id",
+                        reason: "reuse plan id already exists with different payload",
+                    });
+                }
+                continue;
+            }
+            bytes_written += bytes.len() as u64;
+            ops.push(durable_sim::LingquDurableBatchOp::DfsAppendLog {
+                path: path.path.clone(),
+                bytes,
+                options: durable_sim::LingquDfsAppendOptions {
+                    expected_next_seq: Some(next_seq),
+                    writer: Some("lingqu-memory-service".to_string()),
+                    metadata: durable_audit_metadata("prefix_cache_reuse"),
+                },
+            });
+            next_seq += 1;
+        }
+        if !ops.is_empty() {
+            self.durable
+                .commit_batch(ops)
+                .map_err(memory_error_from_durable)?;
+            self.stats.dfs_audit_appends += next_seq - existing_by_id.len() as u64 - 1;
+            self.stats.dfs_bytes_written += bytes_written;
+        }
+        Ok(path)
+    }
+
+    pub fn load_prefix_cache_reuse_plan_manifest(
+        &mut self,
+    ) -> MemoryResult<Vec<PrefixCacheReusePlan>> {
+        Ok(self
+            .load_prefix_cache_reuse_plan_audit_entries(false, "load prefix cache reuse")?
+            .into_iter()
+            .map(|(plan, _bytes)| plan)
+            .collect())
+    }
+
     pub fn persist_object_service_checkpoint(
         &mut self,
         object_service: &LingquObjectServiceStub,
@@ -1193,6 +1467,62 @@ impl LingquMemoryDurableStore {
         Ok(entries)
     }
 
+    fn load_query_result_audit_entries(
+        &mut self,
+        allow_missing: bool,
+        op: &'static str,
+    ) -> MemoryResult<Vec<(QueryResult, Vec<u8>)>> {
+        let records =
+            self.submit_dfs_append_log_read(LINGQU_QUERY_RESULT_AUDIT_LOG_PATH, allow_missing)?;
+        let mut entries = Vec::with_capacity(records.len());
+        let mut ids = HashSet::new();
+        for record in records {
+            let result = QueryResult::from_json_bytes(&record.bytes)?;
+            if !ids.insert(result.result_id.clone()) {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "query_result_id",
+                    reason: "duplicate query result id in durable audit log",
+                });
+            }
+            entries.push((result, record.bytes));
+        }
+        if entries.is_empty() && !allow_missing {
+            return Err(LingquMemoryError::MissingDfsPath(format!(
+                "{op}: {LINGQU_QUERY_RESULT_AUDIT_LOG_PATH}"
+            )));
+        }
+        Ok(entries)
+    }
+
+    fn load_record_lifecycle_event_audit_entries(
+        &mut self,
+        allow_missing: bool,
+        op: &'static str,
+    ) -> MemoryResult<Vec<(MemoryRecordLifecycleEvent, Vec<u8>)>> {
+        let records =
+            self.submit_dfs_append_log_read(LINGQU_RECORD_LIFECYCLE_AUDIT_LOG_PATH, allow_missing)?;
+        let mut entries = Vec::with_capacity(records.len());
+        let mut ids = HashSet::new();
+        for record in records {
+            let event = serde_json::from_slice::<MemoryRecordLifecycleEvent>(&record.bytes)
+                .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+            event.validate()?;
+            if !ids.insert(event.event_id.clone()) {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "record_lifecycle.event_id",
+                    reason: "duplicate lifecycle event id in durable audit log",
+                });
+            }
+            entries.push((event, record.bytes));
+        }
+        if entries.is_empty() && !allow_missing {
+            return Err(LingquMemoryError::MissingDfsPath(format!(
+                "{op}: {LINGQU_RECORD_LIFECYCLE_AUDIT_LOG_PATH}"
+            )));
+        }
+        Ok(entries)
+    }
+
     fn load_prefetch_plan_audit_entries(
         &mut self,
         allow_missing: bool,
@@ -1217,6 +1547,35 @@ impl LingquMemoryDurableStore {
         if entries.is_empty() && !allow_missing {
             return Err(LingquMemoryError::MissingDfsPath(format!(
                 "{op}: {LINGQU_PREFETCH_PLAN_AUDIT_LOG_PATH}"
+            )));
+        }
+        Ok(entries)
+    }
+
+    fn load_prefix_cache_reuse_plan_audit_entries(
+        &mut self,
+        allow_missing: bool,
+        op: &'static str,
+    ) -> MemoryResult<Vec<(PrefixCacheReusePlan, Vec<u8>)>> {
+        let records = self
+            .submit_dfs_append_log_read(LINGQU_PREFIX_CACHE_REUSE_AUDIT_LOG_PATH, allow_missing)?;
+        let mut entries = Vec::with_capacity(records.len());
+        let mut ids = HashSet::new();
+        for record in records {
+            let plan = serde_json::from_slice::<PrefixCacheReusePlan>(&record.bytes)
+                .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+            plan.validate()?;
+            if !ids.insert(plan.plan_id.clone()) {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "prefix_cache_reuse.plan_id",
+                    reason: "duplicate reuse plan id in durable audit log",
+                });
+            }
+            entries.push((plan, record.bytes));
+        }
+        if entries.is_empty() && !allow_missing {
+            return Err(LingquMemoryError::MissingDfsPath(format!(
+                "{op}: {LINGQU_PREFIX_CACHE_REUSE_AUDIT_LOG_PATH}"
             )));
         }
         Ok(entries)
@@ -2790,6 +3149,7 @@ pub struct LingquMemoryService {
     embedding_segments: HashMap<String, EmbeddingSegment>,
     vector_indexes: HashMap<String, VectorIndexObject>,
     query_results: HashMap<String, QueryResult>,
+    record_lifecycle_events: HashMap<String, MemoryRecordLifecycleEvent>,
     hot_states: HashMap<String, HotMemoryStateObject>,
     engram_states: HashMap<String, EngramStateObject>,
     execution_artifacts: HashMap<String, ExecutionArtifactObject>,
@@ -2905,6 +3265,43 @@ impl LingquMemoryService {
         Ok(catalog)
     }
 
+    pub fn rebuild_query_results_from_dfs(
+        &mut self,
+        durable_store: &mut LingquMemoryDurableStore,
+    ) -> MemoryResult<Vec<QueryResult>> {
+        let results = durable_store.load_query_result_audit_manifest()?;
+        for result in &results {
+            self.register_query_result(result.clone())?;
+        }
+        Ok(results)
+    }
+
+    pub fn persist_record_lifecycle_events_to_dfs(
+        &self,
+        durable_store: &mut LingquMemoryDurableStore,
+    ) -> MemoryResult<LingquDfsPath> {
+        let mut events = self
+            .record_lifecycle_events
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        events.sort_by(|left, right| left.event_id.cmp(&right.event_id));
+        durable_store.persist_record_lifecycle_event_manifest(events)
+    }
+
+    pub fn rebuild_record_lifecycle_events_from_dfs(
+        &mut self,
+        durable_store: &mut LingquMemoryDurableStore,
+    ) -> MemoryResult<Vec<MemoryRecordLifecycleEvent>> {
+        let events = durable_store.load_record_lifecycle_event_manifest()?;
+        for event in &events {
+            event.validate()?;
+            self.record_lifecycle_events
+                .insert(event.event_id.clone(), event.clone());
+        }
+        Ok(events)
+    }
+
     pub fn persist_execution_artifacts_to_dfs(
         &self,
         durable_store: &mut LingquMemoryDurableStore,
@@ -3001,6 +3398,32 @@ impl LingquMemoryService {
         Ok(plans)
     }
 
+    pub fn persist_prefix_cache_reuse_plans_to_dfs(
+        &self,
+        durable_store: &mut LingquMemoryDurableStore,
+    ) -> MemoryResult<LingquDfsPath> {
+        let mut plans = self
+            .prefix_cache_reuse_plans
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        plans.sort_by(|left, right| left.plan_id.cmp(&right.plan_id));
+        durable_store.persist_prefix_cache_reuse_plan_manifest(plans)
+    }
+
+    pub fn rebuild_prefix_cache_reuse_plans_from_dfs(
+        &mut self,
+        durable_store: &mut LingquMemoryDurableStore,
+    ) -> MemoryResult<Vec<PrefixCacheReusePlan>> {
+        let plans = durable_store.load_prefix_cache_reuse_plan_manifest()?;
+        for plan in &plans {
+            plan.validate()?;
+            self.prefix_cache_reuse_plans
+                .insert(plan.plan_id.clone(), plan.clone());
+        }
+        Ok(plans)
+    }
+
     pub fn ingest_record(
         &mut self,
         record: MemoryRecord,
@@ -3031,6 +3454,91 @@ impl LingquMemoryService {
         }
         self.records.insert(record.record_id.clone(), record);
         Ok(())
+    }
+
+    pub fn update_record_state(
+        &mut self,
+        catalog_id: &str,
+        record_id: &str,
+        state: MemoryRecordState,
+        now_us: u64,
+        actor: &str,
+        reason: &str,
+    ) -> MemoryResult<MemoryRecord> {
+        required_str(catalog_id, "catalog_id")?;
+        required_str(record_id, "record_id")?;
+        required_str(actor, "record_lifecycle.actor")?;
+        required_str(reason, "record_lifecycle.reason")?;
+        let catalog = self
+            .catalogs
+            .get(catalog_id)
+            .ok_or_else(|| LingquMemoryError::MissingCatalog(catalog_id.to_string()))?;
+        if !catalog.record_ids.iter().any(|id| id == record_id) {
+            return Err(LingquMemoryError::MissingRecord(record_id.to_string()));
+        }
+        let current = self
+            .records
+            .get(record_id)
+            .ok_or_else(|| LingquMemoryError::MissingRecord(record_id.to_string()))?;
+        if now_us < current.updated_at_us {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "now_us",
+                reason: "record mutation time must not move backwards",
+            });
+        }
+        if current.state == state {
+            return Ok(current.clone());
+        }
+        let previous_state = current.state;
+        let previous_record_version = current.version;
+        let previous_catalog_version = catalog.version;
+
+        let mut updated = current.clone();
+        updated.state = state;
+        updated.version = updated.version.saturating_add(1);
+        updated.updated_at_us = now_us;
+        updated.validate()?;
+
+        let mut updated_catalog = catalog.clone();
+        if now_us < updated_catalog.updated_at_us {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "now_us",
+                reason: "catalog mutation time must not move backwards",
+            });
+        }
+        updated_catalog.version = updated_catalog.version.saturating_add(1);
+        updated_catalog.updated_at_us = now_us;
+        updated_catalog.validate()?;
+
+        let event_id = format!(
+            "record-lifecycle/{}/{}/{}",
+            catalog_id, record_id, updated.version
+        );
+        let mut event = MemoryRecordLifecycleEvent {
+            event_id,
+            catalog_id: catalog_id.to_string(),
+            record_id: record_id.to_string(),
+            previous_state,
+            new_state: state,
+            previous_record_version,
+            new_record_version: updated.version,
+            previous_catalog_version,
+            new_catalog_version: updated_catalog.version,
+            actor: actor.to_string(),
+            reason: reason.to_string(),
+            checksum: 0,
+            created_at_us: now_us,
+            version: 1,
+        };
+        event.checksum = record_lifecycle_event_checksum(&event);
+        event.validate()?;
+
+        self.records.insert(record_id.to_string(), updated.clone());
+        self.catalogs
+            .insert(catalog_id.to_string(), updated_catalog);
+        self.record_lifecycle_events
+            .insert(event.event_id.clone(), event);
+        Ok(updated)
     }
 
     pub fn register_embedding_segment(&mut self, segment: EmbeddingSegment) -> MemoryResult<()> {
@@ -4078,6 +4586,10 @@ impl LingquMemoryService {
         self.query_results.get(result_id)
     }
 
+    pub fn record_lifecycle_event(&self, event_id: &str) -> Option<&MemoryRecordLifecycleEvent> {
+        self.record_lifecycle_events.get(event_id)
+    }
+
     pub fn execution_artifact(&self, artifact_id: &str) -> Option<&ExecutionArtifactObject> {
         self.execution_artifacts.get(artifact_id)
     }
@@ -4534,6 +5046,33 @@ fn tensor_dtype_tag(dtype: TensorDType) -> u64 {
     }
 }
 
+fn record_lifecycle_event_checksum(event: &MemoryRecordLifecycleEvent) -> u64 {
+    let mut bytes = Vec::new();
+    push_checksum_str(&mut bytes, &event.event_id);
+    push_checksum_str(&mut bytes, &event.catalog_id);
+    push_checksum_str(&mut bytes, &event.record_id);
+    bytes.extend_from_slice(&record_state_tag(event.previous_state).to_le_bytes());
+    bytes.extend_from_slice(&record_state_tag(event.new_state).to_le_bytes());
+    bytes.extend_from_slice(&event.previous_record_version.to_le_bytes());
+    bytes.extend_from_slice(&event.new_record_version.to_le_bytes());
+    bytes.extend_from_slice(&event.previous_catalog_version.to_le_bytes());
+    bytes.extend_from_slice(&event.new_catalog_version.to_le_bytes());
+    push_checksum_str(&mut bytes, &event.actor);
+    push_checksum_str(&mut bytes, &event.reason);
+    bytes.extend_from_slice(&event.created_at_us.to_le_bytes());
+    bytes.extend_from_slice(&event.version.to_le_bytes());
+    checksum64(&bytes)
+}
+
+fn record_state_tag(state: MemoryRecordState) -> u64 {
+    match state {
+        MemoryRecordState::Pending => 1,
+        MemoryRecordState::Committed => 2,
+        MemoryRecordState::Tombstoned => 3,
+        MemoryRecordState::Quarantined => 4,
+    }
+}
+
 fn prefetch_plan_checksum(plan: &PrefetchPlanRecord) -> u64 {
     fn push_str(bytes: &mut Vec<u8>, value: &str) {
         bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
@@ -4874,6 +5413,72 @@ mod tests {
 
         assert_eq!(result.matches.len(), 1);
         assert_eq!(result.matches[0].chunk_id, "chunk/0");
+    }
+
+    #[test]
+    fn update_record_state_versions_catalog_and_filters_queries() {
+        let mut service = populated_service();
+        let updated = service
+            .update_record_state(
+                "corpus/0",
+                "record/0",
+                MemoryRecordState::Tombstoned,
+                2,
+                "unit-test",
+                "verify tombstone filtering",
+            )
+            .expect("tombstone record");
+        assert_eq!(updated.state, MemoryRecordState::Tombstoned);
+        assert_eq!(updated.version, 2);
+        let event = service
+            .record_lifecycle_event("record-lifecycle/corpus/0/record/0/2")
+            .expect("record lifecycle event");
+        assert_eq!(event.previous_state, MemoryRecordState::Committed);
+        assert_eq!(event.new_state, MemoryRecordState::Tombstoned);
+
+        let snapshot = service
+            .export_catalog_snapshot("corpus/0")
+            .expect("export updated catalog");
+        assert_eq!(snapshot.catalog.version, 2);
+        assert_eq!(snapshot.records[0].state, MemoryRecordState::Tombstoned);
+
+        let result = service
+            .query_memory(
+                MemoryQuery {
+                    query_id: "q/tombstoned".to_string(),
+                    corpus_ids: vec!["corpus/0".to_string()],
+                    scope_filter: Vec::new(),
+                    visibility_filter: Vec::new(),
+                    min_trust: MemoryTrustLevel::UserConfirmed,
+                    min_confidence: 0.0,
+                    embedding_model_version: "embed/v1".to_string(),
+                    top_k: 8,
+                    query_embedding_ref: None,
+                },
+                3,
+            )
+            .expect("query tombstoned catalog");
+        assert!(result.matches.is_empty());
+
+        let mut durable = LingquMemoryDurableStore::new();
+        service
+            .persist_record_lifecycle_events_to_dfs(&mut durable)
+            .expect("persist lifecycle audit");
+        service
+            .persist_record_lifecycle_events_to_dfs(&mut durable)
+            .expect("persist lifecycle audit idempotently");
+        let events = durable
+            .load_record_lifecycle_event_manifest()
+            .expect("load lifecycle audit");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].record_id, "record/0");
+        let mut restored = LingquMemoryService::new();
+        restored
+            .rebuild_record_lifecycle_events_from_dfs(&mut durable)
+            .expect("rebuild lifecycle audit");
+        assert!(restored
+            .record_lifecycle_event("record-lifecycle/corpus/0/record/0/2")
+            .is_some());
     }
 
     #[test]
@@ -5528,11 +6133,17 @@ mod tests {
             .persist_prefetch_plans_to_dfs(&mut restored)
             .expect("persist prefetch audit");
         restored_service
+            .persist_prefix_cache_reuse_plans_to_dfs(&mut restored)
+            .expect("persist prefix cache reuse audit");
+        restored_service
             .persist_shortpath_decisions_to_dfs(&mut restored)
             .expect("persist shortpath audit idempotently");
         restored_service
             .persist_prefetch_plans_to_dfs(&mut restored)
             .expect("persist prefetch audit idempotently");
+        restored_service
+            .persist_prefix_cache_reuse_plans_to_dfs(&mut restored)
+            .expect("persist prefix cache reuse audit idempotently");
         let audit_snapshot = restored
             .export_durable_sim_snapshot()
             .expect("export audit durable snapshot");
@@ -5548,10 +6159,18 @@ mod tests {
             .iter()
             .filter(|record| record.path == LINGQU_PREFETCH_PLAN_AUDIT_LOG_PATH)
             .collect::<Vec<_>>();
+        let prefix_reuse_log_records = audit_snapshot
+            .dfs
+            .append_logs
+            .iter()
+            .filter(|record| record.path == LINGQU_PREFIX_CACHE_REUSE_AUDIT_LOG_PATH)
+            .collect::<Vec<_>>();
         assert_eq!(shortpath_log_records.len(), 1);
         assert_eq!(shortpath_log_records[0].seq, 1);
         assert_eq!(prefetch_log_records.len(), 1);
         assert_eq!(prefetch_log_records[0].seq, 1);
+        assert_eq!(prefix_reuse_log_records.len(), 1);
+        assert_eq!(prefix_reuse_log_records[0].seq, 1);
         assert!(audit_snapshot.dfs.files.iter().all(|record| record.path
             != LINGQU_SHORTPATH_DECISION_MANIFEST_PATH
             && record.path != LINGQU_PREFETCH_PLAN_MANIFEST_PATH));
@@ -5567,11 +6186,17 @@ mod tests {
         audit_service
             .rebuild_prefetch_plans_from_dfs(&mut audit_store)
             .expect("rebuild prefetch audit");
+        audit_service
+            .rebuild_prefix_cache_reuse_plans_from_dfs(&mut audit_store)
+            .expect("rebuild prefix cache reuse audit");
         assert!(audit_service
             .shortpath_decision("shortpath-decision/boundary/restart")
             .is_some());
         assert!(audit_service
             .prefetch_plan("prefetch-plan/prefetch/restart")
+            .is_some());
+        assert!(audit_service
+            .prefix_cache_reuse_plan("prefix-cache-reuse/prefix/restart")
             .is_some());
     }
 
@@ -5695,6 +6320,24 @@ mod tests {
             .load_query_result(&result_path)
             .expect("load query result");
         assert_eq!(restored, result);
+        durable
+            .persist_query_result(&result)
+            .expect("persist query result idempotently");
+        let audit_results = durable
+            .load_query_result_audit_manifest()
+            .expect("load query result audit");
+        assert_eq!(audit_results, vec![result.clone()]);
+        let audit_snapshot = durable
+            .export_durable_sim_snapshot()
+            .expect("export query audit snapshot");
+        let query_log_records = audit_snapshot
+            .dfs
+            .append_logs
+            .iter()
+            .filter(|record| record.path == LINGQU_QUERY_RESULT_AUDIT_LOG_PATH)
+            .collect::<Vec<_>>();
+        assert_eq!(query_log_records.len(), 1);
+        assert_eq!(query_log_records[0].seq, 1);
         assert!(result_path
             .path
             .starts_with("/lingqu/memory/query-results/query-result_query_flat"));
@@ -5784,10 +6427,10 @@ mod tests {
         restored
             .rebuild_catalog_from_dfs(&mut durable, &path)
             .expect("rebuild catalog");
-        let restored_result = durable.load_query_result(&result_path).unwrap();
+        assert_eq!(durable.load_query_result(&result_path).unwrap(), result);
         restored
-            .register_query_result(restored_result)
-            .expect("register query result");
+            .rebuild_query_results_from_dfs(&mut durable)
+            .expect("rebuild query results from audit");
 
         assert_eq!(
             restored.query_result("query-result/query/flat").unwrap(),
