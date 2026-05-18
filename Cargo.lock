@@ -254,6 +254,7 @@ dependencies = [
  "sim-core",
  "sim-runtime",
  "sim-topology",
+ "thiserror",
 ]
 
 [[package]]

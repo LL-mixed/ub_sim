@@ -46,6 +46,7 @@ use sim_runtime::{
 use sim_services::{
     db::{DbGetReq, DbPutReq},
     dfs::{DfsReadReq, DfsWriteReq},
+    durable::{LingquDurableSim, LingquDurableSimSnapshot},
     object::{
         LingquObjectKind, LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
         LingquObjectResolveReq, LingquObjectServiceProfile, LingquObjectServiceSnapshot,
@@ -76,6 +77,9 @@ use std::process::{Command, Stdio};
 mod qwen3_simpler;
 
 fn main() -> anyhow::Result<()> {
+    if lingqu_durable_args() {
+        return run_lingqu_durable_cli();
+    }
     if lingqu_memory_args() {
         return run_lingqu_memory_cli();
     }
@@ -175,6 +179,21 @@ where
     matches!(
         args.into_iter().next().map(Into::into),
         Some(mode) if mode == "lingqu-object-service"
+    )
+}
+
+fn lingqu_durable_args() -> bool {
+    lingqu_durable_args_from(env::args_os().skip(1))
+}
+
+fn lingqu_durable_args_from<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: Into<std::ffi::OsString>,
+{
+    matches!(
+        args.into_iter().next().map(Into::into),
+        Some(mode) if mode == "lingqu-durable"
     )
 }
 
@@ -1142,6 +1161,90 @@ fn run_lingqu_object_service_cli() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn run_lingqu_durable_cli() -> anyhow::Result<()> {
+    let mut raw_args = env::args_os().skip(2);
+    let mode = raw_args
+        .next()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "stat".to_string());
+    let args = raw_args
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    match mode.as_str() {
+        "init" => run_lingqu_durable_init_cli(&args),
+        "stat" => run_lingqu_durable_stat_cli(&args),
+        _ => anyhow::bail!("unknown lingqu-durable mode `{mode}`; expected init or stat"),
+    }
+}
+
+fn run_lingqu_durable_init_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let force = cli_flag(args, "--force");
+    if store_path.exists() && !force {
+        anyhow::bail!(
+            "durable store already exists at {}; pass --force to replace it",
+            store_path.display()
+        );
+    }
+    let sim = LingquDurableSim::default();
+    save_lingqu_durable_sim(&store_path, &sim)?;
+    let snapshot = sim.export_snapshot().context("export durable snapshot")?;
+    println!("lingqu_durable");
+    println!("  mode: init");
+    println!("  store: {}", store_path.display());
+    println!("  kind: {}", snapshot.kind);
+    println!("  schema_version: {}", snapshot.schema_version);
+    println!("  checksum: {:#x}", snapshot.checksum);
+    Ok(())
+}
+
+fn run_lingqu_durable_stat_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let snapshot = load_lingqu_durable_snapshot(&store_path)?;
+    let _sim = LingquDurableSim::import_snapshot(snapshot.clone())
+        .with_context(|| format!("import durable store {}", store_path.display()))?;
+    let inline_file_versions = snapshot
+        .dfs
+        .files
+        .iter()
+        .filter(|record| {
+            matches!(
+                record.content_ref,
+                sim_services::durable::LingquDfsContentRef::Inline(_)
+            )
+        })
+        .count();
+    let block_backed_file_versions = snapshot.dfs.files.len() - inline_file_versions;
+    let dfs_bytes = snapshot
+        .dfs
+        .files
+        .iter()
+        .map(|record| record.bytes)
+        .sum::<u64>();
+    let block_bytes = snapshot
+        .block
+        .blocks
+        .iter()
+        .map(|record| record.bytes.len() as u64)
+        .sum::<u64>();
+
+    println!("lingqu_durable");
+    println!("  mode: stat");
+    println!("  store: {}", store_path.display());
+    println!("  kind: {}", snapshot.kind);
+    println!("  schema_version: {}", snapshot.schema_version);
+    println!("  dfs_file_versions: {}", snapshot.dfs.files.len());
+    println!("  dfs_directories: {}", snapshot.dfs.directories.len());
+    println!("  inline_file_versions: {inline_file_versions}");
+    println!("  block_backed_file_versions: {block_backed_file_versions}");
+    println!("  block_versions: {}", snapshot.block.blocks.len());
+    println!("  dfs_bytes: {dfs_bytes}");
+    println!("  block_bytes: {block_bytes}");
+    println!("  next_timestamp_us: {}", snapshot.next_timestamp_us);
+    println!("  checksum: {:#x}", snapshot.checksum);
+    Ok(())
+}
+
 fn run_lingqu_memory_cli() -> anyhow::Result<()> {
     let mut raw_args = env::args_os().skip(2);
     let mode = raw_args
@@ -1209,17 +1312,18 @@ struct LingquMemoryPrefixCacheRegistry {
 }
 
 fn run_lingqu_memory_register_execution_artifact_cli(args: &[String]) -> anyhow::Result<()> {
-    let registry_path = PathBuf::from(required_cli_arg(args, "--registry")?);
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
     let artifact_path = PathBuf::from(required_cli_arg(args, "--artifact")?);
     let artifact_bytes = fs::read(&artifact_path)
         .with_context(|| format!("read execution artifact {}", artifact_path.display()))?;
     let artifact = serde_json::from_slice::<ExecutionArtifactObject>(&artifact_bytes)
         .with_context(|| format!("decode execution artifact {}", artifact_path.display()))?;
 
-    let mut registry = load_lingqu_memory_execution_artifact_registry(&registry_path)?;
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
     let mut memory_service = LingquMemoryService::new();
-    register_lingqu_memory_execution_registry_artifacts(&mut memory_service, &registry)
-        .context("import execution artifact registry")?;
+    let mut registry =
+        rebuild_lingqu_memory_execution_registry_artifacts(&mut memory_service, &mut durable_store)
+            .context("rebuild execution artifact registry")?;
     memory_service
         .register_execution_artifact(artifact.clone())
         .context("register execution artifact")?;
@@ -1231,11 +1335,18 @@ fn run_lingqu_memory_register_execution_artifact_cli(args: &[String]) -> anyhow:
     registry
         .artifacts
         .sort_by(|left, right| left.artifact_id.cmp(&right.artifact_id));
-    save_lingqu_memory_execution_artifact_registry(&registry_path, &registry)?;
+    memory_service
+        .persist_execution_artifacts_to_dfs(&mut durable_store)
+        .context("persist execution artifact DFS manifest")?;
+    save_lingqu_memory_durable_store(&store_path, &durable_store)?;
 
     println!("lingqu_memory_service");
     println!("  mode: register-execution-artifact");
-    println!("  registry_path: {}", registry_path.display());
+    println!("  store_path: {}", store_path.display());
+    println!(
+        "  manifest_path: {}",
+        sim_memory::LINGQU_EXECUTION_ARTIFACT_MANIFEST_PATH
+    );
     println!("  artifact_path: {}", artifact_path.display());
     println!("  artifact: {}", artifact.artifact_id);
     println!("  kind: {:?}", artifact.kind);
@@ -1257,20 +1368,25 @@ fn run_lingqu_memory_register_execution_artifact_cli(args: &[String]) -> anyhow:
 }
 
 fn run_lingqu_memory_boundary_lookup_cli(args: &[String]) -> anyhow::Result<()> {
-    let registry_path = PathBuf::from(required_cli_arg(args, "--registry")?);
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
     let request_path = PathBuf::from(required_cli_arg(args, "--request")?);
     let response_path = PathBuf::from(required_cli_arg(args, "--response")?);
     let now_us = optional_cli_u64(args, "--now-us")?.unwrap_or(1);
 
-    let registry = load_lingqu_memory_execution_artifact_registry(&registry_path)?;
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
     let request_bytes = fs::read(&request_path)
         .with_context(|| format!("read boundary lookup request {}", request_path.display()))?;
     let request = serde_json::from_slice::<BoundaryLookupRequest>(&request_bytes)
         .with_context(|| format!("decode boundary lookup request {}", request_path.display()))?;
 
     let mut memory_service = LingquMemoryService::new();
-    register_lingqu_memory_execution_registry_artifacts(&mut memory_service, &registry)
-        .context("import execution artifact registry")?;
+    load_required_lingqu_memory_execution_registry_artifacts(
+        &mut memory_service,
+        &mut durable_store,
+    )
+    .context("load execution artifact manifest")?;
+    rebuild_lingqu_memory_shortpath_decisions(&mut memory_service, &mut durable_store)
+        .context("rebuild shortpath decision audit")?;
     let response = memory_service
         .boundary_lookup(request, now_us)
         .context("run boundary lookup")?;
@@ -1282,10 +1398,18 @@ fn run_lingqu_memory_boundary_lookup_cli(args: &[String]) -> anyhow::Result<()> 
     }
     fs::write(&response_path, response_bytes)
         .with_context(|| format!("write boundary lookup response {}", response_path.display()))?;
+    memory_service
+        .persist_shortpath_decisions_to_dfs(&mut durable_store)
+        .context("persist shortpath decision DFS audit")?;
+    save_lingqu_memory_durable_store(&store_path, &durable_store)?;
 
     println!("lingqu_memory_service");
     println!("  mode: boundary-lookup");
-    println!("  registry_path: {}", registry_path.display());
+    println!("  store_path: {}", store_path.display());
+    println!(
+        "  manifest_path: {}",
+        sim_memory::LINGQU_EXECUTION_ARTIFACT_MANIFEST_PATH
+    );
     println!("  request_path: {}", request_path.display());
     println!("  response_path: {}", response_path.display());
     println!("  request: {}", response.request_id);
@@ -1301,20 +1425,25 @@ fn run_lingqu_memory_boundary_lookup_cli(args: &[String]) -> anyhow::Result<()> 
 }
 
 fn run_lingqu_memory_plan_prefetch_cli(args: &[String]) -> anyhow::Result<()> {
-    let registry_path = PathBuf::from(required_cli_arg(args, "--registry")?);
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
     let request_path = PathBuf::from(required_cli_arg(args, "--request")?);
     let plan_path = PathBuf::from(required_cli_arg(args, "--plan")?);
     let now_us = optional_cli_u64(args, "--now-us")?.unwrap_or(1);
 
-    let registry = load_lingqu_memory_execution_artifact_registry(&registry_path)?;
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
     let request_bytes = fs::read(&request_path)
         .with_context(|| format!("read prefetch plan request {}", request_path.display()))?;
     let request = serde_json::from_slice::<PrefetchPlanRequest>(&request_bytes)
         .with_context(|| format!("decode prefetch plan request {}", request_path.display()))?;
 
     let mut memory_service = LingquMemoryService::new();
-    register_lingqu_memory_execution_registry_artifacts(&mut memory_service, &registry)
-        .context("import execution artifact registry")?;
+    load_required_lingqu_memory_execution_registry_artifacts(
+        &mut memory_service,
+        &mut durable_store,
+    )
+    .context("load execution artifact manifest")?;
+    rebuild_lingqu_memory_prefetch_plans(&mut memory_service, &mut durable_store)
+        .context("rebuild prefetch plan audit")?;
     let plan = memory_service
         .plan_prefetch(request, now_us)
         .context("plan prefetch")?;
@@ -1325,10 +1454,18 @@ fn run_lingqu_memory_plan_prefetch_cli(args: &[String]) -> anyhow::Result<()> {
     }
     fs::write(&plan_path, plan_bytes)
         .with_context(|| format!("write prefetch plan {}", plan_path.display()))?;
+    memory_service
+        .persist_prefetch_plans_to_dfs(&mut durable_store)
+        .context("persist prefetch plan DFS audit")?;
+    save_lingqu_memory_durable_store(&store_path, &durable_store)?;
 
     println!("lingqu_memory_service");
     println!("  mode: plan-prefetch");
-    println!("  registry_path: {}", registry_path.display());
+    println!("  store_path: {}", store_path.display());
+    println!(
+        "  manifest_path: {}",
+        sim_memory::LINGQU_EXECUTION_ARTIFACT_MANIFEST_PATH
+    );
     println!("  request_path: {}", request_path.display());
     println!("  plan_path: {}", plan_path.display());
     println!("  plan: {}", plan.plan_id);
@@ -1344,17 +1481,20 @@ fn run_lingqu_memory_plan_prefetch_cli(args: &[String]) -> anyhow::Result<()> {
 }
 
 fn run_lingqu_memory_register_prefix_cache_cli(args: &[String]) -> anyhow::Result<()> {
-    let registry_path = PathBuf::from(required_cli_arg(args, "--registry")?);
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
     let artifact_path = PathBuf::from(required_cli_arg(args, "--artifact")?);
     let artifact_bytes = fs::read(&artifact_path)
         .with_context(|| format!("read prefix cache artifact {}", artifact_path.display()))?;
     let artifact = serde_json::from_slice::<PrefixCacheArtifact>(&artifact_bytes)
         .with_context(|| format!("decode prefix cache artifact {}", artifact_path.display()))?;
 
-    let mut registry = load_lingqu_memory_prefix_cache_registry(&registry_path)?;
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
     let mut memory_service = LingquMemoryService::new();
-    register_lingqu_memory_prefix_cache_registry_artifacts(&mut memory_service, &registry)
-        .context("import prefix cache registry")?;
+    let mut registry = rebuild_lingqu_memory_prefix_cache_registry_artifacts(
+        &mut memory_service,
+        &mut durable_store,
+    )
+    .context("rebuild prefix cache registry")?;
     memory_service
         .register_prefix_cache_artifact(artifact.clone())
         .context("register prefix cache artifact")?;
@@ -1366,11 +1506,18 @@ fn run_lingqu_memory_register_prefix_cache_cli(args: &[String]) -> anyhow::Resul
     registry
         .artifacts
         .sort_by(|left, right| left.artifact_id.cmp(&right.artifact_id));
-    save_lingqu_memory_prefix_cache_registry(&registry_path, &registry)?;
+    memory_service
+        .persist_prefix_cache_artifacts_to_dfs(&mut durable_store)
+        .context("persist prefix cache DFS manifest")?;
+    save_lingqu_memory_durable_store(&store_path, &durable_store)?;
 
     println!("lingqu_memory_service");
     println!("  mode: register-prefix-cache");
-    println!("  registry_path: {}", registry_path.display());
+    println!("  store_path: {}", store_path.display());
+    println!(
+        "  manifest_path: {}",
+        sim_memory::LINGQU_PREFIX_CACHE_MANIFEST_PATH
+    );
     println!("  artifact_path: {}", artifact_path.display());
     println!("  artifact: {}", artifact.artifact_id);
     println!("  prefix_tokens: {}", artifact.key.prefix_token_count);
@@ -1384,18 +1531,18 @@ fn run_lingqu_memory_register_prefix_cache_cli(args: &[String]) -> anyhow::Resul
 }
 
 fn run_lingqu_memory_lookup_prefix_cache_cli(args: &[String]) -> anyhow::Result<()> {
-    let registry_path = PathBuf::from(required_cli_arg(args, "--registry")?);
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
     let request_path = PathBuf::from(required_cli_arg(args, "--request")?);
     let response_path = PathBuf::from(required_cli_arg(args, "--response")?);
     let now_us = optional_cli_u64(args, "--now-us")?.unwrap_or(1);
 
-    let registry = load_lingqu_memory_prefix_cache_registry(&registry_path)?;
-    if registry.artifacts.is_empty() {
-        anyhow::bail!(
-            "prefix cache registry contains no artifacts: {}",
-            registry_path.display()
-        );
-    }
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let mut memory_service = LingquMemoryService::new();
+    let _registry = load_required_lingqu_memory_prefix_cache_registry_artifacts(
+        &mut memory_service,
+        &mut durable_store,
+    )
+    .context("load prefix cache manifest")?;
     let request_bytes = fs::read(&request_path).with_context(|| {
         format!(
             "read prefix cache lookup request {}",
@@ -1410,9 +1557,6 @@ fn run_lingqu_memory_lookup_prefix_cache_cli(args: &[String]) -> anyhow::Result<
             )
         })?;
 
-    let mut memory_service = LingquMemoryService::new();
-    register_lingqu_memory_prefix_cache_registry_artifacts(&mut memory_service, &registry)
-        .context("import prefix cache registry")?;
     let response = memory_service
         .lookup_prefix_cache(request, now_us)
         .context("lookup prefix cache")?;
@@ -1431,7 +1575,11 @@ fn run_lingqu_memory_lookup_prefix_cache_cli(args: &[String]) -> anyhow::Result<
 
     println!("lingqu_memory_service");
     println!("  mode: lookup-prefix-cache");
-    println!("  registry_path: {}", registry_path.display());
+    println!("  store_path: {}", store_path.display());
+    println!(
+        "  manifest_path: {}",
+        sim_memory::LINGQU_PREFIX_CACHE_MANIFEST_PATH
+    );
     println!("  request_path: {}", request_path.display());
     println!("  response_path: {}", response_path.display());
     println!("  request: {}", response.request_id);
@@ -1463,13 +1611,9 @@ fn run_lingqu_memory_query_cli(args: &[String]) -> anyhow::Result<()> {
     if top_k == 0 {
         anyhow::bail!("--top-k must be non-zero");
     }
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
     let snapshot =
-        load_lingqu_memory_catalog_snapshot_if_exists(&catalog_path)?.ok_or_else(|| {
-            anyhow::anyhow!(
-                "catalog snapshot does not exist: {}",
-                catalog_path.display()
-            )
-        })?;
+        load_required_lingqu_memory_catalog_snapshot(args, &catalog_path, &mut durable_store)?;
     let query_embedding_bytes = fs::read(&query_embedding_path).with_context(|| {
         format!(
             "read query embedding json {}",
@@ -1486,7 +1630,6 @@ fn run_lingqu_memory_query_cli(args: &[String]) -> anyhow::Result<()> {
             })?;
     validate_lingqu_memory_query_embedding_input(&query_embedding)?;
 
-    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
     let query_payload = cli_f32_vec_to_le_bytes(&query_embedding.values);
     let query_block = optional_cli_arg(args, "--query-block")?
         .unwrap_or_else(|| format!("block/memory/query/{}", cli_path_id(&query_id)));
@@ -1575,14 +1718,9 @@ fn run_lingqu_memory_materialize_hot_state_cli(args: &[String]) -> anyhow::Resul
     let producer_entity = optional_cli_u64(args, "--producer-entity")?.unwrap_or(0);
     let now_us = optional_cli_u64(args, "--now-us")?.unwrap_or(1);
 
-    let snapshot =
-        load_lingqu_memory_catalog_snapshot_if_exists(&catalog_path)?.ok_or_else(|| {
-            anyhow::anyhow!(
-                "catalog snapshot does not exist: {}",
-                catalog_path.display()
-            )
-        })?;
     let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let snapshot =
+        load_required_lingqu_memory_catalog_snapshot(args, &catalog_path, &mut durable_store)?;
     let query_result_path = LingquDfsPath::new(query_result_manifest);
     let query_result = durable_store
         .load_query_result(&query_result_path)
@@ -1886,20 +2024,15 @@ fn run_lingqu_memory_build_index_cli(args: &[String]) -> anyhow::Result<()> {
     let segment_id = required_cli_arg(args, "--segment-id")?;
     let now_us = optional_cli_u64(args, "--now-us")?.unwrap_or(1);
 
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
     let snapshot =
-        load_lingqu_memory_catalog_snapshot_if_exists(&catalog_path)?.ok_or_else(|| {
-            anyhow::anyhow!(
-                "catalog snapshot does not exist: {}",
-                catalog_path.display()
-            )
-        })?;
+        load_required_lingqu_memory_catalog_snapshot(args, &catalog_path, &mut durable_store)?;
     let embedding_bytes = fs::read(&embedding_path)
         .with_context(|| format!("read embedding json {}", embedding_path.display()))?;
     let embedding_input = serde_json::from_slice::<LingquMemoryEmbeddingInput>(&embedding_bytes)
         .with_context(|| format!("decode embedding json {}", embedding_path.display()))?;
     validate_lingqu_memory_embedding_input(&embedding_input)?;
 
-    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
     let mut memory_service = LingquMemoryService::new();
     memory_service
         .import_catalog_snapshot(snapshot.clone())
@@ -1985,6 +2118,9 @@ fn run_lingqu_memory_build_index_cli(args: &[String]) -> anyhow::Result<()> {
         .context("export updated catalog snapshot")?;
 
     write_lingqu_memory_catalog_snapshot(&catalog_path, &updated_snapshot)?;
+    durable_store
+        .persist_catalog_snapshot(&updated_snapshot)
+        .context("persist catalog snapshot to durable DFS")?;
     save_lingqu_memory_durable_store(&store_path, &durable_store)?;
 
     println!("lingqu_memory_service");
@@ -2060,7 +2196,11 @@ fn run_lingqu_memory_ingest_cli(args: &[String]) -> anyhow::Result<()> {
         .write_block_payload(source_block, source_bytes)
         .context("write source payload to Lingqu Block store")?;
 
-    let existing_snapshot = load_lingqu_memory_catalog_snapshot_if_exists(&catalog_path)?;
+    let existing_snapshot = load_lingqu_memory_catalog_snapshot_from_file_or_store(
+        args,
+        &catalog_path,
+        &mut durable_store,
+    )?;
     let catalog_existed = existing_snapshot.is_some();
     let mut catalog = if let Some(snapshot) = existing_snapshot.as_ref() {
         if let Some(catalog_id) = optional_cli_arg(args, "--catalog-id")? {
@@ -2160,6 +2300,9 @@ fn run_lingqu_memory_ingest_cli(args: &[String]) -> anyhow::Result<()> {
         .context("export updated catalog snapshot")?;
 
     write_lingqu_memory_catalog_snapshot(&catalog_path, &snapshot)?;
+    durable_store
+        .persist_catalog_snapshot(&snapshot)
+        .context("persist catalog snapshot to durable DFS")?;
     save_lingqu_memory_durable_store(&store_path, &durable_store)?;
 
     println!("lingqu_memory_service");
@@ -2197,6 +2340,10 @@ fn optional_cli_arg(args: &[String], name: &'static str) -> anyhow::Result<Optio
     Ok(None)
 }
 
+fn cli_flag(args: &[String], name: &'static str) -> bool {
+    args.iter().any(|arg| arg == name)
+}
+
 fn required_cli_u32(args: &[String], name: &'static str) -> anyhow::Result<u32> {
     let value = required_cli_arg(args, name)?;
     value
@@ -2214,23 +2361,17 @@ fn optional_cli_u64(args: &[String], name: &'static str) -> anyhow::Result<Optio
         .transpose()
 }
 
-fn load_lingqu_memory_durable_store(path: &Path) -> anyhow::Result<LingquMemoryDurableStore> {
-    if !path.exists() {
-        return Ok(LingquMemoryDurableStore::new());
-    }
+fn load_lingqu_durable_snapshot(path: &Path) -> anyhow::Result<LingquDurableSimSnapshot> {
     let bytes = fs::read(path).with_context(|| format!("read durable store {}", path.display()))?;
-    let snapshot = LingquMemoryDurableStoreSnapshot::from_json_bytes(&bytes)
-        .with_context(|| format!("decode durable store {}", path.display()))?;
-    LingquMemoryDurableStore::import_snapshot(snapshot)
-        .with_context(|| format!("import durable store {}", path.display()))
+    LingquDurableSimSnapshot::from_json_bytes(&bytes)
+        .with_context(|| format!("decode durable store {}", path.display()))
 }
 
-fn save_lingqu_memory_durable_store(
-    path: &Path,
-    store: &LingquMemoryDurableStore,
-) -> anyhow::Result<()> {
-    let snapshot = store.export_snapshot().context("export durable store")?;
-    let bytes = snapshot.to_json_bytes().context("encode durable store")?;
+fn save_lingqu_durable_sim(path: &Path, sim: &LingquDurableSim) -> anyhow::Result<()> {
+    let snapshot = sim.export_snapshot().context("export durable snapshot")?;
+    let bytes = snapshot
+        .to_json_bytes()
+        .context("encode durable snapshot")?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("create durable store dir {}", parent.display()))?;
@@ -2238,77 +2379,104 @@ fn save_lingqu_memory_durable_store(
     fs::write(path, bytes).with_context(|| format!("write durable store {}", path.display()))
 }
 
-fn load_lingqu_memory_execution_artifact_registry(
+fn load_lingqu_memory_durable_store(path: &Path) -> anyhow::Result<LingquMemoryDurableStore> {
+    if !path.exists() {
+        return Ok(LingquMemoryDurableStore::new());
+    }
+    let bytes = fs::read(path).with_context(|| format!("read durable store {}", path.display()))?;
+    if let Ok(snapshot) = LingquDurableSimSnapshot::from_json_bytes(&bytes) {
+        return LingquMemoryDurableStore::import_durable_sim_snapshot(snapshot)
+            .with_context(|| format!("import durable sim store {}", path.display()));
+    }
+    let legacy_snapshot = LingquMemoryDurableStoreSnapshot::from_json_bytes(&bytes)
+        .with_context(|| format!("decode durable store {}", path.display()))?;
+    LingquMemoryDurableStore::import_snapshot(legacy_snapshot)
+        .with_context(|| format!("import legacy durable store {}", path.display()))
+}
+
+fn save_lingqu_memory_durable_store(
     path: &Path,
+    store: &LingquMemoryDurableStore,
+) -> anyhow::Result<()> {
+    let snapshot = store
+        .export_durable_sim_snapshot()
+        .context("export durable sim store")?;
+    let bytes = snapshot
+        .to_json_bytes()
+        .context("encode durable sim store")?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create durable store dir {}", parent.display()))?;
+    }
+    fs::write(path, bytes).with_context(|| format!("write durable store {}", path.display()))
+}
+
+fn rebuild_lingqu_memory_execution_registry_artifacts(
+    memory_service: &mut LingquMemoryService,
+    store: &mut LingquMemoryDurableStore,
 ) -> anyhow::Result<LingquMemoryExecutionArtifactRegistry> {
-    if !path.exists() {
-        return Ok(LingquMemoryExecutionArtifactRegistry::default());
+    match memory_service.rebuild_execution_artifacts_from_dfs(store) {
+        Ok(artifacts) => Ok(LingquMemoryExecutionArtifactRegistry { artifacts }),
+        Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => {
+            Ok(LingquMemoryExecutionArtifactRegistry::default())
+        }
+        Err(err) => {
+            Err(err).context("rebuild execution artifact registry from durable DFS manifest")
+        }
     }
-    let bytes =
-        fs::read(path).with_context(|| format!("read execution registry {}", path.display()))?;
-    serde_json::from_slice::<LingquMemoryExecutionArtifactRegistry>(&bytes)
-        .with_context(|| format!("decode execution registry {}", path.display()))
 }
 
-fn save_lingqu_memory_execution_artifact_registry(
-    path: &Path,
-    registry: &LingquMemoryExecutionArtifactRegistry,
-) -> anyhow::Result<()> {
-    let bytes = serde_json::to_vec_pretty(registry).context("encode execution registry")?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("create execution registry dir {}", parent.display()))?;
-    }
-    fs::write(path, bytes).with_context(|| format!("write execution registry {}", path.display()))
-}
-
-fn register_lingqu_memory_execution_registry_artifacts(
+fn load_required_lingqu_memory_execution_registry_artifacts(
     memory_service: &mut LingquMemoryService,
-    registry: &LingquMemoryExecutionArtifactRegistry,
-) -> anyhow::Result<()> {
-    for artifact in &registry.artifacts {
-        memory_service
-            .register_execution_artifact(artifact.clone())
-            .with_context(|| format!("register execution artifact {}", artifact.artifact_id))?;
-    }
-    Ok(())
+    store: &mut LingquMemoryDurableStore,
+) -> anyhow::Result<LingquMemoryExecutionArtifactRegistry> {
+    let artifacts = memory_service
+        .rebuild_execution_artifacts_from_dfs(store)
+        .context("rebuild execution artifact registry from durable DFS manifest")?;
+    Ok(LingquMemoryExecutionArtifactRegistry { artifacts })
 }
 
-fn load_lingqu_memory_prefix_cache_registry(
-    path: &Path,
+fn rebuild_lingqu_memory_prefix_cache_registry_artifacts(
+    memory_service: &mut LingquMemoryService,
+    store: &mut LingquMemoryDurableStore,
 ) -> anyhow::Result<LingquMemoryPrefixCacheRegistry> {
-    if !path.exists() {
-        return Ok(LingquMemoryPrefixCacheRegistry::default());
+    match memory_service.rebuild_prefix_cache_artifacts_from_dfs(store) {
+        Ok(artifacts) => Ok(LingquMemoryPrefixCacheRegistry { artifacts }),
+        Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => {
+            Ok(LingquMemoryPrefixCacheRegistry::default())
+        }
+        Err(err) => Err(err).context("rebuild prefix cache registry from durable DFS manifest"),
     }
-    let bytes =
-        fs::read(path).with_context(|| format!("read prefix cache registry {}", path.display()))?;
-    serde_json::from_slice::<LingquMemoryPrefixCacheRegistry>(&bytes)
-        .with_context(|| format!("decode prefix cache registry {}", path.display()))
 }
 
-fn save_lingqu_memory_prefix_cache_registry(
-    path: &Path,
-    registry: &LingquMemoryPrefixCacheRegistry,
-) -> anyhow::Result<()> {
-    let bytes = serde_json::to_vec_pretty(registry).context("encode prefix cache registry")?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("create prefix cache registry dir {}", parent.display()))?;
-    }
-    fs::write(path, bytes)
-        .with_context(|| format!("write prefix cache registry {}", path.display()))
-}
-
-fn register_lingqu_memory_prefix_cache_registry_artifacts(
+fn load_required_lingqu_memory_prefix_cache_registry_artifacts(
     memory_service: &mut LingquMemoryService,
-    registry: &LingquMemoryPrefixCacheRegistry,
+    store: &mut LingquMemoryDurableStore,
+) -> anyhow::Result<LingquMemoryPrefixCacheRegistry> {
+    let artifacts = memory_service
+        .rebuild_prefix_cache_artifacts_from_dfs(store)
+        .context("rebuild prefix cache registry from durable DFS manifest")?;
+    Ok(LingquMemoryPrefixCacheRegistry { artifacts })
+}
+
+fn rebuild_lingqu_memory_shortpath_decisions(
+    memory_service: &mut LingquMemoryService,
+    store: &mut LingquMemoryDurableStore,
 ) -> anyhow::Result<()> {
-    for artifact in &registry.artifacts {
-        memory_service
-            .register_prefix_cache_artifact(artifact.clone())
-            .with_context(|| format!("register prefix cache artifact {}", artifact.artifact_id))?;
+    match memory_service.rebuild_shortpath_decisions_from_dfs(store) {
+        Ok(_) | Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => Ok(()),
+        Err(err) => Err(err).context("rebuild shortpath decision audit from durable DFS manifest"),
     }
-    Ok(())
+}
+
+fn rebuild_lingqu_memory_prefetch_plans(
+    memory_service: &mut LingquMemoryService,
+    store: &mut LingquMemoryDurableStore,
+) -> anyhow::Result<()> {
+    match memory_service.rebuild_prefetch_plans_from_dfs(store) {
+        Ok(_) | Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => Ok(()),
+        Err(err) => Err(err).context("rebuild prefetch plan audit from durable DFS manifest"),
+    }
 }
 
 fn load_lingqu_object_service_snapshot(
@@ -2346,6 +2514,46 @@ fn load_lingqu_memory_catalog_snapshot_if_exists(
     let snapshot = MemoryCatalogSnapshot::from_json_bytes(&bytes)
         .with_context(|| format!("decode catalog {}", path.display()))?;
     Ok(Some(snapshot))
+}
+
+fn load_lingqu_memory_catalog_snapshot_from_file_or_store(
+    args: &[String],
+    path: &Path,
+    store: &mut LingquMemoryDurableStore,
+) -> anyhow::Result<Option<MemoryCatalogSnapshot>> {
+    if let Some(snapshot) = load_lingqu_memory_catalog_snapshot_if_exists(path)? {
+        return Ok(Some(snapshot));
+    }
+    let Some(catalog_id) = optional_cli_arg(args, "--catalog-id")? else {
+        return Ok(None);
+    };
+    let dfs_path = catalog_dfs_path_from_id(&catalog_id);
+    match store.load_catalog_snapshot(&dfs_path) {
+        Ok(snapshot) => Ok(Some(snapshot)),
+        Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => Ok(None),
+        Err(err) => Err(err)
+            .with_context(|| format!("load catalog snapshot {} from durable store", dfs_path.path)),
+    }
+}
+
+fn load_required_lingqu_memory_catalog_snapshot(
+    args: &[String],
+    path: &Path,
+    store: &mut LingquMemoryDurableStore,
+) -> anyhow::Result<MemoryCatalogSnapshot> {
+    load_lingqu_memory_catalog_snapshot_from_file_or_store(args, path, store)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "catalog snapshot does not exist: {}; pass --catalog-id to load it from durable store",
+            path.display()
+        )
+    })
+}
+
+fn catalog_dfs_path_from_id(catalog_id: &str) -> LingquDfsPath {
+    LingquDfsPath::new(format!(
+        "/lingqu/memory/corpus/{}/catalog.json",
+        cli_path_id(catalog_id)
+    ))
 }
 
 fn write_lingqu_memory_catalog_snapshot(
@@ -3328,7 +3536,8 @@ fn resolve_lingqu_object_cli_sample(
 #[cfg(test)]
 mod tests {
     use super::{
-        cli_f32_vec_to_le_bytes, lingqu_memory_args_from, lingqu_object_service_args_from,
+        cli_f32_vec_to_le_bytes, lingqu_durable_args_from, lingqu_memory_args_from,
+        lingqu_object_service_args_from, load_lingqu_memory_durable_store,
         qwen3_decode_loop_args_from, qwen3_decode_report_verbosity_from_env,
         qwen3_dense_weights_path_from_env, qwen3_engram_policy_checksum,
         qwen3_engram_select_token, qwen3_engram_state_words, qwen3_guest_candidate_records,
@@ -3342,6 +3551,7 @@ mod tests {
         qwen3_guest_log_dir_from_script_output, qwen3_guest_log_match_count,
         qwen3_guest_terminal_candidate_records, qwen3_guest_terminal_text_lossy_from_tokenizer,
         qwen3_guest_terminal_tokens, qwen3_guest_timing_summary, qwen3_range_forward_args_from,
+        run_lingqu_durable_init_cli, run_lingqu_durable_stat_cli,
         run_lingqu_memory_boundary_lookup_cli, run_lingqu_memory_build_index_cli,
         run_lingqu_memory_ingest_cli, run_lingqu_memory_lookup_prefix_cache_cli,
         run_lingqu_memory_materialize_engram_state_cli,
@@ -3350,14 +3560,14 @@ mod tests {
         run_lingqu_memory_register_execution_artifact_cli,
         run_lingqu_memory_register_prefix_cache_cli, run_lingqu_memory_validate_durable_store,
         run_lingqu_memory_validate_flat_materialize, run_lingqu_memory_validate_flat_query,
-        run_lingqu_memory_validate_w5_engram_object_ref,
+        run_lingqu_memory_validate_w5_engram_object_ref, save_lingqu_memory_durable_store,
         simpler_host_matmul_artifact_producer_path, validate_qwen3_dense_weights_path,
-        validate_w5_inference_profile, LingquMemoryDurableStoreSnapshot,
-        LingquObjectServiceSnapshot, LingquObjectServiceStub, LingquObjectVersionSelector,
-        MemoryCatalogSnapshot, QueryResult, Qwen3CandidateRecord, Qwen3DecodeReportVerbosity,
-        Qwen3EngramConfig, Qwen3EngramContextOp, Qwen3EngramMode, Qwen3EngramPool,
-        Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
-        SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+        validate_w5_inference_profile, LingquDurableSimSnapshot, LingquMemoryDurableStore,
+        LingquMemoryDurableStoreSnapshot, LingquObjectServiceSnapshot, LingquObjectServiceStub,
+        LingquObjectVersionSelector, MemoryCatalogSnapshot, QueryResult, Qwen3CandidateRecord,
+        Qwen3DecodeReportVerbosity, Qwen3EngramConfig, Qwen3EngramContextOp, Qwen3EngramMode,
+        Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
+        SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
     };
     use std::env;
     use std::fs;
@@ -4460,6 +4670,88 @@ stage qwen3_range_forward_runtime_output_publish node=2
     }
 
     #[test]
+    fn lingqu_durable_args_detects_command() {
+        assert!(lingqu_durable_args_from(["lingqu-durable"]));
+        assert!(!lingqu_durable_args_from(["lingqu-memory"]));
+    }
+
+    #[test]
+    fn lingqu_durable_cli_init_and_stat_runs() {
+        let root = env::temp_dir().join(format!(
+            "sim-cli-lingqu-durable-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let store_path = root.join("durable.json");
+        let args = vec!["--store".to_string(), store_path.display().to_string()];
+
+        run_lingqu_durable_init_cli(&args).expect("init durable sim");
+        run_lingqu_durable_stat_cli(&args).expect("stat durable sim");
+
+        let store_bytes = fs::read(&store_path).expect("read durable sim snapshot");
+        let snapshot =
+            LingquDurableSimSnapshot::from_json_bytes(&store_bytes).expect("decode snapshot");
+        assert_eq!(snapshot.kind, "lingqu_durable_sim");
+        assert_eq!(snapshot.schema_version, 1);
+        assert!(snapshot.dfs.files.is_empty());
+        assert!(snapshot.block.blocks.is_empty());
+
+        fs::remove_dir_all(&root).expect("remove temp dir");
+    }
+
+    #[test]
+    fn lingqu_memory_store_load_save_migrates_legacy_snapshot() {
+        let root = env::temp_dir().join(format!(
+            "sim-cli-lingqu-memory-legacy-store-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let store_path = root.join("store.json");
+        let mut legacy_store = LingquMemoryDurableStore::new();
+        let payload_ref = legacy_store
+            .write_block_payload("block/legacy/payload", b"legacy payload".to_vec())
+            .expect("write legacy payload");
+        let legacy_snapshot = legacy_store.export_snapshot().expect("export legacy view");
+        fs::write(
+            &store_path,
+            legacy_snapshot
+                .to_json_bytes()
+                .expect("encode legacy durable store"),
+        )
+        .expect("write legacy durable store");
+
+        let mut migrated = load_lingqu_memory_durable_store(&store_path)
+            .expect("load legacy durable store through migration path");
+        assert_eq!(
+            migrated
+                .read_block_payload(&payload_ref)
+                .expect("read migrated payload"),
+            b"legacy payload".to_vec()
+        );
+        save_lingqu_memory_durable_store(&store_path, &migrated)
+            .expect("save migrated durable store");
+
+        let store_bytes = fs::read(&store_path).expect("read migrated durable store");
+        let snapshot =
+            LingquDurableSimSnapshot::from_json_bytes(&store_bytes).expect("decode new snapshot");
+        assert_eq!(snapshot.kind, "lingqu_durable_sim");
+        assert_eq!(snapshot.block.blocks.len(), 1);
+        assert!(LingquMemoryDurableStoreSnapshot::from_json_bytes(&store_bytes).is_err());
+
+        fs::remove_dir_all(&root).expect("remove temp dir");
+    }
+
+    #[test]
     fn lingqu_memory_args_detects_command() {
         assert!(lingqu_memory_args_from(["lingqu-memory"]));
         assert!(!lingqu_memory_args_from(["lingqu-object-service"]));
@@ -4493,7 +4785,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).expect("create temp dir");
-        let registry = root.join("execution_registry.json");
+        let store = root.join("store.json");
         let logits_artifact_path = root.join("logits_artifact.json");
         let kv_artifact_path = root.join("kv_artifact.json");
         let boundary_request_path = root.join("boundary_lookup_request.json");
@@ -4637,16 +4929,16 @@ stage qwen3_range_forward_runtime_output_publish node=2
 
         for artifact_path in [&logits_artifact_path, &kv_artifact_path] {
             run_lingqu_memory_register_execution_artifact_cli(&[
-                "--registry".to_string(),
-                registry.to_string_lossy().into_owned(),
+                "--store".to_string(),
+                store.to_string_lossy().into_owned(),
                 "--artifact".to_string(),
                 artifact_path.to_string_lossy().into_owned(),
             ])
             .expect("register execution artifact");
         }
         run_lingqu_memory_boundary_lookup_cli(&[
-            "--registry".to_string(),
-            registry.to_string_lossy().into_owned(),
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
             "--request".to_string(),
             boundary_request_path.to_string_lossy().into_owned(),
             "--response".to_string(),
@@ -4656,8 +4948,8 @@ stage qwen3_range_forward_runtime_output_publish node=2
         ])
         .expect("boundary lookup");
         run_lingqu_memory_plan_prefetch_cli(&[
-            "--registry".to_string(),
-            registry.to_string_lossy().into_owned(),
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
             "--request".to_string(),
             prefetch_request_path.to_string_lossy().into_owned(),
             "--plan".to_string(),
@@ -4693,6 +4985,102 @@ stage qwen3_range_forward_runtime_output_publish node=2
             vec!["artifact/kv/step4/node4".to_string()]
         );
         assert!(prefetch_plan.checksum != 0);
+        let store_bytes = fs::read(&store).expect("read durable store");
+        let durable_snapshot =
+            LingquDurableSimSnapshot::from_json_bytes(&store_bytes).expect("decode durable store");
+        let mut durable_store =
+            LingquMemoryDurableStore::import_durable_sim_snapshot(durable_snapshot)
+                .expect("import durable store");
+        let artifacts = durable_store
+            .load_execution_artifact_manifest()
+            .expect("load execution artifact manifest after restart");
+        assert_eq!(artifacts.len(), 2);
+        let decisions = durable_store
+            .load_shortpath_decision_manifest()
+            .expect("load shortpath audit after restart");
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(
+            decisions[0].artifact_id.as_deref(),
+            Some("artifact/logits/step3/node4")
+        );
+        let plans = durable_store
+            .load_prefetch_plan_manifest()
+            .expect("load prefetch audit after restart");
+        assert_eq!(plans.len(), 1);
+        assert_eq!(
+            plans[0].planned_artifact_ids,
+            vec!["artifact/kv/step4/node4".to_string()]
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lingqu_memory_boundary_lookup_cli_requires_execution_manifest() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_lingqu_memory_boundary_missing_manifest_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let store = root.join("store.json");
+        let request_path = root.join("boundary_lookup_request.json");
+        let response_path = root.join("boundary_lookup_response.json");
+        let request = sim_memory::BoundaryLookupRequest {
+            request_id: "boundary/missing-manifest".to_string(),
+            model: sim_memory::InferenceModelBinding {
+                model_id: "qwen3-test".to_string(),
+                model_key: "qwen3-test-key".to_string(),
+                tokenizer_hash: 0x1001,
+                profile_hash: 0x2002,
+            },
+            boundary: sim_memory::RangeBoundary {
+                phase: sim_memory::RangeBoundaryPhase::RangeExit,
+                step_index: 1,
+                node_index: 2,
+                layer_start: 4,
+                layer_end: 8,
+                next_node_index: Some(3),
+                position: 12,
+            },
+            hidden_state: sim_memory::HotTensorObjectRef {
+                object_key: "hidden/range/node2/step1".to_string(),
+                version: 1,
+                backend: sim_memory::HotObjectBackend::ObmmShmem,
+                storage_ref: "obmm://hidden/range/node2/step1".to_string(),
+                segment: None,
+                offset: 0,
+                bytes: 16,
+                checksum: 0x4444_4444,
+                dtype: sim_core::TensorDType::F32,
+                shape: vec![1, 4],
+            },
+            engram_state_id: None,
+            min_confidence_milli: 900,
+            allowed_actions: vec![sim_memory::ShortpathAction::JumpToTerminal],
+            created_at_us: 12,
+        };
+        fs::write(
+            &request_path,
+            serde_json::to_vec_pretty(&request).expect("encode boundary request"),
+        )
+        .expect("write boundary request");
+
+        let err = run_lingqu_memory_boundary_lookup_cli(&[
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--request".to_string(),
+            request_path.to_string_lossy().into_owned(),
+            "--response".to_string(),
+            response_path.to_string_lossy().into_owned(),
+            "--now-us".to_string(),
+            "20".to_string(),
+        ])
+        .expect_err("missing execution manifest must fail boundary lookup");
+
+        let err_text = format!("{err:#}");
+        assert!(err_text.contains("load execution artifact manifest"));
+        assert!(err_text.contains(sim_memory::LINGQU_EXECUTION_ARTIFACT_MANIFEST_PATH));
+        assert!(!response_path.exists());
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -4704,7 +5092,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).expect("create temp dir");
-        let registry = root.join("prefix_cache_registry.json");
+        let store = root.join("store.json");
         let artifact_path = root.join("prefix_cache_artifact.json");
         let request_path = root.join("prefix_cache_lookup_request.json");
         let response_path = root.join("prefix_cache_lookup_response.json");
@@ -4768,15 +5156,15 @@ stage qwen3_range_forward_runtime_output_publish node=2
         .expect("write request");
 
         run_lingqu_memory_register_prefix_cache_cli(&[
-            "--registry".to_string(),
-            registry.to_string_lossy().into_owned(),
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
             "--artifact".to_string(),
             artifact_path.to_string_lossy().into_owned(),
         ])
         .expect("register prefix cache artifact");
         run_lingqu_memory_lookup_prefix_cache_cli(&[
-            "--registry".to_string(),
-            registry.to_string_lossy().into_owned(),
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
             "--request".to_string(),
             request_path.to_string_lossy().into_owned(),
             "--response".to_string(),
@@ -4786,15 +5174,17 @@ stage qwen3_range_forward_runtime_output_publish node=2
         ])
         .expect("lookup prefix cache artifact");
 
-        let registry_bytes = fs::read(&registry).expect("read registry");
-        let registry_snapshot =
-            serde_json::from_slice::<super::LingquMemoryPrefixCacheRegistry>(&registry_bytes)
-                .expect("decode registry");
-        assert_eq!(registry_snapshot.artifacts.len(), 1);
-        assert_eq!(
-            registry_snapshot.artifacts[0].artifact_id,
-            "prefix-cache/test/8"
-        );
+        let store_bytes = fs::read(&store).expect("read durable store");
+        let durable_snapshot =
+            LingquDurableSimSnapshot::from_json_bytes(&store_bytes).expect("decode durable store");
+        let mut durable_store =
+            LingquMemoryDurableStore::import_durable_sim_snapshot(durable_snapshot)
+                .expect("import durable store");
+        let registry_artifacts = durable_store
+            .load_prefix_cache_manifest()
+            .expect("load prefix cache manifest after restart");
+        assert_eq!(registry_artifacts.len(), 1);
+        assert_eq!(registry_artifacts[0].artifact_id, "prefix-cache/test/8");
         let response_bytes = fs::read(&response_path).expect("read response");
         let response =
             serde_json::from_slice::<sim_memory::PrefixCacheLookupResponse>(&response_bytes)
@@ -4810,6 +5200,67 @@ stage qwen3_range_forward_runtime_output_publish node=2
         assert_eq!(response.reuse_plan.matched_prefix_token_count, 8);
         assert!(!response.reuse_plan.verify_required);
         assert!(response.reuse_plan.proof_checksum != 0);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lingqu_memory_prefix_lookup_cli_requires_prefix_manifest() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_lingqu_memory_prefix_missing_manifest_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let store = root.join("store.json");
+        let request_path = root.join("prefix_cache_lookup_request.json");
+        let response_path = root.join("prefix_cache_lookup_response.json");
+        let request = sim_memory::PrefixCacheLookupRequest {
+            request_id: "prefix/missing-manifest".to_string(),
+            candidate_keys: vec![sim_memory::PrefixCacheKey {
+                model: sim_memory::InferenceModelBinding {
+                    model_id: "qwen3-test".to_string(),
+                    model_key: "qwen3-test-key".to_string(),
+                    tokenizer_hash: 0x1001,
+                    profile_hash: 0x2002,
+                },
+                namespace: "tenant/project/session".to_string(),
+                chat_template_hash: 0x3003,
+                prefix_token_hash: 0x4004,
+                prefix_token_count: 8,
+                rope_config_hash: 0x5005,
+                kv_layout_hash: 0x6006,
+                layer_start: 0,
+                layer_end: 28,
+                position_start: 0,
+                position_end: 8,
+                security_label: sim_memory::MemorySecurityLabel::Internal,
+            }],
+            min_confidence_milli: 900,
+            allow_verify: false,
+            created_at_us: 12,
+        };
+        fs::write(
+            &request_path,
+            serde_json::to_vec_pretty(&request).expect("encode prefix request"),
+        )
+        .expect("write prefix request");
+
+        let err = run_lingqu_memory_lookup_prefix_cache_cli(&[
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--request".to_string(),
+            request_path.to_string_lossy().into_owned(),
+            "--response".to_string(),
+            response_path.to_string_lossy().into_owned(),
+            "--now-us".to_string(),
+            "20".to_string(),
+        ])
+        .expect_err("missing prefix manifest must fail prefix lookup");
+
+        let err_text = format!("{err:#}");
+        assert!(err_text.contains("load prefix cache manifest"));
+        assert!(err_text.contains(sim_memory::LINGQU_PREFIX_CACHE_MANIFEST_PATH));
+        assert!(!response_path.exists());
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -4858,8 +5309,18 @@ stage qwen3_range_forward_runtime_output_publish node=2
         assert_eq!(snapshot.chunks[0].chunk_id, "chunk/test/0");
 
         let store_bytes = fs::read(&store).expect("read store");
-        let store_snapshot =
-            LingquMemoryDurableStoreSnapshot::from_json_bytes(&store_bytes).expect("decode store");
+        let durable_snapshot =
+            LingquDurableSimSnapshot::from_json_bytes(&store_bytes).expect("decode durable store");
+        let mut durable_store =
+            LingquMemoryDurableStore::import_durable_sim_snapshot(durable_snapshot)
+                .expect("import durable store");
+        let restored_catalog = durable_store
+            .load_catalog_snapshot(&sim_memory::LingquDfsPath::new(
+                "/lingqu/memory/corpus/corpus_test/catalog.json",
+            ))
+            .expect("load durable catalog snapshot");
+        assert_eq!(restored_catalog.catalog.catalog_id, "corpus/test");
+        let store_snapshot = durable_store.export_snapshot().expect("export legacy view");
         assert_eq!(store_snapshot.block_payloads.len(), 1);
         assert_eq!(
             store_snapshot.block_payloads[0].bytes,
@@ -4940,8 +5401,13 @@ stage qwen3_range_forward_runtime_output_publish node=2
         assert_eq!(snapshot.embedding_segments[0].dims, 2);
 
         let store_bytes = fs::read(&store).expect("read store");
+        let durable_snapshot =
+            LingquDurableSimSnapshot::from_json_bytes(&store_bytes).expect("decode durable store");
         let store_snapshot =
-            LingquMemoryDurableStoreSnapshot::from_json_bytes(&store_bytes).expect("decode store");
+            LingquMemoryDurableStore::import_durable_sim_snapshot(durable_snapshot)
+                .expect("import durable store")
+                .export_snapshot()
+                .expect("export legacy view");
         assert_eq!(store_snapshot.block_payloads.len(), 2);
         let _ = fs::remove_dir_all(&root);
     }
@@ -5016,11 +5482,14 @@ stage qwen3_range_forward_runtime_output_publish node=2
             "segment/test/0".to_string(),
         ])
         .expect("build index");
+        fs::remove_file(&catalog).expect("remove catalog file before durable restart query");
         run_lingqu_memory_query_cli(&[
             "--catalog".to_string(),
             catalog.to_string_lossy().into_owned(),
             "--store".to_string(),
             store.to_string_lossy().into_owned(),
+            "--catalog-id".to_string(),
+            "corpus/test".to_string(),
             "--query-embedding-json".to_string(),
             query_embedding.to_string_lossy().into_owned(),
             "--query-id".to_string(),
@@ -5031,8 +5500,13 @@ stage qwen3_range_forward_runtime_output_publish node=2
         .expect("query");
 
         let store_bytes = fs::read(&store).expect("read store");
+        let durable_snapshot =
+            LingquDurableSimSnapshot::from_json_bytes(&store_bytes).expect("decode durable store");
         let store_snapshot =
-            LingquMemoryDurableStoreSnapshot::from_json_bytes(&store_bytes).expect("decode store");
+            LingquMemoryDurableStore::import_durable_sim_snapshot(durable_snapshot)
+                .expect("import durable store")
+                .export_snapshot()
+                .expect("export legacy view");
         assert_eq!(store_snapshot.block_payloads.len(), 3);
         let query_result_payload = store_snapshot
             .dfs_payloads
@@ -5132,11 +5606,14 @@ stage qwen3_range_forward_runtime_output_publish node=2
             "segment/test/0".to_string(),
         ])
         .expect("build index");
+        fs::remove_file(&catalog).expect("remove catalog file before durable restart query");
         run_lingqu_memory_query_cli(&[
             "--catalog".to_string(),
             catalog.to_string_lossy().into_owned(),
             "--store".to_string(),
             store.to_string_lossy().into_owned(),
+            "--catalog-id".to_string(),
+            "corpus/test".to_string(),
             "--query-embedding-json".to_string(),
             query_embedding.to_string_lossy().into_owned(),
             "--query-id".to_string(),
@@ -5150,6 +5627,8 @@ stage qwen3_range_forward_runtime_output_publish node=2
             catalog.to_string_lossy().into_owned(),
             "--store".to_string(),
             store.to_string_lossy().into_owned(),
+            "--catalog-id".to_string(),
+            "corpus/test".to_string(),
             "--object-store".to_string(),
             object_store.to_string_lossy().into_owned(),
             "--query-result-manifest".to_string(),
@@ -5232,8 +5711,20 @@ stage qwen3_range_forward_runtime_output_publish node=2
         .expect("publish w5 engram state ref");
         let registry_entries = fs::read_dir(&registry_dir)
             .expect("read registry dir")
-            .count();
-        assert_eq!(registry_entries, 4);
+            .map(|entry| {
+                entry
+                    .expect("registry entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect::<Vec<_>>();
+        for kind in ["kind0015", "kind0016", "kind0017", "kind0018"] {
+            assert!(
+                registry_entries.iter().any(|entry| entry.contains(kind)),
+                "missing registry entry kind {kind}: {registry_entries:?}"
+            );
+        }
         let _ = fs::remove_dir_all(&root);
     }
 }

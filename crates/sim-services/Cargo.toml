@@ -11,3 +11,4 @@ serde_json.workspace = true
 sim-core = { path = "../sim-core" }
 sim-runtime = { path = "../sim-runtime" }
 sim-topology = { path = "../sim-topology" }
+thiserror.workspace = true

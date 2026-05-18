@@ -518,3 +518,58 @@ CLI tests:
   refs when durable data is missing.
 - Existing workspace tests pass, and new restart/rebuild tests cover the new
   durable boundary.
+
+## Implementation Status
+
+Current code status:
+
+- `sim-services::durable` provides the first durable simulation backend with
+  DFS file records, Block records, version selectors, checksum validation,
+  tombstone/seal handling, and JSON snapshot import/export.
+- `sim-cli lingqu-durable init/stat` writes and validates the
+  `lingqu_durable_sim` snapshot format.
+- `LingquMemoryDurableStore` is now a compatibility wrapper over
+  `LingquDurableSim`; Memory Service durable bytes are no longer owned by
+  private DFS/Block payload HashMaps.
+- `lingqu-memory --store` reads legacy `LingquMemoryDurableStoreSnapshot`
+  only as a migration input. The next save writes the new
+  `lingqu_durable_sim` format.
+- Memory Service catalog snapshots, query results, execution artifact
+  manifests, prefix cache manifests, shortpath decision audit data, and
+  prefetch plan audit data are written into durable DFS.
+- The external `--catalog` JSON file remains as a compatibility output/input,
+  but `ingest` and `build-index` persist the catalog into durable DFS, and
+  `query` / `materialize-hot-state` can restart from `--store` plus
+  `--catalog-id` after the external catalog file is removed.
+- Execution artifact and prefix cache registry files have been replaced by DFS
+  manifests at `/lingqu/memory/execution-artifacts/manifest.json` and
+  `/lingqu/memory/prefix-cache/manifest.json`.
+- Consumer CLI commands that require durable manifests now fail on missing DFS
+  manifests instead of silently treating them as empty registries.
+
+Validated coverage:
+
+- Durable sim unit tests cover DFS read/write, large DFS payloads backed by
+  Block records, checksum mismatch, range overflow, tombstone visibility,
+  sealed Block overwrite rejection, version conflicts, duplicate snapshot
+  versions, and missing block-backed DFS payloads.
+- Memory Service tests cover durable snapshot restart for catalog/query/hot
+  state materialization, execution artifacts, prefix cache artifacts,
+  shortpath decision audits, prefetch plan audits, and hard failure on missing
+  embedding Block payloads.
+- CLI tests cover durable init/stat, legacy store migration, manifest-backed
+  execution artifact and prefix cache flows, durable catalog restart for query
+  and hot-state materialization, and missing manifest hard failures.
+
+Remaining work:
+
+- Shortpath and prefetch audit persistence is currently manifest rewrite
+  semantics. The target appendable DFS audit-log model is still a follow-up.
+- Object Service still uses its own snapshot file for hot OBMM placements.
+  Durable Block/DFS simulation is now unified for Memory Service bytes, but
+  Object Service placement metadata has not yet been folded into a single
+  durable store file.
+- The external catalog file is still supported for compatibility. The durable
+  DFS catalog path is now the recovery source, but the CLI contract should
+  eventually make `--catalog-id` the primary selector and make `--catalog`
+  optional or purely an export path.

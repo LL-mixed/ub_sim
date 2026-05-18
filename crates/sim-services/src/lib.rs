@@ -1,6 +1,6 @@
 //! Host-side service simulation entry points.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 use sim_core::{
@@ -8,6 +8,7 @@ use sim_core::{
     SimTimestamp, TaskKey, TensorDType, TensorLayout,
 };
 use sim_runtime::{BlockReadReq, BlockService, BlockWriteReq};
+use thiserror::Error;
 
 #[derive(Debug, Clone)]
 struct QueuedCompletion {
@@ -531,6 +532,1203 @@ pub mod dfs {
         pub fn poll_ready(&mut self, now: SimTimestamp) -> Vec<CompletionEvent> {
             drain_ready(&mut self.completions, now)
         }
+    }
+}
+
+pub mod durable {
+    use super::*;
+
+    pub const LINGQU_DURABLE_SIM_KIND: &str = "lingqu_durable_sim";
+    pub const LINGQU_DURABLE_SIM_SCHEMA_VERSION: u32 = 1;
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct LingquDfsPath {
+        pub path: String,
+    }
+
+    impl LingquDfsPath {
+        pub fn new(path: impl Into<String>) -> Self {
+            Self { path: path.into() }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct LingquBlockPayloadRef {
+        pub block: BlockHash,
+        pub version: u64,
+        pub offset: u64,
+        pub bytes: u64,
+        pub checksum: u64,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum LingquVersionSelector {
+        LatestCommitted,
+        Exact(u64),
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum LingquDfsContentType {
+        Json,
+        Binary,
+        Text,
+        Manifest,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum LingquDfsFileState {
+        Committed,
+        Tombstoned,
+        Quarantined,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum LingquBlockDurableState {
+        Committed,
+        Sealed,
+        Tombstoned,
+        Quarantined,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum LingquBlockCacheState {
+        Clean,
+        Dirty,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum LingquDfsContentRef {
+        Inline(Vec<u8>),
+        Block(LingquBlockPayloadRef),
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct LingquDfsFileRecord {
+        pub path: String,
+        pub version: u64,
+        pub state: LingquDfsFileState,
+        pub content_ref: LingquDfsContentRef,
+        pub bytes: u64,
+        pub checksum: u64,
+        pub content_type: LingquDfsContentType,
+        pub created_at_us: u64,
+        pub updated_at_us: u64,
+        pub writer: Option<String>,
+        pub metadata: BTreeMap<String, String>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct LingquDfsDirectoryRecord {
+        pub path: String,
+        pub created_at_us: u64,
+        pub updated_at_us: u64,
+        pub metadata: BTreeMap<String, String>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct LingquBlockRecord {
+        pub block: BlockHash,
+        pub version: u64,
+        pub durable_state: LingquBlockDurableState,
+        pub cache_state: LingquBlockCacheState,
+        pub bytes: Vec<u8>,
+        pub checksum: u64,
+        pub created_at_us: u64,
+        pub updated_at_us: u64,
+        pub writer: Option<String>,
+        pub metadata: BTreeMap<String, String>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct LingquDfsSimSnapshot {
+        pub files: Vec<LingquDfsFileRecord>,
+        pub directories: Vec<LingquDfsDirectoryRecord>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct LingquBlockSimSnapshot {
+        pub blocks: Vec<LingquBlockRecord>,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct LingquDfsTimingProfile {
+        pub metadata_latency_us: SimTimestamp,
+        pub data_latency_us: SimTimestamp,
+        pub cold_metadata_penalty_us: SimTimestamp,
+        pub cold_data_penalty_us: SimTimestamp,
+        pub queue_depth: usize,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct LingquBlockTimingProfile {
+        pub queue_depth: usize,
+        pub read_hit_latency_us: SimTimestamp,
+        pub read_miss_latency_us: SimTimestamp,
+        pub write_latency_us: SimTimestamp,
+        pub writeback_latency_us: SimTimestamp,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct LingquDurableSimProfile {
+        pub dfs: LingquDfsTimingProfile,
+        pub block: LingquBlockTimingProfile,
+        pub default_inline_threshold_bytes: usize,
+    }
+
+    impl Default for LingquDurableSimProfile {
+        fn default() -> Self {
+            Self {
+                dfs: dfs::DfsServiceProfile::default().into(),
+                block: block::BlockServiceProfile::default().into(),
+                default_inline_threshold_bytes: 4096,
+            }
+        }
+    }
+
+    impl From<dfs::DfsServiceProfile> for LingquDfsTimingProfile {
+        fn from(profile: dfs::DfsServiceProfile) -> Self {
+            Self {
+                metadata_latency_us: profile.metadata_latency_us,
+                data_latency_us: profile.data_latency_us,
+                cold_metadata_penalty_us: profile.cold_metadata_penalty_us,
+                cold_data_penalty_us: profile.cold_data_penalty_us,
+                queue_depth: profile.queue_depth,
+            }
+        }
+    }
+
+    impl From<LingquDfsTimingProfile> for dfs::DfsServiceProfile {
+        fn from(profile: LingquDfsTimingProfile) -> Self {
+            Self {
+                metadata_latency_us: profile.metadata_latency_us,
+                data_latency_us: profile.data_latency_us,
+                cold_metadata_penalty_us: profile.cold_metadata_penalty_us,
+                cold_data_penalty_us: profile.cold_data_penalty_us,
+                queue_depth: profile.queue_depth,
+            }
+        }
+    }
+
+    impl From<block::BlockServiceProfile> for LingquBlockTimingProfile {
+        fn from(profile: block::BlockServiceProfile) -> Self {
+            Self {
+                queue_depth: profile.queue_depth,
+                read_hit_latency_us: profile.read_hit_latency_us,
+                read_miss_latency_us: profile.read_miss_latency_us,
+                write_latency_us: profile.write_latency_us,
+                writeback_latency_us: profile.writeback_latency_us,
+            }
+        }
+    }
+
+    impl From<LingquBlockTimingProfile> for block::BlockServiceProfile {
+        fn from(profile: LingquBlockTimingProfile) -> Self {
+            Self {
+                queue_depth: profile.queue_depth,
+                read_hit_latency_us: profile.read_hit_latency_us,
+                read_miss_latency_us: profile.read_miss_latency_us,
+                write_latency_us: profile.write_latency_us,
+                writeback_latency_us: profile.writeback_latency_us,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct LingquDurableSimSnapshot {
+        pub kind: String,
+        pub schema_version: u32,
+        pub profile: LingquDurableSimProfile,
+        pub dfs: LingquDfsSimSnapshot,
+        pub block: LingquBlockSimSnapshot,
+        pub next_timestamp_us: u64,
+        pub checksum: u64,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct LingquDfsWriteOptions {
+        pub expected_version: Option<u64>,
+        pub content_type: LingquDfsContentType,
+        pub writer: Option<String>,
+        pub metadata: BTreeMap<String, String>,
+        pub inline_threshold_bytes: usize,
+    }
+
+    impl Default for LingquDfsWriteOptions {
+        fn default() -> Self {
+            Self {
+                expected_version: None,
+                content_type: LingquDfsContentType::Binary,
+                writer: None,
+                metadata: BTreeMap::new(),
+                inline_threshold_bytes: LingquDurableSimProfile::default()
+                    .default_inline_threshold_bytes,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct LingquBlockWriteOptions {
+        pub expected_version: Option<u64>,
+        pub seal: bool,
+        pub writer: Option<String>,
+        pub metadata: BTreeMap<String, String>,
+    }
+
+    impl Default for LingquBlockWriteOptions {
+        fn default() -> Self {
+            Self {
+                expected_version: None,
+                seal: false,
+                writer: None,
+                metadata: BTreeMap::new(),
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct LingquDurableStats {
+        pub dfs_reads: u64,
+        pub dfs_writes: u64,
+        pub dfs_bytes_read: u64,
+        pub dfs_bytes_written: u64,
+        pub block_reads: u64,
+        pub block_writes: u64,
+        pub block_bytes_read: u64,
+        pub block_bytes_written: u64,
+        pub checksum_failures: u64,
+        pub version_conflicts: u64,
+        pub missing_refs: u64,
+    }
+
+    #[derive(Debug, Error, Clone, PartialEq, Eq)]
+    pub enum LingquDurableError {
+        #[error("invalid DFS path: {0}")]
+        InvalidPath(String),
+        #[error("invalid block: {0}")]
+        InvalidBlock(String),
+        #[error("empty payload")]
+        EmptyPayload,
+        #[error("missing DFS path: {0}")]
+        MissingDfsPath(String),
+        #[error("missing block: {0}")]
+        MissingBlock(String),
+        #[error("version conflict for {id}: expected {expected:?}, actual {actual:?}")]
+        VersionConflict {
+            id: String,
+            expected: Option<u64>,
+            actual: Option<u64>,
+        },
+        #[error("checksum mismatch for {id}: expected {expected:#x}, actual {actual:#x}")]
+        ChecksumMismatch {
+            id: String,
+            expected: u64,
+            actual: u64,
+        },
+        #[error("range overflow for {0}")]
+        RangeOverflow(String),
+        #[error("tombstoned ref: {0}")]
+        Tombstoned(String),
+        #[error("quarantined ref: {0}")]
+        Quarantined(String),
+        #[error("sealed block: {0}")]
+        Sealed(String),
+        #[error("queue full: {0}")]
+        QueueFull(String),
+        #[error("snapshot codec failed: {0}")]
+        SnapshotCodec(String),
+        #[error("snapshot validation failed: {0}")]
+        SnapshotValidation(String),
+    }
+
+    pub type LingquDurableResult<T> = Result<T, LingquDurableError>;
+
+    #[derive(Debug)]
+    pub struct LingquDurableSim {
+        profile: LingquDurableSimProfile,
+        dfs_service: dfs::DfsServiceStub,
+        block_service: block::BlockServiceStub,
+        dfs_files: Vec<LingquDfsFileRecord>,
+        dfs_directories: Vec<LingquDfsDirectoryRecord>,
+        block_records: Vec<LingquBlockRecord>,
+        next_timestamp_us: SimTimestamp,
+        stats: LingquDurableStats,
+    }
+
+    impl LingquDurableSim {
+        pub fn new(profile: LingquDurableSimProfile) -> Self {
+            Self {
+                dfs_service: dfs::DfsServiceStub::new(profile.dfs.into()),
+                block_service: block::BlockServiceStub::with_profile(profile.block.into()),
+                profile,
+                dfs_files: Vec::new(),
+                dfs_directories: Vec::new(),
+                block_records: Vec::new(),
+                next_timestamp_us: 1,
+                stats: LingquDurableStats::default(),
+            }
+        }
+
+        pub fn export_snapshot(&self) -> LingquDurableResult<LingquDurableSimSnapshot> {
+            let mut dfs_files = self.dfs_files.clone();
+            dfs_files.sort_by(|left, right| {
+                left.path
+                    .cmp(&right.path)
+                    .then_with(|| left.version.cmp(&right.version))
+            });
+            let mut dfs_directories = self.dfs_directories.clone();
+            dfs_directories.sort_by(|left, right| left.path.cmp(&right.path));
+            let mut block_records = self.block_records.clone();
+            block_records.sort_by(|left, right| {
+                left.block
+                    .0
+                    .cmp(&right.block.0)
+                    .then_with(|| left.version.cmp(&right.version))
+            });
+            let mut snapshot = LingquDurableSimSnapshot {
+                kind: LINGQU_DURABLE_SIM_KIND.to_string(),
+                schema_version: LINGQU_DURABLE_SIM_SCHEMA_VERSION,
+                profile: self.profile,
+                dfs: LingquDfsSimSnapshot {
+                    files: dfs_files,
+                    directories: dfs_directories,
+                },
+                block: LingquBlockSimSnapshot {
+                    blocks: block_records,
+                },
+                next_timestamp_us: self.next_timestamp_us,
+                checksum: 0,
+            };
+            snapshot.checksum = durable_snapshot_checksum(&snapshot);
+            snapshot.validate()?;
+            Ok(snapshot)
+        }
+
+        pub fn import_snapshot(snapshot: LingquDurableSimSnapshot) -> LingquDurableResult<Self> {
+            snapshot.validate()?;
+            let mut sim = Self::new(snapshot.profile);
+            sim.next_timestamp_us = snapshot.next_timestamp_us;
+            sim.dfs_directories = snapshot.dfs.directories;
+            sim.block_records = snapshot.block.blocks;
+            sim.dfs_files = snapshot.dfs.files;
+            sim.rebuild_service_indexes()?;
+            Ok(sim)
+        }
+
+        pub fn stats(&self) -> LingquDurableStats {
+            self.stats
+        }
+
+        pub fn dfs_write(
+            &mut self,
+            path: impl Into<String>,
+            bytes: Vec<u8>,
+            mut options: LingquDfsWriteOptions,
+        ) -> LingquDurableResult<LingquDfsPath> {
+            let path = path.into();
+            validate_dfs_path(&path)?;
+            if bytes.is_empty() {
+                return Err(LingquDurableError::EmptyPayload);
+            }
+            if options.inline_threshold_bytes == 0 {
+                options.inline_threshold_bytes = self.profile.default_inline_threshold_bytes;
+            }
+            let current_version = self
+                .latest_dfs_any_state(&path)
+                .map(|record| record.version);
+            self.check_expected_version(&path, current_version, options.expected_version)?;
+            let version = current_version.unwrap_or(0).saturating_add(1);
+            let content_ref = if bytes.len() <= options.inline_threshold_bytes {
+                LingquDfsContentRef::Inline(bytes.clone())
+            } else {
+                let block = generated_dfs_block_id(&path, version);
+                let payload_ref = self.block_write(
+                    block,
+                    bytes.clone(),
+                    LingquBlockWriteOptions {
+                        expected_version: None,
+                        seal: true,
+                        writer: options.writer.clone(),
+                        metadata: options.metadata.clone(),
+                    },
+                )?;
+                LingquDfsContentRef::Block(payload_ref)
+            };
+            let checksum = checksum64(&bytes);
+            let now = self.next_timestamp();
+            let record = LingquDfsFileRecord {
+                path: path.clone(),
+                version,
+                state: LingquDfsFileState::Committed,
+                content_ref,
+                bytes: bytes.len() as u64,
+                checksum,
+                content_type: options.content_type,
+                created_at_us: now,
+                updated_at_us: now,
+                writer: options.writer,
+                metadata: options.metadata,
+            };
+            validate_dfs_file_record(&record, &self.block_records)?;
+            self.submit_dfs_write(path.clone(), bytes.len() as u64)?;
+            self.stats.dfs_writes += 1;
+            self.stats.dfs_bytes_written += bytes.len() as u64;
+            self.dfs_files.push(record);
+            Ok(LingquDfsPath::new(path))
+        }
+
+        pub fn dfs_read(
+            &mut self,
+            path: &str,
+            selector: LingquVersionSelector,
+        ) -> LingquDurableResult<Vec<u8>> {
+            validate_dfs_path(path)?;
+            let record = self.select_dfs_record(path, selector)?.clone();
+            self.submit_dfs_read(path)?;
+            let bytes = match &record.content_ref {
+                LingquDfsContentRef::Inline(bytes) => bytes.clone(),
+                LingquDfsContentRef::Block(payload_ref) => self.block_read(payload_ref)?,
+            };
+            let actual = checksum64(&bytes);
+            if actual != record.checksum {
+                self.stats.checksum_failures += 1;
+                return Err(LingquDurableError::ChecksumMismatch {
+                    id: path.to_string(),
+                    expected: record.checksum,
+                    actual,
+                });
+            }
+            self.stats.dfs_reads += 1;
+            self.stats.dfs_bytes_read += bytes.len() as u64;
+            Ok(bytes)
+        }
+
+        pub fn dfs_stat(
+            &self,
+            path: &str,
+            selector: LingquVersionSelector,
+        ) -> LingquDurableResult<LingquDfsFileRecord> {
+            validate_dfs_path(path)?;
+            self.select_dfs_record(path, selector).cloned()
+        }
+
+        pub fn dfs_tombstone(
+            &mut self,
+            path: &str,
+            expected_version: Option<u64>,
+        ) -> LingquDurableResult<()> {
+            validate_dfs_path(path)?;
+            let current_version = self.latest_dfs_any_state(path).map(|record| record.version);
+            self.check_expected_version(path, current_version, expected_version)?;
+            let version = current_version
+                .ok_or_else(|| LingquDurableError::MissingDfsPath(path.to_string()))?
+                .saturating_add(1);
+            let now = self.next_timestamp();
+            self.dfs_files.push(LingquDfsFileRecord {
+                path: path.to_string(),
+                version,
+                state: LingquDfsFileState::Tombstoned,
+                content_ref: LingquDfsContentRef::Inline(Vec::new()),
+                bytes: 0,
+                checksum: checksum64(&[]),
+                content_type: LingquDfsContentType::Manifest,
+                created_at_us: now,
+                updated_at_us: now,
+                writer: None,
+                metadata: BTreeMap::new(),
+            });
+            Ok(())
+        }
+
+        pub fn block_write(
+            &mut self,
+            block: impl Into<String>,
+            bytes: Vec<u8>,
+            options: LingquBlockWriteOptions,
+        ) -> LingquDurableResult<LingquBlockPayloadRef> {
+            let block = BlockHash(block.into());
+            validate_block(&block)?;
+            if bytes.is_empty() {
+                return Err(LingquDurableError::EmptyPayload);
+            }
+            let current_record = self.latest_block_any_state(&block);
+            if matches!(
+                current_record.map(|record| record.durable_state),
+                Some(LingquBlockDurableState::Sealed)
+            ) {
+                return Err(LingquDurableError::Sealed(block.0));
+            }
+            let current_version = current_record.map(|record| record.version);
+            self.check_expected_version(&block.0, current_version, options.expected_version)?;
+            let version = current_version.unwrap_or(0).saturating_add(1);
+            let checksum = checksum64(&bytes);
+            let now = self.next_timestamp();
+            self.submit_block_write(block.clone())?;
+            let record = LingquBlockRecord {
+                block: block.clone(),
+                version,
+                durable_state: if options.seal {
+                    LingquBlockDurableState::Sealed
+                } else {
+                    LingquBlockDurableState::Committed
+                },
+                cache_state: LingquBlockCacheState::Dirty,
+                bytes: bytes.clone(),
+                checksum,
+                created_at_us: now,
+                updated_at_us: now,
+                writer: options.writer,
+                metadata: options.metadata,
+            };
+            validate_block_record(&record)?;
+            self.stats.block_writes += 1;
+            self.stats.block_bytes_written += bytes.len() as u64;
+            self.block_records.push(record);
+            Ok(LingquBlockPayloadRef {
+                block,
+                version,
+                offset: 0,
+                bytes: bytes.len() as u64,
+                checksum,
+            })
+        }
+
+        pub fn block_read(
+            &mut self,
+            payload_ref: &LingquBlockPayloadRef,
+        ) -> LingquDurableResult<Vec<u8>> {
+            validate_block_payload_ref(payload_ref)?;
+            let record = self
+                .block_records
+                .iter()
+                .find(|record| {
+                    record.block == payload_ref.block && record.version == payload_ref.version
+                })
+                .cloned()
+                .ok_or_else(|| {
+                    self.stats.missing_refs += 1;
+                    LingquDurableError::MissingBlock(payload_ref.block.0.clone())
+                })?;
+            match record.durable_state {
+                LingquBlockDurableState::Committed | LingquBlockDurableState::Sealed => {}
+                LingquBlockDurableState::Tombstoned => {
+                    return Err(LingquDurableError::Tombstoned(record.block.0));
+                }
+                LingquBlockDurableState::Quarantined => {
+                    return Err(LingquDurableError::Quarantined(record.block.0));
+                }
+            }
+            self.submit_block_read(payload_ref.block.clone())?;
+            let start = payload_ref.offset as usize;
+            let end = payload_ref
+                .offset
+                .checked_add(payload_ref.bytes)
+                .ok_or_else(|| LingquDurableError::RangeOverflow(payload_ref.block.0.clone()))?
+                as usize;
+            if end > record.bytes.len() {
+                return Err(LingquDurableError::RangeOverflow(
+                    payload_ref.block.0.clone(),
+                ));
+            }
+            let selected = record.bytes[start..end].to_vec();
+            let actual = checksum64(&selected);
+            if actual != payload_ref.checksum {
+                self.stats.checksum_failures += 1;
+                return Err(LingquDurableError::ChecksumMismatch {
+                    id: payload_ref.block.0.clone(),
+                    expected: payload_ref.checksum,
+                    actual,
+                });
+            }
+            self.stats.block_reads += 1;
+            self.stats.block_bytes_read += selected.len() as u64;
+            Ok(selected)
+        }
+
+        pub fn block_stat(
+            &self,
+            block: &BlockHash,
+            selector: LingquVersionSelector,
+        ) -> LingquDurableResult<LingquBlockRecord> {
+            validate_block(block)?;
+            self.select_block_record(block, selector).cloned()
+        }
+
+        pub fn block_seal(
+            &mut self,
+            block: &BlockHash,
+            expected_version: Option<u64>,
+        ) -> LingquDurableResult<()> {
+            validate_block(block)?;
+            let latest = self
+                .latest_block_any_state(block)
+                .ok_or_else(|| LingquDurableError::MissingBlock(block.0.clone()))?
+                .clone();
+            self.check_expected_version(&block.0, Some(latest.version), expected_version)?;
+            if latest.durable_state == LingquBlockDurableState::Sealed {
+                return Ok(());
+            }
+            let version = latest.version.saturating_add(1);
+            let now = self.next_timestamp();
+            self.block_records.push(LingquBlockRecord {
+                block: block.clone(),
+                version,
+                durable_state: LingquBlockDurableState::Sealed,
+                cache_state: latest.cache_state,
+                bytes: latest.bytes,
+                checksum: latest.checksum,
+                created_at_us: now,
+                updated_at_us: now,
+                writer: latest.writer,
+                metadata: latest.metadata,
+            });
+            Ok(())
+        }
+
+        pub fn block_tombstone(
+            &mut self,
+            block: &BlockHash,
+            expected_version: Option<u64>,
+        ) -> LingquDurableResult<()> {
+            validate_block(block)?;
+            let latest = self
+                .latest_block_any_state(block)
+                .ok_or_else(|| LingquDurableError::MissingBlock(block.0.clone()))?
+                .clone();
+            self.check_expected_version(&block.0, Some(latest.version), expected_version)?;
+            let version = latest.version.saturating_add(1);
+            let now = self.next_timestamp();
+            self.block_records.push(LingquBlockRecord {
+                block: block.clone(),
+                version,
+                durable_state: LingquBlockDurableState::Tombstoned,
+                cache_state: latest.cache_state,
+                bytes: latest.bytes,
+                checksum: latest.checksum,
+                created_at_us: now,
+                updated_at_us: now,
+                writer: latest.writer,
+                metadata: latest.metadata,
+            });
+            Ok(())
+        }
+
+        fn latest_dfs_any_state(&self, path: &str) -> Option<&LingquDfsFileRecord> {
+            self.dfs_files
+                .iter()
+                .filter(|record| record.path == path)
+                .max_by_key(|record| record.version)
+        }
+
+        fn latest_block_any_state(&self, block: &BlockHash) -> Option<&LingquBlockRecord> {
+            self.block_records
+                .iter()
+                .filter(|record| record.block == *block)
+                .max_by_key(|record| record.version)
+        }
+
+        fn select_dfs_record(
+            &self,
+            path: &str,
+            selector: LingquVersionSelector,
+        ) -> LingquDurableResult<&LingquDfsFileRecord> {
+            let record = match selector {
+                LingquVersionSelector::LatestCommitted => self
+                    .latest_dfs_any_state(path)
+                    .ok_or_else(|| LingquDurableError::MissingDfsPath(path.to_string()))?,
+                LingquVersionSelector::Exact(version) => self
+                    .dfs_files
+                    .iter()
+                    .find(|record| record.path == path && record.version == version)
+                    .ok_or_else(|| LingquDurableError::MissingDfsPath(path.to_string()))?,
+            };
+            match record.state {
+                LingquDfsFileState::Committed => Ok(record),
+                LingquDfsFileState::Tombstoned => {
+                    Err(LingquDurableError::Tombstoned(path.to_string()))
+                }
+                LingquDfsFileState::Quarantined => {
+                    Err(LingquDurableError::Quarantined(path.to_string()))
+                }
+            }
+        }
+
+        fn select_block_record(
+            &self,
+            block: &BlockHash,
+            selector: LingquVersionSelector,
+        ) -> LingquDurableResult<&LingquBlockRecord> {
+            let record = match selector {
+                LingquVersionSelector::LatestCommitted => self
+                    .latest_block_any_state(block)
+                    .ok_or_else(|| LingquDurableError::MissingBlock(block.0.clone()))?,
+                LingquVersionSelector::Exact(version) => self
+                    .block_records
+                    .iter()
+                    .find(|record| record.block == *block && record.version == version)
+                    .ok_or_else(|| LingquDurableError::MissingBlock(block.0.clone()))?,
+            };
+            match record.durable_state {
+                LingquBlockDurableState::Committed | LingquBlockDurableState::Sealed => Ok(record),
+                LingquBlockDurableState::Tombstoned => {
+                    Err(LingquDurableError::Tombstoned(block.0.clone()))
+                }
+                LingquBlockDurableState::Quarantined => {
+                    Err(LingquDurableError::Quarantined(block.0.clone()))
+                }
+            }
+        }
+
+        fn check_expected_version(
+            &mut self,
+            id: &str,
+            actual: Option<u64>,
+            expected: Option<u64>,
+        ) -> LingquDurableResult<()> {
+            if let Some(expected) = expected {
+                if actual != Some(expected) {
+                    self.stats.version_conflicts += 1;
+                    return Err(LingquDurableError::VersionConflict {
+                        id: id.to_string(),
+                        expected: Some(expected),
+                        actual,
+                    });
+                }
+            }
+            Ok(())
+        }
+
+        fn submit_dfs_write(&mut self, path: String, bytes: u64) -> LingquDurableResult<()> {
+            let now = self.next_timestamp();
+            let handle = self
+                .dfs_service
+                .submit_write(
+                    dfs::DfsWriteReq {
+                        task: None,
+                        path,
+                        bytes,
+                    },
+                    now,
+                )
+                .map_err(|err| service_error_to_durable("dfs_write", err))?;
+            expect_success(
+                "dfs_write",
+                handle.0,
+                self.dfs_service.poll_ready(SimTimestamp::MAX),
+            )
+        }
+
+        fn submit_dfs_read(&mut self, path: &str) -> LingquDurableResult<()> {
+            let now = self.next_timestamp();
+            let handle = self
+                .dfs_service
+                .submit_read(
+                    dfs::DfsReadReq {
+                        task: None,
+                        path: path.to_string(),
+                    },
+                    now,
+                )
+                .map_err(|err| service_error_to_durable("dfs_read", err))?;
+            expect_success(
+                "dfs_read",
+                handle.0,
+                self.dfs_service.poll_ready(SimTimestamp::MAX),
+            )
+        }
+
+        fn submit_block_write(&mut self, block: BlockHash) -> LingquDurableResult<()> {
+            let now = self.next_timestamp();
+            let handle = self
+                .block_service
+                .submit_write(BlockWriteReq { task: None, block }, now)
+                .map_err(|err| service_error_to_durable("block_write", err))?;
+            expect_success(
+                "block_write",
+                handle.0,
+                self.block_service.poll_ready(SimTimestamp::MAX),
+            )
+        }
+
+        fn submit_block_read(&mut self, block: BlockHash) -> LingquDurableResult<()> {
+            let now = self.next_timestamp();
+            let handle = self
+                .block_service
+                .submit_read(BlockReadReq { task: None, block }, now)
+                .map_err(|err| service_error_to_durable("block_read", err))?;
+            expect_success(
+                "block_read",
+                handle.0,
+                self.block_service.poll_ready(SimTimestamp::MAX),
+            )
+        }
+
+        fn rebuild_service_indexes(&mut self) -> LingquDurableResult<()> {
+            let mut committed_blocks = self
+                .block_records
+                .iter()
+                .filter(|record| {
+                    matches!(
+                        record.durable_state,
+                        LingquBlockDurableState::Committed | LingquBlockDurableState::Sealed
+                    )
+                })
+                .map(|record| record.block.clone())
+                .collect::<Vec<_>>();
+            committed_blocks.sort_by(|left, right| left.0.cmp(&right.0));
+            committed_blocks.dedup();
+            for block in committed_blocks {
+                self.submit_block_write(block)?;
+            }
+
+            let mut committed_paths = self
+                .dfs_files
+                .iter()
+                .filter(|record| record.state == LingquDfsFileState::Committed)
+                .map(|record| (record.path.clone(), record.bytes))
+                .collect::<Vec<_>>();
+            committed_paths.sort_by(|left, right| left.0.cmp(&right.0));
+            committed_paths.dedup_by(|left, right| left.0 == right.0);
+            for (path, bytes) in committed_paths {
+                self.submit_dfs_write(path, bytes)?;
+            }
+            self.stats = LingquDurableStats::default();
+            Ok(())
+        }
+
+        fn next_timestamp(&mut self) -> SimTimestamp {
+            let now = self.next_timestamp_us;
+            self.next_timestamp_us = self.next_timestamp_us.saturating_add(1);
+            now
+        }
+    }
+
+    impl Default for LingquDurableSim {
+        fn default() -> Self {
+            Self::new(LingquDurableSimProfile::default())
+        }
+    }
+
+    impl LingquDurableSimSnapshot {
+        pub fn validate(&self) -> LingquDurableResult<()> {
+            if self.kind != LINGQU_DURABLE_SIM_KIND {
+                return Err(LingquDurableError::SnapshotValidation(format!(
+                    "unexpected kind `{}`",
+                    self.kind
+                )));
+            }
+            if self.schema_version != LINGQU_DURABLE_SIM_SCHEMA_VERSION {
+                return Err(LingquDurableError::SnapshotValidation(format!(
+                    "unsupported schema version {}",
+                    self.schema_version
+                )));
+            }
+            if self.next_timestamp_us == 0 {
+                return Err(LingquDurableError::SnapshotValidation(
+                    "next_timestamp_us must be non-zero".to_string(),
+                ));
+            }
+            validate_block_snapshot(&self.block)?;
+            validate_dfs_snapshot(&self.dfs, &self.block.blocks)?;
+            let actual = durable_snapshot_checksum(self);
+            if actual != self.checksum {
+                return Err(LingquDurableError::ChecksumMismatch {
+                    id: "lingqu_durable_sim_snapshot".to_string(),
+                    expected: self.checksum,
+                    actual,
+                });
+            }
+            Ok(())
+        }
+
+        pub fn to_json_bytes(&self) -> LingquDurableResult<Vec<u8>> {
+            self.validate()?;
+            serde_json::to_vec_pretty(self)
+                .map_err(|err| LingquDurableError::SnapshotCodec(err.to_string()))
+        }
+
+        pub fn from_json_bytes(bytes: &[u8]) -> LingquDurableResult<Self> {
+            let snapshot = serde_json::from_slice::<Self>(bytes)
+                .map_err(|err| LingquDurableError::SnapshotCodec(err.to_string()))?;
+            snapshot.validate()?;
+            Ok(snapshot)
+        }
+    }
+
+    fn validate_dfs_snapshot(
+        snapshot: &LingquDfsSimSnapshot,
+        block_records: &[LingquBlockRecord],
+    ) -> LingquDurableResult<()> {
+        let mut seen = HashSet::new();
+        for record in &snapshot.files {
+            if !seen.insert((record.path.clone(), record.version)) {
+                return Err(LingquDurableError::SnapshotValidation(format!(
+                    "duplicate DFS version {}:{}",
+                    record.path, record.version
+                )));
+            }
+            validate_dfs_file_record(record, block_records)?;
+        }
+        for directory in &snapshot.directories {
+            validate_dfs_path(&directory.path)?;
+        }
+        Ok(())
+    }
+
+    fn validate_block_snapshot(snapshot: &LingquBlockSimSnapshot) -> LingquDurableResult<()> {
+        let mut seen = HashSet::new();
+        for record in &snapshot.blocks {
+            if !seen.insert((record.block.0.clone(), record.version)) {
+                return Err(LingquDurableError::SnapshotValidation(format!(
+                    "duplicate Block version {}:{}",
+                    record.block.0, record.version
+                )));
+            }
+            validate_block_record(record)?;
+        }
+        Ok(())
+    }
+
+    fn validate_dfs_file_record(
+        record: &LingquDfsFileRecord,
+        block_records: &[LingquBlockRecord],
+    ) -> LingquDurableResult<()> {
+        validate_dfs_path(&record.path)?;
+        if record.version == 0 {
+            return Err(LingquDurableError::SnapshotValidation(
+                "DFS version must be non-zero".to_string(),
+            ));
+        }
+        match (&record.state, &record.content_ref) {
+            (LingquDfsFileState::Committed, LingquDfsContentRef::Inline(bytes)) => {
+                validate_payload_metadata(&record.path, bytes, record.bytes, record.checksum)?;
+            }
+            (LingquDfsFileState::Committed, LingquDfsContentRef::Block(payload_ref)) => {
+                validate_block_payload_ref(payload_ref)?;
+                if record.bytes != payload_ref.bytes || record.checksum != payload_ref.checksum {
+                    return Err(LingquDurableError::SnapshotValidation(format!(
+                        "DFS block ref metadata mismatch for {}",
+                        record.path
+                    )));
+                }
+                validate_block_ref_against_records(payload_ref, block_records)?;
+            }
+            (_, LingquDfsContentRef::Inline(bytes)) => {
+                validate_payload_metadata(&record.path, bytes, record.bytes, record.checksum)?;
+            }
+            (_, LingquDfsContentRef::Block(payload_ref)) => {
+                validate_block_payload_ref(payload_ref)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_block_record(record: &LingquBlockRecord) -> LingquDurableResult<()> {
+        validate_block(&record.block)?;
+        if record.version == 0 {
+            return Err(LingquDurableError::SnapshotValidation(
+                "Block version must be non-zero".to_string(),
+            ));
+        }
+        validate_payload_metadata(
+            &record.block.0,
+            &record.bytes,
+            record.bytes.len() as u64,
+            record.checksum,
+        )
+    }
+
+    fn validate_block_payload_ref(payload_ref: &LingquBlockPayloadRef) -> LingquDurableResult<()> {
+        validate_block(&payload_ref.block)?;
+        if payload_ref.version == 0 {
+            return Err(LingquDurableError::SnapshotValidation(
+                "Block payload ref version must be non-zero".to_string(),
+            ));
+        }
+        if payload_ref.bytes == 0 {
+            return Err(LingquDurableError::EmptyPayload);
+        }
+        Ok(())
+    }
+
+    fn validate_block_ref_against_records(
+        payload_ref: &LingquBlockPayloadRef,
+        records: &[LingquBlockRecord],
+    ) -> LingquDurableResult<()> {
+        let record = records
+            .iter()
+            .find(|record| {
+                record.block == payload_ref.block && record.version == payload_ref.version
+            })
+            .ok_or_else(|| LingquDurableError::MissingBlock(payload_ref.block.0.clone()))?;
+        let start = payload_ref.offset as usize;
+        let end = payload_ref
+            .offset
+            .checked_add(payload_ref.bytes)
+            .ok_or_else(|| LingquDurableError::RangeOverflow(payload_ref.block.0.clone()))?
+            as usize;
+        if end > record.bytes.len() {
+            return Err(LingquDurableError::RangeOverflow(
+                payload_ref.block.0.clone(),
+            ));
+        }
+        let actual = checksum64(&record.bytes[start..end]);
+        if actual != payload_ref.checksum {
+            return Err(LingquDurableError::ChecksumMismatch {
+                id: payload_ref.block.0.clone(),
+                expected: payload_ref.checksum,
+                actual,
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_payload_metadata(
+        id: &str,
+        bytes: &[u8],
+        expected_bytes: u64,
+        expected_checksum: u64,
+    ) -> LingquDurableResult<()> {
+        if bytes.len() as u64 != expected_bytes {
+            return Err(LingquDurableError::SnapshotValidation(format!(
+                "payload byte count mismatch for {id}"
+            )));
+        }
+        let actual = checksum64(bytes);
+        if actual != expected_checksum {
+            return Err(LingquDurableError::ChecksumMismatch {
+                id: id.to_string(),
+                expected: expected_checksum,
+                actual,
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_dfs_path(path: &str) -> LingquDurableResult<()> {
+        if !path.starts_with("/lingqu/") || path.ends_with('/') {
+            return Err(LingquDurableError::InvalidPath(path.to_string()));
+        }
+        for segment in path.split('/') {
+            if segment == "." || segment == ".." {
+                return Err(LingquDurableError::InvalidPath(path.to_string()));
+            }
+        }
+        if path.contains("//") {
+            return Err(LingquDurableError::InvalidPath(path.to_string()));
+        }
+        Ok(())
+    }
+
+    fn validate_block(block: &BlockHash) -> LingquDurableResult<()> {
+        if block.0.trim().is_empty() {
+            return Err(LingquDurableError::InvalidBlock(block.0.clone()));
+        }
+        Ok(())
+    }
+
+    fn service_error_to_durable(op: &'static str, err: sim_core::SimError) -> LingquDurableError {
+        if err.to_string().contains("queue full") {
+            LingquDurableError::QueueFull(op.to_string())
+        } else {
+            LingquDurableError::SnapshotValidation(format!("{op}: {err}"))
+        }
+    }
+
+    fn expect_success(
+        op: &'static str,
+        op_id: u64,
+        events: Vec<CompletionEvent>,
+    ) -> LingquDurableResult<()> {
+        let event = events
+            .into_iter()
+            .find(|event| event.op_id == op_id)
+            .ok_or_else(|| {
+                LingquDurableError::SnapshotValidation(format!("{op} did not complete"))
+            })?;
+        match event.status {
+            CompletionStatus::Success => Ok(()),
+            CompletionStatus::RetryableFailure { code } => Err(
+                LingquDurableError::SnapshotValidation(format!("{op}: {code}")),
+            ),
+            CompletionStatus::FatalFailure { code } => Err(LingquDurableError::SnapshotValidation(
+                format!("{op}: {code}"),
+            )),
+        }
+    }
+
+    fn generated_dfs_block_id(path: &str, version: u64) -> String {
+        let sanitized = path
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>();
+        format!("block/dfs/{sanitized}/v{version}")
+    }
+
+    fn durable_snapshot_checksum(snapshot: &LingquDurableSimSnapshot) -> u64 {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(snapshot.kind.as_bytes());
+        bytes.extend_from_slice(&snapshot.schema_version.to_le_bytes());
+        bytes.extend_from_slice(&snapshot.next_timestamp_us.to_le_bytes());
+        let mut dfs_files = snapshot.dfs.files.iter().collect::<Vec<_>>();
+        dfs_files.sort_by(|left, right| {
+            left.path
+                .cmp(&right.path)
+                .then_with(|| left.version.cmp(&right.version))
+        });
+        let mut block_records = snapshot.block.blocks.iter().collect::<Vec<_>>();
+        block_records.sort_by(|left, right| {
+            left.block
+                .0
+                .cmp(&right.block.0)
+                .then_with(|| left.version.cmp(&right.version))
+        });
+        for record in dfs_files {
+            bytes.extend_from_slice(record.path.as_bytes());
+            bytes.extend_from_slice(&record.version.to_le_bytes());
+            bytes.extend_from_slice(&dfs_state_tag(record.state).to_le_bytes());
+            bytes.extend_from_slice(&record.bytes.to_le_bytes());
+            bytes.extend_from_slice(&record.checksum.to_le_bytes());
+        }
+        for record in block_records {
+            bytes.extend_from_slice(record.block.0.as_bytes());
+            bytes.extend_from_slice(&record.version.to_le_bytes());
+            bytes.extend_from_slice(&block_durable_state_tag(record.durable_state).to_le_bytes());
+            bytes.extend_from_slice(&record.checksum.to_le_bytes());
+            bytes.extend_from_slice(&(record.bytes.len() as u64).to_le_bytes());
+        }
+        checksum64(&bytes)
+    }
+
+    fn dfs_state_tag(state: LingquDfsFileState) -> u64 {
+        match state {
+            LingquDfsFileState::Committed => 1,
+            LingquDfsFileState::Tombstoned => 2,
+            LingquDfsFileState::Quarantined => 3,
+        }
+    }
+
+    fn block_durable_state_tag(state: LingquBlockDurableState) -> u64 {
+        match state {
+            LingquBlockDurableState::Committed => 1,
+            LingquBlockDurableState::Sealed => 2,
+            LingquBlockDurableState::Tombstoned => 3,
+            LingquBlockDurableState::Quarantined => 4,
+        }
+    }
+
+    fn checksum64(bytes: &[u8]) -> u64 {
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash
     }
 }
 
@@ -2343,6 +3541,10 @@ mod tests {
     use super::block::{BlockServiceProfile, BlockServiceStub};
     use super::db::{DbGetReq, DbPutReq, DbServiceProfile, DbServiceStub};
     use super::dfs::{DfsReadReq, DfsServiceProfile, DfsServiceStub, DfsWriteReq};
+    use super::durable::{
+        LingquBlockPayloadRef, LingquBlockWriteOptions, LingquDfsContentRef, LingquDfsContentType,
+        LingquDfsWriteOptions, LingquDurableError, LingquDurableSim, LingquVersionSelector,
+    };
     use super::object::{
         LingquObjectKind, LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
         LingquObjectResolveReq, LingquObjectServiceProfile, LingquObjectServiceSnapshot,
@@ -2520,6 +3722,231 @@ mod tests {
         assert!(matches!(
             err,
             sim_core::SimError::InvalidInput("block queue full")
+        ));
+    }
+
+    #[test]
+    fn durable_sim_dfs_write_read_snapshot_roundtrip() {
+        let mut sim = LingquDurableSim::default();
+        let path = "/lingqu/memory/session/a/prefix-cache.json";
+        sim.dfs_write(
+            path,
+            br#"{"cache":"ready"}"#.to_vec(),
+            LingquDfsWriteOptions {
+                content_type: LingquDfsContentType::Json,
+                ..LingquDfsWriteOptions::default()
+            },
+        )
+        .expect("write dfs file");
+
+        let snapshot = sim.export_snapshot().expect("export snapshot");
+        let bytes = snapshot.to_json_bytes().expect("encode snapshot");
+        let decoded = super::durable::LingquDurableSimSnapshot::from_json_bytes(&bytes)
+            .expect("decode snapshot");
+        let mut restored = LingquDurableSim::import_snapshot(decoded).expect("import snapshot");
+
+        assert_eq!(
+            restored
+                .dfs_read(path, LingquVersionSelector::LatestCommitted)
+                .expect("read restored file"),
+            br#"{"cache":"ready"}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn durable_sim_large_dfs_payload_is_block_backed() {
+        let mut sim = LingquDurableSim::default();
+        let path = "/lingqu/memory/session/a/hot-state.bin";
+        let payload = growing_payload(7, 128);
+        sim.dfs_write(
+            path,
+            payload.clone(),
+            LingquDfsWriteOptions {
+                inline_threshold_bytes: 16,
+                ..LingquDfsWriteOptions::default()
+            },
+        )
+        .expect("write large dfs file");
+
+        let stat = sim
+            .dfs_stat(path, LingquVersionSelector::LatestCommitted)
+            .expect("stat large dfs file");
+        assert!(matches!(stat.content_ref, LingquDfsContentRef::Block(_)));
+        assert_eq!(
+            sim.dfs_read(path, LingquVersionSelector::LatestCommitted)
+                .expect("read block backed file"),
+            payload
+        );
+    }
+
+    #[test]
+    fn durable_sim_block_ref_rejects_checksum_mismatch() {
+        let mut sim = LingquDurableSim::default();
+        let mut payload_ref = sim
+            .block_write(
+                "block/memory/hot-state/0",
+                b"persistent state".to_vec(),
+                LingquBlockWriteOptions::default(),
+            )
+            .expect("write block");
+        payload_ref.checksum ^= 0x55aa;
+
+        let err = sim
+            .block_read(&payload_ref)
+            .expect_err("checksum mismatch must fail");
+        assert!(matches!(err, LingquDurableError::ChecksumMismatch { .. }));
+        assert_eq!(sim.stats().checksum_failures, 1);
+    }
+
+    #[test]
+    fn durable_sim_dfs_tombstone_hides_latest_but_keeps_exact_version() {
+        let mut sim = LingquDurableSim::default();
+        let path = "/lingqu/memory/session/a/artifact.json";
+        sim.dfs_write(path, b"v1".to_vec(), LingquDfsWriteOptions::default())
+            .expect("write v1");
+        sim.dfs_tombstone(path, Some(1)).expect("tombstone");
+
+        let latest_err = sim
+            .dfs_read(path, LingquVersionSelector::LatestCommitted)
+            .expect_err("latest tombstone must hide file");
+        assert!(matches!(latest_err, LingquDurableError::Tombstoned(_)));
+        assert_eq!(
+            sim.dfs_read(path, LingquVersionSelector::Exact(1))
+                .expect("exact committed version survives"),
+            b"v1".to_vec()
+        );
+    }
+
+    #[test]
+    fn durable_sim_expected_version_conflict_fails() {
+        let mut sim = LingquDurableSim::default();
+        let path = "/lingqu/memory/session/a/index.json";
+        sim.dfs_write(path, b"v1".to_vec(), LingquDfsWriteOptions::default())
+            .expect("write v1");
+
+        let err = sim
+            .dfs_write(
+                path,
+                b"v2".to_vec(),
+                LingquDfsWriteOptions {
+                    expected_version: Some(7),
+                    ..LingquDfsWriteOptions::default()
+                },
+            )
+            .expect_err("stale expected version must fail");
+        assert!(matches!(err, LingquDurableError::VersionConflict { .. }));
+        assert_eq!(sim.stats().version_conflicts, 1);
+    }
+
+    #[test]
+    fn durable_sim_sealed_block_rejects_overwrite() {
+        let mut sim = LingquDurableSim::default();
+        sim.block_write(
+            "block/memory/prefix-cache/0",
+            b"sealed".to_vec(),
+            LingquBlockWriteOptions {
+                seal: true,
+                ..LingquBlockWriteOptions::default()
+            },
+        )
+        .expect("write sealed block");
+
+        let err = sim
+            .block_write(
+                "block/memory/prefix-cache/0",
+                b"new bytes".to_vec(),
+                LingquBlockWriteOptions::default(),
+            )
+            .expect_err("sealed block must reject overwrite");
+        assert!(matches!(err, LingquDurableError::Sealed(_)));
+    }
+
+    #[test]
+    fn durable_sim_import_rejects_duplicate_dfs_versions() {
+        let mut sim = LingquDurableSim::default();
+        let path = "/lingqu/memory/session/a/duplicate.json";
+        sim.dfs_write(path, b"v1".to_vec(), LingquDfsWriteOptions::default())
+            .expect("write v1");
+        let mut snapshot = sim.export_snapshot().expect("export snapshot");
+        let duplicate = snapshot.dfs.files[0].clone();
+        snapshot.dfs.files.push(duplicate);
+
+        let err = LingquDurableSim::import_snapshot(snapshot)
+            .expect_err("duplicate DFS version must fail import");
+        assert!(matches!(err, LingquDurableError::SnapshotValidation(_)));
+    }
+
+    #[test]
+    fn durable_sim_import_rejects_missing_block_backed_dfs_payload() {
+        let mut sim = LingquDurableSim::default();
+        let path = "/lingqu/memory/session/a/block-backed.bin";
+        sim.dfs_write(
+            path,
+            growing_payload(9, 64),
+            LingquDfsWriteOptions {
+                inline_threshold_bytes: 8,
+                ..LingquDfsWriteOptions::default()
+            },
+        )
+        .expect("write block-backed DFS file");
+        let mut snapshot = sim.export_snapshot().expect("export snapshot");
+        snapshot.block.blocks.clear();
+
+        let err = LingquDurableSim::import_snapshot(snapshot)
+            .expect_err("missing block-backed DFS payload must fail import");
+        assert!(matches!(err, LingquDurableError::MissingBlock(_)));
+    }
+
+    #[test]
+    fn durable_sim_block_ref_rejects_range_overflow() {
+        let mut sim = LingquDurableSim::default();
+        let mut payload_ref = sim
+            .block_write(
+                "block/memory/range/0",
+                b"range payload".to_vec(),
+                LingquBlockWriteOptions::default(),
+            )
+            .expect("write block");
+        payload_ref.offset = 8;
+        payload_ref.bytes = 128;
+
+        let err = sim
+            .block_read(&payload_ref)
+            .expect_err("range overflow must fail");
+        assert!(matches!(err, LingquDurableError::RangeOverflow(_)));
+    }
+
+    #[test]
+    fn durable_sim_import_rejects_block_ref_range_overflow() {
+        let mut sim = LingquDurableSim::default();
+        let path = "/lingqu/memory/session/a/range.bin";
+        sim.dfs_write(
+            path,
+            growing_payload(11, 64),
+            LingquDfsWriteOptions {
+                inline_threshold_bytes: 8,
+                ..LingquDfsWriteOptions::default()
+            },
+        )
+        .expect("write block-backed DFS file");
+        let mut snapshot = sim.export_snapshot().expect("export snapshot");
+        let payload_ref = match &mut snapshot.dfs.files[0].content_ref {
+            LingquDfsContentRef::Block(payload_ref) => payload_ref,
+            LingquDfsContentRef::Inline(_) => panic!("expected block-backed DFS payload"),
+        };
+        *payload_ref = LingquBlockPayloadRef {
+            block: payload_ref.block.clone(),
+            version: payload_ref.version,
+            offset: 32,
+            bytes: 128,
+            checksum: payload_ref.checksum,
+        };
+
+        let err = LingquDurableSim::import_snapshot(snapshot)
+            .expect_err("overflowing DFS block ref must fail import");
+        assert!(matches!(
+            err,
+            LingquDurableError::SnapshotValidation(_) | LingquDurableError::RangeOverflow(_)
         ));
     }
 

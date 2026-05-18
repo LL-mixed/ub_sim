@@ -8,10 +8,10 @@ use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
-use sim_core::{BlockHash, CompletionStatus, SegmentHandle, SimTimestamp, TensorDType};
-use sim_runtime::{BlockReadReq, BlockWriteReq};
-use sim_services::block::{BlockServiceProfile, BlockServiceStub};
-use sim_services::dfs::{DfsReadReq, DfsServiceProfile, DfsServiceStub, DfsWriteReq};
+use sim_core::{BlockHash, SegmentHandle, TensorDType};
+use sim_services::block::BlockServiceProfile;
+use sim_services::dfs::DfsServiceProfile;
+use sim_services::durable as durable_sim;
 use sim_services::object::{
     LingquObjectKind, LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
     LingquObjectServiceStub, LingquPayloadBackend, LingquPayloadPlacement,
@@ -371,13 +371,304 @@ impl LingquMemoryDurableStoreSnapshot {
     }
 }
 
+pub const LINGQU_EXECUTION_ARTIFACT_MANIFEST_PATH: &str =
+    "/lingqu/memory/execution-artifacts/manifest.json";
+pub const LINGQU_PREFIX_CACHE_MANIFEST_PATH: &str = "/lingqu/memory/prefix-cache/manifest.json";
+pub const LINGQU_SHORTPATH_DECISION_MANIFEST_PATH: &str =
+    "/lingqu/memory/shortpath-decisions/audit.json";
+pub const LINGQU_PREFETCH_PLAN_MANIFEST_PATH: &str = "/lingqu/memory/prefetch-plans/audit.json";
+
+pub const LINGQU_EXECUTION_ARTIFACT_MANIFEST_KIND: &str =
+    "lingqu_memory_execution_artifact_manifest";
+pub const LINGQU_PREFIX_CACHE_MANIFEST_KIND: &str = "lingqu_memory_prefix_cache_manifest";
+pub const LINGQU_SHORTPATH_DECISION_MANIFEST_KIND: &str =
+    "lingqu_memory_shortpath_decision_manifest";
+pub const LINGQU_PREFETCH_PLAN_MANIFEST_KIND: &str = "lingqu_memory_prefetch_plan_manifest";
+pub const LINGQU_MEMORY_MANIFEST_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LingquExecutionArtifactManifest {
+    pub kind: String,
+    pub schema_version: u32,
+    pub artifacts: Vec<ExecutionArtifactObject>,
+    pub checksum: u64,
+}
+
+impl LingquExecutionArtifactManifest {
+    pub fn new(mut artifacts: Vec<ExecutionArtifactObject>) -> MemoryResult<Self> {
+        artifacts.sort_by(|left, right| left.artifact_id.cmp(&right.artifact_id));
+        let mut manifest = Self {
+            kind: LINGQU_EXECUTION_ARTIFACT_MANIFEST_KIND.to_string(),
+            schema_version: LINGQU_MEMORY_MANIFEST_SCHEMA_VERSION,
+            artifacts,
+            checksum: 0,
+        };
+        manifest.checksum = execution_artifact_manifest_checksum(&manifest);
+        manifest.validate()?;
+        Ok(manifest)
+    }
+
+    pub fn validate(&self) -> MemoryResult<()> {
+        if self.kind != LINGQU_EXECUTION_ARTIFACT_MANIFEST_KIND {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "execution_artifact_manifest.kind",
+                reason: "unexpected manifest kind",
+            });
+        }
+        if self.schema_version != LINGQU_MEMORY_MANIFEST_SCHEMA_VERSION {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "execution_artifact_manifest.schema_version",
+                reason: "unsupported manifest schema version",
+            });
+        }
+        let mut ids = HashSet::new();
+        for artifact in &self.artifacts {
+            artifact.validate()?;
+            if !ids.insert(artifact.artifact_id.clone()) {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "execution_artifact_manifest.artifacts",
+                    reason: "duplicate artifact id",
+                });
+            }
+        }
+        let actual = execution_artifact_manifest_checksum(self);
+        if actual != self.checksum {
+            return Err(LingquMemoryError::PayloadChecksumMismatch {
+                id: LINGQU_EXECUTION_ARTIFACT_MANIFEST_PATH.to_string(),
+                expected: self.checksum,
+                actual,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn to_json_bytes(&self) -> MemoryResult<Vec<u8>> {
+        self.validate()?;
+        serde_json::to_vec_pretty(self)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))
+    }
+
+    pub fn from_json_bytes(bytes: &[u8]) -> MemoryResult<Self> {
+        let manifest = serde_json::from_slice::<Self>(bytes)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+        manifest.validate()?;
+        Ok(manifest)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LingquPrefixCacheManifest {
+    pub kind: String,
+    pub schema_version: u32,
+    pub artifacts: Vec<PrefixCacheArtifact>,
+    pub checksum: u64,
+}
+
+impl LingquPrefixCacheManifest {
+    pub fn new(mut artifacts: Vec<PrefixCacheArtifact>) -> MemoryResult<Self> {
+        artifacts.sort_by(|left, right| left.artifact_id.cmp(&right.artifact_id));
+        let mut manifest = Self {
+            kind: LINGQU_PREFIX_CACHE_MANIFEST_KIND.to_string(),
+            schema_version: LINGQU_MEMORY_MANIFEST_SCHEMA_VERSION,
+            artifacts,
+            checksum: 0,
+        };
+        manifest.checksum = prefix_cache_manifest_checksum(&manifest);
+        manifest.validate()?;
+        Ok(manifest)
+    }
+
+    pub fn validate(&self) -> MemoryResult<()> {
+        if self.kind != LINGQU_PREFIX_CACHE_MANIFEST_KIND {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "prefix_cache_manifest.kind",
+                reason: "unexpected manifest kind",
+            });
+        }
+        if self.schema_version != LINGQU_MEMORY_MANIFEST_SCHEMA_VERSION {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "prefix_cache_manifest.schema_version",
+                reason: "unsupported manifest schema version",
+            });
+        }
+        let mut ids = HashSet::new();
+        for artifact in &self.artifacts {
+            artifact.validate()?;
+            if !ids.insert(artifact.artifact_id.clone()) {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "prefix_cache_manifest.artifacts",
+                    reason: "duplicate artifact id",
+                });
+            }
+        }
+        let actual = prefix_cache_manifest_checksum(self);
+        if actual != self.checksum {
+            return Err(LingquMemoryError::PayloadChecksumMismatch {
+                id: LINGQU_PREFIX_CACHE_MANIFEST_PATH.to_string(),
+                expected: self.checksum,
+                actual,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn to_json_bytes(&self) -> MemoryResult<Vec<u8>> {
+        self.validate()?;
+        serde_json::to_vec_pretty(self)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))
+    }
+
+    pub fn from_json_bytes(bytes: &[u8]) -> MemoryResult<Self> {
+        let manifest = serde_json::from_slice::<Self>(bytes)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+        manifest.validate()?;
+        Ok(manifest)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LingquShortpathDecisionManifest {
+    pub kind: String,
+    pub schema_version: u32,
+    pub decisions: Vec<ShortpathDecisionRecord>,
+    pub checksum: u64,
+}
+
+impl LingquShortpathDecisionManifest {
+    pub fn new(mut decisions: Vec<ShortpathDecisionRecord>) -> MemoryResult<Self> {
+        decisions.sort_by(|left, right| left.decision_id.cmp(&right.decision_id));
+        let mut manifest = Self {
+            kind: LINGQU_SHORTPATH_DECISION_MANIFEST_KIND.to_string(),
+            schema_version: LINGQU_MEMORY_MANIFEST_SCHEMA_VERSION,
+            decisions,
+            checksum: 0,
+        };
+        manifest.checksum = shortpath_decision_manifest_checksum(&manifest);
+        manifest.validate()?;
+        Ok(manifest)
+    }
+
+    pub fn validate(&self) -> MemoryResult<()> {
+        if self.kind != LINGQU_SHORTPATH_DECISION_MANIFEST_KIND {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "shortpath_decision_manifest.kind",
+                reason: "unexpected manifest kind",
+            });
+        }
+        if self.schema_version != LINGQU_MEMORY_MANIFEST_SCHEMA_VERSION {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "shortpath_decision_manifest.schema_version",
+                reason: "unsupported manifest schema version",
+            });
+        }
+        let mut ids = HashSet::new();
+        for decision in &self.decisions {
+            decision.validate()?;
+            if !ids.insert(decision.decision_id.clone()) {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "shortpath_decision_manifest.decisions",
+                    reason: "duplicate decision id",
+                });
+            }
+        }
+        let actual = shortpath_decision_manifest_checksum(self);
+        if actual != self.checksum {
+            return Err(LingquMemoryError::PayloadChecksumMismatch {
+                id: LINGQU_SHORTPATH_DECISION_MANIFEST_PATH.to_string(),
+                expected: self.checksum,
+                actual,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn to_json_bytes(&self) -> MemoryResult<Vec<u8>> {
+        self.validate()?;
+        serde_json::to_vec_pretty(self)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))
+    }
+
+    pub fn from_json_bytes(bytes: &[u8]) -> MemoryResult<Self> {
+        let manifest = serde_json::from_slice::<Self>(bytes)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+        manifest.validate()?;
+        Ok(manifest)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LingquPrefetchPlanManifest {
+    pub kind: String,
+    pub schema_version: u32,
+    pub plans: Vec<PrefetchPlanRecord>,
+    pub checksum: u64,
+}
+
+impl LingquPrefetchPlanManifest {
+    pub fn new(mut plans: Vec<PrefetchPlanRecord>) -> MemoryResult<Self> {
+        plans.sort_by(|left, right| left.plan_id.cmp(&right.plan_id));
+        let mut manifest = Self {
+            kind: LINGQU_PREFETCH_PLAN_MANIFEST_KIND.to_string(),
+            schema_version: LINGQU_MEMORY_MANIFEST_SCHEMA_VERSION,
+            plans,
+            checksum: 0,
+        };
+        manifest.checksum = prefetch_plan_manifest_checksum(&manifest);
+        manifest.validate()?;
+        Ok(manifest)
+    }
+
+    pub fn validate(&self) -> MemoryResult<()> {
+        if self.kind != LINGQU_PREFETCH_PLAN_MANIFEST_KIND {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "prefetch_plan_manifest.kind",
+                reason: "unexpected manifest kind",
+            });
+        }
+        if self.schema_version != LINGQU_MEMORY_MANIFEST_SCHEMA_VERSION {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "prefetch_plan_manifest.schema_version",
+                reason: "unsupported manifest schema version",
+            });
+        }
+        let mut ids = HashSet::new();
+        for plan in &self.plans {
+            plan.validate()?;
+            if !ids.insert(plan.plan_id.clone()) {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "prefetch_plan_manifest.plans",
+                    reason: "duplicate plan id",
+                });
+            }
+        }
+        let actual = prefetch_plan_manifest_checksum(self);
+        if actual != self.checksum {
+            return Err(LingquMemoryError::PayloadChecksumMismatch {
+                id: LINGQU_PREFETCH_PLAN_MANIFEST_PATH.to_string(),
+                expected: self.checksum,
+                actual,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn to_json_bytes(&self) -> MemoryResult<Vec<u8>> {
+        self.validate()?;
+        serde_json::to_vec_pretty(self)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))
+    }
+
+    pub fn from_json_bytes(bytes: &[u8]) -> MemoryResult<Self> {
+        let manifest = serde_json::from_slice::<Self>(bytes)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+        manifest.validate()?;
+        Ok(manifest)
+    }
+}
+
 #[derive(Debug)]
 pub struct LingquMemoryDurableStore {
-    dfs_service: DfsServiceStub,
-    block_service: BlockServiceStub,
-    dfs_payloads: HashMap<String, Vec<u8>>,
-    block_payloads: HashMap<BlockHash, Vec<u8>>,
-    now_us: SimTimestamp,
+    durable: durable_sim::LingquDurableSim,
     stats: LingquMemoryDurableStats,
 }
 
@@ -391,11 +682,11 @@ impl LingquMemoryDurableStore {
         block_profile: BlockServiceProfile,
     ) -> Self {
         Self {
-            dfs_service: DfsServiceStub::new(dfs_profile),
-            block_service: BlockServiceStub::with_profile(block_profile),
-            dfs_payloads: HashMap::new(),
-            block_payloads: HashMap::new(),
-            now_us: 1,
+            durable: durable_sim::LingquDurableSim::new(durable_sim::LingquDurableSimProfile {
+                dfs: dfs_profile.into(),
+                block: block_profile.into(),
+                default_inline_threshold_bytes: 4096,
+            }),
             stats: LingquMemoryDurableStats::default(),
         }
     }
@@ -405,33 +696,28 @@ impl LingquMemoryDurableStore {
     }
 
     pub fn export_snapshot(&self) -> MemoryResult<LingquMemoryDurableStoreSnapshot> {
-        let mut dfs_payloads = self
-            .dfs_payloads
-            .iter()
-            .map(|(path, bytes)| LingquMemoryDfsPayloadSnapshot {
-                path: path.clone(),
-                bytes: bytes.clone(),
-            })
-            .collect::<Vec<_>>();
+        let durable_snapshot = self.export_durable_sim_snapshot()?;
+        let mut dfs_payloads = legacy_dfs_payloads_from_durable_snapshot(&durable_snapshot)?;
         dfs_payloads.sort_by(|left, right| left.path.cmp(&right.path));
 
-        let mut block_payloads = self
-            .block_payloads
-            .iter()
-            .map(|(block, bytes)| LingquMemoryBlockPayloadSnapshot {
-                block: block.0.clone(),
-                bytes: bytes.clone(),
-            })
-            .collect::<Vec<_>>();
+        let mut block_payloads = legacy_block_payloads_from_durable_snapshot(&durable_snapshot);
         block_payloads.sort_by(|left, right| left.block.cmp(&right.block));
 
         let snapshot = LingquMemoryDurableStoreSnapshot {
             dfs_payloads,
             block_payloads,
-            next_timestamp_us: self.now_us,
+            next_timestamp_us: durable_snapshot.next_timestamp_us,
         };
         snapshot.validate()?;
         Ok(snapshot)
+    }
+
+    pub fn export_durable_sim_snapshot(
+        &self,
+    ) -> MemoryResult<durable_sim::LingquDurableSimSnapshot> {
+        self.durable
+            .export_snapshot()
+            .map_err(memory_error_from_durable)
     }
 
     pub fn import_snapshot(snapshot: LingquMemoryDurableStoreSnapshot) -> MemoryResult<Self> {
@@ -443,9 +729,19 @@ impl LingquMemoryDurableStore {
         for payload in snapshot.block_payloads {
             store.submit_block_write(BlockHash(payload.block), payload.bytes)?;
         }
-        store.now_us = snapshot.next_timestamp_us;
         store.stats = LingquMemoryDurableStats::default();
         Ok(store)
+    }
+
+    pub fn import_durable_sim_snapshot(
+        snapshot: durable_sim::LingquDurableSimSnapshot,
+    ) -> MemoryResult<Self> {
+        let durable = durable_sim::LingquDurableSim::import_snapshot(snapshot)
+            .map_err(memory_error_from_durable)?;
+        Ok(Self {
+            durable,
+            stats: LingquMemoryDurableStats::default(),
+        })
     }
 
     pub fn persist_catalog_snapshot(
@@ -481,6 +777,74 @@ impl LingquMemoryDurableStore {
         QueryResult::from_json_bytes(&bytes)
     }
 
+    pub fn persist_execution_artifact_manifest(
+        &mut self,
+        artifacts: Vec<ExecutionArtifactObject>,
+    ) -> MemoryResult<LingquDfsPath> {
+        let manifest = LingquExecutionArtifactManifest::new(artifacts)?;
+        let bytes = manifest.to_json_bytes()?;
+        let path = LingquDfsPath::new(LINGQU_EXECUTION_ARTIFACT_MANIFEST_PATH);
+        self.submit_dfs_write(path.path.clone(), bytes)?;
+        Ok(path)
+    }
+
+    pub fn load_execution_artifact_manifest(
+        &mut self,
+    ) -> MemoryResult<Vec<ExecutionArtifactObject>> {
+        let bytes = self.submit_dfs_read(LINGQU_EXECUTION_ARTIFACT_MANIFEST_PATH)?;
+        Ok(LingquExecutionArtifactManifest::from_json_bytes(&bytes)?.artifacts)
+    }
+
+    pub fn persist_prefix_cache_manifest(
+        &mut self,
+        artifacts: Vec<PrefixCacheArtifact>,
+    ) -> MemoryResult<LingquDfsPath> {
+        let manifest = LingquPrefixCacheManifest::new(artifacts)?;
+        let bytes = manifest.to_json_bytes()?;
+        let path = LingquDfsPath::new(LINGQU_PREFIX_CACHE_MANIFEST_PATH);
+        self.submit_dfs_write(path.path.clone(), bytes)?;
+        Ok(path)
+    }
+
+    pub fn load_prefix_cache_manifest(&mut self) -> MemoryResult<Vec<PrefixCacheArtifact>> {
+        let bytes = self.submit_dfs_read(LINGQU_PREFIX_CACHE_MANIFEST_PATH)?;
+        Ok(LingquPrefixCacheManifest::from_json_bytes(&bytes)?.artifacts)
+    }
+
+    pub fn persist_shortpath_decision_manifest(
+        &mut self,
+        decisions: Vec<ShortpathDecisionRecord>,
+    ) -> MemoryResult<LingquDfsPath> {
+        let manifest = LingquShortpathDecisionManifest::new(decisions)?;
+        let bytes = manifest.to_json_bytes()?;
+        let path = LingquDfsPath::new(LINGQU_SHORTPATH_DECISION_MANIFEST_PATH);
+        self.submit_dfs_write(path.path.clone(), bytes)?;
+        Ok(path)
+    }
+
+    pub fn load_shortpath_decision_manifest(
+        &mut self,
+    ) -> MemoryResult<Vec<ShortpathDecisionRecord>> {
+        let bytes = self.submit_dfs_read(LINGQU_SHORTPATH_DECISION_MANIFEST_PATH)?;
+        Ok(LingquShortpathDecisionManifest::from_json_bytes(&bytes)?.decisions)
+    }
+
+    pub fn persist_prefetch_plan_manifest(
+        &mut self,
+        plans: Vec<PrefetchPlanRecord>,
+    ) -> MemoryResult<LingquDfsPath> {
+        let manifest = LingquPrefetchPlanManifest::new(plans)?;
+        let bytes = manifest.to_json_bytes()?;
+        let path = LingquDfsPath::new(LINGQU_PREFETCH_PLAN_MANIFEST_PATH);
+        self.submit_dfs_write(path.path.clone(), bytes)?;
+        Ok(path)
+    }
+
+    pub fn load_prefetch_plan_manifest(&mut self) -> MemoryResult<Vec<PrefetchPlanRecord>> {
+        let bytes = self.submit_dfs_read(LINGQU_PREFETCH_PLAN_MANIFEST_PATH)?;
+        Ok(LingquPrefetchPlanManifest::from_json_bytes(&bytes)?.plans)
+    }
+
     pub fn write_block_payload(
         &mut self,
         block: impl Into<String>,
@@ -509,135 +873,199 @@ impl LingquMemoryDurableStore {
         payload_ref: &LingquBlockPayloadRef,
     ) -> MemoryResult<Vec<u8>> {
         payload_ref.validate("block_payload_ref")?;
-        let payload = self.submit_block_read(&payload_ref.block)?;
-        let start = payload_ref.offset as usize;
-        let end = payload_ref.offset.checked_add(payload_ref.bytes).ok_or(
-            LingquMemoryError::InvalidValue {
-                field: "block_payload_ref",
-                reason: "payload range overflow",
-            },
-        )? as usize;
-        if end > payload.len() {
-            return Err(LingquMemoryError::InvalidValue {
-                field: "block_payload_ref",
-                reason: "payload range exceeds block bytes",
-            });
-        }
-        let selected = payload[start..end].to_vec();
-        let actual = checksum64(&selected);
-        if actual != payload_ref.checksum {
-            return Err(LingquMemoryError::PayloadChecksumMismatch {
-                id: payload_ref.block.0.clone(),
-                expected: payload_ref.checksum,
-                actual,
-            });
-        }
-        self.stats.block_bytes_read += selected.len() as u64;
-        Ok(selected)
+        self.submit_block_read(payload_ref)
     }
 
     fn submit_dfs_write(&mut self, path: String, bytes: Vec<u8>) -> MemoryResult<()> {
-        let now = self.next_timestamp();
-        let handle = self
-            .dfs_service
-            .submit_write(
-                DfsWriteReq {
-                    task: None,
-                    path: path.clone(),
-                    bytes: bytes.len() as u64,
+        let bytes_len = bytes.len() as u64;
+        self.durable
+            .dfs_write(
+                path,
+                bytes,
+                durable_sim::LingquDfsWriteOptions {
+                    content_type: durable_sim::LingquDfsContentType::Json,
+                    ..durable_sim::LingquDfsWriteOptions::default()
                 },
-                now,
             )
-            .map_err(|err| LingquMemoryError::DurableServiceFailed(err.to_string()))?;
-        let events = self.dfs_service.poll_ready(SimTimestamp::MAX);
-        expect_success("dfs_write", handle.0, events)?;
+            .map_err(memory_error_from_durable)?;
         self.stats.dfs_catalog_writes += 1;
-        self.stats.dfs_bytes_written += bytes.len() as u64;
-        self.dfs_payloads.insert(path, bytes);
+        self.stats.dfs_bytes_written += bytes_len;
         Ok(())
     }
 
     fn submit_dfs_read(&mut self, path: &str) -> MemoryResult<Vec<u8>> {
-        if !self.dfs_payloads.contains_key(path) {
-            return Err(LingquMemoryError::MissingDfsPath(path.to_string()));
-        }
-        let now = self.next_timestamp();
-        let handle = self
-            .dfs_service
-            .submit_read(
-                DfsReadReq {
-                    task: None,
-                    path: path.to_string(),
-                },
-                now,
-            )
-            .map_err(|err| LingquMemoryError::DurableServiceFailed(err.to_string()))?;
-        let events = self.dfs_service.poll_ready(SimTimestamp::MAX);
-        expect_success("dfs_read", handle.0, events)?;
         let bytes = self
-            .dfs_payloads
-            .get(path)
-            .cloned()
-            .ok_or_else(|| LingquMemoryError::MissingDfsPath(path.to_string()))?;
+            .durable
+            .dfs_read(path, durable_sim::LingquVersionSelector::LatestCommitted)
+            .map_err(memory_error_from_durable)?;
         self.stats.dfs_catalog_reads += 1;
         self.stats.dfs_bytes_read += bytes.len() as u64;
         Ok(bytes)
     }
 
     fn submit_block_write(&mut self, block: BlockHash, bytes: Vec<u8>) -> MemoryResult<()> {
-        let now = self.next_timestamp();
-        let handle = self
-            .block_service
-            .submit_write(
-                BlockWriteReq {
-                    task: None,
-                    block: block.clone(),
-                },
-                now,
+        let bytes_len = bytes.len() as u64;
+        self.durable
+            .block_write(
+                block.0,
+                bytes,
+                durable_sim::LingquBlockWriteOptions::default(),
             )
-            .map_err(|err| LingquMemoryError::DurableServiceFailed(err.to_string()))?;
-        let events = self.block_service.poll_ready(SimTimestamp::MAX);
-        expect_success("block_write", handle.0, events)?;
+            .map_err(memory_error_from_durable)?;
         self.stats.block_payload_writes += 1;
-        self.stats.block_bytes_written += bytes.len() as u64;
-        self.block_payloads.insert(block, bytes);
+        self.stats.block_bytes_written += bytes_len;
         Ok(())
     }
 
-    fn submit_block_read(&mut self, block: &BlockHash) -> MemoryResult<Vec<u8>> {
-        if !self.block_payloads.contains_key(block) {
-            return Err(LingquMemoryError::MissingBlockPayload(block.0.clone()));
-        }
-        let now = self.next_timestamp();
-        let handle = self
-            .block_service
-            .submit_read(
-                BlockReadReq {
-                    task: None,
-                    block: block.clone(),
-                },
-                now,
+    fn submit_block_read(&mut self, payload_ref: &LingquBlockPayloadRef) -> MemoryResult<Vec<u8>> {
+        let latest = self
+            .durable
+            .block_stat(
+                &payload_ref.block,
+                durable_sim::LingquVersionSelector::LatestCommitted,
             )
-            .map_err(|err| LingquMemoryError::DurableServiceFailed(err.to_string()))?;
-        let events = self.block_service.poll_ready(SimTimestamp::MAX);
-        expect_success("block_read", handle.0, events)?;
+            .map_err(memory_error_from_durable)?;
+        let durable_payload_ref = durable_sim::LingquBlockPayloadRef {
+            block: payload_ref.block.clone(),
+            version: latest.version,
+            offset: payload_ref.offset,
+            bytes: payload_ref.bytes,
+            checksum: payload_ref.checksum,
+        };
         self.stats.block_payload_reads += 1;
-        self.block_payloads
-            .get(block)
-            .cloned()
-            .ok_or_else(|| LingquMemoryError::MissingBlockPayload(block.0.clone()))
-    }
-
-    fn next_timestamp(&mut self) -> SimTimestamp {
-        let now = self.now_us;
-        self.now_us = self.now_us.saturating_add(1);
-        now
+        let bytes = self
+            .durable
+            .block_read(&durable_payload_ref)
+            .map_err(memory_error_from_durable)?;
+        Ok(bytes)
     }
 }
 
 impl Default for LingquMemoryDurableStore {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn memory_error_from_durable(err: durable_sim::LingquDurableError) -> LingquMemoryError {
+    match err {
+        durable_sim::LingquDurableError::MissingDfsPath(path) => {
+            LingquMemoryError::MissingDfsPath(path)
+        }
+        durable_sim::LingquDurableError::MissingBlock(block) => {
+            LingquMemoryError::MissingBlockPayload(block)
+        }
+        durable_sim::LingquDurableError::ChecksumMismatch {
+            id,
+            expected,
+            actual,
+        } => LingquMemoryError::PayloadChecksumMismatch {
+            id,
+            expected,
+            actual,
+        },
+        other => LingquMemoryError::DurableServiceFailed(other.to_string()),
+    }
+}
+
+fn legacy_dfs_payloads_from_durable_snapshot(
+    snapshot: &durable_sim::LingquDurableSimSnapshot,
+) -> MemoryResult<Vec<LingquMemoryDfsPayloadSnapshot>> {
+    let mut latest_by_path: HashMap<String, &durable_sim::LingquDfsFileRecord> = HashMap::new();
+    for record in &snapshot.dfs.files {
+        if record.state != durable_sim::LingquDfsFileState::Committed {
+            continue;
+        }
+        let replace = latest_by_path
+            .get(&record.path)
+            .map(|current| current.version < record.version)
+            .unwrap_or(true);
+        if replace {
+            latest_by_path.insert(record.path.clone(), record);
+        }
+    }
+
+    latest_by_path
+        .into_values()
+        .map(|record| {
+            let bytes = durable_dfs_record_bytes(record, &snapshot.block.blocks)?;
+            Ok(LingquMemoryDfsPayloadSnapshot {
+                path: record.path.clone(),
+                bytes,
+            })
+        })
+        .collect()
+}
+
+fn legacy_block_payloads_from_durable_snapshot(
+    snapshot: &durable_sim::LingquDurableSimSnapshot,
+) -> Vec<LingquMemoryBlockPayloadSnapshot> {
+    let mut latest_by_block: HashMap<String, &durable_sim::LingquBlockRecord> = HashMap::new();
+    for record in &snapshot.block.blocks {
+        if !matches!(
+            record.durable_state,
+            durable_sim::LingquBlockDurableState::Committed
+                | durable_sim::LingquBlockDurableState::Sealed
+        ) {
+            continue;
+        }
+        let replace = latest_by_block
+            .get(&record.block.0)
+            .map(|current| current.version < record.version)
+            .unwrap_or(true);
+        if replace {
+            latest_by_block.insert(record.block.0.clone(), record);
+        }
+    }
+
+    latest_by_block
+        .into_values()
+        .map(|record| LingquMemoryBlockPayloadSnapshot {
+            block: record.block.0.clone(),
+            bytes: record.bytes.clone(),
+        })
+        .collect()
+}
+
+fn durable_dfs_record_bytes(
+    record: &durable_sim::LingquDfsFileRecord,
+    block_records: &[durable_sim::LingquBlockRecord],
+) -> MemoryResult<Vec<u8>> {
+    match &record.content_ref {
+        durable_sim::LingquDfsContentRef::Inline(bytes) => Ok(bytes.clone()),
+        durable_sim::LingquDfsContentRef::Block(payload_ref) => {
+            let block = block_records
+                .iter()
+                .find(|candidate| {
+                    candidate.block == payload_ref.block && candidate.version == payload_ref.version
+                })
+                .ok_or_else(|| {
+                    LingquMemoryError::MissingBlockPayload(payload_ref.block.0.clone())
+                })?;
+            let start = payload_ref.offset as usize;
+            let end = payload_ref.offset.checked_add(payload_ref.bytes).ok_or(
+                LingquMemoryError::InvalidValue {
+                    field: "dfs_payload_ref",
+                    reason: "payload range overflow",
+                },
+            )? as usize;
+            if end > block.bytes.len() {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "dfs_payload_ref",
+                    reason: "payload range exceeds block bytes",
+                });
+            }
+            let selected = block.bytes[start..end].to_vec();
+            let actual = checksum64(&selected);
+            if actual != payload_ref.checksum {
+                return Err(LingquMemoryError::PayloadChecksumMismatch {
+                    id: payload_ref.block.0.clone(),
+                    expected: payload_ref.checksum,
+                    actual,
+                });
+            }
+            Ok(selected)
+        }
     }
 }
 
@@ -2021,6 +2449,102 @@ impl LingquMemoryService {
         Ok(catalog)
     }
 
+    pub fn persist_execution_artifacts_to_dfs(
+        &self,
+        durable_store: &mut LingquMemoryDurableStore,
+    ) -> MemoryResult<LingquDfsPath> {
+        let mut artifacts = self
+            .execution_artifacts
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        artifacts.sort_by(|left, right| left.artifact_id.cmp(&right.artifact_id));
+        durable_store.persist_execution_artifact_manifest(artifacts)
+    }
+
+    pub fn rebuild_execution_artifacts_from_dfs(
+        &mut self,
+        durable_store: &mut LingquMemoryDurableStore,
+    ) -> MemoryResult<Vec<ExecutionArtifactObject>> {
+        let artifacts = durable_store.load_execution_artifact_manifest()?;
+        for artifact in &artifacts {
+            self.register_execution_artifact(artifact.clone())?;
+        }
+        Ok(artifacts)
+    }
+
+    pub fn persist_prefix_cache_artifacts_to_dfs(
+        &self,
+        durable_store: &mut LingquMemoryDurableStore,
+    ) -> MemoryResult<LingquDfsPath> {
+        let mut artifacts = self
+            .prefix_cache_artifacts
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        artifacts.sort_by(|left, right| left.artifact_id.cmp(&right.artifact_id));
+        durable_store.persist_prefix_cache_manifest(artifacts)
+    }
+
+    pub fn rebuild_prefix_cache_artifacts_from_dfs(
+        &mut self,
+        durable_store: &mut LingquMemoryDurableStore,
+    ) -> MemoryResult<Vec<PrefixCacheArtifact>> {
+        let artifacts = durable_store.load_prefix_cache_manifest()?;
+        for artifact in &artifacts {
+            self.register_prefix_cache_artifact(artifact.clone())?;
+        }
+        Ok(artifacts)
+    }
+
+    pub fn persist_shortpath_decisions_to_dfs(
+        &self,
+        durable_store: &mut LingquMemoryDurableStore,
+    ) -> MemoryResult<LingquDfsPath> {
+        let mut decisions = self
+            .shortpath_decisions
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        decisions.sort_by(|left, right| left.decision_id.cmp(&right.decision_id));
+        durable_store.persist_shortpath_decision_manifest(decisions)
+    }
+
+    pub fn rebuild_shortpath_decisions_from_dfs(
+        &mut self,
+        durable_store: &mut LingquMemoryDurableStore,
+    ) -> MemoryResult<Vec<ShortpathDecisionRecord>> {
+        let decisions = durable_store.load_shortpath_decision_manifest()?;
+        for decision in &decisions {
+            decision.validate()?;
+            self.shortpath_decisions
+                .insert(decision.decision_id.clone(), decision.clone());
+        }
+        Ok(decisions)
+    }
+
+    pub fn persist_prefetch_plans_to_dfs(
+        &self,
+        durable_store: &mut LingquMemoryDurableStore,
+    ) -> MemoryResult<LingquDfsPath> {
+        let mut plans = self.prefetch_plans.values().cloned().collect::<Vec<_>>();
+        plans.sort_by(|left, right| left.plan_id.cmp(&right.plan_id));
+        durable_store.persist_prefetch_plan_manifest(plans)
+    }
+
+    pub fn rebuild_prefetch_plans_from_dfs(
+        &mut self,
+        durable_store: &mut LingquMemoryDurableStore,
+    ) -> MemoryResult<Vec<PrefetchPlanRecord>> {
+        let plans = durable_store.load_prefetch_plan_manifest()?;
+        for plan in &plans {
+            plan.validate()?;
+            self.prefetch_plans
+                .insert(plan.plan_id.clone(), plan.clone());
+        }
+        Ok(plans)
+    }
+
     pub fn ingest_record(
         &mut self,
         record: MemoryRecord,
@@ -3268,27 +3792,6 @@ fn validate_table_shape(shape: &[u64], value_count: usize) -> MemoryResult<()> {
     Ok(())
 }
 
-fn expect_success(
-    op_name: &'static str,
-    op_id: u64,
-    events: Vec<sim_core::CompletionEvent>,
-) -> MemoryResult<()> {
-    let event = events
-        .into_iter()
-        .find(|event| event.op_id == op_id)
-        .ok_or_else(|| {
-            LingquMemoryError::DurableServiceFailed(format!("{op_name}:missing_completion"))
-        })?;
-    match event.status {
-        CompletionStatus::Success => Ok(()),
-        CompletionStatus::RetryableFailure { code } | CompletionStatus::FatalFailure { code } => {
-            Err(LingquMemoryError::DurableServiceFailed(format!(
-                "{op_name}:{code}"
-            )))
-        }
-    }
-}
-
 fn record_selectable(
     record: &MemoryRecord,
     query: &MemoryQuery,
@@ -3696,6 +4199,15 @@ fn prefix_cache_reuse_action_tag(action: PrefixCacheReuseAction) -> u64 {
     }
 }
 
+fn shortpath_action_tag(action: ShortpathAction) -> u64 {
+    match action {
+        ShortpathAction::Continue => 1,
+        ShortpathAction::JumpToLayer => 2,
+        ShortpathAction::JumpToTerminal => 3,
+        ShortpathAction::RequireVerify => 4,
+    }
+}
+
 fn shortpath_decision_checksum(
     decision_id: &str,
     request_id: &str,
@@ -3723,6 +4235,100 @@ fn shortpath_decision_checksum(
     bytes.extend_from_slice(&artifact_checksum.to_le_bytes());
     bytes.extend_from_slice(&created_at_us.to_le_bytes());
     checksum64(&bytes)
+}
+
+fn execution_artifact_manifest_checksum(manifest: &LingquExecutionArtifactManifest) -> u64 {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(manifest.kind.as_bytes());
+    bytes.extend_from_slice(&manifest.schema_version.to_le_bytes());
+    let mut artifacts = manifest.artifacts.iter().collect::<Vec<_>>();
+    artifacts.sort_by(|left, right| left.artifact_id.cmp(&right.artifact_id));
+    for artifact in artifacts {
+        push_checksum_str(&mut bytes, &artifact.artifact_id);
+        bytes.extend_from_slice(&execution_artifact_kind_tag(artifact.kind).to_le_bytes());
+        push_checksum_str(&mut bytes, &artifact.model.model_key);
+        bytes.extend_from_slice(&artifact.producer_boundary.step_index.to_le_bytes());
+        bytes.extend_from_slice(&artifact.producer_boundary.node_index.to_le_bytes());
+        bytes.extend_from_slice(&artifact.producer_boundary.layer_start.to_le_bytes());
+        bytes.extend_from_slice(&artifact.producer_boundary.layer_end.to_le_bytes());
+        bytes.extend_from_slice(&artifact.target_layer_start.to_le_bytes());
+        bytes.extend_from_slice(&artifact.target_layer_end.to_le_bytes());
+        bytes.extend_from_slice(&artifact.confidence_milli.to_le_bytes());
+        bytes.extend_from_slice(&artifact.checksum.to_le_bytes());
+        bytes.extend_from_slice(&artifact.version.to_le_bytes());
+    }
+    checksum64(&bytes)
+}
+
+fn prefix_cache_manifest_checksum(manifest: &LingquPrefixCacheManifest) -> u64 {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(manifest.kind.as_bytes());
+    bytes.extend_from_slice(&manifest.schema_version.to_le_bytes());
+    let mut artifacts = manifest.artifacts.iter().collect::<Vec<_>>();
+    artifacts.sort_by(|left, right| left.artifact_id.cmp(&right.artifact_id));
+    for artifact in artifacts {
+        push_checksum_str(&mut bytes, &artifact.artifact_id);
+        push_checksum_str(&mut bytes, &artifact.key.model.model_key);
+        push_checksum_str(&mut bytes, &artifact.key.namespace);
+        bytes.extend_from_slice(&artifact.key.prefix_token_hash.to_le_bytes());
+        bytes.extend_from_slice(&artifact.key.prefix_token_count.to_le_bytes());
+        bytes.extend_from_slice(&artifact.key.layer_start.to_le_bytes());
+        bytes.extend_from_slice(&artifact.key.layer_end.to_le_bytes());
+        bytes.extend_from_slice(&artifact.confidence_milli.to_le_bytes());
+        bytes.extend_from_slice(&artifact.checksum.to_le_bytes());
+        bytes.extend_from_slice(&artifact.version.to_le_bytes());
+        bytes.extend_from_slice(&artifact.use_count.to_le_bytes());
+    }
+    checksum64(&bytes)
+}
+
+fn shortpath_decision_manifest_checksum(manifest: &LingquShortpathDecisionManifest) -> u64 {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(manifest.kind.as_bytes());
+    bytes.extend_from_slice(&manifest.schema_version.to_le_bytes());
+    let mut decisions = manifest.decisions.iter().collect::<Vec<_>>();
+    decisions.sort_by(|left, right| left.decision_id.cmp(&right.decision_id));
+    for decision in decisions {
+        push_checksum_str(&mut bytes, &decision.decision_id);
+        push_checksum_str(&mut bytes, &decision.request_id);
+        bytes.extend_from_slice(&shortpath_action_tag(decision.action).to_le_bytes());
+        if let Some(artifact_id) = &decision.artifact_id {
+            push_checksum_str(&mut bytes, artifact_id);
+        }
+        bytes.extend_from_slice(&decision.confidence_milli.to_le_bytes());
+        bytes.extend_from_slice(&decision.proof_checksum.to_le_bytes());
+        bytes.extend_from_slice(&decision.version.to_le_bytes());
+    }
+    checksum64(&bytes)
+}
+
+fn prefetch_plan_manifest_checksum(manifest: &LingquPrefetchPlanManifest) -> u64 {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(manifest.kind.as_bytes());
+    bytes.extend_from_slice(&manifest.schema_version.to_le_bytes());
+    let mut plans = manifest.plans.iter().collect::<Vec<_>>();
+    plans.sort_by(|left, right| left.plan_id.cmp(&right.plan_id));
+    for plan in plans {
+        push_checksum_str(&mut bytes, &plan.plan_id);
+        push_checksum_str(&mut bytes, &plan.request_id);
+        push_checksum_str(&mut bytes, &plan.model.model_key);
+        bytes.extend_from_slice(&prefetch_scope_tag(plan.scope).to_le_bytes());
+        bytes.extend_from_slice(&plan.lookahead_steps.to_le_bytes());
+        bytes.extend_from_slice(&plan.target_step_index.to_le_bytes());
+        bytes.extend_from_slice(&plan.target_position.to_le_bytes());
+        for artifact_id in &plan.planned_artifact_ids {
+            push_checksum_str(&mut bytes, artifact_id);
+        }
+        bytes.extend_from_slice(&prefetch_plan_state_tag(plan.state).to_le_bytes());
+        bytes.extend_from_slice(&plan.checksum.to_le_bytes());
+        bytes.extend_from_slice(&plan.version.to_le_bytes());
+    }
+    checksum64(&bytes)
+}
+
+fn push_checksum_str(bytes: &mut Vec<u8>, value: &str) {
+    bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(value.as_bytes());
 }
 
 fn checksum64(bytes: &[u8]) -> u64 {
@@ -4300,6 +4906,195 @@ mod tests {
     }
 
     #[test]
+    fn durable_store_restarts_with_execution_and_prefix_manifests() {
+        let mut durable = LingquMemoryDurableStore::new();
+        let execution_artifact = ExecutionArtifactObject {
+            artifact_id: "artifact/logits/restart".to_string(),
+            kind: ExecutionArtifactKind::Logits,
+            model: sample_model_binding(),
+            producer_boundary: sample_range_boundary(),
+            target_layer_start: 8,
+            target_layer_end: 8,
+            dtype: TensorDType::F32,
+            shape: vec![1, 4],
+            durable_payload_ref: Some(LingquBlockPayloadRef::new(
+                "block/logits/restart",
+                0,
+                16,
+                0x1111,
+            )),
+            hot_object_ref: None,
+            source_query_result_id: None,
+            source_engram_state_id: None,
+            confidence_milli: 980,
+            state: ExecutionArtifactState::Verified,
+            checksum: 0x2222,
+            version: 1,
+            created_at_us: 10,
+            expires_at_us: Some(100),
+        };
+        let prefix_artifact = PrefixCacheArtifact {
+            artifact_id: "prefix-cache/restart/8".to_string(),
+            key: sample_prefix_cache_key(8, 0x3333),
+            kv_artifact_ids: Vec::new(),
+            durable_payload_refs: vec![LingquBlockPayloadRef::new(
+                "block/prefix/restart/8",
+                0,
+                64,
+                0x4444,
+            )],
+            hot_object_refs: Vec::new(),
+            dtype: TensorDType::F32,
+            shape: vec![8, 4],
+            confidence_milli: 950,
+            state: ExecutionArtifactState::Verified,
+            checksum: 0x5555,
+            version: 1,
+            created_at_us: 10,
+            expires_at_us: Some(100),
+            last_used_at_us: 10,
+            use_count: 1,
+        };
+
+        durable
+            .persist_execution_artifact_manifest(vec![execution_artifact.clone()])
+            .expect("persist execution artifact manifest");
+        durable
+            .persist_prefix_cache_manifest(vec![prefix_artifact.clone()])
+            .expect("persist prefix cache manifest");
+        let durable_snapshot = durable
+            .export_durable_sim_snapshot()
+            .expect("export durable snapshot");
+        let json = durable_snapshot.to_json_bytes().expect("snapshot json");
+        let decoded = durable_sim::LingquDurableSimSnapshot::from_json_bytes(&json)
+            .expect("decode durable snapshot");
+        let mut restored =
+            LingquMemoryDurableStore::import_durable_sim_snapshot(decoded).expect("import store");
+        let mut restored_service = LingquMemoryService::new();
+
+        assert_eq!(
+            restored
+                .load_execution_artifact_manifest()
+                .expect("load execution artifacts"),
+            vec![execution_artifact]
+        );
+        assert_eq!(
+            restored
+                .load_prefix_cache_manifest()
+                .expect("load prefix artifacts"),
+            vec![prefix_artifact]
+        );
+        restored_service
+            .rebuild_execution_artifacts_from_dfs(&mut restored)
+            .expect("rebuild execution artifacts");
+        restored_service
+            .rebuild_prefix_cache_artifacts_from_dfs(&mut restored)
+            .expect("rebuild prefix cache artifacts");
+
+        let boundary = restored_service
+            .boundary_lookup(
+                BoundaryLookupRequest {
+                    request_id: "boundary/restart".to_string(),
+                    model: sample_model_binding(),
+                    boundary: sample_range_boundary(),
+                    hidden_state: HotTensorObjectRef {
+                        object_key: "hidden/restart".to_string(),
+                        version: 1,
+                        backend: HotObjectBackend::ObmmShmem,
+                        storage_ref: "obmm://hidden/restart".to_string(),
+                        segment: None,
+                        offset: 0,
+                        bytes: 16,
+                        checksum: 0x6666,
+                        dtype: TensorDType::F32,
+                        shape: vec![1, 4],
+                    },
+                    engram_state_id: None,
+                    min_confidence_milli: 900,
+                    allowed_actions: vec![ShortpathAction::JumpToTerminal],
+                    created_at_us: 20,
+                },
+                21,
+            )
+            .expect("boundary lookup after restart");
+        assert_eq!(boundary.decision.action, ShortpathAction::JumpToTerminal);
+        assert_eq!(
+            boundary.decision.artifact_id.as_deref(),
+            Some("artifact/logits/restart")
+        );
+
+        let prefix = restored_service
+            .lookup_prefix_cache(
+                PrefixCacheLookupRequest {
+                    request_id: "prefix/restart".to_string(),
+                    candidate_keys: vec![sample_prefix_cache_key(8, 0x3333)],
+                    min_confidence_milli: 900,
+                    allow_verify: false,
+                    created_at_us: 20,
+                },
+                21,
+            )
+            .expect("prefix cache lookup after restart");
+        assert_eq!(prefix.reuse_plan.action, PrefixCacheReuseAction::Reuse);
+        assert_eq!(
+            prefix.reuse_plan.artifact_id.as_deref(),
+            Some("prefix-cache/restart/8")
+        );
+        let prefetch = restored_service
+            .plan_prefetch(
+                PrefetchPlanRequest {
+                    request_id: "prefetch/restart".to_string(),
+                    model: sample_model_binding(),
+                    boundary: RangeBoundary {
+                        phase: RangeBoundaryPhase::RangeStart,
+                        step_index: 3,
+                        node_index: 4,
+                        layer_start: 4,
+                        layer_end: 8,
+                        next_node_index: Some(5),
+                        position: 12,
+                    },
+                    engram_state_id: None,
+                    scope: PrefetchScope::MultiStep,
+                    lookahead_steps: 2,
+                    artifact_kinds: vec![ExecutionArtifactKind::KvCache],
+                    created_at_us: 20,
+                },
+                21,
+            )
+            .expect("prefetch plan after restart");
+        assert_eq!(prefetch.plan_id, "prefetch-plan/prefetch/restart");
+
+        restored_service
+            .persist_shortpath_decisions_to_dfs(&mut restored)
+            .expect("persist shortpath audit");
+        restored_service
+            .persist_prefetch_plans_to_dfs(&mut restored)
+            .expect("persist prefetch audit");
+        let audit_snapshot = restored
+            .export_durable_sim_snapshot()
+            .expect("export audit durable snapshot");
+        let audit_json = audit_snapshot.to_json_bytes().expect("audit json");
+        let audit_decoded = durable_sim::LingquDurableSimSnapshot::from_json_bytes(&audit_json)
+            .expect("decode audit durable snapshot");
+        let mut audit_store = LingquMemoryDurableStore::import_durable_sim_snapshot(audit_decoded)
+            .expect("import audit store");
+        let mut audit_service = LingquMemoryService::new();
+        audit_service
+            .rebuild_shortpath_decisions_from_dfs(&mut audit_store)
+            .expect("rebuild shortpath audit");
+        audit_service
+            .rebuild_prefetch_plans_from_dfs(&mut audit_store)
+            .expect("rebuild prefetch audit");
+        assert!(audit_service
+            .shortpath_decision("shortpath-decision/boundary/restart")
+            .is_some());
+        assert!(audit_service
+            .prefetch_plan("prefetch-plan/prefetch/restart")
+            .is_some());
+    }
+
+    #[test]
     fn flat_query_ranks_block_backed_embedding_vectors() {
         let mut service = LingquMemoryService::new();
         service
@@ -4520,6 +5315,146 @@ mod tests {
     }
 
     #[test]
+    fn flat_query_hot_state_materializes_after_durable_snapshot_restart() {
+        let mut service = LingquMemoryService::new();
+        service
+            .publish_catalog(MemoryCorpusCatalog {
+                catalog_id: "corpus/flat".to_string(),
+                namespace: "project/default".to_string(),
+                dfs_path: LingquDfsPath::new("/lingqu/memory/corpus/flat/catalog.json"),
+                version: 1,
+                record_ids: vec!["record/a".to_string(), "record/b".to_string()],
+                vector_index_ids: vec!["index/flat".to_string()],
+                created_at_us: 1,
+                updated_at_us: 1,
+            })
+            .unwrap();
+        service
+            .ingest_record(
+                sample_record("record/a", "chunk/a"),
+                vec![sample_chunk("chunk/a", "record/a")],
+            )
+            .unwrap();
+        service
+            .ingest_record(
+                sample_record("record/b", "chunk/b"),
+                vec![sample_chunk("chunk/b", "record/b")],
+            )
+            .unwrap();
+
+        let mut durable = LingquMemoryDurableStore::new();
+        let segment_ref = durable
+            .write_block_payload(
+                "block/embed/restart-flat",
+                f32_vec_to_le_bytes(&[1.0, 0.0, 0.0, 1.0]),
+            )
+            .unwrap();
+        let query_ref = durable
+            .write_block_payload("block/query/restart-flat", f32_vec_to_le_bytes(&[0.0, 1.0]))
+            .unwrap();
+        service
+            .register_embedding_segment(EmbeddingSegment {
+                segment_id: "segment/flat".to_string(),
+                model_version: "embed/v1".to_string(),
+                dims: 2,
+                row_count: 2,
+                row_stride_bytes: 8,
+                dtype: TensorDType::F32,
+                vector_block_refs: vec![segment_ref],
+                row_map: vec![
+                    EmbeddingRow {
+                        chunk_id: "chunk/a".to_string(),
+                        row: 0,
+                    },
+                    EmbeddingRow {
+                        chunk_id: "chunk/b".to_string(),
+                        row: 1,
+                    },
+                ],
+                checksum: 0x5151,
+                version: 1,
+            })
+            .unwrap();
+        service
+            .register_vector_index(VectorIndexObject {
+                index_id: "index/flat".to_string(),
+                corpus_id: "corpus/flat".to_string(),
+                kind: VectorIndexKind::Flat,
+                embedding_model_version: "embed/v1".to_string(),
+                segment_ids: vec!["segment/flat".to_string()],
+                manifest_path: LingquDfsPath::new("/lingqu/memory/corpus/flat/index.json"),
+                created_at_us: 2,
+                updated_at_us: 2,
+                version: 1,
+            })
+            .unwrap();
+        let result = service
+            .query_memory_flat(
+                &mut durable,
+                MemoryQuery {
+                    query_id: "query/restart-flat".to_string(),
+                    corpus_ids: vec!["corpus/flat".to_string()],
+                    scope_filter: Vec::new(),
+                    visibility_filter: Vec::new(),
+                    min_trust: MemoryTrustLevel::UserConfirmed,
+                    min_confidence: 0.0,
+                    embedding_model_version: "embed/v1".to_string(),
+                    top_k: 2,
+                    query_embedding_ref: Some(query_ref),
+                },
+                100,
+            )
+            .unwrap();
+        let catalog_path = service
+            .persist_catalog_to_dfs(&mut durable, "corpus/flat")
+            .unwrap();
+        let result_path = durable.persist_query_result(&result).unwrap();
+        let durable_snapshot = durable.export_durable_sim_snapshot().unwrap();
+        let durable_json = durable_snapshot.to_json_bytes().unwrap();
+        let durable_decoded = durable_sim::LingquDurableSimSnapshot::from_json_bytes(&durable_json)
+            .expect("decode durable snapshot");
+        let mut restored_durable =
+            LingquMemoryDurableStore::import_durable_sim_snapshot(durable_decoded)
+                .expect("import durable store");
+        let mut restored_service = LingquMemoryService::new();
+        restored_service
+            .rebuild_catalog_from_dfs(&mut restored_durable, &catalog_path)
+            .expect("rebuild catalog after restart");
+        let restored_result = restored_durable
+            .load_query_result(&result_path)
+            .expect("load query result after restart");
+        restored_service
+            .register_query_result(restored_result)
+            .expect("register query result after restart");
+        let mut object_service =
+            LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
+
+        let hot_state = restored_service
+            .materialize_hot_state_from_query(
+                &mut restored_durable,
+                &mut object_service,
+                HotMemoryMaterializeFromQueryReq {
+                    state_id: "hot/restart-flat".to_string(),
+                    query_result_id: "query-result/query/restart-flat".to_string(),
+                    owner_entity: 1,
+                    producer_entity: 0,
+                    now_us: 200,
+                },
+            )
+            .expect("materialize hot state after restart");
+
+        assert_eq!(hot_state.selected_chunk_ids, ["chunk/b", "chunk/a"]);
+        let table_bytes = object_service
+            .get_copy(
+                &hot_state.table.object_key,
+                LingquObjectVersionSelector::LatestCommitted,
+            )
+            .expect("hot table payload after restart");
+        let table_values = f32_values_from_le_bytes(&table_bytes).unwrap();
+        assert_eq!(table_values, vec![0.0, 1.0, 1.0, 0.0]);
+    }
+
+    #[test]
     fn flat_query_materialization_publishes_selected_vectors_to_obmm() {
         let mut service = LingquMemoryService::new();
         service
@@ -4668,6 +5603,48 @@ mod tests {
             Err(LingquMemoryError::MissingBlockPayload(
                 "block/missing".to_string()
             ))
+        );
+    }
+
+    #[test]
+    fn hot_state_materialization_fails_on_missing_embedding_block_payload() {
+        let mut service = populated_service();
+        let result = service
+            .query_memory(
+                MemoryQuery {
+                    query_id: "q/missing-block".to_string(),
+                    corpus_ids: vec!["corpus/0".to_string()],
+                    scope_filter: vec![MemoryScope::Project],
+                    visibility_filter: vec![MemoryVisibility::ProjectShared],
+                    min_trust: MemoryTrustLevel::UserConfirmed,
+                    min_confidence: 0.5,
+                    embedding_model_version: "embed/v1".to_string(),
+                    top_k: 1,
+                    query_embedding_ref: None,
+                },
+                100,
+            )
+            .expect("query memory");
+        let mut durable = LingquMemoryDurableStore::new();
+        let mut object_service =
+            LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
+
+        let err = service
+            .materialize_hot_state_from_query(
+                &mut durable,
+                &mut object_service,
+                HotMemoryMaterializeFromQueryReq {
+                    state_id: "hot/missing-block".to_string(),
+                    query_result_id: result.result_id,
+                    owner_entity: 1,
+                    producer_entity: 0,
+                    now_us: 200,
+                },
+            )
+            .expect_err("missing embedding block must fail materialization");
+        assert_eq!(
+            err,
+            LingquMemoryError::MissingBlockPayload("block/embed/0".to_string())
         );
     }
 
