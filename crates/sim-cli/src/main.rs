@@ -7,14 +7,14 @@ use sim_core::{
     SegmentHandle, SimEvent, TaskKey,
 };
 use sim_memory::{
-    EmbeddingRow, EmbeddingSegment, EngramStateMaterializeFromBlockReq, EngramStateObject,
-    HotMemoryMaterializeFromQueryReq, HotMemoryMaterializeReq, HotMemoryStateObject,
-    LingquBlockPayloadRef, LingquDfsPath, LingquMemoryDurableStore,
-    LingquMemoryDurableStoreSnapshot, LingquMemoryService, MemoryCatalogSnapshot, MemoryChunk,
-    MemoryContentType, MemoryCorpusCatalog, MemoryPiiState, MemoryQuery, MemoryRecord,
-    MemoryRecordState, MemoryRetentionPolicy, MemoryScope, MemorySecurityLabel, MemorySourceKind,
-    MemoryTrustLevel, MemoryVisibility, PrefixCacheArtifact, PrefixCacheLookupRequest, QueryResult,
-    VectorIndexKind, VectorIndexObject,
+    BoundaryLookupRequest, EmbeddingRow, EmbeddingSegment, EngramStateMaterializeFromBlockReq,
+    EngramStateObject, ExecutionArtifactObject, HotMemoryMaterializeFromQueryReq,
+    HotMemoryMaterializeReq, HotMemoryStateObject, LingquBlockPayloadRef, LingquDfsPath,
+    LingquMemoryDurableStore, LingquMemoryDurableStoreSnapshot, LingquMemoryService,
+    MemoryCatalogSnapshot, MemoryChunk, MemoryContentType, MemoryCorpusCatalog, MemoryPiiState,
+    MemoryQuery, MemoryRecord, MemoryRecordState, MemoryRetentionPolicy, MemoryScope,
+    MemorySecurityLabel, MemorySourceKind, MemoryTrustLevel, MemoryVisibility, PrefetchPlanRequest,
+    PrefixCacheArtifact, PrefixCacheLookupRequest, QueryResult, VectorIndexKind, VectorIndexObject,
 };
 use sim_models::qwen3_dense_reference::{
     token_piece_bytes_from_tokenizer_path, token_piece_decode_bytes,
@@ -1152,13 +1152,16 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect::<Vec<_>>();
     match mode.as_str() {
+        "boundary-lookup" => run_lingqu_memory_boundary_lookup_cli(&args),
         "build-index" => run_lingqu_memory_build_index_cli(&args),
         "ingest" => run_lingqu_memory_ingest_cli(&args),
         "lookup-prefix-cache" => run_lingqu_memory_lookup_prefix_cache_cli(&args),
         "materialize-engram-state" => run_lingqu_memory_materialize_engram_state_cli(&args),
         "materialize-hot-state" => run_lingqu_memory_materialize_hot_state_cli(&args),
+        "plan-prefetch" => run_lingqu_memory_plan_prefetch_cli(&args),
         "publish-w5-engram-state-ref" => run_lingqu_memory_publish_w5_engram_state_ref_cli(&args),
         "query" => run_lingqu_memory_query_cli(&args),
+        "register-execution-artifact" => run_lingqu_memory_register_execution_artifact_cli(&args),
         "register-prefix-cache" => run_lingqu_memory_register_prefix_cache_cli(&args),
         "validate-service-path" => run_lingqu_memory_validate_service_path(),
         "validate-durable-store" => run_lingqu_memory_validate_durable_store(),
@@ -1166,7 +1169,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "validate-flat-materialize" => run_lingqu_memory_validate_flat_materialize(),
         "validate-w5-engram-object-ref" => run_lingqu_memory_validate_w5_engram_object_ref(),
         _ => anyhow::bail!(
-            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, query, register-prefix-cache, lookup-prefix-cache, materialize-hot-state, materialize-engram-state, publish-w5-engram-state-ref, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
+            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, query, register-execution-artifact, boundary-lookup, plan-prefetch, register-prefix-cache, lookup-prefix-cache, materialize-hot-state, materialize-engram-state, publish-w5-engram-state-ref, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
         ),
     }
 }
@@ -1196,8 +1199,148 @@ struct LingquMemoryGateWeightInput {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
+struct LingquMemoryExecutionArtifactRegistry {
+    artifacts: Vec<ExecutionArtifactObject>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
 struct LingquMemoryPrefixCacheRegistry {
     artifacts: Vec<PrefixCacheArtifact>,
+}
+
+fn run_lingqu_memory_register_execution_artifact_cli(args: &[String]) -> anyhow::Result<()> {
+    let registry_path = PathBuf::from(required_cli_arg(args, "--registry")?);
+    let artifact_path = PathBuf::from(required_cli_arg(args, "--artifact")?);
+    let artifact_bytes = fs::read(&artifact_path)
+        .with_context(|| format!("read execution artifact {}", artifact_path.display()))?;
+    let artifact = serde_json::from_slice::<ExecutionArtifactObject>(&artifact_bytes)
+        .with_context(|| format!("decode execution artifact {}", artifact_path.display()))?;
+
+    let mut registry = load_lingqu_memory_execution_artifact_registry(&registry_path)?;
+    let mut memory_service = LingquMemoryService::new();
+    register_lingqu_memory_execution_registry_artifacts(&mut memory_service, &registry)
+        .context("import execution artifact registry")?;
+    memory_service
+        .register_execution_artifact(artifact.clone())
+        .context("register execution artifact")?;
+
+    registry
+        .artifacts
+        .retain(|entry| entry.artifact_id != artifact.artifact_id);
+    registry.artifacts.push(artifact.clone());
+    registry
+        .artifacts
+        .sort_by(|left, right| left.artifact_id.cmp(&right.artifact_id));
+    save_lingqu_memory_execution_artifact_registry(&registry_path, &registry)?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: register-execution-artifact");
+    println!("  registry_path: {}", registry_path.display());
+    println!("  artifact_path: {}", artifact_path.display());
+    println!("  artifact: {}", artifact.artifact_id);
+    println!("  kind: {:?}", artifact.kind);
+    println!(
+        "  boundary: step={} node={} layer={}..{} position={}",
+        artifact.producer_boundary.step_index,
+        artifact.producer_boundary.node_index,
+        artifact.producer_boundary.layer_start,
+        artifact.producer_boundary.layer_end,
+        artifact.producer_boundary.position
+    );
+    println!(
+        "  target_layer_range: {}..{}",
+        artifact.target_layer_start, artifact.target_layer_end
+    );
+    println!("  confidence_milli: {}", artifact.confidence_milli);
+    println!("  registry_artifacts: {}", registry.artifacts.len());
+    Ok(())
+}
+
+fn run_lingqu_memory_boundary_lookup_cli(args: &[String]) -> anyhow::Result<()> {
+    let registry_path = PathBuf::from(required_cli_arg(args, "--registry")?);
+    let request_path = PathBuf::from(required_cli_arg(args, "--request")?);
+    let response_path = PathBuf::from(required_cli_arg(args, "--response")?);
+    let now_us = optional_cli_u64(args, "--now-us")?.unwrap_or(1);
+
+    let registry = load_lingqu_memory_execution_artifact_registry(&registry_path)?;
+    let request_bytes = fs::read(&request_path)
+        .with_context(|| format!("read boundary lookup request {}", request_path.display()))?;
+    let request = serde_json::from_slice::<BoundaryLookupRequest>(&request_bytes)
+        .with_context(|| format!("decode boundary lookup request {}", request_path.display()))?;
+
+    let mut memory_service = LingquMemoryService::new();
+    register_lingqu_memory_execution_registry_artifacts(&mut memory_service, &registry)
+        .context("import execution artifact registry")?;
+    let response = memory_service
+        .boundary_lookup(request, now_us)
+        .context("run boundary lookup")?;
+    let response_bytes =
+        serde_json::to_vec_pretty(&response).context("encode boundary lookup response")?;
+    if let Some(parent) = response_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create boundary lookup response dir {}", parent.display()))?;
+    }
+    fs::write(&response_path, response_bytes)
+        .with_context(|| format!("write boundary lookup response {}", response_path.display()))?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: boundary-lookup");
+    println!("  registry_path: {}", registry_path.display());
+    println!("  request_path: {}", request_path.display());
+    println!("  response_path: {}", response_path.display());
+    println!("  request: {}", response.request_id);
+    println!("  action: {:?}", response.decision.action);
+    println!(
+        "  artifact: {}",
+        response.decision.artifact_id.as_deref().unwrap_or("")
+    );
+    println!("  confidence_milli: {}", response.decision.confidence_milli);
+    println!("  verify_required: {}", response.decision.verify_required);
+    println!("  proof_checksum: {:#x}", response.decision.proof_checksum);
+    Ok(())
+}
+
+fn run_lingqu_memory_plan_prefetch_cli(args: &[String]) -> anyhow::Result<()> {
+    let registry_path = PathBuf::from(required_cli_arg(args, "--registry")?);
+    let request_path = PathBuf::from(required_cli_arg(args, "--request")?);
+    let plan_path = PathBuf::from(required_cli_arg(args, "--plan")?);
+    let now_us = optional_cli_u64(args, "--now-us")?.unwrap_or(1);
+
+    let registry = load_lingqu_memory_execution_artifact_registry(&registry_path)?;
+    let request_bytes = fs::read(&request_path)
+        .with_context(|| format!("read prefetch plan request {}", request_path.display()))?;
+    let request = serde_json::from_slice::<PrefetchPlanRequest>(&request_bytes)
+        .with_context(|| format!("decode prefetch plan request {}", request_path.display()))?;
+
+    let mut memory_service = LingquMemoryService::new();
+    register_lingqu_memory_execution_registry_artifacts(&mut memory_service, &registry)
+        .context("import execution artifact registry")?;
+    let plan = memory_service
+        .plan_prefetch(request, now_us)
+        .context("plan prefetch")?;
+    let plan_bytes = serde_json::to_vec_pretty(&plan).context("encode prefetch plan")?;
+    if let Some(parent) = plan_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create prefetch plan dir {}", parent.display()))?;
+    }
+    fs::write(&plan_path, plan_bytes)
+        .with_context(|| format!("write prefetch plan {}", plan_path.display()))?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: plan-prefetch");
+    println!("  registry_path: {}", registry_path.display());
+    println!("  request_path: {}", request_path.display());
+    println!("  plan_path: {}", plan_path.display());
+    println!("  plan: {}", plan.plan_id);
+    println!("  scope: {:?}", plan.scope);
+    println!("  target_step_index: {}", plan.target_step_index);
+    println!("  target_position: {}", plan.target_position);
+    println!(
+        "  planned_artifacts: {}",
+        plan.planned_artifact_ids.join(",")
+    );
+    println!("  checksum: {:#x}", plan.checksum);
+    Ok(())
 }
 
 fn run_lingqu_memory_register_prefix_cache_cli(args: &[String]) -> anyhow::Result<()> {
@@ -2093,6 +2236,42 @@ fn save_lingqu_memory_durable_store(
             .with_context(|| format!("create durable store dir {}", parent.display()))?;
     }
     fs::write(path, bytes).with_context(|| format!("write durable store {}", path.display()))
+}
+
+fn load_lingqu_memory_execution_artifact_registry(
+    path: &Path,
+) -> anyhow::Result<LingquMemoryExecutionArtifactRegistry> {
+    if !path.exists() {
+        return Ok(LingquMemoryExecutionArtifactRegistry::default());
+    }
+    let bytes =
+        fs::read(path).with_context(|| format!("read execution registry {}", path.display()))?;
+    serde_json::from_slice::<LingquMemoryExecutionArtifactRegistry>(&bytes)
+        .with_context(|| format!("decode execution registry {}", path.display()))
+}
+
+fn save_lingqu_memory_execution_artifact_registry(
+    path: &Path,
+    registry: &LingquMemoryExecutionArtifactRegistry,
+) -> anyhow::Result<()> {
+    let bytes = serde_json::to_vec_pretty(registry).context("encode execution registry")?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create execution registry dir {}", parent.display()))?;
+    }
+    fs::write(path, bytes).with_context(|| format!("write execution registry {}", path.display()))
+}
+
+fn register_lingqu_memory_execution_registry_artifacts(
+    memory_service: &mut LingquMemoryService,
+    registry: &LingquMemoryExecutionArtifactRegistry,
+) -> anyhow::Result<()> {
+    for artifact in &registry.artifacts {
+        memory_service
+            .register_execution_artifact(artifact.clone())
+            .with_context(|| format!("register execution artifact {}", artifact.artifact_id))?;
+    }
+    Ok(())
 }
 
 fn load_lingqu_memory_prefix_cache_registry(
@@ -3163,10 +3342,12 @@ mod tests {
         qwen3_guest_log_dir_from_script_output, qwen3_guest_log_match_count,
         qwen3_guest_terminal_candidate_records, qwen3_guest_terminal_text_lossy_from_tokenizer,
         qwen3_guest_terminal_tokens, qwen3_guest_timing_summary, qwen3_range_forward_args_from,
-        run_lingqu_memory_build_index_cli, run_lingqu_memory_ingest_cli,
-        run_lingqu_memory_lookup_prefix_cache_cli, run_lingqu_memory_materialize_engram_state_cli,
-        run_lingqu_memory_materialize_hot_state_cli,
+        run_lingqu_memory_boundary_lookup_cli, run_lingqu_memory_build_index_cli,
+        run_lingqu_memory_ingest_cli, run_lingqu_memory_lookup_prefix_cache_cli,
+        run_lingqu_memory_materialize_engram_state_cli,
+        run_lingqu_memory_materialize_hot_state_cli, run_lingqu_memory_plan_prefetch_cli,
         run_lingqu_memory_publish_w5_engram_state_ref_cli, run_lingqu_memory_query_cli,
+        run_lingqu_memory_register_execution_artifact_cli,
         run_lingqu_memory_register_prefix_cache_cli, run_lingqu_memory_validate_durable_store,
         run_lingqu_memory_validate_flat_materialize, run_lingqu_memory_validate_flat_query,
         run_lingqu_memory_validate_w5_engram_object_ref,
@@ -4302,6 +4483,217 @@ stage qwen3_range_forward_runtime_output_publish node=2
     #[test]
     fn lingqu_memory_w5_engram_object_ref_cli_smoke_runs() {
         run_lingqu_memory_validate_w5_engram_object_ref().expect("w5 engram object-ref validation");
+    }
+
+    #[test]
+    fn lingqu_memory_execution_artifact_cli_runs_boundary_and_prefetch() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_lingqu_memory_execution_artifact_cli_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let registry = root.join("execution_registry.json");
+        let logits_artifact_path = root.join("logits_artifact.json");
+        let kv_artifact_path = root.join("kv_artifact.json");
+        let boundary_request_path = root.join("boundary_lookup_request.json");
+        let boundary_response_path = root.join("boundary_lookup_response.json");
+        let prefetch_request_path = root.join("prefetch_plan_request.json");
+        let prefetch_plan_path = root.join("prefetch_plan.json");
+        let model = sim_memory::InferenceModelBinding {
+            model_id: "qwen3-test".to_string(),
+            model_key: "qwen3-test-key".to_string(),
+            tokenizer_hash: 0x1001,
+            profile_hash: 0x2002,
+        };
+        let exit_boundary = sim_memory::RangeBoundary {
+            phase: sim_memory::RangeBoundaryPhase::RangeExit,
+            step_index: 3,
+            node_index: 4,
+            layer_start: 4,
+            layer_end: 8,
+            next_node_index: Some(5),
+            position: 12,
+        };
+        let start_boundary = sim_memory::RangeBoundary {
+            phase: sim_memory::RangeBoundaryPhase::RangeStart,
+            step_index: 3,
+            node_index: 4,
+            layer_start: 8,
+            layer_end: 12,
+            next_node_index: Some(5),
+            position: 12,
+        };
+        let hidden_ref = sim_memory::HotTensorObjectRef {
+            object_key: "hidden/range/node4/step3".to_string(),
+            version: 1,
+            backend: sim_memory::HotObjectBackend::ObmmShmem,
+            storage_ref: "obmm://hidden/range/node4/step3".to_string(),
+            segment: None,
+            offset: 0,
+            bytes: 16,
+            checksum: 0x4444_4444,
+            dtype: sim_core::TensorDType::F32,
+            shape: vec![1, 4],
+        };
+        let logits_artifact = sim_memory::ExecutionArtifactObject {
+            artifact_id: "artifact/logits/step3/node4".to_string(),
+            kind: sim_memory::ExecutionArtifactKind::Logits,
+            model: model.clone(),
+            producer_boundary: exit_boundary.clone(),
+            target_layer_start: 8,
+            target_layer_end: 8,
+            dtype: sim_core::TensorDType::F32,
+            shape: vec![1, 4],
+            durable_payload_ref: Some(sim_memory::LingquBlockPayloadRef::new(
+                "block/logits/step3/node4",
+                0,
+                16,
+                0x5555_5555,
+            )),
+            hot_object_ref: None,
+            source_query_result_id: None,
+            source_engram_state_id: None,
+            confidence_milli: 980,
+            state: sim_memory::ExecutionArtifactState::Verified,
+            checksum: 0x6666_6666,
+            version: 1,
+            created_at_us: 10,
+            expires_at_us: Some(100),
+        };
+        let kv_artifact = sim_memory::ExecutionArtifactObject {
+            artifact_id: "artifact/kv/step4/node4".to_string(),
+            kind: sim_memory::ExecutionArtifactKind::KvCache,
+            model: model.clone(),
+            producer_boundary: sim_memory::RangeBoundary {
+                phase: sim_memory::RangeBoundaryPhase::RangeExit,
+                step_index: 4,
+                node_index: 4,
+                layer_start: 8,
+                layer_end: 12,
+                next_node_index: Some(5),
+                position: 13,
+            },
+            target_layer_start: 8,
+            target_layer_end: 12,
+            dtype: sim_core::TensorDType::F32,
+            shape: vec![1, 4],
+            durable_payload_ref: Some(sim_memory::LingquBlockPayloadRef::new(
+                "block/kv/step4/node4",
+                0,
+                16,
+                0x7777_7777,
+            )),
+            hot_object_ref: None,
+            source_query_result_id: None,
+            source_engram_state_id: None,
+            confidence_milli: 940,
+            state: sim_memory::ExecutionArtifactState::Verified,
+            checksum: 0x8888_8888,
+            version: 1,
+            created_at_us: 11,
+            expires_at_us: Some(100),
+        };
+        let boundary_request = sim_memory::BoundaryLookupRequest {
+            request_id: "boundary/step3/node4".to_string(),
+            model: model.clone(),
+            boundary: exit_boundary,
+            hidden_state: hidden_ref,
+            engram_state_id: None,
+            min_confidence_milli: 900,
+            allowed_actions: vec![sim_memory::ShortpathAction::JumpToTerminal],
+            created_at_us: 12,
+        };
+        let prefetch_request = sim_memory::PrefetchPlanRequest {
+            request_id: "prefetch/step3/node4".to_string(),
+            model,
+            boundary: start_boundary,
+            engram_state_id: None,
+            scope: sim_memory::PrefetchScope::MultiStep,
+            lookahead_steps: 2,
+            artifact_kinds: vec![sim_memory::ExecutionArtifactKind::KvCache],
+            created_at_us: 12,
+        };
+        fs::write(
+            &logits_artifact_path,
+            serde_json::to_vec_pretty(&logits_artifact).expect("encode logits artifact"),
+        )
+        .expect("write logits artifact");
+        fs::write(
+            &kv_artifact_path,
+            serde_json::to_vec_pretty(&kv_artifact).expect("encode kv artifact"),
+        )
+        .expect("write kv artifact");
+        fs::write(
+            &boundary_request_path,
+            serde_json::to_vec_pretty(&boundary_request).expect("encode boundary request"),
+        )
+        .expect("write boundary request");
+        fs::write(
+            &prefetch_request_path,
+            serde_json::to_vec_pretty(&prefetch_request).expect("encode prefetch request"),
+        )
+        .expect("write prefetch request");
+
+        for artifact_path in [&logits_artifact_path, &kv_artifact_path] {
+            run_lingqu_memory_register_execution_artifact_cli(&[
+                "--registry".to_string(),
+                registry.to_string_lossy().into_owned(),
+                "--artifact".to_string(),
+                artifact_path.to_string_lossy().into_owned(),
+            ])
+            .expect("register execution artifact");
+        }
+        run_lingqu_memory_boundary_lookup_cli(&[
+            "--registry".to_string(),
+            registry.to_string_lossy().into_owned(),
+            "--request".to_string(),
+            boundary_request_path.to_string_lossy().into_owned(),
+            "--response".to_string(),
+            boundary_response_path.to_string_lossy().into_owned(),
+            "--now-us".to_string(),
+            "20".to_string(),
+        ])
+        .expect("boundary lookup");
+        run_lingqu_memory_plan_prefetch_cli(&[
+            "--registry".to_string(),
+            registry.to_string_lossy().into_owned(),
+            "--request".to_string(),
+            prefetch_request_path.to_string_lossy().into_owned(),
+            "--plan".to_string(),
+            prefetch_plan_path.to_string_lossy().into_owned(),
+            "--now-us".to_string(),
+            "21".to_string(),
+        ])
+        .expect("plan prefetch");
+
+        let boundary_response_bytes =
+            fs::read(&boundary_response_path).expect("read boundary response");
+        let boundary_response =
+            serde_json::from_slice::<sim_memory::BoundaryLookupResponse>(&boundary_response_bytes)
+                .expect("decode boundary response");
+        assert_eq!(
+            boundary_response.decision.action,
+            sim_memory::ShortpathAction::JumpToTerminal
+        );
+        assert_eq!(
+            boundary_response.decision.artifact_id.as_deref(),
+            Some("artifact/logits/step3/node4")
+        );
+        assert_eq!(boundary_response.decision.confidence_milli, 980);
+
+        let prefetch_plan_bytes = fs::read(&prefetch_plan_path).expect("read prefetch plan");
+        let prefetch_plan =
+            serde_json::from_slice::<sim_memory::PrefetchPlanRecord>(&prefetch_plan_bytes)
+                .expect("decode prefetch plan");
+        assert_eq!(prefetch_plan.scope, sim_memory::PrefetchScope::MultiStep);
+        assert_eq!(prefetch_plan.target_step_index, 5);
+        assert_eq!(
+            prefetch_plan.planned_artifact_ids,
+            vec!["artifact/kv/step4/node4".to_string()]
+        );
+        assert!(prefetch_plan.checksum != 0);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
