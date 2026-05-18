@@ -269,6 +269,12 @@ Block stores durable payload bytes:
 
 Block refs are the durable payload references used by Memory Service records.
 
+The durable simulation backend for DFS and Block is specified separately in
+`docs/plans/2026-05-18-lingqu-block-dfs-durable-simulation-design.md`. Memory
+Service should treat that backend as the durable substrate. It should not grow
+its own long-term payload store or keep adding feature-specific registry JSON
+files as durable state.
+
 ### Lingqu Object Service
 
 Object Service owns runtime object semantics:
@@ -1231,6 +1237,10 @@ CLI tests:
 
 ## Implementation Order
 
+0. Add the Lingqu Block/DFS durable simulation backend described in
+   `docs/plans/2026-05-18-lingqu-block-dfs-durable-simulation-design.md`, then
+   migrate `LingquMemoryDurableStore` to wrap it instead of keeping private
+   DFS/Block payload HashMaps.
 1. Add core Rust data models for `MemoryCorpusCatalog`, `MemoryRecord`,
    `MemoryChunk`, `EmbeddingSegment`, `VectorIndexObject`, `MemoryQuery`,
    `QueryResult`, `HotMemoryStateObject`, and `EngramStateObject`.
