@@ -1,5 +1,5 @@
 use anyhow::Context;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sim_config::ScenarioConfig;
 use sim_core::{
     BlockHash, CompletionSource, CompletionStatus, CopyDirection, CopyRequest, DispatchRequest,
@@ -13,7 +13,8 @@ use sim_memory::{
     LingquMemoryDurableStoreSnapshot, LingquMemoryService, MemoryCatalogSnapshot, MemoryChunk,
     MemoryContentType, MemoryCorpusCatalog, MemoryPiiState, MemoryQuery, MemoryRecord,
     MemoryRecordState, MemoryRetentionPolicy, MemoryScope, MemorySecurityLabel, MemorySourceKind,
-    MemoryTrustLevel, MemoryVisibility, QueryResult, VectorIndexKind, VectorIndexObject,
+    MemoryTrustLevel, MemoryVisibility, PrefixCacheArtifact, PrefixCacheLookupRequest, QueryResult,
+    VectorIndexKind, VectorIndexObject,
 };
 use sim_models::qwen3_dense_reference::{
     token_piece_bytes_from_tokenizer_path, token_piece_decode_bytes,
@@ -1153,17 +1154,19 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
     match mode.as_str() {
         "build-index" => run_lingqu_memory_build_index_cli(&args),
         "ingest" => run_lingqu_memory_ingest_cli(&args),
+        "lookup-prefix-cache" => run_lingqu_memory_lookup_prefix_cache_cli(&args),
         "materialize-engram-state" => run_lingqu_memory_materialize_engram_state_cli(&args),
         "materialize-hot-state" => run_lingqu_memory_materialize_hot_state_cli(&args),
         "publish-w5-engram-state-ref" => run_lingqu_memory_publish_w5_engram_state_ref_cli(&args),
         "query" => run_lingqu_memory_query_cli(&args),
+        "register-prefix-cache" => run_lingqu_memory_register_prefix_cache_cli(&args),
         "validate-service-path" => run_lingqu_memory_validate_service_path(),
         "validate-durable-store" => run_lingqu_memory_validate_durable_store(),
         "validate-flat-query" => run_lingqu_memory_validate_flat_query(),
         "validate-flat-materialize" => run_lingqu_memory_validate_flat_materialize(),
         "validate-w5-engram-object-ref" => run_lingqu_memory_validate_w5_engram_object_ref(),
         _ => anyhow::bail!(
-            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, query, materialize-hot-state, materialize-engram-state, publish-w5-engram-state-ref, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
+            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, query, register-prefix-cache, lookup-prefix-cache, materialize-hot-state, materialize-engram-state, publish-w5-engram-state-ref, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
         ),
     }
 }
@@ -1190,6 +1193,120 @@ struct LingquMemoryQueryEmbeddingInput {
 #[derive(Debug, Deserialize)]
 struct LingquMemoryGateWeightInput {
     values: Vec<f32>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct LingquMemoryPrefixCacheRegistry {
+    artifacts: Vec<PrefixCacheArtifact>,
+}
+
+fn run_lingqu_memory_register_prefix_cache_cli(args: &[String]) -> anyhow::Result<()> {
+    let registry_path = PathBuf::from(required_cli_arg(args, "--registry")?);
+    let artifact_path = PathBuf::from(required_cli_arg(args, "--artifact")?);
+    let artifact_bytes = fs::read(&artifact_path)
+        .with_context(|| format!("read prefix cache artifact {}", artifact_path.display()))?;
+    let artifact = serde_json::from_slice::<PrefixCacheArtifact>(&artifact_bytes)
+        .with_context(|| format!("decode prefix cache artifact {}", artifact_path.display()))?;
+
+    let mut registry = load_lingqu_memory_prefix_cache_registry(&registry_path)?;
+    let mut memory_service = LingquMemoryService::new();
+    register_lingqu_memory_prefix_cache_registry_artifacts(&mut memory_service, &registry)
+        .context("import prefix cache registry")?;
+    memory_service
+        .register_prefix_cache_artifact(artifact.clone())
+        .context("register prefix cache artifact")?;
+
+    registry
+        .artifacts
+        .retain(|entry| entry.artifact_id != artifact.artifact_id);
+    registry.artifacts.push(artifact.clone());
+    registry
+        .artifacts
+        .sort_by(|left, right| left.artifact_id.cmp(&right.artifact_id));
+    save_lingqu_memory_prefix_cache_registry(&registry_path, &registry)?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: register-prefix-cache");
+    println!("  registry_path: {}", registry_path.display());
+    println!("  artifact_path: {}", artifact_path.display());
+    println!("  artifact: {}", artifact.artifact_id);
+    println!("  prefix_tokens: {}", artifact.key.prefix_token_count);
+    println!(
+        "  layer_range: {}..{}",
+        artifact.key.layer_start, artifact.key.layer_end
+    );
+    println!("  confidence_milli: {}", artifact.confidence_milli);
+    println!("  registry_artifacts: {}", registry.artifacts.len());
+    Ok(())
+}
+
+fn run_lingqu_memory_lookup_prefix_cache_cli(args: &[String]) -> anyhow::Result<()> {
+    let registry_path = PathBuf::from(required_cli_arg(args, "--registry")?);
+    let request_path = PathBuf::from(required_cli_arg(args, "--request")?);
+    let response_path = PathBuf::from(required_cli_arg(args, "--response")?);
+    let now_us = optional_cli_u64(args, "--now-us")?.unwrap_or(1);
+
+    let registry = load_lingqu_memory_prefix_cache_registry(&registry_path)?;
+    if registry.artifacts.is_empty() {
+        anyhow::bail!(
+            "prefix cache registry contains no artifacts: {}",
+            registry_path.display()
+        );
+    }
+    let request_bytes = fs::read(&request_path).with_context(|| {
+        format!(
+            "read prefix cache lookup request {}",
+            request_path.display()
+        )
+    })?;
+    let request =
+        serde_json::from_slice::<PrefixCacheLookupRequest>(&request_bytes).with_context(|| {
+            format!(
+                "decode prefix cache lookup request {}",
+                request_path.display()
+            )
+        })?;
+
+    let mut memory_service = LingquMemoryService::new();
+    register_lingqu_memory_prefix_cache_registry_artifacts(&mut memory_service, &registry)
+        .context("import prefix cache registry")?;
+    let response = memory_service
+        .lookup_prefix_cache(request, now_us)
+        .context("lookup prefix cache")?;
+    let response_bytes =
+        serde_json::to_vec_pretty(&response).context("encode prefix cache lookup response")?;
+    if let Some(parent) = response_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create prefix cache response dir {}", parent.display()))?;
+    }
+    fs::write(&response_path, response_bytes).with_context(|| {
+        format!(
+            "write prefix cache lookup response {}",
+            response_path.display()
+        )
+    })?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: lookup-prefix-cache");
+    println!("  registry_path: {}", registry_path.display());
+    println!("  request_path: {}", request_path.display());
+    println!("  response_path: {}", response_path.display());
+    println!("  request: {}", response.request_id);
+    println!("  action: {:?}", response.reuse_plan.action);
+    println!(
+        "  artifact: {}",
+        response.reuse_plan.artifact_id.as_deref().unwrap_or("")
+    );
+    println!(
+        "  matched_prefix_tokens: {}",
+        response.reuse_plan.matched_prefix_token_count
+    );
+    println!("  verify_required: {}", response.reuse_plan.verify_required);
+    println!(
+        "  proof_checksum: {:#x}",
+        response.reuse_plan.proof_checksum
+    );
+    Ok(())
 }
 
 fn run_lingqu_memory_query_cli(args: &[String]) -> anyhow::Result<()> {
@@ -1976,6 +2093,43 @@ fn save_lingqu_memory_durable_store(
             .with_context(|| format!("create durable store dir {}", parent.display()))?;
     }
     fs::write(path, bytes).with_context(|| format!("write durable store {}", path.display()))
+}
+
+fn load_lingqu_memory_prefix_cache_registry(
+    path: &Path,
+) -> anyhow::Result<LingquMemoryPrefixCacheRegistry> {
+    if !path.exists() {
+        return Ok(LingquMemoryPrefixCacheRegistry::default());
+    }
+    let bytes =
+        fs::read(path).with_context(|| format!("read prefix cache registry {}", path.display()))?;
+    serde_json::from_slice::<LingquMemoryPrefixCacheRegistry>(&bytes)
+        .with_context(|| format!("decode prefix cache registry {}", path.display()))
+}
+
+fn save_lingqu_memory_prefix_cache_registry(
+    path: &Path,
+    registry: &LingquMemoryPrefixCacheRegistry,
+) -> anyhow::Result<()> {
+    let bytes = serde_json::to_vec_pretty(registry).context("encode prefix cache registry")?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create prefix cache registry dir {}", parent.display()))?;
+    }
+    fs::write(path, bytes)
+        .with_context(|| format!("write prefix cache registry {}", path.display()))
+}
+
+fn register_lingqu_memory_prefix_cache_registry_artifacts(
+    memory_service: &mut LingquMemoryService,
+    registry: &LingquMemoryPrefixCacheRegistry,
+) -> anyhow::Result<()> {
+    for artifact in &registry.artifacts {
+        memory_service
+            .register_prefix_cache_artifact(artifact.clone())
+            .with_context(|| format!("register prefix cache artifact {}", artifact.artifact_id))?;
+    }
+    Ok(())
 }
 
 fn load_lingqu_object_service_snapshot(
@@ -3010,11 +3164,12 @@ mod tests {
         qwen3_guest_terminal_candidate_records, qwen3_guest_terminal_text_lossy_from_tokenizer,
         qwen3_guest_terminal_tokens, qwen3_guest_timing_summary, qwen3_range_forward_args_from,
         run_lingqu_memory_build_index_cli, run_lingqu_memory_ingest_cli,
-        run_lingqu_memory_materialize_engram_state_cli,
+        run_lingqu_memory_lookup_prefix_cache_cli, run_lingqu_memory_materialize_engram_state_cli,
         run_lingqu_memory_materialize_hot_state_cli,
         run_lingqu_memory_publish_w5_engram_state_ref_cli, run_lingqu_memory_query_cli,
-        run_lingqu_memory_validate_durable_store, run_lingqu_memory_validate_flat_materialize,
-        run_lingqu_memory_validate_flat_query, run_lingqu_memory_validate_w5_engram_object_ref,
+        run_lingqu_memory_register_prefix_cache_cli, run_lingqu_memory_validate_durable_store,
+        run_lingqu_memory_validate_flat_materialize, run_lingqu_memory_validate_flat_query,
+        run_lingqu_memory_validate_w5_engram_object_ref,
         simpler_host_matmul_artifact_producer_path, validate_qwen3_dense_weights_path,
         validate_w5_inference_profile, LingquMemoryDurableStoreSnapshot,
         LingquObjectServiceSnapshot, LingquObjectServiceStub, LingquObjectVersionSelector,
@@ -4147,6 +4302,123 @@ stage qwen3_range_forward_runtime_output_publish node=2
     #[test]
     fn lingqu_memory_w5_engram_object_ref_cli_smoke_runs() {
         run_lingqu_memory_validate_w5_engram_object_ref().expect("w5 engram object-ref validation");
+    }
+
+    #[test]
+    fn lingqu_memory_prefix_cache_cli_registers_and_looks_up_artifact() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_lingqu_memory_prefix_cache_cli_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let registry = root.join("prefix_cache_registry.json");
+        let artifact_path = root.join("prefix_cache_artifact.json");
+        let request_path = root.join("prefix_cache_lookup_request.json");
+        let response_path = root.join("prefix_cache_lookup_response.json");
+        let key = sim_memory::PrefixCacheKey {
+            model: sim_memory::InferenceModelBinding {
+                model_id: "qwen3-test".to_string(),
+                model_key: "qwen3-test-key".to_string(),
+                tokenizer_hash: 0x1001,
+                profile_hash: 0x2002,
+            },
+            namespace: "tenant/project/session".to_string(),
+            chat_template_hash: 0x3003,
+            prefix_token_hash: 0x4004,
+            prefix_token_count: 8,
+            rope_config_hash: 0x5005,
+            kv_layout_hash: 0x6006,
+            layer_start: 0,
+            layer_end: 28,
+            position_start: 0,
+            position_end: 8,
+            security_label: sim_memory::MemorySecurityLabel::Internal,
+        };
+        let artifact = sim_memory::PrefixCacheArtifact {
+            artifact_id: "prefix-cache/test/8".to_string(),
+            key: key.clone(),
+            kv_artifact_ids: Vec::new(),
+            durable_payload_refs: vec![sim_memory::LingquBlockPayloadRef::new(
+                "block/prefix/test/8",
+                0,
+                64,
+                0x1111_1111,
+            )],
+            hot_object_refs: Vec::new(),
+            dtype: sim_core::TensorDType::F32,
+            shape: vec![8, 4],
+            confidence_milli: 950,
+            state: sim_memory::ExecutionArtifactState::Verified,
+            checksum: 0x2222_2222,
+            version: 1,
+            created_at_us: 10,
+            expires_at_us: Some(100),
+            last_used_at_us: 10,
+            use_count: 1,
+        };
+        let request = sim_memory::PrefixCacheLookupRequest {
+            request_id: "prefix-lookup/test/0".to_string(),
+            candidate_keys: vec![key],
+            min_confidence_milli: 900,
+            allow_verify: false,
+            created_at_us: 12,
+        };
+        fs::write(
+            &artifact_path,
+            serde_json::to_vec_pretty(&artifact).expect("encode artifact"),
+        )
+        .expect("write artifact");
+        fs::write(
+            &request_path,
+            serde_json::to_vec_pretty(&request).expect("encode request"),
+        )
+        .expect("write request");
+
+        run_lingqu_memory_register_prefix_cache_cli(&[
+            "--registry".to_string(),
+            registry.to_string_lossy().into_owned(),
+            "--artifact".to_string(),
+            artifact_path.to_string_lossy().into_owned(),
+        ])
+        .expect("register prefix cache artifact");
+        run_lingqu_memory_lookup_prefix_cache_cli(&[
+            "--registry".to_string(),
+            registry.to_string_lossy().into_owned(),
+            "--request".to_string(),
+            request_path.to_string_lossy().into_owned(),
+            "--response".to_string(),
+            response_path.to_string_lossy().into_owned(),
+            "--now-us".to_string(),
+            "20".to_string(),
+        ])
+        .expect("lookup prefix cache artifact");
+
+        let registry_bytes = fs::read(&registry).expect("read registry");
+        let registry_snapshot =
+            serde_json::from_slice::<super::LingquMemoryPrefixCacheRegistry>(&registry_bytes)
+                .expect("decode registry");
+        assert_eq!(registry_snapshot.artifacts.len(), 1);
+        assert_eq!(
+            registry_snapshot.artifacts[0].artifact_id,
+            "prefix-cache/test/8"
+        );
+        let response_bytes = fs::read(&response_path).expect("read response");
+        let response =
+            serde_json::from_slice::<sim_memory::PrefixCacheLookupResponse>(&response_bytes)
+                .expect("decode response");
+        assert_eq!(
+            response.reuse_plan.action,
+            sim_memory::PrefixCacheReuseAction::Reuse
+        );
+        assert_eq!(
+            response.reuse_plan.artifact_id.as_deref(),
+            Some("prefix-cache/test/8")
+        );
+        assert_eq!(response.reuse_plan.matched_prefix_token_count, 8);
+        assert!(!response.reuse_plan.verify_required);
+        assert!(response.reuse_plan.proof_checksum != 0);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
