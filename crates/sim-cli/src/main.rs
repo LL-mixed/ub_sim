@@ -1448,9 +1448,11 @@ fn run_lingqu_memory_materialize_engram_state_cli(args: &[String]) -> anyhow::Re
                 state_id: state_id.clone(),
                 hot_memory_state_id: hot_state.state_id.clone(),
                 gate_weight_ref: gate_weight_ref.clone(),
+                compatible_models: Vec::new(),
                 owner_entity,
                 producer_entity,
                 now_us,
+                expires_at_us: None,
             },
         )
         .context("materialize engram state")?;
@@ -2168,8 +2170,14 @@ fn run_lingqu_memory_validate_service_path() -> anyhow::Result<()> {
             now_us: 200,
         },
     )?;
-    let engram_state =
-        memory_service.build_engram_state("engram/default/0", &hot_state.state_id, None, 300)?;
+    let engram_state = memory_service.build_engram_state(
+        "engram/default/0",
+        &hot_state.state_id,
+        None,
+        Vec::new(),
+        300,
+        None,
+    )?;
     let object_report = object_service.report();
 
     println!("lingqu_memory_service");
@@ -2406,8 +2414,14 @@ fn run_lingqu_memory_validate_flat_materialize() -> anyhow::Result<()> {
         .query_result_manifest_ref
         .as_ref()
         .context("missing hot query result manifest ref")?;
-    let engram_state =
-        memory_service.build_engram_state("engram/flat", &hot_state.state_id, None, 300)?;
+    let engram_state = memory_service.build_engram_state(
+        "engram/flat",
+        &hot_state.state_id,
+        None,
+        Vec::new(),
+        300,
+        None,
+    )?;
     let object_report = object_service.report();
     let stats = durable_store.stats();
 
@@ -2611,9 +2625,11 @@ fn run_lingqu_memory_validate_w5_engram_object_ref() -> anyhow::Result<()> {
             state_id: "engram/w5/object-ref".to_string(),
             hot_memory_state_id: hot_state.state_id.clone(),
             gate_weight_ref,
+            compatible_models: Vec::new(),
             owner_entity: 0,
             producer_entity: 0,
             now_us: 300,
+            expires_at_us: None,
         },
     )?;
     let table_payload = object_service

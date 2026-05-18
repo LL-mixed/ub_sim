@@ -244,6 +244,12 @@ SIM_QWEN3_GUEST_ENGRAM_STATE_REF=<EngramStateObjectRef wire hex>
 SIM_QWEN3_GUEST_ENGRAM_CONTEXT_CHUNK_ELEMS=<optional explicit chunk size>
 ```
 
+`EngramStateObjectRef` resolves a materialized Engram view, not a shortpath
+decision. The referenced state must carry the table, indices, gate object,
+operator kind/config hash, tensor shape, checksum, version, and optional model
+bindings. Simpler-host only consumes the mapped tensor refs. It must not infer
+range-skip behavior from the Engram state itself.
+
 `sim-uapi` flow:
 
 1. Terminal Qwen range forward produces final hidden.
@@ -260,6 +266,26 @@ SIM_QWEN3_GUEST_ENGRAM_CONTEXT_CHUNK_ELEMS=<optional explicit chunk size>
 6. Compute full-vocab logits from the augmented hidden.
 7. Emit the same `qwen3-engram-context` report shape currently used by
    `cpu-reference`.
+
+Shortpath flow is separate from this terminal context-op path:
+
+1. A range exit publishes `hidden_ref`.
+2. W5 builds `BoundaryLookupRequest { model, boundary, hidden_ref,
+   engram_state_id, allowed_actions }`.
+3. Lingqu Memory Service returns `ShortpathDecisionRecord`.
+4. W5 continues, jumps to a downstream layer, jumps to terminal logits, or
+   enters verify mode based on that decision.
+
+This separation matters: `EngramStateObject` proves which semantic memory view
+and operator config are being used; `ShortpathDecisionRecord` proves which
+model-native execution artifact allowed work to be skipped.
+
+Prefetch is also separate from terminal context-op execution. At a range start,
+W5 can build `PrefetchPlanRequest { model, boundary, engram_state_id, scope,
+lookahead_steps, artifact_kinds }` to schedule range, step, or n-step artifact
+materialization before a later range exit needs it. The simpler-host context op
+does not own that scheduling policy; it only consumes tensors that have already
+been resolved and mapped.
 
 The summary parser does not need a new output schema. It already consumes:
 

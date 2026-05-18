@@ -40,7 +40,8 @@ W5 Engram Adapter
 
 W5 Boundary Planner
   resolves model-bound execution artifacts at each range exit and returns
-  continue/jump/verify decisions
+  continue/jump/verify decisions; at each range start it can issue range,
+  step, or multi-step prefetch plans
 ```
 
 Lingqu Object Service remains the authority for object identity, placement,
@@ -68,6 +69,21 @@ range exit hidden_ref + engram_state_ref
   -> ShortpathDecisionRecord
   -> continue | jump_to_layer | jump_to_terminal | require_verify
 ```
+
+There is a second target path for latency hiding:
+
+```text
+range start + engram_state_ref + optional previous hidden/KV refs
+  -> PrefetchPlanRequest
+  -> PrefetchPlanRecord
+  -> range prefetch | step prefetch | n-step prefetch
+```
+
+Shortpath is a skip decision made at a range exit. Prefetch is a scheduling
+decision normally made at a range start. They can use the same semantic memory
+and execution artifact indexes, but they should not share the same record type:
+prefetch may only make future data cheaper, while shortpath changes the
+executed layer/step path and needs stronger proof.
 
 The Memory Service therefore owns two related but distinct domains:
 
@@ -162,10 +178,21 @@ HotMemoryStateObject {
 }
 
 EngramStateObject {
+  hot_state_id,
+  query_result_id,
+  operator_kind,
+  operator_config_hash,
+  compatible_model_bindings,
   table_object_ref,
   indices_object_ref,
   gate_feature_object_ref,
-  operator_config_ref,
+  gate_weight_object_ref,
+  dtype,
+  hidden_size,
+  table_rows,
+  execution_artifact_index_ref,
+  checksum,
+  version,
 }
 ```
 
@@ -537,23 +564,42 @@ W5 Engram Adapter output.
 ```text
 engram_state_id: string
 hot_state_id: string
+query_result_id: string
+query_result_manifest_ref: optional Lingqu DFS path
+operator_kind: context_gate
+operator_config_hash: u64
+compatible_model_bindings: [InferenceModelBinding]
 table_object_ref: Lingqu ObjectRef to ObmmShmem payload
 indices_object_ref: Lingqu ObjectRef to ObmmShmem payload
 gate_feature_object_ref: optional Lingqu ObjectRef to ObmmShmem payload
 gate_weight_object_ref: optional Lingqu ObjectRef to ObmmShmem payload
-operator_config_ref: optional Lingqu ObjectRef or inline config
-record_manifest_ref: Lingqu DFS path
 dtype: f32
 hidden_size: u32
 table_rows: u32
+execution_artifact_index_ref: optional Lingqu DFS path
 checksum: u64
 version: u64
 created_at_us: u64
-expires_at_us: u64
+expires_at_us: optional u64
 ```
 
 `gate_weight`, `gate_feature`, bias, and other gating details belong to the W5
 Engram Adapter or operator configuration, not to the core Memory Service.
+
+`EngramStateObject` is a materialized semantic/hot-memory view. It is not a
+shortpath decision record and must not encode `continue`, `jump_to_layer`, or
+`jump_to_terminal` directly. Range execution passes the `engram_state_id` as
+one input to `BoundaryLookupRequest`; the Memory Service or boundary planner
+then decides whether a verified `ExecutionArtifactObject` can be used.
+
+`compatible_model_bindings` is optional at materialization time but mandatory
+for production shortpath use. An unbound Engram state can drive terminal
+context augmentation, but it cannot justify skipping model layers because the
+service cannot prove compatibility with weights, tokenizer, or range layout.
+
+The older per-step `Qwen3EngramState` used by the CLI remains a sampling and
+policy audit structure. It records selected tokens, blocked candidates, and
+checksums; it is not the state model for boundary shortpath.
 
 ### InferenceModelBinding
 
@@ -572,9 +618,11 @@ across different model weights, tokenizer state, or profile layout is invalid.
 
 ### RangeBoundary
 
-Range exit point where a shortpath decision can be made.
+Range boundary where a planner can make either a range-start prefetch decision
+or a range-exit shortpath decision.
 
 ```text
+phase: range_start | range_exit
 step_index: u64
 node_index: u32
 layer_start: u32
@@ -584,8 +632,12 @@ position: u64
 ```
 
 For the current 8-node Qwen3 range pipeline, a boundary exists after each node
-publishes its range output. Later pipelines can add finer grain boundaries, but
+publishes its range output, and a paired boundary exists before each node starts
+its assigned layer range. Later pipelines can add finer grain boundaries, but
 the contract should stay the same.
+
+`range_exit` is the only valid phase for `BoundaryLookupRequest`.
+`range_start` is the normal phase for `PrefetchPlanRequest`.
 
 ### ExecutionArtifactObject
 
@@ -644,6 +696,53 @@ created_at_us: u64
 This request is control-plane metadata plus object refs. It must not contain
 large tensor payloads. The Memory Service can resolve object metadata and
 artifact indexes; backend kernels still only read mapped buffers.
+
+### PrefetchPlanRequest
+
+Request issued at a range start boundary to hide future ObjectRef, KV, hidden,
+or logits materialization latency.
+
+```text
+request_id: string
+model: InferenceModelBinding
+boundary: RangeBoundary with phase=range_start
+engram_state_id: optional string
+scope: range | step | multi_step
+lookahead_steps: u32
+artifact_kinds: [hidden_state | kv_cache | logits]
+created_at_us: u64
+```
+
+`scope=range` means prefetch likely operands for this node's current layer
+range. `scope=step` means prefetch one or more artifacts for a future decode
+step. `scope=multi_step` is explicit n-step lookahead; it should remain a plan
+until the scheduler confirms enough confidence and memory pressure budget.
+
+### PrefetchPlanRecord
+
+Auditable prefetch plan returned by the Memory Service or boundary planner.
+
+```text
+plan_id: string
+request_id: string
+model: InferenceModelBinding
+boundary: RangeBoundary with phase=range_start
+engram_state_id: optional string
+scope: range | step | multi_step
+lookahead_steps: u32
+target_step_index: u64
+target_position: u64
+artifact_kinds: [hidden_state | kv_cache | logits]
+planned_artifact_ids: [string]
+state: planned | issued | completed | cancelled
+checksum: u64
+version: u64
+created_at_us: u64
+expires_at_us: optional u64
+```
+
+This record does not prove skipped computation. It only proves what the planner
+asked the runtime to make cheaper before a later boundary or step needs it.
 
 ### ShortpathDecisionRecord
 
@@ -944,6 +1043,11 @@ shortpath_decision_id=...
 shortpath_action=continue|jump_to_layer|jump_to_terminal|require_verify
 shortpath_confidence_milli=...
 shortpath_proof_checksum=...
+prefetch_plan_id=...
+prefetch_scope=range|step|multi_step
+prefetch_lookahead_steps=...
+prefetch_target_step_index=...
+prefetch_state=planned|issued|completed|cancelled
 object_versions=...
 object_checksums=...
 obmm_hot_bytes=...
@@ -960,6 +1064,7 @@ Timing should separate:
 - OBMM hot materialization;
 - Object Service publish and resolve;
 - boundary lookup and artifact-index lookup;
+- prefetch plan lookup and issue latency;
 - shortpath decision write;
 - UAPI object map;
 - backend context-op dispatch.
@@ -978,6 +1083,9 @@ Unit tests:
   at least one durable or hot payload ref.
 - `BoundaryLookupRequest` rejects missing hidden refs and invalid confidence
   thresholds.
+- `BoundaryLookupRequest` rejects `range_start` boundaries.
+- `PrefetchPlanRequest` rejects non-`range_start` boundaries and zero
+  lookahead.
 - `ShortpathDecisionRecord` rejects jump decisions without an artifact id.
 - OBMM hot promote and evict keeps durable DFS/Block source valid.
 - stale version and checksum mismatch fail resolve.
@@ -997,6 +1105,8 @@ Integration tests:
 - register a verified logits artifact and verify boundary lookup returns
   `jump_to_terminal`.
 - verify no-hit boundary lookup returns an auditable `continue` decision.
+- issue a multi-step range-start prefetch request and verify the persisted
+  `PrefetchPlanRecord` target step, checksum, and state.
 
 CLI tests:
 
@@ -1021,11 +1131,15 @@ CLI tests:
 9. Make real-memory W5 reject deterministic fallback paths.
 10. Add core data models for `InferenceModelBinding`, `RangeBoundary`,
     `ExecutionArtifactObject`, `BoundaryLookupRequest`,
-    `ShortpathDecisionRecord`, and `BoundaryLookupResponse`.
-11. Add Memory Service boundary lookup over verified execution artifacts.
+    `ShortpathDecisionRecord`, `BoundaryLookupResponse`,
+    `PrefetchPlanRequest`, and `PrefetchPlanRecord`.
+11. Add Memory Service boundary lookup over verified execution artifacts and
+    range-start prefetch planning over artifact indexes.
 12. Teach W5 range exit to issue boundary lookups and consume continue/jump
     decisions.
-13. Add long-step, cross-session, and restart/rebuild validation runs.
+13. Teach W5 range start to issue range/step/n-step prefetch plans and feed
+    them into runtime/Object Service scheduling.
+14. Add long-step, cross-session, and restart/rebuild validation runs.
 
 Current implementation status:
 
@@ -1033,12 +1147,18 @@ Current implementation status:
   carries selected record/chunk ids, vector index ids, embedding segment
   versions/checksums, evidence refs, and its own checksum/version, so query
   output is an auditable memory decision rather than only a top-k vector list.
+  `EngramStateObject` now carries query provenance, operator kind/config hash,
+  compatible model bindings, tensor dtype/shape, checksum, version, and
+  lifetime metadata. This makes it suitable as a trustworthy boundary lookup
+  input, while keeping shortpath actions in `ShortpathDecisionRecord`.
   Step 10 also has a baseline data-model implementation in `sim-memory`:
   `InferenceModelBinding`, `RangeBoundary`, `ExecutionArtifactObject`,
-  `BoundaryLookupRequest`, `ShortpathDecisionRecord`, and
-  `BoundaryLookupResponse` can be validated, registered, and used for a first
-  exact boundary lookup over verified execution artifacts. This is not yet
-  wired into W5 guest range execution.
+  `BoundaryLookupRequest`, `ShortpathDecisionRecord`,
+  `BoundaryLookupResponse`, `PrefetchPlanRequest`, and
+  `PrefetchPlanRecord` can be validated, registered, and used for a first
+  exact boundary lookup over verified execution artifacts plus range-start
+  n-step prefetch planning. This is not yet wired into W5 guest range
+  execution.
   Query results can be persisted to and restored from DFS manifests with
   checksum validation, and QueryResult-driven hot materialization now carries
   that DFS manifest ref into both `HotMemoryStateObject` and

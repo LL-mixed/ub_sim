@@ -1033,28 +1033,138 @@ impl HotMemoryStateObject {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EngramOperatorKind {
+    ContextGate,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EngramStateObject {
     pub state_id: String,
     pub hot_memory_state_id: String,
+    pub query_result_id: String,
     pub query_result_manifest_ref: Option<LingquDfsPath>,
+    pub operator_kind: EngramOperatorKind,
+    pub operator_config_hash: u64,
+    pub compatible_models: Vec<InferenceModelBinding>,
     pub table: HotTensorObjectRef,
     pub indices: HotTensorObjectRef,
     pub gate: Option<HotTensorObjectRef>,
+    pub dtype: TensorDType,
+    pub hidden_size: u64,
+    pub table_rows: u64,
+    pub execution_artifact_index_ref: Option<LingquDfsPath>,
+    pub checksum: u64,
+    pub version: u64,
     pub created_at_us: u64,
+    pub expires_at_us: Option<u64>,
 }
 
 impl EngramStateObject {
     pub fn validate(&self) -> MemoryResult<()> {
         required_str(&self.state_id, "engram_state_id")?;
         required_str(&self.hot_memory_state_id, "hot_memory_state_id")?;
+        required_str(&self.query_result_id, "engram_state.query_result_id")?;
         if let Some(path) = &self.query_result_manifest_ref {
             path.validate("engram_state.query_result_manifest_ref")?;
+        }
+        nonzero(
+            self.operator_config_hash,
+            "engram_state.operator_config_hash",
+        )?;
+        let expected_operator_config_hash = engram_operator_config_hash(
+            self.operator_kind,
+            &self.table,
+            &self.indices,
+            self.gate.as_ref(),
+        );
+        if expected_operator_config_hash != self.operator_config_hash {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "engram_state.operator_config_hash",
+                reason: "operator config hash does not match Engram operands",
+            });
+        }
+        for model in &self.compatible_models {
+            model.validate()?;
         }
         validate_hot_ref(&self.table)?;
         validate_hot_ref(&self.indices)?;
         if let Some(gate) = &self.gate {
             validate_hot_ref(gate)?;
+        }
+        if self.dtype != self.table.dtype {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "engram_state.dtype",
+                reason: "dtype must match table dtype",
+            });
+        }
+        if self.indices.dtype != TensorDType::U32 {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "engram_state.indices",
+                reason: "indices dtype must be u32",
+            });
+        }
+        if self.table.shape.len() != 2 {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "engram_state.table.shape",
+                reason: "table shape must be [rows, hidden_size]",
+            });
+        }
+        if self.table.shape[0] != self.table_rows || self.table.shape[1] != self.hidden_size {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "engram_state.table.shape",
+                reason: "table shape must match table_rows and hidden_size",
+            });
+        }
+        if self.indices.shape != vec![self.table_rows] {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "engram_state.indices.shape",
+                reason: "indices shape must match table rows",
+            });
+        }
+        if let Some(gate) = &self.gate {
+            if gate.dtype != self.dtype || gate.shape != vec![self.hidden_size] {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "engram_state.gate",
+                    reason: "gate dtype/shape must match hidden dimension",
+                });
+            }
+        }
+        if let Some(path) = &self.execution_artifact_index_ref {
+            path.validate("engram_state.execution_artifact_index_ref")?;
+        }
+        nonzero(self.checksum, "engram_state.checksum")?;
+        nonzero(self.version, "engram_state.version")?;
+        let expected_checksum = engram_state_checksum(
+            &self.state_id,
+            &self.hot_memory_state_id,
+            &self.query_result_id,
+            self.operator_kind,
+            self.operator_config_hash,
+            &self.compatible_models,
+            &self.table,
+            &self.indices,
+            self.gate.as_ref(),
+            self.dtype,
+            self.hidden_size,
+            self.table_rows,
+            self.version,
+            self.created_at_us,
+            self.expires_at_us,
+        );
+        if expected_checksum != self.checksum {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "engram_state.checksum",
+                reason: "checksum does not match Engram state metadata",
+            });
+        }
+        if let Some(expires_at_us) = self.expires_at_us {
+            if expires_at_us <= self.created_at_us {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "engram_state.expires_at_us",
+                    reason: "expires_at_us must be greater than created_at_us",
+                });
+            }
         }
         Ok(())
     }
@@ -1082,6 +1192,27 @@ pub enum ShortpathAction {
     RequireVerify,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RangeBoundaryPhase {
+    RangeStart,
+    RangeExit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PrefetchScope {
+    Range,
+    Step,
+    MultiStep,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PrefetchPlanState {
+    Planned,
+    Issued,
+    Completed,
+    Cancelled,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InferenceModelBinding {
     pub model_id: String,
@@ -1102,6 +1233,7 @@ impl InferenceModelBinding {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RangeBoundary {
+    pub phase: RangeBoundaryPhase,
     pub step_index: u64,
     pub node_index: u32,
     pub layer_start: u32,
@@ -1238,6 +1370,108 @@ impl BoundaryLookupRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrefetchPlanRequest {
+    pub request_id: String,
+    pub model: InferenceModelBinding,
+    pub boundary: RangeBoundary,
+    pub engram_state_id: Option<String>,
+    pub scope: PrefetchScope,
+    pub lookahead_steps: u32,
+    pub artifact_kinds: Vec<ExecutionArtifactKind>,
+    pub created_at_us: u64,
+}
+
+impl PrefetchPlanRequest {
+    pub fn validate(&self) -> MemoryResult<()> {
+        required_str(&self.request_id, "prefetch_plan.request_id")?;
+        self.model.validate()?;
+        self.boundary.validate()?;
+        if self.boundary.phase != RangeBoundaryPhase::RangeStart {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "prefetch_plan.boundary.phase",
+                reason: "prefetch planning must be issued from a range start boundary",
+            });
+        }
+        if let Some(engram_state_id) = &self.engram_state_id {
+            required_str(engram_state_id, "prefetch_plan.engram_state_id")?;
+        }
+        nonzero(
+            u64::from(self.lookahead_steps),
+            "prefetch_plan.lookahead_steps",
+        )?;
+        require_nonempty(&self.artifact_kinds, "prefetch_plan.artifact_kinds")?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrefetchPlanRecord {
+    pub plan_id: String,
+    pub request_id: String,
+    pub model: InferenceModelBinding,
+    pub boundary: RangeBoundary,
+    pub engram_state_id: Option<String>,
+    pub scope: PrefetchScope,
+    pub lookahead_steps: u32,
+    pub target_step_index: u64,
+    pub target_position: u64,
+    pub artifact_kinds: Vec<ExecutionArtifactKind>,
+    pub planned_artifact_ids: Vec<String>,
+    pub state: PrefetchPlanState,
+    pub checksum: u64,
+    pub version: u64,
+    pub created_at_us: u64,
+    pub expires_at_us: Option<u64>,
+}
+
+impl PrefetchPlanRecord {
+    pub fn validate(&self) -> MemoryResult<()> {
+        required_str(&self.plan_id, "prefetch_plan.plan_id")?;
+        required_str(&self.request_id, "prefetch_plan.request_id")?;
+        self.model.validate()?;
+        self.boundary.validate()?;
+        if self.boundary.phase != RangeBoundaryPhase::RangeStart {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "prefetch_plan.boundary.phase",
+                reason: "prefetch plans must originate from a range start boundary",
+            });
+        }
+        if let Some(engram_state_id) = &self.engram_state_id {
+            required_str(engram_state_id, "prefetch_plan.engram_state_id")?;
+        }
+        nonzero(
+            u64::from(self.lookahead_steps),
+            "prefetch_plan.lookahead_steps",
+        )?;
+        require_nonempty(&self.artifact_kinds, "prefetch_plan.artifact_kinds")?;
+        if self.target_step_index < self.boundary.step_index {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "prefetch_plan.target_step_index",
+                reason: "target step must be >= boundary step",
+            });
+        }
+        nonzero(self.checksum, "prefetch_plan.checksum")?;
+        nonzero(self.version, "prefetch_plan.version")?;
+        if let Some(expires_at_us) = self.expires_at_us {
+            if expires_at_us <= self.created_at_us {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "prefetch_plan.expires_at_us",
+                    reason: "expires_at_us must be greater than created_at_us",
+                });
+            }
+        }
+        let expected_checksum = prefetch_plan_checksum(self);
+        if expected_checksum != self.checksum {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "prefetch_plan.checksum",
+                reason: "checksum does not match prefetch plan metadata",
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShortpathDecisionRecord {
     pub decision_id: String,
     pub request_id: String,
@@ -1369,9 +1603,11 @@ pub struct EngramStateMaterializeReq {
     pub state_id: String,
     pub hot_memory_state_id: String,
     pub gate_values: Vec<f32>,
+    pub compatible_models: Vec<InferenceModelBinding>,
     pub owner_entity: u64,
     pub producer_entity: u64,
     pub now_us: u64,
+    pub expires_at_us: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1379,9 +1615,11 @@ pub struct EngramStateMaterializeFromBlockReq {
     pub state_id: String,
     pub hot_memory_state_id: String,
     pub gate_weight_ref: LingquBlockPayloadRef,
+    pub compatible_models: Vec<InferenceModelBinding>,
     pub owner_entity: u64,
     pub producer_entity: u64,
     pub now_us: u64,
+    pub expires_at_us: Option<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -1395,6 +1633,7 @@ pub struct LingquMemoryService {
     hot_states: HashMap<String, HotMemoryStateObject>,
     engram_states: HashMap<String, EngramStateObject>,
     execution_artifacts: HashMap<String, ExecutionArtifactObject>,
+    prefetch_plans: HashMap<String, PrefetchPlanRecord>,
     shortpath_decisions: HashMap<String, ShortpathDecisionRecord>,
 }
 
@@ -2067,7 +2306,9 @@ impl LingquMemoryService {
         state_id: impl Into<String>,
         hot_memory_state_id: &str,
         gate: Option<HotTensorObjectRef>,
+        compatible_models: Vec<InferenceModelBinding>,
         created_at_us: u64,
+        expires_at_us: Option<u64>,
     ) -> MemoryResult<EngramStateObject> {
         let state_id = state_id.into();
         required_str(&state_id, "engram_state_id")?;
@@ -2078,15 +2319,63 @@ impl LingquMemoryService {
         if let Some(gate) = gate.as_ref() {
             validate_hot_ref(gate)?;
         }
+        for model in &compatible_models {
+            model.validate()?;
+        }
+        let table_shape = &hot_state.table.shape;
+        if table_shape.len() != 2 {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "hot_state.table.shape",
+                reason: "table shape must be [rows, hidden_size]",
+            });
+        }
+        let table_rows = table_shape[0];
+        let hidden_size = table_shape[1];
+        let operator_kind = EngramOperatorKind::ContextGate;
+        let operator_config_hash = engram_operator_config_hash(
+            operator_kind,
+            &hot_state.table,
+            &hot_state.indices,
+            gate.as_ref(),
+        );
+        let checksum = engram_state_checksum(
+            &state_id,
+            hot_memory_state_id,
+            &hot_state.query_result_id,
+            operator_kind,
+            operator_config_hash,
+            &compatible_models,
+            &hot_state.table,
+            &hot_state.indices,
+            gate.as_ref(),
+            hot_state.table.dtype,
+            hidden_size,
+            table_rows,
+            1,
+            created_at_us,
+            expires_at_us,
+        );
         let engram = EngramStateObject {
             state_id,
             hot_memory_state_id: hot_memory_state_id.to_string(),
+            query_result_id: hot_state.query_result_id.clone(),
             query_result_manifest_ref: hot_state.query_result_manifest_ref.clone(),
+            operator_kind,
+            operator_config_hash,
+            compatible_models,
             table: hot_state.table.clone(),
             indices: hot_state.indices.clone(),
             gate,
+            dtype: hot_state.table.dtype,
+            hidden_size,
+            table_rows,
+            execution_artifact_index_ref: None,
+            checksum,
+            version: 1,
             created_at_us,
+            expires_at_us,
         };
+        engram.validate()?;
         self.engram_states
             .insert(engram.state_id.clone(), engram.clone());
         Ok(engram)
@@ -2133,7 +2422,9 @@ impl LingquMemoryService {
             req.state_id,
             &req.hot_memory_state_id,
             Some(gate),
+            req.compatible_models,
             req.now_us,
+            req.expires_at_us,
         )
     }
 
@@ -2151,9 +2442,11 @@ impl LingquMemoryService {
                 state_id: req.state_id,
                 hot_memory_state_id: req.hot_memory_state_id,
                 gate_values,
+                compatible_models: req.compatible_models,
                 owner_entity: req.owner_entity,
                 producer_entity: req.producer_entity,
                 now_us: req.now_us,
+                expires_at_us: req.expires_at_us,
             },
         )
     }
@@ -2188,6 +2481,12 @@ impl LingquMemoryService {
         now_us: u64,
     ) -> MemoryResult<BoundaryLookupResponse> {
         req.validate()?;
+        if req.boundary.phase != RangeBoundaryPhase::RangeExit {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "boundary_lookup.boundary.phase",
+                reason: "shortpath lookup must be issued from a range exit boundary",
+            });
+        }
         if let Some(engram_state_id) = &req.engram_state_id {
             if !self.engram_states.contains_key(engram_state_id) {
                 return Err(LingquMemoryError::MissingField(
@@ -2303,6 +2602,71 @@ impl LingquMemoryService {
         Ok(response)
     }
 
+    pub fn plan_prefetch(
+        &mut self,
+        req: PrefetchPlanRequest,
+        now_us: u64,
+    ) -> MemoryResult<PrefetchPlanRecord> {
+        req.validate()?;
+        if let Some(engram_state_id) = &req.engram_state_id {
+            if !self.engram_states.contains_key(engram_state_id) {
+                return Err(LingquMemoryError::MissingField(
+                    "prefetch_plan.engram_state_id",
+                ));
+            }
+        }
+        let target_step_index = match req.scope {
+            PrefetchScope::Range => req.boundary.step_index,
+            PrefetchScope::Step | PrefetchScope::MultiStep => req
+                .boundary
+                .step_index
+                .saturating_add(u64::from(req.lookahead_steps)),
+        };
+        let mut planned_artifact_ids = self
+            .execution_artifacts
+            .values()
+            .filter(|artifact| artifact.model == req.model)
+            .filter(|artifact| artifact.producer_boundary.position >= req.boundary.position)
+            .filter(|artifact| artifact.producer_boundary.step_index <= target_step_index)
+            .filter(|artifact| req.artifact_kinds.contains(&artifact.kind))
+            .filter(|artifact| {
+                if let Some(engram_state_id) = &req.engram_state_id {
+                    artifact.source_engram_state_id.as_deref() == Some(engram_state_id.as_str())
+                } else {
+                    true
+                }
+            })
+            .map(|artifact| artifact.artifact_id.clone())
+            .collect::<Vec<_>>();
+        planned_artifact_ids.sort();
+        let mut plan = PrefetchPlanRecord {
+            plan_id: format!("prefetch-plan/{}", req.request_id),
+            request_id: req.request_id,
+            model: req.model,
+            boundary: req.boundary.clone(),
+            engram_state_id: req.engram_state_id,
+            scope: req.scope,
+            lookahead_steps: req.lookahead_steps,
+            target_step_index,
+            target_position: req
+                .boundary
+                .position
+                .saturating_add(u64::from(req.lookahead_steps)),
+            artifact_kinds: req.artifact_kinds,
+            planned_artifact_ids,
+            state: PrefetchPlanState::Planned,
+            checksum: 0,
+            version: 1,
+            created_at_us: now_us,
+            expires_at_us: None,
+        };
+        plan.checksum = prefetch_plan_checksum(&plan);
+        plan.validate()?;
+        self.prefetch_plans
+            .insert(plan.plan_id.clone(), plan.clone());
+        Ok(plan)
+    }
+
     pub fn record(&self, record_id: &str) -> Option<&MemoryRecord> {
         self.records.get(record_id)
     }
@@ -2317,6 +2681,10 @@ impl LingquMemoryService {
 
     pub fn shortpath_decision(&self, decision_id: &str) -> Option<&ShortpathDecisionRecord> {
         self.shortpath_decisions.get(decision_id)
+    }
+
+    pub fn prefetch_plan(&self, plan_id: &str) -> Option<&PrefetchPlanRecord> {
+        self.prefetch_plans.get(plan_id)
     }
 }
 
@@ -2696,6 +3064,164 @@ fn query_result_dfs_path(result_id: &str) -> MemoryResult<LingquDfsPath> {
     )))
 }
 
+fn engram_operator_config_hash(
+    operator_kind: EngramOperatorKind,
+    table: &HotTensorObjectRef,
+    indices: &HotTensorObjectRef,
+    gate: Option<&HotTensorObjectRef>,
+) -> u64 {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&engram_operator_kind_tag(operator_kind).to_le_bytes());
+    bytes.extend_from_slice(&table.checksum.to_le_bytes());
+    bytes.extend_from_slice(&indices.checksum.to_le_bytes());
+    if let Some(gate) = gate {
+        bytes.extend_from_slice(&gate.checksum.to_le_bytes());
+    }
+    checksum64(&bytes)
+}
+
+fn engram_state_checksum(
+    state_id: &str,
+    hot_memory_state_id: &str,
+    query_result_id: &str,
+    operator_kind: EngramOperatorKind,
+    operator_config_hash: u64,
+    compatible_models: &[InferenceModelBinding],
+    table: &HotTensorObjectRef,
+    indices: &HotTensorObjectRef,
+    gate: Option<&HotTensorObjectRef>,
+    dtype: TensorDType,
+    hidden_size: u64,
+    table_rows: u64,
+    version: u64,
+    created_at_us: u64,
+    expires_at_us: Option<u64>,
+) -> u64 {
+    fn push_str(bytes: &mut Vec<u8>, value: &str) {
+        bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(value.as_bytes());
+    }
+
+    let mut bytes = Vec::new();
+    push_str(&mut bytes, state_id);
+    push_str(&mut bytes, hot_memory_state_id);
+    push_str(&mut bytes, query_result_id);
+    bytes.extend_from_slice(&engram_operator_kind_tag(operator_kind).to_le_bytes());
+    bytes.extend_from_slice(&operator_config_hash.to_le_bytes());
+    for model in compatible_models {
+        push_str(&mut bytes, &model.model_id);
+        push_str(&mut bytes, &model.model_key);
+        bytes.extend_from_slice(&model.tokenizer_hash.to_le_bytes());
+        bytes.extend_from_slice(&model.profile_hash.to_le_bytes());
+    }
+    bytes.extend_from_slice(&table.checksum.to_le_bytes());
+    bytes.extend_from_slice(&indices.checksum.to_le_bytes());
+    if let Some(gate) = gate {
+        bytes.extend_from_slice(&gate.checksum.to_le_bytes());
+    }
+    bytes.extend_from_slice(&tensor_dtype_tag(dtype).to_le_bytes());
+    bytes.extend_from_slice(&hidden_size.to_le_bytes());
+    bytes.extend_from_slice(&table_rows.to_le_bytes());
+    bytes.extend_from_slice(&version.to_le_bytes());
+    bytes.extend_from_slice(&created_at_us.to_le_bytes());
+    bytes.extend_from_slice(&expires_at_us.unwrap_or(0).to_le_bytes());
+    checksum64(&bytes)
+}
+
+fn engram_operator_kind_tag(kind: EngramOperatorKind) -> u64 {
+    match kind {
+        EngramOperatorKind::ContextGate => 1,
+    }
+}
+
+fn tensor_dtype_tag(dtype: TensorDType) -> u64 {
+    match dtype {
+        TensorDType::U8 => 1,
+        TensorDType::U32 => 2,
+        TensorDType::U64 => 3,
+        TensorDType::F32 => 4,
+        TensorDType::Opaque => 5,
+    }
+}
+
+fn prefetch_plan_checksum(plan: &PrefetchPlanRecord) -> u64 {
+    fn push_str(bytes: &mut Vec<u8>, value: &str) {
+        bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(value.as_bytes());
+    }
+
+    let mut bytes = Vec::new();
+    push_str(&mut bytes, &plan.plan_id);
+    push_str(&mut bytes, &plan.request_id);
+    push_str(&mut bytes, &plan.model.model_id);
+    push_str(&mut bytes, &plan.model.model_key);
+    bytes.extend_from_slice(&plan.model.tokenizer_hash.to_le_bytes());
+    bytes.extend_from_slice(&plan.model.profile_hash.to_le_bytes());
+    bytes.extend_from_slice(&range_boundary_phase_tag(plan.boundary.phase).to_le_bytes());
+    bytes.extend_from_slice(&plan.boundary.step_index.to_le_bytes());
+    bytes.extend_from_slice(&plan.boundary.node_index.to_le_bytes());
+    bytes.extend_from_slice(&plan.boundary.layer_start.to_le_bytes());
+    bytes.extend_from_slice(&plan.boundary.layer_end.to_le_bytes());
+    bytes.extend_from_slice(
+        &plan
+            .boundary
+            .next_node_index
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+    );
+    bytes.extend_from_slice(&plan.boundary.position.to_le_bytes());
+    if let Some(engram_state_id) = &plan.engram_state_id {
+        push_str(&mut bytes, engram_state_id);
+    }
+    bytes.extend_from_slice(&prefetch_scope_tag(plan.scope).to_le_bytes());
+    bytes.extend_from_slice(&plan.lookahead_steps.to_le_bytes());
+    bytes.extend_from_slice(&plan.target_step_index.to_le_bytes());
+    bytes.extend_from_slice(&plan.target_position.to_le_bytes());
+    for kind in &plan.artifact_kinds {
+        bytes.extend_from_slice(&execution_artifact_kind_tag(*kind).to_le_bytes());
+    }
+    for artifact_id in &plan.planned_artifact_ids {
+        push_str(&mut bytes, artifact_id);
+    }
+    bytes.extend_from_slice(&prefetch_plan_state_tag(plan.state).to_le_bytes());
+    bytes.extend_from_slice(&plan.version.to_le_bytes());
+    bytes.extend_from_slice(&plan.created_at_us.to_le_bytes());
+    bytes.extend_from_slice(&plan.expires_at_us.unwrap_or(0).to_le_bytes());
+    checksum64(&bytes)
+}
+
+fn range_boundary_phase_tag(phase: RangeBoundaryPhase) -> u64 {
+    match phase {
+        RangeBoundaryPhase::RangeStart => 1,
+        RangeBoundaryPhase::RangeExit => 2,
+    }
+}
+
+fn prefetch_scope_tag(scope: PrefetchScope) -> u64 {
+    match scope {
+        PrefetchScope::Range => 1,
+        PrefetchScope::Step => 2,
+        PrefetchScope::MultiStep => 3,
+    }
+}
+
+fn prefetch_plan_state_tag(state: PrefetchPlanState) -> u64 {
+    match state {
+        PrefetchPlanState::Planned => 1,
+        PrefetchPlanState::Issued => 2,
+        PrefetchPlanState::Completed => 3,
+        PrefetchPlanState::Cancelled => 4,
+    }
+}
+
+fn execution_artifact_kind_tag(kind: ExecutionArtifactKind) -> u64 {
+    match kind {
+        ExecutionArtifactKind::HiddenState => 1,
+        ExecutionArtifactKind::KvCache => 2,
+        ExecutionArtifactKind::Logits => 3,
+    }
+}
+
 fn shortpath_decision_checksum(
     decision_id: &str,
     request_id: &str,
@@ -2968,6 +3494,87 @@ mod tests {
                 .unwrap()
                 .kind,
             ExecutionArtifactKind::Logits
+        );
+    }
+
+    #[test]
+    fn boundary_lookup_rejects_range_start_boundary() {
+        let mut service = LingquMemoryService::new();
+        let mut object_service =
+            LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
+        let hidden_ref = publish_hot_tensor(
+            &mut object_service,
+            "hidden/range/node4/start/step3".to_string(),
+            f32_vec_to_le_bytes(&[0.1, 0.2, 0.3, 0.4]),
+            TensorDType::F32,
+            vec![1, 4],
+            1,
+            2,
+            10,
+        )
+        .unwrap();
+        let mut boundary = sample_range_boundary();
+        boundary.phase = RangeBoundaryPhase::RangeStart;
+
+        let err = service
+            .boundary_lookup(
+                BoundaryLookupRequest {
+                    request_id: "boundary/start".to_string(),
+                    model: sample_model_binding(),
+                    boundary,
+                    hidden_state: hidden_ref,
+                    engram_state_id: None,
+                    min_confidence_milli: 900,
+                    allowed_actions: vec![ShortpathAction::JumpToTerminal],
+                    created_at_us: 13,
+                },
+                14,
+            )
+            .unwrap_err();
+        assert_eq!(
+            err,
+            LingquMemoryError::InvalidValue {
+                field: "boundary_lookup.boundary.phase",
+                reason: "shortpath lookup must be issued from a range exit boundary"
+            }
+        );
+    }
+
+    #[test]
+    fn prefetch_plan_records_range_start_lookahead() {
+        let mut service = LingquMemoryService::new();
+        let mut boundary = sample_range_boundary();
+        boundary.phase = RangeBoundaryPhase::RangeStart;
+        boundary.layer_start = 8;
+        boundary.layer_end = 12;
+
+        let plan = service
+            .plan_prefetch(
+                PrefetchPlanRequest {
+                    request_id: "prefetch/node4/step3".to_string(),
+                    model: sample_model_binding(),
+                    boundary,
+                    engram_state_id: None,
+                    scope: PrefetchScope::MultiStep,
+                    lookahead_steps: 2,
+                    artifact_kinds: vec![ExecutionArtifactKind::KvCache],
+                    created_at_us: 13,
+                },
+                14,
+            )
+            .unwrap();
+
+        assert_eq!(plan.scope, PrefetchScope::MultiStep);
+        assert_eq!(plan.target_step_index, 5);
+        assert_eq!(plan.target_position, 14);
+        assert_eq!(plan.state, PrefetchPlanState::Planned);
+        assert!(plan.checksum != 0);
+        assert_eq!(
+            service
+                .prefetch_plan("prefetch-plan/prefetch/node4/step3")
+                .unwrap()
+                .lookahead_steps,
+            2
         );
     }
 
@@ -3581,15 +4188,39 @@ mod tests {
             .unwrap();
 
         let engram = service
-            .build_engram_state("engram/0", &hot_state.state_id, None, 300)
+            .build_engram_state("engram/0", &hot_state.state_id, None, Vec::new(), 300, None)
             .unwrap();
 
         assert_eq!(
             engram.query_result_manifest_ref,
             hot_state.query_result_manifest_ref
         );
+        assert_eq!(engram.query_result_id, hot_state.query_result_id);
+        assert_eq!(engram.operator_kind, EngramOperatorKind::ContextGate);
         assert_eq!(engram.table.object_key, hot_state.table.object_key);
         assert_eq!(engram.indices.object_key, hot_state.indices.object_key);
+        assert_eq!(engram.hidden_size, 2);
+        assert_eq!(engram.table_rows, 1);
+        assert_eq!(engram.version, 1);
+        assert!(engram.checksum != 0);
+        let mut corrupted = engram.clone();
+        corrupted.hidden_size = 4;
+        assert_eq!(
+            corrupted.validate(),
+            Err(LingquMemoryError::InvalidValue {
+                field: "engram_state.table.shape",
+                reason: "table shape must match table_rows and hidden_size"
+            })
+        );
+        let mut corrupted = engram.clone();
+        corrupted.checksum ^= 1;
+        assert_eq!(
+            corrupted.validate(),
+            Err(LingquMemoryError::InvalidValue {
+                field: "engram_state.checksum",
+                reason: "checksum does not match Engram state metadata"
+            })
+        );
     }
 
     #[test]
@@ -3637,13 +4268,17 @@ mod tests {
                     state_id: "engram/0".to_string(),
                     hot_memory_state_id: hot_state.state_id.clone(),
                     gate_values: vec![0.5, 0.6, 0.7, 0.8],
+                    compatible_models: vec![sample_model_binding()],
                     owner_entity: 0,
                     producer_entity: 0,
                     now_us: 300,
+                    expires_at_us: Some(400),
                 },
             )
             .unwrap();
 
+        assert_eq!(engram.compatible_models, vec![sample_model_binding()]);
+        assert_eq!(engram.expires_at_us, Some(400));
         let gate = engram.gate.expect("gate object ref");
         assert_eq!(engram.table.object_key, hot_state.table.object_key);
         assert_eq!(engram.indices.object_key, hot_state.indices.object_key);
@@ -3712,9 +4347,11 @@ mod tests {
                     state_id: "engram/0".to_string(),
                     hot_memory_state_id: hot_state.state_id.clone(),
                     gate_weight_ref: gate_ref,
+                    compatible_models: Vec::new(),
                     owner_entity: 0,
                     producer_entity: 0,
                     now_us: 300,
+                    expires_at_us: None,
                 },
             )
             .unwrap();
@@ -3842,6 +4479,7 @@ mod tests {
 
     fn sample_range_boundary() -> RangeBoundary {
         RangeBoundary {
+            phase: RangeBoundaryPhase::RangeExit,
             step_index: 3,
             node_index: 4,
             layer_start: 4,
