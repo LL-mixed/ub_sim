@@ -5,7 +5,7 @@
 //! and Guest deployments can wrap the same API with their own transport.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use sim_core::{BlockHash, SegmentHandle, TensorDType};
@@ -308,6 +308,8 @@ impl MemoryCatalogSnapshot {
 pub struct LingquMemoryDurableStats {
     pub dfs_catalog_writes: u64,
     pub dfs_catalog_reads: u64,
+    pub dfs_audit_appends: u64,
+    pub dfs_audit_reads: u64,
     pub block_payload_writes: u64,
     pub block_payload_reads: u64,
     pub dfs_bytes_written: u64,
@@ -377,6 +379,9 @@ pub const LINGQU_PREFIX_CACHE_MANIFEST_PATH: &str = "/lingqu/memory/prefix-cache
 pub const LINGQU_SHORTPATH_DECISION_MANIFEST_PATH: &str =
     "/lingqu/memory/shortpath-decisions/audit.json";
 pub const LINGQU_PREFETCH_PLAN_MANIFEST_PATH: &str = "/lingqu/memory/prefetch-plans/audit.json";
+pub const LINGQU_SHORTPATH_DECISION_AUDIT_LOG_PATH: &str =
+    "/lingqu/memory/audit/shortpath-decisions.log";
+pub const LINGQU_PREFETCH_PLAN_AUDIT_LOG_PATH: &str = "/lingqu/memory/audit/prefetch-plans.log";
 
 pub const LINGQU_EXECUTION_ARTIFACT_MANIFEST_KIND: &str =
     "lingqu_memory_execution_artifact_manifest";
@@ -815,34 +820,134 @@ impl LingquMemoryDurableStore {
         &mut self,
         decisions: Vec<ShortpathDecisionRecord>,
     ) -> MemoryResult<LingquDfsPath> {
-        let manifest = LingquShortpathDecisionManifest::new(decisions)?;
-        let bytes = manifest.to_json_bytes()?;
-        let path = LingquDfsPath::new(LINGQU_SHORTPATH_DECISION_MANIFEST_PATH);
-        self.submit_dfs_write(path.path.clone(), bytes)?;
+        let path = LingquDfsPath::new(LINGQU_SHORTPATH_DECISION_AUDIT_LOG_PATH);
+        let mut decisions = decisions;
+        decisions.sort_by(|left, right| left.decision_id.cmp(&right.decision_id));
+        let existing =
+            self.load_shortpath_decision_audit_entries(true, "persist shortpath decisions")?;
+        let mut existing_by_id = HashMap::new();
+        for (decision, bytes) in existing {
+            if existing_by_id
+                .insert(decision.decision_id.clone(), bytes)
+                .is_some()
+            {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "shortpath_decision.decision_id",
+                    reason: "duplicate decision id in durable audit log",
+                });
+            }
+        }
+
+        let mut ops = Vec::new();
+        let mut bytes_written = 0;
+        let mut next_seq = existing_by_id.len() as u64 + 1;
+        for decision in decisions {
+            decision.validate()?;
+            let bytes = serde_json::to_vec(&decision)
+                .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+            if let Some(existing_bytes) = existing_by_id.get(&decision.decision_id) {
+                if existing_bytes != &bytes {
+                    return Err(LingquMemoryError::InvalidValue {
+                        field: "shortpath_decision.decision_id",
+                        reason: "decision id already exists with different payload",
+                    });
+                }
+                continue;
+            }
+            bytes_written += bytes.len() as u64;
+            ops.push(durable_sim::LingquDurableBatchOp::DfsAppendLog {
+                path: path.path.clone(),
+                bytes,
+                options: durable_sim::LingquDfsAppendOptions {
+                    expected_next_seq: Some(next_seq),
+                    writer: Some("lingqu-memory-service".to_string()),
+                    metadata: durable_audit_metadata("shortpath_decision"),
+                },
+            });
+            next_seq += 1;
+        }
+        if !ops.is_empty() {
+            self.durable
+                .commit_batch(ops)
+                .map_err(memory_error_from_durable)?;
+            self.stats.dfs_audit_appends += next_seq - existing_by_id.len() as u64 - 1;
+            self.stats.dfs_bytes_written += bytes_written;
+        }
         Ok(path)
     }
 
     pub fn load_shortpath_decision_manifest(
         &mut self,
     ) -> MemoryResult<Vec<ShortpathDecisionRecord>> {
-        let bytes = self.submit_dfs_read(LINGQU_SHORTPATH_DECISION_MANIFEST_PATH)?;
-        Ok(LingquShortpathDecisionManifest::from_json_bytes(&bytes)?.decisions)
+        Ok(self
+            .load_shortpath_decision_audit_entries(false, "load shortpath decisions")?
+            .into_iter()
+            .map(|(decision, _bytes)| decision)
+            .collect())
     }
 
     pub fn persist_prefetch_plan_manifest(
         &mut self,
         plans: Vec<PrefetchPlanRecord>,
     ) -> MemoryResult<LingquDfsPath> {
-        let manifest = LingquPrefetchPlanManifest::new(plans)?;
-        let bytes = manifest.to_json_bytes()?;
-        let path = LingquDfsPath::new(LINGQU_PREFETCH_PLAN_MANIFEST_PATH);
-        self.submit_dfs_write(path.path.clone(), bytes)?;
+        let path = LingquDfsPath::new(LINGQU_PREFETCH_PLAN_AUDIT_LOG_PATH);
+        let mut plans = plans;
+        plans.sort_by(|left, right| left.plan_id.cmp(&right.plan_id));
+        let existing = self.load_prefetch_plan_audit_entries(true, "persist prefetch plans")?;
+        let mut existing_by_id = HashMap::new();
+        for (plan, bytes) in existing {
+            if existing_by_id.insert(plan.plan_id.clone(), bytes).is_some() {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "prefetch_plan.plan_id",
+                    reason: "duplicate plan id in durable audit log",
+                });
+            }
+        }
+
+        let mut ops = Vec::new();
+        let mut bytes_written = 0;
+        let mut next_seq = existing_by_id.len() as u64 + 1;
+        for plan in plans {
+            plan.validate()?;
+            let bytes = serde_json::to_vec(&plan)
+                .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+            if let Some(existing_bytes) = existing_by_id.get(&plan.plan_id) {
+                if existing_bytes != &bytes {
+                    return Err(LingquMemoryError::InvalidValue {
+                        field: "prefetch_plan.plan_id",
+                        reason: "plan id already exists with different payload",
+                    });
+                }
+                continue;
+            }
+            bytes_written += bytes.len() as u64;
+            ops.push(durable_sim::LingquDurableBatchOp::DfsAppendLog {
+                path: path.path.clone(),
+                bytes,
+                options: durable_sim::LingquDfsAppendOptions {
+                    expected_next_seq: Some(next_seq),
+                    writer: Some("lingqu-memory-service".to_string()),
+                    metadata: durable_audit_metadata("prefetch_plan"),
+                },
+            });
+            next_seq += 1;
+        }
+        if !ops.is_empty() {
+            self.durable
+                .commit_batch(ops)
+                .map_err(memory_error_from_durable)?;
+            self.stats.dfs_audit_appends += next_seq - existing_by_id.len() as u64 - 1;
+            self.stats.dfs_bytes_written += bytes_written;
+        }
         Ok(path)
     }
 
     pub fn load_prefetch_plan_manifest(&mut self) -> MemoryResult<Vec<PrefetchPlanRecord>> {
-        let bytes = self.submit_dfs_read(LINGQU_PREFETCH_PLAN_MANIFEST_PATH)?;
-        Ok(LingquPrefetchPlanManifest::from_json_bytes(&bytes)?.plans)
+        Ok(self
+            .load_prefetch_plan_audit_entries(false, "load prefetch plans")?
+            .into_iter()
+            .map(|(plan, _bytes)| plan)
+            .collect())
     }
 
     pub fn write_block_payload(
@@ -876,6 +981,64 @@ impl LingquMemoryDurableStore {
         self.submit_block_read(payload_ref)
     }
 
+    fn load_shortpath_decision_audit_entries(
+        &mut self,
+        allow_missing: bool,
+        op: &'static str,
+    ) -> MemoryResult<Vec<(ShortpathDecisionRecord, Vec<u8>)>> {
+        let records = self
+            .submit_dfs_append_log_read(LINGQU_SHORTPATH_DECISION_AUDIT_LOG_PATH, allow_missing)?;
+        let mut entries = Vec::with_capacity(records.len());
+        let mut ids = HashSet::new();
+        for record in records {
+            let decision = serde_json::from_slice::<ShortpathDecisionRecord>(&record.bytes)
+                .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+            decision.validate()?;
+            if !ids.insert(decision.decision_id.clone()) {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "shortpath_decision.decision_id",
+                    reason: "duplicate decision id in durable audit log",
+                });
+            }
+            entries.push((decision, record.bytes));
+        }
+        if entries.is_empty() && !allow_missing {
+            return Err(LingquMemoryError::MissingDfsPath(format!(
+                "{op}: {LINGQU_SHORTPATH_DECISION_AUDIT_LOG_PATH}"
+            )));
+        }
+        Ok(entries)
+    }
+
+    fn load_prefetch_plan_audit_entries(
+        &mut self,
+        allow_missing: bool,
+        op: &'static str,
+    ) -> MemoryResult<Vec<(PrefetchPlanRecord, Vec<u8>)>> {
+        let records =
+            self.submit_dfs_append_log_read(LINGQU_PREFETCH_PLAN_AUDIT_LOG_PATH, allow_missing)?;
+        let mut entries = Vec::with_capacity(records.len());
+        let mut ids = HashSet::new();
+        for record in records {
+            let plan = serde_json::from_slice::<PrefetchPlanRecord>(&record.bytes)
+                .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+            plan.validate()?;
+            if !ids.insert(plan.plan_id.clone()) {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "prefetch_plan.plan_id",
+                    reason: "duplicate plan id in durable audit log",
+                });
+            }
+            entries.push((plan, record.bytes));
+        }
+        if entries.is_empty() && !allow_missing {
+            return Err(LingquMemoryError::MissingDfsPath(format!(
+                "{op}: {LINGQU_PREFETCH_PLAN_AUDIT_LOG_PATH}"
+            )));
+        }
+        Ok(entries)
+    }
+
     fn submit_dfs_write(&mut self, path: String, bytes: Vec<u8>) -> MemoryResult<()> {
         let bytes_len = bytes.len() as u64;
         self.durable
@@ -901,6 +1064,27 @@ impl LingquMemoryDurableStore {
         self.stats.dfs_catalog_reads += 1;
         self.stats.dfs_bytes_read += bytes.len() as u64;
         Ok(bytes)
+    }
+
+    fn submit_dfs_append_log_read(
+        &mut self,
+        path: &str,
+        allow_missing: bool,
+    ) -> MemoryResult<Vec<durable_sim::LingquDfsAppendLogRecord>> {
+        match self.durable.dfs_append_log_read(path, 1, None) {
+            Ok(records) => {
+                self.stats.dfs_audit_reads += 1;
+                self.stats.dfs_bytes_read += records
+                    .iter()
+                    .map(|record| record.bytes.len() as u64)
+                    .sum::<u64>();
+                Ok(records)
+            }
+            Err(durable_sim::LingquDurableError::MissingDfsPath(_)) if allow_missing => {
+                Ok(Vec::new())
+            }
+            Err(err) => Err(memory_error_from_durable(err)),
+        }
     }
 
     fn submit_block_write(&mut self, block: BlockHash, bytes: Vec<u8>) -> MemoryResult<()> {
@@ -966,6 +1150,13 @@ fn memory_error_from_durable(err: durable_sim::LingquDurableError) -> LingquMemo
         },
         other => LingquMemoryError::DurableServiceFailed(other.to_string()),
     }
+}
+
+fn durable_audit_metadata(record_kind: &'static str) -> BTreeMap<String, String> {
+    let mut metadata = BTreeMap::new();
+    metadata.insert("service".to_string(), "lingqu-memory".to_string());
+    metadata.insert("record_kind".to_string(), record_kind.to_string());
+    metadata
 }
 
 fn legacy_dfs_payloads_from_durable_snapshot(
@@ -5071,9 +5262,34 @@ mod tests {
         restored_service
             .persist_prefetch_plans_to_dfs(&mut restored)
             .expect("persist prefetch audit");
+        restored_service
+            .persist_shortpath_decisions_to_dfs(&mut restored)
+            .expect("persist shortpath audit idempotently");
+        restored_service
+            .persist_prefetch_plans_to_dfs(&mut restored)
+            .expect("persist prefetch audit idempotently");
         let audit_snapshot = restored
             .export_durable_sim_snapshot()
             .expect("export audit durable snapshot");
+        let shortpath_log_records = audit_snapshot
+            .dfs
+            .append_logs
+            .iter()
+            .filter(|record| record.path == LINGQU_SHORTPATH_DECISION_AUDIT_LOG_PATH)
+            .collect::<Vec<_>>();
+        let prefetch_log_records = audit_snapshot
+            .dfs
+            .append_logs
+            .iter()
+            .filter(|record| record.path == LINGQU_PREFETCH_PLAN_AUDIT_LOG_PATH)
+            .collect::<Vec<_>>();
+        assert_eq!(shortpath_log_records.len(), 1);
+        assert_eq!(shortpath_log_records[0].seq, 1);
+        assert_eq!(prefetch_log_records.len(), 1);
+        assert_eq!(prefetch_log_records[0].seq, 1);
+        assert!(audit_snapshot.dfs.files.iter().all(|record| record.path
+            != LINGQU_SHORTPATH_DECISION_MANIFEST_PATH
+            && record.path != LINGQU_PREFETCH_PLAN_MANIFEST_PATH));
         let audit_json = audit_snapshot.to_json_bytes().expect("audit json");
         let audit_decoded = durable_sim::LingquDurableSimSnapshot::from_json_bytes(&audit_json)
             .expect("decode audit durable snapshot");

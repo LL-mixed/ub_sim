@@ -626,6 +626,88 @@ pub mod durable {
     }
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct LingquDfsAppendLogRecord {
+        pub path: String,
+        pub seq: u64,
+        pub bytes: Vec<u8>,
+        pub checksum: u64,
+        pub prev_chain_checksum: u64,
+        pub chain_checksum: u64,
+        pub created_at_us: u64,
+        pub writer: Option<String>,
+        pub metadata: BTreeMap<String, String>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct LingquDfsAppendOptions {
+        pub expected_next_seq: Option<u64>,
+        pub writer: Option<String>,
+        pub metadata: BTreeMap<String, String>,
+    }
+
+    impl Default for LingquDfsAppendOptions {
+        fn default() -> Self {
+            Self {
+                expected_next_seq: None,
+                writer: None,
+                metadata: BTreeMap::new(),
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct LingquDfsListOptions {
+        pub prefix: String,
+        pub include_tombstoned: bool,
+    }
+
+    impl LingquDfsListOptions {
+        pub fn new(prefix: impl Into<String>) -> Self {
+            Self {
+                prefix: prefix.into(),
+                include_tombstoned: false,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct LingquDfsListEntry {
+        pub path: String,
+        pub version: u64,
+        pub state: LingquDfsFileState,
+        pub bytes: u64,
+        pub checksum: u64,
+        pub updated_at_us: u64,
+        pub content_type: LingquDfsContentType,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum LingquDurableBatchOp {
+        DfsWrite {
+            path: String,
+            bytes: Vec<u8>,
+            options: LingquDfsWriteOptions,
+        },
+        DfsAppendLog {
+            path: String,
+            bytes: Vec<u8>,
+            options: LingquDfsAppendOptions,
+        },
+        BlockWrite {
+            block: String,
+            bytes: Vec<u8>,
+            options: LingquBlockWriteOptions,
+        },
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum LingquDurableBatchOutcome {
+        DfsPath(LingquDfsPath),
+        DfsAppendLog(LingquDfsAppendLogRecord),
+        BlockPayloadRef(LingquBlockPayloadRef),
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     pub struct LingquBlockRecord {
         pub block: BlockHash,
         pub version: u64,
@@ -643,6 +725,8 @@ pub mod durable {
     pub struct LingquDfsSimSnapshot {
         pub files: Vec<LingquDfsFileRecord>,
         pub directories: Vec<LingquDfsDirectoryRecord>,
+        #[serde(default)]
+        pub append_logs: Vec<LingquDfsAppendLogRecord>,
     }
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -800,6 +884,17 @@ pub mod durable {
         pub missing_refs: u64,
     }
 
+    #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct LingquDurableValidationReport {
+        pub dfs_file_versions: usize,
+        pub dfs_append_records: usize,
+        pub block_versions: usize,
+        pub missing_block_refs: Vec<String>,
+        pub orphan_blocks: Vec<String>,
+        pub append_log_paths: Vec<String>,
+        pub checksum: u64,
+    }
+
     #[derive(Debug, Error, Clone, PartialEq, Eq)]
     pub enum LingquDurableError {
         #[error("invalid DFS path: {0}")]
@@ -849,6 +944,7 @@ pub mod durable {
         block_service: block::BlockServiceStub,
         dfs_files: Vec<LingquDfsFileRecord>,
         dfs_directories: Vec<LingquDfsDirectoryRecord>,
+        dfs_append_logs: Vec<LingquDfsAppendLogRecord>,
         block_records: Vec<LingquBlockRecord>,
         next_timestamp_us: SimTimestamp,
         stats: LingquDurableStats,
@@ -862,6 +958,7 @@ pub mod durable {
                 profile,
                 dfs_files: Vec::new(),
                 dfs_directories: Vec::new(),
+                dfs_append_logs: Vec::new(),
                 block_records: Vec::new(),
                 next_timestamp_us: 1,
                 stats: LingquDurableStats::default(),
@@ -877,6 +974,12 @@ pub mod durable {
             });
             let mut dfs_directories = self.dfs_directories.clone();
             dfs_directories.sort_by(|left, right| left.path.cmp(&right.path));
+            let mut append_logs = self.dfs_append_logs.clone();
+            append_logs.sort_by(|left, right| {
+                left.path
+                    .cmp(&right.path)
+                    .then_with(|| left.seq.cmp(&right.seq))
+            });
             let mut block_records = self.block_records.clone();
             block_records.sort_by(|left, right| {
                 left.block
@@ -891,6 +994,7 @@ pub mod durable {
                 dfs: LingquDfsSimSnapshot {
                     files: dfs_files,
                     directories: dfs_directories,
+                    append_logs,
                 },
                 block: LingquBlockSimSnapshot {
                     blocks: block_records,
@@ -908,6 +1012,7 @@ pub mod durable {
             let mut sim = Self::new(snapshot.profile);
             sim.next_timestamp_us = snapshot.next_timestamp_us;
             sim.dfs_directories = snapshot.dfs.directories;
+            sim.dfs_append_logs = snapshot.dfs.append_logs;
             sim.block_records = snapshot.block.blocks;
             sim.dfs_files = snapshot.dfs.files;
             sim.rebuild_service_indexes()?;
@@ -1011,6 +1116,43 @@ pub mod durable {
             self.select_dfs_record(path, selector).cloned()
         }
 
+        pub fn dfs_list(
+            &self,
+            options: LingquDfsListOptions,
+        ) -> LingquDurableResult<Vec<LingquDfsListEntry>> {
+            validate_dfs_prefix(&options.prefix)?;
+            let mut latest_by_path = BTreeMap::<String, &LingquDfsFileRecord>::new();
+            for record in &self.dfs_files {
+                if !record.path.starts_with(&options.prefix) {
+                    continue;
+                }
+                let replace = latest_by_path
+                    .get(&record.path)
+                    .map(|existing| existing.version < record.version)
+                    .unwrap_or(true);
+                if replace {
+                    latest_by_path.insert(record.path.clone(), record);
+                }
+            }
+            let mut entries = Vec::new();
+            for record in latest_by_path.values() {
+                if record.state != LingquDfsFileState::Committed && !options.include_tombstoned {
+                    continue;
+                }
+                entries.push(LingquDfsListEntry {
+                    path: record.path.clone(),
+                    version: record.version,
+                    state: record.state,
+                    bytes: record.bytes,
+                    checksum: record.checksum,
+                    updated_at_us: record.updated_at_us,
+                    content_type: record.content_type,
+                });
+            }
+            entries.sort_by(|left, right| left.path.cmp(&right.path));
+            Ok(entries)
+        }
+
         pub fn dfs_tombstone(
             &mut self,
             path: &str,
@@ -1037,6 +1179,123 @@ pub mod durable {
                 metadata: BTreeMap::new(),
             });
             Ok(())
+        }
+
+        pub fn dfs_append_log_append(
+            &mut self,
+            path: impl Into<String>,
+            bytes: Vec<u8>,
+            options: LingquDfsAppendOptions,
+        ) -> LingquDurableResult<LingquDfsAppendLogRecord> {
+            let path = path.into();
+            validate_dfs_path(&path)?;
+            if bytes.is_empty() {
+                return Err(LingquDurableError::EmptyPayload);
+            }
+            let (latest_seq, prev_chain_checksum) = self
+                .latest_append_log_record(&path)
+                .map(|record| (record.seq, record.chain_checksum))
+                .unwrap_or((0, 0));
+            let next_seq = latest_seq.saturating_add(1);
+            self.check_expected_version(&path, Some(next_seq), options.expected_next_seq)?;
+            let checksum = checksum64(&bytes);
+            let chain_checksum =
+                append_log_chain_checksum(&path, next_seq, checksum, prev_chain_checksum, &bytes);
+            let now = self.next_timestamp();
+            let record = LingquDfsAppendLogRecord {
+                path: path.clone(),
+                seq: next_seq,
+                bytes,
+                checksum,
+                prev_chain_checksum,
+                chain_checksum,
+                created_at_us: now,
+                writer: options.writer,
+                metadata: options.metadata,
+            };
+            validate_append_log_record(&record)?;
+            self.submit_dfs_write(path, record.bytes.len() as u64)?;
+            self.stats.dfs_writes += 1;
+            self.stats.dfs_bytes_written += record.bytes.len() as u64;
+            self.dfs_append_logs.push(record.clone());
+            Ok(record)
+        }
+
+        pub fn dfs_append_log_read(
+            &mut self,
+            path: &str,
+            start_seq: u64,
+            max_records: Option<usize>,
+        ) -> LingquDurableResult<Vec<LingquDfsAppendLogRecord>> {
+            validate_dfs_path(path)?;
+            let max_records = max_records.unwrap_or(usize::MAX);
+            let mut records = self
+                .dfs_append_logs
+                .iter()
+                .filter(|record| record.path == path && record.seq >= start_seq)
+                .cloned()
+                .collect::<Vec<_>>();
+            records.sort_by_key(|record| record.seq);
+            records.truncate(max_records);
+            if records.is_empty() {
+                return Err(LingquDurableError::MissingDfsPath(path.to_string()));
+            }
+            self.submit_dfs_read(path)?;
+            self.stats.dfs_reads += 1;
+            self.stats.dfs_bytes_read += records
+                .iter()
+                .map(|record| record.bytes.len() as u64)
+                .sum::<u64>();
+            Ok(records)
+        }
+
+        pub fn validate_store(&self) -> LingquDurableResult<LingquDurableValidationReport> {
+            let snapshot = self.export_snapshot()?;
+            snapshot.validation_report()
+        }
+
+        pub fn commit_batch(
+            &mut self,
+            ops: Vec<LingquDurableBatchOp>,
+        ) -> LingquDurableResult<Vec<LingquDurableBatchOutcome>> {
+            if ops.is_empty() {
+                return Err(LingquDurableError::SnapshotValidation(
+                    "durable batch must contain at least one operation".to_string(),
+                ));
+            }
+            let original_stats = self.stats;
+            let snapshot = self.export_snapshot()?;
+            let mut staged = Self::import_snapshot(snapshot)?;
+            let mut outcomes = Vec::with_capacity(ops.len());
+            for op in ops {
+                let outcome = match op {
+                    LingquDurableBatchOp::DfsWrite {
+                        path,
+                        bytes,
+                        options,
+                    } => {
+                        LingquDurableBatchOutcome::DfsPath(staged.dfs_write(path, bytes, options)?)
+                    }
+                    LingquDurableBatchOp::DfsAppendLog {
+                        path,
+                        bytes,
+                        options,
+                    } => LingquDurableBatchOutcome::DfsAppendLog(
+                        staged.dfs_append_log_append(path, bytes, options)?,
+                    ),
+                    LingquDurableBatchOp::BlockWrite {
+                        block,
+                        bytes,
+                        options,
+                    } => LingquDurableBatchOutcome::BlockPayloadRef(
+                        staged.block_write(block, bytes, options)?,
+                    ),
+                };
+                outcomes.push(outcome);
+            }
+            staged.stats = add_durable_stats(original_stats, staged.stats);
+            *self = staged;
+            Ok(outcomes)
         }
 
         pub fn block_write(
@@ -1226,6 +1485,13 @@ pub mod durable {
                 .max_by_key(|record| record.version)
         }
 
+        fn latest_append_log_record(&self, path: &str) -> Option<&LingquDfsAppendLogRecord> {
+            self.dfs_append_logs
+                .iter()
+                .filter(|record| record.path == path)
+                .max_by_key(|record| record.seq)
+        }
+
         fn select_dfs_record(
             &self,
             path: &str,
@@ -1391,6 +1657,16 @@ pub mod durable {
             for (path, bytes) in committed_paths {
                 self.submit_dfs_write(path, bytes)?;
             }
+            let mut append_paths = self
+                .dfs_append_logs
+                .iter()
+                .map(|record| (record.path.clone(), record.bytes.len() as u64))
+                .collect::<Vec<_>>();
+            append_paths.sort_by(|left, right| left.0.cmp(&right.0));
+            append_paths.dedup_by(|left, right| left.0 == right.0);
+            for (path, bytes) in append_paths {
+                self.submit_dfs_write(path, bytes)?;
+            }
             self.stats = LingquDurableStats::default();
             Ok(())
         }
@@ -1429,6 +1705,7 @@ pub mod durable {
             }
             validate_block_snapshot(&self.block)?;
             validate_dfs_snapshot(&self.dfs, &self.block.blocks)?;
+            validate_append_logs(&self.dfs.append_logs)?;
             let actual = durable_snapshot_checksum(self);
             if actual != self.checksum {
                 return Err(LingquDurableError::ChecksumMismatch {
@@ -1451,6 +1728,53 @@ pub mod durable {
                 .map_err(|err| LingquDurableError::SnapshotCodec(err.to_string()))?;
             snapshot.validate()?;
             Ok(snapshot)
+        }
+
+        pub fn validation_report(&self) -> LingquDurableResult<LingquDurableValidationReport> {
+            self.validate()?;
+            let mut referenced_blocks = HashSet::<(String, u64)>::new();
+            let mut missing_block_refs = Vec::<String>::new();
+            for record in &self.dfs.files {
+                if let LingquDfsContentRef::Block(payload_ref) = &record.content_ref {
+                    referenced_blocks.insert((payload_ref.block.0.clone(), payload_ref.version));
+                    let present = self.block.blocks.iter().any(|block_record| {
+                        block_record.block == payload_ref.block
+                            && block_record.version == payload_ref.version
+                    });
+                    if !present {
+                        missing_block_refs
+                            .push(format!("{}@{}", payload_ref.block.0, payload_ref.version));
+                    }
+                }
+            }
+            let mut orphan_blocks = self
+                .block
+                .blocks
+                .iter()
+                .filter(|record| {
+                    !referenced_blocks.contains(&(record.block.0.clone(), record.version))
+                        && record.block.0.starts_with("block/dfs/")
+                })
+                .map(|record| format!("{}@{}", record.block.0, record.version))
+                .collect::<Vec<_>>();
+            orphan_blocks.sort();
+            let mut append_log_paths = self
+                .dfs
+                .append_logs
+                .iter()
+                .map(|record| record.path.clone())
+                .collect::<Vec<_>>();
+            append_log_paths.sort();
+            append_log_paths.dedup();
+            Ok(LingquDurableValidationReport {
+                dfs_file_versions: self.dfs.files.len(),
+                dfs_append_records: self.dfs.append_logs.len(),
+                block_versions: self.block.blocks.len(),
+                missing_block_refs,
+                orphan_blocks,
+                append_log_paths,
+                checksum: self.checksum,
+            })
         }
     }
 
@@ -1484,6 +1808,66 @@ pub mod durable {
                 )));
             }
             validate_block_record(record)?;
+        }
+        Ok(())
+    }
+
+    fn validate_append_logs(records: &[LingquDfsAppendLogRecord]) -> LingquDurableResult<()> {
+        let mut by_path = BTreeMap::<String, Vec<&LingquDfsAppendLogRecord>>::new();
+        for record in records {
+            validate_append_log_record(record)?;
+            by_path.entry(record.path.clone()).or_default().push(record);
+        }
+        for (path, records) in by_path.iter_mut() {
+            records.sort_by_key(|record| record.seq);
+            let mut expected_seq = 1u64;
+            let mut prev_chain_checksum = 0u64;
+            for record in records {
+                if record.seq != expected_seq {
+                    return Err(LingquDurableError::SnapshotValidation(format!(
+                        "append log {path} has non-contiguous seq {} expected {expected_seq}",
+                        record.seq
+                    )));
+                }
+                if record.prev_chain_checksum != prev_chain_checksum {
+                    return Err(LingquDurableError::SnapshotValidation(format!(
+                        "append log {path} seq {} prev checksum mismatch",
+                        record.seq
+                    )));
+                }
+                prev_chain_checksum = record.chain_checksum;
+                expected_seq = expected_seq.saturating_add(1);
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_append_log_record(record: &LingquDfsAppendLogRecord) -> LingquDurableResult<()> {
+        validate_dfs_path(&record.path)?;
+        if record.seq == 0 {
+            return Err(LingquDurableError::SnapshotValidation(
+                "append log seq must be non-zero".to_string(),
+            ));
+        }
+        validate_payload_metadata(
+            &record.path,
+            &record.bytes,
+            record.bytes.len() as u64,
+            record.checksum,
+        )?;
+        let chain_checksum = append_log_chain_checksum(
+            &record.path,
+            record.seq,
+            record.checksum,
+            record.prev_chain_checksum,
+            &record.bytes,
+        );
+        if chain_checksum != record.chain_checksum {
+            return Err(LingquDurableError::ChecksumMismatch {
+                id: format!("{}#{}", record.path, record.seq),
+                expected: record.chain_checksum,
+                actual: chain_checksum,
+            });
         }
         Ok(())
     }
@@ -1619,6 +2003,24 @@ pub mod durable {
         Ok(())
     }
 
+    fn validate_dfs_prefix(prefix: &str) -> LingquDurableResult<()> {
+        if prefix == "/lingqu" || prefix == "/lingqu/" {
+            return Ok(());
+        }
+        if !prefix.starts_with("/lingqu/") {
+            return Err(LingquDurableError::InvalidPath(prefix.to_string()));
+        }
+        for segment in prefix.split('/') {
+            if segment == "." || segment == ".." {
+                return Err(LingquDurableError::InvalidPath(prefix.to_string()));
+            }
+        }
+        if prefix.contains("//") {
+            return Err(LingquDurableError::InvalidPath(prefix.to_string()));
+        }
+        Ok(())
+    }
+
     fn validate_block(block: &BlockHash) -> LingquDurableResult<()> {
         if block.0.trim().is_empty() {
             return Err(LingquDurableError::InvalidBlock(block.0.clone()));
@@ -1688,12 +2090,26 @@ pub mod durable {
                 .cmp(&right.block.0)
                 .then_with(|| left.version.cmp(&right.version))
         });
+        let mut append_logs = snapshot.dfs.append_logs.iter().collect::<Vec<_>>();
+        append_logs.sort_by(|left, right| {
+            left.path
+                .cmp(&right.path)
+                .then_with(|| left.seq.cmp(&right.seq))
+        });
         for record in dfs_files {
             bytes.extend_from_slice(record.path.as_bytes());
             bytes.extend_from_slice(&record.version.to_le_bytes());
             bytes.extend_from_slice(&dfs_state_tag(record.state).to_le_bytes());
             bytes.extend_from_slice(&record.bytes.to_le_bytes());
             bytes.extend_from_slice(&record.checksum.to_le_bytes());
+        }
+        for record in append_logs {
+            bytes.extend_from_slice(record.path.as_bytes());
+            bytes.extend_from_slice(&record.seq.to_le_bytes());
+            bytes.extend_from_slice(&record.checksum.to_le_bytes());
+            bytes.extend_from_slice(&record.prev_chain_checksum.to_le_bytes());
+            bytes.extend_from_slice(&record.chain_checksum.to_le_bytes());
+            bytes.extend_from_slice(&(record.bytes.len() as u64).to_le_bytes());
         }
         for record in block_records {
             bytes.extend_from_slice(record.block.0.as_bytes());
@@ -1702,6 +2118,23 @@ pub mod durable {
             bytes.extend_from_slice(&record.checksum.to_le_bytes());
             bytes.extend_from_slice(&(record.bytes.len() as u64).to_le_bytes());
         }
+        checksum64(&bytes)
+    }
+
+    fn append_log_chain_checksum(
+        path: &str,
+        seq: u64,
+        checksum: u64,
+        prev_chain_checksum: u64,
+        payload: &[u8],
+    ) -> u64 {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(path.as_bytes());
+        bytes.extend_from_slice(&seq.to_le_bytes());
+        bytes.extend_from_slice(&checksum.to_le_bytes());
+        bytes.extend_from_slice(&prev_chain_checksum.to_le_bytes());
+        bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(payload);
         checksum64(&bytes)
     }
 
@@ -1719,6 +2152,33 @@ pub mod durable {
             LingquBlockDurableState::Sealed => 2,
             LingquBlockDurableState::Tombstoned => 3,
             LingquBlockDurableState::Quarantined => 4,
+        }
+    }
+
+    fn add_durable_stats(
+        left: LingquDurableStats,
+        right: LingquDurableStats,
+    ) -> LingquDurableStats {
+        LingquDurableStats {
+            dfs_reads: left.dfs_reads.saturating_add(right.dfs_reads),
+            dfs_writes: left.dfs_writes.saturating_add(right.dfs_writes),
+            dfs_bytes_read: left.dfs_bytes_read.saturating_add(right.dfs_bytes_read),
+            dfs_bytes_written: left
+                .dfs_bytes_written
+                .saturating_add(right.dfs_bytes_written),
+            block_reads: left.block_reads.saturating_add(right.block_reads),
+            block_writes: left.block_writes.saturating_add(right.block_writes),
+            block_bytes_read: left.block_bytes_read.saturating_add(right.block_bytes_read),
+            block_bytes_written: left
+                .block_bytes_written
+                .saturating_add(right.block_bytes_written),
+            checksum_failures: left
+                .checksum_failures
+                .saturating_add(right.checksum_failures),
+            version_conflicts: left
+                .version_conflicts
+                .saturating_add(right.version_conflicts),
+            missing_refs: left.missing_refs.saturating_add(right.missing_refs),
         }
     }
 
@@ -3542,8 +4002,10 @@ mod tests {
     use super::db::{DbGetReq, DbPutReq, DbServiceProfile, DbServiceStub};
     use super::dfs::{DfsReadReq, DfsServiceProfile, DfsServiceStub, DfsWriteReq};
     use super::durable::{
-        LingquBlockPayloadRef, LingquBlockWriteOptions, LingquDfsContentRef, LingquDfsContentType,
-        LingquDfsWriteOptions, LingquDurableError, LingquDurableSim, LingquVersionSelector,
+        LingquBlockPayloadRef, LingquBlockWriteOptions, LingquDfsAppendOptions,
+        LingquDfsContentRef, LingquDfsContentType, LingquDfsListOptions, LingquDfsWriteOptions,
+        LingquDurableBatchOp, LingquDurableBatchOutcome, LingquDurableError, LingquDurableSim,
+        LingquVersionSelector,
     };
     use super::object::{
         LingquObjectKind, LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
@@ -3777,6 +4239,215 @@ mod tests {
                 .expect("read block backed file"),
             payload
         );
+    }
+
+    #[test]
+    fn durable_sim_dfs_list_reports_latest_namespace_entries() {
+        let mut sim = LingquDurableSim::default();
+        sim.dfs_write(
+            "/lingqu/memory/session/a/catalog.json",
+            b"v1".to_vec(),
+            LingquDfsWriteOptions::default(),
+        )
+        .expect("write v1");
+        sim.dfs_write(
+            "/lingqu/memory/session/a/catalog.json",
+            b"v2".to_vec(),
+            LingquDfsWriteOptions::default(),
+        )
+        .expect("write v2");
+        sim.dfs_write(
+            "/lingqu/memory/session/a/query.json",
+            b"q".to_vec(),
+            LingquDfsWriteOptions::default(),
+        )
+        .expect("write query");
+        sim.dfs_write(
+            "/lingqu/memory/session/b/catalog.json",
+            b"other".to_vec(),
+            LingquDfsWriteOptions::default(),
+        )
+        .expect("write other");
+
+        let entries = sim
+            .dfs_list(LingquDfsListOptions::new("/lingqu/memory/session/a/"))
+            .expect("list prefix");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].path, "/lingqu/memory/session/a/catalog.json");
+        assert_eq!(entries[0].version, 2);
+        assert_eq!(entries[1].path, "/lingqu/memory/session/a/query.json");
+    }
+
+    #[test]
+    fn durable_sim_append_log_round_trips_with_checksum_chain() {
+        let mut sim = LingquDurableSim::default();
+        let path = "/lingqu/memory/audit/shortpath.log";
+        let first = sim
+            .dfs_append_log_append(
+                path,
+                br#"{"decision":"continue"}"#.to_vec(),
+                LingquDfsAppendOptions {
+                    expected_next_seq: Some(1),
+                    ..LingquDfsAppendOptions::default()
+                },
+            )
+            .expect("append first");
+        let second = sim
+            .dfs_append_log_append(
+                path,
+                br#"{"decision":"jump"}"#.to_vec(),
+                LingquDfsAppendOptions {
+                    expected_next_seq: Some(2),
+                    ..LingquDfsAppendOptions::default()
+                },
+            )
+            .expect("append second");
+
+        assert_eq!(first.seq, 1);
+        assert_eq!(second.seq, 2);
+        assert_eq!(second.prev_chain_checksum, first.chain_checksum);
+        let snapshot = sim.export_snapshot().expect("export snapshot");
+        let bytes = snapshot.to_json_bytes().expect("snapshot json");
+        let decoded = super::durable::LingquDurableSimSnapshot::from_json_bytes(&bytes)
+            .expect("decode snapshot");
+        let mut restored = LingquDurableSim::import_snapshot(decoded).expect("import snapshot");
+        let records = restored
+            .dfs_append_log_read(path, 1, None)
+            .expect("read append log");
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].bytes, br#"{"decision":"continue"}"#.to_vec());
+        assert_eq!(records[1].bytes, br#"{"decision":"jump"}"#.to_vec());
+    }
+
+    #[test]
+    fn durable_sim_append_log_rejects_stale_expected_seq() {
+        let mut sim = LingquDurableSim::default();
+        let path = "/lingqu/memory/audit/prefetch.log";
+        sim.dfs_append_log_append(path, b"first".to_vec(), LingquDfsAppendOptions::default())
+            .expect("append first");
+
+        let err = sim
+            .dfs_append_log_append(
+                path,
+                b"second".to_vec(),
+                LingquDfsAppendOptions {
+                    expected_next_seq: Some(1),
+                    ..LingquDfsAppendOptions::default()
+                },
+            )
+            .expect_err("stale append seq must fail");
+        assert!(matches!(err, LingquDurableError::VersionConflict { .. }));
+    }
+
+    #[test]
+    fn durable_sim_batch_commit_applies_all_operations_atomically() {
+        let mut sim = LingquDurableSim::default();
+        let outcomes = sim
+            .commit_batch(vec![
+                LingquDurableBatchOp::BlockWrite {
+                    block: "block/memory/batch/payload".to_string(),
+                    bytes: b"payload".to_vec(),
+                    options: LingquBlockWriteOptions::default(),
+                },
+                LingquDurableBatchOp::DfsWrite {
+                    path: "/lingqu/memory/batch/catalog.json".to_string(),
+                    bytes: br#"{"ok":true}"#.to_vec(),
+                    options: LingquDfsWriteOptions {
+                        content_type: LingquDfsContentType::Json,
+                        ..LingquDfsWriteOptions::default()
+                    },
+                },
+                LingquDurableBatchOp::DfsAppendLog {
+                    path: "/lingqu/memory/batch/audit.log".to_string(),
+                    bytes: b"committed".to_vec(),
+                    options: LingquDfsAppendOptions::default(),
+                },
+            ])
+            .expect("commit batch");
+
+        assert_eq!(outcomes.len(), 3);
+        assert!(matches!(
+            outcomes[0],
+            LingquDurableBatchOutcome::BlockPayloadRef(_)
+        ));
+        assert_eq!(
+            sim.dfs_read(
+                "/lingqu/memory/batch/catalog.json",
+                LingquVersionSelector::LatestCommitted,
+            )
+            .expect("read batch DFS file"),
+            br#"{"ok":true}"#.to_vec()
+        );
+        assert_eq!(
+            sim.dfs_append_log_read("/lingqu/memory/batch/audit.log", 1, None)
+                .expect("read batch append log")[0]
+                .bytes,
+            b"committed".to_vec()
+        );
+    }
+
+    #[test]
+    fn durable_sim_batch_commit_rolls_back_on_conflict() {
+        let mut sim = LingquDurableSim::default();
+        sim.dfs_write(
+            "/lingqu/memory/batch/existing.json",
+            b"v1".to_vec(),
+            LingquDfsWriteOptions::default(),
+        )
+        .expect("write existing");
+
+        let err = sim
+            .commit_batch(vec![
+                LingquDurableBatchOp::DfsWrite {
+                    path: "/lingqu/memory/batch/new.json".to_string(),
+                    bytes: b"new".to_vec(),
+                    options: LingquDfsWriteOptions::default(),
+                },
+                LingquDurableBatchOp::DfsWrite {
+                    path: "/lingqu/memory/batch/existing.json".to_string(),
+                    bytes: b"v2".to_vec(),
+                    options: LingquDfsWriteOptions {
+                        expected_version: Some(7),
+                        ..LingquDfsWriteOptions::default()
+                    },
+                },
+            ])
+            .expect_err("conflicting batch must fail");
+        assert!(matches!(err, LingquDurableError::VersionConflict { .. }));
+        assert!(matches!(
+            sim.dfs_read(
+                "/lingqu/memory/batch/new.json",
+                LingquVersionSelector::LatestCommitted
+            ),
+            Err(LingquDurableError::MissingDfsPath(_))
+        ));
+        assert_eq!(
+            sim.dfs_read(
+                "/lingqu/memory/batch/existing.json",
+                LingquVersionSelector::LatestCommitted
+            )
+            .expect("existing file survives"),
+            b"v1".to_vec()
+        );
+    }
+
+    #[test]
+    fn durable_sim_import_rejects_corrupt_append_log_chain() {
+        let mut sim = LingquDurableSim::default();
+        let path = "/lingqu/memory/audit/corrupt.log";
+        sim.dfs_append_log_append(path, b"first".to_vec(), LingquDfsAppendOptions::default())
+            .expect("append first");
+        sim.dfs_append_log_append(path, b"second".to_vec(), LingquDfsAppendOptions::default())
+            .expect("append second");
+        let mut snapshot = sim.export_snapshot().expect("export snapshot");
+        snapshot.dfs.append_logs[1].prev_chain_checksum ^= 1;
+
+        let err = LingquDurableSim::import_snapshot(snapshot)
+            .expect_err("corrupt append chain must fail import");
+        assert!(matches!(
+            err,
+            LingquDurableError::ChecksumMismatch { .. } | LingquDurableError::SnapshotValidation(_)
+        ));
     }
 
     #[test]

@@ -46,7 +46,10 @@ use sim_runtime::{
 use sim_services::{
     db::{DbGetReq, DbPutReq},
     dfs::{DfsReadReq, DfsWriteReq},
-    durable::{LingquDurableSim, LingquDurableSimSnapshot},
+    durable::{
+        LingquBlockWriteOptions, LingquDfsAppendOptions, LingquDfsListOptions,
+        LingquDfsWriteOptions, LingquDurableBatchOp, LingquDurableSim, LingquDurableSimSnapshot,
+    },
     object::{
         LingquObjectKind, LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
         LingquObjectResolveReq, LingquObjectServiceProfile, LingquObjectServiceSnapshot,
@@ -1171,9 +1174,16 @@ fn run_lingqu_durable_cli() -> anyhow::Result<()> {
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect::<Vec<_>>();
     match mode.as_str() {
+        "append-log" => run_lingqu_durable_append_log_cli(&args),
+        "batch" => run_lingqu_durable_batch_cli(&args),
         "init" => run_lingqu_durable_init_cli(&args),
+        "list" => run_lingqu_durable_list_cli(&args),
+        "read-log" => run_lingqu_durable_read_log_cli(&args),
         "stat" => run_lingqu_durable_stat_cli(&args),
-        _ => anyhow::bail!("unknown lingqu-durable mode `{mode}`; expected init or stat"),
+        "validate" => run_lingqu_durable_validate_cli(&args),
+        _ => anyhow::bail!(
+            "unknown lingqu-durable mode `{mode}`; expected append-log, batch, init, list, read-log, stat, or validate"
+        ),
     }
 }
 
@@ -1245,6 +1255,178 @@ fn run_lingqu_durable_stat_cli(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn run_lingqu_durable_list_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let prefix = optional_cli_arg(args, "--prefix")?.unwrap_or_else(|| "/lingqu/".to_string());
+    let include_tombstoned = cli_flag(args, "--include-tombstoned");
+    let snapshot = load_lingqu_durable_snapshot(&store_path)?;
+    let sim = LingquDurableSim::import_snapshot(snapshot)
+        .with_context(|| format!("import durable store {}", store_path.display()))?;
+    let mut options = LingquDfsListOptions::new(prefix.clone());
+    options.include_tombstoned = include_tombstoned;
+    let entries = sim
+        .dfs_list(options)
+        .context("list durable DFS namespace")?;
+
+    println!("lingqu_durable");
+    println!("  mode: list");
+    println!("  store: {}", store_path.display());
+    println!("  prefix: {prefix}");
+    println!("  entries: {}", entries.len());
+    for entry in entries {
+        println!(
+            "  entry path={} version={} state={:?} bytes={} checksum={:#x}",
+            entry.path, entry.version, entry.state, entry.bytes, entry.checksum
+        );
+    }
+    Ok(())
+}
+
+fn run_lingqu_durable_validate_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let snapshot = load_lingqu_durable_snapshot(&store_path)?;
+    let sim = LingquDurableSim::import_snapshot(snapshot)
+        .with_context(|| format!("import durable store {}", store_path.display()))?;
+    let report = sim.validate_store().context("validate durable store")?;
+
+    println!("lingqu_durable");
+    println!("  mode: validate");
+    println!("  store: {}", store_path.display());
+    println!("  dfs_file_versions: {}", report.dfs_file_versions);
+    println!("  dfs_append_records: {}", report.dfs_append_records);
+    println!("  block_versions: {}", report.block_versions);
+    println!("  missing_block_refs: {}", report.missing_block_refs.len());
+    println!("  orphan_blocks: {}", report.orphan_blocks.len());
+    println!("  append_log_paths: {}", report.append_log_paths.len());
+    println!("  checksum: {:#x}", report.checksum);
+    if !report.missing_block_refs.is_empty() || !report.orphan_blocks.is_empty() {
+        anyhow::bail!(
+            "durable store validation found missing_block_refs={} orphan_blocks={}",
+            report.missing_block_refs.len(),
+            report.orphan_blocks.len()
+        );
+    }
+    Ok(())
+}
+
+fn run_lingqu_durable_append_log_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let log_path = required_cli_arg(args, "--log")?;
+    let payload = if let Some(payload_file) = optional_cli_arg(args, "--payload-file")? {
+        fs::read(&payload_file).with_context(|| format!("read payload file {payload_file}"))?
+    } else {
+        required_cli_arg(args, "--payload")?.into_bytes()
+    };
+    let expected_next_seq = optional_cli_u64(args, "--expected-next-seq")?;
+    let snapshot = load_lingqu_durable_snapshot(&store_path)?;
+    let mut sim = LingquDurableSim::import_snapshot(snapshot)
+        .with_context(|| format!("import durable store {}", store_path.display()))?;
+    let record = sim
+        .dfs_append_log_append(
+            log_path.clone(),
+            payload,
+            LingquDfsAppendOptions {
+                expected_next_seq,
+                ..LingquDfsAppendOptions::default()
+            },
+        )
+        .context("append durable DFS log record")?;
+    save_lingqu_durable_sim(&store_path, &sim)?;
+
+    println!("lingqu_durable");
+    println!("  mode: append-log");
+    println!("  store: {}", store_path.display());
+    println!("  log: {}", record.path);
+    println!("  seq: {}", record.seq);
+    println!("  bytes: {}", record.bytes.len());
+    println!("  checksum: {:#x}", record.checksum);
+    println!("  chain_checksum: {:#x}", record.chain_checksum);
+    Ok(())
+}
+
+fn run_lingqu_durable_read_log_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let log_path = required_cli_arg(args, "--log")?;
+    let start_seq = optional_cli_u64(args, "--start-seq")?.unwrap_or(1);
+    let max_records = optional_cli_u64(args, "--max-records")?
+        .map(|value| {
+            usize::try_from(value).map_err(|_| anyhow::anyhow!("--max-records exceeds usize"))
+        })
+        .transpose()?;
+    let snapshot = load_lingqu_durable_snapshot(&store_path)?;
+    let mut sim = LingquDurableSim::import_snapshot(snapshot)
+        .with_context(|| format!("import durable store {}", store_path.display()))?;
+    let records = sim
+        .dfs_append_log_read(&log_path, start_seq, max_records)
+        .context("read durable DFS log")?;
+
+    println!("lingqu_durable");
+    println!("  mode: read-log");
+    println!("  store: {}", store_path.display());
+    println!("  log: {log_path}");
+    println!("  records: {}", records.len());
+    for record in records {
+        println!(
+            "  record seq={} bytes={} checksum={:#x} chain_checksum={:#x}",
+            record.seq,
+            record.bytes.len(),
+            record.checksum,
+            record.chain_checksum
+        );
+    }
+    Ok(())
+}
+
+fn run_lingqu_durable_batch_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let manifest_path = PathBuf::from(required_cli_arg(args, "--manifest")?);
+    let manifest_bytes = fs::read(&manifest_path)
+        .with_context(|| format!("read durable batch manifest {}", manifest_path.display()))?;
+    let manifest = serde_json::from_slice::<LingquDurableBatchManifest>(&manifest_bytes)
+        .with_context(|| format!("decode durable batch manifest {}", manifest_path.display()))?;
+    if manifest.ops.is_empty() {
+        anyhow::bail!("durable batch manifest ops must not be empty");
+    }
+    let mut ops = Vec::with_capacity(manifest.ops.len());
+    for op in manifest.ops {
+        match op {
+            LingquDurableBatchManifestOp::DfsWrite { path, payload } => {
+                ops.push(LingquDurableBatchOp::DfsWrite {
+                    path,
+                    bytes: payload.into_bytes(),
+                    options: LingquDfsWriteOptions::default(),
+                });
+            }
+            LingquDurableBatchManifestOp::DfsAppendLog { path, payload } => {
+                ops.push(LingquDurableBatchOp::DfsAppendLog {
+                    path,
+                    bytes: payload.into_bytes(),
+                    options: LingquDfsAppendOptions::default(),
+                });
+            }
+            LingquDurableBatchManifestOp::BlockWrite { block, payload } => {
+                ops.push(LingquDurableBatchOp::BlockWrite {
+                    block,
+                    bytes: payload.into_bytes(),
+                    options: LingquBlockWriteOptions::default(),
+                });
+            }
+        }
+    }
+    let snapshot = load_lingqu_durable_snapshot(&store_path)?;
+    let mut sim = LingquDurableSim::import_snapshot(snapshot)
+        .with_context(|| format!("import durable store {}", store_path.display()))?;
+    let outcomes = sim.commit_batch(ops).context("commit durable batch")?;
+    save_lingqu_durable_sim(&store_path, &sim)?;
+
+    println!("lingqu_durable");
+    println!("  mode: batch");
+    println!("  store: {}", store_path.display());
+    println!("  manifest: {}", manifest_path.display());
+    println!("  outcomes: {}", outcomes.len());
+    Ok(())
+}
+
 fn run_lingqu_memory_cli() -> anyhow::Result<()> {
     let mut raw_args = env::args_os().skip(2);
     let mode = raw_args
@@ -1299,6 +1481,19 @@ struct LingquMemoryQueryEmbeddingInput {
 #[derive(Debug, Deserialize)]
 struct LingquMemoryGateWeightInput {
     values: Vec<f32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LingquDurableBatchManifest {
+    ops: Vec<LingquDurableBatchManifestOp>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum LingquDurableBatchManifestOp {
+    DfsWrite { path: String, payload: String },
+    DfsAppendLog { path: String, payload: String },
+    BlockWrite { block: String, payload: String },
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -3551,7 +3746,9 @@ mod tests {
         qwen3_guest_log_dir_from_script_output, qwen3_guest_log_match_count,
         qwen3_guest_terminal_candidate_records, qwen3_guest_terminal_text_lossy_from_tokenizer,
         qwen3_guest_terminal_tokens, qwen3_guest_timing_summary, qwen3_range_forward_args_from,
-        run_lingqu_durable_init_cli, run_lingqu_durable_stat_cli,
+        run_lingqu_durable_append_log_cli, run_lingqu_durable_batch_cli,
+        run_lingqu_durable_init_cli, run_lingqu_durable_list_cli, run_lingqu_durable_read_log_cli,
+        run_lingqu_durable_stat_cli, run_lingqu_durable_validate_cli,
         run_lingqu_memory_boundary_lookup_cli, run_lingqu_memory_build_index_cli,
         run_lingqu_memory_ingest_cli, run_lingqu_memory_lookup_prefix_cache_cli,
         run_lingqu_memory_materialize_engram_state_cli,
@@ -3560,14 +3757,15 @@ mod tests {
         run_lingqu_memory_register_execution_artifact_cli,
         run_lingqu_memory_register_prefix_cache_cli, run_lingqu_memory_validate_durable_store,
         run_lingqu_memory_validate_flat_materialize, run_lingqu_memory_validate_flat_query,
-        run_lingqu_memory_validate_w5_engram_object_ref, save_lingqu_memory_durable_store,
-        simpler_host_matmul_artifact_producer_path, validate_qwen3_dense_weights_path,
-        validate_w5_inference_profile, LingquDurableSimSnapshot, LingquMemoryDurableStore,
-        LingquMemoryDurableStoreSnapshot, LingquObjectServiceSnapshot, LingquObjectServiceStub,
-        LingquObjectVersionSelector, MemoryCatalogSnapshot, QueryResult, Qwen3CandidateRecord,
-        Qwen3DecodeReportVerbosity, Qwen3EngramConfig, Qwen3EngramContextOp, Qwen3EngramMode,
-        Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
-        SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+        run_lingqu_memory_validate_w5_engram_object_ref, save_lingqu_durable_sim,
+        save_lingqu_memory_durable_store, simpler_host_matmul_artifact_producer_path,
+        validate_qwen3_dense_weights_path, validate_w5_inference_profile, LingquDurableSim,
+        LingquDurableSimSnapshot, LingquMemoryDurableStore, LingquMemoryDurableStoreSnapshot,
+        LingquObjectServiceSnapshot, LingquObjectServiceStub, LingquObjectVersionSelector,
+        MemoryCatalogSnapshot, QueryResult, Qwen3CandidateRecord, Qwen3DecodeReportVerbosity,
+        Qwen3EngramConfig, Qwen3EngramContextOp, Qwen3EngramMode, Qwen3EngramPool,
+        Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
+        SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
     };
     use std::env;
     use std::fs;
@@ -4700,6 +4898,100 @@ stage qwen3_range_forward_runtime_output_publish node=2
         assert_eq!(snapshot.schema_version, 1);
         assert!(snapshot.dfs.files.is_empty());
         assert!(snapshot.block.blocks.is_empty());
+
+        fs::remove_dir_all(&root).expect("remove temp dir");
+    }
+
+    #[test]
+    fn lingqu_durable_cli_lists_validates_and_replays_append_log() {
+        let root = env::temp_dir().join(format!(
+            "sim-cli-lingqu-durable-ops-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let store_path = root.join("durable.json");
+        let batch_manifest_path = root.join("batch.json");
+        let mut sim = LingquDurableSim::default();
+        sim.dfs_write(
+            "/lingqu/memory/catalogs/test.json",
+            br#"{"catalog":"test"}"#.to_vec(),
+            sim_services::durable::LingquDfsWriteOptions::default(),
+        )
+        .expect("write DFS catalog");
+        save_lingqu_durable_sim(&store_path, &sim).expect("save durable sim");
+
+        run_lingqu_durable_list_cli(&[
+            "--store".to_string(),
+            store_path.display().to_string(),
+            "--prefix".to_string(),
+            "/lingqu/memory/catalogs/".to_string(),
+        ])
+        .expect("list durable DFS");
+        run_lingqu_durable_append_log_cli(&[
+            "--store".to_string(),
+            store_path.display().to_string(),
+            "--log".to_string(),
+            "/lingqu/memory/audit/test.log".to_string(),
+            "--payload".to_string(),
+            "{\"event\":\"created\"}".to_string(),
+            "--expected-next-seq".to_string(),
+            "1".to_string(),
+        ])
+        .expect("append durable log");
+        run_lingqu_durable_read_log_cli(&[
+            "--store".to_string(),
+            store_path.display().to_string(),
+            "--log".to_string(),
+            "/lingqu/memory/audit/test.log".to_string(),
+        ])
+        .expect("read durable log");
+        run_lingqu_durable_validate_cli(&["--store".to_string(), store_path.display().to_string()])
+            .expect("validate durable store");
+        fs::write(
+            &batch_manifest_path,
+            serde_json::json!({
+                "ops": [
+                    {
+                        "kind": "block_write",
+                        "block": "block/memory/batch/cli",
+                        "payload": "batch-block"
+                    },
+                    {
+                        "kind": "dfs_write",
+                        "path": "/lingqu/memory/catalogs/batch.json",
+                        "payload": "{\"catalog\":\"batch\"}"
+                    },
+                    {
+                        "kind": "dfs_append_log",
+                        "path": "/lingqu/memory/audit/test.log",
+                        "payload": "{\"event\":\"batched\"}"
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .expect("write batch manifest");
+        run_lingqu_durable_batch_cli(&[
+            "--store".to_string(),
+            store_path.display().to_string(),
+            "--manifest".to_string(),
+            batch_manifest_path.display().to_string(),
+        ])
+        .expect("commit durable batch");
+
+        let store_bytes = fs::read(&store_path).expect("read durable store");
+        let snapshot =
+            LingquDurableSimSnapshot::from_json_bytes(&store_bytes).expect("decode snapshot");
+        assert_eq!(snapshot.dfs.files.len(), 2);
+        assert_eq!(snapshot.dfs.append_logs.len(), 2);
+        assert_eq!(snapshot.block.blocks.len(), 1);
+        assert_eq!(snapshot.dfs.append_logs[0].seq, 1);
+        assert_eq!(snapshot.dfs.append_logs[1].seq, 2);
 
         fs::remove_dir_all(&root).expect("remove temp dir");
     }

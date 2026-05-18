@@ -526,8 +526,18 @@ Current code status:
 - `sim-services::durable` provides the first durable simulation backend with
   DFS file records, Block records, version selectors, checksum validation,
   tombstone/seal handling, and JSON snapshot import/export.
-- `sim-cli lingqu-durable init/stat` writes and validates the
-  `lingqu_durable_sim` snapshot format.
+- DFS namespace discovery is available through `dfs_list()` and
+  `sim-cli lingqu-durable list`.
+- Append-only DFS logs are available through `dfs_append_log_append()` /
+  `dfs_append_log_read()` and `sim-cli lingqu-durable append-log/read-log`.
+  Records carry monotonically increasing sequence numbers and checksum-chain
+  validation.
+- Atomic batch commit is available through `commit_batch()` and
+  `sim-cli lingqu-durable batch`. The implementation stages the full batch on
+  an imported snapshot and swaps it into the live store only after every
+  operation succeeds.
+- `sim-cli lingqu-durable init/stat/validate` writes, summarizes, and validates
+  the `lingqu_durable_sim` snapshot format.
 - `LingquMemoryDurableStore` is now a compatibility wrapper over
   `LingquDurableSim`; Memory Service durable bytes are no longer owned by
   private DFS/Block payload HashMaps.
@@ -537,6 +547,11 @@ Current code status:
 - Memory Service catalog snapshots, query results, execution artifact
   manifests, prefix cache manifests, shortpath decision audit data, and
   prefetch plan audit data are written into durable DFS.
+- Shortpath decision audits and prefetch plan audits use append-only DFS logs
+  at `/lingqu/memory/audit/shortpath-decisions.log` and
+  `/lingqu/memory/audit/prefetch-plans.log`. Repeated persistence of the same
+  already-logged record is idempotent only when the payload is byte-identical;
+  the same record id with different payload is a hard validation error.
 - The external `--catalog` JSON file remains as a compatibility output/input,
   but `ingest` and `build-index` persist the catalog into durable DFS, and
   `query` / `materialize-hot-state` can restart from `--store` plus
@@ -552,19 +567,19 @@ Validated coverage:
 - Durable sim unit tests cover DFS read/write, large DFS payloads backed by
   Block records, checksum mismatch, range overflow, tombstone visibility,
   sealed Block overwrite rejection, version conflicts, duplicate snapshot
-  versions, and missing block-backed DFS payloads.
+  versions, missing block-backed DFS payloads, DFS namespace listing,
+  append-log checksum-chain replay/corruption, and batch commit rollback.
 - Memory Service tests cover durable snapshot restart for catalog/query/hot
   state materialization, execution artifacts, prefix cache artifacts,
-  shortpath decision audits, prefetch plan audits, and hard failure on missing
-  embedding Block payloads.
-- CLI tests cover durable init/stat, legacy store migration, manifest-backed
-  execution artifact and prefix cache flows, durable catalog restart for query
-  and hot-state materialization, and missing manifest hard failures.
+  append-log-backed shortpath decision audits, append-log-backed prefetch plan
+  audits, and hard failure on missing embedding Block payloads.
+- CLI tests cover durable init/stat/list/validate, append-log/read-log, durable
+  batch commit, legacy store migration, manifest-backed execution artifact and
+  prefix cache flows, durable catalog restart for query and hot-state
+  materialization, and missing manifest hard failures.
 
 Remaining work:
 
-- Shortpath and prefetch audit persistence is currently manifest rewrite
-  semantics. The target appendable DFS audit-log model is still a follow-up.
 - Object Service still uses its own snapshot file for hot OBMM placements.
   Durable Block/DFS simulation is now unified for Memory Service bytes, but
   Object Service placement metadata has not yet been folded into a single
