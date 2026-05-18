@@ -337,7 +337,7 @@ fn run_l3(
         )
     })?;
     let ctx = api
-        .create_context(args.device_id as i32)
+        .create_context()
         .map_err(|err| anyhow::anyhow!("failed to create simpler device context: {err}"))?;
     let dispatch_session = DispatchSession::new(&api)?;
 
@@ -549,7 +549,7 @@ fn run_l2(
         )
     })?;
     let ctx = api
-        .create_context(args.device_id as i32)
+        .create_context()
         .map_err(|err| anyhow::anyhow!("failed to create simpler device context: {err}"))?;
     let dispatch_session = DispatchSession::new(&api)?;
 
@@ -750,7 +750,7 @@ fn dispatch(
     aicore: &[u8],
     prepared: PreparedArgs,
 ) -> anyhow::Result<()> {
-    api.run_runtime(
+    api.run_prepared(
         ctx,
         session.runtime_buf.handle(),
         &program.callable,
