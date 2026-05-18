@@ -4,6 +4,8 @@ Workspace-local notes and implementation-specific design material can live here.
 
 Current validation entry points:
 
+- [qwen3_simpler_build_output_validation.md](qwen3_simpler_build_output_validation.md)
+  - validates Qwen3 0.6B/14B L2 and L3 generation on a simpler-backed device using the packaged `build_output/Qwen*` programs
 - [reports/2026-04-14-four-node-matrix-validation.md](2026-04-14-four-node-matrix-validation.md)
   - current four-node full-mesh matrix status for `chat`, `rpc`, `udma`, and `obmm-pool`
 - [reports/2026-04-15-eight-node-matrix-validation.md](2026-04-15-eight-node-matrix-validation.md)
