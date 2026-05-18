@@ -56,9 +56,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+mod qwen3_simpler;
+
 fn main() -> anyhow::Result<()> {
     if lingqu_object_service_args() {
         return run_lingqu_object_service_cli();
+    }
+    if let Some(args) = qwen3_simpler::args()? {
+        return run_qwen3_simpler_generate_cli(args);
     }
     if let Some(args) = qwen3_decode_loop_args()? {
         return run_qwen3_decode_loop_cli(&args);
@@ -120,6 +125,21 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn run_qwen3_simpler_generate_cli(
+    args: qwen3_simpler::Qwen3SimplerGenerateArgs,
+) -> anyhow::Result<()> {
+    let runtime_name = qwen3_simpler::runtime_name(&args)
+        .context("failed to inspect Qwen3 simpler build_output runtime")?;
+    let manifest_path = default_simpler_qwen3_runtime_manifest_path(&runtime_name, &args.platform);
+    ensure_simpler_qwen3_runtime_manifest(&manifest_path, &runtime_name, &args.platform)
+        .context("failed to prepare reusable Qwen3 simpler runtime artifacts")?;
+    let result = qwen3_simpler::run(args, &manifest_path)?;
+    println!("text: {}", result.text);
+    println!("token_ids: {:?}", result.token_ids);
+    println!("finish_reason: {}", result.finish_reason);
     Ok(())
 }
 
@@ -1213,16 +1233,17 @@ fn resolve_lingqu_object_cli_sample(
 mod tests {
     use super::{
         lingqu_object_service_args_from, qwen3_decode_loop_args_from,
-        qwen3_decode_report_verbosity_from_env, qwen3_engram_policy_checksum,
-        qwen3_engram_select_token, qwen3_engram_state_words, qwen3_guest_candidate_records,
-        qwen3_guest_decode_loop_args_from, qwen3_guest_dense_runtime,
-        qwen3_guest_engram_candidate_counts, qwen3_guest_engram_env_vars,
-        qwen3_guest_engram_expected_terminal_rewrites, qwen3_guest_engram_history_lengths,
-        qwen3_guest_engram_object_transport_report, qwen3_guest_engram_report,
-        qwen3_guest_engram_report_from_guest_log, qwen3_guest_engram_selected_tokens,
-        qwen3_guest_log_dir_from_script_output, qwen3_guest_log_match_count,
-        qwen3_guest_terminal_candidate_records, qwen3_guest_terminal_text_lossy_from_tokenizer,
-        qwen3_guest_terminal_tokens, qwen3_guest_timing_summary, qwen3_range_forward_args_from,
+        qwen3_decode_report_verbosity_from_env, qwen3_dense_weights_path_from_env,
+        qwen3_engram_policy_checksum, qwen3_engram_select_token, qwen3_engram_state_words,
+        qwen3_guest_candidate_records, qwen3_guest_decode_loop_args_from,
+        qwen3_guest_dense_runtime, qwen3_guest_engram_candidate_counts,
+        qwen3_guest_engram_env_vars, qwen3_guest_engram_expected_terminal_rewrites,
+        qwen3_guest_engram_history_lengths, qwen3_guest_engram_object_transport_report,
+        qwen3_guest_engram_report, qwen3_guest_engram_report_from_guest_log,
+        qwen3_guest_engram_selected_tokens, qwen3_guest_log_dir_from_script_output,
+        qwen3_guest_log_match_count, qwen3_guest_terminal_candidate_records,
+        qwen3_guest_terminal_text_lossy_from_tokenizer, qwen3_guest_terminal_tokens,
+        qwen3_guest_timing_summary, qwen3_range_forward_args_from,
         simpler_host_matmul_artifact_producer_path, validate_qwen3_dense_weights_path,
         Qwen3CandidateRecord, Qwen3DecodeReportVerbosity, Qwen3EngramConfig, Qwen3EngramContextOp,
         Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
@@ -1325,6 +1346,22 @@ mod tests {
         assert_eq!(args.step_count, 8);
         assert_eq!(args.prompt.as_deref(), Some("Capital of China is"));
         assert_eq!(args.matmul_batch, Some(2));
+    }
+
+    #[test]
+    fn qwen3_decode_loop_weights_env_prefers_dense_and_accepts_legacy_alias() {
+        assert_eq!(
+            qwen3_dense_weights_path_from_env(
+                Some("/models/dense".into()),
+                Some("/models/legacy".into())
+            ),
+            Some("/models/dense".into())
+        );
+        assert_eq!(
+            qwen3_dense_weights_path_from_env(None, Some("/models/legacy".into())),
+            Some("/models/legacy".into())
+        );
+        assert_eq!(qwen3_dense_weights_path_from_env(None, None), None);
     }
 
     #[test]
@@ -4504,6 +4541,14 @@ fn print_qwen3_decode_verbose_steps(steps: &[sim_uapi::Qwen3DenseReferenceDecode
 }
 
 fn prepare_qwen3_decode_loop_environment(args: &Qwen3DecodeLoopCliArgs) -> anyhow::Result<()> {
+    if env::var_os("SIM_QWEN3_DENSE_WEIGHTS_PATH").is_none() {
+        if let Some(weights_path) =
+            qwen3_dense_weights_path_from_env(None, env::var_os("SIM_QWEN3_0_6B_WEIGHTS_PATH"))
+        {
+            env::set_var("SIM_QWEN3_DENSE_WEIGHTS_PATH", weights_path);
+        }
+    }
+
     let scenario_env_path = args
         .scenario_path
         .canonicalize()
@@ -4514,6 +4559,13 @@ fn prepare_qwen3_decode_loop_environment(args: &Qwen3DecodeLoopCliArgs) -> anyho
         return Ok(());
     };
     prepare_qwen3_matmul_batch_environment(matmul_batch)
+}
+
+fn qwen3_dense_weights_path_from_env(
+    dense: Option<std::ffi::OsString>,
+    legacy_0_6b: Option<std::ffi::OsString>,
+) -> Option<std::ffi::OsString> {
+    dense.or(legacy_0_6b)
 }
 
 fn prepare_qwen3_matmul_batch_environment(matmul_batch: usize) -> anyhow::Result<()> {
@@ -4539,6 +4591,14 @@ fn prepare_qwen3_matmul_batch_environment(matmul_batch: usize) -> anyhow::Result
 fn ensure_simpler_host_matmul_manifest(
     manifest_path: &Path,
     batch: Option<(usize, &Path)>,
+) -> anyhow::Result<()> {
+    ensure_simpler_host_matmul_manifest_for_platform(manifest_path, batch, None)
+}
+
+fn ensure_simpler_host_matmul_manifest_for_platform(
+    manifest_path: &Path,
+    batch: Option<(usize, &Path)>,
+    platform: Option<&str>,
 ) -> anyhow::Result<()> {
     if manifest_path.exists() {
         if let Some((tile_batch, base_manifest)) = batch {
@@ -4566,6 +4626,12 @@ fn ensure_simpler_host_matmul_manifest(
 
     let mut command = Command::new("python3");
     command.arg(&script).arg("--output-dir").arg(output_dir);
+    if let Some(simpler_root) = simpler_runtime_root_for_host_artifacts() {
+        command.arg("--simpler-root").arg(simpler_root);
+    }
+    if let Some(platform) = platform {
+        command.arg("--platform").arg(platform);
+    }
     if let Some((tile_batch, base_manifest)) = batch {
         command
             .arg("--tile-batch")
@@ -4608,6 +4674,33 @@ fn simpler_host_matmul_artifact_producer_path() -> PathBuf {
         .unwrap_or_else(|| candidates[0].clone())
 }
 
+fn simpler_runtime_root_for_host_artifacts() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = std::env::var_os("SIMPLER_ROOT") {
+        candidates.push(PathBuf::from(path));
+    }
+    if let Some(workspace_root) = repo_root().parent() {
+        candidates.push(workspace_root.join("pypto").join("runtime"));
+        candidates.push(workspace_root.join("modules").join("simpler"));
+    }
+    candidates.push(repo_root().join("vendor").join("simpler"));
+
+    candidates.into_iter().find(|path| {
+        path.join("tests")
+            .join("st")
+            .join("a2a3")
+            .join("host_build_graph")
+            .join("matmul")
+            .exists()
+            || path
+                .join("examples")
+                .join("a2a3")
+                .join("host_build_graph")
+                .join("matmul")
+                .exists()
+    })
+}
+
 fn simpler_host_matmul_batch_manifest_is_current(
     manifest_path: &Path,
     tile_batch: usize,
@@ -4633,6 +4726,74 @@ fn default_simpler_host_matmul_manifest_path() -> PathBuf {
     Path::new("/tmp")
         .join("simpler-host-matmul-artifacts")
         .join("host_matmul_manifest.json")
+}
+
+fn default_simpler_qwen3_runtime_manifest_path(runtime_name: &str, platform: &str) -> PathBuf {
+    let runtime_name = runtime_name.replace('_', "-");
+    Path::new("/tmp")
+        .join(format!(
+            "simpler-qwen3-{runtime_name}-{platform}-runtime-artifacts"
+        ))
+        .join("simpler_runtime_manifest.json")
+}
+
+fn ensure_simpler_qwen3_runtime_manifest(
+    manifest_path: &Path,
+    runtime_name: &str,
+    platform: &str,
+) -> anyhow::Result<()> {
+    if manifest_path.exists() {
+        return Ok(());
+    }
+    let output_dir = manifest_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("manifest has no parent: {}", manifest_path.display()))?;
+    let script = simpler_runtime_artifact_producer_path();
+    if !script.exists() {
+        anyhow::bail!(
+            "missing simpler runtime artifact producer: {}",
+            script.display()
+        );
+    }
+    let mut command = Command::new("python3");
+    command
+        .arg(&script)
+        .arg("--output-dir")
+        .arg(output_dir)
+        .arg("--runtime-name")
+        .arg(runtime_name)
+        .arg("--platform")
+        .arg(platform)
+        .arg("--aicpu-thread-num")
+        .arg("4");
+    if let Some(simpler_root) = simpler_runtime_root_for_host_artifacts() {
+        command.arg("--simpler-root").arg(simpler_root);
+    }
+    let status = command
+        .stdout(Stdio::null())
+        .status()
+        .with_context(|| format!("failed to run {}", script.display()))?;
+    if !status.success() {
+        anyhow::bail!(
+            "simpler runtime artifact producer failed: {} status={status}",
+            script.display()
+        );
+    }
+    if !manifest_path.exists() {
+        anyhow::bail!(
+            "simpler runtime artifact producer did not create {}",
+            manifest_path.display()
+        );
+    }
+    Ok(())
+}
+
+fn simpler_runtime_artifact_producer_path() -> PathBuf {
+    repo_root()
+        .join("guest-linux")
+        .join("aarch64")
+        .join("scripts")
+        .join("prepare_simpler_runtime_artifacts.py")
 }
 
 fn default_simpler_host_matmul_batch_manifest_path(tile_batch: usize) -> PathBuf {

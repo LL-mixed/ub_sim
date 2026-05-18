@@ -159,6 +159,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "serde_json",
+ "sim-chipbackend-simpler",
  "sim-config",
  "sim-core",
  "sim-models",
