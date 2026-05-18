@@ -1213,6 +1213,13 @@ pub enum PrefetchPlanState {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PrefixCacheReuseAction {
+    Miss,
+    Reuse,
+    RequireVerify,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InferenceModelBinding {
     pub model_id: String,
@@ -1248,6 +1255,59 @@ impl RangeBoundary {
             return Err(LingquMemoryError::InvalidValue {
                 field: "range_boundary.layer_end",
                 reason: "layer_end must be greater than layer_start",
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrefixCacheKey {
+    pub model: InferenceModelBinding,
+    pub namespace: String,
+    pub chat_template_hash: u64,
+    pub prefix_token_hash: u64,
+    pub prefix_token_count: u64,
+    pub rope_config_hash: u64,
+    pub kv_layout_hash: u64,
+    pub layer_start: u32,
+    pub layer_end: u32,
+    pub position_start: u64,
+    pub position_end: u64,
+    pub security_label: MemorySecurityLabel,
+}
+
+impl PrefixCacheKey {
+    pub fn validate(&self) -> MemoryResult<()> {
+        self.model.validate()?;
+        required_str(&self.namespace, "prefix_cache_key.namespace")?;
+        nonzero(
+            self.chat_template_hash,
+            "prefix_cache_key.chat_template_hash",
+        )?;
+        nonzero(self.prefix_token_hash, "prefix_cache_key.prefix_token_hash")?;
+        nonzero(
+            self.prefix_token_count,
+            "prefix_cache_key.prefix_token_count",
+        )?;
+        nonzero(self.rope_config_hash, "prefix_cache_key.rope_config_hash")?;
+        nonzero(self.kv_layout_hash, "prefix_cache_key.kv_layout_hash")?;
+        if self.layer_end <= self.layer_start {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "prefix_cache_key.layer_end",
+                reason: "layer_end must be greater than layer_start",
+            });
+        }
+        if self.position_end <= self.position_start {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "prefix_cache_key.position_end",
+                reason: "position_end must be greater than position_start",
+            });
+        }
+        if self.position_end - self.position_start != self.prefix_token_count {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "prefix_cache_key.position_range",
+                reason: "position range must match prefix token count",
             });
         }
         Ok(())
@@ -1329,6 +1389,76 @@ impl ExecutionArtifactObject {
             if expires_at_us <= self.created_at_us {
                 return Err(LingquMemoryError::InvalidValue {
                     field: "execution_artifact.expires_at_us",
+                    reason: "expires_at_us must be greater than created_at_us",
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrefixCacheArtifact {
+    pub artifact_id: String,
+    pub key: PrefixCacheKey,
+    pub kv_artifact_ids: Vec<String>,
+    pub durable_payload_refs: Vec<LingquBlockPayloadRef>,
+    pub hot_object_refs: Vec<HotTensorObjectRef>,
+    pub dtype: TensorDType,
+    pub shape: Vec<u64>,
+    pub confidence_milli: u32,
+    pub state: ExecutionArtifactState,
+    pub checksum: u64,
+    pub version: u64,
+    pub created_at_us: u64,
+    pub expires_at_us: Option<u64>,
+    pub last_used_at_us: u64,
+    pub use_count: u64,
+}
+
+impl PrefixCacheArtifact {
+    pub fn validate(&self) -> MemoryResult<()> {
+        required_str(&self.artifact_id, "prefix_cache_artifact.artifact_id")?;
+        self.key.validate()?;
+        if self.kv_artifact_ids.is_empty()
+            && self.durable_payload_refs.is_empty()
+            && self.hot_object_refs.is_empty()
+        {
+            return Err(LingquMemoryError::MissingField(
+                "prefix_cache_artifact.payload_ref",
+            ));
+        }
+        for artifact_id in &self.kv_artifact_ids {
+            required_str(artifact_id, "prefix_cache_artifact.kv_artifact_ids")?;
+        }
+        for payload_ref in &self.durable_payload_refs {
+            payload_ref.validate("prefix_cache_artifact.durable_payload_refs")?;
+        }
+        for hot_ref in &self.hot_object_refs {
+            validate_hot_ref(hot_ref)?;
+            if hot_ref.dtype != self.dtype {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "prefix_cache_artifact.hot_object_refs",
+                    reason: "hot object dtype must match prefix cache artifact dtype",
+                });
+            }
+        }
+        require_nonempty(&self.shape, "prefix_cache_artifact.shape")?;
+        for dim in &self.shape {
+            nonzero(*dim, "prefix_cache_artifact.shape")?;
+        }
+        if self.confidence_milli > 1000 {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "prefix_cache_artifact.confidence_milli",
+                reason: "confidence_milli must be in [0, 1000]",
+            });
+        }
+        nonzero(self.checksum, "prefix_cache_artifact.checksum")?;
+        nonzero(self.version, "prefix_cache_artifact.version")?;
+        if let Some(expires_at_us) = self.expires_at_us {
+            if expires_at_us <= self.created_at_us {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "prefix_cache_artifact.expires_at_us",
                     reason: "expires_at_us must be greater than created_at_us",
                 });
             }
@@ -1466,6 +1596,152 @@ impl PrefetchPlanRecord {
                 field: "prefetch_plan.checksum",
                 reason: "checksum does not match prefetch plan metadata",
             });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrefixCacheLookupRequest {
+    pub request_id: String,
+    pub candidate_keys: Vec<PrefixCacheKey>,
+    pub min_confidence_milli: u32,
+    pub allow_verify: bool,
+    pub created_at_us: u64,
+}
+
+impl PrefixCacheLookupRequest {
+    pub fn validate(&self) -> MemoryResult<()> {
+        required_str(&self.request_id, "prefix_cache_lookup.request_id")?;
+        require_nonempty(&self.candidate_keys, "prefix_cache_lookup.candidate_keys")?;
+        for key in &self.candidate_keys {
+            key.validate()?;
+        }
+        if self.min_confidence_milli > 1000 {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "prefix_cache_lookup.min_confidence_milli",
+                reason: "confidence_milli must be in [0, 1000]",
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrefixCacheReusePlan {
+    pub plan_id: String,
+    pub request_id: String,
+    pub action: PrefixCacheReuseAction,
+    pub artifact_id: Option<String>,
+    pub matched_prefix_token_count: u64,
+    pub layer_start: u32,
+    pub layer_end: u32,
+    pub position_start: u64,
+    pub position_end: u64,
+    pub confidence_milli: u32,
+    pub verify_required: bool,
+    pub proof_checksum: u64,
+    pub reason: String,
+    pub created_at_us: u64,
+    pub version: u64,
+}
+
+impl PrefixCacheReusePlan {
+    pub fn validate(&self) -> MemoryResult<()> {
+        required_str(&self.plan_id, "prefix_cache_reuse.plan_id")?;
+        required_str(&self.request_id, "prefix_cache_reuse.request_id")?;
+        required_str(&self.reason, "prefix_cache_reuse.reason")?;
+        if self.layer_end < self.layer_start {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "prefix_cache_reuse.layer_end",
+                reason: "layer_end must be >= layer_start",
+            });
+        }
+        if self.position_end < self.position_start {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "prefix_cache_reuse.position_end",
+                reason: "position_end must be >= position_start",
+            });
+        }
+        if self.confidence_milli > 1000 {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "prefix_cache_reuse.confidence_milli",
+                reason: "confidence_milli must be in [0, 1000]",
+            });
+        }
+        match self.action {
+            PrefixCacheReuseAction::Miss => {
+                if self.artifact_id.is_some()
+                    || self.matched_prefix_token_count != 0
+                    || self.confidence_milli != 0
+                {
+                    return Err(LingquMemoryError::InvalidValue {
+                        field: "prefix_cache_reuse.action",
+                        reason: "miss must not reference an artifact or matched tokens",
+                    });
+                }
+            }
+            PrefixCacheReuseAction::Reuse | PrefixCacheReuseAction::RequireVerify => {
+                if self.artifact_id.as_deref().unwrap_or("").trim().is_empty() {
+                    return Err(LingquMemoryError::MissingField(
+                        "prefix_cache_reuse.artifact_id",
+                    ));
+                }
+                nonzero(
+                    self.matched_prefix_token_count,
+                    "prefix_cache_reuse.matched_prefix_token_count",
+                )?;
+                if self.layer_end <= self.layer_start {
+                    return Err(LingquMemoryError::InvalidValue {
+                        field: "prefix_cache_reuse.layer_end",
+                        reason: "reuse layer_end must be greater than layer_start",
+                    });
+                }
+                if self.position_end <= self.position_start {
+                    return Err(LingquMemoryError::InvalidValue {
+                        field: "prefix_cache_reuse.position_end",
+                        reason: "reuse position_end must be greater than position_start",
+                    });
+                }
+                if self.action == PrefixCacheReuseAction::RequireVerify && !self.verify_required {
+                    return Err(LingquMemoryError::InvalidValue {
+                        field: "prefix_cache_reuse.verify_required",
+                        reason: "require-verify plans must set verify_required",
+                    });
+                }
+            }
+        }
+        nonzero(self.proof_checksum, "prefix_cache_reuse.proof_checksum")?;
+        nonzero(self.version, "prefix_cache_reuse.version")?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrefixCacheLookupResponse {
+    pub request_id: String,
+    pub reuse_plan: PrefixCacheReusePlan,
+    pub artifact: Option<PrefixCacheArtifact>,
+}
+
+impl PrefixCacheLookupResponse {
+    pub fn validate(&self) -> MemoryResult<()> {
+        required_str(&self.request_id, "prefix_cache_lookup_response.request_id")?;
+        self.reuse_plan.validate()?;
+        if self.reuse_plan.request_id != self.request_id {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "prefix_cache_lookup_response.reuse_plan",
+                reason: "reuse plan request_id must match response request_id",
+            });
+        }
+        if let Some(artifact) = &self.artifact {
+            artifact.validate()?;
+            if self.reuse_plan.artifact_id.as_deref() != Some(artifact.artifact_id.as_str()) {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "prefix_cache_lookup_response.artifact",
+                    reason: "artifact id must match reuse plan artifact id",
+                });
+            }
         }
         Ok(())
     }
@@ -1633,6 +1909,8 @@ pub struct LingquMemoryService {
     hot_states: HashMap<String, HotMemoryStateObject>,
     engram_states: HashMap<String, EngramStateObject>,
     execution_artifacts: HashMap<String, ExecutionArtifactObject>,
+    prefix_cache_artifacts: HashMap<String, PrefixCacheArtifact>,
+    prefix_cache_reuse_plans: HashMap<String, PrefixCacheReusePlan>,
     prefetch_plans: HashMap<String, PrefetchPlanRecord>,
     shortpath_decisions: HashMap<String, ShortpathDecisionRecord>,
 }
@@ -2475,6 +2753,150 @@ impl LingquMemoryService {
         Ok(())
     }
 
+    pub fn register_prefix_cache_artifact(
+        &mut self,
+        artifact: PrefixCacheArtifact,
+    ) -> MemoryResult<()> {
+        artifact.validate()?;
+        for artifact_id in &artifact.kv_artifact_ids {
+            let Some(kv_artifact) = self.execution_artifacts.get(artifact_id) else {
+                return Err(LingquMemoryError::MissingExecutionArtifact(
+                    artifact_id.clone(),
+                ));
+            };
+            if kv_artifact.kind != ExecutionArtifactKind::KvCache {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "prefix_cache_artifact.kv_artifact_ids",
+                    reason: "referenced execution artifacts must be kv_cache artifacts",
+                });
+            }
+            if kv_artifact.model != artifact.key.model {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "prefix_cache_artifact.kv_artifact_ids",
+                    reason: "referenced kv artifact model must match prefix cache key",
+                });
+            }
+        }
+        self.prefix_cache_artifacts
+            .insert(artifact.artifact_id.clone(), artifact);
+        Ok(())
+    }
+
+    pub fn lookup_prefix_cache(
+        &mut self,
+        req: PrefixCacheLookupRequest,
+        now_us: u64,
+    ) -> MemoryResult<PrefixCacheLookupResponse> {
+        req.validate()?;
+        let candidate = self
+            .prefix_cache_artifacts
+            .values()
+            .filter(|artifact| {
+                artifact.state == ExecutionArtifactState::Verified
+                    || (req.allow_verify && artifact.state == ExecutionArtifactState::Candidate)
+            })
+            .filter(|artifact| artifact.confidence_milli >= req.min_confidence_milli)
+            .filter(|artifact| {
+                artifact
+                    .expires_at_us
+                    .map(|expires_at_us| expires_at_us > now_us)
+                    .unwrap_or(true)
+            })
+            .filter(|artifact| req.candidate_keys.iter().any(|key| key == &artifact.key))
+            .max_by(|left, right| {
+                left.key
+                    .prefix_token_count
+                    .cmp(&right.key.prefix_token_count)
+                    .then_with(|| left.confidence_milli.cmp(&right.confidence_milli))
+                    .then_with(|| left.version.cmp(&right.version))
+                    .then_with(|| left.artifact_id.cmp(&right.artifact_id))
+            })
+            .cloned();
+
+        let reuse_plan = if let Some(artifact) = candidate.as_ref() {
+            let action = if artifact.state == ExecutionArtifactState::Verified {
+                PrefixCacheReuseAction::Reuse
+            } else {
+                PrefixCacheReuseAction::RequireVerify
+            };
+            let plan_id = format!("prefix-cache-reuse/{}", req.request_id);
+            let proof_checksum = prefix_cache_reuse_plan_checksum(
+                &plan_id,
+                &req.request_id,
+                action,
+                Some(&artifact.artifact_id),
+                artifact.key.prefix_token_count,
+                artifact.key.layer_start,
+                artifact.key.layer_end,
+                artifact.key.position_start,
+                artifact.key.position_end,
+                artifact.confidence_milli,
+                artifact.checksum,
+                now_us,
+            );
+            PrefixCacheReusePlan {
+                plan_id,
+                request_id: req.request_id.clone(),
+                action,
+                artifact_id: Some(artifact.artifact_id.clone()),
+                matched_prefix_token_count: artifact.key.prefix_token_count,
+                layer_start: artifact.key.layer_start,
+                layer_end: artifact.key.layer_end,
+                position_start: artifact.key.position_start,
+                position_end: artifact.key.position_end,
+                confidence_milli: artifact.confidence_milli,
+                verify_required: artifact.state != ExecutionArtifactState::Verified,
+                proof_checksum,
+                reason: "prefix_cache_hit".to_string(),
+                created_at_us: now_us,
+                version: 1,
+            }
+        } else {
+            let plan_id = format!("prefix-cache-reuse/{}", req.request_id);
+            let proof_checksum = prefix_cache_reuse_plan_checksum(
+                &plan_id,
+                &req.request_id,
+                PrefixCacheReuseAction::Miss,
+                None,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                now_us,
+            );
+            PrefixCacheReusePlan {
+                plan_id,
+                request_id: req.request_id.clone(),
+                action: PrefixCacheReuseAction::Miss,
+                artifact_id: None,
+                matched_prefix_token_count: 0,
+                layer_start: 0,
+                layer_end: 0,
+                position_start: 0,
+                position_end: 0,
+                confidence_milli: 0,
+                verify_required: false,
+                proof_checksum,
+                reason: "prefix_cache_miss".to_string(),
+                created_at_us: now_us,
+                version: 1,
+            }
+        };
+        reuse_plan.validate()?;
+        self.prefix_cache_reuse_plans
+            .insert(reuse_plan.plan_id.clone(), reuse_plan.clone());
+        let response = PrefixCacheLookupResponse {
+            request_id: req.request_id,
+            reuse_plan,
+            artifact: candidate,
+        };
+        response.validate()?;
+        Ok(response)
+    }
+
     pub fn boundary_lookup(
         &mut self,
         req: BoundaryLookupRequest,
@@ -2520,7 +2942,8 @@ impl LingquMemoryService {
             })
             .filter(|artifact| match artifact.kind {
                 ExecutionArtifactKind::Logits => allow_terminal,
-                ExecutionArtifactKind::HiddenState | ExecutionArtifactKind::KvCache => allow_layer,
+                ExecutionArtifactKind::HiddenState => allow_layer,
+                ExecutionArtifactKind::KvCache => false,
             })
             .max_by(|left, right| {
                 left.confidence_milli
@@ -2677,6 +3100,14 @@ impl LingquMemoryService {
 
     pub fn execution_artifact(&self, artifact_id: &str) -> Option<&ExecutionArtifactObject> {
         self.execution_artifacts.get(artifact_id)
+    }
+
+    pub fn prefix_cache_artifact(&self, artifact_id: &str) -> Option<&PrefixCacheArtifact> {
+        self.prefix_cache_artifacts.get(artifact_id)
+    }
+
+    pub fn prefix_cache_reuse_plan(&self, plan_id: &str) -> Option<&PrefixCacheReusePlan> {
+        self.prefix_cache_reuse_plans.get(plan_id)
     }
 
     pub fn shortpath_decision(&self, decision_id: &str) -> Option<&ShortpathDecisionRecord> {
@@ -3222,6 +3653,49 @@ fn execution_artifact_kind_tag(kind: ExecutionArtifactKind) -> u64 {
     }
 }
 
+fn prefix_cache_reuse_plan_checksum(
+    plan_id: &str,
+    request_id: &str,
+    action: PrefixCacheReuseAction,
+    artifact_id: Option<&str>,
+    matched_prefix_token_count: u64,
+    layer_start: u32,
+    layer_end: u32,
+    position_start: u64,
+    position_end: u64,
+    confidence_milli: u32,
+    artifact_checksum: u64,
+    created_at_us: u64,
+) -> u64 {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&(plan_id.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(plan_id.as_bytes());
+    bytes.extend_from_slice(&(request_id.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(request_id.as_bytes());
+    bytes.extend_from_slice(&prefix_cache_reuse_action_tag(action).to_le_bytes());
+    if let Some(artifact_id) = artifact_id {
+        bytes.extend_from_slice(&(artifact_id.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(artifact_id.as_bytes());
+    }
+    bytes.extend_from_slice(&matched_prefix_token_count.to_le_bytes());
+    bytes.extend_from_slice(&layer_start.to_le_bytes());
+    bytes.extend_from_slice(&layer_end.to_le_bytes());
+    bytes.extend_from_slice(&position_start.to_le_bytes());
+    bytes.extend_from_slice(&position_end.to_le_bytes());
+    bytes.extend_from_slice(&confidence_milli.to_le_bytes());
+    bytes.extend_from_slice(&artifact_checksum.to_le_bytes());
+    bytes.extend_from_slice(&created_at_us.to_le_bytes());
+    checksum64(&bytes)
+}
+
+fn prefix_cache_reuse_action_tag(action: PrefixCacheReuseAction) -> u64 {
+    match action {
+        PrefixCacheReuseAction::Miss => 1,
+        PrefixCacheReuseAction::Reuse => 2,
+        PrefixCacheReuseAction::RequireVerify => 3,
+    }
+}
+
 fn shortpath_decision_checksum(
     decision_id: &str,
     request_id: &str,
@@ -3576,6 +4050,110 @@ mod tests {
                 .lookahead_steps,
             2
         );
+    }
+
+    #[test]
+    fn prefix_cache_lookup_returns_longest_verified_candidate() {
+        let mut service = LingquMemoryService::new();
+        let short_key = sample_prefix_cache_key(8, 0x1111);
+        let long_key = sample_prefix_cache_key(16, 0x2222);
+        service
+            .register_prefix_cache_artifact(PrefixCacheArtifact {
+                artifact_id: "prefix-cache/short".to_string(),
+                key: short_key.clone(),
+                kv_artifact_ids: Vec::new(),
+                durable_payload_refs: vec![LingquBlockPayloadRef::new(
+                    "block/prefix/short",
+                    0,
+                    64,
+                    0x1234,
+                )],
+                hot_object_refs: Vec::new(),
+                dtype: TensorDType::F32,
+                shape: vec![8, 4],
+                confidence_milli: 950,
+                state: ExecutionArtifactState::Verified,
+                checksum: 0x9001,
+                version: 1,
+                created_at_us: 10,
+                expires_at_us: Some(100),
+                last_used_at_us: 10,
+                use_count: 1,
+            })
+            .unwrap();
+        service
+            .register_prefix_cache_artifact(PrefixCacheArtifact {
+                artifact_id: "prefix-cache/long".to_string(),
+                key: long_key.clone(),
+                kv_artifact_ids: Vec::new(),
+                durable_payload_refs: vec![LingquBlockPayloadRef::new(
+                    "block/prefix/long",
+                    0,
+                    128,
+                    0x5678,
+                )],
+                hot_object_refs: Vec::new(),
+                dtype: TensorDType::F32,
+                shape: vec![16, 4],
+                confidence_milli: 940,
+                state: ExecutionArtifactState::Verified,
+                checksum: 0x9002,
+                version: 1,
+                created_at_us: 10,
+                expires_at_us: Some(100),
+                last_used_at_us: 10,
+                use_count: 1,
+            })
+            .unwrap();
+
+        let response = service
+            .lookup_prefix_cache(
+                PrefixCacheLookupRequest {
+                    request_id: "prefix-lookup/0".to_string(),
+                    candidate_keys: vec![short_key, long_key],
+                    min_confidence_milli: 900,
+                    allow_verify: false,
+                    created_at_us: 20,
+                },
+                21,
+            )
+            .unwrap();
+
+        assert_eq!(response.reuse_plan.action, PrefixCacheReuseAction::Reuse);
+        assert_eq!(
+            response.reuse_plan.artifact_id.as_deref(),
+            Some("prefix-cache/long")
+        );
+        assert_eq!(response.reuse_plan.matched_prefix_token_count, 16);
+        assert_eq!(
+            service
+                .prefix_cache_reuse_plan("prefix-cache-reuse/prefix-lookup/0")
+                .unwrap()
+                .reason,
+            "prefix_cache_hit"
+        );
+    }
+
+    #[test]
+    fn prefix_cache_lookup_miss_is_auditable() {
+        let mut service = LingquMemoryService::new();
+        let response = service
+            .lookup_prefix_cache(
+                PrefixCacheLookupRequest {
+                    request_id: "prefix-lookup/miss".to_string(),
+                    candidate_keys: vec![sample_prefix_cache_key(8, 0x1111)],
+                    min_confidence_milli: 900,
+                    allow_verify: false,
+                    created_at_us: 20,
+                },
+                21,
+            )
+            .unwrap();
+
+        assert_eq!(response.reuse_plan.action, PrefixCacheReuseAction::Miss);
+        assert_eq!(response.artifact, None);
+        assert_eq!(response.reuse_plan.reason, "prefix_cache_miss");
+        assert!(response.reuse_plan.proof_checksum != 0);
     }
 
     #[test]
@@ -4486,6 +5064,23 @@ mod tests {
             layer_end: 8,
             next_node_index: Some(5),
             position: 12,
+        }
+    }
+
+    fn sample_prefix_cache_key(prefix_token_count: u64, prefix_token_hash: u64) -> PrefixCacheKey {
+        PrefixCacheKey {
+            model: sample_model_binding(),
+            namespace: "tenant/project/session".to_string(),
+            chat_template_hash: 0x1001,
+            prefix_token_hash,
+            prefix_token_count,
+            rope_config_hash: 0x2002,
+            kv_layout_hash: 0x3003,
+            layer_start: 0,
+            layer_end: 28,
+            position_start: 0,
+            position_end: prefix_token_count,
+            security_label: MemorySecurityLabel::Internal,
         }
     }
 }

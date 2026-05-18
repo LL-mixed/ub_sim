@@ -669,7 +669,8 @@ Artifact kinds:
 - `hidden_state`: can skip one or more downstream layer ranges by publishing a
   downstream hidden object;
 - `kv_cache`: can reuse prefix/session/memory KV blocks during prefill or
-  decode;
+  decode, but it must not be treated as `jump_to_layer` by boundary lookup;
+  prefix reuse has its own lookup/reuse plan below;
 - `logits`: can jump to terminal sampling when the boundary state is verified
   or accepted by policy.
 
@@ -677,6 +678,107 @@ Artifact kinds:
 use them for non-shadow jumps unless the decision explicitly requires
 verification. `verified` artifacts can be used for direct jumps if policy and
 confidence allow it. `rejected` artifacts remain only for audit.
+
+### PrefixCacheKey
+
+Prefix identity used to prove that a KV cache block is reusable for a new
+request. The service should never infer prefix equality from text alone.
+
+```text
+model: InferenceModelBinding
+namespace: string
+chat_template_hash: u64
+prefix_token_hash: u64
+prefix_token_count: u64
+rope_config_hash: u64
+kv_layout_hash: u64
+layer_start: u32
+layer_end: u32
+position_start: u64
+position_end: u64
+security_label: public | internal | confidential | restricted
+```
+
+The request planner can build multiple candidate keys for exact and partial
+prefixes, ordered by desired specificity. This avoids asking the Memory
+Service to guess a shorter prefix hash from a full prefix hash.
+
+### PrefixCacheArtifact
+
+Reusable prefix KV materialization.
+
+```text
+artifact_id: string
+key: PrefixCacheKey
+kv_artifact_ids: [ExecutionArtifactObject id where kind=kv_cache]
+durable_payload_refs: [Lingqu Block ref]
+hot_object_refs: [Lingqu ObjectRef to ObmmShmem payload]
+dtype: f16 | bf16 | f32 | ...
+shape: [u64]
+confidence_milli: u32
+state: candidate | verified | rejected
+checksum: u64
+version: u64
+created_at_us: u64
+expires_at_us: optional u64
+last_used_at_us: u64
+use_count: u64
+```
+
+`PrefixCacheArtifact` is model-native execution memory. It is not semantic
+memory and not an Engram state. A verified prefix cache artifact lets W5 skip
+the covered prefix prefill work by attaching KV state; it does not by itself
+authorize a layer jump at a range exit.
+
+### PrefixCacheLookupRequest
+
+Request issued during planning, prefill start, or range start.
+
+```text
+request_id: string
+candidate_keys: [PrefixCacheKey]
+min_confidence_milli: u32
+allow_verify: bool
+created_at_us: u64
+```
+
+The lookup returns the longest valid candidate hit. Candidate artifacts can be
+returned only when `allow_verify=true`, and the reuse plan must require
+verification before the runtime attaches that KV.
+
+### PrefixCacheReusePlan
+
+Auditable prefix cache reuse decision.
+
+```text
+plan_id: string
+request_id: string
+action: miss | reuse | require_verify
+artifact_id: optional string
+matched_prefix_token_count: u64
+layer_start: u32
+layer_end: u32
+position_start: u64
+position_end: u64
+confidence_milli: u32
+verify_required: bool
+proof_checksum: u64
+reason: string
+created_at_us: u64
+version: u64
+```
+
+### PrefixCacheLookupResponse
+
+```text
+request_id: string
+reuse_plan: PrefixCacheReusePlan
+artifact: optional PrefixCacheArtifact
+```
+
+Prefix cache lookup can feed prefetch planning: a range-start prefetch plan can
+ask the runtime to materialize or map the selected prefix KV artifacts before
+the next prefill/decode boundary needs them.
 
 ### BoundaryLookupRequest
 
@@ -1048,6 +1150,11 @@ prefetch_scope=range|step|multi_step
 prefetch_lookahead_steps=...
 prefetch_target_step_index=...
 prefetch_state=planned|issued|completed|cancelled
+prefix_cache_lookup_id=...
+prefix_cache_action=miss|reuse|require_verify
+prefix_cache_artifact_id=...
+prefix_cache_matched_tokens=...
+prefix_cache_proof_checksum=...
 object_versions=...
 object_checksums=...
 obmm_hot_bytes=...
@@ -1065,6 +1172,7 @@ Timing should separate:
 - Object Service publish and resolve;
 - boundary lookup and artifact-index lookup;
 - prefetch plan lookup and issue latency;
+- prefix cache lookup and KV attach planning;
 - shortpath decision write;
 - UAPI object map;
 - backend context-op dispatch.
@@ -1086,6 +1194,10 @@ Unit tests:
 - `BoundaryLookupRequest` rejects `range_start` boundaries.
 - `PrefetchPlanRequest` rejects non-`range_start` boundaries and zero
   lookahead.
+- `PrefixCacheKey` rejects missing tokenizer/template/rope/layout hashes and
+  mismatched position ranges.
+- `PrefixCacheLookupRequest` returns the longest verified candidate and writes
+  an auditable miss when there is no usable prefix.
 - `ShortpathDecisionRecord` rejects jump decisions without an artifact id.
 - OBMM hot promote and evict keeps durable DFS/Block source valid.
 - stale version and checksum mismatch fail resolve.
@@ -1107,6 +1219,8 @@ Integration tests:
 - verify no-hit boundary lookup returns an auditable `continue` decision.
 - issue a multi-step range-start prefetch request and verify the persisted
   `PrefetchPlanRecord` target step, checksum, and state.
+- register a verified prefix KV artifact and verify prefix cache lookup
+  returns a `reuse` plan instead of a range `jump_to_layer`.
 
 CLI tests:
 
@@ -1132,14 +1246,20 @@ CLI tests:
 10. Add core data models for `InferenceModelBinding`, `RangeBoundary`,
     `ExecutionArtifactObject`, `BoundaryLookupRequest`,
     `ShortpathDecisionRecord`, `BoundaryLookupResponse`,
-    `PrefetchPlanRequest`, and `PrefetchPlanRecord`.
+    `PrefetchPlanRequest`, `PrefetchPlanRecord`, `PrefixCacheKey`,
+    `PrefixCacheArtifact`, `PrefixCacheLookupRequest`,
+    `PrefixCacheLookupResponse`, and `PrefixCacheReusePlan`.
 11. Add Memory Service boundary lookup over verified execution artifacts and
     range-start prefetch planning over artifact indexes.
-12. Teach W5 range exit to issue boundary lookups and consume continue/jump
+12. Add Memory Service prefix cache lookup over verified model-bound KV
+    artifacts.
+13. Teach W5 range exit to issue boundary lookups and consume continue/jump
     decisions.
-13. Teach W5 range start to issue range/step/n-step prefetch plans and feed
+14. Teach W5 range start to issue range/step/n-step prefetch plans and feed
     them into runtime/Object Service scheduling.
-14. Add long-step, cross-session, and restart/rebuild validation runs.
+15. Teach W5 prefill/request planning to issue prefix cache lookups and attach
+    reusable KV through the UAPI descriptor path.
+16. Add long-step, cross-session, and restart/rebuild validation runs.
 
 Current implementation status:
 
@@ -1155,10 +1275,12 @@ Current implementation status:
   `InferenceModelBinding`, `RangeBoundary`, `ExecutionArtifactObject`,
   `BoundaryLookupRequest`, `ShortpathDecisionRecord`,
   `BoundaryLookupResponse`, `PrefetchPlanRequest`, and
-  `PrefetchPlanRecord` can be validated, registered, and used for a first
-  exact boundary lookup over verified execution artifacts plus range-start
-  n-step prefetch planning. This is not yet wired into W5 guest range
-  execution.
+  `PrefetchPlanRecord`, `PrefixCacheKey`, `PrefixCacheArtifact`,
+  `PrefixCacheLookupRequest`, `PrefixCacheLookupResponse`, and
+  `PrefixCacheReusePlan` can be validated, registered, and used for a first
+  exact boundary lookup over verified execution artifacts, range-start n-step
+  prefetch planning, and auditable prefix cache hit/miss planning. This is not
+  yet wired into W5 guest range execution.
   Query results can be persisted to and restored from DFS manifests with
   checksum validation, and QueryResult-driven hot materialization now carries
   that DFS manifest ref into both `HotMemoryStateObject` and
