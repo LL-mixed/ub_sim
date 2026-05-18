@@ -1,0 +1,87 @@
+#include "pto/pto-inst.hpp"
+using namespace pto;
+
+enum class PTOAutoSyncTailMode : int {
+  kBarrierAll = 0,
+  kSetWaitMte3ToSEvent0 = 1,
+};
+
+static AICORE inline void ptoas_auto_sync_tail(
+    PTOAutoSyncTailMode mode = PTOAutoSyncTailMode::kBarrierAll) {
+  switch (mode) {
+  case PTOAutoSyncTailMode::kSetWaitMte3ToSEvent0:
+    set_flag(PIPE_MTE3, PIPE_S, EVENT_ID0);
+    wait_flag(PIPE_MTE3, PIPE_S, EVENT_ID0);
+    break;
+  case PTOAutoSyncTailMode::kBarrierAll:
+  default:
+    pipe_barrier(PIPE_ALL);
+    break;
+  }
+}
+
+__global__ AICORE void decode_out_proj_residual(__gm__ bfloat16_t* v1, __gm__ float* v2, __gm__ float* v3, int32_t v4, int32_t v5, int32_t v6) {
+  RoundMode v7 = RoundMode::CAST_ROUND;
+  unsigned v8 = 5120;
+  unsigned v9 = 0;
+  const int32_t v10 = 64;
+  const int32_t v11 = 1;
+  const int32_t v12 = 5120;
+  const int32_t v13 = 16;
+  const int64_t v14 = 6144;
+  const int64_t v15 = 4096;
+  const int64_t v16 = 0;
+  using T = float;
+
+  #if defined(__DAV_VEC__)
+  set_mask_norm();
+  set_vector_mask(-1, -1);
+  Tile<TileType::Vec, float, 16, 64, BLayout::RowMajor, -1, -1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null> v17 = Tile<TileType::Vec, float, 16, 64, BLayout::RowMajor, -1, -1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null>(v13, v10);
+  TASSIGN(v17, v16);
+  Tile<TileType::Vec, float, 16, 64, BLayout::RowMajor, -1, -1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null> v18 = Tile<TileType::Vec, float, 16, 64, BLayout::RowMajor, -1, -1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null>(v13, v10);
+  __ubuf__ float* v19 = v17.data();
+  uint64_t v20 = reinterpret_cast<uint64_t>(v19);
+  TASSIGN(v18, v20);
+  pto::Shape<1, 1, 1, 16, 64> v21 = pto::Shape<1, 1, 1, 16, 64>();
+  pto::Stride<1024, 1024, 1024, 64, 1> v22 = pto::Stride<1024, 1024, 1024, 64, 1>();
+  GlobalTensor<float, pto::Shape<1, 1, 1, 16, 64>, pto::Stride<1024, 1024, 1024, 64, 1>, pto::Layout::ND> v23 = GlobalTensor<float, pto::Shape<1, 1, 1, 16, 64>, pto::Stride<1024, 1024, 1024, 64, 1>, pto::Layout::ND>(v2 + (v9 + v9 * (unsigned) v10 + v9 * (unsigned) v11), v21, v22);
+  TLOAD(v18, v23);
+  Tile<TileType::Vec, bfloat16_t, 16, 64, BLayout::RowMajor, -1, -1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null> v24 = Tile<TileType::Vec, bfloat16_t, 16, 64, BLayout::RowMajor, -1, -1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null>(v6, v10);
+  TASSIGN(v24, v15);
+  Tile<TileType::Vec, bfloat16_t, 16, 64, BLayout::RowMajor, -1, -1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null> v25 = Tile<TileType::Vec, bfloat16_t, 16, 64, BLayout::RowMajor, -1, -1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null>(v6, v10);
+  __ubuf__ bfloat16_t* v26 = v24.data();
+  uint64_t v27 = reinterpret_cast<uint64_t>(v26);
+  TASSIGN(v25, v27);
+  unsigned v28 = (unsigned) v6 * v8;
+  pto::Shape<1, 1, 1, -1, 64> v29 = pto::Shape<1, 1, 1, -1, 64>(v6);
+  pto::Stride<-1, -1, -1, 5120, 1> v30 = pto::Stride<-1, -1, -1, 5120, 1>(v28, v28, v28);
+  GlobalTensor<bfloat16_t, pto::Shape<1, 1, 1, -1, 64>, pto::Stride<-1, -1, -1, 5120, 1>, pto::Layout::ND> v31 = GlobalTensor<bfloat16_t, pto::Shape<1, 1, 1, -1, 64>, pto::Stride<-1, -1, -1, 5120, 1>, pto::Layout::ND>(v1 + (v9 + (unsigned) v4 * (unsigned) v12 + (unsigned) v5 * (unsigned) v11), v29, v30);
+  TLOAD(v25, v31);
+  set_flag(PIPE_MTE2, PIPE_V, EVENT_ID0);
+  Tile<TileType::Vec, float, 16, 64, BLayout::RowMajor, -1, -1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null> v32 = Tile<TileType::Vec, float, 16, 64, BLayout::RowMajor, -1, -1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null>(v13, v10);
+  TASSIGN(v32, v14);
+  Tile<TileType::Vec, float, 16, 64, BLayout::RowMajor, -1, -1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null> v33 = Tile<TileType::Vec, float, 16, 64, BLayout::RowMajor, -1, -1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null>(v13, v10);
+  __ubuf__ float* v34 = v32.data();
+  uint64_t v35 = reinterpret_cast<uint64_t>(v34);
+  TASSIGN(v33, v35);
+  wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID0);
+  TCVT(v33, v25, v7);
+  Tile<TileType::Vec, float, 16, 64, BLayout::RowMajor, -1, -1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null> v36 = Tile<TileType::Vec, float, 16, 64, BLayout::RowMajor, -1, -1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null>(v13, v10);
+  TASSIGN(v36, v16);
+  Tile<TileType::Vec, float, 16, 64, BLayout::RowMajor, -1, -1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null> v37 = Tile<TileType::Vec, float, 16, 64, BLayout::RowMajor, -1, -1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null>(v13, v10);
+  __ubuf__ float* v38 = v36.data();
+  uint64_t v39 = reinterpret_cast<uint64_t>(v38);
+  TASSIGN(v37, v39);
+  pipe_barrier(PIPE_V);
+  TADD(v37, v18, v33);
+  set_flag(PIPE_V, PIPE_MTE3, EVENT_ID0);
+  pto::Shape<1, 1, 1, 16, 64> v40 = pto::Shape<1, 1, 1, 16, 64>();
+  pto::Stride<81920, 81920, 81920, 5120, 1> v41 = pto::Stride<81920, 81920, 81920, 5120, 1>();
+  GlobalTensor<float, pto::Shape<1, 1, 1, 16, 64>, pto::Stride<81920, 81920, 81920, 5120, 1>, pto::Layout::ND> v42 = GlobalTensor<float, pto::Shape<1, 1, 1, 16, 64>, pto::Stride<81920, 81920, 81920, 5120, 1>, pto::Layout::ND>(v3 + (v9 + v9 * (unsigned) v12 + (unsigned) v5 * (unsigned) v11), v40, v41);
+  wait_flag(PIPE_V, PIPE_MTE3, EVENT_ID0);
+  TSTORE(v42, v37);
+  #endif // __DAV_VEC__
+
+  ptoas_auto_sync_tail(PTOAutoSyncTailMode::kBarrierAll);
+  return;
+}

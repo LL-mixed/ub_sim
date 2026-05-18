@@ -1,0 +1,10 @@
+=== Memory Usage Report ===
+Pass: AllocateMemoryAddr
+Backend: 910B
+Functions: 1 compute functions
+
+--- final_rms_incore_0 ---
+
+  Space  |  Used       |  Limit      |  Usage   |  MemRefs
+  -------+-------------+-------------+----------+---------
+  Vec    |    20.6 KB  |   192.0 KB  |   10.7%  |  6
