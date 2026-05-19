@@ -1271,8 +1271,11 @@ Memory Service-published shortpath/prefetch/prefix-cache artifact refs.
   artifacts by ObjectRef without qwen `kind*.bin` files. Targeted tests
   validate execution-artifact and prefix-cache publication, the payload index,
   and sim-uapi range operand materialization from the Object Service snapshot.
-  The runtime still keeps its existing per-step range-output registry reader
-  until the live runtime range-output object service path is unified.
+- Live per-step range handoff now keeps the ObjectRef descriptor but prefers
+  the already-mapped UAPI segment payload for hidden/KV operands. sim-uapi
+  verifies the inline payload against the ObjectRef length/checksum before
+  running the backend, so the W5 streaming path no longer needs qwen
+  `kind*.bin` registry files for runtime range-output materialization.
 
 ## Observability
 
@@ -1570,10 +1573,11 @@ Current implementation status:
   hidden/KV range operands from those refs, and guest terminal-jump validation
   can load logits artifacts from the compact Object Service payload index. The
   remaining gap is replacing the exported snapshot/index files with a directly
-  shared Object Service instance or guest-mappable OBMM DB payload mapping, and
-  then moving the runtime-produced per-step range-output objects off the
-  compatibility qwen3 registry reader. The existing per-step 128-byte engram
-  policy state remains a separate writeback object.
+  shared Object Service instance or guest-mappable OBMM DB payload mapping.
+  Runtime-produced per-step range-output objects already travel as ObjectRefs
+  plus inline OBMM/UAPI payload views validated by sim-uapi, not through the
+  qwen registry reader. The existing per-step 128-byte engram policy state
+  remains a separate writeback object.
 
 ## Acceptance Criteria
 

@@ -424,8 +424,10 @@ Status as of 2026-05-16:
   contract for hidden/KV/logits payloads. The snapshot export includes a
   compact payload index for guest-side terminal logits validation, so
   jump-to-terminal artifact validation is no longer coupled to qwen3 registry
-  payload files. The remaining runtime-specific compatibility path is per-step
-  range-output publication.
+  payload files. Live per-step range-output publication now carries ObjectRefs
+  and sim-uapi validates the inline OBMM/UAPI payload view against those refs
+  before backend execution, so the streaming path no longer needs qwen
+  `kind*.bin` registry payloads for hidden/KV materialization.
 
 ## Risks
 

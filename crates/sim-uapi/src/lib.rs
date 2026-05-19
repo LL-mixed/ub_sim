@@ -1738,6 +1738,15 @@ fn materialize_qwen3_range_dispatch_input<'a>(
                         object_ref.payload_bytes
                     ));
                 }
+                if qwen3_runtime_hidden_payload_from_segment(
+                    segment_payload,
+                    expected_len,
+                    &object_ref,
+                )?
+                .is_some()
+                {
+                    continue;
+                }
                 let payload = qwen3_runtime_object_payload_get(&object_ref)?;
                 if payload.len() != expected_len {
                     return Err(format!(
@@ -1758,6 +1767,9 @@ fn materialize_qwen3_range_dispatch_input<'a>(
             QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE => {
                 let payload_len = usize::try_from(object_ref.payload_bytes)
                     .map_err(|_| "qwen3_range_dispatch_kv_object_bytes_too_large".to_string())?;
+                if qwen3_runtime_kv_payload_from_segment(segment_payload, &object_ref)?.is_some() {
+                    continue;
+                }
                 let payload = qwen3_runtime_object_payload_get(&object_ref)?;
                 if payload.len() != payload_len {
                     return Err(format!(
@@ -1806,6 +1818,84 @@ fn materialize_qwen3_range_dispatch_input<'a>(
     Ok(materialized
         .map(Cow::Owned)
         .unwrap_or(Cow::Borrowed(segment_payload)))
+}
+
+fn qwen3_runtime_hidden_payload_from_segment<'a>(
+    segment_payload: &'a [u8],
+    expected_len: usize,
+    object_ref: &LingquObmmObjectRefWire,
+) -> Result<Option<&'a [u8]>, String> {
+    let start = QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET;
+    let Some(end) = start.checked_add(expected_len) else {
+        return Err("qwen3_range_dispatch_hidden_payload_end_overflow".to_string());
+    };
+    let Some(payload) = segment_payload.get(start..end) else {
+        return Ok(None);
+    };
+    let checksum = qwen3_dense_reference_range_object_payload_checksum(payload);
+    if checksum == object_ref.payload_checksum {
+        return Ok(Some(payload));
+    }
+    if payload.iter().all(|byte| *byte == 0) {
+        return Ok(None);
+    }
+    Err(format!(
+        "qwen3_range_dispatch_hidden_inline_checksum_mismatch:got={checksum:#x}:expected={:#x}",
+        object_ref.payload_checksum
+    ))
+}
+
+fn qwen3_runtime_kv_payload_from_segment<'a>(
+    segment_payload: &'a [u8],
+    object_ref: &LingquObmmObjectRefWire,
+) -> Result<Option<&'a [u8]>, String> {
+    let header_start = QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET;
+    let header_end = header_start
+        .checked_add(QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES)
+        .ok_or_else(|| "qwen3_range_dispatch_kv_header_end_overflow".to_string())?;
+    let Some(header) = segment_payload.get(header_start..header_end) else {
+        return Ok(None);
+    };
+    let marker = read_u64_le_at(header, 0);
+    if marker == 0 && header.iter().all(|byte| *byte == 0) {
+        return Ok(None);
+    }
+    if marker != QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER {
+        return Err(format!(
+            "qwen3_range_dispatch_kv_inline_marker_mismatch:{marker:#x}"
+        ));
+    }
+    let payload_len = read_u64_le_at(header, 8);
+    let expected_checksum = read_u64_le_at(header, 16);
+    if payload_len != object_ref.payload_bytes {
+        return Err(format!(
+            "qwen3_range_dispatch_kv_inline_bytes_mismatch:got={}:expected={}",
+            payload_len, object_ref.payload_bytes
+        ));
+    }
+    if expected_checksum != object_ref.payload_checksum {
+        return Err(format!(
+            "qwen3_range_dispatch_kv_inline_checksum_header_mismatch:got={expected_checksum:#x}:expected={:#x}",
+            object_ref.payload_checksum
+        ));
+    }
+    let payload_start = header_end;
+    let payload_len_usize = usize::try_from(payload_len)
+        .map_err(|_| "qwen3_range_dispatch_kv_inline_bytes_too_large".to_string())?;
+    let payload_end = payload_start
+        .checked_add(payload_len_usize)
+        .ok_or_else(|| "qwen3_range_dispatch_kv_inline_payload_end_overflow".to_string())?;
+    let payload = segment_payload
+        .get(payload_start..payload_end)
+        .ok_or_else(|| "qwen3_range_dispatch_kv_inline_payload_missing".to_string())?;
+    let checksum = qwen3_dense_reference_range_object_payload_checksum(payload);
+    if checksum != object_ref.payload_checksum {
+        return Err(format!(
+            "qwen3_range_dispatch_kv_inline_checksum_mismatch:got={checksum:#x}:expected={:#x}",
+            object_ref.payload_checksum
+        ));
+    }
+    Ok(Some(payload))
 }
 
 fn qwen3_range_dispatch_object_refs(
@@ -25531,201 +25621,317 @@ mod tests {
 
     #[test]
     fn qwen3_range_dispatch_materializes_object_ref_operands() {
-        const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
-        const OBJECT_REF_TABLE_OFFSET: usize = 0x07_0000;
-        const HIDDEN_BYTES: usize = 2_048;
-        const KV_BYTES: usize = 128;
+        run_simpler_native_test_isolated(
+            "qwen3_range_dispatch_materializes_object_ref_operands",
+            || {
+                const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
+                const OBJECT_REF_TABLE_OFFSET: usize = 0x07_0000;
+                const HIDDEN_BYTES: usize = 2_048;
+                const KV_BYTES: usize = 128;
 
-        std::env::set_var("SIM_QWEN3_DENSE_TP_NODES", "8");
-        std::env::set_var("SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS", "28");
-        std::env::set_var("SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES", "262144");
-        std::env::set_var(
-            "SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES",
-            HIDDEN_BYTES.to_string(),
-        );
-        let registry_dir = std::env::temp_dir().join(format!(
-            "ub_sim_qwen3_object_registry_test_{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&registry_dir);
-        std::env::set_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, &registry_dir);
+                std::env::set_var("SIM_QWEN3_DENSE_TP_NODES", "8");
+                std::env::set_var("SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS", "28");
+                std::env::set_var("SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES", "262144");
+                std::env::set_var(
+                    "SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES",
+                    HIDDEN_BYTES.to_string(),
+                );
+                let registry_dir = std::env::temp_dir().join(format!(
+                    "ub_sim_qwen3_object_registry_test_{}",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&registry_dir);
+                std::env::set_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, &registry_dir);
 
-        let task = TaskKey {
-            logical_system: LogicalSystemId(1),
-            coord: HierarchyCoord {
-                levels: [RANGE_TASK_MAGIC, 1, 4, 8, 2, 8, 28, HIDDEN_BYTES as u32],
+                let task = TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord {
+                        levels: [RANGE_TASK_MAGIC, 1, 4, 8, 2, 8, 28, HIDDEN_BYTES as u32],
+                    },
+                    scope_depth: 8,
+                    task_id: 31,
+                };
+                let segment_len = QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
+                    + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES
+                    + KV_BYTES;
+                let mut segment_payload = vec![0u8; segment_len];
+                let hidden_payload = vec![0x5au8; HIDDEN_BYTES];
+                let kv_payload = vec![0xa5u8; KV_BYTES];
+                let hidden_ref = LingquObmmObjectRefWire::committed(
+                    QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+                    0,
+                    0,
+                    1,
+                    0x1234,
+                    0x98000,
+                    HIDDEN_BYTES as u64,
+                    qwen3_dense_reference_range_object_payload_checksum(&hidden_payload),
+                );
+                let kv_ref = LingquObmmObjectRefWire::committed(
+                    QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+                    0,
+                    0,
+                    1,
+                    0x5678,
+                    0x99000,
+                    KV_BYTES as u64,
+                    qwen3_dense_reference_range_object_payload_checksum(&kv_payload),
+                );
+                qwen3_object_registry_put(&hidden_ref, &hidden_payload)
+                    .expect("hidden registry put");
+                qwen3_object_registry_put(&kv_ref, &kv_payload).expect("kv registry put");
+                write_obmm_object_ref_wire(
+                    &mut segment_payload[OBJECT_REF_TABLE_OFFSET
+                        ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN],
+                    hidden_ref,
+                );
+                write_obmm_object_ref_wire(
+                    &mut segment_payload[OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN
+                        ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN * 2],
+                    kv_ref,
+                );
+                let req = Qwen3RangeDispatchReq {
+                    op_id: 31,
+                    segment: sim_core::SegmentHandle(1),
+                    task,
+                    object_ref_table_offset: OBJECT_REF_TABLE_OFFSET as u32,
+                    object_ref_count: 2,
+                };
+
+                let materialized = materialize_qwen3_range_dispatch_input(&req, &segment_payload)
+                    .expect("materialize");
+                let hidden_start = QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET;
+                assert_eq!(
+                    &materialized[hidden_start..hidden_start + HIDDEN_BYTES],
+                    hidden_payload.as_slice()
+                );
+                assert_eq!(
+                    read_u64_le_at(&materialized, QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET),
+                    QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER
+                );
+                assert_eq!(
+                    read_u64_le_at(&materialized, QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 8),
+                    KV_BYTES as u64
+                );
+                let kv_start = QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
+                    + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES;
+                assert_eq!(
+                    &materialized[kv_start..kv_start + KV_BYTES],
+                    kv_payload.as_slice()
+                );
+                validate_qwen3_range_dispatch_object_refs(&req, materialized.as_ref())
+                    .expect("materialized refs validate");
+                let _ = std::fs::remove_dir_all(&registry_dir);
+                std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR);
             },
-            scope_depth: 8,
-            task_id: 31,
-        };
-        let segment_len = QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
-            + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES
-            + KV_BYTES;
-        let mut segment_payload = vec![0u8; segment_len];
-        let hidden_payload = vec![0x5au8; HIDDEN_BYTES];
-        let kv_payload = vec![0xa5u8; KV_BYTES];
-        let hidden_ref = LingquObmmObjectRefWire::committed(
-            QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
-            0,
-            0,
-            1,
-            0x1234,
-            0x98000,
-            HIDDEN_BYTES as u64,
-            qwen3_dense_reference_range_object_payload_checksum(&hidden_payload),
         );
-        let kv_ref = LingquObmmObjectRefWire::committed(
-            QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
-            0,
-            0,
-            1,
-            0x5678,
-            0x99000,
-            KV_BYTES as u64,
-            qwen3_dense_reference_range_object_payload_checksum(&kv_payload),
-        );
-        qwen3_object_registry_put(&hidden_ref, &hidden_payload).expect("hidden registry put");
-        qwen3_object_registry_put(&kv_ref, &kv_payload).expect("kv registry put");
-        write_obmm_object_ref_wire(
-            &mut segment_payload[OBJECT_REF_TABLE_OFFSET
-                ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN],
-            hidden_ref,
-        );
-        write_obmm_object_ref_wire(
-            &mut segment_payload[OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN
-                ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN * 2],
-            kv_ref,
-        );
-        let req = Qwen3RangeDispatchReq {
-            op_id: 31,
-            segment: sim_core::SegmentHandle(1),
-            task,
-            object_ref_table_offset: OBJECT_REF_TABLE_OFFSET as u32,
-            object_ref_count: 2,
-        };
+    }
 
-        let materialized =
-            materialize_qwen3_range_dispatch_input(&req, &segment_payload).expect("materialize");
-        let hidden_start = QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET;
-        assert_eq!(
-            &materialized[hidden_start..hidden_start + HIDDEN_BYTES],
-            hidden_payload.as_slice()
+    #[test]
+    fn qwen3_range_dispatch_prefers_inline_object_ref_payloads() {
+        run_simpler_native_test_isolated(
+            "qwen3_range_dispatch_prefers_inline_object_ref_payloads",
+            || {
+                const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
+                const OBJECT_REF_TABLE_OFFSET: usize = 0x07_0000;
+                const HIDDEN_BYTES: usize = 2_048;
+                const KV_BYTES: usize = 128;
+
+                std::env::set_var("SIM_QWEN3_DENSE_TP_NODES", "8");
+                std::env::set_var("SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS", "28");
+                std::env::set_var("SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES", "262144");
+                std::env::set_var(
+                    "SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES",
+                    HIDDEN_BYTES.to_string(),
+                );
+                let missing_snapshot = std::env::temp_dir().join(format!(
+                    "ub_sim_missing_object_service_snapshot_{}.json",
+                    std::process::id()
+                ));
+                std::env::set_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT, &missing_snapshot);
+                std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR);
+
+                let task = TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord {
+                        levels: [RANGE_TASK_MAGIC, 1, 4, 8, 2, 8, 28, HIDDEN_BYTES as u32],
+                    },
+                    scope_depth: 8,
+                    task_id: 31,
+                };
+                let segment_len = QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
+                    + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES
+                    + KV_BYTES;
+                let mut segment_payload = vec![0u8; segment_len];
+                let hidden_start = QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET;
+                let hidden_payload = vec![0x3cu8; HIDDEN_BYTES];
+                let kv_payload = vec![0xc3u8; KV_BYTES];
+                segment_payload[hidden_start..hidden_start + HIDDEN_BYTES]
+                    .copy_from_slice(&hidden_payload);
+                segment_payload[QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
+                    ..QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 8]
+                    .copy_from_slice(&QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER.to_le_bytes());
+                segment_payload[QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 8
+                    ..QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 16]
+                    .copy_from_slice(&(KV_BYTES as u64).to_le_bytes());
+                let kv_checksum = qwen3_dense_reference_range_object_payload_checksum(&kv_payload);
+                segment_payload[QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 16
+                    ..QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 24]
+                    .copy_from_slice(&kv_checksum.to_le_bytes());
+                let kv_start = QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
+                    + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES;
+                segment_payload[kv_start..kv_start + KV_BYTES].copy_from_slice(&kv_payload);
+
+                let hidden_ref = LingquObmmObjectRefWire::committed(
+                    QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+                    0,
+                    0,
+                    1,
+                    0x1234,
+                    0x98000,
+                    HIDDEN_BYTES as u64,
+                    qwen3_dense_reference_range_object_payload_checksum(&hidden_payload),
+                );
+                let kv_ref = LingquObmmObjectRefWire::committed(
+                    QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+                    0,
+                    0,
+                    1,
+                    0x5678,
+                    0x99000,
+                    KV_BYTES as u64,
+                    kv_checksum,
+                );
+                write_obmm_object_ref_wire(
+                    &mut segment_payload[OBJECT_REF_TABLE_OFFSET
+                        ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN],
+                    hidden_ref,
+                );
+                write_obmm_object_ref_wire(
+                    &mut segment_payload[OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN
+                        ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN * 2],
+                    kv_ref,
+                );
+                let req = Qwen3RangeDispatchReq {
+                    op_id: 31,
+                    segment: sim_core::SegmentHandle(1),
+                    task,
+                    object_ref_table_offset: OBJECT_REF_TABLE_OFFSET as u32,
+                    object_ref_count: 2,
+                };
+
+                let materialized = materialize_qwen3_range_dispatch_input(&req, &segment_payload)
+                    .expect("materialize");
+                assert!(matches!(materialized, std::borrow::Cow::Borrowed(_)));
+                validate_qwen3_range_dispatch_object_refs(&req, materialized.as_ref())
+                    .expect("inline refs validate");
+
+                std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT);
+            },
         );
-        assert_eq!(
-            read_u64_le_at(&materialized, QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET),
-            QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER
-        );
-        assert_eq!(
-            read_u64_le_at(&materialized, QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 8),
-            KV_BYTES as u64
-        );
-        let kv_start =
-            QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES;
-        assert_eq!(
-            &materialized[kv_start..kv_start + KV_BYTES],
-            kv_payload.as_slice()
-        );
-        validate_qwen3_range_dispatch_object_refs(&req, materialized.as_ref())
-            .expect("materialized refs validate");
-        let _ = std::fs::remove_dir_all(&registry_dir);
     }
 
     #[test]
     fn qwen3_range_dispatch_materializes_object_service_operands() {
-        const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
-        const OBJECT_REF_TABLE_OFFSET: usize = 0x07_0000;
-        const HIDDEN_BYTES: usize = 2_048;
-        const KV_BYTES: usize = 128;
+        run_simpler_native_test_isolated(
+            "qwen3_range_dispatch_materializes_object_service_operands",
+            || {
+                const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
+                const OBJECT_REF_TABLE_OFFSET: usize = 0x07_0000;
+                const HIDDEN_BYTES: usize = 2_048;
+                const KV_BYTES: usize = 128;
 
-        std::env::set_var("SIM_QWEN3_DENSE_TP_NODES", "8");
-        std::env::set_var("SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS", "28");
-        std::env::set_var("SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES", "262144");
-        std::env::set_var(
-            "SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES",
-            HIDDEN_BYTES.to_string(),
-        );
-        let root = std::env::temp_dir().join(format!(
-            "ub_sim_qwen3_object_service_operand_test_{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("create object service temp dir");
-        let snapshot_path = root.join("lingqu_object_service_snapshot.json");
+                std::env::set_var("SIM_QWEN3_DENSE_TP_NODES", "8");
+                std::env::set_var("SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS", "28");
+                std::env::set_var("SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES", "262144");
+                std::env::set_var(
+                    "SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES",
+                    HIDDEN_BYTES.to_string(),
+                );
+                let root = std::env::temp_dir().join(format!(
+                    "ub_sim_qwen3_object_service_operand_test_{}",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&root);
+                std::fs::create_dir_all(&root).expect("create object service temp dir");
+                let snapshot_path = root.join("lingqu_object_service_snapshot.json");
 
-        let mut object_service =
-            LingquObjectServiceStub::new(qwen3_dense_reference_object_service_profile());
-        let hidden_payload = vec![0x5au8; HIDDEN_BYTES];
-        let kv_payload = vec![0xa5u8; KV_BYTES];
-        let hidden_ref = publish_test_object_service_operand(
-            &mut object_service,
-            QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
-            LingquObjectKind::RuntimeTensor,
-            "test/runtime/hidden",
-            &hidden_payload,
-        );
-        let kv_ref = publish_test_object_service_operand(
-            &mut object_service,
-            QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
-            LingquObjectKind::KvCacheBlock,
-            "test/runtime/kv",
-            &kv_payload,
-        );
-        std::fs::write(
-            &snapshot_path,
-            object_service
-                .export_snapshot()
-                .to_json_bytes()
-                .expect("encode object service snapshot"),
-        )
-        .expect("write object service snapshot");
-        std::env::set_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT, &snapshot_path);
+                let mut object_service =
+                    LingquObjectServiceStub::new(qwen3_dense_reference_object_service_profile());
+                let hidden_payload = vec![0x5au8; HIDDEN_BYTES];
+                let kv_payload = vec![0xa5u8; KV_BYTES];
+                let hidden_ref = publish_test_object_service_operand(
+                    &mut object_service,
+                    QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+                    LingquObjectKind::RuntimeTensor,
+                    "test/runtime/hidden",
+                    &hidden_payload,
+                );
+                let kv_ref = publish_test_object_service_operand(
+                    &mut object_service,
+                    QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+                    LingquObjectKind::KvCacheBlock,
+                    "test/runtime/kv",
+                    &kv_payload,
+                );
+                std::fs::write(
+                    &snapshot_path,
+                    object_service
+                        .export_snapshot()
+                        .to_json_bytes()
+                        .expect("encode object service snapshot"),
+                )
+                .expect("write object service snapshot");
+                std::env::set_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT, &snapshot_path);
 
-        let task = TaskKey {
-            logical_system: LogicalSystemId(1),
-            coord: HierarchyCoord {
-                levels: [RANGE_TASK_MAGIC, 1, 4, 8, 2, 8, 28, HIDDEN_BYTES as u32],
+                let task = TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord {
+                        levels: [RANGE_TASK_MAGIC, 1, 4, 8, 2, 8, 28, HIDDEN_BYTES as u32],
+                    },
+                    scope_depth: 8,
+                    task_id: 31,
+                };
+                let segment_len = QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
+                    + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES
+                    + KV_BYTES;
+                let mut segment_payload = vec![0u8; segment_len];
+                write_obmm_object_ref_wire(
+                    &mut segment_payload[OBJECT_REF_TABLE_OFFSET
+                        ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN],
+                    hidden_ref,
+                );
+                write_obmm_object_ref_wire(
+                    &mut segment_payload[OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN
+                        ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN * 2],
+                    kv_ref,
+                );
+                let req = Qwen3RangeDispatchReq {
+                    op_id: 31,
+                    segment: sim_core::SegmentHandle(1),
+                    task,
+                    object_ref_table_offset: OBJECT_REF_TABLE_OFFSET as u32,
+                    object_ref_count: 2,
+                };
+
+                let materialized = materialize_qwen3_range_dispatch_input(&req, &segment_payload)
+                    .expect("materialize");
+                let hidden_start = QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET;
+                assert_eq!(
+                    &materialized[hidden_start..hidden_start + HIDDEN_BYTES],
+                    hidden_payload.as_slice()
+                );
+                let kv_start = QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
+                    + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES;
+                assert_eq!(
+                    &materialized[kv_start..kv_start + KV_BYTES],
+                    kv_payload.as_slice()
+                );
+
+                std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT);
+                let _ = std::fs::remove_dir_all(&root);
             },
-            scope_depth: 8,
-            task_id: 31,
-        };
-        let segment_len = QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
-            + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES
-            + KV_BYTES;
-        let mut segment_payload = vec![0u8; segment_len];
-        write_obmm_object_ref_wire(
-            &mut segment_payload[OBJECT_REF_TABLE_OFFSET
-                ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN],
-            hidden_ref,
         );
-        write_obmm_object_ref_wire(
-            &mut segment_payload[OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN
-                ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN * 2],
-            kv_ref,
-        );
-        let req = Qwen3RangeDispatchReq {
-            op_id: 31,
-            segment: sim_core::SegmentHandle(1),
-            task,
-            object_ref_table_offset: OBJECT_REF_TABLE_OFFSET as u32,
-            object_ref_count: 2,
-        };
-
-        let materialized =
-            materialize_qwen3_range_dispatch_input(&req, &segment_payload).expect("materialize");
-        let hidden_start = QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET;
-        assert_eq!(
-            &materialized[hidden_start..hidden_start + HIDDEN_BYTES],
-            hidden_payload.as_slice()
-        );
-        let kv_start =
-            QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES;
-        assert_eq!(
-            &materialized[kv_start..kv_start + KV_BYTES],
-            kv_payload.as_slice()
-        );
-
-        std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT);
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn publish_test_object_service_operand(
