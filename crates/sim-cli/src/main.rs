@@ -68,8 +68,10 @@ use sim_uapi::{
     Qwen3EngramStateRegistryValidation, UapiCommand, UapiDescriptor, UapiResponse,
     QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
     QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
-    QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
-    SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+    QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
+    QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+    QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE, QWEN3_DENSE_PROFILE_OBMM_KIND_TERMINAL_LOGITS,
+    SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
 };
 use sim_workloads::{run_host_vector_dispatch, run_minimal_workload};
 use std::env;
@@ -2547,6 +2549,21 @@ struct W5MemoryDecisionBundle {
     prefix_cache_artifact: Option<sim_memory::PrefixCacheArtifact>,
 }
 
+#[derive(Debug)]
+struct W5MemoryDecisionArtifactPublication {
+    shortpath_ref: Option<W5MemoryPublishedArtifactRef>,
+    prefetch_refs: Vec<W5MemoryPublishedArtifactRef>,
+    prefix_cache_ref: Option<W5MemoryPublishedArtifactRef>,
+}
+
+#[derive(Debug)]
+struct W5MemoryPublishedArtifactRef {
+    artifact_id: String,
+    ref_hex: String,
+    payload_bytes: usize,
+    payload_checksum: u64,
+}
+
 fn load_w5_memory_decisions_from_store(
     config: &W5MemoryDecisionConfig,
 ) -> anyhow::Result<W5MemoryDecisionBundle> {
@@ -2787,9 +2804,165 @@ fn validate_lingqu_prefix_cache_payloads(
     Ok(())
 }
 
+fn w5_memory_decisions_reference_artifacts(bundle: &W5MemoryDecisionBundle) -> bool {
+    bundle.shortpath_artifact.is_some()
+        || !bundle.prefetch_artifacts.is_empty()
+        || bundle.prefix_cache_artifact.is_some()
+}
+
+fn publish_w5_memory_decision_artifact_refs(
+    config: &W5MemoryBootstrapConfig,
+    bundle: &W5MemoryDecisionBundle,
+) -> anyhow::Result<W5MemoryDecisionArtifactPublication> {
+    let mut durable_store = load_lingqu_memory_durable_store(&config.store_path)?;
+    let previous_registry_dir = env::var_os(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR);
+    env::set_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, &config.registry_dir);
+    let publish_result = (|| -> anyhow::Result<_> {
+        let shortpath_ref = bundle
+            .shortpath_artifact
+            .as_ref()
+            .map(|artifact| {
+                publish_w5_execution_artifact_ref(
+                    &mut durable_store,
+                    artifact,
+                    config.owner_entity,
+                    config.producer_entity,
+                    "shortpath",
+                )
+            })
+            .transpose()?;
+        let mut prefetch_refs = Vec::new();
+        for artifact in &bundle.prefetch_artifacts {
+            prefetch_refs.push(publish_w5_execution_artifact_ref(
+                &mut durable_store,
+                artifact,
+                config.owner_entity,
+                config.producer_entity,
+                "prefetch",
+            )?);
+        }
+        let prefix_cache_ref = bundle
+            .prefix_cache_artifact
+            .as_ref()
+            .map(|artifact| {
+                publish_w5_prefix_cache_artifact_ref(
+                    &mut durable_store,
+                    artifact,
+                    config.owner_entity,
+                    config.producer_entity,
+                )
+            })
+            .transpose()?;
+        Ok(W5MemoryDecisionArtifactPublication {
+            shortpath_ref,
+            prefetch_refs,
+            prefix_cache_ref,
+        })
+    })();
+    if let Some(previous) = previous_registry_dir {
+        env::set_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, previous);
+    } else {
+        env::remove_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR);
+    }
+    publish_result
+}
+
+fn publish_w5_execution_artifact_ref(
+    durable_store: &mut LingquMemoryDurableStore,
+    artifact: &sim_memory::ExecutionArtifactObject,
+    owner_entity: u32,
+    producer_entity: u32,
+    source: &str,
+) -> anyhow::Result<W5MemoryPublishedArtifactRef> {
+    let payload_ref = artifact.durable_payload_ref.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "{source} execution artifact {} is not backed by a durable payload",
+            artifact.artifact_id
+        )
+    })?;
+    let payload = durable_store
+        .read_block_payload(payload_ref)
+        .with_context(|| {
+            format!(
+                "{source} execution artifact {} durable payload unavailable",
+                artifact.artifact_id
+            )
+        })?;
+    let object_ref = qwen3_publish_object_registry_payload(
+        w5_execution_artifact_obmm_kind(artifact.kind),
+        owner_entity,
+        producer_entity,
+        &format!(
+            "w5-memory-execution:{}:v{}",
+            artifact.artifact_id, artifact.version
+        ),
+        &payload,
+    )
+    .map_err(anyhow::Error::msg)?;
+    Ok(W5MemoryPublishedArtifactRef {
+        artifact_id: artifact.artifact_id.clone(),
+        ref_hex: qwen3_obmm_object_ref_wire_to_hex(&object_ref),
+        payload_bytes: payload.len(),
+        payload_checksum: object_ref.payload_checksum,
+    })
+}
+
+fn publish_w5_prefix_cache_artifact_ref(
+    durable_store: &mut LingquMemoryDurableStore,
+    artifact: &sim_memory::PrefixCacheArtifact,
+    owner_entity: u32,
+    producer_entity: u32,
+) -> anyhow::Result<W5MemoryPublishedArtifactRef> {
+    if artifact.durable_payload_refs.is_empty() {
+        anyhow::bail!(
+            "prefix-cache artifact {} is not backed by durable payloads",
+            artifact.artifact_id
+        );
+    }
+    let mut payload = Vec::new();
+    for payload_ref in &artifact.durable_payload_refs {
+        payload.extend_from_slice(&durable_store.read_block_payload(payload_ref).with_context(
+            || {
+                format!(
+                    "prefix-cache artifact {} durable payload unavailable",
+                    artifact.artifact_id
+                )
+            },
+        )?);
+    }
+    let object_ref = qwen3_publish_object_registry_payload(
+        QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+        owner_entity,
+        producer_entity,
+        &format!(
+            "w5-memory-prefix-cache:{}:v{}",
+            artifact.artifact_id, artifact.version
+        ),
+        &payload,
+    )
+    .map_err(anyhow::Error::msg)?;
+    Ok(W5MemoryPublishedArtifactRef {
+        artifact_id: artifact.artifact_id.clone(),
+        ref_hex: qwen3_obmm_object_ref_wire_to_hex(&object_ref),
+        payload_bytes: payload.len(),
+        payload_checksum: object_ref.payload_checksum,
+    })
+}
+
+fn w5_execution_artifact_obmm_kind(kind: sim_memory::ExecutionArtifactKind) -> u16 {
+    match kind {
+        sim_memory::ExecutionArtifactKind::HiddenState => {
+            QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT
+        }
+        sim_memory::ExecutionArtifactKind::KvCache => QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+        sim_memory::ExecutionArtifactKind::Logits => QWEN3_DENSE_PROFILE_OBMM_KIND_TERMINAL_LOGITS,
+    }
+}
+
 fn w5_memory_decision_env_vars(
     config: &W5MemoryDecisionConfig,
     bundle: &W5MemoryDecisionBundle,
+    publication: Option<&W5MemoryDecisionArtifactPublication>,
 ) -> Vec<(String, String)> {
     let mut vars = vec![
         (
@@ -2831,6 +3004,13 @@ fn w5_memory_decision_env_vars(
                     format!("{:#x}", artifact.checksum),
                 ),
             ]);
+        }
+        if let Some(published) = publication.and_then(|published| published.shortpath_ref.as_ref())
+        {
+            vars.push((
+                "SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF".to_string(),
+                published.ref_hex.clone(),
+            ));
         }
     }
     if let Some(plan) = &bundle.prefetch {
@@ -2874,6 +3054,19 @@ fn w5_memory_decision_env_vars(
                 ),
             ]);
         }
+        if let Some(published) = publication {
+            if !published.prefetch_refs.is_empty() {
+                vars.push((
+                    "SIM_W5_MEMORY_PREFETCH_ARTIFACT_REFS".to_string(),
+                    published
+                        .prefetch_refs
+                        .iter()
+                        .map(|artifact| artifact.ref_hex.as_str())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                ));
+            }
+        }
     }
     if let Some(plan) = &bundle.prefix_cache {
         vars.extend([
@@ -2898,6 +3091,14 @@ fn w5_memory_decision_env_vars(
             vars.push((
                 "SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_CHECKSUM".to_string(),
                 format!("{:#x}", artifact.checksum),
+            ));
+        }
+        if let Some(published) =
+            publication.and_then(|published| published.prefix_cache_ref.as_ref())
+        {
+            vars.push((
+                "SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF".to_string(),
+                published.ref_hex.clone(),
             ));
         }
     }
@@ -4716,9 +4917,10 @@ mod tests {
         cli_f32_vec_to_le_bytes, lingqu_durable_args_from, lingqu_memory_args_from,
         lingqu_object_service_args_from, load_lingqu_memory_durable_store,
         load_w5_memory_decisions_from_store, publish_w5_engram_state_ref_from_memory,
-        qwen3_decode_loop_args_from, qwen3_decode_report_verbosity_from_env,
-        qwen3_dense_weights_path_from_env, qwen3_engram_policy_checksum, qwen3_engram_select_token,
-        qwen3_engram_state_words, qwen3_guest_candidate_records, qwen3_guest_decode_loop_args_from,
+        publish_w5_memory_decision_artifact_refs, qwen3_decode_loop_args_from,
+        qwen3_decode_report_verbosity_from_env, qwen3_dense_weights_path_from_env,
+        qwen3_engram_policy_checksum, qwen3_engram_select_token, qwen3_engram_state_words,
+        qwen3_guest_candidate_records, qwen3_guest_decode_loop_args_from,
         qwen3_guest_default_w5_profile, qwen3_guest_dense_runtime,
         qwen3_guest_engram_candidate_counts, qwen3_guest_engram_env_vars,
         qwen3_guest_engram_env_vars_from_lookup, qwen3_guest_engram_expected_terminal_rewrites,
@@ -4745,12 +4947,12 @@ mod tests {
         run_lingqu_memory_validate_flat_query, run_lingqu_memory_validate_w5_engram_object_ref,
         save_lingqu_durable_sim, save_lingqu_memory_durable_store,
         simpler_host_matmul_artifact_producer_path, validate_qwen3_dense_weights_path,
-        validate_w5_inference_profile, LingquDurableSim, LingquDurableSimSnapshot,
-        LingquMemoryDurableStore, LingquMemoryDurableStoreSnapshot, LingquObjectServiceStub,
-        LingquObjectVersionSelector, MemoryCatalogSnapshot, QueryResult, Qwen3CandidateRecord,
-        Qwen3DecodeReportVerbosity, Qwen3EngramConfig, Qwen3EngramContextOp, Qwen3EngramMode,
-        Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs, W5MemoryBootstrapConfig,
-        W5MemoryDecisionConfig, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
+        validate_w5_inference_profile, w5_memory_decision_env_vars, LingquDurableSim,
+        LingquDurableSimSnapshot, LingquMemoryDurableStore, LingquMemoryDurableStoreSnapshot,
+        LingquObjectServiceStub, LingquObjectVersionSelector, MemoryCatalogSnapshot, QueryResult,
+        Qwen3CandidateRecord, Qwen3DecodeReportVerbosity, Qwen3EngramConfig, Qwen3EngramContextOp,
+        Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
+        W5MemoryBootstrapConfig, W5MemoryDecisionConfig, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
         SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
     };
     use std::env;
@@ -6433,13 +6635,14 @@ stage qwen3_range_forward_runtime_output_publish node=2
             plans[0].planned_artifact_ids,
             vec!["artifact/kv/step4/node4".to_string()]
         );
-        let bundle = load_w5_memory_decisions_from_store(&W5MemoryDecisionConfig {
+        let decision_config = W5MemoryDecisionConfig {
             store_path: store.clone(),
             shortpath_decision_id: Some("shortpath-decision/boundary/step3/node4".to_string()),
             prefetch_plan_id: Some("prefetch-plan/prefetch/step3/node4".to_string()),
             prefix_cache_reuse_plan_id: None,
-        })
-        .expect("load w5 memory decision bundle");
+        };
+        let bundle = load_w5_memory_decisions_from_store(&decision_config)
+            .expect("load w5 memory decision bundle");
         assert_eq!(
             bundle
                 .shortpath
@@ -6470,6 +6673,35 @@ stage qwen3_range_forward_runtime_output_publish node=2
             bundle.prefetch_artifacts[0].artifact_id,
             "artifact/kv/step4/node4"
         );
+        let publication = publish_w5_memory_decision_artifact_refs(
+            &W5MemoryBootstrapConfig {
+                store_path: store.clone(),
+                object_store_path: root.join("unused-object-store.json"),
+                engram_state_path: root.join("unused-engram-state.json"),
+                registry_dir: root.join("qwen3-object-registry"),
+                owner_entity: 1,
+                producer_entity: 2,
+            },
+            &bundle,
+        )
+        .expect("publish w5 memory decision artifact refs");
+        assert_eq!(
+            publication
+                .shortpath_ref
+                .as_ref()
+                .expect("shortpath ref")
+                .ref_hex
+                .len(),
+            128
+        );
+        assert_eq!(publication.prefetch_refs.len(), 1);
+        let env_vars = w5_memory_decision_env_vars(&decision_config, &bundle, Some(&publication));
+        assert!(env_vars.iter().any(
+            |(key, value)| key == "SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF" && value.len() == 128
+        ));
+        assert!(env_vars.iter().any(
+            |(key, value)| key == "SIM_W5_MEMORY_PREFETCH_ARTIFACT_REFS" && value.len() == 128
+        ));
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -6760,13 +6992,14 @@ stage qwen3_range_forward_runtime_output_publish node=2
         assert_eq!(response.reuse_plan.matched_prefix_token_count, 8);
         assert!(!response.reuse_plan.verify_required);
         assert!(response.reuse_plan.proof_checksum != 0);
-        let bundle = load_w5_memory_decisions_from_store(&W5MemoryDecisionConfig {
+        let decision_config = W5MemoryDecisionConfig {
             store_path: store.clone(),
             shortpath_decision_id: None,
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: Some("prefix-cache-reuse/prefix-lookup/test/0".to_string()),
-        })
-        .expect("load w5 prefix-cache decision bundle");
+        };
+        let bundle = load_w5_memory_decisions_from_store(&decision_config)
+            .expect("load w5 prefix-cache decision bundle");
         assert_eq!(
             bundle
                 .prefix_cache
@@ -6784,6 +7017,31 @@ stage qwen3_range_forward_runtime_output_publish node=2
                 .artifact_id,
             "prefix-cache/test/8"
         );
+        let publication = publish_w5_memory_decision_artifact_refs(
+            &W5MemoryBootstrapConfig {
+                store_path: store.clone(),
+                object_store_path: root.join("unused-object-store.json"),
+                engram_state_path: root.join("unused-engram-state.json"),
+                registry_dir: root.join("qwen3-prefix-registry"),
+                owner_entity: 1,
+                producer_entity: 2,
+            },
+            &bundle,
+        )
+        .expect("publish prefix-cache artifact ref");
+        assert_eq!(
+            publication
+                .prefix_cache_ref
+                .as_ref()
+                .expect("prefix cache ref")
+                .ref_hex
+                .len(),
+            128
+        );
+        let env_vars = w5_memory_decision_env_vars(&decision_config, &bundle, Some(&publication));
+        assert!(env_vars.iter().any(|(key, value)| {
+            key == "SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF" && value.len() == 128
+        }));
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -7622,6 +7880,23 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     } else {
         None
     };
+    let memory_decision_publication = if let Some(decisions) = &memory_decisions {
+        if w5_memory_decisions_reference_artifacts(decisions) {
+            let memory_bootstrap = args.memory_bootstrap.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Memory Service artifact-backed decisions require --memory-store, --memory-object-store, --memory-engram-state, and --memory-registry-dir so artifacts can be published as object refs"
+                )
+            })?;
+            Some(
+                publish_w5_memory_decision_artifact_refs(memory_bootstrap, decisions)
+                    .context("publish Memory Service W5 artifact object refs")?,
+            )
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let engram_simt = qwen3_prepare_engram_simt_mode(&effective_engram)?;
     let engram_registry_validation =
         qwen3_validate_guest_engram_state_registry(&effective_engram, &runtime.profile)?;
@@ -7719,6 +7994,38 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
                     .map(|artifact| format!("{:#x}", artifact.checksum))
                     .unwrap_or_else(|| "none".to_string()),
                 plan.proof_checksum
+            );
+        }
+    }
+    if let Some(publication) = &memory_decision_publication {
+        if let Some(published) = &publication.shortpath_ref {
+            println!(
+                "  memory_shortpath_artifact_ref: id={} payload_bytes={} payload_checksum={:#x}",
+                published.artifact_id, published.payload_bytes, published.payload_checksum
+            );
+        }
+        if !publication.prefetch_refs.is_empty() {
+            println!(
+                "  memory_prefetch_artifact_refs: count={} payload_bytes={} checksums={}",
+                publication.prefetch_refs.len(),
+                publication
+                    .prefetch_refs
+                    .iter()
+                    .map(|published| published.payload_bytes.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+                publication
+                    .prefetch_refs
+                    .iter()
+                    .map(|published| format!("{:#x}", published.payload_checksum))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+        }
+        if let Some(published) = &publication.prefix_cache_ref {
+            println!(
+                "  memory_prefix_cache_artifact_ref: id={} payload_bytes={} payload_checksum={:#x}",
+                published.artifact_id, published.payload_bytes, published.payload_checksum
             );
         }
     }
@@ -7855,7 +8162,9 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         command.env(key, value);
     }
     if let (Some(config), Some(decisions)) = (&args.memory_decisions, &memory_decisions) {
-        for (key, value) in w5_memory_decision_env_vars(config, decisions) {
+        for (key, value) in
+            w5_memory_decision_env_vars(config, decisions, memory_decision_publication.as_ref())
+        {
             command.env(key, value);
         }
     }

@@ -1862,6 +1862,7 @@ struct w4_qwen3_memory_decision_config {
     char shortpath_artifact_id[256];
     char shortpath_artifact_kind[64];
     char shortpath_artifact_checksum[64];
+    char shortpath_artifact_ref[160];
     char shortpath_proof_checksum[64];
     char prefetch_plan_id[256];
     char prefetch_scope[64];
@@ -1869,10 +1870,12 @@ struct w4_qwen3_memory_decision_config {
     char prefetch_checksum[64];
     char prefetch_artifact_ids[512];
     char prefetch_artifact_checksums[512];
+    char prefetch_artifact_refs[1024];
     char prefix_cache_reuse_plan_id[256];
     char prefix_cache_action[64];
     char prefix_cache_artifact_id[256];
     char prefix_cache_artifact_checksum[64];
+    char prefix_cache_artifact_ref[160];
     char prefix_cache_proof_checksum[64];
 };
 
@@ -4439,6 +4442,9 @@ static int parse_qwen3_w5_memory_decision_config(
     env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_ARTIFACT_CHECKSUM",
                       config->shortpath_artifact_checksum,
                       sizeof(config->shortpath_artifact_checksum));
+    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF",
+                      config->shortpath_artifact_ref,
+                      sizeof(config->shortpath_artifact_ref));
     env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_PROOF_CHECKSUM",
                       config->shortpath_proof_checksum,
                       sizeof(config->shortpath_proof_checksum));
@@ -4460,6 +4466,9 @@ static int parse_qwen3_w5_memory_decision_config(
     env_copy_or_empty("SIM_W5_MEMORY_PREFETCH_ARTIFACT_CHECKSUMS",
                       config->prefetch_artifact_checksums,
                       sizeof(config->prefetch_artifact_checksums));
+    env_copy_or_empty("SIM_W5_MEMORY_PREFETCH_ARTIFACT_REFS",
+                      config->prefetch_artifact_refs,
+                      sizeof(config->prefetch_artifact_refs));
     env_copy_or_empty("SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID",
                       config->prefix_cache_reuse_plan_id,
                       sizeof(config->prefix_cache_reuse_plan_id));
@@ -4472,6 +4481,9 @@ static int parse_qwen3_w5_memory_decision_config(
     env_copy_or_empty("SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_CHECKSUM",
                       config->prefix_cache_artifact_checksum,
                       sizeof(config->prefix_cache_artifact_checksum));
+    env_copy_or_empty("SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF",
+                      config->prefix_cache_artifact_ref,
+                      sizeof(config->prefix_cache_artifact_ref));
     env_copy_or_empty("SIM_W5_MEMORY_PREFIX_CACHE_PROOF_CHECKSUM",
                       config->prefix_cache_proof_checksum,
                       sizeof(config->prefix_cache_proof_checksum));
@@ -4508,11 +4520,12 @@ static int parse_qwen3_w5_memory_decision_config(
     if (has_shortpath && strcmp(config->shortpath_action, "continue") != 0 &&
         (!str_nonempty(config->shortpath_artifact_id) ||
          !str_nonempty(config->shortpath_artifact_kind) ||
-         !str_nonempty(config->shortpath_artifact_checksum))) {
+         !str_nonempty(config->shortpath_artifact_checksum) ||
+         !str_nonempty(config->shortpath_artifact_ref))) {
         fprintf(stderr,
                 "[w4_guest] fail qwen3 w5 memory shortpath artifact incomplete "
                 "decision_id=%s action=%s artifact_id=%s "
-                "hint=provide verified artifact id kind and checksum\n",
+                "hint=provide verified artifact id kind checksum and object ref\n",
                 config->shortpath_decision_id,
                 config->shortpath_action,
                 str_nonempty(config->shortpath_artifact_id) ?
@@ -4532,10 +4545,11 @@ static int parse_qwen3_w5_memory_decision_config(
     }
     if (has_prefetch &&
         (!str_nonempty(config->prefetch_artifact_ids) ||
-         !str_nonempty(config->prefetch_artifact_checksums))) {
+         !str_nonempty(config->prefetch_artifact_checksums) ||
+         !str_nonempty(config->prefetch_artifact_refs))) {
         fprintf(stderr,
                 "[w4_guest] fail qwen3 w5 memory prefetch artifacts missing "
-                "plan_id=%s hint=provide verified prefetch artifact ids and checksums\n",
+                "plan_id=%s hint=provide verified prefetch artifact ids checksums and object refs\n",
                 config->prefetch_plan_id);
         return -1;
     }
@@ -4550,11 +4564,12 @@ static int parse_qwen3_w5_memory_decision_config(
     }
     if (has_prefix_cache && strcmp(config->prefix_cache_action, "miss") != 0 &&
         (!str_nonempty(config->prefix_cache_artifact_id) ||
-         !str_nonempty(config->prefix_cache_artifact_checksum))) {
+         !str_nonempty(config->prefix_cache_artifact_checksum) ||
+         !str_nonempty(config->prefix_cache_artifact_ref))) {
         fprintf(stderr,
                 "[w4_guest] fail qwen3 w5 memory prefix-cache artifact incomplete "
                 "plan_id=%s action=%s artifact_id=%s "
-                "hint=provide verified prefix-cache artifact id and checksum\n",
+                "hint=provide verified prefix-cache artifact id checksum and object ref\n",
                 config->prefix_cache_reuse_plan_id,
                 config->prefix_cache_action,
                 str_nonempty(config->prefix_cache_artifact_id) ?
@@ -5422,10 +5437,13 @@ int main(void)
         if (qwen3_memory_decision_config.enabled) {
             printf("[w4_guest] stage qwen3_w5_memory_decision_contract local=%s node=%u"
                    " shortpath_id=%s shortpath_action=%s shortpath_artifact_kind=%s"
-                   " shortpath_artifact_checksum=%s prefetch_id=%s prefetch_scope=%s"
+                   " shortpath_artifact_checksum=%s shortpath_artifact_ref_chars=%zu"
+                   " prefetch_id=%s prefetch_scope=%s"
                    " prefetch_target_step=%s prefetch_artifact_ids=%s"
-                   " prefetch_artifact_checksums=%s prefix_cache_id=%s"
+                   " prefetch_artifact_checksums=%s prefetch_artifact_refs_chars=%zu"
+                   " prefix_cache_id=%s"
                    " prefix_cache_action=%s prefix_cache_artifact_checksum=%s"
+                   " prefix_cache_artifact_ref_chars=%zu"
                    " source=env_contract target=range_boundary_reader status=ok\n",
                    role,
                    w4_cluster_role_index(role, cluster_node_count, &local_node) ?
@@ -5443,6 +5461,9 @@ int main(void)
                    str_nonempty(qwen3_memory_decision_config.shortpath_artifact_checksum) ?
                        qwen3_memory_decision_config.shortpath_artifact_checksum :
                        "none",
+                   str_nonempty(qwen3_memory_decision_config.shortpath_artifact_ref) ?
+                       strlen(qwen3_memory_decision_config.shortpath_artifact_ref) :
+                       (size_t)0,
                    str_nonempty(qwen3_memory_decision_config.prefetch_plan_id) ?
                        qwen3_memory_decision_config.prefetch_plan_id :
                        "none",
@@ -5458,6 +5479,9 @@ int main(void)
                    str_nonempty(qwen3_memory_decision_config.prefetch_artifact_checksums) ?
                        qwen3_memory_decision_config.prefetch_artifact_checksums :
                        "none",
+                   str_nonempty(qwen3_memory_decision_config.prefetch_artifact_refs) ?
+                       strlen(qwen3_memory_decision_config.prefetch_artifact_refs) :
+                       (size_t)0,
                    str_nonempty(qwen3_memory_decision_config.prefix_cache_reuse_plan_id) ?
                        qwen3_memory_decision_config.prefix_cache_reuse_plan_id :
                        "none",
@@ -5466,7 +5490,10 @@ int main(void)
                        "none",
                    str_nonempty(qwen3_memory_decision_config.prefix_cache_artifact_checksum) ?
                        qwen3_memory_decision_config.prefix_cache_artifact_checksum :
-                       "none");
+                       "none",
+                   str_nonempty(qwen3_memory_decision_config.prefix_cache_artifact_ref) ?
+                       strlen(qwen3_memory_decision_config.prefix_cache_artifact_ref) :
+                       (size_t)0);
         }
     }
     snprintf(request_id, sizeof(request_id), "w4-%s-request-0", role);
@@ -6923,10 +6950,13 @@ decode_round_start:
             printf("[w4_guest] stage qwen3_w5_memory_boundary_decision local=node%u"
                    " step=%" PRIu64 " layers=[%u,%u) next=node%u shortpath_id=%s"
                    " shortpath_action=%s shortpath_artifact_kind=%s"
-                   " shortpath_artifact_checksum=%s prefetch_id=%s prefetch_scope=%s"
+                   " shortpath_artifact_checksum=%s shortpath_artifact_ref_chars=%zu"
+                   " prefetch_id=%s prefetch_scope=%s"
                    " prefetch_target_step=%s prefetch_artifact_ids=%s"
-                   " prefetch_artifact_checksums=%s prefix_cache_id=%s"
+                   " prefetch_artifact_checksums=%s prefetch_artifact_refs_chars=%zu"
+                   " prefix_cache_id=%s"
                    " prefix_cache_action=%s prefix_cache_artifact_checksum=%s"
+                   " prefix_cache_artifact_ref_chars=%zu"
                    " source=lingqu_memory_service target=range_forward_boundary status=validated\n",
                    dispatch_node + 1U,
                    guest_decode_step,
@@ -6945,6 +6975,9 @@ decode_round_start:
                    str_nonempty(qwen3_memory_decision_config.shortpath_artifact_checksum) ?
                        qwen3_memory_decision_config.shortpath_artifact_checksum :
                        "none",
+                   str_nonempty(qwen3_memory_decision_config.shortpath_artifact_ref) ?
+                       strlen(qwen3_memory_decision_config.shortpath_artifact_ref) :
+                       (size_t)0,
                    str_nonempty(qwen3_memory_decision_config.prefetch_plan_id) ?
                        qwen3_memory_decision_config.prefetch_plan_id :
                        "none",
@@ -6960,6 +6993,9 @@ decode_round_start:
                    str_nonempty(qwen3_memory_decision_config.prefetch_artifact_checksums) ?
                        qwen3_memory_decision_config.prefetch_artifact_checksums :
                        "none",
+                   str_nonempty(qwen3_memory_decision_config.prefetch_artifact_refs) ?
+                       strlen(qwen3_memory_decision_config.prefetch_artifact_refs) :
+                       (size_t)0,
                    str_nonempty(qwen3_memory_decision_config.prefix_cache_reuse_plan_id) ?
                        qwen3_memory_decision_config.prefix_cache_reuse_plan_id :
                        "none",
@@ -6968,7 +7004,10 @@ decode_round_start:
                        "none",
                    str_nonempty(qwen3_memory_decision_config.prefix_cache_artifact_checksum) ?
                        qwen3_memory_decision_config.prefix_cache_artifact_checksum :
-                       "none");
+                       "none",
+                   str_nonempty(qwen3_memory_decision_config.prefix_cache_artifact_ref) ?
+                       strlen(qwen3_memory_decision_config.prefix_cache_artifact_ref) :
+                       (size_t)0);
         }
         {
             uint32_t object_ref_count = 0;
