@@ -1575,13 +1575,24 @@ Current implementation status:
   now use the same Object Service snapshot path; sim-uapi can materialize
   hidden/KV range operands from those refs, and guest terminal-jump validation
   can load logits artifacts from the compact Object Service payload index. The
-  remaining gap is replacing the exported snapshot/index files with a directly
-  shared Object Service instance or guest-mappable OBMM DB payload mapping.
-  Runtime-produced per-step range-output objects already travel as ObjectRefs
-  plus inline OBMM/UAPI payload views validated by sim-uapi, not through the
-  qwen registry reader or default qwen registry writer. The explicit legacy
-  registry bridge remains for old state-ref entrypoints. The existing per-step
-  128-byte engram policy state remains a separate writeback object.
+  sim-uapi snapshot resolver now caches the imported Object Service snapshot by
+  path, length, and mtime-derived fingerprint, so repeated range operand
+  resolves no longer re-read and re-import the same JSON snapshot. When
+  `SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT` is set, snapshot resolve is also
+  fail-closed: it no longer falls back to the legacy qwen registry on a missing
+  or mismatched snapshot. The remaining gap is replacing the exported
+  snapshot/index files with a directly shared Object Service instance or
+  guest-mappable OBMM DB payload mapping.
+  Runtime-produced per-step range-output objects already travel as ObjectRefs.
+  Under the current `run_w4_chipbackend(&[u8])` backend interface, live
+  node-to-node hidden/KV handoffs also mirror the mapped OBMM payload into the
+  UAPI segment so sim-uapi can validate and consume an inline payload view
+  without consulting the static Memory Service snapshot or legacy qwen
+  registry. This is an adapter constraint, not the target architecture: the
+  next interface closure is still to let sim-uapi/backend consume mapped
+  object-backed operand views directly. The explicit legacy registry bridge
+  remains for old state-ref entrypoints. The existing per-step 128-byte engram
+  policy state remains a separate writeback object.
 
 ## Acceptance Criteria
 

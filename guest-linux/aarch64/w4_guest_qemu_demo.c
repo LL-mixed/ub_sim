@@ -7919,6 +7919,10 @@ decode_round_start:
                         range_input_view.ready_monotonic_ms - stage_start_ms :
                         monotonic_ms() - stage_start_ms;
                     write_segment_bytes(ep_mmio,
+                                        W4_QWEN3_RANGE_INPUT_PAYLOAD_OFFSET,
+                                        range_input_view.data,
+                                        hidden_range_bytes);
+                    write_segment_bytes(ep_mmio,
                                         W4_QWEN3_OBJECT_REF_TABLE_OFFSET +
                                             ((uint64_t)object_ref_write_index *
                                              W4_QWEN3_OBJECT_REF_BYTES),
@@ -7926,7 +7930,7 @@ decode_round_start:
                                         W4_QWEN3_OBJECT_REF_BYTES);
                     object_ref_write_index++;
                     input_loaded_ms = monotonic_ms();
-                    printf("[w4_guest] stage qwen3_range_forward_runtime_input_loaded node=%u layers=[%u,%u) input_offset=0x%016" PRIx64 " input_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " source=obmm_object_view target=uapi_object_ref materialize=sim_uapi_adapter status=ok\n",
+                    printf("[w4_guest] stage qwen3_range_forward_runtime_input_loaded node=%u layers=[%u,%u) input_offset=0x%016" PRIx64 " input_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " source=obmm_object_view target=uapi_object_ref materialize=sim_uapi_adapter status=ok inline_payload=1\n",
                            dispatch_node + 1U,
                            layer_start,
                            layer_end,
@@ -7995,6 +7999,23 @@ decode_round_start:
                 }
                 kv_resolved_ms = monotonic_ms();
                 if (previous_kv_view.data && previous_kv_view.len > 0) {
+                    write_segment_u64(ep_mmio,
+                                      W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET,
+                                      W4_QWEN3_PREVIOUS_KV_PAYLOAD_MARKER);
+                    write_segment_u64(ep_mmio,
+                                      W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET + 8U,
+                                      previous_kv_view.len);
+                    write_segment_u64(ep_mmio,
+                                      W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET + 16U,
+                                      previous_kv_view.checksum);
+                    write_segment_u64(ep_mmio,
+                                      W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET + 24U,
+                                      0);
+                    write_segment_bytes(ep_mmio,
+                                        W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET +
+                                            W4_QWEN3_PREVIOUS_KV_PAYLOAD_HEADER_BYTES,
+                                        previous_kv_view.data,
+                                        previous_kv_view.len);
                     write_segment_bytes(ep_mmio,
                                         W4_QWEN3_OBJECT_REF_TABLE_OFFSET +
                                             ((uint64_t)object_ref_write_index *
@@ -8008,7 +8029,7 @@ decode_round_start:
                            " kv_offset=0x%016" PRIx64 " kv_bytes=%" PRIu64
                            " kv_checksum=0x%016" PRIx64
                            " key_hash=0x%016" PRIx64 " version=%" PRIu64
-                           " source=obmm_object_view target=uapi_object_ref materialize=sim_uapi_adapter status=ok\n",
+                           " source=obmm_object_view target=uapi_object_ref materialize=sim_uapi_adapter status=ok inline_payload=1\n",
                            dispatch_node + 1U,
                            guest_decode_step,
                            guest_decode_step - 1U,

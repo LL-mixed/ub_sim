@@ -12,7 +12,7 @@ use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sim_config::ScenarioConfig;
 use sim_core::{
@@ -2053,22 +2053,83 @@ fn qwen3_lingqu_object_payload_checksum(bytes: &[u8]) -> u64 {
     acc
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Qwen3ObjectServiceSnapshotFingerprint {
+    len: u64,
+    modified_ns: Option<u128>,
+}
+
+#[derive(Clone, Debug)]
+struct Qwen3ObjectServiceSnapshotCacheEntry {
+    path: PathBuf,
+    fingerprint: Qwen3ObjectServiceSnapshotFingerprint,
+    snapshot: LingquObjectServiceSnapshot,
+}
+
+fn qwen3_object_service_snapshot_cache(
+) -> &'static Mutex<Option<Qwen3ObjectServiceSnapshotCacheEntry>> {
+    static CACHE: OnceLock<Mutex<Option<Qwen3ObjectServiceSnapshotCacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn qwen3_object_service_snapshot_fingerprint(
+    snapshot_path: &Path,
+) -> Result<Qwen3ObjectServiceSnapshotFingerprint, String> {
+    let metadata = fs::metadata(snapshot_path).map_err(|err| {
+        format!(
+            "qwen3_object_service_snapshot_stat_failed:{}:{err}",
+            snapshot_path.display()
+        )
+    })?;
+    let modified_ns = metadata.modified().ok().and_then(qwen3_system_time_unix_ns);
+    Ok(Qwen3ObjectServiceSnapshotFingerprint {
+        len: metadata.len(),
+        modified_ns,
+    })
+}
+
+fn qwen3_system_time_unix_ns(time: SystemTime) -> Option<u128> {
+    let elapsed = time.duration_since(UNIX_EPOCH).ok()?;
+    Some(u128::from(elapsed.as_secs()) * 1_000_000_000 + u128::from(elapsed.subsec_nanos()))
+}
+
 fn qwen3_object_service_snapshot_get_from_path(
     snapshot_path: &Path,
     object_ref: &LingquObmmObjectRefWire,
 ) -> Result<Vec<u8>, String> {
-    let bytes = fs::read(snapshot_path).map_err(|err| {
-        format!(
-            "qwen3_object_service_snapshot_read_failed:{}:{err}",
-            snapshot_path.display()
-        )
-    })?;
-    let snapshot = LingquObjectServiceSnapshot::from_json_bytes(&bytes).map_err(|err| {
-        format!(
-            "qwen3_object_service_snapshot_decode_failed:{}:{err}",
-            snapshot_path.display()
-        )
-    })?;
+    let fingerprint = qwen3_object_service_snapshot_fingerprint(snapshot_path)?;
+    let mut cache = qwen3_object_service_snapshot_cache()
+        .lock()
+        .map_err(|_| "qwen3_object_service_snapshot_cache_poisoned".to_string())?;
+    let cache_miss = cache
+        .as_ref()
+        .map(|entry| entry.path != snapshot_path || entry.fingerprint != fingerprint)
+        .unwrap_or(true);
+    if cache_miss {
+        let bytes = fs::read(snapshot_path).map_err(|err| {
+            format!(
+                "qwen3_object_service_snapshot_read_failed:{}:{err}",
+                snapshot_path.display()
+            )
+        })?;
+        let snapshot = LingquObjectServiceSnapshot::from_json_bytes(&bytes).map_err(|err| {
+            format!(
+                "qwen3_object_service_snapshot_decode_failed:{}:{err}",
+                snapshot_path.display()
+            )
+        })?;
+        LingquObjectServiceStub::import_snapshot(snapshot.clone())
+            .map_err(|err| format!("qwen3_object_service_snapshot_import_failed:{err}"))?;
+        *cache = Some(Qwen3ObjectServiceSnapshotCacheEntry {
+            path: snapshot_path.to_path_buf(),
+            fingerprint,
+            snapshot,
+        });
+    }
+    let snapshot = &cache
+        .as_ref()
+        .ok_or_else(|| "qwen3_object_service_snapshot_cache_empty".to_string())?
+        .snapshot;
     let matches = snapshot
         .records
         .iter()
@@ -2106,13 +2167,15 @@ fn qwen3_object_service_snapshot_get_from_path(
             ));
         }
     };
-    let service = LingquObjectServiceStub::import_snapshot(snapshot)
-        .map_err(|err| format!("qwen3_object_service_snapshot_import_failed:{err}"))?;
-    let payload = service
-        .get_copy(
-            &key,
-            LingquObjectVersionSelector::Exact(object_ref.object_version),
-        )
+    let payload = snapshot
+        .records
+        .iter()
+        .find(|record| {
+            record.key == key
+                && record.version == object_ref.object_version
+                && record.state == LingquObjectState::Committed
+        })
+        .map(|record| record.payload_bytes.clone())
         .ok_or_else(|| format!("qwen3_object_service_payload_missing:key={key}"))?;
     if payload.len() as u64 != object_ref.payload_bytes {
         return Err(format!(
@@ -2144,17 +2207,7 @@ fn qwen3_runtime_object_payload_get(
     object_ref: &LingquObmmObjectRefWire,
 ) -> Result<Vec<u8>, String> {
     if let Some(snapshot_path) = qwen3_object_service_snapshot_path() {
-        match qwen3_object_service_snapshot_get_from_path(&snapshot_path, object_ref) {
-            Ok(payload) => return Ok(payload),
-            Err(snapshot_err) => {
-                return qwen3_object_registry_get(object_ref)
-                    .map_err(|registry_err| {
-                        format!(
-                            "qwen3_runtime_object_resolve_failed:snapshot={snapshot_err}:registry={registry_err}"
-                        )
-                    });
-            }
-        }
+        return qwen3_object_service_snapshot_get_from_path(&snapshot_path, object_ref);
     }
     qwen3_object_registry_get(object_ref)
 }
@@ -19716,9 +19769,9 @@ mod tests {
         qwen3_dense_reference_write_weight_reference_table,
         qwen3_dense_reference_write_weight_stage_link_table, qwen3_engram_state_manifest_payload,
         qwen3_lingqu_key_hash, qwen3_lingqu_object_payload_checksum, qwen3_object_registry_path,
-        qwen3_object_registry_put, qwen3_obmm_object_ref_for_payload,
-        qwen3_obmm_object_ref_wire_to_hex, qwen3_register_range_forward_objects,
-        qwen3_validate_engram_state_object_service_payload,
+        qwen3_object_registry_put, qwen3_object_service_snapshot_get_from_path,
+        qwen3_obmm_object_ref_for_payload, qwen3_obmm_object_ref_wire_to_hex,
+        qwen3_register_range_forward_objects, qwen3_validate_engram_state_object_service_payload,
         qwen3_validate_engram_state_registry_payload, read_u64_le_at,
         run_host_matmul_batched_smoke, run_host_matmul_smoke,
         run_qwen3_dense_reference_prefill_runtime, validate_qwen3_range_dispatch_object_refs,
@@ -26025,6 +26078,147 @@ mod tests {
                 );
 
                 std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT);
+                let _ = std::fs::remove_dir_all(&root);
+            },
+        );
+    }
+
+    #[test]
+    fn qwen3_range_dispatch_snapshot_path_fails_closed() {
+        run_simpler_native_test_isolated("qwen3_range_dispatch_snapshot_path_fails_closed", || {
+            const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
+            const OBJECT_REF_TABLE_OFFSET: usize = 0x07_0000;
+            const HIDDEN_BYTES: usize = 2_048;
+
+            std::env::set_var("SIM_QWEN3_DENSE_TP_NODES", "8");
+            std::env::set_var("SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS", "28");
+            std::env::set_var("SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES", "262144");
+            std::env::set_var(
+                "SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES",
+                HIDDEN_BYTES.to_string(),
+            );
+            let registry_dir = std::env::temp_dir().join(format!(
+                "ub_sim_qwen3_snapshot_fail_closed_registry_{}",
+                std::process::id()
+            ));
+            let missing_snapshot = std::env::temp_dir().join(format!(
+                "ub_sim_qwen3_snapshot_fail_closed_missing_{}.json",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&registry_dir);
+            let _ = std::fs::remove_file(&missing_snapshot);
+            std::env::set_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, &registry_dir);
+            std::env::set_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT, &missing_snapshot);
+
+            let hidden_payload = vec![0x6du8; HIDDEN_BYTES];
+            let hidden_ref = LingquObmmObjectRefWire::committed(
+                QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+                0,
+                0,
+                1,
+                0x77,
+                0,
+                HIDDEN_BYTES as u64,
+                qwen3_dense_reference_range_object_payload_checksum(&hidden_payload),
+            );
+            qwen3_object_registry_put(&hidden_ref, &hidden_payload)
+                .expect("legacy registry payload should exist but not be used");
+
+            let task = TaskKey {
+                logical_system: LogicalSystemId(1),
+                coord: HierarchyCoord {
+                    levels: [RANGE_TASK_MAGIC, 1, 4, 8, 2, 8, 28, HIDDEN_BYTES as u32],
+                },
+                scope_depth: 8,
+                task_id: 31,
+            };
+            let mut segment_payload =
+                vec![0u8; OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN];
+            write_obmm_object_ref_wire(
+                &mut segment_payload[OBJECT_REF_TABLE_OFFSET
+                    ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN],
+                hidden_ref,
+            );
+            let req = Qwen3RangeDispatchReq {
+                op_id: 31,
+                segment: sim_core::SegmentHandle(1),
+                task,
+                object_ref_table_offset: OBJECT_REF_TABLE_OFFSET as u32,
+                object_ref_count: 1,
+            };
+
+            let err = materialize_qwen3_range_dispatch_input(&req, &segment_payload)
+                .expect_err("snapshot env must fail closed instead of falling back");
+            assert!(
+                err.contains("qwen3_object_service_snapshot_stat_failed"),
+                "{err}"
+            );
+
+            std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR);
+            std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT);
+            let _ = std::fs::remove_dir_all(&registry_dir);
+        });
+    }
+
+    #[test]
+    fn qwen3_object_service_snapshot_cache_invalidates_on_file_change() {
+        run_simpler_native_test_isolated(
+            "qwen3_object_service_snapshot_cache_invalidates_on_file_change",
+            || {
+                let root = std::env::temp_dir().join(format!(
+                    "ub_sim_qwen3_snapshot_cache_invalidate_{}",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&root);
+                std::fs::create_dir_all(&root).expect("create cache test dir");
+                let snapshot_path = root.join("lingqu_object_service_snapshot.json");
+
+                let mut first_service =
+                    LingquObjectServiceStub::new(qwen3_dense_reference_object_service_profile());
+                let first_payload = vec![0x11u8; 7];
+                let first_ref = publish_test_object_service_operand(
+                    &mut first_service,
+                    QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+                    LingquObjectKind::RuntimeTensor,
+                    "test/cache/first",
+                    &first_payload,
+                );
+                std::fs::write(
+                    &snapshot_path,
+                    first_service
+                        .export_snapshot()
+                        .to_json_bytes()
+                        .expect("encode first snapshot"),
+                )
+                .expect("write first snapshot");
+                let resolved_first =
+                    qwen3_object_service_snapshot_get_from_path(&snapshot_path, &first_ref)
+                        .expect("resolve first payload");
+                assert_eq!(resolved_first, first_payload);
+
+                let mut second_service =
+                    LingquObjectServiceStub::new(qwen3_dense_reference_object_service_profile());
+                let second_payload = vec![0x22u8; 19];
+                let second_ref = publish_test_object_service_operand(
+                    &mut second_service,
+                    QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+                    LingquObjectKind::KvCacheBlock,
+                    "test/cache/second",
+                    &second_payload,
+                );
+                std::fs::write(
+                    &snapshot_path,
+                    second_service
+                        .export_snapshot()
+                        .to_json_bytes()
+                        .expect("encode second snapshot"),
+                )
+                .expect("write second snapshot");
+                let resolved_second =
+                    qwen3_object_service_snapshot_get_from_path(&snapshot_path, &second_ref)
+                        .expect("resolve second payload after overwrite");
+                assert_eq!(resolved_second, second_payload);
+
                 let _ = std::fs::remove_dir_all(&root);
             },
         );
