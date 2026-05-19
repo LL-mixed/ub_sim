@@ -1695,6 +1695,8 @@ fn run_lingqu_memory_register_execution_artifact_cli(args: &[String]) -> anyhow:
     let mut registry =
         rebuild_lingqu_memory_execution_registry_artifacts(&mut memory_service, &mut durable_store)
             .context("rebuild execution artifact registry")?;
+    validate_lingqu_execution_artifact_payloads(&mut durable_store, &artifact, "register")
+        .context("validate execution artifact payloads")?;
     memory_service
         .register_execution_artifact(artifact.clone())
         .context("register execution artifact")?;
@@ -1866,6 +1868,8 @@ fn run_lingqu_memory_register_prefix_cache_cli(args: &[String]) -> anyhow::Resul
         &mut durable_store,
     )
     .context("rebuild prefix cache registry")?;
+    validate_lingqu_prefix_cache_payloads(&mut durable_store, &artifact, "register")
+        .context("validate prefix cache artifact payloads")?;
     memory_service
         .register_prefix_cache_artifact(artifact.clone())
         .context("register prefix cache artifact")?;
@@ -2625,22 +2629,34 @@ fn load_w5_memory_decisions_from_store(
         .as_ref()
         .and_then(|decision| decision.artifact_id.as_ref())
     {
-        Some(w5_find_verified_execution_artifact(
+        let artifact = w5_find_verified_execution_artifact(
             &execution_artifacts,
             artifact_id,
             "shortpath decision",
-        )?)
+        )?;
+        validate_lingqu_execution_artifact_payloads(
+            &mut durable_store,
+            &artifact,
+            "shortpath decision",
+        )?;
+        Some(artifact)
     } else {
         None
     };
     let mut prefetch_artifacts = Vec::new();
     if let Some(plan) = &prefetch {
         for artifact_id in &plan.planned_artifact_ids {
-            prefetch_artifacts.push(w5_find_verified_execution_artifact(
+            let artifact = w5_find_verified_execution_artifact(
                 &execution_artifacts,
                 artifact_id,
                 "prefetch plan",
-            )?);
+            )?;
+            validate_lingqu_execution_artifact_payloads(
+                &mut durable_store,
+                &artifact,
+                "prefetch plan",
+            )?;
+            prefetch_artifacts.push(artifact);
         }
     }
     let prefix_cache_artifact = if let Some(artifact_id) = prefix_cache
@@ -2655,11 +2671,17 @@ fn load_w5_memory_decisions_from_store(
                     config.store_path.display()
                 )
             })?;
-        Some(w5_find_verified_prefix_cache_artifact(
+        let artifact = w5_find_verified_prefix_cache_artifact(
             &artifacts,
             artifact_id,
             "prefix-cache reuse plan",
-        )?)
+        )?;
+        validate_lingqu_prefix_cache_payloads(
+            &mut durable_store,
+            &artifact,
+            "prefix-cache reuse plan",
+        )?;
+        Some(artifact)
     } else {
         None
     };
@@ -2711,6 +2733,58 @@ fn w5_find_verified_prefix_cache_artifact(
         );
     }
     Ok(artifact.clone())
+}
+
+fn validate_lingqu_execution_artifact_payloads(
+    durable_store: &mut LingquMemoryDurableStore,
+    artifact: &sim_memory::ExecutionArtifactObject,
+    source: &str,
+) -> anyhow::Result<()> {
+    if let Some(payload_ref) = &artifact.durable_payload_ref {
+        let bytes = durable_store
+            .read_block_payload(payload_ref)
+            .with_context(|| {
+                format!(
+                    "{source} execution artifact {} durable payload unavailable",
+                    artifact.artifact_id
+                )
+            })?;
+        if bytes.len() as u64 != payload_ref.bytes {
+            anyhow::bail!(
+                "{source} execution artifact {} durable payload bytes mismatch: got {} expected {}",
+                artifact.artifact_id,
+                bytes.len(),
+                payload_ref.bytes
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_lingqu_prefix_cache_payloads(
+    durable_store: &mut LingquMemoryDurableStore,
+    artifact: &sim_memory::PrefixCacheArtifact,
+    source: &str,
+) -> anyhow::Result<()> {
+    for payload_ref in &artifact.durable_payload_refs {
+        let bytes = durable_store
+            .read_block_payload(payload_ref)
+            .with_context(|| {
+                format!(
+                    "{source} prefix cache artifact {} durable payload unavailable",
+                    artifact.artifact_id
+                )
+            })?;
+        if bytes.len() as u64 != payload_ref.bytes {
+            anyhow::bail!(
+                "{source} prefix cache artifact {} durable payload bytes mismatch: got {} expected {}",
+                artifact.artifact_id,
+                bytes.len(),
+                payload_ref.bytes
+            );
+        }
+    }
+    Ok(())
 }
 
 fn w5_memory_decision_env_vars(
@@ -6127,6 +6201,15 @@ stage qwen3_range_forward_runtime_output_publish node=2
         let boundary_response_path = root.join("boundary_lookup_response.json");
         let prefetch_request_path = root.join("prefetch_plan_request.json");
         let prefetch_plan_path = root.join("prefetch_plan.json");
+        let mut seed_store = LingquMemoryDurableStore::new();
+        let logits_payload_ref = seed_store
+            .write_block_payload("block/logits/step3/node4", vec![0x51; 16])
+            .expect("write logits payload");
+        let kv_payload_ref = seed_store
+            .write_block_payload("block/kv/step4/node4", vec![0x77; 16])
+            .expect("write kv payload");
+        save_lingqu_memory_durable_store(&store, &seed_store)
+            .expect("save seeded durable payloads");
         let model = sim_memory::InferenceModelBinding {
             model_id: "qwen3-test".to_string(),
             model_key: "qwen3-test-key".to_string(),
@@ -6172,12 +6255,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
             target_layer_end: 8,
             dtype: sim_core::TensorDType::F32,
             shape: vec![1, 4],
-            durable_payload_ref: Some(sim_memory::LingquBlockPayloadRef::new(
-                "block/logits/step3/node4",
-                0,
-                16,
-                0x5555_5555,
-            )),
+            durable_payload_ref: Some(logits_payload_ref),
             hot_object_ref: None,
             source_query_result_id: None,
             source_engram_state_id: None,
@@ -6205,12 +6283,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
             target_layer_end: 12,
             dtype: sim_core::TensorDType::F32,
             shape: vec![1, 4],
-            durable_payload_ref: Some(sim_memory::LingquBlockPayloadRef::new(
-                "block/kv/step4/node4",
-                0,
-                16,
-                0x7777_7777,
-            )),
+            durable_payload_ref: Some(kv_payload_ref),
             hot_object_ref: None,
             source_query_result_id: None,
             source_engram_state_id: None,
@@ -6471,6 +6544,91 @@ stage qwen3_range_forward_runtime_output_publish node=2
     }
 
     #[test]
+    fn w5_memory_decision_load_rejects_missing_artifact_payload() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_w5_memory_decision_missing_payload_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let store = root.join("store.json");
+        let model = sim_memory::InferenceModelBinding {
+            model_id: "qwen3-test".to_string(),
+            model_key: "qwen3-test-key".to_string(),
+            tokenizer_hash: 0x1001,
+            profile_hash: 0x2002,
+        };
+        let boundary = sim_memory::RangeBoundary {
+            phase: sim_memory::RangeBoundaryPhase::RangeExit,
+            step_index: 3,
+            node_index: 4,
+            layer_start: 4,
+            layer_end: 8,
+            next_node_index: Some(5),
+            position: 12,
+        };
+        let artifact = sim_memory::ExecutionArtifactObject {
+            artifact_id: "artifact/logits/missing-payload".to_string(),
+            kind: sim_memory::ExecutionArtifactKind::Logits,
+            model,
+            producer_boundary: boundary,
+            target_layer_start: 8,
+            target_layer_end: 8,
+            dtype: sim_core::TensorDType::F32,
+            shape: vec![1, 4],
+            durable_payload_ref: Some(sim_memory::LingquBlockPayloadRef::new(
+                "block/logits/missing-payload",
+                0,
+                16,
+                0x5555,
+            )),
+            hot_object_ref: None,
+            source_query_result_id: None,
+            source_engram_state_id: None,
+            confidence_milli: 980,
+            state: sim_memory::ExecutionArtifactState::Verified,
+            checksum: 0x6666,
+            version: 1,
+            created_at_us: 10,
+            expires_at_us: Some(100),
+        };
+        let decision = sim_memory::ShortpathDecisionRecord {
+            decision_id: "shortpath-decision/missing-payload".to_string(),
+            request_id: "boundary/missing-payload".to_string(),
+            action: sim_memory::ShortpathAction::JumpToTerminal,
+            artifact_id: Some("artifact/logits/missing-payload".to_string()),
+            target_layer_start: Some(8),
+            target_layer_end: Some(8),
+            confidence_milli: 980,
+            verify_required: false,
+            proof_checksum: 0x7777,
+            reason: "test missing durable payload".to_string(),
+            created_at_us: 11,
+            version: 1,
+        };
+        let mut durable_store = LingquMemoryDurableStore::new();
+        durable_store
+            .persist_execution_artifact_manifest(vec![artifact])
+            .expect("persist execution artifact manifest");
+        durable_store
+            .persist_shortpath_decision_manifest(vec![decision])
+            .expect("persist shortpath decision manifest");
+        save_lingqu_memory_durable_store(&store, &durable_store).expect("save durable store");
+
+        let err = load_w5_memory_decisions_from_store(&W5MemoryDecisionConfig {
+            store_path: store,
+            shortpath_decision_id: Some("shortpath-decision/missing-payload".to_string()),
+            prefetch_plan_id: None,
+            prefix_cache_reuse_plan_id: None,
+        })
+        .expect_err("missing durable payload must fail W5 decision load");
+        let err_text = format!("{err:#}");
+        assert!(err_text.contains("shortpath decision execution artifact"));
+        assert!(err_text.contains("durable payload unavailable"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn lingqu_memory_prefix_cache_cli_registers_and_looks_up_artifact() {
         let root = std::env::temp_dir().join(format!(
             "ub_sim_lingqu_memory_prefix_cache_cli_{}",
@@ -6482,6 +6640,12 @@ stage qwen3_range_forward_runtime_output_publish node=2
         let artifact_path = root.join("prefix_cache_artifact.json");
         let request_path = root.join("prefix_cache_lookup_request.json");
         let response_path = root.join("prefix_cache_lookup_response.json");
+        let mut seed_store = LingquMemoryDurableStore::new();
+        let prefix_payload_ref = seed_store
+            .write_block_payload("block/prefix/test/8", vec![0x18; 64])
+            .expect("write prefix cache payload");
+        save_lingqu_memory_durable_store(&store, &seed_store)
+            .expect("save seeded prefix cache payload");
         let key = sim_memory::PrefixCacheKey {
             model: sim_memory::InferenceModelBinding {
                 model_id: "qwen3-test".to_string(),
@@ -6505,12 +6669,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
             artifact_id: "prefix-cache/test/8".to_string(),
             key: key.clone(),
             kv_artifact_ids: Vec::new(),
-            durable_payload_refs: vec![sim_memory::LingquBlockPayloadRef::new(
-                "block/prefix/test/8",
-                0,
-                64,
-                0x1111_1111,
-            )],
+            durable_payload_refs: vec![prefix_payload_ref],
             hot_object_refs: Vec::new(),
             dtype: sim_core::TensorDType::F32,
             shape: vec![8, 4],
