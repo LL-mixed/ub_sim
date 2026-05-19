@@ -104,6 +104,9 @@
 #define W4_QWEN3_TOKENIZER_FAMILY "qwen3-tiktoken-compatible-synthetic-piece"
 #define W4_QWEN3_TOKENIZER_PIECE_PREFIX "q3_"
 #define W4_QWEN3_VOCAB_SIZE 151936ULL
+#define W4_QWEN3_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT 5U
+#define W4_QWEN3_OBMM_KIND_QWEN3_KV_STATE 7U
+#define W4_QWEN3_OBMM_KIND_TERMINAL_LOGITS 8U
 #define W4_QWEN3_OBMM_KIND_ENGRAM_CONTEXT_TABLE 21U
 #define W4_QWEN3_OBMM_KIND_ENGRAM_CONTEXT_INDICES 22U
 #define W4_QWEN3_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT 23U
@@ -1860,6 +1863,8 @@ struct w4_qwen3_memory_decision_config {
     char shortpath_decision_id[256];
     char shortpath_action[64];
     char shortpath_artifact_id[256];
+    char shortpath_target_layer_start[32];
+    char shortpath_target_layer_end[32];
     char shortpath_artifact_kind[64];
     char shortpath_artifact_checksum[64];
     char shortpath_artifact_ref[160];
@@ -4413,6 +4418,28 @@ static bool str_nonempty(const char *value)
     return value && value[0] != '\0';
 }
 
+static int parse_u32_field(const char *label, const char *value, uint32_t *out)
+{
+    char *end = NULL;
+    unsigned long parsed;
+
+    if (!label || !value || !out || value[0] == '\0') {
+        return -1;
+    }
+    errno = 0;
+    parsed = strtoul(value, &end, 10);
+    if (errno != 0 || end == value || (end && *end != '\0') ||
+        parsed > UINT32_MAX) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 u32 field invalid field=%s value=%s\n",
+                label,
+                value);
+        return -1;
+    }
+    *out = (uint32_t)parsed;
+    return 0;
+}
+
 static int parse_qwen3_w5_memory_decision_config(
     struct w4_qwen3_memory_decision_config *config)
 {
@@ -4436,6 +4463,12 @@ static int parse_qwen3_w5_memory_decision_config(
     env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_ARTIFACT_ID",
                       config->shortpath_artifact_id,
                       sizeof(config->shortpath_artifact_id));
+    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_TARGET_LAYER_START",
+                      config->shortpath_target_layer_start,
+                      sizeof(config->shortpath_target_layer_start));
+    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_TARGET_LAYER_END",
+                      config->shortpath_target_layer_end,
+                      sizeof(config->shortpath_target_layer_end));
     env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_ARTIFACT_KIND",
                       config->shortpath_artifact_kind,
                       sizeof(config->shortpath_artifact_kind));
@@ -4519,6 +4552,8 @@ static int parse_qwen3_w5_memory_decision_config(
     }
     if (has_shortpath && strcmp(config->shortpath_action, "continue") != 0 &&
         (!str_nonempty(config->shortpath_artifact_id) ||
+         !str_nonempty(config->shortpath_target_layer_start) ||
+         !str_nonempty(config->shortpath_target_layer_end) ||
          !str_nonempty(config->shortpath_artifact_kind) ||
          !str_nonempty(config->shortpath_artifact_checksum) ||
          !str_nonempty(config->shortpath_artifact_ref))) {
@@ -4532,6 +4567,26 @@ static int parse_qwen3_w5_memory_decision_config(
                     config->shortpath_artifact_id :
                     "unset");
         return -1;
+    }
+    if (has_shortpath && strcmp(config->shortpath_action, "continue") != 0) {
+        uint32_t target_start = 0U;
+        uint32_t target_end = 0U;
+
+        if (parse_u32_field("shortpath_target_layer_start",
+                            config->shortpath_target_layer_start,
+                            &target_start) != 0 ||
+            parse_u32_field("shortpath_target_layer_end",
+                            config->shortpath_target_layer_end,
+                            &target_end) != 0 ||
+            target_end < target_start) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 w5 memory shortpath target invalid"
+                    " decision_id=%s start=%s end=%s\n",
+                    config->shortpath_decision_id,
+                    config->shortpath_target_layer_start,
+                    config->shortpath_target_layer_end);
+            return -1;
+        }
     }
     if (has_prefetch &&
         (!str_nonempty(config->prefetch_scope) ||
@@ -4659,11 +4714,27 @@ static int parse_lingqu_object_ref_bytes(const char *label,
     return 0;
 }
 
+static int parse_lingqu_object_ref_hex(const char *label,
+                                       const char *value,
+                                       uint16_t expected_kind,
+                                       struct lingqu_obmm_object_ref_wire *ref_out);
+
 static int parse_env_lingqu_object_ref(const char *env_name,
                                        uint16_t expected_kind,
                                        struct lingqu_obmm_object_ref_wire *ref_out)
 {
     const char *value = getenv(env_name);
+    if (!value) {
+        return -1;
+    }
+    return parse_lingqu_object_ref_hex(env_name, value, expected_kind, ref_out);
+}
+
+static int parse_lingqu_object_ref_hex(const char *label,
+                                       const char *value,
+                                       uint16_t expected_kind,
+                                       struct lingqu_obmm_object_ref_wire *ref_out)
+{
     uint8_t bytes[W4_QWEN3_OBJECT_REF_BYTES];
     size_t i;
 
@@ -4673,7 +4744,7 @@ static int parse_env_lingqu_object_ref(const char *env_name,
     if (strlen(value) != W4_QWEN3_OBJECT_REF_BYTES * 2U) {
         fprintf(stderr,
                 "[w4_guest] fail qwen3 object ref hex length invalid env=%s chars=%zu expected=%u\n",
-                env_name,
+                label,
                 strlen(value),
                 (unsigned)(W4_QWEN3_OBJECT_REF_BYTES * 2U));
         return -1;
@@ -4685,13 +4756,63 @@ static int parse_env_lingqu_object_ref(const char *env_name,
         if (hi < 0 || lo < 0) {
             fprintf(stderr,
                     "[w4_guest] fail qwen3 object ref hex invalid env=%s index=%zu\n",
-                    env_name,
+                    label,
                     i);
             return -1;
         }
         bytes[i] = (uint8_t)((hi << 4) | lo);
     }
-    return parse_lingqu_object_ref_bytes(env_name, bytes, expected_kind, ref_out);
+    return parse_lingqu_object_ref_bytes(label, bytes, expected_kind, ref_out);
+}
+
+static int qwen3_memory_shortpath_hidden_input_ref(
+    const struct w4_qwen3_memory_decision_config *config,
+    uint32_t layer_start,
+    uint64_t hidden_bytes,
+    struct lingqu_obmm_object_ref_wire *ref_out)
+{
+    uint32_t target_start = 0U;
+    uint32_t target_end = 0U;
+
+    if (!config || !config->enabled || !ref_out ||
+        strcmp(config->shortpath_action, "jump-to-layer") != 0 ||
+        strcmp(config->shortpath_artifact_kind, "hidden-state") != 0) {
+        return 0;
+    }
+    if (parse_u32_field("shortpath_target_layer_start",
+                        config->shortpath_target_layer_start,
+                        &target_start) != 0 ||
+        parse_u32_field("shortpath_target_layer_end",
+                        config->shortpath_target_layer_end,
+                        &target_end) != 0) {
+        return -1;
+    }
+    if (target_start != layer_start) {
+        return 0;
+    }
+    if (target_end <= target_start) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 shortpath hidden target invalid"
+                " start=%u end=%u\n",
+                target_start,
+                target_end);
+        return -1;
+    }
+    if (parse_lingqu_object_ref_hex("SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF",
+                                    config->shortpath_artifact_ref,
+                                    W4_QWEN3_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+                                    ref_out) != 0) {
+        return -1;
+    }
+    if (ref_out->payload_bytes != hidden_bytes) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 shortpath hidden bytes mismatch"
+                " got=%" PRIu64 " expected=%" PRIu64 "\n",
+                ref_out->payload_bytes,
+                hidden_bytes);
+        return -1;
+    }
+    return 1;
 }
 
 static void parse_env_u64_csv_bounded(const char *key,
@@ -7105,56 +7226,110 @@ decode_round_start:
                 goto out;
             }
             memset(&range_input_view, 0, sizeof(range_input_view));
-            if (w4_db_obmm_service_v0_wait_runtime_range_input_view(
-                    dispatch_node,
-                    cluster_node_count,
-                    guest_decode_step,
-                    &range_input_view) != 0 ||
-                !range_input_view.data ||
-                range_input_view.len != hidden_range_bytes) {
-                fprintf(stderr,
-                        "[w4_guest] fail qwen3 runtime range input resolve failed node=%u layers=[%u,%u)\n",
-                        dispatch_node + 1U,
+            {
+                struct lingqu_obmm_object_ref_wire memory_hidden_ref;
+                int memory_hidden_ref_state;
+
+                memset(&memory_hidden_ref, 0, sizeof(memory_hidden_ref));
+                memory_hidden_ref_state =
+                    qwen3_memory_shortpath_hidden_input_ref(
+                        &qwen3_memory_decision_config,
                         layer_start,
-                        layer_end);
-                goto out;
+                        hidden_range_bytes,
+                        &memory_hidden_ref);
+                if (memory_hidden_ref_state < 0) {
+                    goto out;
+                }
+                if (memory_hidden_ref_state > 0) {
+                    input_found_ms = monotonic_ms();
+                    input_loaded_ms = input_found_ms;
+                    input_wait_ms = input_found_ms > stage_start_ms ?
+                        input_found_ms - stage_start_ms :
+                        0;
+                    input_activate_ms = 0;
+                    input_metadata_ms = 0;
+                    input_source_node = UINT32_MAX;
+                    input_wait_attempts = 0;
+                    range_input_checksum = memory_hidden_ref.payload_checksum;
+                    write_segment_bytes(ep_mmio,
+                                        W4_QWEN3_OBJECT_REF_TABLE_OFFSET +
+                                            ((uint64_t)object_ref_write_index *
+                                             W4_QWEN3_OBJECT_REF_BYTES),
+                                        (const uint8_t *)&memory_hidden_ref,
+                                        W4_QWEN3_OBJECT_REF_BYTES);
+                    object_ref_write_index++;
+                    printf("[w4_guest] stage qwen3_w5_memory_shortpath_input_loaded"
+                           " node=%u step=%" PRIu64 " layers=[%u,%u)"
+                           " decision_id=%s target_layer_start=%s"
+                           " target_layer_end=%s bytes=%" PRIu64
+                           " checksum=0x%016" PRIx64
+                           " key_hash=0x%016" PRIx64 " version=%" PRIu64
+                           " source=lingqu_memory_service target=uapi_object_ref"
+                           " materialize=sim_uapi_adapter status=ok\n",
+                           dispatch_node + 1U,
+                           guest_decode_step,
+                           layer_start,
+                           layer_end,
+                           qwen3_memory_decision_config.shortpath_decision_id,
+                           qwen3_memory_decision_config.shortpath_target_layer_start,
+                           qwen3_memory_decision_config.shortpath_target_layer_end,
+                           memory_hidden_ref.payload_bytes,
+                           memory_hidden_ref.payload_checksum,
+                           memory_hidden_ref.key_hash,
+                           memory_hidden_ref.object_version);
+                } else {
+                    if (w4_db_obmm_service_v0_wait_runtime_range_input_view(
+                            dispatch_node,
+                            cluster_node_count,
+                            guest_decode_step,
+                            &range_input_view) != 0 ||
+                        !range_input_view.data ||
+                        range_input_view.len != hidden_range_bytes) {
+                        fprintf(stderr,
+                                "[w4_guest] fail qwen3 runtime range input resolve failed node=%u layers=[%u,%u)\n",
+                                dispatch_node + 1U,
+                                layer_start,
+                                layer_end);
+                        goto out;
+                    }
+                    input_found_ms = range_input_view.found_monotonic_ms != 0 ?
+                        range_input_view.found_monotonic_ms :
+                        monotonic_ms();
+                    input_producer_publish_supernode_ms =
+                        range_input_view.producer_publish_supernode_ms;
+                    input_producer_publish_monotonic_ms =
+                        range_input_view.producer_publish_monotonic_ms;
+                    input_producer_clock_offset_ms =
+                        range_input_view.producer_clock_offset_ms;
+                    input_producer_to_found_supernode_ms =
+                        range_input_view.producer_to_found_supernode_ms;
+                    input_producer_to_found_monotonic_ms =
+                        range_input_view.producer_to_found_monotonic_ms;
+                    input_activate_ms = range_input_view.activate_ms;
+                    input_metadata_ms = range_input_view.metadata_ms;
+                    input_source_node = range_input_view.source_node;
+                    input_wait_attempts = range_input_view.wait_attempts;
+                    range_input_checksum = range_input_view.checksum;
+                    input_wait_ms = range_input_view.ready_monotonic_ms > stage_start_ms ?
+                        range_input_view.ready_monotonic_ms - stage_start_ms :
+                        monotonic_ms() - stage_start_ms;
+                    write_segment_bytes(ep_mmio,
+                                        W4_QWEN3_OBJECT_REF_TABLE_OFFSET +
+                                            ((uint64_t)object_ref_write_index *
+                                             W4_QWEN3_OBJECT_REF_BYTES),
+                                        (const uint8_t *)&range_input_view.object_ref,
+                                        W4_QWEN3_OBJECT_REF_BYTES);
+                    object_ref_write_index++;
+                    input_loaded_ms = monotonic_ms();
+                    printf("[w4_guest] stage qwen3_range_forward_runtime_input_loaded node=%u layers=[%u,%u) input_offset=0x%016" PRIx64 " input_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " source=obmm_object_view target=uapi_object_ref materialize=sim_uapi_adapter status=ok\n",
+                           dispatch_node + 1U,
+                           layer_start,
+                           layer_end,
+                           (uint64_t)W4_QWEN3_RANGE_INPUT_PAYLOAD_OFFSET,
+                           range_input_checksum,
+                           hidden_range_bytes);
+                }
             }
-            input_found_ms = range_input_view.found_monotonic_ms != 0 ?
-                range_input_view.found_monotonic_ms :
-                monotonic_ms();
-            input_producer_publish_supernode_ms =
-                range_input_view.producer_publish_supernode_ms;
-            input_producer_publish_monotonic_ms =
-                range_input_view.producer_publish_monotonic_ms;
-            input_producer_clock_offset_ms =
-                range_input_view.producer_clock_offset_ms;
-            input_producer_to_found_supernode_ms =
-                range_input_view.producer_to_found_supernode_ms;
-            input_producer_to_found_monotonic_ms =
-                range_input_view.producer_to_found_monotonic_ms;
-            input_activate_ms = range_input_view.activate_ms;
-            input_metadata_ms = range_input_view.metadata_ms;
-            input_source_node = range_input_view.source_node;
-            input_wait_attempts = range_input_view.wait_attempts;
-            range_input_checksum = range_input_view.checksum;
-            input_wait_ms = range_input_view.ready_monotonic_ms > stage_start_ms ?
-                range_input_view.ready_monotonic_ms - stage_start_ms :
-                monotonic_ms() - stage_start_ms;
-            write_segment_bytes(ep_mmio,
-                                W4_QWEN3_OBJECT_REF_TABLE_OFFSET +
-                                    ((uint64_t)object_ref_write_index *
-                                     W4_QWEN3_OBJECT_REF_BYTES),
-                                (const uint8_t *)&range_input_view.object_ref,
-                                W4_QWEN3_OBJECT_REF_BYTES);
-            object_ref_write_index++;
-            input_loaded_ms = monotonic_ms();
-            printf("[w4_guest] stage qwen3_range_forward_runtime_input_loaded node=%u layers=[%u,%u) input_offset=0x%016" PRIx64 " input_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " source=obmm_object_view target=uapi_object_ref materialize=sim_uapi_adapter status=ok\n",
-                   dispatch_node + 1U,
-                   layer_start,
-                   layer_end,
-                   (uint64_t)W4_QWEN3_RANGE_INPUT_PAYLOAD_OFFSET,
-                   range_input_checksum,
-                   hidden_range_bytes);
         } else {
             input_wait_start_ms = monotonic_ms();
             input_found_ms = input_wait_start_ms;

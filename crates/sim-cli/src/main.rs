@@ -2989,6 +2989,20 @@ fn w5_memory_decision_env_vars(
                 decision.artifact_id.clone().unwrap_or_default(),
             ),
             (
+                "SIM_W5_MEMORY_SHORTPATH_TARGET_LAYER_START".to_string(),
+                decision
+                    .target_layer_start
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+            ),
+            (
+                "SIM_W5_MEMORY_SHORTPATH_TARGET_LAYER_END".to_string(),
+                decision
+                    .target_layer_end
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+            ),
+            (
                 "SIM_W5_MEMORY_SHORTPATH_PROOF_CHECKSUM".to_string(),
                 format!("{:#x}", decision.proof_checksum),
             ),
@@ -6699,6 +6713,12 @@ stage qwen3_range_forward_runtime_output_publish node=2
         assert!(env_vars.iter().any(
             |(key, value)| key == "SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF" && value.len() == 128
         ));
+        assert!(env_vars.iter().any(|(key, value)| {
+            key == "SIM_W5_MEMORY_SHORTPATH_TARGET_LAYER_START" && value == "8"
+        }));
+        assert!(env_vars.iter().any(|(key, value)| {
+            key == "SIM_W5_MEMORY_SHORTPATH_TARGET_LAYER_END" && value == "8"
+        }));
         assert!(env_vars.iter().any(
             |(key, value)| key == "SIM_W5_MEMORY_PREFETCH_ARTIFACT_REFS" && value.len() == 128
         ));
