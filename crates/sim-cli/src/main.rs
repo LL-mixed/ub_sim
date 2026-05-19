@@ -54,7 +54,7 @@ use sim_services::{
         LingquObjectKind, LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
         LingquObjectResolveReq, LingquObjectServiceProfile, LingquObjectServiceSnapshot,
         LingquObjectServiceStub, LingquObjectState, LingquObjectVersionSelector,
-        LingquPayloadBackend, LingquPayloadPlacement,
+        LingquObmmObjectRefWire, LingquPayloadBackend, LingquPayloadPlacement,
     },
     shmem::{ShmemGetReq, ShmemPutReq},
 };
@@ -62,16 +62,18 @@ use sim_topology::SimTopology;
 use sim_uapi::{
     qwen3_dense_reference_decode_loop_report, qwen3_dense_reference_decode_loop_report_with_prompt,
     qwen3_dense_reference_default_guest_input, qwen3_dense_reference_prefill_text_output_report,
-    qwen3_dense_reference_range_forward_report_with_prompt, qwen3_obmm_object_ref_wire_to_hex,
-    qwen3_publish_engram_state_registry_payload, qwen3_publish_object_registry_payload,
+    qwen3_dense_reference_range_forward_report_with_prompt, qwen3_obmm_object_ref_for_payload,
+    qwen3_obmm_object_ref_wire_to_hex, qwen3_publish_engram_state_registry_payload,
+    qwen3_publish_object_registry_payload, qwen3_validate_engram_state_object_service_payload,
     qwen3_validate_engram_state_registry_payload, LocalGuestUapiSurface,
     Qwen3EngramStateRegistryValidation, UapiCommand, UapiDescriptor, UapiResponse,
     QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
     QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
-    QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
+    QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE, QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
     QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
     QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE, QWEN3_DENSE_PROFILE_OBMM_KIND_TERMINAL_LOGITS,
     SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+    SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
 };
 use sim_workloads::{run_host_vector_dispatch, run_minimal_workload};
 use std::env;
@@ -327,6 +329,7 @@ struct Qwen3EngramConfig {
     report: Qwen3EngramReport,
     state_ref: Option<String>,
     object_registry_dir: Option<PathBuf>,
+    object_service_snapshot_path: Option<PathBuf>,
 }
 
 impl Default for Qwen3EngramConfig {
@@ -344,6 +347,7 @@ impl Default for Qwen3EngramConfig {
             report: Qwen3EngramReport::Summary,
             state_ref: None,
             object_registry_dir: None,
+            object_service_snapshot_path: None,
         }
     }
 }
@@ -693,6 +697,13 @@ where
                     engram.object_registry_dir = Some(PathBuf::from(next));
                 } else if let Some(value) = text.strip_prefix("--object-registry-dir=") {
                     engram.object_registry_dir = Some(PathBuf::from(value));
+                } else if text == "--object-service-snapshot" {
+                    let next = pending.next().ok_or_else(|| {
+                        anyhow::anyhow!("--object-service-snapshot requires a value")
+                    })?;
+                    engram.object_service_snapshot_path = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--object-service-snapshot=") {
+                    engram.object_service_snapshot_path = Some(PathBuf::from(value));
                 } else if text == "--memory-store" {
                     let next = pending
                         .next()
@@ -797,9 +808,12 @@ where
                     prompt = Some(value.to_string_lossy().to_string());
                 }
             }
-            if engram.state_ref.is_some() != engram.object_registry_dir.is_some() {
+            if engram.state_ref.is_some()
+                && engram.object_registry_dir.is_none()
+                && engram.object_service_snapshot_path.is_none()
+            {
                 anyhow::bail!(
-                    "--engram-state-ref and --object-registry-dir must be provided together"
+                    "--engram-state-ref requires --object-registry-dir or --object-service-snapshot"
                 );
             }
             let memory_bootstrap = match (
@@ -815,9 +829,12 @@ where
                     Some(engram_state_path),
                     Some(registry_dir),
                 ) => {
-                    if engram.state_ref.is_some() || engram.object_registry_dir.is_some() {
+                    if engram.state_ref.is_some()
+                        || engram.object_registry_dir.is_some()
+                        || engram.object_service_snapshot_path.is_some()
+                    {
                         anyhow::bail!(
-                            "--memory-* bootstrap cannot be combined with explicit --engram-state-ref/--object-registry-dir"
+                            "--memory-* bootstrap cannot be combined with explicit --engram-state-ref/--object-registry-dir/--object-service-snapshot"
                         );
                     }
                     Some(W5MemoryBootstrapConfig {
@@ -1150,11 +1167,16 @@ where
     for key in [
         SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
         SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+        SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
     ] {
         let value = match key {
             SIM_QWEN3_GUEST_ENGRAM_STATE_REF => config.state_ref.clone(),
             SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR => config
                 .object_registry_dir
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT => config
+                .object_service_snapshot_path
                 .as_ref()
                 .map(|path| path.display().to_string()),
             _ => None,
@@ -2603,6 +2625,15 @@ fn validate_lingqu_memory_gate_weight_input(
     Ok(())
 }
 
+fn lingqu_object_payload_checksum(bytes: &[u8]) -> u64 {
+    let mut acc = 0xcbf2_9ce4_8422_2325u64;
+    for byte in bytes {
+        acc ^= u64::from(*byte);
+        acc = acc.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    acc
+}
+
 #[derive(Debug)]
 struct W5EngramStateRefPublication {
     state_ref_hex: String,
@@ -2611,6 +2642,7 @@ struct W5EngramStateRefPublication {
     indices_bytes: usize,
     gate_bytes: usize,
     state_manifest_bytes: u64,
+    object_service_snapshot_path: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -2628,6 +2660,7 @@ struct W5MemoryDecisionArtifactPublication {
     shortpath_ref: Option<W5MemoryPublishedArtifactRef>,
     prefetch_refs: Vec<W5MemoryPublishedArtifactRef>,
     prefix_cache_ref: Option<W5MemoryPublishedArtifactRef>,
+    object_service_snapshot_path: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -3208,60 +3241,73 @@ fn publish_w5_memory_decision_artifact_refs(
     bundle: &W5MemoryDecisionBundle,
 ) -> anyhow::Result<W5MemoryDecisionArtifactPublication> {
     let mut durable_store = load_lingqu_memory_durable_store(&config.store_path)?;
-    let previous_registry_dir = env::var_os(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR);
-    env::set_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, &config.registry_dir);
-    let publish_result = (|| -> anyhow::Result<_> {
-        let shortpath_ref = bundle
-            .shortpath_artifact
-            .as_ref()
-            .map(|artifact| {
-                publish_w5_execution_artifact_ref(
-                    &mut durable_store,
-                    artifact,
-                    config.owner_entity,
-                    config.producer_entity,
-                    "shortpath",
-                )
-            })
-            .transpose()?;
-        let mut prefetch_refs = Vec::new();
-        for artifact in &bundle.prefetch_artifacts {
-            prefetch_refs.push(publish_w5_execution_artifact_ref(
+    let object_snapshot =
+        load_lingqu_object_service_snapshot(&config.object_store_path, &mut durable_store)?;
+    let mut object_service = if let Some(snapshot) = object_snapshot {
+        LingquObjectServiceStub::import_snapshot(snapshot).with_context(|| {
+            format!("import object store {}", config.object_store_path.display())
+        })?
+    } else {
+        LingquObjectServiceStub::new(LingquObjectServiceProfile::default())
+    };
+    let shortpath_ref = bundle
+        .shortpath_artifact
+        .as_ref()
+        .map(|artifact| {
+            publish_w5_execution_artifact_ref(
                 &mut durable_store,
+                &mut object_service,
                 artifact,
                 config.owner_entity,
                 config.producer_entity,
-                "prefetch",
-            )?);
-        }
-        let prefix_cache_ref = bundle
-            .prefix_cache_artifact
-            .as_ref()
-            .map(|artifact| {
-                publish_w5_prefix_cache_artifact_ref(
-                    &mut durable_store,
-                    artifact,
-                    config.owner_entity,
-                    config.producer_entity,
-                )
-            })
-            .transpose()?;
-        Ok(W5MemoryDecisionArtifactPublication {
-            shortpath_ref,
-            prefetch_refs,
-            prefix_cache_ref,
+                "shortpath",
+            )
         })
-    })();
-    if let Some(previous) = previous_registry_dir {
-        env::set_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, previous);
-    } else {
-        env::remove_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR);
+        .transpose()?;
+    let mut prefetch_refs = Vec::new();
+    for artifact in &bundle.prefetch_artifacts {
+        prefetch_refs.push(publish_w5_execution_artifact_ref(
+            &mut durable_store,
+            &mut object_service,
+            artifact,
+            config.owner_entity,
+            config.producer_entity,
+            "prefetch",
+        )?);
     }
-    publish_result
+    let prefix_cache_ref = bundle
+        .prefix_cache_artifact
+        .as_ref()
+        .map(|artifact| {
+            publish_w5_prefix_cache_artifact_ref(
+                &mut durable_store,
+                &mut object_service,
+                artifact,
+                config.owner_entity,
+                config.producer_entity,
+            )
+        })
+        .transpose()?;
+
+    save_lingqu_object_service_snapshot(
+        &config.object_store_path,
+        &mut durable_store,
+        &object_service,
+    )?;
+    save_lingqu_memory_durable_store(&config.store_path, &durable_store)?;
+    let snapshot_path = export_w5_object_service_snapshot(&config.registry_dir, &object_service)?;
+
+    Ok(W5MemoryDecisionArtifactPublication {
+        shortpath_ref,
+        prefetch_refs,
+        prefix_cache_ref,
+        object_service_snapshot_path: Some(snapshot_path),
+    })
 }
 
 fn publish_w5_execution_artifact_ref(
     durable_store: &mut LingquMemoryDurableStore,
+    object_service: &mut LingquObjectServiceStub,
     artifact: &sim_memory::ExecutionArtifactObject,
     owner_entity: u32,
     producer_entity: u32,
@@ -3281,17 +3327,20 @@ fn publish_w5_execution_artifact_ref(
                 artifact.artifact_id
             )
         })?;
-    let object_ref = qwen3_publish_object_registry_payload(
+    let object_key = format!(
+        "lingqu/memory/execution/{}/v{}",
+        artifact.artifact_id, artifact.version
+    );
+    let object_ref = publish_w5_object_service_payload_ref(
+        object_service,
         w5_execution_artifact_obmm_kind(artifact.kind),
+        w5_execution_artifact_object_kind(artifact.kind),
         owner_entity,
         producer_entity,
-        &format!(
-            "w5-memory-execution:{}:v{}",
-            artifact.artifact_id, artifact.version
-        ),
+        &object_key,
         &payload,
-    )
-    .map_err(anyhow::Error::msg)?;
+        source,
+    )?;
     Ok(W5MemoryPublishedArtifactRef {
         artifact_id: artifact.artifact_id.clone(),
         ref_hex: qwen3_obmm_object_ref_wire_to_hex(&object_ref),
@@ -3302,6 +3351,7 @@ fn publish_w5_execution_artifact_ref(
 
 fn publish_w5_prefix_cache_artifact_ref(
     durable_store: &mut LingquMemoryDurableStore,
+    object_service: &mut LingquObjectServiceStub,
     artifact: &sim_memory::PrefixCacheArtifact,
     owner_entity: u32,
     producer_entity: u32,
@@ -3323,17 +3373,20 @@ fn publish_w5_prefix_cache_artifact_ref(
             },
         )?);
     }
-    let object_ref = qwen3_publish_object_registry_payload(
+    let object_key = format!(
+        "lingqu/memory/prefix-cache/{}/v{}",
+        artifact.artifact_id, artifact.version
+    );
+    let object_ref = publish_w5_object_service_payload_ref(
+        object_service,
         QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+        LingquObjectKind::KvCacheBlock,
         owner_entity,
         producer_entity,
-        &format!(
-            "w5-memory-prefix-cache:{}:v{}",
-            artifact.artifact_id, artifact.version
-        ),
+        &object_key,
         &payload,
-    )
-    .map_err(anyhow::Error::msg)?;
+        "prefix-cache",
+    )?;
     Ok(W5MemoryPublishedArtifactRef {
         artifact_id: artifact.artifact_id.clone(),
         ref_hex: qwen3_obmm_object_ref_wire_to_hex(&object_ref),
@@ -3350,6 +3403,79 @@ fn w5_execution_artifact_obmm_kind(kind: sim_memory::ExecutionArtifactKind) -> u
         sim_memory::ExecutionArtifactKind::KvCache => QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
         sim_memory::ExecutionArtifactKind::Logits => QWEN3_DENSE_PROFILE_OBMM_KIND_TERMINAL_LOGITS,
     }
+}
+
+fn w5_execution_artifact_object_kind(kind: sim_memory::ExecutionArtifactKind) -> LingquObjectKind {
+    match kind {
+        sim_memory::ExecutionArtifactKind::HiddenState => LingquObjectKind::RuntimeTensor,
+        sim_memory::ExecutionArtifactKind::KvCache => LingquObjectKind::KvCacheBlock,
+        sim_memory::ExecutionArtifactKind::Logits => LingquObjectKind::Logits,
+    }
+}
+
+fn publish_w5_object_service_payload_ref(
+    object_service: &mut LingquObjectServiceStub,
+    obmm_kind: u16,
+    object_kind: LingquObjectKind,
+    owner_entity: u32,
+    producer_entity: u32,
+    object_key: &str,
+    payload: &[u8],
+    source: &str,
+) -> anyhow::Result<LingquObmmObjectRefWire> {
+    if payload.is_empty() {
+        anyhow::bail!("{source} object payload is empty");
+    }
+    let payload_checksum = lingqu_object_payload_checksum(payload);
+    object_service
+        .submit_publish(
+            LingquObjectPublishReq {
+                task: None,
+                key: object_key.to_string(),
+                kind: object_kind,
+                producer_entity: u64::from(producer_entity),
+                owner_entity: Some(u64::from(owner_entity)),
+                expected_version: None,
+                metadata: LingquObjectMetadata {
+                    bytes: payload.len() as u64,
+                    checksum: payload_checksum,
+                    dtype: None,
+                    shape: vec![payload.len() as u64],
+                    layout: None,
+                    expires_at_us: None,
+                },
+                placements: vec![LingquPayloadPlacement {
+                    backend: LingquPayloadBackend::ObmmShmem,
+                    storage_ref: format!("{object_key}/payload"),
+                    segment: None,
+                    offset: 0,
+                    bytes: payload.len() as u64,
+                    checksum: payload_checksum,
+                    locality: LingquObjectLocality::DomainShared(0),
+                }],
+                payload_bytes: payload.to_vec(),
+            },
+            1,
+        )
+        .with_context(|| format!("publish {source} payload into Object Service"))?;
+    let record = object_service
+        .latest_record(object_key)
+        .ok_or_else(|| anyhow::anyhow!("{source} Object Service record missing: {object_key}"))?;
+    let placement = record
+        .placements
+        .iter()
+        .find(|placement| placement.backend == LingquPayloadBackend::ObmmShmem)
+        .ok_or_else(|| anyhow::anyhow!("{source} Object Service OBMM placement missing"))?;
+    Ok(qwen3_obmm_object_ref_for_payload(
+        obmm_kind,
+        owner_entity,
+        producer_entity,
+        record.version,
+        &record.key,
+        placement.offset,
+        record.bytes,
+        record.checksum,
+    ))
 }
 
 fn w5_memory_decision_env_vars(
@@ -3670,7 +3796,192 @@ fn publish_w5_engram_state_ref_from_object_service(
         indices_bytes: indices_payload.len(),
         gate_bytes: gate_payload.len(),
         state_manifest_bytes: state_ref.payload_bytes,
+        object_service_snapshot_path: None,
     })
+}
+
+fn w5_hot_tensor_object_ref_from_object_service(
+    object_service: &LingquObjectServiceStub,
+    object_kind: u16,
+    hot_ref: &sim_memory::HotTensorObjectRef,
+) -> anyhow::Result<LingquObmmObjectRefWire> {
+    let record = object_service
+        .latest_record(&hot_ref.object_key)
+        .ok_or_else(|| anyhow::anyhow!("missing Object Service record {}", hot_ref.object_key))?;
+    if record.version != hot_ref.version {
+        anyhow::bail!(
+            "Object Service record version mismatch key={} got={} expected={}",
+            hot_ref.object_key,
+            record.version,
+            hot_ref.version
+        );
+    }
+    let placement = record
+        .placements
+        .iter()
+        .find(|placement| placement.backend == LingquPayloadBackend::ObmmShmem)
+        .ok_or_else(|| anyhow::anyhow!("missing OBMM placement {}", hot_ref.object_key))?;
+    if placement.bytes != hot_ref.bytes
+        || placement.offset != hot_ref.offset
+        || placement.checksum != hot_ref.checksum
+        || record.bytes != hot_ref.bytes
+        || record.checksum != hot_ref.checksum
+    {
+        anyhow::bail!(
+            "Object Service hot ref metadata mismatch key={}",
+            hot_ref.object_key
+        );
+    }
+    let owner_entity = u32::try_from(record.owner_entity.unwrap_or(record.producer_entity))
+        .with_context(|| format!("owner entity too large for {}", hot_ref.object_key))?;
+    let producer_entity = u32::try_from(record.producer_entity)
+        .with_context(|| format!("producer entity too large for {}", hot_ref.object_key))?;
+    Ok(qwen3_obmm_object_ref_for_payload(
+        object_kind,
+        owner_entity,
+        producer_entity,
+        record.version,
+        &record.key,
+        placement.offset,
+        record.bytes,
+        record.checksum,
+    ))
+}
+
+fn publish_w5_engram_state_ref_from_memory_objects(
+    config: &W5MemoryBootstrapConfig,
+) -> anyhow::Result<W5EngramStateRefPublication> {
+    let mut durable_store = load_lingqu_memory_durable_store(&config.store_path)?;
+    let object_snapshot =
+        load_lingqu_object_service_snapshot(&config.object_store_path, &mut durable_store)?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "object store snapshot does not exist: {}",
+                    config.object_store_path.display()
+                )
+            })?;
+    let mut object_service = LingquObjectServiceStub::import_snapshot(object_snapshot)
+        .with_context(|| format!("import object store {}", config.object_store_path.display()))?;
+    let engram_state_bytes = fs::read(&config.engram_state_path)
+        .with_context(|| format!("read engram state {}", config.engram_state_path.display()))?;
+    let engram_state = serde_json::from_slice::<EngramStateObject>(&engram_state_bytes)
+        .with_context(|| format!("decode engram state {}", config.engram_state_path.display()))?;
+    let gate = engram_state
+        .gate
+        .as_ref()
+        .context("engram state is missing gate object ref")?;
+
+    let table_ref = w5_hot_tensor_object_ref_from_object_service(
+        &object_service,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
+        &engram_state.table,
+    )?;
+    let indices_ref = w5_hot_tensor_object_ref_from_object_service(
+        &object_service,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
+        &engram_state.indices,
+    )?;
+    let gate_ref = w5_hot_tensor_object_ref_from_object_service(
+        &object_service,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
+        gate,
+    )?;
+    let state_payload =
+        sim_uapi::qwen3_engram_state_manifest_payload(&table_ref, &indices_ref, &gate_ref)
+            .map_err(anyhow::Error::msg)?;
+    let state_key = format!(
+        "lingqu/memory/engram/{}/state_manifest",
+        engram_state.state_id
+    );
+    let state_checksum = lingqu_object_payload_checksum(&state_payload);
+    object_service
+        .submit_publish(
+            LingquObjectPublishReq {
+                task: None,
+                key: state_key.clone(),
+                kind: LingquObjectKind::Metadata,
+                producer_entity: u64::from(config.producer_entity),
+                owner_entity: Some(u64::from(config.owner_entity)),
+                expected_version: None,
+                metadata: LingquObjectMetadata {
+                    bytes: state_payload.len() as u64,
+                    checksum: state_checksum,
+                    dtype: None,
+                    shape: vec![state_payload.len() as u64],
+                    layout: None,
+                    expires_at_us: None,
+                },
+                placements: vec![LingquPayloadPlacement {
+                    backend: LingquPayloadBackend::ObmmShmem,
+                    storage_ref: format!("{state_key}/payload"),
+                    segment: None,
+                    offset: 0,
+                    bytes: state_payload.len() as u64,
+                    checksum: state_checksum,
+                    locality: LingquObjectLocality::DomainShared(0),
+                }],
+                payload_bytes: state_payload,
+            },
+            1,
+        )
+        .context("publish W5 EngramStateObjectRef into Object Service")?;
+    let state_record = object_service
+        .latest_record(&state_key)
+        .ok_or_else(|| anyhow::anyhow!("missing published Engram state manifest"))?;
+    let state_placement = state_record
+        .placements
+        .iter()
+        .find(|placement| placement.backend == LingquPayloadBackend::ObmmShmem)
+        .ok_or_else(|| anyhow::anyhow!("missing Engram state manifest OBMM placement"))?;
+    let state_ref = qwen3_obmm_object_ref_for_payload(
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
+        config.owner_entity,
+        config.producer_entity,
+        state_record.version,
+        &state_record.key,
+        state_placement.offset,
+        state_record.bytes,
+        state_record.checksum,
+    );
+
+    save_lingqu_object_service_snapshot(
+        &config.object_store_path,
+        &mut durable_store,
+        &object_service,
+    )?;
+    save_lingqu_memory_durable_store(&config.store_path, &durable_store)?;
+
+    let snapshot_path = export_w5_object_service_snapshot(&config.registry_dir, &object_service)?;
+
+    Ok(W5EngramStateRefPublication {
+        state_ref_hex: qwen3_obmm_object_ref_wire_to_hex(&state_ref),
+        engram_state_id: engram_state.state_id,
+        table_bytes: usize::try_from(table_ref.payload_bytes)
+            .context("table payload bytes exceed usize")?,
+        indices_bytes: usize::try_from(indices_ref.payload_bytes)
+            .context("indices payload bytes exceed usize")?,
+        gate_bytes: usize::try_from(gate_ref.payload_bytes).context("gate bytes exceed usize")?,
+        state_manifest_bytes: state_ref.payload_bytes,
+        object_service_snapshot_path: Some(snapshot_path),
+    })
+}
+
+fn export_w5_object_service_snapshot(
+    registry_dir: &Path,
+    object_service: &LingquObjectServiceStub,
+) -> anyhow::Result<PathBuf> {
+    let snapshot_path = registry_dir.join("lingqu_object_service_snapshot.json");
+    if let Some(parent) = snapshot_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create object service snapshot dir {}", parent.display()))?;
+    }
+    let snapshot_bytes = object_service
+        .export_snapshot()
+        .to_json_bytes()
+        .context("encode Object Service snapshot for W5")?;
+    fs::write(&snapshot_path, snapshot_bytes)
+        .with_context(|| format!("write Object Service snapshot {}", snapshot_path.display()))?;
+    Ok(snapshot_path)
 }
 
 fn run_lingqu_memory_publish_w5_engram_state_ref_cli(args: &[String]) -> anyhow::Result<()> {
@@ -5377,7 +5688,7 @@ mod tests {
         Qwen3CandidateRecord, Qwen3DecodeReportVerbosity, Qwen3EngramConfig, Qwen3EngramContextOp,
         Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
         W5MemoryBootstrapConfig, W5MemoryDecisionConfig, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
-        SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+        SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
     };
     use std::env;
     use std::fs;
@@ -5774,6 +6085,27 @@ mod tests {
     }
 
     #[test]
+    fn qwen3_guest_decode_loop_args_accept_object_service_state_ref_entrypoint() {
+        let args = qwen3_guest_decode_loop_args_from([
+            "w5-inference-cluster",
+            "--steps=2",
+            "--engram-state-ref=abcd",
+            "--object-service-snapshot=/tmp/lingqu-object-service-snapshot.json",
+        ])
+        .expect("parse guest decode loop args")
+        .expect("guest decode loop args");
+
+        assert!(args.engram.enabled);
+        assert_eq!(args.engram.pool, Qwen3EngramPool::Obmm);
+        assert_eq!(args.engram.context_op, Qwen3EngramContextOp::CpuReference);
+        assert_eq!(args.engram.state_ref.as_deref(), Some("abcd"));
+        assert_eq!(
+            args.engram.object_service_snapshot_path.as_deref(),
+            Some(Path::new("/tmp/lingqu-object-service-snapshot.json"))
+        );
+    }
+
+    #[test]
     fn w5_inference_cluster_args_accept_memory_service_bootstrap() {
         let args = qwen3_guest_decode_loop_args_from([
             "w5-inference-cluster",
@@ -5902,11 +6234,11 @@ mod tests {
     fn qwen3_guest_decode_loop_args_require_registry_with_state_ref() {
         let err =
             qwen3_guest_decode_loop_args_from(["w5-inference-cluster", "--engram-state-ref=abcd"])
-                .expect_err("state ref without registry should fail");
+                .expect_err("state ref without object source should fail");
 
-        assert!(err
-            .to_string()
-            .contains("--engram-state-ref and --object-registry-dir"));
+        assert!(err.to_string().contains(
+            "--engram-state-ref requires --object-registry-dir or --object-service-snapshot"
+        ));
     }
 
     #[test]
@@ -5977,6 +6309,9 @@ mod tests {
             context_op: Qwen3EngramContextOp::CpuReference,
             state_ref: Some("state-ref".to_string()),
             object_registry_dir: Some(PathBuf::from("/tmp/qwen3-registry")),
+            object_service_snapshot_path: Some(PathBuf::from(
+                "/tmp/lingqu-object-service-snapshot.json",
+            )),
             ..Qwen3EngramConfig::default()
         };
         let vars = qwen3_guest_engram_env_vars_from_lookup(&config, 0x1234, |_key| None);
@@ -5988,6 +6323,10 @@ mod tests {
         assert!(vars.contains(&(
             SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR.to_string(),
             "/tmp/qwen3-registry".to_string()
+        )));
+        assert!(vars.contains(&(
+            SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT.to_string(),
+            "/tmp/lingqu-object-service-snapshot.json".to_string()
         )));
     }
 
@@ -8218,6 +8557,27 @@ stage qwen3_range_forward_runtime_output_publish node=2
             serde_json::from_slice(&engram_state_json).expect("decode engram state");
         assert_eq!(engram_state_value["state_id"], "engram/test/0");
         assert_eq!(engram_state_value["hot_memory_state_id"], "hot/test/0");
+        assert_eq!(
+            engram_state_value["query_result_id"],
+            "query-result/query/test/0"
+        );
+        assert_eq!(engram_state_value["operator_kind"], "ContextGate");
+        assert_eq!(engram_state_value["dtype"], "F32");
+        assert_eq!(engram_state_value["hidden_size"], 2);
+        assert_eq!(engram_state_value["table_rows"], 1);
+        assert_eq!(engram_state_value["version"], 1);
+        assert!(
+            engram_state_value["operator_config_hash"]
+                .as_u64()
+                .expect("operator config hash")
+                > 0
+        );
+        assert!(
+            engram_state_value["checksum"]
+                .as_u64()
+                .expect("engram state checksum")
+                > 0
+        );
         assert_eq!(engram_state_value["gate"]["shape"][0], 2);
         assert!(
             !object_store.exists(),
@@ -8415,7 +8775,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     let runtime = qwen3_guest_dense_runtime(args)?;
     let mut effective_engram = args.engram.clone();
     let memory_publication = if let Some(memory_bootstrap) = &args.memory_bootstrap {
-        let publication = publish_w5_engram_state_ref_from_memory(memory_bootstrap)
+        let publication = publish_w5_engram_state_ref_from_memory_objects(memory_bootstrap)
             .context("publish Memory Service EngramStateObjectRef for W5")?;
         effective_engram.enabled = true;
         effective_engram.pool = Qwen3EngramPool::Obmm;
@@ -8423,7 +8783,8 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             effective_engram.context_op = Qwen3EngramContextOp::CpuReference;
         }
         effective_engram.state_ref = Some(publication.state_ref_hex.clone());
-        effective_engram.object_registry_dir = Some(memory_bootstrap.registry_dir.clone());
+        effective_engram.object_service_snapshot_path =
+            publication.object_service_snapshot_path.clone();
         Some(publication)
     } else {
         None
@@ -8453,6 +8814,11 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     } else {
         None
     };
+    if let Some(publication) = &memory_decision_publication {
+        if let Some(snapshot_path) = &publication.object_service_snapshot_path {
+            effective_engram.object_service_snapshot_path = Some(snapshot_path.clone());
+        }
+    }
     let engram_simt = qwen3_prepare_engram_simt_mode(&effective_engram)?;
     let engram_registry_validation =
         qwen3_validate_guest_engram_state_registry(&effective_engram, &runtime.profile)?;
@@ -8488,22 +8854,22 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         println!("  memory_fixture_backed: false");
         println!("  memory_engram_state: {}", publication.engram_state_id);
         println!(
-            "  memory_object_registry_dir: {}",
+            "  memory_object_service_snapshot: {}",
             effective_engram
-                .object_registry_dir
+                .object_service_snapshot_path
                 .as_ref()
                 .map(|path| path.display().to_string())
                 .unwrap_or_default()
         );
         println!("  memory_engram_state_ref: {}", publication.state_ref_hex);
-        println!("  memory_registry_table_bytes: {}", publication.table_bytes);
+        println!("  memory_context_table_bytes: {}", publication.table_bytes);
         println!(
-            "  memory_registry_indices_bytes: {}",
+            "  memory_context_indices_bytes: {}",
             publication.indices_bytes
         );
-        println!("  memory_registry_gate_bytes: {}", publication.gate_bytes);
+        println!("  memory_context_gate_bytes: {}", publication.gate_bytes);
         println!(
-            "  memory_registry_state_manifest_bytes: {}",
+            "  memory_context_state_manifest_bytes: {}",
             publication.state_manifest_bytes
         );
     }
@@ -8555,6 +8921,12 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         }
     }
     if let Some(publication) = &memory_decision_publication {
+        if let Some(snapshot_path) = &publication.object_service_snapshot_path {
+            println!(
+                "  memory_artifact_object_service_snapshot: {}",
+                snapshot_path.display()
+            );
+        }
         if let Some(published) = &publication.shortpath_ref {
             println!(
                 "  memory_shortpath_artifact_ref: id={} payload_bytes={} payload_checksum={:#x}",
@@ -9031,12 +9403,32 @@ fn qwen3_validate_guest_engram_state_registry(
     engram: &Qwen3EngramConfig,
     profile: &Qwen3DenseProfile,
 ) -> anyhow::Result<Option<Qwen3EngramStateRegistryValidation>> {
-    let (Some(state_ref), Some(registry_dir)) = (&engram.state_ref, &engram.object_registry_dir)
-    else {
+    let Some(state_ref) = &engram.state_ref else {
         return Ok(None);
     };
     let hidden_size = usize::try_from(profile.hidden_size)
         .with_context(|| format!("qwen3 hidden_size too large: {}", profile.hidden_size))?;
+    if let Some(snapshot_path) = &engram.object_service_snapshot_path {
+        return qwen3_validate_engram_state_object_service_payload(
+            state_ref,
+            snapshot_path,
+            hidden_size,
+        )
+        .map(Some)
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "invalid W5 engram Object Service snapshot for {} hidden_size={}: {}",
+                profile.model_id,
+                hidden_size,
+                err
+            )
+        });
+    }
+    let Some(registry_dir) = &engram.object_registry_dir else {
+        anyhow::bail!(
+            "W5 engram state ref requires Object Service snapshot or object registry payloads"
+        );
+    };
     qwen3_validate_engram_state_registry_payload(state_ref, registry_dir, hidden_size)
         .map(Some)
         .map_err(|err| {

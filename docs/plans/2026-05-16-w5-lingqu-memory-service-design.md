@@ -1198,14 +1198,15 @@ Object Service durable checkpoint, and writes the `EngramStateObject`
 manifest. It intentionally does not accept inline gate values on the command
 line and does not create a default gate if the gate payload is missing.
 
-`publish-w5-engram-state-ref` is the current W5 adapter bridge. It reloads the
+`publish-w5-engram-state-ref` is the legacy W5 adapter bridge. It reloads the
 `EngramStateObject` and Object Service checkpoint, resolves table/index/gate
-payloads from durable Block-backed Object Service records, writes the qwen3
-object registry payloads, and prints the exact
+payloads from durable Block-backed Object Service records, writes qwen3 object
+registry payloads, and prints the exact
 `SIM_QWEN3_GUEST_ENGRAM_STATE_REF` plus
 `SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR` environment values needed by the existing
-W5 guest runner. This is a compatibility bridge until W5 resolves the unified
-Lingqu Object Service directly instead of using the qwen3 registry shim.
+W5 guest runner. This remains only for explicit legacy state-ref runs and for
+manual compatibility checks; the preferred Memory Service bootstrap path below
+uses a Lingqu Object Service snapshot source instead.
 
 `sim-cli w5-inference-cluster` also accepts those values directly as
 `--engram-state-ref` and `--object-registry-dir`. Passing them enables W5
@@ -1227,12 +1228,48 @@ sim-cli w5-inference-cluster \
 
 This bootstrap path reloads the Object Service checkpoint from the durable
 Memory Store, resolves the table/indices/gate objects referenced by the
-`EngramStateObject`, publishes the qwen3 registry shim payloads, injects the
-resulting `SIM_QWEN3_GUEST_ENGRAM_STATE_REF` and
-`SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR` into the W5 guest runner, and then lets
-the normal W5 object-ref validation path run. It cannot be combined with an
-explicit `--engram-state-ref`; callers must choose either a pre-published W5
-state ref or the Memory Service bootstrap source of truth.
+`EngramStateObject`, publishes the compact Engram state manifest back into the
+same Lingqu Object Service, exports an Object Service snapshot for sim-uapi,
+injects `SIM_QWEN3_GUEST_ENGRAM_STATE_REF` plus
+`SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT` into the W5 guest runner, and then
+lets the normal W5 object-ref validation path run. It cannot be combined with
+an explicit `--engram-state-ref`; callers must choose either a pre-published W5
+state ref or the Memory Service bootstrap source of truth. The old
+`--memory-registry-dir` argument is now only the adapter-output directory for
+that Object Service snapshot in the Memory Service bootstrap path; it no
+longer needs per-object qwen3 registry payload files for Engram context or for
+Memory Service-published shortpath/prefetch/prefix-cache artifact refs.
+
+2026-05-19 validation:
+
+- A real Memory Service bootstrap sequence produced durable store, Block-backed
+  embedding payloads, an Object Service checkpoint, a hot-state manifest, and a
+  complete `EngramStateObject` for Qwen3-0.6B with hidden size 1024 and 8 hot
+  rows.
+- `sim-cli w5-inference-cluster` first passed with the compatibility qwen3
+  registry shim, then moved the preferred Memory Service bootstrap path to a
+  Lingqu Object Service snapshot source. The Object Service snapshot run
+  `w5_memory_object_service_snapshot_cpu_ref_0_6b_2step_20260519` passed with
+  `decode_steps_observed=2`, terminal tokens `[11, 108386]`, lossy text
+  `,你好`, and `engram_context_summary` mode `cpu-reference-object-ref`.
+- The same Object Service snapshot path also passed with
+  `--engram-context-op simpler-host` in
+  `w5_memory_object_service_snapshot_simpler_host_0_6b_2step_20260519`;
+  terminal tokens and output checksums matched the CPU-reference run, and
+  `engram_context_summary` mode was `simpler-host-object-ref`.
+- Current performance implication: `simpler-host` is functionally integrated
+  but slower than CPU-reference in this tiny 0.6B, 2-step path. The observed
+  `simpler-host` context latencies were about 2993ms and 950ms, while the CPU-reference
+  context path reported 0ms at the current summary granularity. Treat
+  `simpler-host` as a backend-path semantic validation target for now, not a
+  throughput optimization.
+- Memory decision artifact publication now writes verified hidden/KV/logits
+  payloads into the same Lingqu Object Service checkpoint and exports them
+  through `SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT` refs. Targeted tests
+  validate both execution-artifact and prefix-cache publication plus sim-uapi
+  range operand materialization from the Object Service snapshot. The runtime
+  still keeps its existing per-step range-output registry reader until the live
+  runtime range-output object service path is unified.
 
 ## Observability
 
@@ -1444,11 +1481,15 @@ Current implementation status:
   and emits an `EngramStateObject` manifest.
   `sim-cli lingqu-memory publish-w5-engram-state-ref` then converts that
   `EngramStateObject` plus durable Object Service checkpoint into the current
-  W5 qwen3 object registry state-ref environment contract.
+  legacy W5 qwen3 object registry state-ref environment contract.
   `sim-cli w5-inference-cluster` can also perform that publication internally
   from `--memory-store`, `--memory-object-store`, `--memory-engram-state`, and
   `--memory-registry-dir`, so the W5 execution entrypoint is no longer limited
-  to manually pre-exported env vars.
+  to manually pre-exported env vars. In the preferred path, it publishes the
+  Engram state manifest and Memory decision artifact refs into Lingqu Object
+  Service and forwards `SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT`; `--memory-registry-dir`
+  is now an adapter-output directory for that exported snapshot, not a
+  per-object qwen3 registry payload directory.
   `sim-cli lingqu-memory list-query-results` exposes durable query audit log
   inspection from the CLI. `list-record-lifecycle`,
   `list-shortpath-supports`, `list-shortpath-decisions`,
@@ -1476,14 +1517,16 @@ Current implementation status:
   validation path now exercises durable gate config -> hot object
   materialization instead of passing an in-memory gate vector directly from the
   CLI. The Rust W5 context op can now consume object-ref-backed table,
-  indices, and gate-weight payloads from the qwen3 object registry through a
-  single `SIM_QWEN3_GUEST_ENGRAM_STATE_REF` manifest ref. The W5 runner now
-  requires that state ref, rejects legacy component refs as a non-real
-  entrypoint, and forwards the state ref plus
-  `SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR` through the QEMU
-  environment. The guest validates the state ref, writes it into the UAPI
-  object-ref sideband, and fails fast on missing refs instead of silently using
-  fixture state. The guest does not read the host registry directly; sim-uapi
+  indices, and gate-weight payloads from a single
+  `SIM_QWEN3_GUEST_ENGRAM_STATE_REF` manifest ref. The preferred bootstrap
+  resolves that manifest through `SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT`; the
+  older qwen3 registry state-ref path remains only for explicit legacy CLI
+  entrypoints. The W5 runner now requires the state ref, rejects legacy
+  component refs as a non-real entrypoint, and forwards the state ref plus the
+  Object Service snapshot path through the QEMU environment. The guest
+  validates the state ref, writes it into the UAPI object-ref sideband, and
+  fails fast on missing refs instead of silently using fixture state. The guest
+  does not read the host registry directly for Engram context; sim-uapi
   resolves the state manifest on the host side and expands it into the
   table/indices/gate operands. On guest-input execution, sim-uapi now requires
   the descriptor sideband when env refs are present, so env can no longer mask
@@ -1510,11 +1553,23 @@ Current implementation status:
   `w5_engram_state_ref_0_6b_2step_20260517d` with a single
   `SIM_QWEN3_GUEST_ENGRAM_STATE_REF`, `decode_steps_observed=2`,
   `engram_context_records=2`, and `modes=cpu-reference-object-ref`.
-  The
-  remaining gap is replacing the host qwen3 object registry shim with direct
-  guest OBMM DB payload mapping for the long-lived memory context object; the
-  existing per-step 128-byte engram policy state remains a separate writeback
-  object.
+  On 2026-05-19 the preferred Memory Service bootstrap entrypoint then moved
+  Engram context payload resolution off the host qwen3 object registry shim:
+  `w5_memory_object_service_snapshot_cpu_ref_0_6b_2step_20260519` used
+  `cpu-reference-object-ref`, and
+  `w5_memory_object_service_snapshot_simpler_host_0_6b_2step_20260519` used
+  `simpler-host-object-ref`; both produced terminal tokens `[11, 108386]` from
+  the same Memory Service `EngramStateObject`. The adapter output directory
+  contained only `lingqu_object_service_snapshot.json`, not per-object
+  `kind*.bin` registry payload files.
+  Memory Service-published shortpath, prefetch, and prefix-cache artifact refs
+  now use the same Object Service snapshot path; sim-uapi can materialize
+  hidden/KV range operands from those refs. The remaining gap is replacing the
+  exported snapshot file with a directly shared Object Service instance or
+  guest-mappable OBMM DB payload mapping, and then moving the runtime-produced
+  per-step range-output objects off the compatibility qwen3 registry reader.
+  The existing per-step 128-byte engram policy state remains a separate
+  writeback object.
 
 ## Acceptance Criteria
 

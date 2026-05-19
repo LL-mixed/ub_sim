@@ -406,6 +406,24 @@ Status as of 2026-05-16:
 - 14B 2-step W5 validation with default full-hidden dispatch produced context
   latencies `2392ms` and `832ms`, with the same token IDs and output
   checksums.
+- 2026-05-19 Memory Service-backed W5 validation also passed through the
+  `simpler-host` object-ref path. Run
+  `w5_memory_bootstrap_simpler_host_0_6b_2step_20260519` consumed a real
+  `EngramStateObject` produced from Lingqu Memory Service durable outputs,
+  reported `modes=simpler-host-object-ref`, and produced terminal tokens
+  `[11, 108386]`. The same Memory Service state passed with
+  `cpu-reference-object-ref` in
+  `w5_memory_bootstrap_cpu_ref_0_6b_2step_20260519b`.
+- The preferred Memory Service bootstrap path no longer needs per-object qwen3
+  registry payload files for Engram context. Run
+  `w5_memory_object_service_snapshot_simpler_host_0_6b_2step_20260519`
+  consumed `SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT`, reported
+  `modes=simpler-host-object-ref`, and produced the same terminal tokens
+  `[11, 108386]`. Its observed context latencies were 2993ms and 950ms.
+- Memory decision artifact refs now follow the same Object Service snapshot
+  contract for hidden/KV/logits payloads. The remaining runtime-specific
+  compatibility path is per-step range-output publication; simpler-host
+  context operands are no longer coupled to qwen3 registry payload files.
 
 ## Risks
 

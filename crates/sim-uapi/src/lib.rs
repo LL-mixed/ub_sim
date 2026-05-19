@@ -71,9 +71,9 @@ use sim_services::{
     object::{
         LingquObjectAppendReq, LingquObjectKind, LingquObjectLocality, LingquObjectMetadata,
         LingquObjectPublishReq, LingquObjectResolveReq, LingquObjectServiceProfile,
-        LingquObjectServiceReport, LingquObjectServiceStub, LingquObjectState,
-        LingquObjectVersionSelector, LingquObmmObjectRefWire, LingquPayloadBackend,
-        LingquPayloadPlacement,
+        LingquObjectServiceReport, LingquObjectServiceSnapshot, LingquObjectServiceStub,
+        LingquObjectState, LingquObjectVersionSelector, LingquObmmObjectRefWire,
+        LingquPayloadBackend, LingquPayloadPlacement,
     },
     shmem::{ShmemGetReq, ShmemPutReq, ShmemServiceProfile, ShmemServiceStub},
     weights::{
@@ -1702,6 +1702,7 @@ pub const QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES: u16 = 22;
 pub const QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT: u16 = 23;
 pub const QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE: u16 = 24;
 pub const SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR: &str = "SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR";
+pub const SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT: &str = "SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT";
 const SIM_UAPI_QWEN3_OBJECT_REF_PAYLOAD_SCAN: &str = "SIM_UAPI_QWEN3_OBJECT_REF_PAYLOAD_SCAN";
 pub const SIM_QWEN3_GUEST_ENGRAM_STATE_REF: &str = "SIM_QWEN3_GUEST_ENGRAM_STATE_REF";
 pub const SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF: &str =
@@ -1737,7 +1738,7 @@ fn materialize_qwen3_range_dispatch_input<'a>(
                         object_ref.payload_bytes
                     ));
                 }
-                let payload = qwen3_object_registry_get(&object_ref)?;
+                let payload = qwen3_runtime_object_payload_get(&object_ref)?;
                 if payload.len() != expected_len {
                     return Err(format!(
                         "qwen3_range_dispatch_hidden_object_bytes_mismatch:got={}:expected={expected_len}",
@@ -1757,7 +1758,7 @@ fn materialize_qwen3_range_dispatch_input<'a>(
             QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE => {
                 let payload_len = usize::try_from(object_ref.payload_bytes)
                     .map_err(|_| "qwen3_range_dispatch_kv_object_bytes_too_large".to_string())?;
-                let payload = qwen3_object_registry_get(&object_ref)?;
+                let payload = qwen3_runtime_object_payload_get(&object_ref)?;
                 if payload.len() != payload_len {
                     return Err(format!(
                         "qwen3_range_dispatch_kv_object_bytes_mismatch:got={}:expected={payload_len}",
@@ -1946,6 +1947,128 @@ fn qwen3_object_registry_get_from_dir(
     Ok(payload)
 }
 
+fn qwen3_object_service_snapshot_path() -> Option<PathBuf> {
+    std::env::var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT)
+        .ok()
+        .filter(|path| !path.trim().is_empty())
+        .map(PathBuf::from)
+}
+
+fn qwen3_lingqu_object_payload_checksum(bytes: &[u8]) -> u64 {
+    let mut acc = 0xcbf2_9ce4_8422_2325u64;
+    for byte in bytes {
+        acc ^= u64::from(*byte);
+        acc = acc.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    acc
+}
+
+fn qwen3_object_service_snapshot_get_from_path(
+    snapshot_path: &Path,
+    object_ref: &LingquObmmObjectRefWire,
+) -> Result<Vec<u8>, String> {
+    let bytes = fs::read(snapshot_path).map_err(|err| {
+        format!(
+            "qwen3_object_service_snapshot_read_failed:{}:{err}",
+            snapshot_path.display()
+        )
+    })?;
+    let snapshot = LingquObjectServiceSnapshot::from_json_bytes(&bytes).map_err(|err| {
+        format!(
+            "qwen3_object_service_snapshot_decode_failed:{}:{err}",
+            snapshot_path.display()
+        )
+    })?;
+    let matches = snapshot
+        .records
+        .iter()
+        .filter(|record| {
+            record.state == LingquObjectState::Committed
+                && record.version == object_ref.object_version
+                && record.bytes == object_ref.payload_bytes
+                && record.checksum == object_ref.payload_checksum
+                && u32::try_from(record.producer_entity).ok() == Some(object_ref.producer_entity)
+                && u32::try_from(record.owner_entity.unwrap_or(record.producer_entity)).ok()
+                    == Some(object_ref.owner_entity)
+                && qwen3_lingqu_key_hash(&record.key) == object_ref.key_hash
+        })
+        .map(|record| record.key.clone())
+        .collect::<Vec<_>>();
+    let key = match matches.as_slice() {
+        [key] => key.clone(),
+        [] => {
+            return Err(format!(
+                "qwen3_object_service_ref_missing:kind={}:version={}:key_hash={:#x}:bytes={}:checksum={:#x}",
+                object_ref.object_kind,
+                object_ref.object_version,
+                object_ref.key_hash,
+                object_ref.payload_bytes,
+                object_ref.payload_checksum
+            ));
+        }
+        _ => {
+            return Err(format!(
+                "qwen3_object_service_ref_ambiguous:kind={}:version={}:key_hash={:#x}:matches={}",
+                object_ref.object_kind,
+                object_ref.object_version,
+                object_ref.key_hash,
+                matches.len()
+            ));
+        }
+    };
+    let service = LingquObjectServiceStub::import_snapshot(snapshot)
+        .map_err(|err| format!("qwen3_object_service_snapshot_import_failed:{err}"))?;
+    let payload = service
+        .get_copy(
+            &key,
+            LingquObjectVersionSelector::Exact(object_ref.object_version),
+        )
+        .ok_or_else(|| format!("qwen3_object_service_payload_missing:key={key}"))?;
+    if payload.len() as u64 != object_ref.payload_bytes {
+        return Err(format!(
+            "qwen3_object_service_payload_bytes_mismatch:got={}:expected={}",
+            payload.len(),
+            object_ref.payload_bytes
+        ));
+    }
+    let checksum = qwen3_lingqu_object_payload_checksum(&payload);
+    if checksum != object_ref.payload_checksum {
+        return Err(format!(
+            "qwen3_object_service_payload_checksum_mismatch:got={checksum:#x}:expected={:#x}",
+            object_ref.payload_checksum
+        ));
+    }
+    Ok(payload)
+}
+
+fn qwen3_engram_context_payload_get(
+    object_ref: &LingquObmmObjectRefWire,
+) -> Result<Vec<u8>, String> {
+    if let Some(snapshot_path) = qwen3_object_service_snapshot_path() {
+        return qwen3_object_service_snapshot_get_from_path(&snapshot_path, object_ref);
+    }
+    qwen3_object_registry_get(object_ref)
+}
+
+fn qwen3_runtime_object_payload_get(
+    object_ref: &LingquObmmObjectRefWire,
+) -> Result<Vec<u8>, String> {
+    if let Some(snapshot_path) = qwen3_object_service_snapshot_path() {
+        match qwen3_object_service_snapshot_get_from_path(&snapshot_path, object_ref) {
+            Ok(payload) => return Ok(payload),
+            Err(snapshot_err) => {
+                return qwen3_object_registry_get(object_ref)
+                    .map_err(|registry_err| {
+                        format!(
+                            "qwen3_runtime_object_resolve_failed:snapshot={snapshot_err}:registry={registry_err}"
+                        )
+                    });
+            }
+        }
+    }
+    qwen3_object_registry_get(object_ref)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Qwen3EngramStateRegistryValidation {
     pub hidden_size: usize,
@@ -1980,6 +2103,28 @@ pub fn qwen3_obmm_object_ref_wire_to_hex(object_ref: &LingquObmmObjectRefWire) -
         let _ = write!(&mut hex, "{byte:02x}");
     }
     hex
+}
+
+pub fn qwen3_obmm_object_ref_for_payload(
+    object_kind: u16,
+    owner_entity: u32,
+    producer_entity: u32,
+    object_version: u64,
+    key: &str,
+    payload_offset: u64,
+    payload_bytes: u64,
+    payload_checksum: u64,
+) -> LingquObmmObjectRefWire {
+    LingquObmmObjectRefWire::committed(
+        object_kind,
+        owner_entity,
+        producer_entity,
+        object_version,
+        qwen3_lingqu_key_hash(key),
+        payload_offset,
+        payload_bytes,
+        payload_checksum,
+    )
 }
 
 pub fn qwen3_publish_object_registry_payload(
@@ -2179,6 +2324,95 @@ pub fn qwen3_validate_engram_state_registry_payload(
     let gate_weight_payload =
         qwen3_object_registry_get_from_dir(registry_dir, &object_refs.gate_weight)
             .map_err(|err| format!("qwen3_engram_context_gate_weight_resolve_failed:{err}"))?;
+    if gate_weight_payload.len() % std::mem::size_of::<f32>() != 0 {
+        return Err(format!(
+            "qwen3_engram_context_gate_weight_bytes_not_multiple_of_f32:bytes={}",
+            gate_weight_payload.len()
+        ));
+    }
+    let gate_weight_values = gate_weight_payload.len() / std::mem::size_of::<f32>();
+    if gate_weight_values != hidden_size {
+        return Err(format!(
+            "qwen3_engram_context_gate_weight_len_mismatch:got={gate_weight_values}:expected={hidden_size}"
+        ));
+    }
+
+    Ok(Qwen3EngramStateRegistryValidation {
+        hidden_size,
+        table_rows,
+        table_bytes: table_payload.len(),
+        indices_bytes: indices_payload.len(),
+        gate_weight_bytes: gate_weight_payload.len(),
+    })
+}
+
+pub fn qwen3_validate_engram_state_object_service_payload(
+    state_ref_hex: &str,
+    object_service_snapshot: &Path,
+    hidden_size: usize,
+) -> Result<Qwen3EngramStateRegistryValidation, String> {
+    if hidden_size == 0 {
+        return Err("qwen3_engram_state_registry_hidden_size_unsupported:got=0".to_string());
+    }
+    let state_ref = qwen3_obmm_object_ref_wire_from_hex(state_ref_hex)?;
+    if state_ref.object_kind != QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE {
+        return Err(format!(
+            "qwen3_engram_state_ref_kind_mismatch:got={}:expected={}",
+            state_ref.object_kind, QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE
+        ));
+    }
+    let state_payload =
+        qwen3_object_service_snapshot_get_from_path(object_service_snapshot, &state_ref)
+            .map_err(|err| format!("qwen3_engram_state_ref_resolve_failed:{err}"))?;
+    let object_refs = qwen3_engram_state_manifest_refs_from_payload(&state_payload)?;
+    if object_refs.table.object_kind != QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE
+        || object_refs.indices.object_kind != QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES
+        || object_refs.gate_weight.object_kind
+            != QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT
+    {
+        return Err("qwen3_engram_context_ref_kind_mismatch".to_string());
+    }
+
+    let table_payload =
+        qwen3_object_service_snapshot_get_from_path(object_service_snapshot, &object_refs.table)
+            .map_err(|err| format!("qwen3_engram_context_table_resolve_failed:{err}"))?;
+    if table_payload.len() % std::mem::size_of::<f32>() != 0 {
+        return Err(format!(
+            "qwen3_engram_context_table_bytes_not_multiple_of_f32:bytes={}",
+            table_payload.len()
+        ));
+    }
+    let table_values = table_payload.len() / std::mem::size_of::<f32>();
+    if table_values % hidden_size != 0 {
+        return Err(format!(
+            "qwen3_engram_context_table_len_mismatch:hidden_size={hidden_size}:values={table_values}"
+        ));
+    }
+    let table_rows = table_values / hidden_size;
+    if table_rows < ENGRAM_CONTEXT_INDICES_PER_BATCH {
+        return Err(format!(
+            "qwen3_engram_context_table_rows_too_small:rows={table_rows}:min={}",
+            ENGRAM_CONTEXT_INDICES_PER_BATCH
+        ));
+    }
+
+    let indices_payload =
+        qwen3_object_service_snapshot_get_from_path(object_service_snapshot, &object_refs.indices)
+            .map_err(|err| format!("qwen3_engram_context_indices_resolve_failed:{err}"))?;
+    let expected_indices_bytes = ENGRAM_CONTEXT_INDICES_PER_BATCH * std::mem::size_of::<i32>();
+    if indices_payload.len() != expected_indices_bytes {
+        return Err(format!(
+            "qwen3_engram_context_indices_len_mismatch:got={}:expected={}",
+            indices_payload.len() / std::mem::size_of::<i32>(),
+            ENGRAM_CONTEXT_INDICES_PER_BATCH
+        ));
+    }
+
+    let gate_weight_payload = qwen3_object_service_snapshot_get_from_path(
+        object_service_snapshot,
+        &object_refs.gate_weight,
+    )
+    .map_err(|err| format!("qwen3_engram_context_gate_weight_resolve_failed:{err}"))?;
     if gate_weight_payload.len() % std::mem::size_of::<f32>() != 0 {
         return Err(format!(
             "qwen3_engram_context_gate_weight_bytes_not_multiple_of_f32:bytes={}",
@@ -15597,7 +15831,7 @@ fn qwen3_dense_reference_engram_context_refs_from_state_ref(
             state_ref.object_kind, QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE
         ));
     }
-    let payload = qwen3_object_registry_get(&state_ref)
+    let payload = qwen3_engram_context_payload_get(&state_ref)
         .map_err(|err| format!("qwen3_engram_state_ref_resolve_failed:{err}"))?;
     qwen3_engram_state_manifest_refs_from_payload(&payload)
 }
@@ -15683,7 +15917,7 @@ fn qwen3_dense_reference_engram_context_object_ref_state_from_refs(
         return Err("qwen3_engram_context_ref_kind_mismatch".to_string());
     }
     let table = qwen3_f32_values_from_le_bytes(
-        &qwen3_object_registry_get(&object_refs.table)
+        &qwen3_engram_context_payload_get(&object_refs.table)
             .map_err(|err| format!("qwen3_engram_context_table_resolve_failed:{err}"))?,
         "qwen3_engram_context_table",
     )?;
@@ -15702,7 +15936,7 @@ fn qwen3_dense_reference_engram_context_object_ref_state_from_refs(
     }
 
     let indices = qwen3_i32_values_from_le_bytes(
-        &qwen3_object_registry_get(&object_refs.indices)
+        &qwen3_engram_context_payload_get(&object_refs.indices)
             .map_err(|err| format!("qwen3_engram_context_indices_resolve_failed:{err}"))?,
         "qwen3_engram_context_indices",
     )?;
@@ -15715,7 +15949,7 @@ fn qwen3_dense_reference_engram_context_object_ref_state_from_refs(
     }
 
     let gate_weight = qwen3_f32_values_from_le_bytes(
-        &qwen3_object_registry_get(&object_refs.gate_weight)
+        &qwen3_engram_context_payload_get(&object_refs.gate_weight)
             .map_err(|err| format!("qwen3_engram_context_gate_weight_resolve_failed:{err}"))?,
         "qwen3_engram_context_gate_weight",
     )?;
@@ -19388,7 +19622,9 @@ mod tests {
         qwen3_dense_reference_write_service_flow_markers,
         qwen3_dense_reference_write_weight_reference_table,
         qwen3_dense_reference_write_weight_stage_link_table, qwen3_engram_state_manifest_payload,
-        qwen3_lingqu_key_hash, qwen3_object_registry_put, qwen3_obmm_object_ref_wire_to_hex,
+        qwen3_lingqu_key_hash, qwen3_lingqu_object_payload_checksum, qwen3_object_registry_put,
+        qwen3_obmm_object_ref_for_payload, qwen3_obmm_object_ref_wire_to_hex,
+        qwen3_validate_engram_state_object_service_payload,
         qwen3_validate_engram_state_registry_payload, read_u64_le_at,
         run_host_matmul_batched_smoke, run_host_matmul_smoke,
         run_qwen3_dense_reference_prefill_runtime, validate_qwen3_range_dispatch_object_refs,
@@ -19414,8 +19650,9 @@ mod tests {
         QWEN3_WEIGHT_REFERENCE_ENTRY_WORDS, QWEN3_WEIGHT_STAGE_LINK_ENTRY_WORDS,
         SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF, SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF,
         SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
-        SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, W4_DEMO_KVCACHE_PAYLOAD_BYTES, W4_KVCACHE_BLOCKS,
-        W4_KVCACHE_PREFIX_GROUPS, W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES,
+        SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
+        W4_DEMO_KVCACHE_PAYLOAD_BYTES, W4_KVCACHE_BLOCKS, W4_KVCACHE_PREFIX_GROUPS,
+        W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES,
     };
     use sim_config::ScenarioConfig;
     use sim_core::{
@@ -19570,6 +19807,63 @@ mod tests {
         (table, indices, gate_weight, state_ref)
     }
 
+    fn test_publish_object_service_engram_payload(
+        service: &mut LingquObjectServiceStub,
+        key: &str,
+        object_kind: u16,
+        payload: Vec<u8>,
+        shape: Vec<u64>,
+    ) -> LingquObmmObjectRefWire {
+        let checksum = qwen3_lingqu_object_payload_checksum(&payload);
+        service
+            .submit_publish(
+                LingquObjectPublishReq {
+                    task: None,
+                    key: key.to_string(),
+                    kind: LingquObjectKind::RuntimeTensor,
+                    producer_entity: 0,
+                    owner_entity: Some(0),
+                    expected_version: None,
+                    metadata: LingquObjectMetadata {
+                        bytes: payload.len() as u64,
+                        checksum,
+                        dtype: None,
+                        shape,
+                        layout: None,
+                        expires_at_us: None,
+                    },
+                    placements: vec![LingquPayloadPlacement {
+                        backend: LingquPayloadBackend::ObmmShmem,
+                        storage_ref: format!("{key}/payload"),
+                        segment: None,
+                        offset: 0,
+                        bytes: payload.len() as u64,
+                        checksum,
+                        locality: LingquObjectLocality::DomainShared(0),
+                    }],
+                    payload_bytes: payload,
+                },
+                1,
+            )
+            .expect("publish object service engram payload");
+        let record = service.latest_record(key).expect("published object record");
+        let placement = record
+            .placements
+            .iter()
+            .find(|placement| placement.backend == LingquPayloadBackend::ObmmShmem)
+            .expect("obmm placement");
+        qwen3_obmm_object_ref_for_payload(
+            object_kind,
+            0,
+            0,
+            record.version,
+            key,
+            placement.offset,
+            record.bytes,
+            record.checksum,
+        )
+    }
+
     #[test]
     fn qwen3_engram_state_registry_preflight_rejects_hidden_mismatch() {
         run_simpler_native_test_isolated(
@@ -19622,6 +19916,117 @@ mod tests {
                         );
                     },
                 );
+            },
+        );
+    }
+
+    #[test]
+    fn qwen3_engram_context_consumes_object_service_snapshot_state_ref() {
+        run_simpler_native_test_isolated(
+            "qwen3_engram_context_consumes_object_service_snapshot_state_ref",
+            || {
+                let snapshot_path = std::env::temp_dir().join(format!(
+                    "ub_sim_qwen3_engram_object_service_snapshot_test_{}.json",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_file(&snapshot_path);
+                let hidden_size = 1024usize;
+                let table_rows = ENGRAM_CONTEXT_INDICES_PER_BATCH;
+                let table = (0..table_rows * hidden_size)
+                    .map(|index| ((index % 37) as f32 - 18.0) / 4096.0)
+                    .collect::<Vec<_>>();
+                let indices = (0..ENGRAM_CONTEXT_INDICES_PER_BATCH)
+                    .map(|index| (index % table_rows) as i32)
+                    .collect::<Vec<_>>();
+                let gate_weight = (0..hidden_size)
+                    .map(|index| ((index % 17) as f32 - 8.0) / 8192.0)
+                    .collect::<Vec<_>>();
+                let mut service =
+                    LingquObjectServiceStub::new(qwen3_dense_reference_object_service_profile());
+                let table_ref = test_publish_object_service_engram_payload(
+                    &mut service,
+                    "engram/object-service/table",
+                    QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
+                    test_f32_vec_to_le_bytes(&table),
+                    vec![table_rows as u64, hidden_size as u64],
+                );
+                let indices_ref = test_publish_object_service_engram_payload(
+                    &mut service,
+                    "engram/object-service/indices",
+                    QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
+                    test_i32_vec_to_le_bytes(&indices),
+                    vec![ENGRAM_CONTEXT_INDICES_PER_BATCH as u64],
+                );
+                let gate_ref = test_publish_object_service_engram_payload(
+                    &mut service,
+                    "engram/object-service/gate_weight",
+                    QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
+                    test_f32_vec_to_le_bytes(&gate_weight),
+                    vec![hidden_size as u64],
+                );
+                let state_payload =
+                    qwen3_engram_state_manifest_payload(&table_ref, &indices_ref, &gate_ref)
+                        .expect("engram state manifest payload");
+                let state_ref = test_publish_object_service_engram_payload(
+                    &mut service,
+                    "engram/object-service/state",
+                    QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
+                    state_payload,
+                    vec![LingquObmmObjectRefWire::BYTE_LEN as u64 * 3],
+                );
+                std::fs::write(
+                    &snapshot_path,
+                    service
+                        .export_snapshot()
+                        .to_json_bytes()
+                        .expect("encode object service snapshot"),
+                )
+                .expect("write object service snapshot");
+                let state_ref_hex = qwen3_obmm_object_ref_wire_to_hex(&state_ref);
+                let validation = qwen3_validate_engram_state_object_service_payload(
+                    &state_ref_hex,
+                    &snapshot_path,
+                    hidden_size,
+                )
+                .expect("validate object service state ref");
+                assert_eq!(validation.table_rows, table_rows);
+                with_env_var(
+                    SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
+                    snapshot_path.to_string_lossy().as_ref(),
+                    || {
+                        with_env_var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP", "cpu-reference", || {
+                            with_env_var(SIM_QWEN3_GUEST_ENGRAM_STATE_REF, &state_ref_hex, || {
+                                let terminal_hidden = (0..hidden_size)
+                                    .map(|index| (index as f32 - hidden_size as f32 / 2.0) / 4096.0)
+                                    .collect::<Vec<_>>();
+                                let expected = run_engram_context_reference(&EngramContextOp {
+                                    table: &table,
+                                    table_rows,
+                                    indices: &indices,
+                                    hidden: &terminal_hidden,
+                                    gate_weight: &gate_weight,
+                                    batch: 1,
+                                    hidden_size,
+                                })
+                                .expect("reference object service context");
+                                let mut sequence = vec![vec![0.0f32; hidden_size], terminal_hidden];
+                                let report =
+                                    qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
+                                        &mut sequence,
+                                        &[11, 358, 2776, 264],
+                                        QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
+                                        QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
+                                        None,
+                                    )
+                                    .expect("context op should run")
+                                    .expect("context report");
+                                assert_eq!(report.mode, "cpu-reference-object-ref");
+                                assert_eq!(sequence[1], expected.output);
+                            });
+                        });
+                    },
+                );
+                let _ = std::fs::remove_file(&snapshot_path);
             },
         );
     }
@@ -25223,6 +25628,158 @@ mod tests {
         validate_qwen3_range_dispatch_object_refs(&req, materialized.as_ref())
             .expect("materialized refs validate");
         let _ = std::fs::remove_dir_all(&registry_dir);
+    }
+
+    #[test]
+    fn qwen3_range_dispatch_materializes_object_service_operands() {
+        const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
+        const OBJECT_REF_TABLE_OFFSET: usize = 0x07_0000;
+        const HIDDEN_BYTES: usize = 2_048;
+        const KV_BYTES: usize = 128;
+
+        std::env::set_var("SIM_QWEN3_DENSE_TP_NODES", "8");
+        std::env::set_var("SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS", "28");
+        std::env::set_var("SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES", "262144");
+        std::env::set_var(
+            "SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES",
+            HIDDEN_BYTES.to_string(),
+        );
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_qwen3_object_service_operand_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create object service temp dir");
+        let snapshot_path = root.join("lingqu_object_service_snapshot.json");
+
+        let mut object_service =
+            LingquObjectServiceStub::new(qwen3_dense_reference_object_service_profile());
+        let hidden_payload = vec![0x5au8; HIDDEN_BYTES];
+        let kv_payload = vec![0xa5u8; KV_BYTES];
+        let hidden_ref = publish_test_object_service_operand(
+            &mut object_service,
+            QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+            LingquObjectKind::RuntimeTensor,
+            "test/runtime/hidden",
+            &hidden_payload,
+        );
+        let kv_ref = publish_test_object_service_operand(
+            &mut object_service,
+            QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+            LingquObjectKind::KvCacheBlock,
+            "test/runtime/kv",
+            &kv_payload,
+        );
+        std::fs::write(
+            &snapshot_path,
+            object_service
+                .export_snapshot()
+                .to_json_bytes()
+                .expect("encode object service snapshot"),
+        )
+        .expect("write object service snapshot");
+        std::env::set_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT, &snapshot_path);
+
+        let task = TaskKey {
+            logical_system: LogicalSystemId(1),
+            coord: HierarchyCoord {
+                levels: [RANGE_TASK_MAGIC, 1, 4, 8, 2, 8, 28, HIDDEN_BYTES as u32],
+            },
+            scope_depth: 8,
+            task_id: 31,
+        };
+        let segment_len = QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
+            + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES
+            + KV_BYTES;
+        let mut segment_payload = vec![0u8; segment_len];
+        write_obmm_object_ref_wire(
+            &mut segment_payload[OBJECT_REF_TABLE_OFFSET
+                ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN],
+            hidden_ref,
+        );
+        write_obmm_object_ref_wire(
+            &mut segment_payload[OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN
+                ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN * 2],
+            kv_ref,
+        );
+        let req = Qwen3RangeDispatchReq {
+            op_id: 31,
+            segment: sim_core::SegmentHandle(1),
+            task,
+            object_ref_table_offset: OBJECT_REF_TABLE_OFFSET as u32,
+            object_ref_count: 2,
+        };
+
+        let materialized =
+            materialize_qwen3_range_dispatch_input(&req, &segment_payload).expect("materialize");
+        let hidden_start = QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET;
+        assert_eq!(
+            &materialized[hidden_start..hidden_start + HIDDEN_BYTES],
+            hidden_payload.as_slice()
+        );
+        let kv_start =
+            QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES;
+        assert_eq!(
+            &materialized[kv_start..kv_start + KV_BYTES],
+            kv_payload.as_slice()
+        );
+
+        std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn publish_test_object_service_operand(
+        object_service: &mut LingquObjectServiceStub,
+        obmm_kind: u16,
+        object_kind: LingquObjectKind,
+        key: &str,
+        payload: &[u8],
+    ) -> LingquObmmObjectRefWire {
+        let checksum = qwen3_lingqu_object_payload_checksum(payload);
+        object_service
+            .submit_publish(
+                LingquObjectPublishReq {
+                    task: None,
+                    key: key.to_string(),
+                    kind: object_kind,
+                    producer_entity: 2,
+                    owner_entity: Some(1),
+                    expected_version: None,
+                    metadata: LingquObjectMetadata {
+                        bytes: payload.len() as u64,
+                        checksum,
+                        dtype: None,
+                        shape: vec![payload.len() as u64],
+                        layout: None,
+                        expires_at_us: None,
+                    },
+                    placements: vec![LingquPayloadPlacement {
+                        backend: LingquPayloadBackend::ObmmShmem,
+                        storage_ref: format!("{key}/payload"),
+                        segment: None,
+                        offset: 0,
+                        bytes: payload.len() as u64,
+                        checksum,
+                        locality: LingquObjectLocality::DomainShared(0),
+                    }],
+                    payload_bytes: payload.to_vec(),
+                },
+                1,
+            )
+            .expect("publish object service operand");
+        let record = object_service
+            .latest_record(key)
+            .expect("object service operand record");
+        qwen3_obmm_object_ref_for_payload(
+            obmm_kind,
+            1,
+            2,
+            record.version,
+            key,
+            0,
+            record.bytes,
+            record.checksum,
+        )
     }
 
     const VALID_YAML: &str = r#"
