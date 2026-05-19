@@ -4815,6 +4815,31 @@ static int qwen3_memory_shortpath_hidden_input_ref(
     return 1;
 }
 
+static int qwen3_memory_prefix_cache_kv_ref(
+    const struct w4_qwen3_memory_decision_config *config,
+    struct lingqu_obmm_object_ref_wire *ref_out)
+{
+    if (!config || !config->enabled || !ref_out ||
+        strcmp(config->prefix_cache_action, "reuse") != 0) {
+        return 0;
+    }
+    if (!str_nonempty(config->prefix_cache_artifact_ref)) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 prefix cache ref missing"
+                " plan_id=%s action=%s\n",
+                config->prefix_cache_reuse_plan_id,
+                config->prefix_cache_action);
+        return -1;
+    }
+    if (parse_lingqu_object_ref_hex("SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF",
+                                    config->prefix_cache_artifact_ref,
+                                    W4_QWEN3_OBMM_KIND_QWEN3_KV_STATE,
+                                    ref_out) != 0) {
+        return -1;
+    }
+    return 1;
+}
+
 static void parse_env_u64_csv_bounded(const char *key,
                                       uint64_t *values,
                                       uint64_t value_capacity,
@@ -7336,48 +7361,85 @@ decode_round_start:
             input_loaded_ms = input_found_ms;
         }
         if (guest_decode_step > 0) {
+            struct lingqu_obmm_object_ref_wire prefix_cache_kv_ref;
             struct w4_db_object_payload_view previous_kv_view;
+            int prefix_cache_kv_ref_state;
 
+            memset(&prefix_cache_kv_ref, 0, sizeof(prefix_cache_kv_ref));
             memset(&previous_kv_view, 0, sizeof(previous_kv_view));
             kv_resolve_start_ms = monotonic_ms();
-            if (w4_db_obmm_service_v0_resolve_previous_range_kv_state_view(
+            prefix_cache_kv_ref_state =
+                qwen3_memory_prefix_cache_kv_ref(&qwen3_memory_decision_config,
+                                                 &prefix_cache_kv_ref);
+            if (prefix_cache_kv_ref_state < 0) {
+                goto out;
+            }
+            if (prefix_cache_kv_ref_state > 0) {
+                kv_resolved_ms = monotonic_ms();
+                write_segment_bytes(ep_mmio,
+                                    W4_QWEN3_OBJECT_REF_TABLE_OFFSET +
+                                        ((uint64_t)object_ref_write_index *
+                                         W4_QWEN3_OBJECT_REF_BYTES),
+                                    (const uint8_t *)&prefix_cache_kv_ref,
+                                    W4_QWEN3_OBJECT_REF_BYTES);
+                object_ref_write_index++;
+                kv_loaded_ms = monotonic_ms();
+                printf("[w4_guest] stage qwen3_w5_memory_prefix_cache_kv_loaded"
+                       " node=%u step=%" PRIu64 " previous_step=%" PRIu64
+                       " plan_id=%s artifact_id=%s kv_bytes=%" PRIu64
+                       " kv_checksum=0x%016" PRIx64
+                       " key_hash=0x%016" PRIx64 " version=%" PRIu64
+                       " source=lingqu_memory_service target=uapi_object_ref"
+                       " materialize=sim_uapi_adapter status=ok\n",
+                       dispatch_node + 1U,
+                       guest_decode_step,
+                       guest_decode_step - 1U,
+                       qwen3_memory_decision_config.prefix_cache_reuse_plan_id,
+                       qwen3_memory_decision_config.prefix_cache_artifact_id,
+                       prefix_cache_kv_ref.payload_bytes,
+                       prefix_cache_kv_ref.payload_checksum,
+                       prefix_cache_kv_ref.key_hash,
+                       prefix_cache_kv_ref.object_version);
+            } else {
+                if (w4_db_obmm_service_v0_resolve_previous_range_kv_state_view(
                     &db_service,
                     dispatch_node,
                     cluster_node_count,
                     guest_decode_step,
                     &previous_kv_view) != 0) {
-                fprintf(stderr,
-                        "[w4_guest] fail qwen3 previous range kv state resolve failed node=%u step=%" PRIu64 "\n",
-                        dispatch_node + 1U,
-                        guest_decode_step);
-                goto out;
-            }
-            kv_resolved_ms = monotonic_ms();
-            if (previous_kv_view.data && previous_kv_view.len > 0) {
-                write_segment_bytes(ep_mmio,
-                                    W4_QWEN3_OBJECT_REF_TABLE_OFFSET +
-                                        ((uint64_t)object_ref_write_index *
-                                         W4_QWEN3_OBJECT_REF_BYTES),
-                                    (const uint8_t *)&previous_kv_view.object_ref,
-                                    W4_QWEN3_OBJECT_REF_BYTES);
-                object_ref_write_index++;
-                kv_loaded_ms = monotonic_ms();
-                printf("[w4_guest] stage qwen3_range_kv_state_loaded node=%u step=%" PRIu64
-                       " previous_step=%" PRIu64
-                       " kv_offset=0x%016" PRIx64 " kv_bytes=%" PRIu64
-                       " kv_checksum=0x%016" PRIx64
-                       " key_hash=0x%016" PRIx64 " version=%" PRIu64
-                       " source=obmm_object_view target=uapi_object_ref materialize=sim_uapi_adapter status=ok\n",
-                       dispatch_node + 1U,
-                       guest_decode_step,
-                       guest_decode_step - 1U,
-                       (uint64_t)W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET,
-                       previous_kv_view.len,
-                       previous_kv_view.checksum,
-                       previous_kv_view.object_ref.key_hash,
-                       previous_kv_view.object_ref.object_version);
-            } else {
-                kv_loaded_ms = kv_resolved_ms;
+                    fprintf(stderr,
+                            "[w4_guest] fail qwen3 previous range kv state resolve failed node=%u step=%" PRIu64 "\n",
+                            dispatch_node + 1U,
+                            guest_decode_step);
+                    goto out;
+                }
+                kv_resolved_ms = monotonic_ms();
+                if (previous_kv_view.data && previous_kv_view.len > 0) {
+                    write_segment_bytes(ep_mmio,
+                                        W4_QWEN3_OBJECT_REF_TABLE_OFFSET +
+                                            ((uint64_t)object_ref_write_index *
+                                             W4_QWEN3_OBJECT_REF_BYTES),
+                                        (const uint8_t *)&previous_kv_view.object_ref,
+                                        W4_QWEN3_OBJECT_REF_BYTES);
+                    object_ref_write_index++;
+                    kv_loaded_ms = monotonic_ms();
+                    printf("[w4_guest] stage qwen3_range_kv_state_loaded node=%u step=%" PRIu64
+                           " previous_step=%" PRIu64
+                           " kv_offset=0x%016" PRIx64 " kv_bytes=%" PRIu64
+                           " kv_checksum=0x%016" PRIx64
+                           " key_hash=0x%016" PRIx64 " version=%" PRIu64
+                           " source=obmm_object_view target=uapi_object_ref materialize=sim_uapi_adapter status=ok\n",
+                           dispatch_node + 1U,
+                           guest_decode_step,
+                           guest_decode_step - 1U,
+                           (uint64_t)W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET,
+                           previous_kv_view.len,
+                           previous_kv_view.checksum,
+                           previous_kv_view.object_ref.key_hash,
+                           previous_kv_view.object_ref.object_version);
+                } else {
+                    kv_loaded_ms = kv_resolved_ms;
+                }
             }
         }
         if (qwen3_engram_config.context_object_refs_enabled) {
