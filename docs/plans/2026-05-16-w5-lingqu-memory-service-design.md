@@ -1167,6 +1167,28 @@ Lingqu Object Service directly instead of using the qwen3 registry shim.
 engram OBMM context mode and defaults the context op to `cpu-reference` unless
 the caller explicitly chooses another real context op such as `simpler-host`.
 
+The preferred W5 entrypoint can now consume Memory Service durable outputs
+directly:
+
+```text
+sim-cli w5-inference-cluster \
+  --memory-store <durable-store.json> \
+  --memory-object-store <legacy-object-service-snapshot.json> \
+  --memory-engram-state <engram-state.json> \
+  --memory-registry-dir <qwen3-object-registry-dir> \
+  [--memory-owner-entity <entity>] \
+  [--memory-producer-entity <entity>]
+```
+
+This bootstrap path reloads the Object Service checkpoint from the durable
+Memory Store, resolves the table/indices/gate objects referenced by the
+`EngramStateObject`, publishes the qwen3 registry shim payloads, injects the
+resulting `SIM_QWEN3_GUEST_ENGRAM_STATE_REF` and
+`SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR` into the W5 guest runner, and then lets
+the normal W5 object-ref validation path run. It cannot be combined with an
+explicit `--engram-state-ref`; callers must choose either a pre-published W5
+state ref or the Memory Service bootstrap source of truth.
+
 ## Observability
 
 W5 summary should include:
@@ -1367,6 +1389,10 @@ Current implementation status:
   `sim-cli lingqu-memory publish-w5-engram-state-ref` then converts that
   `EngramStateObject` plus durable Object Service checkpoint into the current
   W5 qwen3 object registry state-ref environment contract.
+  `sim-cli w5-inference-cluster` can also perform that publication internally
+  from `--memory-store`, `--memory-object-store`, `--memory-engram-state`, and
+  `--memory-registry-dir`, so the W5 execution entrypoint is no longer limited
+  to manually pre-exported env vars.
   `sim-cli lingqu-memory list-query-results` exposes durable query audit log
   inspection from the CLI. `list-record-lifecycle`,
   `list-shortpath-decisions`, `list-prefetch-plans`, and

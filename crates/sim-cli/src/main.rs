@@ -246,6 +246,17 @@ struct Qwen3GuestDecodeLoopCliArgs {
     weights_path: Option<PathBuf>,
     w5_profile: Option<String>,
     engram: Qwen3EngramConfig,
+    memory_bootstrap: Option<W5MemoryBootstrapConfig>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct W5MemoryBootstrapConfig {
+    store_path: PathBuf,
+    object_store_path: PathBuf,
+    engram_state_path: PathBuf,
+    registry_dir: PathBuf,
+    owner_entity: u32,
+    producer_entity: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -491,6 +502,12 @@ where
             let mut weights_path = None;
             let mut w5_profile = None;
             let mut engram = Qwen3EngramConfig::default();
+            let mut memory_store_path = None;
+            let mut memory_object_store_path = None;
+            let mut memory_engram_state_path = None;
+            let mut memory_registry_dir = None;
+            let mut memory_owner_entity = None;
+            let mut memory_producer_entity = None;
             let mut positionals = Vec::new();
             let mut pending = args.peekable();
 
@@ -661,6 +678,55 @@ where
                     engram.object_registry_dir = Some(PathBuf::from(next));
                 } else if let Some(value) = text.strip_prefix("--object-registry-dir=") {
                     engram.object_registry_dir = Some(PathBuf::from(value));
+                } else if text == "--memory-store" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--memory-store requires a value"))?;
+                    memory_store_path = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--memory-store=") {
+                    memory_store_path = Some(PathBuf::from(value));
+                } else if text == "--memory-object-store" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--memory-object-store requires a value"))?;
+                    memory_object_store_path = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--memory-object-store=") {
+                    memory_object_store_path = Some(PathBuf::from(value));
+                } else if text == "--memory-engram-state" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--memory-engram-state requires a value"))?;
+                    memory_engram_state_path = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--memory-engram-state=") {
+                    memory_engram_state_path = Some(PathBuf::from(value));
+                } else if text == "--memory-registry-dir" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--memory-registry-dir requires a value"))?;
+                    memory_registry_dir = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--memory-registry-dir=") {
+                    memory_registry_dir = Some(PathBuf::from(value));
+                } else if text == "--memory-owner-entity" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--memory-owner-entity requires a value"))?;
+                    memory_owner_entity = Some(parse_cli_u32(
+                        "--memory-owner-entity",
+                        &next.to_string_lossy(),
+                    )?);
+                } else if let Some(value) = text.strip_prefix("--memory-owner-entity=") {
+                    memory_owner_entity = Some(parse_cli_u32("--memory-owner-entity", value)?);
+                } else if text == "--memory-producer-entity" {
+                    let next = pending.next().ok_or_else(|| {
+                        anyhow::anyhow!("--memory-producer-entity requires a value")
+                    })?;
+                    memory_producer_entity = Some(parse_cli_u32(
+                        "--memory-producer-entity",
+                        &next.to_string_lossy(),
+                    )?);
+                } else if let Some(value) = text.strip_prefix("--memory-producer-entity=") {
+                    memory_producer_entity =
+                        Some(parse_cli_u32("--memory-producer-entity", value)?);
                 } else if text.starts_with("--") {
                     anyhow::bail!("unknown qwen3-guest-decode-loop option: {text}");
                 } else {
@@ -691,6 +757,37 @@ where
                     "--engram-state-ref and --object-registry-dir must be provided together"
                 );
             }
+            let memory_bootstrap = match (
+                memory_store_path,
+                memory_object_store_path,
+                memory_engram_state_path,
+                memory_registry_dir,
+            ) {
+                (None, None, None, None) => None,
+                (
+                    Some(store_path),
+                    Some(object_store_path),
+                    Some(engram_state_path),
+                    Some(registry_dir),
+                ) => {
+                    if engram.state_ref.is_some() || engram.object_registry_dir.is_some() {
+                        anyhow::bail!(
+                            "--memory-* bootstrap cannot be combined with explicit --engram-state-ref/--object-registry-dir"
+                        );
+                    }
+                    Some(W5MemoryBootstrapConfig {
+                        store_path,
+                        object_store_path,
+                        engram_state_path,
+                        registry_dir,
+                        owner_entity: memory_owner_entity.unwrap_or(0),
+                        producer_entity: memory_producer_entity.unwrap_or(0),
+                    })
+                }
+                _ => anyhow::bail!(
+                    "--memory-store, --memory-object-store, --memory-engram-state, and --memory-registry-dir must be provided together"
+                ),
+            };
             if engram.state_ref.is_some() {
                 engram.enabled = true;
                 engram.pool = Qwen3EngramPool::Obmm;
@@ -714,6 +811,7 @@ where
                 weights_path,
                 w5_profile,
                 engram,
+                memory_bootstrap,
             }))
         }
         _ => Ok(None),
@@ -833,6 +931,12 @@ fn parse_nonnegative_usize(label: &str, value: &str) -> anyhow::Result<usize> {
 fn parse_nonnegative_u64(label: &str, value: &str) -> anyhow::Result<u64> {
     value
         .parse::<u64>()
+        .with_context(|| format!("invalid {label}: {value}"))
+}
+
+fn parse_cli_u32(label: &str, value: &str) -> anyhow::Result<u32> {
+    value
+        .parse::<u32>()
         .with_context(|| format!("invalid {label}: {value}"))
 }
 
@@ -2353,33 +2457,47 @@ fn validate_lingqu_memory_gate_weight_input(
     Ok(())
 }
 
-fn run_lingqu_memory_publish_w5_engram_state_ref_cli(args: &[String]) -> anyhow::Result<()> {
-    let store_path = optional_cli_arg(args, "--store")?.map(PathBuf::from);
-    let object_store_path = PathBuf::from(required_cli_arg(args, "--object-store")?);
-    let engram_state_path = PathBuf::from(required_cli_arg(args, "--engram-state")?);
-    let registry_dir = PathBuf::from(required_cli_arg(args, "--registry-dir")?);
-    let owner_entity = optional_cli_u64(args, "--owner-entity")?.unwrap_or(0);
-    let producer_entity = optional_cli_u64(args, "--producer-entity")?.unwrap_or(0);
-    let owner_entity =
-        u32::try_from(owner_entity).map_err(|_| anyhow::anyhow!("--owner-entity exceeds u32"))?;
-    let producer_entity = u32::try_from(producer_entity)
-        .map_err(|_| anyhow::anyhow!("--producer-entity exceeds u32"))?;
+#[derive(Debug)]
+struct W5EngramStateRefPublication {
+    state_ref_hex: String,
+    engram_state_id: String,
+    table_bytes: usize,
+    indices_bytes: usize,
+    gate_bytes: usize,
+    state_manifest_bytes: u64,
+}
 
-    let object_snapshot = if let Some(store_path) = &store_path {
-        let mut durable_store = load_lingqu_memory_durable_store(store_path)?;
-        load_lingqu_object_service_snapshot(&object_store_path, &mut durable_store)?
-    } else {
-        load_lingqu_object_service_snapshot_file(&object_store_path)?
-    }
-    .ok_or_else(|| {
-        anyhow::anyhow!(
-            "object store snapshot does not exist: {}",
-            object_store_path.display()
-        )
-    })?;
+fn publish_w5_engram_state_ref_from_memory(
+    config: &W5MemoryBootstrapConfig,
+) -> anyhow::Result<W5EngramStateRefPublication> {
+    let mut durable_store = load_lingqu_memory_durable_store(&config.store_path)?;
+    let object_snapshot =
+        load_lingqu_object_service_snapshot(&config.object_store_path, &mut durable_store)?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "object store snapshot does not exist: {}",
+                    config.object_store_path.display()
+                )
+            })?;
     let object_service = LingquObjectServiceStub::import_snapshot(object_snapshot)
-        .with_context(|| format!("import object store {}", object_store_path.display()))?;
-    let engram_state_bytes = fs::read(&engram_state_path)
+        .with_context(|| format!("import object store {}", config.object_store_path.display()))?;
+    publish_w5_engram_state_ref_from_object_service(
+        &object_service,
+        &config.engram_state_path,
+        &config.registry_dir,
+        config.owner_entity,
+        config.producer_entity,
+    )
+}
+
+fn publish_w5_engram_state_ref_from_object_service(
+    object_service: &LingquObjectServiceStub,
+    engram_state_path: &Path,
+    registry_dir: &Path,
+    owner_entity: u32,
+    producer_entity: u32,
+) -> anyhow::Result<W5EngramStateRefPublication> {
+    let engram_state_bytes = fs::read(engram_state_path)
         .with_context(|| format!("read engram state {}", engram_state_path.display()))?;
     let engram_state = serde_json::from_slice::<EngramStateObject>(&engram_state_bytes)
         .with_context(|| format!("decode engram state {}", engram_state_path.display()))?;
@@ -2408,7 +2526,7 @@ fn run_lingqu_memory_publish_w5_engram_state_ref_cli(args: &[String]) -> anyhow:
         .with_context(|| format!("resolve gate object {}", gate.object_key))?;
 
     let previous_registry_dir = env::var_os(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR);
-    env::set_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, &registry_dir);
+    env::set_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, registry_dir);
     let publish_result = (|| -> anyhow::Result<_> {
         let table_ref = qwen3_publish_object_registry_payload(
             QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
@@ -2443,33 +2561,83 @@ fn run_lingqu_memory_publish_w5_engram_state_ref_cli(args: &[String]) -> anyhow:
             &gate_ref,
         )
         .map_err(anyhow::Error::msg)?;
-        Ok((table_ref, indices_ref, gate_ref, state_ref))
+        Ok(state_ref)
     })();
     if let Some(previous) = previous_registry_dir {
         env::set_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, previous);
     } else {
         env::remove_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR);
     }
-    let (_table_ref, _indices_ref, _gate_ref, state_ref) = publish_result?;
-    let state_ref_hex = qwen3_obmm_object_ref_wire_to_hex(&state_ref);
+    let state_ref = publish_result?;
+    Ok(W5EngramStateRefPublication {
+        state_ref_hex: qwen3_obmm_object_ref_wire_to_hex(&state_ref),
+        engram_state_id: engram_state.state_id,
+        table_bytes: table_payload.len(),
+        indices_bytes: indices_payload.len(),
+        gate_bytes: gate_payload.len(),
+        state_manifest_bytes: state_ref.payload_bytes,
+    })
+}
+
+fn run_lingqu_memory_publish_w5_engram_state_ref_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = optional_cli_arg(args, "--store")?.map(PathBuf::from);
+    let object_store_path = PathBuf::from(required_cli_arg(args, "--object-store")?);
+    let engram_state_path = PathBuf::from(required_cli_arg(args, "--engram-state")?);
+    let registry_dir = PathBuf::from(required_cli_arg(args, "--registry-dir")?);
+    let owner_entity = optional_cli_u64(args, "--owner-entity")?.unwrap_or(0);
+    let producer_entity = optional_cli_u64(args, "--producer-entity")?.unwrap_or(0);
+    let owner_entity =
+        u32::try_from(owner_entity).map_err(|_| anyhow::anyhow!("--owner-entity exceeds u32"))?;
+    let producer_entity = u32::try_from(producer_entity)
+        .map_err(|_| anyhow::anyhow!("--producer-entity exceeds u32"))?;
+    let publication = if let Some(store_path) = store_path {
+        publish_w5_engram_state_ref_from_memory(&W5MemoryBootstrapConfig {
+            store_path,
+            object_store_path: object_store_path.clone(),
+            engram_state_path: engram_state_path.clone(),
+            registry_dir: registry_dir.clone(),
+            owner_entity,
+            producer_entity,
+        })?
+    } else {
+        let object_snapshot = load_lingqu_object_service_snapshot_file(&object_store_path)?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "object store snapshot does not exist: {}",
+                    object_store_path.display()
+                )
+            })?;
+        let object_service = LingquObjectServiceStub::import_snapshot(object_snapshot)
+            .with_context(|| format!("import object store {}", object_store_path.display()))?;
+        publish_w5_engram_state_ref_from_object_service(
+            &object_service,
+            &engram_state_path,
+            &registry_dir,
+            owner_entity,
+            producer_entity,
+        )?
+    };
 
     println!("lingqu_memory_service");
     println!("  mode: publish-w5-engram-state-ref");
     println!("  object_store_path: {}", object_store_path.display());
-    println!("  engram_state: {}", engram_state.state_id);
+    println!("  engram_state: {}", publication.engram_state_id);
     println!("  registry_dir: {}", registry_dir.display());
-    println!("  {}={}", SIM_QWEN3_GUEST_ENGRAM_STATE_REF, state_ref_hex);
+    println!(
+        "  {}={}",
+        SIM_QWEN3_GUEST_ENGRAM_STATE_REF, publication.state_ref_hex
+    );
     println!(
         "  {}={}",
         SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
         registry_dir.display()
     );
-    println!("  registry_table_bytes: {}", table_payload.len());
-    println!("  registry_indices_bytes: {}", indices_payload.len());
-    println!("  registry_gate_bytes: {}", gate_payload.len());
+    println!("  registry_table_bytes: {}", publication.table_bytes);
+    println!("  registry_indices_bytes: {}", publication.indices_bytes);
+    println!("  registry_gate_bytes: {}", publication.gate_bytes);
     println!(
         "  registry_state_manifest_bytes: {}",
-        state_ref.payload_bytes
+        publication.state_manifest_bytes
     );
     Ok(())
 }
@@ -4077,9 +4245,10 @@ mod tests {
     use super::{
         cli_f32_vec_to_le_bytes, lingqu_durable_args_from, lingqu_memory_args_from,
         lingqu_object_service_args_from, load_lingqu_memory_durable_store,
-        qwen3_decode_loop_args_from, qwen3_decode_report_verbosity_from_env,
-        qwen3_dense_weights_path_from_env, qwen3_engram_policy_checksum, qwen3_engram_select_token,
-        qwen3_engram_state_words, qwen3_guest_candidate_records, qwen3_guest_decode_loop_args_from,
+        publish_w5_engram_state_ref_from_memory, qwen3_decode_loop_args_from,
+        qwen3_decode_report_verbosity_from_env, qwen3_dense_weights_path_from_env,
+        qwen3_engram_policy_checksum, qwen3_engram_select_token, qwen3_engram_state_words,
+        qwen3_guest_candidate_records, qwen3_guest_decode_loop_args_from,
         qwen3_guest_default_w5_profile, qwen3_guest_dense_runtime,
         qwen3_guest_engram_candidate_counts, qwen3_guest_engram_env_vars,
         qwen3_guest_engram_env_vars_from_lookup, qwen3_guest_engram_expected_terminal_rewrites,
@@ -4110,7 +4279,7 @@ mod tests {
         LingquMemoryDurableStore, LingquMemoryDurableStoreSnapshot, LingquObjectServiceStub,
         LingquObjectVersionSelector, MemoryCatalogSnapshot, QueryResult, Qwen3CandidateRecord,
         Qwen3DecodeReportVerbosity, Qwen3EngramConfig, Qwen3EngramContextOp, Qwen3EngramMode,
-        Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
+        Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs, W5MemoryBootstrapConfig,
         SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
     };
     use std::env;
@@ -4418,6 +4587,74 @@ mod tests {
     }
 
     #[test]
+    fn w5_inference_cluster_args_accept_memory_service_bootstrap() {
+        let args = qwen3_guest_decode_loop_args_from([
+            "w5-inference-cluster",
+            "--steps=2",
+            "--memory-store=/tmp/lingqu-memory-store.json",
+            "--memory-object-store=/tmp/lingqu-object-store.json",
+            "--memory-engram-state=/tmp/engram-state.json",
+            "--memory-registry-dir=/tmp/qwen3-registry",
+            "--memory-owner-entity=3",
+            "--memory-producer-entity=4",
+        ])
+        .expect("parse w5 memory bootstrap args")
+        .expect("w5 memory bootstrap args");
+
+        assert_eq!(args.engram, Qwen3EngramConfig::default());
+        let memory_bootstrap = args.memory_bootstrap.expect("memory bootstrap");
+        assert_eq!(
+            memory_bootstrap.store_path,
+            PathBuf::from("/tmp/lingqu-memory-store.json")
+        );
+        assert_eq!(
+            memory_bootstrap.object_store_path,
+            PathBuf::from("/tmp/lingqu-object-store.json")
+        );
+        assert_eq!(
+            memory_bootstrap.engram_state_path,
+            PathBuf::from("/tmp/engram-state.json")
+        );
+        assert_eq!(
+            memory_bootstrap.registry_dir,
+            PathBuf::from("/tmp/qwen3-registry")
+        );
+        assert_eq!(memory_bootstrap.owner_entity, 3);
+        assert_eq!(memory_bootstrap.producer_entity, 4);
+    }
+
+    #[test]
+    fn w5_inference_cluster_args_reject_partial_memory_bootstrap() {
+        let err = qwen3_guest_decode_loop_args_from([
+            "w5-inference-cluster",
+            "--memory-store=/tmp/lingqu-memory-store.json",
+        ])
+        .expect_err("partial memory bootstrap should fail");
+
+        assert!(err
+            .to_string()
+            .contains("--memory-store, --memory-object-store, --memory-engram-state"));
+    }
+
+    #[test]
+    fn w5_inference_cluster_args_reject_mixed_memory_and_state_ref_bootstrap() {
+        let err = qwen3_guest_decode_loop_args_from([
+            "w5-inference-cluster",
+            "--engram-state-ref=abcd",
+            "--object-registry-dir=/tmp/qwen3-registry-explicit",
+            "--memory-store=/tmp/lingqu-memory-store.json",
+            "--memory-object-store=/tmp/lingqu-object-store.json",
+            "--memory-engram-state=/tmp/engram-state.json",
+            "--memory-registry-dir=/tmp/qwen3-registry",
+        ])
+        .expect_err("mixed memory and state-ref bootstrap should fail");
+
+        assert!(err
+            .to_string()
+            .contains("--memory-* bootstrap cannot be combined"));
+    }
+
+    #[test]
     fn qwen3_guest_decode_loop_args_require_registry_with_state_ref() {
         let err =
             qwen3_guest_decode_loop_args_from(["w5-inference-cluster", "--engram-state-ref=abcd"])
@@ -4597,6 +4834,7 @@ mod tests {
             weights_path: Some(dir.clone()),
             w5_profile: None,
             engram: Qwen3EngramConfig::default(),
+            memory_bootstrap: None,
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("dense runtime");
         assert_eq!(runtime.model_key, "qwen3-0-6b");
@@ -4645,6 +4883,7 @@ mod tests {
             weights_path: Some(dir.clone()),
             w5_profile: None,
             engram: Qwen3EngramConfig::default(),
+            memory_bootstrap: None,
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("reference shape runtime");
         assert!(runtime
@@ -4692,6 +4931,7 @@ mod tests {
             weights_path: Some(dir.clone()),
             w5_profile: None,
             engram: Qwen3EngramConfig::default(),
+            memory_bootstrap: None,
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("14B generic runtime");
         assert_eq!(runtime.model_key, "qwen3-14b");
@@ -6539,6 +6779,39 @@ stage qwen3_range_forward_runtime_output_publish node=2
                 "missing registry entry kind {kind}: {registry_entries:?}"
             );
         }
+        let bootstrap_registry_dir = root.join("qwen3_registry_bootstrap");
+        let publication = publish_w5_engram_state_ref_from_memory(&W5MemoryBootstrapConfig {
+            store_path: store.clone(),
+            object_store_path: object_store.clone(),
+            engram_state_path: engram_state.clone(),
+            registry_dir: bootstrap_registry_dir.clone(),
+            owner_entity: 0,
+            producer_entity: 0,
+        })
+        .expect("publish w5 engram state ref from memory bootstrap");
+        assert_eq!(publication.engram_state_id, "engram/test/0");
+        assert!(!publication.state_ref_hex.is_empty());
+        assert_eq!(publication.table_bytes, 8);
+        assert_eq!(publication.indices_bytes, 4);
+        assert_eq!(publication.gate_bytes, 8);
+        let bootstrap_registry_entries = fs::read_dir(&bootstrap_registry_dir)
+            .expect("read bootstrap registry dir")
+            .map(|entry| {
+                entry
+                    .expect("bootstrap registry entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect::<Vec<_>>();
+        for kind in ["kind0015", "kind0016", "kind0017", "kind0018"] {
+            assert!(
+                bootstrap_registry_entries
+                    .iter()
+                    .any(|entry| entry.contains(kind)),
+                "missing bootstrap registry entry kind {kind}: {bootstrap_registry_entries:?}"
+            );
+        }
         let _ = fs::remove_dir_all(&root);
     }
 }
@@ -6649,13 +6922,28 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         );
     }
     let runtime = qwen3_guest_dense_runtime(args)?;
-    let engram_simt = qwen3_prepare_engram_simt_mode(&args.engram)?;
+    let mut effective_engram = args.engram.clone();
+    let memory_publication = if let Some(memory_bootstrap) = &args.memory_bootstrap {
+        let publication = publish_w5_engram_state_ref_from_memory(memory_bootstrap)
+            .context("publish Memory Service EngramStateObjectRef for W5")?;
+        effective_engram.enabled = true;
+        effective_engram.pool = Qwen3EngramPool::Obmm;
+        if effective_engram.context_op == Qwen3EngramContextOp::Disabled {
+            effective_engram.context_op = Qwen3EngramContextOp::CpuReference;
+        }
+        effective_engram.state_ref = Some(publication.state_ref_hex.clone());
+        effective_engram.object_registry_dir = Some(memory_bootstrap.registry_dir.clone());
+        Some(publication)
+    } else {
+        None
+    };
+    let engram_simt = qwen3_prepare_engram_simt_mode(&effective_engram)?;
     let engram_registry_validation =
-        qwen3_validate_guest_engram_state_registry(&args.engram, &runtime.profile)?;
+        qwen3_validate_guest_engram_state_registry(&effective_engram, &runtime.profile)?;
     let w5_profile = args
         .w5_profile
         .clone()
-        .unwrap_or_else(|| qwen3_guest_default_w5_profile(&runtime, &args.engram));
+        .unwrap_or_else(|| qwen3_guest_default_w5_profile(&runtime, &effective_engram));
     println!("qwen3_guest_decode_loop");
     println!("  script: {}", script_path.display());
     println!("  workload: w5 inference cluster");
@@ -6679,18 +6967,42 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         prepare_qwen3_matmul_batch_environment(matmul_batch)?;
         println!("  matmul_batch: {}", matmul_batch);
     }
-    if args.engram.enabled {
+    if let Some(publication) = &memory_publication {
+        println!("  memory_service: lingqu_memory_service");
+        println!("  memory_fixture_backed: false");
+        println!("  memory_engram_state: {}", publication.engram_state_id);
+        println!(
+            "  memory_object_registry_dir: {}",
+            effective_engram
+                .object_registry_dir
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default()
+        );
+        println!("  memory_engram_state_ref: {}", publication.state_ref_hex);
+        println!("  memory_registry_table_bytes: {}", publication.table_bytes);
+        println!(
+            "  memory_registry_indices_bytes: {}",
+            publication.indices_bytes
+        );
+        println!("  memory_registry_gate_bytes: {}", publication.gate_bytes);
+        println!(
+            "  memory_registry_state_manifest_bytes: {}",
+            publication.state_manifest_bytes
+        );
+    }
+    if effective_engram.enabled {
         println!(
             "  engram: enabled=true mode={} pool={} owner_node={} no_repeat_ngram_size={} repetition_penalty_milli={} history_window={} blocked_token_ids={:?} context_op={} report={}",
-            qwen3_engram_mode_name(args.engram.mode),
-            qwen3_engram_pool_name(args.engram.pool),
-            args.engram.owner_node,
-            args.engram.no_repeat_ngram_size,
-            args.engram.repetition_penalty_milli,
-            args.engram.history_window,
-            args.engram.blocked_token_ids,
-            qwen3_engram_context_op_name(args.engram.context_op),
-            qwen3_engram_report_name(args.engram.report)
+            qwen3_engram_mode_name(effective_engram.mode),
+            qwen3_engram_pool_name(effective_engram.pool),
+            effective_engram.owner_node,
+            effective_engram.no_repeat_ngram_size,
+            effective_engram.repetition_penalty_milli,
+            effective_engram.history_window,
+            effective_engram.blocked_token_ids,
+            qwen3_engram_context_op_name(effective_engram.context_op),
+            qwen3_engram_report_name(effective_engram.report)
         );
         if let Some(spec) = &engram_simt {
             println!(
@@ -6808,7 +7120,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
     command.env("SIM_QWEN3_DENSE_WEIGHTS_PATH", &runtime.weights_path);
-    for (key, value) in qwen3_guest_engram_env_vars(&args.engram, engram_session_id) {
+    for (key, value) in qwen3_guest_engram_env_vars(&effective_engram, engram_session_id) {
         command.env(key, value);
     }
     if let Some(spec) = &engram_simt {
@@ -6860,7 +7172,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     let expected_runtime_input_count = 7 * args.step_count;
     let expected_runtime_publish_count = 8 * args.step_count;
     let expected_terminal_token_count = args.step_count;
-    let expected_guest_engram_select_count = if args.engram.enabled {
+    let expected_guest_engram_select_count = if effective_engram.enabled {
         args.step_count
     } else {
         0
@@ -6869,11 +7181,11 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     let expected_guest_engram_candidate_wait_count = expected_guest_engram_select_count;
     let expected_guest_engram_selected_wait_count = expected_guest_engram_select_count;
     let expected_guest_engram_selected_writeback_count = expected_guest_engram_select_count;
-    let expected_guest_engram_history_wait_count = if args.engram.enabled {
+    let expected_guest_engram_history_wait_count = if effective_engram.enabled {
         let mut wait_nodes = [false; 9];
         wait_nodes[1] = true;
         wait_nodes[8] = true;
-        wait_nodes[args.engram.owner_node] = true;
+        wait_nodes[effective_engram.owner_node] = true;
         let wait_node_count = wait_nodes.iter().filter(|enabled| **enabled).count();
         wait_node_count * args.step_count.saturating_sub(1)
     } else {
@@ -6910,18 +7222,18 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             pass
         );
     }
-    let engram_report = if args.engram.enabled {
+    let engram_report = if effective_engram.enabled {
         let session_id = qwen3_guest_session_id(&prompt_history_tokens);
-        if args.engram.pool == Qwen3EngramPool::Obmm {
+        if effective_engram.pool == Qwen3EngramPool::Obmm {
             Some(qwen3_guest_engram_report_from_guest_log(
-                &args.engram,
+                &effective_engram,
                 session_id,
                 &prompt_history_tokens,
                 &combined,
             )?)
         } else {
             Some(qwen3_guest_engram_report(
-                &args.engram,
+                &effective_engram,
                 session_id,
                 &prompt_history_tokens,
                 &combined,
@@ -6931,7 +7243,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         None
     };
     let guest_engram_object_transport =
-        if args.engram.enabled && args.engram.pool == Qwen3EngramPool::Obmm {
+        if effective_engram.enabled && effective_engram.pool == Qwen3EngramPool::Obmm {
             Some(qwen3_guest_engram_object_transport_report(&combined))
         } else {
             None
@@ -6981,13 +7293,13 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             let blocked_writeback_tokens = terminal_tokens
                 .iter()
                 .copied()
-                .filter(|token| args.engram.blocked_token_ids.contains(token))
+                .filter(|token| effective_engram.blocked_token_ids.contains(token))
                 .collect::<Vec<_>>();
             println!(
                 "  guest_engram_writeback: selected_tokens={:?} terminal_tokens={:?} blocked_token_ids={:?} blocked_writeback_tokens={:?} history_lengths={:?} candidate_counts={:?} candidate_publishes={} candidate_waits={} selected_waits={} selected_writebacks={} terminal_rewrites={} select_logs={} history_waits={} state_waits={} state_resolved={} matches_terminal={}",
                 guest_engram_selected_tokens,
                 terminal_tokens,
-                args.engram.blocked_token_ids,
+                effective_engram.blocked_token_ids,
                 blocked_writeback_tokens,
                 guest_engram_history_lengths,
                 guest_engram_candidate_counts,
