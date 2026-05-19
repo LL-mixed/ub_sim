@@ -2563,6 +2563,9 @@ fn qwen3_register_range_forward_objects(
     guest_input: &[u8],
     summary: &Qwen3DenseReferenceRangeForwardSummary,
 ) -> Result<(), String> {
+    if std::env::var_os(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR).is_none() {
+        return Ok(());
+    }
     let model_key = qwen3_dense_runtime_model_key();
     let decode_step = qwen3_dense_runtime_decode_step_from_guest_input(guest_input);
     let terminal_range = contract.layer_end >= contract.total_layers;
@@ -19712,18 +19715,19 @@ mod tests {
         qwen3_dense_reference_write_service_flow_markers,
         qwen3_dense_reference_write_weight_reference_table,
         qwen3_dense_reference_write_weight_stage_link_table, qwen3_engram_state_manifest_payload,
-        qwen3_lingqu_key_hash, qwen3_lingqu_object_payload_checksum, qwen3_object_registry_put,
-        qwen3_obmm_object_ref_for_payload, qwen3_obmm_object_ref_wire_to_hex,
+        qwen3_lingqu_key_hash, qwen3_lingqu_object_payload_checksum, qwen3_object_registry_path,
+        qwen3_object_registry_put, qwen3_obmm_object_ref_for_payload,
+        qwen3_obmm_object_ref_wire_to_hex, qwen3_register_range_forward_objects,
         qwen3_validate_engram_state_object_service_payload,
         qwen3_validate_engram_state_registry_payload, read_u64_le_at,
         run_host_matmul_batched_smoke, run_host_matmul_smoke,
         run_qwen3_dense_reference_prefill_runtime, validate_qwen3_range_dispatch_object_refs,
         GuestUapiSurface, KvCachePayloadLayout, LocalGuestUapiSurface,
         Qwen3DenseReferenceHiddenLayerNodeRange, Qwen3DenseReferenceLayerDependencyDescriptor,
-        Qwen3DenseReferenceLogitsDescriptor, Qwen3DenseReferenceShard,
-        Qwen3GuestRangeComputeContract, Qwen3ProjectionKind, Qwen3RangeDispatchReq, UapiCommand,
-        UapiDescriptor, UapiResponse, QWEN3_DENSE_PROFILE_OBJECT_REF_MAX_COUNT,
-        QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET,
+        Qwen3DenseReferenceLogitsDescriptor, Qwen3DenseReferenceRangeForwardSummary,
+        Qwen3DenseReferenceShard, Qwen3GuestRangeComputeContract, Qwen3ProjectionKind,
+        Qwen3RangeDispatchReq, UapiCommand, UapiDescriptor, UapiResponse,
+        QWEN3_DENSE_PROFILE_OBJECT_REF_MAX_COUNT, QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
@@ -25827,6 +25831,98 @@ mod tests {
                     .expect("inline refs validate");
 
                 std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT);
+            },
+        );
+    }
+
+    #[test]
+    fn qwen3_range_forward_registry_publish_requires_explicit_dir() {
+        run_simpler_native_test_isolated(
+            "qwen3_range_forward_registry_publish_requires_explicit_dir",
+            || {
+                const HIDDEN_BYTES: usize = 16;
+                const KV_BYTES: usize = 32;
+
+                let model_key = format!("qwen3-inline-range-registry-test-{}", std::process::id());
+                std::env::set_var("SIM_QWEN3_DENSE_MODEL_KEY", &model_key);
+                std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR);
+
+                let contract = Qwen3GuestRangeComputeContract {
+                    node: 0,
+                    layer_start: 0,
+                    layer_end: 4,
+                    next_node: 1,
+                    pipeline_nodes: 8,
+                    total_layers: 28,
+                    hidden_bytes: HIDDEN_BYTES as u32,
+                };
+                let hidden_payload = vec![0x44u8; HIDDEN_BYTES];
+                let kv_payload = vec![0x55u8; KV_BYTES];
+                let hidden_checksum =
+                    qwen3_dense_reference_range_object_payload_checksum(&hidden_payload);
+                let kv_checksum = qwen3_dense_reference_range_object_payload_checksum(&kv_payload);
+                let summary = Qwen3DenseReferenceRangeForwardSummary {
+                    node: u64::from(contract.node),
+                    layer_start: u64::from(contract.layer_start),
+                    layer_end: u64::from(contract.layer_end),
+                    layer_count: u64::from(contract.layer_end - contract.layer_start),
+                    next_node: u64::from(contract.next_node),
+                    pipeline_nodes: u64::from(contract.pipeline_nodes),
+                    total_layers: u64::from(contract.total_layers),
+                    hidden_bytes: HIDDEN_BYTES as u64,
+                    input_tensor_checksum: 1,
+                    output_tensor_checksum: hidden_checksum,
+                    range_layer_checksum: 2,
+                    real_layer_execution_count: 0,
+                    first_layer_output_checksum: hidden_checksum,
+                    final_layer_output_checksum: hidden_checksum,
+                    input_tensor_bytes: HIDDEN_BYTES as u64,
+                    output_tensor_bytes: HIDDEN_BYTES as u64,
+                    output_tensor_payload: hidden_payload,
+                    kv_state_bytes: KV_BYTES as u64,
+                    kv_state_checksum: kv_checksum,
+                    kv_state_payload: kv_payload,
+                    engram_context_report: None,
+                };
+                let hidden_key =
+                    format!("hidden/{model_key}/node2/range-runtime-input/decode-step0");
+                let hidden_ref = LingquObmmObjectRefWire::committed(
+                    QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+                    contract.node,
+                    contract.node,
+                    1,
+                    qwen3_lingqu_key_hash(&hidden_key),
+                    0,
+                    HIDDEN_BYTES as u64,
+                    hidden_checksum,
+                );
+                let default_hidden_path = qwen3_object_registry_path(&hidden_ref);
+                assert!(
+                    !default_hidden_path.exists(),
+                    "unique default registry path should not pre-exist: {}",
+                    default_hidden_path.display()
+                );
+
+                qwen3_register_range_forward_objects(contract, &[], &summary)
+                    .expect("skip legacy registry without explicit dir");
+                assert!(
+                    !default_hidden_path.exists(),
+                    "range output publish must not create default legacy registry payloads"
+                );
+
+                let registry_dir = std::env::temp_dir().join(format!(
+                    "ub_sim_explicit_qwen3_range_registry_{}",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&registry_dir);
+                std::env::set_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, &registry_dir);
+                qwen3_register_range_forward_objects(contract, &[], &summary)
+                    .expect("publish explicit legacy registry");
+                assert!(
+                    qwen3_object_registry_path(&hidden_ref).exists(),
+                    "explicit legacy registry dir should receive hidden payload"
+                );
+                let _ = std::fs::remove_dir_all(&registry_dir);
             },
         );
     }

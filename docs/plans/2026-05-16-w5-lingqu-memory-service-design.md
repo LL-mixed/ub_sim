@@ -1276,6 +1276,9 @@ Memory Service-published shortpath/prefetch/prefix-cache artifact refs.
   verifies the inline payload against the ObjectRef length/checksum before
   running the backend, so the W5 streaming path no longer needs qwen
   `kind*.bin` registry files for runtime range-output materialization.
+  sim-uapi also no longer writes live range outputs into the default qwen
+  registry directory; the legacy registry bridge is active only when
+  `SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR` is explicitly set.
 
 ## Observability
 
@@ -1576,8 +1579,9 @@ Current implementation status:
   shared Object Service instance or guest-mappable OBMM DB payload mapping.
   Runtime-produced per-step range-output objects already travel as ObjectRefs
   plus inline OBMM/UAPI payload views validated by sim-uapi, not through the
-  qwen registry reader. The existing per-step 128-byte engram policy state
-  remains a separate writeback object.
+  qwen registry reader or default qwen registry writer. The explicit legacy
+  registry bridge remains for old state-ref entrypoints. The existing per-step
+  128-byte engram policy state remains a separate writeback object.
 
 ## Acceptance Criteria
 

@@ -427,7 +427,9 @@ Status as of 2026-05-16:
   payload files. Live per-step range-output publication now carries ObjectRefs
   and sim-uapi validates the inline OBMM/UAPI payload view against those refs
   before backend execution, so the streaming path no longer needs qwen
-  `kind*.bin` registry payloads for hidden/KV materialization.
+  `kind*.bin` registry payloads for hidden/KV materialization or default
+  live range-output publication. The qwen registry bridge remains only for
+  explicit legacy runs that set `SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR`.
 
 ## Risks
 
