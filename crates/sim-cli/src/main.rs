@@ -2642,21 +2642,23 @@ fn load_w5_memory_decisions_from_store(
     } else {
         Vec::new()
     };
-    let shortpath_artifact = if let Some(artifact_id) = shortpath
-        .as_ref()
-        .and_then(|decision| decision.artifact_id.as_ref())
-    {
-        let artifact = w5_find_verified_execution_artifact(
-            &execution_artifacts,
-            artifact_id,
-            "shortpath decision",
-        )?;
-        validate_lingqu_execution_artifact_payloads(
-            &mut durable_store,
-            &artifact,
-            "shortpath decision",
-        )?;
-        Some(artifact)
+    let shortpath_artifact = if let Some(decision) = shortpath.as_ref() {
+        if let Some(artifact_id) = decision.artifact_id.as_ref() {
+            let artifact = w5_find_verified_execution_artifact(
+                &execution_artifacts,
+                artifact_id,
+                "shortpath decision",
+            )?;
+            validate_w5_shortpath_artifact_contract(decision, &artifact)?;
+            validate_lingqu_execution_artifact_payloads(
+                &mut durable_store,
+                &artifact,
+                "shortpath decision",
+            )?;
+            Some(artifact)
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -2752,6 +2754,54 @@ fn w5_find_verified_prefix_cache_artifact(
     Ok(artifact.clone())
 }
 
+fn validate_w5_shortpath_artifact_contract(
+    decision: &sim_memory::ShortpathDecisionRecord,
+    artifact: &sim_memory::ExecutionArtifactObject,
+) -> anyhow::Result<()> {
+    let expected_kind = match decision.action {
+        sim_memory::ShortpathAction::JumpToLayer => sim_memory::ExecutionArtifactKind::HiddenState,
+        sim_memory::ShortpathAction::JumpToTerminal => sim_memory::ExecutionArtifactKind::Logits,
+        sim_memory::ShortpathAction::Continue | sim_memory::ShortpathAction::RequireVerify => {
+            return Ok(());
+        }
+    };
+    if artifact.kind != expected_kind {
+        anyhow::bail!(
+            "shortpath decision {} action {:?} requires {:?} artifact, got {:?}",
+            decision.decision_id,
+            decision.action,
+            expected_kind,
+            artifact.kind
+        );
+    }
+    if decision.target_layer_start != Some(artifact.target_layer_start)
+        || decision.target_layer_end != Some(artifact.target_layer_end)
+    {
+        anyhow::bail!(
+            "shortpath decision {} target layer range does not match artifact {}",
+            decision.decision_id,
+            artifact.artifact_id
+        );
+    }
+    if decision.action == sim_memory::ShortpathAction::JumpToLayer
+        && artifact.target_layer_end <= artifact.target_layer_start
+    {
+        anyhow::bail!(
+            "shortpath decision {} jump-to-layer requires a non-empty layer range",
+            decision.decision_id
+        );
+    }
+    if decision.action == sim_memory::ShortpathAction::JumpToTerminal
+        && artifact.target_layer_end != artifact.target_layer_start
+    {
+        anyhow::bail!(
+            "shortpath decision {} jump-to-terminal requires a terminal zero-length target layer range",
+            decision.decision_id
+        );
+    }
+    Ok(())
+}
+
 fn validate_lingqu_execution_artifact_payloads(
     durable_store: &mut LingquMemoryDurableStore,
     artifact: &sim_memory::ExecutionArtifactObject,
@@ -2774,8 +2824,226 @@ fn validate_lingqu_execution_artifact_payloads(
                 payload_ref.bytes
             );
         }
+        if artifact.kind == sim_memory::ExecutionArtifactKind::Logits {
+            validate_w5_terminal_logits_payload(&bytes, artifact, source)?;
+        }
     }
     Ok(())
+}
+
+const W5_TERMINAL_LOGITS_MARKER: u64 = 0x713377346c6f6730;
+const W5_TERMINAL_TOKEN_TEXT_MARKER: u64 = 0x7133773474787430;
+const W5_TERMINAL_LOGITS_HEADER_BYTES: usize = 64;
+const W5_TERMINAL_LOGITS_ENTRY_WORDS: u64 = 45;
+const W5_TERMINAL_LOGITS_ENTRY_BYTES: usize = W5_TERMINAL_LOGITS_ENTRY_WORDS as usize * 8;
+const W5_TERMINAL_TOKEN_TEXT_HEADER_BYTES: usize = 64;
+const W5_TERMINAL_TOKEN_TEXT_ENTRY_WORDS: u64 = 8;
+const W5_TERMINAL_TOKEN_TEXT_ENTRY_BYTES: usize = W5_TERMINAL_TOKEN_TEXT_ENTRY_WORDS as usize * 8;
+
+fn validate_w5_terminal_logits_payload(
+    bytes: &[u8],
+    artifact: &sim_memory::ExecutionArtifactObject,
+    source: &str,
+) -> anyhow::Result<()> {
+    let marker = read_w5_u64(bytes, 0, "terminal_logits.marker")?;
+    let count = read_w5_u64(bytes, 8, "terminal_logits.count")?;
+    let entry_words = read_w5_u64(bytes, 16, "terminal_logits.entry_words")?;
+    let table_bytes = read_w5_u64(bytes, 24, "terminal_logits.table_bytes")?;
+    if marker != W5_TERMINAL_LOGITS_MARKER
+        || count == 0
+        || entry_words != W5_TERMINAL_LOGITS_ENTRY_WORDS
+        || table_bytes != count * W5_TERMINAL_LOGITS_ENTRY_BYTES as u64
+    {
+        anyhow::bail!(
+            "{source} execution artifact {} terminal logits header invalid",
+            artifact.artifact_id
+        );
+    }
+    let count_usize = usize::try_from(count)
+        .map_err(|_| anyhow::anyhow!("terminal logits count too large: {count}"))?;
+    let logits_table_bytes = usize::try_from(table_bytes)
+        .map_err(|_| anyhow::anyhow!("terminal logits table too large: {table_bytes}"))?;
+    let token_text_header = W5_TERMINAL_LOGITS_HEADER_BYTES
+        .checked_add(logits_table_bytes)
+        .ok_or_else(|| anyhow::anyhow!("terminal logits table overflow"))?;
+    let token_text_base = token_text_header
+        .checked_add(W5_TERMINAL_TOKEN_TEXT_HEADER_BYTES)
+        .ok_or_else(|| anyhow::anyhow!("terminal token text header overflow"))?;
+    let token_text_marker = read_w5_u64(bytes, token_text_header, "terminal_token_text.marker")?;
+    let token_text_count = read_w5_u64(bytes, token_text_header + 8, "terminal_token_text.count")?;
+    let token_text_entry_words = read_w5_u64(
+        bytes,
+        token_text_header + 16,
+        "terminal_token_text.entry_words",
+    )?;
+    let token_text_table_bytes = read_w5_u64(
+        bytes,
+        token_text_header + 24,
+        "terminal_token_text.table_bytes",
+    )?;
+    let token_text_total_bytes = read_w5_u64(
+        bytes,
+        token_text_header + 32,
+        "terminal_token_text.total_bytes",
+    )?;
+    if token_text_marker != W5_TERMINAL_TOKEN_TEXT_MARKER
+        || token_text_count != count
+        || token_text_entry_words != W5_TERMINAL_TOKEN_TEXT_ENTRY_WORDS
+        || token_text_table_bytes != count * W5_TERMINAL_TOKEN_TEXT_ENTRY_BYTES as u64
+        || token_text_total_bytes == 0
+    {
+        anyhow::bail!(
+            "{source} execution artifact {} terminal token text header invalid",
+            artifact.artifact_id
+        );
+    }
+    let token_text_table_len = usize::try_from(token_text_table_bytes)
+        .map_err(|_| anyhow::anyhow!("terminal token text table too large"))?;
+    let token_text_end = token_text_base
+        .checked_add(token_text_table_len)
+        .ok_or_else(|| anyhow::anyhow!("terminal token text table overflow"))?;
+    if bytes.len() < token_text_end {
+        anyhow::bail!(
+            "{source} execution artifact {} terminal payload truncated: got {} expected at least {}",
+            artifact.artifact_id,
+            bytes.len(),
+            token_text_end
+        );
+    }
+    for entry in 0..count_usize {
+        validate_w5_terminal_logits_entry(bytes, entry, count, artifact, source)?;
+        validate_w5_terminal_token_text_entry(bytes, token_text_base, entry, artifact, source)?;
+    }
+    Ok(())
+}
+
+fn validate_w5_terminal_logits_entry(
+    bytes: &[u8],
+    entry: usize,
+    count: u64,
+    artifact: &sim_memory::ExecutionArtifactObject,
+    source: &str,
+) -> anyhow::Result<()> {
+    let logits_base = W5_TERMINAL_LOGITS_HEADER_BYTES + entry * W5_TERMINAL_LOGITS_ENTRY_BYTES;
+    let sampled_token = read_w5_u64(bytes, logits_base + 32, "terminal_logits.sampled_token")?;
+    let runner_up_token = read_w5_u64(bytes, logits_base + 40, "terminal_logits.runner_up_token")?;
+    let margin_milli = read_w5_u64(bytes, logits_base + 48, "terminal_logits.margin_milli")?;
+    let logits_checksum = read_w5_u64(bytes, logits_base + 56, "terminal_logits.checksum")?;
+    let text_checksum = read_w5_u64(bytes, logits_base + 64, "terminal_logits.text_checksum")?;
+    let step_index = read_w5_u64(bytes, logits_base + 72, "terminal_logits.step_index")?;
+    let full_vocab_checked = read_w5_u64(
+        bytes,
+        logits_base + 104,
+        "terminal_logits.full_vocab_checked",
+    )?;
+    let full_vocab_checksum = read_w5_u64(
+        bytes,
+        logits_base + 112,
+        "terminal_logits.full_vocab_checksum",
+    )?;
+    let top_logit_bits = read_w5_u64(bytes, logits_base + 120, "terminal_logits.top_logit_bits")?;
+    let runner_up_logit_bits = read_w5_u64(
+        bytes,
+        logits_base + 128,
+        "terminal_logits.runner_up_logit_bits",
+    )?;
+    let candidate_count = read_w5_u64(bytes, logits_base + 160, "terminal_logits.candidate_count")?;
+    if sampled_token >= full_vocab_checked
+        || runner_up_token >= full_vocab_checked
+        || sampled_token == runner_up_token
+        || margin_milli == 0
+        || logits_checksum == 0
+        || text_checksum == 0
+        || step_index != entry as u64
+        || full_vocab_checked == 0
+        || full_vocab_checksum == 0
+        || top_logit_bits == 0
+        || runner_up_logit_bits == 0
+        || candidate_count == 0
+        || candidate_count > 4
+    {
+        anyhow::bail!(
+            "{source} execution artifact {} terminal logits entry invalid at index {entry}",
+            artifact.artifact_id
+        );
+    }
+    for candidate in 0..usize::try_from(candidate_count).unwrap_or(0) {
+        let candidate_base = logits_base + 168 + candidate * 48;
+        let token = read_w5_u64(bytes, candidate_base, "terminal_logits.candidate_token")?;
+        let logit_bits = read_w5_u64(bytes, candidate_base + 8, "terminal_logits.candidate_logit")?;
+        let candidate_text_checksum =
+            read_w5_u64(bytes, candidate_base + 16, "terminal_logits.candidate_text")?;
+        let piece_bytes = read_w5_u64(
+            bytes,
+            candidate_base + 24,
+            "terminal_logits.candidate_piece_bytes",
+        )?;
+        if token >= full_vocab_checked
+            || logit_bits == 0
+            || candidate_text_checksum == 0
+            || piece_bytes == 0
+        {
+            anyhow::bail!(
+                "{source} execution artifact {} terminal logits candidate invalid at index {entry}:{candidate}",
+                artifact.artifact_id
+            );
+        }
+        if candidate == 0 && token != sampled_token {
+            anyhow::bail!(
+                "{source} execution artifact {} terminal logits candidate0 does not match sampled token",
+                artifact.artifact_id
+            );
+        }
+    }
+    if count != 1 && entry == 0 && step_index != 0 {
+        anyhow::bail!(
+            "{source} execution artifact {} terminal logits first step invalid",
+            artifact.artifact_id
+        );
+    }
+    Ok(())
+}
+
+fn validate_w5_terminal_token_text_entry(
+    bytes: &[u8],
+    token_text_base: usize,
+    entry: usize,
+    artifact: &sim_memory::ExecutionArtifactObject,
+    source: &str,
+) -> anyhow::Result<()> {
+    let logits_base = W5_TERMINAL_LOGITS_HEADER_BYTES + entry * W5_TERMINAL_LOGITS_ENTRY_BYTES;
+    let text_base = token_text_base + entry * W5_TERMINAL_TOKEN_TEXT_ENTRY_BYTES;
+    let sampled_token = read_w5_u64(bytes, logits_base + 32, "terminal_logits.sampled_token")?;
+    let text_checksum = read_w5_u64(bytes, logits_base + 64, "terminal_logits.text_checksum")?;
+    let text_step = read_w5_u64(bytes, text_base, "terminal_token_text.step")?;
+    let text_token = read_w5_u64(bytes, text_base + 8, "terminal_token_text.token")?;
+    let byte_len = read_w5_u64(bytes, text_base + 24, "terminal_token_text.byte_len")?;
+    let piece_word0 = read_w5_u64(bytes, text_base + 32, "terminal_token_text.piece_word0")?;
+    let checksum = read_w5_u64(bytes, text_base + 48, "terminal_token_text.checksum")?;
+    if text_step != entry as u64
+        || text_token != sampled_token
+        || byte_len == 0
+        || piece_word0 == 0
+        || checksum != text_checksum
+    {
+        anyhow::bail!(
+            "{source} execution artifact {} terminal token text entry invalid at index {entry}",
+            artifact.artifact_id
+        );
+    }
+    Ok(())
+}
+
+fn read_w5_u64(bytes: &[u8], offset: usize, field: &str) -> anyhow::Result<u64> {
+    let end = offset
+        .checked_add(8)
+        .ok_or_else(|| anyhow::anyhow!("{field} offset overflow"))?;
+    let raw = bytes
+        .get(offset..end)
+        .ok_or_else(|| anyhow::anyhow!("{field} out of bounds"))?;
+    Ok(u64::from_le_bytes(
+        raw.try_into().expect("u64 field length"),
+    ))
 }
 
 fn validate_lingqu_prefix_cache_payloads(
@@ -4973,6 +5241,96 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
 
+    fn sample_w5_terminal_logits_payload() -> Vec<u8> {
+        const LOGITS_HEADER_BYTES: usize = 64;
+        const LOGITS_ENTRY_BYTES: usize = 45 * 8;
+        const TOKEN_TEXT_HEADER_BYTES: usize = 64;
+        const TOKEN_TEXT_ENTRY_BYTES: usize = 8 * 8;
+        let token_text_header = LOGITS_HEADER_BYTES + LOGITS_ENTRY_BYTES;
+        let token_text_base = token_text_header + TOKEN_TEXT_HEADER_BYTES;
+        let mut payload = vec![0u8; token_text_base + TOKEN_TEXT_ENTRY_BYTES];
+
+        write_test_u64(&mut payload, 0, 0x713377346c6f6730);
+        write_test_u64(&mut payload, 8, 1);
+        write_test_u64(&mut payload, 16, 45);
+        write_test_u64(&mut payload, 24, LOGITS_ENTRY_BYTES as u64);
+        write_test_u64(&mut payload, LOGITS_HEADER_BYTES + 16, 1_000_000);
+        write_test_u64(&mut payload, LOGITS_HEADER_BYTES + 24, 151_936);
+        write_test_u64(&mut payload, LOGITS_HEADER_BYTES + 32, 11);
+        write_test_u64(&mut payload, LOGITS_HEADER_BYTES + 40, 358);
+        write_test_u64(&mut payload, LOGITS_HEADER_BYTES + 48, 100);
+        write_test_u64(&mut payload, LOGITS_HEADER_BYTES + 56, 0xaaa0);
+        write_test_u64(&mut payload, LOGITS_HEADER_BYTES + 64, 0xbbb0);
+        write_test_u64(&mut payload, LOGITS_HEADER_BYTES + 80, 0x1110);
+        write_test_u64(&mut payload, LOGITS_HEADER_BYTES + 88, 0x2220);
+        write_test_u64(&mut payload, LOGITS_HEADER_BYTES + 96, 0x3330);
+        write_test_u64(&mut payload, LOGITS_HEADER_BYTES + 104, 151_936);
+        write_test_u64(&mut payload, LOGITS_HEADER_BYTES + 112, 0xccc0);
+        write_test_u64(&mut payload, LOGITS_HEADER_BYTES + 120, 0x3f80_0000);
+        write_test_u64(&mut payload, LOGITS_HEADER_BYTES + 128, 0x3f00_0000);
+        write_test_u64(&mut payload, LOGITS_HEADER_BYTES + 136, 40);
+        write_test_u64(&mut payload, LOGITS_HEADER_BYTES + 144, 0x4440);
+        write_test_u64(&mut payload, LOGITS_HEADER_BYTES + 152, 0x5550);
+        write_test_u64(&mut payload, LOGITS_HEADER_BYTES + 160, 2);
+        write_test_terminal_candidate(
+            &mut payload,
+            LOGITS_HEADER_BYTES + 168,
+            11,
+            0x3f80_0000,
+            0xbbb0,
+            1,
+            0x41,
+        );
+        write_test_terminal_candidate(
+            &mut payload,
+            LOGITS_HEADER_BYTES + 216,
+            358,
+            0x3f00_0000,
+            0xddd0,
+            1,
+            0x42,
+        );
+
+        write_test_u64(&mut payload, token_text_header, 0x7133773474787430);
+        write_test_u64(&mut payload, token_text_header + 8, 1);
+        write_test_u64(&mut payload, token_text_header + 16, 8);
+        write_test_u64(
+            &mut payload,
+            token_text_header + 24,
+            TOKEN_TEXT_ENTRY_BYTES as u64,
+        );
+        write_test_u64(&mut payload, token_text_header + 32, 1);
+        write_test_u64(&mut payload, token_text_header + 40, 0x1234);
+        write_test_u64(&mut payload, token_text_header + 48, 2);
+        write_test_u64(&mut payload, token_text_base, 0);
+        write_test_u64(&mut payload, token_text_base + 8, 11);
+        write_test_u64(&mut payload, token_text_base + 24, 1);
+        write_test_u64(&mut payload, token_text_base + 32, 0x41);
+        write_test_u64(&mut payload, token_text_base + 48, 0xbbb0);
+        write_test_u64(&mut payload, token_text_base + 56, 2);
+        payload
+    }
+
+    fn write_test_terminal_candidate(
+        payload: &mut [u8],
+        offset: usize,
+        token: u64,
+        logit_bits: u64,
+        text_checksum: u64,
+        piece_bytes: u64,
+        piece_word0: u64,
+    ) {
+        write_test_u64(payload, offset, token);
+        write_test_u64(payload, offset + 8, logit_bits);
+        write_test_u64(payload, offset + 16, text_checksum);
+        write_test_u64(payload, offset + 24, piece_bytes);
+        write_test_u64(payload, offset + 32, piece_word0);
+    }
+
+    fn write_test_u64(payload: &mut [u8], offset: usize, value: u64) {
+        payload[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
     #[test]
     fn qwen3_decode_loop_args_default_to_two_steps() {
         let args = qwen3_decode_loop_args_from([
@@ -6419,7 +6777,10 @@ stage qwen3_range_forward_runtime_output_publish node=2
         let prefetch_plan_path = root.join("prefetch_plan.json");
         let mut seed_store = LingquMemoryDurableStore::new();
         let logits_payload_ref = seed_store
-            .write_block_payload("block/logits/step3/node4", vec![0x51; 16])
+            .write_block_payload(
+                "block/logits/step3/node4",
+                sample_w5_terminal_logits_payload(),
+            )
             .expect("write logits payload");
         let kv_payload_ref = seed_store
             .write_block_payload("block/kv/step4/node4", vec![0x77; 16])
@@ -6710,6 +7071,13 @@ stage qwen3_range_forward_runtime_output_publish node=2
         );
         assert_eq!(publication.prefetch_refs.len(), 1);
         let env_vars = w5_memory_decision_env_vars(&decision_config, &bundle, Some(&publication));
+        assert!(env_vars
+            .iter()
+            .any(|(key, value)| key == "SIM_W5_MEMORY_SHORTPATH_ACTION"
+                && value == "jump-to-terminal"));
+        assert!(env_vars.iter().any(
+            |(key, value)| key == "SIM_W5_MEMORY_SHORTPATH_ARTIFACT_KIND" && value == "logits"
+        ));
         assert!(env_vars.iter().any(
             |(key, value)| key == "SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF" && value.len() == 128
         ));

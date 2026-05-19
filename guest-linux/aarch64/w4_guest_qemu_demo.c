@@ -4587,6 +4587,30 @@ static int parse_qwen3_w5_memory_decision_config(
                     config->shortpath_target_layer_end);
             return -1;
         }
+        if (strcmp(config->shortpath_action, "jump-to-layer") == 0 &&
+            (strcmp(config->shortpath_artifact_kind, "hidden-state") != 0 ||
+             target_end <= target_start)) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 w5 memory jump-to-layer contract invalid"
+                    " decision_id=%s artifact_kind=%s start=%u end=%u\n",
+                    config->shortpath_decision_id,
+                    config->shortpath_artifact_kind,
+                    target_start,
+                    target_end);
+            return -1;
+        }
+        if (strcmp(config->shortpath_action, "jump-to-terminal") == 0 &&
+            (strcmp(config->shortpath_artifact_kind, "logits") != 0 ||
+             target_end != target_start)) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 w5 memory jump-to-terminal contract invalid"
+                    " decision_id=%s artifact_kind=%s start=%u end=%u\n",
+                    config->shortpath_decision_id,
+                    config->shortpath_artifact_kind,
+                    target_start,
+                    target_end);
+            return -1;
+        }
     }
     if (has_prefetch &&
         (!str_nonempty(config->prefetch_scope) ||
