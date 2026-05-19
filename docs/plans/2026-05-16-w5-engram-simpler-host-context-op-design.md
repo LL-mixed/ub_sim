@@ -421,9 +421,11 @@ Status as of 2026-05-16:
   `modes=simpler-host-object-ref`, and produced the same terminal tokens
   `[11, 108386]`. Its observed context latencies were 2993ms and 950ms.
 - Memory decision artifact refs now follow the same Object Service snapshot
-  contract for hidden/KV/logits payloads. The remaining runtime-specific
-  compatibility path is per-step range-output publication; simpler-host
-  context operands are no longer coupled to qwen3 registry payload files.
+  contract for hidden/KV/logits payloads. The snapshot export includes a
+  compact payload index for guest-side terminal logits validation, so
+  jump-to-terminal artifact validation is no longer coupled to qwen3 registry
+  payload files. The remaining runtime-specific compatibility path is per-step
+  range-output publication.
 
 ## Risks
 

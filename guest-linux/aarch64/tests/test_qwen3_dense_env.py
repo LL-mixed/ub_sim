@@ -185,6 +185,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("artifact_kind=%s", guest_source)
         self.assertIn("jump-to-terminal contract invalid", guest_source)
         self.assertIn("qwen3_memory_shortpath_terminal_logits_record", guest_source)
+        self.assertIn("qwen3_read_object_service_payload", guest_source)
+        self.assertIn("W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_MAGIC", guest_source)
         self.assertIn("qwen3_w5_memory_terminal_logits_loaded", guest_source)
 
     def test_w5_inference_cluster_runner_delegates_to_legacy_compatible_runner(self):

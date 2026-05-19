@@ -1265,11 +1265,14 @@ Memory Service-published shortpath/prefetch/prefix-cache artifact refs.
   throughput optimization.
 - Memory decision artifact publication now writes verified hidden/KV/logits
   payloads into the same Lingqu Object Service checkpoint and exports them
-  through `SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT` refs. Targeted tests
-  validate both execution-artifact and prefix-cache publication plus sim-uapi
-  range operand materialization from the Object Service snapshot. The runtime
-  still keeps its existing per-step range-output registry reader until the live
-  runtime range-output object service path is unified.
+  through `SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT` refs. The adapter also emits
+  `lingqu_object_service_snapshot.bin`, a compact payload index derived from
+  the same snapshot, so guest-side terminal-jump validation can read logits
+  artifacts by ObjectRef without qwen `kind*.bin` files. Targeted tests
+  validate execution-artifact and prefix-cache publication, the payload index,
+  and sim-uapi range operand materialization from the Object Service snapshot.
+  The runtime still keeps its existing per-step range-output registry reader
+  until the live runtime range-output object service path is unified.
 
 ## Observability
 
@@ -1560,16 +1563,17 @@ Current implementation status:
   `w5_memory_object_service_snapshot_simpler_host_0_6b_2step_20260519` used
   `simpler-host-object-ref`; both produced terminal tokens `[11, 108386]` from
   the same Memory Service `EngramStateObject`. The adapter output directory
-  contained only `lingqu_object_service_snapshot.json`, not per-object
-  `kind*.bin` registry payload files.
+  contained Object Service snapshot artifacts, not per-object `kind*.bin`
+  registry payload files.
   Memory Service-published shortpath, prefetch, and prefix-cache artifact refs
   now use the same Object Service snapshot path; sim-uapi can materialize
-  hidden/KV range operands from those refs. The remaining gap is replacing the
-  exported snapshot file with a directly shared Object Service instance or
-  guest-mappable OBMM DB payload mapping, and then moving the runtime-produced
-  per-step range-output objects off the compatibility qwen3 registry reader.
-  The existing per-step 128-byte engram policy state remains a separate
-  writeback object.
+  hidden/KV range operands from those refs, and guest terminal-jump validation
+  can load logits artifacts from the compact Object Service payload index. The
+  remaining gap is replacing the exported snapshot/index files with a directly
+  shared Object Service instance or guest-mappable OBMM DB payload mapping, and
+  then moving the runtime-produced per-step range-output objects off the
+  compatibility qwen3 registry reader. The existing per-step 128-byte engram
+  policy state remains a separate writeback object.
 
 ## Acceptance Criteria
 

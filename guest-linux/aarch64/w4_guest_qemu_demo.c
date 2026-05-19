@@ -111,6 +111,10 @@
 #define W4_QWEN3_OBMM_KIND_ENGRAM_CONTEXT_INDICES 22U
 #define W4_QWEN3_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT 23U
 #define W4_QWEN3_OBMM_KIND_ENGRAM_STATE 24U
+#define W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_MAGIC 0x305941504f53514cULL
+#define W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_VERSION 1U
+#define W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES 32ULL
+#define W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES 48ULL
 #define W4_QWEN3_EXPECTED_SHARDS 8ULL
 #define W4_QWEN3_TILES_PER_SHARD 2ULL
 #define W4_QWEN3_EXPECTED_TILES \
@@ -5000,6 +5004,237 @@ static int qwen3_read_registry_payload(
     return 0;
 }
 
+static uint64_t qwen3_lingqu_object_payload_checksum(const uint8_t *bytes,
+                                                     uint64_t len)
+{
+    uint64_t acc = 0xcbf29ce484222325ULL;
+
+    if (!bytes) {
+        return 0;
+    }
+    for (uint64_t i = 0; i < len; ++i) {
+        acc ^= (uint64_t)bytes[i];
+        acc *= 0x00000100000001b3ULL;
+    }
+    return acc;
+}
+
+static int qwen3_object_service_payload_index_path(char *path, size_t path_len)
+{
+    const char *snapshot_path = getenv("SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT");
+    size_t len;
+
+    if (!path || path_len == 0) {
+        return -1;
+    }
+    if (!snapshot_path || snapshot_path[0] == '\0') {
+        return 1;
+    }
+    len = strlen(snapshot_path);
+    if (len + 1 >= path_len) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 object service snapshot path too long\n");
+        return -1;
+    }
+    memcpy(path, snapshot_path, len + 1U);
+    if (len >= 5U && strcmp(path + len - 5U, ".json") == 0) {
+        memcpy(path + len - 5U, ".bin", 5U);
+    } else if (len + 4U < path_len) {
+        memcpy(path + len, ".bin", 5U);
+    } else {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 object service payload index path too long\n");
+        return -1;
+    }
+    return 0;
+}
+
+static int qwen3_read_object_service_payload(
+    const struct lingqu_obmm_object_ref_wire *ref,
+    uint8_t **payload_out,
+    uint64_t *payload_len_out)
+{
+    char path[1024];
+    struct stat st;
+    FILE *fp = NULL;
+    uint8_t *index_bytes = NULL;
+    uint8_t *payload = NULL;
+    size_t file_len;
+    size_t read_len;
+    uint64_t magic;
+    uint32_t version;
+    uint32_t record_bytes;
+    uint64_t record_count;
+    int path_state;
+
+    if (!ref || !payload_out || !payload_len_out || ref->payload_bytes == 0 ||
+        ref->payload_bytes > SIZE_MAX) {
+        return -1;
+    }
+    path_state = qwen3_object_service_payload_index_path(path, sizeof(path));
+    if (path_state != 0) {
+        return path_state;
+    }
+    if (stat(path, &st) != 0 || st.st_size <= 0) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 object service payload index stat path=%s err=%s\n",
+                path,
+                strerror(errno));
+        return -1;
+    }
+    if ((uint64_t)st.st_size > SIZE_MAX) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 object service payload index too large path=%s\n",
+                path);
+        return -1;
+    }
+    file_len = (size_t)st.st_size;
+    index_bytes = (uint8_t *)malloc(file_len);
+    if (!index_bytes) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 object service payload index alloc bytes=%zu\n",
+                file_len);
+        return -1;
+    }
+    fp = fopen(path, "rb");
+    if (!fp) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 object service payload index open path=%s err=%s\n",
+                path,
+                strerror(errno));
+        free(index_bytes);
+        return -1;
+    }
+    read_len = fread(index_bytes, 1, file_len, fp);
+    {
+        int read_error = ferror(fp);
+        int close_error = fclose(fp);
+
+        if (read_error || close_error != 0 || read_len != file_len) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 object service payload index read path=%s got=%zu expected=%zu\n",
+                    path,
+                    read_len,
+                    file_len);
+            free(index_bytes);
+            return -1;
+        }
+    }
+    if (file_len < W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 object service payload index header truncated path=%s\n",
+                path);
+        free(index_bytes);
+        return -1;
+    }
+    magic = qwen3_ref_read_u64_le(index_bytes, 0);
+    version = qwen3_ref_read_u32_le(index_bytes, 8);
+    record_bytes = qwen3_ref_read_u32_le(index_bytes, 12);
+    record_count = qwen3_ref_read_u64_le(index_bytes, 16);
+    if (magic != W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_MAGIC ||
+        version != W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_VERSION ||
+        record_bytes != W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 object service payload index header invalid path=%s\n",
+                path);
+        free(index_bytes);
+        return -1;
+    }
+    if (record_count >
+        (UINT64_MAX - W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES) /
+            W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES ||
+        W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES +
+                record_count * W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES >
+            (uint64_t)file_len) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 object service payload index records truncated path=%s\n",
+                path);
+        free(index_bytes);
+        return -1;
+    }
+    for (uint64_t i = 0; i < record_count; ++i) {
+        uint64_t base =
+            W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES +
+            i * W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES;
+        uint64_t key_hash = qwen3_ref_read_u64_le(index_bytes, (size_t)base);
+        uint32_t owner = qwen3_ref_read_u32_le(index_bytes, (size_t)base + 8U);
+        uint32_t producer =
+            qwen3_ref_read_u32_le(index_bytes, (size_t)base + 12U);
+        uint64_t version_field =
+            qwen3_ref_read_u64_le(index_bytes, (size_t)base + 16U);
+        uint64_t payload_bytes =
+            qwen3_ref_read_u64_le(index_bytes, (size_t)base + 24U);
+        uint64_t payload_checksum =
+            qwen3_ref_read_u64_le(index_bytes, (size_t)base + 32U);
+        uint64_t payload_offset =
+            qwen3_ref_read_u64_le(index_bytes, (size_t)base + 40U);
+
+        if (key_hash != ref->key_hash || owner != ref->owner_entity ||
+            producer != ref->producer_entity ||
+            version_field != ref->object_version ||
+            payload_bytes != ref->payload_bytes ||
+            payload_checksum != ref->payload_checksum) {
+            continue;
+        }
+        if (payload_offset > (uint64_t)file_len ||
+            payload_bytes > (uint64_t)file_len - payload_offset) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 object service payload index payload range invalid path=%s\n",
+                    path);
+            free(index_bytes);
+            return -1;
+        }
+        payload = (uint8_t *)malloc((size_t)payload_bytes);
+        if (!payload) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 object service payload alloc bytes=%" PRIu64 "\n",
+                    payload_bytes);
+            free(index_bytes);
+            return -1;
+        }
+        memcpy(payload, index_bytes + payload_offset, (size_t)payload_bytes);
+        if (qwen3_lingqu_object_payload_checksum(payload, payload_bytes) !=
+            ref->payload_checksum) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 object service payload checksum mismatch"
+                    " path=%s expected=0x%016" PRIx64 "\n",
+                    path,
+                    ref->payload_checksum);
+            free(payload);
+            free(index_bytes);
+            return -1;
+        }
+        free(index_bytes);
+        *payload_out = payload;
+        *payload_len_out = payload_bytes;
+        return 0;
+    }
+    fprintf(stderr,
+            "[w4_guest] fail qwen3 object service payload missing"
+            " key_hash=0x%016" PRIx64 " version=%" PRIu64
+            " bytes=%" PRIu64 " checksum=0x%016" PRIx64 " path=%s\n",
+            ref->key_hash,
+            ref->object_version,
+            ref->payload_bytes,
+            ref->payload_checksum,
+            path);
+    free(index_bytes);
+    return -1;
+}
+
+static int qwen3_read_object_ref_payload(
+    const struct lingqu_obmm_object_ref_wire *ref,
+    uint8_t **payload_out,
+    uint64_t *payload_len_out)
+{
+    int rc = qwen3_read_object_service_payload(ref, payload_out, payload_len_out);
+
+    if (rc <= 0) {
+        return rc;
+    }
+    return qwen3_read_registry_payload(ref, payload_out, payload_len_out);
+}
+
 static int qwen3_terminal_token_record_from_logits_payload(
     const uint8_t *payload,
     uint64_t payload_len,
@@ -5165,7 +5400,7 @@ static int qwen3_memory_shortpath_terminal_logits_record(
                                     ref_out) != 0) {
         return -1;
     }
-    if (qwen3_read_registry_payload(ref_out, &payload, &payload_len) != 0) {
+    if (qwen3_read_object_ref_payload(ref_out, &payload, &payload_len) != 0) {
         return -1;
     }
     rc = qwen3_terminal_token_record_from_logits_payload(payload,

@@ -2634,6 +2634,14 @@ fn lingqu_object_payload_checksum(bytes: &[u8]) -> u64 {
     acc
 }
 
+fn qwen3_lingqu_key_hash(key: &str) -> u64 {
+    key.as_bytes()
+        .iter()
+        .fold(1_469_598_103_934_665_603u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(1_099_511_628_211)
+        })
+}
+
 #[derive(Debug)]
 struct W5EngramStateRefPublication {
     state_ref_hex: String,
@@ -3981,7 +3989,95 @@ fn export_w5_object_service_snapshot(
         .context("encode Object Service snapshot for W5")?;
     fs::write(&snapshot_path, snapshot_bytes)
         .with_context(|| format!("write Object Service snapshot {}", snapshot_path.display()))?;
+    export_w5_object_service_payload_index(&snapshot_path, &object_service.export_snapshot())?;
     Ok(snapshot_path)
+}
+
+const W5_OBJECT_SERVICE_PAYLOAD_INDEX_MAGIC: u64 = 0x3059_4150_4f53_514c;
+const W5_OBJECT_SERVICE_PAYLOAD_INDEX_VERSION: u32 = 1;
+const W5_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES: usize = 32;
+const W5_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES: usize = 48;
+
+fn export_w5_object_service_payload_index(
+    snapshot_path: &Path,
+    snapshot: &LingquObjectServiceSnapshot,
+) -> anyhow::Result<()> {
+    struct PayloadIndexRecord<'a> {
+        key_hash: u64,
+        owner_entity: u32,
+        producer_entity: u32,
+        version: u64,
+        bytes: u64,
+        checksum: u64,
+        payload: &'a [u8],
+    }
+
+    let mut records = Vec::new();
+    for record in &snapshot.records {
+        if record.state != LingquObjectState::Committed || record.payload_bytes.is_empty() {
+            continue;
+        }
+        let owner = record.owner_entity.unwrap_or(record.producer_entity);
+        let Ok(owner_entity) = u32::try_from(owner) else {
+            continue;
+        };
+        let Ok(producer_entity) = u32::try_from(record.producer_entity) else {
+            continue;
+        };
+        records.push(PayloadIndexRecord {
+            key_hash: qwen3_lingqu_key_hash(&record.key),
+            owner_entity,
+            producer_entity,
+            version: record.version,
+            bytes: record.bytes,
+            checksum: record.checksum,
+            payload: &record.payload_bytes,
+        });
+    }
+
+    let header_bytes = W5_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES;
+    let record_table_bytes = records
+        .len()
+        .checked_mul(W5_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES)
+        .ok_or_else(|| anyhow::anyhow!("Object Service payload index record table overflow"))?;
+    let payload_base = header_bytes
+        .checked_add(record_table_bytes)
+        .ok_or_else(|| anyhow::anyhow!("Object Service payload index payload base overflow"))?;
+    let mut bytes = vec![0u8; payload_base];
+    bytes[0..8].copy_from_slice(&W5_OBJECT_SERVICE_PAYLOAD_INDEX_MAGIC.to_le_bytes());
+    bytes[8..12].copy_from_slice(&W5_OBJECT_SERVICE_PAYLOAD_INDEX_VERSION.to_le_bytes());
+    bytes[12..16]
+        .copy_from_slice(&(W5_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES as u32).to_le_bytes());
+    bytes[16..24].copy_from_slice(&(records.len() as u64).to_le_bytes());
+
+    let mut payload_offset = payload_base;
+    for (index, record) in records.iter().enumerate() {
+        let base = header_bytes + index * W5_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES;
+        bytes[base..base + 8].copy_from_slice(&record.key_hash.to_le_bytes());
+        bytes[base + 8..base + 12].copy_from_slice(&record.owner_entity.to_le_bytes());
+        bytes[base + 12..base + 16].copy_from_slice(&record.producer_entity.to_le_bytes());
+        bytes[base + 16..base + 24].copy_from_slice(&record.version.to_le_bytes());
+        bytes[base + 24..base + 32].copy_from_slice(&record.bytes.to_le_bytes());
+        bytes[base + 32..base + 40].copy_from_slice(&record.checksum.to_le_bytes());
+        bytes[base + 40..base + 48].copy_from_slice(&(payload_offset as u64).to_le_bytes());
+        bytes.extend_from_slice(record.payload);
+        payload_offset = payload_offset
+            .checked_add(record.payload.len())
+            .ok_or_else(|| anyhow::anyhow!("Object Service payload index payload overflow"))?;
+    }
+
+    let sidecar_path = w5_object_service_payload_index_path(snapshot_path);
+    fs::write(&sidecar_path, bytes).with_context(|| {
+        format!(
+            "write Object Service payload index {}",
+            sidecar_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn w5_object_service_payload_index_path(snapshot_path: &Path) -> PathBuf {
+    snapshot_path.with_extension("bin")
 }
 
 fn run_lingqu_memory_publish_w5_engram_state_ref_cli(args: &[String]) -> anyhow::Result<()> {
@@ -5682,12 +5778,13 @@ mod tests {
         run_lingqu_memory_validate_flat_query, run_lingqu_memory_validate_w5_engram_object_ref,
         save_lingqu_durable_sim, save_lingqu_memory_durable_store,
         simpler_host_matmul_artifact_producer_path, validate_qwen3_dense_weights_path,
-        validate_w5_inference_profile, w5_memory_decision_env_vars, LingquDurableSim,
-        LingquDurableSimSnapshot, LingquMemoryDurableStore, LingquMemoryDurableStoreSnapshot,
-        LingquObjectServiceStub, LingquObjectVersionSelector, MemoryCatalogSnapshot, QueryResult,
-        Qwen3CandidateRecord, Qwen3DecodeReportVerbosity, Qwen3EngramConfig, Qwen3EngramContextOp,
-        Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
-        W5MemoryBootstrapConfig, W5MemoryDecisionConfig, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
+        validate_w5_inference_profile, w5_memory_decision_env_vars,
+        w5_object_service_payload_index_path, LingquDurableSim, LingquDurableSimSnapshot,
+        LingquMemoryDurableStore, LingquMemoryDurableStoreSnapshot, LingquObjectServiceStub,
+        LingquObjectVersionSelector, MemoryCatalogSnapshot, QueryResult, Qwen3CandidateRecord,
+        Qwen3DecodeReportVerbosity, Qwen3EngramConfig, Qwen3EngramContextOp, Qwen3EngramMode,
+        Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs, W5MemoryBootstrapConfig,
+        W5MemoryDecisionConfig, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
         SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
     };
     use std::env;
@@ -7556,6 +7653,34 @@ stage qwen3_range_forward_runtime_output_publish node=2
             &bundle,
         )
         .expect("publish w5 memory decision artifact refs");
+        let snapshot_path = publication
+            .object_service_snapshot_path
+            .as_ref()
+            .expect("decision artifact object service snapshot");
+        assert!(snapshot_path.exists());
+        assert!(w5_object_service_payload_index_path(snapshot_path).exists());
+        let publication_entries = fs::read_dir(root.join("qwen3-object-registry"))
+            .expect("read object service export dir")
+            .map(|entry| {
+                entry
+                    .expect("object service export entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect::<Vec<_>>();
+        assert!(publication_entries
+            .iter()
+            .any(|entry| entry == "lingqu_object_service_snapshot.json"));
+        assert!(publication_entries
+            .iter()
+            .any(|entry| entry == "lingqu_object_service_snapshot.bin"));
+        assert!(
+            publication_entries
+                .iter()
+                .all(|entry| !entry.starts_with("kind")),
+            "Object Service publication must not create qwen registry payload files: {publication_entries:?}"
+        );
         assert_eq!(
             publication
                 .shortpath_ref
