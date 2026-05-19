@@ -17,8 +17,9 @@ The hard boundary is:
 - durable namespace and metadata catalogs use Lingqu DFS;
 - W5 decode consumes ready object references and mapped operand views;
 - decode kernels do not ingest, rank, persist, or directly read DFS/Block.
-- range boundary shortpath decisions consume ObjectRefs and model-bound
-  execution artifacts; they do not consume raw vector database rows.
+- range boundary shortpath support records consume ObjectRefs and model-bound
+  execution artifacts; W5 planner decisions consume those support records, not
+  raw vector database rows.
 
 ## Core Decision
 
@@ -28,7 +29,7 @@ Use four explicit layers:
 Lingqu Memory Service
   durable memory records, chunks, embedding segments, vector indexes,
   retrieval policy, trust policy, query results, execution artifacts,
-  boundary lookup, and shortpath decision records
+  boundary lookup, and shortpath support records
 
 Hot State Materializer
   converts retrieval results into OBMM-backed tensor objects and publishes
@@ -39,9 +40,9 @@ W5 Engram Adapter
   consumed by the W5 engram context op
 
 W5 Boundary Planner
-  resolves model-bound execution artifacts at each range exit and returns
-  continue/jump/verify decisions; at each range start it can issue range,
-  step, or multi-step prefetch plans
+  consumes Memory Service support records at each range exit and returns
+  continue/jump/verify decisions; at each range start it can issue range, step,
+  or multi-step prefetch plans
 ```
 
 Lingqu Object Service remains the authority for object identity, placement,
@@ -66,6 +67,8 @@ The target path is:
 range exit hidden_ref + engram_state_ref
   -> BoundaryLookupRequest
   -> model-bound ExecutionArtifact lookup
+  -> ShortpathSupportRecord
+  -> W5 Boundary Planner
   -> ShortpathDecisionRecord
   -> continue | jump_to_layer | jump_to_terminal | require_verify
 ```
@@ -90,7 +93,7 @@ The Memory Service therefore owns two related but distinct domains:
 - semantic memory: records, chunks, embeddings, indexes, query results, hot
   memory tensors, and `EngramStateObject`;
 - execution memory: verified hidden/KV/logits artifacts, model/tokenizer
-  bindings, boundary indexes, and shortpath decisions.
+  bindings, boundary indexes, and shortpath support evidence.
 
 Embedding search can help find relevant state, but a shortpath jump must be
 backed by a model-native execution artifact with a model binding, layer range,
@@ -340,6 +343,8 @@ nodeN range compute
        allowed_actions
      }
   -> Lingqu Memory Service resolves verified ExecutionArtifactObject
+  -> ShortpathSupportRecord
+  -> W5 Boundary Planner
   -> ShortpathDecisionRecord
   -> continue normal handoff
      | jump to downstream hidden/KV artifact
@@ -347,9 +352,14 @@ nodeN range compute
      | require shadow verification
 ```
 
-This makes every range exit boundary a possible decision point. The decision
-must be auditable; W5 reports need the request id, artifact id, model binding,
-confidence, checksum, and verification policy that affected the run.
+This makes every range exit boundary a possible decision point. The Memory
+Service does not make the execution decision. It returns auditable support:
+candidate artifact, confidence, checksum, verification requirement, and reason.
+The W5 Boundary Planner owns the actual decision record because it is the layer
+that can evaluate runtime policy, scheduling pressure, verification mode, and
+whether a jump is allowed for the current run. W5 reports need both the support
+record and the planner decision so it is clear what evidence existed and what
+the runtime chose to do.
 
 ## Data Model
 
@@ -595,8 +605,9 @@ Engram Adapter or operator configuration, not to the core Memory Service.
 `EngramStateObject` is a materialized semantic/hot-memory view. It is not a
 shortpath decision record and must not encode `continue`, `jump_to_layer`, or
 `jump_to_terminal` directly. Range execution passes the `engram_state_id` as
-one input to `BoundaryLookupRequest`; the Memory Service or boundary planner
-then decides whether a verified `ExecutionArtifactObject` can be used.
+one input to `BoundaryLookupRequest`; the Memory Service returns support for
+whether a verified `ExecutionArtifactObject` can be used, and the W5 Boundary
+Planner decides whether to actually use it.
 
 `compatible_model_bindings` is optional at materialization time but mandatory
 for production shortpath use. An unbound Engram state can drive terminal
@@ -852,13 +863,38 @@ expires_at_us: optional u64
 This record does not prove skipped computation. It only proves what the planner
 asked the runtime to make cheaper before a later boundary or step needs it.
 
+### ShortpathSupportRecord
+
+Auditable support returned by the Memory Service for a boundary request.
+
+```text
+support_id: string
+request_id: string
+supported_action: continue | jump_to_layer | jump_to_terminal | require_verify
+artifact_id: optional string
+target_layer_start: optional u32
+target_layer_end: optional u32
+confidence_milli: u32
+verify_required: bool
+proof_checksum: u64
+reason: string
+created_at_us: u64
+version: u64
+```
+
+`continue` is real support, not a fallback. It means no policy-eligible,
+verified execution artifact was found for this boundary. A jump support record
+must name an `ExecutionArtifactObject`; otherwise the planner cannot prove what
+work would be skipped.
+
 ### ShortpathDecisionRecord
 
-Auditable decision returned by the Memory Service or boundary planner.
+Auditable decision returned by the W5 Boundary Planner.
 
 ```text
 decision_id: string
 request_id: string
+support_id: optional string
 action: continue | jump_to_layer | jump_to_terminal | require_verify
 artifact_id: optional string
 target_layer_start: optional u32
@@ -871,18 +907,21 @@ created_at_us: u64
 version: u64
 ```
 
-`continue` is a real decision, not a fallback. It means no policy-eligible,
-verified execution artifact was found for this boundary. A jump decision must
-name an `ExecutionArtifactObject`; otherwise the run cannot prove what work was
-skipped.
+The planner decision may accept, downgrade, or reject Memory Service support.
+For example, it can turn a `jump_to_terminal` support record into `continue`
+when the current run is not in a verification mode that permits terminal jumps.
+When the decision is based on Memory Service evidence, `support_id` must name
+the `ShortpathSupportRecord` that was evaluated. This separation keeps semantic
+memory lookup out of runtime scheduling policy while preserving an explicit
+audit edge from runtime action back to memory evidence.
 
 ### BoundaryLookupResponse
 
-Boundary lookup result.
+Boundary lookup result returned by the Memory Service.
 
 ```text
 request_id: string
-decision: ShortpathDecisionRecord
+support: ShortpathSupportRecord
 artifact: optional ExecutionArtifactObject
 ```
 
@@ -923,12 +962,14 @@ Shortpath-enabled W5 adds a boundary flow inside step execution:
    actions.
 3. Lingqu Memory Service resolves only verified and policy-eligible
    `ExecutionArtifactObject` records for that exact model/boundary state.
-4. The service writes a `ShortpathDecisionRecord`.
-5. `continue` keeps the normal node-to-node handoff.
-6. `jump_to_layer` publishes or forwards a downstream hidden/KV artifact ref
+4. The service writes a `ShortpathSupportRecord`.
+5. The W5 Boundary Planner writes a `ShortpathDecisionRecord` after applying
+   runtime policy to that support.
+6. `continue` keeps the normal node-to-node handoff.
+7. `jump_to_layer` publishes or forwards a downstream hidden/KV artifact ref
    and skips the covered range.
-7. `jump_to_terminal` forwards a logits artifact to terminal sampling.
-8. `require_verify` allows a speculative jump only when a shadow/full path will
+8. `jump_to_terminal` forwards a logits artifact to terminal sampling.
+9. `require_verify` allows a speculative jump only when a shadow/full path will
    verify the artifact and record the result.
 
 Online query is allowed later, but it must be modeled as request planning before
@@ -1073,6 +1114,10 @@ sim-cli lingqu-memory list-record-lifecycle \
 sim-cli lingqu-memory list-shortpath-decisions \
   --store <durable-store.json> \
   [--decision-id <shortpath-decision-id>]
+
+sim-cli lingqu-memory list-shortpath-supports \
+  --store <durable-store.json> \
+  [--support-id <shortpath-support-id>]
 
 sim-cli lingqu-memory list-prefetch-plans \
   --store <durable-store.json> \
@@ -1241,7 +1286,8 @@ Timing should separate:
 - boundary lookup and artifact-index lookup;
 - prefetch plan lookup and issue latency;
 - prefix cache lookup and KV attach planning;
-- shortpath decision write;
+- shortpath support write;
+- W5 planner shortpath decision write;
 - UAPI object map;
 - backend context-op dispatch.
 
@@ -1267,6 +1313,7 @@ Unit tests:
 - `PrefixCacheLookupRequest` returns the longest verified candidate and writes
   an auditable miss when there is no usable prefix.
 - `ShortpathDecisionRecord` rejects jump decisions without an artifact id.
+- `ShortpathSupportRecord` rejects jump support without an artifact id.
 - OBMM hot promote and evict keeps durable DFS/Block source valid.
 - stale version and checksum mismatch fail resolve.
 - tombstoned and quarantined memory records are not selected by normal query.
@@ -1283,8 +1330,9 @@ Integration tests:
 - evict OBMM hot tensors, rebuild state from Block/DFS, and rerun W5.
 - replay a prior run from DFS manifests and Block payload checksums.
 - register a verified logits artifact and verify boundary lookup returns
-  `jump_to_terminal`.
-- verify no-hit boundary lookup returns an auditable `continue` decision.
+  `jump_to_terminal` support.
+- verify no-hit boundary lookup returns auditable `continue` support and W5
+  planner records a `continue` decision.
 - issue a multi-step range-start prefetch request and verify the persisted
   `PrefetchPlanRecord` target step, checksum, and state.
 - register a verified prefix KV artifact and verify prefix cache lookup
@@ -1317,9 +1365,9 @@ CLI tests:
 9. Make real-memory W5 reject deterministic fallback paths.
 10. Add core data models for `InferenceModelBinding`, `RangeBoundary`,
     `ExecutionArtifactObject`, `BoundaryLookupRequest`,
-    `ShortpathDecisionRecord`, `BoundaryLookupResponse`,
-    `PrefetchPlanRequest`, `PrefetchPlanRecord`, `PrefixCacheKey`,
-    `PrefixCacheArtifact`, `PrefixCacheLookupRequest`,
+    `ShortpathSupportRecord`, `ShortpathDecisionRecord`,
+    `BoundaryLookupResponse`, `PrefetchPlanRequest`, `PrefetchPlanRecord`,
+    `PrefixCacheKey`, `PrefixCacheArtifact`, `PrefixCacheLookupRequest`,
     `PrefixCacheLookupResponse`, and `PrefixCacheReusePlan`.
 11. Add Memory Service boundary lookup over verified execution artifacts and
     range-start prefetch planning over artifact indexes.
@@ -1342,19 +1390,27 @@ Current implementation status:
   `EngramStateObject` now carries query provenance, operator kind/config hash,
   compatible model bindings, tensor dtype/shape, checksum, version, and
   lifetime metadata. This makes it suitable as a trustworthy boundary lookup
-  input, while keeping shortpath actions in `ShortpathDecisionRecord`.
+  input, while keeping shortpath support in `ShortpathSupportRecord` and
+  runtime actions in W5 planner `ShortpathDecisionRecord`.
   Step 10 also has a baseline data-model implementation in `sim-memory`:
   `InferenceModelBinding`, `RangeBoundary`, `ExecutionArtifactObject`,
-  `BoundaryLookupRequest`, `ShortpathDecisionRecord`,
-  `BoundaryLookupResponse`, `PrefetchPlanRequest`, and
+  `BoundaryLookupRequest`, `ShortpathSupportRecord`,
+  `ShortpathDecisionRecord`, `BoundaryLookupResponse`,
+  `PrefetchPlanRequest`, and
   `PrefetchPlanRecord`, `PrefixCacheKey`, `PrefixCacheArtifact`,
   `PrefixCacheLookupRequest`, `PrefixCacheLookupResponse`, and
   `PrefixCacheReusePlan` can be validated, registered, and used for a first
   exact boundary lookup over verified execution artifacts, range-start n-step
   prefetch planning, and auditable prefix cache hit/miss planning. Query
-  results, shortpath decisions, prefetch plans, and prefix-cache reuse/miss
-  decisions are persisted as append-only durable DFS audit logs and can be
-  rebuilt after restart. This is not yet wired into W5 guest range execution.
+  results, Memory Service shortpath support records, W5 planner shortpath
+  decisions, prefetch plans, and prefix-cache reuse/miss decisions are
+  persisted as append-only durable DFS audit logs and can be rebuilt after
+  restart. `BoundaryLookupResponse` now carries `ShortpathSupportRecord`
+  rather than a runtime decision. The W5 planner writes the corresponding
+  `ShortpathDecisionRecord` and stores the evaluated `support_id` as an
+  explicit audit edge, so reports no longer need to infer evidence provenance
+  from a reason string. This is not yet wired as an online range-exit call
+  inside W5 guest range execution.
   Query results can be persisted to and restored from DFS manifests with
   checksum validation, and QueryResult-driven hot materialization now carries
   that DFS manifest ref into both `HotMemoryStateObject` and
@@ -1395,9 +1451,15 @@ Current implementation status:
   to manually pre-exported env vars.
   `sim-cli lingqu-memory list-query-results` exposes durable query audit log
   inspection from the CLI. `list-record-lifecycle`,
-  `list-shortpath-decisions`, `list-prefetch-plans`, and
+  `list-shortpath-supports`, `list-shortpath-decisions`,
+  `list-prefetch-plans`, and
   `list-prefix-cache-reuse` expose the remaining durable Memory Service audit
-  logs without reading legacy manifests or synthesizing missing state.
+  logs and W5 planner shortpath decision audit without reading legacy manifests
+  or synthesizing missing state. The W5 runner and eight-node headless launcher
+  now also forward `SIM_W5_MEMORY_SHORTPATH_SUPPORT_ID` alongside
+  `SIM_W5_MEMORY_SHORTPATH_DECISION_ID`, so guest-side validation logs can
+  trace a planner action back to the Memory Service support record that
+  justified it.
   `lookup-prefix-cache` persists prefix cache reuse/miss plans into a durable
   DFS audit log so cache optimization decisions survive restart and remain
   analyzable. Embed generation remains a missing product CLI entrypoint.
@@ -1433,6 +1495,15 @@ Current implementation status:
   before QEMU launch, legacy component refs fail before QEMU launch, the
   guest has the same fail-fast check, and sim-uapi rejects guest-input context
   execution without descriptor refs.
+- W5 smoke validation has been run against the mainline eight-node guest path
+  after the support/decision split:
+  `qwen3_0_6b_decode` with Qwen3-0.6B completed 4 decode steps and produced
+  token ids `[11, 358, 2776, 264]` / pieces `", I'm a"`. After adding the
+  explicit `support_id` environment propagation, a second 2-step W5 run passed
+  with token ids `[11, 358]` / pieces `", I"`. These runs validate that the
+  W5 runner, QEMU headless env propagation, and non-engram qwen3 dense decode
+  path still work. They do not yet validate online Memory Service boundary
+  lookup inside the guest range pipeline.
   `w5_engram_object_ref_sideband_0_6b_2step_verify_20260517` passed with
   `engram_context_records=2` and `modes=cpu-reference-object-ref`. The
   state-manifest path also passed as

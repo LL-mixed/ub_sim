@@ -456,9 +456,13 @@ pub const LINGQU_RECORD_LIFECYCLE_AUDIT_LOG_PATH: &str =
     "/lingqu/memory/audit/record-lifecycle.log";
 pub const LINGQU_SHORTPATH_DECISION_MANIFEST_PATH: &str =
     "/lingqu/memory/shortpath-decisions/audit.json";
+pub const LINGQU_SHORTPATH_SUPPORT_MANIFEST_PATH: &str =
+    "/lingqu/memory/shortpath-support/audit.json";
 pub const LINGQU_PREFETCH_PLAN_MANIFEST_PATH: &str = "/lingqu/memory/prefetch-plans/audit.json";
 pub const LINGQU_SHORTPATH_DECISION_AUDIT_LOG_PATH: &str =
     "/lingqu/memory/audit/shortpath-decisions.log";
+pub const LINGQU_SHORTPATH_SUPPORT_AUDIT_LOG_PATH: &str =
+    "/lingqu/memory/audit/shortpath-support.log";
 pub const LINGQU_PREFETCH_PLAN_AUDIT_LOG_PATH: &str = "/lingqu/memory/audit/prefetch-plans.log";
 pub const LINGQU_PREFIX_CACHE_REUSE_AUDIT_LOG_PATH: &str =
     "/lingqu/memory/audit/prefix-cache-reuse.log";
@@ -470,6 +474,7 @@ pub const LINGQU_EXECUTION_ARTIFACT_MANIFEST_KIND: &str =
 pub const LINGQU_PREFIX_CACHE_MANIFEST_KIND: &str = "lingqu_memory_prefix_cache_manifest";
 pub const LINGQU_SHORTPATH_DECISION_MANIFEST_KIND: &str =
     "lingqu_memory_shortpath_decision_manifest";
+pub const LINGQU_SHORTPATH_SUPPORT_MANIFEST_KIND: &str = "lingqu_memory_shortpath_support_manifest";
 pub const LINGQU_PREFETCH_PLAN_MANIFEST_KIND: &str = "lingqu_memory_prefetch_plan_manifest";
 pub const LINGQU_OBJECT_SERVICE_CHECKPOINT_KIND: &str = "lingqu_object_service_checkpoint";
 pub const LINGQU_MEMORY_MANIFEST_SCHEMA_VERSION: u32 = 1;
@@ -753,6 +758,76 @@ impl LingquShortpathDecisionManifest {
         if actual != self.checksum {
             return Err(LingquMemoryError::PayloadChecksumMismatch {
                 id: LINGQU_SHORTPATH_DECISION_MANIFEST_PATH.to_string(),
+                expected: self.checksum,
+                actual,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn to_json_bytes(&self) -> MemoryResult<Vec<u8>> {
+        self.validate()?;
+        serde_json::to_vec_pretty(self)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))
+    }
+
+    pub fn from_json_bytes(bytes: &[u8]) -> MemoryResult<Self> {
+        let manifest = serde_json::from_slice::<Self>(bytes)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+        manifest.validate()?;
+        Ok(manifest)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LingquShortpathSupportManifest {
+    pub kind: String,
+    pub schema_version: u32,
+    pub supports: Vec<ShortpathSupportRecord>,
+    pub checksum: u64,
+}
+
+impl LingquShortpathSupportManifest {
+    pub fn new(mut supports: Vec<ShortpathSupportRecord>) -> MemoryResult<Self> {
+        supports.sort_by(|left, right| left.support_id.cmp(&right.support_id));
+        let mut manifest = Self {
+            kind: LINGQU_SHORTPATH_SUPPORT_MANIFEST_KIND.to_string(),
+            schema_version: LINGQU_MEMORY_MANIFEST_SCHEMA_VERSION,
+            supports,
+            checksum: 0,
+        };
+        manifest.checksum = shortpath_support_manifest_checksum(&manifest);
+        manifest.validate()?;
+        Ok(manifest)
+    }
+
+    pub fn validate(&self) -> MemoryResult<()> {
+        if self.kind != LINGQU_SHORTPATH_SUPPORT_MANIFEST_KIND {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "shortpath_support_manifest.kind",
+                reason: "unexpected manifest kind",
+            });
+        }
+        if self.schema_version != LINGQU_MEMORY_MANIFEST_SCHEMA_VERSION {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "shortpath_support_manifest.schema_version",
+                reason: "unsupported manifest schema version",
+            });
+        }
+        let mut ids = HashSet::new();
+        for support in &self.supports {
+            support.validate()?;
+            if !ids.insert(support.support_id.clone()) {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "shortpath_support_manifest.supports",
+                    reason: "duplicate support id",
+                });
+            }
+        }
+        let actual = shortpath_support_manifest_checksum(self);
+        if actual != self.checksum {
+            return Err(LingquMemoryError::PayloadChecksumMismatch {
+                id: LINGQU_SHORTPATH_SUPPORT_MANIFEST_PATH.to_string(),
                 expected: self.checksum,
                 actual,
             });
@@ -1161,7 +1236,7 @@ impl LingquMemoryDurableStore {
                 bytes,
                 options: durable_sim::LingquDfsAppendOptions {
                     expected_next_seq: Some(next_seq),
-                    writer: Some("lingqu-memory-service".to_string()),
+                    writer: Some("w5-runtime-planner".to_string()),
                     metadata: durable_audit_metadata("shortpath_decision"),
                 },
             });
@@ -1184,6 +1259,74 @@ impl LingquMemoryDurableStore {
             .load_shortpath_decision_audit_entries(false, "load shortpath decisions")?
             .into_iter()
             .map(|(decision, _bytes)| decision)
+            .collect())
+    }
+
+    pub fn persist_shortpath_support_manifest(
+        &mut self,
+        supports: Vec<ShortpathSupportRecord>,
+    ) -> MemoryResult<LingquDfsPath> {
+        let path = LingquDfsPath::new(LINGQU_SHORTPATH_SUPPORT_AUDIT_LOG_PATH);
+        let mut supports = supports;
+        supports.sort_by(|left, right| left.support_id.cmp(&right.support_id));
+        let existing =
+            self.load_shortpath_support_audit_entries(true, "persist shortpath supports")?;
+        let mut existing_by_id = HashMap::new();
+        for (support, bytes) in existing {
+            if existing_by_id
+                .insert(support.support_id.clone(), bytes)
+                .is_some()
+            {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "shortpath_support.support_id",
+                    reason: "duplicate support id in durable audit log",
+                });
+            }
+        }
+
+        let mut ops = Vec::new();
+        let mut bytes_written = 0;
+        let mut next_seq = existing_by_id.len() as u64 + 1;
+        for support in supports {
+            support.validate()?;
+            let bytes = serde_json::to_vec(&support)
+                .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+            if let Some(existing_bytes) = existing_by_id.get(&support.support_id) {
+                if existing_bytes != &bytes {
+                    return Err(LingquMemoryError::InvalidValue {
+                        field: "shortpath_support.support_id",
+                        reason: "support id already exists with different payload",
+                    });
+                }
+                continue;
+            }
+            bytes_written += bytes.len() as u64;
+            ops.push(durable_sim::LingquDurableBatchOp::DfsAppendLog {
+                path: path.path.clone(),
+                bytes,
+                options: durable_sim::LingquDfsAppendOptions {
+                    expected_next_seq: Some(next_seq),
+                    writer: Some("lingqu-memory-service".to_string()),
+                    metadata: durable_audit_metadata("shortpath_support"),
+                },
+            });
+            next_seq += 1;
+        }
+        if !ops.is_empty() {
+            self.durable
+                .commit_batch(ops)
+                .map_err(memory_error_from_durable)?;
+            self.stats.dfs_audit_appends += next_seq - existing_by_id.len() as u64 - 1;
+            self.stats.dfs_bytes_written += bytes_written;
+        }
+        Ok(path)
+    }
+
+    pub fn load_shortpath_support_manifest(&mut self) -> MemoryResult<Vec<ShortpathSupportRecord>> {
+        Ok(self
+            .load_shortpath_support_audit_entries(false, "load shortpath supports")?
+            .into_iter()
+            .map(|(support, _bytes)| support)
             .collect())
     }
 
@@ -1462,6 +1605,35 @@ impl LingquMemoryDurableStore {
         if entries.is_empty() && !allow_missing {
             return Err(LingquMemoryError::MissingDfsPath(format!(
                 "{op}: {LINGQU_SHORTPATH_DECISION_AUDIT_LOG_PATH}"
+            )));
+        }
+        Ok(entries)
+    }
+
+    fn load_shortpath_support_audit_entries(
+        &mut self,
+        allow_missing: bool,
+        op: &'static str,
+    ) -> MemoryResult<Vec<(ShortpathSupportRecord, Vec<u8>)>> {
+        let records = self
+            .submit_dfs_append_log_read(LINGQU_SHORTPATH_SUPPORT_AUDIT_LOG_PATH, allow_missing)?;
+        let mut entries = Vec::with_capacity(records.len());
+        let mut ids = HashSet::new();
+        for record in records {
+            let support = serde_json::from_slice::<ShortpathSupportRecord>(&record.bytes)
+                .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+            support.validate()?;
+            if !ids.insert(support.support_id.clone()) {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "shortpath_support.support_id",
+                    reason: "duplicate support id in durable audit log",
+                });
+            }
+            entries.push((support, record.bytes));
+        }
+        if entries.is_empty() && !allow_missing {
+            return Err(LingquMemoryError::MissingDfsPath(format!(
+                "{op}: {LINGQU_SHORTPATH_SUPPORT_AUDIT_LOG_PATH}"
             )));
         }
         Ok(entries)
@@ -2991,9 +3163,87 @@ impl PrefixCacheLookupResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShortpathSupportRecord {
+    pub support_id: String,
+    pub request_id: String,
+    pub supported_action: ShortpathAction,
+    pub artifact_id: Option<String>,
+    pub target_layer_start: Option<u32>,
+    pub target_layer_end: Option<u32>,
+    pub confidence_milli: u32,
+    pub verify_required: bool,
+    pub proof_checksum: u64,
+    pub reason: String,
+    pub created_at_us: u64,
+    pub version: u64,
+}
+
+impl ShortpathSupportRecord {
+    pub fn validate(&self) -> MemoryResult<()> {
+        required_str(&self.support_id, "shortpath_support.support_id")?;
+        required_str(&self.request_id, "shortpath_support.request_id")?;
+        required_str(&self.reason, "shortpath_support.reason")?;
+        if self.confidence_milli > 1000 {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "shortpath_support.confidence_milli",
+                reason: "confidence_milli must be in [0, 1000]",
+            });
+        }
+        match self.supported_action {
+            ShortpathAction::Continue => {
+                if self.artifact_id.is_some() {
+                    return Err(LingquMemoryError::InvalidValue {
+                        field: "shortpath_support.artifact_id",
+                        reason: "continue support must not reference an artifact",
+                    });
+                }
+            }
+            ShortpathAction::JumpToLayer | ShortpathAction::JumpToTerminal => {
+                if self.artifact_id.as_deref().unwrap_or("").trim().is_empty() {
+                    return Err(LingquMemoryError::MissingField(
+                        "shortpath_support.artifact_id",
+                    ));
+                }
+                let (Some(start), Some(end)) = (self.target_layer_start, self.target_layer_end)
+                else {
+                    return Err(LingquMemoryError::MissingField(
+                        "shortpath_support.target_layer_range",
+                    ));
+                };
+                if end < start
+                    || (self.supported_action == ShortpathAction::JumpToLayer && end == start)
+                {
+                    return Err(LingquMemoryError::InvalidValue {
+                        field: "shortpath_support.target_layer_end",
+                        reason: "target_layer_end must be greater than target_layer_start unless supported action is jump-to-terminal",
+                    });
+                }
+            }
+            ShortpathAction::RequireVerify => {
+                if self.artifact_id.as_deref().unwrap_or("").trim().is_empty() {
+                    return Err(LingquMemoryError::MissingField(
+                        "shortpath_support.artifact_id",
+                    ));
+                }
+                if !self.verify_required {
+                    return Err(LingquMemoryError::InvalidValue {
+                        field: "shortpath_support.verify_required",
+                        reason: "require-verify support must set verify_required",
+                    });
+                }
+            }
+        }
+        nonzero(self.proof_checksum, "shortpath_support.proof_checksum")?;
+        nonzero(self.version, "shortpath_support.version")?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShortpathDecisionRecord {
     pub decision_id: String,
     pub request_id: String,
+    pub support_id: Option<String>,
     pub action: ShortpathAction,
     pub artifact_id: Option<String>,
     pub target_layer_start: Option<u32>,
@@ -3011,6 +3261,9 @@ impl ShortpathDecisionRecord {
         required_str(&self.decision_id, "shortpath_decision.decision_id")?;
         required_str(&self.request_id, "shortpath_decision.request_id")?;
         required_str(&self.reason, "shortpath_decision.reason")?;
+        if let Some(support_id) = &self.support_id {
+            required_str(support_id, "shortpath_decision.support_id")?;
+        }
         if self.confidence_milli > 1000 {
             return Err(LingquMemoryError::InvalidValue {
                 field: "shortpath_decision.confidence_milli",
@@ -3068,26 +3321,26 @@ impl ShortpathDecisionRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoundaryLookupResponse {
     pub request_id: String,
-    pub decision: ShortpathDecisionRecord,
+    pub support: ShortpathSupportRecord,
     pub artifact: Option<ExecutionArtifactObject>,
 }
 
 impl BoundaryLookupResponse {
     pub fn validate(&self) -> MemoryResult<()> {
         required_str(&self.request_id, "boundary_lookup_response.request_id")?;
-        self.decision.validate()?;
-        if self.decision.request_id != self.request_id {
+        self.support.validate()?;
+        if self.support.request_id != self.request_id {
             return Err(LingquMemoryError::InvalidValue {
-                field: "boundary_lookup_response.decision",
-                reason: "decision request_id must match response request_id",
+                field: "boundary_lookup_response.support",
+                reason: "support request_id must match response request_id",
             });
         }
         if let Some(artifact) = &self.artifact {
             artifact.validate()?;
-            if self.decision.artifact_id.as_deref() != Some(artifact.artifact_id.as_str()) {
+            if self.support.artifact_id.as_deref() != Some(artifact.artifact_id.as_str()) {
                 return Err(LingquMemoryError::InvalidValue {
                     field: "boundary_lookup_response.artifact",
-                    reason: "artifact id must match decision artifact id",
+                    reason: "artifact id must match support artifact id",
                 });
             }
         }
@@ -3156,7 +3409,7 @@ pub struct LingquMemoryService {
     prefix_cache_artifacts: HashMap<String, PrefixCacheArtifact>,
     prefix_cache_reuse_plans: HashMap<String, PrefixCacheReusePlan>,
     prefetch_plans: HashMap<String, PrefetchPlanRecord>,
-    shortpath_decisions: HashMap<String, ShortpathDecisionRecord>,
+    shortpath_supports: HashMap<String, ShortpathSupportRecord>,
 }
 
 impl LingquMemoryService {
@@ -3350,30 +3603,30 @@ impl LingquMemoryService {
         Ok(artifacts)
     }
 
-    pub fn persist_shortpath_decisions_to_dfs(
+    pub fn persist_shortpath_supports_to_dfs(
         &self,
         durable_store: &mut LingquMemoryDurableStore,
     ) -> MemoryResult<LingquDfsPath> {
-        let mut decisions = self
-            .shortpath_decisions
+        let mut supports = self
+            .shortpath_supports
             .values()
             .cloned()
             .collect::<Vec<_>>();
-        decisions.sort_by(|left, right| left.decision_id.cmp(&right.decision_id));
-        durable_store.persist_shortpath_decision_manifest(decisions)
+        supports.sort_by(|left, right| left.support_id.cmp(&right.support_id));
+        durable_store.persist_shortpath_support_manifest(supports)
     }
 
-    pub fn rebuild_shortpath_decisions_from_dfs(
+    pub fn rebuild_shortpath_supports_from_dfs(
         &mut self,
         durable_store: &mut LingquMemoryDurableStore,
-    ) -> MemoryResult<Vec<ShortpathDecisionRecord>> {
-        let decisions = durable_store.load_shortpath_decision_manifest()?;
-        for decision in &decisions {
-            decision.validate()?;
-            self.shortpath_decisions
-                .insert(decision.decision_id.clone(), decision.clone());
+    ) -> MemoryResult<Vec<ShortpathSupportRecord>> {
+        let supports = durable_store.load_shortpath_support_manifest()?;
+        for support in &supports {
+            support.validate()?;
+            self.shortpath_supports
+                .insert(support.support_id.clone(), support.clone());
         }
-        Ok(decisions)
+        Ok(supports)
     }
 
     pub fn persist_prefetch_plans_to_dfs(
@@ -4441,17 +4694,17 @@ impl LingquMemoryService {
             })
             .cloned();
 
-        let decision = if let Some(artifact) = candidate.as_ref() {
-            let action = if artifact.kind == ExecutionArtifactKind::Logits {
+        let support = if let Some(artifact) = candidate.as_ref() {
+            let supported_action = if artifact.kind == ExecutionArtifactKind::Logits {
                 ShortpathAction::JumpToTerminal
             } else {
                 ShortpathAction::JumpToLayer
             };
-            let decision_id = format!("shortpath-decision/{}", req.request_id);
-            let proof_checksum = shortpath_decision_checksum(
-                &decision_id,
+            let support_id = format!("shortpath-support/{}", req.request_id);
+            let proof_checksum = shortpath_support_checksum(
+                &support_id,
                 &req.request_id,
-                action,
+                supported_action,
                 Some(&artifact.artifact_id),
                 artifact.target_layer_start,
                 artifact.target_layer_end,
@@ -4459,24 +4712,24 @@ impl LingquMemoryService {
                 artifact.checksum,
                 now_us,
             );
-            ShortpathDecisionRecord {
-                decision_id,
+            ShortpathSupportRecord {
+                support_id,
                 request_id: req.request_id.clone(),
-                action,
+                supported_action,
                 artifact_id: Some(artifact.artifact_id.clone()),
                 target_layer_start: Some(artifact.target_layer_start),
                 target_layer_end: Some(artifact.target_layer_end),
                 confidence_milli: artifact.confidence_milli,
                 verify_required: artifact.state != ExecutionArtifactState::Verified,
                 proof_checksum,
-                reason: "verified_execution_artifact_hit".to_string(),
+                reason: "verified_execution_artifact_support".to_string(),
                 created_at_us: now_us,
                 version: 1,
             }
         } else {
-            let decision_id = format!("shortpath-decision/{}", req.request_id);
-            let proof_checksum = shortpath_decision_checksum(
-                &decision_id,
+            let support_id = format!("shortpath-support/{}", req.request_id);
+            let proof_checksum = shortpath_support_checksum(
+                &support_id,
                 &req.request_id,
                 ShortpathAction::Continue,
                 None,
@@ -4486,27 +4739,27 @@ impl LingquMemoryService {
                 req.hidden_state.checksum,
                 now_us,
             );
-            ShortpathDecisionRecord {
-                decision_id,
+            ShortpathSupportRecord {
+                support_id,
                 request_id: req.request_id.clone(),
-                action: ShortpathAction::Continue,
+                supported_action: ShortpathAction::Continue,
                 artifact_id: None,
                 target_layer_start: None,
                 target_layer_end: None,
                 confidence_milli: 0,
                 verify_required: false,
                 proof_checksum,
-                reason: "no_verified_execution_artifact_hit".to_string(),
+                reason: "no_verified_execution_artifact_support".to_string(),
                 created_at_us: now_us,
                 version: 1,
             }
         };
-        decision.validate()?;
-        self.shortpath_decisions
-            .insert(decision.decision_id.clone(), decision.clone());
+        support.validate()?;
+        self.shortpath_supports
+            .insert(support.support_id.clone(), support.clone());
         let response = BoundaryLookupResponse {
             request_id: req.request_id,
-            decision,
+            support,
             artifact: candidate,
         };
         response.validate()?;
@@ -4602,8 +4855,8 @@ impl LingquMemoryService {
         self.prefix_cache_reuse_plans.get(plan_id)
     }
 
-    pub fn shortpath_decision(&self, decision_id: &str) -> Option<&ShortpathDecisionRecord> {
-        self.shortpath_decisions.get(decision_id)
+    pub fn shortpath_support(&self, support_id: &str) -> Option<&ShortpathSupportRecord> {
+        self.shortpath_supports.get(support_id)
     }
 
     pub fn prefetch_plan(&self, plan_id: &str) -> Option<&PrefetchPlanRecord> {
@@ -5203,10 +5456,10 @@ fn shortpath_action_tag(action: ShortpathAction) -> u64 {
     }
 }
 
-fn shortpath_decision_checksum(
-    decision_id: &str,
+fn shortpath_support_checksum(
+    support_id: &str,
     request_id: &str,
-    action: ShortpathAction,
+    supported_action: ShortpathAction,
     artifact_id: Option<&str>,
     target_layer_start: u32,
     target_layer_end: u32,
@@ -5215,11 +5468,11 @@ fn shortpath_decision_checksum(
     created_at_us: u64,
 ) -> u64 {
     let mut bytes = Vec::new();
-    bytes.extend_from_slice(&(decision_id.len() as u64).to_le_bytes());
-    bytes.extend_from_slice(decision_id.as_bytes());
+    bytes.extend_from_slice(&(support_id.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(support_id.as_bytes());
     bytes.extend_from_slice(&(request_id.len() as u64).to_le_bytes());
     bytes.extend_from_slice(request_id.as_bytes());
-    bytes.extend_from_slice(&(action as u8).to_le_bytes());
+    bytes.extend_from_slice(&shortpath_action_tag(supported_action).to_le_bytes());
     if let Some(artifact_id) = artifact_id {
         bytes.extend_from_slice(&(artifact_id.len() as u64).to_le_bytes());
         bytes.extend_from_slice(artifact_id.as_bytes());
@@ -5286,6 +5539,9 @@ fn shortpath_decision_manifest_checksum(manifest: &LingquShortpathDecisionManife
     for decision in decisions {
         push_checksum_str(&mut bytes, &decision.decision_id);
         push_checksum_str(&mut bytes, &decision.request_id);
+        if let Some(support_id) = &decision.support_id {
+            push_checksum_str(&mut bytes, support_id);
+        }
         bytes.extend_from_slice(&shortpath_action_tag(decision.action).to_le_bytes());
         if let Some(artifact_id) = &decision.artifact_id {
             push_checksum_str(&mut bytes, artifact_id);
@@ -5293,6 +5549,26 @@ fn shortpath_decision_manifest_checksum(manifest: &LingquShortpathDecisionManife
         bytes.extend_from_slice(&decision.confidence_milli.to_le_bytes());
         bytes.extend_from_slice(&decision.proof_checksum.to_le_bytes());
         bytes.extend_from_slice(&decision.version.to_le_bytes());
+    }
+    checksum64(&bytes)
+}
+
+fn shortpath_support_manifest_checksum(manifest: &LingquShortpathSupportManifest) -> u64 {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(manifest.kind.as_bytes());
+    bytes.extend_from_slice(&manifest.schema_version.to_le_bytes());
+    let mut supports = manifest.supports.iter().collect::<Vec<_>>();
+    supports.sort_by(|left, right| left.support_id.cmp(&right.support_id));
+    for support in supports {
+        push_checksum_str(&mut bytes, &support.support_id);
+        push_checksum_str(&mut bytes, &support.request_id);
+        bytes.extend_from_slice(&shortpath_action_tag(support.supported_action).to_le_bytes());
+        if let Some(artifact_id) = &support.artifact_id {
+            push_checksum_str(&mut bytes, artifact_id);
+        }
+        bytes.extend_from_slice(&support.confidence_milli.to_le_bytes());
+        bytes.extend_from_slice(&support.proof_checksum.to_le_bytes());
+        bytes.extend_from_slice(&support.version.to_le_bytes());
     }
     checksum64(&bytes)
 }
@@ -5545,14 +5821,14 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(response.decision.action, ShortpathAction::Continue);
+        assert_eq!(response.support.supported_action, ShortpathAction::Continue);
         assert_eq!(response.artifact, None);
         assert_eq!(
             service
-                .shortpath_decision("shortpath-decision/boundary/continue")
+                .shortpath_support("shortpath-support/boundary/continue")
                 .unwrap()
                 .reason,
-            "no_verified_execution_artifact_hit"
+            "no_verified_execution_artifact_support"
         );
     }
 
@@ -5621,14 +5897,17 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(response.decision.action, ShortpathAction::JumpToTerminal);
         assert_eq!(
-            response.decision.artifact_id.as_deref(),
+            response.support.supported_action,
+            ShortpathAction::JumpToTerminal
+        );
+        assert_eq!(
+            response.support.artifact_id.as_deref(),
             Some("artifact/logits/step3/node4")
         );
-        assert_eq!(response.decision.target_layer_start, Some(8));
-        assert_eq!(response.decision.target_layer_end, Some(8));
-        assert_eq!(response.decision.confidence_milli, 980);
+        assert_eq!(response.support.target_layer_start, Some(8));
+        assert_eq!(response.support.target_layer_end, Some(8));
+        assert_eq!(response.support.confidence_milli, 980);
         assert_eq!(
             service
                 .execution_artifact("artifact/logits/step3/node4")
@@ -6078,9 +6357,12 @@ mod tests {
                 21,
             )
             .expect("boundary lookup after restart");
-        assert_eq!(boundary.decision.action, ShortpathAction::JumpToTerminal);
         assert_eq!(
-            boundary.decision.artifact_id.as_deref(),
+            boundary.support.supported_action,
+            ShortpathAction::JumpToTerminal
+        );
+        assert_eq!(
+            boundary.support.artifact_id.as_deref(),
             Some("artifact/logits/restart")
         );
 
@@ -6127,8 +6409,8 @@ mod tests {
         assert_eq!(prefetch.plan_id, "prefetch-plan/prefetch/restart");
 
         restored_service
-            .persist_shortpath_decisions_to_dfs(&mut restored)
-            .expect("persist shortpath audit");
+            .persist_shortpath_supports_to_dfs(&mut restored)
+            .expect("persist shortpath support audit");
         restored_service
             .persist_prefetch_plans_to_dfs(&mut restored)
             .expect("persist prefetch audit");
@@ -6136,8 +6418,8 @@ mod tests {
             .persist_prefix_cache_reuse_plans_to_dfs(&mut restored)
             .expect("persist prefix cache reuse audit");
         restored_service
-            .persist_shortpath_decisions_to_dfs(&mut restored)
-            .expect("persist shortpath audit idempotently");
+            .persist_shortpath_supports_to_dfs(&mut restored)
+            .expect("persist shortpath support audit idempotently");
         restored_service
             .persist_prefetch_plans_to_dfs(&mut restored)
             .expect("persist prefetch audit idempotently");
@@ -6147,11 +6429,11 @@ mod tests {
         let audit_snapshot = restored
             .export_durable_sim_snapshot()
             .expect("export audit durable snapshot");
-        let shortpath_log_records = audit_snapshot
+        let shortpath_support_log_records = audit_snapshot
             .dfs
             .append_logs
             .iter()
-            .filter(|record| record.path == LINGQU_SHORTPATH_DECISION_AUDIT_LOG_PATH)
+            .filter(|record| record.path == LINGQU_SHORTPATH_SUPPORT_AUDIT_LOG_PATH)
             .collect::<Vec<_>>();
         let prefetch_log_records = audit_snapshot
             .dfs
@@ -6165,14 +6447,15 @@ mod tests {
             .iter()
             .filter(|record| record.path == LINGQU_PREFIX_CACHE_REUSE_AUDIT_LOG_PATH)
             .collect::<Vec<_>>();
-        assert_eq!(shortpath_log_records.len(), 1);
-        assert_eq!(shortpath_log_records[0].seq, 1);
+        assert_eq!(shortpath_support_log_records.len(), 1);
+        assert_eq!(shortpath_support_log_records[0].seq, 1);
         assert_eq!(prefetch_log_records.len(), 1);
         assert_eq!(prefetch_log_records[0].seq, 1);
         assert_eq!(prefix_reuse_log_records.len(), 1);
         assert_eq!(prefix_reuse_log_records[0].seq, 1);
         assert!(audit_snapshot.dfs.files.iter().all(|record| record.path
             != LINGQU_SHORTPATH_DECISION_MANIFEST_PATH
+            && record.path != LINGQU_SHORTPATH_SUPPORT_MANIFEST_PATH
             && record.path != LINGQU_PREFETCH_PLAN_MANIFEST_PATH));
         let audit_json = audit_snapshot.to_json_bytes().expect("audit json");
         let audit_decoded = durable_sim::LingquDurableSimSnapshot::from_json_bytes(&audit_json)
@@ -6181,8 +6464,8 @@ mod tests {
             .expect("import audit store");
         let mut audit_service = LingquMemoryService::new();
         audit_service
-            .rebuild_shortpath_decisions_from_dfs(&mut audit_store)
-            .expect("rebuild shortpath audit");
+            .rebuild_shortpath_supports_from_dfs(&mut audit_store)
+            .expect("rebuild shortpath support audit");
         audit_service
             .rebuild_prefetch_plans_from_dfs(&mut audit_store)
             .expect("rebuild prefetch audit");
@@ -6190,7 +6473,7 @@ mod tests {
             .rebuild_prefix_cache_reuse_plans_from_dfs(&mut audit_store)
             .expect("rebuild prefix cache reuse audit");
         assert!(audit_service
-            .shortpath_decision("shortpath-decision/boundary/restart")
+            .shortpath_support("shortpath-support/boundary/restart")
             .is_some());
         assert!(audit_service
             .prefetch_plan("prefetch-plan/prefetch/restart")

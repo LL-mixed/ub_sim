@@ -272,13 +272,17 @@ Shortpath flow is separate from this terminal context-op path:
 1. A range exit publishes `hidden_ref`.
 2. W5 builds `BoundaryLookupRequest { model, boundary, hidden_ref,
    engram_state_id, allowed_actions }`.
-3. Lingqu Memory Service returns `ShortpathDecisionRecord`.
-4. W5 continues, jumps to a downstream layer, jumps to terminal logits, or
+3. Lingqu Memory Service returns `ShortpathSupportRecord`.
+4. W5 Boundary Planner turns that support into `ShortpathDecisionRecord` after
+   applying runtime policy.
+5. W5 continues, jumps to a downstream layer, jumps to terminal logits, or
    enters verify mode based on that decision.
 
 This separation matters: `EngramStateObject` proves which semantic memory view
-and operator config are being used; `ShortpathDecisionRecord` proves which
-model-native execution artifact allowed work to be skipped.
+and operator config are being used; `ShortpathSupportRecord` proves which
+model-native execution artifact was available; `ShortpathDecisionRecord`
+proves which runtime choice was actually taken and carries the evaluated
+`support_id` when the choice is based on Memory Service evidence.
 
 Prefetch is also separate from terminal context-op execution. At a range start,
 W5 can build `PrefetchPlanRequest { model, boundary, engram_state_id, scope,

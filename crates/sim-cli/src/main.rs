@@ -850,7 +850,7 @@ where
                 })
             } else if memory_has_decision_id {
                 anyhow::bail!(
-                    "--memory-decision-store is required when Memory Service decision ids are provided"
+                    "--memory-decision-store is required when W5 planner or Memory Service plan ids are provided"
                 );
             } else {
                 None
@@ -1617,6 +1617,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "list-query-results" => run_lingqu_memory_list_query_results_cli(&args),
         "list-record-lifecycle" => run_lingqu_memory_list_record_lifecycle_cli(&args),
         "list-shortpath-decisions" => run_lingqu_memory_list_shortpath_decisions_cli(&args),
+        "list-shortpath-supports" => run_lingqu_memory_list_shortpath_supports_cli(&args),
         "lookup-prefix-cache" => run_lingqu_memory_lookup_prefix_cache_cli(&args),
         "materialize-engram-state" => run_lingqu_memory_materialize_engram_state_cli(&args),
         "materialize-hot-state" => run_lingqu_memory_materialize_hot_state_cli(&args),
@@ -1632,7 +1633,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "validate-flat-materialize" => run_lingqu_memory_validate_flat_materialize(),
         "validate-w5-engram-object-ref" => run_lingqu_memory_validate_w5_engram_object_ref(),
         _ => anyhow::bail!(
-            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, query, list-query-results, list-record-lifecycle, list-shortpath-decisions, list-prefetch-plans, list-prefix-cache-reuse, update-record-state, register-execution-artifact, boundary-lookup, plan-prefetch, register-prefix-cache, lookup-prefix-cache, materialize-hot-state, materialize-engram-state, publish-w5-engram-state-ref, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
+            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, query, list-query-results, list-record-lifecycle, list-shortpath-supports, list-shortpath-decisions, list-prefetch-plans, list-prefix-cache-reuse, update-record-state, register-execution-artifact, boundary-lookup, plan-prefetch, register-prefix-cache, lookup-prefix-cache, materialize-hot-state, materialize-engram-state, publish-w5-engram-state-ref, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
         ),
     }
 }
@@ -1760,11 +1761,13 @@ fn run_lingqu_memory_boundary_lookup_cli(args: &[String]) -> anyhow::Result<()> 
         &mut durable_store,
     )
     .context("load execution artifact manifest")?;
-    rebuild_lingqu_memory_shortpath_decisions(&mut memory_service, &mut durable_store)
-        .context("rebuild shortpath decision audit")?;
+    rebuild_lingqu_memory_shortpath_supports(&mut memory_service, &mut durable_store)
+        .context("rebuild shortpath support audit")?;
     let response = memory_service
         .boundary_lookup(request, now_us)
         .context("run boundary lookup")?;
+    let planner_decision = w5_plan_shortpath_decision_from_memory_support(&response)
+        .context("plan W5 shortpath execution decision from Memory Service support")?;
     let response_bytes =
         serde_json::to_vec_pretty(&response).context("encode boundary lookup response")?;
     if let Some(parent) = response_path.parent() {
@@ -1774,8 +1777,11 @@ fn run_lingqu_memory_boundary_lookup_cli(args: &[String]) -> anyhow::Result<()> 
     fs::write(&response_path, response_bytes)
         .with_context(|| format!("write boundary lookup response {}", response_path.display()))?;
     memory_service
-        .persist_shortpath_decisions_to_dfs(&mut durable_store)
-        .context("persist shortpath decision DFS audit")?;
+        .persist_shortpath_supports_to_dfs(&mut durable_store)
+        .context("persist shortpath support DFS audit")?;
+    durable_store
+        .persist_shortpath_decision_manifest(vec![planner_decision.clone()])
+        .context("persist W5 planner shortpath decision DFS audit")?;
     save_lingqu_memory_durable_store(&store_path, &durable_store)?;
 
     println!("lingqu_memory_service");
@@ -1788,14 +1794,34 @@ fn run_lingqu_memory_boundary_lookup_cli(args: &[String]) -> anyhow::Result<()> 
     println!("  request_path: {}", request_path.display());
     println!("  response_path: {}", response_path.display());
     println!("  request: {}", response.request_id);
-    println!("  action: {:?}", response.decision.action);
+    println!("  support_id: {}", response.support.support_id);
     println!(
-        "  artifact: {}",
-        response.decision.artifact_id.as_deref().unwrap_or("")
+        "  supported_action: {:?}",
+        response.support.supported_action
     );
-    println!("  confidence_milli: {}", response.decision.confidence_milli);
-    println!("  verify_required: {}", response.decision.verify_required);
-    println!("  proof_checksum: {:#x}", response.decision.proof_checksum);
+    println!(
+        "  supported_artifact: {}",
+        response.support.artifact_id.as_deref().unwrap_or("")
+    );
+    println!(
+        "  support_confidence_milli: {}",
+        response.support.confidence_milli
+    );
+    println!(
+        "  support_verify_required: {}",
+        response.support.verify_required
+    );
+    println!(
+        "  support_proof_checksum: {:#x}",
+        response.support.proof_checksum
+    );
+    println!("  planner: w5_runtime_planner");
+    println!("  planner_decision_id: {}", planner_decision.decision_id);
+    println!("  planner_action: {:?}", planner_decision.action);
+    println!(
+        "  planner_proof_checksum: {:#x}",
+        planner_decision.proof_checksum
+    );
     Ok(())
 }
 
@@ -2200,7 +2226,7 @@ fn run_lingqu_memory_list_shortpath_decisions_cli(args: &[String]) -> anyhow::Re
         }
     }
 
-    println!("lingqu_memory_service");
+    println!("w5_runtime_planner");
     println!("  mode: list-shortpath-decisions");
     println!("  store_path: {}", store_path.display());
     println!(
@@ -2210,15 +2236,63 @@ fn run_lingqu_memory_list_shortpath_decisions_cli(args: &[String]) -> anyhow::Re
     println!("  decisions: {}", filtered_decisions.len());
     for decision in filtered_decisions {
         println!(
-            "  decision id={} request_id={} action={:?} artifact={} confidence_milli={} verify_required={} proof_checksum={:#x} created_at_us={}",
+            "  decision id={} request_id={} support_id={} action={:?} artifact={} confidence_milli={} verify_required={} proof_checksum={:#x} created_at_us={}",
             decision.decision_id,
             decision.request_id,
+            decision.support_id.as_deref().unwrap_or(""),
             decision.action,
             decision.artifact_id.as_deref().unwrap_or(""),
             decision.confidence_milli,
             decision.verify_required,
             decision.proof_checksum,
             decision.created_at_us
+        );
+    }
+    Ok(())
+}
+
+fn run_lingqu_memory_list_shortpath_supports_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let support_id_filter = optional_cli_arg(args, "--support-id")?;
+
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let supports = durable_store
+        .load_shortpath_support_manifest()
+        .context("load shortpath support audit")?;
+    let filtered_supports = supports
+        .iter()
+        .filter(|support| {
+            support_id_filter
+                .as_ref()
+                .map(|support_id| support.support_id == *support_id)
+                .unwrap_or(true)
+        })
+        .collect::<Vec<_>>();
+    if let Some(support_id) = support_id_filter.as_ref() {
+        if filtered_supports.is_empty() {
+            anyhow::bail!("shortpath support `{support_id}` not found in durable audit log");
+        }
+    }
+
+    println!("lingqu_memory_service");
+    println!("  mode: list-shortpath-supports");
+    println!("  store_path: {}", store_path.display());
+    println!(
+        "  audit_path: {}",
+        sim_memory::LINGQU_SHORTPATH_SUPPORT_AUDIT_LOG_PATH
+    );
+    println!("  supports: {}", filtered_supports.len());
+    for support in filtered_supports {
+        println!(
+            "  support id={} request_id={} supported_action={:?} artifact={} confidence_milli={} verify_required={} proof_checksum={:#x} created_at_us={}",
+            support.support_id,
+            support.request_id,
+            support.supported_action,
+            support.artifact_id.as_deref().unwrap_or(""),
+            support.confidence_milli,
+            support.verify_required,
+            support.proof_checksum,
+            support.created_at_us
         );
     }
     Ok(())
@@ -2573,7 +2647,7 @@ fn load_w5_memory_decisions_from_store(
             .load_shortpath_decision_manifest()
             .with_context(|| {
                 format!(
-                    "load Memory Service shortpath decisions from {}",
+                    "load W5 planner shortpath decisions from {}",
                     config.store_path.display()
                 )
             })?;
@@ -2752,6 +2826,57 @@ fn w5_find_verified_prefix_cache_artifact(
         );
     }
     Ok(artifact.clone())
+}
+
+fn w5_plan_shortpath_decision_from_memory_support(
+    response: &sim_memory::BoundaryLookupResponse,
+) -> anyhow::Result<sim_memory::ShortpathDecisionRecord> {
+    response
+        .validate()
+        .map_err(|err| anyhow::anyhow!("invalid Memory Service boundary support: {err}"))?;
+    let support = &response.support;
+    let artifact_checksum = response
+        .artifact
+        .as_ref()
+        .map(|artifact| artifact.checksum)
+        .unwrap_or(0);
+    let decision_id = format!("shortpath-decision/{}", support.request_id);
+    let proof_checksum = qwen3_checksum_words(&[
+        support.proof_checksum,
+        w5_shortpath_action_tag(support.supported_action),
+        u64::from(support.confidence_milli),
+        artifact_checksum,
+        support.created_at_us,
+        support.version,
+    ]);
+    let decision = sim_memory::ShortpathDecisionRecord {
+        decision_id,
+        request_id: support.request_id.clone(),
+        support_id: Some(support.support_id.clone()),
+        action: support.supported_action,
+        artifact_id: support.artifact_id.clone(),
+        target_layer_start: support.target_layer_start,
+        target_layer_end: support.target_layer_end,
+        confidence_milli: support.confidence_milli,
+        verify_required: support.verify_required,
+        proof_checksum,
+        reason: format!("w5_planner_accepted_memory_support:{}", support.reason),
+        created_at_us: support.created_at_us,
+        version: 1,
+    };
+    decision
+        .validate()
+        .map_err(|err| anyhow::anyhow!("invalid W5 planner shortpath decision: {err}"))?;
+    Ok(decision)
+}
+
+fn w5_shortpath_action_tag(action: sim_memory::ShortpathAction) -> u64 {
+    match action {
+        sim_memory::ShortpathAction::Continue => 1,
+        sim_memory::ShortpathAction::JumpToLayer => 2,
+        sim_memory::ShortpathAction::JumpToTerminal => 3,
+        sim_memory::ShortpathAction::RequireVerify => 4,
+    }
 }
 
 fn validate_w5_shortpath_artifact_contract(
@@ -3247,6 +3372,10 @@ fn w5_memory_decision_env_vars(
             (
                 "SIM_W5_MEMORY_SHORTPATH_DECISION_ID".to_string(),
                 decision.decision_id.clone(),
+            ),
+            (
+                "SIM_W5_MEMORY_SHORTPATH_SUPPORT_ID".to_string(),
+                decision.support_id.clone().unwrap_or_default(),
             ),
             (
                 "SIM_W5_MEMORY_SHORTPATH_ACTION".to_string(),
@@ -4110,13 +4239,13 @@ fn load_required_lingqu_memory_prefix_cache_registry_artifacts(
     Ok(LingquMemoryPrefixCacheRegistry { artifacts })
 }
 
-fn rebuild_lingqu_memory_shortpath_decisions(
+fn rebuild_lingqu_memory_shortpath_supports(
     memory_service: &mut LingquMemoryService,
     store: &mut LingquMemoryDurableStore,
 ) -> anyhow::Result<()> {
-    match memory_service.rebuild_shortpath_decisions_from_dfs(store) {
+    match memory_service.rebuild_shortpath_supports_from_dfs(store) {
         Ok(_) | Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => Ok(()),
-        Err(err) => Err(err).context("rebuild shortpath decision audit from durable DFS manifest"),
+        Err(err) => Err(err).context("rebuild shortpath support audit from durable DFS manifest"),
     }
 }
 
@@ -5231,7 +5360,8 @@ mod tests {
         run_lingqu_memory_ingest_cli, run_lingqu_memory_list_prefetch_plans_cli,
         run_lingqu_memory_list_prefix_cache_reuse_cli, run_lingqu_memory_list_query_results_cli,
         run_lingqu_memory_list_record_lifecycle_cli,
-        run_lingqu_memory_list_shortpath_decisions_cli, run_lingqu_memory_lookup_prefix_cache_cli,
+        run_lingqu_memory_list_shortpath_decisions_cli,
+        run_lingqu_memory_list_shortpath_supports_cli, run_lingqu_memory_lookup_prefix_cache_cli,
         run_lingqu_memory_materialize_engram_state_cli,
         run_lingqu_memory_materialize_hot_state_cli, run_lingqu_memory_plan_prefetch_cli,
         run_lingqu_memory_publish_w5_engram_state_ref_cli, run_lingqu_memory_query_cli,
@@ -6962,6 +7092,13 @@ stage qwen3_range_forward_runtime_output_publish node=2
             "shortpath-decision/boundary/step3/node4".to_string(),
         ])
         .expect("list shortpath decision audit");
+        run_lingqu_memory_list_shortpath_supports_cli(&[
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--support-id".to_string(),
+            "shortpath-support/boundary/step3/node4".to_string(),
+        ])
+        .expect("list shortpath support audit");
         run_lingqu_memory_list_prefetch_plans_cli(&[
             "--store".to_string(),
             store.to_string_lossy().into_owned(),
@@ -6976,14 +7113,14 @@ stage qwen3_range_forward_runtime_output_publish node=2
             serde_json::from_slice::<sim_memory::BoundaryLookupResponse>(&boundary_response_bytes)
                 .expect("decode boundary response");
         assert_eq!(
-            boundary_response.decision.action,
+            boundary_response.support.supported_action,
             sim_memory::ShortpathAction::JumpToTerminal
         );
         assert_eq!(
-            boundary_response.decision.artifact_id.as_deref(),
+            boundary_response.support.artifact_id.as_deref(),
             Some("artifact/logits/step3/node4")
         );
-        assert_eq!(boundary_response.decision.confidence_milli, 980);
+        assert_eq!(boundary_response.support.confidence_milli, 980);
 
         let prefetch_plan_bytes = fs::read(&prefetch_plan_path).expect("read prefetch plan");
         let prefetch_plan =
@@ -7008,10 +7145,18 @@ stage qwen3_range_forward_runtime_output_publish node=2
         assert_eq!(artifacts.len(), 2);
         let decisions = durable_store
             .load_shortpath_decision_manifest()
-            .expect("load shortpath audit after restart");
+            .expect("load W5 planner decision audit after restart");
         assert_eq!(decisions.len(), 1);
         assert_eq!(
             decisions[0].artifact_id.as_deref(),
+            Some("artifact/logits/step3/node4")
+        );
+        let supports = durable_store
+            .load_shortpath_support_manifest()
+            .expect("load Memory Service support audit after restart");
+        assert_eq!(supports.len(), 1);
+        assert_eq!(
+            supports[0].artifact_id.as_deref(),
             Some("artifact/logits/step3/node4")
         );
         let plans = durable_store
@@ -7087,6 +7232,10 @@ stage qwen3_range_forward_runtime_output_publish node=2
             .iter()
             .any(|(key, value)| key == "SIM_W5_MEMORY_SHORTPATH_ACTION"
                 && value == "jump-to-terminal"));
+        assert!(env_vars.iter().any(|(key, value)| {
+            key == "SIM_W5_MEMORY_SHORTPATH_SUPPORT_ID"
+                && value == "shortpath-support/boundary/step3/node4"
+        }));
         assert!(env_vars.iter().any(
             |(key, value)| key == "SIM_W5_MEMORY_SHORTPATH_ARTIFACT_KIND" && value == "logits"
         ));
@@ -7233,6 +7382,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
         let decision = sim_memory::ShortpathDecisionRecord {
             decision_id: "shortpath-decision/missing-payload".to_string(),
             request_id: "boundary/missing-payload".to_string(),
+            support_id: None,
             action: sim_memory::ShortpathAction::JumpToTerminal,
             artifact_id: Some("artifact/logits/missing-payload".to_string()),
             target_layer_start: Some(8),
@@ -8281,7 +8431,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     let memory_decisions = if let Some(memory_decision_config) = &args.memory_decisions {
         Some(
             load_w5_memory_decisions_from_store(memory_decision_config)
-                .context("load Memory Service W5 execution decisions")?,
+                .context("load W5 execution decisions and Memory Service plans")?,
         )
     } else {
         None
@@ -8290,12 +8440,12 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         if w5_memory_decisions_reference_artifacts(decisions) {
             let memory_bootstrap = args.memory_bootstrap.as_ref().ok_or_else(|| {
                 anyhow::anyhow!(
-                    "Memory Service artifact-backed decisions require --memory-store, --memory-object-store, --memory-engram-state, and --memory-registry-dir so artifacts can be published as object refs"
+                    "W5 artifact-backed decisions and Memory Service plans require --memory-store, --memory-object-store, --memory-engram-state, and --memory-registry-dir so artifacts can be published as object refs"
                 )
             })?;
             Some(
                 publish_w5_memory_decision_artifact_refs(memory_bootstrap, decisions)
-                    .context("publish Memory Service W5 artifact object refs")?,
+                    .context("publish W5 execution artifact object refs")?,
             )
         } else {
             None
@@ -8358,11 +8508,12 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         );
     }
     if let Some(decisions) = &memory_decisions {
-        println!("  memory_decision_service: lingqu_memory_service");
+        println!("  w5_planner: w5_runtime_planner");
         if let Some(decision) = &decisions.shortpath {
             println!(
-                "  memory_shortpath_decision: id={} action={} artifact_id={} artifact_kind={} artifact_checksum={} proof_checksum={:#x}",
+                "  w5_shortpath_decision: id={} support_id={} action={} artifact_id={} artifact_kind={} artifact_checksum={} proof_checksum={:#x}",
                 decision.decision_id,
+                decision.support_id.as_deref().unwrap_or(""),
                 w5_shortpath_action_name(decision.action),
                 decision.artifact_id.as_deref().unwrap_or(""),
                 decisions
