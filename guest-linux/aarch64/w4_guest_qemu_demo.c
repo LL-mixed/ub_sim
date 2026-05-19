@@ -1853,6 +1853,24 @@ struct w4_qwen3_engram_config {
     uint64_t blocked_token_count;
 };
 
+struct w4_qwen3_memory_decision_config {
+    bool enabled;
+    char service[64];
+    char decision_store[256];
+    char shortpath_decision_id[256];
+    char shortpath_action[64];
+    char shortpath_artifact_id[256];
+    char shortpath_proof_checksum[64];
+    char prefetch_plan_id[256];
+    char prefetch_scope[64];
+    char prefetch_target_step_index[64];
+    char prefetch_checksum[64];
+    char prefix_cache_reuse_plan_id[256];
+    char prefix_cache_action[64];
+    char prefix_cache_artifact_id[256];
+    char prefix_cache_proof_checksum[64];
+};
+
 static uint32_t qwen3_engram_context_object_ref_count(
     const struct w4_qwen3_engram_config *config)
 {
@@ -4372,6 +4390,123 @@ static bool env_nonempty(const char *key)
     return value && value[0] != '\0';
 }
 
+static void env_copy_or_empty(const char *key, char *out, size_t out_len)
+{
+    const char *value = getenv(key);
+
+    if (!out || out_len == 0) {
+        return;
+    }
+    snprintf(out, out_len, "%s", value && value[0] != '\0' ? value : "");
+}
+
+static bool str_nonempty(const char *value)
+{
+    return value && value[0] != '\0';
+}
+
+static int parse_qwen3_w5_memory_decision_config(
+    struct w4_qwen3_memory_decision_config *config)
+{
+    bool has_shortpath;
+    bool has_prefetch;
+    bool has_prefix_cache;
+
+    memset(config, 0, sizeof(*config));
+    env_copy_or_empty("SIM_W5_MEMORY_SERVICE",
+                      config->service,
+                      sizeof(config->service));
+    env_copy_or_empty("SIM_W5_MEMORY_DECISION_STORE",
+                      config->decision_store,
+                      sizeof(config->decision_store));
+    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_DECISION_ID",
+                      config->shortpath_decision_id,
+                      sizeof(config->shortpath_decision_id));
+    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_ACTION",
+                      config->shortpath_action,
+                      sizeof(config->shortpath_action));
+    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_ARTIFACT_ID",
+                      config->shortpath_artifact_id,
+                      sizeof(config->shortpath_artifact_id));
+    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_PROOF_CHECKSUM",
+                      config->shortpath_proof_checksum,
+                      sizeof(config->shortpath_proof_checksum));
+    env_copy_or_empty("SIM_W5_MEMORY_PREFETCH_PLAN_ID",
+                      config->prefetch_plan_id,
+                      sizeof(config->prefetch_plan_id));
+    env_copy_or_empty("SIM_W5_MEMORY_PREFETCH_SCOPE",
+                      config->prefetch_scope,
+                      sizeof(config->prefetch_scope));
+    env_copy_or_empty("SIM_W5_MEMORY_PREFETCH_TARGET_STEP_INDEX",
+                      config->prefetch_target_step_index,
+                      sizeof(config->prefetch_target_step_index));
+    env_copy_or_empty("SIM_W5_MEMORY_PREFETCH_CHECKSUM",
+                      config->prefetch_checksum,
+                      sizeof(config->prefetch_checksum));
+    env_copy_or_empty("SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID",
+                      config->prefix_cache_reuse_plan_id,
+                      sizeof(config->prefix_cache_reuse_plan_id));
+    env_copy_or_empty("SIM_W5_MEMORY_PREFIX_CACHE_ACTION",
+                      config->prefix_cache_action,
+                      sizeof(config->prefix_cache_action));
+    env_copy_or_empty("SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_ID",
+                      config->prefix_cache_artifact_id,
+                      sizeof(config->prefix_cache_artifact_id));
+    env_copy_or_empty("SIM_W5_MEMORY_PREFIX_CACHE_PROOF_CHECKSUM",
+                      config->prefix_cache_proof_checksum,
+                      sizeof(config->prefix_cache_proof_checksum));
+
+    has_shortpath = str_nonempty(config->shortpath_decision_id);
+    has_prefetch = str_nonempty(config->prefetch_plan_id);
+    has_prefix_cache = str_nonempty(config->prefix_cache_reuse_plan_id);
+    config->enabled = has_shortpath || has_prefetch || has_prefix_cache;
+    if (!config->enabled) {
+        return 0;
+    }
+    if (strcmp(config->service, "lingqu_memory_service") != 0) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 memory decision service invalid "
+                "service=%s hint=pass decisions from Lingqu Memory Service\n",
+                str_nonempty(config->service) ? config->service : "unset");
+        return -1;
+    }
+    if (!str_nonempty(config->decision_store)) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 memory decision store missing "
+                "hint=set SIM_W5_MEMORY_DECISION_STORE\n");
+        return -1;
+    }
+    if (has_shortpath &&
+        (!str_nonempty(config->shortpath_action) ||
+         !str_nonempty(config->shortpath_proof_checksum))) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 memory shortpath decision incomplete "
+                "decision_id=%s hint=provide action and proof checksum from durable audit\n",
+                config->shortpath_decision_id);
+        return -1;
+    }
+    if (has_prefetch &&
+        (!str_nonempty(config->prefetch_scope) ||
+         !str_nonempty(config->prefetch_target_step_index) ||
+         !str_nonempty(config->prefetch_checksum))) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 memory prefetch plan incomplete "
+                "plan_id=%s hint=provide scope target step and checksum from durable audit\n",
+                config->prefetch_plan_id);
+        return -1;
+    }
+    if (has_prefix_cache &&
+        (!str_nonempty(config->prefix_cache_action) ||
+         !str_nonempty(config->prefix_cache_proof_checksum))) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 memory prefix-cache plan incomplete "
+                "plan_id=%s hint=provide action and proof checksum from durable audit\n",
+                config->prefix_cache_reuse_plan_id);
+        return -1;
+    }
+    return 0;
+}
+
 static int hex_nibble_value(char ch)
 {
     if (ch >= '0' && ch <= '9') {
@@ -5013,12 +5148,14 @@ int main(void)
     uint32_t round_next_node = 0;
     bool qwen3_round_history_loaded = false;
     struct w4_guest_supernode_clock supernode_clock;
+    struct w4_qwen3_memory_decision_config qwen3_memory_decision_config;
 
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
 
     memset(&counts, 0, sizeof(counts));
     memset(&supernode_clock, 0, sizeof(supernode_clock));
+    memset(&qwen3_memory_decision_config, 0, sizeof(qwen3_memory_decision_config));
     resolve_role(role, sizeof(role));
     memset(&qwen3_engram_config, 0, sizeof(qwen3_engram_config));
     cluster_observer_mode = env_bool_is_one("LINQU_W4_ALLOW_OBSERVER_ONLY");
@@ -5163,6 +5300,9 @@ int main(void)
                               sizeof(qwen3_engram_config.blocked_token_ids) /
                                   sizeof(qwen3_engram_config.blocked_token_ids[0]),
                               &qwen3_engram_config.blocked_token_count);
+    if (parse_qwen3_w5_memory_decision_config(&qwen3_memory_decision_config) != 0) {
+        return 1;
+    }
     uapi_completion_timeout_ms = env_u64_or_default("SIM_W4_UAPI_COMPLETION_TIMEOUT_MS",
                                                     W4_DEFAULT_TIMEOUT_MS);
     decode_round_barrier_timeout_ms =
@@ -5220,6 +5360,37 @@ int main(void)
                        gate_ref ? strlen(gate_ref) : (size_t)0,
                        registry_dir && registry_dir[0] != '\0' ? registry_dir : "default");
             }
+        }
+        if (qwen3_memory_decision_config.enabled) {
+            printf("[w4_guest] stage qwen3_w5_memory_decision_contract local=%s node=%u"
+                   " shortpath_id=%s shortpath_action=%s prefetch_id=%s"
+                   " prefetch_scope=%s prefetch_target_step=%s prefix_cache_id=%s"
+                   " prefix_cache_action=%s source=env_contract target=range_boundary_reader status=ok\n",
+                   role,
+                   w4_cluster_role_index(role, cluster_node_count, &local_node) ?
+                       local_node + 1U :
+                       0U,
+                   str_nonempty(qwen3_memory_decision_config.shortpath_decision_id) ?
+                       qwen3_memory_decision_config.shortpath_decision_id :
+                       "none",
+                   str_nonempty(qwen3_memory_decision_config.shortpath_action) ?
+                       qwen3_memory_decision_config.shortpath_action :
+                       "none",
+                   str_nonempty(qwen3_memory_decision_config.prefetch_plan_id) ?
+                       qwen3_memory_decision_config.prefetch_plan_id :
+                       "none",
+                   str_nonempty(qwen3_memory_decision_config.prefetch_scope) ?
+                       qwen3_memory_decision_config.prefetch_scope :
+                       "none",
+                   str_nonempty(qwen3_memory_decision_config.prefetch_target_step_index) ?
+                       qwen3_memory_decision_config.prefetch_target_step_index :
+                       "none",
+                   str_nonempty(qwen3_memory_decision_config.prefix_cache_reuse_plan_id) ?
+                       qwen3_memory_decision_config.prefix_cache_reuse_plan_id :
+                       "none",
+                   str_nonempty(qwen3_memory_decision_config.prefix_cache_action) ?
+                       qwen3_memory_decision_config.prefix_cache_action :
+                       "none");
         }
     }
     snprintf(request_id, sizeof(request_id), "w4-%s-request-0", role);
@@ -6672,6 +6843,39 @@ decode_round_start:
         round_layer_start = layer_start;
         round_layer_end = layer_end;
         round_next_node = next_node;
+        if (qwen3_memory_decision_config.enabled) {
+            printf("[w4_guest] stage qwen3_w5_memory_boundary_decision local=node%u"
+                   " step=%" PRIu64 " layers=[%u,%u) next=node%u shortpath_id=%s"
+                   " shortpath_action=%s prefetch_id=%s prefetch_scope=%s"
+                   " prefetch_target_step=%s prefix_cache_id=%s prefix_cache_action=%s"
+                   " source=lingqu_memory_service target=range_forward_boundary status=observed\n",
+                   dispatch_node + 1U,
+                   guest_decode_step,
+                   layer_start,
+                   layer_end,
+                   next_node + 1U,
+                   str_nonempty(qwen3_memory_decision_config.shortpath_decision_id) ?
+                       qwen3_memory_decision_config.shortpath_decision_id :
+                       "none",
+                   str_nonempty(qwen3_memory_decision_config.shortpath_action) ?
+                       qwen3_memory_decision_config.shortpath_action :
+                       "none",
+                   str_nonempty(qwen3_memory_decision_config.prefetch_plan_id) ?
+                       qwen3_memory_decision_config.prefetch_plan_id :
+                       "none",
+                   str_nonempty(qwen3_memory_decision_config.prefetch_scope) ?
+                       qwen3_memory_decision_config.prefetch_scope :
+                       "none",
+                   str_nonempty(qwen3_memory_decision_config.prefetch_target_step_index) ?
+                       qwen3_memory_decision_config.prefetch_target_step_index :
+                       "none",
+                   str_nonempty(qwen3_memory_decision_config.prefix_cache_reuse_plan_id) ?
+                       qwen3_memory_decision_config.prefix_cache_reuse_plan_id :
+                       "none",
+                   str_nonempty(qwen3_memory_decision_config.prefix_cache_action) ?
+                       qwen3_memory_decision_config.prefix_cache_action :
+                       "none");
+        }
         {
             uint32_t object_ref_count = 0;
 

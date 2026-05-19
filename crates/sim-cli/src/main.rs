@@ -247,6 +247,7 @@ struct Qwen3GuestDecodeLoopCliArgs {
     w5_profile: Option<String>,
     engram: Qwen3EngramConfig,
     memory_bootstrap: Option<W5MemoryBootstrapConfig>,
+    memory_decisions: Option<W5MemoryDecisionConfig>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -257,6 +258,14 @@ struct W5MemoryBootstrapConfig {
     registry_dir: PathBuf,
     owner_entity: u32,
     producer_entity: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct W5MemoryDecisionConfig {
+    store_path: PathBuf,
+    shortpath_decision_id: Option<String>,
+    prefetch_plan_id: Option<String>,
+    prefix_cache_reuse_plan_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -508,6 +517,10 @@ where
             let mut memory_registry_dir = None;
             let mut memory_owner_entity = None;
             let mut memory_producer_entity = None;
+            let mut memory_decision_store_path = None;
+            let mut memory_shortpath_decision_id = None;
+            let mut memory_prefetch_plan_id = None;
+            let mut memory_prefix_cache_reuse_plan_id = None;
             let mut positionals = Vec::new();
             let mut pending = args.peekable();
 
@@ -727,6 +740,36 @@ where
                 } else if let Some(value) = text.strip_prefix("--memory-producer-entity=") {
                     memory_producer_entity =
                         Some(parse_cli_u32("--memory-producer-entity", value)?);
+                } else if text == "--memory-decision-store" {
+                    let next = pending.next().ok_or_else(|| {
+                        anyhow::anyhow!("--memory-decision-store requires a value")
+                    })?;
+                    memory_decision_store_path = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--memory-decision-store=") {
+                    memory_decision_store_path = Some(PathBuf::from(value));
+                } else if text == "--memory-shortpath-decision-id" {
+                    let next = pending.next().ok_or_else(|| {
+                        anyhow::anyhow!("--memory-shortpath-decision-id requires a value")
+                    })?;
+                    memory_shortpath_decision_id = Some(next.to_string_lossy().to_string());
+                } else if let Some(value) = text.strip_prefix("--memory-shortpath-decision-id=") {
+                    memory_shortpath_decision_id = Some(value.to_string());
+                } else if text == "--memory-prefetch-plan-id" {
+                    let next = pending.next().ok_or_else(|| {
+                        anyhow::anyhow!("--memory-prefetch-plan-id requires a value")
+                    })?;
+                    memory_prefetch_plan_id = Some(next.to_string_lossy().to_string());
+                } else if let Some(value) = text.strip_prefix("--memory-prefetch-plan-id=") {
+                    memory_prefetch_plan_id = Some(value.to_string());
+                } else if text == "--memory-prefix-cache-reuse-plan-id" {
+                    let next = pending.next().ok_or_else(|| {
+                        anyhow::anyhow!("--memory-prefix-cache-reuse-plan-id requires a value")
+                    })?;
+                    memory_prefix_cache_reuse_plan_id = Some(next.to_string_lossy().to_string());
+                } else if let Some(value) =
+                    text.strip_prefix("--memory-prefix-cache-reuse-plan-id=")
+                {
+                    memory_prefix_cache_reuse_plan_id = Some(value.to_string());
                 } else if text.starts_with("--") {
                     anyhow::bail!("unknown qwen3-guest-decode-loop option: {text}");
                 } else {
@@ -788,6 +831,28 @@ where
                     "--memory-store, --memory-object-store, --memory-engram-state, and --memory-registry-dir must be provided together"
                 ),
             };
+            let memory_has_decision_id = memory_shortpath_decision_id.is_some()
+                || memory_prefetch_plan_id.is_some()
+                || memory_prefix_cache_reuse_plan_id.is_some();
+            let memory_decisions = if let Some(store_path) = memory_decision_store_path {
+                if !memory_has_decision_id {
+                    anyhow::bail!(
+                        "--memory-decision-store requires at least one of --memory-shortpath-decision-id, --memory-prefetch-plan-id, or --memory-prefix-cache-reuse-plan-id"
+                    );
+                }
+                Some(W5MemoryDecisionConfig {
+                    store_path,
+                    shortpath_decision_id: memory_shortpath_decision_id,
+                    prefetch_plan_id: memory_prefetch_plan_id,
+                    prefix_cache_reuse_plan_id: memory_prefix_cache_reuse_plan_id,
+                })
+            } else if memory_has_decision_id {
+                anyhow::bail!(
+                    "--memory-decision-store is required when Memory Service decision ids are provided"
+                );
+            } else {
+                None
+            };
             if engram.state_ref.is_some() {
                 engram.enabled = true;
                 engram.pool = Qwen3EngramPool::Obmm;
@@ -812,6 +877,7 @@ where
                 w5_profile,
                 engram,
                 memory_bootstrap,
+                memory_decisions,
             }))
         }
         _ => Ok(None),
@@ -2465,6 +2531,180 @@ struct W5EngramStateRefPublication {
     indices_bytes: usize,
     gate_bytes: usize,
     state_manifest_bytes: u64,
+}
+
+#[derive(Debug)]
+struct W5MemoryDecisionBundle {
+    shortpath: Option<sim_memory::ShortpathDecisionRecord>,
+    prefetch: Option<sim_memory::PrefetchPlanRecord>,
+    prefix_cache: Option<sim_memory::PrefixCacheReusePlan>,
+}
+
+fn load_w5_memory_decisions_from_store(
+    config: &W5MemoryDecisionConfig,
+) -> anyhow::Result<W5MemoryDecisionBundle> {
+    let mut durable_store = load_lingqu_memory_durable_store(&config.store_path)?;
+    let shortpath = if let Some(decision_id) = &config.shortpath_decision_id {
+        let decisions = durable_store
+            .load_shortpath_decision_manifest()
+            .with_context(|| {
+                format!(
+                    "load Memory Service shortpath decisions from {}",
+                    config.store_path.display()
+                )
+            })?;
+        Some(
+            decisions
+                .into_iter()
+                .find(|decision| decision.decision_id == *decision_id)
+                .ok_or_else(|| anyhow::anyhow!("shortpath decision not found: {decision_id}"))?,
+        )
+    } else {
+        None
+    };
+    let prefetch = if let Some(plan_id) = &config.prefetch_plan_id {
+        let plans = durable_store
+            .load_prefetch_plan_manifest()
+            .with_context(|| {
+                format!(
+                    "load Memory Service prefetch plans from {}",
+                    config.store_path.display()
+                )
+            })?;
+        Some(
+            plans
+                .into_iter()
+                .find(|plan| plan.plan_id == *plan_id)
+                .ok_or_else(|| anyhow::anyhow!("prefetch plan not found: {plan_id}"))?,
+        )
+    } else {
+        None
+    };
+    let prefix_cache = if let Some(plan_id) = &config.prefix_cache_reuse_plan_id {
+        let plans = durable_store
+            .load_prefix_cache_reuse_plan_manifest()
+            .with_context(|| {
+                format!(
+                    "load Memory Service prefix-cache reuse plans from {}",
+                    config.store_path.display()
+                )
+            })?;
+        Some(
+            plans
+                .into_iter()
+                .find(|plan| plan.plan_id == *plan_id)
+                .ok_or_else(|| anyhow::anyhow!("prefix-cache reuse plan not found: {plan_id}"))?,
+        )
+    } else {
+        None
+    };
+    Ok(W5MemoryDecisionBundle {
+        shortpath,
+        prefetch,
+        prefix_cache,
+    })
+}
+
+fn w5_memory_decision_env_vars(
+    config: &W5MemoryDecisionConfig,
+    bundle: &W5MemoryDecisionBundle,
+) -> Vec<(String, String)> {
+    let mut vars = vec![
+        (
+            "SIM_W5_MEMORY_SERVICE".to_string(),
+            "lingqu_memory_service".to_string(),
+        ),
+        (
+            "SIM_W5_MEMORY_DECISION_STORE".to_string(),
+            config.store_path.display().to_string(),
+        ),
+    ];
+    if let Some(decision) = &bundle.shortpath {
+        vars.extend([
+            (
+                "SIM_W5_MEMORY_SHORTPATH_DECISION_ID".to_string(),
+                decision.decision_id.clone(),
+            ),
+            (
+                "SIM_W5_MEMORY_SHORTPATH_ACTION".to_string(),
+                w5_shortpath_action_name(decision.action).to_string(),
+            ),
+            (
+                "SIM_W5_MEMORY_SHORTPATH_ARTIFACT_ID".to_string(),
+                decision.artifact_id.clone().unwrap_or_default(),
+            ),
+            (
+                "SIM_W5_MEMORY_SHORTPATH_PROOF_CHECKSUM".to_string(),
+                format!("{:#x}", decision.proof_checksum),
+            ),
+        ]);
+    }
+    if let Some(plan) = &bundle.prefetch {
+        vars.extend([
+            (
+                "SIM_W5_MEMORY_PREFETCH_PLAN_ID".to_string(),
+                plan.plan_id.clone(),
+            ),
+            (
+                "SIM_W5_MEMORY_PREFETCH_SCOPE".to_string(),
+                w5_prefetch_scope_name(plan.scope).to_string(),
+            ),
+            (
+                "SIM_W5_MEMORY_PREFETCH_TARGET_STEP_INDEX".to_string(),
+                plan.target_step_index.to_string(),
+            ),
+            (
+                "SIM_W5_MEMORY_PREFETCH_CHECKSUM".to_string(),
+                format!("{:#x}", plan.checksum),
+            ),
+        ]);
+    }
+    if let Some(plan) = &bundle.prefix_cache {
+        vars.extend([
+            (
+                "SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID".to_string(),
+                plan.plan_id.clone(),
+            ),
+            (
+                "SIM_W5_MEMORY_PREFIX_CACHE_ACTION".to_string(),
+                w5_prefix_cache_reuse_action_name(plan.action).to_string(),
+            ),
+            (
+                "SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_ID".to_string(),
+                plan.artifact_id.clone().unwrap_or_default(),
+            ),
+            (
+                "SIM_W5_MEMORY_PREFIX_CACHE_PROOF_CHECKSUM".to_string(),
+                format!("{:#x}", plan.proof_checksum),
+            ),
+        ]);
+    }
+    vars
+}
+
+fn w5_shortpath_action_name(action: sim_memory::ShortpathAction) -> &'static str {
+    match action {
+        sim_memory::ShortpathAction::Continue => "continue",
+        sim_memory::ShortpathAction::JumpToLayer => "jump-to-layer",
+        sim_memory::ShortpathAction::JumpToTerminal => "jump-to-terminal",
+        sim_memory::ShortpathAction::RequireVerify => "require-verify",
+    }
+}
+
+fn w5_prefetch_scope_name(scope: sim_memory::PrefetchScope) -> &'static str {
+    match scope {
+        sim_memory::PrefetchScope::Range => "range",
+        sim_memory::PrefetchScope::Step => "step",
+        sim_memory::PrefetchScope::MultiStep => "multi-step",
+    }
+}
+
+fn w5_prefix_cache_reuse_action_name(action: sim_memory::PrefixCacheReuseAction) -> &'static str {
+    match action {
+        sim_memory::PrefixCacheReuseAction::Miss => "miss",
+        sim_memory::PrefixCacheReuseAction::Reuse => "reuse",
+        sim_memory::PrefixCacheReuseAction::RequireVerify => "require-verify",
+    }
 }
 
 fn publish_w5_engram_state_ref_from_memory(
@@ -4245,10 +4485,10 @@ mod tests {
     use super::{
         cli_f32_vec_to_le_bytes, lingqu_durable_args_from, lingqu_memory_args_from,
         lingqu_object_service_args_from, load_lingqu_memory_durable_store,
-        publish_w5_engram_state_ref_from_memory, qwen3_decode_loop_args_from,
-        qwen3_decode_report_verbosity_from_env, qwen3_dense_weights_path_from_env,
-        qwen3_engram_policy_checksum, qwen3_engram_select_token, qwen3_engram_state_words,
-        qwen3_guest_candidate_records, qwen3_guest_decode_loop_args_from,
+        load_w5_memory_decisions_from_store, publish_w5_engram_state_ref_from_memory,
+        qwen3_decode_loop_args_from, qwen3_decode_report_verbosity_from_env,
+        qwen3_dense_weights_path_from_env, qwen3_engram_policy_checksum, qwen3_engram_select_token,
+        qwen3_engram_state_words, qwen3_guest_candidate_records, qwen3_guest_decode_loop_args_from,
         qwen3_guest_default_w5_profile, qwen3_guest_dense_runtime,
         qwen3_guest_engram_candidate_counts, qwen3_guest_engram_env_vars,
         qwen3_guest_engram_env_vars_from_lookup, qwen3_guest_engram_expected_terminal_rewrites,
@@ -4280,7 +4520,8 @@ mod tests {
         LingquObjectVersionSelector, MemoryCatalogSnapshot, QueryResult, Qwen3CandidateRecord,
         Qwen3DecodeReportVerbosity, Qwen3EngramConfig, Qwen3EngramContextOp, Qwen3EngramMode,
         Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs, W5MemoryBootstrapConfig,
-        SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+        W5MemoryDecisionConfig, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
+        SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
     };
     use std::env;
     use std::fs;
@@ -4624,6 +4865,63 @@ mod tests {
     }
 
     #[test]
+    fn w5_inference_cluster_args_accept_memory_service_decisions() {
+        let args = qwen3_guest_decode_loop_args_from([
+            "w5-inference-cluster",
+            "--memory-decision-store=/tmp/lingqu-memory-store.json",
+            "--memory-shortpath-decision-id=shortpath-decision/boundary/0",
+            "--memory-prefetch-plan-id=prefetch-plan/range/0",
+            "--memory-prefix-cache-reuse-plan-id=prefix-cache-reuse/prefix/0",
+        ])
+        .expect("parse w5 memory decision args")
+        .expect("w5 memory decision args");
+
+        let memory_decisions = args.memory_decisions.expect("memory decisions");
+        assert_eq!(
+            memory_decisions.store_path,
+            PathBuf::from("/tmp/lingqu-memory-store.json")
+        );
+        assert_eq!(
+            memory_decisions.shortpath_decision_id.as_deref(),
+            Some("shortpath-decision/boundary/0")
+        );
+        assert_eq!(
+            memory_decisions.prefetch_plan_id.as_deref(),
+            Some("prefetch-plan/range/0")
+        );
+        assert_eq!(
+            memory_decisions.prefix_cache_reuse_plan_id.as_deref(),
+            Some("prefix-cache-reuse/prefix/0")
+        );
+    }
+
+    #[test]
+    fn w5_inference_cluster_args_reject_decision_id_without_store() {
+        let err = qwen3_guest_decode_loop_args_from([
+            "w5-inference-cluster",
+            "--memory-shortpath-decision-id=shortpath-decision/boundary/0",
+        ])
+        .expect_err("decision id without store should fail");
+
+        assert!(err
+            .to_string()
+            .contains("--memory-decision-store is required"));
+    }
+
+    #[test]
+    fn w5_inference_cluster_args_reject_empty_decision_store() {
+        let err = qwen3_guest_decode_loop_args_from([
+            "w5-inference-cluster",
+            "--memory-decision-store=/tmp/lingqu-memory-store.json",
+        ])
+        .expect_err("decision store without ids should fail");
+
+        assert!(err
+            .to_string()
+            .contains("--memory-decision-store requires at least one"));
+    }
+
+    #[test]
     fn w5_inference_cluster_args_reject_partial_memory_bootstrap() {
         let err = qwen3_guest_decode_loop_args_from([
             "w5-inference-cluster",
@@ -4835,6 +5133,7 @@ mod tests {
             w5_profile: None,
             engram: Qwen3EngramConfig::default(),
             memory_bootstrap: None,
+            memory_decisions: None,
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("dense runtime");
         assert_eq!(runtime.model_key, "qwen3-0-6b");
@@ -4884,6 +5183,7 @@ mod tests {
             w5_profile: None,
             engram: Qwen3EngramConfig::default(),
             memory_bootstrap: None,
+            memory_decisions: None,
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("reference shape runtime");
         assert!(runtime
@@ -4932,6 +5232,7 @@ mod tests {
             w5_profile: None,
             engram: Qwen3EngramConfig::default(),
             memory_bootstrap: None,
+            memory_decisions: None,
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("14B generic runtime");
         assert_eq!(runtime.model_key, "qwen3-14b");
@@ -5903,6 +6204,30 @@ stage qwen3_range_forward_runtime_output_publish node=2
             plans[0].planned_artifact_ids,
             vec!["artifact/kv/step4/node4".to_string()]
         );
+        let bundle = load_w5_memory_decisions_from_store(&W5MemoryDecisionConfig {
+            store_path: store.clone(),
+            shortpath_decision_id: Some("shortpath-decision/boundary/step3/node4".to_string()),
+            prefetch_plan_id: Some("prefetch-plan/prefetch/step3/node4".to_string()),
+            prefix_cache_reuse_plan_id: None,
+        })
+        .expect("load w5 memory decision bundle");
+        assert_eq!(
+            bundle
+                .shortpath
+                .as_ref()
+                .expect("shortpath decision")
+                .artifact_id
+                .as_deref(),
+            Some("artifact/logits/step3/node4")
+        );
+        assert_eq!(
+            bundle
+                .prefetch
+                .as_ref()
+                .expect("prefetch plan")
+                .target_step_index,
+            5
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -6107,6 +6432,22 @@ stage qwen3_range_forward_runtime_output_publish node=2
         assert_eq!(response.reuse_plan.matched_prefix_token_count, 8);
         assert!(!response.reuse_plan.verify_required);
         assert!(response.reuse_plan.proof_checksum != 0);
+        let bundle = load_w5_memory_decisions_from_store(&W5MemoryDecisionConfig {
+            store_path: store.clone(),
+            shortpath_decision_id: None,
+            prefetch_plan_id: None,
+            prefix_cache_reuse_plan_id: Some("prefix-cache-reuse/prefix-lookup/test/0".to_string()),
+        })
+        .expect("load w5 prefix-cache decision bundle");
+        assert_eq!(
+            bundle
+                .prefix_cache
+                .as_ref()
+                .expect("prefix-cache plan")
+                .artifact_id
+                .as_deref(),
+            Some("prefix-cache/test/8")
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -6937,6 +7278,14 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     } else {
         None
     };
+    let memory_decisions = if let Some(memory_decision_config) = &args.memory_decisions {
+        Some(
+            load_w5_memory_decisions_from_store(memory_decision_config)
+                .context("load Memory Service W5 execution decisions")?,
+        )
+    } else {
+        None
+    };
     let engram_simt = qwen3_prepare_engram_simt_mode(&effective_engram)?;
     let engram_registry_validation =
         qwen3_validate_guest_engram_state_registry(&effective_engram, &runtime.profile)?;
@@ -6990,6 +7339,36 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             "  memory_registry_state_manifest_bytes: {}",
             publication.state_manifest_bytes
         );
+    }
+    if let Some(decisions) = &memory_decisions {
+        println!("  memory_decision_service: lingqu_memory_service");
+        if let Some(decision) = &decisions.shortpath {
+            println!(
+                "  memory_shortpath_decision: id={} action={} artifact_id={} proof_checksum={:#x}",
+                decision.decision_id,
+                w5_shortpath_action_name(decision.action),
+                decision.artifact_id.as_deref().unwrap_or(""),
+                decision.proof_checksum
+            );
+        }
+        if let Some(plan) = &decisions.prefetch {
+            println!(
+                "  memory_prefetch_plan: id={} scope={} target_step_index={} checksum={:#x}",
+                plan.plan_id,
+                w5_prefetch_scope_name(plan.scope),
+                plan.target_step_index,
+                plan.checksum
+            );
+        }
+        if let Some(plan) = &decisions.prefix_cache {
+            println!(
+                "  memory_prefix_cache_reuse_plan: id={} action={} artifact_id={} proof_checksum={:#x}",
+                plan.plan_id,
+                w5_prefix_cache_reuse_action_name(plan.action),
+                plan.artifact_id.as_deref().unwrap_or(""),
+                plan.proof_checksum
+            );
+        }
     }
     if effective_engram.enabled {
         println!(
@@ -7122,6 +7501,11 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     command.env("SIM_QWEN3_DENSE_WEIGHTS_PATH", &runtime.weights_path);
     for (key, value) in qwen3_guest_engram_env_vars(&effective_engram, engram_session_id) {
         command.env(key, value);
+    }
+    if let (Some(config), Some(decisions)) = (&args.memory_decisions, &memory_decisions) {
+        for (key, value) in w5_memory_decision_env_vars(config, decisions) {
+            command.env(key, value);
+        }
     }
     if let Some(spec) = &engram_simt {
         command

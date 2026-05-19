@@ -134,6 +134,14 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("modes=[^ ]*object-ref", runner_text)
         self.assertIn("SIM_QWEN3_GUEST_ENGRAM_STATE_REF", launcher_text)
         self.assertIn("SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR", launcher_text)
+        self.assertIn("SIM_W5_MEMORY_DECISION_STORE", runner_text)
+        self.assertIn("SIM_W5_MEMORY_SHORTPATH_DECISION_ID", runner_text)
+        self.assertIn("SIM_W5_MEMORY_PREFETCH_PLAN_ID", runner_text)
+        self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID", runner_text)
+        self.assertIn("SIM_W5_MEMORY_DECISION_STORE", launcher_text)
+        self.assertIn("SIM_W5_MEMORY_SHORTPATH_DECISION_ID", launcher_text)
+        self.assertIn("SIM_W5_MEMORY_PREFETCH_PLAN_ID", launcher_text)
+        self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID", launcher_text)
 
     def test_w5_inference_cluster_runner_delegates_to_legacy_compatible_runner(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
