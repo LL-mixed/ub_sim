@@ -3285,6 +3285,18 @@ fn w5_memory_decision_env_vars(
                     "SIM_W5_MEMORY_SHORTPATH_ARTIFACT_CHECKSUM".to_string(),
                     format!("{:#x}", artifact.checksum),
                 ),
+                (
+                    "SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_START".to_string(),
+                    artifact.producer_boundary.layer_start.to_string(),
+                ),
+                (
+                    "SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_END".to_string(),
+                    artifact.producer_boundary.layer_end.to_string(),
+                ),
+                (
+                    "SIM_W5_MEMORY_SHORTPATH_PRODUCER_POSITION".to_string(),
+                    artifact.producer_boundary.position.to_string(),
+                ),
             ]);
         }
         if let Some(published) = publication.and_then(|published| published.shortpath_ref.as_ref())
@@ -7078,6 +7090,12 @@ stage qwen3_range_forward_runtime_output_publish node=2
         assert!(env_vars.iter().any(
             |(key, value)| key == "SIM_W5_MEMORY_SHORTPATH_ARTIFACT_KIND" && value == "logits"
         ));
+        assert!(env_vars.iter().any(|(key, value)| {
+            key == "SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_START" && value == "4"
+        }));
+        assert!(env_vars.iter().any(|(key, value)| {
+            key == "SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_END" && value == "8"
+        }));
         assert!(env_vars.iter().any(
             |(key, value)| key == "SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF" && value.len() == 128
         ));

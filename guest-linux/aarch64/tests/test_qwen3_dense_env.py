@@ -141,6 +141,9 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_W5_MEMORY_SHORTPATH_ARTIFACT_KIND", runner_text)
         self.assertIn("SIM_W5_MEMORY_SHORTPATH_ARTIFACT_CHECKSUM", runner_text)
         self.assertIn("SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF", runner_text)
+        self.assertIn("SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_START", runner_text)
+        self.assertIn("SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_END", runner_text)
+        self.assertIn("SIM_W5_MEMORY_SHORTPATH_PRODUCER_POSITION", runner_text)
         self.assertIn("SIM_W5_MEMORY_PREFETCH_PLAN_ID", runner_text)
         self.assertIn("SIM_W5_MEMORY_PREFETCH_ARTIFACT_IDS", runner_text)
         self.assertIn("SIM_W5_MEMORY_PREFETCH_ARTIFACT_CHECKSUMS", runner_text)
@@ -155,6 +158,9 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_W5_MEMORY_SHORTPATH_ARTIFACT_KIND", launcher_text)
         self.assertIn("SIM_W5_MEMORY_SHORTPATH_ARTIFACT_CHECKSUM", launcher_text)
         self.assertIn("SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF", launcher_text)
+        self.assertIn("SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_START", launcher_text)
+        self.assertIn("SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_END", launcher_text)
+        self.assertIn("SIM_W5_MEMORY_SHORTPATH_PRODUCER_POSITION", launcher_text)
         self.assertIn("SIM_W5_MEMORY_PREFETCH_PLAN_ID", launcher_text)
         self.assertIn("SIM_W5_MEMORY_PREFETCH_ARTIFACT_IDS", launcher_text)
         self.assertIn("SIM_W5_MEMORY_PREFETCH_ARTIFACT_CHECKSUMS", launcher_text)
@@ -176,6 +182,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("jump-to-terminal", guest_source)
         self.assertIn("artifact_kind=%s", guest_source)
         self.assertIn("jump-to-terminal contract invalid", guest_source)
+        self.assertIn("qwen3_memory_shortpath_terminal_logits_record", guest_source)
+        self.assertIn("qwen3_w5_memory_terminal_logits_loaded", guest_source)
 
     def test_w5_inference_cluster_runner_delegates_to_legacy_compatible_runner(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"

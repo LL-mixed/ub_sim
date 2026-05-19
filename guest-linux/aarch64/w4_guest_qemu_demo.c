@@ -1868,7 +1868,11 @@ struct w4_qwen3_memory_decision_config {
     char shortpath_artifact_kind[64];
     char shortpath_artifact_checksum[64];
     char shortpath_artifact_ref[160];
+    char shortpath_producer_layer_start[32];
+    char shortpath_producer_layer_end[32];
+    char shortpath_producer_position[64];
     char shortpath_proof_checksum[64];
+    bool shortpath_execute;
     char prefetch_plan_id[256];
     char prefetch_scope[64];
     char prefetch_target_step_index[64];
@@ -4478,9 +4482,20 @@ static int parse_qwen3_w5_memory_decision_config(
     env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF",
                       config->shortpath_artifact_ref,
                       sizeof(config->shortpath_artifact_ref));
+    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_START",
+                      config->shortpath_producer_layer_start,
+                      sizeof(config->shortpath_producer_layer_start));
+    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_END",
+                      config->shortpath_producer_layer_end,
+                      sizeof(config->shortpath_producer_layer_end));
+    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_PRODUCER_POSITION",
+                      config->shortpath_producer_position,
+                      sizeof(config->shortpath_producer_position));
     env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_PROOF_CHECKSUM",
                       config->shortpath_proof_checksum,
                       sizeof(config->shortpath_proof_checksum));
+    config->shortpath_execute =
+        env_bool_is_one("SIM_W5_MEMORY_SHORTPATH_EXECUTE");
     env_copy_or_empty("SIM_W5_MEMORY_PREFETCH_PLAN_ID",
                       config->prefetch_plan_id,
                       sizeof(config->prefetch_plan_id));
@@ -4556,11 +4571,14 @@ static int parse_qwen3_w5_memory_decision_config(
          !str_nonempty(config->shortpath_target_layer_end) ||
          !str_nonempty(config->shortpath_artifact_kind) ||
          !str_nonempty(config->shortpath_artifact_checksum) ||
-         !str_nonempty(config->shortpath_artifact_ref))) {
+         !str_nonempty(config->shortpath_artifact_ref) ||
+         !str_nonempty(config->shortpath_producer_layer_start) ||
+         !str_nonempty(config->shortpath_producer_layer_end) ||
+         !str_nonempty(config->shortpath_producer_position))) {
         fprintf(stderr,
                 "[w4_guest] fail qwen3 w5 memory shortpath artifact incomplete "
                 "decision_id=%s action=%s artifact_id=%s "
-                "hint=provide verified artifact id kind checksum and object ref\n",
+                "hint=provide verified artifact id kind checksum producer boundary and object ref\n",
                 config->shortpath_decision_id,
                 config->shortpath_action,
                 str_nonempty(config->shortpath_artifact_id) ?
@@ -4571,6 +4589,8 @@ static int parse_qwen3_w5_memory_decision_config(
     if (has_shortpath && strcmp(config->shortpath_action, "continue") != 0) {
         uint32_t target_start = 0U;
         uint32_t target_end = 0U;
+        uint32_t producer_start = 0U;
+        uint32_t producer_end = 0U;
 
         if (parse_u32_field("shortpath_target_layer_start",
                             config->shortpath_target_layer_start,
@@ -4585,6 +4605,21 @@ static int parse_qwen3_w5_memory_decision_config(
                     config->shortpath_decision_id,
                     config->shortpath_target_layer_start,
                     config->shortpath_target_layer_end);
+            return -1;
+        }
+        if (parse_u32_field("shortpath_producer_layer_start",
+                            config->shortpath_producer_layer_start,
+                            &producer_start) != 0 ||
+            parse_u32_field("shortpath_producer_layer_end",
+                            config->shortpath_producer_layer_end,
+                            &producer_end) != 0 ||
+            producer_end <= producer_start) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 w5 memory shortpath producer boundary invalid"
+                    " decision_id=%s start=%s end=%s\n",
+                    config->shortpath_decision_id,
+                    config->shortpath_producer_layer_start,
+                    config->shortpath_producer_layer_end);
             return -1;
         }
         if (strcmp(config->shortpath_action, "jump-to-layer") == 0 &&
@@ -4859,6 +4894,292 @@ static int qwen3_memory_prefix_cache_kv_ref(
                                     config->prefix_cache_artifact_ref,
                                     W4_QWEN3_OBMM_KIND_QWEN3_KV_STATE,
                                     ref_out) != 0) {
+        return -1;
+    }
+    return 1;
+}
+
+static int qwen3_registry_payload_path(
+    const struct lingqu_obmm_object_ref_wire *ref,
+    char *path,
+    size_t path_len)
+{
+    const char *registry_dir = getenv("SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR");
+
+    if (!ref || !path || path_len == 0) {
+        return -1;
+    }
+    if (!registry_dir || registry_dir[0] == '\0') {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 object registry dir missing"
+                " hint=set SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR\n");
+        return -1;
+    }
+    if (snprintf(path,
+                 path_len,
+                 "%s/kind%04x_owner%08x_producer%08x_version%016" PRIx64
+                 "_key%016" PRIx64 "_bytes%016" PRIx64
+                 "_checksum%016" PRIx64 ".bin",
+                 registry_dir,
+                 (unsigned)ref->object_kind,
+                 ref->owner_entity,
+                 ref->producer_entity,
+                 ref->object_version,
+                 ref->key_hash,
+                 ref->payload_bytes,
+                 ref->payload_checksum) >= (int)path_len) {
+        fprintf(stderr, "[w4_guest] fail qwen3 object registry path too long\n");
+        return -1;
+    }
+    return 0;
+}
+
+static int qwen3_read_registry_payload(
+    const struct lingqu_obmm_object_ref_wire *ref,
+    uint8_t **payload_out,
+    uint64_t *payload_len_out)
+{
+    char path[1024];
+    FILE *fp = NULL;
+    uint8_t *payload = NULL;
+    size_t read_len;
+    uint64_t checksum;
+
+    if (!ref || !payload_out || !payload_len_out || ref->payload_bytes == 0 ||
+        ref->payload_bytes > SIZE_MAX) {
+        return -1;
+    }
+    if (qwen3_registry_payload_path(ref, path, sizeof(path)) != 0) {
+        return -1;
+    }
+    payload = (uint8_t *)malloc((size_t)ref->payload_bytes);
+    if (!payload) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 object registry payload alloc bytes=%" PRIu64 "\n",
+                ref->payload_bytes);
+        return -1;
+    }
+    fp = fopen(path, "rb");
+    if (!fp) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 object registry payload open path=%s err=%s\n",
+                path,
+                strerror(errno));
+        free(payload);
+        return -1;
+    }
+    read_len = fread(payload, 1, (size_t)ref->payload_bytes, fp);
+    {
+        int read_error = ferror(fp);
+        int close_error = fclose(fp);
+
+        if (read_error || close_error != 0 ||
+            read_len != (size_t)ref->payload_bytes) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 object registry payload read path=%s got=%zu expected=%" PRIu64 "\n",
+                    path,
+                    read_len,
+                    ref->payload_bytes);
+            free(payload);
+            return -1;
+        }
+    }
+    checksum = w4_qwen3_hidden_payload_checksum(payload, ref->payload_bytes);
+    if (checksum != ref->payload_checksum) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 object registry payload checksum mismatch"
+                " path=%s got=0x%016" PRIx64 " expected=0x%016" PRIx64 "\n",
+                path,
+                checksum,
+                ref->payload_checksum);
+        free(payload);
+        return -1;
+    }
+    *payload_out = payload;
+    *payload_len_out = ref->payload_bytes;
+    return 0;
+}
+
+static int qwen3_terminal_token_record_from_logits_payload(
+    const uint8_t *payload,
+    uint64_t payload_len,
+    uint64_t decode_step,
+    struct w4_qwen3_terminal_token_record *record)
+{
+    uint64_t marker;
+    uint64_t count;
+    uint64_t entry_words;
+    uint64_t table_bytes;
+    uint64_t token_text_header;
+    uint64_t token_text_base;
+    uint64_t token_text_marker;
+    uint64_t token_text_count;
+    uint64_t token_text_entry_words;
+    uint64_t token_text_table_bytes;
+    uint64_t selected_entry = UINT64_MAX;
+    uint64_t logits_base;
+    uint64_t text_base;
+    uint64_t candidate_count;
+
+    if (!payload || !record || payload_len < 128U) {
+        return -1;
+    }
+    marker = qwen3_ref_read_u64_le(payload, 0);
+    count = qwen3_ref_read_u64_le(payload, 8);
+    entry_words = qwen3_ref_read_u64_le(payload, 16);
+    table_bytes = qwen3_ref_read_u64_le(payload, 24);
+    if (marker != W4_QWEN3_MARKER_LOGITS_TABLE ||
+        count == 0 ||
+        entry_words != W4_QWEN3_LOGITS_TABLE_ENTRY_WORDS ||
+        table_bytes != count * W4_QWEN3_LOGITS_TABLE_ENTRY_BYTES ||
+        payload_len < 64ULL + table_bytes + 64ULL) {
+        return -1;
+    }
+    token_text_header = 64ULL + table_bytes;
+    token_text_base = token_text_header + 64ULL;
+    token_text_marker = qwen3_ref_read_u64_le(payload, (size_t)token_text_header);
+    token_text_count = qwen3_ref_read_u64_le(payload, (size_t)token_text_header + 8U);
+    token_text_entry_words =
+        qwen3_ref_read_u64_le(payload, (size_t)token_text_header + 16U);
+    token_text_table_bytes =
+        qwen3_ref_read_u64_le(payload, (size_t)token_text_header + 24U);
+    if (token_text_marker != W4_QWEN3_MARKER_TOKEN_TEXT_TABLE ||
+        token_text_count != count ||
+        token_text_entry_words != W4_QWEN3_TOKEN_TEXT_TABLE_ENTRY_WORDS ||
+        token_text_table_bytes != count * W4_QWEN3_TOKEN_TEXT_TABLE_ENTRY_BYTES ||
+        payload_len < token_text_base + token_text_table_bytes) {
+        return -1;
+    }
+    for (uint64_t entry = 0; entry < count; ++entry) {
+        uint64_t step_index =
+            qwen3_ref_read_u64_le(payload,
+                                  (size_t)(64ULL +
+                                           entry * W4_QWEN3_LOGITS_TABLE_ENTRY_BYTES +
+                                           72ULL));
+
+        if (step_index == decode_step) {
+            selected_entry = entry;
+            break;
+        }
+    }
+    if (selected_entry == UINT64_MAX) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 terminal logits step missing step=%" PRIu64
+                " entries=%" PRIu64 "\n",
+                decode_step,
+                count);
+        return -1;
+    }
+
+    memset(record, 0, sizeof(*record));
+    logits_base = 64ULL + selected_entry * W4_QWEN3_LOGITS_TABLE_ENTRY_BYTES;
+    text_base = token_text_base +
+                selected_entry * W4_QWEN3_TOKEN_TEXT_TABLE_ENTRY_BYTES;
+    record->sampled_token =
+        qwen3_ref_read_u64_le(payload, (size_t)logits_base + 32U);
+    record->runner_up_token =
+        qwen3_ref_read_u64_le(payload, (size_t)logits_base + 40U);
+    record->margin_milli =
+        qwen3_ref_read_u64_le(payload, (size_t)logits_base + 48U);
+    record->logits_checksum =
+        qwen3_ref_read_u64_le(payload, (size_t)logits_base + 56U);
+    record->text_checksum =
+        qwen3_ref_read_u64_le(payload, (size_t)logits_base + 64U);
+    record->top_logit_bits =
+        qwen3_ref_read_u64_le(payload, (size_t)logits_base + 120U);
+    record->runner_up_logit_bits =
+        qwen3_ref_read_u64_le(payload, (size_t)logits_base + 128U);
+    record->piece_word0 = qwen3_ref_read_u64_le(payload, (size_t)text_base + 32U);
+    record->piece_word1 = qwen3_ref_read_u64_le(payload, (size_t)text_base + 40U);
+    candidate_count =
+        qwen3_ref_read_u64_le(payload, (size_t)logits_base + 160U);
+    if (candidate_count == 0 || candidate_count > 4 ||
+        qwen3_ref_read_u64_le(payload, (size_t)text_base) != decode_step ||
+        qwen3_ref_read_u64_le(payload, (size_t)text_base + 8U) != record->sampled_token ||
+        qwen3_ref_read_u64_le(payload, (size_t)text_base + 48U) != record->text_checksum) {
+        return -1;
+    }
+    record->candidate_count = candidate_count;
+    for (uint64_t i = 0; i < candidate_count; ++i) {
+        uint64_t candidate_base = logits_base + 168ULL + i * 48ULL;
+
+        record->candidate_tokens[i] =
+            qwen3_ref_read_u64_le(payload, (size_t)candidate_base);
+        record->candidate_logit_bits[i] =
+            qwen3_ref_read_u64_le(payload, (size_t)candidate_base + 8U);
+        record->candidate_text_checksums[i] =
+            qwen3_ref_read_u64_le(payload, (size_t)candidate_base + 16U);
+        record->candidate_piece_bytes[i] =
+            qwen3_ref_read_u64_le(payload, (size_t)candidate_base + 24U);
+        record->candidate_piece_word0[i] =
+            qwen3_ref_read_u64_le(payload, (size_t)candidate_base + 32U);
+        record->candidate_piece_word1[i] =
+            qwen3_ref_read_u64_le(payload, (size_t)candidate_base + 40U);
+    }
+    if (record->candidate_tokens[0] != record->sampled_token ||
+        record->sampled_token >= qwen3_vocab_size() ||
+        record->runner_up_token >= qwen3_vocab_size() ||
+        record->sampled_token == record->runner_up_token ||
+        record->margin_milli == 0 ||
+        record->logits_checksum == 0 ||
+        record->text_checksum == 0 ||
+        record->piece_word0 == 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int qwen3_memory_shortpath_terminal_logits_record(
+    const struct w4_qwen3_memory_decision_config *config,
+    uint32_t layer_start,
+    uint32_t layer_end,
+    uint64_t decode_step,
+    struct lingqu_obmm_object_ref_wire *ref_out,
+    struct w4_qwen3_terminal_token_record *record_out)
+{
+    uint32_t producer_start = 0U;
+    uint32_t producer_end = 0U;
+    uint8_t *payload = NULL;
+    uint64_t payload_len = 0;
+    int rc;
+
+    if (!config || !config->enabled || !ref_out || !record_out ||
+        strcmp(config->shortpath_action, "jump-to-terminal") != 0 ||
+        strcmp(config->shortpath_artifact_kind, "logits") != 0) {
+        return 0;
+    }
+    if (parse_u32_field("shortpath_producer_layer_start",
+                        config->shortpath_producer_layer_start,
+                        &producer_start) != 0 ||
+        parse_u32_field("shortpath_producer_layer_end",
+                        config->shortpath_producer_layer_end,
+                        &producer_end) != 0) {
+        return -1;
+    }
+    if (producer_start != layer_start || producer_end != layer_end) {
+        return 0;
+    }
+    if (parse_lingqu_object_ref_hex("SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF",
+                                    config->shortpath_artifact_ref,
+                                    W4_QWEN3_OBMM_KIND_TERMINAL_LOGITS,
+                                    ref_out) != 0) {
+        return -1;
+    }
+    if (qwen3_read_registry_payload(ref_out, &payload, &payload_len) != 0) {
+        return -1;
+    }
+    rc = qwen3_terminal_token_record_from_logits_payload(payload,
+                                                         payload_len,
+                                                         decode_step,
+                                                         record_out);
+    free(payload);
+    if (rc != 0) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 terminal logits payload invalid"
+                " decision_id=%s artifact_id=%s step=%" PRIu64 "\n",
+                config->shortpath_decision_id,
+                config->shortpath_artifact_id,
+                decode_step);
         return -1;
     }
     return 1;
@@ -7659,6 +7980,53 @@ decode_round_start:
         }
         range_publish_done_ms = monotonic_ms();
         range_publish_ms = range_publish_done_ms - range_publish_start_ms;
+        {
+            struct lingqu_obmm_object_ref_wire terminal_logits_ref;
+            struct w4_qwen3_terminal_token_record terminal_logits_record;
+            int terminal_logits_state;
+
+            memset(&terminal_logits_ref, 0, sizeof(terminal_logits_ref));
+            memset(&terminal_logits_record, 0, sizeof(terminal_logits_record));
+            terminal_logits_state =
+                qwen3_memory_shortpath_terminal_logits_record(
+                    &qwen3_memory_decision_config,
+                    round_layer_start,
+                    round_layer_end,
+                    guest_decode_step,
+                    &terminal_logits_ref,
+                    &terminal_logits_record);
+            if (terminal_logits_state < 0) {
+                goto out;
+            }
+            if (terminal_logits_state > 0) {
+                printf("[w4_guest] stage qwen3_w5_memory_terminal_logits_loaded"
+                       " node=%u step=%" PRIu64 " layers=[%u,%u)"
+                       " decision_id=%s artifact_id=%s token=%" PRIu64
+                       " runner_up=%" PRIu64 " margin_milli=%" PRIu64
+                       " logits_checksum=0x%016" PRIx64
+                       " text_checksum=0x%016" PRIx64
+                       " candidate_count=%" PRIu64
+                       " payload_bytes=%" PRIu64
+                       " payload_checksum=0x%016" PRIx64
+                       " source=lingqu_memory_service target=terminal_token_record"
+                       " execute=%s status=ready\n",
+                       dispatch_node + 1U,
+                       guest_decode_step,
+                       round_layer_start,
+                       round_layer_end,
+                       qwen3_memory_decision_config.shortpath_decision_id,
+                       qwen3_memory_decision_config.shortpath_artifact_id,
+                       terminal_logits_record.sampled_token,
+                       terminal_logits_record.runner_up_token,
+                       terminal_logits_record.margin_milli,
+                       terminal_logits_record.logits_checksum,
+                       terminal_logits_record.text_checksum,
+                       terminal_logits_record.candidate_count,
+                       terminal_logits_ref.payload_bytes,
+                       terminal_logits_ref.payload_checksum,
+                       qwen3_memory_decision_config.shortpath_execute ? "true" : "false");
+            }
+        }
         if (qwen3_engram_config.enabled &&
             dispatch_node == qwen3_engram_config.owner_node &&
             dispatch_node + 1U != cluster_node_count) {
