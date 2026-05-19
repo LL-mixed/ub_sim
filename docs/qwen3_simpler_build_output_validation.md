@@ -24,6 +24,7 @@
 - Ascend runtime 和可用 NPU device。
 - 本仓所需的 simpler runtime 环境。
 - 可执行 `cargo run` 的 Rust/Cargo 环境。
+- 已初始化本仓的 `vendor/simpler` 和 `vendor/pto-isa` submodule；没有额外设置 `SIMPLER_ROOT` 或 `PTO_ISA_ROOT` 时，`qwen3-simpler-generate` 会使用这两个仓内 vendor 路径准备 runtime artifact。
 - 本机已有 Qwen3 模型目录，例如:
 
 ```text
@@ -35,6 +36,7 @@
 
 ```bash
 cd /path/to/ub_sim
+git submodule update --init vendor/simpler vendor/pto-isa
 ```
 
 下文所有 `--build-output` 都使用相对于仓库根目录的 `build_output/Qwen*` 路径。
