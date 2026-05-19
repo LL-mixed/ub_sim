@@ -2536,8 +2536,11 @@ struct W5EngramStateRefPublication {
 #[derive(Debug)]
 struct W5MemoryDecisionBundle {
     shortpath: Option<sim_memory::ShortpathDecisionRecord>,
+    shortpath_artifact: Option<sim_memory::ExecutionArtifactObject>,
     prefetch: Option<sim_memory::PrefetchPlanRecord>,
+    prefetch_artifacts: Vec<sim_memory::ExecutionArtifactObject>,
     prefix_cache: Option<sim_memory::PrefixCacheReusePlan>,
+    prefix_cache_artifact: Option<sim_memory::PrefixCacheArtifact>,
 }
 
 fn load_w5_memory_decisions_from_store(
@@ -2598,11 +2601,116 @@ fn load_w5_memory_decisions_from_store(
     } else {
         None
     };
+    let needs_execution_artifacts = shortpath
+        .as_ref()
+        .and_then(|decision| decision.artifact_id.as_ref())
+        .is_some()
+        || prefetch
+            .as_ref()
+            .map(|plan| !plan.planned_artifact_ids.is_empty())
+            .unwrap_or(false);
+    let execution_artifacts = if needs_execution_artifacts {
+        durable_store
+            .load_execution_artifact_manifest()
+            .with_context(|| {
+                format!(
+                    "load Memory Service execution artifacts from {}",
+                    config.store_path.display()
+                )
+            })?
+    } else {
+        Vec::new()
+    };
+    let shortpath_artifact = if let Some(artifact_id) = shortpath
+        .as_ref()
+        .and_then(|decision| decision.artifact_id.as_ref())
+    {
+        Some(w5_find_verified_execution_artifact(
+            &execution_artifacts,
+            artifact_id,
+            "shortpath decision",
+        )?)
+    } else {
+        None
+    };
+    let mut prefetch_artifacts = Vec::new();
+    if let Some(plan) = &prefetch {
+        for artifact_id in &plan.planned_artifact_ids {
+            prefetch_artifacts.push(w5_find_verified_execution_artifact(
+                &execution_artifacts,
+                artifact_id,
+                "prefetch plan",
+            )?);
+        }
+    }
+    let prefix_cache_artifact = if let Some(artifact_id) = prefix_cache
+        .as_ref()
+        .and_then(|plan| plan.artifact_id.as_ref())
+    {
+        let artifacts = durable_store
+            .load_prefix_cache_manifest()
+            .with_context(|| {
+                format!(
+                    "load Memory Service prefix-cache artifacts from {}",
+                    config.store_path.display()
+                )
+            })?;
+        Some(w5_find_verified_prefix_cache_artifact(
+            &artifacts,
+            artifact_id,
+            "prefix-cache reuse plan",
+        )?)
+    } else {
+        None
+    };
     Ok(W5MemoryDecisionBundle {
         shortpath,
+        shortpath_artifact,
         prefetch,
+        prefetch_artifacts,
         prefix_cache,
+        prefix_cache_artifact,
     })
+}
+
+fn w5_find_verified_execution_artifact(
+    artifacts: &[sim_memory::ExecutionArtifactObject],
+    artifact_id: &str,
+    source: &str,
+) -> anyhow::Result<sim_memory::ExecutionArtifactObject> {
+    let artifact = artifacts
+        .iter()
+        .find(|artifact| artifact.artifact_id == artifact_id)
+        .ok_or_else(|| {
+            anyhow::anyhow!("{source} references missing execution artifact: {artifact_id}")
+        })?;
+    if artifact.state != sim_memory::ExecutionArtifactState::Verified {
+        anyhow::bail!(
+            "{source} references non-verified execution artifact: {}",
+            artifact.artifact_id
+        );
+    }
+    Ok(artifact.clone())
+}
+
+fn w5_find_verified_prefix_cache_artifact(
+    artifacts: &[sim_memory::PrefixCacheArtifact],
+    artifact_id: &str,
+    source: &str,
+) -> anyhow::Result<sim_memory::PrefixCacheArtifact> {
+    let artifact = artifacts
+        .iter()
+        .find(|artifact| artifact.artifact_id == artifact_id)
+        .ok_or_else(|| {
+            anyhow::anyhow!("{source} references missing prefix-cache artifact: {artifact_id}")
+        })?;
+    if artifact.state != sim_memory::ExecutionArtifactState::Verified {
+        anyhow::bail!(
+            "{source} references non-verified prefix-cache artifact: {}",
+            artifact.artifact_id
+        );
+    }
+    Ok(artifact.clone())
 }
 
 fn w5_memory_decision_env_vars(
@@ -2638,6 +2746,18 @@ fn w5_memory_decision_env_vars(
                 format!("{:#x}", decision.proof_checksum),
             ),
         ]);
+        if let Some(artifact) = &bundle.shortpath_artifact {
+            vars.extend([
+                (
+                    "SIM_W5_MEMORY_SHORTPATH_ARTIFACT_KIND".to_string(),
+                    w5_execution_artifact_kind_name(artifact.kind).to_string(),
+                ),
+                (
+                    "SIM_W5_MEMORY_SHORTPATH_ARTIFACT_CHECKSUM".to_string(),
+                    format!("{:#x}", artifact.checksum),
+                ),
+            ]);
+        }
     }
     if let Some(plan) = &bundle.prefetch {
         vars.extend([
@@ -2658,6 +2778,28 @@ fn w5_memory_decision_env_vars(
                 format!("{:#x}", plan.checksum),
             ),
         ]);
+        if !bundle.prefetch_artifacts.is_empty() {
+            vars.extend([
+                (
+                    "SIM_W5_MEMORY_PREFETCH_ARTIFACT_IDS".to_string(),
+                    bundle
+                        .prefetch_artifacts
+                        .iter()
+                        .map(|artifact| artifact.artifact_id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                ),
+                (
+                    "SIM_W5_MEMORY_PREFETCH_ARTIFACT_CHECKSUMS".to_string(),
+                    bundle
+                        .prefetch_artifacts
+                        .iter()
+                        .map(|artifact| format!("{:#x}", artifact.checksum))
+                        .collect::<Vec<_>>()
+                        .join(","),
+                ),
+            ]);
+        }
     }
     if let Some(plan) = &bundle.prefix_cache {
         vars.extend([
@@ -2678,8 +2820,22 @@ fn w5_memory_decision_env_vars(
                 format!("{:#x}", plan.proof_checksum),
             ),
         ]);
+        if let Some(artifact) = &bundle.prefix_cache_artifact {
+            vars.push((
+                "SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_CHECKSUM".to_string(),
+                format!("{:#x}", artifact.checksum),
+            ));
+        }
     }
     vars
+}
+
+fn w5_execution_artifact_kind_name(kind: sim_memory::ExecutionArtifactKind) -> &'static str {
+    match kind {
+        sim_memory::ExecutionArtifactKind::HiddenState => "hidden-state",
+        sim_memory::ExecutionArtifactKind::KvCache => "kv-cache",
+        sim_memory::ExecutionArtifactKind::Logits => "logits",
+    }
 }
 
 fn w5_shortpath_action_name(action: sim_memory::ShortpathAction) -> &'static str {
@@ -6228,6 +6384,19 @@ stage qwen3_range_forward_runtime_output_publish node=2
                 .target_step_index,
             5
         );
+        assert_eq!(
+            bundle
+                .shortpath_artifact
+                .as_ref()
+                .expect("shortpath artifact")
+                .artifact_id,
+            "artifact/logits/step3/node4"
+        );
+        assert_eq!(bundle.prefetch_artifacts.len(), 1);
+        assert_eq!(
+            bundle.prefetch_artifacts[0].artifact_id,
+            "artifact/kv/step4/node4"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -6447,6 +6616,14 @@ stage qwen3_range_forward_runtime_output_publish node=2
                 .artifact_id
                 .as_deref(),
             Some("prefix-cache/test/8")
+        );
+        assert_eq!(
+            bundle
+                .prefix_cache_artifact
+                .as_ref()
+                .expect("prefix-cache artifact")
+                .artifact_id,
+            "prefix-cache/test/8"
         );
         let _ = fs::remove_dir_all(&root);
     }
@@ -7344,28 +7521,44 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         println!("  memory_decision_service: lingqu_memory_service");
         if let Some(decision) = &decisions.shortpath {
             println!(
-                "  memory_shortpath_decision: id={} action={} artifact_id={} proof_checksum={:#x}",
+                "  memory_shortpath_decision: id={} action={} artifact_id={} artifact_kind={} artifact_checksum={} proof_checksum={:#x}",
                 decision.decision_id,
                 w5_shortpath_action_name(decision.action),
                 decision.artifact_id.as_deref().unwrap_or(""),
+                decisions
+                    .shortpath_artifact
+                    .as_ref()
+                    .map(|artifact| w5_execution_artifact_kind_name(artifact.kind))
+                    .unwrap_or("none"),
+                decisions
+                    .shortpath_artifact
+                    .as_ref()
+                    .map(|artifact| format!("{:#x}", artifact.checksum))
+                    .unwrap_or_else(|| "none".to_string()),
                 decision.proof_checksum
             );
         }
         if let Some(plan) = &decisions.prefetch {
             println!(
-                "  memory_prefetch_plan: id={} scope={} target_step_index={} checksum={:#x}",
+                "  memory_prefetch_plan: id={} scope={} target_step_index={} artifact_count={} checksum={:#x}",
                 plan.plan_id,
                 w5_prefetch_scope_name(plan.scope),
                 plan.target_step_index,
+                decisions.prefetch_artifacts.len(),
                 plan.checksum
             );
         }
         if let Some(plan) = &decisions.prefix_cache {
             println!(
-                "  memory_prefix_cache_reuse_plan: id={} action={} artifact_id={} proof_checksum={:#x}",
+                "  memory_prefix_cache_reuse_plan: id={} action={} artifact_id={} artifact_checksum={} proof_checksum={:#x}",
                 plan.plan_id,
                 w5_prefix_cache_reuse_action_name(plan.action),
                 plan.artifact_id.as_deref().unwrap_or(""),
+                decisions
+                    .prefix_cache_artifact
+                    .as_ref()
+                    .map(|artifact| format!("{:#x}", artifact.checksum))
+                    .unwrap_or_else(|| "none".to_string()),
                 plan.proof_checksum
             );
         }
