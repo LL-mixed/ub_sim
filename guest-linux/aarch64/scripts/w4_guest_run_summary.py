@@ -38,6 +38,15 @@ def quote_text(value):
     return json.dumps(value, ensure_ascii=False)
 
 
+def parse_layers(value):
+    if not value:
+        return (0, 0)
+    match = re.fullmatch(r"\[([0-9]+),([0-9]+)\)", value)
+    if not match:
+        return (0, 0)
+    return (int(match.group(1)), int(match.group(2)))
+
+
 def shorten(value, limit=220):
     if len(value) <= limit:
         return value
@@ -79,6 +88,7 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
     engram_timings = []
     engram_context_records = []
     memory_records = []
+    boundary_observations = []
     barriers = {}
     pool_usage = {}
     passes = {node_id: 0 for node_id in node_ids}
@@ -120,6 +130,39 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                     record["stage"] = stage
                     record["step"] = parse_int(fields.get("step"), -1)
                     memory_records.append(record)
+
+                if "qwen3_range_forward_runtime_ingress_publish" in clean_line:
+                    fields = parse_pairs(clean_line)
+                    step = parse_int(fields.get("step"), None)
+                    if step is not None:
+                        layer_start, layer_end = parse_layers(fields.get("layers"))
+                        boundary_observations.append(
+                            {
+                                "_log_node": node_id,
+                                "step": step,
+                                "node": fields.get("local", node_id),
+                                "target": fields.get("target", ""),
+                                "layers": fields.get("layers", ""),
+                                "layer_start": layer_start,
+                                "layer_end": layer_end,
+                                "layer_count": parse_int(fields.get("count"), 0),
+                                "hidden_key": fields.get("key", ""),
+                                "hidden_key_hash": fields.get("key_hash", "0x0"),
+                                "hidden_version": parse_int(fields.get("version"), 0),
+                                "hidden_checksum": fields.get("checksum", "0x0"),
+                                "hidden_bytes": parse_int(fields.get("bytes"), 0),
+                                "producer_publish_ms": parse_int(
+                                    fields.get("producer_publish_ms"), 0
+                                ),
+                                "producer_publish_mono_ms": parse_int(
+                                    fields.get("producer_publish_mono_ms"), 0
+                                ),
+                                "backing": fields.get("backing", ""),
+                                "metadata": fields.get("metadata", ""),
+                                "queue": fields.get("queue", ""),
+                                "status": fields.get("status", ""),
+                            }
+                        )
 
                 if "qwen3_worker_timing" in clean_line:
                     fields = parse_pairs(clean_line)
@@ -292,6 +335,7 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
         engram_timings,
         engram_context_records,
         memory_records,
+        boundary_observations,
         barriers,
         pool_usage,
         passes,
@@ -315,6 +359,7 @@ def emit_summary(run_dir, expected_steps, node_ids, output):
         engram_timings,
         engram_context_records,
         memory_records,
+        boundary_observations,
         barriers,
         pool_usage,
         passes,
@@ -345,6 +390,7 @@ def emit_summary(run_dir, expected_steps, node_ids, output):
     emit_engram_timing_summary(engram_timings, expected_steps, node_ids, output)
     emit_engram_context_summary(engram_context_records, expected_steps, output)
     emit_memory_service_summary(memory_records, expected_steps, output)
+    emit_boundary_observation_summary(boundary_observations, expected_steps, output)
     emit_pool_usage_summary(pool_usage, expected_steps, node_ids, output)
 
 
@@ -356,6 +402,7 @@ def emit_progress(run_dir, expected_steps, elapsed_s, node_ids, output):
         _engram_timings,
         _engram_context_records,
         _memory_records,
+        _boundary_observations,
         _barriers,
         _pool_usage,
         passes,
@@ -900,6 +947,49 @@ def emit_memory_service_summary(memory_records, expected_steps, output):
                 f"prefetch_ids={csv_or_none(record.get('prefetch_id') for record in records)} "
                 f"prefix_cache_ids={csv_or_none(record.get('prefix_cache_id') for record in records)}"
             )
+
+
+def emit_boundary_observation_summary(boundary_observations, expected_steps, output):
+    if not boundary_observations:
+        return
+
+    observed_steps = sorted({record["step"] for record in boundary_observations})
+    output.append(
+        "memory_boundary_observation_summary: "
+        f"records={len(boundary_observations)} "
+        f"steps={len(observed_steps)}/{expected_steps} "
+        f"nodes={csv_or_none(record.get('node') for record in boundary_observations)} "
+        f"targets={csv_or_none(record.get('target') for record in boundary_observations)} "
+        "source=w5_guest_range_exit "
+        "hidden_backend=obmm_shmem"
+    )
+    for record in sorted(
+        boundary_observations, key=lambda item: (item["step"], item["node"])
+    ):
+        output.append(
+            "memory_boundary_observation: "
+            "phase=range_exit "
+            f"step={record['step']} "
+            f"node={record['node']} "
+            f"target={record['target']} "
+            f"layers={record['layers']} "
+            f"layer_start={record['layer_start']} "
+            f"layer_end={record['layer_end']} "
+            f"layer_count={record['layer_count']} "
+            f"hidden_key={record['hidden_key']} "
+            f"hidden_key_hash={record['hidden_key_hash']} "
+            f"hidden_version={record['hidden_version']} "
+            f"hidden_bytes={record['hidden_bytes']} "
+            f"hidden_checksum={record['hidden_checksum']} "
+            "hidden_dtype=opaque "
+            f"hidden_shape={record['hidden_bytes']} "
+            f"producer_publish_ms={record['producer_publish_ms']} "
+            f"producer_publish_mono_ms={record['producer_publish_mono_ms']} "
+            f"backing={record['backing']} "
+            f"metadata={record['metadata']} "
+            f"queue={record['queue']} "
+            f"status={record['status']}"
+        )
 
 
 def emit_pool_usage_summary(pool_usage, expected_steps, node_ids, output):

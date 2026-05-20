@@ -1271,6 +1271,35 @@ the shortpath artifact without changing decode output. Passing
 the decision is `jump-to-terminal`, the terminal node reads the verified logits
 artifact and publishes that token record as the step result.
 
+The W5 guest run summary now also exposes actual range-exit hidden object
+observations from `qwen3_range_forward_runtime_ingress_publish`:
+
+```text
+memory_boundary_observation: phase=range_exit step=<n> node=node3 target=node4 \
+  layers=[8,12) hidden_key=hidden/... hidden_bytes=... hidden_checksum=...
+```
+
+`sim-cli lingqu-memory boundary-request-from-w5-summary` converts one of those
+observations into a `BoundaryLookupRequest`:
+
+```text
+sim-cli lingqu-memory boundary-request-from-w5-summary \
+  --summary <eight_node_w5_inference_cluster_summary.txt> \
+  --output <boundary-lookup-request.json> \
+  --step <decode-step> \
+  --node node3 \
+  --position <token-position> \
+  --model-id <model-id> \
+  --model-key <model-key> \
+  --tokenizer-hash <hash> \
+  --profile-hash <hash>
+```
+
+This is still not the final online in-guest lookup loop, but it removes the
+hand-authored boundary request from the validation path. The request hidden
+fingerprint now comes from the real OBMM/Lingqu Object Service range output
+that the next W5 node consumed.
+
 2026-05-19 validation:
 
 - A real Memory Service bootstrap sequence produced durable store, Block-backed
@@ -1316,6 +1345,15 @@ artifact and publishes that token record as the step result.
   bytes/checksum/dtype/shape. This closes the unsafe case where a terminal
   logits artifact could be selected only by model/layer/position while the
   actual boundary hidden state differed.
+- W5 summaries now emit `memory_boundary_observation_summary` plus per-boundary
+  `memory_boundary_observation` records for non-terminal range exits. A real
+  Qwen3-0.6B W5 run
+  `2026-05-20_09-47-10_w5_qwen3_0_6b_decode_22137` produced seven observations
+  for step 0, including node3 layers `[8,12)` with hidden key
+  `hidden/qwen3-0-6b/node4/range-runtime-input/decode-step0` and checksum
+  `0xe2098418c4d84107`. The new
+  `lingqu-memory boundary-request-from-w5-summary` CLI generated a validated
+  `BoundaryLookupRequest` from that real observation.
 - Live per-step range handoff now keeps the ObjectRef descriptor but prefers
   the already-mapped UAPI segment payload for hidden/KV operands. sim-uapi
   verifies the inline payload against the ObjectRef length/checksum before
@@ -1345,6 +1383,10 @@ indices_object_ref=...
 score_object_ref=...
 gate_feature_object_ref=...
 execution_artifact_id=...
+boundary_observation_step=...
+boundary_observation_node=...
+boundary_observation_hidden_key=...
+boundary_observation_hidden_checksum=...
 shortpath_decision_id=...
 shortpath_action=continue|jump_to_layer|jump_to_terminal|require_verify
 shortpath_confidence_milli=...
@@ -1500,8 +1542,12 @@ Current implementation status:
   rather than a runtime decision. The W5 planner writes the corresponding
   `ShortpathDecisionRecord` and stores the evaluated `support_id` as an
   explicit audit edge, so reports no longer need to infer evidence provenance
-  from a reason string. This is not yet wired as an online range-exit call
-  inside W5 guest range execution.
+  from a reason string. W5 range exits now emit real hidden ObjectRef
+  observations into the run summary, and
+  `lingqu-memory boundary-request-from-w5-summary` can generate a validated
+  `BoundaryLookupRequest` from those observations. The remaining gap is the
+  online in-guest lookup loop that performs this request at range-exit time
+  instead of as a post-run/launch-time bridge.
   Query results can be persisted to and restored from DFS manifests with
   checksum validation, and QueryResult-driven hot materialization now carries
   that DFS manifest ref into both `HotMemoryStateObject` and

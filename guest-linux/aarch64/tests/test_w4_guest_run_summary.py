@@ -98,6 +98,16 @@ class W4GuestRunSummaryTest(unittest.TestCase):
                     worker_timing(node_id, index, 1, total1, 70 * index, 9 * index),
                     handoff_timing(node_id, index, 1, 80 * index, 11 * index, 5 * index),
                     (
+                        "[w4_guest] stage qwen3_range_forward_runtime_ingress_publish "
+                        f"local=node{index} target=node{index + 1} step=1 "
+                        f"key=hidden/qwen3-0-6b/node{index + 1}/range-runtime-input/decode-step1 "
+                        f"key_hash=0x{index:016x} version=1 layers=[{index},{index + 1}) "
+                        f"count=1 checksum=0x{index + 16:016x} bytes=262144 "
+                        "producer_publish_ms=1000 producer_publish_mono_ms=2000 "
+                        "producer_clock_offset_ms=3000 epoch=2 seq=1 backing=obmm_shmem "
+                        "metadata=lingqu_object_service queue=obmm_spsc status=ok"
+                    ),
+                    (
                         "[w4_guest] stage qwen3_w5_memory_boundary_decision "
                         f"local={node_id} step=1 layers=[0,1) next=node{index + 1} "
                         "shortpath_id=shortpath-decision/boundary/step1 "
@@ -264,6 +274,19 @@ class W4GuestRunSummaryTest(unittest.TestCase):
             "support_ids=shortpath-support/boundary/step1 "
             "actions=jump-to-terminal prefetch_ids=prefetch-plan/step1 "
             "prefix_cache_ids=prefix-cache-reuse/step1",
+            result.stdout,
+        )
+        self.assertIn(
+            "memory_boundary_observation_summary: records=8 steps=1/2 "
+            "nodes=node1,node2,node3,node4,node5,node6,node7,node8 "
+            "targets=node2,node3,node4,node5,node6,node7,node8,node9 "
+            "source=w5_guest_range_exit hidden_backend=obmm_shmem",
+            result.stdout,
+        )
+        self.assertIn(
+            "memory_boundary_observation: phase=range_exit step=1 node=node1 "
+            "target=node2 layers=[1,2) layer_start=1 layer_end=2 layer_count=1 "
+            "hidden_key=hidden/qwen3-0-6b/node2/range-runtime-input/decode-step1",
             result.stdout,
         )
         self.assertIn(

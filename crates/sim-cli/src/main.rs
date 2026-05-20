@@ -1664,6 +1664,9 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         .collect::<Vec<_>>();
     match mode.as_str() {
         "boundary-lookup" => run_lingqu_memory_boundary_lookup_cli(&args),
+        "boundary-request-from-w5-summary" => {
+            run_lingqu_memory_boundary_request_from_w5_summary_cli(&args)
+        }
         "build-index" => run_lingqu_memory_build_index_cli(&args),
         "ingest" => run_lingqu_memory_ingest_cli(&args),
         "list-prefetch-plans" => run_lingqu_memory_list_prefetch_plans_cli(&args),
@@ -1687,7 +1690,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "validate-flat-materialize" => run_lingqu_memory_validate_flat_materialize(),
         "validate-w5-engram-object-ref" => run_lingqu_memory_validate_w5_engram_object_ref(),
         _ => anyhow::bail!(
-            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, query, list-query-results, list-record-lifecycle, list-shortpath-supports, list-shortpath-decisions, list-prefetch-plans, list-prefix-cache-reuse, update-record-state, register-execution-artifact, boundary-lookup, plan-prefetch, register-prefix-cache, lookup-prefix-cache, materialize-hot-state, materialize-engram-state, publish-w5-engram-state-ref, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
+            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, query, list-query-results, list-record-lifecycle, list-shortpath-supports, list-shortpath-decisions, list-prefetch-plans, list-prefix-cache-reuse, update-record-state, register-execution-artifact, boundary-lookup, boundary-request-from-w5-summary, plan-prefetch, register-prefix-cache, lookup-prefix-cache, materialize-hot-state, materialize-engram-state, publish-w5-engram-state-ref, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
         ),
     }
 }
@@ -1794,6 +1797,108 @@ fn run_lingqu_memory_register_execution_artifact_cli(args: &[String]) -> anyhow:
     );
     println!("  confidence_milli: {}", artifact.confidence_milli);
     println!("  registry_artifacts: {}", registry.artifacts.len());
+    Ok(())
+}
+
+fn run_lingqu_memory_boundary_request_from_w5_summary_cli(args: &[String]) -> anyhow::Result<()> {
+    let summary_path = PathBuf::from(required_cli_arg(args, "--summary")?);
+    let output_path = PathBuf::from(required_cli_arg(args, "--output")?);
+    let step = required_cli_u64(args, "--step")?;
+    let node = required_cli_arg(args, "--node")?;
+    let position = required_cli_u64(args, "--position")?;
+    let model = sim_memory::InferenceModelBinding {
+        model_id: required_cli_arg(args, "--model-id")?,
+        model_key: required_cli_arg(args, "--model-key")?,
+        tokenizer_hash: required_cli_u64_auto(args, "--tokenizer-hash")?,
+        profile_hash: required_cli_u64_auto(args, "--profile-hash")?,
+    };
+    let min_confidence_milli = optional_cli_u64(args, "--min-confidence-milli")?.unwrap_or(900);
+    if min_confidence_milli > 1000 {
+        anyhow::bail!("--min-confidence-milli must be in [0, 1000]");
+    }
+    let allowed_actions = parse_shortpath_actions(
+        optional_cli_arg(args, "--allowed-actions")?
+            .as_deref()
+            .unwrap_or("jump-to-terminal"),
+    )?;
+    let created_at_us = optional_cli_u64(args, "--created-at-us")?.unwrap_or(1);
+    let request_id = optional_cli_arg(args, "--request-id")?.unwrap_or_else(|| {
+        format!(
+            "boundary/{}/step{}/{}/position{}",
+            model.model_key, step, node, position
+        )
+    });
+    let engram_state_id = optional_cli_arg(args, "--engram-state-id")?;
+
+    let summary = fs::read_to_string(&summary_path)
+        .with_context(|| format!("read W5 summary {}", summary_path.display()))?;
+    let observation = find_w5_boundary_observation(&summary, step, &node)
+        .with_context(|| format!("find boundary observation step={step} node={node}"))?;
+    let layer_start = required_summary_u32(&observation, "layer_start")?;
+    let layer_end = required_summary_u32(&observation, "layer_end")?;
+    let node_index = parse_node_index(&node)?;
+    let target = required_summary_field(&observation, "target")?;
+    let next_node_index = Some(parse_node_index(target)?);
+    let hidden_key = required_summary_field(&observation, "hidden_key")?.to_string();
+    let hidden_bytes = required_summary_u64(&observation, "hidden_bytes")?;
+    let hidden_checksum = required_summary_u64_auto(&observation, "hidden_checksum")?;
+    let hidden_version = required_summary_u64(&observation, "hidden_version")?;
+
+    let request = BoundaryLookupRequest {
+        request_id,
+        model,
+        boundary: sim_memory::RangeBoundary {
+            phase: sim_memory::RangeBoundaryPhase::RangeExit,
+            step_index: step,
+            node_index,
+            layer_start,
+            layer_end,
+            next_node_index,
+            position,
+        },
+        hidden_state: sim_memory::HotTensorObjectRef {
+            object_key: hidden_key.clone(),
+            version: hidden_version,
+            backend: sim_memory::HotObjectBackend::ObmmShmem,
+            storage_ref: format!("obmm://{hidden_key}"),
+            segment: None,
+            offset: 0,
+            bytes: hidden_bytes,
+            checksum: hidden_checksum,
+            dtype: sim_core::TensorDType::Opaque,
+            shape: vec![hidden_bytes],
+        },
+        engram_state_id,
+        min_confidence_milli: min_confidence_milli as u32,
+        allowed_actions,
+        created_at_us,
+    };
+    request
+        .validate()
+        .map_err(|err| anyhow::anyhow!("validate boundary lookup request: {err}"))?;
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create boundary request dir {}", parent.display()))?;
+    }
+    fs::write(
+        &output_path,
+        serde_json::to_vec_pretty(&request).context("encode boundary lookup request")?,
+    )
+    .with_context(|| format!("write boundary lookup request {}", output_path.display()))?;
+    println!("lingqu_memory_service");
+    println!("  mode: boundary-request-from-w5-summary");
+    println!("  summary: {}", summary_path.display());
+    println!("  output: {}", output_path.display());
+    println!("  request: {}", request.request_id);
+    println!("  step: {}", request.boundary.step_index);
+    println!("  node: {}", request.boundary.node_index);
+    println!(
+        "  layers: [{},{})",
+        request.boundary.layer_start, request.boundary.layer_end
+    );
+    println!("  position: {}", request.boundary.position);
+    println!("  hidden_key: {}", request.hidden_state.object_key);
+    println!("  hidden_checksum: {:#x}", request.hidden_state.checksum);
     Ok(())
 }
 
@@ -4604,6 +4709,18 @@ fn required_cli_u32(args: &[String], name: &'static str) -> anyhow::Result<u32> 
         .with_context(|| format!("parse {name} as u32"))
 }
 
+fn required_cli_u64(args: &[String], name: &'static str) -> anyhow::Result<u64> {
+    let value = required_cli_arg(args, name)?;
+    value
+        .parse::<u64>()
+        .with_context(|| format!("parse {name} as u64"))
+}
+
+fn required_cli_u64_auto(args: &[String], name: &'static str) -> anyhow::Result<u64> {
+    let value = required_cli_arg(args, name)?;
+    parse_u64_auto(&value).with_context(|| format!("parse {name} as u64"))
+}
+
 fn optional_cli_u64(args: &[String], name: &'static str) -> anyhow::Result<Option<u64>> {
     optional_cli_arg(args, name)?
         .map(|value| {
@@ -4612,6 +4729,114 @@ fn optional_cli_u64(args: &[String], name: &'static str) -> anyhow::Result<Optio
                 .with_context(|| format!("parse {name} as u64"))
         })
         .transpose()
+}
+
+fn parse_u64_auto(value: &str) -> anyhow::Result<u64> {
+    if let Some(hex) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        u64::from_str_radix(hex, 16).with_context(|| format!("parse hex u64 {value}"))
+    } else {
+        value
+            .parse::<u64>()
+            .with_context(|| format!("parse decimal u64 {value}"))
+    }
+}
+
+fn parse_shortpath_actions(value: &str) -> anyhow::Result<Vec<sim_memory::ShortpathAction>> {
+    let mut actions = Vec::new();
+    for item in value.split(',') {
+        let item = item.trim();
+        let action = match item {
+            "continue" => sim_memory::ShortpathAction::Continue,
+            "jump-to-layer" => sim_memory::ShortpathAction::JumpToLayer,
+            "jump-to-terminal" => sim_memory::ShortpathAction::JumpToTerminal,
+            "require-verify" => sim_memory::ShortpathAction::RequireVerify,
+            "" => continue,
+            _ => anyhow::bail!("unsupported shortpath action `{item}`"),
+        };
+        actions.push(action);
+    }
+    if actions.is_empty() {
+        anyhow::bail!("shortpath actions must not be empty");
+    }
+    Ok(actions)
+}
+
+fn parse_node_index(value: &str) -> anyhow::Result<u32> {
+    let raw = value
+        .strip_prefix("node")
+        .ok_or_else(|| anyhow::anyhow!("node must use nodeN form, got `{value}`"))?;
+    let parsed = raw
+        .parse::<u32>()
+        .with_context(|| format!("parse node index from {value}"))?;
+    if parsed == 0 {
+        anyhow::bail!("node index must be one-based, got `{value}`");
+    }
+    Ok(parsed)
+}
+
+fn find_w5_boundary_observation(
+    summary: &str,
+    step: u64,
+    node: &str,
+) -> anyhow::Result<std::collections::HashMap<String, String>> {
+    for line in summary.lines() {
+        if !line.starts_with("memory_boundary_observation: ") {
+            continue;
+        }
+        let fields = parse_summary_fields(line);
+        if required_summary_u64(&fields, "step")? == step
+            && required_summary_field(&fields, "node")? == node
+        {
+            return Ok(fields);
+        }
+    }
+    anyhow::bail!("missing memory_boundary_observation for step={step} node={node}")
+}
+
+fn parse_summary_fields(line: &str) -> std::collections::HashMap<String, String> {
+    line.split_ascii_whitespace()
+        .filter_map(|field| field.split_once('='))
+        .map(|(key, value)| (key.trim_end_matches(':').to_string(), value.to_string()))
+        .collect()
+}
+
+fn required_summary_field<'a>(
+    fields: &'a std::collections::HashMap<String, String>,
+    name: &'static str,
+) -> anyhow::Result<&'a str> {
+    fields
+        .get(name)
+        .map(|value| value.as_str())
+        .ok_or_else(|| anyhow::anyhow!("missing summary field {name}"))
+}
+
+fn required_summary_u64(
+    fields: &std::collections::HashMap<String, String>,
+    name: &'static str,
+) -> anyhow::Result<u64> {
+    required_summary_field(fields, name)?
+        .parse::<u64>()
+        .with_context(|| format!("parse summary field {name} as u64"))
+}
+
+fn required_summary_u32(
+    fields: &std::collections::HashMap<String, String>,
+    name: &'static str,
+) -> anyhow::Result<u32> {
+    required_summary_field(fields, name)?
+        .parse::<u32>()
+        .with_context(|| format!("parse summary field {name} as u32"))
+}
+
+fn required_summary_u64_auto(
+    fields: &std::collections::HashMap<String, String>,
+    name: &'static str,
+) -> anyhow::Result<u64> {
+    parse_u64_auto(required_summary_field(fields, name)?)
+        .with_context(|| format!("parse summary field {name} as u64"))
 }
 
 fn load_lingqu_durable_snapshot(path: &Path) -> anyhow::Result<LingquDurableSimSnapshot> {
@@ -5829,7 +6054,8 @@ mod tests {
         run_lingqu_durable_append_log_cli, run_lingqu_durable_batch_cli,
         run_lingqu_durable_init_cli, run_lingqu_durable_list_cli, run_lingqu_durable_read_log_cli,
         run_lingqu_durable_stat_cli, run_lingqu_durable_validate_cli,
-        run_lingqu_memory_boundary_lookup_cli, run_lingqu_memory_build_index_cli,
+        run_lingqu_memory_boundary_lookup_cli,
+        run_lingqu_memory_boundary_request_from_w5_summary_cli, run_lingqu_memory_build_index_cli,
         run_lingqu_memory_ingest_cli, run_lingqu_memory_list_prefetch_plans_cli,
         run_lingqu_memory_list_prefix_cache_reuse_cli, run_lingqu_memory_list_query_results_cli,
         run_lingqu_memory_list_record_lifecycle_cli,
@@ -7949,6 +8175,82 @@ stage qwen3_range_forward_runtime_output_publish node=2
         assert!(err_text.contains("load execution artifact manifest"));
         assert!(err_text.contains(sim_memory::LINGQU_EXECUTION_ARTIFACT_MANIFEST_PATH));
         assert!(!response_path.exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lingqu_memory_boundary_request_from_w5_summary_uses_real_hidden_observation() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_lingqu_memory_boundary_request_from_summary_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let summary_path = root.join("w5_summary.txt");
+        let request_path = root.join("boundary_request.json");
+        fs::write(
+            &summary_path,
+            concat!(
+                "summary: run_dir=/tmp/w5\n",
+                "memory_boundary_observation: phase=range_exit step=2 node=node3 ",
+                "target=node4 layers=[8,12) layer_start=8 layer_end=12 layer_count=4 ",
+                "hidden_key=hidden/qwen3-0-6b/node4/range-runtime-input/decode-step2 ",
+                "hidden_key_hash=0x000000000000abcd hidden_version=7 hidden_bytes=262144 ",
+                "hidden_checksum=0x0000000000001234 hidden_dtype=opaque hidden_shape=262144 ",
+                "producer_publish_ms=100 producer_publish_mono_ms=20 backing=obmm_shmem ",
+                "metadata=lingqu_object_service queue=obmm_spsc status=ok\n"
+            ),
+        )
+        .expect("write summary");
+
+        run_lingqu_memory_boundary_request_from_w5_summary_cli(&[
+            "--summary".to_string(),
+            summary_path.to_string_lossy().into_owned(),
+            "--output".to_string(),
+            request_path.to_string_lossy().into_owned(),
+            "--step".to_string(),
+            "2".to_string(),
+            "--node".to_string(),
+            "node3".to_string(),
+            "--position".to_string(),
+            "6".to_string(),
+            "--model-id".to_string(),
+            "qwen3-0.6b-test".to_string(),
+            "--model-key".to_string(),
+            "qwen3-0-6b".to_string(),
+            "--tokenizer-hash".to_string(),
+            "0x1001".to_string(),
+            "--profile-hash".to_string(),
+            "0x2002".to_string(),
+        ])
+        .expect("build boundary request from summary");
+
+        let request = serde_json::from_slice::<sim_memory::BoundaryLookupRequest>(
+            &fs::read(&request_path).expect("read request"),
+        )
+        .expect("decode request");
+        assert_eq!(
+            request.request_id,
+            "boundary/qwen3-0-6b/step2/node3/position6"
+        );
+        assert_eq!(request.boundary.step_index, 2);
+        assert_eq!(request.boundary.node_index, 3);
+        assert_eq!(request.boundary.layer_start, 8);
+        assert_eq!(request.boundary.layer_end, 12);
+        assert_eq!(request.boundary.next_node_index, Some(4));
+        assert_eq!(request.boundary.position, 6);
+        assert_eq!(
+            request.hidden_state.object_key,
+            "hidden/qwen3-0-6b/node4/range-runtime-input/decode-step2"
+        );
+        assert_eq!(request.hidden_state.version, 7);
+        assert_eq!(request.hidden_state.bytes, 262144);
+        assert_eq!(request.hidden_state.checksum, 0x1234);
+        assert_eq!(request.hidden_state.dtype, sim_core::TensorDType::Opaque);
+        assert_eq!(
+            request.allowed_actions,
+            vec![sim_memory::ShortpathAction::JumpToTerminal]
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
