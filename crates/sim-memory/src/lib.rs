@@ -2422,6 +2422,42 @@ pub struct HotTensorObjectRef {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoundaryTensorFingerprint {
+    pub bytes: u64,
+    pub checksum: u64,
+    pub dtype: TensorDType,
+    pub shape: Vec<u64>,
+}
+
+impl BoundaryTensorFingerprint {
+    pub fn from_hot_ref(hot_ref: &HotTensorObjectRef) -> Self {
+        Self {
+            bytes: hot_ref.bytes,
+            checksum: hot_ref.checksum,
+            dtype: hot_ref.dtype,
+            shape: hot_ref.shape.clone(),
+        }
+    }
+
+    pub fn matches_hot_ref(&self, hot_ref: &HotTensorObjectRef) -> bool {
+        self.bytes == hot_ref.bytes
+            && self.checksum == hot_ref.checksum
+            && self.dtype == hot_ref.dtype
+            && self.shape == hot_ref.shape
+    }
+
+    fn validate(&self, field: &'static str) -> MemoryResult<()> {
+        nonzero(self.bytes, field)?;
+        nonzero(self.checksum, field)?;
+        require_nonempty(&self.shape, field)?;
+        for dim in &self.shape {
+            nonzero(*dim, field)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HotMemoryStateObject {
     pub state_id: String,
     pub query_result_id: String,
@@ -2735,6 +2771,7 @@ pub struct ExecutionArtifactObject {
     pub kind: ExecutionArtifactKind,
     pub model: InferenceModelBinding,
     pub producer_boundary: RangeBoundary,
+    pub boundary_hidden_fingerprint: BoundaryTensorFingerprint,
     pub target_layer_start: u32,
     pub target_layer_end: u32,
     pub dtype: TensorDType,
@@ -2756,6 +2793,8 @@ impl ExecutionArtifactObject {
         required_str(&self.artifact_id, "execution_artifact_id")?;
         self.model.validate()?;
         self.producer_boundary.validate()?;
+        self.boundary_hidden_fingerprint
+            .validate("execution_artifact.boundary_hidden_fingerprint")?;
         if self.target_layer_end < self.target_layer_start
             || (self.kind != ExecutionArtifactKind::Logits
                 && self.target_layer_end == self.target_layer_start)
@@ -4673,6 +4712,11 @@ impl LingquMemoryService {
             .filter(|artifact| artifact.model == req.model)
             .filter(|artifact| artifact.producer_boundary.layer_end == req.boundary.layer_end)
             .filter(|artifact| artifact.producer_boundary.position == req.boundary.position)
+            .filter(|artifact| {
+                artifact
+                    .boundary_hidden_fingerprint
+                    .matches_hot_ref(&req.hidden_state)
+            })
             .filter(|artifact| artifact.confidence_milli >= req.min_confidence_milli)
             .filter(|artifact| {
                 if let Some(engram_state_id) = &req.engram_state_id {
@@ -5499,6 +5543,14 @@ fn execution_artifact_manifest_checksum(manifest: &LingquExecutionArtifactManife
         bytes.extend_from_slice(&artifact.producer_boundary.node_index.to_le_bytes());
         bytes.extend_from_slice(&artifact.producer_boundary.layer_start.to_le_bytes());
         bytes.extend_from_slice(&artifact.producer_boundary.layer_end.to_le_bytes());
+        bytes.extend_from_slice(&artifact.boundary_hidden_fingerprint.bytes.to_le_bytes());
+        bytes.extend_from_slice(&artifact.boundary_hidden_fingerprint.checksum.to_le_bytes());
+        bytes.extend_from_slice(
+            &tensor_dtype_tag(artifact.boundary_hidden_fingerprint.dtype).to_le_bytes(),
+        );
+        for dim in &artifact.boundary_hidden_fingerprint.shape {
+            bytes.extend_from_slice(&dim.to_le_bytes());
+        }
         bytes.extend_from_slice(&artifact.target_layer_start.to_le_bytes());
         bytes.extend_from_slice(&artifact.target_layer_end.to_le_bytes());
         bytes.extend_from_slice(&artifact.confidence_milli.to_le_bytes());
@@ -5764,6 +5816,7 @@ mod tests {
             kind: ExecutionArtifactKind::HiddenState,
             model: sample_model_binding(),
             producer_boundary: sample_range_boundary(),
+            boundary_hidden_fingerprint: sample_boundary_hidden_fingerprint(),
             target_layer_start: 8,
             target_layer_end: 16,
             dtype: TensorDType::F32,
@@ -5864,6 +5917,7 @@ mod tests {
             kind: ExecutionArtifactKind::Logits,
             model: sample_model_binding(),
             producer_boundary: sample_range_boundary(),
+            boundary_hidden_fingerprint: BoundaryTensorFingerprint::from_hot_ref(&hidden_ref),
             target_layer_start: 8,
             target_layer_end: 8,
             dtype: TensorDType::F32,
@@ -5914,6 +5968,83 @@ mod tests {
                 .unwrap()
                 .kind,
             ExecutionArtifactKind::Logits
+        );
+    }
+
+    #[test]
+    fn boundary_lookup_requires_matching_hidden_fingerprint() {
+        let mut service = LingquMemoryService::new();
+        let mut object_service =
+            LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
+        let hidden_ref = publish_hot_tensor(
+            &mut object_service,
+            "hidden/range/node4/step3".to_string(),
+            f32_vec_to_le_bytes(&[0.1, 0.2, 0.3, 0.4]),
+            TensorDType::F32,
+            vec![1, 4],
+            1,
+            2,
+            10,
+        )
+        .unwrap();
+        let mut mismatched_hidden_ref = hidden_ref.clone();
+        mismatched_hidden_ref.checksum ^= 1;
+        let logits_ref = publish_hot_tensor(
+            &mut object_service,
+            "logits/shortpath/node4/step3".to_string(),
+            f32_vec_to_le_bytes(&[1.0, 0.0, -1.0, -2.0]),
+            TensorDType::F32,
+            vec![1, 4],
+            1,
+            2,
+            11,
+        )
+        .unwrap();
+        service
+            .register_execution_artifact(ExecutionArtifactObject {
+                artifact_id: "artifact/logits/step3/node4".to_string(),
+                kind: ExecutionArtifactKind::Logits,
+                model: sample_model_binding(),
+                producer_boundary: sample_range_boundary(),
+                boundary_hidden_fingerprint: BoundaryTensorFingerprint::from_hot_ref(&hidden_ref),
+                target_layer_start: 8,
+                target_layer_end: 8,
+                dtype: TensorDType::F32,
+                shape: vec![1, 4],
+                durable_payload_ref: None,
+                hot_object_ref: Some(logits_ref),
+                source_query_result_id: None,
+                source_engram_state_id: None,
+                confidence_milli: 980,
+                state: ExecutionArtifactState::Verified,
+                checksum: 0x8899,
+                version: 1,
+                created_at_us: 12,
+                expires_at_us: Some(40),
+            })
+            .unwrap();
+
+        let response = service
+            .boundary_lookup(
+                BoundaryLookupRequest {
+                    request_id: "boundary/hidden-mismatch".to_string(),
+                    model: sample_model_binding(),
+                    boundary: sample_range_boundary(),
+                    hidden_state: mismatched_hidden_ref,
+                    engram_state_id: None,
+                    min_confidence_milli: 900,
+                    allowed_actions: vec![ShortpathAction::JumpToTerminal],
+                    created_at_us: 13,
+                },
+                14,
+            )
+            .unwrap();
+
+        assert_eq!(response.support.supported_action, ShortpathAction::Continue);
+        assert_eq!(response.artifact, None);
+        assert_eq!(
+            response.support.reason,
+            "no_verified_execution_artifact_support"
         );
     }
 
@@ -6253,6 +6384,12 @@ mod tests {
             kind: ExecutionArtifactKind::Logits,
             model: sample_model_binding(),
             producer_boundary: sample_range_boundary(),
+            boundary_hidden_fingerprint: BoundaryTensorFingerprint {
+                bytes: 16,
+                checksum: 0x6666,
+                dtype: TensorDType::F32,
+                shape: vec![1, 4],
+            },
             target_layer_start: 8,
             target_layer_end: 8,
             dtype: TensorDType::F32,
@@ -7483,6 +7620,15 @@ mod tests {
             layer_end: 8,
             next_node_index: Some(5),
             position: 12,
+        }
+    }
+
+    fn sample_boundary_hidden_fingerprint() -> BoundaryTensorFingerprint {
+        BoundaryTensorFingerprint {
+            bytes: 16,
+            checksum: 0x4444,
+            dtype: TensorDType::F32,
+            shape: vec![1, 4],
         }
     }
 

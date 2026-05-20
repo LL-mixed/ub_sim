@@ -665,6 +665,12 @@ artifact_id: string
 kind: hidden_state | kv_cache | logits
 model: InferenceModelBinding
 producer_boundary: RangeBoundary
+boundary_hidden_fingerprint: {
+  bytes: u64
+  checksum: u64
+  dtype: dtype
+  shape: [u64]
+}
 target_layer_start: u32
 target_layer_end: u32
 dtype: f16 | bf16 | f32 | u32 | ...
@@ -690,6 +696,13 @@ Artifact kinds:
   prefix reuse has its own lookup/reuse plan below;
 - `logits`: can jump to terminal sampling when the boundary state is verified
   or accepted by policy.
+
+`boundary_hidden_fingerprint` is the numeric proof that the artifact was
+produced from the same range-exit hidden state as the current request. It is a
+fingerprint, not an OBMM object identity, so verified artifacts can survive
+restart or cross-session reload when the hidden bytes/checksum/dtype/shape
+match. A boundary lookup must not return a jump artifact merely because the
+model, layer range, and position match.
 
 `candidate` artifacts may be produced by speculative paths, but W5 must not
 use them for non-shadow jumps unless the decision explicitly requires
@@ -961,7 +974,9 @@ Shortpath-enabled W5 adds a boundary flow inside step execution:
    binding, range boundary, `hidden_ref`, `EngramStateObject` id, and allowed
    actions.
 3. Lingqu Memory Service resolves only verified and policy-eligible
-   `ExecutionArtifactObject` records for that exact model/boundary state.
+   `ExecutionArtifactObject` records for that exact model/boundary state and
+   requires the artifact `boundary_hidden_fingerprint` to match the request
+   hidden ObjectRef bytes/checksum/dtype/shape.
 4. The service writes a `ShortpathSupportRecord`.
 5. The W5 Boundary Planner writes a `ShortpathDecisionRecord` after applying
    runtime policy to that support.
@@ -1296,6 +1311,11 @@ artifact and publishes that token record as the step result.
   guest terminal node uses the Memory Service logits artifact as the published
   terminal token result. This is still a launch-time bridge, not a per-range
   in-guest online lookup loop.
+- Boundary lookup now requires a verified execution artifact to carry a
+  `boundary_hidden_fingerprint` that matches the request hidden ObjectRef
+  bytes/checksum/dtype/shape. This closes the unsafe case where a terminal
+  logits artifact could be selected only by model/layer/position while the
+  actual boundary hidden state differed.
 - Live per-step range handoff now keeps the ObjectRef descriptor but prefers
   the already-mapped UAPI segment payload for hidden/KV operands. sim-uapi
   verifies the inline payload against the ObjectRef length/checksum before
