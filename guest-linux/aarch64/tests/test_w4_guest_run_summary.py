@@ -284,7 +284,9 @@ class W4GuestRunSummaryTest(unittest.TestCase):
             result.stdout,
         )
         self.assertIn(
-            "memory_boundary_observation: phase=range_exit step=1 node=node1 "
+            "memory_boundary_observation: phase=range_exit "
+            f"observation_id=boundary-observation/{run_dir.name}/step1/node1 "
+            "step=1 node=node1 "
             "target=node2 layers=[1,2) layer_start=1 layer_end=2 layer_count=1 "
             "hidden_key=hidden/qwen3-0-6b/node2/range-runtime-input/decode-step1",
             result.stdout,

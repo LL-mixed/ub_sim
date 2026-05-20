@@ -1284,6 +1284,7 @@ observations from `qwen3_range_forward_runtime_ingress_publish`:
 
 ```text
 memory_boundary_observation: phase=range_exit step=<n> node=node3 target=node4 \
+  observation_id=boundary-observation/<run-id>/step<n>/node3 \
   layers=[8,12) hidden_key=hidden/... hidden_bytes=... hidden_checksum=...
 ```
 
@@ -1326,8 +1327,10 @@ sim-cli lingqu-memory record-boundary-observations-from-w5-summary \
 
 Each persisted `BoundaryObservationRecord` stores the run id, model binding,
 range-exit boundary, producer/consumer nodes, hidden ObjectRef metadata, and a
-checksum. Re-importing the same summary is idempotent; reusing an observation
-id with different payload fails instead of overwriting history.
+checksum. The summary emits the stable observation id, and import uses that id
+instead of recomputing it when present. Re-importing the same summary is
+idempotent; reusing an observation id with different payload fails instead of
+overwriting history.
 
 `sim-cli lingqu-memory boundary-lookup-from-observation` is the standalone
 inspection form of the same path used by the W5 entrypoint:

@@ -5021,7 +5021,10 @@ fn w5_boundary_observations_from_summary(
         let hidden_bytes = required_summary_u64(&fields, "hidden_bytes")?;
         let hidden_checksum = required_summary_u64_auto(&fields, "hidden_checksum")?;
         let hidden_version = required_summary_u64(&fields, "hidden_version")?;
-        let observation_id = format!("boundary-observation/{run_id}/step{step}/{node}");
+        let observation_id = fields
+            .get("observation_id")
+            .cloned()
+            .unwrap_or_else(|| format!("boundary-observation/{run_id}/step{step}/{node}"));
         let observation = sim_memory::BoundaryObservationRecord::new(
             observation_id,
             run_id.to_string(),
@@ -8641,6 +8644,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
             concat!(
                 "summary: run_dir=/tmp/run0_headless8\n",
                 "memory_boundary_observation: phase=range_exit step=2 node=node3 ",
+                "observation_id=boundary-observation/run0/step2/node3 ",
                 "target=node4 layers=[8,12) layer_start=8 layer_end=12 layer_count=4 ",
                 "hidden_key=hidden/qwen3-0-6b/node4/range-runtime-input/decode-step2 ",
                 "hidden_key_hash=0x000000000000abcd hidden_version=7 hidden_bytes=262144 ",

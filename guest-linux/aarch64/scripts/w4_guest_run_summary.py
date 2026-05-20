@@ -390,8 +390,20 @@ def emit_summary(run_dir, expected_steps, node_ids, output):
     emit_engram_timing_summary(engram_timings, expected_steps, node_ids, output)
     emit_engram_context_summary(engram_context_records, expected_steps, output)
     emit_memory_service_summary(memory_records, expected_steps, output)
-    emit_boundary_observation_summary(boundary_observations, expected_steps, output)
+    emit_boundary_observation_summary(
+        boundary_observations,
+        expected_steps,
+        output,
+        derive_run_id_from_run_dir(run_dir),
+    )
     emit_pool_usage_summary(pool_usage, expected_steps, node_ids, output)
+
+
+def derive_run_id_from_run_dir(run_dir):
+    name = os.path.basename(os.path.normpath(run_dir))
+    if name.endswith("_headless8"):
+        return name[: -len("_headless8")]
+    return name
 
 
 def emit_progress(run_dir, expected_steps, elapsed_s, node_ids, output):
@@ -949,7 +961,9 @@ def emit_memory_service_summary(memory_records, expected_steps, output):
             )
 
 
-def emit_boundary_observation_summary(boundary_observations, expected_steps, output):
+def emit_boundary_observation_summary(
+    boundary_observations, expected_steps, output, run_id
+):
     if not boundary_observations:
         return
 
@@ -969,6 +983,7 @@ def emit_boundary_observation_summary(boundary_observations, expected_steps, out
         output.append(
             "memory_boundary_observation: "
             "phase=range_exit "
+            f"observation_id=boundary-observation/{run_id}/step{record['step']}/{record['node']} "
             f"step={record['step']} "
             f"node={record['node']} "
             f"target={record['target']} "
