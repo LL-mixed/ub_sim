@@ -1681,6 +1681,9 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "plan-prefetch" => run_lingqu_memory_plan_prefetch_cli(&args),
         "publish-w5-engram-state-ref" => run_lingqu_memory_publish_w5_engram_state_ref_cli(&args),
         "query" => run_lingqu_memory_query_cli(&args),
+        "record-boundary-observations-from-w5-summary" => {
+            run_lingqu_memory_record_boundary_observations_from_w5_summary_cli(&args)
+        }
         "register-execution-artifact" => run_lingqu_memory_register_execution_artifact_cli(&args),
         "register-prefix-cache" => run_lingqu_memory_register_prefix_cache_cli(&args),
         "update-record-state" => run_lingqu_memory_update_record_state_cli(&args),
@@ -1690,7 +1693,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "validate-flat-materialize" => run_lingqu_memory_validate_flat_materialize(),
         "validate-w5-engram-object-ref" => run_lingqu_memory_validate_w5_engram_object_ref(),
         _ => anyhow::bail!(
-            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, query, list-query-results, list-record-lifecycle, list-shortpath-supports, list-shortpath-decisions, list-prefetch-plans, list-prefix-cache-reuse, update-record-state, register-execution-artifact, boundary-lookup, boundary-request-from-w5-summary, plan-prefetch, register-prefix-cache, lookup-prefix-cache, materialize-hot-state, materialize-engram-state, publish-w5-engram-state-ref, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
+            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, query, list-query-results, list-record-lifecycle, list-shortpath-supports, list-shortpath-decisions, list-prefetch-plans, list-prefix-cache-reuse, update-record-state, register-execution-artifact, boundary-lookup, boundary-request-from-w5-summary, record-boundary-observations-from-w5-summary, plan-prefetch, register-prefix-cache, lookup-prefix-cache, materialize-hot-state, materialize-engram-state, publish-w5-engram-state-ref, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
         ),
     }
 }
@@ -1899,6 +1902,70 @@ fn run_lingqu_memory_boundary_request_from_w5_summary_cli(args: &[String]) -> an
     println!("  position: {}", request.boundary.position);
     println!("  hidden_key: {}", request.hidden_state.object_key);
     println!("  hidden_checksum: {:#x}", request.hidden_state.checksum);
+    Ok(())
+}
+
+fn run_lingqu_memory_record_boundary_observations_from_w5_summary_cli(
+    args: &[String],
+) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let summary_path = PathBuf::from(required_cli_arg(args, "--summary")?);
+    let step = required_cli_u64(args, "--step")?;
+    let position = required_cli_u64(args, "--position")?;
+    let created_at_us = optional_cli_u64(args, "--created-at-us")?.unwrap_or(1);
+    let model = sim_memory::InferenceModelBinding {
+        model_id: required_cli_arg(args, "--model-id")?,
+        model_key: required_cli_arg(args, "--model-key")?,
+        tokenizer_hash: required_cli_u64_auto(args, "--tokenizer-hash")?,
+        profile_hash: required_cli_u64_auto(args, "--profile-hash")?,
+    };
+    model
+        .validate()
+        .map_err(|err| anyhow::anyhow!("validate model binding: {err}"))?;
+
+    let summary = fs::read_to_string(&summary_path)
+        .with_context(|| format!("read W5 summary {}", summary_path.display()))?;
+    let run_id = optional_cli_arg(args, "--run-id")?
+        .or_else(|| derive_w5_run_id_from_summary(&summary))
+        .ok_or_else(|| anyhow::anyhow!("missing --run-id and summary run_dir is unavailable"))?;
+    let observations = w5_boundary_observations_from_summary(
+        &summary,
+        &run_id,
+        model,
+        step,
+        position,
+        created_at_us,
+    )?;
+    if observations.is_empty() {
+        anyhow::bail!("summary has no boundary observations for step={step}");
+    }
+
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let mut memory_service = LingquMemoryService::new();
+    for observation in observations {
+        memory_service
+            .register_boundary_observation(observation)
+            .context("register boundary observation")?;
+    }
+    memory_service
+        .persist_boundary_observations_to_dfs(&mut durable_store)
+        .context("persist boundary observation DFS audit")?;
+    save_lingqu_memory_durable_store(&store_path, &durable_store)?;
+    let persisted = durable_store
+        .load_boundary_observation_manifest()
+        .context("reload boundary observation DFS audit")?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: record-boundary-observations-from-w5-summary");
+    println!("  store_path: {}", store_path.display());
+    println!("  summary: {}", summary_path.display());
+    println!(
+        "  audit_log: {}",
+        sim_memory::LINGQU_BOUNDARY_OBSERVATION_AUDIT_LOG_PATH
+    );
+    println!("  run_id: {run_id}");
+    println!("  step: {step}");
+    println!("  observations: {}", persisted.len());
     Ok(())
 }
 
@@ -4796,6 +4863,83 @@ fn find_w5_boundary_observation(
     anyhow::bail!("missing memory_boundary_observation for step={step} node={node}")
 }
 
+fn w5_boundary_observations_from_summary(
+    summary: &str,
+    run_id: &str,
+    model: sim_memory::InferenceModelBinding,
+    step: u64,
+    position: u64,
+    created_at_us: u64,
+) -> anyhow::Result<Vec<sim_memory::BoundaryObservationRecord>> {
+    let mut observations = Vec::new();
+    for line in summary.lines() {
+        if !line.starts_with("memory_boundary_observation: ") {
+            continue;
+        }
+        let fields = parse_summary_fields(line);
+        if required_summary_u64(&fields, "step")? != step {
+            continue;
+        }
+        let node = required_summary_field(&fields, "node")?;
+        let target = required_summary_field(&fields, "target")?;
+        let layer_start = required_summary_u32(&fields, "layer_start")?;
+        let layer_end = required_summary_u32(&fields, "layer_end")?;
+        let hidden_key = required_summary_field(&fields, "hidden_key")?.to_string();
+        let hidden_bytes = required_summary_u64(&fields, "hidden_bytes")?;
+        let hidden_checksum = required_summary_u64_auto(&fields, "hidden_checksum")?;
+        let hidden_version = required_summary_u64(&fields, "hidden_version")?;
+        let observation_id = format!("boundary-observation/{run_id}/step{step}/{node}");
+        let observation = sim_memory::BoundaryObservationRecord::new(
+            observation_id,
+            run_id.to_string(),
+            model.clone(),
+            sim_memory::RangeBoundary {
+                phase: sim_memory::RangeBoundaryPhase::RangeExit,
+                step_index: step,
+                node_index: parse_node_index(node)?,
+                layer_start,
+                layer_end,
+                next_node_index: Some(parse_node_index(target)?),
+                position,
+            },
+            sim_memory::HotTensorObjectRef {
+                object_key: hidden_key.clone(),
+                version: hidden_version,
+                backend: sim_memory::HotObjectBackend::ObmmShmem,
+                storage_ref: format!("obmm://{hidden_key}"),
+                segment: None,
+                offset: 0,
+                bytes: hidden_bytes,
+                checksum: hidden_checksum,
+                dtype: sim_core::TensorDType::Opaque,
+                shape: vec![hidden_bytes],
+            },
+            node.to_string(),
+            target.to_string(),
+            "w5_guest_range_exit".to_string(),
+            1,
+            created_at_us,
+        )
+        .with_context(|| format!("build boundary observation step={step} node={node}"))?;
+        observations.push(observation);
+    }
+    observations.sort_by(|left, right| left.observation_id.cmp(&right.observation_id));
+    Ok(observations)
+}
+
+fn derive_w5_run_id_from_summary(summary: &str) -> Option<String> {
+    let run_dir = summary.lines().find_map(|line| {
+        line.strip_prefix("summary: run_dir=")
+            .map(|value| value.trim())
+    })?;
+    let name = Path::new(run_dir).file_name()?.to_string_lossy();
+    Some(
+        name.strip_suffix("_headless8")
+            .unwrap_or(name.as_ref())
+            .to_string(),
+    )
+}
+
 fn parse_summary_fields(line: &str) -> std::collections::HashMap<String, String> {
     line.split_ascii_whitespace()
         .filter_map(|field| field.split_once('='))
@@ -6064,6 +6208,7 @@ mod tests {
         run_lingqu_memory_materialize_engram_state_cli,
         run_lingqu_memory_materialize_hot_state_cli, run_lingqu_memory_plan_prefetch_cli,
         run_lingqu_memory_publish_w5_engram_state_ref_cli, run_lingqu_memory_query_cli,
+        run_lingqu_memory_record_boundary_observations_from_w5_summary_cli,
         run_lingqu_memory_register_execution_artifact_cli,
         run_lingqu_memory_register_prefix_cache_cli, run_lingqu_memory_update_record_state_cli,
         run_lingqu_memory_validate_durable_store, run_lingqu_memory_validate_flat_materialize,
@@ -8250,6 +8395,109 @@ stage qwen3_range_forward_runtime_output_publish node=2
         assert_eq!(
             request.allowed_actions,
             vec![sim_memory::ShortpathAction::JumpToTerminal]
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lingqu_memory_records_boundary_observations_from_w5_summary() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_lingqu_memory_record_boundary_observations_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let summary_path = root.join("w5_summary.txt");
+        let store_path = root.join("store.json");
+        fs::write(
+            &summary_path,
+            concat!(
+                "summary: run_dir=/tmp/run0_headless8\n",
+                "memory_boundary_observation: phase=range_exit step=2 node=node3 ",
+                "target=node4 layers=[8,12) layer_start=8 layer_end=12 layer_count=4 ",
+                "hidden_key=hidden/qwen3-0-6b/node4/range-runtime-input/decode-step2 ",
+                "hidden_key_hash=0x000000000000abcd hidden_version=7 hidden_bytes=262144 ",
+                "hidden_checksum=0x0000000000001234 hidden_dtype=opaque hidden_shape=262144 ",
+                "producer_publish_ms=100 producer_publish_mono_ms=20 backing=obmm_shmem ",
+                "metadata=lingqu_object_service queue=obmm_spsc status=ok\n",
+                "memory_boundary_observation: phase=range_exit step=2 node=node4 ",
+                "target=node5 layers=[12,16) layer_start=12 layer_end=16 layer_count=4 ",
+                "hidden_key=hidden/qwen3-0-6b/node5/range-runtime-input/decode-step2 ",
+                "hidden_key_hash=0x000000000000bcde hidden_version=1 hidden_bytes=262144 ",
+                "hidden_checksum=0x0000000000005678 hidden_dtype=opaque hidden_shape=262144 ",
+                "producer_publish_ms=200 producer_publish_mono_ms=30 backing=obmm_shmem ",
+                "metadata=lingqu_object_service queue=obmm_spsc status=ok\n"
+            ),
+        )
+        .expect("write summary");
+
+        run_lingqu_memory_record_boundary_observations_from_w5_summary_cli(&[
+            "--store".to_string(),
+            store_path.to_string_lossy().into_owned(),
+            "--summary".to_string(),
+            summary_path.to_string_lossy().into_owned(),
+            "--step".to_string(),
+            "2".to_string(),
+            "--position".to_string(),
+            "6".to_string(),
+            "--model-id".to_string(),
+            "qwen3-0.6b-test".to_string(),
+            "--model-key".to_string(),
+            "qwen3-0-6b".to_string(),
+            "--tokenizer-hash".to_string(),
+            "0x1001".to_string(),
+            "--profile-hash".to_string(),
+            "0x2002".to_string(),
+            "--created-at-us".to_string(),
+            "100".to_string(),
+        ])
+        .expect("record observations");
+
+        let mut durable =
+            load_lingqu_memory_durable_store(&store_path).expect("reload durable store");
+        let observations = durable
+            .load_boundary_observation_manifest()
+            .expect("load boundary observation audit");
+        assert_eq!(observations.len(), 2);
+        assert_eq!(observations[0].run_id, "run0");
+        assert_eq!(
+            observations[0].observation_id,
+            "boundary-observation/run0/step2/node3"
+        );
+        assert_eq!(observations[0].boundary.node_index, 3);
+        assert_eq!(observations[0].boundary.position, 6);
+        assert_eq!(observations[0].hidden_state.checksum, 0x1234);
+        assert_ne!(observations[0].checksum, 0);
+
+        run_lingqu_memory_record_boundary_observations_from_w5_summary_cli(&[
+            "--store".to_string(),
+            store_path.to_string_lossy().into_owned(),
+            "--summary".to_string(),
+            summary_path.to_string_lossy().into_owned(),
+            "--step".to_string(),
+            "2".to_string(),
+            "--position".to_string(),
+            "6".to_string(),
+            "--model-id".to_string(),
+            "qwen3-0.6b-test".to_string(),
+            "--model-key".to_string(),
+            "qwen3-0-6b".to_string(),
+            "--tokenizer-hash".to_string(),
+            "0x1001".to_string(),
+            "--profile-hash".to_string(),
+            "0x2002".to_string(),
+            "--created-at-us".to_string(),
+            "100".to_string(),
+        ])
+        .expect("record observations idempotently");
+        let mut durable =
+            load_lingqu_memory_durable_store(&store_path).expect("reload durable store");
+        assert_eq!(
+            durable
+                .load_boundary_observation_manifest()
+                .expect("reload observation audit")
+                .len(),
+            2
         );
         let _ = fs::remove_dir_all(&root);
     }

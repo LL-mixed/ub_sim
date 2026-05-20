@@ -1300,6 +1300,27 @@ hand-authored boundary request from the validation path. The request hidden
 fingerprint now comes from the real OBMM/Lingqu Object Service range output
 that the next W5 node consumed.
 
+`sim-cli lingqu-memory record-boundary-observations-from-w5-summary` persists
+all observations for a step into the Memory Service durable store as
+append-only DFS audit records:
+
+```text
+sim-cli lingqu-memory record-boundary-observations-from-w5-summary \
+  --store <durable-store.json> \
+  --summary <eight_node_w5_inference_cluster_summary.txt> \
+  --step <decode-step> \
+  --position <token-position> \
+  --model-id <model-id> \
+  --model-key <model-key> \
+  --tokenizer-hash <hash> \
+  --profile-hash <hash>
+```
+
+Each persisted `BoundaryObservationRecord` stores the run id, model binding,
+range-exit boundary, producer/consumer nodes, hidden ObjectRef metadata, and a
+checksum. Re-importing the same summary is idempotent; reusing an observation
+id with different payload fails instead of overwriting history.
+
 2026-05-19 validation:
 
 - A real Memory Service bootstrap sequence produced durable store, Block-backed
@@ -1353,7 +1374,10 @@ that the next W5 node consumed.
   `hidden/qwen3-0-6b/node4/range-runtime-input/decode-step0` and checksum
   `0xe2098418c4d84107`. The new
   `lingqu-memory boundary-request-from-w5-summary` CLI generated a validated
-  `BoundaryLookupRequest` from that real observation.
+  `BoundaryLookupRequest` from that real observation. The new
+  `lingqu-memory record-boundary-observations-from-w5-summary` CLI persisted
+  the seven real step-0 observations into a durable store audit log at
+  `/lingqu/memory/audit/boundary-observations.log`.
 - Live per-step range handoff now keeps the ObjectRef descriptor but prefers
   the already-mapped UAPI segment payload for hidden/KV operands. sim-uapi
   verifies the inline payload against the ObjectRef length/checksum before
@@ -1387,6 +1411,7 @@ boundary_observation_step=...
 boundary_observation_node=...
 boundary_observation_hidden_key=...
 boundary_observation_hidden_checksum=...
+boundary_observation_audit_log=...
 shortpath_decision_id=...
 shortpath_action=continue|jump_to_layer|jump_to_terminal|require_verify
 shortpath_confidence_milli=...
@@ -1545,9 +1570,12 @@ Current implementation status:
   from a reason string. W5 range exits now emit real hidden ObjectRef
   observations into the run summary, and
   `lingqu-memory boundary-request-from-w5-summary` can generate a validated
-  `BoundaryLookupRequest` from those observations. The remaining gap is the
-  online in-guest lookup loop that performs this request at range-exit time
-  instead of as a post-run/launch-time bridge.
+  `BoundaryLookupRequest` from those observations. Memory Service now also has
+  a `BoundaryObservationRecord` model and durable DFS audit log, and
+  `lingqu-memory record-boundary-observations-from-w5-summary` records real W5
+  observations into that log idempotently. The remaining gap is the online
+  in-guest lookup loop that performs this request at range-exit time instead
+  of as a post-run/launch-time bridge.
   Query results can be persisted to and restored from DFS manifests with
   checksum validation, and QueryResult-driven hot materialization now carries
   that DFS manifest ref into both `HotMemoryStateObject` and

@@ -459,6 +459,8 @@ pub const LINGQU_SHORTPATH_DECISION_MANIFEST_PATH: &str =
 pub const LINGQU_SHORTPATH_SUPPORT_MANIFEST_PATH: &str =
     "/lingqu/memory/shortpath-support/audit.json";
 pub const LINGQU_PREFETCH_PLAN_MANIFEST_PATH: &str = "/lingqu/memory/prefetch-plans/audit.json";
+pub const LINGQU_BOUNDARY_OBSERVATION_AUDIT_LOG_PATH: &str =
+    "/lingqu/memory/audit/boundary-observations.log";
 pub const LINGQU_SHORTPATH_DECISION_AUDIT_LOG_PATH: &str =
     "/lingqu/memory/audit/shortpath-decisions.log";
 pub const LINGQU_SHORTPATH_SUPPORT_AUDIT_LOG_PATH: &str =
@@ -1394,6 +1396,76 @@ impl LingquMemoryDurableStore {
             .collect())
     }
 
+    pub fn persist_boundary_observation_manifest(
+        &mut self,
+        observations: Vec<BoundaryObservationRecord>,
+    ) -> MemoryResult<LingquDfsPath> {
+        let path = LingquDfsPath::new(LINGQU_BOUNDARY_OBSERVATION_AUDIT_LOG_PATH);
+        let mut observations = observations;
+        observations.sort_by(|left, right| left.observation_id.cmp(&right.observation_id));
+        let existing =
+            self.load_boundary_observation_audit_entries(true, "persist boundary observations")?;
+        let mut existing_by_id = HashMap::new();
+        for (observation, bytes) in existing {
+            if existing_by_id
+                .insert(observation.observation_id.clone(), bytes)
+                .is_some()
+            {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "boundary_observation.observation_id",
+                    reason: "duplicate observation id in durable audit log",
+                });
+            }
+        }
+
+        let mut ops = Vec::new();
+        let mut bytes_written = 0;
+        let mut next_seq = existing_by_id.len() as u64 + 1;
+        for observation in observations {
+            observation.validate()?;
+            let bytes = serde_json::to_vec(&observation)
+                .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+            if let Some(existing_bytes) = existing_by_id.get(&observation.observation_id) {
+                if existing_bytes != &bytes {
+                    return Err(LingquMemoryError::InvalidValue {
+                        field: "boundary_observation.observation_id",
+                        reason: "observation id already exists with different payload",
+                    });
+                }
+                continue;
+            }
+            bytes_written += bytes.len() as u64;
+            ops.push(durable_sim::LingquDurableBatchOp::DfsAppendLog {
+                path: path.path.clone(),
+                bytes,
+                options: durable_sim::LingquDfsAppendOptions {
+                    expected_next_seq: Some(next_seq),
+                    writer: Some("w5-range-exit-observer".to_string()),
+                    metadata: durable_audit_metadata("boundary_observation"),
+                },
+            });
+            next_seq += 1;
+        }
+        if !ops.is_empty() {
+            self.durable
+                .commit_batch(ops)
+                .map_err(memory_error_from_durable)?;
+            self.stats.dfs_audit_appends += next_seq - existing_by_id.len() as u64 - 1;
+            self.stats.dfs_bytes_written += bytes_written;
+        }
+        Ok(path)
+    }
+
+    pub fn load_boundary_observation_manifest(
+        &mut self,
+    ) -> MemoryResult<Vec<BoundaryObservationRecord>> {
+        Ok(self
+            .load_boundary_observation_audit_entries(false, "load boundary observations")?
+            .into_iter()
+            .map(|(observation, _bytes)| observation)
+            .collect())
+    }
+
     pub fn persist_prefix_cache_reuse_plan_manifest(
         &mut self,
         plans: Vec<PrefixCacheReusePlan>,
@@ -1748,6 +1820,37 @@ impl LingquMemoryDurableStore {
         if entries.is_empty() && !allow_missing {
             return Err(LingquMemoryError::MissingDfsPath(format!(
                 "{op}: {LINGQU_PREFIX_CACHE_REUSE_AUDIT_LOG_PATH}"
+            )));
+        }
+        Ok(entries)
+    }
+
+    fn load_boundary_observation_audit_entries(
+        &mut self,
+        allow_missing: bool,
+        op: &'static str,
+    ) -> MemoryResult<Vec<(BoundaryObservationRecord, Vec<u8>)>> {
+        let records = self.submit_dfs_append_log_read(
+            LINGQU_BOUNDARY_OBSERVATION_AUDIT_LOG_PATH,
+            allow_missing,
+        )?;
+        let mut entries = Vec::with_capacity(records.len());
+        let mut ids = HashSet::new();
+        for record in records {
+            let observation = serde_json::from_slice::<BoundaryObservationRecord>(&record.bytes)
+                .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+            observation.validate()?;
+            if !ids.insert(observation.observation_id.clone()) {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "boundary_observation.observation_id",
+                    reason: "duplicate observation id in durable audit log",
+                });
+            }
+            entries.push((observation, record.bytes));
+        }
+        if entries.is_empty() && !allow_missing {
+            return Err(LingquMemoryError::MissingDfsPath(format!(
+                "{op}: {LINGQU_BOUNDARY_OBSERVATION_AUDIT_LOG_PATH}"
             )));
         }
         Ok(entries)
@@ -2954,6 +3057,103 @@ impl BoundaryLookupRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoundaryObservationRecord {
+    pub observation_id: String,
+    pub run_id: String,
+    pub model: InferenceModelBinding,
+    pub boundary: RangeBoundary,
+    pub hidden_state: HotTensorObjectRef,
+    pub producer_node: String,
+    pub consumer_node: String,
+    pub source: String,
+    pub checksum: u64,
+    pub version: u64,
+    pub created_at_us: u64,
+}
+
+impl BoundaryObservationRecord {
+    pub fn validate(&self) -> MemoryResult<()> {
+        required_str(&self.observation_id, "boundary_observation.observation_id")?;
+        required_str(&self.run_id, "boundary_observation.run_id")?;
+        self.model.validate()?;
+        self.boundary.validate()?;
+        if self.boundary.phase != RangeBoundaryPhase::RangeExit {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "boundary_observation.boundary.phase",
+                reason: "boundary observations must record range exit boundaries",
+            });
+        }
+        validate_hot_ref(&self.hidden_state)?;
+        required_str(&self.producer_node, "boundary_observation.producer_node")?;
+        required_str(&self.consumer_node, "boundary_observation.consumer_node")?;
+        required_str(&self.source, "boundary_observation.source")?;
+        nonzero(self.checksum, "boundary_observation.checksum")?;
+        nonzero(self.version, "boundary_observation.version")?;
+        let actual = boundary_observation_checksum(self);
+        if actual != self.checksum {
+            return Err(LingquMemoryError::PayloadChecksumMismatch {
+                id: self.observation_id.clone(),
+                expected: self.checksum,
+                actual,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn new(
+        observation_id: String,
+        run_id: String,
+        model: InferenceModelBinding,
+        boundary: RangeBoundary,
+        hidden_state: HotTensorObjectRef,
+        producer_node: String,
+        consumer_node: String,
+        source: String,
+        version: u64,
+        created_at_us: u64,
+    ) -> MemoryResult<Self> {
+        let mut record = Self {
+            observation_id,
+            run_id,
+            model,
+            boundary,
+            hidden_state,
+            producer_node,
+            consumer_node,
+            source,
+            checksum: 0,
+            version,
+            created_at_us,
+        };
+        record.checksum = boundary_observation_checksum(&record);
+        record.validate()?;
+        Ok(record)
+    }
+
+    pub fn to_lookup_request(
+        &self,
+        request_id: String,
+        engram_state_id: Option<String>,
+        min_confidence_milli: u32,
+        allowed_actions: Vec<ShortpathAction>,
+        created_at_us: u64,
+    ) -> MemoryResult<BoundaryLookupRequest> {
+        let request = BoundaryLookupRequest {
+            request_id,
+            model: self.model.clone(),
+            boundary: self.boundary.clone(),
+            hidden_state: self.hidden_state.clone(),
+            engram_state_id,
+            min_confidence_milli,
+            allowed_actions,
+            created_at_us,
+        };
+        request.validate()?;
+        Ok(request)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrefetchPlanRequest {
     pub request_id: String,
     pub model: InferenceModelBinding,
@@ -3449,6 +3649,7 @@ pub struct LingquMemoryService {
     prefix_cache_reuse_plans: HashMap<String, PrefixCacheReusePlan>,
     prefetch_plans: HashMap<String, PrefetchPlanRecord>,
     shortpath_supports: HashMap<String, ShortpathSupportRecord>,
+    boundary_observations: HashMap<String, BoundaryObservationRecord>,
 }
 
 impl LingquMemoryService {
@@ -3714,6 +3915,44 @@ impl LingquMemoryService {
                 .insert(plan.plan_id.clone(), plan.clone());
         }
         Ok(plans)
+    }
+
+    pub fn register_boundary_observation(
+        &mut self,
+        observation: BoundaryObservationRecord,
+    ) -> MemoryResult<()> {
+        observation.validate()?;
+        self.boundary_observations
+            .insert(observation.observation_id.clone(), observation);
+        Ok(())
+    }
+
+    pub fn boundary_observation(&self, observation_id: &str) -> Option<&BoundaryObservationRecord> {
+        self.boundary_observations.get(observation_id)
+    }
+
+    pub fn persist_boundary_observations_to_dfs(
+        &self,
+        durable_store: &mut LingquMemoryDurableStore,
+    ) -> MemoryResult<LingquDfsPath> {
+        let mut observations = self
+            .boundary_observations
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        observations.sort_by(|left, right| left.observation_id.cmp(&right.observation_id));
+        durable_store.persist_boundary_observation_manifest(observations)
+    }
+
+    pub fn rebuild_boundary_observations_from_dfs(
+        &mut self,
+        durable_store: &mut LingquMemoryDurableStore,
+    ) -> MemoryResult<Vec<BoundaryObservationRecord>> {
+        let observations = durable_store.load_boundary_observation_manifest()?;
+        for observation in &observations {
+            self.register_boundary_observation(observation.clone())?;
+        }
+        Ok(observations)
     }
 
     pub fn ingest_record(
@@ -5649,6 +5888,43 @@ fn prefetch_plan_manifest_checksum(manifest: &LingquPrefetchPlanManifest) -> u64
     checksum64(&bytes)
 }
 
+fn boundary_observation_checksum(observation: &BoundaryObservationRecord) -> u64 {
+    let mut bytes = Vec::new();
+    push_checksum_str(&mut bytes, &observation.observation_id);
+    push_checksum_str(&mut bytes, &observation.run_id);
+    push_checksum_str(&mut bytes, &observation.model.model_id);
+    push_checksum_str(&mut bytes, &observation.model.model_key);
+    bytes.extend_from_slice(&observation.model.tokenizer_hash.to_le_bytes());
+    bytes.extend_from_slice(&observation.model.profile_hash.to_le_bytes());
+    bytes.extend_from_slice(&range_boundary_phase_tag(observation.boundary.phase).to_le_bytes());
+    bytes.extend_from_slice(&observation.boundary.step_index.to_le_bytes());
+    bytes.extend_from_slice(&observation.boundary.node_index.to_le_bytes());
+    bytes.extend_from_slice(&observation.boundary.layer_start.to_le_bytes());
+    bytes.extend_from_slice(&observation.boundary.layer_end.to_le_bytes());
+    bytes.extend_from_slice(
+        &observation
+            .boundary
+            .next_node_index
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+    );
+    bytes.extend_from_slice(&observation.boundary.position.to_le_bytes());
+    push_checksum_str(&mut bytes, &observation.hidden_state.object_key);
+    bytes.extend_from_slice(&observation.hidden_state.version.to_le_bytes());
+    bytes.extend_from_slice(&observation.hidden_state.bytes.to_le_bytes());
+    bytes.extend_from_slice(&observation.hidden_state.checksum.to_le_bytes());
+    bytes.extend_from_slice(&tensor_dtype_tag(observation.hidden_state.dtype).to_le_bytes());
+    for dim in &observation.hidden_state.shape {
+        bytes.extend_from_slice(&dim.to_le_bytes());
+    }
+    push_checksum_str(&mut bytes, &observation.producer_node);
+    push_checksum_str(&mut bytes, &observation.consumer_node);
+    push_checksum_str(&mut bytes, &observation.source);
+    bytes.extend_from_slice(&observation.version.to_le_bytes());
+    bytes.extend_from_slice(&observation.created_at_us.to_le_bytes());
+    checksum64(&bytes)
+}
+
 fn push_checksum_str(bytes: &mut Vec<u8>, value: &str) {
     bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
     bytes.extend_from_slice(value.as_bytes());
@@ -5882,6 +6158,82 @@ mod tests {
                 .unwrap()
                 .reason,
             "no_verified_execution_artifact_support"
+        );
+    }
+
+    #[test]
+    fn boundary_observation_persists_and_builds_lookup_request() {
+        let mut service = LingquMemoryService::new();
+        let hidden_ref = HotTensorObjectRef {
+            object_key: "hidden/qwen3-0-6b/node4/range-runtime-input/decode-step2".to_string(),
+            version: 1,
+            backend: HotObjectBackend::ObmmShmem,
+            storage_ref: "obmm://hidden/qwen3-0-6b/node4/range-runtime-input/decode-step2"
+                .to_string(),
+            segment: None,
+            offset: 0,
+            bytes: 262144,
+            checksum: 0xe209_8418_c4d8_4107,
+            dtype: TensorDType::Opaque,
+            shape: vec![262144],
+        };
+        let observation = BoundaryObservationRecord::new(
+            "boundary-observation/run0/step2/node3".to_string(),
+            "run0".to_string(),
+            sample_model_binding(),
+            RangeBoundary {
+                phase: RangeBoundaryPhase::RangeExit,
+                step_index: 2,
+                node_index: 3,
+                layer_start: 8,
+                layer_end: 12,
+                next_node_index: Some(4),
+                position: 6,
+            },
+            hidden_ref.clone(),
+            "node3".to_string(),
+            "node4".to_string(),
+            "w5_guest_range_exit".to_string(),
+            1,
+            100,
+        )
+        .expect("build observation");
+        service
+            .register_boundary_observation(observation.clone())
+            .expect("register observation");
+        let request = observation
+            .to_lookup_request(
+                "boundary/run0/step2/node3".to_string(),
+                None,
+                900,
+                vec![ShortpathAction::JumpToTerminal],
+                101,
+            )
+            .expect("build lookup request");
+        assert_eq!(request.hidden_state, hidden_ref);
+        assert_eq!(request.boundary.layer_end, 12);
+
+        let mut durable = LingquMemoryDurableStore::new();
+        service
+            .persist_boundary_observations_to_dfs(&mut durable)
+            .expect("persist observations");
+        service
+            .persist_boundary_observations_to_dfs(&mut durable)
+            .expect("persist observations idempotently");
+        let persisted = durable
+            .load_boundary_observation_manifest()
+            .expect("load observations");
+        assert_eq!(persisted, vec![observation.clone()]);
+
+        let mut restored = LingquMemoryService::new();
+        restored
+            .rebuild_boundary_observations_from_dfs(&mut durable)
+            .expect("rebuild observations");
+        assert_eq!(
+            restored
+                .boundary_observation("boundary-observation/run0/step2/node3")
+                .expect("restored observation"),
+            &observation
         );
     }
 
