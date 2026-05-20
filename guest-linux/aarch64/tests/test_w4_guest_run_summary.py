@@ -97,6 +97,25 @@ class W4GuestRunSummaryTest(unittest.TestCase):
                     "[w4_guest] pass",
                     worker_timing(node_id, index, 1, total1, 70 * index, 9 * index),
                     handoff_timing(node_id, index, 1, 80 * index, 11 * index, 5 * index),
+                    (
+                        "[w4_guest] stage qwen3_w5_memory_boundary_decision "
+                        f"local={node_id} step=1 layers=[0,1) next=node{index + 1} "
+                        "shortpath_id=shortpath-decision/boundary/step1 "
+                        "shortpath_support_id=shortpath-support/boundary/step1 "
+                        "shortpath_action=jump-to-terminal "
+                        "shortpath_artifact_kind=logits "
+                        "shortpath_artifact_checksum=0xabc "
+                        "shortpath_artifact_ref_chars=128 "
+                        "prefetch_id=prefetch-plan/step1 prefetch_scope=multi-step "
+                        "prefetch_target_step=2 prefetch_artifact_ids=artifact/kv/step2 "
+                        "prefetch_artifact_checksums=0xdef prefetch_artifact_refs_chars=128 "
+                        "prefix_cache_id=prefix-cache-reuse/step1 "
+                        "prefix_cache_action=reuse "
+                        "prefix_cache_artifact_checksum=0x123 "
+                        "prefix_cache_artifact_ref_chars=128 "
+                        "source=lingqu_memory_service "
+                        "target=range_forward_boundary status=validated"
+                    ),
                     engram_timing(node_id, index, 1),
                     (
                         "[w4_guest] stage qwen3_obmm_pool_usage "
@@ -127,6 +146,16 @@ class W4GuestRunSummaryTest(unittest.TestCase):
                         "logits_checksum=0x3 text_checksum=0x4 "
                         "piece_word0=0x000000000049a0c4 piece_word1=0x0000000000000000 "
                         "object_key=tokens/qwen3-0.6b/decode-step1 status=ok",
+                    )
+                    lines.insert(
+                        4,
+                        "[w4_guest] stage qwen3_w5_memory_terminal_logits_execute "
+                        "node=8 step=1 decision_id=shortpath-decision/boundary/step1 "
+                        "artifact_id=artifact/logits/step1 token=358 runner_up=1128 "
+                        "margin_milli=1350 logits_checksum=0x3 text_checksum=0x4 "
+                        "payload_bytes=1024 payload_checksum=0x99 "
+                        "source=lingqu_memory_service "
+                        "target=terminal_token_result status=ok",
                     )
                 (run_dir / f"{node_id}_guest.log").write_text("\n".join(lines) + "\n")
                 if node_id == "nodeH":
@@ -215,6 +244,26 @@ class W4GuestRunSummaryTest(unittest.TestCase):
             "engram_context_summary: records=2 steps=2/2 modes=cpu-reference "
             "max_latency_ms=2 max_latency_step=1 max_latency_node=nodeH "
             "total_latency_ms=3 output_checksum_xor=0x0000000000000033",
+            result.stdout,
+        )
+        self.assertIn(
+            "memory_service_summary: service=lingqu_memory_service records=9 steps=1/2 "
+            "stages=qwen3_w5_memory_boundary_decision:8,"
+            "qwen3_w5_memory_terminal_logits_execute:1 "
+            "shortpath_ids=shortpath-decision/boundary/step1 "
+            "support_ids=shortpath-support/boundary/step1 "
+            "actions=jump-to-terminal artifact_kinds=logits "
+            "prefetch_ids=prefetch-plan/step1 "
+            "prefix_cache_ids=prefix-cache-reuse/step1",
+            result.stdout,
+        )
+        self.assertIn(
+            "memory_service_step: step=1 boundary_records=8 "
+            "nodes=nodeA,nodeB,nodeC,nodeD,nodeE,nodeF,nodeG,nodeH "
+            "shortpath_ids=shortpath-decision/boundary/step1 "
+            "support_ids=shortpath-support/boundary/step1 "
+            "actions=jump-to-terminal prefetch_ids=prefetch-plan/step1 "
+            "prefix_cache_ids=prefix-cache-reuse/step1",
             result.stdout,
         )
         self.assertIn(

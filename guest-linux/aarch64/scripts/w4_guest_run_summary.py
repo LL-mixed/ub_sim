@@ -44,6 +44,11 @@ def shorten(value, limit=220):
     return value[: limit - 3] + "..."
 
 
+def csv_or_none(values):
+    ordered = sorted({value for value in values if value and value != "none"})
+    return ",".join(ordered) if ordered else "none"
+
+
 def format_duration(seconds):
     hours, remainder = divmod(seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
@@ -73,6 +78,7 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
     handoff_timings = []
     engram_timings = []
     engram_context_records = []
+    memory_records = []
     barriers = {}
     pool_usage = {}
     passes = {node_id: 0 for node_id in node_ids}
@@ -103,6 +109,17 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                         fields["_piece"] = decode_piece(fields)
                         fields["_display_piece"] = display_piece(fields["_piece"])
                         tokens[step] = fields
+
+                if "qwen3_w5_memory_" in clean_line:
+                    fields = parse_pairs(clean_line)
+                    stage = ""
+                    if "stage " in clean_line:
+                        stage = clean_line.split("stage ", 1)[1].split(" ", 1)[0]
+                    record = dict(fields)
+                    record["_log_node"] = node_id
+                    record["stage"] = stage
+                    record["step"] = parse_int(fields.get("step"), -1)
+                    memory_records.append(record)
 
                 if "qwen3_worker_timing" in clean_line:
                     fields = parse_pairs(clean_line)
@@ -274,6 +291,7 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
         handoff_timings,
         engram_timings,
         engram_context_records,
+        memory_records,
         barriers,
         pool_usage,
         passes,
@@ -296,6 +314,7 @@ def emit_summary(run_dir, expected_steps, node_ids, output):
         handoff_timings,
         engram_timings,
         engram_context_records,
+        memory_records,
         barriers,
         pool_usage,
         passes,
@@ -325,6 +344,7 @@ def emit_summary(run_dir, expected_steps, node_ids, output):
     emit_handoff_timing_summary(handoff_timings, expected_steps, node_ids, output)
     emit_engram_timing_summary(engram_timings, expected_steps, node_ids, output)
     emit_engram_context_summary(engram_context_records, expected_steps, output)
+    emit_memory_service_summary(memory_records, expected_steps, output)
     emit_pool_usage_summary(pool_usage, expected_steps, node_ids, output)
 
 
@@ -335,6 +355,7 @@ def emit_progress(run_dir, expected_steps, elapsed_s, node_ids, output):
         _handoff_timings,
         _engram_timings,
         _engram_context_records,
+        _memory_records,
         _barriers,
         _pool_usage,
         passes,
@@ -833,6 +854,52 @@ def emit_engram_context_summary(engram_context_records, expected_steps, output):
             f"output_l1_milli={record['output_l1_milli']} "
             f"latency_ms={record['latency_ms']}"
         )
+
+
+def emit_memory_service_summary(memory_records, expected_steps, output):
+    if not memory_records:
+        return
+
+    stages = collections.Counter(record["stage"] for record in memory_records)
+    observed_steps = sorted(
+        {record["step"] for record in memory_records if record["step"] >= 0}
+    )
+    boundary_records = [
+        record
+        for record in memory_records
+        if record["stage"] == "qwen3_w5_memory_boundary_decision"
+    ]
+    output.append(
+        "memory_service_summary: "
+        "service=lingqu_memory_service "
+        f"records={len(memory_records)} "
+        f"steps={len(observed_steps)}/{expected_steps} "
+        f"stages={','.join(f'{stage}:{count}' for stage, count in sorted(stages.items()))} "
+        f"shortpath_ids={csv_or_none(record.get('shortpath_id') for record in memory_records)} "
+        f"support_ids={csv_or_none(record.get('shortpath_support_id') for record in memory_records)} "
+        f"actions={csv_or_none(record.get('shortpath_action') for record in memory_records)} "
+        f"artifact_kinds={csv_or_none(record.get('shortpath_artifact_kind') for record in memory_records)} "
+        f"prefetch_ids={csv_or_none(record.get('prefetch_id') for record in memory_records)} "
+        f"prefix_cache_ids={csv_or_none(record.get('prefix_cache_id') for record in memory_records)}"
+    )
+
+    if boundary_records:
+        by_step = collections.defaultdict(list)
+        for record in boundary_records:
+            by_step[record["step"]].append(record)
+        for step in sorted(by_step):
+            records = by_step[step]
+            output.append(
+                "memory_service_step: "
+                f"step={step} "
+                f"boundary_records={len(records)} "
+                f"nodes={csv_or_none(record.get('local') for record in records)} "
+                f"shortpath_ids={csv_or_none(record.get('shortpath_id') for record in records)} "
+                f"support_ids={csv_or_none(record.get('shortpath_support_id') for record in records)} "
+                f"actions={csv_or_none(record.get('shortpath_action') for record in records)} "
+                f"prefetch_ids={csv_or_none(record.get('prefetch_id') for record in records)} "
+                f"prefix_cache_ids={csv_or_none(record.get('prefix_cache_id') for record in records)}"
+            )
 
 
 def emit_pool_usage_summary(pool_usage, expected_steps, node_ids, output):

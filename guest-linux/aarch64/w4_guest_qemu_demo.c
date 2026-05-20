@@ -1865,6 +1865,7 @@ struct w4_qwen3_memory_decision_config {
     char service[64];
     char decision_store[256];
     char shortpath_decision_id[256];
+    char shortpath_support_id[256];
     char shortpath_action[64];
     char shortpath_artifact_id[256];
     char shortpath_target_layer_start[32];
@@ -4465,6 +4466,9 @@ static int parse_qwen3_w5_memory_decision_config(
     env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_DECISION_ID",
                       config->shortpath_decision_id,
                       sizeof(config->shortpath_decision_id));
+    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_SUPPORT_ID",
+                      config->shortpath_support_id,
+                      sizeof(config->shortpath_support_id));
     env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_ACTION",
                       config->shortpath_action,
                       sizeof(config->shortpath_action));
@@ -6180,7 +6184,8 @@ int main(void)
         }
         if (qwen3_memory_decision_config.enabled) {
             printf("[w4_guest] stage qwen3_w5_memory_decision_contract local=%s node=%u"
-                   " shortpath_id=%s shortpath_action=%s shortpath_artifact_kind=%s"
+                   " shortpath_id=%s shortpath_support_id=%s"
+                   " shortpath_action=%s shortpath_artifact_kind=%s"
                    " shortpath_artifact_checksum=%s shortpath_artifact_ref_chars=%zu"
                    " prefetch_id=%s prefetch_scope=%s"
                    " prefetch_target_step=%s prefetch_artifact_ids=%s"
@@ -6195,6 +6200,9 @@ int main(void)
                        0U,
                    str_nonempty(qwen3_memory_decision_config.shortpath_decision_id) ?
                        qwen3_memory_decision_config.shortpath_decision_id :
+                       "none",
+                   str_nonempty(qwen3_memory_decision_config.shortpath_support_id) ?
+                       qwen3_memory_decision_config.shortpath_support_id :
                        "none",
                    str_nonempty(qwen3_memory_decision_config.shortpath_action) ?
                        qwen3_memory_decision_config.shortpath_action :
@@ -7693,6 +7701,7 @@ decode_round_start:
         if (qwen3_memory_decision_config.enabled) {
             printf("[w4_guest] stage qwen3_w5_memory_boundary_decision local=node%u"
                    " step=%" PRIu64 " layers=[%u,%u) next=node%u shortpath_id=%s"
+                   " shortpath_support_id=%s"
                    " shortpath_action=%s shortpath_artifact_kind=%s"
                    " shortpath_artifact_checksum=%s shortpath_artifact_ref_chars=%zu"
                    " prefetch_id=%s prefetch_scope=%s"
@@ -7709,6 +7718,9 @@ decode_round_start:
                    next_node + 1U,
                    str_nonempty(qwen3_memory_decision_config.shortpath_decision_id) ?
                        qwen3_memory_decision_config.shortpath_decision_id :
+                       "none",
+                   str_nonempty(qwen3_memory_decision_config.shortpath_support_id) ?
+                       qwen3_memory_decision_config.shortpath_support_id :
                        "none",
                    str_nonempty(qwen3_memory_decision_config.shortpath_action) ?
                        qwen3_memory_decision_config.shortpath_action :
