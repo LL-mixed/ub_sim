@@ -1407,6 +1407,11 @@ store; missing Memory Service evidence is a hard failure.
   `lingqu-memory record-boundary-observations-from-w5-summary` CLI persisted
   the seven real step-0 observations into a durable store audit log at
   `/lingqu/memory/audit/boundary-observations.log`.
+- The eight-node W5 runner now treats guest-produced boundary observation ids
+  as part of the acceptance contract: a successful run must contain
+  `memory_boundary_observation_summary` and per-boundary ids in the
+  `boundary-observation/<run-id>/step<n>/node<m>` namespace from the guest range
+  publisher, backed by OBMM shmem and Lingqu Object Service metadata.
 - Live per-step range handoff now keeps the ObjectRef descriptor but prefers
   the already-mapped UAPI segment payload for hidden/KV operands. sim-uapi
   verifies the inline payload against the ObjectRef length/checksum before

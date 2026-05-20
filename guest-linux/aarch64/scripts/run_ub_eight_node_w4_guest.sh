@@ -667,6 +667,25 @@ validate_w5_engram_context_summary() {
   return 0
 }
 
+validate_w5_boundary_observation_summary() {
+  if [[ -z "$SIM_UAPI_W5_PROFILE" ]]; then
+    return 0
+  fi
+  if [[ ! -f "$RUN_SUMMARY_FILE" ]]; then
+    trace "FAIL: W5 boundary observation summary missing path=$RUN_SUMMARY_FILE"
+    return 1
+  fi
+  if ! rg -q "memory_boundary_observation_summary: records=[1-9][0-9]* steps=${SIM_QWEN3_GUEST_DECODE_STEPS}/${SIM_QWEN3_GUEST_DECODE_STEPS} .*source=w5_guest_range_exit hidden_backend=obmm_shmem" "$RUN_SUMMARY_FILE"; then
+    trace "FAIL: W5 boundary observation summary incomplete path=$RUN_SUMMARY_FILE"
+    return 1
+  fi
+  if ! rg -q "memory_boundary_observation: phase=range_exit observation_id=boundary-observation/${RUN_ID_BASE}/step[0-9]+/node[1-7] .*backing=obmm_shmem metadata=lingqu_object_service .*status=ok" "$RUN_SUMMARY_FILE"; then
+    trace "FAIL: W5 boundary observation ids missing guest run id run_id=$RUN_ID_BASE path=$RUN_SUMMARY_FILE"
+    return 1
+  fi
+  return 0
+}
+
 validate_node_log() {
   local node_id="$1"
   local log_file="$2"
@@ -982,6 +1001,10 @@ main() {
     exit_code=0
     emit_w4_run_summary || true
     if ! validate_w5_engram_context_summary; then
+      [[ -n "${CLEANUP_SCRIPT:-}" ]] && cleanup_headless_env "$CLEANUP_SCRIPT"
+      exit 1
+    fi
+    if ! validate_w5_boundary_observation_summary; then
       [[ -n "${CLEANUP_SCRIPT:-}" ]] && cleanup_headless_env "$CLEANUP_SCRIPT"
       exit 1
     fi
