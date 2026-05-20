@@ -269,6 +269,7 @@ struct W5MemoryDecisionConfig {
     store_path: PathBuf,
     boundary_request_path: Option<PathBuf>,
     shortpath_decision_id: Option<String>,
+    shortpath_execute: bool,
     prefetch_plan_id: Option<String>,
     prefix_cache_reuse_plan_id: Option<String>,
 }
@@ -527,6 +528,7 @@ where
             let mut memory_decision_store_path = None;
             let mut memory_boundary_request_path = None;
             let mut memory_shortpath_decision_id = None;
+            let mut memory_shortpath_execute = false;
             let mut memory_prefetch_plan_id = None;
             let mut memory_prefix_cache_reuse_plan_id = None;
             let mut positionals = Vec::new();
@@ -776,6 +778,10 @@ where
                     memory_shortpath_decision_id = Some(next.to_string_lossy().to_string());
                 } else if let Some(value) = text.strip_prefix("--memory-shortpath-decision-id=") {
                     memory_shortpath_decision_id = Some(value.to_string());
+                } else if text == "--memory-shortpath-execute" {
+                    memory_shortpath_execute = true;
+                } else if let Some(value) = text.strip_prefix("--memory-shortpath-execute=") {
+                    memory_shortpath_execute = parse_cli_bool("--memory-shortpath-execute", value)?;
                 } else if text == "--memory-prefetch-plan-id" {
                     let next = pending.next().ok_or_else(|| {
                         anyhow::anyhow!("--memory-prefetch-plan-id requires a value")
@@ -879,6 +885,7 @@ where
                     store_path,
                     boundary_request_path: memory_boundary_request_path,
                     shortpath_decision_id: memory_shortpath_decision_id,
+                    shortpath_execute: memory_shortpath_execute,
                     prefetch_plan_id: memory_prefetch_plan_id,
                     prefix_cache_reuse_plan_id: memory_prefix_cache_reuse_plan_id,
                 })
@@ -1040,6 +1047,14 @@ fn parse_cli_u32(label: &str, value: &str) -> anyhow::Result<u32> {
     value
         .parse::<u32>()
         .with_context(|| format!("invalid {label}: {value}"))
+}
+
+fn parse_cli_bool(label: &str, value: &str) -> anyhow::Result<bool> {
+    match value {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        _ => anyhow::bail!("invalid {label}: {value}"),
+    }
 }
 
 fn parse_qwen3_engram_mode(value: &str) -> anyhow::Result<Qwen3EngramMode> {
@@ -3583,6 +3598,12 @@ fn w5_memory_decision_env_vars(
                 format!("{:#x}", decision.proof_checksum),
             ),
         ]);
+        if config.shortpath_execute {
+            vars.push((
+                "SIM_W5_MEMORY_SHORTPATH_EXECUTE".to_string(),
+                "1".to_string(),
+            ));
+        }
         if let Some(artifact) = &bundle.shortpath_artifact {
             vars.extend([
                 (
@@ -6290,6 +6311,7 @@ mod tests {
             "w5-inference-cluster",
             "--memory-decision-store=/tmp/lingqu-memory-store.json",
             "--memory-shortpath-decision-id=shortpath-decision/boundary/0",
+            "--memory-shortpath-execute",
             "--memory-prefetch-plan-id=prefetch-plan/range/0",
             "--memory-prefix-cache-reuse-plan-id=prefix-cache-reuse/prefix/0",
         ])
@@ -6306,6 +6328,7 @@ mod tests {
             memory_decisions.shortpath_decision_id.as_deref(),
             Some("shortpath-decision/boundary/0")
         );
+        assert!(memory_decisions.shortpath_execute);
         assert_eq!(
             memory_decisions.prefetch_plan_id.as_deref(),
             Some("prefetch-plan/range/0")
@@ -7588,6 +7611,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
             store_path: auto_lookup_store.clone(),
             boundary_request_path: Some(boundary_request_path.clone()),
             shortpath_decision_id: None,
+            shortpath_execute: false,
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: None,
         })
@@ -7727,6 +7751,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
             store_path: store.clone(),
             boundary_request_path: None,
             shortpath_decision_id: Some("shortpath-decision/boundary/step3/node4".to_string()),
+            shortpath_execute: true,
             prefetch_plan_id: Some("prefetch-plan/prefetch/step3/node4".to_string()),
             prefix_cache_reuse_plan_id: None,
         };
@@ -7833,6 +7858,9 @@ stage qwen3_range_forward_runtime_output_publish node=2
         assert!(env_vars.iter().any(
             |(key, value)| key == "SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF" && value.len() == 128
         ));
+        assert!(env_vars
+            .iter()
+            .any(|(key, value)| key == "SIM_W5_MEMORY_SHORTPATH_EXECUTE" && value == "1"));
         assert!(env_vars.iter().any(|(key, value)| {
             key == "SIM_W5_MEMORY_SHORTPATH_TARGET_LAYER_START" && value == "8"
         }));
@@ -7992,6 +8020,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
             store_path: store,
             boundary_request_path: None,
             shortpath_decision_id: Some("shortpath-decision/missing-payload".to_string()),
+            shortpath_execute: false,
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: None,
         })
@@ -8138,6 +8167,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
             store_path: store.clone(),
             boundary_request_path: None,
             shortpath_decision_id: None,
+            shortpath_execute: false,
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: Some("prefix-cache-reuse/prefix-lookup/test/0".to_string()),
         };

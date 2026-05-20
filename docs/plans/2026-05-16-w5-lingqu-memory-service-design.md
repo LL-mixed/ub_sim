@@ -1224,6 +1224,7 @@ sim-cli w5-inference-cluster \
   --memory-registry-dir <qwen3-object-registry-dir> \
   [--memory-decision-store <durable-store.json>] \
   [--memory-boundary-request <boundary-lookup-request.json>] \
+  [--memory-shortpath-execute] \
   [--memory-owner-entity <entity>] \
   [--memory-producer-entity <entity>]
 ```
@@ -1249,7 +1250,11 @@ publishes its payload as a Lingqu Object Service ref, and forwards the existing
 shortpath env contract to the guest. This removes the manual
 `lingqu-memory boundary-lookup` -> copy decision id -> `w5-inference-cluster`
 break in the execution path while still keeping the standalone CLI command for
-inspection and reproducible debugging.
+inspection and reproducible debugging. By default this validates and exposes
+the shortpath artifact without changing decode output. Passing
+`--memory-shortpath-execute` forwards `SIM_W5_MEMORY_SHORTPATH_EXECUTE=1`; when
+the decision is `jump-to-terminal`, the terminal node reads the verified logits
+artifact and publishes that token record as the step result.
 
 2026-05-19 validation:
 
@@ -1286,8 +1291,11 @@ inspection and reproducible debugging.
   the Memory Service boundary lookup at launch, persists both the support audit
   and the W5 planner decision audit, and then continues through the same
   verified artifact publication path used by explicit
-  `--memory-shortpath-decision-id`. This is still a launch-time bridge, not a
-  per-range in-guest online lookup loop.
+  `--memory-shortpath-decision-id`. `--memory-shortpath-execute` is an explicit
+  opt-in: without it W5 only validates/loads the artifact, while with it the
+  guest terminal node uses the Memory Service logits artifact as the published
+  terminal token result. This is still a launch-time bridge, not a per-range
+  in-guest online lookup loop.
 - Live per-step range handoff now keeps the ObjectRef descriptor but prefers
   the already-mapped UAPI segment payload for hidden/KV operands. sim-uapi
   verifies the inline payload against the ObjectRef length/checksum before

@@ -5366,14 +5366,10 @@ static int qwen3_terminal_token_record_from_logits_payload(
 
 static int qwen3_memory_shortpath_terminal_logits_record(
     const struct w4_qwen3_memory_decision_config *config,
-    uint32_t layer_start,
-    uint32_t layer_end,
     uint64_t decode_step,
     struct lingqu_obmm_object_ref_wire *ref_out,
     struct w4_qwen3_terminal_token_record *record_out)
 {
-    uint32_t producer_start = 0U;
-    uint32_t producer_end = 0U;
     uint8_t *payload = NULL;
     uint64_t payload_len = 0;
     int rc;
@@ -5381,17 +5377,6 @@ static int qwen3_memory_shortpath_terminal_logits_record(
     if (!config || !config->enabled || !ref_out || !record_out ||
         strcmp(config->shortpath_action, "jump-to-terminal") != 0 ||
         strcmp(config->shortpath_artifact_kind, "logits") != 0) {
-        return 0;
-    }
-    if (parse_u32_field("shortpath_producer_layer_start",
-                        config->shortpath_producer_layer_start,
-                        &producer_start) != 0 ||
-        parse_u32_field("shortpath_producer_layer_end",
-                        config->shortpath_producer_layer_end,
-                        &producer_end) != 0) {
-        return -1;
-    }
-    if (producer_start != layer_start || producer_end != layer_end) {
         return 0;
     }
     if (parse_lingqu_object_ref_hex("SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF",
@@ -5418,6 +5403,39 @@ static int qwen3_memory_shortpath_terminal_logits_record(
         return -1;
     }
     return 1;
+}
+
+static int qwen3_memory_shortpath_terminal_logits_record_for_boundary(
+    const struct w4_qwen3_memory_decision_config *config,
+    uint32_t layer_start,
+    uint32_t layer_end,
+    uint64_t decode_step,
+    struct lingqu_obmm_object_ref_wire *ref_out,
+    struct w4_qwen3_terminal_token_record *record_out)
+{
+    uint32_t producer_start = 0U;
+    uint32_t producer_end = 0U;
+
+    if (!config || !config->enabled ||
+        strcmp(config->shortpath_action, "jump-to-terminal") != 0 ||
+        strcmp(config->shortpath_artifact_kind, "logits") != 0) {
+        return 0;
+    }
+    if (parse_u32_field("shortpath_producer_layer_start",
+                        config->shortpath_producer_layer_start,
+                        &producer_start) != 0 ||
+        parse_u32_field("shortpath_producer_layer_end",
+                        config->shortpath_producer_layer_end,
+                        &producer_end) != 0) {
+        return -1;
+    }
+    if (producer_start != layer_start || producer_end != layer_end) {
+        return 0;
+    }
+    return qwen3_memory_shortpath_terminal_logits_record(config,
+                                                         decode_step,
+                                                         ref_out,
+                                                         record_out);
 }
 
 static void parse_env_u64_csv_bounded(const char *key,
@@ -8244,7 +8262,7 @@ decode_round_start:
             memset(&terminal_logits_ref, 0, sizeof(terminal_logits_ref));
             memset(&terminal_logits_record, 0, sizeof(terminal_logits_record));
             terminal_logits_state =
-                qwen3_memory_shortpath_terminal_logits_record(
+                qwen3_memory_shortpath_terminal_logits_record_for_boundary(
                     &qwen3_memory_decision_config,
                     round_layer_start,
                     round_layer_end,
@@ -8319,11 +8337,58 @@ decode_round_start:
             if (terminal_publish_start_ms == 0) {
                 terminal_publish_start_ms = monotonic_ms();
             }
-            if (qwen3_read_terminal_token_record(ep_mmio, &terminal_token) != 0) {
-                fprintf(stderr,
-                        "[w4_guest] fail qwen3 terminal token record read failed role=%s\n",
-                        role);
-                goto out;
+            if (qwen3_memory_decision_config.shortpath_execute &&
+                strcmp(qwen3_memory_decision_config.shortpath_action,
+                       "jump-to-terminal") == 0) {
+                struct lingqu_obmm_object_ref_wire terminal_logits_ref;
+                int terminal_logits_state;
+
+                memset(&terminal_logits_ref, 0, sizeof(terminal_logits_ref));
+                memset(&terminal_token, 0, sizeof(terminal_token));
+                terminal_logits_state =
+                    qwen3_memory_shortpath_terminal_logits_record(
+                        &qwen3_memory_decision_config,
+                        decode_step,
+                        &terminal_logits_ref,
+                        &terminal_token);
+                if (terminal_logits_state < 0) {
+                    goto out;
+                }
+                if (terminal_logits_state == 0) {
+                    fprintf(stderr,
+                            "[w4_guest] fail qwen3 w5 shortpath execute missing terminal logits"
+                            " role=%s decision_id=%s\n",
+                            role,
+                            qwen3_memory_decision_config.shortpath_decision_id);
+                    goto out;
+                }
+                printf("[w4_guest] stage qwen3_w5_memory_terminal_logits_execute"
+                       " node=%u step=%" PRIu64
+                       " decision_id=%s artifact_id=%s token=%" PRIu64
+                       " runner_up=%" PRIu64 " margin_milli=%" PRIu64
+                       " logits_checksum=0x%016" PRIx64
+                       " text_checksum=0x%016" PRIx64
+                       " payload_bytes=%" PRIu64
+                       " payload_checksum=0x%016" PRIx64
+                       " source=lingqu_memory_service target=terminal_token_result status=ok\n",
+                       dispatch_node + 1U,
+                       decode_step,
+                       qwen3_memory_decision_config.shortpath_decision_id,
+                       qwen3_memory_decision_config.shortpath_artifact_id,
+                       terminal_token.sampled_token,
+                       terminal_token.runner_up_token,
+                       terminal_token.margin_milli,
+                       terminal_token.logits_checksum,
+                       terminal_token.text_checksum,
+                       terminal_logits_ref.payload_bytes,
+                       terminal_logits_ref.payload_checksum);
+            } else {
+                if (qwen3_read_terminal_token_record(ep_mmio, &terminal_token) != 0) {
+                    fprintf(stderr,
+                            "[w4_guest] fail qwen3 terminal token record read failed role=%s\n",
+                            role);
+                    goto out;
+                }
             }
             raw_sampled_token = terminal_token.sampled_token;
             if (qwen3_engram_config.enabled) {
