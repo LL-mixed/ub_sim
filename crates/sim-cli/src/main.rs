@@ -267,6 +267,7 @@ struct W5MemoryBootstrapConfig {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct W5MemoryDecisionConfig {
     store_path: PathBuf,
+    boundary_request_path: Option<PathBuf>,
     shortpath_decision_id: Option<String>,
     prefetch_plan_id: Option<String>,
     prefix_cache_reuse_plan_id: Option<String>,
@@ -524,6 +525,7 @@ where
             let mut memory_owner_entity = None;
             let mut memory_producer_entity = None;
             let mut memory_decision_store_path = None;
+            let mut memory_boundary_request_path = None;
             let mut memory_shortpath_decision_id = None;
             let mut memory_prefetch_plan_id = None;
             let mut memory_prefix_cache_reuse_plan_id = None;
@@ -760,6 +762,13 @@ where
                     memory_decision_store_path = Some(PathBuf::from(next));
                 } else if let Some(value) = text.strip_prefix("--memory-decision-store=") {
                     memory_decision_store_path = Some(PathBuf::from(value));
+                } else if text == "--memory-boundary-request" {
+                    let next = pending.next().ok_or_else(|| {
+                        anyhow::anyhow!("--memory-boundary-request requires a value")
+                    })?;
+                    memory_boundary_request_path = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--memory-boundary-request=") {
+                    memory_boundary_request_path = Some(PathBuf::from(value));
                 } else if text == "--memory-shortpath-decision-id" {
                     let next = pending.next().ok_or_else(|| {
                         anyhow::anyhow!("--memory-shortpath-decision-id requires a value")
@@ -853,19 +862,27 @@ where
             let memory_has_decision_id = memory_shortpath_decision_id.is_some()
                 || memory_prefetch_plan_id.is_some()
                 || memory_prefix_cache_reuse_plan_id.is_some();
+            if memory_boundary_request_path.is_some() && memory_shortpath_decision_id.is_some() {
+                anyhow::bail!(
+                    "--memory-boundary-request cannot be combined with --memory-shortpath-decision-id"
+                );
+            }
+            let memory_has_decision_input =
+                memory_has_decision_id || memory_boundary_request_path.is_some();
             let memory_decisions = if let Some(store_path) = memory_decision_store_path {
-                if !memory_has_decision_id {
+                if !memory_has_decision_input {
                     anyhow::bail!(
-                        "--memory-decision-store requires at least one of --memory-shortpath-decision-id, --memory-prefetch-plan-id, or --memory-prefix-cache-reuse-plan-id"
+                        "--memory-decision-store requires at least one of --memory-boundary-request, --memory-shortpath-decision-id, --memory-prefetch-plan-id, or --memory-prefix-cache-reuse-plan-id"
                     );
                 }
                 Some(W5MemoryDecisionConfig {
                     store_path,
+                    boundary_request_path: memory_boundary_request_path,
                     shortpath_decision_id: memory_shortpath_decision_id,
                     prefetch_plan_id: memory_prefetch_plan_id,
                     prefix_cache_reuse_plan_id: memory_prefix_cache_reuse_plan_id,
                 })
-            } else if memory_has_decision_id {
+            } else if memory_has_decision_input {
                 anyhow::bail!(
                     "--memory-decision-store is required when W5 planner or Memory Service plan ids are provided"
                 );
@@ -1771,25 +1788,8 @@ fn run_lingqu_memory_boundary_lookup_cli(args: &[String]) -> anyhow::Result<()> 
     let response_path = PathBuf::from(required_cli_arg(args, "--response")?);
     let now_us = optional_cli_u64(args, "--now-us")?.unwrap_or(1);
 
-    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
-    let request_bytes = fs::read(&request_path)
-        .with_context(|| format!("read boundary lookup request {}", request_path.display()))?;
-    let request = serde_json::from_slice::<BoundaryLookupRequest>(&request_bytes)
-        .with_context(|| format!("decode boundary lookup request {}", request_path.display()))?;
-
-    let mut memory_service = LingquMemoryService::new();
-    load_required_lingqu_memory_execution_registry_artifacts(
-        &mut memory_service,
-        &mut durable_store,
-    )
-    .context("load execution artifact manifest")?;
-    rebuild_lingqu_memory_shortpath_supports(&mut memory_service, &mut durable_store)
-        .context("rebuild shortpath support audit")?;
-    let response = memory_service
-        .boundary_lookup(request, now_us)
-        .context("run boundary lookup")?;
-    let planner_decision = w5_plan_shortpath_decision_from_memory_support(&response)
-        .context("plan W5 shortpath execution decision from Memory Service support")?;
+    let (response, planner_decision) =
+        run_w5_memory_boundary_lookup(&store_path, &request_path, now_us)?;
     let response_bytes =
         serde_json::to_vec_pretty(&response).context("encode boundary lookup response")?;
     if let Some(parent) = response_path.parent() {
@@ -1798,14 +1798,6 @@ fn run_lingqu_memory_boundary_lookup_cli(args: &[String]) -> anyhow::Result<()> 
     }
     fs::write(&response_path, response_bytes)
         .with_context(|| format!("write boundary lookup response {}", response_path.display()))?;
-    memory_service
-        .persist_shortpath_supports_to_dfs(&mut durable_store)
-        .context("persist shortpath support DFS audit")?;
-    durable_store
-        .persist_shortpath_decision_manifest(vec![planner_decision.clone()])
-        .context("persist W5 planner shortpath decision DFS audit")?;
-    save_lingqu_memory_durable_store(&store_path, &durable_store)?;
-
     println!("lingqu_memory_service");
     println!("  mode: boundary-lookup");
     println!("  store_path: {}", store_path.display());
@@ -1845,6 +1837,48 @@ fn run_lingqu_memory_boundary_lookup_cli(args: &[String]) -> anyhow::Result<()> 
         planner_decision.proof_checksum
     );
     Ok(())
+}
+
+fn run_w5_memory_boundary_lookup(
+    store_path: &Path,
+    request_path: &Path,
+    now_us: u64,
+) -> anyhow::Result<(
+    sim_memory::BoundaryLookupResponse,
+    sim_memory::ShortpathDecisionRecord,
+)> {
+    let mut durable_store = load_lingqu_memory_durable_store(store_path)?;
+    let request_bytes = fs::read(request_path)
+        .with_context(|| format!("read boundary lookup request {}", request_path.display()))?;
+    let request = serde_json::from_slice::<BoundaryLookupRequest>(&request_bytes)
+        .with_context(|| format!("decode boundary lookup request {}", request_path.display()))?;
+    let effective_now_us = if now_us == 0 {
+        request.created_at_us
+    } else {
+        now_us
+    };
+
+    let mut memory_service = LingquMemoryService::new();
+    load_required_lingqu_memory_execution_registry_artifacts(
+        &mut memory_service,
+        &mut durable_store,
+    )
+    .context("load execution artifact manifest")?;
+    rebuild_lingqu_memory_shortpath_supports(&mut memory_service, &mut durable_store)
+        .context("rebuild shortpath support audit")?;
+    let response = memory_service
+        .boundary_lookup(request, effective_now_us)
+        .context("run boundary lookup")?;
+    let planner_decision = w5_plan_shortpath_decision_from_memory_support(&response)
+        .context("plan W5 shortpath execution decision from Memory Service support")?;
+    memory_service
+        .persist_shortpath_supports_to_dfs(&mut durable_store)
+        .context("persist shortpath support DFS audit")?;
+    durable_store
+        .persist_shortpath_decision_manifest(vec![planner_decision.clone()])
+        .context("persist W5 planner shortpath decision DFS audit")?;
+    save_lingqu_memory_durable_store(store_path, &durable_store)?;
+    Ok((response, planner_decision))
 }
 
 fn run_lingqu_memory_plan_prefetch_cli(args: &[String]) -> anyhow::Result<()> {
@@ -2682,8 +2716,19 @@ struct W5MemoryPublishedArtifactRef {
 fn load_w5_memory_decisions_from_store(
     config: &W5MemoryDecisionConfig,
 ) -> anyhow::Result<W5MemoryDecisionBundle> {
+    let boundary_decision =
+        if let Some(boundary_request_path) = config.boundary_request_path.as_ref() {
+            let (_response, decision) =
+                run_w5_memory_boundary_lookup(&config.store_path, boundary_request_path, 0)
+                    .context("run W5 Memory Service boundary lookup")?;
+            Some(decision)
+        } else {
+            None
+        };
     let mut durable_store = load_lingqu_memory_durable_store(&config.store_path)?;
-    let shortpath = if let Some(decision_id) = &config.shortpath_decision_id {
+    let shortpath = if let Some(decision) = boundary_decision {
+        Some(decision)
+    } else if let Some(decision_id) = &config.shortpath_decision_id {
         let decisions = durable_store
             .load_shortpath_decision_manifest()
             .with_context(|| {
@@ -6256,6 +6301,7 @@ mod tests {
             memory_decisions.store_path,
             PathBuf::from("/tmp/lingqu-memory-store.json")
         );
+        assert_eq!(memory_decisions.boundary_request_path, None);
         assert_eq!(
             memory_decisions.shortpath_decision_id.as_deref(),
             Some("shortpath-decision/boundary/0")
@@ -6268,6 +6314,43 @@ mod tests {
             memory_decisions.prefix_cache_reuse_plan_id.as_deref(),
             Some("prefix-cache-reuse/prefix/0")
         );
+    }
+
+    #[test]
+    fn w5_inference_cluster_args_accept_memory_boundary_request() {
+        let args = qwen3_guest_decode_loop_args_from([
+            "w5-inference-cluster",
+            "--memory-decision-store=/tmp/lingqu-memory-store.json",
+            "--memory-boundary-request=/tmp/boundary-request.json",
+        ])
+        .expect("parse w5 memory boundary request args")
+        .expect("w5 memory boundary request args");
+
+        let memory_decisions = args.memory_decisions.expect("memory decisions");
+        assert_eq!(
+            memory_decisions.store_path,
+            PathBuf::from("/tmp/lingqu-memory-store.json")
+        );
+        assert_eq!(
+            memory_decisions.boundary_request_path.as_deref(),
+            Some(Path::new("/tmp/boundary-request.json"))
+        );
+        assert_eq!(memory_decisions.shortpath_decision_id, None);
+    }
+
+    #[test]
+    fn w5_inference_cluster_args_reject_boundary_request_and_decision_id() {
+        let err = qwen3_guest_decode_loop_args_from([
+            "w5-inference-cluster",
+            "--memory-decision-store=/tmp/lingqu-memory-store.json",
+            "--memory-boundary-request=/tmp/boundary-request.json",
+            "--memory-shortpath-decision-id=shortpath-decision/boundary/0",
+        ])
+        .expect_err("boundary request and explicit shortpath decision should be ambiguous");
+
+        assert!(err
+            .to_string()
+            .contains("--memory-boundary-request cannot be combined"));
     }
 
     #[test]
@@ -7499,6 +7582,43 @@ stage qwen3_range_forward_runtime_output_publish node=2
             ])
             .expect("register execution artifact");
         }
+        let auto_lookup_store = root.join("auto_boundary_lookup_store.json");
+        fs::copy(&store, &auto_lookup_store).expect("copy store for W5 auto boundary lookup");
+        let auto_bundle = load_w5_memory_decisions_from_store(&W5MemoryDecisionConfig {
+            store_path: auto_lookup_store.clone(),
+            boundary_request_path: Some(boundary_request_path.clone()),
+            shortpath_decision_id: None,
+            prefetch_plan_id: None,
+            prefix_cache_reuse_plan_id: None,
+        })
+        .expect("W5 entrypoint should run boundary lookup from request");
+        assert_eq!(
+            auto_bundle
+                .shortpath
+                .as_ref()
+                .expect("auto shortpath decision")
+                .artifact_id
+                .as_deref(),
+            Some("artifact/logits/step3/node4")
+        );
+        assert_eq!(
+            auto_bundle
+                .shortpath_artifact
+                .as_ref()
+                .expect("auto shortpath artifact")
+                .artifact_id,
+            "artifact/logits/step3/node4"
+        );
+        let mut auto_durable_store = load_lingqu_memory_durable_store(&auto_lookup_store)
+            .expect("load auto lookup durable store");
+        let auto_decisions = auto_durable_store
+            .load_shortpath_decision_manifest()
+            .expect("load auto W5 planner decision audit");
+        assert_eq!(auto_decisions.len(), 1);
+        assert_eq!(
+            auto_decisions[0].decision_id,
+            "shortpath-decision/boundary/step3/node4"
+        );
         run_lingqu_memory_boundary_lookup_cli(&[
             "--store".to_string(),
             store.to_string_lossy().into_owned(),
@@ -7605,6 +7725,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
         );
         let decision_config = W5MemoryDecisionConfig {
             store_path: store.clone(),
+            boundary_request_path: None,
             shortpath_decision_id: Some("shortpath-decision/boundary/step3/node4".to_string()),
             prefetch_plan_id: Some("prefetch-plan/prefetch/step3/node4".to_string()),
             prefix_cache_reuse_plan_id: None,
@@ -7869,6 +7990,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
 
         let err = load_w5_memory_decisions_from_store(&W5MemoryDecisionConfig {
             store_path: store,
+            boundary_request_path: None,
             shortpath_decision_id: Some("shortpath-decision/missing-payload".to_string()),
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: None,
@@ -8014,6 +8136,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
         assert!(response.reuse_plan.proof_checksum != 0);
         let decision_config = W5MemoryDecisionConfig {
             store_path: store.clone(),
+            boundary_request_path: None,
             shortpath_decision_id: None,
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: Some("prefix-cache-reuse/prefix-lookup/test/0".to_string()),

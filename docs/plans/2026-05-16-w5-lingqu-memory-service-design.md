@@ -1222,6 +1222,8 @@ sim-cli w5-inference-cluster \
   --memory-object-store <legacy-object-service-snapshot.json> \
   --memory-engram-state <engram-state.json> \
   --memory-registry-dir <qwen3-object-registry-dir> \
+  [--memory-decision-store <durable-store.json>] \
+  [--memory-boundary-request <boundary-lookup-request.json>] \
   [--memory-owner-entity <entity>] \
   [--memory-producer-entity <entity>]
 ```
@@ -1239,6 +1241,15 @@ state ref or the Memory Service bootstrap source of truth. The old
 that Object Service snapshot in the Memory Service bootstrap path; it no
 longer needs per-object qwen3 registry payload files for Engram context or for
 Memory Service-published shortpath/prefetch/prefix-cache artifact refs.
+When `--memory-decision-store` and `--memory-boundary-request` are provided,
+the W5 entrypoint now runs the Memory Service boundary lookup itself, persists
+the returned `ShortpathSupportRecord` and W5 planner `ShortpathDecisionRecord`
+into durable DFS audit logs, loads the resulting verified execution artifact,
+publishes its payload as a Lingqu Object Service ref, and forwards the existing
+shortpath env contract to the guest. This removes the manual
+`lingqu-memory boundary-lookup` -> copy decision id -> `w5-inference-cluster`
+break in the execution path while still keeping the standalone CLI command for
+inspection and reproducible debugging.
 
 2026-05-19 validation:
 
@@ -1271,6 +1282,12 @@ Memory Service-published shortpath/prefetch/prefix-cache artifact refs.
   artifacts by ObjectRef without qwen `kind*.bin` files. Targeted tests
   validate execution-artifact and prefix-cache publication, the payload index,
   and sim-uapi range operand materialization from the Object Service snapshot.
+- The W5 runner can now take `--memory-boundary-request` directly. It executes
+  the Memory Service boundary lookup at launch, persists both the support audit
+  and the W5 planner decision audit, and then continues through the same
+  verified artifact publication path used by explicit
+  `--memory-shortpath-decision-id`. This is still a launch-time bridge, not a
+  per-range in-guest online lookup loop.
 - Live per-step range handoff now keeps the ObjectRef descriptor but prefers
   the already-mapped UAPI segment payload for hidden/KV operands. sim-uapi
   verifies the inline payload against the ObjectRef length/checksum before
