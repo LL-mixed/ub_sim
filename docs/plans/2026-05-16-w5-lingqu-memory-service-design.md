@@ -1239,6 +1239,7 @@ sim-cli w5-inference-cluster \
   --memory-registry-dir <qwen3-object-registry-dir> \
   [--memory-decision-store <durable-store.json>] \
   [--memory-boundary-request <boundary-lookup-request.json>] \
+  [--memory-boundary-observation-id <boundary-observation-id>] \
   [--memory-shortpath-execute] \
   [--memory-owner-entity <entity>] \
   [--memory-producer-entity <entity>]
@@ -1270,6 +1271,13 @@ the shortpath artifact without changing decode output. Passing
 `--memory-shortpath-execute` forwards `SIM_W5_MEMORY_SHORTPATH_EXECUTE=1`; when
 the decision is `jump-to-terminal`, the terminal node reads the verified logits
 artifact and publishes that token record as the step result.
+When `--memory-boundary-observation-id` is provided instead of
+`--memory-boundary-request`, the W5 entrypoint loads the persisted
+`BoundaryObservationRecord` from the durable DFS audit log, derives the
+validated `BoundaryLookupRequest` in process, and runs the same lookup/planner
+path. `--memory-boundary-request`, `--memory-boundary-observation-id`, and
+`--memory-shortpath-decision-id` are mutually exclusive sources for the
+shortpath artifact.
 
 The W5 guest run summary now also exposes actual range-exit hidden object
 observations from `qwen3_range_forward_runtime_ingress_publish`:
@@ -1320,6 +1328,23 @@ Each persisted `BoundaryObservationRecord` stores the run id, model binding,
 range-exit boundary, producer/consumer nodes, hidden ObjectRef metadata, and a
 checksum. Re-importing the same summary is idempotent; reusing an observation
 id with different payload fails instead of overwriting history.
+
+`sim-cli lingqu-memory boundary-lookup-from-observation` is the standalone
+inspection form of the same path used by the W5 entrypoint:
+
+```text
+sim-cli lingqu-memory boundary-lookup-from-observation \
+  --store <durable-store.json> \
+  --observation-id <boundary-observation-id> \
+  --response <boundary-lookup-response.json> \
+  [--engram-state-id <engram-state-id>] \
+  [--min-confidence-milli <0..1000>] \
+  [--allowed-actions jump-to-terminal]
+```
+
+It does not synthesize a boundary request or artifact. The command requires a
+persisted observation and a verified execution artifact manifest in the durable
+store; missing Memory Service evidence is a hard failure.
 
 2026-05-19 validation:
 
@@ -1573,9 +1598,14 @@ Current implementation status:
   `BoundaryLookupRequest` from those observations. Memory Service now also has
   a `BoundaryObservationRecord` model and durable DFS audit log, and
   `lingqu-memory record-boundary-observations-from-w5-summary` records real W5
-  observations into that log idempotently. The remaining gap is the online
-  in-guest lookup loop that performs this request at range-exit time instead
-  of as a post-run/launch-time bridge.
+  observations into that log idempotently.
+  `lingqu-memory boundary-lookup-from-observation` and
+  `w5-inference-cluster --memory-boundary-observation-id` can now run boundary
+  lookup directly from the persisted observation id, persist the support and W5
+  planner decision audit records, and publish the verified shortpath artifact
+  through the same Object Service snapshot path. The remaining gap is the
+  online in-guest lookup loop that performs this lookup at range-exit time
+  instead of as a launch-time bridge.
   Query results can be persisted to and restored from DFS manifests with
   checksum validation, and QueryResult-driven hot materialization now carries
   that DFS manifest ref into both `HotMemoryStateObject` and

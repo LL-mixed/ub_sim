@@ -268,6 +268,7 @@ struct W5MemoryBootstrapConfig {
 struct W5MemoryDecisionConfig {
     store_path: PathBuf,
     boundary_request_path: Option<PathBuf>,
+    boundary_observation_id: Option<String>,
     shortpath_decision_id: Option<String>,
     shortpath_execute: bool,
     prefetch_plan_id: Option<String>,
@@ -527,6 +528,7 @@ where
             let mut memory_producer_entity = None;
             let mut memory_decision_store_path = None;
             let mut memory_boundary_request_path = None;
+            let mut memory_boundary_observation_id = None;
             let mut memory_shortpath_decision_id = None;
             let mut memory_shortpath_execute = false;
             let mut memory_prefetch_plan_id = None;
@@ -771,6 +773,13 @@ where
                     memory_boundary_request_path = Some(PathBuf::from(next));
                 } else if let Some(value) = text.strip_prefix("--memory-boundary-request=") {
                     memory_boundary_request_path = Some(PathBuf::from(value));
+                } else if text == "--memory-boundary-observation-id" {
+                    let next = pending.next().ok_or_else(|| {
+                        anyhow::anyhow!("--memory-boundary-observation-id requires a value")
+                    })?;
+                    memory_boundary_observation_id = Some(next.to_string_lossy().to_string());
+                } else if let Some(value) = text.strip_prefix("--memory-boundary-observation-id=") {
+                    memory_boundary_observation_id = Some(value.to_string());
                 } else if text == "--memory-shortpath-decision-id" {
                     let next = pending.next().ok_or_else(|| {
                         anyhow::anyhow!("--memory-shortpath-decision-id requires a value")
@@ -868,22 +877,27 @@ where
             let memory_has_decision_id = memory_shortpath_decision_id.is_some()
                 || memory_prefetch_plan_id.is_some()
                 || memory_prefix_cache_reuse_plan_id.is_some();
-            if memory_boundary_request_path.is_some() && memory_shortpath_decision_id.is_some() {
+            let shortpath_source_count = usize::from(memory_boundary_request_path.is_some())
+                + usize::from(memory_boundary_observation_id.is_some())
+                + usize::from(memory_shortpath_decision_id.is_some());
+            if shortpath_source_count > 1 {
                 anyhow::bail!(
-                    "--memory-boundary-request cannot be combined with --memory-shortpath-decision-id"
+                    "--memory-boundary-request, --memory-boundary-observation-id, and --memory-shortpath-decision-id are mutually exclusive"
                 );
             }
-            let memory_has_decision_input =
-                memory_has_decision_id || memory_boundary_request_path.is_some();
+            let memory_has_decision_input = memory_has_decision_id
+                || memory_boundary_request_path.is_some()
+                || memory_boundary_observation_id.is_some();
             let memory_decisions = if let Some(store_path) = memory_decision_store_path {
                 if !memory_has_decision_input {
                     anyhow::bail!(
-                        "--memory-decision-store requires at least one of --memory-boundary-request, --memory-shortpath-decision-id, --memory-prefetch-plan-id, or --memory-prefix-cache-reuse-plan-id"
+                        "--memory-decision-store requires at least one of --memory-boundary-request, --memory-boundary-observation-id, --memory-shortpath-decision-id, --memory-prefetch-plan-id, or --memory-prefix-cache-reuse-plan-id"
                     );
                 }
                 Some(W5MemoryDecisionConfig {
                     store_path,
                     boundary_request_path: memory_boundary_request_path,
+                    boundary_observation_id: memory_boundary_observation_id,
                     shortpath_decision_id: memory_shortpath_decision_id,
                     shortpath_execute: memory_shortpath_execute,
                     prefetch_plan_id: memory_prefetch_plan_id,
@@ -1667,6 +1681,9 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "boundary-request-from-w5-summary" => {
             run_lingqu_memory_boundary_request_from_w5_summary_cli(&args)
         }
+        "boundary-lookup-from-observation" => {
+            run_lingqu_memory_boundary_lookup_from_observation_cli(&args)
+        }
         "build-index" => run_lingqu_memory_build_index_cli(&args),
         "ingest" => run_lingqu_memory_ingest_cli(&args),
         "list-prefetch-plans" => run_lingqu_memory_list_prefetch_plans_cli(&args),
@@ -1693,7 +1710,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "validate-flat-materialize" => run_lingqu_memory_validate_flat_materialize(),
         "validate-w5-engram-object-ref" => run_lingqu_memory_validate_w5_engram_object_ref(),
         _ => anyhow::bail!(
-            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, query, list-query-results, list-record-lifecycle, list-shortpath-supports, list-shortpath-decisions, list-prefetch-plans, list-prefix-cache-reuse, update-record-state, register-execution-artifact, boundary-lookup, boundary-request-from-w5-summary, record-boundary-observations-from-w5-summary, plan-prefetch, register-prefix-cache, lookup-prefix-cache, materialize-hot-state, materialize-engram-state, publish-w5-engram-state-ref, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
+            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, query, list-query-results, list-record-lifecycle, list-shortpath-supports, list-shortpath-decisions, list-prefetch-plans, list-prefix-cache-reuse, update-record-state, register-execution-artifact, boundary-lookup, boundary-lookup-from-observation, boundary-request-from-w5-summary, record-boundary-observations-from-w5-summary, plan-prefetch, register-prefix-cache, lookup-prefix-cache, materialize-hot-state, materialize-engram-state, publish-w5-engram-state-ref, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
         ),
     }
 }
@@ -2026,6 +2043,63 @@ fn run_lingqu_memory_boundary_lookup_cli(args: &[String]) -> anyhow::Result<()> 
     Ok(())
 }
 
+fn run_lingqu_memory_boundary_lookup_from_observation_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let observation_id = required_cli_arg(args, "--observation-id")?;
+    let response_path = PathBuf::from(required_cli_arg(args, "--response")?);
+    let now_us = optional_cli_u64(args, "--now-us")?.unwrap_or(1);
+    let min_confidence_milli = optional_cli_u64(args, "--min-confidence-milli")?.unwrap_or(900);
+    if min_confidence_milli > 1000 {
+        anyhow::bail!("--min-confidence-milli must be in [0, 1000]");
+    }
+    let allowed_actions = parse_shortpath_actions(
+        optional_cli_arg(args, "--allowed-actions")?
+            .as_deref()
+            .unwrap_or("jump-to-terminal"),
+    )?;
+    let engram_state_id = optional_cli_arg(args, "--engram-state-id")?;
+
+    let (response, planner_decision) = run_w5_memory_boundary_lookup_from_observation(
+        &store_path,
+        &observation_id,
+        engram_state_id,
+        min_confidence_milli as u32,
+        allowed_actions,
+        now_us,
+    )?;
+    let response_bytes =
+        serde_json::to_vec_pretty(&response).context("encode boundary lookup response")?;
+    if let Some(parent) = response_path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "create boundary lookup observation response dir {}",
+                parent.display()
+            )
+        })?;
+    }
+    fs::write(&response_path, response_bytes).with_context(|| {
+        format!(
+            "write boundary lookup observation response {}",
+            response_path.display()
+        )
+    })?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: boundary-lookup-from-observation");
+    println!("  store_path: {}", store_path.display());
+    println!("  observation_id: {observation_id}");
+    println!("  response_path: {}", response_path.display());
+    println!("  request: {}", response.request_id);
+    println!("  support_id: {}", response.support.support_id);
+    println!(
+        "  supported_action: {:?}",
+        response.support.supported_action
+    );
+    println!("  planner_decision_id: {}", planner_decision.decision_id);
+    println!("  planner_action: {:?}", planner_decision.action);
+    Ok(())
+}
+
 fn run_w5_memory_boundary_lookup(
     store_path: &Path,
     request_path: &Path,
@@ -2034,11 +2108,59 @@ fn run_w5_memory_boundary_lookup(
     sim_memory::BoundaryLookupResponse,
     sim_memory::ShortpathDecisionRecord,
 )> {
-    let mut durable_store = load_lingqu_memory_durable_store(store_path)?;
     let request_bytes = fs::read(request_path)
         .with_context(|| format!("read boundary lookup request {}", request_path.display()))?;
     let request = serde_json::from_slice::<BoundaryLookupRequest>(&request_bytes)
         .with_context(|| format!("decode boundary lookup request {}", request_path.display()))?;
+    run_w5_memory_boundary_lookup_request(store_path, request, now_us)
+}
+
+fn run_w5_memory_boundary_lookup_from_observation(
+    store_path: &Path,
+    observation_id: &str,
+    engram_state_id: Option<String>,
+    min_confidence_milli: u32,
+    allowed_actions: Vec<sim_memory::ShortpathAction>,
+    now_us: u64,
+) -> anyhow::Result<(
+    sim_memory::BoundaryLookupResponse,
+    sim_memory::ShortpathDecisionRecord,
+)> {
+    let mut durable_store = load_lingqu_memory_durable_store(store_path)?;
+    let observations = durable_store
+        .load_boundary_observation_manifest()
+        .context("load boundary observation audit")?;
+    let observation = observations
+        .into_iter()
+        .find(|candidate| candidate.observation_id == observation_id)
+        .ok_or_else(|| anyhow::anyhow!("boundary observation not found: {observation_id}"))?;
+    let request_id = format!("boundary-lookup/{observation_id}");
+    let request_created_at_us = if now_us == 0 {
+        observation.created_at_us
+    } else {
+        now_us
+    };
+    let request = observation
+        .to_lookup_request(
+            request_id,
+            engram_state_id,
+            min_confidence_milli,
+            allowed_actions,
+            request_created_at_us,
+        )
+        .map_err(|err| anyhow::anyhow!("build lookup request from observation: {err}"))?;
+    run_w5_memory_boundary_lookup_request(store_path, request, now_us)
+}
+
+fn run_w5_memory_boundary_lookup_request(
+    store_path: &Path,
+    request: BoundaryLookupRequest,
+    now_us: u64,
+) -> anyhow::Result<(
+    sim_memory::BoundaryLookupResponse,
+    sim_memory::ShortpathDecisionRecord,
+)> {
+    let mut durable_store = load_lingqu_memory_durable_store(store_path)?;
     let effective_now_us = if now_us == 0 {
         request.created_at_us
     } else {
@@ -2908,6 +3030,17 @@ fn load_w5_memory_decisions_from_store(
             let (_response, decision) =
                 run_w5_memory_boundary_lookup(&config.store_path, boundary_request_path, 0)
                     .context("run W5 Memory Service boundary lookup")?;
+            Some(decision)
+        } else if let Some(observation_id) = config.boundary_observation_id.as_ref() {
+            let (_response, decision) = run_w5_memory_boundary_lookup_from_observation(
+                &config.store_path,
+                observation_id,
+                None,
+                900,
+                vec![sim_memory::ShortpathAction::JumpToTerminal],
+                0,
+            )
+            .context("run W5 Memory Service boundary lookup from observation")?;
             Some(decision)
         } else {
             None
@@ -6199,6 +6332,7 @@ mod tests {
         run_lingqu_durable_init_cli, run_lingqu_durable_list_cli, run_lingqu_durable_read_log_cli,
         run_lingqu_durable_stat_cli, run_lingqu_durable_validate_cli,
         run_lingqu_memory_boundary_lookup_cli,
+        run_lingqu_memory_boundary_lookup_from_observation_cli,
         run_lingqu_memory_boundary_request_from_w5_summary_cli, run_lingqu_memory_build_index_cli,
         run_lingqu_memory_ingest_cli, run_lingqu_memory_list_prefetch_plans_cli,
         run_lingqu_memory_list_prefix_cache_reuse_cli, run_lingqu_memory_list_query_results_cli,
@@ -6695,6 +6829,7 @@ mod tests {
             PathBuf::from("/tmp/lingqu-memory-store.json")
         );
         assert_eq!(memory_decisions.boundary_request_path, None);
+        assert_eq!(memory_decisions.boundary_observation_id, None);
         assert_eq!(
             memory_decisions.shortpath_decision_id.as_deref(),
             Some("shortpath-decision/boundary/0")
@@ -6729,6 +6864,30 @@ mod tests {
             memory_decisions.boundary_request_path.as_deref(),
             Some(Path::new("/tmp/boundary-request.json"))
         );
+        assert_eq!(memory_decisions.boundary_observation_id, None);
+        assert_eq!(memory_decisions.shortpath_decision_id, None);
+    }
+
+    #[test]
+    fn w5_inference_cluster_args_accept_memory_boundary_observation() {
+        let args = qwen3_guest_decode_loop_args_from([
+            "w5-inference-cluster",
+            "--memory-decision-store=/tmp/lingqu-memory-store.json",
+            "--memory-boundary-observation-id=boundary-observation/run0/step2/node3",
+        ])
+        .expect("parse w5 memory boundary observation args")
+        .expect("w5 memory boundary observation args");
+
+        let memory_decisions = args.memory_decisions.expect("memory decisions");
+        assert_eq!(
+            memory_decisions.store_path,
+            PathBuf::from("/tmp/lingqu-memory-store.json")
+        );
+        assert_eq!(memory_decisions.boundary_request_path, None);
+        assert_eq!(
+            memory_decisions.boundary_observation_id.as_deref(),
+            Some("boundary-observation/run0/step2/node3")
+        );
         assert_eq!(memory_decisions.shortpath_decision_id, None);
     }
 
@@ -6744,7 +6903,7 @@ mod tests {
 
         assert!(err
             .to_string()
-            .contains("--memory-boundary-request cannot be combined"));
+            .contains("--memory-boundary-request, --memory-boundary-observation-id"));
     }
 
     #[test]
@@ -7828,6 +7987,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
         let kv_artifact_path = root.join("kv_artifact.json");
         let boundary_request_path = root.join("boundary_lookup_request.json");
         let boundary_response_path = root.join("boundary_lookup_response.json");
+        let observation_response_path = root.join("boundary_observation_response.json");
         let prefetch_request_path = root.join("prefetch_plan_request.json");
         let prefetch_plan_path = root.join("prefetch_plan.json");
         let mut seed_store = LingquMemoryDurableStore::new();
@@ -7939,7 +8099,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
             request_id: "boundary/step3/node4".to_string(),
             model: model.clone(),
             boundary: exit_boundary,
-            hidden_state: hidden_ref,
+            hidden_state: hidden_ref.clone(),
             engram_state_id: None,
             min_confidence_milli: 900,
             allowed_actions: vec![sim_memory::ShortpathAction::JumpToTerminal],
@@ -7947,7 +8107,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
         };
         let prefetch_request = sim_memory::PrefetchPlanRequest {
             request_id: "prefetch/step3/node4".to_string(),
-            model,
+            model: model.clone(),
             boundary: start_boundary,
             engram_state_id: None,
             scope: sim_memory::PrefetchScope::MultiStep,
@@ -7985,11 +8145,40 @@ stage qwen3_range_forward_runtime_output_publish node=2
             ])
             .expect("register execution artifact");
         }
+        let observation = sim_memory::BoundaryObservationRecord::new(
+            "boundary-observation/run0/step3/node4".to_string(),
+            "run0".to_string(),
+            model.clone(),
+            sim_memory::RangeBoundary {
+                phase: sim_memory::RangeBoundaryPhase::RangeExit,
+                step_index: 3,
+                node_index: 4,
+                layer_start: 4,
+                layer_end: 8,
+                next_node_index: Some(5),
+                position: 12,
+            },
+            hidden_ref.clone(),
+            "node4".to_string(),
+            "node5".to_string(),
+            "w5_guest_range_exit".to_string(),
+            1,
+            12,
+        )
+        .expect("build boundary observation");
+        let mut observation_store =
+            load_lingqu_memory_durable_store(&store).expect("load store for observation");
+        observation_store
+            .persist_boundary_observation_manifest(vec![observation])
+            .expect("persist boundary observation");
+        save_lingqu_memory_durable_store(&store, &observation_store)
+            .expect("save store with observation");
         let auto_lookup_store = root.join("auto_boundary_lookup_store.json");
         fs::copy(&store, &auto_lookup_store).expect("copy store for W5 auto boundary lookup");
         let auto_bundle = load_w5_memory_decisions_from_store(&W5MemoryDecisionConfig {
             store_path: auto_lookup_store.clone(),
             boundary_request_path: Some(boundary_request_path.clone()),
+            boundary_observation_id: None,
             shortpath_decision_id: None,
             shortpath_execute: false,
             prefetch_plan_id: None,
@@ -8023,6 +8212,43 @@ stage qwen3_range_forward_runtime_output_publish node=2
             auto_decisions[0].decision_id,
             "shortpath-decision/boundary/step3/node4"
         );
+        let auto_observation_store = root.join("auto_boundary_observation_store.json");
+        fs::copy(&store, &auto_observation_store)
+            .expect("copy store for W5 auto boundary observation lookup");
+        let auto_observation_bundle =
+            load_w5_memory_decisions_from_store(&W5MemoryDecisionConfig {
+                store_path: auto_observation_store.clone(),
+                boundary_request_path: None,
+                boundary_observation_id: Some("boundary-observation/run0/step3/node4".to_string()),
+                shortpath_decision_id: None,
+                shortpath_execute: false,
+                prefetch_plan_id: None,
+                prefix_cache_reuse_plan_id: None,
+            })
+            .expect("W5 entrypoint should run boundary lookup from observation");
+        assert_eq!(
+            auto_observation_bundle
+                .shortpath
+                .as_ref()
+                .expect("auto observation shortpath decision")
+                .artifact_id
+                .as_deref(),
+            Some("artifact/logits/step3/node4")
+        );
+        let observation_cli_store = root.join("boundary_observation_cli_store.json");
+        fs::copy(&store, &observation_cli_store)
+            .expect("copy store for boundary observation CLI lookup");
+        run_lingqu_memory_boundary_lookup_from_observation_cli(&[
+            "--store".to_string(),
+            observation_cli_store.to_string_lossy().into_owned(),
+            "--observation-id".to_string(),
+            "boundary-observation/run0/step3/node4".to_string(),
+            "--response".to_string(),
+            observation_response_path.to_string_lossy().into_owned(),
+            "--now-us".to_string(),
+            "20".to_string(),
+        ])
+        .expect("boundary lookup from observation");
         run_lingqu_memory_boundary_lookup_cli(&[
             "--store".to_string(),
             store.to_string_lossy().into_owned(),
@@ -8130,6 +8356,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
         let decision_config = W5MemoryDecisionConfig {
             store_path: store.clone(),
             boundary_request_path: None,
+            boundary_observation_id: None,
             shortpath_decision_id: Some("shortpath-decision/boundary/step3/node4".to_string()),
             shortpath_execute: true,
             prefetch_plan_id: Some("prefetch-plan/prefetch/step3/node4".to_string()),
@@ -8584,6 +8811,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
         let err = load_w5_memory_decisions_from_store(&W5MemoryDecisionConfig {
             store_path: store,
             boundary_request_path: None,
+            boundary_observation_id: None,
             shortpath_decision_id: Some("shortpath-decision/missing-payload".to_string()),
             shortpath_execute: false,
             prefetch_plan_id: None,
@@ -8731,6 +8959,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
         let decision_config = W5MemoryDecisionConfig {
             store_path: store.clone(),
             boundary_request_path: None,
+            boundary_observation_id: None,
             shortpath_decision_id: None,
             shortpath_execute: false,
             prefetch_plan_id: None,
