@@ -100,6 +100,7 @@ class W4GuestRunSummaryTest(unittest.TestCase):
                     (
                         "[w4_guest] stage qwen3_range_forward_runtime_ingress_publish "
                         f"local=node{index} target=node{index + 1} step=1 "
+                        f"observation_id=boundary-observation/run-from-guest/step1/node{index} "
                         f"key=hidden/qwen3-0-6b/node{index + 1}/range-runtime-input/decode-step1 "
                         f"key_hash=0x{index:016x} version=1 layers=[{index},{index + 1}) "
                         f"count=1 checksum=0x{index + 16:016x} bytes=262144 "
@@ -285,7 +286,7 @@ class W4GuestRunSummaryTest(unittest.TestCase):
         )
         self.assertIn(
             "memory_boundary_observation: phase=range_exit "
-            f"observation_id=boundary-observation/{run_dir.name}/step1/node1 "
+            "observation_id=boundary-observation/run-from-guest/step1/node1 "
             "step=1 node=node1 "
             "target=node2 layers=[1,2) layer_start=1 layer_end=2 layer_count=1 "
             "hidden_key=hidden/qwen3-0-6b/node2/range-runtime-input/decode-step1",

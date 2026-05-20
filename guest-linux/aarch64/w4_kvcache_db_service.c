@@ -4959,6 +4959,18 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
     if (object_epoch == 0) {
         object_epoch = 1;
     }
+    char boundary_observation_id[384];
+    const char *w5_run_id = getenv("SIM_W5_RUN_ID");
+
+    boundary_observation_id[0] = '\0';
+    if (w5_run_id && w5_run_id[0] != '\0') {
+        snprintf(boundary_observation_id,
+                 sizeof(boundary_observation_id),
+                 "boundary-observation/%s/step%" PRIu64 "/node%u",
+                 w5_run_id,
+                 decode_step,
+                 local_node + 1U);
+    }
     if (!terminal_range &&
         w4_db_push_obmm_object_desc_to(rt,
                                        target_node,
@@ -4969,7 +4981,26 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
                                        object_epoch) != 0) {
         return -1;
     }
-    if (!terminal_range) {
+    if (!terminal_range && boundary_observation_id[0] != '\0') {
+        printf("[w4_guest] stage qwen3_range_forward_runtime_ingress_publish local=node%u target=node%u observation_id=%s step=%" PRIu64 " key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) count=%u checksum=0x%016" PRIx64 " bytes=%" PRIu64 " producer_publish_ms=%ld producer_publish_mono_ms=%ld producer_clock_offset_ms=%ld epoch=%u seq=%u backing=obmm_shmem metadata=lingqu_object_service queue=obmm_spsc status=ok\n",
+               local_node + 1U,
+               target_node + 1U,
+               boundary_observation_id,
+               decode_step,
+               local_hidden_output_key,
+               hidden_ref.key_hash,
+               hidden_ref.object_version,
+               local_placement.layer_start,
+               local_placement.layer_end,
+               local_placement.layer_count,
+               checksum,
+               payload_len,
+               producer_publish_ms,
+               producer_publish_monotonic_ms,
+               producer_clock_offset_ms,
+               object_epoch,
+               local_publish_seq);
+    } else if (!terminal_range) {
         printf("[w4_guest] stage qwen3_range_forward_runtime_ingress_publish local=node%u target=node%u step=%" PRIu64 " key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) count=%u checksum=0x%016" PRIx64 " bytes=%" PRIu64 " producer_publish_ms=%ld producer_publish_mono_ms=%ld producer_clock_offset_ms=%ld epoch=%u seq=%u backing=obmm_shmem metadata=lingqu_object_service queue=obmm_spsc status=ok\n",
                local_node + 1U,
                target_node + 1U,

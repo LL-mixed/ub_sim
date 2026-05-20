@@ -1327,7 +1327,8 @@ sim-cli lingqu-memory record-boundary-observations-from-w5-summary \
 
 Each persisted `BoundaryObservationRecord` stores the run id, model binding,
 range-exit boundary, producer/consumer nodes, hidden ObjectRef metadata, and a
-checksum. The summary emits the stable observation id, and import uses that id
+checksum. The guest range-exit publisher now emits the stable observation id
+using `SIM_W5_RUN_ID`, the summary preserves that id, and import uses it
 instead of recomputing it when present. Re-importing the same summary is
 idempotent; reusing an observation id with different payload fails instead of
 overwriting history.

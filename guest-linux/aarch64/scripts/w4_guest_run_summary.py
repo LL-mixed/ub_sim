@@ -140,6 +140,7 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                             {
                                 "_log_node": node_id,
                                 "step": step,
+                                "observation_id": fields.get("observation_id", ""),
                                 "node": fields.get("local", node_id),
                                 "target": fields.get("target", ""),
                                 "layers": fields.get("layers", ""),
@@ -980,10 +981,13 @@ def emit_boundary_observation_summary(
     for record in sorted(
         boundary_observations, key=lambda item: (item["step"], item["node"])
     ):
+        observation_id = record.get("observation_id") or (
+            f"boundary-observation/{run_id}/step{record['step']}/{record['node']}"
+        )
         output.append(
             "memory_boundary_observation: "
             "phase=range_exit "
-            f"observation_id=boundary-observation/{run_id}/step{record['step']}/{record['node']} "
+            f"observation_id={observation_id} "
             f"step={record['step']} "
             f"node={record['node']} "
             f"target={record['target']} "
