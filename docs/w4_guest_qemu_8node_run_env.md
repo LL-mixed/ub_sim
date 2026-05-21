@@ -53,7 +53,7 @@ Qwen3 14B 使用同一个入口，把权重目录换成 `SIM_QWEN3_DENSE_WEIGHTS
 | run（guest wrapper） | `SIMPLER_HOST_MATMUL_MANIFEST` | `/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json` | guest 启动时 fallback manifest | `run_ub_eight_node_w4_guest.sh` |
 | run（guest wrapper） | `SIM_UAPI_W4_CHIPBACKEND_PROFILE` | `qwen3_dense` | guest/节点工作流分支 | `run_ub_eight_node_w4_guest.sh` |
 | run（guest wrapper） | `SIM_QWEN3_GUEST_DECODE_STEPS` | `1` | 每个 node decode 步数上限 | `run_ub_eight_node_w4_guest.sh` |
-| run（guest wrapper） | `SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS` | `9707,1207,16948,18` | prompt token 版本（脚本会覆盖） | `run_ub_eight_node_w4_guest.sh` |
+| run（guest wrapper） | `SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS` | `81378,37585,374` | prompt token 版本（默认文本为 `Huawei is`，脚本会覆盖） | `run_ub_eight_node_w4_guest.sh` |
 | run（guest wrapper） | `SIM_W4_UAPI_COMPLETION_TIMEOUT_MS` | `900000` | completion 超时 | `run_ub_eight_node_w4_guest.sh` |
 | run（guest wrapper） | `SIM_W4_RESOURCE_ASSERTIONS` | `0` | 资源断言严格度 | `run_ub_eight_node_w4_guest.sh` |
 | run（guest wrapper） | `W4_GUEST_PROGRESS_INTERVAL_SECS` | `180` | decode 等待期进度输出间隔；设为 `0` 关闭 | `run_ub_eight_node_w4_guest.sh` |
