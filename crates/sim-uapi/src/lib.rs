@@ -7,7 +7,8 @@ use std::fs;
 #[cfg(all(unix, not(test)))]
 use std::fs::OpenOptions;
 use std::io::Write;
-#[cfg(all(unix, not(test)))]
+use std::ops::Range;
+#[cfg(unix)]
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -1718,6 +1719,10 @@ const QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES: usize = 32;
 const QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET: usize = 0x08_0000;
 const QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET: usize = 0x07_0000;
 const QWEN3_DENSE_PROFILE_OBJECT_REF_MAX_COUNT: usize = 5;
+const W5_OBJECT_SERVICE_PAYLOAD_INDEX_MAGIC: u64 = 0x3059_4150_4f53_514c;
+const W5_OBJECT_SERVICE_PAYLOAD_INDEX_VERSION: u32 = 1;
+const W5_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES: usize = 32;
+const W5_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES: usize = 48;
 pub const QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT: u16 = 5;
 pub const QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE: u16 = 7;
 pub const QWEN3_DENSE_PROFILE_OBMM_KIND_TERMINAL_LOGITS: u16 = 8;
@@ -1746,23 +1751,123 @@ struct Qwen3RangeDispatchOperands {
 #[derive(Clone, Debug)]
 struct Qwen3ObjectBackedOperandView {
     object_ref: LingquObmmObjectRefWire,
-    payload: Arc<[u8]>,
+    backing: Qwen3ObjectPayloadBacking,
+    payload_range: Range<usize>,
 }
 
 impl Qwen3ObjectBackedOperandView {
-    fn new(object_ref: LingquObmmObjectRefWire, payload: Vec<u8>) -> Self {
-        Self {
+    fn from_backing(
+        object_ref: LingquObmmObjectRefWire,
+        backing: Qwen3ObjectPayloadBacking,
+        payload_range: Range<usize>,
+    ) -> Result<Self, String> {
+        let backing_len = backing.bytes().len();
+        if payload_range.start > payload_range.end || payload_range.end > backing_len {
+            return Err(format!(
+                "qwen3_object_backed_operand_range_invalid:start={}:end={}:backing={backing_len}",
+                payload_range.start, payload_range.end
+            ));
+        }
+        Ok(Self {
             object_ref,
-            payload: Arc::from(payload),
+            backing,
+            payload_range,
+        })
+    }
+
+    fn from_mapped_file(
+        object_ref: LingquObmmObjectRefWire,
+        mapped_file: Arc<Qwen3MappedFile>,
+        payload_range: Range<usize>,
+    ) -> Result<Self, String> {
+        Self::from_backing(
+            object_ref,
+            Qwen3ObjectPayloadBacking::MappedFile(mapped_file),
+            payload_range,
+        )
+    }
+
+    fn is_mapped(&self) -> bool {
+        matches!(self.backing, Qwen3ObjectPayloadBacking::MappedFile(_))
+    }
+
+    fn backing_path(&self) -> Option<&Path> {
+        match &self.backing {
+            Qwen3ObjectPayloadBacking::MappedFile(file) => Some(file.path()),
         }
     }
 
     fn bytes(&self) -> &[u8] {
-        self.payload.as_ref()
+        &self.backing.bytes()[self.payload_range.clone()]
     }
 
     fn object_ref(&self) -> &LingquObmmObjectRefWire {
         &self.object_ref
+    }
+}
+
+#[derive(Clone, Debug)]
+enum Qwen3ObjectPayloadBacking {
+    MappedFile(Arc<Qwen3MappedFile>),
+}
+
+impl Qwen3ObjectPayloadBacking {
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Qwen3ObjectPayloadBacking::MappedFile(file) => file.bytes(),
+        }
+    }
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct Qwen3MappedFile {
+    path: PathBuf,
+    ptr: std::ptr::NonNull<u8>,
+    len: usize,
+}
+
+#[cfg(unix)]
+unsafe impl Send for Qwen3MappedFile {}
+
+#[cfg(unix)]
+unsafe impl Sync for Qwen3MappedFile {}
+
+#[cfg(unix)]
+impl Qwen3MappedFile {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn bytes(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Qwen3MappedFile {
+    fn drop(&mut self) {
+        unsafe {
+            libc::munmap(self.ptr.as_ptr().cast(), self.len);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+#[derive(Debug)]
+struct Qwen3MappedFile {
+    path: PathBuf,
+    bytes: Arc<[u8]>,
+}
+
+#[cfg(not(unix))]
+impl Qwen3MappedFile {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn bytes(&self) -> &[u8] {
+        self.bytes.as_ref()
     }
 }
 
@@ -1794,6 +1899,9 @@ fn resolve_qwen3_range_dispatch_operands(
                     ));
                 }
                 let operand = qwen3_runtime_object_payload_view(object_ref)?;
+                if !operand.is_mapped() || operand.backing_path().is_none() {
+                    return Err("qwen3_range_dispatch_hidden_operand_not_mapped".to_string());
+                }
                 if operand.bytes().len() != expected_len {
                     return Err(format!(
                         "qwen3_range_dispatch_hidden_object_bytes_mismatch:got={}:expected={expected_len}",
@@ -1811,6 +1919,9 @@ fn resolve_qwen3_range_dispatch_operands(
                 let payload_len = usize::try_from(object_ref.payload_bytes)
                     .map_err(|_| "qwen3_range_dispatch_kv_object_bytes_too_large".to_string())?;
                 let operand = qwen3_runtime_object_payload_view(object_ref)?;
+                if !operand.is_mapped() || operand.backing_path().is_none() {
+                    return Err("qwen3_range_dispatch_kv_operand_not_mapped".to_string());
+                }
                 if operand.bytes().len() != payload_len {
                     return Err(format!(
                         "qwen3_range_dispatch_kv_object_bytes_mismatch:got={}:expected={payload_len}",
@@ -1977,11 +2088,214 @@ fn qwen3_object_registry_get_from_dir(
     Ok(payload)
 }
 
+fn qwen3_object_registry_view_from_dir(
+    registry_dir: &Path,
+    object_ref: LingquObmmObjectRefWire,
+) -> Result<Qwen3ObjectBackedOperandView, String> {
+    let path = qwen3_object_registry_path_in_dir(registry_dir, &object_ref);
+    let mapped_file = qwen3_map_file_read_only(&path)
+        .map_err(|err| format!("qwen3_object_registry_map_failed:{}:{err}", path.display()))?;
+    let payload = mapped_file.bytes();
+    let payload_len = payload.len();
+    if payload_len as u64 != object_ref.payload_bytes {
+        return Err(format!(
+            "qwen3_object_registry_map_bytes_mismatch:got={}:expected={}",
+            payload_len, object_ref.payload_bytes
+        ));
+    }
+    let checksum = qwen3_dense_reference_range_object_payload_checksum(payload);
+    if checksum != object_ref.payload_checksum {
+        return Err(format!(
+            "qwen3_object_registry_map_checksum_mismatch:got={checksum:#x}:expected={:#x}",
+            object_ref.payload_checksum
+        ));
+    }
+    Qwen3ObjectBackedOperandView::from_mapped_file(object_ref, mapped_file, 0..payload_len)
+}
+
+fn qwen3_map_file_read_only(path: &Path) -> Result<Arc<Qwen3MappedFile>, String> {
+    let metadata =
+        fs::metadata(path).map_err(|err| format!("stat_failed:{}:{err}", path.display()))?;
+    let len = usize::try_from(metadata.len())
+        .map_err(|_| format!("file_too_large:{}", path.display()))?;
+    if len == 0 {
+        return Err(format!("file_empty:{}", path.display()));
+    }
+    qwen3_map_file_read_only_len(path, len)
+}
+
+#[cfg(unix)]
+fn qwen3_map_file_read_only_len(path: &Path, len: usize) -> Result<Arc<Qwen3MappedFile>, String> {
+    let file = fs::File::open(path).map_err(|err| format!("open_failed:{err}"))?;
+    let ptr = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            len,
+            libc::PROT_READ,
+            libc::MAP_PRIVATE,
+            file.as_raw_fd(),
+            0,
+        )
+    };
+    if ptr == libc::MAP_FAILED {
+        return Err(format!("mmap_failed:{}", std::io::Error::last_os_error()));
+    }
+    let ptr =
+        std::ptr::NonNull::new(ptr.cast::<u8>()).ok_or_else(|| "mmap_returned_null".to_string())?;
+    Ok(Arc::new(Qwen3MappedFile {
+        path: path.to_path_buf(),
+        ptr,
+        len,
+    }))
+}
+
+#[cfg(not(unix))]
+fn qwen3_map_file_read_only_len(path: &Path, _len: usize) -> Result<Arc<Qwen3MappedFile>, String> {
+    let bytes = fs::read(path).map_err(|err| format!("read_failed:{err}"))?;
+    Ok(Arc::new(Qwen3MappedFile {
+        path: path.to_path_buf(),
+        bytes: Arc::from(bytes),
+    }))
+}
+
 fn qwen3_object_service_snapshot_path() -> Option<PathBuf> {
     std::env::var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT)
         .ok()
         .filter(|path| !path.trim().is_empty())
         .map(PathBuf::from)
+}
+
+fn qwen3_object_service_payload_index_path(snapshot_path: &Path) -> PathBuf {
+    if snapshot_path.extension().and_then(|value| value.to_str()) == Some("json") {
+        snapshot_path.with_extension("bin")
+    } else {
+        let mut path = snapshot_path.as_os_str().to_os_string();
+        path.push(".bin");
+        PathBuf::from(path)
+    }
+}
+
+fn qwen3_object_service_payload_index_view_from_path(
+    snapshot_path: &Path,
+    object_ref: LingquObmmObjectRefWire,
+) -> Result<Qwen3ObjectBackedOperandView, String> {
+    let index_path = qwen3_object_service_payload_index_path(snapshot_path);
+    let mapped_file = qwen3_map_file_read_only(&index_path).map_err(|err| {
+        format!(
+            "qwen3_object_service_payload_index_map_failed:{}:{err}",
+            index_path.display()
+        )
+    })?;
+    let index = mapped_file.bytes();
+    if index.len() < W5_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES {
+        return Err(format!(
+            "qwen3_object_service_payload_index_header_truncated:{}",
+            index_path.display()
+        ));
+    }
+    let magic = qwen3_read_u64_le_at(index, 0);
+    let version = qwen3_read_u32_le_at(index, 8);
+    let record_bytes = qwen3_read_u32_le_at(index, 12);
+    let record_count = qwen3_read_u64_le_at(index, 16);
+    if magic != W5_OBJECT_SERVICE_PAYLOAD_INDEX_MAGIC
+        || version != W5_OBJECT_SERVICE_PAYLOAD_INDEX_VERSION
+        || record_bytes != W5_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES as u32
+    {
+        return Err(format!(
+            "qwen3_object_service_payload_index_header_invalid:{}",
+            index_path.display()
+        ));
+    }
+    let record_count_usize = usize::try_from(record_count)
+        .map_err(|_| "qwen3_object_service_payload_index_record_count_too_large".to_string())?;
+    let record_table_bytes = record_count_usize
+        .checked_mul(W5_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES)
+        .ok_or_else(|| "qwen3_object_service_payload_index_record_table_overflow".to_string())?;
+    let payload_base = W5_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES
+        .checked_add(record_table_bytes)
+        .ok_or_else(|| "qwen3_object_service_payload_index_payload_base_overflow".to_string())?;
+    if payload_base > index.len() {
+        return Err(format!(
+            "qwen3_object_service_payload_index_records_truncated:{}",
+            index_path.display()
+        ));
+    }
+
+    for record_index in 0..record_count_usize {
+        let base = W5_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES
+            + record_index * W5_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES;
+        let key_hash = qwen3_read_u64_le_at(index, base);
+        let owner_entity = qwen3_read_u32_le_at(index, base + 8);
+        let producer_entity = qwen3_read_u32_le_at(index, base + 12);
+        let object_version = qwen3_read_u64_le_at(index, base + 16);
+        let payload_bytes = qwen3_read_u64_le_at(index, base + 24);
+        let payload_checksum = qwen3_read_u64_le_at(index, base + 32);
+        let payload_offset = qwen3_read_u64_le_at(index, base + 40);
+
+        if key_hash != object_ref.key_hash
+            || owner_entity != object_ref.owner_entity
+            || producer_entity != object_ref.producer_entity
+            || object_version != object_ref.object_version
+            || payload_bytes != object_ref.payload_bytes
+            || payload_checksum != object_ref.payload_checksum
+        {
+            continue;
+        }
+        let payload_start = usize::try_from(payload_offset).map_err(|_| {
+            "qwen3_object_service_payload_index_payload_offset_too_large".to_string()
+        })?;
+        let payload_len = usize::try_from(payload_bytes)
+            .map_err(|_| "qwen3_object_service_payload_index_payload_too_large".to_string())?;
+        let payload_end = payload_start
+            .checked_add(payload_len)
+            .ok_or_else(|| "qwen3_object_service_payload_index_payload_end_overflow".to_string())?;
+        let payload = index.get(payload_start..payload_end).ok_or_else(|| {
+            format!(
+                "qwen3_object_service_payload_index_payload_range_invalid:{}",
+                index_path.display()
+            )
+        })?;
+        let checksum = qwen3_lingqu_object_payload_checksum(payload);
+        if checksum != object_ref.payload_checksum {
+            return Err(format!(
+                "qwen3_object_service_payload_index_checksum_mismatch:got={checksum:#x}:expected={:#x}",
+                object_ref.payload_checksum
+            ));
+        }
+        return Qwen3ObjectBackedOperandView::from_mapped_file(
+            object_ref,
+            mapped_file,
+            payload_start..payload_end,
+        );
+    }
+
+    Err(format!(
+        "qwen3_object_service_payload_index_ref_missing:kind={}:version={}:key_hash={:#x}:bytes={}:checksum={:#x}:path={}",
+        object_ref.object_kind,
+        object_ref.object_version,
+        object_ref.key_hash,
+        object_ref.payload_bytes,
+        object_ref.payload_checksum,
+        index_path.display()
+    ))
+}
+
+fn qwen3_read_u32_le_at(bytes: &[u8], offset: usize) -> u32 {
+    let end = offset + std::mem::size_of::<u32>();
+    if end <= bytes.len() {
+        u32::from_le_bytes(bytes[offset..end].try_into().expect("u32-aligned range"))
+    } else {
+        0
+    }
+}
+
+fn qwen3_read_u64_le_at(bytes: &[u8], offset: usize) -> u64 {
+    let end = offset + std::mem::size_of::<u64>();
+    if end <= bytes.len() {
+        u64::from_le_bytes(bytes[offset..end].try_into().expect("u64-aligned range"))
+    } else {
+        0
+    }
 }
 
 fn qwen3_lingqu_object_payload_checksum(bytes: &[u8]) -> u64 {
@@ -2143,28 +2457,21 @@ fn qwen3_engram_context_payload_get(
     qwen3_object_registry_get(object_ref)
 }
 
-fn qwen3_runtime_object_payload_get(
-    object_ref: &LingquObmmObjectRefWire,
-) -> Result<Vec<u8>, String> {
+fn qwen3_runtime_object_payload_view(
+    object_ref: LingquObmmObjectRefWire,
+) -> Result<Qwen3ObjectBackedOperandView, String> {
     if matches!(
         object_ref.object_kind,
         QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT
             | QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE
     ) && std::env::var_os(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR).is_some()
     {
-        return qwen3_object_registry_get(object_ref);
+        return qwen3_object_registry_view_from_dir(&qwen3_object_registry_dir(), object_ref);
     }
     if let Some(snapshot_path) = qwen3_object_service_snapshot_path() {
-        return qwen3_object_service_snapshot_get_from_path(&snapshot_path, object_ref);
+        return qwen3_object_service_payload_index_view_from_path(&snapshot_path, object_ref);
     }
-    qwen3_object_registry_get(object_ref)
-}
-
-fn qwen3_runtime_object_payload_view(
-    object_ref: LingquObmmObjectRefWire,
-) -> Result<Qwen3ObjectBackedOperandView, String> {
-    let payload = qwen3_runtime_object_payload_get(&object_ref)?;
-    Ok(Qwen3ObjectBackedOperandView::new(object_ref, payload))
+    qwen3_object_registry_view_from_dir(&qwen3_object_registry_dir(), object_ref)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -19906,9 +20213,10 @@ mod tests {
         qwen3_dense_reference_write_weight_reference_table,
         qwen3_dense_reference_write_weight_stage_link_table, qwen3_engram_state_manifest_payload,
         qwen3_lingqu_key_hash, qwen3_lingqu_object_payload_checksum, qwen3_object_registry_path,
-        qwen3_object_registry_put, qwen3_object_service_snapshot_get_from_path,
-        qwen3_obmm_object_ref_for_payload, qwen3_obmm_object_ref_wire_to_hex,
-        qwen3_register_range_forward_objects, qwen3_validate_engram_state_object_service_payload,
+        qwen3_object_registry_put, qwen3_object_service_payload_index_path,
+        qwen3_object_service_snapshot_get_from_path, qwen3_obmm_object_ref_for_payload,
+        qwen3_obmm_object_ref_wire_to_hex, qwen3_register_range_forward_objects,
+        qwen3_validate_engram_state_object_service_payload,
         qwen3_validate_engram_state_registry_payload, read_u64_le_at,
         resolve_qwen3_range_dispatch_operands, run_host_matmul_batched_smoke,
         run_host_matmul_smoke, run_qwen3_dense_reference_prefill_runtime,
@@ -19937,7 +20245,9 @@ mod tests {
         SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
         SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
         W4_DEMO_KVCACHE_PAYLOAD_BYTES, W4_KVCACHE_BLOCKS, W4_KVCACHE_PREFIX_GROUPS,
-        W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES,
+        W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES, W5_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES,
+        W5_OBJECT_SERVICE_PAYLOAD_INDEX_MAGIC, W5_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES,
+        W5_OBJECT_SERVICE_PAYLOAD_INDEX_VERSION,
     };
     use sim_config::ScenarioConfig;
     use sim_core::{
@@ -19964,16 +20274,16 @@ mod tests {
         dfs::{DfsReadReq, DfsServiceProfile, DfsWriteReq},
         object::{
             LingquObjectKind, LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
-            LingquObjectResolveReq, LingquObjectServiceStub, LingquObjectState,
-            LingquObjectVersionSelector, LingquObmmObjectRefWire, LingquPayloadBackend,
-            LingquPayloadPlacement,
+            LingquObjectResolveReq, LingquObjectServiceSnapshot, LingquObjectServiceStub,
+            LingquObjectState, LingquObjectVersionSelector, LingquObmmObjectRefWire,
+            LingquPayloadBackend, LingquPayloadPlacement,
         },
         shmem::{ShmemGetReq, ShmemPutReq, ShmemServiceProfile, DEFAULT_MAX_SEGMENT_BYTES},
     };
     use sim_topology::SimTopology;
     use std::collections::BTreeMap;
     use std::collections::BTreeSet;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::time::Duration;
 
     // The native simpler runtime owns process-global state, so run each workload in a fresh test process.
@@ -25903,6 +26213,14 @@ mod tests {
                         .map(|operand| operand.bytes()),
                     Some(hidden_payload.as_slice())
                 );
+                assert!(
+                    operands
+                        .hidden_input
+                        .as_ref()
+                        .map(|operand| operand.is_mapped())
+                        .unwrap_or(false),
+                    "registry operands should be mmap-backed"
+                );
                 assert_eq!(
                     operands.previous_kv.as_ref().map(|operand| operand.bytes()),
                     Some(kv_payload.as_slice())
@@ -26018,7 +26336,7 @@ mod tests {
                 let err = resolve_qwen3_range_dispatch_operands(&req, &segment_payload)
                     .expect_err("object-backed operands must not fall back to inline payloads");
                 assert!(
-                    err.contains("qwen3_object_service_snapshot_stat_failed"),
+                    err.contains("qwen3_object_service_payload_index_map_failed"),
                     "{err}"
                 );
 
@@ -26162,14 +26480,15 @@ mod tests {
                     "test/runtime/kv",
                     &kv_payload,
                 );
+                let snapshot = object_service.export_snapshot();
                 std::fs::write(
                     &snapshot_path,
-                    object_service
-                        .export_snapshot()
+                    snapshot
                         .to_json_bytes()
                         .expect("encode object service snapshot"),
                 )
                 .expect("write object service snapshot");
+                write_test_object_service_payload_index(&snapshot_path, &snapshot);
                 std::env::set_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT, &snapshot_path);
 
                 let task = TaskKey {
@@ -26211,6 +26530,21 @@ mod tests {
                         .as_ref()
                         .map(|operand| operand.bytes()),
                     Some(hidden_payload.as_slice())
+                );
+                assert!(
+                    operands
+                        .hidden_input
+                        .as_ref()
+                        .map(|operand| operand.is_mapped())
+                        .unwrap_or(false),
+                    "snapshot operands should map the Object Service payload index"
+                );
+                assert_eq!(
+                    operands
+                        .hidden_input
+                        .as_ref()
+                        .and_then(|operand| operand.backing_path()),
+                    Some(qwen3_object_service_payload_index_path(&snapshot_path).as_path())
                 );
                 assert_eq!(
                     operands.previous_kv.as_ref().map(|operand| operand.bytes()),
@@ -26298,6 +26632,14 @@ mod tests {
                         .as_ref()
                         .map(|operand| operand.bytes()),
                     Some(hidden_payload.as_slice())
+                );
+                assert!(
+                    operands
+                        .hidden_input
+                        .as_ref()
+                        .map(|operand| operand.is_mapped())
+                        .unwrap_or(false),
+                    "live runtime operands should map the registry payload file"
                 );
 
                 std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR);
@@ -26423,6 +26765,67 @@ mod tests {
             record.bytes,
             record.checksum,
         )
+    }
+
+    fn write_test_object_service_payload_index(
+        snapshot_path: &Path,
+        snapshot: &LingquObjectServiceSnapshot,
+    ) {
+        struct Record<'a> {
+            key_hash: u64,
+            owner_entity: u32,
+            producer_entity: u32,
+            version: u64,
+            bytes: u64,
+            checksum: u64,
+            payload: &'a [u8],
+        }
+
+        let records = snapshot
+            .records
+            .iter()
+            .filter(|record| {
+                record.state == LingquObjectState::Committed && !record.payload_bytes.is_empty()
+            })
+            .map(|record| Record {
+                key_hash: qwen3_lingqu_key_hash(&record.key),
+                owner_entity: u32::try_from(record.owner_entity.unwrap_or(record.producer_entity))
+                    .expect("owner fits u32"),
+                producer_entity: u32::try_from(record.producer_entity).expect("producer fits u32"),
+                version: record.version,
+                bytes: record.bytes,
+                checksum: record.checksum,
+                payload: &record.payload_bytes,
+            })
+            .collect::<Vec<_>>();
+        let header_bytes = W5_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES;
+        let payload_base =
+            header_bytes + records.len() * W5_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES;
+        let mut bytes = vec![0u8; payload_base];
+        bytes[0..8].copy_from_slice(&W5_OBJECT_SERVICE_PAYLOAD_INDEX_MAGIC.to_le_bytes());
+        bytes[8..12].copy_from_slice(&W5_OBJECT_SERVICE_PAYLOAD_INDEX_VERSION.to_le_bytes());
+        bytes[12..16]
+            .copy_from_slice(&(W5_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES as u32).to_le_bytes());
+        bytes[16..24].copy_from_slice(&(records.len() as u64).to_le_bytes());
+
+        let mut payload_offset = payload_base;
+        for (index, record) in records.iter().enumerate() {
+            let base = header_bytes + index * W5_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES;
+            bytes[base..base + 8].copy_from_slice(&record.key_hash.to_le_bytes());
+            bytes[base + 8..base + 12].copy_from_slice(&record.owner_entity.to_le_bytes());
+            bytes[base + 12..base + 16].copy_from_slice(&record.producer_entity.to_le_bytes());
+            bytes[base + 16..base + 24].copy_from_slice(&record.version.to_le_bytes());
+            bytes[base + 24..base + 32].copy_from_slice(&record.bytes.to_le_bytes());
+            bytes[base + 32..base + 40].copy_from_slice(&record.checksum.to_le_bytes());
+            bytes[base + 40..base + 48].copy_from_slice(&(payload_offset as u64).to_le_bytes());
+            bytes.extend_from_slice(record.payload);
+            payload_offset += record.payload.len();
+        }
+        std::fs::write(
+            qwen3_object_service_payload_index_path(snapshot_path),
+            bytes,
+        )
+        .expect("write object service payload index");
     }
 
     const VALID_YAML: &str = r#"
