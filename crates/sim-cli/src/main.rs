@@ -1818,6 +1818,9 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "record-boundary-observations-from-w5-summary" => {
             run_lingqu_memory_record_boundary_observations_from_w5_summary_cli(&args)
         }
+        "promote-terminal-shortpath-artifacts-from-w5-summary" => {
+            run_lingqu_memory_promote_terminal_shortpath_artifacts_from_w5_summary_cli(&args)
+        }
         "register-execution-artifact" => run_lingqu_memory_register_execution_artifact_cli(&args),
         "register-terminal-logits-artifact-from-w5-summary" => {
             run_lingqu_memory_register_terminal_logits_artifact_from_w5_summary_cli(&args)
@@ -1830,7 +1833,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "validate-flat-materialize" => run_lingqu_memory_validate_flat_materialize(),
         "validate-w5-engram-object-ref" => run_lingqu_memory_validate_w5_engram_object_ref(),
         _ => anyhow::bail!(
-            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, query, list-query-results, list-boundary-observations, list-record-lifecycle, list-shortpath-supports, list-shortpath-decisions, list-prefetch-plans, list-prefix-cache-reuse, update-record-state, register-execution-artifact, register-terminal-logits-artifact-from-w5-summary, boundary-lookup, boundary-lookup-from-observation, boundary-request-from-w5-summary, record-boundary-observations-from-w5-summary, plan-prefetch, register-prefix-cache, lookup-prefix-cache, materialize-hot-state, materialize-engram-state, publish-w5-engram-state-ref, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
+            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, query, list-query-results, list-boundary-observations, list-record-lifecycle, list-shortpath-supports, list-shortpath-decisions, list-prefetch-plans, list-prefix-cache-reuse, update-record-state, register-execution-artifact, register-terminal-logits-artifact-from-w5-summary, promote-terminal-shortpath-artifacts-from-w5-summary, boundary-lookup, boundary-lookup-from-observation, boundary-request-from-w5-summary, record-boundary-observations-from-w5-summary, plan-prefetch, register-prefix-cache, lookup-prefix-cache, materialize-hot-state, materialize-engram-state, publish-w5-engram-state-ref, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
         ),
     }
 }
@@ -2516,6 +2519,206 @@ fn run_lingqu_memory_register_terminal_logits_artifact_from_w5_summary_cli(
     println!("  token: {}", terminal.sampled_token);
     println!("  logits_checksum: {:#x}", terminal.logits_checksum);
     println!("  payload_checksum: {payload_checksum:#x}");
+    Ok(())
+}
+
+fn run_lingqu_memory_promote_terminal_shortpath_artifacts_from_w5_summary_cli(
+    args: &[String],
+) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let summary_path = PathBuf::from(required_cli_arg(args, "--summary")?);
+    let initial_position = optional_cli_u64(args, "--initial-position")?.unwrap_or(0);
+    let step_count = optional_cli_u64(args, "--step-count")?;
+    let node_filter = optional_cli_arg(args, "--nodes")?
+        .map(|value| parse_nonempty_string_csv("--nodes", &value))
+        .transpose()?
+        .map(|nodes| nodes.into_iter().collect::<std::collections::BTreeSet<_>>());
+    let confidence_milli = optional_cli_u64(args, "--confidence-milli")?.unwrap_or(980);
+    if confidence_milli > 1000 {
+        anyhow::bail!("--confidence-milli must be in [0, 1000]");
+    }
+    let min_confidence_milli = optional_cli_u64(args, "--min-confidence-milli")?.unwrap_or(900);
+    if min_confidence_milli > 1000 {
+        anyhow::bail!("--min-confidence-milli must be in [0, 1000]");
+    }
+    let created_at_us = optional_cli_u64(args, "--created-at-us")?.unwrap_or(1);
+    let now_us = optional_cli_u64(args, "--now-us")?.unwrap_or(created_at_us);
+    let expires_at_us = optional_cli_u64(args, "--expires-at-us")?;
+    let engram_state_id = optional_cli_arg(args, "--engram-state-id")?;
+    let model = sim_memory::InferenceModelBinding {
+        model_id: required_cli_arg(args, "--model-id")?,
+        model_key: required_cli_arg(args, "--model-key")?,
+        tokenizer_hash: required_cli_u64_auto(args, "--tokenizer-hash")?,
+        profile_hash: required_cli_u64_auto(args, "--profile-hash")?,
+    };
+    model
+        .validate()
+        .map_err(|err| anyhow::anyhow!("validate model binding: {err}"))?;
+
+    let summary = fs::read_to_string(&summary_path)
+        .with_context(|| format!("read W5 summary {}", summary_path.display()))?;
+    let run_id = optional_cli_arg(args, "--run-id")?
+        .or_else(|| derive_w5_run_id_from_summary(&summary))
+        .ok_or_else(|| anyhow::anyhow!("missing --run-id and summary run_dir is unavailable"))?;
+    let steps = w5_step_indices_from_summary(&summary, step_count)?;
+
+    let mut selected_observations = Vec::new();
+    for step in &steps {
+        let observations = w5_boundary_observations_from_summary(
+            &summary,
+            &run_id,
+            model.clone(),
+            *step,
+            initial_position + *step,
+            created_at_us,
+        )?;
+        if observations.is_empty() {
+            anyhow::bail!("summary has no boundary observations for step={step}");
+        }
+        for observation in observations {
+            if node_filter
+                .as_ref()
+                .is_some_and(|nodes| !nodes.contains(&observation.producer_node))
+            {
+                continue;
+            }
+            selected_observations.push(observation);
+        }
+    }
+    if selected_observations.is_empty() {
+        anyhow::bail!("no W5 boundary observations selected for promotion");
+    }
+
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let mut memory_service = LingquMemoryService::new();
+    for observation in &selected_observations {
+        memory_service
+            .register_boundary_observation(observation.clone())
+            .context("register promoted boundary observation")?;
+    }
+    memory_service
+        .persist_boundary_observations_to_dfs(&mut durable_store)
+        .context("persist promoted boundary observation DFS audit")?;
+    rebuild_lingqu_memory_execution_registry_artifacts(&mut memory_service, &mut durable_store)
+        .context("rebuild existing execution artifact registry")?;
+
+    let mut promoted_artifact_ids = Vec::new();
+    let mut promoted_tokens = Vec::new();
+    for observation in &selected_observations {
+        let terminal =
+            find_w5_terminal_logits_observation(&summary, observation.boundary.step_index)
+                .with_context(|| {
+                    format!(
+                        "find terminal logits for promoted observation {}",
+                        observation.observation_id
+                    )
+                })?;
+        let payload = build_w5_terminal_logits_payload(observation.boundary.step_index, &terminal)?;
+        let payload_checksum = cli_bytes_checksum(&payload);
+        let artifact_id = format!(
+            "artifact/logits/{}/step{}/{}",
+            run_id, observation.boundary.step_index, observation.producer_node
+        );
+        let payload_ref = durable_store
+            .write_block_payload(
+                format!(
+                    "block/w5/terminal-logits/{}/step{}/{}",
+                    run_id, observation.boundary.step_index, observation.producer_node
+                ),
+                payload,
+            )
+            .context("write promoted terminal logits artifact payload")?;
+        let artifact_checksum = cli_bytes_checksum(
+            format!(
+                "{}:{}:{}:{}:{}:{}:{payload_checksum:x}",
+                artifact_id,
+                observation.run_id,
+                observation.boundary.step_index,
+                observation.producer_node,
+                observation.boundary.layer_end,
+                terminal.sampled_token
+            )
+            .as_bytes(),
+        );
+        let artifact = sim_memory::ExecutionArtifactObject {
+            artifact_id: artifact_id.clone(),
+            kind: sim_memory::ExecutionArtifactKind::Logits,
+            model: observation.model.clone(),
+            producer_boundary: observation.boundary.clone(),
+            boundary_hidden_fingerprint: sim_memory::BoundaryTensorFingerprint::from_hot_ref(
+                &observation.hidden_state,
+            ),
+            target_layer_start: observation.boundary.layer_end,
+            target_layer_end: observation.boundary.layer_end,
+            dtype: sim_core::TensorDType::Opaque,
+            shape: vec![
+                W5_TERMINAL_LOGITS_HEADER_BYTES as u64 + W5_TERMINAL_LOGITS_ENTRY_BYTES as u64,
+            ],
+            durable_payload_ref: Some(payload_ref),
+            hot_object_ref: None,
+            source_query_result_id: None,
+            source_engram_state_id: None,
+            confidence_milli: confidence_milli as u32,
+            state: sim_memory::ExecutionArtifactState::Verified,
+            checksum: artifact_checksum,
+            version: 1,
+            created_at_us,
+            expires_at_us,
+        };
+        artifact
+            .validate()
+            .map_err(|err| anyhow::anyhow!("validate promoted terminal logits artifact: {err}"))?;
+        validate_lingqu_execution_artifact_payloads(&mut durable_store, &artifact, "promote")
+            .context("validate promoted terminal logits artifact payload")?;
+        memory_service
+            .register_execution_artifact(artifact)
+            .context("register promoted terminal logits execution artifact")?;
+        promoted_artifact_ids.push(artifact_id);
+        promoted_tokens.push(terminal.sampled_token);
+    }
+    memory_service
+        .persist_execution_artifacts_to_dfs(&mut durable_store)
+        .context("persist promoted execution artifact DFS manifest")?;
+    save_lingqu_memory_durable_store(&store_path, &durable_store)?;
+
+    let mut decision_ids = Vec::new();
+    for observation in &selected_observations {
+        let (_response, decision) = run_w5_memory_boundary_lookup_from_observation(
+            &store_path,
+            &observation.observation_id,
+            engram_state_id.clone(),
+            min_confidence_milli as u32,
+            vec![sim_memory::ShortpathAction::JumpToTerminal],
+            now_us,
+        )
+        .with_context(|| {
+            format!(
+                "promote boundary lookup from observation {}",
+                observation.observation_id
+            )
+        })?;
+        decision_ids.push(decision.decision_id);
+    }
+
+    println!("lingqu_memory_service");
+    println!("  mode: promote-terminal-shortpath-artifacts-from-w5-summary");
+    println!("  store_path: {}", store_path.display());
+    println!("  summary: {}", summary_path.display());
+    println!("  run_id: {run_id}");
+    println!("  steps: {}", steps.len());
+    println!("  observations: {}", selected_observations.len());
+    println!("  artifacts: {}", promoted_artifact_ids.len());
+    println!("  decisions: {}", decision_ids.len());
+    println!("  artifact_ids: {}", promoted_artifact_ids.join(","));
+    println!("  decision_ids: {}", decision_ids.join(","));
+    println!(
+        "  sampled_tokens: {}",
+        promoted_tokens
+            .into_iter()
+            .map(|token| token.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
     Ok(())
 }
 
@@ -6240,6 +6443,31 @@ fn derive_w5_run_id_from_summary(summary: &str) -> Option<String> {
     )
 }
 
+fn w5_step_indices_from_summary(
+    summary: &str,
+    step_count: Option<u64>,
+) -> anyhow::Result<Vec<u64>> {
+    if let Some(step_count) = step_count {
+        if step_count == 0 {
+            anyhow::bail!("--step-count must be greater than zero");
+        }
+        return Ok((0..step_count).collect());
+    }
+
+    let mut steps = std::collections::BTreeSet::new();
+    for line in summary.lines() {
+        if !line.starts_with("memory_boundary_observation: ") {
+            continue;
+        }
+        let fields = parse_summary_fields(line);
+        steps.insert(required_summary_u64(&fields, "step")?);
+    }
+    if steps.is_empty() {
+        anyhow::bail!("summary has no memory_boundary_observation lines");
+    }
+    Ok(steps.into_iter().collect())
+}
+
 fn parse_summary_fields(line: &str) -> std::collections::HashMap<String, String> {
     line.split_ascii_whitespace()
         .filter_map(|field| field.split_once('='))
@@ -7522,6 +7750,7 @@ mod tests {
         run_lingqu_memory_list_shortpath_supports_cli, run_lingqu_memory_lookup_prefix_cache_cli,
         run_lingqu_memory_materialize_engram_state_cli,
         run_lingqu_memory_materialize_hot_state_cli, run_lingqu_memory_plan_prefetch_cli,
+        run_lingqu_memory_promote_terminal_shortpath_artifacts_from_w5_summary_cli,
         run_lingqu_memory_publish_w5_engram_state_ref_cli, run_lingqu_memory_query_cli,
         run_lingqu_memory_record_boundary_observations_from_w5_summary_cli,
         run_lingqu_memory_register_execution_artifact_cli,
@@ -7637,6 +7866,31 @@ mod tests {
 
     fn write_test_u64(payload: &mut [u8], offset: usize, value: u64) {
         payload[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn sample_w5_boundary_observation_line(
+        step: u64,
+        node: &str,
+        target: &str,
+        layer_start: u32,
+        layer_end: u32,
+        checksum: u64,
+    ) -> String {
+        format!(
+            "memory_boundary_observation: phase=range_exit observation_id=boundary-observation/run0/step{step}/{node} step={step} node={node} target={target} layers=[{layer_start},{layer_end}) layer_start={layer_start} layer_end={layer_end} layer_count={} hidden_key=hidden/qwen3/{target}/range-runtime-input/decode-step{step} hidden_key_hash=0x1 hidden_version=1 hidden_bytes=16 hidden_checksum={checksum:#x} hidden_dtype=opaque hidden_shape=16 producer_publish_ms=1 producer_publish_mono_ms=1 backing=obmm_shmem metadata=lingqu_object_service queue=obmm_spsc status=ok\n",
+            layer_end - layer_start
+        )
+    }
+
+    fn sample_w5_terminal_logits_log_line(step: u64, token: u64, runner_up: u64) -> String {
+        let logits_checksum = 0xaaa0 + step;
+        let text_checksum = 0xbbb0 + step;
+        let full_vocab_checksum = 0xccc0 + step;
+        let runner_text_checksum = 0xddd0 + step;
+        let piece_word0 = 0x41 + step;
+        format!(
+            "[w4_guest] stage qwen3_w5_terminal_logits_observation local=node8 step={step} token={token} runner_up={runner_up} margin_milli=100 logits_checksum={logits_checksum:#018x} text_checksum={text_checksum:#018x} top_logit_bits=0x000000003f800000 runner_up_logit_bits=0x000000003f000000 full_vocab_checked=151936 full_vocab_checksum={full_vocab_checksum:#018x} piece_word0={piece_word0:#018x} piece_word1=0x0000000000000000 candidate_count=2 candidate0_token={token} candidate0_logit_bits=0x000000003f800000 candidate0_text_checksum={text_checksum:#018x} candidate0_piece_bytes=1 candidate0_piece_word0={piece_word0:#018x} candidate0_piece_word1=0x0000000000000000 candidate1_token={runner_up} candidate1_logit_bits=0x000000003f000000 candidate1_text_checksum={runner_text_checksum:#018x} candidate1_piece_bytes=1 candidate1_piece_word0=0x0000000000000042 candidate1_piece_word1=0x0000000000000000 candidate2_token=0 candidate2_logit_bits=0x0000000000000000 candidate2_text_checksum=0x0000000000000000 candidate2_piece_bytes=0 candidate2_piece_word0=0x0000000000000000 candidate2_piece_word1=0x0000000000000000 candidate3_token=0 candidate3_logit_bits=0x0000000000000000 candidate3_text_checksum=0x0000000000000000 candidate3_piece_bytes=0 candidate3_piece_word0=0x0000000000000000 candidate3_piece_word1=0x0000000000000000 source=uapi_real_logits target=lingqu_memory_execution_artifact status=ok\n"
+        )
     }
 
     #[test]
@@ -10328,6 +10582,100 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             response.support.artifact_id.as_deref(),
             Some("artifact/logits/run0/step1/node4")
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lingqu_memory_promotes_terminal_shortpath_artifacts_from_w5_summary() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_lingqu_memory_promote_terminal_shortpath_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let store = root.join("store.json");
+        let summary_path = root.join("summary.txt");
+        let run_dir = root.join("run0_headless8");
+        fs::create_dir_all(&run_dir).expect("create run dir");
+        let mut summary = format!("summary: run_dir={}\n", run_dir.display());
+        summary.push_str(&sample_w5_boundary_observation_line(
+            0, "node2", "node3", 2, 4, 0x2222,
+        ));
+        summary.push_str(&sample_w5_boundary_observation_line(
+            0, "node4", "node5", 4, 8, 0x4444,
+        ));
+        summary.push_str(&sample_w5_boundary_observation_line(
+            1, "node2", "node3", 2, 4, 0x2223,
+        ));
+        summary.push_str(&sample_w5_boundary_observation_line(
+            1, "node4", "node5", 4, 8, 0x4445,
+        ));
+        fs::write(&summary_path, summary).expect("write summary");
+        fs::write(
+            run_dir.join("nodeH_guest.log"),
+            format!(
+                "{}{}",
+                sample_w5_terminal_logits_log_line(0, 11, 358),
+                sample_w5_terminal_logits_log_line(1, 264, 358)
+            ),
+        )
+        .expect("write guest log");
+        run_lingqu_memory_promote_terminal_shortpath_artifacts_from_w5_summary_cli(&[
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--summary".to_string(),
+            summary_path.to_string_lossy().into_owned(),
+            "--step-count".to_string(),
+            "2".to_string(),
+            "--initial-position".to_string(),
+            "20".to_string(),
+            "--nodes".to_string(),
+            "node2,node4".to_string(),
+            "--model-id".to_string(),
+            "qwen3-test".to_string(),
+            "--model-key".to_string(),
+            "qwen3-test-key".to_string(),
+            "--tokenizer-hash".to_string(),
+            "0x1001".to_string(),
+            "--profile-hash".to_string(),
+            "0x2002".to_string(),
+            "--created-at-us".to_string(),
+            "12".to_string(),
+        ])
+        .expect("promote terminal shortpath artifacts");
+
+        let mut durable_store =
+            load_lingqu_memory_durable_store(&store).expect("load promoted durable store");
+        let observations = durable_store
+            .load_boundary_observation_manifest()
+            .expect("load promoted boundary observations");
+        assert_eq!(observations.len(), 4);
+        let artifacts = durable_store
+            .load_execution_artifact_manifest()
+            .expect("load promoted execution artifacts");
+        assert_eq!(artifacts.len(), 4);
+        assert!(artifacts
+            .iter()
+            .any(|artifact| artifact.artifact_id == "artifact/logits/run0/step0/node2"));
+        assert!(artifacts
+            .iter()
+            .any(|artifact| artifact.artifact_id == "artifact/logits/run0/step1/node4"));
+        let decisions = durable_store
+            .load_shortpath_decision_manifest()
+            .expect("load promoted shortpath decisions");
+        assert_eq!(decisions.len(), 4);
+        assert!(decisions.iter().all(|decision| {
+            decision.action == sim_memory::ShortpathAction::JumpToTerminal
+                && decision.artifact_id.is_some()
+        }));
+        let supports = durable_store
+            .load_shortpath_support_manifest()
+            .expect("load promoted shortpath supports");
+        assert_eq!(supports.len(), 4);
+        assert!(supports.iter().all(|support| {
+            support.supported_action == sim_memory::ShortpathAction::JumpToTerminal
+                && support.artifact_id.is_some()
+        }));
         let _ = fs::remove_dir_all(&root);
     }
 
