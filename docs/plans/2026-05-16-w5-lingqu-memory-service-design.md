@@ -1240,6 +1240,7 @@ sim-cli w5-inference-cluster \
   [--memory-decision-store <durable-store.json>] \
   [--memory-boundary-request <boundary-lookup-request.json>] \
   [--memory-boundary-observation-id <boundary-observation-id>] \
+  [--memory-observation-store <durable-store.json>] \
   [--memory-shortpath-execute] \
   [--memory-owner-entity <entity>] \
   [--memory-producer-entity <entity>]
@@ -1258,6 +1259,12 @@ state ref or the Memory Service bootstrap source of truth. The old
 that Object Service snapshot in the Memory Service bootstrap path; it no
 longer needs per-object qwen3 registry payload files for Engram context or for
 Memory Service-published shortpath/prefetch/prefix-cache artifact refs.
+When `--memory-observation-store` is provided, a successful W5 run records its
+real range-exit `BoundaryObservationRecord`s into that durable store after
+guest validation. If omitted, the W5 entrypoint uses `--memory-store` or
+`--memory-decision-store` when those are present. Missing summary/observation
+data is a hard failure for this path.
+
 When `--memory-decision-store` and `--memory-boundary-request` are provided,
 the W5 entrypoint now runs the Memory Service boundary lookup itself, persists
 the returned `ShortpathSupportRecord` and W5 planner `ShortpathDecisionRecord`
@@ -1612,9 +1619,11 @@ Current implementation status:
   `w5-inference-cluster --memory-boundary-observation-id` can now run boundary
   lookup directly from the persisted observation id, persist the support and W5
   planner decision audit records, and publish the verified shortpath artifact
-  through the same Object Service snapshot path. The remaining gap is the
-  online in-guest lookup loop that performs this lookup at range-exit time
-  instead of as a launch-time bridge.
+  through the same Object Service snapshot path. When W5 runs with a Memory
+  Service store, the CLI now records the successful run's real range-exit
+  boundary observations back into that durable store automatically after guest
+  validation. The remaining gap is the online in-guest lookup loop that
+  performs this lookup at range-exit time instead of as a launch-time bridge.
   Query results can be persisted to and restored from DFS manifests with
   checksum validation, and QueryResult-driven hot materialization now carries
   that DFS manifest ref into both `HotMemoryStateObject` and

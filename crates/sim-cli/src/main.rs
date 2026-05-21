@@ -252,6 +252,7 @@ struct Qwen3GuestDecodeLoopCliArgs {
     engram: Qwen3EngramConfig,
     memory_bootstrap: Option<W5MemoryBootstrapConfig>,
     memory_decisions: Option<W5MemoryDecisionConfig>,
+    memory_observation_store_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -526,6 +527,7 @@ where
             let mut memory_registry_dir = None;
             let mut memory_owner_entity = None;
             let mut memory_producer_entity = None;
+            let mut memory_observation_store_path = None;
             let mut memory_decision_store_path = None;
             let mut memory_boundary_request_path = None;
             let mut memory_boundary_observation_id = None;
@@ -738,6 +740,13 @@ where
                     memory_registry_dir = Some(PathBuf::from(next));
                 } else if let Some(value) = text.strip_prefix("--memory-registry-dir=") {
                     memory_registry_dir = Some(PathBuf::from(value));
+                } else if text == "--memory-observation-store" {
+                    let next = pending.next().ok_or_else(|| {
+                        anyhow::anyhow!("--memory-observation-store requires a value")
+                    })?;
+                    memory_observation_store_path = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--memory-observation-store=") {
+                    memory_observation_store_path = Some(PathBuf::from(value));
                 } else if text == "--memory-owner-entity" {
                     let next = pending
                         .next()
@@ -935,6 +944,7 @@ where
                 engram,
                 memory_bootstrap,
                 memory_decisions,
+                memory_observation_store_path,
             }))
         }
         _ => Ok(None),
@@ -4033,6 +4043,21 @@ fn w5_memory_decision_env_vars(
     vars
 }
 
+fn w5_boundary_observation_store_path(args: &Qwen3GuestDecodeLoopCliArgs) -> Option<&Path> {
+    args.memory_observation_store_path
+        .as_deref()
+        .or_else(|| {
+            args.memory_bootstrap
+                .as_ref()
+                .map(|config| config.store_path.as_path())
+        })
+        .or_else(|| {
+            args.memory_decisions
+                .as_ref()
+                .map(|config| config.store_path.as_path())
+        })
+}
+
 fn w5_execution_artifact_kind_name(kind: sim_memory::ExecutionArtifactKind) -> &'static str {
     match kind {
         sim_memory::ExecutionArtifactKind::HiddenState => "hidden-state",
@@ -5061,6 +5086,88 @@ fn w5_boundary_observations_from_summary(
     }
     observations.sort_by(|left, right| left.observation_id.cmp(&right.observation_id));
     Ok(observations)
+}
+
+fn qwen3_runtime_model_binding(
+    runtime: &Qwen3DenseGuestRuntime,
+) -> anyhow::Result<sim_memory::InferenceModelBinding> {
+    let tokenizer_bytes =
+        fs::read(runtime.weights_path.join("tokenizer.json")).with_context(|| {
+            format!(
+                "read tokenizer for W5 model binding from {}",
+                runtime.weights_path.display()
+            )
+        })?;
+    let config_bytes = fs::read(runtime.weights_path.join("config.json")).with_context(|| {
+        format!(
+            "read model config for W5 model binding from {}",
+            runtime.weights_path.display()
+        )
+    })?;
+    let model = sim_memory::InferenceModelBinding {
+        model_id: runtime.profile.model_id.clone(),
+        model_key: runtime.model_key.clone(),
+        tokenizer_hash: cli_bytes_checksum(&tokenizer_bytes),
+        profile_hash: cli_bytes_checksum(&config_bytes),
+    };
+    model
+        .validate()
+        .map_err(|err| anyhow::anyhow!("validate W5 runtime model binding: {err}"))?;
+    Ok(model)
+}
+
+fn cli_now_us() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_micros().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(1)
+        .max(1)
+}
+
+fn record_w5_runtime_boundary_observations_from_summary(
+    store_path: &Path,
+    summary_path: &Path,
+    runtime: &Qwen3DenseGuestRuntime,
+    step_count: usize,
+    initial_position: u64,
+    created_at_us: u64,
+) -> anyhow::Result<usize> {
+    let summary = fs::read_to_string(summary_path)
+        .with_context(|| format!("read W5 summary {}", summary_path.display()))?;
+    let run_id = derive_w5_run_id_from_summary(&summary)
+        .ok_or_else(|| anyhow::anyhow!("missing W5 run id in {}", summary_path.display()))?;
+    let model = qwen3_runtime_model_binding(runtime)?;
+    let mut observations = Vec::new();
+    for step in 0..step_count {
+        observations.extend(w5_boundary_observations_from_summary(
+            &summary,
+            &run_id,
+            model.clone(),
+            step as u64,
+            initial_position + step as u64,
+            created_at_us,
+        )?);
+    }
+    if observations.is_empty() {
+        anyhow::bail!(
+            "W5 summary has no boundary observations to persist: {}",
+            summary_path.display()
+        );
+    }
+
+    let observed_count = observations.len();
+    let mut durable_store = load_lingqu_memory_durable_store(store_path)?;
+    let mut memory_service = LingquMemoryService::new();
+    for observation in observations {
+        memory_service
+            .register_boundary_observation(observation)
+            .context("register W5 runtime boundary observation")?;
+    }
+    memory_service
+        .persist_boundary_observations_to_dfs(&mut durable_store)
+        .context("persist W5 runtime boundary observation DFS audit")?;
+    save_lingqu_memory_durable_store(store_path, &durable_store)?;
+    Ok(observed_count)
 }
 
 fn derive_w5_run_id_from_summary(summary: &str) -> Option<String> {
@@ -6315,8 +6422,8 @@ fn resolve_lingqu_object_cli_sample(
 #[cfg(test)]
 mod tests {
     use super::{
-        cli_f32_vec_to_le_bytes, lingqu_durable_args_from, lingqu_memory_args_from,
-        lingqu_object_service_args_from, load_lingqu_memory_durable_store,
+        cli_bytes_checksum, cli_f32_vec_to_le_bytes, lingqu_durable_args_from,
+        lingqu_memory_args_from, lingqu_object_service_args_from, load_lingqu_memory_durable_store,
         load_w5_memory_decisions_from_store, publish_w5_engram_state_ref_from_memory,
         publish_w5_memory_decision_artifact_refs, qwen3_decode_loop_args_from,
         qwen3_decode_report_verbosity_from_env, qwen3_dense_weights_path_from_env,
@@ -6329,12 +6436,13 @@ mod tests {
         qwen3_guest_engram_report, qwen3_guest_engram_report_from_guest_log,
         qwen3_guest_engram_select_history_lengths, qwen3_guest_engram_selected_tokens,
         qwen3_guest_log_dir_from_script_output, qwen3_guest_log_match_count,
-        qwen3_guest_terminal_candidate_records, qwen3_guest_terminal_text_lossy_from_tokenizer,
-        qwen3_guest_terminal_tokens, qwen3_guest_timing_summary, qwen3_range_forward_args_from,
-        run_lingqu_durable_append_log_cli, run_lingqu_durable_batch_cli,
-        run_lingqu_durable_init_cli, run_lingqu_durable_list_cli, run_lingqu_durable_read_log_cli,
-        run_lingqu_durable_stat_cli, run_lingqu_durable_validate_cli,
-        run_lingqu_memory_boundary_lookup_cli,
+        qwen3_guest_summary_file_from_script_output, qwen3_guest_terminal_candidate_records,
+        qwen3_guest_terminal_text_lossy_from_tokenizer, qwen3_guest_terminal_tokens,
+        qwen3_guest_timing_summary, qwen3_range_forward_args_from,
+        record_w5_runtime_boundary_observations_from_summary, run_lingqu_durable_append_log_cli,
+        run_lingqu_durable_batch_cli, run_lingqu_durable_init_cli, run_lingqu_durable_list_cli,
+        run_lingqu_durable_read_log_cli, run_lingqu_durable_stat_cli,
+        run_lingqu_durable_validate_cli, run_lingqu_memory_boundary_lookup_cli,
         run_lingqu_memory_boundary_lookup_from_observation_cli,
         run_lingqu_memory_boundary_request_from_w5_summary_cli, run_lingqu_memory_build_index_cli,
         run_lingqu_memory_ingest_cli, run_lingqu_memory_list_prefetch_plans_cli,
@@ -6814,6 +6922,23 @@ mod tests {
     }
 
     #[test]
+    fn w5_inference_cluster_args_accept_memory_observation_store() {
+        let args = qwen3_guest_decode_loop_args_from([
+            "w5-inference-cluster",
+            "--memory-observation-store=/tmp/lingqu-memory-observations.json",
+        ])
+        .expect("parse w5 memory observation store args")
+        .expect("w5 memory observation store args");
+
+        assert_eq!(
+            args.memory_observation_store_path.as_deref(),
+            Some(Path::new("/tmp/lingqu-memory-observations.json"))
+        );
+        assert!(args.memory_bootstrap.is_none());
+        assert!(args.memory_decisions.is_none());
+    }
+
+    #[test]
     fn w5_inference_cluster_args_accept_memory_service_decisions() {
         let args = qwen3_guest_decode_loop_args_from([
             "w5-inference-cluster",
@@ -7155,6 +7280,7 @@ mod tests {
             engram: Qwen3EngramConfig::default(),
             memory_bootstrap: None,
             memory_decisions: None,
+            memory_observation_store_path: None,
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("dense runtime");
         assert_eq!(runtime.model_key, "qwen3-0-6b");
@@ -7205,6 +7331,7 @@ mod tests {
             engram: Qwen3EngramConfig::default(),
             memory_bootstrap: None,
             memory_decisions: None,
+            memory_observation_store_path: None,
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("reference shape runtime");
         assert!(runtime
@@ -7254,6 +7381,7 @@ mod tests {
             engram: Qwen3EngramConfig::default(),
             memory_bootstrap: None,
             memory_decisions: None,
+            memory_observation_store_path: None,
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("14B generic runtime");
         assert_eq!(runtime.model_key, "qwen3-14b");
@@ -7739,6 +7867,16 @@ stage qwen3_range_forward_runtime_output_publish node=2
             log_dir,
             PathBuf::from("guest-linux/aarch64/logs/2026-05-08_09-34-14_w4guest8_9435_headless8")
         );
+    }
+
+    #[test]
+    fn qwen3_guest_summary_file_from_script_output_reads_runner_trace() {
+        let summary = qwen3_guest_summary_file_from_script_output(
+            "[w4guest8] run_dir: /tmp/run\n\
+             [w4guest8] summary_file: /tmp/w5-summary.txt\n",
+        )
+        .expect("summary file");
+        assert_eq!(summary, PathBuf::from("/tmp/w5-summary.txt"));
     }
 
     #[test]
@@ -9013,6 +9151,106 @@ stage qwen3_range_forward_runtime_output_publish node=2
         assert!(env_vars.iter().any(|(key, value)| {
             key == "SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF" && value.len() == 128
         }));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn w5_runtime_records_boundary_observations_into_memory_store() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_w5_runtime_record_boundary_observations_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let weights_dir = root.join("Qwen3-0.6B");
+        fs::create_dir_all(&weights_dir).expect("create weights dir");
+        fs::write(
+            weights_dir.join("config.json"),
+            r#"{
+                "_name_or_path": "Qwen/Qwen3-0.6B",
+                "vocab_size": 151936,
+                "hidden_size": 1024,
+                "intermediate_size": 3072,
+                "num_hidden_layers": 28,
+                "num_attention_heads": 16,
+                "num_key_value_heads": 8,
+                "head_dim": 128,
+                "max_position_embeddings": 40960,
+                "rope_theta": 1000000
+            }"#,
+        )
+        .expect("write config");
+        fs::write(
+            weights_dir.join("tokenizer.json"),
+            br#"{"model":{"vocab":{}}}"#,
+        )
+        .expect("write tokenizer");
+        fs::write(weights_dir.join("model.safetensors"), b"stub").expect("write weights");
+        let args = Qwen3GuestDecodeLoopCliArgs {
+            step_count: 2,
+            prompt: None,
+            prompt_token_ids: None,
+            script_path: PathBuf::from("guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh"),
+            matmul_batch: None,
+            model: None,
+            weights_path: Some(weights_dir.clone()),
+            w5_profile: None,
+            engram: Qwen3EngramConfig::default(),
+            memory_bootstrap: None,
+            memory_decisions: None,
+            memory_observation_store_path: None,
+        };
+        let runtime = qwen3_guest_dense_runtime(&args).expect("dense runtime");
+        let summary_path = root.join("w5_summary.txt");
+        let store_path = root.join("store.json");
+        fs::write(
+            &summary_path,
+            concat!(
+                "summary: run_dir=/tmp/w5_runtime_run_headless8\n",
+                "memory_boundary_observation: phase=range_exit step=0 node=node1 ",
+                "observation_id=boundary-observation/w5_runtime_run/step0/node1 ",
+                "target=node2 layers=[0,4) layer_start=0 layer_end=4 layer_count=4 ",
+                "hidden_key=hidden/qwen3-0-6b/node2/range-runtime-input/decode-step0 ",
+                "hidden_key_hash=0x0000000000001111 hidden_version=1 hidden_bytes=262144 ",
+                "hidden_checksum=0x000000000000aaaa hidden_dtype=opaque hidden_shape=262144 ",
+                "producer_publish_ms=100 producer_publish_mono_ms=20 backing=obmm_shmem ",
+                "metadata=lingqu_object_service queue=obmm_spsc status=ok\n",
+                "memory_boundary_observation: phase=range_exit step=1 node=node1 ",
+                "observation_id=boundary-observation/w5_runtime_run/step1/node1 ",
+                "target=node2 layers=[0,4) layer_start=0 layer_end=4 layer_count=4 ",
+                "hidden_key=hidden/qwen3-0-6b/node2/range-runtime-input/decode-step1 ",
+                "hidden_key_hash=0x0000000000002222 hidden_version=1 hidden_bytes=2048 ",
+                "hidden_checksum=0x000000000000bbbb hidden_dtype=opaque hidden_shape=2048 ",
+                "producer_publish_ms=200 producer_publish_mono_ms=30 backing=obmm_shmem ",
+                "metadata=lingqu_object_service queue=obmm_spsc status=ok\n"
+            ),
+        )
+        .expect("write summary");
+
+        let recorded = record_w5_runtime_boundary_observations_from_summary(
+            &store_path,
+            &summary_path,
+            &runtime,
+            2,
+            4,
+            100,
+        )
+        .expect("record runtime observations");
+        assert_eq!(recorded, 2);
+        let mut durable =
+            load_lingqu_memory_durable_store(&store_path).expect("reload durable store");
+        let observations = durable
+            .load_boundary_observation_manifest()
+            .expect("load runtime observation audit");
+        assert_eq!(observations.len(), 2);
+        assert_eq!(observations[0].boundary.position, 4);
+        assert_eq!(observations[1].boundary.position, 5);
+        assert_eq!(observations[0].model.model_key, "qwen3-0-6b");
+        assert_eq!(
+            observations[0].model.tokenizer_hash,
+            cli_bytes_checksum(br#"{"model":{"vocab":{}}}"#)
+        );
+        assert_eq!(observations[1].hidden_state.bytes, 2048);
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -10470,6 +10708,29 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             expected_guest_engram_state_wait_count,
             guest_engram_state_resolved_count,
             expected_guest_engram_state_resolved_count
+        );
+    }
+    if let Some(store_path) = w5_boundary_observation_store_path(args) {
+        let summary_path =
+            qwen3_guest_summary_file_from_script_output(&combined).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "W5 run used Memory Service store but did not report a summary_file path"
+                )
+            })?;
+        let recorded = record_w5_runtime_boundary_observations_from_summary(
+            store_path,
+            &summary_path,
+            &runtime,
+            args.step_count,
+            prompt_history_tokens.len() as u64,
+            cli_now_us(),
+        )?;
+        println!(
+            "  memory_boundary_observations_recorded: store={} summary={} records={} steps={}",
+            store_path.display(),
+            summary_path.display(),
+            recorded,
+            args.step_count
         );
     }
     Ok(())
@@ -11988,6 +12249,13 @@ fn qwen3_guest_log_dir_from_script_output(output: &str, script_path: &Path) -> O
     let script_dir = script_path.parent()?;
     let root_dir = script_dir.parent()?;
     Some(root_dir.join("logs").join(format!("{run_id}_headless8")))
+}
+
+fn qwen3_guest_summary_file_from_script_output(output: &str) -> Option<PathBuf> {
+    output.lines().find_map(|line| {
+        line.split_once("summary_file: ")
+            .map(|(_, path)| PathBuf::from(path.trim()))
+    })
 }
 
 fn qwen3_guest_read_log_dir(log_dir: &Path) -> anyhow::Result<String> {
