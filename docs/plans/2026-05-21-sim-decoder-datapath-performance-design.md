@@ -328,6 +328,35 @@ Design:
    - prefetch next page or range.
 4. Keep existing `sync_shadow` only as a compatibility mechanism, or fold it into the page cache.
 
+Concrete implementation shape:
+
+1. Store cache ownership in `SimDecMapEntry` in `vendor/qemu_8.2.0_ub/hw/ub/ub_ubc.c`.
+   - Add a `SimDecPageCache *page_cache` pointer or embedded cache state to `SimDecMapEntry`.
+   - Keep the cache per map for simple teardown in `sim_dec_map_entry_destroy()`.
+   - Keep optional global accounting in `SimDecoderState` for total cached pages and global LRU eviction.
+2. Use `(map_id, page_index)` as the logical key.
+   - For Phase 1, prefer per-map `GHashTable` keyed by `page_index`; `map_id` is implicit from the owning `SimDecMapEntry`.
+   - Avoid a flat direct array unless the imported region is small enough, because large imported PA windows can make sparse arrays wasteful.
+3. Suggested initial limits:
+   - page size: 4 KiB fixed first.
+   - per-map cache: env/property default 1024 pages.
+   - global cache: env/property default 8192 pages.
+   - eviction: page-granularity LRU, dirty pages are not introduced until Phase 2.
+4. Locking model:
+   - CPU MemoryRegion callbacks run in QEMU's execution context and currently rely on the existing SIM_DEC state plus `g_sim_decoder->lock` for map list lifetime.
+   - Phase 1 should keep cache lookup/fill serialized by a per-map `QemuMutex` or reuse the SIM_DEC lock only around metadata. Do not hold the global SIM_DEC lock while doing remote read I/O.
+   - Page buffers need stable lifetime during callback execution; unmap should mark the entry inactive under lock, remove the MemoryRegion, then free cache state only in `sim_dec_map_entry_destroy()`.
+5. `sim_dec_cpu_window_read()` is the insertion point:
+   - validate `entry`, `addr`, and `size`.
+   - compute `page_index = addr / page_size` and `page_off = addr % page_size`.
+   - on hit, copy from page buffer into the local `buf`.
+   - on miss, fetch a page-aligned range with `ubc_sim_dec_remote_read()`, insert cache entry, then return requested bytes.
+   - prefetch should be triggered after a miss or sequential hit by enqueueing the next page/range; keep it disabled by default until counters prove benefit.
+6. `sync_shadow` migration:
+   - current `SIM_DEC_OP_SYNC` fills `entry->sync_shadow` by reading from home and `sim_dec_cpu_window_read()` can return from that shadow range.
+   - Phase 1 may keep this path as compatibility, but page cache should become the primary read-hit path.
+   - Once page cache is stable, `sim_dec_handle_sync()` should populate/invalidate page-cache entries instead of maintaining a separate full-size `sync_shadow` allocation.
+
 Constraints:
 
 1. Read cache must be invalidated on unmap.
@@ -393,6 +422,27 @@ Required guest-facing interfaces:
    - any future ioctl/API that promises remote visibility
 4. QEMU SIM_DEC should treat `SIM_DEC_OP_SYNC` as the initial backend operation for this contract, or split a new `SIM_DEC_OP_BARRIER` if read-cache invalidation and writeback ordering need different semantics.
 5. The sync response must carry success/failure status. On failure, OBMM must not report the flush/drain/unmap operation as cleanly completed.
+
+Existing code paths to modify:
+
+1. Guest SIM_DEC service already exposes `ub_sim_decoder_sync()` in:
+   - `guest-linux/kernel_ub/drivers/ub/ubus/sim/ub_sim_decoder_service.c`
+   - `guest-linux/kernel_ub/drivers/ub/ubus/sim/ub_sim_decoder_backend.c`
+   - `guest-linux/kernel_ub/drivers/ub/ubus/sim/ub_sim_decoder.h`
+2. OBMM already has a user-triggered remote sync path:
+   - `guest-linux/kernel_ub/drivers/ub/obmm/obmm_shm_dev.c`
+   - `obmm_shm_sync_remote_range()`
+   - `OBMM_SHMDEV_SYNC_REMOTE_RANGE`
+3. OBMM cache/ownership paths that must gain writeback-aware sync calls:
+   - `guest-linux/kernel_ub/drivers/ub/obmm/obmm_import.c`
+   - `flush_import_region()`
+   - `release_import_memory()`, before `obmm_sim_dec_unmap_import()` removes the SIM_DEC map
+   - ownership update paths in `obmm_shm_dev.c` that already call `flush_import_region()`
+4. QEMU already registers `SIM_DEC_OP_SYNC` in:
+   - `vendor/qemu_8.2.0_ub/hw/ub/ub_ubc.c`
+   - `ubc_handle_sim_dec_message()`
+   - `sim_dec_handle_sync()`
+5. Current QEMU `SIM_DEC_OP_SYNC` semantics are read-side shadow fill: it calls `ubc_sim_dec_remote_read()` and extends `sync_valid_off/sync_valid_len`. Phase 2 must not silently reuse that as a write barrier. Either extend `SIM_DEC_OP_SYNC` with flags/versioned payload, or add `SIM_DEC_OP_BARRIER` for writeback completion.
 
 Acceptance:
 
@@ -497,6 +547,27 @@ Acceptance:
 
 Goal: validate data-plane performance without coupling to real inference.
 
+Test infrastructure:
+
+1. Use the existing custom guest-demo and host-script style, not kselftest for the first implementation.
+2. Add a small dedicated guest binary under `guest-linux/aarch64/apps/`, for example `obmm_import_stress/obmm_import_stress.c`.
+   - It should export/import an OBMM region, mmap imported memory, run deterministic read/write patterns, call `OBMM_SHMDEV_SYNC_REMOTE_RANGE` when needed, and verify checksums.
+   - Reuse helper code from `guest-linux/aarch64/apps/obmm_queue_demo/obmm_pool_helpers.h` only if it avoids pulling queue-specific assumptions into the stress tool.
+3. Add a host runner next to existing OBMM scripts:
+   - `guest-linux/aarch64/scripts/run_ub_dual_node_obmm_import_stress.sh`
+   - four/eight-node runners can come later after the dual-node path is stable.
+4. Build integration should follow `guest-linux/aarch64/scripts/build_initramfs.sh`.
+   - Add the stress binary to the initramfs image.
+   - Keep command-line knobs as environment variables on the runner and argv/options in the guest binary.
+5. Stress mode should be a guest user-space CLI mode, not a QEMU launch mode.
+   - QEMU properties/env should only control backend behavior such as cache size, write mode, batching, and counter verbosity.
+   - The guest CLI controls workload shape: size, pattern, iterations, flush mode, and verification mode.
+6. Counter output should start as structured QEMU log lines and guest summary lines.
+   - QEMU shutdown/periodic line prefix: `SIM_DEC_STATS`.
+   - Guest binary line prefix: `[obmm_import_stress]`.
+   - Use stable `key=value` fields so runners can parse them with `rg`/`awk`.
+   - QEMU monitor or QMP exposure can be a later improvement after the counter schema is stable.
+
 Workload dimensions:
 
 1. Read pattern:
@@ -574,17 +645,33 @@ The existing Unix socket path is valuable for debugging and should remain availa
 3. easier failure injection
 4. lower implementation risk
 
-## 8. Suggested Work Order
+## 8. Phase Dependencies And Priority
+
+The phases are not fully independent:
+
+1. Phase 0 is mandatory first. Without counters and an OBMM-only stress target, later changes cannot be evaluated without coupling to Qwen/W4/W5 inference behavior.
+2. Phase 1 is independently useful. Read caching can reduce synchronous read traffic even before batched transport exists.
+3. Phase 2 has two separable parts:
+   - correctness plumbing: explicit sync/barrier interface, dirty tracking, failure propagation.
+   - performance payoff: write coalescing plus async writeback.
+4. Phase 2 correctness plumbing should start before Phase 3, because Phase 3 batching must know the barrier/completion contract it is implementing.
+5. Phase 2 performance payoff is limited without Phase 3. Coalescing still reduces packet count, but if each flush is still many socket writes with file-kick wakeups, the improvement is bounded.
+6. Phase 3 should therefore begin after the Phase 2 sync/barrier contract is defined, not after every writeback policy is complete.
+7. Phase 4 can proceed in parallel after Phase 0 counters exist, because SIM_UMMU IOTLB improvements benefit SIM_DEC and UDMA/URMA paths independently.
+8. Phase 5 is not last in practice. The minimal dual-node stress CLI belongs in Phase 0 and should expand with each later phase.
+
+## 9. Suggested Work Order
 
 1. Add instrumentation and a dedicated OBMM imported-PA stress CLI.
 2. Add page read cache for CPU-window reads.
-3. Add the explicit guest-facing sync/barrier interface, then add write-back/write-combine mode behind an explicit feature flag.
-4. Add batched SIM_DEC socket messages.
-5. Add shared-memory ring transport.
-6. Improve UMMU IOTLB capacity/replacement and add range cache.
-7. Promote optimized mode from opt-in to default only after stress correctness passes.
+3. Add the explicit guest-facing sync/barrier interface and QEMU completion semantics.
+4. Add batched SIM_DEC socket messages that understand barrier epochs.
+5. Add write-back/write-combine mode behind an explicit feature flag.
+6. Add shared-memory ring transport behind the same completion contract.
+7. Improve SIM_UMMU IOTLB capacity/replacement and add range cache.
+8. Promote optimized mode from opt-in to default only after stress correctness passes.
 
-## 9. Open Decisions
+## 10. Open Decisions
 
 1. Default cache mode:
    - conservative `write-through`
@@ -601,7 +688,7 @@ The existing Unix socket path is valuable for debugging and should remain availa
 5. Failure contract:
    - should CPU load failure return zero, raise an emulated fault, or record RAS/error state?
 
-## 10. Near-Term Acceptance Target
+## 11. Near-Term Acceptance Target
 
 The next implementation milestone should not be tied to Qwen/W4/W5 inference. It should be a focused OBMM imported-PA stress suite:
 
