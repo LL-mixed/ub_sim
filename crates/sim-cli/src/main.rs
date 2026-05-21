@@ -4579,6 +4579,14 @@ fn w5_memory_decision_env_vars(
                     "SIM_W5_MEMORY_SHORTPATH_PRODUCER_POSITION".to_string(),
                     artifact.producer_boundary.position.to_string(),
                 ),
+                (
+                    "SIM_W5_MEMORY_SHORTPATH_BOUNDARY_HIDDEN_BYTES".to_string(),
+                    artifact.boundary_hidden_fingerprint.bytes.to_string(),
+                ),
+                (
+                    "SIM_W5_MEMORY_SHORTPATH_BOUNDARY_HIDDEN_CHECKSUM".to_string(),
+                    artifact.boundary_hidden_fingerprint.checksum.to_string(),
+                ),
             ]);
         }
         if let Some(published) = publication.and_then(|published| published.shortpath_ref.as_ref())
@@ -4722,7 +4730,7 @@ fn w5_memory_shortpath_stream_env(
             let target_start = entry.decision.target_layer_start?;
             let target_end = entry.decision.target_layer_end?;
             Some(format!(
-                "{}:{}:{}:{}:{}:{}:{}:{}",
+                "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
                 artifact.producer_boundary.step_index,
                 artifact.producer_boundary.layer_start,
                 artifact.producer_boundary.layer_end,
@@ -4730,7 +4738,9 @@ fn w5_memory_shortpath_stream_env(
                 target_end,
                 published.ref_hex,
                 decision_id,
-                artifact_id
+                artifact_id,
+                artifact.boundary_hidden_fingerprint.bytes,
+                artifact.boundary_hidden_fingerprint.checksum
             ))
         })
         .collect()
@@ -10192,6 +10202,13 @@ stage qwen3_range_forward_runtime_output_publish node=2
         assert!(env_vars.iter().any(|(key, value)| {
             key == "SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_END" && value == "8"
         }));
+        assert!(env_vars.iter().any(|(key, value)| {
+            key == "SIM_W5_MEMORY_SHORTPATH_BOUNDARY_HIDDEN_BYTES" && value == "16"
+        }));
+        assert!(env_vars.iter().any(|(key, value)| {
+            key == "SIM_W5_MEMORY_SHORTPATH_BOUNDARY_HIDDEN_CHECKSUM"
+                && value == &0x4444_4444_u64.to_string()
+        }));
         assert!(env_vars.iter().any(
             |(key, value)| key == "SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF" && value.len() == 128
         ));
@@ -10199,7 +10216,10 @@ stage qwen3_range_forward_runtime_output_publish node=2
             key == "SIM_W5_MEMORY_SHORTPATH_STREAM"
                 && value.starts_with("3:4:8:8:8:")
                 && value.contains(":shortpath-decision/boundary/step3/node4:")
-                && value.ends_with(":artifact/logits/step3/node4")
+                && value.ends_with(&format!(
+                    ":artifact/logits/step3/node4:16:{}",
+                    0x4444_4444_u64
+                ))
         }));
         assert!(env_vars
             .iter()

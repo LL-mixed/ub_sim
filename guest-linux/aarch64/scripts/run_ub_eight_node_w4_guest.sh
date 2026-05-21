@@ -818,8 +818,11 @@ validate_node_log() {
     w5_memory_shortpath_node_skips_range_compute "$idx" 0; then
     shortpath_node_skips=1
     shortpath_target_layer_start="$(w5_memory_shortpath_target_layer_start_for_step 0)"
+    if rg -q "\\[w4_guest\\] stage qwen3_w5_memory_shortpath_downstream_continue node=${idx} " "$log_file"; then
+      shortpath_node_skips=0
+    fi
   fi
-  if w5_memory_shortpath_execute_jump_to_terminal; then
+  if w5_memory_shortpath_execute_jump_to_terminal && (( shortpath_node_skips == 1 )); then
     engram_candidates_owner_node="$SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE"
     terminal_publish_node="$SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE"
   fi
@@ -938,7 +941,7 @@ validate_node_log() {
       if [[ "$SIM_QWEN3_GUEST_ENGRAM" == "1" ]]; then
         assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_engram_candidates_publish local=node${engram_candidates_owner_node} step=[0-9]+ candidate_count=[1-9][0-9]* candidates_key=qwen3/session/[^/]+/step/[0-9]+/candidates/topk candidates_version=1 candidates_checksum=0x[0-9a-f]+ epoch=[0-9]+ seq=[0-9]+ backing=obmm_pool metadata=db queue=obmm_spsc status=ok" "$node_id qwen3 engram candidates publish" || return 1
         assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_engram_selected_token_wait step=[0-9]+ object_key=qwen3/session/[^/]+/step/[0-9]+/tokens/selected owner=node${SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE} version=1 bytes=64 token=[0-9]+ checksum=0x[0-9a-f]+ source=obmm_object_service status=ok" "$node_id qwen3 engram selected token wait" || return 1
-        if w5_memory_shortpath_execute_jump_to_terminal; then
+        if w5_memory_shortpath_execute_jump_to_terminal && (( shortpath_node_skips == 1 )); then
           assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_engram_selected_writeback local=node${SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE} step=[0-9]+ selected_token=[0-9]+ source=engram_selected_object target=memory_shortpath_terminal_token_result status=ok" "$node_id qwen3 engram selected writeback" || return 1
         else
           assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_engram_selected_writeback local=node8 step=[0-9]+ selected_token=[0-9]+ source=engram_selected_object target=terminal_token_result status=ok" "$node_id qwen3 engram selected writeback" || return 1

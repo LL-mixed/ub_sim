@@ -5748,6 +5748,7 @@ int w4_db_obmm_service_v0_wait_terminal_token_result(struct w4_db_service *svc,
     struct w4_db_cluster_runtime *rt = &g_w4_db_cluster_runtime;
     char token_result_key[96];
     long deadline;
+    bool first_scan = true;
 
     if (!svc) {
         return -1;
@@ -5758,7 +5759,8 @@ int w4_db_obmm_service_v0_wait_terminal_token_result(struct w4_db_service *svc,
              w4_db_qwen3_model_key(),
              decode_step);
     deadline = obmm_now_ms() + (long)timeout_ms;
-    while (obmm_now_ms() < deadline) {
+    while (first_scan || obmm_now_ms() < deadline) {
+        first_scan = false;
         if (w4_db_cluster_runtime_init(rt) == 0) {
             for (int owner_idx = 0; owner_idx < rt->node_count; ++owner_idx) {
                 struct w4_db_cluster_payload_compact_summary compact;
@@ -5820,12 +5822,17 @@ int w4_db_obmm_service_v0_wait_terminal_token_result(struct w4_db_service *svc,
                 }
             }
         }
+        if (timeout_ms == 0) {
+            break;
+        }
         usleep(10000);
     }
-    printf("[w4_guest] gap qwen3_terminal_token_result_wait=timeout step=%" PRIu64
-           " object_key=%s\n",
-           decode_step,
-           token_result_key);
+    if (timeout_ms != 0) {
+        printf("[w4_guest] gap qwen3_terminal_token_result_wait=timeout step=%" PRIu64
+               " object_key=%s\n",
+               decode_step,
+               token_result_key);
+    }
     return -1;
 }
 

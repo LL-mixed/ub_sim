@@ -1278,18 +1278,24 @@ break in the execution path while still keeping the standalone CLI command for
 inspection and reproducible debugging. By default this validates and exposes
 the shortpath artifact without changing decode output. Passing
 `--memory-shortpath-execute` forwards `SIM_W5_MEMORY_SHORTPATH_EXECUTE=1`; when
-the decision is `jump-to-terminal`, the terminal node reads the verified logits
-artifact and publishes that token record as the step result. The W5 entrypoint
-also accepts `--memory-shortpath-decision-ids` for a launch-time per-step
-shortpath stream. It loads each audited decision, validates each verified
-artifact against the selected runtime, publishes every artifact payload into the
-Lingqu Object Service checkpoint, and forwards
-`SIM_W5_MEMORY_SHORTPATH_STREAM` entries keyed by decode step. The guest
-selects only the stream entry matching the current step and boundary; if a step
-has no entry, it continues through the normal range-forward path instead of
-reusing another step's logits. With W5 Engram enabled, execute additionally
-requires every logits artifact producer node to match `--engram-owner-node`;
-that producer boundary publishes candidates, runs Engram selection, writes the
+the decision is `jump-to-terminal`, only the artifact producer boundary may
+consume the logits artifact. The producer first compares the artifact
+`boundary_hidden_fingerprint` with the live range-exit hidden bytes/checksum.
+On mismatch or missing fingerprint, the guest records `shortpath_rejected` and
+continues normal range-forward execution; it must not publish terminal logits,
+must not trigger downstream skip, and must not let the terminal node reload the
+artifact directly. The W5 entrypoint also accepts
+`--memory-shortpath-decision-ids` for a launch-time per-step shortpath stream.
+It loads each audited decision, validates each verified artifact against the
+selected runtime, publishes every artifact payload into the Lingqu Object
+Service checkpoint, and forwards `SIM_W5_MEMORY_SHORTPATH_STREAM` entries keyed
+by decode step plus artifact boundary hidden bytes/checksum. The guest selects
+only the stream entry matching the current step and boundary; if a step has no
+entry or the fingerprint does not match the live boundary, it continues through
+the normal range-forward path instead of reusing another step's logits. With W5
+Engram enabled, execute additionally requires every logits artifact producer
+node to match `--engram-owner-node`; that producer boundary publishes
+candidates, runs Engram selection, writes the
 selected token back into the terminal-token record, and only then publishes the
 shortpath result.
 When `--memory-boundary-observation-id` is provided instead of
@@ -1447,9 +1453,11 @@ store; missing Memory Service evidence is a hard failure.
   `steps=1 && artifact_step=0` host restriction. The entrypoint can load a CSV
   of audited decision ids via `--memory-shortpath-decision-ids`, publish all
   referenced logits artifacts into the Object Service snapshot, and pass a
-  step-indexed `SIM_W5_MEMORY_SHORTPATH_STREAM` to the guest. The guest parser
-  validates stream entries as terminal-logits ObjectRefs and selects only the
-  entry for the current decode step. A 14B one-step W5 Engram run using a
+  step-indexed `SIM_W5_MEMORY_SHORTPATH_STREAM` to the guest. The stream
+  contract now includes the artifact boundary hidden bytes/checksum, and the
+  guest only executes a jump after the producer boundary's live hidden
+  fingerprint matches. Stale artifacts are rejected as an optimization miss and
+  normal range-forward continues. A 14B one-step W5 Engram run using a
   Memory Service shortpath artifact passed with token `[11]` and text `,`,
   exercising the new stream consumer. A follow-up attempt to build a two-step
   0.6B stream exposed an unrelated baseline failure in non-shortpath node8
