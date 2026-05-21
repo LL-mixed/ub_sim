@@ -1082,6 +1082,15 @@ impl LingquMemoryDurableStore {
         QueryResult::from_json_bytes(&bytes)
     }
 
+    pub fn load_query_result_by_id(
+        &mut self,
+        result_id: &str,
+    ) -> MemoryResult<(LingquDfsPath, QueryResult)> {
+        let path = query_result_dfs_path(result_id)?;
+        let result = self.load_query_result(&path)?;
+        Ok((path, result))
+    }
+
     pub fn load_query_result_audit_manifest(&mut self) -> MemoryResult<Vec<QueryResult>> {
         Ok(self
             .load_query_result_audit_entries(false, "load query result audit")?

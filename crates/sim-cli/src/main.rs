@@ -2547,7 +2547,7 @@ fn run_lingqu_memory_lookup_prefix_cache_cli(args: &[String]) -> anyhow::Result<
 }
 
 fn run_lingqu_memory_query_cli(args: &[String]) -> anyhow::Result<()> {
-    let catalog_path = PathBuf::from(required_cli_arg(args, "--catalog")?);
+    let catalog_path = optional_cli_path(args, "--catalog")?;
     let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
     let query_embedding_path = PathBuf::from(required_cli_arg(args, "--query-embedding-json")?);
     let query_id = required_cli_arg(args, "--query-id")?;
@@ -2558,8 +2558,11 @@ fn run_lingqu_memory_query_cli(args: &[String]) -> anyhow::Result<()> {
         anyhow::bail!("--top-k must be non-zero");
     }
     let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
-    let snapshot =
-        load_required_lingqu_memory_catalog_snapshot(args, &catalog_path, &mut durable_store)?;
+    let snapshot = load_required_lingqu_memory_catalog_snapshot_optional(
+        args,
+        catalog_path.as_deref(),
+        &mut durable_store,
+    )?;
     let query_embedding_bytes = fs::read(&query_embedding_path).with_context(|| {
         format!(
             "read query embedding json {}",
@@ -2613,7 +2616,10 @@ fn run_lingqu_memory_query_cli(args: &[String]) -> anyhow::Result<()> {
     println!("lingqu_memory_service");
     println!("  mode: query");
     println!("  catalog: {}", snapshot.catalog.catalog_id);
-    println!("  catalog_path: {}", catalog_path.display());
+    println!(
+        "  catalog_path: {}",
+        cli_optional_path_display(catalog_path.as_deref())
+    );
     println!("  store_path: {}", store_path.display());
     println!("  query_id: {query_id}");
     println!("  query_result: {}", result.result_id);
@@ -2686,6 +2692,33 @@ fn run_lingqu_memory_list_query_results_cli(args: &[String]) -> anyhow::Result<(
         );
     }
     Ok(())
+}
+
+fn load_lingqu_memory_query_result_from_cli(
+    args: &[String],
+    durable_store: &mut LingquMemoryDurableStore,
+) -> anyhow::Result<(LingquDfsPath, QueryResult)> {
+    match (
+        optional_cli_arg(args, "--query-result-id")?,
+        optional_cli_arg(args, "--query-result-manifest")?,
+    ) {
+        (Some(result_id), None) => durable_store
+            .load_query_result_by_id(&result_id)
+            .with_context(|| format!("load query result `{result_id}` from durable DFS")),
+        (None, Some(manifest)) => {
+            let path = LingquDfsPath::new(manifest);
+            let result = durable_store
+                .load_query_result(&path)
+                .context("load query result manifest")?;
+            Ok((path, result))
+        }
+        (Some(_), Some(_)) => {
+            anyhow::bail!("pass either --query-result-id or --query-result-manifest, not both")
+        }
+        (None, None) => {
+            anyhow::bail!("missing required argument --query-result-id or --query-result-manifest")
+        }
+    }
 }
 
 fn run_lingqu_memory_list_boundary_observations_cli(args: &[String]) -> anyhow::Result<()> {
@@ -3017,10 +3050,9 @@ fn validate_lingqu_memory_query_embedding_input(
 }
 
 fn run_lingqu_memory_materialize_hot_state_cli(args: &[String]) -> anyhow::Result<()> {
-    let catalog_path = PathBuf::from(required_cli_arg(args, "--catalog")?);
+    let catalog_path = optional_cli_path(args, "--catalog")?;
     let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
     let object_store_path = PathBuf::from(required_cli_arg(args, "--object-store")?);
-    let query_result_manifest = required_cli_arg(args, "--query-result-manifest")?;
     let state_id = required_cli_arg(args, "--state-id")?;
     let hot_state_path = PathBuf::from(required_cli_arg(args, "--hot-state")?);
     let owner_entity = optional_cli_u64(args, "--owner-entity")?.unwrap_or(0);
@@ -3028,12 +3060,14 @@ fn run_lingqu_memory_materialize_hot_state_cli(args: &[String]) -> anyhow::Resul
     let now_us = optional_cli_u64(args, "--now-us")?.unwrap_or(1);
 
     let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
-    let snapshot =
-        load_required_lingqu_memory_catalog_snapshot(args, &catalog_path, &mut durable_store)?;
-    let query_result_path = LingquDfsPath::new(query_result_manifest);
-    let query_result = durable_store
-        .load_query_result(&query_result_path)
-        .context("load query result manifest")?;
+    let snapshot = load_required_lingqu_memory_catalog_snapshot_optional(
+        args,
+        catalog_path.as_deref(),
+        &mut durable_store,
+    )?;
+    let (query_result_path, query_result) =
+        load_lingqu_memory_query_result_from_cli(args, &mut durable_store)
+            .context("load query result")?;
 
     let mut memory_service = LingquMemoryService::new();
     memory_service
@@ -3079,7 +3113,10 @@ fn run_lingqu_memory_materialize_hot_state_cli(args: &[String]) -> anyhow::Resul
     println!("lingqu_memory_service");
     println!("  mode: materialize-hot-state");
     println!("  catalog: {}", snapshot.catalog.catalog_id);
-    println!("  catalog_path: {}", catalog_path.display());
+    println!(
+        "  catalog_path: {}",
+        cli_optional_path_display(catalog_path.as_deref())
+    );
     println!("  store_path: {}", store_path.display());
     println!("  object_store_path: {}", object_store_path.display());
     println!("  query_result: {}", query_result.result_id);
@@ -4782,7 +4819,7 @@ fn run_lingqu_memory_publish_w5_engram_state_ref_cli(args: &[String]) -> anyhow:
 }
 
 fn run_lingqu_memory_build_index_cli(args: &[String]) -> anyhow::Result<()> {
-    let catalog_path = PathBuf::from(required_cli_arg(args, "--catalog")?);
+    let catalog_path = optional_cli_path(args, "--catalog")?;
     let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
     let embedding_path = PathBuf::from(required_cli_arg(args, "--embedding-json")?);
     let index_id = required_cli_arg(args, "--index-id")?;
@@ -4790,8 +4827,11 @@ fn run_lingqu_memory_build_index_cli(args: &[String]) -> anyhow::Result<()> {
     let now_us = optional_cli_u64(args, "--now-us")?.unwrap_or(1);
 
     let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
-    let snapshot =
-        load_required_lingqu_memory_catalog_snapshot(args, &catalog_path, &mut durable_store)?;
+    let snapshot = load_required_lingqu_memory_catalog_snapshot_optional(
+        args,
+        catalog_path.as_deref(),
+        &mut durable_store,
+    )?;
     let embedding_bytes = fs::read(&embedding_path)
         .with_context(|| format!("read embedding json {}", embedding_path.display()))?;
     let embedding_input = serde_json::from_slice::<LingquMemoryEmbeddingInput>(&embedding_bytes)
@@ -4882,7 +4922,7 @@ fn run_lingqu_memory_build_index_cli(args: &[String]) -> anyhow::Result<()> {
         .export_catalog_snapshot(&catalog.catalog_id)
         .context("export updated catalog snapshot")?;
 
-    write_lingqu_memory_catalog_snapshot(&catalog_path, &updated_snapshot)?;
+    write_lingqu_memory_catalog_snapshot_if_requested(catalog_path.as_deref(), &updated_snapshot)?;
     durable_store
         .persist_catalog_snapshot(&updated_snapshot)
         .context("persist catalog snapshot to durable DFS")?;
@@ -4891,7 +4931,10 @@ fn run_lingqu_memory_build_index_cli(args: &[String]) -> anyhow::Result<()> {
     println!("lingqu_memory_service");
     println!("  mode: build-index");
     println!("  catalog: {}", catalog.catalog_id);
-    println!("  catalog_path: {}", catalog_path.display());
+    println!(
+        "  catalog_path: {}",
+        cli_optional_path_display(catalog_path.as_deref())
+    );
     println!("  store_path: {}", store_path.display());
     println!("  index: {index_id}");
     println!("  segment: {segment_id}");
@@ -4937,7 +4980,7 @@ fn validate_lingqu_memory_embedding_input(
 }
 
 fn run_lingqu_memory_update_record_state_cli(args: &[String]) -> anyhow::Result<()> {
-    let catalog_path = PathBuf::from(required_cli_arg(args, "--catalog")?);
+    let catalog_path = optional_cli_path(args, "--catalog")?;
     let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
     let catalog_id = required_cli_arg(args, "--catalog-id")?;
     let record_id = required_cli_arg(args, "--record-id")?;
@@ -4948,8 +4991,11 @@ fn run_lingqu_memory_update_record_state_cli(args: &[String]) -> anyhow::Result<
     let now_us = optional_cli_u64(args, "--now-us")?.unwrap_or(1);
 
     let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
-    let snapshot =
-        load_required_lingqu_memory_catalog_snapshot(args, &catalog_path, &mut durable_store)?;
+    let snapshot = load_required_lingqu_memory_catalog_snapshot_optional(
+        args,
+        catalog_path.as_deref(),
+        &mut durable_store,
+    )?;
     let mut memory_service = LingquMemoryService::new();
     memory_service
         .import_catalog_snapshot(snapshot)
@@ -4961,7 +5007,7 @@ fn run_lingqu_memory_update_record_state_cli(args: &[String]) -> anyhow::Result<
         .export_catalog_snapshot(&catalog_id)
         .context("export updated catalog snapshot")?;
 
-    write_lingqu_memory_catalog_snapshot(&catalog_path, &updated_snapshot)?;
+    write_lingqu_memory_catalog_snapshot_if_requested(catalog_path.as_deref(), &updated_snapshot)?;
     durable_store
         .persist_catalog_snapshot(&updated_snapshot)
         .context("persist catalog snapshot to durable DFS")?;
@@ -4973,7 +5019,10 @@ fn run_lingqu_memory_update_record_state_cli(args: &[String]) -> anyhow::Result<
     println!("lingqu_memory_service");
     println!("  mode: update-record-state");
     println!("  catalog: {catalog_id}");
-    println!("  catalog_path: {}", catalog_path.display());
+    println!(
+        "  catalog_path: {}",
+        cli_optional_path_display(catalog_path.as_deref())
+    );
     println!("  store_path: {}", store_path.display());
     println!("  record: {record_id}");
     println!("  state: {:?}", updated.state);
@@ -4997,7 +5046,7 @@ fn memory_record_state_from_cli(value: &str) -> anyhow::Result<MemoryRecordState
 }
 
 fn run_lingqu_memory_ingest_cli(args: &[String]) -> anyhow::Result<()> {
-    let catalog_path = PathBuf::from(required_cli_arg(args, "--catalog")?);
+    let catalog_path = optional_cli_path(args, "--catalog")?;
     let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
     let source_path = PathBuf::from(required_cli_arg(args, "--source")?);
     let token_count = required_cli_u32(args, "--token-count")?;
@@ -5023,7 +5072,7 @@ fn run_lingqu_memory_ingest_cli(args: &[String]) -> anyhow::Result<()> {
 
     let existing_snapshot = load_lingqu_memory_catalog_snapshot_from_file_or_store(
         args,
-        &catalog_path,
+        catalog_path.as_deref(),
         &mut durable_store,
     )?;
     let catalog_existed = existing_snapshot.is_some();
@@ -5124,7 +5173,7 @@ fn run_lingqu_memory_ingest_cli(args: &[String]) -> anyhow::Result<()> {
         .export_catalog_snapshot(&catalog.catalog_id)
         .context("export updated catalog snapshot")?;
 
-    write_lingqu_memory_catalog_snapshot(&catalog_path, &snapshot)?;
+    write_lingqu_memory_catalog_snapshot_if_requested(catalog_path.as_deref(), &snapshot)?;
     durable_store
         .persist_catalog_snapshot(&snapshot)
         .context("persist catalog snapshot to durable DFS")?;
@@ -5133,7 +5182,10 @@ fn run_lingqu_memory_ingest_cli(args: &[String]) -> anyhow::Result<()> {
     println!("lingqu_memory_service");
     println!("  mode: ingest");
     println!("  catalog: {}", catalog.catalog_id);
-    println!("  catalog_path: {}", catalog_path.display());
+    println!(
+        "  catalog_path: {}",
+        cli_optional_path_display(catalog_path.as_deref())
+    );
     println!("  store_path: {}", store_path.display());
     println!("  record: {record_id}");
     println!("  chunk: {chunk_id}");
@@ -5163,6 +5215,15 @@ fn optional_cli_arg(args: &[String], name: &'static str) -> anyhow::Result<Optio
         index += 1;
     }
     Ok(None)
+}
+
+fn optional_cli_path(args: &[String], name: &'static str) -> anyhow::Result<Option<PathBuf>> {
+    Ok(optional_cli_arg(args, name)?.map(PathBuf::from))
+}
+
+fn cli_optional_path_display(path: Option<&Path>) -> String {
+    path.map(|path| path.display().to_string())
+        .unwrap_or_else(|| "<durable-store>".to_string())
 }
 
 fn cli_flag(args: &[String], name: &'static str) -> bool {
@@ -5946,11 +6007,13 @@ fn load_lingqu_memory_catalog_snapshot_if_exists(
 
 fn load_lingqu_memory_catalog_snapshot_from_file_or_store(
     args: &[String],
-    path: &Path,
+    path: Option<&Path>,
     store: &mut LingquMemoryDurableStore,
 ) -> anyhow::Result<Option<MemoryCatalogSnapshot>> {
-    if let Some(snapshot) = load_lingqu_memory_catalog_snapshot_if_exists(path)? {
-        return Ok(Some(snapshot));
+    if let Some(path) = path {
+        if let Some(snapshot) = load_lingqu_memory_catalog_snapshot_if_exists(path)? {
+            return Ok(Some(snapshot));
+        }
     }
     let Some(catalog_id) = optional_cli_arg(args, "--catalog-id")? else {
         return Ok(None);
@@ -5964,15 +6027,15 @@ fn load_lingqu_memory_catalog_snapshot_from_file_or_store(
     }
 }
 
-fn load_required_lingqu_memory_catalog_snapshot(
+fn load_required_lingqu_memory_catalog_snapshot_optional(
     args: &[String],
-    path: &Path,
+    path: Option<&Path>,
     store: &mut LingquMemoryDurableStore,
 ) -> anyhow::Result<MemoryCatalogSnapshot> {
     load_lingqu_memory_catalog_snapshot_from_file_or_store(args, path, store)?.ok_or_else(|| {
+        let source = cli_optional_path_display(path);
         anyhow::anyhow!(
-            "catalog snapshot does not exist: {}; pass --catalog-id to load it from durable store",
-            path.display()
+            "catalog snapshot does not exist: {source}; pass --catalog-id to load it from durable store"
         )
     })
 }
@@ -5994,6 +6057,16 @@ fn write_lingqu_memory_catalog_snapshot(
             .with_context(|| format!("create catalog dir {}", parent.display()))?;
     }
     fs::write(path, bytes).with_context(|| format!("write catalog {}", path.display()))
+}
+
+fn write_lingqu_memory_catalog_snapshot_if_requested(
+    path: Option<&Path>,
+    snapshot: &MemoryCatalogSnapshot,
+) -> anyhow::Result<()> {
+    if let Some(path) = path {
+        write_lingqu_memory_catalog_snapshot(path, snapshot)?;
+    }
+    Ok(())
 }
 
 fn memory_content_type_from_path(path: &Path) -> MemoryContentType {
@@ -10090,6 +10163,54 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
     }
 
     #[test]
+    fn lingqu_memory_ingest_cli_can_use_durable_catalog_only() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_lingqu_memory_ingest_durable_only_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let source = root.join("note.md");
+        let store = root.join("store.json");
+        fs::write(&source, b"# Note\nreal durable-only memory source\n").expect("write source");
+
+        run_lingqu_memory_ingest_cli(&[
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--source".to_string(),
+            source.to_string_lossy().into_owned(),
+            "--catalog-id".to_string(),
+            "corpus/durable-only".to_string(),
+            "--namespace".to_string(),
+            "project/test".to_string(),
+            "--record-id".to_string(),
+            "record/durable/0".to_string(),
+            "--chunk-id".to_string(),
+            "chunk/durable/0".to_string(),
+            "--token-count".to_string(),
+            "5".to_string(),
+            "--embedding-model-version".to_string(),
+            "embed/test/v1".to_string(),
+        ])
+        .expect("ingest with durable catalog only");
+
+        let store_bytes = fs::read(&store).expect("read store");
+        let durable_snapshot =
+            LingquDurableSimSnapshot::from_json_bytes(&store_bytes).expect("decode durable store");
+        let mut durable_store =
+            LingquMemoryDurableStore::import_durable_sim_snapshot(durable_snapshot)
+                .expect("import durable store");
+        let restored_catalog = durable_store
+            .load_catalog_snapshot(&sim_memory::LingquDfsPath::new(
+                "/lingqu/memory/corpus/corpus_durable-only/catalog.json",
+            ))
+            .expect("load durable-only catalog snapshot");
+        assert_eq!(restored_catalog.catalog.catalog_id, "corpus/durable-only");
+        assert_eq!(restored_catalog.records[0].record_id, "record/durable/0");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn lingqu_memory_build_index_cli_persists_flat_index() {
         let root = std::env::temp_dir().join(format!(
             "ub_sim_lingqu_memory_build_index_cli_{}",
@@ -10136,11 +10257,12 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             "embed/test/v1".to_string(),
         ])
         .expect("ingest");
+        fs::remove_file(&catalog).expect("remove catalog file before durable restart build-index");
         run_lingqu_memory_build_index_cli(&[
-            "--catalog".to_string(),
-            catalog.to_string_lossy().into_owned(),
             "--store".to_string(),
             store.to_string_lossy().into_owned(),
+            "--catalog-id".to_string(),
+            "corpus/test".to_string(),
             "--embedding-json".to_string(),
             embeddings.to_string_lossy().into_owned(),
             "--index-id".to_string(),
@@ -10150,9 +10272,17 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
         ])
         .expect("build index");
 
-        let catalog_bytes = fs::read(&catalog).expect("read catalog");
-        let snapshot =
-            MemoryCatalogSnapshot::from_json_bytes(&catalog_bytes).expect("decode catalog");
+        let store_bytes = fs::read(&store).expect("read store");
+        let durable_snapshot =
+            LingquDurableSimSnapshot::from_json_bytes(&store_bytes).expect("decode durable store");
+        let mut durable_store =
+            LingquMemoryDurableStore::import_durable_sim_snapshot(durable_snapshot)
+                .expect("import durable store");
+        let snapshot = durable_store
+            .load_catalog_snapshot(&sim_memory::LingquDfsPath::new(
+                "/lingqu/memory/corpus/corpus_test/catalog.json",
+            ))
+            .expect("load durable catalog snapshot");
         assert_eq!(snapshot.vector_indexes.len(), 1);
         assert_eq!(snapshot.embedding_segments.len(), 1);
         assert_eq!(snapshot.vector_indexes[0].index_id, "index/test/flat");
@@ -10160,14 +10290,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
         assert_eq!(snapshot.embedding_segments[0].row_count, 1);
         assert_eq!(snapshot.embedding_segments[0].dims, 2);
 
-        let store_bytes = fs::read(&store).expect("read store");
-        let durable_snapshot =
-            LingquDurableSimSnapshot::from_json_bytes(&store_bytes).expect("decode durable store");
-        let store_snapshot =
-            LingquMemoryDurableStore::import_durable_sim_snapshot(durable_snapshot)
-                .expect("import durable store")
-                .export_snapshot()
-                .expect("export legacy view");
+        let store_snapshot = durable_store.export_snapshot().expect("export legacy view");
         assert_eq!(store_snapshot.block_payloads.len(), 2);
         let _ = fs::remove_dir_all(&root);
     }
@@ -10407,7 +10530,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
     }
 
     #[test]
-    fn lingqu_memory_materialize_hot_state_cli_uses_query_result_manifest() {
+    fn lingqu_memory_materialize_hot_state_cli_uses_durable_selectors() {
         let root = std::env::temp_dir().join(format!(
             "ub_sim_lingqu_memory_materialize_cli_{}",
             std::process::id()
@@ -10491,8 +10614,6 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
         .expect("build index");
         fs::remove_file(&catalog).expect("remove catalog file before durable restart query");
         run_lingqu_memory_query_cli(&[
-            "--catalog".to_string(),
-            catalog.to_string_lossy().into_owned(),
             "--store".to_string(),
             store.to_string_lossy().into_owned(),
             "--catalog-id".to_string(),
@@ -10506,16 +10627,14 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
         ])
         .expect("query");
         run_lingqu_memory_materialize_hot_state_cli(&[
-            "--catalog".to_string(),
-            catalog.to_string_lossy().into_owned(),
             "--store".to_string(),
             store.to_string_lossy().into_owned(),
             "--catalog-id".to_string(),
             "corpus/test".to_string(),
             "--object-store".to_string(),
             object_store.to_string_lossy().into_owned(),
-            "--query-result-manifest".to_string(),
-            "/lingqu/memory/query-results/query-result_query_test_0.json".to_string(),
+            "--query-result-id".to_string(),
+            "query-result/query/test/0".to_string(),
             "--state-id".to_string(),
             "hot/test/0".to_string(),
             "--hot-state".to_string(),
