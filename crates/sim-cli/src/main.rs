@@ -3974,6 +3974,210 @@ fn w5_memory_decisions_reference_artifacts(bundle: &W5MemoryDecisionBundle) -> b
         || bundle.prefix_cache_artifact.is_some()
 }
 
+fn validate_w5_memory_decision_bundle_for_run(
+    config: &W5MemoryDecisionConfig,
+    bundle: &W5MemoryDecisionBundle,
+    runtime: &Qwen3DenseGuestRuntime,
+    profile: &W5InferenceProfileSpec,
+    step_count: usize,
+) -> anyhow::Result<()> {
+    if step_count == 0 {
+        anyhow::bail!("W5 Memory Service decisions require at least one decode step");
+    }
+    if !profile.name.ends_with("_decode") {
+        anyhow::bail!("W5 Memory Service decisions require a decode profile");
+    }
+    if profile.nodes == 0 {
+        anyhow::bail!("W5 Memory Service decisions require at least one profile node");
+    }
+    let step_limit = step_count as u64;
+    let max_layer = u32::try_from(runtime.profile.num_hidden_layers)
+        .context("W5 runtime layer count exceeds u32")?;
+    let max_node = u32::from(profile.nodes);
+
+    if let Some(decision) = &bundle.shortpath {
+        decision
+            .validate()
+            .map_err(|err| anyhow::anyhow!("invalid W5 shortpath decision: {err}"))?;
+        if config.shortpath_execute
+            && decision.action != sim_memory::ShortpathAction::JumpToTerminal
+        {
+            anyhow::bail!(
+                "--memory-shortpath-execute is only valid for jump-to-terminal decisions, got {}",
+                w5_shortpath_action_name(decision.action)
+            );
+        }
+        if config.shortpath_execute && bundle.shortpath_artifact.is_none() {
+            anyhow::bail!("--memory-shortpath-execute requires a verified shortpath artifact");
+        }
+    }
+
+    if let Some(artifact) = &bundle.shortpath_artifact {
+        validate_w5_execution_artifact_matches_run(
+            "shortpath decision",
+            artifact,
+            runtime,
+            step_limit,
+            max_layer,
+            max_node,
+        )?;
+    }
+
+    if let Some(plan) = &bundle.prefetch {
+        plan.validate()
+            .map_err(|err| anyhow::anyhow!("invalid W5 prefetch plan: {err}"))?;
+        validate_w5_model_binding_matches_runtime("prefetch plan", &plan.model, runtime)?;
+        if plan.boundary.step_index >= step_limit {
+            anyhow::bail!(
+                "prefetch plan {} starts at step {} outside this W5 run steps={}",
+                plan.plan_id,
+                plan.boundary.step_index,
+                step_count
+            );
+        }
+        if plan.target_step_index >= step_limit {
+            anyhow::bail!(
+                "prefetch plan {} targets step {} outside this W5 run steps={}",
+                plan.plan_id,
+                plan.target_step_index,
+                step_count
+            );
+        }
+        validate_w5_boundary_matches_profile("prefetch plan", &plan.boundary, max_layer, max_node)?;
+    }
+    for artifact in &bundle.prefetch_artifacts {
+        validate_w5_execution_artifact_matches_run(
+            "prefetch plan",
+            artifact,
+            runtime,
+            step_limit,
+            max_layer,
+            max_node,
+        )?;
+    }
+
+    if let Some(plan) = &bundle.prefix_cache {
+        plan.validate()
+            .map_err(|err| anyhow::anyhow!("invalid W5 prefix-cache reuse plan: {err}"))?;
+        if matches!(plan.action, sim_memory::PrefixCacheReuseAction::Reuse) && step_count < 2 {
+            anyhow::bail!(
+                "prefix-cache reuse plan {} requires at least 2 W5 decode steps because reused KV is attached from step 1 onward",
+                plan.plan_id
+            );
+        }
+        if plan.layer_end > max_layer {
+            anyhow::bail!(
+                "prefix-cache reuse plan {} layer_end={} exceeds model layers={}",
+                plan.plan_id,
+                plan.layer_end,
+                max_layer
+            );
+        }
+    }
+    if let Some(artifact) = &bundle.prefix_cache_artifact {
+        artifact
+            .validate()
+            .map_err(|err| anyhow::anyhow!("invalid W5 prefix-cache artifact: {err}"))?;
+        validate_w5_model_binding_matches_runtime(
+            "prefix-cache artifact",
+            &artifact.key.model,
+            runtime,
+        )?;
+        if artifact.key.layer_end > max_layer {
+            anyhow::bail!(
+                "prefix-cache artifact {} layer_end={} exceeds model layers={}",
+                artifact.artifact_id,
+                artifact.key.layer_end,
+                max_layer
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_w5_execution_artifact_matches_run(
+    source: &str,
+    artifact: &sim_memory::ExecutionArtifactObject,
+    runtime: &Qwen3DenseGuestRuntime,
+    step_limit: u64,
+    max_layer: u32,
+    max_node: u32,
+) -> anyhow::Result<()> {
+    artifact
+        .validate()
+        .map_err(|err| anyhow::anyhow!("invalid {source} execution artifact: {err}"))?;
+    validate_w5_model_binding_matches_runtime(source, &artifact.model, runtime)?;
+    if artifact.producer_boundary.step_index >= step_limit {
+        anyhow::bail!(
+            "{source} artifact {} producer step {} is outside this W5 run steps={}",
+            artifact.artifact_id,
+            artifact.producer_boundary.step_index,
+            step_limit
+        );
+    }
+    validate_w5_boundary_matches_profile(source, &artifact.producer_boundary, max_layer, max_node)?;
+    if artifact.target_layer_end > max_layer {
+        anyhow::bail!(
+            "{source} artifact {} target layer_end={} exceeds model layers={}",
+            artifact.artifact_id,
+            artifact.target_layer_end,
+            max_layer
+        );
+    }
+    Ok(())
+}
+
+fn validate_w5_boundary_matches_profile(
+    source: &str,
+    boundary: &sim_memory::RangeBoundary,
+    max_layer: u32,
+    max_node: u32,
+) -> anyhow::Result<()> {
+    if boundary.layer_end > max_layer {
+        anyhow::bail!(
+            "{source} boundary layer_end={} exceeds model layers={}",
+            boundary.layer_end,
+            max_layer
+        );
+    }
+    if boundary.node_index >= max_node {
+        anyhow::bail!(
+            "{source} boundary node_index={} exceeds W5 profile nodes={}",
+            boundary.node_index,
+            max_node
+        );
+    }
+    if let Some(next_node) = boundary.next_node_index {
+        if next_node >= max_node {
+            anyhow::bail!(
+                "{source} boundary next_node_index={} exceeds W5 profile nodes={}",
+                next_node,
+                max_node
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_w5_model_binding_matches_runtime(
+    source: &str,
+    model: &sim_memory::InferenceModelBinding,
+    runtime: &Qwen3DenseGuestRuntime,
+) -> anyhow::Result<()> {
+    model
+        .validate()
+        .map_err(|err| anyhow::anyhow!("invalid {source} model binding: {err}"))?;
+    if model.model_key != runtime.model_key {
+        anyhow::bail!(
+            "{source} model_key={} does not match W5 runtime model_key={}",
+            model.model_key,
+            runtime.model_key
+        );
+    }
+    Ok(())
+}
+
 fn publish_w5_memory_decision_artifact_refs(
     config: &W5MemoryBootstrapConfig,
     bundle: &W5MemoryDecisionBundle,
@@ -7171,14 +7375,15 @@ mod tests {
         run_lingqu_memory_validate_w5_engram_object_ref, save_lingqu_durable_sim,
         save_lingqu_memory_durable_store, simpler_host_matmul_artifact_producer_path,
         validate_qwen3_dense_weights_path, validate_w5_inference_profile,
-        w5_inference_profile_spec, w5_memory_decision_env_vars,
-        w5_memory_should_publish_engram_state, w5_object_service_payload_index_path,
-        LingquDurableSim, LingquDurableSimSnapshot, LingquMemoryDurableStore,
-        LingquMemoryDurableStoreSnapshot, LingquObjectServiceStub, LingquObjectVersionSelector,
-        MemoryCatalogSnapshot, QueryResult, Qwen3CandidateRecord, Qwen3DecodeReportVerbosity,
-        Qwen3DenseGuestRuntime, Qwen3DenseProfile, Qwen3EngramConfig, Qwen3EngramContextOp,
-        Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
-        W5MemoryBootstrapConfig, W5MemoryDecisionConfig, QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
+        validate_w5_memory_decision_bundle_for_run, w5_inference_profile_spec,
+        w5_memory_decision_env_vars, w5_memory_should_publish_engram_state,
+        w5_object_service_payload_index_path, LingquDurableSim, LingquDurableSimSnapshot,
+        LingquMemoryDurableStore, LingquMemoryDurableStoreSnapshot, LingquObjectServiceStub,
+        LingquObjectVersionSelector, MemoryCatalogSnapshot, QueryResult, Qwen3CandidateRecord,
+        Qwen3DecodeReportVerbosity, Qwen3DenseGuestRuntime, Qwen3DenseProfile, Qwen3EngramConfig,
+        Qwen3EngramContextOp, Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport,
+        Qwen3GuestDecodeLoopCliArgs, W5MemoryBootstrapConfig, W5MemoryDecisionBundle,
+        W5MemoryDecisionConfig, QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
         QWEN3_DENSE_DEFAULT_PREFILL_TOKENS, QWEN3_DENSE_DEFAULT_TP_NODES,
         SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
         SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
@@ -8205,6 +8410,204 @@ mod tests {
         assert!(engram_err
             .to_string()
             .contains("requires engram_enabled=true"));
+    }
+
+    #[test]
+    fn w5_memory_decision_contract_rejects_wrong_model_and_unreachable_prefix_reuse() {
+        let runtime = Qwen3DenseGuestRuntime {
+            profile: Qwen3DenseProfile {
+                model_id: "Qwen/Qwen3-0.6B".to_string(),
+                vocab_size: 151_936,
+                hidden_size: 1024,
+                intermediate_size: 3072,
+                num_hidden_layers: 28,
+                num_attention_heads: 16,
+                num_key_value_heads: 8,
+                head_dim: 128,
+                max_position_embeddings: 40_960,
+                rope_theta: 1_000_000,
+                prefill_tokens: QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
+                decode_tokens: QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
+                tp_nodes: QWEN3_DENSE_DEFAULT_TP_NODES,
+            },
+            model_key: "qwen3-0-6b".to_string(),
+            weights_path: PathBuf::from("/models/qwen3-0.6b"),
+            chipbackend_profile: "qwen3_dense",
+        };
+        let profile = w5_inference_profile_spec("qwen3_0_6b_decode").expect("profile");
+        let config = W5MemoryDecisionConfig {
+            store_path: PathBuf::from("/tmp/lingqu-memory-store.json"),
+            boundary_request_path: None,
+            boundary_observation_id: None,
+            shortpath_decision_id: Some("shortpath-decision/test".to_string()),
+            shortpath_execute: true,
+            prefetch_plan_id: None,
+            prefix_cache_reuse_plan_id: None,
+        };
+        let wrong_model = sim_memory::InferenceModelBinding {
+            model_id: "Qwen/Qwen3-14B".to_string(),
+            model_key: "qwen3-14b".to_string(),
+            tokenizer_hash: 0x1001,
+            profile_hash: 0x2002,
+        };
+        let artifact = sim_memory::ExecutionArtifactObject {
+            artifact_id: "artifact/logits/wrong-model".to_string(),
+            kind: sim_memory::ExecutionArtifactKind::Logits,
+            model: wrong_model,
+            producer_boundary: sim_memory::RangeBoundary {
+                phase: sim_memory::RangeBoundaryPhase::RangeExit,
+                step_index: 0,
+                node_index: 3,
+                layer_start: 12,
+                layer_end: 16,
+                next_node_index: Some(4),
+                position: 4,
+            },
+            boundary_hidden_fingerprint: sim_memory::BoundaryTensorFingerprint {
+                bytes: 16,
+                checksum: 0x4444,
+                dtype: sim_core::TensorDType::F32,
+                shape: vec![1, 4],
+            },
+            target_layer_start: 28,
+            target_layer_end: 28,
+            dtype: sim_core::TensorDType::F32,
+            shape: vec![1, 4],
+            durable_payload_ref: Some(sim_memory::LingquBlockPayloadRef::new(
+                "block/logits/wrong-model",
+                0,
+                16,
+                0x5555,
+            )),
+            hot_object_ref: None,
+            source_query_result_id: None,
+            source_engram_state_id: None,
+            confidence_milli: 990,
+            state: sim_memory::ExecutionArtifactState::Verified,
+            checksum: 0x6666,
+            version: 1,
+            created_at_us: 10,
+            expires_at_us: Some(100),
+        };
+        let bundle = W5MemoryDecisionBundle {
+            shortpath: Some(sim_memory::ShortpathDecisionRecord {
+                decision_id: "shortpath-decision/test".to_string(),
+                request_id: "boundary/test".to_string(),
+                support_id: Some("shortpath-support/test".to_string()),
+                action: sim_memory::ShortpathAction::JumpToTerminal,
+                artifact_id: Some("artifact/logits/wrong-model".to_string()),
+                target_layer_start: Some(28),
+                target_layer_end: Some(28),
+                confidence_milli: 990,
+                verify_required: false,
+                proof_checksum: 0x7777,
+                reason: "test".to_string(),
+                created_at_us: 11,
+                version: 1,
+            }),
+            shortpath_artifact: Some(artifact),
+            prefetch: None,
+            prefetch_artifacts: Vec::new(),
+            prefix_cache: None,
+            prefix_cache_artifact: None,
+        };
+        let err =
+            validate_w5_memory_decision_bundle_for_run(&config, &bundle, &runtime, profile, 2)
+                .expect_err("wrong model artifact must fail before launch");
+        assert!(err.to_string().contains("model_key=qwen3-14b"));
+
+        let model = sim_memory::InferenceModelBinding {
+            model_id: "Qwen/Qwen3-0.6B".to_string(),
+            model_key: "qwen3-0-6b".to_string(),
+            tokenizer_hash: 0x1001,
+            profile_hash: 0x2002,
+        };
+        let prefix_bundle = W5MemoryDecisionBundle {
+            shortpath: None,
+            shortpath_artifact: None,
+            prefetch: None,
+            prefetch_artifacts: Vec::new(),
+            prefix_cache: Some(sim_memory::PrefixCacheReusePlan {
+                plan_id: "prefix-cache-reuse/test".to_string(),
+                request_id: "prefix-cache-lookup/test".to_string(),
+                action: sim_memory::PrefixCacheReuseAction::Reuse,
+                artifact_id: Some("prefix-cache-artifact/test".to_string()),
+                matched_prefix_token_count: 4,
+                layer_start: 0,
+                layer_end: 4,
+                position_start: 0,
+                position_end: 4,
+                confidence_milli: 980,
+                verify_required: false,
+                proof_checksum: 0x8888,
+                reason: "test".to_string(),
+                created_at_us: 12,
+                version: 1,
+            }),
+            prefix_cache_artifact: Some(sim_memory::PrefixCacheArtifact {
+                artifact_id: "prefix-cache-artifact/test".to_string(),
+                key: sim_memory::PrefixCacheKey {
+                    model,
+                    namespace: "test".to_string(),
+                    chat_template_hash: 0x11,
+                    prefix_token_hash: 0x22,
+                    prefix_token_count: 4,
+                    rope_config_hash: 0x33,
+                    kv_layout_hash: 0x44,
+                    layer_start: 0,
+                    layer_end: 4,
+                    position_start: 0,
+                    position_end: 4,
+                    security_label: sim_memory::MemorySecurityLabel::Internal,
+                },
+                kv_artifact_ids: Vec::new(),
+                durable_payload_refs: vec![sim_memory::LingquBlockPayloadRef::new(
+                    "block/prefix-cache/test",
+                    0,
+                    16,
+                    0x9999,
+                )],
+                hot_object_refs: Vec::new(),
+                dtype: sim_core::TensorDType::F32,
+                shape: vec![1, 4],
+                confidence_milli: 980,
+                state: sim_memory::ExecutionArtifactState::Verified,
+                checksum: 0xaaaa,
+                version: 1,
+                created_at_us: 12,
+                expires_at_us: Some(100),
+                last_used_at_us: 12,
+                use_count: 1,
+            }),
+        };
+        let prefix_config = W5MemoryDecisionConfig {
+            store_path: PathBuf::from("/tmp/lingqu-memory-store.json"),
+            boundary_request_path: None,
+            boundary_observation_id: None,
+            shortpath_decision_id: None,
+            shortpath_execute: false,
+            prefetch_plan_id: None,
+            prefix_cache_reuse_plan_id: Some("prefix-cache-reuse/test".to_string()),
+        };
+        let err = validate_w5_memory_decision_bundle_for_run(
+            &prefix_config,
+            &prefix_bundle,
+            &runtime,
+            profile,
+            1,
+        )
+        .expect_err("one-step run cannot consume prefix cache reuse");
+        assert!(err
+            .to_string()
+            .contains("requires at least 2 W5 decode steps"));
+        validate_w5_memory_decision_bundle_for_run(
+            &prefix_config,
+            &prefix_bundle,
+            &runtime,
+            profile,
+            2,
+        )
+        .expect("two-step run can consume prefix cache reuse");
     }
 
     #[test]
@@ -11094,6 +11497,19 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     } else {
         None
     };
+    let engram_simt = qwen3_prepare_engram_simt_mode(&effective_engram)?;
+    let w5_profile =
+        resolve_w5_inference_profile(args.w5_profile.as_deref(), &runtime, &effective_engram)?;
+    if let (Some(config), Some(decisions)) = (&args.memory_decisions, &memory_decisions) {
+        validate_w5_memory_decision_bundle_for_run(
+            config,
+            decisions,
+            &runtime,
+            w5_profile,
+            args.step_count,
+        )
+        .context("validate W5 Memory Service decisions for this run")?;
+    }
     let memory_decision_publication = if let Some(decisions) = &memory_decisions {
         if w5_memory_decisions_reference_artifacts(decisions) {
             let memory_bootstrap = args.memory_bootstrap.as_ref().ok_or_else(|| {
@@ -11116,11 +11532,8 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             effective_engram.object_service_snapshot_path = Some(snapshot_path.clone());
         }
     }
-    let engram_simt = qwen3_prepare_engram_simt_mode(&effective_engram)?;
     let engram_registry_validation =
         qwen3_validate_guest_engram_state_registry(&effective_engram, &runtime.profile)?;
-    let w5_profile =
-        resolve_w5_inference_profile(args.w5_profile.as_deref(), &runtime, &effective_engram)?;
     println!("qwen3_guest_decode_loop");
     println!("  script: {}", script_path.display());
     println!("  workload: w5 inference cluster");

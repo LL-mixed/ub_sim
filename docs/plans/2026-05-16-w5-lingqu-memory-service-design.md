@@ -1287,6 +1287,15 @@ validated `BoundaryLookupRequest` in process, and runs the same lookup/planner
 path. `--memory-boundary-request`, `--memory-boundary-observation-id`, and
 `--memory-shortpath-decision-id` are mutually exclusive sources for the
 shortpath artifact.
+Before publishing Memory Service artifact refs or launching the guest, the W5
+entrypoint validates the whole decision bundle against the selected runtime
+profile: execution artifacts and prefix-cache artifacts must match the runtime
+`model_key`; artifact producer boundaries and prefetch target steps must be
+inside the requested W5 run; boundary node ids must fit the profile node count;
+and prefix-cache reuse is rejected for one-step runs because the guest only
+attaches reused KV from step 1 onward. This makes a Memory Service-backed run
+fail before QEMU launch when the durable decision cannot actually affect the
+current execution.
 
 The W5 guest run summary now also exposes actual range-exit hidden object
 observations from `qwen3_range_forward_runtime_ingress_publish`:
@@ -1643,9 +1652,12 @@ Current implementation status:
   validation. `--memory-shortpath-execute` no longer waits until node8 to make
   the token visible: the matching producer boundary publishes
   `qwen3_w5_memory_terminal_logits_publish_early`, and the next decode-round
-  gate scans all node token-result records. The remaining gap is the online
-  in-guest lookup loop that performs the lookup at range-exit time instead of
-  receiving a launch-time decision.
+  gate scans all node token-result records. The W5 entrypoint now also
+  fail-closes Memory Service decision bundles before guest launch when their
+  model binding, producer boundary, prefetch target, profile node count, or
+  prefix-cache reuse timing cannot affect this run. The remaining gap is the
+  online in-guest lookup loop that performs the lookup at range-exit time
+  instead of receiving a launch-time decision.
   Query results can be persisted to and restored from DFS manifests with
   checksum validation, and QueryResult-driven hot materialization now carries
   that DFS manifest ref into both `HotMemoryStateObject` and
