@@ -1279,21 +1279,26 @@ inspection and reproducible debugging. By default this validates and exposes
 the shortpath artifact without changing decode output. Passing
 `--memory-shortpath-execute` forwards `SIM_W5_MEMORY_SHORTPATH_EXECUTE=1`; when
 the decision is `jump-to-terminal`, the terminal node reads the verified logits
-artifact and publishes that token record as the step result. The current
-execute path is intentionally limited to a single W5 decode step backed by a
-step0 logits artifact, because the registered terminal-logits payload is
-step-indexed and not yet an online per-step lookup stream. With W5 Engram
-enabled, execute additionally requires the logits artifact producer node to
-match `--engram-owner-node`; that producer boundary publishes candidates, runs
-Engram selection, writes the selected token back into the terminal-token
-record, and only then publishes the shortpath result.
+artifact and publishes that token record as the step result. The W5 entrypoint
+also accepts `--memory-shortpath-decision-ids` for a launch-time per-step
+shortpath stream. It loads each audited decision, validates each verified
+artifact against the selected runtime, publishes every artifact payload into the
+Lingqu Object Service checkpoint, and forwards
+`SIM_W5_MEMORY_SHORTPATH_STREAM` entries keyed by decode step. The guest
+selects only the stream entry matching the current step and boundary; if a step
+has no entry, it continues through the normal range-forward path instead of
+reusing another step's logits. With W5 Engram enabled, execute additionally
+requires every logits artifact producer node to match `--engram-owner-node`;
+that producer boundary publishes candidates, runs Engram selection, writes the
+selected token back into the terminal-token record, and only then publishes the
+shortpath result.
 When `--memory-boundary-observation-id` is provided instead of
 `--memory-boundary-request`, the W5 entrypoint loads the persisted
 `BoundaryObservationRecord` from the durable DFS audit log, derives the
 validated `BoundaryLookupRequest` in process, and runs the same lookup/planner
 path. `--memory-boundary-request`, `--memory-boundary-observation-id`, and
-`--memory-shortpath-decision-id` are mutually exclusive sources for the
-shortpath artifact.
+`--memory-shortpath-decision-id`/`--memory-shortpath-decision-ids` are mutually
+exclusive sources for the shortpath artifact stream.
 Before publishing Memory Service artifact refs or launching the guest, the W5
 entrypoint validates the whole decision bundle against the selected runtime
 profile: execution artifacts and prefix-cache artifacts must match the runtime
@@ -1438,6 +1443,19 @@ store; missing Memory Service evidence is a hard failure.
   result. If the artifact producer and Engram owner differ, the W5 entrypoint and
   guest both fail closed because the next step could otherwise consume a raw
   Memory Service token before Engram writeback.
+- 2026-05-21 update: W5 shortpath execute no longer has a hard-coded
+  `steps=1 && artifact_step=0` host restriction. The entrypoint can load a CSV
+  of audited decision ids via `--memory-shortpath-decision-ids`, publish all
+  referenced logits artifacts into the Object Service snapshot, and pass a
+  step-indexed `SIM_W5_MEMORY_SHORTPATH_STREAM` to the guest. The guest parser
+  validates stream entries as terminal-logits ObjectRefs and selects only the
+  entry for the current decode step. A 14B one-step W5 Engram run using a
+  Memory Service shortpath artifact passed with token `[11]` and text `,`,
+  exercising the new stream consumer. A follow-up attempt to build a two-step
+  0.6B stream exposed an unrelated baseline failure in non-shortpath node8
+  terminal range-forward validation before terminal logits could be emitted, so
+  multi-step shortpath execution still needs a fresh passing multi-step
+  baseline artifact source.
 - Boundary lookup now requires a verified execution artifact to carry a
   `boundary_hidden_fingerprint` that matches the request hidden ObjectRef
   bytes/checksum/dtype/shape. This closes the unsafe case where a terminal

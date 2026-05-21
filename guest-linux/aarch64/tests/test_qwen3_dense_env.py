@@ -124,6 +124,15 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_QWEN3_GUEST_ENGRAM_STATE_REF", runner_text)
         self.assertIn("SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR", runner_text)
         self.assertIn("SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT", runner_text)
+        self.assertIn("SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT_GUEST", runner_text)
+        self.assertIn(
+            'SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT="$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT_GUEST"',
+            runner_text,
+        )
+        self.assertIn(
+            'SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT="$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT" \\',
+            runner_text,
+        )
         self.assertIn("qwen3_engram_context_refs_configured", runner_text)
         self.assertIn("qwen3_engram_context_op_enabled", runner_text)
         self.assertIn("validate_qwen3_engram_context_refs", runner_text)
