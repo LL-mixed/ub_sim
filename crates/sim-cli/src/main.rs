@@ -3979,6 +3979,7 @@ fn validate_w5_memory_decision_bundle_for_run(
     bundle: &W5MemoryDecisionBundle,
     runtime: &Qwen3DenseGuestRuntime,
     profile: &W5InferenceProfileSpec,
+    engram: &Qwen3EngramConfig,
     step_count: usize,
 ) -> anyhow::Result<()> {
     if step_count == 0 {
@@ -4021,6 +4022,31 @@ fn validate_w5_memory_decision_bundle_for_run(
             max_layer,
             max_node,
         )?;
+        if config.shortpath_execute
+            && (step_count != 1 || artifact.producer_boundary.step_index != 0)
+        {
+            anyhow::bail!(
+                "--memory-shortpath-execute currently requires exactly one W5 decode step backed by a step0 logits artifact; got steps={} artifact_step={}",
+                step_count,
+                artifact.producer_boundary.step_index
+            );
+        }
+        if config.shortpath_execute && engram.enabled {
+            let producer_owner_node = artifact.producer_boundary.node_index as usize;
+            if producer_owner_node != engram.owner_node {
+                anyhow::bail!(
+                    "--memory-shortpath-execute with W5 Engram requires the shortpath artifact producer node to match --engram-owner-node so boundary early publish can apply selected-token writeback: producer_node={} engram_owner_node={}",
+                    producer_owner_node,
+                    engram.owner_node
+                );
+            }
+            if artifact.kind != sim_memory::ExecutionArtifactKind::Logits {
+                anyhow::bail!(
+                    "--memory-shortpath-execute with W5 Engram requires a logits shortpath artifact, got {}",
+                    w5_execution_artifact_kind_name(artifact.kind)
+                );
+            }
+        }
     }
 
     if let Some(plan) = &bundle.prefetch {
@@ -4180,11 +4206,13 @@ fn validate_w5_model_binding_matches_runtime(
 
 fn publish_w5_memory_decision_artifact_refs(
     config: &W5MemoryBootstrapConfig,
+    artifact_store_path: &Path,
     bundle: &W5MemoryDecisionBundle,
 ) -> anyhow::Result<W5MemoryDecisionArtifactPublication> {
-    let mut durable_store = load_lingqu_memory_durable_store(&config.store_path)?;
+    let mut object_durable_store = load_lingqu_memory_durable_store(&config.store_path)?;
+    let mut artifact_durable_store = load_lingqu_memory_durable_store(artifact_store_path)?;
     let object_snapshot =
-        load_lingqu_object_service_snapshot(&config.object_store_path, &mut durable_store)?;
+        load_lingqu_object_service_snapshot(&config.object_store_path, &mut object_durable_store)?;
     let mut object_service = if let Some(snapshot) = object_snapshot {
         LingquObjectServiceStub::import_snapshot(snapshot).with_context(|| {
             format!("import object store {}", config.object_store_path.display())
@@ -4197,7 +4225,7 @@ fn publish_w5_memory_decision_artifact_refs(
         .as_ref()
         .map(|artifact| {
             publish_w5_execution_artifact_ref(
-                &mut durable_store,
+                &mut artifact_durable_store,
                 &mut object_service,
                 artifact,
                 config.owner_entity,
@@ -4209,7 +4237,7 @@ fn publish_w5_memory_decision_artifact_refs(
     let mut prefetch_refs = Vec::new();
     for artifact in &bundle.prefetch_artifacts {
         prefetch_refs.push(publish_w5_execution_artifact_ref(
-            &mut durable_store,
+            &mut artifact_durable_store,
             &mut object_service,
             artifact,
             config.owner_entity,
@@ -4222,7 +4250,7 @@ fn publish_w5_memory_decision_artifact_refs(
         .as_ref()
         .map(|artifact| {
             publish_w5_prefix_cache_artifact_ref(
-                &mut durable_store,
+                &mut artifact_durable_store,
                 &mut object_service,
                 artifact,
                 config.owner_entity,
@@ -4233,10 +4261,10 @@ fn publish_w5_memory_decision_artifact_refs(
 
     save_lingqu_object_service_snapshot(
         &config.object_store_path,
-        &mut durable_store,
+        &mut object_durable_store,
         &object_service,
     )?;
-    save_lingqu_memory_durable_store(&config.store_path, &durable_store)?;
+    save_lingqu_memory_durable_store(&config.store_path, &object_durable_store)?;
     let snapshot_path = export_w5_object_service_snapshot(&config.registry_dir, &object_service)?;
 
     Ok(W5MemoryDecisionArtifactPublication {
@@ -6386,16 +6414,6 @@ fn cli_bytes_checksum(bytes: &[u8]) -> u64 {
     hash
 }
 
-fn cli_hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        encoded.push(HEX[(byte >> 4) as usize] as char);
-        encoded.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    encoded
-}
-
 fn build_lingqu_memory_cli_sample() -> anyhow::Result<LingquMemoryService> {
     let mut memory_service = LingquMemoryService::new();
     memory_service.publish_catalog(MemoryCorpusCatalog {
@@ -7347,10 +7365,10 @@ mod tests {
         qwen3_guest_engram_history_lengths, qwen3_guest_engram_object_transport_report,
         qwen3_guest_engram_report, qwen3_guest_engram_report_from_guest_log,
         qwen3_guest_engram_select_history_lengths, qwen3_guest_engram_selected_tokens,
-        qwen3_guest_log_dir_from_script_output, qwen3_guest_log_match_count,
-        qwen3_guest_summary_file_from_script_output, qwen3_guest_terminal_candidate_records,
-        qwen3_guest_terminal_text_lossy_from_tokenizer, qwen3_guest_terminal_tokens,
-        qwen3_guest_timing_summary, qwen3_range_forward_args_from,
+        qwen3_guest_expected_worker_counts, qwen3_guest_log_dir_from_script_output,
+        qwen3_guest_log_match_count, qwen3_guest_summary_file_from_script_output,
+        qwen3_guest_terminal_candidate_records, qwen3_guest_terminal_text_lossy_from_tokenizer,
+        qwen3_guest_terminal_tokens, qwen3_guest_timing_summary, qwen3_range_forward_args_from,
         record_w5_runtime_boundary_observations_from_summary, resolve_w5_inference_profile,
         run_lingqu_durable_append_log_cli, run_lingqu_durable_batch_cli,
         run_lingqu_durable_init_cli, run_lingqu_durable_list_cli, run_lingqu_durable_read_log_cli,
@@ -7382,8 +7400,8 @@ mod tests {
         LingquObjectVersionSelector, MemoryCatalogSnapshot, QueryResult, Qwen3CandidateRecord,
         Qwen3DecodeReportVerbosity, Qwen3DenseGuestRuntime, Qwen3DenseProfile, Qwen3EngramConfig,
         Qwen3EngramContextOp, Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport,
-        Qwen3GuestDecodeLoopCliArgs, W5MemoryBootstrapConfig, W5MemoryDecisionBundle,
-        W5MemoryDecisionConfig, QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
+        Qwen3GuestDecodeLoopCliArgs, Qwen3GuestExpectedWorkerCounts, W5MemoryBootstrapConfig,
+        W5MemoryDecisionBundle, W5MemoryDecisionConfig, QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
         QWEN3_DENSE_DEFAULT_PREFILL_TOKENS, QWEN3_DENSE_DEFAULT_TP_NODES,
         SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
         SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
@@ -8457,10 +8475,10 @@ mod tests {
             producer_boundary: sim_memory::RangeBoundary {
                 phase: sim_memory::RangeBoundaryPhase::RangeExit,
                 step_index: 0,
-                node_index: 3,
+                node_index: 4,
                 layer_start: 12,
                 layer_end: 16,
-                next_node_index: Some(4),
+                next_node_index: Some(5),
                 position: 4,
             },
             boundary_hidden_fingerprint: sim_memory::BoundaryTensorFingerprint {
@@ -8511,9 +8529,15 @@ mod tests {
             prefix_cache: None,
             prefix_cache_artifact: None,
         };
-        let err =
-            validate_w5_memory_decision_bundle_for_run(&config, &bundle, &runtime, profile, 2)
-                .expect_err("wrong model artifact must fail before launch");
+        let err = validate_w5_memory_decision_bundle_for_run(
+            &config,
+            &bundle,
+            &runtime,
+            profile,
+            &Qwen3EngramConfig::default(),
+            2,
+        )
+        .expect_err("wrong model artifact must fail before launch");
         assert!(err.to_string().contains("model_key=qwen3-14b"));
 
         let model = sim_memory::InferenceModelBinding {
@@ -8594,6 +8618,7 @@ mod tests {
             &prefix_bundle,
             &runtime,
             profile,
+            &Qwen3EngramConfig::default(),
             1,
         )
         .expect_err("one-step run cannot consume prefix cache reuse");
@@ -8605,9 +8630,145 @@ mod tests {
             &prefix_bundle,
             &runtime,
             profile,
+            &Qwen3EngramConfig::default(),
             2,
         )
         .expect("two-step run can consume prefix cache reuse");
+    }
+
+    #[test]
+    fn w5_memory_shortpath_execute_with_engram_requires_owner_boundary_artifact() {
+        let runtime = Qwen3DenseGuestRuntime {
+            profile: Qwen3DenseProfile {
+                model_id: "Qwen/Qwen3-0.6B".to_string(),
+                vocab_size: 151_936,
+                hidden_size: 1024,
+                intermediate_size: 3072,
+                num_hidden_layers: 28,
+                num_attention_heads: 16,
+                num_key_value_heads: 8,
+                head_dim: 128,
+                max_position_embeddings: 40_960,
+                rope_theta: 1_000_000,
+                prefill_tokens: QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
+                decode_tokens: QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
+                tp_nodes: QWEN3_DENSE_DEFAULT_TP_NODES,
+            },
+            model_key: "qwen3-0-6b".to_string(),
+            weights_path: PathBuf::from("/models/qwen3-0.6b"),
+            chipbackend_profile: "qwen3_dense",
+        };
+        let profile = w5_inference_profile_spec("qwen3_0_6b_engram_decode").expect("profile");
+        let config = W5MemoryDecisionConfig {
+            store_path: PathBuf::from("/tmp/lingqu-memory-store.json"),
+            boundary_request_path: None,
+            boundary_observation_id: None,
+            shortpath_decision_id: Some("shortpath-decision/test".to_string()),
+            shortpath_execute: true,
+            prefetch_plan_id: None,
+            prefix_cache_reuse_plan_id: None,
+        };
+        let model = sim_memory::InferenceModelBinding {
+            model_id: "Qwen/Qwen3-0.6B".to_string(),
+            model_key: "qwen3-0-6b".to_string(),
+            tokenizer_hash: 0x1001,
+            profile_hash: 0x2002,
+        };
+        let artifact = sim_memory::ExecutionArtifactObject {
+            artifact_id: "artifact/logits/test".to_string(),
+            kind: sim_memory::ExecutionArtifactKind::Logits,
+            model,
+            producer_boundary: sim_memory::RangeBoundary {
+                phase: sim_memory::RangeBoundaryPhase::RangeExit,
+                step_index: 0,
+                node_index: 4,
+                layer_start: 12,
+                layer_end: 16,
+                next_node_index: Some(5),
+                position: 4,
+            },
+            boundary_hidden_fingerprint: sim_memory::BoundaryTensorFingerprint {
+                bytes: 16,
+                checksum: 0x4444,
+                dtype: sim_core::TensorDType::F32,
+                shape: vec![1, 4],
+            },
+            target_layer_start: 28,
+            target_layer_end: 28,
+            dtype: sim_core::TensorDType::F32,
+            shape: vec![1, 4],
+            durable_payload_ref: Some(sim_memory::LingquBlockPayloadRef::new(
+                "block/logits/test",
+                0,
+                16,
+                0x5555,
+            )),
+            hot_object_ref: None,
+            source_query_result_id: None,
+            source_engram_state_id: None,
+            confidence_milli: 990,
+            state: sim_memory::ExecutionArtifactState::Verified,
+            checksum: 0x6666,
+            version: 1,
+            created_at_us: 10,
+            expires_at_us: Some(100),
+        };
+        let bundle = W5MemoryDecisionBundle {
+            shortpath: Some(sim_memory::ShortpathDecisionRecord {
+                decision_id: "shortpath-decision/test".to_string(),
+                request_id: "boundary/test".to_string(),
+                support_id: Some("shortpath-support/test".to_string()),
+                action: sim_memory::ShortpathAction::JumpToTerminal,
+                artifact_id: Some("artifact/logits/test".to_string()),
+                target_layer_start: Some(28),
+                target_layer_end: Some(28),
+                confidence_milli: 990,
+                verify_required: false,
+                proof_checksum: 0x7777,
+                reason: "test".to_string(),
+                created_at_us: 11,
+                version: 1,
+            }),
+            shortpath_artifact: Some(artifact),
+            prefetch: None,
+            prefetch_artifacts: Vec::new(),
+            prefix_cache: None,
+            prefix_cache_artifact: None,
+        };
+        let engram = Qwen3EngramConfig {
+            enabled: true,
+            pool: Qwen3EngramPool::Obmm,
+            ..Qwen3EngramConfig::default()
+        };
+        let err = validate_w5_memory_decision_bundle_for_run(
+            &config, &bundle, &runtime, profile, &engram, 2,
+        )
+        .expect_err("single-artifact shortpath execute must not cover multiple steps");
+        assert!(err
+            .to_string()
+            .contains("requires exactly one W5 decode step"));
+
+        let err = validate_w5_memory_decision_bundle_for_run(
+            &config, &bundle, &runtime, profile, &engram, 1,
+        )
+        .expect_err("non-owner shortpath execute must not bypass engram writeback");
+        assert!(err
+            .to_string()
+            .contains("requires the shortpath artifact producer node to match"));
+
+        let matching_owner = Qwen3EngramConfig {
+            owner_node: 4,
+            ..engram
+        };
+        validate_w5_memory_decision_bundle_for_run(
+            &config,
+            &bundle,
+            &runtime,
+            profile,
+            &matching_owner,
+            1,
+        )
+        .expect("owner boundary artifact can apply engram writeback before early publish");
     }
 
     #[test]
@@ -8630,6 +8791,26 @@ stage qwen3_range_forward_runtime_output_publish node=2
         assert_eq!(
             qwen3_guest_log_match_count(log, "stage qwen3_range_forward_runtime_output_publish "),
             2
+        );
+    }
+
+    #[test]
+    fn qwen3_guest_expected_worker_counts_account_for_shortpath_skips() {
+        assert_eq!(
+            qwen3_guest_expected_worker_counts(1, false, 4),
+            Qwen3GuestExpectedWorkerCounts {
+                range_forwards: 8,
+                runtime_inputs: 7,
+                runtime_outputs: 8,
+            }
+        );
+        assert_eq!(
+            qwen3_guest_expected_worker_counts(1, true, 4),
+            Qwen3GuestExpectedWorkerCounts {
+                range_forwards: 4,
+                runtime_inputs: 3,
+                runtime_outputs: 4,
+            }
         );
     }
 
@@ -9743,15 +9924,19 @@ stage qwen3_range_forward_runtime_output_publish node=2
             bundle.prefetch_artifacts[0].artifact_id,
             "artifact/kv/step4/node4"
         );
+        let bootstrap_store = root.join("bootstrap-store.json");
+        save_lingqu_memory_durable_store(&bootstrap_store, &LingquMemoryDurableStore::new())
+            .expect("write separate bootstrap store");
         let publication = publish_w5_memory_decision_artifact_refs(
             &W5MemoryBootstrapConfig {
-                store_path: store.clone(),
+                store_path: bootstrap_store.clone(),
                 object_store_path: root.join("unused-object-store.json"),
                 engram_state_path: root.join("unused-engram-state.json"),
                 registry_dir: root.join("qwen3-object-registry"),
                 owner_entity: 1,
                 producer_entity: 2,
             },
+            &store,
             &bundle,
         )
         .expect("publish w5 memory decision artifact refs");
@@ -10460,6 +10645,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
                 owner_entity: 1,
                 producer_entity: 2,
             },
+            &store,
             &bundle,
         )
         .expect("publish prefix-cache artifact ref");
@@ -11506,6 +11692,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             decisions,
             &runtime,
             w5_profile,
+            &effective_engram,
             args.step_count,
         )
         .context("validate W5 Memory Service decisions for this run")?;
@@ -11517,9 +11704,18 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
                     "W5 artifact-backed decisions and Memory Service plans require --memory-store, --memory-object-store, --memory-engram-state, and --memory-registry-dir so artifacts can be published as object refs"
                 )
             })?;
+            let artifact_store_path = args
+                .memory_decisions
+                .as_ref()
+                .map(|config| config.store_path.as_path())
+                .unwrap_or_else(|| memory_bootstrap.store_path.as_path());
             Some(
-                publish_w5_memory_decision_artifact_refs(memory_bootstrap, decisions)
-                    .context("publish W5 execution artifact object refs")?,
+                publish_w5_memory_decision_artifact_refs(
+                    memory_bootstrap,
+                    artifact_store_path,
+                    decisions,
+                )
+                .context("publish W5 execution artifact object refs")?,
             )
         } else {
             None
@@ -11805,21 +12001,6 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     for (key, value) in qwen3_guest_engram_env_vars(&effective_engram, engram_session_id) {
         command.env(key, value);
     }
-    if let Some(publication) = &memory_decision_publication {
-        if let Some(snapshot_path) = &publication.object_service_snapshot_path {
-            let snapshot_bin_path = snapshot_path.with_extension("bin");
-            let snapshot_bin = fs::read(&snapshot_bin_path).with_context(|| {
-                format!(
-                    "read W5 memory artifact Object Service payload index {}",
-                    snapshot_bin_path.display()
-                )
-            })?;
-            command.env(
-                SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
-                format!("hex:{}", cli_hex_encode(&snapshot_bin)),
-            );
-        }
-    }
     if let (Some(config), Some(decisions)) = (&args.memory_decisions, &memory_decisions) {
         for (key, value) in
             w5_memory_decision_env_vars(config, decisions, memory_decision_publication.as_ref())
@@ -11871,9 +12052,26 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         qwen3_guest_log_match_count(&combined, "stage qwen3_engram_selected_writeback ");
     let guest_engram_terminal_rewrite_count =
         qwen3_guest_log_match_count(&combined, "stage qwen3_engram_terminal_record_rewrite ");
-    let expected_runtime_forward_count = 8 * args.step_count;
-    let expected_runtime_input_count = 7 * args.step_count;
-    let expected_runtime_publish_count = 8 * args.step_count;
+    let shortpath_downstream_skip_count = qwen3_guest_log_match_count(
+        &combined,
+        "stage qwen3_w5_memory_shortpath_downstream_skip ",
+    );
+    let shortpath_execute_jump_to_terminal = args
+        .memory_decisions
+        .as_ref()
+        .is_some_and(|config| config.shortpath_execute)
+        && memory_decisions
+            .as_ref()
+            .and_then(|decisions| decisions.shortpath.as_ref())
+            .is_some_and(|decision| decision.action == sim_memory::ShortpathAction::JumpToTerminal);
+    let worker_counts = qwen3_guest_expected_worker_counts(
+        args.step_count,
+        shortpath_execute_jump_to_terminal,
+        shortpath_downstream_skip_count,
+    );
+    let expected_runtime_forward_count = worker_counts.range_forwards;
+    let expected_runtime_input_count = worker_counts.runtime_inputs;
+    let expected_runtime_publish_count = worker_counts.runtime_outputs;
     let expected_terminal_token_count = args.step_count;
     let expected_guest_engram_select_count = if effective_engram.enabled {
         args.step_count
@@ -11911,6 +12109,15 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         "  guest_worker_summary: pass={} steps={} range_forwards={} runtime_inputs={} runtime_outputs={} terminal_tokens={}",
         pass, args.step_count, runtime_forward_count, runtime_input_count, runtime_publish_count, terminal_token_count
     );
+    if shortpath_execute_jump_to_terminal {
+        println!(
+            "  guest_worker_shortpath_summary: action=jump-to-terminal downstream_skips={} expected_range_forwards={} expected_runtime_inputs={} expected_runtime_outputs={}",
+            shortpath_downstream_skip_count,
+            expected_runtime_forward_count,
+            expected_runtime_input_count,
+            expected_runtime_publish_count
+        );
+    }
     if !terminal_tokens.is_empty() {
         println!("  terminal_tokens: {:?}", terminal_tokens);
         match &terminal_text {
@@ -12098,13 +12305,14 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         || guest_engram_state_resolved_count != expected_guest_engram_state_resolved_count
     {
         anyhow::bail!(
-            "qwen3 guest decode worker incomplete: range_forwards={}/{} runtime_inputs={}/{} runtime_outputs={}/{} terminal_tokens={}/{} engram_selects={}/{} engram_candidate_publishes={}/{} engram_candidate_waits={}/{} engram_selected_waits={}/{} engram_selected_writebacks={}/{} engram_history_waits={}/{} engram_state_waits={}/{} engram_state_resolved={}/{}",
+            "qwen3 guest decode worker incomplete: range_forwards={}/{} runtime_inputs={}/{} runtime_outputs={}/{} shortpath_downstream_skips={} terminal_tokens={}/{} engram_selects={}/{} engram_candidate_publishes={}/{} engram_candidate_waits={}/{} engram_selected_waits={}/{} engram_selected_writebacks={}/{} engram_history_waits={}/{} engram_state_waits={}/{} engram_state_resolved={}/{}",
             runtime_forward_count,
             expected_runtime_forward_count,
             runtime_input_count,
             expected_runtime_input_count,
             runtime_publish_count,
             expected_runtime_publish_count,
+            shortpath_downstream_skip_count,
             terminal_token_count,
             expected_terminal_token_count,
             guest_engram_select_count,
@@ -12223,6 +12431,34 @@ fn qwen3_prepare_engram_simt_mode(
 
 fn qwen3_guest_log_match_count(haystack: &str, needle: &str) -> usize {
     haystack.match_indices(needle).count()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Qwen3GuestExpectedWorkerCounts {
+    range_forwards: usize,
+    runtime_inputs: usize,
+    runtime_outputs: usize,
+}
+
+fn qwen3_guest_expected_worker_counts(
+    step_count: usize,
+    shortpath_execute_jump_to_terminal: bool,
+    shortpath_downstream_skip_count: usize,
+) -> Qwen3GuestExpectedWorkerCounts {
+    let full_range_forwards = 8 * step_count;
+    let full_runtime_inputs = 7 * step_count;
+    let full_runtime_outputs = 8 * step_count;
+    let skipped = if shortpath_execute_jump_to_terminal {
+        shortpath_downstream_skip_count
+    } else {
+        0
+    };
+
+    Qwen3GuestExpectedWorkerCounts {
+        range_forwards: full_range_forwards.saturating_sub(skipped),
+        runtime_inputs: full_runtime_inputs.saturating_sub(skipped),
+        runtime_outputs: full_runtime_outputs.saturating_sub(skipped),
+    }
 }
 
 fn qwen3_guest_terminal_tokens(log: &str) -> Vec<u64> {

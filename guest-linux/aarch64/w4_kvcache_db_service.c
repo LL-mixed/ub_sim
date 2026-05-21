@@ -5424,7 +5424,6 @@ int w4_db_obmm_service_v0_publish_engram_candidates(struct w4_db_service *svc,
 {
     struct w4_db_cluster_runtime *rt = &g_w4_db_cluster_runtime;
     struct w4_db_cluster_slot *local_slot;
-    struct w4_db_qwen3_layer_range_placement local_placement;
     struct w4_db_record candidates_record;
     char candidates_key[96];
     uint64_t candidate_words[32];
@@ -5441,14 +5440,8 @@ int w4_db_obmm_service_v0_publish_engram_candidates(struct w4_db_service *svc,
         return -1;
     }
     if (w4_db_cluster_runtime_init(rt) != 0 ||
-        w4_db_publish_qwen3_layer_range_placements(svc, cluster_node_count) != 0 ||
-        !w4_db_read_qwen3_layer_range_placement(svc,
-                                                local_node,
-                                                &local_placement)) {
+        w4_db_publish_qwen3_layer_range_placements(svc, cluster_node_count) != 0) {
         return -1;
-    }
-    if (!local_placement.terminal) {
-        return 0;
     }
 
     local_slot = &rt->slots[rt->local_idx];
@@ -5852,7 +5845,7 @@ int w4_db_obmm_service_v0_wait_engram_candidates(struct w4_db_service *svc,
     struct w4_db_cluster_runtime *rt = &g_w4_db_cluster_runtime;
     char candidates_key[96];
     long deadline;
-    int terminal_idx = W4_DB_QWEN3_RANGE_NODES - 1;
+    int candidate_owner_idx = -1;
 
     if (!svc || !candidate_tokens_out || !candidate_count_out ||
         candidate_capacity == 0) {
@@ -5874,13 +5867,39 @@ int w4_db_obmm_service_v0_wait_engram_candidates(struct w4_db_service *svc,
         uint64_t inner_checksum;
         uint64_t candidates_checksum;
 
+        candidate_owner_idx = -1;
         memset(&candidates_record, 0, sizeof(candidates_record));
         if (w4_db_cluster_runtime_init(rt) == 0 &&
-            terminal_idx >= 0 &&
-            terminal_idx < rt->node_count &&
-            (terminal_idx == rt->local_idx ||
-             w4_db_activate_remote_slot(rt, terminal_idx) == 0)) {
-            terminal_slot = &rt->slots[terminal_idx];
+            rt->node_count > 0) {
+            for (int node_idx = 0; node_idx < rt->node_count; ++node_idx) {
+                if (node_idx != rt->local_idx &&
+                    w4_db_activate_remote_slot(rt, node_idx) != 0) {
+                    continue;
+                }
+                terminal_slot = &rt->slots[node_idx];
+                memset(&candidates_record, 0, sizeof(candidates_record));
+                if (w4_db_slot_find_record(terminal_slot,
+                                           candidates_key,
+                                           &candidates_record) &&
+                    candidates_record.kind == W4_DB_RECORD_QWEN3_ENGRAM_CANDIDATES &&
+                    candidates_record.version == 1U &&
+                    candidates_record.object_payload_kind ==
+                        W4_DB_OBMM_KIND_QWEN3_ENGRAM_CANDIDATES &&
+                    candidates_record.object_backing_len ==
+                        W4_DB_OBMM_QWEN3_ENGRAM_CANDIDATES_BYTES &&
+                    terminal_slot->region.addr &&
+                    candidates_record.object_backing_offset +
+                            candidates_record.object_backing_len <=
+                        terminal_slot->region.len) {
+                    candidate_owner_idx = node_idx;
+                    break;
+                }
+            }
+            if (candidate_owner_idx < 0) {
+                usleep(10000);
+                continue;
+            }
+            terminal_slot = &rt->slots[candidate_owner_idx];
             if (!w4_db_slot_find_record(terminal_slot, candidates_key, &candidates_record) ||
                 candidates_record.kind != W4_DB_RECORD_QWEN3_ENGRAM_CANDIDATES ||
                 candidates_record.version != 1U ||
@@ -5939,7 +5958,7 @@ int w4_db_obmm_service_v0_wait_engram_candidates(struct w4_db_service *svc,
                        " source=obmm_object_service status=ok\n",
                        decode_step,
                        candidates_key,
-                       terminal_idx + 1,
+                       candidate_owner_idx + 1,
                        candidates_record.version,
                        candidate_count,
                        candidates_record.object_backing_len,

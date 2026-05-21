@@ -276,6 +276,25 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                             record[key] = parse_int(fields.get(key), 0)
                         engram_timings.append(record)
 
+                if "qwen3_engram_context_object_refs_loaded" in clean_line:
+                    fields = parse_pairs(clean_line)
+                    step = parse_int(fields.get("step"), None)
+                    if step is not None:
+                        state_checksum = fields.get("state_checksum", "0x0")
+                        engram_context_records.append(
+                            {
+                                "_log_node": node_id,
+                                "step": step,
+                                "mode": "object-ref",
+                                "output_checksum": state_checksum,
+                                "gate_checksum": "0x0",
+                                "index_checksum": "0x0",
+                                "table_rows": parse_int(fields.get("refs"), 0),
+                                "output_l1_milli": 0,
+                                "latency_ms": 0,
+                            }
+                        )
+
                 if "qwen3_worker_barrier_timing" in clean_line:
                     fields = parse_pairs(clean_line)
                     step = parse_int(fields.get("step"), None)

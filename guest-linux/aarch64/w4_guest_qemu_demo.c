@@ -8017,6 +8017,50 @@ decode_round_start:
                     cluster_node_count);
             goto out;
         }
+        if (qwen3_memory_decision_config.shortpath_execute &&
+            strcmp(qwen3_memory_decision_config.shortpath_action,
+                   "jump-to-terminal") == 0) {
+            uint32_t shortpath_target_layer_start = 0U;
+
+            if (parse_u32_field("shortpath_target_layer_start",
+                                qwen3_memory_decision_config.shortpath_target_layer_start,
+                                &shortpath_target_layer_start) != 0) {
+                goto out;
+            }
+            if (layer_start >= shortpath_target_layer_start) {
+                uint64_t shortpath_token = 0;
+
+                input_wait_start_ms = monotonic_ms();
+                if (w4_db_obmm_service_v0_wait_terminal_token_result(
+                        &db_service,
+                        guest_decode_step,
+                        600000,
+                        &shortpath_token) != 0) {
+                    fprintf(stderr,
+                            "[w4_guest] fail qwen3 w5 shortpath downstream terminal token missing"
+                            " node=%u step=%" PRIu64 " layers=[%u,%u)\n",
+                            dispatch_node + 1U,
+                            guest_decode_step,
+                            layer_start,
+                            layer_end);
+                    goto out;
+                }
+                input_found_ms = monotonic_ms();
+                input_loaded_ms = input_found_ms;
+                input_wait_ms = input_found_ms - input_wait_start_ms;
+                printf("[w4_guest] stage qwen3_w5_memory_shortpath_downstream_skip"
+                       " node=%u step=%" PRIu64 " layers=[%u,%u)"
+                       " target_layer_start=%u token=%" PRIu64
+                       " source=terminal_token_result target=range_forward status=skipped\n",
+                       dispatch_node + 1U,
+                       guest_decode_step,
+                       layer_start,
+                       layer_end,
+                       shortpath_target_layer_start,
+                       shortpath_token);
+                goto qwen3_after_compute_publish;
+            }
+        }
         if (layer_start > 0U) {
             uint64_t hidden_range_bytes = qwen3_handoff_hidden_bytes(guest_decode_step);
             uint64_t range_input_checksum = 0;
@@ -8412,6 +8456,7 @@ decode_round_start:
     verify_done_ms = monotonic_ms();
     if (qwen3_runtime_forward_ready && enable_db_cluster && cluster_node_count == 8U) {
         uint32_t dispatch_node = 0U;
+        bool memory_shortpath_engram_owner_selected = false;
 
         if (!db_service_ready &&
             w4_db_service_init(&db_service, true, true, true) == 0) {
@@ -8484,6 +8529,104 @@ decode_round_start:
                        terminal_logits_ref.payload_checksum,
                        qwen3_memory_decision_config.shortpath_execute ? "true" : "false");
                 if (qwen3_memory_decision_config.shortpath_execute) {
+                    if (qwen3_engram_config.enabled) {
+                        struct w4_qwen3_engram_step_timing boundary_engram_timing;
+                        uint64_t boundary_selected_token = 0;
+                        uint64_t selected_token_from_object = 0;
+                        uint64_t raw_sampled_token;
+                        uint64_t engram_stage_start_ms;
+
+                        if (dispatch_node != qwen3_engram_config.owner_node) {
+                            fprintf(stderr,
+                                    "[w4_guest] fail qwen3 w5 shortpath engram early publish"
+                                    " requires producer node%u to match engram owner node%u\n",
+                                    dispatch_node + 1U,
+                                    qwen3_engram_config.owner_node + 1U);
+                            goto out;
+                        }
+                        engram_stage_start_ms = monotonic_ms();
+                        if (w4_db_obmm_service_v0_publish_engram_candidates(
+                                &db_service,
+                                dispatch_node,
+                                cluster_node_count,
+                                guest_decode_step,
+                                terminal_logits_record.candidate_tokens,
+                                terminal_logits_record.candidate_logit_bits,
+                                terminal_logits_record.candidate_text_checksums,
+                                terminal_logits_record.candidate_piece_bytes,
+                                terminal_logits_record.candidate_piece_word0,
+                                terminal_logits_record.candidate_piece_word1,
+                                terminal_logits_record.candidate_count) != 0) {
+                            fprintf(stderr,
+                                    "[w4_guest] fail qwen3 w5 shortpath engram candidates publish"
+                                    " node=%u step=%" PRIu64 "\n",
+                                    dispatch_node + 1U,
+                                    guest_decode_step);
+                            goto out;
+                        }
+                        engram_candidate_publish_ms += monotonic_ms() - engram_stage_start_ms;
+                        memset(&boundary_engram_timing, 0, sizeof(boundary_engram_timing));
+                        if (qwen3_engram_select_and_publish_step(&db_service,
+                                                                 &qwen3_engram_config,
+                                                                 dispatch_node,
+                                                                 cluster_node_count,
+                                                                 guest_decode_step,
+                                                                 qwen3_round_input_tokens,
+                                                                 qwen3_round_input_token_count,
+                                                                 &terminal_logits_record,
+                                                                 &boundary_selected_token,
+                                                                 &boundary_engram_timing) != 0) {
+                            goto out;
+                        }
+                        engram_candidate_wait_ms += boundary_engram_timing.candidate_wait_ms;
+                        engram_policy_select_ms += boundary_engram_timing.policy_select_ms;
+                        engram_decision_publish_ms += boundary_engram_timing.decision_publish_ms;
+                        raw_sampled_token = terminal_logits_record.sampled_token;
+                        engram_stage_start_ms = monotonic_ms();
+                        if (w4_db_obmm_service_v0_wait_engram_selected_token(
+                                &db_service,
+                                guest_decode_step,
+                                600000,
+                                &selected_token_from_object) != 0) {
+                            fprintf(stderr,
+                                    "[w4_guest] fail qwen3 w5 shortpath engram selected token"
+                                    " resolve failed node=%u step=%" PRIu64 "\n",
+                                    dispatch_node + 1U,
+                                    guest_decode_step);
+                            goto out;
+                        }
+                        engram_selected_wait_ms += monotonic_ms() - engram_stage_start_ms;
+                        if (selected_token_from_object != boundary_selected_token) {
+                            fprintf(stderr,
+                                    "[w4_guest] fail qwen3 w5 shortpath engram selected token"
+                                    " mismatch node=%u step=%" PRIu64
+                                    " selected=%" PRIu64 " object=%" PRIu64 "\n",
+                                    dispatch_node + 1U,
+                                    guest_decode_step,
+                                    boundary_selected_token,
+                                    selected_token_from_object);
+                            goto out;
+                        }
+                        engram_stage_start_ms = monotonic_ms();
+                        if (!qwen3_rewrite_terminal_token_record_for_engram_selection(
+                                &terminal_logits_record,
+                                dispatch_node,
+                                guest_decode_step,
+                                raw_sampled_token,
+                                selected_token_from_object)) {
+                            return 1;
+                        }
+                        terminal_logits_record.sampled_token = selected_token_from_object;
+                        engram_selected_writeback_ms += monotonic_ms() - engram_stage_start_ms;
+                        printf("[w4_guest] stage qwen3_engram_selected_writeback local=node%u"
+                               " step=%" PRIu64 " selected_token=%" PRIu64
+                               " source=engram_selected_object"
+                               " target=memory_shortpath_terminal_token_result status=ok\n",
+                               dispatch_node + 1U,
+                               guest_decode_step,
+                               terminal_logits_record.sampled_token);
+                        memory_shortpath_engram_owner_selected = true;
+                    }
                     if (terminal_publish_start_ms == 0) {
                         terminal_publish_start_ms = monotonic_ms();
                     }
@@ -8525,6 +8668,7 @@ decode_round_start:
             }
         }
         if (qwen3_engram_config.enabled &&
+            !memory_shortpath_engram_owner_selected &&
             dispatch_node == qwen3_engram_config.owner_node &&
             dispatch_node + 1U != cluster_node_count) {
             struct w4_qwen3_terminal_token_record owner_candidates;
@@ -8551,7 +8695,19 @@ decode_round_start:
             engram_decision_publish_ms += owner_engram_timing.decision_publish_ms;
             terminal_publish_done_ms = monotonic_ms();
         }
-        if (dispatch_node + 1U == cluster_node_count) {
+        if (dispatch_node + 1U == cluster_node_count &&
+            qwen3_memory_decision_config.shortpath_execute &&
+            qwen3_engram_config.enabled &&
+            qwen3_engram_config.owner_node + 1U != cluster_node_count &&
+            guest_decode_step == 0U) {
+            printf("[w4_guest] stage qwen3_w5_memory_terminal_publish_skip"
+                   " local=node%u step=%" PRIu64
+                   " reason=engram_owner_boundary_already_published"
+                   " owner=node%u source=lingqu_memory_service status=ok\n",
+                   dispatch_node + 1U,
+                   guest_decode_step,
+                   qwen3_engram_config.owner_node + 1U);
+        } else if (dispatch_node + 1U == cluster_node_count) {
             uint64_t decode_step = guest_decode_step;
             struct w4_qwen3_terminal_token_record terminal_token;
             uint64_t raw_sampled_token;
@@ -8757,6 +8913,7 @@ decode_round_start:
     printf("[w4_guest] assessment service_coverage=5/5 dispatch_path=ubc_entity_chipbackend kvcache_shmem_segment=%" PRIu64 " kvcache_block=%s kvcache_db_key=%s kvcache_db_bytes=%" PRIu64 " complete=true\n",
            default_segment, block, key, kvcache_db_bytes);
     printf("[w4_guest] dispatch path=ubc_entity_chipbackend\n");
+qwen3_after_compute_publish:
     if (is_qwen3_profile() && enable_db_cluster && cluster_node_count == 8U) {
         uint32_t dispatch_node = 0U;
         uint64_t stage_start_ms = monotonic_ms();
