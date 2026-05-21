@@ -1713,6 +1713,9 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
             run_lingqu_memory_record_boundary_observations_from_w5_summary_cli(&args)
         }
         "register-execution-artifact" => run_lingqu_memory_register_execution_artifact_cli(&args),
+        "register-terminal-logits-artifact-from-w5-summary" => {
+            run_lingqu_memory_register_terminal_logits_artifact_from_w5_summary_cli(&args)
+        }
         "register-prefix-cache" => run_lingqu_memory_register_prefix_cache_cli(&args),
         "update-record-state" => run_lingqu_memory_update_record_state_cli(&args),
         "validate-service-path" => run_lingqu_memory_validate_service_path(),
@@ -1721,7 +1724,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "validate-flat-materialize" => run_lingqu_memory_validate_flat_materialize(),
         "validate-w5-engram-object-ref" => run_lingqu_memory_validate_w5_engram_object_ref(),
         _ => anyhow::bail!(
-            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, query, list-query-results, list-boundary-observations, list-record-lifecycle, list-shortpath-supports, list-shortpath-decisions, list-prefetch-plans, list-prefix-cache-reuse, update-record-state, register-execution-artifact, boundary-lookup, boundary-lookup-from-observation, boundary-request-from-w5-summary, record-boundary-observations-from-w5-summary, plan-prefetch, register-prefix-cache, lookup-prefix-cache, materialize-hot-state, materialize-engram-state, publish-w5-engram-state-ref, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
+            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, query, list-query-results, list-boundary-observations, list-record-lifecycle, list-shortpath-supports, list-shortpath-decisions, list-prefetch-plans, list-prefix-cache-reuse, update-record-state, register-execution-artifact, register-terminal-logits-artifact-from-w5-summary, boundary-lookup, boundary-lookup-from-observation, boundary-request-from-w5-summary, record-boundary-observations-from-w5-summary, plan-prefetch, register-prefix-cache, lookup-prefix-cache, materialize-hot-state, materialize-engram-state, publish-w5-engram-state-ref, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
         ),
     }
 }
@@ -2254,6 +2257,164 @@ fn run_lingqu_memory_plan_prefetch_cli(args: &[String]) -> anyhow::Result<()> {
         plan.planned_artifact_ids.join(",")
     );
     println!("  checksum: {:#x}", plan.checksum);
+    Ok(())
+}
+
+#[derive(Debug)]
+struct W5TerminalLogitsObservation {
+    sampled_token: u64,
+    runner_up_token: u64,
+    margin_milli: u64,
+    logits_checksum: u64,
+    text_checksum: u64,
+    top_logit_bits: u64,
+    runner_up_logit_bits: u64,
+    full_vocab_checked: u64,
+    full_vocab_checksum: u64,
+    piece_word0: u64,
+    piece_word1: u64,
+    candidate_count: usize,
+    candidate_tokens: [u64; 4],
+    candidate_logit_bits: [u64; 4],
+    candidate_text_checksums: [u64; 4],
+    candidate_piece_bytes: [u64; 4],
+    candidate_piece_word0: [u64; 4],
+    candidate_piece_word1: [u64; 4],
+}
+
+fn run_lingqu_memory_register_terminal_logits_artifact_from_w5_summary_cli(
+    args: &[String],
+) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let summary_path = PathBuf::from(required_cli_arg(args, "--summary")?);
+    let step = required_cli_u64(args, "--step")?;
+    let node = required_cli_arg(args, "--node")?;
+    let position = required_cli_u64(args, "--position")?;
+    let confidence_milli = optional_cli_u64(args, "--confidence-milli")?.unwrap_or(980);
+    if confidence_milli > 1000 {
+        anyhow::bail!("--confidence-milli must be in [0, 1000]");
+    }
+    if step != 0 {
+        anyhow::bail!(
+            "register-terminal-logits-artifact-from-w5-summary currently requires --step 0 because the W5 terminal logits artifact payload is step-indexed"
+        );
+    }
+    let created_at_us = optional_cli_u64(args, "--created-at-us")?.unwrap_or(1);
+    let expires_at_us = optional_cli_u64(args, "--expires-at-us")?;
+    let model = sim_memory::InferenceModelBinding {
+        model_id: required_cli_arg(args, "--model-id")?,
+        model_key: required_cli_arg(args, "--model-key")?,
+        tokenizer_hash: required_cli_u64_auto(args, "--tokenizer-hash")?,
+        profile_hash: required_cli_u64_auto(args, "--profile-hash")?,
+    };
+    model
+        .validate()
+        .map_err(|err| anyhow::anyhow!("validate model binding: {err}"))?;
+
+    let summary = fs::read_to_string(&summary_path)
+        .with_context(|| format!("read W5 summary {}", summary_path.display()))?;
+    let run_id = derive_w5_run_id_from_summary(&summary)
+        .ok_or_else(|| anyhow::anyhow!("missing W5 run id in {}", summary_path.display()))?;
+    let observation = find_w5_boundary_observation(&summary, step, &node)
+        .with_context(|| format!("find boundary observation step={step} node={node}"))?;
+    let layer_start = required_summary_u32(&observation, "layer_start")?;
+    let layer_end = required_summary_u32(&observation, "layer_end")?;
+    let target = required_summary_field(&observation, "target")?;
+    let hidden_key = required_summary_field(&observation, "hidden_key")?.to_string();
+    let hidden_bytes = required_summary_u64(&observation, "hidden_bytes")?;
+    let hidden_checksum = required_summary_u64_auto(&observation, "hidden_checksum")?;
+    let hidden_version = required_summary_u64(&observation, "hidden_version")?;
+    let terminal = find_w5_terminal_logits_observation(&summary, step)?;
+    let payload = build_w5_terminal_logits_payload(step, &terminal)?;
+    let payload_checksum = cli_bytes_checksum(&payload);
+    let artifact_id = optional_cli_arg(args, "--artifact-id")?
+        .unwrap_or_else(|| format!("artifact/logits/{run_id}/step{step}/{node}"));
+
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let payload_ref = durable_store
+        .write_block_payload(
+            format!("block/w5/terminal-logits/{run_id}/step{step}/{node}"),
+            payload,
+        )
+        .context("write terminal logits artifact payload")?;
+    let hidden_ref = sim_memory::HotTensorObjectRef {
+        object_key: hidden_key.clone(),
+        version: hidden_version,
+        backend: sim_memory::HotObjectBackend::ObmmShmem,
+        storage_ref: format!("obmm://{hidden_key}"),
+        segment: None,
+        offset: 0,
+        bytes: hidden_bytes,
+        checksum: hidden_checksum,
+        dtype: sim_core::TensorDType::Opaque,
+        shape: vec![hidden_bytes],
+    };
+    let artifact_checksum = cli_bytes_checksum(
+        format!(
+            "{}:{}:{}:{}:{}:{}:{payload_checksum:x}",
+            artifact_id, run_id, step, node, layer_end, terminal.sampled_token
+        )
+        .as_bytes(),
+    );
+    let artifact = sim_memory::ExecutionArtifactObject {
+        artifact_id: artifact_id.clone(),
+        kind: sim_memory::ExecutionArtifactKind::Logits,
+        model,
+        producer_boundary: sim_memory::RangeBoundary {
+            phase: sim_memory::RangeBoundaryPhase::RangeExit,
+            step_index: step,
+            node_index: parse_node_index(&node)?,
+            layer_start,
+            layer_end,
+            next_node_index: Some(parse_node_index(target)?),
+            position,
+        },
+        boundary_hidden_fingerprint: sim_memory::BoundaryTensorFingerprint::from_hot_ref(
+            &hidden_ref,
+        ),
+        target_layer_start: layer_end,
+        target_layer_end: layer_end,
+        dtype: sim_core::TensorDType::Opaque,
+        shape: vec![W5_TERMINAL_LOGITS_HEADER_BYTES as u64 + W5_TERMINAL_LOGITS_ENTRY_BYTES as u64],
+        durable_payload_ref: Some(payload_ref),
+        hot_object_ref: None,
+        source_query_result_id: None,
+        source_engram_state_id: None,
+        confidence_milli: confidence_milli as u32,
+        state: sim_memory::ExecutionArtifactState::Verified,
+        checksum: artifact_checksum,
+        version: 1,
+        created_at_us,
+        expires_at_us,
+    };
+    artifact
+        .validate()
+        .map_err(|err| anyhow::anyhow!("validate terminal logits artifact: {err}"))?;
+
+    let mut memory_service = LingquMemoryService::new();
+    rebuild_lingqu_memory_execution_registry_artifacts(&mut memory_service, &mut durable_store)
+        .context("rebuild execution artifact registry")?;
+    validate_lingqu_execution_artifact_payloads(&mut durable_store, &artifact, "register")
+        .context("validate terminal logits artifact payload")?;
+    memory_service
+        .register_execution_artifact(artifact.clone())
+        .context("register terminal logits execution artifact")?;
+    memory_service
+        .persist_execution_artifacts_to_dfs(&mut durable_store)
+        .context("persist execution artifact DFS manifest")?;
+    save_lingqu_memory_durable_store(&store_path, &durable_store)?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: register-terminal-logits-artifact-from-w5-summary");
+    println!("  store_path: {}", store_path.display());
+    println!("  summary: {}", summary_path.display());
+    println!("  artifact: {}", artifact.artifact_id);
+    println!("  step: {step}");
+    println!("  node: {node}");
+    println!("  layers: [{layer_start},{layer_end})");
+    println!("  token: {}", terminal.sampled_token);
+    println!("  logits_checksum: {:#x}", terminal.logits_checksum);
+    println!("  payload_checksum: {payload_checksum:#x}");
     Ok(())
 }
 
@@ -4132,6 +4293,13 @@ fn w5_boundary_observation_store_path(args: &Qwen3GuestDecodeLoopCliArgs) -> Opt
         })
 }
 
+fn w5_memory_should_publish_engram_state(
+    config: &W5MemoryBootstrapConfig,
+    memory_decisions_present: bool,
+) -> bool {
+    config.engram_state_path.exists() || !memory_decisions_present
+}
+
 fn w5_execution_artifact_kind_name(kind: sim_memory::ExecutionArtifactKind) -> &'static str {
     match kind {
         sim_memory::ExecutionArtifactKind::HiddenState => "hidden-state",
@@ -5095,6 +5263,303 @@ fn find_w5_boundary_observation(
     anyhow::bail!("missing memory_boundary_observation for step={step} node={node}")
 }
 
+fn w5_run_dir_from_summary(summary: &str) -> Option<PathBuf> {
+    summary.lines().find_map(|line| {
+        line.strip_prefix("summary: run_dir=")
+            .map(|value| PathBuf::from(value.trim()))
+    })
+}
+
+fn find_w5_terminal_logits_observation(
+    summary: &str,
+    step: u64,
+) -> anyhow::Result<W5TerminalLogitsObservation> {
+    let run_dir = w5_run_dir_from_summary(summary)
+        .ok_or_else(|| anyhow::anyhow!("missing W5 run_dir in summary"))?;
+    let terminal_lines = ["nodeH_guest.log", "node8_guest.log"]
+        .into_iter()
+        .map(|name| run_dir.join(name))
+        .collect::<Vec<_>>();
+    for log_path in terminal_lines {
+        if !log_path.exists() {
+            continue;
+        }
+        let log = fs::read_to_string(&log_path)
+            .with_context(|| format!("read W5 terminal guest log {}", log_path.display()))?;
+        for line in log.lines() {
+            if !line.contains("stage qwen3_w5_terminal_logits_observation ") {
+                continue;
+            }
+            let fields = parse_summary_fields(line);
+            if required_summary_u64(&fields, "step")? == step {
+                return parse_w5_terminal_logits_observation(&fields).with_context(|| {
+                    format!(
+                        "parse terminal logits observation from {}",
+                        log_path.display()
+                    )
+                });
+            }
+        }
+    }
+    anyhow::bail!(
+        "missing qwen3_w5_terminal_logits_observation for step={step} in {}",
+        run_dir.display()
+    )
+}
+
+fn parse_w5_terminal_logits_observation(
+    fields: &std::collections::HashMap<String, String>,
+) -> anyhow::Result<W5TerminalLogitsObservation> {
+    let candidate_count = required_summary_u64(fields, "candidate_count")? as usize;
+    if candidate_count == 0 || candidate_count > 4 {
+        anyhow::bail!("terminal logits candidate_count must be in 1..=4");
+    }
+    let mut observation = W5TerminalLogitsObservation {
+        sampled_token: required_summary_u64(fields, "token")?,
+        runner_up_token: required_summary_u64(fields, "runner_up")?,
+        margin_milli: required_summary_u64(fields, "margin_milli")?,
+        logits_checksum: required_summary_u64_auto(fields, "logits_checksum")?,
+        text_checksum: required_summary_u64_auto(fields, "text_checksum")?,
+        top_logit_bits: required_summary_u64_auto(fields, "top_logit_bits")?,
+        runner_up_logit_bits: required_summary_u64_auto(fields, "runner_up_logit_bits")?,
+        full_vocab_checked: required_summary_u64(fields, "full_vocab_checked")?,
+        full_vocab_checksum: required_summary_u64_auto(fields, "full_vocab_checksum")?,
+        piece_word0: required_summary_u64_auto(fields, "piece_word0")?,
+        piece_word1: required_summary_u64_auto(fields, "piece_word1")?,
+        candidate_count,
+        candidate_tokens: [0; 4],
+        candidate_logit_bits: [0; 4],
+        candidate_text_checksums: [0; 4],
+        candidate_piece_bytes: [0; 4],
+        candidate_piece_word0: [0; 4],
+        candidate_piece_word1: [0; 4],
+    };
+    for index in 0..candidate_count {
+        observation.candidate_tokens[index] =
+            required_summary_u64(fields, candidate_field(index, "token"))?;
+        observation.candidate_logit_bits[index] =
+            required_summary_u64_auto(fields, candidate_field(index, "logit_bits"))?;
+        observation.candidate_text_checksums[index] =
+            required_summary_u64_auto(fields, candidate_field(index, "text_checksum"))?;
+        observation.candidate_piece_bytes[index] =
+            required_summary_u64(fields, candidate_field(index, "piece_bytes"))?;
+        observation.candidate_piece_word0[index] =
+            required_summary_u64_auto(fields, candidate_field(index, "piece_word0"))?;
+        observation.candidate_piece_word1[index] =
+            required_summary_u64_auto(fields, candidate_field(index, "piece_word1"))?;
+    }
+    if observation.sampled_token != observation.candidate_tokens[0]
+        || observation.logits_checksum == 0
+        || observation.text_checksum == 0
+        || observation.top_logit_bits == 0
+        || observation.full_vocab_checked == 0
+        || observation.full_vocab_checksum == 0
+        || observation.candidate_text_checksums[0] != observation.text_checksum
+        || observation.candidate_piece_bytes[0] == 0
+        || observation.candidate_piece_word0[0] == 0
+    {
+        anyhow::bail!("terminal logits observation is incomplete");
+    }
+    Ok(observation)
+}
+
+fn candidate_field(index: usize, suffix: &'static str) -> &'static str {
+    match (index, suffix) {
+        (0, "token") => "candidate0_token",
+        (0, "logit_bits") => "candidate0_logit_bits",
+        (0, "text_checksum") => "candidate0_text_checksum",
+        (0, "piece_bytes") => "candidate0_piece_bytes",
+        (0, "piece_word0") => "candidate0_piece_word0",
+        (0, "piece_word1") => "candidate0_piece_word1",
+        (1, "token") => "candidate1_token",
+        (1, "logit_bits") => "candidate1_logit_bits",
+        (1, "text_checksum") => "candidate1_text_checksum",
+        (1, "piece_bytes") => "candidate1_piece_bytes",
+        (1, "piece_word0") => "candidate1_piece_word0",
+        (1, "piece_word1") => "candidate1_piece_word1",
+        (2, "token") => "candidate2_token",
+        (2, "logit_bits") => "candidate2_logit_bits",
+        (2, "text_checksum") => "candidate2_text_checksum",
+        (2, "piece_bytes") => "candidate2_piece_bytes",
+        (2, "piece_word0") => "candidate2_piece_word0",
+        (2, "piece_word1") => "candidate2_piece_word1",
+        (3, "token") => "candidate3_token",
+        (3, "logit_bits") => "candidate3_logit_bits",
+        (3, "text_checksum") => "candidate3_text_checksum",
+        (3, "piece_bytes") => "candidate3_piece_bytes",
+        (3, "piece_word0") => "candidate3_piece_word0",
+        (3, "piece_word1") => "candidate3_piece_word1",
+        _ => "unsupported_candidate_field",
+    }
+}
+
+fn build_w5_terminal_logits_payload(
+    step: u64,
+    observation: &W5TerminalLogitsObservation,
+) -> anyhow::Result<Vec<u8>> {
+    let token_text_header = W5_TERMINAL_LOGITS_HEADER_BYTES + W5_TERMINAL_LOGITS_ENTRY_BYTES;
+    let token_text_base = token_text_header + W5_TERMINAL_TOKEN_TEXT_HEADER_BYTES;
+    let mut payload = vec![0u8; token_text_base + W5_TERMINAL_TOKEN_TEXT_ENTRY_BYTES];
+
+    write_cli_u64_le_at(&mut payload, 0, W5_TERMINAL_LOGITS_MARKER)?;
+    write_cli_u64_le_at(&mut payload, 8, 1)?;
+    write_cli_u64_le_at(&mut payload, 16, W5_TERMINAL_LOGITS_ENTRY_WORDS)?;
+    write_cli_u64_le_at(&mut payload, 24, W5_TERMINAL_LOGITS_ENTRY_BYTES as u64)?;
+    write_cli_u64_le_at(
+        &mut payload,
+        W5_TERMINAL_LOGITS_HEADER_BYTES + 16,
+        1_000_000,
+    )?;
+    write_cli_u64_le_at(
+        &mut payload,
+        W5_TERMINAL_LOGITS_HEADER_BYTES + 24,
+        observation.full_vocab_checked,
+    )?;
+    write_cli_u64_le_at(
+        &mut payload,
+        W5_TERMINAL_LOGITS_HEADER_BYTES + 32,
+        observation.sampled_token,
+    )?;
+    write_cli_u64_le_at(
+        &mut payload,
+        W5_TERMINAL_LOGITS_HEADER_BYTES + 40,
+        observation.runner_up_token,
+    )?;
+    write_cli_u64_le_at(
+        &mut payload,
+        W5_TERMINAL_LOGITS_HEADER_BYTES + 48,
+        observation.margin_milli,
+    )?;
+    write_cli_u64_le_at(
+        &mut payload,
+        W5_TERMINAL_LOGITS_HEADER_BYTES + 56,
+        observation.logits_checksum,
+    )?;
+    write_cli_u64_le_at(
+        &mut payload,
+        W5_TERMINAL_LOGITS_HEADER_BYTES + 64,
+        observation.text_checksum,
+    )?;
+    write_cli_u64_le_at(&mut payload, W5_TERMINAL_LOGITS_HEADER_BYTES + 72, step)?;
+    write_cli_u64_le_at(
+        &mut payload,
+        W5_TERMINAL_LOGITS_HEADER_BYTES + 104,
+        observation.full_vocab_checked,
+    )?;
+    write_cli_u64_le_at(
+        &mut payload,
+        W5_TERMINAL_LOGITS_HEADER_BYTES + 112,
+        observation.full_vocab_checksum,
+    )?;
+    write_cli_u64_le_at(
+        &mut payload,
+        W5_TERMINAL_LOGITS_HEADER_BYTES + 120,
+        observation.top_logit_bits,
+    )?;
+    write_cli_u64_le_at(
+        &mut payload,
+        W5_TERMINAL_LOGITS_HEADER_BYTES + 128,
+        observation.runner_up_logit_bits,
+    )?;
+    write_cli_u64_le_at(
+        &mut payload,
+        W5_TERMINAL_LOGITS_HEADER_BYTES + 160,
+        observation.candidate_count as u64,
+    )?;
+    for index in 0..observation.candidate_count {
+        let base = W5_TERMINAL_LOGITS_HEADER_BYTES + 168 + index * 48;
+        write_cli_u64_le_at(&mut payload, base, observation.candidate_tokens[index])?;
+        write_cli_u64_le_at(
+            &mut payload,
+            base + 8,
+            observation.candidate_logit_bits[index],
+        )?;
+        write_cli_u64_le_at(
+            &mut payload,
+            base + 16,
+            observation.candidate_text_checksums[index],
+        )?;
+        write_cli_u64_le_at(
+            &mut payload,
+            base + 24,
+            observation.candidate_piece_bytes[index],
+        )?;
+        write_cli_u64_le_at(
+            &mut payload,
+            base + 32,
+            observation.candidate_piece_word0[index],
+        )?;
+        write_cli_u64_le_at(
+            &mut payload,
+            base + 40,
+            observation.candidate_piece_word1[index],
+        )?;
+    }
+
+    write_cli_u64_le_at(
+        &mut payload,
+        token_text_header,
+        W5_TERMINAL_TOKEN_TEXT_MARKER,
+    )?;
+    write_cli_u64_le_at(&mut payload, token_text_header + 8, 1)?;
+    write_cli_u64_le_at(
+        &mut payload,
+        token_text_header + 16,
+        W5_TERMINAL_TOKEN_TEXT_ENTRY_WORDS,
+    )?;
+    write_cli_u64_le_at(
+        &mut payload,
+        token_text_header + 24,
+        W5_TERMINAL_TOKEN_TEXT_ENTRY_BYTES as u64,
+    )?;
+    write_cli_u64_le_at(
+        &mut payload,
+        token_text_header + 32,
+        observation.piece_word0,
+    )?;
+    write_cli_u64_le_at(
+        &mut payload,
+        token_text_header + 40,
+        observation.piece_word1,
+    )?;
+    write_cli_u64_le_at(
+        &mut payload,
+        token_text_header + 48,
+        observation.candidate_count as u64,
+    )?;
+    write_cli_u64_le_at(&mut payload, token_text_base, step)?;
+    write_cli_u64_le_at(&mut payload, token_text_base + 8, observation.sampled_token)?;
+    write_cli_u64_le_at(
+        &mut payload,
+        token_text_base + 24,
+        observation.candidate_piece_bytes[0],
+    )?;
+    write_cli_u64_le_at(&mut payload, token_text_base + 32, observation.piece_word0)?;
+    write_cli_u64_le_at(&mut payload, token_text_base + 40, observation.piece_word1)?;
+    write_cli_u64_le_at(
+        &mut payload,
+        token_text_base + 48,
+        observation.text_checksum,
+    )?;
+    write_cli_u64_le_at(
+        &mut payload,
+        token_text_base + 56,
+        observation.candidate_count as u64,
+    )?;
+    Ok(payload)
+}
+
+fn write_cli_u64_le_at(bytes: &mut [u8], offset: usize, value: u64) -> anyhow::Result<()> {
+    let end = offset
+        .checked_add(8)
+        .ok_or_else(|| anyhow::anyhow!("u64 write offset overflow"))?;
+    let dst = bytes
+        .get_mut(offset..end)
+        .ok_or_else(|| anyhow::anyhow!("u64 write out of bounds at offset {offset}"))?;
+    dst.copy_from_slice(&value.to_le_bytes());
+    Ok(())
+}
+
 fn w5_boundary_observations_from_summary(
     summary: &str,
     run_id: &str,
@@ -5559,6 +6024,16 @@ fn cli_bytes_checksum(bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     hash
+}
+
+fn cli_hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
 }
 
 fn build_lingqu_memory_cli_sample() -> anyhow::Result<LingquMemoryService> {
@@ -6532,12 +7007,14 @@ mod tests {
         run_lingqu_memory_publish_w5_engram_state_ref_cli, run_lingqu_memory_query_cli,
         run_lingqu_memory_record_boundary_observations_from_w5_summary_cli,
         run_lingqu_memory_register_execution_artifact_cli,
-        run_lingqu_memory_register_prefix_cache_cli, run_lingqu_memory_update_record_state_cli,
-        run_lingqu_memory_validate_durable_store, run_lingqu_memory_validate_flat_materialize,
-        run_lingqu_memory_validate_flat_query, run_lingqu_memory_validate_w5_engram_object_ref,
-        save_lingqu_durable_sim, save_lingqu_memory_durable_store,
-        simpler_host_matmul_artifact_producer_path, validate_qwen3_dense_weights_path,
-        validate_w5_inference_profile, w5_memory_decision_env_vars,
+        run_lingqu_memory_register_prefix_cache_cli,
+        run_lingqu_memory_register_terminal_logits_artifact_from_w5_summary_cli,
+        run_lingqu_memory_update_record_state_cli, run_lingqu_memory_validate_durable_store,
+        run_lingqu_memory_validate_flat_materialize, run_lingqu_memory_validate_flat_query,
+        run_lingqu_memory_validate_w5_engram_object_ref, save_lingqu_durable_sim,
+        save_lingqu_memory_durable_store, simpler_host_matmul_artifact_producer_path,
+        validate_qwen3_dense_weights_path, validate_w5_inference_profile,
+        w5_memory_decision_env_vars, w5_memory_should_publish_engram_state,
         w5_object_service_payload_index_path, LingquDurableSim, LingquDurableSimSnapshot,
         LingquMemoryDurableStore, LingquMemoryDurableStoreSnapshot, LingquObjectServiceStub,
         LingquObjectVersionSelector, MemoryCatalogSnapshot, QueryResult, Qwen3CandidateRecord,
@@ -6996,6 +7473,29 @@ mod tests {
         );
         assert_eq!(memory_bootstrap.owner_entity, 3);
         assert_eq!(memory_bootstrap.producer_entity, 4);
+    }
+
+    #[test]
+    fn w5_memory_bootstrap_allows_artifact_only_decision_publication() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_w5_artifact_only_bootstrap_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let config = W5MemoryBootstrapConfig {
+            store_path: root.join("store.json"),
+            object_store_path: root.join("object-store.json"),
+            engram_state_path: root.join("missing-engram-state.json"),
+            registry_dir: root.join("registry"),
+            owner_entity: 0,
+            producer_entity: 0,
+        };
+        assert!(w5_memory_should_publish_engram_state(&config, false));
+        assert!(!w5_memory_should_publish_engram_state(&config, true));
+        fs::write(&config.engram_state_path, "{}").expect("write marker engram state");
+        assert!(w5_memory_should_publish_engram_state(&config, true));
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -7518,6 +8018,15 @@ stage qwen3_range_forward_runtime_output_publish node=2
 [w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=0 token=99710 status=ok
 ";
         assert_eq!(qwen3_guest_terminal_tokens(log), vec![99710, 38511]);
+    }
+
+    #[test]
+    fn qwen3_guest_terminal_tokens_dedup_shortpath_publish_by_step() {
+        let log = "\
+[w4_guest] stage qwen3_terminal_token_result_publish local=node4 step=0 token=11 status=ok publisher=shortpath_boundary
+[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=0 token=11 status=ok publisher=terminal_node
+";
+        assert_eq!(qwen3_guest_terminal_tokens(log), vec![11]);
     }
 
     #[test]
@@ -8695,6 +9204,101 @@ stage qwen3_range_forward_runtime_output_publish node=2
         assert!(env_vars.iter().any(
             |(key, value)| key == "SIM_W5_MEMORY_PREFETCH_ARTIFACT_REFS" && value.len() == 128
         ));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lingqu_memory_registers_terminal_logits_artifact_from_w5_summary() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_lingqu_memory_terminal_logits_from_summary_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let store = root.join("store.json");
+        let summary_path = root.join("summary.txt");
+        let response_path = root.join("response.json");
+        let run_dir = root.join("run0_headless8");
+        fs::create_dir_all(&run_dir).expect("create run dir");
+        fs::write(
+            &summary_path,
+            format!(
+                "summary: run_dir={}\n\
+memory_boundary_observation: phase=range_exit observation_id=boundary-observation/run0/step0/node4 step=0 node=node4 target=node5 layers=[4,8) layer_start=4 layer_end=8 layer_count=4 hidden_key=hidden/qwen3/node5/range-runtime-input/decode-step0 hidden_key_hash=0x1 hidden_version=1 hidden_bytes=16 hidden_checksum=0x4444 hidden_dtype=opaque hidden_shape=16 producer_publish_ms=1 producer_publish_mono_ms=1 backing=obmm_shmem metadata=lingqu_object_service queue=obmm_spsc status=ok\n",
+                run_dir.display()
+            ),
+        )
+        .expect("write summary");
+        fs::write(
+            run_dir.join("nodeH_guest.log"),
+            "[w4_guest] stage qwen3_w5_terminal_logits_observation local=node8 step=0 token=11 runner_up=358 margin_milli=100 logits_checksum=0x000000000000aaa0 text_checksum=0x000000000000bbb0 top_logit_bits=0x000000003f800000 runner_up_logit_bits=0x000000003f000000 full_vocab_checked=151936 full_vocab_checksum=0x000000000000ccc0 piece_word0=0x0000000000000041 piece_word1=0x0000000000000000 candidate_count=2 candidate0_token=11 candidate0_logit_bits=0x000000003f800000 candidate0_text_checksum=0x000000000000bbb0 candidate0_piece_bytes=1 candidate0_piece_word0=0x0000000000000041 candidate0_piece_word1=0x0000000000000000 candidate1_token=358 candidate1_logit_bits=0x000000003f000000 candidate1_text_checksum=0x000000000000ddd0 candidate1_piece_bytes=1 candidate1_piece_word0=0x0000000000000042 candidate1_piece_word1=0x0000000000000000 candidate2_token=0 candidate2_logit_bits=0x0000000000000000 candidate2_text_checksum=0x0000000000000000 candidate2_piece_bytes=0 candidate2_piece_word0=0x0000000000000000 candidate2_piece_word1=0x0000000000000000 candidate3_token=0 candidate3_logit_bits=0x0000000000000000 candidate3_text_checksum=0x0000000000000000 candidate3_piece_bytes=0 candidate3_piece_word0=0x0000000000000000 candidate3_piece_word1=0x0000000000000000 source=uapi_real_logits target=lingqu_memory_execution_artifact status=ok\n",
+        )
+        .expect("write guest log");
+        let model_args = [
+            "--model-id".to_string(),
+            "qwen3-test".to_string(),
+            "--model-key".to_string(),
+            "qwen3-test-key".to_string(),
+            "--tokenizer-hash".to_string(),
+            "0x1001".to_string(),
+            "--profile-hash".to_string(),
+            "0x2002".to_string(),
+        ];
+        let mut record_args = vec![
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--summary".to_string(),
+            summary_path.to_string_lossy().into_owned(),
+            "--step".to_string(),
+            "0".to_string(),
+            "--position".to_string(),
+            "12".to_string(),
+            "--created-at-us".to_string(),
+            "12".to_string(),
+        ];
+        record_args.extend_from_slice(&model_args);
+        run_lingqu_memory_record_boundary_observations_from_w5_summary_cli(&record_args)
+            .expect("record boundary observation");
+        let mut artifact_args = vec![
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--summary".to_string(),
+            summary_path.to_string_lossy().into_owned(),
+            "--step".to_string(),
+            "0".to_string(),
+            "--node".to_string(),
+            "node4".to_string(),
+            "--position".to_string(),
+            "12".to_string(),
+            "--created-at-us".to_string(),
+            "13".to_string(),
+        ];
+        artifact_args.extend_from_slice(&model_args);
+        run_lingqu_memory_register_terminal_logits_artifact_from_w5_summary_cli(&artifact_args)
+            .expect("register terminal logits artifact from summary");
+        run_lingqu_memory_boundary_lookup_from_observation_cli(&[
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--observation-id".to_string(),
+            "boundary-observation/run0/step0/node4".to_string(),
+            "--response".to_string(),
+            response_path.to_string_lossy().into_owned(),
+            "--now-us".to_string(),
+            "20".to_string(),
+        ])
+        .expect("lookup terminal logits artifact from observation");
+        let response = serde_json::from_slice::<sim_memory::BoundaryLookupResponse>(
+            &fs::read(&response_path).expect("read response"),
+        )
+        .expect("decode response");
+        assert_eq!(
+            response.support.supported_action,
+            sim_memory::ShortpathAction::JumpToTerminal
+        );
+        assert_eq!(
+            response.support.artifact_id.as_deref(),
+            Some("artifact/logits/run0/step0/node4")
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -10194,17 +10798,26 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     let runtime = qwen3_guest_dense_runtime(args)?;
     let mut effective_engram = args.engram.clone();
     let memory_publication = if let Some(memory_bootstrap) = &args.memory_bootstrap {
-        let publication = publish_w5_engram_state_ref_from_memory_objects(memory_bootstrap)
-            .context("publish Memory Service EngramStateObjectRef for W5")?;
-        effective_engram.enabled = true;
-        effective_engram.pool = Qwen3EngramPool::Obmm;
-        if effective_engram.context_op == Qwen3EngramContextOp::Disabled {
-            effective_engram.context_op = Qwen3EngramContextOp::CpuReference;
+        if w5_memory_should_publish_engram_state(memory_bootstrap, args.memory_decisions.is_some())
+        {
+            let publication = publish_w5_engram_state_ref_from_memory_objects(memory_bootstrap)
+                .context("publish Memory Service EngramStateObjectRef for W5")?;
+            effective_engram.enabled = true;
+            effective_engram.pool = Qwen3EngramPool::Obmm;
+            if effective_engram.context_op == Qwen3EngramContextOp::Disabled {
+                effective_engram.context_op = Qwen3EngramContextOp::CpuReference;
+            }
+            effective_engram.state_ref = Some(publication.state_ref_hex.clone());
+            effective_engram.object_service_snapshot_path =
+                publication.object_service_snapshot_path.clone();
+            Some(publication)
+        } else {
+            println!(
+                "w5_memory_bootstrap: mode=artifact_only engram_state={} reason=memory_decision_artifacts",
+                memory_bootstrap.engram_state_path.display()
+            );
+            None
         }
-        effective_engram.state_ref = Some(publication.state_ref_hex.clone());
-        effective_engram.object_service_snapshot_path =
-            publication.object_service_snapshot_path.clone();
-        Some(publication)
     } else {
         None
     };
@@ -10509,6 +11122,21 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     for (key, value) in qwen3_guest_engram_env_vars(&effective_engram, engram_session_id) {
         command.env(key, value);
     }
+    if let Some(publication) = &memory_decision_publication {
+        if let Some(snapshot_path) = &publication.object_service_snapshot_path {
+            let snapshot_bin_path = snapshot_path.with_extension("bin");
+            let snapshot_bin = fs::read(&snapshot_bin_path).with_context(|| {
+                format!(
+                    "read W5 memory artifact Object Service payload index {}",
+                    snapshot_bin_path.display()
+                )
+            })?;
+            command.env(
+                SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
+                format!("hex:{}", cli_hex_encode(&snapshot_bin)),
+            );
+        }
+    }
     if let (Some(config), Some(decisions)) = (&args.memory_decisions, &memory_decisions) {
         for (key, value) in
             w5_memory_decision_env_vars(config, decisions, memory_decision_publication.as_ref())
@@ -10541,8 +11169,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     );
     let runtime_input_count =
         qwen3_guest_log_match_count(&combined, "stage qwen3_range_forward_runtime_input_loaded ");
-    let terminal_token_count =
-        qwen3_guest_log_match_count(&combined, "stage qwen3_terminal_token_result_publish ");
+    let terminal_token_count = qwen3_guest_terminal_tokens(&combined).len();
     let guest_engram_select_count =
         qwen3_guest_log_match_count(&combined, "stage qwen3_engram_token_select ");
     let guest_engram_history_wait_count =
@@ -10927,7 +11554,11 @@ fn qwen3_guest_terminal_tokens(log: &str) -> Vec<u64> {
         })
         .collect::<Vec<_>>();
     tokens.sort_by_key(|(step, _)| *step);
-    tokens.into_iter().map(|(_, token)| token).collect()
+    let mut deduped = std::collections::BTreeMap::new();
+    for (step, token) in tokens {
+        deduped.entry(step).or_insert(token);
+    }
+    deduped.into_values().collect()
 }
 
 fn qwen3_guest_engram_selected_tokens(log: &str) -> Vec<u64> {

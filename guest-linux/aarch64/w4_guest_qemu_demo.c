@@ -1826,6 +1826,8 @@ struct w4_qwen3_terminal_token_record {
     uint64_t text_checksum;
     uint64_t top_logit_bits;
     uint64_t runner_up_logit_bits;
+    uint64_t full_vocab_checked_token_count;
+    uint64_t full_vocab_logits_checksum;
     uint64_t piece_word0;
     uint64_t piece_word1;
     uint64_t candidate_count;
@@ -1841,7 +1843,7 @@ _Static_assert(offsetof(struct w4_qwen3_terminal_token_record, text_checksum) ==
                    4ULL * sizeof(uint64_t),
                "terminal token logits fields must stay tightly packed");
 _Static_assert(offsetof(struct w4_qwen3_terminal_token_record, piece_word1) ==
-                   8ULL * sizeof(uint64_t),
+                   10ULL * sizeof(uint64_t),
                "terminal token text fields must stay tightly packed");
 
 struct w4_qwen3_engram_config {
@@ -1942,6 +1944,8 @@ static int qwen3_read_terminal_token_record(volatile uint8_t *ep_mmio,
                        logits_table_base + 32,
                        (uint8_t *)&record->sampled_token,
                        5ULL * sizeof(uint64_t));
+    record->full_vocab_checked_token_count = read_segment_u64(ep_mmio, logits_table_base + 104);
+    record->full_vocab_logits_checksum = read_segment_u64(ep_mmio, logits_table_base + 112);
     record->top_logit_bits = read_segment_u64(ep_mmio, logits_table_base + 120);
     record->runner_up_logit_bits = read_segment_u64(ep_mmio, logits_table_base + 128);
     read_segment_bytes(ep_mmio,
@@ -1976,6 +1980,93 @@ static int qwen3_read_terminal_token_record(volatile uint8_t *ep_mmio,
         }
     }
     return 0;
+}
+
+static void qwen3_log_terminal_logits_observation(
+    uint32_t local_node,
+    uint64_t decode_step,
+    const struct w4_qwen3_terminal_token_record *terminal_token)
+{
+    if (!terminal_token) {
+        return;
+    }
+    printf("[w4_guest] stage qwen3_w5_terminal_logits_observation local=node%u"
+           " step=%" PRIu64
+           " token=%" PRIu64
+           " runner_up=%" PRIu64
+           " margin_milli=%" PRIu64
+           " logits_checksum=0x%016" PRIx64
+           " text_checksum=0x%016" PRIx64
+           " top_logit_bits=0x%016" PRIx64
+           " runner_up_logit_bits=0x%016" PRIx64
+           " full_vocab_checked=%" PRIu64
+           " full_vocab_checksum=0x%016" PRIx64
+           " piece_word0=0x%016" PRIx64
+           " piece_word1=0x%016" PRIx64
+           " candidate_count=%" PRIu64
+           " candidate0_token=%" PRIu64
+           " candidate0_logit_bits=0x%016" PRIx64
+           " candidate0_text_checksum=0x%016" PRIx64
+           " candidate0_piece_bytes=%" PRIu64
+           " candidate0_piece_word0=0x%016" PRIx64
+           " candidate0_piece_word1=0x%016" PRIx64
+           " candidate1_token=%" PRIu64
+           " candidate1_logit_bits=0x%016" PRIx64
+           " candidate1_text_checksum=0x%016" PRIx64
+           " candidate1_piece_bytes=%" PRIu64
+           " candidate1_piece_word0=0x%016" PRIx64
+           " candidate1_piece_word1=0x%016" PRIx64
+           " candidate2_token=%" PRIu64
+           " candidate2_logit_bits=0x%016" PRIx64
+           " candidate2_text_checksum=0x%016" PRIx64
+           " candidate2_piece_bytes=%" PRIu64
+           " candidate2_piece_word0=0x%016" PRIx64
+           " candidate2_piece_word1=0x%016" PRIx64
+           " candidate3_token=%" PRIu64
+           " candidate3_logit_bits=0x%016" PRIx64
+           " candidate3_text_checksum=0x%016" PRIx64
+           " candidate3_piece_bytes=%" PRIu64
+           " candidate3_piece_word0=0x%016" PRIx64
+           " candidate3_piece_word1=0x%016" PRIx64
+           " source=uapi_real_logits target=lingqu_memory_execution_artifact status=ok\n",
+           local_node + 1U,
+           decode_step,
+           terminal_token->sampled_token,
+           terminal_token->runner_up_token,
+           terminal_token->margin_milli,
+           terminal_token->logits_checksum,
+           terminal_token->text_checksum,
+           terminal_token->top_logit_bits,
+           terminal_token->runner_up_logit_bits,
+           terminal_token->full_vocab_checked_token_count,
+           terminal_token->full_vocab_logits_checksum,
+           terminal_token->piece_word0,
+           terminal_token->piece_word1,
+           terminal_token->candidate_count,
+           terminal_token->candidate_tokens[0],
+           terminal_token->candidate_logit_bits[0],
+           terminal_token->candidate_text_checksums[0],
+           terminal_token->candidate_piece_bytes[0],
+           terminal_token->candidate_piece_word0[0],
+           terminal_token->candidate_piece_word1[0],
+           terminal_token->candidate_tokens[1],
+           terminal_token->candidate_logit_bits[1],
+           terminal_token->candidate_text_checksums[1],
+           terminal_token->candidate_piece_bytes[1],
+           terminal_token->candidate_piece_word0[1],
+           terminal_token->candidate_piece_word1[1],
+           terminal_token->candidate_tokens[2],
+           terminal_token->candidate_logit_bits[2],
+           terminal_token->candidate_text_checksums[2],
+           terminal_token->candidate_piece_bytes[2],
+           terminal_token->candidate_piece_word0[2],
+           terminal_token->candidate_piece_word1[2],
+           terminal_token->candidate_tokens[3],
+           terminal_token->candidate_logit_bits[3],
+           terminal_token->candidate_text_checksums[3],
+           terminal_token->candidate_piece_bytes[3],
+           terminal_token->candidate_piece_word0[3],
+           terminal_token->candidate_piece_word1[3]);
 }
 
 static bool qwen3_guest_engram_is_stop_token(uint64_t token)
@@ -5053,6 +5144,69 @@ static int qwen3_object_service_payload_index_path(char *path, size_t path_len)
     return 0;
 }
 
+static int qwen3_hex_nibble(char value)
+{
+    if (value >= '0' && value <= '9') {
+        return value - '0';
+    }
+    if (value >= 'a' && value <= 'f') {
+        return value - 'a' + 10;
+    }
+    if (value >= 'A' && value <= 'F') {
+        return value - 'A' + 10;
+    }
+    return -1;
+}
+
+static int qwen3_object_service_payload_index_hex(uint8_t **bytes_out, size_t *len_out)
+{
+    const char *snapshot = getenv("SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT");
+    const char *hex;
+    size_t hex_len;
+    size_t byte_len;
+    uint8_t *bytes;
+
+    if (!bytes_out || !len_out) {
+        return -1;
+    }
+    *bytes_out = NULL;
+    *len_out = 0;
+    if (!snapshot || strncmp(snapshot, "hex:", 4U) != 0) {
+        return 1;
+    }
+    hex = snapshot + 4U;
+    hex_len = strlen(hex);
+    if (hex_len == 0 || (hex_len % 2U) != 0U) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 object service payload index hex length invalid\n");
+        return -1;
+    }
+    byte_len = hex_len / 2U;
+    bytes = (uint8_t *)malloc(byte_len);
+    if (!bytes) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 object service payload index hex alloc bytes=%zu\n",
+                byte_len);
+        return -1;
+    }
+    for (size_t i = 0; i < byte_len; ++i) {
+        int high = qwen3_hex_nibble(hex[i * 2U]);
+        int low = qwen3_hex_nibble(hex[i * 2U + 1U]);
+
+        if (high < 0 || low < 0) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 object service payload index hex invalid offset=%zu\n",
+                    i * 2U);
+            free(bytes);
+            return -1;
+        }
+        bytes[i] = (uint8_t)((high << 4) | low);
+    }
+    *bytes_out = bytes;
+    *len_out = byte_len;
+    return 0;
+}
+
 static int qwen3_read_object_service_payload(
     const struct lingqu_obmm_object_ref_wire *ref,
     uint8_t **payload_out,
@@ -5070,64 +5224,78 @@ static int qwen3_read_object_service_payload(
     uint32_t record_bytes;
     uint64_t record_count;
     int path_state;
+    int hex_state;
 
+    path[0] = '\0';
     if (!ref || !payload_out || !payload_len_out || ref->payload_bytes == 0 ||
         ref->payload_bytes > SIZE_MAX) {
         return -1;
     }
-    path_state = qwen3_object_service_payload_index_path(path, sizeof(path));
-    if (path_state != 0) {
-        return path_state;
-    }
-    if (stat(path, &st) != 0 || st.st_size <= 0) {
-        fprintf(stderr,
-                "[w4_guest] fail qwen3 object service payload index stat path=%s err=%s\n",
-                path,
-                strerror(errno));
+    hex_state = qwen3_object_service_payload_index_hex(&index_bytes, &file_len);
+    if (hex_state < 0) {
         return -1;
     }
-    if ((uint64_t)st.st_size > SIZE_MAX) {
-        fprintf(stderr,
-                "[w4_guest] fail qwen3 object service payload index too large path=%s\n",
-                path);
-        return -1;
-    }
-    file_len = (size_t)st.st_size;
-    index_bytes = (uint8_t *)malloc(file_len);
-    if (!index_bytes) {
-        fprintf(stderr,
-                "[w4_guest] fail qwen3 object service payload index alloc bytes=%zu\n",
-                file_len);
-        return -1;
-    }
-    fp = fopen(path, "rb");
-    if (!fp) {
-        fprintf(stderr,
-                "[w4_guest] fail qwen3 object service payload index open path=%s err=%s\n",
-                path,
-                strerror(errno));
-        free(index_bytes);
-        return -1;
-    }
-    read_len = fread(index_bytes, 1, file_len, fp);
-    {
-        int read_error = ferror(fp);
-        int close_error = fclose(fp);
-
-        if (read_error || close_error != 0 || read_len != file_len) {
+    if (hex_state > 0) {
+        path_state = qwen3_object_service_payload_index_path(path, sizeof(path));
+        if (path_state != 0) {
+            return path_state;
+        }
+        if (stat(path, &st) != 0 || st.st_size <= 0) {
             fprintf(stderr,
-                    "[w4_guest] fail qwen3 object service payload index read path=%s got=%zu expected=%zu\n",
+                    "[w4_guest] fail qwen3 object service payload index stat path=%s err=%s\n",
                     path,
-                    read_len,
+                    strerror(errno));
+            return -1;
+        }
+        if ((uint64_t)st.st_size > SIZE_MAX) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 object service payload index too large path=%s\n",
+                    path);
+            return -1;
+        }
+        file_len = (size_t)st.st_size;
+        index_bytes = (uint8_t *)malloc(file_len);
+        if (!index_bytes) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 object service payload index alloc bytes=%zu\n",
                     file_len);
+            return -1;
+        }
+        fp = fopen(path, "rb");
+        if (!fp) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 object service payload index open path=%s err=%s\n",
+                    path,
+                    strerror(errno));
+            free(index_bytes);
+            return -1;
+        }
+        read_len = fread(index_bytes, 1, file_len, fp);
+        {
+            int read_error = ferror(fp);
+            int close_error = fclose(fp);
+
+            if (read_error || close_error != 0 || read_len != file_len) {
+                fprintf(stderr,
+                        "[w4_guest] fail qwen3 object service payload index read path=%s got=%zu expected=%zu\n",
+                        path,
+                        read_len,
+                        file_len);
+                free(index_bytes);
+                return -1;
+            }
+        }
+        if (file_len < W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 object service payload index header truncated path=%s\n",
+                    path);
             free(index_bytes);
             return -1;
         }
     }
     if (file_len < W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES) {
         fprintf(stderr,
-                "[w4_guest] fail qwen3 object service payload index header truncated path=%s\n",
-                path);
+                "[w4_guest] fail qwen3 object service payload index header truncated\n");
         free(index_bytes);
         return -1;
     }
@@ -5139,8 +5307,8 @@ static int qwen3_read_object_service_payload(
         version != W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_VERSION ||
         record_bytes != W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES) {
         fprintf(stderr,
-                "[w4_guest] fail qwen3 object service payload index header invalid path=%s\n",
-                path);
+                "[w4_guest] fail qwen3 object service payload index header invalid source=%s\n",
+                hex_state == 0 ? "env_hex" : path);
         free(index_bytes);
         return -1;
     }
@@ -5324,6 +5492,10 @@ static int qwen3_terminal_token_record_from_logits_payload(
         qwen3_ref_read_u64_le(payload, (size_t)logits_base + 56U);
     record->text_checksum =
         qwen3_ref_read_u64_le(payload, (size_t)logits_base + 64U);
+    record->full_vocab_checked_token_count =
+        qwen3_ref_read_u64_le(payload, (size_t)logits_base + 104U);
+    record->full_vocab_logits_checksum =
+        qwen3_ref_read_u64_le(payload, (size_t)logits_base + 112U);
     record->top_logit_bits =
         qwen3_ref_read_u64_le(payload, (size_t)logits_base + 120U);
     record->runner_up_logit_bits =
@@ -8516,6 +8688,9 @@ decode_round_start:
                        terminal_token.sampled_token);
             }
 
+            qwen3_log_terminal_logits_observation(dispatch_node,
+                                                  decode_step,
+                                                  &terminal_token);
             if (w4_db_obmm_service_v0_publish_terminal_token_result(
                     &db_service,
                     dispatch_node,
