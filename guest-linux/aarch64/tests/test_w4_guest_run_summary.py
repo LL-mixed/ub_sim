@@ -127,6 +127,16 @@ class W4GuestRunSummaryTest(unittest.TestCase):
                         "source=lingqu_memory_service "
                         "target=range_forward_boundary status=validated"
                     ),
+                    (
+                        "[w4_guest] stage qwen3_w5_memory_terminal_logits_publish_early "
+                        f"node={index} step=1 layers=[0,1) "
+                        "decision_id=shortpath-decision/boundary/step1 "
+                        "artifact_id=artifact/logits/step1 token=358 "
+                        "source=lingqu_memory_service "
+                        "target=terminal_token_result status=ok"
+                    )
+                    if node_id == "nodeC"
+                    else "",
                     engram_timing(node_id, index, 1),
                     (
                         "[w4_guest] stage qwen3_obmm_pool_usage "
@@ -168,7 +178,9 @@ class W4GuestRunSummaryTest(unittest.TestCase):
                         "source=lingqu_memory_service "
                         "target=terminal_token_result status=ok",
                     )
-                (run_dir / f"{node_id}_guest.log").write_text("\n".join(lines) + "\n")
+                (run_dir / f"{node_id}_guest.log").write_text(
+                    "\n".join(line for line in lines if line) + "\n"
+                )
                 if node_id == "nodeH":
                     qemu_lines = [
                         "qwen3-engram-context: mode=cpu-reference table_rows=16 "
@@ -258,9 +270,10 @@ class W4GuestRunSummaryTest(unittest.TestCase):
             result.stdout,
         )
         self.assertIn(
-            "memory_service_summary: service=lingqu_memory_service records=9 steps=1/2 "
+            "memory_service_summary: service=lingqu_memory_service records=10 steps=1/2 "
             "stages=qwen3_w5_memory_boundary_decision:8,"
-            "qwen3_w5_memory_terminal_logits_execute:1 "
+            "qwen3_w5_memory_terminal_logits_execute:1,"
+            "qwen3_w5_memory_terminal_logits_publish_early:1 "
             "shortpath_ids=shortpath-decision/boundary/step1 "
             "support_ids=shortpath-support/boundary/step1 "
             "actions=jump-to-terminal artifact_kinds=logits "

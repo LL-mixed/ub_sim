@@ -181,6 +181,9 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         guest_source = (
             Path(__file__).resolve().parents[1] / "w4_guest_qemu_demo.c"
         ).read_text(encoding="utf-8")
+        db_service_source = (
+            Path(__file__).resolve().parents[1] / "w4_kvcache_db_service.c"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("qwen3_memory_prefix_cache_kv_ref", guest_source)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF", guest_source)
@@ -194,6 +197,12 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("qwen3_read_object_service_payload", guest_source)
         self.assertIn("W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_MAGIC", guest_source)
         self.assertIn("qwen3_w5_memory_terminal_logits_loaded", guest_source)
+        self.assertIn(
+            "w4_db_obmm_service_v0_publish_shortpath_terminal_token_result",
+            guest_source,
+        )
+        self.assertIn("qwen3_w5_memory_terminal_logits_publish_early", guest_source)
+        self.assertIn("shortpath_boundary", db_service_source)
 
     def test_w5_inference_cluster_runner_delegates_to_legacy_compatible_runner(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"

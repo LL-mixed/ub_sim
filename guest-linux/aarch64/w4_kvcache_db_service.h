@@ -221,6 +221,18 @@ int w4_db_obmm_service_v0_publish_terminal_token_result(struct w4_db_service *sv
                                                         uint64_t text_checksum,
                                                         uint64_t piece_word0,
                                                         uint64_t piece_word1);
+int w4_db_obmm_service_v0_publish_shortpath_terminal_token_result(
+    struct w4_db_service *svc,
+    uint32_t local_node,
+    uint32_t cluster_node_count,
+    uint64_t decode_step,
+    uint64_t sampled_token,
+    uint64_t runner_up_token,
+    uint64_t margin_milli,
+    uint64_t logits_checksum,
+    uint64_t text_checksum,
+    uint64_t piece_word0,
+    uint64_t piece_word1);
 int w4_db_obmm_service_v0_publish_engram_step(struct w4_db_service *svc,
                                               uint32_t local_node,
                                               uint32_t cluster_node_count,

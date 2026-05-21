@@ -1409,9 +1409,12 @@ store; missing Memory Service evidence is a hard failure.
   verified artifact publication path used by explicit
   `--memory-shortpath-decision-id`. `--memory-shortpath-execute` is an explicit
   opt-in: without it W5 only validates/loads the artifact, while with it the
-  guest terminal node uses the Memory Service logits artifact as the published
-  terminal token result. This is still a launch-time bridge, not a per-range
-  in-guest online lookup loop.
+  range-exit producer node can publish the Memory Service logits artifact as
+  that step's terminal token result. The decode-round gate now accepts the
+  token result from any node, so a validated boundary jump can advance the next
+  step without waiting for node8 to publish the same terminal result. This is
+  still a launch-time bridge for the lookup decision, not a per-range in-guest
+  online lookup loop.
 - Boundary lookup now requires a verified execution artifact to carry a
   `boundary_hidden_fingerprint` that matches the request hidden ObjectRef
   bytes/checksum/dtype/shape. This closes the unsafe case where a terminal
@@ -1637,8 +1640,12 @@ Current implementation status:
   through the same Object Service snapshot path. When W5 runs with a Memory
   Service store, the CLI now records the successful run's real range-exit
   boundary observations back into that durable store automatically after guest
-  validation. The remaining gap is the online in-guest lookup loop that
-  performs this lookup at range-exit time instead of as a launch-time bridge.
+  validation. `--memory-shortpath-execute` no longer waits until node8 to make
+  the token visible: the matching producer boundary publishes
+  `qwen3_w5_memory_terminal_logits_publish_early`, and the next decode-round
+  gate scans all node token-result records. The remaining gap is the online
+  in-guest lookup loop that performs the lookup at range-exit time instead of
+  receiving a launch-time decision.
   Query results can be persisted to and restored from DFS manifests with
   checksum validation, and QueryResult-driven hot materialization now carries
   that DFS manifest ref into both `HotMemoryStateObject` and

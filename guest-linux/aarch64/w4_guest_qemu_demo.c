@@ -8311,6 +8311,45 @@ decode_round_start:
                        terminal_logits_ref.payload_bytes,
                        terminal_logits_ref.payload_checksum,
                        qwen3_memory_decision_config.shortpath_execute ? "true" : "false");
+                if (qwen3_memory_decision_config.shortpath_execute) {
+                    if (terminal_publish_start_ms == 0) {
+                        terminal_publish_start_ms = monotonic_ms();
+                    }
+                    if (w4_db_obmm_service_v0_publish_shortpath_terminal_token_result(
+                            &db_service,
+                            dispatch_node,
+                            cluster_node_count,
+                            guest_decode_step,
+                            terminal_logits_record.sampled_token,
+                            terminal_logits_record.runner_up_token,
+                            terminal_logits_record.margin_milli,
+                            terminal_logits_record.logits_checksum,
+                            terminal_logits_record.text_checksum,
+                            terminal_logits_record.piece_word0,
+                            terminal_logits_record.piece_word1) != 0) {
+                        fprintf(stderr,
+                                "[w4_guest] fail qwen3 w5 shortpath terminal token publish"
+                                " node=%u step=%" PRIu64 " decision_id=%s artifact_id=%s\n",
+                                dispatch_node + 1U,
+                                guest_decode_step,
+                                qwen3_memory_decision_config.shortpath_decision_id,
+                                qwen3_memory_decision_config.shortpath_artifact_id);
+                        goto out;
+                    }
+                    terminal_publish_done_ms = monotonic_ms();
+                    printf("[w4_guest] stage qwen3_w5_memory_terminal_logits_publish_early"
+                           " node=%u step=%" PRIu64 " layers=[%u,%u)"
+                           " decision_id=%s artifact_id=%s token=%" PRIu64
+                           " source=lingqu_memory_service target=terminal_token_result"
+                           " status=ok\n",
+                           dispatch_node + 1U,
+                           guest_decode_step,
+                           round_layer_start,
+                           round_layer_end,
+                           qwen3_memory_decision_config.shortpath_decision_id,
+                           qwen3_memory_decision_config.shortpath_artifact_id,
+                           terminal_logits_record.sampled_token);
+                }
             }
         }
         if (qwen3_engram_config.enabled &&

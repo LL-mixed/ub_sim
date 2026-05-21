@@ -5193,17 +5193,19 @@ int w4_db_obmm_service_v0_resolve_previous_range_kv_state(struct w4_db_service *
     return 0;
 }
 
-int w4_db_obmm_service_v0_publish_terminal_token_result(struct w4_db_service *svc,
-                                                        uint32_t local_node,
-                                                        uint32_t cluster_node_count,
-                                                        uint64_t decode_step,
-                                                        uint64_t sampled_token,
-                                                        uint64_t runner_up_token,
-                                                        uint64_t margin_milli,
-                                                        uint64_t logits_checksum,
-                                                        uint64_t text_checksum,
-                                                        uint64_t piece_word0,
-                                                        uint64_t piece_word1)
+static int w4_db_obmm_service_v0_publish_terminal_token_result_from_node(
+    struct w4_db_service *svc,
+    uint32_t local_node,
+    uint32_t cluster_node_count,
+    uint64_t decode_step,
+    uint64_t sampled_token,
+    uint64_t runner_up_token,
+    uint64_t margin_milli,
+    uint64_t logits_checksum,
+    uint64_t text_checksum,
+    uint64_t piece_word0,
+    uint64_t piece_word1,
+    bool require_terminal_node)
 {
     struct w4_db_cluster_runtime *rt = &g_w4_db_cluster_runtime;
     struct w4_db_cluster_slot *local_slot;
@@ -5228,7 +5230,7 @@ int w4_db_obmm_service_v0_publish_terminal_token_result(struct w4_db_service *sv
                                                 &local_placement)) {
         return -1;
     }
-    if (!local_placement.terminal) {
+    if (require_terminal_node && !local_placement.terminal) {
         return 0;
     }
     local_slot = &rt->slots[rt->local_idx];
@@ -5295,7 +5297,7 @@ int w4_db_obmm_service_v0_publish_terminal_token_result(struct w4_db_service *sv
                                      object_epoch) != 0) {
         return -1;
     }
-    printf("[w4_guest] stage qwen3_terminal_token_result_publish local=node%u step=%" PRIu64 " token=%" PRIu64 " runner_up=%" PRIu64 " margin_milli=%" PRIu64 " logits_checksum=0x%016" PRIx64 " text_checksum=0x%016" PRIx64 " piece_word0=0x%016" PRIx64 " piece_word1=0x%016" PRIx64 " object_key=%s offset=0x%016" PRIx64 " bytes=%" PRIu64 " checksum=0x%016" PRIx64 " epoch=%u seq=%u backing=obmm_pool metadata=db queue=obmm_spsc status=ok\n",
+    printf("[w4_guest] stage qwen3_terminal_token_result_publish local=node%u step=%" PRIu64 " token=%" PRIu64 " runner_up=%" PRIu64 " margin_milli=%" PRIu64 " logits_checksum=0x%016" PRIx64 " text_checksum=0x%016" PRIx64 " piece_word0=0x%016" PRIx64 " piece_word1=0x%016" PRIx64 " object_key=%s offset=0x%016" PRIx64 " bytes=%" PRIu64 " checksum=0x%016" PRIx64 " epoch=%u seq=%u backing=obmm_pool metadata=db queue=obmm_spsc status=ok publisher=%s\n",
            local_node + 1U,
            decode_step,
            sampled_token,
@@ -5310,8 +5312,64 @@ int w4_db_obmm_service_v0_publish_terminal_token_result(struct w4_db_service *sv
            local_token_result.object_backing_len,
            local_token_result.object_payload_checksum,
            object_epoch,
-           local_publish_seq);
+           local_publish_seq,
+           require_terminal_node ? "terminal_node" : "shortpath_boundary");
     return 0;
+}
+
+int w4_db_obmm_service_v0_publish_terminal_token_result(struct w4_db_service *svc,
+                                                        uint32_t local_node,
+                                                        uint32_t cluster_node_count,
+                                                        uint64_t decode_step,
+                                                        uint64_t sampled_token,
+                                                        uint64_t runner_up_token,
+                                                        uint64_t margin_milli,
+                                                        uint64_t logits_checksum,
+                                                        uint64_t text_checksum,
+                                                        uint64_t piece_word0,
+                                                        uint64_t piece_word1)
+{
+    return w4_db_obmm_service_v0_publish_terminal_token_result_from_node(
+        svc,
+        local_node,
+        cluster_node_count,
+        decode_step,
+        sampled_token,
+        runner_up_token,
+        margin_milli,
+        logits_checksum,
+        text_checksum,
+        piece_word0,
+        piece_word1,
+        true);
+}
+
+int w4_db_obmm_service_v0_publish_shortpath_terminal_token_result(
+    struct w4_db_service *svc,
+    uint32_t local_node,
+    uint32_t cluster_node_count,
+    uint64_t decode_step,
+    uint64_t sampled_token,
+    uint64_t runner_up_token,
+    uint64_t margin_milli,
+    uint64_t logits_checksum,
+    uint64_t text_checksum,
+    uint64_t piece_word0,
+    uint64_t piece_word1)
+{
+    return w4_db_obmm_service_v0_publish_terminal_token_result_from_node(
+        svc,
+        local_node,
+        cluster_node_count,
+        decode_step,
+        sampled_token,
+        runner_up_token,
+        margin_milli,
+        logits_checksum,
+        text_checksum,
+        piece_word0,
+        piece_word1,
+        false);
 }
 
 static uint64_t w4_db_pack_qwen3_engram_candidates(uint64_t decode_step,
@@ -5697,7 +5755,6 @@ int w4_db_obmm_service_v0_wait_terminal_token_result(struct w4_db_service *svc,
     struct w4_db_cluster_runtime *rt = &g_w4_db_cluster_runtime;
     char token_result_key[96];
     long deadline;
-    int terminal_idx = W4_DB_QWEN3_RANGE_NODES - 1;
 
     if (!svc) {
         return -1;
@@ -5709,58 +5766,64 @@ int w4_db_obmm_service_v0_wait_terminal_token_result(struct w4_db_service *svc,
              decode_step);
     deadline = obmm_now_ms() + (long)timeout_ms;
     while (obmm_now_ms() < deadline) {
-        struct w4_db_cluster_payload_compact_summary compact;
-        struct w4_db_cluster_payload_header seen;
-        struct w4_db_record token_record;
-        uint64_t payload_words[8];
-        uint64_t checksum;
-        struct w4_db_cluster_slot *terminal_slot;
+        if (w4_db_cluster_runtime_init(rt) == 0) {
+            for (int owner_idx = 0; owner_idx < rt->node_count; ++owner_idx) {
+                struct w4_db_cluster_payload_compact_summary compact;
+                struct w4_db_cluster_payload_header seen;
+                struct w4_db_record token_record;
+                uint64_t payload_words[8];
+                uint64_t checksum;
+                struct w4_db_cluster_slot *owner_slot;
 
-        if (w4_db_cluster_runtime_init(rt) == 0 &&
-            terminal_idx >= 0 &&
-            terminal_idx < rt->node_count &&
-            (terminal_idx == rt->local_idx ||
-             w4_db_activate_remote_slot(rt, terminal_idx) == 0)) {
-            terminal_slot = &rt->slots[terminal_idx];
-            if (terminal_slot->region.addr &&
-                w4_db_try_read_stable_compact_summary_region(terminal_slot,
-                                                             &compact,
-                                                             &seen) &&
-                w4_db_slot_find_record(terminal_slot,
-                                       token_result_key,
-                                       &token_record) &&
-                token_record.kind == W4_DB_RECORD_QWEN3_TOKEN_RESULT &&
-                token_record.object_payload_kind == W4_DB_OBMM_KIND_QWEN3_TOKEN_RESULT &&
-                token_record.object_backing_len == W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES &&
-                token_record.object_backing_offset <= terminal_slot->region.len &&
-                token_record.object_backing_len <=
-                    terminal_slot->region.len - token_record.object_backing_offset) {
-                memcpy(payload_words,
-                       (uint8_t *)terminal_slot->region.addr + token_record.object_backing_offset,
-                       W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES);
-                if (payload_words[0] == decode_step) {
-                    checksum = w4_db_checksum_bytes((const uint8_t *)payload_words,
-                                                    W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES);
-                    if (checksum != token_record.object_payload_checksum) {
-                        usleep(10000);
-                        continue;
+                if (owner_idx != rt->local_idx &&
+                    w4_db_activate_remote_slot(rt, owner_idx) != 0) {
+                    continue;
+                }
+                owner_slot = &rt->slots[owner_idx];
+                if (owner_slot->region.addr &&
+                    w4_db_try_read_stable_compact_summary_region(owner_slot,
+                                                                 &compact,
+                                                                 &seen) &&
+                    w4_db_slot_find_record(owner_slot,
+                                           token_result_key,
+                                           &token_record) &&
+                    token_record.kind == W4_DB_RECORD_QWEN3_TOKEN_RESULT &&
+                    token_record.object_payload_kind ==
+                        W4_DB_OBMM_KIND_QWEN3_TOKEN_RESULT &&
+                    token_record.object_backing_len ==
+                        W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES &&
+                    token_record.object_backing_offset <= owner_slot->region.len &&
+                    token_record.object_backing_len <=
+                        owner_slot->region.len - token_record.object_backing_offset) {
+                    memcpy(payload_words,
+                           (uint8_t *)owner_slot->region.addr +
+                               token_record.object_backing_offset,
+                           W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES);
+                    if (payload_words[0] == decode_step) {
+                        checksum = w4_db_checksum_bytes(
+                            (const uint8_t *)payload_words,
+                            W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES);
+                        if (checksum != token_record.object_payload_checksum) {
+                            usleep(10000);
+                            continue;
+                        }
+                        if (sampled_token_out) {
+                            *sampled_token_out = payload_words[1];
+                        }
+                        printf("[w4_guest] stage qwen3_terminal_token_result_wait step=%" PRIu64
+                               " object_key=%s owner=node%d offset=0x%016" PRIx64
+                               " bytes=%" PRIu64
+                               " token=%" PRIu64 " checksum=0x%016" PRIx64
+                               " source=obmm_object_record status=ok\n",
+                               decode_step,
+                               token_result_key,
+                               owner_idx + 1,
+                               token_record.object_backing_offset,
+                               (uint64_t)W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES,
+                               payload_words[1],
+                               checksum);
+                        return 0;
                     }
-                    if (sampled_token_out) {
-                        *sampled_token_out = payload_words[1];
-                    }
-                    printf("[w4_guest] stage qwen3_terminal_token_result_wait step=%" PRIu64
-                           " object_key=%s owner=node%d offset=0x%016" PRIx64
-                           " bytes=%" PRIu64
-                           " token=%" PRIu64 " checksum=0x%016" PRIx64
-                           " source=obmm_object_record status=ok\n",
-                           decode_step,
-                           token_result_key,
-                           terminal_idx + 1,
-                           token_record.object_backing_offset,
-                           (uint64_t)W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES,
-                           payload_words[1],
-                           checksum);
-                    return 0;
                 }
             }
         }
