@@ -1699,6 +1699,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "list-prefetch-plans" => run_lingqu_memory_list_prefetch_plans_cli(&args),
         "list-prefix-cache-reuse" => run_lingqu_memory_list_prefix_cache_reuse_cli(&args),
         "list-query-results" => run_lingqu_memory_list_query_results_cli(&args),
+        "list-boundary-observations" => run_lingqu_memory_list_boundary_observations_cli(&args),
         "list-record-lifecycle" => run_lingqu_memory_list_record_lifecycle_cli(&args),
         "list-shortpath-decisions" => run_lingqu_memory_list_shortpath_decisions_cli(&args),
         "list-shortpath-supports" => run_lingqu_memory_list_shortpath_supports_cli(&args),
@@ -1720,7 +1721,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "validate-flat-materialize" => run_lingqu_memory_validate_flat_materialize(),
         "validate-w5-engram-object-ref" => run_lingqu_memory_validate_w5_engram_object_ref(),
         _ => anyhow::bail!(
-            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, query, list-query-results, list-record-lifecycle, list-shortpath-supports, list-shortpath-decisions, list-prefetch-plans, list-prefix-cache-reuse, update-record-state, register-execution-artifact, boundary-lookup, boundary-lookup-from-observation, boundary-request-from-w5-summary, record-boundary-observations-from-w5-summary, plan-prefetch, register-prefix-cache, lookup-prefix-cache, materialize-hot-state, materialize-engram-state, publish-w5-engram-state-ref, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
+            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, query, list-query-results, list-boundary-observations, list-record-lifecycle, list-shortpath-supports, list-shortpath-decisions, list-prefetch-plans, list-prefix-cache-reuse, update-record-state, register-execution-artifact, boundary-lookup, boundary-lookup-from-observation, boundary-request-from-w5-summary, record-boundary-observations-from-w5-summary, plan-prefetch, register-prefix-cache, lookup-prefix-cache, materialize-hot-state, materialize-engram-state, publish-w5-engram-state-ref, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
         ),
     }
 }
@@ -2521,6 +2522,79 @@ fn run_lingqu_memory_list_query_results_cli(args: &[String]) -> anyhow::Result<(
             result.selected_record_ids.join(","),
             result.selected_chunk_ids.join(","),
             result.created_at_us
+        );
+    }
+    Ok(())
+}
+
+fn run_lingqu_memory_list_boundary_observations_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let observation_id_filter = optional_cli_arg(args, "--observation-id")?;
+    let run_id_filter = optional_cli_arg(args, "--run-id")?;
+    let step_filter = optional_cli_u64(args, "--step")?;
+    let node_filter = optional_cli_arg(args, "--node")?;
+
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let observations = durable_store
+        .load_boundary_observation_manifest()
+        .context("load boundary observation audit")?;
+    let filtered_observations = observations
+        .iter()
+        .filter(|observation| {
+            observation_id_filter
+                .as_ref()
+                .map(|observation_id| observation.observation_id == *observation_id)
+                .unwrap_or(true)
+        })
+        .filter(|observation| {
+            run_id_filter
+                .as_ref()
+                .map(|run_id| observation.run_id == *run_id)
+                .unwrap_or(true)
+        })
+        .filter(|observation| {
+            step_filter
+                .map(|step| observation.boundary.step_index == step)
+                .unwrap_or(true)
+        })
+        .filter(|observation| {
+            node_filter
+                .as_ref()
+                .map(|node| observation.producer_node == *node)
+                .unwrap_or(true)
+        })
+        .collect::<Vec<_>>();
+    if let Some(observation_id) = observation_id_filter.as_ref() {
+        if filtered_observations.is_empty() {
+            anyhow::bail!("boundary observation `{observation_id}` not found in durable audit log");
+        }
+    }
+
+    println!("lingqu_memory_service");
+    println!("  mode: list-boundary-observations");
+    println!("  store_path: {}", store_path.display());
+    println!(
+        "  audit_path: {}",
+        sim_memory::LINGQU_BOUNDARY_OBSERVATION_AUDIT_LOG_PATH
+    );
+    println!("  observations: {}", filtered_observations.len());
+    for observation in filtered_observations {
+        println!(
+            "  observation id={} run_id={} step={} node={} target={} layers=[{},{}] position={} hidden_key={} hidden_bytes={} hidden_checksum={:#x} source={} checksum={:#x} created_at_us={}",
+            observation.observation_id,
+            observation.run_id,
+            observation.boundary.step_index,
+            observation.producer_node,
+            observation.consumer_node,
+            observation.boundary.layer_start,
+            observation.boundary.layer_end,
+            observation.boundary.position,
+            observation.hidden_state.object_key,
+            observation.hidden_state.bytes,
+            observation.hidden_state.checksum,
+            observation.source,
+            observation.checksum,
+            observation.created_at_us
         );
     }
     Ok(())
@@ -5131,7 +5205,7 @@ fn record_w5_runtime_boundary_observations_from_summary(
     step_count: usize,
     initial_position: u64,
     created_at_us: u64,
-) -> anyhow::Result<usize> {
+) -> anyhow::Result<Vec<String>> {
     let summary = fs::read_to_string(summary_path)
         .with_context(|| format!("read W5 summary {}", summary_path.display()))?;
     let run_id = derive_w5_run_id_from_summary(&summary)
@@ -5155,7 +5229,10 @@ fn record_w5_runtime_boundary_observations_from_summary(
         );
     }
 
-    let observed_count = observations.len();
+    let observation_ids = observations
+        .iter()
+        .map(|observation| observation.observation_id.clone())
+        .collect::<Vec<_>>();
     let mut durable_store = load_lingqu_memory_durable_store(store_path)?;
     let mut memory_service = LingquMemoryService::new();
     for observation in observations {
@@ -5167,7 +5244,7 @@ fn record_w5_runtime_boundary_observations_from_summary(
         .persist_boundary_observations_to_dfs(&mut durable_store)
         .context("persist W5 runtime boundary observation DFS audit")?;
     save_lingqu_memory_durable_store(store_path, &durable_store)?;
-    Ok(observed_count)
+    Ok(observation_ids)
 }
 
 fn derive_w5_run_id_from_summary(summary: &str) -> Option<String> {
@@ -6445,9 +6522,9 @@ mod tests {
         run_lingqu_durable_validate_cli, run_lingqu_memory_boundary_lookup_cli,
         run_lingqu_memory_boundary_lookup_from_observation_cli,
         run_lingqu_memory_boundary_request_from_w5_summary_cli, run_lingqu_memory_build_index_cli,
-        run_lingqu_memory_ingest_cli, run_lingqu_memory_list_prefetch_plans_cli,
-        run_lingqu_memory_list_prefix_cache_reuse_cli, run_lingqu_memory_list_query_results_cli,
-        run_lingqu_memory_list_record_lifecycle_cli,
+        run_lingqu_memory_ingest_cli, run_lingqu_memory_list_boundary_observations_cli,
+        run_lingqu_memory_list_prefetch_plans_cli, run_lingqu_memory_list_prefix_cache_reuse_cli,
+        run_lingqu_memory_list_query_results_cli, run_lingqu_memory_list_record_lifecycle_cli,
         run_lingqu_memory_list_shortpath_decisions_cli,
         run_lingqu_memory_list_shortpath_supports_cli, run_lingqu_memory_lookup_prefix_cache_cli,
         run_lingqu_memory_materialize_engram_state_cli,
@@ -8838,6 +8915,28 @@ stage qwen3_range_forward_runtime_output_publish node=2
         assert_eq!(observations[0].hidden_state.checksum, 0x1234);
         assert_ne!(observations[0].checksum, 0);
 
+        run_lingqu_memory_list_boundary_observations_cli(&[
+            "--store".to_string(),
+            store_path.to_string_lossy().into_owned(),
+            "--run-id".to_string(),
+            "run0".to_string(),
+            "--step".to_string(),
+            "2".to_string(),
+            "--node".to_string(),
+            "node3".to_string(),
+        ])
+        .expect("list boundary observations");
+        let missing = run_lingqu_memory_list_boundary_observations_cli(&[
+            "--store".to_string(),
+            store_path.to_string_lossy().into_owned(),
+            "--observation-id".to_string(),
+            "boundary-observation/run0/step2/node8".to_string(),
+        ])
+        .expect_err("missing observation id must fail");
+        assert!(missing
+            .to_string()
+            .contains("boundary observation `boundary-observation/run0/step2/node8` not found"));
+
         run_lingqu_memory_record_boundary_observations_from_w5_summary_cli(&[
             "--store".to_string(),
             store_path.to_string_lossy().into_owned(),
@@ -9236,7 +9335,13 @@ stage qwen3_range_forward_runtime_output_publish node=2
             100,
         )
         .expect("record runtime observations");
-        assert_eq!(recorded, 2);
+        assert_eq!(
+            recorded,
+            vec![
+                "boundary-observation/w5_runtime_run/step0/node1".to_string(),
+                "boundary-observation/w5_runtime_run/step1/node1".to_string()
+            ]
+        );
         let mut durable =
             load_lingqu_memory_durable_store(&store_path).expect("reload durable store");
         let observations = durable
@@ -10717,7 +10822,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
                     "W5 run used Memory Service store but did not report a summary_file path"
                 )
             })?;
-        let recorded = record_w5_runtime_boundary_observations_from_summary(
+        let observation_ids = record_w5_runtime_boundary_observations_from_summary(
             store_path,
             &summary_path,
             &runtime,
@@ -10726,11 +10831,13 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             cli_now_us(),
         )?;
         println!(
-            "  memory_boundary_observations_recorded: store={} summary={} records={} steps={}",
+            "  memory_boundary_observations_recorded: store={} summary={} records={} steps={} first_id={} last_id={}",
             store_path.display(),
             summary_path.display(),
-            recorded,
-            args.step_count
+            observation_ids.len(),
+            args.step_count,
+            observation_ids.first().map(String::as_str).unwrap_or(""),
+            observation_ids.last().map(String::as_str).unwrap_or("")
         );
     }
     Ok(())

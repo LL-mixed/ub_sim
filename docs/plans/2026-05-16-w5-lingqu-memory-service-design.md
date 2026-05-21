@@ -1263,7 +1263,9 @@ When `--memory-observation-store` is provided, a successful W5 run records its
 real range-exit `BoundaryObservationRecord`s into that durable store after
 guest validation. If omitted, the W5 entrypoint uses `--memory-store` or
 `--memory-decision-store` when those are present. Missing summary/observation
-data is a hard failure for this path.
+data is a hard failure for this path. The CLI prints the first and last
+recorded observation ids so the next run can feed an exact
+`--memory-boundary-observation-id` without guessing the namespace.
 
 When `--memory-decision-store` and `--memory-boundary-request` are provided,
 the W5 entrypoint now runs the Memory Service boundary lookup itself, persists
@@ -1339,6 +1341,19 @@ using `SIM_W5_RUN_ID`, the summary preserves that id, and import uses it
 instead of recomputing it when present. Re-importing the same summary is
 idempotent; reusing an observation id with different payload fails instead of
 overwriting history.
+
+`sim-cli lingqu-memory list-boundary-observations` lists persisted range-exit
+observations from the durable store, with optional filters for run, step, node,
+or exact observation id:
+
+```text
+sim-cli lingqu-memory list-boundary-observations \
+  --store <durable-store.json> \
+  [--run-id <w5-run-id>] \
+  [--step <decode-step>] \
+  [--node node3] \
+  [--observation-id <boundary-observation-id>]
+```
 
 `sim-cli lingqu-memory boundary-lookup-from-observation` is the standalone
 inspection form of the same path used by the W5 entrypoint:
