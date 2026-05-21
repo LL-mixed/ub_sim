@@ -185,7 +185,8 @@ points; wire/log compatibility names remain intentionally unchanged.
   where those labels are not part of a wire/log compatibility contract.
 - Keep legacy script names as wrappers.
 
-Phase 3: Workload profile schema. Status: documented only.
+Phase 3: Workload profile schema. Status: implemented in `sim-cli`; runner
+script compatibility mapping remains intentionally simple.
 
 - Replace ad hoc environment groups with a profile schema:
 
@@ -200,8 +201,13 @@ engram:
   context_op: simpler-host
 ```
 
-The profile schema can live in docs first, then become a config file when the
-runner is ready.
+`sim-cli w5-inference-cluster` now resolves every W5 profile through an
+explicit schema with model key, mode, node count, backend profile, and engram
+requirement. The CLI validates profile/weights/engram consistency before
+launching the runner, so a `qwen3_14b_*` profile cannot accidentally run with
+0.6B weights, and an `*_engram_decode` profile cannot run with Engram disabled.
+The shell runner still keeps a small compatibility mapping for direct manual
+execution.
 
 ## Documentation Migration
 
@@ -230,6 +236,7 @@ Migration is complete when:
 | A W5 Qwen3-0.6B decode run passes. | Verified: `w5_migration_0_6b_decode_1step_20260516_170746`. |
 | A W5 Qwen3-14B decode run passes. | Verified: `w5_migration_14b_decode_1step_20260516_170832`. |
 | A W5 engram context-op run emits `engram_context_summary`. | Verified: `w5_migration_0_6b_engram_context_1step_20260516_171046`, `modes=cpu-reference`. |
+| W5 profile schema rejects mismatched model/engram combinations before launch. | Implemented in `sim-cli`; covered by `w5_inference_profile_schema_rejects_runtime_mismatch_before_launch`. |
 
 Latest post-migration validation summaries:
 

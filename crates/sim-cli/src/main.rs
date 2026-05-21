@@ -276,6 +276,16 @@ struct W5MemoryDecisionConfig {
     prefix_cache_reuse_plan_id: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct W5InferenceProfileSpec {
+    name: &'static str,
+    model_key: &'static str,
+    mode: &'static str,
+    nodes: u8,
+    backend_profile: &'static str,
+    engram_required: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Qwen3DenseGuestRuntime {
     profile: Qwen3DenseProfile,
@@ -1018,14 +1028,50 @@ fn default_qwen3_guest_decode_script_path() -> PathBuf {
         .join("run_ub_eight_node_w5_inference_cluster.sh")
 }
 
+const W5_INFERENCE_PROFILE_SPECS: &[W5InferenceProfileSpec] = &[
+    W5InferenceProfileSpec {
+        name: "qwen3_0_6b_decode",
+        model_key: "qwen3-0-6b",
+        mode: "decode",
+        nodes: 8,
+        backend_profile: "qwen3_dense",
+        engram_required: false,
+    },
+    W5InferenceProfileSpec {
+        name: "qwen3_14b_decode",
+        model_key: "qwen3-14b",
+        mode: "decode",
+        nodes: 8,
+        backend_profile: "qwen3_dense",
+        engram_required: false,
+    },
+    W5InferenceProfileSpec {
+        name: "qwen3_0_6b_engram_decode",
+        model_key: "qwen3-0-6b",
+        mode: "engram_decode",
+        nodes: 8,
+        backend_profile: "qwen3_dense",
+        engram_required: true,
+    },
+    W5InferenceProfileSpec {
+        name: "qwen3_14b_engram_decode",
+        model_key: "qwen3-14b",
+        mode: "engram_decode",
+        nodes: 8,
+        backend_profile: "qwen3_dense",
+        engram_required: true,
+    },
+];
+
+fn w5_inference_profile_spec(value: &str) -> anyhow::Result<&'static W5InferenceProfileSpec> {
+    W5_INFERENCE_PROFILE_SPECS
+        .iter()
+        .find(|spec| spec.name == value)
+        .ok_or_else(|| anyhow::anyhow!("unsupported --w5-profile: {value}"))
+}
+
 fn validate_w5_inference_profile(value: &str) -> anyhow::Result<String> {
-    match value {
-        "qwen3_0_6b_decode"
-        | "qwen3_14b_decode"
-        | "qwen3_0_6b_engram_decode"
-        | "qwen3_14b_engram_decode" => Ok(value.to_string()),
-        _ => anyhow::bail!("unsupported --w5-profile: {value}"),
-    }
+    Ok(w5_inference_profile_spec(value)?.name.to_string())
 }
 
 fn qwen3_guest_default_w5_profile(
@@ -1043,6 +1089,43 @@ fn qwen3_guest_default_w5_profile(
         "decode"
     };
     format!("{model}_{mode}")
+}
+
+fn resolve_w5_inference_profile(
+    requested_profile: Option<&str>,
+    runtime: &Qwen3DenseGuestRuntime,
+    engram: &Qwen3EngramConfig,
+) -> anyhow::Result<&'static W5InferenceProfileSpec> {
+    let profile_name = requested_profile
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| qwen3_guest_default_w5_profile(runtime, engram));
+    let spec = w5_inference_profile_spec(&profile_name)?;
+    if runtime.model_key != spec.model_key {
+        anyhow::bail!(
+            "W5 profile {} requires model_key={}, got model_key={} from weights_path={}",
+            spec.name,
+            spec.model_key,
+            runtime.model_key,
+            runtime.weights_path.display()
+        );
+    }
+    if runtime.chipbackend_profile != spec.backend_profile {
+        anyhow::bail!(
+            "W5 profile {} requires backend_profile={}, got backend_profile={}",
+            spec.name,
+            spec.backend_profile,
+            runtime.chipbackend_profile
+        );
+    }
+    if engram.enabled != spec.engram_required {
+        anyhow::bail!(
+            "W5 profile {} requires engram_enabled={}, got engram_enabled={}",
+            spec.name,
+            spec.engram_required,
+            engram.enabled
+        );
+    }
+    Ok(spec)
 }
 
 fn parse_positive_usize(label: &str, value: &str) -> anyhow::Result<usize> {
@@ -7064,10 +7147,11 @@ mod tests {
         qwen3_guest_summary_file_from_script_output, qwen3_guest_terminal_candidate_records,
         qwen3_guest_terminal_text_lossy_from_tokenizer, qwen3_guest_terminal_tokens,
         qwen3_guest_timing_summary, qwen3_range_forward_args_from,
-        record_w5_runtime_boundary_observations_from_summary, run_lingqu_durable_append_log_cli,
-        run_lingqu_durable_batch_cli, run_lingqu_durable_init_cli, run_lingqu_durable_list_cli,
-        run_lingqu_durable_read_log_cli, run_lingqu_durable_stat_cli,
-        run_lingqu_durable_validate_cli, run_lingqu_memory_boundary_lookup_cli,
+        record_w5_runtime_boundary_observations_from_summary, resolve_w5_inference_profile,
+        run_lingqu_durable_append_log_cli, run_lingqu_durable_batch_cli,
+        run_lingqu_durable_init_cli, run_lingqu_durable_list_cli, run_lingqu_durable_read_log_cli,
+        run_lingqu_durable_stat_cli, run_lingqu_durable_validate_cli,
+        run_lingqu_memory_boundary_lookup_cli,
         run_lingqu_memory_boundary_lookup_from_observation_cli,
         run_lingqu_memory_boundary_request_from_w5_summary_cli, run_lingqu_memory_build_index_cli,
         run_lingqu_memory_ingest_cli, run_lingqu_memory_list_boundary_observations_cli,
@@ -7087,14 +7171,17 @@ mod tests {
         run_lingqu_memory_validate_w5_engram_object_ref, save_lingqu_durable_sim,
         save_lingqu_memory_durable_store, simpler_host_matmul_artifact_producer_path,
         validate_qwen3_dense_weights_path, validate_w5_inference_profile,
-        w5_memory_decision_env_vars, w5_memory_should_publish_engram_state,
-        w5_object_service_payload_index_path, LingquDurableSim, LingquDurableSimSnapshot,
-        LingquMemoryDurableStore, LingquMemoryDurableStoreSnapshot, LingquObjectServiceStub,
-        LingquObjectVersionSelector, MemoryCatalogSnapshot, QueryResult, Qwen3CandidateRecord,
-        Qwen3DecodeReportVerbosity, Qwen3EngramConfig, Qwen3EngramContextOp, Qwen3EngramMode,
-        Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs, W5MemoryBootstrapConfig,
-        W5MemoryDecisionConfig, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
-        SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
+        w5_inference_profile_spec, w5_memory_decision_env_vars,
+        w5_memory_should_publish_engram_state, w5_object_service_payload_index_path,
+        LingquDurableSim, LingquDurableSimSnapshot, LingquMemoryDurableStore,
+        LingquMemoryDurableStoreSnapshot, LingquObjectServiceStub, LingquObjectVersionSelector,
+        MemoryCatalogSnapshot, QueryResult, Qwen3CandidateRecord, Qwen3DecodeReportVerbosity,
+        Qwen3DenseGuestRuntime, Qwen3DenseProfile, Qwen3EngramConfig, Qwen3EngramContextOp,
+        Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
+        W5MemoryBootstrapConfig, W5MemoryDecisionConfig, QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
+        QWEN3_DENSE_DEFAULT_PREFILL_TOKENS, QWEN3_DENSE_DEFAULT_TP_NODES,
+        SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+        SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
     };
     use std::env;
     use std::fs;
@@ -8057,8 +8144,67 @@ mod tests {
             validate_w5_inference_profile("qwen3_0_6b_decode").expect("valid profile"),
             "qwen3_0_6b_decode"
         );
+        let spec = w5_inference_profile_spec("qwen3_14b_engram_decode").expect("profile spec");
+        assert_eq!(spec.model_key, "qwen3-14b");
+        assert_eq!(spec.mode, "engram_decode");
+        assert_eq!(spec.nodes, 8);
+        assert_eq!(spec.backend_profile, "qwen3_dense");
+        assert!(spec.engram_required);
         assert!(validate_w5_inference_profile("w4_guest").is_err());
         assert!(validate_w5_inference_profile("qwen3_prefill_decode").is_err());
+    }
+
+    #[test]
+    fn w5_inference_profile_schema_rejects_runtime_mismatch_before_launch() {
+        let runtime = Qwen3DenseGuestRuntime {
+            profile: Qwen3DenseProfile {
+                model_id: "Qwen/Qwen3-0.6B".to_string(),
+                vocab_size: 151_936,
+                hidden_size: 1024,
+                intermediate_size: 3072,
+                num_hidden_layers: 28,
+                num_attention_heads: 16,
+                num_key_value_heads: 8,
+                head_dim: 128,
+                max_position_embeddings: 40_960,
+                rope_theta: 1_000_000,
+                prefill_tokens: QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
+                decode_tokens: QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
+                tp_nodes: QWEN3_DENSE_DEFAULT_TP_NODES,
+            },
+            model_key: "qwen3-0-6b".to_string(),
+            weights_path: PathBuf::from("/models/qwen3-0.6b"),
+            chipbackend_profile: "qwen3_dense",
+        };
+
+        let decode = Qwen3EngramConfig::default();
+        let resolved = resolve_w5_inference_profile(None, &runtime, &decode)
+            .expect("default profile resolves");
+        assert_eq!(resolved.name, "qwen3_0_6b_decode");
+
+        let model_err = resolve_w5_inference_profile(Some("qwen3_14b_decode"), &runtime, &decode)
+            .expect_err("14B profile must reject 0.6B weights");
+        assert!(model_err
+            .to_string()
+            .contains("requires model_key=qwen3-14b"));
+
+        let mut engram = Qwen3EngramConfig {
+            enabled: true,
+            pool: Qwen3EngramPool::Obmm,
+            ..Qwen3EngramConfig::default()
+        };
+        let engram_spec =
+            resolve_w5_inference_profile(Some("qwen3_0_6b_engram_decode"), &runtime, &engram)
+                .expect("engram profile accepts enabled engram");
+        assert_eq!(engram_spec.name, "qwen3_0_6b_engram_decode");
+
+        engram.enabled = false;
+        let engram_err =
+            resolve_w5_inference_profile(Some("qwen3_0_6b_engram_decode"), &runtime, &engram)
+                .expect_err("engram profile must reject disabled engram");
+        assert!(engram_err
+            .to_string()
+            .contains("requires engram_enabled=true"));
     }
 
     #[test]
@@ -10973,14 +11119,19 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     let engram_simt = qwen3_prepare_engram_simt_mode(&effective_engram)?;
     let engram_registry_validation =
         qwen3_validate_guest_engram_state_registry(&effective_engram, &runtime.profile)?;
-    let w5_profile = args
-        .w5_profile
-        .clone()
-        .unwrap_or_else(|| qwen3_guest_default_w5_profile(&runtime, &effective_engram));
+    let w5_profile =
+        resolve_w5_inference_profile(args.w5_profile.as_deref(), &runtime, &effective_engram)?;
     println!("qwen3_guest_decode_loop");
     println!("  script: {}", script_path.display());
     println!("  workload: w5 inference cluster");
-    println!("  w5_profile: {}", w5_profile);
+    println!("  w5_profile: {}", w5_profile.name);
+    println!("  w5_profile_mode: {}", w5_profile.mode);
+    println!("  w5_profile_nodes: {}", w5_profile.nodes);
+    println!("  w5_profile_backend: {}", w5_profile.backend_profile);
+    println!(
+        "  w5_profile_engram_required: {}",
+        w5_profile.engram_required
+    );
     println!("  model_id: {}", runtime.profile.model_id);
     println!("  model_key: {}", runtime.model_key);
     println!("  weights_path: {}", runtime.weights_path.display());
@@ -11171,7 +11322,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             "SIM_UAPI_W4_CHIPBACKEND_PROFILE",
             runtime.chipbackend_profile,
         )
-        .env("SIM_UAPI_W5_PROFILE", &w5_profile)
+        .env("SIM_UAPI_W5_PROFILE", w5_profile.name)
         .env("SIM_QWEN3_DENSE_MODEL_ID", &runtime.profile.model_id)
         .env("SIM_QWEN3_DENSE_MODEL_KEY", &runtime.model_key)
         .env("SIM_QWEN3_DENSE_WEIGHTS_PATH", &runtime.weights_path)
