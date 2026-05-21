@@ -557,10 +557,13 @@ Current code status:
   object metadata, placement records, versions, and checksums; object payload
   bytes are written to Lingqu Block and referenced from the checkpoint instead
   of being inlined into DFS or a standalone object snapshot file.
-- The external `--catalog` JSON file remains as a compatibility output/input,
-  but `ingest` and `build-index` persist the catalog into durable DFS, and
-  `query` / `materialize-hot-state` can restart from `--store` plus
-  `--catalog-id` after the external catalog file is removed.
+- The external `--catalog` JSON file remains as a compatibility import/export
+  path. `--catalog-id` is now the primary selector for `build-index`, `query`,
+  `update-record-state`, and `materialize-hot-state`, and `ingest` can create a
+  durable-only catalog without writing an external catalog file.
+- `materialize-hot-state` can load query results by durable
+  `--query-result-id`; `--query-result-manifest` remains a compatibility
+  selector for callers that already have the DFS path.
 - Execution artifact and prefix cache registry files have been replaced by DFS
   manifests at `/lingqu/memory/execution-artifacts/manifest.json` and
   `/lingqu/memory/prefix-cache/manifest.json`.
@@ -582,11 +585,10 @@ Validated coverage:
 - CLI tests cover durable init/stat/list/validate, append-log/read-log, durable
   batch commit, legacy store migration, manifest-backed execution artifact and
   prefix cache flows, durable catalog restart for query and hot-state
-  materialization, and missing manifest hard failures.
+  materialization, durable-only catalog ingest/build-index selectors,
+  query-result-id materialization, and missing manifest hard failures.
 
 Remaining work:
 
-- The external catalog file is still supported for compatibility. The durable
-  DFS catalog path is now the recovery source, but the CLI contract should
-  eventually make `--catalog-id` the primary selector and make `--catalog`
-  optional or purely an export path.
+- Remove or demote the external catalog JSON compatibility path after all
+  downstream scripts consume durable catalog selectors directly.
