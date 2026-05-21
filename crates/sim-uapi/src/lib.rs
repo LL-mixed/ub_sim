@@ -1,6 +1,5 @@
 //! Guest-visible UAPI surface placeholders.
 
-use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::collections::{HashMap, VecDeque};
@@ -11,7 +10,7 @@ use std::io::Write;
 #[cfg(all(unix, not(test)))]
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sim_config::ScenarioConfig;
@@ -1485,9 +1484,9 @@ impl LocalGuestUapiSurface {
             .get(&req.segment)
             .ok_or_else(|| "missing_qwen3_range_dispatch_segment_payload".to_string())
             .and_then(|input| {
-                let input = materialize_qwen3_range_dispatch_input(&req, input)?;
-                validate_qwen3_range_dispatch_object_refs(&req, input.as_ref())?;
-                run_w4_chipbackend(&self.topology, &req.task, input.as_ref())
+                let operands = resolve_qwen3_range_dispatch_operands(&req, input)?;
+                validate_qwen3_range_dispatch_object_refs(&req, input)?;
+                run_qwen3_range_chipbackend(&self.topology, &req.task, input, operands.as_ref())
             });
         if let Ok(output) = &result {
             self.write_dispatch_result_to_segment(req.segment, output)?;
@@ -1574,7 +1573,32 @@ fn run_w4_chipbackend(
         "qwen3_dense_reference" => {
             run_qwen3_dense_reference_prefill_runtime(topology, task, guest_input, None)
         }
-        "qwen3_dense" => run_qwen3_dense_profile_runtime(topology, task, guest_input),
+        "qwen3_dense" => run_qwen3_dense_profile_runtime(topology, task, guest_input, None),
+        "host_matmul" => run_host_matmul_smoke(topology, task),
+        "host_vector" | "" => run_host_vector_chipbackend(topology, task, guest_input),
+        other => Err(format!("unsupported_w4_chipbackend_profile:{other}")),
+    }
+}
+
+fn run_qwen3_range_chipbackend(
+    topology: &SimTopology,
+    task: &TaskKey,
+    guest_input: &[u8],
+    operands: Option<&Qwen3RangeDispatchOperands>,
+) -> Result<Vec<u8>, String> {
+    match std::env::var("SIM_UAPI_W4_CHIPBACKEND_PROFILE")
+        .unwrap_or_else(|_| "host_vector".to_string())
+        .as_str()
+    {
+        "qwen3_dense" => run_qwen3_dense_profile_runtime(topology, task, guest_input, operands),
+        "qwen3_dense_reference" => {
+            if operands.is_some() {
+                return Err(
+                    "qwen3_dense_reference_range_dispatch_object_operands_unsupported".to_string(),
+                );
+            }
+            run_qwen3_dense_reference_prefill_runtime(topology, task, guest_input, None)
+        }
         "host_matmul" => run_host_matmul_smoke(topology, task),
         "host_vector" | "" => run_host_vector_chipbackend(topology, task, guest_input),
         other => Err(format!("unsupported_w4_chipbackend_profile:{other}")),
@@ -1712,19 +1736,50 @@ pub const SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF: &str =
 pub const SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF: &str =
     "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF";
 
-fn materialize_qwen3_range_dispatch_input<'a>(
+#[derive(Clone, Debug, Default)]
+struct Qwen3RangeDispatchOperands {
+    hidden_input: Option<Qwen3ObjectBackedOperandView>,
+    previous_kv: Option<Qwen3ObjectBackedOperandView>,
+    object_refs: Vec<LingquObmmObjectRefWire>,
+}
+
+#[derive(Clone, Debug)]
+struct Qwen3ObjectBackedOperandView {
+    object_ref: LingquObmmObjectRefWire,
+    payload: Arc<[u8]>,
+}
+
+impl Qwen3ObjectBackedOperandView {
+    fn new(object_ref: LingquObmmObjectRefWire, payload: Vec<u8>) -> Self {
+        Self {
+            object_ref,
+            payload: Arc::from(payload),
+        }
+    }
+
+    fn bytes(&self) -> &[u8] {
+        self.payload.as_ref()
+    }
+
+    fn object_ref(&self) -> &LingquObmmObjectRefWire {
+        &self.object_ref
+    }
+}
+
+fn resolve_qwen3_range_dispatch_operands(
     req: &Qwen3RangeDispatchReq,
-    segment_payload: &'a [u8],
-) -> Result<Cow<'a, [u8]>, String> {
+    segment_payload: &[u8],
+) -> Result<Option<Qwen3RangeDispatchOperands>, String> {
     if req.object_ref_count == 0 {
-        return Ok(Cow::Borrowed(segment_payload));
+        return Ok(None);
     }
     let contract = qwen3_guest_range_compute_contract(&req.task)?
         .ok_or_else(|| "qwen3_range_dispatch_object_refs_require_range_contract".to_string())?;
     let refs = qwen3_range_dispatch_object_refs(req, segment_payload)?;
-    let mut materialized: Option<Vec<u8>> = None;
+    let mut operands = Qwen3RangeDispatchOperands::default();
 
     for object_ref in refs {
+        operands.object_refs.push(object_ref);
         match object_ref.object_kind {
             QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT => {
                 if contract.layer_start == 0 {
@@ -1738,70 +1793,35 @@ fn materialize_qwen3_range_dispatch_input<'a>(
                         object_ref.payload_bytes
                     ));
                 }
-                if qwen3_runtime_hidden_payload_from_segment(
-                    segment_payload,
-                    expected_len,
-                    &object_ref,
-                )?
-                .is_some()
-                {
-                    continue;
-                }
-                let payload = qwen3_runtime_object_payload_get(&object_ref)?;
-                if payload.len() != expected_len {
+                let operand = qwen3_runtime_object_payload_view(object_ref)?;
+                if operand.bytes().len() != expected_len {
                     return Err(format!(
                         "qwen3_range_dispatch_hidden_object_bytes_mismatch:got={}:expected={expected_len}",
-                        payload.len()
+                        operand.bytes().len()
                     ));
                 }
-                let input = materialized.get_or_insert_with(|| segment_payload.to_vec());
-                let start = QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET;
-                let end = start.checked_add(expected_len).ok_or_else(|| {
-                    "qwen3_range_dispatch_hidden_payload_end_overflow".to_string()
-                })?;
-                if end > input.len() {
-                    input.resize(end, 0);
+                if operand.object_ref().object_kind
+                    != QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT
+                {
+                    return Err("qwen3_range_dispatch_hidden_operand_kind_mismatch".to_string());
                 }
-                input[start..end].copy_from_slice(&payload);
+                operands.hidden_input = Some(operand);
             }
             QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE => {
                 let payload_len = usize::try_from(object_ref.payload_bytes)
                     .map_err(|_| "qwen3_range_dispatch_kv_object_bytes_too_large".to_string())?;
-                if qwen3_runtime_kv_payload_from_segment(segment_payload, &object_ref)?.is_some() {
-                    continue;
-                }
-                let payload = qwen3_runtime_object_payload_get(&object_ref)?;
-                if payload.len() != payload_len {
+                let operand = qwen3_runtime_object_payload_view(object_ref)?;
+                if operand.bytes().len() != payload_len {
                     return Err(format!(
                         "qwen3_range_dispatch_kv_object_bytes_mismatch:got={}:expected={payload_len}",
-                        payload.len()
+                        operand.bytes().len()
                     ));
                 }
-                let input = materialized.get_or_insert_with(|| segment_payload.to_vec());
-                let payload_start = QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
-                    + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES;
-                let payload_end = payload_start
-                    .checked_add(payload_len)
-                    .ok_or_else(|| "qwen3_range_dispatch_kv_payload_end_overflow".to_string())?;
-                if payload_end > input.len() {
-                    input.resize(payload_end, 0);
+                if operand.object_ref().object_kind != QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE
+                {
+                    return Err("qwen3_range_dispatch_kv_operand_kind_mismatch".to_string());
                 }
-                write_u64_le_at(
-                    input,
-                    QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET,
-                    QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER,
-                );
-                write_u64_le_at(
-                    input,
-                    QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 8,
-                    object_ref.payload_bytes,
-                );
-                write_u64_le_at(
-                    input,
-                    QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 16,
-                    object_ref.payload_checksum,
-                );
-                input[payload_start..payload_end].copy_from_slice(&payload);
+                operands.previous_kv = Some(operand);
             }
             QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE
             | QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES
@@ -1815,87 +1835,7 @@ fn materialize_qwen3_range_dispatch_input<'a>(
         }
     }
 
-    Ok(materialized
-        .map(Cow::Owned)
-        .unwrap_or(Cow::Borrowed(segment_payload)))
-}
-
-fn qwen3_runtime_hidden_payload_from_segment<'a>(
-    segment_payload: &'a [u8],
-    expected_len: usize,
-    object_ref: &LingquObmmObjectRefWire,
-) -> Result<Option<&'a [u8]>, String> {
-    let start = QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET;
-    let Some(end) = start.checked_add(expected_len) else {
-        return Err("qwen3_range_dispatch_hidden_payload_end_overflow".to_string());
-    };
-    let Some(payload) = segment_payload.get(start..end) else {
-        return Ok(None);
-    };
-    let checksum = qwen3_dense_reference_range_object_payload_checksum(payload);
-    if checksum == object_ref.payload_checksum {
-        return Ok(Some(payload));
-    }
-    if payload.iter().all(|byte| *byte == 0) {
-        return Ok(None);
-    }
-    Err(format!(
-        "qwen3_range_dispatch_hidden_inline_checksum_mismatch:got={checksum:#x}:expected={:#x}",
-        object_ref.payload_checksum
-    ))
-}
-
-fn qwen3_runtime_kv_payload_from_segment<'a>(
-    segment_payload: &'a [u8],
-    object_ref: &LingquObmmObjectRefWire,
-) -> Result<Option<&'a [u8]>, String> {
-    let header_start = QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET;
-    let header_end = header_start
-        .checked_add(QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES)
-        .ok_or_else(|| "qwen3_range_dispatch_kv_header_end_overflow".to_string())?;
-    let Some(header) = segment_payload.get(header_start..header_end) else {
-        return Ok(None);
-    };
-    let marker = read_u64_le_at(header, 0);
-    if marker == 0 && header.iter().all(|byte| *byte == 0) {
-        return Ok(None);
-    }
-    if marker != QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER {
-        return Err(format!(
-            "qwen3_range_dispatch_kv_inline_marker_mismatch:{marker:#x}"
-        ));
-    }
-    let payload_len = read_u64_le_at(header, 8);
-    let expected_checksum = read_u64_le_at(header, 16);
-    if payload_len != object_ref.payload_bytes {
-        return Err(format!(
-            "qwen3_range_dispatch_kv_inline_bytes_mismatch:got={}:expected={}",
-            payload_len, object_ref.payload_bytes
-        ));
-    }
-    if expected_checksum != object_ref.payload_checksum {
-        return Err(format!(
-            "qwen3_range_dispatch_kv_inline_checksum_header_mismatch:got={expected_checksum:#x}:expected={:#x}",
-            object_ref.payload_checksum
-        ));
-    }
-    let payload_start = header_end;
-    let payload_len_usize = usize::try_from(payload_len)
-        .map_err(|_| "qwen3_range_dispatch_kv_inline_bytes_too_large".to_string())?;
-    let payload_end = payload_start
-        .checked_add(payload_len_usize)
-        .ok_or_else(|| "qwen3_range_dispatch_kv_inline_payload_end_overflow".to_string())?;
-    let payload = segment_payload
-        .get(payload_start..payload_end)
-        .ok_or_else(|| "qwen3_range_dispatch_kv_inline_payload_missing".to_string())?;
-    let checksum = qwen3_dense_reference_range_object_payload_checksum(payload);
-    if checksum != object_ref.payload_checksum {
-        return Err(format!(
-            "qwen3_range_dispatch_kv_inline_checksum_mismatch:got={checksum:#x}:expected={:#x}",
-            object_ref.payload_checksum
-        ));
-    }
-    Ok(Some(payload))
+    Ok(Some(operands))
 }
 
 fn qwen3_range_dispatch_object_refs(
@@ -2206,10 +2146,25 @@ fn qwen3_engram_context_payload_get(
 fn qwen3_runtime_object_payload_get(
     object_ref: &LingquObmmObjectRefWire,
 ) -> Result<Vec<u8>, String> {
+    if matches!(
+        object_ref.object_kind,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT
+            | QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE
+    ) && std::env::var_os(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR).is_some()
+    {
+        return qwen3_object_registry_get(object_ref);
+    }
     if let Some(snapshot_path) = qwen3_object_service_snapshot_path() {
         return qwen3_object_service_snapshot_get_from_path(&snapshot_path, object_ref);
     }
     qwen3_object_registry_get(object_ref)
+}
+
+fn qwen3_runtime_object_payload_view(
+    object_ref: LingquObmmObjectRefWire,
+) -> Result<Qwen3ObjectBackedOperandView, String> {
+    let payload = qwen3_runtime_object_payload_get(&object_ref)?;
+    Ok(Qwen3ObjectBackedOperandView::new(object_ref, payload))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2925,27 +2880,11 @@ fn validate_qwen3_range_dispatch_object_refs(
                 hidden_ref_seen = true;
             }
             QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE => {
-                let header = previous_kv_header
-                    .ok_or_else(|| "qwen3_range_dispatch_kv_ref_header_missing".to_string())?;
-                let marker = read_u64_le_at(header, 0);
-                if marker != QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER {
-                    return Err(format!(
-                        "qwen3_range_dispatch_kv_ref_marker_mismatch:{marker:#x}"
-                    ));
+                if object_ref.payload_bytes == 0 {
+                    return Err("qwen3_range_dispatch_kv_ref_bytes_missing".to_string());
                 }
-                let payload_len = read_u64_le_at(header, 8);
-                let expected_checksum = read_u64_le_at(header, 16);
-                if payload_len != object_ref.payload_bytes {
-                    return Err(format!(
-                        "qwen3_range_dispatch_kv_ref_bytes_mismatch:got={}:expected={}",
-                        object_ref.payload_bytes, payload_len
-                    ));
-                }
-                if expected_checksum != object_ref.payload_checksum {
-                    return Err(format!(
-                        "qwen3_range_dispatch_kv_ref_checksum_header_mismatch:got={:#x}:expected={expected_checksum:#x}",
-                        object_ref.payload_checksum
-                    ));
+                if object_ref.payload_checksum == 0 {
+                    return Err("qwen3_range_dispatch_kv_ref_checksum_missing".to_string());
                 }
                 previous_kv_ref_seen = true;
             }
@@ -3029,6 +2968,7 @@ fn run_qwen3_dense_profile_runtime(
     topology: &SimTopology,
     task: &TaskKey,
     guest_input: &[u8],
+    operands: Option<&Qwen3RangeDispatchOperands>,
 ) -> Result<Vec<u8>, String> {
     qwen3_dense_profile_validate_weights_if_available(topology)?;
     let Some(contract) = qwen3_guest_range_compute_contract(task)? else {
@@ -3038,7 +2978,8 @@ fn run_qwen3_dense_profile_runtime(
     let hidden_len = usize::try_from(hidden_bytes)
         .map_err(|_| format!("qwen3_dense_profile_hidden_too_large:{hidden_bytes}"))?;
     let layer_count = u64::from(contract.layer_end - contract.layer_start);
-    let input_checksum = qwen3_dense_profile_range_input_checksum(contract, guest_input);
+    let input_checksum =
+        qwen3_dense_profile_range_input_checksum_with_operands(contract, guest_input, operands)?;
     let kv_state_bytes = qwen3_dense_runtime_kv_payload_bytes(layer_count);
     let kv_state_len = usize::try_from(kv_state_bytes)
         .map_err(|_| format!("qwen3_dense_profile_kv_too_large:{kv_state_bytes}"))?;
@@ -3047,6 +2988,7 @@ fn run_qwen3_dense_profile_runtime(
         &runtime_profile,
         contract,
         guest_input,
+        operands,
         hidden_len,
         kv_state_len,
     )?;
@@ -3243,6 +3185,33 @@ fn qwen3_dense_profile_range_input_checksum(
     ])
 }
 
+fn qwen3_dense_profile_range_input_checksum_with_operands(
+    contract: Qwen3GuestRangeComputeContract,
+    guest_input: &[u8],
+    operands: Option<&Qwen3RangeDispatchOperands>,
+) -> Result<u64, String> {
+    if contract.layer_start > 0 {
+        if let Some(payload) = operands
+            .and_then(|operands| operands.hidden_input.as_ref())
+            .map(Qwen3ObjectBackedOperandView::bytes)
+        {
+            let expected_len = usize::try_from(contract.hidden_bytes)
+                .map_err(|_| "qwen3_dense_profile_hidden_bytes_too_large".to_string())?;
+            if payload.len() != expected_len {
+                return Err(format!(
+                    "qwen3_dense_profile_object_hidden_len_mismatch:got={}:expected={expected_len}",
+                    payload.len()
+                ));
+            }
+            return Ok(qwen3_dense_reference_range_object_payload_checksum(payload));
+        }
+    }
+    Ok(qwen3_dense_profile_range_input_checksum(
+        contract,
+        guest_input,
+    ))
+}
+
 fn qwen3_dense_profile_deterministic_payload(
     len: usize,
     seed: u64,
@@ -3271,6 +3240,7 @@ fn qwen3_dense_profile_real_range_forward(
     profile: &Qwen3DenseReferenceProfile,
     contract: Qwen3GuestRangeComputeContract,
     guest_input: &[u8],
+    operands: Option<&Qwen3RangeDispatchOperands>,
     hidden_len: usize,
     kv_state_len: usize,
 ) -> Result<Option<Qwen3DenseProfileRuntimeForward>, String> {
@@ -3280,8 +3250,12 @@ fn qwen3_dense_profile_real_range_forward(
     let loaded = qwen3_dense_reference_cached_loaded_weights(&weights_path)?;
     let token_ids = qwen3_dense_reference_guest_input_token_ids(guest_input);
     let token_count = token_ids.len();
-    let previous_cache =
-        qwen3_dense_profile_previous_kv_cache_from_guest_payload(profile, contract, guest_input)?;
+    let previous_cache = qwen3_dense_profile_previous_kv_cache_from_operands(
+        profile,
+        contract,
+        guest_input,
+        operands,
+    )?;
     let (forward, mut output_sequence, kv_cache) = if let Some(previous_cache) = previous_cache {
         if token_count == 0 {
             return Ok(None);
@@ -3290,7 +3264,12 @@ fn qwen3_dense_profile_real_range_forward(
         let current_hidden = if contract.layer_start == 0 {
             embedding_reference_last_hidden_for_profile(*profile, &loaded.tensors, &token_ids)?
         } else {
-            qwen3_dense_profile_current_hidden_from_guest_payload(profile, guest_input, hidden_len)?
+            qwen3_dense_profile_current_hidden_from_operands(
+                profile,
+                guest_input,
+                operands,
+                hidden_len,
+            )?
         };
         let forward_with_cache = forward_incremental_range_with_kv_cache_from_hidden_for_profile(
             *profile,
@@ -3314,9 +3293,10 @@ fn qwen3_dense_profile_real_range_forward(
             }
             embedding_reference_hidden_sequence_for_profile(*profile, &loaded.tensors, &token_ids)?
         } else {
-            qwen3_dense_profile_input_sequence_from_guest_payload(
+            qwen3_dense_profile_input_sequence_from_operands(
                 profile,
                 guest_input,
+                operands,
                 hidden_len,
                 token_count,
             )?
@@ -3335,13 +3315,16 @@ fn qwen3_dense_profile_real_range_forward(
             forward_with_cache.kv_cache,
         )
     };
-    let engram_context_report = qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
-        &mut output_sequence,
-        &token_ids,
-        u64::from(contract.layer_end),
-        u64::from(contract.total_layers),
-        Some(guest_input),
-    )?;
+    let descriptor_object_refs = operands.map(|operands| operands.object_refs.as_slice());
+    let engram_context_report =
+        qwen3_dense_reference_apply_engram_context_to_terminal_sequence_with_descriptor_refs(
+            &mut output_sequence,
+            &token_ids,
+            u64::from(contract.layer_end),
+            u64::from(contract.total_layers),
+            Some(guest_input),
+            descriptor_object_refs,
+        )?;
     let output_tensor_payload =
         qwen3_dense_profile_hidden_sequence_range_payload(profile, &output_sequence, hidden_len)?;
     let output_tensor_checksum =
@@ -3383,6 +3366,33 @@ fn qwen3_dense_profile_input_sequence_from_guest_payload(
             )
         })?;
     qwen3_dense_profile_hidden_sequence_from_payload(profile, payload, token_count)
+}
+
+fn qwen3_dense_profile_input_sequence_from_operands(
+    profile: &Qwen3DenseReferenceProfile,
+    guest_input: &[u8],
+    operands: Option<&Qwen3RangeDispatchOperands>,
+    hidden_len: usize,
+    token_count: usize,
+) -> Result<Vec<Vec<f32>>, String> {
+    if let Some(payload) = operands
+        .and_then(|operands| operands.hidden_input.as_ref())
+        .map(Qwen3ObjectBackedOperandView::bytes)
+    {
+        if payload.len() != hidden_len {
+            return Err(format!(
+                "qwen3_dense_profile_hidden_operand_len_mismatch:got={}:expected={hidden_len}",
+                payload.len()
+            ));
+        }
+        return qwen3_dense_profile_hidden_sequence_from_payload(profile, payload, token_count);
+    }
+    qwen3_dense_profile_input_sequence_from_guest_payload(
+        profile,
+        guest_input,
+        hidden_len,
+        token_count,
+    )
 }
 
 fn qwen3_dense_profile_hidden_sequence_from_payload(
@@ -3489,6 +3499,32 @@ fn qwen3_dense_profile_current_hidden_from_guest_payload(
     })
 }
 
+fn qwen3_dense_profile_current_hidden_from_operands(
+    profile: &Qwen3DenseReferenceProfile,
+    guest_input: &[u8],
+    operands: Option<&Qwen3RangeDispatchOperands>,
+    hidden_len: usize,
+) -> Result<Vec<f32>, String> {
+    if let Some(payload) = operands
+        .and_then(|operands| operands.hidden_input.as_ref())
+        .map(Qwen3ObjectBackedOperandView::bytes)
+    {
+        if payload.len() != hidden_len {
+            return Err(format!(
+                "qwen3_dense_profile_hidden_operand_len_mismatch:got={}:expected={hidden_len}",
+                payload.len()
+            ));
+        }
+        return qwen3_dense_profile_hidden_sequence_from_payload(profile, payload, 1).and_then(
+            |mut rows| {
+                rows.pop()
+                    .ok_or_else(|| "qwen3_dense_profile_current_hidden_empty".to_string())
+            },
+        );
+    }
+    qwen3_dense_profile_current_hidden_from_guest_payload(profile, guest_input, hidden_len)
+}
+
 fn qwen3_dense_profile_previous_kv_cache_from_guest_payload(
     profile: &Qwen3DenseReferenceProfile,
     contract: Qwen3GuestRangeComputeContract,
@@ -3540,6 +3576,30 @@ fn qwen3_dense_profile_previous_kv_cache_from_guest_payload(
         u64::from(contract.layer_end),
     )
     .map(Some)
+}
+
+fn qwen3_dense_profile_previous_kv_cache_from_operands(
+    profile: &Qwen3DenseReferenceProfile,
+    contract: Qwen3GuestRangeComputeContract,
+    guest_input: &[u8],
+    operands: Option<&Qwen3RangeDispatchOperands>,
+) -> Result<Option<Vec<Qwen3DenseReferenceLayerKvCache>>, String> {
+    if let Some(payload) = operands
+        .and_then(|operands| operands.previous_kv.as_ref())
+        .map(Qwen3ObjectBackedOperandView::bytes)
+    {
+        if payload.is_empty() {
+            return Ok(None);
+        }
+        return qwen3_dense_profile_range_kv_payload_to_cache(
+            profile,
+            payload,
+            u64::from(contract.layer_start),
+            u64::from(contract.layer_end),
+        )
+        .map(Some);
+    }
+    qwen3_dense_profile_previous_kv_cache_from_guest_payload(profile, contract, guest_input)
 }
 
 fn qwen3_dense_profile_range_kv_payload_from_cache(
@@ -16051,6 +16111,62 @@ fn qwen3_dense_reference_engram_context_refs_from_guest_input(
     }))
 }
 
+fn qwen3_dense_reference_engram_context_refs_from_descriptor_refs(
+    descriptor_refs: &[LingquObmmObjectRefWire],
+) -> Result<Option<Qwen3DenseReferenceEngramContextObjectRefs>, String> {
+    let mut table_ref = None;
+    let mut indices_ref = None;
+    let mut gate_weight_ref = None;
+    let mut state_ref = None;
+
+    for object_ref in descriptor_refs {
+        object_ref
+            .validate()
+            .map_err(|err| format!("qwen3_engram_context_descriptor_ref_invalid:{err}"))?;
+        match object_ref.object_kind {
+            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE => {
+                table_ref = Some(*object_ref);
+            }
+            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES => {
+                indices_ref = Some(*object_ref);
+            }
+            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT => {
+                gate_weight_ref = Some(*object_ref);
+            }
+            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE => {
+                state_ref = Some(*object_ref);
+            }
+            _ => {}
+        }
+    }
+    if state_ref.is_some()
+        && (table_ref.is_some() || indices_ref.is_some() || gate_weight_ref.is_some())
+    {
+        return Err(
+            "qwen3_engram_context_descriptor_refs_ambiguous:state_ref_or_component_refs_required"
+                .to_string(),
+        );
+    }
+    if let Some(state_ref) = state_ref {
+        return qwen3_dense_reference_engram_context_refs_from_state_ref(state_ref).map(Some);
+    }
+    if table_ref.is_none() && indices_ref.is_none() && gate_weight_ref.is_none() {
+        return Ok(None);
+    }
+    let (Some(table), Some(indices), Some(gate_weight)) = (table_ref, indices_ref, gate_weight_ref)
+    else {
+        return Err(
+            "qwen3_engram_context_descriptor_refs_incomplete:table_indices_and_gate_weight_required"
+                .to_string(),
+        );
+    };
+    Ok(Some(Qwen3DenseReferenceEngramContextObjectRefs {
+        table,
+        indices,
+        gate_weight,
+    }))
+}
+
 fn qwen3_dense_reference_engram_context_object_ref_state_from_refs(
     hidden_size: usize,
     object_refs: Qwen3DenseReferenceEngramContextObjectRefs,
@@ -16200,6 +16316,24 @@ fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
     total_layers: u64,
     guest_input: Option<&[u8]>,
 ) -> Result<Option<Qwen3DenseReferenceEngramContextReport>, String> {
+    qwen3_dense_reference_apply_engram_context_to_terminal_sequence_with_descriptor_refs(
+        sequence,
+        _token_ids,
+        layer_end,
+        total_layers,
+        guest_input,
+        None,
+    )
+}
+
+fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence_with_descriptor_refs(
+    sequence: &mut [Vec<f32>],
+    _token_ids: &[u64],
+    layer_end: u64,
+    total_layers: u64,
+    guest_input: Option<&[u8]>,
+    descriptor_refs: Option<&[LingquObmmObjectRefWire]>,
+) -> Result<Option<Qwen3DenseReferenceEngramContextReport>, String> {
     if layer_end != total_layers {
         return Ok(None);
     }
@@ -16219,10 +16353,14 @@ fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
             if hidden_size == 0 {
                 return Err("qwen3_engram_context_hidden_size_unsupported:got=0".to_string());
             }
-            let descriptor_object_refs = guest_input
-                .map(qwen3_dense_reference_engram_context_refs_from_guest_input)
-                .transpose()?
-                .flatten();
+            let descriptor_object_refs = if let Some(descriptor_refs) = descriptor_refs {
+                qwen3_dense_reference_engram_context_refs_from_descriptor_refs(descriptor_refs)?
+            } else {
+                guest_input
+                    .map(qwen3_dense_reference_engram_context_refs_from_guest_input)
+                    .transpose()?
+                    .flatten()
+            };
             let object_ref_state = if let Some(object_refs) = descriptor_object_refs {
                 Some(qwen3_dense_reference_engram_context_object_ref_state_from_refs(
                     hidden_size,
@@ -19707,7 +19845,6 @@ fn runtime_task_for_descriptor(desc: &UapiDescriptor) -> Option<TaskKey> {
 mod tests {
     use super::{
         bytes_to_f32s, f32s_to_bytes, kvcache_input_b_payload,
-        materialize_qwen3_range_dispatch_input,
         qwen3_dense_profile_previous_kv_cache_from_guest_payload,
         qwen3_dense_profile_range_kv_payload_from_cache,
         qwen3_dense_reference_apply_engram_context_to_terminal_sequence,
@@ -19773,14 +19910,15 @@ mod tests {
         qwen3_obmm_object_ref_for_payload, qwen3_obmm_object_ref_wire_to_hex,
         qwen3_register_range_forward_objects, qwen3_validate_engram_state_object_service_payload,
         qwen3_validate_engram_state_registry_payload, read_u64_le_at,
-        run_host_matmul_batched_smoke, run_host_matmul_smoke,
-        run_qwen3_dense_reference_prefill_runtime, validate_qwen3_range_dispatch_object_refs,
-        GuestUapiSurface, KvCachePayloadLayout, LocalGuestUapiSurface,
-        Qwen3DenseReferenceHiddenLayerNodeRange, Qwen3DenseReferenceLayerDependencyDescriptor,
-        Qwen3DenseReferenceLogitsDescriptor, Qwen3DenseReferenceRangeForwardSummary,
-        Qwen3DenseReferenceShard, Qwen3GuestRangeComputeContract, Qwen3ProjectionKind,
-        Qwen3RangeDispatchReq, UapiCommand, UapiDescriptor, UapiResponse,
-        QWEN3_DENSE_PROFILE_OBJECT_REF_MAX_COUNT, QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET,
+        resolve_qwen3_range_dispatch_operands, run_host_matmul_batched_smoke,
+        run_host_matmul_smoke, run_qwen3_dense_reference_prefill_runtime,
+        validate_qwen3_range_dispatch_object_refs, GuestUapiSurface, KvCachePayloadLayout,
+        LocalGuestUapiSurface, Qwen3DenseReferenceHiddenLayerNodeRange,
+        Qwen3DenseReferenceLayerDependencyDescriptor, Qwen3DenseReferenceLogitsDescriptor,
+        Qwen3DenseReferenceRangeForwardSummary, Qwen3DenseReferenceShard,
+        Qwen3GuestRangeComputeContract, Qwen3ProjectionKind, Qwen3RangeDispatchReq, UapiCommand,
+        UapiDescriptor, UapiResponse, QWEN3_DENSE_PROFILE_OBJECT_REF_MAX_COUNT,
+        QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
@@ -25677,9 +25815,9 @@ mod tests {
     }
 
     #[test]
-    fn qwen3_range_dispatch_materializes_object_ref_operands() {
+    fn qwen3_range_dispatch_resolves_object_ref_operands() {
         run_simpler_native_test_isolated(
-            "qwen3_range_dispatch_materializes_object_ref_operands",
+            "qwen3_range_dispatch_resolves_object_ref_operands",
             || {
                 const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
                 const OBJECT_REF_TABLE_OFFSET: usize = 0x07_0000;
@@ -25755,29 +25893,29 @@ mod tests {
                     object_ref_count: 2,
                 };
 
-                let materialized = materialize_qwen3_range_dispatch_input(&req, &segment_payload)
-                    .expect("materialize");
-                let hidden_start = QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET;
+                let operands = resolve_qwen3_range_dispatch_operands(&req, &segment_payload)
+                    .expect("resolve operands")
+                    .expect("object refs should produce operands");
                 assert_eq!(
-                    &materialized[hidden_start..hidden_start + HIDDEN_BYTES],
-                    hidden_payload.as_slice()
+                    operands
+                        .hidden_input
+                        .as_ref()
+                        .map(|operand| operand.bytes()),
+                    Some(hidden_payload.as_slice())
                 );
                 assert_eq!(
-                    read_u64_le_at(&materialized, QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET),
-                    QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER
+                    operands.previous_kv.as_ref().map(|operand| operand.bytes()),
+                    Some(kv_payload.as_slice())
                 );
                 assert_eq!(
-                    read_u64_le_at(&materialized, QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 8),
-                    KV_BYTES as u64
+                    operands
+                        .hidden_input
+                        .as_ref()
+                        .map(|operand| operand.object_ref()),
+                    Some(&hidden_ref)
                 );
-                let kv_start = QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
-                    + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES;
-                assert_eq!(
-                    &materialized[kv_start..kv_start + KV_BYTES],
-                    kv_payload.as_slice()
-                );
-                validate_qwen3_range_dispatch_object_refs(&req, materialized.as_ref())
-                    .expect("materialized refs validate");
+                validate_qwen3_range_dispatch_object_refs(&req, &segment_payload)
+                    .expect("object refs validate");
                 let _ = std::fs::remove_dir_all(&registry_dir);
                 std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR);
             },
@@ -25785,9 +25923,9 @@ mod tests {
     }
 
     #[test]
-    fn qwen3_range_dispatch_prefers_inline_object_ref_payloads() {
+    fn qwen3_range_dispatch_does_not_fallback_to_inline_operands() {
         run_simpler_native_test_isolated(
-            "qwen3_range_dispatch_prefers_inline_object_ref_payloads",
+            "qwen3_range_dispatch_does_not_fallback_to_inline_operands",
             || {
                 const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
                 const OBJECT_REF_TABLE_OFFSET: usize = 0x07_0000;
@@ -25877,11 +26015,12 @@ mod tests {
                     object_ref_count: 2,
                 };
 
-                let materialized = materialize_qwen3_range_dispatch_input(&req, &segment_payload)
-                    .expect("materialize");
-                assert!(matches!(materialized, std::borrow::Cow::Borrowed(_)));
-                validate_qwen3_range_dispatch_object_refs(&req, materialized.as_ref())
-                    .expect("inline refs validate");
+                let err = resolve_qwen3_range_dispatch_operands(&req, &segment_payload)
+                    .expect_err("object-backed operands must not fall back to inline payloads");
+                assert!(
+                    err.contains("qwen3_object_service_snapshot_stat_failed"),
+                    "{err}"
+                );
 
                 std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT);
             },
@@ -25981,9 +26120,9 @@ mod tests {
     }
 
     #[test]
-    fn qwen3_range_dispatch_materializes_object_service_operands() {
+    fn qwen3_range_dispatch_resolves_object_service_operands() {
         run_simpler_native_test_isolated(
-            "qwen3_range_dispatch_materializes_object_service_operands",
+            "qwen3_range_dispatch_resolves_object_service_operands",
             || {
                 const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
                 const OBJECT_REF_TABLE_OFFSET: usize = 0x07_0000;
@@ -26063,18 +26202,19 @@ mod tests {
                     object_ref_count: 2,
                 };
 
-                let materialized = materialize_qwen3_range_dispatch_input(&req, &segment_payload)
-                    .expect("materialize");
-                let hidden_start = QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET;
+                let operands = resolve_qwen3_range_dispatch_operands(&req, &segment_payload)
+                    .expect("resolve operands")
+                    .expect("object refs should produce operands");
                 assert_eq!(
-                    &materialized[hidden_start..hidden_start + HIDDEN_BYTES],
-                    hidden_payload.as_slice()
+                    operands
+                        .hidden_input
+                        .as_ref()
+                        .map(|operand| operand.bytes()),
+                    Some(hidden_payload.as_slice())
                 );
-                let kv_start = QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
-                    + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES;
                 assert_eq!(
-                    &materialized[kv_start..kv_start + KV_BYTES],
-                    kv_payload.as_slice()
+                    operands.previous_kv.as_ref().map(|operand| operand.bytes()),
+                    Some(kv_payload.as_slice())
                 );
 
                 std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT);
@@ -26084,80 +26224,87 @@ mod tests {
     }
 
     #[test]
-    fn qwen3_range_dispatch_snapshot_path_fails_closed() {
-        run_simpler_native_test_isolated("qwen3_range_dispatch_snapshot_path_fails_closed", || {
-            const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
-            const OBJECT_REF_TABLE_OFFSET: usize = 0x07_0000;
-            const HIDDEN_BYTES: usize = 2_048;
+    fn qwen3_range_dispatch_runtime_operands_use_live_registry() {
+        run_simpler_native_test_isolated(
+            "qwen3_range_dispatch_runtime_operands_use_live_registry",
+            || {
+                const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
+                const OBJECT_REF_TABLE_OFFSET: usize = 0x07_0000;
+                const HIDDEN_BYTES: usize = 2_048;
 
-            std::env::set_var("SIM_QWEN3_DENSE_TP_NODES", "8");
-            std::env::set_var("SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS", "28");
-            std::env::set_var("SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES", "262144");
-            std::env::set_var(
-                "SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES",
-                HIDDEN_BYTES.to_string(),
-            );
-            let registry_dir = std::env::temp_dir().join(format!(
-                "ub_sim_qwen3_snapshot_fail_closed_registry_{}",
-                std::process::id()
-            ));
-            let missing_snapshot = std::env::temp_dir().join(format!(
-                "ub_sim_qwen3_snapshot_fail_closed_missing_{}.json",
-                std::process::id()
-            ));
-            let _ = std::fs::remove_dir_all(&registry_dir);
-            let _ = std::fs::remove_file(&missing_snapshot);
-            std::env::set_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, &registry_dir);
-            std::env::set_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT, &missing_snapshot);
+                std::env::set_var("SIM_QWEN3_DENSE_TP_NODES", "8");
+                std::env::set_var("SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS", "28");
+                std::env::set_var("SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES", "262144");
+                std::env::set_var(
+                    "SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES",
+                    HIDDEN_BYTES.to_string(),
+                );
+                let registry_dir = std::env::temp_dir().join(format!(
+                    "ub_sim_qwen3_snapshot_fail_closed_registry_{}",
+                    std::process::id()
+                ));
+                let missing_snapshot = std::env::temp_dir().join(format!(
+                    "ub_sim_qwen3_snapshot_fail_closed_missing_{}.json",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&registry_dir);
+                let _ = std::fs::remove_file(&missing_snapshot);
+                std::env::set_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, &registry_dir);
+                std::env::set_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT, &missing_snapshot);
 
-            let hidden_payload = vec![0x6du8; HIDDEN_BYTES];
-            let hidden_ref = LingquObmmObjectRefWire::committed(
-                QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
-                0,
-                0,
-                1,
-                0x77,
-                0,
-                HIDDEN_BYTES as u64,
-                qwen3_dense_reference_range_object_payload_checksum(&hidden_payload),
-            );
-            qwen3_object_registry_put(&hidden_ref, &hidden_payload)
-                .expect("legacy registry payload should exist but not be used");
+                let hidden_payload = vec![0x6du8; HIDDEN_BYTES];
+                let hidden_ref = LingquObmmObjectRefWire::committed(
+                    QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+                    0,
+                    0,
+                    1,
+                    0x77,
+                    0,
+                    HIDDEN_BYTES as u64,
+                    qwen3_dense_reference_range_object_payload_checksum(&hidden_payload),
+                );
+                qwen3_object_registry_put(&hidden_ref, &hidden_payload)
+                    .expect("legacy registry payload should exist but not be used");
 
-            let task = TaskKey {
-                logical_system: LogicalSystemId(1),
-                coord: HierarchyCoord {
-                    levels: [RANGE_TASK_MAGIC, 1, 4, 8, 2, 8, 28, HIDDEN_BYTES as u32],
-                },
-                scope_depth: 8,
-                task_id: 31,
-            };
-            let mut segment_payload =
-                vec![0u8; OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN];
-            write_obmm_object_ref_wire(
-                &mut segment_payload[OBJECT_REF_TABLE_OFFSET
-                    ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN],
-                hidden_ref,
-            );
-            let req = Qwen3RangeDispatchReq {
-                op_id: 31,
-                segment: sim_core::SegmentHandle(1),
-                task,
-                object_ref_table_offset: OBJECT_REF_TABLE_OFFSET as u32,
-                object_ref_count: 1,
-            };
+                let task = TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord {
+                        levels: [RANGE_TASK_MAGIC, 1, 4, 8, 2, 8, 28, HIDDEN_BYTES as u32],
+                    },
+                    scope_depth: 8,
+                    task_id: 31,
+                };
+                let mut segment_payload =
+                    vec![0u8; OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN];
+                write_obmm_object_ref_wire(
+                    &mut segment_payload[OBJECT_REF_TABLE_OFFSET
+                        ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN],
+                    hidden_ref,
+                );
+                let req = Qwen3RangeDispatchReq {
+                    op_id: 31,
+                    segment: sim_core::SegmentHandle(1),
+                    task,
+                    object_ref_table_offset: OBJECT_REF_TABLE_OFFSET as u32,
+                    object_ref_count: 1,
+                };
 
-            let err = materialize_qwen3_range_dispatch_input(&req, &segment_payload)
-                .expect_err("snapshot env must fail closed instead of falling back");
-            assert!(
-                err.contains("qwen3_object_service_snapshot_stat_failed"),
-                "{err}"
-            );
+                let operands = resolve_qwen3_range_dispatch_operands(&req, &segment_payload)
+                    .expect("runtime operands must use live registry, not bootstrap snapshot")
+                    .expect("hidden ref should resolve to operand");
+                assert_eq!(
+                    operands
+                        .hidden_input
+                        .as_ref()
+                        .map(|operand| operand.bytes()),
+                    Some(hidden_payload.as_slice())
+                );
 
-            std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR);
-            std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT);
-            let _ = std::fs::remove_dir_all(&registry_dir);
-        });
+                std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR);
+                std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT);
+                let _ = std::fs::remove_dir_all(&registry_dir);
+            },
+        );
     }
 
     #[test]

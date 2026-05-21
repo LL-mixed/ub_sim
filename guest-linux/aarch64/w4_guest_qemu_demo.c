@@ -1863,6 +1863,7 @@ struct w4_qwen3_engram_config {
 };
 
 #define W4_QWEN3_W5_SHORTPATH_STREAM_MAX 32U
+#define W4_QWEN3_W5_SHORTPATH_STREAM_BYTES 16384U
 
 struct w4_qwen3_shortpath_stream_entry {
     bool valid;
@@ -1894,7 +1895,8 @@ struct w4_qwen3_memory_decision_config {
     char shortpath_producer_position[64];
     char shortpath_proof_checksum[64];
     bool shortpath_execute;
-    char shortpath_stream[4096];
+    char shortpath_stream[W4_QWEN3_W5_SHORTPATH_STREAM_BYTES];
+    uint64_t shortpath_stream_expected_count;
     uint64_t shortpath_stream_count;
     struct w4_qwen3_shortpath_stream_entry
         shortpath_stream_entries[W4_QWEN3_W5_SHORTPATH_STREAM_MAX];
@@ -2693,6 +2695,20 @@ static int verify_qwen3_range_completion_contract(const uint8_t *cq,
         size_t off = W4_QWEN3_COMPLETION_TASK_OFFSET;
 
         if (op_id != 31ULL || source != 1 || status != 1) {
+            if (op_id == 31ULL && source == 1 && status != 1) {
+                uint8_t code_len = slot[11];
+                char code[64];
+                if (code_len >= sizeof(code)) {
+                    code_len = (uint8_t)(sizeof(code) - 1U);
+                }
+                memcpy(code, slot + 12, code_len);
+                code[code_len] = '\0';
+                fprintf(stderr,
+                        "[w4_guest] qwen3 range dispatch completion failed status=%u code=%s\n",
+                        status,
+                        code_len > 0 ? code : "missing");
+                return -1;
+            }
             continue;
         }
         marker = read_u64_le_bytes(slot, off);
@@ -4673,6 +4689,15 @@ static int parse_qwen3_w5_shortpath_stream(
         config->shortpath_stream_entries[count++] = parsed;
         entry_text = strtok_r(NULL, ";", &save_entry);
     }
+    if (config->shortpath_stream_expected_count != 0 &&
+        count != config->shortpath_stream_expected_count) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 shortpath stream count mismatch"
+                " parsed=%" PRIu64 " expected=%" PRIu64 "\n",
+                count,
+                config->shortpath_stream_expected_count);
+        return -1;
+    }
     config->shortpath_stream_count = count;
     return 0;
 }
@@ -4684,8 +4709,10 @@ static int parse_qwen3_w5_memory_decision_config(
     bool has_shortpath_stream;
     bool has_prefetch;
     bool has_prefix_cache;
+    char shortpath_stream_count_text[32];
 
     memset(config, 0, sizeof(*config));
+    memset(shortpath_stream_count_text, 0, sizeof(shortpath_stream_count_text));
     env_copy_or_empty("SIM_W5_MEMORY_SERVICE",
                       config->service,
                       sizeof(config->service));
@@ -4733,6 +4760,32 @@ static int parse_qwen3_w5_memory_decision_config(
                       sizeof(config->shortpath_proof_checksum));
     config->shortpath_execute =
         env_bool_is_one("SIM_W5_MEMORY_SHORTPATH_EXECUTE");
+    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_STREAM_COUNT",
+                      shortpath_stream_count_text,
+                      sizeof(shortpath_stream_count_text));
+    if (str_nonempty(shortpath_stream_count_text) &&
+        parse_u64_field("shortpath_stream_count",
+                        shortpath_stream_count_text,
+                        &config->shortpath_stream_expected_count) != 0) {
+        return -1;
+    }
+    {
+        const char *shortpath_stream_env =
+            getenv("SIM_W5_MEMORY_SHORTPATH_STREAM");
+
+        if (shortpath_stream_env && shortpath_stream_env[0] != '\0') {
+            size_t stream_len = strlen(shortpath_stream_env);
+
+            if (stream_len >= sizeof(config->shortpath_stream)) {
+                fprintf(stderr,
+                        "[w4_guest] fail qwen3 w5 shortpath stream too long"
+                        " bytes=%zu max=%zu\n",
+                        stream_len,
+                        sizeof(config->shortpath_stream) - 1U);
+                return -1;
+            }
+        }
+    }
     env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_STREAM",
                       config->shortpath_stream,
                       sizeof(config->shortpath_stream));
@@ -8262,6 +8315,8 @@ decode_round_start:
         }
         {
             uint32_t object_ref_count = 0;
+            uint8_t empty_object_ref_table[W4_QWEN3_OBJECT_REF_MAX_COUNT *
+                                           W4_QWEN3_OBJECT_REF_BYTES] = {0};
 
             if (layer_start > 0U) {
                 object_ref_count++;
@@ -8278,6 +8333,10 @@ decode_round_start:
                         W4_QWEN3_OBJECT_REF_MAX_COUNT);
                 goto out;
             }
+            write_segment_bytes(ep_mmio,
+                                W4_QWEN3_OBJECT_REF_TABLE_OFFSET,
+                                empty_object_ref_table,
+                                sizeof(empty_object_ref_table));
             printf("[w4_guest] stage uapi_qwen3_range_dispatch_descriptor node=%u layers=[%u,%u) count=%u next=%u segment=%" PRIu64 " task_id=31 object_ref_table_offset=0x%016" PRIx64 " object_ref_count=%u source=db_metadata status=ok\n",
                dispatch_node,
                layer_start,
@@ -8440,7 +8499,7 @@ decode_round_start:
                            " checksum=0x%016" PRIx64
                            " key_hash=0x%016" PRIx64 " version=%" PRIu64
                            " source=lingqu_memory_service target=uapi_object_ref"
-                           " materialize=sim_uapi_adapter status=ok\n",
+                           " materialize=none status=ok\n",
                            dispatch_node + 1U,
                            guest_decode_step,
                            layer_start,
@@ -8489,10 +8548,6 @@ decode_round_start:
                         range_input_view.ready_monotonic_ms - stage_start_ms :
                         monotonic_ms() - stage_start_ms;
                     write_segment_bytes(ep_mmio,
-                                        W4_QWEN3_RANGE_INPUT_PAYLOAD_OFFSET,
-                                        range_input_view.data,
-                                        hidden_range_bytes);
-                    write_segment_bytes(ep_mmio,
                                         W4_QWEN3_OBJECT_REF_TABLE_OFFSET +
                                             ((uint64_t)object_ref_write_index *
                                              W4_QWEN3_OBJECT_REF_BYTES),
@@ -8500,11 +8555,11 @@ decode_round_start:
                                         W4_QWEN3_OBJECT_REF_BYTES);
                     object_ref_write_index++;
                     input_loaded_ms = monotonic_ms();
-                    printf("[w4_guest] stage qwen3_range_forward_runtime_input_loaded node=%u layers=[%u,%u) input_offset=0x%016" PRIx64 " input_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " source=obmm_object_view target=uapi_object_ref materialize=sim_uapi_adapter status=ok inline_payload=1\n",
+                    printf("[w4_guest] stage qwen3_range_forward_runtime_input_loaded node=%u layers=[%u,%u) input_offset=0x%016" PRIx64 " input_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " source=obmm_object_view target=uapi_object_ref materialize=none status=ok inline_payload=0\n",
                            dispatch_node + 1U,
                            layer_start,
                            layer_end,
-                           (uint64_t)W4_QWEN3_RANGE_INPUT_PAYLOAD_OFFSET,
+                           (uint64_t)0,
                            range_input_checksum,
                            hidden_range_bytes);
                 }
@@ -8544,7 +8599,7 @@ decode_round_start:
                        " kv_checksum=0x%016" PRIx64
                        " key_hash=0x%016" PRIx64 " version=%" PRIu64
                        " source=lingqu_memory_service target=uapi_object_ref"
-                       " materialize=sim_uapi_adapter status=ok\n",
+                       " materialize=none status=ok\n",
                        dispatch_node + 1U,
                        guest_decode_step,
                        guest_decode_step - 1U,
@@ -8569,23 +8624,6 @@ decode_round_start:
                 }
                 kv_resolved_ms = monotonic_ms();
                 if (previous_kv_view.data && previous_kv_view.len > 0) {
-                    write_segment_u64(ep_mmio,
-                                      W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET,
-                                      W4_QWEN3_PREVIOUS_KV_PAYLOAD_MARKER);
-                    write_segment_u64(ep_mmio,
-                                      W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET + 8U,
-                                      previous_kv_view.len);
-                    write_segment_u64(ep_mmio,
-                                      W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET + 16U,
-                                      previous_kv_view.checksum);
-                    write_segment_u64(ep_mmio,
-                                      W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET + 24U,
-                                      0);
-                    write_segment_bytes(ep_mmio,
-                                        W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET +
-                                            W4_QWEN3_PREVIOUS_KV_PAYLOAD_HEADER_BYTES,
-                                        previous_kv_view.data,
-                                        previous_kv_view.len);
                     write_segment_bytes(ep_mmio,
                                         W4_QWEN3_OBJECT_REF_TABLE_OFFSET +
                                             ((uint64_t)object_ref_write_index *
@@ -8599,11 +8637,11 @@ decode_round_start:
                            " kv_offset=0x%016" PRIx64 " kv_bytes=%" PRIu64
                            " kv_checksum=0x%016" PRIx64
                            " key_hash=0x%016" PRIx64 " version=%" PRIu64
-                           " source=obmm_object_view target=uapi_object_ref materialize=sim_uapi_adapter status=ok inline_payload=1\n",
+                           " source=obmm_object_view target=uapi_object_ref materialize=none status=ok inline_payload=0\n",
                            dispatch_node + 1U,
                            guest_decode_step,
                            guest_decode_step - 1U,
-                           (uint64_t)W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET,
+                           (uint64_t)0,
                            previous_kv_view.len,
                            previous_kv_view.checksum,
                            previous_kv_view.object_ref.key_hash,
