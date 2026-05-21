@@ -330,6 +330,10 @@ enum Qwen3EngramReport {
     Verbose,
 }
 
+const QWEN3_ENGRAM_DEFAULT_NO_REPEAT_NGRAM_SIZE: usize = 3;
+const QWEN3_ENGRAM_DEFAULT_REPETITION_PENALTY_MILLI: u32 = 1000;
+const QWEN3_ENGRAM_DEFAULT_HISTORY_WINDOW: usize = 0;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Qwen3EngramConfig {
     enabled: bool,
@@ -354,9 +358,9 @@ impl Default for Qwen3EngramConfig {
             mode: Qwen3EngramMode::Cpu,
             pool: Qwen3EngramPool::Inline,
             owner_node: 8,
-            no_repeat_ngram_size: 0,
-            repetition_penalty_milli: 1000,
-            history_window: 0,
+            no_repeat_ngram_size: QWEN3_ENGRAM_DEFAULT_NO_REPEAT_NGRAM_SIZE,
+            repetition_penalty_milli: QWEN3_ENGRAM_DEFAULT_REPETITION_PENALTY_MILLI,
+            history_window: QWEN3_ENGRAM_DEFAULT_HISTORY_WINDOW,
             blocked_token_ids: Vec::new(),
             context_op: Qwen3EngramContextOp::Disabled,
             report: Qwen3EngramReport::Summary,
@@ -7528,8 +7532,8 @@ mod tests {
         Qwen3GuestDecodeLoopCliArgs, Qwen3GuestExpectedWorkerCounts, W5MemoryBootstrapConfig,
         W5MemoryDecisionBundle, W5MemoryDecisionConfig, QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
         QWEN3_DENSE_DEFAULT_PREFILL_TOKENS, QWEN3_DENSE_DEFAULT_TP_NODES,
-        SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
-        SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
+        QWEN3_ENGRAM_DEFAULT_NO_REPEAT_NGRAM_SIZE, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
+        SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
     };
     use std::env;
     use std::fs;
@@ -9101,6 +9105,41 @@ stage qwen3_range_forward_runtime_output_publish node=2
         assert_eq!(decision.selected_token, 3);
         assert_eq!(decision.blocked_token_count, 1);
         assert!(!decision.fallback_used);
+    }
+
+    #[test]
+    fn qwen3_engram_default_policy_blocks_repeated_trigram_candidate() {
+        let config = Qwen3EngramConfig {
+            enabled: true,
+            ..Qwen3EngramConfig::default()
+        };
+        let candidates = vec![
+            Qwen3CandidateRecord {
+                step_index: 0,
+                rank: 0,
+                token_id: 101_314,
+                logit_milli: 24_858,
+                adjusted_score_milli: 24_858,
+                token_piece_checksum: 0,
+            },
+            Qwen3CandidateRecord {
+                step_index: 0,
+                rank: 1,
+                token_id: 101_119,
+                logit_milli: 23_620,
+                adjusted_score_milli: 23_620,
+                token_piece_checksum: 0,
+            },
+        ];
+        let history = [104_198, 101_919, 101_314, 11_319, 104_198, 101_919];
+        let decision =
+            qwen3_engram_select_token(&config, 1, &history, candidates).expect("select token");
+        assert_eq!(decision.selected_token, 101_119);
+        assert_eq!(decision.blocked_token_count, 1);
+        assert_eq!(
+            decision.state.ngram_window,
+            QWEN3_ENGRAM_DEFAULT_NO_REPEAT_NGRAM_SIZE as u8
+        );
     }
 
     #[test]

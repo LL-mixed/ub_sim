@@ -6659,7 +6659,7 @@ int main(void)
         qwen3_engram_config.owner_node = (uint32_t)(owner_node - 1U);
     }
     qwen3_engram_config.no_repeat_ngram_size =
-        env_u64_or_default("SIM_QWEN3_GUEST_ENGRAM_NO_REPEAT_NGRAM_SIZE", 0);
+        env_u64_or_default("SIM_QWEN3_GUEST_ENGRAM_NO_REPEAT_NGRAM_SIZE", 3);
     qwen3_engram_config.repetition_penalty_milli =
         env_u64_or_default("SIM_QWEN3_GUEST_ENGRAM_REPETITION_PENALTY_MILLI", 1000);
     qwen3_engram_config.history_window =
