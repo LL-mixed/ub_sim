@@ -2132,6 +2132,33 @@ static bool w4_db_qwen3_token_result_desc_matches(const struct obmm_desc *desc,
     return (uint16_t)(desc->seq >> 48) == epoch;
 }
 
+static bool w4_db_qwen3_object_desc_matches(const struct obmm_desc *desc,
+                                            uint16_t epoch,
+                                            uint32_t payload_kind,
+                                            uint64_t min_payload_len,
+                                            uint64_t max_payload_len)
+{
+    if (!desc || desc->type != OBMM_DESC_W4_OBJECT_PUT ||
+        desc->flags != payload_kind ||
+        desc->payload_len < min_payload_len ||
+        desc->payload_len > max_payload_len) {
+        return false;
+    }
+    return (uint16_t)(desc->seq >> 48) == epoch;
+}
+
+static bool w4_db_qwen3_object_desc_kind_len_matches(
+    const struct obmm_desc *desc,
+    uint32_t payload_kind,
+    uint64_t min_payload_len,
+    uint64_t max_payload_len)
+{
+    return desc && desc->type == OBMM_DESC_W4_OBJECT_PUT &&
+           desc->flags == payload_kind &&
+           desc->payload_len >= min_payload_len &&
+           desc->payload_len <= max_payload_len;
+}
+
 static bool w4_db_take_pending_runtime_range_input_desc(
     struct w4_db_cluster_runtime *rt,
     int owner_idx,
@@ -2179,6 +2206,79 @@ static bool w4_db_take_pending_qwen3_token_result_desc(
     for (i = 0; i < count; ++i) {
         if (w4_db_qwen3_token_result_desc_matches(&rt->pending_descs[owner_idx][i],
                                                   epoch)) {
+            if (desc_out) {
+                *desc_out = rt->pending_descs[owner_idx][i];
+            }
+            if (i + 1 < count) {
+                memmove(&rt->pending_descs[owner_idx][i],
+                        &rt->pending_descs[owner_idx][i + 1],
+                        (size_t)(count - i - 1) * sizeof(struct obmm_desc));
+            }
+            rt->pending_desc_count[owner_idx] = (uint8_t)(count - 1);
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool w4_db_take_pending_qwen3_object_desc(
+    struct w4_db_cluster_runtime *rt,
+    int owner_idx,
+    uint16_t epoch,
+    uint32_t payload_kind,
+    uint64_t min_payload_len,
+    uint64_t max_payload_len,
+    struct obmm_desc *desc_out)
+{
+    uint8_t count;
+    uint8_t i;
+
+    if (!rt || owner_idx < 0 || owner_idx >= rt->node_count) {
+        return false;
+    }
+    count = rt->pending_desc_count[owner_idx];
+    for (i = 0; i < count; ++i) {
+        if (w4_db_qwen3_object_desc_matches(&rt->pending_descs[owner_idx][i],
+                                            epoch,
+                                            payload_kind,
+                                            min_payload_len,
+                                            max_payload_len)) {
+            if (desc_out) {
+                *desc_out = rt->pending_descs[owner_idx][i];
+            }
+            if (i + 1 < count) {
+                memmove(&rt->pending_descs[owner_idx][i],
+                        &rt->pending_descs[owner_idx][i + 1],
+                        (size_t)(count - i - 1) * sizeof(struct obmm_desc));
+            }
+            rt->pending_desc_count[owner_idx] = (uint8_t)(count - 1);
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool w4_db_take_pending_qwen3_object_kind_len_desc(
+    struct w4_db_cluster_runtime *rt,
+    int owner_idx,
+    uint32_t payload_kind,
+    uint64_t min_payload_len,
+    uint64_t max_payload_len,
+    struct obmm_desc *desc_out)
+{
+    uint8_t count;
+    uint8_t i;
+
+    if (!rt || owner_idx < 0 || owner_idx >= rt->node_count) {
+        return false;
+    }
+    count = rt->pending_desc_count[owner_idx];
+    for (i = 0; i < count; ++i) {
+        if (w4_db_qwen3_object_desc_kind_len_matches(
+                &rt->pending_descs[owner_idx][i],
+                payload_kind,
+                min_payload_len,
+                max_payload_len)) {
             if (desc_out) {
                 *desc_out = rt->pending_descs[owner_idx][i];
             }
@@ -2665,6 +2765,17 @@ static void w4_db_cluster_runtime_reset(struct w4_db_cluster_runtime *rt)
     rt->payload_arena_next = 0;
     rt->payload_arena_high_water = 0;
     rt->pool_layout_reported = false;
+}
+
+static int w4_db_cluster_runtime_require(struct w4_db_cluster_runtime *rt)
+{
+    if (!rt || !rt->active || rt->local_idx < 0 || rt->node_count <= 0 ||
+        rt->local_idx >= rt->node_count ||
+        !rt->slots[rt->local_idx].region.addr) {
+        printf("[w4_guest] gap db_service_cluster_stage=runtime_not_bootstrapped\n");
+        return -1;
+    }
+    return 0;
 }
 
 static int w4_db_cluster_runtime_init(struct w4_db_cluster_runtime *rt)
@@ -3752,7 +3863,7 @@ int w4_db_cluster_fetch_record(struct w4_db_service *svc,
     if (!svc || !key || !resolved_out) {
         return -1;
     }
-    if (w4_db_cluster_runtime_init(rt) != 0) {
+    if (w4_db_cluster_runtime_require(rt) != 0) {
         return -1;
     }
     if (w4_db_write_cluster_payload(svc, &rt->slots[rt->local_idx]) != 0) {
@@ -3788,6 +3899,45 @@ int w4_db_cluster_fetch_record(struct w4_db_service *svc,
     return rc;
 }
 
+int w4_db_obmm_service_v0_ensure_cluster_runtime(uint32_t local_node,
+                                                 uint32_t cluster_node_count)
+{
+    struct w4_db_cluster_runtime *rt = &g_w4_db_cluster_runtime;
+    uint32_t i;
+
+    if (cluster_node_count != W4_DB_QWEN3_RANGE_NODES ||
+        local_node >= cluster_node_count) {
+        return -1;
+    }
+    if (w4_db_cluster_runtime_init(rt) != 0) {
+        return -1;
+    }
+    if ((uint32_t)rt->local_idx != local_node ||
+        (uint32_t)rt->node_count != cluster_node_count ||
+        !rt->slots[rt->local_idx].region.addr) {
+        return -1;
+    }
+    if (rt->lazy_remote_activation) {
+        printf("[w4_guest] gap db_service_cluster_stage=lazy_activation_forbidden local=node%u\n",
+               local_node + 1U);
+        return -1;
+    }
+    for (i = 0; i < cluster_node_count; ++i) {
+        if (!rt->slots[i].region.addr ||
+            (i != local_node &&
+             (!rt->egress_queues[i] || !rt->ingress_queues[i]))) {
+            printf("[w4_guest] gap db_service_cluster_stage=peer_not_bootstrapped local=node%u peer=node%u\n",
+                   local_node + 1U,
+                   i + 1U);
+            return -1;
+        }
+    }
+    printf("[w4_guest] stage obmm_cluster_runtime_bootstrap local=node%u nodes=%u backing=obmm_pool metadata=lingqu_object_service queue=obmm_spsc status=ok\n",
+           local_node + 1U,
+           cluster_node_count);
+    return 0;
+}
+
 int w4_db_publish_observe_cluster(struct w4_db_service *svc,
                                   const struct w4_db_record *local_record,
                                   struct w4_db_cluster_summary *summary)
@@ -3808,7 +3958,7 @@ int w4_db_publish_observe_cluster(struct w4_db_service *svc,
     if (!svc || !local_record || !summary) {
         return -1;
     }
-    if (w4_db_cluster_runtime_init(rt) != 0) {
+    if (w4_db_cluster_runtime_require(rt) != 0) {
         goto out;
     }
     peer_snapshots = calloc(W4_DB_CLUSTER_MAX_NODES, sizeof(*peer_snapshots));
@@ -4194,7 +4344,7 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
     if (!svc || cluster_node_count == 0 || local_node >= cluster_node_count) {
         return -1;
     }
-    if (w4_db_cluster_runtime_init(rt) != 0) {
+    if (w4_db_cluster_runtime_require(rt) != 0) {
         return -1;
     }
     if ((uint32_t)rt->local_idx != local_node) {
@@ -4783,7 +4933,7 @@ int w4_db_obmm_service_v0_wait_runtime_range_input_view(
         bool token_input_found = false;
         bool token_desc_found = false;
 
-        if (w4_db_cluster_runtime_init(rt) != 0) {
+        if (w4_db_cluster_runtime_require(rt) != 0) {
             return -1;
         }
         memset(&token_desc, 0, sizeof(token_desc));
@@ -5002,7 +5152,7 @@ int w4_db_obmm_service_v0_wait_runtime_range_input_view(
     source_placement.layer_count =
         source_placement.layer_end - source_placement.layer_start;
     source_node = source_placement.owner_node;
-    if (w4_db_cluster_runtime_init(rt) != 0) {
+    if (w4_db_cluster_runtime_require(rt) != 0) {
         return -1;
     }
     if (source_node >= cluster_node_count || !rt->ingress_queues[source_node]) {
@@ -5261,7 +5411,7 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
                kv_payload_len);
         return -1;
     }
-    if (w4_db_cluster_runtime_init(rt) != 0 ||
+    if (w4_db_cluster_runtime_require(rt) != 0 ||
         w4_db_publish_qwen3_layer_range_placements(svc, cluster_node_count) != 0 ||
         !w4_db_read_qwen3_layer_range_placement(svc,
                                                 local_node,
@@ -5540,7 +5690,7 @@ int w4_db_obmm_service_v0_resolve_previous_range_kv_state_view(
         return -1;
     }
     previous_step = decode_step - 1U;
-    if (w4_db_cluster_runtime_init(rt) != 0 ||
+    if (w4_db_cluster_runtime_require(rt) != 0 ||
         w4_db_publish_qwen3_layer_range_placements(svc, cluster_node_count) != 0 ||
         !w4_db_read_qwen3_layer_range_placement(svc,
                                                 local_node,
@@ -5683,7 +5833,7 @@ static int w4_db_obmm_service_v0_publish_terminal_token_result_from_node(
         local_node >= cluster_node_count) {
         return -1;
     }
-    if (w4_db_cluster_runtime_init(rt) != 0 ||
+    if (w4_db_cluster_runtime_require(rt) != 0 ||
         w4_db_publish_qwen3_layer_range_placements(svc, cluster_node_count) != 0 ||
         !w4_db_read_qwen3_layer_range_placement(svc,
                                                 local_node,
@@ -5955,7 +6105,7 @@ int w4_db_obmm_service_v0_publish_engram_candidates(struct w4_db_service *svc,
         local_node >= cluster_node_count || !candidate_tokens || candidate_count == 0) {
         return -1;
     }
-    if (w4_db_cluster_runtime_init(rt) != 0 ||
+    if (w4_db_cluster_runtime_require(rt) != 0 ||
         w4_db_publish_qwen3_layer_range_placements(svc, cluster_node_count) != 0) {
         return -1;
     }
@@ -6092,7 +6242,7 @@ int w4_db_obmm_service_v0_publish_engram_step(struct w4_db_service *svc,
     if (history_token_count == UINT64_MAX || history_token_count + 1U > 1024U) {
         return -1;
     }
-    if (w4_db_cluster_runtime_init(rt) != 0 ||
+    if (w4_db_cluster_runtime_require(rt) != 0 ||
         w4_db_publish_qwen3_layer_range_placements(svc, cluster_node_count) != 0) {
         return -1;
     }
@@ -6277,7 +6427,7 @@ int w4_db_obmm_service_v0_wait_terminal_token_result(struct w4_db_service *svc,
     deadline = obmm_now_ms() + (long)timeout_ms;
     while (first_scan || obmm_now_ms() < deadline) {
         first_scan = false;
-        if (w4_db_cluster_runtime_init(rt) == 0) {
+        if (w4_db_cluster_runtime_require(rt) == 0) {
             for (int owner_idx = 0; owner_idx < rt->node_count; ++owner_idx) {
                 struct w4_db_cluster_payload_compact_summary compact;
                 struct w4_db_cluster_payload_header seen;
@@ -6385,25 +6535,74 @@ int w4_db_obmm_service_v0_wait_engram_candidates(struct w4_db_service *svc,
     while (obmm_now_ms() < deadline) {
         struct w4_db_cluster_slot *terminal_slot;
         struct w4_db_record candidates_record;
+        struct obmm_desc candidates_desc;
         uint64_t candidate_words[32];
         uint64_t candidate_count;
         uint64_t inner_checksum;
         uint64_t candidates_checksum;
+        bool candidates_record_found = false;
 
         candidate_owner_idx = -1;
         memset(&candidates_record, 0, sizeof(candidates_record));
-        if (w4_db_cluster_runtime_init(rt) == 0 &&
+        memset(&candidates_desc, 0, sizeof(candidates_desc));
+        if (w4_db_cluster_runtime_require(rt) == 0 &&
             rt->node_count > 0) {
             for (int node_idx = 0; node_idx < rt->node_count; ++node_idx) {
-                if (node_idx != rt->local_idx &&
-                    w4_db_activate_remote_slot(rt, node_idx) != 0) {
-                    continue;
-                }
                 terminal_slot = &rt->slots[node_idx];
                 memset(&candidates_record, 0, sizeof(candidates_record));
-                if (w4_db_slot_find_record(terminal_slot,
-                                           candidates_key,
-                                           &candidates_record) &&
+                if (node_idx == rt->local_idx) {
+                    candidates_record_found =
+                        w4_db_slot_find_record(terminal_slot,
+                                               candidates_key,
+                                               &candidates_record);
+                } else {
+                    struct obmm_desc rx;
+                    struct w4_db_cluster_payload_compact_summary compact;
+                    struct w4_db_cluster_payload_header seen;
+
+                    if (w4_db_take_pending_qwen3_object_kind_len_desc(
+                            rt,
+                            node_idx,
+                            W4_DB_OBMM_KIND_QWEN3_ENGRAM_CANDIDATES,
+                            W4_DB_OBMM_QWEN3_ENGRAM_CANDIDATES_BYTES,
+                            W4_DB_OBMM_QWEN3_ENGRAM_CANDIDATES_BYTES,
+                            &candidates_desc)) {
+                    } else if (rt->ingress_queues[node_idx]) {
+                        while (obmm_spsc_pop(rt->ingress_queues[node_idx], &rx) == 0) {
+                            if (w4_db_qwen3_object_desc_kind_len_matches(
+                                    &rx,
+                                    W4_DB_OBMM_KIND_QWEN3_ENGRAM_CANDIDATES,
+                                    W4_DB_OBMM_QWEN3_ENGRAM_CANDIDATES_BYTES,
+                                    W4_DB_OBMM_QWEN3_ENGRAM_CANDIDATES_BYTES)) {
+                                candidates_desc = rx;
+                                break;
+                            }
+                            w4_db_stash_pending_desc(rt, node_idx, &rx);
+                        }
+                    }
+                    if (candidates_desc.type != OBMM_DESC_W4_OBJECT_PUT) {
+                        continue;
+                    }
+                    if (!terminal_slot->region.addr &&
+                        w4_db_activate_remote_slot(rt, node_idx) != 0) {
+                        continue;
+                    }
+                    memset(&compact, 0, sizeof(compact));
+                    memset(&seen, 0, sizeof(seen));
+                    candidates_record_found =
+                        w4_db_try_read_stable_compact_summary_region(terminal_slot,
+                                                                      &compact,
+                                                                      &seen) &&
+                        w4_db_slot_find_record_by_obmm_object_backing(
+                            terminal_slot,
+                            W4_DB_RECORD_QWEN3_ENGRAM_CANDIDATES,
+                            W4_DB_OBMM_KIND_QWEN3_ENGRAM_CANDIDATES,
+                            candidates_desc.payload_offset,
+                            candidates_desc.payload_len,
+                            candidates_desc.cookie,
+                            &candidates_record);
+                }
+                if (candidates_record_found &&
                     candidates_record.kind == W4_DB_RECORD_QWEN3_ENGRAM_CANDIDATES &&
                     candidates_record.version == 1U &&
                     candidates_record.object_payload_kind ==
@@ -6417,14 +6616,14 @@ int w4_db_obmm_service_v0_wait_engram_candidates(struct w4_db_service *svc,
                     candidate_owner_idx = node_idx;
                     break;
                 }
+                memset(&candidates_desc, 0, sizeof(candidates_desc));
             }
             if (candidate_owner_idx < 0) {
                 usleep(10000);
                 continue;
             }
             terminal_slot = &rt->slots[candidate_owner_idx];
-            if (!w4_db_slot_find_record(terminal_slot, candidates_key, &candidates_record) ||
-                candidates_record.kind != W4_DB_RECORD_QWEN3_ENGRAM_CANDIDATES ||
+            if (candidates_record.kind != W4_DB_RECORD_QWEN3_ENGRAM_CANDIDATES ||
                 candidates_record.version != 1U ||
                 candidates_record.object_payload_kind != W4_DB_OBMM_KIND_QWEN3_ENGRAM_CANDIDATES ||
                 candidates_record.object_backing_len != W4_DB_OBMM_QWEN3_ENGRAM_CANDIDATES_BYTES ||
@@ -6516,17 +6715,79 @@ int w4_db_obmm_service_v0_wait_engram_selected_token(struct w4_db_service *svc,
     while (obmm_now_ms() < deadline) {
         struct w4_db_cluster_slot *terminal_slot;
         struct w4_db_record selected_record;
+        struct obmm_desc selected_desc;
         uint64_t payload_words[8];
         uint64_t checksum;
+        uint16_t expected_epoch;
+        bool selected_record_found = false;
 
         memset(&selected_record, 0, sizeof(selected_record));
-        if (w4_db_cluster_runtime_init(rt) == 0 &&
+        memset(&selected_desc, 0, sizeof(selected_desc));
+        expected_epoch = (uint16_t)(decode_step + 1U);
+        if (expected_epoch == 0) {
+            expected_epoch = 1;
+        }
+        if (w4_db_cluster_runtime_require(rt) == 0 &&
             owner_idx >= 0 &&
-            owner_idx < rt->node_count &&
-            (owner_idx == rt->local_idx ||
-             w4_db_activate_remote_slot(rt, owner_idx) == 0)) {
+            owner_idx < rt->node_count) {
             terminal_slot = &rt->slots[owner_idx];
-            if (!w4_db_slot_find_record(terminal_slot, selected_key, &selected_record) ||
+            if (owner_idx == rt->local_idx) {
+                selected_record_found =
+                    w4_db_slot_find_record(terminal_slot,
+                                           selected_key,
+                                           &selected_record);
+            } else {
+                struct obmm_desc rx;
+                struct w4_db_cluster_payload_compact_summary compact;
+                struct w4_db_cluster_payload_header seen;
+
+                if (w4_db_take_pending_qwen3_object_desc(
+                        rt,
+                        owner_idx,
+                        expected_epoch,
+                        W4_DB_OBMM_KIND_QWEN3_ENGRAM_SELECTED,
+                        W4_DB_OBMM_QWEN3_ENGRAM_SELECTED_BYTES,
+                        W4_DB_OBMM_QWEN3_ENGRAM_SELECTED_BYTES,
+                        &selected_desc)) {
+                } else if (rt->ingress_queues[owner_idx]) {
+                    while (obmm_spsc_pop(rt->ingress_queues[owner_idx], &rx) == 0) {
+                        if (w4_db_qwen3_object_desc_matches(
+                                &rx,
+                                expected_epoch,
+                                W4_DB_OBMM_KIND_QWEN3_ENGRAM_SELECTED,
+                                W4_DB_OBMM_QWEN3_ENGRAM_SELECTED_BYTES,
+                                W4_DB_OBMM_QWEN3_ENGRAM_SELECTED_BYTES)) {
+                            selected_desc = rx;
+                            break;
+                        }
+                        w4_db_stash_pending_desc(rt, owner_idx, &rx);
+                    }
+                }
+                if (selected_desc.type != OBMM_DESC_W4_OBJECT_PUT) {
+                    usleep(10000);
+                    continue;
+                }
+                if (!terminal_slot->region.addr &&
+                    w4_db_activate_remote_slot(rt, owner_idx) != 0) {
+                    usleep(10000);
+                    continue;
+                }
+                memset(&compact, 0, sizeof(compact));
+                memset(&seen, 0, sizeof(seen));
+                selected_record_found =
+                    w4_db_try_read_stable_compact_summary_region(terminal_slot,
+                                                                  &compact,
+                                                                  &seen) &&
+                    w4_db_slot_find_record_by_obmm_object_backing(
+                        terminal_slot,
+                        W4_DB_RECORD_QWEN3_ENGRAM_SELECTED,
+                        W4_DB_OBMM_KIND_QWEN3_ENGRAM_SELECTED,
+                        selected_desc.payload_offset,
+                        selected_desc.payload_len,
+                        selected_desc.cookie,
+                        &selected_record);
+            }
+            if (!selected_record_found ||
                 selected_record.kind != W4_DB_RECORD_QWEN3_ENGRAM_SELECTED ||
                 selected_record.object_payload_kind != W4_DB_OBMM_KIND_QWEN3_ENGRAM_SELECTED ||
                 selected_record.object_backing_len != W4_DB_OBMM_QWEN3_ENGRAM_SELECTED_BYTES ||
@@ -6598,19 +6859,81 @@ int w4_db_obmm_service_v0_wait_engram_history(struct w4_db_service *svc,
     while (obmm_now_ms() < deadline) {
         struct w4_db_cluster_slot *terminal_slot;
         struct w4_db_record history_record;
+        struct obmm_desc history_desc;
         uint64_t payload_words[1024 + 2];
         uint64_t checksum;
         uint64_t history_token_count;
         uint64_t expected_bytes;
+        uint16_t expected_epoch;
+        bool history_record_found = false;
 
         memset(&history_record, 0, sizeof(history_record));
-        if (w4_db_cluster_runtime_init(rt) == 0 &&
+        memset(&history_desc, 0, sizeof(history_desc));
+        expected_epoch = (uint16_t)expected_version;
+        if (expected_epoch == 0) {
+            expected_epoch = 1;
+        }
+        if (w4_db_cluster_runtime_require(rt) == 0 &&
             owner_idx >= 0 &&
-            owner_idx < rt->node_count &&
-            (owner_idx == rt->local_idx ||
-             w4_db_activate_remote_slot(rt, owner_idx) == 0)) {
+            owner_idx < rt->node_count) {
             terminal_slot = &rt->slots[owner_idx];
-            if (!w4_db_slot_find_record(terminal_slot, history_key, &history_record) ||
+            if (owner_idx == rt->local_idx) {
+                history_record_found =
+                    w4_db_slot_find_record(terminal_slot,
+                                           history_key,
+                                           &history_record);
+            } else {
+                struct obmm_desc rx;
+                struct w4_db_cluster_payload_compact_summary compact;
+                struct w4_db_cluster_payload_header seen;
+
+                if (w4_db_take_pending_qwen3_object_desc(
+                        rt,
+                        owner_idx,
+                        expected_epoch,
+                        W4_DB_OBMM_KIND_QWEN3_ENGRAM_HISTORY,
+                        3U * sizeof(uint64_t),
+                        sizeof(payload_words),
+                        &history_desc)) {
+                } else if (rt->ingress_queues[owner_idx]) {
+                    while (obmm_spsc_pop(rt->ingress_queues[owner_idx], &rx) == 0) {
+                        if (w4_db_qwen3_object_desc_matches(
+                                &rx,
+                                expected_epoch,
+                                W4_DB_OBMM_KIND_QWEN3_ENGRAM_HISTORY,
+                                3U * sizeof(uint64_t),
+                                sizeof(payload_words))) {
+                            history_desc = rx;
+                            break;
+                        }
+                        w4_db_stash_pending_desc(rt, owner_idx, &rx);
+                    }
+                }
+                if (history_desc.type != OBMM_DESC_W4_OBJECT_PUT) {
+                    usleep(10000);
+                    continue;
+                }
+                if (!terminal_slot->region.addr &&
+                    w4_db_activate_remote_slot(rt, owner_idx) != 0) {
+                    usleep(10000);
+                    continue;
+                }
+                memset(&compact, 0, sizeof(compact));
+                memset(&seen, 0, sizeof(seen));
+                history_record_found =
+                    w4_db_try_read_stable_compact_summary_region(terminal_slot,
+                                                                  &compact,
+                                                                  &seen) &&
+                    w4_db_slot_find_record_by_obmm_object_backing(
+                        terminal_slot,
+                        W4_DB_RECORD_QWEN3_ENGRAM_HISTORY,
+                        W4_DB_OBMM_KIND_QWEN3_ENGRAM_HISTORY,
+                        history_desc.payload_offset,
+                        history_desc.payload_len,
+                        history_desc.cookie,
+                        &history_record);
+            }
+            if (!history_record_found ||
                 history_record.kind != W4_DB_RECORD_QWEN3_ENGRAM_HISTORY ||
                 history_record.version != expected_version ||
                 history_record.object_payload_kind != W4_DB_OBMM_KIND_QWEN3_ENGRAM_HISTORY ||
@@ -6694,18 +7017,79 @@ int w4_db_obmm_service_v0_wait_engram_state(struct w4_db_service *svc,
     while (obmm_now_ms() < deadline) {
         struct w4_db_cluster_slot *terminal_slot;
         struct w4_db_record state_record;
+        struct obmm_desc state_desc;
         uint64_t state_words[16];
         uint64_t inner_checksum;
         uint64_t state_checksum;
+        bool state_record_found = false;
 
         memset(&state_record, 0, sizeof(state_record));
-        if (w4_db_cluster_runtime_init(rt) == 0 &&
+        memset(&state_desc, 0, sizeof(state_desc));
+        if (w4_db_cluster_runtime_require(rt) == 0 &&
             owner_idx >= 0 &&
-            owner_idx < rt->node_count &&
-            (owner_idx == rt->local_idx ||
-             w4_db_activate_remote_slot(rt, owner_idx) == 0)) {
+            owner_idx < rt->node_count) {
             terminal_slot = &rt->slots[owner_idx];
-            if (!w4_db_slot_find_record(terminal_slot, state_key, &state_record) ||
+            if (owner_idx == rt->local_idx) {
+                state_record_found =
+                    w4_db_slot_find_record(terminal_slot,
+                                           state_key,
+                                           &state_record);
+            } else {
+                struct obmm_desc rx;
+                struct w4_db_cluster_payload_compact_summary compact;
+                struct w4_db_cluster_payload_header seen;
+                uint16_t expected_epoch = (uint16_t)(decode_step + 1U);
+
+                if (expected_epoch == 0) {
+                    expected_epoch = 1;
+                }
+                if (w4_db_take_pending_qwen3_object_desc(
+                        rt,
+                        owner_idx,
+                        expected_epoch,
+                        W4_DB_OBMM_KIND_QWEN3_ENGRAM_STATE,
+                        W4_DB_OBMM_QWEN3_ENGRAM_STATE_BYTES,
+                        W4_DB_OBMM_QWEN3_ENGRAM_STATE_BYTES,
+                        &state_desc)) {
+                } else if (rt->ingress_queues[owner_idx]) {
+                    while (obmm_spsc_pop(rt->ingress_queues[owner_idx], &rx) == 0) {
+                        if (w4_db_qwen3_object_desc_matches(
+                                &rx,
+                                expected_epoch,
+                                W4_DB_OBMM_KIND_QWEN3_ENGRAM_STATE,
+                                W4_DB_OBMM_QWEN3_ENGRAM_STATE_BYTES,
+                                W4_DB_OBMM_QWEN3_ENGRAM_STATE_BYTES)) {
+                            state_desc = rx;
+                            break;
+                        }
+                        w4_db_stash_pending_desc(rt, owner_idx, &rx);
+                    }
+                }
+                if (state_desc.type != OBMM_DESC_W4_OBJECT_PUT) {
+                    usleep(10000);
+                    continue;
+                }
+                if (!terminal_slot->region.addr &&
+                    w4_db_activate_remote_slot(rt, owner_idx) != 0) {
+                    usleep(10000);
+                    continue;
+                }
+                memset(&compact, 0, sizeof(compact));
+                memset(&seen, 0, sizeof(seen));
+                state_record_found =
+                    w4_db_try_read_stable_compact_summary_region(terminal_slot,
+                                                                  &compact,
+                                                                  &seen) &&
+                    w4_db_slot_find_record_by_obmm_object_backing(
+                        terminal_slot,
+                        W4_DB_RECORD_QWEN3_ENGRAM_STATE,
+                        W4_DB_OBMM_KIND_QWEN3_ENGRAM_STATE,
+                        state_desc.payload_offset,
+                        state_desc.payload_len,
+                        state_desc.cookie,
+                        &state_record);
+            }
+            if (!state_record_found ||
                 state_record.kind != W4_DB_RECORD_QWEN3_ENGRAM_STATE ||
                 state_record.version != 1U ||
                 state_record.object_payload_kind != W4_DB_OBMM_KIND_QWEN3_ENGRAM_STATE ||
@@ -6801,7 +7185,7 @@ int w4_db_obmm_service_v0_publish_decode_round_done(struct w4_db_service *svc,
 
     if (!svc || cluster_node_count != W4_DB_QWEN3_RANGE_NODES ||
         local_node >= cluster_node_count ||
-        w4_db_cluster_runtime_init(rt) != 0) {
+        w4_db_cluster_runtime_require(rt) != 0) {
         return -1;
     }
     local_slot = &rt->slots[rt->local_idx];
@@ -6866,7 +7250,7 @@ int w4_db_obmm_service_v0_wait_all_decode_round_done(struct w4_db_service *svc,
     uint64_t slot_offset;
 
     if (!svc || cluster_node_count != W4_DB_QWEN3_RANGE_NODES ||
-        w4_db_cluster_runtime_init(rt) != 0) {
+        w4_db_cluster_runtime_require(rt) != 0) {
         return -1;
     }
     slot_index = (decode_step ^

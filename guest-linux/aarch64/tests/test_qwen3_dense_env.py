@@ -207,6 +207,20 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("qwen3_memory_shortpath_terminal_logits_record", guest_source)
         self.assertIn("qwen3_read_object_service_payload", guest_source)
         self.assertIn("W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_MAGIC", guest_source)
+        self.assertIn("w4_db_obmm_service_v0_ensure_cluster_runtime", guest_source)
+        self.assertIn("obmm_cluster_runtime_bootstrap", db_service_source)
+        self.assertIn("w4_db_cluster_runtime_require", db_service_source)
+        self.assertIn("lazy_activation_forbidden", db_service_source)
+        self.assertIn("peer_not_bootstrapped", db_service_source)
+        self.assertIn("after=obmm_cluster_runtime_bootstrap", guest_source)
+        self.assertIn(
+            "needs_engram_history =\n                    local_decode_node == qwen3_engram_config.owner_node",
+            guest_source,
+        )
+        self.assertNotIn("local_decode_node == 0U ||", guest_source)
+        self.assertNotIn("local_decode_node + 1U == cluster_node_count ||", guest_source)
+        self.assertIn("w4_db_take_pending_qwen3_object_desc", db_service_source)
+        self.assertIn("w4_db_take_pending_qwen3_object_kind_len_desc", db_service_source)
         self.assertIn("qwen3_w5_memory_terminal_logits_loaded", guest_source)
         self.assertIn(
             "w4_db_obmm_service_v0_publish_shortpath_terminal_token_result",
@@ -219,24 +233,101 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
         runner = script_dir / "run_ub_eight_node_w5_inference_cluster.sh"
         generic = script_dir / "run_ub_w5_inference_cluster.sh"
+        config_runner = script_dir / "run_w5_cluster_config.sh"
         summary = script_dir / "w5_inference_cluster_summary.py"
 
         self.assertTrue(runner.exists())
         self.assertTrue(runner.stat().st_mode & 0o111)
         self.assertTrue(generic.exists())
         self.assertTrue(generic.stat().st_mode & 0o111)
+        self.assertTrue(config_runner.exists())
+        self.assertTrue(config_runner.stat().st_mode & 0o111)
         self.assertTrue(summary.exists())
         self.assertTrue(summary.stat().st_mode & 0o111)
 
         runner_text = runner.read_text(encoding="utf-8")
         generic_text = generic.read_text(encoding="utf-8")
+        config_runner_text = config_runner.read_text(encoding="utf-8")
         summary_text = summary.read_text(encoding="utf-8")
 
         self.assertIn("SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode", runner_text)
         self.assertIn("eight_node_w5_inference_cluster_summary", runner_text)
         self.assertIn('exec "$SCRIPT_DIR/run_ub_eight_node_w4_guest.sh"', runner_text)
         self.assertIn('exec "$SCRIPT_DIR/run_ub_eight_node_w5_inference_cluster.sh"', generic_text)
+        self.assertIn("source \"$CONFIG_PATH\"", config_runner_text)
+        self.assertIn("fixed RUN_ID is disabled", config_runner_text)
+        self.assertIn("SIM_W5_ALLOW_FIXED_RUN_ID", config_runner_text)
+        self.assertIn('exec "$SCRIPT_DIR/run_ub_eight_node_w5_inference_cluster.sh"', config_runner_text)
+        legacy_runner_text = (script_dir / "run_ub_eight_node_w4_guest.sh").read_text(encoding="utf-8")
+        self.assertIn("explicit obmm cluster runtime bootstrap", legacy_runner_text)
+        self.assertIn("SIM_W4_DB_LAZY_REMOTE_ACTIVATION=0", legacy_runner_text)
+        self.assertIn("idx == SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE", legacy_runner_text)
+        self.assertIn("source=runtime_token_input target=uapi_segment", legacy_runner_text)
         self.assertIn("w4_guest_run_summary.py", summary_text)
+
+    def test_w5_cluster_config_runner_loads_env_file_without_dynamic_shell_prefix(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        config_runner = script_dir / "run_w5_cluster_config.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "w5.env"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "RUN_ID=test-run",
+                        "SIM_UAPI_W5_PROFILE=qwen3_0_6b_decode",
+                        "SIM_QWEN3_GUEST_DECODE_STEPS=2",
+                        "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3",
+                        "SIM_W5_MEMORY_SHORTPATH_EXECUTE=0",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(config_runner), "--print-env", str(config_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(
+            result.stdout.strip().splitlines(),
+            [
+                "RUN_ID=test-run",
+                "SIM_UAPI_W5_PROFILE=qwen3_0_6b_decode",
+                "SIM_QWEN3_GUEST_DECODE_STEPS=2",
+                "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3",
+                "SIM_W5_MEMORY_SHORTPATH_EXECUTE=0",
+            ],
+        )
+
+    def test_w5_cluster_config_runner_rejects_fixed_run_id_for_real_runs(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        config_runner = script_dir / "run_w5_cluster_config.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "w5.env"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "RUN_ID=test-run",
+                        "SIM_UAPI_W5_PROFILE=qwen3_0_6b_decode",
+                        "SIM_QWEN3_GUEST_DECODE_STEPS=2",
+                        "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(config_runner), str(config_path)],
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("fixed RUN_ID is disabled", result.stderr)
 
 
 if __name__ == "__main__":

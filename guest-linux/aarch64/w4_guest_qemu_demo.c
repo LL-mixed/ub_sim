@@ -1029,6 +1029,11 @@ static int w4_resource_backed_db_cluster_assertions(const char *role, uint32_t c
         printf("[w4_guest] gap guest_db_service_cluster=resource_backed_bootstrap_failed\n");
         return -1;
     }
+    if (w4_db_obmm_service_v0_ensure_cluster_runtime(placement_node,
+                                                     cluster_node_count) != 0) {
+        printf("[w4_guest] gap guest_db_service_cluster=resource_backed_runtime_bootstrap_failed\n");
+        return -1;
+    }
 
     if (w4_db_publish_observe_cluster(&svc, &primary, &initial_summary) != 0 ||
         !initial_summary.ready ||
@@ -1497,6 +1502,35 @@ static int append_qwen3_terminal_tokens_to_prompt(volatile uint8_t *ep_mmio,
     return 0;
 }
 
+static int append_qwen3_runtime_token_to_prompt(volatile uint8_t *ep_mmio,
+                                                uint64_t token)
+{
+    uint64_t base_token_count;
+    uint64_t next_token_count;
+    uint64_t token_offset;
+
+    base_token_count = read_segment_u64(ep_mmio, 24);
+    next_token_count = base_token_count + 1U;
+    token_offset = 64 + base_token_count * sizeof(uint64_t);
+    if (token_offset + sizeof(uint64_t) > W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 prompt token append overflow tokens=%" PRIu64 "\n",
+                next_token_count);
+        return -1;
+    }
+    write_segment_u64(ep_mmio, token_offset, token);
+    write_segment_u64(ep_mmio, 24, next_token_count);
+    write_segment_u64(ep_mmio,
+                      32,
+                      qwen3_prompt_token_ids_checksum(ep_mmio, next_token_count));
+    printf("[w4_guest] stage qwen3_prompt_tokens_extended base_tokens=%" PRIu64
+           " append_tokens=1 tokens=%" PRIu64
+           " source=runtime_token_input target=uapi_segment status=ok\n",
+           base_token_count,
+           next_token_count);
+    return 0;
+}
+
 static int write_qwen3_prompt_tokens_from_history(volatile uint8_t *ep_mmio,
                                                   const uint64_t *history_tokens,
                                                   uint64_t history_token_count)
@@ -1864,7 +1898,6 @@ struct w4_qwen3_engram_config {
 
 #define W4_QWEN3_W5_SHORTPATH_STREAM_MAX 256U
 #define W4_QWEN3_W5_SHORTPATH_STREAM_BYTES 65536U
-#define W4_QWEN3_W5_SHORTPATH_DOWNSTREAM_WAIT_MS 5000U
 
 struct w4_qwen3_shortpath_stream_entry {
     bool valid;
@@ -8158,15 +8191,21 @@ decode_round_start:
     round_layer_end = 0;
     round_next_node = 0;
     qwen3_round_history_loaded = false;
+    bool delay_decode_round_start_log =
+        is_qwen3_profile() && enable_db_cluster && cluster_node_count == 8U &&
+        guest_decode_step == 0;
     memset(&counts, 0, sizeof(counts));
     memset(&runtime_forward, 0, sizeof(runtime_forward));
     qwen3_runtime_forward_ready = false;
     qwen3_round_input_token_count = 0;
     memset(qwen3_round_input_tokens, 0, sizeof(qwen3_round_input_tokens));
     round_start_ms = monotonic_ms();
-    printf("[w4_guest] stage qwen3_decode_round_start step=%" PRIu64 " total_steps=%" PRIu64 "\n",
-           guest_decode_step,
-           guest_decode_steps);
+    if (!delay_decode_round_start_log) {
+        printf("[w4_guest] stage qwen3_decode_round_start step=%" PRIu64
+               " total_steps=%" PRIu64 "\n",
+               guest_decode_step,
+               guest_decode_steps);
+    }
     if (is_qwen3_profile() && enable_db_cluster && cluster_node_count == 8U &&
         guest_decode_step > 0 && qwen3_engram_config.enabled) {
         uint64_t stage_start_ms = monotonic_ms();
@@ -8177,7 +8216,7 @@ decode_round_start:
                     guest_decode_step);
             goto out;
         }
-        if (qwen3_engram_config.enabled) {
+        {
             uint32_t local_decode_node = UINT32_MAX;
             bool needs_engram_history = false;
             uint64_t previous_engram_history_checksum = 0;
@@ -8185,8 +8224,6 @@ decode_round_start:
 
             if (w4_cluster_role_index(role, cluster_node_count, &local_decode_node)) {
                 needs_engram_history =
-                    local_decode_node == 0U ||
-                    local_decode_node + 1U == cluster_node_count ||
                     local_decode_node == qwen3_engram_config.owner_node;
             }
             if (!needs_engram_history) {
@@ -8212,6 +8249,9 @@ decode_round_start:
                 }
                 qwen3_terminal_tokens[guest_decode_step - 1] =
                     qwen3_round_input_tokens[qwen3_round_input_token_count - 1U];
+                if (qwen3_terminal_token_count < guest_decode_step) {
+                    qwen3_terminal_token_count = guest_decode_step;
+                }
                 if (w4_db_obmm_service_v0_wait_engram_state(
                         &db_service,
                         guest_decode_step - 1,
@@ -8243,18 +8283,6 @@ decode_round_start:
                        previous_engram_history_checksum,
                        previous_engram_state_checksum);
             }
-        } else if (w4_db_obmm_service_v0_wait_terminal_token_result(
-                       &db_service,
-                       guest_decode_step - 1,
-                       600000,
-                       &qwen3_terminal_tokens[guest_decode_step - 1]) != 0) {
-            fprintf(stderr,
-                    "[w4_guest] fail qwen3 decode round gate missing step=%" PRIu64 "\n",
-                    guest_decode_step);
-            goto out;
-        }
-        if (qwen3_terminal_token_count < guest_decode_step) {
-            qwen3_terminal_token_count = guest_decode_step;
         }
         terminal_gate_ms = monotonic_ms() - stage_start_ms;
     }
@@ -8262,6 +8290,7 @@ decode_round_start:
     setup_ms = monotonic_ms();
     if (enable_db_cluster) {
         uint64_t stage_start_ms = monotonic_ms();
+        uint32_t cluster_runtime_node = UINT32_MAX;
 
         if (guest_decode_step == 0) {
             if (run_obmm_backing_stage() != 0) {
@@ -8275,12 +8304,6 @@ decode_round_start:
         obmm_stage_ms = monotonic_ms() - stage_start_ms;
         printf("[w4_guest] stage db_cluster_mode=resource_backed_uapi\n");
         stage_start_ms = monotonic_ms();
-        if (resource_assertions_enabled && guest_decode_step == 0) {
-            if (w4_resource_backed_db_cluster_assertions(role, cluster_node_count) != 0) {
-                fprintf(stderr, "[w4_guest] fail incomplete resource-backed kvcache db cluster assertions\n");
-                goto out;
-            }
-        }
         if (!db_service_ready &&
             w4_db_service_init(&db_service, true, true, true) == 0) {
             db_service_ready = true;
@@ -8294,7 +8317,36 @@ decode_round_start:
             printf("[w4_guest] stage db_service_cluster=reuse decode_step=%" PRIu64 "\n",
                    guest_decode_step);
         }
+        if (cluster_node_count == 8U &&
+            !w4_cluster_role_index(role, cluster_node_count, &cluster_runtime_node)) {
+            fprintf(stderr,
+                    "[w4_guest] fail obmm cluster runtime bootstrap role invalid role=%s nodes=%u\n",
+                    role,
+                    cluster_node_count);
+            goto out;
+        }
+        if (cluster_node_count == 8U &&
+            guest_decode_step == 0 &&
+            w4_db_obmm_service_v0_ensure_cluster_runtime(cluster_runtime_node,
+                                                         cluster_node_count) != 0) {
+            fprintf(stderr,
+                    "[w4_guest] fail obmm cluster runtime bootstrap failed node=%u\n",
+                    cluster_runtime_node + 1U);
+            goto out;
+        }
+        if (resource_assertions_enabled && guest_decode_step == 0) {
+            if (w4_resource_backed_db_cluster_assertions(role, cluster_node_count) != 0) {
+                fprintf(stderr, "[w4_guest] fail incomplete resource-backed kvcache db cluster assertions\n");
+                goto out;
+            }
+        }
         cluster_stage_ms = monotonic_ms() - stage_start_ms;
+    }
+    if (delay_decode_round_start_log) {
+        printf("[w4_guest] stage qwen3_decode_round_start step=%" PRIu64
+               " total_steps=%" PRIu64 " after=obmm_cluster_runtime_bootstrap\n",
+               guest_decode_step,
+               guest_decode_steps);
     }
 
     {
@@ -8619,121 +8671,112 @@ decode_round_start:
             if (!qwen3_memory_shortpath_target_layer_for_step(
                     &qwen3_memory_decision_config,
                     guest_decode_step,
-            &shortpath_target_layer_start)) {
+                    &shortpath_target_layer_start)) {
                 goto out;
             }
             if (layer_start >= shortpath_target_layer_start) {
                 uint64_t shortpath_token = 0;
-                uint64_t terminal_wait_ms =
-                    qwen3_engram_config.enabled &&
-                            dispatch_node == qwen3_engram_config.owner_node ?
-                        60000U :
-                        W4_QWEN3_W5_SHORTPATH_DOWNSTREAM_WAIT_MS;
+                const struct w4_qwen3_shortpath_stream_entry *entry;
+                struct lingqu_obmm_object_ref_wire terminal_logits_ref;
+                struct w4_qwen3_terminal_token_record terminal_logits_record;
+                int terminal_logits_state;
 
                 input_wait_start_ms = monotonic_ms();
-                if (w4_db_obmm_service_v0_wait_terminal_token_result(
-                        &db_service,
-                        guest_decode_step,
-                        terminal_wait_ms,
-                        &shortpath_token) != 0) {
-                    printf("[w4_guest] stage qwen3_w5_memory_shortpath_downstream_continue"
-                           " node=%u step=%" PRIu64 " layers=[%u,%u)"
-                           " target_layer_start=%u"
-                           " reason=terminal_token_not_published_yet"
-                           " source=range_forward target=normal_handoff status=ok\n",
-                           dispatch_node + 1U,
-                           guest_decode_step,
-                           layer_start,
-                           layer_end,
-                           shortpath_target_layer_start);
+                memset(&terminal_logits_ref, 0, sizeof(terminal_logits_ref));
+                memset(&terminal_logits_record, 0, sizeof(terminal_logits_record));
+                entry = qwen3_memory_shortpath_stream_entry_for_step(
+                    &qwen3_memory_decision_config,
+                    guest_decode_step);
+                if (entry) {
+                    terminal_logits_state =
+                        qwen3_memory_shortpath_terminal_logits_record_from_ref(
+                            "SIM_W5_MEMORY_SHORTPATH_STREAM",
+                            entry->artifact_ref,
+                            entry->decision_id,
+                            entry->artifact_id,
+                            guest_decode_step,
+                            &terminal_logits_ref,
+                            &terminal_logits_record);
                 } else {
-                    input_found_ms = monotonic_ms();
-                    input_loaded_ms = input_found_ms;
-                    input_wait_ms = input_found_ms - input_wait_start_ms;
-                    printf("[w4_guest] stage qwen3_w5_memory_shortpath_downstream_skip"
-                           " node=%u step=%" PRIu64 " layers=[%u,%u)"
-                           " target_layer_start=%u token=%" PRIu64
-                           " source=terminal_token_result target=range_forward status=skipped\n",
+                    terminal_logits_state =
+                        qwen3_memory_shortpath_terminal_logits_record(
+                            &qwen3_memory_decision_config,
+                            guest_decode_step,
+                            &terminal_logits_ref,
+                            &terminal_logits_record);
+                }
+                if (terminal_logits_state <= 0) {
+                    fprintf(stderr,
+                            "[w4_guest] fail qwen3 w5 shortpath terminal logits missing"
+                            " node=%u step=%" PRIu64 " layers=[%u,%u)\n",
+                            dispatch_node + 1U,
+                            guest_decode_step,
+                            layer_start,
+                            layer_end);
+                    goto out;
+                }
+                shortpath_token = terminal_logits_record.sampled_token;
+                input_found_ms = monotonic_ms();
+                input_loaded_ms = input_found_ms;
+                input_wait_ms = input_found_ms - input_wait_start_ms;
+                printf("[w4_guest] stage qwen3_w5_memory_shortpath_downstream_skip"
+                       " node=%u step=%" PRIu64 " layers=[%u,%u)"
+                       " target_layer_start=%u token=%" PRIu64
+                       " source=lingqu_memory_service target=range_forward status=skipped\n",
+                       dispatch_node + 1U,
+                       guest_decode_step,
+                       layer_start,
+                       layer_end,
+                       shortpath_target_layer_start,
+                       shortpath_token);
+                if (qwen3_engram_config.enabled &&
+                    dispatch_node == qwen3_engram_config.owner_node) {
+                    uint64_t selected_text_checksum;
+
+                    selected_text_checksum =
+                        qwen3_terminal_token_candidate_text_checksum(
+                            &terminal_logits_record,
+                            shortpath_token);
+                    if (selected_text_checksum == 0) {
+                        selected_text_checksum =
+                            terminal_logits_record.text_checksum;
+                    }
+                    if (w4_db_obmm_service_v0_publish_engram_step(
+                            &db_service,
+                            dispatch_node,
+                            cluster_node_count,
+                            guest_decode_step,
+                            qwen3_round_input_tokens,
+                            qwen3_round_input_token_count,
+                            shortpath_token,
+                            terminal_logits_record.runner_up_token,
+                            shortpath_token,
+                            0,
+                            0,
+                            0,
+                            0,
+                            qwen3_engram_config.no_repeat_ngram_size,
+                            qwen3_engram_config.repetition_penalty_milli,
+                            qwen3_engram_config.history_window,
+                            terminal_logits_record.logits_checksum,
+                            selected_text_checksum) != 0) {
+                        fprintf(stderr,
+                                "[w4_guest] fail qwen3 w5 shortpath owner"
+                                " engram state publish node=%u step=%" PRIu64 "\n",
+                                dispatch_node + 1U,
+                                guest_decode_step);
+                        goto out;
+                    }
+                    printf("[w4_guest] stage qwen3_w5_memory_shortpath_owner_engram_state_publish"
+                           " node=%u step=%" PRIu64
+                           " selected_token=%" PRIu64
+                           " source=lingqu_memory_service"
+                           " target=engram_state status=ok\n",
                            dispatch_node + 1U,
                            guest_decode_step,
-                           layer_start,
-                           layer_end,
-                           shortpath_target_layer_start,
                            shortpath_token);
-                    if (qwen3_engram_config.enabled &&
-                        dispatch_node == qwen3_engram_config.owner_node) {
-                        const struct w4_qwen3_shortpath_stream_entry *entry;
-                        struct lingqu_obmm_object_ref_wire terminal_logits_ref;
-                        struct w4_qwen3_terminal_token_record terminal_logits_record;
-                        uint64_t selected_text_checksum;
-
-                        entry = qwen3_memory_shortpath_stream_entry_for_step(
-                            &qwen3_memory_decision_config,
-                            guest_decode_step);
-                        if (!entry) {
-                            fprintf(stderr,
-                                    "[w4_guest] fail qwen3 w5 shortpath owner"
-                                    " stream entry missing step=%" PRIu64 "\n",
-                                    guest_decode_step);
-                            goto out;
-                        }
-                        memset(&terminal_logits_ref, 0, sizeof(terminal_logits_ref));
-                        memset(&terminal_logits_record, 0, sizeof(terminal_logits_record));
-                        if (qwen3_memory_shortpath_terminal_logits_record_from_ref(
-                                "SIM_W5_MEMORY_SHORTPATH_STREAM",
-                                entry->artifact_ref,
-                                entry->decision_id,
-                                entry->artifact_id,
-                                guest_decode_step,
-                                &terminal_logits_ref,
-                                &terminal_logits_record) < 0) {
-                            goto out;
-                        }
-                        selected_text_checksum =
-                            qwen3_terminal_token_candidate_text_checksum(
-                                &terminal_logits_record,
-                                shortpath_token);
-                        if (selected_text_checksum == 0) {
-                            selected_text_checksum =
-                                terminal_logits_record.text_checksum;
-                        }
-                        if (w4_db_obmm_service_v0_publish_engram_step(
-                                &db_service,
-                                dispatch_node,
-                                cluster_node_count,
-                                guest_decode_step,
-                                qwen3_round_input_tokens,
-                                qwen3_round_input_token_count,
-                                shortpath_token,
-                                terminal_logits_record.runner_up_token,
-                                shortpath_token,
-                                0,
-                                0,
-                                0,
-                                0,
-                                qwen3_engram_config.no_repeat_ngram_size,
-                                qwen3_engram_config.repetition_penalty_milli,
-                                qwen3_engram_config.history_window,
-                                terminal_logits_record.logits_checksum,
-                                selected_text_checksum) != 0) {
-                            fprintf(stderr,
-                                    "[w4_guest] fail qwen3 w5 shortpath owner"
-                                    " engram state publish node=%u step=%" PRIu64 "\n",
-                                    dispatch_node + 1U,
-                                    guest_decode_step);
-                            goto out;
-                        }
-                        printf("[w4_guest] stage qwen3_w5_memory_shortpath_owner_engram_state_publish"
-                               " node=%u step=%" PRIu64
-                               " selected_token=%" PRIu64
-                               " source=terminal_token_result"
-                               " target=engram_state status=ok\n",
-                               dispatch_node + 1U,
-                               guest_decode_step,
-                               shortpath_token);
-                    }
-                    goto qwen3_after_compute_publish;
                 }
+                goto qwen3_after_compute_publish;
             }
         }
         if (layer_start > 0U || guest_decode_step > 0) {
@@ -8840,6 +8883,44 @@ decode_round_start:
                                 range_input_view.len,
                                 hidden_range_bytes);
                         goto out;
+                    }
+                    if (token_result_input && !qwen3_round_history_loaded) {
+                        uint64_t token_words[8];
+                        uint64_t previous_step;
+                        uint64_t previous_token;
+
+                        memcpy(token_words,
+                               range_input_view.data,
+                               W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES);
+                        previous_step = token_words[0];
+                        previous_token = token_words[1];
+                        if (previous_step != guest_decode_step - 1U) {
+                            fprintf(stderr,
+                                    "[w4_guest] fail qwen3 runtime token input step mismatch node=%u got=%" PRIu64 " expected=%" PRIu64 "\n",
+                                    dispatch_node + 1U,
+                                    previous_step,
+                                    guest_decode_step - 1U);
+                            goto out;
+                        }
+                        if (guest_decode_step - 1U <
+                            sizeof(qwen3_terminal_tokens) /
+                                sizeof(qwen3_terminal_tokens[0])) {
+                            qwen3_terminal_tokens[guest_decode_step - 1U] =
+                                previous_token;
+                            if (qwen3_terminal_token_count < guest_decode_step) {
+                                qwen3_terminal_token_count = guest_decode_step;
+                            }
+                        }
+                        if (append_qwen3_runtime_token_to_prompt(ep_mmio,
+                                                                 previous_token) != 0) {
+                            goto out;
+                        }
+                        qwen3_round_input_token_count =
+                            read_qwen3_prompt_tokens(
+                                ep_mmio,
+                                qwen3_round_input_tokens,
+                                sizeof(qwen3_round_input_tokens) /
+                                    sizeof(qwen3_round_input_tokens[0]));
                     }
                     input_found_ms = range_input_view.found_monotonic_ms != 0 ?
                         range_input_view.found_monotonic_ms :

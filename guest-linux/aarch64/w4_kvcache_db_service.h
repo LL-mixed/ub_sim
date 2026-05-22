@@ -177,6 +177,8 @@ int w4_db_publish_observe_cluster(struct w4_db_service *svc,
 int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
                                           uint32_t local_node,
                                           uint32_t cluster_node_count);
+int w4_db_obmm_service_v0_ensure_cluster_runtime(uint32_t local_node,
+                                                 uint32_t cluster_node_count);
 int w4_db_obmm_service_v0_wait_runtime_range_input(uint32_t local_node,
                                                    uint32_t cluster_node_count,
                                                    uint64_t decode_step,
