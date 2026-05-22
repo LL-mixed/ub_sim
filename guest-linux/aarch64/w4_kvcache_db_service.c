@@ -4804,10 +4804,6 @@ int w4_db_obmm_service_v0_wait_runtime_range_input_view(
                  ++owner_idx) {
                 struct obmm_desc rx;
 
-                if (owner_idx == rt->local_idx ||
-                    !rt->ingress_queues[owner_idx]) {
-                    continue;
-                }
                 if (w4_db_take_pending_qwen3_token_result_desc(rt,
                                                                owner_idx,
                                                                expected_epoch,
@@ -4815,6 +4811,10 @@ int w4_db_obmm_service_v0_wait_runtime_range_input_view(
                     source_node = (uint32_t)owner_idx;
                     token_desc_found = true;
                     break;
+                }
+                if (owner_idx == rt->local_idx ||
+                    !rt->ingress_queues[owner_idx]) {
+                    continue;
                 }
                 while (obmm_spsc_pop(rt->ingress_queues[owner_idx], &rx) == 0) {
                     if (w4_db_qwen3_token_result_desc_matches(&rx,
@@ -5781,16 +5781,37 @@ static int w4_db_obmm_service_v0_publish_terminal_token_result_from_node(
     if (object_epoch == 0) {
         object_epoch = 1;
     }
-    if (w4_db_push_obmm_object_desc_to(rt,
-                                       target_node,
-                                       W4_DB_OBMM_KIND_QWEN3_TOKEN_RESULT,
-                                       local_token_result.object_backing_offset,
-                                       local_token_result.object_backing_len,
-                                       local_token_result.object_payload_checksum,
-                                       object_epoch) != 0) {
+    if (target_node == (uint32_t)rt->local_idx) {
+        struct obmm_desc desc;
+
+        if (rt->pending_desc_count[rt->local_idx] >=
+            W4_DB_CLUSTER_PENDING_DESC_DEPTH) {
+            return -1;
+        }
+        memset(&desc, 0, sizeof(desc));
+        desc.type = OBMM_DESC_W4_OBJECT_PUT;
+        desc.flags = W4_DB_OBMM_KIND_QWEN3_TOKEN_RESULT;
+        desc.seq = ((uint64_t)object_epoch << 48) |
+                   ((uint64_t)(rt->local_idx + 1) << 32) |
+                   (local_token_result.object_backing_offset & 0xffffffffULL);
+        desc.region_id = W4_DB_OBMM_KIND_QWEN3_TOKEN_RESULT;
+        desc.payload_len = (uint32_t)local_token_result.object_backing_len;
+        desc.payload_offset = local_token_result.object_backing_offset;
+        desc.cookie =
+            (uint32_t)(local_token_result.object_payload_checksum ^
+                       (local_token_result.object_payload_checksum >> 32));
+        w4_db_stash_pending_desc(rt, rt->local_idx, &desc);
+    } else if (w4_db_push_obmm_object_desc_to(
+                   rt,
+                   target_node,
+                   W4_DB_OBMM_KIND_QWEN3_TOKEN_RESULT,
+                   local_token_result.object_backing_offset,
+                   local_token_result.object_backing_len,
+                   local_token_result.object_payload_checksum,
+                   object_epoch) != 0) {
         return -1;
     }
-    printf("[w4_guest] stage qwen3_terminal_token_result_publish local=node%u target=node%u step=%" PRIu64 " token=%" PRIu64 " runner_up=%" PRIu64 " margin_milli=%" PRIu64 " logits_checksum=0x%016" PRIx64 " text_checksum=0x%016" PRIx64 " piece_word0=0x%016" PRIx64 " piece_word1=0x%016" PRIx64 " object_key=%s offset=0x%016" PRIx64 " bytes=%" PRIu64 " checksum=0x%016" PRIx64 " epoch=%u seq=%u backing=obmm_pool metadata=db queue=obmm_spsc status=ok publisher=%s\n",
+    printf("[w4_guest] stage qwen3_terminal_token_result_publish local=node%u target=node%u step=%" PRIu64 " token=%" PRIu64 " runner_up=%" PRIu64 " margin_milli=%" PRIu64 " logits_checksum=0x%016" PRIx64 " text_checksum=0x%016" PRIx64 " piece_word0=0x%016" PRIx64 " piece_word1=0x%016" PRIx64 " object_key=%s offset=0x%016" PRIx64 " bytes=%" PRIu64 " checksum=0x%016" PRIx64 " epoch=%u seq=%u backing=obmm_pool metadata=db queue=%s status=ok publisher=%s\n",
            local_node + 1U,
            target_node + 1U,
            decode_step,
@@ -5807,6 +5828,7 @@ static int w4_db_obmm_service_v0_publish_terminal_token_result_from_node(
            local_token_result.object_payload_checksum,
            object_epoch,
            local_publish_seq,
+           target_node == (uint32_t)rt->local_idx ? "local_pending" : "obmm_spsc",
            require_terminal_node ? "terminal_node" : "shortpath_boundary");
     return 0;
 }
