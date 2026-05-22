@@ -1986,11 +1986,15 @@ fn qwen3_range_dispatch_object_refs(
 }
 
 fn qwen3_object_registry_dir() -> PathBuf {
+    qwen3_object_registry_explicit_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp/ub_sim_qwen3_object_registry"))
+}
+
+fn qwen3_object_registry_explicit_dir() -> Option<PathBuf> {
     std::env::var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR)
         .ok()
-        .filter(|path| !path.is_empty())
+        .filter(|path| !path.trim().is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/tmp/ub_sim_qwen3_object_registry"))
 }
 
 fn qwen3_object_registry_path_in_dir(
@@ -2464,14 +2468,27 @@ fn qwen3_runtime_object_payload_view(
         object_ref.object_kind,
         QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT
             | QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE
-    ) && std::env::var_os(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR).is_some()
+    ) && qwen3_object_registry_explicit_dir().is_some()
     {
-        return qwen3_object_registry_view_from_dir(&qwen3_object_registry_dir(), object_ref);
+        return qwen3_object_registry_view_from_dir(
+            &qwen3_object_registry_explicit_dir().expect("checked explicit registry dir"),
+            object_ref,
+        );
     }
     if let Some(snapshot_path) = qwen3_object_service_snapshot_path() {
         return qwen3_object_service_payload_index_view_from_path(&snapshot_path, object_ref);
     }
-    qwen3_object_registry_view_from_dir(&qwen3_object_registry_dir(), object_ref)
+    if let Some(registry_dir) = qwen3_object_registry_explicit_dir() {
+        return qwen3_object_registry_view_from_dir(&registry_dir, object_ref);
+    }
+    Err(format!(
+        "qwen3_runtime_object_payload_view_unresolved:kind={}:version={}:key_hash={:#x}:bytes={}:checksum={:#x}:hint=set_explicit_object_service_snapshot_or_registry",
+        object_ref.object_kind,
+        object_ref.object_version,
+        object_ref.key_hash,
+        object_ref.payload_bytes,
+        object_ref.payload_checksum
+    ))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2873,16 +2890,38 @@ fn qwen3_dense_runtime_decode_step_from_guest_input(guest_input: &[u8]) -> u64 {
         .saturating_sub(qwen3_guest_prompt_base_token_count())
 }
 
+fn qwen3_range_forward_registry_decode_step(
+    model_key: &str,
+    contract: Qwen3GuestRangeComputeContract,
+) -> u64 {
+    static RANGE_FORWARD_STEPS: OnceLock<Mutex<HashMap<(String, u32, u32, u32, u32), u64>>> =
+        OnceLock::new();
+    let counters = RANGE_FORWARD_STEPS.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = (
+        model_key.to_string(),
+        contract.node,
+        contract.layer_start,
+        contract.layer_end,
+        contract.pipeline_nodes,
+    );
+    let mut guard = counters
+        .lock()
+        .expect("qwen3 range forward registry step lock poisoned");
+    let step = *guard.get(&key).unwrap_or(&0);
+    guard.insert(key, step + 1);
+    step
+}
+
 fn qwen3_register_range_forward_objects(
     contract: Qwen3GuestRangeComputeContract,
-    guest_input: &[u8],
+    _guest_input: &[u8],
     summary: &Qwen3DenseReferenceRangeForwardSummary,
 ) -> Result<(), String> {
-    if std::env::var_os(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR).is_none() {
+    if qwen3_object_registry_explicit_dir().is_none() {
         return Ok(());
     }
     let model_key = qwen3_dense_runtime_model_key();
-    let decode_step = qwen3_dense_runtime_decode_step_from_guest_input(guest_input);
+    let decode_step = qwen3_range_forward_registry_decode_step(&model_key, contract);
     let terminal_range = contract.layer_end >= contract.total_layers;
     let target_node = if terminal_range {
         contract.node
