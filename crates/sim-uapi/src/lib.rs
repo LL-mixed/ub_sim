@@ -1782,6 +1782,7 @@ const W5_OBJECT_SERVICE_PAYLOAD_INDEX_VERSION: u32 = 1;
 const W5_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES: usize = 32;
 const W5_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES: usize = 48;
 pub const QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT: u16 = 5;
+pub const QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_TOKEN_RESULT: u16 = 6;
 pub const QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE: u16 = 7;
 pub const QWEN3_DENSE_PROFILE_OBMM_KIND_TERMINAL_LOGITS: u16 = 8;
 pub const QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE: u16 = 21;
@@ -1802,6 +1803,7 @@ pub const SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF: &str =
 #[derive(Clone, Debug, Default)]
 struct Qwen3RangeDispatchOperands {
     hidden_input: Option<Qwen3ObjectBackedOperandView>,
+    input_token: Option<Qwen3ObjectBackedOperandView>,
     previous_kv: Option<Qwen3ObjectBackedOperandView>,
     object_refs: Vec<LingquObmmObjectRefWire>,
 }
@@ -2047,7 +2049,7 @@ fn resolve_qwen3_range_dispatch_operands(
         match object_ref.object_kind {
             QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT => {
                 if contract.layer_start == 0 {
-                    continue;
+                    return Err("qwen3_range_dispatch_hidden_ref_invalid_for_layer0".to_string());
                 }
                 let expected_len = usize::try_from(contract.hidden_bytes)
                     .map_err(|_| "qwen3_range_dispatch_hidden_bytes_too_large".to_string())?;
@@ -2073,6 +2075,37 @@ fn resolve_qwen3_range_dispatch_operands(
                     return Err("qwen3_range_dispatch_hidden_operand_kind_mismatch".to_string());
                 }
                 operands.hidden_input = Some(operand);
+            }
+            QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_TOKEN_RESULT => {
+                const TOKEN_RESULT_BYTES: u64 = 64;
+
+                if contract.layer_start != 0 {
+                    return Err(
+                        "qwen3_range_dispatch_token_ref_invalid_for_nonzero_layer".to_string()
+                    );
+                }
+                if object_ref.payload_bytes != TOKEN_RESULT_BYTES {
+                    return Err(format!(
+                        "qwen3_range_dispatch_token_ref_bytes_mismatch:got={}:expected={TOKEN_RESULT_BYTES}",
+                        object_ref.payload_bytes
+                    ));
+                }
+                let operand = qwen3_runtime_object_payload_view(object_ref, surface)?;
+                if !operand.is_object_backed() {
+                    return Err("qwen3_range_dispatch_token_operand_not_object_backed".to_string());
+                }
+                if operand.bytes().len() != TOKEN_RESULT_BYTES as usize {
+                    return Err(format!(
+                        "qwen3_range_dispatch_token_object_bytes_mismatch:got={}:expected={TOKEN_RESULT_BYTES}",
+                        operand.bytes().len()
+                    ));
+                }
+                if operand.object_ref().object_kind
+                    != QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_TOKEN_RESULT
+                {
+                    return Err("qwen3_range_dispatch_token_operand_kind_mismatch".to_string());
+                }
+                operands.input_token = Some(operand);
             }
             QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE => {
                 let payload_len = usize::try_from(object_ref.payload_bytes)
@@ -2630,6 +2663,7 @@ fn qwen3_runtime_object_payload_view(
     if matches!(
         object_ref.object_kind,
         QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT
+            | QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_TOKEN_RESULT
             | QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE
     ) && qwen3_object_registry_explicit_dir().is_some()
     {
@@ -3309,10 +3343,11 @@ fn validate_qwen3_range_dispatch_object_refs(
         QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
             ..QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES,
     );
+    let decode_step = qwen3_dense_runtime_decode_step_from_guest_input(segment_payload);
     let previous_kv_required = previous_kv_header
         .map(|header| read_u64_le_at(header, 0) != 0)
         .unwrap_or(false)
-        || qwen3_dense_runtime_decode_step_from_guest_input(segment_payload) > 0;
+        || decode_step > 0;
     if req.object_ref_count == 0 {
         if contract.layer_start > 0 {
             return Err("qwen3_range_dispatch_hidden_ref_missing".to_string());
@@ -3341,6 +3376,7 @@ fn validate_qwen3_range_dispatch_object_refs(
         })?;
 
     let mut hidden_ref_seen = false;
+    let mut input_token_ref_seen = false;
     let mut previous_kv_ref_seen = false;
     let mut engram_context_table_ref_seen = false;
     let mut engram_context_indices_ref_seen = false;
@@ -3357,6 +3393,9 @@ fn validate_qwen3_range_dispatch_object_refs(
             .map_err(|err| format!("qwen3_range_dispatch_object_ref_invalid:{index}:{err}"))?;
         match object_ref.object_kind {
             QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT => {
+                if contract.layer_start == 0 {
+                    return Err("qwen3_range_dispatch_hidden_ref_invalid_for_layer0".to_string());
+                }
                 let expected_len = u64::from(contract.hidden_bytes);
                 if object_ref.payload_bytes != expected_len {
                     return Err(format!(
@@ -3387,6 +3426,23 @@ fn validate_qwen3_range_dispatch_object_refs(
                     }
                 }
                 hidden_ref_seen = true;
+            }
+            QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_TOKEN_RESULT => {
+                if contract.layer_start != 0 {
+                    return Err(
+                        "qwen3_range_dispatch_token_ref_invalid_for_nonzero_layer".to_string()
+                    );
+                }
+                if object_ref.payload_bytes != 64 {
+                    return Err(format!(
+                        "qwen3_range_dispatch_token_ref_bytes_mismatch:got={}:expected=64",
+                        object_ref.payload_bytes
+                    ));
+                }
+                if object_ref.payload_checksum == 0 {
+                    return Err("qwen3_range_dispatch_token_ref_checksum_missing".to_string());
+                }
+                input_token_ref_seen = true;
             }
             QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE => {
                 if object_ref.payload_bytes == 0 {
@@ -3437,6 +3493,9 @@ fn validate_qwen3_range_dispatch_object_refs(
 
     if contract.layer_start > 0 && !hidden_ref_seen {
         return Err("qwen3_range_dispatch_hidden_ref_missing".to_string());
+    }
+    if contract.layer_start == 0 && decode_step > 0 && !input_token_ref_seen {
+        return Err("qwen3_range_dispatch_token_ref_missing".to_string());
     }
     if previous_kv_required && !previous_kv_ref_seen {
         return Err("qwen3_range_dispatch_kv_ref_missing".to_string());
@@ -3765,20 +3824,38 @@ fn qwen3_dense_profile_real_range_forward(
         guest_input,
         operands,
     )?;
+    let current_hidden_from_operand = || {
+        qwen3_dense_profile_current_hidden_from_operands(profile, guest_input, operands, hidden_len)
+    };
     let (forward, mut output_sequence, kv_cache) = if let Some(previous_cache) = previous_cache {
-        if token_count == 0 {
+        let input_token_operand = operands.and_then(|operands| operands.input_token.as_ref());
+        if token_count == 0 && input_token_operand.is_none() {
             return Ok(None);
         }
-        let position = token_count.saturating_sub(1) as u64;
+        let previous_cache_token_count = previous_cache
+            .first()
+            .map(|layer_cache| layer_cache.token_count)
+            .unwrap_or_else(|| token_count.saturating_sub(1) as u64);
+        let position = previous_cache_token_count;
         let current_hidden = if contract.layer_start == 0 {
-            embedding_reference_last_hidden_for_profile(*profile, &loaded.tensors, &token_ids)?
+            if let Some(token_operand) = input_token_operand {
+                let sampled_token =
+                    qwen3_dense_profile_sampled_token_from_operand(profile, token_operand)?;
+                embedding_reference_last_hidden_for_profile(
+                    *profile,
+                    &loaded.tensors,
+                    &[sampled_token],
+                )?
+            } else if operands
+                .and_then(|operands| operands.hidden_input.as_ref())
+                .is_some()
+            {
+                current_hidden_from_operand()?
+            } else {
+                embedding_reference_last_hidden_for_profile(*profile, &loaded.tensors, &token_ids)?
+            }
         } else {
-            qwen3_dense_profile_current_hidden_from_operands(
-                profile,
-                guest_input,
-                operands,
-                hidden_len,
-            )?
+            current_hidden_from_operand()?
         };
         let forward_with_cache = forward_incremental_range_with_kv_cache_from_hidden_for_profile(
             *profile,
@@ -4006,6 +4083,31 @@ fn qwen3_dense_profile_current_hidden_from_guest_payload(
         rows.pop()
             .ok_or_else(|| "qwen3_dense_profile_current_hidden_empty".to_string())
     })
+}
+
+fn qwen3_dense_profile_sampled_token_from_operand(
+    profile: &Qwen3DenseReferenceProfile,
+    operand: &Qwen3ObjectBackedOperandView,
+) -> Result<u64, String> {
+    let payload = operand.bytes();
+    if payload.len() != 64 {
+        return Err(format!(
+            "qwen3_dense_profile_token_result_len_mismatch:got={}:expected=64",
+            payload.len()
+        ));
+    }
+    let sampled_token = u64::from_le_bytes(
+        payload[8..16]
+            .try_into()
+            .map_err(|_| "qwen3_dense_profile_token_result_sample_missing".to_string())?,
+    );
+    if sampled_token >= profile.vocab_size {
+        return Err(format!(
+            "qwen3_dense_profile_token_result_token_out_of_range:token={sampled_token}:vocab={}",
+            profile.vocab_size
+        ));
+    }
+    Ok(sampled_token)
 }
 
 fn qwen3_dense_profile_current_hidden_from_operands(

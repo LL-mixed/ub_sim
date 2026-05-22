@@ -8168,7 +8168,7 @@ decode_round_start:
            guest_decode_step,
            guest_decode_steps);
     if (is_qwen3_profile() && enable_db_cluster && cluster_node_count == 8U &&
-        guest_decode_step > 0) {
+        guest_decode_step > 0 && qwen3_engram_config.enabled) {
         uint64_t stage_start_ms = monotonic_ms();
 
         if (!db_service_ready) {
@@ -8530,7 +8530,7 @@ decode_round_start:
             uint8_t empty_object_ref_table[W4_QWEN3_OBJECT_REF_MAX_COUNT *
                                            W4_QWEN3_OBJECT_REF_BYTES] = {0};
 
-            if (layer_start > 0U) {
+            if (layer_start > 0U || guest_decode_step > 0) {
                 object_ref_count++;
             }
             if (guest_decode_step > 0) {
@@ -8736,7 +8736,7 @@ decode_round_start:
                 }
             }
         }
-        if (layer_start > 0U) {
+        if (layer_start > 0U || guest_decode_step > 0) {
             uint64_t hidden_range_bytes = qwen3_handoff_hidden_bytes(guest_decode_step);
             uint64_t range_input_checksum = 0;
             struct w4_db_object_payload_view range_input_view;
@@ -8804,18 +8804,41 @@ decode_round_start:
                            memory_hidden_ref.key_hash,
                            memory_hidden_ref.object_version);
                 } else {
+                    bool token_result_input = false;
+                    bool hidden_range_input = false;
+
                     if (w4_db_obmm_service_v0_wait_runtime_range_input_view(
                             dispatch_node,
                             cluster_node_count,
                             guest_decode_step,
                             &range_input_view) != 0 ||
-                        !range_input_view.data ||
-                        range_input_view.len != hidden_range_bytes) {
+                        !range_input_view.data) {
                         fprintf(stderr,
                                 "[w4_guest] fail qwen3 runtime range input resolve failed node=%u layers=[%u,%u)\n",
                                 dispatch_node + 1U,
                                 layer_start,
                                 layer_end);
+                        goto out;
+                    }
+                    token_result_input =
+                        layer_start == 0U && guest_decode_step > 0 &&
+                        range_input_view.payload_kind ==
+                            W4_DB_OBMM_KIND_QWEN3_TOKEN_RESULT &&
+                        range_input_view.len ==
+                            W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES;
+                    hidden_range_input =
+                        range_input_view.payload_kind ==
+                            W4_QWEN3_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT &&
+                        range_input_view.len == hidden_range_bytes;
+                    if (!token_result_input && !hidden_range_input) {
+                        fprintf(stderr,
+                                "[w4_guest] fail qwen3 runtime range input object invalid node=%u layers=[%u,%u) kind=%u bytes=%" PRIu64 " expected_hidden=%" PRIu64 "\n",
+                                dispatch_node + 1U,
+                                layer_start,
+                                layer_end,
+                                range_input_view.payload_kind,
+                                range_input_view.len,
+                                hidden_range_bytes);
                         goto out;
                     }
                     input_found_ms = range_input_view.found_monotonic_ms != 0 ?
@@ -8847,13 +8870,14 @@ decode_round_start:
                                         W4_QWEN3_OBJECT_REF_BYTES);
                     object_ref_write_index++;
                     input_loaded_ms = monotonic_ms();
-                    printf("[w4_guest] stage qwen3_range_forward_runtime_input_loaded node=%u layers=[%u,%u) input_offset=0x%016" PRIx64 " input_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " source=obmm_object_view target=uapi_object_ref materialize=none status=ok inline_payload=0\n",
+                    printf("[w4_guest] stage qwen3_range_forward_runtime_input_loaded node=%u layers=[%u,%u) input_offset=0x%016" PRIx64 " input_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " source=obmm_object_view target=uapi_object_ref materialize=none status=ok inline_payload=0 kind=%u\n",
                            dispatch_node + 1U,
                            layer_start,
                            layer_end,
                            (uint64_t)0,
                            range_input_checksum,
-                           hidden_range_bytes);
+                           range_input_view.len,
+                           range_input_view.payload_kind);
                 }
             }
         } else {

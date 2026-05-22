@@ -32,6 +32,8 @@ enum w4_kvcache_state {
 
 #define W4_DB_MAX_RECORDS 1024U
 #define W4_DB_MAX_GROUP_MEMBERS 4U
+#define W4_DB_OBMM_KIND_QWEN3_TOKEN_RESULT 6U
+#define W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES 64ULL
 
 struct w4_db_record {
     bool in_use;

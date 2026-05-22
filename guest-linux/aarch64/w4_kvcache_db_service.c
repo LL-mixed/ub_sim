@@ -74,7 +74,9 @@
 #define W4_DB_OBMM_QWEN3_ENGRAM_SELECTED_BYTES 64ULL
 #define W4_DB_OBMM_QWEN3_ENGRAM_STATE_BYTES 128ULL
 #define W4_DB_OBMM_HIDDEN_RANGE_BYTES 262144ULL
+#ifndef W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES
 #define W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES 64ULL
+#endif
 #define W4_DB_OBMM_QWEN3_ROUND_DONE_BYTES 64ULL
 #define W4_DB_OBMM_QWEN3_ROUND_DONE_REGION_BYTES \
     (W4_DB_OBMM_QWEN3_ROUND_DONE_SLOTS * \
@@ -84,7 +86,9 @@
 #define W4_DB_OBMM_KIND_HIDDEN_RANGE_INPUT 3U
 #define W4_DB_OBMM_KIND_HIDDEN_RANGE_OUTPUT 4U
 #define W4_DB_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT 5U
+#ifndef W4_DB_OBMM_KIND_QWEN3_TOKEN_RESULT
 #define W4_DB_OBMM_KIND_QWEN3_TOKEN_RESULT 6U
+#endif
 #define W4_DB_OBMM_KIND_QWEN3_KV_STATE 7U
 #define W4_DB_OBMM_KIND_QWEN3_ENGRAM_HISTORY 8U
 #define W4_DB_OBMM_KIND_QWEN3_ENGRAM_CANDIDATES 9U
@@ -4538,7 +4542,170 @@ int w4_db_obmm_service_v0_wait_runtime_range_input_view(
         local_placement.layer_end - local_placement.layer_start;
     local_placement.terminal =
         local_placement.next_owner_node < local_placement.owner_node;
+    if (local_placement.layer_start == 0 && decode_step == 0) {
+        return 0;
+    }
     if (local_placement.layer_start == 0) {
+        struct w4_db_record token_record;
+        struct w4_db_cluster_slot *owner_slot;
+        char token_result_key[96];
+        uint64_t payload_words[8];
+        uint64_t checksum;
+        bool token_input_found = false;
+
+        source_node = cluster_node_count - 1U;
+        if (w4_db_cluster_runtime_init(rt) != 0 ||
+            source_node >= cluster_node_count) {
+            return -1;
+        }
+        wait_enter_ms = obmm_now_ms();
+        found_ms = w4_db_wallclock_ms();
+        snprintf(token_result_key,
+                 sizeof(token_result_key),
+                 "tokens/%s/decode-step%" PRIu64,
+                 w4_db_qwen3_model_key(),
+                 decode_step - 1U);
+        deadline = wait_enter_ms + W4_DB_QWEN3_RUNTIME_RANGE_WAIT_MS;
+        while (obmm_now_ms() < deadline) {
+            attempts++;
+            if (!rt->slots[source_node].region.addr) {
+                long activate_start_ms = obmm_now_ms();
+
+                if (w4_db_activate_remote_slot(rt, (int)source_node) != 0) {
+                    w4_db_cpu_relax_wait(&relax_attempt);
+                    continue;
+                }
+                activate_ms += (uint64_t)(obmm_now_ms() - activate_start_ms);
+            }
+            owner_slot = &rt->slots[source_node];
+            memset(&token_record, 0, sizeof(token_record));
+            {
+                long metadata_start_ms = obmm_now_ms();
+                struct w4_db_cluster_payload_compact_summary compact;
+                struct w4_db_cluster_payload_header seen;
+
+                memset(&compact, 0, sizeof(compact));
+                memset(&seen, 0, sizeof(seen));
+                if (!owner_slot->region.addr ||
+                    !w4_db_try_read_stable_compact_summary_region(owner_slot,
+                                                                  &compact,
+                                                                  &seen) ||
+                    !w4_db_slot_find_record(owner_slot,
+                                            token_result_key,
+                                            &token_record)) {
+                    w4_db_cpu_relax_wait(&relax_attempt);
+                    continue;
+                }
+                metadata_ms = (uint64_t)(obmm_now_ms() - metadata_start_ms);
+            }
+            if (token_record.kind != W4_DB_RECORD_QWEN3_TOKEN_RESULT ||
+                token_record.object_payload_kind != W4_DB_OBMM_KIND_QWEN3_TOKEN_RESULT ||
+                token_record.object_backing_len != W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES ||
+                token_record.object_backing_offset > owner_slot->region.len ||
+                token_record.object_backing_len >
+                    owner_slot->region.len - token_record.object_backing_offset) {
+                printf("[w4_guest] gap qwen3_range_forward=runtime_token_input_invalid local=node%u source=node%u key=%s\n",
+                       local_node + 1U,
+                       source_node + 1U,
+                       token_result_key);
+                return -1;
+            }
+            payload_view =
+                (const uint8_t *)owner_slot->region.addr +
+                token_record.object_backing_offset;
+            memcpy(payload_words,
+                   payload_view,
+                   W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES);
+            if (payload_words[0] != decode_step - 1U) {
+                printf("[w4_guest] gap qwen3_range_forward=runtime_token_input_step_mismatch local=node%u source=node%u key=%s got=%" PRIu64 " expected=%" PRIu64 "\n",
+                       local_node + 1U,
+                       source_node + 1U,
+                       token_result_key,
+                       payload_words[0],
+                       decode_step - 1U);
+                return -1;
+            }
+            checksum = w4_db_qwen3_hidden_payload_checksum(
+                payload_view,
+                W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES);
+            if (checksum != token_record.object_payload_checksum) {
+                w4_db_cpu_relax_wait(&relax_attempt);
+                continue;
+            }
+            token_input_found = true;
+            break;
+        }
+        if (!token_input_found) {
+            printf("[w4_guest] gap qwen3_range_forward=runtime_token_input_wait_failed local=node%u source=node%u key=%s attempts=%u\n",
+                   local_node + 1U,
+                   source_node + 1U,
+                   token_result_key,
+                   attempts);
+            return -1;
+        }
+        found_local_ms = obmm_now_ms();
+        found_ms = w4_db_wallclock_ms();
+        producer_publish_ms = (long)token_record.last_result_segment;
+        producer_publish_monotonic_ms =
+            (long)token_record.object_publish_monotonic_ms;
+        producer_clock_offset_ms =
+            (long)token_record.object_publish_supernode_offset_ms;
+        if (producer_publish_ms > 0 && found_ms > 0) {
+            producer_to_found_ms = found_ms - producer_publish_ms;
+        }
+        if (producer_publish_monotonic_ms > 0 && found_local_ms > 0) {
+            producer_to_found_monotonic_ms =
+                found_local_ms - producer_publish_monotonic_ms;
+        }
+        memset(view_out, 0, sizeof(*view_out));
+        view_out->data = payload_view;
+        view_out->len = W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES;
+        view_out->checksum = checksum;
+        view_out->owner_node = source_node;
+        view_out->payload_kind = token_record.object_payload_kind;
+        view_out->backing_offset = token_record.object_backing_offset;
+        if (w4_db_record_to_lingqu_obmm_ref(&token_record,
+                                            &view_out->object_ref) != 0) {
+            return -1;
+        }
+        view_out->wait_enter_monotonic_ms =
+            wait_enter_ms > 0 ? (uint64_t)wait_enter_ms : 0;
+        view_out->found_monotonic_ms =
+            found_local_ms > 0 ? (uint64_t)found_local_ms : 0;
+        view_out->ready_monotonic_ms = (uint64_t)obmm_now_ms();
+        view_out->producer_publish_supernode_ms =
+            producer_publish_ms > 0 ? (uint64_t)producer_publish_ms : 0;
+        view_out->producer_publish_monotonic_ms =
+            producer_publish_monotonic_ms > 0 ?
+                (uint64_t)producer_publish_monotonic_ms :
+                0;
+        view_out->producer_clock_offset_ms = producer_clock_offset_ms;
+        view_out->producer_to_found_supernode_ms = producer_to_found_ms;
+        view_out->producer_to_found_monotonic_ms = producer_to_found_monotonic_ms;
+        view_out->source_node = source_node;
+        view_out->wait_attempts = attempts;
+        view_out->activate_ms = activate_ms;
+        view_out->metadata_ms = metadata_ms;
+        printf("[w4_guest] stage qwen3_range_forward_runtime_input_resolve local=node%u source=node%u key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) input_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " token=%" PRIu64 " wait_enter_to_found_ms=%ld producer_publish_ms=%ld producer_publish_mono_ms=%ld producer_clock_offset_ms=%ld producer_to_found_ms=%ld producer_to_found_mono_ms=%ld attempts=%u activate_ms=%" PRIu64 " metadata_ms=%" PRIu64 " copy_ms=0 checksum_ms=0 validation=object_ref_metadata metadata=lingqu_object_service backing=obmm_shmem source=terminal_token_result target=mapped_view status=ok\n",
+               local_node + 1U,
+               source_node + 1U,
+               token_result_key,
+               view_out->object_ref.key_hash,
+               view_out->object_ref.object_version,
+               local_placement.layer_start,
+               local_placement.layer_end,
+               checksum,
+               view_out->len,
+               payload_words[1],
+               found_local_ms > 0 ? found_local_ms - wait_enter_ms : -1L,
+               producer_publish_ms,
+               producer_publish_monotonic_ms,
+               producer_clock_offset_ms,
+               producer_to_found_ms,
+               producer_to_found_monotonic_ms,
+               view_out->wait_attempts,
+               activate_ms,
+               metadata_ms);
         return 0;
     }
     memset(&source_placement, 0, sizeof(source_placement));
@@ -5221,6 +5388,9 @@ static int w4_db_obmm_service_v0_publish_terminal_token_result_from_node(
     uint64_t checksum;
     uint16_t local_publish_seq;
     uint16_t object_epoch;
+    long producer_publish_ms;
+    long producer_publish_monotonic_ms;
+    long producer_clock_offset_ms;
     uint8_t *base;
 
     if (!svc || cluster_node_count != W4_DB_QWEN3_RANGE_NODES ||
@@ -5254,8 +5424,9 @@ static int w4_db_obmm_service_v0_publish_terminal_token_result_from_node(
     payload_words[5] = text_checksum;
     payload_words[6] = piece_word0;
     payload_words[7] = piece_word1;
-    checksum = w4_db_checksum_bytes((const uint8_t *)payload_words,
-                                    W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES);
+    checksum = w4_db_qwen3_hidden_payload_checksum(
+        (const uint8_t *)payload_words,
+        W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES);
 
     base = (uint8_t *)local_slot->region.addr;
     memcpy(base + token_result_offset, payload_words, W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES);
@@ -5272,6 +5443,9 @@ static int w4_db_obmm_service_v0_publish_terminal_token_result_from_node(
              "tokens/%s/decode-step%" PRIu64,
              w4_db_qwen3_model_key(),
              decode_step);
+    producer_publish_monotonic_ms = obmm_now_ms();
+    producer_publish_ms = w4_db_wallclock_ms();
+    producer_clock_offset_ms = producer_publish_ms - producer_publish_monotonic_ms;
     if (w4_db_put_obmm_object_record(svc,
                                      W4_DB_RECORD_QWEN3_TOKEN_RESULT,
                                      token_result_key,
@@ -5280,8 +5454,34 @@ static int w4_db_obmm_service_v0_publish_terminal_token_result_from_node(
                                      token_result_offset,
                                      W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES,
                                      checksum,
-                                     &local_token_result) != 0 ||
-        w4_db_write_cluster_payload(svc, local_slot) != 0) {
+                                     &local_token_result) != 0) {
+        return -1;
+    }
+    {
+        struct w4_db_record *published_record =
+            w4_db_find_record(svc, token_result_key);
+
+        if (!published_record) {
+            return -1;
+        }
+        published_record->last_result_segment = (uint64_t)producer_publish_ms;
+        published_record->object_publish_monotonic_ms =
+            producer_publish_monotonic_ms > 0 ?
+                (uint64_t)producer_publish_monotonic_ms :
+                0;
+        published_record->object_publish_supernode_ms =
+            producer_publish_ms > 0 ? (uint64_t)producer_publish_ms : 0;
+        published_record->object_publish_supernode_offset_ms =
+            producer_clock_offset_ms;
+        local_token_result.last_result_segment = (uint64_t)producer_publish_ms;
+        local_token_result.object_publish_monotonic_ms =
+            published_record->object_publish_monotonic_ms;
+        local_token_result.object_publish_supernode_ms =
+            published_record->object_publish_supernode_ms;
+        local_token_result.object_publish_supernode_offset_ms =
+            published_record->object_publish_supernode_offset_ms;
+    }
+    if (w4_db_write_cluster_payload(svc, local_slot) != 0) {
         return -1;
     }
     local_publish_seq = (uint16_t)(rt->publish_seq & 0xffffu);
@@ -5799,7 +5999,7 @@ int w4_db_obmm_service_v0_wait_terminal_token_result(struct w4_db_service *svc,
                                token_record.object_backing_offset,
                            W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES);
                     if (payload_words[0] == decode_step) {
-                        checksum = w4_db_checksum_bytes(
+                        checksum = w4_db_qwen3_hidden_payload_checksum(
                             (const uint8_t *)payload_words,
                             W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES);
                         if (checksum != token_record.object_payload_checksum) {
