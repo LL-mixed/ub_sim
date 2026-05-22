@@ -271,6 +271,7 @@ struct W5MemoryDecisionConfig {
     boundary_request_path: Option<PathBuf>,
     boundary_observation_id: Option<String>,
     boundary_observation_ids: Vec<String>,
+    boundary_observation_run_id: Option<String>,
     shortpath_decision_id: Option<String>,
     shortpath_decision_ids: Vec<String>,
     shortpath_execute: bool,
@@ -548,6 +549,7 @@ where
             let mut memory_boundary_request_path = None;
             let mut memory_boundary_observation_id = None;
             let mut memory_boundary_observation_ids = Vec::new();
+            let mut memory_boundary_observation_run_id = None;
             let mut memory_shortpath_decision_id = None;
             let mut memory_shortpath_decision_ids = Vec::new();
             let mut memory_shortpath_execute = false;
@@ -821,6 +823,15 @@ where
                         "--memory-boundary-observation-ids",
                         value,
                     )?);
+                } else if text == "--memory-boundary-observation-run-id" {
+                    let next = pending.next().ok_or_else(|| {
+                        anyhow::anyhow!("--memory-boundary-observation-run-id requires a value")
+                    })?;
+                    memory_boundary_observation_run_id = Some(next.to_string_lossy().to_string());
+                } else if let Some(value) =
+                    text.strip_prefix("--memory-boundary-observation-run-id=")
+                {
+                    memory_boundary_observation_run_id = Some(value.to_string());
                 } else if text == "--memory-shortpath-decision-id" {
                     let next = pending.next().ok_or_else(|| {
                         anyhow::anyhow!("--memory-shortpath-decision-id requires a value")
@@ -937,21 +948,23 @@ where
             let shortpath_source_count = usize::from(memory_boundary_request_path.is_some())
                 + usize::from(memory_boundary_observation_id.is_some())
                 + usize::from(memory_has_boundary_observation_ids)
+                + usize::from(memory_boundary_observation_run_id.is_some())
                 + usize::from(memory_shortpath_decision_id.is_some())
                 + usize::from(memory_has_shortpath_decision_ids);
             if shortpath_source_count > 1 {
                 anyhow::bail!(
-                    "--memory-boundary-request, --memory-boundary-observation-id, --memory-boundary-observation-ids, --memory-shortpath-decision-id, and --memory-shortpath-decision-ids are mutually exclusive"
+                    "--memory-boundary-request, --memory-boundary-observation-id, --memory-boundary-observation-ids, --memory-boundary-observation-run-id, --memory-shortpath-decision-id, and --memory-shortpath-decision-ids are mutually exclusive"
                 );
             }
             let memory_has_decision_input = memory_has_decision_id
                 || memory_boundary_request_path.is_some()
                 || memory_boundary_observation_id.is_some()
-                || memory_has_boundary_observation_ids;
+                || memory_has_boundary_observation_ids
+                || memory_boundary_observation_run_id.is_some();
             let memory_decisions = if let Some(store_path) = memory_decision_store_path {
                 if !memory_has_decision_input {
                     anyhow::bail!(
-                        "--memory-decision-store requires at least one of --memory-boundary-request, --memory-boundary-observation-id, --memory-boundary-observation-ids, --memory-shortpath-decision-id, --memory-shortpath-decision-ids, --memory-prefetch-plan-id, or --memory-prefix-cache-reuse-plan-id"
+                        "--memory-decision-store requires at least one of --memory-boundary-request, --memory-boundary-observation-id, --memory-boundary-observation-ids, --memory-boundary-observation-run-id, --memory-shortpath-decision-id, --memory-shortpath-decision-ids, --memory-prefetch-plan-id, or --memory-prefix-cache-reuse-plan-id"
                     );
                 }
                 Some(W5MemoryDecisionConfig {
@@ -959,6 +972,7 @@ where
                     boundary_request_path: memory_boundary_request_path,
                     boundary_observation_id: memory_boundary_observation_id,
                     boundary_observation_ids: memory_boundary_observation_ids,
+                    boundary_observation_run_id: memory_boundary_observation_run_id,
                     shortpath_decision_id: memory_shortpath_decision_id,
                     shortpath_decision_ids: memory_shortpath_decision_ids,
                     shortpath_execute: memory_shortpath_execute,
@@ -3660,8 +3674,49 @@ fn load_w5_memory_decisions_from_store(
         } else {
             None
         };
+    let mut boundary_observation_ids = config.boundary_observation_ids.clone();
+    if let Some(run_id) = config.boundary_observation_run_id.as_ref() {
+        let mut observation_store = load_lingqu_memory_durable_store(&config.store_path)?;
+        let mut observations = observation_store
+            .load_boundary_observation_manifest()
+            .with_context(|| {
+                format!(
+                    "load W5 boundary observations from {}",
+                    config.store_path.display()
+                )
+            })?
+            .into_iter()
+            .filter(|observation| observation.run_id == *run_id)
+            .collect::<Vec<_>>();
+        observations.sort_by(|left, right| {
+            (
+                left.boundary.step_index,
+                left.boundary.node_index,
+                left.boundary.layer_start,
+                left.boundary.layer_end,
+                left.boundary.position,
+                left.observation_id.as_str(),
+            )
+                .cmp(&(
+                    right.boundary.step_index,
+                    right.boundary.node_index,
+                    right.boundary.layer_start,
+                    right.boundary.layer_end,
+                    right.boundary.position,
+                    right.observation_id.as_str(),
+                ))
+        });
+        if observations.is_empty() {
+            anyhow::bail!("no W5 boundary observations found for run id: {run_id}");
+        }
+        boundary_observation_ids.extend(
+            observations
+                .into_iter()
+                .map(|observation| observation.observation_id),
+        );
+    }
     let mut boundary_observation_decisions = Vec::new();
-    for observation_id in &config.boundary_observation_ids {
+    for observation_id in &boundary_observation_ids {
         let (_response, decision) = run_w5_memory_boundary_lookup_from_observation(
             &config.store_path,
             observation_id,
@@ -8423,6 +8478,27 @@ mod tests {
     }
 
     #[test]
+    fn w5_inference_cluster_args_accept_memory_boundary_observation_run_id() {
+        let args = qwen3_guest_decode_loop_args_from([
+            "w5-inference-cluster",
+            "--memory-decision-store=/tmp/lingqu-memory-store.json",
+            "--memory-boundary-observation-run-id=2026-05-22_w5_run",
+            "--memory-shortpath-execute",
+        ])
+        .expect("parse W5 memory boundary observation run args")
+        .expect("W5 memory boundary observation run args");
+
+        let memory_decisions = args.memory_decisions.expect("memory decisions");
+        assert_eq!(memory_decisions.boundary_observation_id, None);
+        assert!(memory_decisions.boundary_observation_ids.is_empty());
+        assert_eq!(
+            memory_decisions.boundary_observation_run_id.as_deref(),
+            Some("2026-05-22_w5_run")
+        );
+        assert!(memory_decisions.shortpath_execute);
+    }
+
+    #[test]
     fn w5_inference_cluster_args_accept_memory_boundary_request() {
         let args = qwen3_guest_decode_loop_args_from([
             "w5-inference-cluster",
@@ -8947,6 +9023,7 @@ mod tests {
             boundary_request_path: None,
             boundary_observation_id: None,
             boundary_observation_ids: Vec::new(),
+            boundary_observation_run_id: None,
             shortpath_decision_id: Some("shortpath-decision/test".to_string()),
             shortpath_decision_ids: Vec::new(),
             shortpath_execute: true,
@@ -9106,6 +9183,7 @@ mod tests {
             boundary_request_path: None,
             boundary_observation_id: None,
             boundary_observation_ids: Vec::new(),
+            boundary_observation_run_id: None,
             shortpath_decision_id: None,
             shortpath_decision_ids: Vec::new(),
             shortpath_execute: false,
@@ -9163,6 +9241,7 @@ mod tests {
             boundary_request_path: None,
             boundary_observation_id: None,
             boundary_observation_ids: Vec::new(),
+            boundary_observation_run_id: None,
             shortpath_decision_id: None,
             shortpath_decision_ids: vec![
                 "shortpath-decision/test-node1".to_string(),
@@ -10420,6 +10499,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
             boundary_request_path: Some(boundary_request_path.clone()),
             boundary_observation_id: None,
             boundary_observation_ids: Vec::new(),
+            boundary_observation_run_id: None,
             shortpath_decision_id: None,
             shortpath_decision_ids: Vec::new(),
             shortpath_execute: false,
@@ -10463,6 +10543,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
                 boundary_request_path: None,
                 boundary_observation_id: Some("boundary-observation/run0/step3/node4".to_string()),
                 boundary_observation_ids: Vec::new(),
+                boundary_observation_run_id: None,
                 shortpath_decision_id: None,
                 shortpath_decision_ids: Vec::new(),
                 shortpath_execute: false,
@@ -10492,6 +10573,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
                     "boundary-observation/run0/step3/node4".to_string(),
                     "boundary-observation/run0/step4/node4".to_string(),
                 ],
+                boundary_observation_run_id: None,
                 shortpath_decision_id: None,
                 shortpath_decision_ids: Vec::new(),
                 shortpath_execute: true,
@@ -10528,6 +10610,35 @@ stage qwen3_range_forward_runtime_output_publish node=2
                 .iter()
                 .any(|decision| decision.artifact_id.as_deref()
                     == Some("artifact/logits/step4/node4"))
+        );
+        let auto_observation_run_store = root.join("auto_boundary_observation_run_store.json");
+        fs::copy(&store, &auto_observation_run_store)
+            .expect("copy store for W5 auto boundary observation run lookup");
+        let auto_observation_run_bundle =
+            load_w5_memory_decisions_from_store(&W5MemoryDecisionConfig {
+                store_path: auto_observation_run_store.clone(),
+                boundary_request_path: None,
+                boundary_observation_id: None,
+                boundary_observation_ids: Vec::new(),
+                boundary_observation_run_id: Some("run0".to_string()),
+                shortpath_decision_id: None,
+                shortpath_decision_ids: Vec::new(),
+                shortpath_execute: true,
+                prefetch_plan_id: None,
+                prefix_cache_reuse_plan_id: None,
+            })
+            .expect("W5 entrypoint should run boundary lookup from observation run");
+        assert_eq!(auto_observation_run_bundle.shortpath_entries.len(), 2);
+        assert_eq!(
+            auto_observation_run_bundle
+                .shortpath_entries
+                .iter()
+                .map(|entry| entry.decision.artifact_id.as_deref())
+                .collect::<Vec<_>>(),
+            vec![
+                Some("artifact/logits/step3/node4"),
+                Some("artifact/logits/step4/node4")
+            ]
         );
         let observation_cli_store = root.join("boundary_observation_cli_store.json");
         fs::copy(&store, &observation_cli_store)
@@ -10655,6 +10766,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
             boundary_request_path: None,
             boundary_observation_id: None,
             boundary_observation_ids: Vec::new(),
+            boundary_observation_run_id: None,
             shortpath_decision_id: Some("shortpath-decision/boundary/step3/node4".to_string()),
             shortpath_decision_ids: Vec::new(),
             shortpath_execute: true,
@@ -11344,6 +11456,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             boundary_request_path: None,
             boundary_observation_id: None,
             boundary_observation_ids: Vec::new(),
+            boundary_observation_run_id: None,
             shortpath_decision_id: Some("shortpath-decision/missing-payload".to_string()),
             shortpath_decision_ids: Vec::new(),
             shortpath_execute: false,
@@ -11494,6 +11607,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             boundary_request_path: None,
             boundary_observation_id: None,
             boundary_observation_ids: Vec::new(),
+            boundary_observation_run_id: None,
             shortpath_decision_id: None,
             shortpath_decision_ids: Vec::new(),
             shortpath_execute: false,
