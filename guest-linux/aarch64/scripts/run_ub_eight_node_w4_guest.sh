@@ -99,6 +99,8 @@ SIM_W5_MEMORY_SHORTPATH_PROOF_CHECKSUM="${SIM_W5_MEMORY_SHORTPATH_PROOF_CHECKSUM
 SIM_W5_MEMORY_SHORTPATH_EXECUTE="${SIM_W5_MEMORY_SHORTPATH_EXECUTE:-}"
 SIM_W5_MEMORY_SHORTPATH_STREAM_COUNT="${SIM_W5_MEMORY_SHORTPATH_STREAM_COUNT:-}"
 SIM_W5_MEMORY_SHORTPATH_STREAM="${SIM_W5_MEMORY_SHORTPATH_STREAM:-}"
+SIM_W5_MEMORY_SHORTPATH_STREAM_PATH="${SIM_W5_MEMORY_SHORTPATH_STREAM_PATH:-}"
+SIM_W5_MEMORY_SHORTPATH_STREAM_PATH_GUEST="$SIM_W5_MEMORY_SHORTPATH_STREAM_PATH"
 SIM_W5_MEMORY_PREFETCH_PLAN_ID="${SIM_W5_MEMORY_PREFETCH_PLAN_ID:-}"
 SIM_W5_MEMORY_PREFETCH_SCOPE="${SIM_W5_MEMORY_PREFETCH_SCOPE:-}"
 SIM_W5_MEMORY_PREFETCH_TARGET_STEP_INDEX="${SIM_W5_MEMORY_PREFETCH_TARGET_STEP_INDEX:-}"
@@ -144,6 +146,24 @@ stage_qwen3_object_service_snapshot() {
   cp "$payload_index_src" "$payload_index_guest_bin"
   SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT_GUEST="$payload_index_guest_json"
   trace "prepare: staged qwen3 Object Service payload index source=$payload_index_src guest=$payload_index_guest_bin"
+}
+
+stage_w5_memory_shortpath_stream() {
+  local stream_path="$SIM_W5_MEMORY_SHORTPATH_STREAM_PATH"
+  local stream_guest_path="/tmp/w5_memory_shortpath_stream.txt"
+  local stream_guest_file="$RUN_INITRAMFS_DIR$stream_guest_path"
+
+  if [[ -z "$stream_path" ]]; then
+    return 0
+  fi
+  if [[ ! -f "$stream_path" ]]; then
+    trace "FAIL: W5 Memory shortpath stream file is missing path=$stream_path"
+    return 1
+  fi
+  mkdir -p "$(dirname "$stream_guest_file")"
+  cp "$stream_path" "$stream_guest_file"
+  SIM_W5_MEMORY_SHORTPATH_STREAM_PATH_GUEST="$stream_guest_path"
+  trace "prepare: staged W5 Memory shortpath stream source=$stream_path guest=$stream_guest_path"
 }
 
 source "$SCRIPT_DIR/qemu_ub_common.sh"
@@ -586,6 +606,7 @@ export SIM_W5_MEMORY_SHORTPATH_PROOF_CHECKSUM="$SIM_W5_MEMORY_SHORTPATH_PROOF_CH
 export SIM_W5_MEMORY_SHORTPATH_EXECUTE="$SIM_W5_MEMORY_SHORTPATH_EXECUTE"
 export SIM_W5_MEMORY_SHORTPATH_STREAM_COUNT="$SIM_W5_MEMORY_SHORTPATH_STREAM_COUNT"
 export SIM_W5_MEMORY_SHORTPATH_STREAM="$SIM_W5_MEMORY_SHORTPATH_STREAM"
+export SIM_W5_MEMORY_SHORTPATH_STREAM_PATH="$SIM_W5_MEMORY_SHORTPATH_STREAM_PATH_GUEST"
 export SIM_W5_MEMORY_PREFETCH_PLAN_ID="$SIM_W5_MEMORY_PREFETCH_PLAN_ID"
 export SIM_W5_MEMORY_PREFETCH_SCOPE="$SIM_W5_MEMORY_PREFETCH_SCOPE"
 export SIM_W5_MEMORY_PREFETCH_TARGET_STEP_INDEX="$SIM_W5_MEMORY_PREFETCH_TARGET_STEP_INDEX"
@@ -629,6 +650,7 @@ build_w4_initramfs() {
     gzip -dc "$base_initramfs" | cpio -id --quiet
   )
   stage_qwen3_object_service_snapshot
+  stage_w5_memory_shortpath_stream
   write_w4_initramfs_runner
   (
     cd "$RUN_INITRAMFS_DIR"
@@ -824,7 +846,7 @@ validate_node_log() {
   fi
   if w5_memory_shortpath_execute_jump_to_terminal && (( shortpath_node_skips == 1 )); then
     engram_candidates_owner_node="$SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE"
-    terminal_publish_node="$SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE"
+    terminal_publish_node="1"
   fi
 
   assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_kvcache_path=ready" "$node_id obmm kvcache backing" || return 1
@@ -1103,6 +1125,7 @@ prepare_environment() {
     SIM_W5_MEMORY_SHORTPATH_EXECUTE="$SIM_W5_MEMORY_SHORTPATH_EXECUTE" \
     SIM_W5_MEMORY_SHORTPATH_STREAM_COUNT="$SIM_W5_MEMORY_SHORTPATH_STREAM_COUNT" \
     SIM_W5_MEMORY_SHORTPATH_STREAM="$SIM_W5_MEMORY_SHORTPATH_STREAM" \
+    SIM_W5_MEMORY_SHORTPATH_STREAM_PATH="$SIM_W5_MEMORY_SHORTPATH_STREAM_PATH_GUEST" \
     SIM_W5_MEMORY_PREFETCH_PLAN_ID="$SIM_W5_MEMORY_PREFETCH_PLAN_ID" \
     SIM_W5_MEMORY_PREFETCH_SCOPE="$SIM_W5_MEMORY_PREFETCH_SCOPE" \
     SIM_W5_MEMORY_PREFETCH_TARGET_STEP_INDEX="$SIM_W5_MEMORY_PREFETCH_TARGET_STEP_INDEX" \

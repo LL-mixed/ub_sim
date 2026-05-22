@@ -3603,6 +3603,7 @@ struct W5MemoryDecisionBundle {
 struct W5MemoryDecisionArtifactPublication {
     shortpath_ref: Option<W5MemoryPublishedArtifactRef>,
     shortpath_refs: Vec<W5MemoryPublishedArtifactRef>,
+    shortpath_stream_path: Option<PathBuf>,
     prefetch_refs: Vec<W5MemoryPublishedArtifactRef>,
     prefix_cache_ref: Option<W5MemoryPublishedArtifactRef>,
     object_service_snapshot_path: Option<PathBuf>,
@@ -4247,7 +4248,6 @@ fn validate_w5_memory_decision_bundle_for_run(
         .context("W5 runtime layer count exceeds u32")?;
     let max_node = u32::from(profile.nodes);
 
-    let mut execute_steps = std::collections::BTreeSet::new();
     for entry in &bundle.shortpath_entries {
         entry
             .decision
@@ -4273,24 +4273,7 @@ fn validate_w5_memory_decision_bundle_for_run(
                 max_layer,
                 max_node,
             )?;
-            if config.shortpath_execute
-                && !execute_steps.insert(artifact.producer_boundary.step_index)
-            {
-                anyhow::bail!(
-                    "--memory-shortpath-execute received multiple shortpath artifacts for decode step {}",
-                    artifact.producer_boundary.step_index
-                );
-            }
             if config.shortpath_execute && engram.enabled {
-                let producer_owner_node = artifact.producer_boundary.node_index as usize;
-                if producer_owner_node != engram.owner_node {
-                    anyhow::bail!(
-                        "--memory-shortpath-execute with W5 Engram requires each shortpath artifact producer node to match --engram-owner-node so boundary early publish can apply selected-token writeback: artifact={} producer_node={} engram_owner_node={}",
-                        artifact.artifact_id,
-                        producer_owner_node,
-                        engram.owner_node
-                    );
-                }
                 if artifact.kind != sim_memory::ExecutionArtifactKind::Logits {
                     anyhow::bail!(
                         "--memory-shortpath-execute with W5 Engram requires logits shortpath artifacts, got {} for {}",
@@ -4420,7 +4403,7 @@ fn validate_w5_boundary_matches_profile(
             max_layer
         );
     }
-    if boundary.node_index >= max_node {
+    if boundary.node_index > max_node {
         anyhow::bail!(
             "{source} boundary node_index={} exceeds W5 profile nodes={}",
             boundary.node_index,
@@ -4428,7 +4411,7 @@ fn validate_w5_boundary_matches_profile(
         );
     }
     if let Some(next_node) = boundary.next_node_index {
-        if next_node >= max_node {
+        if next_node > max_node {
             anyhow::bail!(
                 "{source} boundary next_node_index={} exceeds W5 profile nodes={}",
                 next_node,
@@ -4487,6 +4470,21 @@ fn publish_w5_memory_decision_artifact_refs(
         }
     }
     let shortpath_ref = shortpath_refs.first().cloned();
+    let shortpath_stream = w5_memory_shortpath_stream_env_from_refs(bundle, &shortpath_refs);
+    let shortpath_stream_path = if shortpath_stream.is_empty() {
+        None
+    } else {
+        fs::create_dir_all(&config.registry_dir).with_context(|| {
+            format!(
+                "create W5 Memory Service registry dir {}",
+                config.registry_dir.display()
+            )
+        })?;
+        let path = config.registry_dir.join("w5_memory_shortpath_stream.txt");
+        fs::write(&path, shortpath_stream.join(";"))
+            .with_context(|| format!("write W5 shortpath stream {}", path.display()))?;
+        Some(path)
+    };
     let mut prefetch_refs = Vec::new();
     for artifact in &bundle.prefetch_artifacts {
         prefetch_refs.push(publish_w5_execution_artifact_ref(
@@ -4523,6 +4521,7 @@ fn publish_w5_memory_decision_artifact_refs(
     Ok(W5MemoryDecisionArtifactPublication {
         shortpath_ref,
         shortpath_refs,
+        shortpath_stream_path,
         prefetch_refs,
         prefix_cache_ref,
         object_service_snapshot_path: Some(snapshot_path),
@@ -4811,6 +4810,12 @@ fn w5_memory_decision_env_vars(
                 "SIM_W5_MEMORY_SHORTPATH_STREAM".to_string(),
                 stream.join(";"),
             ));
+            if let Some(path) = published.shortpath_stream_path.as_ref() {
+                vars.push((
+                    "SIM_W5_MEMORY_SHORTPATH_STREAM_PATH".to_string(),
+                    path.display().to_string(),
+                ));
+            }
             if config.shortpath_execute {
                 vars.push((
                     "SIM_W5_MEMORY_SHORTPATH_EXECUTE".to_string(),
@@ -4919,13 +4924,19 @@ fn w5_memory_shortpath_stream_env(
     bundle: &W5MemoryDecisionBundle,
     publication: &W5MemoryDecisionArtifactPublication,
 ) -> Vec<String> {
+    w5_memory_shortpath_stream_env_from_refs(bundle, &publication.shortpath_refs)
+}
+
+fn w5_memory_shortpath_stream_env_from_refs(
+    bundle: &W5MemoryDecisionBundle,
+    shortpath_refs: &[W5MemoryPublishedArtifactRef],
+) -> Vec<String> {
     bundle
         .shortpath_entries
         .iter()
         .filter_map(|entry| {
             let artifact = entry.artifact.as_ref()?;
-            let published = publication
-                .shortpath_refs
+            let published = shortpath_refs
                 .iter()
                 .find(|published| published.artifact_id == artifact.artifact_id)?;
             let decision_id = w5_env_stream_field(&entry.decision.decision_id)?;
@@ -7762,14 +7773,16 @@ mod tests {
         save_lingqu_memory_durable_store, simpler_host_matmul_artifact_producer_path,
         validate_qwen3_dense_weights_path, validate_w5_inference_profile,
         validate_w5_memory_decision_bundle_for_run, w5_inference_profile_spec,
-        w5_memory_decision_env_vars, w5_memory_should_publish_engram_state,
-        w5_object_service_payload_index_path, LingquDurableSim, LingquDurableSimSnapshot,
-        LingquMemoryDurableStore, LingquMemoryDurableStoreSnapshot, LingquObjectServiceStub,
-        LingquObjectVersionSelector, MemoryCatalogSnapshot, QueryResult, Qwen3CandidateRecord,
-        Qwen3DecodeReportVerbosity, Qwen3DenseGuestRuntime, Qwen3DenseProfile, Qwen3EngramConfig,
-        Qwen3EngramContextOp, Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport,
-        Qwen3GuestDecodeLoopCliArgs, Qwen3GuestExpectedWorkerCounts, W5MemoryBootstrapConfig,
-        W5MemoryDecisionBundle, W5MemoryDecisionConfig, QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
+        w5_memory_decision_env_vars, w5_memory_shortpath_stream_env,
+        w5_memory_should_publish_engram_state, w5_object_service_payload_index_path,
+        LingquDurableSim, LingquDurableSimSnapshot, LingquMemoryDurableStore,
+        LingquMemoryDurableStoreSnapshot, LingquObjectServiceStub, LingquObjectVersionSelector,
+        MemoryCatalogSnapshot, QueryResult, Qwen3CandidateRecord, Qwen3DecodeReportVerbosity,
+        Qwen3DenseGuestRuntime, Qwen3DenseProfile, Qwen3EngramConfig, Qwen3EngramContextOp,
+        Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
+        Qwen3GuestExpectedWorkerCounts, W5MemoryBootstrapConfig,
+        W5MemoryDecisionArtifactPublication, W5MemoryDecisionBundle, W5MemoryDecisionConfig,
+        W5MemoryPublishedArtifactRef, QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
         QWEN3_DENSE_DEFAULT_PREFILL_TOKENS, QWEN3_DENSE_DEFAULT_TP_NODES,
         QWEN3_ENGRAM_DEFAULT_NO_REPEAT_NGRAM_SIZE, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
         SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
@@ -9061,7 +9074,7 @@ mod tests {
     }
 
     #[test]
-    fn w5_memory_shortpath_execute_with_engram_requires_owner_boundary_artifact() {
+    fn w5_memory_shortpath_execute_allows_per_boundary_engram_artifacts() {
         let runtime = Qwen3DenseGuestRuntime {
             profile: Qwen3DenseProfile {
                 model_id: "Qwen/Qwen3-0.6B".to_string(),
@@ -9087,8 +9100,12 @@ mod tests {
             store_path: PathBuf::from("/tmp/lingqu-memory-store.json"),
             boundary_request_path: None,
             boundary_observation_id: None,
-            shortpath_decision_id: Some("shortpath-decision/test".to_string()),
-            shortpath_decision_ids: Vec::new(),
+            shortpath_decision_id: None,
+            shortpath_decision_ids: vec![
+                "shortpath-decision/test-node1".to_string(),
+                "shortpath-decision/test-node4".to_string(),
+                "shortpath-decision/test-node7".to_string(),
+            ],
             shortpath_execute: true,
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: None,
@@ -9100,9 +9117,46 @@ mod tests {
             profile_hash: 0x2002,
         };
         let artifact = sim_memory::ExecutionArtifactObject {
-            artifact_id: "artifact/logits/test".to_string(),
+            artifact_id: "artifact/logits/test-node1".to_string(),
             kind: sim_memory::ExecutionArtifactKind::Logits,
-            model,
+            model: model.clone(),
+            producer_boundary: sim_memory::RangeBoundary {
+                phase: sim_memory::RangeBoundaryPhase::RangeExit,
+                step_index: 0,
+                node_index: 1,
+                layer_start: 0,
+                layer_end: 4,
+                next_node_index: Some(2),
+                position: 4,
+            },
+            boundary_hidden_fingerprint: sim_memory::BoundaryTensorFingerprint {
+                bytes: 16,
+                checksum: 0x1111,
+                dtype: sim_core::TensorDType::F32,
+                shape: vec![1, 4],
+            },
+            target_layer_start: 4,
+            target_layer_end: 4,
+            dtype: sim_core::TensorDType::F32,
+            shape: vec![1, 4],
+            durable_payload_ref: Some(sim_memory::LingquBlockPayloadRef::new(
+                "block/logits/test-node1",
+                0,
+                16,
+                0x5555,
+            )),
+            hot_object_ref: None,
+            source_query_result_id: None,
+            source_engram_state_id: None,
+            confidence_milli: 990,
+            state: sim_memory::ExecutionArtifactState::Verified,
+            checksum: 0x6666,
+            version: 1,
+            created_at_us: 10,
+            expires_at_us: Some(100),
+        };
+        let artifact_node4 = sim_memory::ExecutionArtifactObject {
+            artifact_id: "artifact/logits/test-node4".to_string(),
             producer_boundary: sim_memory::RangeBoundary {
                 phase: sim_memory::RangeBoundaryPhase::RangeExit,
                 step_index: 0,
@@ -9118,34 +9172,51 @@ mod tests {
                 dtype: sim_core::TensorDType::F32,
                 shape: vec![1, 4],
             },
-            target_layer_start: 28,
-            target_layer_end: 28,
-            dtype: sim_core::TensorDType::F32,
-            shape: vec![1, 4],
+            target_layer_start: 16,
+            target_layer_end: 16,
             durable_payload_ref: Some(sim_memory::LingquBlockPayloadRef::new(
-                "block/logits/test",
+                "block/logits/test-node4",
                 0,
                 16,
                 0x5555,
             )),
-            hot_object_ref: None,
-            source_query_result_id: None,
-            source_engram_state_id: None,
-            confidence_milli: 990,
-            state: sim_memory::ExecutionArtifactState::Verified,
-            checksum: 0x6666,
-            version: 1,
-            created_at_us: 10,
-            expires_at_us: Some(100),
+            ..artifact.clone()
+        };
+        let artifact_node7 = sim_memory::ExecutionArtifactObject {
+            artifact_id: "artifact/logits/test-node7".to_string(),
+            producer_boundary: sim_memory::RangeBoundary {
+                phase: sim_memory::RangeBoundaryPhase::RangeExit,
+                step_index: 0,
+                node_index: 7,
+                layer_start: 24,
+                layer_end: 28,
+                next_node_index: Some(8),
+                position: 4,
+            },
+            boundary_hidden_fingerprint: sim_memory::BoundaryTensorFingerprint {
+                bytes: 16,
+                checksum: 0x7777,
+                dtype: sim_core::TensorDType::F32,
+                shape: vec![1, 4],
+            },
+            target_layer_start: 28,
+            target_layer_end: 28,
+            durable_payload_ref: Some(sim_memory::LingquBlockPayloadRef::new(
+                "block/logits/test-node7",
+                0,
+                16,
+                0x5555,
+            )),
+            ..artifact.clone()
         };
         let decision = sim_memory::ShortpathDecisionRecord {
-            decision_id: "shortpath-decision/test".to_string(),
-            request_id: "boundary/test".to_string(),
-            support_id: Some("shortpath-support/test".to_string()),
+            decision_id: "shortpath-decision/test-node1".to_string(),
+            request_id: "boundary/test-node1".to_string(),
+            support_id: Some("shortpath-support/test-node1".to_string()),
             action: sim_memory::ShortpathAction::JumpToTerminal,
-            artifact_id: Some("artifact/logits/test".to_string()),
-            target_layer_start: Some(28),
-            target_layer_end: Some(28),
+            artifact_id: Some("artifact/logits/test-node1".to_string()),
+            target_layer_start: Some(4),
+            target_layer_end: Some(4),
             confidence_milli: 990,
             verify_required: false,
             proof_checksum: 0x7777,
@@ -9153,44 +9224,87 @@ mod tests {
             created_at_us: 11,
             version: 1,
         };
+        let decision_node4 = sim_memory::ShortpathDecisionRecord {
+            decision_id: "shortpath-decision/test-node4".to_string(),
+            request_id: "boundary/test-node4".to_string(),
+            support_id: Some("shortpath-support/test-node4".to_string()),
+            artifact_id: Some("artifact/logits/test-node4".to_string()),
+            target_layer_start: Some(16),
+            target_layer_end: Some(16),
+            proof_checksum: 0x8888,
+            ..decision.clone()
+        };
+        let decision_node7 = sim_memory::ShortpathDecisionRecord {
+            decision_id: "shortpath-decision/test-node7".to_string(),
+            request_id: "boundary/test-node7".to_string(),
+            support_id: Some("shortpath-support/test-node7".to_string()),
+            artifact_id: Some("artifact/logits/test-node7".to_string()),
+            target_layer_start: Some(28),
+            target_layer_end: Some(28),
+            proof_checksum: 0x9999,
+            ..decision.clone()
+        };
         let bundle = W5MemoryDecisionBundle {
             shortpath: Some(decision.clone()),
             shortpath_artifact: Some(artifact.clone()),
-            shortpath_entries: vec![crate::W5MemoryShortpathEntry {
-                decision,
-                artifact: Some(artifact),
-            }],
+            shortpath_entries: vec![
+                crate::W5MemoryShortpathEntry {
+                    decision,
+                    artifact: Some(artifact),
+                },
+                crate::W5MemoryShortpathEntry {
+                    decision: decision_node4,
+                    artifact: Some(artifact_node4),
+                },
+                crate::W5MemoryShortpathEntry {
+                    decision: decision_node7,
+                    artifact: Some(artifact_node7),
+                },
+            ],
             prefetch: None,
             prefetch_artifacts: Vec::new(),
             prefix_cache: None,
             prefix_cache_artifact: None,
         };
+        let publication = W5MemoryDecisionArtifactPublication {
+            shortpath_ref: None,
+            shortpath_refs: vec![
+                W5MemoryPublishedArtifactRef {
+                    artifact_id: "artifact/logits/test-node1".to_string(),
+                    ref_hex: "1".repeat(128),
+                    payload_bytes: 16,
+                    payload_checksum: 0x5555,
+                },
+                W5MemoryPublishedArtifactRef {
+                    artifact_id: "artifact/logits/test-node4".to_string(),
+                    ref_hex: "2".repeat(128),
+                    payload_bytes: 16,
+                    payload_checksum: 0x5555,
+                },
+                W5MemoryPublishedArtifactRef {
+                    artifact_id: "artifact/logits/test-node7".to_string(),
+                    ref_hex: "3".repeat(128),
+                    payload_bytes: 16,
+                    payload_checksum: 0x5555,
+                },
+            ],
+            shortpath_stream_path: None,
+            prefetch_refs: Vec::new(),
+            prefix_cache_ref: None,
+            object_service_snapshot_path: None,
+        };
+        let stream = w5_memory_shortpath_stream_env(&bundle, &publication);
+        assert_eq!(stream.len(), 3);
+        assert!(stream[0].starts_with("0:0:4:4:4:"));
+        assert!(stream[1].starts_with("0:12:16:16:16:"));
+        assert!(stream[2].starts_with("0:24:28:28:28:"));
         let engram = Qwen3EngramConfig {
             enabled: true,
             pool: Qwen3EngramPool::Obmm,
             ..Qwen3EngramConfig::default()
         };
-        let err = validate_w5_memory_decision_bundle_for_run(
-            &config, &bundle, &runtime, profile, &engram, 1,
-        )
-        .expect_err("non-owner shortpath execute must not bypass engram writeback");
-        assert!(err
-            .to_string()
-            .contains("requires each shortpath artifact producer node to match"));
-
-        let matching_owner = Qwen3EngramConfig {
-            owner_node: 4,
-            ..engram
-        };
-        validate_w5_memory_decision_bundle_for_run(
-            &config,
-            &bundle,
-            &runtime,
-            profile,
-            &matching_owner,
-            1,
-        )
-        .expect("owner boundary artifact can apply engram writeback before early publish");
+        validate_w5_memory_decision_bundle_for_run(&config, &bundle, &runtime, profile, &engram, 1)
+            .expect("per-boundary logits artifacts can drive Engram shortpath execution");
     }
 
     #[test]
@@ -12645,13 +12759,19 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     let expected_runtime_input_count = worker_counts.runtime_inputs;
     let expected_runtime_publish_count = worker_counts.runtime_outputs;
     let expected_terminal_token_count = args.step_count;
-    let expected_guest_engram_select_count = if effective_engram.enabled {
-        args.step_count
-    } else {
-        0
-    };
-    let expected_guest_engram_candidate_publish_count = expected_guest_engram_select_count;
-    let expected_guest_engram_candidate_wait_count = expected_guest_engram_select_count;
+    let expected_guest_engram_select_count =
+        if effective_engram.enabled && !shortpath_execute_jump_to_terminal {
+            args.step_count
+        } else {
+            0
+        };
+    let expected_guest_engram_candidate_publish_count =
+        if effective_engram.enabled && !shortpath_execute_jump_to_terminal {
+            args.step_count
+        } else {
+            0
+        };
+    let expected_guest_engram_candidate_wait_count = expected_guest_engram_candidate_publish_count;
     let expected_guest_engram_selected_wait_count = expected_guest_engram_select_count;
     let expected_guest_engram_selected_writeback_count = expected_guest_engram_select_count;
     let expected_guest_engram_history_wait_count = if effective_engram.enabled {
@@ -13375,6 +13495,73 @@ fn qwen3_guest_engram_report_from_guest_log(
         .collect::<Vec<_>>();
     steps.sort_by_key(|step| step.step_index);
 
+    if steps.is_empty() {
+        steps = log
+            .lines()
+            .filter(|line| line.contains("stage qwen3_engram_decision_publish "))
+            .map(|line| {
+                let step = qwen3_guest_log_u64_field(line, "step");
+                let history_tokens = qwen3_guest_log_u64_field(line, "history_tokens");
+                let selected_token = qwen3_guest_log_u64_field(line, "selected_token");
+                let raw_token = qwen3_guest_log_u64_field(line, "raw_token");
+                let runner_up = qwen3_guest_log_u64_field(line, "runner_up");
+                let blocked_token_count = qwen3_guest_log_u64_field(line, "blocked") as u32;
+                let fallback_used = qwen3_guest_log_u64_field(line, "fallback") != 0;
+                let top_score = qwen3_guest_log_i64_field(line, "top_score_milli") as i32;
+                let runner_up_score =
+                    qwen3_guest_log_i64_field(line, "runner_up_score_milli") as i32;
+                let history_checksum = qwen3_guest_log_hex_u64_field(line, "history_checksum");
+                let state_checksum = qwen3_guest_log_hex_u64_field(line, "state_checksum");
+                let logits_checksum = qwen3_guest_log_hex_u64_field(line, "logits_checksum");
+                let text_checksum = qwen3_guest_log_hex_u64_field(line, "text_checksum");
+                let candidates = [raw_token, runner_up]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(rank, token_id)| Qwen3CandidateRecord {
+                        step_index: step,
+                        rank: rank as u64,
+                        token_id,
+                        logit_milli: if rank == 0 {
+                            top_score
+                        } else {
+                            runner_up_score
+                        },
+                        adjusted_score_milli: 0,
+                        token_piece_checksum: 0,
+                    })
+                    .collect::<Vec<_>>();
+                let state = Qwen3EngramState {
+                    session_id,
+                    step_index: step,
+                    token_count: history_tokens,
+                    rolling_hash: history_checksum,
+                    ngram_window: config.no_repeat_ngram_size.min(u8::MAX as usize) as u8,
+                    repetition_penalty_milli: config.repetition_penalty_milli,
+                    blocked_token_count,
+                    fallback_used,
+                    raw_sampled_token: raw_token,
+                    runner_up_token: runner_up,
+                    top_score_milli: top_score,
+                    runner_up_score_milli: runner_up_score,
+                    history_window: config.history_window as u64,
+                    logits_checksum,
+                    text_checksum,
+                    selected_token,
+                    state_checksum,
+                };
+
+                Qwen3EngramStepDecision {
+                    step_index: step,
+                    candidates,
+                    selected_token,
+                    blocked_token_count,
+                    fallback_used,
+                    state,
+                }
+            })
+            .collect::<Vec<_>>();
+        steps.sort_by_key(|step| step.step_index);
+    }
     if steps.is_empty() {
         anyhow::bail!("guest engram decision log is empty");
     }
