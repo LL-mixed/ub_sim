@@ -1240,6 +1240,7 @@ sim-cli w5-inference-cluster \
   [--memory-decision-store <durable-store.json>] \
   [--memory-boundary-request <boundary-lookup-request.json>] \
   [--memory-boundary-observation-id <boundary-observation-id>] \
+  [--memory-boundary-observation-ids <id0,id1,...>] \
   [--memory-observation-store <durable-store.json>] \
   [--memory-shortpath-execute] \
   [--memory-owner-entity <entity>] \
@@ -1278,33 +1279,39 @@ break in the execution path while still keeping the standalone CLI command for
 inspection and reproducible debugging. By default this validates and exposes
 the shortpath artifact without changing decode output. Passing
 `--memory-shortpath-execute` forwards `SIM_W5_MEMORY_SHORTPATH_EXECUTE=1`; when
-the decision is `jump-to-terminal`, only the artifact producer boundary may
-consume the logits artifact. The producer first compares the artifact
+the decision is `jump-to-terminal`, only the matching artifact producer
+boundary may consume the logits artifact. The producer first compares the artifact
 `boundary_hidden_fingerprint` with the live range-exit hidden bytes/checksum.
 On mismatch or missing fingerprint, the guest records `shortpath_rejected` and
 continues normal range-forward execution; it must not publish terminal logits,
 must not trigger downstream skip, and must not let the terminal node reload the
 artifact directly. The W5 entrypoint also accepts
-`--memory-shortpath-decision-ids` for a launch-time per-step shortpath stream.
-It loads each audited decision, validates each verified artifact against the
-selected runtime, publishes every artifact payload into the Lingqu Object
-Service checkpoint, and forwards `SIM_W5_MEMORY_SHORTPATH_STREAM` entries keyed
-by decode step plus artifact boundary hidden bytes/checksum. The guest selects
-only the stream entry matching the current step and boundary; if a step has no
-entry or the fingerprint does not match the live boundary, it continues through
-the normal range-forward path instead of reusing another step's logits. With W5
-Engram enabled, execute additionally requires every logits artifact producer
-node to match `--engram-owner-node`; that producer boundary publishes
-candidates, runs Engram selection, writes the
-selected token back into the terminal-token record, and only then publishes the
-shortpath result.
+`--memory-boundary-observation-ids` and `--memory-shortpath-decision-ids` for a
+launch-time per-boundary shortpath stream. Observation ids are resolved inside
+the W5 entrypoint by running Memory Service boundary lookup for each persisted
+`BoundaryObservationRecord`, persisting the corresponding support and planner
+decision audit records, and then using the same audited decision path as
+explicit decision ids. It loads each audited decision, validates each verified
+artifact against the selected runtime, publishes every artifact payload into the
+Lingqu Object Service checkpoint, and forwards `SIM_W5_MEMORY_SHORTPATH_STREAM`
+entries keyed by decode step, producer boundary, and artifact boundary hidden
+bytes/checksum. The guest selects only the stream entry matching the current
+step and live boundary; if a step has no entry or the fingerprint does not
+match, it continues through the normal range-forward path instead of reusing
+another step's logits. With W5 Engram enabled, the producer boundary replays the
+Memory Service terminal logits artifact into the terminal-token record. The
+configured Engram owner then observes that terminal token and publishes the
+owner-owned Engram state for the next-step gate. This keeps Engram state
+ownership coherent without requiring the shortpath producer boundary to be the
+Engram owner.
 When `--memory-boundary-observation-id` is provided instead of
 `--memory-boundary-request`, the W5 entrypoint loads the persisted
 `BoundaryObservationRecord` from the durable DFS audit log, derives the
 validated `BoundaryLookupRequest` in process, and runs the same lookup/planner
-path. `--memory-boundary-request`, `--memory-boundary-observation-id`, and
-`--memory-shortpath-decision-id`/`--memory-shortpath-decision-ids` are mutually
-exclusive sources for the shortpath artifact stream.
+path. `--memory-boundary-request`, `--memory-boundary-observation-id`,
+`--memory-boundary-observation-ids`, and `--memory-shortpath-decision-id`/
+`--memory-shortpath-decision-ids` are mutually exclusive sources for the
+shortpath artifact stream.
 Before publishing Memory Service artifact refs or launching the guest, the W5
 entrypoint validates the whole decision bundle against the selected runtime
 profile: execution artifacts and prefix-cache artifacts must match the runtime
@@ -1441,14 +1448,12 @@ store; missing Memory Service evidence is a hard failure.
   token result from any node, so a validated boundary jump can advance the next
   step without waiting for node8 to publish the same terminal result. This is
   still a launch-time bridge for the lookup decision, not a per-range in-guest
-  online lookup loop. The execute path can now run with W5 Engram only when the
-  shortpath artifact producer node is also the configured Engram owner node. In
-  that case the boundary producer publishes the Memory Service logits candidates,
-  runs the same Engram selected-token decision, writes the selected token back
-  into the terminal-token record, and only then publishes the early terminal
-  result. If the artifact producer and Engram owner differ, the W5 entrypoint and
-  guest both fail closed because the next step could otherwise consume a raw
-  Memory Service token before Engram writeback.
+  online lookup loop. W5 Engram execution no longer requires the shortpath
+  artifact producer node to equal the configured Engram owner. The producer
+  boundary replays the audited terminal logits artifact into the terminal-token
+  record, downstream nodes skip after observing that token, and the configured
+  Engram owner publishes owner-owned Engram state so the next decode step's
+  gate remains coherent.
 - 2026-05-21 update: W5 shortpath execute no longer has a hard-coded
   `steps=1 && artifact_step=0` host restriction. The entrypoint can load a CSV
   of audited decision ids via `--memory-shortpath-decision-ids`, publish all
@@ -1461,9 +1466,15 @@ store; missing Memory Service evidence is a hard failure.
   Memory Service shortpath artifact passed with token `[11]` and text `,`,
   exercising the new stream consumer. A follow-up attempt to build a two-step
   0.6B stream exposed an unrelated baseline failure in non-shortpath node8
-  terminal range-forward validation before terminal logits could be emitted, so
-  multi-step shortpath execution still needs a fresh passing multi-step
-  baseline artifact source.
+  terminal range-forward validation before terminal logits could be emitted.
+  2026-05-22 follow-up: a two-step Qwen3-0.6B W5 Engram run using a
+  per-boundary shortpath stream passed with `range_forwards=2`,
+  `runtime_inputs=0`, `runtime_outputs=2`, `downstream_skips=14`, terminal
+  tokens `[264, 6388]`, and text ` a leading`. The W5 entrypoint can now also
+  accept `--memory-boundary-observation-ids`, run Memory Service lookup for each
+  persisted boundary observation, persist the resulting support/planner audit
+  records, and publish the resulting artifact stream without a manual
+  observation-to-decision conversion step.
 - Boundary lookup now requires a verified execution artifact to carry a
   `boundary_hidden_fingerprint` that matches the request hidden ObjectRef
   bytes/checksum/dtype/shape. This closes the unsafe case where a terminal
@@ -1690,17 +1701,20 @@ Current implementation status:
   Service store, the CLI now records the successful run's real range-exit
   boundary observations back into that durable store automatically after guest
   validation. `--memory-shortpath-execute` no longer waits until node8 to make
-  the token visible for the supported one-step/step0 logits-artifact case: the
-  matching producer boundary publishes
-  `qwen3_w5_memory_terminal_logits_publish_early`, and the next decode-round
-  gate scans all node token-result records. When Engram is enabled, the same
-  boundary must also be the Engram owner so selected-token writeback happens
-  before publication. The W5 entrypoint now also fail-closes Memory Service
-  decision bundles before guest launch when their model binding, producer
-  boundary, prefetch target, profile node count, shortpath execute step scope,
-  or prefix-cache reuse timing cannot affect this run. The remaining gap is the
-  online in-guest lookup loop that performs the lookup at range-exit time
-  instead of receiving a launch-time decision.
+  the token visible: the matching producer boundary publishes the terminal
+  token result from the audited logits artifact, and the next decode-round gate
+  scans all node token-result records. When Engram is enabled, the configured
+  Engram owner observes that terminal token and publishes owner-owned Engram
+  state for the next-step gate, so the producer boundary no longer has to equal
+  the Engram owner. The W5 entrypoint can now take
+  `--memory-boundary-observation-ids`, run launch-time lookup for each
+  persisted observation id, persist support/planner audit records, and feed the
+  resulting per-boundary shortpath stream to the guest. The W5 entrypoint now
+  also fail-closes Memory Service decision bundles before guest launch when
+  their model binding, producer boundary, prefetch target, profile node count,
+  shortpath execute step scope, or prefix-cache reuse timing cannot affect this
+  run. The remaining gap is the online in-guest lookup loop that performs the
+  lookup at range-exit time instead of receiving a launch-time decision.
   Query results can be persisted to and restored from DFS manifests with
   checksum validation, and QueryResult-driven hot materialization now carries
   that DFS manifest ref into both `HotMemoryStateObject` and
