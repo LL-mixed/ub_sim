@@ -1425,7 +1425,7 @@ static void force_bind_ubase_for_qemu(void)
     }
 }
 
-int main(void)
+int main(int argc, char *argv[])
 {
     puts("[init] linqu-ub linux probe");
 
@@ -1491,9 +1491,18 @@ int main(void)
     dump_ub_state();
 
     if (should_enter_demo_boot_flow() && access("/bin/run_demo", X_OK) == 0) {
+        int i;
+        char **new_argv = malloc(sizeof(char *) * (argc + 2));
         fprintf(stderr, "[init] switching to /bin/run_demo boot flow\n");
-        execl("/bin/run_demo", "/bin/run_demo", "--resume", (char *)NULL);
+        new_argv[0] = "/bin/run_demo";
+        new_argv[1] = "--resume";
+        for (i = 1; i < argc; i++) {
+            new_argv[i + 1] = argv[i];
+        }
+        new_argv[argc + 1] = NULL;
+        execv("/bin/run_demo", new_argv);
         fprintf(stderr, "[init] exec /bin/run_demo failed: %s\n", strerror(errno));
+        free(new_argv);
     }
 
     if (should_hold_after_probe()) {

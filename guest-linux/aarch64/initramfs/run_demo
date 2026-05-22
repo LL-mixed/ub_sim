@@ -39,6 +39,7 @@ has_flag() {
 run_binary() {
   local name="$1"
   local path="$2"
+  shift 2
 
   if [ ! -x "$path" ]; then
     log "missing executable: $path"
@@ -46,14 +47,59 @@ run_binary() {
   fi
 
   log "run $name"
-  if "$path"; then
+  "$path" "$@"
+  local rc=$?
+  if [ "$rc" -eq 0 ]; then
     log "$name done"
     return 0
   fi
 
-  local rc=$?
   log "$name failed rc=$rc"
   return "$rc"
+}
+
+run_obmm_import_stress() {
+  local args=""
+  local token=""
+
+  read_cmdline
+  for token in $cmdline; do
+    case "$token" in
+      obmm_stress_size=*)
+        args="$args --size ${token#*=}"
+        ;;
+      obmm_stress_pattern=*)
+        args="$args --pattern ${token#*=}"
+        ;;
+      obmm_stress_iters=*)
+        args="$args --iterations ${token#*=}"
+        ;;
+      obmm_stress_flush=*)
+        args="$args --flush-mode ${token#*=}"
+        ;;
+      obmm_stress_period=*)
+        args="$args --period ${token#*=}"
+        ;;
+      obmm_stress_chunk_size=*)
+        args="$args --chunk-size ${token#*=}"
+        ;;
+      obmm_stress_seed=*)
+        args="$args --seed ${token#*=}"
+        ;;
+      obmm_stress_verify=1)
+        args="$args --verify"
+        ;;
+      obmm_stress_read_only=1)
+        args="$args --read-only"
+        ;;
+      obmm_stress_write_only=1)
+        args="$args --write-only"
+        ;;
+    esac
+  done
+
+  # Values come from kernel cmdline key=value tokens, so word splitting is intentional.
+  run_binary "linqu_ub_obmm_import_stress" /bin/linqu_ub_obmm_import_stress $args
 }
 
 run_default_actions() {
@@ -128,6 +174,9 @@ run_single_action() {
       ;;
     obmm_queue)
       run_binary "linqu_ub_obmm_queue_demo" /bin/linqu_ub_obmm_queue_demo
+      ;;
+    obmm_import_stress)
+      run_obmm_import_stress
       ;;
     all)
       run_default_actions

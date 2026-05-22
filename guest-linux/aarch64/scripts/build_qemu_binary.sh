@@ -57,6 +57,9 @@ qemu_source_signature() {
 }
 
 apply_host_qemu_configure_args() {
+  if [[ "$CONFIGURE_ARGS" != *"--disable-docs"* && "$CONFIGURE_ARGS" != *"--enable-docs"* ]]; then
+    CONFIGURE_ARGS="${CONFIGURE_ARGS} --disable-docs"
+  fi
   case "$BUILD_HOST_OS" in
     Darwin)
       if [[ "$CONFIGURE_ARGS" != *"--disable-zstd"* && "$CONFIGURE_ARGS" != *"--enable-zstd"* ]]; then

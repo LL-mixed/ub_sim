@@ -107,7 +107,13 @@ node_serial_port() {
   local node_id="$1"
   local port_base="$2"
   local idx="$(node_index "$node_id")"
-  echo $((port_base + 31 + idx))
+  case "$node_id" in
+    nodeA) echo "${NODEA_SERIAL_PORT:-$((port_base + 15 + idx))}" ;;
+    nodeB) echo "${NODEB_SERIAL_PORT:-$((port_base + 15 + idx))}" ;;
+    nodeC) echo "${NODEC_SERIAL_PORT:-$((port_base + 15 + idx))}" ;;
+    nodeD) echo "${NODED_SERIAL_PORT:-$((port_base + 15 + idx))}" ;;
+    *) return 1 ;;
+  esac
 }
 
 send_serial_block() {
@@ -254,7 +260,10 @@ run_pool_demo() {
     serial_port="$(node_serial_port "$node_id" "$PORT_BASE")"
     start_marker="OBMM_POOL_${node_id}_START"
     trace "start pool demo on $node_id serial=$serial_port"
-    send_obmm_pool_cmd "$(node_ip "$node_id")" "$serial_port" "$start_marker"
+    if ! send_obmm_pool_cmd "$(node_ip "$node_id")" "$serial_port" "$start_marker"; then
+      trace "FAIL: send pool demo command failed on $node_id serial=$serial_port"
+      return 1
+    fi
   done
 
   for node_id in "${NODE_IDS[@]}"; do

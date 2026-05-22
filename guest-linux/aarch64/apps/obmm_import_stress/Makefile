@@ -1,0 +1,17 @@
+CC ?= aarch64-linux-gnu-gcc
+CFLAGS = -static -O2 -Wall -Wextra \
+         -I../../kernel_ub/include/uapi \
+         -I../../common \
+         -I../obmm_queue_demo
+
+TARGET = obmm_import_stress
+
+all: $(TARGET)
+
+$(TARGET): obmm_import_stress.c
+	$(CC) $(CFLAGS) $< -o $@
+
+clean:
+	rm -f $(TARGET)
+
+.PHONY: all clean

@@ -49,6 +49,7 @@ enum pool_import_cache_mode {
 #define MSG_ROUND_TURN 3U
 #define MSG_ROUND_ACK 4U
 #define MSG_ROUND_COMMIT 5U
+#define MSG_STRESS_DONE 6U
 #define OBMM_SIM_DEC_PRIV_MAGIC 0x53444950U
 #define OBMM_SIM_DEC_PRIV_VER_1 1
 
@@ -1066,6 +1067,55 @@ static int wait_until_everyone_ready(int sockfd, struct sockaddr_in peers[MAX_NO
     return -1;
 }
 
+static int wait_until_stress_done(int sockfd, struct sockaddr_in peers[MAX_NODES],
+                                  int node_count, int local_idx)
+{
+    bool done[MAX_NODES] = { false };
+    struct pool_msg msg;
+    long deadline = now_ms() + RUN_TIMEOUT_S * 1000L;
+
+    done[local_idx] = true;
+    while (!g_alarm_fired && now_ms() < deadline) {
+        int i;
+        struct sockaddr_in from;
+        struct pool_msg rx;
+        bool all = true;
+
+        for (i = 0; i < node_count; i++) {
+            if (!done[i]) {
+                all = false;
+                break;
+            }
+        }
+        if (all) {
+            fprintf(stderr, "[ub_obmm_pool] stress barrier -> ok count=%d\n",
+                    node_count);
+            return 0;
+        }
+
+        for (i = 0; i < node_count; i++) {
+            if (i == local_idx || done[i]) {
+                continue;
+            }
+            init_pool_msg(&msg, MSG_STRESS_DONE, local_idx, i);
+            (void)send_msg(sockfd, &peers[i], &msg, sizeof(msg));
+        }
+
+        while (recv_msg(sockfd, &rx, sizeof(rx), &from) == (ssize_t)sizeof(rx)) {
+            if (rx.magic != POOL_MAGIC || rx.version != POOL_VERSION) {
+                continue;
+            }
+            if (rx.type == MSG_STRESS_DONE && rx.src_idx < node_count) {
+                done[rx.src_idx] = true;
+            }
+        }
+        usleep(10000);
+    }
+
+    fprintf(stderr, "[ub_obmm_pool] fail: timeout waiting for STRESS_DONE from all nodes\n");
+    return -1;
+}
+
 static void send_round_turn(int sockfd, const struct sockaddr_in *peer,
                             int local_idx, int peer_idx, int round_idx)
 {
@@ -1483,6 +1533,9 @@ int main(void)
     }
 
     if (do_stress(sockfd, peers, node_count, local_idx, slots) != 0) {
+        goto out;
+    }
+    if (wait_until_stress_done(sockfd, peers, node_count, local_idx) != 0) {
         goto out;
     }
 
