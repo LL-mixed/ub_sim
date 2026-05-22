@@ -260,6 +260,10 @@ validate_qwen3_weights_path() {
   return 0
 }
 
+validate_qwen3_runtime_object_view_source() {
+  return 0
+}
+
 wait_for_log_pattern() {
   local file="$1"
   local pattern="$2"
@@ -886,7 +890,9 @@ validate_node_log() {
     fi
     assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_terminal_token_result_wait step=[0-9]+ object_key=tokens/qwen3[-.0-9a-z]*/decode-step[0-9]+ owner=node${terminal_publish_node} offset=0x[0-9a-f]+ bytes=64 token=[0-9]+ checksum=0x[0-9a-f]+ source=obmm_object_record status=ok" "$node_id qwen3 terminal token wait" || return 1
     assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_w5_memory_shortpath_downstream_skip node=${idx} step=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) target_layer_start=${shortpath_target_layer_start} token=[0-9]+ source=terminal_token_result target=range_forward status=skipped" "$node_id qwen3 shortpath downstream skip" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_decode_round_done_publish local=node${idx} step=[0-9]+ offset=0x[0-9a-f]+ bytes=64 checksum=0x[0-9a-f]+ backing=obmm_pool status=ok" "$node_id qwen3 decode round done publish" || return 1
+    if [[ "${SIM_QWEN3_DECODE_ROUND_BARRIER:-0}" == "1" ]]; then
+      assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_decode_round_done_publish local=node${idx} step=[0-9]+ offset=0x[0-9a-f]+ slot=[0-9]+ bytes=64 scope_hash=0x[0-9a-f]+ checksum=0x[0-9a-f]+ backing=obmm_pool status=ok" "$node_id qwen3 decode round done publish" || return 1
+    fi
     assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_worker_timing local=${node_id} step=[0-9]+ node=${idx} layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=${remote_idx} .* compute_window_ms=0 .* dispatch_ms_per_layer_milli=0" "$node_id qwen3 worker timing" || return 1
     assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_worker_handoff_timing local=${node_id} step=[0-9]+ node=${idx} .* status=ok" "$node_id qwen3 worker handoff timing" || return 1
     if [[ "$SIM_QWEN3_GUEST_ENGRAM" == "1" ]]; then
@@ -1064,6 +1070,7 @@ prepare_environment() {
   control_log="$RUN_DIR/control.log"
   validate_qwen3_weights_path || return 1
   qwen3_dense_apply_config_env
+  validate_qwen3_runtime_object_view_source || return 1
   validate_w5_profile_runtime || return 1
   validate_qwen3_engram_context_refs || return 1
   if is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then

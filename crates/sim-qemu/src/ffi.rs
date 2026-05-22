@@ -3,6 +3,7 @@ use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 
 use sim_config::ScenarioConfig;
+use sim_services::object::LingquObmmObjectRefWire;
 use sim_services::shmem::DEFAULT_MAX_SEGMENT_BYTES;
 use sim_topology::SimTopology;
 
@@ -107,6 +108,20 @@ impl LinquUbBridge {
             .map_err(|_| "read segment payload failed")
     }
 
+    fn register_qwen3_runtime_object_payload(
+        &mut self,
+        object_ref: LingquObmmObjectRefWire,
+        payload: &[u8],
+    ) -> Result<(), &'static str> {
+        self.adapter
+            .register_qwen3_runtime_object_payload(
+                object_ref,
+                payload.to_vec(),
+                "qemu_obmm_bridge_live_payload",
+            )
+            .map_err(|_| "register qwen3 runtime object payload failed")
+    }
+
     fn ring_doorbell(
         &mut self,
         endpoint_id: u16,
@@ -147,6 +162,34 @@ impl LinquUbBridge {
         } else {
             Ok(false)
         }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn linqu_ub_bridge_register_qwen3_runtime_object_payload(
+    ptr: *mut LinquUbBridge,
+    object_ref_data: *const u8,
+    object_ref_len: usize,
+    payload: *const u8,
+    payload_len: usize,
+) -> c_int {
+    if object_ref_data.is_null() || payload.is_null() {
+        return -1;
+    }
+    let object_ref_data = unsafe { std::slice::from_raw_parts(object_ref_data, object_ref_len) };
+    let payload = unsafe { std::slice::from_raw_parts(payload, payload_len) };
+    let object_ref = match LingquObmmObjectRefWire::from_le_bytes(object_ref_data) {
+        Ok(object_ref) => object_ref,
+        Err(_) => return -1,
+    };
+    match bridge_mut(ptr).and_then(|bridge| {
+        bridge
+            .register_qwen3_runtime_object_payload(object_ref, payload)
+            .map(|_| 0)
+            .map_err(|_| -1)
+    }) {
+        Ok(code) => code,
+        Err(code) => code,
     }
 }
 

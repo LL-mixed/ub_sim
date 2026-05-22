@@ -1,7 +1,7 @@
 use sim_core::{CompletionEvent, EntityId, HealthStatus, SegmentHandle, SimError};
 use sim_services::{
     block::BlockServiceProfile, db::DbServiceProfile, dfs::DfsServiceProfile,
-    shmem::ShmemServiceProfile,
+    object::LingquObmmObjectRefWire, shmem::ShmemServiceProfile,
 };
 use sim_topology::{SimTopology, TopologySnapshot};
 use sim_uapi::{LocalGuestUapiSurface, UapiCommand, UapiResponse};
@@ -98,6 +98,17 @@ impl QemuBackendAdapter {
         out: &mut [u8],
     ) -> Result<(), SimError> {
         self.surface.read_segment_payload(segment, offset, out)
+    }
+
+    pub fn register_qwen3_runtime_object_payload(
+        &mut self,
+        object_ref: LingquObmmObjectRefWire,
+        bytes: Vec<u8>,
+        source: impl Into<String>,
+    ) -> Result<(), SimError> {
+        self.surface
+            .register_qwen3_runtime_object_payload(object_ref, bytes, source)
+            .map_err(|_| SimError::InvalidInput("invalid qwen3 runtime object payload"))
     }
 
     pub fn enqueue_descriptor(

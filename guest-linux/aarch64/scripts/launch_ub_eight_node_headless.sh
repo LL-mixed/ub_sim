@@ -378,6 +378,7 @@ if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_reference" || "$SIM_UAP
   log "qwen3_weights_path=${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}"
   log "qwen3_model_id=${SIM_QWEN3_DENSE_MODEL_ID:-}"
   log "qwen3_model_key=${SIM_QWEN3_DENSE_MODEL_KEY:-}"
+  log "qwen3_decode_round_barrier=${SIM_QWEN3_DECODE_ROUND_BARRIER:-0}"
   log "qwen3_decode_round_barrier_timeout_ms=${SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS:-}"
 fi
 log "logs_dir=$(dirname "$CONTROL_LOG")"

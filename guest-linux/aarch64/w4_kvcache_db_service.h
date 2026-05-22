@@ -301,10 +301,12 @@ int w4_db_obmm_service_v0_wait_engram_state(struct w4_db_service *svc,
 int w4_db_obmm_service_v0_publish_decode_round_done(struct w4_db_service *svc,
                                                     uint32_t local_node,
                                                     uint32_t cluster_node_count,
-                                                    uint64_t decode_step);
+                                                    uint64_t decode_step,
+                                                    uint64_t round_scope_hash);
 int w4_db_obmm_service_v0_wait_all_decode_round_done(struct w4_db_service *svc,
                                                      uint32_t cluster_node_count,
                                                      uint64_t decode_step,
+                                                     uint64_t round_scope_hash,
                                                      uint64_t timeout_ms);
 int w4_db_qwen3_layer_range_for_node(uint32_t local_node,
                                      uint32_t cluster_node_count,

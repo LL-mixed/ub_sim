@@ -6637,6 +6637,8 @@ int main(void)
     uint64_t qwen3_round_input_token_count = 0;
     uint64_t uapi_completion_timeout_ms = W4_DEFAULT_TIMEOUT_MS;
     uint64_t decode_round_barrier_timeout_ms = 600000ULL;
+    bool decode_round_barrier_enabled = false;
+    uint64_t decode_round_scope_hash = 0;
     uint64_t round_start_ms = 0;
     uint64_t terminal_gate_ms = 0;
     uint64_t setup_ms = 0;
@@ -6863,6 +6865,27 @@ int main(void)
     }
     uapi_completion_timeout_ms = env_u64_or_default("SIM_W4_UAPI_COMPLETION_TIMEOUT_MS",
                                                     W4_DEFAULT_TIMEOUT_MS);
+    decode_round_barrier_enabled =
+        env_bool_is_one("SIM_QWEN3_DECODE_ROUND_BARRIER");
+    if (decode_round_barrier_enabled) {
+        const char *run_id = getenv("SIM_W5_RUN_ID");
+        const char *batch_id = getenv("SIM_W5_BATCH_ID");
+
+        if (!run_id || run_id[0] == '\0') {
+            run_id = "default-run";
+        }
+        if (!batch_id || batch_id[0] == '\0') {
+            batch_id = "default-batch";
+        }
+        decode_round_scope_hash =
+            (w4_hash_string(run_id) * 1099511628211ULL) ^ w4_hash_string(batch_id);
+        printf("[w4_guest] stage qwen3_decode_round_barrier_scope run_id=%s batch_id=%s"
+               " scope_hash=0x%016" PRIx64
+               " storage=per_scope_step_slot status=ok\n",
+               run_id,
+               batch_id,
+               decode_round_scope_hash);
+    }
     decode_round_barrier_timeout_ms =
         env_u64_or_default("SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS", 600000ULL);
     if (guest_decode_steps == 0) {
@@ -9492,7 +9515,8 @@ qwen3_w5_final_node_publish_done:
            default_segment, block, key, kvcache_db_bytes);
     printf("[w4_guest] dispatch path=ubc_entity_chipbackend\n");
 qwen3_after_compute_publish:
-    if (is_qwen3_profile() && enable_db_cluster && cluster_node_count == 8U) {
+    if (decode_round_barrier_enabled && is_qwen3_profile() && enable_db_cluster &&
+        cluster_node_count == 8U) {
         uint32_t dispatch_node = 0U;
         uint64_t stage_start_ms = monotonic_ms();
 
@@ -9506,7 +9530,8 @@ qwen3_after_compute_publish:
             w4_db_obmm_service_v0_publish_decode_round_done(&db_service,
                                                             dispatch_node,
                                                             cluster_node_count,
-                                                            guest_decode_step) != 0) {
+                                                            guest_decode_step,
+                                                            decode_round_scope_hash) != 0) {
             fprintf(stderr,
                     "[w4_guest] fail qwen3 decode round done publish failed role=%s step=%" PRIu64 "\n",
                     role,
@@ -9730,26 +9755,29 @@ qwen3_after_compute_publish:
     printf("[w4_guest] pass\n");
     rc = 0;
     if (guest_decode_step + 1 < guest_decode_step_limit) {
-        uint64_t stage_start_ms = monotonic_ms();
+        if (decode_round_barrier_enabled) {
+            uint64_t stage_start_ms = monotonic_ms();
 
-        if (is_qwen3_profile() && enable_db_cluster && cluster_node_count == 8U &&
-            w4_db_obmm_service_v0_wait_all_decode_round_done(&db_service,
-                                                             cluster_node_count,
-                                                             guest_decode_step,
-                                                             decode_round_barrier_timeout_ms) != 0) {
-            fprintf(stderr,
-                    "[w4_guest] fail qwen3 decode round barrier failed step=%" PRIu64 "\n",
-                    guest_decode_step);
-            goto out;
+            if (is_qwen3_profile() && enable_db_cluster && cluster_node_count == 8U &&
+                w4_db_obmm_service_v0_wait_all_decode_round_done(&db_service,
+                                                                 cluster_node_count,
+                                                                 guest_decode_step,
+                                                                 decode_round_scope_hash,
+                                                                 decode_round_barrier_timeout_ms) != 0) {
+                fprintf(stderr,
+                        "[w4_guest] fail qwen3 decode round barrier failed step=%" PRIu64 "\n",
+                        guest_decode_step);
+                goto out;
+            }
+            barrier_ms = monotonic_ms() - stage_start_ms;
+            printf("[w4_guest] stage qwen3_worker_barrier_timing local=%s step=%" PRIu64
+                   " node=%u barrier_ms=%" PRIu64 " total_with_barrier_ms=%" PRIu64 "\n",
+                   role,
+                   guest_decode_step,
+                   round_dispatch_node == UINT32_MAX ? 0U : round_dispatch_node + 1U,
+                   barrier_ms,
+                   monotonic_ms() - round_start_ms);
         }
-        barrier_ms = monotonic_ms() - stage_start_ms;
-        printf("[w4_guest] stage qwen3_worker_barrier_timing local=%s step=%" PRIu64
-               " node=%u barrier_ms=%" PRIu64 " total_with_barrier_ms=%" PRIu64 "\n",
-               role,
-               guest_decode_step,
-               round_dispatch_node == UINT32_MAX ? 0U : round_dispatch_node + 1U,
-               barrier_ms,
-               monotonic_ms() - round_start_ms);
         if (cq != MAP_FAILED) {
             munmap(cq, PAGE_SIZE_BYTES);
             cq = MAP_FAILED;

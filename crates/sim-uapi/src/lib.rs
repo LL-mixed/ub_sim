@@ -214,7 +214,6 @@ pub trait GuestUapiSurface {
     fn get_health(&self, entity: EntityId) -> Result<HealthStatus, SimError>;
 }
 
-#[derive(Debug)]
 pub struct LocalGuestUapiSurface {
     topology: SimTopology,
     block_service: BlockServiceStub,
@@ -223,6 +222,8 @@ pub struct LocalGuestUapiSurface {
     db_service: DbServiceStub,
     object_service: LingquObjectServiceStub,
     segment_payloads: HashMap<SegmentHandle, Vec<u8>>,
+    qwen3_runtime_object_payloads:
+        HashMap<Qwen3RuntimeObjectCacheKey, Arc<Qwen3RuntimeObjectPayload>>,
     block_payloads: HashMap<BlockHash, Vec<u8>>,
     next_segment_id: u64,
     next_cq_id: u32,
@@ -236,6 +237,37 @@ pub struct LocalGuestUapiSurface {
     cmd_queues: HashMap<CmdQueueHandle, CommandQueueState>,
     runtime_queue: SharedRuntimeExecutor<RuntimeWorkItem<UapiRuntimePayload>>,
     completion_routes: RuntimeCompletionTracker<CqHandle>,
+}
+
+impl std::fmt::Debug for LocalGuestUapiSurface {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalGuestUapiSurface")
+            .field("topology", &self.topology)
+            .field("block_service", &self.block_service)
+            .field("shmem_service", &self.shmem_service)
+            .field("dfs_service", &self.dfs_service)
+            .field("db_service", &self.db_service)
+            .field("object_service", &self.object_service)
+            .field("segment_payloads", &self.segment_payloads)
+            .field(
+                "qwen3_runtime_object_payloads",
+                &self.qwen3_runtime_object_payloads.len(),
+            )
+            .field("block_payloads", &self.block_payloads)
+            .field("next_segment_id", &self.next_segment_id)
+            .field("next_cq_id", &self.next_cq_id)
+            .field("next_cmdq_id", &self.next_cmdq_id)
+            .field("service_clock", &self.service_clock)
+            .field("runtime_issue_latency_us", &self.runtime_issue_latency_us)
+            .field("runtime_retry_delay_us", &self.runtime_retry_delay_us)
+            .field("runtime_queue_depth", &self.runtime_queue_depth)
+            .field("runtime_max_retries", &self.runtime_max_retries)
+            .field("cq_events", &self.cq_events)
+            .field("cmd_queues", &self.cmd_queues)
+            .field("runtime_queue", &self.runtime_queue)
+            .field("completion_routes", &self.completion_routes)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -805,6 +837,7 @@ impl LocalGuestUapiSurface {
             db_service: DbServiceStub::new(db_profile),
             object_service: LingquObjectServiceStub::new(LingquObjectServiceProfile::default()),
             segment_payloads: HashMap::new(),
+            qwen3_runtime_object_payloads: HashMap::new(),
             block_payloads: HashMap::new(),
             next_segment_id: 0,
             next_cq_id: 0,
@@ -863,6 +896,20 @@ impl LocalGuestUapiSurface {
         Ok(())
     }
 
+    pub fn register_qwen3_runtime_object_payload(
+        &mut self,
+        object_ref: LingquObmmObjectRefWire,
+        bytes: Vec<u8>,
+        source: impl Into<String>,
+    ) -> Result<(), String> {
+        let payload = Qwen3RuntimeObjectPayload::from_live_obmm_bytes(object_ref, bytes, source)?;
+        self.qwen3_runtime_object_payloads.insert(
+            Qwen3RuntimeObjectCacheKey::from(&object_ref),
+            Arc::new(payload),
+        );
+        Ok(())
+    }
+
     pub fn read_segment_payload(
         &self,
         segment: SegmentHandle,
@@ -883,6 +930,17 @@ impl LocalGuestUapiSurface {
         }
         out.copy_from_slice(&payload[offset..end]);
         Ok(())
+    }
+
+    fn qwen3_runtime_object_payload_view(
+        &self,
+        object_ref: LingquObmmObjectRefWire,
+    ) -> Result<Option<Qwen3ObjectBackedOperandView>, String> {
+        self.qwen3_runtime_object_payloads
+            .get(&Qwen3RuntimeObjectCacheKey::from(&object_ref))
+            .cloned()
+            .map(Qwen3ObjectBackedOperandView::from_runtime_payload)
+            .transpose()
     }
 
     fn default_cq(&self) -> Result<CqHandle, SimError> {
@@ -1485,7 +1543,7 @@ impl LocalGuestUapiSurface {
             .get(&req.segment)
             .ok_or_else(|| "missing_qwen3_range_dispatch_segment_payload".to_string())
             .and_then(|input| {
-                let operands = resolve_qwen3_range_dispatch_operands(&req, input)?;
+                let operands = resolve_qwen3_range_dispatch_operands(&req, input, self)?;
                 validate_qwen3_range_dispatch_object_refs(&req, input)?;
                 run_qwen3_range_chipbackend(&self.topology, &req.task, input, operands.as_ref())
             });
@@ -1748,6 +1806,83 @@ struct Qwen3RangeDispatchOperands {
     object_refs: Vec<LingquObmmObjectRefWire>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct Qwen3RuntimeObjectCacheKey {
+    object_kind: u16,
+    owner_entity: u32,
+    producer_entity: u32,
+    object_version: u64,
+    key_hash: u64,
+    payload_offset: u64,
+    payload_bytes: u64,
+    payload_checksum: u64,
+}
+
+impl From<&LingquObmmObjectRefWire> for Qwen3RuntimeObjectCacheKey {
+    fn from(object_ref: &LingquObmmObjectRefWire) -> Self {
+        Self {
+            object_kind: object_ref.object_kind,
+            owner_entity: object_ref.owner_entity,
+            producer_entity: object_ref.producer_entity,
+            object_version: object_ref.object_version,
+            key_hash: object_ref.key_hash,
+            payload_offset: object_ref.payload_offset,
+            payload_bytes: object_ref.payload_bytes,
+            payload_checksum: object_ref.payload_checksum,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Qwen3RuntimeObjectPayload {
+    object_ref: LingquObmmObjectRefWire,
+    bytes: Arc<[u8]>,
+    source: String,
+}
+
+impl Qwen3RuntimeObjectPayload {
+    pub fn from_live_obmm_bytes(
+        object_ref: LingquObmmObjectRefWire,
+        bytes: Vec<u8>,
+        source: impl Into<String>,
+    ) -> Result<Self, String> {
+        object_ref
+            .validate()
+            .map_err(|err| format!("qwen3_runtime_object_ref_invalid:{err}"))?;
+        if bytes.len() as u64 != object_ref.payload_bytes {
+            return Err(format!(
+                "qwen3_runtime_object_payload_bytes_mismatch:got={}:expected={}",
+                bytes.len(),
+                object_ref.payload_bytes
+            ));
+        }
+        let checksum = qwen3_dense_reference_range_object_payload_checksum(&bytes);
+        if checksum != object_ref.payload_checksum {
+            return Err(format!(
+                "qwen3_runtime_object_payload_checksum_mismatch:got={checksum:#x}:expected={:#x}",
+                object_ref.payload_checksum
+            ));
+        }
+        Ok(Self {
+            object_ref,
+            bytes: Arc::from(bytes),
+            source: source.into(),
+        })
+    }
+
+    pub fn object_ref(&self) -> &LingquObmmObjectRefWire {
+        &self.object_ref
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Qwen3ObjectBackedOperandView {
     object_ref: LingquObmmObjectRefWire,
@@ -1787,13 +1922,32 @@ impl Qwen3ObjectBackedOperandView {
         )
     }
 
+    fn from_runtime_payload(payload: Arc<Qwen3RuntimeObjectPayload>) -> Result<Self, String> {
+        let len = payload.bytes().len();
+        Self::from_backing(
+            *payload.object_ref(),
+            Qwen3ObjectPayloadBacking::RuntimeObject(payload),
+            0..len,
+        )
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
     fn is_mapped(&self) -> bool {
         matches!(self.backing, Qwen3ObjectPayloadBacking::MappedFile(_))
     }
 
+    fn is_object_backed(&self) -> bool {
+        matches!(
+            self.backing,
+            Qwen3ObjectPayloadBacking::MappedFile(_) | Qwen3ObjectPayloadBacking::RuntimeObject(_)
+        )
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
     fn backing_path(&self) -> Option<&Path> {
         match &self.backing {
             Qwen3ObjectPayloadBacking::MappedFile(file) => Some(file.path()),
+            Qwen3ObjectPayloadBacking::RuntimeObject(_) => None,
         }
     }
 
@@ -1809,12 +1963,14 @@ impl Qwen3ObjectBackedOperandView {
 #[derive(Clone, Debug)]
 enum Qwen3ObjectPayloadBacking {
     MappedFile(Arc<Qwen3MappedFile>),
+    RuntimeObject(Arc<Qwen3RuntimeObjectPayload>),
 }
 
 impl Qwen3ObjectPayloadBacking {
     fn bytes(&self) -> &[u8] {
         match self {
             Qwen3ObjectPayloadBacking::MappedFile(file) => file.bytes(),
+            Qwen3ObjectPayloadBacking::RuntimeObject(payload) => payload.bytes(),
         }
     }
 }
@@ -1822,6 +1978,7 @@ impl Qwen3ObjectPayloadBacking {
 #[cfg(unix)]
 #[derive(Debug)]
 struct Qwen3MappedFile {
+    #[cfg_attr(not(test), allow(dead_code))]
     path: PathBuf,
     ptr: std::ptr::NonNull<u8>,
     len: usize,
@@ -1835,6 +1992,7 @@ unsafe impl Sync for Qwen3MappedFile {}
 
 #[cfg(unix)]
 impl Qwen3MappedFile {
+    #[cfg_attr(not(test), allow(dead_code))]
     fn path(&self) -> &Path {
         &self.path
     }
@@ -1874,6 +2032,7 @@ impl Qwen3MappedFile {
 fn resolve_qwen3_range_dispatch_operands(
     req: &Qwen3RangeDispatchReq,
     segment_payload: &[u8],
+    surface: &LocalGuestUapiSurface,
 ) -> Result<Option<Qwen3RangeDispatchOperands>, String> {
     if req.object_ref_count == 0 {
         return Ok(None);
@@ -1898,9 +2057,9 @@ fn resolve_qwen3_range_dispatch_operands(
                         object_ref.payload_bytes
                     ));
                 }
-                let operand = qwen3_runtime_object_payload_view(object_ref)?;
-                if !operand.is_mapped() || operand.backing_path().is_none() {
-                    return Err("qwen3_range_dispatch_hidden_operand_not_mapped".to_string());
+                let operand = qwen3_runtime_object_payload_view(object_ref, surface)?;
+                if !operand.is_object_backed() {
+                    return Err("qwen3_range_dispatch_hidden_operand_not_object_backed".to_string());
                 }
                 if operand.bytes().len() != expected_len {
                     return Err(format!(
@@ -1918,9 +2077,9 @@ fn resolve_qwen3_range_dispatch_operands(
             QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE => {
                 let payload_len = usize::try_from(object_ref.payload_bytes)
                     .map_err(|_| "qwen3_range_dispatch_kv_object_bytes_too_large".to_string())?;
-                let operand = qwen3_runtime_object_payload_view(object_ref)?;
-                if !operand.is_mapped() || operand.backing_path().is_none() {
-                    return Err("qwen3_range_dispatch_kv_operand_not_mapped".to_string());
+                let operand = qwen3_runtime_object_payload_view(object_ref, surface)?;
+                if !operand.is_object_backed() {
+                    return Err("qwen3_range_dispatch_kv_operand_not_object_backed".to_string());
                 }
                 if operand.bytes().len() != payload_len {
                     return Err(format!(
@@ -2463,7 +2622,11 @@ fn qwen3_engram_context_payload_get(
 
 fn qwen3_runtime_object_payload_view(
     object_ref: LingquObmmObjectRefWire,
+    surface: &LocalGuestUapiSurface,
 ) -> Result<Qwen3ObjectBackedOperandView, String> {
+    if let Some(view) = surface.qwen3_runtime_object_payload_view(object_ref)? {
+        return Ok(view);
+    }
     if matches!(
         object_ref.object_kind,
         QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT
@@ -2482,7 +2645,7 @@ fn qwen3_runtime_object_payload_view(
         return qwen3_object_registry_view_from_dir(&registry_dir, object_ref);
     }
     Err(format!(
-        "qwen3_runtime_object_payload_view_unresolved:kind={}:version={}:key_hash={:#x}:bytes={}:checksum={:#x}:hint=set_explicit_object_service_snapshot_or_registry",
+        "qwen3_runtime_object_payload_view_unresolved:kind={}:version={}:key_hash={:#x}:bytes={}:checksum={:#x}:hint=register_live_obmm_payload_or_set_explicit_object_service_snapshot_or_registry",
         object_ref.object_kind,
         object_ref.object_version,
         object_ref.key_hash,
@@ -26241,10 +26404,12 @@ mod tests {
                     object_ref_table_offset: OBJECT_REF_TABLE_OFFSET as u32,
                     object_ref_count: 2,
                 };
+                let surface = test_surface();
 
-                let operands = resolve_qwen3_range_dispatch_operands(&req, &segment_payload)
-                    .expect("resolve operands")
-                    .expect("object refs should produce operands");
+                let operands =
+                    resolve_qwen3_range_dispatch_operands(&req, &segment_payload, &surface)
+                        .expect("resolve operands")
+                        .expect("object refs should produce operands");
                 assert_eq!(
                     operands
                         .hidden_input
@@ -26371,8 +26536,9 @@ mod tests {
                     object_ref_table_offset: OBJECT_REF_TABLE_OFFSET as u32,
                     object_ref_count: 2,
                 };
+                let surface = test_surface();
 
-                let err = resolve_qwen3_range_dispatch_operands(&req, &segment_payload)
+                let err = resolve_qwen3_range_dispatch_operands(&req, &segment_payload, &surface)
                     .expect_err("object-backed operands must not fall back to inline payloads");
                 assert!(
                     err.contains("qwen3_object_service_payload_index_map_failed"),
@@ -26380,6 +26546,127 @@ mod tests {
                 );
 
                 std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT);
+            },
+        );
+    }
+
+    #[test]
+    fn qwen3_range_dispatch_resolves_live_obmm_bridge_operands() {
+        run_simpler_native_test_isolated(
+            "qwen3_range_dispatch_resolves_live_obmm_bridge_operands",
+            || {
+                const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
+                const OBJECT_REF_TABLE_OFFSET: usize = 0x07_0000;
+                const HIDDEN_BYTES: usize = 2_048;
+                const KV_BYTES: usize = 128;
+
+                std::env::set_var("SIM_QWEN3_DENSE_TP_NODES", "8");
+                std::env::set_var("SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS", "28");
+                std::env::set_var("SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES", "262144");
+                std::env::set_var(
+                    "SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES",
+                    HIDDEN_BYTES.to_string(),
+                );
+                std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR);
+                std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT);
+
+                let task = TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord {
+                        levels: [RANGE_TASK_MAGIC, 1, 4, 8, 2, 8, 28, HIDDEN_BYTES as u32],
+                    },
+                    scope_depth: 8,
+                    task_id: 31,
+                };
+                let segment_len = QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
+                    + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES
+                    + KV_BYTES;
+                let mut segment_payload = vec![0u8; segment_len];
+                let hidden_payload = vec![0x31u8; HIDDEN_BYTES];
+                let kv_payload = vec![0x7eu8; KV_BYTES];
+                let hidden_ref = LingquObmmObjectRefWire::committed(
+                    QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+                    1,
+                    0,
+                    3,
+                    0x8912,
+                    0x1000,
+                    HIDDEN_BYTES as u64,
+                    qwen3_dense_reference_range_object_payload_checksum(&hidden_payload),
+                );
+                let kv_ref = LingquObmmObjectRefWire::committed(
+                    QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+                    1,
+                    1,
+                    3,
+                    0x8913,
+                    0x2000,
+                    KV_BYTES as u64,
+                    qwen3_dense_reference_range_object_payload_checksum(&kv_payload),
+                );
+                write_obmm_object_ref_wire(
+                    &mut segment_payload[OBJECT_REF_TABLE_OFFSET
+                        ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN],
+                    hidden_ref,
+                );
+                write_obmm_object_ref_wire(
+                    &mut segment_payload[OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN
+                        ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN * 2],
+                    kv_ref,
+                );
+                let req = Qwen3RangeDispatchReq {
+                    op_id: 31,
+                    segment: sim_core::SegmentHandle(1),
+                    task,
+                    object_ref_table_offset: OBJECT_REF_TABLE_OFFSET as u32,
+                    object_ref_count: 2,
+                };
+                let mut surface = test_surface();
+                surface
+                    .register_qwen3_runtime_object_payload(
+                        hidden_ref,
+                        hidden_payload.clone(),
+                        "test_live_obmm",
+                    )
+                    .expect("register live hidden object");
+                surface
+                    .register_qwen3_runtime_object_payload(
+                        kv_ref,
+                        kv_payload.clone(),
+                        "test_live_obmm",
+                    )
+                    .expect("register live kv object");
+
+                let operands =
+                    resolve_qwen3_range_dispatch_operands(&req, &segment_payload, &surface)
+                        .expect("resolve operands from live cache")
+                        .expect("live object refs should produce operands");
+                assert_eq!(
+                    operands
+                        .hidden_input
+                        .as_ref()
+                        .map(|operand| operand.bytes()),
+                    Some(hidden_payload.as_slice())
+                );
+                assert_eq!(
+                    operands.previous_kv.as_ref().map(|operand| operand.bytes()),
+                    Some(kv_payload.as_slice())
+                );
+                assert!(
+                    operands
+                        .hidden_input
+                        .as_ref()
+                        .map(|operand| operand.is_object_backed())
+                        .unwrap_or(false),
+                    "live OBMM operands should be object-backed"
+                );
+                assert_eq!(
+                    operands
+                        .hidden_input
+                        .as_ref()
+                        .and_then(|operand| operand.backing_path()),
+                    None
+                );
             },
         );
     }
@@ -26559,10 +26846,12 @@ mod tests {
                     object_ref_table_offset: OBJECT_REF_TABLE_OFFSET as u32,
                     object_ref_count: 2,
                 };
+                let surface = test_surface();
 
-                let operands = resolve_qwen3_range_dispatch_operands(&req, &segment_payload)
-                    .expect("resolve operands")
-                    .expect("object refs should produce operands");
+                let operands =
+                    resolve_qwen3_range_dispatch_operands(&req, &segment_payload, &surface)
+                        .expect("resolve operands")
+                        .expect("object refs should produce operands");
                 assert_eq!(
                     operands
                         .hidden_input
@@ -26661,10 +26950,12 @@ mod tests {
                     object_ref_table_offset: OBJECT_REF_TABLE_OFFSET as u32,
                     object_ref_count: 1,
                 };
+                let surface = test_surface();
 
-                let operands = resolve_qwen3_range_dispatch_operands(&req, &segment_payload)
-                    .expect("runtime operands must use live registry, not bootstrap snapshot")
-                    .expect("hidden ref should resolve to operand");
+                let operands =
+                    resolve_qwen3_range_dispatch_operands(&req, &segment_payload, &surface)
+                        .expect("runtime operands must use live registry, not bootstrap snapshot")
+                        .expect("hidden ref should resolve to operand");
                 assert_eq!(
                     operands
                         .hidden_input
