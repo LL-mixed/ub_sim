@@ -4816,12 +4816,22 @@ fn publish_w5_memory_decision_artifact_refs(
     let mut artifact_durable_store = load_lingqu_memory_durable_store(artifact_store_path)?;
     let object_snapshot =
         load_lingqu_object_service_snapshot(&config.object_store_path, &mut object_durable_store)?;
-    let mut object_service = if let Some(snapshot) = object_snapshot {
+    let mut object_service = if let Some(mut snapshot) = object_snapshot {
+        let publication_profile = w5_memory_decision_publication_object_service_profile();
+        snapshot.profile.queue_depth = snapshot
+            .profile
+            .queue_depth
+            .max(publication_profile.queue_depth);
+        snapshot.profile.obmm_pool.queue_depth = snapshot
+            .profile
+            .obmm_pool
+            .queue_depth
+            .max(publication_profile.obmm_pool.queue_depth);
         LingquObjectServiceStub::import_snapshot(snapshot).with_context(|| {
             format!("import object store {}", config.object_store_path.display())
         })?
     } else {
-        LingquObjectServiceStub::new(LingquObjectServiceProfile::default())
+        LingquObjectServiceStub::new(w5_memory_decision_publication_object_service_profile())
     };
     let mut shortpath_refs = Vec::new();
     for entry in &bundle.shortpath_entries {
@@ -4894,6 +4904,13 @@ fn publish_w5_memory_decision_artifact_refs(
         object_registry_dir: config.registry_dir.clone(),
         object_service_snapshot_path: Some(snapshot_path),
     })
+}
+
+fn w5_memory_decision_publication_object_service_profile() -> LingquObjectServiceProfile {
+    let mut profile = LingquObjectServiceProfile::default();
+    profile.queue_depth = 4096;
+    profile.obmm_pool.queue_depth = 4096;
+    profile
 }
 
 fn publish_w5_execution_artifact_ref(
@@ -8161,7 +8178,8 @@ mod tests {
         run_w5_runtime_boundary_lookups, save_lingqu_durable_sim, save_lingqu_memory_durable_store,
         simpler_host_matmul_artifact_producer_path, validate_qwen3_dense_weights_path,
         validate_w5_inference_profile, validate_w5_memory_decision_bundle_for_run,
-        w5_inference_profile_spec, w5_memory_decision_env_vars, w5_memory_shortpath_stream_env,
+        w5_inference_profile_spec, w5_memory_decision_env_vars,
+        w5_memory_decision_publication_object_service_profile, w5_memory_shortpath_stream_env,
         w5_memory_should_publish_engram_state, w5_object_service_payload_index_path,
         LingquDurableSim, LingquDurableSimSnapshot, LingquMemoryDurableStore,
         LingquMemoryDurableStoreSnapshot, LingquObjectServiceStub, LingquObjectVersionSelector,
@@ -9781,6 +9799,13 @@ mod tests {
     }
 
     #[test]
+    fn w5_memory_decision_publication_profile_covers_14b_16_step_shortpaths() {
+        let profile = w5_memory_decision_publication_object_service_profile();
+        assert!(profile.queue_depth >= 16 * 7);
+        assert!(profile.obmm_pool.queue_depth >= 16 * 7);
+    }
+
+    #[test]
     fn qwen3_guest_log_match_count_counts_worker_markers() {
         let log = "\
 stage uapi_qwen3_range_runtime_forward node=0
@@ -9819,6 +9844,22 @@ stage qwen3_range_forward_runtime_output_publish node=2
                 range_forwards: 4,
                 runtime_inputs: 3,
                 runtime_outputs: 4,
+            }
+        );
+        assert_eq!(
+            qwen3_guest_expected_worker_counts(16, false, 0),
+            Qwen3GuestExpectedWorkerCounts {
+                range_forwards: 128,
+                runtime_inputs: 127,
+                runtime_outputs: 128,
+            }
+        );
+        assert_eq!(
+            qwen3_guest_expected_worker_counts(16, true, 112),
+            Qwen3GuestExpectedWorkerCounts {
+                range_forwards: 16,
+                runtime_inputs: 15,
+                runtime_outputs: 16,
             }
         );
     }
@@ -14017,17 +14058,17 @@ fn qwen3_guest_expected_worker_counts(
     shortpath_downstream_skip_count: usize,
 ) -> Qwen3GuestExpectedWorkerCounts {
     let full_range_forwards = 8 * step_count;
-    let full_runtime_inputs = 7 * step_count;
     let full_runtime_outputs = 8 * step_count;
     let skipped = if shortpath_execute_jump_to_terminal {
         shortpath_downstream_skip_count
     } else {
         0
     };
+    let range_forwards = full_range_forwards.saturating_sub(skipped);
 
     Qwen3GuestExpectedWorkerCounts {
-        range_forwards: full_range_forwards.saturating_sub(skipped),
-        runtime_inputs: full_runtime_inputs.saturating_sub(skipped),
+        range_forwards,
+        runtime_inputs: range_forwards.saturating_sub(1),
         runtime_outputs: full_runtime_outputs.saturating_sub(skipped),
     }
 }
