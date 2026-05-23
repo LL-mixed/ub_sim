@@ -251,12 +251,20 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         summary_text = summary.read_text(encoding="utf-8")
 
         self.assertIn("SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode", runner_text)
+        self.assertIn("SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP", runner_text)
+        self.assertIn("SIM_W5_MEMORY_OBSERVATION_STORE", runner_text)
+        self.assertIn("target/debug/sim-cli", runner_text)
+        self.assertIn("--memory-runtime-boundary-lookup", runner_text)
+        self.assertIn("--memory-observation-store", runner_text)
+        self.assertIn('exec "$SIM_CLI_BIN" "${cli_args[@]}"', runner_text)
         self.assertIn("eight_node_w5_inference_cluster_summary", runner_text)
         self.assertIn('exec "$SCRIPT_DIR/run_ub_eight_node_w4_guest.sh"', runner_text)
         self.assertIn('exec "$SCRIPT_DIR/run_ub_eight_node_w5_inference_cluster.sh"', generic_text)
         self.assertIn("source \"$CONFIG_PATH\"", config_runner_text)
         self.assertIn("fixed RUN_ID is disabled", config_runner_text)
         self.assertIn("SIM_W5_ALLOW_FIXED_RUN_ID", config_runner_text)
+        self.assertIn("SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP", config_runner_text)
+        self.assertIn("SIM_W5_MEMORY_OBSERVATION_STORE", config_runner_text)
         self.assertIn('exec "$SCRIPT_DIR/run_ub_eight_node_w5_inference_cluster.sh"', config_runner_text)
         legacy_runner_text = (script_dir / "run_ub_eight_node_w4_guest.sh").read_text(encoding="utf-8")
         self.assertIn("explicit obmm cluster runtime bootstrap", legacy_runner_text)
@@ -279,6 +287,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3",
                         "SIM_W5_MEMORY_SHORTPATH_EXECUTE=0",
+                        "SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP=1",
+                        "SIM_W5_MEMORY_OBSERVATION_STORE=/tmp/w5-memory-store.json",
                     ]
                 )
                 + "\n",
@@ -299,6 +309,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                 "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3",
                 "SIM_W5_MEMORY_SHORTPATH_EXECUTE=0",
+                "SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP=1",
+                "SIM_W5_MEMORY_OBSERVATION_STORE=/tmp/w5-memory-store.json",
             ],
         )
 

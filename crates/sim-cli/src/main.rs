@@ -254,6 +254,7 @@ struct Qwen3GuestDecodeLoopCliArgs {
     memory_bootstrap: Option<W5MemoryBootstrapConfig>,
     memory_decisions: Option<W5MemoryDecisionConfig>,
     memory_observation_store_path: Option<PathBuf>,
+    memory_runtime_boundary_lookup: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -556,6 +557,7 @@ where
             let mut memory_shortpath_execute = false;
             let mut memory_prefetch_plan_id = None;
             let mut memory_prefix_cache_reuse_plan_id = None;
+            let mut memory_runtime_boundary_lookup = false;
             let mut positionals = Vec::new();
             let mut pending = args.peekable();
 
@@ -768,6 +770,11 @@ where
                     memory_observation_store_path = Some(PathBuf::from(next));
                 } else if let Some(value) = text.strip_prefix("--memory-observation-store=") {
                     memory_observation_store_path = Some(PathBuf::from(value));
+                } else if text == "--memory-runtime-boundary-lookup" {
+                    memory_runtime_boundary_lookup = true;
+                } else if let Some(value) = text.strip_prefix("--memory-runtime-boundary-lookup=") {
+                    memory_runtime_boundary_lookup =
+                        parse_cli_bool("--memory-runtime-boundary-lookup", value)?;
                 } else if text == "--memory-owner-entity" {
                     let next = pending
                         .next()
@@ -987,6 +994,15 @@ where
             } else {
                 None
             };
+            if memory_runtime_boundary_lookup
+                && memory_observation_store_path.is_none()
+                && memory_bootstrap.is_none()
+                && memory_decisions.is_none()
+            {
+                anyhow::bail!(
+                    "--memory-runtime-boundary-lookup requires --memory-observation-store, --memory-* bootstrap, or --memory-decision-store"
+                );
+            }
             if engram.state_ref.is_some() {
                 engram.enabled = true;
                 engram.pool = Qwen3EngramPool::Obmm;
@@ -1013,6 +1029,7 @@ where
                 memory_bootstrap,
                 memory_decisions,
                 memory_observation_store_path,
+                memory_runtime_boundary_lookup,
             }))
         }
         _ => Ok(None),
@@ -2348,6 +2365,25 @@ fn run_w5_memory_boundary_lookup_from_observation(
     sim_memory::BoundaryLookupResponse,
     sim_memory::ShortpathDecisionRecord,
 )> {
+    let request = w5_memory_boundary_lookup_request_from_observation(
+        store_path,
+        observation_id,
+        engram_state_id,
+        min_confidence_milli,
+        allowed_actions,
+        now_us,
+    )?;
+    run_w5_memory_boundary_lookup_request(store_path, request, now_us)
+}
+
+fn w5_memory_boundary_lookup_request_from_observation(
+    store_path: &Path,
+    observation_id: &str,
+    engram_state_id: Option<String>,
+    min_confidence_milli: u32,
+    allowed_actions: Vec<sim_memory::ShortpathAction>,
+    now_us: u64,
+) -> anyhow::Result<BoundaryLookupRequest> {
     let mut durable_store = load_lingqu_memory_durable_store(store_path)?;
     let observations = durable_store
         .load_boundary_observation_manifest()
@@ -2362,7 +2398,7 @@ fn run_w5_memory_boundary_lookup_from_observation(
     } else {
         now_us
     };
-    let request = observation
+    observation
         .to_lookup_request(
             request_id,
             engram_state_id,
@@ -2370,14 +2406,27 @@ fn run_w5_memory_boundary_lookup_from_observation(
             allowed_actions,
             request_created_at_us,
         )
-        .map_err(|err| anyhow::anyhow!("build lookup request from observation: {err}"))?;
-    run_w5_memory_boundary_lookup_request(store_path, request, now_us)
+        .map_err(|err| anyhow::anyhow!("build lookup request from observation: {err}"))
 }
 
 fn run_w5_memory_boundary_lookup_request(
     store_path: &Path,
     request: BoundaryLookupRequest,
     now_us: u64,
+) -> anyhow::Result<(
+    sim_memory::BoundaryLookupResponse,
+    sim_memory::ShortpathDecisionRecord,
+)> {
+    run_w5_memory_boundary_lookup_request_with_registry_requirement(
+        store_path, request, now_us, true,
+    )
+}
+
+fn run_w5_memory_boundary_lookup_request_with_registry_requirement(
+    store_path: &Path,
+    request: BoundaryLookupRequest,
+    now_us: u64,
+    require_execution_manifest: bool,
 ) -> anyhow::Result<(
     sim_memory::BoundaryLookupResponse,
     sim_memory::ShortpathDecisionRecord,
@@ -2390,11 +2439,16 @@ fn run_w5_memory_boundary_lookup_request(
     };
 
     let mut memory_service = LingquMemoryService::new();
-    load_required_lingqu_memory_execution_registry_artifacts(
-        &mut memory_service,
-        &mut durable_store,
-    )
-    .context("load execution artifact manifest")?;
+    if require_execution_manifest {
+        load_required_lingqu_memory_execution_registry_artifacts(
+            &mut memory_service,
+            &mut durable_store,
+        )
+        .context("load execution artifact manifest")?;
+    } else {
+        rebuild_lingqu_memory_execution_registry_artifacts(&mut memory_service, &mut durable_store)
+            .context("rebuild execution artifact registry for runtime boundary lookup")?;
+    }
     rebuild_lingqu_memory_shortpath_supports(&mut memory_service, &mut durable_store)
         .context("rebuild shortpath support audit")?;
     let response = memory_service
@@ -2410,6 +2464,77 @@ fn run_w5_memory_boundary_lookup_request(
         .context("persist W5 planner shortpath decision DFS audit")?;
     save_lingqu_memory_durable_store(store_path, &durable_store)?;
     Ok((response, planner_decision))
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct W5RuntimeBoundaryLookupReport {
+    observation_count: usize,
+    decision_count: usize,
+    continue_count: usize,
+    jump_to_layer_count: usize,
+    jump_to_terminal_count: usize,
+    require_verify_count: usize,
+    first_decision_id: Option<String>,
+    last_decision_id: Option<String>,
+}
+
+fn run_w5_runtime_boundary_lookups(
+    store_path: &Path,
+    observation_ids: &[String],
+    now_us: u64,
+) -> anyhow::Result<W5RuntimeBoundaryLookupReport> {
+    if observation_ids.is_empty() {
+        anyhow::bail!("runtime boundary lookup requires at least one boundary observation");
+    }
+
+    let mut decisions = Vec::new();
+    for observation_id in observation_ids {
+        let request = w5_memory_boundary_lookup_request_from_observation(
+            store_path,
+            observation_id,
+            None,
+            900,
+            vec![sim_memory::ShortpathAction::JumpToTerminal],
+            now_us,
+        )
+        .with_context(|| {
+            format!("build runtime boundary lookup request from observation {observation_id}")
+        })?;
+        let (_response, decision) =
+            run_w5_memory_boundary_lookup_request_with_registry_requirement(
+                store_path, request, now_us, false,
+            )
+            .with_context(|| {
+                format!(
+                    "run runtime Memory Service boundary lookup for observation {observation_id}"
+                )
+            })?;
+        decisions.push(decision);
+    }
+
+    let mut report = W5RuntimeBoundaryLookupReport {
+        observation_count: observation_ids.len(),
+        decision_count: decisions.len(),
+        continue_count: 0,
+        jump_to_layer_count: 0,
+        jump_to_terminal_count: 0,
+        require_verify_count: 0,
+        first_decision_id: decisions
+            .first()
+            .map(|decision| decision.decision_id.clone()),
+        last_decision_id: decisions
+            .last()
+            .map(|decision| decision.decision_id.clone()),
+    };
+    for decision in decisions {
+        match decision.action {
+            sim_memory::ShortpathAction::Continue => report.continue_count += 1,
+            sim_memory::ShortpathAction::JumpToLayer => report.jump_to_layer_count += 1,
+            sim_memory::ShortpathAction::JumpToTerminal => report.jump_to_terminal_count += 1,
+            sim_memory::ShortpathAction::RequireVerify => report.require_verify_count += 1,
+        }
+    }
+    Ok(report)
 }
 
 fn run_lingqu_memory_plan_prefetch_cli(args: &[String]) -> anyhow::Result<()> {
@@ -8020,11 +8145,11 @@ mod tests {
         run_lingqu_memory_register_terminal_logits_artifact_from_w5_summary_cli,
         run_lingqu_memory_update_record_state_cli, run_lingqu_memory_validate_durable_store,
         run_lingqu_memory_validate_flat_materialize, run_lingqu_memory_validate_flat_query,
-        run_lingqu_memory_validate_w5_engram_object_ref, save_lingqu_durable_sim,
-        save_lingqu_memory_durable_store, simpler_host_matmul_artifact_producer_path,
-        validate_qwen3_dense_weights_path, validate_w5_inference_profile,
-        validate_w5_memory_decision_bundle_for_run, w5_inference_profile_spec,
-        w5_memory_decision_env_vars, w5_memory_shortpath_stream_env,
+        run_lingqu_memory_validate_w5_engram_object_ref, run_qwen3_guest_decode_loop_cli,
+        run_w5_runtime_boundary_lookups, save_lingqu_durable_sim, save_lingqu_memory_durable_store,
+        simpler_host_matmul_artifact_producer_path, validate_qwen3_dense_weights_path,
+        validate_w5_inference_profile, validate_w5_memory_decision_bundle_for_run,
+        w5_inference_profile_spec, w5_memory_decision_env_vars, w5_memory_shortpath_stream_env,
         w5_memory_should_publish_engram_state, w5_object_service_payload_index_path,
         LingquDurableSim, LingquDurableSimSnapshot, LingquMemoryDurableStore,
         LingquMemoryDurableStoreSnapshot, LingquObjectServiceStub, LingquObjectVersionSelector,
@@ -8040,6 +8165,7 @@ mod tests {
     };
     use std::env;
     use std::fs;
+    use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
 
     fn sample_w5_terminal_logits_payload() -> Vec<u8> {
@@ -8556,6 +8682,36 @@ mod tests {
     }
 
     #[test]
+    fn w5_inference_cluster_args_accept_runtime_boundary_lookup() {
+        let args = qwen3_guest_decode_loop_args_from([
+            "w5-inference-cluster",
+            "--memory-observation-store=/tmp/lingqu-memory-observations.json",
+            "--memory-runtime-boundary-lookup",
+        ])
+        .expect("parse W5 runtime boundary lookup args")
+        .expect("W5 runtime boundary lookup args");
+
+        assert_eq!(
+            args.memory_observation_store_path.as_deref(),
+            Some(Path::new("/tmp/lingqu-memory-observations.json"))
+        );
+        assert!(args.memory_runtime_boundary_lookup);
+    }
+
+    #[test]
+    fn w5_inference_cluster_args_reject_runtime_boundary_lookup_without_store() {
+        let err = qwen3_guest_decode_loop_args_from([
+            "w5-inference-cluster",
+            "--memory-runtime-boundary-lookup",
+        ])
+        .expect_err("runtime boundary lookup without store should fail");
+
+        assert!(err
+            .to_string()
+            .contains("--memory-runtime-boundary-lookup requires"));
+    }
+
+    #[test]
     fn w5_inference_cluster_args_accept_memory_service_decisions() {
         let args = qwen3_guest_decode_loop_args_from([
             "w5-inference-cluster",
@@ -8965,6 +9121,7 @@ mod tests {
             memory_bootstrap: None,
             memory_decisions: None,
             memory_observation_store_path: None,
+            memory_runtime_boundary_lookup: false,
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("dense runtime");
         assert_eq!(runtime.model_key, "qwen3-0-6b");
@@ -9016,6 +9173,7 @@ mod tests {
             memory_bootstrap: None,
             memory_decisions: None,
             memory_observation_store_path: None,
+            memory_runtime_boundary_lookup: false,
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("reference shape runtime");
         assert!(runtime
@@ -9066,6 +9224,7 @@ mod tests {
             memory_bootstrap: None,
             memory_decisions: None,
             memory_observation_store_path: None,
+            memory_runtime_boundary_lookup: false,
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("14B generic runtime");
         assert_eq!(runtime.model_key, "qwen3-14b");
@@ -11930,6 +12089,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             memory_bootstrap: None,
             memory_decisions: None,
             memory_observation_store_path: None,
+            memory_runtime_boundary_lookup: false,
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("dense runtime");
         let summary_path = root.join("w5_summary.txt");
@@ -11988,6 +12148,150 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             cli_bytes_checksum(br#"{"model":{"vocab":{}}}"#)
         );
         assert_eq!(observations[1].hidden_state.bytes, 2048);
+        let report = run_w5_runtime_boundary_lookups(&store_path, &recorded, 120)
+            .expect("run current-runtime boundary lookups");
+        assert_eq!(report.observation_count, 2);
+        assert_eq!(report.decision_count, 2);
+        assert_eq!(report.continue_count, 2);
+        assert_eq!(report.jump_to_terminal_count, 0);
+        let mut durable =
+            load_lingqu_memory_durable_store(&store_path).expect("reload runtime lookup store");
+        let decisions = durable
+            .load_shortpath_decision_manifest()
+            .expect("load runtime lookup decisions");
+        assert_eq!(decisions.len(), 2);
+        assert!(decisions
+            .iter()
+            .all(|decision| decision.action == sim_memory::ShortpathAction::Continue));
+        let supports = durable
+            .load_shortpath_support_manifest()
+            .expect("load runtime lookup supports");
+        assert_eq!(supports.len(), 2);
+        assert!(supports.iter().all(|support| {
+            support.supported_action == sim_memory::ShortpathAction::Continue
+                && support.artifact_id.is_none()
+        }));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn qwen3_guest_decode_loop_runs_runtime_boundary_lookup_after_summary_record() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_w5_runtime_boundary_lookup_e2e_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let weights_dir = root.join("Qwen3-0.6B");
+        fs::create_dir_all(&weights_dir).expect("create weights dir");
+        fs::write(
+            weights_dir.join("config.json"),
+            r#"{
+                "_name_or_path": "Qwen/Qwen3-0.6B",
+                "vocab_size": 151936,
+                "hidden_size": 1024,
+                "intermediate_size": 3072,
+                "num_hidden_layers": 28,
+                "num_attention_heads": 16,
+                "num_key_value_heads": 8,
+                "head_dim": 128,
+                "max_position_embeddings": 40960,
+                "rope_theta": 1000000
+            }"#,
+        )
+        .expect("write config");
+        fs::write(
+            weights_dir.join("tokenizer.json"),
+            br#"{"model":{"vocab":{}}}"#,
+        )
+        .expect("write tokenizer");
+        fs::write(weights_dir.join("model.safetensors"), b"stub").expect("write weights");
+
+        let summary_path = root.join("w5_summary.txt");
+        fs::write(
+            &summary_path,
+            concat!(
+                "summary: run_dir=/tmp/w5_runtime_lookup_run_headless8\n",
+                "memory_boundary_observation: phase=range_exit step=0 node=node1 ",
+                "observation_id=boundary-observation/w5_runtime_lookup_run/step0/node1 ",
+                "target=node2 layers=[0,4) layer_start=0 layer_end=4 layer_count=4 ",
+                "hidden_key=hidden/qwen3-0-6b/node2/range-runtime-input/decode-step0 ",
+                "hidden_key_hash=0x0000000000001111 hidden_version=1 hidden_bytes=2048 ",
+                "hidden_checksum=0x000000000000aaaa hidden_dtype=opaque hidden_shape=2048 ",
+                "producer_publish_ms=100 producer_publish_mono_ms=20 backing=obmm_shmem ",
+                "metadata=lingqu_object_service queue=obmm_spsc status=ok\n"
+            ),
+        )
+        .expect("write summary");
+        let script_path = root.join("fake_w5_runner.sh");
+        let mut trace = format!(
+            "summary_file: {}\nPASS: eight-node w5 inference cluster\n",
+            summary_path.display()
+        );
+        for _ in 0..8 {
+            trace.push_str("[w4_guest] stage uapi_qwen3_range_runtime_forward node=1\n");
+        }
+        for _ in 0..7 {
+            trace.push_str("[w4_guest] stage qwen3_range_forward_runtime_input_loaded node=2\n");
+        }
+        for _ in 0..8 {
+            trace.push_str("[w4_guest] stage qwen3_range_forward_runtime_output_publish node=1\n");
+        }
+        trace.push_str(
+            "[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=0 token=11 status=ok\n",
+        );
+        fs::write(
+            &script_path,
+            format!(
+                "#!/bin/zsh\nset -euo pipefail\ncat > \"$TRACE_FILE\" <<'TRACE'\n{}TRACE\n",
+                trace
+            ),
+        )
+        .expect("write fake runner");
+        let mut permissions = fs::metadata(&script_path)
+            .expect("stat fake runner")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions).expect("chmod fake runner");
+
+        let store_path = root.join("store.json");
+        let args = Qwen3GuestDecodeLoopCliArgs {
+            step_count: 1,
+            prompt: None,
+            prompt_token_ids: None,
+            script_path,
+            matmul_batch: None,
+            model: None,
+            weights_path: Some(weights_dir),
+            w5_profile: None,
+            engram: Qwen3EngramConfig::default(),
+            memory_bootstrap: None,
+            memory_decisions: None,
+            memory_observation_store_path: Some(store_path.clone()),
+            memory_runtime_boundary_lookup: true,
+        };
+
+        run_qwen3_guest_decode_loop_cli(&args)
+            .expect("fake W5 run should record and lookup runtime boundary observations");
+        let mut durable =
+            load_lingqu_memory_durable_store(&store_path).expect("load runtime lookup store");
+        let observations = durable
+            .load_boundary_observation_manifest()
+            .expect("load boundary observations");
+        assert_eq!(observations.len(), 1);
+        let decisions = durable
+            .load_shortpath_decision_manifest()
+            .expect("load runtime decisions");
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].action, sim_memory::ShortpathAction::Continue);
+        let supports = durable
+            .load_shortpath_support_manifest()
+            .expect("load runtime supports");
+        assert_eq!(supports.len(), 1);
+        assert_eq!(
+            supports[0].supported_action,
+            sim_memory::ShortpathAction::Continue
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -13566,13 +13870,14 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
                     "W5 run used Memory Service store but did not report a summary_file path"
                 )
             })?;
+        let boundary_lookup_now_us = cli_now_us();
         let observation_ids = record_w5_runtime_boundary_observations_from_summary(
             store_path,
             &summary_path,
             &runtime,
             args.step_count,
             prompt_history_tokens.len() as u64,
-            cli_now_us(),
+            boundary_lookup_now_us,
         )?;
         println!(
             "  memory_boundary_observations_recorded: store={} summary={} records={} steps={} first_id={} last_id={}",
@@ -13583,6 +13888,25 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             observation_ids.first().map(String::as_str).unwrap_or(""),
             observation_ids.last().map(String::as_str).unwrap_or("")
         );
+        if args.memory_runtime_boundary_lookup {
+            let report = run_w5_runtime_boundary_lookups(
+                store_path,
+                &observation_ids,
+                boundary_lookup_now_us,
+            )?;
+            println!(
+                "  memory_runtime_boundary_lookup: store={} observations={} decisions={} continue={} jump_to_layer={} jump_to_terminal={} require_verify={} first_decision_id={} last_decision_id={}",
+                store_path.display(),
+                report.observation_count,
+                report.decision_count,
+                report.continue_count,
+                report.jump_to_layer_count,
+                report.jump_to_terminal_count,
+                report.require_verify_count,
+                report.first_decision_id.as_deref().unwrap_or(""),
+                report.last_decision_id.as_deref().unwrap_or("")
+            );
+        }
     }
     Ok(())
 }
