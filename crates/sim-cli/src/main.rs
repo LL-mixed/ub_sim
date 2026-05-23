@@ -3914,6 +3914,7 @@ struct W5MemoryDecisionArtifactPublication {
     shortpath_stream_path: Option<PathBuf>,
     prefetch_refs: Vec<W5MemoryPublishedArtifactRef>,
     prefix_cache_ref: Option<W5MemoryPublishedArtifactRef>,
+    object_registry_dir: PathBuf,
     object_service_snapshot_path: Option<PathBuf>,
 }
 
@@ -4890,6 +4891,7 @@ fn publish_w5_memory_decision_artifact_refs(
         shortpath_stream_path,
         prefetch_refs,
         prefix_cache_ref,
+        object_registry_dir: config.registry_dir.clone(),
         object_service_snapshot_path: Some(snapshot_path),
     })
 }
@@ -5166,6 +5168,16 @@ fn w5_memory_decision_env_vars(
         }
     }
     if let Some(published) = publication {
+        if let Some(snapshot_path) = published.object_service_snapshot_path.as_ref() {
+            vars.push((
+                SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR.to_string(),
+                published.object_registry_dir.display().to_string(),
+            ));
+            vars.push((
+                SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT.to_string(),
+                snapshot_path.display().to_string(),
+            ));
+        }
         let stream = w5_memory_shortpath_stream_env(bundle, published);
         if !stream.is_empty() {
             vars.push((
@@ -9751,6 +9763,7 @@ mod tests {
             shortpath_stream_path: None,
             prefetch_refs: Vec::new(),
             prefix_cache_ref: None,
+            object_registry_dir: PathBuf::new(),
             object_service_snapshot_path: None,
         };
         let stream = w5_memory_shortpath_stream_env(&bundle, &publication);
@@ -11242,6 +11255,14 @@ stage qwen3_range_forward_runtime_output_publish node=2
         );
         assert_eq!(publication.prefetch_refs.len(), 1);
         let env_vars = w5_memory_decision_env_vars(&decision_config, &bundle, Some(&publication));
+        assert!(env_vars.iter().any(|(key, value)| {
+            key == SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR
+                && value == &root.join("qwen3-object-registry").display().to_string()
+        }));
+        assert!(env_vars.iter().any(|(key, value)| {
+            key == SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT
+                && value == &snapshot_path.display().to_string()
+        }));
         assert!(env_vars
             .iter()
             .any(|(key, value)| key == "SIM_W5_MEMORY_SHORTPATH_ACTION"
