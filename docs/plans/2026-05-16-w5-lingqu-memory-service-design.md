@@ -709,6 +709,45 @@ use them for non-shadow jumps unless the decision explicitly requires
 verification. `verified` artifacts can be used for direct jumps if policy and
 confidence allow it. `rejected` artifacts remain only for audit.
 
+### ArtifactAccessRecord
+
+Append-only durable audit event for artifact lifecycle and use. This is the
+base contract that lets Memory Service support multiple producers, multiple
+consumers, and multiple batches without depending on the current W5 single
+batch execution shape.
+
+```text
+event_id: string
+artifact_id: string
+access: produced | consumed
+artifact_kind: hidden_state | kv_cache | logits
+model: InferenceModelBinding
+boundary: RangeBoundary
+run_id: string
+batch_id: string
+actor: string
+request_id: optional string
+artifact_checksum: u64
+checksum: u64
+version: u64
+created_at_us: u64
+```
+
+`artifact_id`, `artifact_kind`, `model`, `boundary`, and `artifact_checksum`
+must match an existing `ExecutionArtifactObject`. A producer cannot publish an
+opaque event that is not tied to the artifact metadata, and a consumer cannot
+claim use of an artifact whose checksum or boundary differs from the registered
+object. `run_id` and `batch_id` are first-class because W5 is currently
+single-batch, but repeated persistent runs exercise the same correctness
+surface as concurrent batches: several entries can produce or consume the same
+artifact as long as their event ids are unique and their checksums prove the
+same object.
+
+The durable form is `/lingqu/memory/audit/artifact-access.log`, an append-only
+DFS log with append-to-tail writes for independent producers/consumers.
+Re-appending the same event id with identical payload is accepted; reusing the
+event id with different payload is rejected.
+
 ### PrefixCacheKey
 
 Prefix identity used to prove that a KV cache block is reusable for a new
@@ -1588,6 +1627,10 @@ Unit tests:
 - `HotMemoryStateObject` rejects non-OBMM hot tensor placements.
 - `ExecutionArtifactObject` requires a model binding, boundary, checksum, and
   at least one durable or hot payload ref.
+- `ArtifactAccessRecord` requires a registered execution artifact match for
+  kind, model, boundary, and artifact checksum.
+- artifact access audit logs persist multiple produce/consume events across
+  run ids and batch ids, and reject duplicate event ids with different payloads.
 - `BoundaryLookupRequest` rejects missing hidden refs and invalid confidence
   thresholds.
 - `BoundaryLookupRequest` rejects `range_start` boundaries.
@@ -1626,6 +1669,8 @@ Integration tests:
 CLI tests:
 
 - each public command has a smoke test;
+- `lingqu-memory record-artifact-access` and `list-artifact-access` verify the
+  durable produce/consume audit path for multiple run/batch identities.
 - missing DFS source fails with a structured error;
 - missing Block payload fails with a structured error;
 - `--engram-state-ref` shape/checksum mismatch fails decode.
@@ -1680,17 +1725,20 @@ Current implementation status:
   Step 10 also has a baseline data-model implementation in `sim-memory`:
   `InferenceModelBinding`, `RangeBoundary`, `ExecutionArtifactObject`,
   `BoundaryLookupRequest`, `ShortpathSupportRecord`,
-  `ShortpathDecisionRecord`, `BoundaryLookupResponse`,
-  `PrefetchPlanRequest`, and
-  `PrefetchPlanRecord`, `PrefixCacheKey`, `PrefixCacheArtifact`,
-  `PrefixCacheLookupRequest`, `PrefixCacheLookupResponse`, and
+    `ShortpathDecisionRecord`, `BoundaryLookupResponse`,
+    `PrefetchPlanRequest`, and
+    `PrefetchPlanRecord`, `PrefixCacheKey`, `PrefixCacheArtifact`,
+    `PrefixCacheLookupRequest`, `PrefixCacheLookupResponse`, and
   `PrefixCacheReusePlan` can be validated, registered, and used for a first
   exact boundary lookup over verified execution artifacts, range-start n-step
-  prefetch planning, and auditable prefix cache hit/miss planning. Query
-  results, Memory Service shortpath support records, W5 planner shortpath
-  decisions, prefetch plans, and prefix-cache reuse/miss decisions are
-  persisted as append-only durable DFS audit logs and can be rebuilt after
-  restart. `BoundaryLookupResponse` now carries `ShortpathSupportRecord`
+  prefetch planning, and auditable prefix cache hit/miss planning.
+  `ArtifactAccessRecord` now records artifact produce/consume events with
+  explicit `run_id`, `batch_id`, actor, request id, and registered artifact
+  checksum. Query results, artifact access events, Memory Service shortpath
+  support records, W5 planner shortpath decisions, prefetch plans, and
+  prefix-cache reuse/miss decisions are persisted as append-only durable DFS
+  audit logs and can be rebuilt after restart. `BoundaryLookupResponse` now
+  carries `ShortpathSupportRecord`
   rather than a runtime decision. The W5 planner writes the corresponding
   `ShortpathDecisionRecord` and stores the evaluated `support_id` as an
   explicit audit edge, so reports no longer need to infer evidence provenance
@@ -1705,7 +1753,13 @@ Current implementation status:
   `w5-inference-cluster --memory-boundary-observation-id` can now run boundary
   lookup directly from the persisted observation id, persist the support and W5
   planner decision audit records, and publish the verified shortpath artifact
-  through the same Object Service snapshot path. When W5 runs with a Memory
+  through the same Object Service snapshot path. `lingqu-memory
+  record-artifact-access` records audited produce/consume lifecycle events for
+  registered execution artifacts, and `lingqu-memory list-artifact-access`
+  filters that durable log by event id, artifact id, run id, batch id, and
+  access kind. This gives W5 single-batch repeated runs the same persistent
+  evidence model needed by future concurrent multi-batch producers and
+  consumers. When W5 runs with a Memory
   Service store, the CLI now records the successful run's real range-exit
   boundary observations back into that durable store automatically after guest
   validation. `--memory-shortpath-execute` no longer waits until node8 to make

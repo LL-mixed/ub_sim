@@ -461,6 +461,7 @@ pub const LINGQU_SHORTPATH_SUPPORT_MANIFEST_PATH: &str =
 pub const LINGQU_PREFETCH_PLAN_MANIFEST_PATH: &str = "/lingqu/memory/prefetch-plans/audit.json";
 pub const LINGQU_BOUNDARY_OBSERVATION_AUDIT_LOG_PATH: &str =
     "/lingqu/memory/audit/boundary-observations.log";
+pub const LINGQU_ARTIFACT_ACCESS_AUDIT_LOG_PATH: &str = "/lingqu/memory/audit/artifact-access.log";
 pub const LINGQU_SHORTPATH_DECISION_AUDIT_LOG_PATH: &str =
     "/lingqu/memory/audit/shortpath-decisions.log";
 pub const LINGQU_SHORTPATH_SUPPORT_AUDIT_LOG_PATH: &str =
@@ -1187,6 +1188,72 @@ impl LingquMemoryDurableStore {
         Ok(LingquExecutionArtifactManifest::from_json_bytes(&bytes)?.artifacts)
     }
 
+    pub fn persist_artifact_access_manifest(
+        &mut self,
+        events: Vec<ArtifactAccessRecord>,
+    ) -> MemoryResult<LingquDfsPath> {
+        let path = LingquDfsPath::new(LINGQU_ARTIFACT_ACCESS_AUDIT_LOG_PATH);
+        let mut events = events;
+        events.sort_by(|left, right| left.event_id.cmp(&right.event_id));
+        let existing = self.load_artifact_access_audit_entries(true, "persist artifact access")?;
+        let mut existing_by_id = HashMap::new();
+        for (event, bytes) in existing {
+            if existing_by_id
+                .insert(event.event_id.clone(), bytes)
+                .is_some()
+            {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "artifact_access.event_id",
+                    reason: "duplicate artifact access event id in durable audit log",
+                });
+            }
+        }
+
+        let mut ops = Vec::new();
+        let mut bytes_written = 0;
+        for event in events {
+            event.validate()?;
+            let bytes = serde_json::to_vec(&event)
+                .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+            if let Some(existing_bytes) = existing_by_id.get(&event.event_id) {
+                if existing_bytes != &bytes {
+                    return Err(LingquMemoryError::InvalidValue {
+                        field: "artifact_access.event_id",
+                        reason: "artifact access event id already exists with different payload",
+                    });
+                }
+                continue;
+            }
+            bytes_written += bytes.len() as u64;
+            ops.push(durable_sim::LingquDurableBatchOp::DfsAppendLog {
+                path: path.path.clone(),
+                bytes,
+                options: durable_sim::LingquDfsAppendOptions {
+                    expected_next_seq: None,
+                    writer: Some("lingqu-memory-service".to_string()),
+                    metadata: durable_audit_metadata("artifact_access"),
+                },
+            });
+        }
+        if !ops.is_empty() {
+            let append_count = ops.len() as u64;
+            self.durable
+                .commit_batch(ops)
+                .map_err(memory_error_from_durable)?;
+            self.stats.dfs_audit_appends += append_count;
+            self.stats.dfs_bytes_written += bytes_written;
+        }
+        Ok(path)
+    }
+
+    pub fn load_artifact_access_manifest(&mut self) -> MemoryResult<Vec<ArtifactAccessRecord>> {
+        Ok(self
+            .load_artifact_access_audit_entries(false, "load artifact access")?
+            .into_iter()
+            .map(|(event, _bytes)| event)
+            .collect())
+    }
+
     pub fn persist_prefix_cache_manifest(
         &mut self,
         artifacts: Vec<PrefixCacheArtifact>,
@@ -1660,6 +1727,35 @@ impl LingquMemoryDurableStore {
     ) -> MemoryResult<Vec<u8>> {
         payload_ref.validate("block_payload_ref")?;
         self.submit_block_read(payload_ref)
+    }
+
+    fn load_artifact_access_audit_entries(
+        &mut self,
+        allow_missing: bool,
+        op: &'static str,
+    ) -> MemoryResult<Vec<(ArtifactAccessRecord, Vec<u8>)>> {
+        let records =
+            self.submit_dfs_append_log_read(LINGQU_ARTIFACT_ACCESS_AUDIT_LOG_PATH, allow_missing)?;
+        let mut entries = Vec::with_capacity(records.len());
+        let mut ids = HashSet::new();
+        for record in records {
+            let event = serde_json::from_slice::<ArtifactAccessRecord>(&record.bytes)
+                .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+            event.validate()?;
+            if !ids.insert(event.event_id.clone()) {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "artifact_access.event_id",
+                    reason: "duplicate artifact access event id in durable audit log",
+                });
+            }
+            entries.push((event, record.bytes));
+        }
+        if entries.is_empty() && !allow_missing {
+            return Err(LingquMemoryError::MissingDfsPath(format!(
+                "{op}: {LINGQU_ARTIFACT_ACCESS_AUDIT_LOG_PATH}"
+            )));
+        }
+        Ok(entries)
     }
 
     fn load_shortpath_decision_audit_entries(
@@ -2748,6 +2844,12 @@ pub enum ExecutionArtifactState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ArtifactAccessKind {
+    Produced,
+    Consumed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ShortpathAction {
     Continue,
     JumpToLayer,
@@ -2958,6 +3060,88 @@ impl ExecutionArtifactObject {
                     reason: "expires_at_us must be greater than created_at_us",
                 });
             }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactAccessRecord {
+    pub event_id: String,
+    pub artifact_id: String,
+    pub access: ArtifactAccessKind,
+    pub artifact_kind: ExecutionArtifactKind,
+    pub model: InferenceModelBinding,
+    pub boundary: RangeBoundary,
+    pub run_id: String,
+    pub batch_id: String,
+    pub actor: String,
+    pub request_id: Option<String>,
+    pub artifact_checksum: u64,
+    pub checksum: u64,
+    pub version: u64,
+    pub created_at_us: u64,
+}
+
+impl ArtifactAccessRecord {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        event_id: String,
+        artifact_id: String,
+        access: ArtifactAccessKind,
+        artifact_kind: ExecutionArtifactKind,
+        model: InferenceModelBinding,
+        boundary: RangeBoundary,
+        run_id: String,
+        batch_id: String,
+        actor: String,
+        request_id: Option<String>,
+        artifact_checksum: u64,
+        version: u64,
+        created_at_us: u64,
+    ) -> MemoryResult<Self> {
+        let mut record = Self {
+            event_id,
+            artifact_id,
+            access,
+            artifact_kind,
+            model,
+            boundary,
+            run_id,
+            batch_id,
+            actor,
+            request_id,
+            artifact_checksum,
+            checksum: 0,
+            version,
+            created_at_us,
+        };
+        record.checksum = artifact_access_checksum(&record);
+        record.validate()?;
+        Ok(record)
+    }
+
+    pub fn validate(&self) -> MemoryResult<()> {
+        required_str(&self.event_id, "artifact_access.event_id")?;
+        required_str(&self.artifact_id, "artifact_access.artifact_id")?;
+        self.model.validate()?;
+        self.boundary.validate()?;
+        required_str(&self.run_id, "artifact_access.run_id")?;
+        required_str(&self.batch_id, "artifact_access.batch_id")?;
+        required_str(&self.actor, "artifact_access.actor")?;
+        if let Some(request_id) = &self.request_id {
+            required_str(request_id, "artifact_access.request_id")?;
+        }
+        nonzero(self.artifact_checksum, "artifact_access.artifact_checksum")?;
+        nonzero(self.checksum, "artifact_access.checksum")?;
+        nonzero(self.version, "artifact_access.version")?;
+        let actual = artifact_access_checksum(self);
+        if actual != self.checksum {
+            return Err(LingquMemoryError::PayloadChecksumMismatch {
+                id: self.event_id.clone(),
+                expected: self.checksum,
+                actual,
+            });
         }
         Ok(())
     }
@@ -3654,6 +3838,7 @@ pub struct LingquMemoryService {
     hot_states: HashMap<String, HotMemoryStateObject>,
     engram_states: HashMap<String, EngramStateObject>,
     execution_artifacts: HashMap<String, ExecutionArtifactObject>,
+    artifact_access_events: HashMap<String, ArtifactAccessRecord>,
     prefix_cache_artifacts: HashMap<String, PrefixCacheArtifact>,
     prefix_cache_reuse_plans: HashMap<String, PrefixCacheReusePlan>,
     prefetch_plans: HashMap<String, PrefetchPlanRecord>,
@@ -3826,6 +4011,30 @@ impl LingquMemoryService {
             self.register_execution_artifact(artifact.clone())?;
         }
         Ok(artifacts)
+    }
+
+    pub fn persist_artifact_access_to_dfs(
+        &self,
+        durable_store: &mut LingquMemoryDurableStore,
+    ) -> MemoryResult<LingquDfsPath> {
+        let mut events = self
+            .artifact_access_events
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        events.sort_by(|left, right| left.event_id.cmp(&right.event_id));
+        durable_store.persist_artifact_access_manifest(events)
+    }
+
+    pub fn rebuild_artifact_access_from_dfs(
+        &mut self,
+        durable_store: &mut LingquMemoryDurableStore,
+    ) -> MemoryResult<Vec<ArtifactAccessRecord>> {
+        let events = durable_store.load_artifact_access_manifest()?;
+        for event in &events {
+            self.record_artifact_access(event.clone())?;
+        }
+        Ok(events)
     }
 
     pub fn persist_prefix_cache_artifacts_to_dfs(
@@ -4781,6 +4990,42 @@ impl LingquMemoryService {
         Ok(())
     }
 
+    pub fn record_artifact_access(&mut self, event: ArtifactAccessRecord) -> MemoryResult<()> {
+        event.validate()?;
+        let Some(artifact) = self.execution_artifacts.get(&event.artifact_id) else {
+            return Err(LingquMemoryError::MissingExecutionArtifact(
+                event.artifact_id.clone(),
+            ));
+        };
+        if artifact.kind != event.artifact_kind {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "artifact_access.artifact_kind",
+                reason: "access event kind must match execution artifact kind",
+            });
+        }
+        if artifact.model != event.model {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "artifact_access.model",
+                reason: "access event model must match execution artifact model",
+            });
+        }
+        if artifact.producer_boundary != event.boundary {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "artifact_access.boundary",
+                reason: "access event boundary must match execution artifact producer boundary",
+            });
+        }
+        if artifact.checksum != event.artifact_checksum {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "artifact_access.artifact_checksum",
+                reason: "access event checksum must match execution artifact checksum",
+            });
+        }
+        self.artifact_access_events
+            .insert(event.event_id.clone(), event);
+        Ok(())
+    }
+
     pub fn register_prefix_cache_artifact(
         &mut self,
         artifact: PrefixCacheArtifact,
@@ -5137,6 +5382,16 @@ impl LingquMemoryService {
 
     pub fn execution_artifact(&self, artifact_id: &str) -> Option<&ExecutionArtifactObject> {
         self.execution_artifacts.get(artifact_id)
+    }
+
+    pub fn artifact_access_event(&self, event_id: &str) -> Option<&ArtifactAccessRecord> {
+        self.artifact_access_events.get(event_id)
+    }
+
+    pub fn artifact_access_events(&self) -> Vec<&ArtifactAccessRecord> {
+        let mut events = self.artifact_access_events.values().collect::<Vec<_>>();
+        events.sort_by(|left, right| left.event_id.cmp(&right.event_id));
+        events
     }
 
     pub fn prefix_cache_artifact(&self, artifact_id: &str) -> Option<&PrefixCacheArtifact> {
@@ -5696,6 +5951,13 @@ fn execution_artifact_kind_tag(kind: ExecutionArtifactKind) -> u64 {
     }
 }
 
+fn artifact_access_kind_tag(kind: ArtifactAccessKind) -> u64 {
+    match kind {
+        ArtifactAccessKind::Produced => 1,
+        ArtifactAccessKind::Consumed => 2,
+    }
+}
+
 fn prefix_cache_reuse_plan_checksum(
     plan_id: &str,
     request_id: &str,
@@ -5934,6 +6196,41 @@ fn boundary_observation_checksum(observation: &BoundaryObservationRecord) -> u64
     checksum64(&bytes)
 }
 
+fn artifact_access_checksum(event: &ArtifactAccessRecord) -> u64 {
+    let mut bytes = Vec::new();
+    push_checksum_str(&mut bytes, &event.event_id);
+    push_checksum_str(&mut bytes, &event.artifact_id);
+    bytes.extend_from_slice(&artifact_access_kind_tag(event.access).to_le_bytes());
+    bytes.extend_from_slice(&execution_artifact_kind_tag(event.artifact_kind).to_le_bytes());
+    push_checksum_str(&mut bytes, &event.model.model_id);
+    push_checksum_str(&mut bytes, &event.model.model_key);
+    bytes.extend_from_slice(&event.model.tokenizer_hash.to_le_bytes());
+    bytes.extend_from_slice(&event.model.profile_hash.to_le_bytes());
+    bytes.extend_from_slice(&range_boundary_phase_tag(event.boundary.phase).to_le_bytes());
+    bytes.extend_from_slice(&event.boundary.step_index.to_le_bytes());
+    bytes.extend_from_slice(&event.boundary.node_index.to_le_bytes());
+    bytes.extend_from_slice(&event.boundary.layer_start.to_le_bytes());
+    bytes.extend_from_slice(&event.boundary.layer_end.to_le_bytes());
+    bytes.extend_from_slice(
+        &event
+            .boundary
+            .next_node_index
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+    );
+    bytes.extend_from_slice(&event.boundary.position.to_le_bytes());
+    push_checksum_str(&mut bytes, &event.run_id);
+    push_checksum_str(&mut bytes, &event.batch_id);
+    push_checksum_str(&mut bytes, &event.actor);
+    if let Some(request_id) = &event.request_id {
+        push_checksum_str(&mut bytes, request_id);
+    }
+    bytes.extend_from_slice(&event.artifact_checksum.to_le_bytes());
+    bytes.extend_from_slice(&event.version.to_le_bytes());
+    bytes.extend_from_slice(&event.created_at_us.to_le_bytes());
+    checksum64(&bytes)
+}
+
 fn push_checksum_str(bytes: &mut Vec<u8>, value: &str) {
     bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
     bytes.extend_from_slice(value.as_bytes());
@@ -6124,6 +6421,167 @@ mod tests {
                 "execution_artifact.payload_ref"
             ))
         );
+    }
+
+    #[test]
+    fn artifact_access_audit_persists_parallel_runs_and_batches() {
+        let model = sample_model_binding();
+        let boundary = sample_range_boundary();
+        let artifact = sample_logits_execution_artifact("artifact/logits/step3/node4");
+        let mut service = LingquMemoryService::new();
+        service
+            .register_execution_artifact(artifact.clone())
+            .expect("register execution artifact");
+        let produced = ArtifactAccessRecord::new(
+            "artifact-access/run0/batch0/produce".to_string(),
+            artifact.artifact_id.clone(),
+            ArtifactAccessKind::Produced,
+            artifact.kind,
+            model.clone(),
+            boundary.clone(),
+            "run0".to_string(),
+            "batch0".to_string(),
+            "node4".to_string(),
+            Some("publish/step3/node4".to_string()),
+            artifact.checksum,
+            1,
+            11,
+        )
+        .expect("build produce access event");
+        let consumed_run0 = ArtifactAccessRecord::new(
+            "artifact-access/run0/batch0/consume".to_string(),
+            artifact.artifact_id.clone(),
+            ArtifactAccessKind::Consumed,
+            artifact.kind,
+            model.clone(),
+            boundary.clone(),
+            "run0".to_string(),
+            "batch0".to_string(),
+            "w5-runtime-planner".to_string(),
+            Some("boundary/step3/node4".to_string()),
+            artifact.checksum,
+            1,
+            12,
+        )
+        .expect("build run0 consume access event");
+        let consumed_run1 = ArtifactAccessRecord::new(
+            "artifact-access/run1/batch3/consume".to_string(),
+            artifact.artifact_id.clone(),
+            ArtifactAccessKind::Consumed,
+            artifact.kind,
+            model,
+            boundary,
+            "run1".to_string(),
+            "batch3".to_string(),
+            "w5-runtime-planner".to_string(),
+            Some("boundary/step3/node4/run1".to_string()),
+            artifact.checksum,
+            1,
+            13,
+        )
+        .expect("build run1 consume access event");
+
+        service
+            .record_artifact_access(produced)
+            .expect("record produce access");
+        service
+            .record_artifact_access(consumed_run0)
+            .expect("record run0 consume access");
+        service
+            .record_artifact_access(consumed_run1)
+            .expect("record run1 consume access");
+
+        let mut durable = LingquMemoryDurableStore::new();
+        service
+            .persist_execution_artifacts_to_dfs(&mut durable)
+            .expect("persist artifacts");
+        service
+            .persist_artifact_access_to_dfs(&mut durable)
+            .expect("persist artifact access audit");
+        service
+            .persist_artifact_access_to_dfs(&mut durable)
+            .expect("persist artifact access audit idempotently");
+
+        let events = durable
+            .load_artifact_access_manifest()
+            .expect("load artifact access audit");
+        assert_eq!(events.len(), 3);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.access == ArtifactAccessKind::Consumed)
+                .count(),
+            2
+        );
+        assert!(events
+            .iter()
+            .any(|event| event.run_id == "run1" && event.batch_id == "batch3"));
+
+        let mut restored = LingquMemoryService::new();
+        restored
+            .rebuild_execution_artifacts_from_dfs(&mut durable)
+            .expect("rebuild artifacts");
+        restored
+            .rebuild_artifact_access_from_dfs(&mut durable)
+            .expect("rebuild artifact access audit");
+        assert!(restored
+            .artifact_access_event("artifact-access/run0/batch0/produce")
+            .is_some());
+        assert_eq!(restored.artifact_access_events().len(), 3);
+    }
+
+    #[test]
+    fn artifact_access_audit_rejects_same_event_id_with_different_payload() {
+        let artifact = sample_logits_execution_artifact("artifact/logits/step3/node4");
+        let first = ArtifactAccessRecord::new(
+            "artifact-access/conflict".to_string(),
+            artifact.artifact_id.clone(),
+            ArtifactAccessKind::Produced,
+            artifact.kind,
+            artifact.model.clone(),
+            artifact.producer_boundary.clone(),
+            "run0".to_string(),
+            "batch0".to_string(),
+            "node4".to_string(),
+            None,
+            artifact.checksum,
+            1,
+            11,
+        )
+        .expect("build first access event");
+        let conflicting = ArtifactAccessRecord::new(
+            "artifact-access/conflict".to_string(),
+            artifact.artifact_id.clone(),
+            ArtifactAccessKind::Consumed,
+            artifact.kind,
+            artifact.model.clone(),
+            artifact.producer_boundary.clone(),
+            "run0".to_string(),
+            "batch0".to_string(),
+            "node5".to_string(),
+            None,
+            artifact.checksum,
+            1,
+            12,
+        )
+        .expect("build conflicting access event");
+        let mut durable = LingquMemoryDurableStore::new();
+        durable
+            .persist_execution_artifact_manifest(vec![artifact])
+            .expect("persist artifact");
+        durable
+            .persist_artifact_access_manifest(vec![first])
+            .expect("persist first access event");
+        let err = durable
+            .persist_artifact_access_manifest(vec![conflicting])
+            .expect_err("conflicting event id must fail");
+        assert!(matches!(
+            err,
+            LingquMemoryError::InvalidValue {
+                field: "artifact_access.event_id",
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -7990,6 +8448,41 @@ mod tests {
             checksum: 0x4444,
             dtype: TensorDType::F32,
             shape: vec![1, 4],
+        }
+    }
+
+    fn sample_logits_execution_artifact(artifact_id: &str) -> ExecutionArtifactObject {
+        ExecutionArtifactObject {
+            artifact_id: artifact_id.to_string(),
+            kind: ExecutionArtifactKind::Logits,
+            model: sample_model_binding(),
+            producer_boundary: sample_range_boundary(),
+            boundary_hidden_fingerprint: sample_boundary_hidden_fingerprint(),
+            target_layer_start: 8,
+            target_layer_end: 8,
+            dtype: TensorDType::F32,
+            shape: vec![1, 128],
+            durable_payload_ref: None,
+            hot_object_ref: Some(HotTensorObjectRef {
+                object_key: format!("hot/{artifact_id}"),
+                version: 1,
+                backend: HotObjectBackend::ObmmShmem,
+                storage_ref: format!("obmm://hot/{artifact_id}"),
+                segment: None,
+                offset: 0,
+                bytes: 512,
+                checksum: 0x9999,
+                dtype: TensorDType::F32,
+                shape: vec![1, 128],
+            }),
+            source_query_result_id: None,
+            source_engram_state_id: None,
+            confidence_milli: 980,
+            state: ExecutionArtifactState::Verified,
+            checksum: 0x8888,
+            version: 1,
+            created_at_us: 10,
+            expires_at_us: Some(100),
         }
     }
 

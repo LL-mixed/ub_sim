@@ -7,14 +7,15 @@ use sim_core::{
     SegmentHandle, SimEvent, TaskKey,
 };
 use sim_memory::{
-    BoundaryLookupRequest, EmbeddingRow, EmbeddingSegment, EngramStateMaterializeFromBlockReq,
-    EngramStateObject, ExecutionArtifactObject, HotMemoryMaterializeFromQueryReq,
-    HotMemoryMaterializeReq, HotMemoryStateObject, LingquBlockPayloadRef, LingquDfsPath,
-    LingquMemoryDurableStore, LingquMemoryDurableStoreSnapshot, LingquMemoryService,
-    MemoryCatalogSnapshot, MemoryChunk, MemoryContentType, MemoryCorpusCatalog, MemoryPiiState,
-    MemoryQuery, MemoryRecord, MemoryRecordState, MemoryRetentionPolicy, MemoryScope,
-    MemorySecurityLabel, MemorySourceKind, MemoryTrustLevel, MemoryVisibility, PrefetchPlanRequest,
-    PrefixCacheArtifact, PrefixCacheLookupRequest, QueryResult, VectorIndexKind, VectorIndexObject,
+    ArtifactAccessKind, ArtifactAccessRecord, BoundaryLookupRequest, EmbeddingRow,
+    EmbeddingSegment, EngramStateMaterializeFromBlockReq, EngramStateObject,
+    ExecutionArtifactObject, HotMemoryMaterializeFromQueryReq, HotMemoryMaterializeReq,
+    HotMemoryStateObject, LingquBlockPayloadRef, LingquDfsPath, LingquMemoryDurableStore,
+    LingquMemoryDurableStoreSnapshot, LingquMemoryService, MemoryCatalogSnapshot, MemoryChunk,
+    MemoryContentType, MemoryCorpusCatalog, MemoryPiiState, MemoryQuery, MemoryRecord,
+    MemoryRecordState, MemoryRetentionPolicy, MemoryScope, MemorySecurityLabel, MemorySourceKind,
+    MemoryTrustLevel, MemoryVisibility, PrefetchPlanRequest, PrefixCacheArtifact,
+    PrefixCacheLookupRequest, QueryResult, VectorIndexKind, VectorIndexObject,
 };
 use sim_models::qwen3_dense_reference::{
     token_piece_bytes_from_tokenizer_path, token_piece_decode_bytes,
@@ -1836,6 +1837,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         }
         "build-index" => run_lingqu_memory_build_index_cli(&args),
         "ingest" => run_lingqu_memory_ingest_cli(&args),
+        "list-artifact-access" => run_lingqu_memory_list_artifact_access_cli(&args),
         "list-prefetch-plans" => run_lingqu_memory_list_prefetch_plans_cli(&args),
         "list-prefix-cache-reuse" => run_lingqu_memory_list_prefix_cache_reuse_cli(&args),
         "list-query-results" => run_lingqu_memory_list_query_results_cli(&args),
@@ -1849,6 +1851,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "plan-prefetch" => run_lingqu_memory_plan_prefetch_cli(&args),
         "publish-w5-engram-state-ref" => run_lingqu_memory_publish_w5_engram_state_ref_cli(&args),
         "query" => run_lingqu_memory_query_cli(&args),
+        "record-artifact-access" => run_lingqu_memory_record_artifact_access_cli(&args),
         "record-boundary-observations-from-w5-summary" => {
             run_lingqu_memory_record_boundary_observations_from_w5_summary_cli(&args)
         }
@@ -1867,7 +1870,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "validate-flat-materialize" => run_lingqu_memory_validate_flat_materialize(),
         "validate-w5-engram-object-ref" => run_lingqu_memory_validate_w5_engram_object_ref(),
         _ => anyhow::bail!(
-            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, query, list-query-results, list-boundary-observations, list-record-lifecycle, list-shortpath-supports, list-shortpath-decisions, list-prefetch-plans, list-prefix-cache-reuse, update-record-state, register-execution-artifact, register-terminal-logits-artifact-from-w5-summary, promote-terminal-shortpath-artifacts-from-w5-summary, boundary-lookup, boundary-lookup-from-observation, boundary-request-from-w5-summary, record-boundary-observations-from-w5-summary, plan-prefetch, register-prefix-cache, lookup-prefix-cache, materialize-hot-state, materialize-engram-state, publish-w5-engram-state-ref, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
+            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, query, list-query-results, list-artifact-access, list-boundary-observations, list-record-lifecycle, list-shortpath-supports, list-shortpath-decisions, list-prefetch-plans, list-prefix-cache-reuse, update-record-state, register-execution-artifact, record-artifact-access, register-terminal-logits-artifact-from-w5-summary, promote-terminal-shortpath-artifacts-from-w5-summary, boundary-lookup, boundary-lookup-from-observation, boundary-request-from-w5-summary, record-boundary-observations-from-w5-summary, plan-prefetch, register-prefix-cache, lookup-prefix-cache, materialize-hot-state, materialize-engram-state, publish-w5-engram-state-ref, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
         ),
     }
 }
@@ -1974,6 +1977,68 @@ fn run_lingqu_memory_register_execution_artifact_cli(args: &[String]) -> anyhow:
     );
     println!("  confidence_milli: {}", artifact.confidence_milli);
     println!("  registry_artifacts: {}", registry.artifacts.len());
+    Ok(())
+}
+
+fn run_lingqu_memory_record_artifact_access_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let event_id = required_cli_arg(args, "--event-id")?;
+    let artifact_id = required_cli_arg(args, "--artifact-id")?;
+    let access = parse_artifact_access_kind(&required_cli_arg(args, "--access")?)?;
+    let run_id = required_cli_arg(args, "--run-id")?;
+    let batch_id = required_cli_arg(args, "--batch-id")?;
+    let actor = required_cli_arg(args, "--actor")?;
+    let request_id = optional_cli_arg(args, "--request-id")?;
+    let created_at_us = optional_cli_u64(args, "--created-at-us")?.unwrap_or(1);
+
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let mut memory_service = LingquMemoryService::new();
+    rebuild_lingqu_memory_execution_registry_artifacts(&mut memory_service, &mut durable_store)
+        .context("rebuild execution artifact registry")?;
+    let artifact = memory_service
+        .execution_artifact(&artifact_id)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("execution artifact `{artifact_id}` not found"))?;
+    let event = ArtifactAccessRecord::new(
+        event_id,
+        artifact.artifact_id.clone(),
+        access,
+        artifact.kind,
+        artifact.model.clone(),
+        artifact.producer_boundary.clone(),
+        run_id,
+        batch_id,
+        actor,
+        request_id,
+        artifact.checksum,
+        1,
+        created_at_us,
+    )
+    .map_err(|err| anyhow::anyhow!("build artifact access event: {err}"))?;
+    memory_service
+        .record_artifact_access(event.clone())
+        .context("record artifact access event")?;
+    memory_service
+        .persist_artifact_access_to_dfs(&mut durable_store)
+        .context("persist artifact access DFS audit")?;
+    save_lingqu_memory_durable_store(&store_path, &durable_store)?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: record-artifact-access");
+    println!("  store_path: {}", store_path.display());
+    println!(
+        "  audit_path: {}",
+        sim_memory::LINGQU_ARTIFACT_ACCESS_AUDIT_LOG_PATH
+    );
+    println!("  event_id: {}", event.event_id);
+    println!("  artifact_id: {}", event.artifact_id);
+    println!("  access: {:?}", event.access);
+    println!("  artifact_kind: {:?}", event.artifact_kind);
+    println!("  run_id: {}", event.run_id);
+    println!("  batch_id: {}", event.batch_id);
+    println!("  actor: {}", event.actor);
+    println!("  artifact_checksum: {:#x}", event.artifact_checksum);
+    println!("  checksum: {:#x}", event.checksum);
     Ok(())
 }
 
@@ -3127,6 +3192,90 @@ fn run_lingqu_memory_list_boundary_observations_cli(args: &[String]) -> anyhow::
             observation.source,
             observation.checksum,
             observation.created_at_us
+        );
+    }
+    Ok(())
+}
+
+fn run_lingqu_memory_list_artifact_access_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let event_id_filter = optional_cli_arg(args, "--event-id")?;
+    let artifact_id_filter = optional_cli_arg(args, "--artifact-id")?;
+    let run_id_filter = optional_cli_arg(args, "--run-id")?;
+    let batch_id_filter = optional_cli_arg(args, "--batch-id")?;
+    let access_filter = optional_cli_arg(args, "--access")?
+        .map(|value| parse_artifact_access_kind(&value))
+        .transpose()?;
+
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let events = durable_store
+        .load_artifact_access_manifest()
+        .context("load artifact access audit")?;
+    let filtered_events = events
+        .iter()
+        .filter(|event| {
+            event_id_filter
+                .as_ref()
+                .map(|event_id| event.event_id == *event_id)
+                .unwrap_or(true)
+        })
+        .filter(|event| {
+            artifact_id_filter
+                .as_ref()
+                .map(|artifact_id| event.artifact_id == *artifact_id)
+                .unwrap_or(true)
+        })
+        .filter(|event| {
+            run_id_filter
+                .as_ref()
+                .map(|run_id| event.run_id == *run_id)
+                .unwrap_or(true)
+        })
+        .filter(|event| {
+            batch_id_filter
+                .as_ref()
+                .map(|batch_id| event.batch_id == *batch_id)
+                .unwrap_or(true)
+        })
+        .filter(|event| {
+            access_filter
+                .map(|access| event.access == access)
+                .unwrap_or(true)
+        })
+        .collect::<Vec<_>>();
+    if let Some(event_id) = event_id_filter.as_ref() {
+        if filtered_events.is_empty() {
+            anyhow::bail!("artifact access event `{event_id}` not found in durable audit log");
+        }
+    }
+
+    println!("lingqu_memory_service");
+    println!("  mode: list-artifact-access");
+    println!("  store_path: {}", store_path.display());
+    println!(
+        "  audit_path: {}",
+        sim_memory::LINGQU_ARTIFACT_ACCESS_AUDIT_LOG_PATH
+    );
+    println!("  events: {}", filtered_events.len());
+    for event in filtered_events {
+        println!(
+            "  event id={} artifact={} access={:?} kind={:?} run_id={} batch_id={} actor={} request_id={} step={} node={} layers=[{},{}] position={} artifact_checksum={:#x} checksum={:#x} created_at_us={}",
+            event.event_id,
+            event.artifact_id,
+            event.access,
+            event.artifact_kind,
+            event.run_id,
+            event.batch_id,
+            event.actor,
+            event.request_id.as_deref().unwrap_or(""),
+            event.boundary.step_index,
+            event.boundary.node_index,
+            event.boundary.layer_start,
+            event.boundary.layer_end,
+            event.boundary.position,
+            event.artifact_checksum,
+            event.checksum,
+            event.created_at_us
         );
     }
     Ok(())
@@ -6037,6 +6186,14 @@ fn parse_shortpath_actions(value: &str) -> anyhow::Result<Vec<sim_memory::Shortp
     Ok(actions)
 }
 
+fn parse_artifact_access_kind(value: &str) -> anyhow::Result<ArtifactAccessKind> {
+    match value {
+        "produced" | "produce" => Ok(ArtifactAccessKind::Produced),
+        "consumed" | "consume" => Ok(ArtifactAccessKind::Consumed),
+        _ => anyhow::bail!("unsupported artifact access kind `{value}`"),
+    }
+}
+
 fn parse_nonempty_string_csv(label: &str, value: &str) -> anyhow::Result<Vec<String>> {
     let mut items = Vec::new();
     for item in value.split(',') {
@@ -7846,7 +8003,8 @@ mod tests {
         run_lingqu_memory_boundary_lookup_cli,
         run_lingqu_memory_boundary_lookup_from_observation_cli,
         run_lingqu_memory_boundary_request_from_w5_summary_cli, run_lingqu_memory_build_index_cli,
-        run_lingqu_memory_ingest_cli, run_lingqu_memory_list_boundary_observations_cli,
+        run_lingqu_memory_ingest_cli, run_lingqu_memory_list_artifact_access_cli,
+        run_lingqu_memory_list_boundary_observations_cli,
         run_lingqu_memory_list_prefetch_plans_cli, run_lingqu_memory_list_prefix_cache_reuse_cli,
         run_lingqu_memory_list_query_results_cli, run_lingqu_memory_list_record_lifecycle_cli,
         run_lingqu_memory_list_shortpath_decisions_cli,
@@ -7855,6 +8013,7 @@ mod tests {
         run_lingqu_memory_materialize_hot_state_cli, run_lingqu_memory_plan_prefetch_cli,
         run_lingqu_memory_promote_terminal_shortpath_artifacts_from_w5_summary_cli,
         run_lingqu_memory_publish_w5_engram_state_ref_cli, run_lingqu_memory_query_cli,
+        run_lingqu_memory_record_artifact_access_cli,
         run_lingqu_memory_record_boundary_observations_from_w5_summary_cli,
         run_lingqu_memory_register_execution_artifact_cli,
         run_lingqu_memory_register_prefix_cache_cli,
@@ -10443,6 +10602,70 @@ stage qwen3_range_forward_runtime_output_publish node=2
             ])
             .expect("register execution artifact");
         }
+        run_lingqu_memory_record_artifact_access_cli(&[
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--event-id".to_string(),
+            "artifact-access/run0/batch0/produce/step3/node4".to_string(),
+            "--artifact-id".to_string(),
+            "artifact/logits/step3/node4".to_string(),
+            "--access".to_string(),
+            "produced".to_string(),
+            "--run-id".to_string(),
+            "run0".to_string(),
+            "--batch-id".to_string(),
+            "batch0".to_string(),
+            "--actor".to_string(),
+            "node4".to_string(),
+            "--request-id".to_string(),
+            "publish/step3/node4".to_string(),
+            "--created-at-us".to_string(),
+            "12".to_string(),
+        ])
+        .expect("record artifact access");
+        run_lingqu_memory_record_artifact_access_cli(&[
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--event-id".to_string(),
+            "artifact-access/run1/batch2/consume/step3/node4".to_string(),
+            "--artifact-id".to_string(),
+            "artifact/logits/step3/node4".to_string(),
+            "--access".to_string(),
+            "consumed".to_string(),
+            "--run-id".to_string(),
+            "run1".to_string(),
+            "--batch-id".to_string(),
+            "batch2".to_string(),
+            "--actor".to_string(),
+            "w5-runtime-planner".to_string(),
+            "--request-id".to_string(),
+            "boundary/step3/node4/run1".to_string(),
+            "--created-at-us".to_string(),
+            "13".to_string(),
+        ])
+        .expect("record second artifact access");
+        run_lingqu_memory_list_artifact_access_cli(&[
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--run-id".to_string(),
+            "run1".to_string(),
+            "--batch-id".to_string(),
+            "batch2".to_string(),
+            "--access".to_string(),
+            "consumed".to_string(),
+        ])
+        .expect("list artifact access audit");
+        let mut access_audit_store =
+            load_lingqu_memory_durable_store(&store).expect("load artifact access audit store");
+        let access_events = access_audit_store
+            .load_artifact_access_manifest()
+            .expect("load artifact access audit");
+        assert_eq!(access_events.len(), 2);
+        assert!(access_events.iter().any(|event| {
+            event.run_id == "run1"
+                && event.batch_id == "batch2"
+                && event.access == sim_memory::ArtifactAccessKind::Consumed
+        }));
         let observation = sim_memory::BoundaryObservationRecord::new(
             "boundary-observation/run0/step3/node4".to_string(),
             "run0".to_string(),
