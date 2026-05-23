@@ -4866,7 +4866,7 @@ fn publish_w5_memory_decision_artifact_refs(
             )
         })?;
         let path = config.registry_dir.join("w5_memory_shortpath_stream.txt");
-        fs::write(&path, shortpath_stream.join(";"))
+        fs::write(&path, shortpath_stream.join("\n"))
             .with_context(|| format!("write W5 shortpath stream {}", path.display()))?;
         Some(path)
     };
@@ -5209,14 +5209,15 @@ fn w5_memory_decision_env_vars(
                 "SIM_W5_MEMORY_SHORTPATH_STREAM_COUNT".to_string(),
                 stream.len().to_string(),
             ));
-            vars.push((
-                "SIM_W5_MEMORY_SHORTPATH_STREAM".to_string(),
-                stream.join(";"),
-            ));
             if let Some(path) = published.shortpath_stream_path.as_ref() {
                 vars.push((
                     "SIM_W5_MEMORY_SHORTPATH_STREAM_PATH".to_string(),
                     path.display().to_string(),
+                ));
+            } else {
+                vars.push((
+                    "SIM_W5_MEMORY_SHORTPATH_STREAM".to_string(),
+                    stream.join(";"),
                 ));
             }
             if config.shortpath_execute {
@@ -5342,13 +5343,11 @@ fn w5_memory_shortpath_stream_env_from_refs(
             let published = shortpath_refs
                 .iter()
                 .find(|published| published.artifact_id == artifact.artifact_id)?;
-            let decision_id = w5_env_stream_field(&entry.decision.decision_id)?;
-            let artifact_id = w5_env_stream_field(&artifact.artifact_id)?;
             let target_start = entry.decision.target_layer_start?;
             let target_end = entry.decision.target_layer_end?;
             let producer_position = entry.decision.producer_position?;
             Some(format!(
-                "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+                "{}:{}:{}:{}:{}:{}:{}:{}:{}",
                 artifact.producer_boundary.step_index,
                 producer_position,
                 artifact.producer_boundary.layer_start,
@@ -5356,21 +5355,11 @@ fn w5_memory_shortpath_stream_env_from_refs(
                 target_start,
                 target_end,
                 published.ref_hex,
-                decision_id,
-                artifact_id,
                 artifact.boundary_hidden_fingerprint.bytes,
                 artifact.boundary_hidden_fingerprint.checksum
             ))
         })
         .collect()
-}
-
-fn w5_env_stream_field(value: &str) -> Option<&str> {
-    if value.is_empty() || value.contains(':') || value.contains(';') {
-        None
-    } else {
-        Some(value)
-    }
 }
 
 fn w5_boundary_observation_store_path(args: &Qwen3GuestDecodeLoopCliArgs) -> Option<&Path> {
@@ -9802,6 +9791,11 @@ mod tests {
         assert!(stream[0].starts_with("0:4:0:4:4:4:"));
         assert!(stream[1].starts_with("0:4:12:16:16:16:"));
         assert!(stream[2].starts_with("0:4:24:28:28:28:"));
+        assert!(stream
+            .iter()
+            .all(|entry| entry.split(':').count() == 9));
+        assert!(stream.iter().all(|entry| !entry.contains("decision/")));
+        assert!(stream.iter().all(|entry| !entry.contains("artifact/")));
         let engram = Qwen3EngramConfig {
             enabled: true,
             pool: Qwen3EngramPool::Obmm,
@@ -11344,15 +11338,23 @@ stage qwen3_range_forward_runtime_output_publish node=2
         assert!(env_vars.iter().any(
             |(key, value)| key == "SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF" && value.len() == 128
         ));
-        assert!(env_vars.iter().any(|(key, value)| {
-            key == "SIM_W5_MEMORY_SHORTPATH_STREAM"
-                && value.starts_with("3:12:4:8:8:8:")
-                && value.contains(":shortpath-decision/boundary/step3/node4:")
-                && value.ends_with(&format!(
-                    ":artifact/logits/step3/node4:16:{}",
-                    0x4444_4444_u64
-                ))
-        }));
+        let shortpath_stream_path = publication
+            .shortpath_stream_path
+            .as_ref()
+            .expect("shortpath stream path");
+        let shortpath_stream = fs::read_to_string(shortpath_stream_path)
+            .expect("read compact shortpath stream");
+        assert!(env_vars
+            .iter()
+            .any(|(key, value)| key == "SIM_W5_MEMORY_SHORTPATH_STREAM_PATH"
+                && value == &shortpath_stream_path.display().to_string()));
+        assert!(!env_vars
+            .iter()
+            .any(|(key, _)| key == "SIM_W5_MEMORY_SHORTPATH_STREAM"));
+        assert!(shortpath_stream.starts_with("3:12:4:8:8:8:"));
+        assert!(shortpath_stream.ends_with(&format!(":16:{}", 0x4444_4444_u64)));
+        assert!(!shortpath_stream.contains("shortpath-decision/"));
+        assert!(!shortpath_stream.contains("artifact/logits/"));
         assert!(env_vars
             .iter()
             .any(|(key, value)| key == "SIM_W5_MEMORY_SHORTPATH_EXECUTE" && value == "1"));

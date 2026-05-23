@@ -1898,9 +1898,11 @@ struct w4_qwen3_engram_config {
 
 #define W4_QWEN3_W5_SHORTPATH_STREAM_MAX 256U
 #define W4_QWEN3_W5_SHORTPATH_STREAM_BYTES 65536U
+#define W4_QWEN3_W5_SHORTPATH_STREAM_LINE_BYTES 512U
 
 struct w4_qwen3_shortpath_stream_entry {
     bool valid;
+    uint64_t stream_index;
     uint64_t step_index;
     uint64_t producer_position;
     uint64_t boundary_hidden_bytes;
@@ -1910,8 +1912,6 @@ struct w4_qwen3_shortpath_stream_entry {
     uint32_t target_layer_start;
     uint32_t target_layer_end;
     char artifact_ref[160];
-    char decision_id[256];
-    char artifact_id[256];
 };
 
 struct w4_qwen3_memory_decision_config {
@@ -4659,7 +4659,94 @@ static bool qwen3_stream_ref_hex_syntax_ok(const char *value)
     return true;
 }
 
-static int parse_qwen3_w5_shortpath_stream(
+static int parse_qwen3_w5_shortpath_stream_entry(
+    struct w4_qwen3_memory_decision_config *config,
+    const char *entry_text,
+    uint64_t *count)
+{
+    char entry_copy[W4_QWEN3_W5_SHORTPATH_STREAM_LINE_BYTES];
+    char *fields[9];
+    char *save_field = NULL;
+    char *field = NULL;
+    uint32_t field_count = 0U;
+    struct w4_qwen3_shortpath_stream_entry parsed;
+
+    if (!config || !entry_text || !count || entry_text[0] == '\0') {
+        return 0;
+    }
+    if (*count >= W4_QWEN3_W5_SHORTPATH_STREAM_MAX) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 shortpath stream too many entries max=%u\n",
+                (unsigned)W4_QWEN3_W5_SHORTPATH_STREAM_MAX);
+        return -1;
+    }
+    if (strlen(entry_text) >= sizeof(entry_copy)) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 shortpath stream entry too long"
+                " entry_index=%" PRIu64 " max=%zu\n",
+                *count,
+                sizeof(entry_copy) - 1U);
+        return -1;
+    }
+    snprintf(entry_copy, sizeof(entry_copy), "%s", entry_text);
+    memset(&parsed, 0, sizeof(parsed));
+    field = strtok_r(entry_copy, ":", &save_field);
+    while (field && field_count < 9U) {
+        fields[field_count++] = field;
+        field = strtok_r(NULL, ":", &save_field);
+    }
+    if (field != NULL || field_count != 9U) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 shortpath stream entry invalid"
+                " entry_index=%" PRIu64 " fields=%u expected=9\n",
+                *count,
+                field_count);
+        return -1;
+    }
+    if (parse_u64_field("shortpath_stream_step",
+                        fields[0],
+                        &parsed.step_index) != 0 ||
+        parse_u64_field("shortpath_stream_producer_position",
+                        fields[1],
+                        &parsed.producer_position) != 0 ||
+        parse_u32_field("shortpath_stream_producer_layer_start",
+                        fields[2],
+                        &parsed.producer_layer_start) != 0 ||
+        parse_u32_field("shortpath_stream_producer_layer_end",
+                        fields[3],
+                        &parsed.producer_layer_end) != 0 ||
+        parse_u32_field("shortpath_stream_target_layer_start",
+                        fields[4],
+                        &parsed.target_layer_start) != 0 ||
+        parse_u32_field("shortpath_stream_target_layer_end",
+                        fields[5],
+                        &parsed.target_layer_end) != 0 ||
+        parsed.producer_layer_end <= parsed.producer_layer_start ||
+        parsed.target_layer_end != parsed.target_layer_start ||
+        !qwen3_stream_ref_hex_syntax_ok(fields[6]) ||
+        parse_u64_field("shortpath_stream_boundary_hidden_bytes",
+                        fields[7],
+                        &parsed.boundary_hidden_bytes) != 0 ||
+        parse_u64_field("shortpath_stream_boundary_hidden_checksum",
+                        fields[8],
+                        &parsed.boundary_hidden_checksum) != 0 ||
+        parsed.boundary_hidden_bytes == 0 ||
+        parsed.boundary_hidden_checksum == 0) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 shortpath stream contract invalid"
+                " entry_index=%" PRIu64 "\n",
+                *count);
+        return -1;
+    }
+    snprintf(parsed.artifact_ref, sizeof(parsed.artifact_ref), "%s", fields[6]);
+    parsed.stream_index = *count;
+    parsed.valid = true;
+    config->shortpath_stream_entries[*count] = parsed;
+    (*count)++;
+    return 0;
+}
+
+static int parse_qwen3_w5_shortpath_stream_env(
     struct w4_qwen3_memory_decision_config *config)
 {
     char stream_copy[sizeof(config->shortpath_stream)];
@@ -4671,77 +4758,12 @@ static int parse_qwen3_w5_shortpath_stream(
         return 0;
     }
     snprintf(stream_copy, sizeof(stream_copy), "%s", config->shortpath_stream);
-    entry_text = strtok_r(stream_copy, ";", &save_entry);
+    entry_text = strtok_r(stream_copy, ";\n\r", &save_entry);
     while (entry_text) {
-        char *fields[11];
-        char *save_field = NULL;
-        char *field = NULL;
-        uint32_t field_count = 0U;
-        struct w4_qwen3_shortpath_stream_entry parsed;
-
-        if (count >= W4_QWEN3_W5_SHORTPATH_STREAM_MAX) {
-            fprintf(stderr,
-                    "[w4_guest] fail qwen3 w5 shortpath stream too large max=%u\n",
-                    (unsigned)W4_QWEN3_W5_SHORTPATH_STREAM_MAX);
+        if (parse_qwen3_w5_shortpath_stream_entry(config, entry_text, &count) != 0) {
             return -1;
         }
-        memset(&parsed, 0, sizeof(parsed));
-        field = strtok_r(entry_text, ":", &save_field);
-        while (field && field_count < 11U) {
-            fields[field_count++] = field;
-            field = strtok_r(NULL, ":", &save_field);
-        }
-        if (field != NULL || field_count != 11U) {
-            fprintf(stderr,
-                    "[w4_guest] fail qwen3 w5 shortpath stream entry invalid"
-                    " entry=%s fields=%u expected=11\n",
-                    entry_text,
-                    field_count);
-            return -1;
-        }
-        if (parse_u64_field("shortpath_stream_step",
-                            fields[0],
-                            &parsed.step_index) != 0 ||
-            parse_u64_field("shortpath_stream_producer_position",
-                            fields[1],
-                            &parsed.producer_position) != 0 ||
-            parse_u32_field("shortpath_stream_producer_layer_start",
-                            fields[2],
-                            &parsed.producer_layer_start) != 0 ||
-            parse_u32_field("shortpath_stream_producer_layer_end",
-                            fields[3],
-                            &parsed.producer_layer_end) != 0 ||
-            parse_u32_field("shortpath_stream_target_layer_start",
-                            fields[4],
-                            &parsed.target_layer_start) != 0 ||
-            parse_u32_field("shortpath_stream_target_layer_end",
-                            fields[5],
-                            &parsed.target_layer_end) != 0 ||
-            parsed.producer_layer_end <= parsed.producer_layer_start ||
-            parsed.target_layer_end != parsed.target_layer_start ||
-            !qwen3_stream_ref_hex_syntax_ok(fields[6]) ||
-            !str_nonempty(fields[7]) ||
-            !str_nonempty(fields[8]) ||
-            parse_u64_field("shortpath_stream_boundary_hidden_bytes",
-                            fields[9],
-                            &parsed.boundary_hidden_bytes) != 0 ||
-            parse_u64_field("shortpath_stream_boundary_hidden_checksum",
-                            fields[10],
-                            &parsed.boundary_hidden_checksum) != 0 ||
-            parsed.boundary_hidden_bytes == 0 ||
-            parsed.boundary_hidden_checksum == 0) {
-            fprintf(stderr,
-                    "[w4_guest] fail qwen3 w5 shortpath stream contract invalid"
-                    " entry=%s\n",
-                    entry_text);
-            return -1;
-        }
-        snprintf(parsed.artifact_ref, sizeof(parsed.artifact_ref), "%s", fields[6]);
-        snprintf(parsed.decision_id, sizeof(parsed.decision_id), "%s", fields[7]);
-        snprintf(parsed.artifact_id, sizeof(parsed.artifact_id), "%s", fields[8]);
-        parsed.valid = true;
-        config->shortpath_stream_entries[count++] = parsed;
-        entry_text = strtok_r(NULL, ";", &save_entry);
+        entry_text = strtok_r(NULL, ";\n\r", &save_entry);
     }
     if (config->shortpath_stream_expected_count != 0 &&
         count != config->shortpath_stream_expected_count) {
@@ -4758,16 +4780,16 @@ static int parse_qwen3_w5_shortpath_stream(
 
 static int qwen3_read_w5_shortpath_stream_file(
     const char *path,
-    char *stream,
-    size_t stream_capacity)
+    struct w4_qwen3_memory_decision_config *config)
 {
     FILE *fp;
-    size_t nread;
+    char line[W4_QWEN3_W5_SHORTPATH_STREAM_LINE_BYTES];
+    uint64_t count = 0;
 
     if (!str_nonempty(path)) {
         return 0;
     }
-    if (!stream || stream_capacity == 0) {
+    if (!config) {
         return -1;
     }
     fp = fopen(path, "rb");
@@ -4778,7 +4800,31 @@ static int qwen3_read_w5_shortpath_stream_file(
                 errno);
         return -1;
     }
-    nread = fread(stream, 1, stream_capacity - 1U, fp);
+    while (fgets(line, sizeof(line), fp)) {
+        size_t len = strlen(line);
+
+        while (len > 0 &&
+               (line[len - 1U] == '\n' || line[len - 1U] == '\r')) {
+            line[--len] = '\0';
+        }
+        if (len == sizeof(line) - 1U && line[len - 1U] != '\0') {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 w5 shortpath stream file entry too long"
+                    " path=%s entry_index=%" PRIu64 " max=%u\n",
+                    path,
+                    count,
+                    (unsigned)(sizeof(line) - 1U));
+            fclose(fp);
+            return -1;
+        }
+        if (line[0] == '\0') {
+            continue;
+        }
+        if (parse_qwen3_w5_shortpath_stream_entry(config, line, &count) != 0) {
+            fclose(fp);
+            return -1;
+        }
+    }
     if (ferror(fp)) {
         fprintf(stderr,
                 "[w4_guest] fail qwen3 w5 shortpath stream file read path=%s errno=%d\n",
@@ -4787,20 +4833,17 @@ static int qwen3_read_w5_shortpath_stream_file(
         fclose(fp);
         return -1;
     }
-    if (!feof(fp)) {
+    fclose(fp);
+    if (config->shortpath_stream_expected_count != 0 &&
+        count != config->shortpath_stream_expected_count) {
         fprintf(stderr,
-                "[w4_guest] fail qwen3 w5 shortpath stream file too large path=%s max=%zu\n",
-                path,
-                stream_capacity - 1U);
-        fclose(fp);
+                "[w4_guest] fail qwen3 w5 shortpath stream count mismatch"
+                " parsed=%" PRIu64 " expected=%" PRIu64 "\n",
+                count,
+                config->shortpath_stream_expected_count);
         return -1;
     }
-    fclose(fp);
-    while (nread > 0 &&
-           (stream[nread - 1U] == '\n' || stream[nread - 1U] == '\r')) {
-        nread--;
-    }
-    stream[nread] = '\0';
+    config->shortpath_stream_count = count;
     return 0;
 }
 
@@ -4929,13 +4972,12 @@ static int parse_qwen3_w5_memory_decision_config(
     env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_STREAM",
                       config->shortpath_stream,
                       sizeof(config->shortpath_stream));
-    if (!str_nonempty(config->shortpath_stream) &&
-        qwen3_read_w5_shortpath_stream_file(shortpath_stream_path,
-                                            config->shortpath_stream,
-                                            sizeof(config->shortpath_stream)) != 0) {
+    if (str_nonempty(config->shortpath_stream) &&
+        parse_qwen3_w5_shortpath_stream_env(config) != 0) {
         return -1;
     }
-    if (parse_qwen3_w5_shortpath_stream(config) != 0) {
+    if (!str_nonempty(config->shortpath_stream) &&
+        qwen3_read_w5_shortpath_stream_file(shortpath_stream_path, config) != 0) {
         return -1;
     }
     if (config->shortpath_stream_count > 0) {
@@ -6072,7 +6114,7 @@ static int qwen3_memory_shortpath_validate_stream_boundary_fingerprint(
     }
     printf("[w4_guest] stage qwen3_w5_memory_shortpath_rejected"
             " step=%" PRIu64 " layers=[%u,%u)"
-            " decision_id=%s artifact_id=%s"
+            " stream_index=%" PRIu64
             " expected_bytes=%" PRIu64 " actual_bytes=%" PRIu64
             " expected_checksum=0x%016" PRIx64
             " actual_checksum=0x%016" PRIx64
@@ -6080,8 +6122,7 @@ static int qwen3_memory_shortpath_validate_stream_boundary_fingerprint(
             decode_step,
             layer_start,
             layer_end,
-            entry->decision_id,
-            entry->artifact_id,
+            entry->stream_index,
             entry->boundary_hidden_bytes,
             boundary_hidden_bytes,
             entry->boundary_hidden_checksum,
@@ -6205,8 +6246,8 @@ static int qwen3_memory_shortpath_terminal_logits_record_for_boundary(
         return qwen3_memory_shortpath_terminal_logits_record_from_ref(
             "SIM_W5_MEMORY_SHORTPATH_STREAM",
             entry->artifact_ref,
-            entry->decision_id,
-            entry->artifact_id,
+            "stream",
+            "",
             decode_step,
             ref_out,
             record_out);
@@ -8462,6 +8503,29 @@ decode_round_start:
     if (seed_kvcache_payload(ep_mmio, default_segment) != 0) {
         goto out;
     }
+    if (is_qwen3_profile() && enable_db_cluster && cluster_node_count == 8U &&
+        qwen3_memory_decision_config.shortpath_execute && guest_decode_step > 0 &&
+        qwen3_terminal_token_count < guest_decode_step) {
+        uint64_t previous_token = 0;
+
+        if (!db_service_ready ||
+            w4_db_obmm_service_v0_wait_terminal_token_result(
+                &db_service,
+                guest_decode_step - 1U,
+                600000,
+                &previous_token) != 0) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 shortpath previous terminal token missing"
+                    " step=%" PRIu64 "\n",
+                    guest_decode_step - 1U);
+            goto out;
+        }
+        if (guest_decode_step - 1U <
+            sizeof(qwen3_terminal_tokens) / sizeof(qwen3_terminal_tokens[0])) {
+            qwen3_terminal_tokens[guest_decode_step - 1U] = previous_token;
+            qwen3_terminal_token_count = guest_decode_step;
+        }
+    }
     if (is_qwen3_profile() && enable_db_cluster && cluster_node_count == 8U) {
         if (qwen3_engram_config.enabled && guest_decode_step > 0 &&
             qwen3_round_history_loaded) {
@@ -8727,8 +8791,8 @@ decode_round_start:
                         qwen3_memory_shortpath_terminal_logits_record_from_ref(
                             "SIM_W5_MEMORY_SHORTPATH_STREAM",
                             entry->artifact_ref,
-                            entry->decision_id,
-                            entry->artifact_id,
+                            "stream",
+                            "",
                             guest_decode_step,
                             &terminal_logits_ref,
                             &terminal_logits_record);
@@ -8930,7 +8994,8 @@ decode_round_start:
                                 hidden_range_bytes);
                         goto out;
                     }
-                    if (token_result_input && !qwen3_round_history_loaded) {
+                    if (token_result_input && !qwen3_round_history_loaded &&
+                        qwen3_terminal_token_count < guest_decode_step) {
                         uint64_t token_words[8];
                         uint64_t previous_step;
                         uint64_t previous_token;
@@ -9306,10 +9371,10 @@ decode_round_start:
                     guest_decode_step,
                     qwen3_round_input_token_count);
             terminal_logits_decision_id = terminal_logits_entry ?
-                terminal_logits_entry->decision_id :
+                "stream" :
                 qwen3_memory_decision_config.shortpath_decision_id;
             terminal_logits_artifact_id = terminal_logits_entry ?
-                terminal_logits_entry->artifact_id :
+                "" :
                 qwen3_memory_decision_config.shortpath_artifact_id;
             terminal_logits_state =
                 qwen3_memory_shortpath_terminal_logits_record_for_boundary(
