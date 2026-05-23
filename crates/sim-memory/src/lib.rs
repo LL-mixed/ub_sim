@@ -3600,6 +3600,8 @@ pub struct ShortpathSupportRecord {
     pub request_id: String,
     pub supported_action: ShortpathAction,
     pub artifact_id: Option<String>,
+    #[serde(default)]
+    pub producer_position: Option<u64>,
     pub target_layer_start: Option<u32>,
     pub target_layer_end: Option<u32>,
     pub confidence_milli: u32,
@@ -3634,6 +3636,11 @@ impl ShortpathSupportRecord {
                 if self.artifact_id.as_deref().unwrap_or("").trim().is_empty() {
                     return Err(LingquMemoryError::MissingField(
                         "shortpath_support.artifact_id",
+                    ));
+                }
+                if self.producer_position.is_none() {
+                    return Err(LingquMemoryError::MissingField(
+                        "shortpath_support.producer_position",
                     ));
                 }
                 let (Some(start), Some(end)) = (self.target_layer_start, self.target_layer_end)
@@ -3678,6 +3685,8 @@ pub struct ShortpathDecisionRecord {
     pub support_id: Option<String>,
     pub action: ShortpathAction,
     pub artifact_id: Option<String>,
+    #[serde(default)]
+    pub producer_position: Option<u64>,
     pub target_layer_start: Option<u32>,
     pub target_layer_end: Option<u32>,
     pub confidence_milli: u32,
@@ -3715,6 +3724,11 @@ impl ShortpathDecisionRecord {
                 if self.artifact_id.as_deref().unwrap_or("").trim().is_empty() {
                     return Err(LingquMemoryError::MissingField(
                         "shortpath_decision.artifact_id",
+                    ));
+                }
+                if self.producer_position.is_none() {
+                    return Err(LingquMemoryError::MissingField(
+                        "shortpath_decision.producer_position",
                     ));
                 }
                 let (Some(start), Some(end)) = (self.target_layer_start, self.target_layer_end)
@@ -5243,6 +5257,7 @@ impl LingquMemoryService {
                 &req.request_id,
                 supported_action,
                 Some(&artifact.artifact_id),
+                Some(artifact.producer_boundary.position),
                 artifact.target_layer_start,
                 artifact.target_layer_end,
                 artifact.confidence_milli,
@@ -5254,6 +5269,7 @@ impl LingquMemoryService {
                 request_id: req.request_id.clone(),
                 supported_action,
                 artifact_id: Some(artifact.artifact_id.clone()),
+                producer_position: Some(artifact.producer_boundary.position),
                 target_layer_start: Some(artifact.target_layer_start),
                 target_layer_end: Some(artifact.target_layer_end),
                 confidence_milli: artifact.confidence_milli,
@@ -5270,6 +5286,7 @@ impl LingquMemoryService {
                 &req.request_id,
                 ShortpathAction::Continue,
                 None,
+                Some(req.boundary.position),
                 req.boundary.layer_start,
                 req.boundary.layer_end,
                 0,
@@ -5281,6 +5298,7 @@ impl LingquMemoryService {
                 request_id: req.request_id.clone(),
                 supported_action: ShortpathAction::Continue,
                 artifact_id: None,
+                producer_position: Some(req.boundary.position),
                 target_layer_start: None,
                 target_layer_end: None,
                 confidence_milli: 0,
@@ -6015,6 +6033,7 @@ fn shortpath_support_checksum(
     request_id: &str,
     supported_action: ShortpathAction,
     artifact_id: Option<&str>,
+    producer_position: Option<u64>,
     target_layer_start: u32,
     target_layer_end: u32,
     confidence_milli: u32,
@@ -6030,6 +6049,9 @@ fn shortpath_support_checksum(
     if let Some(artifact_id) = artifact_id {
         bytes.extend_from_slice(&(artifact_id.len() as u64).to_le_bytes());
         bytes.extend_from_slice(artifact_id.as_bytes());
+    }
+    if let Some(producer_position) = producer_position {
+        bytes.extend_from_slice(&producer_position.to_le_bytes());
     }
     bytes.extend_from_slice(&target_layer_start.to_le_bytes());
     bytes.extend_from_slice(&target_layer_end.to_le_bytes());
@@ -6780,6 +6802,10 @@ mod tests {
         );
         assert_eq!(response.support.target_layer_start, Some(8));
         assert_eq!(response.support.target_layer_end, Some(8));
+        assert_eq!(
+            response.support.producer_position,
+            Some(sample_range_boundary().position)
+        );
         assert_eq!(response.support.confidence_milli, 980);
         assert_eq!(
             service

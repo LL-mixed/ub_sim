@@ -4237,6 +4237,7 @@ fn w5_plan_shortpath_decision_from_memory_support(
         support_id: Some(support.support_id.clone()),
         action: support.supported_action,
         artifact_id: support.artifact_id.clone(),
+        producer_position: support.producer_position,
         target_layer_start: support.target_layer_start,
         target_layer_end: support.target_layer_end,
         confidence_milli: support.confidence_milli,
@@ -4286,6 +4287,13 @@ fn validate_w5_shortpath_artifact_contract(
     {
         anyhow::bail!(
             "shortpath decision {} target layer range does not match artifact {}",
+            decision.decision_id,
+            artifact.artifact_id
+        );
+    }
+    if decision.producer_position != Some(artifact.producer_boundary.position) {
+        anyhow::bail!(
+            "shortpath decision {} producer position does not match artifact {}",
             decision.decision_id,
             artifact.artifact_id
         );
@@ -5338,9 +5346,11 @@ fn w5_memory_shortpath_stream_env_from_refs(
             let artifact_id = w5_env_stream_field(&artifact.artifact_id)?;
             let target_start = entry.decision.target_layer_start?;
             let target_end = entry.decision.target_layer_end?;
+            let producer_position = entry.decision.producer_position?;
             Some(format!(
-                "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+                "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
                 artifact.producer_boundary.step_index,
+                producer_position,
                 artifact.producer_boundary.layer_start,
                 artifact.producer_boundary.layer_end,
                 target_start,
@@ -9429,6 +9439,7 @@ mod tests {
             support_id: Some("shortpath-support/test".to_string()),
             action: sim_memory::ShortpathAction::JumpToTerminal,
             artifact_id: Some("artifact/logits/wrong-model".to_string()),
+            producer_position: Some(4),
             target_layer_start: Some(28),
             target_layer_end: Some(28),
             confidence_milli: 990,
@@ -9705,6 +9716,7 @@ mod tests {
             support_id: Some("shortpath-support/test-node1".to_string()),
             action: sim_memory::ShortpathAction::JumpToTerminal,
             artifact_id: Some("artifact/logits/test-node1".to_string()),
+            producer_position: Some(4),
             target_layer_start: Some(4),
             target_layer_end: Some(4),
             confidence_milli: 990,
@@ -9719,6 +9731,7 @@ mod tests {
             request_id: "boundary/test-node4".to_string(),
             support_id: Some("shortpath-support/test-node4".to_string()),
             artifact_id: Some("artifact/logits/test-node4".to_string()),
+            producer_position: Some(4),
             target_layer_start: Some(16),
             target_layer_end: Some(16),
             proof_checksum: 0x8888,
@@ -9786,9 +9799,9 @@ mod tests {
         };
         let stream = w5_memory_shortpath_stream_env(&bundle, &publication);
         assert_eq!(stream.len(), 3);
-        assert!(stream[0].starts_with("0:0:4:4:4:"));
-        assert!(stream[1].starts_with("0:12:16:16:16:"));
-        assert!(stream[2].starts_with("0:24:28:28:28:"));
+        assert!(stream[0].starts_with("0:4:0:4:4:4:"));
+        assert!(stream[1].starts_with("0:4:12:16:16:16:"));
+        assert!(stream[2].starts_with("0:4:24:28:28:28:"));
         let engram = Qwen3EngramConfig {
             enabled: true,
             pool: Qwen3EngramPool::Obmm,
@@ -11333,7 +11346,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
         ));
         assert!(env_vars.iter().any(|(key, value)| {
             key == "SIM_W5_MEMORY_SHORTPATH_STREAM"
-                && value.starts_with("3:4:8:8:8:")
+                && value.starts_with("3:12:4:8:8:8:")
                 && value.contains(":shortpath-decision/boundary/step3/node4:")
                 && value.ends_with(&format!(
                     ":artifact/logits/step3/node4:16:{}",
@@ -11877,6 +11890,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             support_id: None,
             action: sim_memory::ShortpathAction::JumpToTerminal,
             artifact_id: Some("artifact/logits/missing-payload".to_string()),
+            producer_position: Some(12),
             target_layer_start: Some(8),
             target_layer_end: Some(8),
             confidence_milli: 980,

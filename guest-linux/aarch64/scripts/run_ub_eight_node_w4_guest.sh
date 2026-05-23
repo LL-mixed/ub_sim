@@ -720,7 +720,7 @@ w5_memory_shortpath_stream_target_layer_start() {
     if [[ -z "$entry" ]]; then
       continue
     fi
-    IFS=':' read -r field_step _ _ target_layer_start _ _ _ _ <<<"$entry"
+    IFS=':' read -r field_step _ _ _ target_layer_start _ _ _ _ _ _ <<<"$entry"
     if [[ "$field_step" == "$step" && -n "$target_layer_start" ]]; then
       printf '%s\n' "$target_layer_start"
       return 0
