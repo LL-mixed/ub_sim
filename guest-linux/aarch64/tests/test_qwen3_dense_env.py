@@ -317,8 +317,9 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("qwen3_range_kv_state_lazy_fallback", guest_source)
         self.assertIn("reason=intermediate_step_kv_absent", guest_source)
         self.assertIn("reason=not_lazy_work_item_resolve", guest_source)
-        self.assertIn("SIM_W5_MEMORY_KV_ARTIFACT_EXPORT", cli_source)
         self.assertIn("SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR", cli_source)
+        self.assertIn("SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT", cli_source)
+        self.assertIn("w5_kv_hot_object_ref_from_object_service", cli_source)
         self.assertIn("qwen3_object_registry_path_in_dir", cli_source)
         self.assertIn("trigger=work_item_lazy_resolve scope=local_range", guest_source)
         self.assertIn(

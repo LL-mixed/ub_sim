@@ -2761,8 +2761,8 @@ struct W5KvArtifactExport {
     hidden_checksum: u64,
     total_bytes: u64,
     checksum: u64,
+    hot_object_ref: Option<sim_memory::HotTensorObjectRef>,
     payload_ref: Option<LingquBlockPayloadRef>,
-    payload: Option<Vec<u8>>,
 }
 
 fn run_lingqu_memory_register_terminal_logits_artifact_from_w5_summary_cli(
@@ -2920,6 +2920,7 @@ fn run_lingqu_memory_promote_terminal_shortpath_artifacts_from_w5_summary_cli(
     let expires_at_us = optional_cli_u64(args, "--expires-at-us")?;
     let engram_state_id = optional_cli_arg(args, "--engram-state-id")?;
     let object_registry_dir = optional_cli_arg(args, "--object-registry-dir")?.map(PathBuf::from);
+    let object_store_path = optional_cli_arg(args, "--object-store")?.map(PathBuf::from);
     let model = sim_memory::InferenceModelBinding {
         model_id: required_cli_arg(args, "--model-id")?,
         model_key: required_cli_arg(args, "--model-key")?,
@@ -2944,6 +2945,7 @@ fn run_lingqu_memory_promote_terminal_shortpath_artifacts_from_w5_summary_cli(
         &summary,
         Some(&step_filter),
         object_registry_dir.as_deref(),
+        object_store_path.as_deref(),
         initial_position,
     )?;
 
@@ -3064,23 +3066,17 @@ fn run_lingqu_memory_promote_terminal_shortpath_artifacts_from_w5_summary_cli(
     let mut promoted_kv_artifact_ids = Vec::new();
     for export in &kv_exports {
         let artifact_id = format!("artifact/kv/{}/step{}/{}", run_id, export.step, export.node);
-        let payload_ref = if let Some(payload_ref) = &export.payload_ref {
-            payload_ref.clone()
+        let payload_ref = if export.hot_object_ref.is_some() {
+            None
+        } else if let Some(payload_ref) = &export.payload_ref {
+            Some(payload_ref.clone())
         } else {
-            let payload = export.payload.clone().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "KV artifact export {} step={} node={} has no payload ref or inline payload",
-                    run_id,
-                    export.step,
-                    export.node
-                )
-            })?;
-            write_lingqu_memory_external_payload_ref(
-                &store_path,
-                &format!("block/w5/kv/{}/step{}/{}", run_id, export.step, export.node),
-                payload,
-            )
-            .context("write promoted KV artifact payload")?
+            anyhow::bail!(
+                "KV artifact export {} step={} node={} has no direct Object Service or registry ref",
+                run_id,
+                export.step,
+                export.node
+            );
         };
         let artifact_checksum = cli_bytes_checksum(
             format!(
@@ -3112,8 +3108,8 @@ fn run_lingqu_memory_promote_terminal_shortpath_artifacts_from_w5_summary_cli(
             target_layer_end: export.layer_end,
             dtype: sim_core::TensorDType::Opaque,
             shape: vec![export.total_bytes],
-            durable_payload_ref: Some(payload_ref),
-            hot_object_ref: None,
+            durable_payload_ref: payload_ref,
+            hot_object_ref: export.hot_object_ref.clone(),
             source_query_result_id: None,
             source_engram_state_id: None,
             confidence_milli: confidence_milli as u32,
@@ -5448,6 +5444,25 @@ fn publish_w5_execution_artifact_ref(
     producer_entity: u32,
     source: &str,
 ) -> anyhow::Result<W5MemoryPublishedArtifactRef> {
+    if let Some(hot_ref) = &artifact.hot_object_ref {
+        let object_ref = w5_hot_tensor_object_ref_from_object_service(
+            object_service,
+            w5_execution_artifact_obmm_kind(artifact.kind),
+            hot_ref,
+        )
+        .with_context(|| {
+            format!(
+                "{source} execution artifact {} hot object unavailable",
+                artifact.artifact_id
+            )
+        })?;
+        return Ok(W5MemoryPublishedArtifactRef {
+            artifact_id: artifact.artifact_id.clone(),
+            ref_hex: qwen3_obmm_object_ref_wire_to_hex(&object_ref),
+            payload_bytes: hot_ref.bytes as usize,
+            payload_checksum: object_ref.payload_checksum,
+        });
+    }
     let payload_ref = artifact.durable_payload_ref.as_ref().ok_or_else(|| {
         anyhow::anyhow!(
             "{source} execution artifact {} is not backed by a durable payload",
@@ -6301,6 +6316,52 @@ fn w5_hot_tensor_object_ref_from_object_service(
     ))
 }
 
+fn w5_kv_hot_object_ref_from_object_service(
+    object_service: &LingquObjectServiceStub,
+    object_key: &str,
+    version: u64,
+    owner_entity: u32,
+    producer_entity: u32,
+    bytes: u64,
+    checksum: u64,
+) -> anyhow::Result<sim_memory::HotTensorObjectRef> {
+    let record = object_service
+        .latest_record(object_key)
+        .ok_or_else(|| anyhow::anyhow!("missing Object Service KV record {object_key}"))?;
+    if record.version != version
+        || record.bytes != bytes
+        || record.checksum != checksum
+        || u32::try_from(record.owner_entity.unwrap_or(record.producer_entity)).ok()
+            != Some(owner_entity)
+        || u32::try_from(record.producer_entity).ok() != Some(producer_entity)
+    {
+        anyhow::bail!(
+            "Object Service KV record metadata mismatch key={} version={} bytes={} checksum={:#x}",
+            object_key,
+            version,
+            bytes,
+            checksum
+        );
+    }
+    let placement = record
+        .placements
+        .iter()
+        .find(|placement| placement.backend == LingquPayloadBackend::ObmmShmem)
+        .ok_or_else(|| anyhow::anyhow!("Object Service KV OBMM placement missing: {object_key}"))?;
+    Ok(sim_memory::HotTensorObjectRef {
+        object_key: record.key.clone(),
+        version: record.version,
+        backend: sim_memory::HotObjectBackend::ObmmShmem,
+        storage_ref: placement.storage_ref.clone(),
+        segment: None,
+        offset: placement.offset,
+        bytes: record.bytes,
+        checksum: record.checksum,
+        dtype: sim_core::TensorDType::Opaque,
+        shape: vec![record.bytes],
+    })
+}
+
 fn publish_w5_engram_state_ref_from_memory_objects(
     config: &W5MemoryBootstrapConfig,
 ) -> anyhow::Result<W5EngramStateRefPublication> {
@@ -6634,11 +6695,13 @@ fn hydrate_object_service_snapshot_payloads_from_index(
                 )
             })?;
             let checksum = lingqu_object_payload_checksum(payload);
-            if checksum != record.checksum {
+            let runtime_checksum = w5_runtime_tensor_payload_checksum(payload);
+            if checksum != record.checksum && runtime_checksum != record.checksum {
                 anyhow::bail!(
-                    "Object Service payload checksum mismatch for key {}: got {:#x} expected {:#x}",
+                    "Object Service payload checksum mismatch for key {}: got {:#x} runtime {:#x} expected {:#x}",
                     record.key,
                     checksum,
+                    runtime_checksum,
                     record.checksum
                 );
             }
@@ -7590,12 +7653,23 @@ fn w5_kv_artifact_exports_from_summary(
     summary: &str,
     step_filter: Option<&std::collections::BTreeSet<u64>>,
     object_registry_dir: Option<&Path>,
+    object_store_path: Option<&Path>,
     initial_position: u64,
 ) -> anyhow::Result<Vec<W5KvArtifactExport>> {
     let run_dir = w5_run_dir_from_summary(summary)
         .ok_or_else(|| anyhow::anyhow!("missing W5 run_dir in summary"))?;
     let mut exports = std::collections::BTreeMap::<(u64, u32, u32, u32), W5KvArtifactExport>::new();
     let boundary_fingerprints = w5_boundary_fingerprints_from_summary(summary)?;
+    let object_service = object_store_path
+        .map(|path| -> anyhow::Result<Option<LingquObjectServiceStub>> {
+            let snapshot = load_lingqu_object_service_snapshot_file(path)?;
+            snapshot
+                .map(LingquObjectServiceStub::import_snapshot)
+                .transpose()
+                .with_context(|| format!("import object store {}", path.display()))
+        })
+        .transpose()?
+        .flatten();
 
     for entry in
         fs::read_dir(&run_dir).with_context(|| format!("read W5 run dir {}", run_dir.display()))?
@@ -7610,7 +7684,7 @@ fn w5_kv_artifact_exports_from_summary(
         let log = fs::read_to_string(&path)
             .with_context(|| format!("read W5 guest log {}", path.display()))?;
         for line in log.lines() {
-            if let Some(registry_dir) = object_registry_dir {
+            if object_service.is_some() || object_registry_dir.is_some() {
                 if line.contains("stage qwen3_range_kv_state_publish ") {
                     let fields = parse_summary_fields(line);
                     let step = required_summary_u64(&fields, "step")?;
@@ -7643,18 +7717,39 @@ fn w5_kv_artifact_exports_from_summary(
                         total_bytes,
                         checksum,
                     );
-                    let payload_path = qwen3_object_registry_path_in_dir(registry_dir, &object_ref);
-                    if !payload_path.exists() {
-                        anyhow::bail!(
-                            "direct KV object registry payload missing: {}",
-                            payload_path.display()
-                        );
-                    }
-                    let payload_ref = lingqu_memory_external_payload_ref_from_path(
-                        &payload_path,
-                        total_bytes,
-                        checksum,
-                    )?;
+                    let hot_object_ref = if let Some(object_service) = &object_service {
+                        Some(w5_kv_hot_object_ref_from_object_service(
+                            object_service,
+                            key,
+                            version,
+                            node_index - 1,
+                            node_index - 1,
+                            total_bytes,
+                            checksum,
+                        )?)
+                    } else {
+                        None
+                    };
+                    let payload_ref = if hot_object_ref.is_none() {
+                        let registry_dir = object_registry_dir.ok_or_else(|| {
+                            anyhow::anyhow!("direct KV object registry dir missing")
+                        })?;
+                        let payload_path =
+                            qwen3_object_registry_path_in_dir(registry_dir, &object_ref);
+                        if !payload_path.exists() {
+                            anyhow::bail!(
+                                "direct KV object registry payload missing: {}",
+                                payload_path.display()
+                            );
+                        }
+                        Some(lingqu_memory_external_payload_ref_from_path(
+                            &payload_path,
+                            total_bytes,
+                            checksum,
+                        )?)
+                    } else {
+                        None
+                    };
                     let key = (step, node_index, layer_start, layer_end);
                     let previous = exports.insert(
                         key,
@@ -7669,8 +7764,8 @@ fn w5_kv_artifact_exports_from_summary(
                             hidden_checksum: hidden.checksum,
                             total_bytes,
                             checksum,
-                            payload_ref: Some(payload_ref),
-                            payload: None,
+                            hot_object_ref,
+                            payload_ref,
                         },
                     );
                     if previous.is_some() {
@@ -7681,86 +7776,21 @@ fn w5_kv_artifact_exports_from_summary(
                     continue;
                 }
             }
-            if !line.contains("stage qwen3_w5_memory_kv_artifact_export ") {
-                continue;
-            }
-            let fields = parse_summary_fields(line);
-            let step = required_summary_u64(&fields, "step")?;
-            if step_filter.is_some_and(|steps| !steps.contains(&step)) {
-                continue;
-            }
-            let node_index = required_summary_u32(&fields, "node")?;
-            let layer_start = required_summary_u32(&fields, "layer_start")?;
-            let layer_end = required_summary_u32(&fields, "layer_end")?;
-            let position = required_summary_u64(&fields, "position")?;
-            let hidden_bytes = required_summary_u64(&fields, "hidden_bytes")?;
-            let hidden_checksum = required_summary_u64_auto(&fields, "hidden_checksum")?;
-            let offset = required_summary_u64(&fields, "offset")?;
-            let bytes = required_summary_u64(&fields, "bytes")?;
-            let total_bytes = required_summary_u64(&fields, "total_bytes")?;
-            let checksum = required_summary_u64_auto(&fields, "kv_checksum")?;
-            let data_hex = required_summary_field(&fields, "data_hex")?;
-            let chunk = decode_hex_payload(data_hex)?;
-            if chunk.len() as u64 != bytes {
-                anyhow::bail!(
-                    "KV export chunk bytes mismatch step={step} node={node_index} offset={offset}"
-                );
-            }
-            let key = (step, node_index, layer_start, layer_end);
-            let export = exports.entry(key).or_insert_with(|| W5KvArtifactExport {
-                step,
-                node: format!("node{node_index}"),
-                node_index,
-                position,
-                layer_start,
-                layer_end,
-                hidden_bytes,
-                hidden_checksum,
-                total_bytes,
-                checksum,
-                payload_ref: None,
-                payload: Some(vec![0; total_bytes as usize]),
-            });
-            if export.payload_ref.is_some() {
-                anyhow::bail!(
-                    "mixed direct and legacy KV artifact export for step={step} node={node_index}"
-                );
-            }
-            if export.position != position
-                || export.hidden_bytes != hidden_bytes
-                || export.hidden_checksum != hidden_checksum
-                || export.total_bytes != total_bytes
-                || export.checksum != checksum
-            {
-                anyhow::bail!("inconsistent KV export metadata for step={step} node={node_index}");
-            }
-            let offset = offset as usize;
-            let end = offset
-                .checked_add(chunk.len())
-                .ok_or_else(|| anyhow::anyhow!("KV export chunk range overflow"))?;
-            let payload = export
-                .payload
-                .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("legacy KV export missing payload buffer"))?;
-            if end > payload.len() {
-                anyhow::bail!("KV export chunk out of range step={step} node={node_index}");
-            }
-            payload[offset..end].copy_from_slice(&chunk);
         }
     }
     for export in exports.values() {
-        if let Some(payload) = &export.payload {
-            if w5_runtime_tensor_payload_checksum(payload) != export.checksum {
+        if let Some(payload_ref) = &export.payload_ref {
+            if payload_ref.bytes != export.total_bytes || payload_ref.checksum != export.checksum {
                 anyhow::bail!(
-                    "KV export checksum mismatch step={} node={}",
+                    "KV export payload ref mismatch step={} node={}",
                     export.step,
                     export.node
                 );
             }
-        } else if let Some(payload_ref) = &export.payload_ref {
-            if payload_ref.bytes != export.total_bytes || payload_ref.checksum != export.checksum {
+        } else if let Some(hot_ref) = &export.hot_object_ref {
+            if hot_ref.bytes != export.total_bytes || hot_ref.checksum != export.checksum {
                 anyhow::bail!(
-                    "KV export payload ref mismatch step={} node={}",
+                    "KV export hot object ref mismatch step={} node={}",
                     export.step,
                     export.node
                 );
@@ -8001,6 +8031,7 @@ fn promote_w5_runtime_terminal_shortpath_artifacts_from_summary(
     created_at_us: u64,
     now_us: u64,
     object_registry_dir: Option<&Path>,
+    object_store_path: Option<&Path>,
 ) -> anyhow::Result<bool> {
     let summary = fs::read_to_string(summary_path)
         .with_context(|| format!("read W5 summary {}", summary_path.display()))?;
@@ -8033,6 +8064,16 @@ fn promote_w5_runtime_terminal_shortpath_artifacts_from_summary(
         args.extend([
             "--object-registry-dir".to_string(),
             object_registry_dir.display().to_string(),
+        ]);
+        args
+    } else {
+        args
+    };
+    let args = if let Some(object_store_path) = object_store_path {
+        let mut args = args;
+        args.extend([
+            "--object-store".to_string(),
+            object_store_path.display().to_string(),
         ]);
         args
     } else {
@@ -8187,41 +8228,6 @@ fn save_lingqu_memory_durable_store(
 }
 
 const LINGQU_EXTERNAL_PAYLOAD_BLOCK_PREFIX: &str = "external-file:";
-
-fn write_lingqu_memory_external_payload_ref(
-    store_path: &Path,
-    block: &str,
-    bytes: Vec<u8>,
-) -> anyhow::Result<LingquBlockPayloadRef> {
-    if bytes.is_empty() {
-        anyhow::bail!("external payload {block} is empty");
-    }
-    let store_name = store_path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("lingqu-memory-store");
-    let payload_dir = store_path.with_file_name(format!("{store_name}.payloads"));
-    fs::create_dir_all(&payload_dir)
-        .with_context(|| format!("create external payload dir {}", payload_dir.display()))?;
-    let checksum = w5_runtime_tensor_payload_checksum(&bytes);
-    let filename = format!(
-        "{:016x}-{checksum:016x}.bin",
-        cli_bytes_checksum(block.as_bytes())
-    );
-    let payload_path = payload_dir.join(filename);
-    fs::write(&payload_path, &bytes)
-        .with_context(|| format!("write external payload {}", payload_path.display()))?;
-    Ok(LingquBlockPayloadRef::new(
-        format!(
-            "{}{}",
-            LINGQU_EXTERNAL_PAYLOAD_BLOCK_PREFIX,
-            payload_path.display()
-        ),
-        0,
-        bytes.len() as u64,
-        checksum,
-    ))
-}
 
 fn lingqu_memory_external_payload_ref_from_path(
     payload_path: &Path,
@@ -9452,10 +9458,10 @@ mod tests {
         load_lingqu_memory_durable_store, load_lingqu_object_service_snapshot_file,
         load_w5_memory_decisions_from_store, parse_summary_fields,
         parse_w5_terminal_logits_observation, publish_w5_engram_state_ref_from_memory,
-        publish_w5_memory_decision_artifact_refs, qwen3_decode_loop_args_from,
-        qwen3_decode_report_verbosity_from_env, qwen3_dense_weights_path_from_env,
-        qwen3_engram_policy_checksum, qwen3_engram_select_token, qwen3_engram_state_words,
-        qwen3_guest_candidate_records, qwen3_guest_decode_loop_args_from,
+        publish_w5_execution_artifact_ref, publish_w5_memory_decision_artifact_refs,
+        qwen3_decode_loop_args_from, qwen3_decode_report_verbosity_from_env,
+        qwen3_dense_weights_path_from_env, qwen3_engram_policy_checksum, qwen3_engram_select_token,
+        qwen3_engram_state_words, qwen3_guest_candidate_records, qwen3_guest_decode_loop_args_from,
         qwen3_guest_default_w5_profile, qwen3_guest_dense_runtime,
         qwen3_guest_engram_candidate_counts, qwen3_guest_engram_env_vars,
         qwen3_guest_engram_env_vars_from_lookup, qwen3_guest_engram_expected_terminal_rewrites,
@@ -9494,15 +9500,17 @@ mod tests {
         run_lingqu_memory_validate_flat_materialize, run_lingqu_memory_validate_flat_query,
         run_lingqu_memory_validate_w5_engram_object_ref, run_qwen3_guest_decode_loop_cli,
         run_w5_runtime_boundary_lookups, save_lingqu_durable_sim, save_lingqu_memory_durable_store,
-        simpler_host_matmul_artifact_producer_path, validate_qwen3_dense_weights_path,
-        validate_w5_inference_profile, validate_w5_memory_decision_bundle_for_run,
-        w5_inference_profile_spec, w5_memory_decision_env_vars,
-        w5_memory_decision_publication_object_service_profile,
+        save_lingqu_object_service_snapshot, simpler_host_matmul_artifact_producer_path,
+        validate_qwen3_dense_weights_path, validate_w5_inference_profile,
+        validate_w5_memory_decision_bundle_for_run, w5_inference_profile_spec,
+        w5_memory_decision_env_vars, w5_memory_decision_publication_object_service_profile,
         w5_memory_shortpath_kv_stream_env_from_refs, w5_memory_shortpath_stream_env,
         w5_memory_should_publish_engram_state, w5_object_service_payload_index_path,
         w5_runtime_tensor_payload_checksum, LingquDurableSim, LingquDurableSimSnapshot,
-        LingquMemoryDurableStore, LingquMemoryDurableStoreSnapshot, LingquObjectServiceStub,
-        LingquObjectVersionSelector, MemoryCatalogSnapshot, QueryResult, Qwen3CandidateRecord,
+        LingquMemoryDurableStore, LingquMemoryDurableStoreSnapshot, LingquObjectKind,
+        LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
+        LingquObjectServiceStub, LingquObjectVersionSelector, LingquPayloadBackend,
+        LingquPayloadPlacement, MemoryCatalogSnapshot, QueryResult, Qwen3CandidateRecord,
         Qwen3DecodeReportVerbosity, Qwen3DenseGuestRuntime, Qwen3DenseProfile, Qwen3EngramConfig,
         Qwen3EngramContextOp, Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport,
         Qwen3GuestDecodeLoopCliArgs, Qwen3GuestExpectedWorkerCounts, Qwen3SamplerConfig,
@@ -9632,28 +9640,6 @@ mod tests {
         let piece_word0 = 0x41 + step;
         format!(
             "[w4_guest] stage qwen3_w5_terminal_logits_observation local=node8 step={step} token={token} runner_up={runner_up} margin_milli=100 logits_checksum={logits_checksum:#018x} text_checksum={text_checksum:#018x} top_logit_bits=0x000000003f800000 runner_up_logit_bits=0x000000003f000000 full_vocab_checked=151936 full_vocab_checksum={full_vocab_checksum:#018x} piece_word0={piece_word0:#018x} piece_word1=0x0000000000000000 candidate_count=2 candidate0_token={token} candidate0_logit_bits=0x000000003f800000 candidate0_text_checksum={text_checksum:#018x} candidate0_piece_bytes=1 candidate0_piece_word0={piece_word0:#018x} candidate0_piece_word1=0x0000000000000000 candidate1_token={runner_up} candidate1_logit_bits=0x000000003f000000 candidate1_text_checksum={runner_text_checksum:#018x} candidate1_piece_bytes=1 candidate1_piece_word0=0x0000000000000042 candidate1_piece_word1=0x0000000000000000 candidate2_token=0 candidate2_logit_bits=0x0000000000000000 candidate2_text_checksum=0x0000000000000000 candidate2_piece_bytes=0 candidate2_piece_word0=0x0000000000000000 candidate2_piece_word1=0x0000000000000000 candidate3_token=0 candidate3_logit_bits=0x0000000000000000 candidate3_text_checksum=0x0000000000000000 candidate3_piece_bytes=0 candidate3_piece_word0=0x0000000000000000 candidate3_piece_word1=0x0000000000000000 source=uapi_real_logits target=lingqu_memory_execution_artifact status=ok\n"
-        )
-    }
-
-    fn sample_w5_kv_export_log_line(
-        step: u64,
-        node: u32,
-        layer_start: u32,
-        layer_end: u32,
-        position: u64,
-        hidden_checksum: u64,
-        payload: &[u8],
-    ) -> String {
-        let data_hex = payload
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        let checksum = w5_runtime_tensor_payload_checksum(payload);
-
-        format!(
-            "[w4_guest] stage qwen3_w5_memory_kv_artifact_export node={node} step={step} layers=[{layer_start},{layer_end}) layer_start={layer_start} layer_end={layer_end} position={position} hidden_bytes=16 hidden_checksum={hidden_checksum:#018x} offset=0 bytes={} total_bytes={} kv_checksum={checksum:#018x} data_hex={data_hex} status=chunk\n",
-            payload.len(),
-            payload.len()
         )
     }
 
@@ -13092,7 +13078,9 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
         let store = root.join("store.json");
         let summary_path = root.join("summary.txt");
         let run_dir = root.join("run0_headless8");
+        let registry_dir = root.join("registry");
         fs::create_dir_all(&run_dir).expect("create run dir");
+        fs::create_dir_all(&registry_dir).expect("create registry dir");
         let mut summary = format!("summary: run_dir={}\n", run_dir.display());
         summary.push_str(&sample_w5_boundary_observation_line(
             0, "node2", "node3", 2, 4, 0x2222,
@@ -13108,13 +13096,27 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
         ));
         fs::write(&summary_path, summary).expect("write summary");
         let kv_payload = vec![0xa1, 0xb2, 0xc3, 0xd4];
+        let kv_checksum = w5_runtime_tensor_payload_checksum(&kv_payload);
+        let key = "kvcache/qwen3-test-key/node4/layers-4-8/decode-step0";
+        let object_ref = qwen3_obmm_object_ref_for_payload(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+            3,
+            3,
+            1,
+            key,
+            0,
+            kv_payload.len() as u64,
+            kv_checksum,
+        );
+        let payload_path = qwen3_object_registry_path_in_dir(&registry_dir, &object_ref);
+        fs::write(&payload_path, &kv_payload).expect("write registry payload");
         fs::write(
             run_dir.join("nodeH_guest.log"),
             format!(
                 "{}{}{}",
                 sample_w5_terminal_logits_log_line(0, 11, 358),
                 sample_w5_terminal_logits_log_line(1, 264, 358),
-                sample_w5_kv_export_log_line(0, 3, 4, 8, 20, 0x2222, &kv_payload)
+                sample_w5_direct_kv_publish_log_line(0, 4, 4, 8, key, 1, &kv_payload)
             ),
         )
         .expect("write guest log");
@@ -13129,6 +13131,8 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             "20".to_string(),
             "--nodes".to_string(),
             "node2,node4".to_string(),
+            "--object-registry-dir".to_string(),
+            registry_dir.to_string_lossy().into_owned(),
             "--model-id".to_string(),
             "qwen3-test".to_string(),
             "--model-key".to_string(),
@@ -13160,13 +13164,13 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             .any(|artifact| artifact.artifact_id == "artifact/logits/run0/step1/node4"));
         let kv_artifact = artifacts
             .iter()
-            .find(|artifact| artifact.artifact_id == "artifact/kv/run0/step0/node3")
+            .find(|artifact| artifact.artifact_id == "artifact/kv/run0/step0/node4")
             .expect("promoted downstream KV artifact");
         assert_eq!(kv_artifact.kind, sim_memory::ExecutionArtifactKind::KvCache);
         assert_eq!(kv_artifact.producer_boundary.position, 20);
         assert_eq!(kv_artifact.producer_boundary.layer_start, 4);
         assert_eq!(kv_artifact.producer_boundary.layer_end, 8);
-        assert_eq!(kv_artifact.boundary_hidden_fingerprint.checksum, 0x2222);
+        assert_eq!(kv_artifact.boundary_hidden_fingerprint.checksum, 0x4444);
         let kv_payload_ref = kv_artifact
             .durable_payload_ref
             .clone()
@@ -13298,6 +13302,180 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
                 .expect("read direct kv payload"),
             kv_payload
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lingqu_memory_promotes_direct_object_service_kv_artifacts_without_payload_refs() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_lingqu_memory_promote_object_kv_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let store = root.join("store.json");
+        let object_store = root.join("object_store.json");
+        let summary_path = root.join("summary.txt");
+        let run_dir = root.join("run0_headless8");
+        fs::create_dir_all(&run_dir).expect("create run dir");
+
+        let mut summary = format!("summary: run_dir={}\n", run_dir.display());
+        summary.push_str(&sample_w5_boundary_observation_line(
+            0, "node3", "node4", 4, 8, 0x3333,
+        ));
+        fs::write(&summary_path, summary).expect("write summary");
+
+        let key = "kvcache/qwen3-test-key/node3/layers-4-8/decode-step0";
+        let kv_payload = vec![0x31, 0x41, 0x59, 0x26, 0x53];
+        let mut object_service =
+            LingquObjectServiceStub::new(w5_memory_decision_publication_object_service_profile());
+        let kv_checksum = w5_runtime_tensor_payload_checksum(&kv_payload);
+        object_service
+            .submit_publish(
+                LingquObjectPublishReq {
+                    task: None,
+                    key: key.to_string(),
+                    kind: LingquObjectKind::KvCacheBlock,
+                    producer_entity: 2,
+                    owner_entity: Some(2),
+                    expected_version: None,
+                    metadata: LingquObjectMetadata {
+                        bytes: kv_payload.len() as u64,
+                        checksum: kv_checksum,
+                        dtype: None,
+                        shape: vec![kv_payload.len() as u64],
+                        layout: None,
+                        expires_at_us: None,
+                    },
+                    placements: vec![LingquPayloadPlacement {
+                        backend: LingquPayloadBackend::ObmmShmem,
+                        storage_ref: format!("{key}/payload"),
+                        segment: None,
+                        offset: 0,
+                        bytes: kv_payload.len() as u64,
+                        checksum: kv_checksum,
+                        locality: LingquObjectLocality::DomainShared(0),
+                    }],
+                    payload_bytes: kv_payload.clone(),
+                },
+                1,
+            )
+            .expect("publish direct object service kv");
+        let object_ref = qwen3_obmm_object_ref_for_payload(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+            2,
+            2,
+            1,
+            key,
+            0,
+            kv_payload.len() as u64,
+            kv_checksum,
+        );
+        let mut durable_store = LingquMemoryDurableStore::default();
+        save_lingqu_object_service_snapshot(&object_store, &mut durable_store, &object_service)
+            .expect("save object service snapshot");
+        let object_store_json = fs::read(&object_store).expect("read object store json");
+        let object_store_value: serde_json::Value =
+            serde_json::from_slice(&object_store_json).expect("decode object store json");
+        assert!(
+            object_store_value["records"]
+                .as_array()
+                .expect("object records")
+                .iter()
+                .all(|record| record["payload_bytes"]
+                    .as_array()
+                    .expect("metadata-only payload bytes")
+                    .is_empty()),
+            "direct Object Service snapshot JSON must not inline payload bytes"
+        );
+
+        let guest_log = format!(
+            "{}{}",
+            sample_w5_terminal_logits_log_line(0, 11, 358),
+            sample_w5_direct_kv_publish_log_line(
+                0,
+                3,
+                4,
+                8,
+                key,
+                object_ref.object_version,
+                &kv_payload
+            )
+        );
+        assert!(
+            !guest_log.contains("data_hex="),
+            "direct Object Service KV fixture must not carry inline log payload"
+        );
+        fs::write(run_dir.join("nodeH_guest.log"), guest_log).expect("write guest log");
+
+        run_lingqu_memory_promote_terminal_shortpath_artifacts_from_w5_summary_cli(&[
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--summary".to_string(),
+            summary_path.to_string_lossy().into_owned(),
+            "--step-count".to_string(),
+            "1".to_string(),
+            "--initial-position".to_string(),
+            "20".to_string(),
+            "--nodes".to_string(),
+            "node3".to_string(),
+            "--object-store".to_string(),
+            object_store.to_string_lossy().into_owned(),
+            "--model-id".to_string(),
+            "qwen3-test".to_string(),
+            "--model-key".to_string(),
+            "qwen3-test-key".to_string(),
+            "--tokenizer-hash".to_string(),
+            "0x1001".to_string(),
+            "--profile-hash".to_string(),
+            "0x2002".to_string(),
+            "--created-at-us".to_string(),
+            "12".to_string(),
+        ])
+        .expect("promote terminal shortpath artifacts from direct Object Service payload");
+
+        let mut memory_store =
+            load_lingqu_memory_durable_store(&store).expect("load promoted durable store");
+        let artifacts = memory_store
+            .load_execution_artifact_manifest()
+            .expect("load promoted execution artifacts");
+        let kv_artifact = artifacts
+            .iter()
+            .find(|artifact| artifact.artifact_id == "artifact/kv/run0/step0/node3")
+            .expect("promoted direct Object Service KV artifact");
+        assert_eq!(kv_artifact.kind, sim_memory::ExecutionArtifactKind::KvCache);
+        assert!(
+            kv_artifact.durable_payload_ref.is_none(),
+            "direct Object Service KV artifact should not add a durable payload copy"
+        );
+        let hot_ref = kv_artifact
+            .hot_object_ref
+            .as_ref()
+            .expect("direct Object Service KV hot ref");
+        assert_eq!(hot_ref.object_key, key);
+        assert_eq!(hot_ref.bytes, kv_payload.len() as u64);
+        assert_eq!(hot_ref.checksum, object_ref.payload_checksum);
+
+        let object_snapshot = load_lingqu_object_service_snapshot_file(&object_store)
+            .expect("load object snapshot")
+            .expect("object snapshot exists");
+        assert!(object_snapshot
+            .records
+            .iter()
+            .any(|record| record.key == key && record.payload_bytes == kv_payload));
+        let mut object_service = LingquObjectServiceStub::import_snapshot(object_snapshot)
+            .expect("import object snapshot");
+        let published = publish_w5_execution_artifact_ref(
+            &mut memory_store,
+            &mut object_service,
+            kv_artifact,
+            2,
+            2,
+            "direct-kv-test",
+        )
+        .expect("publish direct hot KV artifact ref");
+        assert_eq!(published.payload_bytes, kv_payload.len());
+        assert_eq!(published.payload_checksum, object_ref.payload_checksum);
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -15440,9 +15618,10 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
             config.registry_dir.display().to_string(),
         );
-    }
-    if w5_boundary_observation_store_path(args).is_some() && args.memory_decisions.is_some() {
-        command.env("SIM_W5_MEMORY_KV_ARTIFACT_EXPORT", "0");
+        command.env(
+            SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
+            config.object_store_path.display().to_string(),
+        );
     }
     if let Some(spec) = &engram_simt {
         command
@@ -15824,6 +16003,10 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
                 .memory_bootstrap
                 .as_ref()
                 .map(|config| config.registry_dir.as_path());
+            let object_store_path = args
+                .memory_bootstrap
+                .as_ref()
+                .map(|config| config.object_store_path.as_path());
             let promoted = promote_w5_runtime_terminal_shortpath_artifacts_from_summary(
                 store_path,
                 &summary_path,
@@ -15832,6 +16015,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
                 boundary_lookup_now_us,
                 boundary_lookup_now_us,
                 object_registry_dir,
+                object_store_path,
             )?;
             println!(
                 "  memory_runtime_shortpath_artifacts_promoted: store={} summary={} promoted={}",

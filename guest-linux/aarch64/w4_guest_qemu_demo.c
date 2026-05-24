@@ -1914,7 +1914,6 @@ struct w4_qwen3_sampler_config {
 #define W4_QWEN3_W5_SHORTPATH_STREAM_LINE_BYTES 512U
 #define W4_QWEN3_W5_SHORTPATH_KV_STREAM_MAX 2048U
 #define W4_QWEN3_W5_SHORTPATH_KV_STREAM_LINE_BYTES 512U
-#define W4_QWEN3_W5_KV_ARTIFACT_EXPORT_CHUNK_BYTES 1024U
 
 struct w4_qwen3_shortpath_stream_entry {
     bool valid;
@@ -7336,124 +7335,6 @@ static int qwen3_memory_shortpath_materialize_local_kv_state(
     return 1;
 }
 
-static bool qwen3_env_csv_contains_u64(const char *value, uint64_t needle)
-{
-    const char *cursor = value;
-
-    if (!value || value[0] == '\0') {
-        return false;
-    }
-    while (*cursor) {
-        char *end = NULL;
-        unsigned long long parsed;
-
-        while (*cursor == ',' || *cursor == ' ') {
-            cursor++;
-        }
-        if (*cursor == '\0') {
-            break;
-        }
-        errno = 0;
-        parsed = strtoull(cursor, &end, 10);
-        if (end == cursor || errno != 0) {
-            return false;
-        }
-        if ((uint64_t)parsed == needle) {
-            return true;
-        }
-        cursor = end;
-    }
-    return false;
-}
-
-static bool qwen3_w5_kv_artifact_export_enabled(uint32_t node,
-                                                 uint64_t decode_step)
-{
-    const char *enabled = getenv("SIM_W5_MEMORY_KV_ARTIFACT_EXPORT");
-    const char *steps = getenv("SIM_W5_MEMORY_KV_ARTIFACT_EXPORT_STEPS");
-    const char *nodes = getenv("SIM_W5_MEMORY_KV_ARTIFACT_EXPORT_NODES");
-
-    if (!enabled || strcmp(enabled, "1") != 0 || !str_nonempty(steps)) {
-        return false;
-    }
-    if (!qwen3_env_csv_contains_u64(steps, decode_step)) {
-        return false;
-    }
-    if (str_nonempty(nodes) && !qwen3_env_csv_contains_u64(nodes, node + 1U)) {
-        return false;
-    }
-    return true;
-}
-
-static void qwen3_hex_encode_chunk(const uint8_t *bytes,
-                                   size_t len,
-                                   char *hex,
-                                   size_t hex_len)
-{
-    static const char digits[] = "0123456789abcdef";
-
-    if (!bytes || !hex || hex_len < len * 2U + 1U) {
-        return;
-    }
-    for (size_t i = 0; i < len; ++i) {
-        hex[i * 2U] = digits[(bytes[i] >> 4) & 0xfU];
-        hex[i * 2U + 1U] = digits[bytes[i] & 0xfU];
-    }
-    hex[len * 2U] = '\0';
-}
-
-static void qwen3_w5_log_kv_artifact_export(uint32_t node,
-                                            uint64_t decode_step,
-                                            uint64_t position,
-                                            uint32_t layer_start,
-                                            uint32_t layer_end,
-                                            uint64_t boundary_hidden_bytes,
-                                            uint64_t boundary_hidden_checksum,
-                                            const uint8_t *payload,
-                                            uint64_t payload_len,
-                                            uint64_t checksum)
-{
-    char hex[W4_QWEN3_W5_KV_ARTIFACT_EXPORT_CHUNK_BYTES * 2U + 1U];
-    uint64_t offset = 0;
-
-    if (!payload || payload_len == 0 ||
-        !qwen3_w5_kv_artifact_export_enabled(node, decode_step)) {
-        return;
-    }
-    while (offset < payload_len) {
-        uint64_t remaining = payload_len - offset;
-        size_t chunk_len = remaining >
-                W4_QWEN3_W5_KV_ARTIFACT_EXPORT_CHUNK_BYTES ?
-            W4_QWEN3_W5_KV_ARTIFACT_EXPORT_CHUNK_BYTES :
-            (size_t)remaining;
-
-        qwen3_hex_encode_chunk(payload + offset, chunk_len, hex, sizeof(hex));
-        printf("[w4_guest] stage qwen3_w5_memory_kv_artifact_export"
-               " node=%u step=%" PRIu64 " layers=[%u,%u)"
-               " layer_start=%u layer_end=%u position=%" PRIu64
-               " hidden_bytes=%" PRIu64
-               " hidden_checksum=0x%016" PRIx64
-               " offset=%" PRIu64 " bytes=%zu total_bytes=%" PRIu64
-               " kv_checksum=0x%016" PRIx64 " data_hex=%s"
-               " status=chunk\n",
-               node + 1U,
-               decode_step,
-               layer_start,
-               layer_end,
-               layer_start,
-               layer_end,
-               position,
-               boundary_hidden_bytes,
-               boundary_hidden_checksum,
-               offset,
-               chunk_len,
-               payload_len,
-               checksum,
-               hex);
-        offset += chunk_len;
-    }
-}
-
 static void parse_env_u64_csv_bounded(const char *key,
                                       uint64_t *values,
                                       uint64_t value_capacity,
@@ -10745,16 +10626,6 @@ decode_round_start:
                             role);
                     goto out;
                 }
-                qwen3_w5_log_kv_artifact_export(dispatch_node,
-                                                 guest_decode_step,
-                                                 qwen3_round_decode_position,
-                                                 round_layer_start,
-                                                 round_layer_end,
-                                                 runtime_forward.payload_bytes,
-                                                 runtime_forward.payload_checksum,
-                                                 runtime_forward.kv_payload,
-                                                 runtime_forward.kv_payload_bytes,
-                                                 runtime_forward.kv_payload_checksum);
                 range_publish_done_ms = monotonic_ms();
                 range_publish_ms = range_publish_done_ms - range_publish_start_ms;
                 terminal_publish_start_ms = monotonic_ms();
@@ -10824,16 +10695,6 @@ qwen3_shortpath_publish_runtime_range:
                         role);
                 goto out;
             }
-            qwen3_w5_log_kv_artifact_export(dispatch_node,
-                                             guest_decode_step,
-                                             qwen3_round_decode_position,
-                                             round_layer_start,
-                                             round_layer_end,
-                                             runtime_forward.payload_bytes,
-                                             runtime_forward.payload_checksum,
-                                             runtime_forward.kv_payload,
-                                             runtime_forward.kv_payload_bytes,
-                                             runtime_forward.kv_payload_checksum);
             range_publish_done_ms = monotonic_ms();
             range_publish_ms = range_publish_done_ms - range_publish_start_ms;
         }
