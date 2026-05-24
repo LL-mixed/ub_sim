@@ -1,5 +1,6 @@
 target/
 out/
+.venv/
 /a.out
 archive/qemu-device-legacy/qemu/
 archive/guest-probe-legacy/
