@@ -13382,11 +13382,8 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
                 .as_array()
                 .expect("object records")
                 .iter()
-                .all(|record| record["payload_bytes"]
-                    .as_array()
-                    .expect("metadata-only payload bytes")
-                    .is_empty()),
-            "direct Object Service snapshot JSON must not inline payload bytes"
+                .all(|record| record.get("payload_bytes").is_none()),
+            "direct Object Service snapshot JSON must not carry payload_bytes"
         );
 
         let guest_log = format!(
@@ -14954,11 +14951,8 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
                 .as_array()
                 .expect("object records")
                 .iter()
-                .all(|record| record["payload_bytes"]
-                    .as_array()
-                    .expect("metadata-only payload bytes")
-                    .is_empty()),
-            "object store JSON must not inline payload bytes"
+                .all(|record| record.get("payload_bytes").is_none()),
+            "object store JSON must not carry payload_bytes"
         );
         let object_snapshot = load_lingqu_object_service_snapshot_file(&object_store)
             .expect("load object snapshot file")
@@ -15031,11 +15025,8 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
                 .as_array()
                 .expect("updated object records")
                 .iter()
-                .all(|record| record["payload_bytes"]
-                    .as_array()
-                    .expect("metadata-only payload bytes")
-                    .is_empty()),
-            "updated object store JSON must not inline payload bytes"
+                .all(|record| record.get("payload_bytes").is_none()),
+            "updated object store JSON must not carry payload_bytes"
         );
         let object_snapshot = load_lingqu_object_service_snapshot_file(&object_store)
             .expect("load updated object snapshot file")

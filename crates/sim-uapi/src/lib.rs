@@ -27240,10 +27240,15 @@ mod tests {
                     qwen3_object_service_payload_index_path(&snapshot_path).exists(),
                     "object service binary payload index should exist"
                 );
-                let metadata_snapshot = LingquObjectServiceSnapshot::from_json_bytes(
-                    &std::fs::read(&snapshot_path).expect("read metadata snapshot"),
-                )
-                .expect("decode metadata snapshot");
+                let metadata_snapshot_bytes =
+                    std::fs::read(&snapshot_path).expect("read metadata snapshot");
+                assert!(
+                    !String::from_utf8_lossy(&metadata_snapshot_bytes).contains("payload_bytes"),
+                    "metadata snapshot JSON must not carry payload_bytes"
+                );
+                let metadata_snapshot =
+                    LingquObjectServiceSnapshot::from_json_bytes(&metadata_snapshot_bytes)
+                        .expect("decode metadata snapshot");
                 assert!(metadata_snapshot
                     .records
                     .iter()

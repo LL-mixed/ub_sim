@@ -2569,6 +2569,7 @@ pub mod object {
         pub shape: Vec<u64>,
         pub layout: Option<TensorLayout>,
         pub placements: Vec<LingquPayloadPlacement>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         pub payload_bytes: Vec<u8>,
         pub created_at_us: u64,
         pub committed_at_us: Option<u64>,
