@@ -2548,6 +2548,10 @@ fn qwen3_object_service_snapshot_get_from_path(
     snapshot_path: &Path,
     object_ref: &LingquObmmObjectRefWire,
 ) -> Result<Vec<u8>, String> {
+    if qwen3_object_service_payload_index_path(snapshot_path).exists() {
+        let view = qwen3_object_service_payload_index_view_from_path(snapshot_path, *object_ref)?;
+        return Ok(view.bytes().to_vec());
+    }
     let fingerprint = qwen3_object_service_snapshot_fingerprint(snapshot_path)?;
     let mut cache = qwen3_object_service_snapshot_cache()
         .lock()
