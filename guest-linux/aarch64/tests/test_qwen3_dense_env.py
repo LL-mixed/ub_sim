@@ -202,6 +202,9 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         db_service_header = (
             Path(__file__).resolve().parents[1] / "w4_kvcache_db_service.h"
         ).read_text(encoding="utf-8")
+        cli_source = (
+            Path(__file__).resolve().parents[3] / "crates" / "sim-cli" / "src" / "main.rs"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("qwen3_memory_prefix_cache_kv_ref", guest_source)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF", guest_source)
@@ -314,6 +317,10 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("qwen3_range_kv_state_lazy_fallback", guest_source)
         self.assertIn("reason=intermediate_step_kv_absent", guest_source)
         self.assertIn("reason=not_lazy_work_item_resolve", guest_source)
+        self.assertIn("SIM_W5_MEMORY_KV_ARTIFACT_EXPORT", cli_source)
+        self.assertIn("SIM_W5_MEMORY_KV_ARTIFACT_EXPORT_STEPS", cli_source)
+        self.assertIn("SIM_W5_MEMORY_KV_ARTIFACT_EXPORT_NODES", cli_source)
+        self.assertIn("qwen3_csv_u64_range", cli_source)
         self.assertIn("trigger=work_item_lazy_resolve scope=local_range", guest_source)
         self.assertIn(
             '" node=%u consumer_step=%" PRIu64 " kv_step=%" PRIu64',
