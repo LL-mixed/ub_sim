@@ -31,7 +31,22 @@ TRACE_FILE="${TRACE_FILE:-$OUT_DIR/eight_node_w5_inference_cluster.trace.latest.
 RUN_SUMMARY_FILE="${RUN_SUMMARY_FILE:-$OUT_DIR/eight_node_w5_inference_cluster_summary.${RUN_ID}.txt}"
 SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-qwen3_dense}"
 SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP="${SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-0}"
+SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP="${SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP:-0}"
 SIM_W5_MEMORY_OBSERVATION_STORE="${SIM_W5_MEMORY_OBSERVATION_STORE:-}"
+SIM_W5_MEMORY_DECISION_STORE="${SIM_W5_MEMORY_DECISION_STORE:-}"
+SIM_W5_MEMORY_BOUNDARY_OBSERVATION_ID="${SIM_W5_MEMORY_BOUNDARY_OBSERVATION_ID:-}"
+SIM_W5_MEMORY_BOUNDARY_OBSERVATION_IDS="${SIM_W5_MEMORY_BOUNDARY_OBSERVATION_IDS:-}"
+SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID="${SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID:-}"
+SIM_W5_MEMORY_SHORTPATH_DECISION_ID="${SIM_W5_MEMORY_SHORTPATH_DECISION_ID:-}"
+SIM_W5_MEMORY_SHORTPATH_DECISION_IDS="${SIM_W5_MEMORY_SHORTPATH_DECISION_IDS:-}"
+SIM_W5_MEMORY_PREFETCH_PLAN_ID="${SIM_W5_MEMORY_PREFETCH_PLAN_ID:-}"
+SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID="${SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID:-}"
+SIM_W5_MEMORY_STORE="${SIM_W5_MEMORY_STORE:-$OUT_DIR/w5_memory_object_store.${RUN_ID}.json}"
+SIM_W5_MEMORY_OBJECT_STORE="${SIM_W5_MEMORY_OBJECT_STORE:-$OUT_DIR/w5_object_service_store.${RUN_ID}.json}"
+SIM_W5_MEMORY_ENGRAM_STATE="${SIM_W5_MEMORY_ENGRAM_STATE:-$OUT_DIR/w5_memory_engram_state.${RUN_ID}.json}"
+SIM_W5_MEMORY_REGISTRY_DIR="${SIM_W5_MEMORY_REGISTRY_DIR:-$OUT_DIR/w5_memory_registry.${RUN_ID}}"
+SIM_W5_MEMORY_OWNER_ENTITY="${SIM_W5_MEMORY_OWNER_ENTITY:-0}"
+SIM_W5_MEMORY_PRODUCER_ENTITY="${SIM_W5_MEMORY_PRODUCER_ENTITY:-0}"
 
 export RUN_ID
 export TRACE_FILE
@@ -40,21 +55,66 @@ export SIM_UAPI_W5_PROFILE
 export SIM_UAPI_W4_CHIPBACKEND_PROFILE
 export SIM_QWEN3_GUEST_ENGRAM
 export SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP
+export SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP
 export SIM_W5_MEMORY_OBSERVATION_STORE
+export SIM_W5_MEMORY_DECISION_STORE
+export SIM_W5_MEMORY_BOUNDARY_OBSERVATION_ID
+export SIM_W5_MEMORY_BOUNDARY_OBSERVATION_IDS
+export SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID
+export SIM_W5_MEMORY_SHORTPATH_DECISION_ID
+export SIM_W5_MEMORY_SHORTPATH_DECISION_IDS
+export SIM_W5_MEMORY_PREFETCH_PLAN_ID
+export SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID
+export SIM_W5_MEMORY_STORE
+export SIM_W5_MEMORY_OBJECT_STORE
+export SIM_W5_MEMORY_ENGRAM_STATE
+export SIM_W5_MEMORY_REGISTRY_DIR
+export SIM_W5_MEMORY_OWNER_ENTITY
+export SIM_W5_MEMORY_PRODUCER_ENTITY
 
+memory_runtime_lookup=0
 if [[ "$SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP" == "1" ||
       "$SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP" == "true" ]]; then
+  memory_runtime_lookup=1
+fi
+
+memory_online_lookup=0
+if [[ "$SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP" == "1" ||
+      "$SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP" == "true" ]]; then
+  memory_online_lookup=1
+fi
+
+memory_decision_reuse=0
+if [[ -n "$SIM_W5_MEMORY_DECISION_STORE" ]]; then
+  if [[ -n "$SIM_W5_MEMORY_BOUNDARY_OBSERVATION_ID" ||
+        -n "$SIM_W5_MEMORY_BOUNDARY_OBSERVATION_IDS" ||
+        -n "$SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID" ||
+        -n "$SIM_W5_MEMORY_SHORTPATH_DECISION_ID" ||
+        -n "$SIM_W5_MEMORY_SHORTPATH_DECISION_IDS" ||
+        "$memory_online_lookup" == "1" ||
+        -n "$SIM_W5_MEMORY_PREFETCH_PLAN_ID" ||
+        -n "$SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID" ]]; then
+    memory_decision_reuse=1
+  elif [[ -z "${SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT:-}" &&
+          -z "${SIM_W5_MEMORY_SHORTPATH_STREAM_PATH:-}" ]]; then
+    echo "SIM_W5_MEMORY_DECISION_STORE requires a boundary observation/decision selector for live Memory Service reuse" >&2
+    echo "hint: set SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP=1, SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID, SIM_W5_MEMORY_BOUNDARY_OBSERVATION_ID(S), or SIM_W5_MEMORY_SHORTPATH_DECISION_ID(S)" >&2
+    exit 2
+  fi
+fi
+
+if (( memory_runtime_lookup || memory_decision_reuse )); then
   SIM_CLI_BIN="${SIM_CLI_BIN:-$REPO_DIR/target/debug/sim-cli}"
   if [[ ! -x "$SIM_CLI_BIN" ]]; then
-    echo "SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP requires sim-cli: $SIM_CLI_BIN" >&2
+    echo "W5 Memory Service runtime path requires sim-cli: $SIM_CLI_BIN" >&2
     echo "hint: run cargo build -p sim-cli, or set SIM_CLI_BIN to a built sim-cli" >&2
     exit 2
   fi
   if [[ -z "${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}" ]]; then
-    echo "SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP requires SIM_QWEN3_DENSE_WEIGHTS_PATH" >&2
+    echo "W5 Memory Service runtime path requires SIM_QWEN3_DENSE_WEIGHTS_PATH" >&2
     exit 2
   fi
-  if [[ -z "$SIM_W5_MEMORY_OBSERVATION_STORE" ]]; then
+  if (( memory_runtime_lookup )) && [[ -z "$SIM_W5_MEMORY_OBSERVATION_STORE" ]]; then
     SIM_W5_MEMORY_OBSERVATION_STORE="$OUT_DIR/w5_memory_runtime_boundary_lookup.${RUN_ID}.json"
     export SIM_W5_MEMORY_OBSERVATION_STORE
   fi
@@ -65,13 +125,72 @@ if [[ "$SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP" == "1" ||
     --steps "${SIM_QWEN3_GUEST_DECODE_STEPS:-1}"
     --weights-path "$SIM_QWEN3_DENSE_WEIGHTS_PATH"
     --prompt-token-ids "${SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS:-81378,37585,374}"
-    --memory-observation-store "$SIM_W5_MEMORY_OBSERVATION_STORE"
-    --memory-runtime-boundary-lookup
   )
+  if (( memory_runtime_lookup )); then
+    cli_args+=(
+      --memory-observation-store "$SIM_W5_MEMORY_OBSERVATION_STORE"
+      --memory-runtime-boundary-lookup
+    )
+  fi
+  if (( memory_decision_reuse )); then
+    cli_args+=(
+      --memory-store "$SIM_W5_MEMORY_STORE"
+      --memory-object-store "$SIM_W5_MEMORY_OBJECT_STORE"
+      --memory-engram-state "$SIM_W5_MEMORY_ENGRAM_STATE"
+      --memory-registry-dir "$SIM_W5_MEMORY_REGISTRY_DIR"
+      --memory-owner-entity "$SIM_W5_MEMORY_OWNER_ENTITY"
+      --memory-producer-entity "$SIM_W5_MEMORY_PRODUCER_ENTITY"
+      --memory-decision-store "$SIM_W5_MEMORY_DECISION_STORE"
+    )
+    if [[ -n "$SIM_W5_MEMORY_BOUNDARY_OBSERVATION_ID" ]]; then
+      cli_args+=(--memory-boundary-observation-id "$SIM_W5_MEMORY_BOUNDARY_OBSERVATION_ID")
+    fi
+    if [[ -n "$SIM_W5_MEMORY_BOUNDARY_OBSERVATION_IDS" ]]; then
+      cli_args+=(--memory-boundary-observation-ids "$SIM_W5_MEMORY_BOUNDARY_OBSERVATION_IDS")
+    fi
+    if [[ -n "$SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID" ]]; then
+      cli_args+=(--memory-boundary-observation-run-id "$SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID")
+    fi
+    if [[ -n "$SIM_W5_MEMORY_SHORTPATH_DECISION_ID" ]]; then
+      cli_args+=(--memory-shortpath-decision-id "$SIM_W5_MEMORY_SHORTPATH_DECISION_ID")
+    fi
+    if [[ -n "$SIM_W5_MEMORY_SHORTPATH_DECISION_IDS" ]]; then
+      cli_args+=(--memory-shortpath-decision-ids "$SIM_W5_MEMORY_SHORTPATH_DECISION_IDS")
+    fi
+    if (( memory_online_lookup )); then
+      cli_args+=(--memory-online-boundary-lookup)
+    fi
+    if [[ -n "$SIM_W5_MEMORY_PREFETCH_PLAN_ID" ]]; then
+      cli_args+=(--memory-prefetch-plan-id "$SIM_W5_MEMORY_PREFETCH_PLAN_ID")
+    fi
+    if [[ -n "$SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID" ]]; then
+      cli_args+=(--memory-prefix-cache-reuse-plan-id "$SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID")
+    fi
+    case "${SIM_W5_MEMORY_SHORTPATH_EXECUTE:-1}" in
+      0|false|FALSE|no|NO)
+        cli_args+=(--memory-shortpath-execute=false)
+        ;;
+      *)
+        cli_args+=(--memory-shortpath-execute=true)
+        ;;
+    esac
+  fi
   if [[ "$SIM_QWEN3_GUEST_ENGRAM" == "1" ]]; then
     cli_args+=(--engram)
   fi
-  echo "[w5_inference_cluster] runtime_boundary_lookup=1 store=$SIM_W5_MEMORY_OBSERVATION_STORE" >&2
+  if [[ -n "${SIM_QWEN3_SAMPLER_TOP_K:-}" ]]; then
+    cli_args+=(--sampler-top-k "$SIM_QWEN3_SAMPLER_TOP_K")
+  fi
+  if [[ -n "${SIM_QWEN3_SAMPLER_TOP_P_MILLI:-}" ]]; then
+    cli_args+=(--sampler-top-p-milli "$SIM_QWEN3_SAMPLER_TOP_P_MILLI")
+  fi
+  if [[ -n "${SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI:-}" ]]; then
+    cli_args+=(--sampler-temperature-milli "$SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI")
+  fi
+  if [[ -n "${SIM_QWEN3_SAMPLER_SEED:-}" ]]; then
+    cli_args+=(--sampler-seed "$SIM_QWEN3_SAMPLER_SEED")
+  fi
+  echo "[w5_inference_cluster] runtime_boundary_lookup=$memory_runtime_lookup online_boundary_lookup=$memory_online_lookup observation_store=$SIM_W5_MEMORY_OBSERVATION_STORE decision_reuse=$memory_decision_reuse decision_store=$SIM_W5_MEMORY_DECISION_STORE" >&2
   exec "$SIM_CLI_BIN" "${cli_args[@]}"
 fi
 

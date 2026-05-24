@@ -65,6 +65,10 @@ SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-$(w5_profile
 SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-qwen3_dense}"
 SIM_QWEN3_GUEST_DECODE_STEPS="${SIM_QWEN3_GUEST_DECODE_STEPS:-1}"
 SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS="${SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS:-81378,37585,374}"
+SIM_QWEN3_SAMPLER_TOP_K="${SIM_QWEN3_SAMPLER_TOP_K:-1}"
+SIM_QWEN3_SAMPLER_TOP_P_MILLI="${SIM_QWEN3_SAMPLER_TOP_P_MILLI:-1000}"
+SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI="${SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI:-1000}"
+SIM_QWEN3_SAMPLER_SEED="${SIM_QWEN3_SAMPLER_SEED:-0}"
 SIM_QWEN3_GUEST_ENGRAM="${SIM_QWEN3_GUEST_ENGRAM:-$(w5_profile_default_engram "$SIM_UAPI_W5_PROFILE")}"
 SIM_QWEN3_GUEST_ENGRAM_MODE="${SIM_QWEN3_GUEST_ENGRAM_MODE:-cpu}"
 SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE="${SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE:-8}"
@@ -83,6 +87,8 @@ SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT="${SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT
 SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT_GUEST="$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT"
 SIM_W5_MEMORY_SERVICE="${SIM_W5_MEMORY_SERVICE:-}"
 SIM_W5_MEMORY_DECISION_STORE="${SIM_W5_MEMORY_DECISION_STORE:-}"
+SIM_W5_MEMORY_SHORTPATH_LOOKUP_MODE="${SIM_W5_MEMORY_SHORTPATH_LOOKUP_MODE:-}"
+SIM_W5_MEMORY_BOUNDARY_LOOKUP_BACKEND="${SIM_W5_MEMORY_BOUNDARY_LOOKUP_BACKEND:-}"
 SIM_W5_MEMORY_SHORTPATH_DECISION_ID="${SIM_W5_MEMORY_SHORTPATH_DECISION_ID:-}"
 SIM_W5_MEMORY_SHORTPATH_SUPPORT_ID="${SIM_W5_MEMORY_SHORTPATH_SUPPORT_ID:-}"
 SIM_W5_MEMORY_SHORTPATH_ACTION="${SIM_W5_MEMORY_SHORTPATH_ACTION:-}"
@@ -92,6 +98,8 @@ SIM_W5_MEMORY_SHORTPATH_TARGET_LAYER_END="${SIM_W5_MEMORY_SHORTPATH_TARGET_LAYER
 SIM_W5_MEMORY_SHORTPATH_ARTIFACT_KIND="${SIM_W5_MEMORY_SHORTPATH_ARTIFACT_KIND:-}"
 SIM_W5_MEMORY_SHORTPATH_ARTIFACT_CHECKSUM="${SIM_W5_MEMORY_SHORTPATH_ARTIFACT_CHECKSUM:-}"
 SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF="${SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF:-}"
+SIM_W5_MEMORY_BOUNDARY_REGISTRY_REF="${SIM_W5_MEMORY_BOUNDARY_REGISTRY_REF:-}"
+SIM_W5_MEMORY_BOUNDARY_REGISTRY_COUNT="${SIM_W5_MEMORY_BOUNDARY_REGISTRY_COUNT:-}"
 SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_START="${SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_START:-}"
 SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_END="${SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_END:-}"
 SIM_W5_MEMORY_SHORTPATH_PRODUCER_POSITION="${SIM_W5_MEMORY_SHORTPATH_PRODUCER_POSITION:-}"
@@ -101,6 +109,12 @@ SIM_W5_MEMORY_SHORTPATH_STREAM_COUNT="${SIM_W5_MEMORY_SHORTPATH_STREAM_COUNT:-}"
 SIM_W5_MEMORY_SHORTPATH_STREAM="${SIM_W5_MEMORY_SHORTPATH_STREAM:-}"
 SIM_W5_MEMORY_SHORTPATH_STREAM_PATH="${SIM_W5_MEMORY_SHORTPATH_STREAM_PATH:-}"
 SIM_W5_MEMORY_SHORTPATH_STREAM_PATH_GUEST="$SIM_W5_MEMORY_SHORTPATH_STREAM_PATH"
+SIM_W5_MEMORY_SHORTPATH_KV_STREAM_COUNT="${SIM_W5_MEMORY_SHORTPATH_KV_STREAM_COUNT:-}"
+SIM_W5_MEMORY_SHORTPATH_KV_STREAM_PATH="${SIM_W5_MEMORY_SHORTPATH_KV_STREAM_PATH:-}"
+SIM_W5_MEMORY_SHORTPATH_KV_STREAM_PATH_GUEST="$SIM_W5_MEMORY_SHORTPATH_KV_STREAM_PATH"
+SIM_W5_MEMORY_KV_ARTIFACT_EXPORT="${SIM_W5_MEMORY_KV_ARTIFACT_EXPORT:-}"
+SIM_W5_MEMORY_KV_ARTIFACT_EXPORT_STEPS="${SIM_W5_MEMORY_KV_ARTIFACT_EXPORT_STEPS:-}"
+SIM_W5_MEMORY_KV_ARTIFACT_EXPORT_NODES="${SIM_W5_MEMORY_KV_ARTIFACT_EXPORT_NODES:-}"
 SIM_W5_MEMORY_PREFETCH_PLAN_ID="${SIM_W5_MEMORY_PREFETCH_PLAN_ID:-}"
 SIM_W5_MEMORY_PREFETCH_SCOPE="${SIM_W5_MEMORY_PREFETCH_SCOPE:-}"
 SIM_W5_MEMORY_PREFETCH_TARGET_STEP_INDEX="${SIM_W5_MEMORY_PREFETCH_TARGET_STEP_INDEX:-}"
@@ -164,6 +178,24 @@ stage_w5_memory_shortpath_stream() {
   cp "$stream_path" "$stream_guest_file"
   SIM_W5_MEMORY_SHORTPATH_STREAM_PATH_GUEST="$stream_guest_path"
   trace "prepare: staged W5 Memory shortpath stream source=$stream_path guest=$stream_guest_path"
+}
+
+stage_w5_memory_shortpath_kv_stream() {
+  local stream_path="$SIM_W5_MEMORY_SHORTPATH_KV_STREAM_PATH"
+  local stream_guest_path="/tmp/w5_memory_shortpath_kv_stream.txt"
+  local stream_guest_file="$RUN_INITRAMFS_DIR$stream_guest_path"
+
+  if [[ -z "$stream_path" ]]; then
+    return 0
+  fi
+  if [[ ! -f "$stream_path" ]]; then
+    trace "FAIL: W5 Memory shortpath KV stream file is missing path=$stream_path"
+    return 1
+  fi
+  mkdir -p "$(dirname "$stream_guest_file")"
+  cp "$stream_path" "$stream_guest_file"
+  SIM_W5_MEMORY_SHORTPATH_KV_STREAM_PATH_GUEST="$stream_guest_path"
+  trace "prepare: staged W5 Memory shortpath KV stream source=$stream_path guest=$stream_guest_path"
 }
 
 source "$SCRIPT_DIR/qemu_ub_common.sh"
@@ -583,6 +615,10 @@ export SIM_QWEN3_DENSE_KV_STATE_BYTES="${SIM_QWEN3_DENSE_KV_STATE_BYTES:-}"
 export SIM_QWEN3_GUEST_DECODE_STEP=0
 export SIM_QWEN3_GUEST_DECODE_STEPS="$SIM_QWEN3_GUEST_DECODE_STEPS"
 export SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS="$SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS"
+export SIM_QWEN3_SAMPLER_TOP_K="$SIM_QWEN3_SAMPLER_TOP_K"
+export SIM_QWEN3_SAMPLER_TOP_P_MILLI="$SIM_QWEN3_SAMPLER_TOP_P_MILLI"
+export SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI="$SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI"
+export SIM_QWEN3_SAMPLER_SEED="$SIM_QWEN3_SAMPLER_SEED"
 export SIM_QWEN3_GUEST_ENGRAM="$SIM_QWEN3_GUEST_ENGRAM"
 export SIM_QWEN3_GUEST_ENGRAM_MODE="$SIM_QWEN3_GUEST_ENGRAM_MODE"
 export SIM_QWEN3_GUEST_ENGRAM_SESSION_ID="${SIM_QWEN3_GUEST_ENGRAM_SESSION_ID:-guest}"
@@ -598,6 +634,8 @@ export SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR="$SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR"
 export SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT="$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT_GUEST"
 export SIM_W5_MEMORY_SERVICE="$SIM_W5_MEMORY_SERVICE"
 export SIM_W5_MEMORY_DECISION_STORE="$SIM_W5_MEMORY_DECISION_STORE"
+export SIM_W5_MEMORY_SHORTPATH_LOOKUP_MODE="$SIM_W5_MEMORY_SHORTPATH_LOOKUP_MODE"
+export SIM_W5_MEMORY_BOUNDARY_LOOKUP_BACKEND="$SIM_W5_MEMORY_BOUNDARY_LOOKUP_BACKEND"
 export SIM_W5_MEMORY_SHORTPATH_DECISION_ID="$SIM_W5_MEMORY_SHORTPATH_DECISION_ID"
 export SIM_W5_MEMORY_SHORTPATH_SUPPORT_ID="$SIM_W5_MEMORY_SHORTPATH_SUPPORT_ID"
 export SIM_W5_MEMORY_SHORTPATH_ACTION="$SIM_W5_MEMORY_SHORTPATH_ACTION"
@@ -607,6 +645,8 @@ export SIM_W5_MEMORY_SHORTPATH_TARGET_LAYER_END="$SIM_W5_MEMORY_SHORTPATH_TARGET
 export SIM_W5_MEMORY_SHORTPATH_ARTIFACT_KIND="$SIM_W5_MEMORY_SHORTPATH_ARTIFACT_KIND"
 export SIM_W5_MEMORY_SHORTPATH_ARTIFACT_CHECKSUM="$SIM_W5_MEMORY_SHORTPATH_ARTIFACT_CHECKSUM"
 export SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF="$SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF"
+export SIM_W5_MEMORY_BOUNDARY_REGISTRY_REF="$SIM_W5_MEMORY_BOUNDARY_REGISTRY_REF"
+export SIM_W5_MEMORY_BOUNDARY_REGISTRY_COUNT="$SIM_W5_MEMORY_BOUNDARY_REGISTRY_COUNT"
 export SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_START="$SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_START"
 export SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_END="$SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_END"
 export SIM_W5_MEMORY_SHORTPATH_PRODUCER_POSITION="$SIM_W5_MEMORY_SHORTPATH_PRODUCER_POSITION"
@@ -615,6 +655,11 @@ export SIM_W5_MEMORY_SHORTPATH_EXECUTE="$SIM_W5_MEMORY_SHORTPATH_EXECUTE"
 export SIM_W5_MEMORY_SHORTPATH_STREAM_COUNT="$SIM_W5_MEMORY_SHORTPATH_STREAM_COUNT"
 export SIM_W5_MEMORY_SHORTPATH_STREAM="$SIM_W5_MEMORY_SHORTPATH_STREAM"
 export SIM_W5_MEMORY_SHORTPATH_STREAM_PATH="$SIM_W5_MEMORY_SHORTPATH_STREAM_PATH_GUEST"
+export SIM_W5_MEMORY_SHORTPATH_KV_STREAM_COUNT="$SIM_W5_MEMORY_SHORTPATH_KV_STREAM_COUNT"
+export SIM_W5_MEMORY_SHORTPATH_KV_STREAM_PATH="$SIM_W5_MEMORY_SHORTPATH_KV_STREAM_PATH_GUEST"
+export SIM_W5_MEMORY_KV_ARTIFACT_EXPORT="$SIM_W5_MEMORY_KV_ARTIFACT_EXPORT"
+export SIM_W5_MEMORY_KV_ARTIFACT_EXPORT_STEPS="$SIM_W5_MEMORY_KV_ARTIFACT_EXPORT_STEPS"
+export SIM_W5_MEMORY_KV_ARTIFACT_EXPORT_NODES="$SIM_W5_MEMORY_KV_ARTIFACT_EXPORT_NODES"
 export SIM_W5_MEMORY_PREFETCH_PLAN_ID="$SIM_W5_MEMORY_PREFETCH_PLAN_ID"
 export SIM_W5_MEMORY_PREFETCH_SCOPE="$SIM_W5_MEMORY_PREFETCH_SCOPE"
 export SIM_W5_MEMORY_PREFETCH_TARGET_STEP_INDEX="$SIM_W5_MEMORY_PREFETCH_TARGET_STEP_INDEX"
@@ -659,6 +704,7 @@ build_w4_initramfs() {
   )
   stage_qwen3_object_service_snapshot
   stage_w5_memory_shortpath_stream
+  stage_w5_memory_shortpath_kv_stream
   write_w4_initramfs_runner
   (
     cd "$RUN_INITRAMFS_DIR"
@@ -695,84 +741,6 @@ qwen3_engram_context_op_enabled() {
   [[ -n "$SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP" &&
     "$SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP" != "disabled" &&
     "$SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP" != "none" ]]
-}
-
-w5_memory_shortpath_execute_jump_to_terminal() {
-  [[ "$SIM_W5_MEMORY_SHORTPATH_EXECUTE" == "1" &&
-    "$SIM_W5_MEMORY_SHORTPATH_ACTION" == "jump-to-terminal" ]]
-}
-
-w5_memory_shortpath_stream_target_layer_start() {
-  local step="$1"
-  local entry
-  local field_step
-  local IFS
-  local stream
-  local target_layer_start
-
-  if [[ -z "$SIM_W5_MEMORY_SHORTPATH_STREAM" ]]; then
-    return 1
-  fi
-  stream="${SIM_W5_MEMORY_SHORTPATH_STREAM};"
-  while [[ -n "$stream" ]]; do
-    entry="${stream%%;*}"
-    stream="${stream#*;}"
-    if [[ -z "$entry" ]]; then
-      continue
-    fi
-    IFS=':' read -r field_step _ _ _ target_layer_start _ _ _ _ _ _ <<<"$entry"
-    if [[ "$field_step" == "$step" && -n "$target_layer_start" ]]; then
-      printf '%s\n' "$target_layer_start"
-      return 0
-    fi
-  done
-  return 1
-}
-
-w5_memory_shortpath_target_layer_start_for_step() {
-  local step="$1"
-
-  if [[ -n "$SIM_W5_MEMORY_SHORTPATH_STREAM" ]]; then
-    w5_memory_shortpath_stream_target_layer_start "$step"
-    return $?
-  fi
-  if [[ -n "$SIM_W5_MEMORY_SHORTPATH_TARGET_LAYER_START" ]]; then
-    printf '%s\n' "$SIM_W5_MEMORY_SHORTPATH_TARGET_LAYER_START"
-    return 0
-  fi
-  return 1
-}
-
-qwen3_layer_start_for_node() {
-  local idx="$1"
-  local total_layers="${SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS:-0}"
-  local node0=$((idx - 1))
-  local base=0
-  local rem=0
-
-  if (( total_layers <= 0 )); then
-    echo 0
-    return 0
-  fi
-  base=$((total_layers / 8))
-  rem=$((total_layers % 8))
-  echo $((node0 * base + (node0 < rem ? node0 : rem)))
-}
-
-w5_memory_shortpath_node_skips_range_compute() {
-  local idx="$1"
-  local step="${2:-0}"
-  local target_layer_start
-  local layer_start=0
-
-  if ! w5_memory_shortpath_execute_jump_to_terminal; then
-    return 1
-  fi
-  if ! target_layer_start="$(w5_memory_shortpath_target_layer_start_for_step "$step")"; then
-    return 1
-  fi
-  layer_start="$(qwen3_layer_start_for_node "$idx")"
-  (( layer_start >= target_layer_start ))
 }
 
 validate_qwen3_engram_context_refs() {
@@ -815,6 +783,10 @@ validate_w5_boundary_observation_summary() {
     trace "FAIL: W5 boundary observation summary missing path=$RUN_SUMMARY_FILE"
     return 1
   fi
+  if [[ "${SIM_W5_MEMORY_SHORTPATH_EXECUTE:-0}" == "1" ]] &&
+    rg -q "memory_service_summary: .*qwen3_w5_memory_shortpath_commit:[1-9][0-9]*" "$RUN_SUMMARY_FILE"; then
+    return 0
+  fi
   if ! rg -q "memory_boundary_observation_summary: records=[1-9][0-9]* steps=${SIM_QWEN3_GUEST_DECODE_STEPS}/${SIM_QWEN3_GUEST_DECODE_STEPS} .*source=w5_guest_range_exit hidden_backend=obmm_shmem" "$RUN_SUMMARY_FILE"; then
     trace "FAIL: W5 boundary observation summary incomplete path=$RUN_SUMMARY_FILE"
     return 1
@@ -830,10 +802,8 @@ validate_node_log() {
   local node_id="$1"
   local log_file="$2"
   local expected_dispatch_word="0x41a0000041a00000"
-  local shortpath_node_skips=0
   local engram_candidates_owner_node="8"
   local terminal_publish_node="8"
-  local shortpath_target_layer_start=""
   local idx owner_role
   local remote_idx
 
@@ -844,17 +814,18 @@ validate_node_log() {
   fi
   idx="$(node_index "$node_id")"
   remote_idx=$((idx % 8 + 1))
-  if is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" &&
-    w5_memory_shortpath_node_skips_range_compute "$idx" 0; then
-    shortpath_node_skips=1
-    shortpath_target_layer_start="$(w5_memory_shortpath_target_layer_start_for_step 0)"
-    if rg -q "\\[w4_guest\\] stage qwen3_w5_memory_shortpath_downstream_continue node=${idx} " "$log_file"; then
-      shortpath_node_skips=0
-    fi
+
+  if [[ -n "$SIM_UAPI_W5_PROFILE" ]] &&
+    rg -q "\\[w4_guest\\] stage qwen3_decode_round_scheduler_no_dispatch .* work_item=none .* status=no_dispatch" "$log_file"; then
+    assert_log_has "$log_file" "\\[w4_guest\\] pass" "$node_id pass" || return 1
+    assert_log_absent "$log_file" "\\[w4_guest\\] fail" "$node_id fail" || return 1
+    return 0
   fi
-  if w5_memory_shortpath_execute_jump_to_terminal && (( shortpath_node_skips == 1 )); then
-    engram_candidates_owner_node="$SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE"
-    terminal_publish_node="1"
+  if [[ -n "$SIM_UAPI_W5_PROFILE" ]] &&
+    rg -q "\\[w4_guest\\] stage qwen3_w5_memory_shortpath_commit .* publish_hidden=0 status=ok" "$log_file"; then
+    assert_log_has "$log_file" "\\[w4_guest\\] pass" "$node_id pass" || return 1
+    assert_log_absent "$log_file" "\\[w4_guest\\] fail" "$node_id fail" || return 1
+    return 0
   fi
 
   assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_kvcache_path=ready" "$node_id obmm kvcache backing" || return 1
@@ -880,33 +851,6 @@ validate_node_log() {
     assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_forward_summary local=node${idx} nodes=8 layers=[1-9][0-9]* .* hidden_bytes=[1-9][0-9]* objects=2 .* balanced=true placement_source=db_metadata backing=obmm_pool metadata=db status=ok" "$node_id qwen3 range forward summary" || return 1
     assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_service_v0=payload_backing_resolved local=node${idx} remote=node${remote_idx} objects=4 bytes=8192 hidden_bytes=[1-9][0-9]* boundary_offsets=0,248,256,4088,4096 backing=obmm_pool metadata=db status=ok" "$node_id obmm payload backing resolved" || return 1
   fi
-  if (( shortpath_node_skips == 1 )); then
-    assert_log_has "$log_file" "\\[w4_guest\\] step=open_resource ok path=" "$node_id uapi resource opened" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_payload_seeded segment=[0-9]+ bytes=8192 checksum=0x[0-9a-f]+" "$node_id uapi kvcache payload seeded" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_payload_boundaries segment=[0-9]+ offsets=0,248,256,4088,4096,4104 status=ok" "$node_id uapi kvcache payload boundaries" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_queue_round_base step=[0-9]+ cmdq_head=[0-9]+ cq_tail=[0-9]+ cmdq_depth=[0-9]+ cq_depth=[0-9]+" "$node_id uapi queue round base" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_shmem_descriptor segment=[0-9]+ bytes=128 puts=1 gets=1 role=hot_shared" "$node_id uapi kvcache shmem descriptor" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_shmem_descriptor segment=[0-9]+ bytes=8192 puts=1 gets=1 role=legacy_demo_payload" "$node_id uapi kvcache boundary shmem descriptor" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_db_descriptor key=block/w4-${node_id}-block-0 bytes=[1-9][0-9]*" "$node_id uapi kvcache db descriptor" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_db_descriptor key=block/w4-${node_id}-block-1 bytes=[1-9][0-9]* role=aux_block" "$node_id uapi kvcache aux db descriptor" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_block_descriptor block=w4-${node_id}-block-0 segment=[0-9]+ writes=1 reads=1" "$node_id uapi kvcache block descriptor" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_block_descriptor block=w4-${node_id}-block-1 segment=[0-9]+ writes=1 reads=1 role=aux_block_boundary" "$node_id uapi kvcache aux block descriptor" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_dispatch_descriptor node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) segment=[0-9]+ task_id=31 object_ref_table_offset=0x[0-9a-f]+ object_ref_count=[0-9]+ source=db_metadata status=ok" "$node_id qwen3 range dispatch descriptor" || return 1
-    if [[ "$SIM_QWEN3_GUEST_ENGRAM" == "1" ]] && qwen3_engram_context_refs_configured; then
-      assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_engram_state_object_ref local=${node_id} node=${idx} state_ref_chars=[1-9][0-9]* manifest_bytes=[1-9][0-9]* registry_dir=.* source=env_contract target=engram_state_manifest status=ok" "$node_id qwen3 engram state ref configured" || return 1
-    fi
-    assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_w5_memory_shortpath_downstream_skip node=${idx} step=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) target_layer_start=${shortpath_target_layer_start} token=[0-9]+ source=lingqu_memory_service target=range_forward status=skipped" "$node_id qwen3 shortpath downstream skip" || return 1
-    if [[ "${SIM_QWEN3_DECODE_ROUND_BARRIER:-0}" == "1" ]]; then
-      assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_decode_round_done_publish local=node${idx} step=[0-9]+ offset=0x[0-9a-f]+ slot=[0-9]+ bytes=64 scope_hash=0x[0-9a-f]+ checksum=0x[0-9a-f]+ backing=obmm_pool status=ok" "$node_id qwen3 decode round done publish" || return 1
-    fi
-    assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_worker_timing local=${node_id} step=[0-9]+ node=${idx} layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=${remote_idx} .* compute_window_ms=0 .* dispatch_ms_per_layer_milli=0" "$node_id qwen3 worker timing" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_worker_handoff_timing local=${node_id} step=[0-9]+ node=${idx} .* status=ok" "$node_id qwen3 worker handoff timing" || return 1
-    if [[ "$SIM_QWEN3_GUEST_ENGRAM" == "1" ]]; then
-      assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_engram_timing local=${node_id} step=[0-9]+ node=${idx} owner=node${SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE} candidate_publish_ms=0 candidate_wait_ms=0 policy_select_ms=0 decision_publish_ms=0 selected_wait_ms=0 selected_writeback_ms=0 history_state_wait_ms=0 qwen3_range_publish_ms=0 qwen3_range_input_wait_ms=[0-9]+ status=ok" "$node_id qwen3 engram timing" || return 1
-    fi
-    assert_log_has "$log_file" "\\[w4_guest\\] pass" "$node_id pass" || return 1
-    return 0
-  fi
   assert_log_has "$log_file" "\\[w4_guest\\] step=open_resource ok path=" "$node_id uapi resource opened" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] step=map_endpoint ok" "$node_id uapi endpoint mapped" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] step=map_queues ok" "$node_id uapi queues mapped" || return 1
@@ -930,31 +874,23 @@ validate_node_log() {
   assert_log_has "$log_file" "\\[w4_guest\\] step=decode_completions ok" "$node_id decode completions" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_payload_dispatch_result segment=[0-9]+ word0=${expected_dispatch_word}" "$node_id dispatch payload result" || return 1
   if is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
-    if (( shortpath_node_skips == 1 )); then
-      assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_w5_memory_shortpath_downstream_skip node=${idx} step=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) target_layer_start=${shortpath_target_layer_start} token=[0-9]+ source=lingqu_memory_service target=range_forward status=skipped" "$node_id qwen3 shortpath downstream skip" || return 1
-    else
-      assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_compute_contract node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) pipeline_nodes=8 total_layers=[1-9][0-9]* hidden_bytes=[1-9][0-9]* source=(dispatch_task|runtime_forward) output=(completion|metadata) status=ok" "$node_id qwen3 range compute contract" || return 1
-      assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_runtime_forward node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) pipeline_nodes=8 total_layers=[1-9][0-9]* hidden_bytes=[1-9][0-9]* input_checksum=0x[0-9a-f]+ output_checksum=0x[0-9a-f]+ range_checksum=0x[0-9a-f]+ real_layers=[0-9]+ payload_offset=0x[0-9a-f]+ payload_bytes=[1-9][0-9]* kv_payload_offset=0x[0-9a-f]+ kv_payload_bytes=[1-9][0-9]* kv_payload_checksum=0x[0-9a-f]+ source=runtime_forward output=metadata status=ok" "$node_id qwen3 range runtime forward" || return 1
-    fi
-    if (( idx > 1 && shortpath_node_skips == 0 )); then
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_compute_contract node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) pipeline_nodes=8 total_layers=[1-9][0-9]* hidden_bytes=[1-9][0-9]* source=(dispatch_task|runtime_forward) output=(completion|metadata) status=ok" "$node_id qwen3 range compute contract" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_runtime_forward node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) pipeline_nodes=8 total_layers=[1-9][0-9]* hidden_bytes=[1-9][0-9]* input_checksum=0x[0-9a-f]+ output_checksum=0x[0-9a-f]+ range_checksum=0x[0-9a-f]+ real_layers=[0-9]+ payload_offset=0x[0-9a-f]+ payload_bytes=[1-9][0-9]* kv_payload_offset=0x[0-9a-f]+ kv_payload_bytes=[1-9][0-9]* kv_payload_checksum=0x[0-9a-f]+ source=runtime_forward output=metadata status=ok" "$node_id qwen3 range runtime forward" || return 1
+    if (( idx > 1 )); then
       assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_forward_runtime_input_loaded node=${idx} layers=\\[[0-9]+,[0-9]+\\) input_offset=0x[0-9a-f]+ input_checksum=0x[0-9a-f]+ bytes=[1-9][0-9]* source=obmm_object_view target=uapi_object_ref materialize=none status=ok inline_payload=0" "$node_id qwen3 runtime range input loaded" || return 1
     fi
     if [[ "$SIM_QWEN3_GUEST_ENGRAM" == "1" ]] && qwen3_engram_context_refs_configured; then
       assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_engram_state_object_ref local=${node_id} node=${idx} state_ref_chars=[1-9][0-9]* manifest_bytes=[1-9][0-9]* registry_dir=.* source=env_contract target=engram_state_manifest status=ok" "$node_id qwen3 engram state ref configured" || return 1
       assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_engram_context_object_refs_loaded node=${idx} step=[0-9]+ refs=1 state_bytes=[1-9][0-9]* state_checksum=0x[0-9a-f]+ source=engram_state_ref target=uapi_object_ref status=ok" "$node_id qwen3 engram state ref loaded" || return 1
     fi
-    if (( shortpath_node_skips == 0 )); then
-      assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_forward_runtime_output_publish local=node${idx} step=[0-9]+ key_hash=0x[0-9a-f]+ version=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ output_checksum=0x[0-9a-f]+ bytes=[1-9][0-9]* producer_publish_ms=[0-9]+ producer_publish_mono_ms=[0-9]+ producer_clock_offset_ms=[0-9]+ epoch=[0-9]+ seq=[0-9]+ backing=obmm_shmem metadata=lingqu_object_service queue=obmm_spsc status=ok" "$node_id qwen3 runtime range output publish" || return 1
-    fi
+    assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_forward_runtime_output_publish local=node${idx} step=[0-9]+ key_hash=0x[0-9a-f]+ version=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ output_checksum=0x[0-9a-f]+ bytes=[1-9][0-9]* producer_publish_ms=[0-9]+ producer_publish_mono_ms=[0-9]+ producer_clock_offset_ms=[0-9]+ epoch=[0-9]+ seq=[0-9]+ backing=obmm_shmem metadata=lingqu_object_service queue=obmm_spsc status=ok" "$node_id qwen3 runtime range output publish" || return 1
     assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_worker_handoff_timing local=${node_id} step=[0-9]+ node=${idx} .* producer_to_input_found_mono_ms=-?[0-9]+ .* input_found_to_handoff_ms=[0-9]+ .* status=ok" "$node_id qwen3 worker handoff timing" || return 1
     if [[ "$SIM_QWEN3_GUEST_ENGRAM" == "1" ]]; then
       assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_engram_timing local=${node_id} step=[0-9]+ node=${idx} owner=node${SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE} candidate_publish_ms=[0-9]+ candidate_wait_ms=[0-9]+ policy_select_ms=[0-9]+ decision_publish_ms=[0-9]+ selected_wait_ms=[0-9]+ selected_writeback_ms=[0-9]+ history_state_wait_ms=[0-9]+ qwen3_range_publish_ms=[0-9]+ qwen3_range_input_wait_ms=[0-9]+ status=ok" "$node_id qwen3 engram timing" || return 1
     fi
-    if (( shortpath_node_skips == 0 )); then
-      assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_kv_state_publish local=node${idx} step=[0-9]+ key=kvcache/qwen3[-.0-9a-z]*/node${idx}/layers-[0-9]+-[0-9]+/decode-step[0-9]+ key_hash=0x[0-9a-f]+ version=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ kv_bytes=[1-9][0-9]* kv_checksum=0x[0-9a-f]+ offset=0x[0-9a-f]+ slot_bytes=[1-9][0-9]* block_bytes=[1-9][0-9]* blocks=[1-9][0-9]* reserved_bytes=[1-9][0-9]* producer_publish_ms=[0-9]+ epoch=[0-9]+ seq=[0-9]+ backing=obmm_shmem metadata=lingqu_object_service status=ok" "$node_id qwen3 range kv state publish" || return 1
-    fi
+    assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_kv_state_publish local=node${idx} step=[0-9]+ key=kvcache/qwen3[-.0-9a-z]*/node${idx}/layers-[0-9]+-[0-9]+/decode-step[0-9]+ key_hash=0x[0-9a-f]+ version=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ kv_bytes=[1-9][0-9]* kv_checksum=0x[0-9a-f]+ offset=0x[0-9a-f]+ slot_bytes=[1-9][0-9]* block_bytes=[1-9][0-9]* blocks=[1-9][0-9]* reserved_bytes=[1-9][0-9]* producer_publish_ms=[0-9]+ epoch=[0-9]+ seq=[0-9]+ backing=obmm_shmem metadata=lingqu_object_service status=ok" "$node_id qwen3 range kv state publish" || return 1
     if (( SIM_QWEN3_GUEST_DECODE_STEPS > 1 )); then
-      assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_kv_state_resolve local=node${idx} step=[1-9][0-9]* previous_step=[0-9]+ key=kvcache/qwen3[-.0-9a-z]*/node${idx}/layers-[0-9]+-[0-9]+/decode-step[0-9]+ key_hash=0x[0-9a-f]+ version=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ kv_bytes=[1-9][0-9]* kv_checksum=0x[0-9a-f]+ offset=0x[0-9a-f]+ validation=object_ref_metadata source=obmm_object_view backing=obmm_shmem metadata=lingqu_object_service target=mapped_view status=ok" "$node_id qwen3 range kv state resolve" || return 1
+      assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_kv_state_resolve local=node${idx} kv_step=[0-9]+ key=kvcache/qwen3[-.0-9a-z]*/node${idx}/layers-[0-9]+-[0-9]+/decode-step[0-9]+ key_hash=0x[0-9a-f]+ version=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ kv_bytes=[1-9][0-9]* kv_checksum=0x[0-9a-f]+ offset=0x[0-9a-f]+ validation=object_ref_metadata source=obmm_object_view backing=obmm_shmem metadata=lingqu_object_service target=mapped_view status=ok" "$node_id qwen3 range kv state resolve" || return 1
       if [[ "$SIM_QWEN3_GUEST_ENGRAM" == "1" ]]; then
         if (( idx == SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE )); then
           assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_engram_history_wait step=[0-9]+ object_key=qwen3/session/[^/]+/tokens/history owner=node${SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE} version=[0-9]+ history_tokens=[1-9][0-9]* bytes=[1-9][0-9]* checksum=0x[0-9a-f]+ source=obmm_object_service status=ok" "$node_id qwen3 engram history wait" || return 1
@@ -974,25 +910,19 @@ validate_node_log() {
       assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_engram_token_select local=node${SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE} step=[0-9]+ history_tokens=[1-9][0-9]* raw_token=[0-9]+ runner_up=[0-9]+ selected_token=[0-9]+ candidate_count=[1-9][0-9]* candidate2=[0-9]+ candidate3=[0-9]+ blocked=[0-9]+ fallback=[0-9]+ top_score_milli=-?[0-9]+ runner_up_score_milli=-?[0-9]+ no_repeat_ngram_size=[0-9]+ repetition_penalty_milli=[0-9]+ history_window=[0-9]+ candidate_checksum=0x[0-9a-f]+ source=guest_policy status=ok" "$node_id qwen3 engram token select" || return 1
       assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_engram_decision_publish local=node${SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE} step=[0-9]+ objects=3 history_tokens=[1-9][0-9]* selected_token=[0-9]+ raw_token=[0-9]+ runner_up=[0-9]+ fallback=[0-9]+ blocked=[0-9]+ top_score_milli=-?[0-9]+ runner_up_score_milli=-?[0-9]+ history_window=[0-9]+ history_key=qwen3/session/[^/]+/tokens/history history_version=[0-9]+ selected_key=qwen3/session/[^/]+/step/[0-9]+/tokens/selected state_key=qwen3/session/[^/]+/step/[0-9]+/engram/state history_checksum=0x[0-9a-f]+ selected_checksum=0x[0-9a-f]+ state_checksum=0x[0-9a-f]+ logits_checksum=0x[0-9a-f]+ text_checksum=0x[0-9a-f]+ epoch=[0-9]+ seq=[0-9]+ backing=obmm_pool metadata=db queue=obmm_spsc status=ok" "$node_id qwen3 engram decision publish" || return 1
     fi
-    if (( idx == terminal_publish_node && shortpath_node_skips == 0 )); then
+    if (( idx == terminal_publish_node )); then
       if [[ "$SIM_QWEN3_GUEST_ENGRAM" == "1" ]]; then
         assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_engram_candidates_publish local=node${engram_candidates_owner_node} step=[0-9]+ candidate_count=[1-9][0-9]* candidates_key=qwen3/session/[^/]+/step/[0-9]+/candidates/topk candidates_version=1 candidates_checksum=0x[0-9a-f]+ epoch=[0-9]+ seq=[0-9]+ backing=obmm_pool metadata=db queue=obmm_spsc status=ok" "$node_id qwen3 engram candidates publish" || return 1
         assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_engram_selected_token_wait step=[0-9]+ object_key=qwen3/session/[^/]+/step/[0-9]+/tokens/selected owner=node${SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE} version=1 bytes=64 token=[0-9]+ checksum=0x[0-9a-f]+ source=obmm_object_service status=ok" "$node_id qwen3 engram selected token wait" || return 1
-        if w5_memory_shortpath_execute_jump_to_terminal && (( shortpath_node_skips == 1 )); then
-          assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_engram_selected_writeback local=node${SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE} step=[0-9]+ selected_token=[0-9]+ source=engram_selected_object target=memory_shortpath_terminal_token_result status=ok" "$node_id qwen3 engram selected writeback" || return 1
-        else
-          assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_engram_selected_writeback local=node8 step=[0-9]+ selected_token=[0-9]+ source=engram_selected_object target=terminal_token_result status=ok" "$node_id qwen3 engram selected writeback" || return 1
-        fi
+        assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_engram_selected_writeback local=node8 step=[0-9]+ selected_token=[0-9]+ source=engram_selected_object target=terminal_token_result status=ok" "$node_id qwen3 engram selected writeback" || return 1
       fi
       assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_terminal_token_result_publish local=node${engram_candidates_owner_node} target=node[0-9]+ step=[0-9]+ token=[0-9]+ runner_up=[0-9]+ margin_milli=[0-9]+ logits_checksum=0x[0-9a-f]+ text_checksum=0x[0-9a-f]+ piece_word0=0x[0-9a-f]+ piece_word1=0x[0-9a-f]+ object_key=tokens/qwen3[-.0-9a-z]*/decode-step[0-9]+ offset=0x[0-9a-f]+ bytes=64 checksum=0x[0-9a-f]+ epoch=[0-9]+ seq=[0-9]+ backing=obmm_pool metadata=db queue=(obmm_spsc|local_pending) status=ok" "$node_id qwen3 terminal token result publish" || return 1
     fi
-    if (( shortpath_node_skips == 0 )); then
-      assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_forward_only object=range_hidden publish=0 resolve_remote=0 compute=0 storage=obmm_object metadata=db status=ok" "$node_id qwen3 range-only flow" || return 1
-    fi
-    if (( idx == 8 && shortpath_node_skips == 0 )); then
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_forward_only object=range_hidden publish=0 resolve_remote=0 compute=0 storage=obmm_object metadata=db status=ok" "$node_id qwen3 range-only flow" || return 1
+    if (( idx == 8 )); then
       assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_logits_sampling_table entries=[12] entry_words=(20|45) table_bytes=(160|360|720) vocab=[1-9][0-9]* sampled_distinct=[12] logits_checksum_nonzero=[12] text_checksum_nonzero=[12] real_logits=[01] status=ok" "$node_id qwen3 logits sampling table" || return 1
       assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_token_text_table entries=[12] entry_words=8 table_bytes=(64|128) total_bytes=[1-9][0-9]* piece_bytes=9 policy_kind=2 policy_hash=0x[0-9a-f]+ packed_matches=[12] checksum_matches=[12] boundary_first=1 boundary_last=1 status=ok" "$node_id qwen3 token text table" || return 1
-    elif (( shortpath_node_skips == 0 )); then
+    else
       assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_logits_sampling_table node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) terminal_owner=0 status=skipped" "$node_id qwen3 logits sampling table skipped" || return 1
       assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_token_text_table node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) terminal_owner=0 status=skipped" "$node_id qwen3 token text table skipped" || return 1
     fi
@@ -1117,6 +1047,10 @@ prepare_environment() {
     SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES="${SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES:-}" \
     SIM_QWEN3_DENSE_KV_STATE_BYTES="${SIM_QWEN3_DENSE_KV_STATE_BYTES:-}" \
     SIM_QWEN3_DENSE_WEIGHTS_PATH="${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}" \
+    SIM_QWEN3_SAMPLER_TOP_K="$SIM_QWEN3_SAMPLER_TOP_K" \
+    SIM_QWEN3_SAMPLER_TOP_P_MILLI="$SIM_QWEN3_SAMPLER_TOP_P_MILLI" \
+    SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI="$SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI" \
+    SIM_QWEN3_SAMPLER_SEED="$SIM_QWEN3_SAMPLER_SEED" \
     SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS="$SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS" \
     SIM_QWEN3_GUEST_ENGRAM_MODE="$SIM_QWEN3_GUEST_ENGRAM_MODE" \
     SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP="$SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP" \
@@ -1126,6 +1060,8 @@ prepare_environment() {
     SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT="$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT" \
     SIM_W5_MEMORY_SERVICE="$SIM_W5_MEMORY_SERVICE" \
     SIM_W5_MEMORY_DECISION_STORE="$SIM_W5_MEMORY_DECISION_STORE" \
+    SIM_W5_MEMORY_SHORTPATH_LOOKUP_MODE="$SIM_W5_MEMORY_SHORTPATH_LOOKUP_MODE" \
+    SIM_W5_MEMORY_BOUNDARY_LOOKUP_BACKEND="$SIM_W5_MEMORY_BOUNDARY_LOOKUP_BACKEND" \
     SIM_W5_MEMORY_SHORTPATH_DECISION_ID="$SIM_W5_MEMORY_SHORTPATH_DECISION_ID" \
     SIM_W5_MEMORY_SHORTPATH_SUPPORT_ID="$SIM_W5_MEMORY_SHORTPATH_SUPPORT_ID" \
     SIM_W5_MEMORY_SHORTPATH_ACTION="$SIM_W5_MEMORY_SHORTPATH_ACTION" \
@@ -1135,15 +1071,22 @@ prepare_environment() {
     SIM_W5_MEMORY_SHORTPATH_ARTIFACT_KIND="$SIM_W5_MEMORY_SHORTPATH_ARTIFACT_KIND" \
     SIM_W5_MEMORY_SHORTPATH_ARTIFACT_CHECKSUM="$SIM_W5_MEMORY_SHORTPATH_ARTIFACT_CHECKSUM" \
     SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF="$SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF" \
+    SIM_W5_MEMORY_BOUNDARY_REGISTRY_REF="$SIM_W5_MEMORY_BOUNDARY_REGISTRY_REF" \
+    SIM_W5_MEMORY_BOUNDARY_REGISTRY_COUNT="$SIM_W5_MEMORY_BOUNDARY_REGISTRY_COUNT" \
     SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_START="$SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_START" \
     SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_END="$SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_END" \
     SIM_W5_MEMORY_SHORTPATH_PRODUCER_POSITION="$SIM_W5_MEMORY_SHORTPATH_PRODUCER_POSITION" \
     SIM_W5_MEMORY_SHORTPATH_PROOF_CHECKSUM="$SIM_W5_MEMORY_SHORTPATH_PROOF_CHECKSUM" \
     SIM_W5_MEMORY_SHORTPATH_EXECUTE="$SIM_W5_MEMORY_SHORTPATH_EXECUTE" \
-    SIM_W5_MEMORY_SHORTPATH_STREAM_COUNT="$SIM_W5_MEMORY_SHORTPATH_STREAM_COUNT" \
-    SIM_W5_MEMORY_SHORTPATH_STREAM="$SIM_W5_MEMORY_SHORTPATH_STREAM" \
-    SIM_W5_MEMORY_SHORTPATH_STREAM_PATH="$SIM_W5_MEMORY_SHORTPATH_STREAM_PATH_GUEST" \
-    SIM_W5_MEMORY_PREFETCH_PLAN_ID="$SIM_W5_MEMORY_PREFETCH_PLAN_ID" \
+	    SIM_W5_MEMORY_SHORTPATH_STREAM_COUNT="$SIM_W5_MEMORY_SHORTPATH_STREAM_COUNT" \
+	    SIM_W5_MEMORY_SHORTPATH_STREAM="$SIM_W5_MEMORY_SHORTPATH_STREAM" \
+	    SIM_W5_MEMORY_SHORTPATH_STREAM_PATH="$SIM_W5_MEMORY_SHORTPATH_STREAM_PATH_GUEST" \
+	    SIM_W5_MEMORY_SHORTPATH_KV_STREAM_COUNT="$SIM_W5_MEMORY_SHORTPATH_KV_STREAM_COUNT" \
+	    SIM_W5_MEMORY_SHORTPATH_KV_STREAM_PATH="$SIM_W5_MEMORY_SHORTPATH_KV_STREAM_PATH_GUEST" \
+	    SIM_W5_MEMORY_KV_ARTIFACT_EXPORT="$SIM_W5_MEMORY_KV_ARTIFACT_EXPORT" \
+	    SIM_W5_MEMORY_KV_ARTIFACT_EXPORT_STEPS="$SIM_W5_MEMORY_KV_ARTIFACT_EXPORT_STEPS" \
+	    SIM_W5_MEMORY_KV_ARTIFACT_EXPORT_NODES="$SIM_W5_MEMORY_KV_ARTIFACT_EXPORT_NODES" \
+	    SIM_W5_MEMORY_PREFETCH_PLAN_ID="$SIM_W5_MEMORY_PREFETCH_PLAN_ID" \
     SIM_W5_MEMORY_PREFETCH_SCOPE="$SIM_W5_MEMORY_PREFETCH_SCOPE" \
     SIM_W5_MEMORY_PREFETCH_TARGET_STEP_INDEX="$SIM_W5_MEMORY_PREFETCH_TARGET_STEP_INDEX" \
     SIM_W5_MEMORY_PREFETCH_CHECKSUM="$SIM_W5_MEMORY_PREFETCH_CHECKSUM" \

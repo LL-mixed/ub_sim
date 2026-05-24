@@ -23,10 +23,20 @@ def worker_timing(node_id, node_index, step, total_ms, input_wait_ms, compute_wi
     )
 
 
-def handoff_timing(node_id, node_index, step, found_to_handoff_ms, dispatch_ms, publish_ms):
+def handoff_timing(
+    node_id,
+    node_index,
+    step,
+    found_to_handoff_ms,
+    dispatch_ms,
+    publish_ms,
+    source=None,
+):
+    if source is None:
+        source = max(node_index - 1, 0)
     return (
         "[w4_guest] stage qwen3_worker_handoff_timing "
-        f"local={node_id} step={step} node={node_index} source={max(node_index - 1, 0)} "
+        f"local={node_id} step={step} node={node_index} source={source} "
         f"next={node_index + 1} layers=[0,1) timebase=supernode_epoch_ms "
         "clock_offset_ms=1000000 input_wait_start_mono_ms=100 "
         "input_found_mono_ms=110 input_loaded_mono_ms=120 "
@@ -339,6 +349,43 @@ class W4GuestRunSummaryTest(unittest.TestCase):
             "progress: lagging_status node=nodeA passes=2/2",
             progress.stdout,
         )
+
+    def test_handoff_edges_exclude_terminal_token_inputs(self):
+        script = Path(__file__).resolve().parents[1] / "scripts" / "w4_guest_run_summary.py"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "nodeA_guest.log").write_text(
+                "\n".join(
+                    [
+                        worker_timing("nodeA", 1, 0, 100, 0, 10),
+                        handoff_timing("nodeA", 1, 0, 80, 1, 3, source=1),
+                        "[w4_guest] pass",
+                    ]
+                )
+                + "\n"
+            )
+            (run_dir / "nodeB_guest.log").write_text(
+                "\n".join(
+                    [
+                        worker_timing("nodeB", 2, 0, 120, 10, 12),
+                        handoff_timing("nodeB", 2, 0, 90, 1, 3, source=1),
+                        "[w4_guest] pass",
+                    ]
+                )
+                + "\n"
+            )
+
+            result = subprocess.run(
+                [sys.executable, str(script), str(run_dir), "1", "nodeA", "nodeB"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertIn("edge_step: step=0 edges=1/1", result.stdout)
+        self.assertNotIn("edges=2/1", result.stdout)
+        self.assertIn("edge_bottleneck: max_edge_step=0 edge=1->2 node=nodeB", result.stdout)
 
 
 if __name__ == "__main__":

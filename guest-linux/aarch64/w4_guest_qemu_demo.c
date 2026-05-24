@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -111,10 +112,15 @@
 #define W4_QWEN3_OBMM_KIND_ENGRAM_CONTEXT_INDICES 22U
 #define W4_QWEN3_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT 23U
 #define W4_QWEN3_OBMM_KIND_ENGRAM_STATE 24U
+#define W4_QWEN3_OBMM_KIND_MEMORY_BOUNDARY_REGISTRY 25U
 #define W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_MAGIC 0x305941504f53514cULL
 #define W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_VERSION 1U
 #define W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES 32ULL
 #define W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES 48ULL
+#define W4_QWEN3_W5_BOUNDARY_REGISTRY_MARKER 0x7735627265673030ULL
+#define W4_QWEN3_W5_BOUNDARY_REGISTRY_VERSION 1U
+#define W4_QWEN3_W5_BOUNDARY_REGISTRY_HEADER_BYTES 32ULL
+#define W4_QWEN3_W5_BOUNDARY_REGISTRY_ENTRY_BYTES 128ULL
 #define W4_QWEN3_EXPECTED_SHARDS 8ULL
 #define W4_QWEN3_TILES_PER_SHARD 2ULL
 #define W4_QWEN3_EXPECTED_TILES \
@@ -1896,9 +1902,19 @@ struct w4_qwen3_engram_config {
     uint64_t blocked_token_count;
 };
 
+struct w4_qwen3_sampler_config {
+    uint64_t top_k;
+    uint64_t top_p_milli;
+    uint64_t temperature_milli;
+    uint64_t seed;
+};
+
 #define W4_QWEN3_W5_SHORTPATH_STREAM_MAX 256U
 #define W4_QWEN3_W5_SHORTPATH_STREAM_BYTES 65536U
 #define W4_QWEN3_W5_SHORTPATH_STREAM_LINE_BYTES 512U
+#define W4_QWEN3_W5_SHORTPATH_KV_STREAM_MAX 2048U
+#define W4_QWEN3_W5_SHORTPATH_KV_STREAM_LINE_BYTES 512U
+#define W4_QWEN3_W5_KV_ARTIFACT_EXPORT_CHUNK_BYTES 1024U
 
 struct w4_qwen3_shortpath_stream_entry {
     bool valid;
@@ -1914,10 +1930,26 @@ struct w4_qwen3_shortpath_stream_entry {
     char artifact_ref[160];
 };
 
+struct w4_qwen3_shortpath_kv_stream_entry {
+    bool valid;
+    uint64_t stream_index;
+    uint64_t step_index;
+    uint64_t producer_position;
+    uint64_t kv_bytes;
+    uint64_t kv_checksum;
+    uint32_t producer_layer_end;
+    uint32_t target_node;
+    uint32_t target_layer_start;
+    uint32_t target_layer_end;
+    char artifact_ref[160];
+};
+
 struct w4_qwen3_memory_decision_config {
     bool enabled;
     char service[64];
     char decision_store[256];
+    char shortpath_lookup_mode[64];
+    char boundary_lookup_backend[64];
     char shortpath_decision_id[256];
     char shortpath_support_id[256];
     char shortpath_action[64];
@@ -1927,6 +1959,7 @@ struct w4_qwen3_memory_decision_config {
     char shortpath_artifact_kind[64];
     char shortpath_artifact_checksum[64];
     char shortpath_artifact_ref[160];
+    char boundary_registry_ref[160];
     char shortpath_producer_layer_start[32];
     char shortpath_producer_layer_end[32];
     char shortpath_producer_position[64];
@@ -1940,6 +1973,12 @@ struct w4_qwen3_memory_decision_config {
     uint64_t shortpath_stream_count;
     struct w4_qwen3_shortpath_stream_entry
         shortpath_stream_entries[W4_QWEN3_W5_SHORTPATH_STREAM_MAX];
+    uint64_t boundary_registry_expected_count;
+    bool boundary_registry_loaded;
+    uint64_t shortpath_kv_stream_expected_count;
+    uint64_t shortpath_kv_stream_count;
+    struct w4_qwen3_shortpath_kv_stream_entry
+        shortpath_kv_stream_entries[W4_QWEN3_W5_SHORTPATH_KV_STREAM_MAX];
     char prefetch_plan_id[256];
     char prefetch_scope[64];
     char prefetch_target_step_index[64];
@@ -1953,6 +1992,27 @@ struct w4_qwen3_memory_decision_config {
     char prefix_cache_artifact_checksum[64];
     char prefix_cache_artifact_ref[160];
     char prefix_cache_proof_checksum[64];
+};
+
+struct w4_qwen3_memory_boundary_lookup_result {
+    const struct w4_qwen3_shortpath_stream_entry *stream_entry;
+    const char *artifact_ref_source;
+    const char *decision_id;
+    const char *artifact_id;
+    struct lingqu_obmm_object_ref_wire terminal_logits_ref;
+    struct w4_qwen3_terminal_token_record terminal_logits_record;
+};
+
+enum w4_qwen3_boundary_controller_action {
+    W4_QWEN3_BOUNDARY_CONTROLLER_CONTINUE = 0,
+    W4_QWEN3_BOUNDARY_CONTROLLER_JUMP_TO_TERMINAL = 1,
+    W4_QWEN3_BOUNDARY_CONTROLLER_DEFER_TO_RANGE_FORWARD = 2,
+};
+
+struct w4_qwen3_boundary_controller_result {
+    enum w4_qwen3_boundary_controller_action action;
+    struct w4_qwen3_memory_boundary_lookup_result lookup;
+    uint64_t selected_token;
 };
 
 static uint32_t qwen3_engram_context_object_ref_count(
@@ -2207,6 +2267,298 @@ static int64_t qwen3_guest_logit_score_milli(uint64_t logit_bits, int64_t fallba
     return (int64_t)(logit.value * 1000.0f);
 }
 
+static bool qwen3_terminal_token_candidate_index(
+    const struct w4_qwen3_terminal_token_record *terminal_token,
+    uint64_t token,
+    uint64_t *index_out)
+{
+    if (!terminal_token) {
+        return false;
+    }
+    for (uint64_t i = 0; i < terminal_token->candidate_count && i < 4U; ++i) {
+        if (terminal_token->candidate_tokens[i] == token) {
+            if (index_out) {
+                *index_out = i;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+static uint64_t qwen3_sampler_mix64(uint64_t value)
+{
+    value += 0x9e3779b97f4a7c15ULL;
+    value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
+    return value ^ (value >> 31);
+}
+
+static bool qwen3_rewrite_terminal_token_record_for_selected_candidate(
+    struct w4_qwen3_terminal_token_record *terminal_token,
+    uint32_t local_node,
+    uint64_t decode_step,
+    uint64_t raw_sampled_token,
+    uint64_t selected_token,
+    const char *stage_name,
+    const char *text_source)
+{
+    uint64_t raw_index = UINT64_MAX;
+    uint64_t selected_index = UINT64_MAX;
+    uint64_t raw_logit_bits = 0;
+    uint64_t selected_logit_bits = 0;
+    uint64_t selected_text_checksum = 0;
+    uint64_t selected_piece_word0 = 0;
+    uint64_t selected_piece_word1 = 0;
+    uint64_t old_text_checksum;
+    uint64_t old_piece_word0;
+    uint64_t old_piece_word1;
+
+    if (!terminal_token) {
+        return false;
+    }
+    old_text_checksum = terminal_token->text_checksum;
+    old_piece_word0 = terminal_token->piece_word0;
+    old_piece_word1 = terminal_token->piece_word1;
+    (void)qwen3_terminal_token_candidate_index(terminal_token,
+                                               raw_sampled_token,
+                                               &raw_index);
+    if (!qwen3_terminal_token_candidate_index(terminal_token,
+                                              selected_token,
+                                              &selected_index)) {
+        printf("[w4_guest] fail qwen3 terminal rewrite missing selected candidate"
+               " local=node%u step=%" PRIu64
+               " raw_token=%" PRIu64 " selected_token=%" PRIu64
+               " candidate_count=%" PRIu64 "\n",
+               local_node + 1U,
+               decode_step,
+               raw_sampled_token,
+               selected_token,
+               terminal_token->candidate_count);
+        return false;
+    }
+    if (raw_index != UINT64_MAX) {
+        raw_logit_bits = terminal_token->candidate_logit_bits[raw_index];
+    }
+    selected_logit_bits = terminal_token->candidate_logit_bits[selected_index];
+    selected_text_checksum =
+        terminal_token->candidate_text_checksums[selected_index];
+    selected_piece_word0 = terminal_token->candidate_piece_word0[selected_index];
+    selected_piece_word1 = terminal_token->candidate_piece_word1[selected_index];
+    if (selected_text_checksum == 0 ||
+        (selected_piece_word0 == 0 && selected_piece_word1 == 0)) {
+        printf("[w4_guest] fail qwen3 terminal rewrite missing selected candidate"
+               " text metadata local=node%u step=%" PRIu64
+               " raw_token=%" PRIu64 " selected_token=%" PRIu64
+               " candidate_count=%" PRIu64 "\n",
+               local_node + 1U,
+               decode_step,
+               raw_sampled_token,
+               selected_token,
+               terminal_token->candidate_count);
+        return false;
+    }
+
+    terminal_token->sampled_token = selected_token;
+    terminal_token->text_checksum = selected_text_checksum;
+    terminal_token->piece_word0 = selected_piece_word0;
+    terminal_token->piece_word1 = selected_piece_word1;
+    terminal_token->top_logit_bits = selected_logit_bits;
+    if (selected_token != raw_sampled_token) {
+        terminal_token->runner_up_token = raw_sampled_token;
+        terminal_token->runner_up_logit_bits = raw_logit_bits;
+        terminal_token->margin_milli = 0;
+    }
+    printf("[w4_guest] stage %s local=node%u"
+           " step=%" PRIu64 " raw_token=%" PRIu64
+           " selected_token=%" PRIu64 " selected_rank=%" PRIu64
+           " runner_up=%" PRIu64
+           " old_text_checksum=0x%016" PRIx64
+           " new_text_checksum=0x%016" PRIx64
+           " old_piece_word0=0x%016" PRIx64
+           " old_piece_word1=0x%016" PRIx64
+           " new_piece_word0=0x%016" PRIx64
+           " new_piece_word1=0x%016" PRIx64
+           " text_source=%s status=ok\n",
+           stage_name ? stage_name : "qwen3_terminal_record_rewrite",
+           local_node + 1U,
+           decode_step,
+           raw_sampled_token,
+           selected_token,
+           selected_index,
+           terminal_token->runner_up_token,
+           old_text_checksum,
+           terminal_token->text_checksum,
+           old_piece_word0,
+           old_piece_word1,
+           terminal_token->piece_word0,
+           terminal_token->piece_word1,
+           text_source ? text_source : "selected_candidate_text_metadata");
+    return true;
+}
+
+static int qwen3_apply_top_k_sampler(
+    const struct w4_qwen3_sampler_config *config,
+    struct w4_qwen3_terminal_token_record *terminal_token,
+    uint32_t local_node,
+    uint64_t decode_step,
+    uint64_t position,
+    uint64_t *selected_token_out)
+{
+    uint64_t effective_top_k;
+    uint64_t nucleus_count = 0;
+    uint64_t sorted_indices[4] = {0, 1, 2, 3};
+    int64_t scores[4] = {0};
+    double weights[4] = {0};
+    double total_weight = 0.0;
+    double nucleus_weight = 0.0;
+    double cumulative_weight = 0.0;
+    double max_scaled_score = -1.0e300;
+    double temperature;
+    double top_p;
+    double draw;
+    double acc = 0.0;
+    uint64_t selected_index = 0;
+    uint64_t raw_token;
+    uint64_t seed;
+    uint64_t mixed;
+
+    if (!config || !terminal_token || !selected_token_out) {
+        return -1;
+    }
+    raw_token = terminal_token->sampled_token;
+    *selected_token_out = raw_token;
+    if (config->top_k == 1) {
+        return 0;
+    }
+    if (terminal_token->candidate_count == 0 || terminal_token->candidate_count > 4) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 sampler candidate_count invalid step=%" PRIu64
+                " candidate_count=%" PRIu64 "\n",
+                decode_step,
+                terminal_token->candidate_count);
+        return -1;
+    }
+    if (config->top_p_milli == 0 || config->top_p_milli > 1000 ||
+        config->temperature_milli == 0) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 sampler config invalid step=%" PRIu64
+                " top_p_milli=%" PRIu64 " temperature_milli=%" PRIu64 "\n",
+                decode_step,
+                config->top_p_milli,
+                config->temperature_milli);
+        return -1;
+    }
+    effective_top_k =
+        config->top_k == 0 || config->top_k > terminal_token->candidate_count ?
+            terminal_token->candidate_count :
+            config->top_k;
+    temperature = (double)config->temperature_milli / 1000.0;
+    top_p = (double)config->top_p_milli / 1000.0;
+    for (uint64_t i = 0; i < terminal_token->candidate_count; ++i) {
+        scores[i] = qwen3_guest_logit_score_milli(
+            terminal_token->candidate_logit_bits[i],
+            -(int64_t)i);
+    }
+    for (uint64_t i = 0; i < effective_top_k; ++i) {
+        for (uint64_t j = i + 1; j < effective_top_k; ++j) {
+            if (scores[sorted_indices[j]] > scores[sorted_indices[i]]) {
+                uint64_t tmp = sorted_indices[i];
+
+                sorted_indices[i] = sorted_indices[j];
+                sorted_indices[j] = tmp;
+            }
+        }
+    }
+    for (uint64_t rank = 0; rank < effective_top_k; ++rank) {
+        uint64_t candidate_index = sorted_indices[rank];
+        double scaled_score =
+            ((double)scores[candidate_index] / 1000.0) / temperature;
+
+        if (scaled_score > max_scaled_score) {
+            max_scaled_score = scaled_score;
+        }
+    }
+    for (uint64_t rank = 0; rank < effective_top_k; ++rank) {
+        uint64_t candidate_index = sorted_indices[rank];
+        double scaled_score =
+            ((double)scores[candidate_index] / 1000.0) / temperature;
+
+        weights[candidate_index] = exp(scaled_score - max_scaled_score);
+        if (!(weights[candidate_index] > 0.0) ||
+            weights[candidate_index] != weights[candidate_index]) {
+            weights[candidate_index] = 0.0;
+        }
+        total_weight += weights[candidate_index];
+    }
+    if (!(total_weight > 0.0)) {
+        for (uint64_t rank = 0; rank < effective_top_k; ++rank) {
+            weights[sorted_indices[rank]] = 1.0;
+        }
+        total_weight = (double)effective_top_k;
+    }
+    for (uint64_t rank = 0; rank < effective_top_k; ++rank) {
+        uint64_t candidate_index = sorted_indices[rank];
+
+        nucleus_weight += weights[candidate_index];
+        cumulative_weight = nucleus_weight / total_weight;
+        nucleus_count = rank + 1U;
+        if (cumulative_weight >= top_p || rank + 1U == effective_top_k) {
+            break;
+        }
+    }
+    seed = config->seed ^
+           qwen3_sampler_mix64(decode_step) ^
+           qwen3_sampler_mix64(position << 1) ^
+           qwen3_sampler_mix64(terminal_token->logits_checksum) ^
+           qwen3_sampler_mix64(terminal_token->full_vocab_logits_checksum);
+    mixed = qwen3_sampler_mix64(seed);
+    draw = ((double)(mixed >> 11) * (1.0 / 9007199254740992.0)) * nucleus_weight;
+    for (uint64_t rank = 0; rank < nucleus_count; ++rank) {
+        uint64_t candidate_index = sorted_indices[rank];
+
+        acc += weights[candidate_index];
+        if (draw < acc) {
+            selected_index = candidate_index;
+            break;
+        }
+    }
+    *selected_token_out = terminal_token->candidate_tokens[selected_index];
+    printf("[w4_guest] stage qwen3_sampler_token_select local=node%u"
+           " step=%" PRIu64 " position=%" PRIu64
+           " policy=top_k_top_p_temperature"
+           " top_k=%" PRIu64 " effective_top_k=%" PRIu64
+           " top_p_milli=%" PRIu64 " temperature_milli=%" PRIu64
+           " nucleus_count=%" PRIu64
+           " seed=%" PRIu64 " draw_unit_milli=%" PRIu64
+           " total_weight_milli=%" PRIu64 " nucleus_weight_milli=%" PRIu64
+           " raw_token=%" PRIu64 " selected_token=%" PRIu64
+           " selected_rank=%" PRIu64 " source=terminal_logits status=ok\n",
+           local_node + 1U,
+           decode_step,
+           position,
+           config->top_k,
+           effective_top_k,
+           config->top_p_milli,
+           config->temperature_milli,
+           nucleus_count,
+           config->seed,
+           (uint64_t)((draw / nucleus_weight) * 1000.0),
+           (uint64_t)(total_weight * 1000.0),
+           (uint64_t)(nucleus_weight * 1000.0),
+           raw_token,
+           *selected_token_out,
+           selected_index);
+    return qwen3_rewrite_terminal_token_record_for_selected_candidate(
+        terminal_token,
+        local_node,
+        decode_step,
+        raw_token,
+        *selected_token_out,
+        "qwen3_sampler_terminal_record_rewrite",
+        "sampler_selected_candidate_text_metadata") ? 0 : -1;
+}
+
 static void qwen3_token_piece(uint64_t sampled_token, uint64_t *word0, uint64_t *word1);
 static uint64_t qwen3_sample_text_checksum(uint64_t step_index, uint64_t sampled_token);
 
@@ -2241,13 +2593,50 @@ static uint64_t qwen3_guest_engram_select_token(
     if (candidate_count == 0 || candidate_count > 4) {
         candidate_count = 1;
     }
-    if (qwen3_guest_engram_is_stop_token(terminal_token->candidate_tokens[0])) {
-        return terminal_token->candidate_tokens[0];
+    if (qwen3_guest_engram_is_stop_token(terminal_token->sampled_token)) {
+        return terminal_token->sampled_token;
     }
 
     if (config->history_window > 0 && effective_len > config->history_window) {
         effective_history = history + (effective_len - config->history_window);
         effective_len = config->history_window;
+    }
+
+    {
+        uint64_t sampled_index = UINT64_MAX;
+
+        if (qwen3_terminal_token_candidate_index(terminal_token,
+                                                 terminal_token->sampled_token,
+                                                 &sampled_index)) {
+            bool sampled_blocked =
+                qwen3_guest_engram_token_blocked(config, terminal_token->sampled_token) ||
+                qwen3_guest_engram_repeats_ngram(effective_history,
+                                                 effective_len,
+                                                 terminal_token->sampled_token,
+                                                 config->no_repeat_ngram_size);
+            bool sampled_penalized =
+                config->repetition_penalty_milli > 1000 &&
+                qwen3_guest_engram_history_contains(effective_history,
+                                                    effective_len,
+                                                    terminal_token->sampled_token);
+
+            if (sampled_index == 0 && top_score_out) {
+                *top_score_out =
+                    qwen3_guest_logit_score_milli(terminal_token->candidate_logit_bits[0],
+                                                  (int64_t)terminal_token->margin_milli);
+            }
+            if (candidate_count > 1 && runner_up_score_out) {
+                *runner_up_score_out =
+                    qwen3_guest_logit_score_milli(terminal_token->candidate_logit_bits[1],
+                                                  -1);
+            }
+            if (!sampled_blocked && !sampled_penalized) {
+                if (blocked_count) {
+                    *blocked_count = 0;
+                }
+                return terminal_token->sampled_token;
+            }
+        }
     }
 
     for (uint64_t i = 0; i < candidate_count; ++i) {
@@ -2304,84 +2693,14 @@ static bool qwen3_rewrite_terminal_token_record_for_engram_selection(
     uint64_t raw_sampled_token,
     uint64_t selected_token)
 {
-    uint64_t raw_logit_bits = 0;
-    uint64_t selected_logit_bits = 0;
-    uint64_t selected_text_checksum = 0;
-    uint64_t selected_piece_word0 = 0;
-    uint64_t selected_piece_word1 = 0;
-    uint64_t old_text_checksum;
-    uint64_t old_piece_word0;
-    uint64_t old_piece_word1;
-
-    if (!terminal_token) {
-        return false;
-    }
-    old_text_checksum = terminal_token->text_checksum;
-    old_piece_word0 = terminal_token->piece_word0;
-    old_piece_word1 = terminal_token->piece_word1;
-    for (uint64_t i = 0; i < terminal_token->candidate_count && i < 4U; ++i) {
-        if (terminal_token->candidate_tokens[i] == raw_sampled_token) {
-            raw_logit_bits = terminal_token->candidate_logit_bits[i];
-        }
-        if (terminal_token->candidate_tokens[i] == selected_token) {
-            selected_logit_bits = terminal_token->candidate_logit_bits[i];
-            selected_text_checksum = terminal_token->candidate_text_checksums[i];
-            selected_piece_word0 = terminal_token->candidate_piece_word0[i];
-            selected_piece_word1 = terminal_token->candidate_piece_word1[i];
-        }
-    }
-
-    if (selected_token == raw_sampled_token &&
-        terminal_token->text_checksum != 0 &&
-        (terminal_token->piece_word0 != 0 || terminal_token->piece_word1 != 0)) {
-        terminal_token->sampled_token = selected_token;
-        return true;
-    }
-    if (selected_text_checksum == 0 || (selected_piece_word0 == 0 && selected_piece_word1 == 0)) {
-        printf("[w4_guest] fail qwen3 engram terminal rewrite missing selected candidate"
-               " text metadata local=node%u step=%" PRIu64
-               " raw_token=%" PRIu64 " selected_token=%" PRIu64
-               " candidate_count=%" PRIu64 "\n",
-               local_node + 1U,
-               decode_step,
-               raw_sampled_token,
-               selected_token,
-               terminal_token->candidate_count);
-        return false;
-    }
-    terminal_token->sampled_token = selected_token;
-    if (selected_token != raw_sampled_token) {
-        terminal_token->runner_up_token = raw_sampled_token;
-        terminal_token->top_logit_bits = selected_logit_bits;
-        terminal_token->runner_up_logit_bits = raw_logit_bits;
-        terminal_token->margin_milli = 0;
-    }
-    terminal_token->text_checksum = selected_text_checksum;
-    terminal_token->piece_word0 = selected_piece_word0;
-    terminal_token->piece_word1 = selected_piece_word1;
-    printf("[w4_guest] stage qwen3_engram_terminal_record_rewrite local=node%u"
-           " step=%" PRIu64 " raw_token=%" PRIu64
-           " selected_token=%" PRIu64 " runner_up=%" PRIu64
-           " old_text_checksum=0x%016" PRIx64
-           " new_text_checksum=0x%016" PRIx64
-           " old_piece_word0=0x%016" PRIx64
-           " old_piece_word1=0x%016" PRIx64
-           " new_piece_word0=0x%016" PRIx64
-           " new_piece_word1=0x%016" PRIx64
-           " text_source=%s status=ok\n",
-           local_node + 1U,
-           decode_step,
-           raw_sampled_token,
-           selected_token,
-           terminal_token->runner_up_token,
-           old_text_checksum,
-           terminal_token->text_checksum,
-           old_piece_word0,
-           old_piece_word1,
-           terminal_token->piece_word0,
-           terminal_token->piece_word1,
-           "selected_candidate_text_metadata");
-    return true;
+    return qwen3_rewrite_terminal_token_record_for_selected_candidate(
+        terminal_token,
+        local_node,
+        decode_step,
+        raw_sampled_token,
+        selected_token,
+        "qwen3_engram_terminal_record_rewrite",
+        "selected_candidate_text_metadata");
 }
 
 static uint64_t qwen3_terminal_token_candidate_text_checksum(
@@ -2462,7 +2781,11 @@ static int qwen3_engram_select_and_publish_step(
     memcpy(terminal_token->candidate_logit_bits,
            resolved_candidate_logit_bits,
            resolved_candidate_count * sizeof(uint64_t));
-    terminal_token->sampled_token = terminal_token->candidate_tokens[0];
+    if (!qwen3_terminal_token_candidate_index(terminal_token,
+                                              terminal_token->sampled_token,
+                                              NULL)) {
+        terminal_token->sampled_token = terminal_token->candidate_tokens[0];
+    }
     terminal_token->runner_up_token =
         resolved_candidate_count > 1U ? terminal_token->candidate_tokens[1] : 0U;
     raw_sampled_token = terminal_token->sampled_token;
@@ -4566,6 +4889,24 @@ static uint64_t env_u64_or_default(const char *key, uint64_t default_value)
     return (uint64_t)parsed;
 }
 
+static uint64_t env_milli_decimal_or_default(const char *key, uint64_t default_value)
+{
+    const char *value = getenv(key);
+    char *end = NULL;
+    double parsed;
+
+    if (!value || value[0] == '\0') {
+        return default_value;
+    }
+    errno = 0;
+    parsed = strtod(value, &end);
+    if (errno != 0 || end == value || (end && *end != '\0') ||
+        !(parsed > 0.0)) {
+        return default_value;
+    }
+    return (uint64_t)(parsed * 1000.0 + 0.5);
+}
+
 static bool env_bool_is_one(const char *key)
 {
     const char *value = getenv(key);
@@ -4847,20 +5188,177 @@ static int qwen3_read_w5_shortpath_stream_file(
     return 0;
 }
 
+static int parse_qwen3_w5_shortpath_kv_stream_entry(
+    struct w4_qwen3_memory_decision_config *config,
+    const char *entry_text,
+    uint64_t *count)
+{
+    char entry_copy[W4_QWEN3_W5_SHORTPATH_KV_STREAM_LINE_BYTES];
+    char *fields[9];
+    char *save_field = NULL;
+    char *field = NULL;
+    uint32_t field_count = 0U;
+    struct w4_qwen3_shortpath_kv_stream_entry parsed;
+
+    if (!config || !entry_text || !count || entry_text[0] == '\0') {
+        return 0;
+    }
+    if (*count >= W4_QWEN3_W5_SHORTPATH_KV_STREAM_MAX) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 shortpath kv stream too many entries max=%u\n",
+                (unsigned)W4_QWEN3_W5_SHORTPATH_KV_STREAM_MAX);
+        return -1;
+    }
+    if (strlen(entry_text) >= sizeof(entry_copy)) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 shortpath kv stream entry too long"
+                " entry_index=%" PRIu64 " max=%zu\n",
+                *count,
+                sizeof(entry_copy) - 1U);
+        return -1;
+    }
+    snprintf(entry_copy, sizeof(entry_copy), "%s", entry_text);
+    memset(&parsed, 0, sizeof(parsed));
+    field = strtok_r(entry_copy, ":", &save_field);
+    while (field && field_count < 9U) {
+        fields[field_count++] = field;
+        field = strtok_r(NULL, ":", &save_field);
+    }
+    if (field != NULL || field_count != 9U) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 shortpath kv stream entry invalid"
+                " entry_index=%" PRIu64 " fields=%u expected=9\n",
+                *count,
+                field_count);
+        return -1;
+    }
+    if (parse_u64_field("shortpath_kv_stream_step",
+                        fields[0],
+                        &parsed.step_index) != 0 ||
+        parse_u64_field("shortpath_kv_stream_producer_position",
+                        fields[1],
+                        &parsed.producer_position) != 0 ||
+        parse_u32_field("shortpath_kv_stream_producer_layer_end",
+                        fields[2],
+                        &parsed.producer_layer_end) != 0 ||
+        parse_u32_field("shortpath_kv_stream_target_node",
+                        fields[3],
+                        &parsed.target_node) != 0 ||
+        parse_u32_field("shortpath_kv_stream_target_layer_start",
+                        fields[4],
+                        &parsed.target_layer_start) != 0 ||
+        parse_u32_field("shortpath_kv_stream_target_layer_end",
+                        fields[5],
+                        &parsed.target_layer_end) != 0 ||
+        parsed.target_layer_end <= parsed.target_layer_start ||
+        !qwen3_stream_ref_hex_syntax_ok(fields[6]) ||
+        parse_u64_field("shortpath_kv_stream_bytes",
+                        fields[7],
+                        &parsed.kv_bytes) != 0 ||
+        parse_u64_field("shortpath_kv_stream_checksum",
+                        fields[8],
+                        &parsed.kv_checksum) != 0 ||
+        parsed.kv_bytes == 0 ||
+        parsed.kv_checksum == 0) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 shortpath kv stream contract invalid"
+                " entry_index=%" PRIu64 "\n",
+                *count);
+        return -1;
+    }
+    snprintf(parsed.artifact_ref, sizeof(parsed.artifact_ref), "%s", fields[6]);
+    parsed.stream_index = *count;
+    parsed.valid = true;
+    config->shortpath_kv_stream_entries[*count] = parsed;
+    (*count)++;
+    return 0;
+}
+
+static int qwen3_read_w5_shortpath_kv_stream_file(
+    const char *path,
+    struct w4_qwen3_memory_decision_config *config)
+{
+    FILE *fp;
+    char line[W4_QWEN3_W5_SHORTPATH_KV_STREAM_LINE_BYTES];
+    uint64_t count = 0;
+
+    if (!str_nonempty(path)) {
+        return 0;
+    }
+    if (!config) {
+        return -1;
+    }
+    fp = fopen(path, "rb");
+    if (!fp) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 shortpath kv stream file open path=%s errno=%d\n",
+                path,
+                errno);
+        return -1;
+    }
+    while (fgets(line, sizeof(line), fp)) {
+        size_t len = strlen(line);
+
+        while (len > 0 &&
+               (line[len - 1U] == '\n' || line[len - 1U] == '\r')) {
+            line[--len] = '\0';
+        }
+        if (line[0] == '\0') {
+            continue;
+        }
+        if (parse_qwen3_w5_shortpath_kv_stream_entry(config, line, &count) != 0) {
+            fclose(fp);
+            return -1;
+        }
+    }
+    if (ferror(fp)) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 shortpath kv stream file read path=%s errno=%d\n",
+                path,
+                errno);
+        fclose(fp);
+        return -1;
+    }
+    fclose(fp);
+    if (config->shortpath_kv_stream_expected_count != 0 &&
+        count != config->shortpath_kv_stream_expected_count) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 shortpath kv stream count mismatch"
+                " parsed=%" PRIu64 " expected=%" PRIu64 "\n",
+                count,
+                config->shortpath_kv_stream_expected_count);
+        return -1;
+    }
+    config->shortpath_kv_stream_count = count;
+    return 0;
+}
+
+static int qwen3_read_w5_boundary_registry_object(
+    struct w4_qwen3_memory_decision_config *config);
+
 static int parse_qwen3_w5_memory_decision_config(
     struct w4_qwen3_memory_decision_config *config)
 {
     bool has_shortpath;
     bool has_shortpath_stream;
+    bool has_shortpath_registry;
     bool has_prefetch;
     bool has_prefix_cache;
+    bool shortpath_lookup_mode_explicit;
     char shortpath_stream_count_text[32];
+    char boundary_registry_count_text[32];
+    char shortpath_kv_stream_count_text[32];
     char shortpath_boundary_hidden_bytes_text[32];
     char shortpath_boundary_hidden_checksum_text[32];
     char shortpath_stream_path[512];
+    char shortpath_kv_stream_path[512];
 
     memset(config, 0, sizeof(*config));
     memset(shortpath_stream_count_text, 0, sizeof(shortpath_stream_count_text));
+    memset(boundary_registry_count_text, 0, sizeof(boundary_registry_count_text));
+    memset(shortpath_kv_stream_count_text,
+           0,
+           sizeof(shortpath_kv_stream_count_text));
     memset(shortpath_boundary_hidden_bytes_text,
            0,
            sizeof(shortpath_boundary_hidden_bytes_text));
@@ -4868,12 +5366,32 @@ static int parse_qwen3_w5_memory_decision_config(
            0,
            sizeof(shortpath_boundary_hidden_checksum_text));
     memset(shortpath_stream_path, 0, sizeof(shortpath_stream_path));
+    memset(shortpath_kv_stream_path, 0, sizeof(shortpath_kv_stream_path));
     env_copy_or_empty("SIM_W5_MEMORY_SERVICE",
                       config->service,
                       sizeof(config->service));
     env_copy_or_empty("SIM_W5_MEMORY_DECISION_STORE",
                       config->decision_store,
                       sizeof(config->decision_store));
+    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_LOOKUP_MODE",
+                      config->shortpath_lookup_mode,
+                      sizeof(config->shortpath_lookup_mode));
+    shortpath_lookup_mode_explicit = str_nonempty(config->shortpath_lookup_mode);
+    if (!shortpath_lookup_mode_explicit) {
+        snprintf(config->shortpath_lookup_mode,
+                 sizeof(config->shortpath_lookup_mode),
+                 "%s",
+                 "staged_registry");
+    }
+    env_copy_or_empty("SIM_W5_MEMORY_BOUNDARY_LOOKUP_BACKEND",
+                      config->boundary_lookup_backend,
+                      sizeof(config->boundary_lookup_backend));
+    if (!str_nonempty(config->boundary_lookup_backend)) {
+        snprintf(config->boundary_lookup_backend,
+                 sizeof(config->boundary_lookup_backend),
+                 "%s",
+                 "staged_registry");
+    }
     env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_DECISION_ID",
                       config->shortpath_decision_id,
                       sizeof(config->shortpath_decision_id));
@@ -4901,6 +5419,9 @@ static int parse_qwen3_w5_memory_decision_config(
     env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF",
                       config->shortpath_artifact_ref,
                       sizeof(config->shortpath_artifact_ref));
+    env_copy_or_empty("SIM_W5_MEMORY_BOUNDARY_REGISTRY_REF",
+                      config->boundary_registry_ref,
+                      sizeof(config->boundary_registry_ref));
     env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_START",
                       config->shortpath_producer_layer_start,
                       sizeof(config->shortpath_producer_layer_start));
@@ -4924,13 +5445,34 @@ static int parse_qwen3_w5_memory_decision_config(
     env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_STREAM_COUNT",
                       shortpath_stream_count_text,
                       sizeof(shortpath_stream_count_text));
+    env_copy_or_empty("SIM_W5_MEMORY_BOUNDARY_REGISTRY_COUNT",
+                      boundary_registry_count_text,
+                      sizeof(boundary_registry_count_text));
     env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_STREAM_PATH",
                       shortpath_stream_path,
                       sizeof(shortpath_stream_path));
+    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_KV_STREAM_COUNT",
+                      shortpath_kv_stream_count_text,
+                      sizeof(shortpath_kv_stream_count_text));
+    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_KV_STREAM_PATH",
+                      shortpath_kv_stream_path,
+                      sizeof(shortpath_kv_stream_path));
     if (str_nonempty(shortpath_stream_count_text) &&
         parse_u64_field("shortpath_stream_count",
                         shortpath_stream_count_text,
                         &config->shortpath_stream_expected_count) != 0) {
+        return -1;
+    }
+    if (str_nonempty(boundary_registry_count_text) &&
+        parse_u64_field("boundary_registry_count",
+                        boundary_registry_count_text,
+                        &config->boundary_registry_expected_count) != 0) {
+        return -1;
+    }
+    if (str_nonempty(shortpath_kv_stream_count_text) &&
+        parse_u64_field("shortpath_kv_stream_count",
+                        shortpath_kv_stream_count_text,
+                        &config->shortpath_kv_stream_expected_count) != 0) {
         return -1;
     }
     if (str_nonempty(shortpath_boundary_hidden_bytes_text) ||
@@ -4972,19 +5514,38 @@ static int parse_qwen3_w5_memory_decision_config(
     env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_STREAM",
                       config->shortpath_stream,
                       sizeof(config->shortpath_stream));
-    if (str_nonempty(config->shortpath_stream) &&
+    if (qwen3_read_w5_boundary_registry_object(config) != 0) {
+        return -1;
+    }
+    if (!config->boundary_registry_loaded &&
+        str_nonempty(config->shortpath_stream) &&
         parse_qwen3_w5_shortpath_stream_env(config) != 0) {
         return -1;
     }
-    if (!str_nonempty(config->shortpath_stream) &&
+    if (!config->boundary_registry_loaded &&
+        !str_nonempty(config->shortpath_stream) &&
         qwen3_read_w5_shortpath_stream_file(shortpath_stream_path, config) != 0) {
         return -1;
     }
+    if (qwen3_read_w5_shortpath_kv_stream_file(shortpath_kv_stream_path, config) != 0) {
+        return -1;
+    }
     if (config->shortpath_stream_count > 0) {
-        printf("[w4_guest] stage qwen3_w5_memory_shortpath_stream_loaded"
-               " entries=%" PRIu64 " source=%s status=ok\n",
-               config->shortpath_stream_count,
-               str_nonempty(shortpath_stream_path) ? "file" : "env");
+        if (config->boundary_registry_loaded) {
+            printf("[w4_guest] stage qwen3_w5_memory_boundary_registry_loaded"
+                   " entries=%" PRIu64 " source=object_service status=ok\n",
+                   config->shortpath_stream_count);
+        } else {
+            printf("[w4_guest] stage qwen3_w5_memory_shortpath_stream_loaded"
+                   " entries=%" PRIu64 " source=%s status=ok\n",
+                   config->shortpath_stream_count,
+                   str_nonempty(shortpath_stream_path) ? "file" : "env");
+        }
+    }
+    if (config->shortpath_kv_stream_count > 0) {
+        printf("[w4_guest] stage qwen3_w5_memory_shortpath_kv_stream_loaded"
+               " entries=%" PRIu64 " source=file status=ok\n",
+               config->shortpath_kv_stream_count);
     }
     env_copy_or_empty("SIM_W5_MEMORY_PREFETCH_PLAN_ID",
                       config->prefetch_plan_id,
@@ -5028,10 +5589,28 @@ static int parse_qwen3_w5_memory_decision_config(
 
     has_shortpath = str_nonempty(config->shortpath_decision_id);
     has_shortpath_stream = config->shortpath_stream_count > 0;
+    has_shortpath_registry = config->boundary_registry_loaded;
     has_prefetch = str_nonempty(config->prefetch_plan_id);
     has_prefix_cache = str_nonempty(config->prefix_cache_reuse_plan_id);
+    if (!shortpath_lookup_mode_explicit &&
+        (has_shortpath_registry || has_shortpath_stream) &&
+        !has_shortpath) {
+        snprintf(config->shortpath_lookup_mode,
+                 sizeof(config->shortpath_lookup_mode),
+                 "%s",
+                 "staged_registry");
+    }
+    if (strcmp(config->boundary_lookup_backend, "staged_registry") != 0 &&
+        strcmp(config->boundary_lookup_backend, "runtime_service") != 0) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 memory boundary lookup backend invalid"
+                " backend=%s expected=staged_registry|runtime_service\n",
+                config->boundary_lookup_backend);
+        return -1;
+    }
     config->enabled =
-        has_shortpath || has_shortpath_stream || has_prefetch || has_prefix_cache;
+        has_shortpath || has_shortpath_registry || has_shortpath_stream ||
+        has_prefetch || has_prefix_cache;
     if (!config->enabled) {
         return 0;
     }
@@ -5139,12 +5718,12 @@ static int parse_qwen3_w5_memory_decision_config(
             return -1;
         }
     }
-    if (has_shortpath_stream &&
+    if ((has_shortpath_registry || has_shortpath_stream) &&
         (!str_nonempty(config->shortpath_action) ||
          strcmp(config->shortpath_action, "jump-to-terminal") != 0)) {
         fprintf(stderr,
-                "[w4_guest] fail qwen3 w5 memory shortpath stream action invalid"
-                " action=%s hint=stream entries currently carry terminal logits refs\n",
+                "[w4_guest] fail qwen3 w5 memory boundary registry action invalid"
+                " action=%s hint=registry entries currently carry terminal logits refs\n",
                 str_nonempty(config->shortpath_action) ?
                     config->shortpath_action :
                     "unset");
@@ -5811,6 +6390,135 @@ static int qwen3_read_object_ref_payload(
     return qwen3_read_registry_payload(ref, payload_out, payload_len_out);
 }
 
+static void qwen3_bytes_to_hex(const uint8_t *bytes,
+                               size_t bytes_len,
+                               char *out,
+                               size_t out_len)
+{
+    static const char hex[] = "0123456789abcdef";
+    size_t required = bytes_len * 2U + 1U;
+
+    if (!bytes || !out || out_len < required) {
+        return;
+    }
+    for (size_t i = 0; i < bytes_len; ++i) {
+        out[i * 2U] = hex[(bytes[i] >> 4) & 0xfU];
+        out[i * 2U + 1U] = hex[bytes[i] & 0xfU];
+    }
+    out[bytes_len * 2U] = '\0';
+}
+
+static int qwen3_read_w5_boundary_registry_object(
+    struct w4_qwen3_memory_decision_config *config)
+{
+    struct lingqu_obmm_object_ref_wire registry_ref;
+    uint8_t *payload = NULL;
+    uint64_t payload_len = 0;
+    uint64_t marker;
+    uint32_t version;
+    uint32_t header_bytes;
+    uint32_t entry_bytes;
+    uint64_t count;
+
+    if (!config || !str_nonempty(config->boundary_registry_ref)) {
+        return 0;
+    }
+    if (parse_lingqu_object_ref_hex("SIM_W5_MEMORY_BOUNDARY_REGISTRY_REF",
+                                    config->boundary_registry_ref,
+                                    W4_QWEN3_OBMM_KIND_MEMORY_BOUNDARY_REGISTRY,
+                                    &registry_ref) != 0) {
+        return -1;
+    }
+    if (qwen3_read_object_ref_payload(&registry_ref, &payload, &payload_len) != 0) {
+        return -1;
+    }
+    if (payload_len < W4_QWEN3_W5_BOUNDARY_REGISTRY_HEADER_BYTES) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 boundary registry payload truncated"
+                " bytes=%" PRIu64 "\n",
+                payload_len);
+        free(payload);
+        return -1;
+    }
+    marker = qwen3_ref_read_u64_le(payload, 0);
+    version = qwen3_ref_read_u32_le(payload, 8);
+    header_bytes = qwen3_ref_read_u32_le(payload, 12);
+    entry_bytes = qwen3_ref_read_u32_le(payload, 16);
+    count = qwen3_ref_read_u64_le(payload, 24);
+    if (marker != W4_QWEN3_W5_BOUNDARY_REGISTRY_MARKER ||
+        version != W4_QWEN3_W5_BOUNDARY_REGISTRY_VERSION ||
+        header_bytes != W4_QWEN3_W5_BOUNDARY_REGISTRY_HEADER_BYTES ||
+        entry_bytes != W4_QWEN3_W5_BOUNDARY_REGISTRY_ENTRY_BYTES ||
+        count == 0 ||
+        count > W4_QWEN3_W5_SHORTPATH_STREAM_MAX ||
+        payload_len != header_bytes + count * entry_bytes ||
+        (config->boundary_registry_expected_count != 0 &&
+         count != config->boundary_registry_expected_count)) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 boundary registry contract invalid"
+                " marker=0x%016" PRIx64 " version=%u header=%u entry=%u"
+                " count=%" PRIu64 " expected=%" PRIu64 " bytes=%" PRIu64 "\n",
+                marker,
+                version,
+                header_bytes,
+                entry_bytes,
+                count,
+                config->boundary_registry_expected_count,
+                payload_len);
+        free(payload);
+        return -1;
+    }
+    for (uint64_t i = 0; i < count; ++i) {
+        uint64_t base = header_bytes + i * entry_bytes;
+        struct w4_qwen3_shortpath_stream_entry parsed;
+        struct lingqu_obmm_object_ref_wire logits_ref;
+        const uint8_t *ref_bytes = payload + base + 48U;
+
+        memset(&parsed, 0, sizeof(parsed));
+        parsed.step_index = qwen3_ref_read_u64_le(payload, (size_t)base);
+        parsed.producer_position =
+            qwen3_ref_read_u64_le(payload, (size_t)base + 8U);
+        parsed.boundary_hidden_bytes =
+            qwen3_ref_read_u64_le(payload, (size_t)base + 16U);
+        parsed.boundary_hidden_checksum =
+            qwen3_ref_read_u64_le(payload, (size_t)base + 24U);
+        parsed.producer_layer_start =
+            qwen3_ref_read_u32_le(payload, (size_t)base + 32U);
+        parsed.producer_layer_end =
+            qwen3_ref_read_u32_le(payload, (size_t)base + 36U);
+        parsed.target_layer_start =
+            qwen3_ref_read_u32_le(payload, (size_t)base + 40U);
+        parsed.target_layer_end =
+            qwen3_ref_read_u32_le(payload, (size_t)base + 44U);
+        if (parse_lingqu_object_ref_bytes("SIM_W5_MEMORY_BOUNDARY_REGISTRY_REF.entry",
+                                          ref_bytes,
+                                          W4_QWEN3_OBMM_KIND_TERMINAL_LOGITS,
+                                          &logits_ref) != 0 ||
+            parsed.producer_layer_end <= parsed.producer_layer_start ||
+            parsed.target_layer_end != parsed.target_layer_start ||
+            parsed.boundary_hidden_bytes == 0 ||
+            parsed.boundary_hidden_checksum == 0) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 w5 boundary registry entry invalid"
+                    " index=%" PRIu64 "\n",
+                    i);
+            free(payload);
+            return -1;
+        }
+        qwen3_bytes_to_hex(ref_bytes,
+                           W4_QWEN3_OBJECT_REF_BYTES,
+                           parsed.artifact_ref,
+                           sizeof(parsed.artifact_ref));
+        parsed.stream_index = i;
+        parsed.valid = true;
+        config->shortpath_stream_entries[i] = parsed;
+    }
+    config->shortpath_stream_count = count;
+    config->boundary_registry_loaded = true;
+    free(payload);
+    return 0;
+}
+
 static int qwen3_terminal_token_record_from_logits_payload(
     const uint8_t *payload,
     uint64_t payload_len,
@@ -5931,14 +6639,22 @@ static int qwen3_terminal_token_record_from_logits_payload(
         record->candidate_piece_word1[i] =
             qwen3_ref_read_u64_le(payload, (size_t)candidate_base + 40U);
     }
-    if (record->candidate_tokens[0] != record->sampled_token ||
-        record->sampled_token >= qwen3_vocab_size() ||
+    {
+        uint64_t sampled_index = UINT64_MAX;
+
+        if (!qwen3_terminal_token_candidate_index(record,
+                                                  record->sampled_token,
+                                                  &sampled_index) ||
+            record->candidate_text_checksums[sampled_index] != record->text_checksum) {
+            return -1;
+        }
+    }
+    if (record->sampled_token >= qwen3_vocab_size() ||
         record->runner_up_token >= qwen3_vocab_size() ||
         record->sampled_token == record->runner_up_token ||
-        record->margin_milli == 0 ||
         record->logits_checksum == 0 ||
         record->text_checksum == 0 ||
-        record->piece_word0 == 0) {
+        (record->piece_word0 == 0 && record->piece_word1 == 0)) {
         return -1;
     }
     return 0;
@@ -5983,27 +6699,6 @@ static int qwen3_memory_shortpath_terminal_logits_record(
         return -1;
     }
     return 1;
-}
-
-static const struct w4_qwen3_shortpath_stream_entry *
-qwen3_memory_shortpath_stream_entry_for_step(
-    const struct w4_qwen3_memory_decision_config *config,
-    uint64_t decode_step,
-    uint64_t position)
-{
-    if (!config || config->shortpath_stream_count == 0) {
-        return NULL;
-    }
-    for (uint64_t i = 0; i < config->shortpath_stream_count; ++i) {
-        const struct w4_qwen3_shortpath_stream_entry *entry =
-            &config->shortpath_stream_entries[i];
-
-        if (entry->valid && entry->step_index == decode_step &&
-            entry->producer_position == position) {
-            return entry;
-        }
-    }
-    return NULL;
 }
 
 static const struct w4_qwen3_shortpath_stream_entry *
@@ -6068,33 +6763,6 @@ static int qwen3_memory_shortpath_terminal_logits_record_from_ref(
         return -1;
     }
     return 1;
-}
-
-static bool qwen3_memory_shortpath_terminal_active_for_step(
-    const struct w4_qwen3_memory_decision_config *config,
-    uint64_t decode_step,
-    uint64_t position)
-{
-    uint64_t producer_position = 0;
-
-    if (!config || !config->shortpath_execute ||
-        strcmp(config->shortpath_action, "jump-to-terminal") != 0) {
-        return false;
-    }
-    if (config->shortpath_stream_count > 0) {
-        return qwen3_memory_shortpath_stream_entry_for_step(
-            config,
-            decode_step,
-            position) != NULL;
-    }
-    if (parse_u64_field("shortpath_producer_position",
-                        config->shortpath_producer_position,
-                        &producer_position) != 0 ||
-        producer_position != position) {
-        return false;
-    }
-    return strcmp(config->shortpath_artifact_kind, "logits") == 0 &&
-           str_nonempty(config->shortpath_artifact_ref);
 }
 
 static int qwen3_memory_shortpath_validate_stream_boundary_fingerprint(
@@ -6173,67 +6841,61 @@ static int qwen3_memory_shortpath_validate_single_boundary_fingerprint(
     return 1;
 }
 
-static bool qwen3_memory_shortpath_target_layer_for_step(
+static int qwen3_w5_memory_service_lookup_boundary(
     const struct w4_qwen3_memory_decision_config *config,
-    uint64_t decode_step,
-    uint64_t position,
-    uint32_t *target_layer_start)
-{
-    const struct w4_qwen3_shortpath_stream_entry *entry =
-        qwen3_memory_shortpath_stream_entry_for_step(config, decode_step, position);
-
-    if (!target_layer_start ||
-        !qwen3_memory_shortpath_terminal_active_for_step(config, decode_step, position)) {
-        return false;
-    }
-    if (entry) {
-        uint32_t min_target_layer_start = entry->target_layer_start;
-        for (uint64_t i = 0; i < config->shortpath_stream_count; ++i) {
-            const struct w4_qwen3_shortpath_stream_entry *candidate =
-                &config->shortpath_stream_entries[i];
-
-            if (candidate->valid && candidate->step_index == decode_step &&
-                candidate->producer_position == position &&
-                candidate->target_layer_start < min_target_layer_start) {
-                min_target_layer_start = candidate->target_layer_start;
-            }
-        }
-        *target_layer_start = min_target_layer_start;
-        return true;
-    }
-    return parse_u32_field("shortpath_target_layer_start",
-                           config->shortpath_target_layer_start,
-                           target_layer_start) == 0;
-}
-
-static int qwen3_memory_shortpath_terminal_logits_record_for_boundary(
-    const struct w4_qwen3_memory_decision_config *config,
+    uint32_t local_node,
     uint32_t layer_start,
     uint32_t layer_end,
     uint64_t decode_step,
     uint64_t position,
     uint64_t boundary_hidden_bytes,
     uint64_t boundary_hidden_checksum,
-    struct lingqu_obmm_object_ref_wire *ref_out,
-    struct w4_qwen3_terminal_token_record *record_out)
+    struct w4_qwen3_memory_boundary_lookup_result *result_out)
 {
     uint32_t producer_start = 0U;
     uint32_t producer_end = 0U;
     uint64_t producer_position = 0;
-    const struct w4_qwen3_shortpath_stream_entry *entry;
+    const struct w4_qwen3_shortpath_stream_entry *entry = NULL;
+    const char *registry_source = "boundary_registry";
+    int load_state;
 
+    if (!result_out) {
+        return -1;
+    }
+    memset(result_out, 0, sizeof(*result_out));
     if (!config || !config->enabled ||
         strcmp(config->shortpath_action, "jump-to-terminal") != 0 ||
         (config->shortpath_stream_count == 0 &&
          strcmp(config->shortpath_artifact_kind, "logits") != 0)) {
         return 0;
     }
+    printf("[w4_guest] stage qwen3_memory_service_boundary_lookup_request"
+           " node=%u step=%" PRIu64 " layers=[%u,%u)"
+           " position=%" PRIu64
+           " hidden_bytes=%" PRIu64
+           " hidden_checksum=0x%016" PRIx64
+           " allowed_actions=jump-to-terminal"
+           " source=boundary_controller target=lingqu_memory_service"
+           " mode=%s backend=%s status=issued\n",
+           local_node + 1U,
+           decode_step,
+           layer_start,
+           layer_end,
+           position,
+           boundary_hidden_bytes,
+           boundary_hidden_checksum,
+           config->shortpath_lookup_mode,
+           config->boundary_lookup_backend);
     entry = qwen3_memory_shortpath_stream_entry_for_boundary(config,
                                                             layer_start,
                                                             layer_end,
                                                             decode_step,
                                                             position);
     if (entry) {
+        if (config->boundary_registry_loaded &&
+            strcmp(config->boundary_lookup_backend, "runtime_service") == 0) {
+            registry_source = "runtime_service_catalog";
+        }
         if (qwen3_memory_shortpath_validate_stream_boundary_fingerprint(
                 entry,
                 layer_start,
@@ -6241,18 +6903,92 @@ static int qwen3_memory_shortpath_terminal_logits_record_for_boundary(
                 decode_step,
                 boundary_hidden_bytes,
                 boundary_hidden_checksum) != 0) {
+            printf("[w4_guest] stage qwen3_memory_service_boundary_lookup_response"
+                   " node=%u step=%" PRIu64 " layers=[%u,%u)"
+                   " position=%" PRIu64
+                   " action=continue reason=hidden_fingerprint_mismatch"
+                   " source=lingqu_memory_service target=boundary_controller"
+                   " mode=%s backend=%s status=miss\n",
+                   local_node + 1U,
+                   decode_step,
+                   layer_start,
+                   layer_end,
+                   position,
+                   config->shortpath_lookup_mode,
+                   config->boundary_lookup_backend);
             return 0;
         }
-        return qwen3_memory_shortpath_terminal_logits_record_from_ref(
-            "SIM_W5_MEMORY_SHORTPATH_STREAM",
+        load_state = qwen3_memory_shortpath_terminal_logits_record_from_ref(
+            config->boundary_registry_loaded ?
+                "SIM_W5_MEMORY_BOUNDARY_REGISTRY_REF" :
+                "SIM_W5_MEMORY_SHORTPATH_STREAM",
             entry->artifact_ref,
-            "stream",
+            config->boundary_registry_loaded ? registry_source : "stream",
             "",
             decode_step,
-            ref_out,
-            record_out);
+            &result_out->terminal_logits_ref,
+            &result_out->terminal_logits_record);
+        if (load_state <= 0) {
+            return load_state;
+        }
+        result_out->stream_entry = entry;
+        result_out->artifact_ref_source =
+            config->boundary_registry_loaded ? registry_source : "stream";
+        result_out->decision_id =
+            config->boundary_registry_loaded ? registry_source : "stream";
+        result_out->artifact_id = "";
+        if (config->boundary_registry_loaded) {
+            printf("[w4_guest] stage qwen3_memory_service_boundary_lookup_response"
+                   " node=%u step=%" PRIu64 " layers=[%u,%u)"
+                   " position=%" PRIu64
+                   " action=jump-to-terminal artifact_ref=%s"
+                   " registry_index=%" PRIu64
+                   " confidence=verified"
+                   " source=lingqu_memory_service target=boundary_controller"
+                   " mode=%s backend=%s status=hit\n",
+                   local_node + 1U,
+                   decode_step,
+                   layer_start,
+                   layer_end,
+                   position,
+                   registry_source,
+                   entry->stream_index,
+                   config->shortpath_lookup_mode,
+                   config->boundary_lookup_backend);
+        } else {
+            printf("[w4_guest] stage qwen3_memory_service_boundary_lookup_response"
+                   " node=%u step=%" PRIu64 " layers=[%u,%u)"
+                   " position=%" PRIu64
+                   " action=jump-to-terminal artifact_ref=stream"
+                   " stream_index=%" PRIu64
+                   " confidence=verified"
+                   " source=lingqu_memory_service target=boundary_controller"
+                   " mode=%s backend=%s status=hit\n",
+                   local_node + 1U,
+                   decode_step,
+                   layer_start,
+                   layer_end,
+                   position,
+                   entry->stream_index,
+                   config->shortpath_lookup_mode,
+                   config->boundary_lookup_backend);
+        }
+        return 1;
     }
     if (config->shortpath_stream_count > 0) {
+        printf("[w4_guest] stage qwen3_memory_service_boundary_lookup_response"
+               " node=%u step=%" PRIu64 " layers=[%u,%u)"
+               " position=%" PRIu64
+               " action=continue reason=no_verified_execution_artifact"
+               " source=lingqu_memory_service target=boundary_controller"
+               " mode=%s backend=%s status=miss\n",
+               local_node + 1U,
+               decode_step,
+               layer_start,
+               layer_end,
+               position,
+               config->shortpath_lookup_mode,
+               config->boundary_lookup_backend);
         return 0;
     }
     if (parse_u32_field("shortpath_producer_layer_start",
@@ -6267,22 +7003,455 @@ static int qwen3_memory_shortpath_terminal_logits_record_for_boundary(
         return -1;
     }
     if (producer_start != layer_start || producer_end != layer_end ||
-        producer_position != position) {
-        return 0;
-    }
-    if (qwen3_memory_shortpath_validate_single_boundary_fingerprint(
+        producer_position != position ||
+        qwen3_memory_shortpath_validate_single_boundary_fingerprint(
             config,
             layer_start,
             layer_end,
             decode_step,
             boundary_hidden_bytes,
             boundary_hidden_checksum) != 0) {
+        printf("[w4_guest] stage qwen3_memory_service_boundary_lookup_response"
+               " node=%u step=%" PRIu64 " layers=[%u,%u)"
+               " position=%" PRIu64
+               " action=continue reason=no_matching_decision"
+               " source=lingqu_memory_service target=boundary_controller"
+               " mode=%s backend=%s status=miss\n",
+               local_node + 1U,
+               decode_step,
+               layer_start,
+               layer_end,
+               position,
+               config->shortpath_lookup_mode,
+               config->boundary_lookup_backend);
         return 0;
     }
-    return qwen3_memory_shortpath_terminal_logits_record(config,
-                                                         decode_step,
-                                                         ref_out,
-                                                         record_out);
+    load_state = qwen3_memory_shortpath_terminal_logits_record(
+        config,
+        decode_step,
+        &result_out->terminal_logits_ref,
+        &result_out->terminal_logits_record);
+    if (load_state <= 0) {
+        return load_state;
+    }
+    result_out->decision_id = config->shortpath_decision_id;
+    result_out->artifact_id = config->shortpath_artifact_id;
+    printf("[w4_guest] stage qwen3_memory_service_boundary_lookup_response"
+           " node=%u step=%" PRIu64 " layers=[%u,%u)"
+           " position=%" PRIu64
+           " action=jump-to-terminal decision_id=%s artifact_id=%s"
+           " confidence=verified"
+           " source=lingqu_memory_service target=boundary_controller"
+           " mode=%s backend=%s status=hit\n",
+           local_node + 1U,
+           decode_step,
+           layer_start,
+           layer_end,
+           position,
+           config->shortpath_decision_id,
+           config->shortpath_artifact_id,
+           config->shortpath_lookup_mode,
+           config->boundary_lookup_backend);
+    return 1;
+}
+
+static int qwen3_boundary_controller_resolve_work_item(
+    const struct w4_qwen3_memory_decision_config *memory_config,
+    const struct w4_qwen3_sampler_config *sampler_config,
+    const struct w4_qwen3_engram_config *engram_config,
+    uint32_t dispatch_node,
+    uint32_t layer_start,
+    uint32_t layer_end,
+    uint64_t decode_step,
+    uint64_t position,
+    const struct w4_qwen3_range_runtime_forward *runtime_forward,
+    struct w4_qwen3_boundary_controller_result *result_out)
+{
+    int lookup_state;
+
+    if (!memory_config || !sampler_config || !engram_config ||
+        !runtime_forward || !result_out) {
+        return -1;
+    }
+    memset(result_out, 0, sizeof(*result_out));
+    result_out->action = W4_QWEN3_BOUNDARY_CONTROLLER_CONTINUE;
+    printf("[w4_guest] stage qwen3_boundary_controller_input"
+           " node=%u step=%" PRIu64 " layers=[%u,%u)"
+           " hidden_bytes=%" PRIu64
+           " hidden_checksum=0x%016" PRIx64
+           " source=range_worker target=boundary_controller"
+           " status=ready\n",
+           dispatch_node + 1U,
+           decode_step,
+           layer_start,
+           layer_end,
+           runtime_forward->payload_bytes,
+           runtime_forward->payload_checksum);
+    lookup_state = qwen3_w5_memory_service_lookup_boundary(
+        memory_config,
+        dispatch_node,
+        layer_start,
+        layer_end,
+        decode_step,
+        position,
+        runtime_forward->payload_bytes,
+        runtime_forward->payload_checksum,
+        &result_out->lookup);
+    if (lookup_state < 0) {
+        return -1;
+    }
+    if (lookup_state == 0) {
+        if (memory_config->enabled) {
+            printf("[w4_guest] stage qwen3_boundary_controller_lookup"
+                   " node=%u step=%" PRIu64 " layers=[%u,%u)"
+                   " hidden_bytes=%" PRIu64
+                   " hidden_checksum=0x%016" PRIx64
+                   " action=continue"
+                   " source=boundary_controller target=lingqu_memory_service"
+                   " mode=%s backend=%s status=miss\n",
+                   dispatch_node + 1U,
+                   decode_step,
+                   layer_start,
+                   layer_end,
+                   runtime_forward->payload_bytes,
+                   runtime_forward->payload_checksum,
+                   memory_config->shortpath_lookup_mode,
+                   memory_config->boundary_lookup_backend);
+            printf("[w4_guest] stage qwen3_boundary_controller_downstream_work_item"
+                   " node=%u step=%" PRIu64 " layers=[%u,%u)"
+                   " action=continue work_item=range_forward"
+                   " source=boundary_controller target=work_queue"
+                   " status=dispatch\n",
+                   dispatch_node + 1U,
+                   decode_step,
+                   layer_start,
+                   layer_end);
+        }
+        return 0;
+    }
+
+    result_out->selected_token =
+        result_out->lookup.terminal_logits_record.sampled_token;
+    printf("[w4_guest] stage qwen3_boundary_controller_lookup"
+           " node=%u step=%" PRIu64 " layers=[%u,%u)"
+           " hidden_bytes=%" PRIu64
+           " hidden_checksum=0x%016" PRIx64
+           " action=jump-to-terminal execute=%s"
+           " source=boundary_controller target=lingqu_memory_service"
+           " mode=%s backend=%s status=hit\n",
+           dispatch_node + 1U,
+           decode_step,
+           layer_start,
+           layer_end,
+           runtime_forward->payload_bytes,
+           runtime_forward->payload_checksum,
+           memory_config->shortpath_execute ? "true" : "false",
+           memory_config->shortpath_lookup_mode,
+           memory_config->boundary_lookup_backend);
+    printf("[w4_guest] stage qwen3_w5_memory_terminal_logits_loaded"
+           " node=%u step=%" PRIu64 " layers=[%u,%u)"
+           " decision_id=%s artifact_id=%s token=%" PRIu64
+           " runner_up=%" PRIu64 " margin_milli=%" PRIu64
+           " logits_checksum=0x%016" PRIx64
+           " text_checksum=0x%016" PRIx64
+           " candidate_count=%" PRIu64
+           " payload_bytes=%" PRIu64
+           " payload_checksum=0x%016" PRIx64
+           " source=lingqu_memory_service target=terminal_token_record"
+           " execute=%s status=ready\n",
+           dispatch_node + 1U,
+           decode_step,
+           layer_start,
+           layer_end,
+           result_out->lookup.decision_id ? result_out->lookup.decision_id : "",
+           result_out->lookup.artifact_id ? result_out->lookup.artifact_id : "",
+           result_out->lookup.terminal_logits_record.sampled_token,
+           result_out->lookup.terminal_logits_record.runner_up_token,
+           result_out->lookup.terminal_logits_record.margin_milli,
+           result_out->lookup.terminal_logits_record.logits_checksum,
+           result_out->lookup.terminal_logits_record.text_checksum,
+           result_out->lookup.terminal_logits_record.candidate_count,
+           result_out->lookup.terminal_logits_ref.payload_bytes,
+           result_out->lookup.terminal_logits_ref.payload_checksum,
+           memory_config->shortpath_execute ? "true" : "false");
+    if (!memory_config->shortpath_execute) {
+        return 0;
+    }
+    if (qwen3_apply_top_k_sampler(sampler_config,
+                                  &result_out->lookup.terminal_logits_record,
+                                  dispatch_node,
+                                  decode_step,
+                                  position,
+                                  &result_out->selected_token) != 0) {
+        return -1;
+    }
+    if (engram_config->enabled) {
+        printf("[w4_guest] stage qwen3_w5_memory_terminal_logits_selected"
+               " node=%u step=%" PRIu64 " layers=[%u,%u)"
+               " token=%" PRIu64
+               " source=terminal_logits_artifact"
+               " target=memory_shortpath_terminal_candidate"
+               " policy=sampler_then_terminal_engram"
+               " reason=engram_policy_requires_materialized_owner"
+               " status=deferred\n",
+               dispatch_node + 1U,
+               decode_step,
+               layer_start,
+               layer_end,
+               result_out->lookup.terminal_logits_record.sampled_token);
+        result_out->action = W4_QWEN3_BOUNDARY_CONTROLLER_DEFER_TO_RANGE_FORWARD;
+        return 0;
+    }
+    result_out->action = W4_QWEN3_BOUNDARY_CONTROLLER_JUMP_TO_TERMINAL;
+    printf("[w4_guest] stage qwen3_boundary_controller_downstream_work_item"
+           " node=%u step=%" PRIu64 " layers=[%u,%u)"
+           " action=jump-to-terminal token=%" PRIu64
+           " work_item=none"
+           " source=boundary_controller target=work_queue"
+           " status=no_dispatch\n",
+           dispatch_node + 1U,
+           decode_step,
+           layer_start,
+           layer_end,
+           result_out->lookup.terminal_logits_record.sampled_token);
+    return 0;
+}
+
+static const struct w4_qwen3_shortpath_kv_stream_entry *
+qwen3_memory_shortpath_kv_entry_for_local_range(
+    const struct w4_qwen3_memory_decision_config *config,
+    uint32_t local_node,
+    uint32_t layer_start,
+    uint32_t layer_end,
+    uint64_t decode_step)
+{
+    if (!config || config->shortpath_kv_stream_count == 0) {
+        return NULL;
+    }
+    for (uint64_t i = 0; i < config->shortpath_kv_stream_count; ++i) {
+        const struct w4_qwen3_shortpath_kv_stream_entry *entry =
+            &config->shortpath_kv_stream_entries[i];
+
+        if (entry->valid && entry->step_index == decode_step &&
+            entry->target_node == local_node + 1U &&
+            entry->target_layer_start == layer_start &&
+            entry->target_layer_end == layer_end) {
+            return entry;
+        }
+    }
+    return NULL;
+}
+
+static int qwen3_memory_shortpath_materialize_local_kv_state(
+    struct w4_db_service *db_service,
+    const struct w4_qwen3_memory_decision_config *config,
+    uint32_t local_node,
+    uint32_t cluster_node_count,
+    uint32_t layer_start,
+    uint32_t layer_end,
+    uint64_t consumer_step,
+    uint64_t decode_step)
+{
+    const struct w4_qwen3_shortpath_kv_stream_entry *entry;
+    struct lingqu_obmm_object_ref_wire kv_ref;
+    uint8_t *payload = NULL;
+    uint64_t payload_len = 0;
+    uint64_t runtime_kv_checksum;
+    int rc;
+
+    if (consumer_step <= decode_step) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 shortpath kv materialize invalid"
+                " node=%u consumer_step=%" PRIu64 " kv_step=%" PRIu64
+                " reason=not_lazy_work_item_resolve\n",
+                local_node + 1U,
+                consumer_step,
+                decode_step);
+        return -1;
+    }
+    entry = qwen3_memory_shortpath_kv_entry_for_local_range(config,
+                                                            local_node,
+                                                            layer_start,
+                                                            layer_end,
+                                                            decode_step);
+    if (!entry) {
+        return 0;
+    }
+    memset(&kv_ref, 0, sizeof(kv_ref));
+    if (parse_lingqu_object_ref_hex("SIM_W5_MEMORY_SHORTPATH_KV_STREAM",
+                                    entry->artifact_ref,
+                                    W4_QWEN3_OBMM_KIND_QWEN3_KV_STATE,
+                                    &kv_ref) != 0) {
+        return -1;
+    }
+    if (qwen3_read_object_ref_payload(&kv_ref, &payload, &payload_len) != 0) {
+        return -1;
+    }
+    if (payload_len != entry->kv_bytes ||
+        qwen3_lingqu_object_payload_checksum(payload, payload_len) !=
+            entry->kv_checksum) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 shortpath kv materialize payload mismatch"
+                " node=%u step=%" PRIu64 " layers=[%u,%u)"
+                " bytes=%" PRIu64 " expected=%" PRIu64 "\n",
+                local_node + 1U,
+                decode_step,
+                layer_start,
+                layer_end,
+                payload_len,
+                entry->kv_bytes);
+        free(payload);
+        return -1;
+    }
+    runtime_kv_checksum = w4_qwen3_hidden_payload_checksum(payload, payload_len);
+    rc = w4_db_obmm_service_v0_publish_runtime_range_kv_state(db_service,
+                                                              local_node,
+                                                              cluster_node_count,
+                                                              decode_step,
+                                                              payload,
+                                                              payload_len,
+                                                              runtime_kv_checksum);
+    free(payload);
+    if (rc != 0) {
+        return -1;
+    }
+    printf("[w4_guest] stage qwen3_w5_memory_shortpath_kv_materialized"
+           " node=%u consumer_step=%" PRIu64 " kv_step=%" PRIu64
+           " layers=[%u,%u)"
+           " stream_index=%" PRIu64 " bytes=%" PRIu64
+           " checksum=0x%016" PRIx64
+           " runtime_checksum=0x%016" PRIx64
+           " trigger=work_item_lazy_resolve scope=local_range"
+           " source=lingqu_memory_service target=local_kv_state"
+           " status=ok\n",
+           local_node + 1U,
+           consumer_step,
+           decode_step,
+           layer_start,
+           layer_end,
+           entry->stream_index,
+           entry->kv_bytes,
+           entry->kv_checksum,
+           runtime_kv_checksum);
+    return 1;
+}
+
+static bool qwen3_env_csv_contains_u64(const char *value, uint64_t needle)
+{
+    const char *cursor = value;
+
+    if (!value || value[0] == '\0') {
+        return false;
+    }
+    while (*cursor) {
+        char *end = NULL;
+        unsigned long long parsed;
+
+        while (*cursor == ',' || *cursor == ' ') {
+            cursor++;
+        }
+        if (*cursor == '\0') {
+            break;
+        }
+        errno = 0;
+        parsed = strtoull(cursor, &end, 10);
+        if (end == cursor || errno != 0) {
+            return false;
+        }
+        if ((uint64_t)parsed == needle) {
+            return true;
+        }
+        cursor = end;
+    }
+    return false;
+}
+
+static bool qwen3_w5_kv_artifact_export_enabled(uint32_t node,
+                                                 uint64_t decode_step)
+{
+    const char *enabled = getenv("SIM_W5_MEMORY_KV_ARTIFACT_EXPORT");
+    const char *steps = getenv("SIM_W5_MEMORY_KV_ARTIFACT_EXPORT_STEPS");
+    const char *nodes = getenv("SIM_W5_MEMORY_KV_ARTIFACT_EXPORT_NODES");
+
+    if (!enabled || strcmp(enabled, "1") != 0 || !str_nonempty(steps)) {
+        return false;
+    }
+    if (!qwen3_env_csv_contains_u64(steps, decode_step)) {
+        return false;
+    }
+    if (str_nonempty(nodes) && !qwen3_env_csv_contains_u64(nodes, node + 1U)) {
+        return false;
+    }
+    return true;
+}
+
+static void qwen3_hex_encode_chunk(const uint8_t *bytes,
+                                   size_t len,
+                                   char *hex,
+                                   size_t hex_len)
+{
+    static const char digits[] = "0123456789abcdef";
+
+    if (!bytes || !hex || hex_len < len * 2U + 1U) {
+        return;
+    }
+    for (size_t i = 0; i < len; ++i) {
+        hex[i * 2U] = digits[(bytes[i] >> 4) & 0xfU];
+        hex[i * 2U + 1U] = digits[bytes[i] & 0xfU];
+    }
+    hex[len * 2U] = '\0';
+}
+
+static void qwen3_w5_log_kv_artifact_export(uint32_t node,
+                                            uint64_t decode_step,
+                                            uint64_t position,
+                                            uint32_t layer_start,
+                                            uint32_t layer_end,
+                                            uint64_t boundary_hidden_bytes,
+                                            uint64_t boundary_hidden_checksum,
+                                            const uint8_t *payload,
+                                            uint64_t payload_len,
+                                            uint64_t checksum)
+{
+    char hex[W4_QWEN3_W5_KV_ARTIFACT_EXPORT_CHUNK_BYTES * 2U + 1U];
+    uint64_t offset = 0;
+
+    if (!payload || payload_len == 0 ||
+        !qwen3_w5_kv_artifact_export_enabled(node, decode_step)) {
+        return;
+    }
+    while (offset < payload_len) {
+        uint64_t remaining = payload_len - offset;
+        size_t chunk_len = remaining >
+                W4_QWEN3_W5_KV_ARTIFACT_EXPORT_CHUNK_BYTES ?
+            W4_QWEN3_W5_KV_ARTIFACT_EXPORT_CHUNK_BYTES :
+            (size_t)remaining;
+
+        qwen3_hex_encode_chunk(payload + offset, chunk_len, hex, sizeof(hex));
+        printf("[w4_guest] stage qwen3_w5_memory_kv_artifact_export"
+               " node=%u step=%" PRIu64 " layers=[%u,%u)"
+               " layer_start=%u layer_end=%u position=%" PRIu64
+               " hidden_bytes=%" PRIu64
+               " hidden_checksum=0x%016" PRIx64
+               " offset=%" PRIu64 " bytes=%zu total_bytes=%" PRIu64
+               " kv_checksum=0x%016" PRIx64 " data_hex=%s"
+               " status=chunk\n",
+               node + 1U,
+               decode_step,
+               layer_start,
+               layer_end,
+               layer_start,
+               layer_end,
+               position,
+               boundary_hidden_bytes,
+               boundary_hidden_checksum,
+               offset,
+               chunk_len,
+               payload_len,
+               checksum,
+               hex);
+        offset += chunk_len;
+    }
 }
 
 static void parse_env_u64_csv_bounded(const char *key,
@@ -6741,6 +7910,9 @@ int main(void)
     uint64_t qwen3_terminal_token_count = 0;
     uint64_t qwen3_round_input_tokens[1024];
     uint64_t qwen3_round_input_token_count = 0;
+    uint64_t qwen3_prompt_base_token_count = 0;
+    bool qwen3_prompt_base_token_count_ready = false;
+    uint64_t qwen3_round_decode_position = 0;
     uint64_t uapi_completion_timeout_ms = W4_DEFAULT_TIMEOUT_MS;
     uint64_t decode_round_barrier_timeout_ms = 600000ULL;
     bool decode_round_barrier_enabled = false;
@@ -6813,8 +7985,14 @@ int main(void)
     uint32_t round_layer_end = 0;
     uint32_t round_next_node = 0;
     bool qwen3_round_history_loaded = false;
+    bool qwen3_work_item_materialized = true;
+    bool qwen3_step_terminal_observed = false;
+    bool qwen3_shortpath_terminal_committed = false;
+    bool qwen3_pre_resolved_range_input = false;
+    struct w4_db_object_payload_view qwen3_pre_resolved_range_input_view;
     struct w4_guest_supernode_clock supernode_clock;
     struct w4_qwen3_memory_decision_config qwen3_memory_decision_config;
+    struct w4_qwen3_sampler_config qwen3_sampler_config;
 
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -6822,6 +8000,10 @@ int main(void)
     memset(&counts, 0, sizeof(counts));
     memset(&supernode_clock, 0, sizeof(supernode_clock));
     memset(&qwen3_memory_decision_config, 0, sizeof(qwen3_memory_decision_config));
+    memset(&qwen3_sampler_config, 0, sizeof(qwen3_sampler_config));
+    memset(&qwen3_pre_resolved_range_input_view,
+           0,
+           sizeof(qwen3_pre_resolved_range_input_view));
     resolve_role(role, sizeof(role));
     memset(&qwen3_engram_config, 0, sizeof(qwen3_engram_config));
     cluster_observer_mode = env_bool_is_one("LINQU_W4_ALLOW_OBSERVER_ONLY");
@@ -6830,6 +8012,40 @@ int main(void)
     resource_assertions_enabled = env_bool_is_one("SIM_W4_RESOURCE_ASSERTIONS");
     guest_decode_step = env_u64_or_default("SIM_QWEN3_GUEST_DECODE_STEP", 0);
     guest_decode_steps = env_u64_or_default("SIM_QWEN3_GUEST_DECODE_STEPS", 1);
+    qwen3_sampler_config.top_k =
+        env_u64_or_default("SIM_QWEN3_SAMPLER_TOP_K", 1);
+    qwen3_sampler_config.top_p_milli =
+        env_u64_or_default("SIM_QWEN3_SAMPLER_TOP_P_MILLI",
+                           env_milli_decimal_or_default("SIM_QWEN3_SAMPLER_TOP_P",
+                                                        1000));
+    qwen3_sampler_config.temperature_milli =
+        env_u64_or_default(
+            "SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI",
+            env_milli_decimal_or_default("SIM_QWEN3_SAMPLER_TEMPERATURE",
+                                         1000));
+    qwen3_sampler_config.seed =
+        env_u64_or_default("SIM_QWEN3_SAMPLER_SEED", 0);
+    if (qwen3_sampler_config.top_k > 4) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 sampler top_k unsupported top_k=%" PRIu64
+                " supported=0..4 reason=terminal_logits_candidate_table\n",
+                qwen3_sampler_config.top_k);
+        return 1;
+    }
+    if (qwen3_sampler_config.top_p_milli == 0 ||
+        qwen3_sampler_config.top_p_milli > 1000 ||
+        qwen3_sampler_config.temperature_milli == 0 ||
+        qwen3_sampler_config.temperature_milli > 100000) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 sampler distribution unsupported"
+                " top_p_milli=%" PRIu64
+                " temperature_milli=%" PRIu64
+                " supported_top_p_milli=1..1000"
+                " supported_temperature_milli=1..100000\n",
+                qwen3_sampler_config.top_p_milli,
+                qwen3_sampler_config.temperature_milli);
+        return 1;
+    }
     qwen3_engram_config.enabled = env_bool_is_one("SIM_QWEN3_GUEST_ENGRAM");
     const char *context_op = getenv("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP");
     bool has_context_state_ref =
@@ -7015,6 +8231,21 @@ int main(void)
                supernode_clock.bootstrap_monotonic_ms,
                supernode_clock.bootstrap_realtime_ms,
                supernode_clock.monotonic_to_supernode_offset_ms);
+        printf("[w4_guest] stage qwen3_sampler_config local=%s node=%u"
+               " policy=top_k_top_p_temperature"
+               " top_k=%" PRIu64
+               " top_p_milli=%" PRIu64
+               " temperature_milli=%" PRIu64
+               " seed=%" PRIu64
+               " max_supported_top_k=4 source=env status=ok\n",
+               role,
+               w4_cluster_role_index(role, cluster_node_count, &local_node) ?
+                   local_node + 1U :
+                   0U,
+               qwen3_sampler_config.top_k,
+               qwen3_sampler_config.top_p_milli,
+               qwen3_sampler_config.temperature_milli,
+               qwen3_sampler_config.seed);
         if (qwen3_engram_config.context_object_refs_enabled) {
             const char *state_ref = getenv("SIM_QWEN3_GUEST_ENGRAM_STATE_REF");
             const char *table_ref = getenv("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF");
@@ -7050,6 +8281,7 @@ int main(void)
         }
         if (qwen3_memory_decision_config.enabled) {
             printf("[w4_guest] stage qwen3_w5_memory_decision_contract local=%s node=%u"
+                   " lookup_backend=%s lookup_mode=%s"
                    " shortpath_id=%s shortpath_support_id=%s"
                    " shortpath_action=%s shortpath_artifact_kind=%s"
                    " shortpath_artifact_checksum=%s shortpath_artifact_ref_chars=%zu"
@@ -7064,6 +8296,8 @@ int main(void)
                    w4_cluster_role_index(role, cluster_node_count, &local_node) ?
                        local_node + 1U :
                        0U,
+                   qwen3_memory_decision_config.boundary_lookup_backend,
+                   qwen3_memory_decision_config.shortpath_lookup_mode,
                    str_nonempty(qwen3_memory_decision_config.shortpath_decision_id) ?
                        qwen3_memory_decision_config.shortpath_decision_id :
                        "none",
@@ -8264,6 +9498,13 @@ decode_round_start:
     round_layer_end = 0;
     round_next_node = 0;
     qwen3_round_history_loaded = false;
+    qwen3_work_item_materialized = true;
+    qwen3_step_terminal_observed = false;
+    qwen3_shortpath_terminal_committed = false;
+    qwen3_pre_resolved_range_input = false;
+    memset(&qwen3_pre_resolved_range_input_view,
+           0,
+           sizeof(qwen3_pre_resolved_range_input_view));
     bool delay_decode_round_start_log =
         is_qwen3_profile() && enable_db_cluster && cluster_node_count == 8U &&
         guest_decode_step == 0;
@@ -8271,6 +9512,7 @@ decode_round_start:
     memset(&runtime_forward, 0, sizeof(runtime_forward));
     qwen3_runtime_forward_ready = false;
     qwen3_round_input_token_count = 0;
+    qwen3_round_decode_position = 0;
     memset(qwen3_round_input_tokens, 0, sizeof(qwen3_round_input_tokens));
     round_start_ms = monotonic_ms();
     if (!delay_decode_round_start_log) {
@@ -8415,6 +9657,160 @@ decode_round_start:
         }
         cluster_stage_ms = monotonic_ms() - stage_start_ms;
     }
+    if (is_qwen3_profile() && enable_db_cluster && cluster_node_count == 8U) {
+        uint32_t dispatch_node = 0U;
+        uint32_t layer_start = 0U;
+        uint32_t layer_end = 0U;
+        uint32_t next_node = 0U;
+
+        if (!w4_cluster_role_index(role, cluster_node_count, &dispatch_node) ||
+            w4_db_qwen3_layer_range_for_node(dispatch_node,
+                                             cluster_node_count,
+                                             &layer_start,
+                                             &layer_end,
+                                             &next_node) != 0) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 work item scheduler placement unavailable role=%s nodes=%u\n",
+                    role,
+                    cluster_node_count);
+            goto out;
+        }
+        round_dispatch_node = dispatch_node;
+        round_layer_start = layer_start;
+        round_layer_end = layer_end;
+        round_next_node = next_node;
+        if (layer_start > 0U) {
+            uint64_t scheduler_wait_start_ms = monotonic_ms();
+            struct w4_db_scheduler_work_item scheduler_item;
+
+            input_wait_start_ms = scheduler_wait_start_ms;
+            printf("[w4_guest] stage qwen3_work_item_scheduler_wait"
+                   " node=%u step=%" PRIu64 " layers=[%u,%u)"
+                   " source=decode_round_scheduler target=range_worker"
+                   " status=waiting\n",
+                   dispatch_node + 1U,
+                   guest_decode_step,
+                   layer_start,
+                   layer_end);
+            memset(&scheduler_item, 0, sizeof(scheduler_item));
+            if (w4_db_obmm_service_v0_wait_scheduler_work_item(
+                    dispatch_node,
+                    cluster_node_count,
+                    guest_decode_step,
+                    &scheduler_item) != 0 ||
+                scheduler_item.kind == W4_DB_SCHEDULER_WORK_ITEM_NONE) {
+                fprintf(stderr,
+                        "[w4_guest] fail qwen3 work item scheduler input resolve failed node=%u layers=[%u,%u)\n",
+                        dispatch_node + 1U,
+                        layer_start,
+                        layer_end);
+                goto out;
+            }
+            if (scheduler_item.kind == W4_DB_SCHEDULER_WORK_ITEM_NO_DISPATCH) {
+                input_found_ms =
+                    scheduler_item.found_monotonic_ms != 0 ?
+                        scheduler_item.found_monotonic_ms :
+                        monotonic_ms();
+                input_loaded_ms = monotonic_ms();
+                input_producer_publish_supernode_ms =
+                    scheduler_item.producer_publish_supernode_ms;
+                input_producer_publish_monotonic_ms =
+                    scheduler_item.producer_publish_monotonic_ms;
+                input_producer_clock_offset_ms =
+                    scheduler_item.producer_clock_offset_ms;
+                input_producer_to_found_supernode_ms =
+                    scheduler_item.producer_to_found_supernode_ms;
+                input_producer_to_found_monotonic_ms =
+                    scheduler_item.producer_to_found_monotonic_ms;
+                input_activate_ms = scheduler_item.activate_ms;
+                input_metadata_ms = scheduler_item.metadata_ms;
+                input_source_node = scheduler_item.terminal_owner_node;
+                input_wait_attempts = scheduler_item.wait_attempts;
+                input_wait_ms =
+                    scheduler_item.ready_monotonic_ms > scheduler_wait_start_ms ?
+                        scheduler_item.ready_monotonic_ms -
+                            scheduler_wait_start_ms :
+                        monotonic_ms() - scheduler_wait_start_ms;
+                qwen3_work_item_materialized = false;
+                qwen3_step_terminal_observed = true;
+                compute_start_ms = input_loaded_ms;
+                compute_done_ms = compute_start_ms;
+                publish_start_ms = compute_start_ms;
+                publish_ms = publish_start_ms;
+                publish_done_ms = publish_start_ms;
+                printf("[w4_guest] stage qwen3_decode_round_scheduler_no_dispatch"
+                       " node=%u step=%" PRIu64 " layers=[%u,%u)"
+                       " terminal_owner=node%u token=%" PRIu64
+                       " source=decode_round_scheduler target=work_queue"
+                       " reason=terminal_token_committed work_item=none"
+                       " dispatch=skipped status=no_dispatch\n",
+                       dispatch_node + 1U,
+                       guest_decode_step,
+                       layer_start,
+                       layer_end,
+                       scheduler_item.terminal_owner_node + 1U,
+                       scheduler_item.terminal_token);
+                goto qwen3_no_work_item_service_coverage;
+            }
+            if (scheduler_item.kind != W4_DB_SCHEDULER_WORK_ITEM_RANGE_FORWARD ||
+                !scheduler_item.range_input.data) {
+                fprintf(stderr,
+                        "[w4_guest] fail qwen3 scheduler work item invalid node=%u kind=%d\n",
+                        dispatch_node + 1U,
+                        (int)scheduler_item.kind);
+                goto out;
+            }
+            qwen3_pre_resolved_range_input_view = scheduler_item.range_input;
+            input_found_ms =
+                qwen3_pre_resolved_range_input_view.found_monotonic_ms != 0 ?
+                    qwen3_pre_resolved_range_input_view.found_monotonic_ms :
+                    monotonic_ms();
+            input_loaded_ms = monotonic_ms();
+            input_producer_publish_supernode_ms =
+                qwen3_pre_resolved_range_input_view.producer_publish_supernode_ms;
+            input_producer_publish_monotonic_ms =
+                qwen3_pre_resolved_range_input_view.producer_publish_monotonic_ms;
+            input_producer_clock_offset_ms =
+                qwen3_pre_resolved_range_input_view.producer_clock_offset_ms;
+            input_producer_to_found_supernode_ms =
+                qwen3_pre_resolved_range_input_view.producer_to_found_supernode_ms;
+            input_producer_to_found_monotonic_ms =
+                qwen3_pre_resolved_range_input_view.producer_to_found_monotonic_ms;
+            input_activate_ms = qwen3_pre_resolved_range_input_view.activate_ms;
+            input_metadata_ms = qwen3_pre_resolved_range_input_view.metadata_ms;
+            input_source_node = qwen3_pre_resolved_range_input_view.source_node;
+            input_wait_attempts = qwen3_pre_resolved_range_input_view.wait_attempts;
+            input_wait_ms =
+                qwen3_pre_resolved_range_input_view.ready_monotonic_ms >
+                        scheduler_wait_start_ms ?
+                    qwen3_pre_resolved_range_input_view.ready_monotonic_ms -
+                        scheduler_wait_start_ms :
+                    monotonic_ms() - scheduler_wait_start_ms;
+            if (qwen3_pre_resolved_range_input_view.payload_kind !=
+                    W4_QWEN3_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT) {
+                fprintf(stderr,
+                        "[w4_guest] fail qwen3 scheduler input kind invalid node=%u kind=%u bytes=%" PRIu64 "\n",
+                        dispatch_node + 1U,
+                        qwen3_pre_resolved_range_input_view.payload_kind,
+                        qwen3_pre_resolved_range_input_view.len);
+                goto out;
+            }
+            qwen3_pre_resolved_range_input = true;
+            printf("[w4_guest] stage qwen3_work_item_scheduler_dispatch"
+                   " node=%u step=%" PRIu64 " layers=[%u,%u)"
+                   " producer=node%u checksum=0x%016" PRIx64
+                   " bytes=%" PRIu64
+                   " source=decode_round_scheduler target=range_worker"
+                   " work_item=range_forward status=dispatch\n",
+                   dispatch_node + 1U,
+                   guest_decode_step,
+                   layer_start,
+                   layer_end,
+                   qwen3_pre_resolved_range_input_view.source_node + 1U,
+                   qwen3_pre_resolved_range_input_view.checksum,
+                   qwen3_pre_resolved_range_input_view.len);
+        }
+    }
     if (delay_decode_round_start_log) {
         printf("[w4_guest] stage qwen3_decode_round_start step=%" PRIu64
                " total_steps=%" PRIu64 " after=obmm_cluster_runtime_bootstrap\n",
@@ -8546,6 +9942,21 @@ decode_round_start:
                                      qwen3_round_input_tokens,
                                      sizeof(qwen3_round_input_tokens) /
                                          sizeof(qwen3_round_input_tokens[0]));
+        if (!qwen3_prompt_base_token_count_ready) {
+            qwen3_prompt_base_token_count = qwen3_round_input_token_count;
+            qwen3_prompt_base_token_count_ready = true;
+        }
+        qwen3_round_decode_position =
+            qwen3_prompt_base_token_count + guest_decode_step;
+        printf("[w4_guest] stage qwen3_decode_position_resolved"
+               " step=%" PRIu64 " base_tokens=%" PRIu64
+               " local_prompt_tokens=%" PRIu64
+               " decode_position=%" PRIu64
+               " source=step_local_work_item status=ok\n",
+               guest_decode_step,
+               qwen3_prompt_base_token_count,
+               qwen3_round_input_token_count,
+               qwen3_round_decode_position);
     }
     seed_payload_ms = monotonic_ms() - seed_payload_ms;
     descriptor_ms = monotonic_ms();
@@ -8609,6 +10020,7 @@ decode_round_start:
         if (qwen3_memory_decision_config.enabled) {
             printf("[w4_guest] stage qwen3_w5_memory_boundary_decision local=node%u"
                    " step=%" PRIu64 " layers=[%u,%u) next=node%u shortpath_id=%s"
+                   " lookup_backend=%s lookup_mode=%s"
                    " shortpath_support_id=%s"
                    " shortpath_action=%s shortpath_artifact_kind=%s"
                    " shortpath_artifact_checksum=%s shortpath_artifact_ref_chars=%zu"
@@ -8627,6 +10039,8 @@ decode_round_start:
                    str_nonempty(qwen3_memory_decision_config.shortpath_decision_id) ?
                        qwen3_memory_decision_config.shortpath_decision_id :
                        "none",
+                   qwen3_memory_decision_config.boundary_lookup_backend,
+                   qwen3_memory_decision_config.shortpath_lookup_mode,
                    str_nonempty(qwen3_memory_decision_config.shortpath_support_id) ?
                        qwen3_memory_decision_config.shortpath_support_id :
                        "none",
@@ -8759,136 +10173,6 @@ decode_round_start:
                     cluster_node_count);
             goto out;
         }
-        if (qwen3_memory_shortpath_terminal_active_for_step(
-                &qwen3_memory_decision_config,
-                guest_decode_step,
-                qwen3_round_input_token_count)) {
-            uint32_t shortpath_target_layer_start = 0U;
-
-            if (!qwen3_memory_shortpath_target_layer_for_step(
-                    &qwen3_memory_decision_config,
-                    guest_decode_step,
-                    qwen3_round_input_token_count,
-                    &shortpath_target_layer_start)) {
-                goto out;
-            }
-            if (layer_start >= shortpath_target_layer_start) {
-                uint64_t shortpath_token = 0;
-                const struct w4_qwen3_shortpath_stream_entry *entry;
-                struct lingqu_obmm_object_ref_wire terminal_logits_ref;
-                struct w4_qwen3_terminal_token_record terminal_logits_record;
-                int terminal_logits_state;
-
-                input_wait_start_ms = monotonic_ms();
-                memset(&terminal_logits_ref, 0, sizeof(terminal_logits_ref));
-                memset(&terminal_logits_record, 0, sizeof(terminal_logits_record));
-                entry = qwen3_memory_shortpath_stream_entry_for_step(
-                    &qwen3_memory_decision_config,
-                    guest_decode_step,
-                    qwen3_round_input_token_count);
-                if (entry) {
-                    terminal_logits_state =
-                        qwen3_memory_shortpath_terminal_logits_record_from_ref(
-                            "SIM_W5_MEMORY_SHORTPATH_STREAM",
-                            entry->artifact_ref,
-                            "stream",
-                            "",
-                            guest_decode_step,
-                            &terminal_logits_ref,
-                            &terminal_logits_record);
-                } else {
-                    terminal_logits_state =
-                        qwen3_memory_shortpath_terminal_logits_record(
-                            &qwen3_memory_decision_config,
-                            guest_decode_step,
-                            &terminal_logits_ref,
-                            &terminal_logits_record);
-                }
-                if (terminal_logits_state <= 0) {
-                    fprintf(stderr,
-                            "[w4_guest] fail qwen3 w5 shortpath terminal logits missing"
-                            " node=%u step=%" PRIu64 " layers=[%u,%u)\n",
-                            dispatch_node + 1U,
-                            guest_decode_step,
-                            layer_start,
-                            layer_end);
-                    goto out;
-                }
-                shortpath_token = terminal_logits_record.sampled_token;
-                input_found_ms = monotonic_ms();
-                input_loaded_ms = input_found_ms;
-                input_wait_ms = input_found_ms - input_wait_start_ms;
-                printf("[w4_guest] stage qwen3_w5_memory_shortpath_downstream_skip"
-                       " node=%u step=%" PRIu64 " layers=[%u,%u)"
-                       " target_layer_start=%u token=%" PRIu64
-                       " source=lingqu_memory_service target=range_forward status=skipped\n",
-                       dispatch_node + 1U,
-                       guest_decode_step,
-                       layer_start,
-                       layer_end,
-                       shortpath_target_layer_start,
-                       shortpath_token);
-                if (qwen3_engram_config.enabled &&
-                    dispatch_node == qwen3_engram_config.owner_node) {
-                    struct w4_qwen3_engram_step_timing shortpath_engram_timing;
-                    uint64_t engram_selected_token = 0;
-
-                    memset(&shortpath_engram_timing, 0, sizeof(shortpath_engram_timing));
-                    terminal_publish_start_ms = monotonic_ms();
-                    if (qwen3_engram_select_and_publish_step(&db_service,
-                                                             &qwen3_engram_config,
-                                                             dispatch_node,
-                                                             cluster_node_count,
-                                                             guest_decode_step,
-                                                             qwen3_round_input_tokens,
-                                                             qwen3_round_input_token_count,
-                                                             &terminal_logits_record,
-                                                             &engram_selected_token,
-                                                             &shortpath_engram_timing) != 0) {
-                        goto out;
-                    }
-                    engram_candidate_wait_ms += shortpath_engram_timing.candidate_wait_ms;
-                    engram_policy_select_ms += shortpath_engram_timing.policy_select_ms;
-                    engram_decision_publish_ms += shortpath_engram_timing.decision_publish_ms;
-                    if (!qwen3_rewrite_terminal_token_record_for_engram_selection(
-                            &terminal_logits_record,
-                            dispatch_node,
-                            guest_decode_step,
-                            shortpath_token,
-                            engram_selected_token)) {
-                        goto out;
-                    }
-                    if (w4_db_obmm_service_v0_publish_shortpath_terminal_token_result(
-                            &db_service,
-                            dispatch_node,
-                            cluster_node_count,
-                            guest_decode_step,
-                            terminal_logits_record.sampled_token,
-                            terminal_logits_record.runner_up_token,
-                            terminal_logits_record.margin_milli,
-                            terminal_logits_record.logits_checksum,
-                            terminal_logits_record.text_checksum,
-                            terminal_logits_record.piece_word0,
-                            terminal_logits_record.piece_word1) != 0) {
-                        fprintf(stderr,
-                                "[w4_guest] fail qwen3 w5 shortpath selected token publish"
-                                " node=%u step=%" PRIu64 "\n",
-                                dispatch_node + 1U,
-                                guest_decode_step);
-                        goto out;
-                    }
-                    terminal_publish_done_ms = monotonic_ms();
-                    printf("[w4_guest] stage qwen3_engram_selected_writeback local=node%u step=%" PRIu64
-                           " selected_token=%" PRIu64
-                           " source=engram_selected_object"
-                           " target=memory_shortpath_terminal_token_result status=ok\n",
-                           dispatch_node + 1U,
-                           guest_decode_step,
-                           terminal_logits_record.sampled_token);
-                }
-                goto qwen3_after_compute_publish;
-            }
-        }
         if (layer_start > 0U || guest_decode_step > 0) {
             uint64_t hidden_range_bytes = qwen3_handoff_hidden_bytes(guest_decode_step);
             uint64_t range_input_checksum = 0;
@@ -8960,12 +10244,14 @@ decode_round_start:
                     bool token_result_input = false;
                     bool hidden_range_input = false;
 
-                    if (w4_db_obmm_service_v0_wait_runtime_range_input_view(
-                            dispatch_node,
-                            cluster_node_count,
-                            guest_decode_step,
-                            &range_input_view) != 0 ||
-                        !range_input_view.data) {
+                    if (qwen3_pre_resolved_range_input) {
+                        range_input_view = qwen3_pre_resolved_range_input_view;
+                    } else if (w4_db_obmm_service_v0_wait_runtime_range_input_view(
+                                   dispatch_node,
+                                   cluster_node_count,
+                                   guest_decode_step,
+                                   &range_input_view) != 0 ||
+                               !range_input_view.data) {
                         fprintf(stderr,
                                 "[w4_guest] fail qwen3 runtime range input resolve failed node=%u layers=[%u,%u)\n",
                                 dispatch_node + 1U,
@@ -9033,27 +10319,32 @@ decode_round_start:
                                 sizeof(qwen3_round_input_tokens) /
                                     sizeof(qwen3_round_input_tokens[0]));
                     }
-                    input_found_ms = range_input_view.found_monotonic_ms != 0 ?
-                        range_input_view.found_monotonic_ms :
-                        monotonic_ms();
-                    input_producer_publish_supernode_ms =
-                        range_input_view.producer_publish_supernode_ms;
-                    input_producer_publish_monotonic_ms =
-                        range_input_view.producer_publish_monotonic_ms;
-                    input_producer_clock_offset_ms =
-                        range_input_view.producer_clock_offset_ms;
-                    input_producer_to_found_supernode_ms =
-                        range_input_view.producer_to_found_supernode_ms;
-                    input_producer_to_found_monotonic_ms =
-                        range_input_view.producer_to_found_monotonic_ms;
-                    input_activate_ms = range_input_view.activate_ms;
-                    input_metadata_ms = range_input_view.metadata_ms;
-                    input_source_node = range_input_view.source_node;
-                    input_wait_attempts = range_input_view.wait_attempts;
+                    if (!qwen3_pre_resolved_range_input) {
+                        input_found_ms = range_input_view.found_monotonic_ms != 0 ?
+                            range_input_view.found_monotonic_ms :
+                            monotonic_ms();
+                        input_producer_publish_supernode_ms =
+                            range_input_view.producer_publish_supernode_ms;
+                        input_producer_publish_monotonic_ms =
+                            range_input_view.producer_publish_monotonic_ms;
+                        input_producer_clock_offset_ms =
+                            range_input_view.producer_clock_offset_ms;
+                        input_producer_to_found_supernode_ms =
+                            range_input_view.producer_to_found_supernode_ms;
+                        input_producer_to_found_monotonic_ms =
+                            range_input_view.producer_to_found_monotonic_ms;
+                        input_activate_ms = range_input_view.activate_ms;
+                        input_metadata_ms = range_input_view.metadata_ms;
+                        input_source_node = range_input_view.source_node;
+                        input_wait_attempts = range_input_view.wait_attempts;
+                    }
                     range_input_checksum = range_input_view.checksum;
-                    input_wait_ms = range_input_view.ready_monotonic_ms > stage_start_ms ?
-                        range_input_view.ready_monotonic_ms - stage_start_ms :
-                        monotonic_ms() - stage_start_ms;
+                    if (!qwen3_pre_resolved_range_input) {
+                        input_wait_ms =
+                            range_input_view.ready_monotonic_ms > stage_start_ms ?
+                                range_input_view.ready_monotonic_ms - stage_start_ms :
+                                monotonic_ms() - stage_start_ms;
+                    }
                     write_segment_bytes(ep_mmio,
                                         W4_QWEN3_OBJECT_REF_TABLE_OFFSET +
                                             ((uint64_t)object_ref_write_index *
@@ -9080,7 +10371,10 @@ decode_round_start:
         if (guest_decode_step > 0) {
             struct lingqu_obmm_object_ref_wire prefix_cache_kv_ref;
             struct w4_db_object_payload_view previous_kv_view;
+            uint64_t kv_source_step = guest_decode_step - 1U;
+            uint64_t requested_kv_source_step = kv_source_step;
             int prefix_cache_kv_ref_state;
+            int previous_kv_state;
 
             memset(&prefix_cache_kv_ref, 0, sizeof(prefix_cache_kv_ref));
             memset(&previous_kv_view, 0, sizeof(previous_kv_view));
@@ -9118,12 +10412,87 @@ decode_round_start:
                        prefix_cache_kv_ref.key_hash,
                        prefix_cache_kv_ref.object_version);
             } else {
-                if (w4_db_obmm_service_v0_resolve_previous_range_kv_state_view(
-                    &db_service,
-                    dispatch_node,
-                    cluster_node_count,
-                    guest_decode_step,
-                    &previous_kv_view) != 0) {
+                previous_kv_state =
+                    w4_db_obmm_service_v0_try_resolve_range_kv_state_view(
+                        &db_service,
+                        dispatch_node,
+                        cluster_node_count,
+                        kv_source_step,
+                        &previous_kv_view);
+                if (previous_kv_state > 0 &&
+                    qwen3_memory_decision_config.shortpath_execute) {
+                    uint64_t candidate = guest_decode_step;
+
+                    while (candidate > 0U) {
+                        uint64_t candidate_step = candidate - 1U;
+                        int kv_materialize_state;
+
+                        kv_materialize_state =
+                            qwen3_memory_shortpath_materialize_local_kv_state(
+                                &db_service,
+                                &qwen3_memory_decision_config,
+                                dispatch_node,
+                                cluster_node_count,
+                                layer_start,
+                                layer_end,
+                                guest_decode_step,
+                                candidate_step);
+                        if (kv_materialize_state < 0) {
+                            fprintf(stderr,
+                                    "[w4_guest] fail qwen3 shortpath lazy kv materialize failed node=%u consumer_step=%" PRIu64 " kv_step=%" PRIu64 "\n",
+                                    dispatch_node + 1U,
+                                    guest_decode_step,
+                                    candidate_step);
+                            goto out;
+                        }
+                        memset(&previous_kv_view, 0, sizeof(previous_kv_view));
+                        previous_kv_state =
+                            w4_db_obmm_service_v0_try_resolve_range_kv_state_view(
+                                &db_service,
+                                dispatch_node,
+                                cluster_node_count,
+                                candidate_step,
+                                &previous_kv_view);
+                        if (previous_kv_state < 0) {
+                            goto out;
+                        }
+                        if (previous_kv_state == 0) {
+                            kv_source_step = candidate_step;
+                            if (kv_materialize_state > 0) {
+                                printf("[w4_guest] stage qwen3_w5_memory_shortpath_kv_lazy_resolve"
+                                       " node=%u consumer_step=%" PRIu64
+                                       " kv_step=%" PRIu64
+                                       " layers=[%u,%u)"
+                                       " source=lingqu_memory_service"
+                                       " target=work_item_kv_resolve status=ok\n",
+                                       dispatch_node + 1U,
+                                       guest_decode_step,
+                                       kv_source_step,
+                                       layer_start,
+                                       layer_end);
+                            } else if (kv_source_step != requested_kv_source_step) {
+                                printf("[w4_guest] stage qwen3_range_kv_state_lazy_fallback"
+                                       " node=%u consumer_step=%" PRIu64
+                                       " requested_kv_step=%" PRIu64
+                                       " resolved_kv_step=%" PRIu64
+                                       " layers=[%u,%u)"
+                                       " reason=intermediate_step_kv_absent"
+                                       " source=local_kv_state"
+                                       " target=work_item_kv_resolve"
+                                       " materialize=none status=ok\n",
+                                       dispatch_node + 1U,
+                                       guest_decode_step,
+                                       requested_kv_source_step,
+                                       kv_source_step,
+                                       layer_start,
+                                       layer_end);
+                            }
+                            break;
+                        }
+                        candidate--;
+                    }
+                }
+                if (previous_kv_state != 0) {
                     fprintf(stderr,
                             "[w4_guest] fail qwen3 previous range kv state resolve failed node=%u step=%" PRIu64 "\n",
                             dispatch_node + 1U,
@@ -9148,7 +10517,7 @@ decode_round_start:
                            " source=obmm_object_view target=uapi_object_ref materialize=none status=ok inline_payload=0\n",
                            dispatch_node + 1U,
                            guest_decode_step,
-                           guest_decode_step - 1U,
+                           kv_source_step,
                            (uint64_t)0,
                            previous_kv_view.len,
                            previous_kv_view.checksum,
@@ -9332,229 +10701,141 @@ decode_round_start:
             w4_db_service_init(&db_service, true, true, true) == 0) {
             db_service_ready = true;
         }
-        range_publish_start_ms = monotonic_ms();
         if (!w4_cluster_role_index(role, cluster_node_count, &dispatch_node) ||
-            !db_service_ready ||
-            w4_db_obmm_service_v0_publish_runtime_range_output(
-                &db_service,
-                dispatch_node,
-                cluster_node_count,
-                guest_decode_step,
-                runtime_forward.output_payload,
-                runtime_forward.payload_bytes,
-                runtime_forward.payload_checksum,
-                runtime_forward.kv_payload,
-                runtime_forward.kv_payload_bytes,
-                runtime_forward.kv_payload_checksum) != 0) {
+            !db_service_ready) {
             fprintf(stderr,
-                    "[w4_guest] fail qwen3 runtime range output publish failed role=%s\n",
+                    "[w4_guest] fail qwen3 runtime range output publish unavailable role=%s\n",
                     role);
             goto out;
         }
-        range_publish_done_ms = monotonic_ms();
-        range_publish_ms = range_publish_done_ms - range_publish_start_ms;
         {
-            struct lingqu_obmm_object_ref_wire terminal_logits_ref;
-            struct w4_qwen3_terminal_token_record terminal_logits_record;
-            const struct w4_qwen3_shortpath_stream_entry *terminal_logits_entry;
-            const char *terminal_logits_decision_id;
-            const char *terminal_logits_artifact_id;
-            int terminal_logits_state;
+            struct w4_qwen3_boundary_controller_result boundary_result;
 
-            memset(&terminal_logits_ref, 0, sizeof(terminal_logits_ref));
-            memset(&terminal_logits_record, 0, sizeof(terminal_logits_record));
-            terminal_logits_entry =
-                qwen3_memory_shortpath_stream_entry_for_boundary(
+            if (qwen3_boundary_controller_resolve_work_item(
                     &qwen3_memory_decision_config,
+                    &qwen3_sampler_config,
+                    &qwen3_engram_config,
+                    dispatch_node,
                     round_layer_start,
                     round_layer_end,
                     guest_decode_step,
-                    qwen3_round_input_token_count);
-            terminal_logits_decision_id = terminal_logits_entry ?
-                "stream" :
-                qwen3_memory_decision_config.shortpath_decision_id;
-            terminal_logits_artifact_id = terminal_logits_entry ?
-                "" :
-                qwen3_memory_decision_config.shortpath_artifact_id;
-            terminal_logits_state =
-                qwen3_memory_shortpath_terminal_logits_record_for_boundary(
-                    &qwen3_memory_decision_config,
-                    round_layer_start,
-                    round_layer_end,
-                    guest_decode_step,
-                    qwen3_round_input_token_count,
-                    runtime_forward.payload_bytes,
-                    runtime_forward.payload_checksum,
-                    &terminal_logits_ref,
-                    &terminal_logits_record);
-            if (terminal_logits_state < 0) {
+                    qwen3_round_decode_position,
+                    &runtime_forward,
+                    &boundary_result) != 0) {
                 goto out;
             }
-            if (terminal_logits_state > 0) {
-                printf("[w4_guest] stage qwen3_w5_memory_terminal_logits_loaded"
+            if (boundary_result.action ==
+                W4_QWEN3_BOUNDARY_CONTROLLER_DEFER_TO_RANGE_FORWARD) {
+                memory_shortpath_engram_owner_selected = false;
+                goto qwen3_shortpath_publish_runtime_range;
+            }
+            if (boundary_result.action ==
+                W4_QWEN3_BOUNDARY_CONTROLLER_JUMP_TO_TERMINAL) {
+                range_publish_start_ms = monotonic_ms();
+                if (w4_db_obmm_service_v0_publish_runtime_range_kv_state(
+                        &db_service,
+                        dispatch_node,
+                        cluster_node_count,
+                        guest_decode_step,
+                        runtime_forward.kv_payload,
+                        runtime_forward.kv_payload_bytes,
+                        runtime_forward.kv_payload_checksum) != 0) {
+                    fprintf(stderr,
+                            "[w4_guest] fail qwen3 shortpath range kv state publish failed role=%s\n",
+                            role);
+                    goto out;
+                }
+                qwen3_w5_log_kv_artifact_export(dispatch_node,
+                                                 guest_decode_step,
+                                                 qwen3_round_decode_position,
+                                                 round_layer_start,
+                                                 round_layer_end,
+                                                 runtime_forward.payload_bytes,
+                                                 runtime_forward.payload_checksum,
+                                                 runtime_forward.kv_payload,
+                                                 runtime_forward.kv_payload_bytes,
+                                                 runtime_forward.kv_payload_checksum);
+                range_publish_done_ms = monotonic_ms();
+                range_publish_ms = range_publish_done_ms - range_publish_start_ms;
+                terminal_publish_start_ms = monotonic_ms();
+                qwen3_log_terminal_logits_observation(
+                    dispatch_node,
+                    guest_decode_step,
+                    &boundary_result.lookup.terminal_logits_record);
+                if (w4_db_obmm_service_v0_publish_shortpath_terminal_token_result(
+                        &db_service,
+                        dispatch_node,
+                        cluster_node_count,
+                        guest_decode_step,
+                        boundary_result.lookup.terminal_logits_record.sampled_token,
+                        boundary_result.lookup.terminal_logits_record.runner_up_token,
+                        boundary_result.lookup.terminal_logits_record.margin_milli,
+                        boundary_result.lookup.terminal_logits_record.logits_checksum,
+                        boundary_result.lookup.terminal_logits_record.text_checksum,
+                        boundary_result.lookup.terminal_logits_record.piece_word0,
+                        boundary_result.lookup.terminal_logits_record.piece_word1) != 0) {
+                    fprintf(stderr,
+                            "[w4_guest] fail qwen3 shortpath terminal token publish failed role=%s\n",
+                            role);
+                    goto out;
+                }
+                terminal_publish_done_ms = monotonic_ms();
+                qwen3_shortpath_terminal_committed = true;
+                printf("[w4_guest] stage qwen3_w5_memory_terminal_logits_selected"
                        " node=%u step=%" PRIu64 " layers=[%u,%u)"
-                       " decision_id=%s artifact_id=%s token=%" PRIu64
-                       " runner_up=%" PRIu64 " margin_milli=%" PRIu64
-                       " logits_checksum=0x%016" PRIx64
-                       " text_checksum=0x%016" PRIx64
-                       " candidate_count=%" PRIu64
-                       " payload_bytes=%" PRIu64
-                       " payload_checksum=0x%016" PRIx64
-                       " source=lingqu_memory_service target=terminal_token_record"
-                       " execute=%s status=ready\n",
+                       " token=%" PRIu64
+                       " source=terminal_logits_artifact"
+                       " target=terminal_token_result"
+                       " policy=sampler status=ok\n",
                        dispatch_node + 1U,
                        guest_decode_step,
                        round_layer_start,
                        round_layer_end,
-                       terminal_logits_decision_id,
-                       terminal_logits_artifact_id,
-                       terminal_logits_record.sampled_token,
-                       terminal_logits_record.runner_up_token,
-                       terminal_logits_record.margin_milli,
-                       terminal_logits_record.logits_checksum,
-                       terminal_logits_record.text_checksum,
-                       terminal_logits_record.candidate_count,
-                       terminal_logits_ref.payload_bytes,
-                       terminal_logits_ref.payload_checksum,
-                       qwen3_memory_decision_config.shortpath_execute ? "true" : "false");
-                if (qwen3_memory_decision_config.shortpath_execute) {
-                    if (terminal_publish_start_ms == 0) {
-                        terminal_publish_start_ms = monotonic_ms();
-                    }
-                    if (qwen3_engram_config.enabled) {
-                        uint64_t engram_stage_start_ms = monotonic_ms();
-
-                        if (w4_db_obmm_service_v0_publish_engram_candidates(
-                                &db_service,
-                                dispatch_node,
-                                cluster_node_count,
-                                guest_decode_step,
-                                terminal_logits_record.candidate_tokens,
-                                terminal_logits_record.candidate_logit_bits,
-                                terminal_logits_record.candidate_text_checksums,
-                                terminal_logits_record.candidate_piece_bytes,
-                                terminal_logits_record.candidate_piece_word0,
-                                terminal_logits_record.candidate_piece_word1,
-                                terminal_logits_record.candidate_count) != 0) {
-                            fprintf(stderr,
-                                    "[w4_guest] fail qwen3 w5 shortpath engram candidates publish"
-                                    " node=%u step=%" PRIu64
-                                    " decision_id=%s artifact_id=%s\n",
-                                    dispatch_node + 1U,
-                                    guest_decode_step,
-                                    terminal_logits_decision_id,
-                                    terminal_logits_artifact_id);
-                            goto out;
-                        }
-                        engram_candidate_publish_ms +=
-                            monotonic_ms() - engram_stage_start_ms;
-                        printf("[w4_guest] stage qwen3_w5_memory_terminal_logits_candidates_publish"
-                               " node=%u step=%" PRIu64
-                               " source=terminal_logits_artifact"
-                               " target=engram_policy status=ok\n",
-                               dispatch_node + 1U,
-                               guest_decode_step);
-                        if (dispatch_node == qwen3_engram_config.owner_node) {
-                            struct w4_qwen3_engram_step_timing terminal_engram_timing;
-                            uint64_t engram_selected_token = 0;
-                            uint64_t raw_sampled_token = terminal_logits_record.sampled_token;
-
-                            memset(&terminal_engram_timing, 0, sizeof(terminal_engram_timing));
-                            if (qwen3_engram_select_and_publish_step(&db_service,
-                                                                     &qwen3_engram_config,
-                                                                     dispatch_node,
-                                                                     cluster_node_count,
-                                                                     guest_decode_step,
-                                                                     qwen3_round_input_tokens,
-                                                                     qwen3_round_input_token_count,
-                                                                     &terminal_logits_record,
-                                                                     &engram_selected_token,
-                                                                     &terminal_engram_timing) != 0) {
-                                goto out;
-                            }
-                            engram_candidate_wait_ms +=
-                                terminal_engram_timing.candidate_wait_ms;
-                            engram_policy_select_ms +=
-                                terminal_engram_timing.policy_select_ms;
-                            engram_decision_publish_ms +=
-                                terminal_engram_timing.decision_publish_ms;
-                            if (!qwen3_rewrite_terminal_token_record_for_engram_selection(
-                                    &terminal_logits_record,
-                                    dispatch_node,
-                                    guest_decode_step,
-                                    raw_sampled_token,
-                                    engram_selected_token)) {
-                                goto out;
-                            }
-                            if (w4_db_obmm_service_v0_publish_shortpath_terminal_token_result(
-                                    &db_service,
-                                    dispatch_node,
-                                    cluster_node_count,
-                                    guest_decode_step,
-                                    terminal_logits_record.sampled_token,
-                                    terminal_logits_record.runner_up_token,
-                                    terminal_logits_record.margin_milli,
-                                    terminal_logits_record.logits_checksum,
-                                    terminal_logits_record.text_checksum,
-                                    terminal_logits_record.piece_word0,
-                                    terminal_logits_record.piece_word1) != 0) {
-                                fprintf(stderr,
-                                        "[w4_guest] fail qwen3 w5 shortpath selected token publish"
-                                        " node=%u step=%" PRIu64
-                                        " decision_id=%s artifact_id=%s\n",
-                                        dispatch_node + 1U,
-                                        guest_decode_step,
-                                        terminal_logits_decision_id,
-                                        terminal_logits_artifact_id);
-                                goto out;
-                            }
-                            printf("[w4_guest] stage qwen3_engram_selected_writeback local=node%u step=%" PRIu64
-                                   " selected_token=%" PRIu64
-                                   " source=engram_selected_object"
-                                   " target=memory_shortpath_terminal_token_result status=ok\n",
-                                   dispatch_node + 1U,
-                                   guest_decode_step,
-                                   terminal_logits_record.sampled_token);
-                            memory_shortpath_engram_owner_selected = true;
-                            terminal_publish_done_ms = monotonic_ms();
-                        }
-                    } else {
-                        printf("[w4_guest] stage qwen3_w5_memory_terminal_logits_selected"
-                               " node=%u step=%" PRIu64 " layers=[%u,%u)"
-                               " token=%" PRIu64
-                               " source=terminal_logits_artifact"
-                               " target=terminal_token_result policy=simpler status=ok\n",
-                               dispatch_node + 1U,
-                               guest_decode_step,
-                               round_layer_start,
-                               round_layer_end,
-                               terminal_logits_record.sampled_token);
-                        if (w4_db_obmm_service_v0_publish_shortpath_terminal_token_result(
-                                &db_service,
-                                dispatch_node,
-                                cluster_node_count,
-                                guest_decode_step,
-                                terminal_logits_record.sampled_token,
-                                terminal_logits_record.runner_up_token,
-                                terminal_logits_record.margin_milli,
-                                terminal_logits_record.logits_checksum,
-                                terminal_logits_record.text_checksum,
-                                terminal_logits_record.piece_word0,
-                                terminal_logits_record.piece_word1) != 0) {
-                            fprintf(stderr,
-                                    "[w4_guest] fail qwen3 w5 shortpath terminal token publish"
-                                    " node=%u step=%" PRIu64
-                                    " decision_id=%s artifact_id=%s\n",
-                                    dispatch_node + 1U,
-                                    guest_decode_step,
-                                    terminal_logits_decision_id,
-                                    terminal_logits_artifact_id);
-                            goto out;
-                        }
-                        terminal_publish_done_ms = monotonic_ms();
-                    }
-                }
+                       boundary_result.lookup.terminal_logits_record.sampled_token);
+                printf("[w4_guest] stage qwen3_w5_memory_shortpath_commit"
+                       " node=%u step=%" PRIu64 " layers=[%u,%u)"
+                       " token=%" PRIu64
+                       " action=jump-to-terminal"
+                       " publish_hidden=0 status=ok\n",
+                       dispatch_node + 1U,
+                       guest_decode_step,
+                       round_layer_start,
+                       round_layer_end,
+                       boundary_result.lookup.terminal_logits_record.sampled_token);
+                goto qwen3_after_compute_publish;
             }
+        }
+qwen3_shortpath_publish_runtime_range:
+        if (!qwen3_shortpath_terminal_committed) {
+            range_publish_start_ms = monotonic_ms();
+            if (w4_db_obmm_service_v0_publish_runtime_range_output(
+                    &db_service,
+                    dispatch_node,
+                    cluster_node_count,
+                    guest_decode_step,
+                    runtime_forward.output_payload,
+                    runtime_forward.payload_bytes,
+                    runtime_forward.payload_checksum,
+                    runtime_forward.kv_payload,
+                    runtime_forward.kv_payload_bytes,
+                    runtime_forward.kv_payload_checksum) != 0) {
+                fprintf(stderr,
+                        "[w4_guest] fail qwen3 runtime range output publish failed role=%s\n",
+                        role);
+                goto out;
+            }
+            qwen3_w5_log_kv_artifact_export(dispatch_node,
+                                             guest_decode_step,
+                                             qwen3_round_decode_position,
+                                             round_layer_start,
+                                             round_layer_end,
+                                             runtime_forward.payload_bytes,
+                                             runtime_forward.payload_checksum,
+                                             runtime_forward.kv_payload,
+                                             runtime_forward.kv_payload_bytes,
+                                             runtime_forward.kv_payload_checksum);
+            range_publish_done_ms = monotonic_ms();
+            range_publish_ms = range_publish_done_ms - range_publish_start_ms;
         }
         if (qwen3_engram_config.enabled &&
             !memory_shortpath_engram_owner_selected &&
@@ -9563,7 +10844,6 @@ decode_round_start:
             struct w4_qwen3_terminal_token_record owner_candidates;
             struct w4_qwen3_engram_step_timing owner_engram_timing;
             uint64_t owner_selected_token = 0;
-            uint64_t owner_raw_sampled_token = 0;
 
             memset(&owner_candidates, 0, sizeof(owner_candidates));
             memset(&owner_engram_timing, 0, sizeof(owner_engram_timing));
@@ -9583,82 +10863,14 @@ decode_round_start:
             engram_candidate_wait_ms += owner_engram_timing.candidate_wait_ms;
             engram_policy_select_ms += owner_engram_timing.policy_select_ms;
             engram_decision_publish_ms += owner_engram_timing.decision_publish_ms;
-            owner_raw_sampled_token = owner_candidates.sampled_token;
-            if (qwen3_memory_shortpath_terminal_active_for_step(
-                    &qwen3_memory_decision_config,
-                    guest_decode_step,
-                    qwen3_round_input_token_count)) {
-                if (!qwen3_rewrite_terminal_token_record_for_engram_selection(
-                        &owner_candidates,
-                        dispatch_node,
-                        guest_decode_step,
-                        owner_raw_sampled_token,
-                        owner_selected_token)) {
-                    goto out;
-                }
-                if (w4_db_obmm_service_v0_publish_shortpath_terminal_token_result(
-                        &db_service,
-                        dispatch_node,
-                        cluster_node_count,
-                        guest_decode_step,
-                        owner_candidates.sampled_token,
-                        owner_candidates.runner_up_token,
-                        owner_candidates.margin_milli,
-                        owner_candidates.logits_checksum,
-                        owner_candidates.text_checksum,
-                        owner_candidates.piece_word0,
-                        owner_candidates.piece_word1) != 0) {
-                    fprintf(stderr,
-                            "[w4_guest] fail qwen3 w5 shortpath selected token publish"
-                            " node=%u step=%" PRIu64 "\n",
-                            dispatch_node + 1U,
-                            guest_decode_step);
-                    goto out;
-                }
-                printf("[w4_guest] stage qwen3_engram_selected_writeback local=node%u step=%" PRIu64
-                       " selected_token=%" PRIu64
-                       " source=engram_selected_object"
-                       " target=memory_shortpath_terminal_token_result status=ok\n",
-                       dispatch_node + 1U,
-                       guest_decode_step,
-                       owner_candidates.sampled_token);
-                memory_shortpath_engram_owner_selected = true;
-            }
             terminal_publish_done_ms = monotonic_ms();
         }
         if (dispatch_node + 1U == cluster_node_count) {
-            bool final_terminal_already_published = false;
             uint64_t decode_step = guest_decode_step;
             struct w4_qwen3_terminal_token_record terminal_token;
             uint64_t raw_sampled_token;
             uint64_t engram_selected_token;
 
-            if (qwen3_memory_shortpath_terminal_active_for_step(
-                    &qwen3_memory_decision_config,
-                    guest_decode_step,
-                    qwen3_round_input_token_count)) {
-                uint64_t shortpath_published_token = 0;
-
-                if (w4_db_obmm_service_v0_wait_terminal_token_result(
-                        &db_service,
-                        guest_decode_step,
-                        0,
-                        &shortpath_published_token) == 0) {
-                    final_terminal_already_published = true;
-                    printf("[w4_guest] stage qwen3_w5_memory_terminal_publish_skip"
-                           " local=node%u step=%" PRIu64
-                           " token=%" PRIu64
-                           " reason=shortpath_boundary_already_published"
-                           " source=lingqu_memory_service status=ok\n",
-                           dispatch_node + 1U,
-                           guest_decode_step,
-                           shortpath_published_token);
-                }
-            }
-            if (final_terminal_already_published) {
-                terminal_publish_done_ms = monotonic_ms();
-                goto qwen3_w5_final_node_publish_done;
-            }
             if (terminal_publish_start_ms == 0) {
                 terminal_publish_start_ms = monotonic_ms();
             }
@@ -9668,7 +10880,14 @@ decode_round_start:
                         role);
                 goto out;
             }
-            raw_sampled_token = terminal_token.sampled_token;
+            if (qwen3_apply_top_k_sampler(&qwen3_sampler_config,
+                                          &terminal_token,
+                                          dispatch_node,
+                                          decode_step,
+                                          qwen3_round_decode_position,
+                                          &raw_sampled_token) != 0) {
+                goto out;
+            }
             if (qwen3_engram_config.enabled) {
                 uint64_t engram_stage_start_ms;
 
@@ -9764,10 +10983,9 @@ decode_round_start:
                 goto out;
             }
             terminal_publish_done_ms = monotonic_ms();
-qwen3_w5_final_node_publish_done:
-            ;
         }
     }
+qwen3_after_compute_publish:
     publish_done_ms = monotonic_ms();
     if (terminal_publish_done_ms > terminal_publish_start_ms) {
         terminal_publish_ms = terminal_publish_done_ms - terminal_publish_start_ms;
@@ -9802,6 +11020,18 @@ qwen3_w5_final_node_publish_done:
            counts.chipbackend, counts.shmem, counts.dfs, counts.db, counts.block, counts.guest_uapi,
            counts.success, counts.retryable, counts.fatal);
 
+qwen3_no_work_item_service_coverage:
+    if (!qwen3_work_item_materialized) {
+        printf("[w4_guest] assessment service_coverage=0/5"
+               " dispatch_path=step_scheduler_no_work_item"
+               " step=%" PRIu64
+               " terminal_observed=%u complete=true\n",
+               guest_decode_step,
+               qwen3_step_terminal_observed ? 1U : 0U);
+        printf("[w4_guest] dispatch path=step_scheduler_no_work_item\n");
+        goto qwen3_after_service_coverage;
+    }
+
     if (counts.shmem < 2 || counts.dfs < 2 || counts.db < 2 || counts.block < 2 ||
         counts.chipbackend < 1 || counts.fatal != 0) {
         printf("[w4_guest] assessment service_coverage=%d/5 dispatch_path=ubc_entity_chipbackend complete=false\n",
@@ -9814,7 +11044,7 @@ qwen3_w5_final_node_publish_done:
     printf("[w4_guest] assessment service_coverage=5/5 dispatch_path=ubc_entity_chipbackend kvcache_shmem_segment=%" PRIu64 " kvcache_block=%s kvcache_db_key=%s kvcache_db_bytes=%" PRIu64 " complete=true\n",
            default_segment, block, key, kvcache_db_bytes);
     printf("[w4_guest] dispatch path=ubc_entity_chipbackend\n");
-qwen3_after_compute_publish:
+qwen3_after_service_coverage:
     if (decode_round_barrier_enabled && is_qwen3_profile() && enable_db_cluster &&
         cluster_node_count == 8U) {
         uint32_t dispatch_node = 0U;
@@ -9856,6 +11086,7 @@ qwen3_after_compute_publish:
             compute_window_ms > compute_accounted_ms ? compute_window_ms - compute_accounted_ms : 0ULL;
         uint64_t unaccounted_ms = total_ms > accounted_ms ? total_ms - accounted_ms : 0ULL;
 
+        if (qwen3_work_item_materialized || qwen3_shortpath_terminal_committed) {
         printf("[w4_guest] stage qwen3_worker_timing local=%s step=%" PRIu64
                " node=%u layers=[%u,%u) count=%u next=%u total_ms=%" PRIu64
                " terminal_gate_ms=%" PRIu64 " setup_ms=%" PRIu64
@@ -10023,6 +11254,19 @@ qwen3_after_compute_publish:
                    terminal_publish_ms,
                    compute_done_to_handoff_ms,
                    round_done_publish_ms);
+        }
+        } else {
+            printf("[w4_guest] stage qwen3_decode_round_idle_timing"
+                   " local=%s step=%" PRIu64 " node=%u"
+                   " terminal_observed=%u input_wait_ms=%" PRIu64
+                   " round_done_ms=%" PRIu64
+                   " source=decode_round_scheduler status=idle\n",
+                   role,
+                   guest_decode_step,
+                   round_dispatch_node == UINT32_MAX ? 0U : round_dispatch_node + 1U,
+                   qwen3_step_terminal_observed ? 1U : 0U,
+                   input_wait_ms,
+                   round_done_ms);
         }
         if (qwen3_engram_config.enabled) {
             printf("[w4_guest] stage qwen3_engram_timing local=%s step=%" PRIu64

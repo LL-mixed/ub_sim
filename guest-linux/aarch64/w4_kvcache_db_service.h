@@ -91,6 +91,32 @@ struct w4_db_object_payload_view {
     uint64_t metadata_ms;
 };
 
+enum w4_db_scheduler_work_item_kind {
+    W4_DB_SCHEDULER_WORK_ITEM_NONE = 0,
+    W4_DB_SCHEDULER_WORK_ITEM_RANGE_FORWARD = 1,
+    W4_DB_SCHEDULER_WORK_ITEM_NO_DISPATCH = 2,
+};
+
+struct w4_db_scheduler_work_item {
+    enum w4_db_scheduler_work_item_kind kind;
+    struct w4_db_object_payload_view range_input;
+    uint64_t terminal_step;
+    uint64_t terminal_token;
+    uint32_t terminal_owner_node;
+    uint64_t checksum;
+    uint64_t wait_enter_monotonic_ms;
+    uint64_t found_monotonic_ms;
+    uint64_t ready_monotonic_ms;
+    uint64_t producer_publish_supernode_ms;
+    uint64_t producer_publish_monotonic_ms;
+    int64_t producer_clock_offset_ms;
+    int64_t producer_to_found_supernode_ms;
+    int64_t producer_to_found_monotonic_ms;
+    uint32_t wait_attempts;
+    uint64_t activate_ms;
+    uint64_t metadata_ms;
+};
+
 struct w4_db_cluster_summary {
     bool active;
     bool ready;
@@ -190,6 +216,11 @@ int w4_db_obmm_service_v0_wait_runtime_range_input_view(
     uint32_t cluster_node_count,
     uint64_t decode_step,
     struct w4_db_object_payload_view *view_out);
+int w4_db_obmm_service_v0_wait_scheduler_work_item(
+    uint32_t local_node,
+    uint32_t cluster_node_count,
+    uint64_t decode_step,
+    struct w4_db_scheduler_work_item *item_out);
 int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc,
                                                        uint32_t local_node,
                                                        uint32_t cluster_node_count,
@@ -200,11 +231,25 @@ int w4_db_obmm_service_v0_publish_runtime_range_output(struct w4_db_service *svc
                                                        const uint8_t *kv_payload,
                                                        uint64_t kv_payload_len,
                                                        uint64_t expected_kv_checksum);
+int w4_db_obmm_service_v0_publish_runtime_range_kv_state(
+    struct w4_db_service *svc,
+    uint32_t local_node,
+    uint32_t cluster_node_count,
+    uint64_t decode_step,
+    const uint8_t *kv_payload,
+    uint64_t kv_payload_len,
+    uint64_t expected_kv_checksum);
 int w4_db_obmm_service_v0_resolve_previous_range_kv_state_view(
     struct w4_db_service *svc,
     uint32_t local_node,
     uint32_t cluster_node_count,
     uint64_t decode_step,
+    struct w4_db_object_payload_view *view_out);
+int w4_db_obmm_service_v0_try_resolve_range_kv_state_view(
+    struct w4_db_service *svc,
+    uint32_t local_node,
+    uint32_t cluster_node_count,
+    uint64_t kv_step,
     struct w4_db_object_payload_view *view_out);
 int w4_db_obmm_service_v0_resolve_previous_range_kv_state(struct w4_db_service *svc,
                                                           uint32_t local_node,

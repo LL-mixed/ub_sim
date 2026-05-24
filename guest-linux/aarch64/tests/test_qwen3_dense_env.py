@@ -144,6 +144,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("modes=[^ ]*object-ref", runner_text)
         self.assertIn("validate_w5_boundary_observation_summary", runner_text)
         self.assertIn("memory_boundary_observation_summary", runner_text)
+        self.assertIn("qwen3_w5_memory_shortpath_commit:[1-9][0-9]*", runner_text)
         self.assertIn("observation_id=boundary-observation/${RUN_ID_BASE}", runner_text)
         self.assertIn("source=w5_guest_range_exit hidden_backend=obmm_shmem", runner_text)
         self.assertIn("SIM_QWEN3_GUEST_ENGRAM_STATE_REF", launcher_text)
@@ -152,6 +153,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_W5_RUN_ID", runner_text)
         self.assertIn("SIM_W5_RUN_ID", launcher_text)
         self.assertIn("SIM_W5_MEMORY_DECISION_STORE", runner_text)
+        self.assertIn("SIM_W5_MEMORY_SHORTPATH_LOOKUP_MODE", runner_text)
+        self.assertIn("SIM_W5_MEMORY_BOUNDARY_LOOKUP_BACKEND", runner_text)
         self.assertIn("SIM_W5_MEMORY_SHORTPATH_DECISION_ID", runner_text)
         self.assertIn("SIM_W5_MEMORY_SHORTPATH_TARGET_LAYER_START", runner_text)
         self.assertIn("SIM_W5_MEMORY_SHORTPATH_TARGET_LAYER_END", runner_text)
@@ -170,6 +173,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_CHECKSUM", runner_text)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF", runner_text)
         self.assertIn("SIM_W5_MEMORY_DECISION_STORE", launcher_text)
+        self.assertIn("SIM_W5_MEMORY_BOUNDARY_LOOKUP_BACKEND", launcher_text)
         self.assertIn("SIM_W5_MEMORY_SHORTPATH_DECISION_ID", launcher_text)
         self.assertIn("SIM_W5_MEMORY_SHORTPATH_TARGET_LAYER_START", launcher_text)
         self.assertIn("SIM_W5_MEMORY_SHORTPATH_TARGET_LAYER_END", launcher_text)
@@ -194,6 +198,9 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         ).read_text(encoding="utf-8")
         db_service_source = (
             Path(__file__).resolve().parents[1] / "w4_kvcache_db_service.c"
+        ).read_text(encoding="utf-8")
+        db_service_header = (
+            Path(__file__).resolve().parents[1] / "w4_kvcache_db_service.h"
         ).read_text(encoding="utf-8")
 
         self.assertIn("qwen3_memory_prefix_cache_kv_ref", guest_source)
@@ -226,7 +233,97 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             "w4_db_obmm_service_v0_publish_shortpath_terminal_token_result",
             guest_source,
         )
-        self.assertIn("qwen3_w5_memory_terminal_logits_publish_early", guest_source)
+        self.assertIn("entry->target_node == local_node + 1U", guest_source)
+        self.assertIn("runtime_kv_checksum = w4_qwen3_hidden_payload_checksum", guest_source)
+        self.assertIn("runtime_checksum=0x%016", guest_source)
+        self.assertIn("qwen3_w5_memory_terminal_logits_selected", guest_source)
+        self.assertIn("target=terminal_token_result", guest_source)
+        self.assertIn("publish_hidden=0", guest_source)
+        self.assertNotIn("qwen3_memory_shortpath_downstream_kv_complete", guest_source)
+        self.assertNotIn("skipped_downstream_kv_state_unavailable", guest_source)
+        self.assertNotIn("shortpath_execution_guard", guest_source)
+        self.assertIn("qwen3_round_decode_position", guest_source)
+        self.assertIn(
+            "qwen3_prompt_base_token_count + guest_decode_step",
+            guest_source,
+        )
+        self.assertIn("qwen3_decode_position_resolved", guest_source)
+        self.assertIn(
+            "qwen3_w5_memory_service_lookup_boundary(\n"
+            "        memory_config,\n"
+            "        dispatch_node,\n"
+            "        layer_start,\n"
+            "        layer_end,\n"
+            "        decode_step,\n"
+            "        position,",
+            guest_source,
+        )
+        self.assertIn("w4_db_obmm_service_v0_publish_runtime_range_kv_state", guest_source)
+        self.assertIn("qwen3_decode_round_scheduler_no_dispatch", guest_source)
+        self.assertIn("work_item=none", guest_source)
+        self.assertIn("dispatch=skipped status=no_dispatch", guest_source)
+        self.assertIn("qwen3_work_item_scheduler_wait", guest_source)
+        self.assertIn("qwen3_work_item_scheduler_dispatch", guest_source)
+        self.assertIn("w4_db_obmm_service_v0_wait_scheduler_work_item", guest_source)
+        self.assertIn("struct w4_db_scheduler_work_item", db_service_header)
+        self.assertIn("W4_DB_SCHEDULER_WORK_ITEM_RANGE_FORWARD", db_service_header)
+        self.assertIn("W4_DB_SCHEDULER_WORK_ITEM_NO_DISPATCH", db_service_header)
+        self.assertIn("qwen3_memory_service_boundary_lookup_request", guest_source)
+        self.assertIn("qwen3_memory_service_boundary_lookup_response", guest_source)
+        self.assertIn("SIM_W5_MEMORY_BOUNDARY_REGISTRY_REF", guest_source)
+        self.assertIn("qwen3_read_w5_boundary_registry_object", guest_source)
+        self.assertIn("qwen3_w5_memory_boundary_registry_loaded", guest_source)
+        self.assertIn("artifact_ref=%s", guest_source)
+        self.assertIn("runtime_service_catalog", guest_source)
+        self.assertIn("registry_index=%", guest_source)
+        self.assertIn("source=boundary_controller target=lingqu_memory_service", guest_source)
+        self.assertIn("source=lingqu_memory_service target=boundary_controller", guest_source)
+        self.assertIn("qwen3_boundary_controller_lookup", guest_source)
+        self.assertIn("qwen3_boundary_controller_input", guest_source)
+        self.assertIn("qwen3_boundary_controller_downstream_work_item", guest_source)
+        self.assertIn("source=range_worker target=boundary_controller", guest_source)
+        self.assertIn("source=boundary_controller target=lingqu_memory_service", guest_source)
+        self.assertIn("source=boundary_controller target=work_queue", guest_source)
+        self.assertIn("SIM_W5_MEMORY_SHORTPATH_LOOKUP_MODE", guest_source)
+        self.assertIn("SIM_W5_MEMORY_BOUNDARY_LOOKUP_BACKEND", guest_source)
+        self.assertIn("boundary_lookup_backend", guest_source)
+        self.assertIn("shortpath_lookup_mode", guest_source)
+        self.assertIn("staged_registry", guest_source)
+        self.assertIn("runtime_service", guest_source)
+        self.assertNotIn('"online_registry"', guest_source)
+        self.assertIn("mode=%s backend=%s status=hit", guest_source)
+        self.assertIn("mode=%s backend=%s status=miss", guest_source)
+        self.assertIn("qwen3_no_work_item_service_coverage:", guest_source)
+        self.assertIn("qwen3_pre_resolved_range_input", guest_source)
+        self.assertIn("qwen3_decode_round_terminal_committed", db_service_source)
+        self.assertIn(
+            "allow_terminal_commit",
+            db_service_source,
+        )
+        self.assertIn(
+            "false,\n        view_out);",
+            db_service_source,
+        )
+        self.assertNotIn("qwen3_step_work_item_absent", guest_source)
+        self.assertNotIn("qwen3_step_work_item_terminal_observed", db_service_source)
+        self.assertNotIn(
+            "terminal_round_committed_input",
+            guest_source,
+        )
+        self.assertIn("qwen3_w5_memory_shortpath_kv_lazy_resolve", guest_source)
+        self.assertIn("qwen3_range_kv_state_lazy_fallback", guest_source)
+        self.assertIn("reason=intermediate_step_kv_absent", guest_source)
+        self.assertIn("reason=not_lazy_work_item_resolve", guest_source)
+        self.assertIn("trigger=work_item_lazy_resolve scope=local_range", guest_source)
+        self.assertIn(
+            '" node=%u consumer_step=%" PRIu64 " kv_step=%" PRIu64',
+            guest_source,
+        )
+        self.assertIn("w4_db_obmm_service_v0_try_resolve_range_kv_state_view", guest_source)
+        self.assertIn("while (candidate > 0U)", guest_source)
+        self.assertIn("qwen3_decode_round_idle_timing", guest_source)
+        self.assertNotIn("qwen3_w5_memory_shortpath_downstream_skip", guest_source)
+        self.assertNotIn("qwen3_w5_memory_terminal_publish_skip", guest_source)
         self.assertIn("shortpath_boundary", db_service_source)
 
     def test_w5_inference_cluster_runner_delegates_to_legacy_compatible_runner(self):
@@ -248,30 +345,53 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         runner_text = runner.read_text(encoding="utf-8")
         generic_text = generic.read_text(encoding="utf-8")
         config_runner_text = config_runner.read_text(encoding="utf-8")
+        legacy_runner_text = (script_dir / "run_ub_eight_node_w4_guest.sh").read_text(encoding="utf-8")
         summary_text = summary.read_text(encoding="utf-8")
 
         self.assertIn("SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode", runner_text)
         self.assertIn("SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP", runner_text)
+        self.assertIn("SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP", runner_text)
         self.assertIn("SIM_W5_MEMORY_OBSERVATION_STORE", runner_text)
+        self.assertIn("SIM_W5_MEMORY_DECISION_STORE", runner_text)
+        self.assertIn("SIM_W5_MEMORY_BOUNDARY_REGISTRY_REF", legacy_runner_text)
+        self.assertIn("SIM_W5_MEMORY_BOUNDARY_REGISTRY_COUNT", legacy_runner_text)
+        self.assertIn("SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID", runner_text)
+        self.assertIn("SIM_W5_MEMORY_SHORTPATH_DECISION_IDS", runner_text)
+        self.assertIn("SIM_W5_MEMORY_STORE", runner_text)
+        self.assertIn("SIM_W5_MEMORY_OBJECT_STORE", runner_text)
+        self.assertIn("SIM_W5_MEMORY_ENGRAM_STATE", runner_text)
+        self.assertIn("SIM_W5_MEMORY_REGISTRY_DIR", runner_text)
         self.assertIn("target/debug/sim-cli", runner_text)
         self.assertIn("--memory-runtime-boundary-lookup", runner_text)
+        self.assertIn("--memory-online-boundary-lookup", runner_text)
         self.assertIn("--memory-observation-store", runner_text)
+        self.assertIn("--memory-decision-store", runner_text)
+        self.assertIn("--memory-boundary-observation-run-id", runner_text)
+        self.assertIn("--memory-shortpath-decision-ids", runner_text)
+        self.assertIn("--memory-store", runner_text)
+        self.assertIn("--memory-object-store", runner_text)
+        self.assertIn("--memory-engram-state", runner_text)
+        self.assertIn("--memory-registry-dir", runner_text)
+        self.assertIn("memory_decision_reuse=1", runner_text)
         self.assertIn('exec "$SIM_CLI_BIN" "${cli_args[@]}"', runner_text)
         self.assertIn("eight_node_w5_inference_cluster_summary", runner_text)
         self.assertIn('exec "$SCRIPT_DIR/run_ub_eight_node_w4_guest.sh"', runner_text)
         self.assertIn('exec "$SCRIPT_DIR/run_ub_eight_node_w5_inference_cluster.sh"', generic_text)
         self.assertIn("source \"$CONFIG_PATH\"", config_runner_text)
+        self.assertIn("--steps N", config_runner_text)
+        self.assertIn("STEPS_OVERRIDE", config_runner_text)
         self.assertIn("fixed RUN_ID is disabled", config_runner_text)
         self.assertIn("SIM_W5_ALLOW_FIXED_RUN_ID", config_runner_text)
         self.assertIn("SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP", config_runner_text)
+        self.assertIn("SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP", config_runner_text)
         self.assertIn("SIM_W5_MEMORY_OBSERVATION_STORE", config_runner_text)
         self.assertIn('exec "$SCRIPT_DIR/run_ub_eight_node_w5_inference_cluster.sh"', config_runner_text)
-        legacy_runner_text = (script_dir / "run_ub_eight_node_w4_guest.sh").read_text(encoding="utf-8")
         self.assertIn("explicit obmm cluster runtime bootstrap", legacy_runner_text)
         self.assertIn("SIM_W4_DB_LAZY_REMOTE_ACTIVATION=0", legacy_runner_text)
         self.assertIn("idx == SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE", legacy_runner_text)
         self.assertIn("source=runtime_token_input target=uapi_segment", legacy_runner_text)
         self.assertIn("w4_guest_run_summary.py", summary_text)
+        self.assertIn("qwen3_w5_memory_shortpath_commit", legacy_runner_text)
 
     def test_w5_cluster_config_runner_loads_env_file_without_dynamic_shell_prefix(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
@@ -288,6 +408,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3",
                         "SIM_W5_MEMORY_SHORTPATH_EXECUTE=0",
                         "SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP=1",
+                        "SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP=1",
                         "SIM_W5_MEMORY_OBSERVATION_STORE=/tmp/w5-memory-store.json",
                     ]
                 )
@@ -295,7 +416,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 encoding="utf-8",
             )
             result = subprocess.run(
-                [str(config_runner), "--print-env", str(config_path)],
+                [str(config_runner), "--print-env", "--steps", "3", str(config_path)],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -306,10 +427,11 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             [
                 "RUN_ID=test-run",
                 "SIM_UAPI_W5_PROFILE=qwen3_0_6b_decode",
-                "SIM_QWEN3_GUEST_DECODE_STEPS=2",
+                "SIM_QWEN3_GUEST_DECODE_STEPS=3",
                 "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3",
                 "SIM_W5_MEMORY_SHORTPATH_EXECUTE=0",
                 "SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP=1",
+                "SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP=1",
                 "SIM_W5_MEMORY_OBSERVATION_STORE=/tmp/w5-memory-store.json",
             ],
         )

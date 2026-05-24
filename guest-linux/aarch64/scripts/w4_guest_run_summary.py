@@ -622,6 +622,9 @@ def emit_handoff_timing_summary(handoff_timings, expected_steps, node_ids, outpu
         output.append("handoff_timing: unavailable reason=no_qwen3_worker_handoff_timing_records")
         return
 
+    def is_range_handoff_edge(record):
+        return record["node"] > 1 and record["source"] == record["node"] - 1
+
     handoffs_by_step = collections.defaultdict(list)
     handoffs_by_node = collections.defaultdict(list)
     for record in handoff_timings:
@@ -647,7 +650,7 @@ def emit_handoff_timing_summary(handoff_timings, expected_steps, node_ids, outpu
             f"producer_to_input_found_mono_ms={max_handoff['producer_to_input_found_mono_ms']} "
             f"producer_to_input_found_supernode_ms={max_handoff['producer_to_input_found_supernode_ms']}"
         )
-        edge_records = [record for record in records if record["source"] > 0]
+        edge_records = [record for record in records if is_range_handoff_edge(record)]
         if edge_records:
             max_edge = max(edge_records, key=lambda item: item["producer_to_input_found_mono_ms"])
             min_edge = min(edge_records, key=lambda item: item["producer_to_input_found_mono_ms"])
@@ -683,7 +686,7 @@ def emit_handoff_timing_summary(handoff_timings, expected_steps, node_ids, outpu
     )
     max_kv_record = max(handoff_timings, key=lambda item: item["kv_resolve_ms"] + item["kv_load_ms"])
     max_publish_record = max(handoff_timings, key=lambda item: item["range_publish_ms"])
-    edge_records = [record for record in handoff_timings if record["source"] > 0]
+    edge_records = [record for record in handoff_timings if is_range_handoff_edge(record)]
     output.append(
         "handoff_bottleneck: "
         f"max_handoff_step={max_handoff_record['step']} "

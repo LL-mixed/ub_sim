@@ -7,7 +7,7 @@ DEFAULT_CONFIG="$ROOT_DIR/out/w5_cluster_run.env"
 
 usage() {
   cat >&2 <<'USAGE'
-usage: run_w5_cluster_config.sh [--print-env] [config.env]
+usage: run_w5_cluster_config.sh [--print-env] [--steps N] [config.env]
 
 Loads a W5 inference cluster env file and then runs the stable W5 cluster
 entrypoint. This keeps approval prefixes stable: callers execute this script,
@@ -21,11 +21,25 @@ USAGE
 
 PRINT_ENV=0
 CONFIG_PATH=""
+STEPS_OVERRIDE=""
 
 while (( $# > 0 )); do
   case "$1" in
     --print-env)
       PRINT_ENV=1
+      shift
+      ;;
+    --steps)
+      if (( $# < 2 )); then
+        echo "--steps requires a value" >&2
+        usage
+        exit 2
+      fi
+      STEPS_OVERRIDE="$2"
+      shift 2
+      ;;
+    --steps=*)
+      STEPS_OVERRIDE="${1#--steps=}"
       shift
       ;;
     -h|--help)
@@ -70,6 +84,14 @@ set -a
 source "$CONFIG_PATH"
 set +a
 
+if [[ -n "$STEPS_OVERRIDE" ]]; then
+  if [[ ! "$STEPS_OVERRIDE" =~ '^[0-9]+$' || "$STEPS_OVERRIDE" == "0" ]]; then
+    echo "--steps must be a positive integer: $STEPS_OVERRIDE" >&2
+    exit 2
+  fi
+  export SIM_QWEN3_GUEST_DECODE_STEPS="$STEPS_OVERRIDE"
+fi
+
 if (( PRINT_ENV )); then
   printf 'RUN_ID=%s\n' "${RUN_ID:-}"
   printf 'SIM_UAPI_W5_PROFILE=%s\n' "${SIM_UAPI_W5_PROFILE:-}"
@@ -77,6 +99,7 @@ if (( PRINT_ENV )); then
   printf 'SIM_QWEN3_DENSE_WEIGHTS_PATH=%s\n' "${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}"
   printf 'SIM_W5_MEMORY_SHORTPATH_EXECUTE=%s\n' "${SIM_W5_MEMORY_SHORTPATH_EXECUTE:-}"
   printf 'SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP=%s\n' "${SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-}"
+  printf 'SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP=%s\n' "${SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP:-}"
   printf 'SIM_W5_MEMORY_OBSERVATION_STORE=%s\n' "${SIM_W5_MEMORY_OBSERVATION_STORE:-}"
   exit 0
 fi

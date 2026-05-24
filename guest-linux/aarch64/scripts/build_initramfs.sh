@@ -342,7 +342,7 @@ fi
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$OBMM_SRC" -o "$OBMM_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/libs/obmm_queue" -I"$ROOT_DIR/apps/obmm_queue_demo" "$OBMM_QUEUE_DEMO_SRC" -o "$OBMM_QUEUE_DEMO_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/kernel_ub/include/uapi" -I"$ROOT_DIR/common" -I"$ROOT_DIR/apps/obmm_queue_demo" "$OBMM_IMPORT_STRESS_SRC" -o "$OBMM_IMPORT_STRESS_BIN"
-"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/libs/obmm_queue" -I"$ROOT_DIR/apps/obmm_queue_demo" "$W4_GUEST_SRC" "$W4_DB_SERVICE_SRC" -o "$W4_GUEST_BIN"
+"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/libs/obmm_queue" -I"$ROOT_DIR/apps/obmm_queue_demo" "$W4_GUEST_SRC" "$W4_DB_SERVICE_SRC" -lm -o "$W4_GUEST_BIN"
 
 if [[ -f "$INIT_SCRIPT_SRC" ]]; then
   cp "$INIT_SCRIPT_SRC" "$INIT_SCRIPT_BIN"
