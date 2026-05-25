@@ -8,6 +8,28 @@ from pathlib import Path
 
 
 class Qwen3DenseEnvTest(unittest.TestCase):
+    def write_qwen3_14b_stub_weights(self, model_dir):
+        model_dir.mkdir()
+        (model_dir / "config.json").write_text(
+            json.dumps(
+                {
+                    "_name_or_path": "Qwen/Qwen3-14B",
+                    "vocab_size": 151936,
+                    "hidden_size": 5120,
+                    "intermediate_size": 17408,
+                    "num_hidden_layers": 40,
+                    "num_attention_heads": 40,
+                    "num_key_value_heads": 8,
+                    "head_dim": 128,
+                    "max_position_embeddings": 40960,
+                    "rope_theta": 1000000,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (model_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
+        (model_dir / "model.safetensors.index.json").write_text("{}", encoding="utf-8")
+
     def write_w5_reuse_summary(self, out_dir, run_id, steps=2, missing_boundary=None):
         records = steps * 7
         lines = [
@@ -837,13 +859,14 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 encoding="utf-8",
             )
             result = subprocess.run(
-                [str(config_runner), "--validate-only", str(config_path)],
+                [str(config_runner), "--print-env", str(config_path)],
                 check=True,
                 capture_output=True,
                 text=True,
             )
 
-        self.assertIn("config validation passed", result.stderr)
+        self.assertIn(f"SIM_W5_MEMORY_DECISION_STORE={out_dir}/w5_memory_runtime_boundary_lookup.{run_id}.json", result.stdout)
+        self.assertIn(f"SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID={run_id}", result.stdout)
 
     def test_w5_cluster_config_runner_rejects_named_reuse_run_without_completed_summary(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
@@ -973,7 +996,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("fixed RUN_ID is disabled", result.stderr)
 
-    def test_w5_cluster_config_runner_validate_only_accepts_complete_memory_reuse_config(self):
+    def test_w5_cluster_config_runner_validate_only_accepts_basic_config_without_memory_path(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
         config_runner = script_dir / "run_w5_cluster_config.sh"
 
@@ -985,12 +1008,9 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             config_path.write_text(
                 "\n".join(
                     [
-                        "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
+                        "SIM_UAPI_W5_PROFILE=qwen3_0_6b_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
-                        "SIM_W5_MEMORY_DECISION_STORE=/tmp/w5-decision-store.json",
-                        "SIM_W5_MEMORY_DECISION_OBJECT_STORE=/tmp/w5-object-store.json",
-                        "SIM_W5_MEMORY_SHORTPATH_DECISION_IDS=decision-a,decision-b",
                     ]
                 )
                 + "\n",
@@ -1003,7 +1023,44 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 text=True,
             )
 
-        self.assertIn("config validation passed", result.stderr)
+        self.assertIn("validate_only=1", result.stderr)
+        self.assertIn("no Memory Service runtime path selected", result.stderr)
+
+    def test_w5_cluster_config_runner_validate_only_rejects_invalid_memory_decision_store(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        config_runner = script_dir / "run_w5_cluster_config.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            weights_path = tmp_path / "qwen3-14b"
+            self.write_qwen3_14b_stub_weights(weights_path)
+            decision_store = tmp_path / "w5-decision-store.json"
+            object_store = tmp_path / "w5-object-store.json"
+            decision_store.write_text("{}", encoding="utf-8")
+            object_store.write_text("{}", encoding="utf-8")
+            config_path = tmp_path / "w5.env"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
+                        "SIM_QWEN3_GUEST_DECODE_STEPS=2",
+                        f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
+                        f"SIM_W5_MEMORY_DECISION_STORE={decision_store}",
+                        f"SIM_W5_MEMORY_DECISION_OBJECT_STORE={object_store}",
+                        "SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID=bad-run",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(config_runner), "--validate-only", str(config_path)],
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("load W5 execution decisions", result.stderr)
 
     def test_w5_cluster_config_runner_validate_only_rejects_missing_weights_path(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"

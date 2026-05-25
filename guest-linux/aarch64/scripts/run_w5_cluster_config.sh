@@ -216,8 +216,12 @@ if (( validate_w5_cluster_config_status != 0 )); then
 fi
 
 if (( VALIDATE_ONLY )); then
-  echo "[w5_cluster_config] config validation passed: $CONFIG_PATH" >&2
-  exit 0
+  echo "[w5_cluster_config] config=$CONFIG_PATH profile=${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode} validate_only=1" >&2
+  export SIM_W5_VALIDATE_ONLY=1
+  if [[ -n "${SIM_W5_MEMORY_REUSE_RUN_ID:-}" ]]; then
+    unset SIM_W5_MEMORY_REUSE_RUN_ID
+  fi
+  exec "$SCRIPT_DIR/run_ub_eight_node_w5_inference_cluster.sh"
 fi
 
 echo "[w5_cluster_config] config=$CONFIG_PATH profile=${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" >&2
