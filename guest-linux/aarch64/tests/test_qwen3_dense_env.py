@@ -160,7 +160,14 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             "qwen3_w5_memory_terminal_logits_selected:${SIM_QWEN3_GUEST_DECODE_STEPS}",
             runner_text,
         )
-        self.assertIn("W5 shortpath execution summary incomplete", runner_text)
+        self.assertIn("actions=jump-to-terminal .*artifact_kinds=logits", runner_text)
+        self.assertIn("shortpath_ids=none", runner_text)
+        self.assertIn("support_ids=none", runner_text)
+        self.assertIn("artifact_kinds=none", runner_text)
+        self.assertIn(
+            "W5 shortpath execution summary incomplete or unauditable",
+            runner_text,
+        )
         self.assertIn("W5 shortpath scheduler no-dispatch per step", runner_text)
         self.assertIn("W5 shortpath terminal commit observed per step", runner_text)
         self.assertIn("W5 shortpath idle timing per step", runner_text)

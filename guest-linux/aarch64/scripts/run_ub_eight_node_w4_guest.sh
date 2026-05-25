@@ -809,10 +809,14 @@ validate_w5_boundary_observation_summary() {
   fi
   if w5_shortpath_execute_enabled; then
     if rg -q "memory_service_summary: .*qwen3_w5_memory_shortpath_commit:${SIM_QWEN3_GUEST_DECODE_STEPS}(,| )" "$RUN_SUMMARY_FILE" &&
-      rg -q "memory_service_summary: .*qwen3_w5_memory_terminal_logits_selected:${SIM_QWEN3_GUEST_DECODE_STEPS}(,| )" "$RUN_SUMMARY_FILE"; then
+      rg -q "memory_service_summary: .*qwen3_w5_memory_terminal_logits_selected:${SIM_QWEN3_GUEST_DECODE_STEPS}(,| )" "$RUN_SUMMARY_FILE" &&
+      rg -q "memory_service_summary: .*actions=jump-to-terminal .*artifact_kinds=logits" "$RUN_SUMMARY_FILE" &&
+      ! rg -q "memory_service_summary: .*shortpath_ids=none" "$RUN_SUMMARY_FILE" &&
+      ! rg -q "memory_service_summary: .*support_ids=none" "$RUN_SUMMARY_FILE" &&
+      ! rg -q "memory_service_summary: .*artifact_kinds=none" "$RUN_SUMMARY_FILE"; then
       return 0
     fi
-    trace "FAIL: W5 shortpath execution summary incomplete expected_steps=$SIM_QWEN3_GUEST_DECODE_STEPS path=$RUN_SUMMARY_FILE"
+    trace "FAIL: W5 shortpath execution summary incomplete or unauditable expected_steps=$SIM_QWEN3_GUEST_DECODE_STEPS path=$RUN_SUMMARY_FILE"
     return 1
   fi
   if ! rg -q "memory_boundary_observation_summary: records=[1-9][0-9]* steps=${SIM_QWEN3_GUEST_DECODE_STEPS}/${SIM_QWEN3_GUEST_DECODE_STEPS} .*source=w5_guest_range_exit hidden_backend=obmm_shmem" "$RUN_SUMMARY_FILE"; then
