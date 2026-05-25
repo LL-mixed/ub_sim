@@ -151,6 +151,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("validate_w5_boundary_observation_summary", runner_text)
         self.assertIn("memory_boundary_observation_summary", runner_text)
         self.assertIn("w5_shortpath_execute_enabled", runner_text)
+        self.assertIn("assert_log_count", runner_text)
         self.assertIn(
             "qwen3_w5_memory_shortpath_commit:${SIM_QWEN3_GUEST_DECODE_STEPS}",
             runner_text,
@@ -160,6 +161,11 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             runner_text,
         )
         self.assertIn("W5 shortpath execution summary incomplete", runner_text)
+        self.assertIn("W5 shortpath scheduler no-dispatch per step", runner_text)
+        self.assertIn("W5 shortpath terminal commit observed per step", runner_text)
+        self.assertIn("W5 shortpath idle timing per step", runner_text)
+        self.assertIn("W5 shortpath downstream range forward", runner_text)
+        self.assertIn("W5 shortpath downstream runtime output publish", runner_text)
         self.assertIn("observation_id=boundary-observation/${RUN_ID_BASE}", runner_text)
         self.assertIn("source=w5_guest_range_exit hidden_backend=obmm_shmem", runner_text)
         self.assertIn("SIM_QWEN3_GUEST_ENGRAM_STATE_REF", launcher_text)
