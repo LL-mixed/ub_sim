@@ -20,9 +20,11 @@ esac
 case "$SIM_UAPI_W5_PROFILE" in
   qwen3_0_6b_engram_decode|qwen3_14b_engram_decode)
     SIM_QWEN3_GUEST_ENGRAM="${SIM_QWEN3_GUEST_ENGRAM:-1}"
+    SIM_QWEN3_GUEST_ENGRAM_POOL="${SIM_QWEN3_GUEST_ENGRAM_POOL:-obmm}"
     ;;
   *)
     SIM_QWEN3_GUEST_ENGRAM="${SIM_QWEN3_GUEST_ENGRAM:-0}"
+    SIM_QWEN3_GUEST_ENGRAM_POOL="${SIM_QWEN3_GUEST_ENGRAM_POOL:-}"
     ;;
 esac
 
@@ -54,6 +56,7 @@ export RUN_SUMMARY_FILE
 export SIM_UAPI_W5_PROFILE
 export SIM_UAPI_W4_CHIPBACKEND_PROFILE
 export SIM_QWEN3_GUEST_ENGRAM
+export SIM_QWEN3_GUEST_ENGRAM_POOL
 export SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP
 export SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP
 export SIM_W5_MEMORY_OBSERVATION_STORE
@@ -188,7 +191,7 @@ if (( memory_runtime_lookup || memory_decision_reuse )); then
     esac
   fi
   if [[ "$SIM_QWEN3_GUEST_ENGRAM" == "1" ]]; then
-    cli_args+=(--engram)
+    cli_args+=(--engram --engram-pool "$SIM_QWEN3_GUEST_ENGRAM_POOL")
   fi
   if [[ -n "${SIM_QWEN3_SAMPLER_TOP_K:-}" ]]; then
     cli_args+=(--sampler-top-k "$SIM_QWEN3_SAMPLER_TOP_K")

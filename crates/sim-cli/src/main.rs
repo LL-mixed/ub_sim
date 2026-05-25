@@ -4933,10 +4933,9 @@ fn validate_w5_terminal_logits_entry(
     )?;
     let candidate_count = read_w5_u64(bytes, logits_base + 160, "terminal_logits.candidate_count")?;
     let mut sampled_candidate_seen = false;
-    let mut sampled_candidate_text_checksum = 0;
+    let mut sampled_candidate_text_matches = false;
     if sampled_token >= full_vocab_checked
         || runner_up_token >= full_vocab_checked
-        || sampled_token == runner_up_token
         || logits_checksum == 0
         || text_checksum == 0
         || full_vocab_checked == 0
@@ -4974,7 +4973,9 @@ fn validate_w5_terminal_logits_entry(
         }
         if token == sampled_token {
             sampled_candidate_seen = true;
-            sampled_candidate_text_checksum = candidate_text_checksum;
+            if candidate_text_checksum == text_checksum {
+                sampled_candidate_text_matches = true;
+            }
         }
     }
     if !sampled_candidate_seen {
@@ -4983,7 +4984,7 @@ fn validate_w5_terminal_logits_entry(
             artifact.artifact_id
         );
     }
-    if sampled_candidate_text_checksum != text_checksum {
+    if !sampled_candidate_text_matches {
         anyhow::bail!(
             "{source} execution artifact {} terminal logits sampled token text checksum mismatch",
             artifact.artifact_id
@@ -6396,6 +6397,223 @@ fn publish_w5_engram_state_ref_from_object_service(
         state_manifest_bytes: state_ref.payload_bytes,
         object_service_snapshot_path: None,
     })
+}
+
+const W5_MEMORY_BOOTSTRAP_ENGRAM_ROWS: usize = 8;
+
+fn ensure_w5_memory_engram_state(
+    config: &W5MemoryBootstrapConfig,
+    profile: &Qwen3DenseProfile,
+) -> anyhow::Result<()> {
+    let mut durable_store = load_lingqu_memory_durable_store(&config.store_path)?;
+    let object_snapshot =
+        load_lingqu_object_service_snapshot(&config.object_store_path, &mut durable_store)?;
+    if config.engram_state_path.exists() {
+        if object_snapshot.is_none() {
+            anyhow::bail!(
+                "W5 engram state exists but Object Service snapshot is missing: state={} object_store={}",
+                config.engram_state_path.display(),
+                config.object_store_path.display()
+            );
+        }
+        return Ok(());
+    }
+
+    let hidden_size = usize::try_from(profile.hidden_size)
+        .with_context(|| format!("qwen3 hidden_size too large: {}", profile.hidden_size))?;
+    if hidden_size == 0 {
+        anyhow::bail!("qwen3 hidden_size must be > 0 for W5 engram bootstrap");
+    }
+    let profile_id = cli_path_id(&profile.model_id);
+    let mut memory_service = LingquMemoryService::new();
+    let mut object_service = if let Some(snapshot) = object_snapshot {
+        LingquObjectServiceStub::import_snapshot(snapshot).with_context(|| {
+            format!("import object store {}", config.object_store_path.display())
+        })?
+    } else {
+        LingquObjectServiceStub::new(LingquObjectServiceProfile::default())
+    };
+
+    let catalog_id = format!("corpus/w5/engram/{profile_id}");
+    let index_id = format!("index/w5/engram/{profile_id}/flat");
+    let segment_id = format!("segment/w5/engram/{profile_id}/table");
+    let record_ids = (0..W5_MEMORY_BOOTSTRAP_ENGRAM_ROWS)
+        .map(|row| format!("record/w5/engram/{profile_id}/{row}"))
+        .collect::<Vec<_>>();
+    memory_service.publish_catalog(MemoryCorpusCatalog {
+        catalog_id: catalog_id.clone(),
+        namespace: "project/w5".to_string(),
+        dfs_path: LingquDfsPath::new(format!(
+            "/lingqu/memory/corpus/w5/engram/{profile_id}/catalog.json"
+        )),
+        version: 1,
+        record_ids: record_ids.clone(),
+        vector_index_ids: vec![index_id.clone()],
+        created_at_us: 1,
+        updated_at_us: 1,
+    })?;
+    for (row, record_id) in record_ids.iter().enumerate() {
+        let chunk_id = format!("chunk/w5/engram/{profile_id}/{row}");
+        memory_service.ingest_record(
+            MemoryRecord {
+                record_id: record_id.clone(),
+                corpus_id: catalog_id.clone(),
+                scope: MemoryScope::Project,
+                visibility: MemoryVisibility::ProjectShared,
+                source_kind: MemorySourceKind::SystemObservation,
+                source_uri: format!("memory://w5/engram/{profile_id}/{row}"),
+                source_checksum: qwen3_checksum_words(&[profile.hidden_size, row as u64]),
+                content_type: MemoryContentType::Binary,
+                token_count: 1,
+                trust_level: MemoryTrustLevel::SystemVerified,
+                confidence: 1.0,
+                retention_policy: MemoryRetentionPolicy::Durable,
+                security_label: MemorySecurityLabel::Internal,
+                pii_state: MemoryPiiState::None,
+                chunk_refs: vec![chunk_id.clone()],
+                embedding_model_versions: vec![format!("embed/w5/{profile_id}/v1")],
+                evidence_refs: vec![format!("bootstrap://w5/engram/{profile_id}/{row}")],
+                created_at_us: 1,
+                updated_at_us: 1,
+                expires_at_us: None,
+                version: 1,
+                state: MemoryRecordState::Committed,
+            },
+            vec![MemoryChunk {
+                chunk_id,
+                record_id: record_id.clone(),
+                ordinal: 0,
+                text_block_ref: LingquBlockPayloadRef::new(
+                    format!("block/text/w5/engram/{profile_id}/{row}"),
+                    0,
+                    1,
+                    0x5000 + row as u64,
+                ),
+                token_start: 0,
+                token_count: 1,
+                checksum: 0x6000 + row as u64,
+            }],
+        )?;
+    }
+
+    let mut embedding_values = Vec::with_capacity(W5_MEMORY_BOOTSTRAP_ENGRAM_ROWS * hidden_size);
+    for row in 0..W5_MEMORY_BOOTSTRAP_ENGRAM_ROWS {
+        for dim in 0..hidden_size {
+            embedding_values.push(((row * 31 + dim * 17) % 257) as f32 / 8192.0);
+        }
+    }
+    let segment_ref = durable_store.write_block_payload(
+        format!("block/embed/w5/engram/{profile_id}/table"),
+        cli_f32_vec_to_le_bytes(&embedding_values),
+    )?;
+    let query_values = (0..hidden_size)
+        .map(|dim| ((dim % 23) as f32 + 1.0) / 1024.0)
+        .collect::<Vec<_>>();
+    let query_ref = durable_store.write_block_payload(
+        format!("block/query/w5/engram/{profile_id}"),
+        cli_f32_vec_to_le_bytes(&query_values),
+    )?;
+    memory_service.register_embedding_segment(EmbeddingSegment {
+        segment_id: segment_id.clone(),
+        model_version: format!("embed/w5/{profile_id}/v1"),
+        dims: profile.hidden_size as u32,
+        row_count: W5_MEMORY_BOOTSTRAP_ENGRAM_ROWS as u32,
+        row_stride_bytes: (hidden_size * std::mem::size_of::<f32>()) as u32,
+        dtype: sim_core::TensorDType::F32,
+        vector_block_refs: vec![segment_ref],
+        row_map: (0..W5_MEMORY_BOOTSTRAP_ENGRAM_ROWS)
+            .map(|row| EmbeddingRow {
+                chunk_id: format!("chunk/w5/engram/{profile_id}/{row}"),
+                row: row as u32,
+            })
+            .collect(),
+        checksum: qwen3_checksum_words(&[
+            profile.hidden_size,
+            W5_MEMORY_BOOTSTRAP_ENGRAM_ROWS as u64,
+        ]),
+        version: 1,
+    })?;
+    memory_service.register_vector_index(VectorIndexObject {
+        index_id: index_id.clone(),
+        corpus_id: catalog_id.clone(),
+        kind: VectorIndexKind::Flat,
+        embedding_model_version: format!("embed/w5/{profile_id}/v1"),
+        segment_ids: vec![segment_id],
+        manifest_path: LingquDfsPath::new(format!(
+            "/lingqu/memory/corpus/w5/engram/{profile_id}/index.json"
+        )),
+        created_at_us: 2,
+        updated_at_us: 2,
+        version: 1,
+    })?;
+    let result = memory_service.query_memory_flat(
+        &mut durable_store,
+        MemoryQuery {
+            query_id: format!("query/w5/engram/{profile_id}"),
+            corpus_ids: vec![catalog_id],
+            scope_filter: vec![MemoryScope::Project],
+            visibility_filter: vec![MemoryVisibility::ProjectShared],
+            min_trust: MemoryTrustLevel::SystemVerified,
+            min_confidence: 1.0,
+            embedding_model_version: format!("embed/w5/{profile_id}/v1"),
+            top_k: W5_MEMORY_BOOTSTRAP_ENGRAM_ROWS,
+            query_embedding_ref: Some(query_ref),
+        },
+        100,
+    )?;
+    let hot_state = memory_service
+        .materialize_hot_state_from_query(
+            &mut durable_store,
+            &mut object_service,
+            HotMemoryMaterializeFromQueryReq {
+                state_id: format!("hot/w5/engram/{profile_id}"),
+                query_result_id: result.result_id,
+                owner_entity: u64::from(config.owner_entity),
+                producer_entity: u64::from(config.producer_entity),
+                now_us: 200,
+            },
+        )
+        .context("materialize W5 engram hot memory state")?;
+    let gate_values = (0..hidden_size)
+        .map(|dim| ((dim % 29) as f32 - 14.0) / 16384.0)
+        .collect::<Vec<_>>();
+    let gate_weight_ref = durable_store.write_block_payload(
+        format!("block/engram/w5/{profile_id}/gate_weight"),
+        cli_f32_vec_to_le_bytes(&gate_values),
+    )?;
+    let engram_state = memory_service
+        .materialize_engram_state_from_block(
+            &mut durable_store,
+            &mut object_service,
+            EngramStateMaterializeFromBlockReq {
+                state_id: format!("engram/w5/{profile_id}"),
+                hot_memory_state_id: hot_state.state_id,
+                gate_weight_ref,
+                compatible_models: Vec::new(),
+                owner_entity: u64::from(config.owner_entity),
+                producer_entity: u64::from(config.producer_entity),
+                now_us: 300,
+                expires_at_us: None,
+            },
+        )
+        .context("materialize W5 engram state")?;
+
+    if let Some(parent) = config.engram_state_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create engram state dir {}", parent.display()))?;
+    }
+    fs::write(
+        &config.engram_state_path,
+        serde_json::to_vec_pretty(&engram_state).context("encode W5 engram state")?,
+    )
+    .with_context(|| format!("write engram state {}", config.engram_state_path.display()))?;
+    save_lingqu_object_service_snapshot(
+        &config.object_store_path,
+        &mut durable_store,
+        &object_service,
+    )?;
+    save_lingqu_memory_durable_store(&config.store_path, &durable_store)?;
+    Ok(())
 }
 
 fn w5_hot_tensor_object_ref_from_object_service(
@@ -9610,10 +9828,11 @@ fn resolve_lingqu_object_cli_sample(
 mod tests {
     use super::{
         build_w5_terminal_logits_payload, cli_bytes_checksum, cli_f32_vec_to_le_bytes,
-        lingqu_durable_args_from, lingqu_memory_args_from, lingqu_object_service_args_from,
-        load_lingqu_memory_durable_store, load_lingqu_object_service_snapshot_file,
-        load_w5_memory_decisions_from_store, parse_summary_fields,
-        parse_w5_terminal_logits_observation, publish_w5_engram_state_ref_from_memory,
+        ensure_w5_memory_engram_state, lingqu_durable_args_from, lingqu_memory_args_from,
+        lingqu_object_service_args_from, load_lingqu_memory_durable_store,
+        load_lingqu_object_service_snapshot_file, load_w5_memory_decisions_from_store,
+        parse_summary_fields, parse_w5_terminal_logits_observation,
+        publish_w5_engram_state_ref_from_memory, publish_w5_engram_state_ref_from_memory_objects,
         publish_w5_execution_artifact_ref, publish_w5_memory_decision_artifact_refs,
         qwen3_decode_loop_args_from, qwen3_decode_report_verbosity_from_env,
         qwen3_dense_weights_path_from_env, qwen3_engram_policy_checksum, qwen3_engram_select_token,
@@ -9624,12 +9843,13 @@ mod tests {
         qwen3_guest_engram_history_lengths, qwen3_guest_engram_object_transport_report,
         qwen3_guest_engram_report, qwen3_guest_engram_report_from_guest_log,
         qwen3_guest_engram_select_history_lengths, qwen3_guest_engram_selected_tokens,
-        qwen3_guest_expected_worker_counts, qwen3_guest_log_dir_from_script_output,
-        qwen3_guest_log_match_count, qwen3_guest_summary_file_from_script_output,
-        qwen3_guest_terminal_candidate_records, qwen3_guest_terminal_text_lossy_from_tokenizer,
-        qwen3_guest_terminal_tokens, qwen3_guest_timing_summary,
-        qwen3_guest_w5_pass_marker_present, qwen3_object_registry_path_in_dir,
-        qwen3_obmm_object_ref_for_payload, qwen3_range_forward_args_from,
+        qwen3_guest_expected_engram_history_state_waits, qwen3_guest_expected_worker_counts,
+        qwen3_guest_log_dir_from_script_output, qwen3_guest_log_match_count,
+        qwen3_guest_summary_file_from_script_output, qwen3_guest_terminal_candidate_records,
+        qwen3_guest_terminal_text_lossy_from_tokenizer, qwen3_guest_terminal_tokens,
+        qwen3_guest_timing_summary, qwen3_guest_w5_pass_marker_present,
+        qwen3_object_registry_path_in_dir, qwen3_obmm_object_ref_for_payload,
+        qwen3_range_forward_args_from, qwen3_validate_engram_state_object_service_payload,
         read_lingqu_memory_payload_ref, read_w5_u64,
         record_w5_runtime_boundary_observations_from_summary, resolve_w5_inference_profile,
         run_lingqu_durable_append_log_cli, run_lingqu_durable_batch_cli,
@@ -10255,6 +10475,77 @@ mod tests {
         assert!(w5_memory_should_publish_engram_state(
             &config, true, true, false
         ));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn w5_memory_bootstrap_materializes_fresh_engram_state() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_w5_fresh_engram_bootstrap_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let config = W5MemoryBootstrapConfig {
+            store_path: root.join("store.json"),
+            object_store_path: root.join("object-store.json"),
+            engram_state_path: root.join("engram-state.json"),
+            registry_dir: root.join("registry"),
+            owner_entity: 1,
+            producer_entity: 2,
+        };
+        let profile = Qwen3DenseProfile {
+            model_id: "Qwen/Qwen3-bootstrap-test".to_string(),
+            vocab_size: 151936,
+            hidden_size: 16,
+            intermediate_size: 64,
+            num_hidden_layers: 4,
+            num_attention_heads: 4,
+            num_key_value_heads: 2,
+            head_dim: 4,
+            max_position_embeddings: 1024,
+            rope_theta: 1000000,
+            prefill_tokens: QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
+            decode_tokens: QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
+            tp_nodes: QWEN3_DENSE_DEFAULT_TP_NODES,
+        };
+
+        ensure_w5_memory_engram_state(&config, &profile).expect("materialize engram state");
+        assert!(config.engram_state_path.exists());
+        assert!(config.object_store_path.exists());
+        assert!(w5_object_service_payload_index_path(&config.object_store_path).exists());
+        let object_store_json = fs::read(&config.object_store_path).expect("read object store");
+        let object_store_value: serde_json::Value =
+            serde_json::from_slice(&object_store_json).expect("decode object store");
+        assert!(
+            object_store_value["records"]
+                .as_array()
+                .expect("object records")
+                .iter()
+                .all(|record| record.get("payload_bytes").is_none()),
+            "object store JSON must not carry inline payload bytes"
+        );
+
+        let publication = publish_w5_engram_state_ref_from_memory_objects(&config)
+            .expect("publish object-service engram state ref");
+        let snapshot_path = publication
+            .object_service_snapshot_path
+            .as_ref()
+            .expect("object-service snapshot path");
+        let validation = qwen3_validate_engram_state_object_service_payload(
+            &publication.state_ref_hex,
+            snapshot_path,
+            profile.hidden_size as usize,
+        )
+        .expect("validate object-service engram state ref");
+        assert_eq!(validation.hidden_size, profile.hidden_size as usize);
+        assert_eq!(validation.table_rows, 8);
+        assert_eq!(validation.table_bytes, 8 * 16 * std::mem::size_of::<f32>());
+        assert_eq!(validation.indices_bytes, 8 * std::mem::size_of::<i32>());
+        assert_eq!(
+            validation.gate_weight_bytes,
+            16 * std::mem::size_of::<f32>()
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -12172,6 +12463,40 @@ stage qwen3_range_forward_runtime_output_publish node=2
     }
 
     #[test]
+    fn qwen3_guest_engram_terminal_rewrite_expected_for_each_selected_step() {
+        let config = Qwen3EngramConfig {
+            enabled: true,
+            pool: Qwen3EngramPool::Obmm,
+            ..Qwen3EngramConfig::default()
+        };
+        let log = "\
+[w4_guest] stage qwen3_engram_token_select local=node8 step=0 history_tokens=3 raw_token=10 runner_up=11 selected_token=10 candidate_count=4 candidate2=12 candidate3=13 blocked=0 fallback=0 top_score_milli=100 runner_up_score_milli=90 no_repeat_ngram_size=0 repetition_penalty_milli=1000 history_window=0 candidate_checksum=0x1 source=guest_policy status=ok
+[w4_guest] stage qwen3_engram_decision_publish local=node8 step=0 objects=3 history_tokens=4 selected_token=10 history_key=qwen3/session/abc/tokens/history history_version=1 selected_key=qwen3/session/abc/step/0/tokens/selected state_key=qwen3/session/abc/step/0/engram/state history_checksum=0x11 selected_checksum=0x12 state_checksum=0x13 status=ok
+[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=0 token=10 runner_up=11 margin_milli=100 text_checksum=0x1 status=ok
+[w4_guest] stage qwen3_engram_token_select local=node8 step=1 history_tokens=4 raw_token=20 runner_up=21 selected_token=20 candidate_count=4 candidate2=22 candidate3=23 blocked=0 fallback=0 top_score_milli=100 runner_up_score_milli=90 no_repeat_ngram_size=0 repetition_penalty_milli=1000 history_window=0 candidate_checksum=0x2 source=guest_policy status=ok
+[w4_guest] stage qwen3_engram_decision_publish local=node8 step=1 objects=3 history_tokens=5 selected_token=20 history_key=qwen3/session/abc/tokens/history history_version=2 selected_key=qwen3/session/abc/step/1/tokens/selected state_key=qwen3/session/abc/step/1/engram/state history_checksum=0x21 selected_checksum=0x22 state_checksum=0x23 status=ok
+[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=1 token=20 runner_up=21 margin_milli=100 text_checksum=0x2 status=ok
+";
+        let report = qwen3_guest_engram_report_from_guest_log(&config, 7, &[1, 2, 3], log)
+            .expect("guest log report");
+        assert_eq!(qwen3_guest_engram_expected_terminal_rewrites(&report), 2);
+    }
+
+    #[test]
+    fn qwen3_guest_engram_history_state_waits_are_step_local() {
+        assert_eq!(
+            qwen3_guest_expected_engram_history_state_waits(false, 16),
+            0
+        );
+        assert_eq!(qwen3_guest_expected_engram_history_state_waits(true, 0), 0);
+        assert_eq!(qwen3_guest_expected_engram_history_state_waits(true, 1), 0);
+        assert_eq!(
+            qwen3_guest_expected_engram_history_state_waits(true, 16),
+            15
+        );
+    }
+
+    #[test]
     fn qwen3_guest_terminal_text_decodes_tokenizer_bytes() {
         let dir = env::temp_dir().join(format!(
             "sim-cli-qwen3-tokenizer-test-{}",
@@ -13487,6 +13812,63 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             .expect("token text token"),
             358
         );
+    }
+
+    #[test]
+    fn terminal_logits_artifact_allows_repeated_runner_up_token() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_terminal_logits_repeated_runner_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let store = root.join("store.json");
+        let summary_path = root.join("summary.txt");
+        let run_dir = root.join("run0_headless8");
+        fs::create_dir_all(&run_dir).expect("create run dir");
+        fs::write(
+            &summary_path,
+            format!(
+                "summary: run_dir={}\n{}",
+                run_dir.display(),
+                sample_w5_boundary_observation_line(1, "node1", "node2", 0, 4, 0x1111)
+            ),
+        )
+        .expect("write summary");
+        fs::write(
+            run_dir.join("nodeH_guest.log"),
+            sample_w5_terminal_logits_log_line(1, 5348, 5348),
+        )
+        .expect("write terminal logits log");
+        run_lingqu_memory_register_terminal_logits_artifact_from_w5_summary_cli(&[
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--summary".to_string(),
+            summary_path.to_string_lossy().into_owned(),
+            "--step".to_string(),
+            "1".to_string(),
+            "--node".to_string(),
+            "node1".to_string(),
+            "--position".to_string(),
+            "4".to_string(),
+            "--model-id".to_string(),
+            "qwen3-test".to_string(),
+            "--model-key".to_string(),
+            "qwen3-test-key".to_string(),
+            "--tokenizer-hash".to_string(),
+            "0x1001".to_string(),
+            "--profile-hash".to_string(),
+            "0x2002".to_string(),
+        ])
+        .expect("register terminal logits artifact with repeated runner-up token");
+        let mut durable_store =
+            load_lingqu_memory_durable_store(&store).expect("load durable store");
+        let artifacts = durable_store
+            .load_execution_artifact_manifest()
+            .expect("load execution artifacts");
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].artifact_id, "artifact/logits/run0/step1/node1");
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -15766,6 +16148,8 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             args.memory_runtime_boundary_lookup,
             args.engram.enabled,
         ) {
+            ensure_w5_memory_engram_state(memory_bootstrap, &runtime.profile)
+                .context("materialize W5 Memory Service engram state")?;
             let publication = publish_w5_engram_state_ref_from_memory_objects(memory_bootstrap)
                 .context("publish Memory Service EngramStateObjectRef for W5")?;
             effective_engram.enabled = true;
@@ -16246,16 +16630,8 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     let expected_guest_engram_candidate_wait_count = expected_guest_engram_candidate_publish_count;
     let expected_guest_engram_selected_wait_count = expected_guest_engram_select_count;
     let expected_guest_engram_selected_writeback_count = expected_guest_engram_select_count;
-    let expected_guest_engram_history_wait_count = if effective_engram.enabled {
-        let mut wait_nodes = [false; 9];
-        wait_nodes[1] = true;
-        wait_nodes[8] = true;
-        wait_nodes[effective_engram.owner_node] = true;
-        let wait_node_count = wait_nodes.iter().filter(|enabled| **enabled).count();
-        wait_node_count * args.step_count.saturating_sub(1)
-    } else {
-        0
-    };
+    let expected_guest_engram_history_wait_count =
+        qwen3_guest_expected_engram_history_state_waits(effective_engram.enabled, args.step_count);
     let expected_guest_engram_state_wait_count = expected_guest_engram_history_wait_count;
     let expected_guest_engram_state_resolved_count = expected_guest_engram_history_wait_count;
     let timing_summary = qwen3_guest_timing_summary(&combined);
@@ -16795,16 +17171,15 @@ fn qwen3_guest_engram_candidate_counts(log: &str) -> Vec<u64> {
 }
 
 fn qwen3_guest_engram_expected_terminal_rewrites(report: &Qwen3EngramRunReport) -> usize {
-    report
-        .steps
-        .iter()
-        .filter(|step| {
-            step.candidates
-                .first()
-                .map(|candidate| candidate.token_id != step.selected_token)
-                .unwrap_or(false)
-        })
-        .count()
+    report.steps.len()
+}
+
+fn qwen3_guest_expected_engram_history_state_waits(enabled: bool, step_count: usize) -> usize {
+    if enabled {
+        step_count.saturating_sub(1)
+    } else {
+        0
+    }
 }
 
 fn qwen3_guest_terminal_text_lossy(tokens: &[u64], weights_path: &Path) -> Option<String> {

@@ -95,9 +95,11 @@ fi
 case "${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" in
   qwen3_0_6b_engram_decode|qwen3_14b_engram_decode)
     export SIM_QWEN3_GUEST_ENGRAM="${SIM_QWEN3_GUEST_ENGRAM:-1}"
+    export SIM_QWEN3_GUEST_ENGRAM_POOL="${SIM_QWEN3_GUEST_ENGRAM_POOL:-obmm}"
     ;;
   *)
     export SIM_QWEN3_GUEST_ENGRAM="${SIM_QWEN3_GUEST_ENGRAM:-0}"
+    export SIM_QWEN3_GUEST_ENGRAM_POOL="${SIM_QWEN3_GUEST_ENGRAM_POOL:-}"
     ;;
 esac
 
@@ -105,6 +107,7 @@ if (( PRINT_ENV )); then
   printf 'RUN_ID=%s\n' "${RUN_ID:-}"
   printf 'SIM_UAPI_W5_PROFILE=%s\n' "${SIM_UAPI_W5_PROFILE:-}"
   printf 'SIM_QWEN3_GUEST_ENGRAM=%s\n' "${SIM_QWEN3_GUEST_ENGRAM:-}"
+  printf 'SIM_QWEN3_GUEST_ENGRAM_POOL=%s\n' "${SIM_QWEN3_GUEST_ENGRAM_POOL:-}"
   printf 'SIM_QWEN3_GUEST_DECODE_STEPS=%s\n' "${SIM_QWEN3_GUEST_DECODE_STEPS:-}"
   printf 'SIM_QWEN3_DENSE_WEIGHTS_PATH=%s\n' "${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}"
   printf 'SIM_W5_MEMORY_SHORTPATH_EXECUTE=%s\n' "${SIM_W5_MEMORY_SHORTPATH_EXECUTE:-}"

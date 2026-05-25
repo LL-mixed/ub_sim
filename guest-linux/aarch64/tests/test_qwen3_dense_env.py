@@ -414,6 +414,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_W5_MEMORY_STORE", runner_text)
         self.assertIn("SIM_W5_MEMORY_OBJECT_STORE", runner_text)
         self.assertIn("SIM_W5_MEMORY_ENGRAM_STATE", runner_text)
+        self.assertIn("SIM_QWEN3_GUEST_ENGRAM_POOL", runner_text)
         self.assertIn("SIM_W5_MEMORY_REGISTRY_DIR", runner_text)
         self.assertIn("target/debug/sim-cli", runner_text)
         self.assertIn("cargo build -p sim-cli", runner_text)
@@ -432,6 +433,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("--memory-object-store", runner_text)
         self.assertIn("--memory-engram-state", runner_text)
         self.assertIn("--memory-registry-dir", runner_text)
+        self.assertIn("--engram-pool", runner_text)
+        self.assertIn('"$SIM_QWEN3_GUEST_ENGRAM_POOL"', runner_text)
         self.assertIn("memory_decision_reuse=1", runner_text)
         self.assertIn('exec "$SIM_CLI_BIN" "${cli_args[@]}"', runner_text)
         self.assertIn("eight_node_w5_inference_cluster_summary", runner_text)
@@ -441,6 +444,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("--steps N", config_runner_text)
         self.assertIn("STEPS_OVERRIDE", config_runner_text)
         self.assertIn("SIM_QWEN3_GUEST_ENGRAM", config_runner_text)
+        self.assertIn("SIM_QWEN3_GUEST_ENGRAM_POOL", config_runner_text)
         self.assertIn("fixed RUN_ID is disabled", config_runner_text)
         self.assertIn("SIM_W5_ALLOW_FIXED_RUN_ID", config_runner_text)
         self.assertIn("SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP", config_runner_text)
@@ -489,6 +493,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "RUN_ID=test-run",
                 "SIM_UAPI_W5_PROFILE=qwen3_0_6b_decode",
                 "SIM_QWEN3_GUEST_ENGRAM=0",
+                "SIM_QWEN3_GUEST_ENGRAM_POOL=",
                 "SIM_QWEN3_GUEST_DECODE_STEPS=3",
                 "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3",
                 "SIM_W5_MEMORY_SHORTPATH_EXECUTE=0",
@@ -524,6 +529,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
 
         self.assertIn("SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode", result.stdout)
         self.assertIn("SIM_QWEN3_GUEST_ENGRAM=1", result.stdout)
+        self.assertIn("SIM_QWEN3_GUEST_ENGRAM_POOL=obmm", result.stdout)
 
     def test_w5_cluster_config_runner_rejects_fixed_run_id_for_real_runs(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
