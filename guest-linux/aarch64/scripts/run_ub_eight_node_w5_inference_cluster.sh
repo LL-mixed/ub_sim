@@ -104,10 +104,16 @@ if [[ -n "$SIM_W5_MEMORY_DECISION_STORE" ]]; then
 fi
 
 if (( memory_runtime_lookup || memory_decision_reuse )); then
-  SIM_CLI_BIN="${SIM_CLI_BIN:-$REPO_DIR/target/debug/sim-cli}"
+  if [[ -z "${SIM_CLI_BIN:-}" ]]; then
+    SIM_CLI_BIN="$REPO_DIR/target/debug/sim-cli"
+    echo "[w5_inference_cluster] build sim-cli for current workspace: $SIM_CLI_BIN" >&2
+    pushd "$REPO_DIR" >/dev/null
+    cargo build -p sim-cli
+    popd >/dev/null
+  fi
   if [[ ! -x "$SIM_CLI_BIN" ]]; then
     echo "W5 Memory Service runtime path requires sim-cli: $SIM_CLI_BIN" >&2
-    echo "hint: run cargo build -p sim-cli, or set SIM_CLI_BIN to a built sim-cli" >&2
+    echo "hint: set SIM_CLI_BIN to a built sim-cli, or unset SIM_CLI_BIN so the runner builds the workspace default" >&2
     exit 2
   fi
   if [[ -z "${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}" ]]; then

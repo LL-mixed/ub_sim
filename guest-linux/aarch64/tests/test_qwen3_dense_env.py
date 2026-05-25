@@ -376,6 +376,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_W5_MEMORY_ENGRAM_STATE", runner_text)
         self.assertIn("SIM_W5_MEMORY_REGISTRY_DIR", runner_text)
         self.assertIn("target/debug/sim-cli", runner_text)
+        self.assertIn("cargo build -p sim-cli", runner_text)
+        self.assertIn("unset SIM_CLI_BIN so the runner builds", runner_text)
         self.assertIn("--memory-runtime-boundary-lookup", runner_text)
         self.assertIn("--memory-online-boundary-lookup", runner_text)
         self.assertIn("--memory-observation-store", runner_text)
