@@ -77,6 +77,18 @@ def main(argv):
         action="store_true",
         help="Fail if the host QEMU process check is unavailable.",
     )
+    parser.add_argument(
+        "--max-prune-candidates",
+        type=int,
+        default=None,
+        help="Fail if prune candidate count exceeds this limit.",
+    )
+    parser.add_argument(
+        "--max-prune-bytes",
+        type=int,
+        default=None,
+        help="Fail if prune candidate bytes exceed this limit.",
+    )
     args = parser.parse_args(argv)
 
     issues = []
@@ -86,6 +98,10 @@ def main(argv):
         issues.append(f"logs dir missing: {args.logs_dir}")
     if args.keep_latest < 0:
         issues.append("--keep-latest must be non-negative")
+    if args.max_prune_candidates is not None and args.max_prune_candidates < 0:
+        issues.append("--max-prune-candidates must be non-negative")
+    if args.max_prune_bytes is not None and args.max_prune_bytes < 0:
+        issues.append("--max-prune-bytes must be non-negative")
     if issues:
         for issue in issues:
             print(f"issue: {issue}")
@@ -114,6 +130,20 @@ def main(argv):
         for run in runs
         if actions.get(run.run_id) == "prune"
     )
+    if (
+        args.max_prune_candidates is not None
+        and prune_candidates > args.max_prune_candidates
+    ):
+        issues.append(
+            "prune candidate count exceeds limit: "
+            f"actual={prune_candidates} limit={args.max_prune_candidates}"
+        )
+    if args.max_prune_bytes is not None and prune_bytes > args.max_prune_bytes:
+        issues.append(
+            "prune footprint exceeds limit: "
+            f"actual_bytes={prune_bytes} limit_bytes={args.max_prune_bytes} "
+            f"actual_size={format_bytes(prune_bytes)}"
+        )
 
     qemu_unavailable = ""
     if args.skip_qemu_check:

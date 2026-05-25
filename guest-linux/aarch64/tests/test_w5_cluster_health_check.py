@@ -136,6 +136,49 @@ class W5ClusterHealthCheckTest(unittest.TestCase):
         )
         self.assertIn("w5_health_check: status=fail profile=qwen3_14b_engram_decode", result.stdout)
 
+    def test_fails_when_prune_footprint_exceeds_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            logs_dir = Path(tmp) / "logs"
+            out_dir.mkdir()
+            logs_dir.mkdir()
+            reusable = "2026-05-26_00-29-50_w5_qwen3_14b_engram_decode_25060"
+            old_run = "2026-05-26_03-02-33_w5_qwen3_14b_engram_decode_11903"
+            latest = "2026-05-26_03-14-03_w5_qwen3_14b_engram_decode_32556"
+            write_pass_run(out_dir, logs_dir, reusable, reusable=True)
+            write_pass_run(out_dir, logs_dir, old_run)
+            write_pass_run(out_dir, logs_dir, latest)
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--out-dir",
+                    str(out_dir),
+                    "--logs-dir",
+                    str(logs_dir),
+                    "--skip-qemu-check",
+                    "--keep-latest",
+                    "1",
+                    "--max-prune-candidates",
+                    "0",
+                    "--max-prune-bytes",
+                    "0",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("prune_footprint: runs=3 keep_latest=1 prune_candidates=1", result.stdout)
+        self.assertIn(
+            "issue: prune candidate count exceeds limit: actual=1 limit=0",
+            result.stdout,
+        )
+        self.assertIn("issue: prune footprint exceeds limit:", result.stdout)
+        self.assertIn("w5_health_check: status=fail profile=qwen3_14b_engram_decode", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
