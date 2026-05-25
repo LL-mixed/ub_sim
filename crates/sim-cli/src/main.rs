@@ -15283,7 +15283,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
 
         assert_eq!(
             line,
-            "  memory_boundary_observations_recorded: store=/tmp/w5-store.json summary=/tmp/w5-summary.txt records=0 steps=16 status=skipped reason=shortpath_no_range_exit"
+            "  memory_boundary_observations_recorded: store=/tmp/w5-store.json summary=/tmp/w5-summary.txt records=0 expected_steps=16 status=skipped reason=shortpath_no_range_exit"
         );
         assert!(!line.contains("first_id="));
         assert!(!line.contains("last_id="));
@@ -15302,7 +15302,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
 
         assert_eq!(
             line,
-            "  memory_boundary_observations_recorded: store=/tmp/w5-store.json summary=/tmp/w5-summary.txt records=2 steps=2 first_id=boundary-observation/run/step0/node1 last_id=boundary-observation/run/step1/node1 status=ok"
+            "  memory_boundary_observations_recorded: store=/tmp/w5-store.json summary=/tmp/w5-summary.txt records=2 expected_steps=2 first_id=boundary-observation/run/step0/node1 last_id=boundary-observation/run/step1/node1 status=ok"
         );
         assert!(!line.contains("reason="));
     }
@@ -17525,14 +17525,14 @@ fn w5_memory_boundary_observations_recorded_line(
 ) -> String {
     match skipped_reason {
         Some(reason) => format!(
-            "  memory_boundary_observations_recorded: store={} summary={} records=0 steps={} status=skipped reason={}",
+            "  memory_boundary_observations_recorded: store={} summary={} records=0 expected_steps={} status=skipped reason={}",
             store_path.display(),
             summary_path.display(),
             step_count,
             reason
         ),
         None => format!(
-            "  memory_boundary_observations_recorded: store={} summary={} records={} steps={} first_id={} last_id={} status=ok",
+            "  memory_boundary_observations_recorded: store={} summary={} records={} expected_steps={} first_id={} last_id={} status=ok",
             store_path.display(),
             summary_path.display(),
             observation_ids.len(),
