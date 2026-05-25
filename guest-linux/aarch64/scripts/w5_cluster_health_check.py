@@ -25,18 +25,43 @@ def latest_summary_for_profile(out_dir, profile):
     return summaries[0] if summaries else ("", None)
 
 
+def compact_reason(text):
+    return "; ".join(line.strip() for line in text.splitlines() if line.strip())
+
+
 def qemu_processes():
-    result = subprocess.run(
-        ["pgrep", "-fl", "qemu-system-aarch64"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["pgrep", "-fl", "qemu-system-aarch64"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as error:
+        return [], f"pgrep_failed_exception={type(error).__name__}: {error}"
     if result.returncode == 1:
         return [], ""
     if result.returncode != 0:
-        reason = result.stderr.strip() or f"pgrep_failed_rc={result.returncode}"
-        return [], reason
+        try:
+            fallback = subprocess.run(
+                ["ps", "-axo", "pid=,command="],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError as error:
+            reason = compact_reason(result.stderr) or f"pgrep_failed_rc={result.returncode}"
+            return [], f"{reason}; fallback ps_failed_exception={type(error).__name__}: {error}"
+        if fallback.returncode == 0:
+            qemu_lines = [
+                line.strip()
+                for line in fallback.stdout.splitlines()
+                if "qemu-system-aarch64" in line
+            ]
+            return qemu_lines, ""
+        reason = compact_reason(result.stderr) or f"pgrep_failed_rc={result.returncode}"
+        fallback_reason = compact_reason(fallback.stderr) or f"ps_failed_rc={fallback.returncode}"
+        return [], f"{reason}; fallback {fallback_reason}"
     return [line for line in result.stdout.splitlines() if line.strip()], ""
 
 

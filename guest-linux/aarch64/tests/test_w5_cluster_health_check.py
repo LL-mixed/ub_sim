@@ -4,9 +4,15 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "w5_cluster_health_check.py"
+SCRIPT_DIR = SCRIPT.parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+import w5_cluster_health_check  # noqa: E402
 
 
 def write_pass_run(out_dir, logs_dir, run_id, reusable=False):
@@ -178,6 +184,53 @@ class W5ClusterHealthCheckTest(unittest.TestCase):
         )
         self.assertIn("issue: prune footprint exceeds limit:", result.stdout)
         self.assertIn("w5_health_check: status=fail profile=qwen3_14b_engram_decode", result.stdout)
+
+    def test_qemu_check_falls_back_to_ps_when_pgrep_is_unavailable(self):
+        responses = [
+            subprocess.CompletedProcess(
+                ["pgrep", "-fl", "qemu-system-aarch64"],
+                3,
+                stdout="",
+                stderr="sysmon request failed with error: sysmond service not found\n",
+            ),
+            subprocess.CompletedProcess(
+                ["ps", "-axo", "pid=,command="],
+                0,
+                stdout=(
+                    "100 /usr/bin/zsh\n"
+                    "200 /Volumes/repos/ub_sim/vendor/qemu/build/qemu-system-aarch64 -machine virt\n"
+                ),
+                stderr="",
+            ),
+        ]
+
+        with mock.patch("w5_cluster_health_check.subprocess.run", side_effect=responses):
+            lines, unavailable = w5_cluster_health_check.qemu_processes()
+
+        self.assertEqual(unavailable, "")
+        self.assertEqual(
+            lines,
+            ["200 /Volumes/repos/ub_sim/vendor/qemu/build/qemu-system-aarch64 -machine virt"],
+        )
+
+    def test_qemu_check_reports_unavailable_when_pgrep_and_ps_are_blocked(self):
+        responses = [
+            subprocess.CompletedProcess(
+                ["pgrep", "-fl", "qemu-system-aarch64"],
+                3,
+                stdout="",
+                stderr="sysmon request failed with error: sysmond service not found\n",
+            ),
+            PermissionError(1, "Operation not permitted", "ps"),
+        ]
+
+        with mock.patch("w5_cluster_health_check.subprocess.run", side_effect=responses):
+            lines, unavailable = w5_cluster_health_check.qemu_processes()
+
+        self.assertEqual(lines, [])
+        self.assertIn("sysmond service not found", unavailable)
+        self.assertNotIn("\n", unavailable)
+        self.assertIn("fallback ps_failed_exception=PermissionError", unavailable)
 
 
 if __name__ == "__main__":
