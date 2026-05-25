@@ -2029,6 +2029,11 @@ struct w4_qwen3_engram_step_timing {
     uint64_t decision_publish_ms;
 };
 
+static bool qwen3_terminal_token_candidate_index(
+    const struct w4_qwen3_terminal_token_record *terminal_token,
+    uint64_t token,
+    uint64_t *index_out);
+
 static int qwen3_read_terminal_token_record(volatile uint8_t *ep_mmio,
                                             struct w4_qwen3_terminal_token_record *record)
 {
@@ -2073,7 +2078,11 @@ static int qwen3_read_terminal_token_record(volatile uint8_t *ep_mmio,
                        2ULL * sizeof(uint64_t));
     record->candidate_count = read_segment_u64(ep_mmio, logits_table_base + 160);
     if (record->candidate_count == 0 || record->candidate_count > 4) {
-        record->candidate_count = 0;
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 terminal logits candidate_count invalid"
+                " candidate_count=%" PRIu64 "\n",
+                record->candidate_count);
+        return -1;
     }
     for (uint64_t i = 0; i < record->candidate_count; ++i) {
         uint64_t candidate_base = logits_table_base + 168ULL + i * 48ULL;
@@ -2085,17 +2094,19 @@ static int qwen3_read_terminal_token_record(volatile uint8_t *ep_mmio,
         record->candidate_piece_word0[i] = read_segment_u64(ep_mmio, candidate_base + 32);
         record->candidate_piece_word1[i] = read_segment_u64(ep_mmio, candidate_base + 40);
     }
-    if (record->candidate_count == 0) {
-        record->candidate_count = 1;
-        record->candidate_tokens[0] = record->sampled_token;
-        record->candidate_logit_bits[0] = record->top_logit_bits;
-        record->candidate_text_checksums[0] = record->text_checksum;
-        record->candidate_piece_word0[0] = record->piece_word0;
-        record->candidate_piece_word1[0] = record->piece_word1;
-        if (record->runner_up_token != 0 && record->runner_up_token != record->sampled_token) {
-            record->candidate_count = 2;
-            record->candidate_tokens[1] = record->runner_up_token;
-            record->candidate_logit_bits[1] = record->runner_up_logit_bits;
+    {
+        uint64_t sampled_index = UINT64_MAX;
+
+        if (!qwen3_terminal_token_candidate_index(record,
+                                                  record->sampled_token,
+                                                  &sampled_index) ||
+            record->candidate_text_checksums[sampled_index] != record->text_checksum) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 terminal logits sampled candidate metadata invalid"
+                    " token=%" PRIu64 " candidate_count=%" PRIu64 "\n",
+                    record->sampled_token,
+                    record->candidate_count);
+            return -1;
         }
     }
     return 0;
