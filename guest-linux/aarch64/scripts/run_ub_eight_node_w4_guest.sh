@@ -840,6 +840,10 @@ validate_w5_boundary_observation_summary() {
         trace "FAIL: W5 shortpath pool usage summary is ambiguous path=$RUN_SUMMARY_FILE"
         return 1
       fi
+      if ! rg -q "guest_worker_shortpath_summary: action=jump-to-terminal boundary_hits=${SIM_QWEN3_GUEST_DECODE_STEPS} terminal_selects=${SIM_QWEN3_GUEST_DECODE_STEPS} expected_hits=${SIM_QWEN3_GUEST_DECODE_STEPS} actual_range_forwards=${SIM_QWEN3_GUEST_DECODE_STEPS} .*full_pipeline_range_forwards=$((SIM_QWEN3_GUEST_DECODE_STEPS * ${#NODE_IDS[@]}))" "$RUN_SUMMARY_FILE"; then
+        trace "FAIL: W5 shortpath worker summary does not prove reduced range pipeline path=$RUN_SUMMARY_FILE"
+        return 1
+      fi
       if rg -q "$stale_summary_pattern" "$RUN_SUMMARY_FILE"; then
         trace "FAIL: W5 shortpath summary contains stale fallback/missing/ambiguous markers path=$RUN_SUMMARY_FILE"
         return 1
