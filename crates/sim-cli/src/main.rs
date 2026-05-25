@@ -5175,6 +5175,7 @@ fn validate_w5_memory_decision_bundle_for_run(
             );
         }
     }
+    validate_w5_shortpath_run_boundary_coverage(config, bundle, profile, step_limit)?;
 
     if let Some(plan) = &bundle.prefetch {
         plan.validate()
@@ -5246,6 +5247,61 @@ fn validate_w5_memory_decision_bundle_for_run(
         }
     }
 
+    Ok(())
+}
+
+fn validate_w5_shortpath_run_boundary_coverage(
+    config: &W5MemoryDecisionConfig,
+    bundle: &W5MemoryDecisionBundle,
+    profile: &W5InferenceProfileSpec,
+    step_limit: u64,
+) -> anyhow::Result<()> {
+    let Some(run_id) = config.boundary_observation_run_id.as_ref() else {
+        return Ok(());
+    };
+    if !config.shortpath_execute {
+        return Ok(());
+    }
+    let max_node = u32::from(profile.nodes);
+    if max_node < 2 {
+        anyhow::bail!(
+            "W5 shortpath boundary coverage requires at least two profile nodes, got {}",
+            profile.nodes
+        );
+    }
+
+    let mut covered = std::collections::BTreeSet::<(u64, u32)>::new();
+    for entry in &bundle.shortpath_entries {
+        if entry.decision.action != sim_memory::ShortpathAction::JumpToTerminal {
+            continue;
+        }
+        let Some(artifact) = entry.artifact.as_ref() else {
+            continue;
+        };
+        if artifact.kind != sim_memory::ExecutionArtifactKind::Logits {
+            continue;
+        }
+        let boundary = &artifact.producer_boundary;
+        if boundary.step_index < step_limit
+            && boundary.node_index >= 1
+            && boundary.node_index < max_node
+        {
+            covered.insert((boundary.step_index, boundary.node_index));
+        }
+    }
+
+    for step in 0..step_limit {
+        for node in 1..max_node {
+            if !covered.contains(&(step, node)) {
+                anyhow::bail!(
+                    "W5 Memory Service reuse run_id={} is missing jump-to-terminal decision coverage for step={} node=node{}",
+                    run_id,
+                    step,
+                    node
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -11957,6 +12013,69 @@ mod tests {
         assert!(profile.queue_depth >= 16 * 7);
         assert!(profile.obmm_pool.queue_depth >= 16 * 7);
         assert!(profile.obmm_pool.pool_bytes <= 256 * 1024 * 1024);
+    }
+
+    #[test]
+    fn w5_memory_reuse_run_id_requires_shortpath_boundary_coverage() {
+        let runtime = Qwen3DenseGuestRuntime {
+            profile: Qwen3DenseProfile {
+                model_id: "Qwen/Qwen3-0.6B".to_string(),
+                vocab_size: 151_936,
+                hidden_size: 1024,
+                intermediate_size: 3072,
+                num_hidden_layers: 28,
+                num_attention_heads: 16,
+                num_key_value_heads: 8,
+                head_dim: 128,
+                max_position_embeddings: 40_960,
+                rope_theta: 1_000_000,
+                prefill_tokens: QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
+                decode_tokens: QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
+                tp_nodes: QWEN3_DENSE_DEFAULT_TP_NODES,
+            },
+            model_key: "qwen3-0-6b".to_string(),
+            weights_path: PathBuf::from("/models/qwen3-0.6b"),
+            chipbackend_profile: "qwen3_dense",
+        };
+        let profile = w5_inference_profile_spec("qwen3_0_6b_engram_decode").expect("profile");
+        let config = W5MemoryDecisionConfig {
+            store_path: PathBuf::from("/tmp/lingqu-memory-store.json"),
+            artifact_object_store_path: None,
+            boundary_request_path: None,
+            boundary_observation_id: None,
+            boundary_observation_ids: Vec::new(),
+            boundary_observation_run_id: Some("run0".to_string()),
+            shortpath_decision_id: None,
+            shortpath_decision_ids: Vec::new(),
+            online_boundary_lookup: false,
+            shortpath_execute: true,
+            prefetch_plan_id: None,
+            prefix_cache_reuse_plan_id: None,
+        };
+        let bundle = W5MemoryDecisionBundle {
+            shortpath: None,
+            shortpath_artifact: None,
+            shortpath_entries: Vec::new(),
+            shortpath_kv_artifacts: Vec::new(),
+            online_boundary_lookup: false,
+            prefetch: None,
+            prefetch_artifacts: Vec::new(),
+            prefix_cache: None,
+            prefix_cache_artifact: None,
+        };
+
+        let err = validate_w5_memory_decision_bundle_for_run(
+            &config,
+            &bundle,
+            &runtime,
+            profile,
+            &Qwen3EngramConfig::default(),
+            2,
+        )
+        .expect_err("run-id reuse cannot execute without full boundary coverage");
+        assert!(err
+            .to_string()
+            .contains("missing jump-to-terminal decision coverage for step=0 node=node1"));
     }
 
     #[test]
