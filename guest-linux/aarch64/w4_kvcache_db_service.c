@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <net/if.h>
 #include <net/if_arp.h>
 #include <netinet/in.h>
@@ -118,6 +119,40 @@ struct w4_db_cluster_payload {
     uint8_t record_pad[48];
     struct w4_db_record records[W4_DB_CLUSTER_MAX_RECORDS];
 };
+
+static long w4_db_env_wait_ms_or_default(const char *name, long fallback)
+{
+    const char *value = getenv(name);
+    char *end = NULL;
+    unsigned long long parsed;
+
+    if (!value || value[0] == '\0') {
+        return fallback;
+    }
+    errno = 0;
+    parsed = strtoull(value, &end, 10);
+    if (errno != 0 || end == value || *end != '\0' || parsed == 0 ||
+        parsed > (unsigned long long)LONG_MAX) {
+        return fallback;
+    }
+    return (long)parsed;
+}
+
+static long w4_db_qwen3_runtime_range_wait_ms(void)
+{
+    long barrier_wait_ms;
+    long runtime_wait_ms =
+        w4_db_env_wait_ms_or_default("SIM_QWEN3_RUNTIME_RANGE_WAIT_MS", -1);
+
+    if (runtime_wait_ms > 0) {
+        return runtime_wait_ms;
+    }
+    barrier_wait_ms = w4_db_env_wait_ms_or_default(
+        "SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS",
+        W4_DB_QWEN3_RUNTIME_RANGE_WAIT_MS);
+    return barrier_wait_ms > 0 ? barrier_wait_ms :
+        W4_DB_QWEN3_RUNTIME_RANGE_WAIT_MS;
+}
 
 struct w4_db_cluster_payload_header {
     uint32_t magic;
@@ -4946,7 +4981,7 @@ static int w4_db_obmm_service_v0_wait_runtime_range_input_view_internal(
         if (expected_epoch == 0) {
             expected_epoch = 1;
         }
-        deadline = wait_enter_ms + W4_DB_QWEN3_RUNTIME_RANGE_WAIT_MS;
+        deadline = wait_enter_ms + w4_db_qwen3_runtime_range_wait_ms();
         while (obmm_now_ms() < deadline) {
             int owner_idx;
 
@@ -5095,6 +5130,9 @@ static int w4_db_obmm_service_v0_wait_runtime_range_input_view_internal(
         view_out->owner_node = source_node;
         view_out->payload_kind = token_record.object_payload_kind;
         view_out->backing_offset = token_record.object_backing_offset;
+        memcpy(view_out->token_result_words,
+               payload_words,
+               W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES);
         if (w4_db_record_to_lingqu_obmm_ref(&token_record,
                                             &view_out->object_ref) != 0) {
             return -1;
@@ -5169,7 +5207,7 @@ static int w4_db_obmm_service_v0_wait_runtime_range_input_view_internal(
         expected_epoch = 1;
     }
     wait_enter_ms = obmm_now_ms();
-    deadline = wait_enter_ms + W4_DB_QWEN3_RUNTIME_RANGE_WAIT_MS;
+    deadline = wait_enter_ms + w4_db_qwen3_runtime_range_wait_ms();
     while (obmm_now_ms() < deadline) {
         struct obmm_desc rx;
 
@@ -5247,6 +5285,9 @@ static int w4_db_obmm_service_v0_wait_runtime_range_input_view_internal(
                 view_out->owner_node = (uint32_t)owner_idx;
                 view_out->payload_kind = token_record.object_payload_kind;
                 view_out->backing_offset = token_record.object_backing_offset;
+                memcpy(view_out->token_result_words,
+                       payload_words,
+                       W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES);
                 if (w4_db_record_to_lingqu_obmm_ref(&token_record,
                                                     &view_out->object_ref) != 0) {
                     return -1;
@@ -5523,7 +5564,9 @@ int w4_db_obmm_service_v0_wait_scheduler_work_item(
             item_out->range_input = view;
             return 0;
         }
-        memcpy(token_words, view.data, W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES);
+        memcpy(token_words,
+               view.token_result_words,
+               W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES);
         if (token_words[0] != decode_step) {
             printf("[w4_guest] gap qwen3_scheduler_work_item=terminal_step_mismatch local=node%u got=%" PRIu64 " expected=%" PRIu64 "\n",
                    local_node + 1U,

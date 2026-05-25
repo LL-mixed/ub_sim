@@ -119,8 +119,14 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("validate_w5_profile_runtime", runner_text)
         self.assertIn("SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS", runner_text)
         self.assertIn("DEMO_WAIT_SECS * 1000", runner_text)
+        self.assertIn("SIM_QWEN3_RUNTIME_RANGE_WAIT_MS", runner_text)
+        self.assertIn(
+            "DEMO_WAIT_SECS * SIM_QWEN3_GUEST_DECODE_STEPS * 1000",
+            runner_text,
+        )
         self.assertIn("SIM_UAPI_W5_PROFILE", launcher_text)
         self.assertIn("SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS", launcher_text)
+        self.assertIn("SIM_QWEN3_RUNTIME_RANGE_WAIT_MS", launcher_text)
         self.assertIn("SIM_QWEN3_GUEST_ENGRAM_STATE_REF", runner_text)
         self.assertIn("SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR", runner_text)
         self.assertIn("SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT", runner_text)
@@ -242,9 +248,9 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("qwen3_w5_memory_terminal_logits_selected", guest_source)
         self.assertIn("target=terminal_token_result", guest_source)
         self.assertIn("publish_hidden=0", guest_source)
-        self.assertNotIn("qwen3_memory_shortpath_downstream_kv_complete", guest_source)
-        self.assertNotIn("skipped_downstream_kv_state_unavailable", guest_source)
-        self.assertNotIn("shortpath_execution_guard", guest_source)
+        self.assertIn("qwen3_memory_shortpath_downstream_kv_support_complete", guest_source)
+        self.assertIn("skipped_downstream_kv_state_unavailable", guest_source)
+        self.assertIn("shortpath_execution_guard", guest_source)
         self.assertIn("qwen3_round_decode_position", guest_source)
         self.assertIn(
             "qwen3_prompt_base_token_count + guest_decode_step",
@@ -255,6 +261,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             "qwen3_w5_memory_service_lookup_boundary(\n"
             "        memory_config,\n"
             "        dispatch_node,\n"
+            "        cluster_node_count,\n"
             "        layer_start,\n"
             "        layer_end,\n"
             "        decode_step,\n"
@@ -372,6 +379,10 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("--memory-runtime-boundary-lookup", runner_text)
         self.assertIn("--memory-online-boundary-lookup", runner_text)
         self.assertIn("--memory-observation-store", runner_text)
+        self.assertIn("--memory-store", runner_text)
+        self.assertIn("--memory-object-store", runner_text)
+        self.assertIn("--memory-engram-state", runner_text)
+        self.assertIn("--memory-registry-dir", runner_text)
         self.assertIn("--memory-decision-store", runner_text)
         self.assertIn("--memory-boundary-observation-run-id", runner_text)
         self.assertIn("--memory-shortpath-decision-ids", runner_text)

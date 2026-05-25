@@ -130,6 +130,12 @@ if (( memory_runtime_lookup || memory_decision_reuse )); then
     cli_args+=(
       --memory-observation-store "$SIM_W5_MEMORY_OBSERVATION_STORE"
       --memory-runtime-boundary-lookup
+      --memory-store "$SIM_W5_MEMORY_STORE"
+      --memory-object-store "$SIM_W5_MEMORY_OBJECT_STORE"
+      --memory-engram-state "$SIM_W5_MEMORY_ENGRAM_STATE"
+      --memory-registry-dir "$SIM_W5_MEMORY_REGISTRY_DIR"
+      --memory-owner-entity "$SIM_W5_MEMORY_OWNER_ENTITY"
+      --memory-producer-entity "$SIM_W5_MEMORY_PRODUCER_ENTITY"
     )
   fi
   if (( memory_decision_reuse )); then

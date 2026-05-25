@@ -89,6 +89,7 @@ struct w4_db_object_payload_view {
     uint32_t wait_attempts;
     uint64_t activate_ms;
     uint64_t metadata_ms;
+    uint64_t token_result_words[8];
 };
 
 enum w4_db_scheduler_work_item_kind {

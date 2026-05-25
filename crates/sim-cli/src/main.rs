@@ -2977,15 +2977,33 @@ fn run_lingqu_memory_promote_terminal_shortpath_artifacts_from_w5_summary_cli(
     }
 
     let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let existing_observations = match durable_store.load_boundary_observation_manifest() {
+        Ok(observations) => observations,
+        Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => Vec::new(),
+        Err(err) => {
+            return Err(err).context("load existing boundary observations before promotion");
+        }
+    };
+    let existing_observation_ids = existing_observations
+        .iter()
+        .map(|observation| observation.observation_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
     let mut memory_service = LingquMemoryService::new();
+    let mut new_observation_count = 0usize;
     for observation in &selected_observations {
+        if existing_observation_ids.contains(observation.observation_id.as_str()) {
+            continue;
+        }
         memory_service
             .register_boundary_observation(observation.clone())
             .context("register promoted boundary observation")?;
+        new_observation_count += 1;
     }
-    memory_service
-        .persist_boundary_observations_to_dfs(&mut durable_store)
-        .context("persist promoted boundary observation DFS audit")?;
+    if new_observation_count > 0 {
+        memory_service
+            .persist_boundary_observations_to_dfs(&mut durable_store)
+            .context("persist promoted boundary observation DFS audit")?;
+    }
     rebuild_lingqu_memory_execution_registry_artifacts(&mut memory_service, &mut durable_store)
         .context("rebuild existing execution artifact registry")?;
 
@@ -5081,6 +5099,13 @@ fn validate_w5_memory_decision_bundle_for_run(
                     );
                 }
             }
+            if config.shortpath_execute
+                && entry.decision.action == sim_memory::ShortpathAction::JumpToTerminal
+            {
+                validate_w5_shortpath_downstream_kv_bundle(
+                    entry, artifact, bundle, runtime, profile,
+                )?;
+            }
         }
     }
 
@@ -5173,6 +5198,77 @@ fn validate_w5_memory_decision_bundle_for_run(
     }
 
     Ok(())
+}
+
+fn validate_w5_shortpath_downstream_kv_bundle(
+    entry: &W5MemoryShortpathEntry,
+    artifact: &sim_memory::ExecutionArtifactObject,
+    bundle: &W5MemoryDecisionBundle,
+    runtime: &Qwen3DenseGuestRuntime,
+    profile: &W5InferenceProfileSpec,
+) -> anyhow::Result<()> {
+    if artifact.kind != sim_memory::ExecutionArtifactKind::Logits {
+        return Ok(());
+    }
+    let max_node = u32::from(profile.nodes);
+    if artifact.producer_boundary.node_index >= max_node {
+        return Ok(());
+    }
+    let producer_position = entry.decision.producer_position.ok_or_else(|| {
+        anyhow::anyhow!(
+            "shortpath decision {} missing producer position for downstream KV validation",
+            entry.decision.decision_id
+        )
+    })?;
+    for target_node in (artifact.producer_boundary.node_index + 1)..=max_node {
+        let (target_layer_start, target_layer_end) =
+            w5_expected_layer_range_for_node(runtime, profile, target_node)?;
+        let found = bundle.shortpath_kv_artifacts.iter().any(|kv| {
+            kv.step_index == artifact.producer_boundary.step_index
+                && kv.producer_position == producer_position
+                && kv.producer_layer_end == artifact.producer_boundary.layer_end
+                && kv.target_node_index == target_node
+                && kv.target_layer_start == target_layer_start
+                && kv.target_layer_end == target_layer_end
+        });
+        if !found {
+            anyhow::bail!(
+                "--memory-shortpath-execute requires downstream KV artifact for jump-to-terminal decision {} artifact {} step={} producer_layer_end={} target_node={} target_layers=[{},{})",
+                entry.decision.decision_id,
+                artifact.artifact_id,
+                artifact.producer_boundary.step_index,
+                artifact.producer_boundary.layer_end,
+                target_node,
+                target_layer_start,
+                target_layer_end
+            );
+        }
+    }
+    Ok(())
+}
+
+fn w5_expected_layer_range_for_node(
+    runtime: &Qwen3DenseGuestRuntime,
+    profile: &W5InferenceProfileSpec,
+    node_index: u32,
+) -> anyhow::Result<(u32, u32)> {
+    let node_count = u32::from(profile.nodes);
+    if node_count == 0 || node_index == 0 || node_index > node_count {
+        anyhow::bail!(
+            "invalid W5 node index {} for profile {} nodes={}",
+            node_index,
+            profile.name,
+            profile.nodes
+        );
+    }
+    let layer_count = u32::try_from(runtime.profile.num_hidden_layers)
+        .context("W5 runtime layer count exceeds u32")?;
+    let zero_based_node = node_index - 1;
+    let base = layer_count / node_count;
+    let rem = layer_count % node_count;
+    let start = zero_based_node * base + zero_based_node.min(rem);
+    let end = start + base + u32::from(zero_based_node < rem);
+    Ok((start, end))
 }
 
 fn validate_w5_execution_artifact_matches_run(
@@ -6118,8 +6214,12 @@ fn w5_boundary_observation_store_path(args: &Qwen3GuestDecodeLoopCliArgs) -> Opt
 fn w5_memory_should_publish_engram_state(
     config: &W5MemoryBootstrapConfig,
     memory_decisions_present: bool,
+    runtime_boundary_lookup: bool,
+    engram_requested: bool,
 ) -> bool {
-    config.engram_state_path.exists() || !memory_decisions_present
+    engram_requested
+        || config.engram_state_path.exists()
+        || (!memory_decisions_present && !runtime_boundary_lookup)
 }
 
 fn w5_execution_artifact_kind_name(kind: sim_memory::ExecutionArtifactKind) -> &'static str {
@@ -7660,6 +7760,7 @@ fn w5_kv_artifact_exports_from_summary(
         .ok_or_else(|| anyhow::anyhow!("missing W5 run_dir in summary"))?;
     let mut exports = std::collections::BTreeMap::<(u64, u32, u32, u32), W5KvArtifactExport>::new();
     let boundary_fingerprints = w5_boundary_fingerprints_from_summary(summary)?;
+    let boundary_input_fingerprints = w5_boundary_input_fingerprints_from_summary(summary)?;
     let object_service = object_store_path
         .map(|path| -> anyhow::Result<Option<LingquObjectServiceStub>> {
             let snapshot = load_lingqu_object_service_snapshot_file(path)?;
@@ -7702,6 +7803,9 @@ fn w5_kv_artifact_exports_from_summary(
                     let offset = required_summary_u64_auto(&fields, "offset")?;
                     let hidden = boundary_fingerprints
                         .get(&(step, node_index, layer_start, layer_end))
+                        .or_else(|| {
+                            boundary_input_fingerprints.get(&(step, node_index, layer_start))
+                        })
                         .ok_or_else(|| {
                             anyhow::anyhow!(
                                 "missing boundary fingerprint for direct KV artifact step={step} node={node_index} layers=[{layer_start},{layer_end})"
@@ -7829,6 +7933,28 @@ fn w5_boundary_fingerprints_from_summary(
         let checksum = required_summary_u64_auto(&fields, "hidden_checksum")?;
         fingerprints.insert(
             (step, node, layer_start, layer_end),
+            W5BoundaryFingerprint { bytes, checksum },
+        );
+    }
+    Ok(fingerprints)
+}
+
+fn w5_boundary_input_fingerprints_from_summary(
+    summary: &str,
+) -> anyhow::Result<std::collections::BTreeMap<(u64, u32, u32), W5BoundaryFingerprint>> {
+    let mut fingerprints = std::collections::BTreeMap::new();
+    for line in summary.lines() {
+        if !line.starts_with("memory_boundary_observation: ") {
+            continue;
+        }
+        let fields = parse_summary_fields(line);
+        let step = required_summary_u64(&fields, "step")?;
+        let target = parse_node_index(required_summary_field(&fields, "target")?)?;
+        let layer_end = required_summary_u32(&fields, "layer_end")?;
+        let bytes = required_summary_u64(&fields, "hidden_bytes")?;
+        let checksum = required_summary_u64_auto(&fields, "hidden_checksum")?;
+        fingerprints.insert(
+            (step, target, layer_end),
             W5BoundaryFingerprint { bytes, checksum },
         );
     }
@@ -10081,10 +10207,22 @@ mod tests {
             owner_entity: 0,
             producer_entity: 0,
         };
-        assert!(w5_memory_should_publish_engram_state(&config, false));
-        assert!(!w5_memory_should_publish_engram_state(&config, true));
+        assert!(w5_memory_should_publish_engram_state(
+            &config, false, false, false
+        ));
+        assert!(!w5_memory_should_publish_engram_state(
+            &config, true, false, false
+        ));
+        assert!(!w5_memory_should_publish_engram_state(
+            &config, false, true, false
+        ));
+        assert!(w5_memory_should_publish_engram_state(
+            &config, false, true, true
+        ));
         fs::write(&config.engram_state_path, "{}").expect("write marker engram state");
-        assert!(w5_memory_should_publish_engram_state(&config, true));
+        assert!(w5_memory_should_publish_engram_state(
+            &config, true, true, false
+        ));
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -11120,8 +11258,8 @@ mod tests {
                 phase: sim_memory::RangeBoundaryPhase::RangeExit,
                 step_index: 0,
                 node_index: 7,
-                layer_start: 24,
-                layer_end: 28,
+                layer_start: 22,
+                layer_end: 25,
                 next_node_index: Some(8),
                 position: 4,
             },
@@ -11178,6 +11316,95 @@ mod tests {
             proof_checksum: 0x9999,
             ..decision.clone()
         };
+        let incomplete_bundle = W5MemoryDecisionBundle {
+            shortpath: Some(decision.clone()),
+            shortpath_artifact: Some(artifact.clone()),
+            shortpath_entries: vec![crate::W5MemoryShortpathEntry {
+                decision: decision.clone(),
+                artifact: Some(artifact.clone()),
+            }],
+            shortpath_kv_artifacts: Vec::new(),
+            online_boundary_lookup: false,
+            prefetch: None,
+            prefetch_artifacts: Vec::new(),
+            prefix_cache: None,
+            prefix_cache_artifact: None,
+        };
+        let engram = Qwen3EngramConfig {
+            enabled: true,
+            pool: Qwen3EngramPool::Obmm,
+            ..Qwen3EngramConfig::default()
+        };
+        let err = validate_w5_memory_decision_bundle_for_run(
+            &config,
+            &incomplete_bundle,
+            &runtime,
+            profile,
+            &engram,
+            1,
+        )
+        .expect_err("jump-to-terminal before the final node requires downstream KV artifacts");
+        assert!(err.to_string().contains("requires downstream KV artifact"));
+        let make_kv = |producer_layer_end: u32,
+                       target_node_index: u32,
+                       target_layer_start: u32,
+                       target_layer_end: u32| {
+            let checksum =
+                0x9000_u64 + u64::from(producer_layer_end) * 0x100 + u64::from(target_node_index);
+            crate::W5MemoryShortpathKvArtifact {
+                step_index: 0,
+                producer_position: 4,
+                producer_layer_end,
+                target_node_index,
+                target_layer_start,
+                target_layer_end,
+                artifact: sim_memory::ExecutionArtifactObject {
+                    artifact_id: format!(
+                        "artifact/kv/test-p{producer_layer_end}-node{target_node_index}"
+                    ),
+                    kind: sim_memory::ExecutionArtifactKind::KvCache,
+                    model: model.clone(),
+                    producer_boundary: sim_memory::RangeBoundary {
+                        phase: sim_memory::RangeBoundaryPhase::RangeExit,
+                        step_index: 0,
+                        node_index: target_node_index,
+                        layer_start: target_layer_start,
+                        layer_end: target_layer_end,
+                        next_node_index: Some(if target_node_index == 8 {
+                            1
+                        } else {
+                            target_node_index + 1
+                        }),
+                        position: 4,
+                    },
+                    boundary_hidden_fingerprint: sim_memory::BoundaryTensorFingerprint {
+                        bytes: 16,
+                        checksum,
+                        dtype: sim_core::TensorDType::F32,
+                        shape: vec![1, 4],
+                    },
+                    target_layer_start,
+                    target_layer_end,
+                    dtype: sim_core::TensorDType::F32,
+                    shape: vec![1, 4],
+                    durable_payload_ref: Some(sim_memory::LingquBlockPayloadRef::new(
+                        format!("block/kv/test-p{producer_layer_end}-node{target_node_index}"),
+                        0,
+                        16,
+                        checksum,
+                    )),
+                    hot_object_ref: None,
+                    source_query_result_id: None,
+                    source_engram_state_id: None,
+                    confidence_milli: 990,
+                    state: sim_memory::ExecutionArtifactState::Verified,
+                    checksum,
+                    version: 1,
+                    created_at_us: 10,
+                    expires_at_us: Some(100),
+                },
+            }
+        };
         let bundle = W5MemoryDecisionBundle {
             shortpath: Some(decision.clone()),
             shortpath_artifact: Some(artifact.clone()),
@@ -11195,7 +11422,20 @@ mod tests {
                     artifact: Some(artifact_node7),
                 },
             ],
-            shortpath_kv_artifacts: Vec::new(),
+            shortpath_kv_artifacts: vec![
+                make_kv(4, 2, 4, 8),
+                make_kv(4, 3, 8, 12),
+                make_kv(4, 4, 12, 16),
+                make_kv(4, 5, 16, 19),
+                make_kv(4, 6, 19, 22),
+                make_kv(4, 7, 22, 25),
+                make_kv(4, 8, 25, 28),
+                make_kv(16, 5, 16, 19),
+                make_kv(16, 6, 19, 22),
+                make_kv(16, 7, 22, 25),
+                make_kv(16, 8, 25, 28),
+                make_kv(25, 8, 25, 28),
+            ],
             online_boundary_lookup: false,
             prefetch: None,
             prefetch_artifacts: Vec::new(),
@@ -11237,15 +11477,10 @@ mod tests {
         assert_eq!(stream.len(), 3);
         assert!(stream[0].starts_with("0:4:0:4:4:4:"));
         assert!(stream[1].starts_with("0:4:12:16:16:16:"));
-        assert!(stream[2].starts_with("0:4:24:28:28:28:"));
+        assert!(stream[2].starts_with("0:4:22:25:28:28:"));
         assert!(stream.iter().all(|entry| entry.split(':').count() == 9));
         assert!(stream.iter().all(|entry| !entry.contains("decision/")));
         assert!(stream.iter().all(|entry| !entry.contains("artifact/")));
-        let engram = Qwen3EngramConfig {
-            enabled: true,
-            pool: Qwen3EngramPool::Obmm,
-            ..Qwen3EngramConfig::default()
-        };
         validate_w5_memory_decision_bundle_for_run(&config, &bundle, &runtime, profile, &engram, 1)
             .expect("per-boundary logits artifacts can drive Engram shortpath execution");
     }
@@ -13306,6 +13541,131 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
     }
 
     #[test]
+    fn lingqu_memory_promotes_terminal_node_kv_from_input_boundary_fingerprint() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_lingqu_memory_promote_terminal_kv_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let store = root.join("store.json");
+        let summary_path = root.join("summary.txt");
+        let run_dir = root.join("run0_headless8");
+        let registry_dir = root.join("registry");
+        fs::create_dir_all(&run_dir).expect("create run dir");
+        fs::create_dir_all(&registry_dir).expect("create registry dir");
+
+        let mut summary = format!("summary: run_dir={}\n", run_dir.display());
+        summary.push_str(&sample_w5_boundary_observation_line(
+            0, "node7", "node8", 30, 35, 0x7777,
+        ));
+        fs::write(&summary_path, summary).expect("write summary");
+
+        let key = "kvcache/qwen3-test-key/node8/layers-35-40/decode-step0";
+        let version = 1;
+        let kv_payload = vec![0x88, 0x35, 0x40, 0xff];
+        let kv_checksum = w5_runtime_tensor_payload_checksum(&kv_payload);
+        let object_ref = qwen3_obmm_object_ref_for_payload(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+            7,
+            7,
+            version,
+            key,
+            0,
+            kv_payload.len() as u64,
+            kv_checksum,
+        );
+        let payload_path = qwen3_object_registry_path_in_dir(&registry_dir, &object_ref);
+        fs::write(&payload_path, &kv_payload).expect("write registry payload");
+        fs::write(
+            run_dir.join("nodeH_guest.log"),
+            format!(
+                "{}{}",
+                sample_w5_terminal_logits_log_line(0, 11, 358),
+                sample_w5_direct_kv_publish_log_line(0, 8, 35, 40, key, version, &kv_payload)
+            ),
+        )
+        .expect("write guest log");
+
+        run_lingqu_memory_record_boundary_observations_from_w5_summary_cli(&[
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--summary".to_string(),
+            summary_path.to_string_lossy().into_owned(),
+            "--step".to_string(),
+            "0".to_string(),
+            "--position".to_string(),
+            "20".to_string(),
+            "--model-id".to_string(),
+            "qwen3-test".to_string(),
+            "--model-key".to_string(),
+            "qwen3-test-key".to_string(),
+            "--tokenizer-hash".to_string(),
+            "0x1001".to_string(),
+            "--profile-hash".to_string(),
+            "0x2002".to_string(),
+            "--created-at-us".to_string(),
+            "100".to_string(),
+        ])
+        .expect("pre-record boundary observation with original timestamp");
+
+        run_lingqu_memory_promote_terminal_shortpath_artifacts_from_w5_summary_cli(&[
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--summary".to_string(),
+            summary_path.to_string_lossy().into_owned(),
+            "--step-count".to_string(),
+            "1".to_string(),
+            "--initial-position".to_string(),
+            "20".to_string(),
+            "--nodes".to_string(),
+            "node7".to_string(),
+            "--object-registry-dir".to_string(),
+            registry_dir.to_string_lossy().into_owned(),
+            "--model-id".to_string(),
+            "qwen3-test".to_string(),
+            "--model-key".to_string(),
+            "qwen3-test-key".to_string(),
+            "--tokenizer-hash".to_string(),
+            "0x1001".to_string(),
+            "--profile-hash".to_string(),
+            "0x2002".to_string(),
+            "--created-at-us".to_string(),
+            "12".to_string(),
+        ])
+        .expect("promote terminal-node KV artifact from input boundary fingerprint");
+
+        let mut durable_store =
+            load_lingqu_memory_durable_store(&store).expect("load promoted durable store");
+        let observations = durable_store
+            .load_boundary_observation_manifest()
+            .expect("load promoted boundary observations");
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].created_at_us, 100);
+        let artifacts = durable_store
+            .load_execution_artifact_manifest()
+            .expect("load promoted execution artifacts");
+        let kv_artifact = artifacts
+            .iter()
+            .find(|artifact| artifact.artifact_id == "artifact/kv/run0/step0/node8")
+            .expect("promoted terminal node KV artifact");
+        assert_eq!(kv_artifact.kind, sim_memory::ExecutionArtifactKind::KvCache);
+        assert_eq!(kv_artifact.producer_boundary.layer_start, 35);
+        assert_eq!(kv_artifact.producer_boundary.layer_end, 40);
+        assert_eq!(kv_artifact.boundary_hidden_fingerprint.checksum, 0x7777);
+        let kv_payload_ref = kv_artifact
+            .durable_payload_ref
+            .clone()
+            .expect("terminal kv payload ref");
+        assert_eq!(
+            read_lingqu_memory_payload_ref(&mut durable_store, &kv_payload_ref)
+                .expect("read terminal kv payload"),
+            kv_payload
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn lingqu_memory_promotes_direct_object_service_kv_artifacts_without_payload_refs() {
         let root = std::env::temp_dir().join(format!(
             "ub_sim_lingqu_memory_promote_object_kv_{}",
@@ -15213,8 +15573,12 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     let runtime = qwen3_guest_dense_runtime(args)?;
     let mut effective_engram = args.engram.clone();
     let memory_publication = if let Some(memory_bootstrap) = &args.memory_bootstrap {
-        if w5_memory_should_publish_engram_state(memory_bootstrap, args.memory_decisions.is_some())
-        {
+        if w5_memory_should_publish_engram_state(
+            memory_bootstrap,
+            args.memory_decisions.is_some(),
+            args.memory_runtime_boundary_lookup,
+            args.engram.enabled,
+        ) {
             let publication = publish_w5_engram_state_ref_from_memory_objects(memory_bootstrap)
                 .context("publish Memory Service EngramStateObjectRef for W5")?;
             effective_engram.enabled = true;
@@ -15609,10 +15973,12 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
             config.registry_dir.display().to_string(),
         );
-        command.env(
-            SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
-            config.object_store_path.display().to_string(),
-        );
+        if config.object_store_path.exists() {
+            command.env(
+                SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
+                config.object_store_path.display().to_string(),
+            );
+        }
     }
     if let Some(spec) = &engram_simt {
         command

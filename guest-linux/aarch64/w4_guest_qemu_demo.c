@@ -6840,9 +6840,18 @@ static int qwen3_memory_shortpath_validate_single_boundary_fingerprint(
     return 1;
 }
 
+static bool qwen3_memory_shortpath_downstream_kv_support_complete(
+    const struct w4_qwen3_memory_decision_config *config,
+    uint32_t dispatch_node,
+    uint32_t cluster_node_count,
+    uint32_t producer_layer_end,
+    uint64_t decode_step,
+    uint32_t *missing_node_out);
+
 static int qwen3_w5_memory_service_lookup_boundary(
     const struct w4_qwen3_memory_decision_config *config,
     uint32_t local_node,
+    uint32_t cluster_node_count,
     uint32_t layer_start,
     uint32_t layer_end,
     uint64_t decode_step,
@@ -6916,6 +6925,45 @@ static int qwen3_w5_memory_service_lookup_boundary(
                    config->shortpath_lookup_mode,
                    config->boundary_lookup_backend);
             return 0;
+        }
+        {
+            uint32_t missing_node = 0U;
+
+            if (config->shortpath_execute &&
+                !qwen3_memory_shortpath_downstream_kv_support_complete(
+                    config,
+                    local_node,
+                    cluster_node_count,
+                    layer_end,
+                    decode_step,
+                    &missing_node)) {
+                printf("[w4_guest] stage qwen3_w5_memory_shortpath_rejected"
+                       " step=%" PRIu64 " layers=[%u,%u)"
+                       " stream_index=%" PRIu64
+                       " missing_node=node%u"
+                       " reason=skipped_downstream_kv_state_unavailable"
+                       " guard=shortpath_execution_guard status=rejected\n",
+                       decode_step,
+                       layer_start,
+                       layer_end,
+                       entry->stream_index,
+                       missing_node + 1U);
+                printf("[w4_guest] stage qwen3_memory_service_boundary_lookup_response"
+                       " node=%u step=%" PRIu64 " layers=[%u,%u)"
+                       " position=%" PRIu64
+                       " action=continue"
+                       " reason=skipped_downstream_kv_state_unavailable"
+                       " source=lingqu_memory_service target=boundary_controller"
+                       " mode=%s backend=%s status=miss\n",
+                       local_node + 1U,
+                       decode_step,
+                       layer_start,
+                       layer_end,
+                       position,
+                       config->shortpath_lookup_mode,
+                       config->boundary_lookup_backend);
+                return 0;
+            }
         }
         load_state = qwen3_memory_shortpath_terminal_logits_record_from_ref(
             config->boundary_registry_loaded ?
@@ -7025,6 +7073,46 @@ static int qwen3_w5_memory_service_lookup_boundary(
                config->boundary_lookup_backend);
         return 0;
     }
+    {
+        uint32_t missing_node = 0U;
+
+        if (config->shortpath_execute &&
+            !qwen3_memory_shortpath_downstream_kv_support_complete(
+                config,
+                local_node,
+                cluster_node_count,
+                layer_end,
+                decode_step,
+                &missing_node)) {
+            printf("[w4_guest] stage qwen3_w5_memory_shortpath_rejected"
+                   " step=%" PRIu64 " layers=[%u,%u)"
+                   " decision_id=%s artifact_id=%s"
+                   " missing_node=node%u"
+                   " reason=skipped_downstream_kv_state_unavailable"
+                   " guard=shortpath_execution_guard status=rejected\n",
+                   decode_step,
+                   layer_start,
+                   layer_end,
+                   config->shortpath_decision_id,
+                   config->shortpath_artifact_id,
+                   missing_node + 1U);
+            printf("[w4_guest] stage qwen3_memory_service_boundary_lookup_response"
+                   " node=%u step=%" PRIu64 " layers=[%u,%u)"
+                   " position=%" PRIu64
+                   " action=continue"
+                   " reason=skipped_downstream_kv_state_unavailable"
+                   " source=lingqu_memory_service target=boundary_controller"
+                   " mode=%s backend=%s status=miss\n",
+                   local_node + 1U,
+                   decode_step,
+                   layer_start,
+                   layer_end,
+                   position,
+                   config->shortpath_lookup_mode,
+                   config->boundary_lookup_backend);
+            return 0;
+        }
+    }
     load_state = qwen3_memory_shortpath_terminal_logits_record(
         config,
         decode_step,
@@ -7059,6 +7147,7 @@ static int qwen3_boundary_controller_resolve_work_item(
     const struct w4_qwen3_sampler_config *sampler_config,
     const struct w4_qwen3_engram_config *engram_config,
     uint32_t dispatch_node,
+    uint32_t cluster_node_count,
     uint32_t layer_start,
     uint32_t layer_end,
     uint64_t decode_step,
@@ -7070,6 +7159,9 @@ static int qwen3_boundary_controller_resolve_work_item(
 
     if (!memory_config || !sampler_config || !engram_config ||
         !runtime_forward || !result_out) {
+        return -1;
+    }
+    if (dispatch_node >= cluster_node_count) {
         return -1;
     }
     memset(result_out, 0, sizeof(*result_out));
@@ -7089,6 +7181,7 @@ static int qwen3_boundary_controller_resolve_work_item(
     lookup_state = qwen3_w5_memory_service_lookup_boundary(
         memory_config,
         dispatch_node,
+        cluster_node_count,
         layer_start,
         layer_end,
         decode_step,
@@ -7176,6 +7269,59 @@ static int qwen3_boundary_controller_resolve_work_item(
     if (!memory_config->shortpath_execute) {
         return 0;
     }
+    {
+        uint32_t missing_node = 0U;
+
+        if (!qwen3_memory_shortpath_downstream_kv_support_complete(
+                memory_config,
+                dispatch_node,
+                cluster_node_count,
+                layer_end,
+                decode_step,
+                &missing_node)) {
+            printf("[w4_guest] stage qwen3_w5_memory_shortpath_rejected"
+                   " step=%" PRIu64 " layers=[%u,%u)"
+                   " decision_id=%s artifact_id=%s"
+                   " missing_node=node%u"
+                   " reason=skipped_downstream_kv_state_unavailable"
+                   " guard=shortpath_execution_guard status=rejected\n",
+                   decode_step,
+                   layer_start,
+                   layer_end,
+                   result_out->lookup.decision_id ?
+                       result_out->lookup.decision_id : "",
+                   result_out->lookup.artifact_id ?
+                       result_out->lookup.artifact_id : "",
+                   missing_node + 1U);
+            result_out->action = W4_QWEN3_BOUNDARY_CONTROLLER_CONTINUE;
+            printf("[w4_guest] stage qwen3_boundary_controller_lookup"
+                   " node=%u step=%" PRIu64 " layers=[%u,%u)"
+                   " hidden_bytes=%" PRIu64
+                   " hidden_checksum=0x%016" PRIx64
+                   " action=continue"
+                   " reason=skipped_downstream_kv_state_unavailable"
+                   " source=boundary_controller target=lingqu_memory_service"
+                   " mode=%s backend=%s status=miss\n",
+                   dispatch_node + 1U,
+                   decode_step,
+                   layer_start,
+                   layer_end,
+                   runtime_forward->payload_bytes,
+                   runtime_forward->payload_checksum,
+                   memory_config->shortpath_lookup_mode,
+                   memory_config->boundary_lookup_backend);
+            printf("[w4_guest] stage qwen3_boundary_controller_downstream_work_item"
+                   " node=%u step=%" PRIu64 " layers=[%u,%u)"
+                   " action=continue work_item=range_forward"
+                   " source=boundary_controller target=work_queue"
+                   " status=dispatch\n",
+                   dispatch_node + 1U,
+                   decode_step,
+                   layer_start,
+                   layer_end);
+            return 0;
+        }
+    }
     if (qwen3_apply_top_k_sampler(sampler_config,
                                   &result_out->lookup.terminal_logits_record,
                                   dispatch_node,
@@ -7239,6 +7385,78 @@ qwen3_memory_shortpath_kv_entry_for_local_range(
         }
     }
     return NULL;
+}
+
+static const struct w4_qwen3_shortpath_kv_stream_entry *
+qwen3_memory_shortpath_kv_entry_for_downstream_node(
+    const struct w4_qwen3_memory_decision_config *config,
+    uint32_t target_node,
+    uint32_t target_layer_start,
+    uint32_t target_layer_end,
+    uint32_t producer_layer_end,
+    uint64_t decode_step)
+{
+    if (!config || config->shortpath_kv_stream_count == 0) {
+        return NULL;
+    }
+    for (uint64_t i = 0; i < config->shortpath_kv_stream_count; ++i) {
+        const struct w4_qwen3_shortpath_kv_stream_entry *entry =
+            &config->shortpath_kv_stream_entries[i];
+
+        if (entry->valid && entry->step_index == decode_step &&
+            entry->target_node == target_node + 1U &&
+            entry->target_layer_start == target_layer_start &&
+            entry->target_layer_end == target_layer_end &&
+            entry->producer_layer_end == producer_layer_end) {
+            return entry;
+        }
+    }
+    return NULL;
+}
+
+static bool qwen3_memory_shortpath_downstream_kv_support_complete(
+    const struct w4_qwen3_memory_decision_config *config,
+    uint32_t dispatch_node,
+    uint32_t cluster_node_count,
+    uint32_t producer_layer_end,
+    uint64_t decode_step,
+    uint32_t *missing_node_out)
+{
+    if (missing_node_out) {
+        *missing_node_out = 0U;
+    }
+    if (dispatch_node + 1U >= cluster_node_count) {
+        return true;
+    }
+    for (uint32_t node = dispatch_node + 1U; node < cluster_node_count; ++node) {
+        uint32_t target_layer_start = 0U;
+        uint32_t target_layer_end = 0U;
+        uint32_t next_node = 0U;
+
+        if (w4_db_qwen3_layer_range_for_node(node,
+                                             cluster_node_count,
+                                             &target_layer_start,
+                                             &target_layer_end,
+                                             &next_node) != 0) {
+            if (missing_node_out) {
+                *missing_node_out = node;
+            }
+            return false;
+        }
+        if (!qwen3_memory_shortpath_kv_entry_for_downstream_node(
+                config,
+                node,
+                target_layer_start,
+                target_layer_end,
+                producer_layer_end,
+                decode_step)) {
+            if (missing_node_out) {
+                *missing_node_out = node;
+            }
+            return false;
+        }
+    }
+    return true;
 }
 
 static int qwen3_memory_shortpath_materialize_local_kv_state(
@@ -10168,7 +10386,7 @@ decode_round_start:
                         uint64_t previous_token;
 
                         memcpy(token_words,
-                               range_input_view.data,
+                               range_input_view.token_result_words,
                                W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES);
                         previous_step = token_words[0];
                         previous_token = token_words[1];
@@ -10597,6 +10815,7 @@ decode_round_start:
                     &qwen3_sampler_config,
                     &qwen3_engram_config,
                     dispatch_node,
+                    cluster_node_count,
                     round_layer_start,
                     round_layer_end,
                     guest_decode_step,
