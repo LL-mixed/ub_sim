@@ -5860,7 +5860,7 @@ fn w5_memory_decision_env_vars(
             "staged_registry".to_string(),
         ));
     }
-    if !bundle.online_boundary_lookup {
+    if !bundle.online_boundary_lookup && bundle.shortpath_entries.len() == 1 {
         if let Some(decision) = &bundle.shortpath {
             let shortpath_executable = config.shortpath_execute
                 && decision.action == sim_memory::ShortpathAction::JumpToTerminal
@@ -11876,6 +11876,22 @@ mod tests {
         assert!(stream.iter().all(|entry| entry.split(':').count() == 9));
         assert!(stream.iter().all(|entry| !entry.contains("decision/")));
         assert!(stream.iter().all(|entry| !entry.contains("artifact/")));
+        let env_vars = w5_memory_decision_env_vars(&config, &bundle, Some(&publication));
+        assert!(env_vars.iter().any(|(key, value)| {
+            key == "SIM_W5_MEMORY_SHORTPATH_ACTION" && value == "jump-to-terminal"
+        }));
+        assert!(env_vars
+            .iter()
+            .any(|(key, value)| key == "SIM_W5_MEMORY_SHORTPATH_STREAM" && !value.is_empty()));
+        assert!(!env_vars
+            .iter()
+            .any(|(key, _)| key == "SIM_W5_MEMORY_SHORTPATH_DECISION_ID"));
+        assert!(!env_vars
+            .iter()
+            .any(|(key, _)| key == "SIM_W5_MEMORY_SHORTPATH_SUPPORT_ID"));
+        assert!(!env_vars
+            .iter()
+            .any(|(key, _)| key == "SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF"));
         validate_w5_memory_decision_bundle_for_run(&config, &bundle, &runtime, profile, &engram, 1)
             .expect("per-boundary logits artifacts can drive Engram shortpath execution");
     }
@@ -16560,7 +16576,36 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     }
     if let Some(decisions) = &memory_decisions {
         println!("  w5_planner: w5_runtime_planner");
-        if let Some(decision) = &decisions.shortpath {
+        if decisions.shortpath_entries.len() > 1 {
+            let first = decisions
+                .shortpath_entries
+                .first()
+                .expect("nonempty entries");
+            let last = decisions
+                .shortpath_entries
+                .last()
+                .expect("nonempty entries");
+            let jump_to_terminal = decisions
+                .shortpath_entries
+                .iter()
+                .filter(|entry| {
+                    entry.decision.action == sim_memory::ShortpathAction::JumpToTerminal
+                })
+                .count();
+            let artifact_count = decisions
+                .shortpath_entries
+                .iter()
+                .filter(|entry| entry.artifact.is_some())
+                .count();
+            println!(
+                "  w5_shortpath_registry: entries={} jump_to_terminal={} artifact_count={} first_decision_id={} last_decision_id={}",
+                decisions.shortpath_entries.len(),
+                jump_to_terminal,
+                artifact_count,
+                first.decision.decision_id,
+                last.decision.decision_id
+            );
+        } else if let Some(decision) = &decisions.shortpath {
             println!(
                 "  w5_shortpath_decision: id={} support_id={} action={} artifact_id={} artifact_kind={} artifact_checksum={} proof_checksum={:#x}",
                 decision.decision_id,
@@ -16612,46 +16657,104 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
                 snapshot_path.display()
             );
         }
-        if let Some(published) = &publication.shortpath_ref {
+        if publication.shortpath_refs.len() > 1 {
+            let total_payload_bytes = publication
+                .shortpath_refs
+                .iter()
+                .map(|published| published.payload_bytes)
+                .sum::<usize>();
+            let payload_checksum_xor = publication
+                .shortpath_refs
+                .iter()
+                .fold(0u64, |acc, published| acc ^ published.payload_checksum);
+            let first_id = publication
+                .shortpath_refs
+                .first()
+                .map(|published| published.artifact_id.as_str())
+                .unwrap_or("");
+            let last_id = publication
+                .shortpath_refs
+                .last()
+                .map(|published| published.artifact_id.as_str())
+                .unwrap_or("");
+            println!(
+                "  memory_shortpath_artifact_refs: count={} first_id={} last_id={} total_payload_bytes={} payload_checksum_xor={:#x}",
+                publication.shortpath_refs.len(),
+                first_id,
+                last_id,
+                total_payload_bytes,
+                payload_checksum_xor
+            );
+        } else if let Some(published) = &publication.shortpath_ref {
             println!(
                 "  memory_shortpath_artifact_ref: id={} payload_bytes={} payload_checksum={:#x}",
                 published.artifact_id, published.payload_bytes, published.payload_checksum
             );
         }
-        if !publication.shortpath_kv_refs.is_empty() {
+        if let Some(registry_ref) = &publication.shortpath_registry_ref {
             println!(
-                "  memory_shortpath_kv_artifact_refs: count={} payload_bytes={} checksums={}",
+                "  memory_shortpath_registry_ref: entries={} payload_bytes={} payload_checksum={:#x}",
+                publication.shortpath_refs.len(),
+                registry_ref.payload_bytes,
+                registry_ref.payload_checksum
+            );
+        }
+        if !publication.shortpath_kv_refs.is_empty() {
+            let total_payload_bytes = publication
+                .shortpath_kv_refs
+                .iter()
+                .map(|published| published.payload_bytes)
+                .sum::<usize>();
+            let payload_checksum_xor = publication
+                .shortpath_kv_refs
+                .iter()
+                .fold(0u64, |acc, published| acc ^ published.payload_checksum);
+            let first_id = publication
+                .shortpath_kv_refs
+                .first()
+                .map(|published| published.artifact_id.as_str())
+                .unwrap_or("");
+            let last_id = publication
+                .shortpath_kv_refs
+                .last()
+                .map(|published| published.artifact_id.as_str())
+                .unwrap_or("");
+            println!(
+                "  memory_shortpath_kv_artifact_refs: count={} first_id={} last_id={} total_payload_bytes={} payload_checksum_xor={:#x}",
                 publication.shortpath_kv_refs.len(),
-                publication
-                    .shortpath_kv_refs
-                    .iter()
-                    .map(|published| published.payload_bytes.to_string())
-                    .collect::<Vec<_>>()
-                    .join(","),
-                publication
-                    .shortpath_kv_refs
-                    .iter()
-                    .map(|published| format!("{:#x}", published.payload_checksum))
-                    .collect::<Vec<_>>()
-                    .join(",")
+                first_id,
+                last_id,
+                total_payload_bytes,
+                payload_checksum_xor
             );
         }
         if !publication.prefetch_refs.is_empty() {
+            let total_payload_bytes = publication
+                .prefetch_refs
+                .iter()
+                .map(|published| published.payload_bytes)
+                .sum::<usize>();
+            let payload_checksum_xor = publication
+                .prefetch_refs
+                .iter()
+                .fold(0u64, |acc, published| acc ^ published.payload_checksum);
+            let first_id = publication
+                .prefetch_refs
+                .first()
+                .map(|published| published.artifact_id.as_str())
+                .unwrap_or("");
+            let last_id = publication
+                .prefetch_refs
+                .last()
+                .map(|published| published.artifact_id.as_str())
+                .unwrap_or("");
             println!(
-                "  memory_prefetch_artifact_refs: count={} payload_bytes={} checksums={}",
+                "  memory_prefetch_artifact_refs: count={} first_id={} last_id={} total_payload_bytes={} payload_checksum_xor={:#x}",
                 publication.prefetch_refs.len(),
-                publication
-                    .prefetch_refs
-                    .iter()
-                    .map(|published| published.payload_bytes.to_string())
-                    .collect::<Vec<_>>()
-                    .join(","),
-                publication
-                    .prefetch_refs
-                    .iter()
-                    .map(|published| format!("{:#x}", published.payload_checksum))
-                    .collect::<Vec<_>>()
-                    .join(",")
+                first_id,
+                last_id,
+                total_payload_bytes,
+                payload_checksum_xor
             );
         }
         if let Some(published) = &publication.prefix_cache_ref {
