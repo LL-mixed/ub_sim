@@ -9658,8 +9658,9 @@ mod tests {
         run_w5_runtime_boundary_lookups, save_lingqu_durable_sim, save_lingqu_memory_durable_store,
         save_lingqu_object_service_snapshot, simpler_host_matmul_artifact_producer_path,
         validate_qwen3_dense_weights_path, validate_w5_inference_profile,
-        validate_w5_memory_decision_bundle_for_run, w5_inference_profile_spec,
-        w5_memory_decision_env_vars, w5_memory_decision_publication_object_service_profile,
+        validate_w5_memory_decision_bundle_for_run, w5_expected_jump_to_terminal_shortpath_hits,
+        w5_inference_profile_spec, w5_memory_decision_env_vars,
+        w5_memory_decision_publication_object_service_profile,
         w5_memory_shortpath_kv_stream_env_from_refs, w5_memory_shortpath_stream_env,
         w5_memory_should_publish_engram_state, w5_object_service_payload_index_path,
         w5_runtime_tensor_payload_checksum, LingquDurableSim, LingquDurableSimSnapshot,
@@ -11597,6 +11598,148 @@ stage qwen3_range_forward_runtime_output_publish node=2
                 runtime_outputs: 128,
             }
         );
+    }
+
+    #[test]
+    fn w5_expected_jump_to_terminal_shortpath_hits_count_unique_steps() {
+        let model = sim_memory::InferenceModelBinding {
+            model_id: "Qwen/Qwen3-0.6B".to_string(),
+            model_key: "qwen3-0-6b".to_string(),
+            tokenizer_hash: 0x1001,
+            profile_hash: 0x2002,
+        };
+        let make_artifact = |artifact_id: &str, step_index: u64, node_index: u32, kind| {
+            sim_memory::ExecutionArtifactObject {
+                artifact_id: artifact_id.to_string(),
+                kind,
+                model: model.clone(),
+                producer_boundary: sim_memory::RangeBoundary {
+                    phase: sim_memory::RangeBoundaryPhase::RangeExit,
+                    step_index,
+                    node_index,
+                    layer_start: 0,
+                    layer_end: 4,
+                    next_node_index: Some(node_index + 1),
+                    position: 20,
+                },
+                boundary_hidden_fingerprint: sim_memory::BoundaryTensorFingerprint {
+                    bytes: 16,
+                    checksum: 0x4444 + step_index + u64::from(node_index),
+                    dtype: sim_core::TensorDType::F32,
+                    shape: vec![1, 4],
+                },
+                target_layer_start: 4,
+                target_layer_end: 4,
+                dtype: sim_core::TensorDType::F32,
+                shape: vec![1, 4],
+                durable_payload_ref: Some(sim_memory::LingquBlockPayloadRef::new(
+                    format!("block/{artifact_id}"),
+                    0,
+                    16,
+                    0x5555 + step_index + u64::from(node_index),
+                )),
+                hot_object_ref: None,
+                source_query_result_id: None,
+                source_engram_state_id: None,
+                confidence_milli: 990,
+                state: sim_memory::ExecutionArtifactState::Verified,
+                checksum: 0x6666 + step_index + u64::from(node_index),
+                version: 1,
+                created_at_us: 10,
+                expires_at_us: Some(100),
+            }
+        };
+        let make_decision =
+            |decision_id: &str, action, artifact_id: &str| sim_memory::ShortpathDecisionRecord {
+                decision_id: decision_id.to_string(),
+                request_id: format!("boundary/{decision_id}"),
+                support_id: Some(format!("support/{decision_id}")),
+                action,
+                artifact_id: Some(artifact_id.to_string()),
+                producer_position: Some(20),
+                target_layer_start: Some(4),
+                target_layer_end: Some(4),
+                confidence_milli: 990,
+                verify_required: false,
+                proof_checksum: 0x7777,
+                reason: "test".to_string(),
+                created_at_us: 11,
+                version: 1,
+            };
+        let step0_node1 = make_artifact(
+            "artifact/logits/step0/node1",
+            0,
+            1,
+            sim_memory::ExecutionArtifactKind::Logits,
+        );
+        let step0_node4 = make_artifact(
+            "artifact/logits/step0/node4",
+            0,
+            4,
+            sim_memory::ExecutionArtifactKind::Logits,
+        );
+        let step1_node1 = make_artifact(
+            "artifact/logits/step1/node1",
+            1,
+            1,
+            sim_memory::ExecutionArtifactKind::Logits,
+        );
+        let hidden_step2 = make_artifact(
+            "artifact/hidden/step2/node1",
+            2,
+            1,
+            sim_memory::ExecutionArtifactKind::HiddenState,
+        );
+        let bundle = W5MemoryDecisionBundle {
+            shortpath: None,
+            shortpath_artifact: None,
+            shortpath_entries: vec![
+                crate::W5MemoryShortpathEntry {
+                    decision: make_decision(
+                        "shortpath-decision/step0-node1",
+                        sim_memory::ShortpathAction::JumpToTerminal,
+                        "artifact/logits/step0/node1",
+                    ),
+                    artifact: Some(step0_node1),
+                },
+                crate::W5MemoryShortpathEntry {
+                    decision: make_decision(
+                        "shortpath-decision/step0-node4",
+                        sim_memory::ShortpathAction::JumpToTerminal,
+                        "artifact/logits/step0/node4",
+                    ),
+                    artifact: Some(step0_node4),
+                },
+                crate::W5MemoryShortpathEntry {
+                    decision: make_decision(
+                        "shortpath-decision/step1-node1",
+                        sim_memory::ShortpathAction::JumpToTerminal,
+                        "artifact/logits/step1/node1",
+                    ),
+                    artifact: Some(step1_node1),
+                },
+                crate::W5MemoryShortpathEntry {
+                    decision: make_decision(
+                        "shortpath-decision/hidden-step2",
+                        sim_memory::ShortpathAction::JumpToLayer,
+                        "artifact/hidden/step2/node1",
+                    ),
+                    artifact: Some(hidden_step2),
+                },
+            ],
+            shortpath_kv_artifacts: Vec::new(),
+            online_boundary_lookup: true,
+            prefetch: None,
+            prefetch_artifacts: Vec::new(),
+            prefix_cache: None,
+            prefix_cache_artifact: None,
+        };
+
+        assert_eq!(
+            w5_expected_jump_to_terminal_shortpath_hits(Some(&bundle)),
+            2
+        );
+        assert_eq!(w5_expected_jump_to_terminal_shortpath_hits(None), 0);
     }
 
     #[test]
@@ -16063,6 +16206,11 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             .as_ref()
             .and_then(|decisions| decisions.shortpath.as_ref())
             .is_some_and(|decision| decision.action == sim_memory::ShortpathAction::JumpToTerminal);
+    let expected_shortpath_terminal_hit_count = if shortpath_execute_jump_to_terminal {
+        w5_expected_jump_to_terminal_shortpath_hits(memory_decisions.as_ref())
+    } else {
+        0
+    };
     let worker_counts = qwen3_guest_expected_worker_counts(args.step_count);
     let expected_runtime_forward_count = worker_counts.range_forwards;
     let expected_runtime_input_count = worker_counts.runtime_inputs;
@@ -16110,9 +16258,10 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     );
     if shortpath_execute_jump_to_terminal {
         println!(
-            "  guest_worker_shortpath_summary: action=jump-to-terminal boundary_hits={} terminal_selects={} expected_range_forwards={} expected_runtime_inputs={} expected_runtime_outputs={}",
+            "  guest_worker_shortpath_summary: action=jump-to-terminal boundary_hits={} terminal_selects={} expected_hits={} expected_range_forwards={} expected_runtime_inputs={} expected_runtime_outputs={}",
             shortpath_terminal_ready_count,
             shortpath_terminal_selected_count,
+            expected_shortpath_terminal_hit_count,
             expected_runtime_forward_count,
             expected_runtime_input_count,
             expected_runtime_publish_count
@@ -16300,7 +16449,11 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             && runtime_publish_count == expected_runtime_publish_count
             && runtime_input_count == expected_runtime_input_count
     };
+    let shortpath_terminal_counts_ok = expected_shortpath_terminal_hit_count == 0
+        || (shortpath_terminal_ready_count == expected_shortpath_terminal_hit_count
+            && shortpath_terminal_selected_count == expected_shortpath_terminal_hit_count);
     if !worker_pipeline_counts_ok
+        || !shortpath_terminal_counts_ok
         || terminal_token_count != expected_terminal_token_count
         || guest_engram_select_count != expected_guest_engram_select_count
         || guest_engram_candidate_publish_count != expected_guest_engram_candidate_publish_count
@@ -16312,7 +16465,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         || guest_engram_state_resolved_count != expected_guest_engram_state_resolved_count
     {
         anyhow::bail!(
-            "qwen3 guest decode worker incomplete: range_forwards={}/{} runtime_inputs={}/{} runtime_outputs={}/{} shortpath_boundary_hits={} shortpath_terminal_selects={} terminal_tokens={}/{} engram_selects={}/{} engram_candidate_publishes={}/{} engram_candidate_waits={}/{} engram_selected_waits={}/{} engram_selected_writebacks={}/{} engram_history_waits={}/{} engram_state_waits={}/{} engram_state_resolved={}/{}",
+            "qwen3 guest decode worker incomplete: range_forwards={}/{} runtime_inputs={}/{} runtime_outputs={}/{} shortpath_boundary_hits={}/{} shortpath_terminal_selects={}/{} terminal_tokens={}/{} engram_selects={}/{} engram_candidate_publishes={}/{} engram_candidate_waits={}/{} engram_selected_waits={}/{} engram_selected_writebacks={}/{} engram_history_waits={}/{} engram_state_waits={}/{} engram_state_resolved={}/{}",
             runtime_forward_count,
             expected_runtime_forward_count,
             runtime_input_count,
@@ -16320,7 +16473,9 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             runtime_publish_count,
             expected_runtime_publish_count,
             shortpath_terminal_ready_count,
+            expected_shortpath_terminal_hit_count,
             shortpath_terminal_selected_count,
+            expected_shortpath_terminal_hit_count,
             terminal_token_count,
             expected_terminal_token_count,
             guest_engram_select_count,
@@ -16519,6 +16674,26 @@ fn qwen3_guest_expected_worker_counts(step_count: usize) -> Qwen3GuestExpectedWo
         runtime_inputs: full_range_forwards.saturating_sub(1),
         runtime_outputs: full_runtime_outputs,
     }
+}
+
+fn w5_expected_jump_to_terminal_shortpath_hits(bundle: Option<&W5MemoryDecisionBundle>) -> usize {
+    let Some(bundle) = bundle else {
+        return 0;
+    };
+    let mut hit_steps = std::collections::BTreeSet::new();
+    for entry in &bundle.shortpath_entries {
+        if entry.decision.action != sim_memory::ShortpathAction::JumpToTerminal {
+            continue;
+        }
+        let Some(artifact) = entry.artifact.as_ref() else {
+            continue;
+        };
+        if artifact.kind != sim_memory::ExecutionArtifactKind::Logits {
+            continue;
+        }
+        hit_steps.insert(artifact.producer_boundary.step_index);
+    }
+    hit_steps.len()
 }
 
 fn qwen3_guest_terminal_tokens(log: &str) -> Vec<u64> {
