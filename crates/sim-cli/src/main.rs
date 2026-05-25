@@ -5302,6 +5302,10 @@ fn validate_w5_shortpath_run_boundary_coverage(
                 entry.decision.decision_id
             );
         }
+        let (request_step, request_node) = parse_w5_boundary_observation_request_step_node(
+            &entry.decision.request_id,
+            &expected_request_prefix,
+        )?;
         let Some(artifact) = entry.artifact.as_ref() else {
             continue;
         };
@@ -5319,6 +5323,30 @@ fn validate_w5_shortpath_run_boundary_coverage(
             );
         }
         let boundary = &artifact.producer_boundary;
+        if boundary.step_index != request_step || boundary.node_index != request_node {
+            anyhow::bail!(
+                "W5 Memory Service reuse run_id={} decision {} request boundary step={} node=node{} does not match logits artifact {} boundary step={} node=node{}",
+                run_id,
+                entry.decision.decision_id,
+                request_step,
+                request_node,
+                artifact.artifact_id,
+                boundary.step_index,
+                boundary.node_index
+            );
+        }
+        let expected_logits_artifact_id = format!(
+            "artifact/logits/{run_id}/step{}/node{}",
+            boundary.step_index, boundary.node_index
+        );
+        if artifact.artifact_id != expected_logits_artifact_id {
+            anyhow::bail!(
+                "W5 Memory Service reuse run_id={} selected logits artifact id does not match its boundary: id={} expected={}",
+                run_id,
+                artifact.artifact_id,
+                expected_logits_artifact_id
+            );
+        }
         if boundary.step_index < step_limit
             && boundary.node_index >= 1
             && boundary.node_index < max_node
@@ -5351,8 +5379,51 @@ fn validate_w5_shortpath_run_boundary_coverage(
                 kv.artifact.artifact_id
             );
         }
+        let expected_kv_artifact_id = format!(
+            "artifact/kv/{run_id}/step{}/node{}",
+            kv.step_index, kv.target_node_index
+        );
+        if kv.artifact.artifact_id != expected_kv_artifact_id {
+            anyhow::bail!(
+                "W5 Memory Service reuse run_id={} selected KV artifact id does not match its target boundary: id={} expected={}",
+                run_id,
+                kv.artifact.artifact_id,
+                expected_kv_artifact_id
+            );
+        }
     }
     Ok(())
+}
+
+fn parse_w5_boundary_observation_request_step_node(
+    request_id: &str,
+    expected_prefix: &str,
+) -> anyhow::Result<(u64, u32)> {
+    let suffix = request_id.strip_prefix(expected_prefix).ok_or_else(|| {
+        anyhow::anyhow!("W5 boundary lookup request id is outside expected prefix: {request_id}")
+    })?;
+    let Some((step_part, node_part)) = suffix.split_once('/') else {
+        anyhow::bail!("W5 boundary lookup request id missing step/node suffix: {request_id}");
+    };
+    if node_part.contains('/') {
+        anyhow::bail!("W5 boundary lookup request id has extra suffix: {request_id}");
+    }
+    let step_text = step_part.strip_prefix("step").ok_or_else(|| {
+        anyhow::anyhow!("W5 boundary lookup request id has invalid step suffix: {request_id}")
+    })?;
+    let node_text = node_part.strip_prefix("node").ok_or_else(|| {
+        anyhow::anyhow!("W5 boundary lookup request id has invalid node suffix: {request_id}")
+    })?;
+    let step = step_text
+        .parse::<u64>()
+        .with_context(|| format!("parse W5 boundary lookup request step from {request_id}"))?;
+    let node = node_text
+        .parse::<u32>()
+        .with_context(|| format!("parse W5 boundary lookup request node from {request_id}"))?;
+    if node == 0 {
+        anyhow::bail!("W5 boundary lookup request node must be one-based: {request_id}");
+    }
+    Ok((step, node))
 }
 
 fn validate_w5_shortpath_downstream_kv_bundle(
@@ -12274,6 +12345,17 @@ mod tests {
         assert!(err
             .to_string()
             .contains("selected logits artifact is outside the run namespace"));
+
+        let mut bundle = make_bundle("run0", "run0");
+        bundle.shortpath_entries[0].decision.request_id =
+            "boundary-lookup/boundary-observation/run0/step1/node1".to_string();
+        bundle.shortpath_entries[0].decision.decision_id =
+            "shortpath-decision/boundary-lookup/boundary-observation/run0/step1/node1".to_string();
+        let err = validate_w5_shortpath_run_boundary_coverage(&config, &bundle, profile, 2)
+            .expect_err("decision request boundary must match artifact boundary");
+        assert!(err
+            .to_string()
+            .contains("request boundary step=1 node=node1 does not match logits artifact"));
 
         let mut bundle = make_bundle("run0", "run0");
         bundle
