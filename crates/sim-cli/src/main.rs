@@ -9917,18 +9917,19 @@ mod tests {
         qwen3_guest_engram_report, qwen3_guest_engram_report_from_guest_log,
         qwen3_guest_engram_select_history_lengths, qwen3_guest_engram_selected_tokens,
         qwen3_guest_expected_engram_history_state_waits, qwen3_guest_expected_worker_counts,
-        qwen3_guest_log_dir_from_script_output, qwen3_guest_log_match_count,
-        qwen3_guest_shortpath_summary_line, qwen3_guest_summary_file_from_script_output,
-        qwen3_guest_terminal_candidate_records, qwen3_guest_terminal_text_lossy_from_tokenizer,
-        qwen3_guest_terminal_tokens, qwen3_guest_timing_summary,
-        qwen3_guest_w5_pass_marker_present, qwen3_object_registry_path_in_dir,
-        qwen3_obmm_object_ref_for_payload, qwen3_range_forward_args_from,
-        qwen3_validate_engram_state_object_service_payload, read_lingqu_memory_payload_ref,
-        read_w5_u64, record_w5_runtime_boundary_observations_from_summary,
-        resolve_w5_inference_profile, run_lingqu_durable_append_log_cli,
-        run_lingqu_durable_batch_cli, run_lingqu_durable_init_cli, run_lingqu_durable_list_cli,
-        run_lingqu_durable_read_log_cli, run_lingqu_durable_stat_cli,
-        run_lingqu_durable_validate_cli, run_lingqu_memory_boundary_lookup_cli,
+        qwen3_guest_log_dir_from_script_output, qwen3_guest_log_line_match_count,
+        qwen3_guest_log_match_count, qwen3_guest_shortpath_summary_line,
+        qwen3_guest_summary_file_from_script_output, qwen3_guest_terminal_candidate_records,
+        qwen3_guest_terminal_text_lossy_from_tokenizer, qwen3_guest_terminal_tokens,
+        qwen3_guest_timing_summary, qwen3_guest_w5_pass_marker_present,
+        qwen3_object_registry_path_in_dir, qwen3_obmm_object_ref_for_payload,
+        qwen3_range_forward_args_from, qwen3_validate_engram_state_object_service_payload,
+        read_lingqu_memory_payload_ref, read_w5_u64,
+        record_w5_runtime_boundary_observations_from_summary, resolve_w5_inference_profile,
+        run_lingqu_durable_append_log_cli, run_lingqu_durable_batch_cli,
+        run_lingqu_durable_init_cli, run_lingqu_durable_list_cli, run_lingqu_durable_read_log_cli,
+        run_lingqu_durable_stat_cli, run_lingqu_durable_validate_cli,
+        run_lingqu_memory_boundary_lookup_cli,
         run_lingqu_memory_boundary_lookup_from_observation_cli,
         run_lingqu_memory_boundary_request_from_w5_summary_cli, run_lingqu_memory_build_index_cli,
         run_lingqu_memory_ingest_cli, run_lingqu_memory_list_artifact_access_cli,
@@ -9953,9 +9954,9 @@ mod tests {
         save_lingqu_object_service_snapshot, simpler_host_matmul_artifact_producer_path,
         validate_qwen3_dense_weights_path, validate_w5_inference_profile,
         validate_w5_memory_decision_bundle_for_run, w5_expected_jump_to_terminal_shortpath_hits,
-        w5_inference_profile_spec, w5_kv_hot_object_ref_from_object_service,
-        w5_memory_boundary_observations_recorded_line, w5_memory_decision_env_vars,
-        w5_memory_decision_publication_object_service_profile,
+        w5_expected_jump_to_terminal_worker_counts, w5_inference_profile_spec,
+        w5_kv_hot_object_ref_from_object_service, w5_memory_boundary_observations_recorded_line,
+        w5_memory_decision_env_vars, w5_memory_decision_publication_object_service_profile,
         w5_memory_shortpath_kv_stream_env_from_refs, w5_memory_shortpath_stream_env,
         w5_memory_should_publish_engram_state, w5_object_service_payload_index_path,
         w5_runtime_tensor_payload_checksum, LingquDurableSim, LingquDurableSimSnapshot,
@@ -9966,8 +9967,9 @@ mod tests {
         Qwen3DecodeReportVerbosity, Qwen3DenseGuestRuntime, Qwen3DenseProfile, Qwen3EngramConfig,
         Qwen3EngramContextOp, Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport,
         Qwen3GuestDecodeLoopCliArgs, Qwen3GuestExpectedWorkerCounts, Qwen3SamplerConfig,
-        W5MemoryBootstrapConfig, W5MemoryDecisionArtifactPublication, W5MemoryDecisionBundle,
-        W5MemoryDecisionConfig, W5MemoryPublishedArtifactRef, W5MemoryPublishedKvArtifactRef,
+        W5JumpToTerminalExpectedWorkerCounts, W5MemoryBootstrapConfig,
+        W5MemoryDecisionArtifactPublication, W5MemoryDecisionBundle, W5MemoryDecisionConfig,
+        W5MemoryPublishedArtifactRef, W5MemoryPublishedKvArtifactRef,
         LINGQU_EXTERNAL_PAYLOAD_BLOCK_PREFIX, QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
         QWEN3_DENSE_DEFAULT_PREFILL_TOKENS, QWEN3_DENSE_DEFAULT_TP_NODES,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE, QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
@@ -11967,6 +11969,23 @@ stage qwen3_range_forward_runtime_output_publish node=2
     }
 
     #[test]
+    fn qwen3_guest_log_line_match_count_requires_both_needles_on_same_line() {
+        let log = "\
+stage qwen3_w5_memory_shortpath_commit step=0 publish_hidden=0 status=ok
+stage qwen3_w5_memory_shortpath_commit step=1 publish_hidden=1 status=ok
+stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
+";
+        assert_eq!(
+            qwen3_guest_log_line_match_count(
+                log,
+                "stage qwen3_w5_memory_shortpath_commit ",
+                " publish_hidden=0 "
+            ),
+            1
+        );
+    }
+
+    #[test]
     fn qwen3_guest_w5_pass_marker_rejects_plain_w4_pass() {
         assert!(qwen3_guest_w5_pass_marker_present(
             "[w4guest8] PASS: eight-node w5 inference cluster profile=qwen3_14b_decode\n"
@@ -12154,7 +12173,17 @@ stage qwen3_range_forward_runtime_output_publish node=2
             w5_expected_jump_to_terminal_shortpath_hits(Some(&bundle)),
             2
         );
+        assert_eq!(
+            w5_expected_jump_to_terminal_worker_counts(Some(&bundle), 8),
+            Some(W5JumpToTerminalExpectedWorkerCounts {
+                range_forwards: 2,
+                runtime_inputs: 1,
+                runtime_outputs: 0,
+                no_dispatches: 14,
+            })
+        );
         assert_eq!(w5_expected_jump_to_terminal_shortpath_hits(None), 0);
+        assert_eq!(w5_expected_jump_to_terminal_worker_counts(None, 8), None);
     }
 
     #[test]
@@ -17022,6 +17051,15 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         qwen3_guest_log_match_count(&combined, "stage qwen3_engram_selected_writeback ");
     let guest_engram_terminal_rewrite_count =
         qwen3_guest_log_match_count(&combined, "stage qwen3_engram_terminal_record_rewrite ");
+    let shortpath_no_dispatch_count =
+        qwen3_guest_log_match_count(&combined, "stage qwen3_decode_round_scheduler_no_dispatch ");
+    let shortpath_terminal_committed_count =
+        qwen3_guest_log_match_count(&combined, "stage qwen3_decode_round_terminal_committed ");
+    let shortpath_publish_hidden_zero_count = qwen3_guest_log_line_match_count(
+        &combined,
+        "stage qwen3_w5_memory_shortpath_commit ",
+        " publish_hidden=0 ",
+    );
     let shortpath_terminal_ready_count =
         qwen3_guest_log_match_count(&combined, "stage qwen3_w5_memory_terminal_logits_loaded ");
     let shortpath_terminal_selected_count =
@@ -17038,6 +17076,11 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         w5_expected_jump_to_terminal_shortpath_hits(memory_decisions.as_ref())
     } else {
         0
+    };
+    let expected_shortpath_worker_counts = if shortpath_execute_jump_to_terminal {
+        w5_expected_jump_to_terminal_worker_counts(memory_decisions.as_ref(), 8)
+    } else {
+        None
     };
     let engram_shortpath_local_policy =
         effective_engram.enabled && shortpath_execute_jump_to_terminal;
@@ -17277,9 +17320,16 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         );
     }
     let worker_pipeline_counts_ok = if shortpath_execute_jump_to_terminal {
-        runtime_forward_count <= expected_runtime_forward_count
-            && runtime_publish_count <= expected_runtime_publish_count
-            && runtime_input_count <= expected_runtime_input_count
+        if let Some(expected) = expected_shortpath_worker_counts {
+            runtime_forward_count == expected.range_forwards
+                && runtime_publish_count == expected.runtime_outputs
+                && runtime_input_count == expected.runtime_inputs
+                && shortpath_no_dispatch_count == expected.no_dispatches
+                && shortpath_terminal_committed_count == expected.no_dispatches
+                && shortpath_publish_hidden_zero_count == expected_shortpath_terminal_hit_count
+        } else {
+            false
+        }
     } else {
         runtime_forward_count == expected_runtime_forward_count
             && runtime_publish_count == expected_runtime_publish_count
@@ -17301,13 +17351,29 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         || guest_engram_state_resolved_count != expected_guest_engram_state_resolved_count
     {
         anyhow::bail!(
-            "qwen3 guest decode worker incomplete: range_forwards={}/{} runtime_inputs={}/{} runtime_outputs={}/{} shortpath_boundary_hits={}/{} shortpath_terminal_selects={}/{} terminal_tokens={}/{} engram_selects={}/{} engram_candidate_publishes={}/{} engram_candidate_waits={}/{} engram_selected_waits={}/{} engram_selected_writebacks={}/{} engram_history_waits={}/{} engram_state_waits={}/{} engram_state_resolved={}/{}",
+            "qwen3 guest decode worker incomplete: range_forwards={}/{} runtime_inputs={}/{} runtime_outputs={}/{} shortpath_no_dispatch={}/{} shortpath_terminal_committed={}/{} shortpath_publish_hidden_zero={}/{} shortpath_boundary_hits={}/{} shortpath_terminal_selects={}/{} terminal_tokens={}/{} engram_selects={}/{} engram_candidate_publishes={}/{} engram_candidate_waits={}/{} engram_selected_waits={}/{} engram_selected_writebacks={}/{} engram_history_waits={}/{} engram_state_waits={}/{} engram_state_resolved={}/{}",
             runtime_forward_count,
-            expected_runtime_forward_count,
+            expected_shortpath_worker_counts
+                .map(|counts| counts.range_forwards)
+                .unwrap_or(expected_runtime_forward_count),
             runtime_input_count,
-            expected_runtime_input_count,
+            expected_shortpath_worker_counts
+                .map(|counts| counts.runtime_inputs)
+                .unwrap_or(expected_runtime_input_count),
             runtime_publish_count,
-            expected_runtime_publish_count,
+            expected_shortpath_worker_counts
+                .map(|counts| counts.runtime_outputs)
+                .unwrap_or(expected_runtime_publish_count),
+            shortpath_no_dispatch_count,
+            expected_shortpath_worker_counts
+                .map(|counts| counts.no_dispatches)
+                .unwrap_or(0),
+            shortpath_terminal_committed_count,
+            expected_shortpath_worker_counts
+                .map(|counts| counts.no_dispatches)
+                .unwrap_or(0),
+            shortpath_publish_hidden_zero_count,
+            expected_shortpath_terminal_hit_count,
             shortpath_terminal_ready_count,
             expected_shortpath_terminal_hit_count,
             shortpath_terminal_selected_count,
@@ -17491,6 +17557,13 @@ fn qwen3_guest_log_match_count(haystack: &str, needle: &str) -> usize {
     haystack.match_indices(needle).count()
 }
 
+fn qwen3_guest_log_line_match_count(haystack: &str, needle_a: &str, needle_b: &str) -> usize {
+    haystack
+        .lines()
+        .filter(|line| line.contains(needle_a) && line.contains(needle_b))
+        .count()
+}
+
 fn qwen3_guest_shortpath_summary_line(
     boundary_hits: usize,
     terminal_selects: usize,
@@ -17555,6 +17628,14 @@ struct Qwen3GuestExpectedWorkerCounts {
     runtime_outputs: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct W5JumpToTerminalExpectedWorkerCounts {
+    range_forwards: usize,
+    runtime_inputs: usize,
+    runtime_outputs: usize,
+    no_dispatches: usize,
+}
+
 fn qwen3_guest_expected_worker_counts(step_count: usize) -> Qwen3GuestExpectedWorkerCounts {
     let full_range_forwards = 8 * step_count;
     let full_runtime_outputs = 8 * step_count;
@@ -17584,6 +17665,48 @@ fn w5_expected_jump_to_terminal_shortpath_hits(bundle: Option<&W5MemoryDecisionB
         hit_steps.insert(artifact.producer_boundary.step_index);
     }
     hit_steps.len()
+}
+
+fn w5_expected_jump_to_terminal_worker_counts(
+    bundle: Option<&W5MemoryDecisionBundle>,
+    pipeline_nodes: u32,
+) -> Option<W5JumpToTerminalExpectedWorkerCounts> {
+    let bundle = bundle?;
+    let mut first_hit_by_step = std::collections::BTreeMap::<u64, u32>::new();
+    for entry in &bundle.shortpath_entries {
+        if entry.decision.action != sim_memory::ShortpathAction::JumpToTerminal {
+            continue;
+        }
+        let Some(artifact) = entry.artifact.as_ref() else {
+            continue;
+        };
+        if artifact.kind != sim_memory::ExecutionArtifactKind::Logits {
+            continue;
+        }
+        let node_index = artifact.producer_boundary.node_index;
+        first_hit_by_step
+            .entry(artifact.producer_boundary.step_index)
+            .and_modify(|existing| *existing = (*existing).min(node_index))
+            .or_insert(node_index);
+    }
+    if first_hit_by_step.is_empty() {
+        return None;
+    }
+
+    let range_forwards = first_hit_by_step
+        .values()
+        .map(|node_index| *node_index as usize)
+        .sum::<usize>();
+    let no_dispatches = first_hit_by_step
+        .values()
+        .map(|node_index| pipeline_nodes.saturating_sub(*node_index) as usize)
+        .sum::<usize>();
+    Some(W5JumpToTerminalExpectedWorkerCounts {
+        range_forwards,
+        runtime_inputs: range_forwards.saturating_sub(1),
+        runtime_outputs: range_forwards.saturating_sub(first_hit_by_step.len()),
+        no_dispatches,
+    })
 }
 
 fn qwen3_guest_terminal_tokens(log: &str) -> Vec<u64> {
