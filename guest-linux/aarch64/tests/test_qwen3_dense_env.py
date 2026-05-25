@@ -150,7 +150,16 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("modes=[^ ]*object-ref", runner_text)
         self.assertIn("validate_w5_boundary_observation_summary", runner_text)
         self.assertIn("memory_boundary_observation_summary", runner_text)
-        self.assertIn("qwen3_w5_memory_shortpath_commit:[1-9][0-9]*", runner_text)
+        self.assertIn("w5_shortpath_execute_enabled", runner_text)
+        self.assertIn(
+            "qwen3_w5_memory_shortpath_commit:${SIM_QWEN3_GUEST_DECODE_STEPS}",
+            runner_text,
+        )
+        self.assertIn(
+            "qwen3_w5_memory_terminal_logits_selected:${SIM_QWEN3_GUEST_DECODE_STEPS}",
+            runner_text,
+        )
+        self.assertIn("W5 shortpath execution summary incomplete", runner_text)
         self.assertIn("observation_id=boundary-observation/${RUN_ID_BASE}", runner_text)
         self.assertIn("source=w5_guest_range_exit hidden_backend=obmm_shmem", runner_text)
         self.assertIn("SIM_QWEN3_GUEST_ENGRAM_STATE_REF", launcher_text)
@@ -310,6 +319,14 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             "allow_terminal_commit",
             db_service_source,
         )
+        self.assertIn(
+            "for (node_idx = 0; node_idx < cluster_node_count; ++node_idx)",
+            db_service_source,
+        )
+        self.assertIn("broadcast_targets=%u", db_service_source)
+        self.assertIn("w4_db_take_pending_qwen3_token_result_desc", db_service_source)
+        self.assertIn("receive=descriptor", db_service_source)
+        self.assertIn("target=decode_round_scheduler receive=descriptor", db_service_source)
         self.assertIn(
             "false,\n        view_out);",
             db_service_source,

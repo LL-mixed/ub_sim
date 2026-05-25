@@ -739,6 +739,17 @@ qwen3_engram_context_op_enabled() {
     "$SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP" != "none" ]]
 }
 
+w5_shortpath_execute_enabled() {
+  case "${SIM_W5_MEMORY_SHORTPATH_EXECUTE:-0}" in
+    1|true|TRUE|yes|YES)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 validate_qwen3_engram_context_refs() {
   if [[ "$SIM_QWEN3_GUEST_ENGRAM" != "1" ]] || ! qwen3_engram_context_op_enabled; then
     return 0
@@ -779,9 +790,13 @@ validate_w5_boundary_observation_summary() {
     trace "FAIL: W5 boundary observation summary missing path=$RUN_SUMMARY_FILE"
     return 1
   fi
-  if [[ "${SIM_W5_MEMORY_SHORTPATH_EXECUTE:-0}" == "1" ]] &&
-    rg -q "memory_service_summary: .*qwen3_w5_memory_shortpath_commit:[1-9][0-9]*" "$RUN_SUMMARY_FILE"; then
-    return 0
+  if w5_shortpath_execute_enabled; then
+    if rg -q "memory_service_summary: .*qwen3_w5_memory_shortpath_commit:${SIM_QWEN3_GUEST_DECODE_STEPS}(,| )" "$RUN_SUMMARY_FILE" &&
+      rg -q "memory_service_summary: .*qwen3_w5_memory_terminal_logits_selected:${SIM_QWEN3_GUEST_DECODE_STEPS}(,| )" "$RUN_SUMMARY_FILE"; then
+      return 0
+    fi
+    trace "FAIL: W5 shortpath execution summary incomplete expected_steps=$SIM_QWEN3_GUEST_DECODE_STEPS path=$RUN_SUMMARY_FILE"
+    return 1
   fi
   if ! rg -q "memory_boundary_observation_summary: records=[1-9][0-9]* steps=${SIM_QWEN3_GUEST_DECODE_STEPS}/${SIM_QWEN3_GUEST_DECODE_STEPS} .*source=w5_guest_range_exit hidden_backend=obmm_shmem" "$RUN_SUMMARY_FILE"; then
     trace "FAIL: W5 boundary observation summary incomplete path=$RUN_SUMMARY_FILE"
