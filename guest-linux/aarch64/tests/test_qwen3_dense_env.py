@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -188,6 +189,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("W5 shortpath pool usage summary is ambiguous", runner_text)
         self.assertIn("W5 shortpath summary contains stale fallback/missing/ambiguous markers", runner_text)
         self.assertIn("validate_w5_artifact_sizes", runner_text)
+        self.assertIn("--validate-w5-artifact-sizes-only", runner_text)
         self.assertIn('TEE_BIN="${TEE_BIN:-/usr/bin/tee}"', runner_text)
         self.assertIn("zstat -H file_stat +size", runner_text)
         self.assertIn('$shortpath_kv_stream" == /tmp/*', runner_text)
@@ -253,6 +255,91 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID", launcher_text)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_CHECKSUM", launcher_text)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF", launcher_text)
+
+    def test_w5_artifact_size_validation_cli_uses_host_registry_for_guest_tmp_streams(self):
+        runner = Path(__file__).resolve().parents[1] / "scripts" / "run_ub_eight_node_w4_guest.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            registry_dir = tmp_path / "registry"
+            registry_dir.mkdir()
+            memory_store = tmp_path / "memory_store.json"
+            object_store = tmp_path / "object_store.json"
+            object_bin = tmp_path / "object_store.bin"
+            shortpath_stream = registry_dir / "w5_memory_shortpath_stream.txt"
+            shortpath_kv_stream = registry_dir / "w5_memory_shortpath_kv_stream.txt"
+
+            for path in (memory_store, object_store, object_bin, shortpath_stream, shortpath_kv_stream):
+                path.write_bytes(b"ok")
+
+            env = os.environ.copy()
+            env.update(
+                {
+                    "SIM_UAPI_W5_PROFILE": "qwen3_14b_engram_decode",
+                    "SIM_W5_MEMORY_STORE": str(memory_store),
+                    "SIM_W5_MEMORY_OBJECT_STORE": str(object_store),
+                    "SIM_W5_MEMORY_REGISTRY_DIR": str(registry_dir),
+                    "SIM_W5_MEMORY_SHORTPATH_STREAM_PATH": "/tmp/w5_memory_shortpath_stream.txt",
+                    "SIM_W5_MEMORY_SHORTPATH_KV_STREAM_PATH": "/tmp/w5_memory_shortpath_kv_stream.txt",
+                    "TRACE_FILE": str(tmp_path / "trace.txt"),
+                }
+            )
+
+            result = subprocess.run(
+                ["zsh", str(runner), "--validate-w5-artifact-sizes-only"],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+            self.assertIn(f"label=shortpath_stream bytes=2", result.stderr)
+            self.assertIn(str(shortpath_stream), result.stderr)
+            self.assertIn(f"label=shortpath_kv_stream bytes=2", result.stderr)
+            self.assertIn(str(shortpath_kv_stream), result.stderr)
+            self.assertNotIn("/tmp/w5_memory_shortpath_kv_stream.txt", result.stderr)
+
+    def test_w5_artifact_size_validation_cli_fails_on_oversized_artifact(self):
+        runner = Path(__file__).resolve().parents[1] / "scripts" / "run_ub_eight_node_w4_guest.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            registry_dir = tmp_path / "registry"
+            registry_dir.mkdir()
+            memory_store = tmp_path / "memory_store.json"
+            object_store = tmp_path / "object_store.json"
+            object_bin = tmp_path / "object_store.bin"
+            shortpath_stream = registry_dir / "w5_memory_shortpath_stream.txt"
+            shortpath_kv_stream = registry_dir / "w5_memory_shortpath_kv_stream.txt"
+
+            for path in (memory_store, object_store, object_bin, shortpath_stream):
+                path.write_bytes(b"ok")
+            shortpath_kv_stream.write_bytes(b"too-large")
+
+            env = os.environ.copy()
+            env.update(
+                {
+                    "SIM_UAPI_W5_PROFILE": "qwen3_14b_engram_decode",
+                    "SIM_W5_MEMORY_STORE": str(memory_store),
+                    "SIM_W5_MEMORY_OBJECT_STORE": str(object_store),
+                    "SIM_W5_MEMORY_REGISTRY_DIR": str(registry_dir),
+                    "SIM_W5_MEMORY_SHORTPATH_KV_STREAM_PATH": "/tmp/w5_memory_shortpath_kv_stream.txt",
+                    "SIM_W5_MAX_SHORTPATH_KV_STREAM_BYTES": "1",
+                    "TRACE_FILE": str(tmp_path / "trace.txt"),
+                }
+            )
+
+            result = subprocess.run(
+                ["zsh", str(runner), "--validate-w5-artifact-sizes-only"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("FAIL: W5 artifact size too large label=shortpath_kv_stream", result.stderr)
+            self.assertIn("bytes=9 max_bytes=1", result.stderr)
 
     def test_guest_consumes_w5_prefix_cache_reuse_as_kv_object_ref(self):
         guest_source = (

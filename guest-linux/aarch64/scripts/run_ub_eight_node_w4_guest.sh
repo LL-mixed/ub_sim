@@ -932,6 +932,17 @@ validate_w5_artifact_sizes() {
   return 0
 }
 
+run_w5_artifact_size_validation_cli() {
+  if (( $# != 0 )); then
+    echo "--validate-w5-artifact-sizes-only does not accept positional arguments" >&2
+    return 2
+  fi
+
+  mkdir -p "${TRACE_FILE:h}"
+  : > "$TRACE_FILE"
+  validate_w5_artifact_sizes
+}
+
 validate_node_log() {
   local node_id="$1"
   local log_file="$2"
@@ -1289,6 +1300,12 @@ prepare_environment() {
 main() {
   local exit_code=1
   local step
+
+  if [[ "${1:-}" == "--validate-w5-artifact-sizes-only" ]]; then
+    shift
+    run_w5_artifact_size_validation_cli "$@"
+    exit "$?"
+  fi
 
   if ! prepare_environment; then
     [[ -n "${CLEANUP_SCRIPT:-}" ]] && cleanup_headless_env "$CLEANUP_SCRIPT"
