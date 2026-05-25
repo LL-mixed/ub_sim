@@ -160,6 +160,20 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             "qwen3_w5_memory_terminal_logits_selected:${SIM_QWEN3_GUEST_DECODE_STEPS}",
             runner_text,
         )
+        self.assertIn("lookup_hits=${SIM_QWEN3_GUEST_DECODE_STEPS}", runner_text)
+        self.assertIn(
+            "idle_expected=$((SIM_QWEN3_GUEST_DECODE_STEPS * (${#NODE_IDS[@]} - 1)))",
+            runner_text,
+        )
+        self.assertIn("worker_timing_records=${SIM_QWEN3_GUEST_DECODE_STEPS}", runner_text)
+        self.assertIn("idle_timing_records=${idle_expected}", runner_text)
+        self.assertIn("status=idle_no_work_item", runner_text)
+        self.assertIn("obmm_pool: not_observed", runner_text)
+        self.assertIn("active_worker_records=${SIM_QWEN3_GUEST_DECODE_STEPS}", runner_text)
+        self.assertIn("idle_worker_records=${idle_expected}", runner_text)
+        self.assertIn("obmm_pool: unavailable", runner_text)
+        self.assertIn("fallback=runtime_forward_metadata", runner_text)
+        self.assertIn("payload_bytes=[0-9]+,[0-9]+", runner_text)
         self.assertIn("actions=jump-to-terminal .*artifact_kinds=logits", runner_text)
         self.assertIn("shortpath_ids=none", runner_text)
         self.assertIn("support_ids=none", runner_text)
@@ -168,6 +182,11 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             "W5 shortpath execution summary incomplete or unauditable",
             runner_text,
         )
+        self.assertIn("W5 shortpath timing record counts are incomplete", runner_text)
+        self.assertIn("W5 shortpath downstream timing is not idle-only", runner_text)
+        self.assertIn("W5 shortpath downstream handoff is not idle-only", runner_text)
+        self.assertIn("W5 shortpath pool usage summary is ambiguous", runner_text)
+        self.assertIn("W5 shortpath summary contains stale fallback/missing/ambiguous markers", runner_text)
         self.assertIn("W5 shortpath scheduler no-dispatch per step", runner_text)
         self.assertIn("W5 shortpath terminal commit observed per step", runner_text)
         self.assertIn("W5 shortpath idle timing per step", runner_text)

@@ -800,6 +800,10 @@ validate_w5_engram_context_summary() {
 }
 
 validate_w5_boundary_observation_summary() {
+  local idle_expected
+  local node_id
+  local stale_summary_pattern
+
   if [[ -z "$SIM_UAPI_W5_PROFILE" ]]; then
     return 0
   fi
@@ -808,12 +812,37 @@ validate_w5_boundary_observation_summary() {
     return 1
   fi
   if w5_shortpath_execute_enabled; then
+    idle_expected=$((SIM_QWEN3_GUEST_DECODE_STEPS * (${#NODE_IDS[@]} - 1)))
+    stale_summary_pattern="timing_node: node=node[BCDEFGH] steps=0/${SIM_QWEN3_GUEST_DECODE_STEPS} status=missing|handoff_node: node=node[BCDEFGH] steps=0/${SIM_QWEN3_GUEST_DECODE_STEPS} status=missing|qwen3_range_kv_state_lazy_fallback|fallback=runtime_forward_metadata|w5_shortpath_decision:|payload_bytes=[0-9]+,[0-9]+|checksums=0x|obmm_pool: unavailable"
     if rg -q "memory_service_summary: .*qwen3_w5_memory_shortpath_commit:${SIM_QWEN3_GUEST_DECODE_STEPS}(,| )" "$RUN_SUMMARY_FILE" &&
       rg -q "memory_service_summary: .*qwen3_w5_memory_terminal_logits_selected:${SIM_QWEN3_GUEST_DECODE_STEPS}(,| )" "$RUN_SUMMARY_FILE" &&
+      rg -q "memory_service_summary: .*lookup_hits=${SIM_QWEN3_GUEST_DECODE_STEPS}( |$)" "$RUN_SUMMARY_FILE" &&
       rg -q "memory_service_summary: .*actions=jump-to-terminal .*artifact_kinds=logits" "$RUN_SUMMARY_FILE" &&
       ! rg -q "memory_service_summary: .*shortpath_ids=none" "$RUN_SUMMARY_FILE" &&
       ! rg -q "memory_service_summary: .*support_ids=none" "$RUN_SUMMARY_FILE" &&
       ! rg -q "memory_service_summary: .*artifact_kinds=none" "$RUN_SUMMARY_FILE"; then
+      if ! rg -q "summary: .*worker_timing_records=${SIM_QWEN3_GUEST_DECODE_STEPS} .*idle_timing_records=${idle_expected}" "$RUN_SUMMARY_FILE"; then
+        trace "FAIL: W5 shortpath timing record counts are incomplete expected_active=${SIM_QWEN3_GUEST_DECODE_STEPS} expected_idle=${idle_expected} path=$RUN_SUMMARY_FILE"
+        return 1
+      fi
+      for node_id in nodeB nodeC nodeD nodeE nodeF nodeG nodeH; do
+        if ! rg -q "timing_node: node=${node_id} steps=0/${SIM_QWEN3_GUEST_DECODE_STEPS} idle_steps=${SIM_QWEN3_GUEST_DECODE_STEPS}/${SIM_QWEN3_GUEST_DECODE_STEPS} .*status=idle_no_work_item" "$RUN_SUMMARY_FILE"; then
+          trace "FAIL: W5 shortpath downstream timing is not idle-only node=$node_id path=$RUN_SUMMARY_FILE"
+          return 1
+        fi
+        if ! rg -q "handoff_node: node=${node_id} steps=0/${SIM_QWEN3_GUEST_DECODE_STEPS} idle_steps=${SIM_QWEN3_GUEST_DECODE_STEPS}/${SIM_QWEN3_GUEST_DECODE_STEPS} .*status=idle_no_work_item" "$RUN_SUMMARY_FILE"; then
+          trace "FAIL: W5 shortpath downstream handoff is not idle-only node=$node_id path=$RUN_SUMMARY_FILE"
+          return 1
+        fi
+      done
+      if ! rg -q "obmm_pool: not_observed reason=no_qwen3_obmm_pool_usage_records active_worker_records=${SIM_QWEN3_GUEST_DECODE_STEPS} idle_worker_records=${idle_expected}" "$RUN_SUMMARY_FILE"; then
+        trace "FAIL: W5 shortpath pool usage summary is ambiguous path=$RUN_SUMMARY_FILE"
+        return 1
+      fi
+      if rg -q "$stale_summary_pattern" "$RUN_SUMMARY_FILE"; then
+        trace "FAIL: W5 shortpath summary contains stale fallback/missing/ambiguous markers path=$RUN_SUMMARY_FILE"
+        return 1
+      fi
       return 0
     fi
     trace "FAIL: W5 shortpath execution summary incomplete or unauditable expected_steps=$SIM_QWEN3_GUEST_DECODE_STEPS path=$RUN_SUMMARY_FILE"
