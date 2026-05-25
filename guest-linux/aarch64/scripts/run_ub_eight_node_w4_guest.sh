@@ -447,6 +447,9 @@ assert_log_count() {
   local count
 
   count="$(rg -c "$pattern" "$file" || true)"
+  if [[ -z "$count" ]]; then
+    count="0"
+  fi
   if [[ "$count" != "$expected" ]]; then
     echo "unexpected log marker count: $label expected=$expected actual=$count in $file" >&2
     return 1
@@ -840,15 +843,22 @@ validate_node_log() {
   idx="$(node_index "$node_id")"
   remote_idx=$((idx % 8 + 1))
 
-  if [[ -n "$SIM_UAPI_W5_PROFILE" ]] &&
-    w5_shortpath_execute_enabled &&
-    rg -q "\\[w4_guest\\] stage qwen3_decode_round_scheduler_no_dispatch .* reason=terminal_token_committed .* work_item=none .* status=no_dispatch" "$log_file"; then
-    assert_log_count "$log_file" "\\[w4_guest\\] stage qwen3_decode_round_scheduler_no_dispatch .* reason=terminal_token_committed .* work_item=none .* status=no_dispatch" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id W5 shortpath scheduler no-dispatch per step" || return 1
-    assert_log_count "$log_file" "\\[w4_guest\\] stage qwen3_decode_round_terminal_committed .* target=decode_round_scheduler .* status=committed" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id W5 shortpath terminal commit observed per step" || return 1
-    assert_log_count "$log_file" "\\[w4_guest\\] stage qwen3_decode_round_idle_timing .* terminal_observed=1 .* status=idle" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id W5 shortpath idle timing per step" || return 1
-    assert_log_absent "$log_file" "\\[w4_guest\\] stage qwen3_range_forward_runtime_output_publish local=node${idx} " "$node_id W5 shortpath downstream runtime output publish" || return 1
-    assert_log_absent "$log_file" "\\[w4_guest\\] stage qwen3_worker_handoff_timing local=${node_id} " "$node_id W5 shortpath downstream handoff timing" || return 1
-    assert_log_absent "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_runtime_forward node=$((idx - 1)) " "$node_id W5 shortpath downstream range forward" || return 1
+  if [[ -n "$SIM_UAPI_W5_PROFILE" ]] && w5_shortpath_execute_enabled; then
+    if (( idx > 1 )); then
+      assert_log_count "$log_file" "\\[w4_guest\\] stage qwen3_decode_round_scheduler_no_dispatch .*reason=terminal_token_committed.*work_item=none.*status=no_dispatch" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id W5 shortpath scheduler no-dispatch per step" || return 1
+      assert_log_count "$log_file" "\\[w4_guest\\] stage qwen3_decode_round_terminal_committed .*target=decode_round_scheduler.*status=committed" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id W5 shortpath terminal commit observed per step" || return 1
+      assert_log_count "$log_file" "\\[w4_guest\\] stage qwen3_decode_round_idle_timing .*terminal_observed=1.*status=idle" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id W5 shortpath idle timing per step" || return 1
+      assert_log_absent "$log_file" "\\[w4_guest\\] stage qwen3_range_forward_runtime_output_publish local=node${idx} " "$node_id W5 shortpath downstream runtime output publish" || return 1
+      assert_log_absent "$log_file" "\\[w4_guest\\] stage qwen3_worker_handoff_timing local=${node_id} " "$node_id W5 shortpath downstream handoff timing" || return 1
+      assert_log_absent "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_runtime_forward node=$((idx - 1)) " "$node_id W5 shortpath downstream range forward" || return 1
+      assert_log_has "$log_file" "\\[w4_guest\\] pass" "$node_id pass" || return 1
+      assert_log_absent "$log_file" "\\[w4_guest\\] fail" "$node_id fail" || return 1
+      return 0
+    fi
+    assert_log_count "$log_file" "\\[w4_guest\\] stage qwen3_w5_memory_shortpath_commit .*publish_hidden=0.*status=ok" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id W5 shortpath boundary commit per step" || return 1
+    assert_log_count "$log_file" "\\[w4_guest\\] stage qwen3_w5_memory_terminal_logits_selected .*status=ok" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id W5 shortpath terminal logits selected per step" || return 1
+    assert_log_count "$log_file" "\\[w4_guest\\] stage qwen3_terminal_token_result_publish .*publisher=shortpath_boundary" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id W5 shortpath terminal token publish per step" || return 1
+    assert_log_absent "$log_file" "\\[w4_guest\\] stage qwen3_range_forward_runtime_output_publish local=node${idx} " "$node_id W5 shortpath boundary runtime output publish" || return 1
     assert_log_has "$log_file" "\\[w4_guest\\] pass" "$node_id pass" || return 1
     assert_log_absent "$log_file" "\\[w4_guest\\] fail" "$node_id fail" || return 1
     return 0
