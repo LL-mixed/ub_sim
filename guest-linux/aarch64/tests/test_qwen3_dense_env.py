@@ -272,6 +272,9 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("runtime_kv_checksum = w4_qwen3_hidden_payload_checksum", guest_source)
         self.assertIn("runtime_checksum=0x%016", guest_source)
         self.assertIn("qwen3_w5_memory_terminal_logits_selected", guest_source)
+        self.assertNotIn("record->sampled_token == record->runner_up_token", guest_source)
+        self.assertNotIn("engram_policy_requires_materialized_owner", guest_source)
+        self.assertIn("source=shortpath_boundary_policy", guest_source)
         self.assertIn("target=terminal_token_result", guest_source)
         self.assertIn("publish_hidden=0", guest_source)
         self.assertIn("qwen3_memory_shortpath_audit_id", guest_source)
@@ -364,6 +367,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("qwen3_range_kv_state_lazy_fallback", guest_source)
         self.assertIn("reason=intermediate_step_kv_absent", guest_source)
         self.assertIn("reason=not_lazy_work_item_resolve", guest_source)
+        self.assertIn("shortpath_worker_stateless", guest_source)
         self.assertIn("SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR", cli_source)
         self.assertIn("SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT", cli_source)
         self.assertIn("w5_kv_hot_object_ref_from_object_service", cli_source)
@@ -407,6 +411,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP", runner_text)
         self.assertIn("SIM_W5_MEMORY_OBSERVATION_STORE", runner_text)
         self.assertIn("SIM_W5_MEMORY_DECISION_STORE", runner_text)
+        self.assertIn("SIM_W5_MEMORY_DECISION_OBJECT_STORE", runner_text)
         self.assertIn("SIM_W5_MEMORY_BOUNDARY_REGISTRY_REF", legacy_runner_text)
         self.assertIn("SIM_W5_MEMORY_BOUNDARY_REGISTRY_COUNT", legacy_runner_text)
         self.assertIn("SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID", runner_text)
@@ -427,6 +432,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("--memory-engram-state", runner_text)
         self.assertIn("--memory-registry-dir", runner_text)
         self.assertIn("--memory-decision-store", runner_text)
+        self.assertIn("--memory-decision-object-store", runner_text)
         self.assertIn("--memory-boundary-observation-run-id", runner_text)
         self.assertIn("--memory-shortpath-decision-ids", runner_text)
         self.assertIn("--memory-store", runner_text)
@@ -450,6 +456,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP", config_runner_text)
         self.assertIn("SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP", config_runner_text)
         self.assertIn("SIM_W5_MEMORY_OBSERVATION_STORE", config_runner_text)
+        self.assertIn("SIM_W5_MEMORY_DECISION_OBJECT_STORE", config_runner_text)
         self.assertIn('exec "$SCRIPT_DIR/run_ub_eight_node_w5_inference_cluster.sh"', config_runner_text)
         self.assertIn("explicit obmm cluster runtime bootstrap", legacy_runner_text)
         self.assertIn("SIM_W4_DB_LAZY_REMOTE_ACTIVATION=0", legacy_runner_text)
@@ -475,6 +482,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP=1",
                         "SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP=1",
                         "SIM_W5_MEMORY_OBSERVATION_STORE=/tmp/w5-memory-store.json",
+                        "SIM_W5_MEMORY_DECISION_STORE=/tmp/w5-decision-store.json",
+                        "SIM_W5_MEMORY_DECISION_OBJECT_STORE=/tmp/w5-object-store.json",
                     ]
                 )
                 + "\n",
@@ -500,6 +509,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP=1",
                 "SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP=1",
                 "SIM_W5_MEMORY_OBSERVATION_STORE=/tmp/w5-memory-store.json",
+                "SIM_W5_MEMORY_DECISION_STORE=/tmp/w5-decision-store.json",
+                "SIM_W5_MEMORY_DECISION_OBJECT_STORE=/tmp/w5-object-store.json",
             ],
         )
 

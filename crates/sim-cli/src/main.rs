@@ -292,6 +292,7 @@ struct W5MemoryBootstrapConfig {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct W5MemoryDecisionConfig {
     store_path: PathBuf,
+    artifact_object_store_path: Option<PathBuf>,
     boundary_request_path: Option<PathBuf>,
     boundary_observation_id: Option<String>,
     boundary_observation_ids: Vec<String>,
@@ -572,6 +573,7 @@ where
             let mut memory_producer_entity = None;
             let mut memory_observation_store_path = None;
             let mut memory_decision_store_path = None;
+            let mut memory_decision_object_store_path = None;
             let mut memory_boundary_request_path = None;
             let mut memory_boundary_observation_id = None;
             let mut memory_boundary_observation_ids = Vec::new();
@@ -885,6 +887,13 @@ where
                     memory_decision_store_path = Some(PathBuf::from(next));
                 } else if let Some(value) = text.strip_prefix("--memory-decision-store=") {
                     memory_decision_store_path = Some(PathBuf::from(value));
+                } else if text == "--memory-decision-object-store" {
+                    let next = pending.next().ok_or_else(|| {
+                        anyhow::anyhow!("--memory-decision-object-store requires a value")
+                    })?;
+                    memory_decision_object_store_path = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--memory-decision-object-store=") {
+                    memory_decision_object_store_path = Some(PathBuf::from(value));
                 } else if text == "--memory-boundary-request" {
                     let next = pending.next().ok_or_else(|| {
                         anyhow::anyhow!("--memory-boundary-request requires a value")
@@ -1054,6 +1063,9 @@ where
                 || memory_has_boundary_observation_ids
                 || memory_boundary_observation_run_id.is_some()
                 || memory_online_boundary_lookup;
+            if memory_decision_object_store_path.is_some() && memory_decision_store_path.is_none() {
+                anyhow::bail!("--memory-decision-object-store requires --memory-decision-store");
+            }
             let memory_decisions = if let Some(store_path) = memory_decision_store_path {
                 if !memory_has_decision_input {
                     anyhow::bail!(
@@ -1062,6 +1074,7 @@ where
                 }
                 Some(W5MemoryDecisionConfig {
                     store_path,
+                    artifact_object_store_path: memory_decision_object_store_path,
                     boundary_request_path: memory_boundary_request_path,
                     boundary_observation_id: memory_boundary_observation_id,
                     boundary_observation_ids: memory_boundary_observation_ids,
@@ -5389,6 +5402,7 @@ fn validate_w5_model_binding_matches_runtime(
 fn publish_w5_memory_decision_artifact_refs(
     config: &W5MemoryBootstrapConfig,
     artifact_store_path: &Path,
+    artifact_object_store_path: Option<&Path>,
     bundle: &W5MemoryDecisionBundle,
 ) -> anyhow::Result<W5MemoryDecisionArtifactPublication> {
     let mut object_durable_store = load_lingqu_memory_durable_store(&config.store_path)?;
@@ -5412,6 +5426,28 @@ fn publish_w5_memory_decision_artifact_refs(
     } else {
         LingquObjectServiceStub::new(w5_memory_decision_publication_object_service_profile())
     };
+    if let Some(artifact_object_store_path) = artifact_object_store_path {
+        let artifact_snapshot = load_lingqu_object_service_snapshot_file(
+            artifact_object_store_path,
+        )?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "W5 decision artifact object store not found: {}",
+                artifact_object_store_path.display()
+            )
+        })?;
+        let merged_snapshot = merge_w5_publication_object_service_snapshots(
+            object_service.export_snapshot(),
+            artifact_snapshot,
+        )?;
+        object_service =
+            LingquObjectServiceStub::import_snapshot(merged_snapshot).with_context(|| {
+                format!(
+                    "import merged W5 decision object store {}",
+                    artifact_object_store_path.display()
+                )
+            })?;
+    }
     let mut shortpath_refs = Vec::new();
     for entry in &bundle.shortpath_entries {
         if let Some(artifact) = &entry.artifact {
@@ -5561,6 +5597,42 @@ fn w5_memory_decision_publication_object_service_profile() -> LingquObjectServic
     profile.queue_depth = 4096;
     profile.obmm_pool.queue_depth = 4096;
     profile
+}
+
+fn merge_w5_publication_object_service_snapshots(
+    mut target: LingquObjectServiceSnapshot,
+    source: LingquObjectServiceSnapshot,
+) -> anyhow::Result<LingquObjectServiceSnapshot> {
+    target.profile.queue_depth = target.profile.queue_depth.max(source.profile.queue_depth);
+    target.profile.obmm_pool.queue_depth = target
+        .profile
+        .obmm_pool
+        .queue_depth
+        .max(source.profile.obmm_pool.queue_depth);
+    for source_record in source.records {
+        if let Some(existing) = target.records.iter().find(|record| {
+            record.key == source_record.key && record.version == source_record.version
+        }) {
+            if existing.bytes != source_record.bytes
+                || existing.checksum != source_record.checksum
+                || existing.kind != source_record.kind
+            {
+                anyhow::bail!(
+                    "W5 decision object store conflicts with bootstrap object key={} version={}",
+                    source_record.key,
+                    source_record.version
+                );
+            }
+            continue;
+        }
+        target.records.push(source_record);
+    }
+    target.records.sort_by(|left, right| {
+        left.key
+            .cmp(&right.key)
+            .then(left.version.cmp(&right.version))
+    });
+    Ok(target)
 }
 
 fn publish_w5_execution_artifact_ref(
@@ -9829,11 +9901,12 @@ mod tests {
     use super::{
         build_w5_terminal_logits_payload, cli_bytes_checksum, cli_f32_vec_to_le_bytes,
         ensure_w5_memory_engram_state, lingqu_durable_args_from, lingqu_memory_args_from,
-        lingqu_object_service_args_from, load_lingqu_memory_durable_store,
-        load_lingqu_object_service_snapshot_file, load_w5_memory_decisions_from_store,
-        parse_summary_fields, parse_w5_terminal_logits_observation,
-        publish_w5_engram_state_ref_from_memory, publish_w5_engram_state_ref_from_memory_objects,
-        publish_w5_execution_artifact_ref, publish_w5_memory_decision_artifact_refs,
+        lingqu_object_payload_checksum, lingqu_object_service_args_from,
+        load_lingqu_memory_durable_store, load_lingqu_object_service_snapshot_file,
+        load_w5_memory_decisions_from_store, parse_summary_fields,
+        parse_w5_terminal_logits_observation, publish_w5_engram_state_ref_from_memory,
+        publish_w5_engram_state_ref_from_memory_objects, publish_w5_execution_artifact_ref,
+        publish_w5_memory_decision_artifact_refs, publish_w5_object_service_payload_ref,
         qwen3_decode_loop_args_from, qwen3_decode_report_verbosity_from_env,
         qwen3_dense_weights_path_from_env, qwen3_engram_policy_checksum, qwen3_engram_select_token,
         qwen3_engram_state_words, qwen3_guest_candidate_records, qwen3_guest_decode_loop_args_from,
@@ -9880,8 +9953,8 @@ mod tests {
         save_lingqu_object_service_snapshot, simpler_host_matmul_artifact_producer_path,
         validate_qwen3_dense_weights_path, validate_w5_inference_profile,
         validate_w5_memory_decision_bundle_for_run, w5_expected_jump_to_terminal_shortpath_hits,
-        w5_inference_profile_spec, w5_memory_decision_env_vars,
-        w5_memory_decision_publication_object_service_profile,
+        w5_inference_profile_spec, w5_kv_hot_object_ref_from_object_service,
+        w5_memory_decision_env_vars, w5_memory_decision_publication_object_service_profile,
         w5_memory_shortpath_kv_stream_env_from_refs, w5_memory_shortpath_stream_env,
         w5_memory_should_publish_engram_state, w5_object_service_payload_index_path,
         w5_runtime_tensor_payload_checksum, LingquDurableSim, LingquDurableSimSnapshot,
@@ -9896,7 +9969,8 @@ mod tests {
         W5MemoryDecisionConfig, W5MemoryPublishedArtifactRef, W5MemoryPublishedKvArtifactRef,
         LINGQU_EXTERNAL_PAYLOAD_BLOCK_PREFIX, QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
         QWEN3_DENSE_DEFAULT_PREFILL_TOKENS, QWEN3_DENSE_DEFAULT_TP_NODES,
-        QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE, QWEN3_ENGRAM_DEFAULT_NO_REPEAT_NGRAM_SIZE,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE, QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_TERMINAL_LOGITS, QWEN3_ENGRAM_DEFAULT_NO_REPEAT_NGRAM_SIZE,
         SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
         SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT, W5_TERMINAL_LOGITS_ENTRY_BYTES,
         W5_TERMINAL_LOGITS_HEADER_BYTES, W5_TERMINAL_TOKEN_TEXT_HEADER_BYTES,
@@ -11263,6 +11337,7 @@ mod tests {
         let profile = w5_inference_profile_spec("qwen3_0_6b_decode").expect("profile");
         let config = W5MemoryDecisionConfig {
             store_path: PathBuf::from("/tmp/lingqu-memory-store.json"),
+            artifact_object_store_path: None,
             boundary_request_path: None,
             boundary_observation_id: None,
             boundary_observation_ids: Vec::new(),
@@ -11429,6 +11504,7 @@ mod tests {
         };
         let prefix_config = W5MemoryDecisionConfig {
             store_path: PathBuf::from("/tmp/lingqu-memory-store.json"),
+            artifact_object_store_path: None,
             boundary_request_path: None,
             boundary_observation_id: None,
             boundary_observation_ids: Vec::new(),
@@ -11488,6 +11564,7 @@ mod tests {
         let profile = w5_inference_profile_spec("qwen3_0_6b_engram_decode").expect("profile");
         let config = W5MemoryDecisionConfig {
             store_path: PathBuf::from("/tmp/lingqu-memory-store.json"),
+            artifact_object_store_path: None,
             boundary_request_path: None,
             boundary_observation_id: None,
             boundary_observation_ids: Vec::new(),
@@ -13152,6 +13229,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
         fs::copy(&store, &auto_lookup_store).expect("copy store for W5 auto boundary lookup");
         let auto_bundle = load_w5_memory_decisions_from_store(&W5MemoryDecisionConfig {
             store_path: auto_lookup_store.clone(),
+            artifact_object_store_path: None,
             boundary_request_path: Some(boundary_request_path.clone()),
             boundary_observation_id: None,
             boundary_observation_ids: Vec::new(),
@@ -13197,6 +13275,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
         let auto_observation_bundle =
             load_w5_memory_decisions_from_store(&W5MemoryDecisionConfig {
                 store_path: auto_observation_store.clone(),
+                artifact_object_store_path: None,
                 boundary_request_path: None,
                 boundary_observation_id: Some("boundary-observation/run0/step3/node4".to_string()),
                 boundary_observation_ids: Vec::new(),
@@ -13225,6 +13304,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
         let auto_observation_stream_bundle =
             load_w5_memory_decisions_from_store(&W5MemoryDecisionConfig {
                 store_path: auto_observation_stream_store.clone(),
+                artifact_object_store_path: None,
                 boundary_request_path: None,
                 boundary_observation_id: None,
                 boundary_observation_ids: vec![
@@ -13272,6 +13352,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
         );
         let cached_run_bundle = load_w5_memory_decisions_from_store(&W5MemoryDecisionConfig {
             store_path: auto_observation_stream_store.clone(),
+            artifact_object_store_path: None,
             boundary_request_path: None,
             boundary_observation_id: None,
             boundary_observation_ids: Vec::new(),
@@ -13294,6 +13375,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
         assert_eq!(cached_run_decisions.len(), 2);
         let online_boundary_bundle = load_w5_memory_decisions_from_store(&W5MemoryDecisionConfig {
             store_path: auto_observation_stream_store.clone(),
+            artifact_object_store_path: None,
             boundary_request_path: None,
             boundary_observation_id: None,
             boundary_observation_ids: Vec::new(),
@@ -13320,6 +13402,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
         let online_env_vars = w5_memory_decision_env_vars(
             &W5MemoryDecisionConfig {
                 store_path: auto_observation_stream_store.clone(),
+                artifact_object_store_path: None,
                 boundary_request_path: None,
                 boundary_observation_id: None,
                 boundary_observation_ids: Vec::new(),
@@ -13346,6 +13429,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
         let auto_observation_run_bundle =
             load_w5_memory_decisions_from_store(&W5MemoryDecisionConfig {
                 store_path: auto_observation_run_store.clone(),
+                artifact_object_store_path: None,
                 boundary_request_path: None,
                 boundary_observation_id: None,
                 boundary_observation_ids: Vec::new(),
@@ -13493,6 +13577,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
         );
         let decision_config = W5MemoryDecisionConfig {
             store_path: store.clone(),
+            artifact_object_store_path: None,
             boundary_request_path: None,
             boundary_observation_id: None,
             boundary_observation_ids: Vec::new(),
@@ -13551,6 +13636,7 @@ stage qwen3_range_forward_runtime_output_publish node=2
                 producer_entity: 2,
             },
             &store,
+            None,
             &bundle,
         )
         .expect("publish w5 memory decision artifact refs");
@@ -13678,6 +13764,185 @@ stage qwen3_range_forward_runtime_output_publish node=2
         assert!(env_vars.iter().any(
             |(key, value)| key == "SIM_W5_MEMORY_PREFETCH_ARTIFACT_REFS" && value.len() == 128
         ));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn w5_memory_decision_publication_merges_hot_artifact_object_store() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_w5_hot_artifact_object_store_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let bootstrap_store = root.join("bootstrap-store.json");
+        let bootstrap_object_store = root.join("bootstrap-object-store.json");
+        let artifact_object_store = root.join("artifact-object-store.json");
+        let registry_dir = root.join("registry");
+        let mut bootstrap_durable = LingquMemoryDurableStore::new();
+        let mut bootstrap_service =
+            LingquObjectServiceStub::new(w5_memory_decision_publication_object_service_profile());
+        publish_w5_object_service_payload_ref(
+            &mut bootstrap_service,
+            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
+            LingquObjectKind::Metadata,
+            1,
+            2,
+            "engram/state/bootstrap",
+            &[0x11; 8],
+            "bootstrap",
+        )
+        .expect("publish bootstrap object");
+        save_lingqu_object_service_snapshot(
+            &bootstrap_object_store,
+            &mut bootstrap_durable,
+            &bootstrap_service,
+        )
+        .expect("save bootstrap object store");
+        save_lingqu_memory_durable_store(&bootstrap_store, &bootstrap_durable)
+            .expect("save bootstrap memory store");
+
+        let mut artifact_durable = LingquMemoryDurableStore::new();
+        let mut artifact_service =
+            LingquObjectServiceStub::new(w5_memory_decision_publication_object_service_profile());
+        let artifact_payload = vec![0x42; 32];
+        let artifact_key = "logits/qwen3/test/step0/node4";
+        publish_w5_object_service_payload_ref(
+            &mut artifact_service,
+            QWEN3_DENSE_PROFILE_OBMM_KIND_TERMINAL_LOGITS,
+            LingquObjectKind::Logits,
+            3,
+            4,
+            artifact_key,
+            &artifact_payload,
+            "artifact",
+        )
+        .expect("publish hot artifact object");
+        let hot_ref = w5_kv_hot_object_ref_from_object_service(
+            &artifact_service,
+            artifact_key,
+            1,
+            3,
+            4,
+            artifact_payload.len() as u64,
+            lingqu_object_payload_checksum(&artifact_payload),
+        )
+        .expect("build hot artifact ref");
+        save_lingqu_object_service_snapshot(
+            &artifact_object_store,
+            &mut artifact_durable,
+            &artifact_service,
+        )
+        .expect("save artifact object store");
+
+        let model = sim_memory::InferenceModelBinding {
+            model_id: "Qwen/Qwen3-0.6B".to_string(),
+            model_key: "qwen3-0-6b".to_string(),
+            tokenizer_hash: 0x1001,
+            profile_hash: 0x2002,
+        };
+        let artifact = sim_memory::ExecutionArtifactObject {
+            artifact_id: "artifact/logits/hot".to_string(),
+            kind: sim_memory::ExecutionArtifactKind::Logits,
+            model,
+            producer_boundary: sim_memory::RangeBoundary {
+                phase: sim_memory::RangeBoundaryPhase::RangeExit,
+                step_index: 0,
+                node_index: 4,
+                layer_start: 12,
+                layer_end: 16,
+                next_node_index: Some(5),
+                position: 4,
+            },
+            boundary_hidden_fingerprint: sim_memory::BoundaryTensorFingerprint {
+                bytes: 16,
+                checksum: 0x4444,
+                dtype: sim_core::TensorDType::F32,
+                shape: vec![1, 4],
+            },
+            target_layer_start: 28,
+            target_layer_end: 28,
+            dtype: sim_core::TensorDType::Opaque,
+            shape: vec![artifact_payload.len() as u64],
+            durable_payload_ref: None,
+            hot_object_ref: Some(hot_ref),
+            source_query_result_id: None,
+            source_engram_state_id: None,
+            confidence_milli: 990,
+            state: sim_memory::ExecutionArtifactState::Verified,
+            checksum: lingqu_object_payload_checksum(&artifact_payload),
+            version: 1,
+            created_at_us: 10,
+            expires_at_us: Some(100),
+        };
+        let decision = sim_memory::ShortpathDecisionRecord {
+            decision_id: "shortpath-decision/hot".to_string(),
+            request_id: "boundary/hot".to_string(),
+            support_id: Some("shortpath-support/hot".to_string()),
+            action: sim_memory::ShortpathAction::JumpToTerminal,
+            artifact_id: Some("artifact/logits/hot".to_string()),
+            producer_position: Some(4),
+            target_layer_start: Some(28),
+            target_layer_end: Some(28),
+            confidence_milli: 990,
+            verify_required: false,
+            proof_checksum: 0x7777,
+            reason: "test".to_string(),
+            created_at_us: 11,
+            version: 1,
+        };
+        let bundle = W5MemoryDecisionBundle {
+            shortpath: Some(decision.clone()),
+            shortpath_artifact: Some(artifact.clone()),
+            shortpath_entries: vec![crate::W5MemoryShortpathEntry {
+                decision,
+                artifact: Some(artifact),
+            }],
+            shortpath_kv_artifacts: Vec::new(),
+            online_boundary_lookup: false,
+            prefetch: None,
+            prefetch_artifacts: Vec::new(),
+            prefix_cache: None,
+            prefix_cache_artifact: None,
+        };
+
+        let publication = publish_w5_memory_decision_artifact_refs(
+            &W5MemoryBootstrapConfig {
+                store_path: bootstrap_store,
+                object_store_path: bootstrap_object_store.clone(),
+                engram_state_path: root.join("unused-engram-state.json"),
+                registry_dir,
+                owner_entity: 1,
+                producer_entity: 2,
+            },
+            &root.join("unused-artifact-store.json"),
+            Some(&artifact_object_store),
+            &bundle,
+        )
+        .expect("publish hot artifact refs with backing object store");
+        assert_eq!(
+            publication
+                .shortpath_ref
+                .as_ref()
+                .expect("hot shortpath ref")
+                .payload_bytes,
+            artifact_payload.len()
+        );
+        let merged_snapshot = load_lingqu_object_service_snapshot_file(&bootstrap_object_store)
+            .expect("load merged object store")
+            .expect("merged object store exists");
+        let bootstrap_record = merged_snapshot
+            .records
+            .iter()
+            .find(|record| record.key == "engram/state/bootstrap")
+            .expect("bootstrap object preserved");
+        assert_eq!(bootstrap_record.payload_bytes, vec![0x11; 8]);
+        let artifact_record = merged_snapshot
+            .records
+            .iter()
+            .find(|record| record.key == artifact_key)
+            .expect("artifact object merged");
+        assert_eq!(artifact_record.payload_bytes, artifact_payload);
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -14759,6 +15024,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
 
         let err = load_w5_memory_decisions_from_store(&W5MemoryDecisionConfig {
             store_path: store,
+            artifact_object_store_path: None,
             boundary_request_path: None,
             boundary_observation_id: None,
             boundary_observation_ids: Vec::new(),
@@ -14911,6 +15177,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
         assert!(response.reuse_plan.proof_checksum != 0);
         let decision_config = W5MemoryDecisionConfig {
             store_path: store.clone(),
+            artifact_object_store_path: None,
             boundary_request_path: None,
             boundary_observation_id: None,
             boundary_observation_ids: Vec::new(),
@@ -14951,6 +15218,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
                 producer_entity: 2,
             },
             &store,
+            None,
             &bundle,
         )
         .expect("publish prefix-cache artifact ref");
@@ -16209,6 +16477,9 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
                 publish_w5_memory_decision_artifact_refs(
                     memory_bootstrap,
                     artifact_store_path,
+                    args.memory_decisions
+                        .as_ref()
+                        .and_then(|config| config.artifact_object_store_path.as_deref()),
                     decisions,
                 )
                 .context("publish W5 execution artifact object refs")?,
@@ -16612,6 +16883,8 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     } else {
         0
     };
+    let engram_shortpath_local_policy =
+        effective_engram.enabled && shortpath_execute_jump_to_terminal;
     let worker_counts = qwen3_guest_expected_worker_counts(args.step_count);
     let expected_runtime_forward_count = worker_counts.range_forwards;
     let expected_runtime_input_count = worker_counts.runtime_inputs;
@@ -16622,16 +16895,24 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     } else {
         0
     };
-    let expected_guest_engram_candidate_publish_count = if effective_engram.enabled {
-        args.step_count
-    } else {
-        0
-    };
+    let expected_guest_engram_candidate_publish_count =
+        if effective_engram.enabled && !engram_shortpath_local_policy {
+            args.step_count
+        } else {
+            0
+        };
     let expected_guest_engram_candidate_wait_count = expected_guest_engram_candidate_publish_count;
-    let expected_guest_engram_selected_wait_count = expected_guest_engram_select_count;
+    let expected_guest_engram_selected_wait_count = if engram_shortpath_local_policy {
+        0
+    } else {
+        expected_guest_engram_select_count
+    };
     let expected_guest_engram_selected_writeback_count = expected_guest_engram_select_count;
-    let expected_guest_engram_history_wait_count =
-        qwen3_guest_expected_engram_history_state_waits(effective_engram.enabled, args.step_count);
+    let expected_guest_engram_history_wait_count = if engram_shortpath_local_policy {
+        0
+    } else {
+        qwen3_guest_expected_engram_history_state_waits(effective_engram.enabled, args.step_count)
+    };
     let expected_guest_engram_state_wait_count = expected_guest_engram_history_wait_count;
     let expected_guest_engram_state_resolved_count = expected_guest_engram_history_wait_count;
     let timing_summary = qwen3_guest_timing_summary(&combined);
@@ -16770,7 +17051,9 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
                     terminal_tokens
                 );
             }
-            if guest_engram_history_lengths != expected_history_lengths {
+            if !engram_shortpath_local_policy
+                && guest_engram_history_lengths != expected_history_lengths
+            {
                 anyhow::bail!(
                     "guest engram history object lengths are wrong: got={:?} expected={:?}",
                     guest_engram_history_lengths,
@@ -16782,7 +17065,9 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
                 .iter()
                 .map(|step| step.candidates.len() as u64)
                 .collect::<Vec<_>>();
-            if guest_engram_candidate_counts != expected_candidate_counts {
+            if !engram_shortpath_local_policy
+                && guest_engram_candidate_counts != expected_candidate_counts
+            {
                 anyhow::bail!(
                     "guest engram candidate object counts are wrong: got={:?} expected={:?}",
                     guest_engram_candidate_counts,
