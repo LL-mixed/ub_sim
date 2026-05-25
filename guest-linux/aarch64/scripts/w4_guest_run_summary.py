@@ -104,6 +104,7 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
     tokens = {}
     timings = []
     handoff_timings = []
+    idle_timings = []
     engram_timings = []
     engram_context_records = []
     memory_records = []
@@ -228,6 +229,26 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                         ):
                             record[key] = parse_int(fields.get(key), 0)
                         timings.append(record)
+
+                if "qwen3_decode_round_idle_timing" in clean_line:
+                    fields = parse_pairs(clean_line)
+                    step = parse_int(fields.get("step"), None)
+                    if step is not None:
+                        idle_timings.append(
+                            {
+                                "_log_node": node_id,
+                                "step": step,
+                                "local": fields.get("local", node_id),
+                                "node": parse_int(fields.get("node"), 0),
+                                "terminal_observed": parse_int(
+                                    fields.get("terminal_observed"), 0
+                                ),
+                                "input_wait_ms": parse_int(fields.get("input_wait_ms"), 0),
+                                "round_done_ms": parse_int(fields.get("round_done_ms"), 0),
+                                "source": fields.get("source", ""),
+                                "status": fields.get("status", ""),
+                            }
+                        )
 
                 if "qwen3_worker_handoff_timing" in clean_line:
                     fields = parse_pairs(clean_line)
@@ -376,6 +397,7 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
         tokens,
         timings,
         handoff_timings,
+        idle_timings,
         engram_timings,
         engram_context_records,
         memory_records,
@@ -400,6 +422,7 @@ def emit_summary(run_dir, expected_steps, node_ids, output):
         tokens,
         timings,
         handoff_timings,
+        idle_timings,
         engram_timings,
         engram_context_records,
         memory_records,
@@ -422,6 +445,7 @@ def emit_summary(run_dir, expected_steps, node_ids, output):
         f"worker_timing_records={len(timings)} "
         f"passed_nodes={passed_nodes}/{len(node_ids)} "
         f"handoff_timing_records={len(handoff_timings)} "
+        f"idle_timing_records={len(idle_timings)} "
         f"engram_timing_records={len(engram_timings)} "
         f"engram_context_records={len(engram_context_records)}"
     )
@@ -429,8 +453,8 @@ def emit_summary(run_dir, expected_steps, node_ids, output):
         output.append(f"summary: missing_guest_logs={quote_text(missing_logs)}")
 
     emit_token_summary(tokens, expected_steps, output)
-    emit_timing_summary(timings, barriers, expected_steps, node_ids, output)
-    emit_handoff_timing_summary(handoff_timings, expected_steps, node_ids, output)
+    emit_timing_summary(timings, idle_timings, barriers, expected_steps, node_ids, output)
+    emit_handoff_timing_summary(handoff_timings, idle_timings, expected_steps, node_ids, output)
     emit_engram_timing_summary(engram_timings, expected_steps, node_ids, output)
     emit_engram_context_summary(engram_context_records, expected_steps, output)
     emit_memory_service_summary(memory_records, expected_steps, output)
@@ -455,6 +479,7 @@ def emit_progress(run_dir, expected_steps, elapsed_s, node_ids, output):
         tokens,
         _timings,
         _handoff_timings,
+        _idle_timings,
         _engram_timings,
         _engram_context_records,
         _memory_records,
@@ -546,8 +571,8 @@ def emit_token_summary(tokens, expected_steps, output):
         )
 
 
-def emit_timing_summary(timings, barriers, expected_steps, node_ids, output):
-    if not timings:
+def emit_timing_summary(timings, idle_timings, barriers, expected_steps, node_ids, output):
+    if not timings and not idle_timings:
         output.append("timing: unavailable reason=no_qwen3_worker_timing_records")
         return
 
@@ -556,6 +581,12 @@ def emit_timing_summary(timings, barriers, expected_steps, node_ids, output):
     for record in timings:
         timings_by_step[record["step"]].append(record)
         timings_by_node[record["_log_node"]].append(record)
+
+    idle_by_step = collections.defaultdict(list)
+    idle_by_node = collections.defaultdict(list)
+    for record in idle_timings:
+        idle_by_step[record["step"]].append(record)
+        idle_by_node[record["_log_node"]].append(record)
 
     step_summaries = []
     for step in sorted(timings_by_step):
@@ -592,9 +623,34 @@ def emit_timing_summary(timings, barriers, expected_steps, node_ids, output):
             f"max_barrier_ms={max_barrier_ms}"
         )
 
+    for step in sorted(idle_by_step):
+        records = idle_by_step[step]
+        max_idle = max(records, key=lambda item: item["input_wait_ms"])
+        terminal_observed = sum(1 for record in records if record["terminal_observed"] != 0)
+        output.append(
+            "timing_idle_step: "
+            f"step={step} "
+            f"idle_nodes={len(records)}/{len(node_ids)} "
+            f"terminal_observed={terminal_observed}/{len(records)} "
+            f"max_terminal_wait_ms={max_idle['input_wait_ms']} "
+            f"critical_node={max_idle['_log_node']} "
+            "status=no_work_item"
+        )
+
     for node_id in node_ids:
         records = sorted(timings_by_node.get(node_id, []), key=lambda item: item["step"])
         if not records:
+            idle_records = sorted(idle_by_node.get(node_id, []), key=lambda item: item["step"])
+            if idle_records:
+                output.append(
+                    "timing_node: "
+                    f"node={node_id} "
+                    f"steps=0/{expected_steps} "
+                    f"idle_steps={len(idle_records)}/{expected_steps} "
+                    f"max_terminal_wait_ms={max(record['input_wait_ms'] for record in idle_records)} "
+                    "status=idle_no_work_item"
+                )
+                continue
             output.append(f"timing_node: node={node_id} steps=0/{expected_steps} status=missing")
             continue
         worker_total_ms = sum(record["total_ms"] for record in records)
@@ -616,33 +672,34 @@ def emit_timing_summary(timings, barriers, expected_steps, node_ids, output):
             f"avg_worker_ms={avg_worker_ms}"
         )
 
-    slowest_step = max(step_summaries, key=lambda item: item["round_ms"])
-    max_input_record = max(timings, key=lambda item: item["input_wait_ms"])
-    max_compute_record = max(timings, key=lambda item: item["compute_window_ms"])
-    output.append(
-        "timing_bottleneck: "
-        f"slowest_step={slowest_step['step']} "
-        f"round_ms={slowest_step['round_ms']} "
-        f"critical_node={slowest_step['critical_node']}"
-    )
-    output.append(
-        "timing_bottleneck: "
-        f"max_input_wait_step={max_input_record['step']} "
-        f"node={max_input_record['_log_node']} "
-        f"input_wait_ms={max_input_record['input_wait_ms']} "
-        f"worker_total_ms={max_input_record['total_ms']}"
-    )
-    output.append(
-        "timing_bottleneck: "
-        f"max_compute_step={max_compute_record['step']} "
-        f"node={max_compute_record['_log_node']} "
-        f"compute_window_ms={max_compute_record['compute_window_ms']} "
-        f"worker_total_ms={max_compute_record['total_ms']}"
-    )
+    if step_summaries:
+        slowest_step = max(step_summaries, key=lambda item: item["round_ms"])
+        max_input_record = max(timings, key=lambda item: item["input_wait_ms"])
+        max_compute_record = max(timings, key=lambda item: item["compute_window_ms"])
+        output.append(
+            "timing_bottleneck: "
+            f"slowest_step={slowest_step['step']} "
+            f"round_ms={slowest_step['round_ms']} "
+            f"critical_node={slowest_step['critical_node']}"
+        )
+        output.append(
+            "timing_bottleneck: "
+            f"max_input_wait_step={max_input_record['step']} "
+            f"node={max_input_record['_log_node']} "
+            f"input_wait_ms={max_input_record['input_wait_ms']} "
+            f"worker_total_ms={max_input_record['total_ms']}"
+        )
+        output.append(
+            "timing_bottleneck: "
+            f"max_compute_step={max_compute_record['step']} "
+            f"node={max_compute_record['_log_node']} "
+            f"compute_window_ms={max_compute_record['compute_window_ms']} "
+            f"worker_total_ms={max_compute_record['total_ms']}"
+        )
 
 
-def emit_handoff_timing_summary(handoff_timings, expected_steps, node_ids, output):
-    if not handoff_timings:
+def emit_handoff_timing_summary(handoff_timings, idle_timings, expected_steps, node_ids, output):
+    if not handoff_timings and not idle_timings:
         output.append("handoff_timing: unavailable reason=no_qwen3_worker_handoff_timing_records")
         return
 
@@ -654,6 +711,10 @@ def emit_handoff_timing_summary(handoff_timings, expected_steps, node_ids, outpu
     for record in handoff_timings:
         handoffs_by_step[record["step"]].append(record)
         handoffs_by_node[record["_log_node"]].append(record)
+
+    idle_by_node = collections.defaultdict(list)
+    for record in idle_timings:
+        idle_by_node[record["_log_node"]].append(record)
 
     for step in sorted(handoffs_by_step):
         records = handoffs_by_step[step]
@@ -704,36 +765,39 @@ def emit_handoff_timing_summary(handoff_timings, expected_steps, node_ids, outpu
                 f"max_wait_edge={max_wait['source']}->{max_wait['node']}"
             )
 
-    max_handoff_record = max(
-        handoff_timings,
-        key=lambda item: item["input_found_to_handoff_ms"],
-    )
-    max_kv_record = max(handoff_timings, key=lambda item: item["kv_resolve_ms"] + item["kv_load_ms"])
-    max_publish_record = max(handoff_timings, key=lambda item: item["range_publish_ms"])
     edge_records = [record for record in handoff_timings if is_range_handoff_edge(record)]
-    output.append(
-        "handoff_bottleneck: "
-        f"max_handoff_step={max_handoff_record['step']} "
-        f"node={max_handoff_record['_log_node']} "
-        f"input_found_to_handoff_ms={max_handoff_record['input_found_to_handoff_ms']} "
-        f"compute_window_ms={max_handoff_record['compute_window_ms']} "
-        f"dispatch_ms={max_handoff_record['dispatch_ms']} "
-        f"range_publish_ms={max_handoff_record['range_publish_ms']}"
-    )
-    output.append(
-        "handoff_bottleneck: "
-        f"max_kv_step={max_kv_record['step']} "
-        f"node={max_kv_record['_log_node']} "
-        f"kv_resolve_ms={max_kv_record['kv_resolve_ms']} "
-        f"kv_load_ms={max_kv_record['kv_load_ms']}"
-    )
-    output.append(
-        "handoff_bottleneck: "
-        f"max_publish_step={max_publish_record['step']} "
-        f"node={max_publish_record['_log_node']} "
-        f"range_publish_ms={max_publish_record['range_publish_ms']} "
-        f"terminal_publish_ms={max_publish_record['terminal_publish_ms']}"
-    )
+    if handoff_timings:
+        max_handoff_record = max(
+            handoff_timings,
+            key=lambda item: item["input_found_to_handoff_ms"],
+        )
+        max_kv_record = max(
+            handoff_timings, key=lambda item: item["kv_resolve_ms"] + item["kv_load_ms"]
+        )
+        max_publish_record = max(handoff_timings, key=lambda item: item["range_publish_ms"])
+        output.append(
+            "handoff_bottleneck: "
+            f"max_handoff_step={max_handoff_record['step']} "
+            f"node={max_handoff_record['_log_node']} "
+            f"input_found_to_handoff_ms={max_handoff_record['input_found_to_handoff_ms']} "
+            f"compute_window_ms={max_handoff_record['compute_window_ms']} "
+            f"dispatch_ms={max_handoff_record['dispatch_ms']} "
+            f"range_publish_ms={max_handoff_record['range_publish_ms']}"
+        )
+        output.append(
+            "handoff_bottleneck: "
+            f"max_kv_step={max_kv_record['step']} "
+            f"node={max_kv_record['_log_node']} "
+            f"kv_resolve_ms={max_kv_record['kv_resolve_ms']} "
+            f"kv_load_ms={max_kv_record['kv_load_ms']}"
+        )
+        output.append(
+            "handoff_bottleneck: "
+            f"max_publish_step={max_publish_record['step']} "
+            f"node={max_publish_record['_log_node']} "
+            f"range_publish_ms={max_publish_record['range_publish_ms']} "
+            f"terminal_publish_ms={max_publish_record['terminal_publish_ms']}"
+        )
     if edge_records:
         max_edge_record = max(edge_records, key=lambda item: item["producer_to_input_found_mono_ms"])
         max_wait_record = max(edge_records, key=lambda item: item["input_wait_attempts"])
@@ -760,6 +824,17 @@ def emit_handoff_timing_summary(handoff_timings, expected_steps, node_ids, outpu
     for node_id in node_ids:
         records = sorted(handoffs_by_node.get(node_id, []), key=lambda item: item["step"])
         if not records:
+            idle_records = sorted(idle_by_node.get(node_id, []), key=lambda item: item["step"])
+            if idle_records:
+                output.append(
+                    "handoff_node: "
+                    f"node={node_id} "
+                    f"steps=0/{expected_steps} "
+                    f"idle_steps={len(idle_records)}/{expected_steps} "
+                    f"max_terminal_wait_ms={max(record['input_wait_ms'] for record in idle_records)} "
+                    "status=idle_no_work_item"
+                )
+                continue
             output.append(f"handoff_node: node={node_id} steps=0/{expected_steps} status=missing")
             continue
         total_handoff_ms = sum(record["input_found_to_handoff_ms"] for record in records)

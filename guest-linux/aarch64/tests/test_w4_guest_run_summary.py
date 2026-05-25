@@ -531,6 +531,23 @@ class W4GuestRunSummaryTest(unittest.TestCase):
             "max_qwen3_range_input_wait_ms=0 idle_steps=1",
             result.stdout,
         )
+        self.assertIn("idle_timing_records=7", result.stdout)
+        self.assertIn(
+            "timing_idle_step: step=0 idle_nodes=7/8 terminal_observed=7/7 "
+            "max_terminal_wait_ms=5000 critical_node=nodeB status=no_work_item",
+            result.stdout,
+        )
+        self.assertIn(
+            "timing_node: node=nodeB steps=0/1 idle_steps=1/1 "
+            "max_terminal_wait_ms=5000 status=idle_no_work_item",
+            result.stdout,
+        )
+        self.assertIn(
+            "handoff_node: node=nodeB steps=0/1 idle_steps=1/1 "
+            "max_terminal_wait_ms=5000 status=idle_no_work_item",
+            result.stdout,
+        )
+        self.assertNotIn("node=nodeB steps=0/1 status=missing", result.stdout)
 
 
 if __name__ == "__main__":
