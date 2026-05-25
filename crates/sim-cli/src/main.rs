@@ -9918,17 +9918,17 @@ mod tests {
         qwen3_guest_engram_select_history_lengths, qwen3_guest_engram_selected_tokens,
         qwen3_guest_expected_engram_history_state_waits, qwen3_guest_expected_worker_counts,
         qwen3_guest_log_dir_from_script_output, qwen3_guest_log_match_count,
-        qwen3_guest_summary_file_from_script_output, qwen3_guest_terminal_candidate_records,
-        qwen3_guest_terminal_text_lossy_from_tokenizer, qwen3_guest_terminal_tokens,
-        qwen3_guest_timing_summary, qwen3_guest_w5_pass_marker_present,
-        qwen3_object_registry_path_in_dir, qwen3_obmm_object_ref_for_payload,
-        qwen3_range_forward_args_from, qwen3_validate_engram_state_object_service_payload,
-        read_lingqu_memory_payload_ref, read_w5_u64,
-        record_w5_runtime_boundary_observations_from_summary, resolve_w5_inference_profile,
-        run_lingqu_durable_append_log_cli, run_lingqu_durable_batch_cli,
-        run_lingqu_durable_init_cli, run_lingqu_durable_list_cli, run_lingqu_durable_read_log_cli,
-        run_lingqu_durable_stat_cli, run_lingqu_durable_validate_cli,
-        run_lingqu_memory_boundary_lookup_cli,
+        qwen3_guest_shortpath_summary_line, qwen3_guest_summary_file_from_script_output,
+        qwen3_guest_terminal_candidate_records, qwen3_guest_terminal_text_lossy_from_tokenizer,
+        qwen3_guest_terminal_tokens, qwen3_guest_timing_summary,
+        qwen3_guest_w5_pass_marker_present, qwen3_object_registry_path_in_dir,
+        qwen3_obmm_object_ref_for_payload, qwen3_range_forward_args_from,
+        qwen3_validate_engram_state_object_service_payload, read_lingqu_memory_payload_ref,
+        read_w5_u64, record_w5_runtime_boundary_observations_from_summary,
+        resolve_w5_inference_profile, run_lingqu_durable_append_log_cli,
+        run_lingqu_durable_batch_cli, run_lingqu_durable_init_cli, run_lingqu_durable_list_cli,
+        run_lingqu_durable_read_log_cli, run_lingqu_durable_stat_cli,
+        run_lingqu_durable_validate_cli, run_lingqu_memory_boundary_lookup_cli,
         run_lingqu_memory_boundary_lookup_from_observation_cli,
         run_lingqu_memory_boundary_request_from_w5_summary_cli, run_lingqu_memory_build_index_cli,
         run_lingqu_memory_ingest_cli, run_lingqu_memory_list_artifact_access_cli,
@@ -12000,6 +12000,19 @@ stage qwen3_range_forward_runtime_output_publish node=2
                 runtime_outputs: 128,
             }
         );
+    }
+
+    #[test]
+    fn qwen3_guest_shortpath_summary_labels_full_pipeline_counts() {
+        let line = qwen3_guest_shortpath_summary_line(16, 16, 16, 16, 15, 0, 128, 127, 128);
+
+        assert_eq!(
+            line,
+            "  guest_worker_shortpath_summary: action=jump-to-terminal boundary_hits=16 terminal_selects=16 expected_hits=16 actual_range_forwards=16 actual_runtime_inputs=15 actual_runtime_outputs=0 full_pipeline_range_forwards=128 full_pipeline_runtime_inputs=127 full_pipeline_runtime_outputs=128"
+        );
+        assert!(!line.contains("expected_range_forwards"));
+        assert!(!line.contains("expected_runtime_inputs"));
+        assert!(!line.contains("expected_runtime_outputs"));
     }
 
     #[test]
@@ -17072,13 +17085,18 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     );
     if shortpath_execute_jump_to_terminal {
         println!(
-            "  guest_worker_shortpath_summary: action=jump-to-terminal boundary_hits={} terminal_selects={} expected_hits={} expected_range_forwards={} expected_runtime_inputs={} expected_runtime_outputs={}",
-            shortpath_terminal_ready_count,
-            shortpath_terminal_selected_count,
-            expected_shortpath_terminal_hit_count,
-            expected_runtime_forward_count,
-            expected_runtime_input_count,
-            expected_runtime_publish_count
+            "{}",
+            qwen3_guest_shortpath_summary_line(
+                shortpath_terminal_ready_count,
+                shortpath_terminal_selected_count,
+                expected_shortpath_terminal_hit_count,
+                runtime_forward_count,
+                runtime_input_count,
+                runtime_publish_count,
+                expected_runtime_forward_count,
+                expected_runtime_input_count,
+                expected_runtime_publish_count,
+            )
         );
     }
     if !terminal_tokens.is_empty() {
@@ -17471,6 +17489,31 @@ fn qwen3_prepare_engram_simt_mode(
 
 fn qwen3_guest_log_match_count(haystack: &str, needle: &str) -> usize {
     haystack.match_indices(needle).count()
+}
+
+fn qwen3_guest_shortpath_summary_line(
+    boundary_hits: usize,
+    terminal_selects: usize,
+    expected_hits: usize,
+    actual_range_forwards: usize,
+    actual_runtime_inputs: usize,
+    actual_runtime_outputs: usize,
+    full_pipeline_range_forwards: usize,
+    full_pipeline_runtime_inputs: usize,
+    full_pipeline_runtime_outputs: usize,
+) -> String {
+    format!(
+        "  guest_worker_shortpath_summary: action=jump-to-terminal boundary_hits={} terminal_selects={} expected_hits={} actual_range_forwards={} actual_runtime_inputs={} actual_runtime_outputs={} full_pipeline_range_forwards={} full_pipeline_runtime_inputs={} full_pipeline_runtime_outputs={}",
+        boundary_hits,
+        terminal_selects,
+        expected_hits,
+        actual_range_forwards,
+        actual_runtime_inputs,
+        actual_runtime_outputs,
+        full_pipeline_range_forwards,
+        full_pipeline_runtime_inputs,
+        full_pipeline_runtime_outputs,
+    )
 }
 
 fn w5_memory_boundary_observations_recorded_line(
