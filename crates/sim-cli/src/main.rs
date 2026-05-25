@@ -9627,7 +9627,8 @@ mod tests {
         qwen3_guest_expected_worker_counts, qwen3_guest_log_dir_from_script_output,
         qwen3_guest_log_match_count, qwen3_guest_summary_file_from_script_output,
         qwen3_guest_terminal_candidate_records, qwen3_guest_terminal_text_lossy_from_tokenizer,
-        qwen3_guest_terminal_tokens, qwen3_guest_timing_summary, qwen3_object_registry_path_in_dir,
+        qwen3_guest_terminal_tokens, qwen3_guest_timing_summary,
+        qwen3_guest_w5_pass_marker_present, qwen3_object_registry_path_in_dir,
         qwen3_obmm_object_ref_for_payload, qwen3_range_forward_args_from,
         read_lingqu_memory_payload_ref, read_w5_u64,
         record_w5_runtime_boundary_observations_from_summary, resolve_w5_inference_profile,
@@ -11578,6 +11579,22 @@ stage qwen3_range_forward_runtime_output_publish node=2
             qwen3_guest_log_match_count(log, "stage qwen3_range_forward_runtime_output_publish "),
             2
         );
+    }
+
+    #[test]
+    fn qwen3_guest_w5_pass_marker_rejects_plain_w4_pass() {
+        assert!(qwen3_guest_w5_pass_marker_present(
+            "[w4guest8] PASS: eight-node w5 inference cluster profile=qwen3_14b_decode\n"
+        ));
+        assert!(qwen3_guest_w5_pass_marker_present(
+            "eight-node w5 inference cluster validation passed\n"
+        ));
+        assert!(!qwen3_guest_w5_pass_marker_present(
+            "[w4guest8] PASS: eight-node w4 guest resource-backed uapi/chipbackend service coverage validated\n"
+        ));
+        assert!(!qwen3_guest_w5_pass_marker_present(
+            "eight-node w4 guest validation passed\n"
+        ));
     }
 
     #[test]
@@ -16248,10 +16265,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     let guest_engram_history_lengths = qwen3_guest_engram_history_lengths(&combined);
     let guest_engram_candidate_counts = qwen3_guest_engram_candidate_counts(&combined);
     let terminal_text = qwen3_guest_terminal_text_lossy(&terminal_tokens, &runtime.weights_path);
-    let pass = combined.contains("eight-node w5 inference cluster validation passed")
-        || combined.contains("PASS: eight-node w5 inference cluster")
-        || combined.contains("eight-node w4 guest validation passed")
-        || combined.contains("PASS: eight-node w4 guest");
+    let pass = qwen3_guest_w5_pass_marker_present(&combined);
     println!(
         "  guest_worker_summary: pass={} steps={} range_forwards={} runtime_inputs={} runtime_outputs={} terminal_tokens={}",
         pass, args.step_count, runtime_forward_count, runtime_input_count, runtime_publish_count, terminal_token_count
@@ -16656,6 +16670,11 @@ fn qwen3_prepare_engram_simt_mode(
 
 fn qwen3_guest_log_match_count(haystack: &str, needle: &str) -> usize {
     haystack.match_indices(needle).count()
+}
+
+fn qwen3_guest_w5_pass_marker_present(log: &str) -> bool {
+    log.contains("eight-node w5 inference cluster validation passed")
+        || log.contains("PASS: eight-node w5 inference cluster")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
