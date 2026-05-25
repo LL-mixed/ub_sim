@@ -3141,26 +3141,12 @@ static int verify_qwen3_range_completion_contract(const uint8_t *cq,
 
     fprintf(stderr,
             "[w4_guest] qwen3 range compute contract completion sideband missing node=%" PRIu32
-            " layers=[%" PRIu32 ",%" PRIu32 ") next=%" PRIu32
-            " fallback=runtime_forward_metadata\n",
+            " layers=[%" PRIu32 ",%" PRIu32 ") next=%" PRIu32 "\n",
             dispatch_node,
             layer_start,
             layer_end,
             next_node);
-    printf("[w4_guest] stage uapi_qwen3_range_compute_contract node=%" PRIu32
-           " layers=[%" PRIu32 ",%" PRIu32 ") count=%" PRIu32
-           " next=%" PRIu32 " pipeline_nodes=%" PRIu32
-           " total_layers=%" PRIu64 " hidden_bytes=%" PRIu64
-           " source=runtime_forward output=metadata status=ok\n",
-           dispatch_node,
-           layer_start,
-           layer_end,
-           layer_end - layer_start,
-           next_node,
-           cluster_node_count,
-           expected_total_layers,
-           expected_hidden_bytes);
-    return 0;
+    return -1;
 }
 
 static int verify_qwen3_range_forward_table(volatile uint8_t *ep_mmio,

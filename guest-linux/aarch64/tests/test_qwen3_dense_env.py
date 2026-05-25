@@ -384,6 +384,12 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("qwen3_decode_round_idle_timing", guest_source)
         self.assertNotIn("qwen3_w5_memory_shortpath_downstream_skip", guest_source)
         self.assertNotIn("qwen3_w5_memory_terminal_publish_skip", guest_source)
+        self.assertNotIn("fallback=runtime_forward_metadata", guest_source)
+        self.assertNotRegex(
+            guest_source,
+            r"uapi_qwen3_range_compute_contract[\s\S]{0,400}"
+            r"source=runtime_forward output=metadata status=ok",
+        )
         self.assertIn("shortpath_boundary", db_service_source)
 
     def test_w5_inference_cluster_runner_delegates_to_legacy_compatible_runner(self):
