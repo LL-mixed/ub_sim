@@ -95,7 +95,7 @@ if [[ "$SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP" == "1" ||
 fi
 
 resolve_w5_memory_reuse_config_status=0
-w5_resolve_memory_reuse_config "$OUT_DIR" "$SIM_UAPI_W5_PROFILE" || resolve_w5_memory_reuse_config_status=$?
+w5_resolve_memory_reuse_config "$OUT_DIR" "$SIM_UAPI_W5_PROFILE" "${SIM_QWEN3_GUEST_DECODE_STEPS:-1}" || resolve_w5_memory_reuse_config_status=$?
 if (( resolve_w5_memory_reuse_config_status != 0 )); then
   exit "$resolve_w5_memory_reuse_config_status"
 fi

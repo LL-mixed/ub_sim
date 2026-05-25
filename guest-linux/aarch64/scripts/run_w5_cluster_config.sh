@@ -184,7 +184,7 @@ validate_w5_cluster_config() {
 }
 
 resolve_w5_memory_reuse_config_status=0
-w5_resolve_memory_reuse_config "$ROOT_DIR/out" "${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" || resolve_w5_memory_reuse_config_status=$?
+w5_resolve_memory_reuse_config "$ROOT_DIR/out" "${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" "${SIM_QWEN3_GUEST_DECODE_STEPS:-1}" || resolve_w5_memory_reuse_config_status=$?
 if (( resolve_w5_memory_reuse_config_status != 0 )); then
   exit "$resolve_w5_memory_reuse_config_status"
 fi
