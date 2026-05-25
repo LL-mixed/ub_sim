@@ -697,12 +697,25 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             out_dir.mkdir()
             old_run = "2026-05-26_01-00-00_w5_qwen3_14b_engram_decode_111"
             new_run = "2026-05-26_02-00-00_w5_qwen3_14b_engram_decode_222"
-            other_profile_run = "2026-05-26_03-00-00_w5_qwen3_0_6b_engram_decode_333"
-            for index, run_id in enumerate([old_run, new_run, other_profile_run], start=1):
+            failed_run = "2026-05-26_03-00-00_w5_qwen3_14b_engram_decode_333"
+            other_profile_run = "2026-05-26_04-00-00_w5_qwen3_0_6b_engram_decode_444"
+            for index, run_id in enumerate([old_run, new_run, failed_run, other_profile_run], start=1):
                 decision_store = out_dir / f"w5_memory_runtime_boundary_lookup.{run_id}.json"
                 object_store = out_dir / f"w5_object_service_store.{run_id}.json"
                 decision_store.write_text("{}", encoding="utf-8")
                 object_store.write_text("{}", encoding="utf-8")
+                summary = out_dir / f"eight_node_w5_inference_cluster_summary.{run_id}.txt"
+                if run_id != failed_run:
+                    summary.write_text(
+                        "\n".join(
+                            [
+                                "summary: decode_steps_expected=16 decode_steps_observed=16 passed_nodes=8/8",
+                                f"memory_boundary_observation: observation_id=boundary-observation/{run_id}/step0/node1 status=ok",
+                            ]
+                        )
+                        + "\n",
+                        encoding="utf-8",
+                    )
                 mtime = 1700000000 + index
                 os.utime(decision_store, (mtime, mtime))
                 os.utime(object_store, (mtime, mtime))
@@ -742,6 +755,16 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             run_id = "2026-05-26_02-00-00_w5_qwen3_14b_engram_decode_222"
             (out_dir / f"w5_memory_runtime_boundary_lookup.{run_id}.json").write_text("{}", encoding="utf-8")
             (out_dir / f"w5_object_service_store.{run_id}.json").write_text("{}", encoding="utf-8")
+            (out_dir / f"eight_node_w5_inference_cluster_summary.{run_id}.txt").write_text(
+                "\n".join(
+                    [
+                        "summary: decode_steps_expected=16 decode_steps_observed=16 passed_nodes=8/8",
+                        f"memory_boundary_observation: observation_id=boundary-observation/{run_id}/step0/node1 status=ok",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             weights_path = tmp_path / "qwen3-14b"
             weights_path.mkdir()
             config_path = tmp_path / "w5.env"
@@ -766,6 +789,42 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             )
 
         self.assertIn("config validation passed", result.stderr)
+
+    def test_w5_cluster_config_runner_rejects_named_reuse_run_without_completed_summary(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        config_runner = script_dir / "run_w5_cluster_config.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_dir = tmp_path / "out"
+            out_dir.mkdir()
+            run_id = "2026-05-26_02-00-00_w5_qwen3_14b_engram_decode_222"
+            (out_dir / f"w5_memory_runtime_boundary_lookup.{run_id}.json").write_text("{}", encoding="utf-8")
+            (out_dir / f"w5_object_service_store.{run_id}.json").write_text("{}", encoding="utf-8")
+            weights_path = tmp_path / "qwen3-14b"
+            weights_path.mkdir()
+            config_path = tmp_path / "w5.env"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
+                        "SIM_QWEN3_GUEST_DECODE_STEPS=2",
+                        f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
+                        f"SIM_W5_MEMORY_REUSE_RUN_ID={run_id}",
+                        f"SIM_W5_MEMORY_REUSE_OUT_DIR={out_dir}",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(config_runner), "--validate-only", str(config_path)],
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("reuse summary is missing completion evidence", result.stderr)
 
     def test_w5_cluster_config_runner_rejects_ambiguous_memory_reuse_config(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"

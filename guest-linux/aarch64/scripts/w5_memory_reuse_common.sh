@@ -1,3 +1,14 @@
+w5_memory_reuse_summary_completed() {
+  local reuse_out_dir="$1"
+  local run_id="$2"
+  local summary_path="$reuse_out_dir/eight_node_w5_inference_cluster_summary.$run_id.txt"
+  if [[ ! -f "$summary_path" ]]; then
+    return 1
+  fi
+  grep -q "summary: .*passed_nodes=8/8" "$summary_path" &&
+    grep -q "memory_boundary_observation: .*status=ok" "$summary_path"
+}
+
 w5_resolve_memory_reuse_config() {
   local default_reuse_out_dir="$1"
   local profile="$2"
@@ -19,18 +30,32 @@ w5_resolve_memory_reuse_config() {
   local reuse_out_dir="${SIM_W5_MEMORY_REUSE_OUT_DIR:-$default_reuse_out_dir}"
   local decision_store=""
   local selected_run_id="$reuse_run_id"
+  local object_store=""
 
   if [[ "$reuse_run_id" == "latest" ]]; then
     local -a candidates
-    candidates=("$reuse_out_dir"/w5_memory_runtime_boundary_lookup.*_w5_${profile}_*.json(N.om[1]))
+    candidates=("$reuse_out_dir"/w5_memory_runtime_boundary_lookup.*_w5_${profile}_*.json(N.om))
     if (( ${#candidates[@]} == 0 )); then
       echo "SIM_W5_MEMORY_REUSE_RUN_ID=latest found no decision store for profile=$profile in $reuse_out_dir" >&2
       return 2
     fi
-    decision_store="${candidates[1]}"
-    local base="${decision_store:t}"
-    selected_run_id="${base#w5_memory_runtime_boundary_lookup.}"
-    selected_run_id="${selected_run_id%.json}"
+    local candidate=""
+    local base=""
+    for candidate in "${candidates[@]}"; do
+      base="${candidate:t}"
+      selected_run_id="${base#w5_memory_runtime_boundary_lookup.}"
+      selected_run_id="${selected_run_id%.json}"
+      object_store="$reuse_out_dir/w5_object_service_store.$selected_run_id.json"
+      if [[ -f "$object_store" ]] &&
+          w5_memory_reuse_summary_completed "$reuse_out_dir" "$selected_run_id"; then
+        decision_store="$candidate"
+        break
+      fi
+    done
+    if [[ -z "$decision_store" ]]; then
+      echo "SIM_W5_MEMORY_REUSE_RUN_ID=latest found no completed reusable run for profile=$profile in $reuse_out_dir" >&2
+      return 2
+    fi
   else
     if [[ ! "$reuse_run_id" =~ '^[A-Za-z0-9._-]+$' ]]; then
       echo "SIM_W5_MEMORY_REUSE_RUN_ID must be latest or a run id without path separators: $reuse_run_id" >&2
@@ -39,13 +64,17 @@ w5_resolve_memory_reuse_config() {
     decision_store="$reuse_out_dir/w5_memory_runtime_boundary_lookup.$selected_run_id.json"
   fi
 
-  local object_store="$reuse_out_dir/w5_object_service_store.$selected_run_id.json"
+  object_store="$reuse_out_dir/w5_object_service_store.$selected_run_id.json"
   if [[ ! -f "$decision_store" ]]; then
     echo "W5 Memory Service reuse decision store is missing: $decision_store" >&2
     return 2
   fi
   if [[ ! -f "$object_store" ]]; then
     echo "W5 Memory Service reuse object store is missing: $object_store" >&2
+    return 2
+  fi
+  if ! w5_memory_reuse_summary_completed "$reuse_out_dir" "$selected_run_id"; then
+    echo "W5 Memory Service reuse summary is missing completion evidence for run_id=$selected_run_id" >&2
     return 2
   fi
 
