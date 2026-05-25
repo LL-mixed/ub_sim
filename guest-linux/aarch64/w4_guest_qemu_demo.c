@@ -4935,6 +4935,68 @@ static bool str_nonempty(const char *value)
     return value && value[0] != '\0';
 }
 
+static const char *qwen3_memory_shortpath_audit_id(
+    const struct w4_qwen3_memory_decision_config *config)
+{
+    if (!config) {
+        return "none";
+    }
+    if (str_nonempty(config->shortpath_decision_id)) {
+        return config->shortpath_decision_id;
+    }
+    if (config->boundary_registry_loaded) {
+        return "runtime_service_catalog";
+    }
+    if (config->shortpath_stream_count > 0) {
+        return "shortpath_stream";
+    }
+    return "none";
+}
+
+static const char *qwen3_memory_shortpath_support_audit_id(
+    const struct w4_qwen3_memory_decision_config *config)
+{
+    if (!config) {
+        return "none";
+    }
+    if (str_nonempty(config->shortpath_support_id)) {
+        return config->shortpath_support_id;
+    }
+    if (config->boundary_registry_loaded) {
+        return "boundary_registry";
+    }
+    if (config->shortpath_stream_count > 0) {
+        return "shortpath_stream";
+    }
+    return "none";
+}
+
+static const char *qwen3_memory_shortpath_artifact_kind_audit(
+    const struct w4_qwen3_memory_decision_config *config)
+{
+    if (!config) {
+        return "none";
+    }
+    if (str_nonempty(config->shortpath_artifact_kind)) {
+        return config->shortpath_artifact_kind;
+    }
+    if (config->boundary_registry_loaded || config->shortpath_stream_count > 0) {
+        return "logits";
+    }
+    return "none";
+}
+
+static uint64_t qwen3_memory_shortpath_catalog_entry_count(
+    const struct w4_qwen3_memory_decision_config *config)
+{
+    if (!config) {
+        return 0;
+    }
+    return config->boundary_registry_loaded || config->shortpath_stream_count > 0 ?
+        config->shortpath_stream_count :
+        0;
+}
+
 static int parse_u32_field(const char *label, const char *value, uint32_t *out)
 {
     char *end = NULL;
@@ -8384,6 +8446,7 @@ int main(void)
                    " shortpath_id=%s shortpath_support_id=%s"
                    " shortpath_action=%s shortpath_artifact_kind=%s"
                    " shortpath_artifact_checksum=%s shortpath_artifact_ref_chars=%zu"
+                   " shortpath_catalog_entries=%" PRIu64
                    " prefetch_id=%s prefetch_scope=%s"
                    " prefetch_target_step=%s prefetch_artifact_ids=%s"
                    " prefetch_artifact_checksums=%s prefetch_artifact_refs_chars=%zu"
@@ -8397,24 +8460,23 @@ int main(void)
                        0U,
                    qwen3_memory_decision_config.boundary_lookup_backend,
                    qwen3_memory_decision_config.shortpath_lookup_mode,
-                   str_nonempty(qwen3_memory_decision_config.shortpath_decision_id) ?
-                       qwen3_memory_decision_config.shortpath_decision_id :
-                       "none",
-                   str_nonempty(qwen3_memory_decision_config.shortpath_support_id) ?
-                       qwen3_memory_decision_config.shortpath_support_id :
-                       "none",
+                   qwen3_memory_shortpath_audit_id(
+                       &qwen3_memory_decision_config),
+                   qwen3_memory_shortpath_support_audit_id(
+                       &qwen3_memory_decision_config),
                    str_nonempty(qwen3_memory_decision_config.shortpath_action) ?
                        qwen3_memory_decision_config.shortpath_action :
                        "none",
-                   str_nonempty(qwen3_memory_decision_config.shortpath_artifact_kind) ?
-                       qwen3_memory_decision_config.shortpath_artifact_kind :
-                       "none",
+                   qwen3_memory_shortpath_artifact_kind_audit(
+                       &qwen3_memory_decision_config),
                    str_nonempty(qwen3_memory_decision_config.shortpath_artifact_checksum) ?
                        qwen3_memory_decision_config.shortpath_artifact_checksum :
                        "none",
                    str_nonempty(qwen3_memory_decision_config.shortpath_artifact_ref) ?
                        strlen(qwen3_memory_decision_config.shortpath_artifact_ref) :
                        (size_t)0,
+                   qwen3_memory_shortpath_catalog_entry_count(
+                       &qwen3_memory_decision_config),
                    str_nonempty(qwen3_memory_decision_config.prefetch_plan_id) ?
                        qwen3_memory_decision_config.prefetch_plan_id :
                        "none",
@@ -10123,6 +10185,7 @@ decode_round_start:
                    " shortpath_support_id=%s"
                    " shortpath_action=%s shortpath_artifact_kind=%s"
                    " shortpath_artifact_checksum=%s shortpath_artifact_ref_chars=%zu"
+                   " shortpath_catalog_entries=%" PRIu64
                    " prefetch_id=%s prefetch_scope=%s"
                    " prefetch_target_step=%s prefetch_artifact_ids=%s"
                    " prefetch_artifact_checksums=%s prefetch_artifact_refs_chars=%zu"
@@ -10135,26 +10198,25 @@ decode_round_start:
                    layer_start,
                    layer_end,
                    next_node + 1U,
-                   str_nonempty(qwen3_memory_decision_config.shortpath_decision_id) ?
-                       qwen3_memory_decision_config.shortpath_decision_id :
-                       "none",
+                   qwen3_memory_shortpath_audit_id(
+                       &qwen3_memory_decision_config),
                    qwen3_memory_decision_config.boundary_lookup_backend,
                    qwen3_memory_decision_config.shortpath_lookup_mode,
-                   str_nonempty(qwen3_memory_decision_config.shortpath_support_id) ?
-                       qwen3_memory_decision_config.shortpath_support_id :
-                       "none",
+                   qwen3_memory_shortpath_support_audit_id(
+                       &qwen3_memory_decision_config),
                    str_nonempty(qwen3_memory_decision_config.shortpath_action) ?
                        qwen3_memory_decision_config.shortpath_action :
                        "none",
-                   str_nonempty(qwen3_memory_decision_config.shortpath_artifact_kind) ?
-                       qwen3_memory_decision_config.shortpath_artifact_kind :
-                       "none",
+                   qwen3_memory_shortpath_artifact_kind_audit(
+                       &qwen3_memory_decision_config),
                    str_nonempty(qwen3_memory_decision_config.shortpath_artifact_checksum) ?
                        qwen3_memory_decision_config.shortpath_artifact_checksum :
                        "none",
                    str_nonempty(qwen3_memory_decision_config.shortpath_artifact_ref) ?
                        strlen(qwen3_memory_decision_config.shortpath_artifact_ref) :
                        (size_t)0,
+                   qwen3_memory_shortpath_catalog_entry_count(
+                       &qwen3_memory_decision_config),
                    str_nonempty(qwen3_memory_decision_config.prefetch_plan_id) ?
                        qwen3_memory_decision_config.prefetch_plan_id :
                        "none",
