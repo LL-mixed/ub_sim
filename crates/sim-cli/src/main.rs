@@ -9954,7 +9954,8 @@ mod tests {
         validate_qwen3_dense_weights_path, validate_w5_inference_profile,
         validate_w5_memory_decision_bundle_for_run, w5_expected_jump_to_terminal_shortpath_hits,
         w5_inference_profile_spec, w5_kv_hot_object_ref_from_object_service,
-        w5_memory_decision_env_vars, w5_memory_decision_publication_object_service_profile,
+        w5_memory_boundary_observations_recorded_line, w5_memory_decision_env_vars,
+        w5_memory_decision_publication_object_service_profile,
         w5_memory_shortpath_kv_stream_env_from_refs, w5_memory_shortpath_stream_env,
         w5_memory_should_publish_engram_state, w5_object_service_payload_index_path,
         w5_runtime_tensor_payload_checksum, LingquDurableSim, LingquDurableSimSnapshot,
@@ -15255,6 +15256,45 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
     }
 
     #[test]
+    fn w5_boundary_observation_recording_line_reports_skipped_without_ids() {
+        let store = PathBuf::from("/tmp/w5-store.json");
+        let summary = PathBuf::from("/tmp/w5-summary.txt");
+
+        let line = w5_memory_boundary_observations_recorded_line(
+            &store,
+            &summary,
+            &[],
+            16,
+            Some("shortpath_no_range_exit"),
+        );
+
+        assert_eq!(
+            line,
+            "  memory_boundary_observations_recorded: store=/tmp/w5-store.json summary=/tmp/w5-summary.txt records=0 steps=16 status=skipped reason=shortpath_no_range_exit"
+        );
+        assert!(!line.contains("first_id="));
+        assert!(!line.contains("last_id="));
+    }
+
+    #[test]
+    fn w5_boundary_observation_recording_line_reports_ids_for_persisted_records() {
+        let store = PathBuf::from("/tmp/w5-store.json");
+        let summary = PathBuf::from("/tmp/w5-summary.txt");
+        let ids = vec![
+            "boundary-observation/run/step0/node1".to_string(),
+            "boundary-observation/run/step1/node1".to_string(),
+        ];
+
+        let line = w5_memory_boundary_observations_recorded_line(&store, &summary, &ids, 2, None);
+
+        assert_eq!(
+            line,
+            "  memory_boundary_observations_recorded: store=/tmp/w5-store.json summary=/tmp/w5-summary.txt records=2 steps=2 first_id=boundary-observation/run/step0/node1 last_id=boundary-observation/run/step1/node1 status=ok"
+        );
+        assert!(!line.contains("reason="));
+    }
+
+    #[test]
     fn w5_runtime_records_boundary_observations_into_memory_store() {
         let root = std::env::temp_dir().join(format!(
             "ub_sim_w5_runtime_record_boundary_observations_{}",
@@ -17290,30 +17330,27 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             prompt_history_tokens.len() as u64,
             boundary_lookup_now_us,
         );
+        let mut boundary_observations_skipped = false;
         let observation_ids = match observation_ids_result {
             Ok(observation_ids) => observation_ids,
             Err(err)
                 if shortpath_terminal_selected_count > 0
                     && format!("{err:#}").contains("has no boundary observations to persist") =>
             {
-                println!(
-                    "  memory_boundary_observations_recorded: store={} summary={} records=0 steps={} skipped=shortpath_no_range_exit",
-                    store_path.display(),
-                    summary_path.display(),
-                    args.step_count
-                );
+                boundary_observations_skipped = true;
                 Vec::new()
             }
             Err(err) => return Err(err),
         };
         println!(
-            "  memory_boundary_observations_recorded: store={} summary={} records={} steps={} first_id={} last_id={}",
-            store_path.display(),
-            summary_path.display(),
-            observation_ids.len(),
-            args.step_count,
-            observation_ids.first().map(String::as_str).unwrap_or(""),
-            observation_ids.last().map(String::as_str).unwrap_or("")
+            "{}",
+            w5_memory_boundary_observations_recorded_line(
+                store_path,
+                &summary_path,
+                &observation_ids,
+                args.step_count,
+                boundary_observations_skipped.then_some("shortpath_no_range_exit"),
+            )
         );
         if !observation_ids.is_empty() {
             let object_registry_dir = args
@@ -17434,6 +17471,33 @@ fn qwen3_prepare_engram_simt_mode(
 
 fn qwen3_guest_log_match_count(haystack: &str, needle: &str) -> usize {
     haystack.match_indices(needle).count()
+}
+
+fn w5_memory_boundary_observations_recorded_line(
+    store_path: &Path,
+    summary_path: &Path,
+    observation_ids: &[String],
+    step_count: usize,
+    skipped_reason: Option<&str>,
+) -> String {
+    match skipped_reason {
+        Some(reason) => format!(
+            "  memory_boundary_observations_recorded: store={} summary={} records=0 steps={} status=skipped reason={}",
+            store_path.display(),
+            summary_path.display(),
+            step_count,
+            reason
+        ),
+        None => format!(
+            "  memory_boundary_observations_recorded: store={} summary={} records={} steps={} first_id={} last_id={} status=ok",
+            store_path.display(),
+            summary_path.display(),
+            observation_ids.len(),
+            step_count,
+            observation_ids.first().map(String::as_str).unwrap_or(""),
+            observation_ids.last().map(String::as_str).unwrap_or("")
+        ),
+    }
 }
 
 fn qwen3_guest_w5_pass_marker_present(log: &str) -> bool {
