@@ -5271,15 +5271,52 @@ fn validate_w5_shortpath_run_boundary_coverage(
     }
 
     let mut covered = std::collections::BTreeSet::<(u64, u32)>::new();
+    let expected_request_prefix = format!("boundary-lookup/boundary-observation/{run_id}/");
+    let expected_decision_prefix = format!("shortpath-decision/{expected_request_prefix}");
+    let expected_logits_artifact_prefix = format!("artifact/logits/{run_id}/");
+    let expected_kv_artifact_prefix = format!("artifact/kv/{run_id}/");
     for entry in &bundle.shortpath_entries {
         if entry.decision.action != sim_memory::ShortpathAction::JumpToTerminal {
             continue;
+        }
+        if !entry
+            .decision
+            .request_id
+            .starts_with(&expected_request_prefix)
+        {
+            anyhow::bail!(
+                "W5 Memory Service reuse run_id={} selected decision {} has mismatched request_id={}",
+                run_id,
+                entry.decision.decision_id,
+                entry.decision.request_id
+            );
+        }
+        if !entry
+            .decision
+            .decision_id
+            .starts_with(&expected_decision_prefix)
+        {
+            anyhow::bail!(
+                "W5 Memory Service reuse run_id={} selected decision id is outside the run namespace: {}",
+                run_id,
+                entry.decision.decision_id
+            );
         }
         let Some(artifact) = entry.artifact.as_ref() else {
             continue;
         };
         if artifact.kind != sim_memory::ExecutionArtifactKind::Logits {
             continue;
+        }
+        if !artifact
+            .artifact_id
+            .starts_with(&expected_logits_artifact_prefix)
+        {
+            anyhow::bail!(
+                "W5 Memory Service reuse run_id={} selected logits artifact is outside the run namespace: {}",
+                run_id,
+                artifact.artifact_id
+            );
         }
         let boundary = &artifact.producer_boundary;
         if boundary.step_index < step_limit
@@ -5300,6 +5337,19 @@ fn validate_w5_shortpath_run_boundary_coverage(
                     node
                 );
             }
+        }
+    }
+    for kv in &bundle.shortpath_kv_artifacts {
+        if !kv
+            .artifact
+            .artifact_id
+            .starts_with(&expected_kv_artifact_prefix)
+        {
+            anyhow::bail!(
+                "W5 Memory Service reuse run_id={} selected KV artifact is outside the run namespace: {}",
+                run_id,
+                kv.artifact.artifact_id
+            );
         }
     }
     Ok(())
@@ -10010,10 +10060,11 @@ mod tests {
         run_w5_runtime_boundary_lookups, save_lingqu_durable_sim, save_lingqu_memory_durable_store,
         save_lingqu_object_service_snapshot, simpler_host_matmul_artifact_producer_path,
         validate_qwen3_dense_weights_path, validate_w5_inference_profile,
-        validate_w5_memory_decision_bundle_for_run, w5_expected_jump_to_terminal_shortpath_hits,
-        w5_expected_jump_to_terminal_worker_counts, w5_inference_profile_spec,
-        w5_kv_hot_object_ref_from_object_service, w5_memory_boundary_observations_recorded_line,
-        w5_memory_decision_env_vars, w5_memory_decision_publication_object_service_profile,
+        validate_w5_memory_decision_bundle_for_run, validate_w5_shortpath_run_boundary_coverage,
+        w5_expected_jump_to_terminal_shortpath_hits, w5_expected_jump_to_terminal_worker_counts,
+        w5_inference_profile_spec, w5_kv_hot_object_ref_from_object_service,
+        w5_memory_boundary_observations_recorded_line, w5_memory_decision_env_vars,
+        w5_memory_decision_publication_object_service_profile,
         w5_memory_shortpath_kv_stream_env_from_refs, w5_memory_shortpath_stream_env,
         w5_memory_should_publish_engram_state, w5_object_service_payload_index_path,
         w5_runtime_tensor_payload_checksum, LingquDurableSim, LingquDurableSimSnapshot,
@@ -10026,7 +10077,7 @@ mod tests {
         Qwen3GuestDecodeLoopCliArgs, Qwen3GuestExpectedWorkerCounts, Qwen3SamplerConfig,
         W5JumpToTerminalExpectedWorkerCounts, W5MemoryBootstrapConfig,
         W5MemoryDecisionArtifactPublication, W5MemoryDecisionBundle, W5MemoryDecisionConfig,
-        W5MemoryPublishedArtifactRef, W5MemoryPublishedKvArtifactRef,
+        W5MemoryPublishedArtifactRef, W5MemoryPublishedKvArtifactRef, W5MemoryShortpathKvArtifact,
         LINGQU_EXTERNAL_PAYLOAD_BLOCK_PREFIX, QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
         QWEN3_DENSE_DEFAULT_PREFILL_TOKENS, QWEN3_DENSE_DEFAULT_TP_NODES,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE, QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
@@ -12076,6 +12127,171 @@ mod tests {
         assert!(err
             .to_string()
             .contains("missing jump-to-terminal decision coverage for step=0 node=node1"));
+    }
+
+    #[test]
+    fn w5_memory_reuse_run_id_requires_decision_artifact_namespace_match() {
+        fn make_model() -> sim_memory::InferenceModelBinding {
+            sim_memory::InferenceModelBinding {
+                model_id: "Qwen/Qwen3-0.6B".to_string(),
+                model_key: "qwen3-0-6b".to_string(),
+                tokenizer_hash: 0x1001,
+                profile_hash: 0x2002,
+            }
+        }
+        fn make_artifact(
+            run_id: &str,
+            step: u64,
+            node: u32,
+            kind: sim_memory::ExecutionArtifactKind,
+        ) -> sim_memory::ExecutionArtifactObject {
+            let kind_path = match kind {
+                sim_memory::ExecutionArtifactKind::Logits => "logits",
+                sim_memory::ExecutionArtifactKind::KvCache => "kv",
+                sim_memory::ExecutionArtifactKind::HiddenState => "hidden",
+            };
+            sim_memory::ExecutionArtifactObject {
+                artifact_id: format!("artifact/{kind_path}/{run_id}/step{step}/node{node}"),
+                kind,
+                model: make_model(),
+                producer_boundary: sim_memory::RangeBoundary {
+                    phase: sim_memory::RangeBoundaryPhase::RangeExit,
+                    step_index: step,
+                    node_index: node,
+                    layer_start: 0,
+                    layer_end: 1,
+                    next_node_index: Some(node + 1),
+                    position: step + 4,
+                },
+                boundary_hidden_fingerprint: sim_memory::BoundaryTensorFingerprint {
+                    bytes: 16,
+                    checksum: 0xaaa0 + step + u64::from(node),
+                    dtype: sim_core::TensorDType::F32,
+                    shape: vec![1, 4],
+                },
+                target_layer_start: 0,
+                target_layer_end: 0,
+                dtype: sim_core::TensorDType::F32,
+                shape: vec![1, 4],
+                durable_payload_ref: None,
+                hot_object_ref: None,
+                source_query_result_id: None,
+                source_engram_state_id: None,
+                confidence_milli: 990,
+                state: sim_memory::ExecutionArtifactState::Verified,
+                checksum: 0xbbb0 + step + u64::from(node),
+                version: 1,
+                created_at_us: 10,
+                expires_at_us: Some(100),
+            }
+        }
+        fn make_bundle(decision_run_id: &str, artifact_run_id: &str) -> W5MemoryDecisionBundle {
+            let mut shortpath_entries = Vec::new();
+            for step in 0..2 {
+                for node in 1..8 {
+                    let request_id =
+                        format!("boundary-lookup/boundary-observation/{decision_run_id}/step{step}/node{node}");
+                    let artifact = make_artifact(
+                        artifact_run_id,
+                        step,
+                        node,
+                        sim_memory::ExecutionArtifactKind::Logits,
+                    );
+                    shortpath_entries.push(crate::W5MemoryShortpathEntry {
+                        decision: sim_memory::ShortpathDecisionRecord {
+                            decision_id: format!("shortpath-decision/{request_id}"),
+                            request_id,
+                            support_id: None,
+                            action: sim_memory::ShortpathAction::JumpToTerminal,
+                            artifact_id: Some(artifact.artifact_id.clone()),
+                            producer_position: Some(step + 4),
+                            target_layer_start: Some(0),
+                            target_layer_end: Some(0),
+                            confidence_milli: 990,
+                            verify_required: false,
+                            proof_checksum: 0xccc0 + step + u64::from(node),
+                            reason: "test".to_string(),
+                            created_at_us: 10,
+                            version: 1,
+                        },
+                        artifact: Some(artifact),
+                    });
+                }
+            }
+            W5MemoryDecisionBundle {
+                shortpath: None,
+                shortpath_artifact: None,
+                shortpath_entries,
+                shortpath_kv_artifacts: Vec::new(),
+                online_boundary_lookup: false,
+                prefetch: None,
+                prefetch_artifacts: Vec::new(),
+                prefix_cache: None,
+                prefix_cache_artifact: None,
+            }
+        }
+
+        let profile = w5_inference_profile_spec("qwen3_0_6b_engram_decode").expect("profile");
+        let config = W5MemoryDecisionConfig {
+            store_path: PathBuf::from("/tmp/lingqu-memory-store.json"),
+            artifact_object_store_path: None,
+            boundary_request_path: None,
+            boundary_observation_id: None,
+            boundary_observation_ids: Vec::new(),
+            boundary_observation_run_id: Some("run0".to_string()),
+            shortpath_decision_id: None,
+            shortpath_decision_ids: Vec::new(),
+            online_boundary_lookup: false,
+            shortpath_execute: true,
+            prefetch_plan_id: None,
+            prefix_cache_reuse_plan_id: None,
+        };
+
+        validate_w5_shortpath_run_boundary_coverage(
+            &config,
+            &make_bundle("run0", "run0"),
+            profile,
+            2,
+        )
+        .expect("matching run namespace covers every boundary");
+
+        let err = validate_w5_shortpath_run_boundary_coverage(
+            &config,
+            &make_bundle("other", "run0"),
+            profile,
+            2,
+        )
+        .expect_err("request id from another run must fail");
+        assert!(err.to_string().contains("mismatched request_id"));
+
+        let err = validate_w5_shortpath_run_boundary_coverage(
+            &config,
+            &make_bundle("run0", "other"),
+            profile,
+            2,
+        )
+        .expect_err("logits artifact from another run must fail");
+        assert!(err
+            .to_string()
+            .contains("selected logits artifact is outside the run namespace"));
+
+        let mut bundle = make_bundle("run0", "run0");
+        bundle
+            .shortpath_kv_artifacts
+            .push(W5MemoryShortpathKvArtifact {
+                step_index: 0,
+                producer_position: 4,
+                producer_layer_end: 1,
+                target_node_index: 2,
+                target_layer_start: 1,
+                target_layer_end: 2,
+                artifact: make_artifact("other", 0, 2, sim_memory::ExecutionArtifactKind::KvCache),
+            });
+        let err = validate_w5_shortpath_run_boundary_coverage(&config, &bundle, profile, 2)
+            .expect_err("KV artifact from another run must fail");
+        assert!(err
+            .to_string()
+            .contains("selected KV artifact is outside the run namespace"));
     }
 
     #[test]
