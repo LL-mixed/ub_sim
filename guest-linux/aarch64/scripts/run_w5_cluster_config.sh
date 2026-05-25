@@ -7,7 +7,7 @@ DEFAULT_CONFIG="$ROOT_DIR/out/w5_cluster_run.env"
 
 usage() {
   cat >&2 <<'USAGE'
-usage: run_w5_cluster_config.sh [--print-env] [--steps N] [config.env]
+usage: run_w5_cluster_config.sh [--print-env] [--validate-only] [--steps N] [config.env]
 
 Loads a W5 inference cluster env file and then runs the stable W5 cluster
 entrypoint. This keeps approval prefixes stable: callers execute this script,
@@ -20,6 +20,7 @@ USAGE
 }
 
 PRINT_ENV=0
+VALIDATE_ONLY=0
 CONFIG_PATH=""
 STEPS_OVERRIDE=""
 
@@ -27,6 +28,10 @@ while (( $# > 0 )); do
   case "$1" in
     --print-env)
       PRINT_ENV=1
+      shift
+      ;;
+    --validate-only)
+      VALIDATE_ONLY=1
       shift
       ;;
     --steps)
@@ -103,6 +108,80 @@ case "${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" in
     ;;
 esac
 
+bool_enabled() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+validate_w5_cluster_config() {
+  local profile="${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}"
+  local steps="${SIM_QWEN3_GUEST_DECODE_STEPS:-1}"
+  local memory_runtime_lookup=0
+  local memory_online_lookup=0
+
+  case "$profile" in
+    qwen3_0_6b_decode|qwen3_14b_decode|qwen3_0_6b_engram_decode|qwen3_14b_engram_decode)
+      ;;
+    *)
+      echo "unsupported SIM_UAPI_W5_PROFILE=$profile" >&2
+      return 2
+      ;;
+  esac
+  if [[ ! "$steps" =~ '^[0-9]+$' || "$steps" == "0" ]]; then
+    echo "SIM_QWEN3_GUEST_DECODE_STEPS must be a positive integer: $steps" >&2
+    return 2
+  fi
+  if [[ -n "${RUN_ID:-}" && "${SIM_W5_ALLOW_FIXED_RUN_ID:-0}" != "1" ]]; then
+    echo "fixed RUN_ID is disabled for W5 cluster config runs: $RUN_ID" >&2
+    echo "hint: remove RUN_ID from $CONFIG_PATH, or set SIM_W5_ALLOW_FIXED_RUN_ID=1 after manually cleaning the run directory" >&2
+    return 2
+  fi
+  if [[ -z "${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}" ]]; then
+    echo "W5 cluster config requires SIM_QWEN3_DENSE_WEIGHTS_PATH" >&2
+    return 2
+  fi
+  if [[ ! -d "$SIM_QWEN3_DENSE_WEIGHTS_PATH" ]]; then
+    echo "W5 cluster config weights path is missing: $SIM_QWEN3_DENSE_WEIGHTS_PATH" >&2
+    return 2
+  fi
+  if bool_enabled "${SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-0}"; then
+    memory_runtime_lookup=1
+  fi
+  if bool_enabled "${SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP:-0}"; then
+    memory_online_lookup=1
+  fi
+  if [[ -n "${SIM_W5_MEMORY_DECISION_OBJECT_STORE:-}" && -z "${SIM_W5_MEMORY_DECISION_STORE:-}" ]]; then
+    echo "SIM_W5_MEMORY_DECISION_OBJECT_STORE requires SIM_W5_MEMORY_DECISION_STORE" >&2
+    return 2
+  fi
+  if [[ -n "${SIM_W5_MEMORY_DECISION_STORE:-}" ]]; then
+    if [[ -z "${SIM_W5_MEMORY_BOUNDARY_OBSERVATION_ID:-}" &&
+          -z "${SIM_W5_MEMORY_BOUNDARY_OBSERVATION_IDS:-}" &&
+          -z "${SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID:-}" &&
+          -z "${SIM_W5_MEMORY_SHORTPATH_DECISION_ID:-}" &&
+          -z "${SIM_W5_MEMORY_SHORTPATH_DECISION_IDS:-}" &&
+          "$memory_online_lookup" == "0" &&
+          -z "${SIM_W5_MEMORY_PREFETCH_PLAN_ID:-}" &&
+          -z "${SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID:-}" &&
+          -z "${SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT:-}" &&
+          -z "${SIM_W5_MEMORY_SHORTPATH_STREAM_PATH:-}" ]]; then
+      echo "SIM_W5_MEMORY_DECISION_STORE requires a boundary observation/decision selector for live Memory Service reuse" >&2
+      return 2
+    fi
+  fi
+  if (( memory_runtime_lookup )) && [[ -n "${SIM_W5_MEMORY_SHORTPATH_DECISION_ID:-}${SIM_W5_MEMORY_SHORTPATH_DECISION_IDS:-}" ]]; then
+    echo "SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP cannot be combined with explicit shortpath decision ids" >&2
+    return 2
+  fi
+  return 0
+}
+
 if (( PRINT_ENV )); then
   printf 'RUN_ID=%s\n' "${RUN_ID:-}"
   printf 'SIM_UAPI_W5_PROFILE=%s\n' "${SIM_UAPI_W5_PROFILE:-}"
@@ -119,10 +198,15 @@ if (( PRINT_ENV )); then
   exit 0
 fi
 
-if [[ -n "${RUN_ID:-}" && "${SIM_W5_ALLOW_FIXED_RUN_ID:-0}" != "1" ]]; then
-  echo "fixed RUN_ID is disabled for W5 cluster config runs: $RUN_ID" >&2
-  echo "hint: remove RUN_ID from $CONFIG_PATH, or set SIM_W5_ALLOW_FIXED_RUN_ID=1 after manually cleaning the run directory" >&2
-  exit 2
+validate_w5_cluster_config_status=0
+validate_w5_cluster_config || validate_w5_cluster_config_status=$?
+if (( validate_w5_cluster_config_status != 0 )); then
+  exit "$validate_w5_cluster_config_status"
+fi
+
+if (( VALIDATE_ONLY )); then
+  echo "[w5_cluster_config] config validation passed: $CONFIG_PATH" >&2
+  exit 0
 fi
 
 echo "[w5_cluster_config] config=$CONFIG_PATH profile=${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" >&2

@@ -580,7 +580,12 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn('exec "$SCRIPT_DIR/run_ub_eight_node_w5_inference_cluster.sh"', generic_text)
         self.assertIn("source \"$CONFIG_PATH\"", config_runner_text)
         self.assertIn("--steps N", config_runner_text)
+        self.assertIn("--validate-only", config_runner_text)
         self.assertIn("STEPS_OVERRIDE", config_runner_text)
+        self.assertIn("validate_w5_cluster_config", config_runner_text)
+        self.assertIn("W5 cluster config requires SIM_QWEN3_DENSE_WEIGHTS_PATH", config_runner_text)
+        self.assertIn("W5 cluster config weights path is missing", config_runner_text)
+        self.assertIn("SIM_W5_MEMORY_DECISION_OBJECT_STORE requires SIM_W5_MEMORY_DECISION_STORE", config_runner_text)
         self.assertIn("SIM_QWEN3_GUEST_ENGRAM", config_runner_text)
         self.assertIn("SIM_QWEN3_GUEST_ENGRAM_POOL", config_runner_text)
         self.assertIn("fixed RUN_ID is disabled", config_runner_text)
@@ -700,6 +705,122 @@ class Qwen3DenseEnvTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 2)
         self.assertIn("fixed RUN_ID is disabled", result.stderr)
+
+    def test_w5_cluster_config_runner_validate_only_accepts_complete_memory_reuse_config(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        config_runner = script_dir / "run_w5_cluster_config.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            weights_path = tmp_path / "qwen3"
+            weights_path.mkdir()
+            config_path = tmp_path / "w5.env"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
+                        "SIM_QWEN3_GUEST_DECODE_STEPS=2",
+                        f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
+                        "SIM_W5_MEMORY_DECISION_STORE=/tmp/w5-decision-store.json",
+                        "SIM_W5_MEMORY_DECISION_OBJECT_STORE=/tmp/w5-object-store.json",
+                        "SIM_W5_MEMORY_SHORTPATH_DECISION_IDS=decision-a,decision-b",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(config_runner), "--validate-only", "--steps", "3", str(config_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertIn("config validation passed", result.stderr)
+
+    def test_w5_cluster_config_runner_validate_only_rejects_missing_weights_path(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        config_runner = script_dir / "run_w5_cluster_config.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "w5.env"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
+                        "SIM_QWEN3_GUEST_DECODE_STEPS=2",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(config_runner), "--validate-only", str(config_path)],
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("W5 cluster config requires SIM_QWEN3_DENSE_WEIGHTS_PATH", result.stderr)
+
+    def test_w5_cluster_config_runner_validate_only_rejects_decision_store_without_selector(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        config_runner = script_dir / "run_w5_cluster_config.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            weights_path = tmp_path / "qwen3"
+            weights_path.mkdir()
+            config_path = tmp_path / "w5.env"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
+                        "SIM_QWEN3_GUEST_DECODE_STEPS=2",
+                        f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
+                        "SIM_W5_MEMORY_DECISION_STORE=/tmp/w5-decision-store.json",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(config_runner), "--validate-only", str(config_path)],
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("SIM_W5_MEMORY_DECISION_STORE requires a boundary observation/decision selector", result.stderr)
+
+    def test_w5_cluster_config_runner_validate_only_rejects_invalid_steps_override(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        config_runner = script_dir / "run_w5_cluster_config.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            weights_path = tmp_path / "qwen3"
+            weights_path.mkdir()
+            config_path = tmp_path / "w5.env"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
+                        "SIM_QWEN3_GUEST_DECODE_STEPS=2",
+                        f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(config_runner), "--validate-only", "--steps", "0", str(config_path)],
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--steps must be a positive integer: 0", result.stderr)
 
 
 if __name__ == "__main__":
