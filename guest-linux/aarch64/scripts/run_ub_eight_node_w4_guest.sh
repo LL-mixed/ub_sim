@@ -936,6 +936,30 @@ validate_w5_artifact_sizes() {
   return 0
 }
 
+emit_w5_inference_run_report() {
+  local line
+  local report_parser="$SCRIPT_DIR/w5_inference_run_report.py"
+
+  if [[ -z "$SIM_UAPI_W5_PROFILE" ]]; then
+    return 0
+  fi
+  if [[ ! -x "$report_parser" ]]; then
+    trace "FAIL: W5 inference run report parser missing path=$report_parser"
+    return 1
+  fi
+  if [[ ! -f "$RUN_SUMMARY_FILE" ]]; then
+    trace "FAIL: W5 inference run report summary missing path=$RUN_SUMMARY_FILE"
+    return 1
+  fi
+  if ! python3 "$report_parser" "$RUN_SUMMARY_FILE" | while IFS= read -r line; do
+    trace "$line"
+  done; then
+    trace "FAIL: W5 inference run report validation failed path=$RUN_SUMMARY_FILE"
+    return 1
+  fi
+  return 0
+}
+
 run_w5_artifact_size_validation_cli() {
   if (( $# != 0 )); then
     echo "--validate-w5-artifact-sizes-only does not accept positional arguments" >&2
@@ -1338,6 +1362,10 @@ main() {
       exit 1
     fi
     if ! validate_w5_artifact_sizes; then
+      [[ -n "${CLEANUP_SCRIPT:-}" ]] && cleanup_headless_env "$CLEANUP_SCRIPT"
+      exit 1
+    fi
+    if ! emit_w5_inference_run_report; then
       [[ -n "${CLEANUP_SCRIPT:-}" ]] && cleanup_headless_env "$CLEANUP_SCRIPT"
       exit 1
     fi
