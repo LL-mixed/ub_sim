@@ -7,6 +7,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
 SIM_UAPI_W5_PROFILE="${SIM_UAPI_W5_PROFILE:-}"
+TEE_BIN="${TEE_BIN:-/usr/bin/tee}"
 
 w5_profile_default_w4_backend() {
   case "$1" in
@@ -213,7 +214,7 @@ append_kernel_arg_if_missing "rcupdate.rcu_cpu_stall_timeout=300"
 
 trace() {
   local msg="$1"
-  printf '[w4guest8] %s\n' "$msg" | tee -a "$TRACE_FILE" >&2
+  printf '[w4guest8] %s\n' "$msg" | "$TEE_BIN" -a "$TRACE_FILE" >&2
 }
 
 is_qwen3_dense_profile() {
@@ -859,6 +860,78 @@ validate_w5_boundary_observation_summary() {
   return 0
 }
 
+file_size_bytes() {
+  local path="$1"
+  local -A file_stat
+
+  zmodload zsh/stat
+  zstat -H file_stat +size -- "$path"
+  printf '%s\n' "$file_stat[size]"
+}
+
+validate_w5_artifact_file_size() {
+  local path="$1"
+  local label="$2"
+  local max_bytes="$3"
+  local bytes
+
+  if [[ -z "$path" ]]; then
+    return 0
+  fi
+  if [[ ! -f "$path" ]]; then
+    trace "FAIL: W5 artifact size check missing label=$label path=$path"
+    return 1
+  fi
+  bytes="$(file_size_bytes "$path")"
+  if (( bytes > max_bytes )); then
+    trace "FAIL: W5 artifact size too large label=$label bytes=$bytes max_bytes=$max_bytes path=$path"
+    return 1
+  fi
+  trace "W5 artifact size ok label=$label bytes=$bytes max_bytes=$max_bytes path=$path"
+  return 0
+}
+
+validate_w5_artifact_sizes() {
+  local object_json="${SIM_W5_MEMORY_OBJECT_STORE:-}"
+  local object_bin=""
+  local memory_json="${SIM_W5_MEMORY_STORE:-}"
+  local registry_dir="${SIM_W5_MEMORY_REGISTRY_DIR:-${SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR:-}}"
+  local shortpath_stream="${SIM_W5_MEMORY_SHORTPATH_STREAM_PATH:-}"
+  local shortpath_kv_stream="${SIM_W5_MEMORY_SHORTPATH_KV_STREAM_PATH:-}"
+  local max_memory_json="${SIM_W5_MAX_MEMORY_STORE_JSON_BYTES:-16777216}"
+  local max_object_json="${SIM_W5_MAX_OBJECT_STORE_JSON_BYTES:-8388608}"
+  local max_object_bin="${SIM_W5_MAX_OBJECT_STORE_BIN_BYTES:-268435456}"
+  local max_shortpath_stream="${SIM_W5_MAX_SHORTPATH_STREAM_BYTES:-1048576}"
+  local max_shortpath_kv_stream="${SIM_W5_MAX_SHORTPATH_KV_STREAM_BYTES:-1048576}"
+
+  if [[ -z "$SIM_UAPI_W5_PROFILE" ]]; then
+    return 0
+  fi
+  if [[ -z "$object_json" && "$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT" == *.json ]]; then
+    object_json="$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT"
+  fi
+  if [[ -n "$object_json" ]]; then
+    if [[ "$object_json" == *.json ]]; then
+      object_bin="${object_json%.json}.bin"
+    else
+      object_bin="${object_json}.bin"
+    fi
+  fi
+  if [[ -n "$registry_dir" && ( -z "$shortpath_stream" || "$shortpath_stream" == /tmp/* || ! -f "$shortpath_stream" ) ]]; then
+    shortpath_stream="$registry_dir/w5_memory_shortpath_stream.txt"
+  fi
+  if [[ -n "$registry_dir" && ( -z "$shortpath_kv_stream" || "$shortpath_kv_stream" == /tmp/* || ! -f "$shortpath_kv_stream" ) ]]; then
+    shortpath_kv_stream="$registry_dir/w5_memory_shortpath_kv_stream.txt"
+  fi
+
+  validate_w5_artifact_file_size "$memory_json" "memory_store_json" "$max_memory_json" || return 1
+  validate_w5_artifact_file_size "$object_json" "object_store_json" "$max_object_json" || return 1
+  validate_w5_artifact_file_size "$object_bin" "object_store_bin" "$max_object_bin" || return 1
+  validate_w5_artifact_file_size "$shortpath_stream" "shortpath_stream" "$max_shortpath_stream" || return 1
+  validate_w5_artifact_file_size "$shortpath_kv_stream" "shortpath_kv_stream" "$max_shortpath_kv_stream" || return 1
+  return 0
+}
+
 validate_node_log() {
   local node_id="$1"
   local log_file="$2"
@@ -1240,6 +1313,10 @@ main() {
       exit 1
     fi
     if ! validate_w5_boundary_observation_summary; then
+      [[ -n "${CLEANUP_SCRIPT:-}" ]] && cleanup_headless_env "$CLEANUP_SCRIPT"
+      exit 1
+    fi
+    if ! validate_w5_artifact_sizes; then
       [[ -n "${CLEANUP_SCRIPT:-}" ]] && cleanup_headless_env "$CLEANUP_SCRIPT"
       exit 1
     fi
