@@ -56,6 +56,24 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def write_w5_shortpath_only_summary(self, out_dir, run_id, steps=2):
+        lines = [
+            f"summary: decode_steps_expected={steps} decode_steps_observed={steps} passed_nodes=8/8",
+            (
+                "memory_service_summary: service=lingqu_memory_service "
+                f"records={steps} steps={steps}/{steps} actions=jump-to-terminal "
+                f"lookup_hits={steps}"
+            ),
+            (
+                "memory_boundary_observations_recorded: "
+                "records=0 status=skipped reason=shortpath_no_range_exit"
+            ),
+        ]
+        (out_dir / f"eight_node_w5_inference_cluster_summary.{run_id}.txt").write_text(
+            "\n".join(lines) + "\n",
+            encoding="utf-8",
+        )
+
     def run_env_probe(self, config, profile="qwen3_dense"):
         common = Path(__file__).resolve().parents[1] / "scripts" / "qemu_ub_common.sh"
         with tempfile.TemporaryDirectory() as tmp:
@@ -803,6 +821,52 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 object_store.write_text("{}", encoding="utf-8")
                 missing_boundary = (1, 7) if run_id == incomplete_run else None
                 self.write_w5_reuse_summary(out_dir, run_id, steps=2, missing_boundary=missing_boundary)
+                mtime = 1700000000 + index
+                os.utime(decision_store, (mtime, mtime))
+                os.utime(object_store, (mtime, mtime))
+            config_path = tmp_path / "w5.env"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
+                        "SIM_QWEN3_GUEST_DECODE_STEPS=2",
+                        "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3-14b",
+                        "SIM_W5_MEMORY_REUSE_RUN_ID=latest",
+                        f"SIM_W5_MEMORY_REUSE_OUT_DIR={out_dir}",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(config_runner), "--print-env", str(config_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertIn(f"SIM_W5_MEMORY_DECISION_STORE={out_dir}/w5_memory_runtime_boundary_lookup.{complete_run}.json", result.stdout)
+        self.assertIn(f"SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID={complete_run}", result.stdout)
+
+    def test_w5_cluster_config_runner_skips_latest_shortpath_only_reuse_run(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        config_runner = script_dir / "run_w5_cluster_config.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_dir = tmp_path / "out"
+            out_dir.mkdir()
+            complete_run = "2026-05-26_01-00-00_w5_qwen3_14b_engram_decode_111"
+            shortpath_only_run = "2026-05-26_02-00-00_w5_qwen3_14b_engram_decode_222"
+            for index, run_id in enumerate([complete_run, shortpath_only_run], start=1):
+                decision_store = out_dir / f"w5_memory_runtime_boundary_lookup.{run_id}.json"
+                object_store = out_dir / f"w5_object_service_store.{run_id}.json"
+                decision_store.write_text("{}", encoding="utf-8")
+                object_store.write_text("{}", encoding="utf-8")
+                if run_id == shortpath_only_run:
+                    self.write_w5_shortpath_only_summary(out_dir, run_id, steps=2)
+                else:
+                    self.write_w5_reuse_summary(out_dir, run_id, steps=2)
                 mtime = 1700000000 + index
                 os.utime(decision_store, (mtime, mtime))
                 os.utime(object_store, (mtime, mtime))
