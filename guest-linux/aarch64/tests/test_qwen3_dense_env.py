@@ -570,6 +570,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_W5_MEMORY_OBSERVATION_STORE", runner_text)
         self.assertIn("SIM_W5_MEMORY_REUSE_RUN_ID", runner_text)
         self.assertIn("SIM_W5_MEMORY_REUSE_OUT_DIR", runner_text)
+        self.assertIn("SIM_W5_VALIDATE_ONLY", runner_text)
         self.assertIn("SIM_W5_MEMORY_DECISION_STORE", runner_text)
         self.assertIn("SIM_W5_MEMORY_DECISION_OBJECT_STORE", runner_text)
         self.assertIn("SIM_W5_MEMORY_BOUNDARY_REGISTRY_REF", legacy_runner_text)
@@ -592,6 +593,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("--memory-engram-state", runner_text)
         self.assertIn("--memory-registry-dir", runner_text)
         self.assertIn("--memory-decision-store", runner_text)
+        self.assertIn("--validate-only", runner_text)
         self.assertIn("--memory-decision-object-store", runner_text)
         self.assertIn("--memory-boundary-observation-run-id", runner_text)
         self.assertIn("--memory-shortpath-decision-ids", runner_text)
@@ -621,6 +623,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP", config_runner_text)
         self.assertIn("SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP", config_runner_text)
         self.assertIn("SIM_W5_MEMORY_OBSERVATION_STORE", config_runner_text)
+        self.assertIn("SIM_W5_VALIDATE_ONLY", config_runner_text)
         self.assertIn("SIM_W5_MEMORY_REUSE_RUN_ID", config_runner_text)
         self.assertIn("SIM_W5_MEMORY_REUSE_OUT_DIR", config_runner_text)
         self.assertIn("SIM_W5_MEMORY_DECISION_OBJECT_STORE", config_runner_text)
@@ -677,6 +680,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP=1",
                 "SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP=1",
                 "SIM_W5_MEMORY_OBSERVATION_STORE=/tmp/w5-memory-store.json",
+                "SIM_W5_VALIDATE_ONLY=",
                 "SIM_W5_MEMORY_REUSE_RUN_ID=",
                 "SIM_W5_MEMORY_REUSE_OUT_DIR=",
                 "SIM_W5_MEMORY_DECISION_STORE=/tmp/w5-decision-store.json",

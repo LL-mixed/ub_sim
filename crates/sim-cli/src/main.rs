@@ -244,6 +244,7 @@ struct Qwen3DecodeLoopCliArgs {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Qwen3GuestDecodeLoopCliArgs {
+    validate_only: bool,
     step_count: usize,
     prompt: Option<String>,
     prompt_token_ids: Option<String>,
@@ -564,6 +565,7 @@ where
             let mut model = None;
             let mut weights_path = None;
             let mut w5_profile = None;
+            let mut validate_only = false;
             let mut sampler = Qwen3SamplerConfig::default();
             let mut engram = Qwen3EngramConfig::default();
             let mut memory_store_path = None;
@@ -591,7 +593,11 @@ where
 
             while let Some(value) = pending.next() {
                 let text = value.to_string_lossy();
-                if text == "--steps" {
+                if text == "--validate-only" {
+                    validate_only = true;
+                } else if let Some(value) = text.strip_prefix("--validate-only=") {
+                    validate_only = parse_cli_bool("--validate-only", value)?;
+                } else if text == "--steps" {
                     let next = pending
                         .next()
                         .ok_or_else(|| anyhow::anyhow!("--steps requires a value"))?;
@@ -1117,6 +1123,7 @@ where
             }
 
             Ok(Some(Qwen3GuestDecodeLoopCliArgs {
+                validate_only,
                 step_count: step_count.unwrap_or(1),
                 prompt,
                 prompt_token_ids,
@@ -10836,6 +10843,20 @@ mod tests {
     }
 
     #[test]
+    fn w5_inference_cluster_args_accept_validate_only() {
+        let args = qwen3_guest_decode_loop_args_from([
+            "w5-inference-cluster",
+            "--validate-only",
+            "--steps=16",
+        ])
+        .expect("parse W5 validate-only args")
+        .expect("W5 validate-only args");
+
+        assert!(args.validate_only);
+        assert_eq!(args.step_count, 16);
+    }
+
+    #[test]
     fn w5_inference_cluster_args_accept_runtime_boundary_lookup() {
         let args = qwen3_guest_decode_loop_args_from([
             "w5-inference-cluster",
@@ -11297,6 +11318,7 @@ mod tests {
         fs::write(dir.join("model.safetensors"), b"stub").expect("write weights");
 
         let args = Qwen3GuestDecodeLoopCliArgs {
+            validate_only: false,
             step_count: 1,
             prompt: None,
             prompt_token_ids: None,
@@ -11351,6 +11373,7 @@ mod tests {
         fs::write(dir.join("model.safetensors"), b"stub").expect("write weights");
 
         let args = Qwen3GuestDecodeLoopCliArgs {
+            validate_only: false,
             step_count: 1,
             prompt: None,
             prompt_token_ids: None,
@@ -11404,6 +11427,7 @@ mod tests {
         fs::write(dir.join("model.safetensors.index.json"), b"{}").expect("write index");
 
         let args = Qwen3GuestDecodeLoopCliArgs {
+            validate_only: false,
             step_count: 1,
             prompt: None,
             prompt_token_ids: None,
@@ -15800,6 +15824,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
         .expect("write tokenizer");
         fs::write(weights_dir.join("model.safetensors"), b"stub").expect("write weights");
         let args = Qwen3GuestDecodeLoopCliArgs {
+            validate_only: false,
             step_count: 2,
             prompt: None,
             prompt_token_ids: None,
@@ -15989,6 +16014,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
 
         let store_path = root.join("store.json");
         let args = Qwen3GuestDecodeLoopCliArgs {
+            validate_only: false,
             step_count: 1,
             prompt: None,
             prompt_token_ids: None,
@@ -16938,31 +16964,35 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     }
     let runtime = qwen3_guest_dense_runtime(args)?;
     let mut effective_engram = args.engram.clone();
-    let memory_publication = if let Some(memory_bootstrap) = &args.memory_bootstrap {
-        if w5_memory_should_publish_engram_state(
-            memory_bootstrap,
-            args.memory_decisions.is_some(),
-            args.memory_runtime_boundary_lookup,
-            args.engram.enabled,
-        ) {
-            ensure_w5_memory_engram_state(memory_bootstrap, &runtime.profile)
-                .context("materialize W5 Memory Service engram state")?;
-            let publication = publish_w5_engram_state_ref_from_memory_objects(memory_bootstrap)
-                .context("publish Memory Service EngramStateObjectRef for W5")?;
-            effective_engram.enabled = true;
-            effective_engram.pool = Qwen3EngramPool::Obmm;
-            if effective_engram.context_op == Qwen3EngramContextOp::Disabled {
-                effective_engram.context_op = Qwen3EngramContextOp::CpuReference;
-            }
-            effective_engram.state_ref = Some(publication.state_ref_hex.clone());
-            effective_engram.object_service_snapshot_path =
-                publication.object_service_snapshot_path.clone();
-            Some(publication)
-        } else {
-            println!(
+    let memory_publication = if !args.validate_only {
+        if let Some(memory_bootstrap) = &args.memory_bootstrap {
+            if w5_memory_should_publish_engram_state(
+                memory_bootstrap,
+                args.memory_decisions.is_some(),
+                args.memory_runtime_boundary_lookup,
+                args.engram.enabled,
+            ) {
+                ensure_w5_memory_engram_state(memory_bootstrap, &runtime.profile)
+                    .context("materialize W5 Memory Service engram state")?;
+                let publication = publish_w5_engram_state_ref_from_memory_objects(memory_bootstrap)
+                    .context("publish Memory Service EngramStateObjectRef for W5")?;
+                effective_engram.enabled = true;
+                effective_engram.pool = Qwen3EngramPool::Obmm;
+                if effective_engram.context_op == Qwen3EngramContextOp::Disabled {
+                    effective_engram.context_op = Qwen3EngramContextOp::CpuReference;
+                }
+                effective_engram.state_ref = Some(publication.state_ref_hex.clone());
+                effective_engram.object_service_snapshot_path =
+                    publication.object_service_snapshot_path.clone();
+                Some(publication)
+            } else {
+                println!(
                 "w5_memory_bootstrap: mode=artifact_only engram_state={} reason=memory_decision_artifacts",
                 memory_bootstrap.engram_state_path.display()
             );
+                None
+            }
+        } else {
             None
         }
     } else {
@@ -16989,6 +17019,42 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             args.step_count,
         )
         .context("validate W5 Memory Service decisions for this run")?;
+    }
+    if args.validate_only {
+        println!("qwen3_guest_decode_loop");
+        println!("  validate_only: true");
+        println!("  script: {}", script_path.display());
+        println!("  workload: w5 inference cluster");
+        println!("  w5_profile: {}", w5_profile.name);
+        println!("  w5_profile_mode: {}", w5_profile.mode);
+        println!("  w5_profile_nodes: {}", w5_profile.nodes);
+        println!("  model_id: {}", runtime.profile.model_id);
+        println!("  model_key: {}", runtime.model_key);
+        println!("  weights_path: {}", runtime.weights_path.display());
+        println!("  steps: {}", args.step_count);
+        if let Some(decisions) = &memory_decisions {
+            let jump_to_terminal = decisions
+                .shortpath_entries
+                .iter()
+                .filter(|entry| {
+                    entry.decision.action == sim_memory::ShortpathAction::JumpToTerminal
+                })
+                .count();
+            let artifact_count = decisions
+                .shortpath_entries
+                .iter()
+                .filter(|entry| entry.artifact.is_some())
+                .count();
+            println!(
+                "  memory_decision_validation: entries={} jump_to_terminal={} artifact_count={}",
+                decisions.shortpath_entries.len(),
+                jump_to_terminal,
+                artifact_count
+            );
+        } else {
+            println!("  memory_decision_validation: entries=0");
+        }
+        return Ok(());
     }
     let memory_decision_publication = if let Some(decisions) = &memory_decisions {
         if w5_memory_decisions_reference_artifacts(decisions) {

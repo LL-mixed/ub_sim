@@ -53,6 +53,7 @@ SIM_W5_MEMORY_ENGRAM_STATE="${SIM_W5_MEMORY_ENGRAM_STATE:-$OUT_DIR/w5_memory_eng
 SIM_W5_MEMORY_REGISTRY_DIR="${SIM_W5_MEMORY_REGISTRY_DIR:-$OUT_DIR/w5_memory_registry.${RUN_ID}}"
 SIM_W5_MEMORY_OWNER_ENTITY="${SIM_W5_MEMORY_OWNER_ENTITY:-0}"
 SIM_W5_MEMORY_PRODUCER_ENTITY="${SIM_W5_MEMORY_PRODUCER_ENTITY:-0}"
+SIM_W5_VALIDATE_ONLY="${SIM_W5_VALIDATE_ONLY:-0}"
 
 export RUN_ID
 export TRACE_FILE
@@ -81,6 +82,7 @@ export SIM_W5_MEMORY_ENGRAM_STATE
 export SIM_W5_MEMORY_REGISTRY_DIR
 export SIM_W5_MEMORY_OWNER_ENTITY
 export SIM_W5_MEMORY_PRODUCER_ENTITY
+export SIM_W5_VALIDATE_ONLY
 
 memory_runtime_lookup=0
 if [[ "$SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP" == "1" ||
@@ -148,6 +150,11 @@ if (( memory_runtime_lookup || memory_decision_reuse )); then
     --weights-path "$SIM_QWEN3_DENSE_WEIGHTS_PATH"
     --prompt-token-ids "${SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS:-81378,37585,374}"
   )
+  case "$SIM_W5_VALIDATE_ONLY" in
+    1|true|TRUE|yes|YES)
+      cli_args+=(--validate-only)
+      ;;
+  esac
   if (( memory_runtime_lookup )); then
     cli_args+=(
       --memory-observation-store "$SIM_W5_MEMORY_OBSERVATION_STORE"
@@ -224,5 +231,12 @@ if (( memory_runtime_lookup || memory_decision_reuse )); then
   echo "[w5_inference_cluster] runtime_boundary_lookup=$memory_runtime_lookup online_boundary_lookup=$memory_online_lookup observation_store=$SIM_W5_MEMORY_OBSERVATION_STORE decision_reuse=$memory_decision_reuse decision_store=$SIM_W5_MEMORY_DECISION_STORE" >&2
   exec "$SIM_CLI_BIN" "${cli_args[@]}"
 fi
+
+case "$SIM_W5_VALIDATE_ONLY" in
+  1|true|TRUE|yes|YES)
+    echo "[w5_inference_cluster] config validation passed: no Memory Service runtime path selected" >&2
+    exit 0
+    ;;
+esac
 
 exec "$SCRIPT_DIR/run_ub_eight_node_w4_guest.sh"
