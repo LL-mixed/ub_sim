@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 OUT_DIR="$ROOT_DIR/out"
+source "$SCRIPT_DIR/w5_memory_reuse_common.sh"
 
 SIM_UAPI_W5_PROFILE="${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}"
 
@@ -93,50 +94,10 @@ if [[ "$SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP" == "1" ||
   memory_online_lookup=1
 fi
 
-if [[ -n "$SIM_W5_MEMORY_REUSE_RUN_ID" ]]; then
-  if [[ -n "$SIM_W5_MEMORY_DECISION_STORE" ||
-        -n "$SIM_W5_MEMORY_DECISION_OBJECT_STORE" ||
-        -n "$SIM_W5_MEMORY_BOUNDARY_OBSERVATION_ID" ||
-        -n "$SIM_W5_MEMORY_BOUNDARY_OBSERVATION_IDS" ||
-        -n "$SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID" ||
-        -n "$SIM_W5_MEMORY_SHORTPATH_DECISION_ID" ||
-        -n "$SIM_W5_MEMORY_SHORTPATH_DECISION_IDS" ]]; then
-    echo "SIM_W5_MEMORY_REUSE_RUN_ID cannot be combined with explicit Memory Service reuse stores or selectors" >&2
-    exit 2
-  fi
-  selected_reuse_run_id="$SIM_W5_MEMORY_REUSE_RUN_ID"
-  if [[ "$SIM_W5_MEMORY_REUSE_RUN_ID" == "latest" ]]; then
-    reuse_candidates=("$SIM_W5_MEMORY_REUSE_OUT_DIR"/w5_memory_runtime_boundary_lookup.*_w5_${SIM_UAPI_W5_PROFILE}_*.json(N.om[1]))
-    if (( ${#reuse_candidates[@]} == 0 )); then
-      echo "SIM_W5_MEMORY_REUSE_RUN_ID=latest found no decision store for profile=$SIM_UAPI_W5_PROFILE in $SIM_W5_MEMORY_REUSE_OUT_DIR" >&2
-      exit 2
-    fi
-    SIM_W5_MEMORY_DECISION_STORE="${reuse_candidates[1]}"
-    reuse_base="${SIM_W5_MEMORY_DECISION_STORE:t}"
-    selected_reuse_run_id="${reuse_base#w5_memory_runtime_boundary_lookup.}"
-    selected_reuse_run_id="${selected_reuse_run_id%.json}"
-  else
-    if [[ ! "$SIM_W5_MEMORY_REUSE_RUN_ID" =~ '^[A-Za-z0-9._-]+$' ]]; then
-      echo "SIM_W5_MEMORY_REUSE_RUN_ID must be latest or a run id without path separators: $SIM_W5_MEMORY_REUSE_RUN_ID" >&2
-      exit 2
-    fi
-    SIM_W5_MEMORY_DECISION_STORE="$SIM_W5_MEMORY_REUSE_OUT_DIR/w5_memory_runtime_boundary_lookup.$selected_reuse_run_id.json"
-  fi
-  SIM_W5_MEMORY_DECISION_OBJECT_STORE="$SIM_W5_MEMORY_REUSE_OUT_DIR/w5_object_service_store.$selected_reuse_run_id.json"
-  if [[ ! -f "$SIM_W5_MEMORY_DECISION_STORE" ]]; then
-    echo "W5 Memory Service reuse decision store is missing: $SIM_W5_MEMORY_DECISION_STORE" >&2
-    exit 2
-  fi
-  if [[ ! -f "$SIM_W5_MEMORY_DECISION_OBJECT_STORE" ]]; then
-    echo "W5 Memory Service reuse object store is missing: $SIM_W5_MEMORY_DECISION_OBJECT_STORE" >&2
-    exit 2
-  fi
-  SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID="$selected_reuse_run_id"
-  SIM_W5_MEMORY_SHORTPATH_EXECUTE="${SIM_W5_MEMORY_SHORTPATH_EXECUTE:-1}"
-  export SIM_W5_MEMORY_DECISION_STORE
-  export SIM_W5_MEMORY_DECISION_OBJECT_STORE
-  export SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID
-  export SIM_W5_MEMORY_SHORTPATH_EXECUTE
+resolve_w5_memory_reuse_config_status=0
+w5_resolve_memory_reuse_config "$OUT_DIR" "$SIM_UAPI_W5_PROFILE" || resolve_w5_memory_reuse_config_status=$?
+if (( resolve_w5_memory_reuse_config_status != 0 )); then
+  exit "$resolve_w5_memory_reuse_config_status"
 fi
 
 memory_decision_reuse=0
