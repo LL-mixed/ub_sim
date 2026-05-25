@@ -464,7 +464,7 @@ def emit_summary(run_dir, expected_steps, node_ids, output):
         output,
         derive_run_id_from_run_dir(run_dir),
     )
-    emit_pool_usage_summary(pool_usage, expected_steps, node_ids, output)
+    emit_pool_usage_summary(pool_usage, expected_steps, node_ids, output, timings, idle_timings)
 
 
 def derive_run_id_from_run_dir(run_dir):
@@ -1155,9 +1155,22 @@ def emit_boundary_observation_summary(
         )
 
 
-def emit_pool_usage_summary(pool_usage, expected_steps, node_ids, output):
+def emit_pool_usage_summary(
+    pool_usage,
+    expected_steps,
+    node_ids,
+    output,
+    timings=None,
+    idle_timings=None,
+):
     if not pool_usage:
-        output.append("obmm_pool: unavailable reason=no_qwen3_obmm_pool_usage_records")
+        active_records = len(timings or [])
+        idle_records = len(idle_timings or [])
+        output.append(
+            "obmm_pool: not_observed reason=no_qwen3_obmm_pool_usage_records "
+            f"active_worker_records={active_records} "
+            f"idle_worker_records={idle_records}"
+        )
         return
 
     observed = [pool_usage[node_id] for node_id in node_ids if node_id in pool_usage]

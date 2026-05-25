@@ -547,6 +547,11 @@ class W4GuestRunSummaryTest(unittest.TestCase):
             "max_terminal_wait_ms=5000 status=idle_no_work_item",
             result.stdout,
         )
+        self.assertIn(
+            "obmm_pool: not_observed reason=no_qwen3_obmm_pool_usage_records "
+            "active_worker_records=0 idle_worker_records=7",
+            result.stdout,
+        )
         self.assertNotIn("node=nodeB steps=0/1 status=missing", result.stdout)
 
 
