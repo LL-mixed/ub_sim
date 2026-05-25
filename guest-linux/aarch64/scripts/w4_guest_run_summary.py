@@ -109,6 +109,7 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
     engram_context_records = []
     memory_records = []
     boundary_observations = []
+    worker_events = collections.Counter()
     barriers = {}
     pool_usage = {}
     passes = {node_id: 0 for node_id in node_ids}
@@ -153,6 +154,22 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                     record["stage"] = stage
                     record["step"] = parse_int(fields.get("step"), -1)
                     memory_records.append(record)
+
+                if "stage uapi_qwen3_range_runtime_forward " in clean_line:
+                    worker_events["range_forwards"] += 1
+                if "stage qwen3_range_forward_runtime_input_loaded " in clean_line:
+                    worker_events["runtime_inputs"] += 1
+                if "stage qwen3_range_forward_runtime_output_publish " in clean_line:
+                    worker_events["runtime_outputs"] += 1
+                if "stage qwen3_decode_round_scheduler_no_dispatch " in clean_line:
+                    worker_events["shortpath_no_dispatches"] += 1
+                if "stage qwen3_decode_round_terminal_committed " in clean_line:
+                    worker_events["shortpath_terminal_commits"] += 1
+                if (
+                    "stage qwen3_w5_memory_shortpath_commit " in clean_line
+                    and " publish_hidden=0 " in clean_line
+                ):
+                    worker_events["shortpath_publish_hidden_zero"] += 1
 
                 if "qwen3_range_forward_runtime_ingress_publish" in clean_line:
                     fields = parse_pairs(clean_line)
@@ -402,6 +419,7 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
         engram_context_records,
         memory_records,
         boundary_observations,
+        worker_events,
         barriers,
         pool_usage,
         passes,
@@ -427,6 +445,7 @@ def emit_summary(run_dir, expected_steps, node_ids, output):
         engram_context_records,
         memory_records,
         boundary_observations,
+        worker_events,
         barriers,
         pool_usage,
         passes,
@@ -458,6 +477,7 @@ def emit_summary(run_dir, expected_steps, node_ids, output):
     emit_engram_timing_summary(engram_timings, expected_steps, node_ids, output)
     emit_engram_context_summary(engram_context_records, expected_steps, output)
     emit_memory_service_summary(memory_records, expected_steps, output)
+    emit_worker_shortpath_summary(memory_records, worker_events, expected_steps, node_ids, output)
     emit_boundary_observation_summary(
         boundary_observations,
         expected_steps,
@@ -484,6 +504,7 @@ def emit_progress(run_dir, expected_steps, elapsed_s, node_ids, output):
         _engram_context_records,
         _memory_records,
         _boundary_observations,
+        _worker_events,
         _barriers,
         _pool_usage,
         passes,
@@ -1104,6 +1125,44 @@ def emit_memory_service_summary(memory_records, expected_steps, output):
                 f"hit_registry_steps={csv_or_none_ordered(lookup_hit_registry_step(record) for record in step_hits)} "
                 f"hit_positions={csv_or_none_ordered(record.get('position') for record in step_hits)}"
             )
+
+
+def emit_worker_shortpath_summary(memory_records, worker_events, expected_steps, node_ids, output):
+    if not memory_records:
+        return
+
+    boundary_hits = sum(
+        1
+        for record in memory_records
+        if record["stage"] == "qwen3_w5_memory_terminal_logits_loaded"
+    )
+    terminal_selects = sum(
+        1
+        for record in memory_records
+        if record["stage"] == "qwen3_w5_memory_terminal_logits_selected"
+    )
+    if boundary_hits == 0 and terminal_selects == 0:
+        return
+
+    full_pipeline_range_forwards = expected_steps * len(node_ids)
+    full_pipeline_runtime_inputs = max(0, full_pipeline_range_forwards - 1)
+    full_pipeline_runtime_outputs = full_pipeline_range_forwards
+    output.append(
+        "guest_worker_shortpath_summary: "
+        "action=jump-to-terminal "
+        f"boundary_hits={boundary_hits} "
+        f"terminal_selects={terminal_selects} "
+        f"expected_hits={expected_steps} "
+        f"actual_range_forwards={worker_events['range_forwards']} "
+        f"actual_runtime_inputs={worker_events['runtime_inputs']} "
+        f"actual_runtime_outputs={worker_events['runtime_outputs']} "
+        f"shortpath_no_dispatch={worker_events['shortpath_no_dispatches']} "
+        f"shortpath_terminal_commits={worker_events['shortpath_terminal_commits']} "
+        f"shortpath_publish_hidden_zero={worker_events['shortpath_publish_hidden_zero']} "
+        f"full_pipeline_range_forwards={full_pipeline_range_forwards} "
+        f"full_pipeline_runtime_inputs={full_pipeline_runtime_inputs} "
+        f"full_pipeline_runtime_outputs={full_pipeline_runtime_outputs}"
+    )
 
 
 def emit_boundary_observation_summary(

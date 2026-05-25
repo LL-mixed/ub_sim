@@ -90,6 +90,86 @@ def idle_engram_timing(node_id, node_index, step, terminal_wait_ms):
 
 
 class W4GuestRunSummaryTest(unittest.TestCase):
+    def test_emits_worker_shortpath_summary_from_guest_logs(self):
+        script = Path(__file__).resolve().parents[1] / "scripts" / "w4_guest_run_summary.py"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            for index, node_id in enumerate(NODE_IDS, start=1):
+                lines = []
+                for step in range(2):
+                    if node_id == "nodeA":
+                        lines.extend(
+                            [
+                                (
+                                    "[w4_guest] stage uapi_qwen3_range_runtime_forward "
+                                    f"local={node_id} step={step} node={index} status=ok"
+                                ),
+                                worker_timing(node_id, index, step, 1000 + step, step, 900),
+                                handoff_timing(node_id, index, step, 950 + step, 0, 7),
+                                (
+                                    "[w4_guest] stage qwen3_range_forward_runtime_input_loaded "
+                                    f"local={node_id} step={step} status=ok"
+                                )
+                                if step > 0
+                                else "",
+                                (
+                                    "[w4_guest] stage qwen3_w5_memory_terminal_logits_loaded "
+                                    f"local={node_id} step={step} decision_id=shortpath-decision/step{step} "
+                                    "artifact_id=artifact/logits status=ok"
+                                ),
+                                (
+                                    "[w4_guest] stage qwen3_w5_memory_terminal_logits_selected "
+                                    f"local={node_id} step={step} token=11 status=ok"
+                                ),
+                                (
+                                    "[w4_guest] stage qwen3_w5_memory_shortpath_commit "
+                                    f"local={node_id} step={step} publish_hidden=0 status=ok"
+                                ),
+                                "[w4_guest] pass",
+                            ]
+                        )
+                    else:
+                        lines.extend(
+                            [
+                                (
+                                    "[w4_guest] stage qwen3_decode_round_scheduler_no_dispatch "
+                                    f"local={node_id} step={step} status=ok"
+                                ),
+                                (
+                                    "[w4_guest] stage qwen3_decode_round_terminal_committed "
+                                    f"local={node_id} step={step} terminal_observed=1 status=ok"
+                                ),
+                                (
+                                    "[w4_guest] stage qwen3_decode_round_idle_timing "
+                                    f"local={node_id} step={step} node={index} terminal_observed=1 "
+                                    "input_wait_ms=50 round_done_ms=1 source=shortpath status=no_work_item"
+                                ),
+                                "[w4_guest] pass",
+                            ]
+                        )
+                (run_dir / f"{node_id}_guest.log").write_text(
+                    "\n".join(line for line in lines if line) + "\n",
+                    encoding="utf-8",
+                )
+
+            result = subprocess.run(
+                [sys.executable, str(script), str(run_dir), "2", *NODE_IDS],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertIn(
+            "guest_worker_shortpath_summary: action=jump-to-terminal "
+            "boundary_hits=2 terminal_selects=2 expected_hits=2 "
+            "actual_range_forwards=2 actual_runtime_inputs=1 actual_runtime_outputs=0 "
+            "shortpath_no_dispatch=14 shortpath_terminal_commits=14 "
+            "shortpath_publish_hidden_zero=2 full_pipeline_range_forwards=16 "
+            "full_pipeline_runtime_inputs=15 full_pipeline_runtime_outputs=16",
+            result.stdout,
+        )
+
     def test_emits_decode_tokens_and_timing_bottlenecks(self):
         script = Path(__file__).resolve().parents[1] / "scripts" / "w4_guest_run_summary.py"
 

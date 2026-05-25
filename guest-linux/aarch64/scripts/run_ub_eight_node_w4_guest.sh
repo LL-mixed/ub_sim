@@ -840,7 +840,7 @@ validate_w5_boundary_observation_summary() {
         trace "FAIL: W5 shortpath pool usage summary is ambiguous path=$RUN_SUMMARY_FILE"
         return 1
       fi
-      if ! rg -q "guest_worker_shortpath_summary: action=jump-to-terminal boundary_hits=${SIM_QWEN3_GUEST_DECODE_STEPS} terminal_selects=${SIM_QWEN3_GUEST_DECODE_STEPS} expected_hits=${SIM_QWEN3_GUEST_DECODE_STEPS} actual_range_forwards=${SIM_QWEN3_GUEST_DECODE_STEPS} .*full_pipeline_range_forwards=$((SIM_QWEN3_GUEST_DECODE_STEPS * ${#NODE_IDS[@]}))" "$RUN_SUMMARY_FILE"; then
+      if ! rg -q "guest_worker_shortpath_summary: action=jump-to-terminal boundary_hits=${SIM_QWEN3_GUEST_DECODE_STEPS} terminal_selects=${SIM_QWEN3_GUEST_DECODE_STEPS} expected_hits=${SIM_QWEN3_GUEST_DECODE_STEPS} actual_range_forwards=${SIM_QWEN3_GUEST_DECODE_STEPS} actual_runtime_inputs=$((SIM_QWEN3_GUEST_DECODE_STEPS - 1)) actual_runtime_outputs=0 shortpath_no_dispatch=${idle_expected} shortpath_terminal_commits=${idle_expected} shortpath_publish_hidden_zero=${SIM_QWEN3_GUEST_DECODE_STEPS} full_pipeline_range_forwards=$((SIM_QWEN3_GUEST_DECODE_STEPS * ${#NODE_IDS[@]})) full_pipeline_runtime_inputs=$((SIM_QWEN3_GUEST_DECODE_STEPS * ${#NODE_IDS[@]} - 1)) full_pipeline_runtime_outputs=$((SIM_QWEN3_GUEST_DECODE_STEPS * ${#NODE_IDS[@]}))" "$RUN_SUMMARY_FILE"; then
         trace "FAIL: W5 shortpath worker summary does not prove reduced range pipeline path=$RUN_SUMMARY_FILE"
         return 1
       fi
