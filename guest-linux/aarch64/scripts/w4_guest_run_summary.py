@@ -58,6 +58,25 @@ def csv_or_none(values):
     return ",".join(ordered) if ordered else "none"
 
 
+def csv_or_none_ordered(values):
+    seen = set()
+    ordered = []
+    for value in values:
+        if not value or value == "none" or value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ",".join(ordered) if ordered else "none"
+
+
+def lookup_hit_registry_step(record):
+    value = record.get("registry_step")
+    if value and value != "none":
+        return value
+    step = record.get("step", -1)
+    return str(step) if step >= 0 else "none"
+
+
 def format_duration(seconds):
     hours, remainder = divmod(seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
@@ -120,7 +139,10 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                         fields["_display_piece"] = display_piece(fields["_piece"])
                         tokens[step] = fields
 
-                if "qwen3_w5_memory_" in clean_line:
+                if (
+                    "qwen3_w5_memory_" in clean_line
+                    or "qwen3_memory_service_boundary_lookup_" in clean_line
+                ):
                     fields = parse_pairs(clean_line)
                     stage = ""
                     if "stage " in clean_line:
@@ -951,6 +973,13 @@ def emit_memory_service_summary(memory_records, expected_steps, output):
         for record in memory_records
         if record["stage"] == "qwen3_w5_memory_boundary_decision"
     ]
+    lookup_hits = [
+        record
+        for record in memory_records
+        if record["stage"] == "qwen3_memory_service_boundary_lookup_response"
+        and record.get("action") == "jump-to-terminal"
+        and record.get("status") == "hit"
+    ]
     output.append(
         "memory_service_summary: "
         "service=lingqu_memory_service "
@@ -962,15 +991,23 @@ def emit_memory_service_summary(memory_records, expected_steps, output):
         f"actions={csv_or_none(record.get('shortpath_action') for record in memory_records)} "
         f"artifact_kinds={csv_or_none(record.get('shortpath_artifact_kind') for record in memory_records)} "
         f"prefetch_ids={csv_or_none(record.get('prefetch_id') for record in memory_records)} "
-        f"prefix_cache_ids={csv_or_none(record.get('prefix_cache_id') for record in memory_records)}"
+        f"prefix_cache_ids={csv_or_none(record.get('prefix_cache_id') for record in memory_records)} "
+        f"lookup_hits={len(lookup_hits)} "
+        f"hit_registry_indexes={csv_or_none_ordered(record.get('registry_index') for record in lookup_hits)} "
+        f"hit_registry_steps={csv_or_none_ordered(lookup_hit_registry_step(record) for record in lookup_hits)} "
+        f"hit_positions={csv_or_none_ordered(record.get('position') for record in lookup_hits)}"
     )
 
     if boundary_records:
         by_step = collections.defaultdict(list)
         for record in boundary_records:
             by_step[record["step"]].append(record)
+        hits_by_step = collections.defaultdict(list)
+        for record in lookup_hits:
+            hits_by_step[record["step"]].append(record)
         for step in sorted(by_step):
             records = by_step[step]
+            step_hits = hits_by_step.get(step, [])
             output.append(
                 "memory_service_step: "
                 f"step={step} "
@@ -980,7 +1017,11 @@ def emit_memory_service_summary(memory_records, expected_steps, output):
                 f"support_ids={csv_or_none(record.get('shortpath_support_id') for record in records)} "
                 f"actions={csv_or_none(record.get('shortpath_action') for record in records)} "
                 f"prefetch_ids={csv_or_none(record.get('prefetch_id') for record in records)} "
-                f"prefix_cache_ids={csv_or_none(record.get('prefix_cache_id') for record in records)}"
+                f"prefix_cache_ids={csv_or_none(record.get('prefix_cache_id') for record in records)} "
+                f"lookup_hits={len(step_hits)} "
+                f"hit_registry_indexes={csv_or_none_ordered(record.get('registry_index') for record in step_hits)} "
+                f"hit_registry_steps={csv_or_none_ordered(lookup_hit_registry_step(record) for record in step_hits)} "
+                f"hit_positions={csv_or_none_ordered(record.get('position') for record in step_hits)}"
             )
 
 

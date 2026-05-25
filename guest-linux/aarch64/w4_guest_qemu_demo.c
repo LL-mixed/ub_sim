@@ -4938,11 +4938,11 @@ static const char *qwen3_memory_shortpath_audit_id(
     if (!config) {
         return "none";
     }
-    if (str_nonempty(config->shortpath_decision_id)) {
-        return config->shortpath_decision_id;
-    }
     if (config->boundary_registry_loaded) {
         return "runtime_service_catalog";
+    }
+    if (str_nonempty(config->shortpath_decision_id)) {
+        return config->shortpath_decision_id;
     }
     if (config->shortpath_stream_count > 0) {
         return "shortpath_stream";
@@ -4956,11 +4956,11 @@ static const char *qwen3_memory_shortpath_support_audit_id(
     if (!config) {
         return "none";
     }
-    if (str_nonempty(config->shortpath_support_id)) {
-        return config->shortpath_support_id;
-    }
     if (config->boundary_registry_loaded) {
         return "boundary_registry";
+    }
+    if (str_nonempty(config->shortpath_support_id)) {
+        return config->shortpath_support_id;
     }
     if (config->shortpath_stream_count > 0) {
         return "shortpath_stream";
@@ -7048,6 +7048,9 @@ static int qwen3_w5_memory_service_lookup_boundary(
                    " position=%" PRIu64
                    " action=jump-to-terminal artifact_ref=%s"
                    " registry_index=%" PRIu64
+                   " registry_step=%" PRIu64
+                   " registry_position=%" PRIu64
+                   " registry_layers=[%u,%u)"
                    " confidence=verified"
                    " source=lingqu_memory_service target=boundary_controller"
                    " mode=%s backend=%s status=hit\n",
@@ -7058,6 +7061,10 @@ static int qwen3_w5_memory_service_lookup_boundary(
                    position,
                    registry_source,
                    entry->stream_index,
+                   entry->step_index,
+                   entry->producer_position,
+                   entry->producer_layer_start,
+                   entry->producer_layer_end,
                    config->shortpath_lookup_mode,
                    config->boundary_lookup_backend);
         } else {
@@ -7066,6 +7073,9 @@ static int qwen3_w5_memory_service_lookup_boundary(
                    " position=%" PRIu64
                    " action=jump-to-terminal artifact_ref=stream"
                    " stream_index=%" PRIu64
+                   " stream_step=%" PRIu64
+                   " stream_position=%" PRIu64
+                   " stream_layers=[%u,%u)"
                    " confidence=verified"
                    " source=lingqu_memory_service target=boundary_controller"
                    " mode=%s backend=%s status=hit\n",
@@ -7075,6 +7085,10 @@ static int qwen3_w5_memory_service_lookup_boundary(
                    layer_end,
                    position,
                    entry->stream_index,
+                   entry->step_index,
+                   entry->producer_position,
+                   entry->producer_layer_start,
+                   entry->producer_layer_end,
                    config->shortpath_lookup_mode,
                    config->boundary_lookup_backend);
         }

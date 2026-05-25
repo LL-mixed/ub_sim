@@ -5217,8 +5217,7 @@ impl LingquMemoryService {
             .values()
             .filter(|artifact| artifact.state == ExecutionArtifactState::Verified)
             .filter(|artifact| artifact.model == req.model)
-            .filter(|artifact| artifact.producer_boundary.layer_end == req.boundary.layer_end)
-            .filter(|artifact| artifact.producer_boundary.position == req.boundary.position)
+            .filter(|artifact| artifact.producer_boundary == req.boundary)
             .filter(|artifact| {
                 artifact
                     .boundary_hidden_fingerprint
@@ -6891,6 +6890,103 @@ mod tests {
             response.support.reason,
             "no_verified_execution_artifact_support"
         );
+    }
+
+    #[test]
+    fn boundary_lookup_requires_exact_range_boundary_identity() {
+        let mut service = LingquMemoryService::new();
+        let mut object_service =
+            LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
+        let hidden_ref = publish_hot_tensor(
+            &mut object_service,
+            "hidden/range/node4/step3".to_string(),
+            f32_vec_to_le_bytes(&[0.1, 0.2, 0.3, 0.4]),
+            TensorDType::F32,
+            vec![1, 4],
+            1,
+            2,
+            10,
+        )
+        .unwrap();
+        let logits_ref = publish_hot_tensor(
+            &mut object_service,
+            "logits/shortpath/node4/step3".to_string(),
+            f32_vec_to_le_bytes(&[1.0, 0.0, -1.0, -2.0]),
+            TensorDType::F32,
+            vec![1, 4],
+            1,
+            2,
+            11,
+        )
+        .unwrap();
+        service
+            .register_execution_artifact(ExecutionArtifactObject {
+                artifact_id: "artifact/logits/step3/node4".to_string(),
+                kind: ExecutionArtifactKind::Logits,
+                model: sample_model_binding(),
+                producer_boundary: sample_range_boundary(),
+                boundary_hidden_fingerprint: BoundaryTensorFingerprint::from_hot_ref(&hidden_ref),
+                target_layer_start: 8,
+                target_layer_end: 8,
+                dtype: TensorDType::F32,
+                shape: vec![1, 4],
+                durable_payload_ref: None,
+                hot_object_ref: Some(logits_ref),
+                source_query_result_id: None,
+                source_engram_state_id: None,
+                confidence_milli: 980,
+                state: ExecutionArtifactState::Verified,
+                checksum: 0x8899,
+                version: 1,
+                created_at_us: 12,
+                expires_at_us: Some(40),
+            })
+            .unwrap();
+
+        for boundary in [
+            RangeBoundary {
+                step_index: 4,
+                ..sample_range_boundary()
+            },
+            RangeBoundary {
+                node_index: 5,
+                ..sample_range_boundary()
+            },
+            RangeBoundary {
+                layer_start: 0,
+                ..sample_range_boundary()
+            },
+            RangeBoundary {
+                position: 13,
+                ..sample_range_boundary()
+            },
+        ] {
+            let response = service
+                .boundary_lookup(
+                    BoundaryLookupRequest {
+                        request_id: format!(
+                            "boundary/exact-identity/step{}/node{}",
+                            boundary.step_index, boundary.node_index
+                        ),
+                        model: sample_model_binding(),
+                        boundary,
+                        hidden_state: hidden_ref.clone(),
+                        engram_state_id: None,
+                        min_confidence_milli: 900,
+                        allowed_actions: vec![ShortpathAction::JumpToTerminal],
+                        created_at_us: 13,
+                    },
+                    14,
+                )
+                .unwrap();
+
+            assert_eq!(response.support.supported_action, ShortpathAction::Continue);
+            assert_eq!(response.artifact, None);
+            assert_eq!(
+                response.support.reason,
+                "no_verified_execution_artifact_support"
+            );
+        }
     }
 
     #[test]

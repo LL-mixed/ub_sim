@@ -387,6 +387,79 @@ class W4GuestRunSummaryTest(unittest.TestCase):
         self.assertNotIn("edges=2/1", result.stdout)
         self.assertIn("edge_bottleneck: max_edge_step=0 edge=1->2 node=nodeB", result.stdout)
 
+    def test_memory_service_summary_reports_actual_lookup_hits(self):
+        script = Path(__file__).resolve().parents[1] / "scripts" / "w4_guest_run_summary.py"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "nodeA_guest.log").write_text(
+                "\n".join(
+                    [
+                        (
+                            "[w4_guest] stage qwen3_w5_memory_boundary_decision "
+                            "local=nodeA step=1 layers=[0,5) next=node2 "
+                            "shortpath_id=runtime_service_catalog "
+                            "lookup_backend=staged_registry lookup_mode=staged_registry "
+                            "shortpath_support_id=boundary_registry "
+                            "shortpath_action=jump-to-terminal "
+                            "shortpath_artifact_kind=logits "
+                            "shortpath_artifact_checksum=none "
+                            "shortpath_artifact_ref_chars=0 "
+                            "shortpath_catalog_entries=112 "
+                            "prefetch_id=none prefetch_scope=none "
+                            "prefetch_target_step=none prefetch_artifact_ids=none "
+                            "prefetch_artifact_checksums=none "
+                            "prefetch_artifact_refs_chars=0 "
+                            "prefix_cache_id=none prefix_cache_action=none "
+                            "prefix_cache_artifact_checksum=none "
+                            "prefix_cache_artifact_ref_chars=0 "
+                            "source=lingqu_memory_service "
+                            "target=range_forward_boundary status=validated"
+                        ),
+                        (
+                            "[w4_guest] stage qwen3_memory_service_boundary_lookup_response "
+                            "node=1 step=1 layers=[0,5) position=4 "
+                            "action=jump-to-terminal artifact_ref=boundary_registry "
+                            "registry_index=7 registry_step=1 registry_position=4 "
+                            "registry_layers=[0,5) confidence=verified "
+                            "source=lingqu_memory_service "
+                            "target=boundary_controller mode=staged_registry "
+                            "backend=staged_registry status=hit"
+                        ),
+                        "[w4_guest] pass",
+                    ]
+                )
+                + "\n"
+            )
+
+            result = subprocess.run(
+                [sys.executable, str(script), str(run_dir), "1", "nodeA"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertIn(
+            "memory_service_summary: service=lingqu_memory_service records=2 "
+            "steps=1/1 "
+            "stages=qwen3_memory_service_boundary_lookup_response:1,"
+            "qwen3_w5_memory_boundary_decision:1 "
+            "shortpath_ids=runtime_service_catalog "
+            "support_ids=boundary_registry actions=jump-to-terminal "
+            "artifact_kinds=logits prefetch_ids=none prefix_cache_ids=none "
+            "lookup_hits=1 hit_registry_indexes=7 hit_registry_steps=1 "
+            "hit_positions=4",
+            result.stdout,
+        )
+        self.assertIn(
+            "memory_service_step: step=1 boundary_records=1 nodes=nodeA "
+            "shortpath_ids=runtime_service_catalog support_ids=boundary_registry "
+            "actions=jump-to-terminal prefetch_ids=none prefix_cache_ids=none "
+            "lookup_hits=1 hit_registry_indexes=7 hit_registry_steps=1 "
+            "hit_positions=4",
+            result.stdout,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
