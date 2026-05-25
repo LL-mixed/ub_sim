@@ -364,8 +364,10 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             guest_source,
         )
         self.assertIn("qwen3_w5_memory_shortpath_kv_lazy_resolve", guest_source)
-        self.assertIn("qwen3_range_kv_state_lazy_fallback", guest_source)
-        self.assertIn("reason=intermediate_step_kv_absent", guest_source)
+        self.assertNotIn("qwen3_range_kv_state_lazy_fallback", guest_source)
+        self.assertNotIn("reason=intermediate_step_kv_absent", guest_source)
+        self.assertIn("mode=exact_previous_step", guest_source)
+        self.assertIn("shortpath exact kv materialize failed", guest_source)
         self.assertIn("reason=not_lazy_work_item_resolve", guest_source)
         self.assertIn("shortpath_worker_stateless", guest_source)
         self.assertIn("SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR", cli_source)
@@ -378,7 +380,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             guest_source,
         )
         self.assertIn("w4_db_obmm_service_v0_try_resolve_range_kv_state_view", guest_source)
-        self.assertIn("while (candidate > 0U)", guest_source)
+        self.assertNotIn("while (candidate > 0U)", guest_source)
         self.assertIn("qwen3_decode_round_idle_timing", guest_source)
         self.assertNotIn("qwen3_w5_memory_shortpath_downstream_skip", guest_source)
         self.assertNotIn("qwen3_w5_memory_terminal_publish_skip", guest_source)

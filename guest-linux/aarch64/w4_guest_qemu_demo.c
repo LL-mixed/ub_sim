@@ -10572,82 +10572,56 @@ decode_round_start:
                         &previous_kv_view);
                 if (previous_kv_state > 0 &&
                     qwen3_memory_decision_config.shortpath_execute) {
-                    uint64_t candidate = guest_decode_step;
-
-                    while (candidate > 0U) {
-                        uint64_t candidate_step = candidate - 1U;
-                        int kv_materialize_state;
-
-                        kv_materialize_state =
-                            qwen3_memory_shortpath_materialize_local_kv_state(
-                                &db_service,
-                                &qwen3_memory_decision_config,
-                                dispatch_node,
-                                cluster_node_count,
-                                layer_start,
-                                layer_end,
+                    int kv_materialize_state =
+                        qwen3_memory_shortpath_materialize_local_kv_state(
+                            &db_service,
+                            &qwen3_memory_decision_config,
+                            dispatch_node,
+                            cluster_node_count,
+                            layer_start,
+                            layer_end,
+                            guest_decode_step,
+                            requested_kv_source_step);
+                    if (kv_materialize_state < 0) {
+                        fprintf(stderr,
+                                "[w4_guest] fail qwen3 shortpath exact kv materialize failed node=%u consumer_step=%" PRIu64 " kv_step=%" PRIu64 "\n",
+                                dispatch_node + 1U,
                                 guest_decode_step,
-                                candidate_step);
-                        if (kv_materialize_state < 0) {
-                            fprintf(stderr,
-                                    "[w4_guest] fail qwen3 shortpath lazy kv materialize failed node=%u consumer_step=%" PRIu64 " kv_step=%" PRIu64 "\n",
-                                    dispatch_node + 1U,
-                                    guest_decode_step,
-                                    candidate_step);
-                            goto out;
-                        }
-                        memset(&previous_kv_view, 0, sizeof(previous_kv_view));
-                        previous_kv_state =
-                            w4_db_obmm_service_v0_try_resolve_range_kv_state_view(
-                                &db_service,
-                                dispatch_node,
-                                cluster_node_count,
-                                candidate_step,
-                                &previous_kv_view);
-                        if (previous_kv_state < 0) {
-                            goto out;
-                        }
-                        if (previous_kv_state == 0) {
-                            kv_source_step = candidate_step;
-                            if (kv_materialize_state > 0) {
-                                printf("[w4_guest] stage qwen3_w5_memory_shortpath_kv_lazy_resolve"
-                                       " node=%u consumer_step=%" PRIu64
-                                       " kv_step=%" PRIu64
-                                       " layers=[%u,%u)"
-                                       " source=lingqu_memory_service"
-                                       " target=work_item_kv_resolve status=ok\n",
-                                       dispatch_node + 1U,
-                                       guest_decode_step,
-                                       kv_source_step,
-                                       layer_start,
-                                       layer_end);
-                            } else if (kv_source_step != requested_kv_source_step) {
-                                printf("[w4_guest] stage qwen3_range_kv_state_lazy_fallback"
-                                       " node=%u consumer_step=%" PRIu64
-                                       " requested_kv_step=%" PRIu64
-                                       " resolved_kv_step=%" PRIu64
-                                       " layers=[%u,%u)"
-                                       " reason=intermediate_step_kv_absent"
-                                       " source=local_kv_state"
-                                       " target=work_item_kv_resolve"
-                                       " materialize=none status=ok\n",
-                                       dispatch_node + 1U,
-                                       guest_decode_step,
-                                       requested_kv_source_step,
-                                       kv_source_step,
-                                       layer_start,
-                                       layer_end);
-                            }
-                            break;
-                        }
-                        candidate--;
+                                requested_kv_source_step);
+                        goto out;
+                    }
+                    memset(&previous_kv_view, 0, sizeof(previous_kv_view));
+                    previous_kv_state =
+                        w4_db_obmm_service_v0_try_resolve_range_kv_state_view(
+                            &db_service,
+                            dispatch_node,
+                            cluster_node_count,
+                            requested_kv_source_step,
+                            &previous_kv_view);
+                    if (previous_kv_state < 0) {
+                        goto out;
+                    }
+                    if (previous_kv_state == 0 && kv_materialize_state > 0) {
+                        printf("[w4_guest] stage qwen3_w5_memory_shortpath_kv_lazy_resolve"
+                               " node=%u consumer_step=%" PRIu64
+                               " kv_step=%" PRIu64
+                               " layers=[%u,%u)"
+                               " mode=exact_previous_step"
+                               " source=lingqu_memory_service"
+                               " target=work_item_kv_resolve status=ok\n",
+                               dispatch_node + 1U,
+                               guest_decode_step,
+                               requested_kv_source_step,
+                               layer_start,
+                               layer_end);
                     }
                 }
                 if (previous_kv_state != 0) {
                     fprintf(stderr,
-                            "[w4_guest] fail qwen3 previous range kv state resolve failed node=%u step=%" PRIu64 "\n",
+                            "[w4_guest] fail qwen3 previous range kv state resolve failed node=%u step=%" PRIu64 " previous_step=%" PRIu64 " mode=exact_previous_step\n",
                             dispatch_node + 1U,
-                            guest_decode_step);
+                            guest_decode_step,
+                            requested_kv_source_step);
                     goto out;
                 }
                 kv_resolved_ms = monotonic_ms();
