@@ -4449,6 +4449,8 @@ fn load_w5_memory_decisions_from_store(
         shortpath_entries.push(W5MemoryShortpathEntry { decision, artifact });
     }
     let mut shortpath_kv_artifacts = Vec::new();
+    let mut shortpath_kv_by_target =
+        std::collections::BTreeMap::<(u64, u64, u32, u32, u32), (String, u64)>::new();
     for entry in &shortpath_entries {
         let Some(shortpath_artifact) = entry.artifact.as_ref() else {
             continue;
@@ -4474,6 +4476,38 @@ fn load_w5_memory_decisions_from_store(
                 kv_artifact,
                 "shortpath kv materialization",
             )?;
+            let identity = (
+                kv_artifact.producer_boundary.step_index,
+                producer_position,
+                kv_artifact.producer_boundary.node_index,
+                kv_artifact.producer_boundary.layer_start,
+                kv_artifact.producer_boundary.layer_end,
+            );
+            if let Some((existing_artifact_id, existing_checksum)) =
+                shortpath_kv_by_target.get(&identity)
+            {
+                if existing_artifact_id != &kv_artifact.artifact_id
+                    || *existing_checksum != kv_artifact.checksum
+                {
+                    anyhow::bail!(
+                        "ambiguous shortpath KV artifacts for step={} position={} target_node={} layers=[{},{}) existing={} checksum={:#x} duplicate={} checksum={:#x}",
+                        identity.0,
+                        identity.1,
+                        identity.2,
+                        identity.3,
+                        identity.4,
+                        existing_artifact_id,
+                        existing_checksum,
+                        kv_artifact.artifact_id,
+                        kv_artifact.checksum
+                    );
+                }
+                continue;
+            }
+            shortpath_kv_by_target.insert(
+                identity,
+                (kv_artifact.artifact_id.clone(), kv_artifact.checksum),
+            );
             shortpath_kv_artifacts.push(W5MemoryShortpathKvArtifact {
                 step_index: shortpath_artifact.producer_boundary.step_index,
                 producer_position,
@@ -5226,18 +5260,16 @@ fn validate_w5_shortpath_downstream_kv_bundle(
         let found = bundle.shortpath_kv_artifacts.iter().any(|kv| {
             kv.step_index == artifact.producer_boundary.step_index
                 && kv.producer_position == producer_position
-                && kv.producer_layer_end == artifact.producer_boundary.layer_end
                 && kv.target_node_index == target_node
                 && kv.target_layer_start == target_layer_start
                 && kv.target_layer_end == target_layer_end
         });
         if !found {
             anyhow::bail!(
-                "--memory-shortpath-execute requires downstream KV artifact for jump-to-terminal decision {} artifact {} step={} producer_layer_end={} target_node={} target_layers=[{},{})",
+                "--memory-shortpath-execute requires downstream KV artifact for jump-to-terminal decision {} artifact {} step={} target_node={} target_layers=[{},{})",
                 entry.decision.decision_id,
                 artifact.artifact_id,
                 artifact.producer_boundary.step_index,
-                artifact.producer_boundary.layer_end,
                 target_node,
                 target_layer_start,
                 target_layer_end
@@ -5509,8 +5541,6 @@ fn publish_w5_memory_decision_artifact_refs(
         &object_service,
     )?;
     save_lingqu_memory_durable_store(&config.store_path, &object_durable_store)?;
-    let snapshot_path = export_w5_object_service_snapshot(&config.registry_dir, &object_service)?;
-
     Ok(W5MemoryDecisionArtifactPublication {
         shortpath_ref,
         shortpath_refs,
@@ -5521,7 +5551,7 @@ fn publish_w5_memory_decision_artifact_refs(
         prefetch_refs,
         prefix_cache_ref,
         object_registry_dir: config.registry_dir.clone(),
-        object_service_snapshot_path: Some(snapshot_path),
+        object_service_snapshot_path: Some(config.object_store_path.clone()),
     })
 }
 
@@ -11430,11 +11460,6 @@ mod tests {
                 make_kv(4, 6, 19, 22),
                 make_kv(4, 7, 22, 25),
                 make_kv(4, 8, 25, 28),
-                make_kv(16, 5, 16, 19),
-                make_kv(16, 6, 19, 22),
-                make_kv(16, 7, 22, 25),
-                make_kv(16, 8, 25, 28),
-                make_kv(25, 8, 25, 28),
             ],
             online_boundary_lookup: false,
             prefetch: None,
@@ -13027,14 +13052,16 @@ stage qwen3_range_forward_runtime_output_publish node=2
             "artifact/kv/step4/node4"
         );
         let bootstrap_store = root.join("bootstrap-store.json");
+        let object_store = root.join("object-store.json");
+        let registry_dir = root.join("qwen3-object-registry");
         save_lingqu_memory_durable_store(&bootstrap_store, &LingquMemoryDurableStore::new())
             .expect("write separate bootstrap store");
         let publication = publish_w5_memory_decision_artifact_refs(
             &W5MemoryBootstrapConfig {
                 store_path: bootstrap_store.clone(),
-                object_store_path: root.join("unused-object-store.json"),
+                object_store_path: object_store.clone(),
                 engram_state_path: root.join("unused-engram-state.json"),
-                registry_dir: root.join("qwen3-object-registry"),
+                registry_dir: registry_dir.clone(),
                 owner_entity: 1,
                 producer_entity: 2,
             },
@@ -13046,29 +13073,29 @@ stage qwen3_range_forward_runtime_output_publish node=2
             .object_service_snapshot_path
             .as_ref()
             .expect("decision artifact object service snapshot");
+        assert_eq!(snapshot_path, &object_store);
         assert!(snapshot_path.exists());
         assert!(w5_object_service_payload_index_path(snapshot_path).exists());
-        let publication_entries = fs::read_dir(root.join("qwen3-object-registry"))
-            .expect("read object service export dir")
-            .map(|entry| {
-                entry
-                    .expect("object service export entry")
-                    .file_name()
-                    .to_string_lossy()
-                    .into_owned()
+        let publication_entries = fs::read_dir(&registry_dir)
+            .map(|entries| {
+                entries
+                    .map(|entry| {
+                        entry
+                            .expect("object service export entry")
+                            .file_name()
+                            .to_string_lossy()
+                            .into_owned()
+                    })
+                    .collect::<Vec<_>>()
             })
-            .collect::<Vec<_>>();
-        assert!(publication_entries
-            .iter()
-            .any(|entry| entry == "lingqu_object_service_snapshot.json"));
-        assert!(publication_entries
-            .iter()
-            .any(|entry| entry == "lingqu_object_service_snapshot.bin"));
+            .unwrap_or_default();
         assert!(
-            publication_entries
-                .iter()
-                .all(|entry| !entry.starts_with("kind")),
-            "Object Service publication must not create qwen registry payload files: {publication_entries:?}"
+            publication_entries.iter().all(|entry| {
+                entry != "lingqu_object_service_snapshot.json"
+                    && entry != "lingqu_object_service_snapshot.bin"
+                    && !entry.starts_with("kind")
+            }),
+            "artifact publication must not duplicate Object Service snapshots in the registry dir: {publication_entries:?}"
         );
         assert_eq!(
             publication

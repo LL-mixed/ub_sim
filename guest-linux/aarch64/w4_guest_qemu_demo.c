@@ -7399,6 +7399,7 @@ qwen3_memory_shortpath_kv_entry_for_downstream_node(
     if (!config || config->shortpath_kv_stream_count == 0) {
         return NULL;
     }
+    (void)producer_layer_end;
     for (uint64_t i = 0; i < config->shortpath_kv_stream_count; ++i) {
         const struct w4_qwen3_shortpath_kv_stream_entry *entry =
             &config->shortpath_kv_stream_entries[i];
@@ -7406,8 +7407,7 @@ qwen3_memory_shortpath_kv_entry_for_downstream_node(
         if (entry->valid && entry->step_index == decode_step &&
             entry->target_node == target_node + 1U &&
             entry->target_layer_start == target_layer_start &&
-            entry->target_layer_end == target_layer_end &&
-            entry->producer_layer_end == producer_layer_end) {
+            entry->target_layer_end == target_layer_end) {
             return entry;
         }
     }
