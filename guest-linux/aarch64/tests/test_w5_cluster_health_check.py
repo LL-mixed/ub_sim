@@ -213,6 +213,37 @@ class W5ClusterHealthCheckTest(unittest.TestCase):
             ["200 /Volumes/repos/ub_sim/vendor/qemu/build/qemu-system-aarch64 -machine virt"],
         )
 
+    def test_fails_when_w5_pid_file_residue_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            logs_dir = Path(tmp) / "logs"
+            out_dir.mkdir()
+            logs_dir.mkdir()
+            reusable = "2026-05-26_00-29-50_w5_qwen3_14b_engram_decode_25060"
+            latest = "2026-05-26_03-14-03_w5_qwen3_14b_engram_decode_32556"
+            write_pass_run(out_dir, logs_dir, reusable, reusable=True)
+            write_pass_run(out_dir, logs_dir, latest)
+            (out_dir / f"ub_nodeA.headless.{latest}.pid").write_text("12345\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--out-dir",
+                    str(out_dir),
+                    "--logs-dir",
+                    str(logs_dir),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("qemu_pid_residue: count=1", result.stdout)
+        self.assertIn(f"qemu_pid_residue_line: run_id={latest} pid=12345", result.stdout)
+        self.assertIn("issue: qemu pid-file residue detected count=1", result.stdout)
+
     def test_qemu_check_reports_unavailable_when_pgrep_and_ps_are_blocked(self):
         responses = [
             subprocess.CompletedProcess(

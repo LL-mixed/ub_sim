@@ -42,6 +42,7 @@ def write_run(out_dir, logs_dir, run_id, reusable=False):
     (registry / "w5_memory_shortpath_stream.txt").write_text("stream", encoding="utf-8")
     (out_dir / f"headless_eight_node_env.{run_id}.sh").write_text("env", encoding="utf-8")
     (out_dir / f"headless_eight_node_cleanup.{run_id}.sh").write_text("cleanup", encoding="utf-8")
+    (out_dir / f"ub_nodeA.headless.{run_id}.pid").write_text("12345\n", encoding="utf-8")
     (out_dir / f"initramfs.{run_id}").mkdir()
     (out_dir / f"initramfs.{run_id}" / "runner.sh").write_text("runner", encoding="utf-8")
     (out_dir / f"initramfs.{run_id}.cpio.gz").write_bytes(b"initramfs")
@@ -90,6 +91,10 @@ class W5ArtifactPruneTest(unittest.TestCase):
         )
         self.assertIn(
             "artifact: action=dry-run label=initramfs_image",
+            result.stdout,
+        )
+        self.assertIn(
+            "artifact: action=dry-run label=headless_pid",
             result.stdout,
         )
         self.assertIn("w5_artifact_prune: mode=dry-run runs=3 profiles=all prune_candidates=1", result.stdout)
@@ -172,6 +177,7 @@ class W5ArtifactPruneTest(unittest.TestCase):
             self.assertFalse((logs_dir / f"{older}_headless8").exists())
             self.assertFalse((out_dir / f"initramfs.{older}").exists())
             self.assertFalse((out_dir / f"initramfs.{older}.cpio.gz").exists())
+            self.assertFalse((out_dir / f"ub_nodeA.headless.{older}.pid").exists())
 
         self.assertIn("w5_artifact_prune: mode=delete runs=2 profiles=all prune_candidates=1", result.stdout)
 
@@ -205,6 +211,35 @@ class W5ArtifactPruneTest(unittest.TestCase):
         self.assertIn(f"run_id={run_id}", result.stdout)
         self.assertIn("artifact: action=dry-run label=initramfs_dir", result.stdout)
         self.assertIn("artifact: action=dry-run label=initramfs_image", result.stdout)
+        self.assertIn("w5_artifact_prune: mode=dry-run runs=1 profiles=all prune_candidates=1", result.stdout)
+
+    def test_prunes_orphan_headless_pid_without_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            logs_dir = Path(tmp) / "logs"
+            out_dir.mkdir()
+            logs_dir.mkdir()
+            run_id = "2026-05-25_09-41-09_w5_qwen3_14b_decode_31527"
+            (out_dir / f"ub_nodeA.headless.{run_id}.pid").write_text("12345\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--out-dir",
+                    str(out_dir),
+                    "--logs-dir",
+                    str(logs_dir),
+                    "--keep-latest",
+                    "0",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertIn(f"run_id={run_id}", result.stdout)
+        self.assertIn("artifact: action=dry-run label=headless_pid", result.stdout)
         self.assertIn("w5_artifact_prune: mode=dry-run runs=1 profiles=all prune_candidates=1", result.stdout)
 
 

@@ -8,8 +8,18 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from w5_artifact_prune import collect_runs, choose_actions, format_bytes  # noqa: E402
+from w5_artifact_prune import collect_runs, choose_actions, format_bytes, infer_profile  # noqa: E402
 from w5_inference_run_report import build_report  # noqa: E402
+
+
+def run_id_from_headless_pid_file(path):
+    prefix = "ub_"
+    marker = ".headless."
+    suffix = ".pid"
+    name = path.name
+    if not name.startswith(prefix) or marker not in name or not name.endswith(suffix):
+        return ""
+    return name.split(marker, 1)[1][: -len(suffix)]
 
 
 def latest_summary_for_profile(out_dir, profile):
@@ -27,6 +37,20 @@ def latest_summary_for_profile(out_dir, profile):
 
 def compact_reason(text):
     return "; ".join(line.strip() for line in text.splitlines() if line.strip())
+
+
+def qemu_pid_file_residue(out_dir, profile):
+    residues = []
+    for path in sorted(out_dir.glob("ub_node*.headless.*_w5_*.pid")):
+        run_id = run_id_from_headless_pid_file(path)
+        if not run_id or infer_profile(run_id) != profile:
+            continue
+        try:
+            pid = path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError as error:
+            pid = f"unreadable:{type(error).__name__}"
+        residues.append(f"run_id={run_id} pid={pid or 'empty'} path={path}")
+    return residues
 
 
 def qemu_processes():
@@ -100,7 +124,12 @@ def main(argv):
     parser.add_argument(
         "--require-qemu-check",
         action="store_true",
-        help="Fail if the host QEMU process check is unavailable.",
+        help="Fail if the optional host QEMU process check is unavailable.",
+    )
+    parser.add_argument(
+        "--process-qemu-check",
+        action="store_true",
+        help="Also scan host processes for qemu-system-aarch64 residue.",
     )
     parser.add_argument(
         "--max-prune-candidates",
@@ -171,14 +200,19 @@ def main(argv):
         )
 
     qemu_unavailable = ""
+    qemu_lines = []
     if args.skip_qemu_check:
-        qemu_lines = []
+        qemu_pid_residue = []
     else:
-        qemu_lines, qemu_unavailable = qemu_processes()
-    if qemu_lines:
-        issues.append(f"qemu residue detected count={len(qemu_lines)}")
-    if qemu_unavailable and args.require_qemu_check:
-        issues.append(f"qemu residue check unavailable: {qemu_unavailable}")
+        qemu_pid_residue = qemu_pid_file_residue(args.out_dir, args.profile)
+        if qemu_pid_residue:
+            issues.append(f"qemu pid-file residue detected count={len(qemu_pid_residue)}")
+        if args.process_qemu_check or args.require_qemu_check:
+            qemu_lines, qemu_unavailable = qemu_processes()
+            if qemu_lines:
+                issues.append(f"qemu process residue detected count={len(qemu_lines)}")
+            if qemu_unavailable and args.require_qemu_check:
+                issues.append(f"qemu process check unavailable: {qemu_unavailable}")
 
     print(
         "latest_summary: "
@@ -209,12 +243,16 @@ def main(argv):
         f"prune_candidates={prune_candidates} "
         f"prune_bytes={prune_bytes} prune_size={format_bytes(prune_bytes)}"
     )
-    if qemu_unavailable:
-        print(f"qemu_residue: unavailable reason={qemu_unavailable}")
-    else:
-        print(f"qemu_residue: count={len(qemu_lines)}")
+    print(f"qemu_pid_residue: count={len(qemu_pid_residue)}")
+    for line in qemu_pid_residue:
+        print(f"qemu_pid_residue_line: {line}")
+    if args.process_qemu_check or args.require_qemu_check:
+        if qemu_unavailable:
+            print(f"qemu_process_residue: unavailable reason={qemu_unavailable}")
+        else:
+            print(f"qemu_process_residue: count={len(qemu_lines)}")
     for line in qemu_lines:
-        print(f"qemu_residue_line: {line}")
+        print(f"qemu_process_residue_line: {line}")
     for issue in issues:
         print(f"issue: {issue}")
     print(

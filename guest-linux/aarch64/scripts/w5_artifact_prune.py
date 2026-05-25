@@ -63,6 +63,15 @@ def infer_profile(run_id):
     return match.group("profile") if match else "unknown"
 
 
+def run_id_from_headless_pid_file(path):
+    marker = ".headless."
+    suffix = ".pid"
+    name = path.name
+    if not name.startswith("ub_node") or marker not in name or not name.endswith(suffix):
+        return ""
+    return name.split(marker, 1)[1][: -len(suffix)]
+
+
 def summary_has_reusable_boundary_coverage(summary_path):
     try:
         text = summary_path.read_text(encoding="utf-8", errors="replace")
@@ -95,6 +104,9 @@ def collect_artifacts(out_dir, logs_dir, run_id, summary_path):
     for label, path in candidates:
         if path.exists():
             artifacts.append(Artifact(label=label, path=path, bytes=tree_size(path)))
+    for path in sorted(out_dir.glob(f"ub_node*.headless.{run_id}.pid")):
+        if path.exists():
+            artifacts.append(Artifact(label="headless_pid", path=path, bytes=tree_size(path)))
     return artifacts
 
 
@@ -126,6 +138,10 @@ def run_ids_from_artifacts(out_dir, logs_dir):
         name = path.name
         if name.endswith("_headless8"):
             run_ids.add(name[: -len("_headless8")])
+    for path in out_dir.glob("ub_node*.headless.*_w5_*.pid"):
+        run_id = run_id_from_headless_pid_file(path)
+        if run_id:
+            run_ids.add(run_id)
     return run_ids
 
 
