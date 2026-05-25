@@ -73,7 +73,19 @@ def engram_timing(node_id, node_index, step):
         f"history_state_wait_ms={8 if node_index in (1, 8) else 0} "
         f"qwen3_range_publish_ms={node_index} "
         f"qwen3_range_input_wait_ms={node_index * 10} "
-        "status=ok"
+        "status=ok work_item=range_or_shortpath"
+    )
+
+
+def idle_engram_timing(node_id, node_index, step, terminal_wait_ms):
+    return (
+        "[w4_guest] stage qwen3_engram_timing "
+        f"local={node_id} step={step} node={node_index} owner=node8 "
+        "candidate_publish_ms=0 candidate_wait_ms=0 policy_select_ms=0 "
+        "decision_publish_ms=0 selected_wait_ms=0 selected_writeback_ms=0 "
+        "history_state_wait_ms=0 qwen3_range_publish_ms=0 "
+        "qwen3_range_input_wait_ms=0 status=idle work_item=none "
+        f"terminal_commit_wait_ms={terminal_wait_ms}"
     )
 
 
@@ -263,6 +275,7 @@ class W4GuestRunSummaryTest(unittest.TestCase):
             "max_qwen3_range_input_wait_ms=80 bottleneck=range_pipeline bottleneck_ms=88",
             result.stdout,
         )
+        self.assertIn("bottleneck_ms=88 idle_nodes=0", result.stdout)
         self.assertIn(
             "engram_bottleneck: dominant=range_pipeline dominant_ms=88 "
             "cpu_policy_ms=4 object_transport_ms=39 range_pipeline_ms=88",
@@ -273,6 +286,7 @@ class W4GuestRunSummaryTest(unittest.TestCase):
             "candidate_wait_ms=3 policy_select_ms=4 decision_publish_ms=5",
             result.stdout,
         )
+        self.assertIn("max_qwen3_range_input_wait_ms=80 idle_steps=0", result.stdout)
         self.assertIn(
             "engram_context_summary: records=2 steps=2/2 modes=cpu-reference "
             "max_latency_ms=2 max_latency_step=1 max_latency_node=nodeH "
@@ -457,6 +471,64 @@ class W4GuestRunSummaryTest(unittest.TestCase):
             "actions=jump-to-terminal prefetch_ids=none prefix_cache_ids=none "
             "lookup_hits=1 hit_registry_indexes=7 hit_registry_steps=1 "
             "hit_positions=4",
+            result.stdout,
+        )
+
+    def test_idle_engram_timing_does_not_count_terminal_wait_as_range_pipeline(self):
+        script = Path(__file__).resolve().parents[1] / "scripts" / "w4_guest_run_summary.py"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            for index, node_id in enumerate(NODE_IDS, start=1):
+                if index == 1:
+                    lines = [
+                        "[w4_guest] stage qwen3_engram_timing "
+                        "local=nodeA step=0 node=1 owner=node8 "
+                        "candidate_publish_ms=0 candidate_wait_ms=0 policy_select_ms=1 "
+                        "decision_publish_ms=0 selected_wait_ms=0 selected_writeback_ms=1 "
+                        "history_state_wait_ms=0 qwen3_range_publish_ms=7 "
+                        "qwen3_range_input_wait_ms=0 status=ok work_item=range_or_shortpath",
+                        "[w4_guest] pass",
+                    ]
+                else:
+                    lines = [
+                        (
+                            "[w4_guest] stage qwen3_decode_round_idle_timing "
+                            f"local={node_id} step=0 node={index} terminal_observed=1 "
+                            "input_wait_ms=5000 round_done_ms=0 "
+                            "source=decode_round_scheduler status=idle"
+                        ),
+                        idle_engram_timing(node_id, index, 0, 5000),
+                        "[w4_guest] pass",
+                    ]
+                (run_dir / f"{node_id}_guest.log").write_text("\n".join(lines) + "\n")
+
+            result = subprocess.run(
+                [sys.executable, str(script), str(run_dir), "1", *NODE_IDS],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertIn(
+            "engram_timing_step: step=0 nodes=8/8 candidate_publish_ms=0 "
+            "candidate_wait_ms=0 policy_select_ms=1 decision_publish_ms=0 "
+            "selected_wait_ms=0 selected_writeback_ms=1 history_state_wait_ms=0 "
+            "engram_total_ms=2 max_qwen3_range_publish_ms=7 "
+            "max_qwen3_range_input_wait_ms=0 bottleneck=range_pipeline bottleneck_ms=7 "
+            "idle_nodes=7",
+            result.stdout,
+        )
+        self.assertIn(
+            "engram_bottleneck: dominant=range_pipeline dominant_ms=7 "
+            "cpu_policy_ms=1 object_transport_ms=1 range_pipeline_ms=7",
+            result.stdout,
+        )
+        self.assertIn(
+            "engram_timing_node: node=nodeB steps=1/1 candidate_publish_ms=0 "
+            "candidate_wait_ms=0 policy_select_ms=0 decision_publish_ms=0 "
+            "selected_wait_ms=0 selected_writeback_ms=0 history_state_wait_ms=0 "
+            "max_qwen3_range_input_wait_ms=0 idle_steps=1",
             result.stdout,
         )
 

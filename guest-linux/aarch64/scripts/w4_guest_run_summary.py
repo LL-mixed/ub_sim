@@ -282,6 +282,8 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                             "step": step,
                             "local": fields.get("local", node_id),
                             "owner": fields.get("owner", ""),
+                            "status": fields.get("status", ""),
+                            "work_item": fields.get("work_item", "range_forward"),
                         }
                         for key in (
                             "node",
@@ -816,6 +818,7 @@ def emit_engram_timing_summary(engram_timings, expected_steps, node_ids, output)
 
     for step in sorted(timings_by_step):
         records = timings_by_step[step]
+        idle_records = [record for record in records if record.get("work_item") == "none"]
         totals = {key: sum(record[key] for record in records) for key in timing_keys}
         max_range_input = max(record["qwen3_range_input_wait_ms"] for record in records)
         max_range_publish = max(record["qwen3_range_publish_ms"] for record in records)
@@ -844,7 +847,8 @@ def emit_engram_timing_summary(engram_timings, expected_steps, node_ids, output)
             f"max_qwen3_range_publish_ms={max_range_publish} "
             f"max_qwen3_range_input_wait_ms={max_range_input} "
             f"bottleneck={bottleneck_name} "
-            f"bottleneck_ms={bottleneck_ms}"
+            f"bottleneck_ms={bottleneck_ms} "
+            f"idle_nodes={len(idle_records)}"
         )
 
     global_totals = {key: sum(record[key] for record in engram_timings) for key in timing_keys}
@@ -903,6 +907,7 @@ def emit_engram_timing_summary(engram_timings, expected_steps, node_ids, output)
         if not records:
             output.append(f"engram_timing_node: node={node_id} steps=0/{expected_steps} status=missing")
             continue
+        idle_steps = sum(1 for record in records if record.get("work_item") == "none")
         output.append(
             "engram_timing_node: "
             f"node={node_id} "
@@ -914,7 +919,8 @@ def emit_engram_timing_summary(engram_timings, expected_steps, node_ids, output)
             f"selected_wait_ms={sum(record['selected_wait_ms'] for record in records)} "
             f"selected_writeback_ms={sum(record['selected_writeback_ms'] for record in records)} "
             f"history_state_wait_ms={sum(record['history_state_wait_ms'] for record in records)} "
-            f"max_qwen3_range_input_wait_ms={max(record['qwen3_range_input_wait_ms'] for record in records)}"
+            f"max_qwen3_range_input_wait_ms={max(record['qwen3_range_input_wait_ms'] for record in records)} "
+            f"idle_steps={idle_steps}"
         )
 
 

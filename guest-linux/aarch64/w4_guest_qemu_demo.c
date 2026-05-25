@@ -11504,6 +11504,13 @@ qwen3_after_service_coverage:
                    round_done_ms);
         }
         if (qwen3_engram_config.enabled) {
+            const bool engram_range_work_item =
+                qwen3_work_item_materialized || qwen3_shortpath_terminal_committed;
+            const uint64_t engram_range_input_wait_ms =
+                engram_range_work_item ? input_wait_ms : 0ULL;
+            const uint64_t engram_range_publish_ms =
+                engram_range_work_item ? range_publish_ms : 0ULL;
+
             printf("[w4_guest] stage qwen3_engram_timing local=%s step=%" PRIu64
                    " node=%u owner=node%u"
                    " candidate_publish_ms=%" PRIu64
@@ -11515,7 +11522,7 @@ qwen3_after_service_coverage:
                    " history_state_wait_ms=%" PRIu64
                    " qwen3_range_publish_ms=%" PRIu64
                    " qwen3_range_input_wait_ms=%" PRIu64
-                   " status=ok\n",
+                   " status=%s work_item=%s\n",
                    role,
                    guest_decode_step,
                    round_dispatch_node == UINT32_MAX ? 0U : round_dispatch_node + 1U,
@@ -11527,8 +11534,10 @@ qwen3_after_service_coverage:
                    engram_selected_wait_ms,
                    engram_selected_writeback_ms,
                    engram_history_state_wait_ms,
-                   range_publish_ms,
-                   input_wait_ms);
+                   engram_range_publish_ms,
+                   engram_range_input_wait_ms,
+                   engram_range_work_item ? "ok" : "idle",
+                   engram_range_work_item ? "range_or_shortpath" : "none");
         }
     }
     printf("[w4_guest] pass\n");
