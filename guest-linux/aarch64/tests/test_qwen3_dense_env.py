@@ -440,6 +440,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("source \"$CONFIG_PATH\"", config_runner_text)
         self.assertIn("--steps N", config_runner_text)
         self.assertIn("STEPS_OVERRIDE", config_runner_text)
+        self.assertIn("SIM_QWEN3_GUEST_ENGRAM", config_runner_text)
         self.assertIn("fixed RUN_ID is disabled", config_runner_text)
         self.assertIn("SIM_W5_ALLOW_FIXED_RUN_ID", config_runner_text)
         self.assertIn("SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP", config_runner_text)
@@ -487,6 +488,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             [
                 "RUN_ID=test-run",
                 "SIM_UAPI_W5_PROFILE=qwen3_0_6b_decode",
+                "SIM_QWEN3_GUEST_ENGRAM=0",
                 "SIM_QWEN3_GUEST_DECODE_STEPS=3",
                 "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3",
                 "SIM_W5_MEMORY_SHORTPATH_EXECUTE=0",
@@ -495,6 +497,33 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "SIM_W5_MEMORY_OBSERVATION_STORE=/tmp/w5-memory-store.json",
             ],
         )
+
+    def test_w5_cluster_config_runner_prints_effective_engram_default(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        config_runner = script_dir / "run_w5_cluster_config.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "w5-engram.env"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
+                        "SIM_QWEN3_GUEST_DECODE_STEPS=2",
+                        "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3-14b",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(config_runner), "--print-env", str(config_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertIn("SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode", result.stdout)
+        self.assertIn("SIM_QWEN3_GUEST_ENGRAM=1", result.stdout)
 
     def test_w5_cluster_config_runner_rejects_fixed_run_id_for_real_runs(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
