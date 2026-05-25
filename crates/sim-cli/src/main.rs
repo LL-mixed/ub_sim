@@ -79,6 +79,7 @@ use sim_uapi::{
 };
 use sim_workloads::{run_host_vector_dispatch, run_minimal_workload};
 use std::env;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -9921,15 +9922,15 @@ mod tests {
         qwen3_guest_log_match_count, qwen3_guest_shortpath_summary_line,
         qwen3_guest_summary_file_from_script_output, qwen3_guest_terminal_candidate_records,
         qwen3_guest_terminal_text_lossy_from_tokenizer, qwen3_guest_terminal_tokens,
-        qwen3_guest_timing_summary, qwen3_guest_w5_pass_marker_present,
-        qwen3_object_registry_path_in_dir, qwen3_obmm_object_ref_for_payload,
-        qwen3_range_forward_args_from, qwen3_validate_engram_state_object_service_payload,
-        read_lingqu_memory_payload_ref, read_w5_u64,
-        record_w5_runtime_boundary_observations_from_summary, resolve_w5_inference_profile,
-        run_lingqu_durable_append_log_cli, run_lingqu_durable_batch_cli,
-        run_lingqu_durable_init_cli, run_lingqu_durable_list_cli, run_lingqu_durable_read_log_cli,
-        run_lingqu_durable_stat_cli, run_lingqu_durable_validate_cli,
-        run_lingqu_memory_boundary_lookup_cli,
+        qwen3_guest_timing_summary, qwen3_guest_trace_file_path,
+        qwen3_guest_w5_pass_marker_present, qwen3_object_registry_path_in_dir,
+        qwen3_obmm_object_ref_for_payload, qwen3_range_forward_args_from,
+        qwen3_validate_engram_state_object_service_payload, read_lingqu_memory_payload_ref,
+        read_w5_u64, record_w5_runtime_boundary_observations_from_summary,
+        resolve_w5_inference_profile, run_lingqu_durable_append_log_cli,
+        run_lingqu_durable_batch_cli, run_lingqu_durable_init_cli, run_lingqu_durable_list_cli,
+        run_lingqu_durable_read_log_cli, run_lingqu_durable_stat_cli,
+        run_lingqu_durable_validate_cli, run_lingqu_memory_boundary_lookup_cli,
         run_lingqu_memory_boundary_lookup_from_observation_cli,
         run_lingqu_memory_boundary_request_from_w5_summary_cli, run_lingqu_memory_build_index_cli,
         run_lingqu_memory_ingest_cli, run_lingqu_memory_list_artifact_access_cli,
@@ -9979,6 +9980,7 @@ mod tests {
         W5_TERMINAL_LOGITS_HEADER_BYTES, W5_TERMINAL_TOKEN_TEXT_HEADER_BYTES,
     };
     use std::env;
+    use std::ffi::OsString;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
@@ -10283,6 +10285,18 @@ mod tests {
         assert_eq!(args.sampler.temperature_milli, 800);
         assert_eq!(args.sampler.seed, 42);
         assert_eq!(args.engram, Qwen3EngramConfig::default());
+    }
+
+    #[test]
+    fn qwen3_guest_trace_file_prefers_runner_env_path() {
+        assert_eq!(
+            qwen3_guest_trace_file_path(Some(OsString::from("/tmp/w5-trace.latest")), 1234),
+            PathBuf::from("/tmp/w5-trace.latest")
+        );
+        assert_eq!(
+            qwen3_guest_trace_file_path(None, 1234),
+            env::temp_dir().join("qwen3_guest_decode_loop_1234.trace")
+        );
     }
 
     #[test]
@@ -16885,10 +16899,15 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         }
     }
     println!("  worker_path: 8-node W5 inference cluster OBMM object-service range forward");
-    let trace_file = env::temp_dir().join(format!(
-        "qwen3_guest_decode_loop_{}.trace",
-        std::process::id()
-    ));
+    let trace_file = qwen3_guest_trace_file_path(env::var_os("TRACE_FILE"), std::process::id());
+    if let Some(parent) = trace_file.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create qwen3 guest trace directory {}",
+                parent.display()
+            )
+        })?;
+    }
     let prompt_token_ids = args
         .prompt_token_ids
         .clone()
@@ -17483,6 +17502,12 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         }
     }
     Ok(())
+}
+
+fn qwen3_guest_trace_file_path(trace_file_env: Option<OsString>, process_id: u32) -> PathBuf {
+    trace_file_env.map(PathBuf::from).unwrap_or_else(|| {
+        env::temp_dir().join(format!("qwen3_guest_decode_loop_{process_id}.trace"))
+    })
 }
 
 fn qwen3_validate_guest_engram_state_registry(
