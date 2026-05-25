@@ -683,6 +683,13 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_W5_MEMORY_REUSE_RUN_ID", config_runner_text)
         self.assertIn("SIM_W5_MEMORY_REUSE_OUT_DIR", config_runner_text)
         self.assertIn("SIM_W5_MEMORY_DECISION_OBJECT_STORE", config_runner_text)
+        self.assertIn("--post-run-prune", config_runner_text)
+        self.assertIn("--post-run-health", config_runner_text)
+        self.assertIn("SIM_W5_POST_RUN_PRUNE", config_runner_text)
+        self.assertIn("SIM_W5_POST_RUN_HEALTH", config_runner_text)
+        self.assertIn("SIM_W5_ARTIFACT_KEEP_LATEST", config_runner_text)
+        self.assertIn("w5_artifact_prune.py", config_runner_text)
+        self.assertIn("w5_cluster_health_check.py", config_runner_text)
         self.assertIn("unset SIM_W5_MEMORY_REUSE_RUN_ID", config_runner_text)
         self.assertIn('exec "$SCRIPT_DIR/run_ub_eight_node_w5_inference_cluster.sh"', config_runner_text)
         self.assertIn("explicit obmm cluster runtime bootstrap", legacy_runner_text)
@@ -742,8 +749,48 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "SIM_W5_MEMORY_DECISION_STORE=/tmp/w5-decision-store.json",
                 "SIM_W5_MEMORY_DECISION_OBJECT_STORE=/tmp/w5-object-store.json",
                 "SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID=",
+                "SIM_W5_POST_RUN_PRUNE=",
+                "SIM_W5_POST_RUN_HEALTH=",
+                "SIM_W5_ARTIFACT_KEEP_LATEST=3",
+                "SIM_W5_HEALTH_MAX_PRUNE_CANDIDATES=0",
+                "SIM_W5_HEALTH_MAX_PRUNE_BYTES=0",
             ],
         )
+
+    def test_w5_cluster_config_runner_prints_post_run_maintenance_flags(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        config_runner = script_dir / "run_w5_cluster_config.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "w5.env"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
+                        "SIM_QWEN3_GUEST_DECODE_STEPS=2",
+                        "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3-14b",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [
+                    str(config_runner),
+                    "--print-env",
+                    "--post-run-prune",
+                    "--keep-latest",
+                    "4",
+                    str(config_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertIn("SIM_W5_POST_RUN_PRUNE=1", result.stdout)
+        self.assertIn("SIM_W5_POST_RUN_HEALTH=1", result.stdout)
+        self.assertIn("SIM_W5_ARTIFACT_KEEP_LATEST=4", result.stdout)
 
     def test_w5_cluster_config_runner_prints_effective_engram_default(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
@@ -1225,6 +1272,35 @@ class Qwen3DenseEnvTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 2)
         self.assertIn("--steps must be a positive integer: 0", result.stderr)
+
+    def test_w5_cluster_config_runner_rejects_invalid_keep_latest_override(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        config_runner = script_dir / "run_w5_cluster_config.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            weights_path = tmp_path / "qwen3"
+            weights_path.mkdir()
+            config_path = tmp_path / "w5.env"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
+                        "SIM_QWEN3_GUEST_DECODE_STEPS=2",
+                        f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(config_runner), "--validate-only", "--keep-latest", "bad", str(config_path)],
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--keep-latest must be a non-negative integer: bad", result.stderr)
 
 
 if __name__ == "__main__":

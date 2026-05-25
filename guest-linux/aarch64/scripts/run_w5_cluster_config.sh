@@ -8,7 +8,7 @@ source "$SCRIPT_DIR/w5_memory_reuse_common.sh"
 
 usage() {
   cat >&2 <<'USAGE'
-usage: run_w5_cluster_config.sh [--print-env] [--validate-only] [--steps N] [config.env]
+usage: run_w5_cluster_config.sh [--print-env] [--validate-only] [--post-run-prune] [--post-run-health] [--keep-latest N] [--steps N] [config.env]
 
 Loads a W5 inference cluster env file and then runs the stable W5 cluster
 entrypoint. This keeps approval prefixes stable: callers execute this script,
@@ -24,6 +24,7 @@ PRINT_ENV=0
 VALIDATE_ONLY=0
 CONFIG_PATH=""
 STEPS_OVERRIDE=""
+KEEP_LATEST_OVERRIDE=""
 
 while (( $# > 0 )); do
   case "$1" in
@@ -33,6 +34,28 @@ while (( $# > 0 )); do
       ;;
     --validate-only)
       VALIDATE_ONLY=1
+      shift
+      ;;
+    --post-run-prune)
+      export SIM_W5_POST_RUN_PRUNE=1
+      export SIM_W5_POST_RUN_HEALTH="${SIM_W5_POST_RUN_HEALTH:-1}"
+      shift
+      ;;
+    --post-run-health)
+      export SIM_W5_POST_RUN_HEALTH=1
+      shift
+      ;;
+    --keep-latest)
+      if (( $# < 2 )); then
+        echo "--keep-latest requires a value" >&2
+        usage
+        exit 2
+      fi
+      KEEP_LATEST_OVERRIDE="$2"
+      shift 2
+      ;;
+    --keep-latest=*)
+      KEEP_LATEST_OVERRIDE="${1#--keep-latest=}"
       shift
       ;;
     --steps)
@@ -97,6 +120,13 @@ if [[ -n "$STEPS_OVERRIDE" ]]; then
   fi
   export SIM_QWEN3_GUEST_DECODE_STEPS="$STEPS_OVERRIDE"
 fi
+if [[ -n "$KEEP_LATEST_OVERRIDE" ]]; then
+  if [[ ! "$KEEP_LATEST_OVERRIDE" =~ '^[0-9]+$' ]]; then
+    echo "--keep-latest must be a non-negative integer: $KEEP_LATEST_OVERRIDE" >&2
+    exit 2
+  fi
+  export SIM_W5_ARTIFACT_KEEP_LATEST="$KEEP_LATEST_OVERRIDE"
+fi
 
 case "${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" in
   qwen3_0_6b_engram_decode|qwen3_14b_engram_decode)
@@ -125,6 +155,9 @@ validate_w5_cluster_config() {
   local steps="${SIM_QWEN3_GUEST_DECODE_STEPS:-1}"
   local memory_runtime_lookup=0
   local memory_online_lookup=0
+  local keep_latest="${SIM_W5_ARTIFACT_KEEP_LATEST:-3}"
+  local max_prune_candidates="${SIM_W5_HEALTH_MAX_PRUNE_CANDIDATES:-0}"
+  local max_prune_bytes="${SIM_W5_HEALTH_MAX_PRUNE_BYTES:-0}"
 
   case "$profile" in
     qwen3_0_6b_decode|qwen3_14b_decode|qwen3_0_6b_engram_decode|qwen3_14b_engram_decode)
@@ -136,6 +169,18 @@ validate_w5_cluster_config() {
   esac
   if [[ ! "$steps" =~ '^[0-9]+$' || "$steps" == "0" ]]; then
     echo "SIM_QWEN3_GUEST_DECODE_STEPS must be a positive integer: $steps" >&2
+    return 2
+  fi
+  if [[ ! "$keep_latest" =~ '^[0-9]+$' ]]; then
+    echo "SIM_W5_ARTIFACT_KEEP_LATEST must be a non-negative integer: $keep_latest" >&2
+    return 2
+  fi
+  if [[ ! "$max_prune_candidates" =~ '^[0-9]+$' ]]; then
+    echo "SIM_W5_HEALTH_MAX_PRUNE_CANDIDATES must be a non-negative integer: $max_prune_candidates" >&2
+    return 2
+  fi
+  if [[ ! "$max_prune_bytes" =~ '^[0-9]+$' ]]; then
+    echo "SIM_W5_HEALTH_MAX_PRUNE_BYTES must be a non-negative integer: $max_prune_bytes" >&2
     return 2
   fi
   if [[ -n "${RUN_ID:-}" && "${SIM_W5_ALLOW_FIXED_RUN_ID:-0}" != "1" ]]; then
@@ -183,6 +228,30 @@ validate_w5_cluster_config() {
   return 0
 }
 
+run_post_run_maintenance() {
+  local profile="${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}"
+  local keep_latest="${SIM_W5_ARTIFACT_KEEP_LATEST:-3}"
+  local max_prune_candidates="${SIM_W5_HEALTH_MAX_PRUNE_CANDIDATES:-0}"
+  local max_prune_bytes="${SIM_W5_HEALTH_MAX_PRUNE_BYTES:-0}"
+
+  if bool_enabled "${SIM_W5_POST_RUN_PRUNE:-0}"; then
+    echo "[w5_cluster_config] post_run_prune=1 profile=$profile keep_latest=$keep_latest" >&2
+    "$SCRIPT_DIR/w5_artifact_prune.py" \
+      --profile "$profile" \
+      --keep-latest "$keep_latest" \
+      --summary-only \
+      --delete
+  fi
+  if bool_enabled "${SIM_W5_POST_RUN_HEALTH:-0}"; then
+    echo "[w5_cluster_config] post_run_health=1 profile=$profile keep_latest=$keep_latest" >&2
+    "$SCRIPT_DIR/w5_cluster_health_check.py" \
+      --profile "$profile" \
+      --keep-latest "$keep_latest" \
+      --max-prune-candidates "$max_prune_candidates" \
+      --max-prune-bytes "$max_prune_bytes"
+  fi
+}
+
 resolve_w5_memory_reuse_config_status=0
 w5_resolve_memory_reuse_config "$ROOT_DIR/out" "${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" "${SIM_QWEN3_GUEST_DECODE_STEPS:-1}" || resolve_w5_memory_reuse_config_status=$?
 if (( resolve_w5_memory_reuse_config_status != 0 )); then
@@ -206,6 +275,11 @@ if (( PRINT_ENV )); then
   printf 'SIM_W5_MEMORY_DECISION_STORE=%s\n' "${SIM_W5_MEMORY_DECISION_STORE:-}"
   printf 'SIM_W5_MEMORY_DECISION_OBJECT_STORE=%s\n' "${SIM_W5_MEMORY_DECISION_OBJECT_STORE:-}"
   printf 'SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID=%s\n' "${SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID:-}"
+  printf 'SIM_W5_POST_RUN_PRUNE=%s\n' "${SIM_W5_POST_RUN_PRUNE:-}"
+  printf 'SIM_W5_POST_RUN_HEALTH=%s\n' "${SIM_W5_POST_RUN_HEALTH:-}"
+  printf 'SIM_W5_ARTIFACT_KEEP_LATEST=%s\n' "${SIM_W5_ARTIFACT_KEEP_LATEST:-3}"
+  printf 'SIM_W5_HEALTH_MAX_PRUNE_CANDIDATES=%s\n' "${SIM_W5_HEALTH_MAX_PRUNE_CANDIDATES:-0}"
+  printf 'SIM_W5_HEALTH_MAX_PRUNE_BYTES=%s\n' "${SIM_W5_HEALTH_MAX_PRUNE_BYTES:-0}"
   exit 0
 fi
 
@@ -228,4 +302,9 @@ echo "[w5_cluster_config] config=$CONFIG_PATH profile=${SIM_UAPI_W5_PROFILE:-qwe
 if [[ -n "${SIM_W5_MEMORY_REUSE_RUN_ID:-}" ]]; then
   unset SIM_W5_MEMORY_REUSE_RUN_ID
 fi
-exec "$SCRIPT_DIR/run_ub_eight_node_w5_inference_cluster.sh"
+if bool_enabled "${SIM_W5_POST_RUN_PRUNE:-0}" || bool_enabled "${SIM_W5_POST_RUN_HEALTH:-0}"; then
+  "$SCRIPT_DIR/run_ub_eight_node_w5_inference_cluster.sh"
+  run_post_run_maintenance
+else
+  exec "$SCRIPT_DIR/run_ub_eight_node_w5_inference_cluster.sh"
+fi
