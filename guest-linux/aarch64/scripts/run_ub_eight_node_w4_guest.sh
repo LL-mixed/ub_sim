@@ -768,6 +768,33 @@ w5_shortpath_execute_enabled() {
   esac
 }
 
+w5_shortpath_execution_armed() {
+  if ! w5_shortpath_execute_enabled; then
+    return 1
+  fi
+  if [[ "${SIM_W5_MEMORY_SHORTPATH_ACTION:-}" != "jump-to-terminal" ]]; then
+    return 1
+  fi
+  if [[ -n "${SIM_W5_MEMORY_BOUNDARY_REGISTRY_REF:-}" ||
+        -n "${SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF:-}" ||
+        -n "${SIM_W5_MEMORY_SHORTPATH_STREAM:-}" ||
+        -n "${SIM_W5_MEMORY_SHORTPATH_STREAM_PATH:-}" ]]; then
+    return 0
+  fi
+  return 1
+}
+
+runtime_boundary_lookup_produces_store_after_guest() {
+  case "${SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-0}" in
+    1|true|TRUE|yes|YES)
+      if ! w5_shortpath_execution_armed; then
+        return 0
+      fi
+      ;;
+  esac
+  return 1
+}
+
 validate_qwen3_engram_context_refs() {
   if [[ "$SIM_QWEN3_GUEST_ENGRAM" != "1" ]] || ! qwen3_engram_context_op_enabled; then
     return 0
@@ -812,7 +839,7 @@ validate_w5_boundary_observation_summary() {
     trace "FAIL: W5 boundary observation summary missing path=$RUN_SUMMARY_FILE"
     return 1
   fi
-  if w5_shortpath_execute_enabled; then
+  if w5_shortpath_execution_armed; then
     idle_expected=$((SIM_QWEN3_GUEST_DECODE_STEPS * (${#NODE_IDS[@]} - 1)))
     stale_summary_pattern="timing_node: node=node[BCDEFGH] steps=0/${SIM_QWEN3_GUEST_DECODE_STEPS} status=missing|handoff_node: node=node[BCDEFGH] steps=0/${SIM_QWEN3_GUEST_DECODE_STEPS} status=missing|qwen3_range_kv_state_lazy_fallback|fallback=runtime_forward_metadata|w5_shortpath_decision:|payload_bytes=[0-9]+,[0-9]+|checksums=0x|obmm_pool: unavailable"
     if rg -q "memory_service_summary: .*qwen3_w5_memory_shortpath_commit:${SIM_QWEN3_GUEST_DECODE_STEPS}(,| )" "$RUN_SUMMARY_FILE" &&
@@ -877,12 +904,17 @@ validate_w5_artifact_file_size() {
   local path="$1"
   local label="$2"
   local max_bytes="$3"
+  local required="${4:-1}"
   local bytes
 
   if [[ -z "$path" ]]; then
     return 0
   fi
   if [[ ! -f "$path" ]]; then
+    if [[ "$required" != "1" ]]; then
+      trace "W5 artifact size skipped label=$label reason=not_materialized_yet path=$path"
+      return 0
+    fi
     trace "FAIL: W5 artifact size check missing label=$label path=$path"
     return 1
   fi
@@ -907,6 +939,11 @@ validate_w5_artifact_sizes() {
   local max_object_bin="${SIM_W5_MAX_OBJECT_STORE_BIN_BYTES:-268435456}"
   local max_shortpath_stream="${SIM_W5_MAX_SHORTPATH_STREAM_BYTES:-1048576}"
   local max_shortpath_kv_stream="${SIM_W5_MAX_SHORTPATH_KV_STREAM_BYTES:-1048576}"
+  local store_required=1
+
+  if runtime_boundary_lookup_produces_store_after_guest; then
+    store_required=0
+  fi
 
   if [[ -z "$SIM_UAPI_W5_PROFILE" ]]; then
     return 0
@@ -928,11 +965,11 @@ validate_w5_artifact_sizes() {
     shortpath_kv_stream="$registry_dir/w5_memory_shortpath_kv_stream.txt"
   fi
 
-  validate_w5_artifact_file_size "$memory_json" "memory_store_json" "$max_memory_json" || return 1
-  validate_w5_artifact_file_size "$object_json" "object_store_json" "$max_object_json" || return 1
-  validate_w5_artifact_file_size "$object_bin" "object_store_bin" "$max_object_bin" || return 1
-  validate_w5_artifact_file_size "$shortpath_stream" "shortpath_stream" "$max_shortpath_stream" || return 1
-  validate_w5_artifact_file_size "$shortpath_kv_stream" "shortpath_kv_stream" "$max_shortpath_kv_stream" || return 1
+  validate_w5_artifact_file_size "$memory_json" "memory_store_json" "$max_memory_json" "$store_required" || return 1
+  validate_w5_artifact_file_size "$object_json" "object_store_json" "$max_object_json" "$store_required" || return 1
+  validate_w5_artifact_file_size "$object_bin" "object_store_bin" "$max_object_bin" "$store_required" || return 1
+  validate_w5_artifact_file_size "$shortpath_stream" "shortpath_stream" "$max_shortpath_stream" "$store_required" || return 1
+  validate_w5_artifact_file_size "$shortpath_kv_stream" "shortpath_kv_stream" "$max_shortpath_kv_stream" "$store_required" || return 1
   return 0
 }
 
@@ -988,7 +1025,7 @@ validate_node_log() {
   idx="$(node_index "$node_id")"
   remote_idx=$((idx % 8 + 1))
 
-  if [[ -n "$SIM_UAPI_W5_PROFILE" ]] && w5_shortpath_execute_enabled; then
+  if [[ -n "$SIM_UAPI_W5_PROFILE" ]] && w5_shortpath_execution_armed; then
     if (( idx > 1 )); then
       assert_log_count "$log_file" "\\[w4_guest\\] stage qwen3_decode_round_scheduler_no_dispatch .*reason=terminal_token_committed.*work_item=none.*status=no_dispatch" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id W5 shortpath scheduler no-dispatch per step" || return 1
       assert_log_count "$log_file" "\\[w4_guest\\] stage qwen3_decode_round_terminal_committed .*target=decode_round_scheduler.*status=committed" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id W5 shortpath terminal commit observed per step" || return 1

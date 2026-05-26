@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import subprocess
 import sys
 import tempfile
@@ -133,6 +134,54 @@ class W5InferenceRunReportTest(unittest.TestCase):
             result.stdout,
         )
         self.assertIn("artifact: label=object_store_bin bytes=6", result.stdout)
+        self.assertNotIn("issue:", result.stdout)
+
+    def test_reports_shared_artifact_paths_from_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            logs_dir = Path(tmp) / "logs" / "run_headless8"
+            shared = Path(tmp) / "shared"
+            out_dir.mkdir()
+            logs_dir.mkdir(parents=True)
+            shared.mkdir()
+            (logs_dir / "nodeA_guest.log").write_text("log\n", encoding="utf-8")
+            run_id = "run"
+            memory_store = shared / "w5_memory_object_store.shared.json"
+            object_store = shared / "w5_object_service_store.shared.json"
+            registry = shared / "w5_memory_registry.shared"
+            memory_store.write_text("{}", encoding="utf-8")
+            object_store.write_text("{}", encoding="utf-8")
+            object_store.with_suffix(".bin").write_bytes(b"binary")
+            registry.mkdir()
+            (registry / "w5_memory_shortpath_stream.txt").write_text(
+                "shortpath\n", encoding="utf-8"
+            )
+            (registry / "w5_memory_shortpath_kv_stream.txt").write_text(
+                "kv\n", encoding="utf-8"
+            )
+            summary = out_dir / f"eight_node_w5_inference_cluster_summary.{run_id}.txt"
+            write_summary(summary, logs_dir)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "SIM_W5_MEMORY_STORE": str(memory_store),
+                    "SIM_W5_MEMORY_OBJECT_STORE": str(object_store),
+                    "SIM_W5_MEMORY_REGISTRY_DIR": str(registry),
+                }
+            )
+
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), str(summary)],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+        self.assertIn("w5_run_report: status=pass run_id=run", result.stdout)
+        self.assertIn(f"artifact: label=memory_store_json bytes=2", result.stdout)
+        self.assertIn(f"path={memory_store}", result.stdout)
+        self.assertIn(f"path={object_store.with_suffix('.bin')}", result.stdout)
         self.assertNotIn("issue:", result.stdout)
 
     def test_fails_on_bad_shortpath_marker(self):

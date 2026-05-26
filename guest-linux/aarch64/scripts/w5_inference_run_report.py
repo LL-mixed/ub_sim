@@ -263,11 +263,30 @@ def infer_run_id(summary_path):
 
 def artifact_paths(summary_path, run_id, run_dir):
     out_dir = summary_path.parent
-    registry_dir = out_dir / f"w5_memory_registry.{run_id}" if run_id else None
+    memory_store = os.environ.get("SIM_W5_MEMORY_STORE")
+    object_store = os.environ.get("SIM_W5_MEMORY_OBJECT_STORE")
+    registry_store = os.environ.get("SIM_W5_MEMORY_REGISTRY_DIR")
+    registry_dir = (
+        Path(registry_store)
+        if registry_store
+        else out_dir / f"w5_memory_registry.{run_id}" if run_id else None
+    )
+    object_store_path = (
+        Path(object_store)
+        if object_store
+        else out_dir / f"w5_object_service_store.{run_id}.json"
+    )
+    object_store_bin = (
+        object_store_path.with_suffix(".bin")
+        if object_store_path.suffix == ".json"
+        else out_dir / f"w5_object_service_store.{run_id}.bin"
+    )
     paths = {
-        "memory_store_json": out_dir / f"w5_memory_object_store.{run_id}.json",
-        "object_store_json": out_dir / f"w5_object_service_store.{run_id}.json",
-        "object_store_bin": out_dir / f"w5_object_service_store.{run_id}.bin",
+        "memory_store_json": Path(memory_store)
+        if memory_store
+        else out_dir / f"w5_memory_object_store.{run_id}.json",
+        "object_store_json": object_store_path,
+        "object_store_bin": object_store_bin,
     }
     if registry_dir is not None:
         paths["shortpath_stream"] = registry_dir / "w5_memory_shortpath_stream.txt"
@@ -325,7 +344,9 @@ def validate(parsed, paths, output_guard=None):
     observed = parse_int(summary.get("decode_steps_observed"))
     passed_nodes = split_count(summary.get("passed_nodes", "0/0"))
     node_count = passed_nodes[1] or 8
-    idle_expected = expected * max(node_count - 1, 0)
+    shortpath_run = bool(memory or shortpath)
+    worker_expected = expected if shortpath_run else expected * node_count
+    idle_expected = expected * max(node_count - 1, 0) if shortpath_run else 0
 
     if expected <= 0:
         issues.append("missing decode_steps_expected")
@@ -333,45 +354,56 @@ def validate(parsed, paths, output_guard=None):
         issues.append(f"decode steps mismatch expected={expected} observed={observed}")
     if passed_nodes[0] != passed_nodes[1] or passed_nodes[1] == 0:
         issues.append(f"passed_nodes incomplete value={summary.get('passed_nodes', '')}")
-    if parse_int(summary.get("worker_timing_records")) != expected:
-        issues.append("worker_timing_records does not match decode steps")
+    if parse_int(summary.get("worker_timing_records")) != worker_expected:
+        issues.append(
+            f"worker_timing_records mismatch expected={worker_expected} "
+            f"actual={summary.get('worker_timing_records', '')}"
+        )
     if parse_int(summary.get("idle_timing_records")) != idle_expected:
-        issues.append("idle_timing_records does not match shortpath idle expectation")
+        issues.append(
+            f"idle_timing_records mismatch expected={idle_expected} "
+            f"actual={summary.get('idle_timing_records', '')}"
+        )
 
-    if not memory:
-        issues.append("missing memory_service_summary")
-    else:
-        memory_steps = split_count(memory.get("steps", "0/0"))
-        if memory_steps != (expected, expected):
-            issues.append(f"memory service step coverage mismatch value={memory.get('steps', '')}")
-        if memory.get("actions") != "jump-to-terminal":
-            issues.append(f"unexpected memory action value={memory.get('actions', '')}")
-        if memory.get("artifact_kinds") != "logits":
-            issues.append(f"unexpected artifact_kinds value={memory.get('artifact_kinds', '')}")
-        if parse_int(memory.get("lookup_hits")) != expected:
-            issues.append(f"lookup_hits mismatch value={memory.get('lookup_hits', '')}")
+    if shortpath_run:
+        if not memory:
+            issues.append("missing memory_service_summary")
+        else:
+            memory_steps = split_count(memory.get("steps", "0/0"))
+            if memory_steps != (expected, expected):
+                issues.append(
+                    f"memory service step coverage mismatch value={memory.get('steps', '')}"
+                )
+            if memory.get("actions") != "jump-to-terminal":
+                issues.append(f"unexpected memory action value={memory.get('actions', '')}")
+            if memory.get("artifact_kinds") != "logits":
+                issues.append(
+                    f"unexpected artifact_kinds value={memory.get('artifact_kinds', '')}"
+                )
+            if parse_int(memory.get("lookup_hits")) != expected:
+                issues.append(f"lookup_hits mismatch value={memory.get('lookup_hits', '')}")
 
-    if not shortpath:
-        issues.append("missing guest_worker_shortpath_summary")
-    else:
-        expected_fields = {
-            "boundary_hits": expected,
-            "terminal_selects": expected,
-            "expected_hits": expected,
-            "actual_range_forwards": expected,
-            "actual_runtime_inputs": max(expected - 1, 0),
-            "actual_runtime_outputs": 0,
-            "shortpath_no_dispatch": idle_expected,
-            "shortpath_terminal_commits": idle_expected,
-            "shortpath_publish_hidden_zero": expected,
-            "full_pipeline_range_forwards": expected * node_count,
-            "full_pipeline_runtime_inputs": max(expected * node_count - 1, 0),
-            "full_pipeline_runtime_outputs": expected * node_count,
-        }
-        for key, value in expected_fields.items():
-            actual = parse_int(shortpath.get(key))
-            if actual != value:
-                issues.append(f"{key} mismatch expected={value} actual={actual}")
+        if not shortpath:
+            issues.append("missing guest_worker_shortpath_summary")
+        else:
+            expected_fields = {
+                "boundary_hits": expected,
+                "terminal_selects": expected,
+                "expected_hits": expected,
+                "actual_range_forwards": expected,
+                "actual_runtime_inputs": max(expected - 1, 0),
+                "actual_runtime_outputs": 0,
+                "shortpath_no_dispatch": idle_expected,
+                "shortpath_terminal_commits": idle_expected,
+                "shortpath_publish_hidden_zero": expected,
+                "full_pipeline_range_forwards": expected * node_count,
+                "full_pipeline_runtime_inputs": max(expected * node_count - 1, 0),
+                "full_pipeline_runtime_outputs": expected * node_count,
+            }
+            for key, value in expected_fields.items():
+                actual = parse_int(shortpath.get(key))
+                if actual != value:
+                    issues.append(f"{key} mismatch expected={value} actual={actual}")
 
     for marker in sorted(set(parsed["bad_markers"])):
         issues.append(f"bad marker present: {marker}")
@@ -386,7 +418,8 @@ def validate(parsed, paths, output_guard=None):
         size = file_size(path) if path is not None else None
         artifact_sizes[label] = {"path": str(path) if path else "", "bytes": size, "max_bytes": limit}
         if size is None:
-            issues.append(f"missing artifact {label}")
+            if shortpath_run:
+                issues.append(f"missing artifact {label}")
         elif size > limit:
             issues.append(f"artifact {label} too large bytes={size} max_bytes={limit}")
     if paths.get("logs_dir"):
