@@ -5581,6 +5581,29 @@ fn validate_w5_model_binding_matches_runtime(
             runtime.model_key
         );
     }
+    if model.model_id != runtime.profile.model_id {
+        anyhow::bail!(
+            "{source} model_id={} does not match W5 runtime model_id={}",
+            model.model_id,
+            runtime.profile.model_id
+        );
+    }
+    if let Ok(runtime_model) = qwen3_runtime_model_binding(runtime) {
+        if model.tokenizer_hash != runtime_model.tokenizer_hash {
+            anyhow::bail!(
+                "{source} tokenizer_hash={:#x} does not match W5 runtime tokenizer_hash={:#x}",
+                model.tokenizer_hash,
+                runtime_model.tokenizer_hash
+            );
+        }
+        if model.profile_hash != runtime_model.profile_hash {
+            anyhow::bail!(
+                "{source} profile_hash={:#x} does not match W5 runtime profile_hash={:#x}",
+                model.profile_hash,
+                runtime_model.profile_hash
+            );
+        }
+    }
     Ok(())
 }
 
@@ -7945,6 +7968,10 @@ fn find_w5_terminal_logits_observation(
             }
             let fields = parse_summary_fields(line);
             if required_summary_u64(&fields, "step")? == step {
+                let source = required_summary_field(&fields, "source")?;
+                if source != "uapi_real_logits" {
+                    continue;
+                }
                 return parse_w5_terminal_logits_observation(&fields).with_context(|| {
                     format!(
                         "parse terminal logits observation from {}",
@@ -7955,7 +7982,7 @@ fn find_w5_terminal_logits_observation(
         }
     }
     anyhow::bail!(
-        "missing qwen3_w5_terminal_logits_observation for step={step} in {}",
+        "missing source=uapi_real_logits qwen3_w5_terminal_logits_observation for step={step} in {}",
         run_dir.display()
     )
 }
@@ -7963,6 +7990,10 @@ fn find_w5_terminal_logits_observation(
 fn parse_w5_terminal_logits_observation(
     fields: &std::collections::HashMap<String, String>,
 ) -> anyhow::Result<W5TerminalLogitsObservation> {
+    let source = required_summary_field(fields, "source")?;
+    if source != "uapi_real_logits" {
+        anyhow::bail!("terminal logits observation source must be uapi_real_logits, got {source}");
+    }
     let candidate_count = required_summary_u64(fields, "candidate_count")? as usize;
     if candidate_count == 0 || candidate_count > 4 {
         anyhow::bail!("terminal logits candidate_count must be in 1..=4");
@@ -8723,7 +8754,12 @@ fn w5_summary_has_terminal_logits_observation(summary: &str) -> bool {
         .into_iter()
         .any(|name| {
             fs::read_to_string(run_dir.join(name))
-                .is_ok_and(|log| log.contains("stage qwen3_w5_terminal_logits_observation "))
+                .is_ok_and(|log| {
+                    log.lines().any(|line| {
+                        line.contains("stage qwen3_w5_terminal_logits_observation ")
+                            && line.contains(" source=uapi_real_logits ")
+                    })
+                })
         })
 }
 
@@ -14591,6 +14627,73 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             .expect("token text token"),
             358
         );
+    }
+
+    #[test]
+    fn terminal_logits_artifact_rejects_shortpath_replayed_observation() {
+        let line = sample_w5_terminal_logits_log_line(1, 11, 358)
+            .replace("source=uapi_real_logits", "source=terminal_logits_artifact");
+        let fields = parse_summary_fields(&line);
+        let err = parse_w5_terminal_logits_observation(&fields)
+            .expect_err("shortpath replayed logits must not become verified artifacts");
+
+        assert!(err
+            .to_string()
+            .contains("source must be uapi_real_logits"));
+    }
+
+    #[test]
+    fn lingqu_memory_register_terminal_logits_rejects_shortpath_replayed_source() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_terminal_logits_replayed_source_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let store = root.join("store.json");
+        let summary_path = root.join("summary.txt");
+        let run_dir = root.join("run0_headless8");
+        fs::create_dir_all(&run_dir).expect("create run dir");
+        fs::write(
+            &summary_path,
+            format!(
+                "summary: run_dir={}\n{}",
+                run_dir.display(),
+                sample_w5_boundary_observation_line(1, "node1", "node2", 0, 4, 0x1111)
+            ),
+        )
+        .expect("write summary");
+        fs::write(
+            run_dir.join("nodeH_guest.log"),
+            sample_w5_terminal_logits_log_line(1, 11, 358)
+                .replace("source=uapi_real_logits", "source=terminal_logits_artifact"),
+        )
+        .expect("write shortpath replay terminal logits log");
+
+        let err = run_lingqu_memory_register_terminal_logits_artifact_from_w5_summary_cli(&[
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--summary".to_string(),
+            summary_path.to_string_lossy().into_owned(),
+            "--step".to_string(),
+            "1".to_string(),
+            "--node".to_string(),
+            "node1".to_string(),
+            "--position".to_string(),
+            "4".to_string(),
+            "--model-id".to_string(),
+            "qwen3-test".to_string(),
+            "--model-key".to_string(),
+            "qwen3-test-key".to_string(),
+            "--tokenizer-hash".to_string(),
+            "0x1001".to_string(),
+            "--profile-hash".to_string(),
+            "0x2002".to_string(),
+        ])
+        .expect_err("shortpath replayed logits source must not register");
+
+        assert!(format!("{err:#}").contains("missing source=uapi_real_logits"));
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

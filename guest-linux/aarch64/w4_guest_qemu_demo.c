@@ -2115,10 +2115,14 @@ static int qwen3_read_terminal_token_record(volatile uint8_t *ep_mmio,
 static void qwen3_log_terminal_logits_observation(
     uint32_t local_node,
     uint64_t decode_step,
-    const struct w4_qwen3_terminal_token_record *terminal_token)
+    const struct w4_qwen3_terminal_token_record *terminal_token,
+    const char *source)
 {
     if (!terminal_token) {
         return;
+    }
+    if (!source || source[0] == '\0') {
+        source = "unknown";
     }
     printf("[w4_guest] stage qwen3_w5_terminal_logits_observation local=node%u"
            " step=%" PRIu64
@@ -2158,7 +2162,7 @@ static void qwen3_log_terminal_logits_observation(
            " candidate3_piece_bytes=%" PRIu64
            " candidate3_piece_word0=0x%016" PRIx64
            " candidate3_piece_word1=0x%016" PRIx64
-           " source=uapi_real_logits target=lingqu_memory_execution_artifact status=ok\n",
+           " source=%s target=lingqu_memory_execution_artifact status=ok\n",
            local_node + 1U,
            decode_step,
            terminal_token->sampled_token,
@@ -2196,7 +2200,8 @@ static void qwen3_log_terminal_logits_observation(
            terminal_token->candidate_text_checksums[3],
            terminal_token->candidate_piece_bytes[3],
            terminal_token->candidate_piece_word0[3],
-           terminal_token->candidate_piece_word1[3]);
+           terminal_token->candidate_piece_word1[3],
+           source);
 }
 
 static bool qwen3_guest_engram_is_stop_token(uint64_t token)
@@ -11006,7 +11011,8 @@ decode_round_start:
                 qwen3_log_terminal_logits_observation(
                     dispatch_node,
                     guest_decode_step,
-                    &boundary_result.lookup.terminal_logits_record);
+                    &boundary_result.lookup.terminal_logits_record,
+                    "terminal_logits_artifact");
                 if (w4_db_obmm_service_v0_publish_shortpath_terminal_token_result(
                         &db_service,
                         dispatch_node,
@@ -11199,7 +11205,8 @@ qwen3_shortpath_publish_runtime_range:
 
             qwen3_log_terminal_logits_observation(dispatch_node,
                                                   decode_step,
-                                                  &terminal_token);
+                                                  &terminal_token,
+                                                  "uapi_real_logits");
             if (w4_db_obmm_service_v0_publish_terminal_token_result(
                     &db_service,
                     dispatch_node,
