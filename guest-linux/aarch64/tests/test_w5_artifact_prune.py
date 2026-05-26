@@ -34,6 +34,7 @@ def write_run(out_dir, logs_dir, run_id, reusable=False):
         )
     summary.write_text("\n".join(lines) + "\n", encoding="utf-8")
     (out_dir / f"w5_memory_object_store.{run_id}.json").write_text("memory", encoding="utf-8")
+    (out_dir / f"w5_memory_object_store.{run_id}.bin").write_bytes(b"memory-binary")
     (out_dir / f"w5_object_service_store.{run_id}.json").write_text("object", encoding="utf-8")
     (out_dir / f"w5_object_service_store.{run_id}.bin").write_bytes(b"binary")
     (out_dir / f"w5_memory_engram_state.{run_id}.json").write_text("state", encoding="utf-8")
@@ -95,6 +96,10 @@ class W5ArtifactPruneTest(unittest.TestCase):
         )
         self.assertIn(
             "artifact: action=dry-run label=headless_pid",
+            result.stdout,
+        )
+        self.assertIn(
+            "artifact: action=dry-run label=memory_store_bin",
             result.stdout,
         )
         self.assertIn("w5_artifact_prune: mode=dry-run runs=3 profiles=all prune_candidates=1", result.stdout)

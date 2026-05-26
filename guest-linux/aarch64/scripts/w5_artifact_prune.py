@@ -88,6 +88,7 @@ def collect_artifacts(out_dir, logs_dir, run_id, summary_path):
     candidates = [
         ("decision_store", out_dir / f"w5_memory_runtime_boundary_lookup.{run_id}.json"),
         ("memory_store", out_dir / f"w5_memory_object_store.{run_id}.json"),
+        ("memory_store_bin", out_dir / f"w5_memory_object_store.{run_id}.bin"),
         ("object_store_json", out_dir / f"w5_object_service_store.{run_id}.json"),
         ("object_store_bin", out_dir / f"w5_object_service_store.{run_id}.bin"),
         ("engram_state", out_dir / f"w5_memory_engram_state.{run_id}.json"),
@@ -116,6 +117,7 @@ def run_ids_from_artifacts(out_dir, logs_dir):
         ("eight_node_w5_inference_cluster_summary.", ".txt"),
         ("w5_memory_runtime_boundary_lookup.", ".json"),
         ("w5_memory_object_store.", ".json"),
+        ("w5_memory_object_store.", ".bin"),
         ("w5_object_service_store.", ".json"),
         ("w5_object_service_store.", ".bin"),
         ("w5_memory_engram_state.", ".json"),

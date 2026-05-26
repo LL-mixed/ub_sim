@@ -23,10 +23,15 @@ BAD_MARKERS = (
 
 ARTIFACT_LIMITS = {
     "memory_store_json": 16 * 1024 * 1024,
+    "memory_store_bin": 256 * 1024 * 1024,
     "object_store_json": 8 * 1024 * 1024,
     "object_store_bin": 256 * 1024 * 1024,
     "shortpath_stream": 1024 * 1024,
     "shortpath_kv_stream": 1024 * 1024,
+}
+
+OPTIONAL_ARTIFACTS = {
+    "memory_store_bin",
 }
 
 
@@ -281,10 +286,19 @@ def artifact_paths(summary_path, run_id, run_dir):
         if object_store_path.suffix == ".json"
         else out_dir / f"w5_object_service_store.{run_id}.bin"
     )
-    paths = {
-        "memory_store_json": Path(memory_store)
+    memory_store_path = (
+        Path(memory_store)
         if memory_store
-        else out_dir / f"w5_memory_object_store.{run_id}.json",
+        else out_dir / f"w5_memory_object_store.{run_id}.json"
+    )
+    memory_store_bin = (
+        memory_store_path.with_suffix(".bin")
+        if memory_store_path.suffix == ".json"
+        else out_dir / f"w5_memory_object_store.{run_id}.bin"
+    )
+    paths = {
+        "memory_store_json": memory_store_path,
+        "memory_store_bin": memory_store_bin,
         "object_store_json": object_store_path,
         "object_store_bin": object_store_bin,
     }
@@ -418,7 +432,7 @@ def validate(parsed, paths, output_guard=None):
         size = file_size(path) if path is not None else None
         artifact_sizes[label] = {"path": str(path) if path else "", "bytes": size, "max_bytes": limit}
         if size is None:
-            if shortpath_run:
+            if shortpath_run and label not in OPTIONAL_ARTIFACTS:
                 issues.append(f"missing artifact {label}")
         elif size > limit:
             issues.append(f"artifact {label} too large bytes={size} max_bytes={limit}")

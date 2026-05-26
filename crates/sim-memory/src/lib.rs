@@ -6,6 +6,9 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::fs;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sim_core::{BlockHash, SegmentHandle, TensorDType};
@@ -1616,6 +1619,7 @@ impl LingquMemoryDurableStore {
         let snapshot = object_service.export_snapshot();
         let mut checkpoint = LingquObjectServiceCheckpoint::new(snapshot)?;
         let mut ops = Vec::new();
+        let mut staged_payload_blocks = HashSet::new();
         let mut block_writes = 0;
         let mut block_bytes_written = 0;
         for entry in &mut checkpoint.records {
@@ -1627,30 +1631,32 @@ impl LingquMemoryDurableStore {
             }
             let block = object_payload_block(&entry.record);
             let bytes = std::mem::take(&mut entry.record.payload_bytes);
+            let checksum = checksum64(&bytes);
             let payload_ref = LingquBlockPayloadRef {
                 block: block.clone(),
                 offset: 0,
                 bytes: bytes.len() as u64,
-                checksum: checksum64(&bytes),
+                checksum,
             };
             payload_ref.validate("object_payload_ref")?;
-            if payload_ref.bytes != entry.record.bytes
-                || payload_ref.checksum != entry.record.checksum
-            {
-                return Err(LingquMemoryError::PayloadChecksumMismatch {
-                    id: entry.record.key.clone(),
-                    expected: entry.record.checksum,
-                    actual: payload_ref.checksum,
+            if payload_ref.bytes != entry.record.bytes {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "object_payload_ref.bytes",
+                    reason: "payload ref byte count must match object record",
                 });
             }
             entry.payload_ref = Some(payload_ref);
-            block_bytes_written += bytes.len() as u64;
-            block_writes += 1;
-            ops.push(durable_sim::LingquDurableBatchOp::BlockWrite {
-                block: block.0,
-                bytes,
-                options: durable_sim::LingquBlockWriteOptions::default(),
-            });
+            if staged_payload_blocks.insert(block.clone())
+                && !self.object_payload_block_matches(&block, bytes.len() as u64, checksum)?
+            {
+                block_bytes_written += bytes.len() as u64;
+                block_writes += 1;
+                ops.push(durable_sim::LingquDurableBatchOp::BlockWrite {
+                    block: block.0,
+                    bytes,
+                    options: durable_sim::LingquBlockWriteOptions::default(),
+                });
+            }
         }
 
         checkpoint.records.sort_by(|left, right| {
@@ -2045,12 +2051,180 @@ impl LingquMemoryDurableStore {
             .map_err(memory_error_from_durable)?;
         Ok(bytes)
     }
+
+    fn object_payload_block_matches(
+        &self,
+        block: &BlockHash,
+        bytes: u64,
+        checksum: u64,
+    ) -> MemoryResult<bool> {
+        match self
+            .durable
+            .block_stat(block, durable_sim::LingquVersionSelector::LatestCommitted)
+        {
+            Ok(record) => Ok(record.bytes.len() as u64 == bytes && record.checksum == checksum),
+            Err(durable_sim::LingquDurableError::MissingBlock(_)) => Ok(false),
+            Err(err) => Err(memory_error_from_durable(err)),
+        }
+    }
 }
 
 impl Default for LingquMemoryDurableStore {
     fn default() -> Self {
         Self::new()
     }
+}
+
+const LINGQU_DURABLE_EXTERNAL_BLOCK_THRESHOLD_BYTES: u64 = 8 * 1024 * 1024;
+const LINGQU_DURABLE_EXTERNAL_BLOCK_OFFSET_KEY: &str = "lingqu_external_block_offset";
+const LINGQU_DURABLE_EXTERNAL_BLOCK_BYTES_KEY: &str = "lingqu_external_block_bytes";
+const LINGQU_DURABLE_EXTERNAL_BLOCK_CHECKSUM_KEY: &str = "lingqu_external_block_checksum";
+
+pub fn load_lingqu_memory_durable_store_from_path(
+    path: &Path,
+) -> MemoryResult<LingquMemoryDurableStore> {
+    if !path.exists() {
+        return Ok(LingquMemoryDurableStore::new());
+    }
+    let bytes = fs::read(path).map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+    if let Ok(snapshot) = durable_sim::LingquDurableSimSnapshot::from_json_bytes(&bytes) {
+        return LingquMemoryDurableStore::import_durable_sim_snapshot(snapshot);
+    }
+    if let Ok(mut snapshot) =
+        serde_json::from_slice::<durable_sim::LingquDurableSimSnapshot>(&bytes)
+    {
+        if hydrate_lingqu_durable_external_blocks(path, &mut snapshot)? {
+            return LingquMemoryDurableStore::import_durable_sim_snapshot(snapshot);
+        }
+    }
+    let legacy_snapshot = LingquMemoryDurableStoreSnapshot::from_json_bytes(&bytes)?;
+    LingquMemoryDurableStore::import_snapshot(legacy_snapshot)
+}
+
+pub fn save_lingqu_memory_durable_store_to_path(
+    path: &Path,
+    store: &LingquMemoryDurableStore,
+) -> MemoryResult<()> {
+    let mut snapshot = store.export_durable_sim_snapshot()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+    }
+    let total_block_bytes = snapshot
+        .block
+        .blocks
+        .iter()
+        .map(|record| record.bytes.len() as u64)
+        .sum::<u64>();
+    let bytes = if total_block_bytes > LINGQU_DURABLE_EXTERNAL_BLOCK_THRESHOLD_BYTES {
+        externalize_lingqu_durable_blocks(path, &mut snapshot)?;
+        serde_json::to_vec_pretty(&snapshot)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?
+    } else {
+        snapshot
+            .to_json_bytes()
+            .map_err(memory_error_from_durable)?
+    };
+    fs::write(path, bytes).map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))
+}
+
+fn lingqu_durable_block_sidecar_path(path: &Path) -> PathBuf {
+    path.with_extension("bin")
+}
+
+fn externalize_lingqu_durable_blocks(
+    path: &Path,
+    snapshot: &mut durable_sim::LingquDurableSimSnapshot,
+) -> MemoryResult<()> {
+    let sidecar_path = lingqu_durable_block_sidecar_path(path);
+    if let Some(parent) = sidecar_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+    }
+    let mut sidecar = fs::File::create(&sidecar_path)
+        .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+    let mut offset = 0u64;
+    for record in &mut snapshot.block.blocks {
+        if record.bytes.is_empty() {
+            continue;
+        }
+        let bytes = std::mem::take(&mut record.bytes);
+        sidecar
+            .write_all(&bytes)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+        record.metadata.insert(
+            LINGQU_DURABLE_EXTERNAL_BLOCK_OFFSET_KEY.to_string(),
+            offset.to_string(),
+        );
+        record.metadata.insert(
+            LINGQU_DURABLE_EXTERNAL_BLOCK_BYTES_KEY.to_string(),
+            bytes.len().to_string(),
+        );
+        record.metadata.insert(
+            LINGQU_DURABLE_EXTERNAL_BLOCK_CHECKSUM_KEY.to_string(),
+            format!("{:#x}", record.checksum),
+        );
+        offset = offset
+            .checked_add(bytes.len() as u64)
+            .ok_or(LingquMemoryError::InvalidValue {
+                field: "durable_block_sidecar.offset",
+                reason: "offset overflow",
+            })?;
+    }
+    Ok(())
+}
+
+fn hydrate_lingqu_durable_external_blocks(
+    path: &Path,
+    snapshot: &mut durable_sim::LingquDurableSimSnapshot,
+) -> MemoryResult<bool> {
+    let needs_hydration = snapshot.block.blocks.iter().any(|record| {
+        record.bytes.is_empty()
+            && record
+                .metadata
+                .contains_key(LINGQU_DURABLE_EXTERNAL_BLOCK_OFFSET_KEY)
+    });
+    if !needs_hydration {
+        return Ok(false);
+    }
+
+    let sidecar_path = lingqu_durable_block_sidecar_path(path);
+    let mut sidecar = fs::File::open(&sidecar_path)
+        .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+    for record in &mut snapshot.block.blocks {
+        if !record.bytes.is_empty() {
+            continue;
+        }
+        let Some(offset) = record
+            .metadata
+            .get(LINGQU_DURABLE_EXTERNAL_BLOCK_OFFSET_KEY)
+            .map(|value| {
+                value
+                    .parse::<u64>()
+                    .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))
+            })
+            .transpose()?
+        else {
+            continue;
+        };
+        let bytes_len = record
+            .metadata
+            .get(LINGQU_DURABLE_EXTERNAL_BLOCK_BYTES_KEY)
+            .ok_or(LingquMemoryError::MissingField(
+                "durable_block_sidecar.bytes",
+            ))?
+            .parse::<usize>()
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+        sidecar
+            .seek(SeekFrom::Start(offset))
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+        let mut bytes = vec![0u8; bytes_len];
+        sidecar
+            .read_exact(&mut bytes)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+        record.bytes = bytes;
+    }
+    Ok(true)
 }
 
 fn memory_error_from_durable(err: durable_sim::LingquDurableError) -> LingquMemoryError {
@@ -2102,13 +2276,6 @@ fn validate_object_record_checkpoint(entry: &LingquObjectRecordCheckpoint) -> Me
                 reason: "payload ref byte count must match object record",
             });
         }
-        if payload_ref.checksum != entry.record.checksum {
-            return Err(LingquMemoryError::PayloadChecksumMismatch {
-                id: entry.record.key.clone(),
-                expected: entry.record.checksum,
-                actual: payload_ref.checksum,
-            });
-        }
     }
     for placement in &entry.record.placements {
         if placement.bytes != entry.record.bytes {
@@ -2137,22 +2304,15 @@ fn validate_object_record_checkpoint_payload(
             reason: "restored payload byte count must match object record",
         });
     }
-    let actual = checksum64(&entry.record.payload_bytes);
-    if actual != entry.record.checksum {
-        return Err(LingquMemoryError::PayloadChecksumMismatch {
-            id: entry.record.key.clone(),
-            expected: entry.record.checksum,
-            actual,
-        });
-    }
     Ok(())
 }
 
 fn object_payload_block(record: &LingquObjectRecord) -> BlockHash {
     BlockHash(format!(
-        "block/object-service/payload/{:016x}/v{}",
+        "block/object-service/payload/{:016x}/bytes{}/checksum{:016x}",
         checksum64(record.key.as_bytes()),
-        record.version
+        record.bytes,
+        record.checksum
     ))
 }
 
@@ -7972,6 +8132,74 @@ mod tests {
             )
             .expect("hot table payload after object checkpoint reload");
         assert_eq!(restored_table_bytes, table_bytes);
+    }
+
+    #[test]
+    fn object_service_checkpoint_dedupes_identical_payload_blocks() {
+        let mut durable = LingquMemoryDurableStore::new();
+        let mut object_service =
+            LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
+        let key = "kvcache/qwen3-test/node1/layers-0-4/decode-step0";
+        let payload = vec![0x44; 128];
+        let checksum = checksum64(&payload) ^ 0x1234;
+        for _ in 0..2 {
+            object_service
+                .submit_publish(
+                    LingquObjectPublishReq {
+                        task: None,
+                        key: key.to_string(),
+                        kind: LingquObjectKind::KvCacheBlock,
+                        producer_entity: 1,
+                        owner_entity: Some(1),
+                        expected_version: None,
+                        metadata: LingquObjectMetadata {
+                            bytes: payload.len() as u64,
+                            checksum,
+                            dtype: None,
+                            shape: vec![payload.len() as u64],
+                            layout: None,
+                            expires_at_us: None,
+                        },
+                        placements: vec![LingquPayloadPlacement {
+                            backend: LingquPayloadBackend::ObmmShmem,
+                            storage_ref: format!("{key}/payload"),
+                            segment: None,
+                            offset: 0,
+                            bytes: payload.len() as u64,
+                            checksum,
+                            locality: LingquObjectLocality::DomainShared(0),
+                        }],
+                        payload_bytes: payload.clone(),
+                    },
+                    1,
+                )
+                .expect("publish duplicate object payload version");
+        }
+
+        durable
+            .persist_object_service_checkpoint(&object_service)
+            .expect("persist duplicate object checkpoint");
+        durable
+            .persist_object_service_checkpoint(&object_service)
+            .expect("persist duplicate object checkpoint again");
+        let snapshot = durable
+            .export_durable_sim_snapshot()
+            .expect("export durable snapshot");
+        let object_payload_blocks = snapshot
+            .block
+            .blocks
+            .iter()
+            .filter(|record| record.block.0.starts_with("block/object-service/payload/"))
+            .count();
+        assert_eq!(object_payload_blocks, 1);
+        let restored = durable
+            .load_object_service_checkpoint()
+            .expect("load object checkpoint");
+        assert_eq!(restored.records.len(), 2);
+        assert!(restored
+            .records
+            .iter()
+            .all(|record| record.payload_bytes == payload));
     }
 
     #[test]
