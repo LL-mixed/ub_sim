@@ -9,6 +9,7 @@ from pathlib import Path
 
 PAIR_RE = re.compile(r"([A-Za-z0-9_]+)=([^ \r\n]+)")
 RUN_SUMMARY_RE = re.compile(r"^eight_node_w5_inference_cluster_summary\.(.+)\.txt$")
+TOKEN_IDS_RE = re.compile(r"^decode_output: token_ids=(\[.*\])$")
 
 BAD_MARKERS = (
     "status=missing",
@@ -27,6 +28,61 @@ ARTIFACT_LIMITS = {
     "shortpath_stream": 1024 * 1024,
     "shortpath_kv_stream": 1024 * 1024,
 }
+
+
+def byte_level_decoder():
+    visible = (
+        list(range(ord("!"), ord("~") + 1))
+        + list(range(0xA1, 0xAC + 1))
+        + list(range(0xAE, 0xFF + 1))
+    )
+    byte_values = visible[:]
+    codepoints = visible[:]
+    next_codepoint = 0
+    for value in range(256):
+        if value in visible:
+            continue
+        byte_values.append(value)
+        codepoints.append(256 + next_codepoint)
+        next_codepoint += 1
+    return {chr(codepoint): value for value, codepoint in zip(byte_values, codepoints)}
+
+
+BYTE_LEVEL_DECODER = byte_level_decoder()
+
+
+def split_env_regexes(value):
+    if not value:
+        return []
+    stripped = value.strip()
+    if not stripped:
+        return []
+    if stripped.startswith("["):
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            return [stripped]
+        return [str(item) for item in parsed if str(item)]
+    return [line.strip() for line in stripped.splitlines() if line.strip()]
+
+
+def output_guard_from_env():
+    return {
+        "tokenizer_dir": os.environ.get("SIM_W5_OUTPUT_TOKENIZER_DIR")
+        or os.environ.get("SIM_QWEN3_DENSE_WEIGHTS_PATH")
+        or "",
+        "expect_regexes": split_env_regexes(os.environ.get("SIM_W5_EXPECT_OUTPUT_REGEX")),
+        "reject_regexes": split_env_regexes(os.environ.get("SIM_W5_REJECT_OUTPUT_REGEX")),
+    }
+
+
+def output_guard_from_args(args):
+    guard = output_guard_from_env()
+    if args.tokenizer_dir is not None:
+        guard["tokenizer_dir"] = str(args.tokenizer_dir)
+    guard["expect_regexes"].extend(args.expect_output_regex or [])
+    guard["reject_regexes"].extend(args.reject_output_regex or [])
+    return guard
 
 
 def parse_pairs(line):
@@ -82,6 +138,120 @@ def format_bytes(value):
             return f"{current:.1f}{unit}"
         current /= 1024
     return f"{value}B"
+
+
+def parse_decode_token_ids(parsed):
+    for line in parsed["decode_output"]:
+        match = TOKEN_IDS_RE.match(line)
+        if not match:
+            continue
+        try:
+            values = json.loads(match.group(1))
+        except json.JSONDecodeError as error:
+            return [], f"decode token_ids are not valid JSON: {error.msg}"
+        if not isinstance(values, list):
+            return [], "decode token_ids is not a list"
+        token_ids = []
+        for value in values:
+            if not isinstance(value, int):
+                return [], f"decode token_ids contains non-integer value={value!r}"
+            token_ids.append(value)
+        return token_ids, ""
+    return [], "missing decode_output token_ids"
+
+
+def tokenizer_json_path(tokenizer_dir):
+    path = Path(tokenizer_dir)
+    if path.is_file():
+        return path
+    return path / "tokenizer.json"
+
+
+def decode_byte_level_text(text):
+    raw = bytearray()
+    for char in text:
+        value = BYTE_LEVEL_DECODER.get(char)
+        if value is None:
+            raw.extend(char.encode("utf-8"))
+        else:
+            raw.append(value)
+    return raw.decode("utf-8", errors="replace")
+
+
+def decode_tokenizer_piece_text(text, tokenizer):
+    decoder = tokenizer.get("decoder", {})
+    if isinstance(decoder, dict) and decoder.get("type") == "ByteLevel":
+        return decode_byte_level_text(text)
+    return text
+
+
+def decode_output_text(token_ids, tokenizer_dir):
+    if not tokenizer_dir:
+        return "", "missing tokenizer dir"
+    path = tokenizer_json_path(tokenizer_dir)
+    try:
+        tokenizer = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return "", f"tokenizer.json missing: {path}"
+    except json.JSONDecodeError as error:
+        return "", f"tokenizer.json is not valid JSON: {error.msg}"
+    vocab = tokenizer.get("model", {}).get("vocab", {})
+    if not isinstance(vocab, dict):
+        return "", "tokenizer model.vocab is missing"
+    by_id = {}
+    for piece, token_id in vocab.items():
+        if isinstance(token_id, int):
+            by_id[token_id] = piece
+    pieces = []
+    missing = []
+    for token_id in token_ids:
+        piece = by_id.get(token_id)
+        if piece is None:
+            missing.append(token_id)
+        else:
+            pieces.append(piece)
+    if missing:
+        return "", f"tokenizer missing token ids: {missing[:8]}"
+    return decode_tokenizer_piece_text("".join(pieces), tokenizer), ""
+
+
+def evaluate_output_guard(parsed, output_guard):
+    guard = output_guard or {}
+    expect_regexes = list(guard.get("expect_regexes") or [])
+    reject_regexes = list(guard.get("reject_regexes") or [])
+    enabled = bool(expect_regexes or reject_regexes)
+    result = {
+        "enabled": enabled,
+        "status": "disabled",
+        "tokenizer": str(guard.get("tokenizer_dir") or ""),
+        "text": "",
+        "expect_regexes": expect_regexes,
+        "reject_regexes": reject_regexes,
+        "issues": [],
+    }
+    if not enabled:
+        return result
+
+    token_ids, error = parse_decode_token_ids(parsed)
+    if error:
+        result["issues"].append(error)
+    else:
+        text, error = decode_output_text(token_ids, result["tokenizer"])
+        if error:
+            result["issues"].append(error)
+        else:
+            result["text"] = text
+
+    if result["text"]:
+        for pattern in expect_regexes:
+            if not re.search(pattern, result["text"]):
+                result["issues"].append(f"output text does not match expected regex: {pattern}")
+        for pattern in reject_regexes:
+            if re.search(pattern, result["text"]):
+                result["issues"].append(f"output text rejected by regex: {pattern}")
+
+    result["status"] = "fail" if result["issues"] else "pass"
+    return result
 
 
 def infer_run_id(summary_path):
@@ -145,7 +315,7 @@ def parse_summary(summary_path):
     return parsed
 
 
-def validate(parsed, paths):
+def validate(parsed, paths, output_guard=None):
     issues = []
     summary = parsed["summary"]
     shortpath = parsed["shortpath"]
@@ -206,6 +376,10 @@ def validate(parsed, paths):
     for marker in sorted(set(parsed["bad_markers"])):
         issues.append(f"bad marker present: {marker}")
 
+    output_guard_result = evaluate_output_guard(parsed, output_guard)
+    for issue in output_guard_result["issues"]:
+        issues.append(f"output guard: {issue}")
+
     artifact_sizes = {}
     for label, limit in ARTIFACT_LIMITS.items():
         path = paths.get(label)
@@ -228,7 +402,7 @@ def validate(parsed, paths):
             "max_bytes": None,
         }
 
-    return issues, artifact_sizes
+    return issues, artifact_sizes, output_guard_result
 
 
 def timing_report(parsed):
@@ -257,11 +431,11 @@ def timing_report(parsed):
     }
 
 
-def build_report(summary_path):
+def build_report(summary_path, output_guard=None):
     run_id = infer_run_id(summary_path)
     parsed = parse_summary(summary_path)
     paths = artifact_paths(summary_path, run_id, parsed["run_dir"])
-    issues, artifact_sizes = validate(parsed, paths)
+    issues, artifact_sizes, output_guard_result = validate(parsed, paths, output_guard)
     summary = parsed["summary"]
     memory = parsed["memory_service"]
     shortpath = parsed["shortpath"]
@@ -289,6 +463,7 @@ def build_report(summary_path):
         },
         "timing": timing_report(parsed),
         "artifacts": artifact_sizes,
+        "output_guard": output_guard_result,
     }
 
 
@@ -306,6 +481,15 @@ def print_text_report(report):
     )
     for line in decode["output"]:
         print(line)
+    output_guard = report["output_guard"]
+    if output_guard["enabled"]:
+        print(
+            "output_guard: "
+            f"status={output_guard['status']} tokenizer={output_guard['tokenizer']} "
+            f"expect_regexes={json.dumps(output_guard['expect_regexes'])} "
+            f"reject_regexes={json.dumps(output_guard['reject_regexes'])} "
+            f"text={json.dumps(output_guard['text'])}"
+        )
     shortpath = report["shortpath"]
     print(
         "shortpath: "
@@ -350,13 +534,31 @@ def main(argv):
     )
     parser.add_argument("summary", type=Path)
     parser.add_argument("--json", action="store_true", dest="json_output")
+    parser.add_argument(
+        "--tokenizer-dir",
+        type=Path,
+        default=None,
+        help="Tokenizer directory or tokenizer.json used to decode token_ids for output guards.",
+    )
+    parser.add_argument(
+        "--expect-output-regex",
+        action="append",
+        default=[],
+        help="Require tokenizer-decoded output text to match this regex. Repeatable.",
+    )
+    parser.add_argument(
+        "--reject-output-regex",
+        action="append",
+        default=[],
+        help="Fail if tokenizer-decoded output text matches this regex. Repeatable.",
+    )
     args = parser.parse_args(argv)
 
     if not args.summary.is_file():
         print(f"summary file is missing: {args.summary}", file=sys.stderr)
         return 2
 
-    report = build_report(args.summary)
+    report = build_report(args.summary, output_guard_from_args(args))
     if args.json_output:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:

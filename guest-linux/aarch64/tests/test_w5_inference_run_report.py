@@ -19,7 +19,19 @@ def write_artifacts(out_dir, run_id):
     (registry / "w5_memory_shortpath_kv_stream.txt").write_text("kv\n", encoding="utf-8")
 
 
-def write_summary(path, run_dir, bad_marker=""):
+def write_tokenizer(path):
+    path.mkdir()
+    (path / "tokenizer.json").write_text(
+        (
+            '{"model":{"vocab":{",":11,"\\u0120ok":22,'
+            '"_ComCallableWrapper":88950,"\\u0120Huawei":81378,'
+            '"\\u0120is":374}},"decoder":{"type":"ByteLevel"}}'
+        ),
+        encoding="utf-8",
+    )
+
+
+def write_summary(path, run_dir, bad_marker="", token_ids="[11, 22]", token_pieces='", ok"'):
     lines = [
         f"summary: run_dir={run_dir}",
         (
@@ -27,8 +39,8 @@ def write_summary(path, run_dir, bad_marker=""):
             "worker_timing_records=2 passed_nodes=8/8 handoff_timing_records=2 "
             "idle_timing_records=14 engram_timing_records=16 engram_context_records=2"
         ),
-        "decode_output: token_ids=[11, 22]",
-        'decode_output: token_pieces=", ok"',
+        f"decode_output: token_ids={token_ids}",
+        f"decode_output: token_pieces={token_pieces}",
         (
             "timing_step: step=0 round_ms=100 critical_node=nodeA workers=1/8 "
             "max_worker_ms=100 avg_worker_ms=100 max_input_wait_ms=0 "
@@ -144,6 +156,114 @@ class W5InferenceRunReportTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("w5_run_report: status=fail run_id=run", result.stdout)
         self.assertIn("issue: bad marker present: status=missing", result.stdout)
+
+    def test_output_guard_passes_expected_decoded_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            logs_dir = Path(tmp) / "logs" / "run_headless8"
+            tokenizer_dir = Path(tmp) / "tokenizer"
+            out_dir.mkdir()
+            logs_dir.mkdir(parents=True)
+            write_tokenizer(tokenizer_dir)
+            run_id = "run"
+            write_artifacts(out_dir, run_id)
+            summary = out_dir / f"eight_node_w5_inference_cluster_summary.{run_id}.txt"
+            write_summary(summary, logs_dir)
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    str(summary),
+                    "--tokenizer-dir",
+                    str(tokenizer_dir),
+                    "--expect-output-regex",
+                    "^, ok$",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertIn("w5_run_report: status=pass run_id=run", result.stdout)
+        self.assertIn("output_guard: status=pass", result.stdout)
+        self.assertIn('text=", ok"', result.stdout)
+
+    def test_output_guard_fails_rejected_decoded_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            logs_dir = Path(tmp) / "logs" / "run_headless8"
+            tokenizer_dir = Path(tmp) / "tokenizer"
+            out_dir.mkdir()
+            logs_dir.mkdir(parents=True)
+            write_tokenizer(tokenizer_dir)
+            run_id = "run"
+            write_artifacts(out_dir, run_id)
+            summary = out_dir / f"eight_node_w5_inference_cluster_summary.{run_id}.txt"
+            write_summary(
+                summary,
+                logs_dir,
+                token_ids="[88950]",
+                token_pieces='"_ComCallableWrap"',
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    str(summary),
+                    "--tokenizer-dir",
+                    str(tokenizer_dir),
+                    "--reject-output-regex",
+                    "ComCallableWrapper",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("w5_run_report: status=fail run_id=run", result.stdout)
+        self.assertIn(
+            "issue: output guard: output text rejected by regex: ComCallableWrapper",
+            result.stdout,
+        )
+
+    def test_output_guard_decodes_token_ids_instead_of_truncated_token_pieces(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            logs_dir = Path(tmp) / "logs" / "run_headless8"
+            tokenizer_dir = Path(tmp) / "tokenizer"
+            out_dir.mkdir()
+            logs_dir.mkdir(parents=True)
+            write_tokenizer(tokenizer_dir)
+            run_id = "run"
+            write_artifacts(out_dir, run_id)
+            summary = out_dir / f"eight_node_w5_inference_cluster_summary.{run_id}.txt"
+            write_summary(
+                summary,
+                logs_dir,
+                token_ids="[88950]",
+                token_pieces='"_ComCallableWrap"',
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    str(summary),
+                    "--tokenizer-dir",
+                    str(tokenizer_dir),
+                    "--expect-output-regex",
+                    "Wrapper$",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertIn("output_guard: status=pass", result.stdout)
+        self.assertIn('text="_ComCallableWrapper"', result.stdout)
 
 
 if __name__ == "__main__":

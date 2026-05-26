@@ -15,7 +15,25 @@ if str(SCRIPT_DIR) not in sys.path:
 import w5_cluster_health_check  # noqa: E402
 
 
-def write_pass_run(out_dir, logs_dir, run_id, reusable=False):
+def write_tokenizer(path):
+    path.mkdir()
+    (path / "tokenizer.json").write_text(
+        (
+            '{"model":{"vocab":{",":11,"\\u0120ok":22,'
+            '"_ComCallableWrapper":88950}},"decoder":{"type":"ByteLevel"}}'
+        ),
+        encoding="utf-8",
+    )
+
+
+def write_pass_run(
+    out_dir,
+    logs_dir,
+    run_id,
+    reusable=False,
+    token_ids="[11, 22]",
+    token_pieces='", ok"',
+):
     logs = logs_dir / f"{run_id}_headless8"
     logs.mkdir(parents=True)
     (logs / "nodeA_guest.log").write_text("log\n", encoding="utf-8")
@@ -37,8 +55,8 @@ def write_pass_run(out_dir, logs_dir, run_id, reusable=False):
             "worker_timing_records=2 passed_nodes=8/8 handoff_timing_records=2 "
             "idle_timing_records=14 engram_timing_records=2 engram_context_records=2"
         ),
-        "decode_output: token_ids=[11, 22]",
-        'decode_output: token_pieces=", ok"',
+        f"decode_output: token_ids={token_ids}",
+        f"decode_output: token_pieces={token_pieces}",
         (
             "timing_step: step=0 round_ms=100 critical_node=nodeA workers=1/8 "
             "max_compute_window_ms=70 max_publish_ms=5"
@@ -110,6 +128,52 @@ class W5ClusterHealthCheckTest(unittest.TestCase):
         self.assertIn(f"reusable_source: count=1 latest={reusable}", result.stdout)
         self.assertIn("latest_shortpath: lookup_hits=2 actual_range_forwards=2", result.stdout)
         self.assertIn("w5_health_check: status=pass profile=qwen3_14b_engram_decode", result.stdout)
+
+    def test_output_guard_is_applied_to_latest_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            logs_dir = Path(tmp) / "logs"
+            tokenizer_dir = Path(tmp) / "tokenizer"
+            out_dir.mkdir()
+            logs_dir.mkdir()
+            write_tokenizer(tokenizer_dir)
+            reusable = "2026-05-26_00-29-50_w5_qwen3_14b_engram_decode_25060"
+            latest = "2026-05-26_03-14-03_w5_qwen3_14b_engram_decode_32556"
+            write_pass_run(out_dir, logs_dir, reusable, reusable=True)
+            write_pass_run(
+                out_dir,
+                logs_dir,
+                latest,
+                token_ids="[88950]",
+                token_pieces='"_ComCallableWrap"',
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--out-dir",
+                    str(out_dir),
+                    "--logs-dir",
+                    str(logs_dir),
+                    "--skip-qemu-check",
+                    "--tokenizer-dir",
+                    str(tokenizer_dir),
+                    "--reject-output-regex",
+                    "ComCallableWrapper",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"latest_summary: run_id={latest} status=fail", result.stdout)
+        self.assertIn("issue: latest summary report failed", result.stdout)
+        self.assertIn(
+            "issue: output guard: output text rejected by regex: ComCallableWrapper",
+            result.stdout,
+        )
 
     def test_fails_without_reusable_source(self):
         with tempfile.TemporaryDirectory() as tmp:

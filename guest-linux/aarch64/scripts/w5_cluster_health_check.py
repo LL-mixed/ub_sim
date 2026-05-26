@@ -9,7 +9,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from w5_artifact_prune import collect_runs, choose_actions, format_bytes, infer_profile  # noqa: E402
-from w5_inference_run_report import build_report  # noqa: E402
+from w5_inference_run_report import build_report, output_guard_from_args  # noqa: E402
 
 
 def run_id_from_headless_pid_file(path):
@@ -143,6 +143,24 @@ def main(argv):
         default=None,
         help="Fail if prune candidate bytes exceed this limit.",
     )
+    parser.add_argument(
+        "--tokenizer-dir",
+        type=Path,
+        default=None,
+        help="Tokenizer directory or tokenizer.json used to decode token_ids for output guards.",
+    )
+    parser.add_argument(
+        "--expect-output-regex",
+        action="append",
+        default=[],
+        help="Require latest decoded output text to match this regex. Repeatable.",
+    )
+    parser.add_argument(
+        "--reject-output-regex",
+        action="append",
+        default=[],
+        help="Fail if latest decoded output text matches this regex. Repeatable.",
+    )
     args = parser.parse_args(argv)
 
     issues = []
@@ -167,7 +185,7 @@ def main(argv):
     if latest_summary is None:
         issues.append(f"no W5 summary found for profile={args.profile}")
     else:
-        latest_report = build_report(latest_summary)
+        latest_report = build_report(latest_summary, output_guard_from_args(args))
         if latest_report["status"] != "pass":
             issues.append(f"latest summary report failed run_id={latest_run_id}")
             issues.extend(latest_report["issues"])
