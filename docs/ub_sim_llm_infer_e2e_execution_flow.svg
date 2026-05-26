@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1320" height="860" viewBox="0 0 1320 860" role="img" aria-labelledby="title desc" xmlns="http://www.w3.org/2000/svg">
+  <title id="title">UB Sim W5 LLM Infer Execution Flow</title>
+  <desc id="desc">Execution flow diagram for full forward seed run and shortpath reuse run in W5 Qwen3-14B cluster inference.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1320" y2="860" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#f7f2e8"/>
+      <stop offset="100%" stop-color="#e8f0ef"/>
+    </linearGradient>
+    <filter id="shadow" x="-0.04" y="-0.08" width="1.08" height="1.16">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#25312f" flood-opacity="0.16"/>
+    </filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#2f4f4b"/>
+    </marker>
+    <style>
+      .title { font: 700 30px Georgia, 'Times New Roman', serif; fill: #20302d; }
+      .subtitle { font: 500 15px Georgia, 'Times New Roman', serif; fill: #51615d; }
+      .lane-title { font: 700 15px Georgia, 'Times New Roman', serif; fill: #38524e; }
+      .box-title { font: 700 16px Georgia, 'Times New Roman', serif; fill: #1f302d; }
+      .box-text { font: 500 13px Georgia, 'Times New Roman', serif; fill: #41514e; }
+      .small { font: 500 12px Georgia, 'Times New Roman', serif; fill: #596865; }
+      .lane { fill: rgba(255,255,255,0.58); stroke: #b8c7c2; stroke-width: 1.5; }
+      .box { fill: #fffdf7; stroke: #8fa39d; stroke-width: 1.5; filter: url(#shadow); }
+      .full { fill: #dfe9d5; stroke: #7f986f; }
+      .mem { fill: #e8e2f2; stroke: #8f7bb0; }
+      .short { fill: #f3e3d5; stroke: #b9855d; }
+      .store { fill: #f4ead8; stroke: #b59667; }
+      .arrow { fill: none; stroke: #2f4f4b; stroke-width: 2.2; marker-end: url(#arrow); }
+      .dash { fill: none; stroke: #6b7b78; stroke-width: 1.7; stroke-dasharray: 7 6; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="1320" height="860" fill="url(#bg)"/>
+  <text x="48" y="54" class="title">W5 Qwen3-14B Cluster Infer Execution Flow</text>
+  <text x="48" y="82" class="subtitle">Full-forward seed run records artifacts; reuse run performs Memory Service lookup, jump-to-terminal, sampler, optional Engram policy, and token publish.</text>
+
+  <rect x="40" y="120" width="600" height="655" rx="22" class="lane"/>
+  <text x="64" y="150" class="lane-title">SEED RUN: FULL RANGE FORWARD</text>
+  <rect x="80" y="185" width="220" height="72" rx="12" class="box full"/>
+  <text x="100" y="211" class="box-title">Step N work item</text>
+  <text x="100" y="233" class="box-text">node1 owns layers [0,5)</text>
+  <rect x="360" y="185" width="220" height="72" rx="12" class="box full"/>
+  <text x="380" y="211" class="box-title">Resolve inputs</text>
+  <text x="380" y="233" class="box-text">prompt token, previous KV</text>
+  <path d="M300,221 H350" class="arrow"/>
+
+  <rect x="80" y="305" width="220" height="72" rx="12" class="box full"/>
+  <text x="100" y="331" class="box-title">Range forward</text>
+  <text x="100" y="353" class="box-text">node1 executes [0,5)</text>
+  <rect x="360" y="305" width="220" height="72" rx="12" class="box store"/>
+  <text x="380" y="331" class="box-title">Publish hidden</text>
+  <text x="380" y="353" class="box-text">object ref for node2</text>
+  <path d="M470,257 V292" class="arrow"/>
+  <path d="M360,341 H310" class="arrow"/>
+
+  <rect x="80" y="425" width="220" height="72" rx="12" class="box mem"/>
+  <text x="100" y="451" class="box-title">Boundary observation</text>
+  <text x="100" y="473" class="box-text">fingerprint, step, position</text>
+  <rect x="360" y="425" width="220" height="72" rx="12" class="box full"/>
+  <text x="380" y="451" class="box-title">Downstream nodes</text>
+  <text x="380" y="473" class="box-text">node2..node8 range work</text>
+  <path d="M190,377 V412" class="arrow"/>
+  <path d="M300,461 H350" class="arrow"/>
+
+  <rect x="80" y="545" width="220" height="72" rx="12" class="box short"/>
+  <text x="100" y="571" class="box-title">Terminal logits</text>
+  <text x="100" y="593" class="box-text">node8 produces logits</text>
+  <rect x="360" y="545" width="220" height="72" rx="12" class="box short"/>
+  <text x="380" y="571" class="box-title">Token publish</text>
+  <text x="380" y="593" class="box-text">sampler -> optional Engram</text>
+  <path d="M470,497 V532" class="arrow"/>
+  <path d="M300,581 H350" class="arrow"/>
+
+  <rect x="150" y="665" width="360" height="58" rx="12" class="box mem"/>
+  <text x="175" y="690" class="box-title">Async / durable artifact commit target</text>
+  <text x="175" y="712" class="box-text">Memory Service catalog + block/dfs object refs</text>
+  <path d="M190,617 V655" class="dash"/>
+  <path d="M470,617 V655" class="dash"/>
+
+  <rect x="680" y="120" width="600" height="655" rx="22" class="lane"/>
+  <text x="704" y="150" class="lane-title">REUSE RUN: SHORTCUT PATH JUMP</text>
+  <rect x="720" y="185" width="220" height="72" rx="12" class="box full"/>
+  <text x="740" y="211" class="box-title">Step N work item</text>
+  <text x="740" y="233" class="box-text">node1 reaches boundary</text>
+  <rect x="1000" y="185" width="220" height="72" rx="12" class="box mem"/>
+  <text x="1020" y="211" class="box-title">Boundary lookup</text>
+  <text x="1020" y="233" class="box-text">model, position, fingerprint</text>
+  <path d="M940,221 H990" class="arrow"/>
+
+  <rect x="720" y="305" width="220" height="72" rx="12" class="box mem"/>
+  <text x="740" y="331" class="box-title">Verified hit</text>
+  <text x="740" y="353" class="box-text">terminal logits artifact</text>
+  <rect x="1000" y="305" width="220" height="72" rx="12" class="box short"/>
+  <text x="1020" y="331" class="box-title">Jump to terminal</text>
+  <text x="1020" y="353" class="box-text">skip downstream dispatch</text>
+  <path d="M1110,257 V292" class="arrow"/>
+  <path d="M1000,341 H950" class="arrow"/>
+
+  <rect x="720" y="425" width="220" height="72" rx="12" class="box short"/>
+  <text x="740" y="451" class="box-title">Sampler</text>
+  <text x="740" y="473" class="box-text">top-k/top-p/temp or greedy</text>
+  <rect x="1000" y="425" width="220" height="72" rx="12" class="box short"/>
+  <text x="1020" y="451" class="box-title">Optional Engram policy</text>
+  <text x="1020" y="473" class="box-text">history, dedupe, fallback</text>
+  <path d="M830,377 V412" class="arrow"/>
+  <path d="M940,461 H990" class="arrow"/>
+
+  <rect x="720" y="545" width="220" height="72" rx="12" class="box store"/>
+  <text x="740" y="571" class="box-title">Publish token</text>
+  <text x="740" y="593" class="box-text">committed result for step N</text>
+  <rect x="1000" y="545" width="220" height="72" rx="12" class="box full"/>
+  <text x="1020" y="571" class="box-title">Next step input</text>
+  <text x="1020" y="593" class="box-text">prompt/history derives N+1</text>
+  <path d="M1110,497 V532" class="arrow"/>
+  <path d="M1000,581 H950" class="arrow"/>
+
+  <rect x="790" y="665" width="360" height="58" rx="12" class="box mem"/>
+  <text x="815" y="690" class="box-title">Observed latest reuse run</text>
+  <text x="815" y="712" class="box-text">16 hits, 16 terminal selects, 112 no-dispatch</text>
+  <path d="M830,617 V655" class="dash"/>
+
+  <path d="M510,694 C610,790 720,790 820,694" class="dash"/>
+  <text x="565" y="812" class="small">Seed artifacts become Memory Service lookup evidence for the reuse run. The target path is runtime async commit, not log post-processing.</text>
+</svg>

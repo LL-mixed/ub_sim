@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1320" height="820" viewBox="0 0 1320 820" role="img" aria-labelledby="title desc" xmlns="http://www.w3.org/2000/svg">
+  <title id="title">UB Sim W5 LLM Infer E2E Architecture</title>
+  <desc id="desc">Architecture diagram for W5 Qwen3-14B inference cluster, Lingqu Object Service, Memory Service, shortpath, sampler, and optional Engram policy.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1320" y2="820" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#f7f2e8"/>
+      <stop offset="100%" stop-color="#e8f0ef"/>
+    </linearGradient>
+    <filter id="shadow" x="-0.03" y="-0.06" width="1.06" height="1.12">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#25312f" flood-opacity="0.16"/>
+    </filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#2f4f4b"/>
+    </marker>
+    <style>
+      .title { font: 700 30px Georgia, 'Times New Roman', serif; fill: #20302d; }
+      .subtitle { font: 500 15px Georgia, 'Times New Roman', serif; fill: #51615d; }
+      .group-label { font: 700 13px Georgia, 'Times New Roman', serif; fill: #38524e; }
+      .box-title { font: 700 17px Georgia, 'Times New Roman', serif; fill: #1f302d; }
+      .box-text { font: 500 13px Georgia, 'Times New Roman', serif; fill: #41514e; }
+      .small { font: 500 12px Georgia, 'Times New Roman', serif; fill: #596865; }
+      .group { fill: rgba(255,255,255,0.58); stroke: #b8c7c2; stroke-width: 1.5; }
+      .box { fill: #fffdf7; stroke: #8fa39d; stroke-width: 1.5; filter: url(#shadow); }
+      .runner { fill: #e3edf2; stroke: #7895a4; }
+      .guest { fill: #dfe9d5; stroke: #7f986f; }
+      .object { fill: #f4ead8; stroke: #b59667; }
+      .memory { fill: #e8e2f2; stroke: #8f7bb0; }
+      .policy { fill: #f3e3d5; stroke: #b9855d; }
+      .arrow { fill: none; stroke: #2f4f4b; stroke-width: 2.2; marker-end: url(#arrow); }
+      .dash { fill: none; stroke: #6b7b78; stroke-width: 1.7; stroke-dasharray: 7 6; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="1320" height="820" fill="url(#bg)"/>
+  <text x="48" y="54" class="title">UB Sim W5 LLM Infer E2E Architecture</text>
+  <text x="48" y="82" class="subtitle">Qwen3-14B 8-node decode, Lingqu Object Service data plane, Memory Service artifact plane, sampler and optional Engram policy.</text>
+
+  <rect x="40" y="120" width="1240" height="135" rx="22" class="group"/>
+  <text x="64" y="148" class="group-label">HOST / RUNNER / REPORT SIDE</text>
+  <rect x="75" y="170" width="300" height="58" rx="12" class="box runner"/>
+  <text x="95" y="194" class="box-title">W5 cluster launcher</text>
+  <text x="95" y="215" class="box-text">profile, env, weights, QEMU launch</text>
+  <rect x="455" y="170" width="300" height="58" rx="12" class="box runner"/>
+  <text x="475" y="194" class="box-title">Memory bootstrap</text>
+  <text x="475" y="215" class="box-text">decision store, registry, object refs</text>
+  <rect x="835" y="170" width="340" height="58" rx="12" class="box runner"/>
+  <text x="855" y="194" class="box-title">Run report tooling</text>
+  <text x="855" y="215" class="box-text">output, timing, hit/miss, store summary</text>
+  <path d="M375,199 H445" class="arrow"/>
+  <path d="M755,199 H825" class="arrow"/>
+
+  <rect x="40" y="295" width="1240" height="195" rx="22" class="group"/>
+  <text x="64" y="323" class="group-label">8-NODE GUEST / QEMU CLUSTER</text>
+  <rect x="75" y="352" width="150" height="94" rx="12" class="box guest"/>
+  <text x="98" y="378" class="box-title">nodeA / 1</text>
+  <text x="98" y="401" class="box-text">layers [0,5)</text>
+  <text x="98" y="422" class="small">range boundary owner</text>
+  <rect x="285" y="352" width="150" height="94" rx="12" class="box guest"/>
+  <text x="308" y="378" class="box-title">nodeB / 2</text>
+  <text x="308" y="401" class="box-text">layers [5,10)</text>
+  <text x="308" y="422" class="small">downstream work item</text>
+  <rect x="495" y="352" width="150" height="94" rx="12" class="box guest"/>
+  <text x="520" y="378" class="box-title">nodeC..G</text>
+  <text x="520" y="401" class="box-text">layers [10,35)</text>
+  <text x="520" y="422" class="small">range pipeline</text>
+  <rect x="705" y="352" width="150" height="94" rx="12" class="box guest"/>
+  <text x="728" y="378" class="box-title">nodeH / 8</text>
+  <text x="728" y="401" class="box-text">layers [35,40)</text>
+  <text x="728" y="422" class="small">terminal owner</text>
+  <rect x="935" y="342" width="275" height="114" rx="12" class="box policy"/>
+  <text x="957" y="370" class="box-title">Token decision chain</text>
+  <text x="957" y="394" class="box-text">terminal logits -> sampler</text>
+  <text x="957" y="415" class="box-text">-> optional Engram policy</text>
+  <text x="957" y="436" class="box-text">-> published token</text>
+  <path d="M225,399 H275" class="arrow"/>
+  <path d="M435,399 H485" class="arrow"/>
+  <path d="M645,399 H695" class="arrow"/>
+  <path d="M855,399 H925" class="arrow"/>
+
+  <rect x="40" y="530" width="580" height="210" rx="22" class="group"/>
+  <text x="64" y="558" class="group-label">LINGQU OBJECT SERVICE / OBMM DATA PLANE</text>
+  <rect x="75" y="586" width="230" height="98" rx="12" class="box object"/>
+  <text x="97" y="612" class="box-title">Hot object payloads</text>
+  <text x="97" y="635" class="box-text">hidden, KV, logits, token</text>
+  <text x="97" y="656" class="box-text">OBMM shmem backing</text>
+  <rect x="350" y="586" width="230" height="98" rx="12" class="box object"/>
+  <text x="372" y="612" class="box-title">Metadata and queue</text>
+  <text x="372" y="635" class="box-text">lingqu_object_service</text>
+  <text x="372" y="656" class="box-text">OBMM SPSC notification</text>
+
+  <rect x="700" y="530" width="580" height="210" rx="22" class="group"/>
+  <text x="724" y="558" class="group-label">LINGQU MEMORY SERVICE / ARTIFACT PLANE</text>
+  <rect x="735" y="586" width="230" height="98" rx="12" class="box memory"/>
+  <text x="757" y="612" class="box-title">Artifact catalog</text>
+  <text x="757" y="635" class="box-text">BoundaryObservation</text>
+  <text x="757" y="656" class="box-text">ExecutionArtifact</text>
+  <rect x="1010" y="586" width="230" height="98" rx="12" class="box memory"/>
+  <text x="1032" y="612" class="box-title">Policy records</text>
+  <text x="1032" y="635" class="box-text">ShortpathDecision</text>
+  <text x="1032" y="656" class="box-text">EngramStateObject / PrefixCache</text>
+
+  <path d="M605,228 C605,260 605,285 605,342" class="arrow"/>
+  <path d="M780,446 C780,500 505,518 465,586" class="arrow"/>
+  <path d="M150,446 C150,500 185,524 190,586" class="dash"/>
+  <path d="M305,635 H340" class="arrow"/>
+  <path d="M580,635 H725" class="arrow"/>
+  <path d="M965,635 H1000" class="arrow"/>
+  <path d="M1125,586 C1125,520 1095,476 1080,456" class="dash"/>
+  <text x="905" y="515" class="small">verified logits artifact feeds sampler</text>
+  <text x="206" y="515" class="small">range exits record boundary observations</text>
+
+  <rect x="75" y="765" width="1135" height="30" rx="8" fill="#fffdf7" stroke="#c8d3cf"/>
+  <text x="92" y="785" class="small">Validated latest reuse run: 16/16 steps, 8/8 nodes pass, lookup_hits=16, boundary_hits=16, terminal_selects=16, actual_range_forwards=16 vs full_pipeline_range_forwards=128.</text>
+</svg>
