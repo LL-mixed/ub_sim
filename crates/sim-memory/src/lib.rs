@@ -6168,6 +6168,10 @@ pub struct PaperEngramTableRowBlockResponse {
     pub shard_row_end: u64,
     pub dtype: TensorDType,
     pub shape: Vec<u64>,
+    #[serde(default)]
+    pub row_payload_offset_bytes: u64,
+    #[serde(default)]
+    pub row_payload_bytes: u64,
     pub block_payload_refs: Vec<LingquBlockPayloadRef>,
 }
 
@@ -6206,6 +6210,10 @@ impl PaperEngramTableRowBlockResponse {
         for dim in &self.shape {
             nonzero(*dim, "paper_engram_table_row_block_response.shape")?;
         }
+        nonzero(
+            self.row_payload_bytes,
+            "paper_engram_table_row_block_response.row_payload_bytes",
+        )?;
         require_nonempty(
             &self.block_payload_refs,
             "paper_engram_table_row_block_response.block_payload_refs",
@@ -8686,6 +8694,13 @@ impl LingquMemoryService {
             .ok_or(LingquMemoryError::MissingField(
                 "paper_engram_table_row_block.shard",
             ))?;
+        let (row_payload_offset_bytes, row_payload_bytes) =
+            paper_engram_table_row_payload_window(shard, req.row_start, req.row_end)?;
+        let block_payload_refs = paper_engram_table_payload_refs_covering_window(
+            shard,
+            row_payload_offset_bytes,
+            row_payload_bytes,
+        )?;
         let response = PaperEngramTableRowBlockResponse {
             request_id: req.request_id,
             module_id: runtime.module.module_id,
@@ -8699,7 +8714,9 @@ impl LingquMemoryService {
             shard_row_end: shard.row_end,
             dtype: shard.dtype,
             shape: shard.shape.clone(),
-            block_payload_refs: shard.block_payload_refs.clone(),
+            row_payload_offset_bytes,
+            row_payload_bytes,
+            block_payload_refs,
         };
         response.validate()?;
         Ok(response)
@@ -8972,6 +8989,97 @@ fn validate_paper_engram_gate_coverage(
         }
     }
     Ok(())
+}
+
+fn paper_engram_table_row_payload_window(
+    shard: &PaperEngramTableShardManifest,
+    row_start: u64,
+    row_end: u64,
+) -> MemoryResult<(u64, u64)> {
+    let dtype_width = shard
+        .dtype
+        .byte_width()
+        .ok_or(LingquMemoryError::InvalidValue {
+            field: "paper_engram_table_shard.dtype",
+            reason: "table row payload resolution requires fixed-width dtype",
+        })?;
+    if shard.shape.len() < 2 {
+        return Err(LingquMemoryError::InvalidValue {
+            field: "paper_engram_table_shard.shape",
+            reason: "table row payload resolution requires rows and memory dimension",
+        });
+    }
+    let shard_rows = shard.row_end - shard.row_start;
+    if shard.shape[0] != shard_rows {
+        return Err(LingquMemoryError::InvalidValue {
+            field: "paper_engram_table_shard.shape",
+            reason: "table shard first shape dimension must match row range",
+        });
+    }
+    let row_stride_elems = shard.shape[1..].iter().try_fold(1u64, |acc, dim| {
+        acc.checked_mul(*dim)
+            .ok_or(LingquMemoryError::InvalidValue {
+                field: "paper_engram_table_shard.shape",
+                reason: "table row stride exceeds u64",
+            })
+    })?;
+    let row_stride_bytes =
+        row_stride_elems
+            .checked_mul(dtype_width)
+            .ok_or(LingquMemoryError::InvalidValue {
+                field: "paper_engram_table_shard.shape",
+                reason: "table row stride bytes exceeds u64",
+            })?;
+    let row_offset = row_start - shard.row_start;
+    let row_count = row_end - row_start;
+    let offset_bytes =
+        row_offset
+            .checked_mul(row_stride_bytes)
+            .ok_or(LingquMemoryError::InvalidValue {
+                field: "paper_engram_table_row_block.row_range",
+                reason: "table row payload offset exceeds u64",
+            })?;
+    let bytes = row_count
+        .checked_mul(row_stride_bytes)
+        .ok_or(LingquMemoryError::InvalidValue {
+            field: "paper_engram_table_row_block.row_range",
+            reason: "table row payload bytes exceeds u64",
+        })?;
+    Ok((offset_bytes, bytes))
+}
+
+fn paper_engram_table_payload_refs_covering_window(
+    shard: &PaperEngramTableShardManifest,
+    offset_bytes: u64,
+    bytes: u64,
+) -> MemoryResult<Vec<LingquBlockPayloadRef>> {
+    let window_end = offset_bytes
+        .checked_add(bytes)
+        .ok_or(LingquMemoryError::InvalidValue {
+            field: "paper_engram_table_row_block.row_range",
+            reason: "table row payload window exceeds u64",
+        })?;
+    let mut logical_offset = 0u64;
+    let mut refs = Vec::new();
+    for payload_ref in &shard.block_payload_refs {
+        let payload_end = logical_offset.checked_add(payload_ref.bytes).ok_or(
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_table_shard.block_payload_refs",
+                reason: "table payload byte span exceeds u64",
+            },
+        )?;
+        if payload_end > offset_bytes && logical_offset < window_end {
+            refs.push(payload_ref.clone());
+        }
+        logical_offset = payload_end;
+    }
+    if refs.is_empty() || logical_offset < window_end {
+        return Err(LingquMemoryError::InvalidValue {
+            field: "paper_engram_table_shard.block_payload_refs",
+            reason: "table payload refs must cover requested row byte window",
+        });
+    }
+    Ok(refs)
 }
 
 fn build_paper_engram_runtime_layer_operands(
@@ -10671,6 +10779,8 @@ mod tests {
         assert_eq!(row_blocks.shard_id, shard.shard_id);
         assert_eq!(row_blocks.shard_row_start, 0);
         assert_eq!(row_blocks.shard_row_end, 1024);
+        assert_eq!(row_blocks.row_payload_offset_bytes, 10 * 512 * 4);
+        assert_eq!(row_blocks.row_payload_bytes, 512 * 4);
         assert_eq!(row_blocks.block_payload_refs, shard.block_payload_refs);
 
         let prefetch_plan = restored
@@ -10776,6 +10886,89 @@ mod tests {
                 field: "paper_engram_table_row_prefetch_ref.step_index",
                 reason: "row step_index must be covered by the plan step range"
             }
+        );
+    }
+
+    #[test]
+    fn paper_engram_row_block_resolution_filters_payload_chunks() {
+        let mut service = LingquMemoryService::new();
+        let projection = sample_paper_engram_tokenizer_projection_manifest();
+        let hash_config = sample_paper_engram_hash_config_manifest();
+        let gate = sample_paper_engram_gate_manifest();
+        let mut shard = sample_paper_engram_table_shard_manifest();
+        shard.row_end = 16;
+        shard.shape = vec![16, 512];
+        shard.block_payload_refs = (0..4)
+            .map(|chunk| {
+                LingquBlockPayloadRef::new(
+                    format!("block/pe-shard-0/chunk-{chunk}"),
+                    0,
+                    4 * 512 * 4,
+                    0xabc0 + chunk,
+                )
+            })
+            .collect();
+        shard.checksum = paper_engram_table_shard_manifest_checksum(&shard);
+        shard.validate().expect("chunked paper Engram table shard");
+        let mut module = sample_paper_engram_module_manifest();
+        module.table_shard_ids = vec![shard.shard_id.clone()];
+        module.checksum = paper_engram_module_manifest_checksum(&module);
+
+        service
+            .register_paper_engram_tokenizer_projection(projection)
+            .expect("register projection");
+        service
+            .register_paper_engram_hash_config(hash_config)
+            .expect("register hash config");
+        service
+            .register_paper_engram_table_shard(shard.clone())
+            .expect("register chunked shard");
+        service
+            .register_paper_engram_gate(gate)
+            .expect("register gate");
+        service
+            .register_paper_engram_module(module.clone())
+            .expect("register module");
+
+        let aligned = service
+            .resolve_paper_engram_table_row_blocks(PaperEngramTableRowBlockRequest {
+                request_id: "row-blocks/aligned".to_string(),
+                module_id: module.module_id.clone(),
+                layer: 3,
+                order: 2,
+                head: 0,
+                row_start: 4,
+                row_end: 8,
+                created_at_us: 17,
+            })
+            .expect("resolve aligned row block");
+        assert_eq!(aligned.row_payload_offset_bytes, 4 * 512 * 4);
+        assert_eq!(aligned.row_payload_bytes, 4 * 512 * 4);
+        assert_eq!(
+            aligned.block_payload_refs,
+            vec![shard.block_payload_refs[1].clone()]
+        );
+
+        let straddling = service
+            .resolve_paper_engram_table_row_blocks(PaperEngramTableRowBlockRequest {
+                request_id: "row-blocks/straddling".to_string(),
+                module_id: module.module_id.clone(),
+                layer: 3,
+                order: 2,
+                head: 0,
+                row_start: 3,
+                row_end: 5,
+                created_at_us: 18,
+            })
+            .expect("resolve straddling row block");
+        assert_eq!(straddling.row_payload_offset_bytes, 3 * 512 * 4);
+        assert_eq!(straddling.row_payload_bytes, 2 * 512 * 4);
+        assert_eq!(
+            straddling.block_payload_refs,
+            vec![
+                shard.block_payload_refs[0].clone(),
+                shard.block_payload_refs[1].clone()
+            ]
         );
     }
 
@@ -13258,7 +13451,7 @@ mod tests {
             block_payload_refs: vec![LingquBlockPayloadRef::new(
                 "block/pe-shard-0",
                 0,
-                262144,
+                1024 * 512 * 4,
                 0xabc,
             )],
             source_ref: Some("dfs://pe/loader/run-0".to_string()),

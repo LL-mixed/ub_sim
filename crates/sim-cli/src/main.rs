@@ -5450,6 +5450,10 @@ fn run_lingqu_memory_resolve_paper_engram_table_row_blocks_cli(
         response.shard_id, response.shard_row_start, response.shard_row_end
     );
     println!(
+        "  row_payload: offset_bytes={} bytes={}",
+        response.row_payload_offset_bytes, response.row_payload_bytes
+    );
+    println!(
         "  block_payload_refs: {}",
         response.block_payload_refs.len()
     );
@@ -18704,6 +18708,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         )
         .expect("decode row block response");
         assert_eq!(row_blocks.shard_id, shard.shard_id);
+        assert_eq!(row_blocks.row_payload_offset_bytes, 16);
+        assert_eq!(row_blocks.row_payload_bytes, 16);
         assert_eq!(row_blocks.block_payload_refs, shard.block_payload_refs);
         let row_blocks_by_model_output = root.join("row_blocks_by_model.json");
         run_lingqu_memory_resolve_paper_engram_table_row_blocks_cli(&[
