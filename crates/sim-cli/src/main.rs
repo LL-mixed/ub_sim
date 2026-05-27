@@ -72,6 +72,7 @@ use sim_services::{
 };
 use sim_topology::SimTopology;
 use sim_uapi::{
+    qwen3_dense_reference_apply_engram_context_to_terminal_sequence,
     qwen3_dense_reference_decode_loop_report, qwen3_dense_reference_decode_loop_report_with_prompt,
     qwen3_dense_reference_default_guest_input, qwen3_dense_reference_prefill_text_output_report,
     qwen3_dense_reference_range_forward_report_with_prompt, qwen3_flush_w5_memory_runtime_commits,
@@ -2237,6 +2238,9 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "validate-paper-engram-quality" => {
             run_lingqu_memory_validate_paper_engram_quality_cli(&args)
         }
+        "validate-paper-engram-backend-parity" => {
+            run_lingqu_memory_validate_paper_engram_backend_parity_cli(&args)
+        }
         "seed-paper-engram-fixture" => run_lingqu_memory_seed_paper_engram_fixture_cli(&args),
         "list-paper-engram-modules" => run_lingqu_memory_list_paper_engram_modules_cli(&args),
         "resolve-paper-engram-runtime" => run_lingqu_memory_resolve_paper_engram_runtime_cli(&args),
@@ -2275,7 +2279,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
             build-paper-engram-eval-report-from-w5-summary, \
             register-paper-engram-eval-report-from-w5-summary, \
             register-paper-engram-table-shard, register-paper-engram-gate, \
-            register-paper-engram-module, import-paper-engram-module, validate-paper-engram-module, validate-paper-engram-quality, seed-paper-engram-fixture, update-record-state, register-execution-artifact, \
+            register-paper-engram-module, import-paper-engram-module, validate-paper-engram-module, validate-paper-engram-quality, validate-paper-engram-backend-parity, seed-paper-engram-fixture, update-record-state, register-execution-artifact, \
             record-artifact-access, register-terminal-logits-artifact-from-w5-summary, \
             promote-terminal-shortpath-artifacts-from-w5-summary, boundary-lookup, \
             boundary-lookup-from-observation, boundary-request-from-w5-summary, \
@@ -3808,6 +3812,250 @@ fn run_lingqu_memory_validate_paper_engram_module_cli(args: &[String]) -> anyhow
     println!("  payload_refs: {}", payload_stats.payload_refs);
     println!("  payload_bytes: {}", payload_stats.payload_bytes);
     Ok(())
+}
+
+struct ScopedEnvVars {
+    previous: Vec<(&'static str, Option<OsString>)>,
+}
+
+impl ScopedEnvVars {
+    fn set(vars: &[(&'static str, Option<OsString>)]) -> Self {
+        let previous = vars
+            .iter()
+            .map(|(name, _)| (*name, env::var_os(name)))
+            .collect::<Vec<_>>();
+        for (name, value) in vars {
+            if let Some(value) = value {
+                env::set_var(name, value);
+            } else {
+                env::remove_var(name);
+            }
+        }
+        Self { previous }
+    }
+}
+
+impl Drop for ScopedEnvVars {
+    fn drop(&mut self) {
+        for (name, value) in self.previous.drain(..) {
+            if let Some(value) = value {
+                env::set_var(name, value);
+            } else {
+                env::remove_var(name);
+            }
+        }
+    }
+}
+
+fn run_lingqu_memory_validate_paper_engram_backend_parity_cli(
+    args: &[String],
+) -> anyhow::Result<()> {
+    let object_service_snapshot =
+        PathBuf::from(required_cli_arg(args, "--object-service-snapshot")?);
+    let state_ref = required_cli_arg(args, "--state-ref")?;
+    let hidden_size = usize::try_from(required_cli_u64(args, "--hidden-size")?)
+        .map_err(|_| anyhow::anyhow!("--hidden-size exceeds usize"))?;
+    if hidden_size == 0 {
+        anyhow::bail!("--hidden-size must be positive");
+    }
+    let layer_end = required_cli_u64(args, "--layer-end")?;
+    let total_layers = optional_cli_u64(args, "--total-layers")?.unwrap_or(layer_end);
+    if total_layers < layer_end {
+        anyhow::bail!("--total-layers must be >= --layer-end");
+    }
+    let token_ids = parse_u64_csv_arg_or_file(args, "--token-ids", "--token-ids-file")?;
+    if token_ids.is_empty() {
+        anyhow::bail!("--token-ids must not be empty");
+    }
+    let tokenizer_projection = optional_cli_path(args, "--tokenizer-projection")?;
+    let row_prefetch_ref = optional_cli_arg(args, "--row-prefetch-ref")?;
+    let max_ulp = optional_cli_u64(args, "--max-ulp")?.unwrap_or(64);
+    let max_ulp = u32::try_from(max_ulp).map_err(|_| anyhow::anyhow!("--max-ulp exceeds u32"))?;
+
+    let state_validation = qwen3_validate_engram_state_object_service_payload(
+        &state_ref,
+        &object_service_snapshot,
+        hidden_size,
+    )
+    .map_err(anyhow::Error::msg)
+    .context("validate paper Engram Object Service state payload")?;
+
+    let hidden = paper_engram_backend_parity_hidden(hidden_size);
+    let common_env = paper_engram_backend_parity_common_env(
+        &object_service_snapshot,
+        &state_ref,
+        tokenizer_projection.as_deref(),
+        row_prefetch_ref.as_deref(),
+    );
+    let (cpu_output, cpu_report) = run_paper_engram_context_backend(
+        &common_env,
+        "cpu-reference",
+        &hidden,
+        &token_ids,
+        layer_end,
+        total_layers,
+    )
+    .context("run paper Engram CPU reference backend")?;
+    let (simpler_output, simpler_report) = run_paper_engram_context_backend(
+        &common_env,
+        "simpler-host",
+        &hidden,
+        &token_ids,
+        layer_end,
+        total_layers,
+    )
+    .context("run paper Engram simpler-host backend")?;
+
+    if let Some((index, got_bits, expected_bits)) =
+        f32_slice_first_ulp_mismatch(&simpler_output, &cpu_output, max_ulp)
+    {
+        anyhow::bail!(
+            "paper Engram backend parity mismatch index={index} got_bits=0x{got_bits:08x} expected_bits=0x{expected_bits:08x} max_ulp={max_ulp}"
+        );
+    }
+
+    println!("lingqu_memory_service");
+    println!("  mode: validate-paper-engram-backend-parity");
+    println!(
+        "  object_service_snapshot: {}",
+        object_service_snapshot.display()
+    );
+    println!("  state_ref: {}", state_ref);
+    println!("  hidden_size: {}", hidden_size);
+    println!("  layer_end: {}", layer_end);
+    println!("  total_layers: {}", total_layers);
+    println!("  token_ids: {}", token_ids.len());
+    println!("  max_ulp: {}", max_ulp);
+    println!("  state_table_rows: {}", state_validation.table_rows);
+    println!("  state_table_bytes: {}", state_validation.table_bytes);
+    println!(
+        "  state_gate_weight_bytes: {}",
+        state_validation.gate_weight_bytes
+    );
+    println!("  cpu_mode: {}", cpu_report.mode);
+    println!("  simpler_mode: {}", simpler_report.mode);
+    println!(
+        "  cpu_output_checksum: {:#x}",
+        cli_bytes_checksum(&cli_f32_vec_to_le_bytes(&cpu_output))
+    );
+    println!(
+        "  simpler_output_checksum: {:#x}",
+        cli_bytes_checksum(&cli_f32_vec_to_le_bytes(&simpler_output))
+    );
+    println!(
+        "  row_prefetch_requests: {}",
+        simpler_report.row_prefetch_requests
+    );
+    println!("  row_prefetch_hits: {}", simpler_report.row_prefetch_hits);
+    println!("  table_bytes_moved: {}", simpler_report.table_bytes_moved);
+    println!(
+        "  gate_weight_bytes_moved: {}",
+        simpler_report.gate_weight_bytes_moved
+    );
+    println!("  backend_parity: ok");
+    Ok(())
+}
+
+fn paper_engram_backend_parity_hidden(hidden_size: usize) -> Vec<f32> {
+    (0..hidden_size)
+        .map(|index| ((index.wrapping_mul(17) % 97) as f32 - 48.0) / 1024.0)
+        .collect()
+}
+
+fn paper_engram_backend_parity_common_env(
+    object_service_snapshot: &Path,
+    state_ref: &str,
+    tokenizer_projection: Option<&Path>,
+    row_prefetch_ref: Option<&str>,
+) -> Vec<(&'static str, Option<OsString>)> {
+    vec![
+        (
+            SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
+            Some(object_service_snapshot.as_os_str().to_os_string()),
+        ),
+        (SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, None),
+        (
+            SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
+            Some(OsString::from(state_ref)),
+        ),
+        (
+            SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION,
+            tokenizer_projection.map(|path| path.as_os_str().to_os_string()),
+        ),
+        (
+            SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF,
+            row_prefetch_ref.map(OsString::from),
+        ),
+    ]
+}
+
+fn run_paper_engram_context_backend(
+    common_env: &[(&'static str, Option<OsString>)],
+    mode: &'static str,
+    hidden: &[f32],
+    token_ids: &[u64],
+    layer_end: u64,
+    total_layers: u64,
+) -> anyhow::Result<(Vec<f32>, sim_uapi::Qwen3DenseReferenceEngramContextReport)> {
+    let mut vars = common_env.to_vec();
+    vars.push((
+        "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP",
+        Some(OsString::from(mode)),
+    ));
+    let _env = ScopedEnvVars::set(&vars);
+    let mut sequence = vec![hidden.to_vec()];
+    let report = qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
+        &mut sequence,
+        token_ids,
+        layer_end,
+        total_layers,
+        None,
+    )
+    .map_err(anyhow::Error::msg)?
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "paper Engram context did not apply for layer_end={} total_layers={}",
+            layer_end,
+            total_layers
+        )
+    })?;
+    let output = sequence
+        .pop()
+        .ok_or_else(|| anyhow::anyhow!("paper Engram output sequence is empty"))?;
+    Ok((output, report))
+}
+
+fn f32_slice_first_ulp_mismatch(
+    got: &[f32],
+    expected: &[f32],
+    max_ulp: u32,
+) -> Option<(usize, u32, u32)> {
+    if got.len() != expected.len() {
+        return Some((got.len().min(expected.len()), 0, 0));
+    }
+    got.iter()
+        .zip(expected.iter())
+        .enumerate()
+        .find_map(|(index, (got, expected))| {
+            if f32_within_ulp(*got, *expected, max_ulp) {
+                None
+            } else {
+                Some((index, got.to_bits(), expected.to_bits()))
+            }
+        })
+}
+
+fn f32_within_ulp(got: f32, expected: f32, max_ulp: u32) -> bool {
+    if got.to_bits() == expected.to_bits() {
+        return true;
+    }
+    if !got.is_finite() || !expected.is_finite() {
+        return false;
+    }
+    if got.is_sign_negative() != expected.is_sign_negative() {
+        return false;
+    }
+    got.to_bits().abs_diff(expected.to_bits()) <= max_ulp
 }
 
 fn run_lingqu_memory_seed_paper_engram_fixture_cli(args: &[String]) -> anyhow::Result<()> {
@@ -13297,7 +13545,9 @@ mod tests {
         run_lingqu_memory_resolve_paper_engram_table_row_blocks_cli,
         run_lingqu_memory_seed_paper_engram_fixture_cli, run_lingqu_memory_update_record_state_cli,
         run_lingqu_memory_validate_durable_store, run_lingqu_memory_validate_flat_materialize,
-        run_lingqu_memory_validate_flat_query, run_lingqu_memory_validate_paper_engram_module_cli,
+        run_lingqu_memory_validate_flat_query,
+        run_lingqu_memory_validate_paper_engram_backend_parity_cli,
+        run_lingqu_memory_validate_paper_engram_module_cli,
         run_lingqu_memory_validate_paper_engram_quality_cli,
         run_lingqu_memory_validate_w5_engram_object_ref, run_qwen3_guest_decode_loop_cli,
         run_qwen3_tokenizer_projection_cli, run_w5_runtime_boundary_lookups,
@@ -18062,8 +18312,9 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             state_record.bytes,
             state_record.checksum,
         );
+        let state_ref_hex = qwen3_obmm_object_ref_wire_to_hex(&state_ref);
         let validation = qwen3_validate_engram_state_object_service_payload(
-            &qwen3_obmm_object_ref_wire_to_hex(&state_ref),
+            &state_ref_hex,
             &snapshot_path,
             hidden_size,
         )
@@ -18079,6 +18330,57 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             validation.gate_weight_bytes,
             hidden_size * std::mem::size_of::<f32>()
         );
+        let runtime_projection_path = root.join("runtime_tokenizer_projection.json");
+        let runtime_projection = Qwen3DenseReferenceTokenizerProjection {
+            model_id: "qwen3-paper-state-ref-test".to_string(),
+            tokenizer_family: "qwen3".to_string(),
+            source: "fixture://qwen3-paper-state-ref-test".to_string(),
+            source_checksum: 1,
+            total_raw_tokens: 2,
+            total_canonical_tokens: 2,
+            total_special_tokens: 0,
+            merged_token_count: 0,
+            merge_special_tokens: false,
+            compression_milli: 1000,
+            aggregate_checksum: projection.projection_checksum,
+            raw_to_canonical: vec![
+                Qwen3DenseReferenceTokenizerProjectionEntry {
+                    raw_token_id: 70,
+                    raw_token_piece: "raw-70".to_string(),
+                    canonical_token_piece: "canonical-7".to_string(),
+                    canonical_token_id: 7,
+                    is_special: false,
+                },
+                Qwen3DenseReferenceTokenizerProjectionEntry {
+                    raw_token_id: 80,
+                    raw_token_piece: "raw-80".to_string(),
+                    canonical_token_piece: "canonical-8".to_string(),
+                    canonical_token_id: 8,
+                    is_special: false,
+                },
+            ],
+            collision_classes: Vec::new(),
+        };
+        fs::write(
+            &runtime_projection_path,
+            serde_json::to_vec(&runtime_projection).expect("encode runtime tokenizer projection"),
+        )
+        .expect("write runtime tokenizer projection");
+        run_lingqu_memory_validate_paper_engram_backend_parity_cli(&[
+            "--object-service-snapshot".to_string(),
+            snapshot_path.display().to_string(),
+            "--state-ref".to_string(),
+            state_ref_hex,
+            "--hidden-size".to_string(),
+            hidden_size.to_string(),
+            "--layer-end".to_string(),
+            "3".to_string(),
+            "--token-ids".to_string(),
+            "70,80".to_string(),
+            "--tokenizer-projection".to_string(),
+            runtime_projection_path.display().to_string(),
+        ])
+        .expect("validate paper Engram CPU/simpler backend parity");
 
         fs::remove_dir_all(&root).expect("remove paper engram state-ref test dir");
     }

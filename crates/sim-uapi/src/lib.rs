@@ -16997,22 +16997,22 @@ enum Qwen3DenseReferenceEngramContextMode {
 }
 
 #[derive(Clone, Debug)]
-struct Qwen3DenseReferenceEngramContextReport {
-    mode: &'static str,
-    table_rows: usize,
-    output_checksum: u64,
-    gate_checksum: u64,
-    index_checksum: u64,
-    output_l1_milli: u64,
-    latency_ms: u128,
-    row_prefetch_requests: u64,
-    row_prefetch_hits: u64,
-    table_bytes_moved: u64,
-    gate_weight_bytes_moved: u64,
-    indices_bytes_moved: u64,
-    hidden_input_bytes: u64,
-    hidden_output_bytes: u64,
-    hidden_injection_overhead_bytes: u64,
+pub struct Qwen3DenseReferenceEngramContextReport {
+    pub mode: &'static str,
+    pub table_rows: usize,
+    pub output_checksum: u64,
+    pub gate_checksum: u64,
+    pub index_checksum: u64,
+    pub output_l1_milli: u64,
+    pub latency_ms: u128,
+    pub row_prefetch_requests: u64,
+    pub row_prefetch_hits: u64,
+    pub table_bytes_moved: u64,
+    pub gate_weight_bytes_moved: u64,
+    pub indices_bytes_moved: u64,
+    pub hidden_input_bytes: u64,
+    pub hidden_output_bytes: u64,
+    pub hidden_injection_overhead_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -19088,7 +19088,7 @@ fn qwen3_i32_values_from_le_bytes(bytes: &[u8], field: &'static str) -> Result<V
     Ok(values)
 }
 
-fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
+pub fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
     sequence: &mut [Vec<f32>],
     token_ids: &[u64],
     layer_end: u64,
