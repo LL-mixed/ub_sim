@@ -2773,7 +2773,7 @@ fn run_lingqu_memory_build_paper_engram_eval_report_from_w5_summary_cli(
     args: &[String],
 ) -> anyhow::Result<()> {
     let output_path = PathBuf::from(required_cli_arg(args, "--output")?);
-    let built = build_paper_engram_eval_report_from_w5_summary_args(args)?;
+    let built = build_paper_engram_eval_report_from_w5_summary_args(args, None)?;
 
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent)
@@ -2809,7 +2809,8 @@ fn run_lingqu_memory_register_paper_engram_eval_report_from_w5_summary_cli(
     args: &[String],
 ) -> anyhow::Result<()> {
     let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
-    let built = build_paper_engram_eval_report_from_w5_summary_args(args)?;
+    let module_id = paper_engram_module_id_from_store_cli(args, &store_path)?;
+    let built = build_paper_engram_eval_report_from_w5_summary_args(args, Some(module_id))?;
     register_paper_engram_eval_report_to_store(&store_path, built.report.clone())?;
 
     println!("lingqu_memory_service");
@@ -2844,6 +2845,7 @@ struct BuiltPaperEngramEvalReportFromW5 {
 
 fn build_paper_engram_eval_report_from_w5_summary_args(
     args: &[String],
+    module_id_override: Option<String>,
 ) -> anyhow::Result<BuiltPaperEngramEvalReportFromW5> {
     let summary_path = PathBuf::from(required_cli_arg(args, "--summary")?);
     let zero_table_summary_path = optional_cli_path(args, "--zero-table-summary")?;
@@ -2917,10 +2919,15 @@ fn build_paper_engram_eval_report_from_w5_summary_args(
         profile_hash: required_cli_u64_auto(args, "--profile-hash")?,
     };
 
+    let module_id = if let Some(module_id) = module_id_override {
+        module_id
+    } else {
+        required_cli_arg(args, "--module-id")?
+    };
     let report = PaperEngramEvalReportManifest::new(PaperEngramEvalReportManifest {
         report_id: required_cli_arg(args, "--report-id")?,
         recipe_id: required_cli_arg(args, "--recipe-id")?,
-        module_id: required_cli_arg(args, "--module-id")?,
+        module_id,
         model,
         validation_set_refs,
         sample_count: required_cli_u64(args, "--sample-count")?,
@@ -19039,6 +19046,47 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             "pe-eval-w5-quality-cli".to_string(),
             "--recipe-id".to_string(),
             recipe.recipe_id.clone(),
+            "--model-id".to_string(),
+            module.model.model_id.clone(),
+            "--engram-id".to_string(),
+            module.module_name.clone(),
+            "--model-key".to_string(),
+            module.model.model_key.clone(),
+            "--tokenizer-hash".to_string(),
+            module.model.tokenizer_hash.to_string(),
+            "--profile-hash".to_string(),
+            module.model.profile_hash.to_string(),
+            "--validation-set-refs".to_string(),
+            "dfs://datasets/qwen3-w5-quality-val".to_string(),
+            "--sample-count".to_string(),
+            "4".to_string(),
+            "--baseline-loss-milli".to_string(),
+            "1000".to_string(),
+            "--paper-engram-loss-milli".to_string(),
+            "990".to_string(),
+            "--decode-policy-loss-milli".to_string(),
+            "992".to_string(),
+            "--paper-engram-decode-policy-loss-milli".to_string(),
+            "988".to_string(),
+            "--max-allowed-regression-milli".to_string(),
+            "20".to_string(),
+            "--max-allowed-backend-latency-us".to_string(),
+            "10000".to_string(),
+            "--created-at-us".to_string(),
+            "33".to_string(),
+        ])
+        .expect("register eval report from W5 summary by model-scoped Engram id");
+        run_lingqu_memory_register_paper_engram_eval_report_from_w5_summary_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--summary".to_string(),
+            summary_path.display().to_string(),
+            "--zero-table-summary".to_string(),
+            zero_summary_path.display().to_string(),
+            "--report-id".to_string(),
+            "pe-eval-w5-quality-cli".to_string(),
+            "--recipe-id".to_string(),
+            recipe.recipe_id.clone(),
             "--module-id".to_string(),
             module.module_id.clone(),
             "--model-id".to_string(),
@@ -19068,7 +19116,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             "--created-at-us".to_string(),
             "33".to_string(),
         ])
-        .expect("register eval report from W5 summary");
+        .expect_err("reject conflicting eval report module selectors");
         run_lingqu_memory_register_paper_engram_table_shard_cli(&[
             "--store".to_string(),
             store.display().to_string(),
@@ -19097,6 +19145,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             .load_paper_engram_eval_report_manifest()
             .expect("load paper eval report registry");
         assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].module_id, module.module_id);
         assert_eq!(reports[0].row_prefetch_requests, Some(4));
         assert_eq!(reports[0].row_prefetch_hits, Some(4));
         assert_eq!(reports[0].max_backend_latency_us, Some(5000));
