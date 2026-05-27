@@ -6268,6 +6268,10 @@ pub struct PaperEngramTableRowPrefetchRef {
     pub row: u64,
     pub exact_key: u64,
     pub shard_id: String,
+    #[serde(default)]
+    pub row_payload_offset_bytes: u64,
+    #[serde(default)]
+    pub row_payload_bytes: u64,
     pub block_payload_refs: Vec<LingquBlockPayloadRef>,
 }
 
@@ -6280,6 +6284,10 @@ impl PaperEngramTableRowPrefetchRef {
         required_str(
             &self.shard_id,
             "paper_engram_table_row_prefetch_ref.shard_id",
+        )?;
+        nonzero(
+            self.row_payload_bytes,
+            "paper_engram_table_row_prefetch_ref.row_payload_bytes",
         )?;
         require_nonempty(
             &self.block_payload_refs,
@@ -8765,6 +8773,8 @@ impl LingquMemoryService {
                     row: lookup.row,
                     exact_key: lookup.exact_key,
                     shard_id: row_block.shard_id,
+                    row_payload_offset_bytes: row_block.row_payload_offset_bytes,
+                    row_payload_bytes: row_block.row_payload_bytes,
                     block_payload_refs: row_block.block_payload_refs,
                 });
             }
@@ -10846,6 +10856,8 @@ mod tests {
                 row: 10,
                 exact_key: 0x1234,
                 shard_id: "pe-shard-0".to_string(),
+                row_payload_offset_bytes: 10 * 512 * 4,
+                row_payload_bytes: 512 * 4,
                 block_payload_refs: vec![LingquBlockPayloadRef::new(
                     "block/pe-shard-0",
                     0,
