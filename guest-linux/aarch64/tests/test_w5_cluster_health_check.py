@@ -134,6 +134,8 @@ class W5ClusterHealthCheckTest(unittest.TestCase):
                     "--logs-dir",
                     str(logs_dir),
                     "--skip-qemu-check",
+                    "--require-context",
+                    "fused_simt_vendor_context",
                 ],
                 check=True,
                 capture_output=True,
@@ -151,6 +153,41 @@ class W5ClusterHealthCheckTest(unittest.TestCase):
             result.stdout,
         )
         self.assertIn("w5_health_check: status=pass profile=qwen3_14b_engram_decode", result.stdout)
+
+    def test_fails_when_required_context_is_missing_from_latest_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            logs_dir = Path(tmp) / "logs"
+            out_dir.mkdir()
+            logs_dir.mkdir()
+            reusable = "2026-05-26_00-29-50_w5_qwen3_14b_engram_decode_25060"
+            latest = "2026-05-26_03-14-03_w5_qwen3_14b_engram_decode_32556"
+            write_pass_run(out_dir, logs_dir, reusable, reusable=True)
+            write_pass_run(out_dir, logs_dir, latest)
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--out-dir",
+                    str(out_dir),
+                    "--logs-dir",
+                    str(logs_dir),
+                    "--skip-qemu-check",
+                    "--require-context",
+                    "fused_simt_vendor_context",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"latest_summary: run_id={latest} status=fail", result.stdout)
+        self.assertIn(
+            "issue: context guard: required context missing: fused_simt_vendor_context",
+            result.stdout,
+        )
 
     def test_output_guard_is_applied_to_latest_report(self):
         with tempfile.TemporaryDirectory() as tmp:

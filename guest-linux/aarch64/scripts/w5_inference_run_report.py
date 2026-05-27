@@ -78,6 +78,22 @@ def split_env_regexes(value):
     return [line.strip() for line in stripped.splitlines() if line.strip()]
 
 
+def split_env_values(value):
+    if not value:
+        return []
+    stripped = value.strip()
+    if not stripped:
+        return []
+    if stripped.startswith("["):
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            return [stripped]
+        return [str(item) for item in parsed if str(item)]
+    normalized = stripped.replace(",", "\n")
+    return [line.strip() for line in normalized.splitlines() if line.strip()]
+
+
 def output_guard_from_env():
     return {
         "tokenizer_dir": os.environ.get("SIM_W5_OUTPUT_TOKENIZER_DIR")
@@ -94,6 +110,18 @@ def output_guard_from_args(args):
         guard["tokenizer_dir"] = str(args.tokenizer_dir)
     guard["expect_regexes"].extend(args.expect_output_regex or [])
     guard["reject_regexes"].extend(args.reject_output_regex or [])
+    return guard
+
+
+def context_guard_from_env():
+    return {
+        "require_contexts": split_env_values(os.environ.get("SIM_W5_REQUIRE_CONTEXT")),
+    }
+
+
+def context_guard_from_args(args):
+    guard = context_guard_from_env()
+    guard["require_contexts"].extend(args.require_context or [])
     return guard
 
 
@@ -266,6 +294,30 @@ def evaluate_output_guard(parsed, output_guard):
     return result
 
 
+def evaluate_context_guard(parsed, context_guard):
+    guard = context_guard or {}
+    required_contexts = list(guard.get("require_contexts") or [])
+    result = {
+        "enabled": bool(required_contexts),
+        "status": "disabled",
+        "required_contexts": required_contexts,
+        "issues": [],
+    }
+    if not required_contexts:
+        return result
+
+    for label in required_contexts:
+        if label not in CONTEXT_SUMMARY_PREFIXES:
+            result["issues"].append(f"unsupported required context: {label}")
+            continue
+        fields = parsed["context_summaries"].get(label, {})
+        if parse_int(fields.get("records")) <= 0:
+            result["issues"].append(f"required context missing: {label}")
+
+    result["status"] = "fail" if result["issues"] else "pass"
+    return result
+
+
 def infer_run_id(summary_path):
     match = RUN_SUMMARY_RE.match(summary_path.name)
     if not match:
@@ -367,7 +419,7 @@ def parse_summary(summary_path):
     return parsed
 
 
-def validate(parsed, paths, output_guard=None):
+def validate(parsed, paths, output_guard=None, context_guard=None):
     issues = []
     summary = parsed["summary"]
     shortpath = parsed["shortpath"]
@@ -444,6 +496,9 @@ def validate(parsed, paths, output_guard=None):
     output_guard_result = evaluate_output_guard(parsed, output_guard)
     for issue in output_guard_result["issues"]:
         issues.append(f"output guard: {issue}")
+    context_guard_result = evaluate_context_guard(parsed, context_guard)
+    for issue in context_guard_result["issues"]:
+        issues.append(f"context guard: {issue}")
 
     artifact_sizes = {}
     for label, limit in ARTIFACT_LIMITS.items():
@@ -468,7 +523,7 @@ def validate(parsed, paths, output_guard=None):
             "max_bytes": None,
         }
 
-    return issues, artifact_sizes, output_guard_result
+    return issues, artifact_sizes, output_guard_result, context_guard_result
 
 
 def timing_report(parsed):
@@ -529,11 +584,13 @@ def context_report(parsed):
     return result
 
 
-def build_report(summary_path, output_guard=None):
+def build_report(summary_path, output_guard=None, context_guard=None):
     run_id = infer_run_id(summary_path)
     parsed = parse_summary(summary_path)
     paths = artifact_paths(summary_path, run_id, parsed["run_dir"])
-    issues, artifact_sizes, output_guard_result = validate(parsed, paths, output_guard)
+    issues, artifact_sizes, output_guard_result, context_guard_result = validate(
+        parsed, paths, output_guard, context_guard
+    )
     summary = parsed["summary"]
     memory = parsed["memory_service"]
     shortpath = parsed["shortpath"]
@@ -563,6 +620,7 @@ def build_report(summary_path, output_guard=None):
         "context": context_report(parsed),
         "artifacts": artifact_sizes,
         "output_guard": output_guard_result,
+        "context_guard": context_guard_result,
     }
 
 
@@ -588,6 +646,13 @@ def print_text_report(report):
             f"expect_regexes={json.dumps(output_guard['expect_regexes'])} "
             f"reject_regexes={json.dumps(output_guard['reject_regexes'])} "
             f"text={json.dumps(output_guard['text'])}"
+        )
+    context_guard = report["context_guard"]
+    if context_guard["enabled"]:
+        print(
+            "context_guard: "
+            f"status={context_guard['status']} "
+            f"required_contexts={json.dumps(context_guard['required_contexts'])}"
         )
     shortpath = report["shortpath"]
     print(
@@ -676,13 +741,24 @@ def main(argv):
         default=[],
         help="Fail if tokenizer-decoded output text matches this regex. Repeatable.",
     )
+    parser.add_argument(
+        "--require-context",
+        action="append",
+        choices=CONTEXT_SUMMARY_PREFIXES,
+        default=[],
+        help="Require a context summary with at least one record. Repeatable.",
+    )
     args = parser.parse_args(argv)
 
     if not args.summary.is_file():
         print(f"summary file is missing: {args.summary}", file=sys.stderr)
         return 2
 
-    report = build_report(args.summary, output_guard_from_args(args))
+    report = build_report(
+        args.summary,
+        output_guard_from_args(args),
+        context_guard_from_args(args),
+    )
     if args.json_output:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:

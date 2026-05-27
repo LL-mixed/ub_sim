@@ -171,12 +171,22 @@ class W5InferenceRunReportTest(unittest.TestCase):
             )
 
             result = subprocess.run(
-                [sys.executable, str(SCRIPT), str(summary)],
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    str(summary),
+                    "--require-context",
+                    "fused_simt_vendor_context",
+                ],
                 check=True,
                 capture_output=True,
                 text=True,
             )
 
+        self.assertIn(
+            'context_guard: status=pass required_contexts=["fused_simt_vendor_context"]',
+            result.stdout,
+        )
         self.assertIn(
             "context: label=fused_simt_vendor_context records=2 steps=2/2 "
             "modes=fused-simt-vendor-object-ref,fused-simt-vendor-paper-object-ref "
@@ -190,6 +200,40 @@ class W5InferenceRunReportTest(unittest.TestCase):
             result.stdout,
         )
         self.assertNotIn("issue:", result.stdout)
+
+    def test_fails_when_required_context_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            logs_dir = Path(tmp) / "logs" / "run_headless8"
+            out_dir.mkdir()
+            logs_dir.mkdir(parents=True)
+            run_id = "run"
+            write_artifacts(out_dir, run_id)
+            summary = out_dir / f"eight_node_w5_inference_cluster_summary.{run_id}.txt"
+            write_summary(summary, logs_dir)
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    str(summary),
+                    "--require-context",
+                    "fused_simt_vendor_context",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            'context_guard: status=fail required_contexts=["fused_simt_vendor_context"]',
+            result.stdout,
+        )
+        self.assertIn(
+            "issue: context guard: required context missing: fused_simt_vendor_context",
+            result.stdout,
+        )
 
     def test_reports_shared_artifact_paths_from_env(self):
         with tempfile.TemporaryDirectory() as tmp:
