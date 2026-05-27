@@ -604,10 +604,18 @@ impl PaperEngramTrainingRecipeManifest {
             self.base_checkpoint_checksum,
             "paper_engram_training_recipe.base_checkpoint_checksum",
         )?;
-        self.tokenizer_projection_ref
-            .validate("paper_engram_training_recipe.tokenizer_projection_ref")?;
-        self.hash_config_ref
-            .validate("paper_engram_training_recipe.hash_config_ref")?;
+        validate_paper_engram_model_artifact_ref(
+            &self.tokenizer_projection_ref,
+            &self.model.model_id,
+            "projection",
+            "paper_engram_training_recipe.tokenizer_projection_ref",
+        )?;
+        validate_paper_engram_model_artifact_ref(
+            &self.hash_config_ref,
+            &self.model.model_id,
+            "hash-config",
+            "paper_engram_training_recipe.hash_config_ref",
+        )?;
         if self.dataset_refs.is_empty() {
             return Err(LingquMemoryError::MissingField(
                 "paper_engram_training_recipe.dataset_refs",
@@ -992,8 +1000,12 @@ impl PaperEngramTokenizerProjectionManifest {
             &self.tokenizer_id,
             "paper_engram_tokenizer_projection.tokenizer_id",
         )?;
-        self.projection_ref
-            .validate("paper_engram_tokenizer_projection.projection_ref")?;
+        validate_paper_engram_model_artifact_ref(
+            &self.projection_ref,
+            &self.model_id,
+            "projection",
+            "paper_engram_tokenizer_projection.projection_ref",
+        )?;
         nonzero(
             self.projection_checksum,
             "paper_engram_tokenizer_projection.projection_checksum",
@@ -1099,8 +1111,12 @@ impl PaperEngramHashConfigManifest {
             self.tokenizer_projection_checksum,
             "paper_engram_hash_config.tokenizer_projection_checksum",
         )?;
-        self.hash_config_ref
-            .validate("paper_engram_hash_config.hash_config_ref")?;
+        validate_paper_engram_model_artifact_ref(
+            &self.hash_config_ref,
+            &self.model_id,
+            "hash-config",
+            "paper_engram_hash_config.hash_config_ref",
+        )?;
         nonzero(
             self.hash_config_checksum,
             "paper_engram_hash_config.hash_config_checksum",
@@ -1608,10 +1624,18 @@ impl PaperEngramModuleManifest {
             "paper_engram_module.base_checkpoint_checksum",
         )?;
         required_str(&self.tokenizer_id, "paper_engram_module.tokenizer_id")?;
-        self.tokenizer_projection_ref
-            .validate("paper_engram_module.tokenizer_projection_ref")?;
-        self.hash_config_ref
-            .validate("paper_engram_module.hash_config_ref")?;
+        validate_paper_engram_model_artifact_ref(
+            &self.tokenizer_projection_ref,
+            &self.model.model_id,
+            "projection",
+            "paper_engram_module.tokenizer_projection_ref",
+        )?;
+        validate_paper_engram_model_artifact_ref(
+            &self.hash_config_ref,
+            &self.model.model_id,
+            "hash-config",
+            "paper_engram_module.hash_config_ref",
+        )?;
         if let Some(reference) = &self.training_recipe_ref {
             reference.validate("paper_engram_module.training_recipe_ref")?;
         }
@@ -2396,6 +2420,43 @@ pub fn paper_engram_eval_report_dfs_path(report_id: &str) -> LingquDfsPath {
         "/lingqu/memory/engram/eval-reports/{}.json",
         lingqu_memory_path_id(report_id)
     ))
+}
+
+pub fn paper_engram_tokenizer_projection_dfs_path(model_id: &str, version: u64) -> LingquDfsPath {
+    LingquDfsPath::new(format!(
+        "/lingqu/memory/models/{}/engram/projection/v{}.json",
+        lingqu_memory_path_id(model_id),
+        version
+    ))
+}
+
+pub fn paper_engram_hash_config_dfs_path(model_id: &str, version: u64) -> LingquDfsPath {
+    LingquDfsPath::new(format!(
+        "/lingqu/memory/models/{}/engram/hash-config/v{}.json",
+        lingqu_memory_path_id(model_id),
+        version
+    ))
+}
+
+fn validate_paper_engram_model_artifact_ref(
+    reference: &LingquDfsPath,
+    model_id: &str,
+    family: &str,
+    field: &'static str,
+) -> MemoryResult<()> {
+    reference.validate(field)?;
+    let expected_prefix = format!(
+        "/lingqu/memory/models/{}/engram/{}/",
+        lingqu_memory_path_id(model_id),
+        family
+    );
+    if !reference.path.starts_with(&expected_prefix) || !reference.path.ends_with(".json") {
+        return Err(LingquMemoryError::InvalidValue {
+            field,
+            reason: "paper Engram artifact path must use the model-scoped semantic family",
+        });
+    }
+    Ok(())
 }
 
 fn lingqu_memory_path_id(id: &str) -> String {
@@ -11167,6 +11228,63 @@ mod tests {
     }
 
     #[test]
+    fn paper_engram_refs_require_model_scoped_semantic_paths() {
+        let mut projection = sample_paper_engram_tokenizer_projection_manifest();
+        projection.projection_ref = LingquDfsPath::new("/lingqu/memory/engram/tokenizer-proj.json");
+        projection.checksum = paper_engram_tokenizer_projection_manifest_checksum(&projection);
+        assert_eq!(
+            projection
+                .validate()
+                .expect_err("projection ref must be model scoped"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_tokenizer_projection.projection_ref",
+                reason: "paper Engram artifact path must use the model-scoped semantic family"
+            }
+        );
+
+        let mut hash_config = sample_paper_engram_hash_config_manifest();
+        hash_config.hash_config_ref =
+            LingquDfsPath::new("/lingqu/memory/models/OtherModel/engram/hash-config/v1.json");
+        hash_config.checksum = paper_engram_hash_config_manifest_checksum(&hash_config);
+        assert_eq!(
+            hash_config
+                .validate()
+                .expect_err("hash config ref must be under the bound model"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_hash_config.hash_config_ref",
+                reason: "paper Engram artifact path must use the model-scoped semantic family"
+            }
+        );
+
+        let mut recipe = sample_paper_engram_training_recipe_manifest();
+        recipe.tokenizer_projection_ref =
+            LingquDfsPath::new("/lingqu/memory/engram/tokenizer-proj.json");
+        recipe.checksum = paper_engram_training_recipe_manifest_checksum(&recipe);
+        assert_eq!(
+            recipe
+                .validate()
+                .expect_err("recipe projection ref must be model scoped"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_training_recipe.tokenizer_projection_ref",
+                reason: "paper Engram artifact path must use the model-scoped semantic family"
+            }
+        );
+
+        let mut module = sample_paper_engram_module_manifest();
+        module.hash_config_ref = LingquDfsPath::new("/lingqu/memory/engram/hash-config.json");
+        module.checksum = paper_engram_module_manifest_checksum(&module);
+        assert_eq!(
+            module
+                .validate()
+                .expect_err("module hash config ref must be model scoped"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_module.hash_config_ref",
+                reason: "paper Engram artifact path must use the model-scoped semantic family"
+            }
+        );
+    }
+
+    #[test]
     fn paper_engram_hash_config_accepts_legacy_manifest_without_table_specs() {
         let mut legacy = sample_paper_engram_hash_config_manifest();
         legacy.table_specs.clear();
@@ -11194,9 +11312,7 @@ mod tests {
             model_id: "Qwen3-0.6B".to_string(),
             tokenizer_projection_id: projection.projection_id,
             tokenizer_projection_checksum: projection.projection_checksum,
-            hash_config_ref: LingquDfsPath::new(
-                "/lingqu/memory/engram/hash-config-incomplete-specs.json",
-            ),
+            hash_config_ref: paper_engram_hash_config_dfs_path("Qwen3-0.6B", 2),
             hash_config_checksum: 0x2470,
             orders: vec![2],
             heads_per_order: 2,
@@ -11286,7 +11402,6 @@ mod tests {
     #[test]
     fn paper_engram_training_recipe_registration_rejects_artifact_mismatch() {
         for case in [
-            "model",
             "orders",
             "heads_per_order",
             "table_rows_legacy",
@@ -11297,13 +11412,6 @@ mod tests {
             let mut hash_config = sample_paper_engram_hash_config_manifest();
             let mut recipe = sample_paper_engram_training_recipe_manifest();
             let (expected_field, expected_reason) = match case {
-                "model" => {
-                    recipe.model.model_id = "OtherModel".to_string();
-                    (
-                        "paper_engram_training_recipe.model",
-                        "training recipe model must match projection and hash config model_id",
-                    )
-                }
                 "orders" => {
                     recipe.orders = vec![3];
                     recipe.table_specs[0].order = 3;
@@ -11416,7 +11524,7 @@ mod tests {
         let mut alternate_projection = projection.clone();
         alternate_projection.projection_id = "pe-projection-alt".to_string();
         alternate_projection.projection_ref =
-            LingquDfsPath::new("/lingqu/memory/engram/tokenizer-proj-alt.json");
+            paper_engram_tokenizer_projection_dfs_path("Qwen3-0.6B", 2);
         alternate_projection.projection_checksum = 0x2468;
         alternate_projection.checksum =
             paper_engram_tokenizer_projection_manifest_checksum(&alternate_projection);
@@ -11425,8 +11533,7 @@ mod tests {
             .expect("build alternate projection");
 
         let mut alternate_hash_config = sample_paper_engram_hash_config_manifest();
-        alternate_hash_config.hash_config_ref =
-            LingquDfsPath::new("/lingqu/memory/engram/hash-config-alt.json");
+        alternate_hash_config.hash_config_ref = paper_engram_hash_config_dfs_path("Qwen3-0.6B", 2);
         alternate_hash_config.tokenizer_projection_id = alternate_projection.projection_id.clone();
         alternate_hash_config.tokenizer_projection_checksum =
             alternate_projection.projection_checksum;
@@ -11510,7 +11617,7 @@ mod tests {
         let mut alternate_projection = projection.clone();
         alternate_projection.projection_id = "pe-projection-alt".to_string();
         alternate_projection.projection_ref =
-            LingquDfsPath::new("/lingqu/memory/engram/tokenizer-proj-alt.json");
+            paper_engram_tokenizer_projection_dfs_path("Qwen3-0.6B", 2);
         alternate_projection.projection_checksum = 0x2468;
         alternate_projection.checksum =
             paper_engram_tokenizer_projection_manifest_checksum(&alternate_projection);
@@ -11519,8 +11626,7 @@ mod tests {
             .expect("build alternate projection");
 
         let mut alternate_hash_config = sample_paper_engram_hash_config_manifest();
-        alternate_hash_config.hash_config_ref =
-            LingquDfsPath::new("/lingqu/memory/engram/hash-config-alt.json");
+        alternate_hash_config.hash_config_ref = paper_engram_hash_config_dfs_path("Qwen3-0.6B", 2);
         alternate_hash_config.tokenizer_projection_id = alternate_projection.projection_id.clone();
         alternate_hash_config.tokenizer_projection_checksum =
             alternate_projection.projection_checksum;
@@ -14790,7 +14896,7 @@ mod tests {
             projection_id: "pe-projection-0".to_string(),
             model_id: "Qwen3-0.6B".to_string(),
             tokenizer_id: "tok/qwen3-14b".to_string(),
-            projection_ref: LingquDfsPath::new("/lingqu/memory/engram/tokenizer-proj.json"),
+            projection_ref: paper_engram_tokenizer_projection_dfs_path("Qwen3-0.6B", 1),
             projection_checksum: 0x1357,
             source_ref: Some("dfs://pe/tokenizer/run-0".to_string()),
             checksum: 1,
@@ -14812,7 +14918,7 @@ mod tests {
             model_id: "Qwen3-0.6B".to_string(),
             tokenizer_projection_id: projection.projection_id,
             tokenizer_projection_checksum: projection.projection_checksum,
-            hash_config_ref: LingquDfsPath::new("/lingqu/memory/engram/hash-config.json"),
+            hash_config_ref: paper_engram_hash_config_dfs_path("Qwen3-0.6B", 1),
             hash_config_checksum: 0x2468,
             orders: vec![2],
             heads_per_order: 1,
@@ -14963,10 +15069,8 @@ mod tests {
             model: sample_model_binding(),
             base_checkpoint_checksum: 0x2026,
             tokenizer_id: "tok/qwen3-14b".to_string(),
-            tokenizer_projection_ref: LingquDfsPath::new(
-                "/lingqu/memory/engram/tokenizer-proj.json",
-            ),
-            hash_config_ref: LingquDfsPath::new("/lingqu/memory/engram/hash-config.json"),
+            tokenizer_projection_ref: paper_engram_tokenizer_projection_dfs_path("Qwen3-0.6B", 1),
+            hash_config_ref: paper_engram_hash_config_dfs_path("Qwen3-0.6B", 1),
             table_shard_ids: vec!["pe-shard-0".to_string()],
             gate_ids: vec!["pe-gate-0".to_string()],
             layers: vec![3],

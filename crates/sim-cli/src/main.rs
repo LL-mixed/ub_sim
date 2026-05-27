@@ -5279,10 +5279,7 @@ fn run_lingqu_memory_seed_paper_engram_fixture_cli(args: &[String]) -> anyhow::R
             projection_id: format!("{id}/projection"),
             model_id: model_id.clone(),
             tokenizer_id: tokenizer_id.clone(),
-            projection_ref: LingquDfsPath::new(format!(
-                "/lingqu/memory/models/{}/engram/fixture/projection.json",
-                cli_path_id(&model_id)
-            )),
+            projection_ref: sim_memory::paper_engram_tokenizer_projection_dfs_path(&model_id, 1),
             projection_checksum: tokenizer_hash,
             source_ref: Some("fixture://sim-cli/paper-engram/tokenizer-projection".to_string()),
             checksum: 1,
@@ -5296,10 +5293,7 @@ fn run_lingqu_memory_seed_paper_engram_fixture_cli(args: &[String]) -> anyhow::R
         model_id: model_id.clone(),
         tokenizer_projection_id: projection.projection_id.clone(),
         tokenizer_projection_checksum: projection.projection_checksum,
-        hash_config_ref: LingquDfsPath::new(format!(
-            "/lingqu/memory/models/{}/engram/fixture/hash-config.json",
-            cli_path_id(&model_id)
-        )),
+        hash_config_ref: sim_memory::paper_engram_hash_config_dfs_path(&model_id, 1),
         hash_config_checksum: qwen3_checksum_words(&[
             tokenizer_hash,
             table_rows,
@@ -21525,9 +21519,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         let mut no_evidence_report = report.clone();
         no_evidence_report.report_id = "pe-eval-quality-no-evidence-cli".to_string();
         no_evidence_report.recipe_id = no_evidence_recipe.recipe_id.clone();
-        let no_evidence_report =
-            sim_memory::PaperEngramEvalReportManifest::new(no_evidence_report)
-                .expect("build no-evidence paper engram eval report");
+        let no_evidence_report = sim_memory::PaperEngramEvalReportManifest::new(no_evidence_report)
+            .expect("build no-evidence paper engram eval report");
         module.training_recipe_ref = Some(sim_memory::paper_engram_training_recipe_dfs_path(
             &recipe.recipe_id,
         ));
@@ -21626,11 +21619,9 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         ])
         .expect_err("registering quality module without recipe evidence should fail");
         assert!(
-            no_evidence_err
-                .chain()
-                .any(|cause| cause.to_string().contains(
-                    "paper_engram_training_recipe.evidence_refs"
-                )),
+            no_evidence_err.chain().any(|cause| cause
+                .to_string()
+                .contains("paper_engram_training_recipe.evidence_refs")),
             "{no_evidence_err:?}"
         );
         run_lingqu_memory_register_paper_engram_module_cli(&[
