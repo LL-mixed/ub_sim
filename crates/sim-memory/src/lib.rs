@@ -8014,6 +8014,11 @@ impl LingquMemoryService {
             }
         }
         self.validate_paper_engram_module_artifact_bindings(&manifest)?;
+        let table_shards =
+            resolve_paper_engram_module_table_shards(&manifest, &self.paper_engram_table_shards)?;
+        let gates = resolve_paper_engram_module_gates(&manifest, &self.paper_engram_gates)?;
+        let _layer_operands =
+            build_paper_engram_runtime_layer_operands(&manifest, &table_shards, &gates)?;
         self.validate_paper_engram_quality_claim(&manifest)?;
         self.paper_engram_modules
             .insert(manifest.module_id.clone(), manifest);
@@ -10940,6 +10945,80 @@ mod tests {
     }
 
     #[test]
+    fn paper_engram_module_registration_rejects_incompatible_table_shard() {
+        let mut service = LingquMemoryService::new();
+        let projection = sample_paper_engram_tokenizer_projection_manifest();
+        let hash_config = sample_paper_engram_hash_config_manifest();
+        let mut shard = sample_paper_engram_table_shard_manifest();
+        let gate = sample_paper_engram_gate_manifest();
+        let module = sample_paper_engram_module_manifest();
+
+        shard.shape[1] = module.memory_dim + 1;
+        shard.checksum = paper_engram_table_shard_manifest_checksum(&shard);
+        shard.validate().expect("build incompatible table shard");
+
+        service
+            .register_paper_engram_tokenizer_projection(projection)
+            .expect("register projection");
+        service
+            .register_paper_engram_hash_config(hash_config)
+            .expect("register hash config");
+        service
+            .register_paper_engram_table_shard(shard)
+            .expect("register shard before module compatibility check");
+        service
+            .register_paper_engram_gate(gate)
+            .expect("register gate");
+
+        assert_eq!(
+            service
+                .register_paper_engram_module(module)
+                .expect_err("module must reject incompatible table shard"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_table_shard.shape",
+                reason: "table shard memory dimension must match module memory_dim"
+            }
+        );
+    }
+
+    #[test]
+    fn paper_engram_module_registration_rejects_incompatible_gate() {
+        let mut service = LingquMemoryService::new();
+        let projection = sample_paper_engram_tokenizer_projection_manifest();
+        let hash_config = sample_paper_engram_hash_config_manifest();
+        let shard = sample_paper_engram_table_shard_manifest();
+        let mut gate = sample_paper_engram_gate_manifest();
+        let module = sample_paper_engram_module_manifest();
+
+        gate.layer = module.layers[0] + 1;
+        gate.checksum = paper_engram_gate_manifest_checksum(&gate);
+        gate.validate().expect("build incompatible gate");
+
+        service
+            .register_paper_engram_tokenizer_projection(projection)
+            .expect("register projection");
+        service
+            .register_paper_engram_hash_config(hash_config)
+            .expect("register hash config");
+        service
+            .register_paper_engram_table_shard(shard)
+            .expect("register shard");
+        service
+            .register_paper_engram_gate(gate)
+            .expect("register gate before module compatibility check");
+
+        assert_eq!(
+            service
+                .register_paper_engram_module(module)
+                .expect_err("module must reject incompatible gate"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_gate.layer",
+                reason: "gate layer must be declared by module"
+            }
+        );
+    }
+
+    #[test]
     fn paper_engram_module_resolves_by_model_and_engram_id() {
         let mut service = LingquMemoryService::new();
         let projection = sample_paper_engram_tokenizer_projection_manifest();
@@ -11966,7 +12045,7 @@ mod tests {
     }
 
     #[test]
-    fn paper_engram_runtime_resolution_rejects_incomplete_table_coverage() {
+    fn paper_engram_module_registration_rejects_incomplete_table_coverage() {
         let mut service = LingquMemoryService::new();
         let projection = sample_paper_engram_tokenizer_projection_manifest();
         let mut hash_config = sample_paper_engram_hash_config_manifest();
@@ -11991,16 +12070,11 @@ mod tests {
         service
             .register_paper_engram_gate(gate)
             .expect("register gate");
-        service
-            .register_paper_engram_module(module.clone())
-            .expect("register module");
-
-        let err = service
-            .resolve_paper_engram_runtime_artifacts(&module.module_id)
-            .expect_err("missing order=3 table operand should fail");
 
         assert_eq!(
-            err,
+            service
+                .register_paper_engram_module(module)
+                .expect_err("missing order=3 table operand should fail at registration"),
             LingquMemoryError::MissingField("paper_engram_runtime.table_operand")
         );
     }
