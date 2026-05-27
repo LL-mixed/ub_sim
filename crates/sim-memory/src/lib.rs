@@ -2140,6 +2140,25 @@ fn paper_engram_training_mode_tag(mode: PaperEngramTrainingMode) -> u64 {
     }
 }
 
+fn paper_engram_quality_claim_accepts_training_mode(
+    claim: PaperEngramQualityClaim,
+    mode: PaperEngramTrainingMode,
+) -> bool {
+    matches!(
+        (claim, mode),
+        (
+            PaperEngramQualityClaim::Posttrain,
+            PaperEngramTrainingMode::EngramOnlyContinuedPretrain
+        ) | (
+            PaperEngramQualityClaim::Finetune,
+            PaperEngramTrainingMode::EngramLora | PaperEngramTrainingMode::FullFinetune
+        ) | (
+            PaperEngramQualityClaim::Imported,
+            PaperEngramTrainingMode::ExternalImport
+        )
+    )
+}
+
 fn paper_engram_training_recipe_manifest_checksum(
     manifest: &PaperEngramTrainingRecipeManifest,
 ) -> u64 {
@@ -7862,15 +7881,7 @@ impl LingquMemoryService {
                 reason: "eval report must bind the referenced recipe and module",
             });
         }
-        let expected_mode = match module.quality_claim {
-            PaperEngramQualityClaim::Posttrain => {
-                PaperEngramTrainingMode::EngramOnlyContinuedPretrain
-            }
-            PaperEngramQualityClaim::Finetune => PaperEngramTrainingMode::EngramLora,
-            PaperEngramQualityClaim::Imported => PaperEngramTrainingMode::ExternalImport,
-            _ => unreachable!(),
-        };
-        if recipe.mode != expected_mode {
+        if !paper_engram_quality_claim_accepts_training_mode(module.quality_claim, recipe.mode) {
             return Err(LingquMemoryError::InvalidValue {
                 field: "paper_engram_module.quality_claim",
                 reason: "quality claim must match training recipe mode",
@@ -10735,6 +10746,84 @@ mod tests {
         service
             .validate_paper_engram_module_quality(&module.module_id)
             .expect("validate imported module quality claim");
+    }
+
+    #[test]
+    fn paper_engram_finetune_quality_claim_accepts_lora_and_full_finetune_recipes() {
+        for mode in [
+            PaperEngramTrainingMode::EngramLora,
+            PaperEngramTrainingMode::FullFinetune,
+        ] {
+            let mut service = LingquMemoryService::new();
+            let projection = sample_paper_engram_tokenizer_projection_manifest();
+            let hash_config = sample_paper_engram_hash_config_manifest();
+            let shard = sample_paper_engram_table_shard_manifest();
+            let gate = sample_paper_engram_gate_manifest();
+            let mut recipe = sample_paper_engram_training_recipe_manifest();
+            recipe.mode = mode;
+            recipe.objective = match mode {
+                PaperEngramTrainingMode::EngramLora => "next-token-loss+paper-engram-lora",
+                PaperEngramTrainingMode::FullFinetune => "next-token-loss+paper-engram-full",
+                _ => unreachable!(),
+            }
+            .to_string();
+            recipe.frozen_base_model = false;
+            recipe.lora_enabled = matches!(mode, PaperEngramTrainingMode::EngramLora);
+            recipe.checksum = paper_engram_training_recipe_manifest_checksum(&recipe);
+            recipe
+                .validate()
+                .expect("finetune recipe mode remains valid");
+            let report = sample_paper_engram_eval_report_manifest();
+            let mut module = sample_paper_engram_module_manifest();
+            module.quality_claim = PaperEngramQualityClaim::Finetune;
+            module.training_recipe_ref =
+                Some(paper_engram_training_recipe_dfs_path(&recipe.recipe_id));
+            module.eval_report_ref = Some(paper_engram_eval_report_dfs_path(&report.report_id));
+            module.checksum = paper_engram_module_manifest_checksum(&module);
+
+            service
+                .register_paper_engram_tokenizer_projection(projection)
+                .expect("register projection");
+            service
+                .register_paper_engram_hash_config(hash_config)
+                .expect("register hash config");
+            service
+                .register_paper_engram_training_recipe(recipe)
+                .expect("register finetune recipe");
+            service
+                .register_paper_engram_eval_report(report)
+                .expect("register eval report");
+            service
+                .register_paper_engram_table_shard(shard)
+                .expect("register shard");
+            service
+                .register_paper_engram_gate(gate)
+                .expect("register gate");
+            service
+                .register_paper_engram_module(module.clone())
+                .expect("register finetune module");
+            service
+                .validate_paper_engram_module_quality(&module.module_id)
+                .expect("validate finetune module quality claim");
+        }
+    }
+
+    #[test]
+    fn paper_engram_quality_claim_rejects_wrong_training_mode() {
+        assert!(
+            !paper_engram_quality_claim_accepts_training_mode(
+                PaperEngramQualityClaim::Posttrain,
+                PaperEngramTrainingMode::FullFinetune
+            ),
+            "posttrain quality must not accept full-finetune recipe evidence"
+        );
+        assert!(
+            !paper_engram_quality_claim_accepts_training_mode(
+                PaperEngramQualityClaim::Imported,
+                PaperEngramTrainingMode::EngramLora
+            ),
+            "imported quality must not accept local finetune recipe evidence"
+        );
     }
 
     #[test]
