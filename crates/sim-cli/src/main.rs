@@ -2793,6 +2793,10 @@ struct PaperEngramEvalComparison {
 fn run_lingqu_memory_compare_paper_engram_eval_report_cli(args: &[String]) -> anyhow::Result<()> {
     let (report, source) = paper_engram_eval_report_from_cli(args)?;
     let comparison = paper_engram_eval_comparison(&report)?;
+    let require_acceptance = cli_flag(args, "--require-acceptance");
+    if require_acceptance {
+        validate_paper_engram_eval_acceptance_for_cli(&report, &comparison)?;
+    }
 
     println!("lingqu_memory_service");
     println!("  mode: compare-paper-engram-eval-report");
@@ -2902,6 +2906,15 @@ fn run_lingqu_memory_compare_paper_engram_eval_report_cli(args: &[String]) -> an
         "  backend_latency_ok: {}",
         optional_bool_label(comparison.backend_latency_ok)
     );
+    println!("  acceptance_required: {require_acceptance}");
+    println!(
+        "  acceptance: {}",
+        if require_acceptance {
+            "valid"
+        } else {
+            "not_checked"
+        }
+    );
     Ok(())
 }
 
@@ -3007,6 +3020,57 @@ fn paper_engram_eval_comparison(
             .zip(report.max_allowed_backend_latency_us)
             .map(|(latency, max_allowed)| latency <= max_allowed),
     })
+}
+
+fn validate_paper_engram_eval_acceptance_for_cli(
+    report: &PaperEngramEvalReportManifest,
+    comparison: &PaperEngramEvalComparison,
+) -> anyhow::Result<()> {
+    let mut gaps = Vec::new();
+    let max_regression = report.max_allowed_regression_milli;
+    if report.paper_engram_loss_milli > report.baseline_loss_milli.saturating_add(max_regression) {
+        gaps.push("paper_vs_base_regression");
+    }
+    if report.paper_engram_loss_milli
+        > comparison
+            .decode_policy_loss_milli
+            .saturating_add(max_regression)
+    {
+        gaps.push("paper_vs_decode_policy_regression");
+    }
+    if comparison.paper_engram_decode_policy_loss_milli
+        > report.baseline_loss_milli.saturating_add(max_regression)
+    {
+        gaps.push("paper_decode_policy_vs_base_regression");
+    }
+    if comparison.paper_engram_decode_policy_loss_milli
+        > comparison
+            .decode_policy_loss_milli
+            .saturating_add(max_regression)
+    {
+        gaps.push("paper_decode_policy_vs_decode_policy_regression");
+    }
+    if report.cpu_backend_output_match != Some(true) {
+        gaps.push("cpu_backend_output_match");
+    }
+    if comparison.hidden_checksum_changed != Some(true) {
+        gaps.push("hidden_checksum_changed");
+    }
+    if comparison.output_checksum_changed != Some(true) {
+        gaps.push("output_checksum_changed");
+    }
+    match (report.row_prefetch_requests, report.row_prefetch_hits) {
+        (Some(requests), Some(hits)) if requests > 0 && hits > 0 && hits <= requests => {}
+        _ => gaps.push("row_prefetch_locality"),
+    }
+    if comparison.backend_latency_ok != Some(true) {
+        gaps.push("backend_latency_ok");
+    }
+    if gaps.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!("paper Engram eval acceptance missing: {}", gaps.join(","))
+    }
 }
 
 fn signed_delta_milli(value: u64, baseline: u64) -> i128 {
@@ -19882,8 +19946,25 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         run_lingqu_memory_compare_paper_engram_eval_report_cli(&[
             "--manifest".to_string(),
             report_path.display().to_string(),
+            "--require-acceptance".to_string(),
         ])
-        .expect("compare paper Engram eval report from manifest");
+        .expect("compare accepted paper Engram eval report from manifest");
+        let weak_report_path = root.join("weak_eval_report.json");
+        let mut weak_report = report.clone();
+        weak_report.paper_engram_hidden_checksum = weak_report.zero_table_hidden_checksum;
+        let weak_report = sim_memory::PaperEngramEvalReportManifest::new(weak_report)
+            .expect("build weak paper Engram eval report");
+        write_json_file(&weak_report_path, &weak_report);
+        let weak_err = run_lingqu_memory_compare_paper_engram_eval_report_cli(&[
+            "--manifest".to_string(),
+            weak_report_path.display().to_string(),
+            "--require-acceptance".to_string(),
+        ])
+        .expect_err("reject eval report without changed paper Engram hidden checksum");
+        assert!(
+            format!("{weak_err:#}").contains("hidden_checksum_changed"),
+            "unexpected weak eval report error: {weak_err:#}"
+        );
 
         fs::remove_dir_all(&root).expect("remove paper engram eval report test dir");
     }
@@ -20165,8 +20246,9 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             store.display().to_string(),
             "--module-id".to_string(),
             module.module_id.clone(),
+            "--require-acceptance".to_string(),
         ])
-        .expect("compare W5-derived paper Engram eval report by module id");
+        .expect("compare accepted W5-derived paper Engram eval report by module id");
 
         let mut durable = load_lingqu_memory_durable_store(&store)
             .expect("reload W5-derived paper quality store");
