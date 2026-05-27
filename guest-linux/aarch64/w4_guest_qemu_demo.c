@@ -1886,6 +1886,11 @@ _Static_assert(offsetof(struct w4_qwen3_terminal_token_record, piece_word1) ==
                    10ULL * sizeof(uint64_t),
                "terminal token text fields must stay tightly packed");
 
+struct w4_qwen3_engram_token_projection_entry {
+    uint64_t raw_token_id;
+    uint64_t canonical_token_id;
+};
+
 struct w4_qwen3_engram_config {
     bool enabled;
     bool context_object_refs_enabled;
@@ -1900,6 +1905,8 @@ struct w4_qwen3_engram_config {
     uint64_t history_window;
     uint64_t blocked_token_ids[16];
     uint64_t blocked_token_count;
+    struct w4_qwen3_engram_token_projection_entry *token_projection;
+    uint64_t token_projection_count;
 };
 
 struct w4_qwen3_sampler_config {
@@ -2221,24 +2228,414 @@ static bool qwen3_guest_engram_history_contains(const uint64_t *history,
     return false;
 }
 
-static bool qwen3_guest_engram_token_blocked(const struct w4_qwen3_engram_config *config,
-                                             uint64_t token)
+static int w4_qwen3_token_projection_cmp(const void *left, const void *right)
 {
-    if (!config) {
-        return false;
+    const struct w4_qwen3_engram_token_projection_entry *lhs =
+        (const struct w4_qwen3_engram_token_projection_entry *)left;
+    const struct w4_qwen3_engram_token_projection_entry *rhs =
+        (const struct w4_qwen3_engram_token_projection_entry *)right;
+
+    if (lhs->raw_token_id < rhs->raw_token_id) {
+        return -1;
     }
-    for (uint64_t i = 0; i < config->blocked_token_count; ++i) {
-        if (config->blocked_token_ids[i] == token) {
-            return true;
-        }
+    if (lhs->raw_token_id > rhs->raw_token_id) {
+        return 1;
     }
-    return false;
+    return 0;
 }
 
-static bool qwen3_guest_engram_repeats_ngram(const uint64_t *history,
-                                             uint64_t history_len,
-                                             uint64_t token,
-                                             uint64_t ngram_size)
+static uint64_t qwen3_guest_engram_projected_token(
+    const struct w4_qwen3_engram_config *config,
+    uint64_t raw_token_id)
+{
+    if (!config || !config->token_projection || config->token_projection_count == 0) {
+        return raw_token_id;
+    }
+    {
+        struct w4_qwen3_engram_token_projection_entry key;
+        struct w4_qwen3_engram_token_projection_entry *matched = NULL;
+        key.raw_token_id = raw_token_id;
+        key.canonical_token_id = raw_token_id;
+        matched = (struct w4_qwen3_engram_token_projection_entry *)bsearch(
+            &key,
+            config->token_projection,
+            (size_t)config->token_projection_count,
+            sizeof(config->token_projection[0]),
+            w4_qwen3_token_projection_cmp);
+        if (matched) {
+            return matched->canonical_token_id;
+        }
+    }
+    return raw_token_id;
+}
+
+static const char *qwen3_json_skip_ws(const char *cursor, const char *end)
+{
+    while (cursor < end) {
+        const char value = *cursor;
+        if (value == ' ' || value == '\n' || value == '\t' || value == '\r' ||
+            value == '\f' || value == '\v') {
+            ++cursor;
+            continue;
+        }
+        break;
+    }
+    return cursor;
+}
+
+static const char *qwen3_json_find_key_in_span(const char *start,
+                                               const char *end,
+                                               const char *key)
+{
+    size_t key_len;
+    const char *cursor;
+
+    if (!start || !end || !key) {
+        return NULL;
+    }
+    if (start >= end) {
+        return NULL;
+    }
+    key_len = strlen(key);
+    for (cursor = start; cursor && cursor + key_len <= end; ++cursor) {
+        if (memcmp(cursor, key, key_len) == 0) {
+            return cursor;
+        }
+        if (*cursor == '}') {
+            break;
+        }
+    }
+    return NULL;
+}
+
+static int qwen3_json_parse_u64_field(
+    const char *start,
+    const char *end,
+    const char *key,
+    uint64_t *value_out)
+{
+    const char *cursor;
+    const char *value_start;
+    uint64_t value = 0;
+    const char *key_pos;
+
+    key_pos = qwen3_json_find_key_in_span(start, end, key);
+    if (!key_pos || !value_out) {
+        return -1;
+    }
+    cursor = qwen3_json_skip_ws(key_pos + strlen(key), end);
+    if (cursor >= end || *cursor != ':') {
+        return -1;
+    }
+    ++cursor;
+    cursor = qwen3_json_skip_ws(cursor, end);
+    if (cursor >= end || *cursor < '0' || *cursor > '9') {
+        return -1;
+    }
+    for (value_start = cursor; value_start < end && *value_start >= '0' &&
+                               *value_start <= '9';
+         ++value_start) {
+        uint64_t next = *value_start - '0';
+        if (value > (UINT64_MAX - next) / 10) {
+            return -1;
+        }
+        value = value * 10 + next;
+    }
+    *value_out = value;
+    return 0;
+}
+
+static const char *qwen3_json_match_object_end(const char *start,
+                                              const char *end)
+{
+    bool in_string = false;
+    uint64_t depth = 0;
+
+    if (!start || !end || *start != '{' || start + 1 > end) {
+        return NULL;
+    }
+    for (const char *cursor = start; cursor < end; ++cursor) {
+        const char value = *cursor;
+        if (in_string) {
+            if (value == '\\') {
+                if (cursor + 1 < end) {
+                    ++cursor;
+                }
+                continue;
+            }
+            if (value == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        if (value == '"') {
+            in_string = true;
+            continue;
+        }
+        if (value == '{') {
+            ++depth;
+            continue;
+        }
+        if (value == '}' && depth > 0) {
+            --depth;
+            if (depth == 0) {
+                return cursor;
+            }
+            continue;
+        }
+    }
+    return NULL;
+}
+
+static int qwen3_read_engram_token_projection_file(
+    const char *path,
+    struct w4_qwen3_engram_config *config)
+{
+    struct stat path_stat;
+    char *buffer = NULL;
+    size_t file_len = 0;
+    size_t read_len = 0;
+    uint64_t entry_count = 0;
+    uint64_t entry_capacity = 0;
+    struct w4_qwen3_engram_token_projection_entry *projection = NULL;
+    FILE *fp = NULL;
+    const char *start;
+    const char *end;
+    const char *array_start;
+    const char *cursor;
+    if (!path || !config) {
+        return 0;
+    }
+    if (path[0] == '\0') {
+        return 0;
+    }
+    if (stat(path, &path_stat) != 0 || path_stat.st_size <= 0) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 engram tokenizer projection file stat path=%s\n",
+                path);
+        return -1;
+    }
+    if ((uint64_t)path_stat.st_size > SIZE_MAX - 1U) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 engram tokenizer projection file too large path=%s\n",
+                path);
+        return -1;
+    }
+    file_len = (size_t)path_stat.st_size;
+    buffer = (char *)malloc(file_len + 1U);
+    if (!buffer) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 engram tokenizer projection alloc bytes=%zu\n",
+                file_len + 1U);
+        return -1;
+    }
+    fp = fopen(path, "rb");
+    if (!fp) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 engram tokenizer projection open path=%s err=%d\n",
+                path,
+                errno);
+        free(buffer);
+        return -1;
+    }
+    read_len = fread(buffer, 1, file_len, fp);
+    if (fclose(fp) != 0) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 engram tokenizer projection close path=%s\n",
+                path);
+        free(buffer);
+        return -1;
+    }
+    if (read_len != file_len) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 engram tokenizer projection read path=%s read=%zu expected=%zu\n",
+                path,
+                read_len,
+                file_len);
+        free(buffer);
+        return -1;
+    }
+    buffer[file_len] = '\0';
+    start = buffer;
+    end = buffer + file_len;
+    array_start = strstr(start, "\"raw_to_canonical\"");
+    if (!array_start) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 engram tokenizer projection missing raw_to_canonical key path=%s\n",
+                path);
+        free(buffer);
+        return -1;
+    }
+    array_start = strchr(array_start, '[');
+    if (!array_start || array_start >= end) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 engram tokenizer projection invalid array path=%s\n",
+                path);
+        free(buffer);
+        return -1;
+    }
+    cursor = array_start + 1U;
+    for (;;) {
+        const char *entry_start;
+        const char *entry_end;
+        uint64_t raw_token_id = 0;
+        uint64_t canonical_token_id = 0;
+
+        cursor = qwen3_json_skip_ws(cursor, end);
+        if (cursor >= end) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 engram tokenizer projection truncated path=%s\n",
+                    path);
+            free(buffer);
+            free(projection);
+            return -1;
+        }
+        if (*cursor == ']') {
+            cursor++;
+            break;
+        }
+        if (*cursor != '{') {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 engram tokenizer projection invalid entry path=%s\n",
+                    path);
+            free(buffer);
+            free(projection);
+            return -1;
+        }
+        entry_start = cursor;
+        entry_end = qwen3_json_match_object_end(entry_start, end);
+        if (!entry_end || entry_end <= entry_start) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 engram tokenizer projection invalid entry path=%s\n",
+                    path);
+            free(buffer);
+            free(projection);
+            return -1;
+        }
+        if (qwen3_json_parse_u64_field(entry_start,
+                                       entry_end + 1U,
+                                       "\"raw_token_id\"",
+                                       &raw_token_id) != 0 ||
+            qwen3_json_parse_u64_field(entry_start,
+                                       entry_end + 1U,
+                                       "\"canonical_token_id\"",
+                                       &canonical_token_id) != 0) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 engram tokenizer projection invalid entry format path=%s\n",
+                    path);
+            free(buffer);
+            free(projection);
+            return -1;
+        }
+        if (entry_count == entry_capacity) {
+            uint64_t next_capacity = entry_capacity == 0 ? 64U : (entry_capacity * 2U);
+            size_t next_capacity_bytes = (size_t)next_capacity *
+                                        sizeof(struct w4_qwen3_engram_token_projection_entry);
+            struct w4_qwen3_engram_token_projection_entry *expanded =
+                (struct w4_qwen3_engram_token_projection_entry *)realloc(
+                    projection,
+                    next_capacity_bytes);
+            if (!expanded) {
+                fprintf(stderr,
+                        "[w4_guest] fail qwen3 engram tokenizer projection alloc entries=%" PRIu64 "\n",
+                        next_capacity);
+                free(buffer);
+                free(projection);
+                return -1;
+            }
+            projection = expanded;
+            entry_capacity = next_capacity;
+        }
+        projection[entry_count].raw_token_id = raw_token_id;
+        projection[entry_count].canonical_token_id = canonical_token_id;
+        ++entry_count;
+
+        cursor = entry_end + 1U;
+        cursor = qwen3_json_skip_ws(cursor, end);
+        if (cursor >= end) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 engram tokenizer projection truncated path=%s\n",
+                    path);
+            free(buffer);
+            free(projection);
+            return -1;
+        }
+        if (*cursor == ',') {
+            cursor++;
+            continue;
+        }
+        if (*cursor == ']') {
+            cursor++;
+            break;
+        }
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 engram tokenizer projection invalid delimiter path=%s\n",
+                path);
+        free(buffer);
+        free(projection);
+        return -1;
+    }
+    if (entry_count > 0) {
+        uint64_t unique_count = 0;
+        size_t projection_bytes;
+        struct w4_qwen3_engram_token_projection_entry last_entry = {0};
+
+        qsort(projection,
+              (size_t)entry_count,
+              sizeof(projection[0]),
+              w4_qwen3_token_projection_cmp);
+        for (uint64_t i = 0; i < entry_count; ++i) {
+            const struct w4_qwen3_engram_token_projection_entry *entry = &projection[i];
+
+            if (i > 0 && entry->raw_token_id == last_entry.raw_token_id &&
+                entry->canonical_token_id != last_entry.canonical_token_id) {
+                fprintf(stderr,
+                        "[w4_guest] fail qwen3 engram tokenizer projection conflict raw=%" PRIu64
+                        " canonical_a=%" PRIu64 " canonical_b=%" PRIu64
+                        " path=%s\n",
+                        entry->raw_token_id,
+                        last_entry.canonical_token_id,
+                        entry->canonical_token_id,
+                        path);
+                free(buffer);
+                free(projection);
+                return -1;
+            }
+            if (i == 0 || entry->raw_token_id != last_entry.raw_token_id) {
+                last_entry = *entry;
+                projection[unique_count++] = *entry;
+            }
+        }
+        projection_bytes = (size_t)unique_count *
+                          sizeof(struct w4_qwen3_engram_token_projection_entry);
+        config->token_projection = projection;
+        config->token_projection_count = unique_count;
+        if (projection_bytes < (size_t)entry_count *
+                                   sizeof(struct w4_qwen3_engram_token_projection_entry)) {
+            struct w4_qwen3_engram_token_projection_entry *shrink =
+                (struct w4_qwen3_engram_token_projection_entry *)realloc(projection,
+                                                                         projection_bytes);
+            if (shrink) {
+                config->token_projection = shrink;
+            }
+        } else {
+            config->token_projection = projection;
+        }
+        printf("[w4_guest] stage qwen3_engram_token_projection_loaded path=%s count=%" PRIu64
+               " status=ok\n",
+               path,
+               config->token_projection_count);
+    }
+    free(buffer);
+    return 0;
+}
+
+static bool qwen3_guest_engram_repeats_ngram_projected(
+    const struct w4_qwen3_engram_config *config,
+    const uint64_t *history,
+    uint64_t history_len,
+    uint64_t token,
+    uint64_t ngram_size)
 {
     uint64_t prefix_len;
     uint64_t prefix_start;
@@ -2252,12 +2649,54 @@ static bool qwen3_guest_engram_repeats_ngram(const uint64_t *history,
         bool prefix_matches = true;
 
         for (uint64_t j = 0; j < prefix_len; ++j) {
-            if (history[i + j] != history[prefix_start + j]) {
+            uint64_t lhs =
+                qwen3_guest_engram_projected_token(config, history[i + j]);
+            uint64_t rhs =
+                qwen3_guest_engram_projected_token(config, history[prefix_start + j]);
+            if (lhs != rhs) {
                 prefix_matches = false;
                 break;
             }
         }
-        if (prefix_matches && history[i + prefix_len] == token) {
+        if (prefix_matches) {
+            const uint64_t suffix_token =
+                qwen3_guest_engram_projected_token(config, history[i + prefix_len]);
+            if (suffix_token == qwen3_guest_engram_projected_token(config, token)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+static bool qwen3_guest_engram_history_contains_projected(
+    const struct w4_qwen3_engram_config *config,
+    const uint64_t *history,
+    uint64_t history_len,
+    uint64_t token)
+{
+    uint64_t projected_token;
+
+    if (!history || config == NULL) {
+        return false;
+    }
+    projected_token = qwen3_guest_engram_projected_token(config, token);
+    for (uint64_t i = 0; i < history_len; ++i) {
+        if (projected_token == qwen3_guest_engram_projected_token(config, history[i])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool qwen3_guest_engram_token_blocked(const struct w4_qwen3_engram_config *config,
+                                             uint64_t token)
+{
+    if (!config) {
+        return false;
+    }
+    for (uint64_t i = 0; i < config->blocked_token_count; ++i) {
+        if (config->blocked_token_ids[i] == token) {
             return true;
         }
     }
@@ -2619,21 +3058,25 @@ static uint64_t qwen3_guest_engram_select_token(
 
     {
         uint64_t sampled_index = UINT64_MAX;
+        uint64_t sampled_projected_token =
+            qwen3_guest_engram_projected_token(config, terminal_token->sampled_token);
 
         if (qwen3_terminal_token_candidate_index(terminal_token,
                                                  terminal_token->sampled_token,
                                                  &sampled_index)) {
             bool sampled_blocked =
                 qwen3_guest_engram_token_blocked(config, terminal_token->sampled_token) ||
-                qwen3_guest_engram_repeats_ngram(effective_history,
-                                                 effective_len,
-                                                 terminal_token->sampled_token,
-                                                 config->no_repeat_ngram_size);
+                qwen3_guest_engram_repeats_ngram_projected(config,
+                                                           effective_history,
+                                                           effective_len,
+                                                           sampled_projected_token,
+                                                           config->no_repeat_ngram_size);
             bool sampled_penalized =
                 config->repetition_penalty_milli > 1000 &&
-                qwen3_guest_engram_history_contains(effective_history,
-                                                    effective_len,
-                                                    terminal_token->sampled_token);
+                qwen3_guest_engram_history_contains_projected(config,
+                                                             effective_history,
+                                                             effective_len,
+                                                             sampled_projected_token);
 
             if (sampled_index == 0 && top_score_out) {
                 *top_score_out =
@@ -2656,6 +3099,8 @@ static uint64_t qwen3_guest_engram_select_token(
 
     for (uint64_t i = 0; i < candidate_count; ++i) {
         uint64_t token = terminal_token->candidate_tokens[i];
+        uint64_t projected_token =
+            qwen3_guest_engram_projected_token(config, token);
         int64_t fallback_score = i == 0 ? (int64_t)terminal_token->margin_milli : -(int64_t)i;
         int64_t score =
             qwen3_guest_logit_score_milli(terminal_token->candidate_logit_bits[i],
@@ -2666,14 +3111,18 @@ static uint64_t qwen3_guest_engram_select_token(
             continue;
         }
         if (config->repetition_penalty_milli > 1000 &&
-            qwen3_guest_engram_history_contains(effective_history, effective_len, token)) {
+            qwen3_guest_engram_history_contains_projected(config,
+                                                         effective_history,
+                                                         effective_len,
+                                                         projected_token)) {
             score -= (int64_t)(config->repetition_penalty_milli - 1000U);
         }
         blocked = qwen3_guest_engram_token_blocked(config, token) ||
-                  qwen3_guest_engram_repeats_ngram(effective_history,
-                                                   effective_len,
-                                                   token,
-                                                   config->no_repeat_ngram_size);
+                  qwen3_guest_engram_repeats_ngram_projected(config,
+                                                             effective_history,
+                                                             effective_len,
+                                                             projected_token,
+                                                             config->no_repeat_ngram_size);
         if (i == 0 && top_score_out) {
             *top_score_out = score;
         } else if (i == 1 && runner_up_score_out) {
@@ -8361,6 +8810,13 @@ int main(void)
                               sizeof(qwen3_engram_config.blocked_token_ids) /
                                   sizeof(qwen3_engram_config.blocked_token_ids[0]),
                               &qwen3_engram_config.blocked_token_count);
+    if (qwen3_engram_config.enabled) {
+        if (qwen3_read_engram_token_projection_file(
+                getenv("SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION"),
+                &qwen3_engram_config) != 0) {
+            return 1;
+        }
+    }
     if (parse_qwen3_w5_memory_decision_config(&qwen3_memory_decision_config) != 0) {
         return 1;
     }
@@ -11620,6 +12076,11 @@ qwen3_after_service_coverage:
     }
 
 out:
+    if (qwen3_engram_config.token_projection) {
+        free(qwen3_engram_config.token_projection);
+        qwen3_engram_config.token_projection = NULL;
+        qwen3_engram_config.token_projection_count = 0;
+    }
     qwen3_range_runtime_forward_release(&runtime_forward);
     if (cq != MAP_FAILED) {
         munmap(cq, PAGE_SIZE_BYTES);
