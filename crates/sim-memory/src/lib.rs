@@ -2300,13 +2300,19 @@ fn validate_trained_paper_engram_source_ref(
         };
     };
     required_str(source_ref, field)?;
-    if source_ref.starts_with("fixture://") {
+    if paper_engram_source_ref_is_fixture(source_ref) {
         return Err(LingquMemoryError::InvalidValue {
             field,
             reason: "trained paper Engram quality requires non-fixture table and gate provenance",
         });
     }
     Ok(())
+}
+
+fn paper_engram_source_ref_is_fixture(source_ref: &str) -> bool {
+    source_ref == "fixture"
+        || source_ref.starts_with("fixture://")
+        || source_ref.starts_with("fixture/")
 }
 
 fn paper_engram_module_registry_manifest_checksum(
@@ -10834,6 +10840,29 @@ mod tests {
                     "trained paper Engram quality requires non-fixture table and gate provenance"
             }
         );
+    }
+
+    #[test]
+    fn paper_engram_quality_source_ref_rejects_relative_fixture_path() {
+        assert_eq!(
+            validate_trained_paper_engram_source_ref(
+                "paper_engram_table_shard.source_ref",
+                Some("fixture/table.bin"),
+                true,
+            )
+            .expect_err("relative fixture path must not back a trained quality claim"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_table_shard.source_ref",
+                reason:
+                    "trained paper Engram quality requires non-fixture table and gate provenance"
+            }
+        );
+        validate_trained_paper_engram_source_ref(
+            "paper_engram_table_shard.source_ref",
+            Some("dfs://runs/qwen3-quality-train/table.safetensors"),
+            true,
+        )
+        .expect("DFS provenance can back trained quality claim");
     }
 
     #[test]
