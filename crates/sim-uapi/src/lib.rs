@@ -63,9 +63,9 @@ use sim_models::qwen3_dense_reference::{
     Qwen3DenseReferenceQkvReferenceLayerSummary, Qwen3DenseReferenceQkvReferenceLayerValues,
     Qwen3DenseReferenceQkvReferenceShardSummary, Qwen3DenseReferenceQkvReferenceShardValues,
     Qwen3DenseReferenceReferenceWeightSliceValidation, Qwen3DenseReferenceShard,
-    Qwen3DenseReferenceTokenizerAssetSummary, Qwen3DenseReferenceWeightTensorKind,
-    QWEN3_DENSE_REFERENCE_PROFILE, QWEN3_DENSE_REFERENCE_TOKENIZER_ASSET_POLICY_KIND,
-    QWEN3_DENSE_REFERENCE_TOKENIZER_POLICY_KIND,
+    Qwen3DenseReferenceTokenizerAssetSummary, Qwen3DenseReferenceTokenizerProjection,
+    Qwen3DenseReferenceWeightTensorKind, QWEN3_DENSE_REFERENCE_PROFILE,
+    QWEN3_DENSE_REFERENCE_TOKENIZER_ASSET_POLICY_KIND, QWEN3_DENSE_REFERENCE_TOKENIZER_POLICY_KIND,
 };
 use sim_runtime::{
     LocalRuntimeEngine, RuntimeCompletionTracker, RuntimeDriveAction, RuntimeQueueRecord,
@@ -18704,6 +18704,49 @@ fn qwen3_dense_reference_engram_context_loaded_state_from_source(
     }
 }
 
+fn qwen3_dense_reference_paper_engram_canonical_token_ids(
+    token_ids: &[u64],
+) -> Result<Vec<u64>, String> {
+    let Some(path) = std::env::var_os(SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION) else {
+        return Ok(token_ids.to_vec());
+    };
+    if path.is_empty() {
+        return Ok(token_ids.to_vec());
+    }
+    let path = PathBuf::from(path);
+    let bytes = fs::read(&path).map_err(|err| {
+        format!(
+            "qwen3_paper_engram_token_projection_read_failed:path={}:{}",
+            path.display(),
+            err
+        )
+    })?;
+    let projection: Qwen3DenseReferenceTokenizerProjection = serde_json::from_slice(&bytes)
+        .map_err(|err| format!("qwen3_paper_engram_token_projection_decode_failed:{err}"))?;
+    let mut raw_to_canonical = BTreeMap::new();
+    for entry in projection.raw_to_canonical {
+        if let Some(previous) =
+            raw_to_canonical.insert(entry.raw_token_id, entry.canonical_token_id)
+        {
+            if previous != entry.canonical_token_id {
+                return Err(format!(
+                    "qwen3_paper_engram_token_projection_conflict:token={}",
+                    entry.raw_token_id
+                ));
+            }
+        }
+    }
+
+    token_ids
+        .iter()
+        .map(|token_id| {
+            raw_to_canonical.get(token_id).copied().ok_or_else(|| {
+                format!("qwen3_paper_engram_token_projection_missing:token={token_id}")
+            })
+        })
+        .collect()
+}
+
 fn qwen3_dense_reference_paper_engram_context_state_from_manifest(
     hidden_size: usize,
     layer_end: u64,
@@ -18832,10 +18875,15 @@ fn qwen3_dense_reference_paper_engram_context_state_from_manifest(
     };
     validate_engram_hash_config(&config)?;
 
+    let canonical_token_ids = qwen3_dense_reference_paper_engram_canonical_token_ids(token_ids)?;
     let lookup_requests = if token_ids.is_empty() {
         Vec::new()
     } else {
-        build_engram_lookup_requests_from_step(token_ids, token_ids.len() - 1, &config)?
+        build_engram_lookup_requests_from_step(
+            &canonical_token_ids,
+            canonical_token_ids.len() - 1,
+            &config,
+        )?
     };
     let lookups = lookup_requests
         .into_iter()
@@ -22699,11 +22747,12 @@ mod tests {
         QWEN3_WEIGHT_REFERENCE_ENTRY_WORDS, QWEN3_WEIGHT_STAGE_LINK_ENTRY_WORDS,
         SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF, SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF,
         SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF, SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF,
-        SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
-        SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT, W4_DEMO_KVCACHE_PAYLOAD_BYTES, W4_KVCACHE_BLOCKS,
-        W4_KVCACHE_PREFIX_GROUPS, W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES,
-        W5_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES, W5_OBJECT_SERVICE_PAYLOAD_INDEX_MAGIC,
-        W5_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES, W5_OBJECT_SERVICE_PAYLOAD_INDEX_VERSION,
+        SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION,
+        SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
+        W4_DEMO_KVCACHE_PAYLOAD_BYTES, W4_KVCACHE_BLOCKS, W4_KVCACHE_PREFIX_GROUPS,
+        W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES, W5_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES,
+        W5_OBJECT_SERVICE_PAYLOAD_INDEX_MAGIC, W5_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES,
+        W5_OBJECT_SERVICE_PAYLOAD_INDEX_VERSION,
     };
     use sim_config::ScenarioConfig;
     use sim_core::{
@@ -22726,7 +22775,8 @@ mod tests {
         Qwen3DenseReferenceProfile, Qwen3DenseReferenceQkvReferenceLayerSummary,
         Qwen3DenseReferenceQkvReferenceLayerValues, Qwen3DenseReferenceQkvReferenceShardSummary,
         Qwen3DenseReferenceQkvReferenceShardValues,
-        Qwen3DenseReferenceReferenceWeightSliceValidation, Qwen3DenseReferenceWeightTensorKind,
+        Qwen3DenseReferenceReferenceWeightSliceValidation, Qwen3DenseReferenceTokenizerProjection,
+        Qwen3DenseReferenceTokenizerProjectionEntry, Qwen3DenseReferenceWeightTensorKind,
         QWEN3_DENSE_REFERENCE_TOKENIZER_ASSET_POLICY_KIND,
     };
     use sim_services::block::BlockServiceProfile;
@@ -23402,14 +23452,51 @@ mod tests {
                         let total_layers = QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers;
                         let hash_config =
                             build_default_engram_hash_config(0, 2, table_rows as u64, 0x77);
-                        let token_ids = [11, 358, 2776, 264];
+                        let token_ids = [100, 101, 102, 103];
+                        let canonical_token_ids = [11, 358, 2776, 264];
                         let token_step = token_ids.len() - 1;
                         let lookups = build_engram_lookup_requests_from_step(
-                            &token_ids,
+                            &canonical_token_ids,
                             token_step,
                             &hash_config,
                         )
                         .expect("build paper lookups");
+                        let projection = Qwen3DenseReferenceTokenizerProjection {
+                            model_id: "qwen3-paper-projection-test".to_string(),
+                            tokenizer_family: "qwen3".to_string(),
+                            source: "fixture://qwen3-paper-projection-test".to_string(),
+                            source_checksum: 1,
+                            total_raw_tokens: token_ids.len() as u64,
+                            total_canonical_tokens: canonical_token_ids.len() as u64,
+                            total_special_tokens: 0,
+                            merged_token_count: 0,
+                            merge_special_tokens: false,
+                            compression_milli: 1000,
+                            aggregate_checksum: 0x1234,
+                            raw_to_canonical: token_ids
+                                .iter()
+                                .zip(canonical_token_ids.iter())
+                                .map(|(raw_token_id, canonical_token_id)| {
+                                    Qwen3DenseReferenceTokenizerProjectionEntry {
+                                        raw_token_id: *raw_token_id,
+                                        raw_token_piece: format!("<raw-{raw_token_id}>"),
+                                        canonical_token_piece: format!(
+                                            "<canonical-{canonical_token_id}>"
+                                        ),
+                                        canonical_token_id: *canonical_token_id,
+                                        is_special: false,
+                                    }
+                                })
+                                .collect(),
+                            collision_classes: Vec::new(),
+                        };
+                        let projection_path = registry_dir.join("qwen3-paper-projection.json");
+                        std::fs::create_dir_all(&registry_dir).expect("create registry dir");
+                        std::fs::write(
+                            &projection_path,
+                            serde_json::to_vec(&projection).expect("projection json"),
+                        )
+                        .expect("write paper projection");
                         let expected_requests = lookups.len() as u64;
                         let expected_hits = expected_requests.saturating_sub(1);
                         let mut rows = lookups
@@ -23542,37 +23629,50 @@ mod tests {
                             .expect("put paper state manifest");
                         with_env_var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP", "cpu-reference", || {
                             with_env_var(
-                                SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
-                                &qwen3_obmm_object_ref_wire_to_hex(&state_ref),
+                                SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION,
+                                projection_path.to_string_lossy().as_ref(),
                                 || {
                                     with_env_var(
-                                        SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF,
-                                        &qwen3_obmm_object_ref_wire_to_hex(&plan_ref),
+                                        SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
+                                        &qwen3_obmm_object_ref_wire_to_hex(&state_ref),
                                         || {
-                                            let terminal_hidden = (0..hidden_size)
-                                                .map(|index| (index as f32 - 512.0) / 4096.0)
-                                                .collect::<Vec<_>>();
-                                            let mut sequence =
-                                                vec![vec![0.0f32; hidden_size], terminal_hidden];
-                                            let report =
-                                                    qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
-                                                        &mut sequence,
-                                                        &token_ids,
-                                                        layer,
-                                                        total_layers,
-                                                        None,
-                                                    )
-                                                    .expect("paper context op should run")
-                                                    .expect("paper context report");
-                                            assert_eq!(
-                                                report.mode,
-                                                "cpu-reference-paper-object-ref"
+                                            with_env_var(
+                                                SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF,
+                                                &qwen3_obmm_object_ref_wire_to_hex(&plan_ref),
+                                                || {
+                                                    let terminal_hidden = (0..hidden_size)
+                                                        .map(|index| {
+                                                            (index as f32 - 512.0) / 4096.0
+                                                        })
+                                                        .collect::<Vec<_>>();
+                                                    let mut sequence = vec![
+                                                        vec![0.0f32; hidden_size],
+                                                        terminal_hidden,
+                                                    ];
+                                                    let report =
+                                                        qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
+                                                            &mut sequence,
+                                                            &token_ids,
+                                                            layer,
+                                                            total_layers,
+                                                            None,
+                                                        )
+                                                        .expect("paper context op should run")
+                                                        .expect("paper context report");
+                                                    assert_eq!(
+                                                        report.mode,
+                                                        "cpu-reference-paper-object-ref"
+                                                    );
+                                                    assert_eq!(
+                                                        report.row_prefetch_requests,
+                                                        expected_requests
+                                                    );
+                                                    assert_eq!(
+                                                        report.row_prefetch_hits,
+                                                        expected_hits
+                                                    );
+                                                },
                                             );
-                                            assert_eq!(
-                                                report.row_prefetch_requests,
-                                                expected_requests
-                                            );
-                                            assert_eq!(report.row_prefetch_hits, expected_hits);
                                         },
                                     );
                                 },
