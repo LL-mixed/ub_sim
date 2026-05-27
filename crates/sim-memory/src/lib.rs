@@ -752,6 +752,20 @@ impl PaperEngramEvalReportManifest {
                 reason: "paper Engram eval must not regress beyond max_allowed_regression_milli",
             });
         }
+        if let Some(decode_policy_loss_milli) = self.decode_policy_loss_milli {
+            nonzero(
+                decode_policy_loss_milli,
+                "paper_engram_eval_report.decode_policy_loss_milli",
+            )?;
+            if self.paper_engram_loss_milli
+                > decode_policy_loss_milli.saturating_add(self.max_allowed_regression_milli)
+            {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "paper_engram_eval_report.paper_engram_loss_milli",
+                    reason: "paper Engram eval must not regress versus decode policy beyond max_allowed_regression_milli",
+                });
+            }
+        }
         nonzero(
             self.output_checksum,
             "paper_engram_eval_report.output_checksum",
@@ -10344,6 +10358,27 @@ mod tests {
         service
             .validate_paper_engram_module_quality(&module.module_id)
             .expect("validate trained module quality claim");
+    }
+
+    #[test]
+    fn paper_engram_eval_report_rejects_decode_policy_regression() {
+        let mut report = sample_paper_engram_eval_report_manifest();
+        report.baseline_loss_milli = 1200;
+        report.decode_policy_loss_milli = Some(1185);
+        report.paper_engram_loss_milli = 1191;
+        report.max_allowed_regression_milli = 5;
+        report.checksum = paper_engram_eval_report_manifest_checksum(&report);
+
+        let err = report
+            .validate()
+            .expect_err("paper Engram must not regress versus decode policy baseline");
+        assert_eq!(
+            err,
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_eval_report.paper_engram_loss_milli",
+                reason: "paper Engram eval must not regress versus decode policy beyond max_allowed_regression_milli"
+            }
+        );
     }
 
     #[test]
