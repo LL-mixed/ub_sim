@@ -733,6 +733,12 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_W5_MEMORY_OBSERVATION_STORE=/tmp/w5-memory-store.json",
                         "SIM_W5_MEMORY_DECISION_STORE=/tmp/w5-decision-store.json",
                         "SIM_W5_MEMORY_DECISION_OBJECT_STORE=/tmp/w5-object-store.json",
+                        "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context",
+                        "SIM_ENGRAM_SIMT_ARTIFACT_DIR=/tmp/engram-simt",
+                        "SIM_ENGRAM_SIMT_SELECTED_SYMBOL=engram_context_dim8_b1",
+                        "SIM_ENGRAM_SIMT_SELECTED_CASE=dim8_batch1",
+                        "SIM_ENGRAM_SIMT_BINARY_PATH=/tmp/engram-simt/engram-simt",
+                        "SIM_ENGRAM_SIMT_KERNEL_LIBRARY_PATH=/tmp/engram-simt/libkernel.so",
                     ]
                 )
                 + "\n",
@@ -770,6 +776,12 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "SIM_W5_ARTIFACT_KEEP_LATEST=3",
                 "SIM_W5_HEALTH_MAX_PRUNE_CANDIDATES=0",
                 "SIM_W5_HEALTH_MAX_PRUNE_BYTES=0",
+                "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context",
+                "SIM_ENGRAM_SIMT_ARTIFACT_DIR=/tmp/engram-simt",
+                "SIM_ENGRAM_SIMT_SELECTED_SYMBOL=engram_context_dim8_b1",
+                "SIM_ENGRAM_SIMT_SELECTED_CASE=dim8_batch1",
+                "SIM_ENGRAM_SIMT_BINARY_PATH=/tmp/engram-simt/engram-simt",
+                "SIM_ENGRAM_SIMT_KERNEL_LIBRARY_PATH=/tmp/engram-simt/libkernel.so",
             ],
         )
 
