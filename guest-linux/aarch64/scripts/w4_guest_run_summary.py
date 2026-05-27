@@ -474,6 +474,9 @@ def emit_summary(run_dir, expected_steps, node_ids, output):
         run_dir, expected_steps, node_ids
     )
     passed_nodes = sum(1 for count in passes.values() if count >= expected_steps)
+    paper_engram_context_records = [
+        record for record in engram_context_records if "paper" in record.get("mode", "")
+    ]
 
     output.append(f"summary: run_dir={run_dir}")
     output.append(
@@ -485,7 +488,8 @@ def emit_summary(run_dir, expected_steps, node_ids, output):
         f"handoff_timing_records={len(handoff_timings)} "
         f"idle_timing_records={len(idle_timings)} "
         f"engram_timing_records={len(engram_timings)} "
-        f"engram_context_records={len(engram_context_records)}"
+        f"engram_context_records={len(engram_context_records)} "
+        f"paper_engram_context_records={len(paper_engram_context_records)}"
     )
     if missing_logs:
         output.append(f"summary: missing_guest_logs={quote_text(missing_logs)}")
@@ -495,6 +499,7 @@ def emit_summary(run_dir, expected_steps, node_ids, output):
     emit_handoff_timing_summary(handoff_timings, idle_timings, expected_steps, node_ids, output)
     emit_engram_timing_summary(engram_timings, expected_steps, node_ids, output)
     emit_engram_context_summary(engram_context_records, expected_steps, output)
+    emit_paper_engram_context_summary(paper_engram_context_records, expected_steps, output)
     emit_memory_service_summary(memory_records, expected_steps, output)
     emit_worker_shortpath_summary(memory_records, worker_events, expected_steps, node_ids, output)
     emit_boundary_observation_summary(
@@ -1040,11 +1045,29 @@ def emit_engram_timing_summary(engram_timings, expected_steps, node_ids, output)
 
 
 def emit_engram_context_summary(engram_context_records, expected_steps, output):
-    if not engram_context_records:
+    emit_context_record_summary(
+        engram_context_records,
+        expected_steps,
+        output,
+        "engram_context",
+    )
+
+
+def emit_paper_engram_context_summary(paper_engram_context_records, expected_steps, output):
+    emit_context_record_summary(
+        paper_engram_context_records,
+        expected_steps,
+        output,
+        "paper_engram_context",
+    )
+
+
+def emit_context_record_summary(context_records, expected_steps, output, prefix):
+    if not context_records:
         return
 
     records = sorted(
-        engram_context_records,
+        context_records,
         key=lambda item: (item["step"], item["_log_node"]),
     )
     modes = sorted({record["mode"] for record in records if record["mode"]})
@@ -1071,7 +1094,7 @@ def emit_engram_context_summary(engram_context_records, expected_steps, output):
         checksum_xor ^= parse_int(record["output_checksum"], 0)
 
     output.append(
-        "engram_context_summary: "
+        f"{prefix}_summary: "
         f"records={len(records)} "
         f"steps={len(observed_steps)}/{expected_steps} "
         f"modes={','.join(modes)} "
@@ -1092,7 +1115,7 @@ def emit_engram_context_summary(engram_context_records, expected_steps, output):
     )
     for record in records:
         output.append(
-            "engram_context_step: "
+            f"{prefix}_step: "
             f"step={record['step']} "
             f"node={record['_log_node']} "
             f"mode={record['mode']} "

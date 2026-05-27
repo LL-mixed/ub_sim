@@ -659,6 +659,66 @@ class W4GuestRunSummaryTest(unittest.TestCase):
         )
         self.assertNotIn("node=nodeB steps=0/1 status=missing", result.stdout)
 
+    def test_emits_paper_engram_context_prefixed_summary(self):
+        script = Path(__file__).resolve().parents[1] / "scripts" / "w4_guest_run_summary.py"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            qemu_lines = [
+                "qwen3-engram-context: step=0 mode=cpu-reference-object-ref "
+                "table_rows=16 output_checksum=0x11 gate_checksum=0x21 "
+                "index_checksum=0x31 output_l1_milli=1024 latency_ms=1",
+                "qwen3-engram-context: step=1 mode=cpu-reference-paper-object-ref "
+                "table_rows=32 output_checksum=0x22 gate_checksum=0x42 "
+                "index_checksum=0x62 output_l1_milli=2048 latency_ms=2 "
+                "row_prefetch_hits=2 row_prefetch_requests=4 "
+                "row_prefetch_hit_rate_milli=500 table_bytes_moved=4096 "
+                "gate_weight_bytes_moved=128 indices_bytes_moved=0 "
+                "hidden_input_bytes=256 hidden_output_bytes=256 "
+                "hidden_injection_overhead_bytes=512",
+            ]
+            (run_dir / "nodeH_guest.log").write_text("[w4_guest] pass\n")
+            (run_dir / "nodeH_qemu.log").write_text("\n".join(qemu_lines) + "\n")
+
+            result = subprocess.run(
+                [sys.executable, str(script), str(run_dir), "2", "nodeH"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertIn(
+            "engram_context_records=2 paper_engram_context_records=1",
+            result.stdout,
+        )
+        self.assertIn(
+            "engram_context_summary: records=2 steps=2/2 "
+            "modes=cpu-reference-object-ref,cpu-reference-paper-object-ref",
+            result.stdout,
+        )
+        self.assertIn(
+            "paper_engram_context_summary: records=1 steps=1/2 "
+            "modes=cpu-reference-paper-object-ref max_latency_ms=2 "
+            "max_latency_step=1 max_latency_node=nodeH total_latency_ms=2 "
+            "output_checksum_xor=0x0000000000000022 row_prefetch_hits=2 "
+            "row_prefetch_requests=4 row_prefetch_hit_rate_milli=500 "
+            "table_bytes_moved=4096 gate_weight_bytes_moved=128 "
+            "indices_bytes_moved=0 hidden_input_bytes=256 hidden_output_bytes=256 "
+            "hidden_injection_overhead_bytes=512",
+            result.stdout,
+        )
+        self.assertIn(
+            "paper_engram_context_step: step=1 node=nodeH "
+            "mode=cpu-reference-paper-object-ref table_rows=32 "
+            "output_checksum=0x22 gate_checksum=0x42 index_checksum=0x62 "
+            "output_l1_milli=2048 latency_ms=2 row_prefetch_hits=2 "
+            "row_prefetch_requests=4 row_prefetch_hit_rate_milli=500 "
+            "table_bytes_moved=4096 gate_weight_bytes_moved=128 "
+            "indices_bytes_moved=0 hidden_input_bytes=256 hidden_output_bytes=256 "
+            "hidden_injection_overhead_bytes=512",
+            result.stdout,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
