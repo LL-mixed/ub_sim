@@ -354,6 +354,15 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                                 "table_rows": parse_int(fields.get("refs"), 0),
                                 "output_l1_milli": 0,
                                 "latency_ms": 0,
+                                "row_prefetch_hits": 0,
+                                "row_prefetch_requests": 0,
+                                "row_prefetch_hit_rate_milli": 0,
+                                "table_bytes_moved": 0,
+                                "gate_weight_bytes_moved": 0,
+                                "indices_bytes_moved": 0,
+                                "hidden_input_bytes": 0,
+                                "hidden_output_bytes": 0,
+                                "hidden_injection_overhead_bytes": 0,
                             }
                         )
 
@@ -393,9 +402,10 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                     if "qwen3-engram-context:" not in clean_line:
                         continue
                     fields = parse_pairs(clean_line)
+                    step = parse_int(fields.get("step"), context_step)
                     record = {
                         "_log_node": node_id,
-                        "step": context_step,
+                        "step": step,
                         "mode": fields.get("mode", ""),
                         "output_checksum": fields.get("output_checksum", "0x0"),
                         "gate_checksum": fields.get("gate_checksum", "0x0"),
@@ -405,6 +415,15 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                         "table_rows",
                         "output_l1_milli",
                         "latency_ms",
+                        "row_prefetch_hits",
+                        "row_prefetch_requests",
+                        "row_prefetch_hit_rate_milli",
+                        "table_bytes_moved",
+                        "gate_weight_bytes_moved",
+                        "indices_bytes_moved",
+                        "hidden_input_bytes",
+                        "hidden_output_bytes",
+                        "hidden_injection_overhead_bytes",
                     ):
                         record[key] = parse_int(fields.get(key), 0)
                     engram_context_records.append(record)
@@ -1032,6 +1051,21 @@ def emit_engram_context_summary(engram_context_records, expected_steps, output):
     observed_steps = sorted({record["step"] for record in records})
     total_latency_ms = sum(record["latency_ms"] for record in records)
     max_latency = max(records, key=lambda item: item["latency_ms"])
+    row_prefetch_hits = sum(record["row_prefetch_hits"] for record in records)
+    row_prefetch_requests = sum(record["row_prefetch_requests"] for record in records)
+    row_prefetch_hit_rate_milli = (
+        row_prefetch_hits * 1000 // row_prefetch_requests
+        if row_prefetch_requests
+        else 0
+    )
+    table_bytes_moved = sum(record["table_bytes_moved"] for record in records)
+    gate_weight_bytes_moved = sum(record["gate_weight_bytes_moved"] for record in records)
+    indices_bytes_moved = sum(record["indices_bytes_moved"] for record in records)
+    hidden_input_bytes = sum(record["hidden_input_bytes"] for record in records)
+    hidden_output_bytes = sum(record["hidden_output_bytes"] for record in records)
+    hidden_injection_overhead_bytes = sum(
+        record["hidden_injection_overhead_bytes"] for record in records
+    )
     checksum_xor = 0
     for record in records:
         checksum_xor ^= parse_int(record["output_checksum"], 0)
@@ -1045,7 +1079,16 @@ def emit_engram_context_summary(engram_context_records, expected_steps, output):
         f"max_latency_step={max_latency['step']} "
         f"max_latency_node={max_latency['_log_node']} "
         f"total_latency_ms={total_latency_ms} "
-        f"output_checksum_xor=0x{checksum_xor:016x}"
+        f"output_checksum_xor=0x{checksum_xor:016x} "
+        f"row_prefetch_hits={row_prefetch_hits} "
+        f"row_prefetch_requests={row_prefetch_requests} "
+        f"row_prefetch_hit_rate_milli={row_prefetch_hit_rate_milli} "
+        f"table_bytes_moved={table_bytes_moved} "
+        f"gate_weight_bytes_moved={gate_weight_bytes_moved} "
+        f"indices_bytes_moved={indices_bytes_moved} "
+        f"hidden_input_bytes={hidden_input_bytes} "
+        f"hidden_output_bytes={hidden_output_bytes} "
+        f"hidden_injection_overhead_bytes={hidden_injection_overhead_bytes}"
     )
     for record in records:
         output.append(
@@ -1058,7 +1101,16 @@ def emit_engram_context_summary(engram_context_records, expected_steps, output):
             f"gate_checksum={record['gate_checksum']} "
             f"index_checksum={record['index_checksum']} "
             f"output_l1_milli={record['output_l1_milli']} "
-            f"latency_ms={record['latency_ms']}"
+            f"latency_ms={record['latency_ms']} "
+            f"row_prefetch_hits={record['row_prefetch_hits']} "
+            f"row_prefetch_requests={record['row_prefetch_requests']} "
+            f"row_prefetch_hit_rate_milli={record['row_prefetch_hit_rate_milli']} "
+            f"table_bytes_moved={record['table_bytes_moved']} "
+            f"gate_weight_bytes_moved={record['gate_weight_bytes_moved']} "
+            f"indices_bytes_moved={record['indices_bytes_moved']} "
+            f"hidden_input_bytes={record['hidden_input_bytes']} "
+            f"hidden_output_bytes={record['hidden_output_bytes']} "
+            f"hidden_injection_overhead_bytes={record['hidden_injection_overhead_bytes']}"
         )
 
 

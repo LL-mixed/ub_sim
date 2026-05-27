@@ -285,12 +285,22 @@ class W4GuestRunSummaryTest(unittest.TestCase):
                 )
                 if node_id == "nodeH":
                     qemu_lines = [
-                        "qwen3-engram-context: mode=cpu-reference table_rows=16 "
+                        "qwen3-engram-context: step=0 mode=cpu-reference table_rows=16 "
                         "output_checksum=0x11 gate_checksum=0x21 index_checksum=0x31 "
-                        "output_l1_milli=1024 latency_ms=1",
-                        "qwen3-engram-context: mode=cpu-reference table_rows=16 "
+                        "output_l1_milli=1024 latency_ms=1 "
+                        "row_prefetch_hits=1 row_prefetch_requests=2 "
+                        "row_prefetch_hit_rate_milli=500 table_bytes_moved=100 "
+                        "gate_weight_bytes_moved=10 indices_bytes_moved=0 "
+                        "hidden_input_bytes=4 hidden_output_bytes=4 "
+                        "hidden_injection_overhead_bytes=8",
+                        "qwen3-engram-context: step=1 mode=cpu-reference table_rows=16 "
                         "output_checksum=0x22 gate_checksum=0x42 index_checksum=0x62 "
-                        "output_l1_milli=2048 latency_ms=2",
+                        "output_l1_milli=2048 latency_ms=2 "
+                        "row_prefetch_hits=2 row_prefetch_requests=2 "
+                        "row_prefetch_hit_rate_milli=1000 table_bytes_moved=200 "
+                        "gate_weight_bytes_moved=20 indices_bytes_moved=4 "
+                        "hidden_input_bytes=4 hidden_output_bytes=4 "
+                        "hidden_injection_overhead_bytes=8",
                     ]
                     (run_dir / f"{node_id}_qemu.log").write_text("\n".join(qemu_lines) + "\n")
 
@@ -371,6 +381,21 @@ class W4GuestRunSummaryTest(unittest.TestCase):
             "engram_context_summary: records=2 steps=2/2 modes=cpu-reference "
             "max_latency_ms=2 max_latency_step=1 max_latency_node=nodeH "
             "total_latency_ms=3 output_checksum_xor=0x0000000000000033",
+            result.stdout,
+        )
+        self.assertIn(
+            "row_prefetch_hits=3 row_prefetch_requests=4 row_prefetch_hit_rate_milli=750 "
+            "table_bytes_moved=300 gate_weight_bytes_moved=30 indices_bytes_moved=4 "
+            "hidden_input_bytes=8 hidden_output_bytes=8 hidden_injection_overhead_bytes=16",
+            result.stdout,
+        )
+        self.assertIn(
+            "engram_context_step: step=1 node=nodeH mode=cpu-reference table_rows=16 "
+            "output_checksum=0x22 gate_checksum=0x42 index_checksum=0x62 "
+            "output_l1_milli=2048 latency_ms=2 row_prefetch_hits=2 "
+            "row_prefetch_requests=2 row_prefetch_hit_rate_milli=1000 "
+            "table_bytes_moved=200 gate_weight_bytes_moved=20 indices_bytes_moved=4 "
+            "hidden_input_bytes=4 hidden_output_bytes=4 hidden_injection_overhead_bytes=8",
             result.stdout,
         )
         self.assertIn(
