@@ -2275,7 +2275,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
             build-paper-engram-eval-report-from-w5-summary, \
             register-paper-engram-eval-report-from-w5-summary, \
             register-paper-engram-table-shard, register-paper-engram-gate, \
-            register-paper-engram-module, import-paper-engram-module, validate-paper-engram-quality, seed-paper-engram-fixture, update-record-state, register-execution-artifact, \
+            register-paper-engram-module, import-paper-engram-module, validate-paper-engram-module, validate-paper-engram-quality, seed-paper-engram-fixture, update-record-state, register-execution-artifact, \
             record-artifact-access, register-terminal-logits-artifact-from-w5-summary, \
             promote-terminal-shortpath-artifacts-from-w5-summary, boundary-lookup, \
             boundary-lookup-from-observation, boundary-request-from-w5-summary, \
@@ -3302,25 +3302,16 @@ fn rebuild_lingqu_memory_optional_paper_engram_registries(
 
 fn run_lingqu_memory_import_paper_engram_module_cli(args: &[String]) -> anyhow::Result<()> {
     let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
-    let projection_path = PathBuf::from(required_cli_arg(args, "--projection")?);
-    let hash_config_path = PathBuf::from(required_cli_arg(args, "--hash-config")?);
-    let module_path = PathBuf::from(required_cli_arg(args, "--module")?);
-    let table_shard_paths = repeated_cli_paths(args, "--table-shard")?;
-    let gate_paths = repeated_cli_paths(args, "--gate")?;
-    if table_shard_paths.is_empty() {
-        anyhow::bail!("import-paper-engram-module requires at least one --table-shard");
-    }
-    if gate_paths.is_empty() {
-        anyhow::bail!("import-paper-engram-module requires at least one --gate");
-    }
-    let training_recipe_path = optional_cli_path(args, "--training-recipe")?;
-    let eval_report_path = optional_cli_path(args, "--eval-report")?;
+    let manifest_paths = paper_engram_import_manifest_paths_from_cli(args)?;
 
-    let projection: PaperEngramTokenizerProjectionManifest =
-        read_cli_json_manifest(&projection_path, "paper engram tokenizer projection")?;
+    let projection: PaperEngramTokenizerProjectionManifest = read_cli_json_manifest(
+        &manifest_paths.projection,
+        "paper engram tokenizer projection",
+    )?;
     let hash_config: PaperEngramHashConfigManifest =
-        read_cli_json_manifest(&hash_config_path, "paper engram hash config")?;
-    let table_shards = table_shard_paths
+        read_cli_json_manifest(&manifest_paths.hash_config, "paper engram hash config")?;
+    let table_shards = manifest_paths
+        .table_shards
         .iter()
         .map(|path| {
             read_cli_json_manifest::<PaperEngramTableShardManifest>(
@@ -3329,11 +3320,13 @@ fn run_lingqu_memory_import_paper_engram_module_cli(args: &[String]) -> anyhow::
             )
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
-    let gates = gate_paths
+    let gates = manifest_paths
+        .gates
         .iter()
         .map(|path| read_cli_json_manifest::<PaperEngramGateManifest>(path, "paper engram gate"))
         .collect::<anyhow::Result<Vec<_>>>()?;
-    let training_recipe = training_recipe_path
+    let training_recipe = manifest_paths
+        .training_recipe
         .as_ref()
         .map(|path| {
             read_cli_json_manifest::<PaperEngramTrainingRecipeManifest>(
@@ -3342,7 +3335,8 @@ fn run_lingqu_memory_import_paper_engram_module_cli(args: &[String]) -> anyhow::
             )
         })
         .transpose()?;
-    let eval_report = eval_report_path
+    let eval_report = manifest_paths
+        .eval_report
         .as_ref()
         .map(|path| {
             read_cli_json_manifest::<PaperEngramEvalReportManifest>(
@@ -3352,7 +3346,7 @@ fn run_lingqu_memory_import_paper_engram_module_cli(args: &[String]) -> anyhow::
         })
         .transpose()?;
     let module: PaperEngramModuleManifest =
-        read_cli_json_manifest(&module_path, "paper engram module")?;
+        read_cli_json_manifest(&manifest_paths.module, "paper engram module")?;
 
     let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
     let mut memory_service = LingquMemoryService::new();
@@ -3420,6 +3414,9 @@ fn run_lingqu_memory_import_paper_engram_module_cli(args: &[String]) -> anyhow::
     println!("lingqu_memory_service");
     println!("  mode: import-paper-engram-module");
     println!("  store_path: {}", store_path.display());
+    if let Some(bundle_dir) = &manifest_paths.bundle_dir {
+        println!("  bundle_dir: {}", bundle_dir.display());
+    }
     println!("  module_id: {}", runtime.module.module_id);
     println!("  projection_id: {}", projection.projection_id);
     println!("  hash_config_id: {}", hash_config.hash_config_id);
@@ -3428,6 +3425,164 @@ fn run_lingqu_memory_import_paper_engram_module_cli(args: &[String]) -> anyhow::
     println!("  layers: {}", runtime.layer_operands.len());
     println!("  quality: {:?}", runtime.module.quality_claim);
     Ok(())
+}
+
+struct PaperEngramImportManifestPaths {
+    bundle_dir: Option<PathBuf>,
+    projection: PathBuf,
+    hash_config: PathBuf,
+    module: PathBuf,
+    table_shards: Vec<PathBuf>,
+    gates: Vec<PathBuf>,
+    training_recipe: Option<PathBuf>,
+    eval_report: Option<PathBuf>,
+}
+
+fn paper_engram_import_manifest_paths_from_cli(
+    args: &[String],
+) -> anyhow::Result<PaperEngramImportManifestPaths> {
+    if let Some(bundle_dir) = optional_cli_path(args, "--bundle-dir")? {
+        let explicit_args = [
+            "--projection",
+            "--hash-config",
+            "--module",
+            "--table-shard",
+            "--gate",
+            "--training-recipe",
+            "--eval-report",
+        ];
+        if explicit_args.iter().any(|arg| cli_flag(args, arg)) {
+            anyhow::bail!(
+                "import-paper-engram-module --bundle-dir cannot be combined with explicit manifest path arguments"
+            );
+        }
+        if !bundle_dir.is_dir() {
+            anyhow::bail!(
+                "import-paper-engram-module --bundle-dir must be a directory: {}",
+                bundle_dir.display()
+            );
+        }
+        let training_recipe = optional_paper_engram_bundle_manifest_path(
+            &bundle_dir,
+            "training_recipe.json",
+            "paper engram training recipe",
+        )?;
+        let eval_report = optional_paper_engram_bundle_manifest_path(
+            &bundle_dir,
+            "eval_report.json",
+            "paper engram eval report",
+        )?;
+        return Ok(PaperEngramImportManifestPaths {
+            projection: required_paper_engram_bundle_manifest_path(
+                &bundle_dir,
+                "tokenizer_projection.json",
+                "paper engram tokenizer projection",
+            )?,
+            hash_config: required_paper_engram_bundle_manifest_path(
+                &bundle_dir,
+                "hash_config.json",
+                "paper engram hash config",
+            )?,
+            module: required_paper_engram_bundle_manifest_path(
+                &bundle_dir,
+                "engram_module.json",
+                "paper engram module",
+            )?,
+            table_shards: paper_engram_bundle_manifest_dir_paths(
+                &bundle_dir,
+                "table_shards",
+                "paper engram table shard",
+            )?,
+            gates: paper_engram_bundle_manifest_dir_paths(
+                &bundle_dir,
+                "gates",
+                "paper engram gate",
+            )?,
+            training_recipe,
+            eval_report,
+            bundle_dir: Some(bundle_dir),
+        });
+    }
+
+    let table_shards = repeated_cli_paths(args, "--table-shard")?;
+    let gates = repeated_cli_paths(args, "--gate")?;
+    if table_shards.is_empty() {
+        anyhow::bail!("import-paper-engram-module requires at least one --table-shard");
+    }
+    if gates.is_empty() {
+        anyhow::bail!("import-paper-engram-module requires at least one --gate");
+    }
+    Ok(PaperEngramImportManifestPaths {
+        bundle_dir: None,
+        projection: PathBuf::from(required_cli_arg(args, "--projection")?),
+        hash_config: PathBuf::from(required_cli_arg(args, "--hash-config")?),
+        module: PathBuf::from(required_cli_arg(args, "--module")?),
+        table_shards,
+        gates,
+        training_recipe: optional_cli_path(args, "--training-recipe")?,
+        eval_report: optional_cli_path(args, "--eval-report")?,
+    })
+}
+
+fn required_paper_engram_bundle_manifest_path(
+    bundle_dir: &Path,
+    filename: &'static str,
+    label: &'static str,
+) -> anyhow::Result<PathBuf> {
+    let path = bundle_dir.join(filename);
+    if !path.is_file() {
+        anyhow::bail!("paper Engram bundle missing {label}: {}", path.display());
+    }
+    Ok(path)
+}
+
+fn optional_paper_engram_bundle_manifest_path(
+    bundle_dir: &Path,
+    filename: &'static str,
+    label: &'static str,
+) -> anyhow::Result<Option<PathBuf>> {
+    let path = bundle_dir.join(filename);
+    if path.is_file() {
+        Ok(Some(path))
+    } else if path.exists() {
+        anyhow::bail!(
+            "paper Engram bundle {label} is not a file: {}",
+            path.display()
+        );
+    } else {
+        Ok(None)
+    }
+}
+
+fn paper_engram_bundle_manifest_dir_paths(
+    bundle_dir: &Path,
+    dirname: &'static str,
+    label: &'static str,
+) -> anyhow::Result<Vec<PathBuf>> {
+    let dir = bundle_dir.join(dirname);
+    if !dir.is_dir() {
+        anyhow::bail!(
+            "paper Engram bundle missing {label} directory: {}",
+            dir.display()
+        );
+    }
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(&dir).with_context(|| format!("read {}", dir.display()))? {
+        let path = entry
+            .with_context(|| format!("read entry from {}", dir.display()))?
+            .path();
+        if path.extension().and_then(|value| value.to_str()) == Some("json") {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    if paths.is_empty() {
+        anyhow::bail!(
+            "paper Engram bundle {label} directory has no JSON manifests: {}",
+            dir.display()
+        );
+    }
+    Ok(paths)
 }
 
 fn run_lingqu_memory_validate_paper_engram_quality_cli(args: &[String]) -> anyhow::Result<()> {
@@ -18371,13 +18526,18 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).expect("create paper engram imported quality test dir");
         let store = root.join("store.json");
-        let projection_manifest = root.join("projection_manifest.json");
-        let hash_config_manifest = root.join("hash_config_manifest.json");
-        let shard_manifest = root.join("shard_manifest.json");
-        let gate_manifest = root.join("gate_manifest.json");
-        let recipe_manifest = root.join("recipe_manifest.json");
-        let eval_manifest = root.join("eval_manifest.json");
-        let module_manifest = root.join("module_manifest.json");
+        let bundle_dir = root.join("paper_engram_bundle");
+        let table_shards_dir = bundle_dir.join("table_shards");
+        let gates_dir = bundle_dir.join("gates");
+        fs::create_dir_all(&table_shards_dir).expect("create bundle table shard dir");
+        fs::create_dir_all(&gates_dir).expect("create bundle gate dir");
+        let projection_manifest = bundle_dir.join("tokenizer_projection.json");
+        let hash_config_manifest = bundle_dir.join("hash_config.json");
+        let shard_manifest = table_shards_dir.join("shard_0000.json");
+        let gate_manifest = gates_dir.join("gate_0000.json");
+        let recipe_manifest = bundle_dir.join("training_recipe.json");
+        let eval_manifest = bundle_dir.join("eval_report.json");
+        let module_manifest = bundle_dir.join("engram_module.json");
 
         run_lingqu_memory_seed_paper_engram_fixture_cli(&[
             "--store".to_string(),
@@ -18518,22 +18678,10 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         run_lingqu_memory_import_paper_engram_module_cli(&[
             "--store".to_string(),
             store.display().to_string(),
-            "--projection".to_string(),
-            projection_manifest.display().to_string(),
-            "--hash-config".to_string(),
-            hash_config_manifest.display().to_string(),
-            "--training-recipe".to_string(),
-            recipe_manifest.display().to_string(),
-            "--eval-report".to_string(),
-            eval_manifest.display().to_string(),
-            "--table-shard".to_string(),
-            shard_manifest.display().to_string(),
-            "--gate".to_string(),
-            gate_manifest.display().to_string(),
-            "--module".to_string(),
-            module_manifest.display().to_string(),
+            "--bundle-dir".to_string(),
+            bundle_dir.display().to_string(),
         ])
-        .expect("import paper Engram module with imported quality evidence");
+        .expect("import paper Engram module bundle with imported quality evidence");
         run_lingqu_memory_validate_paper_engram_quality_cli(&[
             "--store".to_string(),
             store.display().to_string(),
@@ -18543,6 +18691,32 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         .expect("validate imported paper engram quality evidence");
 
         fs::remove_dir_all(&root).expect("remove paper engram imported quality test dir");
+    }
+
+    #[test]
+    fn lingqu_memory_import_paper_engram_module_rejects_mixed_bundle_and_manifest_paths() {
+        let root = env::temp_dir().join(format!(
+            "sim-cli-lingqu-memory-paper-engram-import-conflict-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create paper engram import conflict test dir");
+        let bundle_dir = root.join("paper_engram_bundle");
+        fs::create_dir_all(&bundle_dir).expect("create paper engram bundle dir");
+        let err = run_lingqu_memory_import_paper_engram_module_cli(&[
+            "--store".to_string(),
+            root.join("store.json").display().to_string(),
+            "--bundle-dir".to_string(),
+            bundle_dir.display().to_string(),
+            "--projection".to_string(),
+            root.join("projection.json").display().to_string(),
+        ])
+        .expect_err("bundle-dir and explicit manifest args must be mutually exclusive");
+        assert!(err
+            .to_string()
+            .contains("--bundle-dir cannot be combined with explicit manifest path arguments"));
+
+        fs::remove_dir_all(&root).expect("remove paper engram import conflict test dir");
     }
 
     #[test]
