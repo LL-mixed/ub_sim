@@ -276,10 +276,12 @@ pub fn generate_canonical_suffix_ngrams_from(
 
 pub fn canonical_ngram_checksum(ngram: &[u64]) -> u64 {
     let mut checksum = ENGRAM_HASH_OFFSET_BASIS;
+    for byte in (ngram.len() as u64).to_le_bytes() {
+        checksum ^= u64::from(byte);
+        checksum = checksum.wrapping_mul(ENGRAM_HASH_PRIME);
+    }
     for token in ngram {
-        let len = token.to_le_bytes();
-        checksum ^= *token;
-        for byte in len {
+        for byte in token.to_le_bytes() {
             checksum ^= u64::from(byte);
             checksum = checksum.wrapping_mul(ENGRAM_HASH_PRIME);
         }
@@ -649,6 +651,21 @@ mod tests {
         assert_eq!(index_total_candidates, 2);
         assert!(index.contains_key(&canonical_ngram_checksum(&[10, 11])));
         assert!(index.contains_key(&canonical_ngram_checksum(&[11, 12])));
+    }
+
+    #[test]
+    fn canonical_ngram_checksum_is_length_prefixed_and_value_sensitive() {
+        assert_eq!(canonical_ngram_checksum(&[1, 2]), 0x422d_ee74_521c_4b44);
+        assert_eq!(canonical_ngram_checksum(&[2, 1]), 0x122a_9fb5_49f6_7d24);
+        assert_eq!(canonical_ngram_checksum(&[1, 2, 3]), 0xb981_0813_92b0_3a26);
+        assert_eq!(
+            canonical_ngram_checksum(&[10, 11, 12]),
+            0xeabd_6a01_2d50_63ab
+        );
+        assert_ne!(
+            canonical_ngram_checksum(&[1, 2, 3]),
+            canonical_ngram_checksum(&[10, 11, 12])
+        );
     }
 
     #[test]
