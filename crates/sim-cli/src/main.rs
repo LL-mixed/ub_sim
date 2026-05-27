@@ -2226,6 +2226,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         }
         "register-paper-engram-gate" => run_lingqu_memory_register_paper_engram_gate_cli(&args),
         "register-paper-engram-module" => run_lingqu_memory_register_paper_engram_module_cli(&args),
+        "import-paper-engram-module" => run_lingqu_memory_import_paper_engram_module_cli(&args),
         "validate-paper-engram-quality" => {
             run_lingqu_memory_validate_paper_engram_quality_cli(&args)
         }
@@ -2265,7 +2266,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
             register-paper-engram-tokenizer-projection, register-paper-engram-hash-config, \
             register-paper-engram-training-recipe, register-paper-engram-eval-report, \
             register-paper-engram-table-shard, register-paper-engram-gate, \
-            register-paper-engram-module, validate-paper-engram-quality, seed-paper-engram-fixture, update-record-state, register-execution-artifact, \
+            register-paper-engram-module, import-paper-engram-module, validate-paper-engram-quality, seed-paper-engram-fixture, update-record-state, register-execution-artifact, \
             record-artifact-access, register-terminal-logits-artifact-from-w5-summary, \
             promote-terminal-shortpath-artifacts-from-w5-summary, boundary-lookup, \
             boundary-lookup-from-observation, boundary-request-from-w5-summary, \
@@ -3046,6 +3047,180 @@ fn run_lingqu_memory_register_paper_engram_module_cli(args: &[String]) -> anyhow
     );
     println!("  input_path: {}", module_path.display());
     println!("  module_id: {}", module.module_id);
+    Ok(())
+}
+
+fn read_cli_json_manifest<T>(path: &Path, label: &str) -> anyhow::Result<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let bytes = fs::read(path).with_context(|| format!("read {label} {}", path.display()))?;
+    serde_json::from_slice::<T>(&bytes)
+        .with_context(|| format!("decode {label} {}", path.display()))
+}
+
+fn rebuild_lingqu_memory_optional_paper_engram_registries(
+    memory_service: &mut LingquMemoryService,
+    store: &mut LingquMemoryDurableStore,
+) -> anyhow::Result<()> {
+    match memory_service.rebuild_paper_engram_tokenizer_projections_from_dfs(store) {
+        Ok(_) | Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => {}
+        Err(err) => return Err(err).context("rebuild paper engram tokenizer projections"),
+    }
+    match memory_service.rebuild_paper_engram_hash_configs_from_dfs(store) {
+        Ok(_) | Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => {}
+        Err(err) => return Err(err).context("rebuild paper engram hash configs"),
+    }
+    match memory_service.rebuild_paper_engram_training_recipes_from_dfs(store) {
+        Ok(_) | Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => {}
+        Err(err) => return Err(err).context("rebuild paper engram training recipes"),
+    }
+    match memory_service.rebuild_paper_engram_eval_reports_from_dfs(store) {
+        Ok(_) | Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => {}
+        Err(err) => return Err(err).context("rebuild paper engram eval reports"),
+    }
+    match memory_service.rebuild_paper_engram_table_shards_from_dfs(store) {
+        Ok(_) | Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => {}
+        Err(err) => return Err(err).context("rebuild paper engram table shards"),
+    }
+    match memory_service.rebuild_paper_engram_gates_from_dfs(store) {
+        Ok(_) | Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => {}
+        Err(err) => return Err(err).context("rebuild paper engram gates"),
+    }
+    match memory_service.rebuild_paper_engram_modules_from_dfs(store) {
+        Ok(_) | Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => {}
+        Err(err) => return Err(err).context("rebuild paper engram modules"),
+    }
+    Ok(())
+}
+
+fn run_lingqu_memory_import_paper_engram_module_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let projection_path = PathBuf::from(required_cli_arg(args, "--projection")?);
+    let hash_config_path = PathBuf::from(required_cli_arg(args, "--hash-config")?);
+    let module_path = PathBuf::from(required_cli_arg(args, "--module")?);
+    let table_shard_paths = repeated_cli_paths(args, "--table-shard")?;
+    let gate_paths = repeated_cli_paths(args, "--gate")?;
+    if table_shard_paths.is_empty() {
+        anyhow::bail!("import-paper-engram-module requires at least one --table-shard");
+    }
+    if gate_paths.is_empty() {
+        anyhow::bail!("import-paper-engram-module requires at least one --gate");
+    }
+    let training_recipe_path = optional_cli_path(args, "--training-recipe")?;
+    let eval_report_path = optional_cli_path(args, "--eval-report")?;
+
+    let projection: PaperEngramTokenizerProjectionManifest =
+        read_cli_json_manifest(&projection_path, "paper engram tokenizer projection")?;
+    let hash_config: PaperEngramHashConfigManifest =
+        read_cli_json_manifest(&hash_config_path, "paper engram hash config")?;
+    let table_shards = table_shard_paths
+        .iter()
+        .map(|path| {
+            read_cli_json_manifest::<PaperEngramTableShardManifest>(
+                path,
+                "paper engram table shard",
+            )
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let gates = gate_paths
+        .iter()
+        .map(|path| read_cli_json_manifest::<PaperEngramGateManifest>(path, "paper engram gate"))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let training_recipe = training_recipe_path
+        .as_ref()
+        .map(|path| {
+            read_cli_json_manifest::<PaperEngramTrainingRecipeManifest>(
+                path,
+                "paper engram training recipe",
+            )
+        })
+        .transpose()?;
+    let eval_report = eval_report_path
+        .as_ref()
+        .map(|path| {
+            read_cli_json_manifest::<PaperEngramEvalReportManifest>(
+                path,
+                "paper engram eval report",
+            )
+        })
+        .transpose()?;
+    let module: PaperEngramModuleManifest =
+        read_cli_json_manifest(&module_path, "paper engram module")?;
+
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let mut memory_service = LingquMemoryService::new();
+    rebuild_lingqu_memory_optional_paper_engram_registries(
+        &mut memory_service,
+        &mut durable_store,
+    )?;
+
+    memory_service
+        .register_paper_engram_tokenizer_projection(projection.clone())
+        .context("import paper engram tokenizer projection")?;
+    memory_service
+        .register_paper_engram_hash_config(hash_config.clone())
+        .context("import paper engram hash config")?;
+    if let Some(recipe) = training_recipe.clone() {
+        memory_service
+            .register_paper_engram_training_recipe(recipe)
+            .context("import paper engram training recipe")?;
+    }
+    if let Some(report) = eval_report.clone() {
+        memory_service
+            .register_paper_engram_eval_report(report)
+            .context("import paper engram eval report")?;
+    }
+    for shard in &table_shards {
+        memory_service
+            .register_paper_engram_table_shard(shard.clone())
+            .with_context(|| format!("import paper engram table shard {}", shard.shard_id))?;
+    }
+    for gate in &gates {
+        memory_service
+            .register_paper_engram_gate(gate.clone())
+            .with_context(|| format!("import paper engram gate {}", gate.gate_id))?;
+    }
+    memory_service
+        .register_paper_engram_module(module.clone())
+        .context("import paper engram module")?;
+    let runtime = memory_service
+        .resolve_paper_engram_runtime_artifacts(&module.module_id)
+        .context("validate imported paper engram runtime artifacts")?;
+
+    memory_service
+        .persist_paper_engram_tokenizer_projections_to_dfs(&mut durable_store)
+        .context("persist imported tokenizer projection registry")?;
+    memory_service
+        .persist_paper_engram_hash_configs_to_dfs(&mut durable_store)
+        .context("persist imported hash config registry")?;
+    memory_service
+        .persist_paper_engram_training_recipes_to_dfs(&mut durable_store)
+        .context("persist imported training recipe registry")?;
+    memory_service
+        .persist_paper_engram_eval_reports_to_dfs(&mut durable_store)
+        .context("persist imported eval report registry")?;
+    memory_service
+        .persist_paper_engram_table_shards_to_dfs(&mut durable_store)
+        .context("persist imported table shard registry")?;
+    memory_service
+        .persist_paper_engram_gates_to_dfs(&mut durable_store)
+        .context("persist imported gate registry")?;
+    memory_service
+        .persist_paper_engram_modules_to_dfs(&mut durable_store)
+        .context("persist imported module registry")?;
+    save_lingqu_memory_durable_store(&store_path, &durable_store)?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: import-paper-engram-module");
+    println!("  store_path: {}", store_path.display());
+    println!("  module_id: {}", runtime.module.module_id);
+    println!("  projection_id: {}", projection.projection_id);
+    println!("  hash_config_id: {}", hash_config.hash_config_id);
+    println!("  table_shards: {}", table_shards.len());
+    println!("  gates: {}", gates.len());
+    println!("  layers: {}", runtime.layer_operands.len());
+    println!("  quality: {:?}", runtime.module.quality_claim);
     Ok(())
 }
 
@@ -9785,6 +9960,26 @@ fn optional_cli_path(args: &[String], name: &'static str) -> anyhow::Result<Opti
     Ok(optional_cli_arg(args, name)?.map(PathBuf::from))
 }
 
+fn repeated_cli_paths(args: &[String], name: &'static str) -> anyhow::Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    let mut index = 0usize;
+    while index < args.len() {
+        if args[index] == name {
+            let value = args
+                .get(index + 1)
+                .ok_or_else(|| anyhow::anyhow!("missing value for argument {name}"))?;
+            if value.starts_with("--") {
+                anyhow::bail!("missing value for argument {name}");
+            }
+            paths.push(PathBuf::from(value));
+            index += 2;
+        } else {
+            index += 1;
+        }
+    }
+    Ok(paths)
+}
+
 fn cli_optional_path_display(path: Option<&Path>) -> String {
     path.map(|path| path.display().to_string())
         .unwrap_or_else(|| "<durable-store>".to_string())
@@ -12303,7 +12498,8 @@ mod tests {
         run_lingqu_memory_boundary_lookup_from_observation_cli,
         run_lingqu_memory_boundary_request_from_w5_summary_cli,
         run_lingqu_memory_build_engram_hash_config_cli, run_lingqu_memory_build_index_cli,
-        run_lingqu_memory_build_tokenizer_projection_cli, run_lingqu_memory_ingest_cli,
+        run_lingqu_memory_build_tokenizer_projection_cli,
+        run_lingqu_memory_import_paper_engram_module_cli, run_lingqu_memory_ingest_cli,
         run_lingqu_memory_list_artifact_access_cli,
         run_lingqu_memory_list_boundary_observations_cli,
         run_lingqu_memory_list_prefetch_plans_cli, run_lingqu_memory_list_prefix_cache_reuse_cli,
@@ -16403,6 +16599,30 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         write_json_file(&shard_manifest, &shard);
         write_json_file(&gate_manifest, &gate);
         write_json_file(&module_manifest, &module);
+
+        let import_store = root.join("import-store.json");
+        run_lingqu_memory_import_paper_engram_module_cli(&[
+            "--store".to_string(),
+            import_store.display().to_string(),
+            "--projection".to_string(),
+            projection_manifest.display().to_string(),
+            "--hash-config".to_string(),
+            hash_config_manifest.display().to_string(),
+            "--table-shard".to_string(),
+            shard_manifest.display().to_string(),
+            "--gate".to_string(),
+            gate_manifest.display().to_string(),
+            "--module".to_string(),
+            module_manifest.display().to_string(),
+        ])
+        .expect("import paper Engram module bundle");
+        run_lingqu_memory_resolve_paper_engram_runtime_cli(&[
+            "--store".to_string(),
+            import_store.display().to_string(),
+            "--module-id".to_string(),
+            module.module_id.clone(),
+        ])
+        .expect("resolve imported runtime artifacts");
 
         run_lingqu_memory_register_paper_engram_tokenizer_projection_cli(&[
             "--store".to_string(),

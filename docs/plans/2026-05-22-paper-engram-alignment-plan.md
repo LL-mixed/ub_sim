@@ -327,6 +327,7 @@ Current implementation status:
 - W5 paper `ENGRAM_STATE` publication now emits a v3 manifest that carries tokenizer-projection and hash-config checksums. UAPI still accepts legacy v2 state manifests for compatibility, but v3 runtime execution requires any provided tokenizer projection to match the manifest checksum before canonical ngram lookups are built.
 - Paper Engram row-prefetch plans now carry tokenizer-projection and hash-config checksums, and UAPI rejects a supplied row-prefetch plan when its contract does not match the active paper `ENGRAM_STATE` manifest.
 - `sim-cli lingqu-memory build-engram-hash-config` now binds the hash config to the tokenizer projection artifact checksum (`aggregate_checksum`) instead of the source tokenizer-file checksum.
+- `sim-cli lingqu-memory import-paper-engram-module` can import a complete paper Engram manifest bundle in dependency order (`projection`, `hash_config`, table shards, gates, optional recipe/eval, module), persist all registries, and resolve runtime artifacts as the import validation gate.
 
 The terminal-only context-op path is not enough. Paper Engram must be able to
 inject at configured model layers, not only after terminal hidden.
@@ -417,15 +418,16 @@ Minimum required evidence before treating a table as useful:
    - materialize row-block ObjectRefs
 3. Add restart/rebuild tests from durable manifests.
 
-Current status: manifest registration/list/validation commands exist, and
-`resolve-paper-engram-table-row-blocks` resolves durable row-block refs without
-copying table payload bytes. `plan-paper-engram-row-prefetch` can map known
-canonical token history to table rows and backing block refs through the shared
-hash contract. `publish-paper-engram-row-prefetch` exports that plan into the
-W5 Object Service snapshot as metadata without publishing full table payloads.
-The row prefetch ObjectRef is a formal W5 CLI/script input and is validated as
-an adjunct to the paper `ENGRAM_STATE` entrypoint rather than as standalone
-runtime state.
+Current status: manifest registration/list/validation commands exist.
+`import-paper-engram-module` imports complete manifest bundles in dependency
+order and validates them by resolving runtime artifacts. `resolve-paper-engram-
+table-row-blocks` resolves durable row-block refs without copying table payload
+bytes. `plan-paper-engram-row-prefetch` can map known canonical token history
+to table rows and backing block refs through the shared hash contract.
+`publish-paper-engram-row-prefetch` exports that plan into the W5 Object Service
+snapshot as metadata without publishing full table payloads. The row prefetch
+ObjectRef is a formal W5 CLI/script input and is validated as an adjunct to the
+paper `ENGRAM_STATE` entrypoint rather than as standalone runtime state.
 
 ### Phase 4: Paper-Compatible CPU Reference
 
