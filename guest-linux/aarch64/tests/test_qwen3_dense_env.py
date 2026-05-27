@@ -893,6 +893,87 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             result.stderr,
         )
 
+    def test_w5_cluster_config_runner_rejects_missing_selected_vendor_binary_path(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        config_runner = script_dir / "run_w5_cluster_config.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            weights_path = tmp_path / "qwen3-14b"
+            weights_path.mkdir()
+            kernel_path = tmp_path / "libengram_simt.so"
+            kernel_path.write_bytes(b"kernel")
+            missing_binary_path = tmp_path / "engram_simt_missing"
+            config_path = tmp_path / "w5.env"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
+                        "SIM_QWEN3_GUEST_DECODE_STEPS=2",
+                        f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
+                        "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context",
+                        "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=fused-simt",
+                        "SIM_ENGRAM_SIMT_SELECTED_SYMBOL=engram_context_dim8_b1",
+                        "SIM_ENGRAM_SIMT_SELECTED_CASE=dim8_batch1",
+                        f"SIM_ENGRAM_SIMT_BINARY_PATH={missing_binary_path}",
+                        f"SIM_ENGRAM_SIMT_KERNEL_LIBRARY_PATH={kernel_path}",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(config_runner), "--validate-only", str(config_path)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(
+            f"SIM_ENGRAM_SIMT_BINARY_PATH is missing: {missing_binary_path}",
+            result.stderr,
+        )
+
+    def test_w5_cluster_config_runner_accepts_selected_vendor_paths(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        config_runner = script_dir / "run_w5_cluster_config.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            weights_path = tmp_path / "qwen3-14b"
+            weights_path.mkdir()
+            binary_path = tmp_path / "engram_simt"
+            kernel_path = tmp_path / "libengram_simt.so"
+            binary_path.write_bytes(b"binary")
+            kernel_path.write_bytes(b"kernel")
+            config_path = tmp_path / "w5.env"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
+                        "SIM_QWEN3_GUEST_DECODE_STEPS=2",
+                        f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
+                        "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context",
+                        "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=fused-simt",
+                        "SIM_ENGRAM_SIMT_SELECTED_SYMBOL=engram_context_dim8_b1",
+                        "SIM_ENGRAM_SIMT_SELECTED_CASE=dim8_batch1",
+                        f"SIM_ENGRAM_SIMT_BINARY_PATH={binary_path}",
+                        f"SIM_ENGRAM_SIMT_KERNEL_LIBRARY_PATH={kernel_path}",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(config_runner), "--validate-only", str(config_path)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_w5_cluster_config_runner_prints_effective_engram_default(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
         config_runner = script_dir / "run_w5_cluster_config.sh"

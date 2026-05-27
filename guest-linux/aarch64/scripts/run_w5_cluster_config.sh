@@ -258,6 +258,12 @@ validate_w5_cluster_config() {
             -z "${SIM_ENGRAM_SIMT_KERNEL_LIBRARY_PATH:-}" ]]; then
       echo "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context requires SIM_ENGRAM_SIMT_ARTIFACT_DIR or complete SIM_ENGRAM_SIMT_SELECTED_* vendor env" >&2
       return 2
+    elif [[ ! -f "$SIM_ENGRAM_SIMT_BINARY_PATH" ]]; then
+      echo "SIM_ENGRAM_SIMT_BINARY_PATH is missing: $SIM_ENGRAM_SIMT_BINARY_PATH" >&2
+      return 2
+    elif [[ ! -f "$SIM_ENGRAM_SIMT_KERNEL_LIBRARY_PATH" ]]; then
+      echo "SIM_ENGRAM_SIMT_KERNEL_LIBRARY_PATH is missing: $SIM_ENGRAM_SIMT_KERNEL_LIBRARY_PATH" >&2
+      return 2
     fi
   fi
   return 0
