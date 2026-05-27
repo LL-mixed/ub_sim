@@ -3354,6 +3354,15 @@ fn run_lingqu_memory_import_paper_engram_module_cli(args: &[String]) -> anyhow::
         &mut memory_service,
         &mut durable_store,
     )?;
+    if let Some(bundle_dir) = &manifest_paths.bundle_dir {
+        import_paper_engram_bundle_block_payloads(
+            &mut durable_store,
+            bundle_dir,
+            &table_shards,
+            &gates,
+        )
+        .context("import paper engram bundle block payloads")?;
+    }
 
     memory_service
         .register_paper_engram_tokenizer_projection(projection.clone())
@@ -3583,6 +3592,88 @@ fn paper_engram_bundle_manifest_dir_paths(
         );
     }
     Ok(paths)
+}
+
+fn import_paper_engram_bundle_block_payloads(
+    durable_store: &mut LingquMemoryDurableStore,
+    bundle_dir: &Path,
+    table_shards: &[PaperEngramTableShardManifest],
+    gates: &[PaperEngramGateManifest],
+) -> anyhow::Result<()> {
+    let mut imported_blocks = HashMap::<String, ()>::new();
+    for payload_ref in paper_engram_bundle_payload_refs(table_shards, gates) {
+        if !imported_blocks.contains_key(&payload_ref.block.0) {
+            let payload_path = paper_engram_bundle_block_payload_path(bundle_dir, payload_ref)?;
+            if payload_path.is_file() {
+                let bytes = fs::read(&payload_path)
+                    .with_context(|| format!("read {}", payload_path.display()))?;
+                durable_store
+                    .write_block_payload(payload_ref.block.0.clone(), bytes)
+                    .with_context(|| {
+                        format!("write imported paper Engram block {}", payload_ref.block.0)
+                    })?;
+            } else if payload_path.exists() {
+                anyhow::bail!(
+                    "paper Engram bundle block payload is not a file: {}",
+                    payload_path.display()
+                );
+            } else {
+                durable_store
+                    .read_block_payload(payload_ref)
+                    .with_context(|| {
+                        format!(
+                            "paper Engram bundle missing block payload file {}",
+                            payload_path.display()
+                        )
+                    })?;
+            }
+            imported_blocks.insert(payload_ref.block.0.clone(), ());
+        }
+        durable_store
+            .read_block_payload(payload_ref)
+            .with_context(|| {
+                format!(
+                    "validate imported paper Engram block payload {} offset={} bytes={}",
+                    payload_ref.block.0, payload_ref.offset, payload_ref.bytes
+                )
+            })?;
+    }
+    Ok(())
+}
+
+fn paper_engram_bundle_payload_refs<'a>(
+    table_shards: &'a [PaperEngramTableShardManifest],
+    gates: &'a [PaperEngramGateManifest],
+) -> Vec<&'a LingquBlockPayloadRef> {
+    let mut refs = Vec::new();
+    for shard in table_shards {
+        refs.extend(shard.block_payload_refs.iter());
+    }
+    for gate in gates {
+        if let Some(payload_ref) = &gate.payload_ref {
+            refs.push(payload_ref);
+        }
+    }
+    refs
+}
+
+fn paper_engram_bundle_block_payload_path(
+    bundle_dir: &Path,
+    payload_ref: &LingquBlockPayloadRef,
+) -> anyhow::Result<PathBuf> {
+    let mut path = bundle_dir.join("block_payloads");
+    for component in Path::new(&payload_ref.block.0).components() {
+        match component {
+            std::path::Component::Normal(value) => path.push(value),
+            _ => {
+                anyhow::bail!(
+                    "paper Engram bundle block id must be relative and normalized: {}",
+                    payload_ref.block.0
+                );
+            }
+        }
+    }
+    Ok(path)
 }
 
 fn run_lingqu_memory_validate_paper_engram_quality_cli(args: &[String]) -> anyhow::Result<()> {
@@ -13054,6 +13145,7 @@ mod tests {
         lingqu_object_payload_checksum, lingqu_object_service_args_from,
         load_lingqu_memory_durable_store, load_lingqu_object_service_snapshot,
         load_lingqu_object_service_snapshot_file, load_w5_memory_decisions_from_store,
+        paper_engram_bundle_block_payload_path, paper_engram_bundle_payload_refs,
         parse_paper_engram_canonical_history_arg_or_file, parse_summary_fields,
         parse_u64_csv_arg_or_file, parse_w5_terminal_logits_observation,
         publish_w5_engram_state_ref_from_memory, publish_w5_engram_state_ref_from_memory_objects,
@@ -13138,17 +13230,18 @@ mod tests {
         LingquMemoryDurableStore, LingquMemoryDurableStoreSnapshot, LingquObjectKind,
         LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
         LingquObjectServiceStub, LingquObjectVersionSelector, LingquPayloadBackend,
-        LingquPayloadPlacement, MemoryCatalogSnapshot, PaperEngramTrainingMode, QueryResult,
-        Qwen3CandidateRecord, Qwen3DecodeReportVerbosity, Qwen3DenseGuestRuntime,
-        Qwen3DenseProfile, Qwen3EngramConfig, Qwen3EngramContextOp, Qwen3EngramMode,
-        Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
-        Qwen3GuestExpectedWorkerCounts, Qwen3SamplerConfig, Qwen3TokenizerProjectionCliArgs,
-        W5JumpToTerminalExpectedWorkerCounts, W5MemoryBootstrapConfig,
-        W5MemoryDecisionArtifactPublication, W5MemoryDecisionBundle, W5MemoryDecisionConfig,
-        W5MemoryPublishedArtifactRef, W5MemoryPublishedKvArtifactRef, W5MemoryShortpathKvArtifact,
-        LINGQU_EXTERNAL_PAYLOAD_BLOCK_PREFIX, QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
-        QWEN3_DENSE_DEFAULT_PREFILL_TOKENS, QWEN3_DENSE_DEFAULT_TP_NODES,
-        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE, QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+        LingquPayloadPlacement, MemoryCatalogSnapshot, PaperEngramGateManifest,
+        PaperEngramTableShardManifest, PaperEngramTrainingMode, QueryResult, Qwen3CandidateRecord,
+        Qwen3DecodeReportVerbosity, Qwen3DenseGuestRuntime, Qwen3DenseProfile, Qwen3EngramConfig,
+        Qwen3EngramContextOp, Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport,
+        Qwen3GuestDecodeLoopCliArgs, Qwen3GuestExpectedWorkerCounts, Qwen3SamplerConfig,
+        Qwen3TokenizerProjectionCliArgs, W5JumpToTerminalExpectedWorkerCounts,
+        W5MemoryBootstrapConfig, W5MemoryDecisionArtifactPublication, W5MemoryDecisionBundle,
+        W5MemoryDecisionConfig, W5MemoryPublishedArtifactRef, W5MemoryPublishedKvArtifactRef,
+        W5MemoryShortpathKvArtifact, LINGQU_EXTERNAL_PAYLOAD_BLOCK_PREFIX,
+        QWEN3_DENSE_DEFAULT_DECODE_TOKENS, QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
+        QWEN3_DENSE_DEFAULT_TP_NODES, QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
         QWEN3_DENSE_PROFILE_OBMM_KIND_TERMINAL_LOGITS, QWEN3_ENGRAM_DEFAULT_NO_REPEAT_NGRAM_SIZE,
         QWEN3_TOKENIZER_PROJECTION_DEFAULT_FILE_NAME, SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF,
         SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION,
@@ -13173,6 +13266,30 @@ mod tests {
             serde_json::to_vec_pretty(value).expect("encode json fixture"),
         )
         .expect("write json fixture");
+    }
+
+    fn write_paper_engram_bundle_block_payload_files(
+        bundle_dir: &Path,
+        durable_store: &mut LingquMemoryDurableStore,
+        table_shards: &[PaperEngramTableShardManifest],
+        gates: &[PaperEngramGateManifest],
+    ) {
+        let mut written_blocks = HashMap::<String, ()>::new();
+        for payload_ref in paper_engram_bundle_payload_refs(table_shards, gates) {
+            if written_blocks.contains_key(&payload_ref.block.0) {
+                continue;
+            }
+            let payload_path = paper_engram_bundle_block_payload_path(bundle_dir, payload_ref)
+                .expect("build paper Engram bundle block payload path");
+            if let Some(parent) = payload_path.parent() {
+                fs::create_dir_all(parent).expect("create paper Engram bundle payload dir");
+            }
+            let payload = durable_store
+                .read_block_payload(payload_ref)
+                .expect("read paper Engram block payload for bundle export");
+            fs::write(&payload_path, payload).expect("write paper Engram bundle block payload");
+            written_blocks.insert(payload_ref.block.0.clone(), ());
+        }
     }
 
     fn sample_w5_terminal_logits_payload() -> Vec<u8> {
@@ -18525,7 +18642,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).expect("create paper engram imported quality test dir");
-        let store = root.join("store.json");
+        let seed_store = root.join("seed-store.json");
+        let import_store = root.join("import-store.json");
         let bundle_dir = root.join("paper_engram_bundle");
         let table_shards_dir = bundle_dir.join("table_shards");
         let gates_dir = bundle_dir.join("gates");
@@ -18541,7 +18659,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
 
         run_lingqu_memory_seed_paper_engram_fixture_cli(&[
             "--store".to_string(),
-            store.display().to_string(),
+            seed_store.display().to_string(),
             "--module-id".to_string(),
             "pe-module-imported-quality-cli".to_string(),
             "--model-id".to_string(),
@@ -18563,8 +18681,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         ])
         .expect("seed paper engram imported quality fixture");
 
-        let mut durable =
-            load_lingqu_memory_durable_store(&store).expect("load seeded imported quality store");
+        let mut durable = load_lingqu_memory_durable_store(&seed_store)
+            .expect("load seeded imported quality store");
         let projection = durable
             .load_paper_engram_tokenizer_projection_manifest()
             .expect("load seeded projection")
@@ -18591,7 +18709,6 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             .pop()
             .expect("seeded module")
             .module;
-        drop(durable);
         shard.source_ref =
             Some("dfs://imports/qwen3-imported-quality/table.safetensors".to_string());
         let shard = sim_memory::PaperEngramTableShardManifest::new(shard)
@@ -18674,23 +18791,142 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         write_json_file(&recipe_manifest, &recipe);
         write_json_file(&eval_manifest, &report);
         write_json_file(&module_manifest, &module);
+        write_paper_engram_bundle_block_payload_files(
+            &bundle_dir,
+            &mut durable,
+            std::slice::from_ref(&shard),
+            std::slice::from_ref(&gate),
+        );
+        drop(durable);
 
         run_lingqu_memory_import_paper_engram_module_cli(&[
             "--store".to_string(),
-            store.display().to_string(),
+            import_store.display().to_string(),
             "--bundle-dir".to_string(),
             bundle_dir.display().to_string(),
         ])
         .expect("import paper Engram module bundle with imported quality evidence");
         run_lingqu_memory_validate_paper_engram_quality_cli(&[
             "--store".to_string(),
-            store.display().to_string(),
+            import_store.display().to_string(),
             "--module-id".to_string(),
             module.module_id.clone(),
         ])
         .expect("validate imported paper engram quality evidence");
+        run_lingqu_memory_validate_paper_engram_module_cli(&[
+            "--store".to_string(),
+            import_store.display().to_string(),
+            "--module-id".to_string(),
+            module.module_id.clone(),
+            "--require-quality".to_string(),
+        ])
+        .expect("validate imported paper engram runtime payloads and quality evidence");
+
+        let mut imported_durable =
+            load_lingqu_memory_durable_store(&import_store).expect("load imported bundle store");
+        for payload_ref in &shard.block_payload_refs {
+            imported_durable
+                .read_block_payload(payload_ref)
+                .expect("read imported table block payload from fresh store");
+        }
+        if let Some(payload_ref) = &gate.payload_ref {
+            imported_durable
+                .read_block_payload(payload_ref)
+                .expect("read imported gate block payload from fresh store");
+        }
 
         fs::remove_dir_all(&root).expect("remove paper engram imported quality test dir");
+    }
+
+    #[test]
+    fn lingqu_memory_import_paper_engram_module_rejects_bundle_missing_block_payloads() {
+        let root = env::temp_dir().join(format!(
+            "sim-cli-lingqu-memory-paper-engram-import-missing-payload-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create paper engram missing payload test dir");
+        let seed_store = root.join("seed-store.json");
+        let import_store = root.join("import-store.json");
+        let bundle_dir = root.join("paper_engram_bundle");
+        let table_shards_dir = bundle_dir.join("table_shards");
+        let gates_dir = bundle_dir.join("gates");
+        fs::create_dir_all(&table_shards_dir).expect("create bundle table shard dir");
+        fs::create_dir_all(&gates_dir).expect("create bundle gate dir");
+
+        run_lingqu_memory_seed_paper_engram_fixture_cli(&[
+            "--store".to_string(),
+            seed_store.display().to_string(),
+            "--module-id".to_string(),
+            "pe-module-missing-payload-cli".to_string(),
+            "--model-id".to_string(),
+            "qwen3-missing-payload-test".to_string(),
+            "--model-key".to_string(),
+            "qwen3-missing-payload-test".to_string(),
+            "--hidden-size".to_string(),
+            "8".to_string(),
+            "--layer-end".to_string(),
+            "4".to_string(),
+            "--table-rows".to_string(),
+            "8".to_string(),
+            "--orders".to_string(),
+            "2".to_string(),
+            "--heads-per-order".to_string(),
+            "1".to_string(),
+            "--created-at-us".to_string(),
+            "10".to_string(),
+        ])
+        .expect("seed paper engram missing payload fixture");
+
+        let mut durable =
+            load_lingqu_memory_durable_store(&seed_store).expect("load missing payload seed store");
+        let projection = durable
+            .load_paper_engram_tokenizer_projection_manifest()
+            .expect("load seeded projection")
+            .pop()
+            .expect("seeded projection");
+        let hash_config = durable
+            .load_paper_engram_hash_config_manifest()
+            .expect("load seeded hash config")
+            .pop()
+            .expect("seeded hash config");
+        let shard = durable
+            .load_paper_engram_table_shard_manifest()
+            .expect("load seeded table shard")
+            .pop()
+            .expect("seeded table shard");
+        let gate = durable
+            .load_paper_engram_gate_manifest()
+            .expect("load seeded gate")
+            .pop()
+            .expect("seeded gate");
+        let module = durable
+            .load_paper_engram_module_registry()
+            .expect("load seeded module registry")
+            .pop()
+            .expect("seeded module")
+            .module;
+
+        write_json_file(&bundle_dir.join("tokenizer_projection.json"), &projection);
+        write_json_file(&bundle_dir.join("hash_config.json"), &hash_config);
+        write_json_file(&table_shards_dir.join("shard_0000.json"), &shard);
+        write_json_file(&gates_dir.join("gate_0000.json"), &gate);
+        write_json_file(&bundle_dir.join("engram_module.json"), &module);
+
+        let err = run_lingqu_memory_import_paper_engram_module_cli(&[
+            "--store".to_string(),
+            import_store.display().to_string(),
+            "--bundle-dir".to_string(),
+            bundle_dir.display().to_string(),
+        ])
+        .expect_err("fresh bundle import must reject missing block payload files");
+        assert!(
+            err.chain()
+                .any(|cause| cause.to_string().contains("missing block payload file")),
+            "{err:#}"
+        );
+
+        fs::remove_dir_all(&root).expect("remove paper engram missing payload test dir");
     }
 
     #[test]

@@ -332,7 +332,7 @@ Current implementation status:
 - W5 paper `ENGRAM_STATE` publication now emits a v3 manifest that carries tokenizer-projection and hash-config checksums. UAPI still accepts legacy v2 state manifests for compatibility, but v3 runtime execution requires any provided tokenizer projection to match the manifest checksum before canonical ngram lookups are built.
 - Paper Engram row-prefetch plans now carry tokenizer-projection and hash-config checksums, and UAPI rejects a supplied row-prefetch plan when its contract does not match the active paper `ENGRAM_STATE` manifest.
 - `sim-cli lingqu-memory build-engram-hash-config` now binds the hash config to the tokenizer projection artifact checksum (`aggregate_checksum`) instead of the source tokenizer-file checksum.
-- `sim-cli lingqu-memory import-paper-engram-module` can import a complete paper Engram manifest bundle in dependency order (`projection`, `hash_config`, table shards, gates, optional recipe/eval, module), persist all registries, and resolve runtime artifacts as the import validation gate. It accepts either explicit manifest paths or a training-export `--bundle-dir` with `tokenizer_projection.json`, `hash_config.json`, `engram_module.json`, optional `training_recipe.json` / `eval_report.json`, and `table_shards/*.json` plus `gates/*.json`. `validate-paper-engram-module` exposes the same runtime validation directly and can additionally require the trained/imported quality gate with `--require-quality`.
+- `sim-cli lingqu-memory import-paper-engram-module` can import a complete paper Engram manifest bundle in dependency order (`projection`, `hash_config`, table shards, gates, optional recipe/eval, module), persist all registries, import table/gate block payload bytes, and resolve runtime artifacts as the import validation gate. It accepts either explicit manifest paths or a training-export `--bundle-dir` with `tokenizer_projection.json`, `hash_config.json`, `engram_module.json`, optional `training_recipe.json` / `eval_report.json`, `table_shards/*.json`, `gates/*.json`, and `block_payloads/<block id>` files for every table/gate `LingquBlockPayloadRef`. `validate-paper-engram-module` exposes the same runtime validation directly and can additionally require the trained/imported quality gate with `--require-quality`.
 - `sim-cli lingqu-memory seed-paper-engram-fixture` now exposes explicit `--table-init` and `--gate-init` modes (`zero`, `fixture`, `random-normal`) so Phase 4 correctness/performance runs can separate no-op baseline, deterministic fixture mutation, and deterministic random-normal payloads.
 - W5 `qwen3-engram-context` runtime logs now include row-prefetch hit/request counters, hit-rate milli, table/gate/indices bytes moved, hidden injection byte counters, backend latency, and output checksums.
 
@@ -352,8 +352,9 @@ An Engram training job should export:
 engram_module.json
 tokenizer_projection.json
 hash_config.json
-table shards
-gate/fusion weights
+table_shards/*.json
+gates/*.json
+block_payloads/<block id>
 training_recipe.json
 eval_report.json
 ```
@@ -427,8 +428,13 @@ Minimum required evidence before treating a table as useful:
 
 Current status: manifest registration/list/validation commands exist.
 `import-paper-engram-module` imports complete manifest bundles in dependency
-order and validates them by resolving runtime artifacts. It supports both
-explicit manifest paths and a standard training-export `--bundle-dir` layout.
+order, imports table/gate block payload bytes into the durable store, and
+validates them by resolving runtime artifacts. It supports both explicit
+manifest paths and a standard training-export `--bundle-dir` layout:
+`tokenizer_projection.json`, `hash_config.json`, `engram_module.json`, optional
+`training_recipe.json` / `eval_report.json`, `table_shards/*.json`,
+`gates/*.json`, and `block_payloads/<block id>` files matching every
+table/gate `LingquBlockPayloadRef`.
 `validate-paper-engram-module` validates an already registered module's runtime
 operand bundle and can require the quality evidence gate. `resolve-paper-engram-
 table-row-blocks` resolves durable row-block refs without copying table payload
