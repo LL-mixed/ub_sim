@@ -2223,6 +2223,9 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "register-paper-engram-eval-report" => {
             run_lingqu_memory_register_paper_engram_eval_report_cli(&args)
         }
+        "compare-paper-engram-eval-report" => {
+            run_lingqu_memory_compare_paper_engram_eval_report_cli(&args)
+        }
         "build-paper-engram-eval-report-from-w5-summary" => {
             run_lingqu_memory_build_paper_engram_eval_report_from_w5_summary_cli(&args)
         }
@@ -2278,6 +2281,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
             plan-paper-engram-row-prefetch, publish-paper-engram-row-prefetch, publish-paper-engram-state-ref, \
             register-paper-engram-tokenizer-projection, register-paper-engram-hash-config, \
             register-paper-engram-training-recipe, register-paper-engram-eval-report, \
+            compare-paper-engram-eval-report, \
             build-paper-engram-eval-report-from-w5-summary, \
             register-paper-engram-eval-report-from-w5-summary, \
             register-paper-engram-table-shard, register-paper-engram-gate, \
@@ -2769,6 +2773,258 @@ fn register_paper_engram_eval_report_to_store(
         .context("persist paper engram eval report manifest to DFS")?;
     save_lingqu_memory_durable_store(&store_path, &durable_store)?;
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PaperEngramEvalComparison {
+    decode_policy_loss_milli: u64,
+    paper_engram_decode_policy_loss_milli: u64,
+    delta_paper_vs_base_milli: i128,
+    delta_decode_policy_vs_base_milli: i128,
+    delta_paper_decode_policy_vs_base_milli: i128,
+    delta_paper_vs_decode_policy_milli: i128,
+    delta_paper_decode_policy_vs_decode_policy_milli: i128,
+    row_prefetch_hit_rate_milli: Option<u64>,
+    hidden_checksum_changed: Option<bool>,
+    output_checksum_changed: Option<bool>,
+    backend_latency_ok: Option<bool>,
+}
+
+fn run_lingqu_memory_compare_paper_engram_eval_report_cli(args: &[String]) -> anyhow::Result<()> {
+    let (report, source) = paper_engram_eval_report_from_cli(args)?;
+    let comparison = paper_engram_eval_comparison(&report)?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: compare-paper-engram-eval-report");
+    println!("  source: {source}");
+    println!("  report_id: {}", report.report_id);
+    println!("  module_id: {}", report.module_id);
+    println!("  model_id: {}", report.model.model_id);
+    println!("  sample_count: {}", report.sample_count);
+    println!("  loss_base_milli: {}", report.baseline_loss_milli);
+    println!(
+        "  loss_decode_policy_milli: {}",
+        comparison.decode_policy_loss_milli
+    );
+    println!(
+        "  loss_paper_engram_milli: {}",
+        report.paper_engram_loss_milli
+    );
+    println!(
+        "  loss_paper_engram_decode_policy_milli: {}",
+        comparison.paper_engram_decode_policy_loss_milli
+    );
+    println!(
+        "  delta_paper_vs_base_milli: {}",
+        comparison.delta_paper_vs_base_milli
+    );
+    println!(
+        "  delta_decode_policy_vs_base_milli: {}",
+        comparison.delta_decode_policy_vs_base_milli
+    );
+    println!(
+        "  delta_paper_decode_policy_vs_base_milli: {}",
+        comparison.delta_paper_decode_policy_vs_base_milli
+    );
+    println!(
+        "  delta_paper_vs_decode_policy_milli: {}",
+        comparison.delta_paper_vs_decode_policy_milli
+    );
+    println!(
+        "  delta_paper_decode_policy_vs_decode_policy_milli: {}",
+        comparison.delta_paper_decode_policy_vs_decode_policy_milli
+    );
+    println!(
+        "  max_allowed_regression_milli: {}",
+        report.max_allowed_regression_milli
+    );
+    println!(
+        "  no_regression_paper_vs_base: {}",
+        report.paper_engram_loss_milli
+            <= report
+                .baseline_loss_milli
+                .saturating_add(report.max_allowed_regression_milli)
+    );
+    println!(
+        "  no_regression_paper_vs_decode_policy: {}",
+        report.paper_engram_loss_milli
+            <= comparison
+                .decode_policy_loss_milli
+                .saturating_add(report.max_allowed_regression_milli)
+    );
+    println!(
+        "  no_regression_paper_decode_policy_vs_base: {}",
+        comparison.paper_engram_decode_policy_loss_milli
+            <= report
+                .baseline_loss_milli
+                .saturating_add(report.max_allowed_regression_milli)
+    );
+    println!(
+        "  no_regression_paper_decode_policy_vs_decode_policy: {}",
+        comparison.paper_engram_decode_policy_loss_milli
+            <= comparison
+                .decode_policy_loss_milli
+                .saturating_add(report.max_allowed_regression_milli)
+    );
+    println!(
+        "  cpu_backend_output_match: {}",
+        optional_bool_label(report.cpu_backend_output_match)
+    );
+    println!(
+        "  hidden_checksum_changed: {}",
+        optional_bool_label(comparison.hidden_checksum_changed)
+    );
+    println!(
+        "  output_checksum_changed: {}",
+        optional_bool_label(comparison.output_checksum_changed)
+    );
+    println!(
+        "  row_prefetch_requests: {}",
+        optional_u64_label(report.row_prefetch_requests)
+    );
+    println!(
+        "  row_prefetch_hits: {}",
+        optional_u64_label(report.row_prefetch_hits)
+    );
+    println!(
+        "  row_prefetch_hit_rate_milli: {}",
+        optional_u64_label(comparison.row_prefetch_hit_rate_milli)
+    );
+    println!(
+        "  max_backend_latency_us: {}",
+        optional_u64_label(report.max_backend_latency_us)
+    );
+    println!(
+        "  max_allowed_backend_latency_us: {}",
+        optional_u64_label(report.max_allowed_backend_latency_us)
+    );
+    println!(
+        "  backend_latency_ok: {}",
+        optional_bool_label(comparison.backend_latency_ok)
+    );
+    Ok(())
+}
+
+fn paper_engram_eval_report_from_cli(
+    args: &[String],
+) -> anyhow::Result<(PaperEngramEvalReportManifest, String)> {
+    let manifest_path = optional_cli_path(args, "--manifest")?;
+    let store_path = optional_cli_path(args, "--store")?;
+    match (manifest_path, store_path) {
+        (Some(manifest_path), None) => {
+            let report = read_cli_json_manifest::<PaperEngramEvalReportManifest>(
+                &manifest_path,
+                "paper engram eval report",
+            )?;
+            Ok((report, manifest_path.display().to_string()))
+        }
+        (None, Some(store_path)) => {
+            let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+            let mut memory_service = LingquMemoryService::new();
+            rebuild_lingqu_memory_optional_paper_engram_registries(
+                &mut memory_service,
+                &mut durable_store,
+            )?;
+            let module_id = paper_engram_module_id_from_cli(args, &memory_service)?;
+            let module = durable_store
+                .load_paper_engram_module_registry()
+                .context("load paper engram module registry")?
+                .into_iter()
+                .find(|entry| entry.module.module_id == module_id)
+                .map(|entry| entry.module)
+                .ok_or_else(|| anyhow::anyhow!("paper Engram module not found: {module_id}"))?;
+            let report = load_paper_engram_eval_report_for_module(&mut durable_store, &module)?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "paper Engram module {} does not bind an eval report",
+                        module.module_id
+                    )
+                })?;
+            Ok((report, store_path.display().to_string()))
+        }
+        (Some(_), Some(_)) => {
+            anyhow::bail!(
+                "compare-paper-engram-eval-report accepts either --manifest or --store, not both"
+            )
+        }
+        (None, None) => {
+            anyhow::bail!("compare-paper-engram-eval-report requires --manifest or --store")
+        }
+    }
+}
+
+fn paper_engram_eval_comparison(
+    report: &PaperEngramEvalReportManifest,
+) -> anyhow::Result<PaperEngramEvalComparison> {
+    let decode_policy_loss_milli = report.decode_policy_loss_milli.ok_or_else(|| {
+        anyhow::anyhow!("paper Engram Phase 6 comparison requires decode_policy_loss_milli")
+    })?;
+    let paper_engram_decode_policy_loss_milli = report
+        .paper_engram_decode_policy_loss_milli
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "paper Engram Phase 6 comparison requires paper_engram_decode_policy_loss_milli"
+            )
+        })?;
+    let row_prefetch_hit_rate_milli = match (report.row_prefetch_hits, report.row_prefetch_requests)
+    {
+        (Some(hits), Some(requests)) if requests > 0 => Some(hits.saturating_mul(1000) / requests),
+        _ => None,
+    };
+    Ok(PaperEngramEvalComparison {
+        decode_policy_loss_milli,
+        paper_engram_decode_policy_loss_milli,
+        delta_paper_vs_base_milli: signed_delta_milli(
+            report.paper_engram_loss_milli,
+            report.baseline_loss_milli,
+        ),
+        delta_decode_policy_vs_base_milli: signed_delta_milli(
+            decode_policy_loss_milli,
+            report.baseline_loss_milli,
+        ),
+        delta_paper_decode_policy_vs_base_milli: signed_delta_milli(
+            paper_engram_decode_policy_loss_milli,
+            report.baseline_loss_milli,
+        ),
+        delta_paper_vs_decode_policy_milli: signed_delta_milli(
+            report.paper_engram_loss_milli,
+            decode_policy_loss_milli,
+        ),
+        delta_paper_decode_policy_vs_decode_policy_milli: signed_delta_milli(
+            paper_engram_decode_policy_loss_milli,
+            decode_policy_loss_milli,
+        ),
+        row_prefetch_hit_rate_milli,
+        hidden_checksum_changed: report
+            .zero_table_hidden_checksum
+            .zip(report.paper_engram_hidden_checksum)
+            .map(|(zero, paper)| zero != paper),
+        output_checksum_changed: report
+            .zero_table_output_checksum
+            .map(|zero| zero != report.output_checksum),
+        backend_latency_ok: report
+            .max_backend_latency_us
+            .zip(report.max_allowed_backend_latency_us)
+            .map(|(latency, max_allowed)| latency <= max_allowed),
+    })
+}
+
+fn signed_delta_milli(value: u64, baseline: u64) -> i128 {
+    value as i128 - baseline as i128
+}
+
+fn optional_u64_label(value: Option<u64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "missing".to_string())
+}
+
+fn optional_bool_label(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "true",
+        Some(false) => "false",
+        None => "missing",
+    }
 }
 
 fn run_lingqu_memory_build_paper_engram_eval_report_from_w5_summary_cli(
@@ -13951,8 +14207,9 @@ mod tests {
         load_lingqu_memory_durable_store, load_lingqu_object_service_snapshot,
         load_lingqu_object_service_snapshot_file, load_w5_memory_decisions_from_store,
         paper_engram_bundle_block_payload_path, paper_engram_bundle_payload_refs,
-        paper_engram_module_matches_list_filters, parse_paper_engram_canonical_history_arg_or_file,
-        parse_summary_fields, parse_u64_csv_arg_or_file, parse_w5_terminal_logits_observation,
+        paper_engram_eval_comparison, paper_engram_module_matches_list_filters,
+        parse_paper_engram_canonical_history_arg_or_file, parse_summary_fields,
+        parse_u64_csv_arg_or_file, parse_w5_terminal_logits_observation,
         publish_w5_engram_state_ref_from_memory, publish_w5_engram_state_ref_from_memory_objects,
         publish_w5_execution_artifact_ref, publish_w5_memory_decision_artifact_refs,
         publish_w5_object_service_payload_ref, qwen3_decode_loop_args_from,
@@ -13986,6 +14243,7 @@ mod tests {
         run_lingqu_memory_build_engram_hash_config_cli, run_lingqu_memory_build_index_cli,
         run_lingqu_memory_build_paper_engram_eval_report_from_w5_summary_cli,
         run_lingqu_memory_build_tokenizer_projection_cli,
+        run_lingqu_memory_compare_paper_engram_eval_report_cli,
         run_lingqu_memory_export_paper_engram_module_cli,
         run_lingqu_memory_import_paper_engram_module_cli, run_lingqu_memory_ingest_cli,
         run_lingqu_memory_list_artifact_access_cli,
@@ -19609,6 +19867,23 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         );
         assert!(report.zero_table_output_checksum.is_some());
         assert_ne!(report.output_checksum, 0);
+        let comparison = paper_engram_eval_comparison(&report).expect("compare eval report");
+        assert_eq!(comparison.decode_policy_loss_milli, 992);
+        assert_eq!(comparison.paper_engram_decode_policy_loss_milli, 988);
+        assert_eq!(comparison.delta_paper_vs_base_milli, -10);
+        assert_eq!(
+            comparison.delta_paper_decode_policy_vs_decode_policy_milli,
+            -4
+        );
+        assert_eq!(comparison.row_prefetch_hit_rate_milli, Some(666));
+        assert_eq!(comparison.hidden_checksum_changed, Some(true));
+        assert_eq!(comparison.output_checksum_changed, Some(true));
+        assert_eq!(comparison.backend_latency_ok, Some(true));
+        run_lingqu_memory_compare_paper_engram_eval_report_cli(&[
+            "--manifest".to_string(),
+            report_path.display().to_string(),
+        ])
+        .expect("compare paper Engram eval report from manifest");
 
         fs::remove_dir_all(&root).expect("remove paper engram eval report test dir");
     }
@@ -19885,6 +20160,13 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             module.module_id.clone(),
         ])
         .expect("validate W5-derived paper engram quality evidence");
+        run_lingqu_memory_compare_paper_engram_eval_report_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--module-id".to_string(),
+            module.module_id.clone(),
+        ])
+        .expect("compare W5-derived paper Engram eval report by module id");
 
         let mut durable = load_lingqu_memory_durable_store(&store)
             .expect("reload W5-derived paper quality store");
