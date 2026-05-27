@@ -2224,6 +2224,9 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "build-paper-engram-eval-report-from-w5-summary" => {
             run_lingqu_memory_build_paper_engram_eval_report_from_w5_summary_cli(&args)
         }
+        "register-paper-engram-eval-report-from-w5-summary" => {
+            run_lingqu_memory_register_paper_engram_eval_report_from_w5_summary_cli(&args)
+        }
         "register-paper-engram-table-shard" => {
             run_lingqu_memory_register_paper_engram_table_shard_cli(&args)
         }
@@ -2269,6 +2272,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
             register-paper-engram-tokenizer-projection, register-paper-engram-hash-config, \
             register-paper-engram-training-recipe, register-paper-engram-eval-report, \
             build-paper-engram-eval-report-from-w5-summary, \
+            register-paper-engram-eval-report-from-w5-summary, \
             register-paper-engram-table-shard, register-paper-engram-gate, \
             register-paper-engram-module, import-paper-engram-module, validate-paper-engram-quality, seed-paper-engram-fixture, update-record-state, register-execution-artifact, \
             record-artifact-access, register-terminal-logits-artifact-from-w5-summary, \
@@ -2699,6 +2703,24 @@ fn run_lingqu_memory_register_paper_engram_eval_report_cli(args: &[String]) -> a
         })?
     };
 
+    register_paper_engram_eval_report_to_store(&store_path, report.clone())?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: register-paper-engram-eval-report");
+    println!("  store_path: {}", store_path.display());
+    println!(
+        "  manifest_path: {}",
+        sim_memory::LINGQU_PAPER_ENGRAM_EVAL_REPORT_MANIFEST_PATH
+    );
+    println!("  input_path: {}", manifest_path.display());
+    println!("  report_id: {}", report.report_id);
+    Ok(())
+}
+
+fn register_paper_engram_eval_report_to_store(
+    store_path: &Path,
+    report: PaperEngramEvalReportManifest,
+) -> anyhow::Result<()> {
     let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
     let mut memory_service = LingquMemoryService::new();
     rebuild_lingqu_memory_paper_engram_tokenizer_projections(
@@ -2739,24 +2761,86 @@ fn run_lingqu_memory_register_paper_engram_eval_report_cli(args: &[String]) -> a
         .persist_paper_engram_eval_reports_to_dfs(&mut durable_store)
         .context("persist paper engram eval report manifest to DFS")?;
     save_lingqu_memory_durable_store(&store_path, &durable_store)?;
-
-    println!("lingqu_memory_service");
-    println!("  mode: register-paper-engram-eval-report");
-    println!("  store_path: {}", store_path.display());
-    println!(
-        "  manifest_path: {}",
-        sim_memory::LINGQU_PAPER_ENGRAM_EVAL_REPORT_MANIFEST_PATH
-    );
-    println!("  input_path: {}", manifest_path.display());
-    println!("  report_id: {}", report.report_id);
     Ok(())
 }
 
 fn run_lingqu_memory_build_paper_engram_eval_report_from_w5_summary_cli(
     args: &[String],
 ) -> anyhow::Result<()> {
-    let summary_path = PathBuf::from(required_cli_arg(args, "--summary")?);
     let output_path = PathBuf::from(required_cli_arg(args, "--output")?);
+    let built = build_paper_engram_eval_report_from_w5_summary_args(args)?;
+
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create eval report dir {}", parent.display()))?;
+    }
+    fs::write(
+        &output_path,
+        serde_json::to_vec_pretty(&built.report).context("encode paper Engram eval report")?,
+    )
+    .with_context(|| format!("write paper Engram eval report {}", output_path.display()))?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: build-paper-engram-eval-report-from-w5-summary");
+    println!("  summary: {}", built.summary_path.display());
+    println!("  output: {}", output_path.display());
+    println!("  report_id: {}", built.report.report_id);
+    println!("  module_id: {}", built.report.module_id);
+    println!("  context_count: {}", built.evidence.context_count);
+    println!(
+        "  row_prefetch_requests: {}",
+        built.evidence.row_prefetch_requests
+    );
+    println!("  row_prefetch_hits: {}", built.evidence.row_prefetch_hits);
+    println!(
+        "  max_backend_latency_us: {}",
+        built.evidence.max_backend_latency_us
+    );
+    println!("  output_checksum: {:#x}", built.report.output_checksum);
+    Ok(())
+}
+
+fn run_lingqu_memory_register_paper_engram_eval_report_from_w5_summary_cli(
+    args: &[String],
+) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let built = build_paper_engram_eval_report_from_w5_summary_args(args)?;
+    register_paper_engram_eval_report_to_store(&store_path, built.report.clone())?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: register-paper-engram-eval-report-from-w5-summary");
+    println!("  store_path: {}", store_path.display());
+    println!("  summary: {}", built.summary_path.display());
+    println!(
+        "  manifest_path: {}",
+        sim_memory::LINGQU_PAPER_ENGRAM_EVAL_REPORT_MANIFEST_PATH
+    );
+    println!("  report_id: {}", built.report.report_id);
+    println!("  module_id: {}", built.report.module_id);
+    println!("  context_count: {}", built.evidence.context_count);
+    println!(
+        "  row_prefetch_requests: {}",
+        built.evidence.row_prefetch_requests
+    );
+    println!("  row_prefetch_hits: {}", built.evidence.row_prefetch_hits);
+    println!(
+        "  max_backend_latency_us: {}",
+        built.evidence.max_backend_latency_us
+    );
+    println!("  output_checksum: {:#x}", built.report.output_checksum);
+    Ok(())
+}
+
+struct BuiltPaperEngramEvalReportFromW5 {
+    summary_path: PathBuf,
+    report: PaperEngramEvalReportManifest,
+    evidence: W5PaperEngramEvalEvidence,
+}
+
+fn build_paper_engram_eval_report_from_w5_summary_args(
+    args: &[String],
+) -> anyhow::Result<BuiltPaperEngramEvalReportFromW5> {
+    let summary_path = PathBuf::from(required_cli_arg(args, "--summary")?);
     let zero_table_summary_path = optional_cli_path(args, "--zero-table-summary")?;
     let validation_set_refs = parse_nonempty_string_csv(
         "--validation-set-refs",
@@ -2862,34 +2946,11 @@ fn run_lingqu_memory_build_paper_engram_eval_report_from_w5_summary_cli(
     })
     .map_err(|err| anyhow::anyhow!("build paper Engram eval report: {err}"))?;
 
-    if let Some(parent) = output_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("create eval report dir {}", parent.display()))?;
-    }
-    fs::write(
-        &output_path,
-        serde_json::to_vec_pretty(&report).context("encode paper Engram eval report")?,
-    )
-    .with_context(|| format!("write paper Engram eval report {}", output_path.display()))?;
-
-    println!("lingqu_memory_service");
-    println!("  mode: build-paper-engram-eval-report-from-w5-summary");
-    println!("  summary: {}", summary_path.display());
-    println!("  output: {}", output_path.display());
-    println!("  report_id: {}", report.report_id);
-    println!("  module_id: {}", report.module_id);
-    println!("  context_count: {}", evidence.context_count);
-    println!(
-        "  row_prefetch_requests: {}",
-        evidence.row_prefetch_requests
-    );
-    println!("  row_prefetch_hits: {}", evidence.row_prefetch_hits);
-    println!(
-        "  max_backend_latency_us: {}",
-        evidence.max_backend_latency_us
-    );
-    println!("  output_checksum: {:#x}", report.output_checksum);
-    Ok(())
+    Ok(BuiltPaperEngramEvalReportFromW5 {
+        summary_path,
+        report,
+        evidence,
+    })
 }
 
 fn run_lingqu_memory_register_execution_artifact_cli(args: &[String]) -> anyhow::Result<()> {
@@ -12860,6 +12921,7 @@ mod tests {
         run_lingqu_memory_record_boundary_observations_from_w5_summary_cli,
         run_lingqu_memory_register_execution_artifact_cli,
         run_lingqu_memory_register_paper_engram_eval_report_cli,
+        run_lingqu_memory_register_paper_engram_eval_report_from_w5_summary_cli,
         run_lingqu_memory_register_paper_engram_gate_cli,
         run_lingqu_memory_register_paper_engram_hash_config_cli,
         run_lingqu_memory_register_paper_engram_module_cli,
@@ -17843,6 +17905,207 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         assert_ne!(report.output_checksum, 0);
 
         fs::remove_dir_all(&root).expect("remove paper engram eval report test dir");
+    }
+
+    #[test]
+    fn lingqu_memory_registers_paper_engram_eval_report_from_w5_summary() {
+        let root = env::temp_dir().join(format!(
+            "sim-cli-lingqu-memory-paper-engram-register-eval-from-w5-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let paper_run = root.join("paper_headless8");
+        let zero_run = root.join("zero_headless8");
+        fs::create_dir_all(&paper_run).expect("create paper W5 run dir");
+        fs::create_dir_all(&zero_run).expect("create zero W5 run dir");
+        let store = root.join("store.json");
+        let summary_path = root.join("paper_summary.txt");
+        let zero_summary_path = root.join("zero_summary.txt");
+        let recipe_manifest = root.join("recipe_manifest.json");
+        let module_manifest = root.join("module_manifest.json");
+        fs::write(
+            &summary_path,
+            format!("summary: run_dir={}\n", paper_run.display()),
+        )
+        .expect("write paper summary");
+        fs::write(
+            paper_run.join("nodeA_guest.log"),
+            concat!(
+                "qwen3-engram-context: node=0 layers=[0,4) total_layers=40 step=0 mode=simpler-host-paper-object-ref table_rows=8 output_checksum=0x0000000000007101 gate_checksum=0x0000000000007102 index_checksum=0x0000000000007103 output_l1_milli=10 latency_ms=5 row_prefetch_hits=4 row_prefetch_requests=4 row_prefetch_hit_rate_milli=1000 table_bytes_moved=256 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=32 hidden_output_bytes=32 hidden_injection_overhead_bytes=64\n",
+                "stage qwen3_terminal_token_result_publish step=0 token=11 runner_up=12 margin_milli=25 text_checksum=0x0000000000008201\n",
+            ),
+        )
+        .expect("write paper guest log");
+        fs::write(
+            &zero_summary_path,
+            format!("summary: run_dir={}\n", zero_run.display()),
+        )
+        .expect("write zero summary");
+        fs::write(
+            zero_run.join("nodeA_guest.log"),
+            concat!(
+                "qwen3-engram-context: node=0 layers=[0,4) total_layers=40 step=0 mode=cpu-reference-paper-object-ref table_rows=8 output_checksum=0x0000000000006101 gate_checksum=0x0000000000006102 index_checksum=0x0000000000006103 output_l1_milli=0 latency_ms=2 row_prefetch_hits=4 row_prefetch_requests=4 row_prefetch_hit_rate_milli=1000 table_bytes_moved=256 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=32 hidden_output_bytes=32 hidden_injection_overhead_bytes=64\n",
+                "stage qwen3_terminal_token_result_publish step=0 token=11 runner_up=12 margin_milli=25 text_checksum=0x0000000000008301\n",
+            ),
+        )
+        .expect("write zero guest log");
+
+        run_lingqu_memory_seed_paper_engram_fixture_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--module-id".to_string(),
+            "pe-module-w5-quality-cli".to_string(),
+            "--model-id".to_string(),
+            "qwen3-w5-quality-test".to_string(),
+            "--model-key".to_string(),
+            "qwen3-w5-quality-test".to_string(),
+            "--hidden-size".to_string(),
+            "8".to_string(),
+            "--layer-end".to_string(),
+            "4".to_string(),
+            "--table-rows".to_string(),
+            "8".to_string(),
+            "--orders".to_string(),
+            "2".to_string(),
+            "--heads-per-order".to_string(),
+            "1".to_string(),
+            "--created-at-us".to_string(),
+            "10".to_string(),
+        ])
+        .expect("seed paper engram fixture");
+
+        let mut durable =
+            load_lingqu_memory_durable_store(&store).expect("load seeded paper store");
+        let projection = durable
+            .load_paper_engram_tokenizer_projection_manifest()
+            .expect("load seeded projection")
+            .pop()
+            .expect("seeded projection");
+        let hash_config = durable
+            .load_paper_engram_hash_config_manifest()
+            .expect("load seeded hash config")
+            .pop()
+            .expect("seeded hash config");
+        let mut module = durable
+            .load_paper_engram_module_registry()
+            .expect("load seeded module registry")
+            .pop()
+            .expect("seeded module")
+            .module;
+        drop(durable);
+
+        let recipe = sim_memory::PaperEngramTrainingRecipeManifest::new(
+            sim_memory::PaperEngramTrainingRecipeManifest {
+                recipe_id: "pe-recipe-w5-quality-cli".to_string(),
+                model: module.model.clone(),
+                mode: PaperEngramTrainingMode::EngramOnlyContinuedPretrain,
+                base_checkpoint_checksum: module.base_checkpoint_checksum,
+                tokenizer_projection_ref: projection.projection_ref.clone(),
+                hash_config_ref: hash_config.hash_config_ref.clone(),
+                dataset_refs: vec!["dfs://datasets/qwen3-w5-quality-train".to_string()],
+                objective: "next-token-loss+paper-engram-context".to_string(),
+                frozen_base_model: true,
+                lora_enabled: false,
+                table_init: "fixture-table".to_string(),
+                gate_init: "fixture-gate".to_string(),
+                layers: module.layers.clone(),
+                orders: module.orders.clone(),
+                heads_per_order: module.heads_per_order,
+                table_rows: 8,
+                evidence_refs: vec!["dfs://runs/qwen3-w5-quality-train/config.json".to_string()],
+                checksum: 1,
+                version: 1,
+                created_at_us: 20,
+                expires_at_us: None,
+            },
+        )
+        .expect("build paper engram training recipe");
+        module.training_recipe_ref = Some(sim_memory::paper_engram_training_recipe_dfs_path(
+            &recipe.recipe_id,
+        ));
+        module.eval_report_ref = Some(sim_memory::paper_engram_eval_report_dfs_path(
+            "pe-eval-w5-quality-cli",
+        ));
+        module.quality_claim = sim_memory::PaperEngramQualityClaim::Posttrain;
+        module = sim_memory::PaperEngramModuleManifest::new(module)
+            .expect("build trained paper engram module manifest");
+
+        write_json_file(&recipe_manifest, &recipe);
+        write_json_file(&module_manifest, &module);
+        run_lingqu_memory_register_paper_engram_training_recipe_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--manifest".to_string(),
+            recipe_manifest.display().to_string(),
+        ])
+        .expect("register paper engram training recipe");
+        run_lingqu_memory_register_paper_engram_eval_report_from_w5_summary_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--summary".to_string(),
+            summary_path.display().to_string(),
+            "--zero-table-summary".to_string(),
+            zero_summary_path.display().to_string(),
+            "--report-id".to_string(),
+            "pe-eval-w5-quality-cli".to_string(),
+            "--recipe-id".to_string(),
+            recipe.recipe_id.clone(),
+            "--module-id".to_string(),
+            module.module_id.clone(),
+            "--model-id".to_string(),
+            module.model.model_id.clone(),
+            "--model-key".to_string(),
+            module.model.model_key.clone(),
+            "--tokenizer-hash".to_string(),
+            module.model.tokenizer_hash.to_string(),
+            "--profile-hash".to_string(),
+            module.model.profile_hash.to_string(),
+            "--validation-set-refs".to_string(),
+            "dfs://datasets/qwen3-w5-quality-val".to_string(),
+            "--sample-count".to_string(),
+            "4".to_string(),
+            "--baseline-loss-milli".to_string(),
+            "1000".to_string(),
+            "--paper-engram-loss-milli".to_string(),
+            "990".to_string(),
+            "--decode-policy-loss-milli".to_string(),
+            "992".to_string(),
+            "--paper-engram-decode-policy-loss-milli".to_string(),
+            "988".to_string(),
+            "--max-allowed-regression-milli".to_string(),
+            "20".to_string(),
+            "--max-allowed-backend-latency-us".to_string(),
+            "10000".to_string(),
+            "--created-at-us".to_string(),
+            "33".to_string(),
+        ])
+        .expect("register eval report from W5 summary");
+        run_lingqu_memory_register_paper_engram_module_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--manifest".to_string(),
+            module_manifest.display().to_string(),
+        ])
+        .expect("register trained paper engram module");
+        run_lingqu_memory_validate_paper_engram_quality_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--module-id".to_string(),
+            module.module_id.clone(),
+        ])
+        .expect("validate W5-derived paper engram quality evidence");
+
+        let mut durable = load_lingqu_memory_durable_store(&store)
+            .expect("reload W5-derived paper quality store");
+        let reports = durable
+            .load_paper_engram_eval_report_manifest()
+            .expect("load paper eval report registry");
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].row_prefetch_requests, Some(4));
+        assert_eq!(reports[0].row_prefetch_hits, Some(4));
+        assert_eq!(reports[0].max_backend_latency_us, Some(5000));
+
+        fs::remove_dir_all(&root).expect("remove paper engram W5 quality test dir");
     }
 
     #[test]
