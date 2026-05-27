@@ -31,8 +31,8 @@ use sim_models::qwen3_dense_reference::{
 };
 use sim_models::{
     engram_hash::{
-        build_default_engram_hash_config, build_exact_canonical_ngram_index,
-        canonical_ngram_checksum, validate_engram_hash_config, ENGRAM_HASH_ALGORITHM_VERSION,
+        build_engram_hash_config, build_exact_canonical_ngram_index, canonical_ngram_checksum,
+        validate_engram_hash_config, ENGRAM_HASH_ALGORITHM_VERSION,
     },
     engram_simt_adapter::{
         artifact_config_from_env, discover_engram_simt_artifact, run_engram_simt_artifact_case,
@@ -2328,13 +2328,13 @@ fn run_lingqu_memory_build_engram_hash_config_cli(args: &[String]) -> anyhow::Re
             .with_context(|| {
                 format!("decode tokenizer projection {}", projection_path.display())
             })?;
-    let mut config = build_default_engram_hash_config(
+    let mut config = build_engram_hash_config(
         projection.aggregate_checksum,
+        orders,
         heads_per_order,
         table_rows,
         seed,
     );
-    config.orders = orders;
     config.algorithm = algorithm;
     if let Some(version) = optional_cli_u64_auto(args, "--version")? {
         config.version = version;
@@ -18620,6 +18620,32 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             format!("{bad_algorithm:#}").contains("engram_hash_config_algorithm_unsupported"),
             "unexpected unsupported algorithm error: {bad_algorithm:#}"
         );
+
+        let order2_output = root.join("hash_config_order2.json");
+        run_lingqu_memory_build_engram_hash_config_cli(&[
+            "--projection".to_string(),
+            projection.display().to_string(),
+            "--output".to_string(),
+            order2_output.display().to_string(),
+            "--heads-per-order".to_string(),
+            "2".to_string(),
+            "--table-rows".to_string(),
+            "64".to_string(),
+            "--orders".to_string(),
+            "2".to_string(),
+        ])
+        .expect("build single-order engram hash config CLI");
+        let order2_config: serde_json::Value =
+            serde_json::from_slice(&fs::read(&order2_output).expect("read order2 hash config"))
+                .expect("decode order2 engram hash config");
+        assert_eq!(order2_config["orders"].as_array().unwrap().len(), 1);
+        assert_eq!(order2_config["orders"][0], serde_json::Value::from(2u64));
+        assert_eq!(order2_config["table_specs"].as_array().unwrap().len(), 2);
+        assert!(order2_config["table_specs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|spec| spec["order"] == serde_json::Value::from(2u64)));
 
         fs::remove_dir_all(&root).expect("remove hash config test dir");
     }

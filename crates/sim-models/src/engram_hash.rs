@@ -62,7 +62,22 @@ pub fn build_default_engram_hash_config(
     table_rows: u64,
     seed: u64,
 ) -> Qwen3DenseReferenceEngramHashConfig {
-    let orders = vec![2, 3];
+    build_engram_hash_config(
+        projection_checksum,
+        vec![2, 3],
+        heads_per_order,
+        table_rows,
+        seed,
+    )
+}
+
+pub fn build_engram_hash_config(
+    projection_checksum: u64,
+    orders: Vec<u8>,
+    heads_per_order: usize,
+    table_rows: u64,
+    seed: u64,
+) -> Qwen3DenseReferenceEngramHashConfig {
     Qwen3DenseReferenceEngramHashConfig {
         version: 1,
         projection_checksum,
@@ -513,6 +528,18 @@ mod tests {
         );
         assert_eq!(descriptor.table_specs[3].order, 3);
         assert_eq!(descriptor.table_specs[3].head, 1);
+    }
+
+    #[test]
+    fn hash_config_builder_uses_explicit_orders_for_table_specs() {
+        let config = build_engram_hash_config(0x12, vec![2], 2, 16, 0x33);
+        validate_engram_hash_config(&config).expect("explicit-order hash config");
+        assert_eq!(config.orders, vec![2]);
+        assert_eq!(config.table_specs.len(), 2);
+        assert!(config.table_specs.iter().all(|spec| spec.order == 2));
+        let requests =
+            build_engram_lookup_requests(&[7, 8, 9], &config).expect("build lookup requests");
+        assert!(requests.iter().all(|request| request.order == 2));
     }
 
     #[test]
