@@ -1256,18 +1256,60 @@ fn validate_paper_engram_quality_recipe_shape(
             reason: "training recipe layers must match module layers",
         });
     }
-    if recipe.orders != module.orders || recipe.orders != hash_config.orders {
+    validate_paper_engram_training_recipe_hash_shape(recipe, hash_config)?;
+    if recipe.orders != module.orders {
         return Err(LingquMemoryError::InvalidValue {
             field: "paper_engram_training_recipe.orders",
-            reason: "training recipe orders must match module and hash config orders",
+            reason: "training recipe orders must match module orders",
         });
     }
-    if recipe.heads_per_order != module.heads_per_order
-        || recipe.heads_per_order != hash_config.heads_per_order
-    {
+    if recipe.heads_per_order != module.heads_per_order {
         return Err(LingquMemoryError::InvalidValue {
             field: "paper_engram_training_recipe.heads_per_order",
-            reason: "training recipe heads_per_order must match module and hash config",
+            reason: "training recipe heads_per_order must match module",
+        });
+    }
+    Ok(())
+}
+
+fn validate_paper_engram_training_recipe_artifact_bindings(
+    recipe: &PaperEngramTrainingRecipeManifest,
+    tokenizer_projection: &PaperEngramTokenizerProjectionManifest,
+    hash_config: &PaperEngramHashConfigManifest,
+) -> MemoryResult<()> {
+    if tokenizer_projection.model_id != recipe.model.model_id
+        || hash_config.model_id != recipe.model.model_id
+    {
+        return Err(LingquMemoryError::InvalidValue {
+            field: "paper_engram_training_recipe.model",
+            reason: "training recipe model must match projection and hash config model_id",
+        });
+    }
+    if hash_config.tokenizer_projection_id != tokenizer_projection.projection_id
+        || hash_config.tokenizer_projection_checksum != tokenizer_projection.projection_checksum
+    {
+        return Err(LingquMemoryError::InvalidValue {
+            field: "paper_engram_training_recipe.hash_config_ref",
+            reason: "training recipe hash config must bind the tokenizer projection",
+        });
+    }
+    validate_paper_engram_training_recipe_hash_shape(recipe, hash_config)
+}
+
+fn validate_paper_engram_training_recipe_hash_shape(
+    recipe: &PaperEngramTrainingRecipeManifest,
+    hash_config: &PaperEngramHashConfigManifest,
+) -> MemoryResult<()> {
+    if recipe.orders != hash_config.orders {
+        return Err(LingquMemoryError::InvalidValue {
+            field: "paper_engram_training_recipe.orders",
+            reason: "training recipe orders must match hash config orders",
+        });
+    }
+    if recipe.heads_per_order != hash_config.heads_per_order {
+        return Err(LingquMemoryError::InvalidValue {
+            field: "paper_engram_training_recipe.heads_per_order",
+            reason: "training recipe heads_per_order must match hash config",
         });
     }
     for &order in &hash_config.orders {
@@ -8066,24 +8108,25 @@ impl LingquMemoryService {
         manifest: PaperEngramTrainingRecipeManifest,
     ) -> MemoryResult<()> {
         manifest.validate()?;
-        if !self
+        let tokenizer_projection = self
             .paper_engram_tokenizer_projections
             .values()
-            .any(|projection| projection.projection_ref == manifest.tokenizer_projection_ref)
-        {
-            return Err(LingquMemoryError::MissingField(
+            .find(|projection| projection.projection_ref == manifest.tokenizer_projection_ref)
+            .ok_or(LingquMemoryError::MissingField(
                 "paper_engram_training_recipe.tokenizer_projection_ref",
-            ));
-        }
-        if !self
+            ))?;
+        let hash_config = self
             .paper_engram_hash_configs
             .values()
-            .any(|hash_config| hash_config.hash_config_ref == manifest.hash_config_ref)
-        {
-            return Err(LingquMemoryError::MissingField(
+            .find(|hash_config| hash_config.hash_config_ref == manifest.hash_config_ref)
+            .ok_or(LingquMemoryError::MissingField(
                 "paper_engram_training_recipe.hash_config_ref",
-            ));
-        }
+            ))?;
+        validate_paper_engram_training_recipe_artifact_bindings(
+            &manifest,
+            tokenizer_projection,
+            hash_config,
+        )?;
         self.paper_engram_training_recipes
             .insert(manifest.recipe_id.clone(), manifest);
         Ok(())
@@ -11163,6 +11206,123 @@ mod tests {
     }
 
     #[test]
+    fn paper_engram_training_recipe_registration_rejects_artifact_mismatch() {
+        for case in ["model", "orders", "heads_per_order", "table_rows"] {
+            let mut service = LingquMemoryService::new();
+            let projection = sample_paper_engram_tokenizer_projection_manifest();
+            let mut hash_config = sample_paper_engram_hash_config_manifest();
+            let mut recipe = sample_paper_engram_training_recipe_manifest();
+            let (expected_field, expected_reason) = match case {
+                "model" => {
+                    recipe.model.model_id = "OtherModel".to_string();
+                    (
+                        "paper_engram_training_recipe.model",
+                        "training recipe model must match projection and hash config model_id",
+                    )
+                }
+                "orders" => {
+                    recipe.orders = vec![3];
+                    (
+                        "paper_engram_training_recipe.orders",
+                        "training recipe orders must match hash config orders",
+                    )
+                }
+                "heads_per_order" => {
+                    recipe.heads_per_order = 2;
+                    (
+                        "paper_engram_training_recipe.heads_per_order",
+                        "training recipe heads_per_order must match hash config",
+                    )
+                }
+                "table_rows" => {
+                    hash_config.table_specs[0].table_rows = 512;
+                    hash_config.checksum = paper_engram_hash_config_manifest_checksum(&hash_config);
+                    (
+                        "paper_engram_training_recipe.table_rows",
+                        "training recipe table_rows must match hash config table specs",
+                    )
+                }
+                _ => unreachable!(),
+            };
+            recipe.checksum = paper_engram_training_recipe_manifest_checksum(&recipe);
+            recipe.validate().expect("mutated recipe remains valid");
+            hash_config
+                .validate()
+                .expect("mutated hash config remains valid");
+
+            service
+                .register_paper_engram_tokenizer_projection(projection)
+                .expect("register projection");
+            service
+                .register_paper_engram_hash_config(hash_config)
+                .expect("register hash config");
+
+            assert_eq!(
+                service
+                    .register_paper_engram_training_recipe(recipe)
+                    .expect_err("recipe artifact mismatch must fail at registration"),
+                LingquMemoryError::InvalidValue {
+                    field: expected_field,
+                    reason: expected_reason
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn paper_engram_training_recipe_registration_rejects_projection_hash_mismatch() {
+        let mut service = LingquMemoryService::new();
+        let projection = sample_paper_engram_tokenizer_projection_manifest();
+        let mut alternate_projection = projection.clone();
+        alternate_projection.projection_id = "pe-projection-alt".to_string();
+        alternate_projection.projection_ref =
+            LingquDfsPath::new("/lingqu/memory/engram/tokenizer-proj-alt.json");
+        alternate_projection.projection_checksum = 0x2468;
+        alternate_projection.checksum =
+            paper_engram_tokenizer_projection_manifest_checksum(&alternate_projection);
+        alternate_projection
+            .validate()
+            .expect("build alternate projection");
+
+        let mut alternate_hash_config = sample_paper_engram_hash_config_manifest();
+        alternate_hash_config.hash_config_ref =
+            LingquDfsPath::new("/lingqu/memory/engram/hash-config-alt.json");
+        alternate_hash_config.tokenizer_projection_id = alternate_projection.projection_id.clone();
+        alternate_hash_config.tokenizer_projection_checksum =
+            alternate_projection.projection_checksum;
+        alternate_hash_config.checksum =
+            paper_engram_hash_config_manifest_checksum(&alternate_hash_config);
+        alternate_hash_config
+            .validate()
+            .expect("build alternate hash config");
+
+        let mut recipe = sample_paper_engram_training_recipe_manifest();
+        recipe.hash_config_ref = alternate_hash_config.hash_config_ref.clone();
+        recipe.checksum = paper_engram_training_recipe_manifest_checksum(&recipe);
+        recipe.validate().expect("build mismatched recipe");
+
+        service
+            .register_paper_engram_tokenizer_projection(projection)
+            .expect("register projection");
+        service
+            .register_paper_engram_tokenizer_projection(alternate_projection)
+            .expect("register alternate projection");
+        service
+            .register_paper_engram_hash_config(alternate_hash_config)
+            .expect("register alternate hash config");
+
+        assert_eq!(
+            service
+                .register_paper_engram_training_recipe(recipe)
+                .expect_err("recipe projection and hash config must bind each other"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_training_recipe.hash_config_ref",
+                reason: "training recipe hash config must bind the tokenizer projection"
+            }
+        );
+    }
+
+    #[test]
     fn paper_engram_module_registration_requires_projection_and_hash_bindings() {
         let mut service = LingquMemoryService::new();
         let projection = sample_paper_engram_tokenizer_projection_manifest();
@@ -12108,98 +12268,57 @@ mod tests {
     }
 
     #[test]
-    fn paper_engram_quality_claim_rejects_recipe_shape_mismatch() {
-        for case in ["layers", "orders", "heads_per_order", "table_rows"] {
-            let mut service = LingquMemoryService::new();
-            let projection = sample_paper_engram_tokenizer_projection_manifest();
-            let mut hash_config = sample_paper_engram_hash_config_manifest();
-            let mut shard = sample_paper_engram_table_shard_manifest();
-            let gate = sample_paper_engram_gate_manifest();
-            let mut recipe = sample_paper_engram_training_recipe_manifest();
-            let report = sample_paper_engram_eval_report_manifest();
-            let mut module = sample_paper_engram_module_manifest();
-            let (expected_field, expected_reason) = match case {
-                "layers" => {
-                    recipe.layers = vec![4];
-                    (
-                        "paper_engram_training_recipe.layers",
-                        "training recipe layers must match module layers",
-                    )
-                }
-                "orders" => {
-                    recipe.orders = vec![3];
-                    (
-                        "paper_engram_training_recipe.orders",
-                        "training recipe orders must match module and hash config orders",
-                    )
-                }
-                "heads_per_order" => {
-                    recipe.heads_per_order = 2;
-                    (
-                        "paper_engram_training_recipe.heads_per_order",
-                        "training recipe heads_per_order must match module and hash config",
-                    )
-                }
-                "table_rows" => {
-                    hash_config.table_specs[0].table_rows = 512;
-                    hash_config.checksum = paper_engram_hash_config_manifest_checksum(&hash_config);
-                    shard.row_end = 512;
-                    shard.shape[0] = 512;
-                    shard.block_payload_refs = vec![LingquBlockPayloadRef::new(
-                        "block/pe-shard-0",
-                        0,
-                        512 * 512 * 4,
-                        0xabc,
-                    )];
-                    shard.checksum = paper_engram_table_shard_manifest_checksum(&shard);
-                    (
-                        "paper_engram_training_recipe.table_rows",
-                        "training recipe table_rows must match hash config table specs",
-                    )
-                }
-                _ => unreachable!(),
-            };
-            recipe.checksum = paper_engram_training_recipe_manifest_checksum(&recipe);
-            recipe.validate().expect("mutated recipe remains valid");
-            hash_config
-                .validate()
-                .expect("mutated hash config remains valid");
-            shard.validate().expect("mutated shard remains valid");
-            module.quality_claim = PaperEngramQualityClaim::Posttrain;
-            module.training_recipe_ref =
-                Some(paper_engram_training_recipe_dfs_path(&recipe.recipe_id));
-            module.eval_report_ref = Some(paper_engram_eval_report_dfs_path(&report.report_id));
-            module.checksum = paper_engram_module_manifest_checksum(&module);
+    fn paper_engram_quality_claim_rejects_recipe_layer_mismatch() {
+        let mut service = LingquMemoryService::new();
+        let projection = sample_paper_engram_tokenizer_projection_manifest();
+        let hash_config = sample_paper_engram_hash_config_manifest();
+        let mut shard = sample_paper_engram_table_shard_manifest();
+        let mut gate = sample_paper_engram_gate_manifest();
+        let recipe = sample_paper_engram_training_recipe_manifest();
+        let report = sample_paper_engram_eval_report_manifest();
+        let mut module = sample_paper_engram_module_manifest();
 
-            service
-                .register_paper_engram_tokenizer_projection(projection)
-                .expect("register projection");
-            service
-                .register_paper_engram_hash_config(hash_config)
-                .expect("register hash config");
-            service
-                .register_paper_engram_training_recipe(recipe)
-                .expect("register recipe");
-            service
-                .register_paper_engram_eval_report(report)
-                .expect("register eval report");
-            service
-                .register_paper_engram_table_shard(shard)
-                .expect("register shard");
-            service
-                .register_paper_engram_gate(gate)
-                .expect("register gate");
+        shard.layer = 4;
+        shard.checksum = paper_engram_table_shard_manifest_checksum(&shard);
+        shard.validate().expect("build alternate-layer shard");
+        gate.layer = 4;
+        gate.checksum = paper_engram_gate_manifest_checksum(&gate);
+        gate.validate().expect("build alternate-layer gate");
+        module.layers = vec![4];
+        module.quality_claim = PaperEngramQualityClaim::Posttrain;
+        module.training_recipe_ref = Some(paper_engram_training_recipe_dfs_path(&recipe.recipe_id));
+        module.eval_report_ref = Some(paper_engram_eval_report_dfs_path(&report.report_id));
+        module.checksum = paper_engram_module_manifest_checksum(&module);
+        module.validate().expect("build alternate-layer module");
 
-            assert_eq!(
-                service
-                    .register_paper_engram_module(module)
-                    .expect_err("quality claim must reject shape mismatch"),
-                LingquMemoryError::InvalidValue {
-                    field: expected_field,
-                    reason: expected_reason
-                }
-            );
-        }
+        service
+            .register_paper_engram_tokenizer_projection(projection)
+            .expect("register projection");
+        service
+            .register_paper_engram_hash_config(hash_config)
+            .expect("register hash config");
+        service
+            .register_paper_engram_training_recipe(recipe)
+            .expect("register recipe");
+        service
+            .register_paper_engram_eval_report(report)
+            .expect("register eval report");
+        service
+            .register_paper_engram_table_shard(shard)
+            .expect("register shard");
+        service
+            .register_paper_engram_gate(gate)
+            .expect("register gate");
+
+        assert_eq!(
+            service
+                .register_paper_engram_module(module)
+                .expect_err("quality claim must reject layer mismatch"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_training_recipe.layers",
+                reason: "training recipe layers must match module layers"
+            }
+        );
     }
 
     #[test]
