@@ -12,3 +12,4 @@ sim-config = { path = "../sim-config" }
 sim-core = { path = "../sim-core" }
 sim-services = { path = "../sim-services" }
 sim-topology = { path = "../sim-topology" }
+unicode-normalization = "0.1"

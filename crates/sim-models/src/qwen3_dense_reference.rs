@@ -10,6 +10,7 @@ use sim_services::weights::{
     WeightMetadataPut, WeightPayloadWrite, WeightStorageKind, WeightsLoadReq,
 };
 use sim_topology::SimTopology;
+use unicode_normalization::UnicodeNormalization;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Qwen3DenseReferenceProfile {
@@ -414,24 +415,9 @@ pub fn normalize_token_piece_for_projection(token_piece: &str, is_special: bool)
     }
     token_piece
         .replace('Ġ', " ")
-        .chars()
-        .map(compat_nfkc_char)
+        .nfkc()
         .collect::<String>()
         .to_lowercase()
-}
-
-fn compat_nfkc_char(ch: char) -> char {
-    if ch == '\u{3000}' {
-        return ' ';
-    }
-    if ('\u{FF01}'..='\u{FF5E}').contains(&ch) {
-        let mapped_code = (ch as u32) - 0xFEE0;
-        return std::char::from_u32(mapped_code).unwrap_or(ch);
-    }
-    match ch {
-        '\u{212A}' => 'K',
-        _ => ch,
-    }
 }
 
 fn parse_tokenizer_projection_tokens(
@@ -5964,6 +5950,14 @@ outputs:
         assert_eq!(
             normalize_token_piece_for_projection("Ａhello", false),
             "ahello"
+        );
+        assert_eq!(
+            normalize_token_piece_for_projection("（Hello）", false),
+            "(hello)"
+        );
+        assert_eq!(
+            normalize_token_piece_for_projection("Kelvin", false),
+            "kelvin"
         );
         assert_eq!(
             normalize_token_piece_for_projection("<|endoftext|>", true),
