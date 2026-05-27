@@ -340,7 +340,7 @@ Current implementation status:
 - `sim-cli lingqu-memory seed-paper-engram-fixture` now exposes explicit `--table-init` and `--gate-init` modes (`zero`, `fixture`, `random-normal`) so Phase 4 correctness/performance runs can separate no-op baseline, deterministic fixture mutation, and deterministic random-normal payloads.
 - W5 `qwen3-engram-context` runtime logs now include row-prefetch hit/request counters, hit-rate milli, table/gate/indices bytes moved, hidden injection byte counters, backend latency, and output checksums.
 - UAPI paper Engram runtime now uses complete row-prefetch hits to materialize only the current step's selected table rows, remaps lookup rows into compact per-order/per-head tables, and preserves output equivalence with the full-table path. Partial prefetch hits still fall back to full table materialization for correctness. Row-prefetch refs carry the resolved row payload byte window so the plan has enough metadata for runtime row-level serving.
-- `sim-models` now exposes a host-side fused SIMT launch wrapper for the vendor `engram-simt` artifact: discovery still validates the build directory, binary, kernel library, case name, shape, run mode, and SoC version, while `engram_context_reference --mode=fused-simt --run --npu=<id>` can execute the selected vendor case and emit a structured launch report. `sim-cli lingqu-memory validate-paper-engram-fused-simt-artifact` exposes the same discovery/run gate for automation. W5/UAPI fused SIMT execution is still intentionally not wired into range-forward until the runtime launch path can pass the same CPU/backend correctness checks as `simpler-host`.
+- `sim-models` now exposes a host-side fused SIMT launch wrapper for the vendor `engram-simt` artifact: discovery still validates the build directory, binary, kernel library, case name, shape, run mode, and SoC version, while `engram_context_reference --mode=fused-simt --run --npu=<id>` can execute the selected vendor case and emit a structured launch report. `sim-cli lingqu-memory validate-paper-engram-fused-simt-artifact` exposes the same discovery/run gate for automation. A launch is accepted only when the vendor self-check reports `[PASS]` for the selected case and a zero-failure `Results` summary. W5/UAPI fused SIMT execution is still intentionally not wired into range-forward until the runtime launch path can pass the same CPU/backend correctness checks as `simpler-host`.
 
 The terminal-only context-op path is not enough. Paper Engram must be able to
 inject at configured model layers, not only after terminal hidden.
@@ -506,8 +506,8 @@ hidden input/output/injection-overhead bytes in the W5 runtime log. Complete
 row-prefetch hits now reduce UAPI table materialization to the selected rows
 while preserving full-table output equivalence; partial hits intentionally
 fallback to full table materialization. Vendor fused SIMT has a host-side
-artifact discovery and launch wrapper, but W5/UAPI fused execution remains
-open.
+artifact discovery and self-checking launch wrapper, but W5/UAPI fused
+execution remains open.
 
 ## Open Decisions
 

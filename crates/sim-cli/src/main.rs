@@ -4760,6 +4760,13 @@ fn run_lingqu_memory_validate_paper_engram_fused_simt_artifact_cli(
         );
         println!("  launch_stdout_bytes: {}", report.stdout.len());
         println!("  launch_stderr_bytes: {}", report.stderr.len());
+        println!("  launch_passed_cases: {}", report.passed_cases);
+        println!("  launch_failed_cases: {}", report.failed_cases);
+        println!("  launch_total_cases: {}", report.total_cases);
+        println!(
+            "  launch_selected_case_passed: {}",
+            u8::from(report.selected_case_passed)
+        );
         println!(
             "  launch_stdout_checksum: {:#x}",
             cli_bytes_checksum(report.stdout.as_bytes())
@@ -19540,8 +19547,11 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).expect("create engram simt artifact dir");
         let binary_path = root.join("engram-simt");
-        fs::write(&binary_path, b"#!/bin/sh\nprintf 'stub:%s\\n' \"$*\"\n")
-            .expect("write engram simt binary");
+        fs::write(
+            &binary_path,
+            b"#!/bin/sh\nprintf 'stub:%s\\n' \"$*\"\nprintf '[PASS] ENGRAMSIMTTest.fused_E1024_B1_T64K\\n'\nprintf '\\n[engram-simt] Results: 1 passed, 0 failed, 1 total\\n'\n",
+        )
+        .expect("write engram simt binary");
         let mut permissions = fs::metadata(&binary_path)
             .expect("stat engram simt binary")
             .permissions();

@@ -34,6 +34,10 @@ pub struct EngramSimtLaunchReport {
     pub working_dir: PathBuf,
     pub npu_id: u32,
     pub status_code: Option<i32>,
+    pub passed_cases: usize,
+    pub failed_cases: usize,
+    pub total_cases: usize,
+    pub selected_case_passed: bool,
     pub stdout: String,
     pub stderr: String,
 }
@@ -165,6 +169,19 @@ pub fn run_engram_simt_artifact_case(
                 err
             )
         })?;
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let status_code = output.status.code();
+    if !output.status.success() {
+        return Err(format!(
+            "engram_simt_case_failed:case={}:status={:?}:stdout={}:stderr={}",
+            spec.case_name,
+            status_code,
+            stdout.escape_debug(),
+            stderr.escape_debug()
+        ));
+    }
+    let launch_status = parse_engram_simt_launch_status(&stdout, &spec.case_name)?;
     let report = EngramSimtLaunchReport {
         mode: "fused-simt",
         case_name: spec.case_name.clone(),
@@ -172,20 +189,95 @@ pub fn run_engram_simt_artifact_case(
         kernel_library_path: spec.kernel_library_path.clone(),
         working_dir: working_dir.to_path_buf(),
         npu_id,
-        status_code: output.status.code(),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        status_code,
+        passed_cases: launch_status.passed_cases,
+        failed_cases: launch_status.failed_cases,
+        total_cases: launch_status.total_cases,
+        selected_case_passed: launch_status.selected_case_passed,
+        stdout,
+        stderr,
     };
-    if !output.status.success() {
+    Ok(report)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct EngramSimtLaunchStatus {
+    passed_cases: usize,
+    failed_cases: usize,
+    total_cases: usize,
+    selected_case_passed: bool,
+}
+
+fn parse_engram_simt_launch_status(
+    stdout: &str,
+    case_name: &str,
+) -> Result<EngramSimtLaunchStatus, String> {
+    let pass_line = format!("[PASS] {case_name}");
+    let fail_line = format!("[FAIL] {case_name}");
+    let selected_case_passed = stdout.lines().any(|line| line.trim() == pass_line);
+    if stdout.lines().any(|line| line.trim() == fail_line) {
+        return Err(format!("engram_simt_selected_case_failed:case={case_name}"));
+    }
+
+    let mut result = None;
+    for line in stdout.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("[engram-simt] Results:") {
+            result = Some(parse_engram_simt_results_line(rest.trim(), line)?);
+        }
+    }
+    let (passed_cases, failed_cases, total_cases) =
+        result.ok_or_else(|| "engram_simt_result_summary_missing".to_string())?;
+    if total_cases == 0 {
+        return Err("engram_simt_result_summary_empty".to_string());
+    }
+    if failed_cases != 0 {
         return Err(format!(
-            "engram_simt_case_failed:case={}:status={:?}:stdout={}:stderr={}",
-            report.case_name,
-            report.status_code,
-            report.stdout.escape_debug(),
-            report.stderr.escape_debug()
+            "engram_simt_result_summary_failed:passed={passed_cases}:failed={failed_cases}:total={total_cases}"
         ));
     }
-    Ok(report)
+    if passed_cases != total_cases {
+        return Err(format!(
+            "engram_simt_result_summary_inconsistent:passed={passed_cases}:failed={failed_cases}:total={total_cases}"
+        ));
+    }
+    if !selected_case_passed {
+        return Err(format!(
+            "engram_simt_selected_case_pass_missing:case={case_name}"
+        ));
+    }
+
+    Ok(EngramSimtLaunchStatus {
+        passed_cases,
+        failed_cases,
+        total_cases,
+        selected_case_passed,
+    })
+}
+
+fn parse_engram_simt_results_line(
+    rest: &str,
+    original_line: &str,
+) -> Result<(usize, usize, usize), String> {
+    let parts = rest
+        .split_whitespace()
+        .map(|part| part.trim_end_matches(','))
+        .collect::<Vec<_>>();
+    if parts.len() != 6 || parts[1] != "passed" || parts[3] != "failed" || parts[5] != "total" {
+        return Err(format!(
+            "engram_simt_result_summary_malformed:line={original_line}"
+        ));
+    }
+    let passed = parts[0]
+        .parse::<usize>()
+        .map_err(|_| format!("engram_simt_result_summary_malformed:passed={}", parts[0]))?;
+    let failed = parts[2]
+        .parse::<usize>()
+        .map_err(|_| format!("engram_simt_result_summary_malformed:failed={}", parts[2]))?;
+    let total = parts[4]
+        .parse::<usize>()
+        .map_err(|_| format!("engram_simt_result_summary_malformed:total={}", parts[4]))?;
+    Ok((passed, failed, total))
 }
 
 fn validate_engram_simt_shape(
@@ -301,7 +393,7 @@ mod tests {
         let binary_path = dir.join(ENGRAM_SIMT_BINARY_NAME);
         fs::write(
             &binary_path,
-            b"#!/bin/sh\nprintf 'cwd=%s\\n' \"$(pwd)\"\nprintf 'args=%s\\n' \"$*\"\n",
+            b"#!/bin/sh\nprintf 'cwd=%s\\n' \"$(pwd)\"\nprintf 'args=%s\\n' \"$*\"\nprintf '[PASS] ENGRAMSIMTTest.fused_E1024_B4_T64K\\n'\nprintf '\\n[engram-simt] Results: 1 passed, 0 failed, 1 total\\n'\n",
         )
         .expect("write binary");
         fs::set_permissions(&binary_path, Permissions::from_mode(0o755)).expect("chmod binary");
@@ -315,9 +407,35 @@ mod tests {
         assert_eq!(report.working_dir, dir);
         assert_eq!(report.npu_id, 2);
         assert_eq!(report.status_code, Some(0));
+        assert_eq!(report.passed_cases, 1);
+        assert_eq!(report.failed_cases, 0);
+        assert_eq!(report.total_cases, 1);
+        assert!(report.selected_case_passed);
         assert!(report.stdout.contains("ENGRAMSIMTTest.fused_E1024_B4_T64K"));
         assert!(report.stdout.contains("--npu=2"));
         let _ = fs::remove_dir_all(report.working_dir);
+    }
+
+    #[test]
+    fn engram_simt_launch_status_rejects_missing_result_summary() {
+        let err = parse_engram_simt_launch_status(
+            "[PASS] ENGRAMSIMTTest.fused_E1024_B4_T64K\n",
+            "ENGRAMSIMTTest.fused_E1024_B4_T64K",
+        )
+        .expect_err("missing result summary should fail");
+
+        assert!(err.contains("engram_simt_result_summary_missing"));
+    }
+
+    #[test]
+    fn engram_simt_launch_status_rejects_selected_case_failure() {
+        let err = parse_engram_simt_launch_status(
+            "[FAIL] ENGRAMSIMTTest.fused_E1024_B4_T64K\n[engram-simt] Results: 0 passed, 1 failed, 1 total\n",
+            "ENGRAMSIMTTest.fused_E1024_B4_T64K",
+        )
+        .expect_err("selected case failure should fail");
+
+        assert!(err.contains("engram_simt_selected_case_failed"));
     }
 
     fn temp_dir(prefix: &str) -> PathBuf {
