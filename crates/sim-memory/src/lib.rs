@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use sim_core::{BlockHash, SegmentHandle, TensorDType};
 use sim_models::engram_hash::{
     build_engram_lookup_requests_from_step, Qwen3DenseReferenceEngramHashConfig,
+    ENGRAM_HASH_ALGORITHM_VERSION,
 };
 use sim_services::block::BlockServiceProfile;
 use sim_services::dfs::DfsServiceProfile;
@@ -1101,6 +1102,12 @@ impl PaperEngramHashConfigManifest {
         )?;
         nonzero(self.table_rows, "paper_engram_hash_config.table_rows")?;
         required_str(&self.algorithm, "paper_engram_hash_config.algorithm")?;
+        if self.algorithm != ENGRAM_HASH_ALGORITHM_VERSION {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_hash_config.algorithm",
+                reason: "unsupported canonical hash algorithm",
+            });
+        }
         if let Some(source_ref) = &self.source_ref {
             required_str(source_ref, "paper_engram_hash_config.source_ref")?;
         }
@@ -10711,6 +10718,18 @@ mod tests {
         let mut corrupted_hash_config = hash_config;
         corrupted_hash_config.checksum ^= 1;
         assert!(corrupted_hash_config.validate().is_err());
+
+        let mut unsupported_hash_config = sample_paper_engram_hash_config_manifest();
+        unsupported_hash_config.algorithm = "custom".to_string();
+        unsupported_hash_config.checksum =
+            paper_engram_hash_config_manifest_checksum(&unsupported_hash_config);
+        assert!(matches!(
+            unsupported_hash_config.validate(),
+            Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_hash_config.algorithm",
+                ..
+            })
+        ));
 
         let mut corrupted_shard = shard.clone();
         corrupted_shard.checksum ^= 1;

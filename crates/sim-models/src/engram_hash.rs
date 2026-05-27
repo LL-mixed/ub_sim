@@ -78,6 +78,12 @@ pub fn build_default_engram_hash_config(
 pub fn validate_engram_hash_config(
     config: &Qwen3DenseReferenceEngramHashConfig,
 ) -> Result<(), String> {
+    if config.algorithm != ENGRAM_HASH_ALGORITHM_VERSION {
+        return Err(format!(
+            "engram_hash_config_algorithm_unsupported:{}",
+            config.algorithm
+        ));
+    }
     if config.orders.is_empty() {
         return Err("engram_hash_config_orders_empty".to_string());
     }
@@ -475,6 +481,18 @@ mod tests {
             validate_engram_hash_config(&config).expect_err("orders empty should reject"),
             "engram_hash_config_orders_empty"
         );
+    }
+
+    #[test]
+    fn hash_config_validation_rejects_unsupported_algorithm() {
+        let mut config = build_default_engram_hash_config(0x12, 1, 16, 0x33);
+        config.algorithm = "custom".to_string();
+        assert_eq!(
+            validate_engram_hash_config(&config).expect_err("unsupported algorithm should reject"),
+            "engram_hash_config_algorithm_unsupported:custom"
+        );
+        assert!(build_engram_runtime_descriptor(&config).is_err());
+        assert!(build_engram_lookup_requests(&[7, 8], &config).is_err());
     }
 
     #[test]

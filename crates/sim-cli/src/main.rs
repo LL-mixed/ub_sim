@@ -32,7 +32,7 @@ use sim_models::qwen3_dense_reference::{
 use sim_models::{
     engram_hash::{
         build_default_engram_hash_config, build_exact_canonical_ngram_index,
-        canonical_ngram_checksum, ENGRAM_HASH_ALGORITHM_VERSION,
+        canonical_ngram_checksum, validate_engram_hash_config, ENGRAM_HASH_ALGORITHM_VERSION,
     },
     engram_simt_adapter::{
         artifact_config_from_env, discover_engram_simt_artifact, run_engram_simt_artifact_case,
@@ -2339,6 +2339,8 @@ fn run_lingqu_memory_build_engram_hash_config_cli(args: &[String]) -> anyhow::Re
     if let Some(version) = optional_cli_u64_auto(args, "--version")? {
         config.version = version;
     }
+    validate_engram_hash_config(&config)
+        .map_err(|err| anyhow::anyhow!("validate engram hash config: {err}"))?;
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent).with_context(|| {
             format!("create engram hash config output dir {}", parent.display())
@@ -18568,8 +18570,6 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             "0x2222".to_string(),
             "--orders".to_string(),
             "2,3".to_string(),
-            "--algorithm".to_string(),
-            "custom".to_string(),
         ])
         .expect("build engram hash config CLI");
 
@@ -18600,7 +18600,25 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         assert_eq!(config["seed"], serde_json::Value::from(0x2222u64));
         assert_eq!(
             config["algorithm"],
-            serde_json::Value::String("custom".to_string())
+            serde_json::Value::String(ENGRAM_HASH_ALGORITHM_VERSION.to_string())
+        );
+
+        let bad_algorithm = run_lingqu_memory_build_engram_hash_config_cli(&[
+            "--projection".to_string(),
+            projection.display().to_string(),
+            "--output".to_string(),
+            output.display().to_string(),
+            "--heads-per-order".to_string(),
+            "2".to_string(),
+            "--table-rows".to_string(),
+            "64".to_string(),
+            "--algorithm".to_string(),
+            "custom".to_string(),
+        ])
+        .expect_err("reject unsupported engram hash algorithm");
+        assert!(
+            format!("{bad_algorithm:#}").contains("engram_hash_config_algorithm_unsupported"),
+            "unexpected unsupported algorithm error: {bad_algorithm:#}"
         );
 
         fs::remove_dir_all(&root).expect("remove hash config test dir");
