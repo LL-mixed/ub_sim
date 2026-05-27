@@ -2216,18 +2216,6 @@ static bool qwen3_guest_engram_is_stop_token(uint64_t token)
     return token == 151643ULL || token == 151645ULL;
 }
 
-static bool qwen3_guest_engram_history_contains(const uint64_t *history,
-                                                uint64_t history_len,
-                                                uint64_t token)
-{
-    for (uint64_t i = 0; i < history_len; ++i) {
-        if (history[i] == token) {
-            return true;
-        }
-    }
-    return false;
-}
-
 static int w4_qwen3_token_projection_cmp(const void *left, const void *right)
 {
     const struct w4_qwen3_engram_token_projection_entry *lhs =
