@@ -34,6 +34,7 @@ TRACE_FILE="${TRACE_FILE:-$OUT_DIR/eight_node_w5_inference_cluster.trace.latest.
 RUN_SUMMARY_FILE="${RUN_SUMMARY_FILE:-$OUT_DIR/eight_node_w5_inference_cluster_summary.${RUN_ID}.txt}"
 SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-qwen3_dense}"
 SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP="${SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-0}"
+SIM_W5_MEMORY_POST_RUN_PROMOTE="${SIM_W5_MEMORY_POST_RUN_PROMOTE:-0}"
 SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP="${SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP:-0}"
 SIM_W5_MEMORY_OBSERVATION_STORE="${SIM_W5_MEMORY_OBSERVATION_STORE:-}"
 SIM_W5_MEMORY_REUSE_RUN_ID="${SIM_W5_MEMORY_REUSE_RUN_ID:-}"
@@ -63,6 +64,7 @@ export SIM_UAPI_W4_CHIPBACKEND_PROFILE
 export SIM_QWEN3_GUEST_ENGRAM
 export SIM_QWEN3_GUEST_ENGRAM_POOL
 export SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP
+export SIM_W5_MEMORY_POST_RUN_PROMOTE
 export SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP
 export SIM_W5_MEMORY_OBSERVATION_STORE
 export SIM_W5_MEMORY_REUSE_RUN_ID
@@ -166,6 +168,11 @@ if (( memory_runtime_lookup || memory_decision_reuse )); then
       --memory-owner-entity "$SIM_W5_MEMORY_OWNER_ENTITY"
       --memory-producer-entity "$SIM_W5_MEMORY_PRODUCER_ENTITY"
     )
+    case "$SIM_W5_MEMORY_POST_RUN_PROMOTE" in
+      1|true|TRUE|yes|YES)
+        cli_args+=(--memory-post-run-promote)
+        ;;
+    esac
   fi
   if (( memory_decision_reuse )); then
     cli_args+=(

@@ -3448,6 +3448,7 @@ static int verify_dispatch_payload(volatile uint8_t *ep_mmio,
                                    const uint8_t *cq,
                                    size_t slot_count,
                                    uint64_t segment,
+                                   uint64_t decode_step,
                                    uint64_t expected_hidden_bytes,
                                    struct w4_qwen3_range_runtime_forward *runtime_out)
 {
@@ -4290,6 +4291,8 @@ qwen3_logits_tables:
                 uint64_t entry_logits_checksum = read_segment_u64(ep_mmio, base + 56);
                 uint64_t entry_text_checksum = read_segment_u64(ep_mmio, base + 64);
                 uint64_t entry_step = read_segment_u64(ep_mmio, base + 72);
+                uint64_t expected_entry_step =
+                    range_only_flow ? decode_step : entry;
                 uint64_t kvcache_read_digest = read_segment_u64(ep_mmio, base + 80);
                 uint64_t qkv_reference_digest = read_segment_u64(ep_mmio, base + 88);
                 uint64_t real_path_digest = read_segment_u64(ep_mmio, base + 96);
@@ -4340,16 +4343,18 @@ qwen3_logits_tables:
                     entry_tile != entry ||
                     entry_segment == 0 ||
                     entry_logits_count != qwen3_vocab_size() ||
-                    entry_step != entry) {
+                    entry_step != expected_entry_step) {
                     fprintf(stderr,
                             "[w4_guest] qwen3 logits table mismatch entry=%" PRIu64
+                            " step=%" PRIu64 "/%" PRIu64
                             " shard=%" PRIu64 "/%" PRIu64
                             " tile=%" PRIu64 " token=%" PRIu64 "/%" PRIu64
                             " runner_up=%" PRIu64 "/%" PRIu64
                             " margin=%" PRIu64 "/%" PRIu64
                             " logits_checksum=0x%016" PRIx64 "/0x%016" PRIx64
                             " text_checksum=0x%016" PRIx64 "/0x%016" PRIx64 "\n",
-                            entry, entry_shard, expected_shard, entry_tile,
+                            entry, entry_step, expected_entry_step,
+                            entry_shard, expected_shard, entry_tile,
                             entry_sampled_token, expected_sampled_token,
                             entry_runner_up_token, expected_runner_up,
                             entry_margin_milli, expected_margin,
@@ -4518,8 +4523,11 @@ qwen3_logits_tables:
                 uint64_t text_checksum = read_segment_u64(ep_mmio, logits_base + 64);
                 uint64_t expected_word0 = 0;
                 uint64_t expected_word1 = 0;
+                uint64_t expected_step =
+                    range_only_flow ? decode_step : entry;
                 uint64_t expected_flags =
-                    (entry == 0 ? 1ULL : 0ULL) |
+                    (range_only_flow ? (decode_step == 0 ? 1ULL : 0ULL) :
+                     (entry == 0 ? 1ULL : 0ULL)) |
                     (entry + 1 == token_text_count ? 2ULL : 0ULL);
                 uint64_t entry_step = read_segment_u64(ep_mmio, base);
                 uint64_t entry_token = read_segment_u64(ep_mmio, base + 8);
@@ -4530,7 +4538,7 @@ qwen3_logits_tables:
                 uint64_t entry_checksum = read_segment_u64(ep_mmio, base + 48);
                 uint64_t entry_flags = read_segment_u64(ep_mmio, base + 56);
 
-                if (entry_step != entry ||
+                if (entry_step != expected_step ||
                     entry_token != sampled_token ||
                     entry_offset != byte_offset_expected ||
                     entry_bytes == 0 ||
@@ -4538,14 +4546,16 @@ qwen3_logits_tables:
                     entry_flags != expected_flags) {
                     fprintf(stderr,
                             "[w4_guest] qwen3 token text mismatch entry=%" PRIu64
-                            " step=%" PRIu64 " token=%" PRIu64 "/%" PRIu64
+                            " step=%" PRIu64 "/%" PRIu64
+                            " token=%" PRIu64 "/%" PRIu64
                             " offset=%" PRIu64 "/%" PRIu64
                             " bytes=%" PRIu64
                             " word0=0x%016" PRIx64 "/0x%016" PRIx64
                             " word1=0x%016" PRIx64 "/0x%016" PRIx64
                             " checksum=0x%016" PRIx64 "/0x%016" PRIx64
                             " flags=%" PRIu64 "/%" PRIu64 "\n",
-                            entry, entry_step, entry_token, sampled_token,
+                            entry, entry_step, expected_step,
+                            entry_token, sampled_token,
                             entry_offset, byte_offset_expected, entry_bytes,
                             entry_word0, expected_word0, entry_word1, expected_word1,
                             entry_checksum, text_checksum, entry_flags, expected_flags);
@@ -4575,17 +4585,20 @@ qwen3_logits_tables:
                 boundary_last += (entry_flags & 2ULL) != 0 ? 1ULL : 0ULL;
                 byte_offset_expected += entry_bytes;
             }
+            uint64_t expected_boundary_first =
+                range_only_flow && decode_step != 0 ? 0ULL : 1ULL;
             if (byte_offset_expected != token_text_total_bytes ||
                 packed_matches != token_text_count ||
                 checksum_matches != token_text_count ||
-                boundary_first != 1 ||
+                boundary_first != expected_boundary_first ||
                 boundary_last != 1) {
                 fprintf(stderr,
                         "[w4_guest] qwen3 token text summary mismatch bytes=%" PRIu64
                         "/%" PRIu64 " packed=%" PRIu64 " checksum=%" PRIu64
-                        " first=%" PRIu64 " last=%" PRIu64 "\n",
+                        " first=%" PRIu64 "/%" PRIu64 " last=%" PRIu64 "\n",
                         byte_offset_expected, token_text_total_bytes, packed_matches,
-                        checksum_matches, boundary_first, boundary_last);
+                        checksum_matches, boundary_first, expected_boundary_first,
+                        boundary_last);
                 return -1;
             }
             printf("[w4_guest] stage uapi_qwen3_token_text_table entries=%" PRIu64
@@ -6411,12 +6424,19 @@ static int qwen3_read_object_service_payload(
             return -1;
         }
         memcpy(payload, index_bytes + payload_offset, (size_t)payload_bytes);
-        if (qwen3_lingqu_object_payload_checksum(payload, payload_bytes) !=
-            ref->payload_checksum) {
+        uint64_t object_checksum =
+            qwen3_lingqu_object_payload_checksum(payload, payload_bytes);
+        uint64_t runtime_checksum =
+            w4_qwen3_hidden_payload_checksum(payload, payload_bytes);
+        if (object_checksum != ref->payload_checksum &&
+            runtime_checksum != ref->payload_checksum) {
             fprintf(stderr,
                     "[w4_guest] fail qwen3 object service payload checksum mismatch"
-                    " path=%s expected=0x%016" PRIx64 "\n",
+                    " path=%s got=0x%016" PRIx64 " runtime=0x%016" PRIx64
+                    " expected=0x%016" PRIx64 "\n",
                     path,
+                    object_checksum,
+                    runtime_checksum,
                     ref->payload_checksum);
             free(payload);
             free(index_bytes);
@@ -10826,6 +10846,7 @@ decode_round_start:
                                 cq_linear,
                                 slot,
                                 default_segment,
+                                guest_decode_step,
                                 qwen3_handoff_hidden_bytes(guest_decode_step),
                                 &runtime_forward) != 0) {
         goto out;

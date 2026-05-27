@@ -87,6 +87,10 @@ SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR="${SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR:-}"
 SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT="${SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT:-}"
 SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT_GUEST="$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT"
 SIM_W5_MEMORY_SERVICE="${SIM_W5_MEMORY_SERVICE:-}"
+SIM_W5_MEMORY_STORE="${SIM_W5_MEMORY_STORE:-}"
+SIM_W5_MEMORY_OBJECT_STORE="${SIM_W5_MEMORY_OBJECT_STORE:-}"
+SIM_W5_MEMORY_ENGRAM_STATE="${SIM_W5_MEMORY_ENGRAM_STATE:-}"
+SIM_W5_MEMORY_REGISTRY_DIR="${SIM_W5_MEMORY_REGISTRY_DIR:-}"
 SIM_W5_MEMORY_DECISION_STORE="${SIM_W5_MEMORY_DECISION_STORE:-}"
 SIM_W5_MEMORY_SHORTPATH_LOOKUP_MODE="${SIM_W5_MEMORY_SHORTPATH_LOOKUP_MODE:-}"
 SIM_W5_MEMORY_BOUNDARY_LOOKUP_BACKEND="${SIM_W5_MEMORY_BOUNDARY_LOOKUP_BACKEND:-}"
@@ -152,6 +156,10 @@ stage_qwen3_object_service_snapshot() {
     payload_index_src="${snapshot_path}.bin"
   fi
   if [[ ! -f "$payload_index_src" ]]; then
+    if [[ ! -e "$snapshot_path" ]]; then
+      trace "prepare: qwen3 Object Service snapshot will be created by runtime path=$snapshot_path"
+      return 0
+    fi
     trace "FAIL: qwen3 Object Service payload index is missing source=$payload_index_src snapshot=$snapshot_path"
     return 1
   fi
@@ -649,6 +657,10 @@ export SIM_QWEN3_GUEST_ENGRAM_STATE_REF="$SIM_QWEN3_GUEST_ENGRAM_STATE_REF"
 export SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR="$SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR"
 export SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT="$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT_GUEST"
 export SIM_W5_MEMORY_SERVICE="$SIM_W5_MEMORY_SERVICE"
+export SIM_W5_MEMORY_STORE="$SIM_W5_MEMORY_STORE"
+export SIM_W5_MEMORY_OBJECT_STORE="$SIM_W5_MEMORY_OBJECT_STORE"
+export SIM_W5_MEMORY_ENGRAM_STATE="$SIM_W5_MEMORY_ENGRAM_STATE"
+export SIM_W5_MEMORY_REGISTRY_DIR="$SIM_W5_MEMORY_REGISTRY_DIR"
 export SIM_W5_MEMORY_DECISION_STORE="$SIM_W5_MEMORY_DECISION_STORE"
 export SIM_W5_MEMORY_SHORTPATH_LOOKUP_MODE="$SIM_W5_MEMORY_SHORTPATH_LOOKUP_MODE"
 export SIM_W5_MEMORY_BOUNDARY_LOOKUP_BACKEND="$SIM_W5_MEMORY_BOUNDARY_LOOKUP_BACKEND"
@@ -931,6 +943,7 @@ validate_w5_artifact_sizes() {
   local object_json="${SIM_W5_MEMORY_OBJECT_STORE:-}"
   local object_bin=""
   local memory_json="${SIM_W5_MEMORY_STORE:-}"
+  local memory_bin=""
   local registry_dir="${SIM_W5_MEMORY_REGISTRY_DIR:-${SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR:-}}"
   local shortpath_stream="${SIM_W5_MEMORY_SHORTPATH_STREAM_PATH:-}"
   local shortpath_kv_stream="${SIM_W5_MEMORY_SHORTPATH_KV_STREAM_PATH:-}"
@@ -958,6 +971,13 @@ validate_w5_artifact_sizes() {
       object_bin="${object_json}.bin"
     fi
   fi
+  if [[ -n "$memory_json" ]]; then
+    if [[ "$memory_json" == *.json ]]; then
+      memory_bin="${memory_json%.json}.bin"
+    else
+      memory_bin="${memory_json}.bin"
+    fi
+  fi
   if [[ -n "$registry_dir" && ( -z "$shortpath_stream" || "$shortpath_stream" == /tmp/* || ! -f "$shortpath_stream" ) ]]; then
     shortpath_stream="$registry_dir/w5_memory_shortpath_stream.txt"
   fi
@@ -966,6 +986,7 @@ validate_w5_artifact_sizes() {
   fi
 
   validate_w5_artifact_file_size "$memory_json" "memory_store_json" "$max_memory_json" "$store_required" || return 1
+  validate_w5_artifact_file_size "$memory_bin" "memory_store_bin" "$max_object_bin" "0" || return 1
   validate_w5_artifact_file_size "$object_json" "object_store_json" "$max_object_json" "$store_required" || return 1
   validate_w5_artifact_file_size "$object_bin" "object_store_bin" "$max_object_bin" "$store_required" || return 1
   validate_w5_artifact_file_size "$shortpath_stream" "shortpath_stream" "$max_shortpath_stream" "$store_required" || return 1

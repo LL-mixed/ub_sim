@@ -470,6 +470,12 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("entry->target_node == local_node + 1U", guest_source)
         self.assertIn("runtime_kv_checksum = w4_qwen3_hidden_payload_checksum", guest_source)
         self.assertIn("runtime_checksum=0x%016", guest_source)
+        self.assertIn("object_checksum =\n            qwen3_lingqu_object_payload_checksum", guest_source)
+        self.assertIn("runtime_checksum =\n            w4_qwen3_hidden_payload_checksum", guest_source)
+        self.assertIn("object_checksum != ref->payload_checksum &&", guest_source)
+        self.assertIn("expected_entry_step =\n                    range_only_flow ? decode_step : entry", guest_source)
+        self.assertIn("expected_step =\n                    range_only_flow ? decode_step : entry", guest_source)
+        self.assertIn("expected_boundary_first =\n                range_only_flow && decode_step != 0 ? 0ULL : 1ULL", guest_source)
         self.assertIn("qwen3_w5_memory_terminal_logits_selected", guest_source)
         self.assertNotIn("record->sampled_token == record->runner_up_token", guest_source)
         self.assertNotIn("engram_policy_requires_materialized_owner", guest_source)
@@ -604,6 +610,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         generic = script_dir / "run_ub_w5_inference_cluster.sh"
         config_runner = script_dir / "run_w5_cluster_config.sh"
         summary = script_dir / "w5_inference_cluster_summary.py"
+        launcher = script_dir / "launch_ub_eight_node_headless.sh"
 
         self.assertTrue(runner.exists())
         self.assertTrue(runner.stat().st_mode & 0o111)
@@ -618,10 +625,12 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         generic_text = generic.read_text(encoding="utf-8")
         config_runner_text = config_runner.read_text(encoding="utf-8")
         legacy_runner_text = (script_dir / "run_ub_eight_node_w4_guest.sh").read_text(encoding="utf-8")
+        launcher_text = launcher.read_text(encoding="utf-8")
         summary_text = summary.read_text(encoding="utf-8")
 
         self.assertIn("SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode", runner_text)
         self.assertIn("SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP", runner_text)
+        self.assertIn("SIM_W5_MEMORY_POST_RUN_PROMOTE", runner_text)
         self.assertIn("SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP", runner_text)
         self.assertIn("SIM_W5_MEMORY_OBSERVATION_STORE", runner_text)
         self.assertIn("SIM_W5_MEMORY_REUSE_RUN_ID", runner_text)
@@ -636,12 +645,17 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_W5_MEMORY_STORE", runner_text)
         self.assertIn("SIM_W5_MEMORY_OBJECT_STORE", runner_text)
         self.assertIn("SIM_W5_MEMORY_ENGRAM_STATE", runner_text)
+        self.assertIn("SIM_W5_MEMORY_STORE", legacy_runner_text)
+        self.assertIn("SIM_W5_MEMORY_OBJECT_STORE", legacy_runner_text)
+        self.assertIn("SIM_W5_MEMORY_STORE", launcher_text)
+        self.assertIn("SIM_W5_MEMORY_OBJECT_STORE", launcher_text)
         self.assertIn("SIM_QWEN3_GUEST_ENGRAM_POOL", runner_text)
         self.assertIn("SIM_W5_MEMORY_REGISTRY_DIR", runner_text)
         self.assertIn("target/debug/sim-cli", runner_text)
         self.assertIn("cargo build -p sim-cli", runner_text)
         self.assertIn("unset SIM_CLI_BIN so the runner builds", runner_text)
         self.assertIn("--memory-runtime-boundary-lookup", runner_text)
+        self.assertIn("--memory-post-run-promote", runner_text)
         self.assertIn("--memory-online-boundary-lookup", runner_text)
         self.assertIn("--memory-observation-store", runner_text)
         self.assertIn("--memory-store", runner_text)
@@ -714,6 +728,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3",
                         "SIM_W5_MEMORY_SHORTPATH_EXECUTE=0",
                         "SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP=1",
+                        "SIM_W5_MEMORY_POST_RUN_PROMOTE=1",
                         "SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP=1",
                         "SIM_W5_MEMORY_OBSERVATION_STORE=/tmp/w5-memory-store.json",
                         "SIM_W5_MEMORY_DECISION_STORE=/tmp/w5-decision-store.json",
@@ -741,6 +756,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3",
                 "SIM_W5_MEMORY_SHORTPATH_EXECUTE=0",
                 "SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP=1",
+                "SIM_W5_MEMORY_POST_RUN_PROMOTE=1",
                 "SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP=1",
                 "SIM_W5_MEMORY_OBSERVATION_STORE=/tmp/w5-memory-store.json",
                 "SIM_W5_VALIDATE_ONLY=",

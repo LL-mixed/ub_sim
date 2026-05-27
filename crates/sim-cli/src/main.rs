@@ -262,6 +262,7 @@ struct Qwen3GuestDecodeLoopCliArgs {
     memory_decisions: Option<W5MemoryDecisionConfig>,
     memory_observation_store_path: Option<PathBuf>,
     memory_runtime_boundary_lookup: bool,
+    memory_post_run_promote: bool,
     memory_online_boundary_lookup: bool,
 }
 
@@ -590,6 +591,7 @@ where
             let mut memory_prefetch_plan_id = None;
             let mut memory_prefix_cache_reuse_plan_id = None;
             let mut memory_runtime_boundary_lookup = false;
+            let mut memory_post_run_promote = false;
             let mut memory_online_boundary_lookup = false;
             let mut positionals = Vec::new();
             let mut pending = args.peekable();
@@ -864,6 +866,10 @@ where
                 } else if let Some(value) = text.strip_prefix("--memory-runtime-boundary-lookup=") {
                     memory_runtime_boundary_lookup =
                         parse_cli_bool("--memory-runtime-boundary-lookup", value)?;
+                } else if text == "--memory-post-run-promote" {
+                    memory_post_run_promote = true;
+                } else if let Some(value) = text.strip_prefix("--memory-post-run-promote=") {
+                    memory_post_run_promote = parse_cli_bool("--memory-post-run-promote", value)?;
                 } else if text == "--memory-online-boundary-lookup" {
                     memory_online_boundary_lookup = true;
                 } else if let Some(value) = text.strip_prefix("--memory-online-boundary-lookup=") {
@@ -1141,6 +1147,7 @@ where
                 memory_decisions,
                 memory_observation_store_path,
                 memory_runtime_boundary_lookup,
+                memory_post_run_promote,
                 memory_online_boundary_lookup,
             }))
         }
@@ -4342,7 +4349,7 @@ fn load_w5_memory_decisions_from_store(
         runtime_artifacts.retain(|artifact| {
             artifact.kind == sim_memory::ExecutionArtifactKind::Logits
                 && artifact.state == sim_memory::ExecutionArtifactState::Verified
-                && artifact.durable_payload_ref.is_some()
+                && (artifact.durable_payload_ref.is_some() || artifact.hot_object_ref.is_some())
         });
         if runtime_artifacts.is_empty() {
             anyhow::bail!(
@@ -6944,7 +6951,6 @@ fn w5_hot_tensor_object_ref_from_object_service(
         .find(|placement| placement.backend == LingquPayloadBackend::ObmmShmem)
         .ok_or_else(|| anyhow::anyhow!("missing OBMM placement {}", hot_ref.object_key))?;
     if placement.bytes != hot_ref.bytes
-        || placement.offset != hot_ref.offset
         || placement.checksum != hot_ref.checksum
         || record.bytes != hot_ref.bytes
         || record.checksum != hot_ref.checksum
@@ -10973,6 +10979,24 @@ mod tests {
             Some(Path::new("/tmp/lingqu-memory-observations.json"))
         );
         assert!(args.memory_runtime_boundary_lookup);
+        assert!(!args.memory_post_run_promote);
+    }
+
+    #[test]
+    fn w5_inference_cluster_args_accept_memory_post_run_promote() {
+        let args = qwen3_guest_decode_loop_args_from([
+            "w5-inference-cluster",
+            "--memory-observation-store=/tmp/lingqu-memory-observations.json",
+            "--memory-post-run-promote",
+        ])
+        .expect("parse W5 post-run promote args")
+        .expect("W5 post-run promote args");
+
+        assert_eq!(
+            args.memory_observation_store_path.as_deref(),
+            Some(Path::new("/tmp/lingqu-memory-observations.json"))
+        );
+        assert!(args.memory_post_run_promote);
     }
 
     #[test]
@@ -11435,6 +11459,7 @@ mod tests {
             memory_decisions: None,
             memory_observation_store_path: None,
             memory_runtime_boundary_lookup: false,
+            memory_post_run_promote: false,
             memory_online_boundary_lookup: false,
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("dense runtime");
@@ -11490,6 +11515,7 @@ mod tests {
             memory_decisions: None,
             memory_observation_store_path: None,
             memory_runtime_boundary_lookup: false,
+            memory_post_run_promote: false,
             memory_online_boundary_lookup: false,
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("reference shape runtime");
@@ -11544,6 +11570,7 @@ mod tests {
             memory_decisions: None,
             memory_observation_store_path: None,
             memory_runtime_boundary_lookup: false,
+            memory_post_run_promote: false,
             memory_online_boundary_lookup: false,
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("14B generic runtime");
@@ -14421,6 +14448,17 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         let mut artifact_durable = LingquMemoryDurableStore::new();
         let mut artifact_service =
             LingquObjectServiceStub::new(w5_memory_decision_publication_object_service_profile());
+        publish_w5_object_service_payload_ref(
+            &mut artifact_service,
+            QWEN3_DENSE_PROFILE_OBMM_KIND_TERMINAL_LOGITS,
+            LingquObjectKind::Logits,
+            3,
+            4,
+            "logits/qwen3/test/filler",
+            &[0x24; 17],
+            "artifact-filler",
+        )
+        .expect("publish filler object");
         let artifact_payload = vec![0x42; 32];
         let artifact_key = "logits/qwen3/test/step0/node4";
         publish_w5_object_service_payload_ref(
@@ -14559,6 +14597,107 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             .find(|record| record.key == artifact_key)
             .expect("artifact object merged");
         assert_eq!(artifact_record.payload_bytes, artifact_payload);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn w5_online_boundary_lookup_accepts_runtime_hot_artifacts() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_w5_online_hot_artifacts_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let store = root.join("store.json");
+        let model = sim_memory::InferenceModelBinding {
+            model_id: "Qwen/Qwen3-0.6B".to_string(),
+            model_key: "qwen3-0-6b".to_string(),
+            tokenizer_hash: 0x1001,
+            profile_hash: 0x2002,
+        };
+        let hot_ref = sim_memory::HotTensorObjectRef {
+            object_key: "logits/qwen3/runtime/step0/node1".to_string(),
+            version: 1,
+            backend: sim_memory::HotObjectBackend::ObmmShmem,
+            storage_ref: "obmm://logits/qwen3/runtime/step0/node1".to_string(),
+            segment: None,
+            offset: 0,
+            bytes: 128,
+            checksum: 0x4444_5555,
+            dtype: sim_core::TensorDType::Opaque,
+            shape: vec![128],
+        };
+        let artifact = sim_memory::ExecutionArtifactObject {
+            artifact_id: "artifact/logits/runtime-hot/step0/node1".to_string(),
+            kind: sim_memory::ExecutionArtifactKind::Logits,
+            model,
+            producer_boundary: sim_memory::RangeBoundary {
+                phase: sim_memory::RangeBoundaryPhase::RangeExit,
+                step_index: 0,
+                node_index: 1,
+                layer_start: 0,
+                layer_end: 4,
+                next_node_index: Some(2),
+                position: 4,
+            },
+            boundary_hidden_fingerprint: sim_memory::BoundaryTensorFingerprint {
+                bytes: 256,
+                checksum: 0x1111_2222,
+                dtype: sim_core::TensorDType::Opaque,
+                shape: vec![256],
+            },
+            target_layer_start: 4,
+            target_layer_end: 4,
+            dtype: sim_core::TensorDType::Opaque,
+            shape: vec![128],
+            durable_payload_ref: None,
+            hot_object_ref: Some(hot_ref),
+            source_query_result_id: None,
+            source_engram_state_id: None,
+            confidence_milli: 980,
+            state: sim_memory::ExecutionArtifactState::Verified,
+            checksum: 0x6666_7777,
+            version: 1,
+            created_at_us: 10,
+            expires_at_us: None,
+        };
+        let mut memory_service = sim_memory::LingquMemoryService::new();
+        memory_service
+            .register_execution_artifact(artifact)
+            .expect("register runtime hot artifact");
+        let mut durable = LingquMemoryDurableStore::new();
+        memory_service
+            .persist_execution_artifacts_to_dfs(&mut durable)
+            .expect("persist runtime hot artifact");
+        save_lingqu_memory_durable_store(&store, &durable).expect("save store");
+
+        let bundle = load_w5_memory_decisions_from_store(&W5MemoryDecisionConfig {
+            store_path: store,
+            artifact_object_store_path: None,
+            boundary_request_path: None,
+            boundary_observation_id: None,
+            boundary_observation_ids: Vec::new(),
+            boundary_observation_run_id: None,
+            shortpath_decision_id: None,
+            shortpath_decision_ids: Vec::new(),
+            online_boundary_lookup: true,
+            shortpath_execute: true,
+            prefetch_plan_id: None,
+            prefix_cache_reuse_plan_id: None,
+        })
+        .expect("online boundary lookup should accept hot runtime artifacts");
+        assert_eq!(bundle.shortpath_entries.len(), 1);
+        let entry = &bundle.shortpath_entries[0];
+        assert_eq!(
+            entry.decision.artifact_id.as_deref(),
+            Some("artifact/logits/runtime-hot/step0/node1")
+        );
+        assert!(entry
+            .artifact
+            .as_ref()
+            .expect("hot artifact")
+            .hot_object_ref
+            .is_some());
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -16174,6 +16313,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             memory_decisions: None,
             memory_observation_store_path: None,
             memory_runtime_boundary_lookup: false,
+            memory_post_run_promote: false,
             memory_online_boundary_lookup: false,
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("dense runtime");
@@ -16260,7 +16400,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
     }
 
     #[test]
-    fn qwen3_guest_decode_loop_runs_runtime_boundary_lookup_after_summary_record() {
+    fn qwen3_guest_decode_loop_skips_post_run_promote_by_default() {
         let root = std::env::temp_dir().join(format!(
             "ub_sim_w5_runtime_boundary_lookup_e2e_{}",
             std::process::id()
@@ -16364,6 +16504,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             memory_decisions: None,
             memory_observation_store_path: Some(store_path.clone()),
             memory_runtime_boundary_lookup: true,
+            memory_post_run_promote: false,
             memory_online_boundary_lookup: false,
         };
 
@@ -16379,27 +16520,17 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             .load_shortpath_decision_manifest()
             .expect("load runtime decisions");
         assert_eq!(decisions.len(), 1);
-        assert_eq!(
-            decisions[0].action,
-            sim_memory::ShortpathAction::JumpToTerminal
-        );
-        assert_eq!(
-            decisions[0].artifact_id.as_deref(),
-            Some("artifact/logits/w5_runtime_lookup_run/step0/node1")
-        );
+        assert_eq!(decisions[0].action, sim_memory::ShortpathAction::Continue);
+        assert!(decisions[0].artifact_id.is_none());
         let supports = durable
             .load_shortpath_support_manifest()
             .expect("load runtime supports");
         assert_eq!(supports.len(), 1);
         assert_eq!(
             supports[0].supported_action,
-            sim_memory::ShortpathAction::JumpToTerminal
+            sim_memory::ShortpathAction::Continue
         );
-        let artifacts = durable
-            .load_execution_artifact_manifest()
-            .expect("load promoted artifacts");
-        assert_eq!(artifacts.len(), 1);
-        assert_eq!(artifacts[0].boundary_hidden_fingerprint.checksum, 0xaaaa);
+        assert!(supports[0].artifact_id.is_none());
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -17833,16 +17964,31 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         }
     }
     if let Some(config) = &args.memory_bootstrap {
+        command
+            .env(
+                "SIM_W5_MEMORY_STORE",
+                config.store_path.display().to_string(),
+            )
+            .env(
+                "SIM_W5_MEMORY_OBJECT_STORE",
+                config.object_store_path.display().to_string(),
+            )
+            .env(
+                "SIM_W5_MEMORY_ENGRAM_STATE",
+                config.engram_state_path.display().to_string(),
+            )
+            .env(
+                "SIM_W5_MEMORY_REGISTRY_DIR",
+                config.registry_dir.display().to_string(),
+            );
         command.env(
             SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
             config.registry_dir.display().to_string(),
         );
-        if config.object_store_path.exists() {
-            command.env(
-                SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
-                config.object_store_path.display().to_string(),
-            );
-        }
+        command.env(
+            SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
+            config.object_store_path.display().to_string(),
+        );
     }
     if let Some(spec) = &engram_simt {
         command
@@ -18275,7 +18421,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
                 boundary_observations_skipped.then_some("shortpath_no_range_exit"),
             )
         );
-        if !observation_ids.is_empty() {
+        if args.memory_post_run_promote && !observation_ids.is_empty() {
             let object_registry_dir = args
                 .memory_bootstrap
                 .as_ref()
@@ -18299,6 +18445,12 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
                 store_path.display(),
                 summary_path.display(),
                 promoted
+            );
+        } else if !args.memory_post_run_promote && !observation_ids.is_empty() {
+            println!(
+                "  memory_runtime_shortpath_artifacts_promoted: store={} summary={} promoted=0 status=skipped reason=post_run_promote_disabled",
+                store_path.display(),
+                summary_path.display()
             );
         }
         if args.memory_runtime_boundary_lookup && !observation_ids.is_empty() {

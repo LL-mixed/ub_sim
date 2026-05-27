@@ -3937,14 +3937,18 @@ fn qwen3_commit_w5_memory_runtime_artifacts(
         .map_err(|err| format!("qwen3_w5_object_checkpoint_persist_failed:{err}"))?;
 
     let mut memory_service = sim_memory::LingquMemoryService::new();
-    match memory_service.rebuild_boundary_observations_from_dfs(&mut durable_store) {
-        Ok(_) | Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => {}
-        Err(err) => return Err(format!("qwen3_w5_boundary_manifest_load_failed:{err}")),
-    }
-    match memory_service.rebuild_execution_artifacts_from_dfs(&mut durable_store) {
-        Ok(_) | Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => {}
-        Err(err) => return Err(format!("qwen3_w5_execution_manifest_load_failed:{err}")),
-    }
+    let mut boundary_observations =
+        match memory_service.rebuild_boundary_observations_from_dfs(&mut durable_store) {
+            Ok(observations) => observations,
+            Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => Vec::new(),
+            Err(err) => return Err(format!("qwen3_w5_boundary_manifest_load_failed:{err}")),
+        };
+    let existing_artifacts =
+        match memory_service.rebuild_execution_artifacts_from_dfs(&mut durable_store) {
+            Ok(artifacts) => artifacts,
+            Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => Vec::new(),
+            Err(err) => return Err(format!("qwen3_w5_execution_manifest_load_failed:{err}")),
+        };
 
     let hidden_hot_ref = qwen3_hot_ref_from_obmm(&refs.hidden_key, refs.hidden_ref);
     let boundary = sim_memory::RangeBoundary {
@@ -3958,7 +3962,7 @@ fn qwen3_commit_w5_memory_runtime_artifacts(
     };
     let producer_node = format!("node{}", contract.node + 1);
     let consumer_node = format!("node{}", refs.target_node + 1);
-    let observation = sim_memory::BoundaryObservationRecord::new(
+    let current_observation = sim_memory::BoundaryObservationRecord::new(
         format!(
             "boundary-observation/{}/step{}/{}",
             run_id, refs.decode_step, producer_node
@@ -3975,8 +3979,9 @@ fn qwen3_commit_w5_memory_runtime_artifacts(
     )
     .map_err(|err| format!("qwen3_w5_boundary_observation_build_failed:{err}"))?;
     memory_service
-        .register_boundary_observation(observation)
+        .register_boundary_observation(current_observation.clone())
         .map_err(|err| format!("qwen3_w5_boundary_observation_register_failed:{err}"))?;
+    boundary_observations.push(current_observation);
     memory_service
         .persist_boundary_observations_to_dfs(&mut durable_store)
         .map_err(|err| format!("qwen3_w5_boundary_observation_persist_failed:{err}"))?;
@@ -4028,7 +4033,7 @@ fn qwen3_commit_w5_memory_runtime_artifacts(
         .register_execution_artifact(kv_artifact)
         .map_err(|err| format!("qwen3_w5_kv_artifact_register_failed:{err}"))?;
 
-    if let (Some(descriptor), Some(logits_hot_ref)) = (logits_descriptor, logits_hot_ref) {
+    if let (Some(descriptor), Some(logits_hot_ref)) = (logits_descriptor, logits_hot_ref.clone()) {
         let logits_artifact_id = format!(
             "artifact/logits/{}/step{}/{}",
             run_id, refs.decode_step, producer_node
@@ -4049,7 +4054,7 @@ fn qwen3_commit_w5_memory_runtime_artifacts(
         let logits_artifact = sim_memory::ExecutionArtifactObject {
             artifact_id: logits_artifact_id,
             kind: sim_memory::ExecutionArtifactKind::Logits,
-            model,
+            model: model.clone(),
             producer_boundary: boundary,
             boundary_hidden_fingerprint: sim_memory::BoundaryTensorFingerprint::from_hot_ref(
                 &hidden_hot_ref,
@@ -4059,7 +4064,7 @@ fn qwen3_commit_w5_memory_runtime_artifacts(
             dtype: TensorDType::Opaque,
             shape: vec![logits_hot_ref.bytes],
             durable_payload_ref: None,
-            hot_object_ref: Some(logits_hot_ref),
+            hot_object_ref: Some(logits_hot_ref.clone()),
             source_query_result_id: None,
             source_engram_state_id: None,
             confidence_milli: 980,
@@ -4072,6 +4077,35 @@ fn qwen3_commit_w5_memory_runtime_artifacts(
         memory_service
             .register_execution_artifact(logits_artifact)
             .map_err(|err| format!("qwen3_w5_logits_artifact_register_failed:{err}"))?;
+        qwen3_register_w5_runtime_terminal_support_artifacts(
+            &mut memory_service,
+            &run_id,
+            &model,
+            refs.decode_step,
+            &boundary_observations,
+            &logits_hot_ref,
+            descriptor.sampled_token,
+            created_at_us,
+        )?;
+    } else if let Some(terminal_artifact) = qwen3_find_w5_runtime_terminal_logits_artifact(
+        &existing_artifacts,
+        &run_id,
+        &model,
+        refs.decode_step,
+        contract.total_layers,
+    ) {
+        if let Some(logits_hot_ref) = terminal_artifact.hot_object_ref.as_ref() {
+            qwen3_register_w5_runtime_terminal_support_artifacts(
+                &mut memory_service,
+                &run_id,
+                &model,
+                refs.decode_step,
+                &boundary_observations,
+                logits_hot_ref,
+                terminal_artifact.checksum,
+                created_at_us,
+            )?;
+        }
     }
 
     memory_service
@@ -4079,6 +4113,94 @@ fn qwen3_commit_w5_memory_runtime_artifacts(
         .map_err(|err| format!("qwen3_w5_execution_artifact_persist_failed:{err}"))?;
     sim_memory::save_lingqu_memory_durable_store_to_path(&store_path, &durable_store)
         .map_err(|err| format!("qwen3_w5_memory_store_save_failed:{err}"))
+}
+
+fn qwen3_find_w5_runtime_terminal_logits_artifact<'a>(
+    artifacts: &'a [sim_memory::ExecutionArtifactObject],
+    run_id: &str,
+    model: &sim_memory::InferenceModelBinding,
+    decode_step: u64,
+    total_layers: u32,
+) -> Option<&'a sim_memory::ExecutionArtifactObject> {
+    let prefix = format!("artifact/logits/{run_id}/step{decode_step}/");
+    artifacts
+        .iter()
+        .filter(|artifact| artifact.artifact_id.starts_with(&prefix))
+        .filter(|artifact| artifact.kind == sim_memory::ExecutionArtifactKind::Logits)
+        .filter(|artifact| artifact.model == *model)
+        .filter(|artifact| artifact.producer_boundary.step_index == decode_step)
+        .filter(|artifact| artifact.producer_boundary.layer_end == total_layers)
+        .filter(|artifact| artifact.hot_object_ref.is_some())
+        .max_by(|left, right| {
+            left.confidence_milli
+                .cmp(&right.confidence_milli)
+                .then_with(|| left.version.cmp(&right.version))
+                .then_with(|| left.artifact_id.cmp(&right.artifact_id))
+        })
+}
+
+fn qwen3_register_w5_runtime_terminal_support_artifacts(
+    memory_service: &mut sim_memory::LingquMemoryService,
+    run_id: &str,
+    model: &sim_memory::InferenceModelBinding,
+    decode_step: u64,
+    boundary_observations: &[sim_memory::BoundaryObservationRecord],
+    logits_hot_ref: &sim_memory::HotTensorObjectRef,
+    decision_seed: u64,
+    created_at_us: u64,
+) -> Result<(), String> {
+    for observation in boundary_observations {
+        if observation.run_id != run_id
+            || observation.model != *model
+            || observation.boundary.step_index != decode_step
+        {
+            continue;
+        }
+        let artifact_id = format!(
+            "artifact/logits/{}/step{}/{}",
+            run_id, decode_step, observation.producer_node
+        );
+        let artifact_checksum = qwen3_lingqu_object_payload_checksum(
+            format!(
+                "{}:{}:{}:{}:{}:{}:{:x}",
+                artifact_id,
+                run_id,
+                decode_step,
+                observation.producer_node,
+                observation.boundary.layer_end,
+                decision_seed,
+                logits_hot_ref.checksum
+            )
+            .as_bytes(),
+        );
+        let artifact = sim_memory::ExecutionArtifactObject {
+            artifact_id,
+            kind: sim_memory::ExecutionArtifactKind::Logits,
+            model: model.clone(),
+            producer_boundary: observation.boundary.clone(),
+            boundary_hidden_fingerprint: sim_memory::BoundaryTensorFingerprint::from_hot_ref(
+                &observation.hidden_state,
+            ),
+            target_layer_start: observation.boundary.layer_end,
+            target_layer_end: observation.boundary.layer_end,
+            dtype: TensorDType::Opaque,
+            shape: vec![logits_hot_ref.bytes],
+            durable_payload_ref: None,
+            hot_object_ref: Some(logits_hot_ref.clone()),
+            source_query_result_id: None,
+            source_engram_state_id: None,
+            confidence_milli: 980,
+            state: sim_memory::ExecutionArtifactState::Verified,
+            checksum: artifact_checksum,
+            version: 1,
+            created_at_us,
+            expires_at_us: None,
+        };
+        memory_service
+            .register_execution_artifact(artifact)
+            .map_err(|err| format!("qwen3_w5_logits_support_artifact_register_failed:{err}"))?;
+    }
+    Ok(())
 }
 
 fn qwen3_dense_weights_config_dir(weights_path: &Path) -> &Path {
@@ -4581,8 +4703,16 @@ fn run_qwen3_dense_profile_runtime(
     } else {
         None
     };
+    let decode_step = range_forward_object_refs
+        .as_ref()
+        .map(|refs| refs.decode_step)
+        .unwrap_or_else(|| qwen3_dense_runtime_decode_step_from_guest_input(guest_input));
     let logits_descriptors = if terminal_owner {
-        qwen3_dense_profile_logits_descriptors(&runtime_profile, real_terminal.as_ref())?
+        qwen3_dense_profile_logits_descriptors(
+            &runtime_profile,
+            real_terminal.as_ref(),
+            decode_step,
+        )?
     } else {
         Vec::new()
     };
@@ -5346,9 +5476,10 @@ fn qwen3_dense_profile_hidden_from_range_output_payload(
 fn qwen3_dense_profile_logits_descriptors(
     profile: &Qwen3DenseReferenceProfile,
     real_terminal: Option<&Qwen3DenseProfileRealTerminal>,
+    step_index: u64,
 ) -> Result<Vec<Qwen3DenseReferenceLogitsDescriptor>, String> {
     if let Some(summary) = real_terminal {
-        return qwen3_dense_profile_real_logits_descriptors(profile, summary);
+        return qwen3_dense_profile_real_logits_descriptors(profile, summary, step_index);
     }
     let count = 2usize;
     let mut descriptors = Vec::with_capacity(count);
@@ -5418,6 +5549,7 @@ fn qwen3_dense_profile_logits_descriptors(
 fn qwen3_dense_profile_real_logits_descriptors(
     profile: &Qwen3DenseReferenceProfile,
     real_terminal: &Qwen3DenseProfileRealTerminal,
+    step_index: u64,
 ) -> Result<Vec<Qwen3DenseReferenceLogitsDescriptor>, String> {
     let summary = &real_terminal.logits;
     let tokenizer_path = qwen3_dense_profile_required_tokenizer_path()?;
@@ -5477,13 +5609,22 @@ fn qwen3_dense_profile_real_logits_descriptors(
         let token = candidate_tokens[candidate_index];
         let candidate_piece = qwen3_dense_reference_token_piece(token, Some(&tokenizer_path))?;
         candidate_text_checksums[candidate_index] =
-            qwen3_dense_reference_sample_text_checksum(0, token, 0, Some(&tokenizer_path))?;
+            qwen3_dense_reference_sample_text_checksum(
+                step_index,
+                token,
+                0,
+                Some(&tokenizer_path),
+            )?;
         candidate_piece_bytes[candidate_index] = candidate_piece.byte_len;
         candidate_piece_word0[candidate_index] = candidate_piece.word0;
         candidate_piece_word1[candidate_index] = candidate_piece.word1;
     }
-    let text_checksum =
-        qwen3_dense_reference_sample_text_checksum(0, sampled_token, 0, Some(&tokenizer_path))?;
+    let text_checksum = qwen3_dense_reference_sample_text_checksum(
+        step_index,
+        sampled_token,
+        0,
+        Some(&tokenizer_path),
+    )?;
     Ok(vec![Qwen3DenseReferenceLogitsDescriptor {
         shard_id: 0,
         tile_id: 0,
@@ -5512,7 +5653,7 @@ fn qwen3_dense_profile_real_logits_descriptors(
         real_path_digest,
         text_checksum,
         text_byte_offset: 0,
-        step_index: 0,
+        step_index,
     }])
 }
 
@@ -28214,6 +28355,54 @@ mod tests {
                 std::env::set_var("SIM_QWEN3_DENSE_MODEL_KEY", "qwen3-runtime-test");
                 std::env::set_var("SIM_QWEN3_DENSE_WEIGHTS_PATH", &weights);
 
+                let hidden_payload = vec![0x44u8; HIDDEN_BYTES];
+                let kv_payload = vec![0x55u8; KV_BYTES];
+                let hidden_checksum =
+                    qwen3_dense_reference_range_object_payload_checksum(&hidden_payload);
+                let kv_checksum = qwen3_dense_reference_range_object_payload_checksum(&kv_payload);
+                let boundary_contract = Qwen3GuestRangeComputeContract {
+                    node: 0,
+                    layer_start: 0,
+                    layer_end: 4,
+                    next_node: 1,
+                    pipeline_nodes: 8,
+                    total_layers: 28,
+                    hidden_bytes: HIDDEN_BYTES as u32,
+                };
+                let boundary_summary = Qwen3DenseReferenceRangeForwardSummary {
+                    node: u64::from(boundary_contract.node),
+                    layer_start: u64::from(boundary_contract.layer_start),
+                    layer_end: u64::from(boundary_contract.layer_end),
+                    layer_count: u64::from(
+                        boundary_contract.layer_end - boundary_contract.layer_start,
+                    ),
+                    next_node: u64::from(boundary_contract.next_node),
+                    pipeline_nodes: u64::from(boundary_contract.pipeline_nodes),
+                    total_layers: u64::from(boundary_contract.total_layers),
+                    hidden_bytes: HIDDEN_BYTES as u64,
+                    input_tensor_checksum: 1,
+                    output_tensor_checksum: hidden_checksum,
+                    range_layer_checksum: 2,
+                    real_layer_execution_count: 4,
+                    first_layer_output_checksum: hidden_checksum,
+                    final_layer_output_checksum: hidden_checksum,
+                    input_tensor_bytes: HIDDEN_BYTES as u64,
+                    output_tensor_bytes: HIDDEN_BYTES as u64,
+                    output_tensor_payload: hidden_payload.clone(),
+                    kv_state_bytes: KV_BYTES as u64,
+                    kv_state_checksum: kv_checksum,
+                    kv_state_payload: kv_payload.clone(),
+                    engram_context_report: None,
+                };
+                let boundary_refs =
+                    qwen3_register_range_forward_objects(boundary_contract, &[], &boundary_summary)
+                        .expect("publish runtime boundary objects")
+                        .expect("boundary object refs should be returned");
+                qwen3_enqueue_w5_memory_runtime_commit(boundary_contract, boundary_refs, None)
+                    .expect("enqueue boundary runtime memory commit");
+                qwen3_flush_w5_memory_runtime_commits()
+                    .expect("flush boundary runtime memory commit");
+
                 let contract = Qwen3GuestRangeComputeContract {
                     node: 7,
                     layer_start: 24,
@@ -28223,11 +28412,6 @@ mod tests {
                     total_layers: 28,
                     hidden_bytes: HIDDEN_BYTES as u32,
                 };
-                let hidden_payload = vec![0x44u8; HIDDEN_BYTES];
-                let kv_payload = vec![0x55u8; KV_BYTES];
-                let hidden_checksum =
-                    qwen3_dense_reference_range_object_payload_checksum(&hidden_payload);
-                let kv_checksum = qwen3_dense_reference_range_object_payload_checksum(&kv_payload);
                 let summary = Qwen3DenseReferenceRangeForwardSummary {
                     node: u64::from(contract.node),
                     layer_start: u64::from(contract.layer_start),
@@ -28294,14 +28478,25 @@ mod tests {
                 let observations = durable
                     .load_boundary_observation_manifest()
                     .expect("load boundary observations");
-                assert_eq!(observations.len(), 1);
-                assert_eq!(
-                    observations[0].observation_id,
-                    "boundary-observation/runtime-memory-commit-test/step0/node8"
-                );
+                assert_eq!(observations.len(), 2);
+                assert!(observations.iter().any(|observation| {
+                    observation.observation_id
+                        == "boundary-observation/runtime-memory-commit-test/step0/node1"
+                }));
+                assert!(observations.iter().any(|observation| {
+                    observation.observation_id
+                        == "boundary-observation/runtime-memory-commit-test/step0/node8"
+                }));
                 let artifacts = durable
                     .load_execution_artifact_manifest()
                     .expect("load execution artifacts");
+                assert!(artifacts.iter().any(|artifact| {
+                    artifact.artifact_id == "artifact/logits/runtime-memory-commit-test/step0/node1"
+                        && artifact.producer_boundary.node_index == 1
+                        && artifact.producer_boundary.layer_end == 4
+                        && artifact.hot_object_ref.is_some()
+                        && artifact.durable_payload_ref.is_none()
+                }));
                 assert!(artifacts.iter().any(|artifact| {
                     artifact.artifact_id == "artifact/kv/runtime-memory-commit-test/step0/node8"
                         && artifact.hot_object_ref.is_some()
@@ -28312,6 +28507,37 @@ mod tests {
                         && artifact.hot_object_ref.is_some()
                         && artifact.durable_payload_ref.is_none()
                 }));
+                let node1_observation = observations
+                    .iter()
+                    .find(|observation| observation.producer_node == "node1")
+                    .expect("node1 boundary observation");
+                let mut memory_service = sim_memory::LingquMemoryService::new();
+                memory_service
+                    .rebuild_execution_artifacts_from_dfs(&mut durable)
+                    .expect("rebuild execution artifacts");
+                let lookup = memory_service
+                    .boundary_lookup(
+                        sim_memory::BoundaryLookupRequest {
+                            request_id: "runtime-memory-commit-node1-lookup".to_string(),
+                            model: node1_observation.model.clone(),
+                            boundary: node1_observation.boundary.clone(),
+                            hidden_state: node1_observation.hidden_state.clone(),
+                            engram_state_id: None,
+                            min_confidence_milli: 900,
+                            allowed_actions: vec![sim_memory::ShortpathAction::JumpToTerminal],
+                            created_at_us: 10,
+                        },
+                        11,
+                    )
+                    .expect("lookup node1 runtime shortpath artifact");
+                assert_eq!(
+                    lookup.support.supported_action,
+                    sim_memory::ShortpathAction::JumpToTerminal
+                );
+                assert_eq!(
+                    lookup.support.artifact_id.as_deref(),
+                    Some("artifact/logits/runtime-memory-commit-test/step0/node1")
+                );
                 let object_checkpoint = durable
                     .load_object_service_checkpoint()
                     .expect("load Object Service checkpoint from Memory Service");
