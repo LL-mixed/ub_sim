@@ -3323,6 +3323,8 @@ fn run_lingqu_memory_seed_paper_engram_fixture_cli(args: &[String]) -> anyhow::R
         anyhow::bail!("--orders cannot contain 0");
     }
     let seed = optional_cli_u64_auto(args, "--seed")?.unwrap_or(0xA5A5_5A5A_2026_0527);
+    let table_init = paper_engram_fixture_init_from_cli(args, "--table-init")?;
+    let gate_init = paper_engram_fixture_init_from_cli(args, "--gate-init")?;
     let created_at_us = optional_cli_u64(args, "--created-at-us")?.unwrap_or_else(cli_now_us);
     let module_id = optional_cli_arg(args, "--module-id")?.unwrap_or_else(|| {
         format!(
@@ -3452,7 +3454,14 @@ fn run_lingqu_memory_seed_paper_engram_fixture_cli(args: &[String]) -> anyhow::R
                         ^ ((row as u64) << 16)
                         ^ dim as u64
                         ^ seed;
-                    values.push(((qwen3_checksum_words(&[word]) % 257) as f32 - 128.0) / 65536.0);
+                    values.push(paper_engram_fixture_init_value(
+                        table_init,
+                        word,
+                        0x5441_424c_455f_494e,
+                        65_536.0,
+                        257,
+                        128.0,
+                    ));
                 }
             }
             let shard_id = format!("{id}/layer-{layer}/table/order-{order}/head-{head}");
@@ -3492,7 +3501,14 @@ fn run_lingqu_memory_seed_paper_engram_fixture_cli(args: &[String]) -> anyhow::R
     let gate_values = (0..hidden_size_usize)
         .map(|dim| {
             let word = (u64::from(layer) << 32) ^ dim as u64 ^ seed.rotate_left(17);
-            ((qwen3_checksum_words(&[word]) % 251) as f32 - 125.0) / 131072.0
+            paper_engram_fixture_init_value(
+                gate_init,
+                word,
+                0x4741_5445_5f49_4e49,
+                131_072.0,
+                251,
+                125.0,
+            )
         })
         .collect::<Vec<_>>();
     let gate_ref = durable_store
@@ -3586,9 +3602,73 @@ fn run_lingqu_memory_seed_paper_engram_fixture_cli(args: &[String]) -> anyhow::R
     println!("  table_rows: {}", table_rows);
     println!("  orders: {:?}", orders);
     println!("  heads_per_order: {}", heads_per_order);
+    println!("  table_init: {}", table_init.as_str());
+    println!("  gate_init: {}", gate_init.as_str());
     println!("  table_shards: {}", shard_ids.len());
     println!("  gates: {}", gate_ids.len());
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaperEngramFixtureInit {
+    Zero,
+    Fixture,
+    RandomNormal,
+}
+
+impl PaperEngramFixtureInit {
+    fn as_str(self) -> &'static str {
+        match self {
+            PaperEngramFixtureInit::Zero => "zero",
+            PaperEngramFixtureInit::Fixture => "fixture",
+            PaperEngramFixtureInit::RandomNormal => "random-normal",
+        }
+    }
+}
+
+fn paper_engram_fixture_init_from_cli(
+    args: &[String],
+    name: &'static str,
+) -> anyhow::Result<PaperEngramFixtureInit> {
+    match optional_cli_arg(args, name)?.as_deref() {
+        None | Some("fixture") => Ok(PaperEngramFixtureInit::Fixture),
+        Some("zero") => Ok(PaperEngramFixtureInit::Zero),
+        Some("random-normal") => Ok(PaperEngramFixtureInit::RandomNormal),
+        Some(value) => {
+            anyhow::bail!("{name} must be one of zero, fixture, random-normal; got {value}")
+        }
+    }
+}
+
+fn paper_engram_fixture_init_value(
+    mode: PaperEngramFixtureInit,
+    word: u64,
+    salt: u64,
+    scale: f32,
+    fixture_modulus: u64,
+    fixture_center: f32,
+) -> f32 {
+    match mode {
+        PaperEngramFixtureInit::Zero => 0.0,
+        PaperEngramFixtureInit::Fixture => {
+            ((qwen3_checksum_words(&[word]) % fixture_modulus) as f32 - fixture_center) / scale
+        }
+        PaperEngramFixtureInit::RandomNormal => deterministic_standard_normal(word, salt) / scale,
+    }
+}
+
+fn deterministic_standard_normal(word: u64, salt: u64) -> f32 {
+    let u1 = deterministic_unit_interval(qwen3_checksum_words(&[word, salt]));
+    let u2 =
+        deterministic_unit_interval(qwen3_checksum_words(&[word ^ salt.rotate_left(13), salt]));
+    let radius = (-2.0 * u1.ln()).sqrt();
+    let angle = std::f64::consts::TAU * u2;
+    (radius * angle.cos()) as f32
+}
+
+fn deterministic_unit_interval(value: u64) -> f64 {
+    let mantissa = value >> 11;
+    (mantissa as f64 + 0.5) / ((1u64 << 53) as f64)
 }
 
 fn run_lingqu_memory_list_paper_engram_modules_cli(args: &[String]) -> anyhow::Result<()> {
@@ -12490,11 +12570,12 @@ mod tests {
         qwen3_obmm_object_ref_for_payload, qwen3_obmm_object_ref_wire_to_hex,
         qwen3_range_forward_args_from, qwen3_tokenizer_projection_args_from,
         qwen3_validate_engram_state_object_service_payload, read_lingqu_memory_payload_ref,
-        read_w5_u64, record_w5_runtime_boundary_observations_from_summary,
-        resolve_w5_inference_profile, run_lingqu_durable_append_log_cli,
-        run_lingqu_durable_batch_cli, run_lingqu_durable_init_cli, run_lingqu_durable_list_cli,
-        run_lingqu_durable_read_log_cli, run_lingqu_durable_stat_cli,
-        run_lingqu_durable_validate_cli, run_lingqu_memory_boundary_lookup_cli,
+        read_w5_u64, rebuild_lingqu_memory_all_paper_engram_registries,
+        record_w5_runtime_boundary_observations_from_summary, resolve_w5_inference_profile,
+        run_lingqu_durable_append_log_cli, run_lingqu_durable_batch_cli,
+        run_lingqu_durable_init_cli, run_lingqu_durable_list_cli, run_lingqu_durable_read_log_cli,
+        run_lingqu_durable_stat_cli, run_lingqu_durable_validate_cli,
+        run_lingqu_memory_boundary_lookup_cli,
         run_lingqu_memory_boundary_lookup_from_observation_cli,
         run_lingqu_memory_boundary_request_from_w5_summary_cli,
         run_lingqu_memory_build_engram_hash_config_cli, run_lingqu_memory_build_index_cli,
@@ -17304,6 +17385,10 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             "2,3".to_string(),
             "--heads-per-order".to_string(),
             "2".to_string(),
+            "--table-init".to_string(),
+            "zero".to_string(),
+            "--gate-init".to_string(),
+            "zero".to_string(),
             "--created-at-us".to_string(),
             "10".to_string(),
         ])
@@ -17315,6 +17400,36 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             "pe-module-fixture-cli".to_string(),
         ])
         .expect("resolve seeded paper engram fixture runtime");
+        let mut durable =
+            load_lingqu_memory_durable_store(&store).expect("load seeded paper engram store");
+        let mut memory_service = sim_memory::LingquMemoryService::new();
+        rebuild_lingqu_memory_all_paper_engram_registries(&mut memory_service, &mut durable)
+            .expect("rebuild seeded paper engram registries");
+        let runtime = memory_service
+            .resolve_paper_engram_runtime_artifacts("pe-module-fixture-cli")
+            .expect("resolve seeded zero-init runtime");
+        for layer in &runtime.layer_operands {
+            for table in &layer.table_operands {
+                for payload_ref in &table.block_payload_refs {
+                    let payload = durable
+                        .read_block_payload(payload_ref)
+                        .expect("read zero-init table payload");
+                    assert!(
+                        payload.iter().all(|byte| *byte == 0),
+                        "zero-init table payload should contain only zero bytes"
+                    );
+                }
+            }
+            for gate in &layer.gate_operands {
+                let payload = durable
+                    .read_block_payload(&gate.payload_ref)
+                    .expect("read zero-init gate payload");
+                assert!(
+                    payload.iter().all(|byte| *byte == 0),
+                    "zero-init gate payload should contain only zero bytes"
+                );
+            }
+        }
         run_lingqu_memory_publish_paper_engram_state_ref_cli(&[
             "--store".to_string(),
             store.display().to_string(),

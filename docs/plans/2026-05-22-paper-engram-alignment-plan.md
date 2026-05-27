@@ -328,6 +328,7 @@ Current implementation status:
 - Paper Engram row-prefetch plans now carry tokenizer-projection and hash-config checksums, and UAPI rejects a supplied row-prefetch plan when its contract does not match the active paper `ENGRAM_STATE` manifest.
 - `sim-cli lingqu-memory build-engram-hash-config` now binds the hash config to the tokenizer projection artifact checksum (`aggregate_checksum`) instead of the source tokenizer-file checksum.
 - `sim-cli lingqu-memory import-paper-engram-module` can import a complete paper Engram manifest bundle in dependency order (`projection`, `hash_config`, table shards, gates, optional recipe/eval, module), persist all registries, and resolve runtime artifacts as the import validation gate.
+- `sim-cli lingqu-memory seed-paper-engram-fixture` now exposes explicit `--table-init` and `--gate-init` modes (`zero`, `fixture`, `random-normal`) so Phase 4 correctness/performance runs can separate no-op baseline, deterministic fixture mutation, and deterministic random-normal payloads.
 
 The terminal-only context-op path is not enough. Paper Engram must be able to
 inject at configured model layers, not only after terminal hidden.
@@ -435,6 +436,12 @@ paper `ENGRAM_STATE` entrypoint rather than as standalone runtime state.
    multi-head descriptors.
 2. Support zero/random/fixture table modes for correctness and performance.
 3. Keep trained-table mode manifest-backed only.
+
+Current status: the CPU reference already accepts paper-style multi-order,
+multi-head table descriptors and lookup refs. Fixture seeding can generate
+explicit zero, deterministic fixture, or deterministic random-normal table and
+gate payloads; trained table quality remains manifest-backed through module
+quality claims.
 
 ### Phase 5: W5 Runtime Injection
 
