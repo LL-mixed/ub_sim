@@ -2305,7 +2305,7 @@ fn run_lingqu_memory_build_engram_hash_config_cli(args: &[String]) -> anyhow::Re
                 format!("decode tokenizer projection {}", projection_path.display())
             })?;
     let mut config = build_default_engram_hash_config(
-        projection.source_checksum,
+        projection.aggregate_checksum,
         heads_per_order,
         table_rows,
         seed,
@@ -16035,7 +16035,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         assert_eq!(config["version"], serde_json::Value::from(1u64));
         assert_eq!(
             config["projection_checksum"],
-            serde_json::Value::from(0x1234u64)
+            serde_json::Value::from(0x77u64)
         );
         assert_eq!(config["orders"][0], serde_json::Value::from(2u8));
         assert_eq!(config["heads_per_order"], serde_json::Value::from(2u64));
