@@ -18403,6 +18403,29 @@ fn qwen3_dense_reference_engram_context_row_prefetch_plan_from_ref(
     Ok(plan)
 }
 
+fn qwen3_dense_reference_validate_paper_row_prefetch_plan_contract(
+    manifest: &Qwen3PaperEngramStateManifest,
+    plan: &PaperEngramTableRowPrefetchPlan,
+) -> Result<(), String> {
+    if manifest.tokenizer_projection_checksum != 0
+        && plan.tokenizer_projection_checksum != manifest.tokenizer_projection_checksum
+    {
+        return Err(format!(
+            "qwen3_engram_context_row_prefetch_projection_checksum_mismatch:expected={:#x}:actual={:#x}",
+            manifest.tokenizer_projection_checksum, plan.tokenizer_projection_checksum
+        ));
+    }
+    if manifest.hash_config_checksum != 0
+        && plan.hash_config_checksum != manifest.hash_config_checksum
+    {
+        return Err(format!(
+            "qwen3_engram_context_row_prefetch_hash_config_checksum_mismatch:expected={:#x}:actual={:#x}",
+            manifest.hash_config_checksum, plan.hash_config_checksum
+        ));
+    }
+    Ok(())
+}
+
 fn qwen3_dense_reference_engram_context_env_refs_present() -> bool {
     [
         SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
@@ -18437,6 +18460,9 @@ fn qwen3_dense_reference_engram_context_source_from_state_ref(
             Qwen3DenseReferenceEngramContextStateSource::LegacyRefs(object_refs),
         ),
         Qwen3EngramStateManifest::Paper(manifest) => {
+            if let Some(plan) = row_prefetch_plan.as_ref() {
+                qwen3_dense_reference_validate_paper_row_prefetch_plan_contract(&manifest, plan)?;
+            }
             Ok(Qwen3DenseReferenceEngramContextStateSource::PaperManifest(
                 Qwen3DenseReferenceEngramContextPaperStateSource {
                     manifest,
@@ -22758,6 +22784,7 @@ mod tests {
         qwen3_dense_reference_tile_with_real_qkv_reference_mix,
         qwen3_dense_reference_tile_with_real_qkv_reference_values_mix,
         qwen3_dense_reference_token_piece, qwen3_dense_reference_tokenizer_sample_token_count,
+        qwen3_dense_reference_validate_paper_row_prefetch_plan_contract,
         qwen3_dense_reference_validate_weight_payload_coverage,
         qwen3_dense_reference_weight_range_object_key,
         qwen3_dense_reference_weight_range_payload_header,
@@ -23507,6 +23534,7 @@ mod tests {
                         let hidden_size = 1024usize;
                         let table_rows = 16usize;
                         let layer = 7u64;
+                        let hash_config_checksum = 0x5678u64;
                         let total_layers = QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers;
                         let hash_config =
                             build_default_engram_hash_config(0, 2, table_rows as u64, 0x77);
@@ -23600,6 +23628,8 @@ mod tests {
                                 plan_id: "qwen3-paper-prefetch-plan".to_string(),
                                 request_id: "qwen3-paper-prefetch-request".to_string(),
                                 module_id: "qwen3-paper-engram-module".to_string(),
+                                tokenizer_projection_checksum: projection.aggregate_checksum,
+                                hash_config_checksum,
                                 canonical_history_len: token_ids.len() as u64,
                                 from_step: token_step as u64,
                                 rows,
@@ -23667,7 +23697,7 @@ mod tests {
                             hidden_size,
                             hidden_size,
                             projection.aggregate_checksum,
-                            hash_config.projection_checksum,
+                            hash_config_checksum,
                             &table_refs,
                             &[Qwen3PaperEngramStateGateRef {
                                 layer,
@@ -23766,6 +23796,8 @@ mod tests {
                                     plan_id: "missing-state-plan".to_string(),
                                     request_id: "missing-state-request".to_string(),
                                     module_id: "missing-state-module".to_string(),
+                                    tokenizer_projection_checksum: 0x1357,
+                                    hash_config_checksum: 0x2468,
                                     canonical_history_len: 4,
                                     from_step: 0,
                                     rows: Vec::new(),
@@ -30376,6 +30408,35 @@ mod tests {
             },
         );
         let _ = std::fs::remove_dir_all(&registry_dir);
+    }
+
+    #[test]
+    fn qwen3_paper_engram_row_prefetch_contract_mismatch_is_rejected() {
+        let manifest = super::Qwen3PaperEngramStateManifest {
+            hidden_size: 4,
+            memory_dim: 4,
+            tokenizer_projection_checksum: 0x1234,
+            hash_config_checksum: 0x5678,
+            tables: Vec::new(),
+            gates: Vec::new(),
+        };
+        let plan = sim_memory::PaperEngramTableRowPrefetchPlan {
+            plan_id: "paper-engram-row-prefetch/test".to_string(),
+            request_id: "test".to_string(),
+            module_id: "module".to_string(),
+            tokenizer_projection_checksum: 0x1234,
+            hash_config_checksum: 0x9999,
+            canonical_history_len: 1,
+            from_step: 0,
+            rows: Vec::new(),
+            created_at_us: 1,
+        };
+        let err = qwen3_dense_reference_validate_paper_row_prefetch_plan_contract(&manifest, &plan)
+            .expect_err("hash config checksum mismatch should fail");
+        assert!(
+            err.contains("qwen3_engram_context_row_prefetch_hash_config_checksum_mismatch"),
+            "{err}"
+        );
     }
 
     #[test]

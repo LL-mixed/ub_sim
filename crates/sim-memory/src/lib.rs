@@ -6026,6 +6026,10 @@ pub struct PaperEngramTableRowPrefetchPlan {
     pub plan_id: String,
     pub request_id: String,
     pub module_id: String,
+    #[serde(default)]
+    pub tokenizer_projection_checksum: u64,
+    #[serde(default)]
+    pub hash_config_checksum: u64,
     pub canonical_history_len: u64,
     pub from_step: u64,
     pub rows: Vec<PaperEngramTableRowPrefetchRef>,
@@ -6040,6 +6044,14 @@ impl PaperEngramTableRowPrefetchPlan {
             "paper_engram_table_row_prefetch.request_id",
         )?;
         required_str(&self.module_id, "paper_engram_table_row_prefetch.module_id")?;
+        nonzero(
+            self.tokenizer_projection_checksum,
+            "paper_engram_table_row_prefetch.tokenizer_projection_checksum",
+        )?;
+        nonzero(
+            self.hash_config_checksum,
+            "paper_engram_table_row_prefetch.hash_config_checksum",
+        )?;
         nonzero(
             self.canonical_history_len,
             "paper_engram_table_row_prefetch.canonical_history_len",
@@ -8313,6 +8325,8 @@ impl LingquMemoryService {
             plan_id: format!("paper-engram-row-prefetch/{}", req.request_id),
             request_id: req.request_id,
             module_id: runtime.module.module_id,
+            tokenizer_projection_checksum: runtime.tokenizer_projection.projection_checksum,
+            hash_config_checksum: runtime.hash_config.hash_config_checksum,
             canonical_history_len: req.canonical_history.len() as u64,
             from_step: req.from_step,
             rows,
@@ -10184,6 +10198,14 @@ mod tests {
                 created_at_us: 16,
             })
             .expect("plan paper Engram table row prefetch");
+        assert_eq!(
+            prefetch_plan.tokenizer_projection_checksum,
+            projection.projection_checksum
+        );
+        assert_eq!(
+            prefetch_plan.hash_config_checksum,
+            hash_config.hash_config_checksum
+        );
         assert_eq!(prefetch_plan.rows.len(), 2);
         assert!(prefetch_plan
             .rows
@@ -10218,6 +10240,8 @@ mod tests {
             plan_id: "paper-engram-row-prefetch/prefetch/out-of-range".to_string(),
             request_id: "prefetch/out-of-range".to_string(),
             module_id: "pe-module-0".to_string(),
+            tokenizer_projection_checksum: 0x1357,
+            hash_config_checksum: 0x2468,
             canonical_history_len: 3,
             from_step: 1,
             rows: vec![PaperEngramTableRowPrefetchRef {
