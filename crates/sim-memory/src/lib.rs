@@ -2343,6 +2343,25 @@ fn validate_trained_paper_engram_provenance_ref(
     Ok(())
 }
 
+fn validate_trained_paper_engram_train_eval_split(
+    recipe: &PaperEngramTrainingRecipeManifest,
+    report: &PaperEngramEvalReportManifest,
+) -> MemoryResult<()> {
+    for validation_set_ref in &report.validation_set_refs {
+        if recipe
+            .dataset_refs
+            .iter()
+            .any(|dataset_ref| dataset_ref == validation_set_ref)
+        {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_eval_report.validation_set_refs",
+                reason: "trained paper Engram quality requires validation sets distinct from training datasets",
+            });
+        }
+    }
+    Ok(())
+}
+
 fn paper_engram_source_ref_is_fixture(source_ref: &str) -> bool {
     source_ref == "fixture"
         || source_ref.starts_with("fixture://")
@@ -7928,6 +7947,7 @@ impl LingquMemoryService {
         recipe: &PaperEngramTrainingRecipeManifest,
         report: &PaperEngramEvalReportManifest,
     ) -> MemoryResult<()> {
+        validate_trained_paper_engram_train_eval_split(recipe, report)?;
         for dataset_ref in &recipe.dataset_refs {
             validate_trained_paper_engram_provenance_ref(
                 "paper_engram_training_recipe.dataset_refs",
@@ -11100,6 +11120,56 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn paper_engram_quality_claim_rejects_training_validation_overlap() {
+        let mut service = LingquMemoryService::new();
+        let projection = sample_paper_engram_tokenizer_projection_manifest();
+        let hash_config = sample_paper_engram_hash_config_manifest();
+        let shard = sample_paper_engram_table_shard_manifest();
+        let gate = sample_paper_engram_gate_manifest();
+        let recipe = sample_paper_engram_training_recipe_manifest();
+        let mut report = sample_paper_engram_eval_report_manifest();
+        report.validation_set_refs = recipe.dataset_refs.clone();
+        report.checksum = paper_engram_eval_report_manifest_checksum(&report);
+        report
+            .validate()
+            .expect("plain eval report may still reference overlapping data before quality claim");
+        let mut module = sample_paper_engram_module_manifest();
+        module.quality_claim = PaperEngramQualityClaim::Posttrain;
+        module.training_recipe_ref = Some(paper_engram_training_recipe_dfs_path(&recipe.recipe_id));
+        module.eval_report_ref = Some(paper_engram_eval_report_dfs_path(&report.report_id));
+        module.checksum = paper_engram_module_manifest_checksum(&module);
+
+        service
+            .register_paper_engram_tokenizer_projection(projection)
+            .expect("register projection");
+        service
+            .register_paper_engram_hash_config(hash_config)
+            .expect("register hash config");
+        service
+            .register_paper_engram_training_recipe(recipe)
+            .expect("register recipe");
+        service
+            .register_paper_engram_eval_report(report)
+            .expect("register eval report");
+        service
+            .register_paper_engram_table_shard(shard)
+            .expect("register shard");
+        service
+            .register_paper_engram_gate(gate)
+            .expect("register gate");
+
+        assert_eq!(
+            service
+                .register_paper_engram_module(module)
+                .expect_err("quality claim must reject train/eval data leakage"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_eval_report.validation_set_refs",
+                reason: "trained paper Engram quality requires validation sets distinct from training datasets"
+            }
+        );
     }
 
     #[test]

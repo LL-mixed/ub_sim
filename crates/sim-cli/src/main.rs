@@ -18970,8 +18970,10 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         let store = root.join("store.json");
         let recipe_manifest = root.join("recipe_manifest.json");
         let eval_manifest = root.join("eval_manifest.json");
+        let eval_overlap_manifest = root.join("eval_overlap_manifest.json");
         let shard_manifest = root.join("shard_manifest.json");
         let module_manifest = root.join("module_manifest.json");
+        let module_overlap_manifest = root.join("module_overlap_manifest.json");
 
         run_lingqu_memory_seed_paper_engram_fixture_cli(&[
             "--store".to_string(),
@@ -19081,6 +19083,11 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             },
         )
         .expect("build paper engram eval report");
+        let mut overlap_report = report.clone();
+        overlap_report.report_id = "pe-eval-quality-overlap-cli".to_string();
+        overlap_report.validation_set_refs = recipe.dataset_refs.clone();
+        let overlap_report = sim_memory::PaperEngramEvalReportManifest::new(overlap_report)
+            .expect("build overlapping train/eval report");
         module.training_recipe_ref = Some(sim_memory::paper_engram_training_recipe_dfs_path(
             &recipe.recipe_id,
         ));
@@ -19090,11 +19097,19 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         module.quality_claim = sim_memory::PaperEngramQualityClaim::Posttrain;
         module = sim_memory::PaperEngramModuleManifest::new(module)
             .expect("build trained paper engram module manifest");
+        let mut overlap_module = module.clone();
+        overlap_module.eval_report_ref = Some(sim_memory::paper_engram_eval_report_dfs_path(
+            &overlap_report.report_id,
+        ));
+        overlap_module = sim_memory::PaperEngramModuleManifest::new(overlap_module)
+            .expect("build overlapping train/eval module manifest");
 
         write_json_file(&recipe_manifest, &recipe);
         write_json_file(&eval_manifest, &report);
+        write_json_file(&eval_overlap_manifest, &overlap_report);
         write_json_file(&shard_manifest, &shard);
         write_json_file(&module_manifest, &module);
+        write_json_file(&module_overlap_manifest, &overlap_module);
 
         run_lingqu_memory_register_paper_engram_training_recipe_cli(&[
             "--store".to_string(),
@@ -19110,6 +19125,13 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             eval_manifest.display().to_string(),
         ])
         .expect("register paper engram eval report");
+        run_lingqu_memory_register_paper_engram_eval_report_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--manifest".to_string(),
+            eval_overlap_manifest.display().to_string(),
+        ])
+        .expect("register overlapping train/eval paper engram eval report");
         run_lingqu_memory_register_paper_engram_table_shard_cli(&[
             "--store".to_string(),
             store.display().to_string(),
@@ -19117,6 +19139,19 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             shard_manifest.display().to_string(),
         ])
         .expect("register trained table shard provenance");
+        let overlap_err = run_lingqu_memory_register_paper_engram_module_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--manifest".to_string(),
+            module_overlap_manifest.display().to_string(),
+        ])
+        .expect_err("registering quality module with overlapping train/eval refs should fail");
+        assert!(
+            overlap_err.chain().any(|cause| cause
+                .to_string()
+                .contains("validation sets distinct from training datasets")),
+            "{overlap_err:?}"
+        );
         run_lingqu_memory_register_paper_engram_module_cli(&[
             "--store".to_string(),
             store.display().to_string(),
@@ -19148,7 +19183,9 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         let modules = durable
             .load_paper_engram_module_registry()
             .expect("load paper module registry");
-        assert_eq!(reports.len(), 1);
+        assert!(reports
+            .iter()
+            .any(|report| report.report_id == "pe-eval-quality-cli"));
         assert!(modules
             .iter()
             .any(|entry| entry.module.quality_claim
