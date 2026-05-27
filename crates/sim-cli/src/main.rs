@@ -2221,6 +2221,9 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "register-paper-engram-eval-report" => {
             run_lingqu_memory_register_paper_engram_eval_report_cli(&args)
         }
+        "build-paper-engram-eval-report-from-w5-summary" => {
+            run_lingqu_memory_build_paper_engram_eval_report_from_w5_summary_cli(&args)
+        }
         "register-paper-engram-table-shard" => {
             run_lingqu_memory_register_paper_engram_table_shard_cli(&args)
         }
@@ -2265,6 +2268,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
             plan-paper-engram-row-prefetch, publish-paper-engram-row-prefetch, publish-paper-engram-state-ref, \
             register-paper-engram-tokenizer-projection, register-paper-engram-hash-config, \
             register-paper-engram-training-recipe, register-paper-engram-eval-report, \
+            build-paper-engram-eval-report-from-w5-summary, \
             register-paper-engram-table-shard, register-paper-engram-gate, \
             register-paper-engram-module, import-paper-engram-module, validate-paper-engram-quality, seed-paper-engram-fixture, update-record-state, register-execution-artifact, \
             record-artifact-access, register-terminal-logits-artifact-from-w5-summary, \
@@ -2745,6 +2749,146 @@ fn run_lingqu_memory_register_paper_engram_eval_report_cli(args: &[String]) -> a
     );
     println!("  input_path: {}", manifest_path.display());
     println!("  report_id: {}", report.report_id);
+    Ok(())
+}
+
+fn run_lingqu_memory_build_paper_engram_eval_report_from_w5_summary_cli(
+    args: &[String],
+) -> anyhow::Result<()> {
+    let summary_path = PathBuf::from(required_cli_arg(args, "--summary")?);
+    let output_path = PathBuf::from(required_cli_arg(args, "--output")?);
+    let zero_table_summary_path = optional_cli_path(args, "--zero-table-summary")?;
+    let validation_set_refs = parse_nonempty_string_csv(
+        "--validation-set-refs",
+        &required_cli_arg(args, "--validation-set-refs")?,
+    )?;
+    let mut evidence_refs = vec![summary_path.display().to_string()];
+    if let Some(path) = &zero_table_summary_path {
+        evidence_refs.push(path.display().to_string());
+    }
+    if let Some(extra_refs) = optional_cli_arg(args, "--evidence-refs")? {
+        evidence_refs.extend(parse_nonempty_string_csv("--evidence-refs", &extra_refs)?);
+    }
+
+    let summary = fs::read_to_string(&summary_path)
+        .with_context(|| format!("read W5 summary {}", summary_path.display()))?;
+    let evidence = w5_paper_engram_eval_evidence_from_summary(&summary).with_context(|| {
+        format!(
+            "extract paper Engram evidence from {}",
+            summary_path.display()
+        )
+    })?;
+    if evidence.context_count == 0 {
+        anyhow::bail!(
+            "{} contains no qwen3-engram-context paper runtime evidence",
+            summary_path.display()
+        );
+    }
+
+    let zero_table_evidence = zero_table_summary_path
+        .as_ref()
+        .map(|path| {
+            let zero_summary = fs::read_to_string(path)
+                .with_context(|| format!("read zero-table W5 summary {}", path.display()))?;
+            w5_paper_engram_eval_evidence_from_summary(&zero_summary).with_context(|| {
+                format!(
+                    "extract zero-table paper Engram evidence from {}",
+                    path.display()
+                )
+            })
+        })
+        .transpose()?;
+
+    let output_checksum = optional_cli_u64_auto(args, "--output-checksum")?
+        .or(evidence.terminal_output_checksum)
+        .unwrap_or(evidence.hidden_checksum);
+    let zero_table_hidden_checksum = optional_cli_u64_auto(args, "--zero-table-hidden-checksum")?
+        .or_else(|| {
+            zero_table_evidence
+                .as_ref()
+                .map(|evidence| evidence.hidden_checksum)
+        });
+    let paper_engram_hidden_checksum =
+        optional_cli_u64_auto(args, "--paper-engram-hidden-checksum")?
+            .or(Some(evidence.hidden_checksum));
+    let zero_table_output_checksum = optional_cli_u64_auto(args, "--zero-table-output-checksum")?
+        .or_else(|| {
+            zero_table_evidence
+                .as_ref()
+                .and_then(|evidence| evidence.terminal_output_checksum)
+        });
+    let cpu_backend_output_match = optional_cli_arg(args, "--cpu-backend-output-match")?
+        .map(|value| parse_cli_bool("--cpu-backend-output-match", &value))
+        .transpose()?
+        .or(evidence.cpu_backend_output_match);
+    let model = sim_memory::InferenceModelBinding {
+        model_id: required_cli_arg(args, "--model-id")?,
+        model_key: required_cli_arg(args, "--model-key")?,
+        tokenizer_hash: required_cli_u64_auto(args, "--tokenizer-hash")?,
+        profile_hash: required_cli_u64_auto(args, "--profile-hash")?,
+    };
+
+    let report = PaperEngramEvalReportManifest::new(PaperEngramEvalReportManifest {
+        report_id: required_cli_arg(args, "--report-id")?,
+        recipe_id: required_cli_arg(args, "--recipe-id")?,
+        module_id: required_cli_arg(args, "--module-id")?,
+        model,
+        validation_set_refs,
+        sample_count: required_cli_u64(args, "--sample-count")?,
+        baseline_loss_milli: required_cli_u64(args, "--baseline-loss-milli")?,
+        paper_engram_loss_milli: required_cli_u64(args, "--paper-engram-loss-milli")?,
+        decode_policy_loss_milli: optional_cli_u64(args, "--decode-policy-loss-milli")?,
+        paper_engram_decode_policy_loss_milli: optional_cli_u64(
+            args,
+            "--paper-engram-decode-policy-loss-milli",
+        )?,
+        max_allowed_regression_milli: required_cli_u64(args, "--max-allowed-regression-milli")?,
+        output_checksum,
+        zero_table_hidden_checksum,
+        paper_engram_hidden_checksum,
+        zero_table_output_checksum,
+        cpu_backend_output_match,
+        row_prefetch_requests: (evidence.row_prefetch_requests > 0)
+            .then_some(evidence.row_prefetch_requests),
+        row_prefetch_hits: (evidence.row_prefetch_hits > 0).then_some(evidence.row_prefetch_hits),
+        max_backend_latency_us: (evidence.max_backend_latency_us > 0)
+            .then_some(evidence.max_backend_latency_us),
+        max_allowed_backend_latency_us: optional_cli_u64(args, "--max-allowed-backend-latency-us")?,
+        evidence_refs,
+        version: optional_cli_u64(args, "--version")?.unwrap_or(1),
+        created_at_us: optional_cli_u64(args, "--created-at-us")?.unwrap_or(1),
+        expires_at_us: optional_cli_u64(args, "--expires-at-us")?,
+        checksum: 0,
+    })
+    .map_err(|err| anyhow::anyhow!("build paper Engram eval report: {err}"))?;
+
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create eval report dir {}", parent.display()))?;
+    }
+    fs::write(
+        &output_path,
+        serde_json::to_vec_pretty(&report).context("encode paper Engram eval report")?,
+    )
+    .with_context(|| format!("write paper Engram eval report {}", output_path.display()))?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: build-paper-engram-eval-report-from-w5-summary");
+    println!("  summary: {}", summary_path.display());
+    println!("  output: {}", output_path.display());
+    println!("  report_id: {}", report.report_id);
+    println!("  module_id: {}", report.module_id);
+    println!("  context_count: {}", evidence.context_count);
+    println!(
+        "  row_prefetch_requests: {}",
+        evidence.row_prefetch_requests
+    );
+    println!("  row_prefetch_hits: {}", evidence.row_prefetch_hits);
+    println!(
+        "  max_backend_latency_us: {}",
+        evidence.max_backend_latency_us
+    );
+    println!("  output_checksum: {:#x}", report.output_checksum);
     Ok(())
 }
 
@@ -4650,6 +4794,123 @@ struct W5KvArtifactExport {
     checksum: u64,
     hot_object_ref: Option<sim_memory::HotTensorObjectRef>,
     payload_ref: Option<LingquBlockPayloadRef>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct W5PaperEngramEvalEvidence {
+    context_count: u64,
+    terminal_output_count: u64,
+    hidden_checksum: u64,
+    terminal_output_checksum: Option<u64>,
+    row_prefetch_requests: u64,
+    row_prefetch_hits: u64,
+    max_backend_latency_us: u64,
+    cpu_backend_output_match: Option<bool>,
+}
+
+fn w5_paper_engram_eval_evidence_from_summary(
+    summary: &str,
+) -> anyhow::Result<W5PaperEngramEvalEvidence> {
+    let mut lines = std::collections::BTreeSet::new();
+    for line in summary.lines() {
+        lines.insert(line.to_string());
+    }
+    if let Some(run_dir) = w5_run_dir_from_summary(summary) {
+        for entry in fs::read_dir(&run_dir)
+            .with_context(|| format!("read W5 run dir {}", run_dir.display()))?
+        {
+            let path = entry?.path();
+            let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if !name.ends_with("_guest.log") {
+                continue;
+            }
+            let log = fs::read_to_string(&path)
+                .with_context(|| format!("read W5 guest log {}", path.display()))?;
+            for line in log.lines() {
+                lines.insert(line.to_string());
+            }
+        }
+    }
+
+    let mut evidence = W5PaperEngramEvalEvidence::default();
+    let mut terminal_output_by_step = std::collections::BTreeMap::<u64, u64>::new();
+    for line in lines {
+        if line.contains("qwen3-engram-context:") {
+            let fields = parse_summary_fields(&line);
+            let mode = required_summary_field(&fields, "mode")?;
+            if !mode.contains("paper") {
+                continue;
+            }
+            let step = required_summary_u64(&fields, "step")?;
+            let node = required_summary_u64(&fields, "node")?;
+            let output_checksum = required_summary_u64_auto(&fields, "output_checksum")?;
+            let gate_checksum = required_summary_u64_auto(&fields, "gate_checksum")?;
+            let index_checksum = required_summary_u64_auto(&fields, "index_checksum")?;
+            let row_prefetch_hits = required_summary_u64(&fields, "row_prefetch_hits")?;
+            let row_prefetch_requests = required_summary_u64(&fields, "row_prefetch_requests")?;
+            let latency_ms = required_summary_u64(&fields, "latency_ms")?;
+            if output_checksum == 0 || gate_checksum == 0 || index_checksum == 0 {
+                anyhow::bail!("paper Engram context evidence has zero checksum");
+            }
+            if row_prefetch_hits > row_prefetch_requests {
+                anyhow::bail!("paper Engram row prefetch hits exceed requests");
+            }
+            evidence.context_count += 1;
+            evidence.hidden_checksum = cli_mix_u64_checksum(evidence.hidden_checksum, step);
+            evidence.hidden_checksum = cli_mix_u64_checksum(evidence.hidden_checksum, node);
+            evidence.hidden_checksum =
+                cli_mix_u64_checksum(evidence.hidden_checksum, output_checksum);
+            evidence.row_prefetch_requests = evidence
+                .row_prefetch_requests
+                .saturating_add(row_prefetch_requests);
+            evidence.row_prefetch_hits =
+                evidence.row_prefetch_hits.saturating_add(row_prefetch_hits);
+            evidence.max_backend_latency_us = evidence
+                .max_backend_latency_us
+                .max(latency_ms.saturating_mul(1000));
+            if mode == "simpler-host-paper-object-ref" {
+                evidence.cpu_backend_output_match = Some(true);
+            }
+        } else if line.contains("stage qwen3_terminal_token_result_publish ") {
+            let fields = parse_summary_fields(&line);
+            let step = required_summary_u64(&fields, "step")?;
+            let text_checksum = required_summary_u64_auto(&fields, "text_checksum")?;
+            if text_checksum != 0 {
+                terminal_output_by_step.insert(step, text_checksum);
+            }
+        } else if line.contains("stage qwen3_w5_terminal_logits_observation ") {
+            let fields = parse_summary_fields(&line);
+            if fields
+                .get("source")
+                .is_some_and(|source| source == "uapi_real_logits")
+            {
+                let step = required_summary_u64(&fields, "step")?;
+                let text_checksum = required_summary_u64_auto(&fields, "text_checksum")?;
+                if text_checksum != 0 {
+                    terminal_output_by_step.insert(step, text_checksum);
+                }
+            }
+        }
+    }
+
+    let mut terminal_checksum = 0u64;
+    for (step, text_checksum) in &terminal_output_by_step {
+        terminal_checksum = cli_mix_u64_checksum(terminal_checksum, *step);
+        terminal_checksum = cli_mix_u64_checksum(terminal_checksum, *text_checksum);
+    }
+    evidence.terminal_output_count = terminal_output_by_step.len() as u64;
+    evidence.terminal_output_checksum = (terminal_checksum != 0).then_some(terminal_checksum);
+    Ok(evidence)
+}
+
+fn cli_mix_u64_checksum(current: u64, value: u64) -> u64 {
+    let mixed = value
+        .wrapping_add(0x9e37_79b9_7f4a_7c15)
+        .wrapping_add(current << 6)
+        .wrapping_add(current >> 2);
+    current ^ mixed
 }
 
 fn run_lingqu_memory_register_terminal_logits_artifact_from_w5_summary_cli(
@@ -12579,6 +12840,7 @@ mod tests {
         run_lingqu_memory_boundary_lookup_from_observation_cli,
         run_lingqu_memory_boundary_request_from_w5_summary_cli,
         run_lingqu_memory_build_engram_hash_config_cli, run_lingqu_memory_build_index_cli,
+        run_lingqu_memory_build_paper_engram_eval_report_from_w5_summary_cli,
         run_lingqu_memory_build_tokenizer_projection_cli,
         run_lingqu_memory_import_paper_engram_module_cli, run_lingqu_memory_ingest_cli,
         run_lingqu_memory_list_artifact_access_cli,
@@ -17480,6 +17742,107 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         assert_eq!(validation.gate_weight_bytes, 8 * std::mem::size_of::<f32>());
 
         fs::remove_dir_all(&root).expect("remove paper engram fixture test dir");
+    }
+
+    #[test]
+    fn lingqu_memory_builds_paper_engram_eval_report_from_w5_summary() {
+        let root = env::temp_dir().join(format!(
+            "sim-cli-lingqu-memory-paper-engram-eval-from-w5-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let paper_run = root.join("paper_headless8");
+        let zero_run = root.join("zero_headless8");
+        fs::create_dir_all(&paper_run).expect("create paper W5 run dir");
+        fs::create_dir_all(&zero_run).expect("create zero W5 run dir");
+        let summary_path = root.join("paper_summary.txt");
+        let zero_summary_path = root.join("zero_summary.txt");
+        let report_path = root.join("eval_report.json");
+        fs::write(
+            &summary_path,
+            format!("summary: run_dir={}\n", paper_run.display()),
+        )
+        .expect("write paper summary");
+        fs::write(
+            paper_run.join("nodeA_guest.log"),
+            concat!(
+                "qwen3-engram-context: node=0 layers=[0,5) total_layers=40 step=0 mode=simpler-host-paper-object-ref table_rows=16 output_checksum=0x0000000000007001 gate_checksum=0x0000000000007002 index_checksum=0x0000000000007003 output_l1_milli=10 latency_ms=7 row_prefetch_hits=2 row_prefetch_requests=3 row_prefetch_hit_rate_milli=666 table_bytes_moved=1024 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=64 hidden_output_bytes=64 hidden_injection_overhead_bytes=128\n",
+                "stage qwen3_terminal_token_result_publish step=0 token=11 runner_up=12 margin_milli=25 text_checksum=0x0000000000008001\n",
+            ),
+        )
+        .expect("write paper guest log");
+        fs::write(
+            &zero_summary_path,
+            format!("summary: run_dir={}\n", zero_run.display()),
+        )
+        .expect("write zero summary");
+        fs::write(
+            zero_run.join("nodeA_guest.log"),
+            concat!(
+                "qwen3-engram-context: node=0 layers=[0,5) total_layers=40 step=0 mode=cpu-reference-paper-object-ref table_rows=16 output_checksum=0x0000000000006001 gate_checksum=0x0000000000006002 index_checksum=0x0000000000006003 output_l1_milli=0 latency_ms=3 row_prefetch_hits=2 row_prefetch_requests=3 row_prefetch_hit_rate_milli=666 table_bytes_moved=1024 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=64 hidden_output_bytes=64 hidden_injection_overhead_bytes=128\n",
+                "stage qwen3_terminal_token_result_publish step=0 token=11 runner_up=12 margin_milli=25 text_checksum=0x0000000000008101\n",
+            ),
+        )
+        .expect("write zero guest log");
+
+        run_lingqu_memory_build_paper_engram_eval_report_from_w5_summary_cli(&[
+            "--summary".to_string(),
+            summary_path.display().to_string(),
+            "--zero-table-summary".to_string(),
+            zero_summary_path.display().to_string(),
+            "--output".to_string(),
+            report_path.display().to_string(),
+            "--report-id".to_string(),
+            "pe-eval-from-w5".to_string(),
+            "--recipe-id".to_string(),
+            "pe-recipe-from-w5".to_string(),
+            "--module-id".to_string(),
+            "pe-module-from-w5".to_string(),
+            "--model-id".to_string(),
+            "qwen3-eval-from-w5".to_string(),
+            "--model-key".to_string(),
+            "qwen3-eval-from-w5".to_string(),
+            "--tokenizer-hash".to_string(),
+            "0x11".to_string(),
+            "--profile-hash".to_string(),
+            "0x22".to_string(),
+            "--validation-set-refs".to_string(),
+            "dfs://datasets/qwen3-val".to_string(),
+            "--sample-count".to_string(),
+            "4".to_string(),
+            "--baseline-loss-milli".to_string(),
+            "1000".to_string(),
+            "--paper-engram-loss-milli".to_string(),
+            "990".to_string(),
+            "--decode-policy-loss-milli".to_string(),
+            "992".to_string(),
+            "--paper-engram-decode-policy-loss-milli".to_string(),
+            "988".to_string(),
+            "--max-allowed-regression-milli".to_string(),
+            "20".to_string(),
+            "--max-allowed-backend-latency-us".to_string(),
+            "10000".to_string(),
+            "--created-at-us".to_string(),
+            "33".to_string(),
+        ])
+        .expect("build eval report from W5 summary");
+        let report = serde_json::from_slice::<sim_memory::PaperEngramEvalReportManifest>(
+            &fs::read(&report_path).expect("read eval report"),
+        )
+        .expect("decode eval report");
+        assert_eq!(report.report_id, "pe-eval-from-w5");
+        assert_eq!(report.row_prefetch_requests, Some(3));
+        assert_eq!(report.row_prefetch_hits, Some(2));
+        assert_eq!(report.max_backend_latency_us, Some(7000));
+        assert_eq!(report.cpu_backend_output_match, Some(true));
+        assert_ne!(
+            report.paper_engram_hidden_checksum,
+            report.zero_table_hidden_checksum
+        );
+        assert!(report.zero_table_output_checksum.is_some());
+        assert_ne!(report.output_checksum, 0);
+
+        fs::remove_dir_all(&root).expect("remove paper engram eval report test dir");
     }
 
     #[test]
