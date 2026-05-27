@@ -23434,13 +23434,13 @@ mod tests {
                             first_row.exact_key = first_row.exact_key.wrapping_add(1);
                         }
                         rows.push(sim_memory::PaperEngramTableRowPrefetchRef {
-                            step_index: 0,
+                            step_index: token_step as u64,
                             layer: 0,
                             order: 2,
                             head: 0,
                             row: 0,
                             exact_key: 0,
-                            shard_id: "wrong-step-layer".to_string(),
+                            shard_id: "wrong-layer".to_string(),
                             block_payload_refs: vec![sim_memory::LingquBlockPayloadRef::new(
                                 "dummy-block",
                                 0,

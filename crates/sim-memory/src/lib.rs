@@ -5974,6 +5974,12 @@ impl PaperEngramTableRowPrefetchRequest {
             &self.canonical_history,
             "paper_engram_table_row_prefetch.canonical_history",
         )?;
+        if self.from_step >= self.canonical_history.len() as u64 {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_table_row_prefetch.from_step",
+                reason: "from_step must be within canonical_history",
+            });
+        }
         nonzero(
             self.created_at_us,
             "paper_engram_table_row_prefetch.created_at_us",
@@ -6038,12 +6044,24 @@ impl PaperEngramTableRowPrefetchPlan {
             self.canonical_history_len,
             "paper_engram_table_row_prefetch.canonical_history_len",
         )?;
+        if self.from_step >= self.canonical_history_len {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_table_row_prefetch.from_step",
+                reason: "from_step must be within canonical_history_len",
+            });
+        }
         nonzero(
             self.created_at_us,
             "paper_engram_table_row_prefetch.created_at_us",
         )?;
         for row in &self.rows {
             row.validate()?;
+            if row.step_index < self.from_step || row.step_index >= self.canonical_history_len {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "paper_engram_table_row_prefetch_ref.step_index",
+                    reason: "row step_index must be covered by the plan step range",
+                });
+            }
         }
         Ok(())
     }
@@ -10175,6 +10193,82 @@ mod tests {
             .rows
             .iter()
             .all(|row| row.shard_id == shard.shard_id));
+    }
+
+    #[test]
+    fn paper_engram_row_prefetch_rejects_out_of_range_steps() {
+        let request = PaperEngramTableRowPrefetchRequest {
+            request_id: "prefetch/out-of-range".to_string(),
+            module_id: "pe-module-0".to_string(),
+            canonical_history: vec![7, 8, 9],
+            from_step: 3,
+            created_at_us: 16,
+        };
+        assert_eq!(
+            request
+                .validate()
+                .expect_err("request from_step should fail"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_table_row_prefetch.from_step",
+                reason: "from_step must be within canonical_history"
+            }
+        );
+
+        let mut plan = PaperEngramTableRowPrefetchPlan {
+            plan_id: "paper-engram-row-prefetch/prefetch/out-of-range".to_string(),
+            request_id: "prefetch/out-of-range".to_string(),
+            module_id: "pe-module-0".to_string(),
+            canonical_history_len: 3,
+            from_step: 1,
+            rows: vec![PaperEngramTableRowPrefetchRef {
+                step_index: 1,
+                layer: 3,
+                order: 2,
+                head: 0,
+                row: 10,
+                exact_key: 0x1234,
+                shard_id: "pe-shard-0".to_string(),
+                block_payload_refs: vec![LingquBlockPayloadRef::new(
+                    "block/pe-shard-0",
+                    0,
+                    262144,
+                    0xabc,
+                )],
+            }],
+            created_at_us: 16,
+        };
+        plan.validate().expect("valid row prefetch plan");
+
+        plan.from_step = 3;
+        assert_eq!(
+            plan.validate()
+                .expect_err("plan from_step outside history should fail"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_table_row_prefetch.from_step",
+                reason: "from_step must be within canonical_history_len"
+            }
+        );
+
+        plan.from_step = 1;
+        plan.rows[0].step_index = 0;
+        assert_eq!(
+            plan.validate()
+                .expect_err("row before from_step should fail"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_table_row_prefetch_ref.step_index",
+                reason: "row step_index must be covered by the plan step range"
+            }
+        );
+
+        plan.rows[0].step_index = 3;
+        assert_eq!(
+            plan.validate()
+                .expect_err("row outside history should fail"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_table_row_prefetch_ref.step_index",
+                reason: "row step_index must be covered by the plan step range"
+            }
+        );
     }
 
     #[test]
