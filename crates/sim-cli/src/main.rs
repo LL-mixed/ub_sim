@@ -36,7 +36,7 @@ use sim_models::{
     },
     engram_simt_adapter::{
         artifact_config_from_env, discover_engram_simt_artifact, run_engram_simt_artifact_case,
-        EngramSimtArtifactConfig, EngramSimtLaunchSpec,
+        EngramSimtArtifactConfig, EngramSimtLaunchReport, EngramSimtLaunchSpec,
     },
     qwen3_dense::{
         decode_hidden_bytes, hidden_range_bytes, kv_state_bytes_for_layer_count,
@@ -14506,9 +14506,10 @@ mod tests {
         qwen3_guest_timing_summary, qwen3_guest_trace_file_path,
         qwen3_guest_w5_pass_marker_present, qwen3_object_registry_path_in_dir,
         qwen3_obmm_object_ref_for_payload, qwen3_obmm_object_ref_wire_to_hex,
-        qwen3_range_forward_args_from, qwen3_tokenizer_projection_args_from,
-        qwen3_validate_engram_state_object_service_payload, read_lingqu_memory_payload_ref,
-        read_w5_u64, rebuild_lingqu_memory_all_paper_engram_registries,
+        qwen3_prepare_engram_simt_mode_from_artifact_config, qwen3_range_forward_args_from,
+        qwen3_tokenizer_projection_args_from, qwen3_validate_engram_state_object_service_payload,
+        read_lingqu_memory_payload_ref, read_w5_u64,
+        rebuild_lingqu_memory_all_paper_engram_registries,
         record_w5_runtime_boundary_observations_from_summary, resolve_w5_inference_profile,
         run_lingqu_durable_append_log_cli, run_lingqu_durable_batch_cli,
         run_lingqu_durable_init_cli, run_lingqu_durable_list_cli, run_lingqu_durable_read_log_cli,
@@ -14571,22 +14572,22 @@ mod tests {
         w5_memory_shortpath_kv_stream_env_from_refs, w5_memory_shortpath_stream_env,
         w5_memory_should_publish_engram_state, w5_object_service_payload_index_path,
         w5_paper_engram_eval_evidence_from_summary, w5_runtime_tensor_payload_checksum,
-        LingquDurableSim, LingquDurableSimSnapshot, LingquMemoryDurableStore,
-        LingquMemoryDurableStoreSnapshot, LingquObjectKind, LingquObjectLocality,
-        LingquObjectMetadata, LingquObjectPublishReq, LingquObjectServiceStub,
-        LingquObjectVersionSelector, LingquPayloadBackend, LingquPayloadPlacement,
-        MemoryCatalogSnapshot, PaperEngramGateManifest, PaperEngramModuleListFilters,
-        PaperEngramTableShardManifest, PaperEngramTrainingMode, QueryResult, Qwen3CandidateRecord,
-        Qwen3DecodeReportVerbosity, Qwen3DenseGuestRuntime, Qwen3DenseProfile, Qwen3EngramConfig,
-        Qwen3EngramContextOp, Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport,
-        Qwen3GuestDecodeLoopCliArgs, Qwen3GuestExpectedWorkerCounts, Qwen3SamplerConfig,
-        Qwen3TokenizerProjectionCliArgs, W5JumpToTerminalExpectedWorkerCounts,
-        W5MemoryBootstrapConfig, W5MemoryDecisionArtifactPublication, W5MemoryDecisionBundle,
-        W5MemoryDecisionConfig, W5MemoryPublishedArtifactRef, W5MemoryPublishedKvArtifactRef,
-        W5MemoryShortpathKvArtifact, LINGQU_EXTERNAL_PAYLOAD_BLOCK_PREFIX,
-        QWEN3_DENSE_DEFAULT_DECODE_TOKENS, QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
-        QWEN3_DENSE_DEFAULT_TP_NODES, QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
-        QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+        EngramSimtArtifactConfig, LingquDurableSim, LingquDurableSimSnapshot,
+        LingquMemoryDurableStore, LingquMemoryDurableStoreSnapshot, LingquObjectKind,
+        LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
+        LingquObjectServiceStub, LingquObjectVersionSelector, LingquPayloadBackend,
+        LingquPayloadPlacement, MemoryCatalogSnapshot, PaperEngramGateManifest,
+        PaperEngramModuleListFilters, PaperEngramTableShardManifest, PaperEngramTrainingMode,
+        QueryResult, Qwen3CandidateRecord, Qwen3DecodeReportVerbosity, Qwen3DenseGuestRuntime,
+        Qwen3DenseProfile, Qwen3EngramConfig, Qwen3EngramContextOp, Qwen3EngramMode,
+        Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
+        Qwen3GuestExpectedWorkerCounts, Qwen3SamplerConfig, Qwen3TokenizerProjectionCliArgs,
+        W5JumpToTerminalExpectedWorkerCounts, W5MemoryBootstrapConfig,
+        W5MemoryDecisionArtifactPublication, W5MemoryDecisionBundle, W5MemoryDecisionConfig,
+        W5MemoryPublishedArtifactRef, W5MemoryPublishedKvArtifactRef, W5MemoryShortpathKvArtifact,
+        LINGQU_EXTERNAL_PAYLOAD_BLOCK_PREFIX, QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
+        QWEN3_DENSE_DEFAULT_PREFILL_TOKENS, QWEN3_DENSE_DEFAULT_TP_NODES,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE, QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
         QWEN3_DENSE_PROFILE_OBMM_KIND_TERMINAL_LOGITS, QWEN3_ENGRAM_DEFAULT_NO_REPEAT_NGRAM_SIZE,
         QWEN3_TOKENIZER_PROJECTION_DEFAULT_FILE_NAME, SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF,
         SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION,
@@ -19574,6 +19575,81 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         .expect("validate fused SIMT artifact launch");
 
         fs::remove_dir_all(&root).expect("remove engram simt run test dir");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn qwen3_prepare_engram_simt_mode_runs_launch_self_check() {
+        let root = env::temp_dir().join(format!(
+            "ub_sim_cli_qwen3_engram_simt_preflight_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create engram simt artifact dir");
+        write_engram_simt_stub(
+            &root,
+            "ENGRAMSIMTTest.fused_E1024_B1_T64K",
+            "1 passed, 0 failed, 1 total",
+        );
+        let artifact_config = EngramSimtArtifactConfig::new(&root, 1, 65_536);
+
+        let prepared = qwen3_prepare_engram_simt_mode_from_artifact_config(&artifact_config)
+            .expect("prepare fused SIMT mode")
+            .expect("fused SIMT should be enabled");
+
+        assert_eq!(
+            prepared.spec.case_name,
+            "ENGRAMSIMTTest.fused_E1024_B1_T64K"
+        );
+        assert_eq!(prepared.preflight.passed_cases, 1);
+        assert_eq!(prepared.preflight.failed_cases, 0);
+        assert_eq!(prepared.preflight.total_cases, 1);
+        assert!(prepared.preflight.selected_case_passed);
+        fs::remove_dir_all(&root).expect("remove engram simt preflight test dir");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn qwen3_prepare_engram_simt_mode_rejects_launch_without_vendor_summary() {
+        let root = env::temp_dir().join(format!(
+            "ub_sim_cli_qwen3_engram_simt_bad_preflight_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create engram simt artifact dir");
+        write_engram_simt_stub(&root, "ENGRAMSIMTTest.fused_E1024_B1_T64K", "");
+        let artifact_config = EngramSimtArtifactConfig::new(&root, 1, 65_536);
+
+        let err = qwen3_prepare_engram_simt_mode_from_artifact_config(&artifact_config)
+            .expect_err("fused SIMT without vendor summary should fail");
+
+        assert!(err.to_string().contains("self-check failed"));
+        assert!(err
+            .to_string()
+            .contains("engram_simt_result_summary_missing"));
+        fs::remove_dir_all(&root).expect("remove engram simt bad preflight test dir");
+    }
+
+    #[cfg(unix)]
+    fn write_engram_simt_stub(root: &Path, pass_case: &str, result_summary: &str) {
+        let binary_path = root.join("engram-simt");
+        let summary_line = if result_summary.is_empty() {
+            String::new()
+        } else {
+            format!("printf '\\n[engram-simt] Results: {result_summary}\\n'\n")
+        };
+        fs::write(
+            &binary_path,
+            format!("#!/bin/sh\nprintf '[PASS] {pass_case}\\n'\n{summary_line}"),
+        )
+        .expect("write engram simt binary");
+        let mut permissions = fs::metadata(&binary_path)
+            .expect("stat engram simt binary")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&binary_path, permissions).expect("chmod engram simt binary");
+        fs::write(root.join("libengram-simt_kernel.so"), b"stub")
+            .expect("write engram simt kernel library");
     }
 
     #[test]
@@ -25582,6 +25658,16 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         println!("  model_key: {}", runtime.model_key);
         println!("  weights_path: {}", runtime.weights_path.display());
         println!("  steps: {}", args.step_count);
+        if let Some(engram_simt) = &engram_simt {
+            println!(
+                "  engram_simt_preflight: case={} passed={} failed={} total={} selected_case_passed={}",
+                engram_simt.spec.case_name,
+                engram_simt.preflight.passed_cases,
+                engram_simt.preflight.failed_cases,
+                engram_simt.preflight.total_cases,
+                u8::from(engram_simt.preflight.selected_case_passed)
+            );
+        }
         if let Some(decisions) = &memory_decisions {
             let jump_to_terminal = decisions
                 .shortpath_entries
@@ -25907,8 +25993,10 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             qwen3_engram_report_name(effective_engram.report)
         );
         if let Some(spec) = &engram_simt {
+            let preflight = &spec.preflight;
+            let spec = &spec.spec;
             println!(
-                "  engram_simt: artifact_dir={} symbol={} case={} run_mode={} soc_version={}",
+                "  engram_simt: artifact_dir={} symbol={} case={} run_mode={} soc_version={} preflight_passed={} preflight_failed={} preflight_total={}",
                 spec.binary_path
                     .parent()
                     .map(Path::display)
@@ -25917,7 +26005,10 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
                 spec.symbol,
                 spec.case_name,
                 spec.run_mode,
-                spec.soc_version
+                spec.soc_version,
+                preflight.passed_cases,
+                preflight.failed_cases,
+                preflight.total_cases
             );
         }
         if let Some(validation) = &engram_registry_validation {
@@ -26075,6 +26166,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         );
     }
     if let Some(spec) = &engram_simt {
+        let spec = &spec.spec;
         command
             .env("SIM_ENGRAM_SIMT_SELECTED_SYMBOL", &spec.symbol)
             .env("SIM_ENGRAM_SIMT_SELECTED_CASE", &spec.case_name)
@@ -26608,9 +26700,15 @@ fn qwen3_validate_guest_engram_state_registry(
         })
 }
 
+#[derive(Clone, Debug)]
+struct Qwen3PreparedEngramSimt {
+    spec: EngramSimtLaunchSpec,
+    preflight: EngramSimtLaunchReport,
+}
+
 fn qwen3_prepare_engram_simt_mode(
     config: &Qwen3EngramConfig,
-) -> anyhow::Result<Option<EngramSimtLaunchSpec>> {
+) -> anyhow::Result<Option<Qwen3PreparedEngramSimt>> {
     if !config.enabled
         || (config.mode != Qwen3EngramMode::FusedSimt
             && config.context_op != Qwen3EngramContextOp::FusedSimt)
@@ -26625,13 +26723,25 @@ fn qwen3_prepare_engram_simt_mode(
              after building it with run.sh -r sim -v Ascend910_9599 -p"
         )
     })?;
-    let spec = discover_engram_simt_artifact(&artifact_config).map_err(|err| {
+    qwen3_prepare_engram_simt_mode_from_artifact_config(&artifact_config)
+}
+
+fn qwen3_prepare_engram_simt_mode_from_artifact_config(
+    artifact_config: &EngramSimtArtifactConfig,
+) -> anyhow::Result<Option<Qwen3PreparedEngramSimt>> {
+    let spec = discover_engram_simt_artifact(artifact_config).map_err(|err| {
         anyhow::anyhow!(
             "qwen3 fused-simt engram artifact is not usable: {err}. \
              Rebuild vendor/pto-isa/kernels/manual/a5/engram_simt with run.sh -r sim -v Ascend910_9599 -p"
         )
     })?;
-    Ok(Some(spec))
+    let preflight = run_engram_simt_artifact_case(&spec, 0).map_err(|err| {
+        anyhow::anyhow!(
+            "qwen3 fused-simt engram artifact self-check failed: {err}. \
+             Run `sim-cli lingqu-memory validate-paper-engram-fused-simt-artifact --run` against the same artifact before enabling W5 fused-simt"
+        )
+    })?;
+    Ok(Some(Qwen3PreparedEngramSimt { spec, preflight }))
 }
 
 fn qwen3_guest_log_match_count(haystack: &str, needle: &str) -> usize {
