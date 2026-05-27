@@ -30,9 +30,8 @@ use sim_models::qwen3_dense_reference::{
 };
 use sim_models::{
     engram_hash::{
-        ENGRAM_HASH_ALGORITHM_VERSION,
         build_default_engram_hash_config, build_exact_canonical_ngram_index,
-        canonical_ngram_checksum,
+        canonical_ngram_checksum, ENGRAM_HASH_ALGORITHM_VERSION,
     },
     engram_simt_adapter::{
         artifact_config_from_env, discover_engram_simt_artifact, EngramSimtLaunchSpec,
@@ -3569,7 +3568,8 @@ fn run_lingqu_memory_resolve_paper_engram_table_row_blocks_cli(
 fn run_lingqu_memory_plan_paper_engram_row_prefetch_cli(args: &[String]) -> anyhow::Result<()> {
     let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
     let module_id = required_cli_arg(args, "--module-id")?;
-    let canonical_history = parse_u64_csv_arg(args, "--canonical-history")?;
+    let canonical_history =
+        parse_u64_csv_arg_or_file(args, "--canonical-history", "--canonical-history-file")?;
     let from_step = optional_cli_u64(args, "--from-step")?.unwrap_or(0);
     let now_us = optional_cli_u64(args, "--now-us")?.unwrap_or(1);
     let output_path = optional_cli_path(args, "--output")?;
@@ -3626,7 +3626,8 @@ fn run_lingqu_memory_publish_paper_engram_row_prefetch_cli(args: &[String]) -> a
     let object_store_path = PathBuf::from(required_cli_arg(args, "--object-store")?);
     let module_id = required_cli_arg(args, "--module-id")?;
     let registry_dir = PathBuf::from(required_cli_arg(args, "--registry-dir")?);
-    let canonical_history = parse_u64_csv_arg(args, "--canonical-history")?;
+    let canonical_history =
+        parse_u64_csv_arg_or_file(args, "--canonical-history", "--canonical-history-file")?;
     let from_step = optional_cli_u64(args, "--from-step")?.unwrap_or(0);
     let owner_entity = optional_cli_u64(args, "--owner-entity")?.unwrap_or(0);
     let producer_entity = optional_cli_u64(args, "--producer-entity")?.unwrap_or(0);
@@ -9840,16 +9841,45 @@ fn parse_nonempty_string_csv(label: &str, value: &str) -> anyhow::Result<Vec<Str
 
 fn parse_u64_csv_arg(args: &[String], name: &'static str) -> anyhow::Result<Vec<u64>> {
     let value = required_cli_arg(args, name)?;
+    parse_u64_csv_text(&value, name)
+}
+
+fn parse_u64_csv_arg_or_file(
+    args: &[String],
+    csv_name: &'static str,
+    file_name: &'static str,
+) -> anyhow::Result<Vec<u64>> {
+    let csv_value = optional_cli_arg(args, csv_name)?;
+    let file_value = optional_cli_arg(args, file_name)?;
+    match (csv_value, file_value) {
+        (Some(_), Some(_)) => {
+            anyhow::bail!("conflicting arguments: {csv_name} and {file_name}");
+        }
+        (Some(_), None) => parse_u64_csv_arg(args, csv_name),
+        (None, Some(file)) => parse_u64_csv_file(&file, file_name),
+        (None, None) => {
+            anyhow::bail!("missing required argument {csv_name} or {file_name}");
+        }
+    }
+}
+
+fn parse_u64_csv_file(path: &str, label: &'static str) -> anyhow::Result<Vec<u64>> {
+    let value =
+        fs::read_to_string(path).with_context(|| format!("read {label} from file {path}"))?;
+    parse_u64_csv_text(&value, label)
+}
+
+fn parse_u64_csv_text(value: &str, label: &'static str) -> anyhow::Result<Vec<u64>> {
     let mut items = Vec::new();
-    for item in value.split(',') {
+    for item in value.split(|c: char| c == ',' || c.is_whitespace()) {
         let item = item.trim();
         if item.is_empty() {
             continue;
         }
-        items.push(parse_u64_auto(item).with_context(|| format!("parse {name} item `{item}`"))?);
+        items.push(parse_u64_auto(item).with_context(|| format!("parse {label} item `{item}`"))?);
     }
     if items.is_empty() {
-        anyhow::bail!("{name} must not be empty");
+        anyhow::bail!("{label} must not be empty");
     }
     Ok(items)
 }
@@ -12291,6 +12321,7 @@ mod tests {
         W5_TERMINAL_LOGITS_ENTRY_BYTES, W5_TERMINAL_LOGITS_HEADER_BYTES,
         W5_TERMINAL_TOKEN_TEXT_HEADER_BYTES,
     };
+    use sim_models::engram_hash::ENGRAM_HASH_ALGORITHM_VERSION;
     use sim_models::qwen3_dense_reference::{
         Qwen3DenseReferenceTokenizerProjection, Qwen3DenseReferenceTokenizerProjectionEntry,
     };
@@ -16394,6 +16425,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         .expect("decode row block response");
         assert_eq!(row_blocks.shard_id, shard.shard_id);
         assert_eq!(row_blocks.block_payload_refs, shard.block_payload_refs);
+        let canonical_history_file = root.join("canonical_history.txt");
+        fs::write(&canonical_history_file, "7\n8\n9").expect("write canonical history file");
         let row_prefetch_output = root.join("row_prefetch.json");
         run_lingqu_memory_plan_paper_engram_row_prefetch_cli(&[
             "--store".to_string(),
@@ -16417,6 +16450,26 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             .rows
             .iter()
             .all(|row| row.shard_id == shard.shard_id));
+        let row_prefetch_file_output = root.join("row_prefetch_file.json");
+        run_lingqu_memory_plan_paper_engram_row_prefetch_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--module-id".to_string(),
+            module.module_id.clone(),
+            "--canonical-history-file".to_string(),
+            canonical_history_file.display().to_string(),
+            "--from-step".to_string(),
+            "0".to_string(),
+            "--output".to_string(),
+            row_prefetch_file_output.display().to_string(),
+        ])
+        .expect("plan paper Engram row prefetch from file");
+        let row_prefetch_file =
+            serde_json::from_slice::<sim_memory::PaperEngramTableRowPrefetchPlan>(
+                &fs::read(&row_prefetch_file_output).expect("read row prefetch plan from file"),
+            )
+            .expect("decode row prefetch plan from file");
+        assert_eq!(row_prefetch_file.rows, row_prefetch.rows);
         run_lingqu_memory_publish_paper_engram_row_prefetch_cli(&[
             "--store".to_string(),
             store.display().to_string(),
@@ -16432,6 +16485,21 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             "0".to_string(),
         ])
         .expect("publish paper Engram row prefetch");
+        run_lingqu_memory_publish_paper_engram_row_prefetch_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--object-store".to_string(),
+            object_store.display().to_string(),
+            "--module-id".to_string(),
+            module.module_id.clone(),
+            "--registry-dir".to_string(),
+            registry_dir.display().to_string(),
+            "--canonical-history-file".to_string(),
+            canonical_history_file.display().to_string(),
+            "--from-step".to_string(),
+            "0".to_string(),
+        ])
+        .expect("publish paper Engram row prefetch from file");
         let snapshot_path = registry_dir.join("lingqu_object_service_snapshot.json");
         assert!(snapshot_path.exists());
         let snapshot = load_lingqu_object_service_snapshot_file(&object_store)
