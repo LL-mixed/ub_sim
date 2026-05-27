@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 const ENGRAM_HASH_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const ENGRAM_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -28,6 +29,12 @@ pub struct Qwen3DenseReferenceEngramLookupRequest {
     pub head: u16,
     pub row: u64,
     pub exact_key: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Qwen3DenseReferenceEngramLookupPlan {
+    pub step_index: u64,
+    pub requests: Vec<Qwen3DenseReferenceEngramLookupRequest>,
 }
 
 pub fn build_default_engram_hash_config(
@@ -184,6 +191,55 @@ pub fn build_engram_lookup_requests(
     build_engram_lookup_requests_from_step(canonical_history, 0, config)
 }
 
+pub fn build_engram_lookup_plans(
+    canonical_history: &[u64],
+    config: &Qwen3DenseReferenceEngramHashConfig,
+) -> Result<Vec<Qwen3DenseReferenceEngramLookupPlan>, String> {
+    build_engram_lookup_plans_from_step(canonical_history, 0, config)
+}
+
+pub fn build_engram_lookup_plans_from_step(
+    canonical_history: &[u64],
+    from_step: usize,
+    config: &Qwen3DenseReferenceEngramHashConfig,
+) -> Result<Vec<Qwen3DenseReferenceEngramLookupPlan>, String> {
+    let requests = build_engram_lookup_requests_from_step(canonical_history, from_step, config)?;
+    let mut plans: Vec<Qwen3DenseReferenceEngramLookupPlan> = Vec::new();
+    for request in requests {
+        if plans.is_empty() || plans.last().unwrap().step_index != request.step_index {
+            plans.push(Qwen3DenseReferenceEngramLookupPlan {
+                step_index: request.step_index,
+                requests: Vec::new(),
+            });
+        }
+        if let Some(plan) = plans.last_mut() {
+            plan.requests.push(request);
+        }
+    }
+    Ok(plans)
+}
+
+pub fn build_exact_canonical_ngram_index(
+    projected_history: &[u64],
+    ngram_size: usize,
+) -> HashMap<u64, Vec<Vec<u64>>> {
+    let mut lookup = HashMap::new();
+    if ngram_size == 0 || projected_history.len() < ngram_size {
+        return lookup;
+    }
+    if ngram_size > 255 {
+        return lookup;
+    }
+    for window in projected_history.windows(ngram_size) {
+        let key = canonical_ngram_checksum(window);
+        lookup
+            .entry(key)
+            .or_insert_with(Vec::new)
+            .push(window.to_vec());
+    }
+    lookup
+}
+
 pub fn build_engram_lookup_requests_from_step(
     canonical_history: &[u64],
     from_step: usize,
@@ -283,6 +339,31 @@ mod tests {
         let requests = build_engram_lookup_requests_from_step(&[7, 8, 9], 2, &config)
             .expect("build lookup requests from step");
         assert_eq!(requests, all_requests[2..].to_vec());
+    }
+
+    #[test]
+    fn engram_lookup_plans_grouped_by_step() {
+        let config = build_default_engram_hash_config(0x99, 2, 8, 0x77);
+        let plans = build_engram_lookup_plans_from_step(&[7, 8, 9], 0, &config)
+            .expect("build lookup plans");
+        assert_eq!(plans.len(), 2);
+        assert_eq!(plans[0].step_index, 1);
+        assert_eq!(plans[0].requests.len(), 2);
+        assert_eq!(plans[0].requests[0].order, 2);
+        assert_eq!(plans[0].requests[0].head, 0);
+        assert_eq!(plans[1].step_index, 2);
+        assert_eq!(plans[1].requests.len(), 4);
+        assert_eq!(plans[1].requests[0].order, 2);
+        assert_eq!(plans[1].requests[0].head, 0);
+    }
+
+    #[test]
+    fn build_exact_canonical_ngram_index_matches_windows() {
+        let index = build_exact_canonical_ngram_index(&[10, 11, 12], 2);
+        let index_total_candidates: usize = index.values().map(|entries| entries.len()).sum();
+        assert_eq!(index_total_candidates, 2);
+        assert!(index.contains_key(&canonical_ngram_checksum(&[10, 11])));
+        assert!(index.contains_key(&canonical_ngram_checksum(&[11, 12])));
     }
 
     #[test]

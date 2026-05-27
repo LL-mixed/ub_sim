@@ -26,7 +26,10 @@ use sim_models::qwen3_dense_reference::{
     Qwen3DenseReferenceTokenizerProjection,
 };
 use sim_models::{
-    engram_hash::{build_default_engram_hash_config, canonical_ngram_checksum},
+    engram_hash::{
+        build_default_engram_hash_config, build_exact_canonical_ngram_index,
+        canonical_ngram_checksum,
+    },
     engram_simt_adapter::{
         artifact_config_from_env, discover_engram_simt_artifact, EngramSimtLaunchSpec,
     },
@@ -20672,21 +20675,7 @@ fn qwen3_engram_no_repeat_exact_index(
     projected_history: &[u64],
     ngram_size: usize,
 ) -> std::collections::HashMap<u64, Vec<Vec<u64>>> {
-    let mut lookup = std::collections::HashMap::new();
-    if ngram_size == 0 || projected_history.len() < ngram_size {
-        return lookup;
-    }
-    if ngram_size > 255 {
-        return lookup;
-    }
-    for window in projected_history.windows(ngram_size) {
-        let key = canonical_ngram_checksum(window);
-        lookup
-            .entry(key)
-            .or_insert_with(Vec::new)
-            .push(window.to_vec());
-    }
-    lookup
+    build_exact_canonical_ngram_index(projected_history, ngram_size)
 }
 
 fn qwen3_engram_repeats_no_repeat_index(
