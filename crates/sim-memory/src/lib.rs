@@ -699,6 +699,14 @@ pub struct PaperEngramEvalReportManifest {
     pub decode_policy_loss_milli: Option<u64>,
     pub max_allowed_regression_milli: u64,
     pub output_checksum: u64,
+    pub zero_table_hidden_checksum: Option<u64>,
+    pub paper_engram_hidden_checksum: Option<u64>,
+    pub zero_table_output_checksum: Option<u64>,
+    pub cpu_backend_output_match: Option<bool>,
+    pub row_prefetch_requests: Option<u64>,
+    pub row_prefetch_hits: Option<u64>,
+    pub max_backend_latency_us: Option<u64>,
+    pub max_allowed_backend_latency_us: Option<u64>,
     pub evidence_refs: Vec<String>,
     pub checksum: u64,
     pub version: u64,
@@ -770,6 +778,64 @@ impl PaperEngramEvalReportManifest {
             self.output_checksum,
             "paper_engram_eval_report.output_checksum",
         )?;
+        if let Some(checksum) = self.zero_table_hidden_checksum {
+            nonzero(
+                checksum,
+                "paper_engram_eval_report.zero_table_hidden_checksum",
+            )?;
+        }
+        if let Some(checksum) = self.paper_engram_hidden_checksum {
+            nonzero(
+                checksum,
+                "paper_engram_eval_report.paper_engram_hidden_checksum",
+            )?;
+        }
+        if let Some(checksum) = self.zero_table_output_checksum {
+            nonzero(
+                checksum,
+                "paper_engram_eval_report.zero_table_output_checksum",
+            )?;
+        }
+        if matches!(self.cpu_backend_output_match, Some(false)) {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_eval_report.cpu_backend_output_match",
+                reason: "CPU reference and backend outputs must match when reported",
+            });
+        }
+        if let Some(requests) = self.row_prefetch_requests {
+            nonzero(requests, "paper_engram_eval_report.row_prefetch_requests")?;
+        }
+        if let Some(hits) = self.row_prefetch_hits {
+            nonzero(hits, "paper_engram_eval_report.row_prefetch_hits")?;
+            if let Some(requests) = self.row_prefetch_requests {
+                if hits > requests {
+                    return Err(LingquMemoryError::InvalidValue {
+                        field: "paper_engram_eval_report.row_prefetch_hits",
+                        reason: "row prefetch hits must not exceed requests",
+                    });
+                }
+            }
+        }
+        if let Some(latency) = self.max_backend_latency_us {
+            nonzero(latency, "paper_engram_eval_report.max_backend_latency_us")?;
+        }
+        if let Some(latency) = self.max_allowed_backend_latency_us {
+            nonzero(
+                latency,
+                "paper_engram_eval_report.max_allowed_backend_latency_us",
+            )?;
+        }
+        if let (Some(latency), Some(max_allowed)) = (
+            self.max_backend_latency_us,
+            self.max_allowed_backend_latency_us,
+        ) {
+            if latency > max_allowed {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "paper_engram_eval_report.max_backend_latency_us",
+                    reason: "backend latency must not exceed max_allowed_backend_latency_us",
+                });
+            }
+        }
         if self.evidence_refs.is_empty() {
             return Err(LingquMemoryError::MissingField(
                 "paper_engram_eval_report.evidence_refs",
@@ -2103,6 +2169,36 @@ fn paper_engram_eval_report_manifest_checksum(manifest: &PaperEngramEvalReportMa
     bytes.extend_from_slice(&manifest.decode_policy_loss_milli.unwrap_or(0).to_le_bytes());
     bytes.extend_from_slice(&manifest.max_allowed_regression_milli.to_le_bytes());
     bytes.extend_from_slice(&manifest.output_checksum.to_le_bytes());
+    bytes.extend_from_slice(
+        &manifest
+            .zero_table_hidden_checksum
+            .unwrap_or(0)
+            .to_le_bytes(),
+    );
+    bytes.extend_from_slice(
+        &manifest
+            .paper_engram_hidden_checksum
+            .unwrap_or(0)
+            .to_le_bytes(),
+    );
+    bytes.extend_from_slice(
+        &manifest
+            .zero_table_output_checksum
+            .unwrap_or(0)
+            .to_le_bytes(),
+    );
+    bytes.extend_from_slice(
+        &u64::from(manifest.cpu_backend_output_match == Some(true)).to_le_bytes(),
+    );
+    bytes.extend_from_slice(&manifest.row_prefetch_requests.unwrap_or(0).to_le_bytes());
+    bytes.extend_from_slice(&manifest.row_prefetch_hits.unwrap_or(0).to_le_bytes());
+    bytes.extend_from_slice(&manifest.max_backend_latency_us.unwrap_or(0).to_le_bytes());
+    bytes.extend_from_slice(
+        &manifest
+            .max_allowed_backend_latency_us
+            .unwrap_or(0)
+            .to_le_bytes(),
+    );
     for evidence_ref in &manifest.evidence_refs {
         push_checksum_str(&mut bytes, evidence_ref);
     }
@@ -7704,6 +7800,76 @@ impl LingquMemoryService {
                 reason: "quality claim must match training recipe mode",
             });
         }
+        self.validate_paper_engram_eval_acceptance_evidence(report)?;
+        Ok(())
+    }
+
+    fn validate_paper_engram_eval_acceptance_evidence(
+        &self,
+        report: &PaperEngramEvalReportManifest,
+    ) -> MemoryResult<()> {
+        let zero_hidden =
+            report
+                .zero_table_hidden_checksum
+                .ok_or(LingquMemoryError::MissingField(
+                    "paper_engram_eval_report.zero_table_hidden_checksum",
+                ))?;
+        let paper_hidden =
+            report
+                .paper_engram_hidden_checksum
+                .ok_or(LingquMemoryError::MissingField(
+                    "paper_engram_eval_report.paper_engram_hidden_checksum",
+                ))?;
+        if zero_hidden == paper_hidden {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_eval_report.paper_engram_hidden_checksum",
+                reason: "paper Engram table must change hidden checksum versus zero table",
+            });
+        }
+        let zero_output =
+            report
+                .zero_table_output_checksum
+                .ok_or(LingquMemoryError::MissingField(
+                    "paper_engram_eval_report.zero_table_output_checksum",
+                ))?;
+        if zero_output == report.output_checksum {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_eval_report.output_checksum",
+                reason: "paper Engram table must change output checksum versus zero table",
+            });
+        }
+        if report.cpu_backend_output_match != Some(true) {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_eval_report.cpu_backend_output_match",
+                reason: "trained paper Engram quality requires CPU/backend output match evidence",
+            });
+        }
+        let requests = report
+            .row_prefetch_requests
+            .ok_or(LingquMemoryError::MissingField(
+                "paper_engram_eval_report.row_prefetch_requests",
+            ))?;
+        let hits = report
+            .row_prefetch_hits
+            .ok_or(LingquMemoryError::MissingField(
+                "paper_engram_eval_report.row_prefetch_hits",
+            ))?;
+        if hits == 0 || hits > requests {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_eval_report.row_prefetch_hits",
+                reason: "trained paper Engram quality requires row prefetch locality evidence",
+            });
+        }
+        report
+            .max_backend_latency_us
+            .ok_or(LingquMemoryError::MissingField(
+                "paper_engram_eval_report.max_backend_latency_us",
+            ))?;
+        report
+            .max_allowed_backend_latency_us
+            .ok_or(LingquMemoryError::MissingField(
+                "paper_engram_eval_report.max_allowed_backend_latency_us",
+            ))?;
         Ok(())
     }
 
@@ -10422,6 +10588,60 @@ mod tests {
     }
 
     #[test]
+    fn paper_engram_quality_claim_requires_acceptance_evidence() {
+        let mut service = LingquMemoryService::new();
+        let projection = sample_paper_engram_tokenizer_projection_manifest();
+        let hash_config = sample_paper_engram_hash_config_manifest();
+        let shard = sample_paper_engram_table_shard_manifest();
+        let gate = sample_paper_engram_gate_manifest();
+        let recipe = sample_paper_engram_training_recipe_manifest();
+        let mut report = sample_paper_engram_eval_report_manifest();
+        report.zero_table_hidden_checksum = None;
+        report.paper_engram_hidden_checksum = None;
+        report.zero_table_output_checksum = None;
+        report.cpu_backend_output_match = None;
+        report.row_prefetch_requests = None;
+        report.row_prefetch_hits = None;
+        report.max_backend_latency_us = None;
+        report.max_allowed_backend_latency_us = None;
+        report.checksum = paper_engram_eval_report_manifest_checksum(&report);
+        report
+            .validate()
+            .expect("plain eval report can be registered before quality acceptance");
+        let mut module = sample_paper_engram_module_manifest();
+        module.quality_claim = PaperEngramQualityClaim::Posttrain;
+        module.training_recipe_ref = Some(paper_engram_training_recipe_dfs_path(&recipe.recipe_id));
+        module.eval_report_ref = Some(paper_engram_eval_report_dfs_path(&report.report_id));
+        module.checksum = paper_engram_module_manifest_checksum(&module);
+
+        service
+            .register_paper_engram_tokenizer_projection(projection)
+            .expect("register projection");
+        service
+            .register_paper_engram_hash_config(hash_config)
+            .expect("register hash config");
+        service
+            .register_paper_engram_training_recipe(recipe)
+            .expect("register recipe");
+        service
+            .register_paper_engram_eval_report(report)
+            .expect("register eval report without acceptance evidence");
+        service
+            .register_paper_engram_table_shard(shard)
+            .expect("register shard");
+        service
+            .register_paper_engram_gate(gate)
+            .expect("register gate");
+
+        assert_eq!(
+            service
+                .register_paper_engram_module(module)
+                .expect_err("quality claim requires runtime acceptance evidence"),
+            LingquMemoryError::MissingField("paper_engram_eval_report.zero_table_hidden_checksum")
+        );
+    }
+
+    #[test]
     fn paper_engram_eval_report_rejects_decode_policy_regression() {
         let mut report = sample_paper_engram_eval_report_manifest();
         report.baseline_loss_milli = 1200;
@@ -12402,6 +12622,14 @@ mod tests {
             decode_policy_loss_milli: Some(1185),
             max_allowed_regression_milli: 5,
             output_checksum: 0x5151,
+            zero_table_hidden_checksum: Some(0x4141),
+            paper_engram_hidden_checksum: Some(0x4242),
+            zero_table_output_checksum: Some(0x5050),
+            cpu_backend_output_match: Some(true),
+            row_prefetch_requests: Some(8),
+            row_prefetch_hits: Some(8),
+            max_backend_latency_us: Some(100),
+            max_allowed_backend_latency_us: Some(1000),
             evidence_refs: vec!["dfs://runs/pe-eval-0/report.json".to_string()],
             checksum: 1,
             version: 1,
