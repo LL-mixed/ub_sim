@@ -1,5 +1,12 @@
 # W5 Engram Simpler-Host Context Op Design
 
+Status: paper-Engram backend scaffold. This document covers the executable
+gather/gate/residual context operator after Engram indices and table refs are
+already available. It does not define tokenizer compression, canonical ngram
+generation, trained Engram table construction, or layer-level placement. The
+canonical paper-aligned plan is
+`docs/plans/2026-05-22-paper-engram-alignment-plan.md`.
+
 ## Goal
 
 Add a runnable W5 inference-cluster Engram context-augmentation backend that

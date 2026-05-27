@@ -18,6 +18,10 @@ Current validation entry points:
   - detailed design for a general Lingqu DB/Object Service that manages Qwen3 weights, KV cache, hidden boundaries, runtime tensors, versions, and shmem/block payload placement before 8-node range forward
 - [drafts/qwen3_0_6b_engram_obmm_simpler_8node_design.md](drafts/qwen3_0_6b_engram_obmm_simpler_8node_design.md)
   - draft design for combining CPU-side engram policy, OBMM shmem pool transport, and simpler-backed Qwen3 0.6B forward in an 8-node simulation path
+- [plans/2026-05-22-paper-engram-alignment-plan.md](plans/2026-05-22-paper-engram-alignment-plan.md)
+  - canonical plan for aligning repo Engram work with `Engram_paper.pdf`, including trained table construction, Memory Service artifacts, and W5 rebase boundaries
+- [plans/2026-05-22-paper-engram-alignment-explainer-zh.md](plans/2026-05-22-paper-engram-alignment-explainer-zh.md)
+  - Chinese explanation of the Engram paper concepts and the paper-aligned repo design plan
 - [plans/2026-05-15-w4-engram-phase5-performance-plan.md](plans/2026-05-15-w4-engram-phase5-performance-plan.md)
   - execution plan for W4 engram Phase 5 performance work, including profiling gates and vendor fused SIMT reuse boundaries
 - [drafts/obmm_spmc_mpsc_queue_design.md](drafts/obmm_spmc_mpsc_queue_design.md)

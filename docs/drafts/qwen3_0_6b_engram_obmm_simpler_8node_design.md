@@ -1,5 +1,11 @@
 # Qwen3 0.6B Engram + OBMM Pool + Simpler 8-Node Design
 
+Status: historical decode-policy scaffold. This document uses `engram` for a
+decode-time no-repeat/repetition policy and OBMM/object transport path. It is
+not the paper Engram conditional-memory architecture from `docs/Engram_paper.pdf`.
+The canonical paper-aligned plan is
+`docs/plans/2026-05-22-paper-engram-alignment-plan.md`.
+
 ## Goal
 
 Build an 8-node simulation path where Qwen3 0.6B decode runs as a CPU+NPU
