@@ -26,7 +26,7 @@ use sim_memory::{
 };
 use sim_models::qwen3_dense_reference::{
     build_tokenizer_projection_from_tokenizer_path, token_piece_bytes_from_tokenizer_path,
-    token_piece_decode_bytes, tokenize_prompt_from_tokenizer_path,
+    token_piece_decode_bytes, tokenize_prompt_from_tokenizer_path, tokenizer_projection_checksum,
     Qwen3DenseReferenceTokenizerProjection,
 };
 use sim_models::{
@@ -2395,6 +2395,7 @@ fn run_lingqu_memory_build_tokenizer_projection_cli(args: &[String]) -> anyhow::
     if let Some(tokenizer_family) = optional_cli_arg(args, "--tokenizer-family")? {
         projection.tokenizer_family = tokenizer_family;
     }
+    projection.aggregate_checksum = tokenizer_projection_checksum(&projection);
     fs::write(
         &output_path,
         serde_json::to_vec_pretty(&projection).context("encode tokenizer projection")?,
@@ -18490,6 +18491,13 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         fs::write(tokenizer_dir.join("generation_config.json"), r#"{}"#)
             .expect("write generation config");
 
+        let default_projection =
+            sim_models::qwen3_dense_reference::build_tokenizer_projection_from_tokenizer_path(
+                &tokenizer_dir,
+                true,
+            )
+            .expect("build default tokenizer projection");
+
         run_lingqu_memory_build_tokenizer_projection_cli(&[
             "--tokenizer-dir".to_string(),
             tokenizer_dir.display().to_string(),
@@ -18504,6 +18512,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         .expect("build tokenizer projection CLI");
 
         let output_bytes = fs::read(&output).expect("read projection output");
+        let typed_projection: Qwen3DenseReferenceTokenizerProjection =
+            serde_json::from_slice(&output_bytes).expect("decode typed projection");
         let projection: serde_json::Value =
             serde_json::from_slice(&output_bytes).expect("decode projection");
         assert_eq!(
@@ -18521,6 +18531,14 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         assert_eq!(
             projection["total_raw_tokens"],
             serde_json::Value::from(3u64)
+        );
+        assert_eq!(
+            typed_projection.aggregate_checksum,
+            sim_models::qwen3_dense_reference::tokenizer_projection_checksum(&typed_projection)
+        );
+        assert_ne!(
+            typed_projection.aggregate_checksum,
+            default_projection.aggregate_checksum
         );
         fs::remove_dir_all(&root).expect("remove tokenizer projection test dir");
     }

@@ -365,34 +365,7 @@ pub fn build_tokenizer_projection_from_tokenizer_path(
         (canonical_index.saturating_mul(1000)).saturating_div(total_raw_tokens)
     };
 
-    let mut projection_checksum_words = Vec::new();
-    projection_checksum_words.push(summary.vocab_size);
-    projection_checksum_words.push(summary.vocab_entries);
-    projection_checksum_words.push(summary.added_tokens);
-    projection_checksum_words.push(summary.aggregate_checksum);
-    projection_checksum_words.push(canonical_index);
-    projection_checksum_words.push(total_special_tokens);
-    for entry in &raw_to_canonical {
-        projection_checksum_words.push(entry.raw_token_id);
-        projection_checksum_words.push(entry.canonical_token_id);
-        projection_checksum_words.push(if entry.is_special { 1 } else { 0 });
-        projection_checksum_words.push(weight_bytes_checksum(entry.raw_token_piece.as_bytes()));
-        projection_checksum_words.push(weight_bytes_checksum(
-            entry.canonical_token_piece.as_bytes(),
-        ));
-    }
-    for collision in &collision_classes {
-        projection_checksum_words.push(collision.canonical_token_id);
-        projection_checksum_words.push(weight_bytes_checksum(
-            collision.canonical_token_piece.as_bytes(),
-        ));
-        projection_checksum_words.push(collision.raw_token_ids.len() as u64);
-        for raw_id in &collision.raw_token_ids {
-            projection_checksum_words.push(*raw_id);
-        }
-    }
-
-    Ok(Qwen3DenseReferenceTokenizerProjection {
+    let mut projection = Qwen3DenseReferenceTokenizerProjection {
         model_id: "Qwen/Qwen3-0.6B".to_string(),
         tokenizer_family: "qwen3".to_string(),
         source: tokenizer_path.display().to_string(),
@@ -403,10 +376,51 @@ pub fn build_tokenizer_projection_from_tokenizer_path(
         merged_token_count,
         merge_special_tokens,
         compression_milli,
-        aggregate_checksum: checksum_words(&projection_checksum_words),
+        aggregate_checksum: 0,
         raw_to_canonical,
         collision_classes,
-    })
+    };
+    projection.aggregate_checksum = tokenizer_projection_checksum(&projection);
+    Ok(projection)
+}
+
+pub fn tokenizer_projection_checksum(projection: &Qwen3DenseReferenceTokenizerProjection) -> u64 {
+    let mut projection_checksum_words = Vec::new();
+    projection_checksum_words.push(weight_bytes_checksum(projection.model_id.as_bytes()));
+    projection_checksum_words.push(weight_bytes_checksum(
+        projection.tokenizer_family.as_bytes(),
+    ));
+    projection_checksum_words.push(projection.source_checksum);
+    projection_checksum_words.push(projection.total_raw_tokens);
+    projection_checksum_words.push(projection.total_canonical_tokens);
+    projection_checksum_words.push(projection.total_special_tokens);
+    projection_checksum_words.push(projection.merged_token_count);
+    projection_checksum_words.push(if projection.merge_special_tokens {
+        1
+    } else {
+        0
+    });
+    projection_checksum_words.push(projection.compression_milli);
+    for entry in &projection.raw_to_canonical {
+        projection_checksum_words.push(entry.raw_token_id);
+        projection_checksum_words.push(entry.canonical_token_id);
+        projection_checksum_words.push(if entry.is_special { 1 } else { 0 });
+        projection_checksum_words.push(weight_bytes_checksum(entry.raw_token_piece.as_bytes()));
+        projection_checksum_words.push(weight_bytes_checksum(
+            entry.canonical_token_piece.as_bytes(),
+        ));
+    }
+    for collision in &projection.collision_classes {
+        projection_checksum_words.push(collision.canonical_token_id);
+        projection_checksum_words.push(weight_bytes_checksum(
+            collision.canonical_token_piece.as_bytes(),
+        ));
+        projection_checksum_words.push(collision.raw_token_ids.len() as u64);
+        for raw_id in &collision.raw_token_ids {
+            projection_checksum_words.push(*raw_id);
+        }
+    }
+    checksum_words(&projection_checksum_words)
 }
 
 pub fn normalize_token_piece_for_projection(token_piece: &str, is_special: bool) -> String {
@@ -5938,6 +5952,44 @@ outputs:
             .raw_to_canonical
             .iter()
             .any(|entry| entry.raw_token_id == 0 && entry.canonical_token_piece == "hello"));
+
+        fs::remove_dir_all(&temp).expect("remove tokenizer temp dir");
+    }
+
+    #[test]
+    fn tokenizer_projection_checksum_binds_model_identity_and_policy() {
+        let temp = std::env::temp_dir().join(format!(
+            "qwen3_tokenizer_projection_identity_test_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&temp);
+        fs::create_dir_all(&temp).expect("create tokenizer temp dir");
+        fs::write(temp.join("tokenizer_config.json"), r#"{}"#).expect("write tokenizer config");
+        fs::write(
+            temp.join("tokenizer.json"),
+            r#"{"model":{"type":"BPE","vocab":{"Hello":0,"hello":1}}}"#,
+        )
+        .expect("write tokenizer json");
+        fs::write(temp.join("vocab.json"), r#"{"Hello":0,"hello":1}"#).expect("write vocab json");
+        fs::write(temp.join("merges.txt"), b"#version\n").expect("write merges");
+        fs::write(temp.join("generation_config.json"), r#"{}"#).expect("write generation config");
+
+        let mut projection =
+            build_tokenizer_projection_from_tokenizer_path(&temp, false).expect("build projection");
+        let default_checksum = projection.aggregate_checksum;
+        assert_eq!(default_checksum, tokenizer_projection_checksum(&projection));
+
+        projection.model_id = "Qwen/Qwen3-14B".to_string();
+        let model_checksum = tokenizer_projection_checksum(&projection);
+        assert_ne!(model_checksum, default_checksum);
+
+        projection.tokenizer_family = "qwen3-custom".to_string();
+        let family_checksum = tokenizer_projection_checksum(&projection);
+        assert_ne!(family_checksum, model_checksum);
+
+        projection.merge_special_tokens = true;
+        let policy_checksum = tokenizer_projection_checksum(&projection);
+        assert_ne!(policy_checksum, family_checksum);
 
         fs::remove_dir_all(&temp).expect("remove tokenizer temp dir");
     }
