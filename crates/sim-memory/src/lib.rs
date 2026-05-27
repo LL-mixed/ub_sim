@@ -1352,6 +1352,20 @@ fn validate_paper_engram_training_recipe_artifact_bindings(
     validate_paper_engram_training_recipe_hash_shape(recipe, hash_config)
 }
 
+fn reject_registered_paper_engram_artifact_mutation<T: PartialEq>(
+    existing: Option<&T>,
+    incoming: &T,
+    field: &'static str,
+    reason: &'static str,
+) -> MemoryResult<()> {
+    if let Some(existing) = existing {
+        if existing != incoming {
+            return Err(LingquMemoryError::InvalidValue { field, reason });
+        }
+    }
+    Ok(())
+}
+
 fn validate_paper_engram_training_recipe_hash_shape(
     recipe: &PaperEngramTrainingRecipeManifest,
     hash_config: &PaperEngramHashConfigManifest,
@@ -8248,17 +8262,13 @@ impl LingquMemoryService {
         manifest: PaperEngramTokenizerProjectionManifest,
     ) -> MemoryResult<()> {
         manifest.validate()?;
-        if let Some(existing) = self
-            .paper_engram_tokenizer_projections
-            .get(&manifest.projection_id)
-        {
-            if existing != &manifest {
-                return Err(LingquMemoryError::InvalidValue {
-                    field: "paper_engram_tokenizer_projection.projection_id",
-                    reason: "registered paper Engram tokenizer projection artifact is immutable",
-                });
-            }
-        }
+        reject_registered_paper_engram_artifact_mutation(
+            self.paper_engram_tokenizer_projections
+                .get(&manifest.projection_id),
+            &manifest,
+            "paper_engram_tokenizer_projection.projection_id",
+            "registered paper Engram tokenizer projection artifact is immutable",
+        )?;
         if self
             .paper_engram_tokenizer_projections
             .values()
@@ -8294,14 +8304,12 @@ impl LingquMemoryService {
                 reason: "hash config projection checksum must match tokenizer projection manifest",
             });
         }
-        if let Some(existing) = self.paper_engram_hash_configs.get(&manifest.hash_config_id) {
-            if existing != &manifest {
-                return Err(LingquMemoryError::InvalidValue {
-                    field: "paper_engram_hash_config.hash_config_id",
-                    reason: "registered paper Engram hash config artifact is immutable",
-                });
-            }
-        }
+        reject_registered_paper_engram_artifact_mutation(
+            self.paper_engram_hash_configs.get(&manifest.hash_config_id),
+            &manifest,
+            "paper_engram_hash_config.hash_config_id",
+            "registered paper Engram hash config artifact is immutable",
+        )?;
         if self
             .paper_engram_hash_configs
             .values()
@@ -8344,6 +8352,12 @@ impl LingquMemoryService {
             tokenizer_projection,
             hash_config,
         )?;
+        reject_registered_paper_engram_artifact_mutation(
+            self.paper_engram_training_recipes.get(&manifest.recipe_id),
+            &manifest,
+            "paper_engram_training_recipe.recipe_id",
+            "registered paper Engram training recipe artifact is immutable",
+        )?;
         self.paper_engram_training_recipes
             .insert(manifest.recipe_id.clone(), manifest);
         Ok(())
@@ -8362,6 +8376,12 @@ impl LingquMemoryService {
                 "paper_engram_eval_report.recipe_id",
             ));
         }
+        reject_registered_paper_engram_artifact_mutation(
+            self.paper_engram_eval_reports.get(&manifest.report_id),
+            &manifest,
+            "paper_engram_eval_report.report_id",
+            "registered paper Engram eval report artifact is immutable",
+        )?;
         self.paper_engram_eval_reports
             .insert(manifest.report_id.clone(), manifest);
         Ok(())
@@ -8372,6 +8392,12 @@ impl LingquMemoryService {
         manifest: PaperEngramTableShardManifest,
     ) -> MemoryResult<()> {
         manifest.validate()?;
+        reject_registered_paper_engram_artifact_mutation(
+            self.paper_engram_table_shards.get(&manifest.shard_id),
+            &manifest,
+            "paper_engram_table_shard.shard_id",
+            "registered paper Engram table shard artifact is immutable",
+        )?;
         self.paper_engram_table_shards
             .insert(manifest.shard_id.clone(), manifest);
         Ok(())
@@ -8382,6 +8408,12 @@ impl LingquMemoryService {
         manifest: PaperEngramGateManifest,
     ) -> MemoryResult<()> {
         manifest.validate()?;
+        reject_registered_paper_engram_artifact_mutation(
+            self.paper_engram_gates.get(&manifest.gate_id),
+            &manifest,
+            "paper_engram_gate.gate_id",
+            "registered paper Engram gate artifact is immutable",
+        )?;
         self.paper_engram_gates
             .insert(manifest.gate_id.clone(), manifest);
         Ok(())
@@ -8392,6 +8424,12 @@ impl LingquMemoryService {
         manifest: PaperEngramModuleManifest,
     ) -> MemoryResult<()> {
         manifest.validate()?;
+        reject_registered_paper_engram_artifact_mutation(
+            self.paper_engram_modules.get(&manifest.module_id),
+            &manifest,
+            "paper_engram_module.module_id",
+            "registered paper Engram module artifact is immutable",
+        )?;
         if self.paper_engram_modules.values().any(|module| {
             module.module_id != manifest.module_id
                 && module.model.model_id == manifest.model.model_id
@@ -11461,6 +11499,122 @@ mod tests {
             LingquMemoryError::InvalidValue {
                 field: "paper_engram_hash_config.hash_config_ref",
                 reason: "paper Engram hash config artifact path is already registered"
+            }
+        );
+    }
+
+    #[test]
+    fn paper_engram_registered_runtime_and_evidence_artifacts_are_immutable() {
+        let mut service = LingquMemoryService::new();
+        let projection = sample_paper_engram_tokenizer_projection_manifest();
+        let hash_config = sample_paper_engram_hash_config_manifest();
+        let recipe = sample_paper_engram_training_recipe_manifest();
+        let report = sample_paper_engram_eval_report_manifest();
+        let shard = sample_paper_engram_table_shard_manifest();
+        let gate = sample_paper_engram_gate_manifest();
+        let module = sample_paper_engram_module_manifest();
+
+        service
+            .register_paper_engram_tokenizer_projection(projection)
+            .expect("register projection");
+        service
+            .register_paper_engram_hash_config(hash_config)
+            .expect("register hash config");
+
+        service
+            .register_paper_engram_training_recipe(recipe.clone())
+            .expect("register recipe");
+        service
+            .register_paper_engram_training_recipe(recipe.clone())
+            .expect("idempotent recipe registration");
+        let mut mutated_recipe = recipe.clone();
+        mutated_recipe
+            .evidence_refs
+            .push("dfs://runs/pe-recipe-0/extra.json".to_string());
+        mutated_recipe.checksum = paper_engram_training_recipe_manifest_checksum(&mutated_recipe);
+        assert_eq!(
+            service
+                .register_paper_engram_training_recipe(mutated_recipe)
+                .expect_err("registered recipe content must be immutable"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_training_recipe.recipe_id",
+                reason: "registered paper Engram training recipe artifact is immutable"
+            }
+        );
+
+        service
+            .register_paper_engram_eval_report(report.clone())
+            .expect("register eval report");
+        service
+            .register_paper_engram_eval_report(report.clone())
+            .expect("idempotent eval report registration");
+        let mut mutated_report = report.clone();
+        mutated_report.output_checksum ^= 1;
+        mutated_report.checksum = paper_engram_eval_report_manifest_checksum(&mutated_report);
+        assert_eq!(
+            service
+                .register_paper_engram_eval_report(mutated_report)
+                .expect_err("registered eval report content must be immutable"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_eval_report.report_id",
+                reason: "registered paper Engram eval report artifact is immutable"
+            }
+        );
+
+        service
+            .register_paper_engram_table_shard(shard.clone())
+            .expect("register shard");
+        service
+            .register_paper_engram_table_shard(shard.clone())
+            .expect("idempotent shard registration");
+        let mut mutated_shard = shard.clone();
+        mutated_shard.source_ref = Some("dfs://pe/loader/run-1".to_string());
+        mutated_shard.checksum = paper_engram_table_shard_manifest_checksum(&mutated_shard);
+        assert_eq!(
+            service
+                .register_paper_engram_table_shard(mutated_shard)
+                .expect_err("registered shard content must be immutable"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_table_shard.shard_id",
+                reason: "registered paper Engram table shard artifact is immutable"
+            }
+        );
+
+        service
+            .register_paper_engram_gate(gate.clone())
+            .expect("register gate");
+        service
+            .register_paper_engram_gate(gate.clone())
+            .expect("idempotent gate registration");
+        let mut mutated_gate = gate.clone();
+        mutated_gate.created_at_us = mutated_gate.created_at_us.saturating_add(1);
+        mutated_gate.checksum = paper_engram_gate_manifest_checksum(&mutated_gate);
+        assert_eq!(
+            service
+                .register_paper_engram_gate(mutated_gate)
+                .expect_err("registered gate content must be immutable"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_gate.gate_id",
+                reason: "registered paper Engram gate artifact is immutable"
+            }
+        );
+
+        service
+            .register_paper_engram_module(module.clone())
+            .expect("register module");
+        service
+            .register_paper_engram_module(module.clone())
+            .expect("idempotent module registration");
+        let mut mutated_module = module.clone();
+        mutated_module.payload_checksums[0] ^= 1;
+        mutated_module.checksum = paper_engram_module_manifest_checksum(&mutated_module);
+        assert_eq!(
+            service
+                .register_paper_engram_module(mutated_module)
+                .expect_err("registered module content must be immutable"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_module.module_id",
+                reason: "registered paper Engram module artifact is immutable"
             }
         );
     }

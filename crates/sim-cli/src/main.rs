@@ -3239,7 +3239,7 @@ fn run_lingqu_memory_register_paper_engram_eval_report_from_w5_summary_cli(
     args: &[String],
 ) -> anyhow::Result<()> {
     let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
-    let module_id = paper_engram_module_id_from_store_cli(args, &store_path)?;
+    let module_id = paper_engram_eval_report_module_id_from_store_cli(args, &store_path)?;
     let built = build_paper_engram_eval_report_from_w5_summary_args(args, Some(module_id))?;
     register_paper_engram_eval_report_to_store(&store_path, built.report.clone())?;
 
@@ -3270,6 +3270,23 @@ fn run_lingqu_memory_register_paper_engram_eval_report_from_w5_summary_cli(
     );
     println!("  output_checksum: {:#x}", built.report.output_checksum);
     Ok(())
+}
+
+fn paper_engram_eval_report_module_id_from_store_cli(
+    args: &[String],
+    store_path: &Path,
+) -> anyhow::Result<String> {
+    if let Some(module_id) = optional_cli_arg(args, "--module-id")? {
+        if optional_cli_arg(args, "--module-name")?.is_some()
+            || optional_cli_arg(args, "--engram-id")?.is_some()
+        {
+            anyhow::bail!(
+                "conflicting paper Engram module arguments: use --module-id or --engram-id"
+            );
+        }
+        return Ok(module_id);
+    }
+    paper_engram_module_id_from_store_cli(args, store_path)
 }
 
 struct BuiltPaperEngramEvalReportFromW5 {
@@ -20549,9 +20566,13 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             .module;
         drop(durable);
 
+        shard.shard_id = "pe-shard-export-quality-trained-cli".to_string();
         shard.source_ref = Some("dfs://imports/qwen3-export-quality/table.safetensors".to_string());
         let shard = sim_memory::PaperEngramTableShardManifest::new(shard)
             .expect("build exported quality table shard manifest");
+        module.module_id = "pe-module-export-quality-trained-cli".to_string();
+        module.module_name = "export-quality-engram-trained".to_string();
+        module.table_shard_ids = vec![shard.shard_id.clone()];
         let recipe = sim_memory::PaperEngramTrainingRecipeManifest::new(
             sim_memory::PaperEngramTrainingRecipeManifest {
                 recipe_id: "pe-recipe-export-quality-cli".to_string(),
@@ -20661,7 +20682,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             "--model-id".to_string(),
             "qwen3-export-quality-test".to_string(),
             "--engram-id".to_string(),
-            "export-quality-engram".to_string(),
+            "export-quality-engram-trained".to_string(),
             "--require-quality".to_string(),
         ])
         .expect("validate seed quality paper Engram module before export");
@@ -20674,7 +20695,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             "--model-id".to_string(),
             "qwen3-export-quality-test".to_string(),
             "--engram-id".to_string(),
-            "export-quality-engram".to_string(),
+            "export-quality-engram-trained".to_string(),
         ])
         .expect("export quality paper Engram module bundle");
         assert!(bundle_dir.join("training_recipe.json").is_file());
@@ -20693,7 +20714,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             "--model-id".to_string(),
             "qwen3-export-quality-test".to_string(),
             "--engram-id".to_string(),
-            "export-quality-engram".to_string(),
+            "export-quality-engram-trained".to_string(),
             "--require-quality".to_string(),
         ])
         .expect("validate imported exported quality paper Engram bundle");
@@ -21223,9 +21244,13 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             .expect("seeded module")
             .module;
         drop(durable);
+        shard.shard_id = "pe-shard-w5-quality-trained-cli".to_string();
         shard.source_ref = Some("dfs://runs/qwen3-w5-quality-train/table.safetensors".to_string());
         let shard = sim_memory::PaperEngramTableShardManifest::new(shard)
             .expect("build trained table shard manifest");
+        module.module_id = "pe-module-w5-quality-trained-cli".to_string();
+        module.module_name = "w5-quality-trained-engram".to_string();
+        module.table_shard_ids = vec![shard.shard_id.clone()];
 
         let recipe = sim_memory::PaperEngramTrainingRecipeManifest::new(
             sim_memory::PaperEngramTrainingRecipeManifest {
@@ -21291,10 +21316,10 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             "pe-eval-w5-quality-cli".to_string(),
             "--recipe-id".to_string(),
             recipe.recipe_id.clone(),
+            "--module-id".to_string(),
+            module.module_id.clone(),
             "--model-id".to_string(),
             module.model.model_id.clone(),
-            "--engram-id".to_string(),
-            module.module_name.clone(),
             "--model-key".to_string(),
             module.model.model_key.clone(),
             "--tokenizer-hash".to_string(),
@@ -21320,7 +21345,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             "--created-at-us".to_string(),
             "33".to_string(),
         ])
-        .expect("register eval report from W5 summary by model-scoped Engram id");
+        .expect("register eval report from W5 summary by explicit module id");
         run_lingqu_memory_register_paper_engram_eval_report_from_w5_summary_cli(&[
             "--store".to_string(),
             store.display().to_string(),
@@ -21334,6 +21359,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             recipe.recipe_id.clone(),
             "--module-id".to_string(),
             module.module_id.clone(),
+            "--engram-id".to_string(),
+            module.module_name.clone(),
             "--model-id".to_string(),
             module.model.model_id.clone(),
             "--model-key".to_string(),
@@ -21505,9 +21532,13 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             .expect("seeded module")
             .module;
         drop(durable);
+        shard.shard_id = "pe-shard-quality-trained-cli".to_string();
         shard.source_ref = Some("dfs://runs/qwen3-quality-train/table.safetensors".to_string());
         let shard = sim_memory::PaperEngramTableShardManifest::new(shard)
             .expect("build trained table shard manifest");
+        module.module_id = "pe-module-quality-trained-cli".to_string();
+        module.module_name = "quality-trained-engram".to_string();
+        module.table_shard_ids = vec![shard.shard_id.clone()];
 
         let recipe = sim_memory::PaperEngramTrainingRecipeManifest::new(
             sim_memory::PaperEngramTrainingRecipeManifest {
@@ -21791,10 +21822,14 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             .expect("seeded module")
             .module;
         drop(durable);
+        shard.shard_id = "pe-shard-full-finetune-quality-trained-cli".to_string();
         shard.source_ref =
             Some("dfs://runs/qwen3-full-finetune-quality/table.safetensors".to_string());
         let shard = sim_memory::PaperEngramTableShardManifest::new(shard)
             .expect("build full finetune table shard manifest");
+        module.module_id = "pe-module-full-finetune-quality-trained-cli".to_string();
+        module.module_name = "full-finetune-quality-trained-engram".to_string();
+        module.table_shard_ids = vec![shard.shard_id.clone()];
 
         let recipe = sim_memory::PaperEngramTrainingRecipeManifest::new(
             sim_memory::PaperEngramTrainingRecipeManifest {
