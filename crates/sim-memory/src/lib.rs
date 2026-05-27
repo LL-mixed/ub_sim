@@ -2309,6 +2309,21 @@ fn validate_trained_paper_engram_source_ref(
     Ok(())
 }
 
+fn validate_trained_paper_engram_provenance_ref(
+    field: &'static str,
+    provenance_ref: &str,
+) -> MemoryResult<()> {
+    required_str(provenance_ref, field)?;
+    if paper_engram_source_ref_is_fixture(provenance_ref) {
+        return Err(LingquMemoryError::InvalidValue {
+            field,
+            reason:
+                "trained paper Engram quality requires non-fixture training and eval provenance",
+        });
+    }
+    Ok(())
+}
+
 fn paper_engram_source_ref_is_fixture(source_ref: &str) -> bool {
     source_ref == "fixture"
         || source_ref.starts_with("fixture://")
@@ -7862,6 +7877,7 @@ impl LingquMemoryService {
             });
         }
         self.validate_paper_engram_quality_artifact_sources(module)?;
+        self.validate_paper_engram_quality_provenance(recipe, report)?;
         self.validate_paper_engram_eval_acceptance_evidence(report)?;
         Ok(())
     }
@@ -7891,6 +7907,38 @@ impl LingquMemoryService {
                 "paper_engram_gate.source_ref",
                 gate.source_ref.as_deref(),
                 false,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn validate_paper_engram_quality_provenance(
+        &self,
+        recipe: &PaperEngramTrainingRecipeManifest,
+        report: &PaperEngramEvalReportManifest,
+    ) -> MemoryResult<()> {
+        for dataset_ref in &recipe.dataset_refs {
+            validate_trained_paper_engram_provenance_ref(
+                "paper_engram_training_recipe.dataset_refs",
+                dataset_ref,
+            )?;
+        }
+        for evidence_ref in &recipe.evidence_refs {
+            validate_trained_paper_engram_provenance_ref(
+                "paper_engram_training_recipe.evidence_refs",
+                evidence_ref,
+            )?;
+        }
+        for validation_set_ref in &report.validation_set_refs {
+            validate_trained_paper_engram_provenance_ref(
+                "paper_engram_eval_report.validation_set_refs",
+                validation_set_ref,
+            )?;
+        }
+        for evidence_ref in &report.evidence_refs {
+            validate_trained_paper_engram_provenance_ref(
+                "paper_engram_eval_report.evidence_refs",
+                evidence_ref,
             )?;
         }
         Ok(())
@@ -10863,6 +10911,106 @@ mod tests {
             true,
         )
         .expect("DFS provenance can back trained quality claim");
+    }
+
+    #[test]
+    fn paper_engram_quality_claim_rejects_fixture_training_and_eval_provenance() {
+        #[derive(Clone, Copy)]
+        enum Case {
+            RecipeDataset,
+            RecipeEvidence,
+            ReportValidationSet,
+            ReportEvidence,
+        }
+
+        let cases = [
+            (
+                Case::RecipeDataset,
+                "paper_engram_training_recipe.dataset_refs",
+            ),
+            (
+                Case::RecipeEvidence,
+                "paper_engram_training_recipe.evidence_refs",
+            ),
+            (
+                Case::ReportValidationSet,
+                "paper_engram_eval_report.validation_set_refs",
+            ),
+            (
+                Case::ReportEvidence,
+                "paper_engram_eval_report.evidence_refs",
+            ),
+        ];
+
+        for (case, field) in cases {
+            let mut service = LingquMemoryService::new();
+            let projection = sample_paper_engram_tokenizer_projection_manifest();
+            let hash_config = sample_paper_engram_hash_config_manifest();
+            let shard = sample_paper_engram_table_shard_manifest();
+            let gate = sample_paper_engram_gate_manifest();
+            let mut recipe = sample_paper_engram_training_recipe_manifest();
+            let mut report = sample_paper_engram_eval_report_manifest();
+            match case {
+                Case::RecipeDataset => {
+                    recipe.dataset_refs = vec!["fixture/training-set.jsonl".to_string()];
+                    recipe.checksum = paper_engram_training_recipe_manifest_checksum(&recipe);
+                }
+                Case::RecipeEvidence => {
+                    recipe.evidence_refs = vec!["fixture://paper-engram/train-log".to_string()];
+                    recipe.checksum = paper_engram_training_recipe_manifest_checksum(&recipe);
+                }
+                Case::ReportValidationSet => {
+                    report.validation_set_refs = vec!["fixture/validation-set.jsonl".to_string()];
+                    report.checksum = paper_engram_eval_report_manifest_checksum(&report);
+                }
+                Case::ReportEvidence => {
+                    report.evidence_refs = vec!["fixture://paper-engram/eval-report".to_string()];
+                    report.checksum = paper_engram_eval_report_manifest_checksum(&report);
+                }
+            }
+            recipe
+                .validate()
+                .expect("fixture provenance can still be registered as a plain recipe");
+            report
+                .validate()
+                .expect("fixture provenance can still be registered as a plain eval report");
+
+            let mut module = sample_paper_engram_module_manifest();
+            module.quality_claim = PaperEngramQualityClaim::Posttrain;
+            module.training_recipe_ref =
+                Some(paper_engram_training_recipe_dfs_path(&recipe.recipe_id));
+            module.eval_report_ref = Some(paper_engram_eval_report_dfs_path(&report.report_id));
+            module.checksum = paper_engram_module_manifest_checksum(&module);
+
+            service
+                .register_paper_engram_tokenizer_projection(projection)
+                .expect("register projection");
+            service
+                .register_paper_engram_hash_config(hash_config)
+                .expect("register hash config");
+            service
+                .register_paper_engram_training_recipe(recipe)
+                .expect("register recipe");
+            service
+                .register_paper_engram_eval_report(report)
+                .expect("register eval report");
+            service
+                .register_paper_engram_table_shard(shard)
+                .expect("register shard");
+            service
+                .register_paper_engram_gate(gate)
+                .expect("register gate");
+
+            assert_eq!(
+                service
+                    .register_paper_engram_module(module)
+                    .expect_err("fixture provenance must not back a trained quality claim"),
+                LingquMemoryError::InvalidValue {
+                    field,
+                    reason: "trained paper Engram quality requires non-fixture training and eval provenance"
+                }
+            );
+        }
     }
 
     #[test]
