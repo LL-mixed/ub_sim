@@ -31,6 +31,7 @@ pub struct PaperEngramContextLookupRef {
     pub order: u8,
     pub head: u16,
     pub row: u64,
+    pub exact_key: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -283,6 +284,7 @@ pub fn deterministic_paper_engram_context_fixture(
                     order,
                     head: head as u16,
                     row: row as u64,
+                    exact_key: 0,
                 });
             }
         }
@@ -485,7 +487,8 @@ fn checksum_paper_engram_lookup_refs(values: &[PaperEngramContextLookupRef]) -> 
         let acc = mix_checksum(acc, value.batch_index as u64);
         let acc = mix_checksum(acc, u64::from(value.order));
         let acc = mix_checksum(acc, u64::from(value.head));
-        mix_checksum(acc, value.row)
+        let acc = mix_checksum(acc, value.row);
+        mix_checksum(acc, value.exact_key)
     })
 }
 
@@ -597,12 +600,14 @@ mod tests {
                 order: 2,
                 head: 0,
                 row: 1,
+                exact_key: 0,
             },
             PaperEngramContextLookupRef {
                 batch_index: 0,
                 order: 3,
                 head: 1,
                 row: 0,
+                exact_key: 0,
             },
         ];
         let hidden = vec![1.0f32; hidden_size];
@@ -683,6 +688,7 @@ mod tests {
             order: 3,
             head: 0,
             row: 0,
+            exact_key: 0,
         }];
         let hidden = vec![0.0f32; hidden_size];
         let gate_weight = vec![0.0f32; hidden_size];
@@ -715,6 +721,7 @@ mod tests {
             order: 2,
             head: 0,
             row: 1,
+            exact_key: 0,
         }];
         let hidden = vec![0.0f32; hidden_size];
         let gate_weight = vec![0.0f32; hidden_size];

@@ -31,9 +31,9 @@ use sim_models::engram_context::{
     PaperEngramContextTableView, ENGRAM_CONTEXT_INDICES_PER_BATCH,
 };
 use sim_models::engram_hash::{
-    ENGRAM_HASH_ALGORITHM_VERSION,
     build_engram_lookup_requests_from_step, validate_engram_hash_config,
     Qwen3DenseReferenceEngramHashConfig, Qwen3DenseReferenceEngramHashTableSpec,
+    ENGRAM_HASH_ALGORITHM_VERSION,
 };
 use sim_models::qwen3_dense;
 use sim_models::qwen3_dense_reference::{
@@ -18844,6 +18844,7 @@ fn qwen3_dense_reference_paper_engram_context_state_from_manifest(
             order: request.order,
             head: request.head,
             row: request.row,
+            exact_key: request.exact_key,
         })
         .collect::<Vec<_>>();
     let row_prefetch_requests = lookups.len() as u64;
@@ -18858,7 +18859,12 @@ fn qwen3_dense_reference_paper_engram_context_state_from_manifest(
                     if row.layer != layer_end as u32 || row.step_index != current_step {
                         return None;
                     }
-                    Some((u64::from(row.order), u64::from(row.head), row.row))
+                    Some((
+                        u64::from(row.order),
+                        u64::from(row.head),
+                        row.row,
+                        row.exact_key,
+                    ))
                 })
                 .collect::<std::collections::BTreeSet<_>>();
             lookups
@@ -18868,6 +18874,7 @@ fn qwen3_dense_reference_paper_engram_context_state_from_manifest(
                         u64::from(lookup.order),
                         u64::from(lookup.head),
                         lookup.row,
+                        lookup.exact_key,
                     ))
                 })
                 .count() as u64
@@ -23323,6 +23330,7 @@ mod tests {
                                     order: request.order,
                                     head: request.head,
                                     row: request.row,
+                                    exact_key: request.exact_key,
                                 })
                                 .collect::<Vec<_>>();
                                 let expected =
@@ -23403,6 +23411,7 @@ mod tests {
                         )
                         .expect("build paper lookups");
                         let expected_requests = lookups.len() as u64;
+                        let expected_hits = expected_requests.saturating_sub(1);
                         let mut rows = lookups
                             .iter()
                             .map(|request| sim_memory::PaperEngramTableRowPrefetchRef {
@@ -23421,6 +23430,9 @@ mod tests {
                                 )],
                             })
                             .collect::<Vec<_>>();
+                        if let Some(first_row) = rows.get_mut(0) {
+                            first_row.exact_key = first_row.exact_key.wrapping_add(1);
+                        }
                         rows.push(sim_memory::PaperEngramTableRowPrefetchRef {
                             step_index: 0,
                             layer: 0,
@@ -23560,7 +23572,7 @@ mod tests {
                                                 report.row_prefetch_requests,
                                                 expected_requests
                                             );
-                                            assert_eq!(report.row_prefetch_hits, expected_requests);
+                                            assert_eq!(report.row_prefetch_hits, expected_hits);
                                         },
                                     );
                                 },
@@ -24168,6 +24180,7 @@ mod tests {
                                 order: request.order,
                                 head: request.head,
                                 row: request.row,
+                                exact_key: request.exact_key,
                             })
                             .collect::<Vec<_>>();
 
@@ -24276,6 +24289,7 @@ mod tests {
                                             order: lookup.order,
                                             head: lookup.head,
                                             row: lookup.row,
+                                            exact_key: lookup.exact_key,
                                         })
                                         .collect::<Vec<_>>();
                                     let expected =
