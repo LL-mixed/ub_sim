@@ -2899,6 +2899,11 @@ fn run_lingqu_memory_compare_paper_engram_eval_report_cli(args: &[String]) -> an
         optional_u64_label(comparison.row_prefetch_hit_rate_milli)
     );
     println!(
+        "  runtime_context_steps: {}/{}",
+        optional_u64_label(report.runtime_context_steps_observed),
+        optional_u64_label(report.runtime_context_steps_expected)
+    );
+    println!(
         "  max_backend_latency_us: {}",
         optional_u64_label(report.max_backend_latency_us)
     );
@@ -3094,6 +3099,13 @@ fn validate_paper_engram_eval_acceptance_for_cli(
         (Some(requests), Some(hits)) if requests > 0 && hits == requests => {}
         _ => gaps.push("row_prefetch_locality"),
     }
+    match (
+        report.runtime_context_steps_expected,
+        report.runtime_context_steps_observed,
+    ) {
+        (Some(expected), Some(observed)) if expected > 0 && observed == expected => {}
+        _ => gaps.push("runtime_context_step_coverage"),
+    }
     if comparison.backend_latency_ok != Some(true) {
         gaps.push("backend_latency_ok");
     }
@@ -3188,6 +3200,10 @@ fn run_lingqu_memory_build_paper_engram_eval_report_from_w5_summary_cli(
     println!("  report_id: {}", built.report.report_id);
     println!("  module_id: {}", built.report.module_id);
     println!("  context_count: {}", built.evidence.context_count);
+    println!(
+        "  runtime_context_steps: {}/{}",
+        built.evidence.context_step_count, built.evidence.decode_steps_expected
+    );
     println!("  phase6_summary_refs: {}", built.phase6_summary_refs.len());
     println!(
         "  row_prefetch_requests: {}",
@@ -3221,6 +3237,10 @@ fn run_lingqu_memory_register_paper_engram_eval_report_from_w5_summary_cli(
     println!("  report_id: {}", built.report.report_id);
     println!("  module_id: {}", built.report.module_id);
     println!("  context_count: {}", built.evidence.context_count);
+    println!(
+        "  runtime_context_steps: {}/{}",
+        built.evidence.context_step_count, built.evidence.decode_steps_expected
+    );
     println!("  phase6_summary_refs: {}", built.phase6_summary_refs.len());
     println!(
         "  row_prefetch_requests: {}",
@@ -3343,6 +3363,10 @@ fn build_paper_engram_eval_report_from_w5_summary_args(
         row_prefetch_requests: (evidence.row_prefetch_requests > 0)
             .then_some(evidence.row_prefetch_requests),
         row_prefetch_hits: (evidence.row_prefetch_hits > 0).then_some(evidence.row_prefetch_hits),
+        runtime_context_steps_expected: (evidence.decode_steps_expected > 0)
+            .then_some(evidence.decode_steps_expected),
+        runtime_context_steps_observed: (evidence.context_step_count > 0)
+            .then_some(evidence.context_step_count),
         max_backend_latency_us: (evidence.max_backend_latency_us > 0)
             .then_some(evidence.max_backend_latency_us),
         max_allowed_backend_latency_us: optional_cli_u64(args, "--max-allowed-backend-latency-us")?,
@@ -20338,6 +20362,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 cpu_backend_output_match: Some(true),
                 row_prefetch_requests: Some(8),
                 row_prefetch_hits: Some(8),
+                runtime_context_steps_expected: Some(1),
+                runtime_context_steps_observed: Some(1),
                 max_backend_latency_us: Some(100),
                 max_allowed_backend_latency_us: Some(1000),
                 evidence_refs: paper_engram_phase6_eval_evidence_refs("qwen3-export-quality"),
@@ -20562,6 +20588,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         assert_eq!(report.report_id, "pe-eval-from-w5");
         assert_eq!(report.row_prefetch_requests, Some(3));
         assert_eq!(report.row_prefetch_hits, Some(3));
+        assert_eq!(report.runtime_context_steps_expected, Some(1));
+        assert_eq!(report.runtime_context_steps_observed, Some(1));
         assert_eq!(report.max_backend_latency_us, Some(7000));
         assert_eq!(report.cpu_backend_output_match, Some(true));
         assert!(
@@ -21257,6 +21285,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 cpu_backend_output_match: Some(true),
                 row_prefetch_requests: Some(8),
                 row_prefetch_hits: Some(8),
+                runtime_context_steps_expected: Some(1),
+                runtime_context_steps_observed: Some(1),
                 max_backend_latency_us: Some(100),
                 max_allowed_backend_latency_us: Some(1000),
                 evidence_refs: paper_engram_phase6_eval_evidence_refs("qwen3-quality-eval"),
@@ -21495,6 +21525,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 cpu_backend_output_match: Some(true),
                 row_prefetch_requests: Some(8),
                 row_prefetch_hits: Some(8),
+                runtime_context_steps_expected: Some(1),
+                runtime_context_steps_observed: Some(1),
                 max_backend_latency_us: Some(100),
                 max_allowed_backend_latency_us: Some(1000),
                 evidence_refs: paper_engram_phase6_eval_evidence_refs(
@@ -21706,6 +21738,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 cpu_backend_output_match: Some(true),
                 row_prefetch_requests: Some(8),
                 row_prefetch_hits: Some(8),
+                runtime_context_steps_expected: Some(1),
+                runtime_context_steps_observed: Some(1),
                 max_backend_latency_us: Some(100),
                 max_allowed_backend_latency_us: Some(1000),
                 evidence_refs: paper_engram_phase6_eval_evidence_refs("qwen3-imported-quality"),

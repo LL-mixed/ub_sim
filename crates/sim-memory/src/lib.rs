@@ -706,6 +706,8 @@ pub struct PaperEngramEvalReportManifest {
     pub cpu_backend_output_match: Option<bool>,
     pub row_prefetch_requests: Option<u64>,
     pub row_prefetch_hits: Option<u64>,
+    pub runtime_context_steps_expected: Option<u64>,
+    pub runtime_context_steps_observed: Option<u64>,
     pub max_backend_latency_us: Option<u64>,
     pub max_allowed_backend_latency_us: Option<u64>,
     pub evidence_refs: Vec<String>,
@@ -842,6 +844,38 @@ impl PaperEngramEvalReportManifest {
                     });
                 }
             }
+        }
+        match (
+            self.runtime_context_steps_expected,
+            self.runtime_context_steps_observed,
+        ) {
+            (Some(expected), Some(observed)) => {
+                nonzero(
+                    expected,
+                    "paper_engram_eval_report.runtime_context_steps_expected",
+                )?;
+                nonzero(
+                    observed,
+                    "paper_engram_eval_report.runtime_context_steps_observed",
+                )?;
+                if observed > expected {
+                    return Err(LingquMemoryError::InvalidValue {
+                        field: "paper_engram_eval_report.runtime_context_steps_observed",
+                        reason: "runtime context observed steps must not exceed expected steps",
+                    });
+                }
+            }
+            (Some(_), None) => {
+                return Err(LingquMemoryError::MissingField(
+                    "paper_engram_eval_report.runtime_context_steps_observed",
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(LingquMemoryError::MissingField(
+                    "paper_engram_eval_report.runtime_context_steps_expected",
+                ));
+            }
+            (None, None) => {}
         }
         if let Some(latency) = self.max_backend_latency_us {
             nonzero(latency, "paper_engram_eval_report.max_backend_latency_us")?;
@@ -2244,6 +2278,18 @@ fn paper_engram_eval_report_manifest_checksum(manifest: &PaperEngramEvalReportMa
     );
     bytes.extend_from_slice(&manifest.row_prefetch_requests.unwrap_or(0).to_le_bytes());
     bytes.extend_from_slice(&manifest.row_prefetch_hits.unwrap_or(0).to_le_bytes());
+    bytes.extend_from_slice(
+        &manifest
+            .runtime_context_steps_expected
+            .unwrap_or(0)
+            .to_le_bytes(),
+    );
+    bytes.extend_from_slice(
+        &manifest
+            .runtime_context_steps_observed
+            .unwrap_or(0)
+            .to_le_bytes(),
+    );
     bytes.extend_from_slice(&manifest.max_backend_latency_us.unwrap_or(0).to_le_bytes());
     bytes.extend_from_slice(
         &manifest
@@ -8166,6 +8212,24 @@ impl LingquMemoryService {
                     "trained paper Engram quality requires complete row prefetch locality evidence",
             });
         }
+        let expected_context_steps =
+            report
+                .runtime_context_steps_expected
+                .ok_or(LingquMemoryError::MissingField(
+                    "paper_engram_eval_report.runtime_context_steps_expected",
+                ))?;
+        let observed_context_steps =
+            report
+                .runtime_context_steps_observed
+                .ok_or(LingquMemoryError::MissingField(
+                    "paper_engram_eval_report.runtime_context_steps_observed",
+                ))?;
+        if observed_context_steps != expected_context_steps {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_eval_report.runtime_context_steps_observed",
+                reason: "trained paper Engram quality requires runtime context evidence for every decode step",
+            });
+        }
         report
             .max_backend_latency_us
             .ok_or(LingquMemoryError::MissingField(
@@ -11388,6 +11452,28 @@ mod tests {
     }
 
     #[test]
+    fn paper_engram_quality_claim_requires_complete_runtime_context_coverage() {
+        let service = LingquMemoryService::new();
+        let mut report = sample_paper_engram_eval_report_manifest();
+        report.runtime_context_steps_expected = Some(8);
+        report.runtime_context_steps_observed = Some(7);
+        report.checksum = paper_engram_eval_report_manifest_checksum(&report);
+        report
+            .validate()
+            .expect("plain eval report may record partial runtime context coverage");
+
+        assert_eq!(
+            service
+                .validate_paper_engram_eval_acceptance_evidence(&report)
+                .expect_err("quality acceptance requires complete runtime context coverage"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_eval_report.runtime_context_steps_observed",
+                reason: "trained paper Engram quality requires runtime context evidence for every decode step"
+            }
+        );
+    }
+
+    #[test]
     fn paper_engram_quality_claim_rejects_fixture_artifact_provenance() {
         let mut service = LingquMemoryService::new();
         let projection = sample_paper_engram_tokenizer_projection_manifest();
@@ -13624,6 +13710,8 @@ mod tests {
             cpu_backend_output_match: Some(true),
             row_prefetch_requests: Some(8),
             row_prefetch_hits: Some(8),
+            runtime_context_steps_expected: Some(1),
+            runtime_context_steps_observed: Some(1),
             max_backend_latency_us: Some(100),
             max_allowed_backend_latency_us: Some(1000),
             evidence_refs: vec![
