@@ -3129,8 +3129,10 @@ pub struct Qwen3EngramStateRegistryValidation {
 }
 
 const QWEN3_PAPER_ENGRAM_STATE_MANIFEST_MAGIC: &[u8; 8] = b"Q3PEGRM2";
-const QWEN3_PAPER_ENGRAM_STATE_MANIFEST_VERSION: u32 = 2;
-const QWEN3_PAPER_ENGRAM_STATE_MANIFEST_HEADER_BYTES: usize = 28;
+const QWEN3_PAPER_ENGRAM_STATE_MANIFEST_VERSION_V2: u32 = 2;
+const QWEN3_PAPER_ENGRAM_STATE_MANIFEST_VERSION: u32 = 3;
+const QWEN3_PAPER_ENGRAM_STATE_MANIFEST_HEADER_BYTES_V2: usize = 28;
+const QWEN3_PAPER_ENGRAM_STATE_MANIFEST_HEADER_BYTES: usize = 44;
 const QWEN3_PAPER_ENGRAM_STATE_MANIFEST_TABLE_RECORD_BYTES: usize = 104;
 const QWEN3_PAPER_ENGRAM_STATE_MANIFEST_GATE_RECORD_BYTES: usize = 72;
 
@@ -3155,6 +3157,8 @@ pub struct Qwen3PaperEngramStateGateRef {
 pub struct Qwen3PaperEngramStateManifest {
     pub hidden_size: usize,
     pub memory_dim: usize,
+    pub tokenizer_projection_checksum: u64,
+    pub hash_config_checksum: u64,
     pub tables: Vec<Qwen3PaperEngramStateTableRef>,
     pub gates: Vec<Qwen3PaperEngramStateGateRef>,
 }
@@ -3274,6 +3278,8 @@ pub fn qwen3_engram_state_manifest_payload(
 pub fn qwen3_paper_engram_state_manifest_payload(
     hidden_size: usize,
     memory_dim: usize,
+    tokenizer_projection_checksum: u64,
+    hash_config_checksum: u64,
     tables: &[Qwen3PaperEngramStateTableRef],
     gates: &[Qwen3PaperEngramStateGateRef],
 ) -> Result<Vec<u8>, String> {
@@ -3349,6 +3355,8 @@ pub fn qwen3_paper_engram_state_manifest_payload(
     payload.extend_from_slice(&(memory_dim as u32).to_le_bytes());
     payload.extend_from_slice(&(tables.len() as u32).to_le_bytes());
     payload.extend_from_slice(&(gates.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&tokenizer_projection_checksum.to_le_bytes());
+    payload.extend_from_slice(&hash_config_checksum.to_le_bytes());
     for table in tables {
         payload.extend_from_slice(&table.layer.to_le_bytes());
         payload.push(table.order);
@@ -3457,23 +3465,30 @@ fn qwen3_engram_state_manifest_from_payload(
 fn qwen3_paper_engram_state_manifest_from_payload(
     payload: &[u8],
 ) -> Result<Qwen3PaperEngramStateManifest, String> {
-    if payload.len() < QWEN3_PAPER_ENGRAM_STATE_MANIFEST_HEADER_BYTES {
+    if payload.len() < QWEN3_PAPER_ENGRAM_STATE_MANIFEST_HEADER_BYTES_V2 {
         return Err(format!(
             "qwen3_paper_engram_state_manifest_len_too_small:got={}:min={}",
             payload.len(),
-            QWEN3_PAPER_ENGRAM_STATE_MANIFEST_HEADER_BYTES
+            QWEN3_PAPER_ENGRAM_STATE_MANIFEST_HEADER_BYTES_V2
         ));
     }
     if &payload[0..8] != QWEN3_PAPER_ENGRAM_STATE_MANIFEST_MAGIC {
         return Err("qwen3_paper_engram_state_manifest_magic_mismatch".to_string());
     }
     let version = qwen3_try_read_u32_le_at(payload, 8, "qwen3_paper_engram_state_version")?;
-    if version != QWEN3_PAPER_ENGRAM_STATE_MANIFEST_VERSION {
+    if version != QWEN3_PAPER_ENGRAM_STATE_MANIFEST_VERSION
+        && version != QWEN3_PAPER_ENGRAM_STATE_MANIFEST_VERSION_V2
+    {
         return Err(format!(
-            "qwen3_paper_engram_state_version_unsupported:got={version}:expected={}",
-            QWEN3_PAPER_ENGRAM_STATE_MANIFEST_VERSION
+            "qwen3_paper_engram_state_version_unsupported:got={version}:expected={}/{}",
+            QWEN3_PAPER_ENGRAM_STATE_MANIFEST_VERSION_V2, QWEN3_PAPER_ENGRAM_STATE_MANIFEST_VERSION
         ));
     }
+    let header_bytes = if version == QWEN3_PAPER_ENGRAM_STATE_MANIFEST_VERSION {
+        QWEN3_PAPER_ENGRAM_STATE_MANIFEST_HEADER_BYTES
+    } else {
+        QWEN3_PAPER_ENGRAM_STATE_MANIFEST_HEADER_BYTES_V2
+    };
     let hidden_size =
         qwen3_try_read_u32_le_at(payload, 12, "qwen3_paper_engram_state_hidden_size")? as usize;
     let memory_dim =
@@ -3494,7 +3509,21 @@ fn qwen3_paper_engram_state_manifest_from_payload(
     if gate_count == 0 {
         return Err("qwen3_paper_engram_state_gates_empty".to_string());
     }
-    let expected_len = QWEN3_PAPER_ENGRAM_STATE_MANIFEST_HEADER_BYTES
+    let tokenizer_projection_checksum = if version == QWEN3_PAPER_ENGRAM_STATE_MANIFEST_VERSION {
+        qwen3_try_read_u64_le_at(
+            payload,
+            28,
+            "qwen3_paper_engram_state_tokenizer_projection_checksum",
+        )?
+    } else {
+        0
+    };
+    let hash_config_checksum = if version == QWEN3_PAPER_ENGRAM_STATE_MANIFEST_VERSION {
+        qwen3_try_read_u64_le_at(payload, 36, "qwen3_paper_engram_state_hash_config_checksum")?
+    } else {
+        0
+    };
+    let expected_len = header_bytes
         .checked_add(table_count * QWEN3_PAPER_ENGRAM_STATE_MANIFEST_TABLE_RECORD_BYTES)
         .and_then(|value| {
             value.checked_add(gate_count * QWEN3_PAPER_ENGRAM_STATE_MANIFEST_GATE_RECORD_BYTES)
@@ -3507,7 +3536,7 @@ fn qwen3_paper_engram_state_manifest_from_payload(
         ));
     }
 
-    let mut offset = QWEN3_PAPER_ENGRAM_STATE_MANIFEST_HEADER_BYTES;
+    let mut offset = header_bytes;
     let mut tables = Vec::with_capacity(table_count);
     for _ in 0..table_count {
         let layer =
@@ -3584,6 +3613,8 @@ fn qwen3_paper_engram_state_manifest_from_payload(
     Ok(Qwen3PaperEngramStateManifest {
         hidden_size,
         memory_dim,
+        tokenizer_projection_checksum,
+        hash_config_checksum,
         tables,
         gates,
     })
@@ -4974,7 +5005,8 @@ fn validate_qwen3_range_dispatch_object_refs(
                 engram_context_gate_weight_ref_seen = true;
             }
             QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE => {
-                if object_ref.payload_bytes < QWEN3_PAPER_ENGRAM_STATE_MANIFEST_HEADER_BYTES as u64
+                if object_ref.payload_bytes
+                    < QWEN3_PAPER_ENGRAM_STATE_MANIFEST_HEADER_BYTES_V2 as u64
                     || object_ref.payload_checksum == 0
                 {
                     return Err("qwen3_range_dispatch_engram_state_ref_invalid".to_string());
@@ -18706,11 +18738,22 @@ fn qwen3_dense_reference_engram_context_loaded_state_from_source(
 
 fn qwen3_dense_reference_paper_engram_canonical_token_ids(
     token_ids: &[u64],
+    expected_projection_checksum: u64,
 ) -> Result<Vec<u64>, String> {
     let Some(path) = std::env::var_os(SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION) else {
+        if expected_projection_checksum != 0 {
+            return Err(format!(
+                "qwen3_paper_engram_token_projection_required:checksum={expected_projection_checksum:#x}"
+            ));
+        }
         return Ok(token_ids.to_vec());
     };
     if path.is_empty() {
+        if expected_projection_checksum != 0 {
+            return Err(format!(
+                "qwen3_paper_engram_token_projection_required:checksum={expected_projection_checksum:#x}"
+            ));
+        }
         return Ok(token_ids.to_vec());
     }
     let path = PathBuf::from(path);
@@ -18723,6 +18766,15 @@ fn qwen3_dense_reference_paper_engram_canonical_token_ids(
     })?;
     let projection: Qwen3DenseReferenceTokenizerProjection = serde_json::from_slice(&bytes)
         .map_err(|err| format!("qwen3_paper_engram_token_projection_decode_failed:{err}"))?;
+    if expected_projection_checksum != 0
+        && projection.aggregate_checksum != expected_projection_checksum
+    {
+        return Err(format!(
+            "qwen3_paper_engram_token_projection_checksum_mismatch:path={}:expected={expected_projection_checksum:#x}:actual={:#x}",
+            path.display(),
+            projection.aggregate_checksum
+        ));
+    }
     let mut raw_to_canonical = BTreeMap::new();
     for entry in projection.raw_to_canonical {
         if let Some(previous) =
@@ -18865,7 +18917,7 @@ fn qwen3_dense_reference_paper_engram_context_state_from_manifest(
         .unwrap_or(0);
     let config = Qwen3DenseReferenceEngramHashConfig {
         version: 1,
-        projection_checksum: 0,
+        projection_checksum: manifest.tokenizer_projection_checksum,
         orders,
         heads_per_order,
         table_rows: 1,
@@ -18875,7 +18927,10 @@ fn qwen3_dense_reference_paper_engram_context_state_from_manifest(
     };
     validate_engram_hash_config(&config)?;
 
-    let canonical_token_ids = qwen3_dense_reference_paper_engram_canonical_token_ids(token_ids)?;
+    let canonical_token_ids = qwen3_dense_reference_paper_engram_canonical_token_ids(
+        token_ids,
+        manifest.tokenizer_projection_checksum,
+    )?;
     let lookup_requests = if token_ids.is_empty() {
         Vec::new()
     } else {
@@ -22674,6 +22729,7 @@ mod tests {
         qwen3_dense_reference_mlp_activation_tile_from_attention_context,
         qwen3_dense_reference_object_metadata, qwen3_dense_reference_object_payload_words,
         qwen3_dense_reference_object_placement, qwen3_dense_reference_object_service_profile,
+        qwen3_dense_reference_paper_engram_canonical_token_ids,
         qwen3_dense_reference_parse_weight_range_payload,
         qwen3_dense_reference_projection_tile_from_half_input,
         qwen3_dense_reference_publish_bootstrap_weight_objects,
@@ -22717,8 +22773,8 @@ mod tests {
         qwen3_object_service_snapshot_get_from_path,
         qwen3_object_service_snapshot_hydrate_payloads, qwen3_object_service_snapshot_put,
         qwen3_obmm_object_ref_for_payload, qwen3_obmm_object_ref_wire_to_hex,
-        qwen3_paper_engram_state_manifest_payload, qwen3_register_range_forward_objects,
-        qwen3_validate_engram_state_object_service_payload,
+        qwen3_paper_engram_state_manifest_from_payload, qwen3_paper_engram_state_manifest_payload,
+        qwen3_register_range_forward_objects, qwen3_validate_engram_state_object_service_payload,
         qwen3_validate_engram_state_registry_payload, read_u64_le_at,
         resolve_qwen3_range_dispatch_operands, run_host_matmul_batched_smoke,
         run_host_matmul_smoke, run_qwen3_dense_reference_prefill_runtime,
@@ -23320,6 +23376,8 @@ mod tests {
                         let state_payload = qwen3_paper_engram_state_manifest_payload(
                             hidden_size,
                             hidden_size,
+                            0,
+                            hash_config.projection_checksum,
                             &table_refs,
                             &[Qwen3PaperEngramStateGateRef {
                                 layer,
@@ -23608,6 +23666,8 @@ mod tests {
                         let state_payload = qwen3_paper_engram_state_manifest_payload(
                             hidden_size,
                             hidden_size,
+                            projection.aggregate_checksum,
+                            hash_config.projection_checksum,
                             &table_refs,
                             &[Qwen3PaperEngramStateGateRef {
                                 layer,
@@ -24343,6 +24403,8 @@ mod tests {
                         let state_payload = qwen3_paper_engram_state_manifest_payload(
                             hidden_size,
                             hidden_size,
+                            0,
+                            hash_config.projection_checksum,
                             &table_refs,
                             &[Qwen3PaperEngramStateGateRef {
                                 layer,
@@ -29355,6 +29417,8 @@ mod tests {
         let paper_state_payload = qwen3_paper_engram_state_manifest_payload(
             256,
             256,
+            0,
+            0,
             &[Qwen3PaperEngramStateTableRef {
                 layer: 4,
                 order: 1,
@@ -30210,6 +30274,108 @@ mod tests {
                 let _ = std::fs::remove_dir_all(&root);
             },
         );
+    }
+
+    #[test]
+    fn qwen3_paper_engram_state_manifest_round_trips_runtime_checksums() {
+        let table_ref = LingquObmmObjectRefWire::committed(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
+            0,
+            0,
+            1,
+            0x1111,
+            0,
+            16,
+            0x2222,
+        );
+        let gate_ref = LingquObmmObjectRefWire::committed(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
+            0,
+            0,
+            1,
+            0x3333,
+            0,
+            16,
+            0x4444,
+        );
+        let payload = qwen3_paper_engram_state_manifest_payload(
+            4,
+            4,
+            0x1234,
+            0x5678,
+            &[Qwen3PaperEngramStateTableRef {
+                layer: 2,
+                order: 3,
+                head: 1,
+                row_start: 0,
+                row_end: 1,
+                hash_seed: 0x99,
+                object_ref: table_ref,
+            }],
+            &[Qwen3PaperEngramStateGateRef {
+                layer: 2,
+                object_ref: gate_ref,
+            }],
+        )
+        .expect("paper state payload");
+        let manifest = qwen3_paper_engram_state_manifest_from_payload(&payload)
+            .expect("decode paper state payload");
+
+        assert_eq!(manifest.tokenizer_projection_checksum, 0x1234);
+        assert_eq!(manifest.hash_config_checksum, 0x5678);
+        assert_eq!(manifest.tables.len(), 1);
+        assert_eq!(manifest.gates.len(), 1);
+    }
+
+    #[test]
+    fn qwen3_paper_engram_projection_checksum_mismatch_is_rejected() {
+        let registry_dir = std::env::temp_dir().join(format!(
+            "ub_sim_qwen3_paper_engram_projection_checksum_mismatch_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&registry_dir);
+        std::fs::create_dir_all(&registry_dir).expect("create projection mismatch dir");
+        let projection_path = registry_dir.join("projection.json");
+        let projection = Qwen3DenseReferenceTokenizerProjection {
+            model_id: "qwen3-projection-mismatch-test".to_string(),
+            tokenizer_family: "qwen3".to_string(),
+            source: "fixture://qwen3-projection-mismatch-test".to_string(),
+            source_checksum: 1,
+            total_raw_tokens: 1,
+            total_canonical_tokens: 1,
+            total_special_tokens: 0,
+            merged_token_count: 0,
+            merge_special_tokens: false,
+            compression_milli: 1000,
+            aggregate_checksum: 0x1234,
+            raw_to_canonical: vec![Qwen3DenseReferenceTokenizerProjectionEntry {
+                raw_token_id: 70,
+                raw_token_piece: "raw-70".to_string(),
+                canonical_token_piece: "canonical-7".to_string(),
+                canonical_token_id: 7,
+                is_special: false,
+            }],
+            collision_classes: Vec::new(),
+        };
+        std::fs::write(
+            &projection_path,
+            serde_json::to_vec(&projection).expect("projection json"),
+        )
+        .expect("write projection");
+
+        with_env_var(
+            SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION,
+            projection_path.to_string_lossy().as_ref(),
+            || {
+                let err = qwen3_dense_reference_paper_engram_canonical_token_ids(&[70], 0x5678)
+                    .expect_err("projection checksum mismatch should fail");
+                assert!(
+                    err.contains("qwen3_paper_engram_token_projection_checksum_mismatch"),
+                    "{err}"
+                );
+            },
+        );
+        let _ = std::fs::remove_dir_all(&registry_dir);
     }
 
     #[test]

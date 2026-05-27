@@ -9007,6 +9007,8 @@ fn publish_w5_paper_engram_state_ref_from_runtime(
     let state_payload = qwen3_paper_engram_state_manifest_payload(
         runtime.module.hidden_size as usize,
         runtime.module.memory_dim as usize,
+        runtime.tokenizer_projection.projection_checksum,
+        runtime.hash_config.hash_config_checksum,
         &table_refs,
         &gate_refs,
     )

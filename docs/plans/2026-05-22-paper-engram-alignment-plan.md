@@ -324,6 +324,7 @@ Current implementation status:
 - `sim-cli lingqu-memory` now supports `register-paper-engram-training-recipe`, `register-paper-engram-eval-report`, and `validate-paper-engram-quality`. Fixture-generated tables still use `quality_claim=none`.
 - Memory Service can resolve paper Engram table row block refs by `module_id/layer/order/head/row_range`; `sim-cli lingqu-memory resolve-paper-engram-table-row-blocks` exposes this as the row-block ObjectRef materialization base for runtime prefetch and Object Service publication.
 - Memory Service can build deterministic paper Engram row prefetch plans from canonical token history using the shared `sim-models::engram_hash` implementation; `sim-cli lingqu-memory plan-paper-engram-row-prefetch` exposes the planned row refs and backing block refs, and `publish-paper-engram-row-prefetch` publishes the row plan as Object Service metadata. W5 entrypoints now carry the published plan through `SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF` / `--engram-row-prefetch-ref` alongside the required paper `ENGRAM_STATE` ref.
+- W5 paper `ENGRAM_STATE` publication now emits a v3 manifest that carries tokenizer-projection and hash-config checksums. UAPI still accepts legacy v2 state manifests for compatibility, but v3 runtime execution requires any provided tokenizer projection to match the manifest checksum before canonical ngram lookups are built.
 
 The terminal-only context-op path is not enough. Paper Engram must be able to
 inject at configured model layers, not only after terminal hidden.
