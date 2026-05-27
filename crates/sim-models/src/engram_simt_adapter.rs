@@ -1,7 +1,10 @@
 use crate::engram_context::{
-    ENGRAM_CONTEXT_HIDDEN_SIZE, ENGRAM_CONTEXT_INDICES_PER_BATCH, ENGRAM_CONTEXT_SUPPORTED_BATCHES,
+    validate_engram_context_op, validate_paper_engram_context_op, EngramContextOp,
+    PaperEngramContextOp, ENGRAM_CONTEXT_HIDDEN_SIZE, ENGRAM_CONTEXT_INDICES_PER_BATCH,
+    ENGRAM_CONTEXT_SUPPORTED_BATCHES,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -40,6 +43,19 @@ pub struct EngramSimtLaunchReport {
     pub selected_case_passed: bool,
     pub stdout: String,
     pub stderr: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EngramSimtRuntimeInput {
+    pub mode: &'static str,
+    pub table: Vec<f32>,
+    pub table_rows: usize,
+    pub indices: Vec<i32>,
+    pub hidden: Vec<f32>,
+    pub gate_weight: Vec<f32>,
+    pub batch: usize,
+    pub hidden_size: usize,
+    pub source_lookup_count_per_batch: Vec<usize>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -200,6 +216,120 @@ pub fn run_engram_simt_artifact_case(
     Ok(report)
 }
 
+pub fn build_engram_simt_runtime_input_from_legacy_op(
+    op: &EngramContextOp<'_>,
+) -> Result<EngramSimtRuntimeInput, String> {
+    validate_engram_context_op(op)?;
+    validate_engram_simt_runtime_shape(op.batch, op.hidden_size)?;
+    Ok(EngramSimtRuntimeInput {
+        mode: "legacy-single-table",
+        table: op.table.to_vec(),
+        table_rows: op.table_rows,
+        indices: op.indices.to_vec(),
+        hidden: op.hidden.to_vec(),
+        gate_weight: op.gate_weight.to_vec(),
+        batch: op.batch,
+        hidden_size: op.hidden_size,
+        source_lookup_count_per_batch: vec![ENGRAM_CONTEXT_INDICES_PER_BATCH; op.batch],
+    })
+}
+
+pub fn build_engram_simt_runtime_input_from_paper_op(
+    op: &PaperEngramContextOp<'_>,
+) -> Result<EngramSimtRuntimeInput, String> {
+    validate_paper_engram_context_op(op)?;
+    validate_engram_simt_runtime_shape(op.batch, op.hidden_size)?;
+
+    let mut table_offsets = BTreeMap::<(u8, u16), usize>::new();
+    let mut table = Vec::<f32>::new();
+    let mut table_rows = 0usize;
+    for view in op.tables {
+        table_offsets.insert((view.order, view.head), table_rows);
+        table_rows = table_rows
+            .checked_add(view.table_rows)
+            .ok_or_else(|| "engram_simt_paper_table_rows_overflow".to_string())?;
+        table.extend_from_slice(view.table);
+    }
+    if table_rows == 0 {
+        return Err("engram_simt_paper_table_rows_must_be_positive".to_string());
+    }
+
+    let mut indices = Vec::with_capacity(op.batch * ENGRAM_CONTEXT_INDICES_PER_BATCH);
+    let mut source_lookup_count_per_batch = Vec::with_capacity(op.batch);
+    for batch_index in 0..op.batch {
+        let lookups = op
+            .lookups
+            .iter()
+            .filter(|lookup| lookup.batch_index == batch_index)
+            .collect::<Vec<_>>();
+        let lookup_count = lookups.len();
+        if lookup_count == 0 {
+            return Err(format!(
+                "engram_simt_paper_lookup_count_zero:batch_index={batch_index}"
+            ));
+        }
+        if lookup_count > ENGRAM_CONTEXT_INDICES_PER_BATCH
+            || ENGRAM_CONTEXT_INDICES_PER_BATCH % lookup_count != 0
+        {
+            return Err(format!(
+                "engram_simt_paper_lookup_count_unsupported:batch_index={batch_index}:count={lookup_count}:slots={ENGRAM_CONTEXT_INDICES_PER_BATCH}"
+            ));
+        }
+        let repeat = ENGRAM_CONTEXT_INDICES_PER_BATCH / lookup_count;
+        for lookup in lookups {
+            let table_offset =
+                table_offsets
+                    .get(&(lookup.order, lookup.head))
+                    .ok_or_else(|| {
+                        format!(
+                            "engram_simt_paper_table_missing:order={}:head={}",
+                            lookup.order, lookup.head
+                        )
+                    })?;
+            let local_row = usize::try_from(lookup.row).map_err(|_| {
+                format!(
+                    "engram_simt_paper_row_exceeds_usize:order={}:head={}:row={}",
+                    lookup.order, lookup.head, lookup.row
+                )
+            })?;
+            let global_row = table_offset
+                .checked_add(local_row)
+                .ok_or_else(|| "engram_simt_paper_global_row_overflow".to_string())?;
+            let global_row = i32::try_from(global_row).map_err(|_| {
+                format!("engram_simt_paper_global_row_exceeds_i32:row={global_row}")
+            })?;
+            for _ in 0..repeat {
+                indices.push(global_row);
+            }
+        }
+        source_lookup_count_per_batch.push(lookup_count);
+    }
+
+    Ok(EngramSimtRuntimeInput {
+        mode: "paper-packed-single-table",
+        table,
+        table_rows,
+        indices,
+        hidden: op.hidden.to_vec(),
+        gate_weight: op.gate_weight.to_vec(),
+        batch: op.batch,
+        hidden_size: op.hidden_size,
+        source_lookup_count_per_batch,
+    })
+}
+
+fn validate_engram_simt_runtime_shape(batch: usize, hidden_size: usize) -> Result<(), String> {
+    if !ENGRAM_CONTEXT_SUPPORTED_BATCHES.contains(&batch) {
+        return Err(format!("unsupported_engram_simt_batch:{batch}"));
+    }
+    if hidden_size != ENGRAM_CONTEXT_HIDDEN_SIZE {
+        return Err(format!(
+            "unsupported_engram_simt_hidden_size:{hidden_size}:expected={ENGRAM_CONTEXT_HIDDEN_SIZE}"
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct EngramSimtLaunchStatus {
     passed_cases: usize,
@@ -322,6 +452,7 @@ fn table_rows_tag(table_rows: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engram_context::{PaperEngramContextLookupRef, PaperEngramContextTableView};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
     #[cfg(unix)]
@@ -438,10 +569,178 @@ mod tests {
         assert!(err.contains("engram_simt_selected_case_failed"));
     }
 
+    #[test]
+    fn engram_simt_runtime_input_packs_paper_op_as_single_table() {
+        let hidden_size = ENGRAM_CONTEXT_HIDDEN_SIZE;
+        let hidden = vec![0.0f32; hidden_size];
+        let gate_weight = vec![0.0f32; hidden_size];
+        let table_20 = constant_table(2, hidden_size, 0.125);
+        let table_21 = constant_table(2, hidden_size, 0.25);
+        let table_30 = constant_table(2, hidden_size, 0.5);
+        let table_31 = constant_table(2, hidden_size, 1.0);
+        let tables = vec![
+            PaperEngramContextTableView {
+                order: 2,
+                head: 0,
+                table: &table_20,
+                table_rows: 2,
+            },
+            PaperEngramContextTableView {
+                order: 2,
+                head: 1,
+                table: &table_21,
+                table_rows: 2,
+            },
+            PaperEngramContextTableView {
+                order: 3,
+                head: 0,
+                table: &table_30,
+                table_rows: 2,
+            },
+            PaperEngramContextTableView {
+                order: 3,
+                head: 1,
+                table: &table_31,
+                table_rows: 2,
+            },
+        ];
+        let lookups = vec![
+            PaperEngramContextLookupRef {
+                batch_index: 0,
+                order: 2,
+                head: 0,
+                row: 0,
+                exact_key: 0x20,
+            },
+            PaperEngramContextLookupRef {
+                batch_index: 0,
+                order: 2,
+                head: 1,
+                row: 1,
+                exact_key: 0x21,
+            },
+            PaperEngramContextLookupRef {
+                batch_index: 0,
+                order: 3,
+                head: 0,
+                row: 0,
+                exact_key: 0x30,
+            },
+            PaperEngramContextLookupRef {
+                batch_index: 0,
+                order: 3,
+                head: 1,
+                row: 1,
+                exact_key: 0x31,
+            },
+        ];
+        let paper_op = PaperEngramContextOp {
+            tables: &tables,
+            lookups: &lookups,
+            hidden: &hidden,
+            gate_weight: &gate_weight,
+            batch: 1,
+            hidden_size,
+        };
+
+        let paper = crate::engram_context::run_paper_engram_context_reference(&paper_op)
+            .expect("run paper reference");
+        let packed = build_engram_simt_runtime_input_from_paper_op(&paper_op)
+            .expect("pack paper op for fused SIMT");
+        let packed_op = EngramContextOp {
+            table: &packed.table,
+            table_rows: packed.table_rows,
+            indices: &packed.indices,
+            hidden: &packed.hidden,
+            gate_weight: &packed.gate_weight,
+            batch: packed.batch,
+            hidden_size: packed.hidden_size,
+        };
+        let legacy = crate::engram_context::run_engram_context_reference(&packed_op)
+            .expect("run packed reference");
+
+        assert_eq!(packed.mode, "paper-packed-single-table");
+        assert_eq!(packed.table_rows, 8);
+        assert_eq!(packed.source_lookup_count_per_batch, vec![4]);
+        assert_eq!(packed.indices, vec![0, 0, 3, 3, 4, 4, 7, 7]);
+        assert_eq!(legacy.output, paper.output);
+        assert_eq!(legacy.report.output_checksum, paper.report.output_checksum);
+    }
+
+    #[test]
+    fn engram_simt_runtime_input_rejects_unrepresentable_paper_lookup_count() {
+        let hidden_size = ENGRAM_CONTEXT_HIDDEN_SIZE;
+        let hidden = vec![0.0f32; hidden_size];
+        let gate_weight = vec![0.0f32; hidden_size];
+        let table_20 = constant_table(2, hidden_size, 0.125);
+        let table_21 = constant_table(2, hidden_size, 0.25);
+        let table_30 = constant_table(2, hidden_size, 0.5);
+        let tables = vec![
+            PaperEngramContextTableView {
+                order: 2,
+                head: 0,
+                table: &table_20,
+                table_rows: 2,
+            },
+            PaperEngramContextTableView {
+                order: 2,
+                head: 1,
+                table: &table_21,
+                table_rows: 2,
+            },
+            PaperEngramContextTableView {
+                order: 3,
+                head: 0,
+                table: &table_30,
+                table_rows: 2,
+            },
+        ];
+        let lookups = vec![
+            PaperEngramContextLookupRef {
+                batch_index: 0,
+                order: 2,
+                head: 0,
+                row: 0,
+                exact_key: 0x20,
+            },
+            PaperEngramContextLookupRef {
+                batch_index: 0,
+                order: 2,
+                head: 1,
+                row: 1,
+                exact_key: 0x21,
+            },
+            PaperEngramContextLookupRef {
+                batch_index: 0,
+                order: 3,
+                head: 0,
+                row: 0,
+                exact_key: 0x30,
+            },
+        ];
+        let paper_op = PaperEngramContextOp {
+            tables: &tables,
+            lookups: &lookups,
+            hidden: &hidden,
+            gate_weight: &gate_weight,
+            batch: 1,
+            hidden_size,
+        };
+
+        let err = build_engram_simt_runtime_input_from_paper_op(&paper_op)
+            .expect_err("three paper lookups cannot fill eight SIMT slots evenly");
+
+        assert!(err.contains("engram_simt_paper_lookup_count_unsupported"));
+    }
+
     fn temp_dir(prefix: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("{prefix}_{}", unique_suffix()));
         fs::create_dir_all(&dir).expect("create temp dir");
         dir
+    }
+
+    fn constant_table(rows: usize, hidden_size: usize, value: f32) -> Vec<f32> {
+        vec![value; rows * hidden_size]
     }
 
     fn unique_suffix() -> u128 {

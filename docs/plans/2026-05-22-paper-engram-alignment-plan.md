@@ -342,6 +342,7 @@ Current implementation status:
 - UAPI paper Engram runtime now uses complete row-prefetch hits to materialize only the current step's selected table rows, remaps lookup rows into compact per-order/per-head tables, and preserves output equivalence with the full-table path. Partial prefetch hits still fall back to full table materialization for correctness. Row-prefetch refs carry the resolved row payload byte window so the plan has enough metadata for runtime row-level serving.
 - `sim-models` now exposes a host-side fused SIMT launch wrapper for the vendor `engram-simt` artifact: discovery still validates the build directory, binary, kernel library, case name, shape, run mode, and SoC version, while `engram_context_reference --mode=fused-simt --run --npu=<id>` can execute the selected vendor case and emit a structured launch report. `sim-cli lingqu-memory validate-paper-engram-fused-simt-artifact` exposes the same discovery/run gate for automation. A launch is accepted only when the vendor self-check reports `[PASS]` for the selected case and a zero-failure `Results` summary. W5/UAPI fused SIMT execution is still intentionally not wired into range-forward until the runtime launch path can pass the same CPU/backend correctness checks as `simpler-host`.
 - W5 decode startup now runs the same fused SIMT selected-case self-check before exporting `SIM_ENGRAM_SIMT_SELECTED_*` to the guest runner. `--validate-only` reports the preflight case and pass/fail/total counters, so a fused-SIMT W5 launch cannot proceed on a merely discoverable artifact that does not pass the vendor self-check.
+- `sim-models::engram_simt_adapter` now defines the runtime input ABI needed to feed the vendor fused SIMT shape: legacy single-table operands pass through directly, while shape-compatible paper Engram multi-table operands are packed into one contiguous table plus eight SIMT index slots per batch. The packer duplicates paper lookups only when the lookup count divides the vendor's eight slots, preserving CPU reference output equivalence and rejecting unrepresentable lookup counts.
 
 The terminal-only context-op path is not enough. Paper Engram must be able to
 inject at configured model layers, not only after terminal hidden.
@@ -509,7 +510,8 @@ while preserving full-table output equivalence; partial hits intentionally
 fallback to full table materialization. Vendor fused SIMT has a host-side
 artifact discovery and self-checking launch wrapper, and W5 decode startup now
 uses that wrapper as a preflight gate before selecting the artifact for the
-guest runner. W5/UAPI fused execution remains open.
+guest runner. The paper Engram to vendor fused-SIMT input ABI is defined and
+covered by CPU equivalence tests, but W5/UAPI fused execution remains open.
 
 ## Open Decisions
 
