@@ -2385,7 +2385,8 @@ fn run_lingqu_memory_build_engram_hash_config_cli(args: &[String]) -> anyhow::Re
 fn run_lingqu_memory_build_tokenizer_projection_cli(args: &[String]) -> anyhow::Result<()> {
     let tokenizer_dir = PathBuf::from(required_cli_arg(args, "--tokenizer-dir")?);
     let output_path = PathBuf::from(required_cli_arg(args, "--output")?);
-    let merge_special_tokens = cli_flag(args, "--merge-special");
+    let merge_special_tokens =
+        cli_flag(args, "--merge-special") || cli_flag(args, "--merge-special-tokens");
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent).with_context(|| {
             format!(
@@ -2429,6 +2430,7 @@ fn run_lingqu_memory_build_tokenizer_projection_cli(args: &[String]) -> anyhow::
     );
     println!("  compression_milli: {}", projection.compression_milli);
     println!("  merged_token_count: {}", projection.merged_token_count);
+    println!("  merge_special_tokens: {}", projection.merge_special_tokens);
     println!(
         "  collision_classes: {}",
         projection.collision_classes.len()
@@ -18570,7 +18572,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             "qwen3-custom".to_string(),
             "--tokenizer-family".to_string(),
             "custom-family".to_string(),
-            "--merge-special".to_string(),
+            "--merge-special-tokens".to_string(),
         ])
         .expect("build tokenizer projection CLI");
 
