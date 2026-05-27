@@ -3568,8 +3568,7 @@ fn run_lingqu_memory_resolve_paper_engram_table_row_blocks_cli(
 fn run_lingqu_memory_plan_paper_engram_row_prefetch_cli(args: &[String]) -> anyhow::Result<()> {
     let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
     let module_id = required_cli_arg(args, "--module-id")?;
-    let canonical_history =
-        parse_u64_csv_arg_or_file(args, "--canonical-history", "--canonical-history-file")?;
+    let canonical_history = parse_paper_engram_canonical_history_arg_or_file(args)?;
     let from_step = optional_cli_u64(args, "--from-step")?.unwrap_or(0);
     let now_us = optional_cli_u64(args, "--now-us")?.unwrap_or(1);
     let output_path = optional_cli_path(args, "--output")?;
@@ -3626,8 +3625,7 @@ fn run_lingqu_memory_publish_paper_engram_row_prefetch_cli(args: &[String]) -> a
     let object_store_path = PathBuf::from(required_cli_arg(args, "--object-store")?);
     let module_id = required_cli_arg(args, "--module-id")?;
     let registry_dir = PathBuf::from(required_cli_arg(args, "--registry-dir")?);
-    let canonical_history =
-        parse_u64_csv_arg_or_file(args, "--canonical-history", "--canonical-history-file")?;
+    let canonical_history = parse_paper_engram_canonical_history_arg_or_file(args)?;
     let from_step = optional_cli_u64(args, "--from-step")?.unwrap_or(0);
     let owner_entity = optional_cli_u64(args, "--owner-entity")?.unwrap_or(0);
     let producer_entity = optional_cli_u64(args, "--producer-entity")?.unwrap_or(0);
@@ -3669,6 +3667,52 @@ fn run_lingqu_memory_publish_paper_engram_row_prefetch_cli(args: &[String]) -> a
         publication.prefetch_manifest_bytes
     );
     Ok(())
+}
+
+fn parse_paper_engram_canonical_history_arg_or_file(args: &[String]) -> anyhow::Result<Vec<u64>> {
+    let canonical_csv = optional_cli_arg(args, "--canonical-history")?;
+    let canonical_file = optional_cli_arg(args, "--canonical-history-file")?;
+    let raw_csv = optional_cli_arg(args, "--raw-history")?;
+    let raw_file = optional_cli_arg(args, "--raw-history-file")?;
+    let canonical_present = canonical_csv.is_some() || canonical_file.is_some();
+    let raw_present = raw_csv.is_some() || raw_file.is_some();
+
+    match (canonical_present, raw_present) {
+        (true, true) => {
+            anyhow::bail!(
+                "conflicting paper Engram history arguments: use canonical history or raw history, not both"
+            );
+        }
+        (true, false) => {
+            parse_u64_csv_arg_or_file(args, "--canonical-history", "--canonical-history-file")
+        }
+        (false, true) => {
+            let raw_history =
+                parse_u64_csv_arg_or_file(args, "--raw-history", "--raw-history-file")?;
+            let projection_path = optional_cli_path(args, "--tokenizer-projection")?
+                .ok_or_else(|| anyhow::anyhow!("--raw-history requires --tokenizer-projection"))?;
+            let Some(projection) = qwen3_engram_projection_lookup(Some(&projection_path))? else {
+                anyhow::bail!("--raw-history requires --tokenizer-projection");
+            };
+            raw_history
+                .into_iter()
+                .map(|token_id| {
+                    projection.get(&token_id).copied().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "tokenizer projection {} does not contain raw token {}",
+                            projection_path.display(),
+                            token_id
+                        )
+                    })
+                })
+                .collect()
+        }
+        (false, false) => {
+            anyhow::bail!(
+                "missing required paper Engram history: provide --canonical-history/--canonical-history-file or --raw-history/--raw-history-file with --tokenizer-projection"
+            );
+        }
+    }
 }
 
 fn run_lingqu_memory_publish_paper_engram_state_ref_cli(args: &[String]) -> anyhow::Result<()> {
@@ -12225,7 +12269,8 @@ mod tests {
         lingqu_object_payload_checksum, lingqu_object_service_args_from,
         load_lingqu_memory_durable_store, load_lingqu_object_service_snapshot,
         load_lingqu_object_service_snapshot_file, load_w5_memory_decisions_from_store,
-        parse_summary_fields, parse_u64_csv_arg_or_file, parse_w5_terminal_logits_observation,
+        parse_paper_engram_canonical_history_arg_or_file, parse_summary_fields,
+        parse_u64_csv_arg_or_file, parse_w5_terminal_logits_observation,
         publish_w5_engram_state_ref_from_memory, publish_w5_engram_state_ref_from_memory_objects,
         publish_w5_execution_artifact_ref, publish_w5_memory_decision_artifact_refs,
         publish_w5_object_service_payload_ref, qwen3_decode_loop_args_from,
@@ -16427,6 +16472,49 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         assert_eq!(row_blocks.block_payload_refs, shard.block_payload_refs);
         let canonical_history_file = root.join("canonical_history.txt");
         fs::write(&canonical_history_file, "7\n8\n9").expect("write canonical history file");
+        let runtime_projection_path = root.join("runtime_tokenizer_projection.json");
+        let runtime_projection = Qwen3DenseReferenceTokenizerProjection {
+            model_id: "qwen3-runtime-cli-projection".to_string(),
+            tokenizer_family: "qwen3".to_string(),
+            source: "fixture://qwen3-runtime-cli-projection".to_string(),
+            source_checksum: 1,
+            total_raw_tokens: 3,
+            total_canonical_tokens: 3,
+            total_special_tokens: 0,
+            merged_token_count: 0,
+            merge_special_tokens: false,
+            compression_milli: 1000,
+            aggregate_checksum: 0x1234,
+            raw_to_canonical: vec![
+                Qwen3DenseReferenceTokenizerProjectionEntry {
+                    raw_token_id: 70,
+                    raw_token_piece: "raw-70".to_string(),
+                    canonical_token_piece: "canonical-7".to_string(),
+                    canonical_token_id: 7,
+                    is_special: false,
+                },
+                Qwen3DenseReferenceTokenizerProjectionEntry {
+                    raw_token_id: 80,
+                    raw_token_piece: "raw-80".to_string(),
+                    canonical_token_piece: "canonical-8".to_string(),
+                    canonical_token_id: 8,
+                    is_special: false,
+                },
+                Qwen3DenseReferenceTokenizerProjectionEntry {
+                    raw_token_id: 90,
+                    raw_token_piece: "raw-90".to_string(),
+                    canonical_token_piece: "canonical-9".to_string(),
+                    canonical_token_id: 9,
+                    is_special: false,
+                },
+            ],
+            collision_classes: Vec::new(),
+        };
+        fs::write(
+            &runtime_projection_path,
+            serde_json::to_vec(&runtime_projection).expect("encode runtime tokenizer projection"),
+        )
+        .expect("write runtime tokenizer projection");
         let row_prefetch_output = root.join("row_prefetch.json");
         run_lingqu_memory_plan_paper_engram_row_prefetch_cli(&[
             "--store".to_string(),
@@ -16470,6 +16558,28 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             )
             .expect("decode row prefetch plan from file");
         assert_eq!(row_prefetch_file.rows, row_prefetch.rows);
+        let row_prefetch_raw_output = root.join("row_prefetch_raw.json");
+        run_lingqu_memory_plan_paper_engram_row_prefetch_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--module-id".to_string(),
+            module.module_id.clone(),
+            "--raw-history".to_string(),
+            "70,80,90".to_string(),
+            "--tokenizer-projection".to_string(),
+            runtime_projection_path.display().to_string(),
+            "--from-step".to_string(),
+            "0".to_string(),
+            "--output".to_string(),
+            row_prefetch_raw_output.display().to_string(),
+        ])
+        .expect("plan paper Engram row prefetch from raw history");
+        let row_prefetch_raw =
+            serde_json::from_slice::<sim_memory::PaperEngramTableRowPrefetchPlan>(
+                &fs::read(&row_prefetch_raw_output).expect("read row prefetch plan from raw"),
+            )
+            .expect("decode row prefetch plan from raw");
+        assert_eq!(row_prefetch_raw.rows, row_prefetch.rows);
         run_lingqu_memory_publish_paper_engram_row_prefetch_cli(&[
             "--store".to_string(),
             store.display().to_string(),
@@ -16500,6 +16610,23 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             "0".to_string(),
         ])
         .expect("publish paper Engram row prefetch from file");
+        run_lingqu_memory_publish_paper_engram_row_prefetch_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--object-store".to_string(),
+            object_store.display().to_string(),
+            "--module-id".to_string(),
+            module.module_id.clone(),
+            "--registry-dir".to_string(),
+            registry_dir.display().to_string(),
+            "--raw-history".to_string(),
+            "70,80,90".to_string(),
+            "--tokenizer-projection".to_string(),
+            runtime_projection_path.display().to_string(),
+            "--from-step".to_string(),
+            "0".to_string(),
+        ])
+        .expect("publish paper Engram row prefetch from raw history");
         let snapshot_path = registry_dir.join("lingqu_object_service_snapshot.json");
         assert!(snapshot_path.exists());
         let snapshot = load_lingqu_object_service_snapshot_file(&object_store)
@@ -16580,6 +16707,92 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         assert!(err.to_string().contains("conflicting arguments"));
 
         fs::remove_dir_all(&root).expect("remove u64 csv temp dir");
+    }
+
+    #[test]
+    fn paper_engram_history_parser_projects_raw_tokens_to_canonical() {
+        let root = env::temp_dir().join(format!(
+            "paper-engram-history-projection-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create paper engram history temp dir");
+        let projection_path = root.join("tokenizer_projection.json");
+        let projection = Qwen3DenseReferenceTokenizerProjection {
+            model_id: "qwen3-history-parser-test".to_string(),
+            tokenizer_family: "qwen3".to_string(),
+            source: "fixture://qwen3-history-parser-test".to_string(),
+            source_checksum: 1,
+            total_raw_tokens: 3,
+            total_canonical_tokens: 3,
+            total_special_tokens: 0,
+            merged_token_count: 0,
+            merge_special_tokens: false,
+            compression_milli: 1000,
+            aggregate_checksum: 0x1234,
+            raw_to_canonical: vec![
+                Qwen3DenseReferenceTokenizerProjectionEntry {
+                    raw_token_id: 70,
+                    raw_token_piece: "raw-70".to_string(),
+                    canonical_token_piece: "canonical-7".to_string(),
+                    canonical_token_id: 7,
+                    is_special: false,
+                },
+                Qwen3DenseReferenceTokenizerProjectionEntry {
+                    raw_token_id: 80,
+                    raw_token_piece: "raw-80".to_string(),
+                    canonical_token_piece: "canonical-8".to_string(),
+                    canonical_token_id: 8,
+                    is_special: false,
+                },
+                Qwen3DenseReferenceTokenizerProjectionEntry {
+                    raw_token_id: 90,
+                    raw_token_piece: "raw-90".to_string(),
+                    canonical_token_piece: "canonical-9".to_string(),
+                    canonical_token_id: 9,
+                    is_special: false,
+                },
+            ],
+            collision_classes: Vec::new(),
+        };
+        fs::write(
+            &projection_path,
+            serde_json::to_vec(&projection).expect("encode tokenizer projection"),
+        )
+        .expect("write tokenizer projection");
+        let args = vec![
+            "--raw-history".to_string(),
+            "70,80,90".to_string(),
+            "--tokenizer-projection".to_string(),
+            projection_path.to_string_lossy().to_string(),
+        ];
+
+        let history =
+            parse_paper_engram_canonical_history_arg_or_file(&args).expect("project raw history");
+        assert_eq!(history, vec![7, 8, 9]);
+
+        fs::remove_dir_all(&root).expect("remove paper engram history temp dir");
+    }
+
+    #[test]
+    fn paper_engram_history_parser_rejects_raw_tokens_without_projection() {
+        let args = vec!["--raw-history".to_string(), "70,80,90".to_string()];
+        let err = parse_paper_engram_canonical_history_arg_or_file(&args)
+            .expect_err("raw history without projection should fail");
+        assert!(err.to_string().contains("--tokenizer-projection"));
+    }
+
+    #[test]
+    fn paper_engram_history_parser_rejects_mixed_raw_and_canonical_history() {
+        let args = vec![
+            "--canonical-history".to_string(),
+            "7,8,9".to_string(),
+            "--raw-history".to_string(),
+            "70,80,90".to_string(),
+        ];
+        let err = parse_paper_engram_canonical_history_arg_or_file(&args)
+            .expect_err("mixed history should fail");
+        assert!(err.to_string().contains("conflicting paper Engram history"));
     }
 
     #[test]
