@@ -13,7 +13,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sim_core::{BlockHash, SegmentHandle, TensorDType};
 use sim_models::engram_hash::{
-    build_engram_lookup_requests_from_step, Qwen3DenseReferenceEngramHashConfig,
+    build_engram_lookup_requests_from_step, engram_hash_table_specs,
+    Qwen3DenseReferenceEngramHashConfig, Qwen3DenseReferenceEngramHashTableSpec,
     ENGRAM_HASH_ALGORITHM_VERSION,
 };
 use sim_services::block::BlockServiceProfile;
@@ -1038,6 +1039,8 @@ pub struct PaperEngramHashConfigManifest {
     pub orders: Vec<u8>,
     pub heads_per_order: u32,
     pub table_rows: u64,
+    #[serde(default)]
+    pub table_specs: Vec<Qwen3DenseReferenceEngramHashTableSpec>,
     pub seed: u64,
     pub algorithm: String,
     pub source_ref: Option<String>,
@@ -1051,6 +1054,20 @@ impl PaperEngramHashConfigManifest {
     pub fn new(mut manifest: PaperEngramHashConfigManifest) -> MemoryResult<Self> {
         manifest.orders.sort();
         manifest.orders.dedup();
+        if manifest.table_specs.is_empty() {
+            manifest.table_specs = paper_engram_default_hash_table_specs(
+                &manifest.orders,
+                manifest.heads_per_order,
+                manifest.table_rows,
+                manifest.seed,
+            )?;
+        } else {
+            manifest.table_specs.sort_by(|left, right| {
+                left.order
+                    .cmp(&right.order)
+                    .then_with(|| left.head.cmp(&right.head))
+            });
+        }
         manifest.checksum = paper_engram_hash_config_manifest_checksum(&manifest);
         manifest.validate()?;
         Ok(manifest)
@@ -1101,6 +1118,11 @@ impl PaperEngramHashConfigManifest {
             "paper_engram_hash_config.heads_per_order",
         )?;
         nonzero(self.table_rows, "paper_engram_hash_config.table_rows")?;
+        validate_paper_engram_hash_table_specs(
+            &self.orders,
+            self.heads_per_order,
+            &self.table_specs,
+        )?;
         required_str(&self.algorithm, "paper_engram_hash_config.algorithm")?;
         if self.algorithm != ENGRAM_HASH_ALGORITHM_VERSION {
             return Err(LingquMemoryError::InvalidValue {
@@ -1145,6 +1167,82 @@ impl PaperEngramHashConfigManifest {
         manifest.validate()?;
         Ok(manifest)
     }
+}
+
+fn paper_engram_default_hash_table_specs(
+    orders: &[u8],
+    heads_per_order: u32,
+    table_rows: u64,
+    seed: u64,
+) -> MemoryResult<Vec<Qwen3DenseReferenceEngramHashTableSpec>> {
+    let heads_per_order =
+        usize::try_from(heads_per_order).map_err(|_| LingquMemoryError::InvalidValue {
+            field: "paper_engram_hash_config.heads_per_order",
+            reason: "heads_per_order exceeds host usize",
+        })?;
+    let config = Qwen3DenseReferenceEngramHashConfig {
+        version: 1,
+        projection_checksum: 1,
+        orders: orders.to_vec(),
+        heads_per_order,
+        table_rows,
+        seed,
+        algorithm: ENGRAM_HASH_ALGORITHM_VERSION.to_string(),
+        table_specs: Vec::new(),
+    };
+    engram_hash_table_specs(&config).map_err(|_| LingquMemoryError::InvalidValue {
+        field: "paper_engram_hash_config.table_specs",
+        reason: "hash table specs could not be derived",
+    })
+}
+
+fn validate_paper_engram_hash_table_specs(
+    orders: &[u8],
+    heads_per_order: u32,
+    table_specs: &[Qwen3DenseReferenceEngramHashTableSpec],
+) -> MemoryResult<()> {
+    if table_specs.is_empty() {
+        return Ok(());
+    }
+    let mut seen = BTreeSet::new();
+    for spec in table_specs {
+        if !orders.contains(&spec.order) {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_hash_config.table_specs",
+                reason: "table spec order must be declared by hash config",
+            });
+        }
+        if u32::from(spec.head) >= heads_per_order {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_hash_config.table_specs",
+                reason: "table spec head must be less than heads_per_order",
+            });
+        }
+        nonzero(
+            spec.table_rows,
+            "paper_engram_hash_config.table_specs.table_rows",
+        )?;
+        if !seen.insert((spec.order, spec.head)) {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_hash_config.table_specs",
+                reason: "duplicate table spec",
+            });
+        }
+    }
+    for &order in orders {
+        for head in 0..heads_per_order {
+            let head = u16::try_from(head).map_err(|_| LingquMemoryError::InvalidValue {
+                field: "paper_engram_hash_config.heads_per_order",
+                reason: "heads_per_order exceeds table spec head range",
+            })?;
+            if !seen.contains(&(order, head)) {
+                return Err(LingquMemoryError::MissingField(
+                    "paper_engram_hash_config.table_specs",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2080,6 +2178,12 @@ fn paper_engram_hash_config_manifest_checksum(manifest: &PaperEngramHashConfigMa
     }
     bytes.extend_from_slice(&manifest.heads_per_order.to_le_bytes());
     bytes.extend_from_slice(&manifest.table_rows.to_le_bytes());
+    for spec in &manifest.table_specs {
+        bytes.extend_from_slice(&(spec.order as u64).to_le_bytes());
+        bytes.extend_from_slice(&(spec.head as u64).to_le_bytes());
+        bytes.extend_from_slice(&spec.table_rows.to_le_bytes());
+        bytes.extend_from_slice(&spec.seed.to_le_bytes());
+    }
     bytes.extend_from_slice(&manifest.seed.to_le_bytes());
     push_checksum_str(&mut bytes, &manifest.algorithm);
     if let Some(source_ref) = &manifest.source_ref {
@@ -8900,10 +9004,12 @@ impl LingquMemoryService {
                 reason: "requested head must be less than module heads_per_order",
             });
         }
-        if req.row_end > runtime.hash_config.table_rows {
+        let table_rows =
+            paper_engram_hash_config_table_rows(&runtime.hash_config, req.order, req.head)?;
+        if req.row_end > table_rows {
             return Err(LingquMemoryError::InvalidValue {
                 field: "paper_engram_table_row_block.row_range",
-                reason: "requested row range must fit hash config table_rows",
+                reason: "requested row range must fit hash config table spec rows",
             });
         }
         let shard = runtime
@@ -9064,6 +9170,7 @@ fn paper_engram_lookup_hash_config(
             reason: "heads_per_order exceeds host usize",
         }
     })?;
+    let table_specs = paper_engram_hash_config_table_specs(&runtime.hash_config)?;
     Ok(Qwen3DenseReferenceEngramHashConfig {
         version: runtime.hash_config.version,
         projection_checksum: runtime.tokenizer_projection.projection_checksum,
@@ -9072,8 +9179,37 @@ fn paper_engram_lookup_hash_config(
         table_rows: runtime.hash_config.table_rows,
         seed: runtime.hash_config.seed,
         algorithm: runtime.hash_config.algorithm.clone(),
-        table_specs: Vec::new(),
+        table_specs,
     })
+}
+
+fn paper_engram_hash_config_table_specs(
+    hash_config: &PaperEngramHashConfigManifest,
+) -> MemoryResult<Vec<Qwen3DenseReferenceEngramHashTableSpec>> {
+    if !hash_config.table_specs.is_empty() {
+        return Ok(hash_config.table_specs.clone());
+    }
+    paper_engram_default_hash_table_specs(
+        &hash_config.orders,
+        hash_config.heads_per_order,
+        hash_config.table_rows,
+        hash_config.seed,
+    )
+}
+
+fn paper_engram_hash_config_table_rows(
+    hash_config: &PaperEngramHashConfigManifest,
+    order: u8,
+    head: u32,
+) -> MemoryResult<u64> {
+    let specs = paper_engram_hash_config_table_specs(hash_config)?;
+    specs
+        .into_iter()
+        .find(|spec| spec.order == order && u32::from(spec.head) == head)
+        .map(|spec| spec.table_rows)
+        .ok_or(LingquMemoryError::MissingField(
+            "paper_engram_hash_config.table_specs",
+        ))
 }
 
 fn resolve_paper_engram_module_gates(
@@ -9223,6 +9359,7 @@ fn validate_paper_engram_table_row_coverage(
     for &layer in &module.layers {
         for &order in &module.orders {
             for head in 0..module.heads_per_order {
+                let table_rows = paper_engram_hash_config_table_rows(hash_config, order, head)?;
                 let mut matching = shards
                     .iter()
                     .filter(|shard| {
@@ -9238,10 +9375,10 @@ fn validate_paper_engram_table_row_coverage(
 
                 let mut next_row = 0;
                 for shard in matching {
-                    if shard.row_end > hash_config.table_rows {
+                    if shard.row_end > table_rows {
                         return Err(LingquMemoryError::InvalidValue {
                             field: "paper_engram_table_shard.row_range",
-                            reason: "table shard row range must fit hash config table_rows",
+                            reason: "table shard row range must fit hash config table spec rows",
                         });
                     }
                     if shard.row_start < next_row {
@@ -9257,7 +9394,7 @@ fn validate_paper_engram_table_row_coverage(
                     }
                     next_row = shard.row_end;
                 }
-                if next_row < hash_config.table_rows {
+                if next_row < table_rows {
                     return Err(LingquMemoryError::MissingField(
                         "paper_engram_runtime.table_row_block",
                     ));
@@ -10822,6 +10959,14 @@ mod tests {
 
         assert!(projection.checksum != 0);
         assert!(hash_config.checksum != 0);
+        assert_eq!(hash_config.table_specs.len(), 1);
+        assert_eq!(hash_config.table_specs[0].order, 2);
+        assert_eq!(hash_config.table_specs[0].head, 0);
+        assert_eq!(
+            hash_config.table_specs[0].table_rows,
+            hash_config.table_rows
+        );
+        assert_eq!(hash_config.table_specs[0].seed, hash_config.seed);
         assert!(shard.checksum != 0);
         assert!(gate.checksum != 0);
         assert!(module.checksum != 0);
@@ -10871,6 +11016,64 @@ mod tests {
         let mut corrupted_module = module;
         corrupted_module.checksum ^= 1;
         assert!(corrupted_module.validate().is_err());
+    }
+
+    #[test]
+    fn paper_engram_hash_config_accepts_legacy_manifest_without_table_specs() {
+        let mut legacy = sample_paper_engram_hash_config_manifest();
+        legacy.table_specs.clear();
+        legacy.checksum = paper_engram_hash_config_manifest_checksum(&legacy);
+        legacy
+            .validate()
+            .expect("legacy hash config without table specs should remain valid");
+        let mut value = serde_json::to_value(&legacy).expect("encode legacy hash config");
+        value
+            .as_object_mut()
+            .expect("legacy hash config JSON object")
+            .remove("table_specs");
+        let bytes = serde_json::to_vec_pretty(&value).expect("encode legacy hash config JSON");
+        let decoded = PaperEngramHashConfigManifest::from_json_bytes(&bytes)
+            .expect("decode legacy hash config without table specs");
+        assert!(decoded.table_specs.is_empty());
+        assert_eq!(decoded.checksum, legacy.checksum);
+    }
+
+    #[test]
+    fn paper_engram_hash_config_rejects_incomplete_table_specs() {
+        let projection = sample_paper_engram_tokenizer_projection_manifest();
+        let mut hash_config = PaperEngramHashConfigManifest {
+            hash_config_id: "pe-hash-config-incomplete-specs".to_string(),
+            model_id: "Qwen3-0.6B".to_string(),
+            tokenizer_projection_id: projection.projection_id,
+            tokenizer_projection_checksum: projection.projection_checksum,
+            hash_config_ref: LingquDfsPath::new(
+                "/lingqu/memory/engram/hash-config-incomplete-specs.json",
+            ),
+            hash_config_checksum: 0x2470,
+            orders: vec![2],
+            heads_per_order: 2,
+            table_rows: 1024,
+            table_specs: vec![Qwen3DenseReferenceEngramHashTableSpec {
+                order: 2,
+                head: 0,
+                table_rows: 1024,
+                seed: 0x1234_5678,
+            }],
+            seed: 0x1234_5678,
+            algorithm: ENGRAM_HASH_ALGORITHM_VERSION.to_string(),
+            source_ref: Some("dfs://pe/hash/incomplete-specs".to_string()),
+            checksum: 1,
+            version: 1,
+            created_at_us: 9,
+            expires_at_us: Some(900),
+        };
+        hash_config.checksum = paper_engram_hash_config_manifest_checksum(&hash_config);
+        assert_eq!(
+            hash_config
+                .validate()
+                .expect_err("non-empty table specs must cover every order/head"),
+            LingquMemoryError::MissingField("paper_engram_hash_config.table_specs")
+        );
     }
 
     #[test]
@@ -11158,7 +11361,7 @@ mod tests {
                 .expect_err("module must reject shard rows beyond hash config"),
             LingquMemoryError::InvalidValue {
                 field: "paper_engram_table_shard.row_range",
-                reason: "table shard row range must fit hash config table_rows"
+                reason: "table shard row range must fit hash config table spec rows"
             }
         );
     }
@@ -11608,6 +11811,85 @@ mod tests {
                 shard.block_payload_refs[0].clone(),
                 shard.block_payload_refs[1].clone()
             ]
+        );
+    }
+
+    #[test]
+    fn paper_engram_row_block_resolution_uses_table_spec_rows() {
+        let mut service = LingquMemoryService::new();
+        let projection = sample_paper_engram_tokenizer_projection_manifest();
+        let mut hash_config = sample_paper_engram_hash_config_manifest();
+        hash_config.table_specs[0].table_rows = 512;
+        hash_config.checksum = paper_engram_hash_config_manifest_checksum(&hash_config);
+        hash_config
+            .validate()
+            .expect("build hash config with per-head table rows");
+        let gate = sample_paper_engram_gate_manifest();
+        let mut shard = sample_paper_engram_table_shard_manifest();
+        shard.row_end = 512;
+        shard.shape[0] = 512;
+        shard.block_payload_refs = vec![LingquBlockPayloadRef::new(
+            "block/pe-shard-0",
+            0,
+            512 * 512 * 4,
+            0xabc,
+        )];
+        shard.checksum = paper_engram_table_shard_manifest_checksum(&shard);
+        shard
+            .validate()
+            .expect("build shard covering table spec rows");
+        let mut module = sample_paper_engram_module_manifest();
+        module.table_shard_ids = vec![shard.shard_id.clone()];
+        module.checksum = paper_engram_module_manifest_checksum(&module);
+
+        service
+            .register_paper_engram_tokenizer_projection(projection)
+            .expect("register projection");
+        service
+            .register_paper_engram_hash_config(hash_config)
+            .expect("register hash config");
+        service
+            .register_paper_engram_table_shard(shard.clone())
+            .expect("register shard");
+        service
+            .register_paper_engram_gate(gate)
+            .expect("register gate");
+        service
+            .register_paper_engram_module(module.clone())
+            .expect("register module with per-head row coverage");
+
+        let row_block = service
+            .resolve_paper_engram_table_row_blocks(PaperEngramTableRowBlockRequest {
+                request_id: "row-blocks/table-spec-ok".to_string(),
+                module_id: module.module_id.clone(),
+                layer: 3,
+                order: 2,
+                head: 0,
+                row_start: 511,
+                row_end: 512,
+                created_at_us: 17,
+            })
+            .expect("resolve last row covered by table spec");
+        assert_eq!(row_block.shard_id, shard.shard_id);
+        assert_eq!(row_block.shard_row_end, 512);
+
+        assert_eq!(
+            service
+                .resolve_paper_engram_table_row_blocks(PaperEngramTableRowBlockRequest {
+                    request_id: "row-blocks/table-spec-oob".to_string(),
+                    module_id: module.module_id,
+                    layer: 3,
+                    order: 2,
+                    head: 0,
+                    row_start: 512,
+                    row_end: 513,
+                    created_at_us: 18,
+                })
+                .expect_err("row beyond per-head table spec should fail"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_table_row_block.row_range",
+                reason: "requested row range must fit hash config table spec rows"
+            }
         );
     }
 
@@ -12241,6 +12523,13 @@ mod tests {
         let mut hash_config = sample_paper_engram_hash_config_manifest();
         hash_config.orders = vec![2, 3];
         hash_config.heads_per_order = 1;
+        hash_config.table_specs = paper_engram_default_hash_table_specs(
+            &hash_config.orders,
+            hash_config.heads_per_order,
+            hash_config.table_rows,
+            hash_config.seed,
+        )
+        .expect("build complete hash table specs");
         hash_config.checksum = paper_engram_hash_config_manifest_checksum(&hash_config);
         let shard = sample_paper_engram_table_shard_manifest();
         let gate = sample_paper_engram_gate_manifest();
@@ -14070,7 +14359,7 @@ mod tests {
 
     fn sample_paper_engram_hash_config_manifest() -> PaperEngramHashConfigManifest {
         let projection = sample_paper_engram_tokenizer_projection_manifest();
-        let mut manifest = PaperEngramHashConfigManifest {
+        PaperEngramHashConfigManifest::new(PaperEngramHashConfigManifest {
             hash_config_id: "pe-hash-config-0".to_string(),
             model_id: "Qwen3-0.6B".to_string(),
             tokenizer_projection_id: projection.projection_id,
@@ -14080,6 +14369,7 @@ mod tests {
             orders: vec![2],
             heads_per_order: 1,
             table_rows: 1024,
+            table_specs: Vec::new(),
             seed: 0x1234_5678,
             algorithm: ENGRAM_HASH_ALGORITHM_VERSION.to_string(),
             source_ref: Some("dfs://pe/hash/run-0".to_string()),
@@ -14087,10 +14377,8 @@ mod tests {
             version: 1,
             created_at_us: 9,
             expires_at_us: Some(900),
-        };
-        manifest.checksum = paper_engram_hash_config_manifest_checksum(&manifest);
-        manifest.validate().expect("build paper engram hash config");
-        manifest
+        })
+        .expect("build paper engram hash config")
     }
 
     fn sample_paper_engram_table_shard_manifest() -> PaperEngramTableShardManifest {
