@@ -2233,6 +2233,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "register-paper-engram-gate" => run_lingqu_memory_register_paper_engram_gate_cli(&args),
         "register-paper-engram-module" => run_lingqu_memory_register_paper_engram_module_cli(&args),
         "import-paper-engram-module" => run_lingqu_memory_import_paper_engram_module_cli(&args),
+        "validate-paper-engram-module" => run_lingqu_memory_validate_paper_engram_module_cli(&args),
         "validate-paper-engram-quality" => {
             run_lingqu_memory_validate_paper_engram_quality_cli(&args)
         }
@@ -2267,7 +2268,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
             list-query-results, list-artifact-access, list-boundary-observations, \
             list-record-lifecycle, list-shortpath-supports, list-shortpath-decisions, \
             list-prefetch-plans, list-prefix-cache-reuse, list-paper-engram-modules, \
-            resolve-paper-engram-runtime, resolve-paper-engram-table-row-blocks, \
+            validate-paper-engram-module, resolve-paper-engram-runtime, resolve-paper-engram-table-row-blocks, \
             plan-paper-engram-row-prefetch, publish-paper-engram-row-prefetch, publish-paper-engram-state-ref, \
             register-paper-engram-tokenizer-projection, register-paper-engram-hash-config, \
             register-paper-engram-training-recipe, register-paper-engram-eval-report, \
@@ -3445,6 +3446,36 @@ fn run_lingqu_memory_validate_paper_engram_quality_cli(args: &[String]) -> anyho
     println!("  store_path: {}", store_path.display());
     println!("  module_id: {}", module_id);
     println!("  quality: valid");
+    Ok(())
+}
+
+fn run_lingqu_memory_validate_paper_engram_module_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let module_id = required_cli_arg(args, "--module-id")?;
+    let require_quality = cli_flag(args, "--require-quality");
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let mut memory_service = LingquMemoryService::new();
+    rebuild_lingqu_memory_all_paper_engram_registries(&mut memory_service, &mut durable_store)
+        .context("rebuild paper engram registries")?;
+    let runtime = memory_service
+        .resolve_paper_engram_runtime_artifacts(&module_id)
+        .context("resolve paper engram runtime artifacts")?;
+    if require_quality {
+        memory_service
+            .validate_paper_engram_module_quality(&module_id)
+            .context("validate paper engram module quality")?;
+    }
+
+    println!("lingqu_memory_service");
+    println!("  mode: validate-paper-engram-module");
+    println!("  store_path: {}", store_path.display());
+    println!("  module_id: {}", runtime.module.module_id);
+    println!("  quality_claim: {:?}", runtime.module.quality_claim);
+    println!("  runtime: valid");
+    println!("  quality_required: {}", require_quality);
+    println!("  table_shards: {}", runtime.table_shards.len());
+    println!("  gates: {}", runtime.gates.len());
+    println!("  layers: {}", runtime.layer_operands.len());
     Ok(())
 }
 
@@ -12934,7 +12965,8 @@ mod tests {
         run_lingqu_memory_resolve_paper_engram_table_row_blocks_cli,
         run_lingqu_memory_seed_paper_engram_fixture_cli, run_lingqu_memory_update_record_state_cli,
         run_lingqu_memory_validate_durable_store, run_lingqu_memory_validate_flat_materialize,
-        run_lingqu_memory_validate_flat_query, run_lingqu_memory_validate_paper_engram_quality_cli,
+        run_lingqu_memory_validate_flat_query, run_lingqu_memory_validate_paper_engram_module_cli,
+        run_lingqu_memory_validate_paper_engram_quality_cli,
         run_lingqu_memory_validate_w5_engram_object_ref, run_qwen3_guest_decode_loop_cli,
         run_qwen3_tokenizer_projection_cli, run_w5_runtime_boundary_lookups,
         save_lingqu_durable_sim, save_lingqu_memory_durable_store,
@@ -17724,6 +17756,13 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             "pe-module-fixture-cli".to_string(),
         ])
         .expect("resolve seeded paper engram fixture runtime");
+        run_lingqu_memory_validate_paper_engram_module_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--module-id".to_string(),
+            "pe-module-fixture-cli".to_string(),
+        ])
+        .expect("validate seeded paper engram fixture module");
         let mut durable =
             load_lingqu_memory_durable_store(&store).expect("load seeded paper engram store");
         let mut memory_service = sim_memory::LingquMemoryService::new();
@@ -18297,6 +18336,14 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             module.module_id.clone(),
         ])
         .expect("validate paper engram quality evidence");
+        run_lingqu_memory_validate_paper_engram_module_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--module-id".to_string(),
+            module.module_id.clone(),
+            "--require-quality".to_string(),
+        ])
+        .expect("validate paper engram module runtime and quality evidence");
 
         let mut durable =
             load_lingqu_memory_durable_store(&store).expect("reload paper quality store");
