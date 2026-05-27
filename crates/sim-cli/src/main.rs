@@ -3844,6 +3844,17 @@ fn paper_engram_module_id_from_cli(
     Ok(module.module_id.clone())
 }
 
+fn paper_engram_module_id_from_store_cli(
+    args: &[String],
+    store_path: &Path,
+) -> anyhow::Result<String> {
+    let mut durable_store = load_lingqu_memory_durable_store(store_path)?;
+    let mut memory_service = LingquMemoryService::new();
+    rebuild_lingqu_memory_all_paper_engram_registries(&mut memory_service, &mut durable_store)
+        .context("rebuild paper engram registries")?;
+    paper_engram_module_id_from_cli(args, &memory_service)
+}
+
 struct ScopedEnvVars {
     previous: Vec<(&'static str, Option<OsString>)>,
 }
@@ -4602,7 +4613,6 @@ fn run_lingqu_memory_resolve_paper_engram_table_row_blocks_cli(
     args: &[String],
 ) -> anyhow::Result<()> {
     let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
-    let module_id = required_cli_arg(args, "--module-id")?;
     let layer = required_cli_u64(args, "--layer")?;
     let order = required_cli_u64(args, "--order")?;
     let head = required_cli_u64(args, "--head")?;
@@ -4616,6 +4626,7 @@ fn run_lingqu_memory_resolve_paper_engram_table_row_blocks_cli(
     rebuild_lingqu_memory_all_paper_engram_registries(&mut memory_service, &mut durable_store)
         .context("rebuild paper engram registries")?;
 
+    let module_id = paper_engram_module_id_from_cli(args, &memory_service)?;
     let request = PaperEngramTableRowBlockRequest {
         request_id: format!(
             "paper-engram-row-blocks/{module_id}/layer-{layer}/order-{order}/head-{head}/rows-{row_start}-{row_end}"
@@ -4667,7 +4678,6 @@ fn run_lingqu_memory_resolve_paper_engram_table_row_blocks_cli(
 
 fn run_lingqu_memory_plan_paper_engram_row_prefetch_cli(args: &[String]) -> anyhow::Result<()> {
     let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
-    let module_id = required_cli_arg(args, "--module-id")?;
     let canonical_history = parse_paper_engram_canonical_history_arg_or_file(args)?;
     let from_step = optional_cli_u64(args, "--from-step")?.unwrap_or(0);
     let now_us = optional_cli_u64(args, "--now-us")?.unwrap_or(1);
@@ -4678,6 +4688,7 @@ fn run_lingqu_memory_plan_paper_engram_row_prefetch_cli(args: &[String]) -> anyh
     rebuild_lingqu_memory_all_paper_engram_registries(&mut memory_service, &mut durable_store)
         .context("rebuild paper engram registries")?;
 
+    let module_id = paper_engram_module_id_from_cli(args, &memory_service)?;
     let request = PaperEngramTableRowPrefetchRequest {
         request_id: format!("paper-engram-row-prefetch/{module_id}/from-{from_step}"),
         module_id,
@@ -4723,7 +4734,7 @@ fn run_lingqu_memory_plan_paper_engram_row_prefetch_cli(args: &[String]) -> anyh
 fn run_lingqu_memory_publish_paper_engram_row_prefetch_cli(args: &[String]) -> anyhow::Result<()> {
     let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
     let object_store_path = PathBuf::from(required_cli_arg(args, "--object-store")?);
-    let module_id = required_cli_arg(args, "--module-id")?;
+    let module_id = paper_engram_module_id_from_store_cli(args, &store_path)?;
     let registry_dir = PathBuf::from(required_cli_arg(args, "--registry-dir")?);
     let canonical_history = parse_paper_engram_canonical_history_arg_or_file(args)?;
     let from_step = optional_cli_u64(args, "--from-step")?.unwrap_or(0);
@@ -4818,7 +4829,7 @@ fn parse_paper_engram_canonical_history_arg_or_file(args: &[String]) -> anyhow::
 fn run_lingqu_memory_publish_paper_engram_state_ref_cli(args: &[String]) -> anyhow::Result<()> {
     let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
     let object_store_path = PathBuf::from(required_cli_arg(args, "--object-store")?);
-    let module_id = required_cli_arg(args, "--module-id")?;
+    let module_id = paper_engram_module_id_from_store_cli(args, &store_path)?;
     let registry_dir = PathBuf::from(required_cli_arg(args, "--registry-dir")?);
     let owner_entity = optional_cli_u64(args, "--owner-entity")?.unwrap_or(0);
     let producer_entity = optional_cli_u64(args, "--producer-entity")?.unwrap_or(0);
@@ -17892,6 +17903,35 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         .expect("decode row block response");
         assert_eq!(row_blocks.shard_id, shard.shard_id);
         assert_eq!(row_blocks.block_payload_refs, shard.block_payload_refs);
+        let row_blocks_by_model_output = root.join("row_blocks_by_model.json");
+        run_lingqu_memory_resolve_paper_engram_table_row_blocks_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--model-id".to_string(),
+            module.model.model_id.clone(),
+            "--engram-id".to_string(),
+            module.module_name.clone(),
+            "--layer".to_string(),
+            "3".to_string(),
+            "--order".to_string(),
+            "2".to_string(),
+            "--head".to_string(),
+            "0".to_string(),
+            "--row-start".to_string(),
+            "1".to_string(),
+            "--row-end".to_string(),
+            "2".to_string(),
+            "--output".to_string(),
+            row_blocks_by_model_output.display().to_string(),
+        ])
+        .expect("resolve paper Engram row block refs by model and engram id");
+        let row_blocks_by_model = serde_json::from_slice::<
+            sim_memory::PaperEngramTableRowBlockResponse,
+        >(
+            &fs::read(&row_blocks_by_model_output).expect("read model-scoped row block response"),
+        )
+        .expect("decode model-scoped row block response");
+        assert_eq!(row_blocks_by_model, row_blocks);
         let canonical_history_file = root.join("canonical_history.txt");
         fs::write(&canonical_history_file, "7\n8\n9").expect("write canonical history file");
         let runtime_projection_path = root.join("runtime_tokenizer_projection.json");
@@ -17960,6 +18000,29 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             .rows
             .iter()
             .all(|row| row.shard_id == shard.shard_id));
+        let row_prefetch_by_model_output = root.join("row_prefetch_by_model.json");
+        run_lingqu_memory_plan_paper_engram_row_prefetch_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--model-id".to_string(),
+            module.model.model_id.clone(),
+            "--engram-id".to_string(),
+            module.module_name.clone(),
+            "--canonical-history".to_string(),
+            "7,8,9".to_string(),
+            "--from-step".to_string(),
+            "0".to_string(),
+            "--output".to_string(),
+            row_prefetch_by_model_output.display().to_string(),
+        ])
+        .expect("plan paper Engram row prefetch by model and engram id");
+        let row_prefetch_by_model = serde_json::from_slice::<
+            sim_memory::PaperEngramTableRowPrefetchPlan,
+        >(
+            &fs::read(&row_prefetch_by_model_output).expect("read model-scoped row prefetch plan"),
+        )
+        .expect("decode model-scoped row prefetch plan");
+        assert_eq!(row_prefetch_by_model.rows, row_prefetch.rows);
         let row_prefetch_file_output = root.join("row_prefetch_file.json");
         run_lingqu_memory_plan_paper_engram_row_prefetch_cli(&[
             "--store".to_string(),
@@ -18017,6 +18080,23 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             "0".to_string(),
         ])
         .expect("publish paper Engram row prefetch");
+        run_lingqu_memory_publish_paper_engram_row_prefetch_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--object-store".to_string(),
+            object_store.display().to_string(),
+            "--model-id".to_string(),
+            module.model.model_id.clone(),
+            "--engram-id".to_string(),
+            module.module_name.clone(),
+            "--registry-dir".to_string(),
+            registry_dir.display().to_string(),
+            "--canonical-history".to_string(),
+            "7,8,9".to_string(),
+            "--from-step".to_string(),
+            "0".to_string(),
+        ])
+        .expect("publish paper Engram row prefetch by model and engram id");
         run_lingqu_memory_publish_paper_engram_row_prefetch_cli(&[
             "--store".to_string(),
             store.display().to_string(),
@@ -18422,6 +18502,23 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             "0".to_string(),
         ])
         .expect("publish paper engram state ref");
+        run_lingqu_memory_publish_paper_engram_state_ref_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--object-store".to_string(),
+            object_store.display().to_string(),
+            "--model-id".to_string(),
+            module.model.model_id.clone(),
+            "--engram-id".to_string(),
+            module.module_name.clone(),
+            "--registry-dir".to_string(),
+            registry_dir.display().to_string(),
+            "--owner-entity".to_string(),
+            "0".to_string(),
+            "--producer-entity".to_string(),
+            "0".to_string(),
+        ])
+        .expect("publish paper engram state ref by model and engram id");
 
         let snapshot_path = registry_dir.join("lingqu_object_service_snapshot.json");
         assert!(snapshot_path.exists());
