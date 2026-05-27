@@ -2438,6 +2438,37 @@ pub fn paper_engram_hash_config_dfs_path(model_id: &str, version: u64) -> Lingqu
     ))
 }
 
+pub fn paper_engram_table_shard_dfs_path(
+    manifest: &PaperEngramTableShardManifest,
+) -> LingquDfsPath {
+    LingquDfsPath::new(format!(
+        "/lingqu/memory/models/{}/engram/table/layer-{}/order-{}/head-{}/rows-{}-{}.json",
+        lingqu_memory_path_id(&manifest.model_id),
+        manifest.layer,
+        manifest.order,
+        manifest.head,
+        manifest.row_start,
+        manifest.row_end
+    ))
+}
+
+pub fn paper_engram_gate_dfs_path(manifest: &PaperEngramGateManifest) -> LingquDfsPath {
+    LingquDfsPath::new(format!(
+        "/lingqu/memory/models/{}/engram/gate/layer-{}/{}.json",
+        lingqu_memory_path_id(&manifest.model_id),
+        manifest.layer,
+        lingqu_memory_path_id(&manifest.gate_id)
+    ))
+}
+
+pub fn paper_engram_module_dfs_path(manifest: &PaperEngramModuleManifest) -> LingquDfsPath {
+    LingquDfsPath::new(format!(
+        "/lingqu/memory/models/{}/engram/module/{}.json",
+        lingqu_memory_path_id(&manifest.model.model_id),
+        lingqu_memory_path_id(&manifest.module_id)
+    ))
+}
+
 fn validate_paper_engram_model_artifact_ref(
     reference: &LingquDfsPath,
     model_id: &str,
@@ -3642,6 +3673,12 @@ impl LingquMemoryDurableStore {
         &mut self,
         manifests: Vec<PaperEngramTokenizerProjectionManifest>,
     ) -> MemoryResult<LingquDfsPath> {
+        for projection in &manifests {
+            self.submit_dfs_write(
+                projection.projection_ref.path.clone(),
+                projection.to_json_bytes()?,
+            )?;
+        }
         let manifest = PaperEngramTokenizerProjectionManifestCollection::new(manifests)?;
         let bytes = manifest.to_json_bytes()?;
         let path = LingquDfsPath::new(LINGQU_PAPER_ENGRAM_TOKENIZER_PROJECTION_MANIFEST_PATH);
@@ -3660,6 +3697,12 @@ impl LingquMemoryDurableStore {
         &mut self,
         manifests: Vec<PaperEngramHashConfigManifest>,
     ) -> MemoryResult<LingquDfsPath> {
+        for hash_config in &manifests {
+            self.submit_dfs_write(
+                hash_config.hash_config_ref.path.clone(),
+                hash_config.to_json_bytes()?,
+            )?;
+        }
         let manifest = PaperEngramHashConfigManifestCollection::new(manifests)?;
         let bytes = manifest.to_json_bytes()?;
         let path = LingquDfsPath::new(LINGQU_PAPER_ENGRAM_HASH_CONFIG_MANIFEST_PATH);
@@ -3726,6 +3769,12 @@ impl LingquMemoryDurableStore {
         &mut self,
         manifests: Vec<PaperEngramTableShardManifest>,
     ) -> MemoryResult<LingquDfsPath> {
+        for shard in &manifests {
+            self.submit_dfs_write(
+                paper_engram_table_shard_dfs_path(shard).path,
+                shard.to_json_bytes()?,
+            )?;
+        }
         let manifest = PaperEngramTableShardManifestCollection::new(manifests)?;
         let bytes = manifest.to_json_bytes()?;
         let path = LingquDfsPath::new(LINGQU_PAPER_ENGRAM_TABLE_SHARD_MANIFEST_PATH);
@@ -3744,6 +3793,9 @@ impl LingquMemoryDurableStore {
         &mut self,
         manifests: Vec<PaperEngramGateManifest>,
     ) -> MemoryResult<LingquDfsPath> {
+        for gate in &manifests {
+            self.submit_dfs_write(paper_engram_gate_dfs_path(gate).path, gate.to_json_bytes()?)?;
+        }
         let manifest = PaperEngramGateManifestCollection::new(manifests)?;
         let bytes = manifest.to_json_bytes()?;
         let path = LingquDfsPath::new(LINGQU_PAPER_ENGRAM_GATE_MANIFEST_PATH);
@@ -3762,6 +3814,12 @@ impl LingquMemoryDurableStore {
         &mut self,
         entries: Vec<PaperEngramModuleRegistryEntry>,
     ) -> MemoryResult<LingquDfsPath> {
+        for entry in &entries {
+            self.submit_dfs_write(
+                paper_engram_module_dfs_path(&entry.module).path,
+                entry.module.to_json_bytes()?,
+            )?;
+        }
         let manifest = PaperEngramModuleRegistryManifest::new(entries)?;
         let bytes = manifest.to_json_bytes()?;
         let path = LingquDfsPath::new(LINGQU_PAPER_ENGRAM_MODULE_REGISTRY_PATH);
@@ -11959,6 +12017,47 @@ mod tests {
         service
             .persist_paper_engram_modules_to_dfs(&mut durable)
             .expect("persist module manifest");
+
+        let projection_bytes = durable
+            .submit_dfs_read(&projection.projection_ref.path)
+            .expect("read individual tokenizer projection manifest");
+        assert_eq!(
+            PaperEngramTokenizerProjectionManifest::from_json_bytes(&projection_bytes)
+                .expect("decode individual tokenizer projection manifest"),
+            projection
+        );
+        let hash_config_bytes = durable
+            .submit_dfs_read(&hash_config.hash_config_ref.path)
+            .expect("read individual hash config manifest");
+        assert_eq!(
+            PaperEngramHashConfigManifest::from_json_bytes(&hash_config_bytes)
+                .expect("decode individual hash config manifest"),
+            hash_config
+        );
+        let shard_bytes = durable
+            .submit_dfs_read(&paper_engram_table_shard_dfs_path(&shard).path)
+            .expect("read individual table shard manifest");
+        assert_eq!(
+            PaperEngramTableShardManifest::from_json_bytes(&shard_bytes)
+                .expect("decode individual table shard manifest"),
+            shard
+        );
+        let gate_bytes = durable
+            .submit_dfs_read(&paper_engram_gate_dfs_path(&gate).path)
+            .expect("read individual gate manifest");
+        assert_eq!(
+            PaperEngramGateManifest::from_json_bytes(&gate_bytes)
+                .expect("decode individual gate manifest"),
+            gate
+        );
+        let module_bytes = durable
+            .submit_dfs_read(&paper_engram_module_dfs_path(&module).path)
+            .expect("read individual module manifest");
+        assert_eq!(
+            PaperEngramModuleManifest::from_json_bytes(&module_bytes)
+                .expect("decode individual module manifest"),
+            module
+        );
 
         let mut restored = LingquMemoryService::new();
         let rebuilt_projections = restored
