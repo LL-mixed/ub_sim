@@ -2630,24 +2630,171 @@ static int qwen3_read_engram_token_projection_file(
     return 0;
 }
 
-static bool qwen3_guest_engram_repeats_ngram_projected(
-    const struct w4_qwen3_engram_config *config,
-    const uint64_t *history,
-    uint64_t history_len,
-    uint64_t token,
-    uint64_t ngram_size)
+static uint64_t qwen3_guest_engram_checksum_u64(uint64_t checksum, uint64_t value)
+{
+    checksum ^= value;
+    for (uint64_t shift = 0; shift < 8; ++shift) {
+        checksum ^= (uint8_t)((value >> (shift * 8)) & 0xffULL);
+        checksum *= 1099511628211ULL;
+    }
+    return checksum;
+}
+
+static uint64_t qwen3_guest_engram_projected_ngram_checksum(const uint64_t *projected_history,
+                                                           uint64_t start,
+                                                           uint64_t token_count)
+{
+    uint64_t checksum = 0xcbf29ce484222325ULL;
+    uint64_t end = start + token_count;
+
+    for (uint64_t i = start; i < end; ++i) {
+        checksum = qwen3_guest_engram_checksum_u64(checksum, projected_history[i]);
+    }
+    return checksum;
+}
+
+static uint64_t qwen3_guest_engram_history_ngram_checksum(const uint64_t *projected_history,
+                                                         uint64_t history_len,
+                                                         uint64_t ngram_size,
+                                                         uint64_t projected_token)
+{
+    uint64_t prefix_len = ngram_size > 0 ? (ngram_size - 1U) : 0U;
+    uint64_t suffix_start = history_len - prefix_len;
+    uint64_t checksum = qwen3_guest_engram_projected_ngram_checksum(projected_history,
+                                                                    suffix_start,
+                                                                    prefix_len);
+    return qwen3_guest_engram_checksum_u64(checksum, projected_token);
+}
+
+static bool qwen3_guest_engram_build_no_repeat_window_index(const uint64_t *projected_history,
+                                                          uint64_t projected_len,
+                                                          uint64_t ngram_size,
+                                                          uint64_t **keys_out,
+                                                          uint64_t **starts_out,
+                                                          uint64_t *count_out)
+{
+    uint64_t count = 0;
+    uint64_t *keys = NULL;
+    uint64_t *starts = NULL;
+
+    if (!keys_out || !starts_out || !count_out || ngram_size == 0 ||
+        projected_len < ngram_size) {
+        if (keys_out) {
+            *keys_out = NULL;
+        }
+        if (starts_out) {
+            *starts_out = NULL;
+        }
+        if (count_out) {
+            *count_out = 0;
+        }
+        return true;
+    }
+
+    count = projected_len - ngram_size + 1U;
+    keys = (uint64_t *)malloc(sizeof(uint64_t) * (size_t)count);
+    starts = (uint64_t *)malloc(sizeof(uint64_t) * (size_t)count);
+    if (!keys || !starts) {
+        free(keys);
+        free(starts);
+        if (keys_out) {
+            *keys_out = NULL;
+        }
+        if (starts_out) {
+            *starts_out = NULL;
+        }
+        if (count_out) {
+            *count_out = 0;
+        }
+        return false;
+    }
+
+    for (uint64_t i = 0; i < count; ++i) {
+        keys[i] = qwen3_guest_engram_projected_ngram_checksum(projected_history, i, ngram_size);
+        starts[i] = i;
+    }
+    *keys_out = keys;
+    *starts_out = starts;
+    *count_out = count;
+    return true;
+}
+
+static bool qwen3_guest_engram_repeats_no_repeat_index(const uint64_t *projected_history,
+                                                     uint64_t projected_len,
+                                                     const uint64_t *window_keys,
+                                                     const uint64_t *window_starts,
+                                                     uint64_t window_count,
+                                                     uint64_t projected_token,
+                                                     uint64_t ngram_size)
+{
+    uint64_t prefix_len;
+    uint64_t suffix_start;
+    uint64_t suffix_key;
+
+    if (!projected_history || !window_keys || !window_starts || ngram_size == 0 ||
+        projected_len + 1U < ngram_size) {
+        return false;
+    }
+    prefix_len = ngram_size - 1U;
+    if (projected_len < prefix_len) {
+        return false;
+    }
+    suffix_start = projected_len - prefix_len;
+    suffix_key = qwen3_guest_engram_history_ngram_checksum(projected_history,
+                                                           projected_len,
+                                                           ngram_size,
+                                                           projected_token);
+    for (uint64_t idx = 0; idx < window_count; ++idx) {
+        uint64_t start = window_starts[idx];
+
+        if (window_keys[idx] != suffix_key) {
+            continue;
+        }
+        for (uint64_t j = 0; j < prefix_len; ++j) {
+            if (projected_history[start + j] != projected_history[suffix_start + j]) {
+                goto next_window;
+            }
+        }
+        if (projected_history[start + prefix_len] == projected_token) {
+            return true;
+        }
+    next_window:
+        continue;
+    }
+    return false;
+}
+
+static bool qwen3_guest_engram_projected_history_contains(const uint64_t *projected_history,
+                                                        uint64_t projected_len,
+                                                        uint64_t projected_token)
+{
+    if (!projected_history) {
+        return false;
+    }
+    for (uint64_t i = 0; i < projected_len; ++i) {
+        if (projected_history[i] == projected_token) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool qwen3_guest_engram_repeats_no_repeat_scan(const struct w4_qwen3_engram_config *config,
+                                                     const uint64_t *history,
+                                                     uint64_t history_len,
+                                                     uint64_t projected_token,
+                                                     uint64_t ngram_size)
 {
     uint64_t prefix_len;
     uint64_t prefix_start;
 
-    if (!history || ngram_size == 0 || history_len + 1U < ngram_size) {
+    if (!history || !config || ngram_size == 0 || history_len + 1U < ngram_size) {
         return false;
     }
     prefix_len = ngram_size - 1U;
     prefix_start = history_len - prefix_len;
     for (uint64_t i = 0; i + ngram_size <= history_len; ++i) {
         bool prefix_matches = true;
-
         for (uint64_t j = 0; j < prefix_len; ++j) {
             uint64_t lhs =
                 qwen3_guest_engram_projected_token(config, history[i + j]);
@@ -2658,12 +2805,10 @@ static bool qwen3_guest_engram_repeats_ngram_projected(
                 break;
             }
         }
-        if (prefix_matches) {
-            const uint64_t suffix_token =
-                qwen3_guest_engram_projected_token(config, history[i + prefix_len]);
-            if (suffix_token == qwen3_guest_engram_projected_token(config, token)) {
-                return true;
-            }
+        if (prefix_matches &&
+            qwen3_guest_engram_projected_token(config, history[i + prefix_len]) ==
+                projected_token) {
+            return true;
         }
     }
     return false;
@@ -2675,12 +2820,10 @@ static bool qwen3_guest_engram_history_contains_projected(
     uint64_t history_len,
     uint64_t token)
 {
-    uint64_t projected_token;
-
-    if (!history || config == NULL) {
+    uint64_t projected_token = qwen3_guest_engram_projected_token(config, token);
+    if (!history || !config) {
         return false;
     }
-    projected_token = qwen3_guest_engram_projected_token(config, token);
     for (uint64_t i = 0; i < history_len; ++i) {
         if (projected_token == qwen3_guest_engram_projected_token(config, history[i])) {
             return true;
@@ -3028,6 +3171,11 @@ static uint64_t qwen3_guest_engram_select_token(
 {
     uint64_t effective_len = history_len;
     const uint64_t *effective_history = history;
+    uint64_t *projected_history = NULL;
+    uint64_t *window_keys = NULL;
+    uint64_t *window_starts = NULL;
+    uint64_t window_count = 0;
+    bool use_exact_index = false;
     uint64_t candidate_count;
     uint64_t best_index = UINT64_MAX;
     int64_t best_score = INT64_MIN;
@@ -3055,6 +3203,26 @@ static uint64_t qwen3_guest_engram_select_token(
         effective_history = history + (effective_len - config->history_window);
         effective_len = config->history_window;
     }
+    if (config->no_repeat_ngram_size > 0 && effective_len > 0) {
+        projected_history = (uint64_t *)malloc(sizeof(uint64_t) * (size_t)effective_len);
+        if (projected_history) {
+            for (uint64_t i = 0; i < effective_len; ++i) {
+                projected_history[i] =
+                    qwen3_guest_engram_projected_token(config, effective_history[i]);
+            }
+            if (qwen3_guest_engram_build_no_repeat_window_index(projected_history,
+                                                                effective_len,
+                                                                config->no_repeat_ngram_size,
+                                                                &window_keys,
+                                                                &window_starts,
+                                                                &window_count)) {
+                use_exact_index = true;
+            } else {
+                free(projected_history);
+                projected_history = NULL;
+            }
+        }
+    }
 
     {
         uint64_t sampled_index = UINT64_MAX;
@@ -3064,19 +3232,37 @@ static uint64_t qwen3_guest_engram_select_token(
         if (qwen3_terminal_token_candidate_index(terminal_token,
                                                  terminal_token->sampled_token,
                                                  &sampled_index)) {
+            bool sampled_penalized = false;
+
             bool sampled_blocked =
                 qwen3_guest_engram_token_blocked(config, terminal_token->sampled_token) ||
-                qwen3_guest_engram_repeats_ngram_projected(config,
-                                                           effective_history,
-                                                           effective_len,
-                                                           sampled_projected_token,
-                                                           config->no_repeat_ngram_size);
-            bool sampled_penalized =
-                config->repetition_penalty_milli > 1000 &&
-                qwen3_guest_engram_history_contains_projected(config,
-                                                             effective_history,
-                                                             effective_len,
-                                                             sampled_projected_token);
+                (config->no_repeat_ngram_size > 0 &&
+                 (use_exact_index
+                      ? qwen3_guest_engram_repeats_no_repeat_index(
+                            projected_history,
+                            effective_len,
+                            window_keys,
+                            window_starts,
+                            window_count,
+                            sampled_projected_token,
+                            config->no_repeat_ngram_size)
+                      : qwen3_guest_engram_repeats_no_repeat_scan(config,
+                                                                   effective_history,
+                                                                   effective_len,
+                                                                   sampled_projected_token,
+                                                                   config->no_repeat_ngram_size)));
+            if (config->repetition_penalty_milli > 1000) {
+                sampled_penalized = use_exact_index
+                                        ? qwen3_guest_engram_projected_history_contains(
+                                              projected_history,
+                                              effective_len,
+                                              sampled_projected_token)
+                                        : qwen3_guest_engram_history_contains_projected(
+                                              config,
+                                              effective_history,
+                                              effective_len,
+                                              sampled_projected_token);
+            }
 
             if (sampled_index == 0 && top_score_out) {
                 *top_score_out =
@@ -3092,6 +3278,9 @@ static uint64_t qwen3_guest_engram_select_token(
                 if (blocked_count) {
                     *blocked_count = 0;
                 }
+                free(projected_history);
+                free(window_keys);
+                free(window_starts);
                 return terminal_token->sampled_token;
             }
         }
@@ -3111,18 +3300,31 @@ static uint64_t qwen3_guest_engram_select_token(
             continue;
         }
         if (config->repetition_penalty_milli > 1000 &&
-            qwen3_guest_engram_history_contains_projected(config,
-                                                         effective_history,
-                                                         effective_len,
-                                                         projected_token)) {
+            (use_exact_index
+                 ? qwen3_guest_engram_projected_history_contains(projected_history,
+                                                                 effective_len,
+                                                                 projected_token)
+                 : qwen3_guest_engram_history_contains_projected(config,
+                                                                 effective_history,
+                                                                 effective_len,
+                                                                 projected_token))) {
             score -= (int64_t)(config->repetition_penalty_milli - 1000U);
         }
         blocked = qwen3_guest_engram_token_blocked(config, token) ||
-                  qwen3_guest_engram_repeats_ngram_projected(config,
-                                                             effective_history,
-                                                             effective_len,
-                                                             projected_token,
-                                                             config->no_repeat_ngram_size);
+                  (config->no_repeat_ngram_size > 0 &&
+                   (use_exact_index
+                        ? qwen3_guest_engram_repeats_no_repeat_index(projected_history,
+                                                                    effective_len,
+                                                                    window_keys,
+                                                                    window_starts,
+                                                                    window_count,
+                                                                    projected_token,
+                                                                    config->no_repeat_ngram_size)
+                        : qwen3_guest_engram_repeats_no_repeat_scan(config,
+                                                                    effective_history,
+                                                                    effective_len,
+                                                                    projected_token,
+                                                                    config->no_repeat_ngram_size)));
         if (i == 0 && top_score_out) {
             *top_score_out = score;
         } else if (i == 1 && runner_up_score_out) {
@@ -3141,12 +3343,20 @@ static uint64_t qwen3_guest_engram_select_token(
         *blocked_count = local_blocked_count;
     }
     if (best_index != UINT64_MAX) {
-        return terminal_token->candidate_tokens[best_index];
+        uint64_t selected_token = terminal_token->candidate_tokens[best_index];
+
+        free(projected_history);
+        free(window_keys);
+        free(window_starts);
+        return selected_token;
     }
 
     if (fallback_used) {
         *fallback_used = true;
     }
+    free(projected_history);
+    free(window_keys);
+    free(window_starts);
     return terminal_token->candidate_tokens[0];
 }
 
