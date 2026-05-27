@@ -3763,11 +3763,11 @@ fn validate_paper_engram_runtime_payload_ref(
 
 fn run_lingqu_memory_validate_paper_engram_quality_cli(args: &[String]) -> anyhow::Result<()> {
     let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
-    let module_id = required_cli_arg(args, "--module-id")?;
     let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
     let mut memory_service = LingquMemoryService::new();
     rebuild_lingqu_memory_all_paper_engram_registries(&mut memory_service, &mut durable_store)
         .context("rebuild paper engram registries")?;
+    let module_id = paper_engram_module_id_from_cli(args, &memory_service)?;
     memory_service
         .validate_paper_engram_module_quality(&module_id)
         .context("validate paper engram module quality")?;
@@ -3782,12 +3782,12 @@ fn run_lingqu_memory_validate_paper_engram_quality_cli(args: &[String]) -> anyho
 
 fn run_lingqu_memory_validate_paper_engram_module_cli(args: &[String]) -> anyhow::Result<()> {
     let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
-    let module_id = required_cli_arg(args, "--module-id")?;
     let require_quality = cli_flag(args, "--require-quality");
     let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
     let mut memory_service = LingquMemoryService::new();
     rebuild_lingqu_memory_all_paper_engram_registries(&mut memory_service, &mut durable_store)
         .context("rebuild paper engram registries")?;
+    let module_id = paper_engram_module_id_from_cli(args, &memory_service)?;
     let runtime = memory_service
         .resolve_paper_engram_runtime_artifacts(&module_id)
         .context("resolve paper engram runtime artifacts")?;
@@ -3812,6 +3812,36 @@ fn run_lingqu_memory_validate_paper_engram_module_cli(args: &[String]) -> anyhow
     println!("  payload_refs: {}", payload_stats.payload_refs);
     println!("  payload_bytes: {}", payload_stats.payload_bytes);
     Ok(())
+}
+
+fn paper_engram_module_id_from_cli(
+    args: &[String],
+    memory_service: &LingquMemoryService,
+) -> anyhow::Result<String> {
+    let module_id = optional_cli_arg(args, "--module-id")?;
+    let model_id = optional_cli_arg(args, "--model-id")?;
+    let module_name = optional_cli_arg(args, "--module-name")?;
+    let engram_id = optional_cli_arg(args, "--engram-id")?;
+    if module_name.is_some() && engram_id.is_some() {
+        anyhow::bail!("use --module-name or --engram-id, not both");
+    }
+    if let Some(module_id) = module_id {
+        if model_id.is_some() || module_name.is_some() || engram_id.is_some() {
+            anyhow::bail!(
+                "conflicting paper Engram module arguments: use --module-id or --model-id with --engram-id"
+            );
+        }
+        return Ok(module_id);
+    }
+    let model_id =
+        model_id.ok_or_else(|| anyhow::anyhow!("missing required argument --module-id"))?;
+    let engram_id = module_name
+        .or(engram_id)
+        .ok_or_else(|| anyhow::anyhow!("--model-id requires --engram-id"))?;
+    let module = memory_service
+        .paper_engram_module_by_model(&model_id, &engram_id)
+        .context("resolve paper engram module by model_id and engram_id")?;
+    Ok(module.module_id.clone())
 }
 
 struct ScopedEnvVars {
@@ -4534,13 +4564,13 @@ fn run_lingqu_memory_list_paper_engram_modules_cli(args: &[String]) -> anyhow::R
 
 fn run_lingqu_memory_resolve_paper_engram_runtime_cli(args: &[String]) -> anyhow::Result<()> {
     let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
-    let module_id = required_cli_arg(args, "--module-id")?;
     let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
     let mut memory_service = LingquMemoryService::new();
 
     rebuild_lingqu_memory_all_paper_engram_registries(&mut memory_service, &mut durable_store)
         .context("rebuild paper engram registries")?;
 
+    let module_id = paper_engram_module_id_from_cli(args, &memory_service)?;
     let runtime = memory_service
         .resolve_paper_engram_runtime_artifacts(&module_id)
         .context("resolve paper engram runtime artifacts")?;
@@ -17775,6 +17805,15 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             module.module_id.clone(),
         ])
         .expect("resolve imported runtime artifacts");
+        run_lingqu_memory_resolve_paper_engram_runtime_cli(&[
+            "--store".to_string(),
+            import_store.display().to_string(),
+            "--model-id".to_string(),
+            module.model.model_id.clone(),
+            "--engram-id".to_string(),
+            module.module_name.clone(),
+        ])
+        .expect("resolve imported runtime artifacts by model and engram id");
 
         run_lingqu_memory_register_paper_engram_tokenizer_projection_cli(&[
             "--store".to_string(),
@@ -17818,6 +17857,15 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             module.module_id.clone(),
         ])
         .expect("resolve runtime artifacts");
+        run_lingqu_memory_validate_paper_engram_module_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--model-id".to_string(),
+            module.model.model_id.clone(),
+            "--engram-id".to_string(),
+            module.module_name.clone(),
+        ])
+        .expect("validate runtime artifacts by model and engram id");
         let row_blocks_output = root.join("row_blocks.json");
         run_lingqu_memory_resolve_paper_engram_table_row_blocks_cli(&[
             "--store".to_string(),

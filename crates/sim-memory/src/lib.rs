@@ -7801,6 +7801,16 @@ impl LingquMemoryService {
         manifest: PaperEngramModuleManifest,
     ) -> MemoryResult<()> {
         manifest.validate()?;
+        if self.paper_engram_modules.values().any(|module| {
+            module.module_id != manifest.module_id
+                && module.model.model_id == manifest.model.model_id
+                && module.module_name == manifest.module_name
+        }) {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_module.module_name",
+                reason: "module_name must be unique per model_id",
+            });
+        }
         for shard_id in &manifest.table_shard_ids {
             if !self.paper_engram_table_shards.contains_key(shard_id) {
                 return Err(LingquMemoryError::MissingField(
@@ -8496,6 +8506,31 @@ impl LingquMemoryService {
 
     pub fn paper_engram_module(&self, module_id: &str) -> Option<&PaperEngramModuleManifest> {
         self.paper_engram_modules.get(module_id)
+    }
+
+    pub fn paper_engram_module_by_model(
+        &self,
+        model_id: &str,
+        engram_id: &str,
+    ) -> MemoryResult<&PaperEngramModuleManifest> {
+        required_str(model_id, "paper_engram_module.model_id")?;
+        required_str(engram_id, "paper_engram_module.engram_id")?;
+        let mut matches = self
+            .paper_engram_modules
+            .values()
+            .filter(|module| module.model.model_id == model_id && module.module_name == engram_id);
+        let Some(module) = matches.next() else {
+            return Err(LingquMemoryError::MissingField(
+                "paper_engram_module.engram_id",
+            ));
+        };
+        if matches.next().is_some() {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_module.engram_id",
+                reason: "model_id and engram_id must resolve exactly one module",
+            });
+        }
+        Ok(module)
     }
 
     pub fn resolve_paper_engram_runtime_artifacts(
@@ -10398,6 +10433,50 @@ mod tests {
             err,
             LingquMemoryError::MissingField("paper_engram_module.table_shard_ids")
         ));
+    }
+
+    #[test]
+    fn paper_engram_module_resolves_by_model_and_engram_id() {
+        let mut service = LingquMemoryService::new();
+        let projection = sample_paper_engram_tokenizer_projection_manifest();
+        let hash_config = sample_paper_engram_hash_config_manifest();
+        let shard = sample_paper_engram_table_shard_manifest();
+        let gate = sample_paper_engram_gate_manifest();
+        let module = sample_paper_engram_module_manifest();
+
+        service
+            .register_paper_engram_tokenizer_projection(projection)
+            .expect("register projection");
+        service
+            .register_paper_engram_hash_config(hash_config)
+            .expect("register hash config");
+        service
+            .register_paper_engram_table_shard(shard)
+            .expect("register shard");
+        service
+            .register_paper_engram_gate(gate)
+            .expect("register gate");
+        service
+            .register_paper_engram_module(module.clone())
+            .expect("register module");
+
+        let resolved = service
+            .paper_engram_module_by_model(&module.model.model_id, &module.module_name)
+            .expect("resolve module by model and engram id");
+        assert_eq!(resolved.module_id, module.module_id);
+
+        let mut duplicate = module.clone();
+        duplicate.module_id = "pe-module-duplicate-name".to_string();
+        duplicate.checksum = paper_engram_module_manifest_checksum(&duplicate);
+        assert_eq!(
+            service
+                .register_paper_engram_module(duplicate)
+                .expect_err("model_id and engram_id must remain unique"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_module.module_name",
+                reason: "module_name must be unique per model_id"
+            }
+        );
     }
 
     #[test]
