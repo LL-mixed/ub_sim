@@ -14371,6 +14371,126 @@ fn run_simpler_host_engram_context(
     Ok(bytes_to_f32s(produced))
 }
 
+fn run_simpler_host_paper_engram_context(
+    tables: &[Qwen3DenseReferencePaperEngramLoadedTable],
+    lookups: &[PaperEngramContextLookupRef],
+    hidden: &[f32],
+    gate_weight: &[f32],
+    batch: usize,
+    hidden_size: usize,
+) -> Result<Vec<f32>, String> {
+    let mut lookup_counts = vec![0usize; batch];
+    let mut synthetic_indices = vec![0i32; batch * ENGRAM_CONTEXT_INDICES_PER_BATCH];
+    let mut synthetic_table: Vec<f32> = Vec::new();
+    if batch == 0 {
+        return Err("qwen3_engram_context_batch_unsupported:got=0".to_string());
+    }
+    if hidden.is_empty() || gate_weight.is_empty() {
+        return Err("qwen3_engram_context_hidden_or_gate_empty".to_string());
+    }
+    if hidden.len() != batch * hidden_size || gate_weight.len() != batch * hidden_size {
+        return Err(format!(
+            "qwen3_simpler_host_paper_engram_context_hidden_len_mismatch:hidden={}:expected={}",
+            hidden.len(),
+            batch * hidden_size
+        ));
+    }
+
+    for lookup in lookups {
+        let batch_index = lookup.batch_index;
+        if batch_index >= batch {
+            return Err(format!(
+                "qwen3_simpler_host_paper_engram_context_batch_index_oob:got={batch_index}:max={}",
+                batch - 1
+            ));
+        }
+        let slot = lookup_counts[batch_index];
+        if slot >= ENGRAM_CONTEXT_INDICES_PER_BATCH {
+            return Err(format!(
+                "qwen3_simpler_host_paper_engram_context_lookup_count_exceeds_limit:batch={batch_index}:count={}",
+                slot + 1
+            ));
+        }
+        let table_view = tables
+            .iter()
+            .find(|table| table.order == lookup.order && table.head == lookup.head)
+            .ok_or_else(|| {
+                format!(
+                    "qwen3_paper_engram_context_table_missing:order={}:head={}",
+                    lookup.order, lookup.head
+                )
+            })?;
+        let row = usize::try_from(lookup.row)
+            .map_err(|_| "qwen3_paper_engram_context_lookup_row_negative".to_string())?;
+        let row_start = row.checked_mul(hidden_size).ok_or_else(|| {
+            "qwen3_simpler_host_paper_engram_context_row_offset_overflow".to_string()
+        })?;
+        let row_end = row_start.checked_add(hidden_size).ok_or_else(|| {
+            "qwen3_simpler_host_paper_engram_context_row_end_overflow".to_string()
+        })?;
+        if row_end > table_view.table.len() {
+            return Err(format!(
+                "qwen3_simpler_host_paper_engram_context_row_oob:order={}:head={}:row={}:rows={}",
+                lookup.order, lookup.head, lookup.row, table_view.table_rows,
+            ));
+        }
+        let synthetic_row = synthetic_table.len() / hidden_size;
+        synthetic_indices[batch_index * ENGRAM_CONTEXT_INDICES_PER_BATCH + slot] =
+            i32::try_from(synthetic_row).map_err(|_| {
+                "qwen3_simpler_host_paper_engram_context_row_index_overflow".to_string()
+            })?;
+        synthetic_table.extend_from_slice(&table_view.table[row_start..row_end]);
+        lookup_counts[batch_index] += 1;
+    }
+
+    if synthetic_table.is_empty() {
+        return Ok(hidden.to_vec());
+    }
+    let table_rows = ENGRAM_CONTEXT_INDICES_PER_BATCH;
+    let synthetic_rows = synthetic_table.len() / hidden_size;
+    if synthetic_rows < table_rows {
+        synthetic_table.resize(table_rows * hidden_size, 0.0);
+    }
+    for batch_index in 0..batch {
+        let base = batch_index * ENGRAM_CONTEXT_INDICES_PER_BATCH;
+        let slot = lookup_counts[batch_index];
+        if slot < ENGRAM_CONTEXT_INDICES_PER_BATCH {
+            for fill_slot in slot..ENGRAM_CONTEXT_INDICES_PER_BATCH {
+                synthetic_indices[base + fill_slot] =
+                    i32::try_from(synthetic_rows).map_err(|_| {
+                        "qwen3_simpler_host_paper_engram_context_row_index_overflow".to_string()
+                    })?;
+            }
+        }
+    }
+
+    let mut produced = run_simpler_host_engram_context(
+        &synthetic_table,
+        &synthetic_indices,
+        hidden,
+        gate_weight,
+        batch,
+        table_rows,
+        hidden_size,
+    )?;
+
+    for batch_index in 0..batch {
+        let base = batch_index * hidden_size;
+        let lookup_count = lookup_counts[batch_index];
+        if lookup_count == 0 {
+            produced[base..base + hidden_size].copy_from_slice(&hidden[base..base + hidden_size]);
+            continue;
+        }
+        let scale = ENGRAM_CONTEXT_INDICES_PER_BATCH as f32 / lookup_count as f32;
+        for dim in 0..hidden_size {
+            let base_index = base + dim;
+            produced[base_index] =
+                hidden[base_index] + (produced[base_index] - hidden[base_index]) * scale;
+        }
+    }
+    Ok(produced)
+}
+
 #[cfg(test)]
 fn run_host_matmul_batched_smoke(
     topology: &SimTopology,
@@ -18994,12 +19114,6 @@ fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence_with_descript
                     row_prefetch_requests,
                     row_prefetch_hits,
                 } => {
-                    if mode == Qwen3DenseReferenceEngramContextMode::SimplerHost {
-                        return Err(
-                            "qwen3_paper_engram_context_simpler_host_not_wired:use cpu-reference"
-                                .to_string(),
-                        );
-                    }
                     let table_views = tables
                         .iter()
                         .map(|table| PaperEngramContextTableView {
@@ -19017,10 +19131,60 @@ fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence_with_descript
                         batch: 1,
                         hidden_size,
                     })?;
+                    let output_values = if mode == Qwen3DenseReferenceEngramContextMode::SimplerHost
+                    {
+                        let produced = run_simpler_host_paper_engram_context(
+                            &tables,
+                            &lookups,
+                            hidden,
+                            &gate_weight,
+                            1,
+                            hidden_size,
+                        )?;
+                        const SIMPLER_HOST_ENGRAM_CONTEXT_MAX_ULP: u32 = 64;
+                        if !qwen3_engram_context_outputs_match_within_ulp(
+                            &produced,
+                            &reference.output,
+                            SIMPLER_HOST_ENGRAM_CONTEXT_MAX_ULP,
+                        ) {
+                            let mismatch = produced
+                                .iter()
+                                .zip(reference.output.iter())
+                                .position(|(got, expected)| {
+                                    !qwen3_engram_context_f32_within_ulp(
+                                        *got,
+                                        *expected,
+                                        SIMPLER_HOST_ENGRAM_CONTEXT_MAX_ULP,
+                                    )
+                                })
+                                .unwrap_or(usize::MAX);
+                            let got_bits = produced
+                                .get(mismatch)
+                                .map(|value| value.to_bits())
+                                .unwrap_or(0);
+                            let expected_bits = reference
+                                .output
+                                .get(mismatch)
+                                .map(|value| value.to_bits())
+                                .unwrap_or(0);
+                            return Err(format!(
+                                "simpler_host_paper_engram_context_output_mismatch:index={mismatch}:got_bits=0x{got_bits:08x}:expected_bits=0x{expected_bits:08x}:got=0x{:016x}:expected=0x{:016x}",
+                                qwen3_dense_reference_f32_values_checksum(&produced),
+                                qwen3_dense_reference_f32_values_checksum(&reference.output)
+                            ));
+                        }
+                        produced
+                    } else {
+                        reference.output.clone()
+                    };
                     (
                         reference.report,
-                        reference.output.clone(),
-                        "cpu-reference-paper-object-ref",
+                        output_values,
+                        if mode == Qwen3DenseReferenceEngramContextMode::SimplerHost {
+                            "simpler-host-paper-object-ref"
+                        } else {
+                            "cpu-reference-paper-object-ref"
+                        },
                         row_prefetch_requests,
                         row_prefetch_hits,
                     )
@@ -23953,6 +24117,208 @@ mod tests {
                                     assert_eq!(report.table_rows, table_rows);
                                     assert_ne!(report.output_checksum, 0);
                                     assert_ne!(sequence[1], terminal_before);
+                                },
+                            );
+                        });
+                    },
+                );
+                let _ = std::fs::remove_dir_all(&registry_dir);
+            },
+        );
+    }
+
+    #[test]
+    fn qwen3_paper_engram_context_simpler_host_mutates_terminal_hidden() {
+        run_simpler_native_test_isolated(
+            "qwen3_paper_engram_context_simpler_host_mutates_terminal_hidden",
+            || {
+                let registry_dir = std::env::temp_dir().join(format!(
+                    "ub_sim_qwen3_paper_engram_context_simpler_state_ref_test_{}",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&registry_dir);
+                with_env_var(
+                    SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+                    registry_dir.to_string_lossy().as_ref(),
+                    || {
+                        let hidden_size = 1024usize;
+                        let table_rows = 16usize;
+                        let layer = 7u64;
+                        let total_layers = QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers;
+                        let hash_config = build_default_engram_hash_config(
+                            0x1a2b_3c4d,
+                            2,
+                            table_rows as u64,
+                            0x77,
+                        );
+                        let token_ids = [11, 358, 2776, 264];
+                        let token_step = token_ids.len() - 1;
+
+                        let lookups = build_engram_lookup_requests_from_step(
+                            &token_ids,
+                            token_step,
+                            &hash_config,
+                        )
+                        .expect("build paper lookups");
+                        let lookups = lookups
+                            .into_iter()
+                            .map(|request| PaperEngramContextLookupRef {
+                                batch_index: 0,
+                                order: request.order,
+                                head: request.head,
+                                row: request.row,
+                            })
+                            .collect::<Vec<_>>();
+
+                        let mut table_refs = Vec::new();
+                        let mut table_payloads = Vec::<(u8, u16, Vec<f32>)>::new();
+                        for spec in &hash_config.table_specs {
+                            let table = (0..table_rows * hidden_size)
+                                .map(|index| {
+                                    let raw = ((usize::from(spec.order) * 41
+                                        + usize::from(spec.head) * 29
+                                        + index * 13)
+                                        % 257) as f32;
+                                    (raw - 128.0) / 4096.0
+                                })
+                                .collect::<Vec<_>>();
+                            let table_payload = test_f32_vec_to_le_bytes(&table);
+                            let table_ref = LingquObmmObjectRefWire::committed(
+                                QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
+                                0,
+                                0,
+                                1,
+                                qwen3_lingqu_key_hash(&format!(
+                                    "paper/simpler-host/table/{}/{}",
+                                    spec.order, spec.head
+                                )),
+                                0,
+                                table_payload.len() as u64,
+                                qwen3_dense_reference_range_object_payload_checksum(&table_payload),
+                            );
+                            qwen3_object_registry_put(&table_ref, &table_payload)
+                                .expect("put paper simpler-host table object");
+                            table_payloads.push((spec.order, spec.head, table.clone()));
+                            table_refs.push(Qwen3PaperEngramStateTableRef {
+                                layer,
+                                order: spec.order,
+                                head: spec.head,
+                                row_start: 0,
+                                row_end: table_rows as u64,
+                                hash_seed: spec.seed,
+                                object_ref: table_ref,
+                            });
+                        }
+                        let gate_weight = (0..hidden_size)
+                            .map(|index| ((index % 17) as f32 - 8.0) / 8192.0)
+                            .collect::<Vec<_>>();
+                        let gate_payload = test_f32_vec_to_le_bytes(&gate_weight);
+                        let gate_ref = LingquObmmObjectRefWire::committed(
+                            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
+                            0,
+                            0,
+                            1,
+                            qwen3_lingqu_key_hash("paper/simpler-host/gate"),
+                            0,
+                            gate_payload.len() as u64,
+                            qwen3_dense_reference_range_object_payload_checksum(&gate_payload),
+                        );
+                        qwen3_object_registry_put(&gate_ref, &gate_payload)
+                            .expect("put paper simpler-host gate object");
+
+                        let state_payload = qwen3_paper_engram_state_manifest_payload(
+                            hidden_size,
+                            hidden_size,
+                            &table_refs,
+                            &[Qwen3PaperEngramStateGateRef {
+                                layer,
+                                object_ref: gate_ref,
+                            }],
+                        )
+                        .expect("paper engram state manifest payload");
+                        let state_ref = LingquObmmObjectRefWire::committed(
+                            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
+                            0,
+                            0,
+                            1,
+                            qwen3_lingqu_key_hash("paper/simpler-host/state"),
+                            0,
+                            state_payload.len() as u64,
+                            qwen3_dense_reference_range_object_payload_checksum(&state_payload),
+                        );
+                        qwen3_object_registry_put(&state_ref, &state_payload)
+                            .expect("put paper simpler-host state manifest");
+
+                        with_env_var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP", "simpler-host", || {
+                            with_env_var(
+                                SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
+                                &qwen3_obmm_object_ref_wire_to_hex(&state_ref),
+                                || {
+                                    let terminal_hidden = (0..hidden_size)
+                                        .map(|index| {
+                                            (index as f32 - hidden_size as f32 / 2.0) / 4096.0
+                                        })
+                                        .collect::<Vec<_>>();
+                                    let table_views = table_payloads
+                                        .iter()
+                                        .map(|(order, head, table)| PaperEngramContextTableView {
+                                            order: *order,
+                                            head: *head,
+                                            table,
+                                            table_rows,
+                                        })
+                                        .collect::<Vec<_>>();
+                                    let expected_lookups = lookups
+                                        .iter()
+                                        .map(|lookup| PaperEngramContextLookupRef {
+                                            batch_index: lookup.batch_index,
+                                            order: lookup.order,
+                                            head: lookup.head,
+                                            row: lookup.row,
+                                        })
+                                        .collect::<Vec<_>>();
+                                    let expected =
+                                        run_paper_engram_context_reference(&PaperEngramContextOp {
+                                            tables: &table_views,
+                                            lookups: &expected_lookups,
+                                            hidden: &terminal_hidden,
+                                            gate_weight: &gate_weight,
+                                            batch: 1,
+                                            hidden_size,
+                                        })
+                                        .expect("paper reference context");
+
+                                    let mut sequence =
+                                        vec![vec![0.0f32; hidden_size], terminal_hidden.clone()];
+                                    let before = sequence[1].clone();
+                                    let report =
+                                        qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
+                                            &mut sequence,
+                                            &token_ids,
+                                            layer,
+                                            total_layers,
+                                            None,
+                                        )
+                                        .expect("paper context op should run")
+                                        .expect("context report");
+
+                                    assert_eq!(report.mode, "simpler-host-paper-object-ref");
+                                    assert_eq!(
+                                        report.table_rows,
+                                        table_rows * table_payloads.len()
+                                    );
+                                    assert_ne!(
+                                        report.output_checksum,
+                                        super::qwen3_dense_reference_f32_values_checksum(&before)
+                                    );
+                                    assert!(
+                                        super::qwen3_engram_context_outputs_match_within_ulp(
+                                            &sequence[1],
+                                            &expected.output,
+                                            64
+                                        ),
+                                        "simpler-host paper output should match cpu reference"
+                                    );
                                 },
                             );
                         });
