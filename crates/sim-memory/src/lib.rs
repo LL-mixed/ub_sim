@@ -2362,6 +2362,39 @@ fn validate_trained_paper_engram_train_eval_split(
     Ok(())
 }
 
+fn validate_paper_engram_phase6_summary_provenance(
+    report: &PaperEngramEvalReportManifest,
+) -> MemoryResult<()> {
+    const VARIANTS: [(&str, &str); 4] = [
+        (
+            "w5-summary:base:",
+            "paper_engram_eval_report.evidence_refs.phase6_base_summary",
+        ),
+        (
+            "w5-summary:base_decode_policy:",
+            "paper_engram_eval_report.evidence_refs.phase6_decode_policy_summary",
+        ),
+        (
+            "w5-summary:paper_engram:",
+            "paper_engram_eval_report.evidence_refs.phase6_paper_engram_summary",
+        ),
+        (
+            "w5-summary:paper_engram_decode_policy:",
+            "paper_engram_eval_report.evidence_refs.phase6_paper_engram_decode_policy_summary",
+        ),
+    ];
+    for (prefix, field) in VARIANTS {
+        if !report
+            .evidence_refs
+            .iter()
+            .any(|evidence_ref| evidence_ref.starts_with(prefix))
+        {
+            return Err(LingquMemoryError::MissingField(field));
+        }
+    }
+    Ok(())
+}
+
 fn paper_engram_source_ref_is_fixture(source_ref: &str) -> bool {
     source_ref == "fixture"
         || source_ref.starts_with("fixture://")
@@ -8061,6 +8094,7 @@ impl LingquMemoryService {
             .ok_or(LingquMemoryError::MissingField(
                 "paper_engram_eval_report.max_allowed_backend_latency_us",
             ))?;
+        validate_paper_engram_phase6_summary_provenance(report)?;
         Ok(())
     }
 
@@ -11030,6 +11064,26 @@ mod tests {
     }
 
     #[test]
+    fn paper_engram_quality_claim_requires_phase6_summary_provenance() {
+        let mut report = sample_paper_engram_eval_report_manifest();
+        report
+            .evidence_refs
+            .retain(|evidence_ref| !evidence_ref.starts_with("w5-summary:base:"));
+        report.checksum = paper_engram_eval_report_manifest_checksum(&report);
+        report
+            .validate()
+            .expect("plain eval report may omit Phase 6 W5 refs before quality claim");
+
+        assert_eq!(
+            validate_paper_engram_phase6_summary_provenance(&report)
+                .expect_err("quality acceptance requires Phase 6 base summary provenance"),
+            LingquMemoryError::MissingField(
+                "paper_engram_eval_report.evidence_refs.phase6_base_summary"
+            )
+        );
+    }
+
+    #[test]
     fn paper_engram_quality_claim_rejects_fixture_artifact_provenance() {
         let mut service = LingquMemoryService::new();
         let projection = sample_paper_engram_tokenizer_projection_manifest();
@@ -13262,7 +13316,15 @@ mod tests {
             row_prefetch_hits: Some(8),
             max_backend_latency_us: Some(100),
             max_allowed_backend_latency_us: Some(1000),
-            evidence_refs: vec!["dfs://runs/pe-eval-0/report.json".to_string()],
+            evidence_refs: vec![
+                "dfs://runs/pe-eval-0/report.json".to_string(),
+                "w5-summary:base:dfs://runs/pe-eval-0/base_summary.txt".to_string(),
+                "w5-summary:base_decode_policy:dfs://runs/pe-eval-0/decode_policy_summary.txt"
+                    .to_string(),
+                "w5-summary:paper_engram:dfs://runs/pe-eval-0/paper_engram_summary.txt"
+                    .to_string(),
+                "w5-summary:paper_engram_decode_policy:dfs://runs/pe-eval-0/paper_engram_decode_policy_summary.txt".to_string(),
+            ],
             checksum: 1,
             version: 1,
             created_at_us: 14,

@@ -14477,6 +14477,20 @@ mod tests {
         .expect("write json fixture");
     }
 
+    fn paper_engram_phase6_eval_evidence_refs(prefix: &str) -> Vec<String> {
+        vec![
+            format!("dfs://runs/{prefix}/eval-report.json"),
+            format!("w5-summary:base:dfs://runs/{prefix}/base_summary.txt"),
+            format!(
+                "w5-summary:base_decode_policy:dfs://runs/{prefix}/decode_policy_summary.txt"
+            ),
+            format!("w5-summary:paper_engram:dfs://runs/{prefix}/paper_engram_summary.txt"),
+            format!(
+                "w5-summary:paper_engram_decode_policy:dfs://runs/{prefix}/paper_engram_decode_policy_summary.txt"
+            ),
+        ]
+    }
+
     fn write_paper_engram_bundle_block_payload_files(
         bundle_dir: &Path,
         durable_store: &mut LingquMemoryDurableStore,
@@ -19812,9 +19826,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 row_prefetch_hits: Some(8),
                 max_backend_latency_us: Some(100),
                 max_allowed_backend_latency_us: Some(1000),
-                evidence_refs: vec![
-                    "dfs://imports/qwen3-export-quality/eval-report.json".to_string()
-                ],
+                evidence_refs: paper_engram_phase6_eval_evidence_refs("qwen3-export-quality"),
                 checksum: 1,
                 version: 1,
                 created_at_us: 21,
@@ -20562,7 +20574,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 row_prefetch_hits: Some(8),
                 max_backend_latency_us: Some(100),
                 max_allowed_backend_latency_us: Some(1000),
-                evidence_refs: vec!["dfs://runs/qwen3-quality-eval/report.json".to_string()],
+                evidence_refs: paper_engram_phase6_eval_evidence_refs("qwen3-quality-eval"),
                 checksum: 1,
                 version: 1,
                 created_at_us: 21,
@@ -20800,9 +20812,9 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 row_prefetch_hits: Some(8),
                 max_backend_latency_us: Some(100),
                 max_allowed_backend_latency_us: Some(1000),
-                evidence_refs: vec![
-                    "dfs://runs/qwen3-full-finetune-quality/eval-report.json".to_string()
-                ],
+                evidence_refs: paper_engram_phase6_eval_evidence_refs(
+                    "qwen3-full-finetune-quality",
+                ),
                 checksum: 1,
                 version: 1,
                 created_at_us: 21,
@@ -21011,9 +21023,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 row_prefetch_hits: Some(8),
                 max_backend_latency_us: Some(100),
                 max_allowed_backend_latency_us: Some(1000),
-                evidence_refs: vec![
-                    "dfs://imports/qwen3-imported-quality/eval-report.json".to_string()
-                ],
+                evidence_refs: paper_engram_phase6_eval_evidence_refs("qwen3-imported-quality"),
                 checksum: 1,
                 version: 1,
                 created_at_us: 21,
