@@ -8013,9 +8013,63 @@ impl LingquMemoryService {
                 ));
             }
         }
+        self.validate_paper_engram_module_artifact_bindings(&manifest)?;
         self.validate_paper_engram_quality_claim(&manifest)?;
         self.paper_engram_modules
             .insert(manifest.module_id.clone(), manifest);
+        Ok(())
+    }
+
+    fn validate_paper_engram_module_artifact_bindings(
+        &self,
+        module: &PaperEngramModuleManifest,
+    ) -> MemoryResult<()> {
+        let tokenizer_projection = self
+            .paper_engram_tokenizer_projections
+            .values()
+            .find(|projection| projection.projection_ref == module.tokenizer_projection_ref)
+            .ok_or(LingquMemoryError::MissingField(
+                "paper_engram_module.tokenizer_projection_ref",
+            ))?;
+        let hash_config = self
+            .paper_engram_hash_configs
+            .values()
+            .find(|hash_config| hash_config.hash_config_ref == module.hash_config_ref)
+            .ok_or(LingquMemoryError::MissingField(
+                "paper_engram_module.hash_config_ref",
+            ))?;
+        if hash_config.tokenizer_projection_id != tokenizer_projection.projection_id {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_module.hash_config_ref",
+                reason: "hash config tokenizer projection must match module projection ref",
+            });
+        }
+        if tokenizer_projection.model_id != module.model.model_id
+            || hash_config.model_id != module.model.model_id
+        {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_module.model",
+                reason: "projection and hash config model_id must match module model_id",
+            });
+        }
+        if tokenizer_projection.tokenizer_id != module.tokenizer_id {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_module.tokenizer_id",
+                reason: "tokenizer projection tokenizer_id must match module tokenizer_id",
+            });
+        }
+        if hash_config.orders != module.orders {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_module.orders",
+                reason: "hash config orders must match module orders",
+            });
+        }
+        if hash_config.heads_per_order != module.heads_per_order {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_module.heads_per_order",
+                reason: "hash config heads_per_order must match module heads_per_order",
+            });
+        }
         Ok(())
     }
 
@@ -10781,6 +10835,108 @@ mod tests {
             err,
             LingquMemoryError::MissingField("paper_engram_module.table_shard_ids")
         ));
+    }
+
+    #[test]
+    fn paper_engram_module_registration_requires_projection_and_hash_bindings() {
+        let mut service = LingquMemoryService::new();
+        let projection = sample_paper_engram_tokenizer_projection_manifest();
+        let hash_config = sample_paper_engram_hash_config_manifest();
+        let shard = sample_paper_engram_table_shard_manifest();
+        let gate = sample_paper_engram_gate_manifest();
+        let module = sample_paper_engram_module_manifest();
+
+        service
+            .register_paper_engram_table_shard(shard.clone())
+            .expect("register shard");
+        service
+            .register_paper_engram_gate(gate.clone())
+            .expect("register gate");
+
+        assert_eq!(
+            service
+                .register_paper_engram_module(module.clone())
+                .expect_err("module must not register without projection manifest"),
+            LingquMemoryError::MissingField("paper_engram_module.tokenizer_projection_ref")
+        );
+
+        service
+            .register_paper_engram_tokenizer_projection(projection.clone())
+            .expect("register projection");
+        assert_eq!(
+            service
+                .register_paper_engram_module(module.clone())
+                .expect_err("module must not register without hash config manifest"),
+            LingquMemoryError::MissingField("paper_engram_module.hash_config_ref")
+        );
+
+        service
+            .register_paper_engram_hash_config(hash_config)
+            .expect("register hash config");
+        service
+            .register_paper_engram_module(module)
+            .expect("register module with projection and hash config bindings");
+    }
+
+    #[test]
+    fn paper_engram_module_registration_rejects_projection_hash_mismatch() {
+        let mut service = LingquMemoryService::new();
+        let projection = sample_paper_engram_tokenizer_projection_manifest();
+        let mut alternate_projection = projection.clone();
+        alternate_projection.projection_id = "pe-projection-alt".to_string();
+        alternate_projection.projection_ref =
+            LingquDfsPath::new("/lingqu/memory/engram/tokenizer-proj-alt.json");
+        alternate_projection.projection_checksum = 0x2468;
+        alternate_projection.checksum =
+            paper_engram_tokenizer_projection_manifest_checksum(&alternate_projection);
+        alternate_projection
+            .validate()
+            .expect("build alternate projection");
+
+        let mut alternate_hash_config = sample_paper_engram_hash_config_manifest();
+        alternate_hash_config.hash_config_ref =
+            LingquDfsPath::new("/lingqu/memory/engram/hash-config-alt.json");
+        alternate_hash_config.tokenizer_projection_id = alternate_projection.projection_id.clone();
+        alternate_hash_config.tokenizer_projection_checksum =
+            alternate_projection.projection_checksum;
+        alternate_hash_config.checksum =
+            paper_engram_hash_config_manifest_checksum(&alternate_hash_config);
+        alternate_hash_config
+            .validate()
+            .expect("build alternate hash config");
+
+        let shard = sample_paper_engram_table_shard_manifest();
+        let gate = sample_paper_engram_gate_manifest();
+        let mut module = sample_paper_engram_module_manifest();
+        module.hash_config_ref = alternate_hash_config.hash_config_ref.clone();
+        module.checksum = paper_engram_module_manifest_checksum(&module);
+        module.validate().expect("build mismatched module");
+
+        service
+            .register_paper_engram_tokenizer_projection(projection)
+            .expect("register module projection");
+        service
+            .register_paper_engram_tokenizer_projection(alternate_projection)
+            .expect("register alternate projection");
+        service
+            .register_paper_engram_hash_config(alternate_hash_config)
+            .expect("register alternate hash config");
+        service
+            .register_paper_engram_table_shard(shard)
+            .expect("register shard");
+        service
+            .register_paper_engram_gate(gate)
+            .expect("register gate");
+
+        assert_eq!(
+            service
+                .register_paper_engram_module(module)
+                .expect_err("module projection and hash config must bind the same projection"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_module.hash_config_ref",
+                reason: "hash config tokenizer projection must match module projection ref"
+            }
+        );
     }
 
     #[test]
