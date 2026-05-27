@@ -6753,7 +6753,7 @@ fn w5_paper_engram_eval_evidence_from_summary(
 
     let mut backend_pair_count = 0u64;
     let mut backend_mismatch = backend_output_contradiction;
-    let mut context_steps = std::collections::BTreeSet::<u64>::new();
+    let mut backend_context_steps = std::collections::BTreeSet::<u64>::new();
     for (boundary, outputs) in &context_outputs {
         if let (Some(cpu), Some(simpler)) = (&outputs.cpu_reference, &outputs.simpler_host) {
             backend_pair_count += 1;
@@ -6761,18 +6761,14 @@ fn w5_paper_engram_eval_evidence_from_summary(
                 backend_mismatch = true;
             }
         }
-        if let Some(primary) = outputs
-            .simpler_host
-            .as_ref()
-            .or(outputs.cpu_reference.as_ref())
-        {
+        if let Some(primary) = outputs.simpler_host.as_ref() {
             evidence.hidden_checksum =
                 cli_mix_u64_checksum(evidence.hidden_checksum, boundary.step);
             evidence.hidden_checksum =
                 cli_mix_u64_checksum(evidence.hidden_checksum, boundary.node);
             evidence.hidden_checksum =
                 cli_mix_u64_checksum(evidence.hidden_checksum, primary.output_checksum);
-            context_steps.insert(boundary.step);
+            backend_context_steps.insert(boundary.step);
             evidence.row_prefetch_requests = evidence
                 .row_prefetch_requests
                 .saturating_add(primary.row_prefetch_requests);
@@ -6782,9 +6778,16 @@ fn w5_paper_engram_eval_evidence_from_summary(
             evidence.max_backend_latency_us = evidence
                 .max_backend_latency_us
                 .max(primary.latency_ms.saturating_mul(1000));
+        } else if let Some(cpu) = outputs.cpu_reference.as_ref() {
+            evidence.hidden_checksum =
+                cli_mix_u64_checksum(evidence.hidden_checksum, boundary.step);
+            evidence.hidden_checksum =
+                cli_mix_u64_checksum(evidence.hidden_checksum, boundary.node);
+            evidence.hidden_checksum =
+                cli_mix_u64_checksum(evidence.hidden_checksum, cpu.output_checksum);
         }
     }
-    evidence.context_step_count = context_steps.len() as u64;
+    evidence.context_step_count = backend_context_steps.len() as u64;
     evidence.cpu_backend_output_match = if backend_mismatch {
         Some(false)
     } else if backend_pair_count > 0 {
@@ -20824,6 +20827,18 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         )
         .expect("extract unpaired backend evidence");
         assert_eq!(unpaired.cpu_backend_output_match, None);
+
+        let cpu_only = w5_paper_engram_eval_evidence_from_summary(concat!(
+            "summary: decode_steps_expected=1 decode_steps_observed=1 worker_timing_records=8 passed_nodes=8/8 handoff_timing_records=0 idle_timing_records=0 engram_timing_records=0 engram_context_records=1 paper_engram_context_records=1 fused_simt_context_records=0 fused_simt_vendor_context_records=0\n",
+            "qwen3-engram-context: node=0 layers=[0,4) total_layers=40 step=0 mode=cpu-reference-paper-object-ref table_rows=8 output_checksum=0x7101 gate_checksum=0x7201 index_checksum=0x7301 output_l1_milli=10 latency_ms=2 row_prefetch_hits=1 row_prefetch_requests=1 row_prefetch_hit_rate_milli=1000 table_bytes_moved=256 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=32 hidden_output_bytes=32 hidden_injection_overhead_bytes=64\n",
+        ))
+        .expect("extract CPU-only reference evidence");
+        assert_eq!(cpu_only.decode_steps_expected, 1);
+        assert_eq!(cpu_only.context_step_count, 0);
+        assert_eq!(cpu_only.row_prefetch_requests, 0);
+        assert_eq!(cpu_only.row_prefetch_hits, 0);
+        assert_eq!(cpu_only.max_backend_latency_us, 0);
+        assert_ne!(cpu_only.hidden_checksum, 0);
 
         let partial = w5_paper_engram_eval_evidence_from_summary(concat!(
             "summary: decode_steps_expected=2 decode_steps_observed=2 worker_timing_records=16 passed_nodes=8/8 handoff_timing_records=0 idle_timing_records=0 engram_timing_records=0 engram_context_records=1 paper_engram_context_records=1 fused_simt_context_records=0 fused_simt_vendor_context_records=0\n",
