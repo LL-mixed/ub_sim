@@ -21291,10 +21291,13 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         fs::create_dir_all(&root).expect("create paper engram quality test dir");
         let store = root.join("store.json");
         let recipe_manifest = root.join("recipe_manifest.json");
+        let recipe_no_evidence_manifest = root.join("recipe_no_evidence_manifest.json");
         let eval_manifest = root.join("eval_manifest.json");
+        let eval_no_evidence_manifest = root.join("eval_no_evidence_manifest.json");
         let eval_overlap_manifest = root.join("eval_overlap_manifest.json");
         let shard_manifest = root.join("shard_manifest.json");
         let module_manifest = root.join("module_manifest.json");
+        let module_no_evidence_manifest = root.join("module_no_evidence_manifest.json");
         let module_overlap_manifest = root.join("module_overlap_manifest.json");
 
         run_lingqu_memory_seed_paper_engram_fixture_cli(&[
@@ -21413,6 +21416,18 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         overlap_report.validation_set_refs = recipe.dataset_refs.clone();
         let overlap_report = sim_memory::PaperEngramEvalReportManifest::new(overlap_report)
             .expect("build overlapping train/eval report");
+        let mut no_evidence_recipe = recipe.clone();
+        no_evidence_recipe.recipe_id = "pe-recipe-quality-no-evidence-cli".to_string();
+        no_evidence_recipe.evidence_refs.clear();
+        let no_evidence_recipe =
+            sim_memory::PaperEngramTrainingRecipeManifest::new(no_evidence_recipe)
+                .expect("build no-evidence paper engram training recipe");
+        let mut no_evidence_report = report.clone();
+        no_evidence_report.report_id = "pe-eval-quality-no-evidence-cli".to_string();
+        no_evidence_report.recipe_id = no_evidence_recipe.recipe_id.clone();
+        let no_evidence_report =
+            sim_memory::PaperEngramEvalReportManifest::new(no_evidence_report)
+                .expect("build no-evidence paper engram eval report");
         module.training_recipe_ref = Some(sim_memory::paper_engram_training_recipe_dfs_path(
             &recipe.recipe_id,
         ));
@@ -21428,12 +21443,24 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         ));
         overlap_module = sim_memory::PaperEngramModuleManifest::new(overlap_module)
             .expect("build overlapping train/eval module manifest");
+        let mut no_evidence_module = module.clone();
+        no_evidence_module.training_recipe_ref = Some(
+            sim_memory::paper_engram_training_recipe_dfs_path(&no_evidence_recipe.recipe_id),
+        );
+        no_evidence_module.eval_report_ref = Some(sim_memory::paper_engram_eval_report_dfs_path(
+            &no_evidence_report.report_id,
+        ));
+        no_evidence_module = sim_memory::PaperEngramModuleManifest::new(no_evidence_module)
+            .expect("build no-evidence module manifest");
 
         write_json_file(&recipe_manifest, &recipe);
+        write_json_file(&recipe_no_evidence_manifest, &no_evidence_recipe);
         write_json_file(&eval_manifest, &report);
+        write_json_file(&eval_no_evidence_manifest, &no_evidence_report);
         write_json_file(&eval_overlap_manifest, &overlap_report);
         write_json_file(&shard_manifest, &shard);
         write_json_file(&module_manifest, &module);
+        write_json_file(&module_no_evidence_manifest, &no_evidence_module);
         write_json_file(&module_overlap_manifest, &overlap_module);
 
         run_lingqu_memory_register_paper_engram_training_recipe_cli(&[
@@ -21443,6 +21470,13 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             recipe_manifest.display().to_string(),
         ])
         .expect("register paper engram training recipe");
+        run_lingqu_memory_register_paper_engram_training_recipe_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--manifest".to_string(),
+            recipe_no_evidence_manifest.display().to_string(),
+        ])
+        .expect("register no-evidence paper engram training recipe");
         run_lingqu_memory_register_paper_engram_eval_report_cli(&[
             "--store".to_string(),
             store.display().to_string(),
@@ -21450,6 +21484,13 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             eval_manifest.display().to_string(),
         ])
         .expect("register paper engram eval report");
+        run_lingqu_memory_register_paper_engram_eval_report_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--manifest".to_string(),
+            eval_no_evidence_manifest.display().to_string(),
+        ])
+        .expect("register no-evidence paper engram eval report");
         run_lingqu_memory_register_paper_engram_eval_report_cli(&[
             "--store".to_string(),
             store.display().to_string(),
@@ -21476,6 +21517,21 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 .to_string()
                 .contains("validation sets distinct from training datasets")),
             "{overlap_err:?}"
+        );
+        let no_evidence_err = run_lingqu_memory_register_paper_engram_module_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--manifest".to_string(),
+            module_no_evidence_manifest.display().to_string(),
+        ])
+        .expect_err("registering quality module without recipe evidence should fail");
+        assert!(
+            no_evidence_err
+                .chain()
+                .any(|cause| cause.to_string().contains(
+                    "paper_engram_training_recipe.evidence_refs"
+                )),
+            "{no_evidence_err:?}"
         );
         run_lingqu_memory_register_paper_engram_module_cli(&[
             "--store".to_string(),
