@@ -17922,6 +17922,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         let summary_path = root.join("paper_summary.txt");
         let zero_summary_path = root.join("zero_summary.txt");
         let recipe_manifest = root.join("recipe_manifest.json");
+        let shard_manifest = root.join("shard_manifest.json");
         let module_manifest = root.join("module_manifest.json");
         fs::write(
             &summary_path,
@@ -17986,6 +17987,11 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             .expect("load seeded hash config")
             .pop()
             .expect("seeded hash config");
+        let mut shard = durable
+            .load_paper_engram_table_shard_manifest()
+            .expect("load seeded table shard")
+            .pop()
+            .expect("seeded table shard");
         let mut module = durable
             .load_paper_engram_module_registry()
             .expect("load seeded module registry")
@@ -17993,6 +17999,9 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             .expect("seeded module")
             .module;
         drop(durable);
+        shard.source_ref = Some("dfs://runs/qwen3-w5-quality-train/table.safetensors".to_string());
+        let shard = sim_memory::PaperEngramTableShardManifest::new(shard)
+            .expect("build trained table shard manifest");
 
         let recipe = sim_memory::PaperEngramTrainingRecipeManifest::new(
             sim_memory::PaperEngramTrainingRecipeManifest {
@@ -18031,6 +18040,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             .expect("build trained paper engram module manifest");
 
         write_json_file(&recipe_manifest, &recipe);
+        write_json_file(&shard_manifest, &shard);
         write_json_file(&module_manifest, &module);
         run_lingqu_memory_register_paper_engram_training_recipe_cli(&[
             "--store".to_string(),
@@ -18080,6 +18090,13 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             "33".to_string(),
         ])
         .expect("register eval report from W5 summary");
+        run_lingqu_memory_register_paper_engram_table_shard_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--manifest".to_string(),
+            shard_manifest.display().to_string(),
+        ])
+        .expect("register trained table shard provenance");
         run_lingqu_memory_register_paper_engram_module_cli(&[
             "--store".to_string(),
             store.display().to_string(),
@@ -18119,6 +18136,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         let store = root.join("store.json");
         let recipe_manifest = root.join("recipe_manifest.json");
         let eval_manifest = root.join("eval_manifest.json");
+        let shard_manifest = root.join("shard_manifest.json");
         let module_manifest = root.join("module_manifest.json");
 
         run_lingqu_memory_seed_paper_engram_fixture_cli(&[
@@ -18157,6 +18175,11 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             .expect("load seeded hash config")
             .pop()
             .expect("seeded hash config");
+        let mut shard = durable
+            .load_paper_engram_table_shard_manifest()
+            .expect("load seeded table shard")
+            .pop()
+            .expect("seeded table shard");
         let mut module = durable
             .load_paper_engram_module_registry()
             .expect("load seeded module registry")
@@ -18164,6 +18187,9 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             .expect("seeded module")
             .module;
         drop(durable);
+        shard.source_ref = Some("dfs://runs/qwen3-quality-train/table.safetensors".to_string());
+        let shard = sim_memory::PaperEngramTableShardManifest::new(shard)
+            .expect("build trained table shard manifest");
 
         let recipe = sim_memory::PaperEngramTrainingRecipeManifest::new(
             sim_memory::PaperEngramTrainingRecipeManifest {
@@ -18233,6 +18259,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
 
         write_json_file(&recipe_manifest, &recipe);
         write_json_file(&eval_manifest, &report);
+        write_json_file(&shard_manifest, &shard);
         write_json_file(&module_manifest, &module);
 
         run_lingqu_memory_register_paper_engram_training_recipe_cli(&[
@@ -18249,6 +18276,13 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             eval_manifest.display().to_string(),
         ])
         .expect("register paper engram eval report");
+        run_lingqu_memory_register_paper_engram_table_shard_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--manifest".to_string(),
+            shard_manifest.display().to_string(),
+        ])
+        .expect("register trained table shard provenance");
         run_lingqu_memory_register_paper_engram_module_cli(&[
             "--store".to_string(),
             store.display().to_string(),
@@ -18334,7 +18368,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             .expect("load seeded hash config")
             .pop()
             .expect("seeded hash config");
-        let shard = durable
+        let mut shard = durable
             .load_paper_engram_table_shard_manifest()
             .expect("load seeded table shard")
             .pop()
@@ -18351,6 +18385,10 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             .expect("seeded module")
             .module;
         drop(durable);
+        shard.source_ref =
+            Some("dfs://imports/qwen3-imported-quality/table.safetensors".to_string());
+        let shard = sim_memory::PaperEngramTableShardManifest::new(shard)
+            .expect("build imported table shard manifest");
 
         let recipe = sim_memory::PaperEngramTrainingRecipeManifest::new(
             sim_memory::PaperEngramTrainingRecipeManifest {

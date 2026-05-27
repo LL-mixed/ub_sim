@@ -325,6 +325,7 @@ Current implementation status:
 - Paper Engram eval reports now enforce no-regression against the base-model validation loss and, when present, the decode-policy-only validation loss before a trained quality claim can pass.
 - `quality_claim=imported` now requires provenance evidence too: the module must bind an `ExternalImport` training recipe plus an eval report, so externally produced tables cannot bypass the same Memory Service quality gate.
 - Trained/imported quality claims now require runtime acceptance evidence in the eval report: all four Phase 6 loss variants (`base`, `base+decode_policy`, `base+paper_engram`, `base+paper_engram+decode_policy`), CPU/backend output match, non-zero-table hidden/output checksum deltas, row-prefetch locality counters, and bounded backend latency.
+- Trained/imported quality claims also reject fixture-provenance table artifacts, so `seed-paper-engram-fixture` output can still validate runtime wiring but cannot be reused as evidence for model-quality improvement.
 - `sim-cli lingqu-memory build-paper-engram-eval-report-from-w5-summary` can now generate an eval report manifest from W5 paper Engram runtime logs, including context output checksum evidence, zero-table comparison evidence, row-prefetch counters, backend latency, and terminal output checksum aggregation. `register-paper-engram-eval-report-from-w5-summary` persists the same W5-derived evidence directly into Memory Service so `validate-paper-engram-quality` can consume runtime evidence without a hand-written eval JSON.
 - Memory Service can resolve paper Engram table row block refs by `module_id/layer/order/head/row_range`; `sim-cli lingqu-memory resolve-paper-engram-table-row-blocks` exposes this as the row-block ObjectRef materialization base for runtime prefetch and Object Service publication.
 - Memory Service can build deterministic paper Engram row prefetch plans from canonical token history using the shared `sim-models::engram_hash` implementation; `sim-cli lingqu-memory plan-paper-engram-row-prefetch` exposes the planned row refs and backing block refs, and `publish-paper-engram-row-prefetch` publishes the row plan as Object Service metadata. W5 entrypoints now carry the published plan through `SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF` / `--engram-row-prefetch-ref` alongside the required paper `ENGRAM_STATE` ref.
@@ -454,7 +455,7 @@ quality claims.
 2. Resolve canonical indices per decode step.
 3. Route operands through Memory Service/Object Service.
 4. Compare CPU reference and simpler-host backend.
-5. Validate no model-quality claim for fixture tables.
+5. Validate no model-quality claim for fixture tables. Current Memory Service quality validation rejects fixture-provenance table artifacts for `Posttrain`, `Finetune`, and `Imported` claims.
 
 ### Phase 6: Trained Table Integration
 

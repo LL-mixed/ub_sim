@@ -2287,6 +2287,28 @@ fn paper_engram_module_manifest_checksum(manifest: &PaperEngramModuleManifest) -
     checksum64(&bytes)
 }
 
+fn validate_trained_paper_engram_source_ref(
+    field: &'static str,
+    source_ref: Option<&str>,
+    require_source_ref: bool,
+) -> MemoryResult<()> {
+    let Some(source_ref) = source_ref else {
+        return if require_source_ref {
+            Err(LingquMemoryError::MissingField(field))
+        } else {
+            Ok(())
+        };
+    };
+    required_str(source_ref, field)?;
+    if source_ref.starts_with("fixture://") {
+        return Err(LingquMemoryError::InvalidValue {
+            field,
+            reason: "trained paper Engram quality requires non-fixture table and gate provenance",
+        });
+    }
+    Ok(())
+}
+
 fn paper_engram_module_registry_manifest_checksum(
     manifest: &PaperEngramModuleRegistryManifest,
 ) -> u64 {
@@ -7833,7 +7855,38 @@ impl LingquMemoryService {
                 reason: "quality claim must match training recipe mode",
             });
         }
+        self.validate_paper_engram_quality_artifact_sources(module)?;
         self.validate_paper_engram_eval_acceptance_evidence(report)?;
+        Ok(())
+    }
+
+    fn validate_paper_engram_quality_artifact_sources(
+        &self,
+        module: &PaperEngramModuleManifest,
+    ) -> MemoryResult<()> {
+        for shard_id in &module.table_shard_ids {
+            let shard = self.paper_engram_table_shards.get(shard_id).ok_or(
+                LingquMemoryError::MissingField("paper_engram_module.table_shard_ids"),
+            )?;
+            validate_trained_paper_engram_source_ref(
+                "paper_engram_table_shard.source_ref",
+                shard.source_ref.as_deref(),
+                true,
+            )?;
+        }
+        for gate_id in &module.gate_ids {
+            let gate =
+                self.paper_engram_gates
+                    .get(gate_id)
+                    .ok_or(LingquMemoryError::MissingField(
+                        "paper_engram_module.gate_ids",
+                    ))?;
+            validate_trained_paper_engram_source_ref(
+                "paper_engram_gate.source_ref",
+                gate.source_ref.as_deref(),
+                false,
+            )?;
+        }
         Ok(())
     }
 
@@ -10679,6 +10732,55 @@ mod tests {
             LingquMemoryError::MissingField(
                 "paper_engram_eval_report.paper_engram_decode_policy_loss_milli"
             )
+        );
+    }
+
+    #[test]
+    fn paper_engram_quality_claim_rejects_fixture_artifact_provenance() {
+        let mut service = LingquMemoryService::new();
+        let projection = sample_paper_engram_tokenizer_projection_manifest();
+        let hash_config = sample_paper_engram_hash_config_manifest();
+        let mut shard = sample_paper_engram_table_shard_manifest();
+        shard.source_ref = Some("fixture://sim-memory/paper-engram/table".to_string());
+        let shard =
+            PaperEngramTableShardManifest::new(shard).expect("fixture table shard manifest");
+        let gate = sample_paper_engram_gate_manifest();
+        let recipe = sample_paper_engram_training_recipe_manifest();
+        let report = sample_paper_engram_eval_report_manifest();
+        let mut module = sample_paper_engram_module_manifest();
+        module.quality_claim = PaperEngramQualityClaim::Posttrain;
+        module.training_recipe_ref = Some(paper_engram_training_recipe_dfs_path(&recipe.recipe_id));
+        module.eval_report_ref = Some(paper_engram_eval_report_dfs_path(&report.report_id));
+        module.checksum = paper_engram_module_manifest_checksum(&module);
+
+        service
+            .register_paper_engram_tokenizer_projection(projection)
+            .expect("register projection");
+        service
+            .register_paper_engram_hash_config(hash_config)
+            .expect("register hash config");
+        service
+            .register_paper_engram_training_recipe(recipe)
+            .expect("register recipe");
+        service
+            .register_paper_engram_eval_report(report)
+            .expect("register eval report");
+        service
+            .register_paper_engram_table_shard(shard)
+            .expect("register fixture shard");
+        service
+            .register_paper_engram_gate(gate)
+            .expect("register gate");
+
+        assert_eq!(
+            service
+                .register_paper_engram_module(module)
+                .expect_err("fixture table must not back a trained quality claim"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_table_shard.source_ref",
+                reason:
+                    "trained paper Engram quality requires non-fixture table and gate provenance"
+            }
         );
     }
 
