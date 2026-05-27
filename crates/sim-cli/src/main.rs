@@ -3468,18 +3468,7 @@ fn run_lingqu_memory_import_paper_engram_module_cli(args: &[String]) -> anyhow::
 fn run_lingqu_memory_export_paper_engram_module_cli(args: &[String]) -> anyhow::Result<()> {
     let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
     let bundle_dir = PathBuf::from(required_cli_arg(args, "--bundle-dir")?);
-    if bundle_dir.exists()
-        && !cli_flag(args, "--allow-overwrite")
-        && fs::read_dir(&bundle_dir)
-            .with_context(|| format!("read bundle dir {}", bundle_dir.display()))?
-            .next()
-            .is_some()
-    {
-        anyhow::bail!(
-            "export-paper-engram-module bundle dir is not empty; pass --allow-overwrite: {}",
-            bundle_dir.display()
-        );
-    }
+    prepare_paper_engram_export_bundle_dir(&bundle_dir, cli_flag(args, "--allow-overwrite"))?;
 
     let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
     let mut memory_service = LingquMemoryService::new();
@@ -3565,6 +3554,57 @@ fn run_lingqu_memory_export_paper_engram_module_cli(args: &[String]) -> anyhow::
     println!("  exported_blocks: {}", block_stats.blocks);
     println!("  exported_block_bytes: {}", block_stats.bytes);
     println!("  quality: {:?}", runtime.module.quality_claim);
+    Ok(())
+}
+
+fn prepare_paper_engram_export_bundle_dir(
+    bundle_dir: &Path,
+    allow_overwrite: bool,
+) -> anyhow::Result<()> {
+    if !bundle_dir.exists() {
+        return Ok(());
+    }
+    if !bundle_dir.is_dir() {
+        anyhow::bail!(
+            "export-paper-engram-module bundle path must be a directory: {}",
+            bundle_dir.display()
+        );
+    }
+    let is_empty = fs::read_dir(bundle_dir)
+        .with_context(|| format!("read bundle dir {}", bundle_dir.display()))?
+        .next()
+        .is_none();
+    if !is_empty && !allow_overwrite {
+        anyhow::bail!(
+            "export-paper-engram-module bundle dir is not empty; pass --allow-overwrite: {}",
+            bundle_dir.display()
+        );
+    }
+    if !allow_overwrite {
+        return Ok(());
+    }
+
+    for relative_path in [
+        "tokenizer_projection.json",
+        "hash_config.json",
+        "engram_module.json",
+        "training_recipe.json",
+        "eval_report.json",
+        "table_shards",
+        "gates",
+        "block_payloads",
+    ] {
+        let path = bundle_dir.join(relative_path);
+        if path.is_dir() {
+            fs::remove_dir_all(&path).with_context(|| {
+                format!("remove stale paper Engram bundle dir {}", path.display())
+            })?;
+        } else if path.exists() {
+            fs::remove_file(&path).with_context(|| {
+                format!("remove stale paper Engram bundle file {}", path.display())
+            })?;
+        }
+    }
     Ok(())
 }
 
@@ -19216,6 +19256,39 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             "export-engram".to_string(),
         ])
         .expect("validate imported exported paper Engram bundle");
+
+        let overwrite_import_store = root.join("overwrite-import-store.json");
+        let stale_shard = bundle_dir.join("table_shards").join("stale.json");
+        fs::write(&stale_shard, b"{not-json").expect("write stale bundle shard");
+        run_lingqu_memory_export_paper_engram_module_cli(&[
+            "--store".to_string(),
+            seed_store.display().to_string(),
+            "--bundle-dir".to_string(),
+            bundle_dir.display().to_string(),
+            "--model-id".to_string(),
+            "qwen3-export-test".to_string(),
+            "--engram-id".to_string(),
+            "export-engram".to_string(),
+            "--allow-overwrite".to_string(),
+        ])
+        .expect("overwrite exported paper Engram module bundle");
+        assert!(!stale_shard.exists());
+        run_lingqu_memory_import_paper_engram_module_cli(&[
+            "--store".to_string(),
+            overwrite_import_store.display().to_string(),
+            "--bundle-dir".to_string(),
+            bundle_dir.display().to_string(),
+        ])
+        .expect("import overwritten paper Engram module bundle");
+        run_lingqu_memory_validate_paper_engram_module_cli(&[
+            "--store".to_string(),
+            overwrite_import_store.display().to_string(),
+            "--model-id".to_string(),
+            "qwen3-export-test".to_string(),
+            "--engram-id".to_string(),
+            "export-engram".to_string(),
+        ])
+        .expect("validate imported overwritten paper Engram bundle");
 
         fs::remove_dir_all(&root).expect("remove paper engram export test dir");
     }
