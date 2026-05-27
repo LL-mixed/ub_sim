@@ -3597,15 +3597,25 @@ fn ensure_w5_paper_engram_eval_context_step_coverage(
     evidence: &W5PaperEngramEvalEvidence,
     summary_path: &Path,
 ) -> anyhow::Result<()> {
+    if !evidence.decode_steps_summary_seen {
+        anyhow::bail!(
+            "{} missing decode_steps_expected summary line for paper Engram runtime coverage",
+            summary_path.display()
+        );
+    }
+    if evidence.decode_steps_expected == 0 {
+        anyhow::bail!(
+            "{} paper Engram runtime coverage requires decode_steps_expected > 0",
+            summary_path.display()
+        );
+    }
     if evidence.context_count == 0 {
         anyhow::bail!(
             "{} contains no qwen3-engram-context paper runtime evidence",
             summary_path.display()
         );
     }
-    if evidence.decode_steps_expected > 0
-        && evidence.context_step_count != evidence.decode_steps_expected
-    {
+    if evidence.context_step_count != evidence.decode_steps_expected {
         anyhow::bail!(
             "{} paper Engram context step coverage incomplete: observed {}/{}",
             summary_path.display(),
@@ -6595,6 +6605,7 @@ struct W5KvArtifactExport {
 
 #[derive(Debug, Clone, Default)]
 struct W5PaperEngramEvalEvidence {
+    decode_steps_summary_seen: bool,
     decode_steps_expected: u64,
     context_step_count: u64,
     context_count: u64,
@@ -6665,6 +6676,7 @@ fn w5_paper_engram_eval_evidence_from_summary(
     for line in lines {
         if line.starts_with("summary: ") && line.contains("decode_steps_expected=") {
             let fields = parse_summary_fields(&line);
+            evidence.decode_steps_summary_seen = true;
             evidence.decode_steps_expected =
                 required_summary_u64(&fields, "decode_steps_expected")?;
         } else if line.contains("qwen3-engram-context:") {
@@ -14705,13 +14717,14 @@ mod tests {
     use super::{
         build_paper_engram_eval_report_from_w5_summary_args, build_w5_terminal_logits_payload,
         cli_bytes_checksum, cli_f32_vec_to_le_bytes, ensure_w5_memory_engram_state,
-        lingqu_durable_args_from, lingqu_memory_args_from, lingqu_object_payload_checksum,
-        lingqu_object_service_args_from, load_lingqu_memory_durable_store,
-        load_lingqu_object_service_snapshot, load_lingqu_object_service_snapshot_file,
-        load_w5_memory_decisions_from_store, paper_engram_bundle_block_payload_path,
-        paper_engram_bundle_payload_refs, paper_engram_eval_comparison,
-        paper_engram_module_matches_list_filters, parse_paper_engram_canonical_history_arg_or_file,
-        parse_summary_fields, parse_u64_csv_arg_or_file, parse_w5_terminal_logits_observation,
+        ensure_w5_paper_engram_eval_context_step_coverage, lingqu_durable_args_from,
+        lingqu_memory_args_from, lingqu_object_payload_checksum, lingqu_object_service_args_from,
+        load_lingqu_memory_durable_store, load_lingqu_object_service_snapshot,
+        load_lingqu_object_service_snapshot_file, load_w5_memory_decisions_from_store,
+        paper_engram_bundle_block_payload_path, paper_engram_bundle_payload_refs,
+        paper_engram_eval_comparison, paper_engram_module_matches_list_filters,
+        parse_paper_engram_canonical_history_arg_or_file, parse_summary_fields,
+        parse_u64_csv_arg_or_file, parse_w5_terminal_logits_observation,
         publish_w5_engram_state_ref_from_memory, publish_w5_engram_state_ref_from_memory_objects,
         publish_w5_execution_artifact_ref, publish_w5_memory_decision_artifact_refs,
         publish_w5_object_service_payload_ref, qwen3_decode_loop_args_from,
@@ -20827,6 +20840,21 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         )
         .expect("extract unpaired backend evidence");
         assert_eq!(unpaired.cpu_backend_output_match, None);
+
+        let no_decode_summary = w5_paper_engram_eval_evidence_from_summary(concat!(
+            "qwen3-engram-context: node=0 layers=[0,4) total_layers=40 step=0 mode=simpler-host-paper-object-ref table_rows=8 output_checksum=0x7101 gate_checksum=0x7201 index_checksum=0x7301 output_l1_milli=10 latency_ms=5 row_prefetch_hits=1 row_prefetch_requests=1 row_prefetch_hit_rate_milli=1000 table_bytes_moved=256 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=32 hidden_output_bytes=32 hidden_injection_overhead_bytes=64\n",
+            "qwen3-engram-context: node=0 layers=[0,4) total_layers=40 step=0 mode=cpu-reference-paper-object-ref table_rows=8 output_checksum=0x7101 gate_checksum=0x7201 index_checksum=0x7301 output_l1_milli=10 latency_ms=2 row_prefetch_hits=1 row_prefetch_requests=1 row_prefetch_hit_rate_milli=1000 table_bytes_moved=256 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=32 hidden_output_bytes=32 hidden_injection_overhead_bytes=64\n",
+        ))
+        .expect("extract summary-less backend evidence");
+        let no_decode_summary_err = ensure_w5_paper_engram_eval_context_step_coverage(
+            &no_decode_summary,
+            Path::new("summary-less-w5.txt"),
+        )
+        .expect_err("reject paper Engram evidence without decode step summary");
+        assert!(
+            format!("{no_decode_summary_err:#}").contains("missing decode_steps_expected"),
+            "unexpected summary-less coverage error: {no_decode_summary_err:#}"
+        );
 
         let cpu_only = w5_paper_engram_eval_evidence_from_summary(concat!(
             "summary: decode_steps_expected=1 decode_steps_observed=1 worker_timing_records=8 passed_nodes=8/8 handoff_timing_records=0 idle_timing_records=0 engram_timing_records=0 engram_context_records=1 paper_engram_context_records=1 fused_simt_context_records=0 fused_simt_vendor_context_records=0\n",
