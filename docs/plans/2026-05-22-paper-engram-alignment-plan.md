@@ -344,6 +344,7 @@ Current implementation status:
 - W5 decode startup now runs the same fused SIMT selected-case self-check before exporting `SIM_ENGRAM_SIMT_SELECTED_*` to the guest runner. `--validate-only` reports the preflight case and pass/fail/total counters, so a fused-SIMT W5 launch cannot proceed on a merely discoverable artifact that does not pass the vendor self-check.
 - `sim-models::engram_simt_adapter` now defines the runtime input ABI needed to feed the vendor fused SIMT shape: legacy single-table operands pass through directly, while shape-compatible paper Engram multi-table operands are packed into one contiguous table plus eight SIMT index slots per batch. The packer duplicates paper lookups only when the lookup count divides the vendor's eight slots, preserving CPU reference output equivalence and rejecting unrepresentable lookup counts.
 - UAPI `SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=fused-simt` now reaches the runtime operand gate instead of failing with an unconditional `not_wired` error. The current execution path builds the fused-SIMT ABI input and runs a parity-checked ABI reference path with explicit `fused-simt-abi-reference-*` report modes; it does not yet claim dynamic vendor-kernel execution for W5 range-forward.
+- The vendor `engram-simt` host harness now accepts an optional per-case `table.bin`, and `sim-models::engram_simt_adapter` can materialize runtime fused-SIMT case data (`table.bin`, `indices.bin`, `hidden.bin`, `gate_weight.bin`, `golden.bin`) before launching the selected vendor case. When W5/UAPI sees the exported `SIM_ENGRAM_SIMT_*` artifact environment, fused-simt context execution now runs that materialized vendor case and reports `fused-simt-vendor-*`; without the artifact environment it remains on the explicit ABI-reference path.
 
 The terminal-only context-op path is not enough. Paper Engram must be able to
 inject at configured model layers, not only after terminal hidden.
@@ -513,8 +514,11 @@ artifact discovery and self-checking launch wrapper, and W5 decode startup now
 uses that wrapper as a preflight gate before selecting the artifact for the
 guest runner. The paper Engram to vendor fused-SIMT input ABI is defined and
 covered by CPU equivalence tests. UAPI can now validate fused-SIMT ABI
-compatibility during range-forward through the explicit ABI-reference path, but
-dynamic vendor-kernel execution for W5 range-forward remains open.
+compatibility during range-forward through the explicit ABI-reference path, and
+can materialize and launch the selected vendor case when the W5 fused-SIMT
+artifact environment is present. Remaining work is to run the real W5 cluster
+path with rebuilt vendor artifacts and collect backend latency/equivalence
+evidence.
 
 ## Open Decisions
 

@@ -36,7 +36,9 @@ use sim_models::engram_hash::{
     ENGRAM_HASH_ALGORITHM_VERSION,
 };
 use sim_models::engram_simt_adapter::{
-    build_engram_simt_runtime_input_from_legacy_op, build_engram_simt_runtime_input_from_paper_op,
+    build_engram_simt_case_name, build_engram_simt_runtime_input_from_legacy_op,
+    build_engram_simt_runtime_input_from_paper_op, build_engram_simt_symbol,
+    run_engram_simt_runtime_input_case, EngramSimtLaunchSpec,
 };
 use sim_models::qwen3_dense;
 use sim_models::qwen3_dense_reference::{
@@ -19475,9 +19477,9 @@ fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence_with_descript
                         hidden_size,
                     };
                     let reference = run_engram_context_reference(&op)?;
-                    let output_values = match mode {
+                    let (output_values, report_mode_override) = match mode {
                         Qwen3DenseReferenceEngramContextMode::CpuReference => {
-                            reference.output.clone()
+                            (reference.output.clone(), None)
                         }
                         Qwen3DenseReferenceEngramContextMode::FusedSimt => {
                             let runtime_input =
@@ -19497,7 +19499,26 @@ fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence_with_descript
                                 &produced,
                                 &reference.output,
                             )?;
-                            produced
+                            let report_mode = if let Some(spec) =
+                                qwen3_engram_simt_launch_spec_from_env(&runtime_input)?
+                            {
+                                let npu_id = qwen3_engram_simt_npu_id_from_env()?;
+                                run_engram_simt_runtime_input_case(
+                                        &spec,
+                                        npu_id,
+                                        &runtime_input,
+                                        &reference.output,
+                                    )
+                                    .map_err(|err| {
+                                        format!(
+                                            "qwen3_engram_context_fused_simt_runtime_launch_failed:{err}"
+                                        )
+                                    })?;
+                                "fused-simt-vendor-object-ref"
+                            } else {
+                                "fused-simt-abi-reference-object-ref"
+                            };
+                            (produced, Some(report_mode))
                         }
                         Qwen3DenseReferenceEngramContextMode::SimplerHost => {
                             let produced = run_simpler_host_engram_context(
@@ -19514,21 +19535,25 @@ fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence_with_descript
                                 &produced,
                                 &reference.output,
                             )?;
-                            reference.output.clone()
+                            (reference.output.clone(), None)
                         }
                         _ => unreachable!(),
                     };
-                    let report_mode = match mode {
-                        Qwen3DenseReferenceEngramContextMode::CpuReference => {
-                            "cpu-reference-object-ref"
+                    let report_mode = if let Some(report_mode) = report_mode_override {
+                        report_mode
+                    } else {
+                        match mode {
+                            Qwen3DenseReferenceEngramContextMode::CpuReference => {
+                                "cpu-reference-object-ref"
+                            }
+                            Qwen3DenseReferenceEngramContextMode::FusedSimt => {
+                                "fused-simt-abi-reference-object-ref"
+                            }
+                            Qwen3DenseReferenceEngramContextMode::SimplerHost => {
+                                "simpler-host-object-ref"
+                            }
+                            Qwen3DenseReferenceEngramContextMode::Disabled => unreachable!(),
                         }
-                        Qwen3DenseReferenceEngramContextMode::FusedSimt => {
-                            "fused-simt-abi-reference-object-ref"
-                        }
-                        Qwen3DenseReferenceEngramContextMode::SimplerHost => {
-                            "simpler-host-object-ref"
-                        }
-                        Qwen3DenseReferenceEngramContextMode::Disabled => unreachable!(),
                     };
                     (
                         reference.report,
@@ -19568,9 +19593,9 @@ fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence_with_descript
                         hidden_size,
                     };
                     let reference = run_paper_engram_context_reference(&paper_op)?;
-                    let output_values = match mode {
+                    let (output_values, report_mode_override) = match mode {
                         Qwen3DenseReferenceEngramContextMode::CpuReference => {
-                            reference.output.clone()
+                            (reference.output.clone(), None)
                         }
                         Qwen3DenseReferenceEngramContextMode::FusedSimt => {
                             let runtime_input =
@@ -19590,7 +19615,26 @@ fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence_with_descript
                                 &produced,
                                 &reference.output,
                             )?;
-                            produced
+                            let report_mode = if let Some(spec) =
+                                qwen3_engram_simt_launch_spec_from_env(&runtime_input)?
+                            {
+                                let npu_id = qwen3_engram_simt_npu_id_from_env()?;
+                                run_engram_simt_runtime_input_case(
+                                        &spec,
+                                        npu_id,
+                                        &runtime_input,
+                                        &reference.output,
+                                    )
+                                    .map_err(|err| {
+                                        format!(
+                                            "qwen3_paper_engram_context_fused_simt_runtime_launch_failed:{err}"
+                                        )
+                                    })?;
+                                "fused-simt-vendor-paper-object-ref"
+                            } else {
+                                "fused-simt-abi-reference-paper-object-ref"
+                            };
+                            (produced, Some(report_mode))
                         }
                         Qwen3DenseReferenceEngramContextMode::SimplerHost => {
                             let produced = run_simpler_host_paper_engram_context(
@@ -19606,21 +19650,25 @@ fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence_with_descript
                                 &produced,
                                 &reference.output,
                             )?;
-                            produced
+                            (produced, None)
                         }
                         Qwen3DenseReferenceEngramContextMode::Disabled => unreachable!(),
                     };
-                    let report_mode = match mode {
-                        Qwen3DenseReferenceEngramContextMode::CpuReference => {
-                            "cpu-reference-paper-object-ref"
+                    let report_mode = if let Some(report_mode) = report_mode_override {
+                        report_mode
+                    } else {
+                        match mode {
+                            Qwen3DenseReferenceEngramContextMode::CpuReference => {
+                                "cpu-reference-paper-object-ref"
+                            }
+                            Qwen3DenseReferenceEngramContextMode::FusedSimt => {
+                                "fused-simt-abi-reference-paper-object-ref"
+                            }
+                            Qwen3DenseReferenceEngramContextMode::SimplerHost => {
+                                "simpler-host-paper-object-ref"
+                            }
+                            Qwen3DenseReferenceEngramContextMode::Disabled => unreachable!(),
                         }
-                        Qwen3DenseReferenceEngramContextMode::FusedSimt => {
-                            "fused-simt-abi-reference-paper-object-ref"
-                        }
-                        Qwen3DenseReferenceEngramContextMode::SimplerHost => {
-                            "simpler-host-paper-object-ref"
-                        }
-                        Qwen3DenseReferenceEngramContextMode::Disabled => unreachable!(),
                     };
                     (
                         reference.report,
@@ -19729,6 +19777,76 @@ fn qwen3_dense_reference_engram_context_row_prefetch_hit_rate_milli(
             .checked_div(report.row_prefetch_requests)
             .unwrap_or(0)
     }
+}
+
+fn qwen3_engram_simt_launch_spec_from_env(
+    input: &sim_models::engram_simt_adapter::EngramSimtRuntimeInput,
+) -> Result<Option<EngramSimtLaunchSpec>, String> {
+    let binary_path = std::env::var_os("SIM_ENGRAM_SIMT_BINARY_PATH")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let kernel_library_path = std::env::var_os("SIM_ENGRAM_SIMT_KERNEL_LIBRARY_PATH")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let selected_case = std::env::var("SIM_ENGRAM_SIMT_SELECTED_CASE")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    if binary_path.is_none() && kernel_library_path.is_none() && selected_case.is_none() {
+        return Ok(None);
+    }
+    let binary_path = binary_path.ok_or_else(|| {
+        "qwen3_engram_context_fused_simt_env_partial:SIM_ENGRAM_SIMT_BINARY_PATH".to_string()
+    })?;
+    let kernel_library_path = kernel_library_path.ok_or_else(|| {
+        "qwen3_engram_context_fused_simt_env_partial:SIM_ENGRAM_SIMT_KERNEL_LIBRARY_PATH"
+            .to_string()
+    })?;
+    let selected_case = selected_case.ok_or_else(|| {
+        "qwen3_engram_context_fused_simt_env_partial:SIM_ENGRAM_SIMT_SELECTED_CASE".to_string()
+    })?;
+    let expected_case =
+        build_engram_simt_case_name(input.hidden_size, input.batch, input.table_rows);
+    if selected_case != expected_case {
+        return Err(format!(
+            "qwen3_engram_context_fused_simt_case_mismatch:selected={selected_case}:expected={expected_case}"
+        ));
+    }
+    let expected_symbol = build_engram_simt_symbol(input.hidden_size, input.batch);
+    let selected_symbol = std::env::var("SIM_ENGRAM_SIMT_SELECTED_SYMBOL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| expected_symbol.clone());
+    if selected_symbol != expected_symbol {
+        return Err(format!(
+            "qwen3_engram_context_fused_simt_symbol_mismatch:selected={selected_symbol}:expected={expected_symbol}"
+        ));
+    }
+    Ok(Some(EngramSimtLaunchSpec {
+        mode: "fused-simt",
+        emb_dim: input.hidden_size,
+        batch: input.batch,
+        table_rows: input.table_rows,
+        indices_per_batch: ENGRAM_CONTEXT_INDICES_PER_BATCH,
+        symbol: selected_symbol,
+        case_name: selected_case,
+        binary_path,
+        kernel_library_path,
+        run_mode: std::env::var("SIM_ENGRAM_SIMT_RUN_MODE").unwrap_or_else(|_| "sim".to_string()),
+        soc_version: std::env::var("SIM_ENGRAM_SIMT_SOC_VERSION")
+            .unwrap_or_else(|_| "Ascend910_9599".to_string()),
+    }))
+}
+
+fn qwen3_engram_simt_npu_id_from_env() -> Result<u32, String> {
+    let Some(value) = std::env::var("SIM_ENGRAM_SIMT_NPU_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(0);
+    };
+    value
+        .parse::<u32>()
+        .map_err(|_| format!("qwen3_engram_context_fused_simt_npu_invalid:value={value}"))
 }
 
 fn qwen3_validate_engram_context_backend_output(
@@ -23289,6 +23407,8 @@ mod tests {
     use std::collections::BTreeSet;
     use std::path::{Path, PathBuf};
     use std::time::Duration;
+    #[cfg(unix)]
+    use std::{fs::Permissions, os::unix::fs::PermissionsExt};
 
     // The native simpler runtime owns process-global state, so run each workload in a fresh test process.
     fn run_simpler_native_test_isolated(test_name: &str, body: impl FnOnce()) {
@@ -23321,6 +23441,27 @@ mod tests {
             Some(previous) => std::env::set_var(name, previous),
             None => std::env::remove_var(name),
         }
+    }
+
+    #[cfg(unix)]
+    fn test_engram_simt_vendor_stub(case_name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_qwen3_engram_simt_vendor_stub_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let build_dir = root.join("build");
+        std::fs::create_dir_all(&build_dir).expect("create engram simt build dir");
+        let binary_path = build_dir.join("engram-simt");
+        let script = format!(
+            "#!/bin/sh\ncase_dir='../data/{case_name}'\ntest -f \"$case_dir/table.bin\" || exit 7\ntest -f \"$case_dir/indices.bin\" || exit 8\ntest -f \"$case_dir/hidden.bin\" || exit 9\ntest -f \"$case_dir/gate_weight.bin\" || exit 10\ntest -f \"$case_dir/golden.bin\" || exit 11\nprintf '[PASS] {case_name}\\n'\nprintf '[engram-simt] Results: 1 passed, 0 failed, 1 total\\n'\n"
+        );
+        std::fs::write(&binary_path, script).expect("write engram simt stub binary");
+        std::fs::set_permissions(&binary_path, Permissions::from_mode(0o755))
+            .expect("chmod engram simt stub binary");
+        let kernel_path = build_dir.join("libengram-simt_kernel.so");
+        std::fs::write(&kernel_path, b"stub").expect("write engram simt kernel stub");
+        (root, binary_path, kernel_path)
     }
 
     fn test_f32_vec_to_le_bytes(values: &[f32]) -> Vec<u8> {
@@ -23803,6 +23944,119 @@ mod tests {
                     },
                 );
                 let _ = std::fs::remove_dir_all(&registry_dir);
+            },
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn qwen3_engram_context_fused_simt_launches_vendor_runtime_case() {
+        run_simpler_native_test_isolated(
+            "qwen3_engram_context_fused_simt_launches_vendor_runtime_case",
+            || {
+                let case_name = "ENGRAMSIMTTest.fused_E1024_B1_T8";
+                let (artifact_root, binary_path, kernel_path) =
+                    test_engram_simt_vendor_stub(case_name);
+                let registry_dir = std::env::temp_dir().join(format!(
+                    "ub_sim_qwen3_engram_context_fused_vendor_state_ref_test_{}",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&registry_dir);
+                with_env_var(
+                    SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+                    registry_dir.to_string_lossy().as_ref(),
+                    || {
+                        let hidden_size = 1024usize;
+                        let table_rows = ENGRAM_CONTEXT_INDICES_PER_BATCH;
+                        let (table, indices, gate_weight, state_ref) =
+                            test_publish_engram_context_state_ref(
+                                "engram/context/fused-vendor",
+                                hidden_size,
+                                table_rows,
+                            );
+                        with_env_var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP", "fused-simt", || {
+                            with_env_var("SIM_ENGRAM_SIMT_SELECTED_CASE", case_name, || {
+                                with_env_var(
+                                    "SIM_ENGRAM_SIMT_SELECTED_SYMBOL",
+                                    "runEngram_fused_E1024_B1",
+                                    || {
+                                        with_env_var(
+                                            "SIM_ENGRAM_SIMT_BINARY_PATH",
+                                            binary_path.to_string_lossy().as_ref(),
+                                            || {
+                                                with_env_var(
+                                                    "SIM_ENGRAM_SIMT_KERNEL_LIBRARY_PATH",
+                                                    kernel_path.to_string_lossy().as_ref(),
+                                                    || {
+                                                        with_env_var(
+                                                            "SIM_ENGRAM_SIMT_NPU_ID",
+                                                            "5",
+                                                            || {
+                                                                with_env_var(
+                                                                    SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
+                                                                    &qwen3_obmm_object_ref_wire_to_hex(&state_ref),
+                                                                    || {
+                                                                        let terminal_hidden = (0..hidden_size)
+                                                                            .map(|index| {
+                                                                                (index as f32
+                                                                                    - hidden_size as f32 / 2.0)
+                                                                                    / 4096.0
+                                                                            })
+                                                                            .collect::<Vec<_>>();
+                                                                        let expected =
+                                                                            run_engram_context_reference(&EngramContextOp {
+                                                                                table: &table,
+                                                                                table_rows,
+                                                                                indices: &indices,
+                                                                                hidden: &terminal_hidden,
+                                                                                gate_weight: &gate_weight,
+                                                                                batch: 1,
+                                                                                hidden_size,
+                                                                            })
+                                                                            .expect("reference fused vendor context");
+                                                                        let mut sequence = vec![
+                                                                            vec![0.0f32; hidden_size],
+                                                                            terminal_hidden,
+                                                                        ];
+                                                                        let report =
+                                                                            qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
+                                                                                &mut sequence,
+                                                                                &[11, 358, 2776, 264],
+                                                                                QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
+                                                                                QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
+                                                                                None,
+                                                                            )
+                                                                            .expect("fused-simt vendor context op should run")
+                                                                            .expect("context report");
+
+                                                                        assert_eq!(
+                                                                            report.mode,
+                                                                            "fused-simt-vendor-object-ref"
+                                                                        );
+                                                                        assert_eq!(
+                                                                            report.output_checksum,
+                                                                            expected.report.output_checksum
+                                                                        );
+                                                                        assert_eq!(sequence[1], expected.output);
+                                                                    },
+                                                                );
+                                                            },
+                                                        );
+                                                    },
+                                                );
+                                            },
+                                        );
+                                    },
+                                );
+                            });
+                        });
+                    },
+                );
+                let case_dir = artifact_root.join("data").join(case_name);
+                assert!(case_dir.join("table.bin").is_file());
+                assert!(case_dir.join("golden.bin").is_file());
+                let _ = std::fs::remove_dir_all(artifact_root);
+                let _ = std::fs::remove_dir_all(registry_dir);
             },
         );
     }

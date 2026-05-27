@@ -5,6 +5,7 @@ use crate::engram_context::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -216,6 +217,42 @@ pub fn run_engram_simt_artifact_case(
     Ok(report)
 }
 
+pub fn materialize_engram_simt_runtime_case_data(
+    spec: &EngramSimtLaunchSpec,
+    input: &EngramSimtRuntimeInput,
+    expected_output: &[f32],
+) -> Result<PathBuf, String> {
+    validate_engram_simt_runtime_input_for_spec(spec, input, expected_output)?;
+    let case_dir = engram_simt_runtime_case_dir(spec)?;
+    fs::create_dir_all(&case_dir).map_err(|err| {
+        format!(
+            "engram_simt_runtime_case_dir_create_failed:path={}:{}",
+            case_dir.display(),
+            err
+        )
+    })?;
+    write_runtime_case_file(&case_dir, "table.bin", &f32s_to_le_bytes(&input.table))?;
+    write_runtime_case_file(&case_dir, "indices.bin", &i32s_to_le_bytes(&input.indices))?;
+    write_runtime_case_file(&case_dir, "hidden.bin", &f32s_to_le_bytes(&input.hidden))?;
+    write_runtime_case_file(
+        &case_dir,
+        "gate_weight.bin",
+        &f32s_to_le_bytes(&input.gate_weight),
+    )?;
+    write_runtime_case_file(&case_dir, "golden.bin", &f32s_to_le_bytes(expected_output))?;
+    Ok(case_dir)
+}
+
+pub fn run_engram_simt_runtime_input_case(
+    spec: &EngramSimtLaunchSpec,
+    npu_id: u32,
+    input: &EngramSimtRuntimeInput,
+    expected_output: &[f32],
+) -> Result<EngramSimtLaunchReport, String> {
+    materialize_engram_simt_runtime_case_data(spec, input, expected_output)?;
+    run_engram_simt_artifact_case(spec, npu_id)
+}
+
 pub fn build_engram_simt_runtime_input_from_legacy_op(
     op: &EngramContextOp<'_>,
 ) -> Result<EngramSimtRuntimeInput, String> {
@@ -328,6 +365,112 @@ fn validate_engram_simt_runtime_shape(batch: usize, hidden_size: usize) -> Resul
         ));
     }
     Ok(())
+}
+
+fn validate_engram_simt_runtime_input_for_spec(
+    spec: &EngramSimtLaunchSpec,
+    input: &EngramSimtRuntimeInput,
+    expected_output: &[f32],
+) -> Result<(), String> {
+    if input.hidden_size != spec.emb_dim {
+        return Err(format!(
+            "engram_simt_runtime_hidden_size_mismatch:input={}:spec={}",
+            input.hidden_size, spec.emb_dim
+        ));
+    }
+    if input.batch != spec.batch {
+        return Err(format!(
+            "engram_simt_runtime_batch_mismatch:input={}:spec={}",
+            input.batch, spec.batch
+        ));
+    }
+    if input.table_rows != spec.table_rows {
+        return Err(format!(
+            "engram_simt_runtime_table_rows_mismatch:input={}:spec={}",
+            input.table_rows, spec.table_rows
+        ));
+    }
+    let table_elems = input
+        .table_rows
+        .checked_mul(input.hidden_size)
+        .ok_or_else(|| "engram_simt_runtime_table_len_overflow".to_string())?;
+    if input.table.len() != table_elems {
+        return Err(format!(
+            "engram_simt_runtime_table_len_mismatch:got={}:expected={table_elems}",
+            input.table.len()
+        ));
+    }
+    let vector_elems = input
+        .batch
+        .checked_mul(input.hidden_size)
+        .ok_or_else(|| "engram_simt_runtime_vector_len_overflow".to_string())?;
+    if input.hidden.len() != vector_elems || input.gate_weight.len() != vector_elems {
+        return Err(format!(
+            "engram_simt_runtime_vector_len_mismatch:hidden={} gate={} expected={vector_elems}",
+            input.hidden.len(),
+            input.gate_weight.len()
+        ));
+    }
+    let index_elems = input
+        .batch
+        .checked_mul(spec.indices_per_batch)
+        .ok_or_else(|| "engram_simt_runtime_indices_len_overflow".to_string())?;
+    if input.indices.len() != index_elems {
+        return Err(format!(
+            "engram_simt_runtime_indices_len_mismatch:got={}:expected={index_elems}",
+            input.indices.len()
+        ));
+    }
+    if expected_output.len() != vector_elems {
+        return Err(format!(
+            "engram_simt_runtime_golden_len_mismatch:got={}:expected={vector_elems}",
+            expected_output.len()
+        ));
+    }
+    Ok(())
+}
+
+fn engram_simt_runtime_case_dir(spec: &EngramSimtLaunchSpec) -> Result<PathBuf, String> {
+    let build_dir = spec.binary_path.parent().ok_or_else(|| {
+        format!(
+            "engram_simt_binary_parent_missing:path={}",
+            spec.binary_path.display()
+        )
+    })?;
+    let artifact_root = build_dir.parent().ok_or_else(|| {
+        format!(
+            "engram_simt_artifact_root_missing:path={}",
+            build_dir.display()
+        )
+    })?;
+    Ok(artifact_root.join("data").join(&spec.case_name))
+}
+
+fn write_runtime_case_file(case_dir: &Path, name: &str, bytes: &[u8]) -> Result<(), String> {
+    let path = case_dir.join(name);
+    fs::write(&path, bytes).map_err(|err| {
+        format!(
+            "engram_simt_runtime_case_write_failed:path={}:{}",
+            path.display(),
+            err
+        )
+    })
+}
+
+fn f32s_to_le_bytes(values: &[f32]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(std::mem::size_of_val(values));
+    for value in values {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    bytes
+}
+
+fn i32s_to_le_bytes(values: &[i32]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(std::mem::size_of_val(values));
+    for value in values {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    bytes
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -545,6 +688,65 @@ mod tests {
         assert!(report.stdout.contains("ENGRAMSIMTTest.fused_E1024_B4_T64K"));
         assert!(report.stdout.contains("--npu=2"));
         let _ = fs::remove_dir_all(report.working_dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn engram_simt_runtime_input_materializes_and_launches_vendor_case_data() {
+        let root = temp_dir("sim_models_engram_simt_runtime_case");
+        let build_dir = root.join("build");
+        fs::create_dir_all(&build_dir).expect("create build dir");
+        let binary_path = build_dir.join(ENGRAM_SIMT_BINARY_NAME);
+        fs::write(
+            &binary_path,
+            b"#!/bin/sh\ncase_dir='../data/ENGRAMSIMTTest.fused_E1024_B1_T8'\ntest -f \"$case_dir/table.bin\" || exit 7\ntest -f \"$case_dir/indices.bin\" || exit 8\ntest -f \"$case_dir/hidden.bin\" || exit 9\ntest -f \"$case_dir/gate_weight.bin\" || exit 10\ntest -f \"$case_dir/golden.bin\" || exit 11\nprintf '[PASS] ENGRAMSIMTTest.fused_E1024_B1_T8\\n'\nprintf '[engram-simt] Results: 1 passed, 0 failed, 1 total\\n'\n",
+        )
+        .expect("write binary");
+        fs::set_permissions(&binary_path, Permissions::from_mode(0o755)).expect("chmod binary");
+        fs::write(build_dir.join(ENGRAM_SIMT_KERNEL_LIBRARY_NAME), b"stub").expect("write kernel");
+        let spec = discover_engram_simt_artifact(&EngramSimtArtifactConfig::new(&build_dir, 1, 8))
+            .expect("discover artifact");
+        let hidden_size = ENGRAM_CONTEXT_HIDDEN_SIZE;
+        let input = EngramSimtRuntimeInput {
+            mode: "legacy-single-table",
+            table: vec![0.25; 8 * hidden_size],
+            table_rows: 8,
+            indices: (0..ENGRAM_CONTEXT_INDICES_PER_BATCH)
+                .map(|index| index as i32)
+                .collect(),
+            hidden: vec![0.125; hidden_size],
+            gate_weight: vec![0.0; hidden_size],
+            batch: 1,
+            hidden_size,
+            source_lookup_count_per_batch: vec![ENGRAM_CONTEXT_INDICES_PER_BATCH],
+        };
+        let expected_output = vec![0.5; hidden_size];
+
+        let report = run_engram_simt_runtime_input_case(&spec, 3, &input, &expected_output)
+            .expect("launch runtime case");
+        let case_dir = root.join("data").join("ENGRAMSIMTTest.fused_E1024_B1_T8");
+
+        assert_eq!(report.working_dir, build_dir);
+        assert_eq!(report.npu_id, 3);
+        assert_eq!(
+            fs::read(case_dir.join("table.bin"))
+                .expect("read table")
+                .len(),
+            input.table.len() * std::mem::size_of::<f32>()
+        );
+        assert_eq!(
+            fs::read(case_dir.join("indices.bin"))
+                .expect("read indices")
+                .len(),
+            input.indices.len() * std::mem::size_of::<i32>()
+        );
+        assert_eq!(
+            fs::read(case_dir.join("golden.bin"))
+                .expect("read golden")
+                .len(),
+            expected_output.len() * std::mem::size_of::<f32>()
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
