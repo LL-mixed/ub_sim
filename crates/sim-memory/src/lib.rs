@@ -1254,7 +1254,9 @@ impl PaperEngramModuleManifest {
         }
         if matches!(
             self.quality_claim,
-            PaperEngramQualityClaim::Posttrain | PaperEngramQualityClaim::Finetune
+            PaperEngramQualityClaim::Posttrain
+                | PaperEngramQualityClaim::Finetune
+                | PaperEngramQualityClaim::Imported
         ) {
             if self.training_recipe_ref.is_none() {
                 return Err(LingquMemoryError::MissingField(
@@ -7623,7 +7625,9 @@ impl LingquMemoryService {
     ) -> MemoryResult<()> {
         let trained_claim = matches!(
             module.quality_claim,
-            PaperEngramQualityClaim::Posttrain | PaperEngramQualityClaim::Finetune
+            PaperEngramQualityClaim::Posttrain
+                | PaperEngramQualityClaim::Finetune
+                | PaperEngramQualityClaim::Imported
         );
         if !trained_claim {
             return Ok(());
@@ -7691,6 +7695,7 @@ impl LingquMemoryService {
                 PaperEngramTrainingMode::EngramOnlyContinuedPretrain
             }
             PaperEngramQualityClaim::Finetune => PaperEngramTrainingMode::EngramLora,
+            PaperEngramQualityClaim::Imported => PaperEngramTrainingMode::ExternalImport,
             _ => unreachable!(),
         };
         if recipe.mode != expected_mode {
@@ -10361,6 +10366,62 @@ mod tests {
     }
 
     #[test]
+    fn paper_engram_imported_quality_claim_requires_external_import_evidence() {
+        let mut module = sample_paper_engram_module_manifest();
+        module.quality_claim = PaperEngramQualityClaim::Imported;
+        module.checksum = paper_engram_module_manifest_checksum(&module);
+        assert_eq!(
+            module
+                .validate()
+                .expect_err("imported module must bind provenance evidence"),
+            LingquMemoryError::MissingField("paper_engram_module.training_recipe_ref")
+        );
+
+        let mut service = LingquMemoryService::new();
+        let projection = sample_paper_engram_tokenizer_projection_manifest();
+        let hash_config = sample_paper_engram_hash_config_manifest();
+        let shard = sample_paper_engram_table_shard_manifest();
+        let gate = sample_paper_engram_gate_manifest();
+        let mut recipe = sample_paper_engram_training_recipe_manifest();
+        recipe.mode = PaperEngramTrainingMode::ExternalImport;
+        recipe.objective = "external-paper-engram-import".to_string();
+        recipe.evidence_refs = vec!["dfs://imports/pe-module-0/provenance.json".to_string()];
+        recipe.checksum = paper_engram_training_recipe_manifest_checksum(&recipe);
+        recipe
+            .validate()
+            .expect("external import recipe remains valid");
+        let report = sample_paper_engram_eval_report_manifest();
+        module.training_recipe_ref = Some(paper_engram_training_recipe_dfs_path(&recipe.recipe_id));
+        module.eval_report_ref = Some(paper_engram_eval_report_dfs_path(&report.report_id));
+        module.checksum = paper_engram_module_manifest_checksum(&module);
+
+        service
+            .register_paper_engram_tokenizer_projection(projection)
+            .expect("register projection");
+        service
+            .register_paper_engram_hash_config(hash_config)
+            .expect("register hash config");
+        service
+            .register_paper_engram_training_recipe(recipe)
+            .expect("register external import recipe");
+        service
+            .register_paper_engram_eval_report(report)
+            .expect("register eval report");
+        service
+            .register_paper_engram_table_shard(shard)
+            .expect("register shard");
+        service
+            .register_paper_engram_gate(gate)
+            .expect("register gate");
+        service
+            .register_paper_engram_module(module.clone())
+            .expect("register imported module with provenance evidence");
+        service
+            .validate_paper_engram_module_quality(&module.module_id)
+            .expect("validate imported module quality claim");
+    }
+
+    #[test]
     fn paper_engram_eval_report_rejects_decode_policy_regression() {
         let mut report = sample_paper_engram_eval_report_manifest();
         report.baseline_loss_milli = 1200;
@@ -12373,11 +12434,9 @@ mod tests {
             table_dtype: TensorDType::F32,
             table_layout: "squad".to_string(),
             gate_kind: "context".to_string(),
-            training_recipe_ref: Some(LingquDfsPath::new(
-                "/lingqu/memory/engram/training-recipe.json",
-            )),
+            training_recipe_ref: None,
             eval_report_ref: None,
-            quality_claim: PaperEngramQualityClaim::Imported,
+            quality_claim: PaperEngramQualityClaim::None,
             payload_checksums: vec![0x1111, 0x2222],
             checksum: 1,
             version: 1,
