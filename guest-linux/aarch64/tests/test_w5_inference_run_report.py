@@ -235,6 +235,88 @@ class W5InferenceRunReportTest(unittest.TestCase):
             result.stdout,
         )
 
+    def test_fails_when_required_context_has_partial_step_coverage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            logs_dir = Path(tmp) / "logs" / "run_headless8"
+            out_dir.mkdir()
+            logs_dir.mkdir(parents=True)
+            run_id = "run"
+            write_artifacts(out_dir, run_id)
+            summary = out_dir / f"eight_node_w5_inference_cluster_summary.{run_id}.txt"
+            write_summary(
+                summary,
+                logs_dir,
+                context_lines=(
+                    "paper_engram_context_summary: records=1 steps=1/2 "
+                    "modes=simpler-host-paper-object-ref max_latency_ms=7 "
+                    "max_latency_step=0 max_latency_node=nodeA total_latency_ms=7 "
+                    "output_checksum_xor=0x0000000000000003",
+                ),
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    str(summary),
+                    "--require-context",
+                    "paper_engram_context",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "issue: context guard: required context step coverage mismatch: "
+            "paper_engram_context value=1/2 expected=2/2",
+            result.stdout,
+        )
+
+    def test_fails_when_vendor_context_uses_non_vendor_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            logs_dir = Path(tmp) / "logs" / "run_headless8"
+            out_dir.mkdir()
+            logs_dir.mkdir(parents=True)
+            run_id = "run"
+            write_artifacts(out_dir, run_id)
+            summary = out_dir / f"eight_node_w5_inference_cluster_summary.{run_id}.txt"
+            write_summary(
+                summary,
+                logs_dir,
+                context_lines=(
+                    "fused_simt_vendor_context_summary: records=2 steps=2/2 "
+                    "modes=fused-simt-abi-reference-paper-object-ref "
+                    "max_latency_ms=13 max_latency_step=1 max_latency_node=nodeA "
+                    "total_latency_ms=24 output_checksum_xor=0x0000000000000003 "
+                    "row_prefetch_hits=4 row_prefetch_requests=4 "
+                    "table_bytes_moved=49152 hidden_injection_overhead_bytes=16384",
+                ),
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    str(summary),
+                    "--require-context",
+                    "fused_simt_vendor_context",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "issue: context guard: required fused SIMT vendor context has "
+            "non-vendor mode: fused-simt-abi-reference-paper-object-ref",
+            result.stdout,
+        )
+
     def test_reports_shared_artifact_paths_from_env(self):
         with tempfile.TemporaryDirectory() as tmp:
             out_dir = Path(tmp) / "out"

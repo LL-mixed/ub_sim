@@ -297,6 +297,7 @@ def evaluate_output_guard(parsed, output_guard):
 def evaluate_context_guard(parsed, context_guard):
     guard = context_guard or {}
     required_contexts = list(guard.get("require_contexts") or [])
+    expected_steps = parse_int(parsed["summary"].get("decode_steps_expected"))
     result = {
         "enabled": bool(required_contexts),
         "status": "disabled",
@@ -313,6 +314,42 @@ def evaluate_context_guard(parsed, context_guard):
         fields = parsed["context_summaries"].get(label, {})
         if parse_int(fields.get("records")) <= 0:
             result["issues"].append(f"required context missing: {label}")
+            continue
+        observed_steps, total_steps = split_count(fields.get("steps", "0/0"))
+        if expected_steps > 0:
+            if observed_steps != expected_steps or total_steps != expected_steps:
+                result["issues"].append(
+                    "required context step coverage mismatch: "
+                    f"{label} value={fields.get('steps', '')} "
+                    f"expected={expected_steps}/{expected_steps}"
+                )
+        elif observed_steps <= 0 or observed_steps != total_steps:
+            result["issues"].append(
+                f"required context step coverage mismatch: {label} "
+                f"value={fields.get('steps', '')}"
+            )
+        if label == "fused_simt_vendor_context":
+            modes = [mode for mode in fields.get("modes", "").split(",") if mode]
+            if not modes:
+                result["issues"].append(
+                    "required fused SIMT vendor context lacks mode evidence"
+                )
+            elif any(not mode.startswith("fused-simt-vendor") for mode in modes):
+                result["issues"].append(
+                    "required fused SIMT vendor context has non-vendor mode: "
+                    f"{fields.get('modes', '')}"
+                )
+            for metric in (
+                "row_prefetch_hits",
+                "row_prefetch_requests",
+                "table_bytes_moved",
+                "hidden_injection_overhead_bytes",
+            ):
+                if metric not in fields:
+                    result["issues"].append(
+                        "required fused SIMT vendor context lacks metric: "
+                        f"{metric}"
+                    )
 
     result["status"] = "fail" if result["issues"] else "pass"
     return result
