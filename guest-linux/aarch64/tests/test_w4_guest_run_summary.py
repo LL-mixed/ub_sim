@@ -719,6 +719,73 @@ class W4GuestRunSummaryTest(unittest.TestCase):
             result.stdout,
         )
 
+    def test_emits_fused_simt_vendor_context_prefixed_summary(self):
+        script = Path(__file__).resolve().parents[1] / "scripts" / "w4_guest_run_summary.py"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            qemu_lines = [
+                "qwen3-engram-context: step=0 mode=fused-simt-vendor-object-ref "
+                "table_rows=8 output_checksum=0x101 gate_checksum=0x201 "
+                "index_checksum=0x301 output_l1_milli=512 latency_ms=11 "
+                "table_bytes_moved=32768 gate_weight_bytes_moved=4096 "
+                "indices_bytes_moved=32 hidden_input_bytes=4096 "
+                "hidden_output_bytes=4096 hidden_injection_overhead_bytes=8192",
+                "qwen3-engram-context: step=1 mode=fused-simt-vendor-paper-object-ref "
+                "table_rows=16 output_checksum=0x102 gate_checksum=0x202 "
+                "index_checksum=0x302 output_l1_milli=768 latency_ms=13 "
+                "row_prefetch_hits=4 row_prefetch_requests=4 "
+                "row_prefetch_hit_rate_milli=1000 table_bytes_moved=16384 "
+                "gate_weight_bytes_moved=4096 indices_bytes_moved=0 "
+                "hidden_input_bytes=4096 hidden_output_bytes=4096 "
+                "hidden_injection_overhead_bytes=8192",
+            ]
+            (run_dir / "nodeA_guest.log").write_text("[w4_guest] pass\n")
+            (run_dir / "nodeA_qemu.log").write_text("\n".join(qemu_lines) + "\n")
+
+            result = subprocess.run(
+                [sys.executable, str(script), str(run_dir), "2", "nodeA"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertIn(
+            "engram_context_records=2 paper_engram_context_records=1 "
+            "fused_simt_context_records=2 fused_simt_vendor_context_records=2",
+            result.stdout,
+        )
+        self.assertIn(
+            "fused_simt_context_summary: records=2 steps=2/2 "
+            "modes=fused-simt-vendor-object-ref,fused-simt-vendor-paper-object-ref "
+            "max_latency_ms=13 max_latency_step=1 max_latency_node=nodeA "
+            "total_latency_ms=24 output_checksum_xor=0x0000000000000003 "
+            "row_prefetch_hits=4 row_prefetch_requests=4 "
+            "row_prefetch_hit_rate_milli=1000 table_bytes_moved=49152 "
+            "gate_weight_bytes_moved=8192 indices_bytes_moved=32 "
+            "hidden_input_bytes=8192 hidden_output_bytes=8192 "
+            "hidden_injection_overhead_bytes=16384",
+            result.stdout,
+        )
+        self.assertIn(
+            "fused_simt_vendor_context_summary: records=2 steps=2/2 "
+            "modes=fused-simt-vendor-object-ref,fused-simt-vendor-paper-object-ref "
+            "max_latency_ms=13 max_latency_step=1 max_latency_node=nodeA "
+            "total_latency_ms=24 output_checksum_xor=0x0000000000000003",
+            result.stdout,
+        )
+        self.assertIn(
+            "fused_simt_vendor_context_step: step=1 node=nodeA "
+            "mode=fused-simt-vendor-paper-object-ref table_rows=16 "
+            "output_checksum=0x102 gate_checksum=0x202 index_checksum=0x302 "
+            "output_l1_milli=768 latency_ms=13 row_prefetch_hits=4 "
+            "row_prefetch_requests=4 row_prefetch_hit_rate_milli=1000 "
+            "table_bytes_moved=16384 gate_weight_bytes_moved=4096 "
+            "indices_bytes_moved=0 hidden_input_bytes=4096 "
+            "hidden_output_bytes=4096 hidden_injection_overhead_bytes=8192",
+            result.stdout,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

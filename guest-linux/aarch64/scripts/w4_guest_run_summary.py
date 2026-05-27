@@ -477,6 +477,16 @@ def emit_summary(run_dir, expected_steps, node_ids, output):
     paper_engram_context_records = [
         record for record in engram_context_records if "paper" in record.get("mode", "")
     ]
+    fused_simt_context_records = [
+        record
+        for record in engram_context_records
+        if record.get("mode", "").startswith("fused-simt")
+    ]
+    fused_simt_vendor_context_records = [
+        record
+        for record in fused_simt_context_records
+        if record.get("mode", "").startswith("fused-simt-vendor")
+    ]
 
     output.append(f"summary: run_dir={run_dir}")
     output.append(
@@ -489,7 +499,9 @@ def emit_summary(run_dir, expected_steps, node_ids, output):
         f"idle_timing_records={len(idle_timings)} "
         f"engram_timing_records={len(engram_timings)} "
         f"engram_context_records={len(engram_context_records)} "
-        f"paper_engram_context_records={len(paper_engram_context_records)}"
+        f"paper_engram_context_records={len(paper_engram_context_records)} "
+        f"fused_simt_context_records={len(fused_simt_context_records)} "
+        f"fused_simt_vendor_context_records={len(fused_simt_vendor_context_records)}"
     )
     if missing_logs:
         output.append(f"summary: missing_guest_logs={quote_text(missing_logs)}")
@@ -500,6 +512,10 @@ def emit_summary(run_dir, expected_steps, node_ids, output):
     emit_engram_timing_summary(engram_timings, expected_steps, node_ids, output)
     emit_engram_context_summary(engram_context_records, expected_steps, output)
     emit_paper_engram_context_summary(paper_engram_context_records, expected_steps, output)
+    emit_fused_simt_context_summary(fused_simt_context_records, expected_steps, output)
+    emit_fused_simt_vendor_context_summary(
+        fused_simt_vendor_context_records, expected_steps, output
+    )
     emit_memory_service_summary(memory_records, expected_steps, output)
     emit_worker_shortpath_summary(memory_records, worker_events, expected_steps, node_ids, output)
     emit_boundary_observation_summary(
@@ -1059,6 +1075,26 @@ def emit_paper_engram_context_summary(paper_engram_context_records, expected_ste
         expected_steps,
         output,
         "paper_engram_context",
+    )
+
+
+def emit_fused_simt_context_summary(fused_simt_context_records, expected_steps, output):
+    emit_context_record_summary(
+        fused_simt_context_records,
+        expected_steps,
+        output,
+        "fused_simt_context",
+    )
+
+
+def emit_fused_simt_vendor_context_summary(
+    fused_simt_vendor_context_records, expected_steps, output
+):
+    emit_context_record_summary(
+        fused_simt_vendor_context_records,
+        expected_steps,
+        output,
+        "fused_simt_vendor_context",
     )
 
 
