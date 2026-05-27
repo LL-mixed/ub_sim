@@ -2938,6 +2938,29 @@ fn paper_engram_eval_report_from_cli(
                 &mut memory_service,
                 &mut durable_store,
             )?;
+            if let Some(report_id) = optional_cli_arg(args, "--report-id")? {
+                if optional_cli_arg(args, "--module-id")?.is_some()
+                    || optional_cli_arg(args, "--model-id")?.is_some()
+                    || optional_cli_arg(args, "--module-name")?.is_some()
+                    || optional_cli_arg(args, "--engram-id")?.is_some()
+                {
+                    anyhow::bail!(
+                        "compare-paper-engram-eval-report accepts --report-id or module selectors, not both"
+                    );
+                }
+                let report = durable_store
+                    .load_paper_engram_eval_report_manifest()
+                    .context("load paper engram eval report registry")?
+                    .into_iter()
+                    .find(|entry| entry.report_id == report_id)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("paper Engram eval report not found: {report_id}")
+                    })?;
+                return Ok((
+                    report,
+                    format!("{}#report_id={report_id}", store_path.display()),
+                ));
+            }
             let module_id = paper_engram_module_id_from_cli(args, &memory_service)?;
             let module = durable_store
                 .load_paper_engram_module_registry()
@@ -20249,6 +20272,23 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             "--require-acceptance".to_string(),
         ])
         .expect("compare accepted W5-derived paper Engram eval report by module id");
+        run_lingqu_memory_compare_paper_engram_eval_report_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--report-id".to_string(),
+            "pe-eval-w5-quality-cli".to_string(),
+            "--require-acceptance".to_string(),
+        ])
+        .expect("compare accepted W5-derived paper Engram eval report by report id");
+        run_lingqu_memory_compare_paper_engram_eval_report_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--report-id".to_string(),
+            "pe-eval-w5-quality-cli".to_string(),
+            "--module-id".to_string(),
+            module.module_id.clone(),
+        ])
+        .expect_err("reject conflicting eval report and module selectors");
 
         let mut durable = load_lingqu_memory_durable_store(&store)
             .expect("reload W5-derived paper quality store");
