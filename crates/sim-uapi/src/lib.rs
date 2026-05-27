@@ -18932,24 +18932,84 @@ fn qwen3_dense_reference_load_full_paper_engram_tables(
 }
 
 fn qwen3_dense_reference_prefetch_plan_rows_for_current_step(
+    hidden_size: usize,
     layer_end: u64,
     current_step: u64,
     plan: &PaperEngramTableRowPrefetchPlan,
-) -> BTreeSet<(u64, u64, u64, u64)> {
-    plan.rows
+    table_shards: &BTreeMap<(u8, u16), Vec<Qwen3PaperEngramStateTableRef>>,
+) -> Result<BTreeSet<(u64, u64, u64, u64)>, String> {
+    let row_stride_bytes = hidden_size
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| "qwen3_paper_engram_context_row_stride_overflow".to_string())?;
+    let row_stride_bytes_u64 = u64::try_from(row_stride_bytes)
+        .map_err(|_| "qwen3_paper_engram_context_row_stride_exceeds_u64".to_string())?;
+    let mut plan_rows = BTreeSet::new();
+    for row in plan
+        .rows
         .iter()
-        .filter_map(|row| {
-            if row.layer != layer_end as u32 || row.step_index != current_step {
-                return None;
-            }
-            Some((
-                u64::from(row.order),
-                u64::from(row.head),
-                row.row,
-                row.exact_key,
-            ))
-        })
-        .collect()
+        .filter(|row| row.layer == layer_end as u32 && row.step_index == current_step)
+    {
+        let head = u16::try_from(row.head).map_err(|_| {
+            format!(
+                "qwen3_paper_engram_context_prefetch_head_exceeds_u16:order={}:head={}",
+                row.order, row.head
+            )
+        })?;
+        let shards = table_shards.get(&(row.order, head)).ok_or_else(|| {
+            format!(
+                "qwen3_paper_engram_context_table_missing:order={}:head={head}",
+                row.order
+            )
+        })?;
+        let shard = shards
+            .iter()
+            .find(|shard| shard.row_start <= row.row && row.row < shard.row_end)
+            .ok_or_else(|| {
+                format!(
+                    "qwen3_paper_engram_context_prefetch_row_missing:order={}:head={head}:row={}",
+                    row.order, row.row
+                )
+            })?;
+        let shard_rows = shard.row_end - shard.row_start;
+        let expected_payload_bytes = usize::try_from(shard_rows)
+            .ok()
+            .and_then(|rows| rows.checked_mul(row_stride_bytes))
+            .ok_or_else(|| {
+                format!(
+                    "qwen3_paper_engram_context_table_len_overflow:order={}:head={head}",
+                    row.order
+                )
+            })?;
+        if shard.object_ref.payload_bytes != expected_payload_bytes as u64 {
+            return Err(format!(
+                "qwen3_paper_engram_context_table_bytes_mismatch:order={}:head={head}:got={}:expected={expected_payload_bytes}",
+                row.order, shard.object_ref.payload_bytes
+            ));
+        }
+        let expected_offset = (row.row - shard.row_start)
+            .checked_mul(row_stride_bytes_u64)
+            .ok_or_else(|| {
+                format!(
+                    "qwen3_paper_engram_context_row_offset_overflow:order={}:head={head}:row={}",
+                    row.order, row.row
+                )
+            })?;
+        if row.row_payload_offset_bytes != expected_offset
+            || row.row_payload_bytes != row_stride_bytes_u64
+        {
+            return Err(format!(
+                "qwen3_paper_engram_context_prefetch_row_window_mismatch:order={}:head={head}:row={}:offset={}:expected_offset={expected_offset}:bytes={}:expected_bytes={row_stride_bytes_u64}",
+                row.order, row.row, row.row_payload_offset_bytes, row.row_payload_bytes
+            ));
+        }
+        plan_rows.insert((
+            u64::from(row.order),
+            u64::from(row.head),
+            row.row,
+            row.exact_key,
+        ));
+    }
+    Ok(plan_rows)
 }
 
 fn qwen3_dense_reference_load_prefetched_paper_engram_tables(
@@ -19191,9 +19251,18 @@ fn qwen3_dense_reference_paper_engram_context_state_from_manifest(
         .collect::<Vec<_>>();
     let row_prefetch_requests = lookups.len() as u64;
     let current_step = token_ids.len().saturating_sub(1) as u64;
-    let plan_rows = row_prefetch_plan.as_ref().map(|plan| {
-        qwen3_dense_reference_prefetch_plan_rows_for_current_step(layer_end, current_step, plan)
-    });
+    let plan_rows = row_prefetch_plan
+        .as_ref()
+        .map(|plan| {
+            qwen3_dense_reference_prefetch_plan_rows_for_current_step(
+                hidden_size,
+                layer_end,
+                current_step,
+                plan,
+                &table_shards,
+            )
+        })
+        .transpose()?;
     let row_prefetch_hits = plan_rows
         .as_ref()
         .map(|plan_rows| {
@@ -24144,6 +24213,68 @@ mod tests {
                                                         .last()
                                                         .expect("full output")
                                                         .clone();
+                                                    let mut bad_window_rows = all_hit_rows.clone();
+                                                    bad_window_rows[0].row_payload_offset_bytes =
+                                                        bad_window_rows[0]
+                                                            .row_payload_offset_bytes
+                                                            .saturating_add(4);
+                                                    let bad_window_plan_ref =
+                                                        test_publish_engram_row_prefetch_plan(
+                                                            "engram/paper/prefetch-bad-window",
+                                                            sim_memory::PaperEngramTableRowPrefetchPlan {
+                                                                plan_id:
+                                                                    "qwen3-paper-prefetch-bad-window-plan"
+                                                                        .to_string(),
+                                                                request_id:
+                                                                    "qwen3-paper-prefetch-bad-window-request"
+                                                                        .to_string(),
+                                                                module_id:
+                                                                    "qwen3-paper-engram-module"
+                                                                        .to_string(),
+                                                                tokenizer_projection_checksum:
+                                                                    projection.aggregate_checksum,
+                                                                hash_config_checksum,
+                                                                canonical_history_len:
+                                                                    token_ids.len() as u64,
+                                                                from_step: token_step as u64,
+                                                                rows: bad_window_rows,
+                                                                created_at_us: 123_458,
+                                                            },
+                                                        );
+                                                    with_env_var(
+                                                        SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF,
+                                                        &qwen3_obmm_object_ref_wire_to_hex(
+                                                            &bad_window_plan_ref,
+                                                        ),
+                                                        || {
+                                                            let terminal_hidden = (0..hidden_size)
+                                                                .map(|index| {
+                                                                    (index as f32 - 512.0) / 4096.0
+                                                                })
+                                                                .collect::<Vec<_>>();
+                                                            let mut sequence = vec![
+                                                                vec![0.0f32; hidden_size],
+                                                                terminal_hidden,
+                                                            ];
+                                                            let err =
+                                                                qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
+                                                                    &mut sequence,
+                                                                    &token_ids,
+                                                                    layer,
+                                                                    total_layers,
+                                                                    None,
+                                                                )
+                                                                .expect_err(
+                                                                    "bad row prefetch window should fail",
+                                                                );
+                                                            assert!(
+                                                                err.contains(
+                                                                    "qwen3_paper_engram_context_prefetch_row_window_mismatch"
+                                                                ),
+                                                                "{err}"
+                                                            );
+                                                        },
+                                                    );
                                                     let all_hit_plan_ref =
                                                         test_publish_engram_row_prefetch_plan(
                                                             "engram/paper/prefetch-all-hits",
