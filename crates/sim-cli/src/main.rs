@@ -20,10 +20,12 @@ use sim_memory::{
     QueryResult, VectorIndexKind, VectorIndexObject,
 };
 use sim_models::qwen3_dense_reference::{
-    token_piece_bytes_from_tokenizer_path, token_piece_decode_bytes,
-    tokenize_prompt_from_tokenizer_path,
+    build_tokenizer_projection_from_tokenizer_path, token_piece_bytes_from_tokenizer_path,
+    token_piece_decode_bytes, tokenize_prompt_from_tokenizer_path,
+    Qwen3DenseReferenceTokenizerProjection,
 };
 use sim_models::{
+    engram_hash::build_default_engram_hash_config,
     engram_simt_adapter::{
         artifact_config_from_env, discover_engram_simt_artifact, EngramSimtLaunchSpec,
     },
@@ -2014,6 +2016,8 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "boundary-request-from-w5-summary" => {
             run_lingqu_memory_boundary_request_from_w5_summary_cli(&args)
         }
+        "build-tokenizer-projection" => run_lingqu_memory_build_tokenizer_projection_cli(&args),
+        "build-engram-hash-config" => run_lingqu_memory_build_engram_hash_config_cli(&args),
         "boundary-lookup-from-observation" => {
             run_lingqu_memory_boundary_lookup_from_observation_cli(&args)
         }
@@ -2052,9 +2056,127 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "validate-flat-materialize" => run_lingqu_memory_validate_flat_materialize(),
         "validate-w5-engram-object-ref" => run_lingqu_memory_validate_w5_engram_object_ref(),
         _ => anyhow::bail!(
-            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, query, list-query-results, list-artifact-access, list-boundary-observations, list-record-lifecycle, list-shortpath-supports, list-shortpath-decisions, list-prefetch-plans, list-prefix-cache-reuse, update-record-state, register-execution-artifact, record-artifact-access, register-terminal-logits-artifact-from-w5-summary, promote-terminal-shortpath-artifacts-from-w5-summary, boundary-lookup, boundary-lookup-from-observation, boundary-request-from-w5-summary, record-boundary-observations-from-w5-summary, plan-prefetch, register-prefix-cache, lookup-prefix-cache, materialize-hot-state, materialize-engram-state, publish-w5-engram-state-ref, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
+            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, build-tokenizer-projection, build-engram-hash-config, query, list-query-results, list-artifact-access, list-boundary-observations, list-record-lifecycle, list-shortpath-supports, list-shortpath-decisions, list-prefetch-plans, list-prefix-cache-reuse, update-record-state, register-execution-artifact, record-artifact-access, register-terminal-logits-artifact-from-w5-summary, promote-terminal-shortpath-artifacts-from-w5-summary, boundary-lookup, boundary-lookup-from-observation, boundary-request-from-w5-summary, record-boundary-observations-from-w5-summary, plan-prefetch, register-prefix-cache, lookup-prefix-cache, materialize-hot-state, materialize-engram-state, publish-w5-engram-state-ref, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
         ),
     }
+}
+
+fn run_lingqu_memory_build_engram_hash_config_cli(args: &[String]) -> anyhow::Result<()> {
+    let projection_path = PathBuf::from(required_cli_arg(args, "--projection")?);
+    let output_path = PathBuf::from(required_cli_arg(args, "--output")?);
+    let heads_per_order = required_cli_u64(args, "--heads-per-order")? as usize;
+    let table_rows = required_cli_u64(args, "--table-rows")?;
+    let seed = optional_cli_u64_auto(args, "--seed")?.unwrap_or(0xA5A5_A5A5_1234_5678);
+    let orders: Vec<u8> = optional_cli_arg(args, "--orders")?
+        .map(|value| {
+            parse_nonempty_string_csv("orders", &value)?
+                .into_iter()
+                .map(|item| {
+                    item.parse::<u8>()
+                        .with_context(|| format!("parse hash order `{item}`"))
+                })
+                .collect()
+        })
+        .transpose()?
+        .unwrap_or_else(|| vec![2, 3]);
+    let algorithm = optional_cli_arg(args, "--algorithm")?
+        .unwrap_or_else(|| "fnv1a-x64+length-prefix".to_string());
+    let projection_bytes = fs::read(&projection_path)
+        .with_context(|| format!("read tokenizer projection {}", projection_path.display()))?;
+    let projection =
+        serde_json::from_slice::<Qwen3DenseReferenceTokenizerProjection>(&projection_bytes)
+            .with_context(|| {
+                format!("decode tokenizer projection {}", projection_path.display())
+            })?;
+    let mut config = build_default_engram_hash_config(
+        projection.source_checksum,
+        heads_per_order,
+        table_rows,
+        seed,
+    );
+    config.orders = orders;
+    config.algorithm = algorithm;
+    if let Some(version) = optional_cli_u64_auto(args, "--version")? {
+        config.version = version;
+    }
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!("create engram hash config output dir {}", parent.display())
+        })?;
+    }
+    fs::write(
+        &output_path,
+        serde_json::to_vec_pretty(&config).context("encode engram hash config")?,
+    )
+    .with_context(|| format!("write engram hash config {}", output_path.display()))?;
+
+    println!("lingqu_memory");
+    println!("  mode: build-engram-hash-config");
+    println!("  projection: {}", projection_path.display());
+    println!("  output: {}", output_path.display());
+    println!("  model_id: {}", projection.model_id);
+    println!("  tokenizer_family: {}", projection.tokenizer_family);
+    println!("  version: {}", config.version);
+    println!("  projection_checksum: {:#x}", config.projection_checksum);
+    println!("  orders: {:?}", config.orders);
+    println!("  heads_per_order: {}", config.heads_per_order);
+    println!("  table_rows: {}", config.table_rows);
+    println!("  seed: {:#x}", config.seed);
+    println!("  algorithm: {}", config.algorithm);
+    Ok(())
+}
+
+fn run_lingqu_memory_build_tokenizer_projection_cli(args: &[String]) -> anyhow::Result<()> {
+    let tokenizer_dir = PathBuf::from(required_cli_arg(args, "--tokenizer-dir")?);
+    let output_path = PathBuf::from(required_cli_arg(args, "--output")?);
+    let merge_special_tokens = cli_flag(args, "--merge-special");
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "create tokenizer projection output dir {}",
+                parent.display()
+            )
+        })?;
+    }
+    let mut projection =
+        build_tokenizer_projection_from_tokenizer_path(&tokenizer_dir, merge_special_tokens)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| {
+                format!(
+                    "build tokenizer projection from {}",
+                    tokenizer_dir.display()
+                )
+            })?;
+    if let Some(model_id) = optional_cli_arg(args, "--model-id")? {
+        projection.model_id = model_id;
+    }
+    if let Some(tokenizer_family) = optional_cli_arg(args, "--tokenizer-family")? {
+        projection.tokenizer_family = tokenizer_family;
+    }
+    fs::write(
+        &output_path,
+        serde_json::to_vec_pretty(&projection).context("encode tokenizer projection")?,
+    )
+    .with_context(|| format!("write tokenizer projection {}", output_path.display()))?;
+
+    println!("lingqu_memory");
+    println!("  mode: build-tokenizer-projection");
+    println!("  tokenizer_dir: {}", tokenizer_dir.display());
+    println!("  output: {}", output_path.display());
+    println!("  model_id: {}", projection.model_id);
+    println!("  tokenizer_family: {}", projection.tokenizer_family);
+    println!("  total_raw_tokens: {}", projection.total_raw_tokens);
+    println!(
+        "  total_canonical_tokens: {}",
+        projection.total_canonical_tokens
+    );
+    println!("  compression_milli: {}", projection.compression_milli);
+    println!("  merged_token_count: {}", projection.merged_token_count);
+    println!(
+        "  collision_classes: {}",
+        projection.collision_classes.len()
+    );
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -7912,6 +8034,12 @@ fn optional_cli_u64(args: &[String], name: &'static str) -> anyhow::Result<Optio
         .transpose()
 }
 
+fn optional_cli_u64_auto(args: &[String], name: &'static str) -> anyhow::Result<Option<u64>> {
+    optional_cli_arg(args, name)?
+        .map(|value| parse_u64_auto(&value).with_context(|| format!("parse {name} as u64")))
+        .transpose()
+}
+
 fn parse_u64_auto(value: &str) -> anyhow::Result<u64> {
     if let Some(hex) = value
         .strip_prefix("0x")
@@ -10224,8 +10352,10 @@ mod tests {
         run_lingqu_durable_read_log_cli, run_lingqu_durable_stat_cli,
         run_lingqu_durable_validate_cli, run_lingqu_memory_boundary_lookup_cli,
         run_lingqu_memory_boundary_lookup_from_observation_cli,
-        run_lingqu_memory_boundary_request_from_w5_summary_cli, run_lingqu_memory_build_index_cli,
-        run_lingqu_memory_ingest_cli, run_lingqu_memory_list_artifact_access_cli,
+        run_lingqu_memory_boundary_request_from_w5_summary_cli,
+        run_lingqu_memory_build_engram_hash_config_cli, run_lingqu_memory_build_index_cli,
+        run_lingqu_memory_build_tokenizer_projection_cli, run_lingqu_memory_ingest_cli,
+        run_lingqu_memory_list_artifact_access_cli,
         run_lingqu_memory_list_boundary_observations_cli,
         run_lingqu_memory_list_prefetch_plans_cli, run_lingqu_memory_list_prefix_cache_reuse_cli,
         run_lingqu_memory_list_query_results_cli, run_lingqu_memory_list_record_lifecycle_cli,
@@ -13527,6 +13657,138 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
     #[test]
     fn lingqu_memory_w5_engram_object_ref_cli_smoke_runs() {
         run_lingqu_memory_validate_w5_engram_object_ref().expect("w5 engram object-ref validation");
+    }
+
+    #[test]
+    fn lingqu_memory_build_tokenizer_projection_cli_runs() {
+        let root = env::temp_dir().join(format!(
+            "sim-cli-lingqu-memory-tokenizer-proj-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create tokenizer projection test dir");
+        let tokenizer_dir = root.join("tokenizer");
+        let output = root.join("projection.json");
+        fs::create_dir_all(&tokenizer_dir).expect("create tokenizer dir");
+        fs::write(tokenizer_dir.join("tokenizer_config.json"), r#"{}"#)
+            .expect("write tokenizer config");
+        fs::write(
+            tokenizer_dir.join("tokenizer.json"),
+            r#"{"model":{"type":"BPE","vocab":{"Hello":0,"world":1,"Ġworld":2}}}"#,
+        )
+        .expect("write tokenizer json");
+        fs::write(
+            tokenizer_dir.join("vocab.json"),
+            r#"{"Hello":0,"world":1,"Ġworld":2}"#,
+        )
+        .expect("write vocab json");
+        fs::write(tokenizer_dir.join("merges.txt"), b"#version").expect("write merges");
+        fs::write(tokenizer_dir.join("generation_config.json"), r#"{}"#)
+            .expect("write generation config");
+
+        run_lingqu_memory_build_tokenizer_projection_cli(&[
+            "--tokenizer-dir".to_string(),
+            tokenizer_dir.display().to_string(),
+            "--output".to_string(),
+            output.display().to_string(),
+            "--model-id".to_string(),
+            "qwen3-custom".to_string(),
+            "--tokenizer-family".to_string(),
+            "custom-family".to_string(),
+            "--merge-special".to_string(),
+        ])
+        .expect("build tokenizer projection CLI");
+
+        let output_bytes = fs::read(&output).expect("read projection output");
+        let projection: serde_json::Value =
+            serde_json::from_slice(&output_bytes).expect("decode projection");
+        assert_eq!(
+            projection["model_id"],
+            serde_json::Value::String("qwen3-custom".to_string())
+        );
+        assert_eq!(
+            projection["tokenizer_family"],
+            serde_json::Value::String("custom-family".to_string())
+        );
+        assert_eq!(
+            projection["merge_special_tokens"],
+            serde_json::Value::Bool(true)
+        );
+        assert_eq!(
+            projection["total_raw_tokens"],
+            serde_json::Value::from(3u64)
+        );
+        fs::remove_dir_all(&root).expect("remove tokenizer projection test dir");
+    }
+
+    #[test]
+    fn lingqu_memory_build_engram_hash_config_cli_runs() {
+        let root = env::temp_dir().join(format!(
+            "sim-cli-lingqu-memory-hash-config-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create hash config test dir");
+        let projection = root.join("projection.json");
+        let output = root.join("hash_config.json");
+
+        let projection_value = serde_json::json!({
+            "model_id": "qwen3-custom",
+            "tokenizer_family": "custom",
+            "source": "tests/fixture",
+            "source_checksum": 0x1234,
+            "total_raw_tokens": 10,
+            "total_canonical_tokens": 8,
+            "total_special_tokens": 2,
+            "merged_token_count": 3,
+            "merge_special_tokens": false,
+            "compression_milli": 880,
+            "aggregate_checksum": 0x77,
+            "raw_to_canonical": [],
+            "collision_classes": []
+        });
+        fs::write(
+            &projection,
+            serde_json::to_vec_pretty(&projection_value).expect("serialize projection"),
+        )
+        .expect("write projection fixture");
+
+        run_lingqu_memory_build_engram_hash_config_cli(&[
+            "--projection".to_string(),
+            projection.display().to_string(),
+            "--output".to_string(),
+            output.display().to_string(),
+            "--heads-per-order".to_string(),
+            "2".to_string(),
+            "--table-rows".to_string(),
+            "64".to_string(),
+            "--seed".to_string(),
+            "0x2222".to_string(),
+            "--orders".to_string(),
+            "2,3".to_string(),
+            "--algorithm".to_string(),
+            "custom".to_string(),
+        ])
+        .expect("build engram hash config CLI");
+
+        let output_bytes = fs::read(&output).expect("read hash config output");
+        let config: serde_json::Value =
+            serde_json::from_slice(&output_bytes).expect("decode engram hash config");
+        assert_eq!(config["version"], serde_json::Value::from(1u64));
+        assert_eq!(
+            config["projection_checksum"],
+            serde_json::Value::from(0x1234u64)
+        );
+        assert_eq!(config["orders"][0], serde_json::Value::from(2u8));
+        assert_eq!(config["heads_per_order"], serde_json::Value::from(2u64));
+        assert_eq!(config["table_rows"], serde_json::Value::from(64u64));
+        assert_eq!(config["seed"], serde_json::Value::from(0x2222u64));
+        assert_eq!(
+            config["algorithm"],
+            serde_json::Value::String("custom".to_string())
+        );
+
+        fs::remove_dir_all(&root).expect("remove hash config test dir");
     }
 
     #[test]

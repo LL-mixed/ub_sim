@@ -5608,13 +5608,12 @@ fn qwen3_dense_profile_real_logits_descriptors(
     for candidate_index in 0..candidate_count.min(4) as usize {
         let token = candidate_tokens[candidate_index];
         let candidate_piece = qwen3_dense_reference_token_piece(token, Some(&tokenizer_path))?;
-        candidate_text_checksums[candidate_index] =
-            qwen3_dense_reference_sample_text_checksum(
-                step_index,
-                token,
-                0,
-                Some(&tokenizer_path),
-            )?;
+        candidate_text_checksums[candidate_index] = qwen3_dense_reference_sample_text_checksum(
+            step_index,
+            token,
+            0,
+            Some(&tokenizer_path),
+        )?;
         candidate_piece_bytes[candidate_index] = candidate_piece.byte_len;
         candidate_piece_word0[candidate_index] = candidate_piece.word0;
         candidate_piece_word1[candidate_index] = candidate_piece.word1;

@@ -110,6 +110,45 @@ pub struct Qwen3DenseReferenceTokenizerAssetSummary {
     pub aggregate_checksum: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Qwen3DenseReferenceTokenizerProjectionEntry {
+    pub raw_token_id: u64,
+    pub raw_token_piece: String,
+    pub canonical_token_piece: String,
+    pub canonical_token_id: u64,
+    pub is_special: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Qwen3DenseReferenceTokenizerProjectionCollisionClass {
+    pub canonical_token_id: u64,
+    pub canonical_token_piece: String,
+    pub raw_token_ids: Vec<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Qwen3DenseReferenceTokenizerProjection {
+    pub model_id: String,
+    pub tokenizer_family: String,
+    pub source: String,
+    pub source_checksum: u64,
+    pub total_raw_tokens: u64,
+    pub total_canonical_tokens: u64,
+    pub total_special_tokens: u64,
+    pub merged_token_count: u64,
+    pub merge_special_tokens: bool,
+    pub compression_milli: u64,
+    pub aggregate_checksum: u64,
+    pub raw_to_canonical: Vec<Qwen3DenseReferenceTokenizerProjectionEntry>,
+    pub collision_classes: Vec<Qwen3DenseReferenceTokenizerProjectionCollisionClass>,
+}
+
+#[derive(Clone, Debug)]
+struct Qwen3DenseReferenceTokenPieceInfo {
+    piece: String,
+    is_special: bool,
+}
+
 pub fn tokenizer_policy(profile: Qwen3DenseReferenceProfile) -> Qwen3DenseReferenceTokenizerPolicy {
     let mut policy = Qwen3DenseReferenceTokenizerPolicy {
         model_id: "Qwen/Qwen3-0.6B",
@@ -228,6 +267,348 @@ pub fn load_tokenizer_asset_summary(
         files,
         aggregate_checksum: checksum_words(&aggregate_words),
     })
+}
+
+pub fn build_tokenizer_projection_from_tokenizer_path(
+    tokenizer_path: &Path,
+    merge_special_tokens: bool,
+) -> Result<Qwen3DenseReferenceTokenizerProjection, String> {
+    let tokenizer_config = read_tokenizer_asset_file(tokenizer_path, "tokenizer_config.json")?;
+    let tokenizer_json = read_tokenizer_asset_file(tokenizer_path, "tokenizer.json")?;
+    let vocab_json = read_tokenizer_asset_file(tokenizer_path, "vocab.json")?;
+    let summary = load_tokenizer_asset_summary(tokenizer_path)?;
+    let token_infos =
+        parse_tokenizer_projection_tokens(&tokenizer_config, &tokenizer_json, &vocab_json)?;
+    let token_infos_for_merge = token_infos.clone();
+    if token_infos.is_empty() {
+        return Err("qwen3_tokenizer_projection_empty".to_string());
+    }
+
+    let mut canonical_index = 0u64;
+    let mut canonical_piece_to_id = BTreeMap::new();
+    let mut raw_to_canonical = Vec::with_capacity(token_infos.len());
+    let mut canonical_to_raw_ids = BTreeMap::new();
+    let total_raw_tokens = token_infos.len() as u64;
+
+    for (raw_token_id, token_info) in token_infos {
+        let canonical_piece =
+            normalize_token_piece_for_projection(&token_info.piece, token_info.is_special);
+        let canonical_token_id = if token_info.is_special && !merge_special_tokens {
+            let id = canonical_index;
+            canonical_index += 1;
+            id
+        } else {
+            match canonical_piece_to_id.get(&canonical_piece) {
+                Some(id) => *id,
+                None => {
+                    let id = canonical_index;
+                    canonical_index += 1;
+                    canonical_piece_to_id.insert(canonical_piece.clone(), id);
+                    id
+                }
+            }
+        };
+
+        canonical_to_raw_ids
+            .entry(canonical_token_id)
+            .or_insert_with(BTreeSet::new)
+            .insert(raw_token_id);
+        raw_to_canonical.push(Qwen3DenseReferenceTokenizerProjectionEntry {
+            raw_token_id,
+            raw_token_piece: token_info.piece,
+            canonical_token_piece: canonical_piece,
+            canonical_token_id,
+            is_special: token_info.is_special,
+        });
+    }
+
+    let merged_token_count = canonical_to_raw_ids
+        .values()
+        .filter(|raw_ids| {
+            raw_ids.iter().any(|raw_id| {
+                !token_infos_for_merge
+                    .get(raw_id)
+                    .is_some_and(|info| info.is_special)
+            })
+        })
+        .map(|raw_ids| raw_ids.len().saturating_sub(1))
+        .sum::<usize>() as u64;
+
+    let total_special_tokens = raw_to_canonical
+        .iter()
+        .filter(|entry| entry.is_special)
+        .count() as u64;
+    let collision_classes = canonical_to_raw_ids
+        .into_iter()
+        .filter_map(|(canonical_token_id, raw_ids)| {
+            if raw_ids.len() > 1 {
+                let canonical_token_piece = raw_to_canonical
+                    .iter()
+                    .find(|entry| entry.canonical_token_id == canonical_token_id)
+                    .map(|entry| entry.canonical_token_piece.clone())
+                    .unwrap_or_default();
+                Some(Qwen3DenseReferenceTokenizerProjectionCollisionClass {
+                    canonical_token_id,
+                    canonical_token_piece,
+                    raw_token_ids: raw_ids.into_iter().collect(),
+                })
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let compression_milli = if total_raw_tokens == 0 {
+        0
+    } else {
+        (canonical_index.saturating_mul(1000)).saturating_div(total_raw_tokens)
+    };
+
+    let mut projection_checksum_words = Vec::new();
+    projection_checksum_words.push(summary.vocab_size);
+    projection_checksum_words.push(summary.vocab_entries);
+    projection_checksum_words.push(summary.added_tokens);
+    projection_checksum_words.push(summary.aggregate_checksum);
+    projection_checksum_words.push(canonical_index);
+    projection_checksum_words.push(total_special_tokens);
+    for entry in &raw_to_canonical {
+        projection_checksum_words.push(entry.raw_token_id);
+        projection_checksum_words.push(entry.canonical_token_id);
+        projection_checksum_words.push(if entry.is_special { 1 } else { 0 });
+        projection_checksum_words.push(weight_bytes_checksum(entry.raw_token_piece.as_bytes()));
+        projection_checksum_words.push(weight_bytes_checksum(
+            entry.canonical_token_piece.as_bytes(),
+        ));
+    }
+    for collision in &collision_classes {
+        projection_checksum_words.push(collision.canonical_token_id);
+        projection_checksum_words.push(weight_bytes_checksum(
+            collision.canonical_token_piece.as_bytes(),
+        ));
+        projection_checksum_words.push(collision.raw_token_ids.len() as u64);
+        for raw_id in &collision.raw_token_ids {
+            projection_checksum_words.push(*raw_id);
+        }
+    }
+
+    Ok(Qwen3DenseReferenceTokenizerProjection {
+        model_id: "Qwen/Qwen3-0.6B".to_string(),
+        tokenizer_family: "qwen3".to_string(),
+        source: tokenizer_path.display().to_string(),
+        source_checksum: summary.aggregate_checksum,
+        total_raw_tokens,
+        total_canonical_tokens: canonical_index,
+        total_special_tokens,
+        merged_token_count,
+        merge_special_tokens,
+        compression_milli,
+        aggregate_checksum: checksum_words(&projection_checksum_words),
+        raw_to_canonical,
+        collision_classes,
+    })
+}
+
+pub fn normalize_token_piece_for_projection(token_piece: &str, is_special: bool) -> String {
+    if is_special {
+        return token_piece.to_string();
+    }
+    token_piece
+        .replace('Ġ', " ")
+        .chars()
+        .map(compat_nfkc_char)
+        .collect::<String>()
+        .to_lowercase()
+}
+
+fn compat_nfkc_char(ch: char) -> char {
+    if ch == '\u{3000}' {
+        return ' ';
+    }
+    if ('\u{FF01}'..='\u{FF5E}').contains(&ch) {
+        let mapped_code = (ch as u32) - 0xFEE0;
+        return std::char::from_u32(mapped_code).unwrap_or(ch);
+    }
+    match ch {
+        '\u{212A}' => 'K',
+        _ => ch,
+    }
+}
+
+fn parse_tokenizer_projection_tokens(
+    tokenizer_config: &[u8],
+    tokenizer_json: &[u8],
+    vocab_json: &[u8],
+) -> Result<BTreeMap<u64, Qwen3DenseReferenceTokenPieceInfo>, String> {
+    let tokenizer_value: serde_json::Value = serde_json::from_slice(tokenizer_json)
+        .map_err(|err| format!("qwen3_tokenizer_projection_json_parse_failed:{err}"))?;
+    let config_value: serde_json::Value = serde_json::from_slice(tokenizer_config)
+        .map_err(|err| format!("qwen3_tokenizer_projection_config_parse_failed:{err}"))?;
+
+    let mut token_pieces = BTreeMap::<u64, Qwen3DenseReferenceTokenPieceInfo>::new();
+    let mut vocab_ids = BTreeSet::new();
+
+    let model = tokenizer_value
+        .get("model")
+        .ok_or_else(|| "qwen3_tokenizer_projection_model_missing".to_string())?;
+    let vocab_value = model
+        .get("vocab")
+        .ok_or_else(|| "qwen3_tokenizer_projection_model_vocab_missing".to_string())?;
+    let vocab_object = vocab_value
+        .as_object()
+        .ok_or_else(|| "qwen3_tokenizer_projection_model_vocab_not_object".to_string())?;
+    for (piece, token_id_value) in vocab_object {
+        let token_id = token_id_value
+            .as_u64()
+            .ok_or_else(|| "qwen3_tokenizer_projection_vocab_id_not_u64".to_string())?;
+        if token_pieces.contains_key(&token_id) {
+            if token_pieces
+                .get(&token_id)
+                .map(|entry| entry.piece.as_str())
+                != Some(piece.as_str())
+            {
+                return Err(format!(
+                    "qwen3_tokenizer_projection_duplicate_token_id_with_conflict:{token_id}"
+                ));
+            }
+            continue;
+        }
+        merge_projection_token(
+            &mut token_pieces,
+            token_id,
+            piece.clone(),
+            false,
+            "model_vocab",
+        )?;
+        vocab_ids.insert(token_id);
+    }
+
+    if let Some(added_tokens) = tokenizer_value
+        .get("added_tokens")
+        .and_then(serde_json::Value::as_array)
+    {
+        for token in added_tokens {
+            let token_id = token
+                .get("id")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| "qwen3_tokenizer_projection_added_token_id_missing".to_string())?;
+            let piece = token
+                .get("content")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    "qwen3_tokenizer_projection_added_token_content_missing".to_string()
+                })?
+                .to_string();
+            let is_special = token
+                .get("special")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or_else(|| is_token_piece_special(&piece));
+            insert_projection_token(
+                &mut token_pieces,
+                token_id,
+                piece,
+                is_special,
+                "added_tokens",
+            )?;
+        }
+    }
+
+    if let Some(vocab_fallback) = serde_json::from_slice::<BTreeMap<String, u64>>(vocab_json).ok() {
+        for (piece, token_id) in vocab_fallback {
+            if vocab_ids.contains(&token_id) {
+                continue;
+            }
+            insert_projection_token(&mut token_pieces, token_id, piece, false, "vocab_fallback")?;
+        }
+    } else {
+        let value = serde_json::from_slice::<serde_json::Value>(vocab_json)
+            .map_err(|err| format!("qwen3_tokenizer_projection_vocab_json_parse_failed:{err}"))?;
+        if let Some(vocab_fallback) = value.as_object() {
+            for (piece, token_id_value) in vocab_fallback {
+                let token_id = token_id_value
+                    .as_u64()
+                    .ok_or_else(|| "qwen3_tokenizer_projection_vocab_id_not_u64".to_string())?;
+                if vocab_ids.contains(&token_id) {
+                    continue;
+                }
+                insert_projection_token(
+                    &mut token_pieces,
+                    token_id,
+                    piece.clone(),
+                    false,
+                    "vocab_fallback",
+                )?;
+            }
+        }
+    }
+
+    if let Some(decoder) = config_value
+        .get("added_tokens_decoder")
+        .and_then(serde_json::Value::as_object)
+    {
+        for (token_key, token_value) in decoder {
+            let token_id: u64 = token_key.parse().map_err(|_| {
+                format!("qwen3_tokenizer_projection_decoder_id_parse_failed:{token_key}")
+            })?;
+            let piece = token_value
+                .get("content")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "qwen3_tokenizer_projection_decoder_content_missing".to_string())?;
+            let is_special = token_value
+                .get("special")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or_else(|| is_token_piece_special(piece));
+            insert_projection_token(
+                &mut token_pieces,
+                token_id,
+                piece.to_string(),
+                is_special,
+                "added_tokens_decoder",
+            )?;
+        }
+    }
+
+    Ok(token_pieces)
+}
+
+fn is_token_piece_special(piece: &str) -> bool {
+    (piece.starts_with("<|") && piece.ends_with("|>"))
+        || piece == "<s>"
+        || piece.starts_with("<|") && piece.ends_with(">")
+}
+
+fn merge_projection_token(
+    token_pieces: &mut BTreeMap<u64, Qwen3DenseReferenceTokenPieceInfo>,
+    token_id: u64,
+    piece: String,
+    is_special: bool,
+    source: &'static str,
+) -> Result<(), String> {
+    insert_projection_token(token_pieces, token_id, piece, is_special, source)
+}
+
+fn insert_projection_token(
+    token_pieces: &mut BTreeMap<u64, Qwen3DenseReferenceTokenPieceInfo>,
+    token_id: u64,
+    piece: String,
+    is_special: bool,
+    source: &'static str,
+) -> Result<(), String> {
+    if let Some(existing) = token_pieces.get_mut(&token_id) {
+        if existing.piece != piece {
+            return Err(format!(
+                "qwen3_tokenizer_projection_token_id_conflict:{token_id}:source={source}"
+            ));
+        }
+        if is_special && !existing.is_special {
+            existing.is_special = true;
+        }
+        return Ok(());
+    }
+    token_pieces.insert(
+        token_id,
+        Qwen3DenseReferenceTokenPieceInfo { piece, is_special },
+    );
+    Ok(())
 }
 
 pub fn token_piece_from_tokenizer_path(
@@ -5525,6 +5906,69 @@ outputs:
         );
 
         fs::remove_dir_all(&temp).expect("remove tokenizer temp dir");
+    }
+
+    #[test]
+    fn tokenizer_projection_builds_canonical_mapping_and_collisions() {
+        let temp = std::env::temp_dir().join(format!(
+            "qwen3_tokenizer_projection_test_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&temp);
+        fs::create_dir_all(&temp).expect("create tokenizer temp dir");
+        fs::write(
+            temp.join("tokenizer_config.json"),
+            r#"{"added_tokens_decoder":{"151643":{"content":"<|endoftext|>","special":true}}}"#,
+        )
+        .expect("write tokenizer config");
+        fs::write(
+            temp.join("tokenizer.json"),
+            r#"{"model":{"type":"BPE","vocab":{"Hello":0,"ĠHello":1,"hello":2,"HELLO":4}},"added_tokens":[{"id":3,"content":"<s>","special":true}]}"#,
+        )
+        .expect("write tokenizer json");
+        fs::write(
+            temp.join("vocab.json"),
+            r#"{"Hello":0,"ĠHello":1,"hello":2}"#,
+        )
+        .expect("write vocab json");
+        fs::write(temp.join("merges.txt"), b"#version\n").expect("write merges");
+        fs::write(temp.join("generation_config.json"), r#"{}"#).expect("write generation config");
+
+        let projection =
+            build_tokenizer_projection_from_tokenizer_path(&temp, false).expect("build projection");
+        assert_eq!(projection.total_raw_tokens, 6);
+        assert_eq!(projection.total_special_tokens, 2);
+        assert_eq!(projection.total_canonical_tokens, 4);
+        assert_eq!(projection.merged_token_count, 2);
+        assert_eq!(projection.merge_special_tokens, false);
+        assert_eq!(projection.collision_classes.len(), 1);
+        assert_eq!(projection.collision_classes[0].raw_token_ids, vec![0, 2, 4]);
+        assert!(projection
+            .raw_to_canonical
+            .iter()
+            .any(|entry| entry.raw_token_id == 1 && entry.canonical_token_piece == " hello"));
+        assert!(projection
+            .raw_to_canonical
+            .iter()
+            .any(|entry| entry.raw_token_id == 0 && entry.canonical_token_piece == "hello"));
+
+        fs::remove_dir_all(&temp).expect("remove tokenizer temp dir");
+    }
+
+    #[test]
+    fn normalize_token_piece_for_projection_handles_nfkc_space_and_special_tokens() {
+        assert_eq!(
+            normalize_token_piece_for_projection("ĠHello", false),
+            " hello"
+        );
+        assert_eq!(
+            normalize_token_piece_for_projection("Ａhello", false),
+            "ahello"
+        );
+        assert_eq!(
+            normalize_token_piece_for_projection("<|endoftext|>", true),
+            "<|endoftext|>"
+        );
     }
 
     #[test]
