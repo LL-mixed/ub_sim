@@ -8456,6 +8456,11 @@ impl LingquMemoryService {
         report: &PaperEngramEvalReportManifest,
     ) -> MemoryResult<()> {
         validate_trained_paper_engram_train_eval_split(recipe, report)?;
+        if recipe.evidence_refs.is_empty() {
+            return Err(LingquMemoryError::MissingField(
+                "paper_engram_training_recipe.evidence_refs",
+            ));
+        }
         for dataset_ref in &recipe.dataset_refs {
             validate_trained_paper_engram_provenance_ref(
                 "paper_engram_training_recipe.dataset_refs",
@@ -12818,6 +12823,53 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn paper_engram_quality_claim_requires_training_recipe_evidence() {
+        let mut service = LingquMemoryService::new();
+        let projection = sample_paper_engram_tokenizer_projection_manifest();
+        let hash_config = sample_paper_engram_hash_config_manifest();
+        let shard = sample_paper_engram_table_shard_manifest();
+        let gate = sample_paper_engram_gate_manifest();
+        let mut recipe = sample_paper_engram_training_recipe_manifest();
+        recipe.evidence_refs.clear();
+        recipe.checksum = paper_engram_training_recipe_manifest_checksum(&recipe);
+        recipe
+            .validate()
+            .expect("plain recipe can be registered without training evidence");
+        let report = sample_paper_engram_eval_report_manifest();
+        let mut module = sample_paper_engram_module_manifest();
+        module.quality_claim = PaperEngramQualityClaim::Posttrain;
+        module.training_recipe_ref = Some(paper_engram_training_recipe_dfs_path(&recipe.recipe_id));
+        module.eval_report_ref = Some(paper_engram_eval_report_dfs_path(&report.report_id));
+        module.checksum = paper_engram_module_manifest_checksum(&module);
+
+        service
+            .register_paper_engram_tokenizer_projection(projection)
+            .expect("register projection");
+        service
+            .register_paper_engram_hash_config(hash_config)
+            .expect("register hash config");
+        service
+            .register_paper_engram_training_recipe(recipe)
+            .expect("register recipe");
+        service
+            .register_paper_engram_eval_report(report)
+            .expect("register eval report");
+        service
+            .register_paper_engram_table_shard(shard)
+            .expect("register shard");
+        service
+            .register_paper_engram_gate(gate)
+            .expect("register gate");
+
+        assert_eq!(
+            service
+                .register_paper_engram_module(module)
+                .expect_err("quality claim must require training or import evidence"),
+            LingquMemoryError::MissingField("paper_engram_training_recipe.evidence_refs")
+        );
     }
 
     #[test]
