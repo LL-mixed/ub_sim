@@ -31,6 +31,7 @@ use sim_models::engram_context::{
     PaperEngramContextTableView, ENGRAM_CONTEXT_INDICES_PER_BATCH,
 };
 use sim_models::engram_hash::{
+    ENGRAM_HASH_ALGORITHM_VERSION,
     build_engram_lookup_requests_from_step, validate_engram_hash_config,
     Qwen3DenseReferenceEngramHashConfig, Qwen3DenseReferenceEngramHashTableSpec,
 };
@@ -18826,7 +18827,7 @@ fn qwen3_dense_reference_paper_engram_context_state_from_manifest(
         heads_per_order,
         table_rows: 1,
         seed: 0,
-        algorithm: "fnv1a-x64+length-prefix".to_string(),
+        algorithm: ENGRAM_HASH_ALGORITHM_VERSION.to_string(),
         table_specs,
     };
     validate_engram_hash_config(&config)?;

@@ -30,6 +30,7 @@ use sim_models::qwen3_dense_reference::{
 };
 use sim_models::{
     engram_hash::{
+        ENGRAM_HASH_ALGORITHM_VERSION,
         build_default_engram_hash_config, build_exact_canonical_ngram_index,
         canonical_ngram_checksum,
     },
@@ -2296,7 +2297,7 @@ fn run_lingqu_memory_build_engram_hash_config_cli(args: &[String]) -> anyhow::Re
         .transpose()?
         .unwrap_or_else(|| vec![2, 3]);
     let algorithm = optional_cli_arg(args, "--algorithm")?
-        .unwrap_or_else(|| "fnv1a-x64+length-prefix".to_string());
+        .unwrap_or_else(|| ENGRAM_HASH_ALGORITHM_VERSION.to_string());
     let projection_bytes = fs::read(&projection_path)
         .with_context(|| format!("read tokenizer projection {}", projection_path.display()))?;
     let projection =
@@ -3245,7 +3246,7 @@ fn run_lingqu_memory_seed_paper_engram_fixture_cli(args: &[String]) -> anyhow::R
         heads_per_order,
         table_rows,
         seed,
-        algorithm: "fnv1a-x64+length-prefix".to_string(),
+        algorithm: ENGRAM_HASH_ALGORITHM_VERSION.to_string(),
         source_ref: Some("fixture://sim-cli/paper-engram/hash-config".to_string()),
         checksum: 1,
         version: 1,
@@ -16127,7 +16128,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             8,
             65_536,
             0x1234_5678,
-            "fnv1a-x64+length-prefix",
+            ENGRAM_HASH_ALGORITHM_VERSION,
             Some("fixture/hash_config.json"),
             1,
             11,
@@ -16146,7 +16147,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             "heads_per_order": 8,
             "table_rows": 65536,
             "seed": 0x12345678u64,
-            "algorithm": "fnv1a-x64+length-prefix",
+            "algorithm": ENGRAM_HASH_ALGORITHM_VERSION,
             "source_ref": "fixture/hash_config.json",
             "checksum": hash_checksum_field,
             "version": 1,
@@ -16231,7 +16232,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 heads_per_order: 1,
                 table_rows: 16,
                 seed: 0x1234_5678,
-                algorithm: "fnv1a-x64+length-prefix".to_string(),
+                algorithm: ENGRAM_HASH_ALGORITHM_VERSION.to_string(),
                 source_ref: Some("fixture/hash_config.json".to_string()),
                 checksum: 1,
                 version: 1,
@@ -16524,7 +16525,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 heads_per_order: 1,
                 table_rows: table_rows as u64,
                 seed: 0x1234_5678,
-                algorithm: "fnv1a-x64+length-prefix".to_string(),
+                algorithm: ENGRAM_HASH_ALGORITHM_VERSION.to_string(),
                 source_ref: Some("fixture/hash_config.json".to_string()),
                 checksum: 1,
                 version: 1,

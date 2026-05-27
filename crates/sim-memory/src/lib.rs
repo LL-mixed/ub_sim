@@ -9409,6 +9409,7 @@ fn u32_vec_to_le_bytes(values: &[u32]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sim_models::engram_hash::ENGRAM_HASH_ALGORITHM_VERSION;
     use sim_services::object::{LingquObjectServiceProfile, LingquObjectVersionSelector};
 
     #[test]
@@ -12050,7 +12051,7 @@ mod tests {
             heads_per_order: 1,
             table_rows: 1024,
             seed: 0x1234_5678,
-            algorithm: "fnv1a-x64+length-prefix".to_string(),
+            algorithm: ENGRAM_HASH_ALGORITHM_VERSION.to_string(),
             source_ref: Some("dfs://pe/hash/run-0".to_string()),
             checksum: 1,
             version: 1,
