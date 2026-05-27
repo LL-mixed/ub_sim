@@ -415,6 +415,7 @@ pub fn normalize_token_piece_for_projection(token_piece: &str, is_special: bool)
     }
     token_piece
         .replace('Ġ', " ")
+        .replace('▁', " ")
         .nfkc()
         .collect::<String>()
         .to_lowercase()
@@ -5945,6 +5946,10 @@ outputs:
     fn normalize_token_piece_for_projection_handles_nfkc_space_and_special_tokens() {
         assert_eq!(
             normalize_token_piece_for_projection("ĠHello", false),
+            " hello"
+        );
+        assert_eq!(
+            normalize_token_piece_for_projection("▁Hello", false),
             " hello"
         );
         assert_eq!(
