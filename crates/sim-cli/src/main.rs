@@ -16,8 +16,9 @@ use sim_memory::{
     LingquMemoryService, MemoryCatalogSnapshot, MemoryChunk, MemoryContentType,
     MemoryCorpusCatalog, MemoryPiiState, MemoryQuery, MemoryRecord, MemoryRecordState,
     MemoryRetentionPolicy, MemoryScope, MemorySecurityLabel, MemorySourceKind, MemoryTrustLevel,
-    MemoryVisibility, PrefetchPlanRequest, PrefixCacheArtifact, PrefixCacheLookupRequest,
-    QueryResult, VectorIndexKind, VectorIndexObject,
+    MemoryVisibility, PaperEngramGateManifest, PaperEngramModuleManifest,
+    PaperEngramTableShardManifest, PrefetchPlanRequest, PrefixCacheArtifact,
+    PrefixCacheLookupRequest, QueryResult, VectorIndexKind, VectorIndexObject,
 };
 use sim_models::qwen3_dense_reference::{
     build_tokenizer_projection_from_tokenizer_path, token_piece_bytes_from_tokenizer_path,
@@ -2183,6 +2184,12 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
             run_lingqu_memory_promote_terminal_shortpath_artifacts_from_w5_summary_cli(&args)
         }
         "register-execution-artifact" => run_lingqu_memory_register_execution_artifact_cli(&args),
+        "register-paper-engram-table-shard" => {
+            run_lingqu_memory_register_paper_engram_table_shard_cli(&args)
+        }
+        "register-paper-engram-gate" => run_lingqu_memory_register_paper_engram_gate_cli(&args),
+        "register-paper-engram-module" => run_lingqu_memory_register_paper_engram_module_cli(&args),
+        "list-paper-engram-modules" => run_lingqu_memory_list_paper_engram_modules_cli(&args),
         "register-terminal-logits-artifact-from-w5-summary" => {
             run_lingqu_memory_register_terminal_logits_artifact_from_w5_summary_cli(&args)
         }
@@ -2194,7 +2201,20 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "validate-flat-materialize" => run_lingqu_memory_validate_flat_materialize(),
         "validate-w5-engram-object-ref" => run_lingqu_memory_validate_w5_engram_object_ref(),
         _ => anyhow::bail!(
-            "unknown lingqu-memory mode `{mode}`; expected ingest, build-index, build-tokenizer-projection, build-engram-hash-config, query, list-query-results, list-artifact-access, list-boundary-observations, list-record-lifecycle, list-shortpath-supports, list-shortpath-decisions, list-prefetch-plans, list-prefix-cache-reuse, update-record-state, register-execution-artifact, record-artifact-access, register-terminal-logits-artifact-from-w5-summary, promote-terminal-shortpath-artifacts-from-w5-summary, boundary-lookup, boundary-lookup-from-observation, boundary-request-from-w5-summary, record-boundary-observations-from-w5-summary, plan-prefetch, register-prefix-cache, lookup-prefix-cache, materialize-hot-state, materialize-engram-state, publish-w5-engram-state-ref, validate-service-path, validate-durable-store, validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
+            "unknown lingqu-memory mode `{mode}`; expected \
+            ingest, build-index, build-tokenizer-projection, build-engram-hash-config, query, \
+            list-query-results, list-artifact-access, list-boundary-observations, \
+            list-record-lifecycle, list-shortpath-supports, list-shortpath-decisions, \
+            list-prefetch-plans, list-prefix-cache-reuse, list-paper-engram-modules, \
+            register-paper-engram-table-shard, register-paper-engram-gate, \
+            register-paper-engram-module, update-record-state, register-execution-artifact, \
+            record-artifact-access, register-terminal-logits-artifact-from-w5-summary, \
+            promote-terminal-shortpath-artifacts-from-w5-summary, boundary-lookup, \
+            boundary-lookup-from-observation, boundary-request-from-w5-summary, \
+            record-boundary-observations-from-w5-summary, plan-prefetch, register-prefix-cache, \
+            lookup-prefix-cache, materialize-hot-state, materialize-engram-state, \
+            publish-w5-engram-state-ref, validate-service-path, validate-durable-store, \
+            validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
         ),
     }
 }
@@ -2364,6 +2384,21 @@ struct LingquMemoryPrefixCacheRegistry {
     artifacts: Vec<PrefixCacheArtifact>,
 }
 
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct LingquMemoryPaperEngramTableShardRegistry {
+    shards: Vec<PaperEngramTableShardManifest>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct LingquMemoryPaperEngramGateRegistry {
+    gates: Vec<PaperEngramGateManifest>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct LingquMemoryPaperEngramModuleRegistry {
+    modules: Vec<PaperEngramModuleManifest>,
+}
+
 fn run_lingqu_memory_register_execution_artifact_cli(args: &[String]) -> anyhow::Result<()> {
     let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
     let artifact_path = PathBuf::from(required_cli_arg(args, "--artifact")?);
@@ -2419,6 +2454,230 @@ fn run_lingqu_memory_register_execution_artifact_cli(args: &[String]) -> anyhow:
     );
     println!("  confidence_milli: {}", artifact.confidence_milli);
     println!("  registry_artifacts: {}", registry.artifacts.len());
+    Ok(())
+}
+
+fn run_lingqu_memory_register_paper_engram_table_shard_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let shard_path = PathBuf::from(required_cli_arg(args, "--manifest")?);
+    let shard = {
+        let bytes = fs::read(&shard_path)
+            .with_context(|| format!("read paper engram table shard {}", shard_path.display()))?;
+        serde_json::from_slice::<PaperEngramTableShardManifest>(&bytes)
+            .with_context(|| format!("decode paper engram table shard {}", shard_path.display()))?
+    };
+
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let mut memory_service = LingquMemoryService::new();
+    let _registry = match rebuild_lingqu_memory_paper_engram_table_shards(
+        &mut memory_service,
+        &mut durable_store,
+    ) {
+        Ok(registry) => registry,
+        Err(err) => {
+            if let Some(memory_error) = err.downcast_ref::<sim_memory::LingquMemoryError>() {
+                if matches!(
+                    memory_error,
+                    sim_memory::LingquMemoryError::MissingDfsPath(_)
+                ) {
+                    LingquMemoryPaperEngramTableShardRegistry { shards: Vec::new() }
+                } else {
+                    return Err(err).context("rebuild paper engram table shard registry");
+                }
+            } else {
+                return Err(err).context("rebuild paper engram table shard registry");
+            }
+        }
+    };
+    memory_service
+        .register_paper_engram_table_shard(shard.clone())
+        .context("register paper engram table shard")?;
+    memory_service
+        .persist_paper_engram_table_shards_to_dfs(&mut durable_store)
+        .context("persist paper engram table shard manifest to DFS")?;
+    save_lingqu_memory_durable_store(&store_path, &durable_store)?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: register-paper-engram-table-shard");
+    println!("  store_path: {}", store_path.display());
+    println!(
+        "  manifest_path: {}",
+        sim_memory::LINGQU_PAPER_ENGRAM_TABLE_SHARD_MANIFEST_PATH
+    );
+    println!("  input_path: {}", shard_path.display());
+    println!("  shard_id: {}", shard.shard_id);
+    Ok(())
+}
+
+fn run_lingqu_memory_register_paper_engram_gate_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let gate_path = PathBuf::from(required_cli_arg(args, "--manifest")?);
+    let gate = {
+        let bytes = fs::read(&gate_path)
+            .with_context(|| format!("read paper engram gate {}", gate_path.display()))?;
+        serde_json::from_slice::<PaperEngramGateManifest>(&bytes)
+            .with_context(|| format!("decode paper engram gate {}", gate_path.display()))?
+    };
+
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let mut memory_service = LingquMemoryService::new();
+    let _registry =
+        match rebuild_lingqu_memory_paper_engram_gates(&mut memory_service, &mut durable_store) {
+            Ok(registry) => registry,
+            Err(err) => {
+                if let Some(memory_error) = err.downcast_ref::<sim_memory::LingquMemoryError>() {
+                    if matches!(
+                        memory_error,
+                        sim_memory::LingquMemoryError::MissingDfsPath(_)
+                    ) {
+                        LingquMemoryPaperEngramGateRegistry { gates: Vec::new() }
+                    } else {
+                        return Err(err).context("rebuild paper engram gate registry");
+                    }
+                } else {
+                    return Err(err).context("rebuild paper engram gate registry");
+                }
+            }
+        };
+    memory_service
+        .register_paper_engram_gate(gate.clone())
+        .context("register paper engram gate")?;
+    memory_service
+        .persist_paper_engram_gates_to_dfs(&mut durable_store)
+        .context("persist paper engram gate manifest to DFS")?;
+    save_lingqu_memory_durable_store(&store_path, &durable_store)?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: register-paper-engram-gate");
+    println!("  store_path: {}", store_path.display());
+    println!(
+        "  manifest_path: {}",
+        sim_memory::LINGQU_PAPER_ENGRAM_GATE_MANIFEST_PATH
+    );
+    println!("  input_path: {}", gate_path.display());
+    println!("  gate_id: {}", gate.gate_id);
+    Ok(())
+}
+
+fn run_lingqu_memory_register_paper_engram_module_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let module_path = PathBuf::from(required_cli_arg(args, "--manifest")?);
+    let module = {
+        let bytes = fs::read(&module_path)
+            .with_context(|| format!("read paper engram module {}", module_path.display()))?;
+        serde_json::from_slice::<PaperEngramModuleManifest>(&bytes)
+            .with_context(|| format!("decode paper engram module {}", module_path.display()))?
+    };
+
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let mut memory_service = LingquMemoryService::new();
+    let _table_registry = match rebuild_lingqu_memory_paper_engram_table_shards(
+        &mut memory_service,
+        &mut durable_store,
+    ) {
+        Ok(registry) => registry,
+        Err(err) => {
+            if let Some(memory_error) = err.downcast_ref::<sim_memory::LingquMemoryError>() {
+                if matches!(
+                    memory_error,
+                    sim_memory::LingquMemoryError::MissingDfsPath(_)
+                ) {
+                    LingquMemoryPaperEngramTableShardRegistry { shards: Vec::new() }
+                } else {
+                    return Err(err).context("rebuild paper engram table shard registry");
+                }
+            } else {
+                return Err(err).context("rebuild paper engram table shard registry");
+            }
+        }
+    };
+    let _gate_registry =
+        match rebuild_lingqu_memory_paper_engram_gates(&mut memory_service, &mut durable_store) {
+            Ok(registry) => registry,
+            Err(err) => {
+                if let Some(memory_error) = err.downcast_ref::<sim_memory::LingquMemoryError>() {
+                    if matches!(
+                        memory_error,
+                        sim_memory::LingquMemoryError::MissingDfsPath(_)
+                    ) {
+                        LingquMemoryPaperEngramGateRegistry { gates: Vec::new() }
+                    } else {
+                        return Err(err).context("rebuild paper engram gate registry");
+                    }
+                } else {
+                    return Err(err).context("rebuild paper engram gate registry");
+                }
+            }
+        };
+    let _module_registry =
+        match rebuild_lingqu_memory_paper_engram_modules(&mut memory_service, &mut durable_store) {
+            Ok(registry) => registry,
+            Err(err) => {
+                if let Some(memory_error) = err.downcast_ref::<sim_memory::LingquMemoryError>() {
+                    if matches!(
+                        memory_error,
+                        sim_memory::LingquMemoryError::MissingDfsPath(_)
+                    ) {
+                        LingquMemoryPaperEngramModuleRegistry {
+                            modules: Vec::new(),
+                        }
+                    } else {
+                        return Err(err).context("rebuild paper engram module registry");
+                    }
+                } else {
+                    return Err(err).context("rebuild paper engram module registry");
+                }
+            }
+        };
+
+    memory_service
+        .register_paper_engram_module(module.clone())
+        .context("register paper engram module")?;
+    memory_service
+        .persist_paper_engram_modules_to_dfs(&mut durable_store)
+        .context("persist paper engram module registry to DFS")?;
+    save_lingqu_memory_durable_store(&store_path, &durable_store)?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: register-paper-engram-module");
+    println!("  store_path: {}", store_path.display());
+    println!(
+        "  manifest_path: {}",
+        sim_memory::LINGQU_PAPER_ENGRAM_MODULE_REGISTRY_PATH
+    );
+    println!("  input_path: {}", module_path.display());
+    println!("  module_id: {}", module.module_id);
+    Ok(())
+}
+
+fn run_lingqu_memory_list_paper_engram_modules_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let mut memory_service = LingquMemoryService::new();
+    let registry =
+        rebuild_lingqu_memory_paper_engram_modules(&mut memory_service, &mut durable_store)
+            .with_context(|| "rebuild paper engram module registry")?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: list-paper-engram-modules");
+    println!("  store_path: {}", store_path.display());
+    println!(
+        "  manifest_path: {}",
+        sim_memory::LINGQU_PAPER_ENGRAM_MODULE_REGISTRY_PATH
+    );
+    println!("  module_count: {}", registry.modules.len());
+    for module in &registry.modules {
+        println!(
+            "  module: {} name={} version={} quality={:?} shards={} gates={} checksums={}",
+            module.module_id,
+            module.module_name,
+            module.version,
+            module.quality_claim,
+            module.table_shard_ids.len(),
+            module.gate_ids.len(),
+            module.payload_checksums.len()
+        );
+    }
     Ok(())
 }
 
@@ -9331,6 +9590,51 @@ fn load_required_lingqu_memory_prefix_cache_registry_artifacts(
         .rebuild_prefix_cache_artifacts_from_dfs(store)
         .context("rebuild prefix cache registry from durable DFS manifest")?;
     Ok(LingquMemoryPrefixCacheRegistry { artifacts })
+}
+
+fn rebuild_lingqu_memory_paper_engram_table_shards(
+    memory_service: &mut LingquMemoryService,
+    store: &mut LingquMemoryDurableStore,
+) -> anyhow::Result<LingquMemoryPaperEngramTableShardRegistry> {
+    match memory_service.rebuild_paper_engram_table_shards_from_dfs(store) {
+        Ok(shards) => Ok(LingquMemoryPaperEngramTableShardRegistry { shards }),
+        Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => {
+            Ok(LingquMemoryPaperEngramTableShardRegistry::default())
+        }
+        Err(err) => {
+            Err(err).context("rebuild paper engram table shard registry from durable DFS manifest")
+        }
+    }
+}
+
+fn rebuild_lingqu_memory_paper_engram_gates(
+    memory_service: &mut LingquMemoryService,
+    store: &mut LingquMemoryDurableStore,
+) -> anyhow::Result<LingquMemoryPaperEngramGateRegistry> {
+    match memory_service.rebuild_paper_engram_gates_from_dfs(store) {
+        Ok(gates) => Ok(LingquMemoryPaperEngramGateRegistry { gates }),
+        Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => {
+            Ok(LingquMemoryPaperEngramGateRegistry::default())
+        }
+        Err(err) => {
+            Err(err).context("rebuild paper engram gate registry from durable DFS manifest")
+        }
+    }
+}
+
+fn rebuild_lingqu_memory_paper_engram_modules(
+    memory_service: &mut LingquMemoryService,
+    store: &mut LingquMemoryDurableStore,
+) -> anyhow::Result<LingquMemoryPaperEngramModuleRegistry> {
+    match memory_service.rebuild_paper_engram_modules_from_dfs(store) {
+        Ok(modules) => Ok(LingquMemoryPaperEngramModuleRegistry { modules }),
+        Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => {
+            Ok(LingquMemoryPaperEngramModuleRegistry::default())
+        }
+        Err(err) => {
+            Err(err).context("rebuild paper engram module registry from durable DFS manifest")
+        }
+    }
 }
 
 fn rebuild_lingqu_memory_shortpath_supports(

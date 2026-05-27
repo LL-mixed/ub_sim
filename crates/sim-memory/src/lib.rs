@@ -472,12 +472,23 @@ pub const LINGQU_SHORTPATH_SUPPORT_AUDIT_LOG_PATH: &str =
 pub const LINGQU_PREFETCH_PLAN_AUDIT_LOG_PATH: &str = "/lingqu/memory/audit/prefetch-plans.log";
 pub const LINGQU_PREFIX_CACHE_REUSE_AUDIT_LOG_PATH: &str =
     "/lingqu/memory/audit/prefix-cache-reuse.log";
+pub const LINGQU_PAPER_ENGRAM_TABLE_SHARD_MANIFEST_PATH: &str =
+    "/lingqu/memory/engram/table-shards/manifest.json";
+pub const LINGQU_PAPER_ENGRAM_GATE_MANIFEST_PATH: &str =
+    "/lingqu/memory/engram/gates/manifest.json";
+pub const LINGQU_PAPER_ENGRAM_MODULE_REGISTRY_PATH: &str =
+    "/lingqu/memory/engram/modules/registry.json";
 pub const LINGQU_OBJECT_SERVICE_CHECKPOINT_PATH: &str =
     "/lingqu/object-service/checkpoints/latest.json";
 
 pub const LINGQU_EXECUTION_ARTIFACT_MANIFEST_KIND: &str =
     "lingqu_memory_execution_artifact_manifest";
 pub const LINGQU_PREFIX_CACHE_MANIFEST_KIND: &str = "lingqu_memory_prefix_cache_manifest";
+pub const LINGQU_PAPER_ENGRAM_TABLE_SHARD_MANIFEST_KIND: &str =
+    "lingqu_memory_paper_engram_table_shard_manifest";
+pub const LINGQU_PAPER_ENGRAM_GATE_MANIFEST_KIND: &str = "lingqu_memory_paper_engram_gate_manifest";
+pub const LINGQU_PAPER_ENGRAM_MODULE_REGISTRY_MANIFEST_KIND: &str =
+    "lingqu_memory_paper_engram_module_registry_manifest";
 pub const LINGQU_SHORTPATH_DECISION_MANIFEST_KIND: &str =
     "lingqu_memory_shortpath_decision_manifest";
 pub const LINGQU_SHORTPATH_SUPPORT_MANIFEST_KIND: &str = "lingqu_memory_shortpath_support_manifest";
@@ -498,6 +509,757 @@ pub struct LingquObjectServiceCheckpoint {
 pub struct LingquObjectRecordCheckpoint {
     pub record: LingquObjectRecord,
     pub payload_ref: Option<LingquBlockPayloadRef>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PaperEngramQualityClaim {
+    None,
+    Posttrain,
+    Finetune,
+    Imported,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaperEngramTableShardManifest {
+    pub shard_id: String,
+    pub model_id: String,
+    pub layer: u32,
+    pub order: u8,
+    pub head: u32,
+    pub row_start: u64,
+    pub row_end: u64,
+    pub dtype: TensorDType,
+    pub shape: Vec<u64>,
+    pub block_payload_refs: Vec<LingquBlockPayloadRef>,
+    pub source_ref: Option<String>,
+    pub checksum: u64,
+    pub version: u64,
+    pub created_at_us: u64,
+    pub expires_at_us: Option<u64>,
+}
+
+impl PaperEngramTableShardManifest {
+    pub fn new(mut manifest: PaperEngramTableShardManifest) -> MemoryResult<Self> {
+        manifest.validate()?;
+        let mut sorted_refs = manifest.block_payload_refs.clone();
+        sorted_refs.sort_by(|left, right| {
+            left.block
+                .0
+                .cmp(&right.block.0)
+                .then_with(|| left.offset.cmp(&right.offset))
+                .then_with(|| left.bytes.cmp(&right.bytes))
+                .then_with(|| left.checksum.cmp(&right.checksum))
+        });
+        manifest.block_payload_refs = sorted_refs;
+        manifest.checksum = paper_engram_table_shard_manifest_checksum(&manifest);
+        manifest.validate()?;
+        Ok(manifest)
+    }
+
+    pub fn validate(&self) -> MemoryResult<()> {
+        required_str(&self.shard_id, "table_shard_manifest.shard_id")?;
+        required_str(&self.model_id, "table_shard_manifest.model_id")?;
+        if self.row_end <= self.row_start {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "table_shard_manifest.row_range",
+                reason: "row_end must be greater than row_start",
+            });
+        }
+        validate_tensor_dtype(self.dtype, "table_shard_manifest.dtype")?;
+        if self.shape.is_empty() {
+            return Err(LingquMemoryError::MissingField(
+                "table_shard_manifest.shape",
+            ));
+        }
+        for dim in &self.shape {
+            nonzero(*dim, "table_shard_manifest.shape")?;
+        }
+        for payload_ref in &self.block_payload_refs {
+            payload_ref.validate("table_shard_manifest.block_payload_refs")?;
+        }
+        if let Some(source_ref) = &self.source_ref {
+            required_str(source_ref, "table_shard_manifest.source_ref")?;
+        }
+        nonzero(self.version, "table_shard_manifest.version")?;
+        nonzero(self.created_at_us, "table_shard_manifest.created_at_us")?;
+        if let Some(expires_at_us) = self.expires_at_us {
+            if expires_at_us <= self.created_at_us {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "table_shard_manifest.expires_at_us",
+                    reason: "expires_at_us must be greater than created_at_us",
+                });
+            }
+        }
+        nonzero(self.checksum, "table_shard_manifest.checksum")?;
+        let actual = paper_engram_table_shard_manifest_checksum(self);
+        if actual != self.checksum {
+            return Err(LingquMemoryError::PayloadChecksumMismatch {
+                id: self.shard_id.clone(),
+                expected: self.checksum,
+                actual,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn to_json_bytes(&self) -> MemoryResult<Vec<u8>> {
+        self.validate()?;
+        serde_json::to_vec_pretty(self)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))
+    }
+
+    pub fn from_json_bytes(bytes: &[u8]) -> MemoryResult<Self> {
+        let manifest = serde_json::from_slice::<Self>(bytes)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+        manifest.validate()?;
+        Ok(manifest)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaperEngramGateManifest {
+    pub gate_id: String,
+    pub model_id: String,
+    pub layer: u32,
+    pub dtype: TensorDType,
+    pub shape: Vec<u64>,
+    pub payload_ref: Option<LingquBlockPayloadRef>,
+    pub source_ref: Option<String>,
+    pub checksum: u64,
+    pub version: u64,
+    pub created_at_us: u64,
+    pub expires_at_us: Option<u64>,
+}
+
+impl PaperEngramGateManifest {
+    pub fn new(mut manifest: PaperEngramGateManifest) -> MemoryResult<Self> {
+        manifest.validate()?;
+        manifest.checksum = paper_engram_gate_manifest_checksum(&manifest);
+        manifest.validate()?;
+        Ok(manifest)
+    }
+
+    pub fn validate(&self) -> MemoryResult<()> {
+        required_str(&self.gate_id, "gate_manifest.gate_id")?;
+        required_str(&self.model_id, "gate_manifest.model_id")?;
+        validate_tensor_dtype(self.dtype, "gate_manifest.dtype")?;
+        if self.shape.is_empty() {
+            return Err(LingquMemoryError::MissingField("gate_manifest.shape"));
+        }
+        for dim in &self.shape {
+            nonzero(*dim, "gate_manifest.shape")?;
+        }
+        if self.payload_ref.is_none() && self.source_ref.is_none() {
+            return Err(LingquMemoryError::MissingField(
+                "gate_manifest.payload_source",
+            ));
+        }
+        if let Some(payload_ref) = &self.payload_ref {
+            payload_ref.validate("gate_manifest.payload_ref")?;
+        }
+        if let Some(source_ref) = &self.source_ref {
+            required_str(source_ref, "gate_manifest.source_ref")?;
+        }
+        if self.payload_ref.is_some() && self.source_ref.is_some() {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "gate_manifest.payload_source",
+                reason: "gate payload must reference exactly one storage source",
+            });
+        }
+        nonzero(self.version, "gate_manifest.version")?;
+        nonzero(self.created_at_us, "gate_manifest.created_at_us")?;
+        if let Some(expires_at_us) = self.expires_at_us {
+            if expires_at_us <= self.created_at_us {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "gate_manifest.expires_at_us",
+                    reason: "expires_at_us must be greater than created_at_us",
+                });
+            }
+        }
+        nonzero(self.checksum, "gate_manifest.checksum")?;
+        let actual = paper_engram_gate_manifest_checksum(self);
+        if actual != self.checksum {
+            return Err(LingquMemoryError::PayloadChecksumMismatch {
+                id: self.gate_id.clone(),
+                expected: self.checksum,
+                actual,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn to_json_bytes(&self) -> MemoryResult<Vec<u8>> {
+        self.validate()?;
+        serde_json::to_vec_pretty(self)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))
+    }
+
+    pub fn from_json_bytes(bytes: &[u8]) -> MemoryResult<Self> {
+        let manifest = serde_json::from_slice::<Self>(bytes)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+        manifest.validate()?;
+        Ok(manifest)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaperEngramModuleManifest {
+    pub module_id: String,
+    pub module_name: String,
+    pub model: InferenceModelBinding,
+    pub base_checkpoint_checksum: u64,
+    pub tokenizer_id: String,
+    pub tokenizer_projection_ref: LingquDfsPath,
+    pub hash_config_ref: LingquDfsPath,
+    pub table_shard_ids: Vec<String>,
+    pub gate_ids: Vec<String>,
+    pub layers: Vec<u32>,
+    pub orders: Vec<u8>,
+    pub heads_per_order: u32,
+    pub hidden_size: u64,
+    pub memory_dim: u64,
+    pub table_dtype: TensorDType,
+    pub table_layout: String,
+    pub gate_kind: String,
+    pub training_recipe_ref: Option<LingquDfsPath>,
+    pub quality_claim: PaperEngramQualityClaim,
+    pub payload_checksums: Vec<u64>,
+    pub checksum: u64,
+    pub version: u64,
+    pub created_at_us: u64,
+    pub expires_at_us: Option<u64>,
+}
+
+impl PaperEngramModuleManifest {
+    pub fn new(mut manifest: PaperEngramModuleManifest) -> MemoryResult<Self> {
+        manifest.table_shard_ids.sort();
+        manifest.table_shard_ids.dedup();
+        manifest.gate_ids.sort();
+        manifest.gate_ids.dedup();
+        manifest.layers.sort();
+        manifest.orders.sort();
+        manifest.payload_checksums.sort();
+        manifest.validate()?;
+        manifest.checksum = paper_engram_module_manifest_checksum(&manifest);
+        manifest.validate()?;
+        Ok(manifest)
+    }
+
+    pub fn validate(&self) -> MemoryResult<()> {
+        required_str(&self.module_id, "paper_engram_module.module_id")?;
+        required_str(&self.module_name, "paper_engram_module.module_name")?;
+        self.model.validate()?;
+        nonzero(
+            self.base_checkpoint_checksum,
+            "paper_engram_module.base_checkpoint_checksum",
+        )?;
+        required_str(&self.tokenizer_id, "paper_engram_module.tokenizer_id")?;
+        self.tokenizer_projection_ref
+            .validate("paper_engram_module.tokenizer_projection_ref")?;
+        self.hash_config_ref
+            .validate("paper_engram_module.hash_config_ref")?;
+        if let Some(reference) = &self.training_recipe_ref {
+            reference.validate("paper_engram_module.training_recipe_ref")?;
+        }
+        let mut shard_ids = HashSet::new();
+        for id in &self.table_shard_ids {
+            required_str(id, "paper_engram_module.table_shard_ids")?;
+            if !shard_ids.insert(id.clone()) {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "paper_engram_module.table_shard_ids",
+                    reason: "duplicate table_shard_id",
+                });
+            }
+        }
+        let mut gate_ids = HashSet::new();
+        for id in &self.gate_ids {
+            required_str(id, "paper_engram_module.gate_ids")?;
+            if !gate_ids.insert(id.clone()) {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "paper_engram_module.gate_ids",
+                    reason: "duplicate gate_id",
+                });
+            }
+        }
+        if self.layers.is_empty() {
+            return Err(LingquMemoryError::MissingField(
+                "paper_engram_module.layers",
+            ));
+        }
+        let mut layers = HashSet::new();
+        for layer in &self.layers {
+            if !layers.insert(*layer) {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "paper_engram_module.layers",
+                    reason: "duplicate layer index",
+                });
+            }
+        }
+        if self.orders.is_empty() {
+            return Err(LingquMemoryError::MissingField(
+                "paper_engram_module.orders",
+            ));
+        }
+        let mut orders = HashSet::new();
+        for order in &self.orders {
+            if *order == 0 {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "paper_engram_module.orders",
+                    reason: "order must be greater than 0",
+                });
+            }
+            if !orders.insert(*order) {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "paper_engram_module.orders",
+                    reason: "duplicate order",
+                });
+            }
+        }
+        nonzero(
+            self.heads_per_order as u64,
+            "paper_engram_module.heads_per_order",
+        )?;
+        nonzero(self.hidden_size, "paper_engram_module.hidden_size")?;
+        nonzero(self.memory_dim, "paper_engram_module.memory_dim")?;
+        validate_tensor_dtype(self.table_dtype, "paper_engram_module.table_dtype")?;
+        required_str(&self.table_layout, "paper_engram_module.table_layout")?;
+        required_str(&self.gate_kind, "paper_engram_module.gate_kind")?;
+        if self.payload_checksums.is_empty() {
+            return Err(LingquMemoryError::MissingField(
+                "paper_engram_module.payload_checksums",
+            ));
+        }
+        for checksum in &self.payload_checksums {
+            nonzero(*checksum, "paper_engram_module.payload_checksums")?;
+        }
+        nonzero(self.version, "paper_engram_module.version")?;
+        nonzero(self.created_at_us, "paper_engram_module.created_at_us")?;
+        if let Some(expires_at_us) = self.expires_at_us {
+            if expires_at_us <= self.created_at_us {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "paper_engram_module.expires_at_us",
+                    reason: "expires_at_us must be greater than created_at_us",
+                });
+            }
+        }
+        nonzero(self.checksum, "paper_engram_module.checksum")?;
+        let actual = paper_engram_module_manifest_checksum(self);
+        if actual != self.checksum {
+            return Err(LingquMemoryError::PayloadChecksumMismatch {
+                id: self.module_id.clone(),
+                expected: self.checksum,
+                actual,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn to_json_bytes(&self) -> MemoryResult<Vec<u8>> {
+        self.validate()?;
+        serde_json::to_vec_pretty(self)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))
+    }
+
+    pub fn from_json_bytes(bytes: &[u8]) -> MemoryResult<Self> {
+        let manifest = serde_json::from_slice::<Self>(bytes)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+        manifest.validate()?;
+        Ok(manifest)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaperEngramModuleRegistryEntry {
+    pub module_id: String,
+    pub module: PaperEngramModuleManifest,
+}
+
+impl PaperEngramModuleRegistryEntry {
+    pub fn new(module: PaperEngramModuleManifest) -> MemoryResult<Self> {
+        let entry = Self {
+            module_id: module.module_id.clone(),
+            module,
+        };
+        entry.validate()?;
+        Ok(entry)
+    }
+
+    pub fn validate(&self) -> MemoryResult<()> {
+        required_str(
+            &self.module_id,
+            "paper_engram_module_registry_entry.module_id",
+        )?;
+        if self.module_id != self.module.module_id {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_module_registry_entry.module_id",
+                reason: "entry module_id must match module.manifest module_id",
+            });
+        }
+        self.module.validate()?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaperEngramModuleRegistryManifest {
+    pub kind: String,
+    pub schema_version: u32,
+    pub entries: Vec<PaperEngramModuleRegistryEntry>,
+    pub checksum: u64,
+}
+
+impl PaperEngramModuleRegistryManifest {
+    pub fn new(mut entries: Vec<PaperEngramModuleRegistryEntry>) -> MemoryResult<Self> {
+        entries.sort_by(|left, right| left.module_id.cmp(&right.module_id));
+        let mut manifest = Self {
+            kind: LINGQU_PAPER_ENGRAM_MODULE_REGISTRY_MANIFEST_KIND.to_string(),
+            schema_version: LINGQU_MEMORY_MANIFEST_SCHEMA_VERSION,
+            entries,
+            checksum: 0,
+        };
+        manifest.checksum = paper_engram_module_registry_manifest_checksum(&manifest);
+        manifest.validate()?;
+        Ok(manifest)
+    }
+
+    pub fn validate(&self) -> MemoryResult<()> {
+        if self.kind != LINGQU_PAPER_ENGRAM_MODULE_REGISTRY_MANIFEST_KIND {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_module_registry_manifest.kind",
+                reason: "unexpected manifest kind",
+            });
+        }
+        if self.schema_version != LINGQU_MEMORY_MANIFEST_SCHEMA_VERSION {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_module_registry_manifest.schema_version",
+                reason: "unsupported manifest schema version",
+            });
+        }
+        let mut ids = HashSet::new();
+        for entry in &self.entries {
+            entry.validate()?;
+            if !ids.insert(entry.module_id.clone()) {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "paper_engram_module_registry_manifest.entries",
+                    reason: "duplicate module_id",
+                });
+            }
+        }
+        let actual = paper_engram_module_registry_manifest_checksum(self);
+        if actual != self.checksum {
+            return Err(LingquMemoryError::PayloadChecksumMismatch {
+                id: LINGQU_PAPER_ENGRAM_MODULE_REGISTRY_PATH.to_string(),
+                expected: self.checksum,
+                actual,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn to_json_bytes(&self) -> MemoryResult<Vec<u8>> {
+        self.validate()?;
+        serde_json::to_vec_pretty(self)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))
+    }
+
+    pub fn from_json_bytes(bytes: &[u8]) -> MemoryResult<Self> {
+        let manifest = serde_json::from_slice::<Self>(bytes)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+        manifest.validate()?;
+        Ok(manifest)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaperEngramTableShardManifestCollection {
+    pub kind: String,
+    pub schema_version: u32,
+    pub shards: Vec<PaperEngramTableShardManifest>,
+    pub checksum: u64,
+}
+
+impl PaperEngramTableShardManifestCollection {
+    pub fn new(mut shards: Vec<PaperEngramTableShardManifest>) -> MemoryResult<Self> {
+        shards.sort_by(|left, right| left.shard_id.cmp(&right.shard_id));
+        let mut manifest = Self {
+            kind: LINGQU_PAPER_ENGRAM_TABLE_SHARD_MANIFEST_KIND.to_string(),
+            schema_version: LINGQU_MEMORY_MANIFEST_SCHEMA_VERSION,
+            shards,
+            checksum: 0,
+        };
+        manifest.checksum = paper_engram_table_shard_manifest_collection_checksum(&manifest);
+        manifest.validate()?;
+        Ok(manifest)
+    }
+
+    pub fn validate(&self) -> MemoryResult<()> {
+        if self.kind != LINGQU_PAPER_ENGRAM_TABLE_SHARD_MANIFEST_KIND {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_table_shard_collection_manifest.kind",
+                reason: "unexpected manifest kind",
+            });
+        }
+        if self.schema_version != LINGQU_MEMORY_MANIFEST_SCHEMA_VERSION {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_table_shard_collection_manifest.schema_version",
+                reason: "unsupported manifest schema version",
+            });
+        }
+        let mut ids = HashSet::new();
+        for shard in &self.shards {
+            shard.validate()?;
+            if !ids.insert(shard.shard_id.clone()) {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "paper_engram_table_shard_collection_manifest.shards",
+                    reason: "duplicate shard id",
+                });
+            }
+        }
+        let actual = paper_engram_table_shard_manifest_collection_checksum(self);
+        if actual != self.checksum {
+            return Err(LingquMemoryError::PayloadChecksumMismatch {
+                id: LINGQU_PAPER_ENGRAM_TABLE_SHARD_MANIFEST_PATH.to_string(),
+                expected: self.checksum,
+                actual,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn to_json_bytes(&self) -> MemoryResult<Vec<u8>> {
+        self.validate()?;
+        serde_json::to_vec_pretty(self)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))
+    }
+
+    pub fn from_json_bytes(bytes: &[u8]) -> MemoryResult<Self> {
+        let manifest = serde_json::from_slice::<Self>(bytes)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+        manifest.validate()?;
+        Ok(manifest)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaperEngramGateManifestCollection {
+    pub kind: String,
+    pub schema_version: u32,
+    pub gates: Vec<PaperEngramGateManifest>,
+    pub checksum: u64,
+}
+
+impl PaperEngramGateManifestCollection {
+    pub fn new(mut gates: Vec<PaperEngramGateManifest>) -> MemoryResult<Self> {
+        gates.sort_by(|left, right| left.gate_id.cmp(&right.gate_id));
+        let mut manifest = Self {
+            kind: LINGQU_PAPER_ENGRAM_GATE_MANIFEST_KIND.to_string(),
+            schema_version: LINGQU_MEMORY_MANIFEST_SCHEMA_VERSION,
+            gates,
+            checksum: 0,
+        };
+        manifest.checksum = paper_engram_gate_manifest_collection_checksum(&manifest);
+        manifest.validate()?;
+        Ok(manifest)
+    }
+
+    pub fn validate(&self) -> MemoryResult<()> {
+        if self.kind != LINGQU_PAPER_ENGRAM_GATE_MANIFEST_KIND {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_gate_collection_manifest.kind",
+                reason: "unexpected manifest kind",
+            });
+        }
+        if self.schema_version != LINGQU_MEMORY_MANIFEST_SCHEMA_VERSION {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_gate_collection_manifest.schema_version",
+                reason: "unsupported manifest schema version",
+            });
+        }
+        let mut ids = HashSet::new();
+        for gate in &self.gates {
+            gate.validate()?;
+            if !ids.insert(gate.gate_id.clone()) {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "paper_engram_gate_collection_manifest.gates",
+                    reason: "duplicate gate id",
+                });
+            }
+        }
+        let actual = paper_engram_gate_manifest_collection_checksum(self);
+        if actual != self.checksum {
+            return Err(LingquMemoryError::PayloadChecksumMismatch {
+                id: LINGQU_PAPER_ENGRAM_GATE_MANIFEST_PATH.to_string(),
+                expected: self.checksum,
+                actual,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn to_json_bytes(&self) -> MemoryResult<Vec<u8>> {
+        self.validate()?;
+        serde_json::to_vec_pretty(self)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))
+    }
+
+    pub fn from_json_bytes(bytes: &[u8]) -> MemoryResult<Self> {
+        let manifest = serde_json::from_slice::<Self>(bytes)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
+        manifest.validate()?;
+        Ok(manifest)
+    }
+}
+
+fn validate_tensor_dtype(dtype: TensorDType, _field: &'static str) -> MemoryResult<()> {
+    match dtype {
+        TensorDType::U8
+        | TensorDType::U32
+        | TensorDType::U64
+        | TensorDType::F32
+        | TensorDType::Opaque => Ok(()),
+    }
+}
+
+fn paper_engram_table_shard_manifest_checksum(manifest: &PaperEngramTableShardManifest) -> u64 {
+    let mut bytes = Vec::new();
+    push_checksum_str(&mut bytes, &manifest.shard_id);
+    push_checksum_str(&mut bytes, &manifest.model_id);
+    bytes.extend_from_slice(&manifest.layer.to_le_bytes());
+    bytes.extend_from_slice(&manifest.order.to_le_bytes());
+    bytes.extend_from_slice(&manifest.head.to_le_bytes());
+    bytes.extend_from_slice(&manifest.row_start.to_le_bytes());
+    bytes.extend_from_slice(&manifest.row_end.to_le_bytes());
+    bytes.extend_from_slice(&tensor_dtype_tag(manifest.dtype).to_le_bytes());
+    for dim in &manifest.shape {
+        bytes.extend_from_slice(&dim.to_le_bytes());
+    }
+    for payload_ref in &manifest.block_payload_refs {
+        push_checksum_str(&mut bytes, &payload_ref.block.0);
+        bytes.extend_from_slice(&payload_ref.offset.to_le_bytes());
+        bytes.extend_from_slice(&payload_ref.bytes.to_le_bytes());
+        bytes.extend_from_slice(&payload_ref.checksum.to_le_bytes());
+    }
+    if let Some(source_ref) = &manifest.source_ref {
+        push_checksum_str(&mut bytes, source_ref);
+    }
+    bytes.extend_from_slice(&manifest.version.to_le_bytes());
+    bytes.extend_from_slice(&manifest.created_at_us.to_le_bytes());
+    bytes.extend_from_slice(&manifest.expires_at_us.unwrap_or(0).to_le_bytes());
+    checksum64(&bytes)
+}
+
+fn paper_engram_gate_manifest_checksum(manifest: &PaperEngramGateManifest) -> u64 {
+    let mut bytes = Vec::new();
+    push_checksum_str(&mut bytes, &manifest.gate_id);
+    push_checksum_str(&mut bytes, &manifest.model_id);
+    bytes.extend_from_slice(&manifest.layer.to_le_bytes());
+    bytes.extend_from_slice(&tensor_dtype_tag(manifest.dtype).to_le_bytes());
+    for dim in &manifest.shape {
+        bytes.extend_from_slice(&dim.to_le_bytes());
+    }
+    if let Some(payload_ref) = &manifest.payload_ref {
+        push_checksum_str(&mut bytes, &payload_ref.block.0);
+        bytes.extend_from_slice(&payload_ref.offset.to_le_bytes());
+        bytes.extend_from_slice(&payload_ref.bytes.to_le_bytes());
+        bytes.extend_from_slice(&payload_ref.checksum.to_le_bytes());
+    }
+    if let Some(source_ref) = &manifest.source_ref {
+        push_checksum_str(&mut bytes, source_ref);
+    }
+    bytes.extend_from_slice(&manifest.version.to_le_bytes());
+    bytes.extend_from_slice(&manifest.created_at_us.to_le_bytes());
+    bytes.extend_from_slice(&manifest.expires_at_us.unwrap_or(0).to_le_bytes());
+    checksum64(&bytes)
+}
+
+fn paper_engram_quality_claim_tag(claim: &PaperEngramQualityClaim) -> u64 {
+    match claim {
+        PaperEngramQualityClaim::None => 0,
+        PaperEngramQualityClaim::Posttrain => 1,
+        PaperEngramQualityClaim::Finetune => 2,
+        PaperEngramQualityClaim::Imported => 3,
+    }
+}
+
+fn paper_engram_module_manifest_checksum(manifest: &PaperEngramModuleManifest) -> u64 {
+    let mut bytes = Vec::new();
+    push_checksum_str(&mut bytes, &manifest.module_id);
+    push_checksum_str(&mut bytes, &manifest.module_name);
+    push_checksum_str(&mut bytes, &manifest.model.model_id);
+    push_checksum_str(&mut bytes, &manifest.model.model_key);
+    bytes.extend_from_slice(&manifest.model.tokenizer_hash.to_le_bytes());
+    bytes.extend_from_slice(&manifest.model.profile_hash.to_le_bytes());
+    bytes.extend_from_slice(&manifest.base_checkpoint_checksum.to_le_bytes());
+    push_checksum_str(&mut bytes, &manifest.tokenizer_id);
+    push_checksum_str(&mut bytes, &manifest.tokenizer_projection_ref.path);
+    push_checksum_str(&mut bytes, &manifest.hash_config_ref.path);
+    if let Some(recipe_ref) = &manifest.training_recipe_ref {
+        push_checksum_str(&mut bytes, &recipe_ref.path);
+    }
+    for shard_id in &manifest.table_shard_ids {
+        push_checksum_str(&mut bytes, shard_id);
+    }
+    for gate_id in &manifest.gate_ids {
+        push_checksum_str(&mut bytes, gate_id);
+    }
+    for layer in &manifest.layers {
+        bytes.extend_from_slice(&layer.to_le_bytes());
+    }
+    for order in &manifest.orders {
+        bytes.extend_from_slice(&(*order as u64).to_le_bytes());
+    }
+    bytes.extend_from_slice(&manifest.heads_per_order.to_le_bytes());
+    bytes.extend_from_slice(&manifest.hidden_size.to_le_bytes());
+    bytes.extend_from_slice(&manifest.memory_dim.to_le_bytes());
+    bytes.extend_from_slice(&tensor_dtype_tag(manifest.table_dtype).to_le_bytes());
+    push_checksum_str(&mut bytes, &manifest.table_layout);
+    push_checksum_str(&mut bytes, &manifest.gate_kind);
+    bytes.extend_from_slice(&paper_engram_quality_claim_tag(&manifest.quality_claim).to_le_bytes());
+    for checksum in &manifest.payload_checksums {
+        bytes.extend_from_slice(&checksum.to_le_bytes());
+    }
+    bytes.extend_from_slice(&manifest.version.to_le_bytes());
+    bytes.extend_from_slice(&manifest.created_at_us.to_le_bytes());
+    bytes.extend_from_slice(&manifest.expires_at_us.unwrap_or(0).to_le_bytes());
+    checksum64(&bytes)
+}
+
+fn paper_engram_module_registry_manifest_checksum(
+    manifest: &PaperEngramModuleRegistryManifest,
+) -> u64 {
+    let mut bytes = Vec::new();
+    push_checksum_str(&mut bytes, &manifest.kind);
+    bytes.extend_from_slice(&manifest.schema_version.to_le_bytes());
+    for entry in &manifest.entries {
+        push_checksum_str(&mut bytes, &entry.module_id);
+        bytes.extend_from_slice(&entry.module.checksum.to_le_bytes());
+    }
+    checksum64(&bytes)
+}
+
+fn paper_engram_table_shard_manifest_collection_checksum(
+    manifest: &PaperEngramTableShardManifestCollection,
+) -> u64 {
+    let mut bytes = Vec::new();
+    push_checksum_str(&mut bytes, &manifest.kind);
+    bytes.extend_from_slice(&manifest.schema_version.to_le_bytes());
+    for shard in &manifest.shards {
+        bytes.extend_from_slice(&shard.checksum.to_le_bytes());
+    }
+    checksum64(&bytes)
+}
+
+fn paper_engram_gate_manifest_collection_checksum(
+    manifest: &PaperEngramGateManifestCollection,
+) -> u64 {
+    let mut bytes = Vec::new();
+    push_checksum_str(&mut bytes, &manifest.kind);
+    bytes.extend_from_slice(&manifest.schema_version.to_le_bytes());
+    for gate in &manifest.gates {
+        bytes.extend_from_slice(&gate.checksum.to_le_bytes());
+    }
+    checksum64(&bytes)
 }
 
 impl LingquObjectServiceCheckpoint {
@@ -1271,6 +2033,60 @@ impl LingquMemoryDurableStore {
     pub fn load_prefix_cache_manifest(&mut self) -> MemoryResult<Vec<PrefixCacheArtifact>> {
         let bytes = self.submit_dfs_read(LINGQU_PREFIX_CACHE_MANIFEST_PATH)?;
         Ok(LingquPrefixCacheManifest::from_json_bytes(&bytes)?.artifacts)
+    }
+
+    pub fn persist_paper_engram_table_shard_manifest(
+        &mut self,
+        manifests: Vec<PaperEngramTableShardManifest>,
+    ) -> MemoryResult<LingquDfsPath> {
+        let manifest = PaperEngramTableShardManifestCollection::new(manifests)?;
+        let bytes = manifest.to_json_bytes()?;
+        let path = LingquDfsPath::new(LINGQU_PAPER_ENGRAM_TABLE_SHARD_MANIFEST_PATH);
+        self.submit_dfs_write(path.path.clone(), bytes)?;
+        Ok(path)
+    }
+
+    pub fn load_paper_engram_table_shard_manifest(
+        &mut self,
+    ) -> MemoryResult<Vec<PaperEngramTableShardManifest>> {
+        let bytes = self.submit_dfs_read(LINGQU_PAPER_ENGRAM_TABLE_SHARD_MANIFEST_PATH)?;
+        Ok(PaperEngramTableShardManifestCollection::from_json_bytes(&bytes)?.shards)
+    }
+
+    pub fn persist_paper_engram_gate_manifest(
+        &mut self,
+        manifests: Vec<PaperEngramGateManifest>,
+    ) -> MemoryResult<LingquDfsPath> {
+        let manifest = PaperEngramGateManifestCollection::new(manifests)?;
+        let bytes = manifest.to_json_bytes()?;
+        let path = LingquDfsPath::new(LINGQU_PAPER_ENGRAM_GATE_MANIFEST_PATH);
+        self.submit_dfs_write(path.path.clone(), bytes)?;
+        Ok(path)
+    }
+
+    pub fn load_paper_engram_gate_manifest(
+        &mut self,
+    ) -> MemoryResult<Vec<PaperEngramGateManifest>> {
+        let bytes = self.submit_dfs_read(LINGQU_PAPER_ENGRAM_GATE_MANIFEST_PATH)?;
+        Ok(PaperEngramGateManifestCollection::from_json_bytes(&bytes)?.gates)
+    }
+
+    pub fn persist_paper_engram_module_registry(
+        &mut self,
+        entries: Vec<PaperEngramModuleRegistryEntry>,
+    ) -> MemoryResult<LingquDfsPath> {
+        let manifest = PaperEngramModuleRegistryManifest::new(entries)?;
+        let bytes = manifest.to_json_bytes()?;
+        let path = LingquDfsPath::new(LINGQU_PAPER_ENGRAM_MODULE_REGISTRY_PATH);
+        self.submit_dfs_write(path.path.clone(), bytes)?;
+        Ok(path)
+    }
+
+    pub fn load_paper_engram_module_registry(
+        &mut self,
+    ) -> MemoryResult<Vec<PaperEngramModuleRegistryEntry>> {
+        let bytes = self.submit_dfs_read(LINGQU_PAPER_ENGRAM_MODULE_REGISTRY_PATH)?;
+        Ok(PaperEngramModuleRegistryManifest::from_json_bytes(&bytes)?.entries)
     }
 
     pub fn persist_shortpath_decision_manifest(
@@ -4018,6 +4834,9 @@ pub struct LingquMemoryService {
     prefetch_plans: HashMap<String, PrefetchPlanRecord>,
     shortpath_supports: HashMap<String, ShortpathSupportRecord>,
     boundary_observations: HashMap<String, BoundaryObservationRecord>,
+    paper_engram_table_shards: HashMap<String, PaperEngramTableShardManifest>,
+    paper_engram_gates: HashMap<String, PaperEngramGateManifest>,
+    paper_engram_modules: HashMap<String, PaperEngramModuleManifest>,
 }
 
 impl LingquMemoryService {
@@ -4307,6 +5126,87 @@ impl LingquMemoryService {
                 .insert(plan.plan_id.clone(), plan.clone());
         }
         Ok(plans)
+    }
+
+    pub fn persist_paper_engram_table_shards_to_dfs(
+        &self,
+        durable_store: &mut LingquMemoryDurableStore,
+    ) -> MemoryResult<LingquDfsPath> {
+        let mut manifests = self
+            .paper_engram_table_shards
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        manifests.sort_by(|left, right| left.shard_id.cmp(&right.shard_id));
+        durable_store.persist_paper_engram_table_shard_manifest(manifests)
+    }
+
+    pub fn rebuild_paper_engram_table_shards_from_dfs(
+        &mut self,
+        durable_store: &mut LingquMemoryDurableStore,
+    ) -> MemoryResult<Vec<PaperEngramTableShardManifest>> {
+        let manifests = durable_store.load_paper_engram_table_shard_manifest()?;
+        for manifest in &manifests {
+            self.register_paper_engram_table_shard(manifest.clone())?;
+        }
+        Ok(manifests)
+    }
+
+    pub fn persist_paper_engram_gates_to_dfs(
+        &self,
+        durable_store: &mut LingquMemoryDurableStore,
+    ) -> MemoryResult<LingquDfsPath> {
+        let mut manifests = self
+            .paper_engram_gates
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        manifests.sort_by(|left, right| left.gate_id.cmp(&right.gate_id));
+        durable_store.persist_paper_engram_gate_manifest(manifests)
+    }
+
+    pub fn rebuild_paper_engram_gates_from_dfs(
+        &mut self,
+        durable_store: &mut LingquMemoryDurableStore,
+    ) -> MemoryResult<Vec<PaperEngramGateManifest>> {
+        let manifests = durable_store.load_paper_engram_gate_manifest()?;
+        for manifest in &manifests {
+            self.register_paper_engram_gate(manifest.clone())?;
+        }
+        Ok(manifests)
+    }
+
+    pub fn persist_paper_engram_modules_to_dfs(
+        &self,
+        durable_store: &mut LingquMemoryDurableStore,
+    ) -> MemoryResult<LingquDfsPath> {
+        let mut modules = self
+            .paper_engram_modules
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        modules.sort_by(|left, right| left.module_id.cmp(&right.module_id));
+        durable_store.persist_paper_engram_module_registry(
+            modules
+                .into_iter()
+                .map(PaperEngramModuleRegistryEntry::new)
+                .collect::<MemoryResult<Vec<_>>>()?,
+        )
+    }
+
+    pub fn rebuild_paper_engram_modules_from_dfs(
+        &mut self,
+        durable_store: &mut LingquMemoryDurableStore,
+    ) -> MemoryResult<Vec<PaperEngramModuleManifest>> {
+        let entries = durable_store.load_paper_engram_module_registry()?;
+        let mut manifests = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            entry.validate()?;
+            self.paper_engram_modules
+                .insert(entry.module_id.clone(), entry.module.clone());
+            manifests.push(entry.module.clone());
+        }
+        Ok(manifests)
     }
 
     pub fn register_boundary_observation(
@@ -5164,6 +6064,50 @@ impl LingquMemoryService {
         Ok(())
     }
 
+    pub fn register_paper_engram_table_shard(
+        &mut self,
+        manifest: PaperEngramTableShardManifest,
+    ) -> MemoryResult<()> {
+        manifest.validate()?;
+        self.paper_engram_table_shards
+            .insert(manifest.shard_id.clone(), manifest);
+        Ok(())
+    }
+
+    pub fn register_paper_engram_gate(
+        &mut self,
+        manifest: PaperEngramGateManifest,
+    ) -> MemoryResult<()> {
+        manifest.validate()?;
+        self.paper_engram_gates
+            .insert(manifest.gate_id.clone(), manifest);
+        Ok(())
+    }
+
+    pub fn register_paper_engram_module(
+        &mut self,
+        manifest: PaperEngramModuleManifest,
+    ) -> MemoryResult<()> {
+        manifest.validate()?;
+        for shard_id in &manifest.table_shard_ids {
+            if !self.paper_engram_table_shards.contains_key(shard_id) {
+                return Err(LingquMemoryError::MissingField(
+                    "paper_engram_module.table_shard_ids",
+                ));
+            }
+        }
+        for gate_id in &manifest.gate_ids {
+            if !self.paper_engram_gates.contains_key(gate_id) {
+                return Err(LingquMemoryError::MissingField(
+                    "paper_engram_module.gate_ids",
+                ));
+            }
+        }
+        self.paper_engram_modules
+            .insert(manifest.module_id.clone(), manifest);
+        Ok(())
+    }
+
     pub fn record_artifact_access(&mut self, event: ArtifactAccessRecord) -> MemoryResult<()> {
         event.validate()?;
         let Some(artifact) = self.execution_artifacts.get(&event.artifact_id) else {
@@ -5577,6 +6521,21 @@ impl LingquMemoryService {
 
     pub fn prefix_cache_reuse_plan(&self, plan_id: &str) -> Option<&PrefixCacheReusePlan> {
         self.prefix_cache_reuse_plans.get(plan_id)
+    }
+
+    pub fn paper_engram_table_shard(
+        &self,
+        shard_id: &str,
+    ) -> Option<&PaperEngramTableShardManifest> {
+        self.paper_engram_table_shards.get(shard_id)
+    }
+
+    pub fn paper_engram_gate(&self, gate_id: &str) -> Option<&PaperEngramGateManifest> {
+        self.paper_engram_gates.get(gate_id)
+    }
+
+    pub fn paper_engram_module(&self, module_id: &str) -> Option<&PaperEngramModuleManifest> {
+        self.paper_engram_modules.get(module_id)
     }
 
     pub fn shortpath_support(&self, support_id: &str) -> Option<&ShortpathSupportRecord> {
@@ -6972,6 +7931,95 @@ mod tests {
                 .unwrap()
                 .kind,
             ExecutionArtifactKind::Logits
+        );
+    }
+
+    #[test]
+    fn paper_engram_manifests_validate_checksums() {
+        let shard = sample_paper_engram_table_shard_manifest();
+        let gate = sample_paper_engram_gate_manifest();
+        let module = sample_paper_engram_module_manifest();
+
+        assert!(shard.checksum != 0);
+        assert!(gate.checksum != 0);
+        assert!(module.checksum != 0);
+
+        let mut corrupted_shard = shard.clone();
+        corrupted_shard.checksum ^= 1;
+        assert!(corrupted_shard.validate().is_err());
+
+        let mut corrupted_gate = gate.clone();
+        corrupted_gate.checksum ^= 1;
+        assert!(corrupted_gate.validate().is_err());
+
+        let mut corrupted_module = module;
+        corrupted_module.checksum ^= 1;
+        assert!(corrupted_module.validate().is_err());
+    }
+
+    #[test]
+    fn paper_engram_module_registration_requires_dependencies() {
+        let module = sample_paper_engram_module_manifest();
+        let mut service = LingquMemoryService::new();
+        let err = service
+            .register_paper_engram_module(module)
+            .expect_err("register module should fail before shards and gates are registered");
+        assert!(matches!(
+            err,
+            LingquMemoryError::MissingField("paper_engram_module.table_shard_ids")
+        ));
+    }
+
+    #[test]
+    fn paper_engram_registry_round_trips_via_durable_store() {
+        let mut service = LingquMemoryService::new();
+        let mut durable = LingquMemoryDurableStore::new();
+
+        let shard = sample_paper_engram_table_shard_manifest();
+        let gate = sample_paper_engram_gate_manifest();
+        let module = sample_paper_engram_module_manifest();
+
+        service
+            .register_paper_engram_table_shard(shard.clone())
+            .expect("register shard");
+        service
+            .register_paper_engram_gate(gate.clone())
+            .expect("register gate");
+        service
+            .register_paper_engram_module(module.clone())
+            .expect("register module");
+        service
+            .persist_paper_engram_table_shards_to_dfs(&mut durable)
+            .expect("persist table shard manifests");
+        service
+            .persist_paper_engram_gates_to_dfs(&mut durable)
+            .expect("persist gate manifests");
+        service
+            .persist_paper_engram_modules_to_dfs(&mut durable)
+            .expect("persist module manifest");
+
+        let mut restored = LingquMemoryService::new();
+        let rebuilt_shards = restored
+            .rebuild_paper_engram_table_shards_from_dfs(&mut durable)
+            .expect("rebuild shards");
+        let rebuilt_gates = restored
+            .rebuild_paper_engram_gates_from_dfs(&mut durable)
+            .expect("rebuild gates");
+        let rebuilt_modules = restored
+            .rebuild_paper_engram_modules_from_dfs(&mut durable)
+            .expect("rebuild modules");
+
+        assert_eq!(rebuilt_shards, vec![shard.clone()]);
+        assert_eq!(rebuilt_gates, vec![gate.clone()]);
+        assert_eq!(rebuilt_modules, vec![module.clone()]);
+        assert_eq!(
+            restored.paper_engram_table_shard(&shard.shard_id),
+            Some(&shard)
+        );
+        assert_eq!(restored.paper_engram_gate(&gate.gate_id), Some(&gate));
+        assert_eq!(
+            restored.paper_engram_module(&module.module_id),
+            Some(&module)
         );
     }
 
@@ -8751,6 +9799,94 @@ mod tests {
             token_count: 32,
             checksum: 0x3003,
         }
+    }
+
+    fn sample_paper_engram_table_shard_manifest() -> PaperEngramTableShardManifest {
+        let mut manifest = PaperEngramTableShardManifest {
+            shard_id: "pe-shard-0".to_string(),
+            model_id: "Qwen3-14B".to_string(),
+            layer: 3,
+            order: 0,
+            head: 2,
+            row_start: 0,
+            row_end: 1024,
+            dtype: TensorDType::F32,
+            shape: vec![128, 1024],
+            block_payload_refs: vec![LingquBlockPayloadRef::new(
+                "block/pe-shard-0",
+                0,
+                262144,
+                0xabc,
+            )],
+            source_ref: Some("dfs://pe/loader/run-0".to_string()),
+            checksum: 1,
+            version: 1,
+            created_at_us: 10,
+            expires_at_us: Some(1000),
+        };
+        manifest.checksum = paper_engram_table_shard_manifest_checksum(&manifest);
+        manifest.validate().expect("build paper engram table shard");
+        manifest
+    }
+
+    fn sample_paper_engram_gate_manifest() -> PaperEngramGateManifest {
+        let mut manifest = PaperEngramGateManifest {
+            gate_id: "pe-gate-0".to_string(),
+            model_id: "Qwen3-14B".to_string(),
+            layer: 3,
+            dtype: TensorDType::F32,
+            shape: vec![128],
+            payload_ref: Some(LingquBlockPayloadRef::new(
+                "block/pe-gate-0",
+                0,
+                4096,
+                0xdef,
+            )),
+            source_ref: None,
+            checksum: 1,
+            version: 1,
+            created_at_us: 11,
+            expires_at_us: Some(1100),
+        };
+        manifest.checksum = paper_engram_gate_manifest_checksum(&manifest);
+        manifest.validate().expect("build paper engram gate");
+        manifest
+    }
+
+    fn sample_paper_engram_module_manifest() -> PaperEngramModuleManifest {
+        let mut manifest = PaperEngramModuleManifest {
+            module_id: "pe-module-0".to_string(),
+            module_name: "Qwen3-14B-PE".to_string(),
+            model: sample_model_binding(),
+            base_checkpoint_checksum: 0x2026,
+            tokenizer_id: "tok/qwen3-14b".to_string(),
+            tokenizer_projection_ref: LingquDfsPath::new(
+                "/lingqu/memory/engram/tokenizer-proj.json",
+            ),
+            hash_config_ref: LingquDfsPath::new("/lingqu/memory/engram/hash-config.json"),
+            table_shard_ids: vec!["pe-shard-0".to_string()],
+            gate_ids: vec!["pe-gate-0".to_string()],
+            layers: vec![2, 4],
+            orders: vec![1, 2],
+            heads_per_order: 8,
+            hidden_size: 4096,
+            memory_dim: 512,
+            table_dtype: TensorDType::F32,
+            table_layout: "squad".to_string(),
+            gate_kind: "context".to_string(),
+            training_recipe_ref: Some(LingquDfsPath::new(
+                "/lingqu/memory/engram/training-recipe.json",
+            )),
+            quality_claim: PaperEngramQualityClaim::Imported,
+            payload_checksums: vec![0x1111, 0x2222],
+            checksum: 1,
+            version: 1,
+            created_at_us: 12,
+            expires_at_us: Some(1200),
+        };
+        manifest.checksum = paper_engram_module_manifest_checksum(&manifest);
+        manifest.validate().expect("build paper engram module");
+        manifest
     }
 
     fn sample_embedding_segment(segment_id: &str, chunk_id: &str) -> EmbeddingSegment {
