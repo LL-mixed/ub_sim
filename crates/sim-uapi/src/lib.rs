@@ -17007,6 +17007,12 @@ struct Qwen3DenseReferenceEngramContextReport {
     latency_ms: u128,
     row_prefetch_requests: u64,
     row_prefetch_hits: u64,
+    table_bytes_moved: u64,
+    gate_weight_bytes_moved: u64,
+    indices_bytes_moved: u64,
+    hidden_input_bytes: u64,
+    hidden_output_bytes: u64,
+    hidden_injection_overhead_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -17086,6 +17092,9 @@ enum Qwen3DenseReferenceEngramContextLoadedState {
         indices: Vec<i32>,
         gate_weight: Vec<f32>,
         table_rows: usize,
+        table_bytes_moved: u64,
+        indices_bytes_moved: u64,
+        gate_weight_bytes_moved: u64,
     },
     Paper {
         tables: Vec<Qwen3DenseReferencePaperEngramLoadedTable>,
@@ -17093,6 +17102,8 @@ enum Qwen3DenseReferenceEngramContextLoadedState {
         gate_weight: Vec<f32>,
         row_prefetch_requests: u64,
         row_prefetch_hits: u64,
+        table_bytes_moved: u64,
+        gate_weight_bytes_moved: u64,
     },
 }
 
@@ -18597,7 +18608,7 @@ fn qwen3_dense_reference_engram_context_source_from_descriptor_refs(
 fn qwen3_dense_reference_engram_context_object_ref_state_from_refs(
     hidden_size: usize,
     object_refs: Qwen3DenseReferenceEngramContextObjectRefs,
-) -> Result<(Vec<f32>, Vec<i32>, Vec<f32>, usize), String> {
+) -> Result<(Vec<f32>, Vec<i32>, Vec<f32>, usize, u64, u64, u64), String> {
     if object_refs.table.object_kind != QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE
         || object_refs.indices.object_kind != QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES
         || object_refs.gate_weight.object_kind
@@ -18605,11 +18616,10 @@ fn qwen3_dense_reference_engram_context_object_ref_state_from_refs(
     {
         return Err("qwen3_engram_context_ref_kind_mismatch".to_string());
     }
-    let table = qwen3_f32_values_from_le_bytes(
-        &qwen3_engram_context_payload_get(&object_refs.table)
-            .map_err(|err| format!("qwen3_engram_context_table_resolve_failed:{err}"))?,
-        "qwen3_engram_context_table",
-    )?;
+    let table_payload = qwen3_engram_context_payload_get(&object_refs.table)
+        .map_err(|err| format!("qwen3_engram_context_table_resolve_failed:{err}"))?;
+    let table_bytes_moved = table_payload.len() as u64;
+    let table = qwen3_f32_values_from_le_bytes(&table_payload, "qwen3_engram_context_table")?;
     if table.len() % hidden_size != 0 {
         return Err(format!(
             "qwen3_engram_context_table_len_mismatch:hidden_size={hidden_size}:values={}",
@@ -18624,11 +18634,10 @@ fn qwen3_dense_reference_engram_context_object_ref_state_from_refs(
         ));
     }
 
-    let indices = qwen3_i32_values_from_le_bytes(
-        &qwen3_engram_context_payload_get(&object_refs.indices)
-            .map_err(|err| format!("qwen3_engram_context_indices_resolve_failed:{err}"))?,
-        "qwen3_engram_context_indices",
-    )?;
+    let indices_payload = qwen3_engram_context_payload_get(&object_refs.indices)
+        .map_err(|err| format!("qwen3_engram_context_indices_resolve_failed:{err}"))?;
+    let indices_bytes_moved = indices_payload.len() as u64;
+    let indices = qwen3_i32_values_from_le_bytes(&indices_payload, "qwen3_engram_context_indices")?;
     if indices.len() != ENGRAM_CONTEXT_INDICES_PER_BATCH {
         return Err(format!(
             "qwen3_engram_context_indices_len_mismatch:got={}:expected={}",
@@ -18637,11 +18646,11 @@ fn qwen3_dense_reference_engram_context_object_ref_state_from_refs(
         ));
     }
 
-    let gate_weight = qwen3_f32_values_from_le_bytes(
-        &qwen3_engram_context_payload_get(&object_refs.gate_weight)
-            .map_err(|err| format!("qwen3_engram_context_gate_weight_resolve_failed:{err}"))?,
-        "qwen3_engram_context_gate_weight",
-    )?;
+    let gate_weight_payload = qwen3_engram_context_payload_get(&object_refs.gate_weight)
+        .map_err(|err| format!("qwen3_engram_context_gate_weight_resolve_failed:{err}"))?;
+    let gate_weight_bytes_moved = gate_weight_payload.len() as u64;
+    let gate_weight =
+        qwen3_f32_values_from_le_bytes(&gate_weight_payload, "qwen3_engram_context_gate_weight")?;
     if gate_weight.len() != hidden_size {
         return Err(format!(
             "qwen3_engram_context_gate_weight_len_mismatch:got={}:expected={hidden_size}",
@@ -18649,7 +18658,15 @@ fn qwen3_dense_reference_engram_context_object_ref_state_from_refs(
         ));
     }
 
-    Ok((table, indices, gate_weight, table_rows))
+    Ok((
+        table,
+        indices,
+        gate_weight,
+        table_rows,
+        table_bytes_moved,
+        indices_bytes_moved,
+        gate_weight_bytes_moved,
+    ))
 }
 
 fn qwen3_dense_reference_engram_context_source_from_env(
@@ -18725,16 +18742,26 @@ fn qwen3_dense_reference_engram_context_loaded_state_from_source(
 ) -> Result<Qwen3DenseReferenceEngramContextLoadedState, String> {
     match source {
         Qwen3DenseReferenceEngramContextStateSource::LegacyRefs(object_refs) => {
-            let (table, indices, gate_weight, table_rows) =
-                qwen3_dense_reference_engram_context_object_ref_state_from_refs(
-                    hidden_size,
-                    object_refs,
-                )?;
+            let (
+                table,
+                indices,
+                gate_weight,
+                table_rows,
+                table_bytes_moved,
+                indices_bytes_moved,
+                gate_weight_bytes_moved,
+            ) = qwen3_dense_reference_engram_context_object_ref_state_from_refs(
+                hidden_size,
+                object_refs,
+            )?;
             Ok(Qwen3DenseReferenceEngramContextLoadedState::Legacy {
                 table,
                 indices,
                 gate_weight,
                 table_rows,
+                table_bytes_moved,
+                indices_bytes_moved,
+                gate_weight_bytes_moved,
             })
         }
         Qwen3DenseReferenceEngramContextStateSource::PaperManifest(manifest) => {
@@ -18853,6 +18880,7 @@ fn qwen3_dense_reference_paper_engram_context_state_from_manifest(
 
     let mut loaded_tables = Vec::with_capacity(grouped.len());
     let mut table_specs = Vec::with_capacity(grouped.len());
+    let mut table_bytes_moved = 0u64;
     for ((order, head), mut shards) in grouped {
         shards.sort_by_key(|shard| shard.row_start);
         let mut expected_row_start = 0u64;
@@ -18874,14 +18902,15 @@ fn qwen3_dense_reference_paper_engram_context_state_from_manifest(
             } else {
                 hash_seed = Some(shard.hash_seed);
             }
-            let payload = qwen3_f32_values_from_le_bytes(
-                &qwen3_engram_context_payload_get(&shard.object_ref).map_err(|err| {
+            let payload_bytes =
+                qwen3_engram_context_payload_get(&shard.object_ref).map_err(|err| {
                     format!(
                         "qwen3_paper_engram_context_table_resolve_failed:order={order}:head={head}:{err}"
                     )
-                })?,
-                "qwen3_paper_engram_context_table",
-            )?;
+                })?;
+            table_bytes_moved = table_bytes_moved.saturating_add(payload_bytes.len() as u64);
+            let payload =
+                qwen3_f32_values_from_le_bytes(&payload_bytes, "qwen3_paper_engram_context_table")?;
             let rows = usize::try_from(shard.row_end - shard.row_start).map_err(|_| {
                 format!(
                     "qwen3_paper_engram_context_table_rows_exceed_usize:order={order}:head={head}"
@@ -19008,11 +19037,11 @@ fn qwen3_dense_reference_paper_engram_context_state_from_manifest(
         ));
     }
     let gate = gates.remove(0);
-    let gate_weight = qwen3_f32_values_from_le_bytes(
-        &qwen3_engram_context_payload_get(&gate.object_ref)
-            .map_err(|err| format!("qwen3_paper_engram_context_gate_resolve_failed:{err}"))?,
-        "qwen3_paper_engram_context_gate_weight",
-    )?;
+    let gate_payload = qwen3_engram_context_payload_get(&gate.object_ref)
+        .map_err(|err| format!("qwen3_paper_engram_context_gate_resolve_failed:{err}"))?;
+    let gate_weight_bytes_moved = gate_payload.len() as u64;
+    let gate_weight =
+        qwen3_f32_values_from_le_bytes(&gate_payload, "qwen3_paper_engram_context_gate_weight")?;
     if gate_weight.len() != hidden_size {
         return Err(format!(
             "qwen3_paper_engram_context_gate_weight_len_mismatch:got={}:expected={hidden_size}",
@@ -19026,6 +19055,8 @@ fn qwen3_dense_reference_paper_engram_context_state_from_manifest(
         gate_weight,
         row_prefetch_requests,
         row_prefetch_hits,
+        table_bytes_moved,
+        gate_weight_bytes_moved,
     })
 }
 
@@ -19157,12 +19188,18 @@ fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence_with_descript
                 report_mode,
                 row_prefetch_requests,
                 row_prefetch_hits,
+                table_bytes_moved,
+                gate_weight_bytes_moved,
+                indices_bytes_moved,
             ) = match loaded_state {
                 Qwen3DenseReferenceEngramContextLoadedState::Legacy {
                     table,
                     indices,
                     gate_weight,
                     table_rows,
+                    table_bytes_moved,
+                    indices_bytes_moved,
+                    gate_weight_bytes_moved,
                 } => {
                     let reference = run_engram_context_reference(&EngramContextOp {
                         table: &table,
@@ -19228,7 +19265,16 @@ fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence_with_descript
                     } else {
                         "cpu-reference-object-ref"
                     };
-                    (reference.report, output_values, report_mode, 0, 0)
+                    (
+                        reference.report,
+                        output_values,
+                        report_mode,
+                        0,
+                        0,
+                        table_bytes_moved,
+                        gate_weight_bytes_moved,
+                        indices_bytes_moved,
+                    )
                 }
                 Qwen3DenseReferenceEngramContextLoadedState::Paper {
                     tables,
@@ -19236,6 +19282,8 @@ fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence_with_descript
                     gate_weight,
                     row_prefetch_requests,
                     row_prefetch_hits,
+                    table_bytes_moved,
+                    gate_weight_bytes_moved,
                 } => {
                     let table_views = tables
                         .iter()
@@ -19310,6 +19358,9 @@ fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence_with_descript
                         },
                         row_prefetch_requests,
                         row_prefetch_hits,
+                        table_bytes_moved,
+                        gate_weight_bytes_moved,
+                        0,
                     )
                 }
             };
@@ -19321,10 +19372,25 @@ fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence_with_descript
             report.mode = report_mode;
             report.row_prefetch_requests = row_prefetch_requests;
             report.row_prefetch_hits = row_prefetch_hits;
+            report.table_bytes_moved = table_bytes_moved;
+            report.gate_weight_bytes_moved = gate_weight_bytes_moved;
+            report.indices_bytes_moved = indices_bytes_moved;
+            report.hidden_input_bytes = qwen3_dense_reference_engram_context_f32_bytes(hidden_size);
+            report.hidden_output_bytes =
+                qwen3_dense_reference_engram_context_f32_bytes(hidden_size);
+            report.hidden_injection_overhead_bytes = report
+                .hidden_input_bytes
+                .saturating_add(report.hidden_output_bytes);
             hidden.copy_from_slice(&output_values);
             Ok(Some(report))
         }
     }
+}
+
+fn qwen3_dense_reference_engram_context_f32_bytes(values: usize) -> u64 {
+    u64::try_from(values)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(std::mem::size_of::<f32>() as u64)
 }
 
 fn qwen3_dense_reference_engram_context_report_from_reference(
@@ -19341,6 +19407,12 @@ fn qwen3_dense_reference_engram_context_report_from_reference(
         latency_ms,
         row_prefetch_requests: 0,
         row_prefetch_hits: 0,
+        table_bytes_moved: 0,
+        gate_weight_bytes_moved: 0,
+        indices_bytes_moved: 0,
+        hidden_input_bytes: 0,
+        hidden_output_bytes: 0,
+        hidden_injection_overhead_bytes: 0,
     }
 }
 
@@ -19350,7 +19422,7 @@ fn qwen3_dense_reference_engram_context_report_line(
     report: &Qwen3DenseReferenceEngramContextReport,
 ) -> String {
     format!(
-        "qwen3-engram-context: node={} layers=[{},{}) total_layers={} step={} mode={} table_rows={} output_checksum=0x{:016x} gate_checksum=0x{:016x} index_checksum=0x{:016x} output_l1_milli={} latency_ms={} row_prefetch_hits={} row_prefetch_requests={} row_prefetch_hit_rate_milli={}",
+        "qwen3-engram-context: node={} layers=[{},{}) total_layers={} step={} mode={} table_rows={} output_checksum=0x{:016x} gate_checksum=0x{:016x} index_checksum=0x{:016x} output_l1_milli={} latency_ms={} row_prefetch_hits={} row_prefetch_requests={} row_prefetch_hit_rate_milli={} table_bytes_moved={} gate_weight_bytes_moved={} indices_bytes_moved={} hidden_input_bytes={} hidden_output_bytes={} hidden_injection_overhead_bytes={}",
         contract.node,
         contract.layer_start,
         contract.layer_end,
@@ -19366,6 +19438,12 @@ fn qwen3_dense_reference_engram_context_report_line(
         report.row_prefetch_hits,
         report.row_prefetch_requests,
         qwen3_dense_reference_engram_context_row_prefetch_hit_rate_milli(report),
+        report.table_bytes_moved,
+        report.gate_weight_bytes_moved,
+        report.indices_bytes_moved,
+        report.hidden_input_bytes,
+        report.hidden_output_bytes,
+        report.hidden_injection_overhead_bytes,
     )
 }
 
@@ -23564,6 +23642,12 @@ mod tests {
             latency_ms: 12,
             row_prefetch_requests: 8,
             row_prefetch_hits: 5,
+            table_bytes_moved: 8192,
+            gate_weight_bytes_moved: 4096,
+            indices_bytes_moved: 0,
+            hidden_input_bytes: 4096,
+            hidden_output_bytes: 4096,
+            hidden_injection_overhead_bytes: 8192,
         };
         let line = qwen3_dense_reference_engram_context_report_line(&contract, 3, &report);
 
@@ -23572,6 +23656,12 @@ mod tests {
         assert!(line.contains("row_prefetch_hits=5"));
         assert!(line.contains("row_prefetch_requests=8"));
         assert!(line.contains("row_prefetch_hit_rate_milli=625"));
+        assert!(line.contains("table_bytes_moved=8192"));
+        assert!(line.contains("gate_weight_bytes_moved=4096"));
+        assert!(line.contains("indices_bytes_moved=0"));
+        assert!(line.contains("hidden_input_bytes=4096"));
+        assert!(line.contains("hidden_output_bytes=4096"));
+        assert!(line.contains("hidden_injection_overhead_bytes=8192"));
     }
 
     #[test]
@@ -23696,6 +23786,7 @@ mod tests {
 
                         let mut table_payloads = Vec::new();
                         let mut table_refs = Vec::new();
+                        let mut expected_table_bytes_moved = 0u64;
                         for spec in &hash_config.table_specs {
                             let table = (0..table_rows * hidden_size)
                                 .map(|index| {
@@ -23707,6 +23798,8 @@ mod tests {
                                 })
                                 .collect::<Vec<_>>();
                             let payload = test_f32_vec_to_le_bytes(&table);
+                            expected_table_bytes_moved =
+                                expected_table_bytes_moved.saturating_add(payload.len() as u64);
                             let object_ref = LingquObmmObjectRefWire::committed(
                                 QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
                                 0,
@@ -23817,6 +23910,32 @@ mod tests {
                                                     assert_eq!(
                                                         report.row_prefetch_hits,
                                                         expected_hits
+                                                    );
+                                                    assert_eq!(
+                                                        report.table_bytes_moved,
+                                                        expected_table_bytes_moved
+                                                    );
+                                                    assert_eq!(
+                                                        report.gate_weight_bytes_moved,
+                                                        gate_payload.len() as u64
+                                                    );
+                                                    assert_eq!(report.indices_bytes_moved, 0);
+                                                    assert_eq!(
+                                                        report.hidden_input_bytes,
+                                                        (hidden_size * std::mem::size_of::<f32>())
+                                                            as u64
+                                                    );
+                                                    assert_eq!(
+                                                        report.hidden_output_bytes,
+                                                        (hidden_size * std::mem::size_of::<f32>())
+                                                            as u64
+                                                    );
+                                                    assert_eq!(
+                                                        report.hidden_injection_overhead_bytes,
+                                                        (hidden_size
+                                                            * std::mem::size_of::<f32>()
+                                                            * 2)
+                                                            as u64
                                                     );
                                                 },
                                             );
