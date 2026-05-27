@@ -5487,10 +5487,18 @@ struct W5PaperEngramContextBoundary {
     total_layers: u64,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct W5PaperEngramContextBackendRecord {
+    output_checksum: u64,
+    row_prefetch_requests: u64,
+    row_prefetch_hits: u64,
+    latency_ms: u64,
+}
+
 #[derive(Debug, Clone, Default)]
 struct W5PaperEngramContextBackendOutputs {
-    cpu_reference_output_checksum: Option<u64>,
-    simpler_host_output_checksum: Option<u64>,
+    cpu_reference: Option<W5PaperEngramContextBackendRecord>,
+    simpler_host: Option<W5PaperEngramContextBackendRecord>,
 }
 
 fn w5_paper_engram_eval_evidence_from_summary(
@@ -5550,18 +5558,12 @@ fn w5_paper_engram_eval_evidence_from_summary(
                 anyhow::bail!("paper Engram row prefetch hits exceed requests");
             }
             evidence.context_count += 1;
-            evidence.hidden_checksum = cli_mix_u64_checksum(evidence.hidden_checksum, step);
-            evidence.hidden_checksum = cli_mix_u64_checksum(evidence.hidden_checksum, node);
-            evidence.hidden_checksum =
-                cli_mix_u64_checksum(evidence.hidden_checksum, output_checksum);
-            evidence.row_prefetch_requests = evidence
-                .row_prefetch_requests
-                .saturating_add(row_prefetch_requests);
-            evidence.row_prefetch_hits =
-                evidence.row_prefetch_hits.saturating_add(row_prefetch_hits);
-            evidence.max_backend_latency_us = evidence
-                .max_backend_latency_us
-                .max(latency_ms.saturating_mul(1000));
+            let record = W5PaperEngramContextBackendRecord {
+                output_checksum,
+                row_prefetch_requests,
+                row_prefetch_hits,
+                latency_ms,
+            };
             if mode == "simpler-host-paper-object-ref" {
                 let entry = context_outputs
                     .entry(W5PaperEngramContextBoundary {
@@ -5572,9 +5574,9 @@ fn w5_paper_engram_eval_evidence_from_summary(
                     })
                     .or_default();
                 if entry
-                    .simpler_host_output_checksum
-                    .replace(output_checksum)
-                    .is_some_and(|previous| previous != output_checksum)
+                    .simpler_host
+                    .replace(record)
+                    .is_some_and(|previous| previous.output_checksum != output_checksum)
                 {
                     backend_output_contradiction = true;
                 }
@@ -5588,9 +5590,9 @@ fn w5_paper_engram_eval_evidence_from_summary(
                     })
                     .or_default();
                 if entry
-                    .cpu_reference_output_checksum
-                    .replace(output_checksum)
-                    .is_some_and(|previous| previous != output_checksum)
+                    .cpu_reference
+                    .replace(record)
+                    .is_some_and(|previous| previous.output_checksum != output_checksum)
                 {
                     backend_output_contradiction = true;
                 }
@@ -5619,15 +5621,33 @@ fn w5_paper_engram_eval_evidence_from_summary(
 
     let mut backend_pair_count = 0u64;
     let mut backend_mismatch = backend_output_contradiction;
-    for outputs in context_outputs.values() {
-        if let (Some(cpu), Some(simpler)) = (
-            outputs.cpu_reference_output_checksum,
-            outputs.simpler_host_output_checksum,
-        ) {
+    for (boundary, outputs) in &context_outputs {
+        if let (Some(cpu), Some(simpler)) = (&outputs.cpu_reference, &outputs.simpler_host) {
             backend_pair_count += 1;
-            if cpu != simpler {
+            if cpu.output_checksum != simpler.output_checksum {
                 backend_mismatch = true;
             }
+        }
+        if let Some(primary) = outputs
+            .simpler_host
+            .as_ref()
+            .or(outputs.cpu_reference.as_ref())
+        {
+            evidence.hidden_checksum =
+                cli_mix_u64_checksum(evidence.hidden_checksum, boundary.step);
+            evidence.hidden_checksum =
+                cli_mix_u64_checksum(evidence.hidden_checksum, boundary.node);
+            evidence.hidden_checksum =
+                cli_mix_u64_checksum(evidence.hidden_checksum, primary.output_checksum);
+            evidence.row_prefetch_requests = evidence
+                .row_prefetch_requests
+                .saturating_add(primary.row_prefetch_requests);
+            evidence.row_prefetch_hits = evidence
+                .row_prefetch_hits
+                .saturating_add(primary.row_prefetch_hits);
+            evidence.max_backend_latency_us = evidence
+                .max_backend_latency_us
+                .max(primary.latency_ms.saturating_mul(1000));
         }
     }
     evidence.cpu_backend_output_match = if backend_mismatch {
@@ -18680,8 +18700,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         )
         .expect("decode eval report");
         assert_eq!(report.report_id, "pe-eval-from-w5");
-        assert_eq!(report.row_prefetch_requests, Some(6));
-        assert_eq!(report.row_prefetch_hits, Some(4));
+        assert_eq!(report.row_prefetch_requests, Some(3));
+        assert_eq!(report.row_prefetch_hits, Some(2));
         assert_eq!(report.max_backend_latency_us, Some(7000));
         assert_eq!(report.cpu_backend_output_match, Some(true));
         assert_ne!(
@@ -18702,6 +18722,9 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         ))
         .expect("extract matched backend evidence");
         assert_eq!(matched.cpu_backend_output_match, Some(true));
+        assert_eq!(matched.row_prefetch_requests, 1);
+        assert_eq!(matched.row_prefetch_hits, 1);
+        assert_eq!(matched.max_backend_latency_us, 5000);
 
         let mismatched = w5_paper_engram_eval_evidence_from_summary(concat!(
             "qwen3-engram-context: node=0 layers=[0,4) total_layers=40 step=0 mode=simpler-host-paper-object-ref table_rows=8 output_checksum=0x7101 gate_checksum=0x7201 index_checksum=0x7301 output_l1_milli=10 latency_ms=5 row_prefetch_hits=1 row_prefetch_requests=1 row_prefetch_hit_rate_milli=1000 table_bytes_moved=256 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=32 hidden_output_bytes=32 hidden_injection_overhead_bytes=64\n",
@@ -18929,8 +18952,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             .load_paper_engram_eval_report_manifest()
             .expect("load paper eval report registry");
         assert_eq!(reports.len(), 1);
-        assert_eq!(reports[0].row_prefetch_requests, Some(8));
-        assert_eq!(reports[0].row_prefetch_hits, Some(8));
+        assert_eq!(reports[0].row_prefetch_requests, Some(4));
+        assert_eq!(reports[0].row_prefetch_hits, Some(4));
         assert_eq!(reports[0].max_backend_latency_us, Some(5000));
 
         fs::remove_dir_all(&root).expect("remove paper engram W5 quality test dir");

@@ -334,7 +334,7 @@ Current implementation status:
 - `sim-cli lingqu-memory build-engram-hash-config` now binds the hash config to the tokenizer projection artifact checksum (`aggregate_checksum`) instead of the source tokenizer-file checksum.
 - `sim-cli lingqu-memory import-paper-engram-module` can import a complete paper Engram manifest bundle in dependency order (`projection`, `hash_config`, table shards, gates, optional recipe/eval, module), persist all registries, import table/gate block payload bytes, and resolve runtime artifacts as the import validation gate. It accepts either explicit manifest paths or a training-export `--bundle-dir` with `tokenizer_projection.json`, `hash_config.json`, `engram_module.json`, optional `training_recipe.json` / `eval_report.json`, `table_shards/*.json`, `gates/*.json`, and `block_payloads/<block id>` files for every table/gate `LingquBlockPayloadRef`. `validate-paper-engram-module` exposes the same runtime validation directly, reads table/gate payload refs to prove backing bytes are present and checksum-valid, and can additionally require the trained/imported quality gate with `--require-quality`.
 - `sim-cli lingqu-memory validate-paper-engram-backend-parity` can run a published paper `ENGRAM_STATE` Object Service snapshot through both the CPU reference and simpler-host paper context path for the same layer, hidden input, and token history, then fail if the simpler-host output diverges beyond the configured ULP tolerance.
-- W5-derived paper Engram eval evidence now treats CPU/backend output match as a real same-boundary comparison: a `simpler-host-paper-object-ref` record must pair with a `cpu-reference-paper-object-ref` record for the same step, node, layer range, and total layer count, and their output checksums must match. Seeing only the simpler-host backend no longer proves parity.
+- W5-derived paper Engram eval evidence now treats CPU/backend output match as a real same-boundary comparison: a `simpler-host-paper-object-ref` record must pair with a `cpu-reference-paper-object-ref` record for the same step, node, layer range, and total layer count, and their output checksums must match. Seeing only the simpler-host backend no longer proves parity. Runtime locality/latency evidence is counted from the primary simpler-host paper runtime record, so CPU-reference parity records do not inflate row-prefetch or backend-latency counters.
 - `sim-cli lingqu-memory seed-paper-engram-fixture` now exposes explicit `--table-init` and `--gate-init` modes (`zero`, `fixture`, `random-normal`) so Phase 4 correctness/performance runs can separate no-op baseline, deterministic fixture mutation, and deterministic random-normal payloads.
 - W5 `qwen3-engram-context` runtime logs now include row-prefetch hit/request counters, hit-rate milli, table/gate/indices bytes moved, hidden injection byte counters, backend latency, and output checksums.
 
@@ -466,6 +466,9 @@ quality claims. The CLI backend parity gate can compare CPU reference and
 simpler-host execution against a published paper `ENGRAM_STATE` Object Service
 snapshot before using that artifact in W5, and W5-derived eval reports only
 claim CPU/backend match when same-boundary runtime output checksums match.
+Runtime counters in those reports are attributed to the primary simpler-host
+paper runtime record rather than double-counting the paired CPU-reference
+parity record.
 
 ### Phase 5: W5 Runtime Injection
 
