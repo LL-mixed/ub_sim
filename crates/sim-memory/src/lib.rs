@@ -918,11 +918,17 @@ impl PaperEngramEvalReportManifest {
         nonzero(self.checksum, "paper_engram_eval_report.checksum")?;
         let actual = paper_engram_eval_report_manifest_checksum(self);
         if actual != self.checksum {
-            return Err(LingquMemoryError::PayloadChecksumMismatch {
-                id: self.report_id.clone(),
-                expected: self.checksum,
-                actual,
-            });
+            let legacy_actual =
+                paper_engram_eval_report_manifest_legacy_checksum_without_runtime_context(self);
+            let is_legacy_runtime_context_absent = self.runtime_context_steps_expected.is_none()
+                && self.runtime_context_steps_observed.is_none();
+            if !is_legacy_runtime_context_absent || legacy_actual != self.checksum {
+                return Err(LingquMemoryError::PayloadChecksumMismatch {
+                    id: self.report_id.clone(),
+                    expected: self.checksum,
+                    actual,
+                });
+            }
         }
         Ok(())
     }
@@ -2232,6 +2238,19 @@ fn paper_engram_training_recipe_manifest_checksum(
 }
 
 fn paper_engram_eval_report_manifest_checksum(manifest: &PaperEngramEvalReportManifest) -> u64 {
+    paper_engram_eval_report_manifest_checksum_with_runtime_context(manifest, true)
+}
+
+fn paper_engram_eval_report_manifest_legacy_checksum_without_runtime_context(
+    manifest: &PaperEngramEvalReportManifest,
+) -> u64 {
+    paper_engram_eval_report_manifest_checksum_with_runtime_context(manifest, false)
+}
+
+fn paper_engram_eval_report_manifest_checksum_with_runtime_context(
+    manifest: &PaperEngramEvalReportManifest,
+    include_runtime_context: bool,
+) -> u64 {
     let mut bytes = Vec::new();
     push_checksum_str(&mut bytes, &manifest.report_id);
     push_checksum_str(&mut bytes, &manifest.recipe_id);
@@ -2278,18 +2297,20 @@ fn paper_engram_eval_report_manifest_checksum(manifest: &PaperEngramEvalReportMa
     );
     bytes.extend_from_slice(&manifest.row_prefetch_requests.unwrap_or(0).to_le_bytes());
     bytes.extend_from_slice(&manifest.row_prefetch_hits.unwrap_or(0).to_le_bytes());
-    bytes.extend_from_slice(
-        &manifest
-            .runtime_context_steps_expected
-            .unwrap_or(0)
-            .to_le_bytes(),
-    );
-    bytes.extend_from_slice(
-        &manifest
-            .runtime_context_steps_observed
-            .unwrap_or(0)
-            .to_le_bytes(),
-    );
+    if include_runtime_context {
+        bytes.extend_from_slice(
+            &manifest
+                .runtime_context_steps_expected
+                .unwrap_or(0)
+                .to_le_bytes(),
+        );
+        bytes.extend_from_slice(
+            &manifest
+                .runtime_context_steps_observed
+                .unwrap_or(0)
+                .to_le_bytes(),
+        );
+    }
     bytes.extend_from_slice(&manifest.max_backend_latency_us.unwrap_or(0).to_le_bytes());
     bytes.extend_from_slice(
         &manifest
@@ -10702,6 +10723,32 @@ mod tests {
         let mut corrupted_module = module;
         corrupted_module.checksum ^= 1;
         assert!(corrupted_module.validate().is_err());
+    }
+
+    #[test]
+    fn paper_engram_eval_report_accepts_legacy_checksum_without_runtime_context() {
+        let mut legacy = sample_paper_engram_eval_report_manifest();
+        legacy.runtime_context_steps_expected = None;
+        legacy.runtime_context_steps_observed = None;
+        legacy.checksum =
+            paper_engram_eval_report_manifest_legacy_checksum_without_runtime_context(&legacy);
+        legacy
+            .validate()
+            .expect("legacy eval report without runtime context coverage checksum");
+        let bytes = serde_json::to_vec_pretty(&legacy).expect("encode legacy eval report");
+        assert_eq!(
+            PaperEngramEvalReportManifest::from_json_bytes(&bytes)
+                .expect("decode legacy eval report"),
+            legacy
+        );
+
+        let mut invalid = sample_paper_engram_eval_report_manifest();
+        invalid.checksum =
+            paper_engram_eval_report_manifest_legacy_checksum_without_runtime_context(&invalid);
+        assert!(matches!(
+            invalid.validate(),
+            Err(LingquMemoryError::PayloadChecksumMismatch { .. })
+        ));
     }
 
     #[test]
