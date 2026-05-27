@@ -251,6 +251,12 @@ validate_w5_cluster_config() {
       if [[ ! -d "$SIM_ENGRAM_SIMT_ARTIFACT_DIR" ]]; then
         echo "SIM_ENGRAM_SIMT_ARTIFACT_DIR is missing: $SIM_ENGRAM_SIMT_ARTIFACT_DIR" >&2
         return 2
+      elif [[ ! -f "$SIM_ENGRAM_SIMT_ARTIFACT_DIR/engram-simt" ]]; then
+        echo "SIM_ENGRAM_SIMT_ARTIFACT_DIR is missing engram-simt: $SIM_ENGRAM_SIMT_ARTIFACT_DIR" >&2
+        return 2
+      elif [[ ! -f "$SIM_ENGRAM_SIMT_ARTIFACT_DIR/libengram-simt_kernel.so" ]]; then
+        echo "SIM_ENGRAM_SIMT_ARTIFACT_DIR is missing libengram-simt_kernel.so: $SIM_ENGRAM_SIMT_ARTIFACT_DIR" >&2
+        return 2
       fi
     elif [[ -z "${SIM_ENGRAM_SIMT_SELECTED_SYMBOL:-}" ||
             -z "${SIM_ENGRAM_SIMT_SELECTED_CASE:-}" ||

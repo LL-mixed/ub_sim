@@ -893,6 +893,80 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             result.stderr,
         )
 
+    def test_w5_cluster_config_runner_rejects_incomplete_vendor_artifact_dir(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        config_runner = script_dir / "run_w5_cluster_config.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            weights_path = tmp_path / "qwen3-14b"
+            weights_path.mkdir()
+            artifact_dir = tmp_path / "engram-simt-build"
+            artifact_dir.mkdir()
+            config_path = tmp_path / "w5.env"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
+                        "SIM_QWEN3_GUEST_DECODE_STEPS=2",
+                        f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
+                        "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context",
+                        "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=fused-simt",
+                        f"SIM_ENGRAM_SIMT_ARTIFACT_DIR={artifact_dir}",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(config_runner), "--validate-only", str(config_path)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(
+            f"SIM_ENGRAM_SIMT_ARTIFACT_DIR is missing engram-simt: {artifact_dir}",
+            result.stderr,
+        )
+
+    def test_w5_cluster_config_runner_accepts_complete_vendor_artifact_dir(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        config_runner = script_dir / "run_w5_cluster_config.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            weights_path = tmp_path / "qwen3-14b"
+            weights_path.mkdir()
+            artifact_dir = tmp_path / "engram-simt-build"
+            artifact_dir.mkdir()
+            (artifact_dir / "engram-simt").write_bytes(b"binary")
+            (artifact_dir / "libengram-simt_kernel.so").write_bytes(b"kernel")
+            config_path = tmp_path / "w5.env"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
+                        "SIM_QWEN3_GUEST_DECODE_STEPS=2",
+                        f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
+                        "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context",
+                        "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=fused-simt",
+                        f"SIM_ENGRAM_SIMT_ARTIFACT_DIR={artifact_dir}",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(config_runner), "--validate-only", str(config_path)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_w5_cluster_config_runner_rejects_missing_selected_vendor_binary_path(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
         config_runner = script_dir / "run_w5_cluster_config.sh"
