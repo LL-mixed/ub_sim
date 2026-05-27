@@ -19221,6 +19221,224 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
     }
 
     #[test]
+    fn lingqu_memory_export_paper_engram_quality_bundle_round_trips() {
+        let root = env::temp_dir().join(format!(
+            "sim-cli-lingqu-memory-paper-engram-quality-export-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create paper engram quality export test dir");
+        let seed_store = root.join("seed-store.json");
+        let import_store = root.join("import-store.json");
+        let bundle_dir = root.join("paper_engram_quality_export_bundle");
+        let recipe_manifest = root.join("training_recipe.json");
+        let eval_manifest = root.join("eval_report.json");
+        let shard_manifest = root.join("table_shard.json");
+        let module_manifest = root.join("engram_module.json");
+
+        run_lingqu_memory_seed_paper_engram_fixture_cli(&[
+            "--store".to_string(),
+            seed_store.display().to_string(),
+            "--module-id".to_string(),
+            "pe-module-export-quality-cli".to_string(),
+            "--module-name".to_string(),
+            "export-quality-engram".to_string(),
+            "--model-id".to_string(),
+            "qwen3-export-quality-test".to_string(),
+            "--model-key".to_string(),
+            "qwen3-export-quality-test".to_string(),
+            "--hidden-size".to_string(),
+            "8".to_string(),
+            "--layer-end".to_string(),
+            "4".to_string(),
+            "--table-rows".to_string(),
+            "8".to_string(),
+            "--orders".to_string(),
+            "2".to_string(),
+            "--heads-per-order".to_string(),
+            "1".to_string(),
+            "--created-at-us".to_string(),
+            "10".to_string(),
+        ])
+        .expect("seed paper engram quality export fixture");
+
+        let mut durable = load_lingqu_memory_durable_store(&seed_store)
+            .expect("load seeded paper quality export store");
+        let projection = durable
+            .load_paper_engram_tokenizer_projection_manifest()
+            .expect("load seeded projection")
+            .pop()
+            .expect("seeded projection");
+        let hash_config = durable
+            .load_paper_engram_hash_config_manifest()
+            .expect("load seeded hash config")
+            .pop()
+            .expect("seeded hash config");
+        let mut shard = durable
+            .load_paper_engram_table_shard_manifest()
+            .expect("load seeded table shard")
+            .pop()
+            .expect("seeded table shard");
+        let mut module = durable
+            .load_paper_engram_module_registry()
+            .expect("load seeded module registry")
+            .pop()
+            .expect("seeded module")
+            .module;
+        drop(durable);
+
+        shard.source_ref = Some("dfs://imports/qwen3-export-quality/table.safetensors".to_string());
+        let shard = sim_memory::PaperEngramTableShardManifest::new(shard)
+            .expect("build exported quality table shard manifest");
+        let recipe = sim_memory::PaperEngramTrainingRecipeManifest::new(
+            sim_memory::PaperEngramTrainingRecipeManifest {
+                recipe_id: "pe-recipe-export-quality-cli".to_string(),
+                model: module.model.clone(),
+                mode: PaperEngramTrainingMode::ExternalImport,
+                base_checkpoint_checksum: module.base_checkpoint_checksum,
+                tokenizer_projection_ref: projection.projection_ref.clone(),
+                hash_config_ref: hash_config.hash_config_ref.clone(),
+                dataset_refs: vec!["dfs://imports/qwen3-export-quality/source".to_string()],
+                objective: "external-paper-engram-export".to_string(),
+                frozen_base_model: false,
+                lora_enabled: false,
+                table_init: "external".to_string(),
+                gate_init: "external".to_string(),
+                layers: module.layers.clone(),
+                orders: module.orders.clone(),
+                heads_per_order: module.heads_per_order,
+                table_rows: 8,
+                evidence_refs: vec![
+                    "dfs://imports/qwen3-export-quality/provenance.json".to_string()
+                ],
+                checksum: 1,
+                version: 1,
+                created_at_us: 20,
+                expires_at_us: None,
+            },
+        )
+        .expect("build exported quality paper engram recipe");
+        let report = sim_memory::PaperEngramEvalReportManifest::new(
+            sim_memory::PaperEngramEvalReportManifest {
+                report_id: "pe-eval-export-quality-cli".to_string(),
+                recipe_id: recipe.recipe_id.clone(),
+                module_id: module.module_id.clone(),
+                model: module.model.clone(),
+                validation_set_refs: vec!["dfs://datasets/qwen3-export-quality-val".to_string()],
+                sample_count: 32,
+                baseline_loss_milli: 1000,
+                paper_engram_loss_milli: 990,
+                decode_policy_loss_milli: Some(992),
+                paper_engram_decode_policy_loss_milli: Some(988),
+                max_allowed_regression_milli: 0,
+                output_checksum: 0x7151,
+                zero_table_hidden_checksum: Some(0x7141),
+                paper_engram_hidden_checksum: Some(0x7242),
+                zero_table_output_checksum: Some(0x7050),
+                cpu_backend_output_match: Some(true),
+                row_prefetch_requests: Some(8),
+                row_prefetch_hits: Some(8),
+                max_backend_latency_us: Some(100),
+                max_allowed_backend_latency_us: Some(1000),
+                evidence_refs: vec![
+                    "dfs://imports/qwen3-export-quality/eval-report.json".to_string()
+                ],
+                checksum: 1,
+                version: 1,
+                created_at_us: 21,
+                expires_at_us: None,
+            },
+        )
+        .expect("build exported quality paper engram eval report");
+        module.training_recipe_ref = Some(sim_memory::paper_engram_training_recipe_dfs_path(
+            &recipe.recipe_id,
+        ));
+        module.eval_report_ref = Some(sim_memory::paper_engram_eval_report_dfs_path(
+            &report.report_id,
+        ));
+        module.quality_claim = sim_memory::PaperEngramQualityClaim::Imported;
+        module = sim_memory::PaperEngramModuleManifest::new(module)
+            .expect("build exported quality paper engram module manifest");
+
+        write_json_file(&recipe_manifest, &recipe);
+        write_json_file(&eval_manifest, &report);
+        write_json_file(&shard_manifest, &shard);
+        write_json_file(&module_manifest, &module);
+        run_lingqu_memory_register_paper_engram_training_recipe_cli(&[
+            "--store".to_string(),
+            seed_store.display().to_string(),
+            "--manifest".to_string(),
+            recipe_manifest.display().to_string(),
+        ])
+        .expect("register exported quality paper engram recipe");
+        run_lingqu_memory_register_paper_engram_eval_report_cli(&[
+            "--store".to_string(),
+            seed_store.display().to_string(),
+            "--manifest".to_string(),
+            eval_manifest.display().to_string(),
+        ])
+        .expect("register exported quality paper engram eval report");
+        run_lingqu_memory_register_paper_engram_table_shard_cli(&[
+            "--store".to_string(),
+            seed_store.display().to_string(),
+            "--manifest".to_string(),
+            shard_manifest.display().to_string(),
+        ])
+        .expect("register exported quality paper engram table shard provenance");
+        run_lingqu_memory_register_paper_engram_module_cli(&[
+            "--store".to_string(),
+            seed_store.display().to_string(),
+            "--manifest".to_string(),
+            module_manifest.display().to_string(),
+        ])
+        .expect("register exported quality paper engram module");
+        run_lingqu_memory_validate_paper_engram_module_cli(&[
+            "--store".to_string(),
+            seed_store.display().to_string(),
+            "--model-id".to_string(),
+            "qwen3-export-quality-test".to_string(),
+            "--engram-id".to_string(),
+            "export-quality-engram".to_string(),
+            "--require-quality".to_string(),
+        ])
+        .expect("validate seed quality paper Engram module before export");
+
+        run_lingqu_memory_export_paper_engram_module_cli(&[
+            "--store".to_string(),
+            seed_store.display().to_string(),
+            "--bundle-dir".to_string(),
+            bundle_dir.display().to_string(),
+            "--model-id".to_string(),
+            "qwen3-export-quality-test".to_string(),
+            "--engram-id".to_string(),
+            "export-quality-engram".to_string(),
+        ])
+        .expect("export quality paper Engram module bundle");
+        assert!(bundle_dir.join("training_recipe.json").is_file());
+        assert!(bundle_dir.join("eval_report.json").is_file());
+
+        run_lingqu_memory_import_paper_engram_module_cli(&[
+            "--store".to_string(),
+            import_store.display().to_string(),
+            "--bundle-dir".to_string(),
+            bundle_dir.display().to_string(),
+        ])
+        .expect("import exported quality paper Engram module bundle");
+        run_lingqu_memory_validate_paper_engram_module_cli(&[
+            "--store".to_string(),
+            import_store.display().to_string(),
+            "--model-id".to_string(),
+            "qwen3-export-quality-test".to_string(),
+            "--engram-id".to_string(),
+            "export-quality-engram".to_string(),
+            "--require-quality".to_string(),
+        ])
+        .expect("validate imported exported quality paper Engram bundle");
+
+        fs::remove_dir_all(&root).expect("remove paper engram quality export test dir");
+    }
+
+    #[test]
     fn lingqu_memory_builds_paper_engram_eval_report_from_w5_summary() {
         let root = env::temp_dir().join(format!(
             "sim-cli-lingqu-memory-paper-engram-eval-from-w5-{}",
