@@ -78,8 +78,38 @@ pub fn generate_canonical_suffix_ngrams(
     canonical_history: &[u64],
     orders: &[u8],
 ) -> Vec<Qwen3DenseReferenceCanonicalNgram> {
+    if canonical_history.is_empty() {
+        return Vec::new();
+    }
     let mut suffixes = Vec::new();
     for step_index in 0..canonical_history.len() {
+        for &order in orders {
+            let needed = usize::from(order);
+            if step_index + 1 < needed {
+                continue;
+            }
+            let start = step_index + 1 - needed;
+            let tokens = canonical_history[start..=step_index].to_vec();
+            suffixes.push(Qwen3DenseReferenceCanonicalNgram {
+                order,
+                step_index: step_index as u64,
+                tokens,
+            });
+        }
+    }
+    suffixes
+}
+
+pub fn generate_canonical_suffix_ngrams_from(
+    canonical_history: &[u64],
+    orders: &[u8],
+    from_step: usize,
+) -> Vec<Qwen3DenseReferenceCanonicalNgram> {
+    if canonical_history.is_empty() || from_step >= canonical_history.len() {
+        return Vec::new();
+    }
+    let mut suffixes = Vec::new();
+    for step_index in from_step..canonical_history.len() {
         for &order in orders {
             let needed = usize::from(order);
             if step_index + 1 < needed {
@@ -151,9 +181,18 @@ pub fn build_engram_lookup_requests(
     canonical_history: &[u64],
     config: &Qwen3DenseReferenceEngramHashConfig,
 ) -> Result<Vec<Qwen3DenseReferenceEngramLookupRequest>, String> {
+    build_engram_lookup_requests_from_step(canonical_history, 0, config)
+}
+
+pub fn build_engram_lookup_requests_from_step(
+    canonical_history: &[u64],
+    from_step: usize,
+    config: &Qwen3DenseReferenceEngramHashConfig,
+) -> Result<Vec<Qwen3DenseReferenceEngramLookupRequest>, String> {
     validate_engram_hash_config(config)?;
     let mut requests = Vec::new();
-    let suffixes = generate_canonical_suffix_ngrams(canonical_history, &config.orders);
+    let suffixes =
+        generate_canonical_suffix_ngrams_from(canonical_history, &config.orders, from_step);
     for suffix in suffixes {
         let exact_key = canonical_ngram_checksum(&suffix.tokens);
         for head in 0..(config.heads_per_order as u16) {
@@ -201,6 +240,25 @@ mod tests {
     }
 
     #[test]
+    fn generate_canonical_suffix_ngrams_from_is_incremental() {
+        let history = vec![10, 20, 30, 40];
+        let suffixes = generate_canonical_suffix_ngrams_from(&history, &[2, 3], 2);
+        assert_eq!(suffixes.len(), 4);
+        assert_eq!(suffixes[0].order, 2);
+        assert_eq!(suffixes[0].step_index, 2);
+        assert_eq!(suffixes[0].tokens, vec![20, 30]);
+        assert_eq!(suffixes[1].order, 3);
+        assert_eq!(suffixes[1].step_index, 2);
+        assert_eq!(suffixes[1].tokens, vec![10, 20, 30]);
+        assert_eq!(suffixes[2].order, 2);
+        assert_eq!(suffixes[2].step_index, 3);
+        assert_eq!(suffixes[2].tokens, vec![30, 40]);
+        assert_eq!(suffixes[3].order, 3);
+        assert_eq!(suffixes[3].step_index, 3);
+        assert_eq!(suffixes[3].tokens, vec![20, 30, 40]);
+    }
+
+    #[test]
     fn engram_lookup_requests_have_all_heads() {
         let config = build_default_engram_hash_config(0x99, 2, 8, 0x77);
         let requests =
@@ -215,6 +273,16 @@ mod tests {
         assert_eq!(requests[4].order, 3);
         assert_eq!(requests[4].head, 0);
         assert_eq!(requests[5].head, 1);
+    }
+
+    #[test]
+    fn engram_lookup_requests_from_step_only_append_new() {
+        let config = build_default_engram_hash_config(0x99, 2, 8, 0x77);
+        let all_requests =
+            build_engram_lookup_requests(&[7, 8, 9], &config).expect("build lookup all requests");
+        let requests = build_engram_lookup_requests_from_step(&[7, 8, 9], 2, &config)
+            .expect("build lookup requests from step");
+        assert_eq!(requests, all_requests[2..].to_vec());
     }
 
     #[test]
