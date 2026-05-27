@@ -243,6 +243,10 @@ validate_w5_cluster_config() {
     return 2
   fi
   if context_guard_requires "fused_simt_vendor_context"; then
+    if ! bool_enabled "${SIM_QWEN3_GUEST_ENGRAM:-0}"; then
+      echo "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context requires SIM_QWEN3_GUEST_ENGRAM=1" >&2
+      return 2
+    fi
     if [[ "${SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP:-}" != "fused-simt" ]]; then
       echo "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context requires SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=fused-simt" >&2
       return 2
