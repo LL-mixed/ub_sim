@@ -697,6 +697,7 @@ pub struct PaperEngramEvalReportManifest {
     pub baseline_loss_milli: u64,
     pub paper_engram_loss_milli: u64,
     pub decode_policy_loss_milli: Option<u64>,
+    pub paper_engram_decode_policy_loss_milli: Option<u64>,
     pub max_allowed_regression_milli: u64,
     pub output_checksum: u64,
     pub zero_table_hidden_checksum: Option<u64>,
@@ -772,6 +773,32 @@ impl PaperEngramEvalReportManifest {
                     field: "paper_engram_eval_report.paper_engram_loss_milli",
                     reason: "paper Engram eval must not regress versus decode policy beyond max_allowed_regression_milli",
                 });
+            }
+        }
+        if let Some(paper_decode_loss_milli) = self.paper_engram_decode_policy_loss_milli {
+            nonzero(
+                paper_decode_loss_milli,
+                "paper_engram_eval_report.paper_engram_decode_policy_loss_milli",
+            )?;
+            if paper_decode_loss_milli
+                > self
+                    .baseline_loss_milli
+                    .saturating_add(self.max_allowed_regression_milli)
+            {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "paper_engram_eval_report.paper_engram_decode_policy_loss_milli",
+                    reason: "paper Engram plus decode policy eval must not regress beyond max_allowed_regression_milli",
+                });
+            }
+            if let Some(decode_policy_loss_milli) = self.decode_policy_loss_milli {
+                if paper_decode_loss_milli
+                    > decode_policy_loss_milli.saturating_add(self.max_allowed_regression_milli)
+                {
+                    return Err(LingquMemoryError::InvalidValue {
+                        field: "paper_engram_eval_report.paper_engram_decode_policy_loss_milli",
+                        reason: "paper Engram plus decode policy eval must not regress versus decode policy beyond max_allowed_regression_milli",
+                    });
+                }
             }
         }
         nonzero(
@@ -2167,6 +2194,12 @@ fn paper_engram_eval_report_manifest_checksum(manifest: &PaperEngramEvalReportMa
     bytes.extend_from_slice(&manifest.baseline_loss_milli.to_le_bytes());
     bytes.extend_from_slice(&manifest.paper_engram_loss_milli.to_le_bytes());
     bytes.extend_from_slice(&manifest.decode_policy_loss_milli.unwrap_or(0).to_le_bytes());
+    bytes.extend_from_slice(
+        &manifest
+            .paper_engram_decode_policy_loss_milli
+            .unwrap_or(0)
+            .to_le_bytes(),
+    );
     bytes.extend_from_slice(&manifest.max_allowed_regression_milli.to_le_bytes());
     bytes.extend_from_slice(&manifest.output_checksum.to_le_bytes());
     bytes.extend_from_slice(
@@ -7808,6 +7841,11 @@ impl LingquMemoryService {
         &self,
         report: &PaperEngramEvalReportManifest,
     ) -> MemoryResult<()> {
+        report
+            .paper_engram_decode_policy_loss_milli
+            .ok_or(LingquMemoryError::MissingField(
+                "paper_engram_eval_report.paper_engram_decode_policy_loss_milli",
+            ))?;
         let zero_hidden =
             report
                 .zero_table_hidden_checksum
@@ -10596,6 +10634,7 @@ mod tests {
         let gate = sample_paper_engram_gate_manifest();
         let recipe = sample_paper_engram_training_recipe_manifest();
         let mut report = sample_paper_engram_eval_report_manifest();
+        report.paper_engram_decode_policy_loss_milli = None;
         report.zero_table_hidden_checksum = None;
         report.paper_engram_hidden_checksum = None;
         report.zero_table_output_checksum = None;
@@ -10637,7 +10676,30 @@ mod tests {
             service
                 .register_paper_engram_module(module)
                 .expect_err("quality claim requires runtime acceptance evidence"),
-            LingquMemoryError::MissingField("paper_engram_eval_report.zero_table_hidden_checksum")
+            LingquMemoryError::MissingField(
+                "paper_engram_eval_report.paper_engram_decode_policy_loss_milli"
+            )
+        );
+    }
+
+    #[test]
+    fn paper_engram_eval_report_rejects_decode_policy_combo_regression() {
+        let mut report = sample_paper_engram_eval_report_manifest();
+        report.baseline_loss_milli = 1200;
+        report.decode_policy_loss_milli = Some(1185);
+        report.paper_engram_decode_policy_loss_milli = Some(1191);
+        report.max_allowed_regression_milli = 5;
+        report.checksum = paper_engram_eval_report_manifest_checksum(&report);
+
+        let err = report
+            .validate()
+            .expect_err("paper Engram plus decode policy must not regress");
+        assert_eq!(
+            err,
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_eval_report.paper_engram_decode_policy_loss_milli",
+                reason: "paper Engram plus decode policy eval must not regress versus decode policy beyond max_allowed_regression_milli"
+            }
         );
     }
 
@@ -12620,6 +12682,7 @@ mod tests {
             baseline_loss_milli: 1200,
             paper_engram_loss_milli: 1180,
             decode_policy_loss_milli: Some(1185),
+            paper_engram_decode_policy_loss_milli: Some(1178),
             max_allowed_regression_milli: 5,
             output_checksum: 0x5151,
             zero_table_hidden_checksum: Some(0x4141),
