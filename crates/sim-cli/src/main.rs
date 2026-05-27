@@ -17,9 +17,10 @@ use sim_memory::{
     MemoryCorpusCatalog, MemoryPiiState, MemoryQuery, MemoryRecord, MemoryRecordState,
     MemoryRetentionPolicy, MemoryScope, MemorySecurityLabel, MemorySourceKind, MemoryTrustLevel,
     MemoryVisibility, PaperEngramEvalReportManifest, PaperEngramGateManifest,
-    PaperEngramHashConfigManifest, PaperEngramModuleManifest, PaperEngramRuntimeArtifacts,
-    PaperEngramTableRowBlockRequest, PaperEngramTableRowPrefetchRequest,
-    PaperEngramTableShardManifest, PaperEngramTokenizerProjectionManifest, PaperEngramTrainingMode,
+    PaperEngramHashConfigManifest, PaperEngramModuleManifest, PaperEngramQualityClaim,
+    PaperEngramRuntimeArtifacts, PaperEngramTableRowBlockRequest,
+    PaperEngramTableRowPrefetchRequest, PaperEngramTableShardManifest,
+    PaperEngramTokenizerProjectionManifest, PaperEngramTrainingMode,
     PaperEngramTrainingRecipeManifest, PrefetchPlanRequest, PrefixCacheArtifact,
     PrefixCacheLookupRequest, QueryResult, VectorIndexKind, VectorIndexObject,
 };
@@ -4534,8 +4535,75 @@ fn deterministic_unit_interval(value: u64) -> f64 {
     (mantissa as f64 + 0.5) / ((1u64 << 53) as f64)
 }
 
+struct PaperEngramModuleListFilters {
+    model_id: Option<String>,
+    engram_id: Option<String>,
+    quality_claim: Option<PaperEngramQualityClaim>,
+}
+
+fn paper_engram_module_list_filters_from_cli(
+    args: &[String],
+) -> anyhow::Result<PaperEngramModuleListFilters> {
+    let module_name = optional_cli_arg(args, "--module-name")?;
+    let engram_id = optional_cli_arg(args, "--engram-id")?;
+    if module_name.is_some() && engram_id.is_some() {
+        anyhow::bail!("use --module-name or --engram-id, not both");
+    }
+    let quality_claim = optional_cli_arg(args, "--quality-claim")?
+        .map(|value| parse_paper_engram_quality_claim("--quality-claim", &value))
+        .transpose()?;
+    Ok(PaperEngramModuleListFilters {
+        model_id: optional_cli_arg(args, "--model-id")?,
+        engram_id: module_name.or(engram_id),
+        quality_claim,
+    })
+}
+
+fn parse_paper_engram_quality_claim(
+    name: &str,
+    value: &str,
+) -> anyhow::Result<PaperEngramQualityClaim> {
+    match value {
+        "none" => Ok(PaperEngramQualityClaim::None),
+        "posttrain" => Ok(PaperEngramQualityClaim::Posttrain),
+        "finetune" => Ok(PaperEngramQualityClaim::Finetune),
+        "imported" => Ok(PaperEngramQualityClaim::Imported),
+        _ => {
+            anyhow::bail!("{name} must be one of none, posttrain, finetune, imported; got {value}")
+        }
+    }
+}
+
+fn paper_engram_module_matches_list_filters(
+    module: &PaperEngramModuleManifest,
+    filters: &PaperEngramModuleListFilters,
+) -> bool {
+    if filters
+        .model_id
+        .as_ref()
+        .is_some_and(|model_id| module.model.model_id != *model_id)
+    {
+        return false;
+    }
+    if filters
+        .engram_id
+        .as_ref()
+        .is_some_and(|engram_id| module.module_name != *engram_id)
+    {
+        return false;
+    }
+    if filters
+        .quality_claim
+        .is_some_and(|quality_claim| module.quality_claim != quality_claim)
+    {
+        return false;
+    }
+    true
+}
+
 fn run_lingqu_memory_list_paper_engram_modules_cli(args: &[String]) -> anyhow::Result<()> {
     let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let filters = paper_engram_module_list_filters_from_cli(args)?;
     let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
     let mut memory_service = LingquMemoryService::new();
     rebuild_lingqu_memory_paper_engram_tokenizer_projections(
@@ -4564,11 +4632,17 @@ fn run_lingqu_memory_list_paper_engram_modules_cli(args: &[String]) -> anyhow::R
         "  manifest_path: {}",
         sim_memory::LINGQU_PAPER_ENGRAM_MODULE_REGISTRY_PATH
     );
-    println!("  module_count: {}", registry.modules.len());
-    for module in &registry.modules {
+    let modules = registry
+        .modules
+        .iter()
+        .filter(|module| paper_engram_module_matches_list_filters(module, &filters))
+        .collect::<Vec<_>>();
+    println!("  module_count: {}", modules.len());
+    for module in modules {
         println!(
-            "  module: {} name={} version={} quality={:?} shards={} gates={} checksums={}",
+            "  module: {} model_id={} engram_id={} version={} quality={:?} shards={} gates={} checksums={}",
             module.module_id,
+            module.model.model_id,
             module.module_name,
             module.version,
             module.quality_claim,
@@ -13619,8 +13693,8 @@ mod tests {
         load_lingqu_memory_durable_store, load_lingqu_object_service_snapshot,
         load_lingqu_object_service_snapshot_file, load_w5_memory_decisions_from_store,
         paper_engram_bundle_block_payload_path, paper_engram_bundle_payload_refs,
-        parse_paper_engram_canonical_history_arg_or_file, parse_summary_fields,
-        parse_u64_csv_arg_or_file, parse_w5_terminal_logits_observation,
+        paper_engram_module_matches_list_filters, parse_paper_engram_canonical_history_arg_or_file,
+        parse_summary_fields, parse_u64_csv_arg_or_file, parse_w5_terminal_logits_observation,
         publish_w5_engram_state_ref_from_memory, publish_w5_engram_state_ref_from_memory_objects,
         publish_w5_execution_artifact_ref, publish_w5_memory_decision_artifact_refs,
         publish_w5_object_service_payload_ref, qwen3_decode_loop_args_from,
@@ -13657,8 +13731,9 @@ mod tests {
         run_lingqu_memory_import_paper_engram_module_cli, run_lingqu_memory_ingest_cli,
         run_lingqu_memory_list_artifact_access_cli,
         run_lingqu_memory_list_boundary_observations_cli,
-        run_lingqu_memory_list_prefetch_plans_cli, run_lingqu_memory_list_prefix_cache_reuse_cli,
-        run_lingqu_memory_list_query_results_cli, run_lingqu_memory_list_record_lifecycle_cli,
+        run_lingqu_memory_list_paper_engram_modules_cli, run_lingqu_memory_list_prefetch_plans_cli,
+        run_lingqu_memory_list_prefix_cache_reuse_cli, run_lingqu_memory_list_query_results_cli,
+        run_lingqu_memory_list_record_lifecycle_cli,
         run_lingqu_memory_list_shortpath_decisions_cli,
         run_lingqu_memory_list_shortpath_supports_cli, run_lingqu_memory_lookup_prefix_cache_cli,
         run_lingqu_memory_materialize_engram_state_cli,
@@ -13706,17 +13781,18 @@ mod tests {
         LingquMemoryDurableStoreSnapshot, LingquObjectKind, LingquObjectLocality,
         LingquObjectMetadata, LingquObjectPublishReq, LingquObjectServiceStub,
         LingquObjectVersionSelector, LingquPayloadBackend, LingquPayloadPlacement,
-        MemoryCatalogSnapshot, PaperEngramGateManifest, PaperEngramTableShardManifest,
-        PaperEngramTrainingMode, QueryResult, Qwen3CandidateRecord, Qwen3DecodeReportVerbosity,
-        Qwen3DenseGuestRuntime, Qwen3DenseProfile, Qwen3EngramConfig, Qwen3EngramContextOp,
-        Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
-        Qwen3GuestExpectedWorkerCounts, Qwen3SamplerConfig, Qwen3TokenizerProjectionCliArgs,
-        W5JumpToTerminalExpectedWorkerCounts, W5MemoryBootstrapConfig,
-        W5MemoryDecisionArtifactPublication, W5MemoryDecisionBundle, W5MemoryDecisionConfig,
-        W5MemoryPublishedArtifactRef, W5MemoryPublishedKvArtifactRef, W5MemoryShortpathKvArtifact,
-        LINGQU_EXTERNAL_PAYLOAD_BLOCK_PREFIX, QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
-        QWEN3_DENSE_DEFAULT_PREFILL_TOKENS, QWEN3_DENSE_DEFAULT_TP_NODES,
-        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE, QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+        MemoryCatalogSnapshot, PaperEngramGateManifest, PaperEngramModuleListFilters,
+        PaperEngramTableShardManifest, PaperEngramTrainingMode, QueryResult, Qwen3CandidateRecord,
+        Qwen3DecodeReportVerbosity, Qwen3DenseGuestRuntime, Qwen3DenseProfile, Qwen3EngramConfig,
+        Qwen3EngramContextOp, Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport,
+        Qwen3GuestDecodeLoopCliArgs, Qwen3GuestExpectedWorkerCounts, Qwen3SamplerConfig,
+        Qwen3TokenizerProjectionCliArgs, W5JumpToTerminalExpectedWorkerCounts,
+        W5MemoryBootstrapConfig, W5MemoryDecisionArtifactPublication, W5MemoryDecisionBundle,
+        W5MemoryDecisionConfig, W5MemoryPublishedArtifactRef, W5MemoryPublishedKvArtifactRef,
+        W5MemoryShortpathKvArtifact, LINGQU_EXTERNAL_PAYLOAD_BLOCK_PREFIX,
+        QWEN3_DENSE_DEFAULT_DECODE_TOKENS, QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
+        QWEN3_DENSE_DEFAULT_TP_NODES, QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
         QWEN3_DENSE_PROFILE_OBMM_KIND_TERMINAL_LOGITS, QWEN3_ENGRAM_DEFAULT_NO_REPEAT_NGRAM_SIZE,
         QWEN3_TOKENIZER_PROJECTION_DEFAULT_FILE_NAME, SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF,
         SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION,
@@ -18762,6 +18838,92 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         assert_eq!(validation.gate_weight_bytes, 8 * std::mem::size_of::<f32>());
 
         fs::remove_dir_all(&root).expect("remove paper engram fixture test dir");
+    }
+
+    #[test]
+    fn lingqu_memory_list_paper_engram_modules_cli_runs() {
+        let root = env::temp_dir().join(format!(
+            "sim-cli-lingqu-memory-paper-engram-list-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create paper engram list test dir");
+        let store = root.join("store.json");
+
+        run_lingqu_memory_seed_paper_engram_fixture_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--module-id".to_string(),
+            "pe-module-list-cli".to_string(),
+            "--module-name".to_string(),
+            "list-engram".to_string(),
+            "--model-id".to_string(),
+            "qwen3-list-test".to_string(),
+            "--model-key".to_string(),
+            "qwen3-list-test".to_string(),
+            "--hidden-size".to_string(),
+            "8".to_string(),
+            "--layer-end".to_string(),
+            "4".to_string(),
+            "--table-rows".to_string(),
+            "8".to_string(),
+            "--orders".to_string(),
+            "2".to_string(),
+            "--heads-per-order".to_string(),
+            "1".to_string(),
+            "--created-at-us".to_string(),
+            "10".to_string(),
+        ])
+        .expect("seed listed paper engram fixture");
+        run_lingqu_memory_list_paper_engram_modules_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--model-id".to_string(),
+            "qwen3-list-test".to_string(),
+            "--engram-id".to_string(),
+            "list-engram".to_string(),
+            "--quality-claim".to_string(),
+            "none".to_string(),
+        ])
+        .expect("list paper Engram modules by model-scoped filters");
+        run_lingqu_memory_list_paper_engram_modules_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--module-name".to_string(),
+            "list-engram".to_string(),
+            "--engram-id".to_string(),
+            "list-engram".to_string(),
+        ])
+        .expect_err("reject ambiguous list Engram id filters");
+
+        let mut durable =
+            load_lingqu_memory_durable_store(&store).expect("load listed paper engram store");
+        let module = durable
+            .load_paper_engram_module_registry()
+            .expect("load listed module registry")
+            .pop()
+            .expect("listed module")
+            .module;
+        let matching_filters = PaperEngramModuleListFilters {
+            model_id: Some("qwen3-list-test".to_string()),
+            engram_id: Some("list-engram".to_string()),
+            quality_claim: Some(sim_memory::PaperEngramQualityClaim::None),
+        };
+        assert!(paper_engram_module_matches_list_filters(
+            &module,
+            &matching_filters
+        ));
+        let mismatched_filters = PaperEngramModuleListFilters {
+            model_id: Some("qwen3-other-test".to_string()),
+            engram_id: Some("list-engram".to_string()),
+            quality_claim: Some(sim_memory::PaperEngramQualityClaim::None),
+        };
+        assert!(!paper_engram_module_matches_list_filters(
+            &module,
+            &mismatched_filters
+        ));
+
+        fs::remove_dir_all(&root).expect("remove paper engram list test dir");
     }
 
     #[test]
