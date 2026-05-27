@@ -6210,6 +6210,7 @@ impl PaperEngramTableRowBlockResponse {
         for dim in &self.shape {
             nonzero(*dim, "paper_engram_table_row_block_response.shape")?;
         }
+        validate_paper_engram_row_block_response_payload_window(self)?;
         nonzero(
             self.row_payload_bytes,
             "paper_engram_table_row_block_response.row_payload_bytes",
@@ -6223,6 +6224,66 @@ impl PaperEngramTableRowBlockResponse {
         }
         Ok(())
     }
+}
+
+fn validate_paper_engram_row_block_response_payload_window(
+    response: &PaperEngramTableRowBlockResponse,
+) -> MemoryResult<()> {
+    let dtype_width = response
+        .dtype
+        .byte_width()
+        .ok_or(LingquMemoryError::InvalidValue {
+            field: "paper_engram_table_row_block_response.dtype",
+            reason: "row payload window validation requires fixed-width dtype",
+        })?;
+    if response.shape.len() < 2 {
+        return Err(LingquMemoryError::InvalidValue {
+            field: "paper_engram_table_row_block_response.shape",
+            reason: "row payload window validation requires rows and memory dimension",
+        });
+    }
+    let shard_rows = response.shard_row_end - response.shard_row_start;
+    if response.shape[0] != shard_rows {
+        return Err(LingquMemoryError::InvalidValue {
+            field: "paper_engram_table_row_block_response.shape",
+            reason: "first shape dimension must match shard row range",
+        });
+    }
+    let row_stride_elems = response.shape[1..].iter().try_fold(1u64, |acc, dim| {
+        acc.checked_mul(*dim)
+            .ok_or(LingquMemoryError::InvalidValue {
+                field: "paper_engram_table_row_block_response.shape",
+                reason: "row stride exceeds u64",
+            })
+    })?;
+    let row_stride_bytes =
+        row_stride_elems
+            .checked_mul(dtype_width)
+            .ok_or(LingquMemoryError::InvalidValue {
+                field: "paper_engram_table_row_block_response.shape",
+                reason: "row stride bytes exceeds u64",
+            })?;
+    let expected_offset = (response.row_start - response.shard_row_start)
+        .checked_mul(row_stride_bytes)
+        .ok_or(LingquMemoryError::InvalidValue {
+            field: "paper_engram_table_row_block_response.row_range",
+            reason: "row payload offset exceeds u64",
+        })?;
+    let expected_bytes = (response.row_end - response.row_start)
+        .checked_mul(row_stride_bytes)
+        .ok_or(LingquMemoryError::InvalidValue {
+            field: "paper_engram_table_row_block_response.row_range",
+            reason: "row payload bytes exceeds u64",
+        })?;
+    if response.row_payload_offset_bytes != expected_offset
+        || response.row_payload_bytes != expected_bytes
+    {
+        return Err(LingquMemoryError::InvalidValue {
+            field: "paper_engram_table_row_block_response.row_payload_window",
+            reason: "row payload window must match row range, dtype, and shape",
+        });
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -10959,6 +11020,17 @@ mod tests {
         assert_eq!(
             aligned.block_payload_refs,
             vec![shard.block_payload_refs[1].clone()]
+        );
+        let mut bad_window = aligned.clone();
+        bad_window.row_payload_offset_bytes = bad_window.row_payload_offset_bytes.saturating_add(4);
+        assert_eq!(
+            bad_window
+                .validate()
+                .expect_err("row block response window mismatch should fail"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_table_row_block_response.row_payload_window",
+                reason: "row payload window must match row range, dtype, and shape"
+            }
         );
 
         let straddling = service
