@@ -734,6 +734,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_W5_MEMORY_DECISION_STORE=/tmp/w5-decision-store.json",
                         "SIM_W5_MEMORY_DECISION_OBJECT_STORE=/tmp/w5-object-store.json",
                         "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context",
+                        "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=fused-simt",
                         "SIM_ENGRAM_SIMT_ARTIFACT_DIR=/tmp/engram-simt",
                         "SIM_ENGRAM_SIMT_SELECTED_SYMBOL=engram_context_dim8_b1",
                         "SIM_ENGRAM_SIMT_SELECTED_CASE=dim8_batch1",
@@ -758,6 +759,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "SIM_UAPI_W5_PROFILE=qwen3_0_6b_decode",
                 "SIM_QWEN3_GUEST_ENGRAM=0",
                 "SIM_QWEN3_GUEST_ENGRAM_POOL=",
+                "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=fused-simt",
                 "SIM_QWEN3_GUEST_DECODE_STEPS=3",
                 "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3",
                 "SIM_W5_MEMORY_SHORTPATH_EXECUTE=0",
@@ -819,6 +821,77 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_W5_POST_RUN_PRUNE=1", result.stdout)
         self.assertIn("SIM_W5_POST_RUN_HEALTH=1", result.stdout)
         self.assertIn("SIM_W5_ARTIFACT_KEEP_LATEST=4", result.stdout)
+
+    def test_w5_cluster_config_runner_rejects_vendor_context_guard_without_fused_simt(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        config_runner = script_dir / "run_w5_cluster_config.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            weights_path = tmp_path / "qwen3-14b"
+            weights_path.mkdir()
+            config_path = tmp_path / "w5.env"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
+                        "SIM_QWEN3_GUEST_DECODE_STEPS=2",
+                        f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
+                        "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(config_runner), "--validate-only", str(config_path)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(
+            "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context requires "
+            "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=fused-simt",
+            result.stderr,
+        )
+
+    def test_w5_cluster_config_runner_rejects_vendor_context_guard_without_artifact(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        config_runner = script_dir / "run_w5_cluster_config.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            weights_path = tmp_path / "qwen3-14b"
+            weights_path.mkdir()
+            config_path = tmp_path / "w5.env"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
+                        "SIM_QWEN3_GUEST_DECODE_STEPS=2",
+                        f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
+                        "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context",
+                        "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=fused-simt",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(config_runner), "--validate-only", str(config_path)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(
+            "requires SIM_ENGRAM_SIMT_ARTIFACT_DIR or complete "
+            "SIM_ENGRAM_SIMT_SELECTED_* vendor env",
+            result.stderr,
+        )
 
     def test_w5_cluster_config_runner_prints_effective_engram_default(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"

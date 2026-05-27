@@ -150,6 +150,23 @@ bool_enabled() {
   esac
 }
 
+context_guard_requires() {
+  local required="$1"
+  local raw="${SIM_W5_REQUIRE_CONTEXT:-}"
+  local normalized=""
+  [[ -n "$raw" ]] || return 1
+  normalized="${raw//$'\n'/,}"
+  normalized="${normalized// /,}"
+  case ",$normalized," in
+    *,"$required",*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 validate_w5_cluster_config() {
   local profile="${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}"
   local steps="${SIM_QWEN3_GUEST_DECODE_STEPS:-1}"
@@ -225,6 +242,24 @@ validate_w5_cluster_config() {
     echo "SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP cannot be combined with explicit shortpath decision ids" >&2
     return 2
   fi
+  if context_guard_requires "fused_simt_vendor_context"; then
+    if [[ "${SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP:-}" != "fused-simt" ]]; then
+      echo "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context requires SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=fused-simt" >&2
+      return 2
+    fi
+    if [[ -n "${SIM_ENGRAM_SIMT_ARTIFACT_DIR:-}" ]]; then
+      if [[ ! -d "$SIM_ENGRAM_SIMT_ARTIFACT_DIR" ]]; then
+        echo "SIM_ENGRAM_SIMT_ARTIFACT_DIR is missing: $SIM_ENGRAM_SIMT_ARTIFACT_DIR" >&2
+        return 2
+      fi
+    elif [[ -z "${SIM_ENGRAM_SIMT_SELECTED_SYMBOL:-}" ||
+            -z "${SIM_ENGRAM_SIMT_SELECTED_CASE:-}" ||
+            -z "${SIM_ENGRAM_SIMT_BINARY_PATH:-}" ||
+            -z "${SIM_ENGRAM_SIMT_KERNEL_LIBRARY_PATH:-}" ]]; then
+      echo "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context requires SIM_ENGRAM_SIMT_ARTIFACT_DIR or complete SIM_ENGRAM_SIMT_SELECTED_* vendor env" >&2
+      return 2
+    fi
+  fi
   return 0
 }
 
@@ -263,6 +298,7 @@ if (( PRINT_ENV )); then
   printf 'SIM_UAPI_W5_PROFILE=%s\n' "${SIM_UAPI_W5_PROFILE:-}"
   printf 'SIM_QWEN3_GUEST_ENGRAM=%s\n' "${SIM_QWEN3_GUEST_ENGRAM:-}"
   printf 'SIM_QWEN3_GUEST_ENGRAM_POOL=%s\n' "${SIM_QWEN3_GUEST_ENGRAM_POOL:-}"
+  printf 'SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=%s\n' "${SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP:-}"
   printf 'SIM_QWEN3_GUEST_DECODE_STEPS=%s\n' "${SIM_QWEN3_GUEST_DECODE_STEPS:-}"
   printf 'SIM_QWEN3_DENSE_WEIGHTS_PATH=%s\n' "${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}"
   printf 'SIM_W5_MEMORY_SHORTPATH_EXECUTE=%s\n' "${SIM_W5_MEMORY_SHORTPATH_EXECUTE:-}"
