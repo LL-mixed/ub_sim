@@ -3398,21 +3398,198 @@ fn collect_paper_engram_phase6_summary_refs(
             )
         })?;
     let variants = [
-        ("base", base_summary_path),
-        ("base_decode_policy", decode_policy_summary_path),
-        ("paper_engram", paper_engram_summary_path),
         (
+            PaperEngramPhase6SummaryVariant::Base,
+            "base",
+            base_summary_path,
+        ),
+        (
+            PaperEngramPhase6SummaryVariant::BaseDecodePolicy,
+            "base_decode_policy",
+            decode_policy_summary_path,
+        ),
+        (
+            PaperEngramPhase6SummaryVariant::PaperEngram,
+            "paper_engram",
+            paper_engram_summary_path,
+        ),
+        (
+            PaperEngramPhase6SummaryVariant::PaperEngramDecodePolicy,
             "paper_engram_decode_policy",
             paper_engram_decode_policy_summary_path,
         ),
     ];
     let mut refs = Vec::new();
-    for (variant, path) in variants {
-        let _summary = fs::read_to_string(&path)
+    for (variant_kind, variant, path) in variants {
+        let summary = fs::read_to_string(&path)
             .with_context(|| format!("read Phase 6 {variant} W5 summary {}", path.display()))?;
+        validate_paper_engram_phase6_summary(variant_kind, &path, &summary)?;
         refs.push(format!("w5-summary:{variant}:{}", path.display()));
     }
     Ok(refs)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PaperEngramPhase6SummaryVariant {
+    Base,
+    BaseDecodePolicy,
+    PaperEngram,
+    PaperEngramDecodePolicy,
+}
+
+impl PaperEngramPhase6SummaryVariant {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Base => "base",
+            Self::BaseDecodePolicy => "base_decode_policy",
+            Self::PaperEngram => "paper_engram",
+            Self::PaperEngramDecodePolicy => "paper_engram_decode_policy",
+        }
+    }
+
+    fn requires_decode_policy(self) -> bool {
+        matches!(self, Self::BaseDecodePolicy | Self::PaperEngramDecodePolicy)
+    }
+
+    fn requires_paper_engram(self) -> bool {
+        matches!(self, Self::PaperEngram | Self::PaperEngramDecodePolicy)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct W5Phase6SummaryStatus {
+    decode_steps_expected: u64,
+    decode_steps_observed: u64,
+    passed_nodes: u64,
+    total_nodes: u64,
+    engram_timing_records: u64,
+    paper_engram_context_records: u64,
+}
+
+fn validate_paper_engram_phase6_summary(
+    variant: PaperEngramPhase6SummaryVariant,
+    path: &Path,
+    summary: &str,
+) -> anyhow::Result<()> {
+    let status = w5_phase6_summary_status_from_summary(summary).with_context(|| {
+        format!(
+            "validate Phase 6 {} summary {}",
+            variant.label(),
+            path.display()
+        )
+    })?;
+    if status.decode_steps_expected == 0 {
+        anyhow::bail!(
+            "Phase 6 {} summary {} has zero expected decode steps",
+            variant.label(),
+            path.display()
+        );
+    }
+    if status.decode_steps_observed != status.decode_steps_expected {
+        anyhow::bail!(
+            "Phase 6 {} summary {} is incomplete: observed {} expected {}",
+            variant.label(),
+            path.display(),
+            status.decode_steps_observed,
+            status.decode_steps_expected
+        );
+    }
+    if status.total_nodes == 0 || status.passed_nodes != status.total_nodes {
+        anyhow::bail!(
+            "Phase 6 {} summary {} has incomplete node pass evidence: {}/{}",
+            variant.label(),
+            path.display(),
+            status.passed_nodes,
+            status.total_nodes
+        );
+    }
+    if variant.requires_decode_policy() && status.engram_timing_records == 0 {
+        anyhow::bail!(
+            "Phase 6 {} summary {} lacks decode-policy timing evidence",
+            variant.label(),
+            path.display()
+        );
+    }
+    if !variant.requires_decode_policy() && status.engram_timing_records > 0 {
+        anyhow::bail!(
+            "Phase 6 {} summary {} unexpectedly contains decode-policy timing evidence",
+            variant.label(),
+            path.display()
+        );
+    }
+    if variant.requires_paper_engram() {
+        if status.paper_engram_context_records == 0 {
+            anyhow::bail!(
+                "Phase 6 {} summary {} lacks paper Engram context evidence",
+                variant.label(),
+                path.display()
+            );
+        }
+        let evidence = w5_paper_engram_eval_evidence_from_summary(summary).with_context(|| {
+            format!(
+                "extract Phase 6 {} paper Engram evidence from {}",
+                variant.label(),
+                path.display()
+            )
+        })?;
+        if evidence.context_count == 0 {
+            anyhow::bail!(
+                "Phase 6 {} summary {} has no usable paper Engram context records",
+                variant.label(),
+                path.display()
+            );
+        }
+        if evidence.cpu_backend_output_match == Some(false) {
+            anyhow::bail!(
+                "Phase 6 {} summary {} has mismatched CPU/backend paper Engram output",
+                variant.label(),
+                path.display()
+            );
+        }
+    } else if status.paper_engram_context_records > 0 {
+        anyhow::bail!(
+            "Phase 6 {} summary {} unexpectedly contains paper Engram context evidence",
+            variant.label(),
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn w5_phase6_summary_status_from_summary(summary: &str) -> anyhow::Result<W5Phase6SummaryStatus> {
+    for line in summary.lines() {
+        if !(line.starts_with("summary: ") && line.contains("decode_steps_expected=")) {
+            continue;
+        }
+        let fields = parse_summary_fields(line);
+        let passed_nodes = required_summary_field(&fields, "passed_nodes")?;
+        let (passed_nodes, total_nodes) = parse_count_pair(passed_nodes, "passed_nodes")?;
+        return Ok(W5Phase6SummaryStatus {
+            decode_steps_expected: required_summary_u64(&fields, "decode_steps_expected")?,
+            decode_steps_observed: required_summary_u64(&fields, "decode_steps_observed")?,
+            passed_nodes,
+            total_nodes,
+            engram_timing_records: required_summary_u64(&fields, "engram_timing_records")?,
+            paper_engram_context_records: required_summary_u64(
+                &fields,
+                "paper_engram_context_records",
+            )?,
+        });
+    }
+    anyhow::bail!("missing W5 decode completion summary line")
+}
+
+fn parse_count_pair(value: &str, field: &'static str) -> anyhow::Result<(u64, u64)> {
+    let (left, right) = value
+        .split_once('/')
+        .ok_or_else(|| anyhow::anyhow!("summary field {field} must use passed/total form"))?;
+    let left = left
+        .parse::<u64>()
+        .with_context(|| format!("parse summary field {field} left side as u64"))?;
+    let right = right
+        .parse::<u64>()
+        .with_context(|| format!("parse summary field {field} right side as u64"))?;
+    Ok((left, right))
 }
 
 fn run_lingqu_memory_register_execution_artifact_cli(args: &[String]) -> anyhow::Result<()> {
@@ -14628,6 +14805,46 @@ mod tests {
         ]
     }
 
+    fn paper_engram_phase6_summary_fixture(
+        run_dir: &Path,
+        decode_policy: bool,
+        paper_engram: bool,
+    ) -> String {
+        format!(
+            "summary: run_dir={}\nsummary: decode_steps_expected=1 decode_steps_observed=1 worker_timing_records=8 passed_nodes=8/8 handoff_timing_records=0 idle_timing_records=0 engram_timing_records={} engram_context_records={} paper_engram_context_records={} fused_simt_context_records=0 fused_simt_vendor_context_records=0\n",
+            run_dir.display(),
+            if decode_policy { 8 } else { 0 },
+            if paper_engram { 1 } else { 0 },
+            if paper_engram { 1 } else { 0 },
+        )
+    }
+
+    fn paper_engram_phase6_guest_log_fixture(
+        output_checksum: u64,
+        gate_checksum: u64,
+        index_checksum: u64,
+        row_prefetch_requests: u64,
+        latency_ms: u64,
+    ) -> String {
+        format!(
+            concat!(
+                "qwen3-engram-context: node=0 layers=[0,4) total_layers=40 step=0 mode=simpler-host-paper-object-ref table_rows=8 output_checksum={:#018x} gate_checksum={:#018x} index_checksum={:#018x} output_l1_milli=10 latency_ms={} row_prefetch_hits={} row_prefetch_requests={} row_prefetch_hit_rate_milli=1000 table_bytes_moved=256 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=32 hidden_output_bytes=32 hidden_injection_overhead_bytes=64\n",
+                "qwen3-engram-context: node=0 layers=[0,4) total_layers=40 step=0 mode=cpu-reference-paper-object-ref table_rows=8 output_checksum={:#018x} gate_checksum={:#018x} index_checksum={:#018x} output_l1_milli=10 latency_ms=2 row_prefetch_hits={} row_prefetch_requests={} row_prefetch_hit_rate_milli=1000 table_bytes_moved=256 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=32 hidden_output_bytes=32 hidden_injection_overhead_bytes=64\n",
+            ),
+            output_checksum,
+            gate_checksum,
+            index_checksum,
+            latency_ms,
+            row_prefetch_requests,
+            row_prefetch_requests,
+            output_checksum,
+            gate_checksum,
+            index_checksum,
+            row_prefetch_requests,
+            row_prefetch_requests,
+        )
+    }
+
     fn write_paper_engram_bundle_block_payload_files(
         bundle_dir: &Path,
         durable_store: &mut LingquMemoryDurableStore,
@@ -20206,8 +20423,15 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         let _ = fs::remove_dir_all(&root);
         let paper_run = root.join("paper_headless8");
         let zero_run = root.join("zero_headless8");
+        let base_run = root.join("base_headless8");
+        let decode_policy_run = root.join("decode_policy_headless8");
+        let paper_decode_policy_run = root.join("paper_decode_policy_headless8");
         fs::create_dir_all(&paper_run).expect("create paper W5 run dir");
         fs::create_dir_all(&zero_run).expect("create zero W5 run dir");
+        fs::create_dir_all(&base_run).expect("create base W5 run dir");
+        fs::create_dir_all(&decode_policy_run).expect("create decode policy W5 run dir");
+        fs::create_dir_all(&paper_decode_policy_run)
+            .expect("create paper decode policy W5 run dir");
         let summary_path = root.join("paper_summary.txt");
         let zero_summary_path = root.join("zero_summary.txt");
         let base_summary_path = root.join("base_summary.txt");
@@ -20216,19 +20440,22 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         let report_path = root.join("eval_report.json");
         fs::write(
             &summary_path,
-            format!("summary: run_dir={}\n", paper_run.display()),
+            paper_engram_phase6_summary_fixture(&paper_run, false, true),
         )
         .expect("write paper summary");
-        fs::write(&base_summary_path, "summary: run_dir=base_headless8\n")
-            .expect("write base summary");
+        fs::write(
+            &base_summary_path,
+            paper_engram_phase6_summary_fixture(&base_run, false, false),
+        )
+        .expect("write base summary");
         fs::write(
             &decode_policy_summary_path,
-            "summary: run_dir=decode_policy_headless8\n",
+            paper_engram_phase6_summary_fixture(&decode_policy_run, true, false),
         )
         .expect("write decode policy summary");
         fs::write(
             &paper_decode_policy_summary_path,
-            "summary: run_dir=paper_decode_policy_headless8\n",
+            paper_engram_phase6_summary_fixture(&paper_decode_policy_run, true, true),
         )
         .expect("write paper decode policy summary");
         fs::write(
@@ -20240,6 +20467,11 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             ),
         )
         .expect("write paper guest log");
+        fs::write(
+            paper_decode_policy_run.join("nodeA_guest.log"),
+            paper_engram_phase6_guest_log_fixture(0x7001, 0x7002, 0x7003, 3, 7),
+        )
+        .expect("write paper decode policy guest log");
         fs::write(
             &zero_summary_path,
             format!("summary: run_dir={}\n", zero_run.display()),
@@ -20416,6 +20648,63 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             format!("{weak_prefetch_err:#}").contains("row_prefetch_locality"),
             "unexpected weak row prefetch eval report error: {weak_prefetch_err:#}"
         );
+        fs::write(
+            &base_summary_path,
+            format!("summary: run_dir={}\n", base_run.display()),
+        )
+        .expect("write weak base summary");
+        let weak_summary_err =
+            run_lingqu_memory_build_paper_engram_eval_report_from_w5_summary_cli(&[
+                "--summary".to_string(),
+                summary_path.display().to_string(),
+                "--zero-table-summary".to_string(),
+                zero_summary_path.display().to_string(),
+                "--phase6-base-summary".to_string(),
+                base_summary_path.display().to_string(),
+                "--phase6-decode-policy-summary".to_string(),
+                decode_policy_summary_path.display().to_string(),
+                "--phase6-paper-engram-decode-policy-summary".to_string(),
+                paper_decode_policy_summary_path.display().to_string(),
+                "--output".to_string(),
+                report_path.display().to_string(),
+                "--report-id".to_string(),
+                "pe-eval-from-w5-weak".to_string(),
+                "--recipe-id".to_string(),
+                "pe-recipe-from-w5".to_string(),
+                "--module-id".to_string(),
+                "pe-module-from-w5".to_string(),
+                "--model-id".to_string(),
+                "qwen3-eval-from-w5".to_string(),
+                "--model-key".to_string(),
+                "qwen3-eval-from-w5".to_string(),
+                "--tokenizer-hash".to_string(),
+                "0x11".to_string(),
+                "--profile-hash".to_string(),
+                "0x22".to_string(),
+                "--validation-set-refs".to_string(),
+                "dfs://datasets/qwen3-val".to_string(),
+                "--sample-count".to_string(),
+                "4".to_string(),
+                "--baseline-loss-milli".to_string(),
+                "1000".to_string(),
+                "--paper-engram-loss-milli".to_string(),
+                "990".to_string(),
+                "--decode-policy-loss-milli".to_string(),
+                "992".to_string(),
+                "--paper-engram-decode-policy-loss-milli".to_string(),
+                "988".to_string(),
+                "--max-allowed-regression-milli".to_string(),
+                "20".to_string(),
+                "--max-allowed-backend-latency-us".to_string(),
+                "10000".to_string(),
+                "--created-at-us".to_string(),
+                "33".to_string(),
+            ])
+            .expect_err("reject Phase 6 summary without completion evidence");
+        assert!(
+            format!("{weak_summary_err:#}").contains("missing W5 decode completion summary line"),
+            "unexpected weak Phase 6 summary error: {weak_summary_err:#}"
+        );
 
         fs::remove_dir_all(&root).expect("remove paper engram eval report test dir");
     }
@@ -20455,8 +20744,15 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         let _ = fs::remove_dir_all(&root);
         let paper_run = root.join("paper_headless8");
         let zero_run = root.join("zero_headless8");
+        let base_run = root.join("base_headless8");
+        let decode_policy_run = root.join("decode_policy_headless8");
+        let paper_decode_policy_run = root.join("paper_decode_policy_headless8");
         fs::create_dir_all(&paper_run).expect("create paper W5 run dir");
         fs::create_dir_all(&zero_run).expect("create zero W5 run dir");
+        fs::create_dir_all(&base_run).expect("create base W5 run dir");
+        fs::create_dir_all(&decode_policy_run).expect("create decode policy W5 run dir");
+        fs::create_dir_all(&paper_decode_policy_run)
+            .expect("create paper decode policy W5 run dir");
         let store = root.join("store.json");
         let summary_path = root.join("paper_summary.txt");
         let zero_summary_path = root.join("zero_summary.txt");
@@ -20468,19 +20764,22 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         let module_manifest = root.join("module_manifest.json");
         fs::write(
             &summary_path,
-            format!("summary: run_dir={}\n", paper_run.display()),
+            paper_engram_phase6_summary_fixture(&paper_run, false, true),
         )
         .expect("write paper summary");
-        fs::write(&base_summary_path, "summary: run_dir=base_headless8\n")
-            .expect("write base summary");
+        fs::write(
+            &base_summary_path,
+            paper_engram_phase6_summary_fixture(&base_run, false, false),
+        )
+        .expect("write base summary");
         fs::write(
             &decode_policy_summary_path,
-            "summary: run_dir=decode_policy_headless8\n",
+            paper_engram_phase6_summary_fixture(&decode_policy_run, true, false),
         )
         .expect("write decode policy summary");
         fs::write(
             &paper_decode_policy_summary_path,
-            "summary: run_dir=paper_decode_policy_headless8\n",
+            paper_engram_phase6_summary_fixture(&paper_decode_policy_run, true, true),
         )
         .expect("write paper decode policy summary");
         fs::write(
@@ -20492,6 +20791,11 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             ),
         )
         .expect("write paper guest log");
+        fs::write(
+            paper_decode_policy_run.join("nodeA_guest.log"),
+            paper_engram_phase6_guest_log_fixture(0x7101, 0x7102, 0x7103, 4, 5),
+        )
+        .expect("write paper decode policy guest log");
         fs::write(
             &zero_summary_path,
             format!("summary: run_dir={}\n", zero_run.display()),
