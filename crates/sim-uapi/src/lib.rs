@@ -5175,19 +5175,12 @@ fn run_qwen3_dense_profile_runtime(
     };
     if let Some(report) = range_forward_summary.engram_context_report.as_ref() {
         eprintln!(
-            "qwen3-engram-context: node={} layers=[{},{}) total_layers={} step={} mode={} table_rows={} output_checksum=0x{:016x} gate_checksum=0x{:016x} index_checksum=0x{:016x} output_l1_milli={} latency_ms={}",
-            contract.node,
-            contract.layer_start,
-            contract.layer_end,
-            contract.total_layers,
-            qwen3_dense_runtime_decode_step_from_guest_input(guest_input),
-            report.mode,
-            report.table_rows,
-            report.output_checksum,
-            report.gate_checksum,
-            report.index_checksum,
-            report.output_l1_milli,
-            report.latency_ms
+            "{}",
+            qwen3_dense_reference_engram_context_report_line(
+                &contract,
+                qwen3_dense_runtime_decode_step_from_guest_input(guest_input),
+                report,
+            )
         );
     }
     let range_forward_object_refs =
@@ -14846,19 +14839,12 @@ fn run_qwen3_dense_reference_prefill_runtime(
             )?;
             if let Some(report) = range_forward_summary.engram_context_report.as_ref() {
                 eprintln!(
-                    "qwen3-engram-context: node={} layers=[{},{}) total_layers={} step={} mode={} table_rows={} output_checksum=0x{:016x} gate_checksum=0x{:016x} index_checksum=0x{:016x} output_l1_milli={} latency_ms={}",
-                    contract.node,
-                    contract.layer_start,
-                    contract.layer_end,
-                    contract.total_layers,
-                    qwen3_dense_runtime_decode_step_from_guest_input(guest_input),
-                    report.mode,
-                    report.table_rows,
-                    report.output_checksum,
-                    report.gate_checksum,
-                    report.index_checksum,
-                    report.output_l1_milli,
-                    report.latency_ms
+                    "{}",
+                    qwen3_dense_reference_engram_context_report_line(
+                        &contract,
+                        qwen3_dense_runtime_decode_step_from_guest_input(guest_input),
+                        report,
+                    )
                 );
             }
             let terminal_range_owner = u32::from(contract.node) + 1 == contract.pipeline_nodes;
@@ -19358,6 +19344,45 @@ fn qwen3_dense_reference_engram_context_report_from_reference(
     }
 }
 
+fn qwen3_dense_reference_engram_context_report_line(
+    contract: &Qwen3GuestRangeComputeContract,
+    step: u64,
+    report: &Qwen3DenseReferenceEngramContextReport,
+) -> String {
+    format!(
+        "qwen3-engram-context: node={} layers=[{},{}) total_layers={} step={} mode={} table_rows={} output_checksum=0x{:016x} gate_checksum=0x{:016x} index_checksum=0x{:016x} output_l1_milli={} latency_ms={} row_prefetch_hits={} row_prefetch_requests={} row_prefetch_hit_rate_milli={}",
+        contract.node,
+        contract.layer_start,
+        contract.layer_end,
+        contract.total_layers,
+        step,
+        report.mode,
+        report.table_rows,
+        report.output_checksum,
+        report.gate_checksum,
+        report.index_checksum,
+        report.output_l1_milli,
+        report.latency_ms,
+        report.row_prefetch_hits,
+        report.row_prefetch_requests,
+        qwen3_dense_reference_engram_context_row_prefetch_hit_rate_milli(report),
+    )
+}
+
+fn qwen3_dense_reference_engram_context_row_prefetch_hit_rate_milli(
+    report: &Qwen3DenseReferenceEngramContextReport,
+) -> u64 {
+    if report.row_prefetch_requests == 0 {
+        0
+    } else {
+        report
+            .row_prefetch_hits
+            .saturating_mul(1000)
+            .checked_div(report.row_prefetch_requests)
+            .unwrap_or(0)
+    }
+}
+
 fn qwen3_engram_context_outputs_match_within_ulp(
     got: &[f32],
     expected: &[f32],
@@ -22747,6 +22772,7 @@ mod tests {
         qwen3_dense_reference_decode_loop_report,
         qwen3_dense_reference_decode_loop_report_with_prompt,
         qwen3_dense_reference_decode_step_selected_samples,
+        qwen3_dense_reference_engram_context_report_line,
         qwen3_dense_reference_fallback_weight_range_payload,
         qwen3_dense_reference_final_hidden_from_round1_outputs, qwen3_dense_reference_half_at,
         qwen3_dense_reference_hidden_layer_owner_node,
@@ -22806,10 +22832,10 @@ mod tests {
         resolve_qwen3_range_dispatch_operands, run_host_matmul_batched_smoke,
         run_host_matmul_smoke, run_qwen3_dense_reference_prefill_runtime,
         validate_qwen3_range_dispatch_object_refs, GuestUapiSurface, KvCachePayloadLayout,
-        LocalGuestUapiSurface, Qwen3DenseReferenceHiddenLayerNodeRange,
-        Qwen3DenseReferenceLayerDependencyDescriptor, Qwen3DenseReferenceLogitsDescriptor,
-        Qwen3DenseReferenceRangeForwardSummary, Qwen3DenseReferenceShard,
-        Qwen3GuestRangeComputeContract, Qwen3PaperEngramStateGateRef,
+        LocalGuestUapiSurface, Qwen3DenseReferenceEngramContextReport,
+        Qwen3DenseReferenceHiddenLayerNodeRange, Qwen3DenseReferenceLayerDependencyDescriptor,
+        Qwen3DenseReferenceLogitsDescriptor, Qwen3DenseReferenceRangeForwardSummary,
+        Qwen3DenseReferenceShard, Qwen3GuestRangeComputeContract, Qwen3PaperEngramStateGateRef,
         Qwen3PaperEngramStateTableRef, Qwen3ProjectionKind, Qwen3RangeDispatchReq, UapiCommand,
         UapiDescriptor, UapiResponse, QWEN3_DENSE_PROFILE_OBJECT_REF_MAX_COUNT,
         QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET,
@@ -23515,6 +23541,37 @@ mod tests {
                 let _ = std::fs::remove_dir_all(&registry_dir);
             },
         );
+    }
+
+    #[test]
+    fn qwen3_engram_context_report_line_includes_row_prefetch_metrics() {
+        let contract = Qwen3GuestRangeComputeContract {
+            node: 0,
+            layer_start: 0,
+            layer_end: 5,
+            next_node: 1,
+            pipeline_nodes: 8,
+            total_layers: 40,
+            hidden_bytes: 4096,
+        };
+        let report = Qwen3DenseReferenceEngramContextReport {
+            mode: "cpu-reference-paper-object-ref",
+            table_rows: 64,
+            output_checksum: 0x1111,
+            gate_checksum: 0x2222,
+            index_checksum: 0x3333,
+            output_l1_milli: 4444,
+            latency_ms: 12,
+            row_prefetch_requests: 8,
+            row_prefetch_hits: 5,
+        };
+        let line = qwen3_dense_reference_engram_context_report_line(&contract, 3, &report);
+
+        assert!(line.contains("qwen3-engram-context: node=0"));
+        assert!(line.contains("step=3"));
+        assert!(line.contains("row_prefetch_hits=5"));
+        assert!(line.contains("row_prefetch_requests=8"));
+        assert!(line.contains("row_prefetch_hit_rate_milli=625"));
     }
 
     #[test]

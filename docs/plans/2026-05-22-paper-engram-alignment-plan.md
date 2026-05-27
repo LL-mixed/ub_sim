@@ -329,6 +329,7 @@ Current implementation status:
 - `sim-cli lingqu-memory build-engram-hash-config` now binds the hash config to the tokenizer projection artifact checksum (`aggregate_checksum`) instead of the source tokenizer-file checksum.
 - `sim-cli lingqu-memory import-paper-engram-module` can import a complete paper Engram manifest bundle in dependency order (`projection`, `hash_config`, table shards, gates, optional recipe/eval, module), persist all registries, and resolve runtime artifacts as the import validation gate.
 - `sim-cli lingqu-memory seed-paper-engram-fixture` now exposes explicit `--table-init` and `--gate-init` modes (`zero`, `fixture`, `random-normal`) so Phase 4 correctness/performance runs can separate no-op baseline, deterministic fixture mutation, and deterministic random-normal payloads.
+- W5 `qwen3-engram-context` runtime logs now include row-prefetch hit/request counters and hit-rate milli alongside backend latency and output checksums.
 
 The terminal-only context-op path is not enough. Paper Engram must be able to
 inject at configured model layers, not only after terminal hidden.
@@ -468,6 +469,10 @@ quality claims.
 3. Use SIM_DEC/OBMM improvements for large table payload movement where needed.
 4. Report row prefetch hit rate, table bytes moved, backend latency, and
    hidden injection overhead.
+
+Current status: paper Engram context reports expose backend latency and
+row-prefetch hit/request/rate counters in the W5 runtime log. Table byte
+movement and hidden injection overhead still need explicit per-run reporting.
 
 ## Open Decisions
 
