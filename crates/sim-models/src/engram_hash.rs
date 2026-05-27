@@ -3,6 +3,7 @@ use std::collections::HashMap;
 
 const ENGRAM_HASH_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const ENGRAM_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
+pub const ENGRAM_HASH_ALGORITHM_VERSION: &str = "fnv1a-x64+length-prefix";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Qwen3DenseReferenceEngramHashConfig {
@@ -70,7 +71,7 @@ pub fn build_default_engram_hash_config(
         heads_per_order,
         table_rows,
         seed,
-        algorithm: "fnv1a-x64+length-prefix".to_string(),
+        algorithm: ENGRAM_HASH_ALGORITHM_VERSION.to_string(),
     }
 }
 
@@ -275,6 +276,15 @@ fn hash_word64(value: u64, seed: u64) -> u64 {
 }
 
 pub fn hash_engram_ngram(
+    order: u8,
+    head: u16,
+    ngram: &[u64],
+    config: &Qwen3DenseReferenceEngramHashConfig,
+) -> Result<u64, String> {
+    hash_engram_ngram_v1(order, head, ngram, config)
+}
+
+pub fn hash_engram_ngram_v1(
     order: u8,
     head: u16,
     ngram: &[u64],
@@ -534,5 +544,20 @@ mod tests {
         let row_a = hash_engram_ngram(2, 1, &[10, 20], &config).expect("hash row");
         let row_b = hash_engram_ngram(2, 1, &[10, 20], &config).expect("hash row again");
         assert_eq!(row_a, row_b);
+    }
+
+    #[test]
+    fn hash_contract_v1_matches_expected_vectors() {
+        let config = build_default_engram_hash_config(0x99, 2, 1024, 0x1234_5678);
+        let row_2_head0 =
+            hash_engram_ngram_v1(2, 0, &[1, 2], &config).expect("hash row 2gram head0");
+        let row_2_head1 =
+            hash_engram_ngram_v1(2, 1, &[1, 2], &config).expect("hash row 2gram head1");
+        let row_3_head0 =
+            hash_engram_ngram_v1(3, 0, &[1, 2, 3], &config).expect("hash row 3gram head0");
+
+        assert_eq!(row_2_head0, 852);
+        assert_eq!(row_2_head1, 157);
+        assert_eq!(row_3_head0, 946);
     }
 }
