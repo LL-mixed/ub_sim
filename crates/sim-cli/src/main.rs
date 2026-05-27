@@ -5479,6 +5479,20 @@ struct W5PaperEngramEvalEvidence {
     cpu_backend_output_match: Option<bool>,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
+struct W5PaperEngramContextBoundary {
+    step: u64,
+    node: u64,
+    layers: String,
+    total_layers: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct W5PaperEngramContextBackendOutputs {
+    cpu_reference_output_checksum: Option<u64>,
+    simpler_host_output_checksum: Option<u64>,
+}
+
 fn w5_paper_engram_eval_evidence_from_summary(
     summary: &str,
 ) -> anyhow::Result<W5PaperEngramEvalEvidence> {
@@ -5507,6 +5521,11 @@ fn w5_paper_engram_eval_evidence_from_summary(
 
     let mut evidence = W5PaperEngramEvalEvidence::default();
     let mut terminal_output_by_step = std::collections::BTreeMap::<u64, u64>::new();
+    let mut context_outputs = std::collections::BTreeMap::<
+        W5PaperEngramContextBoundary,
+        W5PaperEngramContextBackendOutputs,
+    >::new();
+    let mut backend_output_contradiction = false;
     for line in lines {
         if line.contains("qwen3-engram-context:") {
             let fields = parse_summary_fields(&line);
@@ -5516,6 +5535,8 @@ fn w5_paper_engram_eval_evidence_from_summary(
             }
             let step = required_summary_u64(&fields, "step")?;
             let node = required_summary_u64(&fields, "node")?;
+            let layers = required_summary_field(&fields, "layers")?;
+            let total_layers = required_summary_u64(&fields, "total_layers")?;
             let output_checksum = required_summary_u64_auto(&fields, "output_checksum")?;
             let gate_checksum = required_summary_u64_auto(&fields, "gate_checksum")?;
             let index_checksum = required_summary_u64_auto(&fields, "index_checksum")?;
@@ -5542,7 +5563,37 @@ fn w5_paper_engram_eval_evidence_from_summary(
                 .max_backend_latency_us
                 .max(latency_ms.saturating_mul(1000));
             if mode == "simpler-host-paper-object-ref" {
-                evidence.cpu_backend_output_match = Some(true);
+                let entry = context_outputs
+                    .entry(W5PaperEngramContextBoundary {
+                        step,
+                        node,
+                        layers: layers.to_string(),
+                        total_layers,
+                    })
+                    .or_default();
+                if entry
+                    .simpler_host_output_checksum
+                    .replace(output_checksum)
+                    .is_some_and(|previous| previous != output_checksum)
+                {
+                    backend_output_contradiction = true;
+                }
+            } else if mode == "cpu-reference-paper-object-ref" {
+                let entry = context_outputs
+                    .entry(W5PaperEngramContextBoundary {
+                        step,
+                        node,
+                        layers: layers.to_string(),
+                        total_layers,
+                    })
+                    .or_default();
+                if entry
+                    .cpu_reference_output_checksum
+                    .replace(output_checksum)
+                    .is_some_and(|previous| previous != output_checksum)
+                {
+                    backend_output_contradiction = true;
+                }
             }
         } else if line.contains("stage qwen3_terminal_token_result_publish ") {
             let fields = parse_summary_fields(&line);
@@ -5565,6 +5616,27 @@ fn w5_paper_engram_eval_evidence_from_summary(
             }
         }
     }
+
+    let mut backend_pair_count = 0u64;
+    let mut backend_mismatch = backend_output_contradiction;
+    for outputs in context_outputs.values() {
+        if let (Some(cpu), Some(simpler)) = (
+            outputs.cpu_reference_output_checksum,
+            outputs.simpler_host_output_checksum,
+        ) {
+            backend_pair_count += 1;
+            if cpu != simpler {
+                backend_mismatch = true;
+            }
+        }
+    }
+    evidence.cpu_backend_output_match = if backend_mismatch {
+        Some(false)
+    } else if backend_pair_count > 0 {
+        Some(true)
+    } else {
+        None
+    };
 
     let mut terminal_checksum = 0u64;
     for (step, text_checksum) in &terminal_output_by_step {
@@ -13561,22 +13633,22 @@ mod tests {
         w5_memory_decision_publication_object_service_profile,
         w5_memory_shortpath_kv_stream_env_from_refs, w5_memory_shortpath_stream_env,
         w5_memory_should_publish_engram_state, w5_object_service_payload_index_path,
-        w5_runtime_tensor_payload_checksum, LingquDurableSim, LingquDurableSimSnapshot,
-        LingquMemoryDurableStore, LingquMemoryDurableStoreSnapshot, LingquObjectKind,
-        LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
-        LingquObjectServiceStub, LingquObjectVersionSelector, LingquPayloadBackend,
-        LingquPayloadPlacement, MemoryCatalogSnapshot, PaperEngramGateManifest,
-        PaperEngramTableShardManifest, PaperEngramTrainingMode, QueryResult, Qwen3CandidateRecord,
-        Qwen3DecodeReportVerbosity, Qwen3DenseGuestRuntime, Qwen3DenseProfile, Qwen3EngramConfig,
-        Qwen3EngramContextOp, Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport,
-        Qwen3GuestDecodeLoopCliArgs, Qwen3GuestExpectedWorkerCounts, Qwen3SamplerConfig,
-        Qwen3TokenizerProjectionCliArgs, W5JumpToTerminalExpectedWorkerCounts,
-        W5MemoryBootstrapConfig, W5MemoryDecisionArtifactPublication, W5MemoryDecisionBundle,
-        W5MemoryDecisionConfig, W5MemoryPublishedArtifactRef, W5MemoryPublishedKvArtifactRef,
-        W5MemoryShortpathKvArtifact, LINGQU_EXTERNAL_PAYLOAD_BLOCK_PREFIX,
-        QWEN3_DENSE_DEFAULT_DECODE_TOKENS, QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
-        QWEN3_DENSE_DEFAULT_TP_NODES, QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
-        QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+        w5_paper_engram_eval_evidence_from_summary, w5_runtime_tensor_payload_checksum,
+        LingquDurableSim, LingquDurableSimSnapshot, LingquMemoryDurableStore,
+        LingquMemoryDurableStoreSnapshot, LingquObjectKind, LingquObjectLocality,
+        LingquObjectMetadata, LingquObjectPublishReq, LingquObjectServiceStub,
+        LingquObjectVersionSelector, LingquPayloadBackend, LingquPayloadPlacement,
+        MemoryCatalogSnapshot, PaperEngramGateManifest, PaperEngramTableShardManifest,
+        PaperEngramTrainingMode, QueryResult, Qwen3CandidateRecord, Qwen3DecodeReportVerbosity,
+        Qwen3DenseGuestRuntime, Qwen3DenseProfile, Qwen3EngramConfig, Qwen3EngramContextOp,
+        Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
+        Qwen3GuestExpectedWorkerCounts, Qwen3SamplerConfig, Qwen3TokenizerProjectionCliArgs,
+        W5JumpToTerminalExpectedWorkerCounts, W5MemoryBootstrapConfig,
+        W5MemoryDecisionArtifactPublication, W5MemoryDecisionBundle, W5MemoryDecisionConfig,
+        W5MemoryPublishedArtifactRef, W5MemoryPublishedKvArtifactRef, W5MemoryShortpathKvArtifact,
+        LINGQU_EXTERNAL_PAYLOAD_BLOCK_PREFIX, QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
+        QWEN3_DENSE_DEFAULT_PREFILL_TOKENS, QWEN3_DENSE_DEFAULT_TP_NODES,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE, QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
         QWEN3_DENSE_PROFILE_OBMM_KIND_TERMINAL_LOGITS, QWEN3_ENGRAM_DEFAULT_NO_REPEAT_NGRAM_SIZE,
         QWEN3_TOKENIZER_PROJECTION_DEFAULT_FILE_NAME, SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF,
         SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION,
@@ -18543,6 +18615,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             paper_run.join("nodeA_guest.log"),
             concat!(
                 "qwen3-engram-context: node=0 layers=[0,5) total_layers=40 step=0 mode=simpler-host-paper-object-ref table_rows=16 output_checksum=0x0000000000007001 gate_checksum=0x0000000000007002 index_checksum=0x0000000000007003 output_l1_milli=10 latency_ms=7 row_prefetch_hits=2 row_prefetch_requests=3 row_prefetch_hit_rate_milli=666 table_bytes_moved=1024 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=64 hidden_output_bytes=64 hidden_injection_overhead_bytes=128\n",
+                "qwen3-engram-context: node=0 layers=[0,5) total_layers=40 step=0 mode=cpu-reference-paper-object-ref table_rows=16 output_checksum=0x0000000000007001 gate_checksum=0x0000000000007002 index_checksum=0x0000000000007003 output_l1_milli=10 latency_ms=3 row_prefetch_hits=2 row_prefetch_requests=3 row_prefetch_hit_rate_milli=666 table_bytes_moved=1024 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=64 hidden_output_bytes=64 hidden_injection_overhead_bytes=128\n",
                 "stage qwen3_terminal_token_result_publish step=0 token=11 runner_up=12 margin_milli=25 text_checksum=0x0000000000008001\n",
             ),
         )
@@ -18607,8 +18680,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         )
         .expect("decode eval report");
         assert_eq!(report.report_id, "pe-eval-from-w5");
-        assert_eq!(report.row_prefetch_requests, Some(3));
-        assert_eq!(report.row_prefetch_hits, Some(2));
+        assert_eq!(report.row_prefetch_requests, Some(6));
+        assert_eq!(report.row_prefetch_hits, Some(4));
         assert_eq!(report.max_backend_latency_us, Some(7000));
         assert_eq!(report.cpu_backend_output_match, Some(true));
         assert_ne!(
@@ -18619,6 +18692,29 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         assert_ne!(report.output_checksum, 0);
 
         fs::remove_dir_all(&root).expect("remove paper engram eval report test dir");
+    }
+
+    #[test]
+    fn w5_paper_engram_eval_evidence_requires_backend_output_match_pair() {
+        let matched = w5_paper_engram_eval_evidence_from_summary(concat!(
+            "qwen3-engram-context: node=0 layers=[0,4) total_layers=40 step=0 mode=simpler-host-paper-object-ref table_rows=8 output_checksum=0x7101 gate_checksum=0x7201 index_checksum=0x7301 output_l1_milli=10 latency_ms=5 row_prefetch_hits=1 row_prefetch_requests=1 row_prefetch_hit_rate_milli=1000 table_bytes_moved=256 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=32 hidden_output_bytes=32 hidden_injection_overhead_bytes=64\n",
+            "qwen3-engram-context: node=0 layers=[0,4) total_layers=40 step=0 mode=cpu-reference-paper-object-ref table_rows=8 output_checksum=0x7101 gate_checksum=0x7201 index_checksum=0x7301 output_l1_milli=10 latency_ms=2 row_prefetch_hits=1 row_prefetch_requests=1 row_prefetch_hit_rate_milli=1000 table_bytes_moved=256 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=32 hidden_output_bytes=32 hidden_injection_overhead_bytes=64\n",
+        ))
+        .expect("extract matched backend evidence");
+        assert_eq!(matched.cpu_backend_output_match, Some(true));
+
+        let mismatched = w5_paper_engram_eval_evidence_from_summary(concat!(
+            "qwen3-engram-context: node=0 layers=[0,4) total_layers=40 step=0 mode=simpler-host-paper-object-ref table_rows=8 output_checksum=0x7101 gate_checksum=0x7201 index_checksum=0x7301 output_l1_milli=10 latency_ms=5 row_prefetch_hits=1 row_prefetch_requests=1 row_prefetch_hit_rate_milli=1000 table_bytes_moved=256 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=32 hidden_output_bytes=32 hidden_injection_overhead_bytes=64\n",
+            "qwen3-engram-context: node=0 layers=[0,4) total_layers=40 step=0 mode=cpu-reference-paper-object-ref table_rows=8 output_checksum=0x7102 gate_checksum=0x7201 index_checksum=0x7301 output_l1_milli=10 latency_ms=2 row_prefetch_hits=1 row_prefetch_requests=1 row_prefetch_hit_rate_milli=1000 table_bytes_moved=256 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=32 hidden_output_bytes=32 hidden_injection_overhead_bytes=64\n",
+        ))
+        .expect("extract mismatched backend evidence");
+        assert_eq!(mismatched.cpu_backend_output_match, Some(false));
+
+        let unpaired = w5_paper_engram_eval_evidence_from_summary(
+            "qwen3-engram-context: node=0 layers=[0,4) total_layers=40 step=0 mode=simpler-host-paper-object-ref table_rows=8 output_checksum=0x7101 gate_checksum=0x7201 index_checksum=0x7301 output_l1_milli=10 latency_ms=5 row_prefetch_hits=1 row_prefetch_requests=1 row_prefetch_hit_rate_milli=1000 table_bytes_moved=256 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=32 hidden_output_bytes=32 hidden_injection_overhead_bytes=64\n",
+        )
+        .expect("extract unpaired backend evidence");
+        assert_eq!(unpaired.cpu_backend_output_match, None);
     }
 
     #[test]
@@ -18647,6 +18743,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             paper_run.join("nodeA_guest.log"),
             concat!(
                 "qwen3-engram-context: node=0 layers=[0,4) total_layers=40 step=0 mode=simpler-host-paper-object-ref table_rows=8 output_checksum=0x0000000000007101 gate_checksum=0x0000000000007102 index_checksum=0x0000000000007103 output_l1_milli=10 latency_ms=5 row_prefetch_hits=4 row_prefetch_requests=4 row_prefetch_hit_rate_milli=1000 table_bytes_moved=256 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=32 hidden_output_bytes=32 hidden_injection_overhead_bytes=64\n",
+                "qwen3-engram-context: node=0 layers=[0,4) total_layers=40 step=0 mode=cpu-reference-paper-object-ref table_rows=8 output_checksum=0x0000000000007101 gate_checksum=0x0000000000007102 index_checksum=0x0000000000007103 output_l1_milli=10 latency_ms=2 row_prefetch_hits=4 row_prefetch_requests=4 row_prefetch_hit_rate_milli=1000 table_bytes_moved=256 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=32 hidden_output_bytes=32 hidden_injection_overhead_bytes=64\n",
                 "stage qwen3_terminal_token_result_publish step=0 token=11 runner_up=12 margin_milli=25 text_checksum=0x0000000000008201\n",
             ),
         )
@@ -18832,8 +18929,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             .load_paper_engram_eval_report_manifest()
             .expect("load paper eval report registry");
         assert_eq!(reports.len(), 1);
-        assert_eq!(reports[0].row_prefetch_requests, Some(4));
-        assert_eq!(reports[0].row_prefetch_hits, Some(4));
+        assert_eq!(reports[0].row_prefetch_requests, Some(8));
+        assert_eq!(reports[0].row_prefetch_hits, Some(8));
         assert_eq!(reports[0].max_backend_latency_us, Some(5000));
 
         fs::remove_dir_all(&root).expect("remove paper engram W5 quality test dir");
