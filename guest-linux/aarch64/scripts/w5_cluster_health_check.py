@@ -251,6 +251,28 @@ def main(argv):
             f"round_sum_ms={timing['round_sum_ms']} "
             f"avg_round_ms={timing['avg_round_ms']}"
         )
+        for label in (
+            "fused_simt_vendor_context",
+            "fused_simt_context",
+            "paper_engram_context",
+            "engram_context",
+        ):
+            context = latest_report["context"].get(label)
+            if not context:
+                continue
+            print(
+                "latest_context: "
+                f"label={label} "
+                f"records={context['records']} "
+                f"steps={context['steps']} "
+                f"modes={context['modes']} "
+                f"max_latency_ms={context['max_latency_ms']} "
+                f"total_latency_ms={context['total_latency_ms']} "
+                f"row_prefetch_hits={context['row_prefetch_hits']} "
+                f"row_prefetch_requests={context['row_prefetch_requests']} "
+                f"table_bytes_moved={context['table_bytes_moved']} "
+                f"hidden_injection_overhead_bytes={context['hidden_injection_overhead_bytes']}"
+            )
     print(
         "reusable_source: "
         f"count={len(reusable)} latest={reusable[0].run_id if reusable else 'none'}"

@@ -32,7 +32,14 @@ def write_tokenizer(path):
     )
 
 
-def write_summary(path, run_dir, bad_marker="", token_ids="[11, 22]", token_pieces='", ok"'):
+def write_summary(
+    path,
+    run_dir,
+    bad_marker="",
+    token_ids="[11, 22]",
+    token_pieces='", ok"',
+    context_lines=(),
+):
     lines = [
         f"summary: run_dir={run_dir}",
         (
@@ -93,6 +100,7 @@ def write_summary(path, run_dir, bad_marker="", token_ids="[11, 22]", token_piec
             "full_pipeline_runtime_inputs=15 full_pipeline_runtime_outputs=16"
         ),
     ]
+    lines.extend(context_lines)
     if bad_marker:
         lines.append(bad_marker)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -134,6 +142,53 @@ class W5InferenceRunReportTest(unittest.TestCase):
             result.stdout,
         )
         self.assertIn("artifact: label=object_store_bin bytes=6", result.stdout)
+        self.assertNotIn("issue:", result.stdout)
+
+    def test_reports_fused_simt_context_metrics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            logs_dir = Path(tmp) / "logs" / "run_headless8"
+            out_dir.mkdir()
+            logs_dir.mkdir(parents=True)
+            (logs_dir / "nodeA_guest.log").write_text("log\n", encoding="utf-8")
+            run_id = "run"
+            write_artifacts(out_dir, run_id)
+            summary = out_dir / f"eight_node_w5_inference_cluster_summary.{run_id}.txt"
+            write_summary(
+                summary,
+                logs_dir,
+                context_lines=(
+                    "fused_simt_vendor_context_summary: records=2 steps=2/2 "
+                    "modes=fused-simt-vendor-object-ref,fused-simt-vendor-paper-object-ref "
+                    "max_latency_ms=13 max_latency_step=1 max_latency_node=nodeA "
+                    "total_latency_ms=24 output_checksum_xor=0x0000000000000003 "
+                    "row_prefetch_hits=4 row_prefetch_requests=4 "
+                    "row_prefetch_hit_rate_milli=1000 table_bytes_moved=49152 "
+                    "gate_weight_bytes_moved=8192 indices_bytes_moved=32 "
+                    "hidden_input_bytes=8192 hidden_output_bytes=8192 "
+                    "hidden_injection_overhead_bytes=16384",
+                ),
+            )
+
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), str(summary)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertIn(
+            "context: label=fused_simt_vendor_context records=2 steps=2/2 "
+            "modes=fused-simt-vendor-object-ref,fused-simt-vendor-paper-object-ref "
+            "max_latency_ms=13 max_latency_step=1 max_latency_node=nodeA "
+            "total_latency_ms=24 output_checksum_xor=0x0000000000000003 "
+            "row_prefetch_hits=4 row_prefetch_requests=4 "
+            "row_prefetch_hit_rate_milli=1000 table_bytes_moved=49152 "
+            "gate_weight_bytes_moved=8192 indices_bytes_moved=32 "
+            "hidden_input_bytes=8192 hidden_output_bytes=8192 "
+            "hidden_injection_overhead_bytes=16384",
+            result.stdout,
+        )
         self.assertNotIn("issue:", result.stdout)
 
     def test_reports_shared_artifact_paths_from_env(self):

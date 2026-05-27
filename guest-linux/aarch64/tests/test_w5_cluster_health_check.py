@@ -33,6 +33,7 @@ def write_pass_run(
     reusable=False,
     token_ids="[11, 22]",
     token_pieces='", ok"',
+    context_lines=(),
 ):
     logs = logs_dir / f"{run_id}_headless8"
     logs.mkdir(parents=True)
@@ -80,6 +81,7 @@ def write_pass_run(
             "full_pipeline_runtime_inputs=15 full_pipeline_runtime_outputs=16"
         ),
     ]
+    lines.extend(context_lines)
     if reusable:
         lines.extend(
             [
@@ -107,7 +109,21 @@ class W5ClusterHealthCheckTest(unittest.TestCase):
             reusable = "2026-05-26_00-29-50_w5_qwen3_14b_engram_decode_25060"
             latest = "2026-05-26_03-14-03_w5_qwen3_14b_engram_decode_32556"
             write_pass_run(out_dir, logs_dir, reusable, reusable=True)
-            write_pass_run(out_dir, logs_dir, latest)
+            write_pass_run(
+                out_dir,
+                logs_dir,
+                latest,
+                context_lines=(
+                    "fused_simt_vendor_context_summary: records=2 steps=2/2 "
+                    "modes=fused-simt-vendor-object-ref max_latency_ms=13 "
+                    "max_latency_step=1 max_latency_node=nodeA total_latency_ms=24 "
+                    "output_checksum_xor=0x0000000000000003 row_prefetch_hits=4 "
+                    "row_prefetch_requests=4 row_prefetch_hit_rate_milli=1000 "
+                    "table_bytes_moved=49152 gate_weight_bytes_moved=8192 "
+                    "indices_bytes_moved=32 hidden_input_bytes=8192 "
+                    "hidden_output_bytes=8192 hidden_injection_overhead_bytes=16384",
+                ),
+            )
 
             result = subprocess.run(
                 [
@@ -127,6 +143,13 @@ class W5ClusterHealthCheckTest(unittest.TestCase):
         self.assertIn(f"latest_summary: run_id={latest} status=pass", result.stdout)
         self.assertIn(f"reusable_source: count=1 latest={reusable}", result.stdout)
         self.assertIn("latest_shortpath: lookup_hits=2 actual_range_forwards=2", result.stdout)
+        self.assertIn(
+            "latest_context: label=fused_simt_vendor_context records=2 steps=2/2 "
+            "modes=fused-simt-vendor-object-ref max_latency_ms=13 "
+            "total_latency_ms=24 row_prefetch_hits=4 row_prefetch_requests=4 "
+            "table_bytes_moved=49152 hidden_injection_overhead_bytes=16384",
+            result.stdout,
+        )
         self.assertIn("w5_health_check: status=pass profile=qwen3_14b_engram_decode", result.stdout)
 
     def test_output_guard_is_applied_to_latest_report(self):

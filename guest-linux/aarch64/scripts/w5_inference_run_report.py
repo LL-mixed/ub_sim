@@ -34,6 +34,13 @@ OPTIONAL_ARTIFACTS = {
     "memory_store_bin",
 }
 
+CONTEXT_SUMMARY_PREFIXES = (
+    "engram_context",
+    "paper_engram_context",
+    "fused_simt_context",
+    "fused_simt_vendor_context",
+)
+
 
 def byte_level_decoder():
     visible = (
@@ -326,6 +333,7 @@ def parse_summary(summary_path):
         "timing_steps": [],
         "timing_nodes": [],
         "engram_steps": [],
+        "context_summaries": {},
         "decode_output": [],
         "bad_markers": [],
     }
@@ -347,6 +355,12 @@ def parse_summary(summary_path):
             parsed["timing_nodes"].append(parse_pairs(line))
         elif line.startswith("engram_timing_step: "):
             parsed["engram_steps"].append(parse_pairs(line))
+        else:
+            for prefix in CONTEXT_SUMMARY_PREFIXES:
+                marker = f"{prefix}_summary: "
+                if line.startswith(marker):
+                    parsed["context_summaries"][prefix] = parse_pairs(line)
+                    break
         for marker in BAD_MARKERS:
             if marker in line:
                 parsed["bad_markers"].append(marker)
@@ -483,6 +497,38 @@ def timing_report(parsed):
     }
 
 
+def context_report(parsed):
+    result = {}
+    for prefix in CONTEXT_SUMMARY_PREFIXES:
+        fields = parsed["context_summaries"].get(prefix, {})
+        if not fields:
+            continue
+        result[prefix] = {
+            "records": parse_int(fields.get("records")),
+            "steps": fields.get("steps", ""),
+            "modes": fields.get("modes", ""),
+            "max_latency_ms": parse_int(fields.get("max_latency_ms")),
+            "max_latency_step": parse_int(fields.get("max_latency_step"), -1),
+            "max_latency_node": fields.get("max_latency_node", ""),
+            "total_latency_ms": parse_int(fields.get("total_latency_ms")),
+            "output_checksum_xor": fields.get("output_checksum_xor", "0x0"),
+            "row_prefetch_hits": parse_int(fields.get("row_prefetch_hits")),
+            "row_prefetch_requests": parse_int(fields.get("row_prefetch_requests")),
+            "row_prefetch_hit_rate_milli": parse_int(
+                fields.get("row_prefetch_hit_rate_milli")
+            ),
+            "table_bytes_moved": parse_int(fields.get("table_bytes_moved")),
+            "gate_weight_bytes_moved": parse_int(fields.get("gate_weight_bytes_moved")),
+            "indices_bytes_moved": parse_int(fields.get("indices_bytes_moved")),
+            "hidden_input_bytes": parse_int(fields.get("hidden_input_bytes")),
+            "hidden_output_bytes": parse_int(fields.get("hidden_output_bytes")),
+            "hidden_injection_overhead_bytes": parse_int(
+                fields.get("hidden_injection_overhead_bytes")
+            ),
+        }
+    return result
+
+
 def build_report(summary_path, output_guard=None):
     run_id = infer_run_id(summary_path)
     parsed = parse_summary(summary_path)
@@ -514,6 +560,7 @@ def build_report(summary_path, output_guard=None):
             "shortpath_terminal_commits": parse_int(shortpath.get("shortpath_terminal_commits")),
         },
         "timing": timing_report(parsed),
+        "context": context_report(parsed),
         "artifacts": artifact_sizes,
         "output_guard": output_guard_result,
     }
@@ -565,6 +612,31 @@ def print_text_report(report):
         f"engram_total_ms={timing['engram_total_ms']} "
         f"engram_avg_ms={timing['engram_avg_ms']}"
     )
+    for label in CONTEXT_SUMMARY_PREFIXES:
+        context = report["context"].get(label)
+        if not context:
+            continue
+        print(
+            "context: "
+            f"label={label} "
+            f"records={context['records']} "
+            f"steps={context['steps']} "
+            f"modes={context['modes']} "
+            f"max_latency_ms={context['max_latency_ms']} "
+            f"max_latency_step={context['max_latency_step']} "
+            f"max_latency_node={context['max_latency_node']} "
+            f"total_latency_ms={context['total_latency_ms']} "
+            f"output_checksum_xor={context['output_checksum_xor']} "
+            f"row_prefetch_hits={context['row_prefetch_hits']} "
+            f"row_prefetch_requests={context['row_prefetch_requests']} "
+            f"row_prefetch_hit_rate_milli={context['row_prefetch_hit_rate_milli']} "
+            f"table_bytes_moved={context['table_bytes_moved']} "
+            f"gate_weight_bytes_moved={context['gate_weight_bytes_moved']} "
+            f"indices_bytes_moved={context['indices_bytes_moved']} "
+            f"hidden_input_bytes={context['hidden_input_bytes']} "
+            f"hidden_output_bytes={context['hidden_output_bytes']} "
+            f"hidden_injection_overhead_bytes={context['hidden_injection_overhead_bytes']}"
+        )
     for label in sorted(report["artifacts"]):
         artifact = report["artifacts"][label]
         limit = artifact["max_bytes"]
