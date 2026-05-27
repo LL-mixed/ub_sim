@@ -8248,6 +8248,30 @@ impl LingquMemoryService {
         manifest: PaperEngramTokenizerProjectionManifest,
     ) -> MemoryResult<()> {
         manifest.validate()?;
+        if let Some(existing) = self
+            .paper_engram_tokenizer_projections
+            .get(&manifest.projection_id)
+        {
+            if existing != &manifest {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "paper_engram_tokenizer_projection.projection_id",
+                    reason: "registered paper Engram tokenizer projection artifact is immutable",
+                });
+            }
+        }
+        if self
+            .paper_engram_tokenizer_projections
+            .values()
+            .any(|existing| {
+                existing.projection_ref == manifest.projection_ref
+                    && existing.projection_id != manifest.projection_id
+            })
+        {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_tokenizer_projection.projection_ref",
+                reason: "paper Engram tokenizer projection artifact path is already registered",
+            });
+        }
         self.paper_engram_tokenizer_projections
             .insert(manifest.projection_id.clone(), manifest);
         Ok(())
@@ -8268,6 +8292,27 @@ impl LingquMemoryService {
             return Err(LingquMemoryError::InvalidValue {
                 field: "paper_engram_hash_config.tokenizer_projection_checksum",
                 reason: "hash config projection checksum must match tokenizer projection manifest",
+            });
+        }
+        if let Some(existing) = self.paper_engram_hash_configs.get(&manifest.hash_config_id) {
+            if existing != &manifest {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "paper_engram_hash_config.hash_config_id",
+                    reason: "registered paper Engram hash config artifact is immutable",
+                });
+            }
+        }
+        if self
+            .paper_engram_hash_configs
+            .values()
+            .any(|existing| {
+                existing.hash_config_ref == manifest.hash_config_ref
+                    && existing.hash_config_id != manifest.hash_config_id
+            })
+        {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_hash_config.hash_config_ref",
+                reason: "paper Engram hash config artifact path is already registered",
             });
         }
         self.paper_engram_hash_configs
@@ -11338,6 +11383,84 @@ mod tests {
             LingquMemoryError::InvalidValue {
                 field: "paper_engram_module.hash_config_ref",
                 reason: "paper Engram artifact path must use the model-scoped semantic family"
+            }
+        );
+    }
+
+    #[test]
+    fn paper_engram_registered_model_artifacts_are_immutable() {
+        let mut service = LingquMemoryService::new();
+        let projection = sample_paper_engram_tokenizer_projection_manifest();
+        service
+            .register_paper_engram_tokenizer_projection(projection.clone())
+            .expect("register projection");
+        service
+            .register_paper_engram_tokenizer_projection(projection.clone())
+            .expect("idempotent projection registration");
+
+        let mut mutated_projection = projection.clone();
+        mutated_projection.projection_checksum ^= 1;
+        mutated_projection.checksum =
+            paper_engram_tokenizer_projection_manifest_checksum(&mutated_projection);
+        assert_eq!(
+            service
+                .register_paper_engram_tokenizer_projection(mutated_projection)
+                .expect_err("registered projection content must be immutable"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_tokenizer_projection.projection_id",
+                reason: "registered paper Engram tokenizer projection artifact is immutable"
+            }
+        );
+
+        let mut reused_projection_ref = projection.clone();
+        reused_projection_ref.projection_id = "pe-projection-ref-reuse".to_string();
+        reused_projection_ref.projection_checksum ^= 2;
+        reused_projection_ref.checksum =
+            paper_engram_tokenizer_projection_manifest_checksum(&reused_projection_ref);
+        assert_eq!(
+            service
+                .register_paper_engram_tokenizer_projection(reused_projection_ref)
+                .expect_err("projection semantic path must not be reused"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_tokenizer_projection.projection_ref",
+                reason: "paper Engram tokenizer projection artifact path is already registered"
+            }
+        );
+
+        let hash_config = sample_paper_engram_hash_config_manifest();
+        service
+            .register_paper_engram_hash_config(hash_config.clone())
+            .expect("register hash config");
+        service
+            .register_paper_engram_hash_config(hash_config.clone())
+            .expect("idempotent hash config registration");
+
+        let mut mutated_hash_config = hash_config.clone();
+        mutated_hash_config.hash_config_checksum ^= 1;
+        mutated_hash_config.checksum =
+            paper_engram_hash_config_manifest_checksum(&mutated_hash_config);
+        assert_eq!(
+            service
+                .register_paper_engram_hash_config(mutated_hash_config)
+                .expect_err("registered hash config content must be immutable"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_hash_config.hash_config_id",
+                reason: "registered paper Engram hash config artifact is immutable"
+            }
+        );
+
+        let mut reused_hash_config_ref = hash_config.clone();
+        reused_hash_config_ref.hash_config_id = "pe-hash-config-ref-reuse".to_string();
+        reused_hash_config_ref.hash_config_checksum ^= 2;
+        reused_hash_config_ref.checksum =
+            paper_engram_hash_config_manifest_checksum(&reused_hash_config_ref);
+        assert_eq!(
+            service
+                .register_paper_engram_hash_config(reused_hash_config_ref)
+                .expect_err("hash config semantic path must not be reused"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_hash_config.hash_config_ref",
+                reason: "paper Engram hash config artifact path is already registered"
             }
         );
     }
