@@ -2235,6 +2235,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "register-paper-engram-gate" => run_lingqu_memory_register_paper_engram_gate_cli(&args),
         "register-paper-engram-module" => run_lingqu_memory_register_paper_engram_module_cli(&args),
         "import-paper-engram-module" => run_lingqu_memory_import_paper_engram_module_cli(&args),
+        "export-paper-engram-module" => run_lingqu_memory_export_paper_engram_module_cli(&args),
         "validate-paper-engram-module" => run_lingqu_memory_validate_paper_engram_module_cli(&args),
         "validate-paper-engram-quality" => {
             run_lingqu_memory_validate_paper_engram_quality_cli(&args)
@@ -2280,7 +2281,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
             build-paper-engram-eval-report-from-w5-summary, \
             register-paper-engram-eval-report-from-w5-summary, \
             register-paper-engram-table-shard, register-paper-engram-gate, \
-            register-paper-engram-module, import-paper-engram-module, validate-paper-engram-module, validate-paper-engram-quality, validate-paper-engram-backend-parity, seed-paper-engram-fixture, update-record-state, register-execution-artifact, \
+            register-paper-engram-module, import-paper-engram-module, export-paper-engram-module, validate-paper-engram-module, validate-paper-engram-quality, validate-paper-engram-backend-parity, seed-paper-engram-fixture, update-record-state, register-execution-artifact, \
             record-artifact-access, register-terminal-logits-artifact-from-w5-summary, \
             promote-terminal-shortpath-artifacts-from-w5-summary, boundary-lookup, \
             boundary-lookup-from-observation, boundary-request-from-w5-summary, \
@@ -3277,6 +3278,18 @@ where
         .with_context(|| format!("decode {label} {}", path.display()))
 }
 
+fn write_cli_json_manifest<T>(path: &Path, label: &str, value: &T) -> anyhow::Result<()>
+where
+    T: serde::Serialize,
+{
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create {label} dir {}", parent.display()))?;
+    }
+    let bytes = serde_json::to_vec_pretty(value).with_context(|| format!("encode {label}"))?;
+    fs::write(path, bytes).with_context(|| format!("write {label} {}", path.display()))
+}
+
 fn rebuild_lingqu_memory_optional_paper_engram_registries(
     memory_service: &mut LingquMemoryService,
     store: &mut LingquMemoryDurableStore,
@@ -3448,6 +3461,109 @@ fn run_lingqu_memory_import_paper_engram_module_cli(args: &[String]) -> anyhow::
     println!("  layers: {}", runtime.layer_operands.len());
     println!("  payload_refs: {}", payload_stats.payload_refs);
     println!("  payload_bytes: {}", payload_stats.payload_bytes);
+    println!("  quality: {:?}", runtime.module.quality_claim);
+    Ok(())
+}
+
+fn run_lingqu_memory_export_paper_engram_module_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let bundle_dir = PathBuf::from(required_cli_arg(args, "--bundle-dir")?);
+    if bundle_dir.exists()
+        && !cli_flag(args, "--allow-overwrite")
+        && fs::read_dir(&bundle_dir)
+            .with_context(|| format!("read bundle dir {}", bundle_dir.display()))?
+            .next()
+            .is_some()
+    {
+        anyhow::bail!(
+            "export-paper-engram-module bundle dir is not empty; pass --allow-overwrite: {}",
+            bundle_dir.display()
+        );
+    }
+
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let mut memory_service = LingquMemoryService::new();
+    rebuild_lingqu_memory_all_paper_engram_registries(&mut memory_service, &mut durable_store)
+        .context("rebuild paper engram registries")?;
+    let module_id = paper_engram_module_id_from_cli(args, &memory_service)?;
+    let runtime = memory_service
+        .resolve_paper_engram_runtime_artifacts(&module_id)
+        .context("resolve paper engram runtime artifacts")?;
+    let payload_stats = validate_paper_engram_runtime_payloads(&mut durable_store, &runtime)
+        .context("validate paper engram runtime payloads before export")?;
+    let training_recipe =
+        load_paper_engram_training_recipe_for_module(&mut durable_store, &runtime.module)?;
+    let eval_report =
+        load_paper_engram_eval_report_for_module(&mut durable_store, &runtime.module)?;
+
+    write_cli_json_manifest(
+        &bundle_dir.join("tokenizer_projection.json"),
+        "paper engram tokenizer projection",
+        &runtime.tokenizer_projection,
+    )?;
+    write_cli_json_manifest(
+        &bundle_dir.join("hash_config.json"),
+        "paper engram hash config",
+        &runtime.hash_config,
+    )?;
+    write_cli_json_manifest(
+        &bundle_dir.join("engram_module.json"),
+        "paper engram module",
+        &runtime.module,
+    )?;
+    if let Some(recipe) = &training_recipe {
+        write_cli_json_manifest(
+            &bundle_dir.join("training_recipe.json"),
+            "paper engram training recipe",
+            recipe,
+        )?;
+    }
+    if let Some(report) = &eval_report {
+        write_cli_json_manifest(
+            &bundle_dir.join("eval_report.json"),
+            "paper engram eval report",
+            report,
+        )?;
+    }
+    for shard in &runtime.table_shards {
+        write_cli_json_manifest(
+            &bundle_dir
+                .join("table_shards")
+                .join(format!("{}.json", cli_path_id(&shard.shard_id))),
+            "paper engram table shard",
+            shard,
+        )?;
+    }
+    for gate in &runtime.gates {
+        write_cli_json_manifest(
+            &bundle_dir
+                .join("gates")
+                .join(format!("{}.json", cli_path_id(&gate.gate_id))),
+            "paper engram gate",
+            gate,
+        )?;
+    }
+    let block_stats = export_paper_engram_bundle_block_payloads(
+        &mut durable_store,
+        &bundle_dir,
+        &runtime.table_shards,
+        &runtime.gates,
+    )
+    .context("export paper engram bundle block payloads")?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: export-paper-engram-module");
+    println!("  store_path: {}", store_path.display());
+    println!("  bundle_dir: {}", bundle_dir.display());
+    println!("  module_id: {}", runtime.module.module_id);
+    println!("  model_id: {}", runtime.module.model.model_id);
+    println!("  engram_id: {}", runtime.module.module_name);
+    println!("  table_shards: {}", runtime.table_shards.len());
+    println!("  gates: {}", runtime.gates.len());
+    println!("  payload_refs: {}", payload_stats.payload_refs);
+    println!("  payload_bytes: {}", payload_stats.payload_bytes);
+    println!("  exported_blocks: {}", block_stats.blocks);
+    println!("  exported_block_bytes: {}", block_stats.bytes);
     println!("  quality: {:?}", runtime.module.quality_claim);
     Ok(())
 }
@@ -3657,6 +3773,56 @@ fn import_paper_engram_bundle_block_payloads(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct PaperEngramBundleBlockExportStats {
+    blocks: usize,
+    bytes: u64,
+}
+
+fn export_paper_engram_bundle_block_payloads(
+    durable_store: &mut LingquMemoryDurableStore,
+    bundle_dir: &Path,
+    table_shards: &[PaperEngramTableShardManifest],
+    gates: &[PaperEngramGateManifest],
+) -> anyhow::Result<PaperEngramBundleBlockExportStats> {
+    let mut exported_blocks = HashMap::<String, ()>::new();
+    let mut stats = PaperEngramBundleBlockExportStats::default();
+    for payload_ref in paper_engram_bundle_payload_refs(table_shards, gates) {
+        if payload_ref.offset != 0 {
+            anyhow::bail!(
+                "export-paper-engram-module currently requires whole-block payload refs; block={} offset={}",
+                payload_ref.block.0,
+                payload_ref.offset
+            );
+        }
+        if exported_blocks.contains_key(&payload_ref.block.0) {
+            continue;
+        }
+        let bytes = durable_store
+            .read_block_payload(payload_ref)
+            .with_context(|| format!("read paper Engram block payload {}", payload_ref.block.0))?;
+        if bytes.len() as u64 != payload_ref.bytes {
+            anyhow::bail!(
+                "paper Engram block payload length mismatch: block={} expected={} actual={}",
+                payload_ref.block.0,
+                payload_ref.bytes,
+                bytes.len()
+            );
+        }
+        let payload_path = paper_engram_bundle_block_payload_path(bundle_dir, payload_ref)?;
+        if let Some(parent) = payload_path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create block payload dir {}", parent.display()))?;
+        }
+        fs::write(&payload_path, &bytes)
+            .with_context(|| format!("write {}", payload_path.display()))?;
+        exported_blocks.insert(payload_ref.block.0.clone(), ());
+        stats.blocks += 1;
+        stats.bytes += bytes.len() as u64;
+    }
+    Ok(stats)
+}
+
 fn paper_engram_bundle_payload_refs<'a>(
     table_shards: &'a [PaperEngramTableShardManifest],
     gates: &'a [PaperEngramGateManifest],
@@ -3690,6 +3856,57 @@ fn paper_engram_bundle_block_payload_path(
         }
     }
     Ok(path)
+}
+
+fn load_paper_engram_training_recipe_for_module(
+    durable_store: &mut LingquMemoryDurableStore,
+    module: &PaperEngramModuleManifest,
+) -> anyhow::Result<Option<PaperEngramTrainingRecipeManifest>> {
+    let Some(recipe_ref) = &module.training_recipe_ref else {
+        return Ok(None);
+    };
+    let recipes = durable_store
+        .load_paper_engram_training_recipe_manifest()
+        .context("load paper engram training recipe registry")?;
+    recipes
+        .into_iter()
+        .find(|recipe| {
+            sim_memory::paper_engram_training_recipe_dfs_path(&recipe.recipe_id).path
+                == recipe_ref.path
+        })
+        .map(Some)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "paper Engram module {} references missing training recipe {}",
+                module.module_id,
+                recipe_ref.path
+            )
+        })
+}
+
+fn load_paper_engram_eval_report_for_module(
+    durable_store: &mut LingquMemoryDurableStore,
+    module: &PaperEngramModuleManifest,
+) -> anyhow::Result<Option<PaperEngramEvalReportManifest>> {
+    let Some(report_ref) = &module.eval_report_ref else {
+        return Ok(None);
+    };
+    let reports = durable_store
+        .load_paper_engram_eval_report_manifest()
+        .context("load paper engram eval report registry")?;
+    reports
+        .into_iter()
+        .find(|report| {
+            sim_memory::paper_engram_eval_report_dfs_path(&report.report_id).path == report_ref.path
+        })
+        .map(Some)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "paper Engram module {} references missing eval report {}",
+                module.module_id,
+                report_ref.path
+            )
+        })
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -3929,6 +4146,7 @@ fn run_lingqu_memory_validate_paper_engram_backend_parity_cli(
     .map_err(anyhow::Error::msg)
     .context("validate paper Engram Object Service state payload")?;
 
+    prepare_qwen3_matmul_batch_environment(1).context("prepare simpler-host manifest")?;
     let hidden = paper_engram_backend_parity_hidden(hidden_size);
     let common_env = paper_engram_backend_parity_common_env(
         &object_service_snapshot,
@@ -13728,6 +13946,7 @@ mod tests {
         run_lingqu_memory_build_engram_hash_config_cli, run_lingqu_memory_build_index_cli,
         run_lingqu_memory_build_paper_engram_eval_report_from_w5_summary_cli,
         run_lingqu_memory_build_tokenizer_projection_cli,
+        run_lingqu_memory_export_paper_engram_module_cli,
         run_lingqu_memory_import_paper_engram_module_cli, run_lingqu_memory_ingest_cli,
         run_lingqu_memory_list_artifact_access_cli,
         run_lingqu_memory_list_boundary_observations_cli,
@@ -18924,6 +19143,81 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         ));
 
         fs::remove_dir_all(&root).expect("remove paper engram list test dir");
+    }
+
+    #[test]
+    fn lingqu_memory_export_paper_engram_module_bundle_round_trips() {
+        let root = env::temp_dir().join(format!(
+            "sim-cli-lingqu-memory-paper-engram-export-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create paper engram export test dir");
+        let seed_store = root.join("seed-store.json");
+        let import_store = root.join("import-store.json");
+        let bundle_dir = root.join("paper_engram_export_bundle");
+
+        run_lingqu_memory_seed_paper_engram_fixture_cli(&[
+            "--store".to_string(),
+            seed_store.display().to_string(),
+            "--module-id".to_string(),
+            "pe-module-export-cli".to_string(),
+            "--module-name".to_string(),
+            "export-engram".to_string(),
+            "--model-id".to_string(),
+            "qwen3-export-test".to_string(),
+            "--model-key".to_string(),
+            "qwen3-export-test".to_string(),
+            "--hidden-size".to_string(),
+            "8".to_string(),
+            "--layer-end".to_string(),
+            "4".to_string(),
+            "--table-rows".to_string(),
+            "8".to_string(),
+            "--orders".to_string(),
+            "2".to_string(),
+            "--heads-per-order".to_string(),
+            "1".to_string(),
+            "--created-at-us".to_string(),
+            "10".to_string(),
+        ])
+        .expect("seed paper engram export fixture");
+        run_lingqu_memory_export_paper_engram_module_cli(&[
+            "--store".to_string(),
+            seed_store.display().to_string(),
+            "--bundle-dir".to_string(),
+            bundle_dir.display().to_string(),
+            "--model-id".to_string(),
+            "qwen3-export-test".to_string(),
+            "--engram-id".to_string(),
+            "export-engram".to_string(),
+        ])
+        .expect("export paper Engram module bundle");
+        assert!(bundle_dir.join("tokenizer_projection.json").is_file());
+        assert!(bundle_dir.join("hash_config.json").is_file());
+        assert!(bundle_dir.join("engram_module.json").is_file());
+        assert!(bundle_dir.join("table_shards").is_dir());
+        assert!(bundle_dir.join("gates").is_dir());
+        assert!(bundle_dir.join("block_payloads").is_dir());
+
+        run_lingqu_memory_import_paper_engram_module_cli(&[
+            "--store".to_string(),
+            import_store.display().to_string(),
+            "--bundle-dir".to_string(),
+            bundle_dir.display().to_string(),
+        ])
+        .expect("import exported paper Engram module bundle");
+        run_lingqu_memory_validate_paper_engram_module_cli(&[
+            "--store".to_string(),
+            import_store.display().to_string(),
+            "--model-id".to_string(),
+            "qwen3-export-test".to_string(),
+            "--engram-id".to_string(),
+            "export-engram".to_string(),
+        ])
+        .expect("validate imported exported paper Engram bundle");
+
+        fs::remove_dir_all(&root).expect("remove paper engram export test dir");
     }
 
     #[test]
@@ -27374,15 +27668,14 @@ fn qwen3_dense_weights_path_from_env(
 
 fn prepare_qwen3_matmul_batch_environment(matmul_batch: usize) -> anyhow::Result<()> {
     std::env::set_var("SIM_QWEN3_ROUND1_DISPATCH_BATCH", matmul_batch.to_string());
-    if matmul_batch == 1 {
-        return Ok(());
-    }
-
     let base_manifest = std::env::var_os("SIMPLER_HOST_MATMUL_MANIFEST")
         .map(PathBuf::from)
         .unwrap_or_else(default_simpler_host_matmul_manifest_path);
     ensure_simpler_host_matmul_manifest(&base_manifest, None)?;
     std::env::set_var("SIMPLER_HOST_MATMUL_MANIFEST", &base_manifest);
+    if matmul_batch == 1 {
+        return Ok(());
+    }
 
     let batch_manifest = std::env::var_os("SIMPLER_HOST_MATMUL_BATCH_MANIFEST")
         .map(PathBuf::from)
