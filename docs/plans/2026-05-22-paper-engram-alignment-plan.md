@@ -48,6 +48,15 @@ Going forward:
 - Use **Engram context op** for the executable gather/gate/residual operator
   backend used by paper Engram.
 
+### 第一批准备状态（2026-05-27）
+
+- [x] 将现有术语边界固定为三段：`decode policy` / `engram context` / `paper Engram`。
+- [x] 为 no-repeat 路径加上 exact-key 索引（已使用 projection 后 token，并有单测覆盖）。
+- [x] 在报告层新增 `decode_policy_*` 前缀视图，保留 `engram_*` 兼容项，避免历史脚本受影响。
+- [x] 明确当前可承诺行为：当前已实现仅覆盖 decode policy（采样约束）与 context-op 后半段。
+- [ ] 继续补齐多阶/多头 canonical ngram 索引描述与 runtime 可消费元数据。
+- [ ] 规划并补齐 paper Engram 训练产物与模块 manifest（表/门控/配置/质量声明）接口。
+
 ## Design Objectives
 
 1. Support paper-compatible Engram table construction during post-training or

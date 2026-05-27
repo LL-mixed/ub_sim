@@ -25,7 +25,7 @@ use sim_models::qwen3_dense_reference::{
     Qwen3DenseReferenceTokenizerProjection,
 };
 use sim_models::{
-    engram_hash::build_default_engram_hash_config,
+    engram_hash::{build_default_engram_hash_config, canonical_ngram_checksum},
     engram_simt_adapter::{
         artifact_config_from_env, discover_engram_simt_artifact, EngramSimtLaunchSpec,
     },
@@ -13407,6 +13407,39 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
     }
 
     #[test]
+    fn qwen3_engram_no_repeat_index_uses_exact_token_windows() {
+        let config = Qwen3EngramConfig {
+            enabled: true,
+            no_repeat_ngram_size: 3,
+            ..Qwen3EngramConfig::default()
+        };
+        let projection = HashMap::from([(10, 7), (20, 7), (30, 9)]);
+        let candidates = vec![
+            Qwen3CandidateRecord {
+                step_index: 0,
+                rank: 0,
+                token_id: 30,
+                logit_milli: 100,
+                adjusted_score_milli: 100,
+                token_piece_checksum: 0,
+            },
+            Qwen3CandidateRecord {
+                step_index: 0,
+                rank: 1,
+                token_id: 10,
+                logit_milli: 0,
+                adjusted_score_milli: 0,
+                token_piece_checksum: 0,
+            },
+        ];
+        let decision =
+            qwen3_engram_select_token(&config, 1, &[10, 20, 10], candidates, Some(&projection))
+                .expect("select with projection and exact index");
+        assert_eq!(decision.selected_token, 30);
+        assert_eq!(decision.blocked_token_count, 1);
+    }
+
+    #[test]
     fn qwen3_engram_default_policy_blocks_repeated_trigram_candidate() {
         let config = Qwen3EngramConfig {
             enabled: true,
@@ -19929,6 +19962,18 @@ fn print_qwen3_guest_engram_report(report: &Qwen3EngramRunReport) {
         return;
     }
     println!(
+        "  decode_policy_summary: decode_policy_enabled=true decode_policy_mode={} decode_policy_pool={} decode_policy_steps={} decode_policy_history_tokens={} decode_policy_candidate_count={} decode_policy_blocked_token_count={} decode_policy_selected_token={} decode_policy_state_checksum={:#x} decode_policy_checksum={:#x}",
+        qwen3_engram_mode_name(report.config.mode),
+        qwen3_engram_pool_name(report.config.pool),
+        report.steps.len(),
+        report.history_tokens.len(),
+        report.candidate_count,
+        report.blocked_token_count,
+        report.selected_token,
+        report.state_checksum,
+        report.policy_checksum
+    );
+    println!(
         "  engram_summary: engram_enabled=true engram_mode={} engram_pool={} engram_steps={} engram_history_tokens={} engram_candidate_count={} engram_blocked_token_count={} engram_selected_token={} engram_state_checksum={:#x} engram_policy_checksum={:#x}",
         qwen3_engram_mode_name(report.config.mode),
         qwen3_engram_pool_name(report.config.pool),
@@ -19963,6 +20008,15 @@ fn print_qwen3_guest_engram_report(report: &Qwen3EngramRunReport) {
         Qwen3EngramReport::Steps | Qwen3EngramReport::Verbose
     ) {
         for step in &report.steps {
+            println!(
+                "  decode_policy step={} candidates={} blocked={} selected={} fallback_used={} state_checksum={:#x}",
+                step.step_index,
+                step.candidates.len(),
+                step.blocked_token_count,
+                step.selected_token,
+                step.fallback_used,
+                step.state.state_checksum
+            );
             println!(
                 "  engram step={} candidates={} blocked={} selected={} fallback_used={} state_checksum={:#x}",
                 step.step_index,
@@ -20159,6 +20213,10 @@ fn qwen3_engram_select_token(
         .iter()
         .map(|token_id| qwen3_engram_projected_token(token_projection, *token_id))
         .collect::<Vec<_>>();
+    let no_repeat_index = qwen3_engram_no_repeat_exact_index(
+        &effective_projected_history,
+        config.no_repeat_ngram_size,
+    );
     let mut blocked_count = 0u32;
     let mut best: Option<(usize, i32, u64, u64)> = None;
 
@@ -20173,7 +20231,8 @@ fn qwen3_engram_select_token(
         candidate.adjusted_score_milli = adjusted;
 
         if config.blocked_token_ids.contains(&candidate.token_id)
-            || qwen3_engram_repeats_ngram(
+            || qwen3_engram_repeats_no_repeat_index(
+                &no_repeat_index,
                 &effective_projected_history,
                 projected_candidate_token,
                 config.no_repeat_ngram_size,
@@ -20305,16 +20364,47 @@ fn qwen3_engram_effective_history<'a>(config: &Qwen3EngramConfig, history: &'a [
     }
 }
 
-fn qwen3_engram_repeats_ngram(history: &[u64], token: u64, ngram_size: usize) -> bool {
-    if ngram_size == 0 || history.len() + 1 < ngram_size {
+fn qwen3_engram_no_repeat_exact_index(
+    projected_history: &[u64],
+    ngram_size: usize,
+) -> std::collections::HashMap<u64, Vec<Vec<u64>>> {
+    let mut lookup = std::collections::HashMap::new();
+    if ngram_size == 0 || projected_history.len() < ngram_size {
+        return lookup;
+    }
+    if ngram_size > 255 {
+        return lookup;
+    }
+    for window in projected_history.windows(ngram_size) {
+        let key = canonical_ngram_checksum(window);
+        lookup
+            .entry(key)
+            .or_insert_with(Vec::new)
+            .push(window.to_vec());
+    }
+    lookup
+}
+
+fn qwen3_engram_repeats_no_repeat_index(
+    index: &std::collections::HashMap<u64, Vec<Vec<u64>>>,
+    projected_history: &[u64],
+    projected_token: u64,
+    ngram_size: usize,
+) -> bool {
+    if ngram_size == 0 || projected_history.len() + 1 < ngram_size {
         return false;
     }
-    let prefix_len = ngram_size - 1;
-    let prefix_start = history.len().saturating_sub(prefix_len);
-    let prefix = &history[prefix_start..];
-    history
-        .windows(ngram_size)
-        .any(|window| window[..prefix_len] == *prefix && window[prefix_len] == token)
+    let prefix_len = ngram_size.saturating_sub(1);
+    if projected_history.len() < prefix_len {
+        return false;
+    }
+    let candidate_start = projected_history.len() - prefix_len;
+    let mut candidate_ngram = projected_history[candidate_start..].to_vec();
+    candidate_ngram.push(projected_token);
+    let key = canonical_ngram_checksum(&candidate_ngram);
+    index
+        .get(&key)
+        .is_some_and(|candidates| candidates.iter().any(|value| value == &candidate_ngram))
 }
 
 fn qwen3_engram_is_stop_token(token: u64) -> bool {
