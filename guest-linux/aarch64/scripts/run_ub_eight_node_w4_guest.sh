@@ -80,6 +80,7 @@ SIM_QWEN3_GUEST_ENGRAM_BLOCK_TOKEN_IDS="${SIM_QWEN3_GUEST_ENGRAM_BLOCK_TOKEN_IDS
 SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP="${SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP:-disabled}"
 SIM_QWEN3_GUEST_ENGRAM_CONTEXT_CHUNK_ELEMS="${SIM_QWEN3_GUEST_ENGRAM_CONTEXT_CHUNK_ELEMS:-}"
 SIM_QWEN3_GUEST_ENGRAM_STATE_REF="${SIM_QWEN3_GUEST_ENGRAM_STATE_REF:-}"
+SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF="${SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF:-}"
 SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF="${SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF:-}"
 SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF="${SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF:-}"
 SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF="${SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF:-}"
@@ -654,6 +655,7 @@ export SIM_QWEN3_GUEST_ENGRAM_BLOCK_TOKEN_IDS="$SIM_QWEN3_GUEST_ENGRAM_BLOCK_TOK
 export SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP="$SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP"
 export SIM_QWEN3_GUEST_ENGRAM_CONTEXT_CHUNK_ELEMS="$SIM_QWEN3_GUEST_ENGRAM_CONTEXT_CHUNK_ELEMS"
 export SIM_QWEN3_GUEST_ENGRAM_STATE_REF="$SIM_QWEN3_GUEST_ENGRAM_STATE_REF"
+export SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF="$SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF"
 export SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR="$SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR"
 export SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT="$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT_GUEST"
 export SIM_W5_MEMORY_SERVICE="$SIM_W5_MEMORY_SERVICE"
@@ -953,15 +955,20 @@ validate_w5_artifact_sizes() {
   local max_shortpath_stream="${SIM_W5_MAX_SHORTPATH_STREAM_BYTES:-1048576}"
   local max_shortpath_kv_stream="${SIM_W5_MAX_SHORTPATH_KV_STREAM_BYTES:-1048576}"
   local store_required=1
+  local shortpath_required=1
 
   if runtime_boundary_lookup_produces_store_after_guest; then
     store_required=0
   fi
+  shortpath_required="$store_required"
 
   if [[ -z "$SIM_UAPI_W5_PROFILE" ]]; then
     return 0
   fi
-  if [[ -z "$object_json" && "$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT" == *.json ]]; then
+  if [[ -n "${SIM_QWEN3_GUEST_ENGRAM_STATE_REF:-}" ]]; then
+    shortpath_required=0
+  fi
+  if [[ "$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT" == *.json && ( -z "$object_json" || ! -f "$object_json" ) ]]; then
     object_json="$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT"
   fi
   if [[ -n "$object_json" ]]; then
@@ -989,8 +996,8 @@ validate_w5_artifact_sizes() {
   validate_w5_artifact_file_size "$memory_bin" "memory_store_bin" "$max_object_bin" "0" || return 1
   validate_w5_artifact_file_size "$object_json" "object_store_json" "$max_object_json" "$store_required" || return 1
   validate_w5_artifact_file_size "$object_bin" "object_store_bin" "$max_object_bin" "$store_required" || return 1
-  validate_w5_artifact_file_size "$shortpath_stream" "shortpath_stream" "$max_shortpath_stream" "$store_required" || return 1
-  validate_w5_artifact_file_size "$shortpath_kv_stream" "shortpath_kv_stream" "$max_shortpath_kv_stream" "$store_required" || return 1
+  validate_w5_artifact_file_size "$shortpath_stream" "shortpath_stream" "$max_shortpath_stream" "$shortpath_required" || return 1
+  validate_w5_artifact_file_size "$shortpath_kv_stream" "shortpath_kv_stream" "$max_shortpath_kv_stream" "$shortpath_required" || return 1
   return 0
 }
 
@@ -1313,6 +1320,7 @@ prepare_environment() {
     SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP="$SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP" \
     SIM_QWEN3_GUEST_ENGRAM_CONTEXT_CHUNK_ELEMS="$SIM_QWEN3_GUEST_ENGRAM_CONTEXT_CHUNK_ELEMS" \
     SIM_QWEN3_GUEST_ENGRAM_STATE_REF="$SIM_QWEN3_GUEST_ENGRAM_STATE_REF" \
+    SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF="$SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF" \
     SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR="$SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR" \
     SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT="$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT" \
     SIM_W5_MEMORY_SERVICE="$SIM_W5_MEMORY_SERVICE" \

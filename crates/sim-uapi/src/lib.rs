@@ -24,9 +24,15 @@ use sim_core::{
     RequestCorrelation, SegmentHandle, SimError, SimplerKernelArtifact, SimplerRuntimeArg,
     SimplerRuntimeArtifacts, TaskKey, TensorDType, TensorLayout,
 };
+use sim_memory::PaperEngramTableRowPrefetchPlan;
 use sim_models::engram_context::{
-    run_engram_context_reference, EngramContextOp, EngramContextReport,
-    ENGRAM_CONTEXT_INDICES_PER_BATCH,
+    run_engram_context_reference, run_paper_engram_context_reference, EngramContextOp,
+    EngramContextReport, PaperEngramContextLookupRef, PaperEngramContextOp,
+    PaperEngramContextTableView, ENGRAM_CONTEXT_INDICES_PER_BATCH,
+};
+use sim_models::engram_hash::{
+    build_engram_lookup_requests_from_step, validate_engram_hash_config,
+    Qwen3DenseReferenceEngramHashConfig, Qwen3DenseReferenceEngramHashTableSpec,
 };
 use sim_models::qwen3_dense;
 use sim_models::qwen3_dense_reference::{
@@ -1790,10 +1796,12 @@ pub const QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES: u16 = 22;
 pub const QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT: u16 = 23;
 pub const QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE: u16 = 24;
 pub const QWEN3_DENSE_PROFILE_OBMM_KIND_MEMORY_BOUNDARY_REGISTRY: u16 = 25;
+pub const QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_ROW_PREFETCH_PLAN: u16 = 26;
 pub const SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR: &str = "SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR";
 pub const SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT: &str = "SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT";
 const SIM_UAPI_QWEN3_OBJECT_REF_PAYLOAD_SCAN: &str = "SIM_UAPI_QWEN3_OBJECT_REF_PAYLOAD_SCAN";
 pub const SIM_QWEN3_GUEST_ENGRAM_STATE_REF: &str = "SIM_QWEN3_GUEST_ENGRAM_STATE_REF";
+pub const SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF: &str = "SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF";
 pub const SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF: &str =
     "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF";
 pub const SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF: &str =
@@ -2132,7 +2140,8 @@ fn resolve_qwen3_range_dispatch_operands(
             QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE
             | QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES
             | QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT
-            | QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE => {}
+            | QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE
+            | QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_ROW_PREFETCH_PLAN => {}
             kind => {
                 return Err(format!(
                     "qwen3_range_dispatch_object_ref_kind_unsupported:{kind}"
@@ -2414,7 +2423,8 @@ fn qwen3_object_service_kind_for_obmm_kind(obmm_kind: u16) -> Result<LingquObjec
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE
         | QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES
         | QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT
-        | QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE => Ok(LingquObjectKind::Metadata),
+        | QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE
+        | QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_ROW_PREFETCH_PLAN => Ok(LingquObjectKind::Metadata),
         kind => Err(format!("qwen3_object_service_obmm_kind_unsupported:{kind}")),
     }
 }
@@ -3117,6 +3127,43 @@ pub struct Qwen3EngramStateRegistryValidation {
     pub gate_weight_bytes: usize,
 }
 
+const QWEN3_PAPER_ENGRAM_STATE_MANIFEST_MAGIC: &[u8; 8] = b"Q3PEGRM2";
+const QWEN3_PAPER_ENGRAM_STATE_MANIFEST_VERSION: u32 = 2;
+const QWEN3_PAPER_ENGRAM_STATE_MANIFEST_HEADER_BYTES: usize = 28;
+const QWEN3_PAPER_ENGRAM_STATE_MANIFEST_TABLE_RECORD_BYTES: usize = 104;
+const QWEN3_PAPER_ENGRAM_STATE_MANIFEST_GATE_RECORD_BYTES: usize = 72;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Qwen3PaperEngramStateTableRef {
+    pub layer: u64,
+    pub order: u8,
+    pub head: u16,
+    pub row_start: u64,
+    pub row_end: u64,
+    pub hash_seed: u64,
+    pub object_ref: LingquObmmObjectRefWire,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Qwen3PaperEngramStateGateRef {
+    pub layer: u64,
+    pub object_ref: LingquObmmObjectRefWire,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Qwen3PaperEngramStateManifest {
+    pub hidden_size: usize,
+    pub memory_dim: usize,
+    pub tables: Vec<Qwen3PaperEngramStateTableRef>,
+    pub gates: Vec<Qwen3PaperEngramStateGateRef>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum Qwen3EngramStateManifest {
+    Legacy(Qwen3DenseReferenceEngramContextObjectRefs),
+    Paper(Qwen3PaperEngramStateManifest),
+}
+
 fn qwen3_obmm_object_ref_wire_to_le_bytes(object_ref: &LingquObmmObjectRefWire) -> [u8; 64] {
     let mut bytes = [0u8; 64];
     bytes[0..8].copy_from_slice(&object_ref.magic.to_le_bytes());
@@ -3223,6 +3270,101 @@ pub fn qwen3_engram_state_manifest_payload(
     Ok(payload)
 }
 
+pub fn qwen3_paper_engram_state_manifest_payload(
+    hidden_size: usize,
+    memory_dim: usize,
+    tables: &[Qwen3PaperEngramStateTableRef],
+    gates: &[Qwen3PaperEngramStateGateRef],
+) -> Result<Vec<u8>, String> {
+    if hidden_size == 0 {
+        return Err("qwen3_paper_engram_state_hidden_size_must_be_positive".to_string());
+    }
+    if memory_dim == 0 {
+        return Err("qwen3_paper_engram_state_memory_dim_must_be_positive".to_string());
+    }
+    if hidden_size > u32::MAX as usize {
+        return Err("qwen3_paper_engram_state_hidden_size_exceeds_u32".to_string());
+    }
+    if memory_dim > u32::MAX as usize {
+        return Err("qwen3_paper_engram_state_memory_dim_exceeds_u32".to_string());
+    }
+    if tables.is_empty() {
+        return Err("qwen3_paper_engram_state_tables_empty".to_string());
+    }
+    if gates.is_empty() {
+        return Err("qwen3_paper_engram_state_gates_empty".to_string());
+    }
+    if tables.len() > u32::MAX as usize {
+        return Err("qwen3_paper_engram_state_table_count_exceeds_u32".to_string());
+    }
+    if gates.len() > u32::MAX as usize {
+        return Err("qwen3_paper_engram_state_gate_count_exceeds_u32".to_string());
+    }
+    for table in tables {
+        if table.order == 0 {
+            return Err("qwen3_paper_engram_state_table_order_must_be_positive".to_string());
+        }
+        if table.row_end <= table.row_start {
+            return Err(format!(
+                "qwen3_paper_engram_state_table_row_range_invalid:order={}:head={}:start={}:end={}",
+                table.order, table.head, table.row_start, table.row_end
+            ));
+        }
+        if table.object_ref.object_kind != QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE {
+            return Err(format!(
+                "qwen3_paper_engram_state_table_ref_kind_mismatch:order={}:head={}:got={}:expected={}",
+                table.order,
+                table.head,
+                table.object_ref.object_kind,
+                QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE
+            ));
+        }
+        table
+            .object_ref
+            .validate()
+            .map_err(|err| format!("qwen3_paper_engram_state_table_ref_invalid:{err}"))?;
+    }
+    for gate in gates {
+        if gate.object_ref.object_kind != QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT {
+            return Err(format!(
+                "qwen3_paper_engram_state_gate_ref_kind_mismatch:got={}:expected={}",
+                gate.object_ref.object_kind,
+                QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT
+            ));
+        }
+        gate.object_ref
+            .validate()
+            .map_err(|err| format!("qwen3_paper_engram_state_gate_ref_invalid:{err}"))?;
+    }
+
+    let mut payload = Vec::with_capacity(
+        QWEN3_PAPER_ENGRAM_STATE_MANIFEST_HEADER_BYTES
+            + tables.len() * QWEN3_PAPER_ENGRAM_STATE_MANIFEST_TABLE_RECORD_BYTES
+            + gates.len() * QWEN3_PAPER_ENGRAM_STATE_MANIFEST_GATE_RECORD_BYTES,
+    );
+    payload.extend_from_slice(QWEN3_PAPER_ENGRAM_STATE_MANIFEST_MAGIC);
+    payload.extend_from_slice(&QWEN3_PAPER_ENGRAM_STATE_MANIFEST_VERSION.to_le_bytes());
+    payload.extend_from_slice(&(hidden_size as u32).to_le_bytes());
+    payload.extend_from_slice(&(memory_dim as u32).to_le_bytes());
+    payload.extend_from_slice(&(tables.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&(gates.len() as u32).to_le_bytes());
+    for table in tables {
+        payload.extend_from_slice(&table.layer.to_le_bytes());
+        payload.push(table.order);
+        payload.extend_from_slice(&table.head.to_le_bytes());
+        payload.extend_from_slice(&[0u8; 5]);
+        payload.extend_from_slice(&table.row_start.to_le_bytes());
+        payload.extend_from_slice(&table.row_end.to_le_bytes());
+        payload.extend_from_slice(&table.hash_seed.to_le_bytes());
+        payload.extend_from_slice(&qwen3_obmm_object_ref_wire_to_le_bytes(&table.object_ref));
+    }
+    for gate in gates {
+        payload.extend_from_slice(&gate.layer.to_le_bytes());
+        payload.extend_from_slice(&qwen3_obmm_object_ref_wire_to_le_bytes(&gate.object_ref));
+    }
+    Ok(payload)
+}
+
 pub fn qwen3_publish_engram_state_registry_payload(
     owner_entity: u32,
     producer_entity: u32,
@@ -3301,6 +3443,303 @@ fn qwen3_engram_state_manifest_refs_from_payload(
     })
 }
 
+fn qwen3_engram_state_manifest_from_payload(
+    payload: &[u8],
+) -> Result<Qwen3EngramStateManifest, String> {
+    if payload.starts_with(QWEN3_PAPER_ENGRAM_STATE_MANIFEST_MAGIC) {
+        return qwen3_paper_engram_state_manifest_from_payload(payload)
+            .map(Qwen3EngramStateManifest::Paper);
+    }
+    qwen3_engram_state_manifest_refs_from_payload(payload).map(Qwen3EngramStateManifest::Legacy)
+}
+
+fn qwen3_paper_engram_state_manifest_from_payload(
+    payload: &[u8],
+) -> Result<Qwen3PaperEngramStateManifest, String> {
+    if payload.len() < QWEN3_PAPER_ENGRAM_STATE_MANIFEST_HEADER_BYTES {
+        return Err(format!(
+            "qwen3_paper_engram_state_manifest_len_too_small:got={}:min={}",
+            payload.len(),
+            QWEN3_PAPER_ENGRAM_STATE_MANIFEST_HEADER_BYTES
+        ));
+    }
+    if &payload[0..8] != QWEN3_PAPER_ENGRAM_STATE_MANIFEST_MAGIC {
+        return Err("qwen3_paper_engram_state_manifest_magic_mismatch".to_string());
+    }
+    let version = qwen3_try_read_u32_le_at(payload, 8, "qwen3_paper_engram_state_version")?;
+    if version != QWEN3_PAPER_ENGRAM_STATE_MANIFEST_VERSION {
+        return Err(format!(
+            "qwen3_paper_engram_state_version_unsupported:got={version}:expected={}",
+            QWEN3_PAPER_ENGRAM_STATE_MANIFEST_VERSION
+        ));
+    }
+    let hidden_size =
+        qwen3_try_read_u32_le_at(payload, 12, "qwen3_paper_engram_state_hidden_size")? as usize;
+    let memory_dim =
+        qwen3_try_read_u32_le_at(payload, 16, "qwen3_paper_engram_state_memory_dim")? as usize;
+    let table_count =
+        qwen3_try_read_u32_le_at(payload, 20, "qwen3_paper_engram_state_table_count")? as usize;
+    let gate_count =
+        qwen3_try_read_u32_le_at(payload, 24, "qwen3_paper_engram_state_gate_count")? as usize;
+    if hidden_size == 0 {
+        return Err("qwen3_paper_engram_state_hidden_size_must_be_positive".to_string());
+    }
+    if memory_dim == 0 {
+        return Err("qwen3_paper_engram_state_memory_dim_must_be_positive".to_string());
+    }
+    if table_count == 0 {
+        return Err("qwen3_paper_engram_state_tables_empty".to_string());
+    }
+    if gate_count == 0 {
+        return Err("qwen3_paper_engram_state_gates_empty".to_string());
+    }
+    let expected_len = QWEN3_PAPER_ENGRAM_STATE_MANIFEST_HEADER_BYTES
+        .checked_add(table_count * QWEN3_PAPER_ENGRAM_STATE_MANIFEST_TABLE_RECORD_BYTES)
+        .and_then(|value| {
+            value.checked_add(gate_count * QWEN3_PAPER_ENGRAM_STATE_MANIFEST_GATE_RECORD_BYTES)
+        })
+        .ok_or_else(|| "qwen3_paper_engram_state_manifest_len_overflow".to_string())?;
+    if payload.len() != expected_len {
+        return Err(format!(
+            "qwen3_paper_engram_state_manifest_len_mismatch:got={}:expected={expected_len}",
+            payload.len()
+        ));
+    }
+
+    let mut offset = QWEN3_PAPER_ENGRAM_STATE_MANIFEST_HEADER_BYTES;
+    let mut tables = Vec::with_capacity(table_count);
+    for _ in 0..table_count {
+        let layer =
+            qwen3_try_read_u64_le_at(payload, offset, "qwen3_paper_engram_state_table_layer")?;
+        let order = payload[offset + 8];
+        let head =
+            qwen3_try_read_u16_le_at(payload, offset + 9, "qwen3_paper_engram_state_table_head")?;
+        let row_start = qwen3_try_read_u64_le_at(
+            payload,
+            offset + 16,
+            "qwen3_paper_engram_state_table_row_start",
+        )?;
+        let row_end = qwen3_try_read_u64_le_at(
+            payload,
+            offset + 24,
+            "qwen3_paper_engram_state_table_row_end",
+        )?;
+        let hash_seed = qwen3_try_read_u64_le_at(
+            payload,
+            offset + 32,
+            "qwen3_paper_engram_state_table_hash_seed",
+        )?;
+        let object_ref =
+            LingquObmmObjectRefWire::from_le_bytes(&payload[offset + 40..offset + 104])
+                .map_err(|err| format!("qwen3_paper_engram_state_table_ref_parse:{err}"))?;
+        object_ref
+            .validate()
+            .map_err(|err| format!("qwen3_paper_engram_state_table_ref_invalid:{err}"))?;
+        if order == 0 {
+            return Err("qwen3_paper_engram_state_table_order_must_be_positive".to_string());
+        }
+        if row_end <= row_start {
+            return Err(format!(
+                "qwen3_paper_engram_state_table_row_range_invalid:order={order}:head={head}:start={row_start}:end={row_end}"
+            ));
+        }
+        if object_ref.object_kind != QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE {
+            return Err(format!(
+                "qwen3_paper_engram_state_table_ref_kind_mismatch:order={order}:head={head}:got={}:expected={}",
+                object_ref.object_kind, QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE
+            ));
+        }
+        tables.push(Qwen3PaperEngramStateTableRef {
+            layer,
+            order,
+            head,
+            row_start,
+            row_end,
+            hash_seed,
+            object_ref,
+        });
+        offset += QWEN3_PAPER_ENGRAM_STATE_MANIFEST_TABLE_RECORD_BYTES;
+    }
+
+    let mut gates = Vec::with_capacity(gate_count);
+    for _ in 0..gate_count {
+        let layer =
+            qwen3_try_read_u64_le_at(payload, offset, "qwen3_paper_engram_state_gate_layer")?;
+        let object_ref = LingquObmmObjectRefWire::from_le_bytes(&payload[offset + 8..offset + 72])
+            .map_err(|err| format!("qwen3_paper_engram_state_gate_ref_parse:{err}"))?;
+        object_ref
+            .validate()
+            .map_err(|err| format!("qwen3_paper_engram_state_gate_ref_invalid:{err}"))?;
+        if object_ref.object_kind != QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT {
+            return Err(format!(
+                "qwen3_paper_engram_state_gate_ref_kind_mismatch:got={}:expected={}",
+                object_ref.object_kind, QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT
+            ));
+        }
+        gates.push(Qwen3PaperEngramStateGateRef { layer, object_ref });
+        offset += QWEN3_PAPER_ENGRAM_STATE_MANIFEST_GATE_RECORD_BYTES;
+    }
+
+    Ok(Qwen3PaperEngramStateManifest {
+        hidden_size,
+        memory_dim,
+        tables,
+        gates,
+    })
+}
+
+fn qwen3_try_read_u16_le_at(
+    bytes: &[u8],
+    offset: usize,
+    field: &'static str,
+) -> Result<u16, String> {
+    let raw = bytes
+        .get(offset..offset + std::mem::size_of::<u16>())
+        .ok_or_else(|| {
+            format!(
+                "{field}_out_of_bounds:offset={offset}:bytes={}",
+                bytes.len()
+            )
+        })?;
+    Ok(u16::from_le_bytes([raw[0], raw[1]]))
+}
+
+fn qwen3_try_read_u32_le_at(
+    bytes: &[u8],
+    offset: usize,
+    field: &'static str,
+) -> Result<u32, String> {
+    let raw = bytes
+        .get(offset..offset + std::mem::size_of::<u32>())
+        .ok_or_else(|| {
+            format!(
+                "{field}_out_of_bounds:offset={offset}:bytes={}",
+                bytes.len()
+            )
+        })?;
+    Ok(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
+}
+
+fn qwen3_try_read_u64_le_at(
+    bytes: &[u8],
+    offset: usize,
+    field: &'static str,
+) -> Result<u64, String> {
+    let raw = bytes
+        .get(offset..offset + std::mem::size_of::<u64>())
+        .ok_or_else(|| {
+            format!(
+                "{field}_out_of_bounds:offset={offset}:bytes={}",
+                bytes.len()
+            )
+        })?;
+    Ok(u64::from_le_bytes([
+        raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+    ]))
+}
+
+fn qwen3_validate_paper_engram_state_payloads<F>(
+    hidden_size: usize,
+    manifest: Qwen3PaperEngramStateManifest,
+    mut payload_get: F,
+) -> Result<Qwen3EngramStateRegistryValidation, String>
+where
+    F: FnMut(&LingquObmmObjectRefWire) -> Result<Vec<u8>, String>,
+{
+    if manifest.hidden_size != hidden_size {
+        return Err(format!(
+            "qwen3_paper_engram_context_hidden_size_mismatch:manifest={}:runtime={hidden_size}",
+            manifest.hidden_size
+        ));
+    }
+    if manifest.memory_dim != hidden_size {
+        return Err(format!(
+            "qwen3_paper_engram_context_memory_dim_hidden_size_mismatch:memory_dim={}:hidden_size={hidden_size}",
+            manifest.memory_dim
+        ));
+    }
+
+    let mut table_rows = 0usize;
+    let mut table_bytes = 0usize;
+    for table in &manifest.tables {
+        let payload = payload_get(&table.object_ref).map_err(|err| {
+            format!(
+                "qwen3_paper_engram_context_table_resolve_failed:layer={}:order={}:head={}:{}",
+                table.layer, table.order, table.head, err
+            )
+        })?;
+        if payload.len() % std::mem::size_of::<f32>() != 0 {
+            return Err(format!(
+                "qwen3_paper_engram_context_table_bytes_not_multiple_of_f32:layer={}:order={}:head={}:bytes={}",
+                table.layer,
+                table.order,
+                table.head,
+                payload.len()
+            ));
+        }
+        let rows = usize::try_from(table.row_end - table.row_start).map_err(|_| {
+            format!(
+                "qwen3_paper_engram_context_table_rows_exceed_usize:layer={}:order={}:head={}",
+                table.layer, table.order, table.head
+            )
+        })?;
+        let expected_values = rows.checked_mul(hidden_size).ok_or_else(|| {
+            format!(
+                "qwen3_paper_engram_context_table_len_overflow:layer={}:order={}:head={}",
+                table.layer, table.order, table.head
+            )
+        })?;
+        let actual_values = payload.len() / std::mem::size_of::<f32>();
+        if actual_values != expected_values {
+            return Err(format!(
+                "qwen3_paper_engram_context_table_len_mismatch:layer={}:order={}:head={}:expected={expected_values}:actual={actual_values}",
+                table.layer, table.order, table.head
+            ));
+        }
+        table_rows = table_rows
+            .checked_add(rows)
+            .ok_or_else(|| "qwen3_paper_engram_context_table_rows_overflow".to_string())?;
+        table_bytes = table_bytes
+            .checked_add(payload.len())
+            .ok_or_else(|| "qwen3_paper_engram_context_table_bytes_overflow".to_string())?;
+    }
+
+    let mut gate_weight_bytes = 0usize;
+    for gate in &manifest.gates {
+        let payload = payload_get(&gate.object_ref).map_err(|err| {
+            format!(
+                "qwen3_paper_engram_context_gate_resolve_failed:layer={}:{}",
+                gate.layer, err
+            )
+        })?;
+        if payload.len() % std::mem::size_of::<f32>() != 0 {
+            return Err(format!(
+                "qwen3_paper_engram_context_gate_weight_bytes_not_multiple_of_f32:layer={}:bytes={}",
+                gate.layer,
+                payload.len()
+            ));
+        }
+        let values = payload.len() / std::mem::size_of::<f32>();
+        if values != hidden_size {
+            return Err(format!(
+                "qwen3_paper_engram_context_gate_weight_len_mismatch:layer={}:got={values}:expected={hidden_size}",
+                gate.layer
+            ));
+        }
+        gate_weight_bytes = gate_weight_bytes
+            .checked_add(payload.len())
+            .ok_or_else(|| "qwen3_paper_engram_context_gate_weight_bytes_overflow".to_string())?;
+    }
+
+    Ok(Qwen3EngramStateRegistryValidation {
+        hidden_size,
+        table_rows,
+        table_bytes,
+        indices_bytes: 0,
+        gate_weight_bytes,
+    })
+}
+
 pub fn qwen3_validate_engram_state_registry_payload(
     state_ref_hex: &str,
     registry_dir: &Path,
@@ -3318,7 +3757,16 @@ pub fn qwen3_validate_engram_state_registry_payload(
     }
     let state_payload = qwen3_object_registry_get_from_dir(registry_dir, &state_ref)
         .map_err(|err| format!("qwen3_engram_state_ref_resolve_failed:{err}"))?;
-    let object_refs = qwen3_engram_state_manifest_refs_from_payload(&state_payload)?;
+    let object_refs = match qwen3_engram_state_manifest_from_payload(&state_payload)? {
+        Qwen3EngramStateManifest::Legacy(object_refs) => object_refs,
+        Qwen3EngramStateManifest::Paper(manifest) => {
+            return qwen3_validate_paper_engram_state_payloads(
+                hidden_size,
+                manifest,
+                |object_ref| qwen3_object_registry_get_from_dir(registry_dir, object_ref),
+            );
+        }
+    };
     if object_refs.table.object_kind != QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE
         || object_refs.indices.object_kind != QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES
         || object_refs.gate_weight.object_kind
@@ -3403,7 +3851,18 @@ pub fn qwen3_validate_engram_state_object_service_payload(
     let state_payload =
         qwen3_object_service_snapshot_get_from_path(object_service_snapshot, &state_ref)
             .map_err(|err| format!("qwen3_engram_state_ref_resolve_failed:{err}"))?;
-    let object_refs = qwen3_engram_state_manifest_refs_from_payload(&state_payload)?;
+    let object_refs = match qwen3_engram_state_manifest_from_payload(&state_payload)? {
+        Qwen3EngramStateManifest::Legacy(object_refs) => object_refs,
+        Qwen3EngramStateManifest::Paper(manifest) => {
+            return qwen3_validate_paper_engram_state_payloads(
+                hidden_size,
+                manifest,
+                |object_ref| {
+                    qwen3_object_service_snapshot_get_from_path(object_service_snapshot, object_ref)
+                },
+            );
+        }
+    };
     if object_refs.table.object_kind != QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE
         || object_refs.indices.object_kind != QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES
         || object_refs.gate_weight.object_kind
@@ -4514,7 +4973,7 @@ fn validate_qwen3_range_dispatch_object_refs(
                 engram_context_gate_weight_ref_seen = true;
             }
             QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE => {
-                if object_ref.payload_bytes != (LingquObmmObjectRefWire::BYTE_LEN * 3) as u64
+                if object_ref.payload_bytes < QWEN3_PAPER_ENGRAM_STATE_MANIFEST_HEADER_BYTES as u64
                     || object_ref.payload_checksum == 0
                 {
                     return Err("qwen3_range_dispatch_engram_state_ref_invalid".to_string());
@@ -4683,7 +5142,12 @@ fn run_qwen3_dense_profile_runtime(
     };
     if let Some(report) = range_forward_summary.engram_context_report.as_ref() {
         eprintln!(
-            "qwen3-engram-context: mode={} table_rows={} output_checksum=0x{:016x} gate_checksum=0x{:016x} index_checksum=0x{:016x} output_l1_milli={} latency_ms={}",
+            "qwen3-engram-context: node={} layers=[{},{}) total_layers={} step={} mode={} table_rows={} output_checksum=0x{:016x} gate_checksum=0x{:016x} index_checksum=0x{:016x} output_l1_milli={} latency_ms={}",
+            contract.node,
+            contract.layer_start,
+            contract.layer_end,
+            contract.total_layers,
+            qwen3_dense_runtime_decode_step_from_guest_input(guest_input),
             report.mode,
             report.table_rows,
             report.output_checksum,
@@ -14229,7 +14693,12 @@ fn run_qwen3_dense_reference_prefill_runtime(
             )?;
             if let Some(report) = range_forward_summary.engram_context_report.as_ref() {
                 eprintln!(
-                    "qwen3-engram-context: mode={} table_rows={} output_checksum=0x{:016x} gate_checksum=0x{:016x} index_checksum=0x{:016x} output_l1_milli={} latency_ms={}",
+                    "qwen3-engram-context: node={} layers=[{},{}) total_layers={} step={} mode={} table_rows={} output_checksum=0x{:016x} gate_checksum=0x{:016x} index_checksum=0x{:016x} output_l1_milli={} latency_ms={}",
+                    contract.node,
+                    contract.layer_start,
+                    contract.layer_end,
+                    contract.total_layers,
+                    qwen3_dense_runtime_decode_step_from_guest_input(guest_input),
                     report.mode,
                     report.table_rows,
                     report.output_checksum,
@@ -16397,13 +16866,95 @@ struct Qwen3DenseReferenceEngramContextReport {
     index_checksum: u64,
     output_l1_milli: u64,
     latency_ms: u128,
+    row_prefetch_requests: u64,
+    row_prefetch_hits: u64,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Qwen3DenseReferenceEngramContextObjectRefs {
     table: LingquObmmObjectRefWire,
     indices: LingquObmmObjectRefWire,
     gate_weight: LingquObmmObjectRefWire,
+}
+
+#[derive(Clone, Debug)]
+enum Qwen3DenseReferenceEngramContextStateSource {
+    LegacyRefs(Qwen3DenseReferenceEngramContextObjectRefs),
+    PaperManifest(Qwen3DenseReferenceEngramContextPaperStateSource),
+}
+
+#[derive(Clone, Debug)]
+struct Qwen3DenseReferenceEngramContextPaperStateSource {
+    manifest: Qwen3PaperEngramStateManifest,
+    row_prefetch_plan: Option<PaperEngramTableRowPrefetchPlan>,
+}
+
+fn qwen3_dense_reference_engram_context_source_applies_to_layer(
+    source: &Qwen3DenseReferenceEngramContextStateSource,
+    layer_end: u64,
+    total_layers: u64,
+) -> Result<bool, String> {
+    match source {
+        Qwen3DenseReferenceEngramContextStateSource::LegacyRefs(_) => Ok(layer_end == total_layers),
+        Qwen3DenseReferenceEngramContextStateSource::PaperManifest(manifest) => {
+            qwen3_paper_engram_context_manifest_has_complete_layer(&manifest.manifest, layer_end)
+        }
+    }
+}
+
+fn qwen3_paper_engram_context_manifest_has_complete_layer(
+    manifest: &Qwen3PaperEngramStateManifest,
+    layer_end: u64,
+) -> Result<bool, String> {
+    let table_count = manifest
+        .tables
+        .iter()
+        .filter(|table| table.layer == layer_end)
+        .count();
+    let gate_count = manifest
+        .gates
+        .iter()
+        .filter(|gate| gate.layer == layer_end)
+        .count();
+    if table_count == 0 && gate_count == 0 {
+        return Ok(false);
+    }
+    if table_count == 0 {
+        return Err(format!(
+            "qwen3_paper_engram_context_tables_missing_for_layer:{layer_end}"
+        ));
+    }
+    if gate_count != 1 {
+        return Err(format!(
+            "qwen3_paper_engram_context_gate_count_for_layer_mismatch:layer={layer_end}:count={gate_count}"
+        ));
+    }
+    Ok(true)
+}
+
+#[derive(Clone, Debug)]
+struct Qwen3DenseReferencePaperEngramLoadedTable {
+    order: u8,
+    head: u16,
+    table: Vec<f32>,
+    table_rows: usize,
+}
+
+#[derive(Clone, Debug)]
+enum Qwen3DenseReferenceEngramContextLoadedState {
+    Legacy {
+        table: Vec<f32>,
+        indices: Vec<i32>,
+        gate_weight: Vec<f32>,
+        table_rows: usize,
+    },
+    Paper {
+        tables: Vec<Qwen3DenseReferencePaperEngramLoadedTable>,
+        lookups: Vec<PaperEngramContextLookupRef>,
+        gate_weight: Vec<f32>,
+        row_prefetch_requests: u64,
+        row_prefetch_hits: u64,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -17687,12 +18238,25 @@ fn qwen3_dense_reference_engram_context_ref_from_env(
     Ok(Some(object_ref))
 }
 
+fn qwen3_dense_reference_engram_context_row_prefetch_plan_from_ref(
+    object_ref: LingquObmmObjectRefWire,
+) -> Result<PaperEngramTableRowPrefetchPlan, String> {
+    let payload = qwen3_engram_context_payload_get(&object_ref)
+        .map_err(|err| format!("qwen3_engram_context_row_prefetch_plan_resolve_failed:{err}"))?;
+    let plan: PaperEngramTableRowPrefetchPlan = serde_json::from_slice(&payload)
+        .map_err(|err| format!("qwen3_engram_context_row_prefetch_plan_decode_failed:{err}"))?;
+    plan.validate()
+        .map_err(|err| format!("qwen3_engram_context_row_prefetch_plan_invalid:{err}"))?;
+    Ok(plan)
+}
+
 fn qwen3_dense_reference_engram_context_env_refs_present() -> bool {
     [
         SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
         SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF,
         SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF,
         SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF,
+        SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF,
     ]
     .iter()
     .any(|env_name| {
@@ -17703,9 +18267,10 @@ fn qwen3_dense_reference_engram_context_env_refs_present() -> bool {
     })
 }
 
-fn qwen3_dense_reference_engram_context_refs_from_state_ref(
+fn qwen3_dense_reference_engram_context_source_from_state_ref(
     state_ref: LingquObmmObjectRefWire,
-) -> Result<Qwen3DenseReferenceEngramContextObjectRefs, String> {
+    row_prefetch_plan: Option<PaperEngramTableRowPrefetchPlan>,
+) -> Result<Qwen3DenseReferenceEngramContextStateSource, String> {
     if state_ref.object_kind != QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE {
         return Err(format!(
             "qwen3_engram_state_ref_kind_mismatch:got={}:expected={}",
@@ -17714,12 +18279,24 @@ fn qwen3_dense_reference_engram_context_refs_from_state_ref(
     }
     let payload = qwen3_engram_context_payload_get(&state_ref)
         .map_err(|err| format!("qwen3_engram_state_ref_resolve_failed:{err}"))?;
-    qwen3_engram_state_manifest_refs_from_payload(&payload)
+    match qwen3_engram_state_manifest_from_payload(&payload)? {
+        Qwen3EngramStateManifest::Legacy(object_refs) => Ok(
+            Qwen3DenseReferenceEngramContextStateSource::LegacyRefs(object_refs),
+        ),
+        Qwen3EngramStateManifest::Paper(manifest) => {
+            Ok(Qwen3DenseReferenceEngramContextStateSource::PaperManifest(
+                Qwen3DenseReferenceEngramContextPaperStateSource {
+                    manifest,
+                    row_prefetch_plan,
+                },
+            ))
+        }
+    }
 }
 
-fn qwen3_dense_reference_engram_context_refs_from_guest_input(
+fn qwen3_dense_reference_engram_context_source_from_guest_input(
     guest_input: &[u8],
-) -> Result<Option<Qwen3DenseReferenceEngramContextObjectRefs>, String> {
+) -> Result<Option<Qwen3DenseReferenceEngramContextStateSource>, String> {
     let table_end = QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET
         .checked_add(QWEN3_DENSE_PROFILE_OBJECT_REF_MAX_COUNT * LingquObmmObjectRefWire::BYTE_LEN)
         .ok_or_else(|| "qwen3_engram_context_object_ref_table_end_overflow".to_string())?;
@@ -17767,7 +18344,8 @@ fn qwen3_dense_reference_engram_context_refs_from_guest_input(
         );
     }
     if let Some(state_ref) = state_ref {
-        return qwen3_dense_reference_engram_context_refs_from_state_ref(state_ref).map(Some);
+        return qwen3_dense_reference_engram_context_source_from_state_ref(state_ref, None)
+            .map(Some);
     }
     if table_ref.is_none() && indices_ref.is_none() && gate_weight_ref.is_none() {
         return Ok(None);
@@ -17779,16 +18357,20 @@ fn qwen3_dense_reference_engram_context_refs_from_guest_input(
                 .to_string(),
         );
     };
-    Ok(Some(Qwen3DenseReferenceEngramContextObjectRefs {
-        table,
-        indices,
-        gate_weight,
-    }))
+    Ok(Some(
+        Qwen3DenseReferenceEngramContextStateSource::LegacyRefs(
+            Qwen3DenseReferenceEngramContextObjectRefs {
+                table,
+                indices,
+                gate_weight,
+            },
+        ),
+    ))
 }
 
-fn qwen3_dense_reference_engram_context_refs_from_descriptor_refs(
+fn qwen3_dense_reference_engram_context_source_from_descriptor_refs(
     descriptor_refs: &[LingquObmmObjectRefWire],
-) -> Result<Option<Qwen3DenseReferenceEngramContextObjectRefs>, String> {
+) -> Result<Option<Qwen3DenseReferenceEngramContextStateSource>, String> {
     let mut table_ref = None;
     let mut indices_ref = None;
     let mut gate_weight_ref = None;
@@ -17823,7 +18405,8 @@ fn qwen3_dense_reference_engram_context_refs_from_descriptor_refs(
         );
     }
     if let Some(state_ref) = state_ref {
-        return qwen3_dense_reference_engram_context_refs_from_state_ref(state_ref).map(Some);
+        return qwen3_dense_reference_engram_context_source_from_state_ref(state_ref, None)
+            .map(Some);
     }
     if table_ref.is_none() && indices_ref.is_none() && gate_weight_ref.is_none() {
         return Ok(None);
@@ -17835,11 +18418,15 @@ fn qwen3_dense_reference_engram_context_refs_from_descriptor_refs(
                 .to_string(),
         );
     };
-    Ok(Some(Qwen3DenseReferenceEngramContextObjectRefs {
-        table,
-        indices,
-        gate_weight,
-    }))
+    Ok(Some(
+        Qwen3DenseReferenceEngramContextStateSource::LegacyRefs(
+            Qwen3DenseReferenceEngramContextObjectRefs {
+                table,
+                indices,
+                gate_weight,
+            },
+        ),
+    ))
 }
 
 fn qwen3_dense_reference_engram_context_object_ref_state_from_refs(
@@ -17900,13 +18487,22 @@ fn qwen3_dense_reference_engram_context_object_ref_state_from_refs(
     Ok((table, indices, gate_weight, table_rows))
 }
 
-fn qwen3_dense_reference_engram_context_object_ref_state_from_env(
-    hidden_size: usize,
-) -> Result<Option<(Vec<f32>, Vec<i32>, Vec<f32>, usize)>, String> {
+fn qwen3_dense_reference_engram_context_source_from_env(
+) -> Result<Option<Qwen3DenseReferenceEngramContextStateSource>, String> {
     let state_ref = qwen3_dense_reference_engram_context_ref_from_env(
         SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
     )?;
+    let row_prefetch_plan = qwen3_dense_reference_engram_context_ref_from_env(
+        SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_ROW_PREFETCH_PLAN,
+    )?;
+    let row_prefetch_plan = row_prefetch_plan
+        .map(qwen3_dense_reference_engram_context_row_prefetch_plan_from_ref)
+        .transpose()?;
+    if state_ref.is_none() && row_prefetch_plan.is_some() {
+        return Err("qwen3_engram_context_row_prefetch_ref_requires_state_ref".to_string());
+    }
     let table_ref = qwen3_dense_reference_engram_context_ref_from_env(
         SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
@@ -17928,9 +18524,9 @@ fn qwen3_dense_reference_engram_context_object_ref_state_from_env(
         );
     }
     if let Some(state_ref) = state_ref {
-        return qwen3_dense_reference_engram_context_object_ref_state_from_refs(
-            hidden_size,
-            qwen3_dense_reference_engram_context_refs_from_state_ref(state_ref)?,
+        return qwen3_dense_reference_engram_context_source_from_state_ref(
+            state_ref,
+            row_prefetch_plan,
         )
         .map(Some);
     }
@@ -17945,15 +18541,249 @@ fn qwen3_dense_reference_engram_context_object_ref_state_from_env(
                 .to_string(),
         );
     };
-    qwen3_dense_reference_engram_context_object_ref_state_from_refs(
-        hidden_size,
-        Qwen3DenseReferenceEngramContextObjectRefs {
-            table: table_ref,
-            indices: indices_ref,
-            gate_weight: gate_weight_ref,
-        },
-    )
-    .map(Some)
+    Ok(Some(
+        Qwen3DenseReferenceEngramContextStateSource::LegacyRefs(
+            Qwen3DenseReferenceEngramContextObjectRefs {
+                table: table_ref,
+                indices: indices_ref,
+                gate_weight: gate_weight_ref,
+            },
+        ),
+    ))
+}
+
+fn qwen3_dense_reference_engram_context_loaded_state_from_source(
+    hidden_size: usize,
+    layer_end: u64,
+    token_ids: &[u64],
+    source: Qwen3DenseReferenceEngramContextStateSource,
+) -> Result<Qwen3DenseReferenceEngramContextLoadedState, String> {
+    match source {
+        Qwen3DenseReferenceEngramContextStateSource::LegacyRefs(object_refs) => {
+            let (table, indices, gate_weight, table_rows) =
+                qwen3_dense_reference_engram_context_object_ref_state_from_refs(
+                    hidden_size,
+                    object_refs,
+                )?;
+            Ok(Qwen3DenseReferenceEngramContextLoadedState::Legacy {
+                table,
+                indices,
+                gate_weight,
+                table_rows,
+            })
+        }
+        Qwen3DenseReferenceEngramContextStateSource::PaperManifest(manifest) => {
+            qwen3_dense_reference_paper_engram_context_state_from_manifest(
+                hidden_size,
+                layer_end,
+                token_ids,
+                manifest,
+            )
+        }
+    }
+}
+
+fn qwen3_dense_reference_paper_engram_context_state_from_manifest(
+    hidden_size: usize,
+    layer_end: u64,
+    token_ids: &[u64],
+    source: Qwen3DenseReferenceEngramContextPaperStateSource,
+) -> Result<Qwen3DenseReferenceEngramContextLoadedState, String> {
+    let Qwen3DenseReferenceEngramContextPaperStateSource {
+        manifest,
+        row_prefetch_plan,
+    } = source;
+    if manifest.hidden_size != hidden_size {
+        return Err(format!(
+            "qwen3_paper_engram_context_hidden_size_mismatch:manifest={}:runtime={hidden_size}",
+            manifest.hidden_size
+        ));
+    }
+    if manifest.memory_dim != hidden_size {
+        return Err(format!(
+            "qwen3_paper_engram_context_memory_dim_hidden_size_mismatch:memory_dim={}:hidden_size={hidden_size}",
+            manifest.memory_dim
+        ));
+    }
+
+    let mut grouped: BTreeMap<(u8, u16), Vec<Qwen3PaperEngramStateTableRef>> = BTreeMap::new();
+    for table in manifest
+        .tables
+        .into_iter()
+        .filter(|table| table.layer == layer_end)
+    {
+        grouped
+            .entry((table.order, table.head))
+            .or_default()
+            .push(table);
+    }
+    if grouped.is_empty() {
+        return Err(format!(
+            "qwen3_paper_engram_context_tables_missing_for_layer:{layer_end}"
+        ));
+    }
+
+    let mut loaded_tables = Vec::with_capacity(grouped.len());
+    let mut table_specs = Vec::with_capacity(grouped.len());
+    for ((order, head), mut shards) in grouped {
+        shards.sort_by_key(|shard| shard.row_start);
+        let mut expected_row_start = 0u64;
+        let mut table = Vec::new();
+        let mut hash_seed = None;
+        for shard in shards {
+            if shard.row_start != expected_row_start {
+                return Err(format!(
+                    "qwen3_paper_engram_context_table_shards_not_contiguous:order={order}:head={head}:expected_start={expected_row_start}:actual_start={}",
+                    shard.row_start
+                ));
+            }
+            if let Some(seed) = hash_seed {
+                if seed != shard.hash_seed {
+                    return Err(format!(
+                        "qwen3_paper_engram_context_table_hash_seed_mismatch:order={order}:head={head}"
+                    ));
+                }
+            } else {
+                hash_seed = Some(shard.hash_seed);
+            }
+            let payload = qwen3_f32_values_from_le_bytes(
+                &qwen3_engram_context_payload_get(&shard.object_ref).map_err(|err| {
+                    format!(
+                        "qwen3_paper_engram_context_table_resolve_failed:order={order}:head={head}:{err}"
+                    )
+                })?,
+                "qwen3_paper_engram_context_table",
+            )?;
+            let rows = usize::try_from(shard.row_end - shard.row_start).map_err(|_| {
+                format!(
+                    "qwen3_paper_engram_context_table_rows_exceed_usize:order={order}:head={head}"
+                )
+            })?;
+            let expected_values = rows.checked_mul(hidden_size).ok_or_else(|| {
+                format!("qwen3_paper_engram_context_table_len_overflow:order={order}:head={head}")
+            })?;
+            if payload.len() != expected_values {
+                return Err(format!(
+                    "qwen3_paper_engram_context_table_len_mismatch:order={order}:head={head}:expected={expected_values}:actual={}",
+                    payload.len()
+                ));
+            }
+            table.extend_from_slice(&payload);
+            expected_row_start = shard.row_end;
+        }
+        let table_rows = usize::try_from(expected_row_start).map_err(|_| {
+            format!("qwen3_paper_engram_context_table_rows_exceed_usize:order={order}:head={head}")
+        })?;
+        loaded_tables.push(Qwen3DenseReferencePaperEngramLoadedTable {
+            order,
+            head,
+            table,
+            table_rows,
+        });
+        table_specs.push(Qwen3DenseReferenceEngramHashTableSpec {
+            order,
+            head,
+            table_rows: expected_row_start,
+            seed: hash_seed.unwrap_or(0),
+        });
+    }
+
+    let orders = table_specs
+        .iter()
+        .map(|spec| spec.order)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let heads_per_order = table_specs
+        .iter()
+        .map(|spec| usize::from(spec.head) + 1)
+        .max()
+        .unwrap_or(0);
+    let config = Qwen3DenseReferenceEngramHashConfig {
+        version: 1,
+        projection_checksum: 0,
+        orders,
+        heads_per_order,
+        table_rows: 1,
+        seed: 0,
+        algorithm: "fnv1a-x64+length-prefix".to_string(),
+        table_specs,
+    };
+    validate_engram_hash_config(&config)?;
+
+    let lookup_requests = if token_ids.is_empty() {
+        Vec::new()
+    } else {
+        build_engram_lookup_requests_from_step(token_ids, token_ids.len() - 1, &config)?
+    };
+    let lookups = lookup_requests
+        .into_iter()
+        .map(|request| PaperEngramContextLookupRef {
+            batch_index: 0,
+            order: request.order,
+            head: request.head,
+            row: request.row,
+        })
+        .collect::<Vec<_>>();
+    let row_prefetch_requests = lookups.len() as u64;
+    let row_prefetch_hits = row_prefetch_plan
+        .as_ref()
+        .map(|plan| {
+            let current_step = token_ids.len().saturating_sub(1) as u64;
+            let plan_rows = plan
+                .rows
+                .iter()
+                .filter_map(|row| {
+                    if row.layer != layer_end as u32 || row.step_index != current_step {
+                        return None;
+                    }
+                    Some((u64::from(row.order), u64::from(row.head), row.row))
+                })
+                .collect::<std::collections::BTreeSet<_>>();
+            lookups
+                .iter()
+                .filter(|lookup| {
+                    plan_rows.contains(&(
+                        u64::from(lookup.order),
+                        u64::from(lookup.head),
+                        lookup.row,
+                    ))
+                })
+                .count() as u64
+        })
+        .unwrap_or(0);
+
+    let mut gates = manifest
+        .gates
+        .into_iter()
+        .filter(|gate| gate.layer == layer_end)
+        .collect::<Vec<_>>();
+    if gates.len() != 1 {
+        return Err(format!(
+            "qwen3_paper_engram_context_gate_count_for_layer_mismatch:layer={layer_end}:count={}",
+            gates.len()
+        ));
+    }
+    let gate = gates.remove(0);
+    let gate_weight = qwen3_f32_values_from_le_bytes(
+        &qwen3_engram_context_payload_get(&gate.object_ref)
+            .map_err(|err| format!("qwen3_paper_engram_context_gate_resolve_failed:{err}"))?,
+        "qwen3_paper_engram_context_gate_weight",
+    )?;
+    if gate_weight.len() != hidden_size {
+        return Err(format!(
+            "qwen3_paper_engram_context_gate_weight_len_mismatch:got={}:expected={hidden_size}",
+            gate_weight.len()
+        ));
+    }
+
+    Ok(Qwen3DenseReferenceEngramContextLoadedState::Paper {
+        tables: loaded_tables,
+        lookups,
+        gate_weight,
+        row_prefetch_requests,
+        row_prefetch_hits,
+    })
 }
 
 fn qwen3_f32_values_from_le_bytes(bytes: &[u8], field: &'static str) -> Result<Vec<f32>, String> {
@@ -17986,14 +18816,14 @@ fn qwen3_i32_values_from_le_bytes(bytes: &[u8], field: &'static str) -> Result<V
 
 fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
     sequence: &mut [Vec<f32>],
-    _token_ids: &[u64],
+    token_ids: &[u64],
     layer_end: u64,
     total_layers: u64,
     guest_input: Option<&[u8]>,
 ) -> Result<Option<Qwen3DenseReferenceEngramContextReport>, String> {
     qwen3_dense_reference_apply_engram_context_to_terminal_sequence_with_descriptor_refs(
         sequence,
-        _token_ids,
+        token_ids,
         layer_end,
         total_layers,
         guest_input,
@@ -18003,45 +18833,32 @@ fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
 
 fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence_with_descriptor_refs(
     sequence: &mut [Vec<f32>],
-    _token_ids: &[u64],
+    token_ids: &[u64],
     layer_end: u64,
     total_layers: u64,
     guest_input: Option<&[u8]>,
     descriptor_refs: Option<&[LingquObmmObjectRefWire]>,
 ) -> Result<Option<Qwen3DenseReferenceEngramContextReport>, String> {
-    if layer_end != total_layers {
-        return Ok(None);
-    }
     match qwen3_dense_reference_engram_context_mode_from_env()? {
         Qwen3DenseReferenceEngramContextMode::Disabled => Ok(None),
-        Qwen3DenseReferenceEngramContextMode::FusedSimt => Err(
-            "qwen3_engram_context_fused_simt_not_wired:hint=use cpu-reference until P5.3 runtime launch lands"
-                .to_string(),
-        ),
-        Qwen3DenseReferenceEngramContextMode::CpuReference
+        Qwen3DenseReferenceEngramContextMode::FusedSimt
+        | Qwen3DenseReferenceEngramContextMode::CpuReference
         | Qwen3DenseReferenceEngramContextMode::SimplerHost => {
-            let hidden = sequence
-                .last_mut()
-                .ok_or_else(|| "qwen3_engram_context_hidden_sequence_empty".to_string())?;
             let mode = qwen3_dense_reference_engram_context_mode_from_env()?;
-            let hidden_size = hidden.len();
-            if hidden_size == 0 {
-                return Err("qwen3_engram_context_hidden_size_unsupported:got=0".to_string());
-            }
-            let descriptor_object_refs = if let Some(descriptor_refs) = descriptor_refs {
-                qwen3_dense_reference_engram_context_refs_from_descriptor_refs(descriptor_refs)?
+            let descriptor_source = if let Some(descriptor_refs) = descriptor_refs {
+                qwen3_dense_reference_engram_context_source_from_descriptor_refs(descriptor_refs)?
             } else {
                 guest_input
-                    .map(qwen3_dense_reference_engram_context_refs_from_guest_input)
+                    .map(qwen3_dense_reference_engram_context_source_from_guest_input)
                     .transpose()?
                     .flatten()
             };
-            let object_ref_state = if let Some(object_refs) = descriptor_object_refs {
-                Some(qwen3_dense_reference_engram_context_object_ref_state_from_refs(
-                    hidden_size,
-                    object_refs,
-                )?)
+            let source = if let Some(source) = descriptor_source {
+                Some(source)
             } else if guest_input.is_some() {
+                if layer_end != total_layers {
+                    return Ok(None);
+                }
                 if qwen3_dense_reference_engram_context_env_refs_present() {
                     return Err(
                         "qwen3_engram_context_descriptor_refs_missing:guest_input_requires_uapi_sideband"
@@ -18053,78 +18870,170 @@ fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence_with_descript
                         .to_string(),
                 );
             } else {
-                qwen3_dense_reference_engram_context_object_ref_state_from_env(hidden_size)?
+                qwen3_dense_reference_engram_context_source_from_env()?
             };
-            let (table, indices, gate_weight, table_rows) = object_ref_state.ok_or_else(|| {
-                "qwen3_engram_context_object_refs_required:context_op_requires_engram_state_ref"
-                    .to_string()
-            })?;
-            let started = Instant::now();
-            let reference = run_engram_context_reference(&EngramContextOp {
-                table: &table,
-                table_rows,
-                indices: &indices,
-                hidden,
-                gate_weight: &gate_weight,
-                batch: 1,
-                hidden_size,
-            })?;
-            let output_values = match mode {
-                Qwen3DenseReferenceEngramContextMode::CpuReference => reference.output.clone(),
-                Qwen3DenseReferenceEngramContextMode::SimplerHost => {
-                    let produced = run_simpler_host_engram_context(
-                        &table,
-                        &indices,
-                        hidden,
-                        &gate_weight,
-                        1,
-                        table_rows,
-                        hidden_size,
-                    )?;
-                    const SIMPLER_HOST_ENGRAM_CONTEXT_MAX_ULP: u32 = 64;
-                    if !qwen3_engram_context_outputs_match_within_ulp(
-                        &produced,
-                        &reference.output,
-                        SIMPLER_HOST_ENGRAM_CONTEXT_MAX_ULP,
-                    ) {
-                        let mismatch = produced
-                            .iter()
-                            .zip(reference.output.iter())
-                            .position(|(got, expected)| {
-                                !qwen3_engram_context_f32_within_ulp(
-                                    *got,
-                                    *expected,
-                                    SIMPLER_HOST_ENGRAM_CONTEXT_MAX_ULP,
-                                )
-                            })
-                            .unwrap_or(usize::MAX);
-                        let got_bits = produced
-                            .get(mismatch)
-                            .map(|value| value.to_bits())
-                            .unwrap_or(0);
-                        let expected_bits = reference
-                            .output
-                            .get(mismatch)
-                            .map(|value| value.to_bits())
-                            .unwrap_or(0);
-                        return Err(format!(
-                            "simpler_host_engram_context_output_mismatch:index={mismatch}:got_bits=0x{got_bits:08x}:expected_bits=0x{expected_bits:08x}:got=0x{:016x}:expected=0x{:016x}",
-                            qwen3_dense_reference_f32_values_checksum(&produced),
-                            qwen3_dense_reference_f32_values_checksum(&reference.output)
-                        ));
-                    }
-                    reference.output.clone()
+            let Some(source) = source else {
+                if layer_end != total_layers {
+                    return Ok(None);
                 }
-                _ => unreachable!(),
+                return Err(
+                    "qwen3_engram_context_object_refs_required:context_op_requires_engram_state_ref"
+                        .to_string(),
+                );
+            };
+            if !qwen3_dense_reference_engram_context_source_applies_to_layer(
+                &source,
+                layer_end,
+                total_layers,
+            )? {
+                return Ok(None);
+            }
+            if mode == Qwen3DenseReferenceEngramContextMode::FusedSimt {
+                return Err(
+                    "qwen3_engram_context_fused_simt_not_wired:hint=use cpu-reference until P5.3 runtime launch lands"
+                        .to_string(),
+                );
+            }
+            let hidden = sequence
+                .last_mut()
+                .ok_or_else(|| "qwen3_engram_context_hidden_sequence_empty".to_string())?;
+            let hidden_size = hidden.len();
+            if hidden_size == 0 {
+                return Err("qwen3_engram_context_hidden_size_unsupported:got=0".to_string());
+            }
+            let loaded_state = qwen3_dense_reference_engram_context_loaded_state_from_source(
+                hidden_size,
+                layer_end,
+                token_ids,
+                source,
+            )?;
+            let started = Instant::now();
+            let (
+                reference_report,
+                output_values,
+                report_mode,
+                row_prefetch_requests,
+                row_prefetch_hits,
+            ) = match loaded_state {
+                Qwen3DenseReferenceEngramContextLoadedState::Legacy {
+                    table,
+                    indices,
+                    gate_weight,
+                    table_rows,
+                } => {
+                    let reference = run_engram_context_reference(&EngramContextOp {
+                        table: &table,
+                        table_rows,
+                        indices: &indices,
+                        hidden,
+                        gate_weight: &gate_weight,
+                        batch: 1,
+                        hidden_size,
+                    })?;
+                    let output_values = match mode {
+                        Qwen3DenseReferenceEngramContextMode::CpuReference => {
+                            reference.output.clone()
+                        }
+                        Qwen3DenseReferenceEngramContextMode::SimplerHost => {
+                            let produced = run_simpler_host_engram_context(
+                                &table,
+                                &indices,
+                                hidden,
+                                &gate_weight,
+                                1,
+                                table_rows,
+                                hidden_size,
+                            )?;
+                            const SIMPLER_HOST_ENGRAM_CONTEXT_MAX_ULP: u32 = 64;
+                            if !qwen3_engram_context_outputs_match_within_ulp(
+                                &produced,
+                                &reference.output,
+                                SIMPLER_HOST_ENGRAM_CONTEXT_MAX_ULP,
+                            ) {
+                                let mismatch = produced
+                                    .iter()
+                                    .zip(reference.output.iter())
+                                    .position(|(got, expected)| {
+                                        !qwen3_engram_context_f32_within_ulp(
+                                            *got,
+                                            *expected,
+                                            SIMPLER_HOST_ENGRAM_CONTEXT_MAX_ULP,
+                                        )
+                                    })
+                                    .unwrap_or(usize::MAX);
+                                let got_bits = produced
+                                    .get(mismatch)
+                                    .map(|value| value.to_bits())
+                                    .unwrap_or(0);
+                                let expected_bits = reference
+                                    .output
+                                    .get(mismatch)
+                                    .map(|value| value.to_bits())
+                                    .unwrap_or(0);
+                                return Err(format!(
+                                    "simpler_host_engram_context_output_mismatch:index={mismatch}:got_bits=0x{got_bits:08x}:expected_bits=0x{expected_bits:08x}:got=0x{:016x}:expected=0x{:016x}",
+                                    qwen3_dense_reference_f32_values_checksum(&produced),
+                                    qwen3_dense_reference_f32_values_checksum(&reference.output)
+                                ));
+                            }
+                            reference.output.clone()
+                        }
+                        _ => unreachable!(),
+                    };
+                    let report_mode = if mode == Qwen3DenseReferenceEngramContextMode::SimplerHost {
+                        "simpler-host-object-ref"
+                    } else {
+                        "cpu-reference-object-ref"
+                    };
+                    (reference.report, output_values, report_mode, 0, 0)
+                }
+                Qwen3DenseReferenceEngramContextLoadedState::Paper {
+                    tables,
+                    lookups,
+                    gate_weight,
+                    row_prefetch_requests,
+                    row_prefetch_hits,
+                } => {
+                    if mode == Qwen3DenseReferenceEngramContextMode::SimplerHost {
+                        return Err(
+                            "qwen3_paper_engram_context_simpler_host_not_wired:use cpu-reference"
+                                .to_string(),
+                        );
+                    }
+                    let table_views = tables
+                        .iter()
+                        .map(|table| PaperEngramContextTableView {
+                            order: table.order,
+                            head: table.head,
+                            table: &table.table,
+                            table_rows: table.table_rows,
+                        })
+                        .collect::<Vec<_>>();
+                    let reference = run_paper_engram_context_reference(&PaperEngramContextOp {
+                        tables: &table_views,
+                        lookups: &lookups,
+                        hidden,
+                        gate_weight: &gate_weight,
+                        batch: 1,
+                        hidden_size,
+                    })?;
+                    (
+                        reference.report,
+                        reference.output.clone(),
+                        "cpu-reference-paper-object-ref",
+                        row_prefetch_requests,
+                        row_prefetch_hits,
+                    )
+                }
             };
             let latency_ms = started.elapsed().as_millis();
-            let mut report =
-                qwen3_dense_reference_engram_context_report_from_reference(reference.report, latency_ms);
-            if mode == Qwen3DenseReferenceEngramContextMode::SimplerHost {
-                report.mode = "simpler-host-object-ref";
-            } else {
-                report.mode = "cpu-reference-object-ref";
-            }
+            let mut report = qwen3_dense_reference_engram_context_report_from_reference(
+                reference_report,
+                latency_ms,
+            );
+            report.mode = report_mode;
+            report.row_prefetch_requests = row_prefetch_requests;
+            report.row_prefetch_hits = row_prefetch_hits;
             hidden.copy_from_slice(&output_values);
             Ok(Some(report))
         }
@@ -18143,6 +19052,8 @@ fn qwen3_dense_reference_engram_context_report_from_reference(
         index_checksum: report.index_checksum,
         output_l1_milli: report.output_l1_milli,
         latency_ms,
+        row_prefetch_requests: 0,
+        row_prefetch_hits: 0,
     }
 }
 
@@ -21586,7 +22497,8 @@ mod tests {
         qwen3_object_service_snapshot_get_from_path,
         qwen3_object_service_snapshot_hydrate_payloads, qwen3_object_service_snapshot_put,
         qwen3_obmm_object_ref_for_payload, qwen3_obmm_object_ref_wire_to_hex,
-        qwen3_register_range_forward_objects, qwen3_validate_engram_state_object_service_payload,
+        qwen3_paper_engram_state_manifest_payload, qwen3_register_range_forward_objects,
+        qwen3_validate_engram_state_object_service_payload,
         qwen3_validate_engram_state_registry_payload, read_u64_le_at,
         resolve_qwen3_range_dispatch_operands, run_host_matmul_batched_smoke,
         run_host_matmul_smoke, run_qwen3_dense_reference_prefill_runtime,
@@ -21594,12 +22506,14 @@ mod tests {
         LocalGuestUapiSurface, Qwen3DenseReferenceHiddenLayerNodeRange,
         Qwen3DenseReferenceLayerDependencyDescriptor, Qwen3DenseReferenceLogitsDescriptor,
         Qwen3DenseReferenceRangeForwardSummary, Qwen3DenseReferenceShard,
-        Qwen3GuestRangeComputeContract, Qwen3ProjectionKind, Qwen3RangeDispatchReq, UapiCommand,
+        Qwen3GuestRangeComputeContract, Qwen3PaperEngramStateGateRef,
+        Qwen3PaperEngramStateTableRef, Qwen3ProjectionKind, Qwen3RangeDispatchReq, UapiCommand,
         UapiDescriptor, UapiResponse, QWEN3_DENSE_PROFILE_OBJECT_REF_MAX_COUNT,
         QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_ROW_PREFETCH_PLAN,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
         QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
         QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE, QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES,
@@ -21612,12 +22526,12 @@ mod tests {
         QWEN3_SYNTHETIC_MLP_OUTPUT, QWEN3_SYNTHETIC_QKV_BASE_TILE, QWEN3_SYNTHETIC_TOKEN_TEXT,
         QWEN3_WEIGHT_REFERENCE_ENTRY_WORDS, QWEN3_WEIGHT_STAGE_LINK_ENTRY_WORDS,
         SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF, SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF,
-        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
-        SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
-        W4_DEMO_KVCACHE_PAYLOAD_BYTES, W4_KVCACHE_BLOCKS, W4_KVCACHE_PREFIX_GROUPS,
-        W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES, W5_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES,
-        W5_OBJECT_SERVICE_PAYLOAD_INDEX_MAGIC, W5_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES,
-        W5_OBJECT_SERVICE_PAYLOAD_INDEX_VERSION,
+        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF, SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF,
+        SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+        SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT, W4_DEMO_KVCACHE_PAYLOAD_BYTES, W4_KVCACHE_BLOCKS,
+        W4_KVCACHE_PREFIX_GROUPS, W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES,
+        W5_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES, W5_OBJECT_SERVICE_PAYLOAD_INDEX_MAGIC,
+        W5_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES, W5_OBJECT_SERVICE_PAYLOAD_INDEX_VERSION,
     };
     use sim_config::ScenarioConfig;
     use sim_core::{
@@ -21625,7 +22539,12 @@ mod tests {
         SimError, TaskKey,
     };
     use sim_models::engram_context::{
-        run_engram_context_reference, EngramContextOp, ENGRAM_CONTEXT_INDICES_PER_BATCH,
+        run_engram_context_reference, run_paper_engram_context_reference, EngramContextOp,
+        PaperEngramContextLookupRef, PaperEngramContextOp, PaperEngramContextTableView,
+        ENGRAM_CONTEXT_INDICES_PER_BATCH,
+    };
+    use sim_models::engram_hash::{
+        build_default_engram_hash_config, build_engram_lookup_requests_from_step,
     };
     use sim_models::qwen3_dense_reference::{
         checksum_words, token_piece_bytes_from_policy, token_piece_bytes_from_tokenizer_path,
@@ -21770,6 +22689,25 @@ mod tests {
         );
         qwen3_object_registry_put(&state_ref, &state_payload).expect("put state manifest object");
         (table, indices, gate_weight, state_ref)
+    }
+
+    fn test_publish_engram_row_prefetch_plan(
+        key_prefix: &str,
+        plan: sim_memory::PaperEngramTableRowPrefetchPlan,
+    ) -> LingquObmmObjectRefWire {
+        let payload = serde_json::to_vec(&plan).expect("serialize engram row prefetch plan");
+        let plan_ref = LingquObmmObjectRefWire::committed(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_ROW_PREFETCH_PLAN,
+            0,
+            0,
+            1,
+            qwen3_lingqu_key_hash(&format!("{key_prefix}/row-prefetch-plan")),
+            0,
+            payload.len() as u64,
+            qwen3_dense_reference_range_object_payload_checksum(&payload),
+        );
+        qwen3_object_registry_put(&plan_ref, &payload).expect("put row prefetch plan object");
+        plan_ref
     }
 
     fn test_publish_object_service_engram_payload(
@@ -22083,6 +23021,453 @@ mod tests {
     }
 
     #[test]
+    fn qwen3_paper_engram_context_cpu_reference_consumes_state_manifest() {
+        run_simpler_native_test_isolated(
+            "qwen3_paper_engram_context_cpu_reference_consumes_state_manifest",
+            || {
+                let registry_dir = std::env::temp_dir().join(format!(
+                    "ub_sim_qwen3_paper_engram_context_state_ref_test_{}",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&registry_dir);
+                with_env_var(
+                    SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+                    registry_dir.to_string_lossy().as_ref(),
+                    || {
+                        let hidden_size = 1024usize;
+                        let table_rows = 16usize;
+                        let layer = 7u64;
+                        let total_layers = QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers;
+                        let hash_config =
+                            build_default_engram_hash_config(0, 2, table_rows as u64, 0x77);
+                        let mut table_payloads = Vec::new();
+                        let mut table_refs = Vec::new();
+                        for spec in &hash_config.table_specs {
+                            let table = (0..table_rows * hidden_size)
+                                .map(|index| {
+                                    let raw = ((usize::from(spec.order) * 41
+                                        + usize::from(spec.head) * 29
+                                        + index * 13)
+                                        % 257) as f32;
+                                    (raw - 128.0) / 4096.0
+                                })
+                                .collect::<Vec<_>>();
+                            let payload = test_f32_vec_to_le_bytes(&table);
+                            let object_ref = LingquObmmObjectRefWire::committed(
+                                QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
+                                0,
+                                0,
+                                1,
+                                qwen3_lingqu_key_hash(&format!(
+                                    "engram/paper/table/{}/{}",
+                                    spec.order, spec.head
+                                )),
+                                0,
+                                payload.len() as u64,
+                                qwen3_dense_reference_range_object_payload_checksum(&payload),
+                            );
+                            qwen3_object_registry_put(&object_ref, &payload)
+                                .expect("put paper table object");
+                            table_payloads.push((spec.order, spec.head, table));
+                            table_refs.push(Qwen3PaperEngramStateTableRef {
+                                layer,
+                                order: spec.order,
+                                head: spec.head,
+                                row_start: 0,
+                                row_end: table_rows as u64,
+                                hash_seed: spec.seed,
+                                object_ref,
+                            });
+                        }
+                        let gate_weight = (0..hidden_size)
+                            .map(|index| ((index % 17) as f32 - 8.0) / 8192.0)
+                            .collect::<Vec<_>>();
+                        let gate_payload = test_f32_vec_to_le_bytes(&gate_weight);
+                        let gate_ref = LingquObmmObjectRefWire::committed(
+                            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
+                            0,
+                            0,
+                            1,
+                            qwen3_lingqu_key_hash("engram/paper/gate"),
+                            0,
+                            gate_payload.len() as u64,
+                            qwen3_dense_reference_range_object_payload_checksum(&gate_payload),
+                        );
+                        qwen3_object_registry_put(&gate_ref, &gate_payload)
+                            .expect("put paper gate object");
+                        let state_payload = qwen3_paper_engram_state_manifest_payload(
+                            hidden_size,
+                            hidden_size,
+                            &table_refs,
+                            &[Qwen3PaperEngramStateGateRef {
+                                layer,
+                                object_ref: gate_ref,
+                            }],
+                        )
+                        .expect("paper engram state manifest payload");
+                        let state_ref = LingquObmmObjectRefWire::committed(
+                            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
+                            0,
+                            0,
+                            1,
+                            qwen3_lingqu_key_hash("engram/paper/state"),
+                            0,
+                            state_payload.len() as u64,
+                            qwen3_dense_reference_range_object_payload_checksum(&state_payload),
+                        );
+                        qwen3_object_registry_put(&state_ref, &state_payload)
+                            .expect("put paper state manifest");
+                        let state_ref_hex = qwen3_obmm_object_ref_wire_to_hex(&state_ref);
+                        let validation = qwen3_validate_engram_state_registry_payload(
+                            &state_ref_hex,
+                            &registry_dir,
+                            hidden_size,
+                        )
+                        .expect("validate paper state manifest");
+                        assert_eq!(validation.table_rows, table_rows * table_refs.len());
+                        assert_eq!(validation.indices_bytes, 0);
+                        assert_eq!(
+                            validation.gate_weight_bytes,
+                            hidden_size * std::mem::size_of::<f32>()
+                        );
+
+                        with_env_var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP", "cpu-reference", || {
+                            with_env_var(SIM_QWEN3_GUEST_ENGRAM_STATE_REF, &state_ref_hex, || {
+                                let token_ids = [11, 358, 2776, 264];
+                                let terminal_hidden = (0..hidden_size)
+                                    .map(|index| (index as f32 - hidden_size as f32 / 2.0) / 4096.0)
+                                    .collect::<Vec<_>>();
+                                let table_views = table_payloads
+                                    .iter()
+                                    .map(|(order, head, table)| PaperEngramContextTableView {
+                                        order: *order,
+                                        head: *head,
+                                        table,
+                                        table_rows,
+                                    })
+                                    .collect::<Vec<_>>();
+                                let lookups = build_engram_lookup_requests_from_step(
+                                    &token_ids,
+                                    token_ids.len() - 1,
+                                    &hash_config,
+                                )
+                                .expect("build paper lookups")
+                                .into_iter()
+                                .map(|request| PaperEngramContextLookupRef {
+                                    batch_index: 0,
+                                    order: request.order,
+                                    head: request.head,
+                                    row: request.row,
+                                })
+                                .collect::<Vec<_>>();
+                                let expected =
+                                    run_paper_engram_context_reference(&PaperEngramContextOp {
+                                        tables: &table_views,
+                                        lookups: &lookups,
+                                        hidden: &terminal_hidden,
+                                        gate_weight: &gate_weight,
+                                        batch: 1,
+                                        hidden_size,
+                                    })
+                                    .expect("paper reference context");
+                                let mut sequence = vec![vec![0.0f32; hidden_size], terminal_hidden];
+                                let report =
+                                        qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
+                                            &mut sequence,
+                                            &token_ids,
+                                            layer,
+                                            total_layers,
+                                            None,
+                                        )
+                                        .expect("paper context op should run")
+                                        .expect("paper context report");
+                                assert_eq!(report.mode, "cpu-reference-paper-object-ref");
+                                assert_eq!(report.table_rows, table_rows * table_refs.len());
+                                assert_eq!(report.index_checksum, expected.report.index_checksum);
+                                assert_eq!(sequence[1], expected.output);
+
+                                let mut skipped_sequence =
+                                    vec![vec![0.0f32; hidden_size], expected.output.clone()];
+                                let skipped_before = skipped_sequence.clone();
+                                let skipped =
+                                        qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
+                                            &mut skipped_sequence,
+                                            &token_ids,
+                                            layer + 1,
+                                            total_layers,
+                                            None,
+                                        )
+                                        .expect("unconfigured paper layer should skip");
+                                assert!(skipped.is_none());
+                                assert_eq!(skipped_sequence, skipped_before);
+                            });
+                        });
+                    },
+                );
+                let _ = std::fs::remove_dir_all(&registry_dir);
+            },
+        );
+    }
+
+    #[test]
+    fn qwen3_paper_engram_context_row_prefetch_plan_reports_hits() {
+        run_simpler_native_test_isolated(
+            "qwen3_paper_engram_context_row_prefetch_plan_reports_hits",
+            || {
+                let registry_dir = std::env::temp_dir().join(format!(
+                    "ub_sim_qwen3_paper_engram_context_row_prefetch_hits_test_{}",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&registry_dir);
+                with_env_var(
+                    SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+                    registry_dir.to_string_lossy().as_ref(),
+                    || {
+                        let hidden_size = 1024usize;
+                        let table_rows = 16usize;
+                        let layer = 7u64;
+                        let total_layers = QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers;
+                        let hash_config =
+                            build_default_engram_hash_config(0, 2, table_rows as u64, 0x77);
+                        let token_ids = [11, 358, 2776, 264];
+                        let token_step = token_ids.len() - 1;
+                        let lookups = build_engram_lookup_requests_from_step(
+                            &token_ids,
+                            token_step,
+                            &hash_config,
+                        )
+                        .expect("build paper lookups");
+                        let expected_requests = lookups.len() as u64;
+                        let mut rows = lookups
+                            .iter()
+                            .map(|request| sim_memory::PaperEngramTableRowPrefetchRef {
+                                step_index: request.step_index,
+                                layer: layer as u32,
+                                order: request.order,
+                                head: u32::from(request.head),
+                                row: request.row,
+                                exact_key: request.exact_key,
+                                shard_id: format!("shard-{}-{}", request.order, request.head),
+                                block_payload_refs: vec![sim_memory::LingquBlockPayloadRef::new(
+                                    "dummy-block",
+                                    0,
+                                    64,
+                                    12345,
+                                )],
+                            })
+                            .collect::<Vec<_>>();
+                        rows.push(sim_memory::PaperEngramTableRowPrefetchRef {
+                            step_index: 0,
+                            layer: 0,
+                            order: 2,
+                            head: 0,
+                            row: 0,
+                            exact_key: 0,
+                            shard_id: "wrong-step-layer".to_string(),
+                            block_payload_refs: vec![sim_memory::LingquBlockPayloadRef::new(
+                                "dummy-block",
+                                0,
+                                64,
+                                12345,
+                            )],
+                        });
+
+                        let plan_ref = test_publish_engram_row_prefetch_plan(
+                            "engram/paper/prefetch-hits",
+                            sim_memory::PaperEngramTableRowPrefetchPlan {
+                                plan_id: "qwen3-paper-prefetch-plan".to_string(),
+                                request_id: "qwen3-paper-prefetch-request".to_string(),
+                                module_id: "qwen3-paper-engram-module".to_string(),
+                                canonical_history_len: token_ids.len() as u64,
+                                from_step: token_step as u64,
+                                rows,
+                                created_at_us: 123_456,
+                            },
+                        );
+
+                        let mut table_payloads = Vec::new();
+                        let mut table_refs = Vec::new();
+                        for spec in &hash_config.table_specs {
+                            let table = (0..table_rows * hidden_size)
+                                .map(|index| {
+                                    let raw = ((usize::from(spec.order) * 41
+                                        + usize::from(spec.head) * 29
+                                        + index * 13)
+                                        % 257) as f32;
+                                    (raw - 128.0) / 4096.0
+                                })
+                                .collect::<Vec<_>>();
+                            let payload = test_f32_vec_to_le_bytes(&table);
+                            let object_ref = LingquObmmObjectRefWire::committed(
+                                QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
+                                0,
+                                0,
+                                1,
+                                qwen3_lingqu_key_hash(&format!(
+                                    "engram/paper/table/{}/{}",
+                                    spec.order, spec.head
+                                )),
+                                0,
+                                payload.len() as u64,
+                                qwen3_dense_reference_range_object_payload_checksum(&payload),
+                            );
+                            qwen3_object_registry_put(&object_ref, &payload)
+                                .expect("put paper table object");
+                            table_payloads.push((spec.order, spec.head, table));
+                            table_refs.push(Qwen3PaperEngramStateTableRef {
+                                layer,
+                                order: spec.order,
+                                head: spec.head,
+                                row_start: 0,
+                                row_end: table_rows as u64,
+                                hash_seed: spec.seed,
+                                object_ref,
+                            });
+                        }
+                        let gate_weight = (0..hidden_size)
+                            .map(|index| ((index % 17) as f32 - 8.0) / 8192.0)
+                            .collect::<Vec<_>>();
+                        let gate_payload = test_f32_vec_to_le_bytes(&gate_weight);
+                        let gate_ref = LingquObmmObjectRefWire::committed(
+                            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
+                            0,
+                            0,
+                            1,
+                            qwen3_lingqu_key_hash("engram/paper/gate"),
+                            0,
+                            gate_payload.len() as u64,
+                            qwen3_dense_reference_range_object_payload_checksum(&gate_payload),
+                        );
+                        qwen3_object_registry_put(&gate_ref, &gate_payload)
+                            .expect("put paper gate object");
+
+                        let state_payload = qwen3_paper_engram_state_manifest_payload(
+                            hidden_size,
+                            hidden_size,
+                            &table_refs,
+                            &[Qwen3PaperEngramStateGateRef {
+                                layer,
+                                object_ref: gate_ref,
+                            }],
+                        )
+                        .expect("paper engram state manifest payload");
+                        let state_ref = LingquObmmObjectRefWire::committed(
+                            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
+                            0,
+                            0,
+                            1,
+                            qwen3_lingqu_key_hash("engram/paper/state"),
+                            0,
+                            state_payload.len() as u64,
+                            qwen3_dense_reference_range_object_payload_checksum(&state_payload),
+                        );
+                        qwen3_object_registry_put(&state_ref, &state_payload)
+                            .expect("put paper state manifest");
+                        with_env_var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP", "cpu-reference", || {
+                            with_env_var(
+                                SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
+                                &qwen3_obmm_object_ref_wire_to_hex(&state_ref),
+                                || {
+                                    with_env_var(
+                                        SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF,
+                                        &qwen3_obmm_object_ref_wire_to_hex(&plan_ref),
+                                        || {
+                                            let terminal_hidden = (0..hidden_size)
+                                                .map(|index| (index as f32 - 512.0) / 4096.0)
+                                                .collect::<Vec<_>>();
+                                            let mut sequence =
+                                                vec![vec![0.0f32; hidden_size], terminal_hidden];
+                                            let report =
+                                                    qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
+                                                        &mut sequence,
+                                                        &token_ids,
+                                                        layer,
+                                                        total_layers,
+                                                        None,
+                                                    )
+                                                    .expect("paper context op should run")
+                                                    .expect("paper context report");
+                                            assert_eq!(
+                                                report.mode,
+                                                "cpu-reference-paper-object-ref"
+                                            );
+                                            assert_eq!(
+                                                report.row_prefetch_requests,
+                                                expected_requests
+                                            );
+                                            assert_eq!(report.row_prefetch_hits, expected_requests);
+                                        },
+                                    );
+                                },
+                            );
+                        });
+                    },
+                );
+                let _ = std::fs::remove_dir_all(&registry_dir);
+            },
+        );
+    }
+
+    #[test]
+    fn qwen3_engram_context_row_prefetch_ref_requires_state_ref() {
+        run_simpler_native_test_isolated(
+            "qwen3_engram_context_row_prefetch_ref_requires_state_ref",
+            || {
+                let registry_dir = std::env::temp_dir().join(format!(
+                    "ub_sim_qwen3_paper_engram_context_row_prefetch_requires_state_{}",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&registry_dir);
+                with_env_var(
+                    SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+                    registry_dir.to_string_lossy().as_ref(),
+                    || {
+                        with_env_var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP", "cpu-reference", || {
+                            let plan_ref = test_publish_engram_row_prefetch_plan(
+                                "engram/paper/prefetch-missing-state",
+                                sim_memory::PaperEngramTableRowPrefetchPlan {
+                                    plan_id: "missing-state-plan".to_string(),
+                                    request_id: "missing-state-request".to_string(),
+                                    module_id: "missing-state-module".to_string(),
+                                    canonical_history_len: 4,
+                                    from_step: 0,
+                                    rows: Vec::new(),
+                                    created_at_us: 123,
+                                },
+                            );
+                            with_env_var(
+                                SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF,
+                                &qwen3_obmm_object_ref_wire_to_hex(&plan_ref),
+                                || {
+                                    let mut sequence = vec![vec![0.0f32; 1024], vec![0.0f32; 1024]];
+                                    let err =
+                                            qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
+                                                &mut sequence,
+                                                &[11, 358, 2776, 264],
+                                                QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
+                                                QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
+                                                None,
+                                            )
+                                            .expect_err(
+                                                "row prefetch without state ref must error",
+                                            );
+                                    assert!(
+                                            err.contains(
+                                                "qwen3_engram_context_row_prefetch_ref_requires_state_ref"
+                                            ),
+                                            "{err}"
+                                        );
+                                },
+                            );
+                        });
+                    },
+                );
+                let _ = std::fs::remove_dir_all(&registry_dir);
+            },
+        );
+    }
+
+    #[test]
     fn qwen3_engram_context_cpu_reference_consumes_object_ref_state() {
         run_simpler_native_test_isolated(
             "qwen3_engram_context_cpu_reference_consumes_object_ref_state",
@@ -22204,6 +23589,21 @@ mod tests {
                                         expected.report.output_checksum
                                     );
                                     assert_eq!(sequence[1], expected.output);
+
+                                    let mut nonterminal_sequence =
+                                        vec![vec![0.0f32; hidden_size], expected.output.clone()];
+                                    let nonterminal_before = nonterminal_sequence.clone();
+                                    let skipped =
+                                        qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
+                                            &mut nonterminal_sequence,
+                                            &[11, 358, 2776, 264],
+                                            QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers - 1,
+                                            QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
+                                            None,
+                                        )
+                                        .expect("legacy context op should skip non-terminal layer");
+                                    assert!(skipped.is_none());
+                                    assert_eq!(nonterminal_sequence, nonterminal_before);
                                 },
                             );
                         });
@@ -27450,6 +28850,70 @@ mod tests {
 
         validate_qwen3_range_dispatch_object_refs(&req, &segment_payload)
             .expect("object-ref sideband should validate");
+
+        let table_ref = LingquObmmObjectRefWire::committed(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
+            0,
+            0,
+            1,
+            0x2234,
+            0,
+            1024,
+            0x55aa,
+        );
+        let gate_ref = LingquObmmObjectRefWire::committed(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
+            0,
+            0,
+            1,
+            0x3234,
+            0,
+            1024,
+            0xaa55,
+        );
+        let paper_state_payload = qwen3_paper_engram_state_manifest_payload(
+            256,
+            256,
+            &[Qwen3PaperEngramStateTableRef {
+                layer: 4,
+                order: 1,
+                head: 0,
+                row_start: 0,
+                row_end: 1,
+                hash_seed: 0x77,
+                object_ref: table_ref,
+            }],
+            &[Qwen3PaperEngramStateGateRef {
+                layer: 4,
+                object_ref: gate_ref,
+            }],
+        )
+        .expect("paper state payload");
+        assert_ne!(
+            paper_state_payload.len(),
+            LingquObmmObjectRefWire::BYTE_LEN * 3
+        );
+        let paper_state_ref = LingquObmmObjectRefWire::committed(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
+            0,
+            0,
+            1,
+            0x4234,
+            0,
+            paper_state_payload.len() as u64,
+            qwen3_dense_reference_range_object_payload_checksum(&paper_state_payload),
+        );
+        write_obmm_object_ref_wire(
+            &mut segment_payload[OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN
+                ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN * 2],
+            paper_state_ref,
+        );
+        let paper_state_req = Qwen3RangeDispatchReq {
+            object_ref_count: 2,
+            ..req.clone()
+        };
+        validate_qwen3_range_dispatch_object_refs(&paper_state_req, &segment_payload)
+            .expect("paper ENGRAM_STATE sideband should validate");
 
         let missing_ref_req = Qwen3RangeDispatchReq {
             object_ref_count: 0,

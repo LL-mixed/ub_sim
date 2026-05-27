@@ -1,5 +1,7 @@
 use sim_models::{
-    engram_context::deterministic_engram_context_fixture,
+    engram_context::{
+        deterministic_engram_context_fixture, deterministic_paper_engram_context_fixture,
+    },
     engram_simt_adapter::{
         artifact_config_from_env, discover_engram_simt_artifact, EngramSimtArtifactConfig,
     },
@@ -9,6 +11,7 @@ use std::path::PathBuf;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CliMode {
     CpuReference,
+    PaperCpuReference,
     FusedSimt,
 }
 
@@ -25,6 +28,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match args.mode {
         CliMode::CpuReference => {
             let output = deterministic_engram_context_fixture(args.batch, args.rows)?;
+            println!("{}", serde_json::to_string_pretty(&output.report)?);
+        }
+        CliMode::PaperCpuReference => {
+            let output = deterministic_paper_engram_context_fixture(args.batch, args.rows)?;
             println!("{}", serde_json::to_string_pretty(&output.report)?);
         }
         CliMode::FusedSimt => {
@@ -98,6 +105,7 @@ where
 fn parse_mode(value: &str) -> Result<CliMode, String> {
     match value {
         "cpu" | "cpu-reference" => Ok(CliMode::CpuReference),
+        "paper-cpu" | "paper-cpu-reference" => Ok(CliMode::PaperCpuReference),
         "fused-simt" => Ok(CliMode::FusedSimt),
         _ => Err(format!("unsupported --mode: {value}")),
     }
@@ -147,6 +155,21 @@ mod tests {
                 batch: 16,
                 rows: 65_536,
                 artifact_dir: Some(PathBuf::from("/tmp/engram-simt-build"))
+            }
+        );
+    }
+
+    #[test]
+    fn cli_args_accept_paper_cpu_reference_mode() {
+        let args = parse_args(["--mode=paper-cpu-reference", "--batch=4", "--rows=16"])
+            .expect("parse args");
+        assert_eq!(
+            args,
+            CliArgs {
+                mode: CliMode::PaperCpuReference,
+                batch: 4,
+                rows: 16,
+                artifact_dir: None
             }
         );
     }

@@ -16,8 +16,11 @@ use sim_memory::{
     LingquMemoryService, MemoryCatalogSnapshot, MemoryChunk, MemoryContentType,
     MemoryCorpusCatalog, MemoryPiiState, MemoryQuery, MemoryRecord, MemoryRecordState,
     MemoryRetentionPolicy, MemoryScope, MemorySecurityLabel, MemorySourceKind, MemoryTrustLevel,
-    MemoryVisibility, PaperEngramGateManifest, PaperEngramModuleManifest,
-    PaperEngramTableShardManifest, PrefetchPlanRequest, PrefixCacheArtifact,
+    MemoryVisibility, PaperEngramEvalReportManifest, PaperEngramGateManifest,
+    PaperEngramHashConfigManifest, PaperEngramModuleManifest, PaperEngramTableRowBlockRequest,
+    PaperEngramTableRowPrefetchRequest, PaperEngramTableShardManifest,
+    PaperEngramTokenizerProjectionManifest, PaperEngramTrainingMode,
+    PaperEngramTrainingRecipeManifest, PrefetchPlanRequest, PrefixCacheArtifact,
     PrefixCacheLookupRequest, QueryResult, VectorIndexKind, VectorIndexObject,
 };
 use sim_models::qwen3_dense_reference::{
@@ -73,18 +76,22 @@ use sim_uapi::{
     qwen3_dense_reference_default_guest_input, qwen3_dense_reference_prefill_text_output_report,
     qwen3_dense_reference_range_forward_report_with_prompt, qwen3_flush_w5_memory_runtime_commits,
     qwen3_obmm_object_ref_for_payload, qwen3_obmm_object_ref_wire_to_hex,
-    qwen3_publish_engram_state_registry_payload, qwen3_publish_object_registry_payload,
-    qwen3_validate_engram_state_object_service_payload,
+    qwen3_paper_engram_state_manifest_payload, qwen3_publish_engram_state_registry_payload,
+    qwen3_publish_object_registry_payload, qwen3_validate_engram_state_object_service_payload,
     qwen3_validate_engram_state_registry_payload, LocalGuestUapiSurface,
-    Qwen3EngramStateRegistryValidation, UapiCommand, UapiDescriptor, UapiResponse,
+    Qwen3EngramStateRegistryValidation, Qwen3PaperEngramStateGateRef,
+    Qwen3PaperEngramStateTableRef, UapiCommand, UapiDescriptor, UapiResponse,
     QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
     QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
-    QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE, QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
+    QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
+    QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_ROW_PREFETCH_PLAN,
+    QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
     QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
     QWEN3_DENSE_PROFILE_OBMM_KIND_MEMORY_BOUNDARY_REGISTRY,
     QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE, QWEN3_DENSE_PROFILE_OBMM_KIND_TERMINAL_LOGITS,
-    SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION,
-    SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
+    SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
+    SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION, SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+    SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
 };
 use sim_workloads::{run_host_vector_dispatch, run_minimal_workload};
 use std::collections::HashMap;
@@ -399,6 +406,7 @@ struct Qwen3EngramConfig {
     context_op: Qwen3EngramContextOp,
     report: Qwen3EngramReport,
     state_ref: Option<String>,
+    row_prefetch_ref: Option<String>,
     token_projection_path: Option<PathBuf>,
     object_registry_dir: Option<PathBuf>,
     object_service_snapshot_path: Option<PathBuf>,
@@ -418,6 +426,7 @@ impl Default for Qwen3EngramConfig {
             context_op: Qwen3EngramContextOp::Disabled,
             report: Qwen3EngramReport::Summary,
             state_ref: None,
+            row_prefetch_ref: None,
             token_projection_path: None,
             object_registry_dir: None,
             object_service_snapshot_path: None,
@@ -901,6 +910,14 @@ where
                         Some(validate_qwen3_engram_state_ref(&next.to_string_lossy())?);
                 } else if let Some(value) = text.strip_prefix("--engram-state-ref=") {
                     engram.state_ref = Some(validate_qwen3_engram_state_ref(value)?);
+                } else if text == "--engram-row-prefetch-ref" {
+                    let next = pending.next().ok_or_else(|| {
+                        anyhow::anyhow!("--engram-row-prefetch-ref requires a value")
+                    })?;
+                    engram.row_prefetch_ref =
+                        Some(validate_qwen3_engram_state_ref(&next.to_string_lossy())?);
+                } else if let Some(value) = text.strip_prefix("--engram-row-prefetch-ref=") {
+                    engram.row_prefetch_ref = Some(validate_qwen3_engram_state_ref(value)?);
                 } else if text == "--engram-token-projection" {
                     let next = pending.next().ok_or_else(|| {
                         anyhow::anyhow!("--engram-token-projection requires a value")
@@ -1116,6 +1133,9 @@ where
                 anyhow::bail!(
                     "--engram-state-ref requires --object-registry-dir or --object-service-snapshot"
                 );
+            }
+            if engram.row_prefetch_ref.is_some() && engram.state_ref.is_none() {
+                anyhow::bail!("--engram-row-prefetch-ref requires --engram-state-ref");
             }
             let memory_bootstrap = match (
                 memory_store_path,
@@ -1641,12 +1661,14 @@ where
     ];
     for key in [
         SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
+        SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF,
         SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION,
         SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
         SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
     ] {
         let value = match key {
             SIM_QWEN3_GUEST_ENGRAM_STATE_REF => config.state_ref.clone(),
+            SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF => config.row_prefetch_ref.clone(),
             SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION => config
                 .token_projection_path
                 .as_ref()
@@ -2187,12 +2209,41 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
             run_lingqu_memory_promote_terminal_shortpath_artifacts_from_w5_summary_cli(&args)
         }
         "register-execution-artifact" => run_lingqu_memory_register_execution_artifact_cli(&args),
+        "register-paper-engram-tokenizer-projection" => {
+            run_lingqu_memory_register_paper_engram_tokenizer_projection_cli(&args)
+        }
+        "register-paper-engram-hash-config" => {
+            run_lingqu_memory_register_paper_engram_hash_config_cli(&args)
+        }
+        "register-paper-engram-training-recipe" => {
+            run_lingqu_memory_register_paper_engram_training_recipe_cli(&args)
+        }
+        "register-paper-engram-eval-report" => {
+            run_lingqu_memory_register_paper_engram_eval_report_cli(&args)
+        }
         "register-paper-engram-table-shard" => {
             run_lingqu_memory_register_paper_engram_table_shard_cli(&args)
         }
         "register-paper-engram-gate" => run_lingqu_memory_register_paper_engram_gate_cli(&args),
         "register-paper-engram-module" => run_lingqu_memory_register_paper_engram_module_cli(&args),
+        "validate-paper-engram-quality" => {
+            run_lingqu_memory_validate_paper_engram_quality_cli(&args)
+        }
+        "seed-paper-engram-fixture" => run_lingqu_memory_seed_paper_engram_fixture_cli(&args),
         "list-paper-engram-modules" => run_lingqu_memory_list_paper_engram_modules_cli(&args),
+        "resolve-paper-engram-runtime" => run_lingqu_memory_resolve_paper_engram_runtime_cli(&args),
+        "resolve-paper-engram-table-row-blocks" => {
+            run_lingqu_memory_resolve_paper_engram_table_row_blocks_cli(&args)
+        }
+        "plan-paper-engram-row-prefetch" => {
+            run_lingqu_memory_plan_paper_engram_row_prefetch_cli(&args)
+        }
+        "publish-paper-engram-row-prefetch" => {
+            run_lingqu_memory_publish_paper_engram_row_prefetch_cli(&args)
+        }
+        "publish-paper-engram-state-ref" => {
+            run_lingqu_memory_publish_paper_engram_state_ref_cli(&args)
+        }
         "register-terminal-logits-artifact-from-w5-summary" => {
             run_lingqu_memory_register_terminal_logits_artifact_from_w5_summary_cli(&args)
         }
@@ -2209,8 +2260,12 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
             list-query-results, list-artifact-access, list-boundary-observations, \
             list-record-lifecycle, list-shortpath-supports, list-shortpath-decisions, \
             list-prefetch-plans, list-prefix-cache-reuse, list-paper-engram-modules, \
+            resolve-paper-engram-runtime, resolve-paper-engram-table-row-blocks, \
+            plan-paper-engram-row-prefetch, publish-paper-engram-row-prefetch, publish-paper-engram-state-ref, \
+            register-paper-engram-tokenizer-projection, register-paper-engram-hash-config, \
+            register-paper-engram-training-recipe, register-paper-engram-eval-report, \
             register-paper-engram-table-shard, register-paper-engram-gate, \
-            register-paper-engram-module, update-record-state, register-execution-artifact, \
+            register-paper-engram-module, validate-paper-engram-quality, seed-paper-engram-fixture, update-record-state, register-execution-artifact, \
             record-artifact-access, register-terminal-logits-artifact-from-w5-summary, \
             promote-terminal-shortpath-artifacts-from-w5-summary, boundary-lookup, \
             boundary-lookup-from-observation, boundary-request-from-w5-summary, \
@@ -2398,8 +2453,298 @@ struct LingquMemoryPaperEngramGateRegistry {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
+struct LingquMemoryPaperEngramTrainingRecipeRegistry {
+    recipes: Vec<PaperEngramTrainingRecipeManifest>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct LingquMemoryPaperEngramEvalReportRegistry {
+    reports: Vec<PaperEngramEvalReportManifest>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
 struct LingquMemoryPaperEngramModuleRegistry {
     modules: Vec<PaperEngramModuleManifest>,
+}
+
+fn run_lingqu_memory_register_paper_engram_tokenizer_projection_cli(
+    args: &[String],
+) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let manifest_path = PathBuf::from(required_cli_arg(args, "--manifest")?);
+    let projection = {
+        let bytes = fs::read(&manifest_path).with_context(|| {
+            format!(
+                "read paper engram tokenizer projection {}",
+                manifest_path.display()
+            )
+        })?;
+        serde_json::from_slice::<PaperEngramTokenizerProjectionManifest>(&bytes).with_context(
+            || {
+                format!(
+                    "decode paper engram tokenizer projection {}",
+                    manifest_path.display()
+                )
+            },
+        )?
+    };
+
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let mut memory_service = LingquMemoryService::new();
+    let _registry = match rebuild_lingqu_memory_paper_engram_tokenizer_projections(
+        &mut memory_service,
+        &mut durable_store,
+    ) {
+        Ok(registry) => registry,
+        Err(err) => {
+            if let Some(memory_error) = err.downcast_ref::<sim_memory::LingquMemoryError>() {
+                if matches!(
+                    memory_error,
+                    sim_memory::LingquMemoryError::MissingDfsPath(_)
+                ) {
+                    Vec::new()
+                } else {
+                    return Err(err).context("rebuild paper engram tokenizer projections");
+                }
+            } else {
+                return Err(err).context("rebuild paper engram tokenizer projections");
+            }
+        }
+    };
+    memory_service
+        .register_paper_engram_tokenizer_projection(projection.clone())
+        .context("register paper engram tokenizer projection")?;
+    memory_service
+        .persist_paper_engram_tokenizer_projections_to_dfs(&mut durable_store)
+        .context("persist paper engram tokenizer projection manifest to DFS")?;
+    save_lingqu_memory_durable_store(&store_path, &durable_store)?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: register-paper-engram-tokenizer-projection");
+    println!("  store_path: {}", store_path.display());
+    println!(
+        "  manifest_path: {}",
+        sim_memory::LINGQU_PAPER_ENGRAM_TOKENIZER_PROJECTION_MANIFEST_PATH
+    );
+    println!("  input_path: {}", manifest_path.display());
+    println!("  projection_id: {}", projection.projection_id);
+    Ok(())
+}
+
+fn run_lingqu_memory_register_paper_engram_hash_config_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let manifest_path = PathBuf::from(required_cli_arg(args, "--manifest")?);
+    let hash_config = {
+        let bytes = fs::read(&manifest_path).with_context(|| {
+            format!("read paper engram hash config {}", manifest_path.display())
+        })?;
+        serde_json::from_slice::<PaperEngramHashConfigManifest>(&bytes).with_context(|| {
+            format!(
+                "decode paper engram hash config {}",
+                manifest_path.display()
+            )
+        })?
+    };
+
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let mut memory_service = LingquMemoryService::new();
+    let _projection_registry = match rebuild_lingqu_memory_paper_engram_tokenizer_projections(
+        &mut memory_service,
+        &mut durable_store,
+    ) {
+        Ok(registry) => registry,
+        Err(err) => {
+            if let Some(memory_error) = err.downcast_ref::<sim_memory::LingquMemoryError>() {
+                if matches!(
+                    memory_error,
+                    sim_memory::LingquMemoryError::MissingDfsPath(_)
+                ) {
+                    Vec::new()
+                } else {
+                    return Err(err).context("rebuild paper engram tokenizer projections");
+                }
+            } else {
+                return Err(err).context("rebuild paper engram tokenizer projections");
+            }
+        }
+    };
+    let _hash_registry = match rebuild_lingqu_memory_paper_engram_hash_configs(
+        &mut memory_service,
+        &mut durable_store,
+    ) {
+        Ok(registry) => registry,
+        Err(err) => {
+            if let Some(memory_error) = err.downcast_ref::<sim_memory::LingquMemoryError>() {
+                if matches!(
+                    memory_error,
+                    sim_memory::LingquMemoryError::MissingDfsPath(_)
+                ) {
+                    Vec::new()
+                } else {
+                    return Err(err).context("rebuild paper engram hash configs");
+                }
+            } else {
+                return Err(err).context("rebuild paper engram hash configs");
+            }
+        }
+    };
+    memory_service
+        .register_paper_engram_hash_config(hash_config.clone())
+        .context("register paper engram hash config")?;
+    memory_service
+        .persist_paper_engram_hash_configs_to_dfs(&mut durable_store)
+        .context("persist paper engram hash config manifest to DFS")?;
+    save_lingqu_memory_durable_store(&store_path, &durable_store)?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: register-paper-engram-hash-config");
+    println!("  store_path: {}", store_path.display());
+    println!(
+        "  manifest_path: {}",
+        sim_memory::LINGQU_PAPER_ENGRAM_HASH_CONFIG_MANIFEST_PATH
+    );
+    println!("  input_path: {}", manifest_path.display());
+    println!("  hash_config_id: {}", hash_config.hash_config_id);
+    Ok(())
+}
+
+fn run_lingqu_memory_register_paper_engram_training_recipe_cli(
+    args: &[String],
+) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let manifest_path = PathBuf::from(required_cli_arg(args, "--manifest")?);
+    let recipe = {
+        let bytes = fs::read(&manifest_path).with_context(|| {
+            format!(
+                "read paper engram training recipe {}",
+                manifest_path.display()
+            )
+        })?;
+        serde_json::from_slice::<PaperEngramTrainingRecipeManifest>(&bytes).with_context(|| {
+            format!(
+                "decode paper engram training recipe {}",
+                manifest_path.display()
+            )
+        })?
+    };
+
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let mut memory_service = LingquMemoryService::new();
+    rebuild_lingqu_memory_paper_engram_tokenizer_projections(
+        &mut memory_service,
+        &mut durable_store,
+    )
+    .context("rebuild paper engram tokenizer projections")?;
+    rebuild_lingqu_memory_paper_engram_hash_configs(&mut memory_service, &mut durable_store)
+        .context("rebuild paper engram hash configs")?;
+    let _registry = match rebuild_lingqu_memory_paper_engram_training_recipes(
+        &mut memory_service,
+        &mut durable_store,
+    ) {
+        Ok(registry) => registry,
+        Err(err) => {
+            if let Some(memory_error) = err.downcast_ref::<sim_memory::LingquMemoryError>() {
+                if matches!(
+                    memory_error,
+                    sim_memory::LingquMemoryError::MissingDfsPath(_)
+                ) {
+                    LingquMemoryPaperEngramTrainingRecipeRegistry {
+                        recipes: Vec::new(),
+                    }
+                } else {
+                    return Err(err).context("rebuild paper engram training recipe registry");
+                }
+            } else {
+                return Err(err).context("rebuild paper engram training recipe registry");
+            }
+        }
+    };
+    memory_service
+        .register_paper_engram_training_recipe(recipe.clone())
+        .context("register paper engram training recipe")?;
+    memory_service
+        .persist_paper_engram_training_recipes_to_dfs(&mut durable_store)
+        .context("persist paper engram training recipe manifest to DFS")?;
+    save_lingqu_memory_durable_store(&store_path, &durable_store)?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: register-paper-engram-training-recipe");
+    println!("  store_path: {}", store_path.display());
+    println!(
+        "  manifest_path: {}",
+        sim_memory::LINGQU_PAPER_ENGRAM_TRAINING_RECIPE_MANIFEST_PATH
+    );
+    println!("  input_path: {}", manifest_path.display());
+    println!("  recipe_id: {}", recipe.recipe_id);
+    Ok(())
+}
+
+fn run_lingqu_memory_register_paper_engram_eval_report_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let manifest_path = PathBuf::from(required_cli_arg(args, "--manifest")?);
+    let report = {
+        let bytes = fs::read(&manifest_path).with_context(|| {
+            format!("read paper engram eval report {}", manifest_path.display())
+        })?;
+        serde_json::from_slice::<PaperEngramEvalReportManifest>(&bytes).with_context(|| {
+            format!(
+                "decode paper engram eval report {}",
+                manifest_path.display()
+            )
+        })?
+    };
+
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let mut memory_service = LingquMemoryService::new();
+    rebuild_lingqu_memory_paper_engram_tokenizer_projections(
+        &mut memory_service,
+        &mut durable_store,
+    )
+    .context("rebuild paper engram tokenizer projections")?;
+    rebuild_lingqu_memory_paper_engram_hash_configs(&mut memory_service, &mut durable_store)
+        .context("rebuild paper engram hash configs")?;
+    rebuild_lingqu_memory_paper_engram_training_recipes(&mut memory_service, &mut durable_store)
+        .context("rebuild paper engram training recipe registry")?;
+    let _registry = match rebuild_lingqu_memory_paper_engram_eval_reports(
+        &mut memory_service,
+        &mut durable_store,
+    ) {
+        Ok(registry) => registry,
+        Err(err) => {
+            if let Some(memory_error) = err.downcast_ref::<sim_memory::LingquMemoryError>() {
+                if matches!(
+                    memory_error,
+                    sim_memory::LingquMemoryError::MissingDfsPath(_)
+                ) {
+                    LingquMemoryPaperEngramEvalReportRegistry {
+                        reports: Vec::new(),
+                    }
+                } else {
+                    return Err(err).context("rebuild paper engram eval report registry");
+                }
+            } else {
+                return Err(err).context("rebuild paper engram eval report registry");
+            }
+        }
+    };
+    memory_service
+        .register_paper_engram_eval_report(report.clone())
+        .context("register paper engram eval report")?;
+    memory_service
+        .persist_paper_engram_eval_reports_to_dfs(&mut durable_store)
+        .context("persist paper engram eval report manifest to DFS")?;
+    save_lingqu_memory_durable_store(&store_path, &durable_store)?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: register-paper-engram-eval-report");
+    println!("  store_path: {}", store_path.display());
+    println!(
+        "  manifest_path: {}",
+        sim_memory::LINGQU_PAPER_ENGRAM_EVAL_REPORT_MANIFEST_PATH
+    );
+    println!("  input_path: {}", manifest_path.display());
+    println!("  report_id: {}", report.report_id);
+    Ok(())
 }
 
 fn run_lingqu_memory_register_execution_artifact_cli(args: &[String]) -> anyhow::Result<()> {
@@ -2574,6 +2919,57 @@ fn run_lingqu_memory_register_paper_engram_module_cli(args: &[String]) -> anyhow
 
     let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
     let mut memory_service = LingquMemoryService::new();
+    rebuild_lingqu_memory_paper_engram_tokenizer_projections(
+        &mut memory_service,
+        &mut durable_store,
+    )
+    .context("rebuild paper engram tokenizer projections")?;
+    rebuild_lingqu_memory_paper_engram_hash_configs(&mut memory_service, &mut durable_store)
+        .context("rebuild paper engram hash configs")?;
+    let _recipe_registry = match rebuild_lingqu_memory_paper_engram_training_recipes(
+        &mut memory_service,
+        &mut durable_store,
+    ) {
+        Ok(registry) => registry,
+        Err(err) => {
+            if let Some(memory_error) = err.downcast_ref::<sim_memory::LingquMemoryError>() {
+                if matches!(
+                    memory_error,
+                    sim_memory::LingquMemoryError::MissingDfsPath(_)
+                ) {
+                    LingquMemoryPaperEngramTrainingRecipeRegistry {
+                        recipes: Vec::new(),
+                    }
+                } else {
+                    return Err(err).context("rebuild paper engram training recipe registry");
+                }
+            } else {
+                return Err(err).context("rebuild paper engram training recipe registry");
+            }
+        }
+    };
+    let _eval_registry = match rebuild_lingqu_memory_paper_engram_eval_reports(
+        &mut memory_service,
+        &mut durable_store,
+    ) {
+        Ok(registry) => registry,
+        Err(err) => {
+            if let Some(memory_error) = err.downcast_ref::<sim_memory::LingquMemoryError>() {
+                if matches!(
+                    memory_error,
+                    sim_memory::LingquMemoryError::MissingDfsPath(_)
+                ) {
+                    LingquMemoryPaperEngramEvalReportRegistry {
+                        reports: Vec::new(),
+                    }
+                } else {
+                    return Err(err).context("rebuild paper engram eval report registry");
+                }
+            } else {
+                return Err(err).context("rebuild paper engram eval report registry");
+            }
+        }
+    };
     let _table_registry = match rebuild_lingqu_memory_paper_engram_table_shards(
         &mut memory_service,
         &mut durable_store,
@@ -2653,10 +3049,392 @@ fn run_lingqu_memory_register_paper_engram_module_cli(args: &[String]) -> anyhow
     Ok(())
 }
 
+fn run_lingqu_memory_validate_paper_engram_quality_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let module_id = required_cli_arg(args, "--module-id")?;
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let mut memory_service = LingquMemoryService::new();
+    rebuild_lingqu_memory_all_paper_engram_registries(&mut memory_service, &mut durable_store)
+        .context("rebuild paper engram registries")?;
+    memory_service
+        .validate_paper_engram_module_quality(&module_id)
+        .context("validate paper engram module quality")?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: validate-paper-engram-quality");
+    println!("  store_path: {}", store_path.display());
+    println!("  module_id: {}", module_id);
+    println!("  quality: valid");
+    Ok(())
+}
+
+fn run_lingqu_memory_seed_paper_engram_fixture_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let weights_path = optional_cli_path(args, "--weights-path")?;
+    let profile = if let Some(path) = &weights_path {
+        validate_qwen3_dense_weights_path(path)?;
+        Some(
+            profile_from_weights_dir(
+                path,
+                optional_cli_arg(args, "--model")?.as_deref(),
+                QWEN3_DENSE_DEFAULT_TP_NODES,
+                QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
+                QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
+            )
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("load qwen3 profile from {}", path.display()))?,
+        )
+    } else {
+        None
+    };
+    let model_id = optional_cli_arg(args, "--model-id")?
+        .or_else(|| profile.as_ref().map(|profile| profile.model_id.clone()))
+        .unwrap_or_else(|| "qwen3-paper-engram-fixture".to_string());
+    let model_key = optional_cli_arg(args, "--model-key")?
+        .or_else(|| {
+            profile
+                .as_ref()
+                .map(|profile| qwen3_dense_model_key(&profile.model_id))
+        })
+        .unwrap_or_else(|| cli_path_id(&model_id));
+    let hidden_size = optional_cli_u64(args, "--hidden-size")?
+        .or_else(|| profile.as_ref().map(|profile| profile.hidden_size))
+        .ok_or_else(|| {
+            anyhow::anyhow!("seed-paper-engram-fixture requires --hidden-size or --weights-path")
+        })?;
+    if hidden_size == 0 {
+        anyhow::bail!("--hidden-size must be > 0");
+    }
+    let pipeline_nodes = optional_cli_u64(args, "--pipeline-nodes")?.unwrap_or(8);
+    if pipeline_nodes == 0 {
+        anyhow::bail!("--pipeline-nodes must be > 0");
+    }
+    let layer = optional_cli_u64(args, "--layer-end")?
+        .or(optional_cli_u64(args, "--layer")?)
+        .or_else(|| {
+            profile
+                .as_ref()
+                .map(|profile| (profile.num_hidden_layers / pipeline_nodes).max(1))
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!("seed-paper-engram-fixture requires --layer-end or --weights-path")
+        })?;
+    let layer = u32::try_from(layer).context("--layer-end exceeds u32")?;
+    if layer == 0 {
+        anyhow::bail!("--layer-end must be > 0");
+    }
+    let table_rows = optional_cli_u64(args, "--table-rows")?.unwrap_or(16);
+    if table_rows == 0 {
+        anyhow::bail!("--table-rows must be > 0");
+    }
+    let heads_per_order = u32::try_from(optional_cli_u64(args, "--heads-per-order")?.unwrap_or(1))
+        .context("--heads-per-order exceeds u32")?;
+    if heads_per_order == 0 {
+        anyhow::bail!("--heads-per-order must be > 0");
+    }
+    let orders = optional_cli_arg(args, "--orders")?
+        .map(|value| {
+            parse_nonempty_string_csv("orders", &value)?
+                .into_iter()
+                .map(|item| {
+                    item.parse::<u8>()
+                        .with_context(|| format!("parse order `{item}` as u8"))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()
+        })
+        .transpose()?
+        .unwrap_or_else(|| vec![2]);
+    if orders.iter().any(|order| *order == 0) {
+        anyhow::bail!("--orders cannot contain 0");
+    }
+    let seed = optional_cli_u64_auto(args, "--seed")?.unwrap_or(0xA5A5_5A5A_2026_0527);
+    let created_at_us = optional_cli_u64(args, "--created-at-us")?.unwrap_or_else(cli_now_us);
+    let module_id = optional_cli_arg(args, "--module-id")?.unwrap_or_else(|| {
+        format!(
+            "paper-engram-fixture/{}/layer-{}",
+            cli_path_id(&model_key),
+            layer
+        )
+    });
+    let module_name = optional_cli_arg(args, "--module-name")?
+        .unwrap_or_else(|| format!("paper Engram fixture {}", module_id));
+    let id = cli_path_id(&module_id);
+    let tokenizer_id =
+        optional_cli_arg(args, "--tokenizer-id")?.unwrap_or_else(|| format!("tok/{model_key}"));
+    let tokenizer_hash = optional_cli_u64_auto(args, "--tokenizer-hash")?
+        .or_else(|| {
+            profile
+                .as_ref()
+                .map(|profile| qwen3_checksum_words(&[profile.vocab_size]))
+        })
+        .unwrap_or_else(|| qwen3_checksum_words(&[hidden_size]));
+    let profile_hash = optional_cli_u64_auto(args, "--profile-hash")?
+        .or_else(|| {
+            profile.as_ref().map(|profile| {
+                qwen3_checksum_words(&[profile.hidden_size, profile.num_hidden_layers])
+            })
+        })
+        .unwrap_or_else(|| qwen3_checksum_words(&[hidden_size, u64::from(layer)]));
+    let base_checkpoint_checksum =
+        optional_cli_u64_auto(args, "--base-checkpoint-checksum")?.unwrap_or(profile_hash);
+
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let mut memory_service = LingquMemoryService::new();
+    match memory_service.rebuild_paper_engram_tokenizer_projections_from_dfs(&mut durable_store) {
+        Ok(_) | Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => {}
+        Err(err) => return Err(err).context("rebuild paper engram tokenizer projections"),
+    }
+    match memory_service.rebuild_paper_engram_hash_configs_from_dfs(&mut durable_store) {
+        Ok(_) | Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => {}
+        Err(err) => return Err(err).context("rebuild paper engram hash configs"),
+    }
+    match memory_service.rebuild_paper_engram_training_recipes_from_dfs(&mut durable_store) {
+        Ok(_) | Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => {}
+        Err(err) => return Err(err).context("rebuild paper engram training recipes"),
+    }
+    match memory_service.rebuild_paper_engram_eval_reports_from_dfs(&mut durable_store) {
+        Ok(_) | Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => {}
+        Err(err) => return Err(err).context("rebuild paper engram eval reports"),
+    }
+    match memory_service.rebuild_paper_engram_table_shards_from_dfs(&mut durable_store) {
+        Ok(_) | Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => {}
+        Err(err) => return Err(err).context("rebuild paper engram table shards"),
+    }
+    match memory_service.rebuild_paper_engram_gates_from_dfs(&mut durable_store) {
+        Ok(_) | Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => {}
+        Err(err) => return Err(err).context("rebuild paper engram gates"),
+    }
+    match memory_service.rebuild_paper_engram_modules_from_dfs(&mut durable_store) {
+        Ok(_) | Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => {}
+        Err(err) => return Err(err).context("rebuild paper engram modules"),
+    }
+
+    let projection =
+        PaperEngramTokenizerProjectionManifest::new(PaperEngramTokenizerProjectionManifest {
+            projection_id: format!("{id}/projection"),
+            model_id: model_id.clone(),
+            tokenizer_id: tokenizer_id.clone(),
+            projection_ref: LingquDfsPath::new(format!(
+                "/lingqu/memory/models/{}/engram/fixture/projection.json",
+                cli_path_id(&model_id)
+            )),
+            projection_checksum: tokenizer_hash,
+            source_ref: Some("fixture://sim-cli/paper-engram/tokenizer-projection".to_string()),
+            checksum: 1,
+            version: 1,
+            created_at_us,
+            expires_at_us: None,
+        })
+        .context("build paper Engram fixture tokenizer projection manifest")?;
+    let hash_config = PaperEngramHashConfigManifest::new(PaperEngramHashConfigManifest {
+        hash_config_id: format!("{id}/hash-config"),
+        model_id: model_id.clone(),
+        tokenizer_projection_id: projection.projection_id.clone(),
+        tokenizer_projection_checksum: projection.projection_checksum,
+        hash_config_ref: LingquDfsPath::new(format!(
+            "/lingqu/memory/models/{}/engram/fixture/hash-config.json",
+            cli_path_id(&model_id)
+        )),
+        hash_config_checksum: qwen3_checksum_words(&[
+            tokenizer_hash,
+            table_rows,
+            seed,
+            u64::from(heads_per_order),
+        ]),
+        orders: orders.clone(),
+        heads_per_order,
+        table_rows,
+        seed,
+        algorithm: "fnv1a-x64+length-prefix".to_string(),
+        source_ref: Some("fixture://sim-cli/paper-engram/hash-config".to_string()),
+        checksum: 1,
+        version: 1,
+        created_at_us: created_at_us.saturating_add(1),
+        expires_at_us: None,
+    })
+    .context("build paper Engram fixture hash config manifest")?;
+
+    let hidden_size_usize = usize::try_from(hidden_size).context("--hidden-size exceeds usize")?;
+    let table_rows_usize = usize::try_from(table_rows).context("--table-rows exceeds usize")?;
+    let mut shard_ids = Vec::new();
+    let mut gate_ids = Vec::new();
+    let mut payload_checksums = Vec::new();
+    memory_service
+        .register_paper_engram_tokenizer_projection(projection.clone())
+        .context("register fixture paper Engram tokenizer projection")?;
+    memory_service
+        .register_paper_engram_hash_config(hash_config.clone())
+        .context("register fixture paper Engram hash config")?;
+
+    for order in &orders {
+        for head in 0..heads_per_order {
+            let mut values = Vec::with_capacity(table_rows_usize * hidden_size_usize);
+            for row in 0..table_rows_usize {
+                for dim in 0..hidden_size_usize {
+                    let word = (u64::from(layer) << 48)
+                        ^ (u64::from(*order) << 40)
+                        ^ (u64::from(head) << 32)
+                        ^ ((row as u64) << 16)
+                        ^ dim as u64
+                        ^ seed;
+                    values.push(((qwen3_checksum_words(&[word]) % 257) as f32 - 128.0) / 65536.0);
+                }
+            }
+            let shard_id = format!("{id}/layer-{layer}/table/order-{order}/head-{head}");
+            let block_ref = durable_store
+                .write_block_payload(
+                    format!("block/paper-engram/{shard_id}"),
+                    cli_f32_vec_to_le_bytes(&values),
+                )
+                .with_context(|| format!("write fixture paper Engram table block {shard_id}"))?;
+            payload_checksums.push(block_ref.checksum);
+            let shard = PaperEngramTableShardManifest::new(PaperEngramTableShardManifest {
+                shard_id: shard_id.clone(),
+                model_id: model_id.clone(),
+                layer,
+                order: *order,
+                head,
+                row_start: 0,
+                row_end: table_rows,
+                dtype: sim_core::TensorDType::F32,
+                shape: vec![table_rows, hidden_size],
+                block_payload_refs: vec![block_ref],
+                source_ref: Some("fixture://sim-cli/paper-engram/table".to_string()),
+                checksum: 1,
+                version: 1,
+                created_at_us: created_at_us.saturating_add(2),
+                expires_at_us: None,
+            })
+            .with_context(|| format!("build fixture paper Engram table shard {shard_id}"))?;
+            memory_service
+                .register_paper_engram_table_shard(shard)
+                .with_context(|| format!("register fixture paper Engram table shard {shard_id}"))?;
+            shard_ids.push(shard_id);
+        }
+    }
+
+    let gate_id = format!("{id}/layer-{layer}/gate");
+    let gate_values = (0..hidden_size_usize)
+        .map(|dim| {
+            let word = (u64::from(layer) << 32) ^ dim as u64 ^ seed.rotate_left(17);
+            ((qwen3_checksum_words(&[word]) % 251) as f32 - 125.0) / 131072.0
+        })
+        .collect::<Vec<_>>();
+    let gate_ref = durable_store
+        .write_block_payload(
+            format!("block/paper-engram/{gate_id}"),
+            cli_f32_vec_to_le_bytes(&gate_values),
+        )
+        .with_context(|| format!("write fixture paper Engram gate block {gate_id}"))?;
+    payload_checksums.push(gate_ref.checksum);
+    let gate = PaperEngramGateManifest::new(PaperEngramGateManifest {
+        gate_id: gate_id.clone(),
+        model_id: model_id.clone(),
+        layer,
+        dtype: sim_core::TensorDType::F32,
+        shape: vec![hidden_size],
+        payload_ref: Some(gate_ref),
+        source_ref: None,
+        checksum: 1,
+        version: 1,
+        created_at_us: created_at_us.saturating_add(3),
+        expires_at_us: None,
+    })
+    .context("build fixture paper Engram gate manifest")?;
+    memory_service
+        .register_paper_engram_gate(gate)
+        .context("register fixture paper Engram gate")?;
+    gate_ids.push(gate_id);
+
+    let module = PaperEngramModuleManifest::new(PaperEngramModuleManifest {
+        module_id: module_id.clone(),
+        module_name,
+        model: sim_memory::InferenceModelBinding {
+            model_id: model_id.clone(),
+            model_key: model_key.clone(),
+            tokenizer_hash,
+            profile_hash,
+        },
+        base_checkpoint_checksum,
+        tokenizer_id,
+        tokenizer_projection_ref: projection.projection_ref.clone(),
+        hash_config_ref: hash_config.hash_config_ref.clone(),
+        table_shard_ids: shard_ids.clone(),
+        gate_ids: gate_ids.clone(),
+        layers: vec![layer],
+        orders: orders.clone(),
+        heads_per_order,
+        hidden_size,
+        memory_dim: hidden_size,
+        table_dtype: sim_core::TensorDType::F32,
+        table_layout: "row-major".to_string(),
+        gate_kind: "sigmoid-dot".to_string(),
+        training_recipe_ref: None,
+        eval_report_ref: None,
+        quality_claim: sim_memory::PaperEngramQualityClaim::None,
+        payload_checksums,
+        checksum: 1,
+        version: 1,
+        created_at_us: created_at_us.saturating_add(4),
+        expires_at_us: None,
+    })
+    .context("build fixture paper Engram module manifest")?;
+    memory_service
+        .register_paper_engram_module(module.clone())
+        .context("register fixture paper Engram module")?;
+
+    memory_service
+        .persist_paper_engram_tokenizer_projections_to_dfs(&mut durable_store)
+        .context("persist fixture tokenizer projection registry")?;
+    memory_service
+        .persist_paper_engram_hash_configs_to_dfs(&mut durable_store)
+        .context("persist fixture hash config registry")?;
+    memory_service
+        .persist_paper_engram_table_shards_to_dfs(&mut durable_store)
+        .context("persist fixture table shard registry")?;
+    memory_service
+        .persist_paper_engram_gates_to_dfs(&mut durable_store)
+        .context("persist fixture gate registry")?;
+    memory_service
+        .persist_paper_engram_modules_to_dfs(&mut durable_store)
+        .context("persist fixture module registry")?;
+    save_lingqu_memory_durable_store(&store_path, &durable_store)?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: seed-paper-engram-fixture");
+    println!("  store_path: {}", store_path.display());
+    println!("  module_id: {}", module.module_id);
+    println!("  model_id: {}", module.model.model_id);
+    println!("  model_key: {}", module.model.model_key);
+    println!("  layer_end: {}", layer);
+    println!("  hidden_size: {}", hidden_size);
+    println!("  table_rows: {}", table_rows);
+    println!("  orders: {:?}", orders);
+    println!("  heads_per_order: {}", heads_per_order);
+    println!("  table_shards: {}", shard_ids.len());
+    println!("  gates: {}", gate_ids.len());
+    Ok(())
+}
+
 fn run_lingqu_memory_list_paper_engram_modules_cli(args: &[String]) -> anyhow::Result<()> {
     let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
     let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
     let mut memory_service = LingquMemoryService::new();
+    rebuild_lingqu_memory_paper_engram_tokenizer_projections(
+        &mut memory_service,
+        &mut durable_store,
+    )
+    .context("rebuild paper engram tokenizer projection registry")?;
+    rebuild_lingqu_memory_paper_engram_hash_configs(&mut memory_service, &mut durable_store)
+        .context("rebuild paper engram hash config registry")?;
+    rebuild_lingqu_memory_paper_engram_training_recipes(&mut memory_service, &mut durable_store)
+        .context("rebuild paper engram training recipe registry")?;
+    rebuild_lingqu_memory_paper_engram_eval_reports(&mut memory_service, &mut durable_store)
+        .context("rebuild paper engram eval report registry")?;
+    rebuild_lingqu_memory_paper_engram_table_shards(&mut memory_service, &mut durable_store)
+        .context("rebuild paper engram table shard registry")?;
+    rebuild_lingqu_memory_paper_engram_gates(&mut memory_service, &mut durable_store)
+        .context("rebuild paper engram gate registry")?;
     let registry =
         rebuild_lingqu_memory_paper_engram_modules(&mut memory_service, &mut durable_store)
             .with_context(|| "rebuild paper engram module registry")?;
@@ -2681,6 +3459,261 @@ fn run_lingqu_memory_list_paper_engram_modules_cli(args: &[String]) -> anyhow::R
             module.payload_checksums.len()
         );
     }
+    Ok(())
+}
+
+fn run_lingqu_memory_resolve_paper_engram_runtime_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let module_id = required_cli_arg(args, "--module-id")?;
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let mut memory_service = LingquMemoryService::new();
+
+    rebuild_lingqu_memory_all_paper_engram_registries(&mut memory_service, &mut durable_store)
+        .context("rebuild paper engram registries")?;
+
+    let runtime = memory_service
+        .resolve_paper_engram_runtime_artifacts(&module_id)
+        .context("resolve paper engram runtime artifacts")?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: resolve-paper-engram-runtime");
+    println!("  store_path: {}", store_path.display());
+    println!("  module_id: {}", runtime.module.module_id);
+    println!(
+        "  tokenizer_projection_id: {}",
+        runtime.tokenizer_projection.projection_id
+    );
+    println!("  hash_config_id: {}", runtime.hash_config.hash_config_id);
+    println!("  table_shards: {}", runtime.table_shards.len());
+    println!("  gates: {}", runtime.gates.len());
+    println!("  layers: {}", runtime.layer_operands.len());
+    for layer in &runtime.layer_operands {
+        println!(
+            "  layer: {} table_operands={} gate_operands={}",
+            layer.layer,
+            layer.table_operands.len(),
+            layer.gate_operands.len()
+        );
+    }
+    Ok(())
+}
+
+fn run_lingqu_memory_resolve_paper_engram_table_row_blocks_cli(
+    args: &[String],
+) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let module_id = required_cli_arg(args, "--module-id")?;
+    let layer = required_cli_u64(args, "--layer")?;
+    let order = required_cli_u64(args, "--order")?;
+    let head = required_cli_u64(args, "--head")?;
+    let row_start = required_cli_u64(args, "--row-start")?;
+    let row_end = required_cli_u64(args, "--row-end")?;
+    let now_us = optional_cli_u64(args, "--now-us")?.unwrap_or(1);
+    let output_path = optional_cli_path(args, "--output")?;
+
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let mut memory_service = LingquMemoryService::new();
+    rebuild_lingqu_memory_all_paper_engram_registries(&mut memory_service, &mut durable_store)
+        .context("rebuild paper engram registries")?;
+
+    let request = PaperEngramTableRowBlockRequest {
+        request_id: format!(
+            "paper-engram-row-blocks/{module_id}/layer-{layer}/order-{order}/head-{head}/rows-{row_start}-{row_end}"
+        ),
+        module_id,
+        layer: u32::try_from(layer).context("--layer exceeds u32")?,
+        order: u8::try_from(order).context("--order exceeds u8")?,
+        head: u32::try_from(head).context("--head exceeds u32")?,
+        row_start,
+        row_end,
+        created_at_us: now_us,
+    };
+    let response = memory_service
+        .resolve_paper_engram_table_row_blocks(request)
+        .context("resolve paper engram table row blocks")?;
+    if let Some(path) = &output_path {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create row block output dir {}", parent.display()))?;
+        }
+        fs::write(
+            path,
+            serde_json::to_vec_pretty(&response).context("encode row block response")?,
+        )
+        .with_context(|| format!("write row block response {}", path.display()))?;
+    }
+
+    println!("lingqu_memory_service");
+    println!("  mode: resolve-paper-engram-table-row-blocks");
+    println!("  store_path: {}", store_path.display());
+    println!("  module_id: {}", response.module_id);
+    println!(
+        "  table: layer={} order={} head={} rows={}..{}",
+        response.layer, response.order, response.head, response.row_start, response.row_end
+    );
+    println!(
+        "  shard: {} rows={}..{}",
+        response.shard_id, response.shard_row_start, response.shard_row_end
+    );
+    println!(
+        "  block_payload_refs: {}",
+        response.block_payload_refs.len()
+    );
+    if let Some(path) = output_path {
+        println!("  output_path: {}", path.display());
+    }
+    Ok(())
+}
+
+fn run_lingqu_memory_plan_paper_engram_row_prefetch_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let module_id = required_cli_arg(args, "--module-id")?;
+    let canonical_history = parse_u64_csv_arg(args, "--canonical-history")?;
+    let from_step = optional_cli_u64(args, "--from-step")?.unwrap_or(0);
+    let now_us = optional_cli_u64(args, "--now-us")?.unwrap_or(1);
+    let output_path = optional_cli_path(args, "--output")?;
+
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let mut memory_service = LingquMemoryService::new();
+    rebuild_lingqu_memory_all_paper_engram_registries(&mut memory_service, &mut durable_store)
+        .context("rebuild paper engram registries")?;
+
+    let request = PaperEngramTableRowPrefetchRequest {
+        request_id: format!("paper-engram-row-prefetch/{module_id}/from-{from_step}"),
+        module_id,
+        canonical_history,
+        from_step,
+        created_at_us: now_us,
+    };
+    let plan = memory_service
+        .plan_paper_engram_table_row_prefetch(request)
+        .context("plan paper engram row prefetch")?;
+    if let Some(path) = &output_path {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create row prefetch output dir {}", parent.display()))?;
+        }
+        fs::write(
+            path,
+            serde_json::to_vec_pretty(&plan).context("encode row prefetch plan")?,
+        )
+        .with_context(|| format!("write row prefetch plan {}", path.display()))?;
+    }
+
+    let unique_shards = plan
+        .rows
+        .iter()
+        .map(|row| row.shard_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    println!("lingqu_memory_service");
+    println!("  mode: plan-paper-engram-row-prefetch");
+    println!("  store_path: {}", store_path.display());
+    println!("  module_id: {}", plan.module_id);
+    println!("  canonical_history_len: {}", plan.canonical_history_len);
+    println!("  from_step: {}", plan.from_step);
+    println!("  row_refs: {}", plan.rows.len());
+    println!("  unique_shards: {}", unique_shards);
+    if let Some(path) = output_path {
+        println!("  output_path: {}", path.display());
+    }
+    Ok(())
+}
+
+fn run_lingqu_memory_publish_paper_engram_row_prefetch_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let object_store_path = PathBuf::from(required_cli_arg(args, "--object-store")?);
+    let module_id = required_cli_arg(args, "--module-id")?;
+    let registry_dir = PathBuf::from(required_cli_arg(args, "--registry-dir")?);
+    let canonical_history = parse_u64_csv_arg(args, "--canonical-history")?;
+    let from_step = optional_cli_u64(args, "--from-step")?.unwrap_or(0);
+    let owner_entity = optional_cli_u64(args, "--owner-entity")?.unwrap_or(0);
+    let producer_entity = optional_cli_u64(args, "--producer-entity")?.unwrap_or(0);
+    let owner_entity =
+        u32::try_from(owner_entity).map_err(|_| anyhow::anyhow!("--owner-entity exceeds u32"))?;
+    let producer_entity = u32::try_from(producer_entity)
+        .map_err(|_| anyhow::anyhow!("--producer-entity exceeds u32"))?;
+
+    let publication = publish_w5_paper_engram_row_prefetch_from_runtime(
+        &store_path,
+        &object_store_path,
+        &module_id,
+        &registry_dir,
+        canonical_history,
+        from_step,
+        owner_entity,
+        producer_entity,
+    )?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: publish-paper-engram-row-prefetch");
+    println!("  store_path: {}", store_path.display());
+    println!("  object_store_path: {}", object_store_path.display());
+    println!("  module_id: {}", publication.module_id);
+    println!("  registry_dir: {}", registry_dir.display());
+    println!(
+        "  {}={}",
+        SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF, publication.prefetch_ref_hex
+    );
+    println!(
+        "  {}={}",
+        SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
+        publication.object_service_snapshot_path.display()
+    );
+    println!("  row_refs: {}", publication.row_refs);
+    println!("  unique_shards: {}", publication.unique_shards);
+    println!(
+        "  prefetch_manifest_bytes: {}",
+        publication.prefetch_manifest_bytes
+    );
+    Ok(())
+}
+
+fn run_lingqu_memory_publish_paper_engram_state_ref_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let object_store_path = PathBuf::from(required_cli_arg(args, "--object-store")?);
+    let module_id = required_cli_arg(args, "--module-id")?;
+    let registry_dir = PathBuf::from(required_cli_arg(args, "--registry-dir")?);
+    let owner_entity = optional_cli_u64(args, "--owner-entity")?.unwrap_or(0);
+    let producer_entity = optional_cli_u64(args, "--producer-entity")?.unwrap_or(0);
+    let owner_entity =
+        u32::try_from(owner_entity).map_err(|_| anyhow::anyhow!("--owner-entity exceeds u32"))?;
+    let producer_entity = u32::try_from(producer_entity)
+        .map_err(|_| anyhow::anyhow!("--producer-entity exceeds u32"))?;
+
+    let publication = publish_w5_paper_engram_state_ref_from_runtime(
+        &store_path,
+        &object_store_path,
+        &module_id,
+        &registry_dir,
+        owner_entity,
+        producer_entity,
+    )?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: publish-paper-engram-state-ref");
+    println!("  store_path: {}", store_path.display());
+    println!("  object_store_path: {}", object_store_path.display());
+    println!("  module_id: {}", module_id);
+    println!("  registry_dir: {}", registry_dir.display());
+    println!(
+        "  {}={}",
+        SIM_QWEN3_GUEST_ENGRAM_STATE_REF, publication.state_ref_hex
+    );
+    if let Some(snapshot_path) = &publication.object_service_snapshot_path {
+        println!(
+            "  {}={}",
+            SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
+            snapshot_path.display()
+        );
+    }
+    println!("  registry_table_bytes: {}", publication.table_bytes);
+    println!("  registry_indices_bytes: {}", publication.indices_bytes);
+    println!("  registry_gate_bytes: {}", publication.gate_bytes);
+    println!(
+        "  registry_state_manifest_bytes: {}",
+        publication.state_manifest_bytes
+    );
     Ok(())
 }
 
@@ -4693,6 +5726,16 @@ struct W5EngramStateRefPublication {
 }
 
 #[derive(Debug)]
+struct W5PaperEngramRowPrefetchPublication {
+    prefetch_ref_hex: String,
+    module_id: String,
+    row_refs: usize,
+    unique_shards: usize,
+    prefetch_manifest_bytes: u64,
+    object_service_snapshot_path: PathBuf,
+}
+
+#[derive(Debug)]
 struct W5MemoryShortpathEntry {
     decision: sim_memory::ShortpathDecisionRecord,
     artifact: Option<sim_memory::ExecutionArtifactObject>,
@@ -6569,6 +7612,16 @@ fn publish_w5_object_service_payload_ref(
             1,
         )
         .with_context(|| format!("publish {source} payload into Object Service"))?;
+    let events = object_service.poll_ready(u64::MAX);
+    if !events
+        .iter()
+        .any(|event| event.status == CompletionStatus::Success)
+    {
+        anyhow::bail!(
+            "{source} Object Service publish did not complete successfully: events={:?}",
+            events
+        );
+    }
     let record = object_service
         .latest_record(object_key)
         .ok_or_else(|| anyhow::anyhow!("{source} Object Service record missing: {object_key}"))?;
@@ -7662,6 +8715,294 @@ fn publish_w5_engram_state_ref_from_memory_objects(
     })
 }
 
+fn publish_w5_paper_engram_row_prefetch_from_runtime(
+    store_path: &Path,
+    object_store_path: &Path,
+    module_id: &str,
+    registry_dir: &Path,
+    canonical_history: Vec<u64>,
+    from_step: u64,
+    owner_entity: u32,
+    producer_entity: u32,
+) -> anyhow::Result<W5PaperEngramRowPrefetchPublication> {
+    let mut durable_store = load_lingqu_memory_durable_store(store_path)?;
+    let mut memory_service = LingquMemoryService::new();
+    rebuild_lingqu_memory_all_paper_engram_registries(&mut memory_service, &mut durable_store)
+        .context("rebuild paper engram registries")?;
+    let plan = memory_service
+        .plan_paper_engram_table_row_prefetch(PaperEngramTableRowPrefetchRequest {
+            request_id: format!("w5-paper-engram-row-prefetch/{module_id}/from-{from_step}"),
+            module_id: module_id.to_string(),
+            canonical_history,
+            from_step,
+            created_at_us: 1,
+        })
+        .context("plan paper Engram row prefetch")?;
+
+    let object_snapshot =
+        load_lingqu_object_service_snapshot(object_store_path, &mut durable_store)?;
+    let mut object_service = if let Some(mut snapshot) = object_snapshot {
+        let publication_profile = w5_memory_decision_publication_object_service_profile();
+        snapshot.profile.queue_depth = snapshot
+            .profile
+            .queue_depth
+            .max(publication_profile.queue_depth);
+        snapshot.profile.obmm_pool.queue_depth = snapshot
+            .profile
+            .obmm_pool
+            .queue_depth
+            .max(publication_profile.obmm_pool.queue_depth);
+        LingquObjectServiceStub::import_snapshot(snapshot)
+            .with_context(|| format!("import object store {}", object_store_path.display()))?
+    } else {
+        LingquObjectServiceStub::new(w5_memory_decision_publication_object_service_profile())
+    };
+    let payload =
+        serde_json::to_vec_pretty(&plan).context("encode paper Engram row prefetch plan")?;
+    let object_key =
+        format!("lingqu/memory/paper-engram/{module_id}/row-prefetch/from-{from_step}/manifest");
+    let object_ref = publish_w5_object_service_payload_ref(
+        &mut object_service,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_ROW_PREFETCH_PLAN,
+        LingquObjectKind::Metadata,
+        owner_entity,
+        producer_entity,
+        &object_key,
+        &payload,
+        "paper-engram-row-prefetch",
+    )?;
+    save_lingqu_object_service_snapshot(object_store_path, &mut durable_store, &object_service)?;
+    save_lingqu_memory_durable_store(store_path, &durable_store)?;
+    let snapshot_path = export_w5_object_service_snapshot(registry_dir, &object_service)?;
+    let unique_shards = plan
+        .rows
+        .iter()
+        .map(|row| row.shard_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+
+    Ok(W5PaperEngramRowPrefetchPublication {
+        prefetch_ref_hex: qwen3_obmm_object_ref_wire_to_hex(&object_ref),
+        module_id: plan.module_id,
+        row_refs: plan.rows.len(),
+        unique_shards,
+        prefetch_manifest_bytes: object_ref.payload_bytes,
+        object_service_snapshot_path: snapshot_path,
+    })
+}
+
+fn publish_w5_paper_engram_state_ref_from_runtime(
+    store_path: &Path,
+    object_store_path: &Path,
+    module_id: &str,
+    registry_dir: &Path,
+    owner_entity: u32,
+    producer_entity: u32,
+) -> anyhow::Result<W5EngramStateRefPublication> {
+    let mut durable_store = load_lingqu_memory_durable_store(store_path)?;
+    let mut memory_service = LingquMemoryService::new();
+    rebuild_lingqu_memory_all_paper_engram_registries(&mut memory_service, &mut durable_store)
+        .context("rebuild paper engram registries")?;
+
+    let runtime = memory_service
+        .resolve_paper_engram_runtime_artifacts(module_id)
+        .context("resolve paper engram runtime artifacts")?;
+    if runtime.module.table_dtype != sim_core::TensorDType::F32 {
+        anyhow::bail!(
+            "paper Engram UAPI state manifest currently requires F32 tables: got {:?}",
+            runtime.module.table_dtype
+        );
+    }
+    if runtime.module.memory_dim != runtime.module.hidden_size {
+        anyhow::bail!(
+            "paper Engram UAPI hidden injection currently requires memory_dim == hidden_size: memory_dim={} hidden_size={}",
+            runtime.module.memory_dim,
+            runtime.module.hidden_size
+        );
+    }
+
+    let object_snapshot =
+        load_lingqu_object_service_snapshot(object_store_path, &mut durable_store)?;
+    let mut object_service = if let Some(mut snapshot) = object_snapshot {
+        let publication_profile = w5_memory_decision_publication_object_service_profile();
+        snapshot.profile.queue_depth = snapshot
+            .profile
+            .queue_depth
+            .max(publication_profile.queue_depth);
+        snapshot.profile.obmm_pool.queue_depth = snapshot
+            .profile
+            .obmm_pool
+            .queue_depth
+            .max(publication_profile.obmm_pool.queue_depth);
+        LingquObjectServiceStub::import_snapshot(snapshot)
+            .with_context(|| format!("import object store {}", object_store_path.display()))?
+    } else {
+        LingquObjectServiceStub::new(w5_memory_decision_publication_object_service_profile())
+    };
+
+    let mut table_refs = Vec::new();
+    let mut gate_refs = Vec::new();
+    let mut total_table_bytes = 0usize;
+    let mut total_gate_bytes = 0usize;
+    let hidden_size = runtime.module.hidden_size as usize;
+    let expected_elem_bytes = std::mem::size_of::<f32>();
+
+    for layer in &runtime.layer_operands {
+        for table in &layer.table_operands {
+            let payload =
+                read_lingqu_block_payload_refs(&mut durable_store, &table.block_payload_refs)
+                    .with_context(|| {
+                        format!(
+                            "read paper Engram table payload layer={} order={} head={} shard={}",
+                            table.layer, table.order, table.head, table.shard_id
+                        )
+                    })?;
+            let rows = usize::try_from(table.row_end - table.row_start).with_context(|| {
+                format!(
+                    "paper Engram table row range exceeds usize layer={} order={} head={}",
+                    table.layer, table.order, table.head
+                )
+            })?;
+            let expected_bytes = rows
+                .checked_mul(hidden_size)
+                .and_then(|values| values.checked_mul(expected_elem_bytes))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "paper Engram table expected byte size overflow layer={} order={} head={}",
+                        table.layer,
+                        table.order,
+                        table.head
+                    )
+                })?;
+            if payload.len() != expected_bytes {
+                anyhow::bail!(
+                    "paper Engram table payload bytes mismatch layer={} order={} head={} got={} expected={}",
+                    table.layer,
+                    table.order,
+                    table.head,
+                    payload.len(),
+                    expected_bytes
+                );
+            }
+            let object_key = format!(
+                "lingqu/memory/paper-engram/{module_id}/layer/{}/table/order/{}/head/{}/rows/{}-{}",
+                table.layer, table.order, table.head, table.row_start, table.row_end
+            );
+            let object_ref = publish_w5_object_service_payload_ref(
+                &mut object_service,
+                QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
+                LingquObjectKind::RuntimeTensor,
+                owner_entity,
+                producer_entity,
+                &object_key,
+                &payload,
+                "paper-engram-table",
+            )?;
+            total_table_bytes += payload.len();
+            table_refs.push(Qwen3PaperEngramStateTableRef {
+                layer: u64::from(table.layer),
+                order: table.order,
+                head: u16::try_from(table.head)
+                    .with_context(|| format!("paper Engram head exceeds u16: {}", table.head))?,
+                row_start: table.row_start,
+                row_end: table.row_end,
+                hash_seed: runtime.hash_config.seed,
+                object_ref,
+            });
+        }
+        for gate in &layer.gate_operands {
+            if gate.dtype != sim_core::TensorDType::F32 {
+                anyhow::bail!(
+                    "paper Engram UAPI state manifest currently requires F32 gates: got {:?}",
+                    gate.dtype
+                );
+            }
+            let payload = durable_store
+                .read_block_payload(&gate.payload_ref)
+                .with_context(|| {
+                    format!(
+                        "read paper Engram gate payload layer={} gate={}",
+                        gate.layer, gate.gate_id
+                    )
+                })?;
+            let expected_bytes = hidden_size
+                .checked_mul(expected_elem_bytes)
+                .ok_or_else(|| anyhow::anyhow!("paper Engram gate expected byte size overflow"))?;
+            if payload.len() != expected_bytes {
+                anyhow::bail!(
+                    "paper Engram gate payload bytes mismatch layer={} got={} expected={}",
+                    gate.layer,
+                    payload.len(),
+                    expected_bytes
+                );
+            }
+            let object_key = format!(
+                "lingqu/memory/paper-engram/{module_id}/layer/{}/gate/{}",
+                gate.layer, gate.gate_id
+            );
+            let object_ref = publish_w5_object_service_payload_ref(
+                &mut object_service,
+                QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
+                LingquObjectKind::RuntimeTensor,
+                owner_entity,
+                producer_entity,
+                &object_key,
+                &payload,
+                "paper-engram-gate",
+            )?;
+            total_gate_bytes += payload.len();
+            gate_refs.push(Qwen3PaperEngramStateGateRef {
+                layer: u64::from(gate.layer),
+                object_ref,
+            });
+        }
+    }
+
+    let state_payload = qwen3_paper_engram_state_manifest_payload(
+        runtime.module.hidden_size as usize,
+        runtime.module.memory_dim as usize,
+        &table_refs,
+        &gate_refs,
+    )
+    .map_err(anyhow::Error::msg)?;
+    let state_key = format!("lingqu/memory/paper-engram/{module_id}/state_manifest/v2");
+    let state_ref = publish_w5_object_service_payload_ref(
+        &mut object_service,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
+        LingquObjectKind::Metadata,
+        owner_entity,
+        producer_entity,
+        &state_key,
+        &state_payload,
+        "paper-engram-state",
+    )?;
+
+    save_lingqu_object_service_snapshot(object_store_path, &mut durable_store, &object_service)?;
+    save_lingqu_memory_durable_store(store_path, &durable_store)?;
+    let snapshot_path = export_w5_object_service_snapshot(registry_dir, &object_service)?;
+
+    Ok(W5EngramStateRefPublication {
+        state_ref_hex: qwen3_obmm_object_ref_wire_to_hex(&state_ref),
+        engram_state_id: runtime.module.module_id,
+        table_bytes: total_table_bytes,
+        indices_bytes: 0,
+        gate_bytes: total_gate_bytes,
+        state_manifest_bytes: state_ref.payload_bytes,
+        object_service_snapshot_path: Some(snapshot_path),
+    })
+}
+
+fn read_lingqu_block_payload_refs(
+    durable_store: &mut LingquMemoryDurableStore,
+    refs: &[LingquBlockPayloadRef],
+) -> anyhow::Result<Vec<u8>> {
+    let mut payload = Vec::new();
+    for payload_ref in refs {
+        payload.extend_from_slice(&durable_store.read_block_payload(payload_ref)?);
+    }
+    Ok(payload)
+}
+
 fn export_w5_object_service_snapshot(
     registry_dir: &Path,
     object_service: &LingquObjectServiceStub,
@@ -8492,6 +9833,22 @@ fn parse_nonempty_string_csv(label: &str, value: &str) -> anyhow::Result<Vec<Str
     }
     if items.is_empty() {
         anyhow::bail!("{label} must not be empty");
+    }
+    Ok(items)
+}
+
+fn parse_u64_csv_arg(args: &[String], name: &'static str) -> anyhow::Result<Vec<u64>> {
+    let value = required_cli_arg(args, name)?;
+    let mut items = Vec::new();
+    for item in value.split(',') {
+        let item = item.trim();
+        if item.is_empty() {
+            continue;
+        }
+        items.push(parse_u64_auto(item).with_context(|| format!("parse {name} item `{item}`"))?);
+    }
+    if items.is_empty() {
+        anyhow::bail!("{name} must not be empty");
     }
     Ok(items)
 }
@@ -9610,6 +10967,24 @@ fn rebuild_lingqu_memory_paper_engram_table_shards(
     }
 }
 
+fn rebuild_lingqu_memory_paper_engram_tokenizer_projections(
+    memory_service: &mut LingquMemoryService,
+    store: &mut LingquMemoryDurableStore,
+) -> anyhow::Result<Vec<PaperEngramTokenizerProjectionManifest>> {
+    memory_service
+        .rebuild_paper_engram_tokenizer_projections_from_dfs(store)
+        .context("rebuild paper engram tokenizer projections from durable DFS manifest")
+}
+
+fn rebuild_lingqu_memory_paper_engram_hash_configs(
+    memory_service: &mut LingquMemoryService,
+    store: &mut LingquMemoryDurableStore,
+) -> anyhow::Result<Vec<PaperEngramHashConfigManifest>> {
+    memory_service
+        .rebuild_paper_engram_hash_configs_from_dfs(store)
+        .context("rebuild paper engram hash configs from durable DFS manifest")
+}
+
 fn rebuild_lingqu_memory_paper_engram_gates(
     memory_service: &mut LingquMemoryService,
     store: &mut LingquMemoryDurableStore,
@@ -9621,6 +10996,35 @@ fn rebuild_lingqu_memory_paper_engram_gates(
         }
         Err(err) => {
             Err(err).context("rebuild paper engram gate registry from durable DFS manifest")
+        }
+    }
+}
+
+fn rebuild_lingqu_memory_paper_engram_training_recipes(
+    memory_service: &mut LingquMemoryService,
+    store: &mut LingquMemoryDurableStore,
+) -> anyhow::Result<LingquMemoryPaperEngramTrainingRecipeRegistry> {
+    match memory_service.rebuild_paper_engram_training_recipes_from_dfs(store) {
+        Ok(recipes) => Ok(LingquMemoryPaperEngramTrainingRecipeRegistry { recipes }),
+        Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => {
+            Ok(LingquMemoryPaperEngramTrainingRecipeRegistry::default())
+        }
+        Err(err) => Err(err)
+            .context("rebuild paper engram training recipe registry from durable DFS manifest"),
+    }
+}
+
+fn rebuild_lingqu_memory_paper_engram_eval_reports(
+    memory_service: &mut LingquMemoryService,
+    store: &mut LingquMemoryDurableStore,
+) -> anyhow::Result<LingquMemoryPaperEngramEvalReportRegistry> {
+    match memory_service.rebuild_paper_engram_eval_reports_from_dfs(store) {
+        Ok(reports) => Ok(LingquMemoryPaperEngramEvalReportRegistry { reports }),
+        Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => {
+            Ok(LingquMemoryPaperEngramEvalReportRegistry::default())
+        }
+        Err(err) => {
+            Err(err).context("rebuild paper engram eval report registry from durable DFS manifest")
         }
     }
 }
@@ -9638,6 +11042,27 @@ fn rebuild_lingqu_memory_paper_engram_modules(
             Err(err).context("rebuild paper engram module registry from durable DFS manifest")
         }
     }
+}
+
+fn rebuild_lingqu_memory_all_paper_engram_registries(
+    memory_service: &mut LingquMemoryService,
+    store: &mut LingquMemoryDurableStore,
+) -> anyhow::Result<()> {
+    rebuild_lingqu_memory_paper_engram_tokenizer_projections(memory_service, store)
+        .context("rebuild paper engram tokenizer projection registry")?;
+    rebuild_lingqu_memory_paper_engram_hash_configs(memory_service, store)
+        .context("rebuild paper engram hash config registry")?;
+    rebuild_lingqu_memory_paper_engram_training_recipes(memory_service, store)
+        .context("rebuild paper engram training recipe registry")?;
+    rebuild_lingqu_memory_paper_engram_eval_reports(memory_service, store)
+        .context("rebuild paper engram eval report registry")?;
+    rebuild_lingqu_memory_paper_engram_table_shards(memory_service, store)
+        .context("rebuild paper engram table shard registry")?;
+    rebuild_lingqu_memory_paper_engram_gates(memory_service, store)
+        .context("rebuild paper engram gate registry")?;
+    rebuild_lingqu_memory_paper_engram_modules(memory_service, store)
+        .context("rebuild paper engram module registry")?;
+    Ok(())
 }
 
 fn rebuild_lingqu_memory_shortpath_supports(
@@ -10789,14 +12214,14 @@ mod tests {
         qwen3_guest_terminal_text_lossy_from_tokenizer, qwen3_guest_terminal_tokens,
         qwen3_guest_timing_summary, qwen3_guest_trace_file_path,
         qwen3_guest_w5_pass_marker_present, qwen3_object_registry_path_in_dir,
-        qwen3_obmm_object_ref_for_payload, qwen3_range_forward_args_from,
-        qwen3_tokenizer_projection_args_from, qwen3_validate_engram_state_object_service_payload,
-        read_lingqu_memory_payload_ref, read_w5_u64,
-        record_w5_runtime_boundary_observations_from_summary, resolve_w5_inference_profile,
-        run_lingqu_durable_append_log_cli, run_lingqu_durable_batch_cli,
-        run_lingqu_durable_init_cli, run_lingqu_durable_list_cli, run_lingqu_durable_read_log_cli,
-        run_lingqu_durable_stat_cli, run_lingqu_durable_validate_cli,
-        run_lingqu_memory_boundary_lookup_cli,
+        qwen3_obmm_object_ref_for_payload, qwen3_obmm_object_ref_wire_to_hex,
+        qwen3_range_forward_args_from, qwen3_tokenizer_projection_args_from,
+        qwen3_validate_engram_state_object_service_payload, read_lingqu_memory_payload_ref,
+        read_w5_u64, record_w5_runtime_boundary_observations_from_summary,
+        resolve_w5_inference_profile, run_lingqu_durable_append_log_cli,
+        run_lingqu_durable_batch_cli, run_lingqu_durable_init_cli, run_lingqu_durable_list_cli,
+        run_lingqu_durable_read_log_cli, run_lingqu_durable_stat_cli,
+        run_lingqu_durable_validate_cli, run_lingqu_memory_boundary_lookup_cli,
         run_lingqu_memory_boundary_lookup_from_observation_cli,
         run_lingqu_memory_boundary_request_from_w5_summary_cli,
         run_lingqu_memory_build_engram_hash_config_cli, run_lingqu_memory_build_index_cli,
@@ -10808,16 +12233,29 @@ mod tests {
         run_lingqu_memory_list_shortpath_decisions_cli,
         run_lingqu_memory_list_shortpath_supports_cli, run_lingqu_memory_lookup_prefix_cache_cli,
         run_lingqu_memory_materialize_engram_state_cli,
-        run_lingqu_memory_materialize_hot_state_cli, run_lingqu_memory_plan_prefetch_cli,
+        run_lingqu_memory_materialize_hot_state_cli,
+        run_lingqu_memory_plan_paper_engram_row_prefetch_cli, run_lingqu_memory_plan_prefetch_cli,
         run_lingqu_memory_promote_terminal_shortpath_artifacts_from_w5_summary_cli,
+        run_lingqu_memory_publish_paper_engram_row_prefetch_cli,
+        run_lingqu_memory_publish_paper_engram_state_ref_cli,
         run_lingqu_memory_publish_w5_engram_state_ref_cli, run_lingqu_memory_query_cli,
         run_lingqu_memory_record_artifact_access_cli,
         run_lingqu_memory_record_boundary_observations_from_w5_summary_cli,
         run_lingqu_memory_register_execution_artifact_cli,
+        run_lingqu_memory_register_paper_engram_eval_report_cli,
+        run_lingqu_memory_register_paper_engram_gate_cli,
+        run_lingqu_memory_register_paper_engram_hash_config_cli,
+        run_lingqu_memory_register_paper_engram_module_cli,
+        run_lingqu_memory_register_paper_engram_table_shard_cli,
+        run_lingqu_memory_register_paper_engram_tokenizer_projection_cli,
+        run_lingqu_memory_register_paper_engram_training_recipe_cli,
         run_lingqu_memory_register_prefix_cache_cli,
         run_lingqu_memory_register_terminal_logits_artifact_from_w5_summary_cli,
-        run_lingqu_memory_update_record_state_cli, run_lingqu_memory_validate_durable_store,
-        run_lingqu_memory_validate_flat_materialize, run_lingqu_memory_validate_flat_query,
+        run_lingqu_memory_resolve_paper_engram_runtime_cli,
+        run_lingqu_memory_resolve_paper_engram_table_row_blocks_cli,
+        run_lingqu_memory_seed_paper_engram_fixture_cli, run_lingqu_memory_update_record_state_cli,
+        run_lingqu_memory_validate_durable_store, run_lingqu_memory_validate_flat_materialize,
+        run_lingqu_memory_validate_flat_query, run_lingqu_memory_validate_paper_engram_quality_cli,
         run_lingqu_memory_validate_w5_engram_object_ref, run_qwen3_guest_decode_loop_cli,
         run_qwen3_tokenizer_projection_cli, run_w5_runtime_boundary_lookups,
         save_lingqu_durable_sim, save_lingqu_memory_durable_store,
@@ -10834,22 +12272,23 @@ mod tests {
         LingquMemoryDurableStore, LingquMemoryDurableStoreSnapshot, LingquObjectKind,
         LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
         LingquObjectServiceStub, LingquObjectVersionSelector, LingquPayloadBackend,
-        LingquPayloadPlacement, MemoryCatalogSnapshot, QueryResult, Qwen3CandidateRecord,
-        Qwen3DecodeReportVerbosity, Qwen3DenseGuestRuntime, Qwen3DenseProfile, Qwen3EngramConfig,
-        Qwen3EngramContextOp, Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport,
-        Qwen3GuestDecodeLoopCliArgs, Qwen3GuestExpectedWorkerCounts, Qwen3SamplerConfig,
-        Qwen3TokenizerProjectionCliArgs, W5JumpToTerminalExpectedWorkerCounts,
-        W5MemoryBootstrapConfig, W5MemoryDecisionArtifactPublication, W5MemoryDecisionBundle,
-        W5MemoryDecisionConfig, W5MemoryPublishedArtifactRef, W5MemoryPublishedKvArtifactRef,
-        W5MemoryShortpathKvArtifact, LINGQU_EXTERNAL_PAYLOAD_BLOCK_PREFIX,
-        QWEN3_DENSE_DEFAULT_DECODE_TOKENS, QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
-        QWEN3_DENSE_DEFAULT_TP_NODES, QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
-        QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+        LingquPayloadPlacement, MemoryCatalogSnapshot, PaperEngramTrainingMode, QueryResult,
+        Qwen3CandidateRecord, Qwen3DecodeReportVerbosity, Qwen3DenseGuestRuntime,
+        Qwen3DenseProfile, Qwen3EngramConfig, Qwen3EngramContextOp, Qwen3EngramMode,
+        Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
+        Qwen3GuestExpectedWorkerCounts, Qwen3SamplerConfig, Qwen3TokenizerProjectionCliArgs,
+        W5JumpToTerminalExpectedWorkerCounts, W5MemoryBootstrapConfig,
+        W5MemoryDecisionArtifactPublication, W5MemoryDecisionBundle, W5MemoryDecisionConfig,
+        W5MemoryPublishedArtifactRef, W5MemoryPublishedKvArtifactRef, W5MemoryShortpathKvArtifact,
+        LINGQU_EXTERNAL_PAYLOAD_BLOCK_PREFIX, QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
+        QWEN3_DENSE_DEFAULT_PREFILL_TOKENS, QWEN3_DENSE_DEFAULT_TP_NODES,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE, QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
         QWEN3_DENSE_PROFILE_OBMM_KIND_TERMINAL_LOGITS, QWEN3_ENGRAM_DEFAULT_NO_REPEAT_NGRAM_SIZE,
-        QWEN3_TOKENIZER_PROJECTION_DEFAULT_FILE_NAME, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
-        SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION, SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
-        SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT, W5_TERMINAL_LOGITS_ENTRY_BYTES,
-        W5_TERMINAL_LOGITS_HEADER_BYTES, W5_TERMINAL_TOKEN_TEXT_HEADER_BYTES,
+        QWEN3_TOKENIZER_PROJECTION_DEFAULT_FILE_NAME, SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF,
+        SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION,
+        SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
+        W5_TERMINAL_LOGITS_ENTRY_BYTES, W5_TERMINAL_LOGITS_HEADER_BYTES,
+        W5_TERMINAL_TOKEN_TEXT_HEADER_BYTES,
     };
     use sim_models::qwen3_dense_reference::{
         Qwen3DenseReferenceTokenizerProjection, Qwen3DenseReferenceTokenizerProjectionEntry,
@@ -10860,6 +12299,14 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
+
+    fn write_json_file<T: serde::Serialize>(path: &Path, value: &T) {
+        fs::write(
+            path,
+            serde_json::to_vec_pretty(value).expect("encode json fixture"),
+        )
+        .expect("write json fixture");
+    }
 
     fn sample_w5_terminal_logits_payload() -> Vec<u8> {
         const LOGITS_HEADER_BYTES: usize = 64;
@@ -11455,6 +12902,7 @@ mod tests {
             "w5-inference-cluster",
             "--steps=2",
             "--engram-state-ref=abcd",
+            "--engram-row-prefetch-ref=dcba",
             "--object-registry-dir=/tmp/qwen3-registry",
         ])
         .expect("parse guest decode loop args")
@@ -11464,6 +12912,7 @@ mod tests {
         assert_eq!(args.engram.pool, Qwen3EngramPool::Obmm);
         assert_eq!(args.engram.context_op, Qwen3EngramContextOp::CpuReference);
         assert_eq!(args.engram.state_ref.as_deref(), Some("abcd"));
+        assert_eq!(args.engram.row_prefetch_ref.as_deref(), Some("dcba"));
         assert_eq!(
             args.engram.object_registry_dir.as_deref(),
             Some(Path::new("/tmp/qwen3-registry"))
@@ -11979,6 +13428,20 @@ mod tests {
     }
 
     #[test]
+    fn qwen3_guest_decode_loop_args_reject_row_prefetch_without_state_ref() {
+        let err = qwen3_guest_decode_loop_args_from([
+            "w5-inference-cluster",
+            "--engram-row-prefetch-ref=dcba",
+            "--object-service-snapshot=/tmp/lingqu-object-service-snapshot.json",
+        ])
+        .expect_err("row prefetch ref without state ref should fail");
+
+        assert!(err
+            .to_string()
+            .contains("--engram-row-prefetch-ref requires --engram-state-ref"));
+    }
+
+    #[test]
     fn qwen3_guest_decode_loop_engram_requires_obmm_pool() {
         let err = qwen3_guest_decode_loop_args_from([
             "qwen3-guest-decode-loop",
@@ -12045,6 +13508,7 @@ mod tests {
             enabled: true,
             context_op: Qwen3EngramContextOp::CpuReference,
             state_ref: Some("state-ref".to_string()),
+            row_prefetch_ref: Some("row-prefetch-ref".to_string()),
             object_registry_dir: Some(PathBuf::from("/tmp/qwen3-registry")),
             token_projection_path: Some(PathBuf::from("/tmp/qwen3-token-projection.json")),
             object_service_snapshot_path: Some(PathBuf::from(
@@ -12057,6 +13521,10 @@ mod tests {
         assert!(vars.contains(&(
             SIM_QWEN3_GUEST_ENGRAM_STATE_REF.to_string(),
             "state-ref".to_string()
+        )));
+        assert!(vars.contains(&(
+            SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF.to_string(),
+            "row-prefetch-ref".to_string()
         )));
         assert!(vars.contains(&(
             SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR.to_string(),
@@ -14493,6 +15961,19 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         assert_eq!(config["orders"][0], serde_json::Value::from(2u8));
         assert_eq!(config["heads_per_order"], serde_json::Value::from(2u64));
         assert_eq!(config["table_rows"], serde_json::Value::from(64u64));
+        assert_eq!(config["table_specs"].as_array().unwrap().len(), 4);
+        assert_eq!(
+            config["table_specs"][0]["order"],
+            serde_json::Value::from(2u64)
+        );
+        assert_eq!(
+            config["table_specs"][0]["head"],
+            serde_json::Value::from(0u64)
+        );
+        assert_eq!(
+            config["table_specs"][0]["table_rows"],
+            serde_json::Value::from(64u64)
+        );
         assert_eq!(config["seed"], serde_json::Value::from(0x2222u64));
         assert_eq!(
             config["algorithm"],
@@ -14500,6 +15981,990 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         );
 
         fs::remove_dir_all(&root).expect("remove hash config test dir");
+    }
+
+    fn test_push_checksum_str(bytes: &mut Vec<u8>, value: &str) {
+        bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(value.as_bytes());
+    }
+
+    fn test_checksum64(bytes: &[u8]) -> u64 {
+        let mut acc = 0xcbf2_9ce4_8422_2325u64;
+        for byte in bytes {
+            acc ^= u64::from(*byte);
+            acc = acc.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        acc
+    }
+
+    fn paper_engram_projection_manifest_checksum_for_test(
+        projection_id: &str,
+        model_id: &str,
+        tokenizer_id: &str,
+        projection_ref: &str,
+        projection_checksum: u64,
+        source_ref: Option<&str>,
+        version: u64,
+        created_at_us: u64,
+        expires_at_us: Option<u64>,
+    ) -> u64 {
+        let mut bytes = Vec::new();
+        test_push_checksum_str(&mut bytes, projection_id);
+        test_push_checksum_str(&mut bytes, model_id);
+        test_push_checksum_str(&mut bytes, tokenizer_id);
+        test_push_checksum_str(&mut bytes, projection_ref);
+        bytes.extend_from_slice(&projection_checksum.to_le_bytes());
+        if let Some(source_ref) = source_ref {
+            test_push_checksum_str(&mut bytes, source_ref);
+        }
+        bytes.extend_from_slice(&version.to_le_bytes());
+        bytes.extend_from_slice(&created_at_us.to_le_bytes());
+        bytes.extend_from_slice(&expires_at_us.unwrap_or(0).to_le_bytes());
+        test_checksum64(&bytes)
+    }
+
+    fn paper_engram_hash_config_manifest_checksum_for_test(
+        hash_config_id: &str,
+        model_id: &str,
+        tokenizer_projection_id: &str,
+        tokenizer_projection_checksum: u64,
+        hash_config_ref: &str,
+        hash_config_checksum: u64,
+        orders: &[u8],
+        heads_per_order: u32,
+        table_rows: u64,
+        seed: u64,
+        algorithm: &str,
+        source_ref: Option<&str>,
+        version: u64,
+        created_at_us: u64,
+        expires_at_us: Option<u64>,
+    ) -> u64 {
+        let mut bytes = Vec::new();
+        test_push_checksum_str(&mut bytes, hash_config_id);
+        test_push_checksum_str(&mut bytes, model_id);
+        test_push_checksum_str(&mut bytes, tokenizer_projection_id);
+        bytes.extend_from_slice(&tokenizer_projection_checksum.to_le_bytes());
+        test_push_checksum_str(&mut bytes, hash_config_ref);
+        bytes.extend_from_slice(&hash_config_checksum.to_le_bytes());
+        for order in orders {
+            bytes.extend_from_slice(&(*order as u64).to_le_bytes());
+        }
+        bytes.extend_from_slice(&heads_per_order.to_le_bytes());
+        bytes.extend_from_slice(&table_rows.to_le_bytes());
+        bytes.extend_from_slice(&seed.to_le_bytes());
+        test_push_checksum_str(&mut bytes, algorithm);
+        if let Some(source_ref) = source_ref {
+            test_push_checksum_str(&mut bytes, source_ref);
+        }
+        bytes.extend_from_slice(&version.to_le_bytes());
+        bytes.extend_from_slice(&created_at_us.to_le_bytes());
+        bytes.extend_from_slice(&expires_at_us.unwrap_or(0).to_le_bytes());
+        test_checksum64(&bytes)
+    }
+
+    #[test]
+    fn lingqu_memory_register_paper_engram_projection_and_hash_config_cli_runs() {
+        let root = env::temp_dir().join(format!(
+            "sim-cli-lingqu-memory-paper-engram-artifacts-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create paper engram artifact test dir");
+        let store = root.join("store.json");
+        let projection_manifest = root.join("projection_manifest.json");
+        let hash_config_manifest = root.join("hash_config_manifest.json");
+
+        let projection_checksum = 0x1357u64;
+        let projection_checksum_field = paper_engram_projection_manifest_checksum_for_test(
+            "pe-projection-cli",
+            "Qwen3-14B",
+            "tok/qwen3-14b",
+            "/lingqu/memory/models/Qwen3-14B/engram/projection/v1.json",
+            projection_checksum,
+            Some("fixture/projection.json"),
+            1,
+            10,
+            None,
+        );
+        let projection_value = serde_json::json!({
+            "projection_id": "pe-projection-cli",
+            "model_id": "Qwen3-14B",
+            "tokenizer_id": "tok/qwen3-14b",
+            "projection_ref": {
+                "path": "/lingqu/memory/models/Qwen3-14B/engram/projection/v1.json"
+            },
+            "projection_checksum": projection_checksum,
+            "source_ref": "fixture/projection.json",
+            "checksum": projection_checksum_field,
+            "version": 1,
+            "created_at_us": 10,
+            "expires_at_us": null
+        });
+        fs::write(
+            &projection_manifest,
+            serde_json::to_vec_pretty(&projection_value).expect("encode projection manifest"),
+        )
+        .expect("write projection manifest");
+
+        run_lingqu_memory_register_paper_engram_tokenizer_projection_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--manifest".to_string(),
+            projection_manifest.display().to_string(),
+        ])
+        .expect("register tokenizer projection manifest");
+
+        let orders = vec![2u8, 3u8];
+        let hash_checksum_field = paper_engram_hash_config_manifest_checksum_for_test(
+            "pe-hash-cli",
+            "Qwen3-14B",
+            "pe-projection-cli",
+            projection_checksum,
+            "/lingqu/memory/models/Qwen3-14B/engram/hash-config/v1.json",
+            0x2468,
+            &orders,
+            8,
+            65_536,
+            0x1234_5678,
+            "fnv1a-x64+length-prefix",
+            Some("fixture/hash_config.json"),
+            1,
+            11,
+            None,
+        );
+        let hash_config_value = serde_json::json!({
+            "hash_config_id": "pe-hash-cli",
+            "model_id": "Qwen3-14B",
+            "tokenizer_projection_id": "pe-projection-cli",
+            "tokenizer_projection_checksum": projection_checksum,
+            "hash_config_ref": {
+                "path": "/lingqu/memory/models/Qwen3-14B/engram/hash-config/v1.json"
+            },
+            "hash_config_checksum": 0x2468,
+            "orders": orders,
+            "heads_per_order": 8,
+            "table_rows": 65536,
+            "seed": 0x12345678u64,
+            "algorithm": "fnv1a-x64+length-prefix",
+            "source_ref": "fixture/hash_config.json",
+            "checksum": hash_checksum_field,
+            "version": 1,
+            "created_at_us": 11,
+            "expires_at_us": null
+        });
+        fs::write(
+            &hash_config_manifest,
+            serde_json::to_vec_pretty(&hash_config_value).expect("encode hash config manifest"),
+        )
+        .expect("write hash config manifest");
+
+        run_lingqu_memory_register_paper_engram_hash_config_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--manifest".to_string(),
+            hash_config_manifest.display().to_string(),
+        ])
+        .expect("register hash config manifest");
+
+        let mut durable =
+            load_lingqu_memory_durable_store(&store).expect("load durable store after register");
+        let projections = durable
+            .load_paper_engram_tokenizer_projection_manifest()
+            .expect("load tokenizer projection manifests");
+        let hash_configs = durable
+            .load_paper_engram_hash_config_manifest()
+            .expect("load hash config manifests");
+        assert_eq!(projections.len(), 1);
+        assert_eq!(hash_configs.len(), 1);
+        assert_eq!(projections[0].projection_id, "pe-projection-cli");
+        assert_eq!(hash_configs[0].hash_config_id, "pe-hash-cli");
+
+        fs::remove_dir_all(&root).expect("remove paper engram artifact test dir");
+    }
+
+    #[test]
+    fn lingqu_memory_resolve_paper_engram_runtime_cli_runs() {
+        let root = env::temp_dir().join(format!(
+            "sim-cli-lingqu-memory-paper-engram-runtime-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create paper engram runtime test dir");
+        let store = root.join("store.json");
+        let object_store = root.join("object-store.json");
+        let registry_dir = root.join("registry");
+        let projection_manifest = root.join("projection_manifest.json");
+        let hash_config_manifest = root.join("hash_config_manifest.json");
+        let shard_manifest = root.join("table_shard_manifest.json");
+        let gate_manifest = root.join("gate_manifest.json");
+        let module_manifest = root.join("module_manifest.json");
+
+        let projection = sim_memory::PaperEngramTokenizerProjectionManifest::new(
+            sim_memory::PaperEngramTokenizerProjectionManifest {
+                projection_id: "pe-projection-runtime-cli".to_string(),
+                model_id: "qwen3-runtime-test".to_string(),
+                tokenizer_id: "tok/qwen3-runtime-test".to_string(),
+                projection_ref: sim_memory::LingquDfsPath::new(
+                    "/lingqu/memory/models/qwen3-runtime-test/engram/projection/v1.json",
+                ),
+                projection_checksum: 0x1357,
+                source_ref: Some("fixture/projection.json".to_string()),
+                checksum: 1,
+                version: 1,
+                created_at_us: 10,
+                expires_at_us: None,
+            },
+        )
+        .expect("build projection manifest");
+        let hash_config = sim_memory::PaperEngramHashConfigManifest::new(
+            sim_memory::PaperEngramHashConfigManifest {
+                hash_config_id: "pe-hash-runtime-cli".to_string(),
+                model_id: "qwen3-runtime-test".to_string(),
+                tokenizer_projection_id: projection.projection_id.clone(),
+                tokenizer_projection_checksum: projection.projection_checksum,
+                hash_config_ref: sim_memory::LingquDfsPath::new(
+                    "/lingqu/memory/models/qwen3-runtime-test/engram/hash-config/v1.json",
+                ),
+                hash_config_checksum: 0x2468,
+                orders: vec![2],
+                heads_per_order: 1,
+                table_rows: 16,
+                seed: 0x1234_5678,
+                algorithm: "fnv1a-x64+length-prefix".to_string(),
+                source_ref: Some("fixture/hash_config.json".to_string()),
+                checksum: 1,
+                version: 1,
+                created_at_us: 11,
+                expires_at_us: None,
+            },
+        )
+        .expect("build hash config manifest");
+        let shard = sim_memory::PaperEngramTableShardManifest::new(
+            sim_memory::PaperEngramTableShardManifest {
+                shard_id: "pe-shard-runtime-cli".to_string(),
+                model_id: "qwen3-runtime-test".to_string(),
+                layer: 3,
+                order: 2,
+                head: 0,
+                row_start: 0,
+                row_end: 16,
+                dtype: sim_core::TensorDType::F32,
+                shape: vec![16, 4],
+                block_payload_refs: vec![sim_memory::LingquBlockPayloadRef::new(
+                    "block/pe-shard-runtime-cli",
+                    0,
+                    256,
+                    0xabc,
+                )],
+                source_ref: Some("fixture/table.bin".to_string()),
+                checksum: 1,
+                version: 1,
+                created_at_us: 12,
+                expires_at_us: None,
+            },
+        )
+        .expect("build table shard manifest");
+        let gate = sim_memory::PaperEngramGateManifest::new(sim_memory::PaperEngramGateManifest {
+            gate_id: "pe-gate-runtime-cli".to_string(),
+            model_id: "qwen3-runtime-test".to_string(),
+            layer: 3,
+            dtype: sim_core::TensorDType::F32,
+            shape: vec![8],
+            payload_ref: Some(sim_memory::LingquBlockPayloadRef::new(
+                "block/pe-gate-runtime-cli",
+                0,
+                32,
+                0xdef,
+            )),
+            source_ref: None,
+            checksum: 1,
+            version: 1,
+            created_at_us: 13,
+            expires_at_us: None,
+        })
+        .expect("build gate manifest");
+        let module =
+            sim_memory::PaperEngramModuleManifest::new(sim_memory::PaperEngramModuleManifest {
+                module_id: "pe-module-runtime-cli".to_string(),
+                module_name: "runtime-cli-fixture".to_string(),
+                model: sim_memory::InferenceModelBinding {
+                    model_id: "qwen3-runtime-test".to_string(),
+                    model_key: "qwen3-runtime-test".to_string(),
+                    tokenizer_hash: 0x6006,
+                    profile_hash: 0x7007,
+                },
+                base_checkpoint_checksum: 0x2026,
+                tokenizer_id: projection.tokenizer_id.clone(),
+                tokenizer_projection_ref: projection.projection_ref.clone(),
+                hash_config_ref: hash_config.hash_config_ref.clone(),
+                table_shard_ids: vec![shard.shard_id.clone()],
+                gate_ids: vec![gate.gate_id.clone()],
+                layers: vec![3],
+                orders: vec![2],
+                heads_per_order: 1,
+                hidden_size: 8,
+                memory_dim: 4,
+                table_dtype: sim_core::TensorDType::F32,
+                table_layout: "row-major".to_string(),
+                gate_kind: "sigmoid-dot".to_string(),
+                training_recipe_ref: None,
+                eval_report_ref: None,
+                quality_claim: sim_memory::PaperEngramQualityClaim::Imported,
+                payload_checksums: vec![0xabc, 0xdef],
+                checksum: 1,
+                version: 1,
+                created_at_us: 14,
+                expires_at_us: None,
+            })
+            .expect("build module manifest");
+
+        write_json_file(&projection_manifest, &projection);
+        write_json_file(&hash_config_manifest, &hash_config);
+        write_json_file(&shard_manifest, &shard);
+        write_json_file(&gate_manifest, &gate);
+        write_json_file(&module_manifest, &module);
+
+        run_lingqu_memory_register_paper_engram_tokenizer_projection_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--manifest".to_string(),
+            projection_manifest.display().to_string(),
+        ])
+        .expect("register tokenizer projection manifest");
+        run_lingqu_memory_register_paper_engram_hash_config_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--manifest".to_string(),
+            hash_config_manifest.display().to_string(),
+        ])
+        .expect("register hash config manifest");
+        run_lingqu_memory_register_paper_engram_table_shard_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--manifest".to_string(),
+            shard_manifest.display().to_string(),
+        ])
+        .expect("register table shard manifest");
+        run_lingqu_memory_register_paper_engram_gate_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--manifest".to_string(),
+            gate_manifest.display().to_string(),
+        ])
+        .expect("register gate manifest");
+        run_lingqu_memory_register_paper_engram_module_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--manifest".to_string(),
+            module_manifest.display().to_string(),
+        ])
+        .expect("register module manifest");
+        run_lingqu_memory_resolve_paper_engram_runtime_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--module-id".to_string(),
+            module.module_id.clone(),
+        ])
+        .expect("resolve runtime artifacts");
+        let row_blocks_output = root.join("row_blocks.json");
+        run_lingqu_memory_resolve_paper_engram_table_row_blocks_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--module-id".to_string(),
+            module.module_id.clone(),
+            "--layer".to_string(),
+            "3".to_string(),
+            "--order".to_string(),
+            "2".to_string(),
+            "--head".to_string(),
+            "0".to_string(),
+            "--row-start".to_string(),
+            "1".to_string(),
+            "--row-end".to_string(),
+            "2".to_string(),
+            "--output".to_string(),
+            row_blocks_output.display().to_string(),
+        ])
+        .expect("resolve paper Engram row block refs");
+        let row_blocks = serde_json::from_slice::<sim_memory::PaperEngramTableRowBlockResponse>(
+            &fs::read(&row_blocks_output).expect("read row block response"),
+        )
+        .expect("decode row block response");
+        assert_eq!(row_blocks.shard_id, shard.shard_id);
+        assert_eq!(row_blocks.block_payload_refs, shard.block_payload_refs);
+        let row_prefetch_output = root.join("row_prefetch.json");
+        run_lingqu_memory_plan_paper_engram_row_prefetch_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--module-id".to_string(),
+            module.module_id.clone(),
+            "--canonical-history".to_string(),
+            "7,8,9".to_string(),
+            "--from-step".to_string(),
+            "0".to_string(),
+            "--output".to_string(),
+            row_prefetch_output.display().to_string(),
+        ])
+        .expect("plan paper Engram row prefetch");
+        let row_prefetch = serde_json::from_slice::<sim_memory::PaperEngramTableRowPrefetchPlan>(
+            &fs::read(&row_prefetch_output).expect("read row prefetch plan"),
+        )
+        .expect("decode row prefetch plan");
+        assert_eq!(row_prefetch.rows.len(), 2);
+        assert!(row_prefetch
+            .rows
+            .iter()
+            .all(|row| row.shard_id == shard.shard_id));
+        run_lingqu_memory_publish_paper_engram_row_prefetch_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--object-store".to_string(),
+            object_store.display().to_string(),
+            "--module-id".to_string(),
+            module.module_id.clone(),
+            "--registry-dir".to_string(),
+            registry_dir.display().to_string(),
+            "--canonical-history".to_string(),
+            "7,8,9".to_string(),
+            "--from-step".to_string(),
+            "0".to_string(),
+        ])
+        .expect("publish paper Engram row prefetch");
+        let snapshot_path = registry_dir.join("lingqu_object_service_snapshot.json");
+        assert!(snapshot_path.exists());
+        let snapshot = load_lingqu_object_service_snapshot_file(&object_store)
+            .expect("load row prefetch object snapshot")
+            .expect("row prefetch object snapshot exists");
+        let object_service = LingquObjectServiceStub::import_snapshot(snapshot)
+            .expect("import row prefetch snapshot");
+        let prefetch_key =
+            "lingqu/memory/paper-engram/pe-module-runtime-cli/row-prefetch/from-0/manifest";
+        let prefetch_record = object_service
+            .latest_record(prefetch_key)
+            .expect("published row prefetch record");
+        assert_eq!(prefetch_record.kind, LingquObjectKind::Metadata);
+        let published_plan = serde_json::from_slice::<sim_memory::PaperEngramTableRowPrefetchPlan>(
+            &prefetch_record.payload_bytes,
+        )
+        .expect("decode published row prefetch plan");
+        assert_eq!(published_plan.rows, row_prefetch.rows);
+
+        fs::remove_dir_all(&root).expect("remove paper engram runtime test dir");
+    }
+
+    #[test]
+    fn lingqu_memory_publish_paper_engram_state_ref_cli_runs() {
+        let root = env::temp_dir().join(format!(
+            "sim-cli-lingqu-memory-paper-engram-state-ref-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create paper engram state-ref test dir");
+        let store = root.join("store.json");
+        let object_store = root.join("object-store.json");
+        let registry_dir = root.join("registry");
+        let projection_manifest = root.join("projection_manifest.json");
+        let hash_config_manifest = root.join("hash_config_manifest.json");
+        let shard_manifest = root.join("table_shard_manifest.json");
+        let gate_manifest = root.join("gate_manifest.json");
+        let module_manifest = root.join("module_manifest.json");
+
+        let table_rows = 16usize;
+        let hidden_size = 4usize;
+        let table_payload = (0..table_rows * hidden_size)
+            .map(|index| ((index % 37) as f32 - 18.0) / 4096.0)
+            .collect::<Vec<_>>();
+        let gate_payload = (0..hidden_size)
+            .map(|index| ((index % 17) as f32 - 8.0) / 8192.0)
+            .collect::<Vec<_>>();
+        let mut seed_store = LingquMemoryDurableStore::new();
+        let table_block_ref = seed_store
+            .write_block_payload(
+                "block/pe-state-ref/table",
+                cli_f32_vec_to_le_bytes(&table_payload),
+            )
+            .expect("write paper table block");
+        let gate_block_ref = seed_store
+            .write_block_payload(
+                "block/pe-state-ref/gate",
+                cli_f32_vec_to_le_bytes(&gate_payload),
+            )
+            .expect("write paper gate block");
+        save_lingqu_memory_durable_store(&store, &seed_store).expect("save seeded store");
+
+        let projection = sim_memory::PaperEngramTokenizerProjectionManifest::new(
+            sim_memory::PaperEngramTokenizerProjectionManifest {
+                projection_id: "pe-projection-state-ref-cli".to_string(),
+                model_id: "qwen3-paper-state-ref-test".to_string(),
+                tokenizer_id: "tok/qwen3-paper-state-ref-test".to_string(),
+                projection_ref: sim_memory::LingquDfsPath::new(
+                    "/lingqu/memory/models/qwen3-paper-state-ref-test/engram/projection/v1.json",
+                ),
+                projection_checksum: 0x1357,
+                source_ref: Some("fixture/projection.json".to_string()),
+                checksum: 1,
+                version: 1,
+                created_at_us: 10,
+                expires_at_us: None,
+            },
+        )
+        .expect("build projection manifest");
+        let hash_config = sim_memory::PaperEngramHashConfigManifest::new(
+            sim_memory::PaperEngramHashConfigManifest {
+                hash_config_id: "pe-hash-state-ref-cli".to_string(),
+                model_id: "qwen3-paper-state-ref-test".to_string(),
+                tokenizer_projection_id: projection.projection_id.clone(),
+                tokenizer_projection_checksum: projection.projection_checksum,
+                hash_config_ref: sim_memory::LingquDfsPath::new(
+                    "/lingqu/memory/models/qwen3-paper-state-ref-test/engram/hash-config/v1.json",
+                ),
+                hash_config_checksum: 0x2468,
+                orders: vec![2],
+                heads_per_order: 1,
+                table_rows: table_rows as u64,
+                seed: 0x1234_5678,
+                algorithm: "fnv1a-x64+length-prefix".to_string(),
+                source_ref: Some("fixture/hash_config.json".to_string()),
+                checksum: 1,
+                version: 1,
+                created_at_us: 11,
+                expires_at_us: None,
+            },
+        )
+        .expect("build hash config manifest");
+        let shard = sim_memory::PaperEngramTableShardManifest::new(
+            sim_memory::PaperEngramTableShardManifest {
+                shard_id: "pe-shard-state-ref-cli".to_string(),
+                model_id: "qwen3-paper-state-ref-test".to_string(),
+                layer: 3,
+                order: 2,
+                head: 0,
+                row_start: 0,
+                row_end: table_rows as u64,
+                dtype: sim_core::TensorDType::F32,
+                shape: vec![table_rows as u64, hidden_size as u64],
+                block_payload_refs: vec![table_block_ref.clone()],
+                source_ref: Some("fixture/table.bin".to_string()),
+                checksum: 1,
+                version: 1,
+                created_at_us: 12,
+                expires_at_us: None,
+            },
+        )
+        .expect("build table shard manifest");
+        let gate = sim_memory::PaperEngramGateManifest::new(sim_memory::PaperEngramGateManifest {
+            gate_id: "pe-gate-state-ref-cli".to_string(),
+            model_id: "qwen3-paper-state-ref-test".to_string(),
+            layer: 3,
+            dtype: sim_core::TensorDType::F32,
+            shape: vec![hidden_size as u64],
+            payload_ref: Some(gate_block_ref.clone()),
+            source_ref: None,
+            checksum: 1,
+            version: 1,
+            created_at_us: 13,
+            expires_at_us: None,
+        })
+        .expect("build gate manifest");
+        let module =
+            sim_memory::PaperEngramModuleManifest::new(sim_memory::PaperEngramModuleManifest {
+                module_id: "pe-module-state-ref-cli".to_string(),
+                module_name: "state-ref-cli-fixture".to_string(),
+                model: sim_memory::InferenceModelBinding {
+                    model_id: "qwen3-paper-state-ref-test".to_string(),
+                    model_key: "qwen3-paper-state-ref-test".to_string(),
+                    tokenizer_hash: 0x6006,
+                    profile_hash: 0x7007,
+                },
+                base_checkpoint_checksum: 0x2026,
+                tokenizer_id: projection.tokenizer_id.clone(),
+                tokenizer_projection_ref: projection.projection_ref.clone(),
+                hash_config_ref: hash_config.hash_config_ref.clone(),
+                table_shard_ids: vec![shard.shard_id.clone()],
+                gate_ids: vec![gate.gate_id.clone()],
+                layers: vec![3],
+                orders: vec![2],
+                heads_per_order: 1,
+                hidden_size: hidden_size as u64,
+                memory_dim: hidden_size as u64,
+                table_dtype: sim_core::TensorDType::F32,
+                table_layout: "row-major".to_string(),
+                gate_kind: "sigmoid-dot".to_string(),
+                training_recipe_ref: None,
+                eval_report_ref: None,
+                quality_claim: sim_memory::PaperEngramQualityClaim::Imported,
+                payload_checksums: vec![table_block_ref.checksum, gate_block_ref.checksum],
+                checksum: 1,
+                version: 1,
+                created_at_us: 14,
+                expires_at_us: None,
+            })
+            .expect("build module manifest");
+
+        write_json_file(&projection_manifest, &projection);
+        write_json_file(&hash_config_manifest, &hash_config);
+        write_json_file(&shard_manifest, &shard);
+        write_json_file(&gate_manifest, &gate);
+        write_json_file(&module_manifest, &module);
+
+        run_lingqu_memory_register_paper_engram_tokenizer_projection_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--manifest".to_string(),
+            projection_manifest.display().to_string(),
+        ])
+        .expect("register tokenizer projection manifest");
+        run_lingqu_memory_register_paper_engram_hash_config_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--manifest".to_string(),
+            hash_config_manifest.display().to_string(),
+        ])
+        .expect("register hash config manifest");
+        run_lingqu_memory_register_paper_engram_table_shard_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--manifest".to_string(),
+            shard_manifest.display().to_string(),
+        ])
+        .expect("register table shard manifest");
+        run_lingqu_memory_register_paper_engram_gate_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--manifest".to_string(),
+            gate_manifest.display().to_string(),
+        ])
+        .expect("register gate manifest");
+        run_lingqu_memory_register_paper_engram_module_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--manifest".to_string(),
+            module_manifest.display().to_string(),
+        ])
+        .expect("register module manifest");
+        run_lingqu_memory_publish_paper_engram_state_ref_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--object-store".to_string(),
+            object_store.display().to_string(),
+            "--module-id".to_string(),
+            module.module_id.clone(),
+            "--registry-dir".to_string(),
+            registry_dir.display().to_string(),
+            "--owner-entity".to_string(),
+            "0".to_string(),
+            "--producer-entity".to_string(),
+            "0".to_string(),
+        ])
+        .expect("publish paper engram state ref");
+
+        let snapshot_path = registry_dir.join("lingqu_object_service_snapshot.json");
+        assert!(snapshot_path.exists());
+        let snapshot = load_lingqu_object_service_snapshot_file(&object_store)
+            .expect("load object snapshot")
+            .expect("object snapshot exists");
+        let object_service =
+            LingquObjectServiceStub::import_snapshot(snapshot).expect("import object snapshot");
+        let state_key = format!(
+            "lingqu/memory/paper-engram/{}/state_manifest/v2",
+            module.module_id
+        );
+        let state_record = object_service
+            .latest_record(&state_key)
+            .expect("published paper state record");
+        let state_placement = state_record
+            .placements
+            .iter()
+            .find(|placement| placement.backend == LingquPayloadBackend::ObmmShmem)
+            .expect("paper state OBMM placement");
+        let state_ref = qwen3_obmm_object_ref_for_payload(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
+            0,
+            0,
+            state_record.version,
+            &state_record.key,
+            state_placement.offset,
+            state_record.bytes,
+            state_record.checksum,
+        );
+        let validation = qwen3_validate_engram_state_object_service_payload(
+            &qwen3_obmm_object_ref_wire_to_hex(&state_ref),
+            &snapshot_path,
+            hidden_size,
+        )
+        .expect("validate paper engram state snapshot");
+        assert_eq!(validation.hidden_size, hidden_size);
+        assert_eq!(validation.table_rows, table_rows);
+        assert_eq!(
+            validation.table_bytes,
+            table_rows * hidden_size * std::mem::size_of::<f32>()
+        );
+        assert_eq!(validation.indices_bytes, 0);
+        assert_eq!(
+            validation.gate_weight_bytes,
+            hidden_size * std::mem::size_of::<f32>()
+        );
+
+        fs::remove_dir_all(&root).expect("remove paper engram state-ref test dir");
+    }
+
+    #[test]
+    fn lingqu_memory_seed_paper_engram_fixture_cli_runs() {
+        let root = env::temp_dir().join(format!(
+            "sim-cli-lingqu-memory-paper-engram-fixture-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create paper engram fixture test dir");
+        let store = root.join("store.json");
+        let object_store = root.join("object-store.json");
+        let registry_dir = root.join("registry");
+
+        run_lingqu_memory_seed_paper_engram_fixture_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--module-id".to_string(),
+            "pe-module-fixture-cli".to_string(),
+            "--model-id".to_string(),
+            "qwen3-fixture-test".to_string(),
+            "--model-key".to_string(),
+            "qwen3-fixture-test".to_string(),
+            "--hidden-size".to_string(),
+            "8".to_string(),
+            "--layer-end".to_string(),
+            "4".to_string(),
+            "--table-rows".to_string(),
+            "8".to_string(),
+            "--orders".to_string(),
+            "2,3".to_string(),
+            "--heads-per-order".to_string(),
+            "2".to_string(),
+            "--created-at-us".to_string(),
+            "10".to_string(),
+        ])
+        .expect("seed paper engram fixture");
+        run_lingqu_memory_resolve_paper_engram_runtime_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--module-id".to_string(),
+            "pe-module-fixture-cli".to_string(),
+        ])
+        .expect("resolve seeded paper engram fixture runtime");
+        run_lingqu_memory_publish_paper_engram_state_ref_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--object-store".to_string(),
+            object_store.display().to_string(),
+            "--module-id".to_string(),
+            "pe-module-fixture-cli".to_string(),
+            "--registry-dir".to_string(),
+            registry_dir.display().to_string(),
+        ])
+        .expect("publish seeded paper engram fixture state ref");
+
+        let snapshot_path = registry_dir.join("lingqu_object_service_snapshot.json");
+        assert!(snapshot_path.exists());
+        let snapshot = load_lingqu_object_service_snapshot_file(&object_store)
+            .expect("load fixture object snapshot")
+            .expect("fixture object snapshot exists");
+        let object_service =
+            LingquObjectServiceStub::import_snapshot(snapshot).expect("import fixture snapshot");
+        let state_key = "lingqu/memory/paper-engram/pe-module-fixture-cli/state_manifest/v2";
+        let state_record = object_service
+            .latest_record(state_key)
+            .expect("published fixture paper state record");
+        let state_placement = state_record
+            .placements
+            .iter()
+            .find(|placement| placement.backend == LingquPayloadBackend::ObmmShmem)
+            .expect("fixture paper state OBMM placement");
+        let state_ref = qwen3_obmm_object_ref_for_payload(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
+            0,
+            0,
+            state_record.version,
+            &state_record.key,
+            state_placement.offset,
+            state_record.bytes,
+            state_record.checksum,
+        );
+        let validation = qwen3_validate_engram_state_object_service_payload(
+            &qwen3_obmm_object_ref_wire_to_hex(&state_ref),
+            &snapshot_path,
+            8,
+        )
+        .expect("validate seeded fixture paper state snapshot");
+        assert_eq!(validation.hidden_size, 8);
+        assert_eq!(validation.table_rows, 8 * 2 * 2);
+        assert_eq!(validation.indices_bytes, 0);
+        assert_eq!(validation.gate_weight_bytes, 8 * std::mem::size_of::<f32>());
+
+        fs::remove_dir_all(&root).expect("remove paper engram fixture test dir");
+    }
+
+    #[test]
+    fn lingqu_memory_register_paper_engram_quality_evidence_cli_runs() {
+        let root = env::temp_dir().join(format!(
+            "sim-cli-lingqu-memory-paper-engram-quality-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create paper engram quality test dir");
+        let store = root.join("store.json");
+        let recipe_manifest = root.join("recipe_manifest.json");
+        let eval_manifest = root.join("eval_manifest.json");
+        let module_manifest = root.join("module_manifest.json");
+
+        run_lingqu_memory_seed_paper_engram_fixture_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--module-id".to_string(),
+            "pe-module-quality-cli".to_string(),
+            "--model-id".to_string(),
+            "qwen3-quality-test".to_string(),
+            "--model-key".to_string(),
+            "qwen3-quality-test".to_string(),
+            "--hidden-size".to_string(),
+            "8".to_string(),
+            "--layer-end".to_string(),
+            "4".to_string(),
+            "--table-rows".to_string(),
+            "8".to_string(),
+            "--orders".to_string(),
+            "2".to_string(),
+            "--heads-per-order".to_string(),
+            "1".to_string(),
+            "--created-at-us".to_string(),
+            "10".to_string(),
+        ])
+        .expect("seed paper engram quality fixture");
+
+        let mut durable =
+            load_lingqu_memory_durable_store(&store).expect("load seeded paper quality store");
+        let projection = durable
+            .load_paper_engram_tokenizer_projection_manifest()
+            .expect("load seeded projection")
+            .pop()
+            .expect("seeded projection");
+        let hash_config = durable
+            .load_paper_engram_hash_config_manifest()
+            .expect("load seeded hash config")
+            .pop()
+            .expect("seeded hash config");
+        let mut module = durable
+            .load_paper_engram_module_registry()
+            .expect("load seeded module registry")
+            .pop()
+            .expect("seeded module")
+            .module;
+        drop(durable);
+
+        let recipe = sim_memory::PaperEngramTrainingRecipeManifest::new(
+            sim_memory::PaperEngramTrainingRecipeManifest {
+                recipe_id: "pe-recipe-quality-cli".to_string(),
+                model: module.model.clone(),
+                mode: PaperEngramTrainingMode::EngramOnlyContinuedPretrain,
+                base_checkpoint_checksum: module.base_checkpoint_checksum,
+                tokenizer_projection_ref: projection.projection_ref.clone(),
+                hash_config_ref: hash_config.hash_config_ref.clone(),
+                dataset_refs: vec!["dfs://datasets/qwen3-quality-train".to_string()],
+                objective: "next-token-loss+paper-engram-context".to_string(),
+                frozen_base_model: true,
+                lora_enabled: false,
+                table_init: "fixture-table".to_string(),
+                gate_init: "fixture-gate".to_string(),
+                layers: module.layers.clone(),
+                orders: module.orders.clone(),
+                heads_per_order: module.heads_per_order,
+                table_rows: 8,
+                evidence_refs: vec!["dfs://runs/qwen3-quality-train/config.json".to_string()],
+                checksum: 1,
+                version: 1,
+                created_at_us: 20,
+                expires_at_us: None,
+            },
+        )
+        .expect("build paper engram training recipe");
+        let report = sim_memory::PaperEngramEvalReportManifest::new(
+            sim_memory::PaperEngramEvalReportManifest {
+                report_id: "pe-eval-quality-cli".to_string(),
+                recipe_id: recipe.recipe_id.clone(),
+                module_id: module.module_id.clone(),
+                model: module.model.clone(),
+                validation_set_refs: vec!["dfs://datasets/qwen3-quality-val".to_string()],
+                sample_count: 32,
+                baseline_loss_milli: 1000,
+                paper_engram_loss_milli: 990,
+                decode_policy_loss_milli: Some(992),
+                max_allowed_regression_milli: 0,
+                output_checksum: 0x5151,
+                evidence_refs: vec!["dfs://runs/qwen3-quality-eval/report.json".to_string()],
+                checksum: 1,
+                version: 1,
+                created_at_us: 21,
+                expires_at_us: None,
+            },
+        )
+        .expect("build paper engram eval report");
+        module.training_recipe_ref = Some(sim_memory::paper_engram_training_recipe_dfs_path(
+            &recipe.recipe_id,
+        ));
+        module.eval_report_ref = Some(sim_memory::paper_engram_eval_report_dfs_path(
+            &report.report_id,
+        ));
+        module.quality_claim = sim_memory::PaperEngramQualityClaim::Posttrain;
+        module = sim_memory::PaperEngramModuleManifest::new(module)
+            .expect("build trained paper engram module manifest");
+
+        write_json_file(&recipe_manifest, &recipe);
+        write_json_file(&eval_manifest, &report);
+        write_json_file(&module_manifest, &module);
+
+        run_lingqu_memory_register_paper_engram_training_recipe_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--manifest".to_string(),
+            recipe_manifest.display().to_string(),
+        ])
+        .expect("register paper engram training recipe");
+        run_lingqu_memory_register_paper_engram_eval_report_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--manifest".to_string(),
+            eval_manifest.display().to_string(),
+        ])
+        .expect("register paper engram eval report");
+        run_lingqu_memory_register_paper_engram_module_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--manifest".to_string(),
+            module_manifest.display().to_string(),
+        ])
+        .expect("register trained paper engram module");
+        run_lingqu_memory_validate_paper_engram_quality_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--module-id".to_string(),
+            module.module_id.clone(),
+        ])
+        .expect("validate paper engram quality evidence");
+
+        let mut durable =
+            load_lingqu_memory_durable_store(&store).expect("reload paper quality store");
+        let reports = durable
+            .load_paper_engram_eval_report_manifest()
+            .expect("load paper eval report registry");
+        let modules = durable
+            .load_paper_engram_module_registry()
+            .expect("load paper module registry");
+        assert_eq!(reports.len(), 1);
+        assert!(modules
+            .iter()
+            .any(|entry| entry.module.quality_claim
+                == sim_memory::PaperEngramQualityClaim::Posttrain));
+
+        fs::remove_dir_all(&root).expect("remove paper engram quality test dir");
     }
 
     #[test]

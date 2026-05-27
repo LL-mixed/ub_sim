@@ -54,8 +54,16 @@ Going forward:
 - [x] 为 no-repeat 路径加上 exact-key 索引（已使用 projection 后 token，并有单测覆盖）。
 - [x] 在报告层新增 `decode_policy_*` 前缀视图，保留 `engram_*` 兼容项，避免历史脚本受影响。
 - [x] 明确当前可承诺行为：当前已实现仅覆盖 decode policy（采样约束）与 context-op 后半段。
-- [ ] 继续补齐多阶/多头 canonical ngram 索引描述与 runtime 可消费元数据。
-- [ ] 规划并补齐 paper Engram 训练产物与模块 manifest（表/门控/配置/质量声明）接口。
+- [x] 补齐多阶/多头 canonical ngram 索引描述与 runtime 可消费元数据。
+- [x] 为 Memory Service 增加 paper Engram projection/hash-config 一等 artifact 与 CLI 注册入口。
+- [x] 为 Engram context-op 增加 paper-style multi-order/multi-head CPU reference 与 CLI fixture。
+- [x] 为 Memory Service 增加 table/gate/module manifest 到 runtime operand bundle 的解析与 CLI 验证入口。
+- [x] 为 UAPI/W5 `ENGRAM_STATE` 增加 paper manifest v2，可在不改变 guest object-ref 搬运语义的前提下消费 multi-order/multi-head table/gate refs。
+- [x] 增加 `publish-paper-engram-state-ref`，可将 Memory Service runtime operand bundle 发布成 UAPI paper `ENGRAM_STATE` manifest 和 W5 Object Service snapshot。
+- [x] 在 UAPI/W5 range forward reference path 中让 paper `ENGRAM_STATE` 按 manifest layer boundary 注入；legacy `ENGRAM_STATE` 继续 terminal-only。
+- [x] 将 layer-boundary paper injection 接入 W5 cluster decode 脚本入口，并在 runtime context report 中输出 node/layer/step；explicit `SIM_QWEN3_GUEST_ENGRAM_STATE_REF` 入口需要使用 `*_engram_decode` profile，且不能与 Memory Service bootstrap/reuse 混用。
+- [x] 使用 W5 cluster decode artifact bundle 做端到端验证，确认 paper layer-boundary injection 在真实 decode run 中命中。
+- [x] 规划 paper Engram 训练产物生成流程与质量声明验证；Memory Service 已有 `training_recipe` / `eval_report` manifest、CLI 注册入口与质量声明校验。
 
 ## Design Objectives
 
@@ -306,6 +314,17 @@ range/layer boundary hidden
   -> downstream Qwen layer execution continues
 ```
 
+Current implementation status:
+
+- `sim-memory` can resolve paper Engram module/projection/hash/table/gate manifests into layer-scoped runtime operands.
+- `sim-uapi` can consume a v2 `ENGRAM_STATE` manifest that points to paper table/gate objects and run the multi-order/multi-head CPU reference path.
+- `sim-cli lingqu-memory publish-paper-engram-state-ref` can publish Memory Service runtime operands into that UAPI manifest and export a W5 Object Service snapshot.
+- W5 range forward can invoke the context op at manifest-configured layer boundaries. A real Qwen3-14B 1-step W5 cluster decode run passed with an explicit paper artifact bundle (`run_id=2026-05-27_15-40-40_w5_qwen3_14b_engram_decode_17287`), and nodeA reported `qwen3-engram-context` at `layers=[0,5)` with `mode=cpu-reference-paper-object-ref`.
+- `sim-memory` now treats paper Engram `training_recipe` and `eval_report` as durable artifacts. `Posttrain` and `Finetune` module quality claims must bind matching recipe and eval evidence before registration or validation succeeds.
+- `sim-cli lingqu-memory` now supports `register-paper-engram-training-recipe`, `register-paper-engram-eval-report`, and `validate-paper-engram-quality`. Fixture-generated tables still use `quality_claim=none`.
+- Memory Service can resolve paper Engram table row block refs by `module_id/layer/order/head/row_range`; `sim-cli lingqu-memory resolve-paper-engram-table-row-blocks` exposes this as the row-block ObjectRef materialization base for runtime prefetch and Object Service publication.
+- Memory Service can build deterministic paper Engram row prefetch plans from canonical token history using the shared `sim-models::engram_hash` implementation; `sim-cli lingqu-memory plan-paper-engram-row-prefetch` exposes the planned row refs and backing block refs, and `publish-paper-engram-row-prefetch` publishes the row plan as Object Service metadata. W5 entrypoints now carry the published plan through `SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF` / `--engram-row-prefetch-ref` alongside the required paper `ENGRAM_STATE` ref.
+
 The terminal-only context-op path is not enough. Paper Engram must be able to
 inject at configured model layers, not only after terminal hidden.
 
@@ -394,6 +413,16 @@ Minimum required evidence before treating a table as useful:
    - list Engram modules
    - materialize row-block ObjectRefs
 3. Add restart/rebuild tests from durable manifests.
+
+Current status: manifest registration/list/validation commands exist, and
+`resolve-paper-engram-table-row-blocks` resolves durable row-block refs without
+copying table payload bytes. `plan-paper-engram-row-prefetch` can map known
+canonical token history to table rows and backing block refs through the shared
+hash contract. `publish-paper-engram-row-prefetch` exports that plan into the
+W5 Object Service snapshot as metadata without publishing full table payloads.
+The row prefetch ObjectRef is a formal W5 CLI/script input and is validated as
+an adjunct to the paper `ENGRAM_STATE` entrypoint rather than as standalone
+runtime state.
 
 ### Phase 4: Paper-Compatible CPU Reference
 

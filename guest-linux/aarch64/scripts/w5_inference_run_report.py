@@ -270,6 +270,7 @@ def artifact_paths(summary_path, run_id, run_dir):
     out_dir = summary_path.parent
     memory_store = os.environ.get("SIM_W5_MEMORY_STORE")
     object_store = os.environ.get("SIM_W5_MEMORY_OBJECT_STORE")
+    object_snapshot = os.environ.get("SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT")
     registry_store = os.environ.get("SIM_W5_MEMORY_REGISTRY_DIR")
     registry_dir = (
         Path(registry_store)
@@ -281,6 +282,10 @@ def artifact_paths(summary_path, run_id, run_dir):
         if object_store
         else out_dir / f"w5_object_service_store.{run_id}.json"
     )
+    if object_snapshot and object_snapshot.endswith(".json") and not object_store_path.is_file():
+        object_store_path = Path(object_snapshot)
+        if registry_dir is not None and not registry_dir.is_dir():
+            registry_dir = object_store_path.parent
     object_store_bin = (
         object_store_path.with_suffix(".bin")
         if object_store_path.suffix == ".json"

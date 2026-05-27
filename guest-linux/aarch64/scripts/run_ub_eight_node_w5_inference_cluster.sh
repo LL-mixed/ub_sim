@@ -63,6 +63,10 @@ export SIM_UAPI_W5_PROFILE
 export SIM_UAPI_W4_CHIPBACKEND_PROFILE
 export SIM_QWEN3_GUEST_ENGRAM
 export SIM_QWEN3_GUEST_ENGRAM_POOL
+export SIM_QWEN3_GUEST_ENGRAM_STATE_REF="${SIM_QWEN3_GUEST_ENGRAM_STATE_REF:-}"
+export SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF="${SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF:-}"
+export SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR="${SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR:-}"
+export SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT="${SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT:-}"
 export SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP
 export SIM_W5_MEMORY_POST_RUN_PROMOTE
 export SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP
@@ -123,7 +127,21 @@ if [[ -n "$SIM_W5_MEMORY_DECISION_STORE" ]]; then
   fi
 fi
 
-if (( memory_runtime_lookup || memory_decision_reuse )); then
+explicit_engram_state_ref=0
+if [[ -n "$SIM_QWEN3_GUEST_ENGRAM_STATE_REF" ]]; then
+  explicit_engram_state_ref=1
+fi
+if [[ -n "$SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF" && -z "$SIM_QWEN3_GUEST_ENGRAM_STATE_REF" ]]; then
+  echo "SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF requires SIM_QWEN3_GUEST_ENGRAM_STATE_REF" >&2
+  exit 2
+fi
+if (( explicit_engram_state_ref && (memory_runtime_lookup || memory_decision_reuse) )); then
+  echo "SIM_QWEN3_GUEST_ENGRAM_STATE_REF cannot be combined with W5 Memory Service bootstrap/reuse" >&2
+  echo "hint: use either explicit paper ENGRAM_STATE object refs, or let Memory Service publish/materialize the state ref" >&2
+  exit 2
+fi
+
+if (( memory_runtime_lookup || memory_decision_reuse || explicit_engram_state_ref )); then
   if [[ -z "${SIM_CLI_BIN:-}" ]]; then
     SIM_CLI_BIN="$REPO_DIR/target/debug/sim-cli"
     echo "[w5_inference_cluster] build sim-cli for current workspace: $SIM_CLI_BIN" >&2
@@ -132,12 +150,12 @@ if (( memory_runtime_lookup || memory_decision_reuse )); then
     popd >/dev/null
   fi
   if [[ ! -x "$SIM_CLI_BIN" ]]; then
-    echo "W5 Memory Service runtime path requires sim-cli: $SIM_CLI_BIN" >&2
+    echo "W5 sim-cli orchestration path requires sim-cli: $SIM_CLI_BIN" >&2
     echo "hint: set SIM_CLI_BIN to a built sim-cli, or unset SIM_CLI_BIN so the runner builds the workspace default" >&2
     exit 2
   fi
   if [[ -z "${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}" ]]; then
-    echo "W5 Memory Service runtime path requires SIM_QWEN3_DENSE_WEIGHTS_PATH" >&2
+    echo "W5 sim-cli orchestration path requires SIM_QWEN3_DENSE_WEIGHTS_PATH" >&2
     exit 2
   fi
   if (( memory_runtime_lookup )) && [[ -z "$SIM_W5_MEMORY_OBSERVATION_STORE" ]]; then
@@ -222,6 +240,18 @@ if (( memory_runtime_lookup || memory_decision_reuse )); then
   fi
   if [[ "$SIM_QWEN3_GUEST_ENGRAM" == "1" ]]; then
     cli_args+=(--engram --engram-pool "$SIM_QWEN3_GUEST_ENGRAM_POOL")
+  fi
+  if [[ -n "${SIM_QWEN3_GUEST_ENGRAM_STATE_REF:-}" ]]; then
+    cli_args+=(--engram-state-ref "$SIM_QWEN3_GUEST_ENGRAM_STATE_REF")
+    if [[ -n "${SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF:-}" ]]; then
+      cli_args+=(--engram-row-prefetch-ref "$SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF")
+    fi
+    if [[ -n "${SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR:-}" ]]; then
+      cli_args+=(--object-registry-dir "$SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR")
+    fi
+    if [[ -n "${SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT:-}" ]]; then
+      cli_args+=(--object-service-snapshot "$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT")
+    fi
   fi
   if [[ -n "${SIM_QWEN3_SAMPLER_TOP_K:-}" ]]; then
     cli_args+=(--sampler-top-k "$SIM_QWEN3_SAMPLER_TOP_K")

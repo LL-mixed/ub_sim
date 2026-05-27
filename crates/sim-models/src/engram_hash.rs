@@ -13,6 +13,24 @@ pub struct Qwen3DenseReferenceEngramHashConfig {
     pub table_rows: u64,
     pub seed: u64,
     pub algorithm: String,
+    #[serde(default)]
+    pub table_specs: Vec<Qwen3DenseReferenceEngramHashTableSpec>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Qwen3DenseReferenceEngramHashTableSpec {
+    pub order: u8,
+    pub head: u16,
+    pub table_rows: u64,
+    pub seed: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Qwen3DenseReferenceEngramRuntimeDescriptor {
+    pub version: u64,
+    pub projection_checksum: u64,
+    pub algorithm: String,
+    pub table_specs: Vec<Qwen3DenseReferenceEngramHashTableSpec>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -43,10 +61,12 @@ pub fn build_default_engram_hash_config(
     table_rows: u64,
     seed: u64,
 ) -> Qwen3DenseReferenceEngramHashConfig {
+    let orders = vec![2, 3];
     Qwen3DenseReferenceEngramHashConfig {
         version: 1,
         projection_checksum,
-        orders: vec![2, 3],
+        table_specs: default_engram_hash_table_specs(&orders, heads_per_order, table_rows, seed),
+        orders,
         heads_per_order,
         table_rows,
         seed,
@@ -63,6 +83,9 @@ pub fn validate_engram_hash_config(
     if config.heads_per_order == 0 {
         return Err("engram_hash_config_heads_must_be_positive".to_string());
     }
+    if config.heads_per_order > usize::from(u16::MAX) + 1 {
+        return Err("engram_hash_config_heads_exceed_u16".to_string());
+    }
     if config.table_rows == 0 {
         return Err("engram_hash_config_table_rows_must_be_positive".to_string());
     }
@@ -78,7 +101,102 @@ pub fn validate_engram_hash_config(
     {
         return Err("engram_hash_config_orders_must_be_unique".to_string());
     }
+    if !config.table_specs.is_empty() {
+        let mut seen = std::collections::BTreeSet::new();
+        for spec in &config.table_specs {
+            if !config.orders.contains(&spec.order) {
+                return Err(format!(
+                    "engram_hash_config_table_spec_order_unsupported:{}",
+                    spec.order
+                ));
+            }
+            if usize::from(spec.head) >= config.heads_per_order {
+                return Err(format!(
+                    "engram_hash_config_table_spec_head_unsupported:{}",
+                    spec.head
+                ));
+            }
+            if spec.table_rows == 0 {
+                return Err("engram_hash_config_table_spec_rows_must_be_positive".to_string());
+            }
+            if !seen.insert((spec.order, spec.head)) {
+                return Err("engram_hash_config_table_specs_must_be_unique".to_string());
+            }
+        }
+        for &order in &config.orders {
+            for head in 0..config.heads_per_order {
+                if !seen.contains(&(order, head as u16)) {
+                    return Err(format!(
+                        "engram_hash_config_table_spec_missing:{order}:{head}"
+                    ));
+                }
+            }
+        }
+    }
     Ok(())
+}
+
+pub fn build_engram_runtime_descriptor(
+    config: &Qwen3DenseReferenceEngramHashConfig,
+) -> Result<Qwen3DenseReferenceEngramRuntimeDescriptor, String> {
+    Ok(Qwen3DenseReferenceEngramRuntimeDescriptor {
+        version: config.version,
+        projection_checksum: config.projection_checksum,
+        algorithm: config.algorithm.clone(),
+        table_specs: engram_hash_table_specs(config)?,
+    })
+}
+
+pub fn engram_hash_table_specs(
+    config: &Qwen3DenseReferenceEngramHashConfig,
+) -> Result<Vec<Qwen3DenseReferenceEngramHashTableSpec>, String> {
+    validate_engram_hash_config(config)?;
+    if config.table_specs.is_empty() {
+        return Ok(default_engram_hash_table_specs(
+            &config.orders,
+            config.heads_per_order,
+            config.table_rows,
+            config.seed,
+        ));
+    }
+    let mut specs = config.table_specs.clone();
+    specs.sort_by(|left, right| {
+        left.order
+            .cmp(&right.order)
+            .then_with(|| left.head.cmp(&right.head))
+    });
+    Ok(specs)
+}
+
+fn default_engram_hash_table_specs(
+    orders: &[u8],
+    heads_per_order: usize,
+    table_rows: u64,
+    seed: u64,
+) -> Vec<Qwen3DenseReferenceEngramHashTableSpec> {
+    let mut specs = Vec::new();
+    for &order in orders {
+        for head in 0..heads_per_order {
+            specs.push(Qwen3DenseReferenceEngramHashTableSpec {
+                order,
+                head: head as u16,
+                table_rows,
+                seed,
+            });
+        }
+    }
+    specs
+}
+
+fn engram_hash_table_spec(
+    config: &Qwen3DenseReferenceEngramHashConfig,
+    order: u8,
+    head: u16,
+) -> Result<Qwen3DenseReferenceEngramHashTableSpec, String> {
+    engram_hash_table_specs(config)?
+        .into_iter()
+        .find(|spec| spec.order == order && spec.head == head)
+        .ok_or_else(|| format!("engram_hash_table_spec_missing:{order}:{head}"))
 }
 
 pub fn generate_canonical_suffix_ngrams(
@@ -174,14 +292,15 @@ pub fn hash_engram_ngram(
     if usize::from(head) >= config.heads_per_order {
         return Err(format!("engram_hash_head_unsupported:{head}"));
     }
-    let mut head_salt = hash_word64(u64::from(head), config.seed);
+    let spec = engram_hash_table_spec(config, order, head)?;
+    let mut head_salt = hash_word64(u64::from(head), spec.seed);
     let mut acc = head_salt ^ u64::from(order);
     for token in ngram {
         acc ^= hash_word64(*token, head_salt);
         head_salt = head_salt.rotate_left(7).wrapping_add(*token);
         acc = acc.wrapping_mul(ENGRAM_HASH_PRIME);
     }
-    Ok(acc % config.table_rows)
+    Ok(acc % spec.table_rows)
 }
 
 pub fn build_engram_lookup_requests(
@@ -273,10 +392,53 @@ mod tests {
     fn hash_config_validation_rejects_invalid() {
         let mut config = build_default_engram_hash_config(0x12, 1, 16, 0x33);
         config.orders.clear();
+        config.table_specs.clear();
         assert_eq!(
             validate_engram_hash_config(&config).expect_err("orders empty should reject"),
             "engram_hash_config_orders_empty"
         );
+    }
+
+    #[test]
+    fn hash_config_exports_runtime_table_specs() {
+        let config = build_default_engram_hash_config(0x12, 2, 16, 0x33);
+        let descriptor = build_engram_runtime_descriptor(&config).expect("runtime descriptor");
+        assert_eq!(descriptor.version, 1);
+        assert_eq!(descriptor.projection_checksum, 0x12);
+        assert_eq!(descriptor.table_specs.len(), 4);
+        assert_eq!(
+            descriptor.table_specs[0],
+            Qwen3DenseReferenceEngramHashTableSpec {
+                order: 2,
+                head: 0,
+                table_rows: 16,
+                seed: 0x33,
+            }
+        );
+        assert_eq!(descriptor.table_specs[3].order, 3);
+        assert_eq!(descriptor.table_specs[3].head, 1);
+    }
+
+    #[test]
+    fn hash_config_rejects_missing_runtime_table_spec() {
+        let mut config = build_default_engram_hash_config(0x12, 2, 16, 0x33);
+        config.table_specs.pop();
+        assert_eq!(
+            validate_engram_hash_config(&config).expect_err("missing table spec should reject"),
+            "engram_hash_config_table_spec_missing:3:1"
+        );
+    }
+
+    #[test]
+    fn hash_row_uses_order_head_specific_table_rows() {
+        let mut config = build_default_engram_hash_config(0x12, 2, 64, 0x33);
+        for spec in &mut config.table_specs {
+            if spec.order == 3 && spec.head == 1 {
+                spec.table_rows = 7;
+            }
+        }
+        let row = hash_engram_ngram(3, 1, &[10, 11, 12], &config).expect("hash row");
+        assert!(row < 7);
     }
 
     #[test]
