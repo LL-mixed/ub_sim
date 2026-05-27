@@ -568,6 +568,8 @@ pub struct PaperEngramTrainingRecipeManifest {
     pub orders: Vec<u8>,
     pub heads_per_order: u32,
     pub table_rows: u64,
+    #[serde(default)]
+    pub table_specs: Vec<Qwen3DenseReferenceEngramHashTableSpec>,
     pub evidence_refs: Vec<String>,
     pub checksum: u64,
     pub version: u64,
@@ -583,6 +585,11 @@ impl PaperEngramTrainingRecipeManifest {
         manifest.layers.dedup();
         manifest.orders.sort();
         manifest.orders.dedup();
+        manifest.table_specs.sort_by(|left, right| {
+            left.order
+                .cmp(&right.order)
+                .then_with(|| left.head.cmp(&right.head))
+        });
         manifest.evidence_refs.sort();
         manifest.evidence_refs.dedup();
         manifest.checksum = paper_engram_training_recipe_manifest_checksum(&manifest);
@@ -630,6 +637,11 @@ impl PaperEngramTrainingRecipeManifest {
             "paper_engram_training_recipe.heads_per_order",
         )?;
         nonzero(self.table_rows, "paper_engram_training_recipe.table_rows")?;
+        validate_paper_engram_training_recipe_table_specs(
+            &self.orders,
+            self.heads_per_order,
+            &self.table_specs,
+        )?;
         if matches!(
             self.mode,
             PaperEngramTrainingMode::EngramOnlyContinuedPretrain
@@ -1201,6 +1213,39 @@ fn validate_paper_engram_hash_table_specs(
     heads_per_order: u32,
     table_specs: &[Qwen3DenseReferenceEngramHashTableSpec],
 ) -> MemoryResult<()> {
+    validate_paper_engram_hash_table_specs_with_field(
+        orders,
+        heads_per_order,
+        table_specs,
+        "paper_engram_hash_config.table_specs",
+        "paper_engram_hash_config.table_specs.table_rows",
+        "paper_engram_hash_config.heads_per_order",
+    )
+}
+
+fn validate_paper_engram_training_recipe_table_specs(
+    orders: &[u8],
+    heads_per_order: u32,
+    table_specs: &[Qwen3DenseReferenceEngramHashTableSpec],
+) -> MemoryResult<()> {
+    validate_paper_engram_hash_table_specs_with_field(
+        orders,
+        heads_per_order,
+        table_specs,
+        "paper_engram_training_recipe.table_specs",
+        "paper_engram_training_recipe.table_specs.table_rows",
+        "paper_engram_training_recipe.heads_per_order",
+    )
+}
+
+fn validate_paper_engram_hash_table_specs_with_field(
+    orders: &[u8],
+    heads_per_order: u32,
+    table_specs: &[Qwen3DenseReferenceEngramHashTableSpec],
+    specs_field: &'static str,
+    table_rows_field: &'static str,
+    heads_field: &'static str,
+) -> MemoryResult<()> {
     if table_specs.is_empty() {
         return Ok(());
     }
@@ -1208,23 +1253,20 @@ fn validate_paper_engram_hash_table_specs(
     for spec in table_specs {
         if !orders.contains(&spec.order) {
             return Err(LingquMemoryError::InvalidValue {
-                field: "paper_engram_hash_config.table_specs",
-                reason: "table spec order must be declared by hash config",
+                field: specs_field,
+                reason: "table spec order must be declared",
             });
         }
         if u32::from(spec.head) >= heads_per_order {
             return Err(LingquMemoryError::InvalidValue {
-                field: "paper_engram_hash_config.table_specs",
+                field: specs_field,
                 reason: "table spec head must be less than heads_per_order",
             });
         }
-        nonzero(
-            spec.table_rows,
-            "paper_engram_hash_config.table_specs.table_rows",
-        )?;
+        nonzero(spec.table_rows, table_rows_field)?;
         if !seen.insert((spec.order, spec.head)) {
             return Err(LingquMemoryError::InvalidValue {
-                field: "paper_engram_hash_config.table_specs",
+                field: specs_field,
                 reason: "duplicate table spec",
             });
         }
@@ -1232,13 +1274,11 @@ fn validate_paper_engram_hash_table_specs(
     for &order in orders {
         for head in 0..heads_per_order {
             let head = u16::try_from(head).map_err(|_| LingquMemoryError::InvalidValue {
-                field: "paper_engram_hash_config.heads_per_order",
+                field: heads_field,
                 reason: "heads_per_order exceeds table spec head range",
             })?;
             if !seen.contains(&(order, head)) {
-                return Err(LingquMemoryError::MissingField(
-                    "paper_engram_hash_config.table_specs",
-                ));
+                return Err(LingquMemoryError::MissingField(specs_field));
             }
         }
     }
@@ -1312,16 +1352,23 @@ fn validate_paper_engram_training_recipe_hash_shape(
             reason: "training recipe heads_per_order must match hash config",
         });
     }
-    for &order in &hash_config.orders {
-        for head in 0..hash_config.heads_per_order {
-            let table_rows = paper_engram_hash_config_table_rows(hash_config, order, head)?;
-            if recipe.table_rows != table_rows {
+    let hash_specs = paper_engram_hash_config_table_specs(hash_config)?;
+    if recipe.table_specs.is_empty() {
+        for spec in &hash_specs {
+            if recipe.table_rows != spec.table_rows {
                 return Err(LingquMemoryError::InvalidValue {
                     field: "paper_engram_training_recipe.table_rows",
                     reason: "training recipe table_rows must match hash config table specs",
                 });
             }
         }
+        return Ok(());
+    }
+    if recipe.table_specs != hash_specs {
+        return Err(LingquMemoryError::InvalidValue {
+            field: "paper_engram_training_recipe.table_specs",
+            reason: "training recipe table_specs must match hash config table specs",
+        });
     }
     Ok(())
 }
@@ -2420,6 +2467,12 @@ fn paper_engram_training_recipe_manifest_checksum(
     }
     bytes.extend_from_slice(&manifest.heads_per_order.to_le_bytes());
     bytes.extend_from_slice(&manifest.table_rows.to_le_bytes());
+    for spec in &manifest.table_specs {
+        bytes.extend_from_slice(&(spec.order as u64).to_le_bytes());
+        bytes.extend_from_slice(&(spec.head as u64).to_le_bytes());
+        bytes.extend_from_slice(&spec.table_rows.to_le_bytes());
+        bytes.extend_from_slice(&spec.seed.to_le_bytes());
+    }
     for evidence_ref in &manifest.evidence_refs {
         push_checksum_str(&mut bytes, evidence_ref);
     }
@@ -11167,6 +11220,26 @@ mod tests {
     }
 
     #[test]
+    fn paper_engram_training_recipe_accepts_legacy_manifest_without_table_specs() {
+        let mut legacy = sample_paper_engram_training_recipe_manifest();
+        legacy.table_specs.clear();
+        legacy.checksum = paper_engram_training_recipe_manifest_checksum(&legacy);
+        legacy
+            .validate()
+            .expect("legacy recipe without table specs should remain valid");
+        let mut value = serde_json::to_value(&legacy).expect("encode legacy recipe");
+        value
+            .as_object_mut()
+            .expect("legacy recipe JSON object")
+            .remove("table_specs");
+        let bytes = serde_json::to_vec_pretty(&value).expect("encode legacy recipe JSON");
+        let decoded = PaperEngramTrainingRecipeManifest::from_json_bytes(&bytes)
+            .expect("decode legacy recipe without table specs");
+        assert!(decoded.table_specs.is_empty());
+        assert_eq!(decoded.checksum, legacy.checksum);
+    }
+
+    #[test]
     fn paper_engram_eval_report_accepts_legacy_checksum_without_runtime_context() {
         let mut legacy = sample_paper_engram_eval_report_manifest();
         legacy.runtime_context_steps_expected = None;
@@ -11207,7 +11280,13 @@ mod tests {
 
     #[test]
     fn paper_engram_training_recipe_registration_rejects_artifact_mismatch() {
-        for case in ["model", "orders", "heads_per_order", "table_rows"] {
+        for case in [
+            "model",
+            "orders",
+            "heads_per_order",
+            "table_rows_legacy",
+            "table_specs",
+        ] {
             let mut service = LingquMemoryService::new();
             let projection = sample_paper_engram_tokenizer_projection_manifest();
             let mut hash_config = sample_paper_engram_hash_config_manifest();
@@ -11222,6 +11301,7 @@ mod tests {
                 }
                 "orders" => {
                     recipe.orders = vec![3];
+                    recipe.table_specs[0].order = 3;
                     (
                         "paper_engram_training_recipe.orders",
                         "training recipe orders must match hash config orders",
@@ -11229,17 +11309,33 @@ mod tests {
                 }
                 "heads_per_order" => {
                     recipe.heads_per_order = 2;
+                    recipe
+                        .table_specs
+                        .push(Qwen3DenseReferenceEngramHashTableSpec {
+                            order: 2,
+                            head: 1,
+                            table_rows: 1024,
+                            seed: 0x1234_5679,
+                        });
                     (
                         "paper_engram_training_recipe.heads_per_order",
                         "training recipe heads_per_order must match hash config",
                     )
                 }
-                "table_rows" => {
+                "table_rows_legacy" => {
+                    recipe.table_specs.clear();
                     hash_config.table_specs[0].table_rows = 512;
                     hash_config.checksum = paper_engram_hash_config_manifest_checksum(&hash_config);
                     (
                         "paper_engram_training_recipe.table_rows",
                         "training recipe table_rows must match hash config table specs",
+                    )
+                }
+                "table_specs" => {
+                    recipe.table_specs[0].table_rows = 512;
+                    (
+                        "paper_engram_training_recipe.table_specs",
+                        "training recipe table_specs must match hash config table specs",
                     )
                 }
                 _ => unreachable!(),
@@ -11267,6 +11363,45 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn paper_engram_training_recipe_registration_accepts_per_head_table_specs() {
+        let mut service = LingquMemoryService::new();
+        let projection = sample_paper_engram_tokenizer_projection_manifest();
+        let mut hash_config = sample_paper_engram_hash_config_manifest();
+        hash_config.heads_per_order = 2;
+        hash_config.table_specs = vec![
+            Qwen3DenseReferenceEngramHashTableSpec {
+                order: 2,
+                head: 0,
+                table_rows: 512,
+                seed: 0x1234_5678,
+            },
+            Qwen3DenseReferenceEngramHashTableSpec {
+                order: 2,
+                head: 1,
+                table_rows: 1024,
+                seed: 0x1234_5679,
+            },
+        ];
+        hash_config.checksum = paper_engram_hash_config_manifest_checksum(&hash_config);
+        hash_config.validate().expect("build per-head hash config");
+        let mut recipe = sample_paper_engram_training_recipe_manifest();
+        recipe.heads_per_order = hash_config.heads_per_order;
+        recipe.table_specs = hash_config.table_specs.clone();
+        recipe.checksum = paper_engram_training_recipe_manifest_checksum(&recipe);
+        recipe.validate().expect("build per-head recipe");
+
+        service
+            .register_paper_engram_tokenizer_projection(projection)
+            .expect("register projection");
+        service
+            .register_paper_engram_hash_config(hash_config)
+            .expect("register hash config");
+        service
+            .register_paper_engram_training_recipe(recipe)
+            .expect("register per-head training recipe");
     }
 
     #[test]
@@ -14714,6 +14849,7 @@ mod tests {
             orders: vec![2],
             heads_per_order: 1,
             table_rows: 1024,
+            table_specs: hash_config.table_specs,
             evidence_refs: vec!["dfs://runs/pe-recipe-0/config.json".to_string()],
             checksum: 1,
             version: 1,

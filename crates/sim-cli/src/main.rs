@@ -20413,6 +20413,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 orders: module.orders.clone(),
                 heads_per_order: module.heads_per_order,
                 table_rows: 8,
+                table_specs: hash_config.table_specs.clone(),
                 evidence_refs: vec![
                     "dfs://imports/qwen3-export-quality/provenance.json".to_string()
                 ],
@@ -21087,6 +21088,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 orders: module.orders.clone(),
                 heads_per_order: module.heads_per_order,
                 table_rows: 8,
+                table_specs: hash_config.table_specs.clone(),
                 evidence_refs: vec!["dfs://runs/qwen3-w5-quality-train/config.json".to_string()],
                 checksum: 1,
                 version: 1,
@@ -21365,6 +21367,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 orders: module.orders.clone(),
                 heads_per_order: module.heads_per_order,
                 table_rows: 8,
+                table_specs: hash_config.table_specs.clone(),
                 evidence_refs: vec!["dfs://runs/qwen3-quality-train/config.json".to_string()],
                 checksum: 1,
                 version: 1,
@@ -21601,6 +21604,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 orders: module.orders.clone(),
                 heads_per_order: module.heads_per_order,
                 table_rows: 8,
+                table_specs: hash_config.table_specs.clone(),
                 evidence_refs: vec![
                     "dfs://runs/qwen3-full-finetune-quality/config.json".to_string()
                 ],
@@ -21816,6 +21820,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 orders: module.orders.clone(),
                 heads_per_order: module.heads_per_order,
                 table_rows: 8,
+                table_specs: hash_config.table_specs.clone(),
                 evidence_refs: vec![
                     "dfs://imports/qwen3-imported-quality/provenance.json".to_string()
                 ],
