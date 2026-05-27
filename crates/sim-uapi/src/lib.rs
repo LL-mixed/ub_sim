@@ -35,6 +35,9 @@ use sim_models::engram_hash::{
     Qwen3DenseReferenceEngramHashConfig, Qwen3DenseReferenceEngramHashTableSpec,
     ENGRAM_HASH_ALGORITHM_VERSION,
 };
+use sim_models::engram_simt_adapter::{
+    build_engram_simt_runtime_input_from_legacy_op, build_engram_simt_runtime_input_from_paper_op,
+};
 use sim_models::qwen3_dense;
 use sim_models::qwen3_dense_reference::{
     self, checksum_words, embedding_reference_hidden_sequence_for_profile,
@@ -19429,12 +19432,6 @@ fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence_with_descript
             )? {
                 return Ok(None);
             }
-            if mode == Qwen3DenseReferenceEngramContextMode::FusedSimt {
-                return Err(
-                    "qwen3_engram_context_fused_simt_not_wired:hint=use cpu-reference until P5.3 runtime launch lands"
-                        .to_string(),
-                );
-            }
             let hidden = sequence
                 .last_mut()
                 .ok_or_else(|| "qwen3_engram_context_hidden_sequence_empty".to_string())?;
@@ -19468,7 +19465,7 @@ fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence_with_descript
                     indices_bytes_moved,
                     gate_weight_bytes_moved,
                 } => {
-                    let reference = run_engram_context_reference(&EngramContextOp {
+                    let op = EngramContextOp {
                         table: &table,
                         table_rows,
                         indices: &indices,
@@ -19476,10 +19473,31 @@ fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence_with_descript
                         gate_weight: &gate_weight,
                         batch: 1,
                         hidden_size,
-                    })?;
+                    };
+                    let reference = run_engram_context_reference(&op)?;
                     let output_values = match mode {
                         Qwen3DenseReferenceEngramContextMode::CpuReference => {
                             reference.output.clone()
+                        }
+                        Qwen3DenseReferenceEngramContextMode::FusedSimt => {
+                            let runtime_input =
+                                build_engram_simt_runtime_input_from_legacy_op(&op)?;
+                            let produced = run_engram_context_reference(&EngramContextOp {
+                                table: &runtime_input.table,
+                                table_rows: runtime_input.table_rows,
+                                indices: &runtime_input.indices,
+                                hidden: &runtime_input.hidden,
+                                gate_weight: &runtime_input.gate_weight,
+                                batch: runtime_input.batch,
+                                hidden_size: runtime_input.hidden_size,
+                            })?
+                            .output;
+                            qwen3_validate_engram_context_backend_output(
+                                "fused_simt_engram_context_abi_reference_output_mismatch",
+                                &produced,
+                                &reference.output,
+                            )?;
+                            produced
                         }
                         Qwen3DenseReferenceEngramContextMode::SimplerHost => {
                             let produced = run_simpler_host_engram_context(
@@ -19491,46 +19509,26 @@ fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence_with_descript
                                 table_rows,
                                 hidden_size,
                             )?;
-                            const SIMPLER_HOST_ENGRAM_CONTEXT_MAX_ULP: u32 = 64;
-                            if !qwen3_engram_context_outputs_match_within_ulp(
+                            qwen3_validate_engram_context_backend_output(
+                                "simpler_host_engram_context_output_mismatch",
                                 &produced,
                                 &reference.output,
-                                SIMPLER_HOST_ENGRAM_CONTEXT_MAX_ULP,
-                            ) {
-                                let mismatch = produced
-                                    .iter()
-                                    .zip(reference.output.iter())
-                                    .position(|(got, expected)| {
-                                        !qwen3_engram_context_f32_within_ulp(
-                                            *got,
-                                            *expected,
-                                            SIMPLER_HOST_ENGRAM_CONTEXT_MAX_ULP,
-                                        )
-                                    })
-                                    .unwrap_or(usize::MAX);
-                                let got_bits = produced
-                                    .get(mismatch)
-                                    .map(|value| value.to_bits())
-                                    .unwrap_or(0);
-                                let expected_bits = reference
-                                    .output
-                                    .get(mismatch)
-                                    .map(|value| value.to_bits())
-                                    .unwrap_or(0);
-                                return Err(format!(
-                                    "simpler_host_engram_context_output_mismatch:index={mismatch}:got_bits=0x{got_bits:08x}:expected_bits=0x{expected_bits:08x}:got=0x{:016x}:expected=0x{:016x}",
-                                    qwen3_dense_reference_f32_values_checksum(&produced),
-                                    qwen3_dense_reference_f32_values_checksum(&reference.output)
-                                ));
-                            }
+                            )?;
                             reference.output.clone()
                         }
                         _ => unreachable!(),
                     };
-                    let report_mode = if mode == Qwen3DenseReferenceEngramContextMode::SimplerHost {
-                        "simpler-host-object-ref"
-                    } else {
-                        "cpu-reference-object-ref"
+                    let report_mode = match mode {
+                        Qwen3DenseReferenceEngramContextMode::CpuReference => {
+                            "cpu-reference-object-ref"
+                        }
+                        Qwen3DenseReferenceEngramContextMode::FusedSimt => {
+                            "fused-simt-abi-reference-object-ref"
+                        }
+                        Qwen3DenseReferenceEngramContextMode::SimplerHost => {
+                            "simpler-host-object-ref"
+                        }
+                        Qwen3DenseReferenceEngramContextMode::Disabled => unreachable!(),
                     };
                     (
                         reference.report,
@@ -19561,68 +19559,73 @@ fn qwen3_dense_reference_apply_engram_context_to_terminal_sequence_with_descript
                             table_rows: table.table_rows,
                         })
                         .collect::<Vec<_>>();
-                    let reference = run_paper_engram_context_reference(&PaperEngramContextOp {
+                    let paper_op = PaperEngramContextOp {
                         tables: &table_views,
                         lookups: &lookups,
                         hidden,
                         gate_weight: &gate_weight,
                         batch: 1,
                         hidden_size,
-                    })?;
-                    let output_values = if mode == Qwen3DenseReferenceEngramContextMode::SimplerHost
-                    {
-                        let produced = run_simpler_host_paper_engram_context(
-                            &tables,
-                            &lookups,
-                            hidden,
-                            &gate_weight,
-                            1,
-                            hidden_size,
-                        )?;
-                        const SIMPLER_HOST_ENGRAM_CONTEXT_MAX_ULP: u32 = 64;
-                        if !qwen3_engram_context_outputs_match_within_ulp(
-                            &produced,
-                            &reference.output,
-                            SIMPLER_HOST_ENGRAM_CONTEXT_MAX_ULP,
-                        ) {
-                            let mismatch = produced
-                                .iter()
-                                .zip(reference.output.iter())
-                                .position(|(got, expected)| {
-                                    !qwen3_engram_context_f32_within_ulp(
-                                        *got,
-                                        *expected,
-                                        SIMPLER_HOST_ENGRAM_CONTEXT_MAX_ULP,
-                                    )
-                                })
-                                .unwrap_or(usize::MAX);
-                            let got_bits = produced
-                                .get(mismatch)
-                                .map(|value| value.to_bits())
-                                .unwrap_or(0);
-                            let expected_bits = reference
-                                .output
-                                .get(mismatch)
-                                .map(|value| value.to_bits())
-                                .unwrap_or(0);
-                            return Err(format!(
-                                "simpler_host_paper_engram_context_output_mismatch:index={mismatch}:got_bits=0x{got_bits:08x}:expected_bits=0x{expected_bits:08x}:got=0x{:016x}:expected=0x{:016x}",
-                                qwen3_dense_reference_f32_values_checksum(&produced),
-                                qwen3_dense_reference_f32_values_checksum(&reference.output)
-                            ));
+                    };
+                    let reference = run_paper_engram_context_reference(&paper_op)?;
+                    let output_values = match mode {
+                        Qwen3DenseReferenceEngramContextMode::CpuReference => {
+                            reference.output.clone()
                         }
-                        produced
-                    } else {
-                        reference.output.clone()
+                        Qwen3DenseReferenceEngramContextMode::FusedSimt => {
+                            let runtime_input =
+                                build_engram_simt_runtime_input_from_paper_op(&paper_op)?;
+                            let produced = run_engram_context_reference(&EngramContextOp {
+                                table: &runtime_input.table,
+                                table_rows: runtime_input.table_rows,
+                                indices: &runtime_input.indices,
+                                hidden: &runtime_input.hidden,
+                                gate_weight: &runtime_input.gate_weight,
+                                batch: runtime_input.batch,
+                                hidden_size: runtime_input.hidden_size,
+                            })?
+                            .output;
+                            qwen3_validate_engram_context_backend_output(
+                                "fused_simt_paper_engram_context_abi_reference_output_mismatch",
+                                &produced,
+                                &reference.output,
+                            )?;
+                            produced
+                        }
+                        Qwen3DenseReferenceEngramContextMode::SimplerHost => {
+                            let produced = run_simpler_host_paper_engram_context(
+                                &tables,
+                                &lookups,
+                                hidden,
+                                &gate_weight,
+                                1,
+                                hidden_size,
+                            )?;
+                            qwen3_validate_engram_context_backend_output(
+                                "simpler_host_paper_engram_context_output_mismatch",
+                                &produced,
+                                &reference.output,
+                            )?;
+                            produced
+                        }
+                        Qwen3DenseReferenceEngramContextMode::Disabled => unreachable!(),
+                    };
+                    let report_mode = match mode {
+                        Qwen3DenseReferenceEngramContextMode::CpuReference => {
+                            "cpu-reference-paper-object-ref"
+                        }
+                        Qwen3DenseReferenceEngramContextMode::FusedSimt => {
+                            "fused-simt-abi-reference-paper-object-ref"
+                        }
+                        Qwen3DenseReferenceEngramContextMode::SimplerHost => {
+                            "simpler-host-paper-object-ref"
+                        }
+                        Qwen3DenseReferenceEngramContextMode::Disabled => unreachable!(),
                     };
                     (
                         reference.report,
                         output_values,
-                        if mode == Qwen3DenseReferenceEngramContextMode::SimplerHost {
-                            "simpler-host-paper-object-ref"
-                        } else {
-                            "cpu-reference-paper-object-ref"
-                        },
+                        report_mode,
                         row_prefetch_requests,
                         row_prefetch_hits,
                         table_bytes_moved,
@@ -19726,6 +19729,42 @@ fn qwen3_dense_reference_engram_context_row_prefetch_hit_rate_milli(
             .checked_div(report.row_prefetch_requests)
             .unwrap_or(0)
     }
+}
+
+fn qwen3_validate_engram_context_backend_output(
+    label: &'static str,
+    produced: &[f32],
+    reference: &[f32],
+) -> Result<(), String> {
+    const ENGRAM_CONTEXT_BACKEND_MAX_ULP: u32 = 64;
+    if qwen3_engram_context_outputs_match_within_ulp(
+        produced,
+        reference,
+        ENGRAM_CONTEXT_BACKEND_MAX_ULP,
+    ) {
+        return Ok(());
+    }
+
+    let mismatch = produced
+        .iter()
+        .zip(reference.iter())
+        .position(|(got, expected)| {
+            !qwen3_engram_context_f32_within_ulp(*got, *expected, ENGRAM_CONTEXT_BACKEND_MAX_ULP)
+        })
+        .unwrap_or(usize::MAX);
+    let got_bits = produced
+        .get(mismatch)
+        .map(|value| value.to_bits())
+        .unwrap_or(0);
+    let expected_bits = reference
+        .get(mismatch)
+        .map(|value| value.to_bits())
+        .unwrap_or(0);
+    Err(format!(
+        "{label}:index={mismatch}:got_bits=0x{got_bits:08x}:expected_bits=0x{expected_bits:08x}:got=0x{:016x}:expected=0x{:016x}",
+        qwen3_dense_reference_f32_values_checksum(produced),
+        qwen3_dense_reference_f32_values_checksum(reference)
+    ))
 }
 
 fn qwen3_engram_context_outputs_match_within_ulp(
@@ -23697,6 +23736,78 @@ mod tests {
     }
 
     #[test]
+    fn qwen3_engram_context_fused_simt_builds_legacy_runtime_input() {
+        run_simpler_native_test_isolated(
+            "qwen3_engram_context_fused_simt_builds_legacy_runtime_input",
+            || {
+                let registry_dir = std::env::temp_dir().join(format!(
+                    "ub_sim_qwen3_engram_context_fused_legacy_state_ref_test_{}",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&registry_dir);
+                with_env_var(
+                    SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+                    registry_dir.to_string_lossy().as_ref(),
+                    || {
+                        let hidden_size = 1024usize;
+                        let table_rows = ENGRAM_CONTEXT_INDICES_PER_BATCH;
+                        let (table, indices, gate_weight, state_ref) =
+                            test_publish_engram_context_state_ref(
+                                "engram/context/fused-legacy",
+                                hidden_size,
+                                table_rows,
+                            );
+                        with_env_var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP", "fused-simt", || {
+                            with_env_var(
+                                SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
+                                &qwen3_obmm_object_ref_wire_to_hex(&state_ref),
+                                || {
+                                    let terminal_hidden = (0..hidden_size)
+                                        .map(|index| {
+                                            (index as f32 - hidden_size as f32 / 2.0) / 4096.0
+                                        })
+                                        .collect::<Vec<_>>();
+                                    let expected = run_engram_context_reference(&EngramContextOp {
+                                        table: &table,
+                                        table_rows,
+                                        indices: &indices,
+                                        hidden: &terminal_hidden,
+                                        gate_weight: &gate_weight,
+                                        batch: 1,
+                                        hidden_size,
+                                    })
+                                    .expect("reference fused legacy context");
+                                    let mut sequence =
+                                        vec![vec![0.0f32; hidden_size], terminal_hidden];
+                                    let report =
+                                        qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
+                                            &mut sequence,
+                                            &[11, 358, 2776, 264],
+                                            QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
+                                            QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers,
+                                            None,
+                                        )
+                                        .expect("fused-simt ABI context op should run")
+                                        .expect("context report");
+
+                                    assert_eq!(report.mode, "fused-simt-abi-reference-object-ref");
+                                    assert_eq!(report.table_rows, table_rows);
+                                    assert_eq!(
+                                        report.output_checksum,
+                                        expected.report.output_checksum
+                                    );
+                                    assert_eq!(sequence[1], expected.output);
+                                },
+                            );
+                        });
+                    },
+                );
+                let _ = std::fs::remove_dir_all(&registry_dir);
+            },
+        );
+    }
+
+    #[test]
     fn qwen3_paper_engram_context_cpu_reference_consumes_state_manifest() {
         run_simpler_native_test_isolated(
             "qwen3_paper_engram_context_cpu_reference_consumes_state_manifest",
@@ -23880,6 +23991,187 @@ mod tests {
                                 assert!(skipped.is_none());
                                 assert_eq!(skipped_sequence, skipped_before);
                             });
+                        });
+                    },
+                );
+                let _ = std::fs::remove_dir_all(&registry_dir);
+            },
+        );
+    }
+
+    #[test]
+    fn qwen3_paper_engram_context_fused_simt_builds_packed_runtime_input() {
+        run_simpler_native_test_isolated(
+            "qwen3_paper_engram_context_fused_simt_builds_packed_runtime_input",
+            || {
+                let registry_dir = std::env::temp_dir().join(format!(
+                    "ub_sim_qwen3_paper_engram_context_fused_state_ref_test_{}",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&registry_dir);
+                with_env_var(
+                    SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+                    registry_dir.to_string_lossy().as_ref(),
+                    || {
+                        let hidden_size = 1024usize;
+                        let table_rows = 16usize;
+                        let layer = 7u64;
+                        let total_layers = QWEN3_DENSE_REFERENCE_PROFILE.num_hidden_layers;
+                        let hash_config =
+                            build_default_engram_hash_config(0, 2, table_rows as u64, 0x99);
+                        let token_ids = [11, 358, 2776, 264];
+                        let token_step = token_ids.len() - 1;
+                        let lookups = build_engram_lookup_requests_from_step(
+                            &token_ids,
+                            token_step,
+                            &hash_config,
+                        )
+                        .expect("build paper lookups")
+                        .into_iter()
+                        .map(|request| PaperEngramContextLookupRef {
+                            batch_index: 0,
+                            order: request.order,
+                            head: request.head,
+                            row: request.row,
+                            exact_key: request.exact_key,
+                        })
+                        .collect::<Vec<_>>();
+
+                        let mut table_refs = Vec::new();
+                        let mut table_payloads = Vec::<(u8, u16, Vec<f32>)>::new();
+                        for spec in &hash_config.table_specs {
+                            let table = (0..table_rows * hidden_size)
+                                .map(|index| {
+                                    let raw = ((usize::from(spec.order) * 41
+                                        + usize::from(spec.head) * 29
+                                        + index * 13)
+                                        % 257) as f32;
+                                    (raw - 128.0) / 4096.0
+                                })
+                                .collect::<Vec<_>>();
+                            let table_payload = test_f32_vec_to_le_bytes(&table);
+                            let table_ref = LingquObmmObjectRefWire::committed(
+                                QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
+                                0,
+                                0,
+                                1,
+                                qwen3_lingqu_key_hash(&format!(
+                                    "paper/fused-simt/table/{}/{}",
+                                    spec.order, spec.head
+                                )),
+                                0,
+                                table_payload.len() as u64,
+                                qwen3_dense_reference_range_object_payload_checksum(&table_payload),
+                            );
+                            qwen3_object_registry_put(&table_ref, &table_payload)
+                                .expect("put paper fused table object");
+                            table_payloads.push((spec.order, spec.head, table));
+                            table_refs.push(Qwen3PaperEngramStateTableRef {
+                                layer,
+                                order: spec.order,
+                                head: spec.head,
+                                row_start: 0,
+                                row_end: table_rows as u64,
+                                hash_seed: spec.seed,
+                                object_ref: table_ref,
+                            });
+                        }
+                        let gate_weight = (0..hidden_size)
+                            .map(|index| ((index % 17) as f32 - 8.0) / 8192.0)
+                            .collect::<Vec<_>>();
+                        let gate_payload = test_f32_vec_to_le_bytes(&gate_weight);
+                        let gate_ref = LingquObmmObjectRefWire::committed(
+                            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
+                            0,
+                            0,
+                            1,
+                            qwen3_lingqu_key_hash("paper/fused-simt/gate"),
+                            0,
+                            gate_payload.len() as u64,
+                            qwen3_dense_reference_range_object_payload_checksum(&gate_payload),
+                        );
+                        qwen3_object_registry_put(&gate_ref, &gate_payload)
+                            .expect("put paper fused gate object");
+
+                        let state_payload = qwen3_paper_engram_state_manifest_payload(
+                            hidden_size,
+                            hidden_size,
+                            0,
+                            hash_config.projection_checksum,
+                            &table_refs,
+                            &[Qwen3PaperEngramStateGateRef {
+                                layer,
+                                object_ref: gate_ref,
+                            }],
+                        )
+                        .expect("paper engram state manifest payload");
+                        let state_ref = LingquObmmObjectRefWire::committed(
+                            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
+                            0,
+                            0,
+                            1,
+                            qwen3_lingqu_key_hash("paper/fused-simt/state"),
+                            0,
+                            state_payload.len() as u64,
+                            qwen3_dense_reference_range_object_payload_checksum(&state_payload),
+                        );
+                        qwen3_object_registry_put(&state_ref, &state_payload)
+                            .expect("put paper fused state manifest");
+
+                        with_env_var("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP", "fused-simt", || {
+                            with_env_var(
+                                SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
+                                &qwen3_obmm_object_ref_wire_to_hex(&state_ref),
+                                || {
+                                    let terminal_hidden = (0..hidden_size)
+                                        .map(|index| {
+                                            (index as f32 - hidden_size as f32 / 2.0) / 4096.0
+                                        })
+                                        .collect::<Vec<_>>();
+                                    let table_views = table_payloads
+                                        .iter()
+                                        .map(|(order, head, table)| PaperEngramContextTableView {
+                                            order: *order,
+                                            head: *head,
+                                            table,
+                                            table_rows,
+                                        })
+                                        .collect::<Vec<_>>();
+                                    let expected =
+                                        run_paper_engram_context_reference(&PaperEngramContextOp {
+                                            tables: &table_views,
+                                            lookups: &lookups,
+                                            hidden: &terminal_hidden,
+                                            gate_weight: &gate_weight,
+                                            batch: 1,
+                                            hidden_size,
+                                        })
+                                        .expect("paper reference context");
+                                    let mut sequence =
+                                        vec![vec![0.0f32; hidden_size], terminal_hidden];
+                                    let report =
+                                        qwen3_dense_reference_apply_engram_context_to_terminal_sequence(
+                                            &mut sequence,
+                                            &token_ids,
+                                            layer,
+                                            total_layers,
+                                            None,
+                                        )
+                                        .expect("paper fused-simt ABI context op should run")
+                                        .expect("paper context report");
+
+                                    assert_eq!(
+                                        report.mode,
+                                        "fused-simt-abi-reference-paper-object-ref"
+                                    );
+                                    assert_eq!(report.table_rows, table_rows * table_refs.len());
+                                    assert_eq!(
+                                        report.output_checksum,
+                                        expected.report.output_checksum
+                                    );
+                                    assert_eq!(sequence[1], expected.output);
+                                },
+                            );
                         });
                     },
                 );
