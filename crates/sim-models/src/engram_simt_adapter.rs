@@ -3,6 +3,7 @@ use crate::engram_context::{
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 pub const ENGRAM_SIMT_VENDOR_DIR: &str = "vendor/pto-isa/kernels/manual/a5/engram_simt";
 pub const ENGRAM_SIMT_BINARY_NAME: &str = "engram-simt";
@@ -22,6 +23,19 @@ pub struct EngramSimtLaunchSpec {
     pub kernel_library_path: PathBuf,
     pub run_mode: String,
     pub soc_version: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EngramSimtLaunchReport {
+    pub mode: &'static str,
+    pub case_name: String,
+    pub binary_path: PathBuf,
+    pub kernel_library_path: PathBuf,
+    pub working_dir: PathBuf,
+    pub npu_id: u32,
+    pub status_code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -128,6 +142,52 @@ pub fn artifact_config_from_env(
     })
 }
 
+pub fn run_engram_simt_artifact_case(
+    spec: &EngramSimtLaunchSpec,
+    npu_id: u32,
+) -> Result<EngramSimtLaunchReport, String> {
+    let working_dir = spec.binary_path.parent().ok_or_else(|| {
+        format!(
+            "engram_simt_binary_parent_missing:path={}",
+            spec.binary_path.display()
+        )
+    })?;
+    let output = Command::new(&spec.binary_path)
+        .current_dir(working_dir)
+        .arg(format!("--case={}", spec.case_name))
+        .arg(format!("--npu={npu_id}"))
+        .output()
+        .map_err(|err| {
+            format!(
+                "engram_simt_launch_failed:path={}:case={}:{}",
+                spec.binary_path.display(),
+                spec.case_name,
+                err
+            )
+        })?;
+    let report = EngramSimtLaunchReport {
+        mode: "fused-simt",
+        case_name: spec.case_name.clone(),
+        binary_path: spec.binary_path.clone(),
+        kernel_library_path: spec.kernel_library_path.clone(),
+        working_dir: working_dir.to_path_buf(),
+        npu_id,
+        status_code: output.status.code(),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    };
+    if !output.status.success() {
+        return Err(format!(
+            "engram_simt_case_failed:case={}:status={:?}:stdout={}:stderr={}",
+            report.case_name,
+            report.status_code,
+            report.stdout.escape_debug(),
+            report.stderr.escape_debug()
+        ));
+    }
+    Ok(report)
+}
+
 fn validate_engram_simt_shape(
     emb_dim: usize,
     batch: usize,
@@ -172,6 +232,8 @@ mod tests {
     use super::*;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+    #[cfg(unix)]
+    use std::{fs::Permissions, os::unix::fs::PermissionsExt};
 
     #[test]
     fn engram_simt_symbol_selects_fused_dim_and_batch() {
@@ -230,6 +292,32 @@ mod tests {
         let config = EngramSimtArtifactConfig::new("/tmp/unused", 2, 65_536);
         let err = discover_engram_simt_artifact(&config).expect_err("batch should fail");
         assert!(err.contains("unsupported_engram_simt_batch"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn engram_simt_launch_runs_selected_case_in_artifact_dir() {
+        let dir = temp_dir("sim_models_engram_simt_launch");
+        let binary_path = dir.join(ENGRAM_SIMT_BINARY_NAME);
+        fs::write(
+            &binary_path,
+            b"#!/bin/sh\nprintf 'cwd=%s\\n' \"$(pwd)\"\nprintf 'args=%s\\n' \"$*\"\n",
+        )
+        .expect("write binary");
+        fs::set_permissions(&binary_path, Permissions::from_mode(0o755)).expect("chmod binary");
+        fs::write(dir.join(ENGRAM_SIMT_KERNEL_LIBRARY_NAME), b"stub").expect("write kernel");
+        let spec = discover_engram_simt_artifact(&EngramSimtArtifactConfig::new(&dir, 4, 65_536))
+            .expect("discover artifact");
+
+        let report = run_engram_simt_artifact_case(&spec, 2).expect("run selected case");
+
+        assert_eq!(report.mode, "fused-simt");
+        assert_eq!(report.working_dir, dir);
+        assert_eq!(report.npu_id, 2);
+        assert_eq!(report.status_code, Some(0));
+        assert!(report.stdout.contains("ENGRAMSIMTTest.fused_E1024_B4_T64K"));
+        assert!(report.stdout.contains("--npu=2"));
+        let _ = fs::remove_dir_all(report.working_dir);
     }
 
     fn temp_dir(prefix: &str) -> PathBuf {

@@ -3,7 +3,8 @@ use sim_models::{
         deterministic_engram_context_fixture, deterministic_paper_engram_context_fixture,
     },
     engram_simt_adapter::{
-        artifact_config_from_env, discover_engram_simt_artifact, EngramSimtArtifactConfig,
+        artifact_config_from_env, discover_engram_simt_artifact, run_engram_simt_artifact_case,
+        EngramSimtArtifactConfig,
     },
 };
 use std::path::PathBuf;
@@ -21,6 +22,8 @@ struct CliArgs {
     batch: usize,
     rows: usize,
     artifact_dir: Option<PathBuf>,
+    run: bool,
+    npu_id: u32,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -41,7 +44,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 artifact_config_from_env(args.batch, args.rows)?
             };
             let spec = discover_engram_simt_artifact(&config)?;
-            println!("{}", serde_json::to_string_pretty(&spec)?);
+            if args.run {
+                let report = run_engram_simt_artifact_case(&spec, args.npu_id)?;
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("{}", serde_json::to_string_pretty(&spec)?);
+            }
         }
     }
     Ok(())
@@ -56,6 +64,8 @@ where
     let mut batch = 1usize;
     let mut rows = 65_536usize;
     let mut artifact_dir = None;
+    let mut run = false;
+    let mut npu_id = 0u32;
     let mut pending = args.into_iter().map(Into::into).peekable();
 
     while let Some(arg) = pending.next() {
@@ -89,9 +99,24 @@ where
             rows = parse_positive_usize("--rows", value)?;
         } else if let Some(value) = arg.strip_prefix("--table-rows=") {
             rows = parse_positive_usize("--table-rows", value)?;
+        } else if arg == "--run" {
+            run = true;
+        } else if arg == "--npu" || arg == "--npu-id" {
+            let value = pending
+                .next()
+                .ok_or_else(|| format!("{arg} requires a value"))?;
+            npu_id = parse_u32_arg(&arg, &value)?;
+        } else if let Some(value) = arg.strip_prefix("--npu=") {
+            npu_id = parse_u32_arg("--npu", value)?;
+        } else if let Some(value) = arg.strip_prefix("--npu-id=") {
+            npu_id = parse_u32_arg("--npu-id", value)?;
         } else {
             return Err(format!("unknown engram-context-reference option: {arg}"));
         }
+    }
+
+    if run && mode != CliMode::FusedSimt {
+        return Err("--run is only supported with --mode=fused-simt".to_string());
     }
 
     Ok(CliArgs {
@@ -99,6 +124,8 @@ where
         batch,
         rows,
         artifact_dir,
+        run,
+        npu_id,
     })
 }
 
@@ -121,6 +148,12 @@ fn parse_positive_usize(name: &str, value: &str) -> Result<usize, String> {
     Ok(parsed)
 }
 
+fn parse_u32_arg(name: &str, value: &str) -> Result<u32, String> {
+    value
+        .parse::<u32>()
+        .map_err(|err| format!("{name} must be an unsigned integer: {err}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,7 +167,9 @@ mod tests {
                 mode: CliMode::CpuReference,
                 batch: 4,
                 rows: 32,
-                artifact_dir: None
+                artifact_dir: None,
+                run: false,
+                npu_id: 0
             }
         );
     }
@@ -154,9 +189,25 @@ mod tests {
                 mode: CliMode::FusedSimt,
                 batch: 16,
                 rows: 65_536,
-                artifact_dir: Some(PathBuf::from("/tmp/engram-simt-build"))
+                artifact_dir: Some(PathBuf::from("/tmp/engram-simt-build")),
+                run: false,
+                npu_id: 0
             }
         );
+    }
+
+    #[test]
+    fn cli_args_accept_fused_simt_run_npu() {
+        let args = parse_args([
+            "--mode=fused-simt",
+            "--run",
+            "--npu=2",
+            "--artifact-dir=/tmp/engram-simt-build",
+        ])
+        .expect("parse args");
+        assert_eq!(args.mode, CliMode::FusedSimt);
+        assert!(args.run);
+        assert_eq!(args.npu_id, 2);
     }
 
     #[test]
@@ -169,7 +220,9 @@ mod tests {
                 mode: CliMode::PaperCpuReference,
                 batch: 4,
                 rows: 16,
-                artifact_dir: None
+                artifact_dir: None,
+                run: false,
+                npu_id: 0
             }
         );
     }
@@ -178,5 +231,11 @@ mod tests {
     fn cli_args_reject_unknown_option() {
         let err = parse_args(["--mode=fused"]).expect_err("unsupported mode should fail");
         assert!(err.contains("unsupported --mode"));
+    }
+
+    #[test]
+    fn cli_args_reject_run_without_fused_simt() {
+        let err = parse_args(["--run"]).expect_err("run requires fused-simt mode");
+        assert!(err.contains("--mode=fused-simt"));
     }
 }
