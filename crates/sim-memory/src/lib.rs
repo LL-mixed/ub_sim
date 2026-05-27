@@ -8013,9 +8013,10 @@ impl LingquMemoryService {
                 ));
             }
         }
-        self.validate_paper_engram_module_artifact_bindings(&manifest)?;
+        let (_, hash_config) = self.validate_paper_engram_module_artifact_bindings(&manifest)?;
         let table_shards =
             resolve_paper_engram_module_table_shards(&manifest, &self.paper_engram_table_shards)?;
+        validate_paper_engram_table_row_coverage(&manifest, hash_config, &table_shards)?;
         let gates = resolve_paper_engram_module_gates(&manifest, &self.paper_engram_gates)?;
         let _layer_operands =
             build_paper_engram_runtime_layer_operands(&manifest, &table_shards, &gates)?;
@@ -8028,7 +8029,10 @@ impl LingquMemoryService {
     fn validate_paper_engram_module_artifact_bindings(
         &self,
         module: &PaperEngramModuleManifest,
-    ) -> MemoryResult<()> {
+    ) -> MemoryResult<(
+        &PaperEngramTokenizerProjectionManifest,
+        &PaperEngramHashConfigManifest,
+    )> {
         let tokenizer_projection = self
             .paper_engram_tokenizer_projections
             .values()
@@ -8075,7 +8079,7 @@ impl LingquMemoryService {
                 reason: "hash config heads_per_order must match module heads_per_order",
             });
         }
-        Ok(())
+        Ok((tokenizer_projection, hash_config))
     }
 
     pub fn validate_paper_engram_module_quality(&self, module_id: &str) -> MemoryResult<()> {
@@ -8858,6 +8862,7 @@ impl LingquMemoryService {
         }
         let table_shards =
             resolve_paper_engram_module_table_shards(module, &self.paper_engram_table_shards)?;
+        validate_paper_engram_table_row_coverage(module, hash_config, &table_shards)?;
         let gates = resolve_paper_engram_module_gates(module, &self.paper_engram_gates)?;
         let layer_operands =
             build_paper_engram_runtime_layer_operands(module, &table_shards, &gates)?;
@@ -9168,6 +9173,18 @@ fn validate_paper_engram_gate_for_module(
             reason: "gate layer must be declared by module",
         });
     }
+    if gate.dtype != TensorDType::F32 {
+        return Err(LingquMemoryError::InvalidValue {
+            field: "paper_engram_gate.dtype",
+            reason: "paper Engram gate dtype must be f32",
+        });
+    }
+    if gate.shape != vec![module.hidden_size] {
+        return Err(LingquMemoryError::InvalidValue {
+            field: "paper_engram_gate.shape",
+            reason: "gate shape must match module hidden_size",
+        });
+    }
     let Some(_) = &gate.payload_ref else {
         return Err(LingquMemoryError::MissingField(
             "paper_engram_gate.payload_ref",
@@ -9190,6 +9207,59 @@ fn validate_paper_engram_table_coverage(
                 if !available.contains(&(layer, order, head)) {
                     return Err(LingquMemoryError::MissingField(
                         "paper_engram_runtime.table_operand",
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_paper_engram_table_row_coverage(
+    module: &PaperEngramModuleManifest,
+    hash_config: &PaperEngramHashConfigManifest,
+    shards: &[PaperEngramTableShardManifest],
+) -> MemoryResult<()> {
+    for &layer in &module.layers {
+        for &order in &module.orders {
+            for head in 0..module.heads_per_order {
+                let mut matching = shards
+                    .iter()
+                    .filter(|shard| {
+                        shard.layer == layer && shard.order == order && shard.head == head
+                    })
+                    .collect::<Vec<_>>();
+                matching.sort_by(|left, right| {
+                    left.row_start
+                        .cmp(&right.row_start)
+                        .then_with(|| left.row_end.cmp(&right.row_end))
+                        .then_with(|| left.shard_id.cmp(&right.shard_id))
+                });
+
+                let mut next_row = 0;
+                for shard in matching {
+                    if shard.row_end > hash_config.table_rows {
+                        return Err(LingquMemoryError::InvalidValue {
+                            field: "paper_engram_table_shard.row_range",
+                            reason: "table shard row range must fit hash config table_rows",
+                        });
+                    }
+                    if shard.row_start < next_row {
+                        return Err(LingquMemoryError::InvalidValue {
+                            field: "paper_engram_table_shard.row_range",
+                            reason: "table shard row ranges must not overlap",
+                        });
+                    }
+                    if shard.row_start > next_row {
+                        return Err(LingquMemoryError::MissingField(
+                            "paper_engram_runtime.table_row_block",
+                        ));
+                    }
+                    next_row = shard.row_end;
+                }
+                if next_row < hash_config.table_rows {
+                    return Err(LingquMemoryError::MissingField(
+                        "paper_engram_runtime.table_row_block",
                     ));
                 }
             }
@@ -11019,6 +11089,118 @@ mod tests {
     }
 
     #[test]
+    fn paper_engram_module_registration_rejects_incomplete_table_row_coverage() {
+        let mut service = LingquMemoryService::new();
+        let projection = sample_paper_engram_tokenizer_projection_manifest();
+        let hash_config = sample_paper_engram_hash_config_manifest();
+        let mut shard = sample_paper_engram_table_shard_manifest();
+        let gate = sample_paper_engram_gate_manifest();
+        let module = sample_paper_engram_module_manifest();
+
+        shard.row_end = hash_config.table_rows / 2;
+        shard.shape[0] = shard.row_end - shard.row_start;
+        shard.checksum = paper_engram_table_shard_manifest_checksum(&shard);
+        shard
+            .validate()
+            .expect("build partial-coverage table shard");
+
+        service
+            .register_paper_engram_tokenizer_projection(projection)
+            .expect("register projection");
+        service
+            .register_paper_engram_hash_config(hash_config)
+            .expect("register hash config");
+        service
+            .register_paper_engram_table_shard(shard)
+            .expect("register shard before row coverage check");
+        service
+            .register_paper_engram_gate(gate)
+            .expect("register gate");
+
+        assert_eq!(
+            service
+                .register_paper_engram_module(module)
+                .expect_err("module must reject incomplete table row coverage"),
+            LingquMemoryError::MissingField("paper_engram_runtime.table_row_block")
+        );
+    }
+
+    #[test]
+    fn paper_engram_module_registration_rejects_table_rows_past_hash_config() {
+        let mut service = LingquMemoryService::new();
+        let projection = sample_paper_engram_tokenizer_projection_manifest();
+        let hash_config = sample_paper_engram_hash_config_manifest();
+        let mut shard = sample_paper_engram_table_shard_manifest();
+        let gate = sample_paper_engram_gate_manifest();
+        let module = sample_paper_engram_module_manifest();
+
+        shard.row_end = hash_config.table_rows + 1;
+        shard.shape[0] = shard.row_end - shard.row_start;
+        shard.checksum = paper_engram_table_shard_manifest_checksum(&shard);
+        shard.validate().expect("build out-of-range table shard");
+
+        service
+            .register_paper_engram_tokenizer_projection(projection)
+            .expect("register projection");
+        service
+            .register_paper_engram_hash_config(hash_config)
+            .expect("register hash config");
+        service
+            .register_paper_engram_table_shard(shard)
+            .expect("register shard before row coverage check");
+        service
+            .register_paper_engram_gate(gate)
+            .expect("register gate");
+
+        assert_eq!(
+            service
+                .register_paper_engram_module(module)
+                .expect_err("module must reject shard rows beyond hash config"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_table_shard.row_range",
+                reason: "table shard row range must fit hash config table_rows"
+            }
+        );
+    }
+
+    #[test]
+    fn paper_engram_module_registration_rejects_incompatible_gate_shape() {
+        let mut service = LingquMemoryService::new();
+        let projection = sample_paper_engram_tokenizer_projection_manifest();
+        let hash_config = sample_paper_engram_hash_config_manifest();
+        let shard = sample_paper_engram_table_shard_manifest();
+        let mut gate = sample_paper_engram_gate_manifest();
+        let module = sample_paper_engram_module_manifest();
+
+        gate.shape = vec![module.hidden_size + 1];
+        gate.checksum = paper_engram_gate_manifest_checksum(&gate);
+        gate.validate().expect("build incompatible gate shape");
+
+        service
+            .register_paper_engram_tokenizer_projection(projection)
+            .expect("register projection");
+        service
+            .register_paper_engram_hash_config(hash_config)
+            .expect("register hash config");
+        service
+            .register_paper_engram_table_shard(shard)
+            .expect("register shard");
+        service
+            .register_paper_engram_gate(gate)
+            .expect("register gate before module compatibility check");
+
+        assert_eq!(
+            service
+                .register_paper_engram_module(module)
+                .expect_err("module must reject incompatible gate shape"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_gate.shape",
+                reason: "gate shape must match module hidden_size"
+            }
+        );
+    }
+
+    #[test]
     fn paper_engram_module_resolves_by_model_and_engram_id() {
         let mut service = LingquMemoryService::new();
         let projection = sample_paper_engram_tokenizer_projection_manifest();
@@ -11334,18 +11516,26 @@ mod tests {
         let hash_config = sample_paper_engram_hash_config_manifest();
         let gate = sample_paper_engram_gate_manifest();
         let mut shard = sample_paper_engram_table_shard_manifest();
-        shard.row_end = 16;
-        shard.shape = vec![16, 512];
-        shard.block_payload_refs = (0..4)
+        shard.row_end = hash_config.table_rows;
+        shard.shape = vec![hash_config.table_rows, 512];
+        let row_bytes = 512 * 4;
+        let mut block_payload_refs = (0..4)
             .map(|chunk| {
                 LingquBlockPayloadRef::new(
                     format!("block/pe-shard-0/chunk-{chunk}"),
                     0,
-                    4 * 512 * 4,
+                    4 * row_bytes,
                     0xabc0 + chunk,
                 )
             })
-            .collect();
+            .collect::<Vec<_>>();
+        block_payload_refs.push(LingquBlockPayloadRef::new(
+            "block/pe-shard-0/chunk-rest",
+            0,
+            (hash_config.table_rows - 16) * row_bytes,
+            0xabcf,
+        ));
+        shard.block_payload_refs = block_payload_refs;
         shard.checksum = paper_engram_table_shard_manifest_checksum(&shard);
         shard.validate().expect("chunked paper Engram table shard");
         let mut module = sample_paper_engram_module_manifest();
