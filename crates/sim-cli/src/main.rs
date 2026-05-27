@@ -22011,6 +22011,109 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
     }
 
     #[test]
+    fn lingqu_memory_import_paper_engram_module_rejects_incomplete_table_row_coverage() {
+        let root = env::temp_dir().join(format!(
+            "sim-cli-lingqu-memory-paper-engram-import-incomplete-rows-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create paper engram incomplete rows test dir");
+        let seed_store = root.join("seed-store.json");
+        let import_store = root.join("import-store.json");
+        let bundle_dir = root.join("paper_engram_bundle");
+        let table_shards_dir = bundle_dir.join("table_shards");
+        let gates_dir = bundle_dir.join("gates");
+        fs::create_dir_all(&table_shards_dir).expect("create bundle table shard dir");
+        fs::create_dir_all(&gates_dir).expect("create bundle gate dir");
+
+        run_lingqu_memory_seed_paper_engram_fixture_cli(&[
+            "--store".to_string(),
+            seed_store.display().to_string(),
+            "--module-id".to_string(),
+            "pe-module-incomplete-rows-cli".to_string(),
+            "--model-id".to_string(),
+            "qwen3-incomplete-rows-test".to_string(),
+            "--model-key".to_string(),
+            "qwen3-incomplete-rows-test".to_string(),
+            "--hidden-size".to_string(),
+            "8".to_string(),
+            "--layer-end".to_string(),
+            "4".to_string(),
+            "--table-rows".to_string(),
+            "8".to_string(),
+            "--orders".to_string(),
+            "2".to_string(),
+            "--heads-per-order".to_string(),
+            "1".to_string(),
+            "--created-at-us".to_string(),
+            "10".to_string(),
+        ])
+        .expect("seed paper engram incomplete rows fixture");
+
+        let mut durable =
+            load_lingqu_memory_durable_store(&seed_store).expect("load incomplete rows seed store");
+        let projection = durable
+            .load_paper_engram_tokenizer_projection_manifest()
+            .expect("load seeded projection")
+            .pop()
+            .expect("seeded projection");
+        let hash_config = durable
+            .load_paper_engram_hash_config_manifest()
+            .expect("load seeded hash config")
+            .pop()
+            .expect("seeded hash config");
+        let mut shard = durable
+            .load_paper_engram_table_shard_manifest()
+            .expect("load seeded table shard")
+            .pop()
+            .expect("seeded table shard");
+        let gate = durable
+            .load_paper_engram_gate_manifest()
+            .expect("load seeded gate")
+            .pop()
+            .expect("seeded gate");
+        let module = durable
+            .load_paper_engram_module_registry()
+            .expect("load seeded module registry")
+            .pop()
+            .expect("seeded module")
+            .module;
+
+        shard.row_end = hash_config.table_rows / 2;
+        shard.shape[0] = shard.row_end - shard.row_start;
+        let shard = sim_memory::PaperEngramTableShardManifest::new(shard)
+            .expect("build incomplete row coverage shard");
+
+        write_json_file(&bundle_dir.join("tokenizer_projection.json"), &projection);
+        write_json_file(&bundle_dir.join("hash_config.json"), &hash_config);
+        write_json_file(&table_shards_dir.join("shard_0000.json"), &shard);
+        write_json_file(&gates_dir.join("gate_0000.json"), &gate);
+        write_json_file(&bundle_dir.join("engram_module.json"), &module);
+        write_paper_engram_bundle_block_payload_files(
+            &bundle_dir,
+            &mut durable,
+            std::slice::from_ref(&shard),
+            std::slice::from_ref(&gate),
+        );
+
+        let err = run_lingqu_memory_import_paper_engram_module_cli(&[
+            "--store".to_string(),
+            import_store.display().to_string(),
+            "--bundle-dir".to_string(),
+            bundle_dir.display().to_string(),
+        ])
+        .expect_err("fresh bundle import must reject incomplete table row coverage");
+        assert!(
+            err.chain().any(|cause| cause
+                .to_string()
+                .contains("paper_engram_runtime.table_row_block")),
+            "{err:#}"
+        );
+
+        fs::remove_dir_all(&root).expect("remove paper engram incomplete rows test dir");
+    }
+
+    #[test]
     fn lingqu_memory_validate_paper_engram_module_rejects_missing_runtime_payloads() {
         let root = env::temp_dir().join(format!(
             "sim-cli-lingqu-memory-paper-engram-validate-missing-payload-{}",
