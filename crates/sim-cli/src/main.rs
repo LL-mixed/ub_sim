@@ -35,7 +35,8 @@ use sim_models::{
         canonical_ngram_checksum, ENGRAM_HASH_ALGORITHM_VERSION,
     },
     engram_simt_adapter::{
-        artifact_config_from_env, discover_engram_simt_artifact, EngramSimtLaunchSpec,
+        artifact_config_from_env, discover_engram_simt_artifact, run_engram_simt_artifact_case,
+        EngramSimtArtifactConfig, EngramSimtLaunchSpec,
     },
     qwen3_dense::{
         decode_hidden_bytes, hidden_range_bytes, kv_state_bytes_for_layer_count,
@@ -2246,6 +2247,9 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "validate-paper-engram-backend-parity" => {
             run_lingqu_memory_validate_paper_engram_backend_parity_cli(&args)
         }
+        "validate-paper-engram-fused-simt-artifact" => {
+            run_lingqu_memory_validate_paper_engram_fused_simt_artifact_cli(&args)
+        }
         "seed-paper-engram-fixture" => run_lingqu_memory_seed_paper_engram_fixture_cli(&args),
         "list-paper-engram-modules" => run_lingqu_memory_list_paper_engram_modules_cli(&args),
         "resolve-paper-engram-runtime" => run_lingqu_memory_resolve_paper_engram_runtime_cli(&args),
@@ -2285,7 +2289,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
             build-paper-engram-eval-report-from-w5-summary, \
             register-paper-engram-eval-report-from-w5-summary, \
             register-paper-engram-table-shard, register-paper-engram-gate, \
-            register-paper-engram-module, import-paper-engram-module, export-paper-engram-module, validate-paper-engram-module, validate-paper-engram-quality, validate-paper-engram-backend-parity, seed-paper-engram-fixture, update-record-state, register-execution-artifact, \
+            register-paper-engram-module, import-paper-engram-module, export-paper-engram-module, validate-paper-engram-module, validate-paper-engram-quality, validate-paper-engram-backend-parity, validate-paper-engram-fused-simt-artifact, seed-paper-engram-fixture, update-record-state, register-execution-artifact, \
             record-artifact-access, register-terminal-logits-artifact-from-w5-summary, \
             promote-terminal-shortpath-artifacts-from-w5-summary, boundary-lookup, \
             boundary-lookup-from-observation, boundary-request-from-w5-summary, \
@@ -4705,6 +4709,79 @@ fn run_lingqu_memory_validate_paper_engram_backend_parity_cli(
     );
     println!("  backend_parity: ok");
     Ok(())
+}
+
+fn run_lingqu_memory_validate_paper_engram_fused_simt_artifact_cli(
+    args: &[String],
+) -> anyhow::Result<()> {
+    let batch = optional_cli_u64(args, "--batch")?.unwrap_or(1);
+    let batch = usize::try_from(batch).map_err(|_| anyhow::anyhow!("--batch exceeds usize"))?;
+    let table_rows = paper_engram_fused_simt_table_rows_from_cli(args)?;
+    let artifact_dir = optional_cli_path(args, "--artifact-dir")?;
+    let npu_id = optional_cli_u64(args, "--npu")?.unwrap_or(0);
+    let npu_id = u32::try_from(npu_id).map_err(|_| anyhow::anyhow!("--npu exceeds u32"))?;
+    let should_run = cli_flag(args, "--run");
+
+    let artifact_config = match artifact_dir {
+        Some(path) => EngramSimtArtifactConfig::new(path, batch, table_rows),
+        None => artifact_config_from_env(batch, table_rows).map_err(anyhow::Error::msg)?,
+    };
+    let spec = discover_engram_simt_artifact(&artifact_config).map_err(anyhow::Error::msg)?;
+
+    println!("lingqu_memory_service");
+    println!("  mode: validate-paper-engram-fused-simt-artifact");
+    println!("  artifact_dir: {}", artifact_config.artifact_dir.display());
+    println!("  fused_mode: {}", spec.mode);
+    println!("  emb_dim: {}", spec.emb_dim);
+    println!("  batch: {}", spec.batch);
+    println!("  table_rows: {}", spec.table_rows);
+    println!("  indices_per_batch: {}", spec.indices_per_batch);
+    println!("  symbol: {}", spec.symbol);
+    println!("  case_name: {}", spec.case_name);
+    println!("  binary_path: {}", spec.binary_path.display());
+    println!(
+        "  kernel_library_path: {}",
+        spec.kernel_library_path.display()
+    );
+    println!("  run_mode: {}", spec.run_mode);
+    println!("  soc_version: {}", spec.soc_version);
+    println!("  run: {}", u8::from(should_run));
+    println!("  npu_id: {}", npu_id);
+
+    if should_run {
+        let report = run_engram_simt_artifact_case(&spec, npu_id).map_err(anyhow::Error::msg)?;
+        println!("  launch_working_dir: {}", report.working_dir.display());
+        println!(
+            "  launch_status_code: {}",
+            report
+                .status_code
+                .map(|status| status.to_string())
+                .unwrap_or_else(|| "<signal>".to_string())
+        );
+        println!("  launch_stdout_bytes: {}", report.stdout.len());
+        println!("  launch_stderr_bytes: {}", report.stderr.len());
+        println!(
+            "  launch_stdout_checksum: {:#x}",
+            cli_bytes_checksum(report.stdout.as_bytes())
+        );
+        println!(
+            "  launch_stderr_checksum: {:#x}",
+            cli_bytes_checksum(report.stderr.as_bytes())
+        );
+    }
+
+    println!("  fused_simt_artifact: ok");
+    Ok(())
+}
+
+fn paper_engram_fused_simt_table_rows_from_cli(args: &[String]) -> anyhow::Result<usize> {
+    let table_rows = optional_cli_u64(args, "--table-rows")?;
+    let rows = optional_cli_u64(args, "--rows")?;
+    if table_rows.is_some() && rows.is_some() && table_rows != rows {
+        anyhow::bail!("--table-rows and --rows must match when both are provided");
+    }
+    let table_rows = table_rows.or(rows).unwrap_or(65_536);
+    usize::try_from(table_rows).map_err(|_| anyhow::anyhow!("--table-rows exceeds usize"))
 }
 
 fn paper_engram_backend_parity_hidden(hidden_size: usize) -> Vec<f32> {
@@ -14471,6 +14548,7 @@ mod tests {
         run_lingqu_memory_validate_durable_store, run_lingqu_memory_validate_flat_materialize,
         run_lingqu_memory_validate_flat_query,
         run_lingqu_memory_validate_paper_engram_backend_parity_cli,
+        run_lingqu_memory_validate_paper_engram_fused_simt_artifact_cli,
         run_lingqu_memory_validate_paper_engram_module_cli,
         run_lingqu_memory_validate_paper_engram_quality_cli,
         run_lingqu_memory_validate_w5_engram_object_ref, run_qwen3_guest_decode_loop_cli,
@@ -19428,6 +19506,64 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         .expect("validate paper Engram CPU/simpler backend parity");
 
         fs::remove_dir_all(&root).expect("remove paper engram state-ref test dir");
+    }
+
+    #[test]
+    fn lingqu_memory_validate_paper_engram_fused_simt_artifact_cli_discovers_stub() {
+        let root = env::temp_dir().join(format!(
+            "ub_sim_cli_engram_simt_discover_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create engram simt artifact dir");
+        fs::write(root.join("engram-simt"), b"stub").expect("write engram simt binary");
+        fs::write(root.join("libengram-simt_kernel.so"), b"stub")
+            .expect("write engram simt kernel library");
+
+        run_lingqu_memory_validate_paper_engram_fused_simt_artifact_cli(&[
+            "--artifact-dir".to_string(),
+            root.display().to_string(),
+            "--batch".to_string(),
+            "4".to_string(),
+            "--table-rows".to_string(),
+            "65536".to_string(),
+        ])
+        .expect("validate fused SIMT artifact discovery");
+
+        fs::remove_dir_all(&root).expect("remove engram simt discovery test dir");
+    }
+
+    #[test]
+    fn lingqu_memory_validate_paper_engram_fused_simt_artifact_cli_runs_stub() {
+        let root =
+            env::temp_dir().join(format!("ub_sim_cli_engram_simt_run_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create engram simt artifact dir");
+        let binary_path = root.join("engram-simt");
+        fs::write(&binary_path, b"#!/bin/sh\nprintf 'stub:%s\\n' \"$*\"\n")
+            .expect("write engram simt binary");
+        let mut permissions = fs::metadata(&binary_path)
+            .expect("stat engram simt binary")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&binary_path, permissions).expect("chmod engram simt binary");
+        fs::write(root.join("libengram-simt_kernel.so"), b"stub")
+            .expect("write engram simt kernel library");
+
+        run_lingqu_memory_validate_paper_engram_fused_simt_artifact_cli(&[
+            "--artifact-dir".to_string(),
+            root.display().to_string(),
+            "--batch".to_string(),
+            "1".to_string(),
+            "--rows".to_string(),
+            "65536".to_string(),
+            "--npu".to_string(),
+            "2".to_string(),
+            "--run".to_string(),
+        ])
+        .expect("validate fused SIMT artifact launch");
+
+        fs::remove_dir_all(&root).expect("remove engram simt run test dir");
     }
 
     #[test]

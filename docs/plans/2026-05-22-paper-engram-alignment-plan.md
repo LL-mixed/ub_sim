@@ -64,6 +64,7 @@ Going forward:
 - [x] 将 layer-boundary paper injection 接入 W5 cluster decode 脚本入口，并在 runtime context report 中输出 node/layer/step；explicit `SIM_QWEN3_GUEST_ENGRAM_STATE_REF` 入口需要使用 `*_engram_decode` profile，且不能与 Memory Service bootstrap/reuse 混用。
 - [x] 使用 W5 cluster decode artifact bundle 做端到端验证，确认 paper layer-boundary injection 在真实 decode run 中命中。
 - [x] 规划 paper Engram 训练产物生成流程与质量声明验证；Memory Service 已有 `training_recipe` / `eval_report` manifest、CLI 注册入口与质量声明校验。
+- [x] 为 vendor fused SIMT artifact 增加 `sim-cli lingqu-memory validate-paper-engram-fused-simt-artifact` 校验入口，可脚本化验证 build 目录、case discovery，并在 `--run` 下调用 host launch wrapper。
 
 ## Design Objectives
 
@@ -339,7 +340,7 @@ Current implementation status:
 - `sim-cli lingqu-memory seed-paper-engram-fixture` now exposes explicit `--table-init` and `--gate-init` modes (`zero`, `fixture`, `random-normal`) so Phase 4 correctness/performance runs can separate no-op baseline, deterministic fixture mutation, and deterministic random-normal payloads.
 - W5 `qwen3-engram-context` runtime logs now include row-prefetch hit/request counters, hit-rate milli, table/gate/indices bytes moved, hidden injection byte counters, backend latency, and output checksums.
 - UAPI paper Engram runtime now uses complete row-prefetch hits to materialize only the current step's selected table rows, remaps lookup rows into compact per-order/per-head tables, and preserves output equivalence with the full-table path. Partial prefetch hits still fall back to full table materialization for correctness. Row-prefetch refs carry the resolved row payload byte window so the plan has enough metadata for runtime row-level serving.
-- `sim-models` now exposes a host-side fused SIMT launch wrapper for the vendor `engram-simt` artifact: discovery still validates the build directory, binary, kernel library, case name, shape, run mode, and SoC version, while `engram_context_reference --mode=fused-simt --run --npu=<id>` can execute the selected vendor case and emit a structured launch report. W5/UAPI fused SIMT execution is still intentionally not wired into range-forward until the runtime launch path can pass the same CPU/backend correctness checks as `simpler-host`.
+- `sim-models` now exposes a host-side fused SIMT launch wrapper for the vendor `engram-simt` artifact: discovery still validates the build directory, binary, kernel library, case name, shape, run mode, and SoC version, while `engram_context_reference --mode=fused-simt --run --npu=<id>` can execute the selected vendor case and emit a structured launch report. `sim-cli lingqu-memory validate-paper-engram-fused-simt-artifact` exposes the same discovery/run gate for automation. W5/UAPI fused SIMT execution is still intentionally not wired into range-forward until the runtime launch path can pass the same CPU/backend correctness checks as `simpler-host`.
 
 The terminal-only context-op path is not enough. Paper Engram must be able to
 inject at configured model layers, not only after terminal hidden.
