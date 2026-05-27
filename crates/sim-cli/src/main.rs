@@ -2906,6 +2906,10 @@ fn run_lingqu_memory_compare_paper_engram_eval_report_cli(args: &[String]) -> an
         "  backend_latency_ok: {}",
         optional_bool_label(comparison.backend_latency_ok)
     );
+    println!(
+        "  phase6_summary_refs: {}",
+        paper_engram_eval_phase6_summary_ref_count(&report)
+    );
     println!("  acceptance_required: {require_acceptance}");
     println!(
         "  acceptance: {}",
@@ -3089,11 +3093,54 @@ fn validate_paper_engram_eval_acceptance_for_cli(
     if comparison.backend_latency_ok != Some(true) {
         gaps.push("backend_latency_ok");
     }
+    gaps.extend(paper_engram_eval_phase6_summary_provenance_gaps(report));
     if gaps.is_empty() {
         Ok(())
     } else {
         anyhow::bail!("paper Engram eval acceptance missing: {}", gaps.join(","))
     }
+}
+
+fn paper_engram_eval_phase6_summary_ref_count(report: &PaperEngramEvalReportManifest) -> usize {
+    paper_engram_eval_phase6_summary_provenance_specs()
+        .iter()
+        .filter(|(prefix, _gap)| {
+            report
+                .evidence_refs
+                .iter()
+                .any(|evidence_ref| evidence_ref.starts_with(prefix))
+        })
+        .count()
+}
+
+fn paper_engram_eval_phase6_summary_provenance_gaps(
+    report: &PaperEngramEvalReportManifest,
+) -> Vec<&'static str> {
+    paper_engram_eval_phase6_summary_provenance_specs()
+        .iter()
+        .filter_map(|(prefix, gap)| {
+            let present = report
+                .evidence_refs
+                .iter()
+                .any(|evidence_ref| evidence_ref.starts_with(prefix));
+            (!present).then_some(*gap)
+        })
+        .collect()
+}
+
+fn paper_engram_eval_phase6_summary_provenance_specs() -> [(&'static str, &'static str); 4] {
+    [
+        ("w5-summary:base:", "phase6_base_summary"),
+        (
+            "w5-summary:base_decode_policy:",
+            "phase6_decode_policy_summary",
+        ),
+        ("w5-summary:paper_engram:", "phase6_paper_engram_summary"),
+        (
+            "w5-summary:paper_engram_decode_policy:",
+            "phase6_paper_engram_decode_policy_summary",
+        ),
+    ]
 }
 
 fn signed_delta_milli(value: u64, baseline: u64) -> i128 {
@@ -20105,6 +20152,24 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         assert!(
             format!("{weak_err:#}").contains("hidden_checksum_changed"),
             "unexpected weak eval report error: {weak_err:#}"
+        );
+        let weak_phase6_report_path = root.join("weak_phase6_eval_report.json");
+        let mut weak_phase6_report = report.clone();
+        weak_phase6_report
+            .evidence_refs
+            .retain(|evidence_ref| !evidence_ref.starts_with("w5-summary:base:"));
+        let weak_phase6_report = sim_memory::PaperEngramEvalReportManifest::new(weak_phase6_report)
+            .expect("build weak Phase 6 paper Engram eval report");
+        write_json_file(&weak_phase6_report_path, &weak_phase6_report);
+        let weak_phase6_err = run_lingqu_memory_compare_paper_engram_eval_report_cli(&[
+            "--manifest".to_string(),
+            weak_phase6_report_path.display().to_string(),
+            "--require-acceptance".to_string(),
+        ])
+        .expect_err("reject eval report without Phase 6 base summary provenance");
+        assert!(
+            format!("{weak_phase6_err:#}").contains("phase6_base_summary"),
+            "unexpected weak Phase 6 eval report error: {weak_phase6_err:#}"
         );
 
         fs::remove_dir_all(&root).expect("remove paper engram eval report test dir");
