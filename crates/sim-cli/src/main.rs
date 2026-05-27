@@ -12225,7 +12225,7 @@ mod tests {
         lingqu_object_payload_checksum, lingqu_object_service_args_from,
         load_lingqu_memory_durable_store, load_lingqu_object_service_snapshot,
         load_lingqu_object_service_snapshot_file, load_w5_memory_decisions_from_store,
-        parse_summary_fields, parse_w5_terminal_logits_observation,
+        parse_summary_fields, parse_u64_csv_arg_or_file, parse_w5_terminal_logits_observation,
         publish_w5_engram_state_ref_from_memory, publish_w5_engram_state_ref_from_memory_objects,
         publish_w5_execution_artifact_ref, publish_w5_memory_decision_artifact_refs,
         publish_w5_object_service_payload_ref, qwen3_decode_loop_args_from,
@@ -16520,6 +16520,66 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         assert_eq!(published_plan.rows, row_prefetch.rows);
 
         fs::remove_dir_all(&root).expect("remove paper engram runtime test dir");
+    }
+
+    #[test]
+    fn parse_u64_csv_arg_or_file_accepts_csv_argument() {
+        let args = vec!["--canonical-history".to_string(), "7, 8\n9".to_string()];
+        let history =
+            parse_u64_csv_arg_or_file(&args, "--canonical-history", "--canonical-history-file")
+                .expect("parse canonical history csv");
+        assert_eq!(history, vec![7, 8, 9]);
+    }
+
+    #[test]
+    fn parse_u64_csv_arg_or_file_accepts_file_argument() {
+        let root = env::temp_dir().join(format!("sim-cli-u64-csv-file-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create u64 csv temp dir");
+        let path = root.join("history.txt");
+        fs::write(&path, "7\n8\n9\n").expect("write csv file");
+
+        let args = vec![
+            "--canonical-history-file".to_string(),
+            path.to_string_lossy().to_string(),
+        ];
+        let history =
+            parse_u64_csv_arg_or_file(&args, "--canonical-history", "--canonical-history-file")
+                .expect("parse canonical history file");
+        assert_eq!(history, vec![7, 8, 9]);
+
+        fs::remove_dir_all(&root).expect("remove u64 csv temp dir");
+    }
+
+    #[test]
+    fn parse_u64_csv_arg_or_file_rejects_missing_arguments() {
+        let err = parse_u64_csv_arg_or_file(&[], "--canonical-history", "--canonical-history-file")
+            .expect_err("missing canonical history should fail");
+        assert!(err
+            .to_string()
+            .contains("missing required argument --canonical-history"));
+    }
+
+    #[test]
+    fn parse_u64_csv_arg_or_file_rejects_conflicting_arguments() {
+        let root = env::temp_dir().join(format!("sim-cli-u64-csv-conflict-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create u64 csv conflict temp dir");
+        let path = root.join("history.txt");
+        fs::write(&path, "7").expect("write csv conflict file");
+
+        let args = vec![
+            "--canonical-history".to_string(),
+            "1,2".to_string(),
+            "--canonical-history-file".to_string(),
+            path.to_string_lossy().to_string(),
+        ];
+        let err =
+            parse_u64_csv_arg_or_file(&args, "--canonical-history", "--canonical-history-file")
+                .expect_err("conflicting canonical history args should fail");
+        assert!(err.to_string().contains("conflicting arguments"));
+
+        fs::remove_dir_all(&root).expect("remove u64 csv temp dir");
     }
 
     #[test]
