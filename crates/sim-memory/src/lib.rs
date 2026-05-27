@@ -10011,7 +10011,13 @@ mod tests {
         let hash_config = sample_paper_engram_hash_config_manifest();
         let shard = sample_paper_engram_table_shard_manifest();
         let gate = sample_paper_engram_gate_manifest();
-        let module = sample_paper_engram_module_manifest();
+        let recipe = sample_paper_engram_training_recipe_manifest();
+        let report = sample_paper_engram_eval_report_manifest();
+        let mut module = sample_paper_engram_module_manifest();
+        module.quality_claim = PaperEngramQualityClaim::Posttrain;
+        module.training_recipe_ref = Some(paper_engram_training_recipe_dfs_path(&recipe.recipe_id));
+        module.eval_report_ref = Some(paper_engram_eval_report_dfs_path(&report.report_id));
+        module.checksum = paper_engram_module_manifest_checksum(&module);
 
         service
             .register_paper_engram_tokenizer_projection(projection.clone())
@@ -10019,6 +10025,12 @@ mod tests {
         service
             .register_paper_engram_hash_config(hash_config.clone())
             .expect("register hash config");
+        service
+            .register_paper_engram_training_recipe(recipe.clone())
+            .expect("register training recipe");
+        service
+            .register_paper_engram_eval_report(report.clone())
+            .expect("register eval report");
         service
             .register_paper_engram_table_shard(shard.clone())
             .expect("register shard");
@@ -10034,6 +10046,12 @@ mod tests {
         service
             .persist_paper_engram_hash_configs_to_dfs(&mut durable)
             .expect("persist hash config manifests");
+        service
+            .persist_paper_engram_training_recipes_to_dfs(&mut durable)
+            .expect("persist training recipe manifests");
+        service
+            .persist_paper_engram_eval_reports_to_dfs(&mut durable)
+            .expect("persist eval report manifests");
         service
             .persist_paper_engram_table_shards_to_dfs(&mut durable)
             .expect("persist table shard manifests");
@@ -10051,6 +10069,12 @@ mod tests {
         let rebuilt_hash_configs = restored
             .rebuild_paper_engram_hash_configs_from_dfs(&mut durable)
             .expect("rebuild hash configs");
+        let rebuilt_recipes = restored
+            .rebuild_paper_engram_training_recipes_from_dfs(&mut durable)
+            .expect("rebuild training recipes");
+        let rebuilt_reports = restored
+            .rebuild_paper_engram_eval_reports_from_dfs(&mut durable)
+            .expect("rebuild eval reports");
         let rebuilt_shards = restored
             .rebuild_paper_engram_table_shards_from_dfs(&mut durable)
             .expect("rebuild shards");
@@ -10063,6 +10087,8 @@ mod tests {
 
         assert_eq!(rebuilt_projections, vec![projection.clone()]);
         assert_eq!(rebuilt_hash_configs, vec![hash_config.clone()]);
+        assert_eq!(rebuilt_recipes, vec![recipe.clone()]);
+        assert_eq!(rebuilt_reports, vec![report.clone()]);
         assert_eq!(rebuilt_shards, vec![shard.clone()]);
         assert_eq!(rebuilt_gates, vec![gate.clone()]);
         assert_eq!(rebuilt_modules, vec![module.clone()]);
@@ -10083,6 +10109,9 @@ mod tests {
             restored.paper_engram_module(&module.module_id),
             Some(&module)
         );
+        restored
+            .validate_paper_engram_module_quality(&module.module_id)
+            .expect("validate rebuilt trained paper Engram quality claim");
         let runtime = restored
             .resolve_paper_engram_runtime_artifacts(&module.module_id)
             .expect("resolve paper engram runtime artifacts");
