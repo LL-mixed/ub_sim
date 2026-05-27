@@ -7895,6 +7895,11 @@ impl LingquMemoryService {
         report: &PaperEngramEvalReportManifest,
     ) -> MemoryResult<()> {
         report
+            .decode_policy_loss_milli
+            .ok_or(LingquMemoryError::MissingField(
+                "paper_engram_eval_report.decode_policy_loss_milli",
+            ))?;
+        report
             .paper_engram_decode_policy_loss_milli
             .ok_or(LingquMemoryError::MissingField(
                 "paper_engram_eval_report.paper_engram_decode_policy_loss_milli",
@@ -10732,6 +10737,53 @@ mod tests {
             LingquMemoryError::MissingField(
                 "paper_engram_eval_report.paper_engram_decode_policy_loss_milli"
             )
+        );
+    }
+
+    #[test]
+    fn paper_engram_quality_claim_requires_decode_policy_loss_variant() {
+        let mut service = LingquMemoryService::new();
+        let projection = sample_paper_engram_tokenizer_projection_manifest();
+        let hash_config = sample_paper_engram_hash_config_manifest();
+        let shard = sample_paper_engram_table_shard_manifest();
+        let gate = sample_paper_engram_gate_manifest();
+        let recipe = sample_paper_engram_training_recipe_manifest();
+        let mut report = sample_paper_engram_eval_report_manifest();
+        report.decode_policy_loss_milli = None;
+        report.checksum = paper_engram_eval_report_manifest_checksum(&report);
+        report
+            .validate()
+            .expect("plain eval report may omit decode-policy-only loss before quality claim");
+        let mut module = sample_paper_engram_module_manifest();
+        module.quality_claim = PaperEngramQualityClaim::Posttrain;
+        module.training_recipe_ref = Some(paper_engram_training_recipe_dfs_path(&recipe.recipe_id));
+        module.eval_report_ref = Some(paper_engram_eval_report_dfs_path(&report.report_id));
+        module.checksum = paper_engram_module_manifest_checksum(&module);
+
+        service
+            .register_paper_engram_tokenizer_projection(projection)
+            .expect("register projection");
+        service
+            .register_paper_engram_hash_config(hash_config)
+            .expect("register hash config");
+        service
+            .register_paper_engram_training_recipe(recipe)
+            .expect("register recipe");
+        service
+            .register_paper_engram_eval_report(report)
+            .expect("register eval report without decode-policy-only loss");
+        service
+            .register_paper_engram_table_shard(shard)
+            .expect("register shard");
+        service
+            .register_paper_engram_gate(gate)
+            .expect("register gate");
+
+        assert_eq!(
+            service
+                .register_paper_engram_module(module)
+                .expect_err("quality claim requires all four loss variants"),
+            LingquMemoryError::MissingField("paper_engram_eval_report.decode_policy_loss_milli")
         );
     }
 
