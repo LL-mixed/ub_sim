@@ -30,6 +30,9 @@ use sim_models::qwen3_dense_reference::{
     Qwen3DenseReferenceTokenizerProjection,
 };
 use sim_models::{
+    engram_context::{
+        PAPER_ENGRAM_CONTEXT_DEFAULT_HEADS_PER_ORDER, PAPER_ENGRAM_CONTEXT_DEFAULT_ORDERS,
+    },
     engram_hash::{
         build_engram_hash_config, build_exact_canonical_ngram_index, canonical_ngram_checksum,
         validate_engram_hash_config, ENGRAM_HASH_ALGORITHM_VERSION,
@@ -5190,8 +5193,12 @@ fn run_lingqu_memory_seed_paper_engram_fixture_cli(args: &[String]) -> anyhow::R
     if table_rows == 0 {
         anyhow::bail!("--table-rows must be > 0");
     }
-    let heads_per_order = u32::try_from(optional_cli_u64(args, "--heads-per-order")?.unwrap_or(1))
-        .context("--heads-per-order exceeds u32")?;
+    let default_heads_per_order = u64::try_from(PAPER_ENGRAM_CONTEXT_DEFAULT_HEADS_PER_ORDER)
+        .context("paper Engram default heads_per_order exceeds u64")?;
+    let heads_per_order = u32::try_from(
+        optional_cli_u64(args, "--heads-per-order")?.unwrap_or(default_heads_per_order),
+    )
+    .context("--heads-per-order exceeds u32")?;
     if heads_per_order == 0 {
         anyhow::bail!("--heads-per-order must be > 0");
     }
@@ -5206,7 +5213,7 @@ fn run_lingqu_memory_seed_paper_engram_fixture_cli(args: &[String]) -> anyhow::R
                 .collect::<anyhow::Result<Vec<_>>>()
         })
         .transpose()?
-        .unwrap_or_else(|| vec![2]);
+        .unwrap_or_else(|| PAPER_ENGRAM_CONTEXT_DEFAULT_ORDERS.to_vec());
     if orders.iter().any(|order| *order == 0) {
         anyhow::bail!("--orders cannot contain 0");
     }
@@ -20223,6 +20230,62 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         assert_eq!(validation.gate_weight_bytes, 8 * std::mem::size_of::<f32>());
 
         fs::remove_dir_all(&root).expect("remove paper engram fixture test dir");
+    }
+
+    #[test]
+    fn lingqu_memory_seed_paper_engram_fixture_defaults_to_paper_shape() {
+        let root = env::temp_dir().join(format!(
+            "sim-cli-lingqu-memory-paper-engram-default-fixture-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create default paper engram fixture test dir");
+        let store = root.join("store.json");
+
+        run_lingqu_memory_seed_paper_engram_fixture_cli(&[
+            "--store".to_string(),
+            store.display().to_string(),
+            "--module-id".to_string(),
+            "pe-module-default-fixture-cli".to_string(),
+            "--model-id".to_string(),
+            "qwen3-default-fixture-test".to_string(),
+            "--model-key".to_string(),
+            "qwen3-default-fixture-test".to_string(),
+            "--hidden-size".to_string(),
+            "8".to_string(),
+            "--layer-end".to_string(),
+            "4".to_string(),
+            "--table-rows".to_string(),
+            "8".to_string(),
+            "--created-at-us".to_string(),
+            "10".to_string(),
+        ])
+        .expect("seed paper engram default fixture");
+
+        let mut durable =
+            load_lingqu_memory_durable_store(&store).expect("load default paper engram store");
+        let modules = durable
+            .load_paper_engram_module_registry()
+            .expect("load default paper engram module registry");
+        let module = &modules[0].module;
+        assert_eq!(
+            module.orders,
+            sim_models::engram_context::PAPER_ENGRAM_CONTEXT_DEFAULT_ORDERS
+        );
+        assert_eq!(
+            module.heads_per_order,
+            sim_models::engram_context::PAPER_ENGRAM_CONTEXT_DEFAULT_HEADS_PER_ORDER as u32
+        );
+        let shards = durable
+            .load_paper_engram_table_shard_manifest()
+            .expect("load default paper engram table shards");
+        assert_eq!(
+            shards.len(),
+            sim_models::engram_context::PAPER_ENGRAM_CONTEXT_DEFAULT_ORDERS.len()
+                * sim_models::engram_context::PAPER_ENGRAM_CONTEXT_DEFAULT_HEADS_PER_ORDER
+        );
+
+        fs::remove_dir_all(&root).expect("remove default paper engram fixture test dir");
     }
 
     #[test]
