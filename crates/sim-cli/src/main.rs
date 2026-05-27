@@ -3087,7 +3087,7 @@ fn validate_paper_engram_eval_acceptance_for_cli(
         gaps.push("output_checksum_changed");
     }
     match (report.row_prefetch_requests, report.row_prefetch_hits) {
-        (Some(requests), Some(hits)) if requests > 0 && hits > 0 && hits <= requests => {}
+        (Some(requests), Some(hits)) if requests > 0 && hits == requests => {}
         _ => gaps.push("row_prefetch_locality"),
     }
     if comparison.backend_latency_ok != Some(true) {
@@ -20006,8 +20006,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         fs::write(
             paper_run.join("nodeA_guest.log"),
             concat!(
-                "qwen3-engram-context: node=0 layers=[0,5) total_layers=40 step=0 mode=simpler-host-paper-object-ref table_rows=16 output_checksum=0x0000000000007001 gate_checksum=0x0000000000007002 index_checksum=0x0000000000007003 output_l1_milli=10 latency_ms=7 row_prefetch_hits=2 row_prefetch_requests=3 row_prefetch_hit_rate_milli=666 table_bytes_moved=1024 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=64 hidden_output_bytes=64 hidden_injection_overhead_bytes=128\n",
-                "qwen3-engram-context: node=0 layers=[0,5) total_layers=40 step=0 mode=cpu-reference-paper-object-ref table_rows=16 output_checksum=0x0000000000007001 gate_checksum=0x0000000000007002 index_checksum=0x0000000000007003 output_l1_milli=10 latency_ms=3 row_prefetch_hits=2 row_prefetch_requests=3 row_prefetch_hit_rate_milli=666 table_bytes_moved=1024 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=64 hidden_output_bytes=64 hidden_injection_overhead_bytes=128\n",
+                "qwen3-engram-context: node=0 layers=[0,5) total_layers=40 step=0 mode=simpler-host-paper-object-ref table_rows=16 output_checksum=0x0000000000007001 gate_checksum=0x0000000000007002 index_checksum=0x0000000000007003 output_l1_milli=10 latency_ms=7 row_prefetch_hits=3 row_prefetch_requests=3 row_prefetch_hit_rate_milli=1000 table_bytes_moved=1024 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=64 hidden_output_bytes=64 hidden_injection_overhead_bytes=128\n",
+                "qwen3-engram-context: node=0 layers=[0,5) total_layers=40 step=0 mode=cpu-reference-paper-object-ref table_rows=16 output_checksum=0x0000000000007001 gate_checksum=0x0000000000007002 index_checksum=0x0000000000007003 output_l1_milli=10 latency_ms=3 row_prefetch_hits=3 row_prefetch_requests=3 row_prefetch_hit_rate_milli=1000 table_bytes_moved=1024 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=64 hidden_output_bytes=64 hidden_injection_overhead_bytes=128\n",
                 "stage qwen3_terminal_token_result_publish step=0 token=11 runner_up=12 margin_milli=25 text_checksum=0x0000000000008001\n",
             ),
         )
@@ -20020,7 +20020,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         fs::write(
             zero_run.join("nodeA_guest.log"),
             concat!(
-                "qwen3-engram-context: node=0 layers=[0,5) total_layers=40 step=0 mode=cpu-reference-paper-object-ref table_rows=16 output_checksum=0x0000000000006001 gate_checksum=0x0000000000006002 index_checksum=0x0000000000006003 output_l1_milli=0 latency_ms=3 row_prefetch_hits=2 row_prefetch_requests=3 row_prefetch_hit_rate_milli=666 table_bytes_moved=1024 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=64 hidden_output_bytes=64 hidden_injection_overhead_bytes=128\n",
+                "qwen3-engram-context: node=0 layers=[0,5) total_layers=40 step=0 mode=cpu-reference-paper-object-ref table_rows=16 output_checksum=0x0000000000006001 gate_checksum=0x0000000000006002 index_checksum=0x0000000000006003 output_l1_milli=0 latency_ms=3 row_prefetch_hits=3 row_prefetch_requests=3 row_prefetch_hit_rate_milli=1000 table_bytes_moved=1024 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=64 hidden_output_bytes=64 hidden_injection_overhead_bytes=128\n",
                 "stage qwen3_terminal_token_result_publish step=0 token=11 runner_up=12 margin_milli=25 text_checksum=0x0000000000008101\n",
             ),
         )
@@ -20079,7 +20079,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         .expect("decode eval report");
         assert_eq!(report.report_id, "pe-eval-from-w5");
         assert_eq!(report.row_prefetch_requests, Some(3));
-        assert_eq!(report.row_prefetch_hits, Some(2));
+        assert_eq!(report.row_prefetch_hits, Some(3));
         assert_eq!(report.max_backend_latency_us, Some(7000));
         assert_eq!(report.cpu_backend_output_match, Some(true));
         assert!(
@@ -20127,7 +20127,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             comparison.delta_paper_decode_policy_vs_decode_policy_milli,
             -4
         );
-        assert_eq!(comparison.row_prefetch_hit_rate_milli, Some(666));
+        assert_eq!(comparison.row_prefetch_hit_rate_milli, Some(1000));
         assert_eq!(comparison.hidden_checksum_changed, Some(true));
         assert_eq!(comparison.output_checksum_changed, Some(true));
         assert_eq!(comparison.backend_latency_ok, Some(true));
@@ -20170,6 +20170,23 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         assert!(
             format!("{weak_phase6_err:#}").contains("phase6_base_summary"),
             "unexpected weak Phase 6 eval report error: {weak_phase6_err:#}"
+        );
+        let weak_prefetch_report_path = root.join("weak_prefetch_eval_report.json");
+        let mut weak_prefetch_report = report.clone();
+        weak_prefetch_report.row_prefetch_hits = Some(2);
+        let weak_prefetch_report =
+            sim_memory::PaperEngramEvalReportManifest::new(weak_prefetch_report)
+                .expect("build weak row prefetch paper Engram eval report");
+        write_json_file(&weak_prefetch_report_path, &weak_prefetch_report);
+        let weak_prefetch_err = run_lingqu_memory_compare_paper_engram_eval_report_cli(&[
+            "--manifest".to_string(),
+            weak_prefetch_report_path.display().to_string(),
+            "--require-acceptance".to_string(),
+        ])
+        .expect_err("reject eval report without complete row prefetch locality");
+        assert!(
+            format!("{weak_prefetch_err:#}").contains("row_prefetch_locality"),
+            "unexpected weak row prefetch eval report error: {weak_prefetch_err:#}"
         );
 
         fs::remove_dir_all(&root).expect("remove paper engram eval report test dir");

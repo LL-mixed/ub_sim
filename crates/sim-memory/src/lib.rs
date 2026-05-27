@@ -8078,10 +8078,11 @@ impl LingquMemoryService {
             .ok_or(LingquMemoryError::MissingField(
                 "paper_engram_eval_report.row_prefetch_hits",
             ))?;
-        if hits == 0 || hits > requests {
+        if hits == 0 || hits != requests {
             return Err(LingquMemoryError::InvalidValue {
                 field: "paper_engram_eval_report.row_prefetch_hits",
-                reason: "trained paper Engram quality requires row prefetch locality evidence",
+                reason:
+                    "trained paper Engram quality requires complete row prefetch locality evidence",
             });
         }
         report
@@ -11080,6 +11081,28 @@ mod tests {
             LingquMemoryError::MissingField(
                 "paper_engram_eval_report.evidence_refs.phase6_base_summary"
             )
+        );
+    }
+
+    #[test]
+    fn paper_engram_quality_claim_requires_complete_row_prefetch_locality() {
+        let service = LingquMemoryService::new();
+        let mut report = sample_paper_engram_eval_report_manifest();
+        report.row_prefetch_hits = Some(7);
+        report.checksum = paper_engram_eval_report_manifest_checksum(&report);
+        report
+            .validate()
+            .expect("plain eval report may record partial row prefetch locality");
+
+        assert_eq!(
+            service
+                .validate_paper_engram_eval_acceptance_evidence(&report)
+                .expect_err("quality acceptance requires complete row prefetch locality"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_eval_report.row_prefetch_hits",
+                reason:
+                    "trained paper Engram quality requires complete row prefetch locality evidence"
+            }
         );
     }
 
