@@ -79,10 +79,11 @@ use sim_uapi::{
     QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
     QWEN3_DENSE_PROFILE_OBMM_KIND_MEMORY_BOUNDARY_REGISTRY,
     QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE, QWEN3_DENSE_PROFILE_OBMM_KIND_TERMINAL_LOGITS,
-    SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
-    SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
+    SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION,
+    SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
 };
 use sim_workloads::{run_host_vector_dispatch, run_minimal_workload};
+use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -103,6 +104,9 @@ fn main() -> anyhow::Result<()> {
     }
     if let Some(args) = qwen3_simpler::args()? {
         return run_qwen3_simpler_generate_cli(args);
+    }
+    if let Some(args) = qwen3_tokenizer_projection_args()? {
+        return run_qwen3_tokenizer_projection_cli(&args);
     }
     if let Some(args) = qwen3_decode_loop_args()? {
         return run_qwen3_decode_loop_cli(&args);
@@ -248,6 +252,13 @@ struct Qwen3DecodeLoopCliArgs {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct Qwen3TokenizerProjectionCliArgs {
+    tokenizer_path: PathBuf,
+    output_path: PathBuf,
+    merge_special_tokens: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct Qwen3GuestDecodeLoopCliArgs {
     validate_only: bool,
     step_count: usize,
@@ -369,6 +380,7 @@ enum Qwen3EngramReport {
 const QWEN3_ENGRAM_DEFAULT_NO_REPEAT_NGRAM_SIZE: usize = 3;
 const QWEN3_ENGRAM_DEFAULT_REPETITION_PENALTY_MILLI: u32 = 1000;
 const QWEN3_ENGRAM_DEFAULT_HISTORY_WINDOW: usize = 0;
+const QWEN3_TOKENIZER_PROJECTION_DEFAULT_FILE_NAME: &str = "qwen3-tokenizer-projection.json";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Qwen3EngramConfig {
@@ -383,6 +395,7 @@ struct Qwen3EngramConfig {
     context_op: Qwen3EngramContextOp,
     report: Qwen3EngramReport,
     state_ref: Option<String>,
+    token_projection_path: Option<PathBuf>,
     object_registry_dir: Option<PathBuf>,
     object_service_snapshot_path: Option<PathBuf>,
 }
@@ -401,6 +414,7 @@ impl Default for Qwen3EngramConfig {
             context_op: Qwen3EngramContextOp::Disabled,
             report: Qwen3EngramReport::Summary,
             state_ref: None,
+            token_projection_path: None,
             object_registry_dir: None,
             object_service_snapshot_path: None,
         }
@@ -450,6 +464,10 @@ struct Qwen3EngramStepDecision {
 
 fn qwen3_decode_loop_args() -> anyhow::Result<Option<Qwen3DecodeLoopCliArgs>> {
     qwen3_decode_loop_args_from(env::args_os().skip(1))
+}
+
+fn qwen3_tokenizer_projection_args() -> anyhow::Result<Option<Qwen3TokenizerProjectionCliArgs>> {
+    qwen3_tokenizer_projection_args_from(env::args_os().skip(1))
 }
 
 fn qwen3_range_forward_args() -> anyhow::Result<Option<Qwen3RangeForwardCliArgs>> {
@@ -547,6 +565,71 @@ where
                 step_count: step_count.unwrap_or(2),
                 prompt,
                 matmul_batch,
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn qwen3_tokenizer_projection_args_from<I, S>(
+    args: I,
+) -> anyhow::Result<Option<Qwen3TokenizerProjectionCliArgs>>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<std::ffi::OsString>,
+{
+    let mut args = args.into_iter().map(Into::into);
+    match args.next() {
+        Some(mode) if mode == "qwen3-tokenizer-projection" => {
+            let mut tokenizer_path = None;
+            let mut output_path = None;
+            let mut merge_special_tokens = false;
+            let mut positionals = Vec::new();
+            let mut pending = args.peekable();
+
+            while let Some(value) = pending.next() {
+                let text = value.to_string_lossy();
+                if text == "--tokenizer-path" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--tokenizer-path requires a value"))?;
+                    tokenizer_path = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--tokenizer-path=") {
+                    tokenizer_path = Some(PathBuf::from(value));
+                } else if text == "--output" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--output requires a value"))?;
+                    output_path = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--output=") {
+                    output_path = Some(PathBuf::from(value));
+                } else if text == "--merge-special-tokens" {
+                    merge_special_tokens = true;
+                } else if let Some(value) = text.strip_prefix("--merge-special-tokens=") {
+                    merge_special_tokens = parse_cli_bool("--merge-special-tokens", value)?;
+                } else if text.starts_with("--") {
+                    anyhow::bail!("unknown qwen3-tokenizer-projection option: {text}");
+                } else {
+                    positionals.push(value);
+                }
+            }
+
+            if tokenizer_path.is_none() {
+                tokenizer_path = positionals
+                    .first()
+                    .map(|value| PathBuf::from(value.to_string_lossy().into_owned()));
+            }
+            let tokenizer_path = tokenizer_path.ok_or_else(|| {
+                anyhow::anyhow!("qwen3-tokenizer-projection requires a tokenizer path")
+            })?;
+            let output_path = output_path.unwrap_or_else(|| {
+                tokenizer_path.join(QWEN3_TOKENIZER_PROJECTION_DEFAULT_FILE_NAME)
+            });
+
+            Ok(Some(Qwen3TokenizerProjectionCliArgs {
+                tokenizer_path,
+                output_path,
+                merge_special_tokens,
             }))
         }
         _ => Ok(None),
@@ -814,6 +897,13 @@ where
                         Some(validate_qwen3_engram_state_ref(&next.to_string_lossy())?);
                 } else if let Some(value) = text.strip_prefix("--engram-state-ref=") {
                     engram.state_ref = Some(validate_qwen3_engram_state_ref(value)?);
+                } else if text == "--engram-token-projection" {
+                    let next = pending.next().ok_or_else(|| {
+                        anyhow::anyhow!("--engram-token-projection requires a value")
+                    })?;
+                    engram.token_projection_path = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--engram-token-projection=") {
+                    engram.token_projection_path = Some(PathBuf::from(value));
                 } else if text == "--object-registry-dir" {
                     let next = pending
                         .next()
@@ -1547,11 +1637,16 @@ where
     ];
     for key in [
         SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
+        SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION,
         SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
         SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
     ] {
         let value = match key {
             SIM_QWEN3_GUEST_ENGRAM_STATE_REF => config.state_ref.clone(),
+            SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION => config
+                .token_projection_path
+                .as_ref()
+                .map(|path| path.display().to_string()),
             SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR => config
                 .object_registry_dir
                 .as_ref()
@@ -1569,6 +1664,49 @@ where
         }
     }
     vars
+}
+
+fn qwen3_engram_projection_lookup(
+    projection_path: Option<&Path>,
+) -> anyhow::Result<Option<HashMap<u64, u64>>> {
+    let Some(path) = projection_path else {
+        return Ok(None);
+    };
+    let bytes = fs::read(path).with_context(|| {
+        format!(
+            "failed to read engram tokenizer projection from {}",
+            path.display()
+        )
+    })?;
+    let projection: Qwen3DenseReferenceTokenizerProjection = serde_json::from_slice(&bytes)
+        .with_context(|| {
+            format!(
+                "failed to parse engram tokenizer projection JSON from {}",
+                path.display()
+            )
+        })?;
+    let mut token_projection = HashMap::with_capacity(projection.raw_to_canonical.len());
+    for entry in projection.raw_to_canonical {
+        match token_projection.insert(entry.raw_token_id, entry.canonical_token_id) {
+            Some(previous) if previous != entry.canonical_token_id => {
+                anyhow::bail!(
+                    "engram tokenizer projection has conflicting canonical ids for raw token {}",
+                    entry.raw_token_id
+                );
+            }
+            _ => {}
+        }
+    }
+    Ok(Some(token_projection))
+}
+
+fn qwen3_engram_projected_token(
+    token_projection: Option<&HashMap<u64, u64>>,
+    token_id: u64,
+) -> u64 {
+    token_projection
+        .and_then(|projection| projection.get(&token_id).copied())
+        .unwrap_or(token_id)
 }
 
 fn qwen3_scenario_path_from_value(value: &str) -> PathBuf {
@@ -10329,8 +10467,8 @@ mod tests {
         publish_w5_execution_artifact_ref, publish_w5_memory_decision_artifact_refs,
         publish_w5_object_service_payload_ref, qwen3_decode_loop_args_from,
         qwen3_decode_report_verbosity_from_env, qwen3_dense_weights_path_from_env,
-        qwen3_engram_policy_checksum, qwen3_engram_select_token, qwen3_engram_state_words,
-        qwen3_guest_candidate_records, qwen3_guest_decode_loop_args_from,
+        qwen3_engram_policy_checksum, qwen3_engram_projection_lookup, qwen3_engram_select_token,
+        qwen3_engram_state_words, qwen3_guest_candidate_records, qwen3_guest_decode_loop_args_from,
         qwen3_guest_default_w5_profile, qwen3_guest_dense_runtime,
         qwen3_guest_engram_candidate_counts, qwen3_guest_engram_env_vars,
         qwen3_guest_engram_env_vars_from_lookup, qwen3_guest_engram_expected_terminal_rewrites,
@@ -10345,12 +10483,13 @@ mod tests {
         qwen3_guest_timing_summary, qwen3_guest_trace_file_path,
         qwen3_guest_w5_pass_marker_present, qwen3_object_registry_path_in_dir,
         qwen3_obmm_object_ref_for_payload, qwen3_range_forward_args_from,
-        qwen3_validate_engram_state_object_service_payload, read_lingqu_memory_payload_ref,
-        read_w5_u64, record_w5_runtime_boundary_observations_from_summary,
-        resolve_w5_inference_profile, run_lingqu_durable_append_log_cli,
-        run_lingqu_durable_batch_cli, run_lingqu_durable_init_cli, run_lingqu_durable_list_cli,
-        run_lingqu_durable_read_log_cli, run_lingqu_durable_stat_cli,
-        run_lingqu_durable_validate_cli, run_lingqu_memory_boundary_lookup_cli,
+        qwen3_tokenizer_projection_args_from, qwen3_validate_engram_state_object_service_payload,
+        read_lingqu_memory_payload_ref, read_w5_u64,
+        record_w5_runtime_boundary_observations_from_summary, resolve_w5_inference_profile,
+        run_lingqu_durable_append_log_cli, run_lingqu_durable_batch_cli,
+        run_lingqu_durable_init_cli, run_lingqu_durable_list_cli, run_lingqu_durable_read_log_cli,
+        run_lingqu_durable_stat_cli, run_lingqu_durable_validate_cli,
+        run_lingqu_memory_boundary_lookup_cli,
         run_lingqu_memory_boundary_lookup_from_observation_cli,
         run_lingqu_memory_boundary_request_from_w5_summary_cli,
         run_lingqu_memory_build_engram_hash_config_cli, run_lingqu_memory_build_index_cli,
@@ -10373,7 +10512,8 @@ mod tests {
         run_lingqu_memory_update_record_state_cli, run_lingqu_memory_validate_durable_store,
         run_lingqu_memory_validate_flat_materialize, run_lingqu_memory_validate_flat_query,
         run_lingqu_memory_validate_w5_engram_object_ref, run_qwen3_guest_decode_loop_cli,
-        run_w5_runtime_boundary_lookups, save_lingqu_durable_sim, save_lingqu_memory_durable_store,
+        run_qwen3_tokenizer_projection_cli, run_w5_runtime_boundary_lookups,
+        save_lingqu_durable_sim, save_lingqu_memory_durable_store,
         save_lingqu_object_service_snapshot, simpler_host_matmul_artifact_producer_path,
         validate_qwen3_dense_weights_path, validate_w5_inference_profile,
         validate_w5_memory_decision_bundle_for_run, validate_w5_shortpath_run_boundary_coverage,
@@ -10391,17 +10531,23 @@ mod tests {
         Qwen3DecodeReportVerbosity, Qwen3DenseGuestRuntime, Qwen3DenseProfile, Qwen3EngramConfig,
         Qwen3EngramContextOp, Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport,
         Qwen3GuestDecodeLoopCliArgs, Qwen3GuestExpectedWorkerCounts, Qwen3SamplerConfig,
-        W5JumpToTerminalExpectedWorkerCounts, W5MemoryBootstrapConfig,
-        W5MemoryDecisionArtifactPublication, W5MemoryDecisionBundle, W5MemoryDecisionConfig,
-        W5MemoryPublishedArtifactRef, W5MemoryPublishedKvArtifactRef, W5MemoryShortpathKvArtifact,
-        LINGQU_EXTERNAL_PAYLOAD_BLOCK_PREFIX, QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
-        QWEN3_DENSE_DEFAULT_PREFILL_TOKENS, QWEN3_DENSE_DEFAULT_TP_NODES,
-        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE, QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+        Qwen3TokenizerProjectionCliArgs, W5JumpToTerminalExpectedWorkerCounts,
+        W5MemoryBootstrapConfig, W5MemoryDecisionArtifactPublication, W5MemoryDecisionBundle,
+        W5MemoryDecisionConfig, W5MemoryPublishedArtifactRef, W5MemoryPublishedKvArtifactRef,
+        W5MemoryShortpathKvArtifact, LINGQU_EXTERNAL_PAYLOAD_BLOCK_PREFIX,
+        QWEN3_DENSE_DEFAULT_DECODE_TOKENS, QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
+        QWEN3_DENSE_DEFAULT_TP_NODES, QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
         QWEN3_DENSE_PROFILE_OBMM_KIND_TERMINAL_LOGITS, QWEN3_ENGRAM_DEFAULT_NO_REPEAT_NGRAM_SIZE,
-        SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+        QWEN3_TOKENIZER_PROJECTION_DEFAULT_FILE_NAME, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
+        SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION, SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
         SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT, W5_TERMINAL_LOGITS_ENTRY_BYTES,
         W5_TERMINAL_LOGITS_HEADER_BYTES, W5_TERMINAL_TOKEN_TEXT_HEADER_BYTES,
     };
+    use sim_models::qwen3_dense_reference::{
+        Qwen3DenseReferenceTokenizerProjection, Qwen3DenseReferenceTokenizerProjectionEntry,
+    };
+    use std::collections::HashMap;
     use std::env;
     use std::ffi::OsString;
     use std::fs;
@@ -10636,6 +10782,107 @@ mod tests {
     }
 
     #[test]
+    fn qwen3_tokenizer_projection_args_with_positional_input() {
+        let tokenizer_path = PathBuf::from("/tmp/qwen3-tokenizer");
+        let args = qwen3_tokenizer_projection_args_from([
+            "qwen3-tokenizer-projection",
+            tokenizer_path.to_string_lossy().as_ref(),
+        ])
+        .expect("parse tokenizer projection args")
+        .expect("tokenizer projection args");
+        assert_eq!(args.tokenizer_path, tokenizer_path);
+        assert_eq!(
+            args.output_path,
+            PathBuf::from("/tmp/qwen3-tokenizer")
+                .join(QWEN3_TOKENIZER_PROJECTION_DEFAULT_FILE_NAME)
+        );
+        assert!(!args.merge_special_tokens);
+    }
+
+    #[test]
+    fn qwen3_tokenizer_projection_args_with_options() {
+        let args = qwen3_tokenizer_projection_args_from([
+            "qwen3-tokenizer-projection",
+            "--tokenizer-path=/tmp/qwen3-tokenizer",
+            "--output=/tmp/tokenizer-projection.json",
+            "--merge-special-tokens=false",
+        ])
+        .expect("parse tokenizer projection args")
+        .expect("tokenizer projection args");
+        assert_eq!(args.tokenizer_path, PathBuf::from("/tmp/qwen3-tokenizer"));
+        assert_eq!(
+            args.output_path,
+            PathBuf::from("/tmp/tokenizer-projection.json")
+        );
+        assert!(!args.merge_special_tokens);
+    }
+
+    #[test]
+    fn qwen3_tokenizer_projection_args_with_merge_flag() {
+        let args = qwen3_tokenizer_projection_args_from([
+            "qwen3-tokenizer-projection",
+            "--merge-special-tokens",
+            "--tokenizer-path",
+            "/tmp/qwen3-tokenizer",
+        ])
+        .expect("parse tokenizer projection args")
+        .expect("tokenizer projection args");
+        assert_eq!(args.tokenizer_path, PathBuf::from("/tmp/qwen3-tokenizer"));
+        assert_eq!(
+            args.output_path,
+            PathBuf::from("/tmp/qwen3-tokenizer")
+                .join(QWEN3_TOKENIZER_PROJECTION_DEFAULT_FILE_NAME)
+        );
+        assert!(args.merge_special_tokens);
+    }
+
+    #[test]
+    fn run_qwen3_tokenizer_projection_cli_writes_projection_file() {
+        let root = env::temp_dir().join(format!(
+            "sim-cli-tokenizer-projection-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create tokenizer projection temp dir");
+        let tokenizer_path = root.join("tokenizer");
+        fs::create_dir_all(&tokenizer_path).expect("create tokenizer dir");
+        fs::write(
+            tokenizer_path.join("tokenizer_config.json"),
+            r#"{"added_tokens_decoder":{"151643":{"content":"<|endoftext|>","special":true}}}"#,
+        )
+        .expect("write tokenizer config");
+        fs::write(
+            tokenizer_path.join("tokenizer.json"),
+            r#"{"model":{"type":"BPE","vocab":{"Hello":0,"ĠHello":1,"hello":2,"HELLO":4}},"added_tokens":[{"id":3,"content":"<s>","special":true}]}"#,
+        )
+        .expect("write tokenizer json");
+        fs::write(
+            tokenizer_path.join("vocab.json"),
+            r#"{"Hello":0,"ĠHello":1,"hello":2}"#,
+        )
+        .expect("write vocab json");
+        fs::write(tokenizer_path.join("merges.txt"), b"#version\nh e\n").expect("write merges");
+        fs::write(tokenizer_path.join("generation_config.json"), r#"{}"#)
+            .expect("write generation config");
+
+        let output = root.join("projection.json");
+        run_qwen3_tokenizer_projection_cli(&Qwen3TokenizerProjectionCliArgs {
+            tokenizer_path: tokenizer_path.clone(),
+            output_path: output.clone(),
+            merge_special_tokens: true,
+        })
+        .expect("run tokenizer projection cli");
+
+        let bytes = fs::read(&output).expect("read projection output");
+        let value: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("decode projection output");
+        assert_eq!(value["total_raw_tokens"], serde_json::Value::from(6u64));
+        assert_eq!(value["total_special_tokens"], serde_json::Value::from(2u64));
+        assert_eq!(value["merge_special_tokens"], serde_json::Value::Bool(true));
+        fs::remove_dir_all(&root).expect("remove tokenizer projection temp dir");
+    }
+
+    #[test]
     fn qwen3_decode_loop_weights_env_prefers_dense_and_accepts_legacy_alias() {
         assert_eq!(
             qwen3_dense_weights_path_from_env(
@@ -10829,6 +11076,23 @@ mod tests {
         assert_eq!(args.engram.context_op, Qwen3EngramContextOp::CpuReference);
         assert_eq!(args.engram.history_window, 64);
         assert_eq!(args.engram.report, Qwen3EngramReport::Steps);
+    }
+
+    #[test]
+    fn qwen3_guest_decode_loop_args_accept_engram_token_projection() {
+        let args = qwen3_guest_decode_loop_args_from([
+            "qwen3-guest-decode-loop",
+            "--engram",
+            "--engram-pool=obmm",
+            "--engram-token-projection=/tmp/qwen3-token-projection.json",
+        ])
+        .expect("parse guest decode loop args")
+        .expect("guest decode loop args");
+
+        assert_eq!(
+            args.engram.token_projection_path.as_deref(),
+            Some(Path::new("/tmp/qwen3-token-projection.json"))
+        );
     }
 
     #[test]
@@ -11475,6 +11739,7 @@ mod tests {
             context_op: Qwen3EngramContextOp::CpuReference,
             state_ref: Some("state-ref".to_string()),
             object_registry_dir: Some(PathBuf::from("/tmp/qwen3-registry")),
+            token_projection_path: Some(PathBuf::from("/tmp/qwen3-token-projection.json")),
             object_service_snapshot_path: Some(PathBuf::from(
                 "/tmp/lingqu-object-service-snapshot.json",
             )),
@@ -11491,9 +11756,76 @@ mod tests {
             "/tmp/qwen3-registry".to_string()
         )));
         assert!(vars.contains(&(
+            SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION.to_string(),
+            "/tmp/qwen3-token-projection.json".to_string()
+        )));
+        assert!(vars.contains(&(
             SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT.to_string(),
             "/tmp/lingqu-object-service-snapshot.json".to_string()
         )));
+    }
+
+    #[test]
+    fn qwen3_engram_projection_lookup_reads_projection_file() {
+        let temp_dir = env::temp_dir().join(format!(
+            "sim_cli_qwen3_projection_lookup_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).expect("create temp projection dir");
+        let projection_path = temp_dir.join("projection.json");
+        let projection = Qwen3DenseReferenceTokenizerProjection {
+            model_id: "Qwen/Qwen3-test".to_string(),
+            tokenizer_family: "qwen3".to_string(),
+            source: "projection-test".to_string(),
+            source_checksum: 0,
+            total_raw_tokens: 3,
+            total_canonical_tokens: 2,
+            total_special_tokens: 0,
+            merged_token_count: 1,
+            merge_special_tokens: false,
+            compression_milli: 750,
+            aggregate_checksum: 0,
+            raw_to_canonical: vec![
+                Qwen3DenseReferenceTokenizerProjectionEntry {
+                    raw_token_id: 1,
+                    raw_token_piece: " token1 ".to_string(),
+                    canonical_token_piece: "token1".to_string(),
+                    canonical_token_id: 11,
+                    is_special: false,
+                },
+                Qwen3DenseReferenceTokenizerProjectionEntry {
+                    raw_token_id: 2,
+                    raw_token_piece: "token2".to_string(),
+                    canonical_token_piece: "token2".to_string(),
+                    canonical_token_id: 12,
+                    is_special: false,
+                },
+                Qwen3DenseReferenceTokenizerProjectionEntry {
+                    raw_token_id: 3,
+                    raw_token_piece: "token3".to_string(),
+                    canonical_token_piece: "token2".to_string(),
+                    canonical_token_id: 12,
+                    is_special: false,
+                },
+            ],
+            collision_classes: vec![],
+        };
+        fs::write(
+            &projection_path,
+            serde_json::to_vec(&projection).expect("serialize projection"),
+        )
+        .expect("write projection file");
+
+        let projection_lookup =
+            qwen3_engram_projection_lookup(Some(&projection_path)).expect("load projection");
+        let projection_map = projection_lookup.expect("projection map");
+
+        assert_eq!(projection_map.get(&1).copied(), Some(11));
+        assert_eq!(projection_map.get(&2).copied(), Some(12));
+        assert_eq!(projection_map.get(&3).copied(), Some(12));
+
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
@@ -13028,11 +13360,50 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 token_piece_checksum: 0,
             },
         ];
-        let decision =
-            qwen3_engram_select_token(&config, 1, &[1, 2, 1], candidates).expect("select token");
+        let decision = qwen3_engram_select_token(&config, 1, &[1, 2, 1], candidates, None)
+            .expect("select token");
         assert_eq!(decision.selected_token, 3);
         assert_eq!(decision.blocked_token_count, 1);
         assert!(!decision.fallback_used);
+    }
+
+    #[test]
+    fn qwen3_engram_no_repeat_ngram_blocks_projected_repetition() {
+        let config = Qwen3EngramConfig {
+            enabled: true,
+            no_repeat_ngram_size: 2,
+            ..Qwen3EngramConfig::default()
+        };
+        let projection = HashMap::from([(2, 1), (3, 1), (4, 2)]);
+        let candidates = vec![
+            Qwen3CandidateRecord {
+                step_index: 0,
+                rank: 0,
+                token_id: 3,
+                logit_milli: 100,
+                adjusted_score_milli: 100,
+                token_piece_checksum: 0,
+            },
+            Qwen3CandidateRecord {
+                step_index: 0,
+                rank: 1,
+                token_id: 4,
+                logit_milli: 0,
+                adjusted_score_milli: 0,
+                token_piece_checksum: 0,
+            },
+        ];
+        let no_projection =
+            qwen3_engram_select_token(&config, 1, &[2, 3], candidates.clone(), None)
+                .expect("select without projection");
+        assert_eq!(no_projection.selected_token, 3);
+        assert_eq!(no_projection.blocked_token_count, 0);
+
+        let with_projection =
+            qwen3_engram_select_token(&config, 1, &[2, 3], candidates, Some(&projection))
+                .expect("select with projection");
+        assert_eq!(with_projection.selected_token, 4);
+        assert_eq!(with_projection.blocked_token_count, 1);
     }
 
     #[test]
@@ -13060,8 +13431,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             },
         ];
         let history = [104_198, 101_919, 101_314, 11_319, 104_198, 101_919];
-        let decision =
-            qwen3_engram_select_token(&config, 1, &history, candidates).expect("select token");
+        let decision = qwen3_engram_select_token(&config, 1, &history, candidates, None)
+            .expect("select token");
         assert_eq!(decision.selected_token, 101_119);
         assert_eq!(decision.blocked_token_count, 1);
         assert_eq!(
@@ -13095,8 +13466,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 token_piece_checksum: 0,
             },
         ];
-        let decision =
-            qwen3_engram_select_token(&config, 1, &[9707, 1207], candidates).expect("select token");
+        let decision = qwen3_engram_select_token(&config, 1, &[9707, 1207], candidates, None)
+            .expect("select token");
         assert_eq!(decision.selected_token, 1079);
         assert_eq!(decision.blocked_token_count, 1);
         assert!(!decision.fallback_used);
@@ -13141,7 +13512,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             },
         ];
         let decision =
-            qwen3_engram_select_token(&config, 1, &[7, 9], candidates).expect("select token");
+            qwen3_engram_select_token(&config, 1, &[7, 9], candidates, None).expect("select token");
         assert_eq!(decision.selected_token, 10);
         assert_eq!(decision.candidates[0].adjusted_score_milli, -900);
     }
@@ -13171,7 +13542,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             },
         ];
         let decision =
-            qwen3_engram_select_token(&config, 1, &[], candidates).expect("select token");
+            qwen3_engram_select_token(&config, 1, &[], candidates, None).expect("select token");
         assert_eq!(decision.selected_token, 20);
     }
 
@@ -13201,8 +13572,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 token_piece_checksum: 0,
             },
         ];
-        let decision =
-            qwen3_engram_select_token(&config, 1, &[151_645], candidates).expect("select token");
+        let decision = qwen3_engram_select_token(&config, 1, &[151_645], candidates, None)
+            .expect("select token");
         assert_eq!(decision.selected_token, 151_645);
         assert_eq!(decision.blocked_token_count, 0);
     }
@@ -17585,6 +17956,45 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
     }
 }
 
+fn run_qwen3_tokenizer_projection_cli(
+    args: &Qwen3TokenizerProjectionCliArgs,
+) -> anyhow::Result<()> {
+    let projection = build_tokenizer_projection_from_tokenizer_path(
+        &args.tokenizer_path,
+        args.merge_special_tokens,
+    )
+    .map_err(|err| {
+        anyhow::anyhow!(
+            "failed to build tokenizer projection from {}: {err}",
+            args.tokenizer_path.display()
+        )
+    })?;
+    if let Some(parent) = args.output_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create output dir {}", parent.display()))?;
+    }
+    fs::write(
+        &args.output_path,
+        serde_json::to_vec_pretty(&projection).context("failed to serialize projection")?,
+    )
+    .with_context(|| {
+        format!(
+            "failed to write tokenizer projection to {}",
+            args.output_path.display()
+        )
+    })?;
+    println!("projection written: {}", args.output_path.display());
+    println!(
+        "raw_tokens={} canonical_tokens={} special_tokens={} merged_pairs={} merge_special_tokens={}",
+        projection.total_raw_tokens,
+        projection.total_canonical_tokens,
+        projection.total_special_tokens,
+        projection.merged_token_count,
+        projection.merge_special_tokens
+    );
+    Ok(())
+}
+
 fn run_qwen3_decode_loop_cli(args: &Qwen3DecodeLoopCliArgs) -> anyhow::Result<()> {
     configure_simpler_dispatch_logging();
     let scenario_path = &args.scenario_path;
@@ -19158,6 +19568,7 @@ fn qwen3_guest_engram_report(
     log: &str,
 ) -> anyhow::Result<Qwen3EngramRunReport> {
     let candidates_by_step = qwen3_guest_candidate_records(log);
+    let token_projection = qwen3_engram_projection_lookup(config.token_projection_path.as_deref())?;
     let mut history = prompt_tokens.to_vec();
     let mut steps = Vec::with_capacity(candidates_by_step.len());
 
@@ -19165,7 +19576,13 @@ fn qwen3_guest_engram_report(
         if candidates.is_empty() {
             continue;
         }
-        let decision = qwen3_engram_select_token(config, session_id, &history, candidates.clone())?;
+        let decision = qwen3_engram_select_token(
+            config,
+            session_id,
+            &history,
+            candidates.clone(),
+            token_projection.as_ref(),
+        )?;
         history.push(decision.selected_token);
         steps.push(decision);
     }
@@ -19709,6 +20126,7 @@ fn qwen3_engram_select_token(
     session_id: u64,
     history: &[u64],
     mut candidates: Vec<Qwen3CandidateRecord>,
+    token_projection: Option<&HashMap<u64, u64>>,
 ) -> anyhow::Result<Qwen3EngramStepDecision> {
     let Some(first) = candidates.first() else {
         anyhow::bail!("engram candidate table is empty");
@@ -19737,11 +20155,17 @@ fn qwen3_engram_select_token(
     }
 
     let effective_history = qwen3_engram_effective_history(config, history);
+    let effective_projected_history = effective_history
+        .iter()
+        .map(|token_id| qwen3_engram_projected_token(token_projection, *token_id))
+        .collect::<Vec<_>>();
     let mut blocked_count = 0u32;
     let mut best: Option<(usize, i32, u64, u64)> = None;
 
     for (index, candidate) in candidates.iter_mut().enumerate() {
-        let repeated = effective_history.contains(&candidate.token_id);
+        let projected_candidate_token =
+            qwen3_engram_projected_token(token_projection, candidate.token_id);
+        let repeated = effective_projected_history.contains(&projected_candidate_token);
         let mut adjusted = candidate.logit_milli;
         if repeated && config.repetition_penalty_milli > 1000 {
             adjusted = adjusted.saturating_sub((config.repetition_penalty_milli - 1000) as i32);
@@ -19750,8 +20174,8 @@ fn qwen3_engram_select_token(
 
         if config.blocked_token_ids.contains(&candidate.token_id)
             || qwen3_engram_repeats_ngram(
-                effective_history,
-                candidate.token_id,
+                &effective_projected_history,
+                projected_candidate_token,
                 config.no_repeat_ngram_size,
             )
         {
