@@ -35,7 +35,8 @@ use sim_models::{
     },
     engram_hash::{
         build_engram_hash_config, build_exact_canonical_ngram_index, canonical_ngram_checksum,
-        validate_engram_hash_config, ENGRAM_HASH_ALGORITHM_VERSION,
+        validate_engram_hash_config, ENGRAM_HASH_ALGORITHM_VERSION, ENGRAM_HASH_OFFSET_BASIS,
+        ENGRAM_HASH_PRIME,
     },
     engram_simt_adapter::{
         artifact_config_from_env, discover_engram_simt_artifact, run_engram_simt_artifact_case,
@@ -2379,6 +2380,11 @@ fn run_lingqu_memory_build_engram_hash_config_cli(args: &[String]) -> anyhow::Re
     println!("  table_rows: {}", config.table_rows);
     println!("  seed: {:#x}", config.seed);
     println!("  algorithm: {}", config.algorithm);
+    println!(
+        "  fnv1a_offset_basis: {:#x}",
+        config.fnv1a_offset_basis
+    );
+    println!("  fnv1a_prime: {:#x}", config.fnv1a_prime);
     Ok(())
 }
 
@@ -5325,6 +5331,8 @@ fn run_lingqu_memory_seed_paper_engram_fixture_cli(args: &[String]) -> anyhow::R
             table_rows,
             seed,
             u64::from(heads_per_order),
+            ENGRAM_HASH_OFFSET_BASIS,
+            ENGRAM_HASH_PRIME,
         ]),
         orders: orders.clone(),
         heads_per_order,
@@ -5332,6 +5340,8 @@ fn run_lingqu_memory_seed_paper_engram_fixture_cli(args: &[String]) -> anyhow::R
         table_specs: Vec::new(),
         seed,
         algorithm: ENGRAM_HASH_ALGORITHM_VERSION.to_string(),
+        fnv1a_offset_basis: ENGRAM_HASH_OFFSET_BASIS,
+        fnv1a_prime: ENGRAM_HASH_PRIME,
         source_ref: Some("fixture://sim-cli/paper-engram/hash-config".to_string()),
         checksum: 1,
         version: 1,
@@ -14902,7 +14912,9 @@ mod tests {
         W5_TERMINAL_LOGITS_ENTRY_BYTES, W5_TERMINAL_LOGITS_HEADER_BYTES,
         W5_TERMINAL_TOKEN_TEXT_HEADER_BYTES,
     };
-    use sim_models::engram_hash::ENGRAM_HASH_ALGORITHM_VERSION;
+    use sim_models::engram_hash::{
+        ENGRAM_HASH_ALGORITHM_VERSION, ENGRAM_HASH_OFFSET_BASIS, ENGRAM_HASH_PRIME,
+    };
     use sim_models::qwen3_dense_reference::{
         Qwen3DenseReferenceTokenizerProjection, Qwen3DenseReferenceTokenizerProjectionEntry,
     };
@@ -18685,6 +18697,14 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             config["algorithm"],
             serde_json::Value::String(ENGRAM_HASH_ALGORITHM_VERSION.to_string())
         );
+        assert_eq!(
+            config["fnv1a_offset_basis"],
+            serde_json::Value::from(ENGRAM_HASH_OFFSET_BASIS)
+        );
+        assert_eq!(
+            config["fnv1a_prime"],
+            serde_json::Value::from(ENGRAM_HASH_PRIME)
+        );
 
         let bad_algorithm = run_lingqu_memory_build_engram_hash_config_cli(&[
             "--projection".to_string(),
@@ -18804,6 +18824,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         bytes.extend_from_slice(&table_rows.to_le_bytes());
         bytes.extend_from_slice(&seed.to_le_bytes());
         test_push_checksum_str(&mut bytes, algorithm);
+        bytes.extend_from_slice(&ENGRAM_HASH_OFFSET_BASIS.to_le_bytes());
+        bytes.extend_from_slice(&ENGRAM_HASH_PRIME.to_le_bytes());
         if let Some(source_ref) = source_ref {
             test_push_checksum_str(&mut bytes, source_ref);
         }
@@ -18897,6 +18919,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             "table_rows": 65536,
             "seed": 0x12345678u64,
             "algorithm": ENGRAM_HASH_ALGORITHM_VERSION,
+            "fnv1a_offset_basis": ENGRAM_HASH_OFFSET_BASIS,
+            "fnv1a_prime": ENGRAM_HASH_PRIME,
             "source_ref": "fixture/hash_config.json",
             "checksum": hash_checksum_field,
             "version": 1,
@@ -19010,6 +19034,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 table_specs: Vec::new(),
                 seed: 0x1234_5678,
                 algorithm: ENGRAM_HASH_ALGORITHM_VERSION.to_string(),
+                fnv1a_offset_basis: ENGRAM_HASH_OFFSET_BASIS,
+                fnv1a_prime: ENGRAM_HASH_PRIME,
                 source_ref: Some("fixture/hash_config.json".to_string()),
                 checksum: 1,
                 version: 1,
@@ -19727,6 +19753,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 table_specs: Vec::new(),
                 seed: 0x1234_5678,
                 algorithm: ENGRAM_HASH_ALGORITHM_VERSION.to_string(),
+                fnv1a_offset_basis: ENGRAM_HASH_OFFSET_BASIS,
+                fnv1a_prime: ENGRAM_HASH_PRIME,
                 source_ref: Some("fixture/hash_config.json".to_string()),
                 checksum: 1,
                 version: 1,

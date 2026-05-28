@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-const ENGRAM_HASH_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-const ENGRAM_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
+pub const ENGRAM_HASH_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+pub const ENGRAM_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
 pub const ENGRAM_HASH_ALGORITHM_VERSION: &str = "fnv1a-x64+length-prefix";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -14,6 +14,10 @@ pub struct Qwen3DenseReferenceEngramHashConfig {
     pub table_rows: u64,
     pub seed: u64,
     pub algorithm: String,
+    #[serde(default = "default_engram_hash_offset_basis")]
+    pub fnv1a_offset_basis: u64,
+    #[serde(default = "default_engram_hash_prime")]
+    pub fnv1a_prime: u64,
     #[serde(default)]
     pub table_specs: Vec<Qwen3DenseReferenceEngramHashTableSpec>,
 }
@@ -31,6 +35,10 @@ pub struct Qwen3DenseReferenceEngramRuntimeDescriptor {
     pub version: u64,
     pub projection_checksum: u64,
     pub algorithm: String,
+    #[serde(default = "default_engram_hash_offset_basis")]
+    pub fnv1a_offset_basis: u64,
+    #[serde(default = "default_engram_hash_prime")]
+    pub fnv1a_prime: u64,
     pub table_specs: Vec<Qwen3DenseReferenceEngramHashTableSpec>,
 }
 
@@ -87,7 +95,17 @@ pub fn build_engram_hash_config(
         table_rows,
         seed,
         algorithm: ENGRAM_HASH_ALGORITHM_VERSION.to_string(),
+        fnv1a_offset_basis: ENGRAM_HASH_OFFSET_BASIS,
+        fnv1a_prime: ENGRAM_HASH_PRIME,
     }
+}
+
+pub fn default_engram_hash_offset_basis() -> u64 {
+    ENGRAM_HASH_OFFSET_BASIS
+}
+
+pub fn default_engram_hash_prime() -> u64 {
+    ENGRAM_HASH_PRIME
 }
 
 pub fn validate_engram_hash_config(
@@ -97,6 +115,18 @@ pub fn validate_engram_hash_config(
         return Err(format!(
             "engram_hash_config_algorithm_unsupported:{}",
             config.algorithm
+        ));
+    }
+    if config.fnv1a_offset_basis != ENGRAM_HASH_OFFSET_BASIS {
+        return Err(format!(
+            "engram_hash_config_offset_basis_unsupported:{:#x}",
+            config.fnv1a_offset_basis
+        ));
+    }
+    if config.fnv1a_prime != ENGRAM_HASH_PRIME {
+        return Err(format!(
+            "engram_hash_config_prime_unsupported:{:#x}",
+            config.fnv1a_prime
         ));
     }
     if config.orders.is_empty() {
@@ -165,6 +195,8 @@ pub fn build_engram_runtime_descriptor(
         version: config.version,
         projection_checksum: config.projection_checksum,
         algorithm: config.algorithm.clone(),
+        fnv1a_offset_basis: config.fnv1a_offset_basis,
+        fnv1a_prime: config.fnv1a_prime,
         table_specs: engram_hash_table_specs(config)?,
     })
 }
@@ -510,6 +542,23 @@ mod tests {
         );
         assert!(build_engram_runtime_descriptor(&config).is_err());
         assert!(build_engram_lookup_requests(&[7, 8], &config).is_err());
+    }
+
+    #[test]
+    fn hash_config_validation_rejects_unsupported_hash_constants() {
+        let mut config = build_default_engram_hash_config(0x12, 1, 16, 0x33);
+        config.fnv1a_prime ^= 1;
+        assert_eq!(
+            validate_engram_hash_config(&config).expect_err("unsupported prime should reject"),
+            "engram_hash_config_prime_unsupported:0x100000001b2"
+        );
+
+        let mut config = build_default_engram_hash_config(0x12, 1, 16, 0x33);
+        config.fnv1a_offset_basis ^= 1;
+        assert_eq!(
+            validate_engram_hash_config(&config).expect_err("unsupported offset should reject"),
+            "engram_hash_config_offset_basis_unsupported:0xcbf29ce484222324"
+        );
     }
 
     #[test]

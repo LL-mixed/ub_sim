@@ -15,7 +15,7 @@ use sim_core::{BlockHash, SegmentHandle, TensorDType};
 use sim_models::engram_hash::{
     build_engram_lookup_requests_from_step, engram_hash_table_specs,
     Qwen3DenseReferenceEngramHashConfig, Qwen3DenseReferenceEngramHashTableSpec,
-    ENGRAM_HASH_ALGORITHM_VERSION,
+    ENGRAM_HASH_ALGORITHM_VERSION, ENGRAM_HASH_OFFSET_BASIS, ENGRAM_HASH_PRIME,
 };
 use sim_services::block::BlockServiceProfile;
 use sim_services::dfs::DfsServiceProfile;
@@ -1067,6 +1067,10 @@ pub struct PaperEngramHashConfigManifest {
     pub table_specs: Vec<Qwen3DenseReferenceEngramHashTableSpec>,
     pub seed: u64,
     pub algorithm: String,
+    #[serde(default = "paper_engram_default_hash_offset_basis")]
+    pub fnv1a_offset_basis: u64,
+    #[serde(default = "paper_engram_default_hash_prime")]
+    pub fnv1a_prime: u64,
     pub source_ref: Option<String>,
     pub checksum: u64,
     pub version: u64,
@@ -1158,6 +1162,18 @@ impl PaperEngramHashConfigManifest {
                 reason: "unsupported canonical hash algorithm",
             });
         }
+        if self.fnv1a_offset_basis != ENGRAM_HASH_OFFSET_BASIS {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_hash_config.fnv1a_offset_basis",
+                reason: "unsupported canonical hash offset basis",
+            });
+        }
+        if self.fnv1a_prime != ENGRAM_HASH_PRIME {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "paper_engram_hash_config.fnv1a_prime",
+                reason: "unsupported canonical hash prime",
+            });
+        }
         if let Some(source_ref) = &self.source_ref {
             required_str(source_ref, "paper_engram_hash_config.source_ref")?;
         }
@@ -1197,6 +1213,14 @@ impl PaperEngramHashConfigManifest {
     }
 }
 
+fn paper_engram_default_hash_offset_basis() -> u64 {
+    ENGRAM_HASH_OFFSET_BASIS
+}
+
+fn paper_engram_default_hash_prime() -> u64 {
+    ENGRAM_HASH_PRIME
+}
+
 fn paper_engram_default_hash_table_specs(
     orders: &[u8],
     heads_per_order: u32,
@@ -1216,6 +1240,8 @@ fn paper_engram_default_hash_table_specs(
         table_rows,
         seed,
         algorithm: ENGRAM_HASH_ALGORITHM_VERSION.to_string(),
+        fnv1a_offset_basis: ENGRAM_HASH_OFFSET_BASIS,
+        fnv1a_prime: ENGRAM_HASH_PRIME,
         table_specs: Vec::new(),
     };
     engram_hash_table_specs(&config).map_err(|_| LingquMemoryError::InvalidValue {
@@ -2352,6 +2378,8 @@ fn paper_engram_hash_config_manifest_checksum(manifest: &PaperEngramHashConfigMa
     }
     bytes.extend_from_slice(&manifest.seed.to_le_bytes());
     push_checksum_str(&mut bytes, &manifest.algorithm);
+    bytes.extend_from_slice(&manifest.fnv1a_offset_basis.to_le_bytes());
+    bytes.extend_from_slice(&manifest.fnv1a_prime.to_le_bytes());
     if let Some(source_ref) = &manifest.source_ref {
         push_checksum_str(&mut bytes, source_ref);
     }
@@ -9529,6 +9557,8 @@ fn paper_engram_lookup_hash_config(
         table_rows: runtime.hash_config.table_rows,
         seed: runtime.hash_config.seed,
         algorithm: runtime.hash_config.algorithm.clone(),
+        fnv1a_offset_basis: runtime.hash_config.fnv1a_offset_basis,
+        fnv1a_prime: runtime.hash_config.fnv1a_prime,
         table_specs,
     })
 }
@@ -11632,11 +11662,50 @@ mod tests {
             .as_object_mut()
             .expect("legacy hash config JSON object")
             .remove("table_specs");
+        value
+            .as_object_mut()
+            .expect("legacy hash config JSON object")
+            .remove("fnv1a_offset_basis");
+        value
+            .as_object_mut()
+            .expect("legacy hash config JSON object")
+            .remove("fnv1a_prime");
         let bytes = serde_json::to_vec_pretty(&value).expect("encode legacy hash config JSON");
         let decoded = PaperEngramHashConfigManifest::from_json_bytes(&bytes)
             .expect("decode legacy hash config without table specs");
         assert!(decoded.table_specs.is_empty());
+        assert_eq!(decoded.fnv1a_offset_basis, ENGRAM_HASH_OFFSET_BASIS);
+        assert_eq!(decoded.fnv1a_prime, ENGRAM_HASH_PRIME);
         assert_eq!(decoded.checksum, legacy.checksum);
+    }
+
+    #[test]
+    fn paper_engram_hash_config_rejects_unsupported_hash_constants() {
+        let mut hash_config = sample_paper_engram_hash_config_manifest();
+        hash_config.fnv1a_prime ^= 1;
+        hash_config.checksum = paper_engram_hash_config_manifest_checksum(&hash_config);
+        assert_eq!(
+            hash_config
+                .validate()
+                .expect_err("unsupported hash prime must fail"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_hash_config.fnv1a_prime",
+                reason: "unsupported canonical hash prime"
+            }
+        );
+
+        let mut hash_config = sample_paper_engram_hash_config_manifest();
+        hash_config.fnv1a_offset_basis ^= 1;
+        hash_config.checksum = paper_engram_hash_config_manifest_checksum(&hash_config);
+        assert_eq!(
+            hash_config
+                .validate()
+                .expect_err("unsupported hash offset basis must fail"),
+            LingquMemoryError::InvalidValue {
+                field: "paper_engram_hash_config.fnv1a_offset_basis",
+                reason: "unsupported canonical hash offset basis"
+            }
+        );
     }
 
     #[test]
@@ -11660,6 +11729,8 @@ mod tests {
             }],
             seed: 0x1234_5678,
             algorithm: ENGRAM_HASH_ALGORITHM_VERSION.to_string(),
+            fnv1a_offset_basis: ENGRAM_HASH_OFFSET_BASIS,
+            fnv1a_prime: ENGRAM_HASH_PRIME,
             source_ref: Some("dfs://pe/hash/incomplete-specs".to_string()),
             checksum: 1,
             version: 1,
@@ -15302,6 +15373,8 @@ mod tests {
             table_specs: Vec::new(),
             seed: 0x1234_5678,
             algorithm: ENGRAM_HASH_ALGORITHM_VERSION.to_string(),
+            fnv1a_offset_basis: ENGRAM_HASH_OFFSET_BASIS,
+            fnv1a_prime: ENGRAM_HASH_PRIME,
             source_ref: Some("dfs://pe/hash/run-0".to_string()),
             checksum: 1,
             version: 1,

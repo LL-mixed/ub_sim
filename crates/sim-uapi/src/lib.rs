@@ -33,7 +33,7 @@ use sim_models::engram_context::{
 use sim_models::engram_hash::{
     build_engram_lookup_requests_from_step, validate_engram_hash_config,
     Qwen3DenseReferenceEngramHashConfig, Qwen3DenseReferenceEngramHashTableSpec,
-    ENGRAM_HASH_ALGORITHM_VERSION,
+    ENGRAM_HASH_ALGORITHM_VERSION, ENGRAM_HASH_OFFSET_BASIS, ENGRAM_HASH_PRIME,
 };
 use sim_models::engram_simt_adapter::{
     build_engram_simt_case_name, build_engram_simt_runtime_input_from_legacy_op,
@@ -19227,6 +19227,8 @@ fn qwen3_dense_reference_paper_engram_context_state_from_manifest(
         table_rows: 1,
         seed: 0,
         algorithm: ENGRAM_HASH_ALGORITHM_VERSION.to_string(),
+        fnv1a_offset_basis: ENGRAM_HASH_OFFSET_BASIS,
+        fnv1a_prime: ENGRAM_HASH_PRIME,
         table_specs,
     };
     validate_engram_hash_config(&config)?;
