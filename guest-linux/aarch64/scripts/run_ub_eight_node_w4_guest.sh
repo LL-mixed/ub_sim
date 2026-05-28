@@ -229,7 +229,54 @@ trace() {
 
 is_qwen3_dense_profile() {
   local profile="$1"
-  [[ "$profile" == "qwen3_dense_reference" || "$profile" == "qwen3_dense" ]]
+  [[ "$profile" == "qwen3_dense_reference" || "$profile" == "qwen3_dense" || "$profile" == "qwen3_guest_simpler_l2" || "$profile" == "qwen3_dense_simpler_l2" ]]
+}
+
+is_qwen3_simpler_l2_profile() {
+  local profile="$1"
+  [[ "$profile" == "qwen3_guest_simpler_l2" || "$profile" == "qwen3_dense_simpler_l2" ]]
+}
+
+validate_qwen3_simpler_l2_build_output() {
+  local name="$1"
+  local path="$2"
+  local -a so_files
+  local -a kernel_files
+
+  if [[ -z "$path" ]]; then
+    trace "FAIL: $SIM_UAPI_W4_CHIPBACKEND_PROFILE requires $name"
+    return 1
+  fi
+  if [[ ! -d "$path" ]]; then
+    trace "FAIL: $name is not a directory path=$path"
+    return 1
+  fi
+  if [[ ! -f "$path/kernel_config.py" ]]; then
+    trace "FAIL: $name missing kernel_config.py path=$path"
+    return 1
+  fi
+  so_files=("$path"/orchestration/*.so(N))
+  if (( ${#so_files[@]} == 0 )); then
+    trace "FAIL: $name missing orchestration .so path=$path/orchestration"
+    return 1
+  fi
+  kernel_files=("$path"/kernels/**/*.o(N))
+  if (( ${#kernel_files[@]} == 0 )); then
+    trace "FAIL: $name missing kernel .o files path=$path/kernels"
+    return 1
+  fi
+  return 0
+}
+
+validate_qwen3_simpler_l2_env() {
+  if ! is_qwen3_simpler_l2_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+    return 0
+  fi
+  validate_qwen3_simpler_l2_build_output "SIM_QWEN3_SIMPLER_PREFILL_BUILD_OUTPUT" "${SIM_QWEN3_SIMPLER_PREFILL_BUILD_OUTPUT:-}" || return 1
+  validate_qwen3_simpler_l2_build_output "SIM_QWEN3_SIMPLER_DECODE_BUILD_OUTPUT" "${SIM_QWEN3_SIMPLER_DECODE_BUILD_OUTPUT:-}" || return 1
+  validate_qwen3_simpler_l2_build_output "SIM_QWEN3_SIMPLER_FINAL_RMS_BUILD_OUTPUT" "${SIM_QWEN3_SIMPLER_FINAL_RMS_BUILD_OUTPUT:-}" || return 1
+  validate_qwen3_simpler_l2_build_output "SIM_QWEN3_SIMPLER_LM_HEAD_BUILD_OUTPUT" "${SIM_QWEN3_SIMPLER_LM_HEAD_BUILD_OUTPUT:-}" || return 1
+  trace "prepare: qwen3 simpler L2 build_output ok prefill=${SIM_QWEN3_SIMPLER_PREFILL_BUILD_OUTPUT:-} decode=${SIM_QWEN3_SIMPLER_DECODE_BUILD_OUTPUT:-} final_rms=${SIM_QWEN3_SIMPLER_FINAL_RMS_BUILD_OUTPUT:-} lm_head=${SIM_QWEN3_SIMPLER_LM_HEAD_BUILD_OUTPUT:-}"
 }
 
 validate_w5_profile_runtime() {
@@ -1270,6 +1317,7 @@ prepare_environment() {
   env_file="$OUT_DIR/headless_eight_node_env.${RUN_ID_BASE}.sh"
   control_log="$RUN_DIR/control.log"
   validate_qwen3_weights_path || return 1
+  validate_qwen3_simpler_l2_env || return 1
   qwen3_dense_apply_config_env
   validate_qwen3_runtime_object_view_source || return 1
   validate_w5_profile_runtime || return 1
@@ -1312,6 +1360,16 @@ prepare_environment() {
     SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES="${SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES:-}" \
     SIM_QWEN3_DENSE_KV_STATE_BYTES="${SIM_QWEN3_DENSE_KV_STATE_BYTES:-}" \
     SIM_QWEN3_DENSE_WEIGHTS_PATH="${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}" \
+    SIM_QWEN3_SIMPLER_PLATFORM="${SIM_QWEN3_SIMPLER_PLATFORM:-}" \
+    SIM_QWEN3_SIMPLER_DEVICE_ID="${SIM_QWEN3_SIMPLER_DEVICE_ID:-}" \
+    SIM_QWEN3_SIMPLER_DEVICE_IDS="${SIM_QWEN3_SIMPLER_DEVICE_IDS:-}" \
+    SIM_QWEN3_SIMPLER_RUNTIME_MANIFEST="${SIM_QWEN3_SIMPLER_RUNTIME_MANIFEST:-}" \
+    SIM_QWEN3_SIMPLER_PREFILL_BUILD_OUTPUT="${SIM_QWEN3_SIMPLER_PREFILL_BUILD_OUTPUT:-}" \
+    SIM_QWEN3_SIMPLER_DECODE_BUILD_OUTPUT="${SIM_QWEN3_SIMPLER_DECODE_BUILD_OUTPUT:-}" \
+    SIM_QWEN3_SIMPLER_FINAL_RMS_BUILD_OUTPUT="${SIM_QWEN3_SIMPLER_FINAL_RMS_BUILD_OUTPUT:-}" \
+    SIM_QWEN3_SIMPLER_LM_HEAD_BUILD_OUTPUT="${SIM_QWEN3_SIMPLER_LM_HEAD_BUILD_OUTPUT:-}" \
+    SIM_QWEN3_SIMPLER_PROFILE_VERBOSE="${SIM_QWEN3_SIMPLER_PROFILE_VERBOSE:-}" \
+    ASCEND_RT_VISIBLE_DEVICES="${ASCEND_RT_VISIBLE_DEVICES:-}" \
     SIM_QWEN3_SAMPLER_TOP_K="$SIM_QWEN3_SAMPLER_TOP_K" \
     SIM_QWEN3_SAMPLER_TOP_P_MILLI="$SIM_QWEN3_SAMPLER_TOP_P_MILLI" \
     SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI="$SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI" \

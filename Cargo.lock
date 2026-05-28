@@ -271,9 +271,11 @@ dependencies = [
 name = "sim-uapi"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "libc",
  "serde",
  "serde_json",
+ "sim-chipbackend-simpler",
  "sim-config",
  "sim-core",
  "sim-memory",

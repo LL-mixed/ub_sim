@@ -624,10 +624,124 @@ pub fn token_piece_bytes_from_tokenizer_path(
     tokenizer_path: &Path,
     token_id: u64,
 ) -> Result<Vec<u8>, String> {
-    let tokenizer_config = read_tokenizer_asset_file(tokenizer_path, "tokenizer_config.json")?;
-    let tokenizer_json = read_tokenizer_asset_file(tokenizer_path, "tokenizer.json")?;
-    let vocab_json = read_tokenizer_asset_file(tokenizer_path, "vocab.json")?;
-    tokenizer_piece_bytes(&tokenizer_config, &tokenizer_json, &vocab_json, token_id)
+    Qwen3DenseReferenceTokenPieceDecoder::from_tokenizer_path(tokenizer_path)?
+        .token_piece_bytes(token_id)
+}
+
+#[derive(Clone, Debug)]
+pub struct Qwen3DenseReferenceTokenPieceDecoder {
+    pieces_by_token_id: BTreeMap<u64, Vec<u8>>,
+    unicode_to_byte: BTreeMap<char, u8>,
+}
+
+impl Qwen3DenseReferenceTokenPieceDecoder {
+    pub fn from_tokenizer_path(tokenizer_path: &Path) -> Result<Self, String> {
+        let tokenizer_config = read_tokenizer_asset_file(tokenizer_path, "tokenizer_config.json")?;
+        let tokenizer_json = read_tokenizer_asset_file(tokenizer_path, "tokenizer.json")?;
+        let vocab_json = read_tokenizer_asset_file(tokenizer_path, "vocab.json")?;
+        Self::from_tokenizer_assets(&tokenizer_config, &tokenizer_json, &vocab_json)
+    }
+
+    pub fn from_tokenizer_assets(
+        tokenizer_config: &[u8],
+        tokenizer_json: &[u8],
+        vocab_json: &[u8],
+    ) -> Result<Self, String> {
+        let mut pieces_by_token_id = BTreeMap::new();
+        let tokenizer_value: serde_json::Value = serde_json::from_slice(tokenizer_json)
+            .map_err(|err| format!("qwen3_tokenizer_json_parse_failed:{err}"))?;
+        if let Some(vocab) = tokenizer_value
+            .get("model")
+            .and_then(|model| model.get("vocab"))
+            .and_then(serde_json::Value::as_object)
+        {
+            for (piece, id) in vocab {
+                if let Some(token_id) = id.as_u64() {
+                    pieces_by_token_id
+                        .entry(token_id)
+                        .or_insert_with(|| piece.as_bytes().to_vec());
+                }
+            }
+        }
+        if let Some(tokens) = tokenizer_value
+            .get("added_tokens")
+            .and_then(serde_json::Value::as_array)
+        {
+            for token in tokens {
+                if let (Some(token_id), Some(piece)) = (
+                    token.get("id").and_then(serde_json::Value::as_u64),
+                    token.get("content").and_then(serde_json::Value::as_str),
+                ) {
+                    pieces_by_token_id
+                        .entry(token_id)
+                        .or_insert_with(|| piece.as_bytes().to_vec());
+                }
+            }
+        }
+        let vocab: BTreeMap<String, u64> = serde_json::from_slice(vocab_json)
+            .map_err(|err| format!("qwen3_tokenizer_vocab_json_parse_failed:{err}"))?;
+        for (piece, token_id) in vocab {
+            pieces_by_token_id
+                .entry(token_id)
+                .or_insert_with(|| piece.as_bytes().to_vec());
+        }
+        let config_value: serde_json::Value = serde_json::from_slice(tokenizer_config)
+            .map_err(|err| format!("qwen3_tokenizer_config_json_parse_failed:{err}"))?;
+        if let Some(decoder) = config_value
+            .get("added_tokens_decoder")
+            .and_then(serde_json::Value::as_object)
+        {
+            for (token_id, token) in decoder {
+                if let (Ok(token_id), Some(piece)) = (
+                    token_id.parse::<u64>(),
+                    token.get("content").and_then(serde_json::Value::as_str),
+                ) {
+                    pieces_by_token_id
+                        .entry(token_id)
+                        .or_insert_with(|| piece.as_bytes().to_vec());
+                }
+            }
+        }
+
+        let byte_map = qwen3_tokenizer_bytes_to_unicode();
+        let unicode_to_byte = byte_map
+            .iter()
+            .enumerate()
+            .map(|(byte, ch)| (*ch, byte as u8))
+            .collect();
+        Ok(Self {
+            pieces_by_token_id,
+            unicode_to_byte,
+        })
+    }
+
+    pub fn token_piece_bytes(&self, token_id: u64) -> Result<Vec<u8>, String> {
+        self.pieces_by_token_id
+            .get(&token_id)
+            .cloned()
+            .ok_or_else(|| format!("qwen3_tokenizer_token_missing:{token_id}"))
+    }
+
+    pub fn decode_token_bytes(&self, token_id: u64) -> Result<Vec<u8>, String> {
+        let piece = self.token_piece_bytes(token_id)?;
+        Ok(self.decode_piece_bytes(&piece))
+    }
+
+    pub fn decode_piece_bytes(&self, piece: &[u8]) -> Vec<u8> {
+        let Ok(piece) = std::str::from_utf8(piece) else {
+            return piece.to_vec();
+        };
+        let mut decoded = Vec::with_capacity(piece.len());
+        for ch in piece.chars() {
+            if let Some(byte) = self.unicode_to_byte.get(&ch) {
+                decoded.push(*byte);
+            } else {
+                let mut buf = [0u8; 4];
+                decoded.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+            }
+        }
+        decoded
+    }
 }
 
 pub fn token_piece_decode_bytes(piece: &[u8]) -> Vec<u8> {
@@ -848,56 +962,6 @@ fn tokenizer_asset_file_summary(
         bytes: bytes.len() as u64,
         checksum: weight_bytes_checksum(bytes),
     }
-}
-
-fn tokenizer_piece_bytes(
-    tokenizer_config: &[u8],
-    tokenizer_json: &[u8],
-    vocab_json: &[u8],
-    token_id: u64,
-) -> Result<Vec<u8>, String> {
-    let tokenizer_value: serde_json::Value = serde_json::from_slice(tokenizer_json)
-        .map_err(|err| format!("qwen3_tokenizer_json_parse_failed:{err}"))?;
-    if let Some(piece) = tokenizer_value
-        .get("model")
-        .and_then(|model| model.get("vocab"))
-        .and_then(serde_json::Value::as_object)
-        .and_then(|vocab| {
-            vocab
-                .iter()
-                .find_map(|(piece, id)| (id.as_u64() == Some(token_id)).then_some(piece.as_str()))
-        })
-    {
-        return Ok(piece.as_bytes().to_vec());
-    }
-    if let Some(piece) = tokenizer_value
-        .get("added_tokens")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|tokens| {
-            tokens.iter().find_map(|token| {
-                (token.get("id").and_then(serde_json::Value::as_u64) == Some(token_id))
-                    .then(|| token.get("content").and_then(serde_json::Value::as_str))
-                    .flatten()
-            })
-        })
-    {
-        return Ok(piece.as_bytes().to_vec());
-    }
-    let vocab: BTreeMap<String, u64> = serde_json::from_slice(vocab_json)
-        .map_err(|err| format!("qwen3_tokenizer_vocab_json_parse_failed:{err}"))?;
-    if let Some((piece, _)) = vocab.iter().find(|(_, id)| **id == token_id) {
-        return Ok(piece.as_bytes().to_vec());
-    }
-    let config_value: serde_json::Value = serde_json::from_slice(tokenizer_config)
-        .map_err(|err| format!("qwen3_tokenizer_config_json_parse_failed:{err}"))?;
-    let token_key = token_id.to_string();
-    config_value
-        .get("added_tokens_decoder")
-        .and_then(|decoder| decoder.get(&token_key))
-        .and_then(|token| token.get("content"))
-        .and_then(serde_json::Value::as_str)
-        .map(|piece| piece.as_bytes().to_vec())
-        .ok_or_else(|| format!("qwen3_tokenizer_token_missing:{token_id}"))
 }
 
 fn token_piece_from_bytes(token_id: u64, piece: &[u8]) -> Qwen3DenseReferenceTokenPiece {

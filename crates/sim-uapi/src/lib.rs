@@ -1,12 +1,14 @@
 //! Guest-visible UAPI surface placeholders.
 
+pub mod qwen3_simpler;
+
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 #[cfg(all(unix, not(test)))]
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::ops::Range;
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
@@ -1645,6 +1647,15 @@ fn run_w4_chipbackend(
             run_qwen3_dense_reference_prefill_runtime(topology, task, guest_input, None)
         }
         "qwen3_dense" => run_qwen3_dense_profile_runtime(topology, task, guest_input, None),
+        "qwen3_guest_simpler_l2" => {
+            run_qwen3_guest_simpler_l2_profile_runtime(topology, task, guest_input, None)
+        }
+        "qwen3_dense_simpler_l2" => {
+            eprintln!(
+                "warning: SIM_UAPI_W4_CHIPBACKEND_PROFILE=qwen3_dense_simpler_l2 is deprecated; use qwen3_guest_simpler_l2"
+            );
+            run_qwen3_guest_simpler_l2_profile_runtime(topology, task, guest_input, None)
+        }
         "host_matmul" => run_host_matmul_smoke(topology, task),
         "host_vector" | "" => run_host_vector_chipbackend(topology, task, guest_input),
         other => Err(format!("unsupported_w4_chipbackend_profile:{other}")),
@@ -1662,6 +1673,15 @@ fn run_qwen3_range_chipbackend(
         .as_str()
     {
         "qwen3_dense" => run_qwen3_dense_profile_runtime(topology, task, guest_input, operands),
+        "qwen3_guest_simpler_l2" => {
+            run_qwen3_guest_simpler_l2_profile_runtime(topology, task, guest_input, operands)
+        }
+        "qwen3_dense_simpler_l2" => {
+            eprintln!(
+                "warning: SIM_UAPI_W4_CHIPBACKEND_PROFILE=qwen3_dense_simpler_l2 is deprecated; use qwen3_guest_simpler_l2"
+            );
+            run_qwen3_guest_simpler_l2_profile_runtime(topology, task, guest_input, operands)
+        }
         "qwen3_dense_reference" => {
             if operands.is_some() {
                 return Err(
@@ -1674,6 +1694,1028 @@ fn run_qwen3_range_chipbackend(
         "host_vector" | "" => run_host_vector_chipbackend(topology, task, guest_input),
         other => Err(format!("unsupported_w4_chipbackend_profile:{other}")),
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Qwen3SimplerL2ProfileConfig {
+    platform: String,
+    device_id: u32,
+    device_ids: Vec<u32>,
+    decode_abi: qwen3_simpler::DecodeAbi,
+    dispatch_mode: Qwen3SimplerL2DispatchMode,
+    cli_path: PathBuf,
+    runtime_manifest: Option<PathBuf>,
+    prefill_build_output: PathBuf,
+    decode_build_output: PathBuf,
+    final_rms_build_output: PathBuf,
+    lm_head_build_output: PathBuf,
+    profile_verbose: bool,
+    visible_devices: Option<String>,
+    prompt: Option<String>,
+    max_seq_len: usize,
+    range_worker: bool,
+    real_dispatch_once: bool,
+    real_dispatch_strict: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Qwen3SimplerL2DispatchMode {
+    Process,
+    InProcess,
+}
+
+fn qwen3_simpler_env_path(name: &str, fallback: &str) -> PathBuf {
+    std::env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(fallback))
+}
+
+fn qwen3_simpler_l2_profile_config_from_env() -> Result<Qwen3SimplerL2ProfileConfig, String> {
+    let platform = std::env::var("SIM_QWEN3_SIMPLER_PLATFORM")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "a2a3".to_string());
+    let device_id = std::env::var("SIM_QWEN3_SIMPLER_DEVICE_ID")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value
+                .parse::<u32>()
+                .map_err(|_| format!("SIM_QWEN3_SIMPLER_DEVICE_ID_invalid:{value}"))
+        })
+        .transpose()?
+        .unwrap_or(0);
+    let device_ids = std::env::var("SIM_QWEN3_SIMPLER_DEVICE_IDS")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(|value| qwen3_simpler_l2_parse_device_ids(&value))
+        .transpose()?
+        .unwrap_or_default();
+    let dispatch_mode = std::env::var("SIM_QWEN3_SIMPLER_REAL_DISPATCH_MODE")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(|value| qwen3_simpler_l2_parse_dispatch_mode(&value))
+        .transpose()?
+        .unwrap_or(Qwen3SimplerL2DispatchMode::Process);
+    let decode_abi = std::env::var("SIM_QWEN3_SIMPLER_DECODE_ABI")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            qwen3_simpler::DecodeAbi::parse(&value)
+                .map_err(|err| format!("SIM_QWEN3_SIMPLER_DECODE_ABI_invalid:{err}"))
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let cli_path = std::env::var_os("SIM_QWEN3_SIMPLER_CLI_PATH")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("target/release/sim-cli"));
+    let runtime_manifest = std::env::var_os("SIM_QWEN3_SIMPLER_RUNTIME_MANIFEST")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let config = Qwen3SimplerL2ProfileConfig {
+        platform,
+        device_id,
+        device_ids,
+        decode_abi,
+        dispatch_mode,
+        cli_path,
+        runtime_manifest,
+        prefill_build_output: qwen3_simpler_env_path(
+            "SIM_QWEN3_SIMPLER_PREFILL_BUILD_OUTPUT",
+            "build_output/Qwen306BPrefillProgram_20260516_120745",
+        ),
+        decode_build_output: qwen3_simpler_env_path(
+            "SIM_QWEN3_SIMPLER_DECODE_BUILD_OUTPUT",
+            "build_output/Qwen3Decode_20260516_120745",
+        ),
+        final_rms_build_output: qwen3_simpler_env_path(
+            "SIM_QWEN3_SIMPLER_FINAL_RMS_BUILD_OUTPUT",
+            "build_output/Qwen3FinalRMS_20260516_120745",
+        ),
+        lm_head_build_output: qwen3_simpler_env_path(
+            "SIM_QWEN3_SIMPLER_LM_HEAD_BUILD_OUTPUT",
+            "build_output/Qwen3LMHead_20260516_120746",
+        ),
+        profile_verbose: std::env::var("SIM_QWEN3_SIMPLER_PROFILE_VERBOSE")
+            .ok()
+            .as_deref()
+            == Some("1"),
+        visible_devices: std::env::var("ASCEND_RT_VISIBLE_DEVICES")
+            .ok()
+            .filter(|value| !value.is_empty()),
+        prompt: std::env::var("SIM_QWEN3_SIMPLER_PROMPT")
+            .or_else(|_| std::env::var("SIM_QWEN3_GUEST_PROMPT"))
+            .ok()
+            .filter(|value| !value.is_empty()),
+        max_seq_len: std::env::var("SIM_QWEN3_SIMPLER_MAX_SEQ_LEN")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                value
+                    .parse::<usize>()
+                    .map_err(|_| format!("SIM_QWEN3_SIMPLER_MAX_SEQ_LEN_invalid:{value}"))
+            })
+            .transpose()?
+            .unwrap_or(512),
+        range_worker: std::env::var("SIM_QWEN3_SIMPLER_RANGE_WORKER")
+            .ok()
+            .as_deref()
+            != Some("0"),
+        real_dispatch_once: std::env::var("SIM_QWEN3_SIMPLER_REAL_DISPATCH_ONCE")
+            .ok()
+            .as_deref()
+            != Some("0"),
+        real_dispatch_strict: std::env::var("SIM_QWEN3_SIMPLER_REAL_DISPATCH_STRICT")
+            .ok()
+            .as_deref()
+            == Some("1"),
+    };
+    qwen3_simpler_l2_validate_config(&config)?;
+    Ok(config)
+}
+
+fn qwen3_simpler_l2_validate_config(config: &Qwen3SimplerL2ProfileConfig) -> Result<(), String> {
+    qwen3_simpler_l2_validate_build_output("prefill", &config.prefill_build_output)?;
+    qwen3_simpler_l2_validate_build_output("decode", &config.decode_build_output)?;
+    qwen3_simpler_l2_validate_build_output("final_rms", &config.final_rms_build_output)?;
+    qwen3_simpler_l2_validate_build_output("lm_head", &config.lm_head_build_output)?;
+    if let Some(manifest) = config.runtime_manifest.as_ref() {
+        if !manifest.is_file() {
+            return Err(format!(
+                "qwen3_simpler_l2_runtime_manifest_missing:{}",
+                manifest.display()
+            ));
+        }
+    }
+    if config.max_seq_len == 0 || config.max_seq_len % 256 != 0 {
+        return Err(format!(
+            "qwen3_simpler_l2_max_seq_len_invalid:{}",
+            config.max_seq_len
+        ));
+    }
+    Ok(())
+}
+
+fn qwen3_simpler_l2_parse_device_ids(value: &str) -> Result<Vec<u32>, String> {
+    let mut ids = Vec::new();
+    for part in value
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
+        let id = part
+            .parse::<u32>()
+            .map_err(|_| format!("SIM_QWEN3_SIMPLER_DEVICE_IDS_invalid_entry:{part}"))?;
+        ids.push(id);
+    }
+    if ids.is_empty() {
+        return Err("SIM_QWEN3_SIMPLER_DEVICE_IDS_empty".to_string());
+    }
+    Ok(ids)
+}
+
+fn qwen3_simpler_l2_parse_dispatch_mode(value: &str) -> Result<Qwen3SimplerL2DispatchMode, String> {
+    match value {
+        "process" | "child-process" => Ok(Qwen3SimplerL2DispatchMode::Process),
+        "inprocess" | "in-process" => Ok(Qwen3SimplerL2DispatchMode::InProcess),
+        other => Err(format!(
+            "SIM_QWEN3_SIMPLER_REAL_DISPATCH_MODE_invalid:{other}"
+        )),
+    }
+}
+
+fn qwen3_simpler_l2_validate_build_output(kind: &str, path: &Path) -> Result<(), String> {
+    if !path.is_dir() {
+        return Err(format!(
+            "qwen3_simpler_l2_{kind}_build_output_missing:{}",
+            path.display()
+        ));
+    }
+    if !path.join("kernel_config.py").is_file() {
+        return Err(format!(
+            "qwen3_simpler_l2_{kind}_kernel_config_missing:{}",
+            path.display()
+        ));
+    }
+    let orchestration = path.join("orchestration");
+    let has_so = fs::read_dir(&orchestration)
+        .map_err(|err| {
+            format!(
+                "qwen3_simpler_l2_{kind}_orchestration_read_failed:{}:{err}",
+                orchestration.display()
+            )
+        })?
+        .filter_map(Result::ok)
+        .any(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("so"));
+    if !has_so {
+        return Err(format!(
+            "qwen3_simpler_l2_{kind}_orchestration_so_missing:{}",
+            orchestration.display()
+        ));
+    }
+    let kernels = path.join("kernels");
+    if !qwen3_simpler_l2_dir_contains_extension(&kernels, "o")? {
+        return Err(format!(
+            "qwen3_simpler_l2_{kind}_kernel_object_missing:{}",
+            kernels.display()
+        ));
+    }
+    Ok(())
+}
+
+fn qwen3_simpler_l2_dir_contains_extension(path: &Path, extension: &str) -> Result<bool, String> {
+    let entries = fs::read_dir(path).map_err(|err| {
+        format!(
+            "qwen3_simpler_l2_kernel_dir_read_failed:{}:{err}",
+            path.display()
+        )
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|err| {
+            format!(
+                "qwen3_simpler_l2_kernel_dir_entry_failed:{}:{err}",
+                path.display()
+            )
+        })?;
+        let child = entry.path();
+        if child.is_dir() {
+            if qwen3_simpler_l2_dir_contains_extension(&child, extension)? {
+                return Ok(true);
+            }
+        } else if child.extension().and_then(|ext| ext.to_str()) == Some(extension) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn run_qwen3_guest_simpler_l2_profile_runtime(
+    topology: &SimTopology,
+    task: &TaskKey,
+    guest_input: &[u8],
+    operands: Option<&Qwen3RangeDispatchOperands>,
+) -> Result<Vec<u8>, String> {
+    let config = qwen3_simpler_l2_profile_config_from_env()?;
+    let contract = qwen3_guest_range_compute_contract(task)?;
+    static LOGGED_CONFIGS: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
+    let log_key = format!(
+        "{}|{}|{:?}|{}|{}|{}|{}|{}|{}",
+        config.platform,
+        config.device_id,
+        config.device_ids,
+        config.decode_abi.as_str(),
+        config
+            .visible_devices
+            .as_deref()
+            .unwrap_or("<all-visible-devices>"),
+        config.prefill_build_output.display(),
+        config.decode_build_output.display(),
+        config.final_rms_build_output.display(),
+        config.lm_head_build_output.display()
+    );
+    let should_log = {
+        let logged = LOGGED_CONFIGS.get_or_init(|| Mutex::new(BTreeSet::new()));
+        let mut logged = logged
+            .lock()
+            .map_err(|_| "qwen3_simpler_l2_profile_log_cache_poisoned".to_string())?;
+        logged.insert(log_key)
+    };
+    if should_log || config.profile_verbose {
+        eprintln!(
+            "qwen3-guest-simpler-l2-profile: mode=control-plane-ready platform={} device_id={} device_ids={:?} decode_abi={} dispatch_mode={:?} range_worker={} cli_path={} visible_devices={} prefill={} decode={} final_rms={} lm_head={} runtime_manifest={}",
+            config.platform,
+            config.device_id,
+            config.device_ids,
+            config.decode_abi.as_str(),
+            config.dispatch_mode,
+            config.range_worker,
+            config.cli_path.display(),
+            config.visible_devices.as_deref().unwrap_or("<unset>"),
+            config.prefill_build_output.display(),
+            config.decode_build_output.display(),
+            config.final_rms_build_output.display(),
+            config.lm_head_build_output.display(),
+            config
+                .runtime_manifest
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<auto>".to_string())
+        );
+    }
+    if config.decode_abi == qwen3_simpler::DecodeAbi::SingleLayer {
+        let contract = contract
+            .ok_or_else(|| "qwen3_simpler_l2_range_runtime_requires_contract".to_string())?;
+        return run_qwen3_guest_simpler_l2_range_profile_runtime(
+            &config,
+            contract,
+            guest_input,
+            operands,
+        );
+    }
+    if let Some(contract) = contract.as_ref() {
+        let terminal_owner = contract.node + 1 == contract.pipeline_nodes;
+        if terminal_owner {
+            if let Err(err) =
+                qwen3_guest_simpler_l2_sidecar_dispatch(&config, contract.node, guest_input)
+            {
+                eprintln!(
+                    "qwen3-guest-simpler-l2-profile: mode=simpler-dispatch-error strict={} error={}",
+                    config.real_dispatch_strict, err
+                );
+                if config.real_dispatch_strict {
+                    return Err(err);
+                }
+            }
+        }
+    }
+    run_qwen3_dense_profile_runtime(topology, task, guest_input, None)
+}
+
+fn run_qwen3_guest_simpler_l2_range_profile_runtime(
+    config: &Qwen3SimplerL2ProfileConfig,
+    contract: Qwen3GuestRangeComputeContract,
+    guest_input: &[u8],
+    operands: Option<&Qwen3RangeDispatchOperands>,
+) -> Result<Vec<u8>, String> {
+    let weights_path = std::env::var_os("SIM_QWEN3_DENSE_WEIGHTS_PATH")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| "qwen3_simpler_l2_weights_path_missing".to_string())?;
+    let hidden_bytes = u64::from(contract.hidden_bytes);
+    let hidden_len = usize::try_from(hidden_bytes)
+        .map_err(|_| format!("qwen3_simpler_l2_hidden_too_large:{hidden_bytes}"))?;
+    let layer_count = u64::from(contract.layer_end - contract.layer_start);
+    let input_checksum =
+        qwen3_dense_profile_range_input_checksum_with_operands(contract, guest_input, operands)?;
+    let token_ids = qwen3_dense_reference_guest_input_token_ids(guest_input);
+    if token_ids.is_empty() {
+        return Err("qwen3_simpler_l2_range_token_ids_empty".to_string());
+    }
+    let runtime_profile = qwen3_dense_runtime_profile_from_env();
+    let previous_cache = qwen3_dense_profile_previous_kv_cache_from_guest_payload(
+        &runtime_profile,
+        contract,
+        guest_input,
+    )?;
+    let previous_kv_payload = if let Some(payload) = operands
+        .and_then(|operands| operands.previous_kv.as_ref())
+        .map(Qwen3ObjectBackedOperandView::bytes)
+    {
+        Some(payload.to_vec())
+    } else {
+        previous_cache
+            .as_ref()
+            .map(|cache| {
+                qwen3_dense_profile_range_kv_payload_from_cache(
+                    cache,
+                    u64::from(contract.layer_start),
+                    u64::from(contract.layer_end),
+                )
+            })
+            .transpose()?
+    };
+    let input_hidden_payload = if contract.layer_start > 0 {
+        if let Some(payload) = operands
+            .and_then(|operands| operands.hidden_input.as_ref())
+            .map(Qwen3ObjectBackedOperandView::bytes)
+        {
+            Some(payload.to_vec())
+        } else {
+            Some(
+                guest_input
+                    .get(
+                        QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET
+                            ..QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + hidden_len,
+                    )
+                    .ok_or_else(|| {
+                        format!(
+                            "qwen3_simpler_l2_range_input_payload_missing:offset={:#x}:bytes={hidden_len}",
+                            QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET
+                        )
+                    })?
+                    .to_vec(),
+            )
+        }
+    } else {
+        None
+    };
+    let selected_device_id = qwen3_simpler_l2_device_for_node(config, contract.node);
+    let build_outputs = vec![
+        config.prefill_build_output.clone(),
+        config.decode_build_output.clone(),
+        config.final_rms_build_output.clone(),
+        config.lm_head_build_output.clone(),
+    ];
+    let runtime_args = qwen3_simpler::Qwen3SimplerGenerateArgs {
+        build_outputs: build_outputs.clone(),
+        l3: false,
+        decode_abi: qwen3_simpler::DecodeAbi::SingleLayer,
+        model_dir: weights_path.clone(),
+        prompt: config.prompt.clone().unwrap_or_default(),
+        max_seq_len: config.max_seq_len,
+        max_new_tokens: 1,
+        platform: config.platform.clone(),
+        device_id: selected_device_id,
+        profile_verbose: config.profile_verbose,
+        sampling: qwen3_simpler::SamplingConfig::default(),
+    };
+    let runtime_name = qwen3_simpler::runtime_name(&runtime_args)
+        .map_err(|err| format!("qwen3_simpler_l2_runtime_name_failed:{err}"))?;
+    let manifest_path = config.runtime_manifest.clone().unwrap_or_else(|| {
+        qwen3_simpler::default_runtime_manifest_path(&runtime_name, &config.platform)
+    });
+    qwen3_simpler::ensure_runtime_manifest(&manifest_path, &runtime_name, &config.platform)
+        .map_err(|err| format!("qwen3_simpler_l2_runtime_manifest_prepare_failed:{err}"))?;
+    let started = Instant::now();
+    if config.profile_verbose {
+        let phase = if previous_cache.is_some() {
+            "decode"
+        } else {
+            "prefill"
+        };
+        eprintln!(
+            "qwen3-guest-simpler-l2-profile: mode=range-dispatch-start phase={} node={} device_id={} layers=[{}, {}) token_count={} manifest={}",
+            phase,
+            contract.node,
+            selected_device_id,
+            contract.layer_start,
+            contract.layer_end,
+            token_ids.len(),
+            manifest_path.display()
+        );
+    }
+    let range_args = qwen3_simpler::Qwen3SimplerRangeArgs {
+        build_outputs,
+        model_dir: weights_path,
+        token_ids,
+        max_seq_len: config.max_seq_len,
+        platform: config.platform.clone(),
+        device_id: selected_device_id,
+        layer_start: contract.layer_start as usize,
+        layer_end: contract.layer_end as usize,
+        output_hidden_bytes: hidden_len,
+        input_hidden_payload,
+        previous_kv_payload,
+        terminal_projection: contract.node + 1 == contract.pipeline_nodes,
+        profile_verbose: config.profile_verbose,
+    };
+    let range = match config.dispatch_mode {
+        Qwen3SimplerL2DispatchMode::Process => qwen3_guest_simpler_l2_range_dispatch_process(
+            config,
+            &range_args,
+            &manifest_path,
+            contract,
+        )?,
+        Qwen3SimplerL2DispatchMode::InProcess => {
+            let result = qwen3_simpler::run_l2_range(range_args, &manifest_path)
+                .map_err(|err| format!("qwen3_simpler_l2_range_dispatch_failed:{err}"))?;
+            Qwen3SimplerL2RangeDispatchResult {
+                output_hidden_payload: result.output_hidden_payload,
+                kv_state_payload: result.kv_payload,
+                terminal_projection: result.terminal_projection,
+                elapsed_ms: result.elapsed.as_millis(),
+            }
+        }
+    };
+    let output_tensor_checksum =
+        qwen3_dense_reference_range_object_payload_checksum(&range.output_hidden_payload);
+    let kv_state_checksum =
+        qwen3_dense_reference_range_object_payload_checksum(&range.kv_state_payload);
+    let range_layer_checksum = checksum_words(&[
+        u64::from(contract.node),
+        u64::from(contract.layer_start),
+        u64::from(contract.layer_end),
+        u64::from(contract.next_node),
+        u64::from(contract.pipeline_nodes),
+        u64::from(contract.total_layers),
+        hidden_bytes,
+        input_checksum,
+        output_tensor_checksum,
+        kv_state_checksum,
+    ]);
+    let range_forward_summary = Qwen3DenseReferenceRangeForwardSummary {
+        node: u64::from(contract.node),
+        layer_start: u64::from(contract.layer_start),
+        layer_end: u64::from(contract.layer_end),
+        layer_count,
+        next_node: u64::from(contract.next_node),
+        pipeline_nodes: u64::from(contract.pipeline_nodes),
+        total_layers: u64::from(contract.total_layers),
+        hidden_bytes,
+        input_tensor_checksum: input_checksum,
+        output_tensor_checksum,
+        range_layer_checksum,
+        real_layer_execution_count: layer_count,
+        first_layer_output_checksum: output_tensor_checksum,
+        final_layer_output_checksum: output_tensor_checksum,
+        input_tensor_bytes: hidden_bytes,
+        output_tensor_bytes: hidden_bytes,
+        output_tensor_payload: range.output_hidden_payload,
+        kv_state_bytes: range.kv_state_payload.len() as u64,
+        kv_state_checksum,
+        kv_state_payload: range.kv_state_payload,
+        engram_context_report: None,
+    };
+    if config.profile_verbose {
+        eprintln!(
+            "qwen3-guest-simpler-l2-profile: mode=range-dispatch-finish node={} device_id={} layers=[{}, {}) elapsed_ms={} output_checksum=0x{:016x} kv_checksum=0x{:016x} terminal_token={}",
+            contract.node,
+            selected_device_id,
+            contract.layer_start,
+            contract.layer_end,
+            range.elapsed_ms.max(started.elapsed().as_millis()),
+            range_forward_summary.output_tensor_checksum,
+            range_forward_summary.kv_state_checksum,
+            range
+                .terminal_projection
+                .as_ref()
+                .map(|projection| projection.sampled_token.to_string())
+                .unwrap_or_else(|| "<none>".to_string())
+        );
+    }
+    qwen3_dense_profile_runtime_output_from_range_summary(
+        &runtime_profile,
+        contract,
+        guest_input,
+        range_forward_summary,
+        None,
+        range.terminal_projection.as_ref(),
+    )
+}
+
+fn qwen3_guest_simpler_l2_sidecar_dispatch(
+    config: &Qwen3SimplerL2ProfileConfig,
+    node: u32,
+    guest_input: &[u8],
+) -> Result<(), String> {
+    let Some(prompt) = config.prompt.as_ref() else {
+        if config.profile_verbose {
+            eprintln!(
+                "qwen3-guest-simpler-l2-profile: mode=simpler-dispatch-skip reason=missing_prompt"
+            );
+        }
+        return Ok(());
+    };
+    let weights_path = std::env::var_os("SIM_QWEN3_DENSE_WEIGHTS_PATH")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| "qwen3_simpler_l2_weights_path_missing".to_string())?;
+    let decode_step = qwen3_dense_runtime_decode_step_from_guest_input(guest_input);
+    let selected_device_id = qwen3_simpler_l2_device_for_node(config, node);
+    let dispatch_key = if config.real_dispatch_once {
+        "terminal-once".to_string()
+    } else {
+        format!("terminal-step-{decode_step}")
+    };
+    static DISPATCHED: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
+    {
+        let dispatched = DISPATCHED.get_or_init(|| Mutex::new(BTreeSet::new()));
+        let mut dispatched = dispatched
+            .lock()
+            .map_err(|_| "qwen3_simpler_l2_sidecar_dispatch_cache_poisoned".to_string())?;
+        if !dispatched.insert(dispatch_key.clone()) {
+            if config.profile_verbose {
+                eprintln!(
+                    "qwen3-guest-simpler-l2-profile: mode=simpler-dispatch-skip reason=already_dispatched key={dispatch_key}"
+                );
+            }
+            return Ok(());
+        }
+    }
+
+    let max_new_tokens = usize::try_from(decode_step + 1)
+        .map_err(|_| format!("qwen3_simpler_l2_decode_step_too_large:{decode_step}"))?
+        .max(1);
+    let build_outputs = vec![
+        config.prefill_build_output.clone(),
+        config.decode_build_output.clone(),
+        config.final_rms_build_output.clone(),
+        config.lm_head_build_output.clone(),
+    ];
+    let args = qwen3_simpler::Qwen3SimplerGenerateArgs {
+        build_outputs,
+        l3: false,
+        decode_abi: config.decode_abi,
+        model_dir: weights_path,
+        prompt: prompt.clone(),
+        max_seq_len: config.max_seq_len,
+        max_new_tokens,
+        platform: config.platform.clone(),
+        device_id: selected_device_id,
+        profile_verbose: config.profile_verbose,
+        sampling: qwen3_simpler::SamplingConfig::default(),
+    };
+    let runtime_name = qwen3_simpler::runtime_name(&args)
+        .map_err(|err| format!("qwen3_simpler_l2_runtime_name_failed:{err}"))?;
+    let manifest_path = config.runtime_manifest.clone().unwrap_or_else(|| {
+        qwen3_simpler::default_runtime_manifest_path(&runtime_name, &args.platform)
+    });
+    let started = Instant::now();
+    eprintln!(
+        "qwen3-guest-simpler-l2-profile: mode=simpler-dispatch-start key={} node={} device_id={} decode_step={} max_new_tokens={} manifest={}",
+        dispatch_key,
+        node,
+        selected_device_id,
+        decode_step,
+        max_new_tokens,
+        manifest_path.display()
+    );
+    match config.dispatch_mode {
+        Qwen3SimplerL2DispatchMode::Process => {
+            qwen3_guest_simpler_l2_sidecar_dispatch_process(config, &args, &dispatch_key, started)?;
+        }
+        Qwen3SimplerL2DispatchMode::InProcess => {
+            qwen3_simpler::ensure_runtime_manifest(&manifest_path, &runtime_name, &args.platform)
+                .map_err(|err| format!("qwen3_simpler_l2_runtime_manifest_prepare_failed:{err}"))?;
+            let result = qwen3_simpler::run(args, &manifest_path)
+                .map_err(|err| format!("qwen3_simpler_l2_dispatch_failed:{err}"))?;
+            eprintln!(
+                "qwen3-guest-simpler-l2-profile: mode=simpler-dispatch-finish key={} elapsed_ms={} token_ids={:?} text={:?} finish_reason={}",
+                dispatch_key,
+                started.elapsed().as_millis(),
+                result.token_ids,
+                result.text,
+                result.finish_reason
+            );
+        }
+    }
+    Ok(())
+}
+
+fn qwen3_guest_simpler_l2_sidecar_dispatch_process(
+    config: &Qwen3SimplerL2ProfileConfig,
+    args: &qwen3_simpler::Qwen3SimplerGenerateArgs,
+    dispatch_key: &str,
+    started: Instant,
+) -> Result<(), String> {
+    let mut command = std::process::Command::new(&config.cli_path);
+    command
+        .arg("qwen3-simpler-generate")
+        .arg("--model-dir")
+        .arg(&args.model_dir)
+        .arg("--prompt")
+        .arg(&args.prompt)
+        .arg("--max-seq-len")
+        .arg(args.max_seq_len.to_string())
+        .arg("--max-new-tokens")
+        .arg(args.max_new_tokens.to_string())
+        .arg("--platform")
+        .arg(&args.platform)
+        .arg("--device-id")
+        .arg(args.device_id.to_string())
+        .arg("--decode-abi")
+        .arg(args.decode_abi.as_str())
+        .env_remove("ASCEND_RT_VISIBLE_DEVICES");
+    for build_output in &args.build_outputs {
+        command.arg("--build-output").arg(build_output);
+    }
+    if args.profile_verbose {
+        command.arg("--profile-verbose");
+    }
+    let output = command.output().map_err(|err| {
+        format!(
+            "qwen3_simpler_l2_process_dispatch_spawn_failed:{}:{err}",
+            config.cli_path.display()
+        )
+    })?;
+    for line in String::from_utf8_lossy(&output.stderr).lines() {
+        eprintln!("qwen3-guest-simpler-l2-profile: child-stderr: {line}");
+    }
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        eprintln!("qwen3-guest-simpler-l2-profile: child-stdout: {line}");
+    }
+    if !output.status.success() {
+        return Err(format!(
+            "qwen3_simpler_l2_process_dispatch_failed:{}",
+            output.status
+        ));
+    }
+    eprintln!(
+        "qwen3-guest-simpler-l2-profile: mode=simpler-dispatch-finish key={} elapsed_ms={} process_status={}",
+        dispatch_key,
+        started.elapsed().as_millis(),
+        output.status
+    );
+    Ok(())
+}
+
+struct Qwen3SimplerL2RangeDispatchResult {
+    output_hidden_payload: Vec<u8>,
+    kv_state_payload: Vec<u8>,
+    terminal_projection: Option<qwen3_simpler::Qwen3SimplerTerminalProjectionResult>,
+    elapsed_ms: u128,
+}
+
+fn qwen3_guest_simpler_l2_range_dispatch_process(
+    config: &Qwen3SimplerL2ProfileConfig,
+    args: &qwen3_simpler::Qwen3SimplerRangeArgs,
+    manifest_path: &Path,
+    contract: Qwen3GuestRangeComputeContract,
+) -> Result<Qwen3SimplerL2RangeDispatchResult, String> {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "ub-sim-qwen3-range-node{}-{}-{}-{}",
+        contract.node,
+        contract.layer_start,
+        contract.layer_end,
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&temp_dir);
+    fs::create_dir_all(&temp_dir)
+        .map_err(|err| format!("qwen3_simpler_l2_range_temp_dir_create_failed:{err}"))?;
+    let input_hidden_path = args
+        .input_hidden_payload
+        .as_ref()
+        .map(|payload| {
+            let path = temp_dir.join("input_hidden.bin");
+            fs::write(&path, payload)
+                .map_err(|err| format!("qwen3_simpler_l2_range_input_hidden_write_failed:{err}"))?;
+            Ok::<PathBuf, String>(path)
+        })
+        .transpose()?;
+    let previous_kv_path = args
+        .previous_kv_payload
+        .as_ref()
+        .map(|payload| {
+            let path = temp_dir.join("previous_kv.bin");
+            fs::write(&path, payload)
+                .map_err(|err| format!("qwen3_simpler_l2_range_previous_kv_write_failed:{err}"))?;
+            Ok::<PathBuf, String>(path)
+        })
+        .transpose()?;
+    let output_hidden_path = temp_dir.join("output_hidden.bin");
+    let output_kv_path = temp_dir.join("output_kv.bin");
+    let output_terminal_path = temp_dir.join("terminal_projection.json");
+    let request_path = temp_dir.join("request.json");
+    let request = serde_json::json!({
+        "build_outputs": args.build_outputs.iter().map(|path| path.display().to_string()).collect::<Vec<_>>(),
+        "model_dir": args.model_dir.display().to_string(),
+        "token_ids": &args.token_ids,
+        "max_seq_len": args.max_seq_len,
+        "platform": &args.platform,
+        "device_id": args.device_id,
+        "layer_start": args.layer_start,
+        "layer_end": args.layer_end,
+        "output_hidden_bytes": args.output_hidden_bytes,
+        "input_hidden_payload": input_hidden_path.as_ref().map(|path| path.display().to_string()),
+        "previous_kv_payload": previous_kv_path.as_ref().map(|path| path.display().to_string()),
+        "runtime_manifest": manifest_path.display().to_string(),
+        "output_hidden_payload": output_hidden_path.display().to_string(),
+        "output_kv_payload": output_kv_path.display().to_string(),
+        "terminal_projection": args.terminal_projection,
+        "output_terminal_projection": if args.terminal_projection { Some(output_terminal_path.display().to_string()) } else { None },
+        "profile_verbose": args.profile_verbose,
+    });
+    let request_text = serde_json::to_string_pretty(&request)
+        .map_err(|err| format!("qwen3_simpler_l2_range_request_json_failed:{err}"))?;
+    fs::write(&request_path, request_text)
+        .map_err(|err| format!("qwen3_simpler_l2_range_request_write_failed:{err}"))?;
+    let started = Instant::now();
+    let attempts = qwen3_simpler_l2_range_process_attempts();
+    let mut last_error = None;
+    for attempt in 0..attempts {
+        let _ = fs::remove_file(&output_hidden_path);
+        let _ = fs::remove_file(&output_kv_path);
+        let _ = fs::remove_file(&output_terminal_path);
+        let dispatch_result = if config.range_worker {
+            qwen3_guest_simpler_l2_range_dispatch_worker(config, &request_path, contract)
+        } else {
+            qwen3_guest_simpler_l2_range_dispatch_oneshot(config, &request_path)
+        };
+        if dispatch_result.is_ok() {
+            last_error = None;
+            break;
+        }
+        let error = dispatch_result.expect_err("checked is_err");
+        eprintln!(
+            "qwen3-guest-simpler-l2-profile: mode=range-process-retry attempt={} attempts={} error={}",
+            attempt + 1,
+            attempts,
+            error
+        );
+        last_error = Some(error);
+    }
+    if let Some(error) = last_error {
+        return Err(error);
+    }
+    let output_hidden_payload = fs::read(&output_hidden_path)
+        .map_err(|err| format!("qwen3_simpler_l2_range_output_hidden_read_failed:{err}"))?;
+    let kv_state_payload = fs::read(&output_kv_path)
+        .map_err(|err| format!("qwen3_simpler_l2_range_output_kv_read_failed:{err}"))?;
+    let terminal_projection = if args.terminal_projection {
+        Some(
+            fs::read(&output_terminal_path)
+                .map_err(|err| {
+                    format!("qwen3_simpler_l2_range_terminal_projection_read_failed:{err}")
+                })
+                .and_then(|bytes| {
+                    serde_json::from_slice(&bytes).map_err(|err| {
+                        format!("qwen3_simpler_l2_range_terminal_projection_parse_failed:{err}")
+                    })
+                })?,
+        )
+    } else {
+        None
+    };
+    let _ = fs::remove_dir_all(&temp_dir);
+    Ok(Qwen3SimplerL2RangeDispatchResult {
+        output_hidden_payload,
+        kv_state_payload,
+        terminal_projection,
+        elapsed_ms: started.elapsed().as_millis(),
+    })
+}
+
+fn qwen3_guest_simpler_l2_range_dispatch_oneshot(
+    config: &Qwen3SimplerL2ProfileConfig,
+    request_path: &Path,
+) -> Result<(), String> {
+    let output = std::process::Command::new(&config.cli_path)
+        .arg("qwen3-simpler-range-runner")
+        .arg("--request")
+        .arg(request_path)
+        .env_remove("ASCEND_RT_VISIBLE_DEVICES")
+        .output()
+        .map_err(|err| {
+            format!(
+                "qwen3_simpler_l2_range_process_spawn_failed:{}:{err}",
+                config.cli_path.display()
+            )
+        })?;
+    for line in String::from_utf8_lossy(&output.stderr).lines() {
+        eprintln!("qwen3-guest-simpler-l2-profile: range-child-stderr: {line}");
+    }
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        eprintln!("qwen3-guest-simpler-l2-profile: range-child-stdout: {line}");
+    }
+    if !output.status.success() {
+        return Err(format!(
+            "qwen3_simpler_l2_range_process_failed:{}",
+            output.status
+        ));
+    }
+    Ok(())
+}
+
+fn qwen3_guest_simpler_l2_range_dispatch_worker(
+    config: &Qwen3SimplerL2ProfileConfig,
+    request_path: &Path,
+    contract: Qwen3GuestRangeComputeContract,
+) -> Result<(), String> {
+    let key = qwen3_simpler_l2_range_worker_key(config, contract);
+    let workers = QWEN3_SIMPLER_RANGE_WORKERS.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut workers = workers
+        .lock()
+        .map_err(|_| "qwen3_simpler_l2_range_worker_pool_poisoned".to_string())?;
+    let worker = match workers.entry(key.clone()) {
+        std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            eprintln!(
+                "qwen3-guest-simpler-l2-profile: mode=range-worker-start key={} cli_path={}",
+                key,
+                config.cli_path.display()
+            );
+            entry.insert(Qwen3SimplerRangeWorkerClient::spawn(&config.cli_path)?)
+        }
+    };
+    match worker.dispatch(request_path) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            workers.remove(&key);
+            Err(err)
+        }
+    }
+}
+
+static QWEN3_SIMPLER_RANGE_WORKERS: OnceLock<
+    Mutex<BTreeMap<String, Qwen3SimplerRangeWorkerClient>>,
+> = OnceLock::new();
+
+struct Qwen3SimplerRangeWorkerClient {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    stdout: BufReader<std::process::ChildStdout>,
+}
+
+impl Qwen3SimplerRangeWorkerClient {
+    fn spawn(cli_path: &Path) -> Result<Self, String> {
+        let mut child = std::process::Command::new(cli_path)
+            .arg("qwen3-simpler-range-worker")
+            .env_remove("ASCEND_RT_VISIBLE_DEVICES")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|err| {
+                format!(
+                    "qwen3_simpler_l2_range_worker_spawn_failed:{}:{err}",
+                    cli_path.display()
+                )
+            })?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "qwen3_simpler_l2_range_worker_stdin_missing".to_string())?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "qwen3_simpler_l2_range_worker_stdout_missing".to_string())?;
+        Ok(Self {
+            child,
+            stdin,
+            stdout: BufReader::new(stdout),
+        })
+    }
+
+    fn dispatch(&mut self, request_path: &Path) -> Result<(), String> {
+        let request = serde_json::json!({
+            "request": request_path.display().to_string(),
+        });
+        writeln!(
+            self.stdin,
+            "{}",
+            serde_json::to_string(&request).map_err(|err| err.to_string())?
+        )
+        .map_err(|err| format!("qwen3_simpler_l2_range_worker_write_failed:{err}"))?;
+        self.stdin
+            .flush()
+            .map_err(|err| format!("qwen3_simpler_l2_range_worker_flush_failed:{err}"))?;
+        let mut line = String::new();
+        let bytes = self
+            .stdout
+            .read_line(&mut line)
+            .map_err(|err| format!("qwen3_simpler_l2_range_worker_read_failed:{err}"))?;
+        if bytes == 0 {
+            return Err("qwen3_simpler_l2_range_worker_eof".to_string());
+        }
+        eprintln!(
+            "qwen3-guest-simpler-l2-profile: range-worker-stdout: {}",
+            line.trim()
+        );
+        let response: serde_json::Value = serde_json::from_str(&line)
+            .map_err(|err| format!("qwen3_simpler_l2_range_worker_response_parse_failed:{err}"))?;
+        if response
+            .get("ok")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        {
+            Ok(())
+        } else {
+            Err(format!(
+                "qwen3_simpler_l2_range_worker_failed:{}",
+                response
+                    .get("error")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown")
+            ))
+        }
+    }
+}
+
+impl Drop for Qwen3SimplerRangeWorkerClient {
+    fn drop(&mut self) {
+        let _ = writeln!(self.stdin, "shutdown");
+        let _ = self.stdin.flush();
+        let _ = self.child.wait();
+    }
+}
+
+fn qwen3_simpler_l2_range_worker_key(
+    config: &Qwen3SimplerL2ProfileConfig,
+    contract: Qwen3GuestRangeComputeContract,
+) -> String {
+    format!(
+        "node{}|device{}|{}|{}|{}|{}|{}|{}|{}",
+        contract.node,
+        qwen3_simpler_l2_device_for_node(config, contract.node),
+        config.platform,
+        config.decode_abi.as_str(),
+        config.prefill_build_output.display(),
+        config.decode_build_output.display(),
+        config.final_rms_build_output.display(),
+        config.lm_head_build_output.display(),
+        config
+            .runtime_manifest
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "<auto>".to_string())
+    )
+}
+
+fn qwen3_simpler_l2_range_process_attempts() -> usize {
+    std::env::var("SIM_QWEN3_SIMPLER_RANGE_PROCESS_ATTEMPTS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|attempts| *attempts > 0)
+        .unwrap_or(3)
+}
+
+fn qwen3_simpler_l2_device_for_node(config: &Qwen3SimplerL2ProfileConfig, node: u32) -> u32 {
+    config
+        .device_ids
+        .get(node as usize)
+        .copied()
+        .unwrap_or(config.device_id)
 }
 
 fn qwen3_dense_env_u64(name: &str, fallback: u64) -> u64 {
@@ -5441,6 +6483,96 @@ fn qwen3_dense_profile_range_input_checksum_with_operands(
     ))
 }
 
+fn qwen3_dense_profile_runtime_output_from_range_summary(
+    runtime_profile: &Qwen3DenseReferenceProfile,
+    contract: Qwen3GuestRangeComputeContract,
+    _guest_input: &[u8],
+    range_forward_summary: Qwen3DenseReferenceRangeForwardSummary,
+    real_forward: Option<&Qwen3DenseProfileRuntimeForward>,
+    terminal_projection: Option<&qwen3_simpler::Qwen3SimplerTerminalProjectionResult>,
+) -> Result<Vec<u8>, String> {
+    qwen3_register_range_forward_objects(contract, _guest_input, &range_forward_summary)?;
+    let terminal_owner = contract.node + 1 == contract.pipeline_nodes;
+    let real_terminal = if terminal_owner {
+        if let Some(projection) = terminal_projection {
+            Some(qwen3_dense_profile_real_terminal_from_simpler_projection(
+                runtime_profile,
+                &range_forward_summary,
+                projection,
+            ))
+        } else {
+            qwen3_dense_profile_real_terminal_summary(
+                runtime_profile,
+                &range_forward_summary,
+                real_forward,
+            )?
+        }
+    } else {
+        None
+    };
+    let logits_descriptors = if terminal_owner {
+        qwen3_dense_profile_logits_descriptors(runtime_profile, real_terminal.as_ref())?
+    } else {
+        Vec::new()
+    };
+    let result_descriptors: Vec<Qwen3DenseReferenceResultDescriptor> = Vec::new();
+    let result_block_descriptors: Vec<Qwen3DenseReferenceResultBlockDescriptor> = Vec::new();
+    let projection_descriptors: Vec<Qwen3DenseReferenceProjectionDescriptor> = Vec::new();
+    let layer_dependency_descriptors: Vec<Qwen3DenseReferenceLayerDependencyDescriptor> =
+        Vec::new();
+    let kvcache_descriptors: Vec<Qwen3DenseReferenceKvCacheDescriptor> = Vec::new();
+    let real_weight_stage_links: Vec<Qwen3DenseReferenceRealWeightStageLinkDescriptor> = Vec::new();
+    let real_tokenizer_path = qwen3_dense_profile_tokenizer_path();
+    let real_tokenizer_asset_summary = match real_tokenizer_path.as_deref() {
+        Some(path) => Some(load_tokenizer_asset_summary(path)?),
+        None => None,
+    };
+    let mut output = vec![
+        0u8;
+        qwen3_dense_reference_service_flow_output_len(
+            &result_descriptors,
+            &result_block_descriptors,
+            &projection_descriptors,
+            &layer_dependency_descriptors,
+            &kvcache_descriptors,
+            &logits_descriptors,
+            real_tokenizer_path.as_deref(),
+            real_tokenizer_asset_summary.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            &real_weight_stage_links,
+            Some(&range_forward_summary),
+        )?
+    ];
+    qwen3_dense_reference_write_service_flow_markers(
+        &mut output,
+        0,
+        0,
+        0,
+        0,
+        0,
+        &[],
+        &[],
+        &result_descriptors,
+        &result_block_descriptors,
+        &projection_descriptors,
+        &layer_dependency_descriptors,
+        &kvcache_descriptors,
+        &logits_descriptors,
+        real_tokenizer_path.as_deref(),
+        real_tokenizer_asset_summary.as_ref(),
+        None,
+        None,
+        None,
+        None,
+        &real_weight_stage_links,
+        Some(&range_forward_summary),
+    )?;
+    Ok(output)
+}
+
 fn qwen3_dense_profile_deterministic_payload(
     len: usize,
     seed: u64,
@@ -6036,6 +7168,48 @@ fn qwen3_dense_profile_real_terminal_summary(
             .unwrap_or(0),
         logits,
     }))
+}
+
+fn qwen3_dense_profile_real_terminal_from_simpler_projection(
+    profile: &Qwen3DenseReferenceProfile,
+    range_forward_summary: &Qwen3DenseReferenceRangeForwardSummary,
+    projection: &qwen3_simpler::Qwen3SimplerTerminalProjectionResult,
+) -> Qwen3DenseProfileRealTerminal {
+    let top_candidates = projection
+        .top_candidates
+        .iter()
+        .map(|candidate| Qwen3DenseReferenceLogitCandidate {
+            rank: candidate.rank,
+            token_id: candidate.token_id,
+            logit_bits: candidate.logit_bits,
+        })
+        .collect::<Vec<_>>();
+    let logits = Qwen3DenseReferenceFullVocabLogitsSummary {
+        vocab_size: profile.vocab_size,
+        hidden_size: profile.hidden_size,
+        final_norm_checksum: projection.final_norm_checksum,
+        checked_token_count: projection.checked_token_count,
+        top_token_id: projection.sampled_token,
+        top_logit_bits: projection.top_logit_bits,
+        runner_up_token_id: projection.runner_up_token,
+        runner_up_logit_bits: projection.runner_up_logit_bits,
+        top_candidates,
+        logits_checksum: projection.logits_checksum,
+        aggregate_checksum: projection.aggregate_checksum,
+    };
+    let forward_checksum = checksum_words(&[
+        range_forward_summary.range_layer_checksum,
+        range_forward_summary.output_tensor_checksum,
+        range_forward_summary.kv_state_checksum,
+        projection.aggregate_checksum,
+        projection.logits_checksum,
+    ]);
+    Qwen3DenseProfileRealTerminal {
+        forward_layer_count: range_forward_summary.layer_end,
+        forward_final_hidden_checksum: range_forward_summary.output_tensor_checksum,
+        forward_checksum,
+        logits,
+    }
 }
 
 fn qwen3_dense_profile_hidden_from_range_output_payload(

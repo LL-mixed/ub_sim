@@ -92,7 +92,7 @@ log() {
 }
 
 validate_qwen3_weights_path() {
-  if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" != "qwen3_dense_reference" && "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" != "qwen3_dense" ]]; then
+  if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" != "qwen3_dense_reference" && "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" != "qwen3_dense" && "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" != "qwen3_guest_simpler_l2" && "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" != "qwen3_dense_simpler_l2" ]]; then
     return 0
   fi
   local weights_path="${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}"
@@ -262,6 +262,16 @@ start_node() {
     SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES="${SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES:-}" \
     SIM_QWEN3_DENSE_KV_STATE_BYTES="${SIM_QWEN3_DENSE_KV_STATE_BYTES:-}" \
     SIM_QWEN3_DENSE_WEIGHTS_PATH="${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}" \
+    SIM_QWEN3_SIMPLER_PLATFORM="${SIM_QWEN3_SIMPLER_PLATFORM:-}" \
+    SIM_QWEN3_SIMPLER_DEVICE_ID="${SIM_QWEN3_SIMPLER_DEVICE_ID:-}" \
+    SIM_QWEN3_SIMPLER_DEVICE_IDS="${SIM_QWEN3_SIMPLER_DEVICE_IDS:-}" \
+    SIM_QWEN3_SIMPLER_RUNTIME_MANIFEST="${SIM_QWEN3_SIMPLER_RUNTIME_MANIFEST:-}" \
+    SIM_QWEN3_SIMPLER_PREFILL_BUILD_OUTPUT="${SIM_QWEN3_SIMPLER_PREFILL_BUILD_OUTPUT:-}" \
+    SIM_QWEN3_SIMPLER_DECODE_BUILD_OUTPUT="${SIM_QWEN3_SIMPLER_DECODE_BUILD_OUTPUT:-}" \
+    SIM_QWEN3_SIMPLER_FINAL_RMS_BUILD_OUTPUT="${SIM_QWEN3_SIMPLER_FINAL_RMS_BUILD_OUTPUT:-}" \
+    SIM_QWEN3_SIMPLER_LM_HEAD_BUILD_OUTPUT="${SIM_QWEN3_SIMPLER_LM_HEAD_BUILD_OUTPUT:-}" \
+    SIM_QWEN3_SIMPLER_PROFILE_VERBOSE="${SIM_QWEN3_SIMPLER_PROFILE_VERBOSE:-}" \
+    ASCEND_RT_VISIBLE_DEVICES="${ASCEND_RT_VISIBLE_DEVICES:-}" \
     SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS="${SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS:-}" \
     SIM_QWEN3_RUNTIME_RANGE_WAIT_MS="${SIM_QWEN3_RUNTIME_RANGE_WAIT_MS:-}" \
     SIM_QWEN3_GUEST_ENGRAM_MODE="${SIM_QWEN3_GUEST_ENGRAM_MODE:-cpu}" \
@@ -346,7 +356,7 @@ mkdir -p "$OUT_DIR" "$LOG_DIR/${RUN_ID}_headless8" "$QMP_DIR" "$SERIAL_DIR" "$MO
 touch "$CONTROL_LOG"
 validate_qwen3_weights_path
 qwen3_dense_apply_config_env
-if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_reference" || "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense" ]]; then
+if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_reference" || "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense" || "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_guest_simpler_l2" || "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_simpler_l2" ]]; then
   log "qwen3_dense_profile=$SIM_UAPI_W4_CHIPBACKEND_PROFILE model_id=${SIM_QWEN3_DENSE_MODEL_ID:-} model_key=${SIM_QWEN3_DENSE_MODEL_KEY:-} layers=${SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS:-} hidden_range_bytes=${SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES:-} decode_hidden_bytes=${SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES:-}"
 fi
 
@@ -401,13 +411,19 @@ log "ub_sim_port_num=$PORT_NUM"
 if [[ -n "$SIM_UAPI_W5_PROFILE" ]]; then
   log "w5_profile=$SIM_UAPI_W5_PROFILE"
 fi
-if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_reference" || "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense" ]]; then
+if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_reference" || "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense" || "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_guest_simpler_l2" || "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_simpler_l2" ]]; then
   log "qwen3_weights_path=${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}"
   log "qwen3_model_id=${SIM_QWEN3_DENSE_MODEL_ID:-}"
   log "qwen3_model_key=${SIM_QWEN3_DENSE_MODEL_KEY:-}"
   log "qwen3_decode_round_barrier=${SIM_QWEN3_DECODE_ROUND_BARRIER:-0}"
   log "qwen3_decode_round_barrier_timeout_ms=${SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS:-}"
   log "qwen3_runtime_range_wait_ms=${SIM_QWEN3_RUNTIME_RANGE_WAIT_MS:-}"
+fi
+if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_guest_simpler_l2" || "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_simpler_l2" ]]; then
+  log "qwen3_simpler_platform=${SIM_QWEN3_SIMPLER_PLATFORM:-}"
+  log "qwen3_simpler_device_id=${SIM_QWEN3_SIMPLER_DEVICE_ID:-}"
+  log "qwen3_simpler_device_ids=${SIM_QWEN3_SIMPLER_DEVICE_IDS:-}"
+  log "qwen3_simpler_visible_devices=${ASCEND_RT_VISIBLE_DEVICES:-}"
 fi
 log "logs_dir=$(dirname "$CONTROL_LOG")"
 

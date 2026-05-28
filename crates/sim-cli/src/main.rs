@@ -84,6 +84,7 @@ use sim_uapi::{
     qwen3_dense_reference_decode_loop_report, qwen3_dense_reference_decode_loop_report_with_prompt,
     qwen3_dense_reference_default_guest_input, qwen3_dense_reference_prefill_text_output_report,
     qwen3_dense_reference_range_forward_report_with_prompt, qwen3_flush_w5_memory_runtime_commits,
+    qwen3_simpler,
     qwen3_obmm_object_ref_for_payload, qwen3_obmm_object_ref_wire_to_hex,
     qwen3_paper_engram_state_manifest_payload, qwen3_publish_engram_state_registry_payload,
     qwen3_publish_object_registry_payload, qwen3_validate_engram_state_object_service_payload,
@@ -110,7 +111,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-mod qwen3_simpler;
 
 fn main() -> anyhow::Result<()> {
     if lingqu_durable_args() {
@@ -128,8 +128,20 @@ fn main() -> anyhow::Result<()> {
     if let Some(args) = qwen3_tokenizer_projection_args()? {
         return run_qwen3_tokenizer_projection_cli(&args);
     }
+    if let Some(args) = qwen3_simpler::range_runner_args()? {
+        qwen3_simpler::run_range_runner(args)?;
+        return Ok(());
+    }
+    if let Some(args) = qwen3_simpler::range_worker_args()? {
+        qwen3_simpler::run_range_worker(args)?;
+        return Ok(());
+    }
     if let Some(args) = qwen3_decode_loop_args()? {
         return run_qwen3_decode_loop_cli(&args);
+    }
+    if qwen3_guest_simpler_generate_help_args() {
+        print_qwen3_guest_simpler_generate_help();
+        return Ok(());
     }
     if let Some(args) = qwen3_guest_decode_loop_args()? {
         return run_qwen3_guest_decode_loop_cli(&args);
@@ -196,8 +208,8 @@ fn run_qwen3_simpler_generate_cli(
 ) -> anyhow::Result<()> {
     let runtime_name = qwen3_simpler::runtime_name(&args)
         .context("failed to inspect Qwen3 simpler build_output runtime")?;
-    let manifest_path = default_simpler_qwen3_runtime_manifest_path(&runtime_name, &args.platform);
-    ensure_simpler_qwen3_runtime_manifest(&manifest_path, &runtime_name, &args.platform)
+    let manifest_path = qwen3_simpler::default_runtime_manifest_path(&runtime_name, &args.platform);
+    qwen3_simpler::ensure_runtime_manifest(&manifest_path, &runtime_name, &args.platform)
         .context("failed to prepare reusable Qwen3 simpler runtime artifacts")?;
     let result = qwen3_simpler::run(args, &manifest_path)?;
     println!("text: {}", result.text);
@@ -280,6 +292,7 @@ struct Qwen3TokenizerProjectionCliArgs {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Qwen3GuestDecodeLoopCliArgs {
+    command: Qwen3GuestCommand,
     validate_only: bool,
     step_count: usize,
     prompt: Option<String>,
@@ -302,6 +315,7 @@ struct Qwen3GuestDecodeLoopCliArgs {
     min_terminal_margin_milli: u32,
     approximate_requires_verify: bool,
     min_source_confidence_milli: u32,
+    simpler: Qwen3GuestSimplerCliConfig,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -370,6 +384,45 @@ struct Qwen3DenseGuestRuntime {
     model_key: String,
     weights_path: PathBuf,
     chipbackend_profile: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Qwen3GuestCommand {
+    DecodeLoop,
+    SimplerGenerate,
+}
+
+impl Qwen3GuestCommand {
+    fn default_chipbackend_profile(self) -> &'static str {
+        match self {
+            Self::DecodeLoop => "qwen3_dense",
+            Self::SimplerGenerate => QWEN3_GUEST_SIMPLER_L2_PROFILE,
+        }
+    }
+
+    fn report_name(self) -> &'static str {
+        match self {
+            Self::DecodeLoop => "qwen3_guest_decode_loop",
+            Self::SimplerGenerate => "qwen3_guest_simpler_generate",
+        }
+    }
+}
+
+const QWEN3_GUEST_SIMPLER_L2_PROFILE: &str = "qwen3_guest_simpler_l2";
+const QWEN3_GUEST_SIMPLER_L2_LEGACY_PROFILE: &str = "qwen3_dense_simpler_l2";
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct Qwen3GuestSimplerCliConfig {
+    platform: Option<String>,
+    device_id: Option<u32>,
+    device_ids: Option<Vec<u32>>,
+    decode_abi: Option<String>,
+    runtime_manifest: Option<PathBuf>,
+    prefill_build_output: Option<PathBuf>,
+    decode_build_output: Option<PathBuf>,
+    final_rms_build_output: Option<PathBuf>,
+    lm_head_build_output: Option<PathBuf>,
+    profile_verbose: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -508,6 +561,42 @@ fn qwen3_range_forward_args() -> anyhow::Result<Option<Qwen3RangeForwardCliArgs>
 
 fn qwen3_guest_decode_loop_args() -> anyhow::Result<Option<Qwen3GuestDecodeLoopCliArgs>> {
     qwen3_guest_decode_loop_args_from(env::args_os().skip(1))
+}
+
+fn qwen3_guest_simpler_generate_help_args() -> bool {
+    qwen3_guest_simpler_generate_help_args_from(env::args_os().skip(1))
+}
+
+fn qwen3_guest_simpler_generate_help_args_from<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: Into<std::ffi::OsString>,
+{
+    let mut args = args.into_iter().map(Into::into);
+    matches!(args.next(), Some(mode) if mode == "qwen3-guest-simpler-generate")
+        && args.any(|arg| arg == "--help" || arg == "-h")
+}
+
+fn print_qwen3_guest_simpler_generate_help() {
+    println!("Usage:");
+    println!("  sim-cli qwen3-guest-simpler-generate [OPTIONS]");
+    println!();
+    println!("Options:");
+    println!("  --weights-path <DIR>              Qwen3-0.6B model directory");
+    println!("  --prompt <TEXT>                   Prompt text");
+    println!("  --prompt-token-ids <CSV>          Pre-tokenized prompt ids");
+    println!("  --steps <N>                       Decode tokens to generate");
+    println!("  --platform <NAME>                 Simpler platform, default a2a3");
+    println!("  --device-id <ID>                  Simpler device id, default 0");
+    println!("  --device-ids <CSV>                Per-node simpler device ids, e.g. 8,9,10,11,12,13,14,15");
+    println!("  --decode-abi <ABI>                Qwen3 L2 decode ABI: fused or single-layer");
+    println!("  --runtime-manifest <PATH>         Reusable simpler runtime manifest");
+    println!("  --prefill-build-output <DIR>      Qwen3 L2 prefill build_output");
+    println!("  --decode-build-output <DIR>       Qwen3 L2 decode build_output");
+    println!("  --final-rms-build-output <DIR>    Qwen3 L2 final RMS build_output");
+    println!("  --lm-head-build-output <DIR>      Qwen3 L2 LM head build_output");
+    println!("  --profile-verbose                 Print verbose QEMU/simpler timing");
+    println!("  --script <PATH>                   Override guest runner script");
 }
 
 fn qwen3_decode_loop_args_from<I, S>(args: I) -> anyhow::Result<Option<Qwen3DecodeLoopCliArgs>>
@@ -677,7 +766,16 @@ where
 {
     let mut args = args.into_iter().map(Into::into);
     match args.next() {
-        Some(mode) if mode == "qwen3-guest-decode-loop" || mode == "w5-inference-cluster" => {
+        Some(mode)
+            if mode == "qwen3-guest-decode-loop"
+                || mode == "w5-inference-cluster"
+                || mode == "qwen3-guest-simpler-generate" =>
+        {
+            let command = if mode == "qwen3-guest-simpler-generate" {
+                Qwen3GuestCommand::SimplerGenerate
+            } else {
+                Qwen3GuestCommand::DecodeLoop
+            };
             let mut step_count = None;
             let mut prompt = None;
             let mut prompt_token_ids = None;
@@ -689,6 +787,7 @@ where
             let mut validate_only = false;
             let mut sampler = Qwen3SamplerConfig::default();
             let mut engram = Qwen3EngramConfig::default();
+            let mut simpler = Qwen3GuestSimplerCliConfig::default();
             let mut memory_store_path = None;
             let mut memory_object_store_path = None;
             let mut memory_engram_state_path = None;
@@ -788,6 +887,83 @@ where
                     weights_path = Some(PathBuf::from(next));
                 } else if let Some(value) = text.strip_prefix("--weights-path=") {
                     weights_path = Some(PathBuf::from(value));
+                } else if text == "--platform" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--platform requires a value"))?;
+                    simpler.platform = Some(next.to_string_lossy().to_string());
+                } else if let Some(value) = text.strip_prefix("--platform=") {
+                    simpler.platform = Some(value.to_string());
+                } else if text == "--device-id" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--device-id requires a value"))?;
+                    simpler.device_id = Some(next.to_string_lossy().parse::<u32>().with_context(|| {
+                        format!("invalid --device-id: {}", next.to_string_lossy())
+                    })?);
+                } else if let Some(value) = text.strip_prefix("--device-id=") {
+                    simpler.device_id = Some(
+                        value
+                            .parse::<u32>()
+                            .with_context(|| format!("invalid --device-id: {value}"))?,
+                    );
+                } else if text == "--device-ids" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--device-ids requires a value"))?;
+                    simpler.device_ids = Some(parse_qwen3_simpler_device_ids(
+                        "--device-ids",
+                        &next.to_string_lossy(),
+                    )?);
+                } else if let Some(value) = text.strip_prefix("--device-ids=") {
+                    simpler.device_ids = Some(parse_qwen3_simpler_device_ids("--device-ids", value)?);
+                } else if text == "--decode-abi" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--decode-abi requires a value"))?;
+                    simpler.decode_abi = Some(parse_qwen3_simpler_decode_abi(
+                        "--decode-abi",
+                        &next.to_string_lossy(),
+                    )?);
+                } else if let Some(value) = text.strip_prefix("--decode-abi=") {
+                    simpler.decode_abi = Some(parse_qwen3_simpler_decode_abi("--decode-abi", value)?);
+                } else if text == "--runtime-manifest" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--runtime-manifest requires a value"))?;
+                    simpler.runtime_manifest = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--runtime-manifest=") {
+                    simpler.runtime_manifest = Some(PathBuf::from(value));
+                } else if text == "--prefill-build-output" {
+                    let next = pending.next().ok_or_else(|| {
+                        anyhow::anyhow!("--prefill-build-output requires a value")
+                    })?;
+                    simpler.prefill_build_output = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--prefill-build-output=") {
+                    simpler.prefill_build_output = Some(PathBuf::from(value));
+                } else if text == "--decode-build-output" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--decode-build-output requires a value"))?;
+                    simpler.decode_build_output = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--decode-build-output=") {
+                    simpler.decode_build_output = Some(PathBuf::from(value));
+                } else if text == "--final-rms-build-output" {
+                    let next = pending.next().ok_or_else(|| {
+                        anyhow::anyhow!("--final-rms-build-output requires a value")
+                    })?;
+                    simpler.final_rms_build_output = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--final-rms-build-output=") {
+                    simpler.final_rms_build_output = Some(PathBuf::from(value));
+                } else if text == "--lm-head-build-output" {
+                    let next = pending.next().ok_or_else(|| {
+                        anyhow::anyhow!("--lm-head-build-output requires a value")
+                    })?;
+                    simpler.lm_head_build_output = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--lm-head-build-output=") {
+                    simpler.lm_head_build_output = Some(PathBuf::from(value));
+                } else if text == "--profile-verbose" {
+                    simpler.profile_verbose = true;
                 } else if text == "--w5-profile" {
                     let next = pending
                         .next()
@@ -1330,6 +1506,7 @@ where
             }
 
             Ok(Some(Qwen3GuestDecodeLoopCliArgs {
+                command,
                 validate_only,
                 step_count: step_count.unwrap_or(1),
                 prompt,
@@ -1352,6 +1529,7 @@ where
                 min_terminal_margin_milli,
                 approximate_requires_verify,
                 min_source_confidence_milli,
+                simpler,
             }))
         }
         _ => Ok(None),
@@ -16845,6 +17023,7 @@ mod tests {
         fs::write(dir.join("model.safetensors"), b"stub").expect("write weights");
 
         let args = Qwen3GuestDecodeLoopCliArgs {
+            command: Qwen3GuestCommand::DecodeLoop,
             validate_only: false,
             step_count: 1,
             prompt: None,
@@ -16867,6 +17046,7 @@ mod tests {
             min_terminal_margin_milli: 500,
             approximate_requires_verify: true,
             min_source_confidence_milli: 900,
+            simpler: Qwen3GuestSimplerCliConfig::default(),
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("dense runtime");
         assert_eq!(runtime.model_key, "qwen3-0-6b");
@@ -16906,6 +17086,7 @@ mod tests {
         fs::write(dir.join("model.safetensors"), b"stub").expect("write weights");
 
         let args = Qwen3GuestDecodeLoopCliArgs {
+            command: Qwen3GuestCommand::DecodeLoop,
             validate_only: false,
             step_count: 1,
             prompt: None,
@@ -16928,6 +17109,7 @@ mod tests {
             min_terminal_margin_milli: 500,
             approximate_requires_verify: true,
             min_source_confidence_milli: 900,
+            simpler: Qwen3GuestSimplerCliConfig::default(),
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("reference shape runtime");
         assert!(runtime
@@ -16966,6 +17148,7 @@ mod tests {
         fs::write(dir.join("model.safetensors.index.json"), b"{}").expect("write index");
 
         let args = Qwen3GuestDecodeLoopCliArgs {
+            command: Qwen3GuestCommand::DecodeLoop,
             validate_only: false,
             step_count: 1,
             prompt: None,
@@ -16988,6 +17171,7 @@ mod tests {
             min_terminal_margin_milli: 500,
             approximate_requires_verify: true,
             min_source_confidence_milli: 900,
+            simpler: Qwen3GuestSimplerCliConfig::default(),
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("14B generic runtime");
         assert_eq!(runtime.model_key, "qwen3-14b");
@@ -25938,6 +26122,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
         .expect("write tokenizer");
         fs::write(weights_dir.join("model.safetensors"), b"stub").expect("write weights");
         let args = Qwen3GuestDecodeLoopCliArgs {
+            command: Qwen3GuestCommand::DecodeLoop,
             validate_only: false,
             step_count: 2,
             prompt: None,
@@ -25960,6 +26145,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             min_terminal_margin_milli: 500,
             approximate_requires_verify: true,
             min_source_confidence_milli: 900,
+            simpler: Qwen3GuestSimplerCliConfig::default(),
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("dense runtime");
         let summary_path = root.join("w5_summary.txt");
@@ -26144,6 +26330,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
 
         let store_path = root.join("store.json");
         let args = Qwen3GuestDecodeLoopCliArgs {
+            command: Qwen3GuestCommand::DecodeLoop,
             validate_only: false,
             step_count: 1,
             prompt: None,
@@ -26166,6 +26353,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             min_terminal_margin_milli: 500,
             approximate_requires_verify: true,
             min_source_confidence_milli: 900,
+            simpler: Qwen3GuestSimplerCliConfig::default(),
         };
 
         run_qwen3_guest_decode_loop_cli(&args)
@@ -28069,7 +28257,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         .context("validate W5 Memory Service decisions for this run")?;
     }
     if args.validate_only {
-        println!("qwen3_guest_decode_loop");
+        println!("{}", args.command.report_name());
         println!("  validate_only: true");
         println!("  script: {}", script_path.display());
         println!("  workload: w5 inference cluster");
@@ -28150,7 +28338,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     }
     let engram_registry_validation =
         qwen3_validate_guest_engram_state_registry(&effective_engram, &runtime.profile)?;
-    println!("qwen3_guest_decode_loop");
+    println!("{}", args.command.report_name());
     println!("  script: {}", script_path.display());
     println!("  workload: w5 inference cluster");
     println!("  w5_profile: {}", w5_profile.name);
@@ -28187,6 +28375,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         prepare_qwen3_matmul_batch_environment(matmul_batch)?;
         println!("  matmul_batch: {}", matmul_batch);
     }
+    apply_qwen3_guest_simpler_envs(&mut command, &args.simpler);
     if let Some(publication) = &memory_publication {
         println!("  memory_service: lingqu_memory_service");
         println!("  memory_fixture_backed: false");
@@ -30766,7 +30955,7 @@ fn qwen3_guest_dense_runtime(
     )
     .map_err(anyhow::Error::msg)?;
     let model_key = qwen3_dense_model_key(&profile.model_id);
-    let chipbackend_profile = "qwen3_dense";
+    let chipbackend_profile = args.command.default_chipbackend_profile();
 
     Ok(Qwen3DenseGuestRuntime {
         profile,
@@ -30774,6 +30963,68 @@ fn qwen3_guest_dense_runtime(
         weights_path,
         chipbackend_profile,
     })
+}
+
+fn apply_qwen3_guest_simpler_envs(command: &mut Command, config: &Qwen3GuestSimplerCliConfig) {
+    if let Some(value) = &config.platform {
+        command.env("SIM_QWEN3_SIMPLER_PLATFORM", value);
+    }
+    if let Some(value) = config.device_id {
+        command.env("SIM_QWEN3_SIMPLER_DEVICE_ID", value.to_string());
+    }
+    if let Some(values) = &config.device_ids {
+        command.env(
+            "SIM_QWEN3_SIMPLER_DEVICE_IDS",
+            values
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+    }
+    if let Some(value) = &config.decode_abi {
+        command.env("SIM_QWEN3_SIMPLER_DECODE_ABI", value);
+    }
+    if let Some(value) = &config.runtime_manifest {
+        command.env("SIM_QWEN3_SIMPLER_RUNTIME_MANIFEST", value);
+    }
+    if let Some(value) = &config.prefill_build_output {
+        command.env("SIM_QWEN3_SIMPLER_PREFILL_BUILD_OUTPUT", value);
+    }
+    if let Some(value) = &config.decode_build_output {
+        command.env("SIM_QWEN3_SIMPLER_DECODE_BUILD_OUTPUT", value);
+    }
+    if let Some(value) = &config.final_rms_build_output {
+        command.env("SIM_QWEN3_SIMPLER_FINAL_RMS_BUILD_OUTPUT", value);
+    }
+    if let Some(value) = &config.lm_head_build_output {
+        command.env("SIM_QWEN3_SIMPLER_LM_HEAD_BUILD_OUTPUT", value);
+    }
+    if config.profile_verbose {
+        command.env("SIM_QWEN3_SIMPLER_PROFILE_VERBOSE", "1");
+    }
+}
+
+fn parse_qwen3_simpler_device_ids(name: &str, value: &str) -> anyhow::Result<Vec<u32>> {
+    let ids = value
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            part.parse::<u32>()
+                .with_context(|| format!("invalid {name} entry: {part}"))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    if ids.is_empty() {
+        anyhow::bail!("{name} requires at least one device id");
+    }
+    Ok(ids)
+}
+
+fn parse_qwen3_simpler_decode_abi(name: &str, value: &str) -> anyhow::Result<String> {
+    sim_uapi::qwen3_simpler::DecodeAbi::parse(value)
+        .with_context(|| format!("invalid {name}: {value}"))
+        .map(|abi| abi.as_str().to_string())
 }
 
 #[derive(Default)]
