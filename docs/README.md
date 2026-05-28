@@ -22,6 +22,8 @@ Current validation entry points:
   - canonical plan for aligning repo Engram work with `Engram_paper.pdf`, including trained table construction, Memory Service artifacts, and W5 rebase boundaries
 - [plans/2026-05-22-paper-engram-alignment-explainer-zh.md](plans/2026-05-22-paper-engram-alignment-explainer-zh.md)
   - Chinese explanation of the Engram paper concepts and the paper-aligned repo design plan
+- [plans/2026-05-27-w5-shortpath-approximate-hidden-match-plan.md](plans/2026-05-27-w5-shortpath-approximate-hidden-match-plan.md)
+  - plan for adding an opt-in approximate hidden-state match path to W5 shortpath while preserving exact-match correctness
 - [plans/2026-05-15-w4-engram-phase5-performance-plan.md](plans/2026-05-15-w4-engram-phase5-performance-plan.md)
   - execution plan for W4 engram Phase 5 performance work, including profiling gates and vendor fused SIMT reuse boundaries
 - [drafts/obmm_spmc_mpsc_queue_design.md](drafts/obmm_spmc_mpsc_queue_design.md)
