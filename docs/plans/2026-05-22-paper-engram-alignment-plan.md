@@ -66,6 +66,34 @@ Going forward:
 - [x] 规划 paper Engram 训练产物生成流程与质量声明验证；Memory Service 已有 `training_recipe` / `eval_report` manifest、CLI 注册入口与质量声明校验。
 - [x] 为 vendor fused SIMT artifact 增加 `sim-cli lingqu-memory validate-paper-engram-fused-simt-artifact` 校验入口，可脚本化验证 build 目录、case discovery，并在 `--run` 下调用 host launch wrapper。
 
+### Integration-Ready 收口状态（2026-05-28）
+
+当前没有训练或微调产出的可用 paper Engram table，因此本阶段不能声明
+paper Engram 带来模型质量收益，也不能声明 Phase 6 完成。本阶段收口目标是
+`integration-ready, quality-blocked-by-missing-trained-table`：
+
+- [x] artifact contract 已闭合：tokenizer projection、hash config、table shard、
+  gate、module、training recipe、eval report 都有 manifest/CLI/test 路径。
+- [x] hash config artifact 显式记录并校验 FNV-1a hash constants
+  (`fnv1a_offset_basis` / `fnv1a_prime`)，不再只把 hash prime/seed 隐藏在实现里。
+- [x] Memory Service 和 CLI 可以 import/export fixture bundle，并在新 durable
+  store 中重新 resolve runtime operands。
+- [x] `validate-paper-engram-module --require-quality` 现在要求真实 trained/imported
+  quality claim；`quality_claim=None` 的 fixture bundle 只能验证 wiring，不能通过
+  quality gate。
+- [x] fixture runtime wiring 已验证到 Object Service state-ref 和 backend parity：
+  `out/paper_engram_fixture_validation_20260528` 中的 import 后 runtime 有 4 个
+  table shards、1 个 gate、5 个 payload refs、2112 payload bytes；发布的 state
+  manifest 有 2048 table bytes、64 gate bytes；CPU reference 与 simpler-host
+  paper object-ref path 在 `max_ulp=64` 下通过 parity。
+
+明确不能声明：
+
+- 不能声明 paper Engram quality improvement。
+- 不能声明 trained table 已验证。
+- 不能用 fixture/zero/random-normal table 作为业务质量证据。
+- Phase 6 仍然被缺失 trained/fine-tuned Engram table 阻塞。
+
 ## Design Objectives
 
 1. Support paper-compatible Engram table construction during post-training or
@@ -333,8 +361,9 @@ Current implementation status:
 - Memory Service can build deterministic paper Engram row prefetch plans from canonical token history using the shared `sim-models::engram_hash` implementation; `sim-cli lingqu-memory plan-paper-engram-row-prefetch` exposes the planned row refs and backing block refs, and `publish-paper-engram-row-prefetch` publishes the row plan as Object Service metadata. W5 entrypoints now carry the published plan through `SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF` / `--engram-row-prefetch-ref` alongside the required paper `ENGRAM_STATE` ref.
 - W5 paper `ENGRAM_STATE` publication now emits a v3 manifest that carries tokenizer-projection and hash-config checksums. UAPI still accepts legacy v2 state manifests for compatibility, but v3 runtime execution requires any provided tokenizer projection to match the manifest checksum before canonical ngram lookups are built.
 - Paper Engram row-prefetch plans now carry tokenizer-projection and hash-config checksums, and UAPI rejects a supplied row-prefetch plan when its contract does not match the active paper `ENGRAM_STATE` manifest.
-- `sim-cli lingqu-memory build-engram-hash-config` now binds the hash config to the tokenizer projection artifact checksum (`aggregate_checksum`) instead of the source tokenizer-file checksum.
+- `sim-cli lingqu-memory build-engram-hash-config` now binds the hash config to the tokenizer projection artifact checksum (`aggregate_checksum`) instead of the source tokenizer-file checksum, emits the canonical FNV-1a constants, and Memory Service/UAPI reject unsupported hash constants.
 - `sim-cli lingqu-memory import-paper-engram-module` can import a complete paper Engram manifest bundle in dependency order (`projection`, `hash_config`, table shards, gates, optional recipe/eval, module), persist all registries, import table/gate block payload bytes, and resolve runtime artifacts as the import validation gate. It accepts either explicit manifest paths or a training-export `--bundle-dir` with `tokenizer_projection.json`, `hash_config.json`, `engram_module.json`, optional `training_recipe.json` / `eval_report.json`, `table_shards/*.json`, `gates/*.json`, and `block_payloads/<block id>` files for every table/gate `LingquBlockPayloadRef`. `validate-paper-engram-module` exposes the same runtime validation directly, reads table/gate payload refs to prove backing bytes are present and checksum-valid, and can additionally require the trained/imported quality gate with `--require-quality`.
+- `validate-paper-engram-module --require-quality` now fails fast for `quality_claim=None`, so fixture/random/zero bundles remain valid for runtime wiring but cannot satisfy a quality-required acceptance gate.
 - `sim-cli lingqu-memory validate-paper-engram-backend-parity` can run a published paper `ENGRAM_STATE` Object Service snapshot through both the CPU reference and simpler-host paper context path for the same layer, hidden input, and token history, then fail if the simpler-host output diverges beyond the configured ULP tolerance.
 - W5-derived paper Engram eval evidence now treats CPU/backend output match as a real same-boundary comparison: a `simpler-host-paper-object-ref` record must pair with a `cpu-reference-paper-object-ref` record for the same step, node, layer range, and total layer count, and their output checksums must match. Seeing only the simpler-host backend no longer proves parity. Runtime locality/latency evidence is counted from the primary simpler-host paper runtime record, so CPU-reference parity records do not inflate row-prefetch or backend-latency counters.
 - `sim-cli lingqu-memory seed-paper-engram-fixture` now exposes explicit `--table-init` and `--gate-init` modes (`zero`, `fixture`, `random-normal`) so Phase 4 correctness/performance runs can separate no-op baseline, deterministic fixture mutation, and deterministic random-normal payloads.
@@ -495,6 +524,14 @@ parity record.
    - base + decode policy
    - base + paper Engram
    - base + paper Engram + decode policy
+
+Current status: blocked by missing trained/fine-tuned paper Engram table.
+The simulator can validate the import contract, runtime wiring, backend parity,
+and quality gate behavior with fixture/zero/random-normal tables, but those
+tables do not prove model quality. Phase 6 starts only after an external
+training job provides a manifest bundle with non-fixture table/gate provenance,
+training recipe, eval report, and the required four-way held-out validation
+evidence.
 
 ### Phase 7: Performance Path
 
