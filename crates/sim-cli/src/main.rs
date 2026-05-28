@@ -20,10 +20,11 @@ use sim_memory::{
     PaperEngramHashConfigManifest, PaperEngramModuleManifest, PaperEngramQualityClaim,
     PaperEngramRuntimeArtifacts, PaperEngramTableRowBlockRequest,
     PaperEngramTableRowPrefetchRequest, PaperEngramTableShardManifest,
-    PaperEngramTokenizerProjectionManifest, PaperEngramTrainingMode,
-    PaperEngramTrainingRecipeManifest, PrefetchPlanRequest, PrefixCacheArtifact,
-    PrefixCacheLookupRequest, QueryResult, VectorIndexKind, VectorIndexObject,
+    PaperEngramTokenizerProjectionManifest, PaperEngramTrainingRecipeManifest, PrefetchPlanRequest,
+    PrefixCacheArtifact, PrefixCacheLookupRequest, QueryResult, VectorIndexKind, VectorIndexObject,
 };
+#[cfg(test)]
+use sim_memory::PaperEngramTrainingMode;
 use sim_models::qwen3_dense_reference::{
     build_tokenizer_projection_from_tokenizer_path, token_piece_bytes_from_tokenizer_path,
     token_piece_decode_bytes, tokenize_prompt_from_tokenizer_path, tokenizer_projection_checksum,
@@ -4773,6 +4774,14 @@ fn run_lingqu_memory_validate_paper_engram_module_cli(args: &[String]) -> anyhow
     let payload_stats = validate_paper_engram_runtime_payloads(&mut durable_store, &runtime)
         .context("validate paper engram runtime payloads")?;
     if require_quality {
+        if matches!(
+            runtime.module.quality_claim,
+            sim_memory::PaperEngramQualityClaim::None
+        ) {
+            anyhow::bail!(
+                "validate-paper-engram-module --require-quality requires a trained/imported Paper Engram quality claim; module quality_claim=None"
+            );
+        }
         memory_service
             .validate_paper_engram_module_quality(&module_id)
             .context("validate paper engram module quality")?;
@@ -20492,6 +20501,19 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             "export-engram".to_string(),
         ])
         .expect("validate imported exported paper Engram bundle");
+        let quality_err = run_lingqu_memory_validate_paper_engram_module_cli(&[
+            "--store".to_string(),
+            import_store.display().to_string(),
+            "--model-id".to_string(),
+            "qwen3-export-test".to_string(),
+            "--engram-id".to_string(),
+            "export-engram".to_string(),
+            "--require-quality".to_string(),
+        ])
+        .expect_err("fixture bundle must not satisfy require-quality");
+        assert!(quality_err.to_string().contains(
+            "validate-paper-engram-module --require-quality requires a trained/imported Paper Engram quality claim"
+        ));
 
         let overwrite_import_store = root.join("overwrite-import-store.json");
         let stale_shard = bundle_dir.join("table_shards").join("stale.json");
