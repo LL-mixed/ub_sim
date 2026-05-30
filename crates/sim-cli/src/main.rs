@@ -107,6 +107,8 @@ use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
+use std::io::{BufRead, BufReader, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -2303,6 +2305,9 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "record-boundary-observations-from-w5-summary" => {
             run_lingqu_memory_record_boundary_observations_from_w5_summary_cli(&args)
         }
+        "prefix-cache-service" => run_lingqu_memory_prefix_cache_service_cli(&args),
+        "rpc-client" => run_lingqu_memory_rpc_client_cli(&args),
+        "rpc-server" => run_lingqu_memory_rpc_server_cli(&args),
         "promote-terminal-shortpath-artifacts-from-w5-summary" => {
             run_lingqu_memory_promote_terminal_shortpath_artifacts_from_w5_summary_cli(&args)
         }
@@ -2387,6 +2392,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
             register-paper-engram-module, import-paper-engram-module, export-paper-engram-module, validate-paper-engram-module, validate-paper-engram-quality, validate-paper-engram-backend-parity, validate-paper-engram-fused-simt-artifact, seed-paper-engram-fixture, update-record-state, register-execution-artifact, \
             record-artifact-access, register-terminal-logits-artifact-from-w5-summary, \
             promote-terminal-shortpath-artifacts-from-w5-summary, boundary-lookup, \
+            rpc-server, rpc-client, prefix-cache-service, \
             boundary-lookup-from-observation, boundary-request-from-w5-summary, \
             record-boundary-observations-from-w5-summary, plan-prefetch, register-prefix-cache, \
             lookup-prefix-cache, materialize-hot-state, materialize-engram-state, \
@@ -7805,6 +7811,434 @@ fn run_lingqu_memory_lookup_prefix_cache_cli(args: &[String]) -> anyhow::Result<
         response.reuse_plan.proof_checksum
     );
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LingquMemoryRpcServiceMode {
+    MemoryService,
+    PrefixCacheService,
+}
+
+impl LingquMemoryRpcServiceMode {
+    fn service_name(self) -> &'static str {
+        match self {
+            LingquMemoryRpcServiceMode::MemoryService => "memory-service",
+            LingquMemoryRpcServiceMode::PrefixCacheService => "prefix-cache-service",
+        }
+    }
+
+    fn allows_boundary_lookup(self) -> bool {
+        matches!(self, LingquMemoryRpcServiceMode::MemoryService)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "kebab-case")]
+enum LingquMemoryRpcRequest {
+    Health {
+        request_id: String,
+    },
+    Shutdown {
+        request_id: String,
+    },
+    BoundaryLookup {
+        request_id: String,
+        request: BoundaryLookupRequest,
+        #[serde(default)]
+        now_us: u64,
+        #[serde(default = "default_rpc_min_terminal_margin_milli")]
+        min_terminal_margin_milli: u32,
+        #[serde(default = "default_rpc_approximate_requires_verify")]
+        approximate_requires_verify: bool,
+    },
+    PrefixCacheRegister {
+        request_id: String,
+        artifact: PrefixCacheArtifact,
+    },
+    PrefixCacheLookup {
+        request_id: String,
+        request: PrefixCacheLookupRequest,
+        #[serde(default)]
+        now_us: u64,
+    },
+}
+
+impl LingquMemoryRpcRequest {
+    fn request_id(&self) -> &str {
+        match self {
+            LingquMemoryRpcRequest::Health { request_id }
+            | LingquMemoryRpcRequest::Shutdown { request_id }
+            | LingquMemoryRpcRequest::BoundaryLookup { request_id, .. }
+            | LingquMemoryRpcRequest::PrefixCacheRegister { request_id, .. }
+            | LingquMemoryRpcRequest::PrefixCacheLookup { request_id, .. } => request_id,
+        }
+    }
+
+    fn is_shutdown(&self) -> bool {
+        matches!(self, LingquMemoryRpcRequest::Shutdown { .. })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LingquMemoryRpcResponse {
+    request_id: String,
+    service: String,
+    status: String,
+    error: Option<String>,
+    boundary_lookup: Option<sim_memory::BoundaryLookupResponse>,
+    prefix_cache_lookup: Option<sim_memory::PrefixCacheLookupResponse>,
+    prefix_cache_artifact_id: Option<String>,
+    shutdown: bool,
+}
+
+impl LingquMemoryRpcResponse {
+    fn ok(request_id: impl Into<String>, service: &str) -> Self {
+        Self {
+            request_id: request_id.into(),
+            service: service.to_string(),
+            status: "ok".to_string(),
+            error: None,
+            boundary_lookup: None,
+            prefix_cache_lookup: None,
+            prefix_cache_artifact_id: None,
+            shutdown: false,
+        }
+    }
+
+    fn err(request_id: impl Into<String>, service: &str, error: anyhow::Error) -> Self {
+        Self {
+            request_id: request_id.into(),
+            service: service.to_string(),
+            status: "error".to_string(),
+            error: Some(format!("{error:#}")),
+            boundary_lookup: None,
+            prefix_cache_lookup: None,
+            prefix_cache_artifact_id: None,
+            shutdown: false,
+        }
+    }
+}
+
+fn default_rpc_min_terminal_margin_milli() -> u32 {
+    500
+}
+
+fn default_rpc_approximate_requires_verify() -> bool {
+    true
+}
+
+struct LingquMemoryRpcServer {
+    service_mode: LingquMemoryRpcServiceMode,
+    store_path: PathBuf,
+    durable_store: LingquMemoryDurableStore,
+    memory_service: LingquMemoryService,
+    object_service: Option<LingquObjectServiceStub>,
+}
+
+impl LingquMemoryRpcServer {
+    fn load(
+        service_mode: LingquMemoryRpcServiceMode,
+        store_path: PathBuf,
+        object_store_path: Option<PathBuf>,
+    ) -> anyhow::Result<Self> {
+        let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+        let mut memory_service = LingquMemoryService::new();
+        rebuild_lingqu_memory_execution_registry_artifacts(&mut memory_service, &mut durable_store)
+            .context("rebuild execution artifact registry for RPC server")?;
+        match memory_service.rebuild_boundary_observations_from_dfs(&mut durable_store) {
+            Ok(_) | Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => {}
+            Err(err) => {
+                return Err(err).context("rebuild boundary observation registry for RPC server");
+            }
+        }
+        rebuild_lingqu_memory_shortpath_supports(&mut memory_service, &mut durable_store)
+            .context("rebuild shortpath support registry for RPC server")?;
+        rebuild_lingqu_memory_prefix_cache_registry_artifacts(
+            &mut memory_service,
+            &mut durable_store,
+        )
+        .context("rebuild prefix cache registry for RPC server")?;
+        rebuild_lingqu_memory_prefix_cache_reuse_plans(&mut memory_service, &mut durable_store)
+            .context("rebuild prefix cache reuse audit for RPC server")?;
+
+        let object_service = if let Some(object_store_path) = object_store_path {
+            load_lingqu_object_service_snapshot(&object_store_path, &mut durable_store)?
+                .map(LingquObjectServiceStub::import_snapshot)
+                .transpose()
+                .with_context(|| format!("import object store {}", object_store_path.display()))?
+        } else {
+            match durable_store.load_object_service_checkpoint() {
+                Ok(snapshot) => Some(
+                    LingquObjectServiceStub::import_snapshot(snapshot)
+                        .context("import object service checkpoint from durable store")?,
+                ),
+                Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => None,
+                Err(err) => return Err(err).context("load object service checkpoint"),
+            }
+        };
+
+        Ok(Self {
+            service_mode,
+            store_path,
+            durable_store,
+            memory_service,
+            object_service,
+        })
+    }
+
+    fn service_name(&self) -> &'static str {
+        self.service_mode.service_name()
+    }
+
+    fn handle_request(&mut self, request: LingquMemoryRpcRequest) -> LingquMemoryRpcResponse {
+        let request_id = request.request_id().to_string();
+        match self.try_handle_request(request) {
+            Ok(response) => response,
+            Err(err) => LingquMemoryRpcResponse::err(request_id, self.service_name(), err),
+        }
+    }
+
+    fn try_handle_request(
+        &mut self,
+        request: LingquMemoryRpcRequest,
+    ) -> anyhow::Result<LingquMemoryRpcResponse> {
+        let service_name = self.service_name();
+        match request {
+            LingquMemoryRpcRequest::Health { request_id } => {
+                Ok(LingquMemoryRpcResponse::ok(request_id, service_name))
+            }
+            LingquMemoryRpcRequest::Shutdown { request_id } => {
+                let mut response = LingquMemoryRpcResponse::ok(request_id, service_name);
+                response.shutdown = true;
+                Ok(response)
+            }
+            LingquMemoryRpcRequest::BoundaryLookup {
+                request_id,
+                request,
+                now_us,
+                min_terminal_margin_milli,
+                approximate_requires_verify,
+            } => {
+                if !self.service_mode.allows_boundary_lookup() {
+                    anyhow::bail!("prefix-cache-service does not accept boundary-lookup RPC");
+                }
+                let effective_now_us = if now_us == 0 {
+                    request.created_at_us
+                } else {
+                    now_us
+                };
+                let (mut response, planner_decision) =
+                    run_w5_memory_boundary_lookup_request_in_memory(
+                        &mut self.memory_service,
+                        request,
+                        self.object_service.as_ref(),
+                        min_terminal_margin_milli,
+                        approximate_requires_verify,
+                    )
+                    .context("run RPC boundary lookup")?;
+                response.support.created_at_us = effective_now_us;
+                self.memory_service
+                    .persist_shortpath_supports_to_dfs(&mut self.durable_store)
+                    .context("persist RPC shortpath support audit")?;
+                self.durable_store
+                    .persist_shortpath_decision_manifest(vec![planner_decision])
+                    .context("persist RPC shortpath decision audit")?;
+                save_lingqu_memory_durable_store(&self.store_path, &self.durable_store)?;
+                let mut rpc_response = LingquMemoryRpcResponse::ok(request_id, service_name);
+                rpc_response.boundary_lookup = Some(response);
+                Ok(rpc_response)
+            }
+            LingquMemoryRpcRequest::PrefixCacheRegister {
+                request_id,
+                artifact,
+            } => {
+                validate_lingqu_prefix_cache_payloads(
+                    &mut self.durable_store,
+                    &artifact,
+                    "rpc-register",
+                )
+                .context("validate RPC prefix cache artifact payloads")?;
+                self.memory_service
+                    .register_prefix_cache_artifact(artifact.clone())
+                    .context("register RPC prefix cache artifact")?;
+                self.memory_service
+                    .persist_prefix_cache_artifacts_to_dfs(&mut self.durable_store)
+                    .context("persist RPC prefix cache DFS manifest")?;
+                save_lingqu_memory_durable_store(&self.store_path, &self.durable_store)?;
+                let mut response = LingquMemoryRpcResponse::ok(request_id, service_name);
+                response.prefix_cache_artifact_id = Some(artifact.artifact_id);
+                Ok(response)
+            }
+            LingquMemoryRpcRequest::PrefixCacheLookup {
+                request_id,
+                request,
+                now_us,
+            } => {
+                let effective_now_us = if now_us == 0 {
+                    request.created_at_us
+                } else {
+                    now_us
+                };
+                let lookup_response = self
+                    .memory_service
+                    .lookup_prefix_cache(request, effective_now_us)
+                    .context("run RPC prefix cache lookup")?;
+                self.memory_service
+                    .persist_prefix_cache_reuse_plans_to_dfs(&mut self.durable_store)
+                    .context("persist RPC prefix cache reuse audit")?;
+                save_lingqu_memory_durable_store(&self.store_path, &self.durable_store)?;
+                let mut response = LingquMemoryRpcResponse::ok(request_id, service_name);
+                response.prefix_cache_lookup = Some(lookup_response);
+                Ok(response)
+            }
+        }
+    }
+}
+
+fn run_lingqu_memory_rpc_server_cli(args: &[String]) -> anyhow::Result<()> {
+    run_lingqu_memory_rpc_server_cli_with_mode(args, LingquMemoryRpcServiceMode::MemoryService)
+}
+
+fn run_lingqu_memory_prefix_cache_service_cli(args: &[String]) -> anyhow::Result<()> {
+    run_lingqu_memory_rpc_server_cli_with_mode(args, LingquMemoryRpcServiceMode::PrefixCacheService)
+}
+
+fn run_lingqu_memory_rpc_server_cli_with_mode(
+    args: &[String],
+    service_mode: LingquMemoryRpcServiceMode,
+) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let addr = optional_cli_arg(args, "--addr")?.unwrap_or_else(|| "127.0.0.1:0".to_string());
+    let object_store_path = optional_cli_path(args, "--object-store")?;
+    let ready_file = optional_cli_path(args, "--ready-file")?;
+    let max_requests = optional_cli_u64(args, "--max-requests")?.map(|value| value as usize);
+
+    let listener = TcpListener::bind(&addr).with_context(|| format!("bind RPC server {addr}"))?;
+    let bound_addr = listener
+        .local_addr()
+        .context("read RPC server bound address")?;
+    if let Some(ready_file) = ready_file {
+        if let Some(parent) = ready_file.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create RPC ready dir {}", parent.display()))?;
+        }
+        fs::write(&ready_file, bound_addr.to_string())
+            .with_context(|| format!("write RPC ready file {}", ready_file.display()))?;
+    }
+
+    let server = LingquMemoryRpcServer::load(service_mode, store_path.clone(), object_store_path)?;
+    println!("lingqu_memory_service");
+    println!("  mode: {}", service_mode.service_name());
+    println!("  store_path: {}", store_path.display());
+    println!("  addr: {bound_addr}");
+    println!(
+        "  max_requests: {}",
+        max_requests
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unbounded".to_string())
+    );
+    let served = lingqu_memory_rpc_serve(listener, server, max_requests)?;
+    println!("  served_requests: {served}");
+    Ok(())
+}
+
+fn run_lingqu_memory_rpc_client_cli(args: &[String]) -> anyhow::Result<()> {
+    let addr = required_cli_arg(args, "--addr")?;
+    let request_path = PathBuf::from(required_cli_arg(args, "--request")?);
+    let response_path = PathBuf::from(required_cli_arg(args, "--response")?);
+    let request_bytes = fs::read(&request_path)
+        .with_context(|| format!("read RPC request {}", request_path.display()))?;
+    let request = serde_json::from_slice::<LingquMemoryRpcRequest>(&request_bytes)
+        .with_context(|| format!("decode RPC request {}", request_path.display()))?;
+    let response = lingqu_memory_rpc_client_send(&addr, &request)
+        .with_context(|| format!("send RPC request to {addr}"))?;
+    if let Some(parent) = response_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create RPC response dir {}", parent.display()))?;
+    }
+    fs::write(
+        &response_path,
+        serde_json::to_vec_pretty(&response).context("encode RPC response")?,
+    )
+    .with_context(|| format!("write RPC response {}", response_path.display()))?;
+    if response.status != "ok" {
+        anyhow::bail!(
+            "RPC request {} failed: {}",
+            response.request_id,
+            response
+                .error
+                .unwrap_or_else(|| "unknown error".to_string())
+        );
+    }
+    println!("lingqu_memory_service");
+    println!("  mode: rpc-client");
+    println!("  addr: {addr}");
+    println!("  request_path: {}", request_path.display());
+    println!("  response_path: {}", response_path.display());
+    println!("  request: {}", response.request_id);
+    println!("  status: {}", response.status);
+    Ok(())
+}
+
+fn lingqu_memory_rpc_serve(
+    listener: TcpListener,
+    mut server: LingquMemoryRpcServer,
+    max_requests: Option<usize>,
+) -> anyhow::Result<usize> {
+    let mut served = 0usize;
+    for stream in listener.incoming() {
+        let stream = stream.context("accept RPC connection")?;
+        let shutdown = lingqu_memory_rpc_handle_stream(stream, &mut server)
+            .context("handle RPC connection")?;
+        served += 1;
+        if shutdown || max_requests.is_some_and(|limit| served >= limit) {
+            break;
+        }
+    }
+    Ok(served)
+}
+
+fn lingqu_memory_rpc_handle_stream(
+    mut stream: TcpStream,
+    server: &mut LingquMemoryRpcServer,
+) -> anyhow::Result<bool> {
+    let mut reader = BufReader::new(stream.try_clone().context("clone RPC stream")?);
+    let mut line = String::new();
+    let bytes = reader.read_line(&mut line).context("read RPC request")?;
+    if bytes == 0 {
+        anyhow::bail!("empty RPC request");
+    }
+    let request = serde_json::from_str::<LingquMemoryRpcRequest>(&line).context("decode RPC")?;
+    let is_shutdown_request = request.is_shutdown();
+    let response = server.handle_request(request);
+    let response_bytes = serde_json::to_vec(&response).context("encode RPC response")?;
+    stream
+        .write_all(&response_bytes)
+        .context("write RPC response")?;
+    stream.write_all(b"\n").context("write RPC newline")?;
+    stream.flush().context("flush RPC response")?;
+    Ok(is_shutdown_request || response.shutdown)
+}
+
+fn lingqu_memory_rpc_client_send(
+    addr: &str,
+    request: &LingquMemoryRpcRequest,
+) -> anyhow::Result<LingquMemoryRpcResponse> {
+    let mut stream =
+        TcpStream::connect(addr).with_context(|| format!("connect RPC server {addr}"))?;
+    let request_bytes = serde_json::to_vec(request).context("encode RPC request")?;
+    stream
+        .write_all(&request_bytes)
+        .context("write RPC request")?;
+    stream.write_all(b"\n").context("write RPC newline")?;
+    stream.flush().context("flush RPC request")?;
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    let bytes = reader.read_line(&mut line).context("read RPC response")?;
+    if bytes == 0 {
+        anyhow::bail!("empty RPC response");
+    }
+    serde_json::from_str::<LingquMemoryRpcResponse>(&line).context("decode RPC response")
 }
 
 fn run_lingqu_memory_query_cli(args: &[String]) -> anyhow::Result<()> {
@@ -26252,6 +26686,372 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
         assert!(err_text.contains("load prefix cache manifest"));
         assert!(err_text.contains(sim_memory::LINGQU_PREFIX_CACHE_MANIFEST_PATH));
         assert!(!response_path.exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lingqu_prefix_cache_service_registers_and_reuses_via_rpc() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_lingqu_prefix_cache_service_rpc_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let store = root.join("store.json");
+        let mut seed_store = LingquMemoryDurableStore::new();
+        let prefix_payload_ref = seed_store
+            .write_block_payload("block/prefix/rpc/8", vec![0x28; 64])
+            .expect("write prefix cache payload");
+        save_lingqu_memory_durable_store(&store, &seed_store)
+            .expect("save seeded prefix cache payload");
+
+        let key = sim_memory::PrefixCacheKey {
+            model: sim_memory::InferenceModelBinding {
+                model_id: "qwen3-test".to_string(),
+                model_key: "qwen3-test-key".to_string(),
+                tokenizer_hash: 0x1001,
+                profile_hash: 0x2002,
+            },
+            namespace: "tenant/project/session".to_string(),
+            chat_template_hash: 0x3003,
+            prefix_token_hash: 0x4004,
+            prefix_token_count: 8,
+            rope_config_hash: 0x5005,
+            kv_layout_hash: 0x6006,
+            layer_start: 0,
+            layer_end: 28,
+            position_start: 0,
+            position_end: 8,
+            security_label: sim_memory::MemorySecurityLabel::Internal,
+        };
+        let artifact = sim_memory::PrefixCacheArtifact {
+            artifact_id: "prefix-cache/rpc/8".to_string(),
+            key: key.clone(),
+            kv_artifact_ids: Vec::new(),
+            durable_payload_refs: vec![prefix_payload_ref],
+            hot_object_refs: Vec::new(),
+            dtype: sim_core::TensorDType::F32,
+            shape: vec![8, 4],
+            confidence_milli: 950,
+            state: sim_memory::ExecutionArtifactState::Verified,
+            checksum: 0x3333_3333,
+            version: 1,
+            created_at_us: 10,
+            expires_at_us: Some(100),
+            last_used_at_us: 10,
+            use_count: 1,
+        };
+        let request = sim_memory::PrefixCacheLookupRequest {
+            request_id: "prefix-lookup/rpc/0".to_string(),
+            candidate_keys: vec![key],
+            min_confidence_milli: 900,
+            allow_verify: false,
+            created_at_us: 12,
+        };
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind RPC listener");
+        let addr = listener.local_addr().expect("read RPC addr").to_string();
+        let server = super::LingquMemoryRpcServer::load(
+            super::LingquMemoryRpcServiceMode::PrefixCacheService,
+            store.clone(),
+            None,
+        )
+        .expect("load prefix cache RPC server");
+        let handle =
+            std::thread::spawn(move || super::lingqu_memory_rpc_serve(listener, server, None));
+
+        let health_request_path = root.join("rpc_health_request.json");
+        let health_response_path = root.join("rpc_health_response.json");
+        write_json_file(
+            &health_request_path,
+            &super::LingquMemoryRpcRequest::Health {
+                request_id: "rpc/health".to_string(),
+            },
+        );
+        super::run_lingqu_memory_rpc_client_cli(&[
+            "--addr".to_string(),
+            addr.clone(),
+            "--request".to_string(),
+            health_request_path.to_string_lossy().into_owned(),
+            "--response".to_string(),
+            health_response_path.to_string_lossy().into_owned(),
+        ])
+        .expect("run RPC client CLI");
+        let health_response = serde_json::from_slice::<super::LingquMemoryRpcResponse>(
+            &fs::read(&health_response_path).expect("read health response"),
+        )
+        .expect("decode health response");
+        assert_eq!(health_response.status, "ok");
+        assert_eq!(health_response.service, "prefix-cache-service");
+
+        let register_response = super::lingqu_memory_rpc_client_send(
+            &addr,
+            &super::LingquMemoryRpcRequest::PrefixCacheRegister {
+                request_id: "rpc/register-prefix/0".to_string(),
+                artifact,
+            },
+        )
+        .expect("send prefix register RPC");
+        assert_eq!(register_response.status, "ok");
+        assert_eq!(register_response.service, "prefix-cache-service");
+        assert_eq!(
+            register_response.prefix_cache_artifact_id.as_deref(),
+            Some("prefix-cache/rpc/8")
+        );
+
+        let lookup_response = super::lingqu_memory_rpc_client_send(
+            &addr,
+            &super::LingquMemoryRpcRequest::PrefixCacheLookup {
+                request_id: "rpc/lookup-prefix/0".to_string(),
+                request,
+                now_us: 20,
+            },
+        )
+        .expect("send prefix lookup RPC");
+        assert_eq!(lookup_response.status, "ok");
+        let prefix_response = lookup_response
+            .prefix_cache_lookup
+            .expect("prefix cache lookup response");
+        assert_eq!(
+            prefix_response.reuse_plan.action,
+            sim_memory::PrefixCacheReuseAction::Reuse
+        );
+        assert_eq!(
+            prefix_response.reuse_plan.artifact_id.as_deref(),
+            Some("prefix-cache/rpc/8")
+        );
+        assert_eq!(prefix_response.reuse_plan.matched_prefix_token_count, 8);
+
+        let shutdown_response = super::lingqu_memory_rpc_client_send(
+            &addr,
+            &super::LingquMemoryRpcRequest::Shutdown {
+                request_id: "rpc/shutdown".to_string(),
+            },
+        )
+        .expect("send shutdown RPC");
+        assert_eq!(shutdown_response.status, "ok");
+        assert!(shutdown_response.shutdown);
+        assert_eq!(
+            handle.join().expect("join RPC server").expect("serve RPC"),
+            4
+        );
+
+        let mut durable_store =
+            load_lingqu_memory_durable_store(&store).expect("reload durable store");
+        let registry_artifacts = durable_store
+            .load_prefix_cache_manifest()
+            .expect("load prefix cache manifest after RPC");
+        assert_eq!(registry_artifacts.len(), 1);
+        assert_eq!(registry_artifacts[0].artifact_id, "prefix-cache/rpc/8");
+        let reuse_plans = durable_store
+            .load_prefix_cache_reuse_plan_manifest()
+            .expect("load prefix cache reuse audit after RPC");
+        assert_eq!(reuse_plans.len(), 1);
+        assert_eq!(
+            reuse_plans[0].plan_id,
+            "prefix-cache-reuse/prefix-lookup/rpc/0"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lingqu_memory_rpc_server_cli_serves_health_request() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_lingqu_memory_rpc_server_cli_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let store = root.join("store.json");
+        let ready_file = root.join("rpc.ready");
+        save_lingqu_memory_durable_store(&store, &LingquMemoryDurableStore::new())
+            .expect("save empty durable store");
+
+        let store_arg = store.to_string_lossy().into_owned();
+        let ready_arg = ready_file.to_string_lossy().into_owned();
+        let handle = std::thread::spawn(move || {
+            super::run_lingqu_memory_rpc_server_cli(&[
+                "--store".to_string(),
+                store_arg,
+                "--addr".to_string(),
+                "127.0.0.1:0".to_string(),
+                "--ready-file".to_string(),
+                ready_arg,
+                "--max-requests".to_string(),
+                "1".to_string(),
+            ])
+        });
+
+        for _ in 0..100 {
+            if ready_file.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(ready_file.exists());
+        let addr = fs::read_to_string(&ready_file).expect("read RPC ready file");
+        let response = super::lingqu_memory_rpc_client_send(
+            addr.trim(),
+            &super::LingquMemoryRpcRequest::Health {
+                request_id: "rpc/server-cli-health".to_string(),
+            },
+        )
+        .expect("send health request to RPC server CLI");
+        assert_eq!(response.status, "ok");
+        assert_eq!(response.service, "memory-service");
+        handle
+            .join()
+            .expect("join RPC server CLI")
+            .expect("run RPC server CLI");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lingqu_memory_rpc_approximate_miss_returns_continue_decision() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_lingqu_memory_rpc_approx_miss_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let store = root.join("store.json");
+        let query_bytes: Vec<u8> = [1.0f32, 0.0, 0.0]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let candidate_bytes: Vec<u8> = [0.0f32, 1.0, 0.0]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let object_service = make_test_object_service(&[
+            ("hidden/query".to_string(), 1, query_bytes.clone()),
+            ("hidden/candidate".to_string(), 1, candidate_bytes),
+        ]);
+        let mut memory_service = sim_memory::LingquMemoryService::new();
+        let observation = make_test_boundary_observation(
+            "obs/rpc-miss",
+            "hidden/candidate",
+            query_bytes.len() as u64,
+            vec![3],
+        );
+        memory_service
+            .register_boundary_observation(observation)
+            .expect("register boundary observation");
+        let artifact = make_test_execution_artifact(
+            "artifact/rpc-miss",
+            sim_memory::ExecutionArtifactKind::HiddenState,
+            990,
+            None,
+            vec![3],
+        );
+        memory_service
+            .register_execution_artifact(artifact)
+            .expect("register execution artifact");
+        let mut durable_store = LingquMemoryDurableStore::new();
+        memory_service
+            .persist_boundary_observations_to_dfs(&mut durable_store)
+            .expect("persist boundary observations");
+        memory_service
+            .persist_execution_artifacts_to_dfs(&mut durable_store)
+            .expect("persist execution artifacts");
+        durable_store
+            .persist_object_service_checkpoint(&object_service)
+            .expect("persist object service checkpoint");
+        save_lingqu_memory_durable_store(&store, &durable_store).expect("save durable store");
+
+        let request = sim_memory::BoundaryLookupRequest {
+            request_id: "req/rpc-miss".to_string(),
+            model: sim_memory::InferenceModelBinding {
+                model_id: "model/test".to_string(),
+                model_key: "qwen3-test".to_string(),
+                tokenizer_hash: 0x1111,
+                profile_hash: 0x2222,
+            },
+            boundary: sim_memory::RangeBoundary {
+                phase: sim_memory::RangeBoundaryPhase::RangeExit,
+                step_index: 0,
+                node_index: 1,
+                layer_start: 0,
+                layer_end: 4,
+                next_node_index: Some(2),
+                position: 4,
+            },
+            hidden_state: sim_memory::HotTensorObjectRef {
+                object_key: "hidden/query".to_string(),
+                version: 1,
+                backend: sim_memory::HotObjectBackend::ObmmShmem,
+                storage_ref: "hidden/query".to_string(),
+                segment: None,
+                offset: 0,
+                bytes: 12,
+                checksum: 0x1234,
+                dtype: sim_core::TensorDType::F32,
+                shape: vec![3],
+            },
+            engram_state_id: None,
+            min_confidence_milli: 900,
+            allowed_actions: vec![sim_memory::ShortpathAction::JumpToLayer],
+            created_at_us: 1,
+            match_mode: "approximate".to_string(),
+            min_match_score_milli: 850,
+        };
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind RPC listener");
+        let addr = listener.local_addr().expect("read RPC addr").to_string();
+        let server = super::LingquMemoryRpcServer::load(
+            super::LingquMemoryRpcServiceMode::MemoryService,
+            store.clone(),
+            None,
+        )
+        .expect("load memory RPC server");
+        let handle =
+            std::thread::spawn(move || super::lingqu_memory_rpc_serve(listener, server, None));
+
+        let response = super::lingqu_memory_rpc_client_send(
+            &addr,
+            &super::LingquMemoryRpcRequest::BoundaryLookup {
+                request_id: "rpc/boundary-miss/0".to_string(),
+                request,
+                now_us: 30,
+                min_terminal_margin_milli: 500,
+                approximate_requires_verify: true,
+            },
+        )
+        .expect("send boundary lookup RPC");
+        assert_eq!(response.status, "ok");
+        let boundary_response = response.boundary_lookup.expect("boundary lookup response");
+        assert_eq!(
+            boundary_response.support.supported_action,
+            sim_memory::ShortpathAction::Continue
+        );
+        assert_eq!(
+            boundary_response.support.reason,
+            "approximate_hidden_match_below_threshold"
+        );
+        assert!(boundary_response.support.artifact_id.is_none());
+
+        let shutdown_response = super::lingqu_memory_rpc_client_send(
+            &addr,
+            &super::LingquMemoryRpcRequest::Shutdown {
+                request_id: "rpc/shutdown".to_string(),
+            },
+        )
+        .expect("send shutdown RPC");
+        assert_eq!(shutdown_response.status, "ok");
+        assert_eq!(
+            handle.join().expect("join RPC server").expect("serve RPC"),
+            2
+        );
+
+        let mut durable_store =
+            load_lingqu_memory_durable_store(&store).expect("reload durable store");
+        let decisions = durable_store
+            .load_shortpath_decision_manifest()
+            .expect("load shortpath decision audit");
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].request_id, "req/rpc-miss");
+        assert_eq!(decisions[0].action, sim_memory::ShortpathAction::Continue);
+        assert!(decisions[0].artifact_id.is_none());
         let _ = fs::remove_dir_all(&root);
     }
 
