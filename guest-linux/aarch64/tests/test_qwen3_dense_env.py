@@ -488,9 +488,11 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("shortpath_catalog_entries=%", guest_source)
         self.assertIn("runtime_service_catalog", guest_source)
         self.assertIn("boundary_registry", guest_source)
-        self.assertIn("qwen3_memory_shortpath_downstream_kv_support_complete", guest_source)
-        self.assertIn("skipped_downstream_kv_state_unavailable", guest_source)
-        self.assertIn("shortpath_execution_guard", guest_source)
+        self.assertNotIn("qwen3_memory_shortpath_downstream_kv_support_complete", guest_source)
+        self.assertNotIn("skipped_downstream_kv_state_unavailable", guest_source)
+        self.assertNotIn("shortpath_execution_guard", guest_source)
+        self.assertIn("qwen3_memory_shortpath_validate_live_boundary_match", guest_source)
+        self.assertIn("qwen3_w5_memory_shortpath_approximate_match", guest_source)
         self.assertIn("qwen3_round_decode_position", guest_source)
         self.assertIn(
             "qwen3_prompt_base_token_count + guest_decode_step",

@@ -176,6 +176,13 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                     step = parse_int(fields.get("step"), None)
                     if step is not None:
                         layer_start, layer_end = parse_layers(fields.get("layers"))
+                        hidden_bytes = parse_int(fields.get("bytes"), 0)
+                        if hidden_bytes > 0 and hidden_bytes % 4 == 0:
+                            hidden_dtype = "F32"
+                            hidden_shape = str(hidden_bytes // 4)
+                        else:
+                            hidden_dtype = "Opaque"
+                            hidden_shape = str(hidden_bytes)
                         boundary_observations.append(
                             {
                                 "_log_node": node_id,
@@ -191,7 +198,9 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                                 "hidden_key_hash": fields.get("key_hash", "0x0"),
                                 "hidden_version": parse_int(fields.get("version"), 0),
                                 "hidden_checksum": fields.get("checksum", "0x0"),
-                                "hidden_bytes": parse_int(fields.get("bytes"), 0),
+                                "hidden_bytes": hidden_bytes,
+                                "hidden_dtype": hidden_dtype,
+                                "hidden_shape": hidden_shape,
                                 "producer_publish_ms": parse_int(
                                     fields.get("producer_publish_ms"), 0
                                 ),
@@ -1314,8 +1323,8 @@ def emit_boundary_observation_summary(
             f"hidden_version={record['hidden_version']} "
             f"hidden_bytes={record['hidden_bytes']} "
             f"hidden_checksum={record['hidden_checksum']} "
-            "hidden_dtype=opaque "
-            f"hidden_shape={record['hidden_bytes']} "
+            f"hidden_dtype={record['hidden_dtype']} "
+            f"hidden_shape={record['hidden_shape']} "
             f"producer_publish_ms={record['producer_publish_ms']} "
             f"producer_publish_mono_ms={record['producer_publish_mono_ms']} "
             f"backing={record['backing']} "

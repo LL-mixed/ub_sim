@@ -9240,8 +9240,21 @@ impl LingquMemoryService {
         let query_payload = match payload_resolver.resolve_payload(&req.hidden_state) {
             Some(payload) => payload,
             None => {
+                let support_id = format!("shortpath-support/approximate-miss/{}", req.request_id);
+                let proof_checksum = shortpath_support_checksum(
+                    &support_id,
+                    &req.request_id,
+                    ShortpathAction::Continue,
+                    None,
+                    Some(req.boundary.position),
+                    0,
+                    0,
+                    0,
+                    0,
+                    now_us,
+                );
                 return Ok(Some(ShortpathSupportRecord {
-                    support_id: format!("shortpath-support/approximate-miss/{}", req.request_id),
+                    support_id,
                     request_id: req.request_id.clone(),
                     supported_action: ShortpathAction::Continue,
                     artifact_id: None,
@@ -9250,7 +9263,7 @@ impl LingquMemoryService {
                     target_layer_end: None,
                     confidence_milli: 0,
                     verify_required: false,
-                    proof_checksum: 0,
+                    proof_checksum,
                     reason: "approximate_hidden_match_payload_unavailable".to_string(),
                     created_at_us: now_us,
                     version: 1,
@@ -9409,8 +9422,21 @@ impl LingquMemoryService {
             } else {
                 "approximate_hidden_match_no_candidate".to_string()
             };
+            let support_id = format!("shortpath-support/approximate-miss/{}", req.request_id);
+            let proof_checksum = shortpath_support_checksum(
+                &support_id,
+                &req.request_id,
+                ShortpathAction::Continue,
+                None,
+                Some(req.boundary.position),
+                0,
+                0,
+                0,
+                0,
+                now_us,
+            );
             Ok(Some(ShortpathSupportRecord {
-                support_id: format!("shortpath-support/approximate-miss/{}", req.request_id),
+                support_id,
                 request_id: req.request_id.clone(),
                 supported_action: ShortpathAction::Continue,
                 artifact_id: None,
@@ -9419,7 +9445,7 @@ impl LingquMemoryService {
                 target_layer_end: None,
                 confidence_milli: 0,
                 verify_required: false,
-                proof_checksum: 0,
+                proof_checksum,
                 reason,
                 created_at_us: now_us,
                 version: 1,

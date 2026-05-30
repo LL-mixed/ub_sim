@@ -1937,6 +1937,7 @@ struct w4_qwen3_shortpath_stream_entry {
     char match_mode[32];
     uint64_t match_score_milli;
     bool verify_required;
+    char boundary_hidden_ref[160];
 };
 
 struct w4_qwen3_shortpath_kv_stream_entry {
@@ -5735,7 +5736,7 @@ static int parse_qwen3_w5_shortpath_stream_entry(
     uint64_t *count)
 {
     char entry_copy[W4_QWEN3_W5_SHORTPATH_STREAM_LINE_BYTES];
-    char *fields[12];
+    char *fields[13];
     char *save_field = NULL;
     char *field = NULL;
     uint32_t field_count = 0U;
@@ -5761,14 +5762,14 @@ static int parse_qwen3_w5_shortpath_stream_entry(
     snprintf(entry_copy, sizeof(entry_copy), "%s", entry_text);
     memset(&parsed, 0, sizeof(parsed));
     field = strtok_r(entry_copy, ":", &save_field);
-    while (field && field_count < 12U) {
+    while (field && field_count < 13U) {
         fields[field_count++] = field;
         field = strtok_r(NULL, ":", &save_field);
     }
-    if (field_count < 9U || field_count > 12U) {
+    if (field_count < 9U || field_count > 13U) {
         fprintf(stderr,
                 "[w4_guest] fail qwen3 w5 shortpath stream entry invalid"
-                " entry_index=%" PRIu64 " fields=%u expected=9-12\n",
+                " entry_index=%" PRIu64 " fields=%u expected=9-13\n",
                 *count,
                 field_count);
         return -1;
@@ -5828,6 +5829,19 @@ static int parse_qwen3_w5_shortpath_stream_entry(
                                   strcmp(fields[11], "true") == 0);
     } else {
         parsed.verify_required = false;
+    }
+    if (field_count >= 13U) {
+        if (!qwen3_stream_ref_hex_syntax_ok(fields[12])) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 w5 shortpath stream hidden ref invalid"
+                    " entry_index=%" PRIu64 "\n",
+                    *count);
+            return -1;
+        }
+        snprintf(parsed.boundary_hidden_ref,
+                 sizeof(parsed.boundary_hidden_ref),
+                 "%s",
+                 fields[12]);
     }
     parsed.stream_index = *count;
     parsed.valid = true;
@@ -7553,6 +7567,197 @@ static int qwen3_memory_shortpath_validate_stream_boundary_fingerprint(
     return 1;
 }
 
+static uint32_t qwen3_memory_shortpath_cosine_score_milli_f32(
+    const uint8_t *query,
+    const uint8_t *candidate,
+    uint64_t bytes,
+    bool *valid_out)
+{
+    double dot = 0.0;
+    double query_norm_sq = 0.0;
+    double candidate_norm_sq = 0.0;
+
+    if (valid_out) {
+        *valid_out = false;
+    }
+    if (!query || !candidate || bytes == 0 || (bytes % 4U) != 0) {
+        return 0;
+    }
+    for (uint64_t offset = 0; offset < bytes; offset += 4U) {
+        uint32_t q_bits = (uint32_t)query[offset] |
+                          ((uint32_t)query[offset + 1U] << 8U) |
+                          ((uint32_t)query[offset + 2U] << 16U) |
+                          ((uint32_t)query[offset + 3U] << 24U);
+        uint32_t c_bits = (uint32_t)candidate[offset] |
+                          ((uint32_t)candidate[offset + 1U] << 8U) |
+                          ((uint32_t)candidate[offset + 2U] << 16U) |
+                          ((uint32_t)candidate[offset + 3U] << 24U);
+        float q;
+        float c;
+
+        memcpy(&q, &q_bits, sizeof(q));
+        memcpy(&c, &c_bits, sizeof(c));
+        if (!isfinite(q) || !isfinite(c)) {
+            return 0;
+        }
+        dot += (double)q * (double)c;
+        query_norm_sq += (double)q * (double)q;
+        candidate_norm_sq += (double)c * (double)c;
+    }
+    if (query_norm_sq <= 0.0 || candidate_norm_sq <= 0.0) {
+        return 0;
+    }
+    {
+        double cosine = dot / (sqrt(query_norm_sq) * sqrt(candidate_norm_sq));
+        long score;
+
+        if (cosine < -1.0) {
+            cosine = -1.0;
+        } else if (cosine > 1.0) {
+            cosine = 1.0;
+        }
+        score = lround(((cosine + 1.0) / 2.0) * 1000.0);
+        if (score < 0) {
+            score = 0;
+        } else if (score > 1000) {
+            score = 1000;
+        }
+        if (valid_out) {
+            *valid_out = true;
+        }
+        return (uint32_t)score;
+    }
+}
+
+static int qwen3_memory_shortpath_validate_live_boundary_match(
+    const struct w4_qwen3_shortpath_stream_entry *entry,
+    uint32_t layer_start,
+    uint32_t layer_end,
+    uint64_t decode_step,
+    const uint8_t *boundary_hidden_payload,
+    uint64_t boundary_hidden_bytes,
+    uint64_t boundary_hidden_checksum)
+{
+    if (!entry) {
+        return 1;
+    }
+    if (strcmp(entry->match_mode, "approximate") != 0 &&
+        strcmp(entry->match_mode, "exact-then-approximate") != 0) {
+        return qwen3_memory_shortpath_validate_stream_boundary_fingerprint(
+            entry,
+            layer_start,
+            layer_end,
+            decode_step,
+            boundary_hidden_bytes,
+            boundary_hidden_checksum);
+    }
+    if (entry->boundary_hidden_bytes != boundary_hidden_bytes ||
+        !str_nonempty(entry->boundary_hidden_ref)) {
+        printf("[w4_guest] stage qwen3_w5_memory_shortpath_rejected"
+               " step=%" PRIu64 " layers=[%u,%u)"
+               " stream_index=%" PRIu64
+               " reason=approximate_candidate_payload_unavailable"
+               " expected_bytes=%" PRIu64 " actual_bytes=%" PRIu64
+               " status=rejected\n",
+               decode_step,
+               layer_start,
+               layer_end,
+               entry->stream_index,
+               entry->boundary_hidden_bytes,
+               boundary_hidden_bytes);
+        return 1;
+    }
+    if (entry->boundary_hidden_checksum == boundary_hidden_checksum) {
+        printf("[w4_guest] stage qwen3_w5_memory_shortpath_approximate_match"
+               " step=%" PRIu64 " layers=[%u,%u)"
+               " stream_index=%" PRIu64
+               " match_mode=%s match_score_milli=1000"
+               " min_match_score_milli=%" PRIu64
+               " reason=approximate_hidden_checksum_match"
+               " status=hit\n",
+               decode_step,
+               layer_start,
+               layer_end,
+               entry->stream_index,
+               entry->match_mode,
+               entry->match_score_milli);
+        return 0;
+    }
+    {
+        struct lingqu_obmm_object_ref_wire hidden_ref;
+        uint8_t *candidate_payload = NULL;
+        uint64_t candidate_len = 0;
+        uint32_t score = 0;
+        bool valid = false;
+
+        memset(&hidden_ref, 0, sizeof(hidden_ref));
+        if (parse_lingqu_object_ref_hex("SIM_W5_MEMORY_SHORTPATH_STREAM.hidden_ref",
+                                        entry->boundary_hidden_ref,
+                                        W4_QWEN3_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+                                        &hidden_ref) != 0) {
+            return -1;
+        }
+        if (qwen3_read_object_ref_payload(&hidden_ref,
+                                          &candidate_payload,
+                                          &candidate_len) != 0) {
+            return -1;
+        }
+        if (candidate_len != boundary_hidden_bytes) {
+            free(candidate_payload);
+            printf("[w4_guest] stage qwen3_w5_memory_shortpath_rejected"
+                   " step=%" PRIu64 " layers=[%u,%u)"
+                   " stream_index=%" PRIu64
+                   " reason=approximate_candidate_shape_mismatch"
+                   " expected_bytes=%" PRIu64 " actual_bytes=%" PRIu64
+                   " status=rejected\n",
+                   decode_step,
+                   layer_start,
+                   layer_end,
+                   entry->stream_index,
+                   candidate_len,
+                   boundary_hidden_bytes);
+            return 1;
+        }
+        score = qwen3_memory_shortpath_cosine_score_milli_f32(
+            boundary_hidden_payload,
+            candidate_payload,
+            boundary_hidden_bytes,
+            &valid);
+        free(candidate_payload);
+        if (!valid || score < entry->match_score_milli) {
+            printf("[w4_guest] stage qwen3_w5_memory_shortpath_rejected"
+                   " step=%" PRIu64 " layers=[%u,%u)"
+                   " stream_index=%" PRIu64
+                   " match_mode=%s match_score_milli=%u"
+                   " min_match_score_milli=%" PRIu64
+                   " reason=approximate_hidden_match_below_threshold"
+                   " status=rejected\n",
+                   decode_step,
+                   layer_start,
+                   layer_end,
+                   entry->stream_index,
+                   entry->match_mode,
+                   score,
+                   entry->match_score_milli);
+            return 1;
+        }
+        printf("[w4_guest] stage qwen3_w5_memory_shortpath_approximate_match"
+               " step=%" PRIu64 " layers=[%u,%u)"
+               " stream_index=%" PRIu64
+               " match_mode=%s match_score_milli=%u"
+               " min_match_score_milli=%" PRIu64
+               " status=hit\n",
+               decode_step,
+               layer_start,
+               layer_end,
+               entry->stream_index,
+               entry->match_mode,
+               score,
+               entry->match_score_milli);
+        return 0;
+    }
+}
+
 static int qwen3_memory_shortpath_validate_single_boundary_fingerprint(
     const struct w4_qwen3_memory_decision_config *config,
     uint32_t layer_start,
@@ -7596,14 +7801,6 @@ static int qwen3_memory_shortpath_validate_single_boundary_fingerprint(
     return 1;
 }
 
-static bool qwen3_memory_shortpath_downstream_kv_support_complete(
-    const struct w4_qwen3_memory_decision_config *config,
-    uint32_t dispatch_node,
-    uint32_t cluster_node_count,
-    uint32_t producer_layer_end,
-    uint64_t decode_step,
-    uint32_t *missing_node_out);
-
 static int qwen3_w5_memory_service_lookup_boundary(
     const struct w4_qwen3_memory_decision_config *config,
     uint32_t local_node,
@@ -7612,6 +7809,7 @@ static int qwen3_w5_memory_service_lookup_boundary(
     uint32_t layer_end,
     uint64_t decode_step,
     uint64_t position,
+    const uint8_t *boundary_hidden_payload,
     uint64_t boundary_hidden_bytes,
     uint64_t boundary_hidden_checksum,
     struct w4_qwen3_memory_boundary_lookup_result *result_out)
@@ -7626,6 +7824,7 @@ static int qwen3_w5_memory_service_lookup_boundary(
     if (!result_out) {
         return -1;
     }
+    (void)cluster_node_count;
     memset(result_out, 0, sizeof(*result_out));
     if (!config || !config->enabled ||
         strcmp(config->shortpath_action, "jump-to-terminal") != 0 ||
@@ -7660,11 +7859,12 @@ static int qwen3_w5_memory_service_lookup_boundary(
             strcmp(config->boundary_lookup_backend, "runtime_service") == 0) {
             registry_source = "runtime_service_catalog";
         }
-        if (qwen3_memory_shortpath_validate_stream_boundary_fingerprint(
+        if (qwen3_memory_shortpath_validate_live_boundary_match(
                 entry,
                 layer_start,
                 layer_end,
                 decode_step,
+                boundary_hidden_payload,
                 boundary_hidden_bytes,
                 boundary_hidden_checksum) != 0) {
             printf("[w4_guest] stage qwen3_memory_service_boundary_lookup_response"
@@ -7681,45 +7881,6 @@ static int qwen3_w5_memory_service_lookup_boundary(
                    config->shortpath_lookup_mode,
                    config->boundary_lookup_backend);
             return 0;
-        }
-        {
-            uint32_t missing_node = 0U;
-
-            if (config->shortpath_execute &&
-                !qwen3_memory_shortpath_downstream_kv_support_complete(
-                    config,
-                    local_node,
-                    cluster_node_count,
-                    layer_end,
-                    decode_step,
-                    &missing_node)) {
-                printf("[w4_guest] stage qwen3_w5_memory_shortpath_rejected"
-                       " step=%" PRIu64 " layers=[%u,%u)"
-                       " stream_index=%" PRIu64
-                       " missing_node=node%u"
-                       " reason=skipped_downstream_kv_state_unavailable"
-                       " guard=shortpath_execution_guard status=rejected\n",
-                       decode_step,
-                       layer_start,
-                       layer_end,
-                       entry->stream_index,
-                       missing_node + 1U);
-                printf("[w4_guest] stage qwen3_memory_service_boundary_lookup_response"
-                       " node=%u step=%" PRIu64 " layers=[%u,%u)"
-                       " position=%" PRIu64
-                       " action=continue"
-                       " reason=skipped_downstream_kv_state_unavailable"
-                       " source=lingqu_memory_service target=boundary_controller"
-                       " mode=%s backend=%s status=miss\n",
-                       local_node + 1U,
-                       decode_step,
-                       layer_start,
-                       layer_end,
-                       position,
-                       config->shortpath_lookup_mode,
-                       config->boundary_lookup_backend);
-                return 0;
-            }
         }
         load_state = qwen3_memory_shortpath_terminal_logits_record_from_ref(
             config->boundary_registry_loaded ?
@@ -7856,46 +8017,6 @@ static int qwen3_w5_memory_service_lookup_boundary(
                config->boundary_lookup_backend);
         return 0;
     }
-    {
-        uint32_t missing_node = 0U;
-
-        if (config->shortpath_execute &&
-            !qwen3_memory_shortpath_downstream_kv_support_complete(
-                config,
-                local_node,
-                cluster_node_count,
-                layer_end,
-                decode_step,
-                &missing_node)) {
-            printf("[w4_guest] stage qwen3_w5_memory_shortpath_rejected"
-                   " step=%" PRIu64 " layers=[%u,%u)"
-                   " decision_id=%s artifact_id=%s"
-                   " missing_node=node%u"
-                   " reason=skipped_downstream_kv_state_unavailable"
-                   " guard=shortpath_execution_guard status=rejected\n",
-                   decode_step,
-                   layer_start,
-                   layer_end,
-                   config->shortpath_decision_id,
-                   config->shortpath_artifact_id,
-                   missing_node + 1U);
-            printf("[w4_guest] stage qwen3_memory_service_boundary_lookup_response"
-                   " node=%u step=%" PRIu64 " layers=[%u,%u)"
-                   " position=%" PRIu64
-                   " action=continue"
-                   " reason=skipped_downstream_kv_state_unavailable"
-                   " source=lingqu_memory_service target=boundary_controller"
-                   " mode=%s backend=%s status=miss\n",
-                   local_node + 1U,
-                   decode_step,
-                   layer_start,
-                   layer_end,
-                   position,
-                   config->shortpath_lookup_mode,
-                   config->boundary_lookup_backend);
-            return 0;
-        }
-    }
     load_state = qwen3_memory_shortpath_terminal_logits_record(
         config,
         decode_step,
@@ -7969,6 +8090,7 @@ static int qwen3_boundary_controller_resolve_work_item(
         layer_end,
         decode_step,
         position,
+        runtime_forward->output_payload,
         runtime_forward->payload_bytes,
         runtime_forward->payload_checksum,
         &result_out->lookup);
@@ -8052,59 +8174,6 @@ static int qwen3_boundary_controller_resolve_work_item(
     if (!memory_config->shortpath_execute) {
         return 0;
     }
-    {
-        uint32_t missing_node = 0U;
-
-        if (!qwen3_memory_shortpath_downstream_kv_support_complete(
-                memory_config,
-                dispatch_node,
-                cluster_node_count,
-                layer_end,
-                decode_step,
-                &missing_node)) {
-            printf("[w4_guest] stage qwen3_w5_memory_shortpath_rejected"
-                   " step=%" PRIu64 " layers=[%u,%u)"
-                   " decision_id=%s artifact_id=%s"
-                   " missing_node=node%u"
-                   " reason=skipped_downstream_kv_state_unavailable"
-                   " guard=shortpath_execution_guard status=rejected\n",
-                   decode_step,
-                   layer_start,
-                   layer_end,
-                   result_out->lookup.decision_id ?
-                       result_out->lookup.decision_id : "",
-                   result_out->lookup.artifact_id ?
-                       result_out->lookup.artifact_id : "",
-                   missing_node + 1U);
-            result_out->action = W4_QWEN3_BOUNDARY_CONTROLLER_CONTINUE;
-            printf("[w4_guest] stage qwen3_boundary_controller_lookup"
-                   " node=%u step=%" PRIu64 " layers=[%u,%u)"
-                   " hidden_bytes=%" PRIu64
-                   " hidden_checksum=0x%016" PRIx64
-                   " action=continue"
-                   " reason=skipped_downstream_kv_state_unavailable"
-                   " source=boundary_controller target=lingqu_memory_service"
-                   " mode=%s backend=%s status=miss\n",
-                   dispatch_node + 1U,
-                   decode_step,
-                   layer_start,
-                   layer_end,
-                   runtime_forward->payload_bytes,
-                   runtime_forward->payload_checksum,
-                   memory_config->shortpath_lookup_mode,
-                   memory_config->boundary_lookup_backend);
-            printf("[w4_guest] stage qwen3_boundary_controller_downstream_work_item"
-                   " node=%u step=%" PRIu64 " layers=[%u,%u)"
-                   " action=continue work_item=range_forward"
-                   " source=boundary_controller target=work_queue"
-                   " status=dispatch\n",
-                   dispatch_node + 1U,
-                   decode_step,
-                   layer_start,
-                   layer_end);
-            return 0;
-        }
-    }
     if (qwen3_apply_top_k_sampler(sampler_config,
                                   &result_out->lookup.terminal_logits_record,
                                   dispatch_node,
@@ -8153,78 +8222,6 @@ qwen3_memory_shortpath_kv_entry_for_local_range(
     return NULL;
 }
 
-static const struct w4_qwen3_shortpath_kv_stream_entry *
-qwen3_memory_shortpath_kv_entry_for_downstream_node(
-    const struct w4_qwen3_memory_decision_config *config,
-    uint32_t target_node,
-    uint32_t target_layer_start,
-    uint32_t target_layer_end,
-    uint32_t producer_layer_end,
-    uint64_t decode_step)
-{
-    if (!config || config->shortpath_kv_stream_count == 0) {
-        return NULL;
-    }
-    (void)producer_layer_end;
-    for (uint64_t i = 0; i < config->shortpath_kv_stream_count; ++i) {
-        const struct w4_qwen3_shortpath_kv_stream_entry *entry =
-            &config->shortpath_kv_stream_entries[i];
-
-        if (entry->valid && entry->step_index == decode_step &&
-            entry->target_node == target_node + 1U &&
-            entry->target_layer_start == target_layer_start &&
-            entry->target_layer_end == target_layer_end) {
-            return entry;
-        }
-    }
-    return NULL;
-}
-
-static bool qwen3_memory_shortpath_downstream_kv_support_complete(
-    const struct w4_qwen3_memory_decision_config *config,
-    uint32_t dispatch_node,
-    uint32_t cluster_node_count,
-    uint32_t producer_layer_end,
-    uint64_t decode_step,
-    uint32_t *missing_node_out)
-{
-    if (missing_node_out) {
-        *missing_node_out = 0U;
-    }
-    if (dispatch_node + 1U >= cluster_node_count) {
-        return true;
-    }
-    for (uint32_t node = dispatch_node + 1U; node < cluster_node_count; ++node) {
-        uint32_t target_layer_start = 0U;
-        uint32_t target_layer_end = 0U;
-        uint32_t next_node = 0U;
-
-        if (w4_db_qwen3_layer_range_for_node(node,
-                                             cluster_node_count,
-                                             &target_layer_start,
-                                             &target_layer_end,
-                                             &next_node) != 0) {
-            if (missing_node_out) {
-                *missing_node_out = node;
-            }
-            return false;
-        }
-        if (!qwen3_memory_shortpath_kv_entry_for_downstream_node(
-                config,
-                node,
-                target_layer_start,
-                target_layer_end,
-                producer_layer_end,
-                decode_step)) {
-            if (missing_node_out) {
-                *missing_node_out = node;
-            }
-            return false;
-        }
-    }
-    return true;
-}
-
 static int qwen3_memory_shortpath_materialize_local_kv_state(
     struct w4_db_service *db_service,
     const struct w4_qwen3_memory_decision_config *config,
@@ -8270,9 +8267,12 @@ static int qwen3_memory_shortpath_materialize_local_kv_state(
     if (qwen3_read_object_ref_payload(&kv_ref, &payload, &payload_len) != 0) {
         return -1;
     }
+    runtime_kv_checksum = w4_qwen3_hidden_payload_checksum(payload, payload_len);
     if (payload_len != entry->kv_bytes ||
-        qwen3_lingqu_object_payload_checksum(payload, payload_len) !=
-            entry->kv_checksum) {
+        (qwen3_lingqu_object_payload_checksum(payload, payload_len) !=
+             entry->kv_checksum &&
+         runtime_kv_checksum != entry->kv_checksum &&
+         kv_ref.payload_checksum != entry->kv_checksum)) {
         fprintf(stderr,
                 "[w4_guest] fail qwen3 shortpath kv materialize payload mismatch"
                 " node=%u step=%" PRIu64 " layers=[%u,%u)"
@@ -8286,7 +8286,6 @@ static int qwen3_memory_shortpath_materialize_local_kv_state(
         free(payload);
         return -1;
     }
-    runtime_kv_checksum = w4_qwen3_hidden_payload_checksum(payload, payload_len);
     rc = w4_db_obmm_service_v0_publish_runtime_range_kv_state(db_service,
                                                               local_node,
                                                               cluster_node_count,

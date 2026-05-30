@@ -345,6 +345,11 @@ struct W5MemoryDecisionConfig {
     shortpath_decision_ids: Vec<String>,
     online_boundary_lookup: bool,
     shortpath_execute: bool,
+    shortpath_match_mode: String,
+    min_match_score_milli: u32,
+    min_terminal_margin_milli: u32,
+    approximate_requires_verify: bool,
+    min_source_confidence_milli: u32,
     prefetch_plan_id: Option<String>,
     prefix_cache_reuse_plan_id: Option<String>,
 }
@@ -1287,6 +1292,11 @@ where
                     shortpath_decision_ids: memory_shortpath_decision_ids,
                     online_boundary_lookup: memory_online_boundary_lookup,
                     shortpath_execute: memory_shortpath_execute.unwrap_or(true),
+                    shortpath_match_mode: shortpath_match_mode.clone(),
+                    min_match_score_milli,
+                    min_terminal_margin_milli,
+                    approximate_requires_verify,
+                    min_source_confidence_milli,
                     prefetch_plan_id: memory_prefetch_plan_id,
                     prefix_cache_reuse_plan_id: memory_prefix_cache_reuse_plan_id,
                 })
@@ -6579,10 +6589,12 @@ fn w5_try_approximate_boundary_lookup(
     min_match_score_milli: u32,
     min_terminal_margin_milli: u32,
     approximate_requires_verify: bool,
+    now_us: u64,
 ) -> anyhow::Result<Option<sim_memory::ShortpathSupportRecord>> {
     let Some(decode_policy) = HiddenDecodePolicy::from_dtype(request.hidden_state.dtype) else {
+        let support_id = format!("shortpath-support/approximate-miss/{}", request.request_id);
         return Ok(Some(sim_memory::ShortpathSupportRecord {
-            support_id: format!("shortpath-support/approximate-miss/{}", request.request_id),
+            support_id,
             request_id: request.request_id.clone(),
             supported_action: sim_memory::ShortpathAction::Continue,
             artifact_id: None,
@@ -6591,9 +6603,20 @@ fn w5_try_approximate_boundary_lookup(
             target_layer_end: None,
             confidence_milli: 0,
             verify_required: false,
-            proof_checksum: 0,
+            proof_checksum: qwen3_checksum_words(&[
+                1,
+                w5_shortpath_action_tag(sim_memory::ShortpathAction::Continue),
+                request.boundary.step_index,
+                u64::from(request.boundary.node_index),
+                u64::from(request.boundary.layer_start),
+                u64::from(request.boundary.layer_end),
+                request.boundary.position,
+                request.hidden_state.checksum,
+                request.hidden_state.bytes,
+                now_us,
+            ]),
             reason: "approximate_hidden_match_typed_payload_unavailable".to_string(),
-            created_at_us: 0,
+            created_at_us: now_us,
             version: 1,
             match_score_milli: 0,
             match_metric: "".to_string(),
@@ -6609,7 +6632,7 @@ fn w5_try_approximate_boundary_lookup(
             min_match_score_milli,
             min_terminal_margin_milli,
             approximate_requires_verify,
-            0,
+            now_us,
         )
         .map_err(|e| anyhow::anyhow!(e))
 }
@@ -6682,6 +6705,7 @@ fn run_w5_memory_boundary_lookup_request_with_registry_requirement(
                 request.min_match_score_milli,
                 min_terminal_margin_milli,
                 approximate_requires_verify,
+                effective_now_us,
             )
             .context("try approximate boundary lookup")?;
             if let Some(mut support) = approximate_support {
@@ -6706,6 +6730,101 @@ fn run_w5_memory_boundary_lookup_request_with_registry_requirement(
         .persist_shortpath_decision_manifest(vec![planner_decision.clone()])
         .context("persist W5 planner shortpath decision DFS audit")?;
     save_lingqu_memory_durable_store(store_path, &durable_store)?;
+    Ok((response, planner_decision))
+}
+
+fn run_w5_memory_boundary_lookup_request_in_memory(
+    memory_service: &mut LingquMemoryService,
+    request: BoundaryLookupRequest,
+    object_service: Option<&LingquObjectServiceStub>,
+    min_terminal_margin_milli: u32,
+    approximate_requires_verify: bool,
+) -> anyhow::Result<(
+    sim_memory::BoundaryLookupResponse,
+    sim_memory::ShortpathDecisionRecord,
+)> {
+    let match_mode = if request.match_mode.is_empty() {
+        sim_memory::similarity::MatchMode::Exact
+    } else {
+        sim_memory::similarity::MatchMode::from_str(&request.match_mode)
+            .unwrap_or(sim_memory::similarity::MatchMode::Exact)
+    };
+    let effective_now_us = request.created_at_us;
+    let mut response = if match_mode == sim_memory::similarity::MatchMode::Approximate {
+        let support_id = format!(
+            "shortpath-support/approximate-request/{}",
+            request.request_id
+        );
+        let proof_checksum = qwen3_checksum_words(&[
+            2,
+            w5_shortpath_action_tag(sim_memory::ShortpathAction::Continue),
+            request.boundary.step_index,
+            u64::from(request.boundary.node_index),
+            u64::from(request.boundary.layer_start),
+            u64::from(request.boundary.layer_end),
+            request.boundary.position,
+            request.hidden_state.checksum,
+            request.hidden_state.bytes,
+            effective_now_us,
+        ]);
+        sim_memory::BoundaryLookupResponse {
+            request_id: request.request_id.clone(),
+            support: sim_memory::ShortpathSupportRecord {
+                support_id,
+                request_id: request.request_id.clone(),
+                supported_action: sim_memory::ShortpathAction::Continue,
+                artifact_id: None,
+                producer_position: Some(request.boundary.position),
+                target_layer_start: None,
+                target_layer_end: None,
+                confidence_milli: 0,
+                verify_required: false,
+                proof_checksum,
+                reason: "approximate_match_mode_skips_exact_lookup".to_string(),
+                created_at_us: effective_now_us,
+                version: 1,
+                match_score_milli: 0,
+                match_metric: "".to_string(),
+                match_mode: "approximate".to_string(),
+                normalized_l2_milli: 0,
+            },
+            artifact: None,
+        }
+    } else {
+        memory_service
+            .boundary_lookup(request.clone(), effective_now_us)
+            .context("run in-memory boundary lookup")?
+    };
+
+    if response.support.supported_action == sim_memory::ShortpathAction::Continue
+        && object_service.is_some()
+        && match_mode.allows_approximate()
+    {
+        if let Some(object_service) = object_service {
+            let approximate_support = w5_try_approximate_boundary_lookup(
+                memory_service,
+                &request,
+                object_service,
+                request.min_match_score_milli,
+                min_terminal_margin_milli,
+                approximate_requires_verify,
+                effective_now_us,
+            )
+            .context("try in-memory approximate boundary lookup")?;
+            if let Some(support) = approximate_support {
+                if support.supported_action != sim_memory::ShortpathAction::Continue {
+                    response.artifact = memory_service
+                        .execution_artifacts()
+                        .get(support.artifact_id.as_deref().unwrap_or(""))
+                        .cloned();
+                }
+                response.support = support;
+            }
+        }
+    }
+
+    let planner_decision = w5_plan_shortpath_decision_from_memory_support(&response)
+        .context("plan W5 shortpath execution decision from in-memory support")?;
     Ok((response, planner_decision))
 }
 
@@ -8526,6 +8645,7 @@ struct W5PaperEngramRowPrefetchPublication {
 struct W5MemoryShortpathEntry {
     decision: sim_memory::ShortpathDecisionRecord,
     artifact: Option<sim_memory::ExecutionArtifactObject>,
+    boundary_hidden_ref: Option<sim_memory::HotTensorObjectRef>,
 }
 
 #[derive(Debug)]
@@ -8552,10 +8672,17 @@ struct W5MemoryDecisionBundle {
     prefix_cache_artifact: Option<sim_memory::PrefixCacheArtifact>,
 }
 
+fn w5_shortpath_decision_needs_boundary_hidden_ref(
+    decision: &sim_memory::ShortpathDecisionRecord,
+) -> bool {
+    decision.match_mode == "approximate" || decision.match_mode == "exact-then-approximate"
+}
+
 #[derive(Debug)]
 struct W5MemoryDecisionArtifactPublication {
     shortpath_ref: Option<W5MemoryPublishedArtifactRef>,
     shortpath_refs: Vec<W5MemoryPublishedArtifactRef>,
+    shortpath_hidden_refs: Vec<W5MemoryPublishedArtifactRef>,
     shortpath_registry_ref: Option<W5MemoryPublishedArtifactRef>,
     shortpath_stream_path: Option<PathBuf>,
     shortpath_kv_refs: Vec<W5MemoryPublishedKvArtifactRef>,
@@ -8662,38 +8789,88 @@ fn load_w5_memory_decisions_from_store(
     } else {
         None
     };
+    let match_mode = sim_memory::similarity::MatchMode::from_str(&config.shortpath_match_mode)
+        .unwrap_or(sim_memory::similarity::MatchMode::Exact);
+    let approximate_object_service = if match_mode.allows_approximate() {
+        match config.artifact_object_store_path.as_ref() {
+            Some(path) => load_lingqu_object_service_snapshot_file(path)?
+                .map(LingquObjectServiceStub::import_snapshot)
+                .transpose()
+                .with_context(|| format!("import W5 decision object store {}", path.display()))?,
+            None => None,
+        }
+    } else {
+        None
+    };
+    let mut boundary_lookup_service = if !boundary_observation_ids.is_empty()
+        && !match_mode.is_exact_only()
+    {
+        let mut service = LingquMemoryService::new();
+        load_required_lingqu_memory_execution_registry_artifacts(&mut service, &mut durable_store)
+            .context("load execution artifact manifest for batched W5 boundary lookup")?;
+        service
+            .rebuild_boundary_observations_from_dfs(&mut durable_store)
+            .context("rebuild boundary observations for batched W5 boundary lookup")?;
+        rebuild_lingqu_memory_shortpath_supports(&mut service, &mut durable_store)
+            .context("rebuild shortpath support audit for batched W5 boundary lookup")?;
+        Some(service)
+    } else {
+        None
+    };
     let mut boundary_observation_decisions = Vec::new();
     for observation_id in &boundary_observation_ids {
         let cached_request_id = format!("boundary-lookup/{observation_id}");
         let cached_decision_id = format!("shortpath-decision/{cached_request_id}");
-        if let Some(decision) = cached_shortpath_decisions
-            .as_ref()
-            .and_then(|decisions| {
-                decisions.iter().find(|decision| {
-                    decision.decision_id == cached_decision_id
-                        || decision.request_id == cached_request_id
+        if match_mode.is_exact_only() {
+            if let Some(decision) = cached_shortpath_decisions
+                .as_ref()
+                .and_then(|decisions| {
+                    decisions.iter().find(|decision| {
+                        decision.decision_id == cached_decision_id
+                            || decision.request_id == cached_request_id
+                    })
                 })
-            })
-            .cloned()
-        {
-            boundary_observation_decisions.push(decision);
-            continue;
+                .cloned()
+            {
+                boundary_observation_decisions.push(decision);
+                continue;
+            }
         }
-        let (_response, decision) = run_w5_memory_boundary_lookup_from_observation(
+        let request = w5_memory_boundary_lookup_request_from_observation(
             &config.store_path,
             observation_id,
             None,
-            900,
+            config.min_source_confidence_milli,
             vec![sim_memory::ShortpathAction::JumpToTerminal],
             0,
-            "exact".to_string(),
-            1000,
-            500,
-            true,
-        )
+            config.shortpath_match_mode.clone(),
+            config.min_match_score_milli,
+        )?;
+        let (_response, mut decision) = if let Some(service) = boundary_lookup_service.as_mut() {
+            run_w5_memory_boundary_lookup_request_in_memory(
+                service,
+                request,
+                approximate_object_service.as_ref(),
+                config.min_terminal_margin_milli,
+                config.approximate_requires_verify,
+            )
+        } else {
+            run_w5_memory_boundary_lookup_request_with_registry_requirement(
+                &config.store_path,
+                request,
+                0,
+                true,
+                approximate_object_service.as_ref(),
+                config.min_terminal_margin_milli,
+                config.approximate_requires_verify,
+            )
+        }
         .with_context(|| {
             format!("run W5 Memory Service boundary lookup from observation {observation_id}")
         })?;
+        if decision.match_mode == "approximate" {
+            decision.match_score_milli = config.min_match_score_milli;
+        }
         boundary_observation_decisions.push(decision);
     }
     let mut shortpath_decisions = Vec::new();
@@ -8819,6 +8996,13 @@ fn load_w5_memory_decisions_from_store(
     } else {
         Vec::new()
     };
+    let boundary_observations = if needs_execution_artifacts {
+        durable_store
+            .load_boundary_observation_manifest()
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let mut shortpath_entries = Vec::new();
     for decision in shortpath_decisions {
         let artifact = if let Some(artifact_id) = decision.artifact_id.as_ref() {
@@ -8837,7 +9021,25 @@ fn load_w5_memory_decisions_from_store(
         } else {
             None
         };
-        shortpath_entries.push(W5MemoryShortpathEntry { decision, artifact });
+        let boundary_hidden_ref =
+            if w5_shortpath_decision_needs_boundary_hidden_ref(&decision) {
+                artifact.as_ref().and_then(|artifact| {
+                    boundary_observations
+                        .iter()
+                        .find(|observation| {
+                            observation.model == artifact.model
+                                && observation.boundary == artifact.producer_boundary
+                        })
+                        .map(|observation| observation.hidden_state.clone())
+                })
+            } else {
+                None
+            };
+        shortpath_entries.push(W5MemoryShortpathEntry {
+            decision,
+            artifact,
+            boundary_hidden_ref,
+        });
     }
     let mut shortpath_kv_artifacts = Vec::new();
     let mut shortpath_kv_by_target =
@@ -9533,13 +9735,6 @@ fn validate_w5_memory_decision_bundle_for_run(
                     );
                 }
             }
-            if config.shortpath_execute
-                && entry.decision.action == sim_memory::ShortpathAction::JumpToTerminal
-            {
-                validate_w5_shortpath_downstream_kv_bundle(
-                    entry, artifact, bundle, runtime, profile,
-                )?;
-            }
         }
     }
 
@@ -9811,75 +10006,6 @@ fn parse_w5_boundary_observation_request_step_node(
     Ok((step, node))
 }
 
-fn validate_w5_shortpath_downstream_kv_bundle(
-    entry: &W5MemoryShortpathEntry,
-    artifact: &sim_memory::ExecutionArtifactObject,
-    bundle: &W5MemoryDecisionBundle,
-    runtime: &Qwen3DenseGuestRuntime,
-    profile: &W5InferenceProfileSpec,
-) -> anyhow::Result<()> {
-    if artifact.kind != sim_memory::ExecutionArtifactKind::Logits {
-        return Ok(());
-    }
-    let max_node = u32::from(profile.nodes);
-    if artifact.producer_boundary.node_index >= max_node {
-        return Ok(());
-    }
-    let producer_position = entry.decision.producer_position.ok_or_else(|| {
-        anyhow::anyhow!(
-            "shortpath decision {} missing producer position for downstream KV validation",
-            entry.decision.decision_id
-        )
-    })?;
-    for target_node in (artifact.producer_boundary.node_index + 1)..=max_node {
-        let (target_layer_start, target_layer_end) =
-            w5_expected_layer_range_for_node(runtime, profile, target_node)?;
-        let found = bundle.shortpath_kv_artifacts.iter().any(|kv| {
-            kv.step_index == artifact.producer_boundary.step_index
-                && kv.producer_position == producer_position
-                && kv.target_node_index == target_node
-                && kv.target_layer_start == target_layer_start
-                && kv.target_layer_end == target_layer_end
-        });
-        if !found {
-            anyhow::bail!(
-                "--memory-shortpath-execute requires downstream KV artifact for jump-to-terminal decision {} artifact {} step={} target_node={} target_layers=[{},{})",
-                entry.decision.decision_id,
-                artifact.artifact_id,
-                artifact.producer_boundary.step_index,
-                target_node,
-                target_layer_start,
-                target_layer_end
-            );
-        }
-    }
-    Ok(())
-}
-
-fn w5_expected_layer_range_for_node(
-    runtime: &Qwen3DenseGuestRuntime,
-    profile: &W5InferenceProfileSpec,
-    node_index: u32,
-) -> anyhow::Result<(u32, u32)> {
-    let node_count = u32::from(profile.nodes);
-    if node_count == 0 || node_index == 0 || node_index > node_count {
-        anyhow::bail!(
-            "invalid W5 node index {} for profile {} nodes={}",
-            node_index,
-            profile.name,
-            profile.nodes
-        );
-    }
-    let layer_count = u32::try_from(runtime.profile.num_hidden_layers)
-        .context("W5 runtime layer count exceeds u32")?;
-    let zero_based_node = node_index - 1;
-    let base = layer_count / node_count;
-    let rem = layer_count % node_count;
-    let start = zero_based_node * base + zero_based_node.min(rem);
-    let end = start + base + u32::from(zero_based_node < rem);
-    Ok((start, end))
-}
-
 fn validate_w5_execution_artifact_matches_run(
     source: &str,
     artifact: &sim_memory::ExecutionArtifactObject,
@@ -10035,6 +10161,7 @@ fn publish_w5_memory_decision_artifact_refs(
             })?;
     }
     let mut shortpath_refs = Vec::new();
+    let mut shortpath_hidden_refs = Vec::new();
     for entry in &bundle.shortpath_entries {
         if let Some(artifact) = &entry.artifact {
             shortpath_refs.push(publish_w5_execution_artifact_ref(
@@ -10045,11 +10172,42 @@ fn publish_w5_memory_decision_artifact_refs(
                 config.producer_entity,
                 "shortpath",
             )?);
+            if let Some(hidden_ref) = &entry.boundary_hidden_ref {
+                let object_ref = w5_hot_tensor_object_ref_from_object_service(
+                    &object_service,
+                    QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+                    hidden_ref,
+                )
+                .with_context(|| {
+                    format!(
+                        "shortpath boundary hidden object unavailable for {}",
+                        artifact.artifact_id
+                    )
+                })?;
+                shortpath_hidden_refs.push(W5MemoryPublishedArtifactRef {
+                    artifact_id: artifact.artifact_id.clone(),
+                    ref_hex: qwen3_obmm_object_ref_wire_to_hex(&object_ref),
+                    payload_bytes: hidden_ref.bytes as usize,
+                    payload_checksum: object_ref.payload_checksum,
+                });
+            } else if w5_shortpath_decision_needs_boundary_hidden_ref(&entry.decision) {
+                anyhow::bail!(
+                    "shortpath approximate boundary hidden ref unavailable for {}",
+                    artifact.artifact_id
+                );
+            }
         }
     }
     let shortpath_ref = shortpath_refs.first().cloned();
-    let shortpath_registry_payload =
-        w5_memory_boundary_registry_payload_from_refs(bundle, &shortpath_refs)?;
+    let has_live_approximate_entries = bundle.shortpath_entries.iter().any(|entry| {
+        entry.decision.match_mode == "approximate"
+            || entry.decision.match_mode == "exact-then-approximate"
+    });
+    let shortpath_registry_payload = if has_live_approximate_entries {
+        Vec::new()
+    } else {
+        w5_memory_boundary_registry_payload_from_refs(bundle, &shortpath_refs)?
+    };
     let shortpath_registry_ref = if shortpath_registry_payload.is_empty() {
         None
     } else {
@@ -10070,7 +10228,8 @@ fn publish_w5_memory_decision_artifact_refs(
             payload_checksum: object_ref.payload_checksum,
         })
     };
-    let shortpath_stream = w5_memory_shortpath_stream_env_from_refs(bundle, &shortpath_refs);
+    let shortpath_stream =
+        w5_memory_shortpath_stream_env_from_refs(bundle, &shortpath_refs, &shortpath_hidden_refs);
     let shortpath_stream_path = if shortpath_stream.is_empty() {
         None
     } else {
@@ -10167,6 +10326,7 @@ fn publish_w5_memory_decision_artifact_refs(
     Ok(W5MemoryDecisionArtifactPublication {
         shortpath_ref,
         shortpath_refs,
+        shortpath_hidden_refs,
         shortpath_registry_ref,
         shortpath_stream_path,
         shortpath_kv_refs,
@@ -10740,7 +10900,11 @@ fn w5_memory_shortpath_stream_env(
     bundle: &W5MemoryDecisionBundle,
     publication: &W5MemoryDecisionArtifactPublication,
 ) -> Vec<String> {
-    w5_memory_shortpath_stream_env_from_refs(bundle, &publication.shortpath_refs)
+    w5_memory_shortpath_stream_env_from_refs(
+        bundle,
+        &publication.shortpath_refs,
+        &publication.shortpath_hidden_refs,
+    )
 }
 
 fn w5_memory_boundary_registry_payload_from_refs(
@@ -10858,6 +11022,7 @@ fn w5_memory_boundary_registry_payload_from_refs(
 fn w5_memory_shortpath_stream_env_from_refs(
     bundle: &W5MemoryDecisionBundle,
     shortpath_refs: &[W5MemoryPublishedArtifactRef],
+    hidden_refs: &[W5MemoryPublishedArtifactRef],
 ) -> Vec<String> {
     bundle
         .shortpath_entries
@@ -10867,28 +11032,34 @@ fn w5_memory_shortpath_stream_env_from_refs(
             let published = shortpath_refs
                 .iter()
                 .find(|published| published.artifact_id == artifact.artifact_id)?;
+            let hidden_ref = hidden_refs
+                .iter()
+                .find(|published| published.artifact_id == artifact.artifact_id);
             let target_start = entry.decision.target_layer_start?;
             let target_end = entry.decision.target_layer_end?;
             let producer_position = entry.decision.producer_position?;
-            Some(format!(
-                "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
-                artifact.producer_boundary.step_index,
-                producer_position,
-                artifact.producer_boundary.layer_start,
-                artifact.producer_boundary.layer_end,
-                target_start,
-                target_end,
-                published.ref_hex,
-                artifact.boundary_hidden_fingerprint.bytes,
-                artifact.boundary_hidden_fingerprint.checksum,
-                entry.decision.match_mode,
-                entry.decision.match_score_milli,
+            let mut fields = vec![
+                artifact.producer_boundary.step_index.to_string(),
+                producer_position.to_string(),
+                artifact.producer_boundary.layer_start.to_string(),
+                artifact.producer_boundary.layer_end.to_string(),
+                target_start.to_string(),
+                target_end.to_string(),
+                published.ref_hex.clone(),
+                artifact.boundary_hidden_fingerprint.bytes.to_string(),
+                artifact.boundary_hidden_fingerprint.checksum.to_string(),
+                entry.decision.match_mode.clone(),
+                entry.decision.match_score_milli.to_string(),
                 if entry.decision.verify_required {
-                    "1"
+                    "1".to_string()
                 } else {
-                    "0"
-                }
-            ))
+                    "0".to_string()
+                },
+            ];
+            if let Some(hidden_ref) = hidden_ref {
+                fields.push(hidden_ref.ref_hex.clone());
+            }
+            Some(fields.join(":"))
         })
         .collect()
 }
@@ -13304,6 +13475,17 @@ fn w5_boundary_input_fingerprints_from_summary(
     Ok(fingerprints)
 }
 
+fn parse_w5_hidden_dtype(value: &str) -> anyhow::Result<sim_core::TensorDType> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" | "opaque" => Ok(sim_core::TensorDType::Opaque),
+        "f32" => Ok(sim_core::TensorDType::F32),
+        "u8" => Ok(sim_core::TensorDType::U8),
+        "u32" => Ok(sim_core::TensorDType::U32),
+        "u64" => Ok(sim_core::TensorDType::U64),
+        other => anyhow::bail!("unsupported W5 hidden dtype `{other}`"),
+    }
+}
+
 fn parse_w5_layer_range(value: &str) -> anyhow::Result<(u32, u32)> {
     let inner = value
         .strip_prefix('[')
@@ -13365,6 +13547,26 @@ fn w5_boundary_observations_from_summary(
         let hidden_bytes = required_summary_u64(&fields, "hidden_bytes")?;
         let hidden_checksum = required_summary_u64_auto(&fields, "hidden_checksum")?;
         let hidden_version = required_summary_u64(&fields, "hidden_version")?;
+        let hidden_dtype = parse_w5_hidden_dtype(
+            fields
+                .get("hidden_dtype")
+                .map(String::as_str)
+                .unwrap_or("Opaque"),
+        )?;
+        let hidden_shape = match fields.get("hidden_shape") {
+            Some(shape) => parse_u64_csv_text(shape, "hidden_shape")?,
+            None => {
+                if let Some(width) = hidden_dtype.byte_width() {
+                    if hidden_bytes % width == 0 {
+                        vec![hidden_bytes / width]
+                    } else {
+                        vec![hidden_bytes]
+                    }
+                } else {
+                    vec![hidden_bytes]
+                }
+            }
+        };
         let observation_id = fields
             .get("observation_id")
             .cloned()
@@ -13391,8 +13593,8 @@ fn w5_boundary_observations_from_summary(
                 offset: 0,
                 bytes: hidden_bytes,
                 checksum: hidden_checksum,
-                dtype: sim_core::TensorDType::Opaque,
-                shape: vec![hidden_bytes],
+                dtype: hidden_dtype,
+                shape: hidden_shape,
             },
             node.to_string(),
             target.to_string(),
@@ -16908,6 +17110,11 @@ mod tests {
             shortpath_decision_ids: Vec::new(),
             online_boundary_lookup: false,
             shortpath_execute: true,
+            shortpath_match_mode: "exact".to_string(),
+            min_match_score_milli: 850,
+            min_terminal_margin_milli: 500,
+            approximate_requires_verify: true,
+            min_source_confidence_milli: 900,
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: None,
         };
@@ -16983,6 +17190,7 @@ mod tests {
             shortpath_entries: vec![crate::W5MemoryShortpathEntry {
                 decision,
                 artifact: Some(artifact),
+                boundary_hidden_ref: None,
             }],
             shortpath_kv_artifacts: Vec::new(),
             online_boundary_lookup: false,
@@ -17080,6 +17288,11 @@ mod tests {
             shortpath_decision_ids: Vec::new(),
             online_boundary_lookup: false,
             shortpath_execute: false,
+            shortpath_match_mode: "exact".to_string(),
+            min_match_score_milli: 850,
+            min_terminal_margin_milli: 500,
+            approximate_requires_verify: true,
+            min_source_confidence_milli: 900,
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: Some("prefix-cache-reuse/test".to_string()),
         };
@@ -17144,6 +17357,11 @@ mod tests {
             ],
             online_boundary_lookup: false,
             shortpath_execute: true,
+            shortpath_match_mode: "exact".to_string(),
+            min_match_score_milli: 850,
+            min_terminal_margin_milli: 500,
+            approximate_requires_verify: true,
+            min_source_confidence_milli: 900,
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: None,
         };
@@ -17294,6 +17512,7 @@ mod tests {
             shortpath_entries: vec![crate::W5MemoryShortpathEntry {
                 decision: decision.clone(),
                 artifact: Some(artifact.clone()),
+                boundary_hidden_ref: None,
             }],
             shortpath_kv_artifacts: Vec::new(),
             online_boundary_lookup: false,
@@ -17307,7 +17526,7 @@ mod tests {
             pool: Qwen3EngramPool::Obmm,
             ..Qwen3EngramConfig::default()
         };
-        let err = validate_w5_memory_decision_bundle_for_run(
+        validate_w5_memory_decision_bundle_for_run(
             &config,
             &incomplete_bundle,
             &runtime,
@@ -17315,8 +17534,7 @@ mod tests {
             &engram,
             1,
         )
-        .expect_err("jump-to-terminal before the final node requires downstream KV artifacts");
-        assert!(err.to_string().contains("requires downstream KV artifact"));
+        .expect("stateless shortpath does not require pre-staged downstream KV artifacts");
         let make_kv = |producer_layer_end: u32,
                        target_node_index: u32,
                        target_layer_start: u32,
@@ -17385,14 +17603,17 @@ mod tests {
                 crate::W5MemoryShortpathEntry {
                     decision,
                     artifact: Some(artifact),
+                    boundary_hidden_ref: None,
                 },
                 crate::W5MemoryShortpathEntry {
                     decision: decision_node4,
                     artifact: Some(artifact_node4),
+                    boundary_hidden_ref: None,
                 },
                 crate::W5MemoryShortpathEntry {
                     decision: decision_node7,
                     artifact: Some(artifact_node7),
+                    boundary_hidden_ref: None,
                 },
             ],
             shortpath_kv_artifacts: vec![
@@ -17432,6 +17653,7 @@ mod tests {
                     payload_checksum: 0x5555,
                 },
             ],
+            shortpath_hidden_refs: Vec::new(),
             shortpath_registry_ref: None,
             shortpath_stream_path: None,
             shortpath_kv_refs: Vec::new(),
@@ -17549,6 +17771,11 @@ mod tests {
             shortpath_decision_ids: Vec::new(),
             online_boundary_lookup: false,
             shortpath_execute: true,
+            shortpath_match_mode: "exact".to_string(),
+            min_match_score_milli: 850,
+            min_terminal_margin_milli: 500,
+            approximate_requires_verify: true,
+            min_source_confidence_milli: 900,
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: None,
         };
@@ -17669,6 +17896,7 @@ mod tests {
                             normalized_l2_milli: 0,
                         },
                         artifact: Some(artifact),
+                        boundary_hidden_ref: None,
                     });
                 }
             }
@@ -17697,6 +17925,11 @@ mod tests {
             shortpath_decision_ids: Vec::new(),
             online_boundary_lookup: false,
             shortpath_execute: true,
+            shortpath_match_mode: "exact".to_string(),
+            min_match_score_milli: 850,
+            min_terminal_margin_milli: 500,
+            approximate_requires_verify: true,
+            min_source_confidence_milli: 900,
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: None,
         };
@@ -17954,6 +18187,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                         "artifact/logits/step0/node1",
                     ),
                     artifact: Some(step0_node1),
+                    boundary_hidden_ref: None,
                 },
                 crate::W5MemoryShortpathEntry {
                     decision: make_decision(
@@ -17962,6 +18196,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                         "artifact/logits/step0/node4",
                     ),
                     artifact: Some(step0_node4),
+                    boundary_hidden_ref: None,
                 },
                 crate::W5MemoryShortpathEntry {
                     decision: make_decision(
@@ -17970,6 +18205,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                         "artifact/logits/step1/node1",
                     ),
                     artifact: Some(step1_node1),
+                    boundary_hidden_ref: None,
                 },
                 crate::W5MemoryShortpathEntry {
                     decision: make_decision(
@@ -17978,6 +18214,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                         "artifact/hidden/step2/node1",
                     ),
                     artifact: Some(hidden_step2),
+                    boundary_hidden_ref: None,
                 },
             ],
             shortpath_kv_artifacts: Vec::new(),
@@ -23215,6 +23452,11 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             shortpath_decision_ids: Vec::new(),
             online_boundary_lookup: false,
             shortpath_execute: false,
+            shortpath_match_mode: "exact".to_string(),
+            min_match_score_milli: 850,
+            min_terminal_margin_milli: 500,
+            approximate_requires_verify: true,
+            min_source_confidence_milli: 900,
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: None,
         })
@@ -23261,6 +23503,11 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 shortpath_decision_ids: Vec::new(),
                 online_boundary_lookup: false,
                 shortpath_execute: false,
+                shortpath_match_mode: "exact".to_string(),
+                min_match_score_milli: 850,
+                min_terminal_margin_milli: 500,
+                approximate_requires_verify: true,
+                min_source_confidence_milli: 900,
                 prefetch_plan_id: None,
                 prefix_cache_reuse_plan_id: None,
             })
@@ -23293,6 +23540,11 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 shortpath_decision_ids: Vec::new(),
                 online_boundary_lookup: false,
                 shortpath_execute: true,
+                shortpath_match_mode: "exact".to_string(),
+                min_match_score_milli: 850,
+                min_terminal_margin_milli: 500,
+                approximate_requires_verify: true,
+                min_source_confidence_milli: 900,
                 prefetch_plan_id: None,
                 prefix_cache_reuse_plan_id: None,
             })
@@ -23338,6 +23590,11 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             shortpath_decision_ids: Vec::new(),
             online_boundary_lookup: false,
             shortpath_execute: true,
+            shortpath_match_mode: "exact".to_string(),
+            min_match_score_milli: 850,
+            min_terminal_margin_milli: 500,
+            approximate_requires_verify: true,
+            min_source_confidence_milli: 900,
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: None,
         })
@@ -23361,6 +23618,11 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             shortpath_decision_ids: Vec::new(),
             online_boundary_lookup: true,
             shortpath_execute: true,
+            shortpath_match_mode: "exact".to_string(),
+            min_match_score_milli: 850,
+            min_terminal_margin_milli: 500,
+            approximate_requires_verify: true,
+            min_source_confidence_milli: 900,
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: None,
         })
@@ -23388,6 +23650,11 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 shortpath_decision_ids: Vec::new(),
                 online_boundary_lookup: true,
                 shortpath_execute: true,
+                shortpath_match_mode: "exact".to_string(),
+                min_match_score_milli: 850,
+                min_terminal_margin_milli: 500,
+                approximate_requires_verify: true,
+                min_source_confidence_milli: 900,
                 prefetch_plan_id: None,
                 prefix_cache_reuse_plan_id: None,
             },
@@ -23415,6 +23682,11 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 shortpath_decision_ids: Vec::new(),
                 online_boundary_lookup: false,
                 shortpath_execute: true,
+                shortpath_match_mode: "exact".to_string(),
+                min_match_score_milli: 850,
+                min_terminal_margin_milli: 500,
+                approximate_requires_verify: true,
+                min_source_confidence_milli: 900,
                 prefetch_plan_id: None,
                 prefix_cache_reuse_plan_id: None,
             })
@@ -23563,6 +23835,11 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             shortpath_decision_ids: Vec::new(),
             online_boundary_lookup: false,
             shortpath_execute: true,
+            shortpath_match_mode: "exact".to_string(),
+            min_match_score_milli: 850,
+            min_terminal_margin_milli: 500,
+            approximate_requires_verify: true,
+            min_source_confidence_milli: 900,
             prefetch_plan_id: Some("prefetch-plan/prefetch/step3/node4".to_string()),
             prefix_cache_reuse_plan_id: None,
         };
@@ -23890,6 +24167,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             shortpath_entries: vec![crate::W5MemoryShortpathEntry {
                 decision,
                 artifact: Some(artifact),
+                boundary_hidden_ref: None,
             }],
             shortpath_kv_artifacts: Vec::new(),
             online_boundary_lookup: false,
@@ -24022,6 +24300,11 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             shortpath_decision_ids: Vec::new(),
             online_boundary_lookup: true,
             shortpath_execute: true,
+            shortpath_match_mode: "exact".to_string(),
+            min_match_score_milli: 850,
+            min_terminal_margin_milli: 500,
+            approximate_requires_verify: true,
+            min_source_confidence_milli: 900,
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: None,
         })
@@ -25368,6 +25651,11 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             shortpath_decision_ids: Vec::new(),
             online_boundary_lookup: false,
             shortpath_execute: false,
+            shortpath_match_mode: "exact".to_string(),
+            min_match_score_milli: 850,
+            min_terminal_margin_milli: 500,
+            approximate_requires_verify: true,
+            min_source_confidence_milli: 900,
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: None,
         })
@@ -25521,6 +25809,11 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             shortpath_decision_ids: Vec::new(),
             online_boundary_lookup: false,
             shortpath_execute: false,
+            shortpath_match_mode: "exact".to_string(),
+            min_match_score_milli: 850,
+            min_terminal_margin_milli: 500,
+            approximate_requires_verify: true,
+            min_source_confidence_milli: 900,
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: Some("prefix-cache-reuse/prefix-lookup/test/0".to_string()),
         };
@@ -26945,6 +27238,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             850,
             500,
             true,
+            1,
         )
         .expect("approximate lookup")
         .expect("approximate hit");
@@ -27005,6 +27299,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             850,
             500,
             true,
+            1,
         )
         .expect("approximate lookup")
         .expect("typed miss support");
@@ -27096,6 +27391,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             850,
             500,
             true,
+            1,
         )
         .expect("approximate lookup");
         let support = support.expect("approximate lookup returns miss record");
@@ -27184,6 +27480,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             850,
             500,
             true,
+            1,
         )
         .expect("approximate lookup");
         let support = support.expect("approximate lookup returns miss record");
@@ -27270,6 +27567,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             850,
             500,
             true,
+            1,
         )
         .expect("approximate lookup");
         let support = support.expect("approximate lookup returns miss record");
@@ -27353,6 +27651,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             850,
             500,
             false, // verify disabled
+            1,
         )
         .expect("approximate lookup")
         .expect("approximate hit");
@@ -27485,6 +27784,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             850,
             500,
             true,
+            1,
         )
         .expect("approximate lookup")
         .expect("approximate hit");
