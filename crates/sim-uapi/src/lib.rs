@@ -4526,6 +4526,7 @@ fn qwen3_commit_w5_memory_runtime_artifacts(
         version: 1,
         created_at_us,
         expires_at_us: None,
+        terminal_logits_metadata: None,
     };
     memory_service
         .register_execution_artifact(kv_artifact)
@@ -4536,6 +4537,13 @@ fn qwen3_commit_w5_memory_runtime_artifacts(
             "artifact/logits/{}/step{}/{}",
             run_id, refs.decode_step, producer_node
         );
+        let terminal_logits_metadata = sim_memory::TerminalLogitsMetadata {
+            sampled_token: descriptor.sampled_token,
+            runner_up_token: descriptor.runner_up_token,
+            margin_milli: descriptor.margin_milli,
+            logits_checksum: descriptor.logits_checksum,
+            full_vocab_checked: descriptor.full_vocab_checked_token_count,
+        };
         let logits_checksum = qwen3_lingqu_object_payload_checksum(
             format!(
                 "{}:{}:{}:{}:{}:{}:{:x}",
@@ -4571,6 +4579,7 @@ fn qwen3_commit_w5_memory_runtime_artifacts(
             version: 1,
             created_at_us,
             expires_at_us: None,
+            terminal_logits_metadata: Some(terminal_logits_metadata.clone()),
         };
         memory_service
             .register_execution_artifact(logits_artifact)
@@ -4582,7 +4591,7 @@ fn qwen3_commit_w5_memory_runtime_artifacts(
             refs.decode_step,
             &boundary_observations,
             &logits_hot_ref,
-            descriptor.sampled_token,
+            Some(terminal_logits_metadata.clone()),
             created_at_us,
         )?;
     } else if let Some(terminal_artifact) = qwen3_find_w5_runtime_terminal_logits_artifact(
@@ -4600,7 +4609,7 @@ fn qwen3_commit_w5_memory_runtime_artifacts(
                 refs.decode_step,
                 &boundary_observations,
                 logits_hot_ref,
-                terminal_artifact.checksum,
+                terminal_artifact.terminal_logits_metadata.clone(),
                 created_at_us,
             )?;
         }
@@ -4644,10 +4653,19 @@ fn qwen3_register_w5_runtime_terminal_support_artifacts(
     decode_step: u64,
     boundary_observations: &[sim_memory::BoundaryObservationRecord],
     logits_hot_ref: &sim_memory::HotTensorObjectRef,
-    decision_seed: u64,
+    terminal_logits_metadata: Option<sim_memory::TerminalLogitsMetadata>,
     created_at_us: u64,
 ) -> Result<(), String> {
+    let terminal_logits_metadata =
+        terminal_logits_metadata.unwrap_or_else(|| sim_memory::TerminalLogitsMetadata {
+            sampled_token: 0,
+            runner_up_token: 0,
+            margin_milli: 0,
+            logits_checksum: 0,
+            full_vocab_checked: 0,
+        });
     for observation in boundary_observations {
+        let terminal_sampled_token = terminal_logits_metadata.sampled_token;
         if observation.run_id != run_id
             || observation.model != *model
             || observation.boundary.step_index != decode_step
@@ -4666,7 +4684,7 @@ fn qwen3_register_w5_runtime_terminal_support_artifacts(
                 decode_step,
                 observation.producer_node,
                 observation.boundary.layer_end,
-                decision_seed,
+                terminal_sampled_token,
                 logits_hot_ref.checksum
             )
             .as_bytes(),
@@ -4693,6 +4711,7 @@ fn qwen3_register_w5_runtime_terminal_support_artifacts(
             version: 1,
             created_at_us,
             expires_at_us: None,
+            terminal_logits_metadata: Some(terminal_logits_metadata.clone()),
         };
         memory_service
             .register_execution_artifact(artifact)
@@ -31852,6 +31871,8 @@ mod tests {
                             min_confidence_milli: 900,
                             allowed_actions: vec![sim_memory::ShortpathAction::JumpToTerminal],
                             created_at_us: 10,
+                            match_mode: "exact".to_string(),
+                            min_match_score_milli: 1000,
                         },
                         11,
                     )

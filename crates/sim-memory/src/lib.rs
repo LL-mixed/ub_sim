@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sim_core::{BlockHash, SegmentHandle, TensorDType};
+
+pub mod similarity;
 use sim_models::engram_hash::{
     build_engram_lookup_requests_from_step, engram_hash_table_specs,
     Qwen3DenseReferenceEngramHashConfig, Qwen3DenseReferenceEngramHashTableSpec,
@@ -5743,6 +5745,15 @@ impl PrefixCacheKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalLogitsMetadata {
+    pub sampled_token: u64,
+    pub runner_up_token: u64,
+    pub margin_milli: u64,
+    pub logits_checksum: u64,
+    pub full_vocab_checked: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionArtifactObject {
     pub artifact_id: String,
     pub kind: ExecutionArtifactKind,
@@ -5763,6 +5774,8 @@ pub struct ExecutionArtifactObject {
     pub version: u64,
     pub created_at_us: u64,
     pub expires_at_us: Option<u64>,
+    #[serde(default)]
+    pub terminal_logits_metadata: Option<TerminalLogitsMetadata>,
 }
 
 impl ExecutionArtifactObject {
@@ -5990,9 +6003,25 @@ pub struct BoundaryLookupRequest {
     pub min_confidence_milli: u32,
     pub allowed_actions: Vec<ShortpathAction>,
     pub created_at_us: u64,
+    #[serde(default)]
+    pub match_mode: String,
+    #[serde(default)]
+    pub min_match_score_milli: u32,
 }
 
 impl BoundaryLookupRequest {
+    fn parsed_match_mode(&self) -> MemoryResult<similarity::MatchMode> {
+        let mode_str = if self.match_mode.is_empty() {
+            "exact"
+        } else {
+            self.match_mode.as_str()
+        };
+        similarity::MatchMode::from_str(mode_str).ok_or_else(|| LingquMemoryError::InvalidValue {
+            field: "boundary_lookup.match_mode",
+            reason: "must be one of: exact, approximate, exact-then-approximate",
+        })
+    }
+
     pub fn validate(&self) -> MemoryResult<()> {
         required_str(&self.request_id, "boundary_lookup.request_id")?;
         self.model.validate()?;
@@ -6007,6 +6036,13 @@ impl BoundaryLookupRequest {
                 reason: "min_confidence_milli must be in [0, 1000]",
             });
         }
+        if self.min_match_score_milli > 1000 {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "boundary_lookup.min_match_score_milli",
+                reason: "min_match_score_milli must be in [0, 1000]",
+            });
+        }
+        self.parsed_match_mode()?;
         require_nonempty(&self.allowed_actions, "boundary_lookup.allowed_actions")?;
         Ok(())
     }
@@ -6093,6 +6129,8 @@ impl BoundaryObservationRecord {
         min_confidence_milli: u32,
         allowed_actions: Vec<ShortpathAction>,
         created_at_us: u64,
+        match_mode: String,
+        min_match_score_milli: u32,
     ) -> MemoryResult<BoundaryLookupRequest> {
         let request = BoundaryLookupRequest {
             request_id,
@@ -6103,6 +6141,8 @@ impl BoundaryObservationRecord {
             min_confidence_milli,
             allowed_actions,
             created_at_us,
+            match_mode,
+            min_match_score_milli,
         };
         request.validate()?;
         Ok(request)
@@ -6373,6 +6413,14 @@ pub struct ShortpathSupportRecord {
     pub reason: String,
     pub created_at_us: u64,
     pub version: u64,
+    #[serde(default)]
+    pub match_score_milli: u32,
+    #[serde(default)]
+    pub match_metric: String,
+    #[serde(default)]
+    pub match_mode: String,
+    #[serde(default)]
+    pub normalized_l2_milli: u32,
 }
 
 impl ShortpathSupportRecord {
@@ -6384,6 +6432,12 @@ impl ShortpathSupportRecord {
             return Err(LingquMemoryError::InvalidValue {
                 field: "shortpath_support.confidence_milli",
                 reason: "confidence_milli must be in [0, 1000]",
+            });
+        }
+        if self.match_score_milli > 1000 {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "shortpath_support.match_score_milli",
+                reason: "match_score_milli must be in [0, 1000]",
             });
         }
         match self.supported_action {
@@ -6458,6 +6512,14 @@ pub struct ShortpathDecisionRecord {
     pub reason: String,
     pub created_at_us: u64,
     pub version: u64,
+    #[serde(default)]
+    pub match_score_milli: u32,
+    #[serde(default)]
+    pub match_metric: String,
+    #[serde(default)]
+    pub match_mode: String,
+    #[serde(default)]
+    pub normalized_l2_milli: u32,
 }
 
 impl ShortpathDecisionRecord {
@@ -6472,6 +6534,12 @@ impl ShortpathDecisionRecord {
             return Err(LingquMemoryError::InvalidValue {
                 field: "shortpath_decision.confidence_milli",
                 reason: "confidence_milli must be in [0, 1000]",
+            });
+        }
+        if self.match_score_milli > 1000 {
+            return Err(LingquMemoryError::InvalidValue {
+                field: "shortpath_decision.match_score_milli",
+                reason: "match_score_milli must be in [0, 1000]",
             });
         }
         match self.action {
@@ -6965,6 +7033,10 @@ pub struct LingquMemoryService {
     paper_engram_modules: HashMap<String, PaperEngramModuleManifest>,
 }
 
+pub trait BoundaryPayloadResolver {
+    fn resolve_payload(&self, object_ref: &HotTensorObjectRef) -> Option<Vec<u8>>;
+}
+
 impl LingquMemoryService {
     pub fn new() -> Self {
         Self::default()
@@ -7442,6 +7514,15 @@ impl LingquMemoryService {
 
     pub fn boundary_observation(&self, observation_id: &str) -> Option<&BoundaryObservationRecord> {
         self.boundary_observations.get(observation_id)
+    }
+
+    pub fn find_boundary_observation_by_boundary(
+        &self,
+        boundary: &RangeBoundary,
+    ) -> Option<&BoundaryObservationRecord> {
+        self.boundary_observations
+            .values()
+            .find(|obs| obs.boundary == *boundary)
     }
 
     pub fn persist_boundary_observations_to_dfs(
@@ -8261,6 +8342,10 @@ impl LingquMemoryService {
         )
     }
 
+    pub fn execution_artifacts(&self) -> &HashMap<String, ExecutionArtifactObject> {
+        &self.execution_artifacts
+    }
+
     pub fn register_execution_artifact(
         &mut self,
         artifact: ExecutionArtifactObject,
@@ -8338,14 +8423,10 @@ impl LingquMemoryService {
             "paper_engram_hash_config.hash_config_id",
             "registered paper Engram hash config artifact is immutable",
         )?;
-        if self
-            .paper_engram_hash_configs
-            .values()
-            .any(|existing| {
-                existing.hash_config_ref == manifest.hash_config_ref
-                    && existing.hash_config_id != manifest.hash_config_id
-            })
-        {
+        if self.paper_engram_hash_configs.values().any(|existing| {
+            existing.hash_config_ref == manifest.hash_config_ref
+                && existing.hash_config_id != manifest.hash_config_id
+        }) {
             return Err(LingquMemoryError::InvalidValue {
                 field: "paper_engram_hash_config.hash_config_ref",
                 reason: "paper Engram hash config artifact path is already registered",
@@ -9003,6 +9084,7 @@ impl LingquMemoryService {
         now_us: u64,
     ) -> MemoryResult<BoundaryLookupResponse> {
         req.validate()?;
+        req.parsed_match_mode()?;
         if req.boundary.phase != RangeBoundaryPhase::RangeExit {
             return Err(LingquMemoryError::InvalidValue {
                 field: "boundary_lookup.boundary.phase",
@@ -9090,6 +9172,10 @@ impl LingquMemoryService {
                 reason: "verified_execution_artifact_support".to_string(),
                 created_at_us: now_us,
                 version: 1,
+                match_score_milli: 1000,
+                match_metric: "checksum".to_string(),
+                match_mode: "exact".to_string(),
+                normalized_l2_milli: 0,
             }
         } else {
             let support_id = format!("shortpath-support/{}", req.request_id);
@@ -9119,6 +9205,10 @@ impl LingquMemoryService {
                 reason: "no_verified_execution_artifact_support".to_string(),
                 created_at_us: now_us,
                 version: 1,
+                match_score_milli: 0,
+                match_metric: "".to_string(),
+                match_mode: "".to_string(),
+                normalized_l2_milli: 0,
             }
         };
         support.validate()?;
@@ -9131,6 +9221,214 @@ impl LingquMemoryService {
         };
         response.validate()?;
         Ok(response)
+    }
+
+    pub fn approximate_boundary_lookup(
+        &self,
+        req: &BoundaryLookupRequest,
+        payload_resolver: &dyn BoundaryPayloadResolver,
+        decode_policy: similarity::HiddenDecodePolicy,
+        min_match_score_milli: u32,
+        min_terminal_margin_milli: u32,
+        approximate_requires_verify: bool,
+        now_us: u64,
+    ) -> MemoryResult<Option<ShortpathSupportRecord>> {
+        if !req.parsed_match_mode()?.allows_approximate() {
+            return Ok(None);
+        }
+
+        let query_payload = match payload_resolver.resolve_payload(&req.hidden_state) {
+            Some(payload) => payload,
+            None => {
+                return Ok(Some(ShortpathSupportRecord {
+                    support_id: format!("shortpath-support/approximate-miss/{}", req.request_id),
+                    request_id: req.request_id.clone(),
+                    supported_action: ShortpathAction::Continue,
+                    artifact_id: None,
+                    producer_position: Some(req.boundary.position),
+                    target_layer_start: None,
+                    target_layer_end: None,
+                    confidence_milli: 0,
+                    verify_required: false,
+                    proof_checksum: 0,
+                    reason: "approximate_hidden_match_payload_unavailable".to_string(),
+                    created_at_us: now_us,
+                    version: 1,
+                    match_score_milli: 0,
+                    match_metric: "".to_string(),
+                    match_mode: "approximate".to_string(),
+                    normalized_l2_milli: 0,
+                }));
+            }
+        };
+
+        let allow_terminal = req
+            .allowed_actions
+            .iter()
+            .any(|action| *action == ShortpathAction::JumpToTerminal);
+        let allow_layer = req
+            .allowed_actions
+            .iter()
+            .any(|action| *action == ShortpathAction::JumpToLayer);
+
+        let mut prefiltered_count = 0usize;
+        let mut similarity_checked = 0usize;
+        let mut above_threshold = 0usize;
+        let mut margin_rejected = 0usize;
+        let mut best: Option<(u32, u32, &ExecutionArtifactObject)> = None;
+
+        for artifact in self.execution_artifacts.values() {
+            if artifact.state != ExecutionArtifactState::Verified {
+                continue;
+            }
+            if artifact.model != req.model {
+                continue;
+            }
+            if artifact.producer_boundary != req.boundary {
+                continue;
+            }
+            if artifact.confidence_milli < req.min_confidence_milli {
+                continue;
+            }
+            let action_allowed = match artifact.kind {
+                ExecutionArtifactKind::Logits => allow_terminal,
+                ExecutionArtifactKind::HiddenState => allow_layer,
+                ExecutionArtifactKind::KvCache => false,
+            };
+            if !action_allowed {
+                continue;
+            }
+            prefiltered_count += 1;
+
+            let candidate_observation =
+                match self.find_boundary_observation_by_boundary(&artifact.producer_boundary) {
+                    Some(obs) => obs,
+                    None => continue,
+                };
+
+            let candidate_payload =
+                match payload_resolver.resolve_payload(&candidate_observation.hidden_state) {
+                    Some(payload) => payload,
+                    None => continue,
+                };
+
+            match similarity::compute_hidden_similarity(
+                &query_payload,
+                &candidate_payload,
+                &req.hidden_state,
+                &candidate_observation.hidden_state,
+                decode_policy,
+            ) {
+                Ok((score_milli, _metric, normalized_l2)) => {
+                    similarity_checked += 1;
+                    let normalized_l2_milli = (normalized_l2 * 1000.0).round() as u32;
+                    if score_milli >= min_match_score_milli {
+                        above_threshold += 1;
+                        let margin_ok = if artifact.kind == ExecutionArtifactKind::Logits
+                            && min_terminal_margin_milli > 0
+                        {
+                            if let Some(meta) = &artifact.terminal_logits_metadata {
+                                meta.margin_milli >= min_terminal_margin_milli as u64
+                            } else {
+                                false
+                            }
+                        } else {
+                            true
+                        };
+                        if margin_ok {
+                            let should_replace =
+                                best.as_ref()
+                                    .map_or(true, |(best_score, _, best_artifact)| {
+                                        (score_milli, artifact.confidence_milli)
+                                            > (*best_score, best_artifact.confidence_milli)
+                                    });
+                            if should_replace {
+                                best = Some((score_milli, normalized_l2_milli, artifact));
+                            }
+                        } else {
+                            margin_rejected += 1;
+                        }
+                    }
+                }
+                Err(_err) => continue,
+            }
+        }
+
+        if let Some((score_milli, normalized_l2_milli, artifact)) = best {
+            let supported_action = match artifact.kind {
+                ExecutionArtifactKind::Logits => ShortpathAction::JumpToTerminal,
+                ExecutionArtifactKind::HiddenState => ShortpathAction::JumpToLayer,
+                _ => ShortpathAction::Continue,
+            };
+            let support_id = format!("shortpath-support/approximate/{}", req.request_id);
+            let proof_checksum = shortpath_support_checksum(
+                &support_id,
+                &req.request_id,
+                supported_action,
+                Some(&artifact.artifact_id),
+                Some(artifact.producer_boundary.position),
+                artifact.target_layer_start,
+                artifact.target_layer_end,
+                artifact.confidence_milli,
+                artifact.checksum,
+                now_us,
+            );
+            let (verify_required, reason) = if approximate_requires_verify {
+                (true, "approximate_hidden_match_requires_verify".to_string())
+            } else {
+                (false, "approximate_hidden_match_guarded_commit".to_string())
+            };
+            Ok(Some(ShortpathSupportRecord {
+                support_id,
+                request_id: req.request_id.clone(),
+                supported_action,
+                artifact_id: Some(artifact.artifact_id.clone()),
+                producer_position: Some(artifact.producer_boundary.position),
+                target_layer_start: Some(artifact.target_layer_start),
+                target_layer_end: Some(artifact.target_layer_end),
+                confidence_milli: artifact.confidence_milli,
+                verify_required,
+                proof_checksum,
+                reason,
+                created_at_us: now_us,
+                version: 1,
+                match_score_milli: score_milli,
+                match_metric: "cosine".to_string(),
+                match_mode: "approximate".to_string(),
+                normalized_l2_milli,
+            }))
+        } else {
+            let reason = if prefiltered_count == 0 {
+                "approximate_hidden_match_no_candidate".to_string()
+            } else if similarity_checked == 0 {
+                "approximate_hidden_match_payload_unavailable".to_string()
+            } else if above_threshold == 0 {
+                "approximate_hidden_match_below_threshold".to_string()
+            } else if margin_rejected > 0 {
+                "approximate_hidden_match_low_terminal_margin".to_string()
+            } else {
+                "approximate_hidden_match_no_candidate".to_string()
+            };
+            Ok(Some(ShortpathSupportRecord {
+                support_id: format!("shortpath-support/approximate-miss/{}", req.request_id),
+                request_id: req.request_id.clone(),
+                supported_action: ShortpathAction::Continue,
+                artifact_id: None,
+                producer_position: Some(req.boundary.position),
+                target_layer_start: None,
+                target_layer_end: None,
+                confidence_milli: 0,
+                verify_required: false,
+                proof_checksum: 0,
+                reason,
+                created_at_us: now_us,
+                version: 1,
+                match_score_milli: 0,
+                match_metric: "".to_string(),
+                match_mode: "approximate".to_string(),
+                normalized_l2_milli: 0,
+            }))
+        }
     }
 
     pub fn plan_prefetch(
@@ -10948,6 +11246,7 @@ mod tests {
             version: 1,
             created_at_us: 10,
             expires_at_us: Some(20),
+            terminal_logits_metadata: None,
         };
 
         assert_eq!(
@@ -11147,6 +11446,8 @@ mod tests {
                     min_confidence_milli: 900,
                     allowed_actions: vec![ShortpathAction::JumpToTerminal],
                     created_at_us: 11,
+                    match_mode: "exact".to_string(),
+                    min_match_score_milli: 1000,
                 },
                 12,
             )
@@ -11161,6 +11462,49 @@ mod tests {
                 .reason,
             "no_verified_execution_artifact_support"
         );
+    }
+
+    #[test]
+    fn boundary_lookup_rejects_unknown_match_mode() {
+        let mut service = LingquMemoryService::new();
+        let mut object_service =
+            LingquObjectServiceStub::new(LingquObjectServiceProfile::default());
+        let hidden_ref = publish_hot_tensor(
+            &mut object_service,
+            "hidden/range/node2/step0".to_string(),
+            f32_vec_to_le_bytes(&[0.1, 0.2, 0.3, 0.4]),
+            TensorDType::F32,
+            vec![1, 4],
+            1,
+            2,
+            10,
+        )
+        .unwrap();
+
+        let err = service
+            .boundary_lookup(
+                BoundaryLookupRequest {
+                    request_id: "boundary/invalid-mode".to_string(),
+                    model: sample_model_binding(),
+                    boundary: sample_range_boundary(),
+                    hidden_state: hidden_ref,
+                    engram_state_id: None,
+                    min_confidence_milli: 900,
+                    allowed_actions: vec![ShortpathAction::JumpToTerminal],
+                    created_at_us: 11,
+                    match_mode: "invalid".to_string(),
+                    min_match_score_milli: 1000,
+                },
+                12,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            LingquMemoryError::InvalidValue {
+                field: "boundary_lookup.match_mode",
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -11210,6 +11554,8 @@ mod tests {
                 900,
                 vec![ShortpathAction::JumpToTerminal],
                 101,
+                "exact".to_string(),
+                1000,
             )
             .expect("build lookup request");
         assert_eq!(request.hidden_state, hidden_ref);
@@ -11286,6 +11632,7 @@ mod tests {
             version: 1,
             created_at_us: 12,
             expires_at_us: Some(40),
+            terminal_logits_metadata: None,
         };
         service.register_execution_artifact(artifact).unwrap();
 
@@ -11300,6 +11647,8 @@ mod tests {
                     min_confidence_milli: 900,
                     allowed_actions: vec![ShortpathAction::JumpToTerminal],
                     created_at_us: 13,
+                    match_mode: "exact".to_string(),
+                    min_match_score_milli: 1000,
                 },
                 14,
             )
@@ -13609,6 +13958,7 @@ mod tests {
                 version: 1,
                 created_at_us: 12,
                 expires_at_us: Some(40),
+                terminal_logits_metadata: None,
             })
             .unwrap();
 
@@ -13623,6 +13973,8 @@ mod tests {
                     min_confidence_milli: 900,
                     allowed_actions: vec![ShortpathAction::JumpToTerminal],
                     created_at_us: 13,
+                    match_mode: "exact".to_string(),
+                    min_match_score_milli: 1000,
                 },
                 14,
             )
@@ -13684,6 +14036,7 @@ mod tests {
                 version: 1,
                 created_at_us: 12,
                 expires_at_us: Some(40),
+                terminal_logits_metadata: None,
             })
             .unwrap();
 
@@ -13719,6 +14072,8 @@ mod tests {
                         min_confidence_milli: 900,
                         allowed_actions: vec![ShortpathAction::JumpToTerminal],
                         created_at_us: 13,
+                        match_mode: "exact".to_string(),
+                        min_match_score_milli: 1000,
                     },
                     14,
                 )
@@ -13763,6 +14118,8 @@ mod tests {
                     min_confidence_milli: 900,
                     allowed_actions: vec![ShortpathAction::JumpToTerminal],
                     created_at_us: 13,
+                    match_mode: "exact".to_string(),
+                    min_match_score_milli: 1000,
                 },
                 14,
             )
@@ -14094,6 +14451,7 @@ mod tests {
             version: 1,
             created_at_us: 10,
             expires_at_us: Some(100),
+            terminal_logits_metadata: None,
         };
         let prefix_artifact = PrefixCacheArtifact {
             artifact_id: "prefix-cache/restart/8".to_string(),
@@ -14175,6 +14533,8 @@ mod tests {
                     min_confidence_milli: 900,
                     allowed_actions: vec![ShortpathAction::JumpToTerminal],
                     created_at_us: 20,
+                    match_mode: "exact".to_string(),
+                    min_match_score_milli: 1000,
                 },
                 21,
             )
@@ -15624,6 +15984,7 @@ mod tests {
             version: 1,
             created_at_us: 10,
             expires_at_us: Some(100),
+            terminal_logits_metadata: None,
         }
     }
 

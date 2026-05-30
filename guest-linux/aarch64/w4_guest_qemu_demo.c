@@ -1934,6 +1934,9 @@ struct w4_qwen3_shortpath_stream_entry {
     uint32_t target_layer_start;
     uint32_t target_layer_end;
     char artifact_ref[160];
+    char match_mode[32];
+    uint64_t match_score_milli;
+    bool verify_required;
 };
 
 struct w4_qwen3_shortpath_kv_stream_entry {
@@ -2007,6 +2010,9 @@ struct w4_qwen3_memory_boundary_lookup_result {
     const char *artifact_id;
     struct lingqu_obmm_object_ref_wire terminal_logits_ref;
     struct w4_qwen3_terminal_token_record terminal_logits_record;
+    const char *match_mode;
+    uint64_t match_score_milli;
+    bool verify_required;
 };
 
 enum w4_qwen3_boundary_controller_action {
@@ -5729,7 +5735,7 @@ static int parse_qwen3_w5_shortpath_stream_entry(
     uint64_t *count)
 {
     char entry_copy[W4_QWEN3_W5_SHORTPATH_STREAM_LINE_BYTES];
-    char *fields[9];
+    char *fields[12];
     char *save_field = NULL;
     char *field = NULL;
     uint32_t field_count = 0U;
@@ -5755,14 +5761,14 @@ static int parse_qwen3_w5_shortpath_stream_entry(
     snprintf(entry_copy, sizeof(entry_copy), "%s", entry_text);
     memset(&parsed, 0, sizeof(parsed));
     field = strtok_r(entry_copy, ":", &save_field);
-    while (field && field_count < 9U) {
+    while (field && field_count < 12U) {
         fields[field_count++] = field;
         field = strtok_r(NULL, ":", &save_field);
     }
-    if (field != NULL || field_count != 9U) {
+    if (field_count < 9U || field_count > 12U) {
         fprintf(stderr,
                 "[w4_guest] fail qwen3 w5 shortpath stream entry invalid"
-                " entry_index=%" PRIu64 " fields=%u expected=9\n",
+                " entry_index=%" PRIu64 " fields=%u expected=9-12\n",
                 *count,
                 field_count);
         return -1;
@@ -5803,6 +5809,26 @@ static int parse_qwen3_w5_shortpath_stream_entry(
         return -1;
     }
     snprintf(parsed.artifact_ref, sizeof(parsed.artifact_ref), "%s", fields[6]);
+    if (field_count >= 10) {
+        snprintf(parsed.match_mode, sizeof(parsed.match_mode), "%s", fields[9]);
+    } else {
+        snprintf(parsed.match_mode, sizeof(parsed.match_mode), "%s", "exact");
+    }
+    if (field_count >= 11) {
+        if (parse_u64_field("shortpath_stream_match_score_milli",
+                            fields[10],
+                            &parsed.match_score_milli) != 0) {
+            parsed.match_score_milli = 1000;
+        }
+    } else {
+        parsed.match_score_milli = 1000;
+    }
+    if (field_count >= 12) {
+        parsed.verify_required = (strcmp(fields[11], "1") == 0 ||
+                                  strcmp(fields[11], "true") == 0);
+    } else {
+        parsed.verify_required = false;
+    }
     parsed.stream_index = *count;
     parsed.valid = true;
     config->shortpath_stream_entries[*count] = parsed;
@@ -7714,6 +7740,9 @@ static int qwen3_w5_memory_service_lookup_boundary(
         result_out->decision_id =
             config->boundary_registry_loaded ? registry_source : "stream";
         result_out->artifact_id = "";
+        result_out->match_mode = entry->match_mode;
+        result_out->match_score_milli = entry->match_score_milli;
+        result_out->verify_required = entry->verify_required;
         if (config->boundary_registry_loaded) {
             printf("[w4_guest] stage qwen3_memory_service_boundary_lookup_response"
                    " node=%u step=%" PRIu64 " layers=[%u,%u)"
@@ -7723,6 +7752,8 @@ static int qwen3_w5_memory_service_lookup_boundary(
                    " registry_step=%" PRIu64
                    " registry_position=%" PRIu64
                    " registry_layers=[%u,%u)"
+                   " match_mode=%s match_score_milli=%" PRIu64
+                   " verify_required=%s"
                    " confidence=verified"
                    " source=lingqu_memory_service target=boundary_controller"
                    " mode=%s backend=%s status=hit\n",
@@ -7737,6 +7768,9 @@ static int qwen3_w5_memory_service_lookup_boundary(
                    entry->producer_position,
                    entry->producer_layer_start,
                    entry->producer_layer_end,
+                   entry->match_mode,
+                   entry->match_score_milli,
+                   entry->verify_required ? "true" : "false",
                    config->shortpath_lookup_mode,
                    config->boundary_lookup_backend);
         } else {
@@ -7748,6 +7782,8 @@ static int qwen3_w5_memory_service_lookup_boundary(
                    " stream_step=%" PRIu64
                    " stream_position=%" PRIu64
                    " stream_layers=[%u,%u)"
+                   " match_mode=%s match_score_milli=%" PRIu64
+                   " verify_required=%s"
                    " confidence=verified"
                    " source=lingqu_memory_service target=boundary_controller"
                    " mode=%s backend=%s status=hit\n",
@@ -7761,6 +7797,9 @@ static int qwen3_w5_memory_service_lookup_boundary(
                    entry->producer_position,
                    entry->producer_layer_start,
                    entry->producer_layer_end,
+                   entry->match_mode,
+                   entry->match_score_milli,
+                   entry->verify_required ? "true" : "false",
                    config->shortpath_lookup_mode,
                    config->boundary_lookup_backend);
         }
@@ -11548,6 +11587,25 @@ decode_round_start:
             }
             if (boundary_result.action ==
                 W4_QWEN3_BOUNDARY_CONTROLLER_JUMP_TO_TERMINAL) {
+                if (boundary_result.lookup.verify_required) {
+                    printf("[w4_guest] stage qwen3_boundary_controller_lookup"
+                           " node=%u step=%" PRIu64 " layers=[%u,%u)"
+                           " action=continue"
+                           " reason=approximate_hidden_match_requires_verify"
+                           " match_mode=%s match_score_milli=%" PRIu64
+                           " verify_required=true"
+                           " source=boundary_controller target=lingqu_memory_service"
+                           " mode=%s backend=%s status=miss\n",
+                           dispatch_node + 1U,
+                           guest_decode_step,
+                           round_layer_start,
+                           round_layer_end,
+                           boundary_result.lookup.match_mode,
+                           boundary_result.lookup.match_score_milli,
+                           qwen3_memory_decision_config.shortpath_lookup_mode,
+                           qwen3_memory_decision_config.boundary_lookup_backend);
+                    goto qwen3_shortpath_publish_runtime_range;
+                }
                 range_publish_start_ms = monotonic_ms();
                 if (w4_db_obmm_service_v0_publish_runtime_range_kv_state(
                         &db_service,

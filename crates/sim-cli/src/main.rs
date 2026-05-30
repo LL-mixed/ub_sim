@@ -8,23 +8,24 @@ use sim_core::{
 };
 #[cfg(test)]
 use sim_memory::LingquMemoryDurableStoreSnapshot;
-use sim_memory::{
-    ArtifactAccessKind, ArtifactAccessRecord, BoundaryLookupRequest, EmbeddingRow,
-    EmbeddingSegment, EngramStateMaterializeFromBlockReq, EngramStateObject,
-    ExecutionArtifactObject, HotMemoryMaterializeFromQueryReq, HotMemoryMaterializeReq,
-    HotMemoryStateObject, LingquBlockPayloadRef, LingquDfsPath, LingquMemoryDurableStore,
-    LingquMemoryService, MemoryCatalogSnapshot, MemoryChunk, MemoryContentType,
-    MemoryCorpusCatalog, MemoryPiiState, MemoryQuery, MemoryRecord, MemoryRecordState,
-    MemoryRetentionPolicy, MemoryScope, MemorySecurityLabel, MemorySourceKind, MemoryTrustLevel,
-    MemoryVisibility, PaperEngramEvalReportManifest, PaperEngramGateManifest,
-    PaperEngramHashConfigManifest, PaperEngramModuleManifest, PaperEngramQualityClaim,
-    PaperEngramRuntimeArtifacts, PaperEngramTableRowBlockRequest,
-    PaperEngramTableRowPrefetchRequest, PaperEngramTableShardManifest,
-    PaperEngramTokenizerProjectionManifest, PaperEngramTrainingRecipeManifest, PrefetchPlanRequest,
-    PrefixCacheArtifact, PrefixCacheLookupRequest, QueryResult, VectorIndexKind, VectorIndexObject,
-};
 #[cfg(test)]
 use sim_memory::PaperEngramTrainingMode;
+use sim_memory::{
+    similarity::HiddenDecodePolicy, ArtifactAccessKind, ArtifactAccessRecord,
+    BoundaryLookupRequest, BoundaryPayloadResolver, EmbeddingRow, EmbeddingSegment,
+    EngramStateMaterializeFromBlockReq, EngramStateObject, ExecutionArtifactObject,
+    HotMemoryMaterializeFromQueryReq, HotMemoryMaterializeReq, HotMemoryStateObject,
+    LingquBlockPayloadRef, LingquDfsPath, LingquMemoryDurableStore, LingquMemoryService,
+    MemoryCatalogSnapshot, MemoryChunk, MemoryContentType, MemoryCorpusCatalog, MemoryPiiState,
+    MemoryQuery, MemoryRecord, MemoryRecordState, MemoryRetentionPolicy, MemoryScope,
+    MemorySecurityLabel, MemorySourceKind, MemoryTrustLevel, MemoryVisibility,
+    PaperEngramEvalReportManifest, PaperEngramGateManifest, PaperEngramHashConfigManifest,
+    PaperEngramModuleManifest, PaperEngramQualityClaim, PaperEngramRuntimeArtifacts,
+    PaperEngramTableRowBlockRequest, PaperEngramTableRowPrefetchRequest,
+    PaperEngramTableShardManifest, PaperEngramTokenizerProjectionManifest,
+    PaperEngramTrainingRecipeManifest, PrefetchPlanRequest, PrefixCacheArtifact,
+    PrefixCacheLookupRequest, QueryResult, VectorIndexKind, VectorIndexObject,
+};
 use sim_models::qwen3_dense_reference::{
     build_tokenizer_projection_from_tokenizer_path, token_piece_bytes_from_tokenizer_path,
     token_piece_decode_bytes, tokenize_prompt_from_tokenizer_path, tokenizer_projection_checksum,
@@ -71,9 +72,10 @@ use sim_services::{
     },
     object::{
         LingquObjectKind, LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
-        LingquObjectResolveReq, LingquObjectServiceProfile, LingquObjectServiceSnapshot,
-        LingquObjectServiceStub, LingquObjectState, LingquObjectVersionSelector,
-        LingquObmmObjectRefWire, LingquPayloadBackend, LingquPayloadPlacement,
+        LingquObjectRecord, LingquObjectResolveReq, LingquObjectServiceProfile,
+        LingquObjectServiceSnapshot, LingquObjectServiceStub, LingquObjectState,
+        LingquObjectVersionSelector, LingquObmmObjectRefWire, LingquPayloadBackend,
+        LingquPayloadPlacement,
     },
     shmem::{ShmemGetReq, ShmemPutReq},
 };
@@ -296,6 +298,11 @@ struct Qwen3GuestDecodeLoopCliArgs {
     memory_runtime_boundary_lookup: bool,
     memory_post_run_promote: bool,
     memory_online_boundary_lookup: bool,
+    shortpath_match_mode: String,
+    min_match_score_milli: u32,
+    min_terminal_margin_milli: u32,
+    approximate_requires_verify: bool,
+    min_source_confidence_milli: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -699,8 +706,22 @@ where
             let mut memory_runtime_boundary_lookup = false;
             let mut memory_post_run_promote = false;
             let mut memory_online_boundary_lookup = false;
+            let mut shortpath_match_mode = "exact".to_string();
+            let mut min_match_score_milli: u32 = 850;
+            let mut min_terminal_margin_milli: u32 = 500;
+            let mut approximate_requires_verify = true;
+            let mut min_source_confidence_milli: u32 = 900;
             let mut positionals = Vec::new();
             let mut pending = args.peekable();
+            let parse_match_mode = |mode: &str| -> anyhow::Result<String> {
+                sim_memory::similarity::MatchMode::from_str(mode).map(|_| mode.to_string()).ok_or_else(
+                        || {
+                            anyhow::anyhow!(
+                                "unknown shortpath match mode: {mode}, expected exact|approximate|exact-then-approximate"
+                            )
+                        },
+                    )
+            };
 
             while let Some(value) = pending.next() {
                 let text = value.to_string_lossy();
@@ -996,6 +1017,50 @@ where
                 } else if let Some(value) = text.strip_prefix("--memory-online-boundary-lookup=") {
                     memory_online_boundary_lookup =
                         parse_cli_bool("--memory-online-boundary-lookup", value)?;
+                } else if text == "--shortpath-match-mode" {
+                    let next = pending.next().ok_or_else(|| {
+                        anyhow::anyhow!("--shortpath-match-mode requires a value")
+                    })?;
+                    shortpath_match_mode = parse_match_mode(&next.to_string_lossy())?;
+                } else if let Some(value) = text.strip_prefix("--shortpath-match-mode=") {
+                    shortpath_match_mode = parse_match_mode(value)?;
+                } else if text == "--min-match-score-milli" {
+                    let next = pending.next().ok_or_else(|| {
+                        anyhow::anyhow!("--min-match-score-milli requires a value")
+                    })?;
+                    min_match_score_milli =
+                        parse_nonnegative_u64("--min-match-score-milli", &next.to_string_lossy())?
+                            as u32;
+                } else if let Some(value) = text.strip_prefix("--min-match-score-milli=") {
+                    min_match_score_milli =
+                        parse_nonnegative_u64("--min-match-score-milli", value)? as u32;
+                } else if text == "--min-terminal-margin-milli" {
+                    let next = pending.next().ok_or_else(|| {
+                        anyhow::anyhow!("--min-terminal-margin-milli requires a value")
+                    })?;
+                    min_terminal_margin_milli = parse_nonnegative_u64(
+                        "--min-terminal-margin-milli",
+                        &next.to_string_lossy(),
+                    )? as u32;
+                } else if let Some(value) = text.strip_prefix("--min-terminal-margin-milli=") {
+                    min_terminal_margin_milli =
+                        parse_nonnegative_u64("--min-terminal-margin-milli", value)? as u32;
+                } else if text == "--approximate-requires-verify" {
+                    approximate_requires_verify = true;
+                } else if let Some(value) = text.strip_prefix("--approximate-requires-verify=") {
+                    approximate_requires_verify =
+                        parse_cli_bool("--approximate-requires-verify", value)?;
+                } else if text == "--min-source-confidence-milli" {
+                    let next = pending.next().ok_or_else(|| {
+                        anyhow::anyhow!("--min-source-confidence-milli requires a value")
+                    })?;
+                    min_source_confidence_milli = parse_nonnegative_u64(
+                        "--min-source-confidence-milli",
+                        &next.to_string_lossy(),
+                    )? as u32;
+                } else if let Some(value) = text.strip_prefix("--min-source-confidence-milli=") {
+                    min_source_confidence_milli =
+                        parse_nonnegative_u64("--min-source-confidence-milli", value)? as u32;
                 } else if text == "--memory-owner-entity" {
                     let next = pending
                         .next()
@@ -1273,6 +1338,11 @@ where
                 memory_runtime_boundary_lookup,
                 memory_post_run_promote,
                 memory_online_boundary_lookup,
+                shortpath_match_mode,
+                min_match_score_milli,
+                min_terminal_margin_milli,
+                approximate_requires_verify,
+                min_source_confidence_milli,
             }))
         }
         _ => Ok(None),
@@ -2381,10 +2451,7 @@ fn run_lingqu_memory_build_engram_hash_config_cli(args: &[String]) -> anyhow::Re
     println!("  table_rows: {}", config.table_rows);
     println!("  seed: {:#x}", config.seed);
     println!("  algorithm: {}", config.algorithm);
-    println!(
-        "  fnv1a_offset_basis: {:#x}",
-        config.fnv1a_offset_basis
-    );
+    println!("  fnv1a_offset_basis: {:#x}", config.fnv1a_offset_basis);
     println!("  fnv1a_prime: {:#x}", config.fnv1a_prime);
     Ok(())
 }
@@ -2437,7 +2504,10 @@ fn run_lingqu_memory_build_tokenizer_projection_cli(args: &[String]) -> anyhow::
     );
     println!("  compression_milli: {}", projection.compression_milli);
     println!("  merged_token_count: {}", projection.merged_token_count);
-    println!("  merge_special_tokens: {}", projection.merge_special_tokens);
+    println!(
+        "  merge_special_tokens: {}",
+        projection.merge_special_tokens
+    );
     println!(
         "  collision_classes: {}",
         projection.collision_classes.len()
@@ -6190,6 +6260,8 @@ fn run_lingqu_memory_boundary_request_from_w5_summary_cli(args: &[String]) -> an
         min_confidence_milli: min_confidence_milli as u32,
         allowed_actions,
         created_at_us,
+        match_mode: "exact".to_string(),
+        min_match_score_milli: 1000,
     };
     request
         .validate()
@@ -6364,6 +6436,10 @@ fn run_lingqu_memory_boundary_lookup_from_observation_cli(args: &[String]) -> an
         min_confidence_milli as u32,
         allowed_actions,
         now_us,
+        "exact".to_string(),
+        1000,
+        500,
+        true,
     )?;
     let response_bytes =
         serde_json::to_vec_pretty(&response).context("encode boundary lookup response")?;
@@ -6420,6 +6496,10 @@ fn run_w5_memory_boundary_lookup_from_observation(
     min_confidence_milli: u32,
     allowed_actions: Vec<sim_memory::ShortpathAction>,
     now_us: u64,
+    match_mode: String,
+    min_match_score_milli: u32,
+    min_terminal_margin_milli: u32,
+    approximate_requires_verify: bool,
 ) -> anyhow::Result<(
     sim_memory::BoundaryLookupResponse,
     sim_memory::ShortpathDecisionRecord,
@@ -6431,8 +6511,18 @@ fn run_w5_memory_boundary_lookup_from_observation(
         min_confidence_milli,
         allowed_actions,
         now_us,
+        match_mode,
+        min_match_score_milli,
     )?;
-    run_w5_memory_boundary_lookup_request(store_path, request, now_us)
+    run_w5_memory_boundary_lookup_request_with_registry_requirement(
+        store_path,
+        request,
+        now_us,
+        true,
+        None,
+        min_terminal_margin_milli,
+        approximate_requires_verify,
+    )
 }
 
 fn w5_memory_boundary_lookup_request_from_observation(
@@ -6442,6 +6532,8 @@ fn w5_memory_boundary_lookup_request_from_observation(
     min_confidence_milli: u32,
     allowed_actions: Vec<sim_memory::ShortpathAction>,
     now_us: u64,
+    match_mode: String,
+    min_match_score_milli: u32,
 ) -> anyhow::Result<BoundaryLookupRequest> {
     let mut durable_store = load_lingqu_memory_durable_store(store_path)?;
     let observations = durable_store
@@ -6464,8 +6556,43 @@ fn w5_memory_boundary_lookup_request_from_observation(
             min_confidence_milli,
             allowed_actions,
             request_created_at_us,
+            match_mode,
+            min_match_score_milli,
         )
         .map_err(|err| anyhow::anyhow!("build lookup request from observation: {err}"))
+}
+
+struct ObjectServiceResolver<'a>(&'a LingquObjectServiceStub);
+
+impl<'a> BoundaryPayloadResolver for ObjectServiceResolver<'a> {
+    fn resolve_payload(&self, object_ref: &sim_memory::HotTensorObjectRef) -> Option<Vec<u8>> {
+        self.0.get_copy(
+            &object_ref.object_key,
+            LingquObjectVersionSelector::Exact(object_ref.version),
+        )
+    }
+}
+
+fn w5_try_approximate_boundary_lookup(
+    memory_service: &sim_memory::LingquMemoryService,
+    request: &BoundaryLookupRequest,
+    object_service: &LingquObjectServiceStub,
+    decode_policy: HiddenDecodePolicy,
+    min_match_score_milli: u32,
+    min_terminal_margin_milli: u32,
+    approximate_requires_verify: bool,
+) -> anyhow::Result<Option<sim_memory::ShortpathSupportRecord>> {
+    memory_service
+        .approximate_boundary_lookup(
+            request,
+            &ObjectServiceResolver(object_service),
+            decode_policy,
+            min_match_score_milli,
+            min_terminal_margin_milli,
+            approximate_requires_verify,
+            0,
+        )
+        .map_err(|e| anyhow::anyhow!(e))
 }
 
 fn run_w5_memory_boundary_lookup_request(
@@ -6477,7 +6604,7 @@ fn run_w5_memory_boundary_lookup_request(
     sim_memory::ShortpathDecisionRecord,
 )> {
     run_w5_memory_boundary_lookup_request_with_registry_requirement(
-        store_path, request, now_us, true,
+        store_path, request, now_us, true, None, 500, true,
     )
 }
 
@@ -6486,6 +6613,9 @@ fn run_w5_memory_boundary_lookup_request_with_registry_requirement(
     request: BoundaryLookupRequest,
     now_us: u64,
     require_execution_manifest: bool,
+    object_service: Option<&LingquObjectServiceStub>,
+    min_terminal_margin_milli: u32,
+    approximate_requires_verify: bool,
 ) -> anyhow::Result<(
     sim_memory::BoundaryLookupResponse,
     sim_memory::ShortpathDecisionRecord,
@@ -6510,9 +6640,48 @@ fn run_w5_memory_boundary_lookup_request_with_registry_requirement(
     }
     rebuild_lingqu_memory_shortpath_supports(&mut memory_service, &mut durable_store)
         .context("rebuild shortpath support audit")?;
-    let response = memory_service
-        .boundary_lookup(request, effective_now_us)
+    let mut response = memory_service
+        .boundary_lookup(request.clone(), effective_now_us)
         .context("run boundary lookup")?;
+
+    let match_mode = if request.match_mode.is_empty() {
+        sim_memory::similarity::MatchMode::Exact
+    } else {
+        sim_memory::similarity::MatchMode::from_str(&request.match_mode)
+            .unwrap_or(sim_memory::similarity::MatchMode::Exact)
+    };
+
+    if response.support.supported_action == sim_memory::ShortpathAction::Continue
+        && object_service.is_some()
+        && match_mode.allows_approximate()
+    {
+        if let Some(object_service) = object_service {
+            let approximate_support = w5_try_approximate_boundary_lookup(
+                &memory_service,
+                &request,
+                object_service,
+                // TODO: W5 hidden payloads are currently Opaque (2 bytes/element).
+                // This hardcoded F16 policy is a temporary adapter until sim-uapi
+                // produces a typed F32 hidden sidecar artifact (see plan doc).
+                HiddenDecodePolicy::F16,
+                request.min_match_score_milli,
+                min_terminal_margin_milli,
+                approximate_requires_verify,
+            )
+            .context("try approximate boundary lookup")?;
+            if let Some(mut support) = approximate_support {
+                support.created_at_us = effective_now_us;
+                if support.supported_action != sim_memory::ShortpathAction::Continue {
+                    response.artifact = memory_service
+                        .execution_artifacts()
+                        .get(support.artifact_id.as_deref().unwrap_or(""))
+                        .cloned();
+                }
+                response.support = support;
+            }
+        }
+    }
+
     let planner_decision = w5_plan_shortpath_decision_from_memory_support(&response)
         .context("plan W5 shortpath execution decision from Memory Service support")?;
     memory_service
@@ -6541,6 +6710,12 @@ fn run_w5_runtime_boundary_lookups(
     store_path: &Path,
     observation_ids: &[String],
     now_us: u64,
+    object_service: Option<&LingquObjectServiceStub>,
+    match_mode: &str,
+    min_match_score_milli: u32,
+    min_terminal_margin_milli: u32,
+    approximate_requires_verify: bool,
+    min_source_confidence_milli: u32,
 ) -> anyhow::Result<W5RuntimeBoundaryLookupReport> {
     if observation_ids.is_empty() {
         anyhow::bail!("runtime boundary lookup requires at least one boundary observation");
@@ -6552,16 +6727,24 @@ fn run_w5_runtime_boundary_lookups(
             store_path,
             observation_id,
             None,
-            900,
+            min_source_confidence_milli,
             vec![sim_memory::ShortpathAction::JumpToTerminal],
             now_us,
+            match_mode.to_string(),
+            min_match_score_milli,
         )
         .with_context(|| {
             format!("build runtime boundary lookup request from observation {observation_id}")
         })?;
         let (_response, decision) =
             run_w5_memory_boundary_lookup_request_with_registry_requirement(
-                store_path, request, now_us, false,
+                store_path,
+                request,
+                now_us,
+                false,
+                object_service,
+                min_terminal_margin_milli,
+                approximate_requires_verify,
             )
             .with_context(|| {
                 format!(
@@ -7012,6 +7195,13 @@ fn run_lingqu_memory_register_terminal_logits_artifact_from_w5_summary_cli(
         version: 1,
         created_at_us,
         expires_at_us,
+        terminal_logits_metadata: Some(sim_memory::TerminalLogitsMetadata {
+            sampled_token: terminal.sampled_token,
+            runner_up_token: terminal.runner_up_token,
+            margin_milli: terminal.margin_milli,
+            logits_checksum: terminal.logits_checksum,
+            full_vocab_checked: terminal.full_vocab_checked,
+        }),
     };
     artifact
         .validate()
@@ -7217,6 +7407,13 @@ fn run_lingqu_memory_promote_terminal_shortpath_artifacts_from_w5_summary_cli(
             version: 1,
             created_at_us,
             expires_at_us,
+            terminal_logits_metadata: Some(sim_memory::TerminalLogitsMetadata {
+                sampled_token: terminal.sampled_token,
+                runner_up_token: terminal.runner_up_token,
+                margin_milli: terminal.margin_milli,
+                logits_checksum: terminal.logits_checksum,
+                full_vocab_checked: terminal.full_vocab_checked,
+            }),
         };
         artifact
             .validate()
@@ -7284,6 +7481,7 @@ fn run_lingqu_memory_promote_terminal_shortpath_artifacts_from_w5_summary_cli(
             version: 1,
             created_at_us,
             expires_at_us,
+            terminal_logits_metadata: None,
         };
         artifact
             .validate()
@@ -7309,6 +7507,10 @@ fn run_lingqu_memory_promote_terminal_shortpath_artifacts_from_w5_summary_cli(
             min_confidence_milli as u32,
             vec![sim_memory::ShortpathAction::JumpToTerminal],
             now_us,
+            "exact".to_string(),
+            1000,
+            500,
+            true,
         )
         .with_context(|| {
             format!(
@@ -7888,7 +8090,7 @@ fn run_lingqu_memory_list_shortpath_decisions_cli(args: &[String]) -> anyhow::Re
     println!("  decisions: {}", filtered_decisions.len());
     for decision in filtered_decisions {
         println!(
-            "  decision id={} request_id={} support_id={} action={:?} artifact={} confidence_milli={} verify_required={} proof_checksum={:#x} created_at_us={}",
+            "  decision id={} request_id={} support_id={} action={:?} artifact={} confidence_milli={} verify_required={} proof_checksum={:#x} created_at_us={} match_mode={} match_score_milli={} match_metric={} normalized_l2_milli={}",
             decision.decision_id,
             decision.request_id,
             decision.support_id.as_deref().unwrap_or(""),
@@ -7897,7 +8099,11 @@ fn run_lingqu_memory_list_shortpath_decisions_cli(args: &[String]) -> anyhow::Re
             decision.confidence_milli,
             decision.verify_required,
             decision.proof_checksum,
-            decision.created_at_us
+            decision.created_at_us,
+            decision.match_mode,
+            decision.match_score_milli,
+            decision.match_metric,
+            decision.normalized_l2_milli,
         );
     }
     Ok(())
@@ -7936,7 +8142,7 @@ fn run_lingqu_memory_list_shortpath_supports_cli(args: &[String]) -> anyhow::Res
     println!("  supports: {}", filtered_supports.len());
     for support in filtered_supports {
         println!(
-            "  support id={} request_id={} supported_action={:?} artifact={} confidence_milli={} verify_required={} proof_checksum={:#x} created_at_us={}",
+            "  support id={} request_id={} supported_action={:?} artifact={} confidence_milli={} verify_required={} proof_checksum={:#x} created_at_us={} match_mode={} match_score_milli={} match_metric={} normalized_l2_milli={}",
             support.support_id,
             support.request_id,
             support.supported_action,
@@ -7944,7 +8150,11 @@ fn run_lingqu_memory_list_shortpath_supports_cli(args: &[String]) -> anyhow::Res
             support.confidence_milli,
             support.verify_required,
             support.proof_checksum,
-            support.created_at_us
+            support.created_at_us,
+            support.match_mode,
+            support.match_score_milli,
+            support.match_metric,
+            support.normalized_l2_milli,
         );
     }
     Ok(())
@@ -8380,6 +8590,10 @@ fn load_w5_memory_decisions_from_store(
                 900,
                 vec![sim_memory::ShortpathAction::JumpToTerminal],
                 0,
+                "exact".to_string(),
+                1000,
+                500,
+                true,
             )
             .context("run W5 Memory Service boundary lookup from observation")?;
             Some(decision)
@@ -8457,6 +8671,10 @@ fn load_w5_memory_decisions_from_store(
             900,
             vec![sim_memory::ShortpathAction::JumpToTerminal],
             0,
+            "exact".to_string(),
+            1000,
+            500,
+            true,
         )
         .with_context(|| {
             format!("run W5 Memory Service boundary lookup from observation {observation_id}")
@@ -8814,6 +9032,10 @@ fn w5_plan_shortpath_decision_from_memory_support(
         reason: format!("w5_planner_accepted_memory_support:{}", support.reason),
         created_at_us: support.created_at_us,
         version: 1,
+        match_score_milli: support.match_score_milli,
+        match_metric: support.match_metric.clone(),
+        match_mode: support.match_mode.clone(),
+        normalized_l2_milli: support.normalized_l2_milli,
     };
     decision
         .validate()
@@ -8868,6 +9090,10 @@ fn w5_runtime_service_decision_from_artifact(
         reason: "runtime_service_catalog_verified_execution_artifact".to_string(),
         created_at_us: artifact.created_at_us,
         version: 1,
+        match_score_milli: 0,
+        match_metric: "".to_string(),
+        match_mode: "".to_string(),
+        normalized_l2_milli: 0,
     };
     decision
         .validate()
@@ -10630,7 +10856,7 @@ fn w5_memory_shortpath_stream_env_from_refs(
             let target_end = entry.decision.target_layer_end?;
             let producer_position = entry.decision.producer_position?;
             Some(format!(
-                "{}:{}:{}:{}:{}:{}:{}:{}:{}",
+                "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
                 artifact.producer_boundary.step_index,
                 producer_position,
                 artifact.producer_boundary.layer_start,
@@ -10639,7 +10865,14 @@ fn w5_memory_shortpath_stream_env_from_refs(
                 target_end,
                 published.ref_hex,
                 artifact.boundary_hidden_fingerprint.bytes,
-                artifact.boundary_hidden_fingerprint.checksum
+                artifact.boundary_hidden_fingerprint.checksum,
+                entry.decision.match_mode,
+                entry.decision.match_score_milli,
+                if entry.decision.verify_required {
+                    "1"
+                } else {
+                    "0"
+                }
             ))
         })
         .collect()
@@ -14898,15 +15131,16 @@ mod tests {
         w5_memory_shortpath_kv_stream_env_from_refs, w5_memory_shortpath_stream_env,
         w5_memory_should_publish_engram_state, w5_object_service_payload_index_path,
         w5_paper_engram_eval_evidence_from_summary, w5_runtime_tensor_payload_checksum,
-        EngramSimtArtifactConfig, LingquDurableSim, LingquDurableSimSnapshot,
-        LingquMemoryDurableStore, LingquMemoryDurableStoreSnapshot, LingquObjectKind,
-        LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
-        LingquObjectServiceStub, LingquObjectVersionSelector, LingquPayloadBackend,
-        LingquPayloadPlacement, MemoryCatalogSnapshot, PaperEngramGateManifest,
-        PaperEngramModuleListFilters, PaperEngramTableShardManifest, PaperEngramTrainingMode,
-        QueryResult, Qwen3CandidateRecord, Qwen3DecodeReportVerbosity, Qwen3DenseGuestRuntime,
-        Qwen3DenseProfile, Qwen3EngramConfig, Qwen3EngramContextOp, Qwen3EngramMode,
-        Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
+        w5_try_approximate_boundary_lookup, EngramSimtArtifactConfig, LingquDurableSim,
+        LingquDurableSimSnapshot, LingquMemoryDurableStore, LingquMemoryDurableStoreSnapshot,
+        LingquObjectKind, LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
+        LingquObjectRecord, LingquObjectServiceProfile, LingquObjectServiceSnapshot,
+        LingquObjectServiceStub, LingquObjectState, LingquObjectVersionSelector,
+        LingquPayloadBackend, LingquPayloadPlacement, MemoryCatalogSnapshot,
+        PaperEngramGateManifest, PaperEngramModuleListFilters, PaperEngramTableShardManifest,
+        PaperEngramTrainingMode, QueryResult, Qwen3CandidateRecord, Qwen3DecodeReportVerbosity,
+        Qwen3DenseGuestRuntime, Qwen3DenseProfile, Qwen3EngramConfig, Qwen3EngramContextOp,
+        Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
         Qwen3GuestExpectedWorkerCounts, Qwen3SamplerConfig, Qwen3TokenizerProjectionCliArgs,
         W5JumpToTerminalExpectedWorkerCounts, W5MemoryBootstrapConfig,
         W5MemoryDecisionArtifactPublication, W5MemoryDecisionBundle, W5MemoryDecisionConfig,
@@ -16410,6 +16644,11 @@ mod tests {
             memory_runtime_boundary_lookup: false,
             memory_post_run_promote: false,
             memory_online_boundary_lookup: false,
+            shortpath_match_mode: "exact".to_string(),
+            min_match_score_milli: 850,
+            min_terminal_margin_milli: 500,
+            approximate_requires_verify: true,
+            min_source_confidence_milli: 900,
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("dense runtime");
         assert_eq!(runtime.model_key, "qwen3-0-6b");
@@ -16466,6 +16705,11 @@ mod tests {
             memory_runtime_boundary_lookup: false,
             memory_post_run_promote: false,
             memory_online_boundary_lookup: false,
+            shortpath_match_mode: "exact".to_string(),
+            min_match_score_milli: 850,
+            min_terminal_margin_milli: 500,
+            approximate_requires_verify: true,
+            min_source_confidence_milli: 900,
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("reference shape runtime");
         assert!(runtime
@@ -16521,6 +16765,11 @@ mod tests {
             memory_runtime_boundary_lookup: false,
             memory_post_run_promote: false,
             memory_online_boundary_lookup: false,
+            shortpath_match_mode: "exact".to_string(),
+            min_match_score_milli: 850,
+            min_terminal_margin_milli: 500,
+            approximate_requires_verify: true,
+            min_source_confidence_milli: 900,
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("14B generic runtime");
         assert_eq!(runtime.model_key, "qwen3-14b");
@@ -16690,6 +16939,7 @@ mod tests {
             version: 1,
             created_at_us: 10,
             expires_at_us: Some(100),
+            terminal_logits_metadata: None,
         };
         let decision = sim_memory::ShortpathDecisionRecord {
             decision_id: "shortpath-decision/test".to_string(),
@@ -16706,6 +16956,10 @@ mod tests {
             reason: "test".to_string(),
             created_at_us: 11,
             version: 1,
+            match_score_milli: 0,
+            match_metric: "".to_string(),
+            match_mode: "".to_string(),
+            normalized_l2_milli: 0,
         };
         let bundle = W5MemoryDecisionBundle {
             shortpath: Some(decision.clone()),
@@ -16921,6 +17175,7 @@ mod tests {
             version: 1,
             created_at_us: 10,
             expires_at_us: Some(100),
+            terminal_logits_metadata: None,
         };
         let artifact_node4 = sim_memory::ExecutionArtifactObject {
             artifact_id: "artifact/logits/test-node4".to_string(),
@@ -16991,6 +17246,10 @@ mod tests {
             reason: "test".to_string(),
             created_at_us: 11,
             version: 1,
+            match_score_milli: 0,
+            match_metric: "".to_string(),
+            match_mode: "".to_string(),
+            normalized_l2_milli: 0,
         };
         let decision_node4 = sim_memory::ShortpathDecisionRecord {
             decision_id: "shortpath-decision/test-node4".to_string(),
@@ -17099,6 +17358,7 @@ mod tests {
                     version: 1,
                     created_at_us: 10,
                     expires_at_us: Some(100),
+                    terminal_logits_metadata: None,
                 },
             }
         };
@@ -17170,7 +17430,7 @@ mod tests {
         assert!(stream[0].starts_with("0:4:0:4:4:4:"));
         assert!(stream[1].starts_with("0:4:12:16:16:16:"));
         assert!(stream[2].starts_with("0:4:22:25:28:28:"));
-        assert!(stream.iter().all(|entry| entry.split(':').count() == 9));
+        assert!(stream.iter().all(|entry| entry.split(':').count() == 12));
         assert!(stream.iter().all(|entry| !entry.contains("decision/")));
         assert!(stream.iter().all(|entry| !entry.contains("artifact/")));
         let env_vars = w5_memory_decision_env_vars(&config, &bundle, Some(&publication));
@@ -17356,6 +17616,7 @@ mod tests {
                 version: 1,
                 created_at_us: 10,
                 expires_at_us: Some(100),
+                terminal_logits_metadata: None,
             }
         }
         fn make_bundle(decision_run_id: &str, artifact_run_id: &str) -> W5MemoryDecisionBundle {
@@ -17386,6 +17647,10 @@ mod tests {
                             reason: "test".to_string(),
                             created_at_us: 10,
                             version: 1,
+                            match_score_milli: 0,
+                            match_metric: "".to_string(),
+                            match_mode: "".to_string(),
+                            normalized_l2_milli: 0,
                         },
                         artifact: Some(artifact),
                     });
@@ -17614,6 +17879,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 version: 1,
                 created_at_us: 10,
                 expires_at_us: Some(100),
+                terminal_logits_metadata: None,
             }
         };
         let make_decision =
@@ -17632,6 +17898,10 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 reason: "test".to_string(),
                 created_at_us: 11,
                 version: 1,
+                match_score_milli: 0,
+                match_metric: "".to_string(),
+                match_mode: "".to_string(),
+                normalized_l2_milli: 0,
             };
         let step0_node1 = make_artifact(
             "artifact/logits/step0/node1",
@@ -22659,6 +22929,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             version: 1,
             created_at_us: 10,
             expires_at_us: Some(100),
+            terminal_logits_metadata: None,
         };
         let mut hidden_ref_step4 = hidden_ref.clone();
         hidden_ref_step4.object_key = "hidden/range/node4/step4".to_string();
@@ -22701,6 +22972,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             version: 1,
             created_at_us: 11,
             expires_at_us: Some(100),
+            terminal_logits_metadata: None,
         };
         save_lingqu_memory_durable_store(&store, &seed_store)
             .expect("save seeded durable payloads with second logits");
@@ -22737,6 +23009,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             version: 1,
             created_at_us: 11,
             expires_at_us: Some(100),
+            terminal_logits_metadata: None,
         };
         let boundary_request = sim_memory::BoundaryLookupRequest {
             request_id: "boundary/step3/node4".to_string(),
@@ -22747,6 +23020,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             min_confidence_milli: 900,
             allowed_actions: vec![sim_memory::ShortpathAction::JumpToTerminal],
             created_at_us: 12,
+            match_mode: "exact".to_string(),
+            min_match_score_milli: 1000,
         };
         let prefetch_request = sim_memory::PrefetchPlanRequest {
             request_id: "prefetch/step3/node4".to_string(),
@@ -23435,7 +23710,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             .iter()
             .any(|(key, _)| key == "SIM_W5_MEMORY_SHORTPATH_STREAM"));
         assert!(shortpath_stream.starts_with("3:12:4:8:8:8:"));
-        assert!(shortpath_stream.ends_with(&format!(":16:{}", 0x4444_4444_u64)));
+        assert!(shortpath_stream.ends_with(&format!(":16:{}:exact:1000:0", 0x4444_4444_u64)));
         assert!(!shortpath_stream.contains("shortpath-decision/"));
         assert!(!shortpath_stream.contains("artifact/logits/"));
         assert!(env_vars
@@ -23571,6 +23846,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             version: 1,
             created_at_us: 10,
             expires_at_us: Some(100),
+            terminal_logits_metadata: None,
         };
         let decision = sim_memory::ShortpathDecisionRecord {
             decision_id: "shortpath-decision/hot".to_string(),
@@ -23587,6 +23863,10 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             reason: "test".to_string(),
             created_at_us: 11,
             version: 1,
+            match_score_milli: 0,
+            match_metric: "".to_string(),
+            match_mode: "".to_string(),
+            normalized_l2_milli: 0,
         };
         let bundle = W5MemoryDecisionBundle {
             shortpath: Some(decision.clone()),
@@ -23703,6 +23983,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             version: 1,
             created_at_us: 10,
             expires_at_us: None,
+            terminal_logits_metadata: None,
         };
         let mut memory_service = sim_memory::LingquMemoryService::new();
         memory_service
@@ -24745,6 +25026,8 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             min_confidence_milli: 900,
             allowed_actions: vec![sim_memory::ShortpathAction::JumpToTerminal],
             created_at_us: 12,
+            match_mode: "exact".to_string(),
+            min_match_score_milli: 1000,
         };
         fs::write(
             &request_path,
@@ -25027,6 +25310,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             version: 1,
             created_at_us: 10,
             expires_at_us: Some(100),
+            terminal_logits_metadata: None,
         };
         let decision = sim_memory::ShortpathDecisionRecord {
             decision_id: "shortpath-decision/missing-payload".to_string(),
@@ -25043,6 +25327,10 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             reason: "test missing durable payload".to_string(),
             created_at_us: 11,
             version: 1,
+            match_score_milli: 0,
+            match_metric: "".to_string(),
+            match_mode: "".to_string(),
+            normalized_l2_milli: 0,
         };
         let mut durable_store = LingquMemoryDurableStore::new();
         durable_store
@@ -25358,6 +25646,11 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             memory_runtime_boundary_lookup: false,
             memory_post_run_promote: false,
             memory_online_boundary_lookup: false,
+            shortpath_match_mode: "exact".to_string(),
+            min_match_score_milli: 850,
+            min_terminal_margin_milli: 500,
+            approximate_requires_verify: true,
+            min_source_confidence_milli: 900,
         };
         let runtime = qwen3_guest_dense_runtime(&args).expect("dense runtime");
         let summary_path = root.join("w5_summary.txt");
@@ -25416,8 +25709,18 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             cli_bytes_checksum(br#"{"model":{"vocab":{}}}"#)
         );
         assert_eq!(observations[1].hidden_state.bytes, 2048);
-        let report = run_w5_runtime_boundary_lookups(&store_path, &recorded, 120)
-            .expect("run current-runtime boundary lookups");
+        let report = run_w5_runtime_boundary_lookups(
+            &store_path,
+            &recorded,
+            120,
+            None,
+            "exact",
+            1000,
+            500,
+            true,
+            900,
+        )
+        .expect("run current-runtime boundary lookups");
         assert_eq!(report.observation_count, 2);
         assert_eq!(report.decision_count, 2);
         assert_eq!(report.continue_count, 2);
@@ -25549,6 +25852,11 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             memory_runtime_boundary_lookup: true,
             memory_post_run_promote: false,
             memory_online_boundary_lookup: false,
+            shortpath_match_mode: "exact".to_string(),
+            min_match_score_milli: 850,
+            min_terminal_margin_milli: 500,
+            approximate_requires_verify: true,
+            min_source_confidence_milli: 900,
         };
 
         run_qwen3_guest_decode_loop_cli(&args)
@@ -26363,6 +26671,826 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             );
         }
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn qwen3_guest_decode_loop_args_accept_shortpath_approximate_flags() {
+        let args = qwen3_guest_decode_loop_args_from([
+            "w5-inference-cluster",
+            "--shortpath-match-mode=approximate",
+            "--min-match-score-milli=900",
+            "--min-terminal-margin-milli=300",
+            "--approximate-requires-verify=false",
+        ])
+        .expect("parse shortpath approximate flags")
+        .expect("guest decode loop args");
+
+        assert_eq!(args.shortpath_match_mode, "approximate");
+        assert_eq!(args.min_match_score_milli, 900);
+        assert_eq!(args.min_terminal_margin_milli, 300);
+        assert!(!args.approximate_requires_verify);
+    }
+
+    #[test]
+    fn qwen3_guest_decode_loop_args_default_shortpath_flags() {
+        let args = qwen3_guest_decode_loop_args_from(["w5-inference-cluster"])
+            .expect("parse default args")
+            .expect("guest decode loop args");
+
+        assert_eq!(args.shortpath_match_mode, "exact");
+        assert_eq!(args.min_match_score_milli, 850);
+        assert_eq!(args.min_terminal_margin_milli, 500);
+        assert!(args.approximate_requires_verify);
+    }
+
+    #[test]
+    fn w5_terminal_logits_margin_read_roundtrip() {
+        let margin: u64 = 777;
+        let mut payload = vec![0u8; 128];
+        payload[W5_TERMINAL_LOGITS_HEADER_BYTES + 48..W5_TERMINAL_LOGITS_HEADER_BYTES + 56]
+            .copy_from_slice(&margin.to_le_bytes());
+        let read = read_w5_u64(
+            &payload,
+            W5_TERMINAL_LOGITS_HEADER_BYTES + 48,
+            "terminal_logits.margin_milli",
+        )
+        .expect("read margin");
+        assert_eq!(read, margin);
+    }
+
+    fn make_test_object_service(payloads: &[(String, u64, Vec<u8>)]) -> LingquObjectServiceStub {
+        let records = payloads
+            .iter()
+            .map(|(key, version, bytes)| LingquObjectRecord {
+                key: key.clone(),
+                kind: LingquObjectKind::RuntimeTensor,
+                version: *version,
+                state: LingquObjectState::Committed,
+                producer_entity: 1,
+                owner_entity: None,
+                bytes: bytes.len() as u64,
+                checksum: 0,
+                dtype: Some(sim_core::TensorDType::F32),
+                shape: vec![(bytes.len() / 4) as u64],
+                layout: None,
+                placements: vec![],
+                payload_bytes: bytes.clone(),
+                created_at_us: 1,
+                committed_at_us: Some(1),
+                expires_at_us: None,
+            })
+            .collect();
+        let snapshot = LingquObjectServiceSnapshot {
+            profile: LingquObjectServiceProfile::default(),
+            records,
+        };
+        LingquObjectServiceStub::import_snapshot(snapshot).expect("import object snapshot")
+    }
+
+    fn make_test_boundary_observation(
+        observation_id: &str,
+        object_key: &str,
+        bytes: u64,
+        shape: Vec<u64>,
+    ) -> sim_memory::BoundaryObservationRecord {
+        sim_memory::BoundaryObservationRecord::new(
+            observation_id.to_string(),
+            "run/test".to_string(),
+            sim_memory::InferenceModelBinding {
+                model_id: "model/test".to_string(),
+                model_key: "qwen3-test".to_string(),
+                tokenizer_hash: 0x1111,
+                profile_hash: 0x2222,
+            },
+            sim_memory::RangeBoundary {
+                phase: sim_memory::RangeBoundaryPhase::RangeExit,
+                step_index: 0,
+                node_index: 1,
+                layer_start: 0,
+                layer_end: 4,
+                next_node_index: Some(2),
+                position: 4,
+            },
+            sim_memory::HotTensorObjectRef {
+                object_key: object_key.to_string(),
+                version: 1,
+                backend: sim_memory::HotObjectBackend::ObmmShmem,
+                storage_ref: object_key.to_string(),
+                segment: None,
+                offset: 0,
+                bytes,
+                checksum: 0x1234,
+                dtype: sim_core::TensorDType::F32,
+                shape,
+            },
+            "node1".to_string(),
+            "node2".to_string(),
+            "test".to_string(),
+            1,
+            1,
+        )
+        .expect("create boundary observation")
+    }
+
+    fn make_test_execution_artifact(
+        artifact_id: &str,
+        kind: sim_memory::ExecutionArtifactKind,
+        confidence_milli: u32,
+        hot_object_key: Option<&str>,
+        hot_shape: Vec<u64>,
+    ) -> sim_memory::ExecutionArtifactObject {
+        let hot_bytes: u64 = hot_shape.iter().product::<u64>() * 4;
+        sim_memory::ExecutionArtifactObject {
+            artifact_id: artifact_id.to_string(),
+            kind,
+            model: sim_memory::InferenceModelBinding {
+                model_id: "model/test".to_string(),
+                model_key: "qwen3-test".to_string(),
+                tokenizer_hash: 0x1111,
+                profile_hash: 0x2222,
+            },
+            producer_boundary: sim_memory::RangeBoundary {
+                phase: sim_memory::RangeBoundaryPhase::RangeExit,
+                step_index: 0,
+                node_index: 1,
+                layer_start: 0,
+                layer_end: 4,
+                next_node_index: Some(2),
+                position: 4,
+            },
+            boundary_hidden_fingerprint: sim_memory::BoundaryTensorFingerprint {
+                bytes: 12,
+                checksum: 0xaaaa,
+                dtype: sim_core::TensorDType::F32,
+                shape: vec![3],
+            },
+            target_layer_start: 0,
+            target_layer_end: 4,
+            dtype: sim_core::TensorDType::F32,
+            shape: hot_shape.clone(),
+            durable_payload_ref: None,
+            hot_object_ref: Some(sim_memory::HotTensorObjectRef {
+                object_key: hot_object_key.unwrap_or("dummy/object").to_string(),
+                version: 1,
+                backend: sim_memory::HotObjectBackend::ObmmShmem,
+                storage_ref: hot_object_key.unwrap_or("dummy/object").to_string(),
+                segment: None,
+                offset: 0,
+                bytes: hot_bytes,
+                checksum: 0x1234,
+                dtype: sim_core::TensorDType::F32,
+                shape: hot_shape,
+            }),
+            source_query_result_id: None,
+            source_engram_state_id: None,
+            confidence_milli,
+            state: sim_memory::ExecutionArtifactState::Verified,
+            checksum: 0xbbbb,
+            version: 1,
+            created_at_us: 1,
+            expires_at_us: None,
+            terminal_logits_metadata: None,
+        }
+    }
+
+    #[test]
+    fn w5_approximate_hit_identical_payload() {
+        let query_bytes: Vec<u8> = [1.0f32, 2.0, 3.0]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let mut memory_service = sim_memory::LingquMemoryService::new();
+        let observation = make_test_boundary_observation(
+            "obs/test",
+            "hidden/candidate",
+            query_bytes.len() as u64,
+            vec![3],
+        );
+        memory_service
+            .register_boundary_observation(observation)
+            .expect("register observation");
+        let artifact = make_test_execution_artifact(
+            "artifact/test",
+            sim_memory::ExecutionArtifactKind::HiddenState,
+            990,
+            None,
+            vec![3],
+        );
+        memory_service
+            .register_execution_artifact(artifact)
+            .expect("register artifact");
+        let object_service = make_test_object_service(&[
+            ("hidden/query".to_string(), 1, query_bytes.clone()),
+            ("hidden/candidate".to_string(), 1, query_bytes.clone()),
+        ]);
+        let request = sim_memory::BoundaryLookupRequest {
+            request_id: "req/test".to_string(),
+            model: sim_memory::InferenceModelBinding {
+                model_id: "model/test".to_string(),
+                model_key: "qwen3-test".to_string(),
+                tokenizer_hash: 0x1111,
+                profile_hash: 0x2222,
+            },
+            boundary: sim_memory::RangeBoundary {
+                phase: sim_memory::RangeBoundaryPhase::RangeExit,
+                step_index: 0,
+                node_index: 1,
+                layer_start: 0,
+                layer_end: 4,
+                next_node_index: Some(2),
+                position: 4,
+            },
+            hidden_state: sim_memory::HotTensorObjectRef {
+                object_key: "hidden/query".to_string(),
+                version: 1,
+                backend: sim_memory::HotObjectBackend::ObmmShmem,
+                storage_ref: "hidden/query".to_string(),
+                segment: None,
+                offset: 0,
+                bytes: 12,
+                checksum: 0x1234,
+                dtype: sim_core::TensorDType::F32,
+                shape: vec![3],
+            },
+            engram_state_id: None,
+            min_confidence_milli: 900,
+            allowed_actions: vec![
+                sim_memory::ShortpathAction::JumpToLayer,
+                sim_memory::ShortpathAction::JumpToTerminal,
+            ],
+            created_at_us: 1,
+            match_mode: "approximate".to_string(),
+            min_match_score_milli: 850,
+        };
+        let support = w5_try_approximate_boundary_lookup(
+            &memory_service,
+            &request,
+            &object_service,
+            sim_memory::similarity::HiddenDecodePolicy::F32,
+            850,
+            500,
+            true,
+        )
+        .expect("approximate lookup")
+        .expect("approximate hit");
+        assert_eq!(support.match_score_milli, 1000);
+        assert_eq!(support.match_mode, "approximate");
+        assert!(support.verify_required);
+        assert_eq!(
+            support.supported_action,
+            sim_memory::ShortpathAction::JumpToLayer
+        );
+    }
+
+    #[test]
+    fn w5_approximate_miss_below_threshold() {
+        let query_bytes: Vec<u8> = [1.0f32, 0.0, 0.0]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let candidate_bytes: Vec<u8> = [0.0f32, 1.0, 0.0]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let mut memory_service = sim_memory::LingquMemoryService::new();
+        let observation = make_test_boundary_observation(
+            "obs/test",
+            "hidden/candidate",
+            candidate_bytes.len() as u64,
+            vec![3],
+        );
+        memory_service
+            .register_boundary_observation(observation)
+            .expect("register observation");
+        let artifact = make_test_execution_artifact(
+            "artifact/test",
+            sim_memory::ExecutionArtifactKind::HiddenState,
+            990,
+            None,
+            vec![3],
+        );
+        memory_service
+            .register_execution_artifact(artifact)
+            .expect("register artifact");
+        let object_service = make_test_object_service(&[
+            ("hidden/query".to_string(), 1, query_bytes),
+            ("hidden/candidate".to_string(), 1, candidate_bytes),
+        ]);
+        let request = sim_memory::BoundaryLookupRequest {
+            request_id: "req/test".to_string(),
+            model: sim_memory::InferenceModelBinding {
+                model_id: "model/test".to_string(),
+                model_key: "qwen3-test".to_string(),
+                tokenizer_hash: 0x1111,
+                profile_hash: 0x2222,
+            },
+            boundary: sim_memory::RangeBoundary {
+                phase: sim_memory::RangeBoundaryPhase::RangeExit,
+                step_index: 0,
+                node_index: 1,
+                layer_start: 0,
+                layer_end: 4,
+                next_node_index: Some(2),
+                position: 4,
+            },
+            hidden_state: sim_memory::HotTensorObjectRef {
+                object_key: "hidden/query".to_string(),
+                version: 1,
+                backend: sim_memory::HotObjectBackend::ObmmShmem,
+                storage_ref: "hidden/query".to_string(),
+                segment: None,
+                offset: 0,
+                bytes: 12,
+                checksum: 0x1234,
+                dtype: sim_core::TensorDType::F32,
+                shape: vec![3],
+            },
+            engram_state_id: None,
+            min_confidence_milli: 900,
+            allowed_actions: vec![sim_memory::ShortpathAction::JumpToLayer],
+            created_at_us: 1,
+            match_mode: "approximate".to_string(),
+            min_match_score_milli: 850,
+        };
+        let support = w5_try_approximate_boundary_lookup(
+            &memory_service,
+            &request,
+            &object_service,
+            sim_memory::similarity::HiddenDecodePolicy::F32,
+            850,
+            500,
+            true,
+        )
+        .expect("approximate lookup");
+        let support = support.expect("approximate lookup returns miss record");
+        assert_eq!(
+            support.supported_action,
+            sim_memory::ShortpathAction::Continue
+        );
+        assert_eq!(support.reason, "approximate_hidden_match_below_threshold");
+    }
+
+    #[test]
+    fn w5_approximate_low_margin_rejected() {
+        let query_bytes: Vec<u8> = [1.0f32, 2.0, 3.0]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let mut terminal_payload = vec![0u8; 128];
+        terminal_payload
+            [W5_TERMINAL_LOGITS_HEADER_BYTES + 48..W5_TERMINAL_LOGITS_HEADER_BYTES + 56]
+            .copy_from_slice(&(100u64).to_le_bytes());
+        let mut memory_service = sim_memory::LingquMemoryService::new();
+        let observation = make_test_boundary_observation(
+            "obs/test",
+            "hidden/query",
+            query_bytes.len() as u64,
+            vec![3],
+        );
+        memory_service
+            .register_boundary_observation(observation)
+            .expect("register observation");
+        let artifact = make_test_execution_artifact(
+            "artifact/test",
+            sim_memory::ExecutionArtifactKind::Logits,
+            990,
+            Some("terminal/logits"),
+            vec![32],
+        );
+        memory_service
+            .register_execution_artifact(artifact)
+            .expect("register artifact");
+        let object_service = make_test_object_service(&[
+            ("hidden/query".to_string(), 1, query_bytes.clone()),
+            ("hidden/candidate".to_string(), 1, query_bytes.clone()),
+            ("terminal/logits".to_string(), 1, terminal_payload),
+        ]);
+        let request = sim_memory::BoundaryLookupRequest {
+            request_id: "req/test".to_string(),
+            model: sim_memory::InferenceModelBinding {
+                model_id: "model/test".to_string(),
+                model_key: "qwen3-test".to_string(),
+                tokenizer_hash: 0x1111,
+                profile_hash: 0x2222,
+            },
+            boundary: sim_memory::RangeBoundary {
+                phase: sim_memory::RangeBoundaryPhase::RangeExit,
+                step_index: 0,
+                node_index: 1,
+                layer_start: 0,
+                layer_end: 4,
+                next_node_index: Some(2),
+                position: 4,
+            },
+            hidden_state: sim_memory::HotTensorObjectRef {
+                object_key: "hidden/query".to_string(),
+                version: 1,
+                backend: sim_memory::HotObjectBackend::ObmmShmem,
+                storage_ref: "hidden/query".to_string(),
+                segment: None,
+                offset: 0,
+                bytes: 12,
+                checksum: 0x1234,
+                dtype: sim_core::TensorDType::F32,
+                shape: vec![3],
+            },
+            engram_state_id: None,
+            min_confidence_milli: 900,
+            allowed_actions: vec![sim_memory::ShortpathAction::JumpToTerminal],
+            created_at_us: 1,
+            match_mode: "approximate".to_string(),
+            min_match_score_milli: 850,
+        };
+        let support = w5_try_approximate_boundary_lookup(
+            &memory_service,
+            &request,
+            &object_service,
+            sim_memory::similarity::HiddenDecodePolicy::F32,
+            850,
+            500,
+            true,
+        )
+        .expect("approximate lookup");
+        let support = support.expect("approximate lookup returns miss record");
+        assert_eq!(
+            support.supported_action,
+            sim_memory::ShortpathAction::Continue
+        );
+        assert_eq!(
+            support.reason,
+            "approximate_hidden_match_low_terminal_margin"
+        );
+    }
+
+    #[test]
+    fn w5_approximate_source_confidence_filtered() {
+        let query_bytes: Vec<u8> = [1.0f32, 2.0, 3.0]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let mut memory_service = sim_memory::LingquMemoryService::new();
+        let observation = make_test_boundary_observation(
+            "obs/test",
+            "hidden/query",
+            query_bytes.len() as u64,
+            vec![3],
+        );
+        memory_service
+            .register_boundary_observation(observation)
+            .expect("register observation");
+        let artifact = make_test_execution_artifact(
+            "artifact/test",
+            sim_memory::ExecutionArtifactKind::HiddenState,
+            500, // below min_confidence_milli=900
+            None,
+            vec![3],
+        );
+        memory_service
+            .register_execution_artifact(artifact)
+            .expect("register artifact");
+        let object_service = make_test_object_service(&[
+            ("hidden/query".to_string(), 1, query_bytes.clone()),
+            ("hidden/candidate".to_string(), 1, query_bytes.clone()),
+        ]);
+        let request = sim_memory::BoundaryLookupRequest {
+            request_id: "req/test".to_string(),
+            model: sim_memory::InferenceModelBinding {
+                model_id: "model/test".to_string(),
+                model_key: "qwen3-test".to_string(),
+                tokenizer_hash: 0x1111,
+                profile_hash: 0x2222,
+            },
+            boundary: sim_memory::RangeBoundary {
+                phase: sim_memory::RangeBoundaryPhase::RangeExit,
+                step_index: 0,
+                node_index: 1,
+                layer_start: 0,
+                layer_end: 4,
+                next_node_index: Some(2),
+                position: 4,
+            },
+            hidden_state: sim_memory::HotTensorObjectRef {
+                object_key: "hidden/query".to_string(),
+                version: 1,
+                backend: sim_memory::HotObjectBackend::ObmmShmem,
+                storage_ref: "hidden/query".to_string(),
+                segment: None,
+                offset: 0,
+                bytes: 12,
+                checksum: 0x1234,
+                dtype: sim_core::TensorDType::F32,
+                shape: vec![3],
+            },
+            engram_state_id: None,
+            min_confidence_milli: 900,
+            allowed_actions: vec![sim_memory::ShortpathAction::JumpToLayer],
+            created_at_us: 1,
+            match_mode: "approximate".to_string(),
+            min_match_score_milli: 850,
+        };
+        let support = w5_try_approximate_boundary_lookup(
+            &memory_service,
+            &request,
+            &object_service,
+            sim_memory::similarity::HiddenDecodePolicy::F32,
+            850,
+            500,
+            true,
+        )
+        .expect("approximate lookup");
+        let support = support.expect("approximate lookup returns miss record");
+        assert_eq!(
+            support.supported_action,
+            sim_memory::ShortpathAction::Continue
+        );
+        assert_eq!(support.reason, "approximate_hidden_match_no_candidate");
+    }
+
+    #[test]
+    fn w5_approximate_allows_guarded_commit_when_verify_disabled() {
+        let query_bytes: Vec<u8> = [1.0f32, 2.0, 3.0]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let mut memory_service = sim_memory::LingquMemoryService::new();
+        let observation = make_test_boundary_observation(
+            "obs/test",
+            "hidden/query",
+            query_bytes.len() as u64,
+            vec![3],
+        );
+        memory_service
+            .register_boundary_observation(observation)
+            .expect("register observation");
+        let artifact = make_test_execution_artifact(
+            "artifact/test",
+            sim_memory::ExecutionArtifactKind::HiddenState,
+            990,
+            None,
+            vec![3],
+        );
+        memory_service
+            .register_execution_artifact(artifact)
+            .expect("register artifact");
+        let object_service = make_test_object_service(&[
+            ("hidden/query".to_string(), 1, query_bytes.clone()),
+            ("hidden/candidate".to_string(), 1, query_bytes.clone()),
+        ]);
+        let request = sim_memory::BoundaryLookupRequest {
+            request_id: "req/test".to_string(),
+            model: sim_memory::InferenceModelBinding {
+                model_id: "model/test".to_string(),
+                model_key: "qwen3-test".to_string(),
+                tokenizer_hash: 0x1111,
+                profile_hash: 0x2222,
+            },
+            boundary: sim_memory::RangeBoundary {
+                phase: sim_memory::RangeBoundaryPhase::RangeExit,
+                step_index: 0,
+                node_index: 1,
+                layer_start: 0,
+                layer_end: 4,
+                next_node_index: Some(2),
+                position: 4,
+            },
+            hidden_state: sim_memory::HotTensorObjectRef {
+                object_key: "hidden/query".to_string(),
+                version: 1,
+                backend: sim_memory::HotObjectBackend::ObmmShmem,
+                storage_ref: "hidden/query".to_string(),
+                segment: None,
+                offset: 0,
+                bytes: 12,
+                checksum: 0x1234,
+                dtype: sim_core::TensorDType::F32,
+                shape: vec![3],
+            },
+            engram_state_id: None,
+            min_confidence_milli: 900,
+            allowed_actions: vec![sim_memory::ShortpathAction::JumpToLayer],
+            created_at_us: 1,
+            match_mode: "approximate".to_string(),
+            min_match_score_milli: 850,
+        };
+        let support = w5_try_approximate_boundary_lookup(
+            &memory_service,
+            &request,
+            &object_service,
+            sim_memory::similarity::HiddenDecodePolicy::F32,
+            850,
+            500,
+            false, // verify disabled
+        )
+        .expect("approximate lookup")
+        .expect("approximate hit");
+        assert_eq!(support.match_score_milli, 1000);
+        assert!(!support.verify_required);
+        assert_eq!(support.reason, "approximate_hidden_match_guarded_commit");
+    }
+
+    #[test]
+    fn w5_approximate_multi_candidate_orders_by_score_then_confidence() {
+        let query_bytes: Vec<u8> = [1.0f32, 2.0, 3.0]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let mut memory_service = sim_memory::LingquMemoryService::new();
+        let observation = make_test_boundary_observation(
+            "obs/test",
+            "hidden/candidate",
+            query_bytes.len() as u64,
+            vec![3],
+        );
+        memory_service
+            .register_boundary_observation(observation)
+            .expect("register observation");
+        let artifact_low_conf = sim_memory::ExecutionArtifactObject {
+            artifact_id: "artifact/low".to_string(),
+            kind: sim_memory::ExecutionArtifactKind::HiddenState,
+            model: sim_memory::InferenceModelBinding {
+                model_id: "model/test".to_string(),
+                model_key: "qwen3-test".to_string(),
+                tokenizer_hash: 0x1111,
+                profile_hash: 0x2222,
+            },
+            producer_boundary: sim_memory::RangeBoundary {
+                phase: sim_memory::RangeBoundaryPhase::RangeExit,
+                step_index: 0,
+                node_index: 1,
+                layer_start: 0,
+                layer_end: 4,
+                next_node_index: Some(2),
+                position: 4,
+            },
+            boundary_hidden_fingerprint: sim_memory::BoundaryTensorFingerprint {
+                bytes: 12,
+                checksum: 0xaaaa,
+                dtype: sim_core::TensorDType::F32,
+                shape: vec![3],
+            },
+            target_layer_start: 0,
+            target_layer_end: 4,
+            dtype: sim_core::TensorDType::F32,
+            shape: vec![3],
+            durable_payload_ref: None,
+            hot_object_ref: Some(sim_memory::HotTensorObjectRef {
+                object_key: "hidden/candidate".to_string(),
+                version: 1,
+                backend: sim_memory::HotObjectBackend::ObmmShmem,
+                storage_ref: "hidden/candidate".to_string(),
+                segment: None,
+                offset: 0,
+                bytes: 12,
+                checksum: 0x1234,
+                dtype: sim_core::TensorDType::F32,
+                shape: vec![3],
+            }),
+            source_query_result_id: None,
+            source_engram_state_id: None,
+            confidence_milli: 800,
+            state: sim_memory::ExecutionArtifactState::Verified,
+            checksum: 0xbbbb,
+            version: 1,
+            created_at_us: 1,
+            expires_at_us: None,
+            terminal_logits_metadata: None,
+        };
+        let mut artifact_high_conf = artifact_low_conf.clone();
+        artifact_high_conf.artifact_id = "artifact/high".to_string();
+        artifact_high_conf.confidence_milli = 990;
+        artifact_high_conf.checksum = 0xcccc;
+        memory_service
+            .register_execution_artifact(artifact_low_conf)
+            .expect("register low conf artifact");
+        memory_service
+            .register_execution_artifact(artifact_high_conf)
+            .expect("register high conf artifact");
+        let object_service = make_test_object_service(&[
+            ("hidden/query".to_string(), 1, query_bytes.clone()),
+            ("hidden/candidate".to_string(), 1, query_bytes.clone()),
+        ]);
+        let request = sim_memory::BoundaryLookupRequest {
+            request_id: "req/test".to_string(),
+            model: sim_memory::InferenceModelBinding {
+                model_id: "model/test".to_string(),
+                model_key: "qwen3-test".to_string(),
+                tokenizer_hash: 0x1111,
+                profile_hash: 0x2222,
+            },
+            boundary: sim_memory::RangeBoundary {
+                phase: sim_memory::RangeBoundaryPhase::RangeExit,
+                step_index: 0,
+                node_index: 1,
+                layer_start: 0,
+                layer_end: 4,
+                next_node_index: Some(2),
+                position: 4,
+            },
+            hidden_state: sim_memory::HotTensorObjectRef {
+                object_key: "hidden/query".to_string(),
+                version: 1,
+                backend: sim_memory::HotObjectBackend::ObmmShmem,
+                storage_ref: "hidden/query".to_string(),
+                segment: None,
+                offset: 0,
+                bytes: 12,
+                checksum: 0x1234,
+                dtype: sim_core::TensorDType::F32,
+                shape: vec![3],
+            },
+            engram_state_id: None,
+            min_confidence_milli: 500,
+            allowed_actions: vec![sim_memory::ShortpathAction::JumpToLayer],
+            created_at_us: 1,
+            match_mode: "approximate".to_string(),
+            min_match_score_milli: 850,
+        };
+        let support = w5_try_approximate_boundary_lookup(
+            &memory_service,
+            &request,
+            &object_service,
+            sim_memory::similarity::HiddenDecodePolicy::F32,
+            850,
+            500,
+            true,
+        )
+        .expect("approximate lookup")
+        .expect("approximate hit");
+        assert_eq!(support.match_score_milli, 1000);
+        assert_eq!(support.artifact_id.as_deref(), Some("artifact/high"));
+    }
+
+    #[test]
+    fn shortpath_support_manifest_roundtrips_match_metadata() {
+        let support = sim_memory::ShortpathSupportRecord {
+            support_id: "support/test".to_string(),
+            request_id: "req/test".to_string(),
+            supported_action: sim_memory::ShortpathAction::JumpToTerminal,
+            artifact_id: Some("artifact/test".to_string()),
+            producer_position: Some(4),
+            target_layer_start: Some(0),
+            target_layer_end: Some(4),
+            confidence_milli: 990,
+            verify_required: true,
+            proof_checksum: 0xabcd,
+            reason: "approximate_hidden_match_requires_verify".to_string(),
+            created_at_us: 100,
+            version: 1,
+            match_score_milli: 999,
+            match_metric: "cosine".to_string(),
+            match_mode: "approximate".to_string(),
+            normalized_l2_milli: 42,
+        };
+        let mut durable_store = sim_memory::LingquMemoryDurableStore::new();
+        durable_store
+            .persist_shortpath_support_manifest(vec![support.clone()])
+            .expect("persist support manifest");
+        let supports = durable_store
+            .load_shortpath_support_manifest()
+            .expect("load support manifest");
+        assert_eq!(supports.len(), 1);
+        let loaded = &supports[0];
+        assert_eq!(loaded.match_score_milli, 999);
+        assert_eq!(loaded.match_metric, "cosine");
+        assert_eq!(loaded.match_mode, "approximate");
+        assert_eq!(loaded.normalized_l2_milli, 42);
+    }
+
+    #[test]
+    fn shortpath_decision_manifest_roundtrips_match_metadata() {
+        let decision = sim_memory::ShortpathDecisionRecord {
+            decision_id: "decision/test".to_string(),
+            request_id: "req/test".to_string(),
+            support_id: Some("support/test".to_string()),
+            action: sim_memory::ShortpathAction::JumpToTerminal,
+            artifact_id: Some("artifact/test".to_string()),
+            producer_position: Some(4),
+            target_layer_start: Some(0),
+            target_layer_end: Some(4),
+            confidence_milli: 990,
+            verify_required: true,
+            proof_checksum: 0xabcd,
+            reason: "approximate_hidden_match_requires_verify".to_string(),
+            created_at_us: 100,
+            version: 1,
+            match_score_milli: 999,
+            match_metric: "cosine".to_string(),
+            match_mode: "approximate".to_string(),
+            normalized_l2_milli: 42,
+        };
+        let mut durable_store = sim_memory::LingquMemoryDurableStore::new();
+        durable_store
+            .persist_shortpath_decision_manifest(vec![decision.clone()])
+            .expect("persist decision manifest");
+        let decisions = durable_store
+            .load_shortpath_decision_manifest()
+            .expect("load decision manifest");
+        assert_eq!(decisions.len(), 1);
+        let loaded = &decisions[0];
+        assert_eq!(loaded.match_score_milli, 999);
+        assert_eq!(loaded.match_metric, "cosine");
+        assert_eq!(loaded.match_mode, "approximate");
+        assert_eq!(loaded.normalized_l2_milli, 42);
     }
 }
 
@@ -27551,11 +28679,25 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
                 summary_path.display()
             );
         }
+        let object_service = if let Some(bootstrap) = &args.memory_bootstrap {
+            load_lingqu_object_service_snapshot_file(&bootstrap.object_store_path)
+                .ok()
+                .flatten()
+                .and_then(|snapshot| LingquObjectServiceStub::import_snapshot(snapshot).ok())
+        } else {
+            None
+        };
         if args.memory_runtime_boundary_lookup && !observation_ids.is_empty() {
             let report = run_w5_runtime_boundary_lookups(
                 store_path,
                 &observation_ids,
                 boundary_lookup_now_us,
+                object_service.as_ref(),
+                &args.shortpath_match_mode,
+                args.min_match_score_milli,
+                args.min_terminal_margin_milli,
+                args.approximate_requires_verify,
+                args.min_source_confidence_milli,
             )?;
             println!(
                 "  memory_runtime_boundary_lookup: store={} observations={} decisions={} continue={} jump_to_layer={} jump_to_terminal={} require_verify={} first_decision_id={} last_decision_id={}",

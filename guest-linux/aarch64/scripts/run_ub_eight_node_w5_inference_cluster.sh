@@ -192,6 +192,23 @@ if (( memory_runtime_lookup || memory_decision_reuse || explicit_engram_state_re
         cli_args+=(--memory-post-run-promote)
         ;;
     esac
+    if [[ -n "$SIM_W5_SHORTPATH_MATCH_MODE" ]]; then
+      cli_args+=(--shortpath-match-mode "$SIM_W5_SHORTPATH_MATCH_MODE")
+    fi
+    if [[ -n "$SIM_W5_MIN_MATCH_SCORE_MILLI" ]]; then
+      cli_args+=(--min-match-score-milli "$SIM_W5_MIN_MATCH_SCORE_MILLI")
+    fi
+    if [[ -n "$SIM_W5_MIN_TERMINAL_MARGIN_MILLI" ]]; then
+      cli_args+=(--min-terminal-margin-milli "$SIM_W5_MIN_TERMINAL_MARGIN_MILLI")
+    fi
+    case "$SIM_W5_APPROXIMATE_REQUIRES_VERIFY" in
+      0|false|FALSE|no|NO)
+        cli_args+=(--approximate-requires-verify=false)
+        ;;
+    esac
+    if [[ -n "$SIM_W5_MIN_SOURCE_CONFIDENCE_MILLI" ]]; then
+      cli_args+=(--min-source-confidence-milli "$SIM_W5_MIN_SOURCE_CONFIDENCE_MILLI")
+    fi
   fi
   if (( memory_decision_reuse )); then
     cli_args+=(
