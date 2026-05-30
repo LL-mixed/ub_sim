@@ -82,10 +82,10 @@ use sim_services::{
     dfs::{DfsReadReq, DfsServiceProfile, DfsServiceStub, DfsWriteReq},
     object::{
         LingquObjectAppendReq, LingquObjectKind, LingquObjectLocality, LingquObjectMetadata,
-        LingquObjectPublishReq, LingquObjectResolveReq, LingquObjectServiceProfile,
-        LingquObjectServiceReport, LingquObjectServiceSnapshot, LingquObjectServiceStub,
-        LingquObjectState, LingquObjectVersionSelector, LingquObmmObjectRefWire,
-        LingquPayloadBackend, LingquPayloadPlacement,
+        LingquObjectPublishReq, LingquObjectRecord, LingquObjectResolveReq,
+        LingquObjectServiceProfile, LingquObjectServiceReport, LingquObjectServiceSnapshot,
+        LingquObjectServiceStub, LingquObjectState, LingquObjectVersionSelector,
+        LingquObmmObjectRefWire, LingquPayloadBackend, LingquPayloadPlacement,
     },
     shmem::{ShmemGetReq, ShmemPutReq, ShmemServiceProfile, ShmemServiceStub},
     weights::{
@@ -2658,6 +2658,30 @@ fn qwen3_object_service_snapshot_put(
     key: &str,
     payload: &[u8],
 ) -> Result<LingquObmmObjectRefWire, String> {
+    qwen3_object_service_snapshot_put_with_metadata(
+        snapshot_path,
+        obmm_kind,
+        owner_entity,
+        producer_entity,
+        key,
+        payload,
+        None,
+        vec![payload.len() as u64],
+        None,
+    )
+}
+
+fn qwen3_object_service_snapshot_put_with_metadata(
+    snapshot_path: &Path,
+    obmm_kind: u16,
+    owner_entity: u32,
+    producer_entity: u32,
+    key: &str,
+    payload: &[u8],
+    dtype: Option<TensorDType>,
+    shape: Vec<u64>,
+    layout: Option<TensorLayout>,
+) -> Result<LingquObmmObjectRefWire, String> {
     if payload.is_empty() {
         return Err("qwen3_object_service_publish_empty_payload".to_string());
     }
@@ -2691,6 +2715,9 @@ fn qwen3_object_service_snapshot_put(
             && record.producer_entity == u64::from(producer_entity)
             && record.bytes == payload.len() as u64
             && record.checksum == checksum
+            && record.dtype == dtype
+            && record.shape == shape
+            && record.layout == layout
             && record.payload_bytes == payload
         {
             return Ok(qwen3_obmm_object_ref_for_payload(
@@ -2717,9 +2744,9 @@ fn qwen3_object_service_snapshot_put(
                 metadata: LingquObjectMetadata {
                     bytes: payload.len() as u64,
                     checksum,
-                    dtype: None,
-                    shape: vec![payload.len() as u64],
-                    layout: None,
+                    dtype,
+                    shape,
+                    layout,
                     expires_at_us: None,
                 },
                 placements: vec![LingquPayloadPlacement {
@@ -4036,6 +4063,23 @@ struct Qwen3RangeForwardObjectRefs {
     kv_ref: LingquObmmObjectRefWire,
 }
 
+fn qwen3_range_forward_hidden_tensor_metadata(
+    summary: &Qwen3DenseReferenceRangeForwardSummary,
+) -> (Option<TensorDType>, Vec<u64>, Option<TensorLayout>) {
+    let payload_len = summary.output_tensor_payload.len() as u64;
+    if payload_len == summary.output_tensor_bytes
+        && payload_len % std::mem::size_of::<f32>() as u64 == 0
+    {
+        (
+            Some(TensorDType::F32),
+            vec![payload_len / std::mem::size_of::<f32>() as u64],
+            Some(TensorLayout::Contiguous),
+        )
+    } else {
+        (None, vec![payload_len], None)
+    }
+}
+
 fn qwen3_register_range_forward_objects(
     contract: Qwen3GuestRangeComputeContract,
     _guest_input: &[u8],
@@ -4071,14 +4115,19 @@ fn qwen3_register_range_forward_objects(
         contract.layer_start,
         contract.layer_end
     );
+    let (hidden_dtype, hidden_shape, hidden_layout) =
+        qwen3_range_forward_hidden_tensor_metadata(summary);
     if let Some(snapshot_path) = object_service_snapshot {
-        let hidden_ref = qwen3_object_service_snapshot_put(
+        let hidden_ref = qwen3_object_service_snapshot_put_with_metadata(
             &snapshot_path,
             QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
             contract.node,
             contract.node,
             &hidden_key,
             &summary.output_tensor_payload,
+            hidden_dtype,
+            hidden_shape,
+            hidden_layout,
         )?;
         let kv_ref = qwen3_object_service_snapshot_put(
             &snapshot_path,
@@ -4188,6 +4237,37 @@ fn qwen3_hot_ref_from_obmm(
     key: &str,
     object_ref: LingquObmmObjectRefWire,
 ) -> sim_memory::HotTensorObjectRef {
+    qwen3_hot_ref_from_obmm_metadata(
+        key,
+        object_ref,
+        TensorDType::Opaque,
+        vec![object_ref.payload_bytes],
+    )
+}
+
+fn qwen3_hot_ref_from_object_record(
+    key: &str,
+    object_ref: LingquObmmObjectRefWire,
+    record: &LingquObjectRecord,
+) -> sim_memory::HotTensorObjectRef {
+    qwen3_hot_ref_from_obmm_metadata(
+        key,
+        object_ref,
+        record.dtype.unwrap_or(TensorDType::Opaque),
+        if record.shape.is_empty() {
+            vec![object_ref.payload_bytes]
+        } else {
+            record.shape.clone()
+        },
+    )
+}
+
+fn qwen3_hot_ref_from_obmm_metadata(
+    key: &str,
+    object_ref: LingquObmmObjectRefWire,
+    dtype: TensorDType,
+    shape: Vec<u64>,
+) -> sim_memory::HotTensorObjectRef {
     sim_memory::HotTensorObjectRef {
         object_key: key.to_string(),
         version: object_ref.object_version,
@@ -4197,8 +4277,8 @@ fn qwen3_hot_ref_from_obmm(
         offset: object_ref.payload_offset,
         bytes: object_ref.payload_bytes,
         checksum: object_ref.payload_checksum,
-        dtype: TensorDType::Opaque,
-        shape: vec![object_ref.payload_bytes],
+        dtype,
+        shape,
     }
 }
 
@@ -4448,7 +4528,20 @@ fn qwen3_commit_w5_memory_runtime_artifacts(
             Err(err) => return Err(format!("qwen3_w5_execution_manifest_load_failed:{err}")),
         };
 
-    let hidden_hot_ref = qwen3_hot_ref_from_obmm(&refs.hidden_key, refs.hidden_ref);
+    let hidden_record = object_service
+        .latest_record(&refs.hidden_key)
+        .ok_or_else(|| format!("qwen3_w5_hidden_object_record_missing:{}", refs.hidden_key))?;
+    if hidden_record.version != refs.hidden_ref.object_version
+        || hidden_record.bytes != refs.hidden_ref.payload_bytes
+        || hidden_record.checksum != refs.hidden_ref.payload_checksum
+    {
+        return Err(format!(
+            "qwen3_w5_hidden_object_record_mismatch:key={}:version={}:bytes={}:checksum={:#x}",
+            refs.hidden_key, hidden_record.version, hidden_record.bytes, hidden_record.checksum
+        ));
+    }
+    let hidden_hot_ref =
+        qwen3_hot_ref_from_object_record(&refs.hidden_key, refs.hidden_ref, hidden_record);
     let boundary = sim_memory::RangeBoundary {
         phase: sim_memory::RangeBoundaryPhase::RangeExit,
         step_index: refs.decode_step,
@@ -31163,6 +31256,17 @@ mod tests {
                     .records
                     .iter()
                     .all(|record| record.payload_bytes.is_empty()));
+                let hidden_record = metadata_snapshot
+                    .records
+                    .iter()
+                    .find(|record| record.key == hidden_key)
+                    .expect("hidden object metadata");
+                assert_eq!(hidden_record.dtype, Some(sim_core::TensorDType::F32));
+                assert_eq!(hidden_record.shape, vec![HIDDEN_BYTES as u64 / 4]);
+                assert_eq!(
+                    hidden_record.layout,
+                    Some(sim_core::TensorLayout::Contiguous)
+                );
                 assert_eq!(
                     qwen3_object_service_snapshot_get_from_path(&snapshot_path, &hidden_ref)
                         .expect("read direct hidden payload"),
@@ -31856,6 +31960,14 @@ mod tests {
                     .iter()
                     .find(|observation| observation.producer_node == "node1")
                     .expect("node1 boundary observation");
+                assert_eq!(
+                    node1_observation.hidden_state.dtype,
+                    sim_core::TensorDType::F32
+                );
+                assert_eq!(
+                    node1_observation.hidden_state.shape,
+                    vec![HIDDEN_BYTES as u64 / 4]
+                );
                 let mut memory_service = sim_memory::LingquMemoryService::new();
                 memory_service
                     .rebuild_execution_artifacts_from_dfs(&mut durable)

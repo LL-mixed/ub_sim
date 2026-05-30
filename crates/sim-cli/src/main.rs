@@ -72,10 +72,9 @@ use sim_services::{
     },
     object::{
         LingquObjectKind, LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
-        LingquObjectRecord, LingquObjectResolveReq, LingquObjectServiceProfile,
-        LingquObjectServiceSnapshot, LingquObjectServiceStub, LingquObjectState,
-        LingquObjectVersionSelector, LingquObmmObjectRefWire, LingquPayloadBackend,
-        LingquPayloadPlacement,
+        LingquObjectResolveReq, LingquObjectServiceProfile, LingquObjectServiceSnapshot,
+        LingquObjectServiceStub, LingquObjectState, LingquObjectVersionSelector,
+        LingquObmmObjectRefWire, LingquPayloadBackend, LingquPayloadPlacement,
     },
     shmem::{ShmemGetReq, ShmemPutReq},
 };
@@ -6577,11 +6576,31 @@ fn w5_try_approximate_boundary_lookup(
     memory_service: &sim_memory::LingquMemoryService,
     request: &BoundaryLookupRequest,
     object_service: &LingquObjectServiceStub,
-    decode_policy: HiddenDecodePolicy,
     min_match_score_milli: u32,
     min_terminal_margin_milli: u32,
     approximate_requires_verify: bool,
 ) -> anyhow::Result<Option<sim_memory::ShortpathSupportRecord>> {
+    let Some(decode_policy) = HiddenDecodePolicy::from_dtype(request.hidden_state.dtype) else {
+        return Ok(Some(sim_memory::ShortpathSupportRecord {
+            support_id: format!("shortpath-support/approximate-miss/{}", request.request_id),
+            request_id: request.request_id.clone(),
+            supported_action: sim_memory::ShortpathAction::Continue,
+            artifact_id: None,
+            producer_position: Some(request.boundary.position),
+            target_layer_start: None,
+            target_layer_end: None,
+            confidence_milli: 0,
+            verify_required: false,
+            proof_checksum: 0,
+            reason: "approximate_hidden_match_typed_payload_unavailable".to_string(),
+            created_at_us: 0,
+            version: 1,
+            match_score_milli: 0,
+            match_metric: "".to_string(),
+            match_mode: "approximate".to_string(),
+            normalized_l2_milli: 0,
+        }));
+    };
     memory_service
         .approximate_boundary_lookup(
             request,
@@ -6660,10 +6679,6 @@ fn run_w5_memory_boundary_lookup_request_with_registry_requirement(
                 &memory_service,
                 &request,
                 object_service,
-                // TODO: W5 hidden payloads are currently Opaque (2 bytes/element).
-                // This hardcoded F16 policy is a temporary adapter until sim-uapi
-                // produces a typed F32 hidden sidecar artifact (see plan doc).
-                HiddenDecodePolicy::F16,
                 request.min_match_score_milli,
                 min_terminal_margin_milli,
                 approximate_requires_verify,
@@ -15134,13 +15149,13 @@ mod tests {
         w5_try_approximate_boundary_lookup, EngramSimtArtifactConfig, LingquDurableSim,
         LingquDurableSimSnapshot, LingquMemoryDurableStore, LingquMemoryDurableStoreSnapshot,
         LingquObjectKind, LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
-        LingquObjectRecord, LingquObjectServiceProfile, LingquObjectServiceSnapshot,
-        LingquObjectServiceStub, LingquObjectState, LingquObjectVersionSelector,
-        LingquPayloadBackend, LingquPayloadPlacement, MemoryCatalogSnapshot,
-        PaperEngramGateManifest, PaperEngramModuleListFilters, PaperEngramTableShardManifest,
-        PaperEngramTrainingMode, QueryResult, Qwen3CandidateRecord, Qwen3DecodeReportVerbosity,
-        Qwen3DenseGuestRuntime, Qwen3DenseProfile, Qwen3EngramConfig, Qwen3EngramContextOp,
-        Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
+        LingquObjectServiceProfile, LingquObjectServiceSnapshot, LingquObjectServiceStub,
+        LingquObjectState, LingquObjectVersionSelector, LingquPayloadBackend,
+        LingquPayloadPlacement, MemoryCatalogSnapshot, PaperEngramGateManifest,
+        PaperEngramModuleListFilters, PaperEngramTableShardManifest, PaperEngramTrainingMode,
+        QueryResult, Qwen3CandidateRecord, Qwen3DecodeReportVerbosity, Qwen3DenseGuestRuntime,
+        Qwen3DenseProfile, Qwen3EngramConfig, Qwen3EngramContextOp, Qwen3EngramMode,
+        Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
         Qwen3GuestExpectedWorkerCounts, Qwen3SamplerConfig, Qwen3TokenizerProjectionCliArgs,
         W5JumpToTerminalExpectedWorkerCounts, W5MemoryBootstrapConfig,
         W5MemoryDecisionArtifactPublication, W5MemoryDecisionBundle, W5MemoryDecisionConfig,
@@ -15161,6 +15176,7 @@ mod tests {
     use sim_models::qwen3_dense_reference::{
         Qwen3DenseReferenceTokenizerProjection, Qwen3DenseReferenceTokenizerProjectionEntry,
     };
+    use sim_services::object::LingquObjectRecord;
     use std::collections::HashMap;
     use std::env;
     use std::ffi::OsString;
@@ -26926,7 +26942,6 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             &memory_service,
             &request,
             &object_service,
-            sim_memory::similarity::HiddenDecodePolicy::F32,
             850,
             500,
             true,
@@ -26939,6 +26954,68 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
         assert_eq!(
             support.supported_action,
             sim_memory::ShortpathAction::JumpToLayer
+        );
+    }
+
+    #[test]
+    fn w5_approximate_rejects_opaque_hidden_without_typed_sidecar() {
+        let request = sim_memory::BoundaryLookupRequest {
+            request_id: "req/opaque".to_string(),
+            model: sim_memory::InferenceModelBinding {
+                model_id: "model/test".to_string(),
+                model_key: "qwen3-test".to_string(),
+                tokenizer_hash: 0x1111,
+                profile_hash: 0x2222,
+            },
+            boundary: sim_memory::RangeBoundary {
+                phase: sim_memory::RangeBoundaryPhase::RangeExit,
+                step_index: 0,
+                node_index: 1,
+                layer_start: 0,
+                layer_end: 4,
+                next_node_index: Some(2),
+                position: 4,
+            },
+            hidden_state: sim_memory::HotTensorObjectRef {
+                object_key: "hidden/opaque".to_string(),
+                version: 1,
+                backend: sim_memory::HotObjectBackend::ObmmShmem,
+                storage_ref: "hidden/opaque".to_string(),
+                segment: None,
+                offset: 0,
+                bytes: 12,
+                checksum: 0x1234,
+                dtype: sim_core::TensorDType::Opaque,
+                shape: vec![12],
+            },
+            engram_state_id: None,
+            min_confidence_milli: 900,
+            allowed_actions: vec![sim_memory::ShortpathAction::JumpToLayer],
+            created_at_us: 1,
+            match_mode: "approximate".to_string(),
+            min_match_score_milli: 850,
+        };
+        let memory_service = sim_memory::LingquMemoryService::new();
+        let object_service = make_test_object_service(&[]);
+
+        let support = w5_try_approximate_boundary_lookup(
+            &memory_service,
+            &request,
+            &object_service,
+            850,
+            500,
+            true,
+        )
+        .expect("approximate lookup")
+        .expect("typed miss support");
+
+        assert_eq!(
+            support.reason,
+            "approximate_hidden_match_typed_payload_unavailable"
+        );
+        assert_eq!(
+            support.supported_action,
+            sim_memory::ShortpathAction::Continue
         );
     }
 
@@ -27016,7 +27093,6 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             &memory_service,
             &request,
             &object_service,
-            sim_memory::similarity::HiddenDecodePolicy::F32,
             850,
             500,
             true,
@@ -27105,7 +27181,6 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             &memory_service,
             &request,
             &object_service,
-            sim_memory::similarity::HiddenDecodePolicy::F32,
             850,
             500,
             true,
@@ -27192,7 +27267,6 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             &memory_service,
             &request,
             &object_service,
-            sim_memory::similarity::HiddenDecodePolicy::F32,
             850,
             500,
             true,
@@ -27276,7 +27350,6 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             &memory_service,
             &request,
             &object_service,
-            sim_memory::similarity::HiddenDecodePolicy::F32,
             850,
             500,
             false, // verify disabled
@@ -27409,7 +27482,6 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             &memory_service,
             &request,
             &object_service,
-            sim_memory::similarity::HiddenDecodePolicy::F32,
             850,
             500,
             true,

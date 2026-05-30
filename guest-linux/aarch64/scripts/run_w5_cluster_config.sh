@@ -113,6 +113,11 @@ set -a
 source "$CONFIG_PATH"
 set +a
 
+if [[ -n "${SIM_W5_MEMORY_REUSE_RUN_ID:-}" ]]; then
+  echo "SIM_W5_MEMORY_REUSE_RUN_ID was renamed to SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG; normal W5 runs auto-discover reusable Memory Service stores without this variable" >&2
+  exit 2
+fi
+
 if [[ -n "$STEPS_OVERRIDE" ]]; then
   if [[ ! "$STEPS_OVERRIDE" =~ '^[0-9]+$' || "$STEPS_OVERRIDE" == "0" ]]; then
     echo "--steps must be a positive integer: $STEPS_OVERRIDE" >&2
@@ -323,7 +328,7 @@ if (( PRINT_ENV )); then
   printf 'SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP=%s\n' "${SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP:-}"
   printf 'SIM_W5_MEMORY_OBSERVATION_STORE=%s\n' "${SIM_W5_MEMORY_OBSERVATION_STORE:-}"
   printf 'SIM_W5_VALIDATE_ONLY=%s\n' "${SIM_W5_VALIDATE_ONLY:-}"
-  printf 'SIM_W5_MEMORY_REUSE_RUN_ID=%s\n' "${SIM_W5_MEMORY_REUSE_RUN_ID:-}"
+  printf 'SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG=%s\n' "${SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG:-}"
   printf 'SIM_W5_MEMORY_REUSE_OUT_DIR=%s\n' "${SIM_W5_MEMORY_REUSE_OUT_DIR:-}"
   printf 'SIM_W5_MEMORY_DECISION_STORE=%s\n' "${SIM_W5_MEMORY_DECISION_STORE:-}"
   printf 'SIM_W5_MEMORY_DECISION_OBJECT_STORE=%s\n' "${SIM_W5_MEMORY_DECISION_OBJECT_STORE:-}"
@@ -351,15 +356,15 @@ fi
 if (( VALIDATE_ONLY )); then
   echo "[w5_cluster_config] config=$CONFIG_PATH profile=${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode} validate_only=1" >&2
   export SIM_W5_VALIDATE_ONLY=1
-  if [[ -n "${SIM_W5_MEMORY_REUSE_RUN_ID:-}" ]]; then
-    unset SIM_W5_MEMORY_REUSE_RUN_ID
+  if [[ -n "${SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG:-}" ]]; then
+    unset SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG
   fi
   exec "$SCRIPT_DIR/run_ub_eight_node_w5_inference_cluster.sh"
 fi
 
 echo "[w5_cluster_config] config=$CONFIG_PATH profile=${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" >&2
-if [[ -n "${SIM_W5_MEMORY_REUSE_RUN_ID:-}" ]]; then
-  unset SIM_W5_MEMORY_REUSE_RUN_ID
+if [[ -n "${SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG:-}" ]]; then
+  unset SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG
 fi
 if bool_enabled "${SIM_W5_POST_RUN_PRUNE:-0}" || bool_enabled "${SIM_W5_POST_RUN_HEALTH:-0}"; then
   "$SCRIPT_DIR/run_ub_eight_node_w5_inference_cluster.sh"

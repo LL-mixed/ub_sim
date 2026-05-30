@@ -48,6 +48,15 @@ impl MatchMode {
     }
 }
 
+impl HiddenDecodePolicy {
+    pub fn from_dtype(dtype: TensorDType) -> Option<Self> {
+        match dtype {
+            TensorDType::F32 => Some(Self::F32),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum SimilarityError {
     #[error("dtype mismatch: query={query:?} candidate={candidate:?}")]
@@ -70,8 +79,6 @@ pub enum SimilarityError {
     UnsupportedDecodePolicy(TensorDType),
     #[error("missing payload")]
     MissingPayload,
-    #[error("checksum mismatch")]
-    ChecksumMismatch,
 }
 
 pub type SimilarityResult<T> = Result<T, SimilarityError>;
@@ -236,10 +243,6 @@ pub fn compute_hidden_similarity(
             candidate: candidate_ref.shape.clone(),
         });
     }
-    if query_ref.checksum != candidate_ref.checksum {
-        return Err(SimilarityError::ChecksumMismatch);
-    }
-
     let query_vec =
         decode_payload_to_f32(query_payload, query_ref.dtype, &query_ref.shape, policy)?;
     let candidate_vec = decode_payload_to_f32(
@@ -406,6 +409,29 @@ mod tests {
     }
 
     #[test]
+    fn hidden_similarity_allows_distinct_payload_checksums() {
+        let payload: Vec<u8> = [1.0f32, 2.0, 3.0]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let mut query_ref = dummy_tensor_ref(TensorDType::F32, vec![3]);
+        let mut candidate_ref = dummy_tensor_ref(TensorDType::F32, vec![3]);
+        query_ref.checksum = 0x1111;
+        candidate_ref.checksum = 0x2222;
+
+        let (score, _, _) = compute_hidden_similarity(
+            &payload,
+            &payload,
+            &query_ref,
+            &candidate_ref,
+            HiddenDecodePolicy::F32,
+        )
+        .unwrap();
+
+        assert_eq!(score, 1000);
+    }
+
+    #[test]
     fn match_mode_from_str() {
         assert_eq!(MatchMode::from_str("exact"), Some(MatchMode::Exact));
         assert_eq!(
@@ -436,21 +462,30 @@ mod tests {
     }
 
     #[test]
-    fn hidden_similarity_rejects_checksum_mismatch() {
+    fn hidden_decode_policy_only_accepts_typed_f32() {
+        assert_eq!(
+            HiddenDecodePolicy::from_dtype(TensorDType::F32),
+            Some(HiddenDecodePolicy::F32)
+        );
+        assert_eq!(HiddenDecodePolicy::from_dtype(TensorDType::Opaque), None);
+    }
+
+    #[test]
+    fn hidden_similarity_does_not_require_exact_checksum_match() {
         let q = dummy_tensor_ref(TensorDType::F32, vec![2]);
         let c = dummy_tensor_ref(TensorDType::F32, vec![2]);
         let q_payload: Vec<u8> = [1.0f32, 2.0].iter().flat_map(|f| f.to_le_bytes()).collect();
         let c_payload = q_payload.clone();
         let mut candidate_ref = c;
         candidate_ref.checksum = 42;
-        let err = compute_hidden_similarity(
+        let (score, _, _) = compute_hidden_similarity(
             &q_payload,
             &c_payload,
             &q,
             &candidate_ref,
             HiddenDecodePolicy::F32,
         )
-        .unwrap_err();
-        assert!(matches!(err, SimilarityError::ChecksumMismatch));
+        .unwrap();
+        assert_eq!(score, 1000);
     }
 }

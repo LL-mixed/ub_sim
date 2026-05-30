@@ -43,22 +43,38 @@ w5_resolve_memory_reuse_config() {
   local default_reuse_out_dir="$1"
   local profile="$2"
   local expected_steps="${3:-${SIM_QWEN3_GUEST_DECODE_STEPS:-1}}"
-  local reuse_run_id="${SIM_W5_MEMORY_REUSE_RUN_ID:-}"
+  local reuse_run_id="${SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG:-}"
+  local reuse_optional=0
+  local reuse_auto=0
+  local explicit_reuse_selector=0
   if [[ -z "$reuse_run_id" ]]; then
-    return 0
+    if [[ -n "${SIM_W5_MEMORY_DECISION_STORE:-}" ||
+          -n "${SIM_W5_MEMORY_DECISION_OBJECT_STORE:-}" ||
+          -n "${SIM_W5_MEMORY_BOUNDARY_OBSERVATION_ID:-}" ||
+          -n "${SIM_W5_MEMORY_BOUNDARY_OBSERVATION_IDS:-}" ||
+          -n "${SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID:-}" ||
+          -n "${SIM_W5_MEMORY_SHORTPATH_DECISION_ID:-}" ||
+          -n "${SIM_W5_MEMORY_SHORTPATH_DECISION_IDS:-}" ]]; then
+      return 0
+    fi
+    reuse_run_id="latest"
+    reuse_optional=1
+    reuse_auto=1
+  else
+    explicit_reuse_selector=1
   fi
   if [[ ! "$expected_steps" =~ '^[0-9]+$' || "$expected_steps" == "0" ]]; then
     echo "SIM_QWEN3_GUEST_DECODE_STEPS must be a positive integer for Memory Service reuse: $expected_steps" >&2
     return 2
   fi
-  if [[ -n "${SIM_W5_MEMORY_DECISION_STORE:-}" ||
+  if (( explicit_reuse_selector )) && [[ -n "${SIM_W5_MEMORY_DECISION_STORE:-}" ||
         -n "${SIM_W5_MEMORY_DECISION_OBJECT_STORE:-}" ||
         -n "${SIM_W5_MEMORY_BOUNDARY_OBSERVATION_ID:-}" ||
         -n "${SIM_W5_MEMORY_BOUNDARY_OBSERVATION_IDS:-}" ||
         -n "${SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID:-}" ||
         -n "${SIM_W5_MEMORY_SHORTPATH_DECISION_ID:-}" ||
         -n "${SIM_W5_MEMORY_SHORTPATH_DECISION_IDS:-}" ]]; then
-    echo "SIM_W5_MEMORY_REUSE_RUN_ID cannot be combined with explicit Memory Service reuse stores or selectors" >&2
+    echo "SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG cannot be combined with explicit Memory Service reuse stores or selectors" >&2
     return 2
   fi
 
@@ -69,16 +85,28 @@ w5_resolve_memory_reuse_config() {
 
   if [[ "$reuse_run_id" == "latest" ]]; then
     local -a candidates
-    candidates=("$reuse_out_dir"/w5_memory_runtime_boundary_lookup.*_w5_${profile}_*.json(N.om))
+    candidates=("$reuse_out_dir"/w5_memory_object_store.*_w5_${profile}_*.json(N.om))
     if (( ${#candidates[@]} == 0 )); then
-      echo "SIM_W5_MEMORY_REUSE_RUN_ID=latest found no decision store for profile=$profile in $reuse_out_dir" >&2
+      candidates=("$reuse_out_dir"/w5_memory_runtime_boundary_lookup.*_w5_${profile}_*.json(N.om))
+    fi
+    if (( ${#candidates[@]} == 0 )); then
+      if (( reuse_optional )); then
+        if (( ! reuse_auto )); then
+          echo "SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG=latest found no reusable decision store; continuing without Memory Service reuse" >&2
+        fi
+        return 0
+      fi
+      echo "SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG=latest found no decision store for profile=$profile in $reuse_out_dir" >&2
       return 2
     fi
     local candidate=""
     local base=""
     for candidate in "${candidates[@]}"; do
       base="${candidate:t}"
-      selected_run_id="${base#w5_memory_runtime_boundary_lookup.}"
+      selected_run_id="${base#w5_memory_object_store.}"
+      if [[ "$selected_run_id" == "$base" ]]; then
+        selected_run_id="${base#w5_memory_runtime_boundary_lookup.}"
+      fi
       selected_run_id="${selected_run_id%.json}"
       object_store="$reuse_out_dir/w5_object_service_store.$selected_run_id.json"
       if [[ -f "$object_store" ]] &&
@@ -88,15 +116,24 @@ w5_resolve_memory_reuse_config() {
       fi
     done
     if [[ -z "$decision_store" ]]; then
-      echo "SIM_W5_MEMORY_REUSE_RUN_ID=latest found no completed reusable run covering steps=$expected_steps for profile=$profile in $reuse_out_dir" >&2
+      if (( reuse_optional )); then
+        if (( ! reuse_auto )); then
+          echo "SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG=latest found no completed reusable run covering steps=$expected_steps; continuing without Memory Service reuse" >&2
+        fi
+        return 0
+      fi
+      echo "SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG=latest found no completed reusable run covering steps=$expected_steps for profile=$profile in $reuse_out_dir" >&2
       return 2
     fi
   else
     if [[ ! "$reuse_run_id" =~ '^[A-Za-z0-9._-]+$' ]]; then
-      echo "SIM_W5_MEMORY_REUSE_RUN_ID must be latest or a run id without path separators: $reuse_run_id" >&2
+      echo "SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG must be latest or a run id without path separators: $reuse_run_id" >&2
       return 2
     fi
-    decision_store="$reuse_out_dir/w5_memory_runtime_boundary_lookup.$selected_run_id.json"
+    decision_store="$reuse_out_dir/w5_memory_object_store.$selected_run_id.json"
+    if [[ ! -f "$decision_store" ]]; then
+      decision_store="$reuse_out_dir/w5_memory_runtime_boundary_lookup.$selected_run_id.json"
+    fi
   fi
 
   object_store="$reuse_out_dir/w5_object_service_store.$selected_run_id.json"
