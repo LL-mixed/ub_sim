@@ -65,6 +65,7 @@ range 模式:
 - 每个 node 按自己的 layer range，一次调用 merged prefill/decode program。
 - QEMU/W5/OBMM 外层数据流不变，区别只在 range worker 内部执行排布。
 - 用户命令仍传 single-layer 四目录；worker 会根据模型和本 node `layer_count` 自动选择仓内 merged-range program。
+- merged-range program 目录当前不是用户参数，而是仓内约定目录；因此运行 `--range-exec merged-range` 时，相关 `build_output/Qwen*Merged*` 目录必须存在于仓库根目录的 `build_output/` 下。
 - Qwen3-0.6B 的 8-node layer range 是 `4,4,4,4,3,3,3,3`，因此仓内提供 range 4 和 range 3 merged programs。
 - Qwen3-14B 的 8-node layer range 是 `5,5,5,5,5,5,5,5`，因此仓内提供 range 5 merged programs。
 
@@ -88,6 +89,13 @@ build_output/Qwen306BMergedPrefillRange3
 build_output/Qwen306BMergedDecodeRange3
 ```
 
+自动选择规则:
+
+```text
+nodeA/B/C/D layer_count=4 -> Qwen306BMergedPrefillRange4 + Qwen306BMergedDecodeRange4
+nodeE/F/G/H layer_count=3 -> Qwen306BMergedPrefillRange3 + Qwen306BMergedDecodeRange3
+```
+
 Qwen3-14B per-layer L2:
 
 ```text
@@ -102,6 +110,12 @@ Qwen3-14B range L2:
 ```text
 build_output/Qwen314BMergedPrefillRange5
 build_output/Qwen314BMergedDecodeRange5
+```
+
+自动选择规则:
+
+```text
+nodeA/B/C/D/E/F/G/H layer_count=5 -> Qwen314BMergedPrefillRange5 + Qwen314BMergedDecodeRange5
 ```
 
 ## Qwen3-0.6B per-layer
@@ -151,6 +165,7 @@ text=" a global leader in the field of information technology,"
 
 - 验证 0.6B 的 range merged dispatch 路径。
 - 外层 W5 数据流与 per-layer 相同，node 内由 merged-range program 执行。
+- 命令不需要额外传 `Qwen306BMerged*` 目录；worker 会按 0.6B 的 layer count 自动选择 range 4 或 range 3 program。
 
 命令:
 
@@ -237,6 +252,7 @@ text=" a company that"
 
 - 验证 14B 的 range merged dispatch 主路径。
 - 当前 14B range smoke 已验证 10-token 生成。
+- 命令不需要额外传 `Qwen314BMerged*` 目录；worker 会按 14B 的 layer count 自动选择 range 5 program。
 
 命令:
 
@@ -286,6 +302,12 @@ text=" a Chinese multinational technology company that designs and sells consume
 - `--decode-abi single-layer`: 当前 guest simpler L2 使用 single-layer decode ABI。
 - `--range-exec`: `single-layer` 或 `merged-range`。
 - 四个 `--*-build-output`: single-layer L2 prefill/decode/final_rms/lm_head program 目录。
+
+`merged-range` 目录说明:
+
+- 当前没有 `--merged-prefill-build-output` 或 `--merged-decode-build-output` 参数。
+- merged-range 目录通过仓内固定命名自动解析，解析依据是模型规格和当前 node 的 `layer_count`。
+- 若要移动、重命名或新增其它 range size 的 merged program，需要同步更新 worker 内的目录选择规则。
 
 常用环境变量:
 
