@@ -594,9 +594,23 @@ static uint64_t qwen3_decode_hidden_bytes(void)
                       hidden_size * decode_tokens * 2ULL);
 }
 
-static uint64_t qwen3_handoff_hidden_bytes(uint64_t decode_step)
+static uint64_t qwen3_prefill_handoff_hidden_bytes(uint64_t token_count)
 {
-    return decode_step > 0 ? qwen3_decode_hidden_bytes() : qwen3_hidden_range_bytes();
+    uint64_t hidden_size = env_u64_or("SIM_QWEN3_DENSE_HIDDEN_SIZE", 1024ULL);
+    uint64_t fallback = qwen3_hidden_range_bytes();
+
+    if (token_count == 0 || hidden_size == 0 ||
+        token_count > UINT64_MAX / hidden_size / 2ULL) {
+        return fallback;
+    }
+    return token_count * hidden_size * 2ULL;
+}
+
+static uint64_t qwen3_handoff_hidden_bytes(uint64_t decode_step,
+                                           uint64_t prefill_token_count)
+{
+    return decode_step > 0 ? qwen3_decode_hidden_bytes() :
+                             qwen3_prefill_handoff_hidden_bytes(prefill_token_count);
 }
 
 static bool is_qwen3_profile_name(const char *profile)
@@ -604,8 +618,27 @@ static bool is_qwen3_profile_name(const char *profile)
     return profile &&
            (strcmp(profile, "qwen3_dense_reference") == 0 ||
             strcmp(profile, "qwen3_dense") == 0 ||
-            strcmp(profile, "qwen3_guest_simpler_l2") == 0 ||
-            strcmp(profile, "qwen3_dense_simpler_l2") == 0);
+            strcmp(profile, "qwen3_guest_simpler_w5_l2") == 0);
+}
+
+static bool is_qwen3_simpler_l2_profile_name(const char *profile)
+{
+    return profile &&
+           strcmp(profile, "qwen3_guest_simpler_w5_l2") == 0;
+}
+
+static bool qwen3_skip_legacy_uapi_coverage_enabled(void)
+{
+    const char *profile = getenv("SIM_UAPI_W4_CHIPBACKEND_PROFILE");
+    const char *value = getenv("SIM_QWEN3_GUEST_SKIP_LEGACY_UAPI_COVERAGE");
+
+    if (!is_qwen3_simpler_l2_profile_name(profile)) {
+        return false;
+    }
+    if (!value || value[0] == '\0') {
+        return true;
+    }
+    return strcmp(value, "0") != 0;
 }
 
 static bool qwen3_real_tokenizer_required(void)
@@ -1849,15 +1882,16 @@ static bool qwen3_find_logits_table_by_scan(volatile uint8_t *ep_mmio,
 {
     uint64_t cursor;
     uint64_t scan_limit = qwen3_output_scan_limit(ep_mmio);
+    bool found = false;
 
     for (cursor = 0; cursor + 64ULL <= scan_limit; cursor += 8ULL) {
         if (qwen3_logits_table_candidate_is_valid(ep_mmio, cursor, allow_compact)) {
             *table_header = cursor;
-            return true;
+            found = true;
         }
     }
 
-    return false;
+    return found;
 }
 
 struct w4_qwen3_terminal_token_record {
@@ -1958,6 +1992,7 @@ struct w4_qwen3_shortpath_kv_stream_entry {
 
 struct w4_qwen3_memory_decision_config {
     bool enabled;
+    bool continue_only;
     char service[64];
     char decision_store[256];
     char shortpath_lookup_mode[64];
@@ -3813,7 +3848,7 @@ static int verify_qwen3_range_completion_contract(const uint8_t *cq,
 
     printf("[w4_guest] stage uapi_qwen3_range_compute_contract_fallback node=%" PRIu32
            " layers=[%" PRIu32 ",%" PRIu32 ") next=%" PRIu32
-           " reason=completion_sideband_absent fallback=runtime_forward_metadata status=ok\n",
+           " reason=completion_sideband_absent fallback=completion_sideband_absent status=ok\n",
            dispatch_node,
            layer_start,
            layer_end,
@@ -3826,11 +3861,11 @@ static int verify_qwen3_range_completion_contract(const uint8_t *cq,
            dispatch_node,
            layer_start,
            layer_end,
-           range_layer_end - range_layer_start,
-           range_next_node,
-           range_pipeline_nodes,
-           range_total_layers,
-           range_hidden_bytes);
+           layer_end - layer_start,
+           next_node,
+           cluster_node_count,
+           (uint32_t)expected_total_layers,
+           expected_hidden_bytes);
     return 0;
 }
 
@@ -6148,6 +6183,7 @@ static int parse_qwen3_w5_memory_decision_config(
     env_copy_or_empty("SIM_W5_MEMORY_SERVICE",
                       config->service,
                       sizeof(config->service));
+    config->continue_only = env_bool_is_one("SIM_W5_MEMORY_CONTINUE_ONLY");
     env_copy_or_empty("SIM_W5_MEMORY_DECISION_STORE",
                       config->decision_store,
                       sizeof(config->decision_store));
@@ -6387,7 +6423,7 @@ static int parse_qwen3_w5_memory_decision_config(
         return -1;
     }
     config->enabled =
-        has_shortpath || has_shortpath_registry || has_shortpath_stream ||
+        config->continue_only || has_shortpath || has_shortpath_registry || has_shortpath_stream ||
         has_prefetch || has_prefix_cache;
     if (!config->enabled) {
         return 0;
@@ -8770,6 +8806,8 @@ int main(void)
     bool cluster_observer_mode = false;
     bool qwen3_runtime_forward_ready = false;
     bool resource_assertions_enabled = false;
+    bool qwen3_inline_range_input_payload = true;
+    bool qwen3_skip_legacy_uapi_coverage = false;
     uint32_t cluster_node_count = 4U;
     size_t slot = 0;
     int rc = 1;
@@ -8889,6 +8927,14 @@ int main(void)
     require_uapi_resource = env_bool_is_one("LINQU_W4_REQUIRE_UAPI_RESOURCE");
     enable_db_cluster = env_bool_is_one("LINQU_W4_DB_CLUSTER");
     resource_assertions_enabled = env_bool_is_one("SIM_W4_RESOURCE_ASSERTIONS");
+    qwen3_skip_legacy_uapi_coverage =
+        qwen3_skip_legacy_uapi_coverage_enabled();
+    {
+        const char *inline_payload_env =
+            getenv("SIM_QWEN3_INLINE_RANGE_INPUT_PAYLOAD");
+        qwen3_inline_range_input_payload =
+            !inline_payload_env || strcmp(inline_payload_env, "0") != 0;
+    }
     guest_decode_step = env_u64_or_default("SIM_QWEN3_GUEST_DECODE_STEP", 0);
     guest_decode_steps = env_u64_or_default("SIM_QWEN3_GUEST_DECODE_STEPS", 1);
     qwen3_sampler_config.top_k =
@@ -10863,32 +10909,38 @@ decode_round_start:
            cmdq_depth,
            cq_depth);
 
-    printf("[w4_guest] stage uapi_kvcache_shmem_descriptor segment=%" PRIu64 " bytes=128 puts=1 gets=1 role=hot_shared\n",
-           default_segment);
-    build_shmem_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 3, default_segment, 128);
-    build_shmem_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 4, default_segment, 128);
-    printf("[w4_guest] stage uapi_kvcache_shmem_descriptor segment=%" PRIu64 " bytes=%u puts=1 gets=1 role=legacy_demo_payload\n",
-           default_segment, W4_DEMO_KVCACHE_PAYLOAD_BYTES);
-    build_shmem_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 3, default_segment, W4_DEMO_KVCACHE_PAYLOAD_BYTES);
-    build_shmem_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 4, default_segment, W4_DEMO_KVCACHE_PAYLOAD_BYTES);
-    printf("[w4_guest] stage uapi_kvcache_db_descriptor key=%s bytes=%" PRIu64 "\n",
-           key, kvcache_db_bytes);
-    build_dbput_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), key, kvcache_db_bytes);
-    build_dbget_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), key);
-    printf("[w4_guest] stage uapi_kvcache_db_descriptor key=%s bytes=%" PRIu64 " role=aux_block\n",
-           key_aux, kvcache_db_bytes);
-    build_dbput_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), key_aux, kvcache_db_bytes);
-    build_dbget_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), key_aux);
-    build_dfs_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 6, path, 256);
-    build_dfs_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 5, path, 0);
-    printf("[w4_guest] stage uapi_kvcache_block_descriptor block=%s segment=%" PRIu64 " writes=1 reads=1\n",
-           block, default_segment);
-    build_io_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 100, 2, default_segment, block);
-    build_io_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 101, 1, default_segment, block);
-    printf("[w4_guest] stage uapi_kvcache_block_descriptor block=%s segment=%" PRIu64 " writes=1 reads=1 role=aux_block_boundary\n",
-           block_aux, default_segment);
-    build_io_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 102, 2, default_segment, block_aux);
-    build_io_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 103, 1, default_segment, block_aux);
+    if (qwen3_skip_legacy_uapi_coverage) {
+        printf("[w4_guest] stage uapi_kvcache_legacy_coverage"
+               " action=skip reason=qwen3_simpler_range_only"
+               " env=SIM_QWEN3_GUEST_SKIP_LEGACY_UAPI_COVERAGE status=ok\n");
+    } else {
+        printf("[w4_guest] stage uapi_kvcache_shmem_descriptor segment=%" PRIu64 " bytes=128 puts=1 gets=1 role=hot_shared\n",
+               default_segment);
+        build_shmem_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 3, default_segment, 128);
+        build_shmem_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 4, default_segment, 128);
+        printf("[w4_guest] stage uapi_kvcache_shmem_descriptor segment=%" PRIu64 " bytes=%u puts=1 gets=1 role=legacy_demo_payload\n",
+               default_segment, W4_DEMO_KVCACHE_PAYLOAD_BYTES);
+        build_shmem_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 3, default_segment, W4_DEMO_KVCACHE_PAYLOAD_BYTES);
+        build_shmem_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 4, default_segment, W4_DEMO_KVCACHE_PAYLOAD_BYTES);
+        printf("[w4_guest] stage uapi_kvcache_db_descriptor key=%s bytes=%" PRIu64 "\n",
+               key, kvcache_db_bytes);
+        build_dbput_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), key, kvcache_db_bytes);
+        build_dbget_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), key);
+        printf("[w4_guest] stage uapi_kvcache_db_descriptor key=%s bytes=%" PRIu64 " role=aux_block\n",
+               key_aux, kvcache_db_bytes);
+        build_dbput_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), key_aux, kvcache_db_bytes);
+        build_dbget_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), key_aux);
+        build_dfs_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 6, path, 256);
+        build_dfs_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 5, path, 0);
+        printf("[w4_guest] stage uapi_kvcache_block_descriptor block=%s segment=%" PRIu64 " writes=1 reads=1\n",
+               block, default_segment);
+        build_io_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 100, 2, default_segment, block);
+        build_io_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 101, 1, default_segment, block);
+        printf("[w4_guest] stage uapi_kvcache_block_descriptor block=%s segment=%" PRIu64 " writes=1 reads=1 role=aux_block_boundary\n",
+               block_aux, default_segment);
+        build_io_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 102, 2, default_segment, block_aux);
+        build_io_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 103, 1, default_segment, block_aux);
+    }
     if (is_qwen3_profile() && enable_db_cluster && cluster_node_count == 8U) {
         uint32_t dispatch_node = 0U;
         uint32_t layer_start = 0U;
@@ -11021,7 +11073,9 @@ decode_round_start:
                                                   layer_start,
                                                   layer_end,
                                                   next_node,
-                                                  qwen3_handoff_hidden_bytes(guest_decode_step),
+                                                  qwen3_handoff_hidden_bytes(
+                                                      guest_decode_step,
+                                                      qwen3_round_input_token_count),
                                                   (uint32_t)W4_QWEN3_OBJECT_REF_TABLE_OFFSET,
                                                   object_ref_count);
         }
@@ -11068,7 +11122,9 @@ decode_round_start:
             goto out;
         }
         if (layer_start > 0U || guest_decode_step > 0) {
-            uint64_t hidden_range_bytes = qwen3_handoff_hidden_bytes(guest_decode_step);
+            uint64_t hidden_range_bytes =
+                qwen3_handoff_hidden_bytes(guest_decode_step,
+                                           qwen3_round_input_token_count);
             uint64_t range_input_checksum = 0;
             struct w4_db_object_payload_view range_input_view;
             uint64_t stage_start_ms = monotonic_ms();
@@ -11137,6 +11193,9 @@ decode_round_start:
                 } else {
                     bool token_result_input = false;
                     bool hidden_range_input = false;
+                    uint64_t materialized_input_offset = 0;
+                    uint64_t materialized_input_bytes = 0;
+                    uint32_t materialized_inline_payload = 0;
 
                     if (qwen3_pre_resolved_range_input) {
                         range_input_view = qwen3_pre_resolved_range_input_view;
@@ -11246,14 +11305,37 @@ decode_round_start:
                                         (const uint8_t *)&range_input_view.object_ref,
                                         W4_QWEN3_OBJECT_REF_BYTES);
                     object_ref_write_index++;
+                    if (token_result_input) {
+                        write_segment_bytes(ep_mmio,
+                                            W4_QWEN3_RANGE_INPUT_PAYLOAD_OFFSET,
+                                            (const uint8_t *)range_input_view.token_result_words,
+                                            W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES);
+                        materialized_input_offset = W4_QWEN3_RANGE_INPUT_PAYLOAD_OFFSET;
+                        materialized_input_bytes = W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES;
+                        materialized_inline_payload = 1;
+                    } else if (hidden_range_input) {
+                        if (qwen3_inline_range_input_payload) {
+                            write_segment_bytes(ep_mmio,
+                                                W4_QWEN3_RANGE_INPUT_PAYLOAD_OFFSET,
+                                                range_input_view.data,
+                                                range_input_view.len);
+                            materialized_input_offset =
+                                W4_QWEN3_RANGE_INPUT_PAYLOAD_OFFSET;
+                            materialized_input_bytes = range_input_view.len;
+                            materialized_inline_payload = 1;
+                        }
+                    }
                     input_loaded_ms = monotonic_ms();
-                    printf("[w4_guest] stage qwen3_range_forward_runtime_input_loaded node=%u layers=[%u,%u) input_offset=0x%016" PRIx64 " input_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " source=obmm_object_view target=uapi_object_ref materialize=none status=ok inline_payload=0 kind=%u\n",
+                    printf("[w4_guest] stage qwen3_range_forward_runtime_input_loaded node=%u layers=[%u,%u) input_offset=0x%016" PRIx64 " input_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " source=obmm_object_view target=uapi_object_ref materialize=%s status=ok inline_payload=%u inline_bytes=%" PRIu64 " kind=%u\n",
                            dispatch_node + 1U,
                            layer_start,
                            layer_end,
-                           (uint64_t)0,
+                           materialized_input_offset,
                            range_input_checksum,
                            range_input_view.len,
+                           materialized_inline_payload ? "uapi_segment" : "none",
+                           materialized_inline_payload,
+                           materialized_input_bytes,
                            range_input_view.payload_kind);
                 }
             }
@@ -11376,21 +11458,43 @@ decode_round_start:
                                         (const uint8_t *)&previous_kv_view.object_ref,
                                         W4_QWEN3_OBJECT_REF_BYTES);
                     object_ref_write_index++;
+                    write_segment_u64(ep_mmio,
+                                      W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET,
+                                      W4_QWEN3_PREVIOUS_KV_PAYLOAD_MARKER);
+                    write_segment_u64(ep_mmio,
+                                      W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET + 8ULL,
+                                      previous_kv_view.len);
+                    write_segment_u64(ep_mmio,
+                                      W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET + 16ULL,
+                                      previous_kv_view.checksum);
+                    write_segment_u64(ep_mmio,
+                                      W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET + 24ULL,
+                                      0);
+                    if (qwen3_inline_range_input_payload) {
+                        write_segment_bytes(ep_mmio,
+                                            W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET +
+                                                W4_QWEN3_PREVIOUS_KV_PAYLOAD_HEADER_BYTES,
+                                            previous_kv_view.data,
+                                            previous_kv_view.len);
+                    }
                     kv_loaded_ms = monotonic_ms();
                     printf("[w4_guest] stage qwen3_range_kv_state_loaded node=%u step=%" PRIu64
                            " previous_step=%" PRIu64
                            " kv_offset=0x%016" PRIx64 " kv_bytes=%" PRIu64
                            " kv_checksum=0x%016" PRIx64
                            " key_hash=0x%016" PRIx64 " version=%" PRIu64
-                           " source=obmm_object_view target=uapi_object_ref materialize=none status=ok inline_payload=0\n",
+                           " source=obmm_object_view target=uapi_object_ref materialize=%s status=ok inline_payload=%u\n",
                            dispatch_node + 1U,
                            guest_decode_step,
                            kv_source_step,
-                           (uint64_t)0,
+                           (uint64_t)W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET,
                            previous_kv_view.len,
                            previous_kv_view.checksum,
                            previous_kv_view.object_ref.key_hash,
-                           previous_kv_view.object_ref.object_version);
+                           previous_kv_view.object_ref.object_version,
+                           qwen3_inline_range_input_payload ? "uapi_segment" :
+                                                              "none",
+                           qwen3_inline_range_input_payload ? 1U : 0U);
                 } else {
                     kv_loaded_ms = kv_resolved_ms;
                 }
@@ -11554,13 +11658,17 @@ decode_round_start:
                                 slot,
                                 default_segment,
                                 guest_decode_step,
-                                qwen3_handoff_hidden_bytes(guest_decode_step),
+                                qwen3_handoff_hidden_bytes(
+                                    guest_decode_step,
+                                    qwen3_round_input_token_count),
                                 &runtime_forward) != 0) {
         goto out;
     }
     qwen3_runtime_forward_ready =
         is_qwen3_profile() &&
-        runtime_forward.payload_bytes == qwen3_handoff_hidden_bytes(guest_decode_step);
+        runtime_forward.payload_bytes ==
+            qwen3_handoff_hidden_bytes(guest_decode_step,
+                                       qwen3_round_input_token_count);
     verify_done_ms = monotonic_ms();
     if (qwen3_runtime_forward_ready && enable_db_cluster && cluster_node_count == 8U) {
         uint32_t dispatch_node = 0U;
@@ -11991,6 +12099,24 @@ qwen3_after_compute_publish:
     printf("[w4_guest] completion_status success=%" PRIu64 " retryable=%" PRIu64
            " fatal=%" PRIu64 "\n",
            counts.success, counts.retryable, counts.fatal);
+    if (qwen3_skip_legacy_uapi_coverage) {
+        if (counts.chipbackend < 1 || counts.fatal != 0) {
+            printf("[w4_guest] assessment service_coverage=range-only"
+                   " dispatch_path=qwen3_range_only complete=false"
+                   " chipbackend=%" PRIu64 " fatal=%" PRIu64 "\n",
+                   counts.chipbackend,
+                   counts.fatal);
+            fprintf(stderr, "[w4_guest] fail qwen3 range-only coverage incomplete\n");
+            goto out;
+        }
+        printf("[w4_guest] assessment service_coverage=range-only"
+               " dispatch_path=qwen3_range_only"
+               " legacy_uapi_coverage=skipped chipbackend=%" PRIu64
+               " complete=true\n",
+               counts.chipbackend);
+        printf("[w4_guest] dispatch path=qwen3_range_only\n");
+        goto qwen3_after_service_coverage;
+    }
     printf("[w4_guest] stage uapi_kvcache_shmem_completion segment=%" PRIu64 " bytes=128 puts=1 gets=1 source=shmem_service role=hot_shared\n",
            default_segment);
     printf("[w4_guest] stage uapi_kvcache_shmem_completion segment=%" PRIu64 " bytes=%u puts=1 gets=1 source=shmem_service role=legacy_demo_payload\n",
