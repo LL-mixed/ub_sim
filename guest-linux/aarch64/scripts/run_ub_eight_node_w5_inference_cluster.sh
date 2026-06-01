@@ -33,7 +33,7 @@ RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_w5_${SIM_UAPI_W5_PROFILE}_${RANDOM}
 TRACE_FILE="${TRACE_FILE:-$OUT_DIR/eight_node_w5_inference_cluster.trace.latest.txt}"
 RUN_SUMMARY_FILE="${RUN_SUMMARY_FILE:-$OUT_DIR/eight_node_w5_inference_cluster_summary.${RUN_ID}.txt}"
 SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-qwen3_dense}"
-SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP="${SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-0}"
+SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP="${SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-1}"
 SIM_W5_MEMORY_POST_RUN_PROMOTE="${SIM_W5_MEMORY_POST_RUN_PROMOTE:-0}"
 SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP="${SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP:-0}"
 SIM_W5_MEMORY_OBSERVATION_STORE="${SIM_W5_MEMORY_OBSERVATION_STORE:-}"
@@ -47,6 +47,7 @@ SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID="${SIM_W5_MEMORY_BOUNDARY_OBSERVATION_
 SIM_W5_MEMORY_SHORTPATH_DECISION_ID="${SIM_W5_MEMORY_SHORTPATH_DECISION_ID:-}"
 SIM_W5_MEMORY_SHORTPATH_DECISION_IDS="${SIM_W5_MEMORY_SHORTPATH_DECISION_IDS:-}"
 SIM_W5_MEMORY_PREFETCH_PLAN_ID="${SIM_W5_MEMORY_PREFETCH_PLAN_ID:-}"
+SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP="${SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP:-1}"
 SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID="${SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID:-}"
 SIM_W5_MEMORY_PREFIX_CACHE_SERVICE_ADDR="${SIM_W5_MEMORY_PREFIX_CACHE_SERVICE_ADDR:-}"
 SIM_W5_MEMORY_STORE="${SIM_W5_MEMORY_STORE:-$OUT_DIR/w5_memory_object_store.${RUN_ID}.json}"
@@ -88,6 +89,7 @@ export SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID
 export SIM_W5_MEMORY_SHORTPATH_DECISION_ID
 export SIM_W5_MEMORY_SHORTPATH_DECISION_IDS
 export SIM_W5_MEMORY_PREFETCH_PLAN_ID
+export SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP
 export SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID
 export SIM_W5_MEMORY_PREFIX_CACHE_SERVICE_ADDR
 export SIM_W5_MEMORY_STORE
@@ -115,6 +117,23 @@ if [[ "$SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP" == "1" ||
   memory_online_lookup=1
 fi
 
+memory_validate_only=0
+case "$SIM_W5_VALIDATE_ONLY" in
+  1|true|TRUE|yes|YES)
+    memory_validate_only=1
+    ;;
+esac
+
+memory_prefix_cache_lookup=0
+case "$SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP" in
+  0|false|FALSE|no|NO)
+    memory_prefix_cache_lookup=0
+    ;;
+  *)
+    memory_prefix_cache_lookup=1
+    ;;
+esac
+
 resolve_w5_memory_reuse_config_status=0
 w5_resolve_memory_reuse_config "$OUT_DIR" "$SIM_UAPI_W5_PROFILE" "${SIM_QWEN3_GUEST_DECODE_STEPS:-1}" || resolve_w5_memory_reuse_config_status=$?
 if (( resolve_w5_memory_reuse_config_status != 0 )); then
@@ -130,6 +149,7 @@ if [[ -n "$SIM_W5_MEMORY_DECISION_STORE" ]]; then
         -n "$SIM_W5_MEMORY_SHORTPATH_DECISION_IDS" ||
         "$memory_online_lookup" == "1" ||
         -n "$SIM_W5_MEMORY_PREFETCH_PLAN_ID" ||
+        "$memory_prefix_cache_lookup" == "1" ||
         -n "$SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID" ]]; then
     memory_decision_reuse=1
   elif [[ -z "${SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT:-}" &&
@@ -196,7 +216,7 @@ if (( memory_runtime_lookup || memory_decision_reuse || explicit_engram_state_re
 
     rm -f "$service_addr_file"
     (
-      "${SIM_CLI_BIN}" prefix-cache-service \
+      "${SIM_CLI_BIN}" lingqu-memory prefix-cache-service \
         --store "$SIM_W5_MEMORY_DECISION_STORE" \
         --object-store "$service_object_store" \
         --ready-file "$service_addr_file" \
@@ -322,11 +342,13 @@ if (( memory_runtime_lookup || memory_decision_reuse || explicit_engram_state_re
     if [[ -n "$SIM_W5_MEMORY_PREFETCH_PLAN_ID" ]]; then
       cli_args+=(--memory-prefetch-plan-id "$SIM_W5_MEMORY_PREFETCH_PLAN_ID")
     fi
+    if (( memory_prefix_cache_lookup )); then
+      cli_args+=(--memory-prefix-cache-lookup=true)
+    else
+      cli_args+=(--memory-prefix-cache-lookup=false)
+    fi
     if [[ -n "$SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID" ]]; then
       cli_args+=(--memory-prefix-cache-reuse-plan-id "$SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID")
-    fi
-    if [[ -n "$SIM_W5_MEMORY_PREFIX_CACHE_SERVICE_ADDR" ]]; then
-      cli_args+=(--memory-prefix-cache-service-addr "$SIM_W5_MEMORY_PREFIX_CACHE_SERVICE_ADDR")
     fi
     case "${SIM_W5_MEMORY_SHORTPATH_EXECUTE:-1}" in
       0|false|FALSE|no|NO)
@@ -368,12 +390,17 @@ if (( memory_runtime_lookup || memory_decision_reuse || explicit_engram_state_re
     cli_args+=(--sampler-seed "$SIM_QWEN3_SAMPLER_SEED")
   fi
 
-  if [[ -n "$SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID" ]] &&
+  if (( memory_decision_reuse )) &&
+     (( ! memory_validate_only )) &&
+     (( memory_prefix_cache_lookup )) &&
      [[ -z "$SIM_W5_MEMORY_PREFIX_CACHE_SERVICE_ADDR" ]]; then
     if ! launch_prefix_cache_service; then
       echo "failed to launch prefix-cache service" >&2
       exit 1
     fi
+  fi
+  if (( memory_decision_reuse )) && [[ -n "$SIM_W5_MEMORY_PREFIX_CACHE_SERVICE_ADDR" ]]; then
+    cli_args+=(--memory-prefix-cache-service-addr "$SIM_W5_MEMORY_PREFIX_CACHE_SERVICE_ADDR")
   fi
   echo "[w5_inference_cluster] runtime_boundary_lookup=$memory_runtime_lookup online_boundary_lookup=$memory_online_lookup observation_store=$SIM_W5_MEMORY_OBSERVATION_STORE decision_reuse=$memory_decision_reuse decision_store=$SIM_W5_MEMORY_DECISION_STORE" >&2
   "${SIM_CLI_BIN}" "${cli_args[@]}"

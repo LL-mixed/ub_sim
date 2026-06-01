@@ -177,6 +177,7 @@ validate_w5_cluster_config() {
   local steps="${SIM_QWEN3_GUEST_DECODE_STEPS:-1}"
   local memory_runtime_lookup=0
   local memory_online_lookup=0
+  local memory_prefix_cache_lookup=1
   local keep_latest="${SIM_W5_ARTIFACT_KEEP_LATEST:-3}"
   local max_prune_candidates="${SIM_W5_HEALTH_MAX_PRUNE_CANDIDATES:-0}"
   local max_prune_bytes="${SIM_W5_HEALTH_MAX_PRUNE_BYTES:-0}"
@@ -218,12 +219,17 @@ validate_w5_cluster_config() {
     echo "W5 cluster config weights path is missing: $SIM_QWEN3_DENSE_WEIGHTS_PATH" >&2
     return 2
   fi
-  if bool_enabled "${SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-0}"; then
+  if bool_enabled "${SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-1}"; then
     memory_runtime_lookup=1
   fi
   if bool_enabled "${SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP:-0}"; then
     memory_online_lookup=1
   fi
+  case "${SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP:-1}" in
+    0|false|FALSE|no|NO)
+      memory_prefix_cache_lookup=0
+      ;;
+  esac
   if [[ -n "${SIM_W5_MEMORY_DECISION_OBJECT_STORE:-}" && -z "${SIM_W5_MEMORY_DECISION_STORE:-}" ]]; then
     echo "SIM_W5_MEMORY_DECISION_OBJECT_STORE requires SIM_W5_MEMORY_DECISION_STORE" >&2
     return 2
@@ -235,11 +241,12 @@ validate_w5_cluster_config() {
           -z "${SIM_W5_MEMORY_SHORTPATH_DECISION_ID:-}" &&
           -z "${SIM_W5_MEMORY_SHORTPATH_DECISION_IDS:-}" &&
           "$memory_online_lookup" == "0" &&
+          "$memory_prefix_cache_lookup" == "0" &&
           -z "${SIM_W5_MEMORY_PREFETCH_PLAN_ID:-}" &&
           -z "${SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID:-}" &&
           -z "${SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT:-}" &&
           -z "${SIM_W5_MEMORY_SHORTPATH_STREAM_PATH:-}" ]]; then
-      echo "SIM_W5_MEMORY_DECISION_STORE requires a boundary observation/decision selector for live Memory Service reuse" >&2
+      echo "SIM_W5_MEMORY_DECISION_STORE requires a boundary observation/decision selector or enabled prefix-cache lookup for live Memory Service reuse" >&2
       return 2
     fi
   fi
@@ -323,7 +330,8 @@ if (( PRINT_ENV )); then
   printf 'SIM_QWEN3_GUEST_DECODE_STEPS=%s\n' "${SIM_QWEN3_GUEST_DECODE_STEPS:-}"
   printf 'SIM_QWEN3_DENSE_WEIGHTS_PATH=%s\n' "${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}"
   printf 'SIM_W5_MEMORY_SHORTPATH_EXECUTE=%s\n' "${SIM_W5_MEMORY_SHORTPATH_EXECUTE:-}"
-  printf 'SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP=%s\n' "${SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-}"
+  printf 'SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP=%s\n' "${SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-1}"
+  printf 'SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP=%s\n' "${SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP:-1}"
   printf 'SIM_W5_MEMORY_POST_RUN_PROMOTE=%s\n' "${SIM_W5_MEMORY_POST_RUN_PROMOTE:-}"
   printf 'SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP=%s\n' "${SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP:-}"
   printf 'SIM_W5_MEMORY_OBSERVATION_STORE=%s\n' "${SIM_W5_MEMORY_OBSERVATION_STORE:-}"

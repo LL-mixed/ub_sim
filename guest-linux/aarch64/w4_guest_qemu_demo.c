@@ -6727,21 +6727,13 @@ static int qwen3_memory_prefix_cache_kv_ref(
         strcmp(config->prefix_cache_action, "reuse") != 0) {
         return 0;
     }
-    if (!str_nonempty(config->prefix_cache_artifact_ref)) {
-        fprintf(stderr,
-                "[w4_guest] fail qwen3 w5 prefix cache ref missing"
-                " plan_id=%s action=%s\n",
-                config->prefix_cache_reuse_plan_id,
-                config->prefix_cache_action);
-        return -1;
-    }
-    if (parse_lingqu_object_ref_hex("SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF",
-                                    config->prefix_cache_artifact_ref,
-                                    W4_QWEN3_OBMM_KIND_QWEN3_KV_STATE,
-                                    ref_out) != 0) {
-        return -1;
-    }
-    return 1;
+    (void)ref_out;
+    /*
+     * Prefix-cache artifacts describe a verified prefix KV set. They are not a
+     * single work-item KV block, so range workers must still resolve the exact
+     * node/layer KV through the step-local KV path or shortpath KV stream.
+     */
+    return 0;
 }
 
 static int qwen3_registry_payload_path(

@@ -4692,7 +4692,8 @@ pub fn load_lingqu_memory_durable_store_from_path(
         return Ok(LingquMemoryDurableStore::new());
     }
     let bytes = fs::read(path).map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
-    if let Ok(snapshot) = durable_sim::LingquDurableSimSnapshot::from_json_bytes(&bytes) {
+    if let Ok(mut snapshot) = durable_sim::LingquDurableSimSnapshot::from_json_bytes(&bytes) {
+        hydrate_lingqu_durable_external_blocks(path, &mut snapshot)?;
         return LingquMemoryDurableStore::import_durable_sim_snapshot(snapshot);
     }
     if let Ok(mut snapshot) =
@@ -9067,6 +9068,16 @@ impl LingquMemoryService {
             }
         };
         reuse_plan.validate()?;
+        let reuse_plan =
+            if let Some(existing) = self.prefix_cache_reuse_plans.get(&reuse_plan.plan_id) {
+                if prefix_cache_reuse_plan_semantically_matches(existing, &reuse_plan) {
+                    existing.clone()
+                } else {
+                    reuse_plan
+                }
+            } else {
+                reuse_plan
+            };
         self.prefix_cache_reuse_plans
             .insert(reuse_plan.plan_id.clone(), reuse_plan.clone());
         let response = PrefixCacheLookupResponse {
@@ -9885,6 +9896,24 @@ fn paper_engram_lookup_hash_config(
         fnv1a_prime: runtime.hash_config.fnv1a_prime,
         table_specs,
     })
+}
+
+fn prefix_cache_reuse_plan_semantically_matches(
+    left: &PrefixCacheReusePlan,
+    right: &PrefixCacheReusePlan,
+) -> bool {
+    left.request_id == right.request_id
+        && left.action == right.action
+        && left.artifact_id == right.artifact_id
+        && left.matched_prefix_token_count == right.matched_prefix_token_count
+        && left.layer_start == right.layer_start
+        && left.layer_end == right.layer_end
+        && left.position_start == right.position_start
+        && left.position_end == right.position_end
+        && left.confidence_milli == right.confidence_milli
+        && left.verify_required == right.verify_required
+        && left.reason == right.reason
+        && left.version == right.version
 }
 
 fn paper_engram_hash_config_table_specs(
