@@ -253,19 +253,45 @@ static long w4_db_wallclock_ms(void)
     return (long)(ts.tv_sec * 1000L + ts.tv_nsec / 1000000L);
 }
 
+static long w4_db_relax_max_usec(void)
+{
+    static long cached = -1;
+    const char *value;
+    char *end = NULL;
+    unsigned long parsed;
+
+    if (cached > 0) {
+        return cached;
+    }
+    cached = 64000L;
+    value = getenv("SIM_W4_DB_RELAX_MAX_US");
+    if (!value || value[0] == '\0') {
+        return cached;
+    }
+    errno = 0;
+    parsed = strtoul(value, &end, 10);
+    if (errno != 0 || end == value || *end != '\0' || parsed == 0 ||
+        parsed > 1000000UL) {
+        return cached;
+    }
+    cached = (long)parsed;
+    return cached;
+}
+
 static void w4_db_cpu_relax_wait(unsigned int *attempt)
 {
     struct timespec ts;
     unsigned int step = attempt ? *attempt : 0;
     long usec = 1000L;
+    long max_usec = w4_db_relax_max_usec();
 
     if (step < 32U) {
         usec <<= step / 4U;
     } else {
-        usec = 64000L;
+        usec = max_usec;
     }
-    if (usec > 64000L) {
-        usec = 64000L;
+    if (usec > max_usec) {
+        usec = max_usec;
     }
     ts.tv_sec = usec / 1000000L;
     ts.tv_nsec = (usec % 1000000L) * 1000L;
@@ -273,6 +299,74 @@ static void w4_db_cpu_relax_wait(unsigned int *attempt)
     if (attempt && *attempt < 64U) {
         *attempt += 1U;
     }
+}
+
+static bool w4_db_env_flag_enabled(const char *name, bool fallback)
+{
+    const char *value = getenv(name);
+
+    if (!value || value[0] == '\0') {
+        return fallback;
+    }
+    if (strcmp(value, "1") == 0 || strcmp(value, "true") == 0 ||
+        strcmp(value, "TRUE") == 0 || strcmp(value, "yes") == 0 ||
+        strcmp(value, "on") == 0) {
+        return true;
+    }
+    if (strcmp(value, "0") == 0 || strcmp(value, "false") == 0 ||
+        strcmp(value, "FALSE") == 0 || strcmp(value, "no") == 0 ||
+        strcmp(value, "off") == 0) {
+        return false;
+    }
+    return fallback;
+}
+
+static bool w4_db_qwen3_terminal_scheduler_shortcut_enabled(void)
+{
+    static int cached = -1;
+    const char *profile;
+
+    if (cached >= 0) {
+        return cached != 0;
+    }
+    profile = getenv("SIM_UAPI_W4_CHIPBACKEND_PROFILE");
+    cached = 1;
+    if (profile && strcmp(profile, "qwen3_guest_simpler_w5_l2") == 0) {
+        cached = 0;
+    }
+    cached = w4_db_env_flag_enabled(
+                 "SIM_QWEN3_TERMINAL_SCHEDULER_SHORTCUT",
+                 cached != 0) ?
+        1 :
+        0;
+    return cached != 0;
+}
+
+static int w4_db_qwen3_terminal_token_source_hint(int node_count)
+{
+    const char *profile;
+
+    if (node_count <= 0) {
+        return -1;
+    }
+    profile = getenv("SIM_UAPI_W4_CHIPBACKEND_PROFILE");
+    if (profile && strcmp(profile, "qwen3_guest_simpler_w5_l2") == 0) {
+        return node_count - 1;
+    }
+    return -1;
+}
+
+static int w4_db_qwen3_terminal_scan_owner(int scan_idx, int node_count)
+{
+    int hint = w4_db_qwen3_terminal_token_source_hint(node_count);
+
+    if (hint < 0 || hint >= node_count) {
+        return scan_idx;
+    }
+    if (scan_idx == 0) {
+        return hint;
+    }
+    return scan_idx - 1;
 }
 
 static bool w4_db_parse_ip_list(const char *csv,
@@ -1024,10 +1118,48 @@ static uint64_t w4_db_qwen3_decode_hidden_bytes(void)
                             hidden_size * decode_tokens * 2ULL);
 }
 
+static uint64_t w4_db_qwen3_prompt_token_count(void)
+{
+    const char *csv;
+    uint64_t count = w4_db_env_u64_or("SIM_QWEN3_GUEST_PROMPT_TOKEN_COUNT", 0);
+    bool in_token = false;
+
+    if (count > 0) {
+        return count;
+    }
+    csv = getenv("SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS");
+    if (!csv || csv[0] == '\0') {
+        return 0;
+    }
+    for (const char *p = csv; *p; ++p) {
+        if (*p == ',' || *p == ' ' || *p == '\t' || *p == '\n' ||
+            *p == '\r') {
+            in_token = false;
+        } else if (!in_token) {
+            ++count;
+            in_token = true;
+        }
+    }
+    return count;
+}
+
+static uint64_t w4_db_qwen3_prefill_handoff_hidden_bytes(void)
+{
+    uint64_t token_count = w4_db_qwen3_prompt_token_count();
+    uint64_t hidden_size = w4_db_env_u64_or("SIM_QWEN3_DENSE_HIDDEN_SIZE", 1024ULL);
+    uint64_t fallback = w4_db_qwen3_hidden_range_bytes();
+
+    if (token_count == 0 || hidden_size == 0 ||
+        token_count > UINT64_MAX / hidden_size / 2ULL) {
+        return fallback;
+    }
+    return token_count * hidden_size * 2ULL;
+}
+
 static uint64_t w4_db_qwen3_handoff_hidden_bytes(uint64_t decode_step)
 {
     return decode_step > 0 ? w4_db_qwen3_decode_hidden_bytes() :
-                             w4_db_qwen3_hidden_range_bytes();
+                             w4_db_qwen3_prefill_handoff_hidden_bytes();
 }
 
 static uint64_t w4_db_qwen3_kv_heads(void)
@@ -4931,6 +5063,11 @@ static int w4_db_obmm_service_v0_wait_runtime_range_input_view_internal(
     uint64_t activate_ms = 0;
     uint64_t metadata_ms = 0;
     uint32_t attempts = 0;
+    uint32_t desc_wait_attempts = 0;
+    uint32_t metadata_attempts = 0;
+    uint32_t ingress_pop_count = 0;
+    uint32_t pending_desc_hits = 0;
+    uint32_t stashed_desc_count = 0;
     uint16_t expected_epoch;
     unsigned int relax_attempt = 0;
     uint32_t source_node = UINT32_MAX;
@@ -4972,6 +5109,12 @@ static int w4_db_obmm_service_v0_wait_runtime_range_input_view_internal(
         uint64_t checksum;
         bool token_input_found = false;
         bool token_desc_found = false;
+        long token_desc_found_ms = 0;
+        long token_metadata_found_ms = 0;
+        uint32_t token_metadata_attempts = 0;
+        uint32_t token_ingress_pop_count = 0;
+        uint32_t token_pending_desc_hits = 0;
+        uint32_t token_stashed_desc_count = 0;
 
         if (w4_db_cluster_runtime_require(rt) != 0) {
             return -1;
@@ -4986,20 +5129,32 @@ static int w4_db_obmm_service_v0_wait_runtime_range_input_view_internal(
         }
         deadline = wait_enter_ms + w4_db_qwen3_runtime_range_wait_ms();
         while (obmm_now_ms() < deadline) {
-            int owner_idx;
+            int scan_idx;
+            int scan_count = rt->node_count +
+                             (w4_db_qwen3_terminal_token_source_hint(
+                                  rt->node_count) >= 0 ?
+                                  1 :
+                                  0);
 
             attempts++;
-            for (owner_idx = 0;
-                 !token_desc_found && owner_idx < rt->node_count;
-                 ++owner_idx) {
+            for (scan_idx = 0;
+                 !token_desc_found && scan_idx < scan_count;
+                 ++scan_idx) {
+                int owner_idx =
+                    w4_db_qwen3_terminal_scan_owner(scan_idx, rt->node_count);
                 struct obmm_desc rx;
 
+                if (owner_idx < 0 || owner_idx >= rt->node_count) {
+                    continue;
+                }
                 if (w4_db_take_pending_qwen3_token_result_desc(rt,
                                                                owner_idx,
                                                                expected_epoch,
                                                                &token_desc)) {
                     source_node = (uint32_t)owner_idx;
                     token_desc_found = true;
+                    token_pending_desc_hits++;
+                    token_desc_found_ms = obmm_now_ms();
                     break;
                 }
                 if (owner_idx == rt->local_idx ||
@@ -5007,14 +5162,17 @@ static int w4_db_obmm_service_v0_wait_runtime_range_input_view_internal(
                     continue;
                 }
                 while (obmm_spsc_pop(rt->ingress_queues[owner_idx], &rx) == 0) {
+                    token_ingress_pop_count++;
                     if (w4_db_qwen3_token_result_desc_matches(&rx,
                                                               expected_epoch)) {
                         token_desc = rx;
                         source_node = (uint32_t)owner_idx;
                         token_desc_found = true;
+                        token_desc_found_ms = obmm_now_ms();
                         break;
                     }
                     w4_db_stash_pending_desc(rt, owner_idx, &rx);
+                    token_stashed_desc_count++;
                 }
             }
             if (!token_desc_found) {
@@ -5037,6 +5195,7 @@ static int w4_db_obmm_service_v0_wait_runtime_range_input_view_internal(
                 struct w4_db_cluster_payload_compact_summary compact;
                 struct w4_db_cluster_payload_header seen;
 
+                token_metadata_attempts++;
                 memset(&compact, 0, sizeof(compact));
                 memset(&seen, 0, sizeof(seen));
                 if (!owner_slot->region.addr ||
@@ -5055,6 +5214,7 @@ static int w4_db_obmm_service_v0_wait_runtime_range_input_view_internal(
                     continue;
                 }
                 metadata_ms = (uint64_t)(obmm_now_ms() - metadata_start_ms);
+                token_metadata_found_ms = obmm_now_ms();
             }
             snprintf(token_result_key,
                      sizeof(token_result_key),
@@ -5178,6 +5338,41 @@ static int w4_db_obmm_service_v0_wait_runtime_range_input_view_internal(
                view_out->wait_attempts,
                activate_ms,
                metadata_ms);
+        printf("[w4_guest] stage qwen3_wait_detail local=node%u source=node%u step=%" PRIu64
+               " input_kind=terminal_token layers=[%u,%u)"
+               " wait_enter_mono_ms=%ld desc_found_mono_ms=%ld"
+               " metadata_found_mono_ms=%ld ready_mono_ms=%" PRIu64
+               " total_wait_ms=%ld desc_wait_ms=%ld"
+               " metadata_wait_ms=%ld activate_ms=%" PRIu64
+               " producer_publish_mono_ms=%ld producer_to_desc_found_mono_ms=%ld"
+               " attempts=%u desc_attempts=%u metadata_attempts=%u"
+               " ingress_pops=%u pending_desc_hits=%u stashed_desc=%u"
+               " queue=obmm_spsc backing=obmm_shmem metadata=lingqu_object_service status=ok\n",
+               local_node + 1U,
+               source_node + 1U,
+               decode_step,
+               local_placement.layer_start,
+               local_placement.layer_end,
+               wait_enter_ms,
+               token_desc_found_ms,
+               token_metadata_found_ms,
+               view_out->ready_monotonic_ms,
+               found_local_ms > wait_enter_ms ? found_local_ms - wait_enter_ms : 0L,
+               token_desc_found_ms > wait_enter_ms ? token_desc_found_ms - wait_enter_ms : 0L,
+               token_metadata_found_ms > token_desc_found_ms ?
+                   token_metadata_found_ms - token_desc_found_ms :
+                   0L,
+               activate_ms,
+               producer_publish_monotonic_ms,
+               producer_publish_monotonic_ms > 0 && token_desc_found_ms > 0 ?
+                   token_desc_found_ms - producer_publish_monotonic_ms :
+                   0L,
+               view_out->wait_attempts,
+               view_out->wait_attempts,
+               token_metadata_attempts,
+               token_ingress_pop_count,
+               token_pending_desc_hits,
+               token_stashed_desc_count);
         return 0;
     }
     memset(&source_placement, 0, sizeof(source_placement));
@@ -5223,11 +5418,23 @@ static int w4_db_obmm_service_v0_wait_runtime_range_input_view_internal(
                      w4_db_qwen3_model_key(),
                      decode_step);
             if (!terminal_desc_found) {
-                for (int owner_idx = 0;
-                     !terminal_desc_found && owner_idx < rt->node_count;
-                     ++owner_idx) {
+                int scan_count =
+                    rt->node_count +
+                    (w4_db_qwen3_terminal_token_source_hint(rt->node_count) >= 0 ?
+                         1 :
+                         0);
+
+                for (int scan_idx = 0;
+                     !terminal_desc_found && scan_idx < scan_count;
+                     ++scan_idx) {
+                    int owner_idx =
+                        w4_db_qwen3_terminal_scan_owner(scan_idx,
+                                                        rt->node_count);
                     struct obmm_desc rx;
 
+                    if (owner_idx < 0 || owner_idx >= rt->node_count) {
+                        continue;
+                    }
                     if (w4_db_take_pending_qwen3_token_result_desc(
                             rt,
                             owner_idx,
@@ -5511,15 +5718,18 @@ static int w4_db_obmm_service_v0_wait_runtime_range_input_view_internal(
                                                         (int)source_node,
                                                         expected_epoch,
                                                         &handoff_desc)) {
+            pending_desc_hits++;
             break;
         }
         while (obmm_spsc_pop(rt->ingress_queues[source_node], &rx) == 0) {
+            ingress_pop_count++;
             if (w4_db_runtime_range_input_desc_matches(&rx,
                                                        expected_epoch)) {
                 handoff_desc = rx;
                 break;
             }
             w4_db_stash_pending_desc(rt, (int)source_node, &rx);
+            stashed_desc_count++;
         }
         if (handoff_desc.type == OBMM_DESC_W4_OBJECT_PUT) {
             break;
@@ -5536,6 +5746,7 @@ static int w4_db_obmm_service_v0_wait_runtime_range_input_view_internal(
         return -1;
     }
     found_local_ms = obmm_now_ms();
+    desc_wait_attempts = attempts;
     found_ms = w4_db_wallclock_ms();
     if (!rt->slots[source_node].region.addr) {
         long activate_start_ms = obmm_now_ms();
@@ -5554,6 +5765,7 @@ static int w4_db_obmm_service_v0_wait_runtime_range_input_view_internal(
             struct w4_db_cluster_payload_compact_summary compact;
             struct w4_db_cluster_payload_header seen;
 
+            metadata_attempts++;
             memset(&compact, 0, sizeof(compact));
             memset(&seen, 0, sizeof(seen));
             if (w4_db_try_read_stable_compact_summary_region(source_slot,
@@ -5673,6 +5885,39 @@ static int w4_db_obmm_service_v0_wait_runtime_range_input_view_internal(
            activate_ms,
            metadata_ms,
            checksum_ms);
+    printf("[w4_guest] stage qwen3_wait_detail local=node%u source=node%u step=%" PRIu64
+           " input_kind=hidden_range layers=[%u,%u)"
+           " wait_enter_mono_ms=%ld desc_found_mono_ms=%ld"
+           " metadata_found_mono_ms=%" PRIu64 " ready_mono_ms=%" PRIu64
+           " total_wait_ms=%ld desc_wait_ms=%ld"
+           " metadata_wait_ms=%" PRIu64 " activate_ms=%" PRIu64
+           " producer_publish_mono_ms=%ld producer_to_desc_found_mono_ms=%ld"
+           " attempts=%u desc_attempts=%u metadata_attempts=%u"
+           " ingress_pops=%u pending_desc_hits=%u stashed_desc=%u"
+           " queue=obmm_spsc backing=obmm_shmem metadata=lingqu_object_service status=ok\n",
+           local_node + 1U,
+           source_node + 1U,
+           decode_step,
+           local_placement.layer_start,
+           local_placement.layer_end,
+           wait_enter_ms,
+           found_local_ms,
+           view_out->ready_monotonic_ms,
+           view_out->ready_monotonic_ms,
+           found_local_ms > wait_enter_ms ? found_local_ms - wait_enter_ms : 0L,
+           found_local_ms > wait_enter_ms ? found_local_ms - wait_enter_ms : 0L,
+           metadata_ms,
+           activate_ms,
+           producer_publish_monotonic_ms,
+           producer_publish_monotonic_ms > 0 && found_local_ms > 0 ?
+               found_local_ms - producer_publish_monotonic_ms :
+               0L,
+           attempts,
+           desc_wait_attempts,
+           metadata_attempts,
+           ingress_pop_count,
+           pending_desc_hits,
+           stashed_desc_count);
     return 0;
 }
 
@@ -5731,7 +5976,8 @@ int w4_db_obmm_service_v0_wait_scheduler_work_item(
             local_node,
             cluster_node_count,
             decode_step,
-            local_placement.layer_start > 0,
+            local_placement.layer_start > 0 &&
+                w4_db_qwen3_terminal_scheduler_shortcut_enabled(),
             &view) != 0 ||
         !view.data) {
         return -1;

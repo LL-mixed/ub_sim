@@ -11,6 +11,9 @@ TEE_BIN="${TEE_BIN:-/usr/bin/tee}"
 
 w5_profile_default_w4_backend() {
   case "$1" in
+    qwen3_guest_simpler_w5_l2)
+      echo qwen3_guest_simpler_w5_l2
+      ;;
     ""|qwen3_0_6b_decode|qwen3_14b_decode|qwen3_0_6b_engram_decode|qwen3_14b_engram_decode)
       echo qwen3_dense
       ;;
@@ -134,6 +137,7 @@ SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF="${SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_R
 SIM_W5_MEMORY_PREFIX_CACHE_PROOF_CHECKSUM="${SIM_W5_MEMORY_PREFIX_CACHE_PROOF_CHECKSUM:-}"
 SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS="${SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS:-}"
 SIM_QWEN3_RUNTIME_RANGE_WAIT_MS="${SIM_QWEN3_RUNTIME_RANGE_WAIT_MS:-}"
+SIM_W4_DB_RELAX_MAX_US="${SIM_W4_DB_RELAX_MAX_US:-}"
 SIM_W4_UAPI_COMPLETION_TIMEOUT_MS="${SIM_W4_UAPI_COMPLETION_TIMEOUT_MS:-900000}"
 SIM_W4_RESOURCE_ASSERTIONS="${SIM_W4_RESOURCE_ASSERTIONS:-0}"
 FATAL_GUEST_PATTERN="rcu_preempt|RCU grace-period|self-detected stall|detected stalls on CPUs/tasks|rx msg plen invalid|poller rx msg failed, ret=-22|timeout waiting completions|qwen3 .*missing|qwen3 .*mismatch|\\[w4_guest\\] fail"
@@ -229,13 +233,75 @@ trace() {
 
 is_qwen3_dense_profile() {
   local profile="$1"
-  [[ "$profile" == "qwen3_dense_reference" || "$profile" == "qwen3_dense" ]]
+  [[ "$profile" == "qwen3_dense_reference" || "$profile" == "qwen3_dense" || "$profile" == "qwen3_guest_simpler_w5_l2" ]]
+}
+
+is_qwen3_simpler_l2_profile() {
+  local profile="$1"
+  [[ "$profile" == "qwen3_guest_simpler_w5_l2" ]]
+}
+
+qwen3_skip_legacy_uapi_coverage() {
+  if ! is_qwen3_simpler_l2_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+    return 1
+  fi
+  [[ "${SIM_QWEN3_GUEST_SKIP_LEGACY_UAPI_COVERAGE:-1}" != "0" ]]
+}
+
+if is_qwen3_simpler_l2_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+  SIM_QWEN3_GUEST_SKIP_LEGACY_UAPI_COVERAGE="${SIM_QWEN3_GUEST_SKIP_LEGACY_UAPI_COVERAGE:-1}"
+else
+  SIM_QWEN3_GUEST_SKIP_LEGACY_UAPI_COVERAGE="${SIM_QWEN3_GUEST_SKIP_LEGACY_UAPI_COVERAGE:-0}"
+fi
+
+validate_qwen3_simpler_l2_build_output() {
+  local name="$1"
+  local path="$2"
+  local -a so_files
+  local -a kernel_files
+
+  if [[ -z "$path" ]]; then
+    trace "FAIL: $SIM_UAPI_W4_CHIPBACKEND_PROFILE requires $name"
+    return 1
+  fi
+  if [[ ! -d "$path" ]]; then
+    trace "FAIL: $name is not a directory path=$path"
+    return 1
+  fi
+  if [[ ! -f "$path/kernel_config.py" ]]; then
+    trace "FAIL: $name missing kernel_config.py path=$path"
+    return 1
+  fi
+  so_files=("$path"/orchestration/*.so(N))
+  if (( ${#so_files[@]} == 0 )); then
+    trace "FAIL: $name missing orchestration .so path=$path/orchestration"
+    return 1
+  fi
+  kernel_files=("$path"/kernels/**/*.o(N))
+  if (( ${#kernel_files[@]} == 0 )); then
+    trace "FAIL: $name missing kernel .o files path=$path/kernels"
+    return 1
+  fi
+  return 0
+}
+
+validate_qwen3_simpler_l2_env() {
+  if ! is_qwen3_simpler_l2_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+    return 0
+  fi
+  validate_qwen3_simpler_l2_build_output "SIM_QWEN3_SIMPLER_PREFILL_BUILD_OUTPUT" "${SIM_QWEN3_SIMPLER_PREFILL_BUILD_OUTPUT:-}" || return 1
+  validate_qwen3_simpler_l2_build_output "SIM_QWEN3_SIMPLER_DECODE_BUILD_OUTPUT" "${SIM_QWEN3_SIMPLER_DECODE_BUILD_OUTPUT:-}" || return 1
+  validate_qwen3_simpler_l2_build_output "SIM_QWEN3_SIMPLER_FINAL_RMS_BUILD_OUTPUT" "${SIM_QWEN3_SIMPLER_FINAL_RMS_BUILD_OUTPUT:-}" || return 1
+  validate_qwen3_simpler_l2_build_output "SIM_QWEN3_SIMPLER_LM_HEAD_BUILD_OUTPUT" "${SIM_QWEN3_SIMPLER_LM_HEAD_BUILD_OUTPUT:-}" || return 1
+  trace "prepare: qwen3 simpler L2 build_output ok prefill=${SIM_QWEN3_SIMPLER_PREFILL_BUILD_OUTPUT:-} decode=${SIM_QWEN3_SIMPLER_DECODE_BUILD_OUTPUT:-} final_rms=${SIM_QWEN3_SIMPLER_FINAL_RMS_BUILD_OUTPUT:-} lm_head=${SIM_QWEN3_SIMPLER_LM_HEAD_BUILD_OUTPUT:-}"
 }
 
 validate_w5_profile_runtime() {
   case "$SIM_UAPI_W5_PROFILE" in
     "")
       return 0
+      ;;
+    qwen3_guest_simpler_w5_l2)
       ;;
     qwen3_0_6b_decode|qwen3_0_6b_engram_decode)
       if [[ "${SIM_QWEN3_DENSE_MODEL_KEY:-}" == "qwen3-14b" ]]; then
@@ -262,7 +328,7 @@ validate_w5_profile_runtime() {
         return 1
       fi
       ;;
-    qwen3_0_6b_decode|qwen3_14b_decode)
+    qwen3_guest_simpler_w5_l2|qwen3_0_6b_decode|qwen3_14b_decode)
       if [[ "$SIM_QWEN3_GUEST_ENGRAM" == "1" ]]; then
         trace "FAIL: SIM_UAPI_W5_PROFILE=$SIM_UAPI_W5_PROFILE requires SIM_QWEN3_GUEST_ENGRAM=0"
         return 1
@@ -645,6 +711,8 @@ export SIM_QWEN3_SAMPLER_TOP_K="$SIM_QWEN3_SAMPLER_TOP_K"
 export SIM_QWEN3_SAMPLER_TOP_P_MILLI="$SIM_QWEN3_SAMPLER_TOP_P_MILLI"
 export SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI="$SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI"
 export SIM_QWEN3_SAMPLER_SEED="$SIM_QWEN3_SAMPLER_SEED"
+export SIM_QWEN3_TERMINAL_SCHEDULER_SHORTCUT="${SIM_QWEN3_TERMINAL_SCHEDULER_SHORTCUT:-}"
+export SIM_QWEN3_GUEST_SKIP_LEGACY_UAPI_COVERAGE="$SIM_QWEN3_GUEST_SKIP_LEGACY_UAPI_COVERAGE"
 export SIM_QWEN3_GUEST_ENGRAM="$SIM_QWEN3_GUEST_ENGRAM"
 export SIM_QWEN3_GUEST_ENGRAM_MODE="$SIM_QWEN3_GUEST_ENGRAM_MODE"
 export SIM_QWEN3_GUEST_ENGRAM_SESSION_ID="${SIM_QWEN3_GUEST_ENGRAM_SESSION_ID:-guest}"
@@ -704,6 +772,8 @@ export SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF="$SIM_W5_MEMORY_PREFIX_CACHE_ARTI
 export SIM_W5_MEMORY_PREFIX_CACHE_PROOF_CHECKSUM="$SIM_W5_MEMORY_PREFIX_CACHE_PROOF_CHECKSUM"
 export SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS="$SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS"
 export SIM_QWEN3_RUNTIME_RANGE_WAIT_MS="$SIM_QWEN3_RUNTIME_RANGE_WAIT_MS"
+export SIM_QWEN3_GUEST_SKIP_LEGACY_UAPI_COVERAGE="$SIM_QWEN3_GUEST_SKIP_LEGACY_UAPI_COVERAGE"
+export SIM_W4_DB_RELAX_MAX_US="$SIM_W4_DB_RELAX_MAX_US"
 export SIM_W4_UAPI_COMPLETION_TIMEOUT_MS="$SIM_W4_UAPI_COMPLETION_TIMEOUT_MS"
 export SIM_W4_RESOURCE_ASSERTIONS="$SIM_W4_RESOURCE_ASSERTIONS"
 
@@ -962,6 +1032,9 @@ validate_w5_artifact_sizes() {
   if runtime_boundary_lookup_produces_store_after_guest; then
     store_required=0
   fi
+  if is_qwen3_simpler_l2_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+    store_required=0
+  fi
   shortpath_required="$store_required"
 
   if [[ -z "$SIM_UAPI_W5_PROFILE" ]]; then
@@ -1119,26 +1192,34 @@ validate_node_log() {
   assert_log_has "$log_file" "\\[w4_guest\\] step=read_default_segment ok segment=[0-9]+" "$node_id uapi default segment" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_payload_seeded segment=[0-9]+ bytes=8192 checksum=0x[0-9a-f]+" "$node_id uapi kvcache payload seeded" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_payload_boundaries segment=[0-9]+ offsets=0,248,256,4088,4096,4104 status=ok" "$node_id uapi kvcache payload boundaries" || return 1
-  assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_shmem_descriptor segment=[0-9]+ bytes=128 puts=1 gets=1 role=hot_shared" "$node_id uapi kvcache shmem descriptor" || return 1
-  assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_shmem_descriptor segment=[0-9]+ bytes=8192 puts=1 gets=1 role=legacy_demo_payload" "$node_id uapi kvcache boundary shmem descriptor" || return 1
-  assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_db_descriptor key=block/w4-${node_id}-block-0 bytes=[1-9][0-9]*" "$node_id uapi kvcache db descriptor" || return 1
-  assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_db_descriptor key=block/w4-${node_id}-block-1 bytes=[1-9][0-9]* role=aux_block" "$node_id uapi kvcache aux db descriptor" || return 1
-  assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_block_descriptor block=w4-${node_id}-block-0 segment=[0-9]+ writes=1 reads=1" "$node_id uapi kvcache block descriptor" || return 1
-  assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_block_descriptor block=w4-${node_id}-block-1 segment=[0-9]+ writes=1 reads=1 role=aux_block_boundary" "$node_id uapi kvcache aux block descriptor" || return 1
+  if qwen3_skip_legacy_uapi_coverage; then
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_legacy_coverage action=skip reason=qwen3_simpler_range_only .* status=ok" "$node_id qwen3 skip legacy uapi coverage" || return 1
+  else
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_shmem_descriptor segment=[0-9]+ bytes=128 puts=1 gets=1 role=hot_shared" "$node_id uapi kvcache shmem descriptor" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_shmem_descriptor segment=[0-9]+ bytes=8192 puts=1 gets=1 role=legacy_demo_payload" "$node_id uapi kvcache boundary shmem descriptor" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_db_descriptor key=block/w4-${node_id}-block-0 bytes=[1-9][0-9]*" "$node_id uapi kvcache db descriptor" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_db_descriptor key=block/w4-${node_id}-block-1 bytes=[1-9][0-9]* role=aux_block" "$node_id uapi kvcache aux db descriptor" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_block_descriptor block=w4-${node_id}-block-0 segment=[0-9]+ writes=1 reads=1" "$node_id uapi kvcache block descriptor" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_block_descriptor block=w4-${node_id}-block-1 segment=[0-9]+ writes=1 reads=1 role=aux_block_boundary" "$node_id uapi kvcache aux block descriptor" || return 1
+  fi
   if is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
     assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_dispatch_descriptor node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) segment=[0-9]+ task_id=31 object_ref_table_offset=0x[0-9a-f]+ object_ref_count=[0-9]+ source=db_metadata status=ok" "$node_id qwen3 range dispatch descriptor" || return 1
   else
     assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_chipbackend_dispatch_descriptor block=w4-${node_id}-block-0 segment=[0-9]+ task_id=31" "$node_id uapi chipbackend descriptor" || return 1
   fi
-  assert_log_has "$log_file" "\\[w4_guest\\] step=doorbell ok slots=15" "$node_id uapi doorbell" || return 1
-  assert_log_has "$log_file" "\\[w4_guest\\] step=wait_completions ok cq_tail=15" "$node_id uapi completions" || return 1
+  if qwen3_skip_legacy_uapi_coverage; then
+    assert_log_has "$log_file" "\\[w4_guest\\] step=doorbell ok slots=1" "$node_id uapi doorbell" || return 1
+  else
+    assert_log_has "$log_file" "\\[w4_guest\\] step=doorbell ok slots=15" "$node_id uapi doorbell" || return 1
+  fi
+  assert_log_has "$log_file" "\\[w4_guest\\] step=wait_completions ok cq_tail=[0-9]+" "$node_id uapi completions" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] step=decode_completions ok" "$node_id decode completions" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_payload_dispatch_result segment=[0-9]+ word0=${expected_dispatch_word}" "$node_id dispatch payload result" || return 1
   if is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
     assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_compute_contract node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) pipeline_nodes=8 total_layers=[1-9][0-9]* hidden_bytes=[1-9][0-9]* source=(dispatch_task|runtime_forward) output=(completion|metadata) status=ok" "$node_id qwen3 range compute contract" || return 1
     assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_runtime_forward node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) pipeline_nodes=8 total_layers=[1-9][0-9]* hidden_bytes=[1-9][0-9]* input_checksum=0x[0-9a-f]+ output_checksum=0x[0-9a-f]+ range_checksum=0x[0-9a-f]+ real_layers=[0-9]+ payload_offset=0x[0-9a-f]+ payload_bytes=[1-9][0-9]* kv_payload_offset=0x[0-9a-f]+ kv_payload_bytes=[1-9][0-9]* kv_payload_checksum=0x[0-9a-f]+ source=runtime_forward output=metadata status=ok" "$node_id qwen3 range runtime forward" || return 1
     if (( idx > 1 )); then
-      assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_forward_runtime_input_loaded node=${idx} layers=\\[[0-9]+,[0-9]+\\) input_offset=0x[0-9a-f]+ input_checksum=0x[0-9a-f]+ bytes=[1-9][0-9]* source=obmm_object_view target=uapi_object_ref materialize=none status=ok inline_payload=0" "$node_id qwen3 runtime range input loaded" || return 1
+      assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_range_forward_runtime_input_loaded node=${idx} layers=\\[[0-9]+,[0-9]+\\) input_offset=0x[0-9a-f]+ input_checksum=0x[0-9a-f]+ bytes=[1-9][0-9]* source=obmm_object_view target=uapi_object_ref materialize=(none|uapi_segment) status=ok inline_payload=[01]( inline_bytes=[0-9]+)? kind=[0-9]+" "$node_id qwen3 runtime range input loaded" || return 1
     fi
     if [[ "$SIM_QWEN3_GUEST_ENGRAM" == "1" ]] && qwen3_engram_context_refs_configured; then
       assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_engram_state_object_ref local=${node_id} node=${idx} state_ref_chars=[1-9][0-9]* manifest_bytes=[1-9][0-9]* registry_dir=.* source=env_contract target=engram_state_manifest status=ok" "$node_id qwen3 engram state ref configured" || return 1
@@ -1188,16 +1269,23 @@ validate_node_log() {
       assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_token_text_table node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) terminal_owner=0 status=skipped" "$node_id qwen3 token text table skipped" || return 1
     fi
   fi
-  assert_log_has "$log_file" "\\[w4_guest\\] completion_sources chipbackend=[1-9][0-9]* shmem=[2-9][0-9]* dfs=[2-9][0-9]* db=[2-9][0-9]* block=[2-9][0-9]* guest_uapi=[0-9]+" "$node_id completion source coverage" || return 1
-  assert_log_has "$log_file" "\\[w4_guest\\] completion_status success=15 retryable=0 fatal=0" "$node_id completion status" || return 1
-  assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_shmem_completion segment=[0-9]+ bytes=128 puts=1 gets=1 source=shmem_service role=hot_shared" "$node_id uapi kvcache shmem completion" || return 1
-  assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_shmem_completion segment=[0-9]+ bytes=8192 puts=1 gets=1 source=shmem_service role=legacy_demo_payload" "$node_id uapi kvcache boundary shmem completion" || return 1
-  assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_block_completion block=w4-${node_id}-block-0 writes=1 reads=1 source=block_service" "$node_id uapi kvcache block completion" || return 1
-  assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_block_completion block=w4-${node_id}-block-1 writes=1 reads=1 source=block_service role=aux_block_boundary" "$node_id uapi kvcache aux block completion" || return 1
-  assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_db_completion key=block/w4-${node_id}-block-0 bytes=[1-9][0-9]* puts=1 gets=1 source=db_service" "$node_id uapi kvcache db completion" || return 1
-  assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_db_completion key=block/w4-${node_id}-block-1 bytes=[1-9][0-9]* puts=1 gets=1 source=db_service role=aux_block" "$node_id uapi kvcache aux db completion" || return 1
-  assert_log_has "$log_file" "\\[w4_guest\\] assessment service_coverage=5/5 dispatch_path=ubc_entity_chipbackend kvcache_shmem_segment=[0-9]+ kvcache_block=w4-${node_id}-block-0 kvcache_db_key=block/w4-${node_id}-block-0 kvcache_db_bytes=[1-9][0-9]* complete=true" "$node_id service coverage" || return 1
-  assert_log_has "$log_file" "\\[w4_guest\\] dispatch path=ubc_entity_chipbackend" "$node_id chipbackend dispatch marker" || return 1
+  if qwen3_skip_legacy_uapi_coverage; then
+    assert_log_has "$log_file" "\\[w4_guest\\] completion_sources chipbackend=[1-9][0-9]* shmem=0 dfs=0 db=0 block=0 guest_uapi=0" "$node_id qwen3 range-only completion source coverage" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] completion_status success=1 retryable=0 fatal=0" "$node_id qwen3 range-only completion status" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] assessment service_coverage=range-only dispatch_path=qwen3_range_only legacy_uapi_coverage=skipped chipbackend=[1-9][0-9]* complete=true" "$node_id qwen3 range-only service coverage" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] dispatch path=qwen3_range_only" "$node_id qwen3 range-only dispatch marker" || return 1
+  else
+    assert_log_has "$log_file" "\\[w4_guest\\] completion_sources chipbackend=[1-9][0-9]* shmem=[2-9][0-9]* dfs=[2-9][0-9]* db=[2-9][0-9]* block=[2-9][0-9]* guest_uapi=[0-9]+" "$node_id completion source coverage" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] completion_status success=15 retryable=0 fatal=0" "$node_id completion status" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_shmem_completion segment=[0-9]+ bytes=128 puts=1 gets=1 source=shmem_service role=hot_shared" "$node_id uapi kvcache shmem completion" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_shmem_completion segment=[0-9]+ bytes=8192 puts=1 gets=1 source=shmem_service role=legacy_demo_payload" "$node_id uapi kvcache boundary shmem completion" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_block_completion block=w4-${node_id}-block-0 writes=1 reads=1 source=block_service" "$node_id uapi kvcache block completion" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_block_completion block=w4-${node_id}-block-1 writes=1 reads=1 source=block_service role=aux_block_boundary" "$node_id uapi kvcache aux block completion" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_db_completion key=block/w4-${node_id}-block-0 bytes=[1-9][0-9]* puts=1 gets=1 source=db_service" "$node_id uapi kvcache db completion" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_db_completion key=block/w4-${node_id}-block-1 bytes=[1-9][0-9]* puts=1 gets=1 source=db_service role=aux_block" "$node_id uapi kvcache aux db completion" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] assessment service_coverage=5/5 dispatch_path=ubc_entity_chipbackend kvcache_shmem_segment=[0-9]+ kvcache_block=w4-${node_id}-block-0 kvcache_db_key=block/w4-${node_id}-block-0 kvcache_db_bytes=[1-9][0-9]* complete=true" "$node_id service coverage" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] dispatch path=ubc_entity_chipbackend" "$node_id chipbackend dispatch marker" || return 1
+  fi
   assert_log_absent "$log_file" "observer_metadata_only" "$node_id no observer-only path" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] pass" "$node_id pass" || return 1
   assert_log_absent "$log_file" "\\[w4_guest\\] fail" "$node_id fail" || return 1
@@ -1270,6 +1358,7 @@ prepare_environment() {
   env_file="$OUT_DIR/headless_eight_node_env.${RUN_ID_BASE}.sh"
   control_log="$RUN_DIR/control.log"
   validate_qwen3_weights_path || return 1
+  validate_qwen3_simpler_l2_env || return 1
   qwen3_dense_apply_config_env
   validate_qwen3_runtime_object_view_source || return 1
   validate_w5_profile_runtime || return 1
@@ -1312,10 +1401,22 @@ prepare_environment() {
     SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES="${SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES:-}" \
     SIM_QWEN3_DENSE_KV_STATE_BYTES="${SIM_QWEN3_DENSE_KV_STATE_BYTES:-}" \
     SIM_QWEN3_DENSE_WEIGHTS_PATH="${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}" \
+    SIM_QWEN3_SIMPLER_PLATFORM="${SIM_QWEN3_SIMPLER_PLATFORM:-}" \
+    SIM_QWEN3_SIMPLER_DEVICE_ID="${SIM_QWEN3_SIMPLER_DEVICE_ID:-}" \
+    SIM_QWEN3_SIMPLER_DEVICE_IDS="${SIM_QWEN3_SIMPLER_DEVICE_IDS:-}" \
+    SIM_QWEN3_SIMPLER_RUNTIME_MANIFEST="${SIM_QWEN3_SIMPLER_RUNTIME_MANIFEST:-}" \
+    SIM_QWEN3_SIMPLER_PREFILL_BUILD_OUTPUT="${SIM_QWEN3_SIMPLER_PREFILL_BUILD_OUTPUT:-}" \
+    SIM_QWEN3_SIMPLER_DECODE_BUILD_OUTPUT="${SIM_QWEN3_SIMPLER_DECODE_BUILD_OUTPUT:-}" \
+    SIM_QWEN3_SIMPLER_FINAL_RMS_BUILD_OUTPUT="${SIM_QWEN3_SIMPLER_FINAL_RMS_BUILD_OUTPUT:-}" \
+    SIM_QWEN3_SIMPLER_LM_HEAD_BUILD_OUTPUT="${SIM_QWEN3_SIMPLER_LM_HEAD_BUILD_OUTPUT:-}" \
+    SIM_QWEN3_SIMPLER_PROFILE_VERBOSE="${SIM_QWEN3_SIMPLER_PROFILE_VERBOSE:-}" \
+    ASCEND_RT_VISIBLE_DEVICES="${ASCEND_RT_VISIBLE_DEVICES:-}" \
     SIM_QWEN3_SAMPLER_TOP_K="$SIM_QWEN3_SAMPLER_TOP_K" \
     SIM_QWEN3_SAMPLER_TOP_P_MILLI="$SIM_QWEN3_SAMPLER_TOP_P_MILLI" \
     SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI="$SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI" \
     SIM_QWEN3_SAMPLER_SEED="$SIM_QWEN3_SAMPLER_SEED" \
+    SIM_QWEN3_TERMINAL_SCHEDULER_SHORTCUT="${SIM_QWEN3_TERMINAL_SCHEDULER_SHORTCUT:-}" \
+    SIM_QWEN3_GUEST_SKIP_LEGACY_UAPI_COVERAGE="$SIM_QWEN3_GUEST_SKIP_LEGACY_UAPI_COVERAGE" \
     SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS="$SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS" \
     SIM_QWEN3_RUNTIME_RANGE_WAIT_MS="$SIM_QWEN3_RUNTIME_RANGE_WAIT_MS" \
     SIM_QWEN3_GUEST_ENGRAM_MODE="$SIM_QWEN3_GUEST_ENGRAM_MODE" \

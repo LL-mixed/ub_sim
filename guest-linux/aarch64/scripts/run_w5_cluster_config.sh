@@ -182,7 +182,7 @@ validate_w5_cluster_config() {
   local max_prune_bytes="${SIM_W5_HEALTH_MAX_PRUNE_BYTES:-0}"
 
   case "$profile" in
-    qwen3_0_6b_decode|qwen3_14b_decode|qwen3_0_6b_engram_decode|qwen3_14b_engram_decode)
+    qwen3_guest_simpler_w5_l2|qwen3_0_6b_decode|qwen3_14b_decode|qwen3_0_6b_engram_decode|qwen3_14b_engram_decode)
       ;;
     *)
       echo "unsupported SIM_UAPI_W5_PROFILE=$profile" >&2

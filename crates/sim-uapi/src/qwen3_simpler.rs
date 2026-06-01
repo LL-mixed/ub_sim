@@ -7,15 +7,17 @@ use sim_models::qwen3_dense::{
 use sim_models::qwen3_dense_reference::{
     embedding_reference_hidden_sequence_for_profile, load_safetensors_path_metadata,
     materialize_full_weight_tensor_payload, profile_from_dense_profile,
-    token_piece_bytes_from_tokenizer_path, token_piece_decode_bytes,
-    tokenize_prompt_from_tokenizer_path, Qwen3DenseReferenceProfile,
+    tokenize_prompt_from_tokenizer_path, Qwen3DenseReferenceLayerKvCache,
+    Qwen3DenseReferenceProfile, Qwen3DenseReferenceTokenPieceDecoder,
     Qwen3DenseReferenceWeightDType, Qwen3DenseReferenceWeightTensorMetadata,
 };
 use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
+use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const PAGE_SIZE: usize = 256;
@@ -72,6 +74,7 @@ impl Qwen3SimplerModelSpec {
 pub struct Qwen3SimplerGenerateArgs {
     pub build_outputs: Vec<PathBuf>,
     pub l3: bool,
+    pub decode_abi: DecodeAbi,
     pub model_dir: PathBuf,
     pub prompt: String,
     pub max_seq_len: usize,
@@ -87,6 +90,126 @@ pub struct Qwen3SimplerGenerateResult {
     pub text: String,
     pub token_ids: Vec<u64>,
     pub finish_reason: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct Qwen3SimplerRangeArgs {
+    pub build_outputs: Vec<PathBuf>,
+    pub model_dir: PathBuf,
+    pub token_ids: Vec<u64>,
+    pub max_seq_len: usize,
+    pub platform: String,
+    pub device_id: u32,
+    pub range_exec: RangeExec,
+    pub layer_start: usize,
+    pub layer_end: usize,
+    pub output_hidden_bytes: usize,
+    pub input_hidden_payload: Option<Vec<u8>>,
+    pub previous_kv_payload: Option<Vec<u8>>,
+    pub terminal_projection: bool,
+    pub profile_verbose: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct Qwen3SimplerRangeResult {
+    pub output_hidden_payload: Vec<u8>,
+    pub kv_payload: Vec<u8>,
+    pub terminal_projection: Option<Qwen3SimplerTerminalProjectionResult>,
+    pub elapsed: Duration,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct Qwen3SimplerTerminalProjectionResult {
+    pub sampled_token: u64,
+    pub runner_up_token: u64,
+    pub top_logit_bits: u64,
+    pub runner_up_logit_bits: u64,
+    pub top_candidates: Vec<Qwen3SimplerLogitCandidate>,
+    pub checked_token_count: u64,
+    pub logits_checksum: u64,
+    pub final_norm_checksum: u64,
+    pub aggregate_checksum: u64,
+    pub final_rms_elapsed_ms: u128,
+    pub lm_head_elapsed_ms: u128,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct Qwen3SimplerLogitCandidate {
+    pub rank: u64,
+    pub token_id: u64,
+    pub logit_bits: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Qwen3SimplerRangeRunnerArgs {
+    pub request: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Qwen3SimplerRangeWorkerArgs;
+
+struct Qwen3SimplerRangeRunnerRequest {
+    range_args: Qwen3SimplerRangeArgs,
+    runtime_manifest: PathBuf,
+    output_hidden_payload: PathBuf,
+    output_kv_payload: PathBuf,
+    output_terminal_projection: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DecodeAbi {
+    #[default]
+    Fused,
+    SingleLayer,
+}
+
+impl DecodeAbi {
+    pub fn parse(value: &str) -> anyhow::Result<Self> {
+        match value {
+            "fused" | "all-layer" | "all_layers" => Ok(Self::Fused),
+            "single-layer" | "single_layer" | "layerwise" | "layer-wise" => Ok(Self::SingleLayer),
+            other => {
+                anyhow::bail!("unsupported decode ABI {other}; expected fused or single-layer")
+            }
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fused => "fused",
+            Self::SingleLayer => "single-layer",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RangeExec {
+    #[default]
+    SingleLayer,
+    MergedRange,
+}
+
+impl RangeExec {
+    pub fn parse(value: &str) -> anyhow::Result<Self> {
+        match value {
+            "single-layer" | "single_layer" | "layerwise" | "layer-wise" => {
+                Ok(Self::SingleLayer)
+            }
+            "merged-range" | "merged_range" | "range" | "range-merged" => {
+                Ok(Self::MergedRange)
+            }
+            other => anyhow::bail!(
+                "unsupported Qwen3 guest range execution mode {other}; expected single-layer or merged-range"
+            ),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SingleLayer => "single-layer",
+            Self::MergedRange => "merged-range",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -145,6 +268,12 @@ where
         let mut max_new_tokens = 10usize;
         let mut platform = "a2a3".to_string();
         let mut device_id = 0u32;
+        let mut decode_abi = env::var("SIM_QWEN3_SIMPLER_DECODE_ABI")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .map(|value| DecodeAbi::parse(&value))
+            .transpose()?
+            .unwrap_or_default();
         let mut profile_verbose = false;
         let mut sampling = SamplingConfig::default();
         let mut pending = args.peekable();
@@ -157,6 +286,10 @@ where
                 build_outputs.push(PathBuf::from(value));
             } else if text == "--l3" {
                 l3 = true;
+            } else if text == "--decode-abi" {
+                decode_abi = DecodeAbi::parse(&next_value(&mut pending, "--decode-abi")?)?;
+            } else if let Some(value) = text.strip_prefix("--decode-abi=") {
+                decode_abi = DecodeAbi::parse(value)?;
             } else if text == "--model-dir" {
                 model_dir = Some(PathBuf::from(next_value(&mut pending, "--model-dir")?));
             } else if let Some(value) = text.strip_prefix("--model-dir=") {
@@ -224,6 +357,7 @@ where
         Ok(Some(Qwen3SimplerGenerateArgs {
             build_outputs,
             l3,
+            decode_abi,
             model_dir: model_dir.ok_or_else(|| anyhow::anyhow!("--model-dir is required"))?,
             prompt: prompt.ok_or_else(|| anyhow::anyhow!("--prompt is required"))?,
             max_seq_len,
@@ -233,6 +367,625 @@ where
             profile_verbose,
             sampling,
         }))
+    }
+}
+
+pub fn range_runner_args() -> anyhow::Result<Option<Qwen3SimplerRangeRunnerArgs>> {
+    range_runner_args_from(env::args_os().skip(1))
+}
+
+pub fn range_runner_args_from<I, S>(args: I) -> anyhow::Result<Option<Qwen3SimplerRangeRunnerArgs>>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<std::ffi::OsString>,
+{
+    let mut args = args.into_iter().map(Into::into);
+    match args.next() {
+        Some(mode) if mode == "qwen3-simpler-range-runner" => {}
+        _ => return Ok(None),
+    }
+    let mut request = None;
+    let mut pending = args.peekable();
+    while let Some(value) = pending.next() {
+        let text = value.to_string_lossy();
+        if text == "--request" {
+            request = Some(PathBuf::from(next_value(&mut pending, "--request")?));
+        } else if let Some(value) = text.strip_prefix("--request=") {
+            request = Some(PathBuf::from(value));
+        } else if text.starts_with("--") {
+            anyhow::bail!("unknown qwen3-simpler-range-runner option: {text}");
+        } else if request.is_none() {
+            request = Some(PathBuf::from(text.as_ref()));
+        } else {
+            anyhow::bail!("unexpected qwen3-simpler-range-runner positional: {text}");
+        }
+    }
+    Ok(Some(Qwen3SimplerRangeRunnerArgs {
+        request: request.ok_or_else(|| anyhow::anyhow!("--request is required"))?,
+    }))
+}
+
+pub fn range_worker_args() -> anyhow::Result<Option<Qwen3SimplerRangeWorkerArgs>> {
+    range_worker_args_from(env::args_os().skip(1))
+}
+
+pub fn range_worker_args_from<I, S>(args: I) -> anyhow::Result<Option<Qwen3SimplerRangeWorkerArgs>>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<std::ffi::OsString>,
+{
+    let mut args = args.into_iter().map(Into::into);
+    match args.next() {
+        Some(mode) if mode == "qwen3-simpler-range-worker" => {}
+        _ => return Ok(None),
+    }
+    if let Some(extra) = args.next() {
+        anyhow::bail!(
+            "unexpected qwen3-simpler-range-worker argument: {}",
+            extra.to_string_lossy()
+        );
+    }
+    Ok(Some(Qwen3SimplerRangeWorkerArgs))
+}
+
+pub fn run_range_runner(args: Qwen3SimplerRangeRunnerArgs) -> anyhow::Result<()> {
+    let response = run_range_runner_request(&args.request)?;
+    println!("{}", serde_json::to_string(&response)?);
+    Ok(())
+}
+
+pub fn run_range_worker(_args: Qwen3SimplerRangeWorkerArgs) -> anyhow::Result<()> {
+    let stdin = io::stdin();
+    let mut stdout = io::stdout().lock();
+    let cache_enabled = env::var("SIM_QWEN3_SIMPLER_RANGE_WORKER_CACHE")
+        .map(|value| value != "0")
+        .unwrap_or(true);
+    let mut state: Option<Qwen3RangeWorkerState> = None;
+    for line in stdin.lock().lines() {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed == "shutdown" {
+            break;
+        }
+        let response = (|| -> anyhow::Result<serde_json::Value> {
+            let value: serde_json::Value = serde_json::from_str(trimmed)
+                .context("failed to parse qwen3 simpler range worker request")?;
+            let request = value
+                .get("request")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("range worker request missing request path"))?;
+            let request = parse_range_runner_request(Path::new(request))?;
+            if cache_enabled {
+                run_range_runner_request_cached(&mut state, request)
+            } else {
+                run_range_runner_request_stateless(request)
+            }
+        })();
+        match response {
+            Ok(value) => {
+                writeln!(stdout, "{}", serde_json::to_string(&value)?)?;
+            }
+            Err(err) => {
+                let value = serde_json::json!({
+                    "ok": false,
+                    "error": err.to_string(),
+                });
+                writeln!(stdout, "{}", serde_json::to_string(&value)?)?;
+            }
+        }
+        stdout.flush()?;
+    }
+    Ok(())
+}
+
+fn run_range_runner_request(request: &Path) -> anyhow::Result<serde_json::Value> {
+    let request = parse_range_runner_request(request)?;
+    run_range_runner_request_stateless(request)
+}
+
+fn parse_range_runner_request(request: &Path) -> anyhow::Result<Qwen3SimplerRangeRunnerRequest> {
+    let text = fs::read_to_string(request)
+        .with_context(|| format!("failed to read {}", request.display()))?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .with_context(|| format!("failed to parse {}", request.display()))?;
+    let build_outputs = required_string_array(&value, "build_outputs")?
+        .into_iter()
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    let input_hidden_payload = optional_path(&value, "input_hidden_payload")?
+        .map(|path| fs::read(&path).with_context(|| format!("failed to read {}", path.display())))
+        .transpose()?;
+    let previous_kv_payload = optional_path(&value, "previous_kv_payload")?
+        .map(|path| fs::read(&path).with_context(|| format!("failed to read {}", path.display())))
+        .transpose()?;
+    let output_hidden_payload = required_path(&value, "output_hidden_payload")?;
+    let output_kv_payload = required_path(&value, "output_kv_payload")?;
+    let output_terminal_projection = optional_path(&value, "output_terminal_projection")?;
+    let range_args = Qwen3SimplerRangeArgs {
+        build_outputs,
+        model_dir: required_path(&value, "model_dir")?,
+        token_ids: required_u64_array(&value, "token_ids")?,
+        max_seq_len: required_usize(&value, "max_seq_len")?,
+        platform: required_string(&value, "platform")?,
+        device_id: required_u32(&value, "device_id")?,
+        range_exec: value
+            .get("range_exec")
+            .and_then(serde_json::Value::as_str)
+            .map(RangeExec::parse)
+            .transpose()?
+            .unwrap_or_default(),
+        layer_start: required_usize(&value, "layer_start")?,
+        layer_end: required_usize(&value, "layer_end")?,
+        output_hidden_bytes: required_usize(&value, "output_hidden_bytes")?,
+        input_hidden_payload,
+        previous_kv_payload,
+        terminal_projection: value
+            .get("terminal_projection")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        profile_verbose: value
+            .get("profile_verbose")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+    };
+    Ok(Qwen3SimplerRangeRunnerRequest {
+        range_args,
+        runtime_manifest: required_path(&value, "runtime_manifest")?,
+        output_hidden_payload,
+        output_kv_payload,
+        output_terminal_projection,
+    })
+}
+
+fn run_range_runner_request_stateless(
+    request: Qwen3SimplerRangeRunnerRequest,
+) -> anyhow::Result<serde_json::Value> {
+    let result = run_l2_range(request.range_args.clone(), &request.runtime_manifest)?;
+    write_range_runner_result(request, result, None)
+}
+
+fn run_range_runner_request_cached(
+    state: &mut Option<Qwen3RangeWorkerState>,
+    request: Qwen3SimplerRangeRunnerRequest,
+) -> anyhow::Result<serde_json::Value> {
+    let key = Qwen3RangeWorkerCacheKey::from_request(&request);
+    let needs_rebuild = state.as_ref().map(|state| state.key != key).unwrap_or(true);
+    let cache_event = if needs_rebuild {
+        let started = Instant::now();
+        *state = Some(Qwen3RangeWorkerState::new(&request, key)?);
+        Some(("miss", started.elapsed()))
+    } else {
+        Some(("hit", Duration::ZERO))
+    };
+    let result = state
+        .as_mut()
+        .expect("state initialized")
+        .run(request.range_args.clone())?;
+    write_range_runner_result(request, result, cache_event)
+}
+
+fn write_range_runner_result(
+    request: Qwen3SimplerRangeRunnerRequest,
+    result: Qwen3SimplerRangeResult,
+    cache_event: Option<(&'static str, Duration)>,
+) -> anyhow::Result<serde_json::Value> {
+    fs::write(
+        &request.output_hidden_payload,
+        &result.output_hidden_payload,
+    )
+    .with_context(|| {
+        format!(
+            "failed to write {}",
+            request.output_hidden_payload.display()
+        )
+    })?;
+    fs::write(&request.output_kv_payload, &result.kv_payload)
+        .with_context(|| format!("failed to write {}", request.output_kv_payload.display()))?;
+    if let (Some(path), Some(terminal)) = (
+        request.output_terminal_projection.as_ref(),
+        result.terminal_projection.as_ref(),
+    ) {
+        fs::write(path, serde_json::to_vec_pretty(terminal)?)
+            .with_context(|| format!("failed to write {}", path.display()))?;
+    }
+    let mut response = serde_json::json!({
+        "ok": true,
+        "elapsed_ms": result.elapsed.as_millis(),
+        "output_hidden_bytes": result.output_hidden_payload.len(),
+        "kv_payload_bytes": result.kv_payload.len(),
+        "terminal_projection": result.terminal_projection,
+    });
+    if let Some((event, elapsed)) = cache_event {
+        response["worker_cache"] = serde_json::Value::String(event.to_string());
+        response["worker_cache_init_ms"] = serde_json::Value::from(elapsed.as_millis() as u64);
+    }
+    Ok(response)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Qwen3RangeWorkerCacheKey {
+    build_outputs: Vec<PathBuf>,
+    model_dir: PathBuf,
+    max_seq_len: usize,
+    platform: String,
+    device_id: u32,
+    range_exec: RangeExec,
+    layer_start: usize,
+    layer_end: usize,
+    terminal_projection: bool,
+    runtime_manifest: PathBuf,
+}
+
+impl Qwen3RangeWorkerCacheKey {
+    fn from_request(request: &Qwen3SimplerRangeRunnerRequest) -> Self {
+        let args = &request.range_args;
+        Self {
+            build_outputs: args.build_outputs.clone(),
+            model_dir: args.model_dir.clone(),
+            max_seq_len: args.max_seq_len,
+            platform: args.platform.clone(),
+            device_id: args.device_id,
+            range_exec: args.range_exec,
+            layer_start: args.layer_start,
+            layer_end: args.layer_end,
+            terminal_projection: args.terminal_projection,
+            runtime_manifest: request.runtime_manifest.clone(),
+        }
+    }
+}
+
+struct Qwen3RangeWorkerState {
+    key: Qwen3RangeWorkerCacheKey,
+    runtime: RuntimePaths,
+    api: &'static simpler::RuntimeLibrary,
+    ctx: &'static simpler::DeviceContext<'static>,
+    dispatch_session: DispatchSession,
+    prefill_cached: Option<simpler::PreparedCallable<'static, 'static>>,
+    decode_cached: Option<simpler::PreparedCallable<'static, 'static>>,
+    terminal_cached: Option<Qwen3RangeWorkerTerminalProjectionCache>,
+    aicpu: Vec<u8>,
+    aicore: Vec<u8>,
+    weights: BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
+    tensors: Qwen3SimplerTensors,
+    prefill: PreparedProgram,
+    decode: PreparedProgram,
+    terminal_projection: Option<Qwen3RangeWorkerTerminalProjection>,
+}
+
+struct Qwen3RangeWorkerTerminalProjection {
+    final_rms: PreparedProgram,
+    lm_head: PreparedProgram,
+}
+
+struct Qwen3RangeWorkerTerminalProjectionCache {
+    final_rms: simpler::PreparedCallable<'static, 'static>,
+    lm_head: simpler::PreparedCallable<'static, 'static>,
+}
+
+impl Qwen3RangeWorkerState {
+    fn new(
+        request: &Qwen3SimplerRangeRunnerRequest,
+        key: Qwen3RangeWorkerCacheKey,
+    ) -> anyhow::Result<Self> {
+        let args = &request.range_args;
+        validate_range_args(args)?;
+        let build = L2BuildOutputs::load(&args.build_outputs)?;
+        let runtime =
+            RuntimePaths::from_manifest(&request.runtime_manifest)?.with_device_id(args.device_id);
+        let weights = load_safetensors_path_metadata(&args.model_dir)
+            .map_err(anyhow::Error::msg)
+            .context("failed to load model safetensors metadata")?
+            .tensors;
+        let profile = load_qwen3_reference_profile(&args.model_dir)?;
+        let spec = Qwen3SimplerModelSpec::from_profile(profile)?;
+        let tensor_args = Qwen3SimplerGenerateArgs {
+            build_outputs: args.build_outputs.clone(),
+            l3: false,
+            decode_abi: DecodeAbi::SingleLayer,
+            model_dir: args.model_dir.clone(),
+            prompt: String::new(),
+            max_seq_len: args.max_seq_len,
+            max_new_tokens: 1,
+            platform: args.platform.clone(),
+            device_id: args.device_id,
+            profile_verbose: args.profile_verbose,
+            sampling: SamplingConfig::default(),
+        };
+        let tensors = Qwen3SimplerTensors::build_range(
+            &tensor_args,
+            profile,
+            spec,
+            &weights,
+            &args.token_ids,
+            args.layer_start,
+            args.layer_end,
+            args.terminal_projection,
+        )?;
+        let aicpu = fs::read(&runtime.aicpu).with_context(|| {
+            format!(
+                "failed to read runtime aicpu binary {}",
+                runtime.aicpu.display()
+            )
+        })?;
+        let aicore = fs::read(&runtime.aicore).with_context(|| {
+            format!(
+                "failed to read runtime aicore binary {}",
+                runtime.aicore.display()
+            )
+        })?;
+        let prefill = PreparedProgram::load(&build.prefill)?;
+        let decode = PreparedProgram::load(&build.decode)?;
+        let terminal_projection = if args.terminal_projection {
+            let final_rms = PreparedProgram::load(&build.final_rms)?;
+            let lm_head = PreparedProgram::load(&build.lm_head)?;
+            Some(Qwen3RangeWorkerTerminalProjection { final_rms, lm_head })
+        } else {
+            None
+        };
+        let _runtime_env = EnvGuard::apply(&runtime.env);
+        let api = simpler::RuntimeLibrary::load(&runtime.host)
+            .map_err(|err| anyhow::anyhow!("failed to load simpler runtime host library: {err}"))?;
+        let api: &'static simpler::RuntimeLibrary = Box::leak(Box::new(api));
+        let ctx = api
+            .create_context(args.device_id as i32)
+            .map_err(|err| anyhow::anyhow!("failed to create simpler device context: {err}"))?;
+        // The range worker is a long-lived child process scoped to one node/device.
+        // Leaking the runtime context lets prepared callables borrow it for the
+        // worker lifetime and avoids rebuilding simpler state on every range.
+        let ctx: &'static simpler::DeviceContext<'static> = Box::leak(Box::new(ctx));
+        let dispatch_session = DispatchSession::new(api)?;
+        let prefill_cached =
+            prepare_cached_callable(api, ctx, &prefill, &runtime, &aicpu, &aicore)?;
+        let decode_cached = prepare_cached_callable(api, ctx, &decode, &runtime, &aicpu, &aicore)?;
+        let terminal_cached = if let Some(terminal) = terminal_projection.as_ref() {
+            let final_rms =
+                prepare_cached_callable(api, ctx, &terminal.final_rms, &runtime, &aicpu, &aicore)?;
+            let lm_head =
+                prepare_cached_callable(api, ctx, &terminal.lm_head, &runtime, &aicpu, &aicore)?;
+            match (final_rms, lm_head) {
+                (Some(final_rms), Some(lm_head)) => {
+                    Some(Qwen3RangeWorkerTerminalProjectionCache { final_rms, lm_head })
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        Ok(Self {
+            key,
+            runtime,
+            api,
+            ctx,
+            dispatch_session,
+            prefill_cached,
+            decode_cached,
+            terminal_cached,
+            aicpu,
+            aicore,
+            weights,
+            tensors,
+            prefill,
+            decode,
+            terminal_projection,
+        })
+    }
+
+    fn run(&mut self, args: Qwen3SimplerRangeArgs) -> anyhow::Result<Qwen3SimplerRangeResult> {
+        validate_range_args(&args)?;
+        let started = Instant::now();
+        let token_count = args.token_ids.len();
+        let previous_kv_cache = args
+            .previous_kv_payload
+            .as_deref()
+            .map(|payload| {
+                range_kv_payload_to_cache(
+                    self.tensors.profile,
+                    payload,
+                    args.layer_start,
+                    args.layer_end,
+                )
+            })
+            .transpose()?;
+        let is_decode = previous_kv_cache.is_some();
+        let effective_token_count = if is_decode {
+            previous_kv_cache
+                .as_ref()
+                .and_then(|cache| cache.first())
+                .map(|layer| layer.token_count as usize + 1)
+                .ok_or_else(|| anyhow::anyhow!("decode range missing previous KV token count"))?
+        } else {
+            token_count
+        };
+        if let Some(cache) = previous_kv_cache.as_ref() {
+            self.tensors
+                .load_range_kv_cache(cache, args.layer_start, args.layer_end)?;
+        }
+        if let Some(payload) = args.input_hidden_payload.as_deref() {
+            if is_decode {
+                self.tensors.set_decode_hidden_from_f16_payload(payload)?;
+            } else {
+                self.tensors
+                    .set_prefill_hidden_from_f16_payload(payload, token_count)?;
+            }
+        } else if is_decode {
+            let token = *args
+                .token_ids
+                .last()
+                .ok_or_else(|| anyhow::anyhow!("decode range missing token id"))?;
+            self.tensors
+                .set_decode_hidden_from_token(&self.weights, token)?;
+        } else {
+            self.tensors
+                .set_prefill_hidden_from_tokens(&self.weights, &args.token_ids)?;
+        }
+        if is_decode {
+            self.tensors.write_decode_position(effective_token_count);
+        }
+
+        let _runtime_env = EnvGuard::apply(&self.runtime.env);
+
+        match args.range_exec {
+            RangeExec::SingleLayer => {
+                for layer in args.layer_start..args.layer_end {
+                    let layer_started = Instant::now();
+                    let (program, cached, prepared) = if is_decode {
+                        (
+                            &self.decode,
+                            self.decode_cached.as_ref(),
+                            l2_decode_args(&mut self.tensors, layer)?,
+                        )
+                    } else {
+                        (
+                            &self.prefill,
+                            self.prefill_cached.as_ref(),
+                            l2_prefill_args(&mut self.tensors, layer)?,
+                        )
+                    };
+                    dispatch(
+                        self.api,
+                        self.ctx,
+                        program,
+                        cached,
+                        &self.runtime,
+                        &self.dispatch_session,
+                        &self.aicpu,
+                        &self.aicore,
+                        prepared,
+                    )?;
+                    if is_decode {
+                        if layer + 1 < args.layer_end {
+                            self.tensors.copy_decode_out_to_decode_hidden();
+                        }
+                    } else {
+                        self.tensors.copy_prefill_out_to_hidden();
+                    }
+                    if args.profile_verbose {
+                        let phase = if is_decode { "decode" } else { "prefill" };
+                        eprintln!(
+                            "[QEMU-L2-range] phase={phase} range_exec=single-layer device_id={} layer={layer:02} dispatch={:.2} ms worker_cache=hit",
+                            args.device_id,
+                            duration_ms(layer_started.elapsed())
+                        );
+                    }
+                }
+            }
+            RangeExec::MergedRange => {
+                let dispatch_started = Instant::now();
+                let (program, cached, prepared) = if is_decode {
+                    (
+                        &self.decode,
+                        self.decode_cached.as_ref(),
+                        decode_args(&mut self.tensors)?,
+                    )
+                } else {
+                    (
+                        &self.prefill,
+                        self.prefill_cached.as_ref(),
+                        prefill_args(&mut self.tensors)?,
+                    )
+                };
+                dispatch(
+                    self.api,
+                    self.ctx,
+                    program,
+                    cached,
+                    &self.runtime,
+                    &self.dispatch_session,
+                    &self.aicpu,
+                    &self.aicore,
+                    prepared,
+                )?;
+                if !is_decode {
+                    self.tensors.copy_prefill_out_to_hidden();
+                }
+                if args.profile_verbose {
+                    let phase = if is_decode { "decode" } else { "prefill" };
+                    eprintln!(
+                        "[QEMU-L2-range] phase={phase} range_exec=merged-range device_id={} layers=[{}, {}) dispatch={:.2} ms worker_cache=hit",
+                        args.device_id,
+                        args.layer_start,
+                        args.layer_end,
+                        duration_ms(dispatch_started.elapsed())
+                    );
+                }
+            }
+        }
+        let output_hidden_payload = if is_decode {
+            self.tensors
+                .decode_out_payload_f16(args.output_hidden_bytes)?
+        } else {
+            self.tensors
+                .prefill_out_payload_f16(token_count, args.output_hidden_bytes)?
+        };
+        let terminal_projection = if let Some(terminal) = self.terminal_projection.as_ref() {
+            if is_decode {
+                self.tensors.copy_decode_out_to_rms_x();
+            } else {
+                self.tensors.copy_prefill_last_to_rms_x(token_count);
+            }
+            let (final_rms_cached, lm_head_cached) = self
+                .terminal_cached
+                .as_ref()
+                .map(|cache| (Some(&cache.final_rms), Some(&cache.lm_head)))
+                .unwrap_or((None, None));
+            let final_rms_started = Instant::now();
+            dispatch(
+                self.api,
+                self.ctx,
+                &terminal.final_rms,
+                final_rms_cached,
+                &self.runtime,
+                &self.dispatch_session,
+                &self.aicpu,
+                &self.aicore,
+                final_rms_args(&mut self.tensors)?,
+            )?;
+            let final_rms_elapsed = final_rms_started.elapsed();
+            let lm_head_started = Instant::now();
+            dispatch(
+                self.api,
+                self.ctx,
+                &terminal.lm_head,
+                lm_head_cached,
+                &self.runtime,
+                &self.dispatch_session,
+                &self.aicpu,
+                &self.aicore,
+                lm_head_args(&mut self.tensors)?,
+            )?;
+            let lm_head_elapsed = lm_head_started.elapsed();
+            let result =
+                terminal_projection_from_logits(&self.tensors, final_rms_elapsed, lm_head_elapsed)?;
+            if args.profile_verbose {
+                eprintln!(
+                    "[QEMU-L2-terminal] device_id={} token={} runner_up={} final_rms={:.2} ms lm_head={:.2} ms logits_checksum=0x{:016x} worker_cache=hit",
+                    args.device_id,
+                    result.sampled_token,
+                    result.runner_up_token,
+                    duration_ms(final_rms_elapsed),
+                    duration_ms(lm_head_elapsed),
+                    result.logits_checksum
+                );
+            }
+            Some(result)
+        } else {
+            None
+        };
+        let kv_cache = self.tensors.export_range_kv_cache(
+            args.layer_start,
+            args.layer_end,
+            effective_token_count,
+        )?;
+        let kv_payload = range_kv_payload_from_cache(&kv_cache, args.layer_start, args.layer_end)?;
+        Ok(Qwen3SimplerRangeResult {
+            output_hidden_payload,
+            kv_payload,
+            terminal_projection,
+            elapsed: started.elapsed(),
+        })
     }
 }
 
@@ -248,12 +1001,331 @@ pub fn run(
     }
 }
 
+pub fn run_l2_range(
+    args: Qwen3SimplerRangeArgs,
+    runtime_manifest_path: &Path,
+) -> anyhow::Result<Qwen3SimplerRangeResult> {
+    validate_range_args(&args)?;
+    let build = L2BuildOutputs::load(&args.build_outputs)?;
+    let runtime =
+        RuntimePaths::from_manifest(runtime_manifest_path)?.with_device_id(args.device_id);
+    let weights = load_safetensors_path_metadata(&args.model_dir)
+        .map_err(anyhow::Error::msg)
+        .context("failed to load model safetensors metadata")?;
+    let profile = load_qwen3_reference_profile(&args.model_dir)?;
+    let spec = Qwen3SimplerModelSpec::from_profile(profile)?;
+    let tensor_args = Qwen3SimplerGenerateArgs {
+        build_outputs: args.build_outputs.clone(),
+        l3: false,
+        decode_abi: DecodeAbi::SingleLayer,
+        model_dir: args.model_dir.clone(),
+        prompt: String::new(),
+        max_seq_len: args.max_seq_len,
+        max_new_tokens: 1,
+        platform: args.platform.clone(),
+        device_id: args.device_id,
+        profile_verbose: args.profile_verbose,
+        sampling: SamplingConfig::default(),
+    };
+    let mut tensors = Qwen3SimplerTensors::build_range(
+        &tensor_args,
+        profile,
+        spec,
+        &weights.tensors,
+        &args.token_ids,
+        args.layer_start,
+        args.layer_end,
+        args.terminal_projection,
+    )?;
+    let token_count = args.token_ids.len();
+    let previous_kv_cache = args
+        .previous_kv_payload
+        .as_deref()
+        .map(|payload| {
+            range_kv_payload_to_cache(profile, payload, args.layer_start, args.layer_end)
+        })
+        .transpose()?;
+    let is_decode = previous_kv_cache.is_some();
+    let effective_token_count = if is_decode {
+        previous_kv_cache
+            .as_ref()
+            .and_then(|cache| cache.first())
+            .map(|layer| layer.token_count as usize + 1)
+            .ok_or_else(|| anyhow::anyhow!("decode range missing previous KV token count"))?
+    } else {
+        token_count
+    };
+    if let Some(cache) = previous_kv_cache.as_ref() {
+        tensors.load_range_kv_cache(cache, args.layer_start, args.layer_end)?;
+    }
+    if let Some(payload) = args.input_hidden_payload.as_deref() {
+        if is_decode {
+            tensors.set_decode_hidden_from_f16_payload(payload)?;
+        } else {
+            tensors.set_prefill_hidden_from_f16_payload(payload, token_count)?;
+        }
+    }
+    if is_decode {
+        tensors.write_decode_position(effective_token_count);
+    }
+
+    let _runtime_env = EnvGuard::apply(&runtime.env);
+    let api = simpler::RuntimeLibrary::load(&runtime.host)
+        .map_err(|err| anyhow::anyhow!("failed to load simpler runtime host library: {err}"))?;
+    let aicpu = fs::read(&runtime.aicpu).with_context(|| {
+        format!(
+            "failed to read runtime aicpu binary {}",
+            runtime.aicpu.display()
+        )
+    })?;
+    let aicore = fs::read(&runtime.aicore).with_context(|| {
+        format!(
+            "failed to read runtime aicore binary {}",
+            runtime.aicore.display()
+        )
+    })?;
+    let ctx = api
+        .create_context(args.device_id as i32)
+        .map_err(|err| anyhow::anyhow!("failed to create simpler device context: {err}"))?;
+    let dispatch_session = DispatchSession::new(&api)?;
+    let program = if is_decode {
+        PreparedProgram::load(&build.decode)?
+    } else {
+        PreparedProgram::load(&build.prefill)?
+    };
+    let cached = prepare_cached_callable(&api, &ctx, &program, &runtime, &aicpu, &aicore)?;
+    let terminal_projection = if args.terminal_projection {
+        let final_rms = PreparedProgram::load(&build.final_rms)?;
+        let lm_head = PreparedProgram::load(&build.lm_head)?;
+        let final_rms_cached =
+            prepare_cached_callable(&api, &ctx, &final_rms, &runtime, &aicpu, &aicore)?;
+        let lm_head_cached =
+            prepare_cached_callable(&api, &ctx, &lm_head, &runtime, &aicpu, &aicore)?;
+        Some((final_rms, lm_head, final_rms_cached, lm_head_cached))
+    } else {
+        None
+    };
+    let started = Instant::now();
+    match args.range_exec {
+        RangeExec::SingleLayer => {
+            for layer in args.layer_start..args.layer_end {
+                let layer_started = Instant::now();
+                let prepared = if is_decode {
+                    l2_decode_args(&mut tensors, layer)?
+                } else {
+                    l2_prefill_args(&mut tensors, layer)?
+                };
+                dispatch(
+                    &api,
+                    &ctx,
+                    &program,
+                    cached.as_ref(),
+                    &runtime,
+                    &dispatch_session,
+                    &aicpu,
+                    &aicore,
+                    prepared,
+                )?;
+                if is_decode {
+                    if layer + 1 < args.layer_end {
+                        tensors.copy_decode_out_to_decode_hidden();
+                    }
+                } else {
+                    tensors.copy_prefill_out_to_hidden();
+                }
+                if args.profile_verbose {
+                    let phase = if is_decode { "decode" } else { "prefill" };
+                    eprintln!(
+                        "[QEMU-L2-range] phase={phase} range_exec=single-layer device_id={} layer={layer:02} dispatch={:.2} ms",
+                        args.device_id,
+                        duration_ms(layer_started.elapsed())
+                    );
+                }
+            }
+        }
+        RangeExec::MergedRange => {
+            let dispatch_started = Instant::now();
+            let prepared = if is_decode {
+                decode_args(&mut tensors)?
+            } else {
+                prefill_args(&mut tensors)?
+            };
+            dispatch(
+                &api,
+                &ctx,
+                &program,
+                cached.as_ref(),
+                &runtime,
+                &dispatch_session,
+                &aicpu,
+                &aicore,
+                prepared,
+            )?;
+            if !is_decode {
+                tensors.copy_prefill_out_to_hidden();
+            }
+            if args.profile_verbose {
+                let phase = if is_decode { "decode" } else { "prefill" };
+                eprintln!(
+                    "[QEMU-L2-range] phase={phase} range_exec=merged-range device_id={} layers=[{}, {}) dispatch={:.2} ms",
+                    args.device_id,
+                    args.layer_start,
+                    args.layer_end,
+                    duration_ms(dispatch_started.elapsed())
+                );
+            }
+        }
+    }
+    let output_hidden_payload = if is_decode {
+        tensors.decode_out_payload_f16(args.output_hidden_bytes)?
+    } else {
+        tensors.prefill_out_payload_f16(token_count, args.output_hidden_bytes)?
+    };
+    let terminal_projection = if let Some((final_rms, lm_head, final_rms_cached, lm_head_cached)) =
+        terminal_projection.as_ref()
+    {
+        if is_decode {
+            tensors.copy_decode_out_to_rms_x();
+        } else {
+            tensors.copy_prefill_last_to_rms_x(token_count);
+        }
+        let final_rms_started = Instant::now();
+        dispatch(
+            &api,
+            &ctx,
+            final_rms,
+            final_rms_cached.as_ref(),
+            &runtime,
+            &dispatch_session,
+            &aicpu,
+            &aicore,
+            final_rms_args(&mut tensors)?,
+        )?;
+        let final_rms_elapsed = final_rms_started.elapsed();
+        let lm_head_started = Instant::now();
+        dispatch(
+            &api,
+            &ctx,
+            lm_head,
+            lm_head_cached.as_ref(),
+            &runtime,
+            &dispatch_session,
+            &aicpu,
+            &aicore,
+            lm_head_args(&mut tensors)?,
+        )?;
+        let lm_head_elapsed = lm_head_started.elapsed();
+        let result = terminal_projection_from_logits(&tensors, final_rms_elapsed, lm_head_elapsed)?;
+        if args.profile_verbose {
+            eprintln!(
+                "[QEMU-L2-terminal] device_id={} token={} runner_up={} final_rms={:.2} ms lm_head={:.2} ms logits_checksum=0x{:016x}",
+                args.device_id,
+                result.sampled_token,
+                result.runner_up_token,
+                duration_ms(final_rms_elapsed),
+                duration_ms(lm_head_elapsed),
+                result.logits_checksum
+            );
+        }
+        Some(result)
+    } else {
+        None
+    };
+    let kv_cache =
+        tensors.export_range_kv_cache(args.layer_start, args.layer_end, effective_token_count)?;
+    let kv_payload = range_kv_payload_from_cache(&kv_cache, args.layer_start, args.layer_end)?;
+    Ok(Qwen3SimplerRangeResult {
+        output_hidden_payload,
+        kv_payload,
+        terminal_projection,
+        elapsed: started.elapsed(),
+    })
+}
+
 pub fn runtime_name(args: &Qwen3SimplerGenerateArgs) -> anyhow::Result<String> {
     if args.l3 {
         L3BuildOutput::load(one_build_output(args)?)?.runtime_name()
     } else {
         L2BuildOutputs::load(&args.build_outputs)?.runtime_name()
     }
+}
+
+pub fn default_runtime_manifest_path(runtime_name: &str, platform: &str) -> PathBuf {
+    let runtime_name = runtime_name.replace('_', "-");
+    Path::new("/tmp")
+        .join(format!(
+            "simpler-qwen3-{runtime_name}-{platform}-runtime-artifacts"
+        ))
+        .join("simpler_runtime_manifest.json")
+}
+
+pub fn ensure_runtime_manifest(
+    manifest_path: &Path,
+    runtime_name: &str,
+    platform: &str,
+) -> anyhow::Result<()> {
+    if manifest_path.exists() {
+        return Ok(());
+    }
+    let output_dir = manifest_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("manifest has no parent: {}", manifest_path.display()))?;
+    let script = runtime_artifact_producer_path();
+    if !script.exists() {
+        anyhow::bail!(
+            "missing simpler runtime artifact producer: {}",
+            script.display()
+        );
+    }
+    let mut command = Command::new("python3");
+    command
+        .arg(&script)
+        .arg("--output-dir")
+        .arg(output_dir)
+        .arg("--runtime-name")
+        .arg(runtime_name)
+        .arg("--platform")
+        .arg(platform)
+        .arg("--aicpu-thread-num")
+        .arg("4");
+    if let Some(simpler_root) = runtime_root_for_host_artifacts() {
+        command.arg("--simpler-root").arg(simpler_root);
+    }
+    let status = command
+        .stdout(Stdio::null())
+        .status()
+        .with_context(|| format!("failed to run {}", script.display()))?;
+    if !status.success() {
+        anyhow::bail!(
+            "simpler runtime artifact producer failed: {} status={status}",
+            script.display()
+        );
+    }
+    if !manifest_path.exists() {
+        anyhow::bail!(
+            "simpler runtime artifact producer did not create {}",
+            manifest_path.display()
+        );
+    }
+    Ok(())
+}
+
+fn runtime_artifact_producer_path() -> PathBuf {
+    repo_root()
+        .join("guest-linux")
+        .join("aarch64")
+        .join("scripts")
+        .join("prepare_simpler_runtime_artifacts.py")
+}
+
+fn runtime_root_for_host_artifacts() -> Option<PathBuf> {
+    env::var_os("SIM_SIMPLER_ROOT")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
 fn load_qwen3_reference_profile(model_dir: &Path) -> anyhow::Result<Qwen3DenseReferenceProfile> {
@@ -274,7 +1346,8 @@ fn run_l3(
     runtime_manifest_path: &Path,
 ) -> anyhow::Result<Qwen3SimplerGenerateResult> {
     let build = L3BuildOutput::load(one_build_output(&args)?)?;
-    let runtime = RuntimePaths::from_manifest(runtime_manifest_path)?;
+    let runtime =
+        RuntimePaths::from_manifest(runtime_manifest_path)?.with_device_id(args.device_id);
     if args.profile_verbose {
         eprintln!("qwen3-simpler-generate --l3:");
         eprintln!("  build_output: {}", build.root.display());
@@ -300,6 +1373,9 @@ fn run_l3(
         );
     }
     let eos_token_id = load_eos_token_id(&args.model_dir)?;
+    let token_decoder = Qwen3DenseReferenceTokenPieceDecoder::from_tokenizer_path(&args.model_dir)
+        .map_err(anyhow::Error::msg)
+        .context("failed to load tokenizer decoder")?;
 
     let weights = load_safetensors_path_metadata(&args.model_dir)
         .map_err(anyhow::Error::msg)
@@ -337,19 +1413,32 @@ fn run_l3(
         )
     })?;
     let ctx = api
-        .create_context()
+        .create_context(args.device_id as i32)
         .map_err(|err| anyhow::anyhow!("failed to create simpler device context: {err}"))?;
     let dispatch_session = DispatchSession::new(&api)?;
 
     let prefill = PreparedProgram::load(&build.prefill)?;
     let decode = PreparedProgram::load(&build.decode)?;
     let rms_lmhead = PreparedProgram::load(&build.rms_lmhead)?;
+    let prefill_cached = prepare_cached_callable(&api, &ctx, &prefill, &runtime, &aicpu, &aicore)?;
+    let decode_cached = prepare_cached_callable(&api, &ctx, &decode, &runtime, &aicpu, &aicore)?;
+    let rms_lmhead_cached =
+        prepare_cached_callable(&api, &ctx, &rms_lmhead, &runtime, &aicpu, &aicore)?;
 
     if args.profile_verbose {
         eprintln!("  prefill kernels: {}", prefill.kernel_count);
         eprintln!("  decode kernels: {}", decode.kernel_count);
         eprintln!("  rms_lmhead kernels: {}", rms_lmhead.kernel_count);
         eprintln!("  runtime buffer: reused across dispatches");
+        eprintln!(
+            "  prepared callable cache: {}",
+            if api.supports_prepared_callable_cache() {
+                "enabled"
+            } else {
+                "unavailable"
+            }
+        );
+        eprintln!("  token decoder: cached tokenizer assets");
         if let Some(eos_token_id) = eos_token_id {
             eprintln!("  eos_token_id: {eos_token_id}");
         }
@@ -369,6 +1458,7 @@ fn run_l3(
         &api,
         &ctx,
         &prefill,
+        prefill_cached.as_ref(),
         &runtime,
         &dispatch_session,
         &aicpu,
@@ -388,6 +1478,7 @@ fn run_l3(
             &api,
             &ctx,
             &decode,
+            decode_cached.as_ref(),
             &runtime,
             &dispatch_session,
             &aicpu,
@@ -413,6 +1504,7 @@ fn run_l3(
             &api,
             &ctx,
             &rms_lmhead,
+            rms_lmhead_cached.as_ref(),
             &runtime,
             &dispatch_session,
             &aicpu,
@@ -422,7 +1514,7 @@ fn run_l3(
         let rms_lmhead_elapsed = rms_lmhead_started.elapsed();
         let sample_started = Instant::now();
         let token = sampler.sample_from_logits(tensors.logits())?;
-        let stop_reason = generated.push_token(&args.model_dir, token)?;
+        let stop_reason = generated.push_token(&token_decoder, token)?;
         let reached_length = generated.len() >= args.max_new_tokens;
         if stop_reason.is_none() && !reached_length {
             tensors.set_decode_hidden_from_token(&weights.tensors, token)?;
@@ -455,6 +1547,7 @@ fn run_l3(
             &api,
             &ctx,
             &decode,
+            decode_cached.as_ref(),
             &runtime,
             &dispatch_session,
             &aicpu,
@@ -483,13 +1576,15 @@ fn run_l2(
     runtime_manifest_path: &Path,
 ) -> anyhow::Result<Qwen3SimplerGenerateResult> {
     let build = L2BuildOutputs::load(&args.build_outputs)?;
-    let runtime = RuntimePaths::from_manifest(runtime_manifest_path)?;
+    let runtime =
+        RuntimePaths::from_manifest(runtime_manifest_path)?.with_device_id(args.device_id);
     if args.profile_verbose {
         eprintln!("qwen3-simpler-generate:");
         eprintln!("  prefill: {}", build.prefill.root.display());
         eprintln!("  decode: {}", build.decode.root.display());
         eprintln!("  final_rms: {}", build.final_rms.root.display());
         eprintln!("  lm_head: {}", build.lm_head.root.display());
+        eprintln!("  decode_abi: {}", args.decode_abi.as_str());
         eprintln!("  runtime_host: {}", runtime.host.display());
         eprintln!("  platform: {}", args.platform);
         eprintln!("  device_id: {}", args.device_id);
@@ -512,6 +1607,9 @@ fn run_l2(
         );
     }
     let eos_token_id = load_eos_token_id(&args.model_dir)?;
+    let token_decoder = Qwen3DenseReferenceTokenPieceDecoder::from_tokenizer_path(&args.model_dir)
+        .map_err(anyhow::Error::msg)
+        .context("failed to load tokenizer decoder")?;
 
     let weights = load_safetensors_path_metadata(&args.model_dir)
         .map_err(anyhow::Error::msg)
@@ -549,7 +1647,7 @@ fn run_l2(
         )
     })?;
     let ctx = api
-        .create_context()
+        .create_context(args.device_id as i32)
         .map_err(|err| anyhow::anyhow!("failed to create simpler device context: {err}"))?;
     let dispatch_session = DispatchSession::new(&api)?;
 
@@ -557,6 +1655,11 @@ fn run_l2(
     let decode = PreparedProgram::load(&build.decode)?;
     let final_rms = PreparedProgram::load(&build.final_rms)?;
     let lm_head = PreparedProgram::load(&build.lm_head)?;
+    let prefill_cached = prepare_cached_callable(&api, &ctx, &prefill, &runtime, &aicpu, &aicore)?;
+    let decode_cached = prepare_cached_callable(&api, &ctx, &decode, &runtime, &aicpu, &aicore)?;
+    let final_rms_cached =
+        prepare_cached_callable(&api, &ctx, &final_rms, &runtime, &aicpu, &aicore)?;
+    let lm_head_cached = prepare_cached_callable(&api, &ctx, &lm_head, &runtime, &aicpu, &aicore)?;
 
     if args.profile_verbose {
         eprintln!("  prefill kernels: {}", prefill.kernel_count);
@@ -564,6 +1667,15 @@ fn run_l2(
         eprintln!("  final_rms kernels: {}", final_rms.kernel_count);
         eprintln!("  lm_head kernels: {}", lm_head.kernel_count);
         eprintln!("  runtime buffer: reused across dispatches");
+        eprintln!(
+            "  prepared callable cache: {}",
+            if api.supports_prepared_callable_cache() {
+                "enabled"
+            } else {
+                "unavailable"
+            }
+        );
+        eprintln!("  token decoder: cached tokenizer assets");
         if let Some(eos_token_id) = eos_token_id {
             eprintln!("  eos_token_id: {eos_token_id}");
         }
@@ -577,6 +1689,7 @@ fn run_l2(
             &api,
             &ctx,
             &prefill,
+            prefill_cached.as_ref(),
             &runtime,
             &dispatch_session,
             &aicpu,
@@ -616,6 +1729,7 @@ fn run_l2(
             &api,
             &ctx,
             &final_rms,
+            final_rms_cached.as_ref(),
             &runtime,
             &dispatch_session,
             &aicpu,
@@ -628,6 +1742,7 @@ fn run_l2(
             &api,
             &ctx,
             &lm_head,
+            lm_head_cached.as_ref(),
             &runtime,
             &dispatch_session,
             &aicpu,
@@ -637,7 +1752,7 @@ fn run_l2(
         let lm_head_elapsed = lm_head_started.elapsed();
         let sample_started = Instant::now();
         let token = sampler.sample_from_logits(tensors.logits())?;
-        let stop_reason = generated.push_token(&args.model_dir, token)?;
+        let stop_reason = generated.push_token(&token_decoder, token)?;
         let reached_length = generated.len() >= args.max_new_tokens;
         if stop_reason.is_none() && !reached_length {
             tensors.set_decode_hidden_from_token(&weights.tensors, token)?;
@@ -666,18 +1781,20 @@ fn run_l2(
             break "length".to_string();
         }
 
-        let decode_started = Instant::now();
-        dispatch(
+        current_decode_elapsed = dispatch_l2_decode_step(
             &api,
             &ctx,
             &decode,
+            decode_cached.as_ref(),
             &runtime,
             &dispatch_session,
             &aicpu,
             &aicore,
-            decode_args(&mut tensors)?,
+            &mut tensors,
+            args.decode_abi,
+            args.profile_verbose,
+            step,
         )?;
-        current_decode_elapsed = decode_started.elapsed();
         tensors.copy_decode_out_to_rms_x();
     };
 
@@ -714,6 +1831,39 @@ fn validate_args(args: &Qwen3SimplerGenerateArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn validate_range_args(args: &Qwen3SimplerRangeArgs) -> anyhow::Result<()> {
+    if args.build_outputs.len() != 4 {
+        anyhow::bail!(
+            "Qwen3 simpler L2 range requires four build_output directories; got {}",
+            args.build_outputs.len()
+        );
+    }
+    if args.token_ids.is_empty() {
+        anyhow::bail!("Qwen3 simpler L2 range requires at least one token id");
+    }
+    if args.max_seq_len == 0 || args.max_seq_len % PAGE_SIZE != 0 {
+        anyhow::bail!("max_seq_len must be a positive multiple of {PAGE_SIZE}");
+    }
+    if args.token_ids.len() > args.max_seq_len {
+        anyhow::bail!(
+            "token count ({}) exceeds max_seq_len ({})",
+            args.token_ids.len(),
+            args.max_seq_len
+        );
+    }
+    if args.layer_start >= args.layer_end {
+        anyhow::bail!(
+            "invalid layer range [{}, {})",
+            args.layer_start,
+            args.layer_end
+        );
+    }
+    if args.output_hidden_bytes == 0 {
+        anyhow::bail!("output_hidden_bytes must be > 0");
+    }
+    Ok(())
+}
+
 fn one_build_output(args: &Qwen3SimplerGenerateArgs) -> anyhow::Result<&Path> {
     if args.build_outputs.len() != 1 {
         anyhow::bail!(
@@ -740,17 +1890,48 @@ impl DispatchSession {
     }
 }
 
+fn prepare_cached_callable<'ctx, 'lib>(
+    api: &'lib simpler::RuntimeLibrary,
+    ctx: &'ctx simpler::DeviceContext<'lib>,
+    program: &PreparedProgram,
+    runtime: &RuntimePaths,
+    aicpu: &[u8],
+    aicore: &[u8],
+) -> anyhow::Result<Option<simpler::PreparedCallable<'ctx, 'lib>>> {
+    api.prepare_callable_cached(
+        ctx,
+        &program.callable,
+        runtime.device_id as i32,
+        aicpu.as_ptr(),
+        aicpu.len(),
+        aicore.as_ptr(),
+        aicore.len(),
+    )
+    .map_err(|err| anyhow::anyhow!("simpler prepared callable cache failed: {err}"))
+}
+
 fn dispatch(
     api: &simpler::RuntimeLibrary,
     ctx: &simpler::DeviceContext<'_>,
     program: &PreparedProgram,
+    cached: Option<&simpler::PreparedCallable<'_, '_>>,
     runtime: &RuntimePaths,
     session: &DispatchSession,
     aicpu: &[u8],
     aicore: &[u8],
     prepared: PreparedArgs,
 ) -> anyhow::Result<()> {
-    api.run_prepared(
+    if let Some(cached) = cached {
+        return cached
+            .run(
+                session.runtime_buf.handle(),
+                &prepared.task_args,
+                program.block_dim.unwrap_or(runtime.block_dim) as i32,
+                program.aicpu_thread_num.unwrap_or(runtime.aicpu_thread_num) as i32,
+            )
+            .map_err(|err| anyhow::anyhow!("simpler runtime dispatch failed: {err}"));
+    }
+    api.run_runtime(
         ctx,
         session.runtime_buf.handle(),
         &program.callable,
@@ -764,6 +1945,65 @@ fn dispatch(
         aicore.len(),
     )
     .map_err(|err| anyhow::anyhow!("simpler runtime dispatch failed: {err}"))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dispatch_l2_decode_step(
+    api: &simpler::RuntimeLibrary,
+    ctx: &simpler::DeviceContext<'_>,
+    decode: &PreparedProgram,
+    decode_cached: Option<&simpler::PreparedCallable<'_, '_>>,
+    runtime: &RuntimePaths,
+    dispatch_session: &DispatchSession,
+    aicpu: &[u8],
+    aicore: &[u8],
+    tensors: &mut Qwen3SimplerTensors,
+    decode_abi: DecodeAbi,
+    profile_verbose: bool,
+    step: usize,
+) -> anyhow::Result<Duration> {
+    let decode_started = Instant::now();
+    match decode_abi {
+        DecodeAbi::Fused => {
+            dispatch(
+                api,
+                ctx,
+                decode,
+                decode_cached,
+                runtime,
+                dispatch_session,
+                aicpu,
+                aicore,
+                decode_args(tensors)?,
+            )?;
+        }
+        DecodeAbi::SingleLayer => {
+            for layer in 0..tensors.spec.num_layers {
+                let layer_started = Instant::now();
+                dispatch(
+                    api,
+                    ctx,
+                    decode,
+                    decode_cached,
+                    runtime,
+                    dispatch_session,
+                    aicpu,
+                    aicore,
+                    l2_decode_args(tensors, layer)?,
+                )?;
+                if layer + 1 < tensors.spec.num_layers {
+                    tensors.copy_decode_out_to_decode_hidden();
+                }
+                if profile_verbose {
+                    eprintln!(
+                        "[L2-decode] step={step:02} layer={layer:02} dispatch={:.2} ms",
+                        duration_ms(layer_started.elapsed())
+                    );
+                }
+            }
+        }
+    }
+    Ok(decode_started.elapsed())
 }
 
 #[derive(Clone, Debug)]
@@ -1066,6 +2306,11 @@ impl RuntimePaths {
             env: runtime_env(runtime)?,
         })
     }
+
+    fn with_device_id(mut self, device_id: u32) -> Self {
+        self.device_id = device_id;
+        self
+    }
 }
 
 struct EnvGuard {
@@ -1120,13 +2365,17 @@ impl GenerationTracker {
         }
     }
 
-    fn push_token(&mut self, model_dir: &Path, token: u64) -> anyhow::Result<Option<String>> {
+    fn push_token(
+        &mut self,
+        decoder: &Qwen3DenseReferenceTokenPieceDecoder,
+        token: u64,
+    ) -> anyhow::Result<Option<String>> {
         self.token_ids.push(token);
-        let piece = token_piece_bytes_from_tokenizer_path(model_dir, token)
+        let piece = decoder
+            .decode_token_bytes(token)
             .map_err(anyhow::Error::msg)
             .with_context(|| format!("failed to decode token {token}"))?;
-        self.text_bytes
-            .extend_from_slice(&token_piece_decode_bytes(&piece));
+        self.text_bytes.extend_from_slice(&piece);
         self.text = String::from_utf8_lossy(&self.text_bytes).into_owned();
         if self.eos_token_id == Some(token) {
             return Ok(Some("eos".to_string()));
@@ -1290,6 +2539,8 @@ impl XorShift64 {
 struct Qwen3SimplerTensors {
     profile: Qwen3DenseReferenceProfile,
     spec: Qwen3SimplerModelSpec,
+    layer_base: usize,
+    layer_count: usize,
     prefill_hidden: TensorBuf,
     prefill_seq_lens: TensorBuf,
     prefill_slot_mapping: TensorBuf,
@@ -1329,10 +2580,39 @@ impl Qwen3SimplerTensors {
         tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
         prompt_tokens: &[u64],
     ) -> anyhow::Result<Self> {
+        Self::build_range(
+            args,
+            profile,
+            spec,
+            tensors,
+            prompt_tokens,
+            0,
+            spec.num_layers,
+            true,
+        )
+    }
+
+    fn build_range(
+        args: &Qwen3SimplerGenerateArgs,
+        profile: Qwen3DenseReferenceProfile,
+        spec: Qwen3SimplerModelSpec,
+        tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
+        prompt_tokens: &[u64],
+        layer_start: usize,
+        layer_end: usize,
+        include_terminal_projection: bool,
+    ) -> anyhow::Result<Self> {
+        if layer_start >= layer_end || layer_end > spec.num_layers {
+            anyhow::bail!(
+                "invalid tensor layer range [{layer_start}, {layer_end}) for {} layers",
+                spec.num_layers
+            );
+        }
+        let layer_count = layer_end - layer_start;
         let max_seq = args.max_seq_len;
         let max_blocks = max_seq.div_ceil(spec.page_size);
         let total_pages = spec.runtime_batch * max_blocks;
-        let kv_rows = spec.num_layers * total_pages * spec.num_kv_heads * spec.page_size;
+        let kv_rows = layer_count * total_pages * spec.num_kv_heads * spec.page_size;
 
         let prompt_hidden =
             embedding_reference_hidden_sequence_for_profile(profile, tensors, prompt_tokens)
@@ -1373,52 +2653,79 @@ impl Qwen3SimplerTensors {
 
         let (rope_cos, rope_sin) = rope_tables(max_seq, spec.head_dim, profile.rope_theta as f32);
 
+        let (rms_x, final_norm_weight, rms_normed, lm_head_weight_t, logits_padded) =
+            if include_terminal_projection {
+                (
+                    TensorBuf::zero_bf16(&[spec.logits_batch_tile, spec.hidden]),
+                    full_norm(tensors, "model.norm.weight", spec.hidden)?,
+                    TensorBuf::zero_bf16(&[spec.logits_batch_tile, spec.hidden]),
+                    lm_head_weight(tensors, spec)?,
+                    TensorBuf::zero_f32(&[spec.logits_batch_tile, spec.padded_vocab]),
+                )
+            } else {
+                (
+                    TensorBuf::zero_bf16(&[1, 1]),
+                    TensorBuf::zero_f32(&[1, 1]),
+                    TensorBuf::zero_bf16(&[1, 1]),
+                    TensorBuf::zero_bf16(&[1, 1]),
+                    TensorBuf::zero_f32(&[1, 1]),
+                )
+            };
+
         Ok(Self {
             profile,
             spec,
+            layer_base: layer_start,
+            layer_count,
             prefill_hidden,
             prefill_seq_lens,
             prefill_slot_mapping,
             decode_hidden,
             decode_seq_lens,
             decode_slot_mapping,
-            input_rms_weight: stack_norm(
+            input_rms_weight: stack_norm_range(
                 tensors,
                 "input_layernorm.weight",
-                spec.num_layers,
+                layer_start,
+                layer_end,
                 spec.hidden,
             )?,
-            wq: stack_transposed(
+            wq: stack_transposed_range(
                 tensors,
                 "self_attn.q_proj.weight",
-                spec.num_layers,
+                layer_start,
+                layer_end,
                 spec.hidden,
                 spec.q_hidden,
             )?,
-            wk: stack_transposed(
+            wk: stack_transposed_range(
                 tensors,
                 "self_attn.k_proj.weight",
-                spec.num_layers,
+                layer_start,
+                layer_end,
                 spec.hidden,
                 spec.kv_hidden,
             )?,
-            wv: stack_transposed(
+            wv: stack_transposed_range(
                 tensors,
                 "self_attn.v_proj.weight",
-                spec.num_layers,
+                layer_start,
+                layer_end,
                 spec.hidden,
                 spec.kv_hidden,
             )?,
-            q_norm_weight: stack_optional_norm(
+            q_norm_weight: stack_optional_norm_range(
                 tensors,
                 "self_attn.q_norm.weight",
-                spec.num_layers,
+                layer_start,
+                layer_end,
                 spec.head_dim,
             )?,
-            k_norm_weight: stack_optional_norm(
+            k_norm_weight: stack_optional_norm_range(
                 tensors,
                 "self_attn.k_norm.weight",
-                spec.num_layers,
+                layer_start,
+                layer_end,
                 spec.head_dim,
             )?,
             rope_cos,
@@ -1426,48 +2733,67 @@ impl Qwen3SimplerTensors {
             block_table,
             k_cache_all: TensorBuf::zero_bf16(&[kv_rows, spec.head_dim]),
             v_cache_all: TensorBuf::zero_bf16(&[kv_rows, spec.head_dim]),
-            wo: stack_transposed(
+            wo: stack_transposed_range(
                 tensors,
                 "self_attn.o_proj.weight",
-                spec.num_layers,
+                layer_start,
+                layer_end,
                 spec.q_hidden,
                 spec.hidden,
             )?,
-            post_rms_weight: stack_norm(
+            post_rms_weight: stack_norm_range(
                 tensors,
                 "post_attention_layernorm.weight",
-                spec.num_layers,
+                layer_start,
+                layer_end,
                 spec.hidden,
             )?,
-            w_gate: stack_transposed(
+            w_gate: stack_transposed_range(
                 tensors,
                 "mlp.gate_proj.weight",
-                spec.num_layers,
+                layer_start,
+                layer_end,
                 spec.hidden,
                 spec.intermediate,
             )?,
-            w_up: stack_transposed(
+            w_up: stack_transposed_range(
                 tensors,
                 "mlp.up_proj.weight",
-                spec.num_layers,
+                layer_start,
+                layer_end,
                 spec.hidden,
                 spec.intermediate,
             )?,
-            w_down: stack_transposed(
+            w_down: stack_transposed_range(
                 tensors,
                 "mlp.down_proj.weight",
-                spec.num_layers,
+                layer_start,
+                layer_end,
                 spec.intermediate,
                 spec.hidden,
             )?,
             prefill_out: TensorBuf::zero_bf16(&[1, max_seq, spec.hidden]),
             decode_out: TensorBuf::zero_bf16(&[1, spec.hidden]),
-            rms_x: TensorBuf::zero_bf16(&[spec.logits_batch_tile, spec.hidden]),
-            final_norm_weight: full_norm(tensors, "model.norm.weight", spec.hidden)?,
-            rms_normed: TensorBuf::zero_bf16(&[spec.logits_batch_tile, spec.hidden]),
-            lm_head_weight_t: lm_head_weight(tensors, spec)?,
-            logits_padded: TensorBuf::zero_f32(&[spec.logits_batch_tile, spec.padded_vocab]),
+            rms_x,
+            final_norm_weight,
+            rms_normed,
+            lm_head_weight_t,
+            logits_padded,
         })
+    }
+
+    fn local_layer_index(&self, layer: usize) -> anyhow::Result<usize> {
+        let local = layer.checked_sub(self.layer_base).ok_or_else(|| {
+            anyhow::anyhow!("layer {layer} below tensor base {}", self.layer_base)
+        })?;
+        if local >= self.layer_count {
+            anyhow::bail!(
+                "layer {layer} outside tensor range [{}, {})",
+                self.layer_base,
+                self.layer_base + self.layer_count
+            );
+        }
+        Ok(local)
     }
 
     fn copy_decode_out_to_rms_x(&mut self) {
@@ -1476,10 +2802,49 @@ impl Qwen3SimplerTensors {
         self.rms_x.data[..row_bytes].copy_from_slice(&self.decode_out.data[..row_bytes]);
     }
 
+    fn copy_decode_out_to_decode_hidden(&mut self) {
+        let row_bytes = self.spec.hidden * 2;
+        self.decode_hidden.data[..row_bytes].copy_from_slice(&self.decode_out.data[..row_bytes]);
+    }
+
     fn copy_prefill_out_to_hidden(&mut self) {
         self.prefill_hidden
             .data
             .copy_from_slice(&self.prefill_out.data);
+    }
+
+    fn set_prefill_hidden_from_f16_payload(
+        &mut self,
+        payload: &[u8],
+        token_count: usize,
+    ) -> anyhow::Result<()> {
+        let row_elems = self.spec.hidden;
+        let row_bytes = row_elems * 2;
+        let required = token_count
+            .checked_mul(row_bytes)
+            .ok_or_else(|| anyhow::anyhow!("prefill hidden payload size overflow"))?;
+        if payload.len() < required {
+            anyhow::bail!(
+                "prefill hidden payload too short: got {}, need {required}",
+                payload.len()
+            );
+        }
+        self.prefill_hidden.data.fill(0);
+        self.prefill_hidden.data[..required].copy_from_slice(&payload[..required]);
+        Ok(())
+    }
+
+    fn set_decode_hidden_from_f16_payload(&mut self, payload: &[u8]) -> anyhow::Result<()> {
+        let row_bytes = self.spec.hidden * 2;
+        if payload.len() < row_bytes {
+            anyhow::bail!(
+                "decode hidden payload too short: got {}, need {row_bytes}",
+                payload.len()
+            );
+        }
+        self.decode_hidden.data.fill(0);
+        self.decode_hidden.data[..row_bytes].copy_from_slice(&payload[..row_bytes]);
+        Ok(())
     }
 
     fn copy_prefill_last_to_rms_x(&mut self, seq_len: usize) {
@@ -1508,9 +2873,217 @@ impl Qwen3SimplerTensors {
         Ok(())
     }
 
+    fn set_prefill_hidden_from_tokens(
+        &mut self,
+        tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
+        prompt_tokens: &[u64],
+    ) -> anyhow::Result<()> {
+        let prompt_hidden =
+            embedding_reference_hidden_sequence_for_profile(self.profile, tensors, prompt_tokens)
+                .map_err(anyhow::Error::msg)
+                .context("failed to materialize prompt embeddings")?;
+        self.prefill_hidden.data.fill(0);
+        for (row, hidden) in prompt_hidden.iter().enumerate() {
+            write_f32_as_bf16(
+                &mut self.prefill_hidden.data,
+                row * self.spec.hidden,
+                hidden,
+            );
+        }
+        self.decode_hidden.data.fill(0);
+        write_f32_as_bf16(
+            &mut self.decode_hidden.data,
+            0,
+            prompt_hidden.last().expect("nonempty prompt hidden"),
+        );
+        self.prefill_slot_mapping.data.fill(0xff);
+        for pos in 0..prompt_tokens.len() {
+            write_i32(&mut self.prefill_slot_mapping.data, pos, pos as i32);
+        }
+        write_i32(
+            &mut self.prefill_seq_lens.data,
+            0,
+            prompt_tokens.len() as i32,
+        );
+        write_i32(
+            &mut self.decode_seq_lens.data,
+            0,
+            prompt_tokens.len() as i32,
+        );
+        write_i32(
+            &mut self.decode_slot_mapping.data,
+            0,
+            (prompt_tokens.len() - 1) as i32,
+        );
+        Ok(())
+    }
+
     fn write_decode_position(&mut self, seq_len: usize) {
         write_i32(&mut self.decode_seq_lens.data, 0, seq_len as i32);
         write_i32(&mut self.decode_slot_mapping.data, 0, (seq_len - 1) as i32);
+    }
+
+    fn prefill_out_payload_f16(
+        &self,
+        token_count: usize,
+        output_hidden_bytes: usize,
+    ) -> anyhow::Result<Vec<u8>> {
+        let rows = self.payload_row_capacity(output_hidden_bytes)?;
+        if token_count > rows {
+            anyhow::bail!(
+                "prefill output hidden payload too small: tokens={token_count}:rows={rows}"
+            );
+        }
+        let mut payload = Vec::with_capacity(output_hidden_bytes);
+        let final_row = token_count - 1;
+        for row in 0..rows {
+            let src_row = row.min(final_row);
+            self.append_bf16_row_as_f16(&self.prefill_hidden.data, src_row, &mut payload);
+        }
+        Ok(payload)
+    }
+
+    fn decode_out_payload_f16(&self, output_hidden_bytes: usize) -> anyhow::Result<Vec<u8>> {
+        let rows = self.payload_row_capacity(output_hidden_bytes)?;
+        let mut payload = Vec::with_capacity(output_hidden_bytes);
+        for _ in 0..rows {
+            self.append_bf16_row_as_f16(&self.decode_out.data, 0, &mut payload);
+        }
+        Ok(payload)
+    }
+
+    fn payload_row_capacity(&self, output_hidden_bytes: usize) -> anyhow::Result<usize> {
+        let row_bytes = self.spec.hidden * 2;
+        if row_bytes == 0 || output_hidden_bytes % row_bytes != 0 {
+            anyhow::bail!(
+                "hidden payload bytes invalid: bytes={output_hidden_bytes}:row_bytes={row_bytes}"
+            );
+        }
+        Ok(output_hidden_bytes / row_bytes)
+    }
+
+    fn append_bf16_row_as_f16(&self, data: &[u8], row: usize, out: &mut Vec<u8>) {
+        let row_bytes = self.spec.hidden * 2;
+        let start = row * row_bytes;
+        out.extend_from_slice(&data[start..start + row_bytes]);
+    }
+
+    fn load_range_kv_cache(
+        &mut self,
+        cache: &[Qwen3DenseReferenceLayerKvCache],
+        layer_start: usize,
+        layer_end: usize,
+    ) -> anyhow::Result<()> {
+        for layer in layer_start..layer_end {
+            let layer_cache = cache
+                .iter()
+                .find(|entry| entry.layer_id == layer as u64)
+                .ok_or_else(|| anyhow::anyhow!("missing KV cache for layer {layer}"))?;
+            if layer_cache.rope_k_states.len() != layer_cache.token_count as usize
+                || layer_cache.v_states.len() != layer_cache.token_count as usize
+            {
+                anyhow::bail!("KV cache token count mismatch for layer {layer}");
+            }
+            for token in 0..layer_cache.token_count as usize {
+                self.write_cache_state(layer, token, &layer_cache.rope_k_states[token], true)?;
+                self.write_cache_state(layer, token, &layer_cache.v_states[token], false)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn export_range_kv_cache(
+        &self,
+        layer_start: usize,
+        layer_end: usize,
+        token_count: usize,
+    ) -> anyhow::Result<Vec<Qwen3DenseReferenceLayerKvCache>> {
+        let mut cache = Vec::with_capacity(layer_end - layer_start);
+        for layer in layer_start..layer_end {
+            let mut rope_k_states = Vec::with_capacity(token_count);
+            let mut v_states = Vec::with_capacity(token_count);
+            for token in 0..token_count {
+                rope_k_states.push(self.read_cache_state(layer, token, true)?);
+                v_states.push(self.read_cache_state(layer, token, false)?);
+            }
+            cache.push(Qwen3DenseReferenceLayerKvCache {
+                layer_id: layer as u64,
+                token_count: token_count as u64,
+                rope_k_states,
+                v_states,
+            });
+        }
+        Ok(cache)
+    }
+
+    fn write_cache_state(
+        &mut self,
+        layer: usize,
+        token: usize,
+        state: &[f32],
+        is_k: bool,
+    ) -> anyhow::Result<()> {
+        let state_len = self.spec.num_kv_heads * self.spec.head_dim;
+        if state.len() != state_len {
+            anyhow::bail!(
+                "KV state length mismatch: layer={layer} token={token} got={} expected={state_len}",
+                state.len()
+            );
+        }
+        let max_seq = self.prefill_hidden.shape[1] as usize;
+        if token >= max_seq {
+            anyhow::bail!("KV token index {token} exceeds max_seq {max_seq}");
+        }
+        for kv_head in 0..self.spec.num_kv_heads {
+            for dim in 0..self.spec.head_dim {
+                let value = state[kv_head * self.spec.head_dim + dim];
+                let elem = self.cache_elem_index(layer, token, kv_head, dim);
+                if is_k {
+                    write_bf16(&mut self.k_cache_all.data, elem, f32_to_bf16(value));
+                } else {
+                    write_bf16(&mut self.v_cache_all.data, elem, f32_to_bf16(value));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn read_cache_state(&self, layer: usize, token: usize, is_k: bool) -> anyhow::Result<Vec<f32>> {
+        let max_seq = self.prefill_hidden.shape[1] as usize;
+        if token >= max_seq {
+            anyhow::bail!("KV token index {token} exceeds max_seq {max_seq}");
+        }
+        let mut state = Vec::with_capacity(self.spec.num_kv_heads * self.spec.head_dim);
+        let data = if is_k {
+            &self.k_cache_all.data
+        } else {
+            &self.v_cache_all.data
+        };
+        for kv_head in 0..self.spec.num_kv_heads {
+            for dim in 0..self.spec.head_dim {
+                state.push(read_bf16(
+                    data,
+                    self.cache_elem_index(layer, token, kv_head, dim),
+                ));
+            }
+        }
+        Ok(state)
+    }
+
+    fn cache_elem_index(&self, layer: usize, token: usize, kv_head: usize, dim: usize) -> usize {
+        let local_layer = self
+            .local_layer_index(layer)
+            .expect("validated cache layer index");
+        let max_seq = self.prefill_hidden.shape[1] as usize;
+        let total_pages = self.spec.runtime_batch * max_seq.div_ceil(self.spec.page_size);
+        let layer_cache_rows = total_pages * self.spec.num_kv_heads * self.spec.page_size;
+        let page = token / self.spec.page_size;
+        let offset_in_page = token % self.spec.page_size;
+        let row = local_layer * layer_cache_rows
+            + page * self.spec.num_kv_heads * self.spec.page_size
+            + kv_head * self.spec.page_size
+            + offset_in_page;
+        row * self.spec.head_dim + dim
     }
 }
 
@@ -1701,6 +3274,88 @@ fn decode_args(t: &mut Qwen3SimplerTensors) -> anyhow::Result<PreparedArgs> {
     ])
 }
 
+fn l2_decode_args(t: &mut Qwen3SimplerTensors, layer: usize) -> anyhow::Result<PreparedArgs> {
+    let local_layer = t.local_layer_index(layer)?;
+    let max_seq = t.prefill_hidden.shape[1] as usize;
+    let spec = t.spec;
+    let total_pages = spec.runtime_batch * max_seq.div_ceil(spec.page_size);
+    let layer_cache_rows = total_pages * spec.num_kv_heads * spec.page_size;
+    make_args(vec![
+        in_arg(&mut t.decode_hidden),
+        in_arg_view(
+            &mut t.input_rms_weight,
+            local_layer * spec.hidden,
+            &[1, spec.hidden],
+        ),
+        in_arg_view(
+            &mut t.wq,
+            local_layer * spec.hidden * spec.q_hidden,
+            &[spec.hidden, spec.q_hidden],
+        ),
+        in_arg_view(
+            &mut t.wk,
+            local_layer * spec.hidden * spec.kv_hidden,
+            &[spec.hidden, spec.kv_hidden],
+        ),
+        in_arg_view(
+            &mut t.wv,
+            local_layer * spec.hidden * spec.kv_hidden,
+            &[spec.hidden, spec.kv_hidden],
+        ),
+        in_arg_view(
+            &mut t.q_norm_weight,
+            local_layer * spec.head_dim,
+            &[1, spec.head_dim],
+        ),
+        in_arg_view(
+            &mut t.k_norm_weight,
+            local_layer * spec.head_dim,
+            &[1, spec.head_dim],
+        ),
+        in_arg(&mut t.decode_seq_lens),
+        in_arg(&mut t.block_table),
+        in_arg(&mut t.decode_slot_mapping),
+        in_arg(&mut t.rope_cos),
+        in_arg(&mut t.rope_sin),
+        inout_arg_view(
+            &mut t.k_cache_all,
+            local_layer * layer_cache_rows * spec.head_dim,
+            &[layer_cache_rows, spec.head_dim],
+        ),
+        inout_arg_view(
+            &mut t.v_cache_all,
+            local_layer * layer_cache_rows * spec.head_dim,
+            &[layer_cache_rows, spec.head_dim],
+        ),
+        in_arg_view(
+            &mut t.wo,
+            local_layer * spec.q_hidden * spec.hidden,
+            &[spec.q_hidden, spec.hidden],
+        ),
+        in_arg_view(
+            &mut t.post_rms_weight,
+            local_layer * spec.hidden,
+            &[1, spec.hidden],
+        ),
+        in_arg_view(
+            &mut t.w_gate,
+            local_layer * spec.hidden * spec.intermediate,
+            &[spec.hidden, spec.intermediate],
+        ),
+        in_arg_view(
+            &mut t.w_up,
+            local_layer * spec.hidden * spec.intermediate,
+            &[spec.hidden, spec.intermediate],
+        ),
+        in_arg_view(
+            &mut t.w_down,
+            local_layer * spec.intermediate * spec.hidden,
+            &[spec.intermediate, spec.hidden],
+        ),
+        out_arg(&mut t.decode_out),
+    ])
+}
+
 fn rms_lmhead_args(t: &mut Qwen3SimplerTensors) -> anyhow::Result<PreparedArgs> {
     make_args(vec![
         in_arg(&mut t.rms_x),
@@ -1712,6 +3367,7 @@ fn rms_lmhead_args(t: &mut Qwen3SimplerTensors) -> anyhow::Result<PreparedArgs> 
 }
 
 fn l2_prefill_args(t: &mut Qwen3SimplerTensors, layer: usize) -> anyhow::Result<PreparedArgs> {
+    let local_layer = t.local_layer_index(layer)?;
     let max_seq = t.prefill_hidden.shape[1] as usize;
     let spec = t.spec;
     let total_pages = spec.runtime_batch * max_seq.div_ceil(spec.page_size);
@@ -1721,32 +3377,32 @@ fn l2_prefill_args(t: &mut Qwen3SimplerTensors, layer: usize) -> anyhow::Result<
         in_arg(&mut t.prefill_seq_lens),
         in_arg_view(
             &mut t.input_rms_weight,
-            layer * spec.hidden,
+            local_layer * spec.hidden,
             &[1, spec.hidden],
         ),
         in_arg_view(
             &mut t.wq,
-            layer * spec.hidden * spec.q_hidden,
+            local_layer * spec.hidden * spec.q_hidden,
             &[spec.hidden, spec.q_hidden],
         ),
         in_arg_view(
             &mut t.wk,
-            layer * spec.hidden * spec.kv_hidden,
+            local_layer * spec.hidden * spec.kv_hidden,
             &[spec.hidden, spec.kv_hidden],
         ),
         in_arg_view(
             &mut t.wv,
-            layer * spec.hidden * spec.kv_hidden,
+            local_layer * spec.hidden * spec.kv_hidden,
             &[spec.hidden, spec.kv_hidden],
         ),
         in_arg_view(
             &mut t.q_norm_weight,
-            layer * spec.head_dim,
+            local_layer * spec.head_dim,
             &[1, spec.head_dim],
         ),
         in_arg_view(
             &mut t.k_norm_weight,
-            layer * spec.head_dim,
+            local_layer * spec.head_dim,
             &[1, spec.head_dim],
         ),
         in_arg(&mut t.rope_cos),
@@ -1755,37 +3411,37 @@ fn l2_prefill_args(t: &mut Qwen3SimplerTensors, layer: usize) -> anyhow::Result<
         in_arg(&mut t.prefill_slot_mapping),
         inout_arg_view(
             &mut t.k_cache_all,
-            layer * layer_cache_rows * spec.head_dim,
+            local_layer * layer_cache_rows * spec.head_dim,
             &[layer_cache_rows, spec.head_dim],
         ),
         inout_arg_view(
             &mut t.v_cache_all,
-            layer * layer_cache_rows * spec.head_dim,
+            local_layer * layer_cache_rows * spec.head_dim,
             &[layer_cache_rows, spec.head_dim],
         ),
         in_arg_view(
             &mut t.wo,
-            layer * spec.q_hidden * spec.hidden,
+            local_layer * spec.q_hidden * spec.hidden,
             &[spec.q_hidden, spec.hidden],
         ),
         in_arg_view(
             &mut t.post_rms_weight,
-            layer * spec.hidden,
+            local_layer * spec.hidden,
             &[1, spec.hidden],
         ),
         in_arg_view(
             &mut t.w_gate,
-            layer * spec.hidden * spec.intermediate,
+            local_layer * spec.hidden * spec.intermediate,
             &[spec.hidden, spec.intermediate],
         ),
         in_arg_view(
             &mut t.w_up,
-            layer * spec.hidden * spec.intermediate,
+            local_layer * spec.hidden * spec.intermediate,
             &[spec.hidden, spec.intermediate],
         ),
         in_arg_view(
             &mut t.w_down,
-            layer * spec.intermediate * spec.hidden,
+            local_layer * spec.intermediate * spec.hidden,
             &[spec.intermediate, spec.hidden],
         ),
         out_arg(&mut t.prefill_out),
@@ -1808,49 +3464,160 @@ fn lm_head_args(t: &mut Qwen3SimplerTensors) -> anyhow::Result<PreparedArgs> {
     ])
 }
 
-fn stack_norm(
+fn terminal_projection_from_logits(
+    tensors: &Qwen3SimplerTensors,
+    final_rms_elapsed: Duration,
+    lm_head_elapsed: Duration,
+) -> anyhow::Result<Qwen3SimplerTerminalProjectionResult> {
+    let mut candidates = Vec::<(u64, f32)>::new();
+    let (floor, ceil) = finite_logit_bounds(tensors.logits(), tensors.spec.vocab_size);
+    for token in 0..tensors.spec.vocab_size {
+        let logit = sanitize_logit(read_f32(tensors.logits(), token), floor, ceil);
+        insert_top_logit_candidate(&mut candidates, 4, token as u64, logit);
+    }
+    if candidates.is_empty() {
+        anyhow::bail!("terminal projection produced no candidate logits");
+    }
+    let sampled_token = candidates[0].0;
+    let top_logit_bits = candidates[0].1.to_bits() as u64;
+    let (runner_up_token, runner_up_logit_bits) = candidates
+        .get(1)
+        .map(|(token, logit)| (*token, logit.to_bits() as u64))
+        .unwrap_or((sampled_token, top_logit_bits));
+    let top_candidates = candidates
+        .iter()
+        .enumerate()
+        .map(|(rank, (token_id, logit))| Qwen3SimplerLogitCandidate {
+            rank: rank as u64,
+            token_id: *token_id,
+            logit_bits: logit.to_bits() as u64,
+        })
+        .collect::<Vec<_>>();
+    let final_norm_checksum = checksum_bytes(&tensors.rms_normed.data);
+    let logits_bytes = tensors.spec.vocab_size * std::mem::size_of::<f32>();
+    let logits_checksum = checksum_bytes(&tensors.logits_padded.data[..logits_bytes]);
+    let mut aggregate_words = vec![
+        tensors.profile.vocab_size,
+        tensors.profile.hidden_size,
+        final_norm_checksum,
+        tensors.spec.vocab_size as u64,
+        sampled_token,
+        top_logit_bits,
+        runner_up_token,
+        runner_up_logit_bits,
+        logits_checksum,
+    ];
+    for candidate in &top_candidates {
+        aggregate_words.extend_from_slice(&[
+            candidate.rank,
+            candidate.token_id,
+            candidate.logit_bits,
+        ]);
+    }
+    Ok(Qwen3SimplerTerminalProjectionResult {
+        sampled_token,
+        runner_up_token,
+        top_logit_bits,
+        runner_up_logit_bits,
+        top_candidates,
+        checked_token_count: tensors.spec.vocab_size as u64,
+        logits_checksum,
+        final_norm_checksum,
+        aggregate_checksum: checksum_words(&aggregate_words),
+        final_rms_elapsed_ms: final_rms_elapsed.as_millis(),
+        lm_head_elapsed_ms: lm_head_elapsed.as_millis(),
+    })
+}
+
+fn insert_top_logit_candidate(
+    candidates: &mut Vec<(u64, f32)>,
+    capacity: usize,
+    token_id: u64,
+    logit: f32,
+) {
+    candidates.push((token_id, logit));
+    candidates.sort_by(|(left_token, left_logit), (right_token, right_logit)| {
+        right_logit
+            .partial_cmp(left_logit)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left_token.cmp(right_token))
+    });
+    if candidates.len() > capacity {
+        candidates.truncate(capacity);
+    }
+}
+
+fn checksum_bytes(bytes: &[u8]) -> u64 {
+    let mut acc = 0xcbf2_9ce4_8422_2325u64;
+    for chunk in bytes.chunks(8) {
+        let mut word = 0u64;
+        for (index, byte) in chunk.iter().enumerate() {
+            word |= u64::from(*byte) << (index * 8);
+        }
+        acc ^= word;
+        acc = acc.wrapping_mul(0x1000_0000_01b3);
+    }
+    acc
+}
+
+fn checksum_words(words: &[u64]) -> u64 {
+    let mut acc = 0x9e37_79b9_7f4a_7c15u64;
+    for (index, word) in words.iter().enumerate() {
+        acc ^= word.wrapping_add((index as u64).wrapping_mul(0xa076_1d64_78bd_642f));
+        acc = acc.rotate_left(11).wrapping_mul(0xe703_7ed1_a0b4_28db);
+    }
+    acc
+}
+
+fn stack_norm_range(
     tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     suffix: &str,
-    num_layers: usize,
+    layer_start: usize,
+    layer_end: usize,
     width: usize,
 ) -> anyhow::Result<TensorBuf> {
-    let mut out = TensorBuf::zero_f32(&[num_layers, width]);
-    for layer in 0..num_layers {
+    let layer_count = layer_end - layer_start;
+    let mut out = TensorBuf::zero_f32(&[layer_count, width]);
+    for (local_layer, layer) in (layer_start..layer_end).enumerate() {
         let name = format!("model.layers.{layer}.{suffix}");
         let values = full_tensor_as_f32(tensors, &name, width)?;
-        write_f32(&mut out.data, layer * width, &values);
+        write_f32(&mut out.data, local_layer * width, &values);
     }
     Ok(out)
 }
 
-fn stack_optional_norm(
+fn stack_optional_norm_range(
     tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     suffix: &str,
-    num_layers: usize,
+    layer_start: usize,
+    layer_end: usize,
     width: usize,
 ) -> anyhow::Result<TensorBuf> {
-    let mut out = TensorBuf::zero_f32(&[num_layers, width]);
-    for layer in 0..num_layers {
+    let layer_count = layer_end - layer_start;
+    let mut out = TensorBuf::zero_f32(&[layer_count, width]);
+    for (local_layer, layer) in (layer_start..layer_end).enumerate() {
         let name = format!("model.layers.{layer}.{suffix}");
         let values = if tensors.contains_key(&name) {
             full_tensor_as_f32(tensors, &name, width)?
         } else {
             vec![1.0; width]
         };
-        write_f32(&mut out.data, layer * width, &values);
+        write_f32(&mut out.data, local_layer * width, &values);
     }
     Ok(out)
 }
 
-fn stack_transposed(
+fn stack_transposed_range(
     tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
     suffix: &str,
-    num_layers: usize,
+    layer_start: usize,
+    layer_end: usize,
     in_dim: usize,
     out_dim: usize,
 ) -> anyhow::Result<TensorBuf> {
-    let mut out = TensorBuf::zero_bf16(&[num_layers * in_dim, out_dim]);
-    for layer in 0..num_layers {
+    let layer_count = layer_end - layer_start;
+    let mut out = TensorBuf::zero_bf16(&[layer_count * in_dim, out_dim]);
+    for (local_layer, layer) in (layer_start..layer_end).enumerate() {
         let name = format!("model.layers.{layer}.{suffix}");
         let tensor = tensors
             .get(&name)
@@ -1871,7 +3638,7 @@ fn stack_transposed(
         for i in 0..in_dim {
             for o in 0..out_dim {
                 let src_elem = o * in_dim + i;
-                let dst_elem = (layer * in_dim + i) * out_dim + o;
+                let dst_elem = (local_layer * in_dim + i) * out_dim + o;
                 write_payload_value_as_bf16(
                     &mut out.data,
                     dst_elem,
@@ -2130,7 +3897,14 @@ fn find_orchestration_so(root: &Path) -> anyhow::Result<PathBuf> {
         .with_context(|| format!("failed to read {}", orch_dir.display()))?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("so"))
+        .filter(|path| {
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                return false;
+            };
+            !name.starts_with("._")
+                && name != ".DS_Store"
+                && path.extension().and_then(|ext| ext.to_str()) == Some("so")
+        })
         .collect::<Vec<_>>();
     matches.sort();
     match matches.as_slice() {
@@ -2361,6 +4135,76 @@ fn parse_optional_top_k(value: &str) -> anyhow::Result<Option<usize>> {
     Ok((parsed > 0).then_some(parsed))
 }
 
+fn required_value<'a>(
+    value: &'a serde_json::Value,
+    key: &str,
+) -> anyhow::Result<&'a serde_json::Value> {
+    value
+        .get(key)
+        .ok_or_else(|| anyhow::anyhow!("range runner request missing {key}"))
+}
+
+fn required_string(value: &serde_json::Value, key: &str) -> anyhow::Result<String> {
+    required_value(value, key)?
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("range runner request {key} must be a string"))
+}
+
+fn required_path(value: &serde_json::Value, key: &str) -> anyhow::Result<PathBuf> {
+    Ok(PathBuf::from(required_string(value, key)?))
+}
+
+fn optional_path(value: &serde_json::Value, key: &str) -> anyhow::Result<Option<PathBuf>> {
+    match value.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(path) => {
+            path.as_str().map(PathBuf::from).map(Some).ok_or_else(|| {
+                anyhow::anyhow!("range runner request {key} must be a string or null")
+            })
+        }
+    }
+}
+
+fn required_usize(value: &serde_json::Value, key: &str) -> anyhow::Result<usize> {
+    let raw = required_value(value, key)?
+        .as_u64()
+        .ok_or_else(|| anyhow::anyhow!("range runner request {key} must be a u64"))?;
+    usize_from_u64(key, raw)
+}
+
+fn required_u32(value: &serde_json::Value, key: &str) -> anyhow::Result<u32> {
+    let raw = required_value(value, key)?
+        .as_u64()
+        .ok_or_else(|| anyhow::anyhow!("range runner request {key} must be a u64"))?;
+    u32::try_from(raw).with_context(|| format!("range runner request {key} does not fit u32"))
+}
+
+fn required_u64_array(value: &serde_json::Value, key: &str) -> anyhow::Result<Vec<u64>> {
+    required_value(value, key)?
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("range runner request {key} must be an array"))?
+        .iter()
+        .map(|item| {
+            item.as_u64()
+                .ok_or_else(|| anyhow::anyhow!("range runner request {key} entries must be u64"))
+        })
+        .collect()
+}
+
+fn required_string_array(value: &serde_json::Value, key: &str) -> anyhow::Result<Vec<String>> {
+    required_value(value, key)?
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("range runner request {key} must be an array"))?
+        .iter()
+        .map(|item| {
+            item.as_str().map(str::to_string).ok_or_else(|| {
+                anyhow::anyhow!("range runner request {key} entries must be strings")
+            })
+        })
+        .collect()
+}
+
 fn usize_from_u64(name: &str, value: u64) -> anyhow::Result<usize> {
     usize::try_from(value).with_context(|| format!("{name} does not fit usize"))
 }
@@ -2399,6 +4243,141 @@ fn write_f32(data: &mut [u8], start_index: usize, values: &[f32]) {
 fn read_f32(data: &[u8], index: usize) -> f32 {
     let base = index * 4;
     f32::from_le_bytes(data[base..base + 4].try_into().expect("f32 bytes"))
+}
+
+fn range_kv_payload_from_cache(
+    cache: &[Qwen3DenseReferenceLayerKvCache],
+    layer_start: usize,
+    layer_end: usize,
+) -> anyhow::Result<Vec<u8>> {
+    let mut payload = Vec::new();
+    for layer_id in layer_start..layer_end {
+        let layer = cache
+            .iter()
+            .find(|layer| layer.layer_id == layer_id as u64)
+            .ok_or_else(|| anyhow::anyhow!("range KV layer missing: {layer_id}"))?;
+        payload.extend_from_slice(&layer.layer_id.to_le_bytes());
+        payload.extend_from_slice(&layer.token_count.to_le_bytes());
+        payload.extend_from_slice(&(layer.rope_k_states.len() as u64).to_le_bytes());
+        payload.extend_from_slice(&(layer.v_states.len() as u64).to_le_bytes());
+        let state_len = layer
+            .rope_k_states
+            .first()
+            .map(|state| state.len())
+            .or_else(|| layer.v_states.first().map(|state| state.len()))
+            .unwrap_or(0);
+        payload.extend_from_slice(&(state_len as u64).to_le_bytes());
+        for state in &layer.rope_k_states {
+            if state.len() != state_len {
+                anyhow::bail!(
+                    "range KV k state length mismatch: layer={layer_id} got={} expected={state_len}",
+                    state.len()
+                );
+            }
+            for value in state {
+                payload.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        for state in &layer.v_states {
+            if state.len() != state_len {
+                anyhow::bail!(
+                    "range KV v state length mismatch: layer={layer_id} got={} expected={state_len}",
+                    state.len()
+                );
+            }
+            for value in state {
+                payload.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+    }
+    Ok(payload)
+}
+
+fn range_kv_payload_to_cache(
+    profile: Qwen3DenseReferenceProfile,
+    payload: &[u8],
+    layer_start: usize,
+    layer_end: usize,
+) -> anyhow::Result<Vec<Qwen3DenseReferenceLayerKvCache>> {
+    let expected_state_len = usize_from_u64(
+        "range KV state len",
+        profile.num_key_value_heads * profile.head_dim,
+    )?;
+    let mut offset = 0usize;
+    let mut cache = Vec::with_capacity(layer_end - layer_start);
+    for expected_layer_id in layer_start..layer_end {
+        let layer_id = read_payload_u64(payload, &mut offset)?;
+        let token_count = read_payload_u64(payload, &mut offset)?;
+        let k_state_count = read_payload_u64(payload, &mut offset)? as usize;
+        let v_state_count = read_payload_u64(payload, &mut offset)? as usize;
+        let state_len = read_payload_u64(payload, &mut offset)? as usize;
+        if layer_id != expected_layer_id as u64 {
+            anyhow::bail!(
+                "range KV layer id mismatch: got={layer_id} expected={expected_layer_id}"
+            );
+        }
+        if k_state_count != token_count as usize || v_state_count != token_count as usize {
+            anyhow::bail!(
+                "range KV token count mismatch: layer={layer_id} tokens={token_count} k={k_state_count} v={v_state_count}"
+            );
+        }
+        if state_len != expected_state_len {
+            anyhow::bail!(
+                "range KV state len mismatch: layer={layer_id} got={state_len} expected={expected_state_len}"
+            );
+        }
+        let mut rope_k_states = Vec::with_capacity(k_state_count);
+        for _ in 0..k_state_count {
+            rope_k_states.push(read_payload_f32_vec(payload, &mut offset, state_len)?);
+        }
+        let mut v_states = Vec::with_capacity(v_state_count);
+        for _ in 0..v_state_count {
+            v_states.push(read_payload_f32_vec(payload, &mut offset, state_len)?);
+        }
+        cache.push(Qwen3DenseReferenceLayerKvCache {
+            layer_id,
+            token_count,
+            rope_k_states,
+            v_states,
+        });
+    }
+    if offset != payload.len() {
+        anyhow::bail!("range KV trailing bytes: {}", payload.len() - offset);
+    }
+    Ok(cache)
+}
+
+fn read_payload_u64(payload: &[u8], offset: &mut usize) -> anyhow::Result<u64> {
+    let end = offset
+        .checked_add(8)
+        .ok_or_else(|| anyhow::anyhow!("range KV u64 offset overflow"))?;
+    let bytes = payload
+        .get(*offset..end)
+        .ok_or_else(|| anyhow::anyhow!("range KV u64 read out of bounds at {}", *offset))?;
+    *offset = end;
+    Ok(u64::from_le_bytes(bytes.try_into().expect("u64 payload")))
+}
+
+fn read_payload_f32_vec(
+    payload: &[u8],
+    offset: &mut usize,
+    len: usize,
+) -> anyhow::Result<Vec<f32>> {
+    let bytes = len
+        .checked_mul(4)
+        .ok_or_else(|| anyhow::anyhow!("range KV f32 vec size overflow"))?;
+    let end = offset
+        .checked_add(bytes)
+        .ok_or_else(|| anyhow::anyhow!("range KV f32 vec offset overflow"))?;
+    let slice = payload
+        .get(*offset..end)
+        .ok_or_else(|| anyhow::anyhow!("range KV f32 vec read out of bounds at {}", *offset))?;
+    *offset = end;
+    let mut out = Vec::with_capacity(len);
+    for chunk in slice.chunks_exact(4) {
+        out.push(f32::from_le_bytes(chunk.try_into().expect("f32 payload")));
+    }
+    Ok(out)
 }
 
 fn greedy_token_from_logits(logits: &[u8], vocab_size: usize) -> u64 {
@@ -2453,6 +4432,12 @@ fn write_bf16(data: &mut [u8], index: usize, value: u16) {
     data[base..base + 2].copy_from_slice(&value.to_le_bytes());
 }
 
+fn read_bf16(data: &[u8], index: usize) -> f32 {
+    let base = index * 2;
+    let bits = u16::from_le_bytes([data[base], data[base + 1]]) as u32;
+    f32::from_bits(bits << 16)
+}
+
 fn f32_to_bf16(value: f32) -> u16 {
     (value.to_bits() >> 16) as u16
 }
@@ -2504,6 +4489,7 @@ mod tests {
             "--platform",
             "a2a3",
             "--device-id=0",
+            "--decode-abi=single-layer",
             "--temperature=0.7",
             "--top-p",
             "0.9",
@@ -2523,6 +4509,7 @@ mod tests {
         assert_eq!(args.max_new_tokens, 10);
         assert_eq!(args.platform, "a2a3");
         assert_eq!(args.device_id, 0);
+        assert_eq!(args.decode_abi, DecodeAbi::SingleLayer);
         assert!(args.profile_verbose);
         assert_eq!(args.sampling.temperature, 0.7);
         assert_eq!(args.sampling.top_p, 0.9);
@@ -2556,6 +4543,7 @@ mod tests {
             vec![PathBuf::from("/tmp/Qwen3GenChunked_1")]
         );
         assert!(args.l3);
+        assert_eq!(args.decode_abi, DecodeAbi::Fused);
         assert_eq!(args.model_dir, PathBuf::from("/models/qwen"));
         assert_eq!(args.prompt, "Huawei is");
         assert_eq!(args.max_seq_len, 512);
@@ -2578,6 +4566,35 @@ mod tests {
         ])
         .expect("legacy command should be ignored by qwen3_simpler parser");
         assert!(args.is_none());
+    }
+
+    #[test]
+    fn qwen3_simpler_range_worker_args_accept_hidden_command() {
+        let args = range_worker_args_from(["qwen3-simpler-range-worker"])
+            .expect("parse range worker args");
+        assert_eq!(args, Some(Qwen3SimplerRangeWorkerArgs));
+    }
+
+    #[test]
+    fn qwen3_simpler_range_runner_args_accept_request() {
+        let args =
+            range_runner_args_from(["qwen3-simpler-range-runner", "--request", "/tmp/r.json"])
+                .expect("parse range runner args")
+                .expect("range runner args");
+        assert_eq!(args.request, PathBuf::from("/tmp/r.json"));
+    }
+
+    #[test]
+    fn qwen3_simpler_range_exec_accepts_aliases() {
+        assert_eq!(
+            RangeExec::parse("single-layer").expect("single-layer"),
+            RangeExec::SingleLayer
+        );
+        assert_eq!(
+            RangeExec::parse("merged-range").expect("merged-range"),
+            RangeExec::MergedRange
+        );
+        assert!(RangeExec::parse("other").is_err());
     }
 
     #[test]
@@ -2676,18 +4693,20 @@ mod tests {
         .expect("write generation config");
 
         assert_eq!(load_eos_token_id(&temp).unwrap(), Some(151_643));
+        let decoder = Qwen3DenseReferenceTokenPieceDecoder::from_tokenizer_path(&temp)
+            .expect("load tokenizer decoder");
 
         let mut stop_tracker = GenerationTracker::new(4, None, vec!["hello world".to_string()]);
-        assert_eq!(stop_tracker.push_token(&temp, 0).unwrap(), None);
+        assert_eq!(stop_tracker.push_token(&decoder, 0).unwrap(), None);
         assert_eq!(
-            stop_tracker.push_token(&temp, 1).unwrap(),
+            stop_tracker.push_token(&decoder, 1).unwrap(),
             Some("stop".to_string())
         );
         assert_eq!(stop_tracker.text(), "hello world");
 
         let mut eos_tracker = GenerationTracker::new(4, Some(151_643), Vec::new());
         assert_eq!(
-            eos_tracker.push_token(&temp, 151_643).unwrap(),
+            eos_tracker.push_token(&decoder, 151_643).unwrap(),
             Some("eos".to_string())
         );
 

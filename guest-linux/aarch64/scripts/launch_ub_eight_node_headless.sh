@@ -69,6 +69,7 @@ SOCKET_SUFFIX="${SOCKET_SUFFIX:-$$_${RANDOM}}"
 APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 QEMU_MEM="${QEMU_MEM:-2G}"
 QEMU_SMP="${QEMU_SMP:-2}"
+SIM_QEMU_UB_FILTER_DEBUG_LOGS="${SIM_QEMU_UB_FILTER_DEBUG_LOGS:-0}"
 CONTROL_LOG="$LOG_DIR/${RUN_ID}_headless8/control.log"
 CLEANUP_SCRIPT="$OUT_DIR/headless_eight_node_cleanup.${RUN_ID}.sh"
 ENV_FILE="${ENV_FILE:-$OUT_DIR/headless_eight_node_env.${RUN_ID}.sh}"
@@ -92,7 +93,7 @@ log() {
 }
 
 validate_qwen3_weights_path() {
-  if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" != "qwen3_dense_reference" && "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" != "qwen3_dense" ]]; then
+  if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" != "qwen3_dense_reference" && "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" != "qwen3_dense" && "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" != "qwen3_guest_simpler_w5_l2" ]]; then
     return 0
   fi
   local weights_path="${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}"
@@ -179,6 +180,18 @@ PY
   return 1
 }
 
+filter_qemu_debug_log() {
+  awk '
+    /^ubc_msgq: received remote msg/ { next }
+    /^ubc_msgq sim_dec read_resp dispatch/ { next }
+    /^ubc_msgq sim_dec read_req dispatch/ { next }
+    /^ub_link rx .* bytes:/ { next }
+    /^ub_link rx .* complete_frame:/ { next }
+    /^ub_fm: rx_poll_start scheduled/ { next }
+    { print; fflush(); }
+  '
+}
+
 start_node() {
   local node_id="$1"
   local local_ip="$2"
@@ -189,6 +202,18 @@ start_node() {
   local pid_file="$7"
   local qmp_socket="$8"
   local node_append_extra="$APPEND_EXTRA linqu_ipourma_ipv4=$local_ip"
+  local qemu_log_pipe="${qemu_log}.pipe"
+  local log_filter_pid=""
+  local qemu_log_target="$qemu_log"
+
+  if [[ "$SIM_QEMU_UB_FILTER_DEBUG_LOGS" != "0" ]]; then
+    rm -f "$qemu_log_pipe"
+    mkfifo "$qemu_log_pipe"
+    filter_qemu_debug_log < "$qemu_log_pipe" > "$qemu_log" &
+    log_filter_pid="$!"
+    echo "$log_filter_pid" > "${pid_file}.log_filter"
+    qemu_log_target="$qemu_log_pipe"
+  fi
 
   env \
     UB_FM_NODE_ID="$node_id" \
@@ -262,8 +287,21 @@ start_node() {
     SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES="${SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES:-}" \
     SIM_QWEN3_DENSE_KV_STATE_BYTES="${SIM_QWEN3_DENSE_KV_STATE_BYTES:-}" \
     SIM_QWEN3_DENSE_WEIGHTS_PATH="${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}" \
+    SIM_QWEN3_SIMPLER_PLATFORM="${SIM_QWEN3_SIMPLER_PLATFORM:-}" \
+    SIM_QWEN3_SIMPLER_DEVICE_ID="${SIM_QWEN3_SIMPLER_DEVICE_ID:-}" \
+    SIM_QWEN3_SIMPLER_DEVICE_IDS="${SIM_QWEN3_SIMPLER_DEVICE_IDS:-}" \
+    SIM_QWEN3_SIMPLER_RUNTIME_MANIFEST="${SIM_QWEN3_SIMPLER_RUNTIME_MANIFEST:-}" \
+    SIM_QWEN3_SIMPLER_PREFILL_BUILD_OUTPUT="${SIM_QWEN3_SIMPLER_PREFILL_BUILD_OUTPUT:-}" \
+    SIM_QWEN3_SIMPLER_DECODE_BUILD_OUTPUT="${SIM_QWEN3_SIMPLER_DECODE_BUILD_OUTPUT:-}" \
+    SIM_QWEN3_SIMPLER_FINAL_RMS_BUILD_OUTPUT="${SIM_QWEN3_SIMPLER_FINAL_RMS_BUILD_OUTPUT:-}" \
+    SIM_QWEN3_SIMPLER_LM_HEAD_BUILD_OUTPUT="${SIM_QWEN3_SIMPLER_LM_HEAD_BUILD_OUTPUT:-}" \
+    SIM_QWEN3_SIMPLER_PROFILE_VERBOSE="${SIM_QWEN3_SIMPLER_PROFILE_VERBOSE:-}" \
+    ASCEND_RT_VISIBLE_DEVICES="${ASCEND_RT_VISIBLE_DEVICES:-}" \
     SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS="${SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS:-}" \
     SIM_QWEN3_RUNTIME_RANGE_WAIT_MS="${SIM_QWEN3_RUNTIME_RANGE_WAIT_MS:-}" \
+    SIM_QWEN3_TERMINAL_SCHEDULER_SHORTCUT="${SIM_QWEN3_TERMINAL_SCHEDULER_SHORTCUT:-}" \
+    SIM_QWEN3_GUEST_SKIP_LEGACY_UAPI_COVERAGE="${SIM_QWEN3_GUEST_SKIP_LEGACY_UAPI_COVERAGE:-}" \
+    SIM_W4_DB_RELAX_MAX_US="${SIM_W4_DB_RELAX_MAX_US:-}" \
     SIM_QWEN3_GUEST_ENGRAM_MODE="${SIM_QWEN3_GUEST_ENGRAM_MODE:-cpu}" \
     SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP="${SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP:-disabled}" \
     SIM_QWEN3_GUEST_ENGRAM_CONTEXT_CHUNK_ELEMS="${SIM_QWEN3_GUEST_ENGRAM_CONTEXT_CHUNK_ELEMS:-}" \
@@ -336,8 +374,11 @@ start_node() {
       -kernel "$KERNEL_IMAGE" \
       -initrd "$INITRAMFS_IMAGE" \
       -append "console=ttyAMA0 rdinit=${RDINIT} ${node_append_extra}" \
-      >"$qemu_log" 2>&1 &
+      >"$qemu_log_target" 2>&1 &
   echo $! > "$pid_file"
+  if [[ "$SIM_QEMU_UB_FILTER_DEBUG_LOGS" != "0" ]]; then
+    rm -f "$qemu_log_pipe"
+  fi
 }
 
 need_cmd python3
@@ -346,7 +387,7 @@ mkdir -p "$OUT_DIR" "$LOG_DIR/${RUN_ID}_headless8" "$QMP_DIR" "$SERIAL_DIR" "$MO
 touch "$CONTROL_LOG"
 validate_qwen3_weights_path
 qwen3_dense_apply_config_env
-if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_reference" || "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense" ]]; then
+if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_reference" || "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense" || "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_guest_simpler_w5_l2" ]]; then
   log "qwen3_dense_profile=$SIM_UAPI_W4_CHIPBACKEND_PROFILE model_id=${SIM_QWEN3_DENSE_MODEL_ID:-} model_key=${SIM_QWEN3_DENSE_MODEL_KEY:-} layers=${SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS:-} hidden_range_bytes=${SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES:-} decode_hidden_bytes=${SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES:-}"
 fi
 
@@ -373,6 +414,17 @@ for node_id in "${NODE_IDS[@]}"; do
     fi
     rm -f "$pid_file"
   fi
+  filter_pid_file="${pid_file}.log_filter"
+  if [[ -f "$filter_pid_file" ]]; then
+    filter_pid="$(cat "$filter_pid_file" 2>/dev/null || true)"
+    if [[ -n "${filter_pid:-}" ]] && kill -0 "$filter_pid" 2>/dev/null; then
+      kill "$filter_pid" 2>/dev/null || true
+      sleep 0.1
+      kill -9 "$filter_pid" 2>/dev/null || true
+    fi
+    rm -f "$filter_pid_file"
+  fi
+  rm -f "__LOG_DIR__/__RUN_ID___headless8/${node_id}_qemu.log.pipe"
   rm -f "__QMP_DIR__/${node_id}.__SOCKET_SUFFIX__.sock"
   rm -f "__SERIAL_DIR__/${node_id}.__SOCKET_SUFFIX__.sock"
   rm -f "__MON_DIR__/${node_id}.__SOCKET_SUFFIX__.sock"
@@ -382,6 +434,7 @@ rmdir "__QMP_DIR__" "__SERIAL_DIR__" "__MON_DIR__" 2>/dev/null || true
 echo "cleaned run_id=__RUN_ID__"
 EOC
 perl -0pi -e 's#__OUT_DIR__#'"$OUT_DIR"'#g; s#__RUN_ID__#'"$RUN_ID"'#g; s#__SOCKET_SUFFIX__#'"$SOCKET_SUFFIX"'#g; s#__QMP_DIR__#'"$QMP_DIR"'#g; s#__SERIAL_DIR__#'"$SERIAL_DIR"'#g; s#__MON_DIR__#'"$MON_DIR"'#g; s#__RUNTIME_DIR__#'"$UB_QEMU_RUNTIME_DIR"'#g' "$CLEANUP_SCRIPT"
+perl -0pi -e 's#__LOG_DIR__#'"$LOG_DIR"'#g' "$CLEANUP_SCRIPT"
 chmod +x "$CLEANUP_SCRIPT"
 
 rm -rf "$UB_QEMU_RUNTIME_DIR"
@@ -395,19 +448,29 @@ log "run_id=$RUN_ID"
 log "qemu_bin=$QEMU_BIN"
 log "qemu_mem=$QEMU_MEM"
 log "qemu_smp=$QEMU_SMP"
+log "qemu_ub_filter_debug_logs=$SIM_QEMU_UB_FILTER_DEBUG_LOGS"
 log "topology=$TOPOLOGY_FILE"
 log "append_extra=$APPEND_EXTRA"
 log "ub_sim_port_num=$PORT_NUM"
 if [[ -n "$SIM_UAPI_W5_PROFILE" ]]; then
   log "w5_profile=$SIM_UAPI_W5_PROFILE"
 fi
-if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_reference" || "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense" ]]; then
+if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_reference" || "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense" || "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_guest_simpler_w5_l2" ]]; then
   log "qwen3_weights_path=${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}"
   log "qwen3_model_id=${SIM_QWEN3_DENSE_MODEL_ID:-}"
   log "qwen3_model_key=${SIM_QWEN3_DENSE_MODEL_KEY:-}"
   log "qwen3_decode_round_barrier=${SIM_QWEN3_DECODE_ROUND_BARRIER:-0}"
   log "qwen3_decode_round_barrier_timeout_ms=${SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS:-}"
   log "qwen3_runtime_range_wait_ms=${SIM_QWEN3_RUNTIME_RANGE_WAIT_MS:-}"
+  log "qwen3_terminal_scheduler_shortcut=${SIM_QWEN3_TERMINAL_SCHEDULER_SHORTCUT:-auto}"
+  log "qwen3_skip_legacy_uapi_coverage=${SIM_QWEN3_GUEST_SKIP_LEGACY_UAPI_COVERAGE:-auto}"
+  log "w4_db_relax_max_us=${SIM_W4_DB_RELAX_MAX_US:-}"
+fi
+if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_guest_simpler_w5_l2" ]]; then
+  log "qwen3_simpler_platform=${SIM_QWEN3_SIMPLER_PLATFORM:-}"
+  log "qwen3_simpler_device_id=${SIM_QWEN3_SIMPLER_DEVICE_ID:-}"
+  log "qwen3_simpler_device_ids=${SIM_QWEN3_SIMPLER_DEVICE_IDS:-}"
+  log "qwen3_simpler_visible_devices=${ASCEND_RT_VISIBLE_DEVICES:-}"
 fi
 log "logs_dir=$(dirname "$CONTROL_LOG")"
 
@@ -444,6 +507,7 @@ cat > "$ENV_FILE" <<EOF
 export RUN_ID='$RUN_ID'
 export RUN_DIR='$(dirname "$CONTROL_LOG")'
 export CLEANUP_SCRIPT='$CLEANUP_SCRIPT'
+export SIM_QEMU_UB_FILTER_DEBUG_LOGS='$SIM_QEMU_UB_FILTER_DEBUG_LOGS'
 export SIM_UAPI_W5_PROFILE='$SIM_UAPI_W5_PROFILE'
 export SIM_W5_MEMORY_SERVICE='$SIM_W5_MEMORY_SERVICE'
 export SIM_W5_MEMORY_DECISION_STORE='$SIM_W5_MEMORY_DECISION_STORE'

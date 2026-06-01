@@ -709,7 +709,7 @@ fn ensure_simpler_device_context(
         .api;
     if state.device_context.is_none() || state.device_context_device_id != Some(device_id) {
         state.device_context = Some(
-            api.create_context()
+            api.create_context(device_id)
                 .map_err(|err| format!("simpler_capi_create_device_context_failed:{err}"))?,
         );
         state.device_context_device_id = Some(device_id);
@@ -2213,13 +2213,12 @@ impl LocalRuntimeEngine {
             // finalization path. Copy operations keep their own cached context.
             let detail_started = Instant::now();
             let ctx = api
-                .create_context()
+                .create_context(runtime_artifacts.launch.device_id as i32)
                 .map_err(|err| format!("simpler_capi_create_device_context_failed:{err}"))?;
             detail_create_context_ms = detail_started.elapsed().as_millis();
             let detail_started = Instant::now();
             let runtime = simpler_capi::RuntimeBuffer::allocate(api)
                 .map_err(|err| format!("simpler_capi_runtime_alloc_failed:{err}"))?;
-            let runtime_handle = runtime.handle();
             detail_runtime_alloc_ms = detail_started.elapsed().as_millis();
 
             let detail_started = Instant::now();
@@ -2265,9 +2264,9 @@ impl LocalRuntimeEngine {
             detail_make_callable_ms = detail_started.elapsed().as_millis();
 
             let detail_started = Instant::now();
-            api.run_prepared(
+            api.run_runtime(
                 &ctx,
-                runtime_handle,
+                runtime.handle(),
                 &callable,
                 &prepared.task_args,
                 runtime_artifacts.launch.block_dim as i32,

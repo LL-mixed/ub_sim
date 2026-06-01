@@ -39,7 +39,20 @@ cd /path/to/ub_sim
 git submodule update --init vendor/simpler vendor/pto-isa
 ```
 
-下文所有 `--build-output` 都使用相对于仓库根目录的 `build_output/Qwen*` 路径。
+Qwen3 build output programs 以压缩包形式随仓库提供。首次运行前，在 `ub_sim` 仓库根目录执行:
+
+```bash
+tar -xzf build_output/qwen3_build_output_programs.tar.gz
+```
+
+解压后会得到下文所有 `--build-output` 使用的 `build_output/Qwen*` 相对路径。压缩包内已经保留 `build_output/` 前缀，因此不要在 `build_output/` 目录内执行解压。
+
+如需清理后重新解压:
+
+```bash
+rm -rf build_output/Qwen*
+tar -xzf build_output/qwen3_build_output_programs.tar.gz
+```
 
 ## 仓内 Build Output
 

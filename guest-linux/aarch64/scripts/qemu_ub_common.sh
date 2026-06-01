@@ -378,6 +378,20 @@ ensure_qemu_ub_binary() {
     print_qemu_preflight_help "$workspace_root" "$src_dir" "$build_dir" "$bin"
     return 1
   fi
+  if [[ "${UB_SKIP_QEMU_BUILD:-0}" == "1" ]]; then
+    if [[ ! -x "$bin" ]]; then
+      echo "QEMU binary not found: $bin" >&2
+      print_qemu_preflight_help "$workspace_root" "$src_dir" "$build_dir" "$bin"
+      return 1
+    fi
+    if ! qemu_ub_supports_required_opts "$bin"; then
+      echo "QEMU binary missing required UB options: $bin" >&2
+      print_qemu_preflight_help "$workspace_root" "$src_dir" "$build_dir" "$bin"
+      return 1
+    fi
+    echo "$bin"
+    return 0
+  fi
   if ! (
     cd "$workspace_root/guest-linux/aarch64"
     QEMU_BUILD_JOBS="$jobs" ./scripts/build_qemu_binary.sh >/dev/null

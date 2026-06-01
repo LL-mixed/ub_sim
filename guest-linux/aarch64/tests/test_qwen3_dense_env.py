@@ -436,6 +436,11 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         cli_source = (
             Path(__file__).resolve().parents[3] / "crates" / "sim-cli" / "src" / "main.rs"
         ).read_text(encoding="utf-8")
+        runner_text = (
+            Path(__file__).resolve().parents[1]
+            / "scripts"
+            / "run_ub_eight_node_w4_guest.sh"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("qwen3_memory_prefix_cache_kv_ref", guest_source)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF", guest_source)
@@ -551,6 +556,35 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn(
             "allow_terminal_commit",
             db_service_source,
+        )
+        self.assertIn(
+            "w4_db_qwen3_terminal_token_source_hint",
+            db_service_source,
+        )
+        self.assertIn(
+            "w4_db_qwen3_terminal_scan_owner",
+            db_service_source,
+        )
+        self.assertIn("qwen3_guest_simpler_w5_l2", db_service_source)
+        self.assertNotIn("qwen3_dense_simpler_l2", db_service_source)
+        self.assertIn("int scan_count = rt->node_count +", db_service_source)
+        self.assertIn(
+            "w4_db_qwen3_terminal_scan_owner(scan_idx",
+            db_service_source,
+        )
+        self.assertIn("qwen3_skip_legacy_uapi_coverage_enabled", guest_source)
+        self.assertIn(
+            "SIM_QWEN3_GUEST_SKIP_LEGACY_UAPI_COVERAGE",
+            guest_source,
+        )
+        self.assertIn(
+            "reason=qwen3_simpler_range_only",
+            guest_source,
+        )
+        self.assertIn("dispatch path=qwen3_range_only", guest_source)
+        self.assertIn(
+            "qwen3_skip_legacy_uapi_coverage",
+            runner_text,
         )
         self.assertIn(
             "for (node_idx = 0; node_idx < cluster_node_count; ++node_idx)",
