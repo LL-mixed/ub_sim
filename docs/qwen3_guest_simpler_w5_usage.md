@@ -7,9 +7,10 @@
 - 单卡单节点入口仍是 `qwen3-simpler-generate`。
 - 8-node QEMU guest + simpler 入口是 `qwen3-guest-simpler-generate`。
 - 当前 guest simpler 主线只支持 W5 Continue，不再暴露旧 W4 fallback 用户参数。
-- 当前验证模型为 Qwen3-0.6B 和 Qwen3-14B，batch=1，greedy，`max_seq_len=512`。
+- 当前验证模型为 Qwen3-0.6B 和 Qwen3-14B。
+- 当前验证约束为 batch=1、greedy、`max_seq_len=512`。
 
-## 执行环境
+## 运行前准备
 
 在具备 Ascend/simpler runtime 的机器或容器内进入 `ub_sim` 仓库根目录:
 
@@ -18,7 +19,7 @@ cd /path/to/ub_sim
 git submodule update --init vendor/simpler vendor/pto-isa
 ```
 
-需要本机提供模型权重目录，例如:
+需要本机提供模型权重目录。本文命令使用以下路径，可按实际环境替换:
 
 ```text
 /data/models/Qwen/qwen3-0.6B
@@ -31,7 +32,7 @@ git submodule update --init vendor/simpler vendor/pto-isa
 unset ASCEND_RT_VISIBLE_DEVICES
 ```
 
-本项目验证时使用 8-15 卡:
+本文命令使用 8-15 卡:
 
 ```text
 nodeA -> device 8
@@ -44,9 +45,32 @@ nodeG -> device 14
 nodeH -> device 15
 ```
 
-## Build Output 目录
+## 两种执行模式
 
-Qwen3-0.6B single-layer L2:
+`qwen3-guest-simpler-generate` 通过 `--range-exec` 选择 node 内执行方式。
+
+```text
+--range-exec single-layer   # per-layer 模式，每个 node 内逐层 dispatch
+--range-exec merged-range   # range 模式，每个 node 内一个 layer range 一次 dispatch
+```
+
+per-layer 模式:
+
+- 每个 node 按自己的 layer range，逐层调用 single-layer prefill/decode program。
+- 这是兼容性和数值回退路径。
+- 只依赖命令行传入的四个 L2 build_output 目录。
+
+range 模式:
+
+- 每个 node 按自己的 layer range，一次调用 merged prefill/decode program。
+- QEMU/W5/OBMM 外层数据流不变，区别只在 range worker 内部执行排布。
+- 用户命令仍传 single-layer 四目录；worker 会根据模型和本 node `layer_count` 自动选择仓内 merged-range program。
+- Qwen3-0.6B 的 8-node layer range 是 `4,4,4,4,3,3,3,3`，因此仓内提供 range 4 和 range 3 merged programs。
+- Qwen3-14B 的 8-node layer range 是 `5,5,5,5,5,5,5,5`，因此仓内提供 range 5 merged programs。
+
+## Build Output 对照
+
+Qwen3-0.6B per-layer L2:
 
 ```text
 build_output/Qwen306BPrefillProgram_20260522_120108
@@ -55,7 +79,7 @@ build_output/Qwen3FinalRMS_20260522_120109
 build_output/Qwen3LMHead_20260522_120110
 ```
 
-Qwen3-0.6B merged-range L2:
+Qwen3-0.6B range L2:
 
 ```text
 build_output/Qwen306BMergedPrefillRange4
@@ -64,7 +88,7 @@ build_output/Qwen306BMergedPrefillRange3
 build_output/Qwen306BMergedDecodeRange3
 ```
 
-Qwen3-14B single-layer L2:
+Qwen3-14B per-layer L2:
 
 ```text
 build_output/Qwen314BPrefillProgram_20260529_053315
@@ -73,30 +97,62 @@ build_output/Qwen3FinalRMS_20260529_053316
 build_output/Qwen3LMHead_20260529_053316
 ```
 
-Qwen3-14B merged-range L2:
+Qwen3-14B range L2:
 
 ```text
 build_output/Qwen314BMergedPrefillRange5
 build_output/Qwen314BMergedDecodeRange5
 ```
 
-用户命令始终传 single-layer 四目录。`--range-exec merged-range` 时，worker 会根据模型和本 node 的 layer range 自动选择对应 merged-range program；若选择 `--range-exec single-layer`，则使用四目录中的 prefill/decode program 逐层 dispatch。
+## Qwen3-0.6B per-layer
 
-## 执行模式
+用途:
 
-`--range-exec single-layer`:
+- 验证 0.6B 的逐层 dispatch 回退路径。
+- 适合排查 merged-range 数值差异，或确认 single-layer build_output 可用。
 
-- 每个 node 内按 layer 逐层调用 single-layer prefill/decode program。
-- 作为兼容性和数值回退路径保留。
+命令:
 
-`--range-exec merged-range`:
+```bash
+cd /path/to/ub_sim
+unset ASCEND_RT_VISIBLE_DEVICES
+PYTHON=/usr/bin/python3 \
+UB_GUEST_ARTIFACT_SOURCE=none \
+RECONFIGURE=0 \
+QEMU_BUILD_JOBS=32 \
+QEMU_CONFIGURE_ARGS="--disable-werror --disable-docs" \
+SIM_QEMU_UB_FILTER_DEBUG_LOGS=1 \
+SIM_QWEN3_SIMPLER_REAL_DISPATCH_STRICT=1 \
+cargo run --release -p sim-cli -- qwen3-guest-simpler-generate \
+  --weights-path /data/models/Qwen/qwen3-0.6B \
+  --steps 10 \
+  --prompt "Huawei is" \
+  --platform a2a3 \
+  --device-ids 8,9,10,11,12,13,14,15 \
+  --decode-abi single-layer \
+  --range-exec single-layer \
+  --prefill-build-output build_output/Qwen306BPrefillProgram_20260522_120108 \
+  --decode-build-output build_output/Qwen3Decode_20260522_120109 \
+  --final-rms-build-output build_output/Qwen3FinalRMS_20260522_120109 \
+  --lm-head-build-output build_output/Qwen3LMHead_20260522_120110 \
+  --profile-verbose
+```
 
-- 每个 node 内按本 node 的 layer range 一次 dispatch merged prefill/decode program。
-- QEMU/W5/OBMM 外层数据流不变，区别只在 range worker 内部执行排布。
-- 当前 0.6B 的 layer range 为 `4,4,4,4,3,3,3,3`，因此需要 range 4 和 range 3 的 merged programs。
-- 当前 14B 的 layer range 为 `5,5,5,5,5,5,5,5`，因此需要 range 5 的 merged programs。
+10-token 预期:
 
-## Qwen3-0.6B merged-range smoke
+```text
+terminal_tokens=[264, 3644, 7653, 304, 279, 2070, 315, 1995, 5440, 11]
+text=" a global leader in the field of information technology,"
+```
+
+## Qwen3-0.6B range
+
+用途:
+
+- 验证 0.6B 的 range merged dispatch 路径。
+- 外层 W5 数据流与 per-layer 相同，node 内由 merged-range program 执行。
+
+命令:
 
 ```bash
 cd /path/to/ub_sim
@@ -123,27 +179,77 @@ cargo run --release -p sim-cli -- qwen3-guest-simpler-generate \
   --profile-verbose
 ```
 
-预期:
+10-token 预期:
 
 ```text
 terminal_tokens=[264, 3644, 7653, 304, 279, 2070, 315, 1995, 5440, 11]
 text=" a global leader in the field of information technology,"
 ```
 
-## Qwen3-14B merged-range smoke
+## Qwen3-14B per-layer
 
-14B 验证建议隔离 W5 memory reuse 目录，避免误用其它模型的 decision/object store:
+用途:
+
+- 验证 14B 的逐层 dispatch 回退路径。
+- 14B per-layer 路径更慢，建议先跑 `--steps 3`；需要完整 smoke 时再把 `--steps` 改成 `10`。
+
+命令:
 
 ```bash
 cd /path/to/ub_sim
 unset ASCEND_RT_VISIBLE_DEVICES
-rm -rf /tmp/w5_no_reuse_14b && mkdir -p /tmp/w5_no_reuse_14b
+rm -rf /tmp/w5_no_reuse_14b_per_layer && mkdir -p /tmp/w5_no_reuse_14b_per_layer
 PYTHON=/usr/bin/python3 \
 UB_GUEST_ARTIFACT_SOURCE=none \
 RECONFIGURE=0 \
 QEMU_BUILD_JOBS=32 \
 QEMU_CONFIGURE_ARGS="--disable-werror --disable-docs" \
-SIM_W5_MEMORY_REUSE_OUT_DIR=/tmp/w5_no_reuse_14b \
+SIM_W5_MEMORY_REUSE_OUT_DIR=/tmp/w5_no_reuse_14b_per_layer \
+SIM_QEMU_UB_FILTER_DEBUG_LOGS=1 \
+SIM_QWEN3_SIMPLER_REAL_DISPATCH_STRICT=1 \
+cargo run --release -p sim-cli -- qwen3-guest-simpler-generate \
+  --weights-path /data/models/Qwen/Qwen3-14B \
+  --steps 3 \
+  --prompt "Huawei is" \
+  --platform a2a3 \
+  --device-ids 8,9,10,11,12,13,14,15 \
+  --decode-abi single-layer \
+  --range-exec single-layer \
+  --prefill-build-output build_output/Qwen314BPrefillProgram_20260529_053315 \
+  --decode-build-output build_output/Qwen3Decode_20260529_053316 \
+  --final-rms-build-output build_output/Qwen3FinalRMS_20260529_053316 \
+  --lm-head-build-output build_output/Qwen3LMHead_20260529_053316 \
+  --profile-verbose
+```
+
+3-token 预期:
+
+```text
+terminal_tokens=[264, 2813, 429]
+text=" a company that"
+```
+
+如果要跑 10-token，把 `--steps 3` 改为 `--steps 10`。14B per-layer 10-token 输出可能和 range 路径不逐 token 对齐，做回归时应记录当前实际 token/text，不要和 merged-range golden 混用。
+
+## Qwen3-14B range
+
+用途:
+
+- 验证 14B 的 range merged dispatch 主路径。
+- 当前 14B range smoke 已验证 10-token 生成。
+
+命令:
+
+```bash
+cd /path/to/ub_sim
+unset ASCEND_RT_VISIBLE_DEVICES
+rm -rf /tmp/w5_no_reuse_14b_range && mkdir -p /tmp/w5_no_reuse_14b_range
+PYTHON=/usr/bin/python3 \
+UB_GUEST_ARTIFACT_SOURCE=none \
+RECONFIGURE=0 \
+QEMU_BUILD_JOBS=32 \
+QEMU_CONFIGURE_ARGS="--disable-werror --disable-docs" \
+SIM_W5_MEMORY_REUSE_OUT_DIR=/tmp/w5_no_reuse_14b_range \
 SIM_QEMU_UB_FILTER_DEBUG_LOGS=1 \
 SIM_QWEN3_SIMPLER_REAL_DISPATCH_STRICT=1 \
 cargo run --release -p sim-cli -- qwen3-guest-simpler-generate \
@@ -161,32 +267,33 @@ cargo run --release -p sim-cli -- qwen3-guest-simpler-generate \
   --profile-verbose
 ```
 
-预期:
+10-token 预期:
 
 ```text
 terminal_tokens=[264, 8453, 67926, 5440, 2813, 429, 14431, 323, 30778, 11502]
 text=" a Chinese multinational technology company that designs and sells consumer"
 ```
 
-## single-layer fallback smoke
+## 参数说明
 
-把 `--range-exec merged-range` 改成 `--range-exec single-layer` 即可走逐层 dispatch 回退路径。建议先用较短 steps 验证:
+必需参数:
 
-```bash
-cargo run --release -p sim-cli -- qwen3-guest-simpler-generate \
-  --weights-path /data/models/Qwen/qwen3-0.6B \
-  --steps 3 \
-  --prompt "Huawei is" \
-  --platform a2a3 \
-  --device-ids 8,9,10,11,12,13,14,15 \
-  --decode-abi single-layer \
-  --range-exec single-layer \
-  --prefill-build-output build_output/Qwen306BPrefillProgram_20260522_120108 \
-  --decode-build-output build_output/Qwen3Decode_20260522_120109 \
-  --final-rms-build-output build_output/Qwen3FinalRMS_20260522_120109 \
-  --lm-head-build-output build_output/Qwen3LMHead_20260522_120110 \
-  --profile-verbose
-```
+- `--weights-path`: Qwen3 模型权重目录。
+- `--steps`: 生成 token 数。0.6B 常用 `10`；14B per-layer 建议先用 `3`。
+- `--prompt`: prompt 文本。
+- `--platform`: simpler 平台，当前验证为 `a2a3`。
+- `--device-ids`: 8 个 node 对应的 device ids，格式如 `8,9,10,11,12,13,14,15`。
+- `--decode-abi single-layer`: 当前 guest simpler L2 使用 single-layer decode ABI。
+- `--range-exec`: `single-layer` 或 `merged-range`。
+- 四个 `--*-build-output`: single-layer L2 prefill/decode/final_rms/lm_head program 目录。
+
+常用环境变量:
+
+- `SIM_QWEN3_SIMPLER_REAL_DISPATCH_STRICT=1`: dispatch 失败时严格报错。
+- `SIM_QEMU_UB_FILTER_DEBUG_LOGS=1`: 人工验证时过滤高频 QEMU/UB debug log。脚本默认是 `0`。
+- `SIM_W5_MEMORY_REUSE_OUT_DIR=/tmp/<isolated-dir>`: 隔离 W5 memory reuse。跨模型验证，尤其是 14B，建议设置。
+- `UB_GUEST_ARTIFACT_SOURCE=none`: 使用当前仓内已构建 artifact。
+- `RECONFIGURE=0`: 不强制重新 configure QEMU。
 
 ## 日志与调试
 
