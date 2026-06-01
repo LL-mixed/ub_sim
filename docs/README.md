@@ -5,9 +5,9 @@ Workspace-local notes and implementation-specific design material can live here.
 Current validation entry points:
 
 - [qwen3_guest_simpler_w5_usage.md](qwen3_guest_simpler_w5_usage.md)
-  - runs Qwen3 0.6B/14B 8-node QEMU guest generation through W5 Continue and simpler L2 using packaged `build_output/Qwen*` programs
+  - runs Qwen3 0.6B/14B 8-node QEMU guest generation through W5 Continue and simpler L2 using archived packaged `build_output/Qwen*` programs
 - [qwen3_simpler_build_output_validation.md](qwen3_simpler_build_output_validation.md)
-  - validates Qwen3 0.6B/14B L2 and L3 generation on a simpler-backed device using the packaged `build_output/Qwen*` programs
+  - validates Qwen3 0.6B/14B L2 and L3 generation on a simpler-backed device using the archived packaged `build_output/Qwen*` programs
 - [reports/2026-04-14-four-node-matrix-validation.md](2026-04-14-four-node-matrix-validation.md)
   - current four-node full-mesh matrix status for `chat`, `rpc`, `udma`, and `obmm-pool`
 - [reports/2026-04-15-eight-node-matrix-validation.md](2026-04-15-eight-node-matrix-validation.md)
