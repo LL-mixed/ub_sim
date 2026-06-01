@@ -325,10 +325,13 @@ if (( memory_runtime_lookup || memory_decision_reuse || explicit_engram_state_re
     if [[ -n "$SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID" ]]; then
       cli_args+=(--memory-prefix-cache-reuse-plan-id "$SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID")
     fi
+    if [[ -n "$SIM_W5_MEMORY_PREFIX_CACHE_SERVICE_ADDR" ]]; then
+      cli_args+=(--memory-prefix-cache-service-addr "$SIM_W5_MEMORY_PREFIX_CACHE_SERVICE_ADDR")
+    fi
     case "${SIM_W5_MEMORY_SHORTPATH_EXECUTE:-1}" in
       0|false|FALSE|no|NO)
         cli_args+=(--memory-shortpath-execute=false)
-        ;;
+      ;;
       *)
         cli_args+=(--memory-shortpath-execute=true)
         ;;

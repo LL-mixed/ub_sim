@@ -354,6 +354,7 @@ struct W5MemoryDecisionConfig {
     min_source_confidence_milli: u32,
     prefetch_plan_id: Option<String>,
     prefix_cache_reuse_plan_id: Option<String>,
+    prefix_cache_service_addr: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -709,6 +710,7 @@ where
             let mut memory_shortpath_execute = None;
             let mut memory_prefetch_plan_id = None;
             let mut memory_prefix_cache_reuse_plan_id = None;
+            let mut memory_prefix_cache_service_addr = None;
             let mut memory_runtime_boundary_lookup = false;
             let mut memory_post_run_promote = false;
             let mut memory_online_boundary_lookup = false;
@@ -1180,6 +1182,14 @@ where
                     text.strip_prefix("--memory-prefix-cache-reuse-plan-id=")
                 {
                     memory_prefix_cache_reuse_plan_id = Some(value.to_string());
+                } else if text == "--memory-prefix-cache-service-addr" {
+                    let next = pending.next().ok_or_else(|| {
+                        anyhow::anyhow!("--memory-prefix-cache-service-addr requires a value")
+                    })?;
+                    memory_prefix_cache_service_addr = Some(next.to_string_lossy().to_string());
+                } else if let Some(value) = text.strip_prefix("--memory-prefix-cache-service-addr=")
+                {
+                    memory_prefix_cache_service_addr = Some(value.to_string());
                 } else if text.starts_with("--") {
                     anyhow::bail!("unknown qwen3-guest-decode-loop option: {text}");
                 } else {
@@ -1301,6 +1311,7 @@ where
                     min_source_confidence_milli,
                     prefetch_plan_id: memory_prefetch_plan_id,
                     prefix_cache_reuse_plan_id: memory_prefix_cache_reuse_plan_id,
+                    prefix_cache_service_addr: memory_prefix_cache_service_addr,
                 })
             } else if memory_has_decision_input {
                 anyhow::bail!(
@@ -9455,20 +9466,19 @@ fn load_w5_memory_decisions_from_store(
         } else {
             None
         };
-        let boundary_hidden_ref =
-            if w5_shortpath_decision_needs_boundary_hidden_ref(&decision) {
-                artifact.as_ref().and_then(|artifact| {
-                    boundary_observations
-                        .iter()
-                        .find(|observation| {
-                            observation.model == artifact.model
-                                && observation.boundary == artifact.producer_boundary
-                        })
-                        .map(|observation| observation.hidden_state.clone())
-                })
-            } else {
-                None
-            };
+        let boundary_hidden_ref = if w5_shortpath_decision_needs_boundary_hidden_ref(&decision) {
+            artifact.as_ref().and_then(|artifact| {
+                boundary_observations
+                    .iter()
+                    .find(|observation| {
+                        observation.model == artifact.model
+                            && observation.boundary == artifact.producer_boundary
+                    })
+                    .map(|observation| observation.hidden_state.clone())
+            })
+        } else {
+            None
+        };
         shortpath_entries.push(W5MemoryShortpathEntry {
             decision,
             artifact,
@@ -11326,6 +11336,12 @@ fn w5_memory_decision_env_vars(
                 published.ref_hex.clone(),
             ));
         }
+    }
+    if let Some(prefix_cache_service_addr) = &config.prefix_cache_service_addr {
+        vars.push((
+            "SIM_W5_MEMORY_PREFIX_CACHE_SERVICE_ADDR".to_string(),
+            prefix_cache_service_addr.clone(),
+        ));
     }
     vars
 }
@@ -16789,6 +16805,7 @@ mod tests {
             "--memory-shortpath-decision-id=shortpath-decision/boundary/0",
             "--memory-prefetch-plan-id=prefetch-plan/range/0",
             "--memory-prefix-cache-reuse-plan-id=prefix-cache-reuse/prefix/0",
+            "--memory-prefix-cache-service-addr=http://127.0.0.1:12345",
         ])
         .expect("parse w5 memory decision args")
         .expect("w5 memory decision args");
@@ -16812,6 +16829,10 @@ mod tests {
         assert_eq!(
             memory_decisions.prefix_cache_reuse_plan_id.as_deref(),
             Some("prefix-cache-reuse/prefix/0")
+        );
+        assert_eq!(
+            memory_decisions.prefix_cache_service_addr.as_deref(),
+            Some("http://127.0.0.1:12345")
         );
     }
 
@@ -17551,6 +17572,7 @@ mod tests {
             min_source_confidence_milli: 900,
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: None,
+            prefix_cache_service_addr: None,
         };
         let wrong_model = sim_memory::InferenceModelBinding {
             model_id: "Qwen/Qwen3-14B".to_string(),
@@ -17729,6 +17751,7 @@ mod tests {
             min_source_confidence_milli: 900,
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: Some("prefix-cache-reuse/test".to_string()),
+            prefix_cache_service_addr: None,
         };
         let err = validate_w5_memory_decision_bundle_for_run(
             &prefix_config,
@@ -17798,6 +17821,7 @@ mod tests {
             min_source_confidence_milli: 900,
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: None,
+            prefix_cache_service_addr: None,
         };
         let model = sim_memory::InferenceModelBinding {
             model_id: "Qwen/Qwen3-0.6B".to_string(),
@@ -18212,6 +18236,7 @@ mod tests {
             min_source_confidence_milli: 900,
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: None,
+            prefix_cache_service_addr: None,
         };
         let bundle = W5MemoryDecisionBundle {
             shortpath: None,
@@ -18366,6 +18391,7 @@ mod tests {
             min_source_confidence_milli: 900,
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: None,
+            prefix_cache_service_addr: None,
         };
 
         validate_w5_shortpath_run_boundary_coverage(
@@ -23893,6 +23919,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             min_source_confidence_milli: 900,
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: None,
+            prefix_cache_service_addr: None,
         })
         .expect("W5 entrypoint should run boundary lookup from request");
         assert_eq!(
@@ -23944,6 +23971,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 min_source_confidence_milli: 900,
                 prefetch_plan_id: None,
                 prefix_cache_reuse_plan_id: None,
+                prefix_cache_service_addr: None,
             })
             .expect("W5 entrypoint should run boundary lookup from observation");
         assert_eq!(
@@ -23981,6 +24009,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 min_source_confidence_milli: 900,
                 prefetch_plan_id: None,
                 prefix_cache_reuse_plan_id: None,
+                prefix_cache_service_addr: None,
             })
             .expect("W5 entrypoint should run boundary lookup from observation stream");
         assert_eq!(auto_observation_stream_bundle.shortpath_entries.len(), 2);
@@ -24031,6 +24060,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             min_source_confidence_milli: 900,
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: None,
+            prefix_cache_service_addr: None,
         })
         .expect("W5 entrypoint should reuse cached observation-run decisions");
         assert_eq!(cached_run_bundle.shortpath_entries.len(), 2);
@@ -24059,6 +24089,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             min_source_confidence_milli: 900,
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: None,
+            prefix_cache_service_addr: None,
         })
         .expect("W5 online boundary lookup should load verified terminal decisions");
         assert!(online_boundary_bundle.online_boundary_lookup);
@@ -24091,6 +24122,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 min_source_confidence_milli: 900,
                 prefetch_plan_id: None,
                 prefix_cache_reuse_plan_id: None,
+                prefix_cache_service_addr: None,
             },
             &online_boundary_bundle,
             None,
@@ -24123,6 +24155,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 min_source_confidence_milli: 900,
                 prefetch_plan_id: None,
                 prefix_cache_reuse_plan_id: None,
+                prefix_cache_service_addr: None,
             })
             .expect("W5 entrypoint should run boundary lookup from observation run");
         assert_eq!(auto_observation_run_bundle.shortpath_entries.len(), 2);
@@ -24276,6 +24309,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             min_source_confidence_milli: 900,
             prefetch_plan_id: Some("prefetch-plan/prefetch/step3/node4".to_string()),
             prefix_cache_reuse_plan_id: None,
+            prefix_cache_service_addr: None,
         };
         let bundle = load_w5_memory_decisions_from_store(&decision_config)
             .expect("load w5 memory decision bundle");
@@ -24741,6 +24775,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             min_source_confidence_milli: 900,
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: None,
+            prefix_cache_service_addr: None,
         })
         .expect("online boundary lookup should accept hot runtime artifacts");
         assert_eq!(bundle.shortpath_entries.len(), 1);
@@ -26092,6 +26127,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             min_source_confidence_milli: 900,
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: None,
+            prefix_cache_service_addr: None,
         })
         .expect_err("missing durable payload must fail W5 decision load");
         let err_text = format!("{err:#}");
@@ -26250,6 +26286,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             min_source_confidence_milli: 900,
             prefetch_plan_id: None,
             prefix_cache_reuse_plan_id: Some("prefix-cache-reuse/prefix-lookup/test/0".to_string()),
+            prefix_cache_service_addr: Some("http://127.0.0.1:6789".to_string()),
         };
         let bundle = load_w5_memory_decisions_from_store(&decision_config)
             .expect("load w5 prefix-cache decision bundle");
@@ -26296,6 +26333,9 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
         let env_vars = w5_memory_decision_env_vars(&decision_config, &bundle, Some(&publication));
         assert!(env_vars.iter().any(|(key, value)| {
             key == "SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF" && value.len() == 128
+        }));
+        assert!(env_vars.iter().any(|(key, value)| {
+            key == "SIM_W5_MEMORY_PREFIX_CACHE_SERVICE_ADDR" && value == "http://127.0.0.1:6789"
         }));
         let _ = fs::remove_dir_all(&root);
     }
