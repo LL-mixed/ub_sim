@@ -1550,17 +1550,68 @@ impl LocalGuestUapiSurface {
         req: Qwen3RangeDispatchReq,
     ) -> Result<CompletionEvent, SimError> {
         let now = self.next_service_time();
-        let result = self
-            .segment_payloads
-            .get(&req.segment)
-            .ok_or_else(|| "missing_qwen3_range_dispatch_segment_payload".to_string())
-            .and_then(|input| {
-                let operands = resolve_qwen3_range_dispatch_operands(&req, input, self)?;
-                validate_qwen3_range_dispatch_object_refs(&req, input)?;
-                run_qwen3_range_chipbackend(&self.topology, &req.task, input, operands.as_ref())
-            });
+        let timing_enabled = qwen3_range_stage_timing_enabled();
+        let total_started = Instant::now();
+        let mut payload_lookup_ms = 0u128;
+        let mut resolve_operands_ms = 0u128;
+        let mut validate_refs_ms = 0u128;
+        let mut backend_ms = 0u128;
+        let mut writeback_ms = 0u128;
+        let result = (|| {
+            let started = Instant::now();
+            let input = self
+                .segment_payloads
+                .get(&req.segment)
+                .ok_or_else(|| "missing_qwen3_range_dispatch_segment_payload".to_string())?;
+            payload_lookup_ms = qwen3_elapsed_ms(started);
+
+            let started = Instant::now();
+            let operands = resolve_qwen3_range_dispatch_operands(&req, input, self)?;
+            resolve_operands_ms = qwen3_elapsed_ms(started);
+
+            let started = Instant::now();
+            validate_qwen3_range_dispatch_object_refs(&req, input)?;
+            validate_refs_ms = qwen3_elapsed_ms(started);
+
+            let started = Instant::now();
+            let output =
+                run_qwen3_range_chipbackend(&self.topology, &req.task, input, operands.as_ref())?;
+            backend_ms = qwen3_elapsed_ms(started);
+            Ok(output)
+        })();
         if let Ok(output) = &result {
+            let started = Instant::now();
             self.write_dispatch_result_to_segment(req.segment, output)?;
+            writeback_ms = qwen3_elapsed_ms(started);
+        }
+        if timing_enabled {
+            let contract = qwen3_guest_range_compute_contract(&req.task).ok().flatten();
+            let (node, layer_start, layer_end, terminal_owner) = contract
+                .map(|contract| {
+                    (
+                        u64::from(contract.node),
+                        u64::from(contract.layer_start),
+                        u64::from(contract.layer_end),
+                        contract.node + 1 == contract.pipeline_nodes,
+                    )
+                })
+                .unwrap_or((0, 0, 0, false));
+            eprintln!(
+                "qwen3-range-dispatch-timing: task_id={} node={} layers=[{},{}] terminal_owner={} segment={} total_ms={} payload_lookup_ms={} resolve_operands_ms={} validate_refs_ms={} backend_ms={} writeback_ms={} status={}",
+                req.task.task_id,
+                node,
+                layer_start,
+                layer_end,
+                terminal_owner as u8,
+                req.segment.0,
+                qwen3_elapsed_ms(total_started),
+                payload_lookup_ms,
+                resolve_operands_ms,
+                validate_refs_ms,
+                backend_ms,
+                writeback_ms,
+                if result.is_ok() { "ok" } else { "err" }
+            );
         }
         Ok(CompletionEvent {
             op_id: req.op_id,
@@ -5179,26 +5230,56 @@ fn qwen3_range_object_ref_payload_scan_enabled() -> bool {
         == Some("1")
 }
 
+fn qwen3_range_stage_timing_enabled() -> bool {
+    std::env::var("SIM_QWEN3_STAGE_TIMING").as_deref() == Ok("1")
+}
+
+fn qwen3_elapsed_ms(started: Instant) -> u128 {
+    started.elapsed().as_millis()
+}
+
 fn run_qwen3_dense_profile_runtime(
     topology: &SimTopology,
     task: &TaskKey,
     guest_input: &[u8],
     operands: Option<&Qwen3RangeDispatchOperands>,
 ) -> Result<Vec<u8>, String> {
+    let timing_enabled = qwen3_range_stage_timing_enabled();
+    let total_started = Instant::now();
+    let validate_weights_ms;
+    let contract_ms;
+    let input_checksum_ms;
+    let real_range_forward_ms;
+    let summary_build_ms;
+    let register_objects_ms;
+    let terminal_summary_ms;
+    let logits_descriptor_ms;
+    let memory_commit_ms;
+    let tokenizer_ms;
+    let output_len_ms;
+    let marker_write_ms;
+
+    let started = Instant::now();
     qwen3_dense_profile_validate_weights_if_available(topology)?;
+    validate_weights_ms = qwen3_elapsed_ms(started);
+    let started = Instant::now();
     let Some(contract) = qwen3_guest_range_compute_contract(task)? else {
         return Err("qwen3_dense_profile_runtime_requires_range_contract".to_string());
     };
+    contract_ms = qwen3_elapsed_ms(started);
     let hidden_bytes = u64::from(contract.hidden_bytes);
     let hidden_len = usize::try_from(hidden_bytes)
         .map_err(|_| format!("qwen3_dense_profile_hidden_too_large:{hidden_bytes}"))?;
     let layer_count = u64::from(contract.layer_end - contract.layer_start);
+    let started = Instant::now();
     let input_checksum =
         qwen3_dense_profile_range_input_checksum_with_operands(contract, guest_input, operands)?;
+    input_checksum_ms = qwen3_elapsed_ms(started);
     let kv_state_bytes = qwen3_dense_runtime_kv_payload_bytes(layer_count);
     let kv_state_len = usize::try_from(kv_state_bytes)
         .map_err(|_| format!("qwen3_dense_profile_kv_too_large:{kv_state_bytes}"))?;
     let runtime_profile = qwen3_dense_runtime_profile_from_env();
+    let started = Instant::now();
     let real_forward = qwen3_dense_profile_real_range_forward(
         &runtime_profile,
         contract,
@@ -5207,6 +5288,8 @@ fn run_qwen3_dense_profile_runtime(
         hidden_len,
         kv_state_len,
     )?;
+    real_range_forward_ms = qwen3_elapsed_ms(started);
+    let started = Instant::now();
     let (
         output_tensor_payload,
         output_tensor_checksum,
@@ -5290,6 +5373,7 @@ fn run_qwen3_dense_profile_runtime(
         kv_state_payload,
         engram_context_report,
     };
+    summary_build_ms = qwen3_elapsed_ms(started);
     if let Some(report) = range_forward_summary.engram_context_report.as_ref() {
         eprintln!(
             "{}",
@@ -5300,9 +5384,12 @@ fn run_qwen3_dense_profile_runtime(
             )
         );
     }
+    let started = Instant::now();
     let range_forward_object_refs =
         qwen3_register_range_forward_objects(contract, guest_input, &range_forward_summary)?;
+    register_objects_ms = qwen3_elapsed_ms(started);
     let terminal_owner = contract.node + 1 == contract.pipeline_nodes;
+    let started = Instant::now();
     let real_terminal = if terminal_owner {
         qwen3_dense_profile_real_terminal_summary(
             &runtime_profile,
@@ -5312,10 +5399,12 @@ fn run_qwen3_dense_profile_runtime(
     } else {
         None
     };
+    terminal_summary_ms = qwen3_elapsed_ms(started);
     let decode_step = range_forward_object_refs
         .as_ref()
         .map(|refs| refs.decode_step)
         .unwrap_or_else(|| qwen3_dense_runtime_decode_step_from_guest_input(guest_input));
+    let started = Instant::now();
     let logits_descriptors = if terminal_owner {
         qwen3_dense_profile_logits_descriptors(
             &runtime_profile,
@@ -5325,13 +5414,16 @@ fn run_qwen3_dense_profile_runtime(
     } else {
         Vec::new()
     };
-    if let Some(refs) = range_forward_object_refs {
+    logits_descriptor_ms = qwen3_elapsed_ms(started);
+    let started = Instant::now();
+    if let Some(refs) = range_forward_object_refs.clone() {
         qwen3_enqueue_w5_memory_runtime_commit(
             contract,
             refs,
             logits_descriptors.first().copied(),
         )?;
     }
+    memory_commit_ms = qwen3_elapsed_ms(started);
     let result_descriptors: Vec<Qwen3DenseReferenceResultDescriptor> = Vec::new();
     let result_block_descriptors: Vec<Qwen3DenseReferenceResultBlockDescriptor> = Vec::new();
     let projection_descriptors: Vec<Qwen3DenseReferenceProjectionDescriptor> = Vec::new();
@@ -5339,30 +5431,33 @@ fn run_qwen3_dense_profile_runtime(
         Vec::new();
     let kvcache_descriptors: Vec<Qwen3DenseReferenceKvCacheDescriptor> = Vec::new();
     let real_weight_stage_links: Vec<Qwen3DenseReferenceRealWeightStageLinkDescriptor> = Vec::new();
+    let started = Instant::now();
     let real_tokenizer_path = qwen3_dense_profile_tokenizer_path();
     let real_tokenizer_asset_summary = match real_tokenizer_path.as_deref() {
         Some(path) => Some(load_tokenizer_asset_summary(path)?),
         None => None,
     };
-    let mut output = vec![
-        0u8;
-        qwen3_dense_reference_service_flow_output_len(
-            &result_descriptors,
-            &result_block_descriptors,
-            &projection_descriptors,
-            &layer_dependency_descriptors,
-            &kvcache_descriptors,
-            &logits_descriptors,
-            real_tokenizer_path.as_deref(),
-            real_tokenizer_asset_summary.as_ref(),
-            None,
-            None,
-            None,
-            None,
-            &real_weight_stage_links,
-            Some(&range_forward_summary),
-        )?
-    ];
+    tokenizer_ms = qwen3_elapsed_ms(started);
+    let started = Instant::now();
+    let output_len = qwen3_dense_reference_service_flow_output_len(
+        &result_descriptors,
+        &result_block_descriptors,
+        &projection_descriptors,
+        &layer_dependency_descriptors,
+        &kvcache_descriptors,
+        &logits_descriptors,
+        real_tokenizer_path.as_deref(),
+        real_tokenizer_asset_summary.as_ref(),
+        None,
+        None,
+        None,
+        None,
+        &real_weight_stage_links,
+        Some(&range_forward_summary),
+    )?;
+    output_len_ms = qwen3_elapsed_ms(started);
+    let mut output = vec![0u8; output_len];
+    let started = Instant::now();
     qwen3_dense_reference_write_service_flow_markers(
         &mut output,
         0,
@@ -5387,6 +5482,39 @@ fn run_qwen3_dense_profile_runtime(
         &real_weight_stage_links,
         Some(&range_forward_summary),
     )?;
+    marker_write_ms = qwen3_elapsed_ms(started);
+    if timing_enabled {
+        let full_vocab_checked = logits_descriptors
+            .first()
+            .map(|descriptor| descriptor.full_vocab_checked_token_count)
+            .unwrap_or(0);
+        eprintln!(
+            "qwen3-range-runtime-timing: task_id={} node={} layers=[{},{}] terminal_owner={} decode_step={} total_ms={} validate_weights_ms={} contract_ms={} input_checksum_ms={} real_range_forward_ms={} summary_build_ms={} register_objects_ms={} terminal_summary_ms={} logits_descriptor_ms={} memory_commit_ms={} tokenizer_ms={} output_len_ms={} marker_write_ms={} output_bytes={} real_forward={} logits_descriptors={} full_vocab_checked={}",
+            task.task_id,
+            contract.node,
+            contract.layer_start,
+            contract.layer_end,
+            terminal_owner as u8,
+            decode_step,
+            qwen3_elapsed_ms(total_started),
+            validate_weights_ms,
+            contract_ms,
+            input_checksum_ms,
+            real_range_forward_ms,
+            summary_build_ms,
+            register_objects_ms,
+            terminal_summary_ms,
+            logits_descriptor_ms,
+            memory_commit_ms,
+            tokenizer_ms,
+            output_len_ms,
+            marker_write_ms,
+            output.len(),
+            real_forward.is_some() as u8,
+            logits_descriptors.len(),
+            full_vocab_checked
+        );
+    }
     Ok(output)
 }
 
@@ -5473,18 +5601,36 @@ fn qwen3_dense_profile_real_range_forward(
     hidden_len: usize,
     kv_state_len: usize,
 ) -> Result<Option<Qwen3DenseProfileRuntimeForward>, String> {
+    let timing_enabled = qwen3_range_stage_timing_enabled();
+    let total_started = Instant::now();
+    let weights_load_ms;
+    let token_parse_ms;
+    let previous_kv_ms;
+    let mut input_hidden_ms = 0u128;
+    let mut layer_forward_ms = 0u128;
+    let engram_context_ms;
+    let output_payload_ms;
+    let kv_payload_ms;
+    let mut checksum_ms = 0u128;
+
     let Ok(weights_path) = std::env::var("SIM_QWEN3_DENSE_WEIGHTS_PATH") else {
         return Ok(None);
     };
+    let started = Instant::now();
     let loaded = qwen3_dense_reference_cached_loaded_weights(&weights_path)?;
+    weights_load_ms = qwen3_elapsed_ms(started);
+    let started = Instant::now();
     let token_ids = qwen3_dense_reference_guest_input_token_ids(guest_input);
     let token_count = token_ids.len();
+    token_parse_ms = qwen3_elapsed_ms(started);
+    let started = Instant::now();
     let previous_cache = qwen3_dense_profile_previous_kv_cache_from_operands(
         profile,
         contract,
         guest_input,
         operands,
     )?;
+    previous_kv_ms = qwen3_elapsed_ms(started);
     let current_hidden_from_operand = || {
         qwen3_dense_profile_current_hidden_from_operands(profile, guest_input, operands, hidden_len)
     };
@@ -5499,25 +5645,40 @@ fn qwen3_dense_profile_real_range_forward(
             .unwrap_or_else(|| token_count.saturating_sub(1) as u64);
         let position = previous_cache_token_count;
         let current_hidden = if contract.layer_start == 0 {
+            let started = Instant::now();
             if let Some(token_operand) = input_token_operand {
                 let sampled_token =
                     qwen3_dense_profile_sampled_token_from_operand(profile, token_operand)?;
-                embedding_reference_last_hidden_for_profile(
+                let hidden = embedding_reference_last_hidden_for_profile(
                     *profile,
                     &loaded.tensors,
                     &[sampled_token],
-                )?
+                )?;
+                input_hidden_ms += qwen3_elapsed_ms(started);
+                hidden
             } else if operands
                 .and_then(|operands| operands.hidden_input.as_ref())
                 .is_some()
             {
-                current_hidden_from_operand()?
+                let hidden = current_hidden_from_operand()?;
+                input_hidden_ms += qwen3_elapsed_ms(started);
+                hidden
             } else {
-                embedding_reference_last_hidden_for_profile(*profile, &loaded.tensors, &token_ids)?
+                let hidden = embedding_reference_last_hidden_for_profile(
+                    *profile,
+                    &loaded.tensors,
+                    &token_ids,
+                )?;
+                input_hidden_ms += qwen3_elapsed_ms(started);
+                hidden
             }
         } else {
-            current_hidden_from_operand()?
+            let started = Instant::now();
+            let hidden = current_hidden_from_operand()?;
+            input_hidden_ms += qwen3_elapsed_ms(started);
+            hidden
         };
+        let started = Instant::now();
         let forward_with_cache = forward_incremental_range_with_kv_cache_from_hidden_for_profile(
             *profile,
             &loaded.tensors,
@@ -5527,6 +5688,7 @@ fn qwen3_dense_profile_real_range_forward(
             position,
             &current_hidden,
         )?;
+        layer_forward_ms += qwen3_elapsed_ms(started);
         let output_sequence = vec![forward_with_cache.forward.final_hidden.clone()];
         (
             forward_with_cache.forward,
@@ -5534,6 +5696,7 @@ fn qwen3_dense_profile_real_range_forward(
             forward_with_cache.kv_cache,
         )
     } else {
+        let started = Instant::now();
         let input_sequence = if contract.layer_start == 0 {
             if token_ids.is_empty() {
                 return Ok(None);
@@ -5548,6 +5711,8 @@ fn qwen3_dense_profile_real_range_forward(
                 token_count,
             )?
         };
+        input_hidden_ms += qwen3_elapsed_ms(started);
+        let started = Instant::now();
         let (forward_with_cache, output_sequence) =
             forward_reference_from_hidden_sequence_range_with_kv_cache_for_profile(
                 *profile,
@@ -5556,6 +5721,7 @@ fn qwen3_dense_profile_real_range_forward(
                 u64::from(contract.layer_end),
                 &input_sequence,
             )?;
+        layer_forward_ms += qwen3_elapsed_ms(started);
         (
             forward_with_cache.forward,
             output_sequence,
@@ -5563,6 +5729,7 @@ fn qwen3_dense_profile_real_range_forward(
         )
     };
     let descriptor_object_refs = operands.map(|operands| operands.object_refs.as_slice());
+    let started = Instant::now();
     let engram_context_report =
         qwen3_dense_reference_apply_engram_context_to_terminal_sequence_with_descriptor_refs(
             &mut output_sequence,
@@ -5572,22 +5739,55 @@ fn qwen3_dense_profile_real_range_forward(
             Some(guest_input),
             descriptor_object_refs,
         )?;
+    engram_context_ms = qwen3_elapsed_ms(started);
+    let started = Instant::now();
     let output_tensor_payload =
         qwen3_dense_profile_hidden_sequence_range_payload(profile, &output_sequence, hidden_len)?;
+    output_payload_ms = qwen3_elapsed_ms(started);
+    let started = Instant::now();
     let output_tensor_checksum =
         qwen3_dense_reference_range_object_payload_checksum(&output_tensor_payload);
+    checksum_ms += qwen3_elapsed_ms(started);
+    let started = Instant::now();
     let kv_state_payload = qwen3_dense_profile_range_kv_payload_from_cache(
         &kv_cache,
         u64::from(contract.layer_start),
         u64::from(contract.layer_end),
     )?;
+    kv_payload_ms = qwen3_elapsed_ms(started);
     if kv_state_payload.len() > kv_state_len && token_count <= profile.decode_tokens as usize {
         return Err(format!(
             "qwen3_dense_profile_kv_payload_too_large:bytes={}:limit={kv_state_len}",
             kv_state_payload.len()
         ));
     }
+    let started = Instant::now();
     let kv_state_checksum = qwen3_dense_reference_range_object_payload_checksum(&kv_state_payload);
+    checksum_ms += qwen3_elapsed_ms(started);
+    if timing_enabled {
+        eprintln!(
+            "qwen3-real-range-forward-timing: node={} layers=[{},{}] terminal_owner={} total_ms={} weights_load_ms={} token_parse_ms={} previous_kv_ms={} input_hidden_ms={} layer_forward_ms={} engram_context_ms={} output_payload_ms={} kv_payload_ms={} checksum_ms={} token_count={} hidden_len={} kv_state_len={} output_payload_bytes={} kv_payload_bytes={}",
+            contract.node,
+            contract.layer_start,
+            contract.layer_end,
+            (contract.node + 1 == contract.pipeline_nodes) as u8,
+            qwen3_elapsed_ms(total_started),
+            weights_load_ms,
+            token_parse_ms,
+            previous_kv_ms,
+            input_hidden_ms,
+            layer_forward_ms,
+            engram_context_ms,
+            output_payload_ms,
+            kv_payload_ms,
+            checksum_ms,
+            token_count,
+            hidden_len,
+            kv_state_len,
+            output_tensor_payload.len(),
+            kv_state_payload.len()
+        );
+    }
     Ok(Some(Qwen3DenseProfileRuntimeForward {
         forward,
         output_tensor_payload,
@@ -5992,10 +6192,19 @@ fn qwen3_dense_profile_real_terminal_summary(
     range_forward_summary: &Qwen3DenseReferenceRangeForwardSummary,
     real_forward: Option<&Qwen3DenseProfileRuntimeForward>,
 ) -> Result<Option<Qwen3DenseProfileRealTerminal>, String> {
+    let timing_enabled = qwen3_range_stage_timing_enabled();
+    let total_started = Instant::now();
+    let weights_load_ms;
+    let hidden_extract_ms;
+    let full_vocab_logits_ms;
+
     let Ok(weights_path) = std::env::var("SIM_QWEN3_DENSE_WEIGHTS_PATH") else {
         return Ok(None);
     };
+    let started = Instant::now();
     let loaded = qwen3_dense_reference_cached_loaded_weights(&weights_path)?;
+    weights_load_ms = qwen3_elapsed_ms(started);
+    let started = Instant::now();
     let hidden = if range_forward_summary.engram_context_report.is_some() {
         qwen3_dense_profile_hidden_from_range_output_payload(profile, range_forward_summary)
             .unwrap_or_default()
@@ -6007,10 +6216,30 @@ fn qwen3_dense_profile_real_terminal_summary(
                     .unwrap_or_default()
             })
     };
+    hidden_extract_ms = qwen3_elapsed_ms(started);
     if hidden.is_empty() {
         return Err("qwen3_dense_profile_real_terminal_hidden_empty".to_string());
     }
+    let started = Instant::now();
     let logits = full_vocab_logits_from_hidden_for_profile(*profile, &loaded.tensors, &hidden)?;
+    full_vocab_logits_ms = qwen3_elapsed_ms(started);
+    if timing_enabled {
+        eprintln!(
+            "qwen3-terminal-logits-timing: node={} layers=[{},{}] total_ms={} weights_load_ms={} hidden_extract_ms={} full_vocab_logits_ms={} hidden_values={} checked_token_count={} vocab_size={} top_token={} runner_up={}",
+            range_forward_summary.node,
+            range_forward_summary.layer_start,
+            range_forward_summary.layer_end,
+            qwen3_elapsed_ms(total_started),
+            weights_load_ms,
+            hidden_extract_ms,
+            full_vocab_logits_ms,
+            hidden.len(),
+            logits.checked_token_count,
+            profile.vocab_size,
+            logits.top_token_id,
+            logits.runner_up_token_id
+        );
+    }
     Ok(Some(Qwen3DenseProfileRealTerminal {
         forward_layer_count: real_forward.map(|_| profile.num_hidden_layers).unwrap_or(0),
         forward_final_hidden_checksum: range_forward_summary

@@ -12050,6 +12050,10 @@ qwen3_after_service_coverage:
                                         doorbell_log_ms + post_batch_ms + completion_decode_ms;
         uint64_t compute_unaccounted_ms =
             compute_window_ms > compute_accounted_ms ? compute_window_ms - compute_accounted_ms : 0ULL;
+        uint64_t compute_cq_bookkeeping_ms = dispatch_wait_ms + batch_sleep_ms +
+                                             doorbell_log_ms + post_batch_ms +
+                                             completion_decode_ms;
+        uint64_t compute_backend_estimate_ms = submit_ms + compute_unaccounted_ms;
         uint64_t unaccounted_ms = total_ms > accounted_ms ? total_ms - accounted_ms : 0ULL;
 
         if (qwen3_work_item_materialized || qwen3_shortpath_terminal_committed) {
@@ -12102,6 +12106,35 @@ qwen3_after_service_coverage:
                barrier_ms,
                unaccounted_ms,
                ms_per_layer_milli);
+        printf("[w4_guest] stage qwen3_compute_window_breakdown local=%s"
+               " step=%" PRIu64 " node=%u layers=[%u,%u)"
+               " compute_window_ms=%" PRIu64
+               " backend_estimate_ms=%" PRIu64
+               " submit_ms=%" PRIu64
+               " compute_unaccounted_ms=%" PRIu64
+               " cq_bookkeeping_ms=%" PRIu64
+               " dispatch_ms=%" PRIu64
+               " batch_sleep_ms=%" PRIu64
+               " doorbell_log_ms=%" PRIu64
+               " post_batch_ms=%" PRIu64
+               " completion_decode_ms=%" PRIu64
+               " submit_included_in_compute_window=1"
+               " input_wait_excluded_from_breakdown=1\n",
+               role,
+               guest_decode_step,
+               round_dispatch_node == UINT32_MAX ? 0U : round_dispatch_node + 1U,
+               round_layer_start,
+               round_layer_end,
+               compute_window_ms,
+               compute_backend_estimate_ms,
+               submit_ms,
+               compute_unaccounted_ms,
+               compute_cq_bookkeeping_ms,
+               dispatch_wait_ms,
+               batch_sleep_ms,
+               doorbell_log_ms,
+               post_batch_ms,
+               completion_decode_ms);
         {
             uint64_t handoff_publish_ms =
                 range_publish_done_ms != 0 ? range_publish_done_ms : publish_done_ms;

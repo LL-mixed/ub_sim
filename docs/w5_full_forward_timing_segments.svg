@@ -1,0 +1,706 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="1568.3856"
+   height="680"
+   viewBox="0 0 1568.3856 680"
+   role="img"
+   aria-labelledby="title desc"
+   version="1.1"
+   id="svg62"
+   sodipodi:docname="w5_full_forward_timing_segments.svg"
+   inkscape:version="1.3 (0e150ed, 2023-07-21)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg"
+   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+   xmlns:cc="http://creativecommons.org/ns#"
+   xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <sodipodi:namedview
+     id="namedview62"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="1.9439444"
+     inkscape:cx="751.05029"
+     inkscape:cy="355.97726"
+     inkscape:window-width="3840"
+     inkscape:window-height="2101"
+     inkscape:window-x="3040"
+     inkscape:window-y="818"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg62" />
+  <title
+     id="title">W5 full forward range-forward timing breakdown</title>
+  <desc
+     id="desc">Post-step average active timing per node for a full forward run. Input wait and token wait are omitted. Backend/data+compute is estimated from submit_ms plus compute_unaccounted_ms because the current doorbell path executes backend work synchronously.</desc>
+  <defs
+     id="defs1">
+    <style
+       id="style1">&#10;      .bg { fill: #f8fafc; }&#10;      .title { font: 700 24px system-ui, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif; fill: #0f172a; }&#10;      .subtitle { font: 14px system-ui, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif; fill: #475569; }&#10;      .axis { stroke: #cbd5e1; stroke-width: 1; }&#10;      .tick { stroke: #e2e8f0; stroke-width: 1; }&#10;      .tick-label { font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #64748b; }&#10;      .node-label { font: 700 14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #0f172a; }&#10;      .bar-bg { fill: #ffffff; stroke: #e2e8f0; stroke-width: 1; }&#10;      .mat { fill: #7c3aed; }&#10;      .backend { fill: #2563eb; }&#10;      .cq { fill: #f59e0b; }&#10;      .publish { fill: #10b981; }&#10;      .inside { font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #ffffff; }&#10;      .small-label { font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #334155; }&#10;      .right-label { font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #334155; }&#10;      .legend { font: 13px system-ui, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif; fill: #334155; }&#10;      .note { font: 13px system-ui, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif; fill: #475569; }&#10;      .callout { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1; }&#10;      .callout-title { font: 700 13px system-ui, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif; fill: #0f172a; }&#10;      .callout-text { font: 12px system-ui, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif; fill: #475569; }&#10;    </style>
+  </defs>
+  <rect
+     class="bg"
+     x="0"
+     y="0"
+     width="1568.3856"
+     height="680"
+     id="rect1"
+     style="stroke-width:1.15288" />
+  <text
+     class="title"
+     x="40"
+     y="44"
+     id="text1"
+     style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:24px;line-height:normal;font-family:system-ui, '-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif">W5 full forward: node range-forward active time</text>
+  <text
+     class="subtitle"
+     x="40"
+     y="70"
+     id="text2"
+     style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:14px;line-height:normal;font-family:system-ui, '-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif">Post-step average. input_wait and token/setup wait are omitted. The large blue segment is backend work currently folded into submit_ms/compute_unaccounted_ms.</text>
+  <g
+     transform="translate(220,112)"
+     id="g9">
+    <line
+       class="axis"
+       x1="0"
+       y1="0"
+       x2="780"
+       y2="0"
+       id="line2" />
+    <g
+       id="g3">
+      <line
+         class="tick"
+         x1="0"
+         y1="0"
+         x2="0"
+         y2="416"
+         id="line3" />
+      <text
+         class="tick-label"
+         x="-8"
+         y="-10"
+         id="text3"
+         style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:12px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">0s</text>
+    </g>
+    <g
+       id="g4">
+      <line
+         class="tick"
+         x1="142"
+         y1="0"
+         x2="142"
+         y2="416"
+         id="line4" />
+      <text
+         class="tick-label"
+         x="130"
+         y="-10"
+         id="text4"
+         style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:12px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">1s</text>
+    </g>
+    <g
+       id="g5">
+      <line
+         class="tick"
+         x1="283"
+         y1="0"
+         x2="283"
+         y2="416"
+         id="line5" />
+      <text
+         class="tick-label"
+         x="271"
+         y="-10"
+         id="text5"
+         style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:12px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">2s</text>
+    </g>
+    <g
+       id="g6">
+      <line
+         class="tick"
+         x1="425"
+         y1="0"
+         x2="425"
+         y2="416"
+         id="line6" />
+      <text
+         class="tick-label"
+         x="413"
+         y="-10"
+         id="text6"
+         style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:12px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">3s</text>
+    </g>
+    <g
+       id="g7">
+      <line
+         class="tick"
+         x1="566"
+         y1="0"
+         x2="566"
+         y2="416"
+         id="line7" />
+      <text
+         class="tick-label"
+         x="554"
+         y="-10"
+         id="text7"
+         style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:12px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">4s</text>
+    </g>
+    <g
+       id="g8">
+      <line
+         class="tick"
+         x1="708"
+         y1="0"
+         x2="708"
+         y2="416"
+         id="line8" />
+      <text
+         class="tick-label"
+         x="696"
+         y="-10"
+         id="text8"
+         style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:12px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">5s</text>
+    </g>
+  </g>
+  <g
+     transform="translate(40,134)"
+     id="g56">
+    <text
+       class="node-label"
+       x="0"
+       y="22"
+       id="text9"
+       style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:14px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">nodeA</text>
+    <rect
+       class="bar-bg"
+       x="180"
+       y="0"
+       width="372"
+       height="30"
+       rx="4"
+       id="rect9" />
+    <rect
+       class="mat"
+       x="180"
+       y="0"
+       width="3"
+       height="30"
+       rx="4"
+       id="rect10" />
+    <rect
+       class="backend"
+       x="183"
+       y="0"
+       width="359"
+       height="30"
+       id="rect11" />
+    <rect
+       class="cq"
+       x="542"
+       y="0"
+       width="2"
+       height="30"
+       id="rect12" />
+    <rect
+       class="publish"
+       x="544"
+       y="0"
+       width="9"
+       height="30"
+       id="rect13" />
+    <text
+       class="inside"
+       x="196"
+       y="20"
+       id="text13"
+       style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:12px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">backend/data+compute 2537ms</text>
+    <text
+       class="right-label"
+       x="572"
+       y="20"
+       id="text14"
+       style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:12px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">mat 7ms | cq 11ms | publish 66ms | active 2620ms</text>
+    <text
+       class="node-label"
+       x="0"
+       y="72"
+       id="text15"
+       style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:14px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">nodeB</text>
+    <rect
+       class="bar-bg"
+       x="180"
+       y="50"
+       width="369"
+       height="30"
+       rx="4"
+       id="rect15" />
+    <rect
+       class="mat"
+       x="180"
+       y="50"
+       width="3"
+       height="30"
+       rx="4"
+       id="rect16" />
+    <rect
+       class="backend"
+       x="183"
+       y="50"
+       width="357"
+       height="30"
+       id="rect17" />
+    <rect
+       class="cq"
+       x="540"
+       y="50"
+       width="2"
+       height="30"
+       id="rect18" />
+    <rect
+       class="publish"
+       x="542"
+       y="50"
+       width="9"
+       height="30"
+       id="rect19" />
+    <text
+       class="inside"
+       x="196"
+       y="70"
+       id="text19"
+       style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:12px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">backend/data+compute 2526ms</text>
+    <text
+       class="right-label"
+       x="572"
+       y="70"
+       id="text20"
+       style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:12px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">mat 7ms | cq 10ms | publish 65ms | active 2608ms</text>
+    <text
+       class="node-label"
+       x="0"
+       y="122"
+       id="text21"
+       style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:14px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">nodeC</text>
+    <rect
+       class="bar-bg"
+       x="180"
+       y="100"
+       width="374"
+       height="30"
+       rx="4"
+       id="rect21" />
+    <rect
+       class="mat"
+       x="180"
+       y="100"
+       width="2"
+       height="30"
+       rx="4"
+       id="rect22" />
+    <rect
+       class="backend"
+       x="182"
+       y="100"
+       width="363"
+       height="30"
+       id="rect23" />
+    <rect
+       class="cq"
+       x="545"
+       y="100"
+       width="2"
+       height="30"
+       id="rect24" />
+    <rect
+       class="publish"
+       x="547"
+       y="100"
+       width="9"
+       height="30"
+       id="rect25" />
+    <text
+       class="inside"
+       x="196"
+       y="120"
+       id="text25"
+       style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:12px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">backend/data+compute 2560ms</text>
+    <text
+       class="right-label"
+       x="572"
+       y="120"
+       id="text26"
+       style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:12px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">mat 5ms | cq 13ms | publish 63ms | active 2642ms</text>
+    <text
+       class="node-label"
+       x="0"
+       y="172"
+       id="text27"
+       style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:14px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">nodeD</text>
+    <rect
+       class="bar-bg"
+       x="180"
+       y="150"
+       width="372"
+       height="30"
+       rx="4"
+       id="rect27" />
+    <rect
+       class="mat"
+       x="180"
+       y="150"
+       width="2"
+       height="30"
+       rx="4"
+       id="rect28" />
+    <rect
+       class="backend"
+       x="182"
+       y="150"
+       width="359"
+       height="30"
+       id="rect29" />
+    <rect
+       class="cq"
+       x="541"
+       y="150"
+       width="2"
+       height="30"
+       id="rect30" />
+    <rect
+       class="publish"
+       x="543"
+       y="150"
+       width="10"
+       height="30"
+       id="rect31" />
+    <text
+       class="inside"
+       x="196"
+       y="170"
+       id="text31"
+       style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:12px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">backend/data+compute 2534ms</text>
+    <text
+       class="right-label"
+       x="572"
+       y="170"
+       id="text32"
+       style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:12px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">mat 5ms | cq 13ms | publish 74ms | active 2626ms</text>
+    <text
+       class="node-label"
+       x="0"
+       y="222"
+       id="text33"
+       style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:14px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">nodeE</text>
+    <rect
+       class="bar-bg"
+       x="180"
+       y="200"
+       width="376"
+       height="30"
+       rx="4"
+       id="rect33" />
+    <rect
+       class="mat"
+       x="180"
+       y="200"
+       width="3"
+       height="30"
+       rx="4"
+       id="rect34" />
+    <rect
+       class="backend"
+       x="183"
+       y="200"
+       width="363"
+       height="30"
+       id="rect35" />
+    <rect
+       class="cq"
+       x="546"
+       y="200"
+       width="2"
+       height="30"
+       id="rect36" />
+    <rect
+       class="publish"
+       x="548"
+       y="200"
+       width="10"
+       height="30"
+       id="rect37" />
+    <text
+       class="inside"
+       x="196"
+       y="220"
+       id="text37"
+       style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:12px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">backend/data+compute 2564ms</text>
+    <text
+       class="right-label"
+       x="572"
+       y="220"
+       id="text38"
+       style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:12px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">mat 7ms | cq 13ms | publish 73ms | active 2657ms</text>
+    <text
+       class="node-label"
+       x="0"
+       y="272"
+       id="text39"
+       style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:14px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">nodeF</text>
+    <rect
+       class="bar-bg"
+       x="180"
+       y="250"
+       width="376"
+       height="30"
+       rx="4"
+       id="rect39" />
+    <rect
+       class="mat"
+       x="180"
+       y="250"
+       width="2"
+       height="30"
+       rx="4"
+       id="rect40" />
+    <rect
+       class="backend"
+       x="182"
+       y="250"
+       width="363"
+       height="30"
+       id="rect41" />
+    <rect
+       class="cq"
+       x="545"
+       y="250"
+       width="2"
+       height="30"
+       id="rect42" />
+    <rect
+       class="publish"
+       x="547"
+       y="250"
+       width="10"
+       height="30"
+       id="rect43" />
+    <text
+       class="inside"
+       x="196"
+       y="270"
+       id="text43"
+       style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:12px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">backend/data+compute 2567ms</text>
+    <text
+       class="right-label"
+       x="572"
+       y="270"
+       id="text44"
+       style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:12px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">mat 5ms | cq 12ms | publish 73ms | active 2657ms</text>
+    <text
+       class="node-label"
+       x="0"
+       y="322"
+       id="text45"
+       style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:14px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">nodeG</text>
+    <rect
+       class="bar-bg"
+       x="180"
+       y="300"
+       width="372"
+       height="30"
+       rx="4"
+       id="rect45" />
+    <rect
+       class="mat"
+       x="180"
+       y="300"
+       width="2"
+       height="30"
+       rx="4"
+       id="rect46" />
+    <rect
+       class="backend"
+       x="182"
+       y="300"
+       width="359"
+       height="30"
+       id="rect47" />
+    <rect
+       class="cq"
+       x="541"
+       y="300"
+       width="2"
+       height="30"
+       id="rect48" />
+    <rect
+       class="publish"
+       x="543"
+       y="300"
+       width="10"
+       height="30"
+       id="rect49" />
+    <text
+       class="inside"
+       x="196"
+       y="320"
+       id="text49"
+       style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:12px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">backend/data+compute 2534ms</text>
+    <text
+       class="right-label"
+       x="572"
+       y="320"
+       id="text50"
+       style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:12px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">mat 5ms | cq 13ms | publish 71ms | active 2624ms</text>
+    <text
+       class="node-label"
+       x="0"
+       y="372"
+       id="text51"
+       style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:14px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">nodeH</text>
+    <rect
+       class="bar-bg"
+       x="180"
+       y="350"
+       width="780"
+       height="30"
+       rx="4"
+       id="rect51" />
+    <rect
+       class="mat"
+       x="180"
+       y="350"
+       width="3"
+       height="30"
+       rx="4"
+       id="rect52" />
+    <rect
+       class="backend"
+       x="183"
+       y="350"
+       width="768"
+       height="30"
+       id="rect53" />
+    <rect
+       class="cq"
+       x="951"
+       y="350"
+       width="2"
+       height="30"
+       id="rect54" />
+    <rect
+       class="publish"
+       x="953"
+       y="350"
+       width="9"
+       height="30"
+       id="rect55" />
+    <text
+       class="inside"
+       x="196"
+       y="370"
+       id="text55"
+       style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:12px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">backend/data+compute 5425ms</text>
+    <text
+       class="right-label"
+       x="978"
+       y="370"
+       id="text56"
+       style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:12px;line-height:normal;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">mat 7ms | cq 10ms | publish 67ms | active 5510ms</text>
+  </g>
+  <rect
+     class="mat"
+     x="40"
+     y="543"
+     width="18"
+     height="18"
+     rx="3"
+     id="rect56" />
+  <text
+     class="legend"
+     x="66"
+     y="557"
+     id="text57"
+     style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:13px;line-height:normal;font-family:system-ui, '-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif">materialize: cluster/map/descriptor active work, wait removed</text>
+  <rect
+     class="backend"
+     x="493.05768"
+     y="542.4856"
+     width="18"
+     height="18"
+     rx="3"
+     id="rect57" />
+  <text
+     class="legend"
+     x="517"
+     y="557"
+     id="text58"
+     style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:13px;line-height:normal;font-family:system-ui, '-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif">backend/data+compute: submit_ms + compute_unaccounted_ms</text>
+  <rect
+     class="cq"
+     x="979"
+     y="543"
+     width="18"
+     height="18"
+     rx="3"
+     id="rect58" />
+  <text
+     class="legend"
+     x="1005"
+     y="557"
+     id="text59"
+     style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:13px;line-height:normal;font-family:system-ui, '-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif">CQ/bookkeeping</text>
+  <rect
+     class="publish"
+     x="1139"
+     y="543"
+     width="18"
+     height="18"
+     rx="3"
+     id="rect59" />
+  <text
+     class="legend"
+     x="1165"
+     y="557"
+     id="text60"
+     style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:13px;line-height:normal;font-family:system-ui, '-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif">publish</text>
+  <g
+     transform="translate(40,590)"
+     id="g62">
+    <rect
+       class="callout"
+       x="0"
+       y="0"
+       width="1100"
+       height="58"
+       rx="6"
+       id="rect60" />
+    <text
+       class="callout-title"
+       x="16"
+       y="22"
+       id="text61"
+       style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:13px;line-height:normal;font-family:system-ui, '-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif">Measurement caveat</text>
+    <text
+       class="callout-text"
+       x="16"
+       y="43"
+       id="text62"
+       style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:12px;line-height:normal;font-family:system-ui, '-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif">The current log does not isolate pure &quot;submit to work queue then doorbell&quot;. Doorbell is synchronous, so backend data movement and compute are mostly charged to submit_ms. Pure submit is expected to be tiny compared with the blue segment.</text>
+  </g>
+  <metadata
+     id="metadata62">
+    <rdf:RDF>
+      <cc:Work
+         rdf:about="">
+        <dc:title>W5 full forward range-forward timing breakdown</dc:title>
+      </cc:Work>
+    </rdf:RDF>
+  </metadata>
+</svg>
