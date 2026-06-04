@@ -86,6 +86,48 @@ run_obmm_import_stress() {
       obmm_stress_seed=*)
         args="$args --seed ${token#*=}"
         ;;
+      obmm_stress_gva_mode=*)
+        args="$args --gva-mode ${token#*=}"
+        ;;
+      obmm_stress_gva_map_source=*)
+        args="$args --gva-map-source ${token#*=}"
+        ;;
+      obmm_stress_gva_address_profile=*)
+        args="$args --gva-address-profile ${token#*=}"
+        ;;
+      obmm_stress_gva_cache_policy=*)
+        args="$args --gva-cache-policy ${token#*=}"
+        ;;
+      obmm_stress_gva_vmid=*)
+        args="$args --gva-vmid ${token#*=}"
+        ;;
+      obmm_stress_gva_asid=*)
+        args="$args --gva-asid ${token#*=}"
+        ;;
+      obmm_stress_gva_tid=*)
+        args="$args --gva-tid ${token#*=}"
+        ;;
+      obmm_stress_gva_p_tag=*)
+        args="$args --gva-p-tag ${token#*=}"
+        ;;
+      obmm_stress_gva_access_flags=*)
+        args="$args --gva-access-flags ${token#*=}"
+        ;;
+      obmm_stress_gva_id=*)
+        args="$args --gva-id ${token#*=}"
+        ;;
+      obmm_stress_gva_token_value=*)
+        args="$args --gva-token-value ${token#*=}"
+        ;;
+      obmm_stress_gva_user_va=*)
+        args="$args --gva-user-va ${token#*=}"
+        ;;
+      obmm_stress_gva_home_va=*)
+        args="$args --gva-home-va ${token#*=}"
+        ;;
+      obmm_stress_gva_pte_offset=*)
+        args="$args --gva-pte-offset ${token#*=}"
+        ;;
       obmm_stress_verify=1)
         args="$args --verify"
         ;;

@@ -51,6 +51,12 @@ enum flush_mode {
     FLUSH_EVERY,
 };
 
+enum stress_gva_mode {
+    STRESS_GVA_MODE_LEGACY = 0,
+    STRESS_GVA_MODE_GENERIC = 1,
+    STRESS_GVA_MODE_GSVA = 2,
+};
+
 struct stress_config {
     uint64_t size;
     enum stress_pattern pattern;
@@ -62,6 +68,23 @@ struct stress_config {
     bool write_only;
     uint64_t chunk_size;
     uint32_t seed;
+    enum stress_gva_mode gva_mode;
+    uint32_t map_source;
+    uint32_t address_profile;
+    uint32_t cache_policy;
+    uint32_t vmid;
+    uint32_t asid;
+    uint32_t tid;
+    uint32_t p_tag;
+    uint32_t token_value;
+    uint32_t access_flags;
+    uint64_t gva_id;
+    uint64_t local_va;
+    uint64_t home_va;
+    uint64_t pte_offset;
+    bool gva_home_va_set;
+    bool gva_local_va_set;
+    bool gva_pte_offset_set;
 };
 
 struct stress_stats {
@@ -259,6 +282,13 @@ static void stress_print_stats(const struct stress_config *cfg,
                stats->reads, stats->writes, stats->read_bytes, stats->write_bytes,
                stats->flushes, stats->verify_failures, stats->duration_ms,
                rbw, wbw);
+
+    stress_log("gva_mode=%d map_source=%u address_profile=%u cache_policy=%u vmid=%u asid=%u tid=%u p_tag=%u access_flags=%u gva_id=%" PRIu64
+               " local_va=%" PRIx64 " home_va=%" PRIx64 " pte_offset=%" PRIx64 " token_value=%u",
+               cfg->gva_mode, cfg->map_source, cfg->address_profile,
+               cfg->cache_policy, cfg->vmid, cfg->asid, cfg->tid, cfg->p_tag,
+               cfg->access_flags, cfg->gva_id, cfg->local_va, cfg->home_va,
+               cfg->pte_offset, cfg->token_value);
 }
 
 static bool stress_completion_barrier(int obmm_fd,
@@ -289,6 +319,187 @@ static bool stress_completion_barrier(int obmm_fd,
     return true;
 }
 
+static bool parse_stress_gva_mode(const char *s, enum stress_gva_mode *mode)
+{
+    if (strcmp(s, "legacy") == 0) {
+        *mode = STRESS_GVA_MODE_LEGACY;
+    } else if (strcmp(s, "generic") == 0 || strcmp(s, "gva") == 0) {
+        *mode = STRESS_GVA_MODE_GENERIC;
+    } else if (strcmp(s, "gsva") == 0) {
+        *mode = STRESS_GVA_MODE_GSVA;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+static bool parse_stress_cache_policy(const char *s, uint32_t *policy)
+{
+    if (strcmp(s, "nc") == 0) {
+        *policy = OBMM_SIM_DEC_CACHE_POLICY_NC;
+    } else if (strcmp(s, "wt") == 0 || strcmp(s, "write-through") == 0) {
+        *policy = OBMM_SIM_DEC_CACHE_POLICY_WRITE_THROUGH;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+static bool parse_stress_map_source(const char *s, uint32_t *map_source)
+{
+    if (strcmp(s, "legacy") == 0 || strcmp(s, "legacy-obmm") == 0) {
+        *map_source = OBMM_SIM_DEC_MAP_SOURCE_LEGACY_OBMM;
+    } else if (strcmp(s, "gva") == 0 || strcmp(s, "gva-manager") == 0) {
+        *map_source = OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+static bool parse_stress_address_profile(const char *s, uint32_t *profile)
+{
+    if (strcmp(s, "generic") == 0) {
+        *profile = OBMM_SIM_DEC_ADDRESS_PROFILE_GENERIC_GVA;
+    } else if (strcmp(s, "gsva") == 0) {
+        *profile = OBMM_SIM_DEC_ADDRESS_PROFILE_GSVA_IDENTITY;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+static bool parse_u64_arg(const char *s, uint64_t *out)
+{
+    char *end = NULL;
+    errno = 0;
+    *out = strtoull(s, &end, 0);
+    return errno == 0 && end != NULL && *end == '\0';
+}
+
+static bool parse_u32_arg(const char *s, uint32_t *out)
+{
+    char *end = NULL;
+    errno = 0;
+    *out = (uint32_t)strtoul(s, &end, 0);
+    return errno == 0 && end != NULL && *end == '\0';
+}
+
+static void stress_init_gva_defaults(struct stress_config *cfg)
+{
+    cfg->gva_mode = STRESS_GVA_MODE_LEGACY;
+    cfg->map_source = OBMM_SIM_DEC_MAP_SOURCE_LEGACY_OBMM;
+    cfg->address_profile = OBMM_SIM_DEC_ADDRESS_PROFILE_GENERIC_GVA;
+    cfg->cache_policy = OBMM_SIM_DEC_CACHE_POLICY_WRITE_THROUGH;
+    cfg->vmid = 0;
+    cfg->asid = 0;
+    cfg->tid = 0;
+    cfg->p_tag = 0;
+    cfg->token_value = 0;
+    cfg->access_flags = 0;
+    cfg->gva_id = 0;
+    cfg->local_va = 0;
+    cfg->home_va = 0;
+    cfg->pte_offset = 0;
+    cfg->gva_local_va_set = false;
+    cfg->gva_home_va_set = false;
+    cfg->gva_pte_offset_set = false;
+}
+
+static bool stress_finalize_gva_config(struct stress_config *cfg,
+                                      uint64_t remote_uba)
+{
+    if (cfg->gva_mode == STRESS_GVA_MODE_LEGACY) {
+        return true;
+    }
+
+    if (cfg->gva_local_va_set && cfg->gva_home_va_set &&
+        cfg->local_va != cfg->home_va) {
+        fprintf(stderr, "local_va/home_va mismatch\n");
+        return false;
+    }
+
+    if (cfg->gva_mode == STRESS_GVA_MODE_GSVA) {
+        cfg->map_source = OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER;
+        cfg->address_profile = OBMM_SIM_DEC_ADDRESS_PROFILE_GSVA_IDENTITY;
+        if (cfg->gva_local_va_set && cfg->local_va != remote_uba) {
+            fprintf(stderr, "GSVA requires local_va == remote_uba\n");
+            return false;
+        }
+        if (cfg->gva_home_va_set && cfg->home_va != remote_uba) {
+            fprintf(stderr, "GSVA requires home_va == remote_uba\n");
+            return false;
+        }
+        if (cfg->gva_pte_offset_set && cfg->pte_offset != 0) {
+            fprintf(stderr, "GSVA requires pte_offset=0\n");
+            return false;
+        }
+        cfg->local_va = remote_uba;
+        cfg->home_va = remote_uba;
+        cfg->pte_offset = 0;
+        cfg->gva_local_va_set = true;
+        cfg->gva_home_va_set = true;
+        cfg->gva_pte_offset_set = true;
+        if (cfg->local_va != remote_uba || cfg->home_va != remote_uba) {
+            fprintf(stderr, "GSVA requires remote_uba/local_va/home_va all equal\n");
+            return false;
+        }
+        if (cfg->pte_offset != 0) {
+            fprintf(stderr, "GSVA requires pte_offset=0\n");
+            return false;
+        }
+        return true;
+    }
+
+    /* generic GVA */
+    cfg->map_source = OBMM_SIM_DEC_MAP_SOURCE_LEGACY_OBMM;
+    cfg->address_profile = OBMM_SIM_DEC_ADDRESS_PROFILE_GENERIC_GVA;
+
+    if (!cfg->gva_local_va_set && !cfg->gva_home_va_set && !cfg->gva_pte_offset_set) {
+        cfg->local_va = remote_uba;
+        cfg->home_va = remote_uba;
+        cfg->gva_local_va_set = true;
+        cfg->gva_home_va_set = true;
+    }
+
+    if (cfg->gva_local_va_set && !cfg->gva_home_va_set) {
+        cfg->home_va = cfg->local_va;
+        cfg->gva_home_va_set = true;
+    }
+    if (!cfg->gva_local_va_set && cfg->gva_home_va_set) {
+        cfg->local_va = cfg->home_va;
+        cfg->gva_local_va_set = true;
+    }
+
+    if (!cfg->gva_pte_offset_set && cfg->gva_local_va_set) {
+        if (remote_uba < cfg->local_va) {
+            fprintf(stderr, "cannot derive pte_offset: remote_uba < local_va\n");
+            return false;
+        }
+        cfg->pte_offset = remote_uba - cfg->local_va;
+        cfg->gva_pte_offset_set = true;
+    } else if (cfg->gva_pte_offset_set && cfg->gva_local_va_set) {
+        if (remote_uba < cfg->pte_offset) {
+            fprintf(stderr, "invalid gva config: pte_offset exceeds remote_uba\n");
+            return false;
+        }
+        if (remote_uba != cfg->local_va + cfg->pte_offset) {
+            fprintf(stderr, "invalid gva config: local_va + pte_offset != remote_uba\n");
+            return false;
+        }
+    } else if (cfg->gva_pte_offset_set) {
+        if (remote_uba < cfg->pte_offset) {
+            fprintf(stderr, "invalid gva config: pte_offset exceeds remote_uba\n");
+            return false;
+        }
+        cfg->local_va = remote_uba - cfg->pte_offset;
+        cfg->home_va = cfg->local_va;
+        cfg->gva_local_va_set = true;
+        cfg->gva_home_va_set = true;
+    }
+    return true;
+}
+
 static bool stress_parse_args(int argc, char **argv, struct stress_config *cfg)
 {
     int i;
@@ -304,6 +515,7 @@ static bool stress_parse_args(int argc, char **argv, struct stress_config *cfg)
         .chunk_size = STRESS_DEFAULT_CHUNK_SIZE,
         .seed = STRESS_DEFAULT_SEED,
     };
+    stress_init_gva_defaults(cfg);
 
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--size") == 0 && i + 1 < argc) {
@@ -335,6 +547,79 @@ static bool stress_parse_args(int argc, char **argv, struct stress_config *cfg)
             cfg->chunk_size = strtoull(argv[++i], NULL, 0);
         } else if (strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
             cfg->seed = strtoul(argv[++i], NULL, 0);
+        } else if (strcmp(argv[i], "--gva-mode") == 0 && i + 1 < argc) {
+            if (!parse_stress_gva_mode(argv[++i], &cfg->gva_mode)) {
+                fprintf(stderr, "unknown --gva-mode %s\n", argv[i]);
+                return false;
+            }
+        } else if (strcmp(argv[i], "--gva-map-source") == 0 && i + 1 < argc) {
+            if (!parse_stress_map_source(argv[++i], &cfg->map_source)) {
+                fprintf(stderr, "unknown --gva-map-source %s\n", argv[i]);
+                return false;
+            }
+        } else if (strcmp(argv[i], "--gva-address-profile") == 0 && i + 1 < argc) {
+            if (!parse_stress_address_profile(argv[++i], &cfg->address_profile)) {
+                fprintf(stderr, "unknown --gva-address-profile %s\n", argv[i]);
+                return false;
+            }
+        } else if (strcmp(argv[i], "--gva-cache-policy") == 0 && i + 1 < argc) {
+            if (!parse_stress_cache_policy(argv[++i], &cfg->cache_policy)) {
+                fprintf(stderr, "unknown --gva-cache-policy %s\n", argv[i]);
+                return false;
+            }
+        } else if (strcmp(argv[i], "--gva-vmid") == 0 && i + 1 < argc) {
+            if (!parse_u32_arg(argv[++i], &cfg->vmid)) {
+                fprintf(stderr, "invalid --gva-vmid %s\n", argv[i]);
+                return false;
+            }
+        } else if (strcmp(argv[i], "--gva-asid") == 0 && i + 1 < argc) {
+            if (!parse_u32_arg(argv[++i], &cfg->asid)) {
+                fprintf(stderr, "invalid --gva-asid %s\n", argv[i]);
+                return false;
+            }
+        } else if (strcmp(argv[i], "--gva-tid") == 0 && i + 1 < argc) {
+            if (!parse_u32_arg(argv[++i], &cfg->tid)) {
+                fprintf(stderr, "invalid --gva-tid %s\n", argv[i]);
+                return false;
+            }
+        } else if (strcmp(argv[i], "--gva-p-tag") == 0 && i + 1 < argc) {
+            if (!parse_u32_arg(argv[++i], &cfg->p_tag)) {
+                fprintf(stderr, "invalid --gva-p-tag %s\n", argv[i]);
+                return false;
+            }
+        } else if (strcmp(argv[i], "--gva-access-flags") == 0 && i + 1 < argc) {
+            if (!parse_u32_arg(argv[++i], &cfg->access_flags)) {
+                fprintf(stderr, "invalid --gva-access-flags %s\n", argv[i]);
+                return false;
+            }
+        } else if (strcmp(argv[i], "--gva-token-value") == 0 && i + 1 < argc) {
+            if (!parse_u32_arg(argv[++i], &cfg->token_value)) {
+                fprintf(stderr, "invalid --gva-token-value %s\n", argv[i]);
+                return false;
+            }
+        } else if (strcmp(argv[i], "--gva-id") == 0 && i + 1 < argc) {
+            if (!parse_u64_arg(argv[++i], &cfg->gva_id)) {
+                fprintf(stderr, "invalid --gva-id %s\n", argv[i]);
+                return false;
+            }
+        } else if (strcmp(argv[i], "--gva-user-va") == 0 && i + 1 < argc) {
+            if (!parse_u64_arg(argv[++i], &cfg->local_va)) {
+                fprintf(stderr, "invalid --gva-user-va %s\n", argv[i]);
+                return false;
+            }
+            cfg->gva_local_va_set = true;
+        } else if (strcmp(argv[i], "--gva-home-va") == 0 && i + 1 < argc) {
+            if (!parse_u64_arg(argv[++i], &cfg->home_va)) {
+                fprintf(stderr, "invalid --gva-home-va %s\n", argv[i]);
+                return false;
+            }
+            cfg->gva_home_va_set = true;
+        } else if (strcmp(argv[i], "--gva-pte-offset") == 0 && i + 1 < argc) {
+            if (!parse_u64_arg(argv[++i], &cfg->pte_offset)) {
+                fprintf(stderr, "invalid --gva-pte-offset %s\n", argv[i]);
+                return false;
+            }
+            cfg->gva_pte_offset_set = true;
         } else {
             fprintf(stderr, "unknown option %s\n", argv[i]);
             return false;
@@ -363,9 +648,44 @@ static void stress_usage(const char *prog)
            "  --read-only           Read stress only\n"
            "  --write-only          Write stress only\n"
            "  --chunk-size <bytes>  (default %d)\n"
-           "  --seed <n>            RNG seed (default %d)\n",
+           "  --seed <n>            RNG seed (default %d)\n"
+           "  --gva-mode <legacy|generic|gsva>\n"
+           "  --gva-map-source <legacy|legacy-obmm|gva|gva-manager>\n"
+           "  --gva-address-profile <generic|gsva>\n"
+           "  --gva-cache-policy <nc|wt>\n"
+           "  --gva-vmid <n>\n"
+           "  --gva-asid <n>\n"
+           "  --gva-tid <n>\n"
+           "  --gva-p-tag <n>\n"
+           "  --gva-access-flags <n>\n"
+           "  --gva-token-value <n>\n"
+           "  --gva-id <n>\n"
+           "  --gva-user-va <addr>\n"
+           "  --gva-home-va <addr>\n"
+           "  --gva-pte-offset <n>\n",
            prog, STRESS_DEFAULT_SIZE, STRESS_DEFAULT_ITERATIONS,
            STRESS_DEFAULT_CHUNK_SIZE, STRESS_DEFAULT_SEED);
+}
+
+static bool stress_import_region(int obmm_fd, const struct stress_config *cfg,
+                                const struct obmm_helpers_meta *remote_meta,
+                                uint32_t local_cna, uint64_t local_pa,
+                                uint64_t *import_mem_id)
+{
+    uint32_t token_value = cfg->token_value ? cfg->token_value : remote_meta->token_id;
+
+    if (cfg->gva_mode == STRESS_GVA_MODE_LEGACY) {
+        return obmm_do_import(obmm_fd, remote_meta, local_cna, local_pa,
+                             token_value, import_mem_id) == 0;
+    }
+
+    return obmm_do_import_v2(obmm_fd, remote_meta, local_cna, local_pa,
+                             token_value, cfg->map_source,
+                             cfg->address_profile, cfg->cache_policy,
+                             cfg->vmid, cfg->asid, cfg->tid, cfg->p_tag,
+                             cfg->access_flags, cfg->gva_id,
+                             cfg->local_va, cfg->home_va,
+                             cfg->pte_offset, import_mem_id) == 0;
 }
 
 int main(int argc, char **argv)
@@ -388,6 +708,7 @@ int main(int argc, char **argv)
     int ret = 1;
     uint64_t generation = 1;
     char cmdline_val[64];
+    bool import_osync[OBMM_POOL_HELPERS_MAX_NODES];
 
     if (!stress_parse_args(argc, argv, &cfg)) {
         stress_usage(argv[0]);
@@ -461,20 +782,30 @@ int main(int argc, char **argv)
         stress_log("remote node not found in bootstrap");
         goto cleanup;
     }
+    if (!stress_finalize_gva_config(&cfg, remote_metas[local_idx ^ 1].remote_uba)) {
+        stress_log("invalid gva config");
+        goto cleanup;
+    }
+    stress_log("using gva config mode=%d map_source=%u address_profile=%u cache_policy=%u vmid=%u asid=%u tid=%u p_tag=%u access_flags=%u token_value=%u "
+               "local_va=%" PRIx64 " home_va=%" PRIx64 " pte_offset=%" PRIx64,
+               cfg.gva_mode, cfg.map_source, cfg.address_profile,
+               cfg.cache_policy, cfg.vmid, cfg.asid, cfg.tid, cfg.p_tag,
+               cfg.access_flags, cfg.token_value, cfg.local_va, cfg.home_va,
+               cfg.pte_offset);
 
     /* Wait for OBMM device deferred probe to complete (mem_windows sysfs) */
     stress_log("waiting for OBMM device ready...");
     sleep(2);
 
-    bool import_osync[1];
     if (!obmm_alloc_import_pas(1, cfg.size, local_pas, import_osync,
                                obmm_parse_import_cache_mode())) {
         stress_log("cannot allocate import PA");
         goto cleanup;
     }
     stress_log("alloc_pas ok pa=%" PRIx64, local_pas[0]);
-    if (obmm_do_import(obmm_fd, &remote_metas[local_idx ^ 1], (uint32_t)local_cna,
-                       local_pas[0], 0, &import_mem_id) != 0) {
+    if (!stress_import_region(
+            obmm_fd, &cfg, &remote_metas[local_idx ^ 1], (uint32_t)local_cna,
+            local_pas[0], &import_mem_id)) {
         stress_log("import failed errno=%d", errno);
         goto cleanup;
     }
@@ -482,8 +813,20 @@ int main(int argc, char **argv)
 
     {
         struct obmm_helpers_region region = {0};
-        if (obmm_map_region(import_mem_id, cfg.size, import_osync[0], &region) != 0) {
+        void *target_va = NULL;
+
+        if (cfg.gva_mode != STRESS_GVA_MODE_LEGACY && cfg.gva_local_va_set) {
+            target_va = (void *)(uintptr_t)cfg.local_va;
+        }
+        if (obmm_map_region_at(import_mem_id,
+                               target_va,
+                               cfg.size,
+                               import_osync[0], &region) != 0) {
             stress_log("map import region failed mem_id=%" PRIx64, import_mem_id);
+            goto cleanup;
+        }
+        if (target_va && region.addr != target_va) {
+            stress_log("map mismatch: got=%p expect=%p", region.addr, target_va);
             goto cleanup;
         }
         imported_va = region.addr;

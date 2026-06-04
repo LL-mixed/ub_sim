@@ -60,6 +60,13 @@ enum obmm_import_cache_mode {
 #define OBMM_POOL_HELPERS_VERSION       1U
 #define OBMM_SIM_DEC_PRIV_MAGIC        0x53444950U
 #define OBMM_SIM_DEC_PRIV_VER_1        1
+#define OBMM_SIM_DEC_PRIV_VER_2        2
+#define OBMM_SIM_DEC_MAP_SOURCE_LEGACY_OBMM 1
+#define OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER 2
+#define OBMM_SIM_DEC_ADDRESS_PROFILE_GENERIC_GVA 1
+#define OBMM_SIM_DEC_ADDRESS_PROFILE_GSVA_IDENTITY 2
+#define OBMM_SIM_DEC_CACHE_POLICY_NC 0
+#define OBMM_SIM_DEC_CACHE_POLICY_WRITE_THROUGH 1
 
 /* ------------------------------------------------------------------ */
 /* Shared types                                                        */
@@ -78,6 +85,36 @@ struct obmm_helpers_region {
     void *addr;
     size_t len;
     uint64_t mem_id;
+};
+
+struct obmm_sim_dec_import_priv_v2 {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t len;
+    uint64_t remote_uba;
+    uint32_t token_value;
+    uint32_t flags;
+    uint32_t map_source;
+    uint32_t address_profile;
+    uint32_t cache_policy;
+    uint32_t vmid;
+    uint32_t asid;
+    uint64_t local_va;
+    uint64_t home_va;
+    uint64_t pte_offset;
+    uint32_t tid;
+    uint32_t p_tag;
+    uint32_t access_flags;
+    uint64_t gva_id;
+};
+
+struct obmm_sim_dec_import_priv_v1 {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t len;
+    uint64_t remote_uba;
+    uint32_t token_value;
+    uint32_t flags;
 };
 
 struct obmm_helpers_window {
@@ -332,9 +369,11 @@ static int obmm_open_shmdev(uint64_t mem_id, bool map_osync)
     return open(path, O_RDWR | (map_osync ? O_SYNC : 0));
 }
 
-static int obmm_map_region(uint64_t mem_id, size_t len, bool map_osync,
-                           struct obmm_helpers_region *region)
+static int obmm_map_region_at(uint64_t mem_id, void *addr, size_t len, bool map_osync,
+                             struct obmm_helpers_region *region)
 {
+    int flags = MAP_SHARED;
+    void *mapped;
     memset(region, 0, sizeof(*region));
     region->fd = -1;
     region->mem_id = mem_id;
@@ -345,17 +384,26 @@ static int obmm_map_region(uint64_t mem_id, size_t len, bool map_osync,
                 mem_id, strerror(errno));
         return -1;
     }
-    region->addr = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED,
-                        region->fd, 0);
-    if (region->addr == MAP_FAILED) {
-        fprintf(stderr, "[obmm] mmap shmdev%" PRIu64 " failed: %s\n",
-                mem_id, strerror(errno));
+    if (addr) {
+        flags |= MAP_FIXED_NOREPLACE;
+    }
+    mapped = mmap(addr, len, PROT_READ | PROT_WRITE, flags, region->fd, 0);
+    if (mapped == MAP_FAILED) {
+        fprintf(stderr, "[obmm] mmap shmdev%" PRIu64 " at %p failed: %s\n",
+                mem_id, addr, strerror(errno));
         close(region->fd);
         region->fd = -1;
         region->addr = NULL;
         return -1;
     }
+    region->addr = mapped;
     return 0;
+}
+
+static int obmm_map_region(uint64_t mem_id, size_t len, bool map_osync,
+                          struct obmm_helpers_region *region)
+{
+    return obmm_map_region_at(mem_id, NULL, len, map_osync, region);
 }
 
 static void obmm_unmap_region(struct obmm_helpers_region *region)
@@ -413,7 +461,7 @@ static int obmm_do_import(int obmm_fd, const struct obmm_helpers_meta *meta,
                           uint32_t local_cna, uint64_t local_pa,
                           uint32_t token_value, uint64_t *import_mem_id)
 {
-    struct obmm_sim_dec_import_priv priv;
+    struct obmm_sim_dec_import_priv_v1 priv;
     struct obmm_cmd_import cmd;
     memset(&priv, 0, sizeof(priv));
     priv.magic = OBMM_SIM_DEC_PRIV_MAGIC;
@@ -432,6 +480,54 @@ static int obmm_do_import(int obmm_fd, const struct obmm_helpers_meta *meta,
     cmd.priv = &priv;
     if (ioctl(obmm_fd, OBMM_CMD_IMPORT, &cmd) != 0)
         return -1;
+    *import_mem_id = cmd.mem_id;
+    return 0;
+}
+
+static int obmm_do_import_v2(int obmm_fd, const struct obmm_helpers_meta *meta,
+                            uint32_t local_cna, uint64_t local_pa,
+                            uint32_t token_value, uint32_t map_source,
+                            uint32_t address_profile, uint32_t cache_policy,
+                            uint32_t vmid, uint32_t asid, uint32_t tid,
+                            uint32_t p_tag, uint32_t access_flags,
+                            uint64_t gva_id, uint64_t local_va,
+                            uint64_t home_va, uint64_t pte_offset,
+                            uint64_t *import_mem_id)
+{
+    struct obmm_sim_dec_import_priv_v2 priv = {0};
+    struct obmm_cmd_import cmd;
+
+    memset(&cmd, 0, sizeof(cmd));
+    priv.magic = OBMM_SIM_DEC_PRIV_MAGIC;
+    priv.version = OBMM_SIM_DEC_PRIV_VER_2;
+    priv.len = sizeof(priv);
+    priv.remote_uba = meta->remote_uba;
+    priv.token_value = token_value;
+    priv.map_source = map_source;
+    priv.address_profile = address_profile;
+    priv.cache_policy = cache_policy;
+    priv.vmid = vmid;
+    priv.asid = asid;
+    priv.local_va = local_va;
+    priv.home_va = home_va;
+    priv.pte_offset = pte_offset;
+    priv.tid = tid;
+    priv.p_tag = p_tag;
+    priv.access_flags = access_flags;
+    priv.gva_id = gva_id;
+
+    cmd.flags = OBMM_IMPORT_FLAG_ALLOW_MMAP;
+    cmd.addr = local_pa;
+    cmd.length = meta->size;
+    cmd.tokenid = meta->token_id;
+    cmd.scna = local_cna;
+    cmd.dcna = meta->export_cna;
+    cmd.priv_len = sizeof(priv);
+    cmd.priv = &priv;
+
+    if (ioctl(obmm_fd, OBMM_CMD_IMPORT, &cmd) != 0) {
+        return -1;
+    }
     *import_mem_id = cmd.mem_id;
     return 0;
 }
