@@ -206,6 +206,10 @@ Application / workload
 
 ### 3.3 分阶段实现架构
 
+在开始实现前先锁定一个关键顺序假设：
+`GVA Manager` 的 bootstrap 必须建立在已可用的 OBMM bootstrap 之上（仅用于 manager control plane 初始化与范围协商），该依赖不在本阶段的 QEMU backend 内实现。
+`GVA Simulation Layer` 本身只消费 GVA 管理面产生的 map 请求和元数据，当前第一阶段不重新实现 OBMM bootstrap 或 MPMC 队列。
+
 第一阶段新增 `GVA Simulation Layer`，位于 guest `OBMM/UBMM` 与现有 UB Link backend 之间。这里仍会复用 `SIM_DEC` 代码路径，但只能把它视为 legacy backend，而不是 GVA 架构组件。
 
 ```text

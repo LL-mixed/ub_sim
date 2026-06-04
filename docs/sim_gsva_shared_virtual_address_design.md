@@ -212,6 +212,9 @@ OBMM bootstrap
                   -> commits GSVA reserved VA aperture
 ```
 
+当前实现约束：只允许基于 `OBMM_CMD_BOOTSTRAP_PUBLISH/LOOKUP` 的同一 cluster 生效路径来建立 manager control plane。
+尚未支持任何 UDP/host 或手工配置的替代引导链路作为 acceptance path。
+
 Required order:
 
 1. `obmm.ko` and `ub-sim-decoder.ko` must be loaded before `gva_manager` starts.
