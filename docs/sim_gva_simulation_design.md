@@ -29,8 +29,9 @@ PU LD/ST/DMA
 
 1. 复用当前已闭合路径，不重写一条旁路协议。
 2. 保留 `EID/Token/UBA/CNA` 语义链，不能退化为 QEMU 私有 `VA -> GPA` 表。
-3. 管控面必须可追踪：每条 GVA 映射都能回溯到 guest `OBMM` 或后续 `GVA control` 命令。
-4. 数据面必须可验证：读写结果必须由 QEMU/guest 日志、统计计数和端到端测试证明。
+3. 地址管理和路由模拟分层：`GVA Manager` 负责全局地址分配/保留，`GVA Simulation Layer` 负责 `MMU.S3/NoC` route 和 QEMU backend。
+4. 管控面必须可追踪：每条 GVA 映射都能回溯到 `GVA Manager`、guest `OBMM` 或后续 `GVA control` 命令。
+5. 数据面必须可验证：读写结果必须由 QEMU/guest 日志、统计计数和端到端测试证明。
 
 ## 2. 当前已实现基线
 
@@ -106,11 +107,12 @@ local imported PA window
 当前实现仍更像“UB Decoder/OBMM 直访仿真”，还不是完整的 “GVA 仿真”。主要缺口是：
 
 1. 没有显式 `GVA map` 对象，`remote_uba` 仍由 OBMM 私有 `priv` 隐式携带。
-2. 没有模拟 `VA + PTE.offset -> UBA` 的可观测计算过程。
-3. 没有模拟 `{VMID, ASID, UBA} -> {dcna, TID, UPI, p_tag}` 的 `MMU.S3 ma_table` 语义。
-4. 没有模拟 `p_tag -> UBC port/lane` 的 NoC `mp_table` 语义。
-5. `cacheable`/`non-cacheable` 策略没有作为 GVA 映射属性统一表达。
-6. 现有日志和统计以 `SIM_DEC` 为中心，不足以回答“这次访问是否走了 GVA 模拟路径”。
+2. 没有独立 `GVA Manager` 负责全局地址空间、GSVA reserved range 和地址生命周期。
+3. 没有模拟 `VA + PTE.offset -> UBA` 的可观测计算过程。
+4. 没有模拟 `{VMID, ASID, UBA} -> {dcna, TID, UPI, p_tag}` 的 `MMU.S3 ma_table` 语义。
+5. 没有模拟 `p_tag -> UBC port/lane` 的 NoC `mp_table` 语义。
+6. `cacheable`/`non-cacheable` 策略没有作为 GVA 映射属性统一表达。
+7. 现有日志和统计以 `SIM_DEC` 为中心，不足以回答“这次访问是否走了 GVA 模拟路径”。
 
 ### 2.4 代码基线校验
 
@@ -208,8 +210,8 @@ Application / workload
 
 ```text
 Application / workload
-  -> mmap / load-store / DMA on imported view
-      -> OBMM / UBMM control plane
+  -> libgva / mmap / load-store / DMA
+      -> GVA Manager or legacy OBMM / UBMM control plane
           -> GVA Simulation Layer
               -> QEMU MMU.S3 ma_table model
               -> QEMU NoC mp_table model
@@ -223,18 +225,69 @@ Application / workload
 
 `GVA Simulation Layer` 的职责是把 PPT 中的 GVA 概念显式化，并把它们编译到当前 QEMU 已有的 UB Link 数据面：
 
-1. 建立 `GVA map`，保存 `VA/PTE.offset/UBA` 关系。
-2. 建立 `ma_table` 模型，保存 `{VMID, ASID, UBA range} -> {dcna, TID, UPI, p_tag}`。
-3. 建立 `mp_table` 模型，保存 `{p_tag} -> {ubc_port, link, lane}`。
-4. 把上述模型编译成当前 QEMU 可执行的 internal backend map。
-5. 在数据面命中时输出 `gva_path` 级别的观测记录。
+1. 消费上游 `GVA Manager` 或 legacy OBMM import 产生的 `GVA map request`。
+2. 建立 `GVA map`，保存 `VA/PTE.offset/UBA` 关系。
+3. 建立 `ma_table` 模型，保存 `{VMID, ASID, UBA range} -> {dcna, TID, UPI, p_tag}`。
+4. 建立 `mp_table` 模型，保存 `{p_tag} -> {ubc_port, link, lane}`。
+5. 把上述模型编译成当前 QEMU 可执行的 internal backend map。
+6. 在数据面命中时输出 `gva_path` 级别的观测记录。
+
+`GVA Simulation Layer` 不负责选择全局地址。地址来源必须来自：
+
+1. `GVA Manager`：管理 GSVA 或后续普通 GVA 的全局地址空间。
+2. legacy OBMM import：仅作为 Phase A 兼容入口，使用 OBMM export 返回的 `remote_uba` 生成默认 GVA metadata。
+
+### 3.4 Global Address Management
+
+完整 GVA 需要一个独立的 `GVA Manager`，运行在 UB-connected supernode 上的每一个 OS 中。它是 GVA 控制面的上游地址管理组件，不是 QEMU backend。
+
+`GVA Manager` 的职责：
+
+1. 在 bootstrap 阶段通过基于 OBMM shmem 的 MPMC 队列与 peer manager 协商全局地址策略。
+2. 为 GSVA 协商并 reserve 一段所有参与 OS 都可用的 global VA range。
+3. 将 reserved range 注册到 guest kernel 和 OBMM 地址管理机制，避免普通 VA/mmap 和 OBMM shmdev mapping 误占。
+4. 从 reserved range 或普通 GVA address pool 中分配 GVA segment。
+5. 调用 OBMM export/import 或 GVA control API，把 `{local_va, pte_offset, uba_base, home, token}` 编译为 `ub_gva_map_req`。
+6. 维护 segment lifetime、generation、retire/reuse fence。
+
+GVA 与 GSVA 的关系：
+
+```text
+GVA Manager
+  -> produces ub_gva_map_req
+      -> GVA Simulation Layer
+          -> MMU.S3 ma_table / NoC mp_table
+              -> QEMU backend / UB Link
+```
+
+普通 GVA profile 允许：
+
+```text
+UBA = User VA + PTE.offset
+pte_offset may be nonzero
+```
+
+GSVA 是 GVA Manager 的 strict identity profile，要求：
+
+```text
+user_va == uba == home_va
+pte_offset == 0
+```
+
+如果 GSVA reserved range 不能被 guest kernel/OBMM 同时保留，GSVA session 必须失败。不能通过 `pte_offset != 0` relocation 或 QEMU private alias 继续伪装为 GSVA；那只能退化为普通 GVA。
+
+术语约束：
+
+1. `GSVA reserved VA aperture` 指 guest OS/进程 VA 层面的全局保留区间。
+2. `QEMU GVA MemoryRegion aperture` 指 QEMU 数据面可命中的 dispatch 入口。
+3. 两者可以由同一个 `ub_gva_map_req` 关联，但不能混为同一层地址管理对象。
 
 这个分阶段设计的关键约束：
 
 1. 用户、guest API、日志和测试应逐步使用 `GVA/MMU.S3/NoC` 术语，不再把 `SIM_DEC` 当成目标架构。
 2. `SIM_DEC` 可以作为 C 代码、map storage、CPU window callback、DMA fast path 的复用实现存在。
 3. 新增接口不得把 `SIM_DEC` 固化成 GVA 的长期 ABI。
-4. 后续切到 QEMU ARM MMU/TCG hook 时，`ma_table/mp_table` 与统计/测试应可复用，只替换入口路径。
+4. 后续切到 QEMU ARM MMU/TCG hook 时，`GVA Manager`、`ma_table/mp_table` 与统计/测试应可复用，只替换入口路径。
 
 ## 4. 关键抽象
 
@@ -247,6 +300,7 @@ Application / workload
 ```c
 struct ub_gva_map_req {
     u64 local_va;
+    u64 home_va;
     u64 local_pa;
     u64 size;
     u64 pte_offset;
@@ -263,17 +317,22 @@ struct ub_gva_map_req {
     u8  deid[16];
     u32 cache_policy;
     u32 access_flags;
+    u32 map_source;
+    u32 address_profile;
 };
 ```
 
 字段含义：
 
-1. `local_va`：可选。第一阶段可为 `0`，因为当前路径从 mmap/imported PA 窗口触发。
-2. `local_pa`：当前 `SIM_DEC` 的命中地址，必须保留。
-3. `pte_offset`：模拟 PPT 中 `PTE.offset`。
-4. `uba_base`：模拟 `VA + PTE.offset` 生成的 `UBA`；第一阶段可等于 OBMM export 返回的 `remote_uba`。
-5. `vmid/asid`：模拟 `MMU.S3` 查找上下文；第一阶段允许默认值，但必须进入表项和日志。
-6. `cache_policy`：显式表达 `Normal NC`、`cacheable read-only`、`write-through`、`write-back` 等策略。
+1. `local_va`：用户侧 VA。legacy OBMM Phase A 兼容入口可为 `0`，因为当前路径从 mmap/imported PA 窗口触发；`GVA Manager` 入口必须填写真实 VA，GSVA 中必须等于 `gsva_base`。
+2. `home_va`：Home 侧 VA。普通 GVA 可为 `0` 或仅用于调试；GSVA 中必须等于 `local_va` 和 `uba_base`。
+3. `local_pa`：当前 `SIM_DEC` 的命中地址，必须保留。
+4. `pte_offset`：模拟 PPT 中 `PTE.offset`。
+5. `uba_base`：模拟 `VA + PTE.offset` 生成的 `UBA`；legacy Phase A 可等于 OBMM export 返回的 `remote_uba`，GSVA 中必须等于 `local_va` 和 `home_va`。
+6. `vmid/asid`：模拟 `MMU.S3` 查找上下文；第一阶段允许默认值，但必须进入表项和日志。
+7. `cache_policy`：显式表达 `Normal NC`、`cacheable read-only`、`write-through`、`write-back` 等策略。
+8. `map_source`：区分 `legacy_obmm` 和 `gva_manager`。
+9. `address_profile`：区分 `generic_gva` 和 `gsva_identity`。`gsva_identity` 必须强校验地址三等值。
 
 ### 4.2 GVA Route Entry
 
@@ -285,12 +344,15 @@ struct ub_gva_map_req {
 struct ub_gva_route_entry {
     u32 vmid;
     u32 asid;
+    u64 local_va;
+    u64 home_va;
     u64 uba_base;
     u64 size;
     u32 dcna;
     u32 tid;
     u32 upi;
     u32 p_tag;
+    u32 address_profile;
     u64 sim_dec_map_id;
 };
 ```
@@ -339,10 +401,11 @@ struct ub_gva_mp_entry {
 2. `PTE.offset` 来源：
    - Phase A 不改 guest page table。
    - `pte_offset` 作为 GVA control metadata 字段。
-   - 目标语义是 identity-first：优先让 `User VA == UBA`，此时 `pte_offset=0`。
-   - 若 User 侧与 `UBA` 等值的 VA 不可用，例如已被占用、不满足 mmap 约束、ASLR/布局冲突，或测试显式要求 relocation，则选择其他 `User VA`，并记录 `pte_offset=UBA-User VA`。
+   - 普通 GVA profile 是 identity-first：优先让 `User VA == UBA`，此时 `pte_offset=0`。
+   - 若普通 GVA 中 User 侧与 `UBA` 等值的 VA 不可用，例如已被占用、不满足 mmap 约束、ASLR/布局冲突，或测试显式要求 relocation，则选择其他 `User VA`，并记录 `pte_offset=UBA-User VA`。
+   - GSVA profile 不允许 relocation；`GVA Manager` 必须先 reserve 可用的 `gsva_base`，并保证 `local_va=uba_base=home_va=gsva_base`、`pte_offset=0`。
    - Phase A 默认 `local_va=0`、`pte_offset=0`、`uba_base=remote_uba`，因为当前尚未接入 QEMU ARM MMU/TCG VA translation。
-   - 这里的 `pte_offset` 只描述 `User VA -> UBA` 的重定位关系，不推导 `Home VA == UBA`。
+   - 这里的 `pte_offset` 只描述 `User VA -> UBA` 的重定位关系；只有 GSVA profile 才额外要求 `Home VA == UBA`。
 3. `p_tag` 来源：
    - Phase A 由 GVA layer 静态分配。
    - 推荐使用确定性函数，例如 `{local_cna, peer_cna, upi}` 或 `gva_map_id` 派生。
@@ -366,7 +429,7 @@ struct ub_gva_mp_entry {
 
 ### 5.1 Export
 
-当前保持不变：
+普通 GVA 的 legacy Phase A export 保持不变：
 
 ```text
 Home guest
@@ -374,11 +437,22 @@ Home guest
       -> returns {mem_id, uba, tokenid}
 ```
 
-新增要求：
+普通 GVA 新增要求：
 
 1. export 结果必须可转换为 `GVA export descriptor`。
 2. descriptor 至少包含 `{deid, export_cna, uba_base, size, token_id}`。
 3. 通过现有 `OBMM_BOOTSTRAP_PUBLISH/LOOKUP` 分发时，记录应升级为 `GVA-capable` 语义。
+
+GSVA export 不以 OBMM 自行返回的任意 `uba` 为起点。它必须由 `GVA Manager` 先分配 `gsva_base`，并要求 guest kernel/OBMM 以该地址作为 architectural UBA：
+
+```text
+GVA Manager
+  -> allocate gsva_base from reserved range
+  -> OBMM_CMD_EXPORT with GSVA metadata
+      -> returns {mem_id, uba=gsva_base, tokenid}
+```
+
+如果 OBMM/UMMU 当前实现无法让 `cmd_export.uba == gsva_base`，GSVA export 必须失败；不能使用 QEMU private alias 掩盖地址不一致。
 
 ### 5.2 Import
 
@@ -395,8 +469,8 @@ User guest
 目标路径：
 
 ```text
-User guest
-  -> OBMM_CMD_IMPORT or UB_GVA_CMD_MAP
+User guest or GVA Manager
+  -> OBMM_CMD_IMPORT / UB_GVA_CMD_MAP / GSVA map API
       -> build ub_gva_map_req
           -> allocate GVA route entry
               -> allocate/derive p_tag entry
@@ -411,6 +485,7 @@ User guest
 1. 任一阶段失败必须回滚已创建的 `GVA route entry` 和 backend map。
 2. backend map 失败不能注册 OBMM region。
 3. route overlap、token mismatch、cache policy 不支持必须返回明确 errno。
+4. GSVA map 中 `local_va/uba_base/home_va` 不一致或 `pte_offset != 0` 必须失败，不能降级为普通 GVA。
 
 映射基数：
 
@@ -565,6 +640,8 @@ typedef struct SimGvaRouteMeta {
     uint64_t gva_map_id;
     uint32_t vmid;
     uint32_t asid;
+    uint64_t local_va;
+    uint64_t home_va;
     uint64_t pte_offset;
     uint64_t uba_base;
     uint64_t size;
@@ -573,6 +650,8 @@ typedef struct SimGvaRouteMeta {
     uint32_t upi;
     uint32_t p_tag;
     uint32_t cache_policy;
+    uint32_t map_source;
+    uint32_t address_profile;
 } SimGvaRouteMeta;
 ```
 
@@ -580,7 +659,7 @@ typedef struct SimGvaRouteMeta {
 
 1. `SimDecMapEntry` 是 legacy backend entry。
 2. `SimGvaRouteMeta` 才是 GVA 架构语义。
-3. QEMU MAP 日志应输出 `GVA_S3_MAP` 或等价前缀，包含 `vmid/asid/pte_offset/uba/p_tag/dcna/tid/upi`。
+3. QEMU MAP 日志应输出 `GVA_S3_MAP` 或等价前缀，包含 `vmid/asid/local_va/home_va/pte_offset/uba/p_tag/dcna/tid/upi/address_profile`。
 4. CPU window 与 DMA path 命中时应先关联 `SimGvaRouteMeta`，再调用已有 remote read/write helper。
 5. 后续切换到 QEMU ARM MMU/TCG hook 时，保留 `SimGvaRouteMeta/ma_table/mp_table`，替换掉 imported PA window 入口。
 
@@ -614,30 +693,34 @@ guest-linux/aarch64/scripts/run_ub_four_node_gva_matrix.sh
 修改：
 
 1. 新增 `GVA map/route/mp` 数据结构。
-2. 在 OBMM import callback 中生成 `ub_gva_map_req`。
-3. 新增 `SIM_DEC_OP_GVA_MAP` 或 GVA sideband payload；不改变现有 `SIM_DEC_OP_MAP` ABI。
-4. 在 guest debugfs 或 sysfs 导出 GVA maps/routes。
-5. QEMU `SimDecMapEntry` 增加 GVA metadata。
-6. 强制 `GVA route entry : backend map = 1:1`，暂不做 range split。
-7. CPU window read/write 输出 `gva_cpu_read/write` 计数。
-8. strict DMA path 输出 `gva_dma_read/write` 计数。
-9. 增加 `gva_path=cpu_window|dma` 日志。
-10. 输出基础 `GVA_STATS`。
-11. 新增 `gva_direct_demo`，覆盖 export/import/load/store/sync/unimport/dump。
-12. 新增 `run_ub_dual_node_gva_direct_test.sh`。
+2. 定义 `map_source=legacy_obmm|gva_manager` 和 `address_profile=generic_gva|gsva_identity`。
+3. 在 OBMM import callback 中生成 legacy `ub_gva_map_req`。
+4. 为 `GVA Manager` 预留 manager-produced `ub_gva_map_req` 合同，要求填写真实 `local_va/uba_base/pte_offset`。
+5. 新增 `SIM_DEC_OP_GVA_MAP` 或 GVA sideband payload；不改变现有 `SIM_DEC_OP_MAP` ABI。
+6. 在 guest debugfs 或 sysfs 导出 GVA maps/routes。
+7. QEMU `SimDecMapEntry` 增加 GVA metadata。
+8. 强制 `GVA route entry : backend map = 1:1`，暂不做 range split。
+9. CPU window read/write 输出 `gva_cpu_read/write` 计数。
+10. strict DMA path 输出 `gva_dma_read/write` 计数。
+11. 增加 `gva_path=cpu_window|dma` 日志。
+12. 输出基础 `GVA_STATS`。
+13. 新增 `gva_direct_demo`，覆盖 export/import/load/store/sync/unimport/dump。
+14. 新增 `run_ub_dual_node_gva_direct_test.sh`。
 
 验收：
 
 1. OBMM import 成功后能看到一条 GVA map。
-2. QEMU MAP 日志包含 `gva_map_id/vmid/asid/pte_offset/uba/p_tag`，且日志前缀体现 `GVA_S3` 而非只有 `SIM_DEC`。
-3. 双节点 WRITE 后 Home 侧内存可见。
-4. 双节点 READ 返回 Home 侧内容。
-5. unmap 后访问失败或返回预期错误。
-6. `SIM_DEC_STATS` 与 `GVA_STATS` 均有非零读写计数。
-7. `gva_direct_demo --mode=write-read` 通过。
-8. `gva_direct_demo --mode=unmap-fault` 通过。
-9. `gva_direct_demo --mode=sync` 通过。
-10. 现有 dual-node `obmm_demo` 不回退。
+2. QEMU MAP 日志包含 `gva_map_id/vmid/asid/local_va/home_va/pte_offset/uba/p_tag/address_profile`，且日志前缀体现 `GVA_S3` 而非只有 `SIM_DEC`。
+3. `generic_gva` map 允许 `pte_offset != 0` 并在 route dump 中可见。
+4. `gsva_identity` map 必须满足 `local_va=uba_base=home_va` 且 `pte_offset=0`，否则 map 失败。
+5. 双节点 WRITE 后 Home 侧内存可见。
+6. 双节点 READ 返回 Home 侧内容。
+7. unmap 后访问失败或返回预期错误。
+8. `SIM_DEC_STATS` 与 `GVA_STATS` 均有非零读写计数。
+9. `gva_direct_demo --mode=write-read` 通过。
+10. `gva_direct_demo --mode=unmap-fault` 通过。
+11. `gva_direct_demo --mode=sync` 通过。
+12. 现有 dual-node `obmm_demo` 不回退。
 
 ### Phase B：MMU.S3 / NoC 表语义增强
 
@@ -775,9 +858,11 @@ guest-linux/aarch64/scripts/run_ub_four_node_gva_matrix.sh
 2. `PTE.offset`：
    - 不进入 guest page table。
    - 作为 GVA metadata 字段。
-   - 目标语义优先 `User VA == UBA`，此时 `pte_offset=0`。
-   - 当 User 侧同值 VA 不可用或显式要求 relocation 时，记录 `pte_offset=UBA-User VA`。
-   - Phase A 当前未接入 VA translation，默认只记录 `local_va=0`、`pte_offset=0`、`uba_base=remote_uba`。
+   - 普通 GVA profile 优先 `User VA == UBA`，此时 `pte_offset=0`。
+   - 当普通 GVA 的 User 侧同值 VA 不可用或显式要求 relocation 时，记录 `pte_offset=UBA-User VA`。
+   - GSVA profile 由 `GVA Manager` 分配 `gsva_base`，必须满足 `local_va=uba_base=home_va=gsva_base`、`pte_offset=0`。
+   - legacy OBMM Phase A 当前未接入 VA translation，默认只记录 `local_va=0`、`pte_offset=0`、`uba_base=remote_uba`。
+   - manager-produced map request 必须填写真实 `local_va`，不能使用 legacy `local_va=0` 约定。
 3. `p_tag`：
    - Phase A 静态确定性分配。
    - Phase B 再和 FM link topology 校验。
@@ -798,6 +883,9 @@ guest-linux/aarch64/scripts/run_ub_four_node_gva_matrix.sh
 8. 模块放置：
    - Phase A 放在 `ubus/sim` 内。
    - 不新增独立 `ub-gva.ko`。
+9. `GVA Manager`：
+   - GVA Simulation Phase A 只定义 manager-produced map request 合同。
+   - GSVA manager bootstrap、reserved range 协商和 kernel/OBMM aperture registry 在 GSVA 设计中实现。
 
 ### 12.2 剩余开放问题
 

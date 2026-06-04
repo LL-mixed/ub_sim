@@ -16,6 +16,8 @@ Current validation entry points:
   - eight-node scale-up design notes, including configurable `port_num` and FM-owned `EID/CNA` constraints
 - [sim_gva_simulation_design.md](sim_gva_simulation_design.md)
   - design for adding explicit GVA simulation semantics on top of the current OBMM/SIM_DEC/QEMU UB Link path
+- [sim_gsva_shared_virtual_address_design.md](sim_gsva_shared_virtual_address_design.md)
+  - design for a GSVA mode where OBMM shmem ranges use identical user VA, public UBA, and home VA across nodes
 - [lingqu_db_object_service_design.md](lingqu_db_object_service_design.md)
   - detailed design for a general Lingqu DB/Object Service that manages Qwen3 weights, KV cache, hidden boundaries, runtime tensors, versions, and shmem/block payload placement before 8-node range forward
 - [drafts/qwen3_0_6b_engram_obmm_simpler_8node_design.md](drafts/qwen3_0_6b_engram_obmm_simpler_8node_design.md)
