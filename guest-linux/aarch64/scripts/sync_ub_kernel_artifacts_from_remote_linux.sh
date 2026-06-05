@@ -10,6 +10,13 @@ REMOTE_LINUX_HOST="${REMOTE_LINUX_HOST:-}"
 REMOTE_KERNEL_SRC="${REMOTE_KERNEL_SRC:-}"
 REMOTE_KERNEL_BUILD="${REMOTE_KERNEL_BUILD:-}"
 REMOTE_LINQU_DRIVER_DIR="${REMOTE_LINQU_DRIVER_DIR:-}"
+if [[ -z "${REMOTE_TMPDIR:-}" ]]; then
+  if [[ -n "${REMOTE_KERNEL_BUILD:-}" ]]; then
+    REMOTE_TMPDIR="${REMOTE_KERNEL_BUILD:h}/tmp"
+  else
+    REMOTE_TMPDIR="/tmp"
+  fi
+fi
 
 REMOTE_IMAGE_PATH="${REMOTE_IMAGE_PATH:-$REMOTE_KERNEL_BUILD/arch/arm64/boot/Image}"
 REMOTE_HISI_MODULE_PATH="${REMOTE_HISI_MODULE_PATH:-$REMOTE_KERNEL_BUILD/drivers/ub/ubus/vendor/hisilicon/hisi_ubus.ko}"
@@ -50,6 +57,8 @@ normalize_remote_sim_config() {
   ssh "$REMOTE_LINUX_HOST" "
     set -euo pipefail
     cd '$REMOTE_KERNEL_SRC'
+    mkdir -p '$REMOTE_TMPDIR'
+    export TMPDIR='$REMOTE_TMPDIR'
     if [[ '$REMOTE_REUSE_KERNEL_CONFIG' == '1' ]]; then
       test -f '$REMOTE_KERNEL_BUILD/.config'
     else
@@ -107,12 +116,16 @@ if [[ "$BUILD_ON_REMOTE" == "1" ]]; then
   ssh "$REMOTE_LINUX_HOST" "
     set -euo pipefail
     cd '$REMOTE_KERNEL_SRC'
+    mkdir -p '$REMOTE_TMPDIR'
+    export TMPDIR='$REMOTE_TMPDIR'
     make O='$REMOTE_KERNEL_BUILD' ARCH='$REMOTE_ARCH' CROSS_COMPILE='$REMOTE_CROSS_COMPILE' KALLSYMS_EXTRA_PASS=1 -j'$JOBS' Image modules
   "
 
   if [[ "$BUILD_LINQU_DRIVER_ON_REMOTE" == "1" ]]; then
     ssh "$REMOTE_LINUX_HOST" "
       set -euo pipefail
+      mkdir -p '$REMOTE_TMPDIR'
+      export TMPDIR='$REMOTE_TMPDIR'
       if [[ -d '$REMOTE_LINQU_DRIVER_DIR' ]] && [[ -f '$REMOTE_LINQU_DRIVER_DIR/Makefile' ]]; then
         make -C '$REMOTE_KERNEL_BUILD' M='$REMOTE_LINQU_DRIVER_DIR' O='$REMOTE_KERNEL_BUILD' ARCH='$REMOTE_ARCH' CROSS_COMPILE='$REMOTE_CROSS_COMPILE' modules
       else

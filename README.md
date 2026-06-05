@@ -141,12 +141,35 @@ ALLOW_REMOTE_LINUX_ARTIFACTS=1 \
 REMOTE_LINUX_HOST=<your-build-host> \
 REMOTE_KERNEL_SRC=/path/to/kernel_ub \
 REMOTE_KERNEL_BUILD=/path/to/kernel_build \
+REMOTE_TMPDIR=/path/to/writable/tmp \
 AARCH64_LINUX_CC="$AARCH64_LINUX_CC" \
 BUSYBOX="$BUSYBOX" \
 ./scripts/build_guest_artifacts.sh
 ```
 
 其中 `REMOTE_LINUX_HOST` 是你自己的 SSH 目标，例如 `user@build-host`。
+
+如果远端根分区可用空间不足（VM 经常会出现），请把 `REMOTE_KERNEL_SRC` / `REMOTE_KERNEL_BUILD` / `REMOTE_TMPDIR` 放在有空间的挂载点（例如 `/mnt/share/...`），否则容易在 kernel 编译中触发 `No space left on device`。
+
+当前仓库在 `ll@192.168.64.3` VM 上已有可用内核构建环境，可直接用如下参数：
+
+```bash
+cd guest-linux/aarch64
+export UB_REMOTE_LINUX_HOST=ll@192.168.64.3
+export UB_ALLOW_REMOTE_LINUX_ARTIFACTS=1
+export UB_REMOTE_KERNEL_SRC=/home/ll/ub_sim/guest-linux/kernel_ub
+export UB_REMOTE_KERNEL_BUILD=/mnt/share/shared_data/ub_sim_kernel_build
+export UB_REMOTE_TMPDIR=/mnt/share/shared_data/ub_sim_kernel_tmp
+export UB_GUEST_ARTIFACT_SOURCE=remote
+export UB_SYNC_ARTIFACTS=1
+
+ARTIFACT_SOURCE=remote \
+AARCH64_LINUX_CC=/opt/homebrew/bin/aarch64-linux-gnu-gcc \
+BUSYBOX=$PWD/busybox-aarch64 \
+./scripts/build_guest_artifacts.sh
+```
+
+如果你希望同步脚本在 `run_ub_*.sh` 链路里自动生效，只需把上述 `UB_*` 环境变量导出后直接运行对应启动脚本，`ensure_ub_guest_artifacts` 会在内部透传到 `build_guest_artifacts.sh`。
 
 默认 `ARTIFACT_SOURCE=auto`，行为是：
 

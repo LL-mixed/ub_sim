@@ -1,4 +1,4 @@
-CC ?= aarch64-linux-gnu-gcc
+CC = aarch64-linux-gnu-gcc
 CFLAGS = -static -O2 -Wall -Wextra \
          -I../../kernel_ub/include/uapi \
          -I../../common \

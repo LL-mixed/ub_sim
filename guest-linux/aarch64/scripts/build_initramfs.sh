@@ -29,6 +29,12 @@ OBMM_QUEUE_DEMO_SRC="$ROOT_DIR/apps/obmm_queue_demo/obmm_queue_demo.c"
 OBMM_QUEUE_DEMO_BIN="$OUT_DIR/linqu_ub_obmm_queue_demo"
 OBMM_IMPORT_STRESS_SRC="$ROOT_DIR/apps/obmm_import_stress/obmm_import_stress.c"
 OBMM_IMPORT_STRESS_BIN="$OUT_DIR/linqu_ub_obmm_import_stress"
+GVA_DIRECT_DEMO_SRC="$ROOT_DIR/apps/gva_direct_demo/gva_direct_demo.c"
+GVA_DIRECT_DEMO_BIN="$OUT_DIR/linqu_gva_direct_demo"
+OBMM_GSVA_DEMO_SRC="$ROOT_DIR/apps/obmm_gsva_demo/obmm_gsva_demo.c"
+OBMM_GSVA_DEMO_BIN="$OUT_DIR/linqu_ub_obmm_gsva_demo"
+GVA_MANAGER_SRC="$ROOT_DIR/apps/gva_manager/gva_manager.c"
+GVA_MANAGER_BIN="$OUT_DIR/linqu_gva_manager"
 W4_GUEST_SRC="$ROOT_DIR/w4_guest_qemu_demo.c"
 W4_DB_SERVICE_SRC="$ROOT_DIR/w4_kvcache_db_service.c"
 W4_GUEST_BIN="$OUT_DIR/linqu_w4_guest"
@@ -119,6 +125,9 @@ current_initramfs_signature() {
   write_signature_line "obmm_src" "$OBMM_SRC"
   write_signature_line "obmm_queue_demo_src" "$OBMM_QUEUE_DEMO_SRC"
   write_signature_line "obmm_import_stress_src" "$OBMM_IMPORT_STRESS_SRC"
+  write_signature_line "gva_direct_demo_src" "$GVA_DIRECT_DEMO_SRC"
+  write_signature_line "obmm_gsva_demo_src" "$OBMM_GSVA_DEMO_SRC"
+  write_signature_line "gva_manager_src" "$GVA_MANAGER_SRC"
   write_signature_line "w4_guest_src" "$W4_GUEST_SRC"
   write_signature_line "w4_db_service_src" "$W4_DB_SERVICE_SRC"
   write_signature_line "run_demo_src" "$RUN_DEMO_SRC"
@@ -342,6 +351,9 @@ fi
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$OBMM_SRC" -o "$OBMM_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/libs/obmm_queue" -I"$ROOT_DIR/apps/obmm_queue_demo" "$OBMM_QUEUE_DEMO_SRC" -o "$OBMM_QUEUE_DEMO_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/kernel_ub/include/uapi" -I"$ROOT_DIR/common" -I"$ROOT_DIR/apps/obmm_queue_demo" "$OBMM_IMPORT_STRESS_SRC" -o "$OBMM_IMPORT_STRESS_BIN"
+"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/common" "$GVA_DIRECT_DEMO_SRC" -o "$GVA_DIRECT_DEMO_BIN"
+"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/common" "$OBMM_GSVA_DEMO_SRC" -o "$OBMM_GSVA_DEMO_BIN"
+"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/kernel_ub/include/uapi" -I"$ROOT_DIR/common" -I"$ROOT_DIR/libs/obmm_queue" "$GVA_MANAGER_SRC" -o "$GVA_MANAGER_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/libs/obmm_queue" -I"$ROOT_DIR/apps/obmm_queue_demo" "$W4_GUEST_SRC" "$W4_DB_SERVICE_SRC" -lm -o "$W4_GUEST_BIN"
 
 if [[ -f "$INIT_SCRIPT_SRC" ]]; then
@@ -364,6 +376,9 @@ cp "$UDMA_BIN" "$INITRAMFS_DIR/bin/linqu_ub_udma_demo"
 cp "$OBMM_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_demo"
 cp "$OBMM_QUEUE_DEMO_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_queue_demo"
 cp "$OBMM_IMPORT_STRESS_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_import_stress"
+cp "$GVA_DIRECT_DEMO_BIN" "$INITRAMFS_DIR/bin/linqu_gva_direct_demo"
+cp "$OBMM_GSVA_DEMO_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_gsva_demo"
+cp "$GVA_MANAGER_BIN" "$INITRAMFS_DIR/bin/linqu_gva_manager"
 cp "$W4_GUEST_BIN" "$INITRAMFS_DIR/bin/linqu_w4_guest"
 chmod +x \
   "$INITRAMFS_DIR/bin/linqu_probe" \
@@ -375,6 +390,9 @@ chmod +x \
   "$INITRAMFS_DIR/bin/linqu_ub_udma_demo" \
   "$INITRAMFS_DIR/bin/linqu_ub_obmm_demo" \
   "$INITRAMFS_DIR/bin/linqu_ub_obmm_queue_demo" \
+  "$INITRAMFS_DIR/bin/linqu_gva_direct_demo" \
+  "$INITRAMFS_DIR/bin/linqu_ub_obmm_gsva_demo" \
+  "$INITRAMFS_DIR/bin/linqu_gva_manager" \
   "$INITRAMFS_DIR/bin/linqu_w4_guest"
 
 cp "$BUSYBOX" "$INITRAMFS_DIR/bin/busybox"

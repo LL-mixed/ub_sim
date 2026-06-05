@@ -144,6 +144,90 @@ run_obmm_import_stress() {
   run_binary "linqu_ub_obmm_import_stress" /bin/linqu_ub_obmm_import_stress $args
 }
 
+run_gva_manager_bootstrap() {
+  local args="--bootstrap"
+  local token=""
+
+  read_cmdline
+  for token in $cmdline; do
+    case "$token" in
+      gva_manager_node_id=*)
+        args="$args --node-id ${token#*=}"
+        ;;
+      gva_manager_node_count=*)
+        args="$args --node-count ${token#*=}"
+        ;;
+      gva_manager_generation=*)
+        args="$args --generation ${token#*=}"
+        ;;
+      gva_manager_aperture_base=*)
+        args="$args --aperture-base ${token#*=}"
+        ;;
+      gva_manager_aperture_size=*)
+        args="$args --aperture-size ${token#*=}"
+        ;;
+      gva_manager_conflict=1)
+        args="$args --conflict"
+        ;;
+    esac
+  done
+
+  # Values come from kernel cmdline key=value tokens, so word splitting is intentional.
+  run_binary "linqu_gva_manager" /bin/linqu_gva_manager $args
+}
+
+run_obmm_gsva_demo() {
+  local args=""
+  local token=""
+
+  read_cmdline
+  for token in $cmdline; do
+    case "$token" in
+      obmm_gsva_mode=*)
+        args="$args --mode ${token#*=}"
+        ;;
+      obmm_gsva_base=*)
+        args="$args --base ${token#*=}"
+        ;;
+      obmm_gsva_size=*)
+        args="$args --size ${token#*=}"
+        ;;
+      obmm_gsva_node_count=*)
+        args="$args --node-count ${token#*=}"
+        ;;
+    esac
+  done
+
+  # Values come from kernel cmdline key=value tokens, so word splitting is intentional.
+  run_binary "linqu_ub_obmm_gsva_demo" /bin/linqu_ub_obmm_gsva_demo $args
+}
+
+run_gva_direct_demo() {
+  local args=""
+  local token=""
+
+  read_cmdline
+  for token in $cmdline; do
+    case "$token" in
+      gva_direct_mode=*)
+        args="$args --mode ${token#*=}"
+        ;;
+      gva_direct_size=*)
+        args="$args --size ${token#*=}"
+        ;;
+      gva_direct_local_va=*)
+        args="$args --local-va ${token#*=}"
+        ;;
+      gva_direct_home_va=*)
+        args="$args --home-va ${token#*=}"
+        ;;
+    esac
+  done
+
+  # Values come from kernel cmdline key=value tokens, so word splitting is intentional.
+  run_binary "linqu_gva_direct_demo" /bin/linqu_gva_direct_demo $args
+}
+
 run_default_actions() {
   local ran_any="0"
   local rc=0
@@ -183,6 +267,21 @@ run_default_actions() {
     ran_any="1"
   fi
 
+  if has_flag "linqu_gva_manager=1"; then
+    run_gva_manager_bootstrap || rc=$?
+    ran_any="1"
+  fi
+
+  if has_flag "linqu_gva_direct_demo=1"; then
+    run_gva_direct_demo || rc=$?
+    ran_any="1"
+  fi
+
+  if has_flag "linqu_obmm_gsva_demo=1"; then
+    run_obmm_gsva_demo || rc=$?
+    ran_any="1"
+  fi
+
   if [ "$rc" -ne 0 ]; then
     return "$rc"
   fi
@@ -219,6 +318,15 @@ run_single_action() {
       ;;
     obmm_import_stress)
       run_obmm_import_stress
+      ;;
+    gva_manager_bootstrap)
+      run_gva_manager_bootstrap
+      ;;
+    gva_direct_demo)
+      run_gva_direct_demo
+      ;;
+    obmm_gsva_demo)
+      run_obmm_gsva_demo
       ;;
     all)
       run_default_actions

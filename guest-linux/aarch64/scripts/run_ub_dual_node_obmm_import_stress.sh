@@ -14,6 +14,7 @@ SHARED_DIR="${UB_FM_SHARED_DIR:-/tmp/ub-qemu-links-stress}"
 RUN_SECS="${RUN_SECS:-180}"
 LINK_WAIT_SECS="${LINK_WAIT_SECS:-45}"
 QEMU_KEEP_ALIVE_ON_POWEROFF="${QEMU_KEEP_ALIVE_ON_POWEROFF:-0}"
+QMP_MODE="${QMP_MODE:-auto}"
 APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
@@ -92,6 +93,7 @@ NODEA_PID_FILE="$OUT_DIR/ub_nodeA.stress.${RUN_ID}.pid"
 NODEB_PID_FILE="$OUT_DIR/ub_nodeB.stress.${RUN_ID}.pid"
 NODEA_QMP="$SHARED_DIR/qmp/nodeA.qmp"
 NODEB_QMP="$SHARED_DIR/qmp/nodeB.qmp"
+QMP_ACTIVE=0
 
 rm -rf "$SHARED_DIR"
 mkdir -p "$SHARED_DIR/qmp"
@@ -120,9 +122,16 @@ start_node() {
   local pid_file="$5"
   local qmp_socket="$6"
   local qemu_extra=()
+  local qemu_pause=()
+  local qmp_flag=()
 
   if [[ "$QEMU_KEEP_ALIVE_ON_POWEROFF" == "1" ]]; then
     qemu_extra=(-no-shutdown)
+  fi
+
+  if [[ "$QMP_MODE" == "on" ]]; then
+    qmp_flag=(-qmp unix:"$qmp_socket",server=on,wait=off)
+    qemu_pause=(-S)
   fi
 
   env \
@@ -132,13 +141,13 @@ start_node() {
     UB_SIM_ENTITY_COUNT="$ENTITY_COUNT" \
     UB_FM_ENTITY_PLAN_FILE="$ENTITY_PLAN_FILE" \
     "$QEMU_BIN" \
-      -S \
       -M virt,gic-version=3,its=on,ummu=on,ub-cluster-mode=on \
       -cpu cortex-a57 \
       -m 8G \
       -nodefaults \
       -nographic \
-      -qmp unix:"$qmp_socket",server=on,wait=off \
+      "${qemu_pause[@]}" \
+      ${qmp_flag[@]} \
       -serial file:"$guest_log" \
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
@@ -211,19 +220,73 @@ wait_for_fm_links_ready() {
   return 1
 }
 
+validate_gva_logs() {
+  if [[ "$STRESS_GVA_MODE" == "legacy" ]]; then
+    return 0
+  fi
+
+  if ! grep -q 'SIM_DEC: GVA_MAP success' "$NODEA_QEMU_LOG" ||
+     ! grep -q 'SIM_DEC: GVA_MAP success' "$NODEB_QEMU_LOG" ||
+     ! grep -q 'GVA_S3_MAP' "$NODEA_QEMU_LOG" ||
+     ! grep -q 'GVA_S3_MAP' "$NODEB_QEMU_LOG" ||
+     ! grep -q 'GVA_ROUTE_DUMP state=active' "$NODEA_QEMU_LOG" ||
+     ! grep -q 'GVA_ROUTE_DUMP state=active' "$NODEB_QEMU_LOG"; then
+    echo "[stress] FAIL: GVA mode completed without QEMU GVA_MAP evidence" >&2
+    return 1
+  fi
+
+  if ! grep -Eq 'GVA_PATH gva_path=cpu_window op=read ' "$NODEA_QEMU_LOG" ||
+     ! grep -Eq 'GVA_PATH gva_path=cpu_window op=write ' "$NODEA_QEMU_LOG" ||
+     ! grep -Eq 'GVA_PATH gva_path=cpu_window op=read ' "$NODEB_QEMU_LOG" ||
+     ! grep -Eq 'GVA_PATH gva_path=cpu_window op=write ' "$NODEB_QEMU_LOG"; then
+    echo "[stress] FAIL: GVA mode completed without cpu-window path read/write evidence" >&2
+    return 1
+  fi
+
+  if ! grep -Eq 'GVA_STATS .*cpu_reads=[1-9][0-9]* .*cpu_writes=[1-9][0-9]*' "$NODEA_QEMU_LOG" ||
+     ! grep -Eq 'GVA_STATS .*cpu_reads=[1-9][0-9]* .*cpu_writes=[1-9][0-9]*' "$NODEB_QEMU_LOG"; then
+    echo "[stress] FAIL: GVA mode completed without nonzero GVA_STATS read/write evidence" >&2
+    return 1
+  fi
+  if ! grep -Eq 'SIM_DEC_STATS .*gva_cpu_reads=[1-9][0-9]* .*gva_cpu_writes=[1-9][0-9]* .*cpu_reads=[1-9][0-9]* .*cpu_writes=[1-9][0-9]*' "$NODEA_QEMU_LOG" ||
+     ! grep -Eq 'SIM_DEC_STATS .*gva_cpu_reads=[1-9][0-9]* .*gva_cpu_writes=[1-9][0-9]* .*cpu_reads=[1-9][0-9]* .*cpu_writes=[1-9][0-9]*' "$NODEB_QEMU_LOG"; then
+    echo "[stress] FAIL: GVA mode completed without nonzero SIM_DEC_STATS read/write evidence" >&2
+    return 1
+  fi
+
+  if [[ "$STRESS_GVA_MODE" == "gsva" ]]; then
+    if ! grep -Eq 'SIM_DEC: GVA_MAP success .*address_profile=2 .*pte_offset=0' "$NODEA_QEMU_LOG" ||
+       ! grep -Eq 'SIM_DEC: GVA_MAP success .*address_profile=2 .*pte_offset=0' "$NODEB_QEMU_LOG" ||
+       ! grep -Eq 'GVA_S3_MAP .*local_va=[0-9a-f]+ .*home_va=[0-9a-f]+ .*pte_offset=0 .*uba=[0-9a-f]+ .*address_profile=2' "$NODEA_QEMU_LOG" ||
+       ! grep -Eq 'GVA_S3_MAP .*local_va=[0-9a-f]+ .*home_va=[0-9a-f]+ .*pte_offset=0 .*uba=[0-9a-f]+ .*address_profile=2' "$NODEB_QEMU_LOG"; then
+      echo "[stress] FAIL: GSVA mode completed without identity GVA_MAP evidence" >&2
+      return 1
+    fi
+  fi
+}
+
 echo "[stress] run_id=$RUN_ID size=$STRESS_SIZE pattern=$STRESS_PATTERN iters=$STRESS_ITERS flush=$STRESS_FLUSH chunk=$STRESS_CHUNK_SIZE"
 echo "[stress] starting nodeA and nodeB..."
 
 start_node nodeA nodeA "$NODEA_GUEST_LOG" "$NODEA_QEMU_LOG" "$NODEA_PID_FILE" "$NODEA_QMP"
 start_node nodeB nodeB "$NODEB_GUEST_LOG" "$NODEB_QEMU_LOG" "$NODEB_PID_FILE" "$NODEB_QMP"
 
-if ! wait_for_qmp_socket "$NODEA_QMP" 10 || ! wait_for_qmp_socket "$NODEB_QMP" 10; then
-  echo "[stress] FAIL: QMP socket not ready" >&2
-  exit 1
+if [[ "$QMP_MODE" == "on" ]]; then
+  if ! wait_for_qmp_socket "$NODEA_QMP" 10 || ! wait_for_qmp_socket "$NODEB_QMP" 10; then
+    echo "[stress] FAIL: QMP socket not ready" >&2
+    exit 1
+  else
+    QMP_ACTIVE=1
+  fi
 fi
 
-# Resume QEMU via QMP
-python3 - "$NODEA_QMP" <<'PY'
+if [[ "$QMP_MODE" == "none" || "$QMP_MODE" == "auto" ]]; then
+  QMP_ACTIVE=0
+fi
+
+if [[ "$QMP_ACTIVE" == "1" ]]; then
+  # Resume QEMU via QMP
+  python3 - "$NODEA_QMP" <<'PY'
 import socket, sys
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.settimeout(5)
@@ -236,7 +299,7 @@ s.recv(4096)
 s.close()
 PY
 
-python3 - "$NODEB_QMP" <<'PY'
+  python3 - "$NODEB_QMP" <<'PY'
 import socket, sys
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.settimeout(5)
@@ -248,6 +311,9 @@ s.sendall(b'{"execute":"cont"}\r\n')
 s.recv(4096)
 s.close()
 PY
+else
+  echo "[stress] running without QMP control path"
+fi
 
 echo "[stress] waiting for FM links..."
 if ! wait_for_fm_links_ready "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG" "$LINK_WAIT_SECS"; then
@@ -261,6 +327,11 @@ deadline=$((SECONDS + RUN_SECS))
 while (( SECONDS < deadline )); do
   if [[ -f "$NODEA_GUEST_LOG" ]] && grep -qE '\[obmm_import_stress\] result=done' "$NODEA_GUEST_LOG" && \
      [[ -f "$NODEB_GUEST_LOG" ]] && grep -qE '\[obmm_import_stress\] result=done' "$NODEB_GUEST_LOG"; then
+    cleanup
+    sleep 0.5
+    if ! validate_gva_logs; then
+      exit 1
+    fi
     echo "[stress] PASS: both nodes completed"
     echo "[stress] nodeA stats:"
     grep '\[obmm_import_stress\]' "$NODEA_GUEST_LOG" | tail -5

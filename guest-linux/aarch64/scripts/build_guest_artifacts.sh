@@ -16,6 +16,7 @@ SYNC_ARTIFACTS="${SYNC_ARTIFACTS:-1}"
 BUILD_ON_REMOTE="${BUILD_ON_REMOTE:-0}"
 BUILD_LINQU_DRIVER_ON_REMOTE="${BUILD_LINQU_DRIVER_ON_REMOTE:-0}"
 ALLOW_REMOTE_LINUX_ARTIFACTS="${ALLOW_REMOTE_LINUX_ARTIFACTS:-0}"
+REMOTE_TMPDIR="${REMOTE_TMPDIR:-}"
 LOCAL_KERNEL_IMAGE="${LOCAL_KERNEL_IMAGE:-}"
 LOCAL_MODULES_DIR="${LOCAL_MODULES_DIR:-}"
 KERNEL_DEFCONFIG="${KERNEL_DEFCONFIG:-openeuler_defconfig}"
@@ -58,19 +59,39 @@ current_kernel_submodule_head() {
   git -C "$KERNEL_SRC_DIR" rev-parse HEAD 2>/dev/null || echo ""
 }
 
-kernel_image_stamp_matches() {
+current_kernel_artifact_signature() {
   local current_head=""
+  local tracked_path
   current_head="$(current_kernel_submodule_head)"
   [[ -n "$current_head" ]] || return 1
+
+  printf 'kernel_head=%s\n' "$current_head"
+  if git -C "$KERNEL_SRC_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    for tracked_path in \
+      drivers/ub/obmm \
+      drivers/ub/ubus/sim \
+      include/uapi/ub/obmm.h; do
+      git -C "$KERNEL_SRC_DIR" status --porcelain --untracked-files=no -- "$tracked_path" || true
+      git -C "$KERNEL_SRC_DIR" diff --binary -- "$tracked_path" || true
+      git -C "$KERNEL_SRC_DIR" diff --cached --binary -- "$tracked_path" || true
+    done
+  fi
+}
+
+kernel_image_stamp_matches() {
+  local current_signature=""
+  local legacy_head=""
+  local stamp=""
+  current_signature="$(current_kernel_artifact_signature)" || return 1
+  legacy_head="$(current_kernel_submodule_head)"
   [[ -f "$KERNEL_STAMP_FILE" ]] || return 1
-  [[ "$(cat "$KERNEL_STAMP_FILE" 2>/dev/null)" == "$current_head" ]]
+  stamp="$(cat "$KERNEL_STAMP_FILE" 2>/dev/null)"
+  [[ "$stamp" == "$current_signature" ]] && return 0
+  [[ "$stamp" == "$legacy_head" && "$current_signature" == "kernel_head=$legacy_head" ]]
 }
 
 write_kernel_image_stamp() {
-  local current_head=""
-  current_head="$(current_kernel_submodule_head)"
-  [[ -n "$current_head" ]] || return 1
-  printf '%s\n' "$current_head" > "$KERNEL_STAMP_FILE"
+  current_kernel_artifact_signature > "$KERNEL_STAMP_FILE"
 }
 
 import_local_artifacts() {
@@ -222,6 +243,7 @@ sync_from_remote_linux() {
     REMOTE_LINUX_HOST="${REMOTE_LINUX_HOST:-}" \
     REMOTE_KERNEL_SRC="${REMOTE_KERNEL_SRC:-}" \
     REMOTE_KERNEL_BUILD="${REMOTE_KERNEL_BUILD:-}" \
+    REMOTE_TMPDIR="${REMOTE_TMPDIR}" \
     REMOTE_LINQU_DRIVER_DIR="${REMOTE_LINQU_DRIVER_DIR:-}" \
     REMOTE_LINQU_MODULE_PATH="${REMOTE_LINQU_MODULE_PATH:-}" \
     REMOTE_REUSE_KERNEL_CONFIG="${REMOTE_REUSE_KERNEL_CONFIG:-0}" \
@@ -246,6 +268,7 @@ print_build_guest_help() {
 [build_guest_artifacts]   ARTIFACT_SOURCE=native AARCH64_LINUX_CC=$CC BUSYBOX=\$PWD/busybox-aarch64 ./scripts/build_guest_artifacts.sh
 [build_guest_artifacts]   ARTIFACT_SOURCE=local LOCAL_KERNEL_IMAGE=/path/to/Image LOCAL_MODULES_DIR=/path/to/modules AARCH64_LINUX_CC=$CC ./scripts/build_guest_artifacts.sh
 [build_guest_artifacts]   ARTIFACT_SOURCE=remote ALLOW_REMOTE_LINUX_ARTIFACTS=1 REMOTE_LINUX_HOST=user@build-host REMOTE_KERNEL_SRC=/path/to/kernel_ub REMOTE_KERNEL_BUILD=/path/to/kernel_build AARCH64_LINUX_CC=$CC ./scripts/build_guest_artifacts.sh
+[build_guest_artifacts]   ARTIFACT_SOURCE=remote ALLOW_REMOTE_LINUX_ARTIFACTS=1 REMOTE_LINUX_HOST=user@build-host REMOTE_TMPDIR=/mnt/share/tmp REMOTE_KERNEL_SRC=/mnt/share/... REMOTE_KERNEL_BUILD=/mnt/share/... AARCH64_LINUX_CC=$CC ./scripts/build_guest_artifacts.sh
 EOF
 }
 
@@ -254,7 +277,7 @@ case "$ARTIFACT_SOURCE" in
     if have_default_artifacts && kernel_image_stamp_matches; then
       echo "[build_guest_artifacts] using existing local out/ artifacts" >&2
     elif have_default_artifacts; then
-      echo "[build_guest_artifacts] existing Image/initramfs are stale for current kernel_ub HEAD" >&2
+      echo "[build_guest_artifacts] existing Image/initramfs are stale for current kernel_ub source signature" >&2
       if [[ -n "$LOCAL_KERNEL_IMAGE" || -n "$LOCAL_MODULES_DIR" ]]; then
         echo "[build_guest_artifacts] importing refreshed guest artifacts from local paths" >&2
         import_local_artifacts
@@ -291,7 +314,7 @@ case "$ARTIFACT_SOURCE" in
       exit 1
     fi
     if ! kernel_image_stamp_matches; then
-      echo "[build_guest_artifacts] error: ARTIFACT_SOURCE=none requires an Image matching current kernel_ub HEAD" >&2
+      echo "[build_guest_artifacts] error: ARTIFACT_SOURCE=none requires an Image matching current kernel_ub source signature" >&2
       print_build_guest_help
       exit 1
     fi

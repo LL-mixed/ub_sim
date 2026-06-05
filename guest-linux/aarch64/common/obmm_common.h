@@ -58,6 +58,9 @@ enum obmm_import_cache_mode {
 };
 #define OBMM_POOL_HELPERS_MAGIC         0x4f424d50U
 #define OBMM_POOL_HELPERS_VERSION       1U
+#ifndef OBMM_EXPORT_FLAG_GSVA_FIXED_UBA
+#define OBMM_EXPORT_FLAG_GSVA_FIXED_UBA 0x4UL
+#endif
 #define OBMM_SIM_DEC_PRIV_MAGIC        0x53444950U
 #define OBMM_SIM_DEC_PRIV_VER_1        1
 #define OBMM_SIM_DEC_PRIV_VER_2        2
@@ -429,6 +432,29 @@ static int obmm_do_export(int obmm_fd, struct obmm_helpers_meta *meta,
     cmd.pxm_numa = 0;
     if (ioctl(obmm_fd, OBMM_CMD_EXPORT, &cmd) != 0) {
         fprintf(stderr, "[obmm] export failed: %s\n", strerror(errno));
+        return -1;
+    }
+    meta->export_mem_id = cmd.mem_id;
+    meta->remote_uba = cmd.uba;
+    meta->size = export_size;
+    meta->token_id = cmd.tokenid;
+    return 0;
+}
+
+static int OBMM_MAYBE_UNUSED obmm_do_export_fixed_uba(
+    int obmm_fd, struct obmm_helpers_meta *meta, uint64_t export_size,
+    uint64_t requested_uba)
+{
+    struct obmm_cmd_export cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.length = 1;
+    cmd.size[0] = export_size;
+    cmd.flags = OBMM_EXPORT_FLAG_ALLOW_MMAP | OBMM_EXPORT_FLAG_GSVA_FIXED_UBA;
+    cmd.uba = requested_uba;
+    cmd.pxm_numa = 0;
+    if (ioctl(obmm_fd, OBMM_CMD_EXPORT, &cmd) != 0) {
+        fprintf(stderr, "[obmm] fixed-uba export failed: requested_uba=%#"
+                PRIx64 " errno=%d\n", requested_uba, errno);
         return -1;
     }
     meta->export_mem_id = cmd.mem_id;
