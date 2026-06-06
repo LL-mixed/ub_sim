@@ -822,10 +822,17 @@ int main(int argc, char **argv)
         if (cfg.gva_mode != STRESS_GVA_MODE_LEGACY && cfg.gva_local_va_set) {
             target_va = (void *)(uintptr_t)cfg.local_va;
         }
-        if (obmm_map_region_at(import_mem_id,
-                               target_va,
-                               cfg.size,
-                               import_osync[0], &region) != 0) {
+        int map_ret;
+
+        if (cfg.gva_mode == STRESS_GVA_MODE_GSVA) {
+            map_ret = obmm_map_gsva_region_at(import_mem_id, target_va,
+                                              cfg.size, import_osync[0],
+                                              &region);
+        } else {
+            map_ret = obmm_map_region_at(import_mem_id, target_va, cfg.size,
+                                         import_osync[0], &region);
+        }
+        if (map_ret != 0) {
             stress_log("map import region failed mem_id=%" PRIx64, import_mem_id);
             goto cleanup;
         }

@@ -324,9 +324,9 @@ static int run_matrix(int obmm_fd, uint32_t local_cna,
     if (obmm_bootstrap_publish(obmm_fd, local_idx, cfg->node_count,
                                GSVA_DEMO_GENERATION, local_meta) != 0)
         goto out_unexport;
-    if (obmm_map_region_at(local_meta->export_mem_id,
-                           (void *)(uintptr_t)local_base, cfg->size, false,
-                           &regions[local_idx]) != 0)
+    if (obmm_map_gsva_region_at(local_meta->export_mem_id,
+                                (void *)(uintptr_t)local_base, cfg->size,
+                                false, &regions[local_idx]) != 0)
         goto out_unexport;
     payloads[local_idx] =
         (struct gsva_matrix_payload *)regions[local_idx].addr;
@@ -365,10 +365,10 @@ static int run_matrix(int obmm_fd, uint32_t local_cna,
                               slot_base, slot_base, 0,
                               &import_mem_id[owner]) != 0)
             goto out_cleanup;
-        if (obmm_map_region_at(import_mem_id[owner],
-                               (void *)(uintptr_t)slot_base, cfg->size,
-                               import_osync[import_idx],
-                               &regions[owner]) != 0)
+        if (obmm_map_gsva_region_at(import_mem_id[owner],
+                                    (void *)(uintptr_t)slot_base, cfg->size,
+                                    import_osync[import_idx],
+                                    &regions[owner]) != 0)
             goto out_cleanup;
         payloads[owner] = (struct gsva_matrix_payload *)regions[owner].addr;
         import_idx++;
@@ -461,9 +461,9 @@ static int run_identity_home(int obmm_fd, uint32_t local_cna,
                                local_meta) != 0)
         goto out_unexport;
 
-    if (obmm_map_region_at(local_meta->export_mem_id,
-                           (void *)(uintptr_t)cfg->base, cfg->size, false,
-                           &region) != 0)
+    if (obmm_map_gsva_region_at(local_meta->export_mem_id,
+                                (void *)(uintptr_t)cfg->base, cfg->size,
+                                false, &region) != 0)
         goto out_unexport;
     if ((uint64_t)(uintptr_t)region.addr != cfg->base) {
         errno = EINVAL;
@@ -540,8 +540,8 @@ static int run_identity_peer(int obmm_fd, uint32_t local_cna,
                           0, 0, 0, 0, 0, 1, cfg->base, cfg->base, 0,
                           &import_mem_id) != 0)
         goto out_unexport;
-    if (obmm_map_region_at(import_mem_id, (void *)(uintptr_t)cfg->base,
-                           cfg->size, import_osync[0], &region) != 0)
+    if (obmm_map_gsva_region_at(import_mem_id, (void *)(uintptr_t)cfg->base,
+                                cfg->size, import_osync[0], &region) != 0)
         goto out_unimport;
     if ((uint64_t)(uintptr_t)region.addr != cfg->base) {
         errno = EINVAL;
@@ -631,9 +631,9 @@ static int run_mmap_mode(int obmm_fd, const struct gsva_demo_config *cfg,
         goto out_gsva;
     }
 
-    if (obmm_map_region_at(gsva_meta.export_mem_id,
-                           (void *)(uintptr_t)cfg->base, cfg->size, false,
-                           &region) != 0)
+    if (obmm_map_gsva_region_at(gsva_meta.export_mem_id,
+                                (void *)(uintptr_t)cfg->base, cfg->size,
+                                false, &region) != 0)
         goto out_gsva;
     if ((uint64_t)(uintptr_t)region.addr != cfg->base) {
         errno = EINVAL;
