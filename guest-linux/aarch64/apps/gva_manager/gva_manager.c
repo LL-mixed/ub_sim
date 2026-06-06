@@ -890,8 +890,9 @@ static bool segment_msg_matches(const struct gva_mgr_config *cfg,
            msg->cache_policy == cfg->cache_policy;
 }
 
-static int validate_segment_announce(const struct gva_mgr_config *cfg,
-                                     const struct gva_mgr_aperture_msg *msg)
+static int validate_segment_state(const struct gva_mgr_config *cfg,
+                                  const struct gva_mgr_aperture_msg *msg,
+                                  uint32_t expected_state)
 {
     uint64_t segment_id;
     uint64_t segment_base;
@@ -902,7 +903,7 @@ static int validate_segment_announce(const struct gva_mgr_config *cfg,
         msg->aperture_size != cfg->aperture_size ||
         msg->segment_size != cfg->segment_size ||
         msg->home_node_id != (uint32_t)cfg->home_node_id ||
-        msg->segment_state != GVA_MGR_SEGMENT_PROPOSED)
+        msg->segment_state != expected_state)
         return -EINVAL;
 
     ret = compute_owner_sharded_segment(cfg, &segment_id, &segment_base,
@@ -977,6 +978,20 @@ static int run_segment_protocol(const struct gva_mgr_config *cfg,
                 pending--;
             }
         }
+
+        for (peer = 0; peer < cfg->node_count; peer++) {
+            if (peer == cfg->node_id)
+                continue;
+            ret = send_segment_msg(bus, slots, cfg, peer,
+                                   GVA_MGR_MSG_SEGMENT_ANNOUNCE, (*seq)++,
+                                   segment_id, segment_base, cfg->segment_size,
+                                   GVA_MGR_SEGMENT_ACTIVE, 0);
+            if (ret) {
+                log_msg("send SEGMENT_ACTIVE failed peer=%d ret=%d",
+                        peer, ret);
+                return ret;
+            }
+        }
     } else {
         while (true) {
             struct gva_mgr_aperture_msg msg;
@@ -990,7 +1005,8 @@ static int run_segment_protocol(const struct gva_mgr_config *cfg,
             if (src != (uint32_t)cfg->home_node_id ||
                 msg.hdr.type != GVA_MGR_MSG_SEGMENT_ANNOUNCE)
                 continue;
-            ret = validate_segment_announce(cfg, &msg);
+            ret = validate_segment_state(cfg, &msg,
+                                         GVA_MGR_SEGMENT_PROPOSED);
             if (ret) {
                 (void)send_segment_msg(bus, slots, cfg, cfg->home_node_id,
                                        GVA_MGR_MSG_ERROR, (*seq)++,
@@ -1005,6 +1021,26 @@ static int run_segment_protocol(const struct gva_mgr_config *cfg,
                                    GVA_MGR_SEGMENT_ACTIVE, 0);
             if (ret)
                 return ret;
+            break;
+        }
+
+        while (true) {
+            struct gva_mgr_aperture_msg msg;
+            uint32_t src = 0;
+
+            ret = recv_msg(bus, slots, &msg, &src);
+            if (ret) {
+                log_msg("timeout waiting SEGMENT_ACTIVE ret=%d", ret);
+                return ret;
+            }
+            if (src != (uint32_t)cfg->home_node_id ||
+                msg.hdr.type != GVA_MGR_MSG_SEGMENT_ANNOUNCE)
+                continue;
+            ret = validate_segment_state(cfg, &msg, GVA_MGR_SEGMENT_ACTIVE);
+            if (ret) {
+                log_msg("invalid SEGMENT_ACTIVE ret=%d", ret);
+                return ret;
+            }
             break;
         }
     }
@@ -1277,6 +1313,7 @@ int main(int argc, char **argv)
     int obmm_fd = -1;
     uint64_t local_cna_u64 = 0;
     uint32_t local_cna = 0;
+    char value[64];
     int i;
     int rc = 1;
 
@@ -1309,8 +1346,10 @@ int main(int argc, char **argv)
         log_msg("open /dev/obmm failed errno=%d", errno);
         goto out;
     }
-    if (!obmm_parse_hex_u64("/sys/bus/ub/devices/00001/primary_cna",
-                            &local_cna_u64)) {
+    if (obmm_cmdline_get("linqu_cna", value, sizeof(value))) {
+        local_cna_u64 = strtoull(value, NULL, 0);
+    } else if (!obmm_parse_hex_u64("/sys/bus/ub/devices/00001/primary_cna",
+                                   &local_cna_u64)) {
         log_msg("read primary_cna failed");
         goto out;
     }
@@ -1335,6 +1374,8 @@ int main(int argc, char **argv)
         log_msg("init manager region failed");
         goto out;
     }
+    obmm_publish_payload_for_remote_read(slots[cfg.node_id].region.addr,
+                                         GVA_MGR_REGION_SIZE);
     if (resolve_peer_region(&slots[cfg.node_id], cfg.node_id) != 0) {
         log_msg("resolve local manager region failed");
         goto out;

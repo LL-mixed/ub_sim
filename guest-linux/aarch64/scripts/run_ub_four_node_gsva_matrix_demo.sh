@@ -27,6 +27,7 @@ ENTITY_PLAN_FILE="${UB_FM_ENTITY_PLAN_FILE:-$WORKSPACE_ROOT/vendor/ub_topology_t
 ENTITY_COUNT="${UB_SIM_ENTITY_COUNT:-2}"
 PORT_NUM="${UB_SIM_PORT_NUM:-$((GSVA_MATRIX_NODE_COUNT - 1))}"
 SHARED_DIR="${UB_FM_SHARED_DIR:-/tmp/ub-qemu-links-gsva-matrix${GSVA_MATRIX_NODE_COUNT}}"
+QMP_DIR="$SHARED_DIR/qmp"
 RUN_SECS="${RUN_SECS:-240}"
 QEMU_KEEP_ALIVE_ON_POWEROFF="${QEMU_KEEP_ALIVE_ON_POWEROFF:-0}"
 QEMU_MEM="${QEMU_MEM:-8G}"
@@ -46,7 +47,7 @@ ensure_ub_guest_artifacts "$ROOT_DIR" "$KERNEL_IMAGE" "$INITRAMFS_IMAGE"
 
 mkdir -p "$LOG_DIR/${RUN_ID}"
 rm -rf "$SHARED_DIR"
-mkdir -p "$SHARED_DIR"
+mkdir -p "$SHARED_DIR" "$QMP_DIR"
 
 guest_log_for() {
   echo "$LOG_DIR/${RUN_ID}/$1_guest.log"
@@ -54,6 +55,10 @@ guest_log_for() {
 
 qemu_log_for() {
   echo "$LOG_DIR/${RUN_ID}/$1_qemu.log"
+}
+
+qmp_socket_for() {
+  echo "$QMP_DIR/$1.qmp"
 }
 
 pid_file_for() {
@@ -83,8 +88,12 @@ trap 'cleanup' EXIT INT TERM
 start_node() {
   local node_name="$1"
   local node_idx="$2"
+  local node_cna
+  local qmp_socket
   local qemu_extra=()
 
+  node_cna="$(node_cna_for "$node_idx")"
+  qmp_socket="$(qmp_socket_for "$node_name")"
   if [[ "$QEMU_KEEP_ALIVE_ON_POWEROFF" == "1" ]]; then
     qemu_extra=(-no-shutdown)
   fi
@@ -97,17 +106,19 @@ start_node() {
     UB_SIM_PORT_NUM="$PORT_NUM" \
     UB_FM_ENTITY_PLAN_FILE="$ENTITY_PLAN_FILE" \
     "$QEMU_BIN" \
+      -S \
       -M virt,gic-version=3,its=on,ummu=on,ub-cluster-mode=on \
       -cpu cortex-a57 \
       -smp "$QEMU_SMP" \
       -m "$QEMU_MEM" \
       -nodefaults \
       -nographic \
+      -qmp unix:"$qmp_socket",server=on,wait=off \
       -serial file:"$(guest_log_for "$node_name")" \
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
       -initrd "$INITRAMFS_IMAGE" \
-      -append "console=ttyAMA0 rdinit=/bin/run_demo obmm_gsva_demo linqu_urma_dp_role=${node_name} linqu_node_idx=${node_idx} obmm_gsva_mode=matrix obmm_gsva_base=${GSVA_MATRIX_BASE} obmm_gsva_size=${GSVA_MATRIX_SLICE_SIZE} obmm_gsva_node_count=${GSVA_MATRIX_NODE_COUNT} ${APPEND_EXTRA}" \
+      -append "console=ttyAMA0 rdinit=/bin/run_demo obmm_gsva_demo linqu_urma_dp_role=${node_name} linqu_node_idx=${node_idx} linqu_cna=${node_cna} obmm_gsva_mode=matrix obmm_gsva_base=${GSVA_MATRIX_BASE} obmm_gsva_size=${GSVA_MATRIX_SLICE_SIZE} obmm_gsva_node_count=${GSVA_MATRIX_NODE_COUNT} ${APPEND_EXTRA}" \
       >"$(qemu_log_for "$node_name")" 2>&1 &
   echo $! > "$(pid_file_for "$node_name")"
 }
@@ -124,6 +135,66 @@ matrix_value() {
   local writer="$1"
   local owner="$2"
   printf '0x%x' "$((0x4753564d00000000 | (writer << 8) | owner))"
+}
+
+node_cna_for() {
+  local node_idx="$1"
+  printf '0x%x' "$((0xc4c2 + node_idx * 0x10))"
+}
+
+wait_for_qmp_socket() {
+  local node_name="$1"
+  local qmp_socket="$2"
+  local timeout_s="${3:-30}"
+  local deadline=$((SECONDS + timeout_s))
+
+  while (( SECONDS < deadline )); do
+    if [[ -S "$qmp_socket" ]]; then
+      return 0
+    fi
+    sleep 0.1
+  done
+
+  echo "$LOG_PREFIX FAIL: QMP socket not ready for $node_name: $qmp_socket" >&2
+  return 1
+}
+
+wait_for_fm_endpoints() {
+  local timeout_s="${1:-30}"
+  local deadline=$((SECONDS + timeout_s))
+  local expected=$((GSVA_MATRIX_NODE_COUNT * (GSVA_MATRIX_NODE_COUNT - 1)))
+  local endpoint_files=()
+
+  while (( SECONDS < deadline )); do
+    endpoint_files=("$SHARED_DIR"/node*_ubcdev0__*.ini(N))
+    if (( ${#endpoint_files[@]} >= expected )); then
+      return 0
+    fi
+    sleep 0.1
+  done
+
+  endpoint_files=("$SHARED_DIR"/node*_ubcdev0__*.ini(N))
+  echo "$LOG_PREFIX FAIL: FM endpoints not ready: have=${#endpoint_files[@]} expected=$expected" >&2
+  return 1
+}
+
+cont_qemu() {
+  local qmp_socket="$1"
+  python3 - "$qmp_socket" <<'PY'
+import socket
+import sys
+
+path = sys.argv[1]
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.settimeout(5)
+s.connect(path)
+s.recv(4096)
+s.sendall(b'{"execute":"qmp_capabilities"}\r\n')
+s.recv(4096)
+s.sendall(b'{"execute":"cont"}\r\n')
+s.recv(4096)
+s.close()
+PY
 }
 
 validate_mp_table_log() {
@@ -255,6 +326,15 @@ for node_name in "${NODE_NAMES[@]}"; do
   start_node "$node_name" "$idx"
   idx=$((idx + 1))
   sleep 0.2
+done
+
+echo "$LOG_PREFIX waiting for QMP sockets and FM endpoint files..."
+for node_name in "${NODE_NAMES[@]}"; do
+  wait_for_qmp_socket "$node_name" "$(qmp_socket_for "$node_name")" 30
+done
+wait_for_fm_endpoints 30
+for node_name in "${NODE_NAMES[@]}"; do
+  cont_qemu "$(qmp_socket_for "$node_name")"
 done
 
 echo "$LOG_PREFIX waiting for matrix completion (timeout ${RUN_SECS}s)..."
