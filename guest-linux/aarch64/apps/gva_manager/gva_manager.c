@@ -34,14 +34,27 @@
 #define GVA_MGR_QUEUE_DEPTH OBMM_QUEUE_MIN_DEPTH
 #define GVA_MGR_DEFAULT_APERTURE_BASE 0x700000000000ULL
 #define GVA_MGR_DEFAULT_APERTURE_SIZE (16UL * 1024UL * 1024UL)
+#define GVA_MGR_DEFAULT_SEGMENT_SIZE (4UL * 1024UL * 1024UL)
+#define GVA_MGR_DEFAULT_SEGMENT_ALIGNMENT 4096ULL
 #define GVA_MGR_TIMEOUT_MS 90000
 #define GVA_MGR_PAYLOAD_SLOTS 64U
+
+enum gva_mgr_segment_state {
+    GVA_MGR_SEGMENT_PROPOSED = 1,
+    GVA_MGR_SEGMENT_ACTIVE = 2,
+    GVA_MGR_SEGMENT_RETIRED = 3,
+};
 
 enum gva_mgr_msg_type {
     GVA_MGR_MSG_HELLO = 1,
     GVA_MGR_MSG_APERTURE_PROPOSE = 2,
     GVA_MGR_MSG_APERTURE_ACCEPT = 3,
     GVA_MGR_MSG_APERTURE_COMMIT = 4,
+    GVA_MGR_MSG_SEGMENT_ANNOUNCE = 5,
+    GVA_MGR_MSG_SEGMENT_ACK = 6,
+    GVA_MGR_MSG_SEGMENT_RETIRE = 7,
+    GVA_MGR_MSG_SEGMENT_RETIRED_ACK = 8,
+    GVA_MGR_MSG_HEARTBEAT = 9,
     GVA_MGR_MSG_ERROR = 10,
 };
 
@@ -63,17 +76,31 @@ struct gva_mgr_aperture_msg {
     uint64_t aperture_size;
     uint64_t node_stride;
     uint64_t forbidden_hash;
+    uint64_t segment_id;
+    uint64_t segment_base;
+    uint64_t segment_size;
+    uint32_t home_node_id;
+    uint32_t access_flags;
+    uint32_t cache_policy;
+    uint32_t segment_state;
     uint32_t status;
     uint32_t reserved;
 };
 
 struct gva_mgr_config {
     bool bootstrap;
+    bool dump_routes;
+    bool allocate_segment;
     int node_id;
     int node_count;
     uint64_t generation;
     uint64_t aperture_base;
     uint64_t aperture_size;
+    uint64_t segment_size;
+    uint64_t segment_alignment;
+    int home_node_id;
+    uint32_t access_flags;
+    uint32_t cache_policy;
     bool inject_conflict;
 };
 
@@ -109,6 +136,57 @@ static void log_msg(const char *fmt, ...)
     fflush(stderr);
 }
 
+static int dump_gva_routes(void)
+{
+    FILE *fp;
+    char line[512];
+    unsigned int count = 0;
+
+    fp = fopen("/proc/ub_sim_decoder/gva_routes", "r");
+    if (!fp) {
+        log_msg("dump-routes failed path=/proc/ub_sim_decoder/gva_routes errno=%d",
+                errno);
+        return -1;
+    }
+
+    while (fgets(line, sizeof(line), fp)) {
+        size_t len = strlen(line);
+
+        if (len > 0 && line[len - 1] == '\n')
+            line[len - 1] = '\0';
+        log_msg("route %s", line);
+        count++;
+    }
+    fclose(fp);
+    log_msg("result=done action=dump-routes lines=%u", count);
+    return 0;
+}
+
+static void log_kernel_aperture_proc(void)
+{
+    FILE *fp;
+    char header[160];
+    char value[160];
+    size_t len;
+
+    fp = fopen("/proc/obmm/gsva_aperture", "r");
+    if (!fp) {
+        log_msg("kernel aperture proc unavailable errno=%d", errno);
+        return;
+    }
+    if (!fgets(header, sizeof(header), fp) ||
+        !fgets(value, sizeof(value), fp)) {
+        fclose(fp);
+        log_msg("kernel aperture proc read failed errno=%d", errno);
+        return;
+    }
+    fclose(fp);
+    len = strlen(value);
+    if (len > 0 && value[len - 1] == '\n')
+        value[len - 1] = '\0';
+    log_msg("kernel aperture proc -> %s", value);
+}
+
 static bool parse_u64_str(const char *s, uint64_t *out)
 {
     char *end = NULL;
@@ -137,6 +215,22 @@ static bool parse_i32_str(const char *s, int *out)
         value < INT32_MIN || value > INT32_MAX)
         return false;
     *out = (int)value;
+    return true;
+}
+
+static bool parse_cache_policy_str(const char *s, uint32_t *out)
+{
+    if (strcmp(s, "nc") == 0) {
+        *out = OBMM_SIM_DEC_CACHE_POLICY_NC;
+    } else if (strcmp(s, "wt") == 0 || strcmp(s, "write-through") == 0) {
+        *out = OBMM_SIM_DEC_CACHE_POLICY_WRITE_THROUGH;
+    } else if (strcmp(s, "rc") == 0 || strcmp(s, "read-cache") == 0) {
+        *out = OBMM_SIM_DEC_CACHE_POLICY_READ_CACHE;
+    } else if (strcmp(s, "wb") == 0 || strcmp(s, "write-back") == 0) {
+        *out = OBMM_SIM_DEC_CACHE_POLICY_WRITE_BACK;
+    } else {
+        return false;
+    }
     return true;
 }
 
@@ -187,6 +281,42 @@ static void config_from_env_cmdline(struct gva_mgr_config *cfg)
         parse_u64_str(value, &parsed64)) {
         cfg->aperture_size = parsed64;
     }
+    if (obmm_env_or_cmdline("GVA_MANAGER_ALLOCATE_SEGMENT",
+                            "gva_manager_allocate_segment",
+                            value, sizeof(value)) &&
+        parse_i32_str(value, &parsed32)) {
+        cfg->allocate_segment = parsed32 != 0;
+    }
+    if (obmm_env_or_cmdline("GVA_MANAGER_SEGMENT_SIZE",
+                            "gva_manager_segment_size",
+                            value, sizeof(value)) &&
+        parse_u64_str(value, &parsed64)) {
+        cfg->segment_size = parsed64;
+    }
+    if (obmm_env_or_cmdline("GVA_MANAGER_SEGMENT_ALIGNMENT",
+                            "gva_manager_segment_alignment",
+                            value, sizeof(value)) &&
+        parse_u64_str(value, &parsed64)) {
+        cfg->segment_alignment = parsed64;
+    }
+    if (obmm_env_or_cmdline("GVA_MANAGER_HOME_NODE",
+                            "gva_manager_home_node",
+                            value, sizeof(value)) &&
+        parse_i32_str(value, &parsed32)) {
+        cfg->home_node_id = parsed32;
+    }
+    if (obmm_env_or_cmdline("GVA_MANAGER_CACHE_POLICY",
+                            "gva_manager_cache_policy",
+                            value, sizeof(value)) &&
+        !parse_cache_policy_str(value, &cfg->cache_policy)) {
+        cfg->cache_policy = UINT32_MAX;
+    }
+    if (obmm_env_or_cmdline("GVA_MANAGER_ACCESS_FLAGS",
+                            "gva_manager_access_flags",
+                            value, sizeof(value)) &&
+        parse_u64_str(value, &parsed64) && parsed64 <= UINT32_MAX) {
+        cfg->access_flags = (uint32_t)parsed64;
+    }
     if (obmm_env_or_cmdline("GVA_MANAGER_CONFLICT",
                             "gva_manager_conflict",
                             value, sizeof(value)) &&
@@ -206,6 +336,10 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
     cfg->generation = default_generation();
     cfg->aperture_base = GVA_MGR_DEFAULT_APERTURE_BASE;
     cfg->aperture_size = GVA_MGR_DEFAULT_APERTURE_SIZE;
+    cfg->segment_size = GVA_MGR_DEFAULT_SEGMENT_SIZE;
+    cfg->segment_alignment = GVA_MGR_DEFAULT_SEGMENT_ALIGNMENT;
+    cfg->home_node_id = 0;
+    cfg->cache_policy = OBMM_SIM_DEC_CACHE_POLICY_WRITE_THROUGH;
 
     config_from_env_cmdline(cfg);
 
@@ -215,6 +349,12 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
 
         if (strcmp(argv[i], "--bootstrap") == 0) {
             cfg->bootstrap = true;
+        } else if (strcmp(argv[i], "--allocate-segment") == 0) {
+            cfg->bootstrap = true;
+            cfg->allocate_segment = true;
+        } else if (strcmp(argv[i], "--dump-routes") == 0) {
+            cfg->bootstrap = false;
+            cfg->dump_routes = true;
         } else if (strcmp(argv[i], "--node-id") == 0 && i + 1 < argc) {
             if (!parse_i32_str(argv[++i], &parsed32))
                 return -EINVAL;
@@ -235,17 +375,43 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
             if (!parse_u64_str(argv[++i], &parsed64))
                 return -EINVAL;
             cfg->aperture_size = parsed64;
+        } else if (strcmp(argv[i], "--segment-size") == 0 && i + 1 < argc) {
+            if (!parse_u64_str(argv[++i], &parsed64))
+                return -EINVAL;
+            cfg->segment_size = parsed64;
+        } else if (strcmp(argv[i], "--segment-alignment") == 0 && i + 1 < argc) {
+            if (!parse_u64_str(argv[++i], &parsed64))
+                return -EINVAL;
+            cfg->segment_alignment = parsed64;
+        } else if (strcmp(argv[i], "--home-node") == 0 && i + 1 < argc) {
+            if (!parse_i32_str(argv[++i], &parsed32))
+                return -EINVAL;
+            cfg->home_node_id = parsed32;
+        } else if (strcmp(argv[i], "--access-flags") == 0 && i + 1 < argc) {
+            if (!parse_u64_str(argv[++i], &parsed64) || parsed64 > UINT32_MAX)
+                return -EINVAL;
+            cfg->access_flags = (uint32_t)parsed64;
+        } else if (strcmp(argv[i], "--cache-policy") == 0 && i + 1 < argc) {
+            if (!parse_cache_policy_str(argv[++i], &cfg->cache_policy))
+                return -EINVAL;
         } else if (strcmp(argv[i], "--conflict") == 0) {
             cfg->inject_conflict = true;
         } else {
             fprintf(stderr,
                     "usage: gva_manager --bootstrap --node-id N --node-count C "
                     "[--generation G] [--aperture-base A] "
-                    "[--aperture-size S] [--conflict]\n");
+                    "[--aperture-size S] [--conflict]\n"
+                    "       gva_manager --allocate-segment --node-id N "
+                    "--node-count C [--home-node N] [--segment-size S] "
+                    "[--segment-alignment A] [--cache-policy nc|wt|rc|wb] "
+                    "[--access-flags F]\n"
+                    "       gva_manager --dump-routes\n");
             return -EINVAL;
         }
     }
 
+    if (cfg->dump_routes)
+        return 0;
     if (!cfg->bootstrap)
         return -EINVAL;
     if (cfg->node_id < 0 || cfg->node_id >= cfg->node_count)
@@ -255,6 +421,23 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
     if (cfg->aperture_size == 0 ||
         (cfg->aperture_base & (4096ULL - 1)) != 0 ||
         (cfg->aperture_size & (4096ULL - 1)) != 0)
+        return -EINVAL;
+    if (cfg->allocate_segment &&
+        (cfg->home_node_id < 0 || cfg->home_node_id >= cfg->node_count ||
+         cfg->segment_size == 0 || cfg->segment_alignment == 0 ||
+         (cfg->segment_size & (4096ULL - 1)) != 0 ||
+         (cfg->segment_alignment & (cfg->segment_alignment - 1)) != 0))
+        return -EINVAL;
+    if (cfg->cache_policy != OBMM_SIM_DEC_CACHE_POLICY_NC &&
+        cfg->cache_policy != OBMM_SIM_DEC_CACHE_POLICY_WRITE_THROUGH &&
+        cfg->cache_policy != OBMM_SIM_DEC_CACHE_POLICY_READ_CACHE &&
+        cfg->cache_policy != OBMM_SIM_DEC_CACHE_POLICY_WRITE_BACK)
+        return -EINVAL;
+    if (cfg->cache_policy == OBMM_SIM_DEC_CACHE_POLICY_READ_CACHE &&
+        !(cfg->access_flags & OBMM_SIM_DEC_ACCESS_READ_ONLY))
+        return -EINVAL;
+    if (cfg->cache_policy == OBMM_SIM_DEC_CACHE_POLICY_WRITE_BACK &&
+        !(cfg->access_flags & OBMM_SIM_DEC_ACCESS_EXPLICIT_SYNC))
         return -EINVAL;
     return 0;
 }
@@ -535,6 +718,66 @@ static int send_msg(struct obmm_mpmc_bus *bus, struct node_slot slots[MAX_NODES]
     return rc == -EAGAIN ? -ETIMEDOUT : rc;
 }
 
+static int send_segment_msg(struct obmm_mpmc_bus *bus,
+                            struct node_slot slots[MAX_NODES],
+                            const struct gva_mgr_config *cfg,
+                            int dst, uint16_t type, uint64_t seq,
+                            uint64_t segment_id, uint64_t segment_base,
+                            uint64_t segment_size, uint32_t state,
+                            uint32_t status)
+{
+    struct gva_mgr_aperture_msg *msg = payload_slot(&slots[cfg->node_id], seq);
+    struct obmm_desc desc = {0};
+    long deadline;
+    int rc = -EAGAIN;
+    uint64_t node_stride = cfg->aperture_size / (uint64_t)cfg->node_count;
+
+    if (!msg)
+        return -ENOSPC;
+    node_stride &= ~(4096ULL - 1);
+
+    memset(msg, 0, sizeof(*msg));
+    msg->hdr.magic = GVA_MGR_MAGIC;
+    msg->hdr.version = GVA_MGR_VERSION;
+    msg->hdr.type = type;
+    msg->hdr.generation = cfg->generation;
+    msg->hdr.seq = seq;
+    msg->hdr.src_node = (uint32_t)cfg->node_id;
+    msg->hdr.dst_node = (uint32_t)dst;
+    msg->hdr.payload_len = sizeof(*msg) - sizeof(msg->hdr);
+    msg->aperture_base = cfg->aperture_base;
+    msg->aperture_size = cfg->aperture_size;
+    msg->node_stride = node_stride;
+    msg->segment_id = segment_id;
+    msg->segment_base = segment_base;
+    msg->segment_size = segment_size;
+    msg->home_node_id = (uint32_t)cfg->home_node_id;
+    msg->access_flags = cfg->access_flags;
+    msg->cache_policy = cfg->cache_policy;
+    msg->segment_state = state;
+    msg->status = status;
+    msg->hdr.crc32 = msg_crc(msg);
+    obmm_publish_payload_for_remote_read(msg, sizeof(*msg));
+
+    desc.seq = seq;
+    desc.region_id = slots[cfg->node_id].tx_arena_region_id;
+    desc.payload_offset = (uint64_t)((uint8_t *)msg - slots[cfg->node_id].tx_arena);
+    desc.payload_len = sizeof(*msg);
+    desc.type = type;
+    desc.cookie = GVA_MGR_MAGIC;
+
+    deadline = obmm_now_ms() + GVA_MGR_TIMEOUT_MS;
+    while (!g_alarm_fired && obmm_now_ms() < deadline) {
+        rc = obmm_mpmc_send(bus, (uint32_t)dst, &desc);
+        if (rc == 0)
+            return 0;
+        if (rc != -EAGAIN)
+            return rc;
+        usleep(100);
+    }
+    return rc == -EAGAIN ? -ETIMEDOUT : rc;
+}
+
 static int recv_msg(struct obmm_mpmc_bus *bus, struct node_slot slots[MAX_NODES],
                     struct gva_mgr_aperture_msg *out, uint32_t *src_out)
 {
@@ -587,6 +830,193 @@ static void *reserve_aperture(uint64_t base, uint64_t size)
     return mapped;
 }
 
+static uint64_t make_segment_id(uint64_t generation, int home_node,
+                                uint64_t segment_base)
+{
+    uint64_t id = 1469598103934665603ULL;
+
+    id ^= generation;
+    id *= 1099511628211ULL;
+    id ^= (uint64_t)(uint32_t)home_node;
+    id *= 1099511628211ULL;
+    id ^= segment_base;
+    id *= 1099511628211ULL;
+    return id ? id : 1;
+}
+
+static int compute_owner_sharded_segment(const struct gva_mgr_config *cfg,
+                                         uint64_t *segment_id,
+                                         uint64_t *segment_base,
+                                         uint64_t *node_stride)
+{
+    uint64_t stride = cfg->aperture_size / (uint64_t)cfg->node_count;
+    uint64_t slice_base;
+    uint64_t slice_end;
+    uint64_t base;
+
+    stride &= ~(4096ULL - 1);
+    if (stride == 0 || cfg->segment_size > stride)
+        return -EINVAL;
+    if (UINT64_MAX - cfg->aperture_base <
+        (uint64_t)cfg->home_node_id * stride)
+        return -EOVERFLOW;
+    slice_base = cfg->aperture_base + (uint64_t)cfg->home_node_id * stride;
+    if (UINT64_MAX - slice_base < stride)
+        return -EOVERFLOW;
+    slice_end = slice_base + stride;
+    base = obmm_align_up_u64(slice_base, cfg->segment_alignment);
+    if (base < slice_base || UINT64_MAX - base < cfg->segment_size ||
+        base + cfg->segment_size > slice_end)
+        return -ENOSPC;
+
+    *segment_base = base;
+    *segment_id = make_segment_id(cfg->generation, cfg->home_node_id, base);
+    *node_stride = stride;
+    return 0;
+}
+
+static bool segment_msg_matches(const struct gva_mgr_config *cfg,
+                                const struct gva_mgr_aperture_msg *msg,
+                                uint64_t segment_id,
+                                uint64_t segment_base,
+                                uint64_t segment_size)
+{
+    return msg->hdr.generation == cfg->generation &&
+           msg->segment_id == segment_id &&
+           msg->segment_base == segment_base &&
+           msg->segment_size == segment_size &&
+           msg->home_node_id == (uint32_t)cfg->home_node_id &&
+           msg->access_flags == cfg->access_flags &&
+           msg->cache_policy == cfg->cache_policy;
+}
+
+static int validate_segment_announce(const struct gva_mgr_config *cfg,
+                                     const struct gva_mgr_aperture_msg *msg)
+{
+    uint64_t segment_id;
+    uint64_t segment_base;
+    uint64_t node_stride;
+    int ret;
+
+    if (msg->aperture_base != cfg->aperture_base ||
+        msg->aperture_size != cfg->aperture_size ||
+        msg->segment_size != cfg->segment_size ||
+        msg->home_node_id != (uint32_t)cfg->home_node_id ||
+        msg->segment_state != GVA_MGR_SEGMENT_PROPOSED)
+        return -EINVAL;
+
+    ret = compute_owner_sharded_segment(cfg, &segment_id, &segment_base,
+                                        &node_stride);
+    if (ret)
+        return ret;
+    if (msg->node_stride != node_stride ||
+        !segment_msg_matches(cfg, msg, segment_id, segment_base,
+                             cfg->segment_size))
+        return -EINVAL;
+    return 0;
+}
+
+static int run_segment_protocol(const struct gva_mgr_config *cfg,
+                                struct obmm_mpmc_bus *bus,
+                                struct node_slot slots[MAX_NODES],
+                                uint64_t *seq)
+{
+    uint64_t segment_id = 0;
+    uint64_t segment_base = 0;
+    uint64_t node_stride = 0;
+    int ret;
+    int peer;
+
+    if (!cfg->allocate_segment)
+        return 0;
+
+    ret = compute_owner_sharded_segment(cfg, &segment_id, &segment_base,
+                                        &node_stride);
+    if (ret) {
+        log_msg("segment allocation failed ret=%d", ret);
+        return ret;
+    }
+
+    if (cfg->node_id == cfg->home_node_id) {
+        bool acked[MAX_NODES] = {false};
+        int pending = cfg->node_count - 1;
+
+        for (peer = 0; peer < cfg->node_count; peer++) {
+            if (peer == cfg->node_id)
+                continue;
+            ret = send_segment_msg(bus, slots, cfg, peer,
+                                   GVA_MGR_MSG_SEGMENT_ANNOUNCE, (*seq)++,
+                                   segment_id, segment_base, cfg->segment_size,
+                                   GVA_MGR_SEGMENT_PROPOSED, 0);
+            if (ret) {
+                log_msg("send SEGMENT_ANNOUNCE failed peer=%d ret=%d",
+                        peer, ret);
+                return ret;
+            }
+        }
+
+        while (pending > 0) {
+            struct gva_mgr_aperture_msg msg;
+            uint32_t src = 0;
+
+            ret = recv_msg(bus, slots, &msg, &src);
+            if (ret) {
+                log_msg("timeout waiting SEGMENT_ACK ret=%d", ret);
+                return ret;
+            }
+            if (msg.hdr.type == GVA_MGR_MSG_ERROR) {
+                log_msg("peer=%u reported segment error status=%u", src,
+                        msg.status);
+                return -EIO;
+            }
+            if (msg.hdr.type == GVA_MGR_MSG_SEGMENT_ACK &&
+                !acked[src] &&
+                segment_msg_matches(cfg, &msg, segment_id, segment_base,
+                                    cfg->segment_size)) {
+                acked[src] = true;
+                pending--;
+            }
+        }
+    } else {
+        while (true) {
+            struct gva_mgr_aperture_msg msg;
+            uint32_t src = 0;
+
+            ret = recv_msg(bus, slots, &msg, &src);
+            if (ret) {
+                log_msg("timeout waiting SEGMENT_ANNOUNCE ret=%d", ret);
+                return ret;
+            }
+            if (src != (uint32_t)cfg->home_node_id ||
+                msg.hdr.type != GVA_MGR_MSG_SEGMENT_ANNOUNCE)
+                continue;
+            ret = validate_segment_announce(cfg, &msg);
+            if (ret) {
+                (void)send_segment_msg(bus, slots, cfg, cfg->home_node_id,
+                                       GVA_MGR_MSG_ERROR, (*seq)++,
+                                       msg.segment_id, msg.segment_base,
+                                       msg.segment_size, msg.segment_state,
+                                       (uint32_t)-ret);
+                return ret;
+            }
+            ret = send_segment_msg(bus, slots, cfg, cfg->home_node_id,
+                                   GVA_MGR_MSG_SEGMENT_ACK, (*seq)++,
+                                   segment_id, segment_base, cfg->segment_size,
+                                   GVA_MGR_SEGMENT_ACTIVE, 0);
+            if (ret)
+                return ret;
+            break;
+        }
+    }
+
+    log_msg("segment active segment_id=%#" PRIx64 " gsva_base=%#" PRIx64
+            " size=%#" PRIx64 " node_stride=%#" PRIx64 " home_node=%d"
+            " cache_policy=%u access_flags=%u",
+            segment_id, segment_base, cfg->segment_size, node_stride,
+            cfg->home_node_id, cfg->cache_policy, cfg->access_flags);
+    return 0;
+}
+
 static int register_kernel_aperture(int obmm_fd, const struct gva_mgr_config *cfg)
 {
     struct obmm_cmd_gsva_aperture req = {0};
@@ -621,6 +1051,7 @@ static int register_kernel_aperture(int obmm_fd, const struct gva_mgr_config *cf
     log_msg("kernel aperture registry -> ok base=%#" PRIx64
             " size=%#" PRIx64 " generation=%#" PRIx64,
             query.base, query.size, query.generation);
+    log_kernel_aperture_proc();
     return 0;
 }
 
@@ -794,6 +1225,9 @@ static int run_protocol(struct gva_mgr_config *cfg,
         }
     }
 
+    if (run_segment_protocol(cfg, bus, slots, &seq) != 0)
+        goto fail;
+
     log_msg("result=done generation=%#" PRIx64 " aperture_base=%#" PRIx64
             " aperture_size=%#" PRIx64 " registry=kernel-obmm",
             cfg->generation, cfg->aperture_base, cfg->aperture_size);
@@ -857,6 +1291,9 @@ int main(int argc, char **argv)
         log_msg("invalid arguments");
         return 2;
     }
+
+    if (cfg.dump_routes)
+        return dump_gva_routes() == 0 ? 0 : 1;
 
     signal(SIGALRM, alarm_handler);
     alarm(GVA_MGR_TIMEOUT_MS / 1000);

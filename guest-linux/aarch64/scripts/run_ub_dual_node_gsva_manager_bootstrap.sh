@@ -21,6 +21,12 @@ RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_gsva_mgr_${RANDOM}}"
 GVA_MANAGER_GENERATION="${GVA_MANAGER_GENERATION:-0x475356410001}"
 GVA_MANAGER_APERTURE_BASE="${GVA_MANAGER_APERTURE_BASE:-0x700000000000}"
 GVA_MANAGER_APERTURE_SIZE="${GVA_MANAGER_APERTURE_SIZE:-0x1000000}"
+GVA_MANAGER_ALLOCATE_SEGMENT="${GVA_MANAGER_ALLOCATE_SEGMENT:-0}"
+GVA_MANAGER_SEGMENT_SIZE="${GVA_MANAGER_SEGMENT_SIZE:-0x400000}"
+GVA_MANAGER_SEGMENT_ALIGNMENT="${GVA_MANAGER_SEGMENT_ALIGNMENT:-0x1000}"
+GVA_MANAGER_HOME_NODE="${GVA_MANAGER_HOME_NODE:-0}"
+GVA_MANAGER_CACHE_POLICY="${GVA_MANAGER_CACHE_POLICY:-wt}"
+GVA_MANAGER_ACCESS_FLAGS="${GVA_MANAGER_ACCESS_FLAGS:-0}"
 GVA_MANAGER_CONFLICT_NODE="${GVA_MANAGER_CONFLICT_NODE:-}"
 EXPECT_FAILURE="${EXPECT_FAILURE:-0}"
 
@@ -69,12 +75,16 @@ start_node() {
   local pid_file="$6"
   local qemu_extra=()
   local conflict_append=""
+  local segment_append=""
 
   if [[ "$QEMU_KEEP_ALIVE_ON_POWEROFF" == "1" ]]; then
     qemu_extra=(-no-shutdown)
   fi
   if [[ "$GVA_MANAGER_CONFLICT_NODE" == "$node_idx" ]]; then
     conflict_append="gva_manager_conflict=1"
+  fi
+  if [[ "$GVA_MANAGER_ALLOCATE_SEGMENT" == "1" ]]; then
+    segment_append="gva_manager_allocate_segment=1 gva_manager_segment_size=${GVA_MANAGER_SEGMENT_SIZE} gva_manager_segment_alignment=${GVA_MANAGER_SEGMENT_ALIGNMENT} gva_manager_home_node=${GVA_MANAGER_HOME_NODE} gva_manager_cache_policy=${GVA_MANAGER_CACHE_POLICY} gva_manager_access_flags=${GVA_MANAGER_ACCESS_FLAGS}"
   fi
 
   env \
@@ -93,7 +103,7 @@ start_node() {
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
       -initrd "$INITRAMFS_IMAGE" \
-      -append "console=ttyAMA0 rdinit=/bin/run_demo gva_manager_bootstrap linqu_urma_dp_role=${role} gva_manager_node_id=${node_idx} gva_manager_node_count=2 gva_manager_generation=${GVA_MANAGER_GENERATION} gva_manager_aperture_base=${GVA_MANAGER_APERTURE_BASE} gva_manager_aperture_size=${GVA_MANAGER_APERTURE_SIZE} ${conflict_append} ${APPEND_EXTRA}" \
+      -append "console=ttyAMA0 rdinit=/bin/run_demo gva_manager_bootstrap linqu_urma_dp_role=${role} gva_manager_node_id=${node_idx} gva_manager_node_count=2 gva_manager_generation=${GVA_MANAGER_GENERATION} gva_manager_aperture_base=${GVA_MANAGER_APERTURE_BASE} gva_manager_aperture_size=${GVA_MANAGER_APERTURE_SIZE} ${segment_append} ${conflict_append} ${APPEND_EXTRA}" \
       >"$qemu_log" 2>&1 &
   echo $! > "$pid_file"
 }
@@ -142,6 +152,8 @@ extract_aperture() {
 validate_manager_logs() {
   local a_aperture
   local b_aperture
+  local a_segment
+  local b_segment
 
   if ! grep -q '\[gva_manager\] manager queues -> ok' "$NODEA_GUEST_LOG" ||
      ! grep -q '\[gva_manager\] manager queues -> ok' "$NODEB_GUEST_LOG"; then
@@ -158,6 +170,11 @@ validate_manager_logs() {
     echo "[gsva-manager] FAIL: missing kernel/OBMM aperture registry evidence" >&2
     return 1
   fi
+  if ! grep -q '\[gva_manager\] kernel aperture proc -> 1 ' "$NODEA_GUEST_LOG" ||
+     ! grep -q '\[gva_manager\] kernel aperture proc -> 1 ' "$NODEB_GUEST_LOG"; then
+    echo "[gsva-manager] FAIL: missing /proc/obmm/gsva_aperture active evidence" >&2
+    return 1
+  fi
   if ! grep -q 'registry=kernel-obmm' "$NODEA_GUEST_LOG" ||
      ! grep -q 'registry=kernel-obmm' "$NODEB_GUEST_LOG"; then
     echo "[gsva-manager] FAIL: managers did not complete with kernel/OBMM registry" >&2
@@ -170,6 +187,20 @@ validate_manager_logs() {
     echo "[gsva-manager] FAIL: managers did not agree on aperture" >&2
     echo "[gsva-manager] nodeA=$a_aperture nodeB=$b_aperture" >&2
     return 1
+  fi
+  if [[ "$GVA_MANAGER_ALLOCATE_SEGMENT" == "1" ]]; then
+    if ! grep -q '\[gva_manager\] segment active' "$NODEA_GUEST_LOG" ||
+       ! grep -q '\[gva_manager\] segment active' "$NODEB_GUEST_LOG"; then
+      echo "[gsva-manager] FAIL: missing active segment evidence" >&2
+      return 1
+    fi
+    a_segment="$(grep '\[gva_manager\] segment active' "$NODEA_GUEST_LOG" | tail -1 | sed -n 's/.*segment_id=\([^ ]*\).*gsva_base=\([^ ]*\).*size=\([^ ]*\).*/\1 \2 \3/p')"
+    b_segment="$(grep '\[gva_manager\] segment active' "$NODEB_GUEST_LOG" | tail -1 | sed -n 's/.*segment_id=\([^ ]*\).*gsva_base=\([^ ]*\).*size=\([^ ]*\).*/\1 \2 \3/p')"
+    if [[ -z "$a_segment" || -z "$b_segment" || "$a_segment" != "$b_segment" ]]; then
+      echo "[gsva-manager] FAIL: managers did not agree on active segment" >&2
+      echo "[gsva-manager] nodeA=$a_segment nodeB=$b_segment" >&2
+      return 1
+    fi
   fi
 }
 
@@ -188,7 +219,7 @@ validate_expected_failure() {
   fi
 }
 
-echo "[gsva-manager] run_id=$RUN_ID generation=$GVA_MANAGER_GENERATION aperture_base=$GVA_MANAGER_APERTURE_BASE aperture_size=$GVA_MANAGER_APERTURE_SIZE"
+echo "[gsva-manager] run_id=$RUN_ID generation=$GVA_MANAGER_GENERATION aperture_base=$GVA_MANAGER_APERTURE_BASE aperture_size=$GVA_MANAGER_APERTURE_SIZE allocate_segment=$GVA_MANAGER_ALLOCATE_SEGMENT"
 echo "[gsva-manager] starting nodeA and nodeB..."
 
 start_node nodeA nodeA 0 "$NODEA_GUEST_LOG" "$NODEA_QEMU_LOG" "$NODEA_PID_FILE"

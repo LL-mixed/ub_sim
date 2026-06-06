@@ -339,6 +339,10 @@ static bool parse_stress_cache_policy(const char *s, uint32_t *policy)
         *policy = OBMM_SIM_DEC_CACHE_POLICY_NC;
     } else if (strcmp(s, "wt") == 0 || strcmp(s, "write-through") == 0) {
         *policy = OBMM_SIM_DEC_CACHE_POLICY_WRITE_THROUGH;
+    } else if (strcmp(s, "rc") == 0 || strcmp(s, "read-cache") == 0) {
+        *policy = OBMM_SIM_DEC_CACHE_POLICY_READ_CACHE;
+    } else if (strcmp(s, "wb") == 0 || strcmp(s, "write-back") == 0) {
+        *policy = OBMM_SIM_DEC_CACHE_POLICY_WRITE_BACK;
     } else {
         return false;
     }
@@ -652,7 +656,7 @@ static void stress_usage(const char *prog)
            "  --gva-mode <legacy|generic|gsva>\n"
            "  --gva-map-source <legacy|legacy-obmm|gva|gva-manager>\n"
            "  --gva-address-profile <generic|gsva>\n"
-           "  --gva-cache-policy <nc|wt>\n"
+           "  --gva-cache-policy <nc|wt|rc|wb>\n"
            "  --gva-vmid <n>\n"
            "  --gva-asid <n>\n"
            "  --gva-tid <n>\n"

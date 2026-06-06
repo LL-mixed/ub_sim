@@ -200,6 +200,14 @@ validate_stale_generation_logs() {
   fi
 }
 
+validate_kernel_aperture_proc_logs() {
+  if ! grep -q '\[obmm_gsva_demo\] kernel aperture proc -> 1 ' "$NODEA_GUEST_LOG" ||
+     ! grep -q '\[obmm_gsva_demo\] kernel aperture proc -> 1 ' "$NODEB_GUEST_LOG"; then
+    echo "[gsva-demo] FAIL: missing /proc/obmm/gsva_aperture active evidence" >&2
+    return 1
+  fi
+}
+
 validate_invalid_offset_logs() {
   if ! grep -q '\[obmm_gsva_demo\] result=done mode=invalid-offset role=home' "$NODEA_GUEST_LOG" ||
      ! grep -q '\[obmm_gsva_demo\] result=done mode=invalid-offset role=peer bad_pte_offset=0x1000' "$NODEB_GUEST_LOG"; then
@@ -210,7 +218,7 @@ validate_invalid_offset_logs() {
     echo "[gsva-demo] FAIL: invalid-offset mode unexpectedly programmed a GSVA route" >&2
     return 1
   fi
-  if ! grep -q 'GSVA identity mapping requires local_va/home_va/remote_uba be equal and pte_offset 0' "$NODEB_GUEST_LOG"; then
+  if ! grep -Eq 'GSVA identity mapping requires local_va/home_va/remote_uba be equal and pte_offset 0|GSVA identity import outside active aperture or not identity' "$NODEB_GUEST_LOG"; then
     echo "[gsva-demo] FAIL: invalid-offset mode lacks guest kernel rejection evidence" >&2
     return 1
   fi
@@ -261,6 +269,35 @@ validate_mmap_mode_logs() {
   fi
 }
 
+validate_outside_aperture_logs() {
+  if ! grep -q '\[obmm_gsva_demo\] result=done mode=outside-aperture role=home' "$NODEA_GUEST_LOG" ||
+     ! grep -q '\[obmm_gsva_demo\] result=done mode=outside-aperture role=peer' "$NODEB_GUEST_LOG"; then
+    echo "[gsva-demo] FAIL: outside-aperture mode did not reject fixed UBA on both nodes" >&2
+    return 1
+  fi
+  if ! grep -q 'GSVA fixed UBA export outside active aperture' "$NODEA_GUEST_LOG" ||
+     ! grep -q 'GSVA fixed UBA export outside active aperture' "$NODEB_GUEST_LOG"; then
+    echo "[gsva-demo] FAIL: outside-aperture mode lacks OBMM rejection evidence" >&2
+    return 1
+  fi
+}
+
+validate_outside_import_logs() {
+  if ! grep -q '\[obmm_gsva_demo\] result=done mode=outside-import role=home' "$NODEA_GUEST_LOG" ||
+     ! grep -q '\[obmm_gsva_demo\] result=done mode=outside-import role=peer' "$NODEB_GUEST_LOG"; then
+    echo "[gsva-demo] FAIL: outside-import mode did not reject GSVA import on both roles" >&2
+    return 1
+  fi
+  if ! grep -q 'GSVA identity import outside active aperture or not identity' "$NODEB_GUEST_LOG"; then
+    echo "[gsva-demo] FAIL: outside-import mode lacks OBMM import rejection evidence" >&2
+    return 1
+  fi
+  if grep -Eq "GVA_S3_MAP .*address_profile=2" "$NODEB_QEMU_LOG"; then
+    echo "[gsva-demo] FAIL: outside-import mode unexpectedly programmed a GSVA route" >&2
+    return 1
+  fi
+}
+
 echo "[gsva-demo] run_id=$RUN_ID mode=$GSVA_DEMO_MODE base=$GSVA_DEMO_BASE size=$GSVA_DEMO_SIZE node_count=$GSVA_DEMO_NODE_COUNT"
 echo "[gsva-demo] starting nodeA and nodeB..."
 
@@ -279,6 +316,7 @@ deadline=$((SECONDS + RUN_SECS))
 while (( SECONDS < deadline )); do
   if [[ -f "$NODEA_GUEST_LOG" ]] && grep -qE '\[obmm_gsva_demo\] result=done' "$NODEA_GUEST_LOG" && \
      [[ -f "$NODEB_GUEST_LOG" ]] && grep -qE '\[obmm_gsva_demo\] result=done' "$NODEB_GUEST_LOG"; then
+    validate_kernel_aperture_proc_logs
     case "$GSVA_DEMO_MODE" in
       identity)
         validate_identity_logs
@@ -297,6 +335,12 @@ while (( SECONDS < deadline )); do
         ;;
       mmap-mode)
         validate_mmap_mode_logs
+        ;;
+      outside-aperture)
+        validate_outside_aperture_logs
+        ;;
+      outside-import)
+        validate_outside_import_logs
         ;;
     esac
     echo "[gsva-demo] PASS: both nodes completed"

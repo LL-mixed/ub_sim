@@ -70,6 +70,12 @@ enum obmm_import_cache_mode {
 #define OBMM_SIM_DEC_ADDRESS_PROFILE_GSVA_IDENTITY 2
 #define OBMM_SIM_DEC_CACHE_POLICY_NC 0
 #define OBMM_SIM_DEC_CACHE_POLICY_WRITE_THROUGH 1
+#define OBMM_SIM_DEC_CACHE_POLICY_READ_CACHE 2
+#define OBMM_SIM_DEC_CACHE_POLICY_WRITE_BACK 3
+
+#define OBMM_SIM_DEC_ACCESS_READ_ONLY (1U << 0)
+#define OBMM_SIM_DEC_ACCESS_EXPLICIT_SYNC (1U << 1)
+#define OBMM_SIM_DEC_ACCESS_FAULT_UPI_MISMATCH (1U << 31)
 
 /* ------------------------------------------------------------------ */
 /* Shared types                                                        */

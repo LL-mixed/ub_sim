@@ -102,9 +102,9 @@ local imported PA window
   -> target strict DMA access
 ```
 
-### 2.3 当前缺口
+### 2.3 原始基线缺口
 
-当前实现仍更像“UB Decoder/OBMM 直访仿真”，还不是完整的 “GVA 仿真”。主要缺口是：
+本文档立项时的实现仍更像“UB Decoder/OBMM 直访仿真”，还不是完整的 “GVA 仿真”。当时的主要缺口是：
 
 1. 没有显式 `GVA map` 对象，`remote_uba` 仍由 OBMM 私有 `priv` 隐式携带。
 2. 没有独立 `GVA Manager` 负责全局地址空间、GSVA reserved range 和地址生命周期。
@@ -392,7 +392,7 @@ struct ub_gva_mp_entry {
 };
 ```
 
-第一阶段不要求改变 QEMU 真实路由算法，也不要求先读取完整 FM link state。`p_tag` 先由 GVA layer 静态、确定性分配，后续 Phase B 再从 FM/link state 反推并校验 `p_tag -> link`。
+第一阶段不要求改变 QEMU 真实路由算法，也不要求 guest 侧读取完整 FM link state。`p_tag` 支持两种来源：guest/GVA layer 可显式给出非零 tag；若请求中 `p_tag=0`，QEMU backend 在解析 FM neighbor 后派生 effective `p_tag=mp_table.link_id`。Phase B 再校验 effective `p_tag -> {port,lane,link}`，显式非零 `p_tag` 与 resolved link 不一致时必须触发 route miss。
 
 ### 4.4 Phase A 接口决策
 
@@ -411,21 +411,21 @@ struct ub_gva_mp_entry {
    - Phase A 默认 `local_va=0`、`pte_offset=0`、`uba_base=remote_uba`，因为当前尚未接入 QEMU ARM MMU/TCG VA translation。
    - 这里的 `pte_offset` 只描述 `User VA -> UBA` 的重定位关系；只有 GSVA profile 才额外要求 `Home VA == UBA`。
 3. `p_tag` 来源：
-   - Phase A 由 GVA layer 静态分配。
-   - 推荐使用确定性函数，例如 `{local_cna, peer_cna, upi}` 或 `gva_map_id` 派生。
-   - Phase B 再接入 FM link topology 校验 `p_tag -> {port,lane,link}`。
+   - Phase A 允许 GVA layer 显式静态分配非零 `p_tag`。
+   - 若请求 `p_tag=0`，表示由 QEMU backend 自动派生；backend 根据 FM neighbor 解析出的 `mp_table.link_id` 写入 route entry 的 effective `p_tag`。
+   - Phase B 校验 effective `p_tag -> {port,lane,link}`；显式非零 `p_tag` 与 resolved link 不一致时触发 `p_tag_mismatch`。
 4. `cache_policy` 范围：
    - Phase A 只支持 `NC/write-through`。
    - QEMU 当前 `SIM_DEC_WRITE_MODE=write-back` 仍属于 legacy backend 调试开关，不能等价为 GVA cacheable。
    - `read-cache`、`write-back`、`MRSW` 延后到 Phase D。
 5. `OBMM_CMD_IMPORT` 是否改 UAPI：
    - Phase A 不改 `struct obmm_cmd_import`。
-   - 继续使用 `priv`，但新增 GVA 私有结构或 `OBMM_SIM_DEC_PRIV_VER_2`。
+   - 继续使用 `priv`，新增 `OBMM_SIM_DEC_PRIV_VER_2` 承载 GVA metadata。
    - legacy `OBMM_SIM_DEC_PRIV_VER_1` 继续兼容，只生成默认 GVA metadata。
    - 等 Phase A 验证通过后，再评估是否把 `uba/token_value/gva_flags` 升级为显式 UAPI 字段。
 6. `SIM_DEC_OP_MAP` 是否扩展：
    - Phase A 不修改现有 `SIM_DEC_OP_MAP` payload。
-   - 推荐新增 `SIM_DEC_OP_GVA_MAP` 或等价 GVA metadata sideband。
+   - 新增 `SIM_DEC_OP_GVA_MAP = 0x07` 承载 GVA metadata sideband。
    - 新 payload 应包含原 `sim_dec_map_req` 加 `SimGvaRouteMeta`。
    - QEMU 收到后创建同一个 legacy backend map，并在 `SimDecMapEntry` 上挂 `gva_meta`。
 
@@ -735,13 +735,15 @@ guest-linux/aarch64/scripts/run_ub_four_node_gva_matrix.sh
 1. `ma_table` 模型支持 overlap 检查。
 2. `mp_table` 模型从 FM link topology 派生端口。
 3. route miss/token mismatch/UPI mismatch 可注入错误。
-4. GVA debug CLI 支持 dump route。
+4. GVA debug CLI 支持 dump route，并展示 request `p_tag`、backend effective `p_tag`、`mp_ubc_port/mp_lane/mp_link_id`。
 
 验收：
 
 1. 错误 `dcna` 或 `p_tag` 触发 route miss。
 2. token mismatch 触发读写失败。
 3. 八节点场景中每个 peer route 可唯一映射到 active link。
+4. 普通 GVA route dump 必须能在 QEMU log 和 guest `/proc/ub_sim_decoder/gva_routes` 中证明 effective `p_tag == link_id`，或者显式错误 `p_tag` 触发 `p_tag_mismatch`。
+5. `GSVA_MATRIX_NODE_COUNT=4|8 run_ub_four_node_gsva_matrix_demo.sh` 必须检查每个节点至少有 `node_count - 1` 条 `GVA_S3_MAP address_profile=2`，且每条 route 的 `link_id` 已解析、`p_tag == link_id`、peer `dcna` 唯一、`link_id` 唯一。
 
 ### Phase C：QEMU ARM MMU/TCG 入口验证
 
@@ -749,9 +751,10 @@ guest-linux/aarch64/scripts/run_ub_four_node_gva_matrix.sh
 
 修改：
 
-1. 设计 `PTE.offset` 的来源：
-   - guest PTE encoding 扩展，或
-   - QEMU/guest 共享 side table。
+1. `PTE.offset` 的来源采用 GVA route metadata side table：
+   - guest 通过 `OBMM_SIM_DEC_PRIV_VER_2` / GVA manager map request 显式下发 `local_va`、`uba_base`、`pte_offset`。
+   - QEMU backend 将这些字段保存在 `SimDecMapEntry`，TCG hook 按 `VA + pte_offset` 回查同一条 `ma_table` entry。
+   - guest PTE encoding 扩展暂不进入当前 simulator 实现；后续若要模拟真实硬件 PTE bit，再把 side table 替换为 PTE decoder。
 2. 在 QEMU ARM translation slow path 中查 `ma_table`。
 3. 让 `ma_table` 结果生成可被 memory dispatch 命中的 GVA aperture 或 `MemoryRegionSection`。
 4. 对 `ma_table` 更新、unmap、ASID/VMID 切换做 TLB invalidation。
@@ -763,10 +766,24 @@ guest-linux/aarch64/scripts/run_ub_four_node_gva_matrix.sh
 2. route 更新后旧 TLB 不再可用。
 3. 关闭该路径时现有 OBMM/SIM_DEC/GVA backend 回归不变。
 4. 与 Phase A-B 的 `ma_table/mp_table/stats/fault injection` 共用同一套模型。
+5. `SIM_GVA_TCG=1 GVA_DIRECT_MODE=write-read run_ub_dual_node_gva_direct_test.sh` 必须看到 `GVA_TCG_TLB_FLUSH reason=gva_map` 和 `GVA_TCG_TRANSLATE`。
+6. `SIM_GVA_TCG=1 GVA_DIRECT_MODE=unmap-fault run_ub_dual_node_gva_direct_test.sh` 必须看到 `GVA_TCG_TLB_FLUSH reason=gva_unmap`。
+7. `SIM_GVA_TCG=0` 或默认值下不得出现 `GVA_TCG_TRANSLATE`，证明默认路径不侵入 legacy backend 回归。
 
 ### Phase D：Cache Policy 与 Ownership
 
 目标：支持 PPT 中的 `MRSW` 方向，但必须以正确性为先。
+
+当前模拟实现采用“拒绝冲突 writer”作为第一步 ownership 语义，而不是伪造远端 invalidation。原因是现有 UB Link 数据面还没有跨 QEMU 进程的 remote reader invalidation 回调，也没有把 OBMM ownership 的页级 reader/writer 状态同步为全局分布式状态。为了让 generic GVA 的 MRSW 在当前仿真里可证明，QEMU GVA backend 对 `address_profile=generic_gva` 的显式 GVA route 在 `UB_FM_SHARED_DIR/gva_ownership/registry.tsv` 维护 host-shared ownership registry：
+
+1. `cache_policy=read_cache` 且 `READ_ONLY` 的 route 注册为 `reader`，允许多个 reader 重叠。
+2. 非 `READ_ONLY` 的 generic GVA route 注册为 `writer`。
+3. writer 与任意重叠 reader/writer 冲突时，`SIM_DEC_OP_GVA_MAP` 返回 `RESOURCE_BUSY`，日志输出 `GVA_OWNERSHIP_CONFLICT`。
+4. route unmap 或 QEMU cleanup 时注销 ownership entry，日志输出 `GVA_OWNERSHIP_UNREGISTER`。
+
+`address_profile=gsva_identity` 不进入这个临时 generic GVA ownership registry。GSVA 的地址生命周期与共享语义由 GSVA Manager、reserved aperture 和 segment owner 管理；否则四节点 GSVA matrix 中每个节点写入其他节点 GSVA slot 时会被 generic writer 独占规则错误拒绝。
+
+这不是最终硬件级 cache coherence；它是当前阶段对“单写者写入前能拒绝或 invalid 其他 writer/reader”的可执行选择：先拒绝，后续若 UB Link/OBMM 增加远端 invalidation 控制消息，再把拒绝升级为 invalidate-and-grant。
 
 修改：
 
@@ -781,6 +798,9 @@ guest-linux/aarch64/scripts/run_ub_four_node_gva_matrix.sh
 2. 单写者写入前能拒绝或 invalid 其他 writer。
 3. write-back 未 sync 时远端不可见，sync 后可见。
 4. 故障注入不破坏当前 OBMM/URMA 回归。
+5. `gva_direct_demo --mode=mrsw-read-share` 能证明同一 UBA 上两个 read-only reader route 可并存，并在 QEMU 日志中看到两条 `GVA_OWNERSHIP_REGISTER role=reader` 且没有 `GVA_OWNERSHIP_CONFLICT`。
+6. `gva_direct_demo --mode=mrsw-conflict` 能证明同一 UBA 上已有 reader 时 writer map 被拒绝，并在 QEMU 日志中看到 `GVA_OWNERSHIP_REGISTER role=reader` 与 `GVA_OWNERSHIP_CONFLICT role=writer existing_role=reader`。
+7. `gva_direct_demo --mode=mrsw-writer-conflict` 能证明同一 UBA 上已有 writer 时第二个 writer map 被拒绝，并在 QEMU 日志中看到 `GVA_OWNERSHIP_REGISTER role=writer` 与 `GVA_OWNERSHIP_CONFLICT role=writer existing_role=writer`。
 
 ## 10. 验证矩阵
 
@@ -808,8 +828,8 @@ guest-linux/aarch64/scripts/run_ub_four_node_gva_matrix.sh
 
 1. `SIM_DEC_STATS` 已由 QEMU `sim_dec_print_global_stats()` 在退出时输出到 QEMU log。
 2. dual/four/eight-node 脚本已经按 node 维护 `*_qemu.log` 和 `*_guest.log`。
-3. `GVA_STATS` 当前不存在，是 Phase A 需要新增的 QEMU/guest 统计前缀。
-4. Phase A 验收不能只依赖 `SIM_DEC_STATS`，必须新增 `GVA_S3_MAP` 日志和 guest debugfs/sysfs route dump。
+3. `GVA_STATS` 已由 QEMU 在退出统计中输出，脚本必须检查 GVA 读写计数而不能只依赖 `SIM_DEC_STATS`。
+4. Phase A 验收还必须检查 `GVA_S3_MAP` 日志和 guest `/proc/ub_sim_decoder/gva_routes` route dump；guest dump 必须包含 request/effective `p_tag` 和 resolved `mp_table` 字段。
 
 最小测试集：
 
@@ -822,8 +842,12 @@ guest-linux/aarch64/scripts/run_ub_four_node_gva_matrix.sh
    - `gva_direct_demo --mode=write-read`
    - `gva_direct_demo --mode=unmap-fault`
    - `gva_direct_demo --mode=sync`
+   - `gva_direct_demo --mode=mrsw-read-share`
+   - `gva_direct_demo --mode=mrsw-conflict`
+   - `gva_direct_demo --mode=mrsw-writer-conflict`
 3. QEMU dual-node：
    - `run_ub_dual_node_gva_direct_test.sh`
+   - `run_ub_dual_node_gva_direct_matrix.sh`
    - existing `run_ub_dual_node_demo.sh`
    - existing `run_ub_dual_node_urma_dataplane_workload_test.sh`
 4. QEMU four/eight-node：
@@ -868,22 +892,23 @@ guest-linux/aarch64/scripts/run_ub_four_node_gva_matrix.sh
    - legacy OBMM Phase A 当前未接入 VA translation，默认只记录 `local_va=0`、`pte_offset=0`、`uba_base=remote_uba`。
    - manager-produced map request 必须填写真实 `local_va`，不能使用 legacy `local_va=0` 约定。
 3. `p_tag`：
-   - Phase A 静态确定性分配。
-   - Phase B 再和 FM link topology 校验。
+   - Phase A 支持显式非零静态 tag，也支持 `p_tag=0` 由 QEMU backend 按 resolved `mp_table.link_id` 派生 effective tag。
+   - Phase B 和 FM link topology 校验 effective tag；显式非零 tag 与 resolved link 不一致时必须失败。
 4. `cache_policy`：
-   - Phase A 只支持 `NC/write-through`。
-   - `read-cache/write-back/MRSW` 延后。
+   - Phase A 基线只要求 `NC/write-through`。
+   - 当前实现已扩展到 Phase D 的 `read-cache`、`write-back` 和 MRSW ownership registry。
 5. `obmm_cmd_import`：
    - Phase A 不改 UAPI struct。
-   - 使用 `priv` 新版本或新 magic 承载 GVA metadata。
+   - 使用 `OBMM_SIM_DEC_PRIV_VER_2` 承载 GVA metadata。
    - legacy `OBMM_SIM_DEC_PRIV_VER_1` 继续兼容。
 6. `SIM_DEC_OP_MAP`：
    - 不修改现有 v1 payload。
-   - 新增 `SIM_DEC_OP_GVA_MAP` 或等价 sideband。
+   - 新增 `SIM_DEC_OP_GVA_MAP = 0x07`。
    - QEMU 创建 legacy backend map，同时保存 `SimGvaRouteMeta`。
 7. map 基数：
    - Phase A 强制 `GVA route entry : backend map = 1:1`。
    - 不做按页拆分。
+   - `map_id` 由 backend/QEMU 分配并在 response 中返回，guest kernel 绑定到 OBMM import registry。
 8. 模块放置：
    - Phase A 放在 `ubus/sim` 内。
    - 不新增独立 `ub-gva.ko`。
@@ -893,11 +918,7 @@ guest-linux/aarch64/scripts/run_ub_four_node_gva_matrix.sh
 
 ### 12.2 剩余开放问题
 
-1. `SIM_DEC_OP_GVA_MAP` 的 opcode 编号需要在 guest/QEMU 双端统一分配。
-2. GVA `priv` 是使用 `OBMM_SIM_DEC_PRIV_VER_2` 还是新 `OBMM_GVA_PRIV_MAGIC`。
-3. `gva_map_id` 是否由 guest 先分配，还是由 QEMU 返回后 guest 绑定。
-4. Phase B 的 `p_tag -> link/lane` 是否完全从 FM state 派生，还是保留静态分配并增加校验模式。
-5. Phase C 的 `PTE.offset` 最终来源：guest PTE encoding、side table，还是 QEMU machine property 辅助表。
+当前设计中的 Phase A/B/C/D 接口决策已经收敛。剩余工作不再是接口选择，而是需要基于新 guest kernel artifact 跑完整两节点、四节点和 TCG-on/off runtime 验证。
 
 ## 13. 结论
 
@@ -914,10 +935,11 @@ VA + PTE.offset -> UBA
 
 因此 `SIM_DEC` 不能被当成 GVA 架构组件。它在当前方案中的角色只是第一阶段复用的 legacy backend：提供已验证的 map storage、CPU window callback、strict DMA fast path 和 UB Link remote read/write。
 
-下一步不应从零写一套 GVA 数据面，也不应一开始就侵入 QEMU ARM MMU/TCG 主路径。更稳妥的路线是：
+当前实现不从零写一套 GVA 数据面，也没有把 `SIM_DEC` 提升为架构组件；它复用 legacy backend 承载分阶段模拟：
 
-1. 先在现有 backend 上建立显式 `GVA map/MMU.S3 ma_table/NoC mp_table/cache policy` 语义。
-2. 通过日志、stats、CLI、fault injection 和双/四/八节点测试证明 GVA 语义正确。
-3. 等 `PTE.offset` 来源、TLB invalidation、GVA aperture/MemoryRegion 设计稳定后，再把入口前移到 QEMU ARM MMU/TCG translation hook。
+1. 在现有 backend 上建立显式 `GVA map/MMU.S3 ma_table/NoC mp_table/cache policy` 语义。
+2. 通过日志、stats、CLI、fault injection 和双/四/八节点脚本证明 GVA 语义正确。
+3. 使用 GVA route metadata side table 作为当前 simulator 的 `PTE.offset` 来源，并通过可选 `SIM_GVA_TCG=1` 把入口前移到 QEMU ARM MMU/TCG translation hook。
+4. 若后续需要更贴近硬件 PTE encoding，再把 side table 替换为 guest PTE decoder；GVA manager、ma_table/mp_table、fault/stats/test contract 保持不变。
 
 这样能最小化改动风险，同时把 PPT 中的 `PTE.offset`、`MMU.S3 ma_table`、`NoC mp_table`、`UBC/UMMU validation` 转化为可测试、可回归、可观测的工程对象，并保留最终摆脱 `SIM_DEC` 对外概念的架构方向。

@@ -31,6 +31,8 @@ enum gsva_demo_mode {
     GSVA_DEMO_INVALID_OFFSET,
     GSVA_DEMO_MATRIX,
     GSVA_DEMO_MMAP_MODE,
+    GSVA_DEMO_OUTSIDE_APERTURE,
+    GSVA_DEMO_OUTSIDE_IMPORT,
 };
 
 struct gsva_demo_config {
@@ -106,6 +108,10 @@ static bool parse_args(int argc, char **argv, struct gsva_demo_config *cfg)
                 cfg->mode = GSVA_DEMO_MATRIX;
             } else if (strcmp(mode, "mmap-mode") == 0) {
                 cfg->mode = GSVA_DEMO_MMAP_MODE;
+            } else if (strcmp(mode, "outside-aperture") == 0) {
+                cfg->mode = GSVA_DEMO_OUTSIDE_APERTURE;
+            } else if (strcmp(mode, "outside-import") == 0) {
+                cfg->mode = GSVA_DEMO_OUTSIDE_IMPORT;
             } else {
                 return false;
             }
@@ -164,6 +170,31 @@ static int get_local_identity(uint32_t *local_cna, int *local_idx)
     return 0;
 }
 
+static void log_kernel_aperture_proc(void)
+{
+    FILE *fp;
+    char header[160];
+    char value[160];
+    size_t len;
+
+    fp = fopen("/proc/obmm/gsva_aperture", "r");
+    if (!fp) {
+        log_msg("kernel aperture proc unavailable errno=%d", errno);
+        return;
+    }
+    if (!fgets(header, sizeof(header), fp) ||
+        !fgets(value, sizeof(value), fp)) {
+        fclose(fp);
+        log_msg("kernel aperture proc read failed errno=%d", errno);
+        return;
+    }
+    fclose(fp);
+    len = strlen(value);
+    if (len > 0 && value[len - 1] == '\n')
+        value[len - 1] = '\0';
+    log_msg("kernel aperture proc -> %s", value);
+}
+
 static int register_aperture(int obmm_fd, const struct gsva_demo_config *cfg,
                              int local_idx)
 {
@@ -190,6 +221,7 @@ static int register_aperture(int obmm_fd, const struct gsva_demo_config *cfg,
         errno = EINVAL;
         return -1;
     }
+    log_kernel_aperture_proc();
     return 0;
 }
 
@@ -649,6 +681,41 @@ out_gsva:
     return ret;
 }
 
+static int run_outside_aperture(int obmm_fd, const struct gsva_demo_config *cfg,
+                                int local_idx)
+{
+    struct obmm_helpers_meta meta = {0};
+    uint64_t outside_base;
+    int saved_errno;
+
+    if (register_aperture(obmm_fd, cfg, local_idx) != 0)
+        return -1;
+    if (UINT64_MAX - cfg->base < cfg->size) {
+        (void)clear_aperture(obmm_fd, GSVA_DEMO_GENERATION);
+        errno = EOVERFLOW;
+        return -1;
+    }
+    outside_base = cfg->base + cfg->size;
+
+    if (obmm_do_export_fixed_uba(obmm_fd, &meta, cfg->size,
+                                 outside_base) == 0) {
+        (void)obmm_do_unexport(obmm_fd, meta.export_mem_id);
+        (void)clear_aperture(obmm_fd, GSVA_DEMO_GENERATION);
+        log_msg("result=fail mode=outside-aperture role=%s reason=fixed-export-accepted uba=%#"
+                PRIx64,
+                local_idx == 0 ? "home" : "peer", outside_base);
+        errno = EINVAL;
+        return -1;
+    }
+
+    saved_errno = errno;
+    (void)clear_aperture(obmm_fd, GSVA_DEMO_GENERATION);
+    log_msg("result=done mode=outside-aperture role=%s rejected_uba=%#"
+            PRIx64 " errno=%d",
+            local_idx == 0 ? "home" : "peer", outside_base, saved_errno);
+    return 0;
+}
+
 static int run_stale_generation(int obmm_fd, const struct gsva_demo_config *cfg,
                                 int local_idx)
 {
@@ -766,6 +833,94 @@ out_unexport:
     return ret;
 }
 
+static int run_outside_import_home(int obmm_fd, uint32_t local_cna,
+                                   const struct gsva_demo_config *cfg,
+                                   struct obmm_helpers_meta *local_meta)
+{
+    int ret = -1;
+
+    local_meta->export_cna = local_cna;
+    if (obmm_do_export(obmm_fd, local_meta, cfg->size) != 0)
+        return -1;
+    if (obmm_bootstrap_publish(obmm_fd, 0, 2, GSVA_DEMO_GENERATION,
+                               local_meta) != 0)
+        goto out_unexport;
+
+    usleep(3000000);
+    log_msg("result=done mode=outside-import role=home published_uba=%#"
+            PRIx64, local_meta->remote_uba);
+    ret = 0;
+
+out_unexport:
+    if (local_meta->export_mem_id)
+        (void)obmm_do_unexport(obmm_fd, local_meta->export_mem_id);
+    return ret;
+}
+
+static int run_outside_import_peer(int obmm_fd, uint32_t local_cna,
+                                   const struct gsva_demo_config *cfg,
+                                   struct obmm_helpers_meta *local_meta)
+{
+    struct obmm_helpers_meta metas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
+    struct obmm_helpers_meta import_meta;
+    bool got[OBMM_POOL_HELPERS_MAX_NODES] = {false};
+    uint64_t import_pas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
+    bool import_osync[OBMM_POOL_HELPERS_MAX_NODES] = {false};
+    uint64_t import_mem_id = 0;
+    uint64_t outside_base;
+    int saved_errno;
+    int ret = -1;
+
+    if (UINT64_MAX - cfg->base < cfg->size) {
+        errno = EOVERFLOW;
+        return -1;
+    }
+    outside_base = cfg->base + cfg->size;
+
+    local_meta->export_cna = local_cna;
+    if (obmm_do_export(obmm_fd, local_meta, cfg->size) != 0)
+        return -1;
+    if (obmm_bootstrap_publish(obmm_fd, 1, 2, GSVA_DEMO_GENERATION,
+                               local_meta) != 0)
+        goto out_unexport;
+    if (obmm_bootstrap_lookup(obmm_fd, local_cna, 2, GSVA_DEMO_GENERATION,
+                              metas, got) != 0)
+        goto out_unexport;
+    if (!got[0]) {
+        errno = EINVAL;
+        goto out_unexport;
+    }
+    if (!obmm_alloc_import_pas(1, cfg->size, import_pas, import_osync,
+                               obmm_parse_import_cache_mode()))
+        goto out_unexport;
+
+    import_meta = metas[0];
+    import_meta.remote_uba = outside_base;
+    if (obmm_do_import_v2(obmm_fd, &import_meta, local_cna, import_pas[0], 0,
+                          OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER,
+                          OBMM_SIM_DEC_ADDRESS_PROFILE_GSVA_IDENTITY,
+                          OBMM_SIM_DEC_CACHE_POLICY_WRITE_THROUGH,
+                          0, 0, 0, 0, 0, 1, outside_base, outside_base,
+                          0, &import_mem_id) == 0) {
+        (void)obmm_do_unimport(obmm_fd, import_mem_id);
+        log_msg("result=fail mode=outside-import role=peer reason=import-accepted uba=%#"
+                PRIx64, outside_base);
+        errno = EINVAL;
+        goto out_unexport;
+    }
+
+    saved_errno = errno;
+    log_msg("result=done mode=outside-import role=peer rejected_uba=%#"
+            PRIx64 " errno=%d",
+            outside_base, saved_errno);
+    ret = 0;
+
+out_unexport:
+    if (local_meta->export_mem_id)
+        (void)obmm_do_unexport(obmm_fd, local_meta->export_mem_id);
+    return ret;
+}
+
 int main(int argc, char **argv)
 {
     struct gsva_demo_config cfg;
@@ -776,7 +931,7 @@ int main(int argc, char **argv)
     int ret = 1;
 
     if (!parse_args(argc, argv, &cfg)) {
-        fprintf(stderr, "usage: obmm_gsva_demo --mode identity|conflict|stale-generation|invalid-offset|matrix|mmap-mode "
+        fprintf(stderr, "usage: obmm_gsva_demo --mode identity|conflict|stale-generation|invalid-offset|matrix|mmap-mode|outside-aperture|outside-import "
                 "[--base A] [--size S] [--node-count N]\n");
         return 2;
     }
@@ -807,14 +962,37 @@ int main(int argc, char **argv)
         ret = run_mmap_mode(obmm_fd, &cfg, local_idx) == 0 ? 0 : 1;
         goto out;
     }
+    if (cfg.mode == GSVA_DEMO_OUTSIDE_APERTURE) {
+        ret = run_outside_aperture(obmm_fd, &cfg, local_idx) == 0 ? 0 : 1;
+        goto out;
+    }
     if (cfg.mode == GSVA_DEMO_STALE_GENERATION) {
         ret = run_stale_generation(obmm_fd, &cfg, local_idx) == 0 ? 0 : 1;
         goto out;
     }
     if (cfg.mode == GSVA_DEMO_INVALID_OFFSET) {
+        if (register_aperture(obmm_fd, &cfg, local_idx) != 0) {
+            log_msg("aperture register failed errno=%d", errno);
+            goto out;
+        }
+        log_msg("kernel aperture registry -> ok base=%#" PRIx64
+                " size=%#" PRIx64, cfg.base, cfg.size);
         ret = local_idx == 0 ?
             run_invalid_offset_home(obmm_fd, local_cna, &cfg, &local_meta) :
             run_invalid_offset_peer(obmm_fd, local_cna, &cfg, &local_meta);
+        ret = ret == 0 ? 0 : 1;
+        goto out;
+    }
+    if (cfg.mode == GSVA_DEMO_OUTSIDE_IMPORT) {
+        if (register_aperture(obmm_fd, &cfg, local_idx) != 0) {
+            log_msg("aperture register failed errno=%d", errno);
+            goto out;
+        }
+        log_msg("kernel aperture registry -> ok base=%#" PRIx64
+                " size=%#" PRIx64, cfg.base, cfg.size);
+        ret = local_idx == 0 ?
+            run_outside_import_home(obmm_fd, local_cna, &cfg, &local_meta) :
+            run_outside_import_peer(obmm_fd, local_cna, &cfg, &local_meta);
         ret = ret == 0 ? 0 : 1;
         goto out;
     }

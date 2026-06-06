@@ -166,6 +166,24 @@ run_gva_manager_bootstrap() {
       gva_manager_aperture_size=*)
         args="$args --aperture-size ${token#*=}"
         ;;
+      gva_manager_allocate_segment=1)
+        args="$args --allocate-segment"
+        ;;
+      gva_manager_segment_size=*)
+        args="$args --segment-size ${token#*=}"
+        ;;
+      gva_manager_segment_alignment=*)
+        args="$args --segment-alignment ${token#*=}"
+        ;;
+      gva_manager_home_node=*)
+        args="$args --home-node ${token#*=}"
+        ;;
+      gva_manager_cache_policy=*)
+        args="$args --cache-policy ${token#*=}"
+        ;;
+      gva_manager_access_flags=*)
+        args="$args --access-flags ${token#*=}"
+        ;;
       gva_manager_conflict=1)
         args="$args --conflict"
         ;;
@@ -174,6 +192,10 @@ run_gva_manager_bootstrap() {
 
   # Values come from kernel cmdline key=value tokens, so word splitting is intentional.
   run_binary "linqu_gva_manager" /bin/linqu_gva_manager $args
+}
+
+run_gva_manager_dump_routes() {
+  run_binary "linqu_gva_manager" /bin/linqu_gva_manager --dump-routes
 }
 
 run_obmm_gsva_demo() {
@@ -272,6 +294,11 @@ run_default_actions() {
     ran_any="1"
   fi
 
+  if has_flag "linqu_gva_dump_routes=1"; then
+    run_gva_manager_dump_routes || rc=$?
+    ran_any="1"
+  fi
+
   if has_flag "linqu_gva_direct_demo=1"; then
     run_gva_direct_demo || rc=$?
     ran_any="1"
@@ -321,6 +348,9 @@ run_single_action() {
       ;;
     gva_manager_bootstrap)
       run_gva_manager_bootstrap
+      ;;
+    gva_manager_dump_routes)
+      run_gva_manager_dump_routes
       ;;
     gva_direct_demo)
       run_gva_direct_demo

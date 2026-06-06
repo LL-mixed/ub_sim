@@ -23,18 +23,25 @@
 #define GVA_DIRECT_A 0x13579bdf2468ace0ULL
 #define GVA_DIRECT_B 0xfdb97531eca86420ULL
 #define GVA_DIRECT_TIMEOUT_MS 90000
-#define GVA_DIRECT_ACCESS_FAULT_UPI_MISMATCH (1U << 31)
 
 enum gva_direct_mode {
     GVA_DIRECT_WRITE_READ,
     GVA_DIRECT_SYNC,
+    GVA_DIRECT_WRITE_BACK_SYNC,
     GVA_DIRECT_UNMAP_FAULT,
     GVA_DIRECT_DUMP,
     GVA_DIRECT_INVALID_CACHE,
+    GVA_DIRECT_READ_CACHE_WRITE_FAULT,
+    GVA_DIRECT_WRITE_BACK_NO_SYNC,
     GVA_DIRECT_OVERLAP,
+    GVA_DIRECT_ROUTE_OVERLAP,
     GVA_DIRECT_INVALID_PTAG,
+    GVA_DIRECT_INVALID_DCNA,
     GVA_DIRECT_TOKEN_MISMATCH,
     GVA_DIRECT_INVALID_UPI,
+    GVA_DIRECT_MRSW_READ_SHARE,
+    GVA_DIRECT_MRSW_CONFLICT,
+    GVA_DIRECT_MRSW_WRITER_CONFLICT,
 };
 
 struct gva_direct_config {
@@ -94,20 +101,36 @@ static bool parse_args(int argc, char **argv, struct gva_direct_config *cfg)
                 cfg->mode = GVA_DIRECT_WRITE_READ;
             } else if (strcmp(mode, "sync") == 0) {
                 cfg->mode = GVA_DIRECT_SYNC;
+            } else if (strcmp(mode, "write-back-sync") == 0) {
+                cfg->mode = GVA_DIRECT_WRITE_BACK_SYNC;
             } else if (strcmp(mode, "unmap-fault") == 0) {
                 cfg->mode = GVA_DIRECT_UNMAP_FAULT;
             } else if (strcmp(mode, "dump") == 0) {
                 cfg->mode = GVA_DIRECT_DUMP;
             } else if (strcmp(mode, "invalid-cache") == 0) {
                 cfg->mode = GVA_DIRECT_INVALID_CACHE;
+            } else if (strcmp(mode, "read-cache-write-fault") == 0) {
+                cfg->mode = GVA_DIRECT_READ_CACHE_WRITE_FAULT;
+            } else if (strcmp(mode, "write-back-no-sync") == 0) {
+                cfg->mode = GVA_DIRECT_WRITE_BACK_NO_SYNC;
             } else if (strcmp(mode, "overlap") == 0) {
                 cfg->mode = GVA_DIRECT_OVERLAP;
+            } else if (strcmp(mode, "route-overlap") == 0) {
+                cfg->mode = GVA_DIRECT_ROUTE_OVERLAP;
             } else if (strcmp(mode, "invalid-ptag") == 0) {
                 cfg->mode = GVA_DIRECT_INVALID_PTAG;
+            } else if (strcmp(mode, "invalid-dcna") == 0) {
+                cfg->mode = GVA_DIRECT_INVALID_DCNA;
             } else if (strcmp(mode, "token-mismatch") == 0) {
                 cfg->mode = GVA_DIRECT_TOKEN_MISMATCH;
             } else if (strcmp(mode, "invalid-upi") == 0) {
                 cfg->mode = GVA_DIRECT_INVALID_UPI;
+            } else if (strcmp(mode, "mrsw-read-share") == 0) {
+                cfg->mode = GVA_DIRECT_MRSW_READ_SHARE;
+            } else if (strcmp(mode, "mrsw-conflict") == 0) {
+                cfg->mode = GVA_DIRECT_MRSW_CONFLICT;
+            } else if (strcmp(mode, "mrsw-writer-conflict") == 0) {
+                cfg->mode = GVA_DIRECT_MRSW_WRITER_CONFLICT;
             } else {
                 return false;
             }
@@ -140,20 +163,36 @@ static const char *mode_name(enum gva_direct_mode mode)
         return "write-read";
     case GVA_DIRECT_SYNC:
         return "sync";
+    case GVA_DIRECT_WRITE_BACK_SYNC:
+        return "write-back-sync";
     case GVA_DIRECT_UNMAP_FAULT:
         return "unmap-fault";
     case GVA_DIRECT_DUMP:
         return "dump";
     case GVA_DIRECT_INVALID_CACHE:
         return "invalid-cache";
+    case GVA_DIRECT_READ_CACHE_WRITE_FAULT:
+        return "read-cache-write-fault";
+    case GVA_DIRECT_WRITE_BACK_NO_SYNC:
+        return "write-back-no-sync";
     case GVA_DIRECT_OVERLAP:
         return "overlap";
+    case GVA_DIRECT_ROUTE_OVERLAP:
+        return "route-overlap";
     case GVA_DIRECT_INVALID_PTAG:
         return "invalid-ptag";
+    case GVA_DIRECT_INVALID_DCNA:
+        return "invalid-dcna";
     case GVA_DIRECT_TOKEN_MISMATCH:
         return "token-mismatch";
     case GVA_DIRECT_INVALID_UPI:
         return "invalid-upi";
+    case GVA_DIRECT_MRSW_READ_SHARE:
+        return "mrsw-read-share";
+    case GVA_DIRECT_MRSW_CONFLICT:
+        return "mrsw-conflict";
+    case GVA_DIRECT_MRSW_WRITER_CONFLICT:
+        return "mrsw-writer-conflict";
     }
     return "unknown";
 }
@@ -261,10 +300,17 @@ static int run_home(int obmm_fd, uint32_t local_cna,
         goto out_unexport;
 
     if (cfg->mode == GVA_DIRECT_INVALID_CACHE ||
+        cfg->mode == GVA_DIRECT_READ_CACHE_WRITE_FAULT ||
+        cfg->mode == GVA_DIRECT_WRITE_BACK_NO_SYNC ||
         cfg->mode == GVA_DIRECT_OVERLAP ||
+        cfg->mode == GVA_DIRECT_ROUTE_OVERLAP ||
         cfg->mode == GVA_DIRECT_INVALID_PTAG ||
+        cfg->mode == GVA_DIRECT_INVALID_DCNA ||
         cfg->mode == GVA_DIRECT_TOKEN_MISMATCH ||
-        cfg->mode == GVA_DIRECT_INVALID_UPI) {
+        cfg->mode == GVA_DIRECT_INVALID_UPI ||
+        cfg->mode == GVA_DIRECT_MRSW_READ_SHARE ||
+        cfg->mode == GVA_DIRECT_MRSW_CONFLICT ||
+        cfg->mode == GVA_DIRECT_MRSW_WRITER_CONFLICT) {
         usleep(3000000);
         log_msg("result=done mode=%s role=home uba=%#" PRIx64,
                 mode_name(cfg->mode), local_meta->remote_uba);
@@ -351,6 +397,7 @@ static int run_peer(int obmm_fd, uint32_t local_cna,
                     struct obmm_helpers_meta *local_meta)
 {
     struct obmm_helpers_meta metas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
+    struct obmm_helpers_meta import_meta;
     bool got[OBMM_POOL_HELPERS_MAX_NODES] = {false};
     uint64_t import_pas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
     bool import_osync[OBMM_POOL_HELPERS_MAX_NODES] = {false};
@@ -363,6 +410,10 @@ static int run_peer(int obmm_fd, uint32_t local_cna,
     uint32_t token_value = 0;
     uint32_t p_tag = 0;
     uint32_t access_flags = 0;
+    uint32_t import_count = (cfg->mode == GVA_DIRECT_ROUTE_OVERLAP ||
+                             cfg->mode == GVA_DIRECT_MRSW_READ_SHARE ||
+                             cfg->mode == GVA_DIRECT_MRSW_CONFLICT ||
+                             cfg->mode == GVA_DIRECT_MRSW_WRITER_CONFLICT) ? 2 : 1;
     int ret = -1;
 
     if (publish_peer_dummy(obmm_fd, local_cna, cfg, local_meta) != 0)
@@ -374,20 +425,42 @@ static int run_peer(int obmm_fd, uint32_t local_cna,
         errno = EINVAL;
         goto out_unexport;
     }
-    if (!obmm_alloc_import_pas(1, cfg->size, import_pas, import_osync,
+    if (!obmm_alloc_import_pas(import_count, cfg->size, import_pas, import_osync,
                                obmm_parse_import_cache_mode()))
         goto out_unexport;
 
+    import_meta = metas[0];
     pte_offset = metas[0].remote_uba - cfg->local_va;
     if (cfg->mode == GVA_DIRECT_INVALID_CACHE)
         cache_policy = 0xffffffffU;
+    if (cfg->mode == GVA_DIRECT_READ_CACHE_WRITE_FAULT) {
+        cache_policy = OBMM_SIM_DEC_CACHE_POLICY_READ_CACHE;
+        access_flags |= OBMM_SIM_DEC_ACCESS_READ_ONLY;
+    }
+    if (cfg->mode == GVA_DIRECT_MRSW_READ_SHARE ||
+        cfg->mode == GVA_DIRECT_MRSW_CONFLICT) {
+        cache_policy = OBMM_SIM_DEC_CACHE_POLICY_READ_CACHE;
+        access_flags |= OBMM_SIM_DEC_ACCESS_READ_ONLY;
+    }
+    if (cfg->mode == GVA_DIRECT_WRITE_BACK_NO_SYNC)
+        cache_policy = OBMM_SIM_DEC_CACHE_POLICY_WRITE_BACK;
+    if (cfg->mode == GVA_DIRECT_WRITE_BACK_SYNC) {
+        cache_policy = OBMM_SIM_DEC_CACHE_POLICY_WRITE_BACK;
+        access_flags |= OBMM_SIM_DEC_ACCESS_EXPLICIT_SYNC;
+    }
     if (cfg->mode == GVA_DIRECT_INVALID_PTAG)
         p_tag = 0xffffffffU;
+    if (cfg->mode == GVA_DIRECT_INVALID_DCNA) {
+        import_meta.export_cna = 0x00badc0dU;
+        if ((import_meta.export_cna & 0x00ffffffU) ==
+            (metas[0].export_cna & 0x00ffffffU))
+            import_meta.export_cna ^= 0x0055aa55U;
+    }
     if (cfg->mode == GVA_DIRECT_TOKEN_MISMATCH)
         token_value = 0xffffffffU;
     if (cfg->mode == GVA_DIRECT_INVALID_UPI)
-        access_flags = GVA_DIRECT_ACCESS_FAULT_UPI_MISMATCH;
-    if (obmm_do_import_v2(obmm_fd, &metas[0], local_cna, import_pas[0],
+        access_flags |= OBMM_SIM_DEC_ACCESS_FAULT_UPI_MISMATCH;
+    if (obmm_do_import_v2(obmm_fd, &import_meta, local_cna, import_pas[0],
                           token_value,
                           OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER,
                           OBMM_SIM_DEC_ADDRESS_PROFILE_GENERIC_GVA,
@@ -397,6 +470,10 @@ static int run_peer(int obmm_fd, uint32_t local_cna,
         if (cfg->mode == GVA_DIRECT_INVALID_CACHE) {
             log_msg("result=done mode=invalid-cache role=peer bad_cache_policy=%#x errno=%d",
                     cache_policy, errno);
+            ret = 0;
+        } else if (cfg->mode == GVA_DIRECT_WRITE_BACK_NO_SYNC) {
+            log_msg("result=done mode=write-back-no-sync role=peer cache_policy=%#x access_flags=%#x errno=%d",
+                    cache_policy, access_flags, errno);
             ret = 0;
         }
         goto out_unexport;
@@ -408,14 +485,22 @@ static int run_peer(int obmm_fd, uint32_t local_cna,
         errno = EINVAL;
         goto out_unexport;
     }
+    if (cfg->mode == GVA_DIRECT_WRITE_BACK_NO_SYNC) {
+        (void)obmm_do_unimport(obmm_fd, import_mem_id);
+        import_mem_id = 0;
+        log_msg("result=fail mode=write-back-no-sync role=peer reason=import-accepted");
+        errno = EINVAL;
+        goto out_unexport;
+    }
     log_msg("guest_route_dump map_source=%u address_profile=%u cache_policy=%u "
             "gva_id=%u local_va=%#" PRIx64 " home_va=%#" PRIx64
-            " pte_offset=%#" PRIx64 " uba=%#" PRIx64 " import_pa=%#"
+            " pte_offset=%#" PRIx64 " uba=%#" PRIx64 " dcna=%#x import_pa=%#"
             PRIx64,
             OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER,
             OBMM_SIM_DEC_ADDRESS_PROFILE_GENERIC_GVA,
-            OBMM_SIM_DEC_CACHE_POLICY_WRITE_THROUGH, 1, cfg->local_va,
-            cfg->home_va, pte_offset, metas[0].remote_uba, import_pas[0]);
+            cache_policy, 1, cfg->local_va,
+            cfg->home_va, pte_offset, metas[0].remote_uba,
+            import_meta.export_cna, import_pas[0]);
 
     if (cfg->mode == GVA_DIRECT_DUMP &&
         dump_proc_gva_routes(cfg->local_va, cfg->home_va, pte_offset) != 0) {
@@ -432,12 +517,109 @@ static int run_peer(int obmm_fd, uint32_t local_cna,
                               cfg->home_va, pte_offset,
                               &second_import_mem_id) == 0) {
             (void)obmm_do_unimport(obmm_fd, second_import_mem_id);
+            second_import_mem_id = 0;
             log_msg("result=fail mode=overlap role=peer reason=second-import-accepted");
             errno = EBUSY;
             goto out_unimport;
         }
         log_msg("result=done mode=overlap role=peer import_pa=%#" PRIx64
                 " errno=%d", import_pas[0], errno);
+        ret = 0;
+        goto out_unimport;
+    }
+
+    if (cfg->mode == GVA_DIRECT_ROUTE_OVERLAP) {
+        if (obmm_do_import_v2(obmm_fd, &metas[0], local_cna, import_pas[1], 0,
+                              OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER,
+                              OBMM_SIM_DEC_ADDRESS_PROFILE_GENERIC_GVA,
+                              OBMM_SIM_DEC_CACHE_POLICY_WRITE_THROUGH,
+                              0, 0, 0, 0, 0, 2, cfg->local_va,
+                              cfg->home_va, pte_offset,
+                              &second_import_mem_id) == 0) {
+            (void)obmm_do_unimport(obmm_fd, second_import_mem_id);
+            second_import_mem_id = 0;
+            log_msg("result=fail mode=route-overlap role=peer reason=second-import-accepted");
+            errno = EBUSY;
+            goto out_unimport;
+        }
+        log_msg("result=done mode=route-overlap role=peer first_import_pa=%#"
+                PRIx64 " second_import_pa=%#" PRIx64 " uba=%#" PRIx64
+                " errno=%d", import_pas[0], import_pas[1],
+                metas[0].remote_uba, errno);
+        ret = 0;
+        goto out_unimport;
+    }
+
+    if (cfg->mode == GVA_DIRECT_MRSW_CONFLICT) {
+        uint64_t writer_local_va = cfg->local_va + cfg->size;
+        uint64_t writer_pte_offset = metas[0].remote_uba - writer_local_va;
+
+        if (obmm_do_import_v2(obmm_fd, &metas[0], local_cna, import_pas[1], 0,
+                              OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER,
+                              OBMM_SIM_DEC_ADDRESS_PROFILE_GENERIC_GVA,
+                              OBMM_SIM_DEC_CACHE_POLICY_WRITE_THROUGH,
+                              0, 1, 0, 0, 0, 2, writer_local_va,
+                              cfg->home_va, writer_pte_offset,
+                              &second_import_mem_id) == 0) {
+            (void)obmm_do_unimport(obmm_fd, second_import_mem_id);
+            second_import_mem_id = 0;
+            log_msg("result=fail mode=mrsw-conflict role=peer reason=writer-import-accepted");
+            errno = EBUSY;
+            goto out_unimport;
+        }
+        log_msg("result=done mode=mrsw-conflict role=peer reader_import_pa=%#"
+                PRIx64 " writer_import_pa=%#" PRIx64 " uba=%#" PRIx64
+                " errno=%d", import_pas[0], import_pas[1],
+                metas[0].remote_uba, errno);
+        ret = 0;
+        goto out_unimport;
+    }
+
+    if (cfg->mode == GVA_DIRECT_MRSW_WRITER_CONFLICT) {
+        uint64_t writer2_local_va = cfg->local_va + cfg->size;
+        uint64_t writer2_pte_offset = metas[0].remote_uba - writer2_local_va;
+
+        if (obmm_do_import_v2(obmm_fd, &metas[0], local_cna, import_pas[1], 0,
+                              OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER,
+                              OBMM_SIM_DEC_ADDRESS_PROFILE_GENERIC_GVA,
+                              OBMM_SIM_DEC_CACHE_POLICY_WRITE_THROUGH,
+                              0, 1, 0, 0, 0, 2, writer2_local_va,
+                              cfg->home_va, writer2_pte_offset,
+                              &second_import_mem_id) == 0) {
+            (void)obmm_do_unimport(obmm_fd, second_import_mem_id);
+            second_import_mem_id = 0;
+            log_msg("result=fail mode=mrsw-writer-conflict role=peer reason=second-writer-import-accepted");
+            errno = EBUSY;
+            goto out_unimport;
+        }
+        log_msg("result=done mode=mrsw-writer-conflict role=peer writer1_import_pa=%#"
+                PRIx64 " writer2_import_pa=%#" PRIx64 " uba=%#" PRIx64
+                " errno=%d", import_pas[0], import_pas[1],
+                metas[0].remote_uba, errno);
+        ret = 0;
+        goto out_unimport;
+    }
+
+    if (cfg->mode == GVA_DIRECT_MRSW_READ_SHARE) {
+        uint64_t reader2_local_va = cfg->local_va + cfg->size;
+        uint64_t reader2_pte_offset = metas[0].remote_uba - reader2_local_va;
+
+        if (obmm_do_import_v2(obmm_fd, &metas[0], local_cna, import_pas[1], 0,
+                              OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER,
+                              OBMM_SIM_DEC_ADDRESS_PROFILE_GENERIC_GVA,
+                              OBMM_SIM_DEC_CACHE_POLICY_READ_CACHE,
+                              0, 1, 0, 0,
+                              OBMM_SIM_DEC_ACCESS_READ_ONLY, 2,
+                              reader2_local_va, cfg->home_va,
+                              reader2_pte_offset,
+                              &second_import_mem_id) != 0) {
+            log_msg("result=fail mode=mrsw-read-share role=peer reason=second-reader-rejected errno=%d",
+                    errno);
+            goto out_unimport;
+        }
+        log_msg("result=done mode=mrsw-read-share role=peer reader1_import_pa=%#"
+                PRIx64 " reader2_import_pa=%#" PRIx64 " uba=%#" PRIx64,
+                import_pas[0], import_pas[1], metas[0].remote_uba);
         ret = 0;
         goto out_unimport;
     }
@@ -452,6 +634,8 @@ static int run_peer(int obmm_fd, uint32_t local_cna,
 
     payload = (struct gva_direct_payload *)region.addr;
     if (cfg->mode == GVA_DIRECT_INVALID_PTAG ||
+        cfg->mode == GVA_DIRECT_INVALID_DCNA ||
+        cfg->mode == GVA_DIRECT_READ_CACHE_WRITE_FAULT ||
         cfg->mode == GVA_DIRECT_TOKEN_MISMATCH ||
         cfg->mode == GVA_DIRECT_INVALID_UPI) {
         uint64_t observed = payload->phase;
@@ -459,9 +643,9 @@ static int run_peer(int obmm_fd, uint32_t local_cna,
         payload->value = GVA_DIRECT_B;
         __sync_synchronize();
         log_msg("result=done mode=%s role=peer fault_injected=1 observed_phase=%#"
-                PRIx64 " p_tag=%#x token_value=%#x access_flags=%#x",
-                mode_name(cfg->mode), observed, p_tag, token_value,
-                access_flags);
+                PRIx64 " p_tag=%#x dcna=%#x token_value=%#x access_flags=%#x",
+                mode_name(cfg->mode), observed, p_tag,
+                import_meta.export_cna, token_value, access_flags);
         ret = 0;
         goto out_unmap;
     }
@@ -480,7 +664,8 @@ static int run_peer(int obmm_fd, uint32_t local_cna,
 
     payload->value = GVA_DIRECT_B;
     payload->peer_ptr = cfg->local_va;
-    if (cfg->mode == GVA_DIRECT_SYNC) {
+    if (cfg->mode == GVA_DIRECT_SYNC ||
+        cfg->mode == GVA_DIRECT_WRITE_BACK_SYNC) {
         if (sync_import_range(region.fd, 0, sizeof(*payload)) != 0) {
             log_msg("sync failed errno=%d", errno);
             goto out_unmap;
@@ -508,6 +693,8 @@ static int run_peer(int obmm_fd, uint32_t local_cna,
 out_unmap:
     obmm_unmap_region(&region);
 out_unimport:
+    if (second_import_mem_id)
+        (void)obmm_do_unimport(obmm_fd, second_import_mem_id);
     if (import_mem_id)
         (void)obmm_do_unimport(obmm_fd, import_mem_id);
 out_unexport:
@@ -526,7 +713,7 @@ int main(int argc, char **argv)
     int ret = 1;
 
     if (!parse_args(argc, argv, &cfg)) {
-        fprintf(stderr, "usage: gva_direct_demo --mode write-read|sync|unmap-fault|dump|invalid-cache|overlap|invalid-ptag|token-mismatch|invalid-upi "
+        fprintf(stderr, "usage: gva_direct_demo --mode write-read|sync|write-back-sync|unmap-fault|dump|invalid-cache|read-cache-write-fault|write-back-no-sync|overlap|route-overlap|invalid-ptag|invalid-dcna|token-mismatch|invalid-upi|mrsw-read-share|mrsw-conflict|mrsw-writer-conflict "
                 "[--size S] [--local-va A] [--home-va A]\n");
         return 2;
     }

@@ -738,8 +738,11 @@ First implementation policy:
 2. Remote imports default to `O_SYNC` / non-cacheable OBMM mappings.
 3. Manager queues use the existing single-writer queue layout.
 4. Shared descriptors use release/acquire ordering.
-5. Cacheable remote GSVA is out of scope until ownership/coherence simulation is
-   added.
+5. GSVA identity routes are not registered in the generic GVA MRSW ownership
+   registry; GSVA ownership is defined by the GSVA Manager's aperture and
+   segment lifecycle.
+6. Cacheable remote GSVA is out of scope until GSVA-specific
+   ownership/coherence simulation is added.
 
 This keeps the programming model simple without overstating consistency.
 
