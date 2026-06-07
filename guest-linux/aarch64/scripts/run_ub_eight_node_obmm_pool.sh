@@ -13,7 +13,9 @@ RUN_DIR="$LOG_DIR/${RUN_ID_BASE}_headless8"
 BOOT_WAIT_SECS="${BOOT_WAIT_SECS:-180}"
 DEMO_WAIT_SECS="${DEMO_WAIT_SECS:-180}"
 START_GAP_SECS="${START_GAP_SECS:-1}"
-APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1 obmm.mempool_size=0}"
+APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1 pmd_mapping=100% obmm.mempool_size=0}"
+QEMU_MEM="${QEMU_MEM:-8G}"
+QEMU_SMP="${QEMU_SMP:-4}"
 PORT_BASE_START="${PORT_BASE_START:-$((53600 + (RANDOM % 300)))}"
 PORT_BASE="$PORT_BASE_START"
 
@@ -196,9 +198,16 @@ prepare_environment() {
 
   mkdir -p "$RUN_DIR"
   : > "$TRACE_FILE"
-  trace "prepare: launch headless env run_id=$RUN_ID_BASE"
-  ENV_FILE="$OUT_DIR/headless_eight_node_env.${RUN_ID_BASE}.sh" PORT_BASE="$PORT_BASE" RUN_ID="$RUN_ID_BASE" APPEND_EXTRA="$APPEND_BASE" \
-    "$SCRIPT_DIR/launch_ub_eight_node_headless.sh" >/dev/null
+  trace "prepare: launch headless env run_id=$RUN_ID_BASE qemu_mem=$QEMU_MEM qemu_smp=$QEMU_SMP"
+  if ! ENV_FILE="$OUT_DIR/headless_eight_node_env.${RUN_ID_BASE}.sh" PORT_BASE="$PORT_BASE" RUN_ID="$RUN_ID_BASE" QEMU_MEM="$QEMU_MEM" QEMU_SMP="$QEMU_SMP" APPEND_EXTRA="$APPEND_BASE" \
+    "$SCRIPT_DIR/launch_ub_eight_node_headless.sh" >/dev/null; then
+    trace "FAIL: launch headless env failed"
+    return 1
+  fi
+  if [[ ! -f "$OUT_DIR/headless_eight_node_env.${RUN_ID_BASE}.sh" ]]; then
+    trace "FAIL: missing headless env file"
+    return 1
+  fi
   source "$OUT_DIR/headless_eight_node_env.${RUN_ID_BASE}.sh"
 
   for node_id in "${NODE_IDS[@]}"; do
