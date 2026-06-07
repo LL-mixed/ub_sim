@@ -120,22 +120,43 @@ node_serial_port() {
   echo $((port_base + 31 + idx))
 }
 
+node_serial_endpoint() {
+  local node_id="$1"
+  local port_base="$2"
+  case "$node_id" in
+    nodeA) echo "${NODEA_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    nodeB) echo "${NODEB_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    nodeC) echo "${NODEC_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    nodeD) echo "${NODED_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    nodeE) echo "${NODEE_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    nodeF) echo "${NODEF_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    nodeG) echo "${NODEG_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    nodeH) echo "${NODEH_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    *) return 1 ;;
+  esac
+}
+
 send_serial_block() {
-  local port="$1"
+  local endpoint="$1"
   local payload="$2"
-  python3 - "$port" "$payload" <<'PY'
+  python3 - "$endpoint" "$payload" <<'PY'
 import socket
 import sys
 import time
-port = int(sys.argv[1])
+endpoint = sys.argv[1]
 payload = sys.argv[2]
 deadline = time.time() + 20.0
 last_err = None
 while time.time() < deadline:
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if endpoint.startswith("/"):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connect_arg = endpoint
+    else:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        connect_arg = ("127.0.0.1", int(endpoint))
     s.settimeout(5)
     try:
-        s.connect(("127.0.0.1", port))
+        s.connect(connect_arg)
         s.sendall(payload.encode("utf-8"))
         time.sleep(0.2)
         s.close()
@@ -166,7 +187,7 @@ cleanup_headless_env() {
 
 send_obmm_queue_demo_cmd() {
   local local_ip="$1"
-  local serial_port="$2"
+  local serial_endpoint="$2"
   local start_marker="$3"
   local payload
 
@@ -186,7 +207,7 @@ send_obmm_queue_demo_cmd() {
   payload+=$'echo '"${start_marker}"$'\n'
   payload+=$'/bin/linqu_ub_obmm_queue_demo\n'
 
-  send_serial_block "$serial_port" "$payload"
+  send_serial_block "$serial_endpoint" "$payload"
 }
 
 prepare_environment() {
@@ -254,7 +275,7 @@ validate_node_log() {
 run_queue_demo() {
   local node_id
   local guest_log
-  local serial_port
+  local serial_endpoint
   local start_marker
   local start_line
   local rc
@@ -264,10 +285,10 @@ run_queue_demo() {
     guest_log="$RUN_DIR/${node_id}_guest.log"
     start_line=$(wc -l < "$guest_log" | tr -d ' ')
     START_LINES[$node_id]="$start_line"
-    serial_port="$(node_serial_port "$node_id" "$PORT_BASE")"
+    serial_endpoint="$(node_serial_endpoint "$node_id" "$PORT_BASE")"
     start_marker="OBMM_QUEUE_${node_id}_START"
-    trace "start queue demo on $node_id serial=$serial_port"
-    send_obmm_queue_demo_cmd "$(node_ip "$node_id")" "$serial_port" "$start_marker"
+    trace "start queue demo on $node_id serial=$serial_endpoint"
+    send_obmm_queue_demo_cmd "$(node_ip "$node_id")" "$serial_endpoint" "$start_marker"
   done
 
   for node_id in "${NODE_IDS[@]}"; do

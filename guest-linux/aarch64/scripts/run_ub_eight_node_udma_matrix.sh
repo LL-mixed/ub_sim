@@ -131,22 +131,43 @@ node_serial_port() {
   echo $((port_base + 31 + idx))
 }
 
+node_serial_endpoint() {
+  local node_id="$1"
+  local port_base="$2"
+  case "$node_id" in
+    nodeA) echo "${NODEA_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    nodeB) echo "${NODEB_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    nodeC) echo "${NODEC_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    nodeD) echo "${NODED_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    nodeE) echo "${NODEE_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    nodeF) echo "${NODEF_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    nodeG) echo "${NODEG_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    nodeH) echo "${NODEH_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    *) return 1 ;;
+  esac
+}
+
 send_serial_block() {
-  local port="$1"
+  local endpoint="$1"
   local payload="$2"
-  python3 - "$port" "$payload" <<'PY'
+  python3 - "$endpoint" "$payload" <<'PY'
 import socket
 import sys
 import time
-port = int(sys.argv[1])
+endpoint = sys.argv[1]
 payload = sys.argv[2]
 deadline = time.time() + 20.0
 last_err = None
 while time.time() < deadline:
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if endpoint.startswith("/"):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connect_arg = endpoint
+    else:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        connect_arg = ("127.0.0.1", int(endpoint))
     s.settimeout(5)
     try:
-        s.connect(("127.0.0.1", port))
+        s.connect(connect_arg)
         s.sendall(payload.encode("utf-8"))
         time.sleep(0.2)
         s.close()
@@ -190,7 +211,7 @@ send_udma_cmd() {
   local role="$1"
   local local_ip="$2"
   local peer_ip="$3"
-  local serial_port="$4"
+  local serial_endpoint="$4"
   local start_marker="$5"
   local payload
 
@@ -202,13 +223,13 @@ send_udma_cmd() {
   payload+=$'i=0; while [ ! -d /sys/class/uburma ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done\n'
   payload+=$'/bin/linqu_ub_udma_demo\n'
 
-  send_serial_block "$serial_port" "$payload"
+  send_serial_block "$serial_endpoint" "$payload"
 }
 
 capture_guest_diag() {
   local node_id="$1"
-  local serial_port="$2"
-  send_serial_block "$serial_port" $'echo DIAG_'"${node_id}"$'_START\nifconfig ipourma0\nps\n'
+  local serial_endpoint="$2"
+  send_serial_block "$serial_endpoint" $'echo DIAG_'"${node_id}"$'_START\nifconfig ipourma0\nps\n'
 }
 
 validate_udma_slice() {
@@ -279,8 +300,8 @@ run_directed_call() {
 
   src_ip="$(node_ip "$src")"
   dst_ip="$(node_ip "$dst")"
-  src_serial="$(node_serial_port "$src" "$PORT_BASE")"
-  dst_serial="$(node_serial_port "$dst" "$PORT_BASE")"
+  src_serial="$(node_serial_endpoint "$src" "$PORT_BASE")"
+  dst_serial="$(node_serial_endpoint "$dst" "$PORT_BASE")"
   src_log="$RUN_DIR/${src}_guest.log"
   dst_log="$RUN_DIR/${dst}_guest.log"
   initiator_marker="UDMA_INITIATOR_START_${call_idx}_${src}_${dst}"
