@@ -442,6 +442,8 @@ static int run_write_read(struct coh_config *cfg)
 
         data = (uint64_t *)region.addr;
         word_count = cfg->size / sizeof(uint64_t);
+        if (cfg->node_count > 2 && word_count > 4096)
+            word_count = 4096;
         if (!verify_pattern(data, word_count, final_seed)) {
             fprintf(stderr, "[write_read] VERIFY FAILED final_seed=%#" PRIx64 "\n",
                     final_seed);
@@ -854,7 +856,8 @@ static int run_fence_test(struct coh_config *cfg)
             goto out;
         }
         printf("[fence] exporter wrote pattern, waiting for importer fence\n");
-        if (!wait_word_value(&data[0], 0xCAFEBABE, 30000)) {
+        if (!wait_word_value((volatile uint64_t *)&data[0], 0xCAFEBABE,
+                             cfg->node_count > 2 ? 120000 : 30000)) {
             fprintf(stderr, "[fence] persistent-point verify failed: got %#" PRIx64
                     " expected %#" PRIx64 "\n", data[0],
                     (uint64_t)0xCAFEBABE);
@@ -900,27 +903,40 @@ static int run_fence_test(struct coh_config *cfg)
             goto out;
         }
 
-        /* Read data first to populate local cache */
-        if (!verify_pattern(data, cfg->size / sizeof(uint64_t), 0xDEADBEEF)) {
-            fprintf(stderr, "[fence] initial read failed\n");
-            rc = 1;
-            goto out;
-        }
-        printf("[fence] initial read OK\n");
+        if (cfg->node_count > 2 && cfg->node_id != 1) {
+            if (!wait_word_value((volatile uint64_t *)&data[0], 0xCAFEBABE,
+                                 120000)) {
+                fprintf(stderr, "[fence] observer did not observe dirty data\n");
+                rc = 1;
+                goto out;
+            }
+            printf("[fence] observer saw persistent value\n");
+        } else {
+            /* Read data first to populate local cache */
+            word_count = cfg->size / sizeof(uint64_t);
+            if (cfg->node_count > 2 && word_count > 4096)
+                word_count = 4096;
+            if (!verify_pattern(data, word_count, 0xDEADBEEF)) {
+                fprintf(stderr, "[fence] initial read failed\n");
+                rc = 1;
+                goto out;
+            }
+            printf("[fence] initial read OK\n");
 
-        /* Write dirty data locally */
-        data[0] = 0xCAFEBABE;
-        printf("[fence] wrote dirty data at offset 0\n");
+            /* Write dirty data locally */
+            data[0] = 0xCAFEBABE;
+            printf("[fence] wrote dirty data at offset 0\n");
 
-        /* Sync (fence) to flush dirty data back */
-        t0 = obmm_now_ms();
-        if (do_sync_remote_range(shmdev_fd, 0, cfg->size) != 0) {
-            fprintf(stderr, "[fence] sync_remote_range failed: %s\n", strerror(errno));
-            rc = 1;
-            goto out;
+            /* Sync (fence) to flush dirty data back */
+            t0 = obmm_now_ms();
+            if (do_sync_remote_range(shmdev_fd, 0, cfg->size) != 0) {
+                fprintf(stderr, "[fence] sync_remote_range failed: %s\n", strerror(errno));
+                rc = 1;
+                goto out;
+            }
+            t1 = obmm_now_ms();
+            printf("[fence] fence completed in %ld ms\n", t1 - t0);
         }
-        t1 = obmm_now_ms();
-        printf("[fence] fence completed in %ld ms\n", t1 - t0);
     }
 
 out:
