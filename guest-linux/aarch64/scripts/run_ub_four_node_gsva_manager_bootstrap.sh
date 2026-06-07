@@ -44,6 +44,8 @@ GVA_MANAGER_GENERATION="${GVA_MANAGER_GENERATION:-$DEFAULT_GENERATION}"
 GVA_MANAGER_APERTURE_BASE="${GVA_MANAGER_APERTURE_BASE:-0x700000000000}"
 GVA_MANAGER_APERTURE_SIZE="${GVA_MANAGER_APERTURE_SIZE:-$DEFAULT_APERTURE_SIZE}"
 GVA_MANAGER_ALLOCATE_SEGMENT="${GVA_MANAGER_ALLOCATE_SEGMENT:-0}"
+GVA_MANAGER_RETIRE_SEGMENT="${GVA_MANAGER_RETIRE_SEGMENT:-0}"
+GVA_MANAGER_REUSE_SEGMENT="${GVA_MANAGER_REUSE_SEGMENT:-0}"
 GVA_MANAGER_SEGMENT_SIZE="${GVA_MANAGER_SEGMENT_SIZE:-0x400000}"
 GVA_MANAGER_SEGMENT_ALIGNMENT="${GVA_MANAGER_SEGMENT_ALIGNMENT:-0x1000}"
 GVA_MANAGER_HOME_NODE="${GVA_MANAGER_HOME_NODE:-0}"
@@ -122,8 +124,14 @@ start_node() {
   if [[ "$GVA_MANAGER_CONFLICT_NODE" == "$node_idx" ]]; then
     conflict_append="gva_manager_conflict=1"
   fi
-  if [[ "$GVA_MANAGER_ALLOCATE_SEGMENT" == "1" ]]; then
+  if [[ "$GVA_MANAGER_ALLOCATE_SEGMENT" == "1" || "$GVA_MANAGER_RETIRE_SEGMENT" == "1" || "$GVA_MANAGER_REUSE_SEGMENT" == "1" ]]; then
     segment_append="gva_manager_allocate_segment=1 gva_manager_segment_size=${GVA_MANAGER_SEGMENT_SIZE} gva_manager_segment_alignment=${GVA_MANAGER_SEGMENT_ALIGNMENT} gva_manager_home_node=${GVA_MANAGER_HOME_NODE} gva_manager_cache_policy=${GVA_MANAGER_CACHE_POLICY} gva_manager_access_flags=${GVA_MANAGER_ACCESS_FLAGS}"
+    if [[ "$GVA_MANAGER_RETIRE_SEGMENT" == "1" ]]; then
+      segment_append="${segment_append} gva_manager_retire_segment=1"
+    fi
+    if [[ "$GVA_MANAGER_REUSE_SEGMENT" == "1" ]]; then
+      segment_append="${segment_append} gva_manager_reuse_segment=1"
+    fi
   fi
 
   env \
@@ -224,6 +232,11 @@ validate_manager_logs() {
   local node_aperture
   local segment=""
   local node_segment
+  local node_initial_segment
+  local retired=""
+  local node_retired
+  local reused=""
+  local node_reused
 
   for node_name in "${NODE_NAMES[@]}"; do
     guest_log="$(guest_log_for "$node_name")"
@@ -268,12 +281,13 @@ validate_manager_logs() {
       echo "$LOG_PREFIX expected=$aperture ${node_name}=$node_aperture" >&2
       return 1
     fi
-    if [[ "$GVA_MANAGER_ALLOCATE_SEGMENT" == "1" ]]; then
+    if [[ "$GVA_MANAGER_ALLOCATE_SEGMENT" == "1" || "$GVA_MANAGER_RETIRE_SEGMENT" == "1" || "$GVA_MANAGER_REUSE_SEGMENT" == "1" ]]; then
       if ! grep -q '\[gva_manager\] segment active' "$guest_log"; then
         echo "$LOG_PREFIX FAIL: $node_name lacks active segment evidence" >&2
         return 1
       fi
       node_segment="$(grep '\[gva_manager\] segment active' "$guest_log" | tail -1 | sed -n 's/.*segment_id=\([^ ]*\).*gsva_base=\([^ ]*\).*size=\([^ ]*\).*/\1 \2 \3/p')"
+      node_initial_segment="$(grep '\[gva_manager\] segment active' "$guest_log" | head -1 | sed -n 's/.*segment_id=\([^ ]*\).*gsva_base=\([^ ]*\).*size=\([^ ]*\).*/\1 \2 \3/p')"
       if [[ -z "$node_segment" ]]; then
         echo "$LOG_PREFIX FAIL: $node_name lacks active segment fields" >&2
         return 1
@@ -284,6 +298,51 @@ validate_manager_logs() {
         echo "$LOG_PREFIX FAIL: managers did not agree on active segment" >&2
         echo "$LOG_PREFIX expected=$segment ${node_name}=$node_segment" >&2
         return 1
+      fi
+      if [[ "$GVA_MANAGER_RETIRE_SEGMENT" == "1" || "$GVA_MANAGER_REUSE_SEGMENT" == "1" ]]; then
+        if ! grep -q '\[gva_manager\] segment retired' "$guest_log"; then
+          echo "$LOG_PREFIX FAIL: $node_name lacks retired segment evidence" >&2
+          return 1
+        fi
+        node_retired="$(grep '\[gva_manager\] segment retired' "$guest_log" | tail -1 | sed -n 's/.*segment_id=\([^ ]*\).*gsva_base=\([^ ]*\).*size=\([^ ]*\).*/\1 \2 \3/p')"
+        if [[ -z "$node_retired" || "$node_retired" != "$node_initial_segment" ]]; then
+          echo "$LOG_PREFIX FAIL: $node_name retired segment does not match active segment" >&2
+          echo "$LOG_PREFIX initial=$node_initial_segment retired=$node_retired" >&2
+          return 1
+        fi
+        if [[ -z "$retired" ]]; then
+          retired="$node_retired"
+        elif [[ "$node_retired" != "$retired" ]]; then
+          echo "$LOG_PREFIX FAIL: managers did not agree on retired segment" >&2
+          echo "$LOG_PREFIX expected=$retired ${node_name}=$node_retired" >&2
+          return 1
+        fi
+      fi
+      if [[ "$GVA_MANAGER_REUSE_SEGMENT" == "1" ]]; then
+        if (( $(grep -c '\[gva_manager\] segment active' "$guest_log") < 2 )); then
+          echo "$LOG_PREFIX FAIL: $node_name reuse did not create a second active segment" >&2
+          return 1
+        fi
+        if ! grep -q '\[gva_manager\] segment reused' "$guest_log"; then
+          echo "$LOG_PREFIX FAIL: $node_name lacks reused segment evidence" >&2
+          return 1
+        fi
+        node_reused="$(grep '\[gva_manager\] segment reused' "$guest_log" | tail -1 | sed -n 's/.*old_segment_id=\([^ ]*\).*new_segment_id=\([^ ]*\).*gsva_base=\([^ ]*\).*size=\([^ ]*\).*/\1 \2 \3 \4/p')"
+        if [[ -z "$node_reused" ]]; then
+          echo "$LOG_PREFIX FAIL: $node_name lacks reused segment fields" >&2
+          return 1
+        fi
+        if [[ -z "$reused" ]]; then
+          reused="$node_reused"
+        elif [[ "$node_reused" != "$reused" ]]; then
+          echo "$LOG_PREFIX FAIL: managers did not agree on reused segment" >&2
+          echo "$LOG_PREFIX expected=$reused ${node_name}=$node_reused" >&2
+          return 1
+        fi
+        if [[ "$(echo "$node_reused" | awk '{print $1}')" == "$(echo "$node_reused" | awk '{print $2}')" ]]; then
+          echo "$LOG_PREFIX FAIL: reused segment id did not change" >&2
+          return 1
+        fi
       fi
     fi
   done
@@ -325,7 +384,7 @@ print_node_summary() {
   grep '\[gva_manager\]' "$(guest_log_for "$node_name")" | tail -8
 }
 
-echo "$LOG_PREFIX run_id=$RUN_ID generation=$GVA_MANAGER_GENERATION aperture_base=$GVA_MANAGER_APERTURE_BASE aperture_size=$GVA_MANAGER_APERTURE_SIZE allocate_segment=$GVA_MANAGER_ALLOCATE_SEGMENT"
+echo "$LOG_PREFIX run_id=$RUN_ID generation=$GVA_MANAGER_GENERATION aperture_base=$GVA_MANAGER_APERTURE_BASE aperture_size=$GVA_MANAGER_APERTURE_SIZE allocate_segment=$GVA_MANAGER_ALLOCATE_SEGMENT retire_segment=$GVA_MANAGER_RETIRE_SEGMENT reuse_segment=$GVA_MANAGER_REUSE_SEGMENT"
 echo "$LOG_PREFIX topology=$TOPOLOGY_FILE qemu_mem=$QEMU_MEM qemu_smp=$QEMU_SMP port_num=$PORT_NUM"
 echo "$LOG_PREFIX starting ${GVA_MANAGER_NODE_COUNT} nodes..."
 

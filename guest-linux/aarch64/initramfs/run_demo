@@ -210,6 +210,12 @@ run_gva_manager_bootstrap() {
       gva_manager_allocate_segment=1)
         args="$args --allocate-segment"
         ;;
+      gva_manager_retire_segment=1)
+        args="$args --retire-segment"
+        ;;
+      gva_manager_reuse_segment=1)
+        args="$args --reuse-segment"
+        ;;
       gva_manager_segment_size=*)
         args="$args --segment-size ${token#*=}"
         ;;
