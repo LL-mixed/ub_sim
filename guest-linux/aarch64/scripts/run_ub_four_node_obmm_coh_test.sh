@@ -186,8 +186,8 @@ validate_coh_logs() {
         echo "[coh4] FAIL: multi_reader missing OBMM_COH_GETS evidence" >&2
         return 1
       }
-      rg -q 'OBMM_COH_DOWNGRADE|OBMM_COH_DOWNGRADE_ACK' "${logs[@]}" || {
-        echo "[coh4] FAIL: multi_reader missing downgrade evidence" >&2
+      rg -q 'OBMM_COH_DATA .*grant=1' "${logs[@]}" || {
+        echo "[coh4] FAIL: multi_reader missing shared DATA grant evidence" >&2
         return 1
       }
       ;;
