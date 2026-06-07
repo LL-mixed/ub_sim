@@ -7,9 +7,11 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORKSPACE_ROOT="$(cd "$ROOT_DIR/../.." && pwd)"
 KERNEL_IMAGE="${KERNEL_IMAGE:-$ROOT_DIR/out/Image}"
 INITRAMFS_IMAGE="${INITRAMFS_IMAGE:-$ROOT_DIR/out/initramfs.cpio.gz}"
+COH_NODE_COUNT="${COH_NODE_COUNT:-4}"
 TOPOLOGY_FILE="${TOPOLOGY_FILE:-$WORKSPACE_ROOT/vendor/ub_topology_four_node_full_mesh_one_entity.ini}"
 ENTITY_PLAN_FILE="${UB_FM_ENTITY_PLAN_FILE:-$WORKSPACE_ROOT/vendor/ub_topology_one_entity.ini}"
 ENTITY_COUNT="${UB_SIM_ENTITY_COUNT:-1}"
+PORT_NUM="${UB_SIM_PORT_NUM:-3}"
 SHARED_DIR="${UB_FM_SHARED_DIR:-$ROOT_DIR/out/coh4_links_${RANDOM}}"
 LINK_WAIT_SECS="${LINK_WAIT_SECS:-60}"
 RUN_SECS="${RUN_SECS:-240}"
@@ -27,9 +29,18 @@ COH_TEST_VERBOSE="${COH_TEST_VERBOSE:-1}"
 COH_REQUIRE_LOGS="${COH_REQUIRE_LOGS:-1}"
 APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 
-NODE_IDS=(nodeA nodeB nodeC nodeD)
-NODE_ROLES=(nodeA nodeB nodeC nodeD)
-COH_NODE_IDS=(0 1 2 3)
+if [[ "$COH_NODE_COUNT" == "4" ]]; then
+  NODE_IDS=(nodeA nodeB nodeC nodeD)
+  NODE_ROLES=(nodeA nodeB nodeC nodeD)
+  COH_NODE_IDS=(0 1 2 3)
+elif [[ "$COH_NODE_COUNT" == "8" ]]; then
+  NODE_IDS=(nodeA nodeB nodeC nodeD nodeE nodeF nodeG nodeH)
+  NODE_ROLES=(nodeA nodeB nodeC nodeD nodeE nodeF nodeG nodeH)
+  COH_NODE_IDS=(0 1 2 3 4 5 6 7)
+else
+  echo "[coh4] unsupported COH_NODE_COUNT=$COH_NODE_COUNT" >&2
+  exit 2
+fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -121,6 +132,7 @@ start_node() {
     UB_FM_TOPOLOGY_FILE="$TOPOLOGY_FILE" \
     UB_FM_SHARED_DIR="$SHARED_DIR" \
     UB_SIM_ENTITY_COUNT="$ENTITY_COUNT" \
+    UB_SIM_PORT_NUM="$PORT_NUM" \
     UB_FM_ENTITY_PLAN_FILE="$ENTITY_PLAN_FILE" \
     "$QEMU_BIN" \
       -M virt,gic-version=3,its=on,ummu=on,ub-cluster-mode=on \
@@ -132,7 +144,7 @@ start_node() {
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
       -initrd "$INITRAMFS_IMAGE" \
-      -append "console=ttyAMA0 rdinit=/bin/run_demo obmm_coh_test linqu_urma_dp_role=${role} obmm_coh_test_mode=${COH_TEST_MODE} obmm_coh_test_size=${COH_TEST_SIZE} obmm_coh_test_iters=${COH_TEST_ITERS} obmm_coh_test_node_id=${coh_node_id} obmm_coh_test_node_count=4 obmm_coh_test_token_value=${COH_TEST_TOKEN_VALUE} obmm_coh_test_generation=${COH_TEST_GENERATION} obmm_coh_test_verbose=${COH_TEST_VERBOSE} ${exporter_arg} ${APPEND_EXTRA}" \
+      -append "console=ttyAMA0 rdinit=/bin/run_demo obmm_coh_test linqu_urma_dp_role=${role} obmm_coh_test_mode=${COH_TEST_MODE} obmm_coh_test_size=${COH_TEST_SIZE} obmm_coh_test_iters=${COH_TEST_ITERS} obmm_coh_test_node_id=${coh_node_id} obmm_coh_test_node_count=${COH_NODE_COUNT} obmm_coh_test_token_value=${COH_TEST_TOKEN_VALUE} obmm_coh_test_generation=${COH_TEST_GENERATION} obmm_coh_test_verbose=${COH_TEST_VERBOSE} ${exporter_arg} ${APPEND_EXTRA}" \
       >"$qemu_log" 2>&1 &
   echo $! > "$pid_file"
 }
@@ -150,7 +162,7 @@ wait_for_fm_links_ready() {
         ready=$((ready + 1))
       fi
     done < <(find "$SHARED_DIR" -maxdepth 1 -type f -name '*.status')
-    if (( ready >= 4 )); then
+    if (( ready >= COH_NODE_COUNT )); then
       return 0
     fi
     sleep 0.2
@@ -211,7 +223,7 @@ validate_coh_logs() {
 }
 
 echo "[coh4] run_id=$RUN_ID mode=$COH_TEST_MODE size=$COH_TEST_SIZE iterations=$COH_TEST_ITERS"
-echo "[coh4] starting nodeA exporter and nodeB/nodeC/nodeD importers..."
+echo "[coh4] starting nodeA exporter and non-exporter importers..."
 
 integer i=1
 for node_id in "${NODE_IDS[@]}"; do
@@ -251,11 +263,11 @@ while (( SECONDS < deadline )); do
     echo "[coh4] FAIL: guest reported failure" >&2
     exit 1
   fi
-  if (( pass_count == 4 )); then
+  if (( pass_count == COH_NODE_COUNT )); then
     cleanup
     sleep 0.5
     validate_coh_logs
-    echo "[coh4] PASS: all four nodes completed"
+    echo "[coh4] PASS: all ${COH_NODE_COUNT} nodes completed"
     exit 0
   fi
   sleep 1
