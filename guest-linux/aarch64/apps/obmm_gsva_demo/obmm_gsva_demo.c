@@ -33,6 +33,7 @@ enum gsva_demo_mode {
     GSVA_DEMO_MMAP_MODE,
     GSVA_DEMO_OUTSIDE_APERTURE,
     GSVA_DEMO_OUTSIDE_IMPORT,
+    GSVA_DEMO_ANONYMOUS_COLLISION,
 };
 
 struct gsva_demo_config {
@@ -112,6 +113,8 @@ static bool parse_args(int argc, char **argv, struct gsva_demo_config *cfg)
                 cfg->mode = GSVA_DEMO_OUTSIDE_APERTURE;
             } else if (strcmp(mode, "outside-import") == 0) {
                 cfg->mode = GSVA_DEMO_OUTSIDE_IMPORT;
+            } else if (strcmp(mode, "anonymous-collision") == 0) {
+                cfg->mode = GSVA_DEMO_ANONYMOUS_COLLISION;
             } else {
                 return false;
             }
@@ -701,6 +704,44 @@ out_gsva:
     return ret;
 }
 
+static int run_anonymous_collision(int obmm_fd,
+                                   const struct gsva_demo_config *cfg,
+                                   int local_idx)
+{
+    void *ptr;
+    int saved_errno;
+
+    if (register_aperture(obmm_fd, cfg, local_idx) != 0)
+        return -1;
+
+    ptr = mmap((void *)(uintptr_t)cfg->base, 4096, PROT_NONE,
+               MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+    if (ptr != MAP_FAILED) {
+        (void)munmap(ptr, 4096);
+        (void)clear_aperture(obmm_fd, GSVA_DEMO_GENERATION);
+        log_msg("result=fail mode=anonymous-collision role=%s reason=anonymous-mmap-entered-gsva-aperture",
+                local_idx == 0 ? "home" : "peer");
+        errno = EINVAL;
+        return -1;
+    }
+
+    saved_errno = errno;
+    if (saved_errno != EEXIST) {
+        (void)clear_aperture(obmm_fd, GSVA_DEMO_GENERATION);
+        log_msg("anonymous mmap rejected with unexpected errno=%d",
+                saved_errno);
+        errno = saved_errno;
+        return -1;
+    }
+
+    log_msg("anonymous mmap rejected by kernel gsva reserve -> ok errno=%d",
+            saved_errno);
+    (void)clear_aperture(obmm_fd, GSVA_DEMO_GENERATION);
+    log_msg("result=done mode=anonymous-collision role=%s errno=%d",
+            local_idx == 0 ? "home" : "peer", saved_errno);
+    return 0;
+}
+
 static int run_outside_aperture(int obmm_fd, const struct gsva_demo_config *cfg,
                                 int local_idx)
 {
@@ -951,7 +992,7 @@ int main(int argc, char **argv)
     int ret = 1;
 
     if (!parse_args(argc, argv, &cfg)) {
-        fprintf(stderr, "usage: obmm_gsva_demo --mode identity|conflict|stale-generation|invalid-offset|matrix|mmap-mode|outside-aperture|outside-import "
+        fprintf(stderr, "usage: obmm_gsva_demo --mode identity|conflict|stale-generation|invalid-offset|matrix|mmap-mode|outside-aperture|outside-import|anonymous-collision "
                 "[--base A] [--size S] [--node-count N]\n");
         return 2;
     }
@@ -980,6 +1021,10 @@ int main(int argc, char **argv)
         log_msg("kernel aperture registry -> ok base=%#" PRIx64
                 " size=%#" PRIx64, cfg.base, cfg.size);
         ret = run_mmap_mode(obmm_fd, &cfg, local_idx) == 0 ? 0 : 1;
+        goto out;
+    }
+    if (cfg.mode == GSVA_DEMO_ANONYMOUS_COLLISION) {
+        ret = run_anonymous_collision(obmm_fd, &cfg, local_idx) == 0 ? 0 : 1;
         goto out;
     }
     if (cfg.mode == GSVA_DEMO_OUTSIDE_APERTURE) {

@@ -267,9 +267,22 @@ validate_mmap_mode_logs() {
     echo "[gsva-demo] FAIL: mmap-mode did not complete on both nodes" >&2
     return 1
   fi
-  if ! grep -q 'overlaps active GSVA aperture' "$NODEA_GUEST_LOG" ||
-     ! grep -q 'overlaps active GSVA aperture' "$NODEB_GUEST_LOG"; then
+  if ! grep -q 'normal_reject_errno=17' "$NODEA_GUEST_LOG" ||
+     ! grep -q 'normal_reject_errno=17' "$NODEB_GUEST_LOG"; then
     echo "[gsva-demo] FAIL: mmap-mode lacks normal OBMM aperture rejection evidence" >&2
+    return 1
+  fi
+}
+
+validate_anonymous_collision_logs() {
+  if ! grep -q '\[obmm_gsva_demo\] anonymous mmap rejected by kernel gsva reserve -> ok errno=17' "$NODEA_GUEST_LOG" ||
+     ! grep -q '\[obmm_gsva_demo\] anonymous mmap rejected by kernel gsva reserve -> ok errno=17' "$NODEB_GUEST_LOG"; then
+    echo "[gsva-demo] FAIL: anonymous-collision lacks kernel mmap reserve rejection evidence" >&2
+    return 1
+  fi
+  if ! grep -q '\[obmm_gsva_demo\] result=done mode=anonymous-collision role=home' "$NODEA_GUEST_LOG" ||
+     ! grep -q '\[obmm_gsva_demo\] result=done mode=anonymous-collision role=peer' "$NODEB_GUEST_LOG"; then
+    echo "[gsva-demo] FAIL: anonymous-collision did not complete on both nodes" >&2
     return 1
   fi
 }
@@ -340,6 +353,9 @@ while (( SECONDS < deadline )); do
         ;;
       mmap-mode)
         validate_mmap_mode_logs
+        ;;
+      anonymous-collision)
+        validate_anonymous_collision_logs
         ;;
       outside-aperture)
         validate_outside_aperture_logs
