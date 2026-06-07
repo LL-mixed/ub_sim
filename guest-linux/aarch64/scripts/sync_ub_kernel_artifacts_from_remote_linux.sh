@@ -39,6 +39,7 @@ REMOTE_CROSS_COMPILE="${REMOTE_CROSS_COMPILE-aarch64-linux-gnu-}"
 REMOTE_ARCH="${REMOTE_ARCH:-arm64}"
 REMOTE_KERNEL_DEFCONFIG="${REMOTE_KERNEL_DEFCONFIG:-openeuler_defconfig}"
 REMOTE_REUSE_KERNEL_CONFIG="${REMOTE_REUSE_KERNEL_CONFIG:-0}"
+SYNC_KERNEL_SRC_TO_REMOTE="${SYNC_KERNEL_SRC_TO_REMOTE:-0}"
 
 if [[ -z "$REMOTE_LINUX_HOST" ]]; then
   echo "[sync] error: REMOTE_LINUX_HOST is required; this script never uses an implicit remote target" >&2
@@ -52,6 +53,28 @@ if [[ "$REMOTE_ARCH" != "arm64" ]]; then
   echo "[sync] error: this guest target requires REMOTE_ARCH=arm64" >&2
   exit 1
 fi
+
+sync_kernel_src_to_remote() {
+  local src_root="$ROOT_DIR/../kernel_ub"
+  if ! command -v rsync >/dev/null 2>&1; then
+    echo "[sync] error: SYNC_KERNEL_SRC_TO_REMOTE=1 requires rsync" >&2
+    exit 1
+  fi
+  if [[ ! -d "$src_root" ]]; then
+    echo "[sync] error: local kernel source not found: $src_root" >&2
+    exit 1
+  fi
+  ssh "$REMOTE_LINUX_HOST" "mkdir -p '$REMOTE_KERNEL_SRC'"
+  rsync -a --delete \
+    --exclude='.git/' \
+    --exclude='*.o' \
+    --exclude='*.cmd' \
+    --exclude='*.mod' \
+    --exclude='*.ko' \
+    --exclude='modules.order' \
+    --exclude='Module.symvers' \
+    "$src_root/" "$REMOTE_LINUX_HOST:$REMOTE_KERNEL_SRC/"
+}
 
 normalize_remote_sim_config() {
   ssh "$REMOTE_LINUX_HOST" "
@@ -112,6 +135,9 @@ copy_optional() {
 }
 
 if [[ "$BUILD_ON_REMOTE" == "1" ]]; then
+  if [[ "$SYNC_KERNEL_SRC_TO_REMOTE" == "1" ]]; then
+    sync_kernel_src_to_remote
+  fi
   normalize_remote_sim_config
   ssh "$REMOTE_LINUX_HOST" "
     set -euo pipefail

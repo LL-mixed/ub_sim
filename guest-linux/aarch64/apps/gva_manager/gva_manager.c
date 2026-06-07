@@ -228,6 +228,8 @@ static bool parse_cache_policy_str(const char *s, uint32_t *out)
         *out = OBMM_SIM_DEC_CACHE_POLICY_READ_CACHE;
     } else if (strcmp(s, "wb") == 0 || strcmp(s, "write-back") == 0) {
         *out = OBMM_SIM_DEC_CACHE_POLICY_WRITE_BACK;
+    } else if (strcmp(s, "mesi") == 0 || strcmp(s, "directory-mesi") == 0) {
+        *out = OBMM_SIM_DEC_CACHE_POLICY_DIRECTORY_MESI;
     } else {
         return false;
     }
@@ -403,7 +405,7 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
                     "[--aperture-size S] [--conflict]\n"
                     "       gva_manager --allocate-segment --node-id N "
                     "--node-count C [--home-node N] [--segment-size S] "
-                    "[--segment-alignment A] [--cache-policy nc|wt|rc|wb] "
+                    "[--segment-alignment A] [--cache-policy nc|wt|rc|wb|mesi|directory-mesi] "
                     "[--access-flags F]\n"
                     "       gva_manager --dump-routes\n");
             return -EINVAL;
@@ -431,7 +433,8 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
     if (cfg->cache_policy != OBMM_SIM_DEC_CACHE_POLICY_NC &&
         cfg->cache_policy != OBMM_SIM_DEC_CACHE_POLICY_WRITE_THROUGH &&
         cfg->cache_policy != OBMM_SIM_DEC_CACHE_POLICY_READ_CACHE &&
-        cfg->cache_policy != OBMM_SIM_DEC_CACHE_POLICY_WRITE_BACK)
+        cfg->cache_policy != OBMM_SIM_DEC_CACHE_POLICY_WRITE_BACK &&
+        cfg->cache_policy != OBMM_SIM_DEC_CACHE_POLICY_DIRECTORY_MESI)
         return -EINVAL;
     if (cfg->cache_policy == OBMM_SIM_DEC_CACHE_POLICY_READ_CACHE &&
         !(cfg->access_flags & OBMM_SIM_DEC_ACCESS_READ_ONLY))

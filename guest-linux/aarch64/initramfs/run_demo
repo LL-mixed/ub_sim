@@ -144,6 +144,47 @@ run_obmm_import_stress() {
   run_binary "linqu_ub_obmm_import_stress" /bin/linqu_ub_obmm_import_stress $args
 }
 
+run_obmm_coh_test() {
+  local args=""
+  local token=""
+
+  read_cmdline
+  for token in $cmdline; do
+    case "$token" in
+      obmm_coh_test_mode=*)
+        args="$args --mode ${token#*=}"
+        ;;
+      obmm_coh_test_size=*)
+        args="$args --size ${token#*=}"
+        ;;
+      obmm_coh_test_iters=*)
+        args="$args --iterations ${token#*=}"
+        ;;
+      obmm_coh_test_node_id=*)
+        args="$args --node-id ${token#*=}"
+        ;;
+      obmm_coh_test_node_count=*)
+        args="$args --node-count ${token#*=}"
+        ;;
+      obmm_coh_test_token_value=*)
+        args="$args --token-value ${token#*=}"
+        ;;
+      obmm_coh_test_generation=*)
+        args="$args --generation ${token#*=}"
+        ;;
+      obmm_coh_test_exporter=1)
+        args="$args --is-exporter"
+        ;;
+      obmm_coh_test_verbose=1)
+        args="$args --verbose"
+        ;;
+    esac
+  done
+
+  # Values come from kernel cmdline key=value tokens, so word splitting is intentional.
+  run_binary "linqu_ub_obmm_coh_test" /bin/linqu_ub_obmm_coh_test $args
+}
+
 run_gva_manager_bootstrap() {
   local args="--bootstrap"
   local token=""
@@ -345,6 +386,9 @@ run_single_action() {
       ;;
     obmm_import_stress)
       run_obmm_import_stress
+      ;;
+    obmm_coh_test)
+      run_obmm_coh_test
       ;;
     gva_manager_bootstrap)
       run_gva_manager_bootstrap

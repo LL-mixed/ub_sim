@@ -44,6 +44,23 @@ STRESS_GVA_ID="${STRESS_GVA_ID:-0}"
 STRESS_GVA_USER_VA="${STRESS_GVA_USER_VA:-}"
 STRESS_GVA_HOME_VA="${STRESS_GVA_HOME_VA:-}"
 STRESS_GVA_PTE_OFFSET="${STRESS_GVA_PTE_OFFSET:-}"
+STRESS_DIRECTORY_MESI_ACCEPTANCE="${STRESS_DIRECTORY_MESI_ACCEPTANCE:-0}"
+STRESS_REQUIRE_COHERENCE_LOGS="${STRESS_REQUIRE_COHERENCE_LOGS:-$STRESS_DIRECTORY_MESI_ACCEPTANCE}"
+if [[ "$STRESS_DIRECTORY_MESI_ACCEPTANCE" == "1" ]]; then
+  STRESS_SIZE=2097152
+  STRESS_PATTERN=seq
+  STRESS_ITERS=64
+  STRESS_FLUSH=periodic
+  STRESS_PERIOD=8
+  STRESS_CHUNK_SIZE=64
+  STRESS_VERIFY=1
+  STRESS_GVA_MODE=generic
+  STRESS_GVA_MAP_SOURCE=gva
+  STRESS_GVA_CACHE_POLICY=directory-mesi
+  if [[ "$APPEND_EXTRA" != *"obmm.skip_cache_maintain="* ]]; then
+    APPEND_EXTRA="${APPEND_EXTRA} obmm.skip_cache_maintain=1"
+  fi
+fi
 STRESS_APPEND="obmm_stress_size=${STRESS_SIZE} obmm_stress_pattern=${STRESS_PATTERN} obmm_stress_iters=${STRESS_ITERS} obmm_stress_flush=${STRESS_FLUSH} obmm_stress_period=${STRESS_PERIOD} obmm_stress_chunk_size=${STRESS_CHUNK_SIZE} obmm_stress_seed=${STRESS_SEED}"
 STRESS_APPEND="${STRESS_APPEND} obmm_stress_gva_mode=${STRESS_GVA_MODE}"
 STRESS_APPEND="${STRESS_APPEND} obmm_stress_gva_map_source=${STRESS_GVA_MAP_SOURCE}"
@@ -263,6 +280,22 @@ validate_gva_logs() {
       return 1
     fi
   fi
+
+  if [[ "$STRESS_GVA_CACHE_POLICY" == "directory-mesi" ||
+        "$STRESS_GVA_CACHE_POLICY" == "mesi" ]]; then
+    if ! grep -Eq 'GVA_S3_MAP .*cache_policy=4' "$NODEA_QEMU_LOG" ||
+       ! grep -Eq 'GVA_S3_MAP .*cache_policy=4' "$NODEB_QEMU_LOG"; then
+      echo "[stress] FAIL: directory-MESI completed without cache_policy=4 GVA map evidence" >&2
+      return 1
+    fi
+  fi
+
+  if [[ "$STRESS_REQUIRE_COHERENCE_LOGS" == "1" ]]; then
+    if ! grep -Eq 'OBMM_COH_GET[SM]|OBMM_COH_WB|OBMM_COH_INV' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
+      echo "[stress] FAIL: directory-MESI completed without OBMM_COH message evidence" >&2
+      return 1
+    fi
+  fi
 }
 
 echo "[stress] run_id=$RUN_ID size=$STRESS_SIZE pattern=$STRESS_PATTERN iters=$STRESS_ITERS flush=$STRESS_FLUSH chunk=$STRESS_CHUNK_SIZE"
@@ -341,6 +374,10 @@ while (( SECONDS < deadline )); do
   fi
   if grep -qE '\[obmm_import_stress\] stress_run failed' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
     echo "[stress] FAIL: stress_run failed" >&2
+    exit 1
+  fi
+  if grep -qE '\[obmm_import_stress\] import failed|\[obmm_import_stress\] export failed|\[run_demo\] action failed|Kernel panic - not syncing' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
+    echo "[stress] FAIL: guest reported import/export/action failure" >&2
     exit 1
   fi
   sleep 0.5
