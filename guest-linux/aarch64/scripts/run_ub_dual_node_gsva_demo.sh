@@ -252,9 +252,14 @@ validate_matrix_logs() {
 }
 
 validate_mmap_mode_logs() {
-  if ! grep -q '\[obmm_gsva_demo\] mmap-mode gsva segment -> ok' "$NODEA_GUEST_LOG" ||
-     ! grep -q '\[obmm_gsva_demo\] mmap-mode gsva segment -> ok' "$NODEB_GUEST_LOG"; then
-    echo "[gsva-demo] FAIL: mmap-mode lacks GSVA segment mmap success evidence" >&2
+  if ! grep -q '\[obmm_gsva_demo\] mmap-mode MAP_GSVA segment -> ok' "$NODEA_GUEST_LOG" ||
+     ! grep -q '\[obmm_gsva_demo\] mmap-mode MAP_GSVA segment -> ok' "$NODEB_GUEST_LOG"; then
+    echo "[gsva-demo] FAIL: mmap-mode lacks MAP_GSVA segment mmap success evidence" >&2
+    return 1
+  fi
+  if ! grep -q '\[obmm_gsva_demo\] mmap-mode MAP_GSVA non-gsva reject -> ok' "$NODEA_GUEST_LOG" ||
+     ! grep -q '\[obmm_gsva_demo\] mmap-mode MAP_GSVA non-gsva reject -> ok' "$NODEB_GUEST_LOG"; then
+    echo "[gsva-demo] FAIL: mmap-mode lacks MAP_GSVA non-GSVA rejection evidence" >&2
     return 1
   fi
   if ! grep -q '\[obmm_gsva_demo\] result=done mode=mmap-mode role=home' "$NODEA_GUEST_LOG" ||

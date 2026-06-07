@@ -71,7 +71,9 @@ current_kernel_artifact_signature() {
     for tracked_path in \
       drivers/ub/obmm \
       drivers/ub/ubus/sim \
-      include/uapi/ub/obmm.h; do
+      include/uapi/asm-generic/mman-common.h \
+      include/uapi/ub/obmm.h \
+      mm/mmap.c; do
       git -C "$KERNEL_SRC_DIR" status --porcelain --untracked-files=no -- "$tracked_path" || true
       git -C "$KERNEL_SRC_DIR" diff --binary -- "$tracked_path" || true
       git -C "$KERNEL_SRC_DIR" diff --cached --binary -- "$tracked_path" || true

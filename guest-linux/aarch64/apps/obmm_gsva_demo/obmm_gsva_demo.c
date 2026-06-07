@@ -620,6 +620,7 @@ static int run_mmap_mode(int obmm_fd, const struct gsva_demo_config *cfg,
     struct obmm_helpers_meta normal_meta = {0};
     struct obmm_helpers_region region = {0};
     int saved_errno;
+    int map_gsva_reject_errno;
     bool gsva_mapped = false;
     int ret = -1;
 
@@ -640,7 +641,7 @@ static int run_mmap_mode(int obmm_fd, const struct gsva_demo_config *cfg,
         goto out_unmap_gsva;
     }
     gsva_mapped = true;
-    log_msg("mmap-mode gsva segment -> ok ptr=%#" PRIx64 " uba=%#"
+    log_msg("mmap-mode MAP_GSVA segment -> ok ptr=%#" PRIx64 " uba=%#"
             PRIx64, cfg->base, gsva_meta.remote_uba);
 
 out_unmap_gsva:
@@ -666,10 +667,29 @@ out_unmap_gsva:
         errno = saved_errno;
         goto out_normal;
     }
+    if (obmm_map_gsva_region_at(normal_meta.export_mem_id,
+                                (void *)(uintptr_t)cfg->base, cfg->size,
+                                false, &region) == 0) {
+        obmm_unmap_region(&region);
+        log_msg("result=fail mode=mmap-mode role=%s reason=MAP_GSVA-non-gsva-mapped",
+                local_idx == 0 ? "home" : "peer");
+        errno = EINVAL;
+        goto out_normal;
+    }
+    map_gsva_reject_errno = errno;
+    if (map_gsva_reject_errno != EINVAL) {
+        log_msg("mmap-mode MAP_GSVA non-gsva rejected with unexpected errno=%d",
+                map_gsva_reject_errno);
+        errno = map_gsva_reject_errno;
+        goto out_normal;
+    }
+    log_msg("mmap-mode MAP_GSVA non-gsva reject -> ok errno=%d",
+            map_gsva_reject_errno);
 
     log_msg("result=done mode=mmap-mode role=%s gsva_ptr=%#" PRIx64
-            " normal_reject_errno=%d",
-            local_idx == 0 ? "home" : "peer", cfg->base, saved_errno);
+            " normal_reject_errno=%d map_gsva_reject_errno=%d",
+            local_idx == 0 ? "home" : "peer", cfg->base, saved_errno,
+            map_gsva_reject_errno);
     ret = 0;
 
 out_normal:

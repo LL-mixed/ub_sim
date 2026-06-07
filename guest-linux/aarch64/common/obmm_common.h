@@ -64,6 +64,9 @@ enum obmm_import_cache_mode {
 #ifndef OBMM_MMAP_FLAG_GSVA
 #define OBMM_MMAP_FLAG_GSVA (1UL << 62)
 #endif
+#ifndef MAP_GSVA
+#define MAP_GSVA 0x200000
+#endif
 #define OBMM_SIM_DEC_PRIV_MAGIC        0x53444950U
 #define OBMM_SIM_DEC_PRIV_VER_1        1
 #define OBMM_SIM_DEC_PRIV_VER_2        2
@@ -384,9 +387,15 @@ static int obmm_open_shmdev(uint64_t mem_id, bool map_osync)
 
 static int obmm_map_region_at_offset(uint64_t mem_id, void *addr, size_t len,
                                      bool map_osync, uint64_t mmap_offset,
-                                     struct obmm_helpers_region *region)
+                                     struct obmm_helpers_region *region);
+
+static int obmm_map_region_at_offset_flags(uint64_t mem_id, void *addr,
+                                           size_t len, bool map_osync,
+                                           uint64_t mmap_offset,
+                                           int extra_mmap_flags,
+                                           struct obmm_helpers_region *region)
 {
-    int flags = MAP_SHARED;
+    int flags = MAP_SHARED | extra_mmap_flags;
     void *mapped;
     memset(region, 0, sizeof(*region));
     region->fd = -1;
@@ -415,6 +424,14 @@ static int obmm_map_region_at_offset(uint64_t mem_id, void *addr, size_t len,
     return 0;
 }
 
+static int obmm_map_region_at_offset(uint64_t mem_id, void *addr, size_t len,
+                                     bool map_osync, uint64_t mmap_offset,
+                                     struct obmm_helpers_region *region)
+{
+    return obmm_map_region_at_offset_flags(mem_id, addr, len, map_osync,
+                                           mmap_offset, 0, region);
+}
+
 static int obmm_map_region_at(uint64_t mem_id, void *addr, size_t len, bool map_osync,
                              struct obmm_helpers_region *region)
 {
@@ -425,8 +442,8 @@ static int OBMM_MAYBE_UNUSED obmm_map_gsva_region_at(
     uint64_t mem_id, void *addr, size_t len, bool map_osync,
     struct obmm_helpers_region *region)
 {
-    return obmm_map_region_at_offset(mem_id, addr, len, map_osync,
-                                     OBMM_MMAP_FLAG_GSVA, region);
+    return obmm_map_region_at_offset_flags(mem_id, addr, len, map_osync, 0,
+                                           MAP_GSVA, region);
 }
 
 static int obmm_map_region(uint64_t mem_id, size_t len, bool map_osync,
