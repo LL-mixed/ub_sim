@@ -1073,6 +1073,26 @@ static void test_coh_timeout(int obmm_fd, uint32_t local_cna,
     CHECK(ev_error == GSVA_ERR_COH_TIMEOUT,
           "ReadAcquire after timeout should remain terminal");
 
+    {
+        struct obmm_cmd_gsva_query_v1 query = {0};
+        struct {
+            uint32_t version;
+            int32_t error;
+            uint8_t data[240];
+        } *query_resp = (void *)query.resp_data;
+
+        query.version = OBMM_GSVA_ABI_VERSION;
+        query.query_type = GSVA_QUERY_COHERENCE;
+        query.segment_id = segment_id;
+        query.home_va = my_base;
+
+        rc = ioctl(obmm_fd, OBMM_CMD_GSVA_QUERY_V1, &query);
+        CHECK(rc == 0, "coherence query after timeout should reach QEMU");
+        printf("%s   coh_timeout Query error=%d\n", TAG, query_resp->error);
+        CHECK(query_resp->error == GSVA_ERR_COH_TIMEOUT,
+              "coherence query should report GSVA_ERR_COH_TIMEOUT");
+    }
+
     rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_RETIRE, local_cna,
                          token_id, token_id, segment_id, my_base,
                          GSVA_SIZE, &ev_error);

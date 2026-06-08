@@ -172,6 +172,14 @@ validate_coh_logs() {
       echo "[gsva_coh] FAIL: guest did not observe GSVA_ERR_COH_TIMEOUT" >&2
       return 1
     fi
+    if ! grep -q 'coh_timeout Query error=-7' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG"; then
+      echo "[gsva_coh] FAIL: coherence query did not report GSVA_ERR_COH_TIMEOUT" >&2
+      return 1
+    fi
+    if ! grep -Eq 'GSVA_QUERY_COHERENCE: .*state=TIMEOUT error=-7' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: QEMU coherence query did not report TIMEOUT" >&2
+      return 1
+    fi
     if [[ "$GSVA_MODE" == "arm_mmu" ]]; then
       if ! grep -q 'GSVA_TLB: lookup' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
         echo "[gsva_coh] FAIL: ARM MMU coh_timeout lacks GSVA_TLB lookup evidence" >&2

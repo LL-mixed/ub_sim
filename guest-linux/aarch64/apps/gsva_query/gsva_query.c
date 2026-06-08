@@ -133,6 +133,13 @@ static int do_query_route(int obmm_fd, uint64_t segment_id)
 static int do_query_coherence(int obmm_fd, uint64_t segment_id)
 {
 	struct obmm_cmd_gsva_query_v1 cmd = {0};
+	struct {
+		uint32_t version;
+		int32_t error;
+		uint8_t data[240];
+	} *resp = (void *)cmd.resp_data;
+	uint32_t state = 0xffffffffu;
+
 	cmd.version = 1;
 	cmd.query_type = GSVA_QUERY_COHERENCE;
 	cmd.segment_id = segment_id;
@@ -145,7 +152,22 @@ static int do_query_coherence(int obmm_fd, uint64_t segment_id)
 		return 1;
 	}
 
+	if (sizeof(state) <= sizeof(resp->data))
+		memcpy(&state, resp->data, sizeof(state));
+
 	printf("%s GSVA_QUERY_COHERENCE segment_id=%#" PRIx64 "\n", TAG, segment_id);
+	printf("  error:                %d\n", resp->error);
+	printf("  state_code:           %u\n", state);
+	if (resp->error == GSVA_ERR_COH_TIMEOUT) {
+		printf("  coherence_state:      timeout\n");
+		printf("  verdict=PASS\n");
+		return 0;
+	}
+	if (resp->error != GSVA_OK) {
+		printf("  coherence_state:      error\n");
+		printf("  verdict=FAIL\n");
+		return 1;
+	}
 	printf("  coherence_state:      active\n");
 	printf("  verdict=PASS\n");
 	return 0;
