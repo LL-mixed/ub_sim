@@ -21,9 +21,11 @@
   `guest-linux/aarch64/logs/2026-06-09_00-25-17_gsva_coh4_15946`。
 - 2026-06-09 在远端 `cf:/sd_data/repo/ub_sim` 上重新构建 guest artifacts，并通过的 GSVA stale epoch remap rejection 验证日志：
   `guest-linux/aarch64/logs/2026-06-09_00-28-44_gsva_coh_25343`。
+- 2026-06-09 在远端 `cf:/sd_data/repo/ub_sim` 上重新构建 guest artifacts，并通过的 GSVA read-only token permission 验证日志：
+  `guest-linux/aarch64/logs/2026-06-09_00-32-36_gsva_coh_28024`。
 - `docs/qemu_obmm_directory_mesi_coherence_design.md` 中的 OBMM directory MESI 当前实现状态记录。
 
-除明确列出的 2026-06-08 segment ABI 验证、2026-06-09 token acquire 验证、2026-06-09 token rotation 验证、2026-06-09 event retire 验证、2026-06-09 四节点 writer invalidation 验证和 2026-06-09 stale remap 验证外，其余结论基于已经存在的代码和日志证据。
+除明确列出的 2026-06-08 segment ABI 验证、2026-06-09 token acquire 验证、2026-06-09 token rotation 验证、2026-06-09 event retire 验证、2026-06-09 四节点 writer invalidation 验证、2026-06-09 stale remap 验证和 2026-06-09 read-only token permission 验证外，其余结论基于已经存在的代码和日志证据。
 
 ## 1. 总体结论
 
@@ -39,14 +41,15 @@
 8. `OBMM_CMD_GSVA_EVENT_V1` 已经进入 guest kernel ioctl path，可触发 QEMU GSVA ReadAcquire/WriteAcquire/TokenChange/Retire；active route token v1 精确匹配校验已通过两节点 `token_denied` 验证，basic route-local token rotation 已通过两节点 `token_rotate` 验证，event Retire route tombstone 已通过两节点 `retire_event` 验证。
 9. 四节点 `writer_inv` 已验证 GSVA ReadAcquire shared state 到 WriteAcquire invalidating writer 的状态机转换，QEMU 日志可见 `WriteAcquire S->M pending inv` 和 `WriteAcquire S->M`。
 10. Stale epoch remap rejection 已验证：event Retire 后同一 `{segment_id, home_va, epoch=1}` 再次 map 会被 QEMU tombstone 拒绝为 `GSVA_ERR_STALE_EPOCH`。
-11. 最终目标中的 GSVA-specific coherence 仍未完整完成；当前已经有 GSVA route/coherence 模块、acquire token 校验、basic token rotation、event retire tombstone、四节点 writer invalidation 和 stale remap rejection，但跨节点 retire ACK/timeout、epoch reuse commit、manager token revoke ACK、ARM MMU 默认路径还未形成最终事务闭环。
+11. Read-only token permission 已验证：`access_flags=OBMM_GSVA_ACCESS_READ` 的 route 允许 `ReadAcquire`，但同一 token 的 `WriteAcquire` 会被 QEMU 拒绝为 `GSVA_ERR_TOKEN_DENIED`。
+12. 最终目标中的 GSVA-specific coherence 仍未完整完成；当前已经有 GSVA route/coherence 模块、acquire token 校验、basic token rotation、event retire tombstone、四节点 writer invalidation、stale remap rejection 和 read-only write denial，但跨节点 retire ACK/timeout、epoch reuse commit、manager token revoke ACK、ARM MMU 默认路径还未形成最终事务闭环。
 
 一句话判断：
 
 ```text
 当前阶段已经从“设计概念”进入“多节点可运行实现”。
 GVA/GSVA 地址语义、QEMU route、guest kernel GSVA aperture、OBMM directory MESI 已经有真实日志闭环。
-segment descriptor ABI、token acquire/rotation、event retire tombstone、四节点 writer invalidation 和 stale epoch remap rejection 已有独立验证；下一阶段的核心不是再证明能跑，而是把 GSVA-specific coherence、token revoke ACK、epoch reuse 与 route/coherence/TLB 的事务绑定、ARM MMU 默认路径产品化。
+segment descriptor ABI、token acquire/rotation/read-only permission、event retire tombstone、四节点 writer invalidation 和 stale epoch remap rejection 已有独立验证；下一阶段的核心不是再证明能跑，而是把 GSVA-specific coherence、token revoke ACK、epoch reuse 与 route/coherence/TLB 的事务绑定、ARM MMU 默认路径产品化。
 ```
 
 ## 2. 当前实现分层状态
@@ -169,6 +172,7 @@ SIM_DEC_OP_GSVA_QUERY_V1    0x0c
   - protected route 必须有非零 `token_id/token_value`。
   - supplied `token_id/token_value` 必须和 route lease 精确匹配。
   - strict GSVA 不再允许 `token_value == 0` 时只校验 token id。
+- `access_flags` 已进入 token permission 校验：read-only route 允许 ReadAcquire，但拒绝 WriteAcquire 并返回 `GSVA_ERR_TOKEN_DENIED`。
 
 日志证据：
 
@@ -190,7 +194,7 @@ GVA_STATS ... read_errors=0 write_errors=0
 
 - `SIM_DEC_OP_GSVA_MAP_V1/UNMAP_V1/EVENT_V1/QUERY_V1` 已有实现路径，但 query 仍主要覆盖 caps，route/coherence 细粒度查询还未完整产品化。
 - 当前 GSVA identity 路径仍部分依赖现有 GVA/OBMM helper 元数据；`obmm_import` 的 `segment_id/epoch/p_tag/token` 还未强制全部来自 kernel segment descriptor。
-- basic route-local token rotation 和 `lease_epoch++` 已完成；manager 侧 token 分发、revoke ACK、holder token cache/TLB flush 仍未完成。
+- basic route-local token rotation、`lease_epoch++` 和 read-only write denial 已完成；manager 侧 token 分发、revoke ACK、holder token cache/TLB flush 仍未完成。
 
 ## 2.4 ARM MMU / TCG hook 层
 
