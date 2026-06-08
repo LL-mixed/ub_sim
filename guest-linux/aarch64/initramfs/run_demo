@@ -245,6 +245,88 @@ run_gva_manager_dump_routes() {
   run_binary "linqu_gva_manager" /bin/linqu_gva_manager --dump-routes
 }
 
+run_gva_manager_segment_cli() {
+  local node_id="0"
+  local node_count="2"
+  local aperture_base="0x700000000000"
+  local aperture_size="0x1000000"
+  local segment_size="0x400000"
+  local segment_alignment="0x1000"
+  local home_node="0"
+  local cache_policy="directory-mesi"
+  local access_flags="3"
+  local requested_home_va="0"
+  local token=""
+  local alloc_log="/tmp/gva_manager_segment_alloc.log"
+  local query_log="/tmp/gva_manager_segment_query.log"
+  local retire_log="/tmp/gva_manager_segment_retire.log"
+  local segment_id=""
+  local epoch=""
+
+  read_cmdline
+  for token in $cmdline; do
+    case "$token" in
+      gva_manager_node_id=*) node_id="${token#*=}" ;;
+      gva_manager_node_count=*) node_count="${token#*=}" ;;
+      gva_manager_aperture_base=*) aperture_base="${token#*=}" ;;
+      gva_manager_aperture_size=*) aperture_size="${token#*=}" ;;
+      gva_manager_segment_size=*) segment_size="${token#*=}" ;;
+      gva_manager_segment_alignment=*) segment_alignment="${token#*=}" ;;
+      gva_manager_home_node=*) home_node="${token#*=}" ;;
+      gva_manager_cache_policy=*) cache_policy="${token#*=}" ;;
+      gva_manager_access_flags=*) access_flags="${token#*=}" ;;
+      gva_manager_requested_home_va=*) requested_home_va="${token#*=}" ;;
+    esac
+  done
+
+  if [ "$requested_home_va" = "0" ]; then
+    /bin/linqu_gva_manager --alloc --node-id "$node_id" --node-count "$node_count" \
+      --aperture-base "$aperture_base" --aperture-size "$aperture_size" \
+      --segment-size "$segment_size" --segment-alignment "$segment_alignment" \
+      --home-node "$home_node" --cache-policy "$cache_policy" \
+      --access-flags "$access_flags" >"$alloc_log" 2>&1
+  else
+    /bin/linqu_gva_manager --alloc --node-id "$node_id" --node-count "$node_count" \
+      --aperture-base "$aperture_base" --aperture-size "$aperture_size" \
+      --requested-home-va "$requested_home_va" --segment-size "$segment_size" \
+      --segment-alignment "$segment_alignment" --home-node "$home_node" \
+      --cache-policy "$cache_policy" --access-flags "$access_flags" \
+      >"$alloc_log" 2>&1
+  fi
+  local rc=$?
+  /bin/busybox cat "$alloc_log"
+  if [ "$rc" -ne 0 ]; then
+    echo "[gva_manager_segment_cli] verdict=FAIL stage=alloc rc=$rc"
+    return "$rc"
+  fi
+
+  segment_id="$(/bin/busybox sed -n 's/.*result=done action=gsva-segment-alloc segment_id=\([^ ]*\).*/\1/p' "$alloc_log" | /bin/busybox tail -1)"
+  epoch="$(/bin/busybox sed -n 's/.*result=done action=gsva-segment-alloc .* epoch=\([^ ]*\).*/\1/p' "$alloc_log" | /bin/busybox tail -1)"
+  if [ -z "$segment_id" ] || [ -z "$epoch" ]; then
+    echo "[gva_manager_segment_cli] verdict=FAIL stage=parse"
+    return 1
+  fi
+
+  /bin/linqu_gva_manager --query --segment-id "$segment_id" >"$query_log" 2>&1
+  rc=$?
+  /bin/busybox cat "$query_log"
+  if [ "$rc" -ne 0 ]; then
+    echo "[gva_manager_segment_cli] verdict=FAIL stage=query rc=$rc segment_id=$segment_id"
+    return "$rc"
+  fi
+
+  /bin/linqu_gva_manager --retire --segment-id "$segment_id" --epoch "$epoch" >"$retire_log" 2>&1
+  rc=$?
+  /bin/busybox cat "$retire_log"
+  if [ "$rc" -ne 0 ]; then
+    echo "[gva_manager_segment_cli] verdict=FAIL stage=retire rc=$rc segment_id=$segment_id epoch=$epoch"
+    return "$rc"
+  fi
+
+  echo "[gva_manager_segment_cli] verdict=PASS segment_id=$segment_id epoch=$epoch"
+  return 0
+}
+
 run_obmm_gsva_demo() {
   local args=""
   local token=""
@@ -401,6 +483,9 @@ run_single_action() {
       ;;
     gva_manager_dump_routes)
       run_gva_manager_dump_routes
+      ;;
+    gva_manager_segment_cli)
+      run_gva_manager_segment_cli
       ;;
     gva_direct_demo)
       run_gva_direct_demo

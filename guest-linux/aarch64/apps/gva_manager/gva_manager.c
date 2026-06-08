@@ -94,6 +94,9 @@ struct gva_mgr_config {
     bool allocate_segment;
     bool retire_segment;
     bool reuse_segment;
+    bool desc_alloc;
+    bool desc_query;
+    bool desc_retire;
     int node_id;
     int node_count;
     uint64_t generation;
@@ -105,6 +108,12 @@ struct gva_mgr_config {
     uint32_t access_flags;
     uint32_t cache_policy;
     bool inject_conflict;
+    uint64_t requested_home_va;
+    uint64_t query_home_va;
+    uint64_t segment_id;
+    uint64_t epoch;
+    uint32_t requested_p_tag;
+    uint32_t retire_timeout_ms;
 };
 
 struct node_slot {
@@ -340,6 +349,42 @@ static void config_from_env_cmdline(struct gva_mgr_config *cfg)
         parse_i32_str(value, &parsed32)) {
         cfg->inject_conflict = parsed32 != 0;
     }
+    if (obmm_env_or_cmdline("GVA_MANAGER_REQUESTED_HOME_VA",
+                            "gva_manager_requested_home_va",
+                            value, sizeof(value)) &&
+        parse_u64_str(value, &parsed64)) {
+        cfg->requested_home_va = parsed64;
+    }
+    if (obmm_env_or_cmdline("GVA_MANAGER_SEGMENT_ID",
+                            "gva_manager_segment_id",
+                            value, sizeof(value)) &&
+        parse_u64_str(value, &parsed64)) {
+        cfg->segment_id = parsed64;
+    }
+    if (obmm_env_or_cmdline("GVA_MANAGER_QUERY_HOME_VA",
+                            "gva_manager_query_home_va",
+                            value, sizeof(value)) &&
+        parse_u64_str(value, &parsed64)) {
+        cfg->query_home_va = parsed64;
+    }
+    if (obmm_env_or_cmdline("GVA_MANAGER_EPOCH",
+                            "gva_manager_epoch",
+                            value, sizeof(value)) &&
+        parse_u64_str(value, &parsed64)) {
+        cfg->epoch = parsed64;
+    }
+    if (obmm_env_or_cmdline("GVA_MANAGER_REQUESTED_P_TAG",
+                            "gva_manager_requested_p_tag",
+                            value, sizeof(value)) &&
+        parse_u64_str(value, &parsed64) && parsed64 <= UINT32_MAX) {
+        cfg->requested_p_tag = (uint32_t)parsed64;
+    }
+    if (obmm_env_or_cmdline("GVA_MANAGER_RETIRE_TIMEOUT_MS",
+                            "gva_manager_retire_timeout_ms",
+                            value, sizeof(value)) &&
+        parse_u64_str(value, &parsed64) && parsed64 <= UINT32_MAX) {
+        cfg->retire_timeout_ms = (uint32_t)parsed64;
+    }
 }
 
 static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
@@ -357,6 +402,9 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
     cfg->segment_alignment = GVA_MGR_DEFAULT_SEGMENT_ALIGNMENT;
     cfg->home_node_id = 0;
     cfg->cache_policy = OBMM_SIM_DEC_CACHE_POLICY_WRITE_THROUGH;
+    cfg->epoch = 1;
+    cfg->requested_p_tag = OBMM_GSVA_P_TAG_AUTO;
+    cfg->retire_timeout_ms = 5000;
 
     config_from_env_cmdline(cfg);
 
@@ -366,6 +414,15 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
 
         if (strcmp(argv[i], "--bootstrap") == 0) {
             cfg->bootstrap = true;
+        } else if (strcmp(argv[i], "--alloc") == 0) {
+            cfg->bootstrap = false;
+            cfg->desc_alloc = true;
+        } else if (strcmp(argv[i], "--query") == 0) {
+            cfg->bootstrap = false;
+            cfg->desc_query = true;
+        } else if (strcmp(argv[i], "--retire") == 0) {
+            cfg->bootstrap = false;
+            cfg->desc_retire = true;
         } else if (strcmp(argv[i], "--allocate-segment") == 0) {
             cfg->bootstrap = true;
             cfg->allocate_segment = true;
@@ -417,6 +474,30 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
             if (!parse_u64_str(argv[++i], &parsed64) || parsed64 > UINT32_MAX)
                 return -EINVAL;
             cfg->access_flags = (uint32_t)parsed64;
+        } else if (strcmp(argv[i], "--requested-home-va") == 0 && i + 1 < argc) {
+            if (!parse_u64_str(argv[++i], &parsed64))
+                return -EINVAL;
+            cfg->requested_home_va = parsed64;
+        } else if (strcmp(argv[i], "--home-va") == 0 && i + 1 < argc) {
+            if (!parse_u64_str(argv[++i], &parsed64))
+                return -EINVAL;
+            cfg->query_home_va = parsed64;
+        } else if (strcmp(argv[i], "--segment-id") == 0 && i + 1 < argc) {
+            if (!parse_u64_str(argv[++i], &parsed64))
+                return -EINVAL;
+            cfg->segment_id = parsed64;
+        } else if (strcmp(argv[i], "--epoch") == 0 && i + 1 < argc) {
+            if (!parse_u64_str(argv[++i], &parsed64))
+                return -EINVAL;
+            cfg->epoch = parsed64;
+        } else if (strcmp(argv[i], "--p-tag") == 0 && i + 1 < argc) {
+            if (!parse_u64_str(argv[++i], &parsed64) || parsed64 > UINT32_MAX)
+                return -EINVAL;
+            cfg->requested_p_tag = (uint32_t)parsed64;
+        } else if (strcmp(argv[i], "--timeout-ms") == 0 && i + 1 < argc) {
+            if (!parse_u64_str(argv[++i], &parsed64) || parsed64 > UINT32_MAX)
+                return -EINVAL;
+            cfg->retire_timeout_ms = (uint32_t)parsed64;
         } else if (strcmp(argv[i], "--cache-policy") == 0 && i + 1 < argc) {
             if (!parse_cache_policy_str(argv[++i], &cfg->cache_policy))
                 return -EINVAL;
@@ -427,6 +508,12 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
                     "usage: gva_manager --bootstrap --node-id N --node-count C "
                     "[--generation G] [--aperture-base A] "
                     "[--aperture-size S] [--conflict]\n"
+                    "       gva_manager --alloc --node-id N --node-count C "
+                    "[--aperture-base A] [--aperture-size S] [--requested-home-va VA] "
+                    "[--segment-size S] [--segment-alignment A] [--cache-policy POLICY] "
+                    "[--access-flags F] [--p-tag P]\n"
+                    "       gva_manager --query [--segment-id ID|--home-va VA]\n"
+                    "       gva_manager --retire --segment-id ID [--epoch E] [--timeout-ms MS]\n"
                     "       gva_manager --allocate-segment --node-id N "
                     "--node-count C [--home-node N] [--segment-size S] "
                     "[--segment-alignment A] [--cache-policy nc|wt|rc|wb|mesi|directory-mesi] "
@@ -438,6 +525,39 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
 
     if (cfg->dump_routes)
         return 0;
+    if (cfg->desc_alloc || cfg->desc_query || cfg->desc_retire) {
+        int actions = (cfg->desc_alloc ? 1 : 0) + (cfg->desc_query ? 1 : 0) +
+                      (cfg->desc_retire ? 1 : 0);
+
+        if (actions != 1)
+            return -EINVAL;
+        if (cfg->desc_alloc) {
+            if (cfg->node_id < 0)
+                cfg->node_id = 0;
+            if (cfg->node_count < 1 || cfg->node_count > MAX_NODES ||
+                cfg->home_node_id < 0 || cfg->home_node_id >= cfg->node_count ||
+                cfg->segment_size == 0 || cfg->segment_alignment == 0 ||
+                (cfg->segment_size & (4096ULL - 1)) != 0 ||
+                (cfg->segment_alignment & (cfg->segment_alignment - 1)) != 0)
+                return -EINVAL;
+            if (cfg->access_flags == 0)
+                cfg->access_flags = OBMM_GSVA_ACCESS_READ |
+                                    OBMM_GSVA_ACCESS_WRITE;
+            if (!(cfg->access_flags & OBMM_GSVA_ACCESS_READ))
+                return -EINVAL;
+        }
+        if (cfg->desc_query && !cfg->segment_id && !cfg->query_home_va)
+            return -EINVAL;
+        if (cfg->desc_retire && (!cfg->segment_id || !cfg->epoch))
+            return -EINVAL;
+        if (cfg->cache_policy != OBMM_SIM_DEC_CACHE_POLICY_NC &&
+            cfg->cache_policy != OBMM_SIM_DEC_CACHE_POLICY_WRITE_THROUGH &&
+            cfg->cache_policy != OBMM_SIM_DEC_CACHE_POLICY_READ_CACHE &&
+            cfg->cache_policy != OBMM_SIM_DEC_CACHE_POLICY_WRITE_BACK &&
+            cfg->cache_policy != OBMM_SIM_DEC_CACHE_POLICY_DIRECTORY_MESI)
+            return -EINVAL;
+        return 0;
+    }
     if (!cfg->bootstrap)
         return -EINVAL;
     if (cfg->reuse_segment)
@@ -1339,6 +1459,109 @@ static int register_kernel_aperture(int obmm_fd, const struct gva_mgr_config *cf
     return 0;
 }
 
+static void log_gsva_desc(const char *action,
+                          const struct obmm_gsva_segment_desc_v1 *desc)
+{
+    log_msg("gsva descriptor action=%s version=%u flags=%#x"
+            " segment_id=%#" PRIx64 " home_va=%#" PRIx64
+            " size=%#" PRIx64 " epoch=%#" PRIx64
+            " home_cna=%u owner_node=%u node_count=%u"
+            " cache_policy=%u p_tag=%u access_flags=%#x"
+            " token_id=%u token_value=%u",
+            action, desc->version, desc->flags, desc->segment_id,
+            desc->home_va, desc->size, desc->epoch, desc->home_cna,
+            desc->owner_node_id, desc->node_count, desc->cache_policy,
+            desc->p_tag, desc->access_flags, desc->token_id,
+            desc->token_value);
+}
+
+static int run_descriptor_cli_action(const struct gva_mgr_config *cfg,
+                                     int obmm_fd)
+{
+    int ret;
+
+    if (cfg->desc_alloc) {
+        struct obmm_cmd_gsva_alloc_segment_v1 cmd = {0};
+
+        ret = register_kernel_aperture(obmm_fd, cfg);
+        if (ret) {
+            log_msg("result=fail action=gsva-segment-alloc stage=aperture errno=%d",
+                    errno);
+            return ret;
+        }
+
+        cmd.version = OBMM_GSVA_ABI_VERSION;
+        cmd.flags = OBMM_GSVA_SEG_F_STRICT_ADDRESS_IDENTITY |
+                    OBMM_GSVA_SEG_F_TOKEN_VALUE_REQUIRED;
+        cmd.size = cfg->segment_size;
+        cmd.alignment = cfg->segment_alignment;
+        cmd.requested_home_va = cfg->requested_home_va;
+        cmd.home_node_id = (uint32_t)cfg->home_node_id;
+        cmd.cache_policy = cfg->cache_policy;
+        cmd.requested_p_tag = cfg->requested_p_tag;
+        cmd.access_flags = cfg->access_flags;
+
+        if (ioctl(obmm_fd, OBMM_CMD_GSVA_ALLOC_SEGMENT, &cmd) != 0) {
+            log_msg("result=fail action=gsva-segment-alloc stage=alloc errno=%d",
+                    errno);
+            return -1;
+        }
+
+        log_gsva_desc("alloc", &cmd.desc);
+        log_msg("result=done action=gsva-segment-alloc"
+                " segment_id=%#" PRIx64 " home_va=%#" PRIx64
+                " epoch=%#" PRIx64,
+                cmd.desc.segment_id, cmd.desc.home_va, cmd.desc.epoch);
+        return 0;
+    }
+
+    if (cfg->desc_query) {
+        struct obmm_cmd_gsva_query_segment_v1 cmd = {0};
+
+        cmd.version = OBMM_GSVA_ABI_VERSION;
+        cmd.segment_id = cfg->segment_id;
+        cmd.home_va = cfg->query_home_va;
+
+        if (ioctl(obmm_fd, OBMM_CMD_GSVA_QUERY_SEGMENT, &cmd) != 0) {
+            log_msg("result=fail action=gsva-segment-query errno=%d",
+                    errno);
+            return -1;
+        }
+
+        log_gsva_desc("query", &cmd.desc);
+        log_msg("result=done action=gsva-segment-query"
+                " segment_id=%#" PRIx64 " home_va=%#" PRIx64
+                " epoch=%#" PRIx64,
+                cmd.desc.segment_id, cmd.desc.home_va, cmd.desc.epoch);
+        return 0;
+    }
+
+    if (cfg->desc_retire) {
+        struct obmm_cmd_gsva_retire_segment_v1 cmd = {0};
+
+        cmd.version = OBMM_GSVA_ABI_VERSION;
+        cmd.segment_id = cfg->segment_id;
+        cmd.epoch = cfg->epoch;
+        cmd.timeout_ms = cfg->retire_timeout_ms;
+
+        if (ioctl(obmm_fd, OBMM_CMD_GSVA_RETIRE_SEGMENT, &cmd) != 0) {
+            log_msg("result=fail action=gsva-segment-retire errno=%d"
+                    " status=%u error=%u",
+                    errno, cmd.status, cmd.error);
+            return -1;
+        }
+
+        log_msg("result=done action=gsva-segment-retire"
+                " segment_id=%#" PRIx64 " committed_epoch=%#" PRIx64
+                " status=%u error=%u",
+                cfg->segment_id, cmd.committed_epoch, cmd.status,
+                cmd.error);
+        return 0;
+    }
+
+    return -EINVAL;
+}
+
 static int run_protocol(struct gva_mgr_config *cfg,
                         int obmm_fd,
                         struct obmm_mpmc_bus *bus,
@@ -1606,6 +1829,12 @@ int main(int argc, char **argv)
     }
     local_cna = (uint32_t)local_cna_u64;
     local_meta.export_cna = local_cna;
+
+    if (cfg.desc_alloc || cfg.desc_query || cfg.desc_retire) {
+        if (run_descriptor_cli_action(&cfg, obmm_fd) == 0)
+            rc = 0;
+        goto out;
+    }
 
     if (obmm_do_export(obmm_fd, &local_meta, GVA_MGR_REGION_SIZE) != 0) {
         log_msg("export manager region failed errno=%d", errno);
