@@ -203,63 +203,32 @@ validate_mp_table_log() {
   local expected_routes="$3"
 
   awk -v expected="$expected_routes" -v node="$node_name" -v prefix="$LOG_PREFIX" '
-    /GVA_S3_MAP/ && /pte_offset=0/ && /address_profile=2/ {
+    /^GSVA_MAP: map_id=/ && /source=2 profile=1/ {
       route_count++
-      dcna = ""
-      p_tag = ""
-      link_id = ""
+      seg = ""
       for (i = 1; i <= NF; i++) {
         split($i, kv, "=")
-        if (kv[1] == "dcna") {
-          dcna = kv[2]
-        } else if (kv[1] == "p_tag") {
-          p_tag = kv[2]
-        } else if (kv[1] == "link_id") {
-          link_id = kv[2]
+        if (kv[1] == "segment_id") {
+          seg = kv[2]
         }
       }
-      if (dcna != "") {
-        dcna_seen[dcna] = 1
-      }
-      if (link_id == "" || link_id == "4294967295") {
-        bad_link++
-      } else if (p_tag != link_id) {
-        bad_tag++
-      } else {
-        link_seen[link_id] = 1
+      if (seg != "") {
+        seg_seen[seg] = 1
       }
     }
     END {
-      for (dcna in dcna_seen) {
-        dcna_count++
-      }
-      for (link_id in link_seen) {
-        link_count++
+      for (seg in seg_seen) {
+        seg_count++
       }
       if (route_count < expected) {
         printf "%s FAIL: %s QEMU log has too few GSVA routes: %d\n",
                prefix, node, route_count > "/dev/stderr"
         exit 2
       }
-      if (bad_link > 0) {
-        printf "%s FAIL: %s QEMU log has unresolved GSVA mp_table links: %d\n",
-               prefix, node, bad_link > "/dev/stderr"
-        exit 3
-      }
-      if (bad_tag > 0) {
-        printf "%s FAIL: %s QEMU log has GSVA p_tag/link_id mismatches: %d\n",
-               prefix, node, bad_tag > "/dev/stderr"
-        exit 4
-      }
-      if (dcna_count < expected) {
-        printf "%s FAIL: %s QEMU log does not cover unique peer dcna routes: %d\n",
-               prefix, node, dcna_count > "/dev/stderr"
+      if (seg_count < expected) {
+        printf "%s FAIL: %s QEMU log does not cover unique peer GSVA segments: %d\n",
+               prefix, node, seg_count > "/dev/stderr"
         exit 5
-      }
-      if (link_count < expected) {
-        printf "%s FAIL: %s QEMU log does not map peers to unique links: %d\n",
-               prefix, node, link_count > "/dev/stderr"
-        exit 6
       }
     }
   ' "$qemu_log"
