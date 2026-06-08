@@ -94,7 +94,7 @@ start_node() {
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
       -initrd "$INITRAMFS_IMAGE" \
-      -append "console=ttyAMA0 rdinit=/bin/run_demo gsva_coh_test linqu_urma_dp_role=${role} linqu_node_idx=${node_idx} gsva_test_mode=${GSVA_TEST_MODE} ${APPEND_EXTRA}" \
+      -append "console=ttyAMA0 rdinit=/bin/run_demo gsva_coh_test linqu_urma_dp_role=${role} linqu_node_idx=${node_idx} linqu_node_count=4 gsva_test_mode=${GSVA_TEST_MODE} ${APPEND_EXTRA}" \
       >"$qemu_log" 2>&1 &
   echo $! > "$pid_file"
 }
@@ -106,8 +106,19 @@ wait_all_links_ready() {
   while (( SECONDS < deadline )); do
     local all_ready=true
     for n in "${nodes[@]}"; do
+      local ready=false
       local ql="${QEMU_LOGS[$n]}"
-      if ! [[ -f "$ql" ]] || ! grep -qE "marked connected for ubcdev0:1 state=1 socket=1 guid_valid=1 snapshot_reconciled=1" "$ql"; then
+      local node_name="node${n}"
+      # Check status file first (like 2-node script does)
+      local sf="$SHARED_DIR/${node_name}_ubcdev0__0.status"
+      if [[ -f "$sf" ]] && grep -q "^state=READY" "$sf"; then
+        ready=true
+      fi
+      if [[ "$ready" == "false" ]] && [[ -f "$ql" ]] && \
+         grep -qE "marked connected for ubcdev0:1 state=1 socket=1 guid_valid=1 snapshot_reconciled=1" "$ql"; then
+        ready=true
+      fi
+      if [[ "$ready" == "false" ]]; then
         all_ready=false
         break
       fi
