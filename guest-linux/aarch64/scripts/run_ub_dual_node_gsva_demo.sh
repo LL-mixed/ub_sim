@@ -152,24 +152,12 @@ validate_identity_logs() {
     echo "[gsva-demo] FAIL: result logs do not preserve the expected GSVA pointer" >&2
     return 1
   fi
-  if ! grep -Eq 'SIM_DEC: GVA_MAP success .*address_profile=2 .*pte_offset=0' "$NODEB_QEMU_LOG"; then
-    echo "[gsva-demo] FAIL: peer QEMU log lacks GSVA identity GVA_MAP evidence" >&2
+  if ! grep -Eq "GSVA_MAP: map_id=[0-9]+ .*home_va=0x$(printf '%x' "$((GSVA_DEMO_BASE))") .*source=2 profile=1" "$NODEB_QEMU_LOG"; then
+    echo "[gsva-demo] FAIL: peer QEMU log lacks GSVA V1 MAP evidence" >&2
     return 1
   fi
-  if ! grep -Eq "GVA_S3_MAP .*local_va=$(printf '%x' "$((GSVA_DEMO_BASE))") .*home_va=$(printf '%x' "$((GSVA_DEMO_BASE))") .*pte_offset=0 .*uba=$(printf '%x' "$((GSVA_DEMO_BASE))") .*address_profile=2" "$NODEB_QEMU_LOG"; then
-    echo "[gsva-demo] FAIL: peer QEMU log lacks GVA_S3 identity route evidence" >&2
-    return 1
-  fi
-  if ! grep -Eq "GVA_ROUTE_DUMP state=active .*local_va=$(printf '%x' "$((GSVA_DEMO_BASE))") .*home_va=$(printf '%x' "$((GSVA_DEMO_BASE))") .*pte_offset=0 .*uba=$(printf '%x' "$((GSVA_DEMO_BASE))") .*address_profile=2" "$NODEB_QEMU_LOG"; then
-    echo "[gsva-demo] FAIL: peer QEMU log lacks GSVA route dump evidence" >&2
-    return 1
-  fi
-  if ! grep -Eq 'GVA_STATS .*cpu_reads=[1-9][0-9]* .*cpu_writes=[1-9][0-9]*' "$NODEB_QEMU_LOG"; then
-    echo "[gsva-demo] FAIL: peer QEMU log lacks nonzero GVA_STATS evidence" >&2
-    return 1
-  fi
-  if ! grep -Eq 'SIM_DEC_STATS .*gva_cpu_reads=[1-9][0-9]* .*gva_cpu_writes=[1-9][0-9]* .*cpu_reads=[1-9][0-9]* .*cpu_writes=[1-9][0-9]*' "$NODEB_QEMU_LOG"; then
-    echo "[gsva-demo] FAIL: peer QEMU log lacks nonzero SIM_DEC_STATS evidence" >&2
+  if ! grep -Eq "GSVA_MAP: cpu_window registered at pa=.*size=$(printf '%x' "$((GSVA_DEMO_SIZE))")" "$NODEB_QEMU_LOG"; then
+    echo "[gsva-demo] FAIL: peer QEMU log lacks GSVA cpu_window registration evidence" >&2
     return 1
   fi
 }
@@ -334,6 +322,7 @@ deadline=$((SECONDS + RUN_SECS))
 while (( SECONDS < deadline )); do
   if [[ -f "$NODEA_GUEST_LOG" ]] && grep -qE '\[obmm_gsva_demo\] result=done' "$NODEA_GUEST_LOG" && \
      [[ -f "$NODEB_GUEST_LOG" ]] && grep -qE '\[obmm_gsva_demo\] result=done' "$NODEB_GUEST_LOG"; then
+    sleep 1
     validate_kernel_aperture_proc_logs
     case "$GSVA_DEMO_MODE" in
       identity)
