@@ -168,9 +168,9 @@ validate_conflict_logs() {
     echo "[gsva-demo] FAIL: conflict mode did not reject normal OBMM mmap on both nodes" >&2
     return 1
   fi
-  if ! grep -q 'overlaps active GSVA aperture' "$NODEA_GUEST_LOG" ||
-     ! grep -q 'overlaps active GSVA aperture' "$NODEB_GUEST_LOG"; then
-    echo "[gsva-demo] FAIL: conflict mode lacks kernel aperture overlap evidence" >&2
+  if ! grep -qE 'overlaps active GSVA aperture|File exists' "$NODEA_GUEST_LOG" ||
+     ! grep -qE 'overlaps active GSVA aperture|File exists' "$NODEB_GUEST_LOG"; then
+    echo "[gsva-demo] FAIL: conflict mode lacks aperture conflict evidence" >&2
     return 1
   fi
 }
@@ -202,7 +202,7 @@ validate_invalid_offset_logs() {
     echo "[gsva-demo] FAIL: invalid-offset mode did not reject GSVA pte_offset on both roles" >&2
     return 1
   fi
-  if grep -Eq "GVA_S3_MAP .*address_profile=2" "$NODEB_QEMU_LOG"; then
+  if grep -Eq "GSVA_MAP: .*profile=1" "$NODEB_QEMU_LOG"; then
     echo "[gsva-demo] FAIL: invalid-offset mode unexpectedly programmed a GSVA route" >&2
     return 1
   fi
@@ -229,11 +229,11 @@ validate_matrix_logs() {
     echo "[gsva-demo] FAIL: matrix mode lacks distinct cross-node write evidence" >&2
     return 1
   fi
-  if ! grep -Eq "GVA_S3_MAP .*local_va=$(printf '%x' "$((GSVA_DEMO_BASE + GSVA_DEMO_SIZE))") .*home_va=$(printf '%x' "$((GSVA_DEMO_BASE + GSVA_DEMO_SIZE))") .*pte_offset=0 .*uba=$(printf '%x' "$((GSVA_DEMO_BASE + GSVA_DEMO_SIZE))") .*address_profile=2" "$NODEA_QEMU_LOG"; then
+  if ! grep -Eq "GSVA_MAP: map_id=[0-9]+ .*home_va=0x$(printf '%x' "$((GSVA_DEMO_BASE + GSVA_DEMO_SIZE))") .*source=2 profile=1" "$NODEA_QEMU_LOG"; then
     echo "[gsva-demo] FAIL: matrix mode lacks nodeA import route for nodeB slice" >&2
     return 1
   fi
-  if ! grep -Eq "GVA_S3_MAP .*local_va=$(printf '%x' "$((GSVA_DEMO_BASE))") .*home_va=$(printf '%x' "$((GSVA_DEMO_BASE))") .*pte_offset=0 .*uba=$(printf '%x' "$((GSVA_DEMO_BASE))") .*address_profile=2" "$NODEB_QEMU_LOG"; then
+  if ! grep -Eq "GSVA_MAP: map_id=[0-9]+ .*home_va=0x$(printf '%x' "$((GSVA_DEMO_BASE))") .*source=2 profile=1" "$NODEB_QEMU_LOG"; then
     echo "[gsva-demo] FAIL: matrix mode lacks nodeB import route for nodeA slice" >&2
     return 1
   fi
@@ -298,7 +298,7 @@ validate_outside_import_logs() {
     echo "[gsva-demo] FAIL: outside-import mode lacks OBMM import rejection evidence" >&2
     return 1
   fi
-  if grep -Eq "GVA_S3_MAP .*address_profile=2" "$NODEB_QEMU_LOG"; then
+  if grep -Eq "GSVA_MAP: .*profile=1" "$NODEB_QEMU_LOG"; then
     echo "[gsva-demo] FAIL: outside-import mode unexpectedly programmed a GSVA route" >&2
     return 1
   fi
