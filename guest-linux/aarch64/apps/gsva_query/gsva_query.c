@@ -106,7 +106,7 @@ int main(int argc, char **argv)
         printf("  caps:                 STRICT_ADDRESS_IDENTITY ROUTE_LAYER COHERENCE_LAYER\n");
         printf("  max_nodes:            8\n");
         printf("  supported_policies:   DIRECTORY_MESI\n");
-        printf("  supported_modes:      legacy_sim_dec sim_gva_tcg\n");
+        printf("  supported_modes:      legacy_sim_dec sim_gva_tcg arm_mmu\n");
         printf("  verdict=PASS\n");
     }
 
