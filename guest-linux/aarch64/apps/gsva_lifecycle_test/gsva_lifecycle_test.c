@@ -6,12 +6,14 @@
  *   - Strict address identity (user_va == uba == home_va)
  *   - Fixed UBA export/import
  *   - GSVA aperture registration and mmap
+ *   - OBMM_CMD_GSVA_ALLOC_SEGMENT / QUERY_SEGMENT / RETIRE_SEGMENT ABI
  *   - Segment retire/unmap lifecycle
  *
  * Modes:
  *   mmap_strict        -- verify strict address identity
  *   retire_reuse       -- map, unmap, remap with same address
  *   stale_epoch        -- verify epoch-based lifecycle
+ *   segment_abi        -- verify kernel GSVA segment descriptor ABI
  *   all                -- run all tests
  *
  * Usage:
@@ -236,6 +238,108 @@ static void test_aperture_mmap_reject(int obmm_fd, uint32_t local_cna, int node_
     PASS();
 }
 
+static void check_segment_desc(const struct obmm_gsva_segment_desc_v1 *desc,
+                               uint64_t expected_home_va,
+                               uint32_t local_cna)
+{
+    CHECK(desc->version == OBMM_GSVA_ABI_VERSION,
+          "segment desc version should be v1");
+    CHECK(desc->segment_id != 0, "segment_id should be assigned");
+    CHECK(desc->home_va == expected_home_va,
+          "segment home_va should match requested_home_va");
+    CHECK(desc->size == GSVA_SIZE, "segment size should match request");
+    CHECK(desc->epoch == 1, "initial segment epoch should be 1");
+    CHECK(desc->home_cna == local_cna, "home_cna should match local CNA");
+    CHECK(desc->flags & OBMM_GSVA_SEG_F_STRICT_ADDRESS_IDENTITY,
+          "segment should require strict address identity");
+    CHECK(desc->flags & OBMM_GSVA_SEG_F_TOKEN_VALUE_REQUIRED,
+          "segment should require token value");
+    CHECK(desc->flags & OBMM_GSVA_SEG_F_ACTIVE,
+          "segment should be active after allocation");
+    CHECK(!(desc->flags & OBMM_GSVA_SEG_F_RETIRED),
+          "segment should not be retired after allocation");
+    CHECK(desc->cache_policy == OBMM_SIM_DEC_CACHE_POLICY_DIRECTORY_MESI,
+          "cache_policy should round-trip");
+    CHECK(desc->p_tag == (local_cna & 0x00ffffffu),
+          "auto p_tag should derive from home CNA");
+    CHECK(desc->access_flags == (OBMM_GSVA_ACCESS_READ | OBMM_GSVA_ACCESS_WRITE),
+          "access_flags should round-trip");
+    CHECK(desc->token_id != 0, "token_id should be assigned");
+    CHECK(desc->token_value != 0, "token_value should be assigned");
+}
+
+/* ---- Test: segment_abi ---- */
+static void test_segment_abi(int obmm_fd, uint32_t local_cna, int node_idx)
+{
+    TEST("OBMM GSVA segment alloc/query/retire ABI");
+    uint64_t base = GSVA_BASE + 0x5000000ULL;
+    struct obmm_cmd_gsva_alloc_segment_v1 alloc = {0};
+    struct obmm_cmd_gsva_query_segment_v1 query = {0};
+    struct obmm_cmd_gsva_query_segment_v1 query_va = {0};
+    struct obmm_cmd_gsva_retire_segment_v1 retire = {0};
+    struct obmm_cmd_gsva_retire_segment_v1 stale_retire = {0};
+    int rc;
+
+    alloc.version = OBMM_GSVA_ABI_VERSION;
+    alloc.size = GSVA_SIZE;
+    alloc.alignment = GSVA_SIZE;
+    alloc.requested_home_va = base;
+    alloc.home_node_id = (uint32_t)node_idx;
+    alloc.cache_policy = OBMM_SIM_DEC_CACHE_POLICY_DIRECTORY_MESI;
+    alloc.requested_p_tag = OBMM_GSVA_P_TAG_AUTO;
+    alloc.access_flags = OBMM_GSVA_ACCESS_READ | OBMM_GSVA_ACCESS_WRITE;
+
+    rc = ioctl(obmm_fd, OBMM_CMD_GSVA_ALLOC_SEGMENT, &alloc);
+    CHECK(rc == 0, "ALLOC_SEGMENT should succeed");
+    check_segment_desc(&alloc.desc, base, local_cna);
+
+    query.version = OBMM_GSVA_ABI_VERSION;
+    query.segment_id = alloc.desc.segment_id;
+    rc = ioctl(obmm_fd, OBMM_CMD_GSVA_QUERY_SEGMENT, &query);
+    CHECK(rc == 0, "QUERY_SEGMENT by segment_id should succeed");
+    CHECK(query.desc.segment_id == alloc.desc.segment_id,
+          "QUERY_SEGMENT should return same segment_id");
+    CHECK(query.desc.token_id == alloc.desc.token_id,
+          "QUERY_SEGMENT should return same token_id");
+    CHECK(query.desc.token_value == alloc.desc.token_value,
+          "QUERY_SEGMENT should return same token_value");
+
+    query_va.version = OBMM_GSVA_ABI_VERSION;
+    query_va.home_va = alloc.desc.home_va;
+    rc = ioctl(obmm_fd, OBMM_CMD_GSVA_QUERY_SEGMENT, &query_va);
+    CHECK(rc == 0, "QUERY_SEGMENT by home_va should succeed");
+    CHECK(query_va.desc.segment_id == alloc.desc.segment_id,
+          "QUERY_SEGMENT by home_va should return allocated segment");
+
+    stale_retire.version = OBMM_GSVA_ABI_VERSION;
+    stale_retire.segment_id = alloc.desc.segment_id;
+    stale_retire.epoch = alloc.desc.epoch + 1;
+    rc = ioctl(obmm_fd, OBMM_CMD_GSVA_RETIRE_SEGMENT, &stale_retire);
+    CHECK(rc != 0 && errno == EINVAL,
+          "RETIRE_SEGMENT with stale epoch should fail with EINVAL");
+
+    retire.version = OBMM_GSVA_ABI_VERSION;
+    retire.segment_id = alloc.desc.segment_id;
+    retire.epoch = alloc.desc.epoch;
+    retire.timeout_ms = 1000;
+    rc = ioctl(obmm_fd, OBMM_CMD_GSVA_RETIRE_SEGMENT, &retire);
+    CHECK(rc == 0, "RETIRE_SEGMENT should succeed");
+    CHECK(retire.status == OBMM_GSVA_RETIRE_COMMITTED,
+          "RETIRE_SEGMENT status should be committed");
+    CHECK(retire.error == 0, "RETIRE_SEGMENT error should be zero");
+    CHECK(retire.committed_epoch == alloc.desc.epoch,
+          "RETIRE_SEGMENT committed epoch should match");
+
+    memset(&query, 0, sizeof(query));
+    query.version = OBMM_GSVA_ABI_VERSION;
+    query.segment_id = alloc.desc.segment_id;
+    rc = ioctl(obmm_fd, OBMM_CMD_GSVA_QUERY_SEGMENT, &query);
+    CHECK(rc != 0 && errno == ENOENT,
+          "QUERY_SEGMENT after retire should fail with ENOENT");
+
+    PASS();
+}
+
 static void usage(const char *prog)
 {
     fprintf(stderr,
@@ -245,6 +349,7 @@ static void usage(const char *prog)
         "  retire_reuse         Verify retire then reuse\n"
         "  stale_epoch          Verify epoch lifecycle\n"
         "  mmap_aperture_overlap Verify aperture mmap rejection\n"
+        "  segment_abi          Verify GSVA segment alloc/query/retire ABI\n"
         "  all                  Run all tests\n",
         prog);
 }
@@ -323,11 +428,14 @@ int main(int argc, char **argv)
         test_stale_epoch(obmm_fd, local_cna, node_idx);
     } else if (strcmp(mode, "mmap_aperture_overlap") == 0) {
         test_aperture_mmap_reject(obmm_fd, local_cna, node_idx);
+    } else if (strcmp(mode, "segment_abi") == 0) {
+        test_segment_abi(obmm_fd, local_cna, node_idx);
     } else if (strcmp(mode, "all") == 0) {
         test_mmap_strict(obmm_fd, local_cna, node_idx);
         test_retire_reuse(obmm_fd, local_cna, node_idx);
         test_stale_epoch(obmm_fd, local_cna, node_idx);
         test_aperture_mmap_reject(obmm_fd, local_cna, node_idx);
+        test_segment_abi(obmm_fd, local_cna, node_idx);
     } else {
         fprintf(stderr, "%s unknown mode: %s\n", TAG, mode);
         usage(argv[0]);
