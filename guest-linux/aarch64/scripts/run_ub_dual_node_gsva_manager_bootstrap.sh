@@ -24,6 +24,7 @@ GVA_MANAGER_APERTURE_SIZE="${GVA_MANAGER_APERTURE_SIZE:-0x1000000}"
 GVA_MANAGER_ALLOCATE_SEGMENT="${GVA_MANAGER_ALLOCATE_SEGMENT:-0}"
 GVA_MANAGER_RETIRE_SEGMENT="${GVA_MANAGER_RETIRE_SEGMENT:-0}"
 GVA_MANAGER_REUSE_SEGMENT="${GVA_MANAGER_REUSE_SEGMENT:-0}"
+GVA_MANAGER_IMPORT_SEGMENT="${GVA_MANAGER_IMPORT_SEGMENT:-0}"
 GVA_MANAGER_SEGMENT_SIZE="${GVA_MANAGER_SEGMENT_SIZE:-0x400000}"
 GVA_MANAGER_SEGMENT_ALIGNMENT="${GVA_MANAGER_SEGMENT_ALIGNMENT:-0x1000}"
 GVA_MANAGER_HOME_NODE="${GVA_MANAGER_HOME_NODE:-0}"
@@ -85,8 +86,11 @@ start_node() {
   if [[ "$GVA_MANAGER_CONFLICT_NODE" == "$node_idx" ]]; then
     conflict_append="gva_manager_conflict=1"
   fi
-  if [[ "$GVA_MANAGER_ALLOCATE_SEGMENT" == "1" || "$GVA_MANAGER_RETIRE_SEGMENT" == "1" || "$GVA_MANAGER_REUSE_SEGMENT" == "1" ]]; then
+  if [[ "$GVA_MANAGER_ALLOCATE_SEGMENT" == "1" || "$GVA_MANAGER_RETIRE_SEGMENT" == "1" || "$GVA_MANAGER_REUSE_SEGMENT" == "1" || "$GVA_MANAGER_IMPORT_SEGMENT" == "1" ]]; then
     segment_append="gva_manager_allocate_segment=1 gva_manager_segment_size=${GVA_MANAGER_SEGMENT_SIZE} gva_manager_segment_alignment=${GVA_MANAGER_SEGMENT_ALIGNMENT} gva_manager_home_node=${GVA_MANAGER_HOME_NODE} gva_manager_cache_policy=${GVA_MANAGER_CACHE_POLICY} gva_manager_access_flags=${GVA_MANAGER_ACCESS_FLAGS}"
+    if [[ "$GVA_MANAGER_IMPORT_SEGMENT" == "1" ]]; then
+      segment_append="${segment_append} gva_manager_import_segment=1"
+    fi
     if [[ "$GVA_MANAGER_RETIRE_SEGMENT" == "1" ]]; then
       segment_append="${segment_append} gva_manager_retire_segment=1"
     fi
@@ -202,7 +206,7 @@ validate_manager_logs() {
     echo "[gsva-manager] nodeA=$a_aperture nodeB=$b_aperture" >&2
     return 1
   fi
-  if [[ "$GVA_MANAGER_ALLOCATE_SEGMENT" == "1" || "$GVA_MANAGER_RETIRE_SEGMENT" == "1" || "$GVA_MANAGER_REUSE_SEGMENT" == "1" ]]; then
+  if [[ "$GVA_MANAGER_ALLOCATE_SEGMENT" == "1" || "$GVA_MANAGER_RETIRE_SEGMENT" == "1" || "$GVA_MANAGER_REUSE_SEGMENT" == "1" || "$GVA_MANAGER_IMPORT_SEGMENT" == "1" ]]; then
     if ! grep -q '\[gva_manager\] segment active' "$NODEA_GUEST_LOG" ||
        ! grep -q '\[gva_manager\] segment active' "$NODEB_GUEST_LOG"; then
       echo "[gsva-manager] FAIL: missing active segment evidence" >&2
@@ -222,6 +226,18 @@ validate_manager_logs() {
       echo "[gsva-manager] FAIL: managers did not agree on active segment" >&2
       echo "[gsva-manager] nodeA=$a_segment nodeB=$b_segment" >&2
       return 1
+    fi
+    if [[ "$GVA_MANAGER_IMPORT_SEGMENT" == "1" ]]; then
+      local imported_segment
+      imported_segment="$(grep '\[gva_manager\] manager descriptor import segment_id=' "$NODEB_GUEST_LOG" | tail -1 | sed -n 's/.*segment_id=\([^ ]*\).*home_va=\([^ ]*\).*epoch=\([^ ]*\).*p_tag=\([^ ]*\).*token_id=\([^ ]*\).*/\1 \2 \3 \4 \5/p')"
+      if [[ -z "$imported_segment" ]]; then
+        echo "[gsva-manager] FAIL: missing peer descriptor import evidence" >&2
+        return 1
+      fi
+      if ! grep -q 'GSVA_MAP: map_id=.*segment_id=0xc' "$NODEB_QEMU_LOG"; then
+        echo "[gsva-manager] FAIL: missing QEMU GSVA_MAP descriptor import evidence" >&2
+        return 1
+      fi
     fi
     if [[ "$GVA_MANAGER_RETIRE_SEGMENT" == "1" || "$GVA_MANAGER_REUSE_SEGMENT" == "1" ]]; then
       if ! grep -q '\[gva_manager\] segment retired' "$NODEA_GUEST_LOG" ||

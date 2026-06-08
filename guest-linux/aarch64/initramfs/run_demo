@@ -216,6 +216,9 @@ run_gva_manager_bootstrap() {
       gva_manager_reuse_segment=1)
         args="$args --reuse-segment"
         ;;
+      gva_manager_import_segment=1)
+        args="$args --import-segment"
+        ;;
       gva_manager_segment_size=*)
         args="$args --segment-size ${token#*=}"
         ;;

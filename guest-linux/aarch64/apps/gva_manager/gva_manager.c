@@ -95,6 +95,7 @@ struct gva_mgr_config {
     bool allocate_segment;
     bool retire_segment;
     bool reuse_segment;
+    bool import_segment;
     bool desc_alloc;
     bool desc_query;
     bool desc_retire;
@@ -314,6 +315,12 @@ static void config_from_env_cmdline(struct gva_mgr_config *cfg)
         parse_i32_str(value, &parsed32)) {
         cfg->reuse_segment = parsed32 != 0;
     }
+    if (obmm_env_or_cmdline("GVA_MANAGER_IMPORT_SEGMENT",
+                            "gva_manager_import_segment",
+                            value, sizeof(value)) &&
+        parse_i32_str(value, &parsed32)) {
+        cfg->import_segment = parsed32 != 0;
+    }
     if (obmm_env_or_cmdline("GVA_MANAGER_SEGMENT_SIZE",
                             "gva_manager_segment_size",
                             value, sizeof(value)) &&
@@ -436,6 +443,10 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
             cfg->allocate_segment = true;
             cfg->retire_segment = true;
             cfg->reuse_segment = true;
+        } else if (strcmp(argv[i], "--import-segment") == 0) {
+            cfg->bootstrap = true;
+            cfg->allocate_segment = true;
+            cfg->import_segment = true;
         } else if (strcmp(argv[i], "--dump-routes") == 0) {
             cfg->bootstrap = false;
             cfg->dump_routes = true;
@@ -518,7 +529,8 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
                     "       gva_manager --allocate-segment --node-id N "
                     "--node-count C [--home-node N] [--segment-size S] "
                     "[--segment-alignment A] [--cache-policy nc|wt|rc|wb|mesi|directory-mesi] "
-                    "[--access-flags F] [--retire-segment] [--reuse-segment]\n"
+                    "[--access-flags F] [--import-segment] [--retire-segment] "
+                    "[--reuse-segment]\n"
                     "       gva_manager --dump-routes\n");
             return -EINVAL;
         }
@@ -563,7 +575,7 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
         return -EINVAL;
     if (cfg->reuse_segment)
         cfg->retire_segment = true;
-    if (cfg->retire_segment || cfg->reuse_segment)
+    if (cfg->retire_segment || cfg->reuse_segment || cfg->import_segment)
         cfg->allocate_segment = true;
     if (cfg->allocate_segment && cfg->access_flags == 0)
         cfg->access_flags = OBMM_GSVA_ACCESS_READ | OBMM_GSVA_ACCESS_WRITE;
@@ -1366,14 +1378,44 @@ static int retire_manager_segment_desc(int obmm_fd,
     return 0;
 }
 
+static int import_manager_segment_desc(int obmm_fd,
+                                       const struct obmm_gsva_segment_desc_v1 *desc,
+                                       uint32_t local_cna,
+                                       uint64_t *import_mem_id)
+{
+    uint64_t import_pas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
+    bool import_osync[OBMM_POOL_HELPERS_MAX_NODES] = {false};
+
+    /*
+     * The manager control-region import already occupies the first helper PA
+     * window on peer nodes. Use the second slot for the segment descriptor
+     * import so this test exercises the real map path instead of colliding
+     * with manager bootstrap metadata.
+     */
+    if (!obmm_alloc_import_pas(2, desc->size, import_pas, import_osync,
+                               OBMM_IMPORT_CACHE_AUTO))
+        return -ENOSPC;
+
+    if (obmm_do_import_gsva_desc_v1(obmm_fd, desc, local_cna,
+                                    import_pas[1], desc->home_va,
+                                    import_mem_id) != 0)
+        return -errno;
+    return 0;
+}
+
 static int run_segment_protocol(const struct gva_mgr_config *cfg,
                                 int obmm_fd,
                                 struct obmm_mpmc_bus *bus,
                                 struct node_slot slots[MAX_NODES],
-                                uint64_t *seq)
+                                uint64_t *seq,
+                                uint32_t local_cna)
 {
     struct obmm_gsva_segment_desc_v1 desc = {0};
+    struct obmm_helpers_meta backing = {0};
+    uint64_t import_mem_id = 0;
     uint64_t node_stride = 0;
+    bool have_backing = false;
+    bool have_import = false;
     int ret;
 
     if (!cfg->allocate_segment)
@@ -1391,11 +1433,27 @@ static int run_segment_protocol(const struct gva_mgr_config *cfg,
             return ret;
         }
         log_gsva_desc("manager-alloc", &desc);
+        if (cfg->import_segment) {
+            backing.export_cna = local_cna;
+            if (obmm_do_export_fixed_uba(obmm_fd, &backing, desc.size,
+                                         desc.home_va) != 0) {
+                ret = -errno;
+                log_msg("manager backing fixed UBA export failed ret=%d",
+                        ret);
+                return ret;
+            }
+            have_backing = true;
+            log_msg("manager backing export segment_id=%#" PRIx64
+                    " export_mem_id=%#" PRIx64 " home_va=%#" PRIx64
+                    " size=%#" PRIx64,
+                    desc.segment_id, backing.export_mem_id, desc.home_va,
+                    desc.size);
+        }
     }
 
     ret = activate_segment(cfg, bus, slots, seq, &desc, node_stride);
     if (ret)
-        return ret;
+        goto out;
 
     log_msg("segment active segment_id=%#" PRIx64 " gsva_base=%#" PRIx64
             " size=%#" PRIx64 " node_stride=%#" PRIx64 " home_node=%d"
@@ -1405,19 +1463,40 @@ static int run_segment_protocol(const struct gva_mgr_config *cfg,
             cfg->home_node_id, desc.cache_policy, desc.access_flags,
             desc.epoch, desc.p_tag, desc.token_id);
 
+    if (cfg->import_segment && cfg->node_id != cfg->home_node_id) {
+        ret = import_manager_segment_desc(obmm_fd, &desc, local_cna,
+                                          &import_mem_id);
+        if (ret) {
+            log_msg("manager descriptor import failed ret=%d", ret);
+            goto out;
+        }
+        have_import = true;
+        log_msg("manager descriptor import segment_id=%#" PRIx64
+                " import_mem_id=%#" PRIx64 " home_va=%#" PRIx64
+                " epoch=%#" PRIx64 " p_tag=%u token_id=%u",
+                desc.segment_id, import_mem_id, desc.home_va, desc.epoch,
+                desc.p_tag, desc.token_id);
+    }
+
     if (cfg->retire_segment) {
         struct obmm_gsva_segment_desc_v1 retired_desc = desc;
 
+        if (have_import) {
+            (void)obmm_do_unimport(obmm_fd, import_mem_id);
+            have_import = false;
+            log_msg("manager descriptor import released segment_id=%#" PRIx64,
+                    desc.segment_id);
+        }
         retired_desc.flags &= ~OBMM_GSVA_SEG_F_ACTIVE;
         retired_desc.flags |= OBMM_GSVA_SEG_F_RETIRED;
         ret = retire_segment(cfg, bus, slots, seq, &retired_desc, node_stride);
         if (ret)
-            return ret;
+            goto out;
         if (cfg->node_id == cfg->home_node_id) {
             ret = retire_manager_segment_desc(obmm_fd, &desc);
             if (ret) {
                 log_msg("kernel descriptor retire failed ret=%d", ret);
-                return ret;
+                goto out;
             }
         }
         log_msg("segment retired segment_id=%#" PRIx64 " gsva_base=%#" PRIx64
@@ -1434,16 +1513,18 @@ static int run_segment_protocol(const struct gva_mgr_config *cfg,
             if (ret) {
                 log_msg("kernel descriptor reuse allocation failed ret=%d",
                         ret);
-                return ret;
+                goto out;
             }
             if (reuse_desc.segment_id == desc.segment_id ||
-                reuse_desc.home_va != desc.home_va)
-                return -EINVAL;
+                reuse_desc.home_va != desc.home_va) {
+                ret = -EINVAL;
+                goto out;
+            }
             log_gsva_desc("manager-reuse", &reuse_desc);
         }
         ret = activate_segment(cfg, bus, slots, seq, &reuse_desc, node_stride);
         if (ret)
-            return ret;
+            goto out;
         log_msg("segment reused old_segment_id=%#" PRIx64
                 " new_segment_id=%#" PRIx64 " gsva_base=%#" PRIx64
                 " size=%#" PRIx64 " home_node=%d",
@@ -1458,7 +1539,20 @@ static int run_segment_protocol(const struct gva_mgr_config *cfg,
                 reuse_desc.access_flags, reuse_desc.epoch, reuse_desc.p_tag,
                 reuse_desc.token_id);
     }
-    return 0;
+
+    if (cfg->import_segment && !cfg->retire_segment && !cfg->reuse_segment) {
+        log_msg("manager descriptor import retained segment_id=%#" PRIx64
+                " reason=import-path-validation",
+                desc.segment_id);
+        return 0;
+    }
+
+out:
+    if (have_import)
+        (void)obmm_do_unimport(obmm_fd, import_mem_id);
+    if (have_backing)
+        (void)obmm_do_unexport(obmm_fd, backing.export_mem_id);
+    return ret;
 }
 
 static int register_kernel_aperture(int obmm_fd, const struct gva_mgr_config *cfg)
@@ -1604,6 +1698,7 @@ static int run_descriptor_cli_action(const struct gva_mgr_config *cfg,
 
 static int run_protocol(struct gva_mgr_config *cfg,
                         int obmm_fd,
+                        uint32_t local_cna,
                         struct obmm_mpmc_bus *bus,
                         struct node_slot slots[MAX_NODES])
 {
@@ -1773,7 +1868,7 @@ static int run_protocol(struct gva_mgr_config *cfg,
         }
     }
 
-    if (run_segment_protocol(cfg, obmm_fd, bus, slots, &seq) != 0)
+    if (run_segment_protocol(cfg, obmm_fd, bus, slots, &seq, local_cna) != 0)
         goto fail;
 
     log_msg("result=done generation=%#" PRIx64 " aperture_base=%#" PRIx64
@@ -1965,7 +2060,7 @@ int main(int argc, char **argv)
         goto out;
     }
 
-    if (run_protocol(&cfg, obmm_fd, &bus, slots) == 0)
+    if (run_protocol(&cfg, obmm_fd, local_cna, &bus, slots) == 0)
         rc = 0;
 
 out:
