@@ -370,6 +370,60 @@ static void test_write_owner_stays(void)
     PASS();
 }
 
+/* Test: segment lifecycle - map, write acquire, retire, remap with higher epoch */
+static void test_segment_lifecycle(void)
+{
+    TEST("segment lifecycle: map->write->retire->remap");
+    uint64_t map_id1 = 0;
+    int rc = send_gsva_map(0x4400, 0xA0000000, 0x10000, 1, &map_id1);
+    CHECK(rc == GSVA_OK, "map epoch=1 should succeed");
+
+    rc = send_gsva_event(GSVA_EVENT_WRITE_ACQUIRE, 0x4400, 0xA0000000,
+                         1, 0);
+    CHECK(rc == GSVA_OK, "WriteAcquire should succeed I->M");
+
+    rc = send_gsva_event(GSVA_EVENT_RETIRE, 0x4400, 0xA0000000, 1, 0);
+    CHECK(rc == GSVA_OK, "retire should succeed");
+
+    send_gsva_unmap(map_id1);
+
+    /* Remap with higher epoch - should reuse the segment */
+    uint64_t map_id2 = 0;
+    rc = send_gsva_map(0x4400, 0xA0000000, 0x10000, 2, &map_id2);
+    CHECK(rc == GSVA_OK, "map epoch=2 should succeed (reuse)");
+    CHECK(map_id2 != map_id1, "new map_id should differ");
+
+    /* Should be able to acquire on new epoch */
+    rc = send_gsva_event(GSVA_EVENT_READ_ACQUIRE, 0x4400, 0xA0000000,
+                         2, 0);
+    CHECK(rc == GSVA_OK, "ReadAcquire on new epoch should succeed");
+
+    send_gsva_unmap(map_id2);
+    PASS();
+}
+
+/* Test: stale epoch rejected on remap */
+static void test_stale_epoch_remap_rejected(void)
+{
+    TEST("stale epoch rejected on remap");
+    uint64_t map_id1 = 0;
+    int rc = send_gsva_map(0x5500, 0xB0000000, 0x10000, 3, &map_id1);
+    CHECK(rc == GSVA_OK, "map epoch=3 should succeed");
+
+    send_gsva_unmap(map_id1);
+
+    /* Try remap with same epoch - should fail */
+    uint64_t map_id2 = 0;
+    rc = send_gsva_map(0x5500, 0xB0000000, 0x10000, 3, &map_id2);
+    CHECK(rc == GSVA_ERR_STALE_EPOCH, "same epoch should be rejected");
+
+    /* Try remap with lower epoch - should fail */
+    rc = send_gsva_map(0x5500, 0xB0000000, 0x10000, 2, &map_id2);
+    CHECK(rc == GSVA_ERR_STALE_EPOCH, "lower epoch should be rejected");
+
+    PASS();
+}
+
 /* Fallback test: runs without hardware, validates compile/link */
 static void test_software_only(void)
 {
@@ -407,6 +461,8 @@ int main(int argc, char **argv)
     test_retired_segment_ops_fail();
     test_multiple_sharers();
     test_write_owner_stays();
+    test_segment_lifecycle();
+    test_stale_epoch_remap_rejected();
 
     printf("%s =========================\n", TAG);
     printf("%s Results: %d/%d passed, %d failed\n",
