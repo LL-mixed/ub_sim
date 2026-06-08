@@ -33,6 +33,8 @@ GVA_MANAGER_CACHE_POLICY="${GVA_MANAGER_CACHE_POLICY:-wt}"
 GVA_MANAGER_ACCESS_FLAGS="${GVA_MANAGER_ACCESS_FLAGS:-0}"
 GVA_MANAGER_CONFLICT_NODE="${GVA_MANAGER_CONFLICT_NODE:-}"
 EXPECT_FAILURE="${EXPECT_FAILURE:-0}"
+GSVA_MODE="${GSVA_MODE:-legacy_sim_dec}"
+GSVA_STRICT="${GSVA_STRICT:-0}"
 
 source "$SCRIPT_DIR/qemu_ub_common.sh"
 APPEND_EXTRA="$(ensure_sim_kernel_append_defaults "$APPEND_EXTRA")"
@@ -109,6 +111,8 @@ start_node() {
     UB_FM_SHARED_DIR="$SHARED_DIR" \
     UB_SIM_ENTITY_COUNT="$ENTITY_COUNT" \
     UB_FM_ENTITY_PLAN_FILE="$ENTITY_PLAN_FILE" \
+    GSVA_MODE="$GSVA_MODE" \
+    GSVA_STRICT="$GSVA_STRICT" \
     "$QEMU_BIN" \
       -M virt,gic-version=3,its=on,ummu=on,ub-cluster-mode=on \
       -cpu cortex-a57 \
@@ -270,6 +274,13 @@ validate_manager_logs() {
       if [[ "$(echo "$a_token" | awk '{print $3}')" == "$(echo "$a_token" | awk '{print $4}')" ]]; then
         echo "[gsva-manager] FAIL: token rotation did not change token value" >&2
         return 1
+      fi
+      if [[ "$GSVA_MODE" == "arm_mmu" ]]; then
+        if ! grep -q 'GSVA_TLB: flush reason=token_revoke_pending' "$NODEB_QEMU_LOG" ||
+           ! grep -q 'GSVA_TLB: flush reason=token_revoke_ack' "$NODEB_QEMU_LOG"; then
+          echo "[gsva-manager] FAIL: ARM MMU token revoke did not flush peer GSVA TLB metadata" >&2
+          return 1
+        fi
       fi
     fi
     if [[ "$GVA_MANAGER_RETIRE_SEGMENT" == "1" || "$GVA_MANAGER_REUSE_SEGMENT" == "1" ]]; then
