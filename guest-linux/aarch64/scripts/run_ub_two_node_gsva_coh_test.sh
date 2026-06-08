@@ -25,6 +25,8 @@ RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_gsva_coh_${RANDOM}}"
 GSVA_TEST_MODE="${GSVA_TEST_MODE:-all}"
 GSVA_MODE="${GSVA_MODE:-legacy_sim_dec}"
 GSVA_STRICT="${GSVA_STRICT:-0}"
+GSVA_COH_HOLD_PENDING="${GSVA_COH_HOLD_PENDING:-0}"
+GSVA_COH_TIMEOUT_MS="${GSVA_COH_TIMEOUT_MS:-5000}"
 APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 
 source "$SCRIPT_DIR/qemu_ub_common.sh"
@@ -85,6 +87,8 @@ start_node() {
     UB_FM_ENTITY_PLAN_FILE="$ENTITY_PLAN_FILE" \
     GSVA_MODE="$GSVA_MODE" \
     GSVA_STRICT="$GSVA_STRICT" \
+    GSVA_COH_HOLD_PENDING="$GSVA_COH_HOLD_PENDING" \
+    GSVA_COH_TIMEOUT_MS="$GSVA_COH_TIMEOUT_MS" \
     "$QEMU_BIN" \
       -M virt,gic-version=3,its=on,ummu=on,ub-cluster-mode=on \
       -cpu cortex-a57 \
@@ -148,6 +152,24 @@ validate_coh_logs() {
     fi
     if grep -q 'GVA_TCG_TRANSLATE' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
       echo "[gsva_coh] FAIL: ARM MMU token_rotate fell back to GVA_TCG_TRANSLATE" >&2
+      return 1
+    fi
+  fi
+  if [[ "$GSVA_TEST_MODE" == "coh_timeout" ]]; then
+    if ! grep -q 'GSVA_COH: WriteAcquire S->M pending inv' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: coh_timeout lacks pending invalidation evidence" >&2
+      return 1
+    fi
+    if ! grep -q 'GSVA_COH: pending held' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: coh_timeout did not hold pending transaction" >&2
+      return 1
+    fi
+    if ! grep -q 'GSVA_COH: TIMEOUT' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: coh_timeout lacks GSVA_COH TIMEOUT evidence" >&2
+      return 1
+    fi
+    if ! grep -q 'coh_timeout Retry error=-7' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG"; then
+      echo "[gsva_coh] FAIL: guest did not observe GSVA_ERR_COH_TIMEOUT" >&2
       return 1
     fi
   fi

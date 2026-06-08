@@ -17,6 +17,7 @@
  *   token_denied      -- Read/WriteAcquire require exact token_id/value
  *   token_write_denied -- Read-only route rejects WriteAcquire
  *   token_rotate      -- TokenChange rejects old token and accepts new token
+ *   coh_timeout       -- Pending writer invalidation reaches TIMEOUT
  *
  * Usage:
  *   gsva_coh_test --mode <mode>
@@ -968,6 +969,105 @@ static void test_token_write_denied(int obmm_fd, uint32_t local_cna,
     PASS();
 }
 
+/* ---- Test: coh_timeout ---- */
+static void test_coh_timeout(int obmm_fd, uint32_t local_cna,
+                             int node_idx, int node_count)
+{
+    TEST("GSVA coherence pending timeout is terminal");
+    struct obmm_helpers_meta peer_meta = {0};
+    uint64_t my_base = GSVA_BASE + 0x4800000ULL +
+                       (uint64_t)node_idx * GSVA_SIZE;
+    uint64_t import_pas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
+    bool import_osync[OBMM_POOL_HELPERS_MAX_NODES] = {false};
+    struct obmm_helpers_meta my_meta = {0};
+    uint64_t segment_id = 0;
+    uint64_t import_mem_id = 0;
+    int32_t ev_error = GSVA_ERR_FEATURE_MISSING;
+    uint32_t token_id = 0;
+    uint32_t other_cna = local_cna ^ 1U;
+    int rc;
+
+    (void)node_count;
+
+    if (node_idx != 0) {
+        PASS();
+        return;
+    }
+
+    my_meta.export_cna = local_cna;
+
+    rc = obmm_do_export_fixed_uba(obmm_fd, &my_meta, GSVA_SIZE, my_base);
+    CHECK(rc == 0, "fixed UBA export should succeed");
+
+    peer_meta = my_meta;
+    segment_id = peer_meta.export_mem_id;
+    token_id = peer_meta.token_id;
+
+    if (!obmm_alloc_import_pas(1, GSVA_SIZE, import_pas, import_osync,
+                               OBMM_IMPORT_CACHE_AUTO)) {
+        obmm_do_unexport(obmm_fd, my_meta.export_mem_id);
+        FAIL("failed to allocate import PA");
+        return;
+    }
+
+    rc = obmm_do_import_v2(obmm_fd, &peer_meta, local_cna,
+                           import_pas[0], token_id,
+                           OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER,
+                           OBMM_SIM_DEC_ADDRESS_PROFILE_GSVA_IDENTITY,
+                           OBMM_SIM_DEC_CACHE_POLICY_DIRECTORY_MESI,
+                           0, 0, 0, 0, 0, segment_id,
+                           my_base, my_base, 0,
+                           &import_mem_id);
+    CHECK(rc == 0, "GSVA identity import should succeed");
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, local_cna,
+                         token_id, token_id, segment_id, my_base,
+                         GSVA_SIZE, &ev_error);
+    CHECK(rc == 0, "local ReadAcquire should reach QEMU");
+    CHECK(ev_error == GSVA_OK, "local ReadAcquire should pass");
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, other_cna,
+                         token_id, token_id, segment_id, my_base,
+                         GSVA_SIZE, &ev_error);
+    CHECK(rc == 0, "peer ReadAcquire should reach QEMU");
+    CHECK(ev_error == GSVA_OK, "peer ReadAcquire should pass");
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_WRITE_ACQUIRE, local_cna,
+                         token_id, token_id, segment_id, my_base,
+                         GSVA_SIZE, &ev_error);
+    CHECK(rc == 0, "writer WriteAcquire should reach QEMU");
+    CHECK(ev_error == GSVA_ERR_COH_PENDING,
+          "writer should wait for invalidation ACK");
+
+    usleep(50000);
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_RETRY, local_cna,
+                         0, 0, segment_id, my_base,
+                         GSVA_SIZE, &ev_error);
+    CHECK(rc == 0, "Retry should reach QEMU");
+    printf("%s   coh_timeout Retry error=%d\n", TAG, ev_error);
+    CHECK(ev_error == GSVA_ERR_COH_TIMEOUT,
+          "Retry after timeout should report GSVA_ERR_COH_TIMEOUT");
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, local_cna,
+                         token_id, token_id, segment_id, my_base,
+                         GSVA_SIZE, &ev_error);
+    CHECK(rc == 0, "ReadAcquire after timeout should reach QEMU");
+    printf("%s   coh_timeout ReadAcquire error=%d\n", TAG, ev_error);
+    CHECK(ev_error == GSVA_ERR_COH_TIMEOUT,
+          "ReadAcquire after timeout should remain terminal");
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_RETIRE, local_cna,
+                         token_id, token_id, segment_id, my_base,
+                         GSVA_SIZE, &ev_error);
+    CHECK(rc == 0, "Retire after timeout should reach QEMU");
+    CHECK(ev_error == GSVA_OK, "Retire after timeout should clean up");
+
+    obmm_do_unimport(obmm_fd, import_mem_id);
+    obmm_do_unexport(obmm_fd, my_meta.export_mem_id);
+    PASS();
+}
+
 static void usage(const char *prog)
 {
     fprintf(stderr,
@@ -982,6 +1082,7 @@ static void usage(const char *prog)
         "  token_denied           Validate acquire token denial\n"
         "  token_write_denied     Validate read-only write denial\n"
         "  token_rotate           Validate token rotation\n"
+        "  coh_timeout            Validate pending coherence timeout\n"
         "  all                    Run all tests (default)\n",
         prog);
 }
@@ -1070,6 +1171,8 @@ int main(int argc, char **argv)
         test_token_write_denied(obmm_fd, local_cna, node_idx, node_count);
     } else if (strcmp(mode, "token_rotate") == 0) {
         test_token_rotate(obmm_fd, local_cna, node_idx, node_count);
+    } else if (strcmp(mode, "coh_timeout") == 0) {
+        test_coh_timeout(obmm_fd, local_cna, node_idx, node_count);
     } else if (strcmp(mode, "all") == 0) {
         test_cross_node_write_read(obmm_fd, local_cna, node_idx, node_count);
         usleep(200000);
