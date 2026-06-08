@@ -1573,6 +1573,167 @@ static void test_coh_remote_wb(int obmm_fd, uint32_t local_cna,
     PASS();
 }
 
+/* ---- Test: coh_remote_downgrade ---- */
+static void test_coh_remote_downgrade(int obmm_fd, uint32_t local_cna,
+                                      int node_idx, int node_count)
+{
+    TEST("GSVA coherence sends remote downgrade over UB Link");
+    struct obmm_helpers_meta metas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
+    bool got[OBMM_POOL_HELPERS_MAX_NODES] = {false};
+    uint64_t my_base = GSVA_BASE + 0x6c00000ULL;
+    struct obmm_helpers_meta my_meta = {0};
+    uint64_t import_pas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
+    bool import_osync[OBMM_POOL_HELPERS_MAX_NODES] = {false};
+    uint64_t import_mem_id = 0;
+    struct obmm_helpers_region import_region = { .fd = -1 };
+    int32_t ev_error = GSVA_ERR_FEATURE_MISSING;
+    uint32_t peer_cna = 0;
+    uint64_t segment_id = 0;
+    uint32_t token_id = 0;
+    uint64_t pending_seq = 0;
+    bool downgrade_already_complete = false;
+    int rc;
+
+    if (node_count < 2) {
+        FAIL("remote downgrade requires at least two nodes");
+        return;
+    }
+
+    my_meta.export_cna = local_cna;
+    rc = obmm_do_export_fixed_uba(obmm_fd, &my_meta, GSVA_SIZE,
+                                  my_base + (uint64_t)node_idx * GSVA_SIZE);
+    CHECK(rc == 0, "fixed UBA export should succeed");
+
+    rc = obmm_bootstrap_publish(obmm_fd, node_idx, node_count,
+                                0x475356410609ULL, &my_meta);
+    CHECK(rc == 0, "bootstrap publish should succeed");
+
+    if (node_idx != 0) {
+        for (int attempt = 0; attempt < 40; attempt++) {
+            struct obmm_cmd_gsva_query_v1 query = {0};
+
+            query.version = OBMM_GSVA_ABI_VERSION;
+            query.query_type = GSVA_QUERY_CAPS;
+            (void)ioctl(obmm_fd, OBMM_CMD_GSVA_QUERY_V1, &query);
+            usleep(100000);
+        }
+        obmm_do_unexport(obmm_fd, my_meta.export_mem_id);
+        PASS();
+        return;
+    }
+
+    rc = obmm_bootstrap_lookup(obmm_fd, local_cna, node_count,
+                               0x475356410609ULL, metas, got);
+    CHECK(rc == 0, "bootstrap lookup should succeed");
+    CHECK(got[1], "peer metadata should be available");
+    peer_cna = metas[1].export_cna;
+    CHECK(peer_cna != 0 && peer_cna != local_cna,
+          "peer CNA should be a real remote CNA");
+
+    segment_id = my_meta.export_mem_id;
+    token_id = my_meta.token_id;
+    if (!obmm_alloc_import_pas(1, GSVA_SIZE, import_pas, import_osync,
+                               OBMM_IMPORT_CACHE_AUTO)) {
+        obmm_do_unexport(obmm_fd, my_meta.export_mem_id);
+        FAIL("failed to allocate import PA");
+        return;
+    }
+
+    rc = obmm_do_import_v2(obmm_fd, &my_meta, local_cna,
+                           import_pas[0], token_id,
+                           OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER,
+                           OBMM_SIM_DEC_ADDRESS_PROFILE_GSVA_IDENTITY,
+                           OBMM_SIM_DEC_CACHE_POLICY_DIRECTORY_MESI,
+                           0, 0, 0, 0, 0, segment_id,
+                           my_base, my_base, 0,
+                           &import_mem_id);
+    CHECK(rc == 0, "GSVA identity import should succeed");
+
+    rc = obmm_map_gsva_region_at(import_mem_id, (void *)(uintptr_t)my_base,
+                                 GSVA_SIZE, import_osync[0],
+                                 &import_region);
+    CHECK(rc == 0, "GSVA mmap should succeed");
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_WRITE_ACQUIRE, peer_cna,
+                         token_id, token_id, segment_id, my_base,
+                         GSVA_SIZE, &ev_error);
+    CHECK(rc == 0, "remote owner WriteAcquire should reach QEMU");
+    CHECK(ev_error == GSVA_OK, "remote CNA should become M owner");
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, local_cna,
+                         token_id, token_id, segment_id, my_base,
+                         GSVA_SIZE, &ev_error);
+    CHECK(rc == 0, "local reader ReadAcquire should reach QEMU");
+    CHECK(ev_error == GSVA_ERR_COH_PENDING,
+          "reader should wait for remote downgrade ACK");
+
+    {
+        struct obmm_cmd_gsva_query_v1 query = {0};
+        struct {
+            uint32_t version;
+            int32_t error;
+            uint8_t data[240];
+        } *query_resp = (void *)query.resp_data;
+        uint32_t query_state = 0;
+
+        query.version = OBMM_GSVA_ABI_VERSION;
+        query.query_type = GSVA_QUERY_COHERENCE;
+        query.segment_id = segment_id;
+        query.home_va = my_base;
+        rc = ioctl(obmm_fd, OBMM_CMD_GSVA_QUERY_V1, &query);
+        CHECK(rc == 0, "coherence query should reach QEMU");
+        CHECK(query_resp->error == GSVA_OK,
+              "coherence query should report active downgrade object");
+        memcpy(&query_state, query_resp->data, sizeof(query_state));
+        memcpy(&pending_seq, query_resp->data + sizeof(uint32_t),
+               sizeof(pending_seq));
+        printf("%s   coh_remote_downgrade Query state=%u seq=%#" PRIx64
+               " peer_cna=%u\n", TAG, query_state, pending_seq, peer_cna);
+        if (query_state == 1 && pending_seq == 0) {
+            downgrade_already_complete = true;
+        } else {
+            CHECK(pending_seq != 0,
+                  "coherence query should expose pending downgrade seq");
+        }
+    }
+
+    if (downgrade_already_complete) {
+        ev_error = GSVA_OK;
+    } else {
+        for (int attempt = 0; attempt < 30; attempt++) {
+            rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_RETRY, local_cna,
+                                 (uint32_t)pending_seq, 0, segment_id, my_base,
+                                 GSVA_SIZE, &ev_error);
+            CHECK(rc == 0, "Retry should reach QEMU");
+            if (ev_error == GSVA_OK)
+                break;
+            usleep(100000);
+        }
+    }
+    printf("%s   coh_remote_downgrade Retry error=%d\n", TAG, ev_error);
+    CHECK(ev_error == GSVA_OK, "remote DOWNGRADE_ACK should complete pending op");
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, local_cna,
+                         token_id, token_id, segment_id, my_base,
+                         GSVA_SIZE, &ev_error);
+    CHECK(rc == 0, "ReadAcquire after remote downgrade ACK should reach QEMU");
+    CHECK(ev_error == GSVA_OK, "reader should share after remote downgrade ACK");
+    {
+        volatile uint64_t *probe =
+            (volatile uint64_t *)(uintptr_t)import_region.addr;
+        uint64_t value = *probe;
+
+        __sync_synchronize();
+        printf("%s   coh_remote_downgrade ARM MMU touch va=%#" PRIx64
+               " value=%#" PRIx64 "\n", TAG, my_base, value);
+    }
+
+    obmm_unmap_region(&import_region);
+    obmm_do_unimport(obmm_fd, import_mem_id);
+    obmm_do_unexport(obmm_fd, my_meta.export_mem_id);
+    PASS();
+}
+
 /* ---- Test: coh_remote_retire ---- */
 static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
                                    int node_idx, int node_count)
@@ -1759,6 +1920,7 @@ static void usage(const char *prog)
         "  coh_recovery           Validate pending coherence recovery\n"
         "  coh_remote_inv         Validate UB Link remote invalidate/ACK\n"
         "  coh_remote_wb          Validate UB Link remote writeback/ACK\n"
+        "  coh_remote_downgrade   Validate UB Link remote downgrade/ACK\n"
         "  coh_remote_retire      Validate UB Link remote retire/ACK\n"
         "  all                    Run all tests (default)\n",
         prog);
@@ -1856,6 +2018,8 @@ int main(int argc, char **argv)
         test_coh_remote_inv(obmm_fd, local_cna, node_idx, node_count);
     } else if (strcmp(mode, "coh_remote_wb") == 0) {
         test_coh_remote_wb(obmm_fd, local_cna, node_idx, node_count);
+    } else if (strcmp(mode, "coh_remote_downgrade") == 0) {
+        test_coh_remote_downgrade(obmm_fd, local_cna, node_idx, node_count);
     } else if (strcmp(mode, "coh_remote_retire") == 0) {
         test_coh_remote_retire(obmm_fd, local_cna, node_idx, node_count);
     } else if (strcmp(mode, "all") == 0) {

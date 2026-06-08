@@ -285,6 +285,38 @@ validate_coh_logs() {
       fi
     fi
   fi
+  if [[ "$GSVA_TEST_MODE" == "coh_remote_downgrade" ]]; then
+    if ! grep -q 'GSVA_COH: tx DOWNGRADE' "$NODEA_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: remote downgrade test lacks GSVA_COH tx DOWNGRADE evidence" >&2
+      return 1
+    fi
+    if ! grep -q 'GSVA_COH: rx DOWNGRADE from' "$NODEB_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: remote downgrade test lacks peer rx DOWNGRADE evidence" >&2
+      return 1
+    fi
+    if ! grep -q 'GSVA_COH: rx DOWNGRADE_ACK applied' "$NODEA_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: remote downgrade test lacks reader rx DOWNGRADE_ACK apply evidence" >&2
+      return 1
+    fi
+    if ! grep -q 'GSVA_COH: DowngradeAck recovery grant S' "$NODEA_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: remote downgrade test did not grant shared state after ACK" >&2
+      return 1
+    fi
+    if ! grep -q 'coh_remote_downgrade Retry error=0' "$NODEA_GUEST_LOG"; then
+      echo "[gsva_coh] FAIL: guest did not observe remote DOWNGRADE_ACK recovery" >&2
+      return 1
+    fi
+    if [[ "$GSVA_MODE" == "arm_mmu" ]]; then
+      if ! grep -q 'GSVA_TLB: lookup' "$NODEA_QEMU_LOG"; then
+        echo "[gsva_coh] FAIL: ARM MMU remote downgrade lacks GSVA_TLB lookup evidence" >&2
+        return 1
+      fi
+      if grep -q 'GVA_TCG_TRANSLATE' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
+        echo "[gsva_coh] FAIL: ARM MMU remote downgrade fell back to GVA_TCG_TRANSLATE" >&2
+        return 1
+      fi
+    fi
+  fi
   if [[ "$GSVA_TEST_MODE" == "coh_remote_retire" ]]; then
     if ! grep -q 'GSVA_COH: tx RETIRE' "$NODEA_QEMU_LOG"; then
       echo "[gsva_coh] FAIL: remote retire test lacks GSVA_COH tx RETIRE evidence" >&2
