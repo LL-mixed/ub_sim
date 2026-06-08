@@ -11,6 +11,7 @@
  *   write_read        -- Export on home, import on peer, write then read
  *   writer_inv        -- Multiple readers, then writer invalidates
  *   retire_while_shared -- Unmap while segment is shared (retire path)
+ *   token_denied      -- Read/WriteAcquire require exact token_id/value
  *
  * Usage:
  *   gsva_coh_test --mode <mode>
@@ -198,6 +199,122 @@ static void test_retire_while_shared(int obmm_fd, uint32_t local_cna,
     PASS();
 }
 
+static int gsva_send_event(int obmm_fd, uint32_t sub_op, uint32_t requester_cna,
+                           uint32_t token_id, uint32_t token_value,
+                           uint64_t segment_id, uint64_t home_va,
+                           uint64_t size, int32_t *error_out)
+{
+    struct obmm_cmd_gsva_event_v1 cmd = {0};
+
+    cmd.version = OBMM_GSVA_ABI_VERSION;
+    cmd.sub_op = sub_op;
+    cmd.requester_cna = requester_cna;
+    cmd.token_id = token_id;
+    cmd.token_value = token_value;
+    cmd.key.version = 1;
+    cmd.key.segment_id = segment_id;
+    cmd.key.home_va = home_va;
+    cmd.key.size = size;
+    cmd.key.vmid = 0;
+    cmd.key.asid = 0;
+    cmd.key.pte_offset = 0;
+    cmd.key.p_tag = 0;
+    cmd.key.cache_policy = GSVA_CACHE_POLICY_DIRECTORY_MESI;
+    cmd.key.epoch = 1;
+
+    if (ioctl(obmm_fd, OBMM_CMD_GSVA_EVENT_V1, &cmd) != 0)
+        return -1;
+
+    *error_out = cmd.error;
+    return 0;
+}
+
+/* ---- Test: token_denied ---- */
+static void test_token_denied(int obmm_fd, uint32_t local_cna,
+                              int node_idx, int node_count)
+{
+    TEST("GSVA ReadAcquire/WriteAcquire token v1 validation");
+    struct obmm_helpers_meta metas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
+    bool got[OBMM_POOL_HELPERS_MAX_NODES] = {false};
+    uint64_t my_base = GSVA_BASE + 0x1000000ULL +
+                       (uint64_t)node_idx * GSVA_SIZE;
+    uint64_t import_pas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
+    bool import_osync[OBMM_POOL_HELPERS_MAX_NODES] = {false};
+    struct obmm_helpers_meta my_meta = {0};
+    int peer_idx = -1;
+    uint64_t peer_base = 0;
+    uint64_t import_mem_id = 0;
+    int32_t ev_error = GSVA_ERR_FEATURE_MISSING;
+    uint32_t good_token = 0;
+    int rc;
+
+    my_meta.export_cna = local_cna;
+
+    rc = obmm_do_export_fixed_uba(obmm_fd, &my_meta, GSVA_SIZE, my_base);
+    CHECK(rc == 0, "fixed UBA export should succeed");
+
+    rc = obmm_bootstrap_publish(obmm_fd, node_idx, node_count,
+                                0x475356410303ULL, &my_meta);
+    CHECK(rc == 0, "bootstrap publish should succeed");
+
+    rc = obmm_bootstrap_lookup(obmm_fd, local_cna, node_count,
+                               0x475356410303ULL, metas, got);
+    CHECK(rc == 0, "bootstrap lookup should succeed");
+
+    for (int i = 0; i < node_count; i++) {
+        if (i != node_idx && got[i]) {
+            peer_idx = i;
+            break;
+        }
+    }
+    CHECK(peer_idx >= 0, "peer metadata should be available");
+
+    if (!obmm_alloc_import_pas(1, GSVA_SIZE, import_pas, import_osync,
+                               OBMM_IMPORT_CACHE_AUTO)) {
+        obmm_do_unexport(obmm_fd, my_meta.export_mem_id);
+        FAIL("failed to allocate import PA");
+        return;
+    }
+
+    peer_base = GSVA_BASE + 0x1000000ULL + (uint64_t)peer_idx * GSVA_SIZE;
+    good_token = metas[peer_idx].token_id;
+    rc = obmm_do_import_v2(obmm_fd, &metas[peer_idx], local_cna,
+                           import_pas[0], good_token,
+                           OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER,
+                           OBMM_SIM_DEC_ADDRESS_PROFILE_GSVA_IDENTITY,
+                           OBMM_SIM_DEC_CACHE_POLICY_DIRECTORY_MESI,
+                           0, 0, 0, 0, 0, metas[peer_idx].export_mem_id,
+                           peer_base, peer_base, 0,
+                           &import_mem_id);
+    CHECK(rc == 0, "GSVA identity import should succeed");
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, local_cna,
+                         good_token, good_token, metas[peer_idx].export_mem_id,
+                         peer_base, GSVA_SIZE, &ev_error);
+    CHECK(rc == 0, "ReadAcquire with valid token should reach QEMU");
+    CHECK(ev_error == GSVA_OK, "ReadAcquire with valid token should pass");
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, local_cna,
+                         good_token, good_token ^ 0x5a5a5a5aU,
+                         metas[peer_idx].export_mem_id, peer_base, GSVA_SIZE,
+                         &ev_error);
+    CHECK(rc == 0, "ReadAcquire with bad token should reach QEMU");
+    CHECK(ev_error == GSVA_ERR_TOKEN_DENIED,
+          "ReadAcquire with bad token should be denied");
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_WRITE_ACQUIRE, local_cna,
+                         good_token, good_token ^ 0xa5a5a5a5U,
+                         metas[peer_idx].export_mem_id, peer_base, GSVA_SIZE,
+                         &ev_error);
+    CHECK(rc == 0, "WriteAcquire with bad token should reach QEMU");
+    CHECK(ev_error == GSVA_ERR_TOKEN_DENIED,
+          "WriteAcquire with bad token should be denied");
+
+    obmm_do_unimport(obmm_fd, import_mem_id);
+    obmm_do_unexport(obmm_fd, my_meta.export_mem_id);
+    PASS();
+}
+
 static void usage(const char *prog)
 {
     fprintf(stderr,
@@ -205,6 +322,7 @@ static void usage(const char *prog)
         "Modes:\n"
         "  cross_node_write_read  Write then read across nodes\n"
         "  retire_while_shared    Unmap while segment is shared\n"
+        "  token_denied           Validate acquire token denial\n"
         "  all                    Run all tests (default)\n",
         prog);
 }
@@ -279,6 +397,8 @@ int main(int argc, char **argv)
         test_cross_node_write_read(obmm_fd, local_cna, node_idx, node_count);
     } else if (strcmp(mode, "retire_while_shared") == 0) {
         test_retire_while_shared(obmm_fd, local_cna, node_idx, node_count);
+    } else if (strcmp(mode, "token_denied") == 0) {
+        test_token_denied(obmm_fd, local_cna, node_idx, node_count);
     } else if (strcmp(mode, "all") == 0) {
         test_cross_node_write_read(obmm_fd, local_cna, node_idx, node_count);
         usleep(200000);

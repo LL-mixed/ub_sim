@@ -1,6 +1,6 @@
 # GVA / GSVA / OBMM MESI 阶段性状态总结
 
-日期：2026-06-08
+日期：2026-06-09
 
 仓库：`/Volumes/repos/ub_sim`
 
@@ -11,9 +11,11 @@
 - `guest-linux/aarch64/logs` 下 2026-06-07 的 GVA direct matrix、GSVA 8-node manager/matrix、OBMM coherence 4/8-node 日志。
 - 2026-06-08 在远端 `cf:/sd_data/repo/ub_sim` 上重新构建 guest artifacts 并通过的 GSVA segment ABI lifecycle 验证日志：
   `guest-linux/aarch64/logs/2026-06-08_23-57-24_gsva_lc_11516`。
+- 2026-06-09 在远端 `cf:/sd_data/repo/ub_sim` 上重新构建 guest artifacts 与 QEMU，并通过的 GSVA token v1 acquire 验证日志：
+  `guest-linux/aarch64/logs/2026-06-09_00-09-33_gsva_coh_30739`。
 - `docs/qemu_obmm_directory_mesi_coherence_design.md` 中的 OBMM directory MESI 当前实现状态记录。
 
-除明确列出的 2026-06-08 segment ABI 验证外，其余结论基于已经存在的代码和日志证据。
+除明确列出的 2026-06-08 segment ABI 验证和 2026-06-09 token acquire 验证外，其余结论基于已经存在的代码和日志证据。
 
 ## 1. 总体结论
 
@@ -26,14 +28,15 @@
 5. QEMU ARM TCG slow path 已经有 `SIM_GVA_TCG=1` 控制的 GVA route probe，证明把 GVA 入口前移到 ARM MMU/TLB fill path 是可行的。
 6. OBMM directory MESI 已经实现并通过 4/8 节点运行日志验证，覆盖 `GETS/GETM/DATA/INV/INV_ACK/WB/FENCE` 等关键消息与 dirty owner writeback。
 7. `OBMM_CMD_GSVA_ALLOC_SEGMENT/QUERY_SEGMENT/RETIRE_SEGMENT` v1 ABI 已经进入 guest kernel ioctl path，并通过两节点 lifecycle `segment_abi` 验证。
-8. 最终目标中的 GSVA-specific coherence 仍未完成；当前通过的是 GSVA address identity + GVA route + OBMM PA/data-layer MESI，不应误写成最终 GSVA-keyed coherence 已落地。
+8. `OBMM_CMD_GSVA_EVENT_V1` 已经进入 guest kernel ioctl path，可触发 QEMU GSVA ReadAcquire/WriteAcquire；active route token v1 精确匹配校验已通过两节点 `token_denied` 验证。
+9. 最终目标中的 GSVA-specific coherence 仍未完整完成；当前已经有 GSVA route/coherence 模块和 acquire token 校验，但 segment lifecycle、retire/reuse、token rotation/revoke、ARM MMU 默认路径还未形成最终事务闭环。
 
 一句话判断：
 
 ```text
 当前阶段已经从“设计概念”进入“多节点可运行实现”。
 GVA/GSVA 地址语义、QEMU route、guest kernel GSVA aperture、OBMM directory MESI 已经有真实日志闭环。
-segment descriptor ABI 已有独立验证；下一阶段的核心不是再证明能跑，而是把 GSVA-specific coherence、token lease、segment lifecycle 与 route/coherence/TLB 的事务绑定、ARM MMU 默认路径产品化。
+segment descriptor ABI 与 token acquire 校验已有独立验证；下一阶段的核心不是再证明能跑，而是把 GSVA-specific coherence、token rotation/revoke、segment lifecycle 与 route/coherence/TLB 的事务绑定、ARM MMU 默认路径产品化。
 ```
 
 ## 2. 当前实现分层状态
@@ -71,6 +74,7 @@ segment descriptor ABI 已有独立验证；下一阶段的核心不是再证明
 
 - guest kernel 已有 aperture、`MAP_GSVA` mmap 保护，以及 `OBMM_CMD_GSVA_ALLOC_SEGMENT` / `QUERY_SEGMENT` / `RETIRE_SEGMENT` v1 descriptor ABI。
 - `segment_abi` 验证已经证明 descriptor 字段来源可用：`segment_id` 来自 `home_cna << 48 | local_counter`，`epoch=1`，`p_tag=home_cna & 0x00ffffff`，`token_id/token_value` 由 kernel 分配。
+- `OBMM_CMD_GSVA_EVENT_V1` 已暴露 guest ioctl request/response，可从 guest 侧发起 ReadAcquire/WriteAcquire/Retire/InvAck/Retry 语义事件，并获得 `GSVA_OK` 或 `GSVA_ERR_*`。
 - 当前 segment lifecycle 仍未和 GVA/GSVA route removal、coherence revoke、PA-MESI fence/writeback、TLB flush 形成一个原子事务；这仍是后续工作。
 
 ## 2.2 GVA Manager / GSVA address management 层
@@ -124,6 +128,8 @@ SIM_DEC_OP_GVA_MAP          0x07
 SIM_DEC_OP_COH_FENCE        0x08
 SIM_DEC_OP_GSVA_MAP_V1      0x09
 SIM_DEC_OP_GSVA_UNMAP_V1    0x0a
+SIM_DEC_OP_GSVA_EVENT_V1    0x0b
+SIM_DEC_OP_GSVA_QUERY_V1    0x0c
 ```
 
 - `SIM_DEC_OP_GVA_MAP` 已能建立 GVA route。
@@ -147,6 +153,11 @@ SIM_DEC_OP_GSVA_UNMAP_V1    0x0a
 - QEMU route dump 可以输出完整 `ma_table/mp_table` 视图。
 - GVA path 读写统计分别由 `SIM_DEC_STATS` 与 `GVA_STATS` 导出。
 - `SIM_DEC_OP_GSVA_QUERY_V1` capability query 已有初步 handler，能输出 `GSVA_QUERY_CAPS`。
+- `SIM_DEC_OP_GSVA_EVENT_V1` 已接入 guest ioctl/backend，可转发 ReadAcquire/WriteAcquire，并把 QEMU 的 `GSVA_ERR_TOKEN_DENIED` 作为语义错误返回给 guest。
+- QEMU `gsva_route_validate_token()` 已按 token v1 定义收紧：
+  - protected route 必须有非零 `token_id/token_value`。
+  - supplied `token_id/token_value` 必须和 route lease 精确匹配。
+  - strict GSVA 不再允许 `token_value == 0` 时只校验 token id。
 
 日志证据：
 
@@ -166,8 +177,9 @@ GVA_STATS ... read_errors=0 write_errors=0
 
 当前边界：
 
-- `SIM_DEC_OP_GSVA_MAP_V1/UNMAP_V1` 常量已占位，但最终 GSVA v1 ABI 的 map/unmap/event/query 全闭环仍未完成。
-- 当前 GSVA identity 主要仍走 `SIM_DEC_OP_GVA_MAP` 承载的 GVA route profile，而不是最终 `gsva_key_v1 + gsva_route + gsva_coherence` 模块化路径。
+- `SIM_DEC_OP_GSVA_MAP_V1/UNMAP_V1/EVENT_V1/QUERY_V1` 已有实现路径，但 query 仍主要覆盖 caps，route/coherence 细粒度查询还未完整产品化。
+- 当前 GSVA identity 路径仍部分依赖现有 GVA/OBMM helper 元数据；`obmm_import` 的 `segment_id/epoch/p_tag/token` 还未强制全部来自 kernel segment descriptor。
+- token rotation/revoke 和 lease epoch 分发仍未完成。
 
 ## 2.4 ARM MMU / TCG hook 层
 
@@ -545,9 +557,10 @@ GVA_ROUTE_DUMP state=retired ... cache_policy=4
 | GVA MRSW ownership registry | 已实现为当前阶段的 conflict/reject 语义 | `mrsw-read-share`、`mrsw-conflict`、`mrsw-writer-conflict` |
 | ARM TCG GVA probe | 已实现为显式开关 | `SIM_GVA_TCG=1`、`GVA_TCG_TRANSLATE` |
 | OBMM directory MESI | 已实现并通过 4/8 节点日志 | `cache_policy=4`、`OBMM_COH_*`、`obmm_coh_test: PASS` |
-| GSVA-specific coherence | 未完成 | canonical plan 已定义，代码仍未落地完整 `gsva_coherence` |
+| GSVA-specific coherence | 部分实现 | `gsva_route/gsva_coherence` 已接入 map/event，ReadAcquire/WriteAcquire token validation 已验证；retire/reuse 和 ACK 恢复仍未完整 |
 | Segment retire/reuse transaction | 未完成 | 仍需 `segment_id/epoch/tombstone/ACK/fence` 事务化 |
-| Token lease v1 | 未完成 | 当前有 token_id/token_value 校验基础，尚未形成 active route lease + rotation/revoke |
+| Token lease v1 acquire validation | 已实现并通过两节点日志 | `token_denied`：valid ReadAcquire PASS，bad ReadAcquire/WriteAcquire 返回 `GSVA_ERR_TOKEN_DENIED` |
+| Token rotation/revoke | 未完成 | 仍需 manager 分发、revoke ACK、lease_epoch commit、旧 token 拒绝矩阵 |
 | ARM MMU 默认路径 | 未完成 | 当前是 `SIM_GVA_TCG` transition hook，默认仍非最终 `arm_mmu` |
 
 ## 5. 与最终架构目标的差距
@@ -563,10 +576,29 @@ GVA_ROUTE_DUMP state=retired ... cache_policy=4
 当前实现尚未证明：
 
 - 以 `gsva_key_v1` 为唯一 semantic identity 的 coherence。
-- ReadAcquire/WriteAcquire 前的 GSVA token lease 校验。
 - segment retire/reuse 与 route/coherence/TLB flush 的原子事务。
 - `GSVA_MODE=arm_mmu` 作为默认路径。
 - stale epoch、retired tombstone、token rotation、cache policy change 的完整 ACK/timeout/recovery。
+
+当前实现已经新增证明：
+
+- ReadAcquire/WriteAcquire 前的 active route GSVA token lease 校验。
+- `token_value` 错误时 QEMU 返回 `GSVA_ERR_TOKEN_DENIED`，guest ioctl 能收到该语义错误。
+
+2026-06-09 token acquire 验证证据：
+
+```text
+run_id=guest-linux/aarch64/logs/2026-06-09_00-09-33_gsva_coh_30739
+nodeA_guest.log: [gsva_coh_test] TEST: GSVA ReadAcquire/WriteAcquire token v1 validation
+nodeA_guest.log: [gsva_coh_test] verdict=PASS
+nodeA_qemu.log:  GSVA_COH: ReadAcquire I->S cna=50370 segment_id=0x1
+nodeA_qemu.log:  GSVA_COH: ReadAcquire token denied: cna=50370 token_id=96 rc=-4
+nodeA_qemu.log:  GSVA_COH: WriteAcquire token denied: cna=50370 token_id=96 rc=-4
+nodeB_guest.log: [gsva_coh_test] verdict=PASS
+nodeB_qemu.log:  GSVA_COH: ReadAcquire I->S cna=50386 segment_id=0x1
+nodeB_qemu.log:  GSVA_COH: ReadAcquire token denied: cna=50386 token_id=96 rc=-4
+nodeB_qemu.log:  GSVA_COH: WriteAcquire token denied: cna=50386 token_id=96 rc=-4
+```
 
 关键区别：
 
@@ -592,7 +624,7 @@ GVA_ROUTE_DUMP state=retired ... cache_policy=4
 当前阶段还不能承诺给用户的事：
 
 - “默认所有 GSVA 访问都经过 ARM MMU 主路径”。
-- “GSVA coherence 已经按 segment/epoch/token 语义完成”。
+- “GSVA coherence 已经按 segment/epoch/token 全事务语义完成”。
 - “segment retire/reuse 后 stale mapping 一定被 route/coherence/TLB 事务化拒绝”。
 - “token rotation/revoke 已经产品化”。
 - “cache_policy change 已经按 old-key revoke + new-key map 完整处理”。
@@ -607,10 +639,10 @@ GVA_ROUTE_DUMP state=retired ... cache_policy=4
    - 下一步是让 `obmm_import` 的 `gsva_key_v1` 字段完全来自 descriptor，而不是 demo metadata 拼装。
 
 2. GSVA route/token v1
-   - 新建 `gsva_route.c/h`。
-   - 把当前 GVA route 中和 GSVA identity 相关的字段迁移到显式 `gsva_route_entry`。
-   - 实现 active route lease 的 token validation。
-   - ReadAcquire/WriteAcquire 前必须先过 token lease。
+   - `gsva_route.c/h` 已存在并接入 `SIM_DEC_OP_GSVA_MAP_V1`。
+   - active route lease 的 ReadAcquire/WriteAcquire token validation 已验证。
+   - 下一步是实现 token rotation/revoke、lease_epoch commit、旧 token negative test。
+   - `obmm_import` 仍需强制从 segment descriptor 生成 `gsva_key_v1`，避免 demo metadata 自行拼装。
 
 3. GSVA-specific coherence
    - 新建 `gsva_coherence.c/h`。
@@ -636,6 +668,7 @@ GVA_ROUTE_DUMP state=retired ... cache_policy=4
 ./guest-linux/aarch64/scripts/run_ub_dual_node_gsva_demo.sh
 ./guest-linux/aarch64/scripts/run_ub_dual_node_gva_direct_matrix.sh
 GSVA_TEST_MODE=segment_abi ./guest-linux/aarch64/scripts/run_ub_two_node_gsva_lifecycle_test.sh
+GSVA_TEST_MODE=token_denied ./guest-linux/aarch64/scripts/run_ub_two_node_gsva_coh_test.sh
 ./guest-linux/aarch64/scripts/run_ub_four_node_gsva_manager_bootstrap.sh
 ./guest-linux/aarch64/scripts/run_ub_four_node_gsva_matrix_demo.sh
 COH_TEST_MODE=multi_reader ./guest-linux/aarch64/scripts/run_ub_four_node_obmm_coh_test.sh
@@ -666,15 +699,16 @@ Generic GVA fault/ownership matrix: PASS
 ARM TCG route probe: PASS as transition path
 OBMM directory MESI data layer: PASS
 GSVA segment descriptor ABI: PASS
-GSVA-specific coherence: NOT YET
+GSVA token acquire validation: PASS
+GSVA-specific coherence: PARTIAL
 ARM MMU default GSVA path: NOT YET
 Segment lifecycle route/coherence/TLB transaction binding: NOT YET
-Token lease v1: NOT YET
+Token rotation/revoke: NOT YET
 ```
 
 因此，当前最准确的项目状态是：
 
 ```text
-已完成一个稳定的 GVA/GSVA 地址、GSVA segment descriptor ABI 与 OBMM MESI 数据层阶段。
-下一阶段应从“能跑”转向“语义收敛”：把 GSVA key、token、epoch、retire/reuse、route/coherence/TLB 事务和 ARM MMU 默认路径合成最终架构。
+已完成一个稳定的 GVA/GSVA 地址、GSVA segment descriptor ABI、GSVA token acquire 校验与 OBMM MESI 数据层阶段。
+下一阶段应从“能跑”转向“语义收敛”：把 GSVA key、token rotation/revoke、epoch、retire/reuse、route/coherence/TLB 事务和 ARM MMU 默认路径合成最终架构。
 ```
