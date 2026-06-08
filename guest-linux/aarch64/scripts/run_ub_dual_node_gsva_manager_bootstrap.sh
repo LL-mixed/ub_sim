@@ -289,6 +289,17 @@ validate_manager_logs() {
         echo "[gsva-manager] nodeA=$a_retired nodeB=$b_retired initialA=$a_initial_segment initialB=$b_initial_segment" >&2
         return 1
       fi
+      if [[ "$GVA_MANAGER_IMPORT_SEGMENT" == "1" || "$GVA_MANAGER_ROTATE_TOKEN" == "1" ]]; then
+        if ! grep -q '\[gva_manager\] manager retire holder route retired' "$NODEB_GUEST_LOG"; then
+          echo "[gsva-manager] FAIL: missing peer manager RetireAck route-retired evidence" >&2
+          return 1
+        fi
+        if ! grep -q 'GSVA_RETIRE: segment_id=' "$NODEB_QEMU_LOG" ||
+           ! grep -q 'GSVA_UNMAP: map_id=.*tombstone=yes' "$NODEB_QEMU_LOG"; then
+          echo "[gsva-manager] FAIL: missing QEMU GSVA retire/tombstone evidence before manager ACK cleanup" >&2
+          return 1
+        fi
+      fi
     fi
     if [[ "$GVA_MANAGER_REUSE_SEGMENT" == "1" ]]; then
       if (( $(grep -c '\[gva_manager\] segment active' "$NODEA_GUEST_LOG") < 2 )) ||

@@ -1169,6 +1169,11 @@ static int validate_segment_msg(const struct gva_mgr_config *cfg,
     return 0;
 }
 
+static int send_gsva_event_for_desc(int obmm_fd, uint32_t sub_op,
+                                    uint32_t requester_cna,
+                                    const struct obmm_gsva_segment_desc_v1 *desc,
+                                    int32_t *error_out);
+
 static int activate_segment(const struct gva_mgr_config *cfg,
                             struct obmm_mpmc_bus *bus,
                             struct node_slot slots[MAX_NODES],
@@ -1302,8 +1307,11 @@ static int retire_segment(const struct gva_mgr_config *cfg,
                           struct obmm_mpmc_bus *bus,
                           struct node_slot slots[MAX_NODES],
                           uint64_t *seq,
+                          int obmm_fd,
+                          uint32_t local_cna,
                           const struct obmm_gsva_segment_desc_v1 *desc,
-                          uint64_t node_stride)
+                          uint64_t node_stride,
+                          bool have_import)
 {
     int ret;
     int peer;
@@ -1372,6 +1380,26 @@ static int retire_segment(const struct gva_mgr_config *cfg,
                                        desc, msg.segment_state,
                                        (uint32_t)-ret);
                 return ret;
+            }
+            if (have_import) {
+                int32_t ev_error = 0;
+
+                ret = send_gsva_event_for_desc(obmm_fd,
+                                               OBMM_GSVA_EVENT_RETIRE,
+                                               local_cna, desc, &ev_error);
+                if (ret || ev_error != GSVA_OK) {
+                    log_msg("manager retire event failed ret=%d error=%d",
+                            ret, ev_error);
+                    (void)send_segment_msg(bus, slots, cfg,
+                                           cfg->home_node_id,
+                                           GVA_MGR_MSG_ERROR, (*seq)++,
+                                           desc, GVA_MGR_SEGMENT_RETIRED,
+                                           (uint32_t)(ret ? -ret : ev_error));
+                    return ret ? ret : -EIO;
+                }
+                log_msg("manager retire holder route retired segment_id=%#"
+                        PRIx64 " cna=%u",
+                        desc->segment_id, local_cna);
             }
             ret = send_segment_msg(bus, slots, cfg, cfg->home_node_id,
                                    GVA_MGR_MSG_SEGMENT_RETIRED_ACK, (*seq)++,
@@ -1739,17 +1767,18 @@ static int run_segment_protocol(const struct gva_mgr_config *cfg,
     if (cfg->retire_segment) {
         struct obmm_gsva_segment_desc_v1 retired_desc = desc;
 
+        retired_desc.flags &= ~OBMM_GSVA_SEG_F_ACTIVE;
+        retired_desc.flags |= OBMM_GSVA_SEG_F_RETIRED;
+        ret = retire_segment(cfg, bus, slots, seq, obmm_fd, local_cna,
+                             &retired_desc, node_stride, have_import);
+        if (ret)
+            goto out;
         if (have_import) {
             (void)obmm_do_unimport(obmm_fd, import_mem_id);
             have_import = false;
             log_msg("manager descriptor import released segment_id=%#" PRIx64,
                     desc.segment_id);
         }
-        retired_desc.flags &= ~OBMM_GSVA_SEG_F_ACTIVE;
-        retired_desc.flags |= OBMM_GSVA_SEG_F_RETIRED;
-        ret = retire_segment(cfg, bus, slots, seq, &retired_desc, node_stride);
-        if (ret)
-            goto out;
         if (cfg->node_id == cfg->home_node_id) {
             ret = retire_manager_segment_desc(obmm_fd, &desc);
             if (ret) {
