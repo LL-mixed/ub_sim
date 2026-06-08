@@ -139,6 +139,7 @@ static int do_query_coherence(int obmm_fd, uint64_t segment_id)
 		uint8_t data[240];
 	} *resp = (void *)cmd.resp_data;
 	uint32_t state = 0xffffffffu;
+	uint64_t pending_seq = 0;
 
 	cmd.version = 1;
 	cmd.query_type = GSVA_QUERY_COHERENCE;
@@ -154,10 +155,14 @@ static int do_query_coherence(int obmm_fd, uint64_t segment_id)
 
 	if (sizeof(state) <= sizeof(resp->data))
 		memcpy(&state, resp->data, sizeof(state));
+	if (sizeof(state) + sizeof(pending_seq) <= sizeof(resp->data))
+		memcpy(&pending_seq, resp->data + sizeof(state),
+		       sizeof(pending_seq));
 
 	printf("%s GSVA_QUERY_COHERENCE segment_id=%#" PRIx64 "\n", TAG, segment_id);
 	printf("  error:                %d\n", resp->error);
 	printf("  state_code:           %u\n", state);
+	printf("  pending_seq:          %#" PRIx64 "\n", pending_seq);
 	if (resp->error == GSVA_ERR_COH_TIMEOUT) {
 		printf("  coherence_state:      timeout\n");
 		printf("  verdict=PASS\n");

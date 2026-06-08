@@ -195,6 +195,38 @@ validate_coh_logs() {
       fi
     fi
   fi
+  if [[ "$GSVA_TEST_MODE" == "coh_recovery" ]]; then
+    if ! grep -q 'GSVA_COH: WriteAcquire S->M pending inv' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: coh_recovery lacks pending invalidation evidence" >&2
+      return 1
+    fi
+    if ! grep -q 'GSVA_COH: InvAck recovery grant M' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: coh_recovery did not grant M after InvAck" >&2
+      return 1
+    fi
+    if ! grep -q 'coh_recovery Retry error=0' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG"; then
+      echo "[gsva_coh] FAIL: guest did not observe successful retry after InvAck" >&2
+      return 1
+    fi
+    if ! grep -q 'coh_recovery Query recovered state=3 error=0' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG"; then
+      echo "[gsva_coh] FAIL: guest query did not observe recovered M state" >&2
+      return 1
+    fi
+    if [[ "$GSVA_MODE" == "arm_mmu" ]]; then
+      if ! grep -q 'GSVA_TLB: lookup' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
+        echo "[gsva_coh] FAIL: ARM MMU coh_recovery lacks GSVA_TLB lookup evidence" >&2
+        return 1
+      fi
+      if ! grep -Eq 'GSVA_TLB: flush reason=coh_inv_ack.*cleared=[1-9][0-9]*' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
+        echo "[gsva_coh] FAIL: ARM MMU coh_recovery did not clear installed GSVA TLB metadata" >&2
+        return 1
+      fi
+      if grep -q 'GVA_TCG_TRANSLATE' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
+        echo "[gsva_coh] FAIL: ARM MMU coh_recovery fell back to GVA_TCG_TRANSLATE" >&2
+        return 1
+      fi
+    fi
+  fi
 }
 
 echo "[gsva_coh] run_id=$RUN_ID mode=$GSVA_TEST_MODE"

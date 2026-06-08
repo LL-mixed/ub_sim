@@ -18,6 +18,7 @@
  *   token_write_denied -- Read-only route rejects WriteAcquire
  *   token_rotate      -- TokenChange rejects old token and accepts new token
  *   coh_timeout       -- Pending writer invalidation reaches TIMEOUT
+ *   coh_recovery      -- Pending writer invalidation recovers after InvAck
  *
  * Usage:
  *   gsva_coh_test --mode <mode>
@@ -1106,6 +1107,168 @@ static void test_coh_timeout(int obmm_fd, uint32_t local_cna,
     PASS();
 }
 
+/* ---- Test: coh_recovery ---- */
+static void test_coh_recovery(int obmm_fd, uint32_t local_cna,
+                              int node_idx, int node_count)
+{
+    TEST("GSVA coherence pending invalidation recovers after InvAck");
+    struct obmm_helpers_meta peer_meta = {0};
+    uint64_t my_base = GSVA_BASE + 0x5000000ULL +
+                       (uint64_t)node_idx * GSVA_SIZE;
+    uint64_t import_pas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
+    bool import_osync[OBMM_POOL_HELPERS_MAX_NODES] = {false};
+    struct obmm_helpers_meta my_meta = {0};
+    uint64_t segment_id = 0;
+    uint64_t import_mem_id = 0;
+    struct obmm_helpers_region import_region = { .fd = -1 };
+    bool import_mapped = false;
+    int32_t ev_error = GSVA_ERR_FEATURE_MISSING;
+    uint32_t token_id = 0;
+    uint32_t other_cna = 3;
+    uint32_t query_state = 0xffffffffu;
+    uint64_t pending_seq = 0;
+    int rc;
+
+    (void)node_count;
+
+    if (node_idx != 0) {
+        PASS();
+        return;
+    }
+
+    my_meta.export_cna = local_cna;
+
+    rc = obmm_do_export_fixed_uba(obmm_fd, &my_meta, GSVA_SIZE, my_base);
+    CHECK(rc == 0, "fixed UBA export should succeed");
+
+    peer_meta = my_meta;
+    segment_id = peer_meta.export_mem_id;
+    token_id = peer_meta.token_id;
+
+    if (!obmm_alloc_import_pas(1, GSVA_SIZE, import_pas, import_osync,
+                               OBMM_IMPORT_CACHE_AUTO)) {
+        obmm_do_unexport(obmm_fd, my_meta.export_mem_id);
+        FAIL("failed to allocate import PA");
+        return;
+    }
+
+    rc = obmm_do_import_v2(obmm_fd, &peer_meta, local_cna,
+                           import_pas[0], token_id,
+                           OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER,
+                           OBMM_SIM_DEC_ADDRESS_PROFILE_GSVA_IDENTITY,
+                           OBMM_SIM_DEC_CACHE_POLICY_DIRECTORY_MESI,
+                           0, 0, 0, 0, 0, segment_id,
+                           my_base, my_base, 0,
+                           &import_mem_id);
+    CHECK(rc == 0, "GSVA identity import should succeed");
+
+    rc = obmm_map_gsva_region_at(import_mem_id, (void *)(uintptr_t)my_base,
+                                 GSVA_SIZE, import_osync[0], &import_region);
+    CHECK(rc == 0, "GSVA mmap should succeed before recovery");
+    import_mapped = true;
+    {
+        volatile uint64_t *probe =
+            (volatile uint64_t *)(uintptr_t)import_region.addr;
+        uint64_t value = *probe;
+
+        __sync_synchronize();
+        printf("%s   coh_recovery ARM MMU touch va=%#" PRIx64
+               " value=%#" PRIx64 "\n", TAG, my_base, value);
+    }
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, local_cna,
+                         token_id, token_id, segment_id, my_base,
+                         GSVA_SIZE, &ev_error);
+    CHECK(rc == 0, "local ReadAcquire should reach QEMU");
+    CHECK(ev_error == GSVA_OK, "local ReadAcquire should pass");
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, other_cna,
+                         token_id, token_id, segment_id, my_base,
+                         GSVA_SIZE, &ev_error);
+    CHECK(rc == 0, "peer ReadAcquire should reach QEMU");
+    CHECK(ev_error == GSVA_OK, "peer ReadAcquire should pass");
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_WRITE_ACQUIRE, local_cna,
+                         token_id, token_id, segment_id, my_base,
+                         GSVA_SIZE, &ev_error);
+    CHECK(rc == 0, "writer WriteAcquire should reach QEMU");
+    CHECK(ev_error == GSVA_ERR_COH_PENDING,
+          "writer should wait for invalidation ACK");
+
+    {
+        struct obmm_cmd_gsva_query_v1 query = {0};
+        struct {
+            uint32_t version;
+            int32_t error;
+            uint8_t data[240];
+        } *query_resp = (void *)query.resp_data;
+
+        query.version = OBMM_GSVA_ABI_VERSION;
+        query.query_type = GSVA_QUERY_COHERENCE;
+        query.segment_id = segment_id;
+        query.home_va = my_base;
+
+        rc = ioctl(obmm_fd, OBMM_CMD_GSVA_QUERY_V1, &query);
+        CHECK(rc == 0, "coherence query should reach QEMU");
+        CHECK(query_resp->error == GSVA_OK,
+              "coherence query should report pending object as active");
+        memcpy(&query_state, query_resp->data, sizeof(query_state));
+        memcpy(&pending_seq, query_resp->data + sizeof(query_state),
+               sizeof(pending_seq));
+        printf("%s   coh_recovery Query pending state=%u seq=%#" PRIx64 "\n",
+               TAG, query_state, pending_seq);
+        CHECK(pending_seq != 0, "coherence query should expose pending seq");
+    }
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_INV_ACK, other_cna,
+                         (uint32_t)pending_seq, 0, segment_id, my_base,
+                         GSVA_SIZE, &ev_error);
+    CHECK(rc == 0, "InvAck should reach QEMU");
+    CHECK(ev_error == GSVA_OK, "InvAck should complete pending invalidation");
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_RETRY, local_cna,
+                         (uint32_t)pending_seq, 0, segment_id, my_base,
+                         GSVA_SIZE, &ev_error);
+    CHECK(rc == 0, "Retry after InvAck should reach QEMU");
+    printf("%s   coh_recovery Retry error=%d\n", TAG, ev_error);
+    CHECK(ev_error == GSVA_OK, "Retry after InvAck should pass");
+
+    {
+        struct obmm_cmd_gsva_query_v1 query = {0};
+        struct {
+            uint32_t version;
+            int32_t error;
+            uint8_t data[240];
+        } *query_resp = (void *)query.resp_data;
+
+        query.version = OBMM_GSVA_ABI_VERSION;
+        query.query_type = GSVA_QUERY_COHERENCE;
+        query.segment_id = segment_id;
+        query.home_va = my_base;
+
+        rc = ioctl(obmm_fd, OBMM_CMD_GSVA_QUERY_V1, &query);
+        CHECK(rc == 0, "coherence query after recovery should reach QEMU");
+        memcpy(&query_state, query_resp->data, sizeof(query_state));
+        printf("%s   coh_recovery Query recovered state=%u error=%d\n",
+               TAG, query_state, query_resp->error);
+        CHECK(query_resp->error == GSVA_OK,
+              "coherence query after recovery should pass");
+        CHECK(query_state == 3, "coherence query after recovery should report M");
+    }
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_WRITE_ACQUIRE, local_cna,
+                         token_id, token_id, segment_id, my_base,
+                         GSVA_SIZE, &ev_error);
+    CHECK(rc == 0, "WriteAcquire after recovery should reach QEMU");
+    CHECK(ev_error == GSVA_OK, "writer should own M after recovery");
+
+    if (import_mapped)
+        obmm_unmap_region(&import_region);
+    obmm_do_unimport(obmm_fd, import_mem_id);
+    obmm_do_unexport(obmm_fd, my_meta.export_mem_id);
+    PASS();
+}
+
 static void usage(const char *prog)
 {
     fprintf(stderr,
@@ -1121,6 +1284,7 @@ static void usage(const char *prog)
         "  token_write_denied     Validate read-only write denial\n"
         "  token_rotate           Validate token rotation\n"
         "  coh_timeout            Validate pending coherence timeout\n"
+        "  coh_recovery           Validate pending coherence recovery\n"
         "  all                    Run all tests (default)\n",
         prog);
 }
@@ -1211,6 +1375,8 @@ int main(int argc, char **argv)
         test_token_rotate(obmm_fd, local_cna, node_idx, node_count);
     } else if (strcmp(mode, "coh_timeout") == 0) {
         test_coh_timeout(obmm_fd, local_cna, node_idx, node_count);
+    } else if (strcmp(mode, "coh_recovery") == 0) {
+        test_coh_recovery(obmm_fd, local_cna, node_idx, node_count);
     } else if (strcmp(mode, "all") == 0) {
         test_cross_node_write_read(obmm_fd, local_cna, node_idx, node_count);
         usleep(200000);
