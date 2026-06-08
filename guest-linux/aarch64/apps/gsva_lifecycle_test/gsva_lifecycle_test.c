@@ -14,6 +14,7 @@
  *   retire_reuse       -- map, unmap, remap with same address
  *   stale_epoch        -- verify epoch-based lifecycle
  *   segment_abi        -- verify kernel GSVA segment descriptor ABI
+ *   descriptor_import  -- verify import key is sourced from descriptor
  *   all                -- run all tests
  *
  * Usage:
@@ -268,6 +269,36 @@ static void check_segment_desc(const struct obmm_gsva_segment_desc_v1 *desc,
     CHECK(desc->token_value != 0, "token_value should be assigned");
 }
 
+static int gsva_send_desc_event(int obmm_fd,
+                                const struct obmm_gsva_segment_desc_v1 *desc,
+                                uint32_t sub_op, uint32_t requester_cna,
+                                int32_t *error_out)
+{
+    struct obmm_cmd_gsva_event_v1 cmd = {0};
+
+    cmd.version = OBMM_GSVA_ABI_VERSION;
+    cmd.sub_op = sub_op;
+    cmd.requester_cna = requester_cna;
+    cmd.token_id = desc->token_id;
+    cmd.token_value = desc->token_value;
+    cmd.key.version = 1;
+    cmd.key.segment_id = desc->segment_id;
+    cmd.key.home_va = desc->home_va;
+    cmd.key.size = desc->size;
+    cmd.key.vmid = 0;
+    cmd.key.asid = 0;
+    cmd.key.pte_offset = 0;
+    cmd.key.p_tag = desc->p_tag;
+    cmd.key.cache_policy = desc->cache_policy;
+    cmd.key.epoch = desc->epoch;
+
+    if (ioctl(obmm_fd, OBMM_CMD_GSVA_EVENT_V1, &cmd) != 0)
+        return -1;
+
+    *error_out = cmd.error;
+    return 0;
+}
+
 /* ---- Test: segment_abi ---- */
 static void test_segment_abi(int obmm_fd, uint32_t local_cna, int node_idx)
 {
@@ -340,6 +371,75 @@ static void test_segment_abi(int obmm_fd, uint32_t local_cna, int node_idx)
     PASS();
 }
 
+/* ---- Test: descriptor_import ---- */
+static void test_descriptor_import(int obmm_fd, uint32_t local_cna, int node_idx)
+{
+    TEST("OBMM import builds GSVA key from segment descriptor");
+    uint64_t base = GSVA_BASE + 0x6000000ULL;
+    struct obmm_cmd_gsva_alloc_segment_v1 alloc = {0};
+    struct obmm_cmd_gsva_retire_segment_v1 retire = {0};
+    struct obmm_helpers_meta backing = {0};
+    uint64_t import_pas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
+    bool import_osync[OBMM_POOL_HELPERS_MAX_NODES] = {false};
+    uint64_t import_mem_id = 0;
+    int32_t ev_error = GSVA_ERR_FEATURE_MISSING;
+    int rc;
+
+    if (node_idx != 0) {
+        PASS();
+        return;
+    }
+
+    alloc.version = OBMM_GSVA_ABI_VERSION;
+    alloc.size = GSVA_SIZE;
+    alloc.alignment = GSVA_SIZE;
+    alloc.requested_home_va = base;
+    alloc.home_node_id = (uint32_t)node_idx;
+    alloc.cache_policy = OBMM_SIM_DEC_CACHE_POLICY_DIRECTORY_MESI;
+    alloc.requested_p_tag = OBMM_GSVA_P_TAG_AUTO;
+    alloc.access_flags = OBMM_GSVA_ACCESS_READ | OBMM_GSVA_ACCESS_WRITE;
+
+    rc = ioctl(obmm_fd, OBMM_CMD_GSVA_ALLOC_SEGMENT, &alloc);
+    CHECK(rc == 0, "ALLOC_SEGMENT should return descriptor");
+    check_segment_desc(&alloc.desc, base, local_cna);
+
+    backing.export_cna = local_cna;
+    rc = obmm_do_export_fixed_uba(obmm_fd, &backing, alloc.desc.size,
+                                  alloc.desc.home_va);
+    CHECK(rc == 0, "fixed UBA backing export should succeed");
+
+    if (!obmm_alloc_import_pas(1, alloc.desc.size, import_pas, import_osync,
+                               OBMM_IMPORT_CACHE_AUTO)) {
+        obmm_do_unexport(obmm_fd, backing.export_mem_id);
+        FAIL("failed to allocate import PA");
+        return;
+    }
+
+    rc = obmm_do_import_gsva_desc_v1(obmm_fd, &alloc.desc, local_cna,
+                                     import_pas[0], alloc.desc.home_va,
+                                     &import_mem_id);
+    CHECK(rc == 0, "descriptor-driven GSVA import should succeed");
+
+    rc = gsva_send_desc_event(obmm_fd, &alloc.desc,
+                              OBMM_GSVA_EVENT_READ_ACQUIRE, local_cna,
+                              &ev_error);
+    CHECK(rc == 0, "descriptor ReadAcquire should reach QEMU");
+    CHECK(ev_error == GSVA_OK,
+          "descriptor ReadAcquire should pass with descriptor token");
+
+    obmm_do_unimport(obmm_fd, import_mem_id);
+    obmm_do_unexport(obmm_fd, backing.export_mem_id);
+
+    retire.version = OBMM_GSVA_ABI_VERSION;
+    retire.segment_id = alloc.desc.segment_id;
+    retire.epoch = alloc.desc.epoch;
+    retire.timeout_ms = 1000;
+    rc = ioctl(obmm_fd, OBMM_CMD_GSVA_RETIRE_SEGMENT, &retire);
+    CHECK(rc == 0, "RETIRE_SEGMENT cleanup should succeed");
+
+    PASS();
+}
+
 static void usage(const char *prog)
 {
     fprintf(stderr,
@@ -350,6 +450,7 @@ static void usage(const char *prog)
         "  stale_epoch          Verify epoch lifecycle\n"
         "  mmap_aperture_overlap Verify aperture mmap rejection\n"
         "  segment_abi          Verify GSVA segment alloc/query/retire ABI\n"
+        "  descriptor_import    Verify descriptor-driven import key\n"
         "  all                  Run all tests\n",
         prog);
 }
@@ -430,12 +531,15 @@ int main(int argc, char **argv)
         test_aperture_mmap_reject(obmm_fd, local_cna, node_idx);
     } else if (strcmp(mode, "segment_abi") == 0) {
         test_segment_abi(obmm_fd, local_cna, node_idx);
+    } else if (strcmp(mode, "descriptor_import") == 0) {
+        test_descriptor_import(obmm_fd, local_cna, node_idx);
     } else if (strcmp(mode, "all") == 0) {
         test_mmap_strict(obmm_fd, local_cna, node_idx);
         test_retire_reuse(obmm_fd, local_cna, node_idx);
         test_stale_epoch(obmm_fd, local_cna, node_idx);
         test_aperture_mmap_reject(obmm_fd, local_cna, node_idx);
         test_segment_abi(obmm_fd, local_cna, node_idx);
+        test_descriptor_import(obmm_fd, local_cna, node_idx);
     } else {
         fprintf(stderr, "%s unknown mode: %s\n", TAG, mode);
         usage(argv[0]);

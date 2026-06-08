@@ -624,6 +624,39 @@ static int obmm_do_import_v2(int obmm_fd, const struct obmm_helpers_meta *meta,
                                    pte_offset, import_mem_id);
 }
 
+static int OBMM_MAYBE_UNUSED obmm_do_import_gsva_desc_v1(
+                            int obmm_fd,
+                            const struct obmm_gsva_segment_desc_v1 *desc,
+                            uint32_t local_cna, uint64_t local_pa,
+                            uint64_t local_va, uint64_t *import_mem_id)
+{
+    struct obmm_helpers_meta meta = {0};
+
+    if (!desc || desc->version != OBMM_GSVA_ABI_VERSION ||
+        !(desc->flags & OBMM_GSVA_SEG_F_STRICT_ADDRESS_IDENTITY) ||
+        local_va != desc->home_va) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    meta.export_mem_id = desc->segment_id;
+    meta.remote_uba = desc->home_va;
+    meta.size = desc->size;
+    meta.token_id = desc->token_id;
+    meta.export_cna = desc->home_cna;
+
+    return obmm_do_import_v2_epoch(obmm_fd, &meta, local_cna, local_pa,
+                                   desc->token_value,
+                                   OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER,
+                                   OBMM_SIM_DEC_ADDRESS_PROFILE_GSVA_IDENTITY,
+                                   desc->cache_policy,
+                                   0, 0, 0, desc->p_tag,
+                                   desc->access_flags,
+                                   desc->segment_id, desc->epoch,
+                                   desc->home_va, desc->home_va, 0,
+                                   import_mem_id);
+}
+
 static int obmm_bootstrap_publish(int obmm_fd, int local_idx, int node_count,
                                   uint64_t generation,
                                   const struct obmm_helpers_meta *meta)
