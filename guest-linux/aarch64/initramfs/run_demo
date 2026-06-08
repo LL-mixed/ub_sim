@@ -428,6 +428,16 @@ run_single_action() {
       done
       run_binary "linqu_ub_gsva_lifecycle_test" /bin/linqu_ub_gsva_lifecycle_test --mode "${gsva_test_mode:-all}"
       ;;
+    gsva_query)
+      gsva_query_mode="--caps"
+      read_cmdline
+      for a in $cmdline; do
+        case "$a" in
+          gsva_query_mode=*) gsva_query_mode="--${a#gsva_query_mode=}" ;;
+        esac
+      done
+      run_binary "linqu_ub_gsva_query" /bin/linqu_ub_gsva_query "$gsva_query_mode"
+      ;;
     all)
       run_default_actions
       ;;
