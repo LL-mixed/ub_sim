@@ -208,6 +208,12 @@ validate_manager_logs() {
       echo "[gsva-manager] FAIL: missing active segment evidence" >&2
       return 1
     fi
+    if ! grep -q 'descriptor=kernel' "$NODEA_GUEST_LOG" ||
+       ! grep -q 'descriptor=kernel' "$NODEB_GUEST_LOG" ||
+       ! grep -q 'gsva descriptor action=manager-alloc' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG"; then
+      echo "[gsva-manager] FAIL: missing kernel descriptor distribution evidence" >&2
+      return 1
+    fi
     a_segment="$(grep '\[gva_manager\] segment active' "$NODEA_GUEST_LOG" | tail -1 | sed -n 's/.*segment_id=\([^ ]*\).*gsva_base=\([^ ]*\).*size=\([^ ]*\).*/\1 \2 \3/p')"
     b_segment="$(grep '\[gva_manager\] segment active' "$NODEB_GUEST_LOG" | tail -1 | sed -n 's/.*segment_id=\([^ ]*\).*gsva_base=\([^ ]*\).*size=\([^ ]*\).*/\1 \2 \3/p')"
     a_initial_segment="$(grep '\[gva_manager\] segment active' "$NODEA_GUEST_LOG" | head -1 | sed -n 's/.*segment_id=\([^ ]*\).*gsva_base=\([^ ]*\).*size=\([^ ]*\).*/\1 \2 \3/p')"
@@ -221,6 +227,10 @@ validate_manager_logs() {
       if ! grep -q '\[gva_manager\] segment retired' "$NODEA_GUEST_LOG" ||
          ! grep -q '\[gva_manager\] segment retired' "$NODEB_GUEST_LOG"; then
         echo "[gsva-manager] FAIL: missing retired segment evidence" >&2
+        return 1
+      fi
+      if ! grep -q 'OBMM: GSVA segment retired:' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG"; then
+        echo "[gsva-manager] FAIL: missing kernel descriptor retire evidence" >&2
         return 1
       fi
       a_retired="$(grep '\[gva_manager\] segment retired' "$NODEA_GUEST_LOG" | tail -1 | sed -n 's/.*segment_id=\([^ ]*\).*gsva_base=\([^ ]*\).*size=\([^ ]*\).*/\1 \2 \3/p')"

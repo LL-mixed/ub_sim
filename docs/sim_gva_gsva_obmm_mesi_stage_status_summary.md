@@ -31,9 +31,11 @@
   `guest-linux/aarch64/logs/2026-06-09_00-56-43_gsva_lc_23720`。
 - 2026-06-09 在远端 `cf:/sd_data/repo/ub_sim` 上重新构建 guest artifacts，并通过的 `gva_manager --alloc/--query/--retire` descriptor CLI 验证日志：
   `guest-linux/aarch64/logs/2026-06-09_01-14-13_gva_mgr_segcli_2760`。
+- 2026-06-09 在远端 `cf:/sd_data/repo/ub_sim` 上重新构建 guest artifacts，并通过的 manager peer kernel descriptor distribution + ACK-before-retire 验证日志：
+  `guest-linux/aarch64/logs/2026-06-09_01-23-58_gsva_mgr_15399`。
 - `docs/qemu_obmm_directory_mesi_coherence_design.md` 中的 OBMM directory MESI 当前实现状态记录。
 
-除明确列出的 2026-06-08 segment ABI 验证、2026-06-09 token acquire 验证、2026-06-09 token rotation 验证、2026-06-09 route-local token revoke ACK gating 验证、2026-06-09 event retire 验证、2026-06-09 四节点 writer invalidation 验证、2026-06-09 stale remap 验证、2026-06-09 read-only token permission 验证、2026-06-09 higher epoch reuse 验证、2026-06-09 descriptor-driven import 验证和 2026-06-09 manager descriptor CLI 验证外，其余结论基于已经存在的代码和日志证据。
+除明确列出的 2026-06-08 segment ABI 验证、2026-06-09 token acquire 验证、2026-06-09 token rotation 验证、2026-06-09 route-local token revoke ACK gating 验证、2026-06-09 event retire 验证、2026-06-09 四节点 writer invalidation 验证、2026-06-09 stale remap 验证、2026-06-09 read-only token permission 验证、2026-06-09 higher epoch reuse 验证、2026-06-09 descriptor-driven import 验证、2026-06-09 manager descriptor CLI 验证和 2026-06-09 manager peer descriptor distribution 验证外，其余结论基于已经存在的代码和日志证据。
 
 ## 1. 总体结论
 
@@ -53,14 +55,15 @@
 12. Higher epoch reuse 已验证：guest import private metadata 能携带 `epoch=2`，kernel SIM decoder 能把 epoch 传入 `GSVA_MAP_V1`，QEMU 能在 event Retire tombstone 后接受同一 base key 的更高 epoch remap，并把旧 epoch acquire 拒绝为 stale。
 13. Descriptor-driven import 已验证：`obmm_do_import_gsva_desc_v1()` 只从 `OBMM_CMD_GSVA_ALLOC_SEGMENT` 返回的 descriptor 和 active mapping context 生成 GSVA import private metadata，QEMU `GSVA_MAP` 日志中的 `segment_id/home_va/size/epoch/p_tag/cache_policy` 与 descriptor 一致。
 14. `gva_manager --alloc/--query/--retire` 已接入 kernel segment descriptor ABI：`--alloc` 注册 kernel aperture 后调用 `OBMM_CMD_GSVA_ALLOC_SEGMENT`，`--query` 调 `OBMM_CMD_GSVA_QUERY_SEGMENT`，`--retire` 调 `OBMM_CMD_GSVA_RETIRE_SEGMENT`；两节点 segment CLI 日志已验证完整 descriptor 字段和 retire commit。
-15. 最终目标中的 GSVA-specific coherence 仍未完整完成；当前已经有 GSVA route/coherence 模块、manager descriptor CLI、descriptor-driven import、acquire token 校验、ACK-gated route-local token rotation、event retire tombstone、四节点 writer invalidation、stale remap rejection、read-only write denial 和 higher epoch reuse，但跨节点 retire ACK/timeout、manager token 分发、holder token cache/TLB flush、ARM MMU 默认路径还未形成最终事务闭环。
+15. Manager peer segment distribution 已切到 kernel descriptor：home manager 调 kernel alloc 取得 descriptor，peer manager 通过 manager message 接收并 ACK 同一 `segment_id/home_va/epoch/p_tag/token`，retire flow 在 peer ACK 后由 home manager 调 kernel retire commit。
+16. 最终目标中的 GSVA-specific coherence 仍未完整完成；当前已经有 GSVA route/coherence 模块、manager descriptor CLI/peer descriptor distribution、descriptor-driven import、acquire token 校验、ACK-gated route-local token rotation、event retire tombstone、四节点 writer invalidation、stale remap rejection、read-only write denial 和 higher epoch reuse，但跨节点 GSVA coherence retire ACK/timeout、manager token 分发、holder token cache/TLB flush、ARM MMU 默认路径还未形成最终事务闭环。
 
 一句话判断：
 
 ```text
 当前阶段已经从“设计概念”进入“多节点可运行实现”。
 GVA/GSVA 地址语义、QEMU route、guest kernel GSVA aperture、OBMM directory MESI 已经有真实日志闭环。
-segment descriptor ABI、manager descriptor CLI、descriptor-driven import、token acquire/ACK-gated rotation/read-only permission、event retire tombstone、四节点 writer invalidation、stale epoch remap rejection 和 higher epoch reuse 已有独立验证；下一阶段的核心不是再证明能跑，而是把 GSVA-specific coherence、manager token revoke 分发与 holder/TLB ACK、跨节点 retire ACK/timeout、ARM MMU 默认路径产品化。
+segment descriptor ABI、manager descriptor CLI/peer descriptor distribution、descriptor-driven import、token acquire/ACK-gated rotation/read-only permission、event retire tombstone、四节点 writer invalidation、stale epoch remap rejection 和 higher epoch reuse 已有独立验证；下一阶段的核心不是再证明能跑，而是把 GSVA-specific coherence、manager token revoke 分发与 holder/TLB ACK、跨节点 GSVA coherence retire ACK/timeout、ARM MMU 默认路径产品化。
 ```
 
 ## 2. 当前实现分层状态
@@ -136,7 +139,8 @@ segment descriptor ABI、manager descriptor CLI、descriptor-driven import、tok
 
 - Manager 已能 bootstrap aperture，但还未成为最终 segment lifecycle coordinator。
 - kernel segment ABI 已有 alloc/query/retire 验证；`gva_manager --alloc/--query/--retire` 已能直接调用该 ABI 并打印 descriptor/retire commit 结果。
-- 旧 `--allocate-segment/--retire-segment/--reuse-segment` manager message flow 仍存在，作为 bootstrap 协调模拟路径；下一步应把 manager peer 分发和 import metadata 默认切到 kernel descriptor。
+- `--allocate-segment/--retire-segment` manager peer flow 已从旧 hash segment identity 切到 kernel descriptor：home manager 调 kernel alloc，peer manager 接收完整 descriptor 并 ACK，home 在 peer ACK 后调 kernel retire。
+- `--reuse-segment` 仍是 manager-level reuse smoke，不等价于最终 epoch reuse transaction；下一步应把 default GSVA import path 切到 manager 分发的 descriptor。
 - route-local token rotation 已按 ACK-gated revoke flow 落地：`TokenChange` 只进入 `REVOKING` 并拒绝 old/new token，收到 revoke ACK 后才提交 new token；manager 分发、holder token cache/TLB flush 仍未完成。
 
 ## 2.3 QEMU SIM_DEC / GVA route 层
@@ -207,7 +211,7 @@ GVA_STATS ... read_errors=0 write_errors=0
 当前边界：
 
 - `SIM_DEC_OP_GSVA_MAP_V1/UNMAP_V1/EVENT_V1/QUERY_V1` 已有实现路径，但 query 仍主要覆盖 caps，route/coherence 细粒度查询还未完整产品化。
-- GSVA descriptor-driven helper 已能让 import key 从 kernel segment descriptor 生成；旧 demo/helper 路径仍存在兼容入口，后续需要把 manager/default import path 切到 descriptor helper。
+- GSVA descriptor-driven helper 已能让 import key 从 kernel segment descriptor 生成；manager peer flow 已能分发 kernel descriptor；旧 demo/helper 路径仍存在兼容入口，后续需要把 default import path 接到 manager 分发的 descriptor。
 - `gva_manager --alloc/--query/--retire` 已提供 descriptor ABI CLI 覆盖；`gva_manager_segment_cli` boot action 和两节点脚本验证 alloc/query/retire 都走 kernel ioctl。
 - ACK-gated route-local token rotation、`lease_epoch++`、read-only write denial 和 higher epoch reuse 已完成；manager 侧 token 分发、holder token cache/TLB flush 仍未完成。
 
@@ -594,6 +598,7 @@ GVA_ROUTE_DUMP state=retired ... cache_policy=4
 | Higher epoch reuse | 已实现并通过两节点日志 | `epoch_reuse`：epoch=1 retire/tombstone 后 epoch=2 remap 成功，旧 epoch acquire stale |
 | Descriptor-driven import | 已实现并通过两节点日志 | `descriptor_import`：QEMU `GSVA_MAP` 使用 kernel descriptor 的 `segment_id/home_va/epoch/p_tag/token` |
 | Manager descriptor CLI | 已实现并通过两节点日志 | `gva_manager --alloc/--query/--retire` 调用 kernel segment ABI，日志含完整 descriptor 与 retire commit |
+| Manager peer descriptor distribution | 已实现并通过两节点日志 | `run_ub_dual_node_gsva_manager_bootstrap.sh`：home kernel descriptor 分发到 peer，peer 使用同一 `segment_id/p_tag/token_id`，retire 在 ACK 后 kernel commit |
 | Distributed retire transaction | 未完成 | 仍需跨节点 ACK/timeout/TLB flush 事务化 |
 | Token lease v1 acquire validation | 已实现并通过两节点日志 | `token_denied`：valid ReadAcquire PASS，bad ReadAcquire/WriteAcquire 返回 `GSVA_ERR_TOKEN_DENIED` |
 | ACK-gated token rotation | route-local 已实现并通过两节点日志 | `token_rotate`：TokenChange 后 `REVOKING/lease_epoch=2`，old token denied，new token ACK 前 denied，revoke ACK 后同一 key 通过 |
@@ -628,6 +633,7 @@ GVA_ROUTE_DUMP state=retired ... cache_policy=4
 - Higher epoch reuse 可在 route-local lifecycle 中把同一 base identity 从 epoch=1 tombstone 提升到 epoch=2 active route，旧 epoch acquire 返回 stale。
 - Descriptor-driven import 可从 kernel segment descriptor 生成 QEMU GSVA key，避免由 demo metadata 自行拼装 `segment_id/epoch/p_tag/token`。
 - `gva_manager --alloc/--query/--retire` 可直接使用 kernel segment descriptor ABI，避免 manager CLI 自行 hash segment identity。
+- Manager peer segment distribution 可传递 kernel descriptor，避免 peer manager 根据本地公式重建 `segment_id/p_tag/token`。
 
 2026-06-09 token acquire 验证证据：
 
@@ -735,6 +741,19 @@ nodeB_guest.log: OBMM: GSVA segment allocated: segment_id=0xc4d2000000000001 hom
 nodeB_guest.log: [gva_manager_segment_cli] verdict=PASS segment_id=0xc4d2000000000001 epoch=0x1
 ```
 
+2026-06-09 manager peer descriptor distribution 验证证据：
+
+```text
+run_id=guest-linux/aarch64/logs/2026-06-09_01-23-58_gsva_mgr_15399
+nodeA_guest.log: OBMM: GSVA segment allocated: segment_id=0xc4c2000000000001 home_va=0x700000000000 size=0x400000 epoch=1 p_tag=50370 token_id=2
+nodeA_guest.log: [gva_manager] gsva descriptor action=manager-alloc version=1 flags=0x7 segment_id=0xc4c2000000000001 home_va=0x700000000000 size=0x400000 epoch=0x1 home_cna=50370 owner_node=0 node_count=2 cache_policy=4 p_tag=50370 access_flags=0x3 token_id=2 token_value=2
+nodeA_guest.log: [gva_manager] segment active segment_id=0xc4c2000000000001 gsva_base=0x700000000000 size=0x400000 node_stride=0x800000 home_node=0 cache_policy=4 access_flags=3 epoch=0x1 p_tag=50370 token_id=2 descriptor=kernel
+nodeB_guest.log: [gva_manager] segment active segment_id=0xc4c2000000000001 gsva_base=0x700000000000 size=0x400000 node_stride=0x800000 home_node=0 cache_policy=4 access_flags=3 epoch=0x1 p_tag=50370 token_id=2 descriptor=kernel
+nodeA_guest.log: OBMM: GSVA segment retired: segment_id=0xc4c2000000000001 epoch=1 status=COMMITTED
+nodeA_guest.log: [gva_manager] segment retired segment_id=0xc4c2000000000001 gsva_base=0x700000000000 size=0x400000 home_node=0
+nodeB_guest.log: [gva_manager] segment retired segment_id=0xc4c2000000000001 gsva_base=0x700000000000 size=0x400000 home_node=0
+```
+
 关键区别：
 
 ```text
@@ -772,7 +791,8 @@ nodeB_guest.log: [gva_manager_segment_cli] verdict=PASS segment_id=0xc4d20000000
   - `guest-linux/kernel_ub/include/uapi/ub/gsva.h` 已落地。
   - `OBMM_CMD_GSVA_ALLOC_SEGMENT/QUERY_SEGMENT/RETIRE_SEGMENT` descriptor ABI 已有两节点 `segment_abi` 验证。
    - `gva_manager --alloc/--query/--retire` 已能调用 kernel descriptor ABI，并已有两节点 CLI 验证。
-   - `obmm_do_import_gsva_desc_v1()` 已能让 import key 来自 descriptor；下一步是把 manager peer 分发和 default GSVA import path 切到该入口。
+   - manager peer segment distribution 已能分发 kernel descriptor，并已有两节点 ACK-before-retire 验证。
+   - `obmm_do_import_gsva_desc_v1()` 已能让 import key 来自 descriptor；下一步是把 default GSVA import path 切到 manager 分发的 descriptor。
 
 2. GSVA route/token v1
    - `gsva_route.c/h` 已存在并接入 `SIM_DEC_OP_GSVA_MAP_V1`。
@@ -807,6 +827,7 @@ nodeB_guest.log: [gva_manager_segment_cli] verdict=PASS segment_id=0xc4d20000000
 GSVA_TEST_MODE=segment_abi ./guest-linux/aarch64/scripts/run_ub_two_node_gsva_lifecycle_test.sh
 GSVA_TEST_MODE=descriptor_import ./guest-linux/aarch64/scripts/run_ub_two_node_gsva_lifecycle_test.sh
 ./guest-linux/aarch64/scripts/run_ub_two_node_gva_manager_segment_cli_test.sh
+GVA_MANAGER_RETIRE_SEGMENT=1 GVA_MANAGER_CACHE_POLICY=directory-mesi ./guest-linux/aarch64/scripts/run_ub_dual_node_gsva_manager_bootstrap.sh
 GSVA_TEST_MODE=token_denied ./guest-linux/aarch64/scripts/run_ub_two_node_gsva_coh_test.sh
 GSVA_TEST_MODE=token_rotate ./guest-linux/aarch64/scripts/run_ub_two_node_gsva_coh_test.sh
 GSVA_TEST_MODE=retire_event ./guest-linux/aarch64/scripts/run_ub_two_node_gsva_coh_test.sh
@@ -843,6 +864,7 @@ ARM TCG route probe: PASS as transition path
 OBMM directory MESI data layer: PASS
 GSVA segment descriptor ABI: PASS
 GSVA manager descriptor CLI: PASS
+GSVA manager peer descriptor distribution: PASS
 GSVA descriptor-driven import: PASS
 GSVA token acquire validation: PASS
 GSVA ACK-gated route-local token rotation: PASS
@@ -859,6 +881,6 @@ Token revoke/ACK productization: PARTIAL, route-local ACK commit only
 因此，当前最准确的项目状态是：
 
 ```text
-已完成一个稳定的 GVA/GSVA 地址、GSVA segment descriptor ABI、manager descriptor CLI、descriptor-driven import、GSVA token acquire/ACK-gated route-local rotation、event retire tombstone、四节点 writer invalidation、stale epoch remap rejection、higher epoch reuse 与 OBMM MESI 数据层阶段。
-下一阶段应从“能跑”转向“语义收敛”：把 manager peer descriptor 分发/default descriptor import、manager token revoke 分发与 holder/TLB ACK、跨节点 retire ACK/timeout、route/coherence/TLB 事务和 ARM MMU 默认路径合成最终架构。
+已完成一个稳定的 GVA/GSVA 地址、GSVA segment descriptor ABI、manager descriptor CLI/peer descriptor distribution、descriptor-driven import、GSVA token acquire/ACK-gated route-local rotation、event retire tombstone、四节点 writer invalidation、stale epoch remap rejection、higher epoch reuse 与 OBMM MESI 数据层阶段。
+下一阶段应从“能跑”转向“语义收敛”：把 default descriptor import、manager token revoke 分发与 holder/TLB ACK、跨节点 GSVA coherence retire ACK/timeout、route/coherence/TLB 事务和 ARM MMU 默认路径合成最终架构。
 ```

@@ -86,6 +86,7 @@ struct gva_mgr_aperture_msg {
     uint32_t segment_state;
     uint32_t status;
     uint32_t reserved;
+    struct obmm_gsva_segment_desc_v1 segment_desc;
 };
 
 struct gva_mgr_config {
@@ -564,6 +565,8 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
         cfg->retire_segment = true;
     if (cfg->retire_segment || cfg->reuse_segment)
         cfg->allocate_segment = true;
+    if (cfg->allocate_segment && cfg->access_flags == 0)
+        cfg->access_flags = OBMM_GSVA_ACCESS_READ | OBMM_GSVA_ACCESS_WRITE;
     if (cfg->node_id < 0 || cfg->node_id >= cfg->node_count)
         return -EINVAL;
     if (cfg->node_count < 2 || cfg->node_count > MAX_NODES)
@@ -894,12 +897,11 @@ static int send_segment_msg(struct obmm_mpmc_bus *bus,
                             struct node_slot slots[MAX_NODES],
                             const struct gva_mgr_config *cfg,
                             int dst, uint16_t type, uint64_t seq,
-                            uint64_t segment_id, uint64_t segment_base,
-                            uint64_t segment_size, uint32_t state,
-                            uint32_t status)
+                            const struct obmm_gsva_segment_desc_v1 *desc,
+                            uint32_t state, uint32_t status)
 {
     struct gva_mgr_aperture_msg *msg = payload_slot(&slots[cfg->node_id], seq);
-    struct obmm_desc desc = {0};
+    struct obmm_desc qdesc = {0};
     long deadline;
     int rc = -EAGAIN;
     uint64_t node_stride = cfg->aperture_size / (uint64_t)cfg->node_count;
@@ -920,27 +922,28 @@ static int send_segment_msg(struct obmm_mpmc_bus *bus,
     msg->aperture_base = cfg->aperture_base;
     msg->aperture_size = cfg->aperture_size;
     msg->node_stride = node_stride;
-    msg->segment_id = segment_id;
-    msg->segment_base = segment_base;
-    msg->segment_size = segment_size;
-    msg->home_node_id = (uint32_t)cfg->home_node_id;
-    msg->access_flags = cfg->access_flags;
-    msg->cache_policy = cfg->cache_policy;
+    msg->segment_id = desc->segment_id;
+    msg->segment_base = desc->home_va;
+    msg->segment_size = desc->size;
+    msg->home_node_id = desc->owner_node_id;
+    msg->access_flags = desc->access_flags;
+    msg->cache_policy = desc->cache_policy;
     msg->segment_state = state;
     msg->status = status;
+    msg->segment_desc = *desc;
     msg->hdr.crc32 = msg_crc(msg);
     obmm_publish_payload_for_remote_read(msg, sizeof(*msg));
 
-    desc.seq = seq;
-    desc.region_id = slots[cfg->node_id].tx_arena_region_id;
-    desc.payload_offset = (uint64_t)((uint8_t *)msg - slots[cfg->node_id].tx_arena);
-    desc.payload_len = sizeof(*msg);
-    desc.type = type;
-    desc.cookie = GVA_MGR_MAGIC;
+    qdesc.seq = seq;
+    qdesc.region_id = slots[cfg->node_id].tx_arena_region_id;
+    qdesc.payload_offset = (uint64_t)((uint8_t *)msg - slots[cfg->node_id].tx_arena);
+    qdesc.payload_len = sizeof(*msg);
+    qdesc.type = type;
+    qdesc.cookie = GVA_MGR_MAGIC;
 
     deadline = obmm_now_ms() + GVA_MGR_TIMEOUT_MS;
     while (!g_alarm_fired && obmm_now_ms() < deadline) {
-        rc = obmm_mpmc_send(bus, (uint32_t)dst, &desc);
+        rc = obmm_mpmc_send(bus, (uint32_t)dst, &qdesc);
         if (rc == 0)
             return 0;
         if (rc != -EAGAIN)
@@ -955,9 +958,7 @@ static int send_segment_msg_broadcast_reliable(struct obmm_mpmc_bus *bus,
                                                const struct gva_mgr_config *cfg,
                                                int dst, uint16_t type,
                                                uint64_t seq,
-                                               uint64_t segment_id,
-                                               uint64_t segment_base,
-                                               uint64_t segment_size,
+                                               const struct obmm_gsva_segment_desc_v1 *desc,
                                                uint32_t state,
                                                uint32_t status)
 {
@@ -965,8 +966,8 @@ static int send_segment_msg_broadcast_reliable(struct obmm_mpmc_bus *bus,
     int ret;
 
     for (attempt = 0; attempt < GVA_MGR_BROADCAST_RETRIES; attempt++) {
-        ret = send_segment_msg(bus, slots, cfg, dst, type, seq, segment_id,
-                               segment_base, segment_size, state, status);
+        ret = send_segment_msg(bus, slots, cfg, dst, type, seq, desc, state,
+                               status);
         if (ret)
             return ret;
         if (attempt + 1 < GVA_MGR_BROADCAST_RETRIES)
@@ -1027,98 +1028,79 @@ static void *reserve_aperture(uint64_t base, uint64_t size)
     return mapped;
 }
 
-static uint64_t make_segment_id(uint64_t generation, uint64_t epoch,
-                                int home_node, uint64_t segment_base)
+static bool segment_desc_valid_for_config(const struct gva_mgr_config *cfg,
+                                          const struct obmm_gsva_segment_desc_v1 *desc)
 {
-    uint64_t id = 1469598103934665603ULL;
-
-    id ^= generation;
-    id *= 1099511628211ULL;
-    if (epoch != 0) {
-        id ^= epoch;
-        id *= 1099511628211ULL;
-    }
-    id ^= (uint64_t)(uint32_t)home_node;
-    id *= 1099511628211ULL;
-    id ^= segment_base;
-    id *= 1099511628211ULL;
-    return id ? id : 1;
+    if (desc->version != OBMM_GSVA_ABI_VERSION)
+        return false;
+    if (!(desc->flags & OBMM_GSVA_SEG_F_STRICT_ADDRESS_IDENTITY))
+        return false;
+    if (desc->segment_id == 0 || desc->home_va == 0 || desc->size == 0)
+        return false;
+    if ((desc->home_va & (4096ULL - 1)) != 0 ||
+        (desc->size & (4096ULL - 1)) != 0)
+        return false;
+    if (desc->home_va < cfg->aperture_base ||
+        desc->size > cfg->aperture_size ||
+        desc->home_va - cfg->aperture_base > cfg->aperture_size - desc->size)
+        return false;
+    if (desc->owner_node_id != (uint32_t)cfg->home_node_id ||
+        desc->node_count != (uint32_t)cfg->node_count ||
+        desc->cache_policy != cfg->cache_policy ||
+        desc->access_flags != cfg->access_flags ||
+        desc->token_id == 0 || desc->token_value == 0)
+        return false;
+    return true;
 }
 
-static int compute_owner_sharded_segment_epoch(const struct gva_mgr_config *cfg,
-                                               uint64_t epoch,
-                                               uint64_t *segment_id,
-                                               uint64_t *segment_base,
-                                               uint64_t *node_stride)
+static bool segment_desc_equal(const struct obmm_gsva_segment_desc_v1 *a,
+                               const struct obmm_gsva_segment_desc_v1 *b)
 {
-    uint64_t stride = cfg->aperture_size / (uint64_t)cfg->node_count;
-    uint64_t slice_base;
-    uint64_t slice_end;
-    uint64_t base;
-
-    stride &= ~(4096ULL - 1);
-    if (stride == 0 || cfg->segment_size > stride)
-        return -EINVAL;
-    if (UINT64_MAX - cfg->aperture_base <
-        (uint64_t)cfg->home_node_id * stride)
-        return -EOVERFLOW;
-    slice_base = cfg->aperture_base + (uint64_t)cfg->home_node_id * stride;
-    if (UINT64_MAX - slice_base < stride)
-        return -EOVERFLOW;
-    slice_end = slice_base + stride;
-    base = obmm_align_up_u64(slice_base, cfg->segment_alignment);
-    if (base < slice_base || UINT64_MAX - base < cfg->segment_size ||
-        base + cfg->segment_size > slice_end)
-        return -ENOSPC;
-
-    *segment_base = base;
-    *segment_id = make_segment_id(cfg->generation, epoch, cfg->home_node_id,
-                                  base);
-    *node_stride = stride;
-    return 0;
+    return a->version == b->version &&
+           a->flags == b->flags &&
+           a->segment_id == b->segment_id &&
+           a->home_va == b->home_va &&
+           a->size == b->size &&
+           a->epoch == b->epoch &&
+           a->home_cna == b->home_cna &&
+           a->owner_node_id == b->owner_node_id &&
+           a->node_count == b->node_count &&
+           a->cache_policy == b->cache_policy &&
+           a->p_tag == b->p_tag &&
+           a->access_flags == b->access_flags &&
+           a->token_id == b->token_id &&
+           a->token_value == b->token_value;
 }
 
-static int compute_owner_sharded_segment(const struct gva_mgr_config *cfg,
-                                         uint64_t *segment_id,
-                                         uint64_t *segment_base,
-                                         uint64_t *node_stride)
-{
-    return compute_owner_sharded_segment_epoch(cfg, 0, segment_id,
-                                               segment_base, node_stride);
-}
-
-static bool segment_msg_matches(const struct gva_mgr_config *cfg,
-                                const struct gva_mgr_aperture_msg *msg,
-                                uint64_t segment_id,
-                                uint64_t segment_base,
-                                uint64_t segment_size)
+static bool segment_msg_matches_desc(const struct gva_mgr_config *cfg,
+                                     const struct gva_mgr_aperture_msg *msg,
+                                     const struct obmm_gsva_segment_desc_v1 *desc)
 {
     return msg->hdr.generation == cfg->generation &&
-           msg->segment_id == segment_id &&
-           msg->segment_base == segment_base &&
-           msg->segment_size == segment_size &&
-           msg->home_node_id == (uint32_t)cfg->home_node_id &&
-           msg->access_flags == cfg->access_flags &&
-           msg->cache_policy == cfg->cache_policy;
+           msg->segment_id == desc->segment_id &&
+           msg->segment_base == desc->home_va &&
+           msg->segment_size == desc->size &&
+           msg->home_node_id == desc->owner_node_id &&
+           msg->access_flags == desc->access_flags &&
+           msg->cache_policy == desc->cache_policy &&
+           segment_desc_valid_for_config(cfg, &msg->segment_desc) &&
+           segment_desc_equal(&msg->segment_desc, desc);
 }
 
 static int validate_segment_msg(const struct gva_mgr_config *cfg,
                                 const struct gva_mgr_aperture_msg *msg,
-                                uint64_t segment_id,
-                                uint64_t segment_base,
-                                uint64_t segment_size,
+                                const struct obmm_gsva_segment_desc_v1 *desc,
                                 uint64_t node_stride,
                                 uint32_t expected_state)
 {
     if (msg->aperture_base != cfg->aperture_base ||
         msg->aperture_size != cfg->aperture_size ||
         msg->node_stride != node_stride ||
-        msg->segment_size != segment_size ||
         msg->home_node_id != (uint32_t)cfg->home_node_id ||
         msg->segment_state != expected_state)
         return -EINVAL;
 
-    if (!segment_msg_matches(cfg, msg, segment_id, segment_base, segment_size))
+    if (!segment_msg_matches_desc(cfg, msg, desc))
         return -EINVAL;
     return 0;
 }
@@ -1126,12 +1108,16 @@ static int validate_segment_msg(const struct gva_mgr_config *cfg,
 static int activate_segment(const struct gva_mgr_config *cfg,
                             struct obmm_mpmc_bus *bus,
                             struct node_slot slots[MAX_NODES],
-                            uint64_t *seq, uint64_t segment_id,
-                            uint64_t segment_base, uint64_t segment_size,
+                            uint64_t *seq,
+                            struct obmm_gsva_segment_desc_v1 *desc,
                             uint64_t node_stride)
 {
     int ret;
     int peer;
+
+    if (cfg->node_id == cfg->home_node_id &&
+        !segment_desc_valid_for_config(cfg, desc))
+        return -EINVAL;
 
     if (cfg->node_id == cfg->home_node_id) {
         bool acked[MAX_NODES] = {false};
@@ -1142,8 +1128,7 @@ static int activate_segment(const struct gva_mgr_config *cfg,
                 continue;
             ret = send_segment_msg_broadcast_reliable(
                     bus, slots, cfg, peer, GVA_MGR_MSG_SEGMENT_ANNOUNCE,
-                    (*seq)++, segment_id, segment_base, segment_size,
-                    GVA_MGR_SEGMENT_PROPOSED, 0);
+                    (*seq)++, desc, GVA_MGR_SEGMENT_PROPOSED, 0);
             if (ret) {
                 log_msg("send SEGMENT_ANNOUNCE failed peer=%d ret=%d",
                         peer, ret);
@@ -1167,8 +1152,7 @@ static int activate_segment(const struct gva_mgr_config *cfg,
             }
             if (msg.hdr.type == GVA_MGR_MSG_SEGMENT_ACK &&
                 !acked[src] &&
-                segment_msg_matches(cfg, &msg, segment_id, segment_base,
-                                    segment_size)) {
+                segment_msg_matches_desc(cfg, &msg, desc)) {
                 acked[src] = true;
                 pending--;
             }
@@ -1179,8 +1163,7 @@ static int activate_segment(const struct gva_mgr_config *cfg,
                 continue;
             ret = send_segment_msg_broadcast_reliable(
                     bus, slots, cfg, peer, GVA_MGR_MSG_SEGMENT_ANNOUNCE,
-                    (*seq)++, segment_id, segment_base, segment_size,
-                    GVA_MGR_SEGMENT_ACTIVE, 0);
+                    (*seq)++, desc, GVA_MGR_SEGMENT_ACTIVE, 0);
             if (ret) {
                 log_msg("send SEGMENT_ACTIVE failed peer=%d ret=%d",
                         peer, ret);
@@ -1202,24 +1185,21 @@ static int activate_segment(const struct gva_mgr_config *cfg,
                 continue;
             if (msg.segment_state != GVA_MGR_SEGMENT_PROPOSED)
                 continue;
-            if (!segment_msg_matches(cfg, &msg, segment_id, segment_base,
-                                     segment_size))
+            if (!segment_desc_valid_for_config(cfg, &msg.segment_desc))
                 continue;
-            ret = validate_segment_msg(cfg, &msg, segment_id, segment_base,
-                                       segment_size, node_stride,
+            *desc = msg.segment_desc;
+            ret = validate_segment_msg(cfg, &msg, desc, node_stride,
                                        GVA_MGR_SEGMENT_PROPOSED);
             if (ret) {
                 (void)send_segment_msg(bus, slots, cfg, cfg->home_node_id,
                                        GVA_MGR_MSG_ERROR, (*seq)++,
-                                       msg.segment_id, msg.segment_base,
-                                       msg.segment_size, msg.segment_state,
+                                       desc, msg.segment_state,
                                        (uint32_t)-ret);
                 return ret;
             }
             ret = send_segment_msg(bus, slots, cfg, cfg->home_node_id,
                                    GVA_MGR_MSG_SEGMENT_ACK, (*seq)++,
-                                   segment_id, segment_base, segment_size,
-                                   GVA_MGR_SEGMENT_ACTIVE, 0);
+                                   desc, GVA_MGR_SEGMENT_ACTIVE, 0);
             if (ret)
                 return ret;
             break;
@@ -1239,11 +1219,9 @@ static int activate_segment(const struct gva_mgr_config *cfg,
                 continue;
             if (msg.segment_state != GVA_MGR_SEGMENT_ACTIVE)
                 continue;
-            if (!segment_msg_matches(cfg, &msg, segment_id, segment_base,
-                                     segment_size))
+            if (!segment_msg_matches_desc(cfg, &msg, desc))
                 continue;
-            ret = validate_segment_msg(cfg, &msg, segment_id, segment_base,
-                                       segment_size, node_stride,
+            ret = validate_segment_msg(cfg, &msg, desc, node_stride,
                                        GVA_MGR_SEGMENT_ACTIVE);
             if (ret) {
                 log_msg("invalid SEGMENT_ACTIVE ret=%d", ret);
@@ -1259,8 +1237,8 @@ static int activate_segment(const struct gva_mgr_config *cfg,
 static int retire_segment(const struct gva_mgr_config *cfg,
                           struct obmm_mpmc_bus *bus,
                           struct node_slot slots[MAX_NODES],
-                          uint64_t *seq, uint64_t segment_id,
-                          uint64_t segment_base, uint64_t segment_size,
+                          uint64_t *seq,
+                          const struct obmm_gsva_segment_desc_v1 *desc,
                           uint64_t node_stride)
 {
     int ret;
@@ -1275,8 +1253,7 @@ static int retire_segment(const struct gva_mgr_config *cfg,
                 continue;
             ret = send_segment_msg_broadcast_reliable(
                     bus, slots, cfg, peer, GVA_MGR_MSG_SEGMENT_RETIRE,
-                    (*seq)++, segment_id, segment_base, segment_size,
-                    GVA_MGR_SEGMENT_RETIRED, 0);
+                    (*seq)++, desc, GVA_MGR_SEGMENT_RETIRED, 0);
             if (ret) {
                 log_msg("send SEGMENT_RETIRE failed peer=%d ret=%d",
                         peer, ret);
@@ -1300,8 +1277,7 @@ static int retire_segment(const struct gva_mgr_config *cfg,
             }
             if (msg.hdr.type == GVA_MGR_MSG_SEGMENT_RETIRED_ACK &&
                 !acked[src] &&
-                validate_segment_msg(cfg, &msg, segment_id, segment_base,
-                                     segment_size, node_stride,
+                validate_segment_msg(cfg, &msg, desc, node_stride,
                                      GVA_MGR_SEGMENT_RETIRED) == 0) {
                 acked[src] = true;
                 pending--;
@@ -1322,24 +1298,20 @@ static int retire_segment(const struct gva_mgr_config *cfg,
                 continue;
             if (msg.segment_state != GVA_MGR_SEGMENT_RETIRED)
                 continue;
-            if (!segment_msg_matches(cfg, &msg, segment_id, segment_base,
-                                     segment_size))
+            if (!segment_msg_matches_desc(cfg, &msg, desc))
                 continue;
-            ret = validate_segment_msg(cfg, &msg, segment_id, segment_base,
-                                       segment_size, node_stride,
+            ret = validate_segment_msg(cfg, &msg, desc, node_stride,
                                        GVA_MGR_SEGMENT_RETIRED);
             if (ret) {
                 (void)send_segment_msg(bus, slots, cfg, cfg->home_node_id,
                                        GVA_MGR_MSG_ERROR, (*seq)++,
-                                       msg.segment_id, msg.segment_base,
-                                       msg.segment_size, msg.segment_state,
+                                       desc, msg.segment_state,
                                        (uint32_t)-ret);
                 return ret;
             }
             ret = send_segment_msg(bus, slots, cfg, cfg->home_node_id,
                                    GVA_MGR_MSG_SEGMENT_RETIRED_ACK, (*seq)++,
-                                   segment_id, segment_base, segment_size,
-                                   GVA_MGR_SEGMENT_RETIRED, 0);
+                                   desc, GVA_MGR_SEGMENT_RETIRED, 0);
             if (ret)
                 return ret;
             break;
@@ -1349,74 +1321,142 @@ static int retire_segment(const struct gva_mgr_config *cfg,
     return 0;
 }
 
+static void log_gsva_desc(const char *action,
+                          const struct obmm_gsva_segment_desc_v1 *desc);
+
+static int allocate_manager_segment_desc(int obmm_fd,
+                                         const struct gva_mgr_config *cfg,
+                                         uint64_t requested_home_va,
+                                         struct obmm_gsva_segment_desc_v1 *desc)
+{
+    struct obmm_cmd_gsva_alloc_segment_v1 cmd = {0};
+
+    cmd.version = OBMM_GSVA_ABI_VERSION;
+    cmd.flags = OBMM_GSVA_SEG_F_STRICT_ADDRESS_IDENTITY |
+                OBMM_GSVA_SEG_F_TOKEN_VALUE_REQUIRED;
+    cmd.size = cfg->segment_size;
+    cmd.alignment = cfg->segment_alignment;
+    cmd.requested_home_va = requested_home_va;
+    cmd.home_node_id = (uint32_t)cfg->home_node_id;
+    cmd.cache_policy = cfg->cache_policy;
+    cmd.requested_p_tag = OBMM_GSVA_P_TAG_AUTO;
+    cmd.access_flags = cfg->access_flags ? cfg->access_flags :
+                        (OBMM_GSVA_ACCESS_READ | OBMM_GSVA_ACCESS_WRITE);
+
+    if (ioctl(obmm_fd, OBMM_CMD_GSVA_ALLOC_SEGMENT, &cmd) != 0)
+        return -errno;
+    *desc = cmd.desc;
+    return 0;
+}
+
+static int retire_manager_segment_desc(int obmm_fd,
+                                       const struct obmm_gsva_segment_desc_v1 *desc)
+{
+    struct obmm_cmd_gsva_retire_segment_v1 cmd = {0};
+
+    cmd.version = OBMM_GSVA_ABI_VERSION;
+    cmd.segment_id = desc->segment_id;
+    cmd.epoch = desc->epoch;
+    cmd.timeout_ms = 5000;
+
+    if (ioctl(obmm_fd, OBMM_CMD_GSVA_RETIRE_SEGMENT, &cmd) != 0)
+        return -errno;
+    if (cmd.status != OBMM_GSVA_RETIRE_COMMITTED || cmd.error != 0)
+        return -EIO;
+    return 0;
+}
+
 static int run_segment_protocol(const struct gva_mgr_config *cfg,
+                                int obmm_fd,
                                 struct obmm_mpmc_bus *bus,
                                 struct node_slot slots[MAX_NODES],
                                 uint64_t *seq)
 {
-    uint64_t segment_id = 0;
-    uint64_t segment_base = 0;
+    struct obmm_gsva_segment_desc_v1 desc = {0};
     uint64_t node_stride = 0;
     int ret;
 
     if (!cfg->allocate_segment)
         return 0;
 
-    ret = compute_owner_sharded_segment(cfg, &segment_id, &segment_base,
-                                        &node_stride);
-    if (ret) {
-        log_msg("segment allocation failed ret=%d", ret);
-        return ret;
+    node_stride = (cfg->aperture_size / (uint64_t)cfg->node_count) &
+                  ~(4096ULL - 1);
+    if (node_stride == 0 || cfg->segment_size > node_stride)
+        return -EINVAL;
+
+    if (cfg->node_id == cfg->home_node_id) {
+        ret = allocate_manager_segment_desc(obmm_fd, cfg, 0, &desc);
+        if (ret) {
+            log_msg("kernel descriptor allocation failed ret=%d", ret);
+            return ret;
+        }
+        log_gsva_desc("manager-alloc", &desc);
     }
 
-    ret = activate_segment(cfg, bus, slots, seq, segment_id, segment_base,
-                           cfg->segment_size, node_stride);
+    ret = activate_segment(cfg, bus, slots, seq, &desc, node_stride);
     if (ret)
         return ret;
 
     log_msg("segment active segment_id=%#" PRIx64 " gsva_base=%#" PRIx64
             " size=%#" PRIx64 " node_stride=%#" PRIx64 " home_node=%d"
-            " cache_policy=%u access_flags=%u",
-            segment_id, segment_base, cfg->segment_size, node_stride,
-            cfg->home_node_id, cfg->cache_policy, cfg->access_flags);
+            " cache_policy=%u access_flags=%u epoch=%#" PRIx64
+            " p_tag=%u token_id=%u descriptor=kernel",
+            desc.segment_id, desc.home_va, desc.size, node_stride,
+            cfg->home_node_id, desc.cache_policy, desc.access_flags,
+            desc.epoch, desc.p_tag, desc.token_id);
 
     if (cfg->retire_segment) {
-        ret = retire_segment(cfg, bus, slots, seq, segment_id, segment_base,
-                             cfg->segment_size, node_stride);
+        struct obmm_gsva_segment_desc_v1 retired_desc = desc;
+
+        retired_desc.flags &= ~OBMM_GSVA_SEG_F_ACTIVE;
+        retired_desc.flags |= OBMM_GSVA_SEG_F_RETIRED;
+        ret = retire_segment(cfg, bus, slots, seq, &retired_desc, node_stride);
         if (ret)
             return ret;
+        if (cfg->node_id == cfg->home_node_id) {
+            ret = retire_manager_segment_desc(obmm_fd, &desc);
+            if (ret) {
+                log_msg("kernel descriptor retire failed ret=%d", ret);
+                return ret;
+            }
+        }
         log_msg("segment retired segment_id=%#" PRIx64 " gsva_base=%#" PRIx64
                 " size=%#" PRIx64 " home_node=%d",
-                segment_id, segment_base, cfg->segment_size,
-                cfg->home_node_id);
+                desc.segment_id, desc.home_va, desc.size, cfg->home_node_id);
     }
 
     if (cfg->reuse_segment) {
-        uint64_t reuse_id = 0;
-        uint64_t reuse_base = 0;
-        uint64_t reuse_stride = 0;
+        struct obmm_gsva_segment_desc_v1 reuse_desc = {0};
 
-        ret = compute_owner_sharded_segment_epoch(cfg, 1, &reuse_id,
-                                                  &reuse_base, &reuse_stride);
-        if (ret)
-            return ret;
-        if (reuse_base != segment_base || reuse_stride != node_stride ||
-            reuse_id == segment_id)
-            return -EINVAL;
-        ret = activate_segment(cfg, bus, slots, seq, reuse_id, reuse_base,
-                               cfg->segment_size, reuse_stride);
+        if (cfg->node_id == cfg->home_node_id) {
+            ret = allocate_manager_segment_desc(obmm_fd, cfg, desc.home_va,
+                                                &reuse_desc);
+            if (ret) {
+                log_msg("kernel descriptor reuse allocation failed ret=%d",
+                        ret);
+                return ret;
+            }
+            if (reuse_desc.segment_id == desc.segment_id ||
+                reuse_desc.home_va != desc.home_va)
+                return -EINVAL;
+            log_gsva_desc("manager-reuse", &reuse_desc);
+        }
+        ret = activate_segment(cfg, bus, slots, seq, &reuse_desc, node_stride);
         if (ret)
             return ret;
         log_msg("segment reused old_segment_id=%#" PRIx64
                 " new_segment_id=%#" PRIx64 " gsva_base=%#" PRIx64
                 " size=%#" PRIx64 " home_node=%d",
-                segment_id, reuse_id, reuse_base, cfg->segment_size,
-                cfg->home_node_id);
+                desc.segment_id, reuse_desc.segment_id, reuse_desc.home_va,
+                reuse_desc.size, cfg->home_node_id);
         log_msg("segment active segment_id=%#" PRIx64 " gsva_base=%#" PRIx64
                 " size=%#" PRIx64 " node_stride=%#" PRIx64 " home_node=%d"
-                " cache_policy=%u access_flags=%u",
-                reuse_id, reuse_base, cfg->segment_size, reuse_stride,
-                cfg->home_node_id, cfg->cache_policy, cfg->access_flags);
+                " cache_policy=%u access_flags=%u epoch=%#" PRIx64
+                " p_tag=%u token_id=%u descriptor=kernel",
+                reuse_desc.segment_id, reuse_desc.home_va, reuse_desc.size,
+                node_stride, cfg->home_node_id, reuse_desc.cache_policy,
+                reuse_desc.access_flags, reuse_desc.epoch, reuse_desc.p_tag,
+                reuse_desc.token_id);
     }
     return 0;
 }
@@ -1733,7 +1773,7 @@ static int run_protocol(struct gva_mgr_config *cfg,
         }
     }
 
-    if (run_segment_protocol(cfg, bus, slots, &seq) != 0)
+    if (run_segment_protocol(cfg, obmm_fd, bus, slots, &seq) != 0)
         goto fail;
 
     log_msg("result=done generation=%#" PRIx64 " aperture_base=%#" PRIx64
