@@ -409,22 +409,24 @@ run_single_action() {
       run_obmm_gsva_demo
       ;;
     gsva_coh_test)
-      gsva_test_mode=gsva_test_mode=
+      gsva_test_mode=""
+      read_cmdline
       for a in $cmdline; do
         case "$a" in
-          gsva_test_mode=*) gsva_test_mode="$a" ;;
+          gsva_test_mode=*) gsva_test_mode="${a#gsva_test_mode=}" ;;
         esac
       done
-      run_binary "linqu_ub_gsva_coh_test" /bin/linqu_ub_gsva_coh_test --mode "${gsva_test_mode#gsva_test_mode=}"
+      run_binary "linqu_ub_gsva_coh_test" /bin/linqu_ub_gsva_coh_test --mode "${gsva_test_mode:-all}"
       ;;
     gsva_lifecycle_test)
-      gsva_test_mode=gsva_test_mode=
+      gsva_test_mode=""
+      read_cmdline
       for a in $cmdline; do
         case "$a" in
-          gsva_test_mode=*) gsva_test_mode="$a" ;;
+          gsva_test_mode=*) gsva_test_mode="${a#gsva_test_mode=}" ;;
         esac
       done
-      run_binary "linqu_ub_gsva_lifecycle_test" /bin/linqu_ub_gsva_lifecycle_test --mode "${gsva_test_mode#gsva_test_mode=}"
+      run_binary "linqu_ub_gsva_lifecycle_test" /bin/linqu_ub_gsva_lifecycle_test --mode "${gsva_test_mode:-all}"
       ;;
     all)
       run_default_actions
