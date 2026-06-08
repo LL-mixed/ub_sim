@@ -2646,6 +2646,7 @@ Status as of 2026-06-09:
 - Route-local GSVA coherence covers writer invalidation, retire tombstone, stale epoch rejection, higher epoch reuse, pending timeout, timeout query, timeout TLB flush, and 2/4/8-node InvAck recovery.
 - Manager-distributed GSVA coherence recovery is validated in a two-node ARM MMU run.
 - QEMU active UB Link GSVA remote invalidate/ACK is implemented and validated in a two-node ARM MMU run. The wire protocol uses the 4-bit-safe `UBC_MSG_SUB_GSVA_COH` carrier and `GsvaCohMsgV1.op` for concrete operations.
+- QEMU active UB Link GSVA remote writeback/ACK is implemented and validated in a two-node ARM MMU run.
 
 Latest manager-distributed recovery evidence:
 
@@ -2671,9 +2672,24 @@ nodeA_qemu.log: GSVA_COH: ub_link rx sub=15 op=2 scna=0xc4d2 payload_len=120
 nodeA_qemu.log: GSVA_COH: rx INV_ACK applied from cna=50386 segment_id=0x1 seq=2 rc=0
 ```
 
+Latest active UB Link remote writeback evidence:
+
+```text
+run_id=guest-linux/aarch64/logs/2026-06-09_03-53-21_gsva_coh_29956
+command=GSVA_MODE=arm_mmu GSVA_STRICT=1 GSVA_COH_HOLD_PENDING=1 GSVA_COH_UB_LINK_TX=1 GSVA_COH_TIMEOUT_MS=10000 GSVA_TEST_MODE=coh_remote_wb ./guest-linux/aarch64/scripts/run_ub_two_node_gsva_coh_test.sh
+nodeA_guest.log: coh_remote_wb Query pending seq=0x2 peer_cna=50386
+nodeA_guest.log: coh_remote_wb Retry error=0
+nodeA_qemu.log: GSVA_COH: tx WRITEBACK target=50386 seq=2 segment_id=0x1 rc=0
+nodeB_qemu.log: GSVA_COH: ub_link rx sub=15 op=5 scna=0xc4c2 payload_len=120
+nodeB_qemu.log: GSVA_COH: rx WRITEBACK from cna=50370 segment_id=0x1 seq=2
+nodeA_qemu.log: GSVA_COH: ub_link rx sub=15 op=6 scna=0xc4d2 payload_len=120
+nodeA_qemu.log: GSVA_COH: WbAck recovery grant M cna=50370 seq=2 segment_id=0x1
+nodeA_qemu.log: GSVA_COH: rx WRITEBACK_ACK applied from cna=50386 segment_id=0x1 seq=2 rc=0
+```
+
 Remaining gap before this plan can be considered complete:
 
-- QEMU GSVA coherence still needs active UB Link data-plane transactions for downgrade, writeback, fence, retire, and token revoke. Remote invalidate/ACK is now active over UB Link; the remaining operations still need full sender/receiver state transitions and validation.
+- QEMU GSVA coherence still needs active UB Link data-plane transactions for downgrade, fence, retire, and token revoke. Remote invalidate/ACK and writeback/ACK are now active over UB Link; the remaining operations still need full sender/receiver state transitions and validation.
 - Four-node and eight-node manager-distributed GSVA recovery are not yet validated.
 - Milestone 6 full default-mode regression matrix is not yet complete.
 
