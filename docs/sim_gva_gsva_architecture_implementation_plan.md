@@ -2644,7 +2644,7 @@ Status as of 2026-06-09:
 - GSVA segment descriptor ABI, descriptor-driven import, manager peer descriptor distribution, manager-distributed descriptor import cleanup + retire, and manager RetireAck-before-cleanup are implemented and validated.
 - Token v1 ReadAcquire/WriteAcquire validation, ACK-gated token rotation, manager-distributed token revoke + holder ACK, and ARM MMU token revoke TLB flush are implemented and validated.
 - Route-local GSVA coherence covers writer invalidation, retire tombstone, stale epoch rejection, higher epoch reuse, pending timeout, timeout query, timeout TLB flush, and 2/4/8-node InvAck recovery.
-- Manager-distributed GSVA coherence recovery is validated in a two-node ARM MMU run.
+- Manager-distributed GSVA coherence recovery is validated in 2/4/8-node ARM MMU runs.
 - QEMU active UB Link GSVA remote invalidate/ACK is implemented and validated in a two-node ARM MMU run. The wire protocol uses the 4-bit-safe `UBC_MSG_SUB_GSVA_COH` carrier and `GsvaCohMsgV1.op` for concrete operations.
 - QEMU active UB Link GSVA remote writeback/ACK is implemented and validated in a two-node ARM MMU run.
 - QEMU active UB Link GSVA remote downgrade/ACK is implemented and validated in a two-node ARM MMU run.
@@ -2660,6 +2660,19 @@ command=GSVA_MODE=arm_mmu GSVA_STRICT=1 GSVA_COH_HOLD_PENDING=1 GSVA_COH_TIMEOUT
 nodeA_guest.log: manager coherence recovery committed segment_id=0xc4c2000000000001 acked_peers=1
 nodeB_guest.log: manager coherence recovery pending segment_id=0xc4c2000000000001 state=1 seq=0x2 waiting_for=0x8
 nodeB_guest.log: manager coherence recovery holder ack segment_id=0xc4c2000000000001 state=3 seq=0x2 cna=50386 holder_cna=3
+
+run_id=guest-linux/aarch64/logs/2026-06-09_04-29-53_gsva_mgr4_24539
+command=GSVA_MODE=arm_mmu GSVA_STRICT=1 GSVA_COH_HOLD_PENDING=1 GSVA_COH_TIMEOUT_MS=10000 GVA_MANAGER_COH_RECOVERY=1 GVA_MANAGER_CACHE_POLICY=directory-mesi ./guest-linux/aarch64/scripts/run_ub_four_node_gsva_manager_bootstrap.sh
+nodeA_guest.log: manager coherence recovery committed segment_id=0xc4c2000000000001 acked_peers=3
+nodeB/nodeC/nodeD_guest.log: manager coherence recovery pending ... state=1 seq=0x2 waiting_for=0x8
+nodeB/nodeC/nodeD_guest.log: manager coherence recovery holder ack ... state=3 seq=0x2
+
+run_id=guest-linux/aarch64/logs/2026-06-09_04-30-15_gsva_mgr8_2462
+command=GSVA_MODE=arm_mmu GSVA_STRICT=1 GSVA_COH_HOLD_PENDING=1 GSVA_COH_TIMEOUT_MS=10000 GVA_MANAGER_NODE_COUNT=8 GVA_MANAGER_COH_RECOVERY=1 GVA_MANAGER_CACHE_POLICY=directory-mesi RUN_SECS=240 ./guest-linux/aarch64/scripts/run_ub_four_node_gsva_manager_bootstrap.sh
+nodeA_guest.log: manager coherence recovery committed segment_id=0xc4c2000000000001 acked_peers=7
+nodeB-nodeH_guest.log: manager coherence recovery pending ... state=1 seq=0x2 waiting_for=0x8
+nodeB-nodeH_guest.log: manager coherence recovery holder ack ... state=3 seq=0x2
+script assertions: every peer QEMU log has WriteAcquire S->M pending inv, pending query, InvAck recovery grant M, coh_inv_ack TLB flush, recovered state=M error=0, and no GVA_TCG_TRANSLATE fallback in ARM MMU mode
 ```
 
 Latest active UB Link remote invalidate evidence:
@@ -2768,8 +2781,6 @@ nodeA_qemu.log: GSVA_COH: rx RETIRE_ACK applied from cna=50386 segment_id=0x1 se
 
 Remaining gap before this plan can be considered complete:
 
-- QEMU GSVA coherence active UB Link data-plane transactions are validated for invalidate/ACK, writeback/ACK, downgrade/ACK, token revoke/ACK, fence/ACK, and retire/ACK in two-node ARM MMU runs.
-- Four-node and eight-node manager-distributed GSVA recovery are not yet validated.
 - Milestone 6 full default-mode regression matrix is not yet complete.
 
 ## 29. Future work

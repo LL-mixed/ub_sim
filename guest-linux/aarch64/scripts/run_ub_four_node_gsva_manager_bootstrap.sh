@@ -44,14 +44,20 @@ GVA_MANAGER_GENERATION="${GVA_MANAGER_GENERATION:-$DEFAULT_GENERATION}"
 GVA_MANAGER_APERTURE_BASE="${GVA_MANAGER_APERTURE_BASE:-0x700000000000}"
 GVA_MANAGER_APERTURE_SIZE="${GVA_MANAGER_APERTURE_SIZE:-$DEFAULT_APERTURE_SIZE}"
 GVA_MANAGER_ALLOCATE_SEGMENT="${GVA_MANAGER_ALLOCATE_SEGMENT:-0}"
+GVA_MANAGER_IMPORT_SEGMENT="${GVA_MANAGER_IMPORT_SEGMENT:-0}"
 GVA_MANAGER_RETIRE_SEGMENT="${GVA_MANAGER_RETIRE_SEGMENT:-0}"
 GVA_MANAGER_REUSE_SEGMENT="${GVA_MANAGER_REUSE_SEGMENT:-0}"
+GVA_MANAGER_COH_RECOVERY="${GVA_MANAGER_COH_RECOVERY:-0}"
 GVA_MANAGER_SEGMENT_SIZE="${GVA_MANAGER_SEGMENT_SIZE:-0x400000}"
 GVA_MANAGER_SEGMENT_ALIGNMENT="${GVA_MANAGER_SEGMENT_ALIGNMENT:-0x1000}"
 GVA_MANAGER_HOME_NODE="${GVA_MANAGER_HOME_NODE:-0}"
 GVA_MANAGER_CACHE_POLICY="${GVA_MANAGER_CACHE_POLICY:-wt}"
 GVA_MANAGER_ACCESS_FLAGS="${GVA_MANAGER_ACCESS_FLAGS:-0}"
 GVA_MANAGER_CONFLICT_NODE="${GVA_MANAGER_CONFLICT_NODE:-}"
+GSVA_MODE="${GSVA_MODE:-sim_dec}"
+GSVA_STRICT="${GSVA_STRICT:-0}"
+GSVA_COH_HOLD_PENDING="${GSVA_COH_HOLD_PENDING:-0}"
+GSVA_COH_TIMEOUT_MS="${GSVA_COH_TIMEOUT_MS:-0}"
 EXPECT_FAILURE="${EXPECT_FAILURE:-0}"
 LOG_PREFIX="[gsva-manager${GVA_MANAGER_NODE_COUNT}]"
 
@@ -124,17 +130,27 @@ start_node() {
   if [[ "$GVA_MANAGER_CONFLICT_NODE" == "$node_idx" ]]; then
     conflict_append="gva_manager_conflict=1"
   fi
-  if [[ "$GVA_MANAGER_ALLOCATE_SEGMENT" == "1" || "$GVA_MANAGER_RETIRE_SEGMENT" == "1" || "$GVA_MANAGER_REUSE_SEGMENT" == "1" ]]; then
+  if [[ "$GVA_MANAGER_ALLOCATE_SEGMENT" == "1" || "$GVA_MANAGER_IMPORT_SEGMENT" == "1" || "$GVA_MANAGER_RETIRE_SEGMENT" == "1" || "$GVA_MANAGER_REUSE_SEGMENT" == "1" || "$GVA_MANAGER_COH_RECOVERY" == "1" ]]; then
     segment_append="gva_manager_allocate_segment=1 gva_manager_segment_size=${GVA_MANAGER_SEGMENT_SIZE} gva_manager_segment_alignment=${GVA_MANAGER_SEGMENT_ALIGNMENT} gva_manager_home_node=${GVA_MANAGER_HOME_NODE} gva_manager_cache_policy=${GVA_MANAGER_CACHE_POLICY} gva_manager_access_flags=${GVA_MANAGER_ACCESS_FLAGS}"
+    if [[ "$GVA_MANAGER_IMPORT_SEGMENT" == "1" || "$GVA_MANAGER_COH_RECOVERY" == "1" ]]; then
+      segment_append="${segment_append} gva_manager_import_segment=1"
+    fi
     if [[ "$GVA_MANAGER_RETIRE_SEGMENT" == "1" ]]; then
       segment_append="${segment_append} gva_manager_retire_segment=1"
     fi
     if [[ "$GVA_MANAGER_REUSE_SEGMENT" == "1" ]]; then
       segment_append="${segment_append} gva_manager_reuse_segment=1"
     fi
+    if [[ "$GVA_MANAGER_COH_RECOVERY" == "1" ]]; then
+      segment_append="${segment_append} gva_manager_coh_recovery=1"
+    fi
   fi
 
   env \
+    GSVA_MODE="$GSVA_MODE" \
+    GSVA_STRICT="$GSVA_STRICT" \
+    GSVA_COH_HOLD_PENDING="$GSVA_COH_HOLD_PENDING" \
+    GSVA_COH_TIMEOUT_MS="$GSVA_COH_TIMEOUT_MS" \
     UB_FM_NODE_ID="$node_name" \
     UB_FM_TOPOLOGY_FILE="$TOPOLOGY_FILE" \
     UB_FM_SHARED_DIR="$SHARED_DIR" \
@@ -237,6 +253,10 @@ validate_manager_logs() {
   local node_retired
   local reused=""
   local node_reused
+  local home_pos=$((GVA_MANAGER_HOME_NODE + 1))
+  local home_node_name="${NODE_NAMES[$home_pos]}"
+  local qemu_log
+  local peer_count_expected=$((GVA_MANAGER_NODE_COUNT - 1))
 
   for node_name in "${NODE_NAMES[@]}"; do
     guest_log="$(guest_log_for "$node_name")"
@@ -346,6 +366,53 @@ validate_manager_logs() {
       fi
     fi
   done
+
+  if [[ "$GVA_MANAGER_COH_RECOVERY" == "1" ]]; then
+    guest_log="$(guest_log_for "$home_node_name")"
+    if ! grep -q "\[gva_manager\] manager coherence recovery committed .*acked_peers=${peer_count_expected}" "$guest_log"; then
+      echo "$LOG_PREFIX FAIL: $home_node_name lacks manager coherence recovery commit evidence" >&2
+      return 1
+    fi
+    for node_name in "${NODE_NAMES[@]}"; do
+      if [[ "$node_name" == "$home_node_name" ]]; then
+        continue
+      fi
+      guest_log="$(guest_log_for "$node_name")"
+      qemu_log="$(qemu_log_for "$node_name")"
+      if ! grep -q '\[gva_manager\] manager coherence recovery pending' "$guest_log"; then
+        echo "$LOG_PREFIX FAIL: $node_name lacks manager coherence recovery pending evidence" >&2
+        return 1
+      fi
+      if ! grep -q '\[gva_manager\] manager coherence recovery holder ack' "$guest_log"; then
+        echo "$LOG_PREFIX FAIL: $node_name lacks manager holder ACK evidence" >&2
+        return 1
+      fi
+      if ! grep -q 'GSVA_COH: WriteAcquire S->M pending inv' "$qemu_log"; then
+        echo "$LOG_PREFIX FAIL: $node_name lacks pending invalidation evidence" >&2
+        return 1
+      fi
+      if ! grep -q 'GSVA_QUERY_COHERENCE: .*pending=1' "$qemu_log"; then
+        echo "$LOG_PREFIX FAIL: $node_name lacks pending query evidence" >&2
+        return 1
+      fi
+      if ! grep -q 'GSVA_COH: InvAck recovery grant M' "$qemu_log"; then
+        echo "$LOG_PREFIX FAIL: $node_name lacks InvAck recovery evidence" >&2
+        return 1
+      fi
+      if ! grep -q 'GSVA_TLB: flush reason=coh_inv_ack' "$qemu_log"; then
+        echo "$LOG_PREFIX FAIL: $node_name lacks coh_inv_ack TLB flush evidence" >&2
+        return 1
+      fi
+      if ! grep -q 'GSVA_QUERY_COHERENCE: .*state=M error=0' "$qemu_log"; then
+        echo "$LOG_PREFIX FAIL: $node_name lacks recovered M query evidence" >&2
+        return 1
+      fi
+      if [[ "$GSVA_MODE" == "arm_mmu" ]] && grep -q 'GVA_TCG_TRANSLATE' "$qemu_log"; then
+        echo "$LOG_PREFIX FAIL: $node_name fell back to GVA_TCG_TRANSLATE" >&2
+        return 1
+      fi
+    done
+  fi
 }
 
 validate_expected_failure() {
@@ -384,7 +451,7 @@ print_node_summary() {
   grep '\[gva_manager\]' "$(guest_log_for "$node_name")" | tail -8
 }
 
-echo "$LOG_PREFIX run_id=$RUN_ID generation=$GVA_MANAGER_GENERATION aperture_base=$GVA_MANAGER_APERTURE_BASE aperture_size=$GVA_MANAGER_APERTURE_SIZE allocate_segment=$GVA_MANAGER_ALLOCATE_SEGMENT retire_segment=$GVA_MANAGER_RETIRE_SEGMENT reuse_segment=$GVA_MANAGER_REUSE_SEGMENT"
+echo "$LOG_PREFIX run_id=$RUN_ID generation=$GVA_MANAGER_GENERATION aperture_base=$GVA_MANAGER_APERTURE_BASE aperture_size=$GVA_MANAGER_APERTURE_SIZE allocate_segment=$GVA_MANAGER_ALLOCATE_SEGMENT import_segment=$GVA_MANAGER_IMPORT_SEGMENT retire_segment=$GVA_MANAGER_RETIRE_SEGMENT reuse_segment=$GVA_MANAGER_REUSE_SEGMENT coh_recovery=$GVA_MANAGER_COH_RECOVERY"
 echo "$LOG_PREFIX topology=$TOPOLOGY_FILE qemu_mem=$QEMU_MEM qemu_smp=$QEMU_SMP port_num=$PORT_NUM"
 echo "$LOG_PREFIX starting ${GVA_MANAGER_NODE_COUNT} nodes..."
 

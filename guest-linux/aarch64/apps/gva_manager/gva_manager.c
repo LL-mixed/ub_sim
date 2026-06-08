@@ -1916,23 +1916,29 @@ static int retire_manager_segment_desc(int obmm_fd,
 static int import_manager_segment_desc(int obmm_fd,
                                        const struct obmm_gsva_segment_desc_v1 *desc,
                                        uint32_t local_cna,
+                                       int reserved_import_count,
                                        uint64_t *import_mem_id)
 {
     uint64_t import_pas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
     bool import_osync[OBMM_POOL_HELPERS_MAX_NODES] = {false};
+    int import_count = reserved_import_count + 1;
 
     /*
-     * The manager control-region import already occupies the first helper PA
-     * window on peer nodes. Use the second slot for the segment descriptor
-     * import so this test exercises the real map path instead of colliding
+     * Manager control-region imports occupy one helper PA window per peer on
+     * peer nodes. Place the segment descriptor import after those windows so
+     * multi-node manager tests exercise the real map path without colliding
      * with manager bootstrap metadata.
      */
-    if (!obmm_alloc_import_pas(2, desc->size, import_pas, import_osync,
+    if (reserved_import_count < 0 ||
+        import_count > OBMM_POOL_HELPERS_MAX_NODES)
+        return -EINVAL;
+    if (!obmm_alloc_import_pas(import_count, desc->size, import_pas, import_osync,
                                OBMM_IMPORT_CACHE_AUTO))
         return -ENOSPC;
 
     if (obmm_do_import_gsva_desc_v1(obmm_fd, desc, local_cna,
-                                    import_pas[1], desc->home_va,
+                                    import_pas[reserved_import_count],
+                                    desc->home_va,
                                     import_mem_id) != 0)
         return -errno;
     return 0;
@@ -2000,6 +2006,7 @@ static int run_segment_protocol(const struct gva_mgr_config *cfg,
 
     if (cfg->import_segment && cfg->node_id != cfg->home_node_id) {
         ret = import_manager_segment_desc(obmm_fd, &desc, local_cna,
+                                          cfg->node_count - 1,
                                           &import_mem_id);
         if (ret) {
             log_msg("manager descriptor import failed ret=%d", ret);
