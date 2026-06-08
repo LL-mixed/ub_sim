@@ -13,6 +13,7 @@
  *   retire_while_shared -- Unmap while segment is shared (retire path)
  *   retire_event      -- Event Retire tombstones route and blocks acquire
  *   stale_remap       -- Retired epoch-1 key cannot be mapped again
+ *   epoch_reuse       -- Retired key remaps when epoch increases
  *   token_denied      -- Read/WriteAcquire require exact token_id/value
  *   token_write_denied -- Read-only route rejects WriteAcquire
  *   token_rotate      -- TokenChange rejects old token and accepts new token
@@ -203,10 +204,11 @@ static void test_retire_while_shared(int obmm_fd, uint32_t local_cna,
     PASS();
 }
 
-static int gsva_send_event(int obmm_fd, uint32_t sub_op, uint32_t requester_cna,
-                           uint32_t token_id, uint32_t token_value,
-                           uint64_t segment_id, uint64_t home_va,
-                           uint64_t size, int32_t *error_out)
+static int gsva_send_event_epoch(int obmm_fd, uint32_t sub_op,
+                           uint32_t requester_cna, uint32_t token_id,
+                           uint32_t token_value, uint64_t segment_id,
+                           uint64_t home_va, uint64_t size, uint64_t epoch,
+                           int32_t *error_out)
 {
     struct obmm_cmd_gsva_event_v1 cmd = {0};
 
@@ -224,13 +226,23 @@ static int gsva_send_event(int obmm_fd, uint32_t sub_op, uint32_t requester_cna,
     cmd.key.pte_offset = 0;
     cmd.key.p_tag = 0;
     cmd.key.cache_policy = GSVA_CACHE_POLICY_DIRECTORY_MESI;
-    cmd.key.epoch = 1;
+    cmd.key.epoch = epoch;
 
     if (ioctl(obmm_fd, OBMM_CMD_GSVA_EVENT_V1, &cmd) != 0)
         return -1;
 
     *error_out = cmd.error;
     return 0;
+}
+
+static int gsva_send_event(int obmm_fd, uint32_t sub_op, uint32_t requester_cna,
+                           uint32_t token_id, uint32_t token_value,
+                           uint64_t segment_id, uint64_t home_va,
+                           uint64_t size, int32_t *error_out)
+{
+    return gsva_send_event_epoch(obmm_fd, sub_op, requester_cna, token_id,
+                                 token_value, segment_id, home_va, size, 1,
+                                 error_out);
 }
 
 /* ---- Test: token_denied ---- */
@@ -683,6 +695,100 @@ static void test_stale_remap(int obmm_fd, uint32_t local_cna,
     PASS();
 }
 
+/* ---- Test: epoch_reuse ---- */
+static void test_epoch_reuse(int obmm_fd, uint32_t local_cna,
+                             int node_idx, int node_count)
+{
+    TEST("GSVA retired segment remaps with higher epoch");
+    struct obmm_helpers_meta peer_meta = {0};
+    uint64_t my_base = GSVA_BASE + 0x4000000ULL +
+                       (uint64_t)node_idx * GSVA_SIZE;
+    uint64_t import_pas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
+    bool import_osync[OBMM_POOL_HELPERS_MAX_NODES] = {false};
+    struct obmm_helpers_meta my_meta = {0};
+    uint64_t peer_base = 0;
+    uint64_t segment_id = 0;
+    uint64_t import_mem_id_epoch1 = 0;
+    uint64_t import_mem_id_epoch2 = 0;
+    int32_t ev_error = GSVA_ERR_FEATURE_MISSING;
+    uint32_t token_id = 0;
+    int rc;
+
+    (void)node_count;
+
+    if (node_idx != 0) {
+        PASS();
+        return;
+    }
+
+    my_meta.export_cna = local_cna;
+
+    rc = obmm_do_export_fixed_uba(obmm_fd, &my_meta, GSVA_SIZE, my_base);
+    CHECK(rc == 0, "fixed UBA export should succeed");
+
+    peer_meta = my_meta;
+
+    if (!obmm_alloc_import_pas(2, GSVA_SIZE, import_pas, import_osync,
+                               OBMM_IMPORT_CACHE_AUTO)) {
+        obmm_do_unexport(obmm_fd, my_meta.export_mem_id);
+        FAIL("failed to allocate import PAs");
+        return;
+    }
+
+    peer_base = my_base;
+    segment_id = peer_meta.export_mem_id;
+    token_id = peer_meta.token_id;
+
+    rc = obmm_do_import_v2_epoch(obmm_fd, &peer_meta, local_cna,
+                           import_pas[0], token_id,
+                           OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER,
+                           OBMM_SIM_DEC_ADDRESS_PROFILE_GSVA_IDENTITY,
+                           OBMM_SIM_DEC_CACHE_POLICY_DIRECTORY_MESI,
+                           0, 0, 0, 0, 0, segment_id, 1,
+                           peer_base, peer_base, 0,
+                           &import_mem_id_epoch1);
+    CHECK(rc == 0, "epoch-1 GSVA identity import should succeed");
+
+    rc = gsva_send_event_epoch(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE,
+                         local_cna, token_id, token_id, segment_id,
+                         peer_base, GSVA_SIZE, 1, &ev_error);
+    CHECK(rc == 0, "epoch-1 ReadAcquire should reach QEMU");
+    CHECK(ev_error == GSVA_OK, "epoch-1 ReadAcquire should pass");
+
+    rc = gsva_send_event_epoch(obmm_fd, OBMM_GSVA_EVENT_RETIRE, local_cna,
+                         token_id, token_id, segment_id, peer_base,
+                         GSVA_SIZE, 1, &ev_error);
+    CHECK(rc == 0, "epoch-1 Retire should reach QEMU");
+    CHECK(ev_error == GSVA_OK, "epoch-1 Retire should tombstone route");
+
+    rc = obmm_do_import_v2_epoch(obmm_fd, &peer_meta, local_cna,
+                           import_pas[1], token_id,
+                           OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER,
+                           OBMM_SIM_DEC_ADDRESS_PROFILE_GSVA_IDENTITY,
+                           OBMM_SIM_DEC_CACHE_POLICY_DIRECTORY_MESI,
+                           0, 0, 0, 0, 0, segment_id, 2,
+                           peer_base, peer_base, 0,
+                           &import_mem_id_epoch2);
+    CHECK(rc == 0, "epoch-2 remap should remove tombstone and succeed");
+
+    rc = gsva_send_event_epoch(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE,
+                         local_cna, token_id, token_id, segment_id,
+                         peer_base, GSVA_SIZE, 2, &ev_error);
+    CHECK(rc == 0, "epoch-2 ReadAcquire should reach QEMU");
+    CHECK(ev_error == GSVA_OK, "epoch-2 ReadAcquire should pass");
+
+    rc = gsva_send_event_epoch(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE,
+                         local_cna, token_id, token_id, segment_id,
+                         peer_base, GSVA_SIZE, 1, &ev_error);
+    CHECK(rc == 0, "stale epoch-1 ReadAcquire should reach QEMU");
+    CHECK(ev_error == GSVA_ERR_STALE_EPOCH,
+          "stale epoch-1 ReadAcquire should be rejected");
+
+    obmm_do_unimport(obmm_fd, import_mem_id_epoch2);
+    obmm_do_unexport(obmm_fd, my_meta.export_mem_id);
+    PASS();
+}
+
 /* ---- Test: token_write_denied ---- */
 static void test_token_write_denied(int obmm_fd, uint32_t local_cna,
                                     int node_idx, int node_count)
@@ -773,6 +879,7 @@ static void usage(const char *prog)
         "  retire_while_shared    Unmap while segment is shared\n"
         "  retire_event           Validate event retire tombstone\n"
         "  stale_remap            Validate stale epoch remap rejection\n"
+        "  epoch_reuse            Validate higher epoch remap after retire\n"
         "  token_denied           Validate acquire token denial\n"
         "  token_write_denied     Validate read-only write denial\n"
         "  token_rotate           Validate token rotation\n"
@@ -856,6 +963,8 @@ int main(int argc, char **argv)
         test_retire_event(obmm_fd, local_cna, node_idx, node_count);
     } else if (strcmp(mode, "stale_remap") == 0) {
         test_stale_remap(obmm_fd, local_cna, node_idx, node_count);
+    } else if (strcmp(mode, "epoch_reuse") == 0) {
+        test_epoch_reuse(obmm_fd, local_cna, node_idx, node_count);
     } else if (strcmp(mode, "token_denied") == 0) {
         test_token_denied(obmm_fd, local_cna, node_idx, node_count);
     } else if (strcmp(mode, "token_write_denied") == 0) {

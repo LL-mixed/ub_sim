@@ -123,6 +123,8 @@ struct obmm_sim_dec_import_priv_v2 {
     uint32_t p_tag;
     uint32_t access_flags;
     uint64_t gva_id;
+    uint64_t segment_id;
+    uint64_t epoch;
 };
 
 struct obmm_sim_dec_import_priv_v1 {
@@ -554,15 +556,16 @@ static int obmm_do_import(int obmm_fd, const struct obmm_helpers_meta *meta,
     return 0;
 }
 
-static int obmm_do_import_v2(int obmm_fd, const struct obmm_helpers_meta *meta,
+static int obmm_do_import_v2_epoch(int obmm_fd,
+                            const struct obmm_helpers_meta *meta,
                             uint32_t local_cna, uint64_t local_pa,
                             uint32_t token_value, uint32_t map_source,
                             uint32_t address_profile, uint32_t cache_policy,
                             uint32_t vmid, uint32_t asid, uint32_t tid,
                             uint32_t p_tag, uint32_t access_flags,
-                            uint64_t gva_id, uint64_t local_va,
-                            uint64_t home_va, uint64_t pte_offset,
-                            uint64_t *import_mem_id)
+                            uint64_t gva_id, uint64_t epoch,
+                            uint64_t local_va, uint64_t home_va,
+                            uint64_t pte_offset, uint64_t *import_mem_id)
 {
     struct obmm_sim_dec_import_priv_v2 priv = {0};
     struct obmm_cmd_import cmd;
@@ -585,6 +588,8 @@ static int obmm_do_import_v2(int obmm_fd, const struct obmm_helpers_meta *meta,
     priv.p_tag = p_tag;
     priv.access_flags = access_flags;
     priv.gva_id = gva_id;
+    priv.segment_id = gva_id;
+    priv.epoch = epoch;
 
     cmd.flags = OBMM_IMPORT_FLAG_ALLOW_MMAP;
     cmd.addr = local_pa;
@@ -600,6 +605,23 @@ static int obmm_do_import_v2(int obmm_fd, const struct obmm_helpers_meta *meta,
     }
     *import_mem_id = cmd.mem_id;
     return 0;
+}
+
+static int obmm_do_import_v2(int obmm_fd, const struct obmm_helpers_meta *meta,
+                            uint32_t local_cna, uint64_t local_pa,
+                            uint32_t token_value, uint32_t map_source,
+                            uint32_t address_profile, uint32_t cache_policy,
+                            uint32_t vmid, uint32_t asid, uint32_t tid,
+                            uint32_t p_tag, uint32_t access_flags,
+                            uint64_t gva_id, uint64_t local_va,
+                            uint64_t home_va, uint64_t pte_offset,
+                            uint64_t *import_mem_id)
+{
+    return obmm_do_import_v2_epoch(obmm_fd, meta, local_cna, local_pa,
+                                   token_value, map_source, address_profile,
+                                   cache_policy, vmid, asid, tid, p_tag,
+                                   access_flags, gva_id, 1, local_va, home_va,
+                                   pte_offset, import_mem_id);
 }
 
 static int obmm_bootstrap_publish(int obmm_fd, int local_idx, int node_count,
