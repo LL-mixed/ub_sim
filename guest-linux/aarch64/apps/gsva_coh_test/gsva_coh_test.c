@@ -982,6 +982,8 @@ static void test_coh_timeout(int obmm_fd, uint32_t local_cna,
     struct obmm_helpers_meta my_meta = {0};
     uint64_t segment_id = 0;
     uint64_t import_mem_id = 0;
+    struct obmm_helpers_region import_region = { .fd = -1 };
+    bool import_mapped = false;
     int32_t ev_error = GSVA_ERR_FEATURE_MISSING;
     uint32_t token_id = 0;
     uint32_t other_cna = local_cna ^ 1U;
@@ -1019,6 +1021,20 @@ static void test_coh_timeout(int obmm_fd, uint32_t local_cna,
                            my_base, my_base, 0,
                            &import_mem_id);
     CHECK(rc == 0, "GSVA identity import should succeed");
+
+    rc = obmm_map_gsva_region_at(import_mem_id, (void *)(uintptr_t)my_base,
+                                 GSVA_SIZE, import_osync[0], &import_region);
+    CHECK(rc == 0, "GSVA mmap should succeed before timeout");
+    import_mapped = true;
+    {
+        volatile uint64_t *probe =
+            (volatile uint64_t *)(uintptr_t)import_region.addr;
+        uint64_t value = *probe;
+
+        __sync_synchronize();
+        printf("%s   coh_timeout ARM MMU touch va=%#" PRIx64
+               " value=%#" PRIx64 "\n", TAG, my_base, value);
+    }
 
     rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, local_cna,
                          token_id, token_id, segment_id, my_base,
@@ -1063,6 +1079,8 @@ static void test_coh_timeout(int obmm_fd, uint32_t local_cna,
     CHECK(rc == 0, "Retire after timeout should reach QEMU");
     CHECK(ev_error == GSVA_OK, "Retire after timeout should clean up");
 
+    if (import_mapped)
+        obmm_unmap_region(&import_region);
     obmm_do_unimport(obmm_fd, import_mem_id);
     obmm_do_unexport(obmm_fd, my_meta.export_mem_id);
     PASS();

@@ -172,6 +172,20 @@ validate_coh_logs() {
       echo "[gsva_coh] FAIL: guest did not observe GSVA_ERR_COH_TIMEOUT" >&2
       return 1
     fi
+    if [[ "$GSVA_MODE" == "arm_mmu" ]]; then
+      if ! grep -q 'GSVA_TLB: lookup' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
+        echo "[gsva_coh] FAIL: ARM MMU coh_timeout lacks GSVA_TLB lookup evidence" >&2
+        return 1
+      fi
+      if ! grep -Eq 'GSVA_TLB: flush reason=coh_timeout.*cleared=[1-9][0-9]*' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
+        echo "[gsva_coh] FAIL: ARM MMU coh_timeout did not clear installed GSVA TLB metadata" >&2
+        return 1
+      fi
+      if grep -q 'GVA_TCG_TRANSLATE' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
+        echo "[gsva_coh] FAIL: ARM MMU coh_timeout fell back to GVA_TCG_TRANSLATE" >&2
+        return 1
+      fi
+    fi
   fi
 }
 

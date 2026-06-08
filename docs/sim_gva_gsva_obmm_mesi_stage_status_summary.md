@@ -67,9 +67,11 @@
   `guest-linux/aarch64/logs/2026-06-09_02-44-26_gsva_coh_31238`。
 - 2026-06-09 在远端 `cf:/sd_data/repo/ub_sim` 上重新构建 QEMU 与 guest artifacts，并通过的 GSVA coherence pending timeout 终态验证日志：
   `guest-linux/aarch64/logs/2026-06-09_02-51-47_gsva_coh_20477`。
+- 2026-06-09 在远端 `cf:/sd_data/repo/ub_sim` 上重新构建 QEMU 与 guest artifacts，并通过的 ARM MMU GSVA coherence timeout TLB flush 事务绑定验证日志：
+  `guest-linux/aarch64/logs/2026-06-09_02-55-39_gsva_coh_6342`。
 - `docs/qemu_obmm_directory_mesi_coherence_design.md` 中的 OBMM directory MESI 当前实现状态记录。
 
-除明确列出的 2026-06-08 segment ABI 验证、2026-06-09 token acquire 验证、2026-06-09 token rotation 验证、2026-06-09 route-local token revoke ACK gating 验证、2026-06-09 四节点 token acquire 验证、2026-06-09 四节点 token rotation 验证、2026-06-09 manager-distributed token revoke + holder ACK 验证、2026-06-09 event retire 验证、2026-06-09 四节点 writer invalidation 验证、2026-06-09 stale remap 验证、2026-06-09 read-only token permission 验证、2026-06-09 higher epoch reuse 验证、2026-06-09 descriptor-driven import 验证、2026-06-09 manager descriptor CLI 验证、2026-06-09 manager peer descriptor distribution 验证、2026-06-09 manager-distributed descriptor import 验证、2026-06-09 manager-distributed descriptor import cleanup + retire 验证、2026-06-09 GSVA-aware unimport cleanup idempotency 验证、2026-06-09 四节点 retire-while-shared 验证、2026-06-09 manager-distributed RetireAck-before-cleanup 验证、2026-06-09 ARM MMU 2/4/8 节点验收、2026-06-09 GSVA V1 profile namespace 修正后的 ARM MMU 2/4/8 节点回归、2026-06-09 ARM MMU manager token revoke TLB flush 事件绑定验证、2026-06-09 ARM MMU token_rotate `cleared>0` 验证和 2026-06-09 GSVA coherence pending timeout 终态验证外，其余结论基于已经存在的代码和日志证据。
+除明确列出的 2026-06-08 segment ABI 验证、2026-06-09 token acquire 验证、2026-06-09 token rotation 验证、2026-06-09 route-local token revoke ACK gating 验证、2026-06-09 四节点 token acquire 验证、2026-06-09 四节点 token rotation 验证、2026-06-09 manager-distributed token revoke + holder ACK 验证、2026-06-09 event retire 验证、2026-06-09 四节点 writer invalidation 验证、2026-06-09 stale remap 验证、2026-06-09 read-only token permission 验证、2026-06-09 higher epoch reuse 验证、2026-06-09 descriptor-driven import 验证、2026-06-09 manager descriptor CLI 验证、2026-06-09 manager peer descriptor distribution 验证、2026-06-09 manager-distributed descriptor import 验证、2026-06-09 manager-distributed descriptor import cleanup + retire 验证、2026-06-09 GSVA-aware unimport cleanup idempotency 验证、2026-06-09 四节点 retire-while-shared 验证、2026-06-09 manager-distributed RetireAck-before-cleanup 验证、2026-06-09 ARM MMU 2/4/8 节点验收、2026-06-09 GSVA V1 profile namespace 修正后的 ARM MMU 2/4/8 节点回归、2026-06-09 ARM MMU manager token revoke TLB flush 事件绑定验证、2026-06-09 ARM MMU token_rotate `cleared>0` 验证、2026-06-09 GSVA coherence pending timeout 终态验证和 2026-06-09 ARM MMU GSVA coherence timeout TLB flush 事务绑定验证外，其余结论基于已经存在的代码和日志证据。
 
 ## 1. 总体结论
 
@@ -98,14 +100,15 @@
 21. Token revoke/ACK 已绑定 ARM MMU GSVA TLB flush：`TOKEN_CHANGE` 成功进入 revoke pending 后 flush key range，token `INV_ACK` 成功提交新 token 后再次 flush key range；manager ARM MMU 验收已强制检查 `token_revoke_pending` 和 `token_revoke_ack` 两类 flush 日志。
 22. 带已安装 TLB entry 的 revoke flush 已验证：`token_rotate` 在 ARM MMU 模式下先通过 `MAP_GSVA` 读访问安装 `GSVA_TLB` side-table entry，再执行 token revoke，QEMU 日志可见 `GSVA_TLB: lookup` 后 `token_revoke_pending ... cleared=1`。
 23. GSVA coherence pending timeout 终态已验证：`GSVA_COH_HOLD_PENDING=1` 下 WriteAcquire S->M 可保持等待 invalidation ACK，`GSVA_COH_TIMEOUT_MS=1` 后 Retry 返回 `GSVA_ERR_COH_TIMEOUT`，后续 ReadAcquire 对同一 key 继续返回 `GSVA_ERR_COH_TIMEOUT`；timeout 后 Retire/Unmap tombstone 清理成功。
-24. 最终目标中的 GSVA-specific coherence 仍未完整完成；当前已经有 GSVA route/coherence 模块、ARM MMU default GSVA path、manager descriptor CLI/peer descriptor distribution、manager-distributed descriptor import cleanup + retire、manager RetireAck-before-cleanup、descriptor-driven import、2/4 节点 acquire token 校验、2/4 节点 ACK-gated route-local token rotation、manager-distributed token revoke + holder ACK + TLB flush、event retire tombstone、四节点 writer invalidation、四节点 retire-while-shared、stale remap rejection、read-only write denial、higher epoch reuse 和 pending timeout 终态，但跨节点 GSVA coherence recovery 与 route/coherence/TLB 事务绑定还未形成最终闭环。
+24. ARM MMU timeout TLB flush 事务绑定已验证：`coh_timeout` 在 `GSVA_MODE=arm_mmu` 下先通过 `MAP_GSVA` 读访问安装 `GSVA_TLB` side-table entry，再触发 pending timeout；QEMU 日志可见 `GSVA_TLB: lookup` 后 `GSVA_TLB: flush reason=coh_timeout ... cleared=1`，且没有 `GVA_TCG_TRANSLATE` 回退。
+25. 最终目标中的 GSVA-specific coherence 仍未完整完成；当前已经有 GSVA route/coherence 模块、ARM MMU default GSVA path、manager descriptor CLI/peer descriptor distribution、manager-distributed descriptor import cleanup + retire、manager RetireAck-before-cleanup、descriptor-driven import、2/4 节点 acquire token 校验、2/4 节点 ACK-gated route-local token rotation、manager-distributed token revoke + holder ACK + TLB flush、event retire tombstone、四节点 writer invalidation、四节点 retire-while-shared、stale remap rejection、read-only write denial、higher epoch reuse、pending timeout 终态和 timeout TLB flush，但跨节点 GSVA coherence recovery 与 route/coherence/TLB 事务绑定还未形成最终闭环。
 
 一句话判断：
 
 ```text
 当前阶段已经从“设计概念”进入“多节点可运行实现”。
 GVA/GSVA 地址语义、QEMU route、guest kernel GSVA aperture、OBMM directory MESI 已经有真实日志闭环。
-segment descriptor ABI、manager descriptor CLI/peer descriptor distribution、manager-distributed descriptor import cleanup + retire、manager RetireAck-before-cleanup、descriptor-driven import、2/4 节点 token acquire/ACK-gated rotation、manager token revoke 分发与 holder ACK/TLB flush、read-only permission、event retire tombstone、四节点 writer invalidation、四节点 retire-while-shared、stale epoch remap rejection、higher epoch reuse、pending timeout 终态和 2/4/8 节点 ARM MMU default GSVA path 已有独立验证；下一阶段的核心不是再证明能跑，而是把跨节点 GSVA coherence recovery 与 route/coherence/TLB 事务绑定产品化。
+segment descriptor ABI、manager descriptor CLI/peer descriptor distribution、manager-distributed descriptor import cleanup + retire、manager RetireAck-before-cleanup、descriptor-driven import、2/4 节点 token acquire/ACK-gated rotation、manager token revoke 分发与 holder ACK/TLB flush、read-only permission、event retire tombstone、四节点 writer invalidation、四节点 retire-while-shared、stale epoch remap rejection、higher epoch reuse、pending timeout 终态、timeout TLB flush 和 2/4/8 节点 ARM MMU default GSVA path 已有独立验证；下一阶段的核心不是再证明能跑，而是把跨节点 GSVA coherence recovery 与 route/coherence/TLB 事务绑定产品化。
 ```
 
 ## 2. 当前实现分层状态
@@ -652,11 +655,11 @@ GVA_ROUTE_DUMP state=retired ... cache_policy=4
 | Manager-distributed descriptor import | 已实现并通过两节点日志 | `GVA_MANAGER_IMPORT_SEGMENT=1`：home fixed UBA backing export，peer descriptor import，QEMU `GSVA_MAP` 使用同一 descriptor |
 | Manager-distributed descriptor import cleanup + retire | 已实现并通过两节点日志 | `GVA_MANAGER_IMPORT_SEGMENT=1 GVA_MANAGER_RETIRE_SEGMENT=1`：peer unimport，QEMU `GSVA_UNMAP` + `OBMM_COH_FENCE_ACK`，home kernel retire commit |
 | GSVA-aware unimport cleanup idempotency | 已实现并通过两节点日志 | GSVA segment unimport 走 `GSVA_UNMAP`；普通 manager control import close 走 legacy unmap；negative grep 无 `GSVA_ERR_ROUTE_MISSING` |
-| Distributed retire transaction | 部分完成 | manager RetireAck-before-cleanup、descriptor import cleanup + retire、route-local shared holder retire、token revoke TLB flush 和 timeout terminal state 已验证；仍需 GSVA-keyed recovery/TLB 事务化 |
+| Distributed retire transaction | 部分完成 | manager RetireAck-before-cleanup、descriptor import cleanup + retire、route-local shared holder retire、token revoke TLB flush、timeout terminal state 和 timeout TLB flush 已验证；仍需 GSVA-keyed recovery 事务化 |
 | Token lease v1 acquire validation | 已实现并通过 2/4 节点日志 | `token_denied`：valid ReadAcquire PASS，bad ReadAcquire/WriteAcquire 返回 `GSVA_ERR_TOKEN_DENIED` |
 | ACK-gated token rotation | route-local 已实现并通过 2/4 节点日志 | `token_rotate`：TokenChange 后 `REVOKING/lease_epoch=2`，old token denied，new token ACK 前 denied，revoke ACK 后同一 key 通过 |
 | Token revoke/ACK 产品化 | 已实现并通过当前验收 | route-local pending + ACK commit、manager-distributed token revoke + holder ACK、ARM MMU token revoke pending/ack TLB flush、带已安装 TLB entry 的 `cleared>0` end-to-end 回归已验证 |
-| ARM MMU 默认路径 | 未完成 | 当前是 `SIM_GVA_TCG` transition hook，默认仍非最终 `arm_mmu` |
+| ARM MMU 默认路径 | 已实现并通过 2/4/8 节点验收 | `GSVA_MODE=arm_mmu` 下 `GSVA_TLB: lookup` 与 `GSVA_COH:` 出现在 QEMU 日志，`GVA_TCG_TRANSLATE` 不出现在 data path |
 
 ## 5. 与最终架构目标的差距
 
@@ -672,7 +675,6 @@ GVA_ROUTE_DUMP state=retired ... cache_policy=4
 
 - 以 `gsva_key_v1` 为唯一 semantic identity 的 coherence。
 - segment retire/reuse 与 route/coherence/TLB flush 的原子事务。
-- `GSVA_MODE=arm_mmu` 作为默认路径。
 - stale epoch、retired tombstone、manager-distributed token revoke ACK、cache policy change 的完整 ACK/timeout/recovery。
 
 当前实现已经新增证明：
@@ -989,7 +991,6 @@ negative grep: no result=fail, no manager retire event failure, no GSVA_ERR_ROUT
 
 当前阶段还不能承诺给用户的事：
 
-- “默认所有 GSVA 访问都经过 ARM MMU 主路径”。
 - “GSVA coherence 已经按 segment/epoch/token 全事务语义完成”。
 - “segment reuse 后 stale mapping 一定被 route/coherence/TLB 事务化拒绝”。
 - “token revoke ACK / holder token cache / TLB flush 已经产品化”。
