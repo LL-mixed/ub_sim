@@ -2648,6 +2648,7 @@ Status as of 2026-06-09:
 - QEMU active UB Link GSVA remote invalidate/ACK is implemented and validated in a two-node ARM MMU run. The wire protocol uses the 4-bit-safe `UBC_MSG_SUB_GSVA_COH` carrier and `GsvaCohMsgV1.op` for concrete operations.
 - QEMU active UB Link GSVA remote writeback/ACK is implemented and validated in a two-node ARM MMU run.
 - QEMU active UB Link GSVA remote downgrade/ACK is implemented and validated in a two-node ARM MMU run.
+- QEMU active UB Link GSVA remote token revoke/ACK is implemented and validated in a two-node ARM MMU run.
 - QEMU active UB Link GSVA remote retire/ACK is implemented and validated in a two-node ARM MMU run.
 
 Latest manager-distributed recovery evidence:
@@ -2708,6 +2709,25 @@ nodeA_qemu.log: GSVA_COH: rx DOWNGRADE_ACK applied from cna=50386 segment_id=0x1
 nodeA_qemu.log: GSVA_TLB: lookup va=0x700006c00000 state=S is_write=0 cpu=0 segment_id=0x1 epoch=1 local_pa=0x60000000000
 ```
 
+Latest active UB Link remote token revoke evidence:
+
+```text
+run_id=guest-linux/aarch64/logs/2026-06-09_04-15-17_gsva_coh_17695
+command=GSVA_MODE=arm_mmu GSVA_STRICT=1 GSVA_COH_HOLD_PENDING=1 GSVA_COH_UB_LINK_TX=1 GSVA_COH_TIMEOUT_MS=10000 GSVA_TEST_MODE=coh_remote_token_revoke ./guest-linux/aarch64/scripts/run_ub_two_node_gsva_coh_test.sh
+nodeA_guest.log: coh_remote_token_revoke ARM MMU touch va=0x700007400000 value=0
+nodeA_guest.log: coh_remote_token_revoke New token error=0
+nodeA_guest.log: verdict=PASS
+nodeB_guest.log: verdict=PASS
+nodeA_qemu.log: GSVA_ROUTE: token revoke pending segment_id=0x1 token_id=96 lease_epoch=2
+nodeA_qemu.log: GSVA_COH: tx TOKEN_REVOKE target=50386 segment_id=0x1 token_id=96 rc=0
+nodeB_qemu.log: GSVA_COH: ub_link rx sub=15 op=11 scna=0xc4c2 payload_len=120
+nodeB_qemu.log: GSVA_COH: rx TOKEN_REVOKE from cna=50370 segment_id=0x1 seq=0
+nodeA_qemu.log: GSVA_COH: ub_link rx sub=15 op=12 scna=0xc4d2 payload_len=120
+nodeA_qemu.log: GSVA_ROUTE: token revoke ack segment_id=0x1 token_id=96 cna=50386 lease_epoch=2
+nodeA_qemu.log: GSVA_COH: rx TOKEN_ACK applied from cna=50386 segment_id=0x1 token_id=96 rc=0
+nodeA_qemu.log: GSVA_TLB: lookup va=0x700007400000 state=S is_write=0 cpu=0 segment_id=0x1 epoch=1 local_pa=0x60000000000
+```
+
 Latest active UB Link remote retire evidence:
 
 ```text
@@ -2728,7 +2748,7 @@ nodeA_qemu.log: GSVA_COH: rx RETIRE_ACK applied from cna=50386 segment_id=0x1 se
 
 Remaining gap before this plan can be considered complete:
 
-- QEMU GSVA coherence still needs active UB Link data-plane transactions for fence and token revoke. Remote invalidate/ACK, writeback/ACK, downgrade/ACK, and retire/ACK are now active over UB Link; the remaining operations still need full sender/receiver state transitions and validation.
+- QEMU GSVA coherence still needs an active UB Link data-plane transaction for fence. Remote invalidate/ACK, writeback/ACK, downgrade/ACK, token revoke/ACK, and retire/ACK are now active over UB Link; the remaining fence operation still needs full sender/receiver state transitions and validation.
 - Four-node and eight-node manager-distributed GSVA recovery are not yet validated.
 - Milestone 6 full default-mode regression matrix is not yet complete.
 

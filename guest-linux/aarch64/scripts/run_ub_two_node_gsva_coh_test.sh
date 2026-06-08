@@ -317,6 +317,38 @@ validate_coh_logs() {
       fi
     fi
   fi
+  if [[ "$GSVA_TEST_MODE" == "coh_remote_token_revoke" ]]; then
+    if ! grep -q 'GSVA_COH: tx TOKEN_REVOKE' "$NODEA_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: remote token revoke test lacks GSVA_COH tx TOKEN_REVOKE evidence" >&2
+      return 1
+    fi
+    if ! grep -q 'GSVA_COH: rx TOKEN_REVOKE from' "$NODEB_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: remote token revoke test lacks peer rx TOKEN_REVOKE evidence" >&2
+      return 1
+    fi
+    if ! grep -q 'GSVA_COH: rx TOKEN_ACK applied' "$NODEA_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: remote token revoke test lacks coordinator rx TOKEN_ACK apply evidence" >&2
+      return 1
+    fi
+    if ! grep -q 'GSVA_ROUTE: token revoke ack' "$NODEA_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: remote token revoke test did not commit new token" >&2
+      return 1
+    fi
+    if ! grep -q 'coh_remote_token_revoke New token error=0' "$NODEA_GUEST_LOG"; then
+      echo "[gsva_coh] FAIL: guest did not observe remote TOKEN_ACK token commit" >&2
+      return 1
+    fi
+    if [[ "$GSVA_MODE" == "arm_mmu" ]]; then
+      if ! grep -q 'GSVA_TLB: lookup' "$NODEA_QEMU_LOG"; then
+        echo "[gsva_coh] FAIL: ARM MMU remote token revoke lacks GSVA_TLB lookup evidence" >&2
+        return 1
+      fi
+      if grep -q 'GVA_TCG_TRANSLATE' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
+        echo "[gsva_coh] FAIL: ARM MMU remote token revoke fell back to GVA_TCG_TRANSLATE" >&2
+        return 1
+      fi
+    fi
+  fi
   if [[ "$GSVA_TEST_MODE" == "coh_remote_retire" ]]; then
     if ! grep -q 'GSVA_COH: tx RETIRE' "$NODEA_QEMU_LOG"; then
       echo "[gsva_coh] FAIL: remote retire test lacks GSVA_COH tx RETIRE evidence" >&2

@@ -1734,6 +1734,148 @@ static void test_coh_remote_downgrade(int obmm_fd, uint32_t local_cna,
     PASS();
 }
 
+/* ---- Test: coh_remote_token_revoke ---- */
+static void test_coh_remote_token_revoke(int obmm_fd, uint32_t local_cna,
+                                         int node_idx, int node_count)
+{
+    TEST("GSVA coherence sends remote token revoke over UB Link");
+    struct obmm_helpers_meta metas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
+    bool got[OBMM_POOL_HELPERS_MAX_NODES] = {false};
+    uint64_t my_base = GSVA_BASE + 0x7400000ULL;
+    struct obmm_helpers_meta my_meta = {0};
+    uint64_t import_pas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
+    bool import_osync[OBMM_POOL_HELPERS_MAX_NODES] = {false};
+    uint64_t import_mem_id = 0;
+    struct obmm_helpers_region import_region = { .fd = -1 };
+    int32_t ev_error = GSVA_ERR_FEATURE_MISSING;
+    uint32_t peer_cna = 0;
+    uint64_t segment_id = 0;
+    uint32_t token_id = 0;
+    uint32_t old_token = 0;
+    uint32_t new_token = 0;
+    int rc;
+
+    if (node_count < 2) {
+        FAIL("remote token revoke requires at least two nodes");
+        return;
+    }
+
+    my_meta.export_cna = local_cna;
+    rc = obmm_do_export_fixed_uba(obmm_fd, &my_meta, GSVA_SIZE,
+                                  my_base + (uint64_t)node_idx * GSVA_SIZE);
+    CHECK(rc == 0, "fixed UBA export should succeed");
+
+    rc = obmm_bootstrap_publish(obmm_fd, node_idx, node_count,
+                                0x47535641060aULL, &my_meta);
+    CHECK(rc == 0, "bootstrap publish should succeed");
+
+    if (node_idx != 0) {
+        for (int attempt = 0; attempt < 40; attempt++) {
+            struct obmm_cmd_gsva_query_v1 query = {0};
+
+            query.version = OBMM_GSVA_ABI_VERSION;
+            query.query_type = GSVA_QUERY_CAPS;
+            (void)ioctl(obmm_fd, OBMM_CMD_GSVA_QUERY_V1, &query);
+            usleep(100000);
+        }
+        obmm_do_unexport(obmm_fd, my_meta.export_mem_id);
+        PASS();
+        return;
+    }
+
+    rc = obmm_bootstrap_lookup(obmm_fd, local_cna, node_count,
+                               0x47535641060aULL, metas, got);
+    CHECK(rc == 0, "bootstrap lookup should succeed");
+    CHECK(got[1], "peer metadata should be available");
+    peer_cna = metas[1].export_cna;
+    CHECK(peer_cna != 0 && peer_cna != local_cna,
+          "peer CNA should be a real remote CNA");
+
+    segment_id = my_meta.export_mem_id;
+    token_id = my_meta.token_id;
+    old_token = token_id;
+    new_token = old_token ^ 0x10203040U;
+    if (new_token == 0 || new_token == old_token)
+        new_token = old_token + 1;
+
+    if (!obmm_alloc_import_pas(1, GSVA_SIZE, import_pas, import_osync,
+                               OBMM_IMPORT_CACHE_AUTO)) {
+        obmm_do_unexport(obmm_fd, my_meta.export_mem_id);
+        FAIL("failed to allocate import PA");
+        return;
+    }
+
+    rc = obmm_do_import_v2(obmm_fd, &my_meta, local_cna,
+                           import_pas[0], old_token,
+                           OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER,
+                           OBMM_SIM_DEC_ADDRESS_PROFILE_GSVA_IDENTITY,
+                           OBMM_SIM_DEC_CACHE_POLICY_DIRECTORY_MESI,
+                           0, 0, 0, 0, 0, segment_id,
+                           my_base, my_base, 0,
+                           &import_mem_id);
+    CHECK(rc == 0, "GSVA identity import should succeed");
+
+    rc = obmm_map_gsva_region_at(import_mem_id, (void *)(uintptr_t)my_base,
+                                 GSVA_SIZE, import_osync[0],
+                                 &import_region);
+    CHECK(rc == 0, "GSVA mmap should succeed");
+    {
+        volatile uint64_t *probe =
+            (volatile uint64_t *)(uintptr_t)import_region.addr;
+        uint64_t value = *probe;
+
+        __sync_synchronize();
+        printf("%s   coh_remote_token_revoke ARM MMU touch va=%#" PRIx64
+               " value=%#" PRIx64 "\n", TAG, my_base, value);
+    }
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, local_cna,
+                         token_id, old_token, segment_id, my_base,
+                         GSVA_SIZE, &ev_error);
+    CHECK(rc == 0, "local ReadAcquire with old token should reach QEMU");
+    CHECK(ev_error == GSVA_OK, "local old token should be valid");
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, peer_cna,
+                         token_id, old_token, segment_id, my_base,
+                         GSVA_SIZE, &ev_error);
+    CHECK(rc == 0, "remote ReadAcquire with old token should reach QEMU");
+    CHECK(ev_error == GSVA_OK, "remote old token should be valid");
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_TOKEN_CHANGE, local_cna,
+                         token_id, new_token, segment_id, my_base,
+                         GSVA_SIZE, &ev_error);
+    CHECK(rc == 0, "TokenChange should reach QEMU");
+    CHECK(ev_error == GSVA_OK, "TokenChange should enter revoke flow");
+
+    for (int attempt = 0; attempt < 30; attempt++) {
+        struct obmm_cmd_gsva_query_v1 query = {0};
+
+        query.version = OBMM_GSVA_ABI_VERSION;
+        query.query_type = GSVA_QUERY_CAPS;
+        (void)ioctl(obmm_fd, OBMM_CMD_GSVA_QUERY_V1, &query);
+        usleep(100000);
+    }
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, local_cna,
+                         token_id, old_token, segment_id, my_base,
+                         GSVA_SIZE, &ev_error);
+    CHECK(rc == 0, "ReadAcquire with old token after revoke should reach QEMU");
+    CHECK(ev_error == GSVA_ERR_TOKEN_DENIED,
+          "old token after remote revoke should be denied");
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, local_cna,
+                         token_id, new_token, segment_id, my_base,
+                         GSVA_SIZE, &ev_error);
+    CHECK(rc == 0, "ReadAcquire with new token after remote ACK should reach QEMU");
+    printf("%s   coh_remote_token_revoke New token error=%d\n", TAG, ev_error);
+    CHECK(ev_error == GSVA_OK, "new token should pass after remote TOKEN_ACK");
+
+    obmm_unmap_region(&import_region);
+    obmm_do_unimport(obmm_fd, import_mem_id);
+    obmm_do_unexport(obmm_fd, my_meta.export_mem_id);
+    PASS();
+}
+
 /* ---- Test: coh_remote_retire ---- */
 static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
                                    int node_idx, int node_count)
@@ -1921,6 +2063,7 @@ static void usage(const char *prog)
         "  coh_remote_inv         Validate UB Link remote invalidate/ACK\n"
         "  coh_remote_wb          Validate UB Link remote writeback/ACK\n"
         "  coh_remote_downgrade   Validate UB Link remote downgrade/ACK\n"
+        "  coh_remote_token_revoke Validate UB Link remote token revoke/ACK\n"
         "  coh_remote_retire      Validate UB Link remote retire/ACK\n"
         "  all                    Run all tests (default)\n",
         prog);
@@ -2020,6 +2163,8 @@ int main(int argc, char **argv)
         test_coh_remote_wb(obmm_fd, local_cna, node_idx, node_count);
     } else if (strcmp(mode, "coh_remote_downgrade") == 0) {
         test_coh_remote_downgrade(obmm_fd, local_cna, node_idx, node_count);
+    } else if (strcmp(mode, "coh_remote_token_revoke") == 0) {
+        test_coh_remote_token_revoke(obmm_fd, local_cna, node_idx, node_count);
     } else if (strcmp(mode, "coh_remote_retire") == 0) {
         test_coh_remote_retire(obmm_fd, local_cna, node_idx, node_count);
     } else if (strcmp(mode, "all") == 0) {
