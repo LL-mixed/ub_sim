@@ -23,6 +23,8 @@ LOG_DIR="$ROOT_DIR/logs"
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_gsva_coh_${RANDOM}}"
 
 GSVA_TEST_MODE="${GSVA_TEST_MODE:-all}"
+GSVA_MODE="${GSVA_MODE:-legacy_sim_dec}"
+GSVA_STRICT="${GSVA_STRICT:-0}"
 APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 
 source "$SCRIPT_DIR/qemu_ub_common.sh"
@@ -81,6 +83,8 @@ start_node() {
     UB_FM_SHARED_DIR="$SHARED_DIR" \
     UB_SIM_ENTITY_COUNT="$ENTITY_COUNT" \
     UB_FM_ENTITY_PLAN_FILE="$ENTITY_PLAN_FILE" \
+    GSVA_MODE="$GSVA_MODE" \
+    GSVA_STRICT="$GSVA_STRICT" \
     "$QEMU_BIN" \
       -M virt,gic-version=3,its=on,ummu=on,ub-cluster-mode=on \
       -cpu cortex-a57 \
@@ -132,6 +136,20 @@ wait_for_fm_links_ready() {
 validate_coh_logs() {
   if ! grep -Eq 'OBMM import mapped|OBMM.*fixed UBA|gsva_map|gsva_route' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
     echo "[gsva_coh] WARNING: no GSVA map evidence in QEMU logs (guest tests may still pass)" >&2
+  fi
+  if [[ "$GSVA_MODE" == "arm_mmu" && "$GSVA_TEST_MODE" == "token_rotate" ]]; then
+    if ! grep -q 'GSVA_TLB: lookup' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: ARM MMU token_rotate lacks GSVA_TLB lookup evidence" >&2
+      return 1
+    fi
+    if ! grep -Eq 'GSVA_TLB: flush reason=token_revoke_(pending|ack).*cleared=[1-9][0-9]*' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: token revoke did not clear installed GSVA TLB metadata" >&2
+      return 1
+    fi
+    if grep -q 'GVA_TCG_TRANSLATE' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: ARM MMU token_rotate fell back to GVA_TCG_TRANSLATE" >&2
+      return 1
+    fi
   fi
 }
 
