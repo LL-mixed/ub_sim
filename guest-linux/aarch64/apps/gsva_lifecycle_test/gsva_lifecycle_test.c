@@ -25,11 +25,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <sys/ioctl.h>
 
 #define TAG "[gsva_lifecycle]"
 
 #define GSVA_BASE 0x700000000000ULL
 #define GSVA_SIZE 0x400000ULL
+#define GSVA_APERTURE_SIZE (GSVA_SIZE * 16)
 
 static int tests_run = 0;
 static int tests_passed = 0;
@@ -60,6 +62,8 @@ static int tests_failed = 0;
 static int parse_node_info(uint32_t *local_cna, int *node_idx, int *node_count)
 {
     char buf[64];
+    uint64_t cna_u64 = 0;
+
     *node_count = 2;
     if (obmm_env_or_cmdline("LINQU_NODE_COUNT", "linqu_node_count", buf, sizeof(buf))) {
         *node_count = atoi(buf);
@@ -69,7 +73,16 @@ static int parse_node_info(uint32_t *local_cna, int *node_idx, int *node_count)
     if (obmm_env_or_cmdline("LINQU_NODE_IDX", "linqu_node_idx", buf, sizeof(buf))) {
         *node_idx = atoi(buf);
     }
-    *local_cna = (uint32_t)(*node_idx);
+    if (obmm_env_or_cmdline("LINQU_LOCAL_CNA", "linqu_local_cna", buf, sizeof(buf))) {
+        *local_cna = (uint32_t)strtoull(buf, NULL, 0);
+    } else if (obmm_env_or_cmdline("LINQU_CNA", "linqu_cna", buf, sizeof(buf))) {
+        *local_cna = (uint32_t)strtoull(buf, NULL, 0);
+    } else if (obmm_parse_hex_u64("/sys/bus/ub/devices/00001/primary_cna", &cna_u64)) {
+        *local_cna = (uint32_t)cna_u64;
+    } else {
+        printf("%s WARNING: cannot resolve CNA, using node_idx=%d\n", TAG, *node_idx);
+        *local_cna = (uint32_t)(*node_idx);
+    }
     return 0;
 }
 
@@ -283,6 +296,24 @@ int main(int argc, char **argv)
     }
 
     printf("%s /dev/obmm opened\n", TAG);
+
+    /* Register GSVA aperture */
+    {
+        struct obmm_cmd_gsva_aperture req = {0};
+        req.base = GSVA_BASE;
+        req.size = GSVA_APERTURE_SIZE;
+        req.generation = 1;
+        req.flags = OBMM_GSVA_APERTURE_F_ACTIVE;
+        req.node_id = (uint32_t)node_idx;
+        req.node_count = (uint32_t)node_count;
+        if (ioctl(obmm_fd, OBMM_CMD_GSVA_APERTURE_REGISTER, &req) != 0) {
+            printf("%s aperture register failed errno=%d\n", TAG, errno);
+            close(obmm_fd);
+            return 1;
+        }
+        printf("%s aperture registered base=%#lx size=%#lx\n",
+               TAG, (unsigned long)GSVA_BASE, (unsigned long)GSVA_APERTURE_SIZE);
+    }
 
     if (strcmp(mode, "mmap_strict") == 0) {
         test_mmap_strict(obmm_fd, local_cna, node_idx);
