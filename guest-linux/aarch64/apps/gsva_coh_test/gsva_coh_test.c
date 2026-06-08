@@ -91,6 +91,11 @@ static int parse_node_info(uint32_t *local_cna, int *node_idx, int *node_count)
     return 0;
 }
 
+static int gsva_send_event(int obmm_fd, uint32_t sub_op, uint32_t requester_cna,
+                           uint32_t token_id, uint32_t token_value,
+                           uint64_t segment_id, uint64_t home_va,
+                           uint64_t size, int32_t *error_out);
+
 /* ---- Test: cross_node_write_read ---- */
 static void test_cross_node_write_read(int obmm_fd, uint32_t local_cna,
                                        int node_idx, int node_count)
@@ -178,28 +183,100 @@ static void test_cross_node_write_read(int obmm_fd, uint32_t local_cna,
 static void test_retire_while_shared(int obmm_fd, uint32_t local_cna,
                                      int node_idx, int node_count)
 {
-    TEST("GSVA unmap/retire while segment is shared");
-    uint64_t my_base = GSVA_BASE + 0x800000ULL + (uint64_t)node_idx * GSVA_SIZE;
+    TEST("GSVA event retire while segment is shared");
+    struct obmm_helpers_meta metas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
+    bool got[OBMM_POOL_HELPERS_MAX_NODES] = {false};
+    uint64_t base = GSVA_BASE + 0x800000ULL;
+    uint64_t my_base = base + (uint64_t)node_idx * GSVA_SIZE;
+    uint64_t import_pas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
+    bool import_osync[OBMM_POOL_HELPERS_MAX_NODES] = {false};
     struct obmm_helpers_meta my_meta = {0};
+    int peer_idx = -1;
+    int other_idx = -1;
+    uint64_t peer_base = 0;
+    uint64_t segment_id = 0;
+    uint64_t import_mem_id = 0;
+    int32_t ev_error = GSVA_ERR_FEATURE_MISSING;
+    uint32_t token_id = 0;
+    uint32_t other_cna = 0;
+    int rc;
+
     my_meta.export_cna = local_cna;
 
-    int rc = obmm_do_export_fixed_uba(obmm_fd, &my_meta, GSVA_SIZE, my_base);
-    CHECK(rc == 0, "export should succeed");
+    rc = obmm_do_export_fixed_uba(obmm_fd, &my_meta, GSVA_SIZE, my_base);
+    CHECK(rc == 0, "fixed UBA export should succeed");
 
-    struct obmm_helpers_region region = {0};
-    rc = obmm_map_gsva_region_at(my_meta.export_mem_id,
-                                 (void *)(uintptr_t)my_base,
-                                 GSVA_SIZE, false, &region);
-    CHECK(rc == 0, "mmap should succeed");
+    rc = obmm_bootstrap_publish(obmm_fd, node_idx, node_count,
+                                0x475356410404ULL, &my_meta);
+    CHECK(rc == 0, "bootstrap publish should succeed");
 
-    /* Write some data */
-    uint64_t *data = (uint64_t *)region.addr;
-    *data = 0x1234567890ABCDEFULL;
+    rc = obmm_bootstrap_lookup(obmm_fd, local_cna, node_count,
+                               0x475356410404ULL, metas, got);
+    CHECK(rc == 0, "bootstrap lookup should succeed");
 
-    /* Unmap while data is potentially shared */
-    obmm_unmap_region(&region);
-    rc = obmm_do_unexport(obmm_fd, my_meta.export_mem_id);
-    CHECK(rc == 0, "unexport while shared should succeed");
+    for (int i = 0; i < node_count; i++) {
+        if (i == node_idx || !got[i])
+            continue;
+        if (peer_idx < 0) {
+            peer_idx = i;
+        } else {
+            other_idx = i;
+            break;
+        }
+    }
+    CHECK(peer_idx >= 0, "peer metadata should be available");
+    CHECK(other_idx >= 0 || node_count == 2, "second reader metadata should be available");
+
+    if (!obmm_alloc_import_pas(1, GSVA_SIZE, import_pas, import_osync,
+                               OBMM_IMPORT_CACHE_AUTO)) {
+        obmm_do_unexport(obmm_fd, my_meta.export_mem_id);
+        FAIL("failed to allocate import PA");
+        return;
+    }
+
+    peer_base = base + (uint64_t)peer_idx * GSVA_SIZE;
+    segment_id = metas[peer_idx].export_mem_id;
+    token_id = metas[peer_idx].token_id;
+    other_cna = (other_idx >= 0) ? metas[other_idx].export_cna
+                                 : (local_cna ^ 1U);
+
+    rc = obmm_do_import_v2(obmm_fd, &metas[peer_idx], local_cna,
+                           import_pas[0], token_id,
+                           OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER,
+                           OBMM_SIM_DEC_ADDRESS_PROFILE_GSVA_IDENTITY,
+                           OBMM_SIM_DEC_CACHE_POLICY_DIRECTORY_MESI,
+                           0, 0, 0, 0, 0, segment_id,
+                           peer_base, peer_base, 0,
+                           &import_mem_id);
+    CHECK(rc == 0, "GSVA identity import should succeed");
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, local_cna,
+                         token_id, token_id, segment_id, peer_base,
+                         GSVA_SIZE, &ev_error);
+    CHECK(rc == 0, "local ReadAcquire should reach QEMU");
+    CHECK(ev_error == GSVA_OK, "local ReadAcquire should pass");
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, other_cna,
+                         token_id, token_id, segment_id, peer_base,
+                         GSVA_SIZE, &ev_error);
+    CHECK(rc == 0, "peer ReadAcquire should reach QEMU");
+    CHECK(ev_error == GSVA_OK, "peer ReadAcquire should pass");
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_RETIRE, local_cna,
+                         token_id, token_id, segment_id, peer_base,
+                         GSVA_SIZE, &ev_error);
+    CHECK(rc == 0, "Retire should reach QEMU");
+    CHECK(ev_error == GSVA_OK, "Retire while shared should commit");
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, local_cna,
+                         token_id, token_id, segment_id, peer_base,
+                         GSVA_SIZE, &ev_error);
+    CHECK(rc == 0, "ReadAcquire after shared retire should reach QEMU");
+    CHECK(ev_error == GSVA_ERR_SEGMENT_RETIRED,
+          "ReadAcquire after shared retire should be rejected as retired");
+
+    obmm_do_unimport(obmm_fd, import_mem_id);
+    obmm_do_unexport(obmm_fd, my_meta.export_mem_id);
 
     PASS();
 }
