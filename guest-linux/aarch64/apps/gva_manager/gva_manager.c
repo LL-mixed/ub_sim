@@ -57,6 +57,8 @@ enum gva_mgr_msg_type {
     GVA_MGR_MSG_SEGMENT_RETIRED_ACK = 8,
     GVA_MGR_MSG_HEARTBEAT = 9,
     GVA_MGR_MSG_ERROR = 10,
+    GVA_MGR_MSG_TOKEN_CHANGE = 11,
+    GVA_MGR_MSG_TOKEN_ACK = 12,
 };
 
 struct gva_mgr_msg_hdr {
@@ -96,6 +98,7 @@ struct gva_mgr_config {
     bool retire_segment;
     bool reuse_segment;
     bool import_segment;
+    bool rotate_token;
     bool desc_alloc;
     bool desc_query;
     bool desc_retire;
@@ -321,6 +324,12 @@ static void config_from_env_cmdline(struct gva_mgr_config *cfg)
         parse_i32_str(value, &parsed32)) {
         cfg->import_segment = parsed32 != 0;
     }
+    if (obmm_env_or_cmdline("GVA_MANAGER_ROTATE_TOKEN",
+                            "gva_manager_rotate_token",
+                            value, sizeof(value)) &&
+        parse_i32_str(value, &parsed32)) {
+        cfg->rotate_token = parsed32 != 0;
+    }
     if (obmm_env_or_cmdline("GVA_MANAGER_SEGMENT_SIZE",
                             "gva_manager_segment_size",
                             value, sizeof(value)) &&
@@ -447,6 +456,11 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
             cfg->bootstrap = true;
             cfg->allocate_segment = true;
             cfg->import_segment = true;
+        } else if (strcmp(argv[i], "--rotate-token") == 0) {
+            cfg->bootstrap = true;
+            cfg->allocate_segment = true;
+            cfg->import_segment = true;
+            cfg->rotate_token = true;
         } else if (strcmp(argv[i], "--dump-routes") == 0) {
             cfg->bootstrap = false;
             cfg->dump_routes = true;
@@ -529,8 +543,8 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
                     "       gva_manager --allocate-segment --node-id N "
                     "--node-count C [--home-node N] [--segment-size S] "
                     "[--segment-alignment A] [--cache-policy nc|wt|rc|wb|mesi|directory-mesi] "
-                    "[--access-flags F] [--import-segment] [--retire-segment] "
-                    "[--reuse-segment]\n"
+                    "[--access-flags F] [--import-segment] [--rotate-token] "
+                    "[--retire-segment] [--reuse-segment]\n"
                     "       gva_manager --dump-routes\n");
             return -EINVAL;
         }
@@ -575,6 +589,8 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
         return -EINVAL;
     if (cfg->reuse_segment)
         cfg->retire_segment = true;
+    if (cfg->rotate_token)
+        cfg->import_segment = true;
     if (cfg->retire_segment || cfg->reuse_segment || cfg->import_segment)
         cfg->allocate_segment = true;
     if (cfg->allocate_segment && cfg->access_flags == 0)
@@ -1084,6 +1100,42 @@ static bool segment_desc_equal(const struct obmm_gsva_segment_desc_v1 *a,
            a->token_value == b->token_value;
 }
 
+static bool segment_desc_same_token_base(const struct obmm_gsva_segment_desc_v1 *a,
+                                         const struct obmm_gsva_segment_desc_v1 *b)
+{
+    return a->version == b->version &&
+           a->segment_id == b->segment_id &&
+           a->home_va == b->home_va &&
+           a->size == b->size &&
+           a->epoch == b->epoch &&
+           a->home_cna == b->home_cna &&
+           a->owner_node_id == b->owner_node_id &&
+           a->node_count == b->node_count &&
+           a->cache_policy == b->cache_policy &&
+           a->p_tag == b->p_tag &&
+           a->access_flags == b->access_flags &&
+           a->token_id == b->token_id;
+}
+
+static bool segment_msg_matches_token_change(
+        const struct gva_mgr_config *cfg,
+        const struct gva_mgr_aperture_msg *msg,
+        const struct obmm_gsva_segment_desc_v1 *old_desc,
+        const struct obmm_gsva_segment_desc_v1 *new_desc)
+{
+    return msg->hdr.generation == cfg->generation &&
+           msg->segment_id == new_desc->segment_id &&
+           msg->segment_base == new_desc->home_va &&
+           msg->segment_size == new_desc->size &&
+           msg->home_node_id == new_desc->owner_node_id &&
+           msg->access_flags == new_desc->access_flags &&
+           msg->cache_policy == new_desc->cache_policy &&
+           segment_desc_valid_for_config(cfg, &msg->segment_desc) &&
+           segment_desc_equal(&msg->segment_desc, new_desc) &&
+           segment_desc_same_token_base(old_desc, new_desc) &&
+           new_desc->token_value != old_desc->token_value;
+}
+
 static bool segment_msg_matches_desc(const struct gva_mgr_config *cfg,
                                      const struct gva_mgr_aperture_msg *msg,
                                      const struct obmm_gsva_segment_desc_v1 *desc)
@@ -1333,6 +1385,205 @@ static int retire_segment(const struct gva_mgr_config *cfg,
     return 0;
 }
 
+static uint32_t next_token_value(uint32_t old_value)
+{
+    uint32_t new_value = old_value + 1;
+
+    if (new_value == 0)
+        new_value = 1;
+    if (new_value == old_value)
+        new_value++;
+    return new_value;
+}
+
+static int send_gsva_event_for_desc(int obmm_fd, uint32_t sub_op,
+                                    uint32_t requester_cna,
+                                    const struct obmm_gsva_segment_desc_v1 *desc,
+                                    int32_t *error_out)
+{
+    struct obmm_cmd_gsva_event_v1 cmd = {0};
+
+    cmd.version = OBMM_GSVA_ABI_VERSION;
+    cmd.sub_op = sub_op;
+    cmd.requester_cna = requester_cna;
+    cmd.token_id = desc->token_id;
+    cmd.token_value = desc->token_value;
+    cmd.key.version = OBMM_GSVA_ABI_VERSION;
+    cmd.key.segment_id = desc->segment_id;
+    cmd.key.home_va = desc->home_va;
+    cmd.key.size = desc->size;
+    cmd.key.vmid = 0;
+    cmd.key.asid = 0;
+    cmd.key.pte_offset = 0;
+    cmd.key.p_tag = desc->p_tag;
+    cmd.key.cache_policy = desc->cache_policy;
+    cmd.key.epoch = desc->epoch;
+
+    if (ioctl(obmm_fd, OBMM_CMD_GSVA_EVENT_V1, &cmd) != 0)
+        return -errno;
+    *error_out = cmd.error;
+    return 0;
+}
+
+static int rotate_segment_token(const struct gva_mgr_config *cfg,
+                                struct obmm_mpmc_bus *bus,
+                                struct node_slot slots[MAX_NODES],
+                                uint64_t *seq,
+                                int obmm_fd,
+                                uint32_t local_cna,
+                                struct obmm_gsva_segment_desc_v1 *desc,
+                                uint64_t node_stride,
+                                bool have_import)
+{
+    struct obmm_gsva_segment_desc_v1 old_desc = *desc;
+    struct obmm_gsva_segment_desc_v1 new_desc = *desc;
+    int ret;
+    int peer;
+
+    new_desc.token_value = next_token_value(old_desc.token_value);
+
+    if (cfg->node_id == cfg->home_node_id) {
+        bool acked[MAX_NODES] = {false};
+        int pending = cfg->node_count - 1;
+
+        for (peer = 0; peer < cfg->node_count; peer++) {
+            if (peer == cfg->node_id)
+                continue;
+            ret = send_segment_msg_broadcast_reliable(
+                    bus, slots, cfg, peer, GVA_MGR_MSG_TOKEN_CHANGE,
+                    (*seq)++, &new_desc, GVA_MGR_SEGMENT_ACTIVE, 0);
+            if (ret) {
+                log_msg("send TOKEN_CHANGE failed peer=%d ret=%d",
+                        peer, ret);
+                return ret;
+            }
+        }
+
+        while (pending > 0) {
+            struct gva_mgr_aperture_msg msg;
+            uint32_t src = 0;
+
+            ret = recv_msg(bus, slots, &msg, &src);
+            if (ret) {
+                log_msg("timeout waiting TOKEN_ACK ret=%d", ret);
+                return ret;
+            }
+            if (msg.hdr.type == GVA_MGR_MSG_ERROR) {
+                log_msg("peer=%u reported token rotate error status=%u",
+                        src, msg.status);
+                return -EIO;
+            }
+            if (msg.hdr.type == GVA_MGR_MSG_TOKEN_ACK &&
+                !acked[src] &&
+                msg.segment_state == GVA_MGR_SEGMENT_ACTIVE &&
+                msg.node_stride == node_stride &&
+                segment_msg_matches_token_change(cfg, &msg, &old_desc,
+                                                 &new_desc)) {
+                acked[src] = true;
+                pending--;
+            }
+        }
+
+        *desc = new_desc;
+        log_msg("manager token rotation committed segment_id=%#" PRIx64
+                " token_id=%u old_token_value=%u new_token_value=%u"
+                " acked_peers=%d",
+                desc->segment_id, desc->token_id, old_desc.token_value,
+                desc->token_value, cfg->node_count - 1);
+    } else {
+        while (true) {
+            struct gva_mgr_aperture_msg msg;
+            struct obmm_gsva_segment_desc_v1 rotated_desc;
+            int32_t ev_error = 0;
+            uint32_t src = 0;
+
+            ret = recv_msg(bus, slots, &msg, &src);
+            if (ret) {
+                log_msg("timeout waiting TOKEN_CHANGE ret=%d", ret);
+                return ret;
+            }
+            if (src != (uint32_t)cfg->home_node_id ||
+                msg.hdr.type != GVA_MGR_MSG_TOKEN_CHANGE)
+                continue;
+            if (msg.segment_state != GVA_MGR_SEGMENT_ACTIVE)
+                continue;
+            rotated_desc = msg.segment_desc;
+            if (!segment_msg_matches_token_change(cfg, &msg, &old_desc,
+                                                  &rotated_desc))
+                continue;
+            if (!have_import) {
+                ret = -EINVAL;
+                (void)send_segment_msg(bus, slots, cfg, cfg->home_node_id,
+                                       GVA_MGR_MSG_ERROR, (*seq)++,
+                                       &rotated_desc,
+                                       GVA_MGR_SEGMENT_ACTIVE,
+                                       (uint32_t)-ret);
+                return ret;
+            }
+
+            ret = send_gsva_event_for_desc(obmm_fd,
+                                           OBMM_GSVA_EVENT_TOKEN_CHANGE,
+                                           local_cna, &rotated_desc,
+                                           &ev_error);
+            if (ret || ev_error != GSVA_OK) {
+                log_msg("manager token change event failed ret=%d error=%d",
+                        ret, ev_error);
+                (void)send_segment_msg(bus, slots, cfg, cfg->home_node_id,
+                                       GVA_MGR_MSG_ERROR, (*seq)++,
+                                       &rotated_desc,
+                                       GVA_MGR_SEGMENT_ACTIVE,
+                                       (uint32_t)(ret ? -ret : ev_error));
+                return ret ? ret : -EIO;
+            }
+
+            ret = send_gsva_event_for_desc(obmm_fd,
+                                           OBMM_GSVA_EVENT_INV_ACK,
+                                           local_cna, &rotated_desc,
+                                           &ev_error);
+            if (ret || ev_error != GSVA_OK) {
+                log_msg("manager token revoke ack event failed ret=%d error=%d",
+                        ret, ev_error);
+                (void)send_segment_msg(bus, slots, cfg, cfg->home_node_id,
+                                       GVA_MGR_MSG_ERROR, (*seq)++,
+                                       &rotated_desc,
+                                       GVA_MGR_SEGMENT_ACTIVE,
+                                       (uint32_t)(ret ? -ret : ev_error));
+                return ret ? ret : -EIO;
+            }
+
+            ret = send_gsva_event_for_desc(obmm_fd,
+                                           OBMM_GSVA_EVENT_READ_ACQUIRE,
+                                           local_cna, &rotated_desc,
+                                           &ev_error);
+            if (ret || ev_error != GSVA_OK) {
+                log_msg("manager token post-ack read failed ret=%d error=%d",
+                        ret, ev_error);
+                (void)send_segment_msg(bus, slots, cfg, cfg->home_node_id,
+                                       GVA_MGR_MSG_ERROR, (*seq)++,
+                                       &rotated_desc,
+                                       GVA_MGR_SEGMENT_ACTIVE,
+                                       (uint32_t)(ret ? -ret : ev_error));
+                return ret ? ret : -EIO;
+            }
+
+            *desc = rotated_desc;
+            ret = send_segment_msg(bus, slots, cfg, cfg->home_node_id,
+                                   GVA_MGR_MSG_TOKEN_ACK, (*seq)++,
+                                   desc, GVA_MGR_SEGMENT_ACTIVE, 0);
+            if (ret)
+                return ret;
+            log_msg("manager token revoke holder ack segment_id=%#" PRIx64
+                    " token_id=%u old_token_value=%u new_token_value=%u"
+                    " cna=%u",
+                    desc->segment_id, desc->token_id, old_desc.token_value,
+                    desc->token_value, local_cna);
+            break;
+        }
+    }
+
+    return 0;
+}
+
 static void log_gsva_desc(const char *action,
                           const struct obmm_gsva_segment_desc_v1 *desc);
 
@@ -1478,6 +1729,13 @@ static int run_segment_protocol(const struct gva_mgr_config *cfg,
                 desc.p_tag, desc.token_id);
     }
 
+    if (cfg->rotate_token) {
+        ret = rotate_segment_token(cfg, bus, slots, seq, obmm_fd, local_cna,
+                                   &desc, node_stride, have_import);
+        if (ret)
+            goto out;
+    }
+
     if (cfg->retire_segment) {
         struct obmm_gsva_segment_desc_v1 retired_desc = desc;
 
@@ -1541,9 +1799,15 @@ static int run_segment_protocol(const struct gva_mgr_config *cfg,
     }
 
     if (cfg->import_segment && !cfg->retire_segment && !cfg->reuse_segment) {
-        log_msg("manager descriptor import retained segment_id=%#" PRIx64
-                " reason=import-path-validation",
-                desc.segment_id);
+        if (have_import) {
+            log_msg("manager descriptor import retained segment_id=%#" PRIx64
+                    " reason=import-path-validation",
+                    desc.segment_id);
+        } else if (have_backing) {
+            log_msg("manager backing export retained segment_id=%#" PRIx64
+                    " reason=import-path-validation",
+                    desc.segment_id);
+        }
         return 0;
     }
 

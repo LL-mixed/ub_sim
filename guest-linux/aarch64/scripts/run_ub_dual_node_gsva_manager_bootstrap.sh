@@ -25,6 +25,7 @@ GVA_MANAGER_ALLOCATE_SEGMENT="${GVA_MANAGER_ALLOCATE_SEGMENT:-0}"
 GVA_MANAGER_RETIRE_SEGMENT="${GVA_MANAGER_RETIRE_SEGMENT:-0}"
 GVA_MANAGER_REUSE_SEGMENT="${GVA_MANAGER_REUSE_SEGMENT:-0}"
 GVA_MANAGER_IMPORT_SEGMENT="${GVA_MANAGER_IMPORT_SEGMENT:-0}"
+GVA_MANAGER_ROTATE_TOKEN="${GVA_MANAGER_ROTATE_TOKEN:-0}"
 GVA_MANAGER_SEGMENT_SIZE="${GVA_MANAGER_SEGMENT_SIZE:-0x400000}"
 GVA_MANAGER_SEGMENT_ALIGNMENT="${GVA_MANAGER_SEGMENT_ALIGNMENT:-0x1000}"
 GVA_MANAGER_HOME_NODE="${GVA_MANAGER_HOME_NODE:-0}"
@@ -86,10 +87,13 @@ start_node() {
   if [[ "$GVA_MANAGER_CONFLICT_NODE" == "$node_idx" ]]; then
     conflict_append="gva_manager_conflict=1"
   fi
-  if [[ "$GVA_MANAGER_ALLOCATE_SEGMENT" == "1" || "$GVA_MANAGER_RETIRE_SEGMENT" == "1" || "$GVA_MANAGER_REUSE_SEGMENT" == "1" || "$GVA_MANAGER_IMPORT_SEGMENT" == "1" ]]; then
+  if [[ "$GVA_MANAGER_ALLOCATE_SEGMENT" == "1" || "$GVA_MANAGER_RETIRE_SEGMENT" == "1" || "$GVA_MANAGER_REUSE_SEGMENT" == "1" || "$GVA_MANAGER_IMPORT_SEGMENT" == "1" || "$GVA_MANAGER_ROTATE_TOKEN" == "1" ]]; then
     segment_append="gva_manager_allocate_segment=1 gva_manager_segment_size=${GVA_MANAGER_SEGMENT_SIZE} gva_manager_segment_alignment=${GVA_MANAGER_SEGMENT_ALIGNMENT} gva_manager_home_node=${GVA_MANAGER_HOME_NODE} gva_manager_cache_policy=${GVA_MANAGER_CACHE_POLICY} gva_manager_access_flags=${GVA_MANAGER_ACCESS_FLAGS}"
-    if [[ "$GVA_MANAGER_IMPORT_SEGMENT" == "1" ]]; then
+    if [[ "$GVA_MANAGER_IMPORT_SEGMENT" == "1" || "$GVA_MANAGER_ROTATE_TOKEN" == "1" ]]; then
       segment_append="${segment_append} gva_manager_import_segment=1"
+    fi
+    if [[ "$GVA_MANAGER_ROTATE_TOKEN" == "1" ]]; then
+      segment_append="${segment_append} gva_manager_rotate_token=1"
     fi
     if [[ "$GVA_MANAGER_RETIRE_SEGMENT" == "1" ]]; then
       segment_append="${segment_append} gva_manager_retire_segment=1"
@@ -206,7 +210,7 @@ validate_manager_logs() {
     echo "[gsva-manager] nodeA=$a_aperture nodeB=$b_aperture" >&2
     return 1
   fi
-  if [[ "$GVA_MANAGER_ALLOCATE_SEGMENT" == "1" || "$GVA_MANAGER_RETIRE_SEGMENT" == "1" || "$GVA_MANAGER_REUSE_SEGMENT" == "1" || "$GVA_MANAGER_IMPORT_SEGMENT" == "1" ]]; then
+  if [[ "$GVA_MANAGER_ALLOCATE_SEGMENT" == "1" || "$GVA_MANAGER_RETIRE_SEGMENT" == "1" || "$GVA_MANAGER_REUSE_SEGMENT" == "1" || "$GVA_MANAGER_IMPORT_SEGMENT" == "1" || "$GVA_MANAGER_ROTATE_TOKEN" == "1" ]]; then
     if ! grep -q '\[gva_manager\] segment active' "$NODEA_GUEST_LOG" ||
        ! grep -q '\[gva_manager\] segment active' "$NODEB_GUEST_LOG"; then
       echo "[gsva-manager] FAIL: missing active segment evidence" >&2
@@ -227,7 +231,7 @@ validate_manager_logs() {
       echo "[gsva-manager] nodeA=$a_segment nodeB=$b_segment" >&2
       return 1
     fi
-    if [[ "$GVA_MANAGER_IMPORT_SEGMENT" == "1" ]]; then
+    if [[ "$GVA_MANAGER_IMPORT_SEGMENT" == "1" || "$GVA_MANAGER_ROTATE_TOKEN" == "1" ]]; then
       local imported_segment
       imported_segment="$(grep '\[gva_manager\] manager descriptor import segment_id=' "$NODEB_GUEST_LOG" | tail -1 | sed -n 's/.*segment_id=\([^ ]*\).*home_va=\([^ ]*\).*epoch=\([^ ]*\).*p_tag=\([^ ]*\).*token_id=\([^ ]*\).*/\1 \2 \3 \4 \5/p')"
       if [[ -z "$imported_segment" ]]; then
@@ -236,6 +240,35 @@ validate_manager_logs() {
       fi
       if ! grep -q 'GSVA_MAP: map_id=.*segment_id=0xc' "$NODEB_QEMU_LOG"; then
         echo "[gsva-manager] FAIL: missing QEMU GSVA_MAP descriptor import evidence" >&2
+        return 1
+      fi
+    fi
+    if [[ "$GVA_MANAGER_ROTATE_TOKEN" == "1" ]]; then
+      if ! grep -q '\[gva_manager\] manager token rotation committed' "$NODEA_GUEST_LOG"; then
+        echo "[gsva-manager] FAIL: missing home token rotation commit evidence" >&2
+        return 1
+      fi
+      if ! grep -q '\[gva_manager\] manager token revoke holder ack' "$NODEB_GUEST_LOG"; then
+        echo "[gsva-manager] FAIL: missing peer token revoke holder ACK evidence" >&2
+        return 1
+      fi
+      if ! grep -q 'GSVA_ROUTE: token revoke pending' "$NODEB_QEMU_LOG" ||
+         ! grep -q 'GSVA_ROUTE: token revoke ack' "$NODEB_QEMU_LOG" ||
+         ! grep -q 'GSVA_COH: ReadAcquire' "$NODEB_QEMU_LOG"; then
+        echo "[gsva-manager] FAIL: missing QEMU token revoke/ACK/read evidence" >&2
+        return 1
+      fi
+      local a_token
+      local b_token
+      a_token="$(grep '\[gva_manager\] manager token rotation committed' "$NODEA_GUEST_LOG" | tail -1 | sed -n 's/.*segment_id=\([^ ]*\).*token_id=\([^ ]*\).*old_token_value=\([^ ]*\).*new_token_value=\([^ ]*\).*/\1 \2 \3 \4/p')"
+      b_token="$(grep '\[gva_manager\] manager token revoke holder ack' "$NODEB_GUEST_LOG" | tail -1 | sed -n 's/.*segment_id=\([^ ]*\).*token_id=\([^ ]*\).*old_token_value=\([^ ]*\).*new_token_value=\([^ ]*\).*/\1 \2 \3 \4/p')"
+      if [[ -z "$a_token" || -z "$b_token" || "$a_token" != "$b_token" ]]; then
+        echo "[gsva-manager] FAIL: managers did not agree on token rotation" >&2
+        echo "[gsva-manager] nodeA=$a_token nodeB=$b_token" >&2
+        return 1
+      fi
+      if [[ "$(echo "$a_token" | awk '{print $3}')" == "$(echo "$a_token" | awk '{print $4}')" ]]; then
+        echo "[gsva-manager] FAIL: token rotation did not change token value" >&2
         return 1
       fi
     fi
@@ -298,7 +331,7 @@ validate_expected_failure() {
   fi
 }
 
-echo "[gsva-manager] run_id=$RUN_ID generation=$GVA_MANAGER_GENERATION aperture_base=$GVA_MANAGER_APERTURE_BASE aperture_size=$GVA_MANAGER_APERTURE_SIZE allocate_segment=$GVA_MANAGER_ALLOCATE_SEGMENT retire_segment=$GVA_MANAGER_RETIRE_SEGMENT reuse_segment=$GVA_MANAGER_REUSE_SEGMENT"
+echo "[gsva-manager] run_id=$RUN_ID generation=$GVA_MANAGER_GENERATION aperture_base=$GVA_MANAGER_APERTURE_BASE aperture_size=$GVA_MANAGER_APERTURE_SIZE allocate_segment=$GVA_MANAGER_ALLOCATE_SEGMENT retire_segment=$GVA_MANAGER_RETIRE_SEGMENT reuse_segment=$GVA_MANAGER_REUSE_SEGMENT rotate_token=$GVA_MANAGER_ROTATE_TOKEN"
 echo "[gsva-manager] starting nodeA and nodeB..."
 
 start_node nodeA nodeA 0 "$NODEA_GUEST_LOG" "$NODEA_QEMU_LOG" "$NODEA_PID_FILE"
