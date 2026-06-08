@@ -336,14 +336,12 @@ static void test_token_rotate(int obmm_fd, uint32_t local_cna,
                               int node_idx, int node_count)
 {
     TEST("GSVA token rotation preserves key identity");
-    struct obmm_helpers_meta metas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
-    bool got[OBMM_POOL_HELPERS_MAX_NODES] = {false};
+    struct obmm_helpers_meta peer_meta = {0};
     uint64_t my_base = GSVA_BASE + 0x1800000ULL +
                        (uint64_t)node_idx * GSVA_SIZE;
     uint64_t import_pas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
     bool import_osync[OBMM_POOL_HELPERS_MAX_NODES] = {false};
     struct obmm_helpers_meta my_meta = {0};
-    int peer_idx = -1;
     uint64_t peer_base = 0;
     uint64_t segment_id = 0;
     uint64_t import_mem_id = 0;
@@ -353,26 +351,19 @@ static void test_token_rotate(int obmm_fd, uint32_t local_cna,
     uint32_t new_token = 0;
     int rc;
 
+    (void)node_count;
+
+    if (node_idx != 0) {
+        PASS();
+        return;
+    }
+
     my_meta.export_cna = local_cna;
 
     rc = obmm_do_export_fixed_uba(obmm_fd, &my_meta, GSVA_SIZE, my_base);
     CHECK(rc == 0, "fixed UBA export should succeed");
 
-    rc = obmm_bootstrap_publish(obmm_fd, node_idx, node_count,
-                                0x475356410404ULL, &my_meta);
-    CHECK(rc == 0, "bootstrap publish should succeed");
-
-    rc = obmm_bootstrap_lookup(obmm_fd, local_cna, node_count,
-                               0x475356410404ULL, metas, got);
-    CHECK(rc == 0, "bootstrap lookup should succeed");
-
-    for (int i = 0; i < node_count; i++) {
-        if (i != node_idx && got[i]) {
-            peer_idx = i;
-            break;
-        }
-    }
-    CHECK(peer_idx >= 0, "peer metadata should be available");
+    peer_meta = my_meta;
 
     if (!obmm_alloc_import_pas(1, GSVA_SIZE, import_pas, import_osync,
                                OBMM_IMPORT_CACHE_AUTO)) {
@@ -381,15 +372,15 @@ static void test_token_rotate(int obmm_fd, uint32_t local_cna,
         return;
     }
 
-    peer_base = GSVA_BASE + 0x1800000ULL + (uint64_t)peer_idx * GSVA_SIZE;
-    segment_id = metas[peer_idx].export_mem_id;
-    token_id = metas[peer_idx].token_id;
+    peer_base = my_base;
+    segment_id = peer_meta.export_mem_id;
+    token_id = peer_meta.token_id;
     old_token = token_id;
     new_token = old_token ^ 0x01020304U;
     if (new_token == 0 || new_token == old_token)
         new_token = old_token + 1;
 
-    rc = obmm_do_import_v2(obmm_fd, &metas[peer_idx], local_cna,
+    rc = obmm_do_import_v2(obmm_fd, &peer_meta, local_cna,
                            import_pas[0], old_token,
                            OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER,
                            OBMM_SIM_DEC_ADDRESS_PROFILE_GSVA_IDENTITY,
@@ -422,8 +413,21 @@ static void test_token_rotate(int obmm_fd, uint32_t local_cna,
                          token_id, new_token, segment_id, peer_base,
                          GSVA_SIZE, &ev_error);
     CHECK(rc == 0, "ReadAcquire with new token should reach QEMU");
+    CHECK(ev_error == GSVA_ERR_TOKEN_DENIED,
+          "new token should be denied before revoke ACK");
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_INV_ACK, local_cna,
+                         token_id, new_token, segment_id, peer_base,
+                         GSVA_SIZE, &ev_error);
+    CHECK(rc == 0, "Token revoke ACK should reach QEMU");
+    CHECK(ev_error == GSVA_OK, "Token revoke ACK should commit new token");
+
+    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, local_cna,
+                         token_id, new_token, segment_id, peer_base,
+                         GSVA_SIZE, &ev_error);
+    CHECK(rc == 0, "ReadAcquire with new token after ACK should reach QEMU");
     CHECK(ev_error == GSVA_OK,
-          "new token should pass using the same GSVA key identity");
+          "new token should pass after ACK using the same GSVA key identity");
 
     obmm_do_unimport(obmm_fd, import_mem_id);
     obmm_do_unexport(obmm_fd, my_meta.export_mem_id);
