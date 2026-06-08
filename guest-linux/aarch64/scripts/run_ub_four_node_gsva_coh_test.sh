@@ -24,6 +24,10 @@ LOG_DIR="$ROOT_DIR/logs"
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_gsva_coh4_${RANDOM}}"
 
 GSVA_TEST_MODE="${GSVA_TEST_MODE:-all}"
+GSVA_MODE="${GSVA_MODE:-legacy_sim_dec}"
+GSVA_STRICT="${GSVA_STRICT:-0}"
+GSVA_COH_HOLD_PENDING="${GSVA_COH_HOLD_PENDING:-0}"
+GSVA_COH_TIMEOUT_MS="${GSVA_COH_TIMEOUT_MS:-5000}"
 APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 
 source "$SCRIPT_DIR/qemu_ub_common.sh"
@@ -84,6 +88,10 @@ start_node() {
     UB_SIM_ENTITY_COUNT="$ENTITY_COUNT" \
     UB_FM_ENTITY_PLAN_FILE="$ENTITY_PLAN_FILE" \
     UB_SIM_PORT_NUM="$PORT_NUM" \
+    GSVA_MODE="$GSVA_MODE" \
+    GSVA_STRICT="$GSVA_STRICT" \
+    GSVA_COH_HOLD_PENDING="$GSVA_COH_HOLD_PENDING" \
+    GSVA_COH_TIMEOUT_MS="$GSVA_COH_TIMEOUT_MS" \
     "$QEMU_BIN" \
       -M virt,gic-version=3,its=on,ummu=on,ub-cluster-mode=on \
       -cpu cortex-a57 \
@@ -133,7 +141,12 @@ wait_all_links_ready() {
 
 validate_coh_logs() {
   local found=false
+  local qemu_log_args=()
+  local guest_log_args=()
+
   for n in A B C D; do
+    qemu_log_args+=("${QEMU_LOGS[$n]}")
+    guest_log_args+=("${GUEST_LOGS[$n]}")
     if grep -Eq 'GSVA_COH' "${QEMU_LOGS[$n]}" 2>/dev/null; then
       found=true
       break
@@ -142,6 +155,38 @@ validate_coh_logs() {
   if [[ "$found" == "false" ]]; then
     echo "[gsva_coh] FAIL: no GSVA_COH evidence in any QEMU log" >&2
     return 1
+  fi
+  if [[ "$GSVA_TEST_MODE" == "coh_recovery" ]]; then
+    if ! grep -q 'GSVA_COH: WriteAcquire S->M pending inv' "${qemu_log_args[@]}"; then
+      echo "[gsva_coh4] FAIL: coh_recovery lacks pending invalidation evidence" >&2
+      return 1
+    fi
+    if ! grep -q 'GSVA_COH: InvAck recovery grant M' "${qemu_log_args[@]}"; then
+      echo "[gsva_coh4] FAIL: coh_recovery did not grant M after InvAck" >&2
+      return 1
+    fi
+    if ! grep -q 'coh_recovery Retry error=0' "${guest_log_args[@]}"; then
+      echo "[gsva_coh4] FAIL: guest did not observe successful retry after InvAck" >&2
+      return 1
+    fi
+    if ! grep -q 'coh_recovery Query recovered state=3 error=0' "${guest_log_args[@]}"; then
+      echo "[gsva_coh4] FAIL: guest query did not observe recovered M state" >&2
+      return 1
+    fi
+    if [[ "$GSVA_MODE" == "arm_mmu" ]]; then
+      if ! grep -q 'GSVA_TLB: lookup' "${qemu_log_args[@]}"; then
+        echo "[gsva_coh4] FAIL: ARM MMU coh_recovery lacks GSVA_TLB lookup evidence" >&2
+        return 1
+      fi
+      if ! grep -Eq 'GSVA_TLB: flush reason=coh_inv_ack.*cleared=[1-9][0-9]*' "${qemu_log_args[@]}"; then
+        echo "[gsva_coh4] FAIL: ARM MMU coh_recovery did not clear installed GSVA TLB metadata" >&2
+        return 1
+      fi
+      if grep -q 'GVA_TCG_TRANSLATE' "${qemu_log_args[@]}"; then
+        echo "[gsva_coh4] FAIL: ARM MMU coh_recovery fell back to GVA_TCG_TRANSLATE" >&2
+        return 1
+      fi
+    fi
   fi
 }
 
