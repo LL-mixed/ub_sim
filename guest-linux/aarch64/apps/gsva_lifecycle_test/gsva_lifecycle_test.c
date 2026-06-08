@@ -31,7 +31,7 @@
 
 #define GSVA_BASE 0x700000000000ULL
 #define GSVA_SIZE 0x400000ULL
-#define GSVA_APERTURE_SIZE (GSVA_SIZE * 16)
+#define GSVA_APERTURE_SIZE (GSVA_SIZE * 32)
 
 static int tests_run = 0;
 static int tests_passed = 0;
