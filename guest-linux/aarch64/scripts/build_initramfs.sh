@@ -37,6 +37,8 @@ GVA_MANAGER_SRC="$ROOT_DIR/apps/gva_manager/gva_manager.c"
 GVA_MANAGER_BIN="$OUT_DIR/linqu_gva_manager"
 OBMM_COH_TEST_SRC="$ROOT_DIR/apps/obmm_coh_test/obmm_coh_test.c"
 OBMM_COH_TEST_BIN="$OUT_DIR/linqu_ub_obmm_coh_test"
+GSVA_QUERY_SRC="$ROOT_DIR/apps/gsva_query/gsva_query.c"
+GSVA_QUERY_BIN="$OUT_DIR/linqu_ub_gsva_query"
 W4_GUEST_SRC="$ROOT_DIR/w4_guest_qemu_demo.c"
 W4_DB_SERVICE_SRC="$ROOT_DIR/w4_kvcache_db_service.c"
 W4_GUEST_BIN="$OUT_DIR/linqu_w4_guest"
@@ -131,6 +133,7 @@ current_initramfs_signature() {
   write_signature_line "obmm_coh_test_src" "$OBMM_COH_TEST_SRC"
   write_signature_line "obmm_gsva_demo_src" "$OBMM_GSVA_DEMO_SRC"
   write_signature_line "gva_manager_src" "$GVA_MANAGER_SRC"
+  write_signature_line "gsva_query_src" "$GSVA_QUERY_SRC"
   write_signature_line "w4_guest_src" "$W4_GUEST_SRC"
   write_signature_line "w4_db_service_src" "$W4_DB_SERVICE_SRC"
   write_signature_line "run_demo_src" "$RUN_DEMO_SRC"
@@ -358,6 +361,7 @@ fi
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/common" "$OBMM_GSVA_DEMO_SRC" -o "$OBMM_GSVA_DEMO_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/kernel_ub/include/uapi" -I"$ROOT_DIR/common" -I"$ROOT_DIR/libs/obmm_queue" "$GVA_MANAGER_SRC" -o "$GVA_MANAGER_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/common" "$OBMM_COH_TEST_SRC" -o "$OBMM_COH_TEST_BIN"
+"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/kernel_ub/include/uapi" -I"$ROOT_DIR/common" "$GSVA_QUERY_SRC" -o "$GSVA_QUERY_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/libs/obmm_queue" -I"$ROOT_DIR/apps/obmm_queue_demo" "$W4_GUEST_SRC" "$W4_DB_SERVICE_SRC" -lm -o "$W4_GUEST_BIN"
 
 if [[ -f "$INIT_SCRIPT_SRC" ]]; then
@@ -384,6 +388,7 @@ cp "$GVA_DIRECT_DEMO_BIN" "$INITRAMFS_DIR/bin/linqu_gva_direct_demo"
 cp "$OBMM_GSVA_DEMO_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_gsva_demo"
 cp "$GVA_MANAGER_BIN" "$INITRAMFS_DIR/bin/linqu_gva_manager"
 cp "$OBMM_COH_TEST_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_coh_test"
+cp "$GSVA_QUERY_BIN" "$INITRAMFS_DIR/bin/linqu_ub_gsva_query"
 cp "$W4_GUEST_BIN" "$INITRAMFS_DIR/bin/linqu_w4_guest"
 chmod +x \
   "$INITRAMFS_DIR/bin/linqu_probe" \
@@ -399,6 +404,7 @@ chmod +x \
   "$INITRAMFS_DIR/bin/linqu_ub_obmm_gsva_demo" \
   "$INITRAMFS_DIR/bin/linqu_gva_manager" \
   "$INITRAMFS_DIR/bin/linqu_ub_obmm_coh_test" \
+  "$INITRAMFS_DIR/bin/linqu_ub_gsva_query" \
   "$INITRAMFS_DIR/bin/linqu_w4_guest"
 
 cp "$BUSYBOX" "$INITRAMFS_DIR/bin/busybox"

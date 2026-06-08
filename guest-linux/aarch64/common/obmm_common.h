@@ -40,6 +40,7 @@
 #include <unistd.h>
 
 #include "../../kernel_ub/include/uapi/ub/obmm.h"
+#include "../../kernel_ub/include/uapi/ub/gsva.h"
 
 /* ------------------------------------------------------------------ */
 /* Constants                                                           */
