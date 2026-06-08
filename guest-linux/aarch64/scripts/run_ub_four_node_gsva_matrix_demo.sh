@@ -38,6 +38,8 @@ LOG_DIR="$ROOT_DIR/logs"
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_gsva_matrix${GSVA_MATRIX_NODE_COUNT}_${RANDOM}}"
 GSVA_MATRIX_BASE="${GSVA_MATRIX_BASE:-0x700000000000}"
 GSVA_MATRIX_SLICE_SIZE="${GSVA_MATRIX_SLICE_SIZE:-0x400000}"
+GSVA_MODE="${GSVA_MODE:-legacy_sim_dec}"
+GSVA_STRICT="${GSVA_STRICT:-0}"
 LOG_PREFIX="[gsva-matrix${GSVA_MATRIX_NODE_COUNT}]"
 
 source "$SCRIPT_DIR/qemu_ub_common.sh"
@@ -99,6 +101,8 @@ start_node() {
   fi
 
   env \
+    GSVA_MODE="$GSVA_MODE" \
+    GSVA_STRICT="$GSVA_STRICT" \
     UB_FM_NODE_ID="$node_name" \
     UB_FM_TOPOLOGY_FILE="$TOPOLOGY_FILE" \
     UB_FM_SHARED_DIR="$SHARED_DIR" \
@@ -270,6 +274,20 @@ validate_node_logs() {
 
     if ! validate_mp_table_log "$node_name" "$qemu_log" "$((GSVA_MATRIX_NODE_COUNT - 1))"; then
       return 1
+    fi
+    if [[ "$GSVA_MODE" == "arm_mmu" ]]; then
+      if ! grep -q 'GSVA_TLB: lookup' "$qemu_log"; then
+        echo "$LOG_PREFIX FAIL: $node_name ARM MMU mode lacks GSVA_TLB lookup evidence" >&2
+        return 1
+      fi
+      if ! grep -q 'GSVA_COH:' "$qemu_log"; then
+        echo "$LOG_PREFIX FAIL: $node_name ARM MMU mode lacks GSVA_COH evidence" >&2
+        return 1
+      fi
+      if grep -q 'GVA_TCG_TRANSLATE' "$qemu_log"; then
+        echo "$LOG_PREFIX FAIL: $node_name ARM MMU mode unexpectedly used SIM_GVA_TCG data path" >&2
+        return 1
+      fi
     fi
     if grep -qE '\[obmm_gsva_demo\] result=fail|Kernel panic - not syncing|Call trace:' "$guest_log"; then
       echo "$LOG_PREFIX FAIL: $node_name has failure markers" >&2

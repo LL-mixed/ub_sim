@@ -22,6 +22,8 @@ GSVA_DEMO_MODE="${GSVA_DEMO_MODE:-identity}"
 GSVA_DEMO_BASE="${GSVA_DEMO_BASE:-0x700000000000}"
 GSVA_DEMO_SIZE="${GSVA_DEMO_SIZE:-0x400000}"
 GSVA_DEMO_NODE_COUNT="${GSVA_DEMO_NODE_COUNT:-2}"
+GSVA_MODE="${GSVA_MODE:-legacy_sim_dec}"
+GSVA_STRICT="${GSVA_STRICT:-0}"
 
 source "$SCRIPT_DIR/qemu_ub_common.sh"
 APPEND_EXTRA="$(ensure_sim_kernel_append_defaults "$APPEND_EXTRA")"
@@ -73,6 +75,8 @@ start_node() {
   fi
 
   env \
+    GSVA_MODE="$GSVA_MODE" \
+    GSVA_STRICT="$GSVA_STRICT" \
     UB_FM_NODE_ID="$node_name" \
     UB_FM_TOPOLOGY_FILE="$TOPOLOGY_FILE" \
     UB_FM_SHARED_DIR="$SHARED_DIR" \
@@ -159,6 +163,20 @@ validate_identity_logs() {
   if ! grep -Eq "GSVA_MAP: cpu_window registered at pa=.*size=$(printf '%x' "$((GSVA_DEMO_SIZE))")" "$NODEB_QEMU_LOG"; then
     echo "[gsva-demo] FAIL: peer QEMU log lacks GSVA cpu_window registration evidence" >&2
     return 1
+  fi
+  if [[ "$GSVA_MODE" == "arm_mmu" ]]; then
+    if ! grep -q 'GSVA_TLB: lookup' "$NODEB_QEMU_LOG"; then
+      echo "[gsva-demo] FAIL: ARM MMU mode lacks GSVA_TLB lookup evidence" >&2
+      return 1
+    fi
+    if ! grep -q 'GSVA_COH:' "$NODEB_QEMU_LOG"; then
+      echo "[gsva-demo] FAIL: ARM MMU mode lacks GSVA_COH evidence" >&2
+      return 1
+    fi
+    if grep -q 'GVA_TCG_TRANSLATE' "$NODEB_QEMU_LOG"; then
+      echo "[gsva-demo] FAIL: ARM MMU mode unexpectedly used SIM_GVA_TCG data path" >&2
+      return 1
+    fi
   fi
 }
 
