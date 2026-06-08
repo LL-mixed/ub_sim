@@ -1570,7 +1570,8 @@ gsva_coherence.c
   -> gsva_coh_send_ub_link_msg()
   -> obmm_coh_send_ub_link_msg() transport helper or equivalent shared helper
   -> UBC msg_code = UBC_MSG_CODE_URMA_DATA
-  -> UBC sub_msg_code = UBC_MSG_SUB_GSVA_COH_*
+  -> UBC sub_msg_code = UBC_MSG_SUB_GSVA_COH carrier
+  -> GsvaCohMsgV1.op identifies INV/ACK/DOWNGRADE/WB/FENCE/RETIRE/TOKEN
   -> hw/ub/hisi/ubc_msgq.c receive dispatch
   -> gsva_coh_handle_rx_*()
 ```
@@ -1600,26 +1601,17 @@ Existing UBC msg subcodes are occupied through `15`:
 #define UBC_MSG_SUB_COH_DOWNGRADE_ACK 15
 ```
 
-GSVA coherence uses new subcodes starting at `16`:
+The UBC extended header stores `sub_msg_code` in 4 bits. Values above `15` are truncated on the wire and are invalid for real transport.
+
+GSVA coherence therefore uses a single 4-bit carrier subcode and carries the concrete operation in `GsvaCohMsgV1.op`:
 
 ```c
-#define UBC_MSG_SUB_GSVA_COH_GETS           16
-#define UBC_MSG_SUB_GSVA_COH_GETM           17
-#define UBC_MSG_SUB_GSVA_COH_INV            18
-#define UBC_MSG_SUB_GSVA_COH_INV_ACK        19
-#define UBC_MSG_SUB_GSVA_COH_DOWNGRADE      20
-#define UBC_MSG_SUB_GSVA_COH_DOWNGRADE_ACK  21
-#define UBC_MSG_SUB_GSVA_COH_WB             22
-#define UBC_MSG_SUB_GSVA_COH_WB_ACK         23
-#define UBC_MSG_SUB_GSVA_COH_FENCE          24
-#define UBC_MSG_SUB_GSVA_COH_FENCE_ACK      25
-#define UBC_MSG_SUB_GSVA_COH_RETIRE         26
-#define UBC_MSG_SUB_GSVA_COH_RETIRE_ACK     27
-#define UBC_MSG_SUB_GSVA_COH_TOKEN_REVOKE   28
-#define UBC_MSG_SUB_GSVA_COH_TOKEN_ACK      29
+#define UBC_MSG_SUB_GSVA_COH 15
 ```
 
-Add these constants in:
+`15` is also the legacy OBMM `UBC_MSG_SUB_COH_DOWNGRADE_ACK` value. Receive dispatch must first identify `sub=15` GSVA carrier payloads by `sizeof(GsvaCohMsgV1)`, `version=1`, and a valid `op`, then fall through to existing OBMM handling for non-GSVA payloads.
+
+Add this constant in:
 
 ```text
 vendor/qemu_8.2.0_ub/include/hw/ub/ub_ubc.h
@@ -1653,7 +1645,7 @@ struct gsva_coh_msg_v1 {
 Payload rules:
 
 - `version` must equal 1.
-- `op` must match `sub_msg_code`.
+- `op` identifies the concrete coherence operation because the wire `sub_msg_code` is the GSVA carrier.
 - `seq` is allocated by the sender from `ubc_dev->next_coh_req_id` or a dedicated `next_gsva_coh_req_id`.
 - `source_cna` must match the UBC transport source CNA.
 - `target_cna` must match the intended receiver.
@@ -1700,7 +1692,7 @@ Send path:
 1. caller holds object lock and decides required remote operations
 2. caller creates pending record for each target CNA
 3. caller releases object lock before blocking
-4. caller sends UBC_MSG_SUB_GSVA_COH_* through UB Link
+4. caller sends `UBC_MSG_SUB_GSVA_COH` through UB Link with concrete `GsvaCohMsgV1.op`
 5. caller polls receive links while waiting
 6. ACK handler completes pending record
 7. caller reacquires object lock and commits transition if all ACKs succeeded
@@ -1710,7 +1702,7 @@ Receive path:
 
 ```text
 1. ubc_msgq receives msg_code=UBC_MSG_CODE_URMA_DATA
-2. dispatch by UBC_MSG_SUB_GSVA_COH_*
+2. dispatch by `UBC_MSG_SUB_GSVA_COH` carrier and `GsvaCohMsgV1.op`
 3. validate payload length and version
 4. validate source CNA from transport header
 5. lookup local GSVA object or tombstone
@@ -2653,6 +2645,7 @@ Status as of 2026-06-09:
 - Token v1 ReadAcquire/WriteAcquire validation, ACK-gated token rotation, manager-distributed token revoke + holder ACK, and ARM MMU token revoke TLB flush are implemented and validated.
 - Route-local GSVA coherence covers writer invalidation, retire tombstone, stale epoch rejection, higher epoch reuse, pending timeout, timeout query, timeout TLB flush, and 2/4/8-node InvAck recovery.
 - Manager-distributed GSVA coherence recovery is validated in a two-node ARM MMU run.
+- QEMU active UB Link GSVA remote invalidate/ACK is implemented and validated in a two-node ARM MMU run. The wire protocol uses the 4-bit-safe `UBC_MSG_SUB_GSVA_COH` carrier and `GsvaCohMsgV1.op` for concrete operations.
 
 Latest manager-distributed recovery evidence:
 
@@ -2664,9 +2657,23 @@ nodeB_guest.log: manager coherence recovery pending segment_id=0xc4c200000000000
 nodeB_guest.log: manager coherence recovery holder ack segment_id=0xc4c2000000000001 state=3 seq=0x2 cna=50386 holder_cna=3
 ```
 
+Latest active UB Link remote invalidate evidence:
+
+```text
+run_id=guest-linux/aarch64/logs/2026-06-09_03-44-01_gsva_coh_27961
+command=GSVA_MODE=arm_mmu GSVA_STRICT=1 GSVA_COH_HOLD_PENDING=1 GSVA_COH_UB_LINK_TX=1 GSVA_COH_TIMEOUT_MS=10000 GSVA_TEST_MODE=coh_remote_inv ./guest-linux/aarch64/scripts/run_ub_two_node_gsva_coh_test.sh
+nodeA_guest.log: coh_remote_inv Query pending seq=0x2 peer_cna=50386
+nodeA_guest.log: coh_remote_inv Retry error=0
+nodeA_qemu.log: GSVA_COH: ub_link send sub=15 scna=0xc4c2 dcna=0xc4d2 payload_len=120
+nodeB_qemu.log: GSVA_COH: ub_link rx sub=15 op=1 scna=0xc4c2 payload_len=120
+nodeB_qemu.log: GSVA_COH: rx INV from cna=50370 segment_id=0x1 seq=2
+nodeA_qemu.log: GSVA_COH: ub_link rx sub=15 op=2 scna=0xc4d2 payload_len=120
+nodeA_qemu.log: GSVA_COH: rx INV_ACK applied from cna=50386 segment_id=0x1 seq=2 rc=0
+```
+
 Remaining gap before this plan can be considered complete:
 
-- QEMU GSVA coherence still needs active UB Link data-plane transactions for remote invalidate, downgrade, writeback, fence, retire, and token revoke. Current UBC subcodes and RX dispatch exist, but the core state transitions are still primarily local/synchronous simulation.
+- QEMU GSVA coherence still needs active UB Link data-plane transactions for downgrade, writeback, fence, retire, and token revoke. Remote invalidate/ACK is now active over UB Link; the remaining operations still need full sender/receiver state transitions and validation.
 - Four-node and eight-node manager-distributed GSVA recovery are not yet validated.
 - Milestone 6 full default-mode regression matrix is not yet complete.
 

@@ -27,6 +27,7 @@ GSVA_MODE="${GSVA_MODE:-legacy_sim_dec}"
 GSVA_STRICT="${GSVA_STRICT:-0}"
 GSVA_COH_HOLD_PENDING="${GSVA_COH_HOLD_PENDING:-0}"
 GSVA_COH_TIMEOUT_MS="${GSVA_COH_TIMEOUT_MS:-5000}"
+GSVA_COH_UB_LINK_TX="${GSVA_COH_UB_LINK_TX:-0}"
 APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 
 source "$SCRIPT_DIR/qemu_ub_common.sh"
@@ -89,6 +90,7 @@ start_node() {
     GSVA_STRICT="$GSVA_STRICT" \
     GSVA_COH_HOLD_PENDING="$GSVA_COH_HOLD_PENDING" \
     GSVA_COH_TIMEOUT_MS="$GSVA_COH_TIMEOUT_MS" \
+    GSVA_COH_UB_LINK_TX="$GSVA_COH_UB_LINK_TX" \
     "$QEMU_BIN" \
       -M virt,gic-version=3,its=on,ummu=on,ub-cluster-mode=on \
       -cpu cortex-a57 \
@@ -223,6 +225,34 @@ validate_coh_logs() {
       fi
       if grep -q 'GVA_TCG_TRANSLATE' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
         echo "[gsva_coh] FAIL: ARM MMU coh_recovery fell back to GVA_TCG_TRANSLATE" >&2
+        return 1
+      fi
+    fi
+  fi
+  if [[ "$GSVA_TEST_MODE" == "coh_remote_inv" ]]; then
+    if ! grep -q 'GSVA_COH: tx INV' "$NODEA_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: remote invalidate test lacks GSVA_COH tx INV evidence" >&2
+      return 1
+    fi
+    if ! grep -q 'GSVA_COH: rx INV from' "$NODEB_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: remote invalidate test lacks peer rx INV evidence" >&2
+      return 1
+    fi
+    if ! grep -q 'GSVA_COH: rx INV_ACK applied' "$NODEA_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: remote invalidate test lacks writer rx INV_ACK apply evidence" >&2
+      return 1
+    fi
+    if ! grep -q 'coh_remote_inv Retry error=0' "$NODEA_GUEST_LOG"; then
+      echo "[gsva_coh] FAIL: guest did not observe remote INV_ACK recovery" >&2
+      return 1
+    fi
+    if [[ "$GSVA_MODE" == "arm_mmu" ]]; then
+      if ! grep -q 'GSVA_TLB: lookup' "$NODEA_QEMU_LOG"; then
+        echo "[gsva_coh] FAIL: ARM MMU remote invalidate lacks GSVA_TLB lookup evidence" >&2
+        return 1
+      fi
+      if grep -q 'GVA_TCG_TRANSLATE' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
+        echo "[gsva_coh] FAIL: ARM MMU remote invalidate fell back to GVA_TCG_TRANSLATE" >&2
         return 1
       fi
     fi
