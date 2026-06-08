@@ -2644,6 +2644,32 @@ The full project is done only when all conditions below are true:
 - Logs include run ID, mode, node count, verdict, and stable failure reason.
 - Docs and scripts point to this canonical plan.
 
+## 28.1 Current implementation status
+
+Status as of 2026-06-09:
+
+- ARM MMU GSVA access path is implemented and has 2/4/8-node acceptance evidence with `GSVA_TLB: lookup` and no `GVA_TCG_TRANSLATE` data-path fallback.
+- GSVA segment descriptor ABI, descriptor-driven import, manager peer descriptor distribution, manager-distributed descriptor import cleanup + retire, and manager RetireAck-before-cleanup are implemented and validated.
+- Token v1 ReadAcquire/WriteAcquire validation, ACK-gated token rotation, manager-distributed token revoke + holder ACK, and ARM MMU token revoke TLB flush are implemented and validated.
+- Route-local GSVA coherence covers writer invalidation, retire tombstone, stale epoch rejection, higher epoch reuse, pending timeout, timeout query, timeout TLB flush, and 2/4/8-node InvAck recovery.
+- Manager-distributed GSVA coherence recovery is validated in a two-node ARM MMU run.
+
+Latest manager-distributed recovery evidence:
+
+```text
+run_id=guest-linux/aarch64/logs/2026-06-09_03-24-04_gsva_mgr_13234
+command=GSVA_MODE=arm_mmu GSVA_STRICT=1 GSVA_COH_HOLD_PENDING=1 GSVA_COH_TIMEOUT_MS=10000 GVA_MANAGER_COH_RECOVERY=1 GVA_MANAGER_CACHE_POLICY=directory-mesi ./guest-linux/aarch64/scripts/run_ub_dual_node_gsva_manager_bootstrap.sh
+nodeA_guest.log: manager coherence recovery committed segment_id=0xc4c2000000000001 acked_peers=1
+nodeB_guest.log: manager coherence recovery pending segment_id=0xc4c2000000000001 state=1 seq=0x2 waiting_for=0x8
+nodeB_guest.log: manager coherence recovery holder ack segment_id=0xc4c2000000000001 state=3 seq=0x2 cna=50386 holder_cna=3
+```
+
+Remaining gap before this plan can be considered complete:
+
+- QEMU GSVA coherence still needs active UB Link data-plane transactions for remote invalidate, downgrade, writeback, fence, retire, and token revoke. Current UBC subcodes and RX dispatch exist, but the core state transitions are still primarily local/synchronous simulation.
+- Four-node and eight-node manager-distributed GSVA recovery are not yet validated.
+- Milestone 6 full default-mode regression matrix is not yet complete.
+
 ## 29. Future work
 
 Future work must not block V1:

@@ -26,6 +26,7 @@ GVA_MANAGER_RETIRE_SEGMENT="${GVA_MANAGER_RETIRE_SEGMENT:-0}"
 GVA_MANAGER_REUSE_SEGMENT="${GVA_MANAGER_REUSE_SEGMENT:-0}"
 GVA_MANAGER_IMPORT_SEGMENT="${GVA_MANAGER_IMPORT_SEGMENT:-0}"
 GVA_MANAGER_ROTATE_TOKEN="${GVA_MANAGER_ROTATE_TOKEN:-0}"
+GVA_MANAGER_COH_RECOVERY="${GVA_MANAGER_COH_RECOVERY:-0}"
 GVA_MANAGER_SEGMENT_SIZE="${GVA_MANAGER_SEGMENT_SIZE:-0x400000}"
 GVA_MANAGER_SEGMENT_ALIGNMENT="${GVA_MANAGER_SEGMENT_ALIGNMENT:-0x1000}"
 GVA_MANAGER_HOME_NODE="${GVA_MANAGER_HOME_NODE:-0}"
@@ -35,6 +36,8 @@ GVA_MANAGER_CONFLICT_NODE="${GVA_MANAGER_CONFLICT_NODE:-}"
 EXPECT_FAILURE="${EXPECT_FAILURE:-0}"
 GSVA_MODE="${GSVA_MODE:-legacy_sim_dec}"
 GSVA_STRICT="${GSVA_STRICT:-0}"
+GSVA_COH_HOLD_PENDING="${GSVA_COH_HOLD_PENDING:-0}"
+GSVA_COH_TIMEOUT_MS="${GSVA_COH_TIMEOUT_MS:-5000}"
 
 source "$SCRIPT_DIR/qemu_ub_common.sh"
 APPEND_EXTRA="$(ensure_sim_kernel_append_defaults "$APPEND_EXTRA")"
@@ -89,13 +92,16 @@ start_node() {
   if [[ "$GVA_MANAGER_CONFLICT_NODE" == "$node_idx" ]]; then
     conflict_append="gva_manager_conflict=1"
   fi
-  if [[ "$GVA_MANAGER_ALLOCATE_SEGMENT" == "1" || "$GVA_MANAGER_RETIRE_SEGMENT" == "1" || "$GVA_MANAGER_REUSE_SEGMENT" == "1" || "$GVA_MANAGER_IMPORT_SEGMENT" == "1" || "$GVA_MANAGER_ROTATE_TOKEN" == "1" ]]; then
+  if [[ "$GVA_MANAGER_ALLOCATE_SEGMENT" == "1" || "$GVA_MANAGER_RETIRE_SEGMENT" == "1" || "$GVA_MANAGER_REUSE_SEGMENT" == "1" || "$GVA_MANAGER_IMPORT_SEGMENT" == "1" || "$GVA_MANAGER_ROTATE_TOKEN" == "1" || "$GVA_MANAGER_COH_RECOVERY" == "1" ]]; then
     segment_append="gva_manager_allocate_segment=1 gva_manager_segment_size=${GVA_MANAGER_SEGMENT_SIZE} gva_manager_segment_alignment=${GVA_MANAGER_SEGMENT_ALIGNMENT} gva_manager_home_node=${GVA_MANAGER_HOME_NODE} gva_manager_cache_policy=${GVA_MANAGER_CACHE_POLICY} gva_manager_access_flags=${GVA_MANAGER_ACCESS_FLAGS}"
-    if [[ "$GVA_MANAGER_IMPORT_SEGMENT" == "1" || "$GVA_MANAGER_ROTATE_TOKEN" == "1" ]]; then
+    if [[ "$GVA_MANAGER_IMPORT_SEGMENT" == "1" || "$GVA_MANAGER_ROTATE_TOKEN" == "1" || "$GVA_MANAGER_COH_RECOVERY" == "1" ]]; then
       segment_append="${segment_append} gva_manager_import_segment=1"
     fi
     if [[ "$GVA_MANAGER_ROTATE_TOKEN" == "1" ]]; then
       segment_append="${segment_append} gva_manager_rotate_token=1"
+    fi
+    if [[ "$GVA_MANAGER_COH_RECOVERY" == "1" ]]; then
+      segment_append="${segment_append} gva_manager_coh_recovery=1"
     fi
     if [[ "$GVA_MANAGER_RETIRE_SEGMENT" == "1" ]]; then
       segment_append="${segment_append} gva_manager_retire_segment=1"
@@ -113,6 +119,8 @@ start_node() {
     UB_FM_ENTITY_PLAN_FILE="$ENTITY_PLAN_FILE" \
     GSVA_MODE="$GSVA_MODE" \
     GSVA_STRICT="$GSVA_STRICT" \
+    GSVA_COH_HOLD_PENDING="$GSVA_COH_HOLD_PENDING" \
+    GSVA_COH_TIMEOUT_MS="$GSVA_COH_TIMEOUT_MS" \
     "$QEMU_BIN" \
       -M virt,gic-version=3,its=on,ummu=on,ub-cluster-mode=on \
       -cpu cortex-a57 \
@@ -214,7 +222,7 @@ validate_manager_logs() {
     echo "[gsva-manager] nodeA=$a_aperture nodeB=$b_aperture" >&2
     return 1
   fi
-  if [[ "$GVA_MANAGER_ALLOCATE_SEGMENT" == "1" || "$GVA_MANAGER_RETIRE_SEGMENT" == "1" || "$GVA_MANAGER_REUSE_SEGMENT" == "1" || "$GVA_MANAGER_IMPORT_SEGMENT" == "1" || "$GVA_MANAGER_ROTATE_TOKEN" == "1" ]]; then
+  if [[ "$GVA_MANAGER_ALLOCATE_SEGMENT" == "1" || "$GVA_MANAGER_RETIRE_SEGMENT" == "1" || "$GVA_MANAGER_REUSE_SEGMENT" == "1" || "$GVA_MANAGER_IMPORT_SEGMENT" == "1" || "$GVA_MANAGER_ROTATE_TOKEN" == "1" || "$GVA_MANAGER_COH_RECOVERY" == "1" ]]; then
     if ! grep -q '\[gva_manager\] segment active' "$NODEA_GUEST_LOG" ||
        ! grep -q '\[gva_manager\] segment active' "$NODEB_GUEST_LOG"; then
       echo "[gsva-manager] FAIL: missing active segment evidence" >&2
@@ -235,7 +243,7 @@ validate_manager_logs() {
       echo "[gsva-manager] nodeA=$a_segment nodeB=$b_segment" >&2
       return 1
     fi
-    if [[ "$GVA_MANAGER_IMPORT_SEGMENT" == "1" || "$GVA_MANAGER_ROTATE_TOKEN" == "1" ]]; then
+    if [[ "$GVA_MANAGER_IMPORT_SEGMENT" == "1" || "$GVA_MANAGER_ROTATE_TOKEN" == "1" || "$GVA_MANAGER_COH_RECOVERY" == "1" ]]; then
       local imported_segment
       imported_segment="$(grep '\[gva_manager\] manager descriptor import segment_id=' "$NODEB_GUEST_LOG" | tail -1 | sed -n 's/.*segment_id=\([^ ]*\).*home_va=\([^ ]*\).*epoch=\([^ ]*\).*p_tag=\([^ ]*\).*token_id=\([^ ]*\).*/\1 \2 \3 \4 \5/p')"
       if [[ -z "$imported_segment" ]]; then
@@ -281,6 +289,30 @@ validate_manager_logs() {
           echo "[gsva-manager] FAIL: ARM MMU token revoke did not flush peer GSVA TLB metadata" >&2
           return 1
         fi
+      fi
+    fi
+    if [[ "$GVA_MANAGER_COH_RECOVERY" == "1" ]]; then
+      if ! grep -q '\[gva_manager\] manager coherence recovery committed' "$NODEA_GUEST_LOG"; then
+        echo "[gsva-manager] FAIL: missing home coherence recovery commit evidence" >&2
+        return 1
+      fi
+      if ! grep -q '\[gva_manager\] manager coherence recovery pending' "$NODEB_GUEST_LOG" ||
+         ! grep -q '\[gva_manager\] manager coherence recovery holder ack' "$NODEB_GUEST_LOG"; then
+        echo "[gsva-manager] FAIL: missing peer coherence recovery holder evidence" >&2
+        return 1
+      fi
+      if ! grep -q 'GSVA_COH: WriteAcquire S->M pending inv' "$NODEB_QEMU_LOG" ||
+         ! grep -q 'GSVA_QUERY_COHERENCE: .*pending=1' "$NODEB_QEMU_LOG" ||
+         ! grep -q 'GSVA_COH: InvAck recovery grant M' "$NODEB_QEMU_LOG" ||
+         ! grep -q 'GSVA_TLB: flush reason=coh_inv_ack' "$NODEB_QEMU_LOG" ||
+         ! grep -q 'GSVA_QUERY_COHERENCE: .*state=M error=0' "$NODEB_QEMU_LOG"; then
+        echo "[gsva-manager] FAIL: missing QEMU coherence recovery evidence" >&2
+        return 1
+      fi
+      if [[ "$GSVA_MODE" == "arm_mmu" ]] &&
+         grep -q 'GVA_TCG_TRANSLATE' "$NODEB_QEMU_LOG"; then
+        echo "[gsva-manager] FAIL: ARM MMU coherence recovery fell back to GVA_TCG_TRANSLATE" >&2
+        return 1
       fi
     fi
     if [[ "$GVA_MANAGER_RETIRE_SEGMENT" == "1" || "$GVA_MANAGER_REUSE_SEGMENT" == "1" ]]; then

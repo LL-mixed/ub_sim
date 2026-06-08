@@ -654,7 +654,7 @@ GVA_ROUTE_DUMP state=retired ... cache_policy=4
 | GVA MRSW ownership registry | 已实现为当前阶段的 conflict/reject 语义 | `mrsw-read-share`、`mrsw-conflict`、`mrsw-writer-conflict` |
 | ARM TCG GVA probe | 已实现为显式开关 | `SIM_GVA_TCG=1`、`GVA_TCG_TRANSLATE` |
 | OBMM directory MESI | 已实现并通过 4/8 节点日志 | `cache_policy=4`、`OBMM_COH_*`、`obmm_coh_test: PASS` |
-| GSVA-specific coherence | 部分实现 | `gsva_route/gsva_coherence` 已接入 map/event/query，ReadAcquire/WriteAcquire token validation、writer invalidation、retire tombstone、higher epoch reuse、pending timeout 终态、timeout query 和 2/4/8 节点 InvAck recovery 已验证；manager-distributed recovery 仍未完整 |
+| GSVA-specific coherence | 部分实现 | `gsva_route/gsva_coherence` 已接入 map/event/query，ReadAcquire/WriteAcquire token validation、writer invalidation、retire tombstone、higher epoch reuse、pending timeout 终态、timeout query、2/4/8 节点 InvAck recovery 和两节点 manager-distributed recovery 已验证；QEMU 主动 UB Link GSVA coherence 数据面仍未完整 |
 | GSVA writer invalidation | 已实现并通过四节点日志 | `writer_inv`：`ReadAcquire I->S`、`ReadAcquire S->S`、`WriteAcquire S->M pending inv`、`WriteAcquire S->M` |
 | Event retire route tombstone | 已实现并通过两节点日志 | `retire_event`：retire 后 `GSVA_UNMAP ... tombstone=yes`，post-retire ReadAcquire 返回 retired |
 | Retire while shared | 已实现并通过四节点日志 | `retire_while_shared`：`ReadAcquire I->S/S->S` 后 `Retire revoke holders state=S`，post-retire ReadAcquire 返回 retired |
@@ -666,7 +666,7 @@ GVA_ROUTE_DUMP state=retired ... cache_policy=4
 | Manager-distributed descriptor import | 已实现并通过两节点日志 | `GVA_MANAGER_IMPORT_SEGMENT=1`：home fixed UBA backing export，peer descriptor import，QEMU `GSVA_MAP` 使用同一 descriptor |
 | Manager-distributed descriptor import cleanup + retire | 已实现并通过两节点日志 | `GVA_MANAGER_IMPORT_SEGMENT=1 GVA_MANAGER_RETIRE_SEGMENT=1`：peer unimport，QEMU `GSVA_UNMAP` + `OBMM_COH_FENCE_ACK`，home kernel retire commit |
 | GSVA-aware unimport cleanup idempotency | 已实现并通过两节点日志 | GSVA segment unimport 走 `GSVA_UNMAP`；普通 manager control import close 走 legacy unmap；negative grep 无 `GSVA_ERR_ROUTE_MISSING` |
-| Distributed retire transaction | 部分完成 | manager RetireAck-before-cleanup、descriptor import cleanup + retire、route-local shared holder retire、token revoke TLB flush、timeout terminal state、timeout query、timeout TLB flush 和 2/4/8 节点 InvAck recovery 已验证；仍需 manager-distributed GSVA-keyed recovery 事务化 |
+| Distributed retire transaction | 部分完成 | manager RetireAck-before-cleanup、descriptor import cleanup + retire、route-local shared holder retire、token revoke TLB flush、timeout terminal state、timeout query、timeout TLB flush、2/4/8 节点 InvAck recovery 和两节点 manager-distributed recovery 已验证；仍需 QEMU 主动 UB Link GSVA coherence 事务化 |
 | Token lease v1 acquire validation | 已实现并通过 2/4 节点日志 | `token_denied`：valid ReadAcquire PASS，bad ReadAcquire/WriteAcquire 返回 `GSVA_ERR_TOKEN_DENIED` |
 | ACK-gated token rotation | route-local 已实现并通过 2/4 节点日志 | `token_rotate`：TokenChange 后 `REVOKING/lease_epoch=2`，old token denied，new token ACK 前 denied，revoke ACK 后同一 key 通过 |
 | Token revoke/ACK 产品化 | 已实现并通过当前验收 | route-local pending + ACK commit、manager-distributed token revoke + holder ACK、ARM MMU token revoke pending/ack TLB flush、带已安装 TLB entry 的 `cleared>0` end-to-end 回归已验证 |
@@ -705,6 +705,18 @@ GVA_ROUTE_DUMP state=retired ... cache_policy=4
 - Manager peer segment distribution 可传递 kernel descriptor，避免 peer manager 根据本地公式重建 `segment_id/p_tag/token`。
 - Manager-distributed descriptor import 可让 peer 直接用 manager 分发 descriptor 进入 `obmm_do_import_gsva_desc_v1()` 和 QEMU `GSVA_MAP`，避免 default import path 回退到 demo 自拼 metadata。
 - Manager-distributed descriptor import cleanup + retire 可让 peer 显式释放 descriptor import，并在 PA-MESI fence ACK 后完成 QEMU tombstone 与 home kernel retire commit，避免 import path 只能依赖 QEMU teardown。
+- Manager-distributed coherence recovery 可由 home manager 广播 recovery request，peer holder 在本地 QEMU 上制造 pending writer invalidation、查询 pending seq、执行 InvAck/Retry、确认恢复到 M 后再 ACK home manager。
+
+2026-06-09 manager-distributed coherence recovery 验证证据：
+
+```text
+run_id=guest-linux/aarch64/logs/2026-06-09_03-24-04_gsva_mgr_13234
+command=GSVA_MODE=arm_mmu GSVA_STRICT=1 GSVA_COH_HOLD_PENDING=1 GSVA_COH_TIMEOUT_MS=10000 GVA_MANAGER_COH_RECOVERY=1 GVA_MANAGER_CACHE_POLICY=directory-mesi ./guest-linux/aarch64/scripts/run_ub_dual_node_gsva_manager_bootstrap.sh
+nodeA_guest.log: [gva_manager] manager coherence recovery committed segment_id=0xc4c2000000000001 acked_peers=1
+nodeB_guest.log: [gva_manager] manager coherence recovery pending segment_id=0xc4c2000000000001 state=1 seq=0x2 waiting_for=0x8
+nodeB_guest.log: [gva_manager] manager coherence recovery holder ack segment_id=0xc4c2000000000001 state=3 seq=0x2 cna=50386 holder_cna=3
+script assertions: QEMU pending invalidation, pending query, InvAck recovery grant M, coh_inv_ack TLB flush, final coherence query state=M error=0, and no GVA_TCG_TRANSLATE fallback in ARM MMU mode
+```
 
 2026-06-09 token acquire 验证证据：
 
@@ -1023,7 +1035,7 @@ negative grep: no result=fail, no manager retire event failure, no GSVA_ERR_ROUT
    - Milestone 3 四节点 `token_denied` / `token_rotate` acceptance 已验证。
    - manager-distributed token revoke + holder ACK 已验证。
    - ARM MMU token revoke pending/ack 的 GSVA TLB key-range flush 已验证。
-   - manager-distributed RetireAck-before-cleanup 和 pending timeout 终态已验证，下一步是推进 GSVA-keyed recovery。
+   - manager-distributed RetireAck-before-cleanup、pending timeout 终态和两节点 manager-distributed GSVA-keyed recovery 已验证，下一步是推进 QEMU 主动 UB Link GSVA coherence 数据面。
 
 2. GSVA route/token v1
    - `gsva_route.c/h` 已存在并接入 `SIM_DEC_OP_GSVA_MAP_V1`。
@@ -1048,7 +1060,8 @@ negative grep: no result=fail, no manager retire event failure, no GSVA_ERR_ROUT
 5. Lifecycle transaction
    - event retire 已绑定 route removal、coherence retire、PA-MESI fence/invalidate best-effort、CPU window remove、tombstone。
    - manager-distributed RetireAck-before-cleanup 已证明 peer ACK 前执行本地 QEMU retire/tombstone。
-   - 下一步是 recovery 与 route/coherence/TLB 事务绑定。
+   - 两节点 manager-distributed recovery 已与 route/coherence/TLB flush 绑定。
+   - 下一步是把 QEMU 侧 remote invalidate/writeback/fence 从同步模拟推进到主动 UB Link 消息事务。
    - timeout 已暴露为 stable error，不允许静默提交。
 
 ## 8. 推荐保留的回归矩阵
@@ -1113,6 +1126,7 @@ GSVA descriptor-driven import: PASS
 GSVA token acquire validation: PASS
 GSVA ACK-gated route-local token rotation: PASS
 GSVA manager-distributed token revoke + holder ACK: PASS
+GSVA manager-distributed coherence recovery: PASS, two-node ARM MMU validation complete
 GSVA event retire tombstone: PASS
 GSVA four-node writer invalidation: PASS
 GSVA four-node retire while shared: PASS
@@ -1120,13 +1134,13 @@ GSVA stale epoch remap rejection: PASS
 GSVA higher epoch reuse: PASS as route-local lifecycle validation
 GSVA-specific coherence: PARTIAL
 ARM MMU default GSVA path: PASS, 2/4/8-node acceptance complete
-Distributed retire ACK/recovery/TLB transaction binding: PARTIAL, manager RetireAck-before-cleanup, route-local shared retire, token TLB flush, timeout terminal state, timeout query, timeout TLB flush and 2/4/8-node route-local InvAck recovery complete; manager-distributed recovery transaction binding pending
+Distributed retire ACK/recovery/TLB transaction binding: PARTIAL, manager RetireAck-before-cleanup, route-local shared retire, token TLB flush, timeout terminal state, timeout query, timeout TLB flush, 2/4/8-node route-local InvAck recovery, and two-node manager-distributed recovery complete; QEMU active UB Link GSVA coherence data-plane transaction pending
 Token revoke/ACK productization: PASS, route-local ACK commit, manager-distributed holder ACK, ARM MMU revoke TLB flush event binding, and cleared>0 end-to-end regression complete
 ```
 
 因此，当前最准确的项目状态是：
 
 ```text
-已完成一个稳定的 GVA/GSVA 地址、GSVA segment descriptor ABI、manager descriptor CLI/peer descriptor distribution、manager-distributed descriptor import cleanup + retire、manager RetireAck-before-cleanup、descriptor-driven import、GSVA token acquire/ACK-gated route-local rotation、manager-distributed token revoke + holder ACK、event retire tombstone、四节点 writer invalidation、四节点 retire-while-shared、stale epoch remap rejection、higher epoch reuse、ARM MMU default GSVA path 与 OBMM MESI 数据层阶段。
-下一阶段应从“能跑”转向“语义收敛”：把 manager-distributed GSVA coherence recovery 合成最终架构。
+已完成一个稳定的 GVA/GSVA 地址、GSVA segment descriptor ABI、manager descriptor CLI/peer descriptor distribution、manager-distributed descriptor import cleanup + retire、manager RetireAck-before-cleanup、descriptor-driven import、GSVA token acquire/ACK-gated route-local rotation、manager-distributed token revoke + holder ACK、manager-distributed coherence recovery、event retire tombstone、四节点 writer invalidation、四节点 retire-while-shared、stale epoch remap rejection、higher epoch reuse、ARM MMU default GSVA path 与 OBMM MESI 数据层阶段。
+下一阶段应从“能跑”转向“语义收敛”：把 QEMU GSVA coherence 从本地同步状态机推进到主动 UB Link remote invalidate/writeback/fence 事务。
 ```

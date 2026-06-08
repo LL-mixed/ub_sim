@@ -59,6 +59,8 @@ enum gva_mgr_msg_type {
     GVA_MGR_MSG_ERROR = 10,
     GVA_MGR_MSG_TOKEN_CHANGE = 11,
     GVA_MGR_MSG_TOKEN_ACK = 12,
+    GVA_MGR_MSG_COH_RECOVERY = 13,
+    GVA_MGR_MSG_COH_RECOVERY_ACK = 14,
 };
 
 struct gva_mgr_msg_hdr {
@@ -99,6 +101,7 @@ struct gva_mgr_config {
     bool reuse_segment;
     bool import_segment;
     bool rotate_token;
+    bool coh_recovery;
     bool desc_alloc;
     bool desc_query;
     bool desc_retire;
@@ -330,6 +333,12 @@ static void config_from_env_cmdline(struct gva_mgr_config *cfg)
         parse_i32_str(value, &parsed32)) {
         cfg->rotate_token = parsed32 != 0;
     }
+    if (obmm_env_or_cmdline("GVA_MANAGER_COH_RECOVERY",
+                            "gva_manager_coh_recovery",
+                            value, sizeof(value)) &&
+        parse_i32_str(value, &parsed32)) {
+        cfg->coh_recovery = parsed32 != 0;
+    }
     if (obmm_env_or_cmdline("GVA_MANAGER_SEGMENT_SIZE",
                             "gva_manager_segment_size",
                             value, sizeof(value)) &&
@@ -461,6 +470,11 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
             cfg->allocate_segment = true;
             cfg->import_segment = true;
             cfg->rotate_token = true;
+        } else if (strcmp(argv[i], "--coh-recovery") == 0) {
+            cfg->bootstrap = true;
+            cfg->allocate_segment = true;
+            cfg->import_segment = true;
+            cfg->coh_recovery = true;
         } else if (strcmp(argv[i], "--dump-routes") == 0) {
             cfg->bootstrap = false;
             cfg->dump_routes = true;
@@ -544,6 +558,7 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
                     "--node-count C [--home-node N] [--segment-size S] "
                     "[--segment-alignment A] [--cache-policy nc|wt|rc|wb|mesi|directory-mesi] "
                     "[--access-flags F] [--import-segment] [--rotate-token] "
+                    "[--coh-recovery] "
                     "[--retire-segment] [--reuse-segment]\n"
                     "       gva_manager --dump-routes\n");
             return -EINVAL;
@@ -591,7 +606,10 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
         cfg->retire_segment = true;
     if (cfg->rotate_token)
         cfg->import_segment = true;
-    if (cfg->retire_segment || cfg->reuse_segment || cfg->import_segment)
+    if (cfg->coh_recovery)
+        cfg->import_segment = true;
+    if (cfg->retire_segment || cfg->reuse_segment || cfg->import_segment ||
+        cfg->coh_recovery)
         cfg->allocate_segment = true;
     if (cfg->allocate_segment && cfg->access_flags == 0)
         cfg->access_flags = OBMM_GSVA_ACCESS_READ | OBMM_GSVA_ACCESS_WRITE;
@@ -1173,6 +1191,18 @@ static int send_gsva_event_for_desc(int obmm_fd, uint32_t sub_op,
                                     uint32_t requester_cna,
                                     const struct obmm_gsva_segment_desc_v1 *desc,
                                     int32_t *error_out);
+static int send_gsva_event_for_desc_token(int obmm_fd, uint32_t sub_op,
+                                          uint32_t requester_cna,
+                                          const struct obmm_gsva_segment_desc_v1 *desc,
+                                          uint32_t token_id,
+                                          uint32_t token_value,
+                                          int32_t *error_out);
+static int query_gsva_coh_for_desc(int obmm_fd,
+                                   const struct obmm_gsva_segment_desc_v1 *desc,
+                                   int32_t *error_out,
+                                   uint32_t *state_out,
+                                   uint64_t *pending_seq_out,
+                                   uint64_t *pending_waiting_out);
 
 static int activate_segment(const struct gva_mgr_config *cfg,
                             struct obmm_mpmc_bus *bus,
@@ -1429,13 +1459,25 @@ static int send_gsva_event_for_desc(int obmm_fd, uint32_t sub_op,
                                     const struct obmm_gsva_segment_desc_v1 *desc,
                                     int32_t *error_out)
 {
+    return send_gsva_event_for_desc_token(obmm_fd, sub_op, requester_cna,
+                                          desc, desc->token_id,
+                                          desc->token_value, error_out);
+}
+
+static int send_gsva_event_for_desc_token(int obmm_fd, uint32_t sub_op,
+                                          uint32_t requester_cna,
+                                          const struct obmm_gsva_segment_desc_v1 *desc,
+                                          uint32_t token_id,
+                                          uint32_t token_value,
+                                          int32_t *error_out)
+{
     struct obmm_cmd_gsva_event_v1 cmd = {0};
 
     cmd.version = OBMM_GSVA_ABI_VERSION;
     cmd.sub_op = sub_op;
     cmd.requester_cna = requester_cna;
-    cmd.token_id = desc->token_id;
-    cmd.token_value = desc->token_value;
+    cmd.token_id = token_id;
+    cmd.token_value = token_value;
     cmd.key.version = OBMM_GSVA_ABI_VERSION;
     cmd.key.segment_id = desc->segment_id;
     cmd.key.home_va = desc->home_va;
@@ -1451,6 +1493,220 @@ static int send_gsva_event_for_desc(int obmm_fd, uint32_t sub_op,
         return -errno;
     *error_out = cmd.error;
     return 0;
+}
+
+static int query_gsva_coh_for_desc(int obmm_fd,
+                                   const struct obmm_gsva_segment_desc_v1 *desc,
+                                   int32_t *error_out,
+                                   uint32_t *state_out,
+                                   uint64_t *pending_seq_out,
+                                   uint64_t *pending_waiting_out)
+{
+    struct obmm_cmd_gsva_query_v1 query = {0};
+    struct {
+        uint32_t version;
+        int32_t error;
+        uint8_t data[240];
+    } *resp = (void *)query.resp_data;
+    uint32_t state = UINT32_MAX;
+    uint64_t pending_seq = 0;
+    uint64_t pending_waiting = 0;
+
+    query.version = OBMM_GSVA_ABI_VERSION;
+    query.query_type = GSVA_QUERY_COHERENCE;
+    query.segment_id = desc->segment_id;
+    query.home_va = desc->home_va;
+
+    if (ioctl(obmm_fd, OBMM_CMD_GSVA_QUERY_V1, &query) != 0)
+        return -errno;
+
+    memcpy(&state, resp->data, sizeof(state));
+    memcpy(&pending_seq, resp->data + sizeof(state), sizeof(pending_seq));
+    memcpy(&pending_waiting,
+           resp->data + sizeof(state) + sizeof(pending_seq),
+           sizeof(pending_waiting));
+
+    if (error_out)
+        *error_out = resp->error;
+    if (state_out)
+        *state_out = state;
+    if (pending_seq_out)
+        *pending_seq_out = pending_seq;
+    if (pending_waiting_out)
+        *pending_waiting_out = pending_waiting;
+    return 0;
+}
+
+static int recover_segment_coherence(const struct gva_mgr_config *cfg,
+                                     struct obmm_mpmc_bus *bus,
+                                     struct node_slot slots[MAX_NODES],
+                                     uint64_t *seq,
+                                     int obmm_fd,
+                                     uint32_t local_cna,
+                                     const struct obmm_gsva_segment_desc_v1 *desc,
+                                     uint64_t node_stride,
+                                     bool have_import)
+{
+    int ret;
+    int peer;
+
+    if (cfg->node_id == cfg->home_node_id) {
+        bool acked[MAX_NODES] = {false};
+        int pending = cfg->node_count - 1;
+
+        for (peer = 0; peer < cfg->node_count; peer++) {
+            if (peer == cfg->node_id)
+                continue;
+            ret = send_segment_msg_broadcast_reliable(
+                    bus, slots, cfg, peer, GVA_MGR_MSG_COH_RECOVERY,
+                    (*seq)++, desc, GVA_MGR_SEGMENT_ACTIVE, 0);
+            if (ret) {
+                log_msg("send COH_RECOVERY failed peer=%d ret=%d",
+                        peer, ret);
+                return ret;
+            }
+        }
+
+        while (pending > 0) {
+            struct gva_mgr_aperture_msg msg;
+            uint32_t src = 0;
+
+            ret = recv_msg(bus, slots, &msg, &src);
+            if (ret) {
+                log_msg("timeout waiting COH_RECOVERY_ACK ret=%d", ret);
+                return ret;
+            }
+            if (msg.hdr.type == GVA_MGR_MSG_ERROR) {
+                log_msg("peer=%u reported coherence recovery error status=%u",
+                        src, msg.status);
+                return -EIO;
+            }
+            if (msg.hdr.type == GVA_MGR_MSG_COH_RECOVERY_ACK &&
+                !acked[src] &&
+                validate_segment_msg(cfg, &msg, desc, node_stride,
+                                     GVA_MGR_SEGMENT_ACTIVE) == 0) {
+                acked[src] = true;
+                pending--;
+            }
+        }
+
+        log_msg("manager coherence recovery committed segment_id=%#" PRIx64
+                " acked_peers=%d",
+                desc->segment_id, cfg->node_count - 1);
+        return 0;
+    }
+
+    while (true) {
+        struct gva_mgr_aperture_msg msg;
+        int32_t ev_error = 0;
+        int32_t query_error = 0;
+        uint32_t query_state = UINT32_MAX;
+        uint64_t pending_seq = 0;
+        uint64_t pending_waiting = 0;
+        uint32_t holder_cna = 3;
+        uint32_t src = 0;
+
+        ret = recv_msg(bus, slots, &msg, &src);
+        if (ret) {
+            log_msg("timeout waiting COH_RECOVERY ret=%d", ret);
+            return ret;
+        }
+        if (src != (uint32_t)cfg->home_node_id ||
+            msg.hdr.type != GVA_MGR_MSG_COH_RECOVERY)
+            continue;
+        if (msg.segment_state != GVA_MGR_SEGMENT_ACTIVE)
+            continue;
+        if (!segment_msg_matches_desc(cfg, &msg, desc))
+            continue;
+        if (!have_import) {
+            ret = -EINVAL;
+            (void)send_segment_msg(bus, slots, cfg, cfg->home_node_id,
+                                   GVA_MGR_MSG_ERROR, (*seq)++,
+                                   desc, GVA_MGR_SEGMENT_ACTIVE,
+                                   (uint32_t)-ret);
+            return ret;
+        }
+
+        ret = send_gsva_event_for_desc(obmm_fd,
+                                       OBMM_GSVA_EVENT_READ_ACQUIRE,
+                                       local_cna, desc, &ev_error);
+        if (ret || ev_error != GSVA_OK)
+            goto event_fail;
+
+        ret = send_gsva_event_for_desc(obmm_fd,
+                                       OBMM_GSVA_EVENT_READ_ACQUIRE,
+                                       holder_cna, desc, &ev_error);
+        if (ret || ev_error != GSVA_OK)
+            goto event_fail;
+
+        ret = send_gsva_event_for_desc(obmm_fd,
+                                       OBMM_GSVA_EVENT_WRITE_ACQUIRE,
+                                       local_cna, desc, &ev_error);
+        if (ret || ev_error != GSVA_ERR_COH_PENDING)
+            goto event_fail;
+
+        ret = query_gsva_coh_for_desc(obmm_fd, desc, &query_error,
+                                      &query_state, &pending_seq,
+                                      &pending_waiting);
+        if (ret || query_error != GSVA_OK || pending_seq == 0) {
+            ev_error = query_error;
+            goto event_fail;
+        }
+        log_msg("manager coherence recovery pending segment_id=%#" PRIx64
+                " state=%u seq=%#" PRIx64 " waiting_for=%#" PRIx64,
+                desc->segment_id, query_state, pending_seq, pending_waiting);
+
+        ret = send_gsva_event_for_desc_token(obmm_fd,
+                                             OBMM_GSVA_EVENT_INV_ACK,
+                                             holder_cna, desc,
+                                             (uint32_t)pending_seq, 0,
+                                             &ev_error);
+        if (ret || ev_error != GSVA_OK)
+            goto event_fail;
+
+        ret = send_gsva_event_for_desc_token(obmm_fd,
+                                             OBMM_GSVA_EVENT_RETRY,
+                                             local_cna, desc,
+                                             (uint32_t)pending_seq, 0,
+                                             &ev_error);
+        if (ret || ev_error != GSVA_OK)
+            goto event_fail;
+
+        ret = query_gsva_coh_for_desc(obmm_fd, desc, &query_error,
+                                      &query_state, &pending_seq,
+                                      &pending_waiting);
+        if (ret || query_error != GSVA_OK || query_state != 3) {
+            ev_error = query_error;
+            goto event_fail;
+        }
+
+        ret = send_gsva_event_for_desc(obmm_fd,
+                                       OBMM_GSVA_EVENT_WRITE_ACQUIRE,
+                                       local_cna, desc, &ev_error);
+        if (ret || ev_error != GSVA_OK)
+            goto event_fail;
+
+        ret = send_segment_msg(bus, slots, cfg, cfg->home_node_id,
+                               GVA_MGR_MSG_COH_RECOVERY_ACK, (*seq)++,
+                               desc, GVA_MGR_SEGMENT_ACTIVE, 0);
+        if (ret)
+            return ret;
+        log_msg("manager coherence recovery holder ack segment_id=%#" PRIx64
+                " state=%u seq=%#" PRIx64 " cna=%u holder_cna=%u",
+                desc->segment_id, query_state, pending_seq, local_cna,
+                holder_cna);
+        return 0;
+
+event_fail:
+        log_msg("manager coherence recovery event failed ret=%d error=%d"
+                " query_state=%u pending_seq=%#" PRIx64,
+                ret, ev_error, query_state, pending_seq);
+        (void)send_segment_msg(bus, slots, cfg, cfg->home_node_id,
+                               GVA_MGR_MSG_ERROR, (*seq)++,
+                               desc, GVA_MGR_SEGMENT_ACTIVE,
+                               (uint32_t)(ret ? -ret : ev_error));
+        return ret ? ret : -EIO;
+    }
 }
 
 static int rotate_segment_token(const struct gva_mgr_config *cfg,
@@ -1760,6 +2016,14 @@ static int run_segment_protocol(const struct gva_mgr_config *cfg,
     if (cfg->rotate_token) {
         ret = rotate_segment_token(cfg, bus, slots, seq, obmm_fd, local_cna,
                                    &desc, node_stride, have_import);
+        if (ret)
+            goto out;
+    }
+
+    if (cfg->coh_recovery) {
+        ret = recover_segment_coherence(cfg, bus, slots, seq, obmm_fd,
+                                        local_cna, &desc, node_stride,
+                                        have_import);
         if (ret)
             goto out;
     }
