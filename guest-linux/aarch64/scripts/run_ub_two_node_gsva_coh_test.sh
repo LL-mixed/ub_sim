@@ -285,6 +285,38 @@ validate_coh_logs() {
       fi
     fi
   fi
+  if [[ "$GSVA_TEST_MODE" == "coh_remote_retire" ]]; then
+    if ! grep -q 'GSVA_COH: tx RETIRE' "$NODEA_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: remote retire test lacks GSVA_COH tx RETIRE evidence" >&2
+      return 1
+    fi
+    if ! grep -q 'GSVA_COH: rx RETIRE from' "$NODEB_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: remote retire test lacks peer rx RETIRE evidence" >&2
+      return 1
+    fi
+    if ! grep -q 'GSVA_COH: rx RETIRE_ACK applied' "$NODEA_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: remote retire test lacks coordinator rx RETIRE_ACK apply evidence" >&2
+      return 1
+    fi
+    if ! grep -q 'GSVA_COH: RetireAck recovery retire' "$NODEA_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: remote retire test did not mark object retired after RetireAck" >&2
+      return 1
+    fi
+    if ! grep -q 'coh_remote_retire Retry error=0' "$NODEA_GUEST_LOG"; then
+      echo "[gsva_coh] FAIL: guest did not observe remote RETIRE_ACK recovery" >&2
+      return 1
+    fi
+    if [[ "$GSVA_MODE" == "arm_mmu" ]]; then
+      if ! grep -q 'GSVA_TLB: lookup' "$NODEA_QEMU_LOG"; then
+        echo "[gsva_coh] FAIL: ARM MMU remote retire lacks GSVA_TLB lookup evidence" >&2
+        return 1
+      fi
+      if grep -q 'GVA_TCG_TRANSLATE' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
+        echo "[gsva_coh] FAIL: ARM MMU remote retire fell back to GVA_TCG_TRANSLATE" >&2
+        return 1
+      fi
+    fi
+  fi
 }
 
 echo "[gsva_coh] run_id=$RUN_ID mode=$GSVA_TEST_MODE"
