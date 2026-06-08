@@ -55,9 +55,15 @@
   `guest-linux/aarch64/logs/2026-06-09_02-28-14_gsva_armmmu4_6466`。
 - 2026-06-09 在远端 `cf:/sd_data/repo/ub_sim` 上重新构建 QEMU，并通过的八节点 GSVA ARM MMU matrix 验证日志：
   `guest-linux/aarch64/logs/2026-06-09_02-28-37_gsva_armmmu8_28605`。
+- 2026-06-09 在远端 `cf:/sd_data/repo/ub_sim` 上修正 QEMU GSVA V1 `address_profile` 命名空间后，通过的两节点 GSVA ARM MMU identity 验证日志：
+  `guest-linux/aarch64/logs/2026-06-09_02-33-16_gsva_armmmu_30909`。
+- 2026-06-09 在远端 `cf:/sd_data/repo/ub_sim` 上修正 QEMU GSVA V1 `address_profile` 命名空间后，通过的四节点 GSVA ARM MMU matrix 验证日志：
+  `guest-linux/aarch64/logs/2026-06-09_02-33-52_gsva_armmmu4_12280`。
+- 2026-06-09 在远端 `cf:/sd_data/repo/ub_sim` 上修正 QEMU GSVA V1 `address_profile` 命名空间后，通过的八节点 GSVA ARM MMU matrix 验证日志：
+  `guest-linux/aarch64/logs/2026-06-09_02-34-06_gsva_armmmu8_20575`。
 - `docs/qemu_obmm_directory_mesi_coherence_design.md` 中的 OBMM directory MESI 当前实现状态记录。
 
-除明确列出的 2026-06-08 segment ABI 验证、2026-06-09 token acquire 验证、2026-06-09 token rotation 验证、2026-06-09 route-local token revoke ACK gating 验证、2026-06-09 四节点 token acquire 验证、2026-06-09 四节点 token rotation 验证、2026-06-09 manager-distributed token revoke + holder ACK 验证、2026-06-09 event retire 验证、2026-06-09 四节点 writer invalidation 验证、2026-06-09 stale remap 验证、2026-06-09 read-only token permission 验证、2026-06-09 higher epoch reuse 验证、2026-06-09 descriptor-driven import 验证、2026-06-09 manager descriptor CLI 验证、2026-06-09 manager peer descriptor distribution 验证、2026-06-09 manager-distributed descriptor import 验证、2026-06-09 manager-distributed descriptor import cleanup + retire 验证、2026-06-09 GSVA-aware unimport cleanup idempotency 验证、2026-06-09 四节点 retire-while-shared 验证、2026-06-09 manager-distributed RetireAck-before-cleanup 验证和 2026-06-09 ARM MMU 2/4/8 节点验收外，其余结论基于已经存在的代码和日志证据。
+除明确列出的 2026-06-08 segment ABI 验证、2026-06-09 token acquire 验证、2026-06-09 token rotation 验证、2026-06-09 route-local token revoke ACK gating 验证、2026-06-09 四节点 token acquire 验证、2026-06-09 四节点 token rotation 验证、2026-06-09 manager-distributed token revoke + holder ACK 验证、2026-06-09 event retire 验证、2026-06-09 四节点 writer invalidation 验证、2026-06-09 stale remap 验证、2026-06-09 read-only token permission 验证、2026-06-09 higher epoch reuse 验证、2026-06-09 descriptor-driven import 验证、2026-06-09 manager descriptor CLI 验证、2026-06-09 manager peer descriptor distribution 验证、2026-06-09 manager-distributed descriptor import 验证、2026-06-09 manager-distributed descriptor import cleanup + retire 验证、2026-06-09 GSVA-aware unimport cleanup idempotency 验证、2026-06-09 四节点 retire-while-shared 验证、2026-06-09 manager-distributed RetireAck-before-cleanup 验证、2026-06-09 ARM MMU 2/4/8 节点验收和 2026-06-09 GSVA V1 profile namespace 修正后的 ARM MMU 2/4/8 节点回归外，其余结论基于已经存在的代码和日志证据。
 
 ## 1. 总体结论
 
@@ -1014,7 +1020,7 @@ negative grep: no result=fail, no manager retire event failure, no GSVA_ERR_ROUT
    - 已在 `arm_cpu_tlb_fill()` 中接入 `GSVA_MODE=arm_mmu`，data access 先查 GSVA route/coherence，未命中才走正常 ARM page-table translation，不再依赖 `sim_dec_gva_tcg_translate()`。
    - 已引入 GSVA TLB metadata side table，并在 `GSVA_MAP/GSVA_UNMAP` 时 flush。
    - 两节点 identity、四节点 matrix、八节点 matrix 验收均要求 `GSVA_TLB: lookup` 和 `GSVA_COH:` 出现在 QEMU 日志，且 `GVA_TCG_TRANSLATE` 不出现在 data path。
-   - 当前 QEMU 对 kernel 转换出的 GSVA route 做结构性 identity 兜底：`source=GVA_MANAGER` 且 `local_va == home_va == remote_uba`。原因是当前日志中 `GSVA_MAP` 的 `profile=1` 仍表现为 generic，后续应在 guest kernel import-private 到 `GSVA_MAP_V1` 的转换源头补齐 identity profile。
+   - QEMU 已区分 SIM_DEC GVA profile namespace 和 GSVA V1 profile namespace：`GSVA_MAP profile=1` 表示 `GSVA_ADDRESS_PROFILE_STRICT_GSVA`，不是 generic GVA。修正后 2/4/8 节点日志均满足 `profile=1`、`GSVA_TLB: lookup`、`GSVA_COH:`，且没有 `GSVA_MMU: unsupported route` 或 `GVA_TCG_TRANSLATE`。
 
 5. Lifecycle transaction
    - event retire 已绑定 route removal、coherence retire、PA-MESI fence/invalidate best-effort、CPU window remove、tombstone。
@@ -1098,5 +1104,5 @@ Token revoke/ACK productization: PARTIAL, route-local ACK commit and manager-dis
 
 ```text
 已完成一个稳定的 GVA/GSVA 地址、GSVA segment descriptor ABI、manager descriptor CLI/peer descriptor distribution、manager-distributed descriptor import cleanup + retire、manager RetireAck-before-cleanup、descriptor-driven import、GSVA token acquire/ACK-gated route-local rotation、manager-distributed token revoke + holder ACK、event retire tombstone、四节点 writer invalidation、四节点 retire-while-shared、stale epoch remap rejection、higher epoch reuse、ARM MMU default GSVA path 与 OBMM MESI 数据层阶段。
-下一阶段应从“能跑”转向“语义收敛”：把 holder token cache/TLB flush、跨节点 GSVA coherence timeout/recovery、route/coherence/TLB 事务和 kernel `GSVA_MAP_V1` profile 源头修正合成最终架构。
+下一阶段应从“能跑”转向“语义收敛”：把 holder token cache/TLB flush、跨节点 GSVA coherence timeout/recovery 和 route/coherence/TLB 事务合成最终架构。
 ```
