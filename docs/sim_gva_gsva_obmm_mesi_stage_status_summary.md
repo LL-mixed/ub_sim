@@ -19,9 +19,11 @@
   `guest-linux/aarch64/logs/2026-06-09_00-21-31_gsva_coh_12940`。
 - 2026-06-09 在远端 `cf:/sd_data/repo/ub_sim` 上重新构建 guest artifacts，并通过的四节点 GSVA writer invalidation 验证日志：
   `guest-linux/aarch64/logs/2026-06-09_00-25-17_gsva_coh4_15946`。
+- 2026-06-09 在远端 `cf:/sd_data/repo/ub_sim` 上重新构建 guest artifacts，并通过的 GSVA stale epoch remap rejection 验证日志：
+  `guest-linux/aarch64/logs/2026-06-09_00-28-44_gsva_coh_25343`。
 - `docs/qemu_obmm_directory_mesi_coherence_design.md` 中的 OBMM directory MESI 当前实现状态记录。
 
-除明确列出的 2026-06-08 segment ABI 验证、2026-06-09 token acquire 验证、2026-06-09 token rotation 验证、2026-06-09 event retire 验证和 2026-06-09 四节点 writer invalidation 验证外，其余结论基于已经存在的代码和日志证据。
+除明确列出的 2026-06-08 segment ABI 验证、2026-06-09 token acquire 验证、2026-06-09 token rotation 验证、2026-06-09 event retire 验证、2026-06-09 四节点 writer invalidation 验证和 2026-06-09 stale remap 验证外，其余结论基于已经存在的代码和日志证据。
 
 ## 1. 总体结论
 
@@ -36,14 +38,15 @@
 7. `OBMM_CMD_GSVA_ALLOC_SEGMENT/QUERY_SEGMENT/RETIRE_SEGMENT` v1 ABI 已经进入 guest kernel ioctl path，并通过两节点 lifecycle `segment_abi` 验证。
 8. `OBMM_CMD_GSVA_EVENT_V1` 已经进入 guest kernel ioctl path，可触发 QEMU GSVA ReadAcquire/WriteAcquire/TokenChange/Retire；active route token v1 精确匹配校验已通过两节点 `token_denied` 验证，basic route-local token rotation 已通过两节点 `token_rotate` 验证，event Retire route tombstone 已通过两节点 `retire_event` 验证。
 9. 四节点 `writer_inv` 已验证 GSVA ReadAcquire shared state 到 WriteAcquire invalidating writer 的状态机转换，QEMU 日志可见 `WriteAcquire S->M pending inv` 和 `WriteAcquire S->M`。
-10. 最终目标中的 GSVA-specific coherence 仍未完整完成；当前已经有 GSVA route/coherence 模块、acquire token 校验、basic token rotation、event retire tombstone 和四节点 writer invalidation，但跨节点 retire ACK/timeout/reuse、manager token revoke ACK、ARM MMU 默认路径还未形成最终事务闭环。
+10. Stale epoch remap rejection 已验证：event Retire 后同一 `{segment_id, home_va, epoch=1}` 再次 map 会被 QEMU tombstone 拒绝为 `GSVA_ERR_STALE_EPOCH`。
+11. 最终目标中的 GSVA-specific coherence 仍未完整完成；当前已经有 GSVA route/coherence 模块、acquire token 校验、basic token rotation、event retire tombstone、四节点 writer invalidation 和 stale remap rejection，但跨节点 retire ACK/timeout、epoch reuse commit、manager token revoke ACK、ARM MMU 默认路径还未形成最终事务闭环。
 
 一句话判断：
 
 ```text
 当前阶段已经从“设计概念”进入“多节点可运行实现”。
 GVA/GSVA 地址语义、QEMU route、guest kernel GSVA aperture、OBMM directory MESI 已经有真实日志闭环。
-segment descriptor ABI、token acquire/rotation、event retire tombstone 和四节点 writer invalidation 已有独立验证；下一阶段的核心不是再证明能跑，而是把 GSVA-specific coherence、token revoke ACK、segment reuse 与 route/coherence/TLB 的事务绑定、ARM MMU 默认路径产品化。
+segment descriptor ABI、token acquire/rotation、event retire tombstone、四节点 writer invalidation 和 stale epoch remap rejection 已有独立验证；下一阶段的核心不是再证明能跑，而是把 GSVA-specific coherence、token revoke ACK、epoch reuse 与 route/coherence/TLB 的事务绑定、ARM MMU 默认路径产品化。
 ```
 
 ## 2. 当前实现分层状态
@@ -568,7 +571,8 @@ GVA_ROUTE_DUMP state=retired ... cache_policy=4
 | GSVA-specific coherence | 部分实现 | `gsva_route/gsva_coherence` 已接入 map/event，ReadAcquire/WriteAcquire token validation 已验证；retire/reuse 和 ACK 恢复仍未完整 |
 | GSVA writer invalidation | 已实现并通过四节点日志 | `writer_inv`：`ReadAcquire I->S`、`ReadAcquire S->S`、`WriteAcquire S->M pending inv`、`WriteAcquire S->M` |
 | Event retire route tombstone | 已实现并通过两节点日志 | `retire_event`：retire 后 `GSVA_UNMAP ... tombstone=yes`，post-retire ReadAcquire 返回 retired |
-| Segment reuse / distributed retire transaction | 未完成 | 仍需 `segment_id/epoch/ACK/timeout/TLB flush` 事务化 |
+| Stale epoch remap rejection | 已实现并通过两节点日志 | `stale_remap`：retire 后 epoch=1 remap 被 `GSVA_ERR_STALE_EPOCH` 拒绝 |
+| Segment reuse / distributed retire transaction | 未完成 | 仍需 new epoch reuse commit、ACK/timeout/TLB flush 事务化 |
 | Token lease v1 acquire validation | 已实现并通过两节点日志 | `token_denied`：valid ReadAcquire PASS，bad ReadAcquire/WriteAcquire 返回 `GSVA_ERR_TOKEN_DENIED` |
 | Basic token rotation | 已实现并通过两节点日志 | `token_rotate`：TokenChange 后 `lease_epoch=2`，old token denied，新 token 使用同一 key 通过 |
 | Token revoke/ACK 产品化 | 未完成 | 仍需 manager 分发、revoke ACK、holder token cache/TLB flush |
@@ -598,6 +602,7 @@ GVA_ROUTE_DUMP state=retired ... cache_policy=4
 - TokenChange 可在同一 `gsva_key_v1` 上提交新的 `token_value` 和 `lease_epoch`；旧 token 随后返回 `GSVA_ERR_TOKEN_DENIED`，新 token 通过。
 - Event Retire 可把 active route 迁移到 tombstone，删除 CPU window，并让后续同一 key 的 acquire 返回 retired。
 - 四节点 writer invalidation 可从 shared reader 状态进入 writer invalidation，再授予 modified writer。
+- Retired tombstone 会拒绝同一 epoch 的 stale remap，避免旧 key 静默复活。
 
 2026-06-09 token acquire 验证证据：
 
@@ -663,6 +668,22 @@ nodeA_qemu.log:  GSVA_COH: WriteAcquire S->M cna=50370 segment_id=0x1
 nodeB_guest.log: [gsva_coh_test] verdict=PASS
 nodeC_guest.log: [gsva_coh_test] verdict=PASS
 nodeD_guest.log: [gsva_coh_test] verdict=PASS
+```
+
+2026-06-09 stale remap 验证证据：
+
+```text
+run_id=guest-linux/aarch64/logs/2026-06-09_00-28-44_gsva_coh_25343
+nodeA_guest.log: [gsva_coh_test] TEST: GSVA stale epoch remap rejected after retire
+nodeA_guest.log: OBMM: sim decoder map callback failed: -EIO.
+nodeA_guest.log: [gsva_coh_test] verdict=PASS
+nodeA_qemu.log:  GSVA_UNMAP: map_id=1 segment_id=0x1 home_va=0x700003400000 epoch=1 tombstone=yes
+nodeA_qemu.log:  GSVA_ROUTE: stale epoch on tombstone: new epoch=1 <= old epoch=1
+nodeA_qemu.log:  GSVA_MAP: failed: GSVA_ERR_STALE_EPOCH
+nodeB_guest.log: [gsva_coh_test] verdict=PASS
+nodeB_qemu.log:  GSVA_UNMAP: map_id=1 segment_id=0x1 home_va=0x700003000000 epoch=1 tombstone=yes
+nodeB_qemu.log:  GSVA_ROUTE: stale epoch on tombstone: new epoch=1 <= old epoch=1
+nodeB_qemu.log:  GSVA_MAP: failed: GSVA_ERR_STALE_EPOCH
 ```
 
 关键区别：
@@ -738,6 +759,7 @@ GSVA_TEST_MODE=segment_abi ./guest-linux/aarch64/scripts/run_ub_two_node_gsva_li
 GSVA_TEST_MODE=token_denied ./guest-linux/aarch64/scripts/run_ub_two_node_gsva_coh_test.sh
 GSVA_TEST_MODE=token_rotate ./guest-linux/aarch64/scripts/run_ub_two_node_gsva_coh_test.sh
 GSVA_TEST_MODE=retire_event ./guest-linux/aarch64/scripts/run_ub_two_node_gsva_coh_test.sh
+GSVA_TEST_MODE=stale_remap ./guest-linux/aarch64/scripts/run_ub_two_node_gsva_coh_test.sh
 GSVA_TEST_MODE=writer_inv ./guest-linux/aarch64/scripts/run_ub_four_node_gsva_coh_test.sh
 ./guest-linux/aarch64/scripts/run_ub_four_node_gsva_manager_bootstrap.sh
 ./guest-linux/aarch64/scripts/run_ub_four_node_gsva_matrix_demo.sh
@@ -773,15 +795,16 @@ GSVA token acquire validation: PASS
 GSVA basic token rotation: PASS
 GSVA event retire tombstone: PASS
 GSVA four-node writer invalidation: PASS
+GSVA stale epoch remap rejection: PASS
 GSVA-specific coherence: PARTIAL
 ARM MMU default GSVA path: NOT YET
-Segment reuse route/coherence/TLB transaction binding: NOT YET
+Segment new-epoch reuse route/coherence/TLB transaction binding: NOT YET
 Token revoke/ACK productization: NOT YET
 ```
 
 因此，当前最准确的项目状态是：
 
 ```text
-已完成一个稳定的 GVA/GSVA 地址、GSVA segment descriptor ABI、GSVA token acquire/rotation、event retire tombstone、四节点 writer invalidation 与 OBMM MESI 数据层阶段。
-下一阶段应从“能跑”转向“语义收敛”：把 GSVA key、token revoke ACK、epoch reuse、route/coherence/TLB 事务和 ARM MMU 默认路径合成最终架构。
+已完成一个稳定的 GVA/GSVA 地址、GSVA segment descriptor ABI、GSVA token acquire/rotation、event retire tombstone、四节点 writer invalidation、stale epoch remap rejection 与 OBMM MESI 数据层阶段。
+下一阶段应从“能跑”转向“语义收敛”：把 GSVA key、token revoke ACK、new-epoch reuse、route/coherence/TLB 事务和 ARM MMU 默认路径合成最终架构。
 ```
