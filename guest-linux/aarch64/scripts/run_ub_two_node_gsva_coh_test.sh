@@ -349,6 +349,38 @@ validate_coh_logs() {
       fi
     fi
   fi
+  if [[ "$GSVA_TEST_MODE" == "coh_remote_fence" ]]; then
+    if ! grep -q 'GSVA_COH: tx FENCE' "$NODEA_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: remote fence test lacks GSVA_COH tx FENCE evidence" >&2
+      return 1
+    fi
+    if ! grep -q 'GSVA_COH: rx FENCE from' "$NODEB_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: remote fence test lacks peer rx FENCE evidence" >&2
+      return 1
+    fi
+    if ! grep -q 'GSVA_COH: rx FENCE_ACK applied' "$NODEA_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: remote fence test lacks coordinator rx FENCE_ACK apply evidence" >&2
+      return 1
+    fi
+    if ! grep -q 'GSVA_COH: FenceAck recovery complete' "$NODEA_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: remote fence test did not complete fence after ACK" >&2
+      return 1
+    fi
+    if ! grep -q 'coh_remote_fence Retry error=0' "$NODEA_GUEST_LOG"; then
+      echo "[gsva_coh] FAIL: guest did not observe remote FENCE_ACK recovery" >&2
+      return 1
+    fi
+    if [[ "$GSVA_MODE" == "arm_mmu" ]]; then
+      if ! grep -q 'GSVA_TLB: lookup' "$NODEA_QEMU_LOG"; then
+        echo "[gsva_coh] FAIL: ARM MMU remote fence lacks GSVA_TLB lookup evidence" >&2
+        return 1
+      fi
+      if grep -q 'GVA_TCG_TRANSLATE' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
+        echo "[gsva_coh] FAIL: ARM MMU remote fence fell back to GVA_TCG_TRANSLATE" >&2
+        return 1
+      fi
+    fi
+  fi
   if [[ "$GSVA_TEST_MODE" == "coh_remote_retire" ]]; then
     if ! grep -q 'GSVA_COH: tx RETIRE' "$NODEA_QEMU_LOG"; then
       echo "[gsva_coh] FAIL: remote retire test lacks GSVA_COH tx RETIRE evidence" >&2
