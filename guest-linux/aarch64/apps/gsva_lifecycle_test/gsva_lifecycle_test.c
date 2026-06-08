@@ -120,47 +120,145 @@ static void test_mmap_strict(int obmm_fd, uint32_t local_cna, int node_idx)
 }
 
 /* ---- Test: retire_reuse ---- */
+static void check_segment_desc(const struct obmm_gsva_segment_desc_v1 *desc,
+                               uint64_t expected_home_va,
+                               uint32_t local_cna);
+static int gsva_send_desc_event(int obmm_fd,
+                                const struct obmm_gsva_segment_desc_v1 *desc,
+                                uint32_t sub_op, uint32_t requester_cna,
+                                int32_t *error_out);
+
 static void test_retire_reuse(int obmm_fd, uint32_t local_cna, int node_idx)
 {
     TEST("retire then reuse same address");
     uint64_t base = GSVA_BASE + 0x2000000ULL;
-
-    /* First lifecycle */
-    struct obmm_helpers_meta meta1 = {0};
-    meta1.export_cna = local_cna;
-    int rc = obmm_do_export_fixed_uba(obmm_fd, &meta1, GSVA_SIZE, base);
-    CHECK(rc == 0, "first export should succeed");
-
+    struct obmm_cmd_gsva_alloc_segment_v1 alloc1 = {0};
+    struct obmm_cmd_gsva_alloc_segment_v1 alloc2 = {0};
+    struct obmm_cmd_gsva_retire_segment_v1 retire = {0};
+    struct obmm_helpers_meta backing1 = {0};
+    struct obmm_helpers_meta backing2 = {0};
     struct obmm_helpers_region region1 = {0};
-    rc = obmm_map_gsva_region_at(meta1.export_mem_id,
-                                 (void *)(uintptr_t)base,
-                                 GSVA_SIZE, false, &region1);
-    CHECK(rc == 0, "first mmap should succeed");
+    struct obmm_helpers_region region2 = {0};
+    uint64_t import_pas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
+    bool import_osync[OBMM_POOL_HELPERS_MAX_NODES] = {false};
+    uint64_t import_mem_id1 = 0;
+    uint64_t import_mem_id2 = 0;
+    int32_t ev_error = GSVA_ERR_FEATURE_MISSING;
+    uint64_t *data;
+    int rc;
 
-    uint64_t *data = (uint64_t *)region1.addr;
+    alloc1.version = OBMM_GSVA_ABI_VERSION;
+    alloc1.size = GSVA_SIZE;
+    alloc1.alignment = GSVA_SIZE;
+    alloc1.requested_home_va = base;
+    alloc1.home_node_id = (uint32_t)node_idx;
+    alloc1.cache_policy = OBMM_SIM_DEC_CACHE_POLICY_DIRECTORY_MESI;
+    alloc1.requested_p_tag = OBMM_GSVA_P_TAG_AUTO;
+    alloc1.access_flags = OBMM_GSVA_ACCESS_READ | OBMM_GSVA_ACCESS_WRITE;
+    rc = ioctl(obmm_fd, OBMM_CMD_GSVA_ALLOC_SEGMENT, &alloc1);
+    CHECK(rc == 0, "first ALLOC_SEGMENT should succeed");
+    check_segment_desc(&alloc1.desc, base, local_cna);
+
+    backing1.export_cna = local_cna;
+    rc = obmm_do_export_fixed_uba(obmm_fd, &backing1, alloc1.desc.size,
+                                  alloc1.desc.home_va);
+    CHECK(rc == 0, "first fixed UBA backing export should succeed");
+
+    if (!obmm_alloc_import_pas(2, alloc1.desc.size, import_pas, import_osync,
+                               OBMM_IMPORT_CACHE_AUTO)) {
+        obmm_do_unexport(obmm_fd, backing1.export_mem_id);
+        FAIL("failed to allocate import PAs");
+        return;
+    }
+
+    rc = obmm_do_import_gsva_desc_v1(obmm_fd, &alloc1.desc, local_cna,
+                                     import_pas[0], alloc1.desc.home_va,
+                                     &import_mem_id1);
+    CHECK(rc == 0, "first descriptor-driven import should succeed");
+
+    rc = obmm_map_gsva_region_at(import_mem_id1,
+                                 (void *)(uintptr_t)alloc1.desc.home_va,
+                                 alloc1.desc.size, import_osync[0], &region1);
+    CHECK(rc == 0, "first descriptor MAP_GSVA should succeed");
+    data = (uint64_t *)region1.addr;
     *data = 0x1111111111111111ULL;
+    CHECK(*data == 0x1111111111111111ULL,
+          "first lifecycle readback should match");
+
+    rc = gsva_send_desc_event(obmm_fd, &alloc1.desc,
+                              OBMM_GSVA_EVENT_READ_ACQUIRE, local_cna,
+                              &ev_error);
+    CHECK(rc == 0, "first ReadAcquire should reach QEMU");
+    CHECK(ev_error == GSVA_OK, "first ReadAcquire should pass");
+
+    rc = gsva_send_desc_event(obmm_fd, &alloc1.desc,
+                              OBMM_GSVA_EVENT_RETIRE, local_cna,
+                              &ev_error);
+    CHECK(rc == 0, "first Retire event should reach QEMU");
+    CHECK(ev_error == GSVA_OK, "first Retire event should tombstone QEMU route");
 
     obmm_unmap_region(&region1);
-    obmm_do_unexport(obmm_fd, meta1.export_mem_id);
+    obmm_do_unimport(obmm_fd, import_mem_id1);
+    obmm_do_unexport(obmm_fd, backing1.export_mem_id);
 
-    /* Second lifecycle at same address */
-    struct obmm_helpers_meta meta2 = {0};
-    meta2.export_cna = local_cna;
-    rc = obmm_do_export_fixed_uba(obmm_fd, &meta2, GSVA_SIZE, base);
-    CHECK(rc == 0, "second export at same address should succeed");
+    retire.version = OBMM_GSVA_ABI_VERSION;
+    retire.segment_id = alloc1.desc.segment_id;
+    retire.epoch = alloc1.desc.epoch;
+    retire.timeout_ms = 1000;
+    rc = ioctl(obmm_fd, OBMM_CMD_GSVA_RETIRE_SEGMENT, &retire);
+    CHECK(rc == 0, "first RETIRE_SEGMENT should succeed");
+    CHECK(retire.status == OBMM_GSVA_RETIRE_COMMITTED,
+          "first RETIRE_SEGMENT should commit");
 
-    struct obmm_helpers_region region2 = {0};
-    rc = obmm_map_gsva_region_at(meta2.export_mem_id,
-                                 (void *)(uintptr_t)base,
-                                 GSVA_SIZE, false, &region2);
-    CHECK(rc == 0, "second mmap at same address should succeed");
+    rc = gsva_send_desc_event(obmm_fd, &alloc1.desc,
+                              OBMM_GSVA_EVENT_READ_ACQUIRE, local_cna,
+                              &ev_error);
+    CHECK(rc == 0, "old descriptor ReadAcquire should reach QEMU");
+    CHECK(ev_error != GSVA_OK,
+          "old descriptor should not silently revive after retire");
 
+    alloc2 = alloc1;
+    memset(&alloc2.desc, 0, sizeof(alloc2.desc));
+    rc = ioctl(obmm_fd, OBMM_CMD_GSVA_ALLOC_SEGMENT, &alloc2);
+    CHECK(rc == 0, "second ALLOC_SEGMENT at same home_va should succeed");
+    check_segment_desc(&alloc2.desc, base, local_cna);
+
+    backing2.export_cna = local_cna;
+    rc = obmm_do_export_fixed_uba(obmm_fd, &backing2, alloc2.desc.size,
+                                  alloc2.desc.home_va);
+    CHECK(rc == 0, "second fixed UBA backing export should succeed");
+
+    rc = obmm_do_import_gsva_desc_v1(obmm_fd, &alloc2.desc, local_cna,
+                                     import_pas[1], alloc2.desc.home_va,
+                                     &import_mem_id2);
+    CHECK(rc == 0, "second descriptor-driven import should succeed");
+
+    rc = obmm_map_gsva_region_at(import_mem_id2,
+                                 (void *)(uintptr_t)alloc2.desc.home_va,
+                                 alloc2.desc.size, import_osync[1], &region2);
+    CHECK(rc == 0, "second descriptor MAP_GSVA should succeed");
     data = (uint64_t *)region2.addr;
     *data = 0x2222222222222222ULL;
-    CHECK(*data == 0x2222222222222222ULL, "second lifecycle readback should match");
+    CHECK(*data == 0x2222222222222222ULL,
+          "second lifecycle readback should match");
+
+    rc = gsva_send_desc_event(obmm_fd, &alloc2.desc,
+                              OBMM_GSVA_EVENT_READ_ACQUIRE, local_cna,
+                              &ev_error);
+    CHECK(rc == 0, "second ReadAcquire should reach QEMU");
+    CHECK(ev_error == GSVA_OK, "second ReadAcquire should pass");
 
     obmm_unmap_region(&region2);
-    obmm_do_unexport(obmm_fd, meta2.export_mem_id);
+    obmm_do_unimport(obmm_fd, import_mem_id2);
+    obmm_do_unexport(obmm_fd, backing2.export_mem_id);
+
+    memset(&retire, 0, sizeof(retire));
+    retire.version = OBMM_GSVA_ABI_VERSION;
+    retire.segment_id = alloc2.desc.segment_id;
+    retire.epoch = alloc2.desc.epoch;
+    retire.timeout_ms = 1000;
+    rc = ioctl(obmm_fd, OBMM_CMD_GSVA_RETIRE_SEGMENT, &retire);
+    CHECK(rc == 0, "second RETIRE_SEGMENT cleanup should succeed");
     PASS();
 }
 

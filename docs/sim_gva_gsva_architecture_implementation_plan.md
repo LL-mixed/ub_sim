@@ -2651,6 +2651,8 @@ Status as of 2026-06-09:
 - QEMU active UB Link GSVA remote token revoke/ACK is implemented and validated in a two-node ARM MMU run.
 - QEMU active UB Link GSVA remote fence/ACK is implemented and validated in a two-node ARM MMU run.
 - QEMU active UB Link GSVA remote retire/ACK is implemented and validated in a two-node ARM MMU run.
+- Milestone 6 default enablement is implemented: GSVA runners default to `GSVA_MODE=arm_mmu` and `GSVA_STRICT=1`, QEMU treats an unset `GSVA_MODE` as ARM MMU mode, and explicit `legacy_sim_dec` / `sim_gva_tcg` compatibility modes remain available.
+- Default-mode regression matrix is validated on `cf:/sd_data/repo/ub_sim`.
 
 Latest manager-distributed recovery evidence:
 
@@ -2779,9 +2781,49 @@ nodeA_qemu.log: GSVA_COH: RetireAck recovery retire requester=50370 seq=2 segmen
 nodeA_qemu.log: GSVA_COH: rx RETIRE_ACK applied from cna=50386 segment_id=0x1 seq=2 rc=0
 ```
 
-Remaining gap before this plan can be considered complete:
+Latest Milestone 6 default-mode regression evidence:
 
-- Milestone 6 full default-mode regression matrix is not yet complete.
+```text
+build:
+./guest-linux/aarch64/scripts/build_guest_artifacts.sh
+./guest-linux/aarch64/scripts/build_qemu_binary.sh
+
+OBMM baseline:
+run_id=guest-linux/aarch64/logs/2026-06-09_04-36-48_coh_18684
+run_id=guest-linux/aarch64/logs/2026-06-09_04-37-32_coh4_27728
+run_id=guest-linux/aarch64/logs/2026-06-09_04-38-16_coh8_17024
+
+Default GSVA identity:
+run_id=guest-linux/aarch64/logs/2026-06-09_04-39-15_gsva_id_20269
+run_id=guest-linux/aarch64/logs/2026-06-09_04-39-28_gsva_id4_19727
+run_id=guest-linux/aarch64/logs/2026-06-09_04-39-43_gsva_id8_19856
+
+Default GSVA lifecycle retire_reuse:
+run_id=guest-linux/aarch64/logs/2026-06-09_04-54-17_gsva_lc_16394
+run_id=guest-linux/aarch64/logs/2026-06-09_04-47-44_gsva_lc4_13271
+run_id=guest-linux/aarch64/logs/2026-06-09_04-54-30_gsva_lc8_17543
+
+Default GSVA coherence writer_inv:
+run_id=guest-linux/aarch64/logs/2026-06-09_04-52-25_gsva_coh4_13874
+
+Default ARM MMU eight-node acceptance:
+run_id=guest-linux/aarch64/logs/2026-06-09_04-46-34_gsva_armmmu8_8185
+
+Compatibility smoke:
+legacy_sim_dec run_id=guest-linux/aarch64/logs/2026-06-09_04-48-10_gsva_id_17083
+sim_gva_tcg run_id=guest-linux/aarch64/logs/2026-06-09_04-48-23_gsva_id_14513
+
+assertions:
+all listed runs PASS
+default ARM MMU runs log GSVA_MODE arm_mmu
+default ARM MMU GSVA runs log GSVA_TLB: lookup
+default ARM MMU GSVA runs have no GVA_TCG_TRANSLATE
+failure_reason is absent or GSVA_OK
+```
+
+Remaining V1 gap before this plan can be considered complete:
+
+- No known V1 implementation gap remains in the scoped simulator target. Items below are future work and must not block V1.
 
 ## 29. Future work
 
