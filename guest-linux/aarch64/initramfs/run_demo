@@ -496,6 +496,12 @@ run_single_action() {
     obmm_gsva_demo)
       run_obmm_gsva_demo
       ;;
+    npu_test)
+      run_binary "npu_test" /bin/npu_test
+      ;;
+    ssd_test)
+      run_binary "ssd_test" /bin/ssd_test
+      ;;
     gsva_coh_test)
       gsva_test_mode=""
       read_cmdline
