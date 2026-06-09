@@ -2060,7 +2060,7 @@ ARM MMU V1 approach:
 - TLB flush via existing `sim_dec_flush_gva_tlbs()` which calls `tlb_flush_all_cpus_synced()`.
 - Hook only applies to data accesses (`access_type != MMU_INST_FETCH`).
 
-### Guest kernel SIM decoder
+### Guest kernel SIM decoder driver
 
 Location: `guest-linux/kernel_ub/drivers/ub/ubus/sim/ub_sim_decoder.h`
 
