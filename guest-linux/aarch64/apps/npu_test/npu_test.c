@@ -57,7 +57,7 @@ static int test_npu_echo(void)
     printf("[npu_test] TEST: command echo (no data)\n");
 
     cmd.version = 1;
-    cmd.opcode = NPU_OP_MEMCOPY;
+    cmd.opcode = NPU_OP_NOOP;
     cmd.req_id = 0x1234;
     cmd.desc_count = 0;
 
