@@ -226,6 +226,145 @@ static int test_bad_token(void)
     return 0;
 }
 
+static int test_version_conflict(void)
+{
+    struct ub_ssd_cmd_v1 cmd = {0};
+    struct ub_ssd_cpl_v1 cpl = {0};
+
+    printf(TAG "TEST: block write version conflict\n");
+
+    memset(peer_region.addr, 0x11, TEST_DATA_SIZE);
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.version = 1;
+    cmd.opcode = SSD_OP_BLOCK_WRITE;
+    cmd.req_id = 0x3006;
+    cmd.source_cna = local_cna;
+    cmd.block_ref.block_hi = 0xEE;
+    cmd.block_ref.block_lo = 0x0100000000000001ULL;
+    cmd.block_ref.version = 0;
+    fill_buffer_desc(&cmd.buffer, 0, TEST_DATA_SIZE, g_token_id);
+
+    if (ssd_submit_and_wait(&cmd, &cpl) < 0)
+        return -1;
+    if (cpl.status != SSD_OK) {
+        fprintf(stderr, TAG "  FAIL: first write expected SSD_OK got %d\n",
+                cpl.status);
+        return -1;
+    }
+
+    memset(peer_region.addr, 0x22, TEST_DATA_SIZE);
+    memset(&cmd, 0, sizeof(cmd));
+    memset(&cpl, 0, sizeof(cpl));
+    cmd.version = 1;
+    cmd.opcode = SSD_OP_BLOCK_WRITE;
+    cmd.req_id = 0x3007;
+    cmd.source_cna = local_cna;
+    cmd.block_ref.block_hi = 0xEE;
+    cmd.block_ref.block_lo = 0x0100000000000001ULL;
+    cmd.block_ref.version = 0;
+    fill_buffer_desc(&cmd.buffer, 0, TEST_DATA_SIZE, g_token_id);
+
+    if (ssd_submit_and_wait(&cmd, &cpl) < 0)
+        return -1;
+    if (cpl.status != (__u32)SSD_ERR_VERSION_CONFLICT) {
+        fprintf(stderr, TAG "  FAIL: expected VERSION_CONFLICT got %d\n",
+                cpl.status);
+        return -1;
+    }
+
+    printf(TAG "  PASS: version-conflict write rejected\n");
+    return 0;
+}
+
+static int test_tombstone_rejects_read_write(void)
+{
+    struct ub_ssd_cmd_v1 cmd = {0};
+    struct ub_ssd_cpl_v1 cpl = {0};
+
+    printf(TAG "TEST: tombstoned block rejects write/read\n");
+
+    memset(peer_region.addr, 0x33, TEST_DATA_SIZE);
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.version = 1;
+    cmd.opcode = SSD_OP_BLOCK_WRITE;
+    cmd.req_id = 0x3008;
+    cmd.source_cna = local_cna;
+    cmd.block_ref.block_hi = 0xFF;
+    cmd.block_ref.block_lo = 0x0200000000000001ULL;
+    cmd.block_ref.version = 0;
+    fill_buffer_desc(&cmd.buffer, 0, TEST_DATA_SIZE, g_token_id);
+
+    if (ssd_submit_and_wait(&cmd, &cpl) < 0)
+        return -1;
+    if (cpl.status != SSD_OK) {
+        fprintf(stderr, TAG "  FAIL: initial write expected SSD_OK got %d\n",
+                cpl.status);
+        return -1;
+    }
+
+    memset(&cmd, 0, sizeof(cmd));
+    memset(&cpl, 0, sizeof(cpl));
+    cmd.version = 1;
+    cmd.opcode = SSD_OP_BLOCK_TOMBSTONE;
+    cmd.req_id = 0x3009;
+    cmd.source_cna = local_cna;
+    cmd.block_ref.block_hi = 0xFF;
+    cmd.block_ref.block_lo = 0x0200000000000001ULL;
+    cmd.block_ref.version = 1;
+
+    if (ssd_submit_and_wait(&cmd, &cpl) < 0)
+        return -1;
+    if (cpl.status != SSD_OK) {
+        fprintf(stderr, TAG "  FAIL: tombstone expected SSD_OK got %d\n",
+                cpl.status);
+        return -1;
+    }
+
+    memset(peer_region.addr, 0x55, TEST_DATA_SIZE);
+    memset(&cmd, 0, sizeof(cmd));
+    memset(&cpl, 0, sizeof(cpl));
+    cmd.version = 1;
+    cmd.opcode = SSD_OP_BLOCK_WRITE;
+    cmd.req_id = 0x300a;
+    cmd.source_cna = local_cna;
+    cmd.block_ref.block_hi = 0xFF;
+    cmd.block_ref.block_lo = 0x0200000000000001ULL;
+    cmd.block_ref.version = 1;
+    fill_buffer_desc(&cmd.buffer, 0, TEST_DATA_SIZE, g_token_id);
+
+    if (ssd_submit_and_wait(&cmd, &cpl) < 0)
+        return -1;
+    if (cpl.status != (__u32)SSD_ERR_TOMBSTONED) {
+        fprintf(stderr, TAG "  FAIL: expected TOMBSTONED write got %d\n",
+                cpl.status);
+        return -1;
+    }
+
+    memset(peer_region.addr, 0, TEST_DATA_SIZE);
+    memset(&cmd, 0, sizeof(cmd));
+    memset(&cpl, 0, sizeof(cpl));
+    cmd.version = 1;
+    cmd.opcode = SSD_OP_BLOCK_READ;
+    cmd.req_id = 0x300b;
+    cmd.source_cna = local_cna;
+    cmd.block_ref.block_hi = 0xFF;
+    cmd.block_ref.block_lo = 0x0200000000000001ULL;
+    cmd.block_ref.version = 0;
+    cmd.block_ref.offset = 0;
+    fill_buffer_desc(&cmd.buffer, TEST_DATA_SIZE, TEST_DATA_SIZE, g_token_id);
+
+    if (ssd_submit_and_wait(&cmd, &cpl) < 0)
+        return -1;
+    if (cpl.status != (__u32)SSD_ERR_TOMBSTONED) {
+        fprintf(stderr, TAG "  FAIL: expected TOMBSTONED read got %d\n",
+                cpl.status);
+        return -1;
+    }
+
+    printf(TAG "  PASS: tombstone blocks reject read/write\n");
+    return 0;
+}
+
 static int parse_node_info(void)
 {
     char buf[64];
@@ -413,6 +552,8 @@ int main(int argc, char *argv[])
     if (test_block_write_read_gsva() == 0) pass++; else fail++;
     if (test_seal_rejects_overwrite() == 0) pass++; else fail++;
     if (test_bad_token() == 0) pass++; else fail++;
+    if (test_version_conflict() == 0) pass++; else fail++;
+    if (test_tombstone_rejects_read_write() == 0) pass++; else fail++;
 
     cleanup_gsva();
     close(ssd_fd);
