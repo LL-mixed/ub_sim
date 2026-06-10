@@ -46,6 +46,7 @@ static int node_idx = 0;
 static int node_count = 2;
 
 static struct obmm_helpers_meta local_meta;
+static struct obmm_gsva_segment_desc_v1 peer_desc;
 static struct obmm_helpers_meta peer_metas[OBMM_POOL_HELPERS_MAX_NODES];
 static bool peer_got[OBMM_POOL_HELPERS_MAX_NODES];
 static uint64_t import_mem_id = 0;
@@ -54,6 +55,24 @@ static uint64_t peer_gsva_base = 0;
 
 static struct gsva_key_v1 peer_key;
 static uint32_t g_token_id = 0;
+static uint32_t g_token_value = 0;
+
+static void init_peer_key_from_desc(const struct obmm_gsva_segment_desc_v1 *desc,
+                                   struct gsva_key_v1 *key)
+{
+    memset(key, 0, sizeof(*key));
+    key->version = desc->version;
+    key->flags = desc->flags;
+    key->segment_id = desc->segment_id;
+    key->home_va = desc->home_va;
+    key->size = desc->size;
+    key->vmid = 0;
+    key->asid = 0;
+    key->pte_offset = desc->home_va;
+    key->p_tag = desc->p_tag;
+    key->cache_policy = desc->cache_policy;
+    key->epoch = desc->epoch;
+}
 
 static int npu_submit_and_wait(struct ub_npu_cmd_v1 *cmd,
                                struct ub_npu_cpl_v1 *cpl)
@@ -111,9 +130,9 @@ static int test_memcopy_gsva(void)
     cmd.source_cna = local_cna;
     cmd.desc_count = 2;
     fill_desc(&cmd.descs[0], NPU_BUF_INPUT, NPU_ACCESS_READ,
-              OFF_MEMCOPY_IN, TEST_DATA_SIZE, g_token_id);
+              OFF_MEMCOPY_IN, TEST_DATA_SIZE, g_token_value);
     fill_desc(&cmd.descs[1], NPU_BUF_OUTPUT, NPU_ACCESS_WRITE,
-              OFF_MEMCOPY_OUT, TEST_DATA_SIZE, g_token_id);
+              OFF_MEMCOPY_OUT, TEST_DATA_SIZE, g_token_value);
 
     if (npu_submit_and_wait(&cmd, &cpl) < 0)
         return -1;
@@ -149,7 +168,7 @@ static int test_fill_gsva(void)
     cmd.desc_count = 1;
     cmd.scalar0 = fill_val;
     fill_desc(&cmd.descs[0], NPU_BUF_OUTPUT, NPU_ACCESS_WRITE,
-              OFF_FILL, TEST_DATA_SIZE, g_token_id);
+              OFF_FILL, TEST_DATA_SIZE, g_token_value);
 
     if (npu_submit_and_wait(&cmd, &cpl) < 0)
         return -1;
@@ -200,11 +219,11 @@ static int test_vector_add_u32_gsva(void)
     cmd.desc_count = 3;
     cmd.scalar0 = VECTOR_ELEMENT_COUNT;
     fill_desc(&cmd.descs[0], NPU_BUF_INPUT, NPU_ACCESS_READ,
-              OFF_VEC_A, vector_bytes, g_token_id);
+              OFF_VEC_A, vector_bytes, g_token_value);
     fill_desc(&cmd.descs[1], NPU_BUF_INPUT, NPU_ACCESS_READ,
-              OFF_VEC_B, vector_bytes, g_token_id);
+              OFF_VEC_B, vector_bytes, g_token_value);
     fill_desc(&cmd.descs[2], NPU_BUF_OUTPUT, NPU_ACCESS_WRITE,
-              OFF_VEC_C, vector_bytes, g_token_id);
+              OFF_VEC_C, vector_bytes, g_token_value);
 
     if (npu_submit_and_wait(&cmd, &cpl) < 0)
         return -1;
@@ -249,7 +268,7 @@ static int test_checksum64_gsva(void)
     cmd.source_cna = local_cna;
     cmd.desc_count = 1;
     fill_desc(&cmd.descs[0], NPU_BUF_INPUT, NPU_ACCESS_READ,
-              OFF_CHECKSUM, TEST_DATA_SIZE, g_token_id);
+              OFF_CHECKSUM, TEST_DATA_SIZE, g_token_value);
 
     if (npu_submit_and_wait(&cmd, &cpl) < 0)
         return -1;
@@ -317,9 +336,9 @@ static int test_bad_token_id(void)
     cmd.source_cna = local_cna;
     cmd.desc_count = 2;
     fill_desc(&cmd.descs[0], NPU_BUF_INPUT, NPU_ACCESS_READ,
-              OFF_BADTK_IN, TEST_DATA_SIZE, 0);
+              OFF_BADTK_IN, TEST_DATA_SIZE, g_token_value);
     fill_desc(&cmd.descs[1], NPU_BUF_OUTPUT, NPU_ACCESS_WRITE,
-              OFF_BADTK_OUT, TEST_DATA_SIZE, g_token_id);
+              OFF_BADTK_OUT, TEST_DATA_SIZE, g_token_value);
 
     if (npu_submit_and_wait(&cmd, &cpl) < 0)
         return -1;
@@ -369,7 +388,9 @@ static int parse_node_info(void)
 static int setup_gsva(void)
 {
     uint64_t my_base = GSVA_BASE + (uint64_t)node_idx * GSVA_SEG_SIZE;
+    struct obmm_cmd_gsva_alloc_segment_v1 alloc = {0};
     struct obmm_cmd_gsva_aperture ap = {0};
+    struct obmm_cmd_gsva_query_segment_v1 query = {0};
     uint64_t import_pas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
     bool import_osync[OBMM_POOL_HELPERS_MAX_NODES] = {false};
     int peer_idx = -1;
@@ -392,10 +413,25 @@ static int setup_gsva(void)
         return -1;
     }
 
+    alloc.version = OBMM_GSVA_ABI_VERSION;
+    alloc.size = GSVA_SEG_SIZE;
+    alloc.alignment = GSVA_SEG_SIZE;
+    alloc.requested_home_va = my_base;
+    alloc.home_node_id = (uint32_t)node_idx;
+    alloc.cache_policy = OBMM_SIM_DEC_CACHE_POLICY_DIRECTORY_MESI;
+    alloc.requested_p_tag = OBMM_GSVA_P_TAG_AUTO;
+    alloc.access_flags = OBMM_GSVA_ACCESS_READ | OBMM_GSVA_ACCESS_WRITE;
+    if (ioctl(obmm_fd, OBMM_CMD_GSVA_ALLOC_SEGMENT, &alloc) != 0) {
+        fprintf(stderr, TAG "GSVA_ALLOC_SEGMENT: %s\n", strerror(errno));
+        return -1;
+    }
+
     memset(&local_meta, 0, sizeof(local_meta));
     local_meta.export_cna = local_cna;
-    if (obmm_do_export_fixed_uba(obmm_fd, &local_meta, GSVA_SEG_SIZE,
-                                 my_base) != 0) {
+    local_meta.remote_uba = alloc.desc.home_va;
+    local_meta.size = alloc.desc.size;
+    if (obmm_do_export_fixed_uba(obmm_fd, &local_meta, alloc.desc.size,
+                                 alloc.desc.home_va) != 0) {
         fprintf(stderr, TAG "fixed-uba export: %s\n", strerror(errno));
         return -1;
     }
@@ -426,22 +462,31 @@ static int setup_gsva(void)
         return -1;
     }
 
-    peer_gsva_base = GSVA_BASE + (uint64_t)peer_idx * GSVA_SEG_SIZE;
+    memset(&query, 0, sizeof(query));
+    query.version = OBMM_GSVA_ABI_VERSION;
+    query.segment_id = peer_metas[peer_idx].export_mem_id;
+    if (ioctl(obmm_fd, OBMM_CMD_GSVA_QUERY_SEGMENT, &query) != 0) {
+        fprintf(stderr, TAG "GSVA_QUERY_SEGMENT: %s\n", strerror(errno));
+        return -1;
+    }
 
-    if (!obmm_alloc_import_pas(1, GSVA_SEG_SIZE, import_pas, import_osync,
+    peer_desc = query.desc;
+    init_peer_key_from_desc(&peer_desc, &peer_key);
+    peer_gsva_base = query.desc.home_va;
+
+    if (query.desc.size < (OFF_VEC_C + (uint64_t)VECTOR_ELEMENT_COUNT * 4)) {
+        fprintf(stderr, TAG "peer segment too small for vector test\n");
+        return -1;
+    }
+
+    if (!obmm_alloc_import_pas(1, query.desc.size, import_pas, import_osync,
                                OBMM_IMPORT_CACHE_AUTO)) {
         fprintf(stderr, TAG "import PA allocation failed\n");
         return -1;
     }
 
-    rc = obmm_do_import_v2(obmm_fd, &peer_metas[peer_idx], local_cna,
-                           import_pas[0], peer_metas[peer_idx].token_id,
-                           OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER,
-                           OBMM_SIM_DEC_ADDRESS_PROFILE_GSVA_IDENTITY,
-                           OBMM_SIM_DEC_CACHE_POLICY_DIRECTORY_MESI,
-                           0, 0, 0, 0, 0,
-                           peer_metas[peer_idx].export_mem_id,
-                           peer_gsva_base, peer_gsva_base, 0,
+    rc = obmm_do_import_gsva_desc_v1(obmm_fd, &peer_desc, local_cna,
+                           import_pas[0], peer_gsva_base,
                            &import_mem_id);
     if (rc != 0) {
         fprintf(stderr, TAG "GSVA import: %s\n", strerror(errno));
@@ -451,21 +496,14 @@ static int setup_gsva(void)
     memset(&peer_region, 0, sizeof(peer_region));
     if (obmm_map_gsva_region_at(import_mem_id,
                                 (void *)(uintptr_t)peer_gsva_base,
-                                GSVA_SEG_SIZE, false,
+                                query.desc.size, false,
                                 &peer_region) != 0) {
         fprintf(stderr, TAG "GSVA mmap: %s\n", strerror(errno));
         return -1;
     }
 
-    memset(&peer_key, 0, sizeof(peer_key));
-    peer_key.version = 1;
-    peer_key.segment_id = peer_metas[peer_idx].export_mem_id;
-    peer_key.home_va = peer_gsva_base;
-    peer_key.size = GSVA_SEG_SIZE;
-    peer_key.cache_policy = GSVA_CACHE_POLICY_DIRECTORY_MESI;
-    peer_key.epoch = 1;
-
-    g_token_id = peer_metas[peer_idx].token_id;
+    g_token_id = peer_desc.token_id;
+    g_token_value = peer_desc.token_value;
 
     printf(TAG "GSVA setup done: peer_base=%#llx token_id=%u\n",
            (unsigned long long)peer_gsva_base, g_token_id);
