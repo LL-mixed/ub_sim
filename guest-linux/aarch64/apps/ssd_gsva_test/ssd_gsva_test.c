@@ -36,6 +36,8 @@ static struct obmm_helpers_meta local_meta;
 static struct obmm_gsva_segment_desc_v1 peer_desc;
 static struct obmm_helpers_meta peer_metas[OBMM_POOL_HELPERS_MAX_NODES];
 static bool peer_got[OBMM_POOL_HELPERS_MAX_NODES];
+static int peer_ids[OBMM_POOL_HELPERS_MAX_NODES];
+static int peer_count = 0;
 static uint64_t import_mem_id = 0;
 static struct obmm_helpers_region peer_region;
 static uint64_t peer_gsva_base = 0;
@@ -457,11 +459,7 @@ static int setup_gsva(void)
     uint64_t my_base = GSVA_BASE + (uint64_t)node_idx * GSVA_SEG_SIZE;
     struct obmm_cmd_gsva_alloc_segment_v1 alloc = {0};
     struct obmm_cmd_gsva_aperture ap = {0};
-    struct obmm_cmd_gsva_query_segment_v1 query = {0};
-    uint64_t import_pas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
-    bool import_osync[OBMM_POOL_HELPERS_MAX_NODES] = {false};
-    int peer_idx = -1;
-    int rc, i;
+    int i;
 
     obmm_fd = obmm_open_device();
     if (obmm_fd < 0) {
@@ -518,22 +516,44 @@ static int setup_gsva(void)
         return -1;
     }
 
+    peer_count = 0;
+    memset(peer_ids, 0, sizeof(peer_ids));
     for (i = 0; i < node_count; i++) {
         if (i != node_idx && peer_got[i]) {
-            peer_idx = i;
-            break;
+            if (peer_count < OBMM_POOL_HELPERS_MAX_NODES)
+                peer_ids[peer_count++] = i;
         }
     }
-    if (peer_idx < 0) {
+    if (peer_count == 0) {
         fprintf(stderr, TAG "no peer metadata found\n");
         return -1;
     }
 
+    printf(TAG "GSVA setup done: discovered %d peers\n", peer_count);
+    printf(TAG "GSVA local segment: base=%#llx size=%llu\n",
+           (unsigned long long)alloc.desc.home_va, (unsigned long long)alloc.desc.size);
+    return 0;
+}
+
+static int setup_peer_context(int peer_idx_order)
+{
+    struct obmm_cmd_gsva_query_segment_v1 query = {0};
+    uint64_t import_pas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
+    bool import_osync[OBMM_POOL_HELPERS_MAX_NODES] = {false};
+    int peer_meta_idx;
+    int rc;
+
+    if (peer_idx_order < 0 || peer_idx_order >= peer_count) {
+        fprintf(stderr, TAG "invalid peer index %d\n", peer_idx_order);
+        return -1;
+    }
+
+    peer_meta_idx = peer_ids[peer_idx_order];
     memset(&query, 0, sizeof(query));
     query.version = OBMM_GSVA_ABI_VERSION;
-    query.segment_id = peer_metas[peer_idx].export_mem_id;
+    query.segment_id = peer_metas[peer_meta_idx].export_mem_id;
     if (ioctl(obmm_fd, OBMM_CMD_GSVA_QUERY_SEGMENT, &query) != 0) {
-        fprintf(stderr, TAG "GSVA_QUERY_SEGMENT: %s\n", strerror(errno));
+        fprintf(stderr, TAG "GSVA_QUERY_SEGMENT(peer=%d): %s\n", peer_meta_idx, strerror(errno));
         return -1;
     }
 
@@ -543,7 +563,7 @@ static int setup_gsva(void)
 
     if (!obmm_alloc_import_pas(1, query.desc.size, import_pas, import_osync,
                                OBMM_IMPORT_CACHE_AUTO)) {
-        fprintf(stderr, TAG "import PA allocation failed\n");
+        fprintf(stderr, TAG "import PA allocation failed (peer=%d)\n", peer_meta_idx);
         return -1;
     }
 
@@ -551,7 +571,7 @@ static int setup_gsva(void)
                            import_pas[0], peer_gsva_base,
                            &import_mem_id);
     if (rc != 0) {
-        fprintf(stderr, TAG "GSVA import: %s\n", strerror(errno));
+        fprintf(stderr, TAG "GSVA import(peer=%d): %s\n", peer_meta_idx, strerror(errno));
         return -1;
     }
 
@@ -560,23 +580,27 @@ static int setup_gsva(void)
                                 (void *)(uintptr_t)peer_gsva_base,
                                 query.desc.size, false,
                                 &peer_region) != 0) {
-        fprintf(stderr, TAG "GSVA mmap: %s\n", strerror(errno));
+        fprintf(stderr, TAG "GSVA mmap(peer=%d): %s\n", peer_meta_idx, strerror(errno));
         return -1;
     }
 
     g_token_id = peer_desc.token_id;
     g_token_value = peer_desc.token_value;
-
-    printf(TAG "GSVA setup done: peer_base=%#llx token_id=%u\n",
-           (unsigned long long)peer_gsva_base, g_token_id);
     return 0;
 }
 
-static void cleanup_gsva(void)
+static void cleanup_peer_context(void)
 {
     obmm_unmap_region(&peer_region);
     if (import_mem_id)
         obmm_do_unimport(obmm_fd, import_mem_id);
+    import_mem_id = 0;
+    memset(&peer_region, 0, sizeof(peer_region));
+}
+
+static void cleanup_gsva(void)
+{
+    cleanup_peer_context();
     if (local_meta.export_mem_id)
         obmm_do_unexport(obmm_fd, local_meta.export_mem_id);
     if (obmm_fd >= 0)
@@ -618,12 +642,36 @@ int main(int argc, char *argv[])
         return skip_code();
     }
 
-    if (test_block_write_read_gsva() == 0) pass++; else fail++;
-    if (test_seal_rejects_overwrite() == 0) pass++; else fail++;
-    if (test_bad_token() == 0) pass++; else fail++;
-    if (test_bad_token_id() == 0) pass++; else fail++;
-    if (test_version_conflict() == 0) pass++; else fail++;
-    if (test_tombstone_rejects_read_write() == 0) pass++; else fail++;
+    if (peer_count <= 0) {
+        fprintf(stderr, TAG "No peer available for GSVA tests\n");
+        cleanup_gsva();
+        close(ssd_fd);
+        printf(TAG "verdict=SKIP (GSVA setup)\n");
+        return skip_code();
+    }
+
+    for (int i = 0; i < peer_count; i++) {
+        int peer_meta_idx = peer_ids[i];
+
+        printf(TAG "Testing peer %d/%d node_idx=%d segment_id=%llu\n",
+               i + 1, peer_count, peer_meta_idx,
+               (unsigned long long)peer_metas[peer_meta_idx].export_mem_id);
+
+        if (setup_peer_context(i) != 0) {
+            fprintf(stderr, TAG "peer %d setup failed\n", peer_meta_idx);
+            fail++;
+            continue;
+        }
+
+        if (test_block_write_read_gsva() == 0) pass++; else fail++;
+        if (test_seal_rejects_overwrite() == 0) pass++; else fail++;
+        if (test_bad_token() == 0) pass++; else fail++;
+        if (test_bad_token_id() == 0) pass++; else fail++;
+        if (test_version_conflict() == 0) pass++; else fail++;
+        if (test_tombstone_rejects_read_write() == 0) pass++; else fail++;
+
+        cleanup_peer_context();
+    }
 
     cleanup_gsva();
     close(ssd_fd);

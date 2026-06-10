@@ -499,8 +499,14 @@ run_single_action() {
     npu_test)
       run_binary "npu_test" /bin/npu_test
       ;;
+    npu_gsva_test)
+      run_binary "npu_gsva_test" /bin/npu_gsva_test
+      ;;
     ssd_test)
       run_binary "ssd_test" /bin/ssd_test
+      ;;
+    ssd_gsva_test)
+      run_binary "ssd_gsva_test" /bin/ssd_gsva_test
       ;;
     gsva_coh_test)
       gsva_test_mode=""

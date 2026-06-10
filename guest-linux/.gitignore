@@ -5,3 +5,4 @@
 aarch64/logs/
 aarch64/third_party/
 aarch64/busybox-aarch64
+aarch64/scripts/qemu-system-aarch64
