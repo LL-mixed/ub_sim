@@ -302,6 +302,38 @@ static int test_bad_token(void)
     return 0;
 }
 
+static int test_bad_token_id(void)
+{
+    struct ub_npu_cmd_v1 cmd = {0};
+    struct ub_npu_cpl_v1 cpl = {0};
+
+    printf(TAG "TEST: bad token_id rejection\n");
+
+    memset((uint8_t *)peer_region.addr + OFF_BADTK_IN, 0xBB, TEST_DATA_SIZE);
+
+    cmd.version = 1;
+    cmd.opcode = NPU_OP_MEMCOPY;
+    cmd.req_id = 0x2006;
+    cmd.source_cna = local_cna;
+    cmd.desc_count = 2;
+    fill_desc(&cmd.descs[0], NPU_BUF_INPUT, NPU_ACCESS_READ,
+              OFF_BADTK_IN, TEST_DATA_SIZE, 0);
+    fill_desc(&cmd.descs[1], NPU_BUF_OUTPUT, NPU_ACCESS_WRITE,
+              OFF_BADTK_OUT, TEST_DATA_SIZE, g_token_id);
+
+    if (npu_submit_and_wait(&cmd, &cpl) < 0)
+        return -1;
+
+    if (cpl.status != (__u32)NPU_ERR_TOKEN_DENIED) {
+        fprintf(stderr, TAG "  FAIL: expected TOKEN_DENIED got %d\n",
+                cpl.status);
+        return -1;
+    }
+
+    printf(TAG "  PASS: rejected with TOKEN_DENIED\n");
+    return 0;
+}
+
 static int parse_node_info(void)
 {
     char buf[64];
@@ -491,6 +523,7 @@ int main(int argc, char *argv[])
     if (test_vector_add_u32_gsva() == 0) pass++; else fail++;
     if (test_checksum64_gsva() == 0) pass++; else fail++;
     if (test_bad_token() == 0) pass++; else fail++;
+    if (test_bad_token_id() == 0) pass++; else fail++;
 
     cleanup_gsva();
     close(npu_fd);

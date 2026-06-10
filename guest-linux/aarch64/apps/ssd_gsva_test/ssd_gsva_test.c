@@ -226,6 +226,42 @@ static int test_bad_token(void)
     return 0;
 }
 
+static int test_bad_token_id(void)
+{
+    struct ub_ssd_cmd_v1 cmd = {0};
+    struct ub_ssd_cpl_v1 cpl = {0};
+
+    printf(TAG "TEST: bad token_id rejection\n");
+
+    memset(peer_region.addr, 0xEE, TEST_DATA_SIZE);
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.version = 1;
+    cmd.opcode = SSD_OP_BLOCK_WRITE;
+    cmd.req_id = 0x300c;
+    cmd.source_cna = local_cna;
+    cmd.block_ref.block_hi = 0xEE;
+    cmd.block_ref.block_lo = 0xEE00000000000002ULL;
+    cmd.block_ref.version = 0;
+
+    cmd.buffer.gsva_base = peer_gsva_base + 0;
+    cmd.buffer.bytes = TEST_DATA_SIZE;
+    cmd.buffer.key = peer_key;
+    cmd.buffer.token_id = 0;
+    cmd.buffer.token_value = g_token_id;
+
+    if (ssd_submit_and_wait(&cmd, &cpl) < 0)
+        return -1;
+
+    if (cpl.status != (__u32)SSD_ERR_TOKEN_DENIED) {
+        fprintf(stderr, TAG "  FAIL: expected TOKEN_DENIED got %d\n",
+                cpl.status);
+        return -1;
+    }
+
+    printf(TAG "  PASS: rejected with TOKEN_DENIED\n");
+    return 0;
+}
+
 static int test_version_conflict(void)
 {
     struct ub_ssd_cmd_v1 cmd = {0};
@@ -552,6 +588,7 @@ int main(int argc, char *argv[])
     if (test_block_write_read_gsva() == 0) pass++; else fail++;
     if (test_seal_rejects_overwrite() == 0) pass++; else fail++;
     if (test_bad_token() == 0) pass++; else fail++;
+    if (test_bad_token_id() == 0) pass++; else fail++;
     if (test_version_conflict() == 0) pass++; else fail++;
     if (test_tombstone_rejects_read_write() == 0) pass++; else fail++;
 
