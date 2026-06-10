@@ -31,9 +31,13 @@
 #define OFF_CHECKSUM     0x03000ULL
 #define OFF_BADTK_IN     0x04000ULL
 #define OFF_BADTK_OUT    0x05000ULL
+#define OFF_VEC_A        0x06000ULL
+#define OFF_VEC_B        0x07000ULL
+#define OFF_VEC_C        0x08000ULL
 #define GSVA_GENERATION  0x475356410301ULL
 #define NPU_DEV          "/dev/ub_npu0"
 #define TEST_DATA_SIZE   4096
+#define VECTOR_ELEMENT_COUNT 16
 
 static int obmm_fd = -1;
 static int npu_fd = -1;
@@ -166,6 +170,61 @@ static int test_fill_gsva(void)
 
     printf(TAG "  PASS: %llu bytes filled\n",
            (unsigned long long)cpl.bytes_written);
+    return 0;
+}
+
+static int test_vector_add_u32_gsva(void)
+{
+    struct ub_npu_cmd_v1 cmd = {0};
+    struct ub_npu_cpl_v1 cpl = {0};
+    uint32_t *a, *b, *c;
+    int i;
+    size_t vector_bytes = VECTOR_ELEMENT_COUNT * sizeof(uint32_t);
+
+    printf(TAG "TEST: NPU VECTOR_ADD_U32 via GSVA\n");
+
+    a = (uint32_t *)((uint8_t *)peer_region.addr + OFF_VEC_A);
+    b = (uint32_t *)((uint8_t *)peer_region.addr + OFF_VEC_B);
+    c = (uint32_t *)((uint8_t *)peer_region.addr + OFF_VEC_C);
+
+    for (i = 0; i < VECTOR_ELEMENT_COUNT; i++) {
+        a[i] = (uint32_t)(i * 3 + 1);
+        b[i] = (uint32_t)(i * 5 + 2);
+        c[i] = 0xdeadbeef;
+    }
+
+    cmd.version = 1;
+    cmd.opcode = NPU_OP_VECTOR_ADD_U32;
+    cmd.req_id = 0x2005;
+    cmd.source_cna = local_cna;
+    cmd.desc_count = 3;
+    cmd.scalar0 = VECTOR_ELEMENT_COUNT;
+    fill_desc(&cmd.descs[0], NPU_BUF_INPUT, NPU_ACCESS_READ,
+              OFF_VEC_A, vector_bytes, g_token_id);
+    fill_desc(&cmd.descs[1], NPU_BUF_INPUT, NPU_ACCESS_READ,
+              OFF_VEC_B, vector_bytes, g_token_id);
+    fill_desc(&cmd.descs[2], NPU_BUF_OUTPUT, NPU_ACCESS_WRITE,
+              OFF_VEC_C, vector_bytes, g_token_id);
+
+    if (npu_submit_and_wait(&cmd, &cpl) < 0)
+        return -1;
+    if (cpl.status != NPU_OK) {
+        fprintf(stderr, TAG "  FAIL: status=%d\n", cpl.status);
+        return -1;
+    }
+
+    for (i = 0; i < VECTOR_ELEMENT_COUNT; i++) {
+        uint32_t want = a[i] + b[i];
+
+        if (c[i] != want) {
+            fprintf(stderr, TAG "  FAIL: vector[%d]=%#x want %#x (a=%#x b=%#x)\n",
+                    i, c[i], want, a[i], b[i]);
+            return -1;
+        }
+    }
+
+    printf(TAG "  PASS: vector add %d u32 elements, bytes=%u\n",
+           VECTOR_ELEMENT_COUNT, (unsigned int)cpl.bytes_written);
     return 0;
 }
 
@@ -429,6 +488,7 @@ int main(int argc, char *argv[])
 
     if (test_memcopy_gsva() == 0) pass++; else fail++;
     if (test_fill_gsva() == 0) pass++; else fail++;
+    if (test_vector_add_u32_gsva() == 0) pass++; else fail++;
     if (test_checksum64_gsva() == 0) pass++; else fail++;
     if (test_bad_token() == 0) pass++; else fail++;
 
