@@ -57,6 +57,8 @@ SSD_OP_BLOCK_SEAL
 SSD_OP_BLOCK_TOMBSTONE
 SSD_OP_FLUSH
 SSD_OP_STAT
+SSD_OP_EXPORT_SNAPSHOT
+SSD_OP_IMPORT_SNAPSHOT
 ```
 
 Raw LBA mode may be added later as a compatibility profile. It should not be
@@ -78,15 +80,21 @@ Reason:
 - SysBus MMIO matches the platform-device style already used by the current UB
   simulator.
 
-The device is created with explicit QEMU `-device` properties:
+The `virt` machine instantiates one `ub-ssd` device per QEMU node during board
+initialization. V1 does not expose `ub-ssd` as a user-created `-device`, because
+dynamic SysBus devices are created after the board FDT is built and would not be
+discoverable by the guest platform driver without a second dynamic-FDT path.
+
+The machine-created device is configured with QOM properties equivalent to:
 
 ```text
--device ub-ssd,id=ssd0,node-id=0,cna=0xc4c22000,backend=memory,ubc=/machine/peripheral/ubc0
+node-id=0,cna=0xc4c22000,backend=memory,ubc=/machine/peripheral/ubcdev0
 ```
 
-The `ubc` property links the SSD to the local `UbUbcState`. The SSD calls GSVA
-route/coherence and OBMM data helpers through that UBC state. It does not own a
-separate route table.
+`UB_SIM_SKIP_DEVICES=ssd` suppresses SSD instantiation for negative discovery
+tests. The `ubc` property links the SSD to the local `BusControllerDev`. The SSD
+calls GSVA route/coherence and OBMM data helpers through that UBC state. It does
+not own a separate route table.
 
 ### QEMU GSVA access API
 
@@ -226,9 +234,10 @@ offset      size     access  meaning
 0x510       0x004    W       doorbell, write 1 to submit command slot
 0x514       0x004    W       clear completion, write 1 to release cpl slot
 0x518       0x008    R       last_req_id
-0x520       0x080    R       stats snapshot
-0x5a0       0x004    R       backend_profile
-0x5a4       0xa5c    -       reserved, reads zero, writes ignored
+0x520       0x098    R       stats snapshot
+0x5b8       0x008    -       reserved, reads zero, writes ignored
+0x5c0       0x004    R       backend_profile
+0x5c4       0xa3c    -       reserved, reads zero, writes ignored
 ```
 
 Status bits:
@@ -248,7 +257,7 @@ if the slot is free; otherwise it only sets the error register.
 
 The guest discovers the device through Device Tree.
 
-QEMU must add an FDT node when `ub-ssd` is realized:
+QEMU must add an FDT node when the `virt` machine instantiates `ub-ssd`:
 
 ```text
 compatible = "ub-sim,ssd-v1"
@@ -413,8 +422,15 @@ struct ub_ssd_buffer_desc_v1 {
     uint64_t gsva_base;
     uint64_t bytes;
     struct gsva_key_v1 key;
-    struct gsva_token_v1 token;
+    uint32_t token_id;
+    uint32_t token_value;
 };
+```
+
+Command flags:
+
+```text
+SSD_CMD_INJECT_COH_TIMEOUT
 ```
 
 Completion payload:
@@ -450,14 +466,17 @@ SSD_ERR_VERSION_CONFLICT
 SSD_ERR_SEALED
 SSD_ERR_TOMBSTONED
 SSD_ERR_BACKEND_IO
+SSD_ERR_BAD_SNAPSHOT
 ```
 
 ### ABI ownership
 
-`struct gsva_key_v1` and `struct gsva_token_v1` are not device-specific types.
-The SSD UAPI includes the canonical GSVA UAPI definitions and embeds those
-structures directly. QEMU converts only at the boundary required by existing
-internal headers; field meaning and validation rules are identical to GSVA V1.
+`struct gsva_key_v1` is not a device-specific type. The SSD UAPI includes the
+canonical GSVA UAPI definitions and embeds that structure directly. The token is
+carried as the canonical GSVA V1 `token_id` and `token_value` pair used by GSVA
+segment records and ioctl events. QEMU converts only at the boundary required by
+existing internal headers; field meaning and validation rules are identical to
+GSVA V1.
 
 Do not define SSD-specific key or token variants with different layout.
 
@@ -489,6 +508,13 @@ Version rules:
   version is `N`.
 - completion returns the committed version in `committed_ref.version`.
 - conflicts return `SSD_ERR_VERSION_CONFLICT` and do not mutate the backend.
+
+Failure-injection rule:
+
+- `SSD_CMD_INJECT_COH_TIMEOUT` completes with `SSD_ERR_COH_TIMEOUT` after
+  command version validation and before any GSVA data access or backend
+  mutation. The injection is V1 test-only and must not publish a committed block
+  version.
 
 Read rules:
 
@@ -643,7 +669,7 @@ V1 should expose a simple test-first interface:
 /dev/ub_ssd0
 
 ioctl(UB_SSD_SUBMIT, struct ub_ssd_cmd_v1)
-ioctl(UB_SSD_WAIT, struct ub_ssd_wait_v1)
+ioctl(UB_SSD_WAIT, struct ub_ssd_cpl_v1)
 ioctl(UB_SSD_QUERY, struct ub_ssd_query_v1)
 ioctl(UB_SSD_EXPORT_SNAPSHOT, ...)
 ioctl(UB_SSD_IMPORT_SNAPSHOT, ...)
@@ -745,9 +771,9 @@ ssd_bytes_read_from_backend
 ssd_token_denied
 ssd_stale_epoch
 ssd_retired_segment
+ssd_version_conflict
 ssd_coh_timeout
 ssd_checksum_error
-ssd_version_conflict
 ```
 
 Latency histograms are V2. V1 may log timestamps, but acceptance must key off
@@ -765,6 +791,9 @@ stable counters and completion status.
 6. Add checksum validation, version conflict, seal, and tombstone state.
 7. Add snapshot export/import compatible with Lingqu Block simulation records.
 8. Add DFS manifest publication tests from user space.
+9. Add deterministic timeout failure injection through
+   `SSD_CMD_INJECT_COH_TIMEOUT` so acceptance does not depend on a real fabric
+   timeout.
 9. Add optional host-file backend after deterministic memory backend passes.
 
 ## V1 Acceptance Criteria

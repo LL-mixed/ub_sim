@@ -26,6 +26,7 @@ RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_npu_gsva_test_${RANDOM}}"
 APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 
 source "$SCRIPT_DIR/qemu_ub_common.sh"
+source "$SCRIPT_DIR/ub_gsva_trace_assert.sh"
 APPEND_EXTRA="$(ensure_sim_kernel_append_defaults "$APPEND_EXTRA")"
 
 if [[ "$APPEND_EXTRA" != *"pmd_mapping="* ]]; then
@@ -130,18 +131,17 @@ wait_for_fm_links_ready() {
 }
 
 validate_npu_gsva_logs() {
-  if ! grep -q 'UB_NPU: created' "$NODEA_QEMU_LOG"; then
-    echo "[npu_gsva_test] FAIL: NPU device not created on nodeA" >&2
-    return 1
-  fi
-  if ! grep -q 'UB_NPU: created' "$NODEB_QEMU_LOG"; then
-    echo "[npu_gsva_test] FAIL: NPU device not created on nodeB" >&2
-    return 1
-  fi
-  if ! grep -q 'UB_DEV_GSVA\|gsva_device_read\|gsva_device_write' "$NODEA_QEMU_LOG"; then
-    echo "[npu_gsva_test] WARN: no UB_DEV_GSVA trace in nodeA QEMU log"
-  fi
-  return 0
+  local rc=0
+
+  validate_ub_gsva_trace_logs "[npu_gsva_test]" npu nodeA \
+    "$NODEA_QEMU_LOG" "$NODEA_GUEST_LOG" || rc=1
+  validate_ub_gsva_peer_matrix "[npu_gsva_test]" nodeA \
+    "$NODEA_GUEST_LOG" 0 2 || rc=1
+  validate_ub_gsva_trace_logs "[npu_gsva_test]" npu nodeB \
+    "$NODEB_QEMU_LOG" "$NODEB_GUEST_LOG" || rc=1
+  validate_ub_gsva_peer_matrix "[npu_gsva_test]" nodeB \
+    "$NODEB_GUEST_LOG" 1 2 || rc=1
+  return $rc
 }
 
 echo "[npu_gsva_test] run_id=$RUN_ID"

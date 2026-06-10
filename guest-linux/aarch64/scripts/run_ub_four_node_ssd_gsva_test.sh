@@ -26,6 +26,7 @@ RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_ssd_gsva_test_4_${RANDOM}}"
 APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 
 source "$SCRIPT_DIR/qemu_ub_common.sh"
+source "$SCRIPT_DIR/ub_gsva_trace_assert.sh"
 APPEND_EXTRA="$(ensure_sim_kernel_append_defaults "$APPEND_EXTRA")"
 
 if [[ "$APPEND_EXTRA" != *"pmd_mapping="* ]]; then
@@ -133,13 +134,17 @@ wait_all_links_ready() {
 
 validate_ssd_gsva_logs() {
   local node_suffix
+  local rc=0
+  local node_idx=0
+
   for node_suffix in "${NODES[@]}"; do
-    if ! grep -q 'UB_SSD: created' "${QEMU_LOGS[$node_suffix]}"; then
-      echo "[ssd_gsva_test_4] FAIL: UB_SSD not created on node${node_suffix}" >&2
-      return 1
-    fi
+    validate_ub_gsva_trace_logs "[ssd_gsva_test_4]" ssd "node${node_suffix}" \
+      "${QEMU_LOGS[$node_suffix]}" "${GUEST_LOGS[$node_suffix]}" || rc=1
+    validate_ub_gsva_peer_matrix "[ssd_gsva_test_4]" "node${node_suffix}" \
+      "${GUEST_LOGS[$node_suffix]}" "$node_idx" "${#NODES[@]}" || rc=1
+    node_idx=$((node_idx + 1))
   done
-  return 0
+  return $rc
 }
 
 echo "[ssd_gsva_test_4] run_id=$RUN_ID"

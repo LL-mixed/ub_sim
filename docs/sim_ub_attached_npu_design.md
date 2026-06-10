@@ -48,13 +48,15 @@ behavior.
 V1 operation set:
 
 ```text
+NPU_OP_NOOP
 NPU_OP_MEMCOPY
 NPU_OP_FILL
 NPU_OP_VECTOR_ADD_U32
 NPU_OP_CHECKSUM64
 ```
 
-These operations are intentionally simple. They make input/output validation
+`NPU_OP_NOOP` is a control-path smoke command and does not touch GSVA data. The
+data operations are intentionally simple. They make input/output validation
 obvious while exercising read ownership, write ownership, fence, completion, and
 negative paths.
 
@@ -72,16 +74,22 @@ Reason:
 - V1 does not need PCI enumeration, BAR sizing, MSI-X, or config space;
 - SysBus MMIO keeps the first kernel driver and QEMU model small.
 
-The device is created with explicit QEMU `-device` properties:
+The `virt` machine instantiates one `ub-npu` device per QEMU node during board
+initialization. V1 does not expose `ub-npu` as a user-created `-device`, because
+dynamic SysBus devices are created after the board FDT is built and would not be
+discoverable by the guest platform driver without a second dynamic-FDT path.
+
+The machine-created device is configured with QOM properties equivalent to:
 
 ```text
--device ub-npu,id=npu0,node-id=0,cna=0xc4c20010,ubc=/machine/peripheral/ubc0
+node-id=0,cna=0xc4c21000,ubc=/machine/peripheral/ubcdev0
 ```
 
-The `ubc` property is a link to the local `UbUbcState`. QEMU realization fails
-if the linked UBC device is missing or not GSVA-capable. The NPU does not create
-its own route table; it calls the GSVA route/coherence helpers owned by the
-local UBC device.
+`UB_SIM_SKIP_DEVICES=npu` suppresses NPU instantiation for negative discovery
+tests. The `ubc` property is a link to the local `BusControllerDev`. QEMU
+realization fails if the linked UBC device is missing or not GSVA-capable. The
+NPU does not create its own route table; it calls the GSVA route/coherence
+helpers owned by the local UBC device.
 
 ### QEMU GSVA access API
 
@@ -245,7 +253,7 @@ if the slot is free; otherwise it only sets the error register.
 
 The guest discovers the device through Device Tree.
 
-QEMU must add an FDT node when `ub-npu` is realized:
+QEMU must add an FDT node when the `virt` machine instantiates `ub-npu`:
 
 ```text
 compatible = "ub-sim,npu-v1"
@@ -401,8 +409,16 @@ struct ub_npu_buffer_desc_v1 {
     uint64_t gsva_base;
     uint64_t bytes;
     struct gsva_key_v1 key;
-    struct gsva_token_v1 token;
+    uint32_t token_id;
+    uint32_t token_value;
 };
+```
+
+Command flags:
+
+```text
+NPU_CMD_ALLOW_TRUNCATE
+NPU_CMD_INJECT_COH_TIMEOUT
 ```
 
 Descriptor roles:
@@ -452,10 +468,12 @@ NPU_ERR_DEVICE_BUSY
 
 ### ABI ownership
 
-`struct gsva_key_v1` and `struct gsva_token_v1` are not device-specific types.
-The NPU UAPI includes the canonical GSVA UAPI definitions and embeds those
-structures directly. QEMU converts only at the boundary required by existing
-internal headers; field meaning and validation rules are identical to GSVA V1.
+`struct gsva_key_v1` is not a device-specific type. The NPU UAPI includes the
+canonical GSVA UAPI definitions and embeds that structure directly. The token is
+carried as the canonical GSVA V1 `token_id` and `token_value` pair used by GSVA
+segment records and ioctl events. QEMU converts only at the boundary required by
+existing internal headers; field meaning and validation rules are identical to
+GSVA V1.
 
 Do not define `ub_npu_gsva_key` or `ub_npu_token` aliases with different layout.
 
@@ -465,6 +483,7 @@ Descriptor count and scalar usage are fixed:
 
 ```text
 opcode                 desc_count  desc roles                         scalar0              scalar1
+NPU_OP_NOOP            ignored     none                               unused               unused
 NPU_OP_MEMCOPY         2           INPUT, OUTPUT                      unused               unused
 NPU_OP_FILL            1           OUTPUT                             fill_u64             unused
 NPU_OP_VECTOR_ADD_U32  3           INPUT, INPUT, OUTPUT               element_count_u32    unused
@@ -473,11 +492,15 @@ NPU_OP_CHECKSUM64      1           INPUT                              unused    
 
 Validation rules:
 
-- `desc_count` must be between 1 and 4.
+- `desc_count` must be between 1 and 4 for data operations.
+- `NPU_OP_NOOP` does not access descriptors.
 - Extra descriptors beyond the required count are rejected.
 - Required roles must appear in order.
 - `bytes` for `MEMCOPY` is `min(input.bytes, output.bytes)` and both sizes must
   match unless `NPU_CMD_ALLOW_TRUNCATE` is set.
+- `NPU_CMD_INJECT_COH_TIMEOUT` completes with `NPU_ERR_COH_TIMEOUT` after
+  command version validation and before descriptor data access. The injection is
+  V1 test-only and must not write output bytes.
 - `FILL` writes exactly `output.bytes`.
 - `VECTOR_ADD_U32` requires `element_count_u32 * 4` bytes available in both
   inputs and the output.
@@ -579,7 +602,7 @@ V1 should expose a simple test-first interface:
 /dev/ub_npu0
 
 ioctl(UB_NPU_SUBMIT, struct ub_npu_cmd_v1)
-ioctl(UB_NPU_WAIT, struct ub_npu_wait_v1)
+ioctl(UB_NPU_WAIT, struct ub_npu_cpl_v1)
 ioctl(UB_NPU_QUERY, struct ub_npu_query_v1)
 ```
 
@@ -678,7 +701,8 @@ acceptance must key off counters and stable completion status.
    access.
 6. Implement `MEMCOPY`, `FILL`, `VECTOR_ADD_U32`, and `CHECKSUM64`.
 7. Add failure injection for bad token, stale epoch, retired segment, timeout,
-   and device busy.
+   and device busy. Timeout injection is driven by `NPU_CMD_INJECT_COH_TIMEOUT`
+   so acceptance does not depend on a real fabric timeout.
 8. Add Lingqu DFS/Block manifest publication tests from user space.
 
 ## V1 Acceptance Criteria

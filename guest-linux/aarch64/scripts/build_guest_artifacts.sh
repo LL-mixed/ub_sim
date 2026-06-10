@@ -70,8 +70,12 @@ current_kernel_artifact_signature() {
   if git -C "$KERNEL_SRC_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     for tracked_path in \
       drivers/ub/obmm \
+      drivers/ub/ubus/ub_npu.c \
+      drivers/ub/ubus/ub_ssd.c \
       drivers/ub/ubus/sim \
       include/uapi/asm-generic/mman-common.h \
+      include/uapi/ub/ub_npu.h \
+      include/uapi/ub/ub_ssd.h \
       include/uapi/ub/obmm.h \
       mm/mmap.c; do
       git -C "$KERNEL_SRC_DIR" status --porcelain --untracked-files=no -- "$tracked_path" || true
