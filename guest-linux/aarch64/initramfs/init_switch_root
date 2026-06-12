@@ -1,0 +1,221 @@
+#!/bin/busybox sh
+set -e
+
+# openEuler simulated node initramfs
+# Stage 1: initialize UB devices, activate LVM, mount rootfs, switch_root
+
+log() {
+    echo "[oe-init] $*"
+}
+
+die() {
+    echo "[oe-init] FATAL: $*" >&2
+    echo "[oe-init] dropping to shell..." >&2
+    exec /bin/busybox sh
+}
+
+mount_fs() {
+    fstype="$1"
+    target="$2"
+    /bin/busybox mkdir -p "$target" >/dev/null 2>&1 || true
+    /bin/busybox mount -t "$fstype" none "$target" >/dev/null 2>&1 || true
+}
+
+# ------------------------------------------------------------------
+# 1. Mount basic filesystems
+# ------------------------------------------------------------------
+mount_fs proc /proc
+mount_fs sysfs /sys
+mount_fs devtmpfs /dev
+
+# Need /dev/pts for some tools, /tmp for logs
+/bin/busybox mkdir -p /dev/pts /tmp
+/bin/busybox mount -t devpts devpts /dev/pts >/dev/null 2>&1 || true
+
+# ------------------------------------------------------------------
+# 2. Load remaining UB kernel modules (those not built-in)
+# ------------------------------------------------------------------
+log "loading UB kernel modules..."
+
+for mod in ubase ubcore udma ipourma uburma ummu-core ummu; do
+    ko="/lib/modules/${mod}.ko"
+    if [ -f "$ko" ]; then
+        /bin/busybox insmod "$ko" 2>/dev/null && log "  loaded ${mod}" || log "  skip ${mod} (maybe built-in or error)"
+    fi
+done
+
+# Wait for UB device enumeration
+sleep 2
+
+# ------------------------------------------------------------------
+# 3. Initialize UB device 00001 (manual bind like init_manual_bind.c)
+# ------------------------------------------------------------------
+log "initializing UB device..."
+
+if [ -d /sys/bus/ub/devices/00001 ]; then
+    log "  device 00001 found"
+
+    # Set match_driver
+    if [ -w /sys/bus/ub/devices/00001/match_driver ]; then
+        /bin/busybox echo 1 > /sys/bus/ub/devices/00001/match_driver
+        log "  match_driver -> 1"
+    fi
+
+    # Set driver_override
+    if [ -w /sys/bus/ub/devices/00001/driver_override ]; then
+        /bin/busybox echo ubase > /sys/bus/ub/devices/00001/driver_override
+        log "  driver_override -> ubase"
+    fi
+
+    # Trigger probe
+    if [ -w /sys/bus/ub/drivers_probe ]; then
+        /bin/busybox echo 00001 > /sys/bus/ub/drivers_probe
+        log "  drivers_probe triggered"
+    fi
+
+    sleep 2
+
+    # Check if driver bound
+    if [ -L /sys/bus/ub/devices/00001/driver ]; then
+        driver_name=$(/bin/busybox basename "$(/bin/busybox readlink /sys/bus/ub/devices/00001/driver)")
+        log "  driver bound: $driver_name"
+    else
+        log "  WARNING: no driver bound to 00001"
+    fi
+else
+    log "  WARNING: device 00001 not found, skipping UB init"
+fi
+
+# ------------------------------------------------------------------
+# 4. Wait for virtio block device
+# ------------------------------------------------------------------
+log "waiting for block device..."
+attempt=0
+max_attempts=30
+while [ $attempt -lt $max_attempts ]; do
+    if [ -b /dev/vda ] || [ -b /dev/vdb ]; then
+        log "  block device ready"
+        break
+    fi
+    sleep 1
+    attempt=$((attempt + 1))
+done
+
+if [ $attempt -eq $max_attempts ]; then
+    die "block device never appeared"
+fi
+
+# ------------------------------------------------------------------
+# 5. Activate LVM
+# ------------------------------------------------------------------
+log "activating LVM..."
+
+# Set LD_LIBRARY_PATH for our bundled libraries
+export LD_LIBRARY_PATH=/lib
+
+# Run vgscan
+log "  running vgscan..."
+if /sbin/vgscan >/tmp/vgscan.out 2>/tmp/vgscan.err; then
+    log "  vgscan ok"
+else
+    log "  vgscan failed, output:"
+    /bin/busybox cat /tmp/vgscan.err 2>/dev/null | /bin/busybox head -20
+fi
+
+# Run vgchange -ay
+log "  running vgchange -ay..."
+if /sbin/vgchange -ay >/tmp/vgchange.out 2>/tmp/vgchange.err; then
+    log "  vgchange ok"
+else
+    log "  vgchange failed, output:"
+    /bin/busybox cat /tmp/vgchange.err 2>/dev/null | /bin/busybox head -20
+    die "LVM activation failed"
+fi
+
+# ------------------------------------------------------------------
+# 6. Mount rootfs
+# ------------------------------------------------------------------
+ROOT_LV="/dev/mapper/openeuler_bogon-root"
+
+# Wait for the mapper device to appear
+attempt=0
+max_attempts=20
+while [ $attempt -lt $max_attempts ]; do
+    if [ -b "$ROOT_LV" ]; then
+        break
+    fi
+    # Fallback: find any *root* mapper device
+    ROOT_LV=$(/bin/busybox ls /dev/mapper/*root* 2>/dev/null | /bin/busybox head -n1)
+    if [ -b "$ROOT_LV" ]; then
+        break
+    fi
+    # Fallback 2: /dev/dm-1 is usually the root LV in this layout
+    if [ -b /dev/dm-1 ]; then
+        ROOT_LV=/dev/dm-1
+        break
+    fi
+    sleep 0.5
+    attempt=$((attempt + 1))
+done
+
+if [ ! -b "$ROOT_LV" ]; then
+    die "root LV not found (tried /dev/mapper/openeuler_bogon-root and /dev/dm-1)"
+fi
+
+log "mounting rootfs: $ROOT_LV"
+/bin/busybox mkdir -p /newroot
+/bin/busybox mount -t ext4 -o rw "$ROOT_LV" /newroot || die "failed to mount rootfs"
+log "  rootfs mounted"
+
+# ------------------------------------------------------------------
+# 7. Sanitize guest fstab for virtualized environment
+# ------------------------------------------------------------------
+# The original openEuler disk expects physical EFI/swap layouts that may not
+# exist in our QEMU virt setup.  Comment out entries that would otherwise
+# cause systemd to drop into emergency mode.
+if [ -f /newroot/etc/fstab ]; then
+    log "sanitizing /etc/fstab..."
+    # Use a temporary file because busybox sed -i is not always available.
+    /bin/busybox cp /newroot/etc/fstab /newroot/etc/fstab.oe_bak
+    /bin/busybox awk '
+        /^[[:space:]]*#/ { print; next }
+        /[[:space:]]\/boot\/efi[[:space:]]/ { print "#oe-sim# " $0; next }
+        /[[:space:]]none[[:space:]]+swap[[:space:]]/ { print "#oe-sim# " $0; next }
+        /[[:space:]]swap[[:space:]]+swap[[:space:]]/ { print "#oe-sim# " $0; next }
+        { print }
+    ' /newroot/etc/fstab.oe_bak > /newroot/etc/fstab
+    /bin/busybox rm -f /newroot/etc/fstab.oe_bak
+    log "  fstab sanitized"
+fi
+
+# ------------------------------------------------------------------
+# 8. Deploy apps from initramfs to rootfs
+# ------------------------------------------------------------------
+if [ -d /ub_apps ] && [ "$(/bin/busybox ls -A /ub_apps 2>/dev/null)" ]; then
+    log "deploying apps to /newroot/opt/ub_sim/..."
+    /bin/busybox mkdir -p /newroot/opt/ub_sim
+    /bin/busybox cp -a /ub_apps/* /newroot/opt/ub_sim/ 2>/dev/null || true
+    log "  apps deployed"
+fi
+
+# ------------------------------------------------------------------
+# 9. Prepare switch_root
+# ------------------------------------------------------------------
+log "preparing switch_root..."
+
+# Create essential mount points if missing
+/bin/busybox mkdir -p /newroot/proc /newroot/sys /newroot/dev /newroot/run
+
+# Move mounts
+/bin/busybox mount --move /proc /newroot/proc 2>/dev/null || /bin/busybox mount -t proc proc /newroot/proc
+/bin/busybox mount --move /sys /newroot/sys 2>/dev/null || /bin/busybox mount -t sysfs sysfs /newroot/sys
+/bin/busybox mount --move /dev /newroot/dev 2>/dev/null || /bin/busybox mount -t devtmpfs devtmpfs /newroot/dev
+
+# ------------------------------------------------------------------
+# 10. switch_root
+# ------------------------------------------------------------------
+log "switch_root -> /sbin/init"
+exec /bin/busybox switch_root /newroot /sbin/init
+
+# Should never reach here
+die "switch_root returned"

@@ -470,7 +470,83 @@ cd guest-linux/aarch64
 避免 `4G + pmd_mapping=25%/50%` 下的 OBMM contiguous allocation failure。
 需要时仍可通过 `QEMU_MEM` 和 `APPEND_EXTRA` 覆盖。
 
-## 8. 常见交互和产物位置
+## 8. 启动 openEuler simulated super-node
+
+除了前面几节的轻量 busybox guest，仓库也支持让每个 QEMU node 从 openEuler qcow2
+磁盘镜像启动完整 Linux 发行版。入口脚本是：
+
+- `guest-linux/aarch64/scripts/run-openEuler-simulated-super-node.sh`
+
+它会为每个 node：
+
+1. 基于原始 openEuler 磁盘创建独立的 qcow2 overlay（不修改原盘）
+2. 从镜像中提取 aarch64 LVM2 工具/库，打包进每个 node 的 initramfs
+3. 在 initramfs 中激活 LVM、挂载 rootfs，并注释掉会导致 emergency mode 的 `/boot/efi` 和 swap 条目
+4. 将 `--app-dir` 中的应用复制到 `/opt/ub_sim/`
+5. `switch_root` 到 openEuler 的 `/sbin/init`
+
+### 8.1 前置条件
+
+- 一个可启动的 openEuler ARM64 qcow2 磁盘镜像（例如 `~/vms/openEuler-2403/disk.qcow2`）
+- 已构建好的 guest kernel `guest-linux/aarch64/out/Image`
+- 该 kernel 配置已包含 openEuler 所需驱动：`VIRTIO_BLK/PCI/NET`、`EXT4_FS`、`BLK_DEV_DM` 等
+- ARM64 静态 busybox
+
+### 8.2 启动 2 节点
+
+```bash
+cd guest-linux/aarch64
+export AARCH64_LINUX_CC=aarch64-linux-gnu-gcc
+export BUSYBOX=$PWD/busybox-aarch64
+
+./scripts/run-openEuler-simulated-super-node.sh \
+  --disk ~/vms/openEuler-2403/disk.qcow2 \
+  --nodes 2 \
+  --memory 4G \
+  --smp 2
+```
+
+### 8.3 带应用目录启动
+
+```bash
+./scripts/run-openEuler-simulated-super-node.sh \
+  --disk ~/vms/openEuler-2403/disk.qcow2 \
+  --nodes 4 \
+  --memory 8G \
+  --smp 4 \
+  --app-dir ./my_apps \
+  --demo gsva_identity
+```
+
+### 8.4 常用参数
+
+| 参数 | 说明 |
+|---|---|
+| `--disk PATH` | 原始 openEuler qcow2 磁盘镜像（必需） |
+| `--nodes N` | 节点数：2 / 4 / 8（默认 2） |
+| `--topology FILE` | UB topology ini 文件 |
+| `--memory SIZE` | 每节点内存，默认 4G |
+| `--smp N` | 每节点 vCPU 数，默认 4 |
+| `--app-dir DIR` | 要部署到每个节点 `/opt/ub_sim/` 的应用目录 |
+| `--demo MODE` | demo 模式提示 |
+| `--out-dir DIR` | 输出目录，默认 `out/openEuler-super-node` |
+| `--run-id ID` | 自定义 run-id |
+
+### 8.5 清理
+
+脚本会打印 cleanup 脚本路径，运行即可停止所有 node：
+
+```bash
+/tmp/oe_super_test/nodes/<run_id>/cleanup.sh
+```
+
+### 8.6 注意事项
+
+- 部分 UB `.ko` 可能报 `disagrees about version of symbol module_layout`，但对应驱动已 built-in，不影响启动和 UB 功能。
+- 原始 qcow2 不会被修改，每个节点使用独立的 overlay。
+- 如果 guest 内有其他依赖特定物理分区的服务失败，可在 initramfs 阶段进一步扩展 `/etc/fstab` 清理逻辑。
+
+## 9. 常见交互和产物位置
 
 ### 日志
 
@@ -489,7 +565,7 @@ cd guest-linux/aarch64
 
 启动脚本都会打印 cleanup 脚本路径。优先用它清理，不要自己手工找 PID。
 
-## 9. 进一步文档
+## 10. 进一步文档
 
 - [guest-linux/aarch64/README.md](guest-linux/aarch64/README.md)
   更细的 guest harness、run_demo、tmux 细节
@@ -498,7 +574,7 @@ cd guest-linux/aarch64
 - [scenarios/README.md](scenarios/README.md)
   scenario 输入说明
 
-## 10. 对用户的实际影响
+## 11. 对用户的实际影响
 
 这版 README 关注的是“从零启动到可交互”的完整路径，而不是继续做仓库索引。这样新机器、新同事、未来的自己回来看时，不需要先读一堆历史材料再猜命令入口，直接按步骤执行就能知道：
 
