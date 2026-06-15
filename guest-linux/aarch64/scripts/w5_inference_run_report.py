@@ -15,9 +15,6 @@ BAD_MARKERS = (
     "status=missing",
     "qwen3_range_kv_state_lazy_fallback",
     "fallback=runtime_forward_metadata",
-    "shortpath_ids=none",
-    "support_ids=none",
-    "artifact_kinds=none",
     "obmm_pool: unavailable",
 )
 
@@ -28,6 +25,7 @@ ARTIFACT_LIMITS = {
     "object_store_bin": 256 * 1024 * 1024,
     "shortpath_stream": 1024 * 1024,
     "shortpath_kv_stream": 1024 * 1024,
+    "prefix_cache_kv_stream": 1024 * 1024,
 }
 
 OPTIONAL_ARTIFACTS = {
@@ -406,6 +404,9 @@ def artifact_paths(summary_path, run_id, run_dir):
     if registry_dir is not None:
         paths["shortpath_stream"] = registry_dir / "w5_memory_shortpath_stream.txt"
         paths["shortpath_kv_stream"] = registry_dir / "w5_memory_shortpath_kv_stream.txt"
+        paths["prefix_cache_kv_stream"] = (
+            registry_dir / "w5_memory_prefix_cache_kv_stream.txt"
+        )
         paths["registry_dir"] = registry_dir
     if run_dir:
         paths["logs_dir"] = Path(run_dir)
@@ -466,7 +467,18 @@ def validate(parsed, paths, output_guard=None, context_guard=None):
     observed = parse_int(summary.get("decode_steps_observed"))
     passed_nodes = split_count(summary.get("passed_nodes", "0/0"))
     node_count = passed_nodes[1] or 8
-    shortpath_run = bool(memory or shortpath)
+    prefix_cache_run = bool(memory and memory.get("prefix_cache_ids") not in ("", None, "none"))
+    shortpath_run = bool(
+        shortpath
+        or (
+            memory
+            and (
+                memory.get("shortpath_ids") not in ("", None, "none")
+                or memory.get("actions") not in ("", None, "none")
+                or memory.get("artifact_kinds") not in ("", None, "none")
+            )
+        )
+    )
     worker_expected = expected if shortpath_run else expected * node_count
     idle_expected = expected * max(node_count - 1, 0) if shortpath_run else 0
 
@@ -527,6 +539,23 @@ def validate(parsed, paths, output_guard=None, context_guard=None):
                 if actual != value:
                     issues.append(f"{key} mismatch expected={value} actual={actual}")
 
+    if prefix_cache_run:
+        stages = memory.get("stages", "")
+        prefix_cache_actions = memory.get("prefix_cache_actions")
+        if prefix_cache_actions not in ("reuse", "miss", "require-verify"):
+            issues.append(
+                f"unexpected prefix_cache_actions value={prefix_cache_actions or ''}"
+            )
+        if prefix_cache_actions == "reuse" and parse_int(memory.get("prefix_cache_kv_hits")) <= 0:
+            issues.append(
+                f"prefix_cache_kv_hits missing value={memory.get('prefix_cache_kv_hits', '')}"
+            )
+        if (
+            prefix_cache_actions == "reuse"
+            and "qwen3_w5_memory_prefix_cache_kv_loaded:" not in stages
+        ):
+            issues.append("missing prefix-cache kv loaded stage")
+
     for marker in sorted(set(parsed["bad_markers"])):
         issues.append(f"bad marker present: {marker}")
 
@@ -543,7 +572,22 @@ def validate(parsed, paths, output_guard=None, context_guard=None):
         size = file_size(path) if path is not None else None
         artifact_sizes[label] = {"path": str(path) if path else "", "bytes": size, "max_bytes": limit}
         if size is None:
-            if shortpath_run and label not in OPTIONAL_ARTIFACTS:
+            required_for_shortpath = (
+                shortpath_run
+                and label not in OPTIONAL_ARTIFACTS
+                and label != "prefix_cache_kv_stream"
+            )
+            required_for_prefix_cache = (
+                prefix_cache_run
+                and memory.get("prefix_cache_actions") == "reuse"
+                and label
+                in {
+                    "memory_store_json",
+                    "object_store_json",
+                    "prefix_cache_kv_stream",
+                }
+            )
+            if required_for_shortpath or required_for_prefix_cache:
                 issues.append(f"missing artifact {label}")
         elif size > limit:
             issues.append(f"artifact {label} too large bytes={size} max_bytes={limit}")
@@ -653,6 +697,12 @@ def build_report(summary_path, output_guard=None, context_guard=None):
             "shortpath_no_dispatch": parse_int(shortpath.get("shortpath_no_dispatch")),
             "shortpath_terminal_commits": parse_int(shortpath.get("shortpath_terminal_commits")),
         },
+        "prefix_cache": {
+            "ids": memory.get("prefix_cache_ids", ""),
+            "actions": memory.get("prefix_cache_actions", ""),
+            "kv_hits": parse_int(memory.get("prefix_cache_kv_hits")),
+            "kv_nodes": memory.get("prefix_cache_kv_nodes", ""),
+        },
         "timing": timing_report(parsed),
         "context": context_report(parsed),
         "artifacts": artifact_sizes,
@@ -702,6 +752,12 @@ def print_text_report(report):
         f"actual_runtime_outputs={shortpath['actual_runtime_outputs']} "
         f"shortpath_no_dispatch={shortpath['shortpath_no_dispatch']} "
         f"shortpath_terminal_commits={shortpath['shortpath_terminal_commits']}"
+    )
+    prefix_cache = report["prefix_cache"]
+    print(
+        "prefix_cache: "
+        f"ids={prefix_cache['ids']} action={prefix_cache['actions']} "
+        f"kv_hits={prefix_cache['kv_hits']} kv_nodes={prefix_cache['kv_nodes']}"
     )
     timing = report["timing"]
     print(
@@ -754,11 +810,123 @@ def print_text_report(report):
             print(f"issue: {issue}")
 
 
+def decode_output_key(report):
+    lines = report["decode"]["output"]
+    for line in lines:
+        if line.startswith("decode_output: token_ids="):
+            return line
+    return "\n".join(lines)
+
+
+def artifact_bytes(report, label):
+    return report["artifacts"].get(label, {}).get("bytes")
+
+
+def delta_text(value, baseline):
+    if value is None or baseline is None:
+        return "missing"
+    return str(value - baseline)
+
+
+def build_prefix_cache_comparison(baseline_summary, prefix_summary, mismatch_summary, args):
+    output_guard = output_guard_from_args(args)
+    context_guard = context_guard_from_args(args)
+    baseline = build_report(baseline_summary, output_guard, context_guard)
+    prefix = build_report(prefix_summary, output_guard, context_guard)
+    mismatch = build_report(mismatch_summary, output_guard, context_guard)
+    issues = []
+    for label, report in (
+        ("baseline", baseline),
+        ("prefix", prefix),
+        ("mismatch", mismatch),
+    ):
+        for issue in report["issues"]:
+            issues.append(f"{label}: {issue}")
+    if decode_output_key(baseline) != decode_output_key(prefix):
+        issues.append("baseline/prefix decode_output mismatch")
+    if prefix["prefix_cache"]["actions"] != "reuse":
+        issues.append(
+            f"prefix run did not reuse prefix cache action={prefix['prefix_cache']['actions']}"
+        )
+    if prefix["prefix_cache"]["kv_hits"] <= 0:
+        issues.append(
+            f"prefix run has no prefix-cache KV hits value={prefix['prefix_cache']['kv_hits']}"
+        )
+    if mismatch["prefix_cache"]["actions"] != "miss":
+        issues.append(
+            f"mismatch run did not miss prefix cache action={mismatch['prefix_cache']['actions']}"
+        )
+    return {
+        "status": "pass" if not issues else "fail",
+        "issues": issues,
+        "baseline": baseline,
+        "prefix": prefix,
+        "mismatch": mismatch,
+        "deltas": {
+            "prefix_round_sum_ms": prefix["timing"]["round_sum_ms"]
+            - baseline["timing"]["round_sum_ms"],
+            "prefix_post_step0_avg_round_ms": round(
+                prefix["timing"]["post_step0_avg_round_ms"]
+                - baseline["timing"]["post_step0_avg_round_ms"],
+                1,
+            ),
+            "prefix_range_forwards": prefix["shortpath"]["actual_range_forwards"]
+            - baseline["shortpath"]["actual_range_forwards"],
+            "prefix_memory_store_json_bytes": delta_text(
+                artifact_bytes(prefix, "memory_store_json"),
+                artifact_bytes(baseline, "memory_store_json"),
+            ),
+            "prefix_object_store_json_bytes": delta_text(
+                artifact_bytes(prefix, "object_store_json"),
+                artifact_bytes(baseline, "object_store_json"),
+            ),
+        },
+    }
+
+
+def print_prefix_cache_comparison(comparison):
+    print(f"w5_prefix_cache_comparison: status={comparison['status']}")
+    for label in ("baseline", "prefix", "mismatch"):
+        report = comparison[label]
+        prefix_cache = report["prefix_cache"]
+        timing = report["timing"]
+        print(
+            "comparison_run: "
+            f"label={label} status={report['status']} run_id={report['run_id']} "
+            f"prefix_cache_ids={prefix_cache['ids']} "
+            f"prefix_cache_action={prefix_cache['actions']} "
+            f"prefix_cache_kv_hits={prefix_cache['kv_hits']} "
+            f"round_sum_ms={timing['round_sum_ms']} "
+            f"post_step0_avg_round_ms={timing['post_step0_avg_round_ms']} "
+            f"range_forwards={report['shortpath']['actual_range_forwards']} "
+            f"memory_store_json_bytes={artifact_bytes(report, 'memory_store_json')} "
+            f"object_store_json_bytes={artifact_bytes(report, 'object_store_json')}"
+        )
+    deltas = comparison["deltas"]
+    print(
+        "comparison_delta: "
+        f"prefix_round_sum_ms={deltas['prefix_round_sum_ms']} "
+        f"prefix_post_step0_avg_round_ms={deltas['prefix_post_step0_avg_round_ms']} "
+        f"prefix_range_forwards={deltas['prefix_range_forwards']} "
+        f"prefix_memory_store_json_bytes={deltas['prefix_memory_store_json_bytes']} "
+        f"prefix_object_store_json_bytes={deltas['prefix_object_store_json_bytes']}"
+    )
+    for issue in comparison["issues"]:
+        print(f"issue: {issue}")
+
+
 def main(argv):
     parser = argparse.ArgumentParser(
         description="Audit a W5 inference cluster run summary and its artifacts."
     )
-    parser.add_argument("summary", type=Path)
+    parser.add_argument("summary", type=Path, nargs="?")
+    parser.add_argument(
+        "--compare-prefix-cache",
+        nargs=3,
+        metavar=("BASELINE", "PREFIX", "MISMATCH"),
+        type=Path,
+        help="Compare no-prefix baseline, prefix-cache reuse, and mismatched-prefix fallback summaries.",
+    )
     parser.add_argument("--json", action="store_true", dest="json_output")
     parser.add_argument(
         "--tokenizer-dir",
@@ -787,6 +955,25 @@ def main(argv):
     )
     args = parser.parse_args(argv)
 
+    if args.compare_prefix_cache:
+        for summary in args.compare_prefix_cache:
+            if not summary.is_file():
+                print(f"summary file is missing: {summary}", file=sys.stderr)
+                return 2
+        comparison = build_prefix_cache_comparison(
+            args.compare_prefix_cache[0],
+            args.compare_prefix_cache[1],
+            args.compare_prefix_cache[2],
+            args,
+        )
+        if args.json_output:
+            print(json.dumps(comparison, indent=2, sort_keys=True))
+        else:
+            print_prefix_cache_comparison(comparison)
+        return 0 if comparison["status"] == "pass" else 1
+
+    if args.summary is None:
+        parser.error("summary is required unless --compare-prefix-cache is used")
     if not args.summary.is_file():
         print(f"summary file is missing: {args.summary}", file=sys.stderr)
         return 2

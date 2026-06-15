@@ -566,6 +566,8 @@ class W4GuestRunSummaryTest(unittest.TestCase):
             "shortpath_ids=runtime_service_catalog "
             "support_ids=boundary_registry actions=jump-to-terminal "
             "artifact_kinds=logits prefetch_ids=none prefix_cache_ids=none "
+            "prefix_cache_actions=none prefix_cache_kv_hits=0 "
+            "prefix_cache_kv_nodes=none "
             "lookup_hits=1 hit_registry_indexes=7 hit_registry_steps=1 "
             "hit_positions=4",
             result.stdout,
@@ -574,6 +576,7 @@ class W4GuestRunSummaryTest(unittest.TestCase):
             "memory_service_step: step=1 boundary_records=1 nodes=nodeA "
             "shortpath_ids=runtime_service_catalog support_ids=boundary_registry "
             "actions=jump-to-terminal prefetch_ids=none prefix_cache_ids=none "
+            "prefix_cache_actions=none "
             "lookup_hits=1 hit_registry_indexes=7 hit_registry_steps=1 "
             "hit_positions=4",
             result.stdout,

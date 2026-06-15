@@ -133,6 +133,9 @@ SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_CHECKSUM="${SIM_W5_MEMORY_PREFIX_CACHE_ARTIF
 SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF="${SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF:-}"
 SIM_W5_MEMORY_PREFIX_CACHE_PROOF_CHECKSUM="${SIM_W5_MEMORY_PREFIX_CACHE_PROOF_CHECKSUM:-}"
 SIM_W5_MEMORY_PREFIX_CACHE_SERVICE_ADDR="${SIM_W5_MEMORY_PREFIX_CACHE_SERVICE_ADDR:-}"
+SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_COUNT="${SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_COUNT:-}"
+SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH="${SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH:-}"
+SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH_GUEST="$SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH"
 SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS="${SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS:-}"
 SIM_QWEN3_RUNTIME_RANGE_WAIT_MS="${SIM_QWEN3_RUNTIME_RANGE_WAIT_MS:-}"
 SIM_W4_UAPI_COMPLETION_TIMEOUT_MS="${SIM_W4_UAPI_COMPLETION_TIMEOUT_MS:-900000}"
@@ -206,6 +209,24 @@ stage_w5_memory_shortpath_kv_stream() {
   cp "$stream_path" "$stream_guest_file"
   SIM_W5_MEMORY_SHORTPATH_KV_STREAM_PATH_GUEST="$stream_guest_path"
   trace "prepare: staged W5 Memory shortpath KV stream source=$stream_path guest=$stream_guest_path"
+}
+
+stage_w5_memory_prefix_cache_kv_stream() {
+  local stream_path="$SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH"
+  local stream_guest_path="/tmp/w5_memory_prefix_cache_kv_stream.txt"
+  local stream_guest_file="$RUN_INITRAMFS_DIR$stream_guest_path"
+
+  if [[ -z "$stream_path" ]]; then
+    return 0
+  fi
+  if [[ ! -f "$stream_path" ]]; then
+    trace "FAIL: W5 Memory prefix-cache KV stream file is missing path=$stream_path"
+    return 1
+  fi
+  mkdir -p "$(dirname "$stream_guest_file")"
+  cp "$stream_path" "$stream_guest_file"
+  SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH_GUEST="$stream_guest_path"
+  trace "prepare: staged W5 Memory prefix-cache KV stream source=$stream_path guest=$stream_guest_path"
 }
 
 source "$SCRIPT_DIR/qemu_ub_common.sh"
@@ -704,6 +725,8 @@ export SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_CHECKSUM="$SIM_W5_MEMORY_PREFIX_CACHE
 export SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF="$SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF"
 export SIM_W5_MEMORY_PREFIX_CACHE_PROOF_CHECKSUM="$SIM_W5_MEMORY_PREFIX_CACHE_PROOF_CHECKSUM"
 export SIM_W5_MEMORY_PREFIX_CACHE_SERVICE_ADDR="$SIM_W5_MEMORY_PREFIX_CACHE_SERVICE_ADDR"
+export SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_COUNT="$SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_COUNT"
+export SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH="$SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH_GUEST"
 export SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS="$SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS"
 export SIM_QWEN3_RUNTIME_RANGE_WAIT_MS="$SIM_QWEN3_RUNTIME_RANGE_WAIT_MS"
 export SIM_W4_UAPI_COMPLETION_TIMEOUT_MS="$SIM_W4_UAPI_COMPLETION_TIMEOUT_MS"
@@ -737,6 +760,7 @@ build_w4_initramfs() {
   stage_qwen3_object_service_snapshot
   stage_w5_memory_shortpath_stream
   stage_w5_memory_shortpath_kv_stream
+  stage_w5_memory_prefix_cache_kv_stream
   write_w4_initramfs_runner
   (
     cd "$RUN_INITRAMFS_DIR"
@@ -953,19 +977,20 @@ validate_w5_artifact_sizes() {
   local registry_dir="${SIM_W5_MEMORY_REGISTRY_DIR:-${SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR:-}}"
   local shortpath_stream="${SIM_W5_MEMORY_SHORTPATH_STREAM_PATH:-}"
   local shortpath_kv_stream="${SIM_W5_MEMORY_SHORTPATH_KV_STREAM_PATH:-}"
+  local prefix_cache_kv_stream="${SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH:-}"
   local max_memory_json="${SIM_W5_MAX_MEMORY_STORE_JSON_BYTES:-16777216}"
   local max_object_json="${SIM_W5_MAX_OBJECT_STORE_JSON_BYTES:-8388608}"
   local max_object_bin="${SIM_W5_MAX_OBJECT_STORE_BIN_BYTES:-268435456}"
   local max_shortpath_stream="${SIM_W5_MAX_SHORTPATH_STREAM_BYTES:-1048576}"
   local max_shortpath_kv_stream="${SIM_W5_MAX_SHORTPATH_KV_STREAM_BYTES:-1048576}"
+  local max_prefix_cache_kv_stream="${SIM_W5_MAX_PREFIX_CACHE_KV_STREAM_BYTES:-1048576}"
   local store_required=1
-  local shortpath_required=1
+  local shortpath_required=0
+  local prefix_cache_required=0
 
   if runtime_boundary_lookup_produces_store_after_guest; then
     store_required=0
   fi
-  shortpath_required="$store_required"
-
   if [[ -z "$SIM_UAPI_W5_PROFILE" ]]; then
     return 0
   fi
@@ -995,6 +1020,15 @@ validate_w5_artifact_sizes() {
   if [[ -n "$registry_dir" && ( -z "$shortpath_kv_stream" || "$shortpath_kv_stream" == /tmp/* || ! -f "$shortpath_kv_stream" ) ]]; then
     shortpath_kv_stream="$registry_dir/w5_memory_shortpath_kv_stream.txt"
   fi
+  if [[ -n "$registry_dir" && ( -z "$prefix_cache_kv_stream" || "$prefix_cache_kv_stream" == /tmp/* || ! -f "$prefix_cache_kv_stream" ) ]]; then
+    prefix_cache_kv_stream="$registry_dir/w5_memory_prefix_cache_kv_stream.txt"
+  fi
+  if [[ -z "${SIM_QWEN3_GUEST_ENGRAM_STATE_REF:-}" && ( -n "${SIM_W5_MEMORY_SHORTPATH_STREAM_PATH:-}" || -n "${SIM_W5_MEMORY_SHORTPATH_KV_STREAM_PATH:-}" ) ]]; then
+    shortpath_required="$store_required"
+  fi
+  if [[ -n "${SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH:-}" ]]; then
+    prefix_cache_required="$store_required"
+  fi
 
   validate_w5_artifact_file_size "$memory_json" "memory_store_json" "$max_memory_json" "$store_required" || return 1
   validate_w5_artifact_file_size "$memory_bin" "memory_store_bin" "$max_object_bin" "0" || return 1
@@ -1002,6 +1036,7 @@ validate_w5_artifact_sizes() {
   validate_w5_artifact_file_size "$object_bin" "object_store_bin" "$max_object_bin" "$store_required" || return 1
   validate_w5_artifact_file_size "$shortpath_stream" "shortpath_stream" "$max_shortpath_stream" "$shortpath_required" || return 1
   validate_w5_artifact_file_size "$shortpath_kv_stream" "shortpath_kv_stream" "$max_shortpath_kv_stream" "$shortpath_required" || return 1
+  validate_w5_artifact_file_size "$prefix_cache_kv_stream" "prefix_cache_kv_stream" "$max_prefix_cache_kv_stream" "$prefix_cache_required" || return 1
   return 0
 }
 
@@ -1365,6 +1400,8 @@ prepare_environment() {
     SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_CHECKSUM="$SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_CHECKSUM" \
     SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF="$SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF" \
     SIM_W5_MEMORY_PREFIX_CACHE_PROOF_CHECKSUM="$SIM_W5_MEMORY_PREFIX_CACHE_PROOF_CHECKSUM" \
+    SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_COUNT="$SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_COUNT" \
+    SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH="$SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH_GUEST" \
     SIM_ENGRAM_SIMT_ARTIFACT_DIR="${SIM_ENGRAM_SIMT_ARTIFACT_DIR:-}" \
     SIM_ENGRAM_SIMT_SELECTED_SYMBOL="${SIM_ENGRAM_SIMT_SELECTED_SYMBOL:-}" \
     SIM_ENGRAM_SIMT_SELECTED_CASE="${SIM_ENGRAM_SIMT_SELECTED_CASE:-}" \

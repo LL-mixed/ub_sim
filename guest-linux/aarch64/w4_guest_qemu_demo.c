@@ -2002,6 +2002,10 @@ struct w4_qwen3_memory_decision_config {
     char prefix_cache_artifact_checksum[64];
     char prefix_cache_artifact_ref[160];
     char prefix_cache_proof_checksum[64];
+    uint64_t prefix_cache_kv_stream_expected_count;
+    uint64_t prefix_cache_kv_stream_count;
+    struct w4_qwen3_shortpath_kv_stream_entry
+        prefix_cache_kv_stream_entries[W4_QWEN3_W5_SHORTPATH_KV_STREAM_MAX];
 };
 
 struct w4_qwen3_memory_boundary_lookup_result {
@@ -6096,6 +6100,151 @@ static int qwen3_read_w5_shortpath_kv_stream_file(
     return 0;
 }
 
+static int parse_qwen3_w5_prefix_cache_kv_stream_entry(
+    struct w4_qwen3_memory_decision_config *config,
+    const char *entry_text,
+    uint64_t *count)
+{
+    char entry_copy[W4_QWEN3_W5_SHORTPATH_KV_STREAM_LINE_BYTES];
+    char *fields[9];
+    char *save_field = NULL;
+    char *field = NULL;
+    uint32_t field_count = 0U;
+    struct w4_qwen3_shortpath_kv_stream_entry parsed;
+
+    if (!config || !entry_text || !count || entry_text[0] == '\0') {
+        return 0;
+    }
+    if (*count >= W4_QWEN3_W5_SHORTPATH_KV_STREAM_MAX) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 prefix-cache kv stream too many entries max=%u\n",
+                (unsigned)W4_QWEN3_W5_SHORTPATH_KV_STREAM_MAX);
+        return -1;
+    }
+    if (strlen(entry_text) >= sizeof(entry_copy)) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 prefix-cache kv stream entry too long"
+                " entry_index=%" PRIu64 " max=%zu\n",
+                *count,
+                sizeof(entry_copy) - 1U);
+        return -1;
+    }
+    snprintf(entry_copy, sizeof(entry_copy), "%s", entry_text);
+    memset(&parsed, 0, sizeof(parsed));
+    field = strtok_r(entry_copy, ":", &save_field);
+    while (field && field_count < 9U) {
+        fields[field_count++] = field;
+        field = strtok_r(NULL, ":", &save_field);
+    }
+    if (field != NULL || field_count != 9U) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 prefix-cache kv stream entry invalid"
+                " entry_index=%" PRIu64 " fields=%u expected=9\n",
+                *count,
+                field_count);
+        return -1;
+    }
+    if (parse_u64_field("prefix_cache_kv_stream_step",
+                        fields[0],
+                        &parsed.step_index) != 0 ||
+        parse_u64_field("prefix_cache_kv_stream_producer_position",
+                        fields[1],
+                        &parsed.producer_position) != 0 ||
+        parse_u32_field("prefix_cache_kv_stream_producer_layer_end",
+                        fields[2],
+                        &parsed.producer_layer_end) != 0 ||
+        parse_u32_field("prefix_cache_kv_stream_target_node",
+                        fields[3],
+                        &parsed.target_node) != 0 ||
+        parse_u32_field("prefix_cache_kv_stream_target_layer_start",
+                        fields[4],
+                        &parsed.target_layer_start) != 0 ||
+        parse_u32_field("prefix_cache_kv_stream_target_layer_end",
+                        fields[5],
+                        &parsed.target_layer_end) != 0 ||
+        parsed.target_layer_end <= parsed.target_layer_start ||
+        !qwen3_stream_ref_hex_syntax_ok(fields[6]) ||
+        parse_u64_field("prefix_cache_kv_stream_bytes",
+                        fields[7],
+                        &parsed.kv_bytes) != 0 ||
+        parse_u64_field("prefix_cache_kv_stream_checksum",
+                        fields[8],
+                        &parsed.kv_checksum) != 0 ||
+        parsed.kv_bytes == 0 ||
+        parsed.kv_checksum == 0) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 prefix-cache kv stream contract invalid"
+                " entry_index=%" PRIu64 "\n",
+                *count);
+        return -1;
+    }
+    snprintf(parsed.artifact_ref, sizeof(parsed.artifact_ref), "%s", fields[6]);
+    parsed.stream_index = *count;
+    parsed.valid = true;
+    config->prefix_cache_kv_stream_entries[*count] = parsed;
+    (*count)++;
+    return 0;
+}
+
+static int qwen3_read_w5_prefix_cache_kv_stream_file(
+    const char *path,
+    struct w4_qwen3_memory_decision_config *config)
+{
+    FILE *fp;
+    char line[W4_QWEN3_W5_SHORTPATH_KV_STREAM_LINE_BYTES];
+    uint64_t count = 0;
+
+    if (!str_nonempty(path)) {
+        return 0;
+    }
+    if (!config) {
+        return -1;
+    }
+    fp = fopen(path, "rb");
+    if (!fp) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 prefix-cache kv stream file open path=%s errno=%d\n",
+                path,
+                errno);
+        return -1;
+    }
+    while (fgets(line, sizeof(line), fp)) {
+        size_t len = strlen(line);
+
+        while (len > 0 &&
+               (line[len - 1U] == '\n' || line[len - 1U] == '\r')) {
+            line[--len] = '\0';
+        }
+        if (line[0] == '\0') {
+            continue;
+        }
+        if (parse_qwen3_w5_prefix_cache_kv_stream_entry(config, line, &count) != 0) {
+            fclose(fp);
+            return -1;
+        }
+    }
+    if (ferror(fp)) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 prefix-cache kv stream file read path=%s errno=%d\n",
+                path,
+                errno);
+        fclose(fp);
+        return -1;
+    }
+    fclose(fp);
+    if (config->prefix_cache_kv_stream_expected_count != 0 &&
+        count != config->prefix_cache_kv_stream_expected_count) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 prefix-cache kv stream count mismatch"
+                " parsed=%" PRIu64 " expected=%" PRIu64 "\n",
+                count,
+                config->prefix_cache_kv_stream_expected_count);
+        return -1;
+    }
+    config->prefix_cache_kv_stream_count = count;
+    return 0;
+}
+
 static int qwen3_read_w5_boundary_registry_object(
     struct w4_qwen3_memory_decision_config *config);
 
@@ -6111,10 +6260,12 @@ static int parse_qwen3_w5_memory_decision_config(
     char shortpath_stream_count_text[32];
     char boundary_registry_count_text[32];
     char shortpath_kv_stream_count_text[32];
+    char prefix_cache_kv_stream_count_text[32];
     char shortpath_boundary_hidden_bytes_text[32];
     char shortpath_boundary_hidden_checksum_text[32];
     char shortpath_stream_path[512];
     char shortpath_kv_stream_path[512];
+    char prefix_cache_kv_stream_path[512];
 
     memset(config, 0, sizeof(*config));
     memset(shortpath_stream_count_text, 0, sizeof(shortpath_stream_count_text));
@@ -6122,6 +6273,9 @@ static int parse_qwen3_w5_memory_decision_config(
     memset(shortpath_kv_stream_count_text,
            0,
            sizeof(shortpath_kv_stream_count_text));
+    memset(prefix_cache_kv_stream_count_text,
+           0,
+           sizeof(prefix_cache_kv_stream_count_text));
     memset(shortpath_boundary_hidden_bytes_text,
            0,
            sizeof(shortpath_boundary_hidden_bytes_text));
@@ -6130,6 +6284,7 @@ static int parse_qwen3_w5_memory_decision_config(
            sizeof(shortpath_boundary_hidden_checksum_text));
     memset(shortpath_stream_path, 0, sizeof(shortpath_stream_path));
     memset(shortpath_kv_stream_path, 0, sizeof(shortpath_kv_stream_path));
+    memset(prefix_cache_kv_stream_path, 0, sizeof(prefix_cache_kv_stream_path));
     env_copy_or_empty("SIM_W5_MEMORY_SERVICE",
                       config->service,
                       sizeof(config->service));
@@ -6220,6 +6375,12 @@ static int parse_qwen3_w5_memory_decision_config(
     env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_KV_STREAM_PATH",
                       shortpath_kv_stream_path,
                       sizeof(shortpath_kv_stream_path));
+    env_copy_or_empty("SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_COUNT",
+                      prefix_cache_kv_stream_count_text,
+                      sizeof(prefix_cache_kv_stream_count_text));
+    env_copy_or_empty("SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH",
+                      prefix_cache_kv_stream_path,
+                      sizeof(prefix_cache_kv_stream_path));
     if (str_nonempty(shortpath_stream_count_text) &&
         parse_u64_field("shortpath_stream_count",
                         shortpath_stream_count_text,
@@ -6236,6 +6397,12 @@ static int parse_qwen3_w5_memory_decision_config(
         parse_u64_field("shortpath_kv_stream_count",
                         shortpath_kv_stream_count_text,
                         &config->shortpath_kv_stream_expected_count) != 0) {
+        return -1;
+    }
+    if (str_nonempty(prefix_cache_kv_stream_count_text) &&
+        parse_u64_field("prefix_cache_kv_stream_count",
+                        prefix_cache_kv_stream_count_text,
+                        &config->prefix_cache_kv_stream_expected_count) != 0) {
         return -1;
     }
     if (str_nonempty(shortpath_boundary_hidden_bytes_text) ||
@@ -6293,6 +6460,9 @@ static int parse_qwen3_w5_memory_decision_config(
     if (qwen3_read_w5_shortpath_kv_stream_file(shortpath_kv_stream_path, config) != 0) {
         return -1;
     }
+    if (qwen3_read_w5_prefix_cache_kv_stream_file(prefix_cache_kv_stream_path, config) != 0) {
+        return -1;
+    }
     if (config->shortpath_stream_count > 0) {
         if (config->boundary_registry_loaded) {
             printf("[w4_guest] stage qwen3_w5_memory_boundary_registry_loaded"
@@ -6309,6 +6479,11 @@ static int parse_qwen3_w5_memory_decision_config(
         printf("[w4_guest] stage qwen3_w5_memory_shortpath_kv_stream_loaded"
                " entries=%" PRIu64 " source=file status=ok\n",
                config->shortpath_kv_stream_count);
+    }
+    if (config->prefix_cache_kv_stream_count > 0) {
+        printf("[w4_guest] stage qwen3_w5_memory_prefix_cache_kv_stream_loaded"
+               " entries=%" PRIu64 " source=file status=ok\n",
+               config->prefix_cache_kv_stream_count);
     }
     env_copy_or_empty("SIM_W5_MEMORY_PREFETCH_PLAN_ID",
                       config->prefetch_plan_id,
@@ -6721,19 +6896,57 @@ static int qwen3_memory_shortpath_hidden_input_ref(
 
 static int qwen3_memory_prefix_cache_kv_ref(
     const struct w4_qwen3_memory_decision_config *config,
+    uint32_t local_node,
+    uint32_t layer_start,
+    uint32_t layer_end,
+    uint64_t decode_step,
     struct lingqu_obmm_object_ref_wire *ref_out)
 {
+    const struct w4_qwen3_shortpath_kv_stream_entry *entry = NULL;
+
     if (!config || !config->enabled || !ref_out ||
         strcmp(config->prefix_cache_action, "reuse") != 0) {
         return 0;
     }
-    (void)ref_out;
-    /*
-     * Prefix-cache artifacts describe a verified prefix KV set. They are not a
-     * single work-item KV block, so range workers must still resolve the exact
-     * node/layer KV through the step-local KV path or shortpath KV stream.
-     */
-    return 0;
+    for (uint64_t i = 0; i < config->prefix_cache_kv_stream_count; ++i) {
+        const struct w4_qwen3_shortpath_kv_stream_entry *candidate =
+            &config->prefix_cache_kv_stream_entries[i];
+
+        if (candidate->valid && candidate->step_index == decode_step &&
+            candidate->target_node == local_node + 1U &&
+            candidate->target_layer_start == layer_start &&
+            candidate->target_layer_end == layer_end) {
+            entry = candidate;
+            break;
+        }
+    }
+    if (!entry) {
+        return 0;
+    }
+    if (parse_lingqu_object_ref_hex("SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM",
+                                    entry->artifact_ref,
+                                    W4_QWEN3_OBMM_KIND_QWEN3_KV_STATE,
+                                    ref_out) != 0) {
+        return -1;
+    }
+    if (ref_out->payload_bytes != entry->kv_bytes ||
+        ref_out->payload_checksum != entry->kv_checksum) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 prefix-cache kv ref mismatch"
+                " node=%u step=%" PRIu64 " layers=[%u,%u)"
+                " bytes=%" PRIu64 " expected=%" PRIu64
+                " checksum=0x%016" PRIx64 " expected=0x%016" PRIx64 "\n",
+                local_node + 1U,
+                decode_step,
+                layer_start,
+                layer_end,
+                ref_out->payload_bytes,
+                entry->kv_bytes,
+                ref_out->payload_checksum,
+                entry->kv_checksum);
+        return -1;
+    }
+    return 1;
 }
 
 static int qwen3_registry_payload_path(
@@ -11252,6 +11465,10 @@ decode_round_start:
             kv_resolve_start_ms = monotonic_ms();
             prefix_cache_kv_ref_state =
                 qwen3_memory_prefix_cache_kv_ref(&qwen3_memory_decision_config,
+                                                 dispatch_node,
+                                                 layer_start,
+                                                 layer_end,
+                                                 kv_source_step,
                                                  &prefix_cache_kv_ref);
             if (prefix_cache_kv_ref_state < 0) {
                 goto out;

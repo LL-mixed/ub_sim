@@ -1202,6 +1202,11 @@ def emit_memory_service_summary(memory_records, expected_steps, output):
         and record.get("action") == "jump-to-terminal"
         and record.get("status") == "hit"
     ]
+    prefix_cache_kv_hits = [
+        record
+        for record in memory_records
+        if record["stage"] == "qwen3_w5_memory_prefix_cache_kv_loaded"
+    ]
     output.append(
         "memory_service_summary: "
         "service=lingqu_memory_service "
@@ -1214,6 +1219,9 @@ def emit_memory_service_summary(memory_records, expected_steps, output):
         f"artifact_kinds={csv_or_none(record.get('shortpath_artifact_kind') for record in memory_records)} "
         f"prefetch_ids={csv_or_none(record.get('prefetch_id') for record in memory_records)} "
         f"prefix_cache_ids={csv_or_none(record.get('prefix_cache_id') for record in memory_records)} "
+        f"prefix_cache_actions={csv_or_none(record.get('prefix_cache_action') for record in memory_records)} "
+        f"prefix_cache_kv_hits={len(prefix_cache_kv_hits)} "
+        f"prefix_cache_kv_nodes={csv_or_none_ordered(record.get('node') for record in prefix_cache_kv_hits)} "
         f"lookup_hits={len(lookup_hits)} "
         f"hit_registry_indexes={csv_or_none_ordered(record.get('registry_index') for record in lookup_hits)} "
         f"hit_registry_steps={csv_or_none_ordered(lookup_hit_registry_step(record) for record in lookup_hits)} "
@@ -1240,6 +1248,7 @@ def emit_memory_service_summary(memory_records, expected_steps, output):
                 f"actions={csv_or_none(record.get('shortpath_action') for record in records)} "
                 f"prefetch_ids={csv_or_none(record.get('prefetch_id') for record in records)} "
                 f"prefix_cache_ids={csv_or_none(record.get('prefix_cache_id') for record in records)} "
+                f"prefix_cache_actions={csv_or_none(record.get('prefix_cache_action') for record in records)} "
                 f"lookup_hits={len(step_hits)} "
                 f"hit_registry_indexes={csv_or_none_ordered(record.get('registry_index') for record in step_hits)} "
                 f"hit_registry_steps={csv_or_none_ordered(lookup_hit_registry_step(record) for record in step_hits)} "

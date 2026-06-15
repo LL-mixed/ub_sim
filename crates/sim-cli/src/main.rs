@@ -15,16 +15,16 @@ use sim_memory::{
     BoundaryLookupRequest, BoundaryPayloadResolver, EmbeddingRow, EmbeddingSegment,
     EngramStateMaterializeFromBlockReq, EngramStateObject, ExecutionArtifactObject,
     HotMemoryMaterializeFromQueryReq, HotMemoryMaterializeReq, HotMemoryStateObject,
-    LingquBlockPayloadRef, LingquDfsPath, LingquMemoryDurableStore, LingquMemoryService,
-    MemoryCatalogSnapshot, MemoryChunk, MemoryContentType, MemoryCorpusCatalog, MemoryPiiState,
-    MemoryQuery, MemoryRecord, MemoryRecordState, MemoryRetentionPolicy, MemoryScope,
-    MemorySecurityLabel, MemorySourceKind, MemoryTrustLevel, MemoryVisibility,
-    PaperEngramEvalReportManifest, PaperEngramGateManifest, PaperEngramHashConfigManifest,
-    PaperEngramModuleManifest, PaperEngramQualityClaim, PaperEngramRuntimeArtifacts,
-    PaperEngramTableRowBlockRequest, PaperEngramTableRowPrefetchRequest,
-    PaperEngramTableShardManifest, PaperEngramTokenizerProjectionManifest,
-    PaperEngramTrainingRecipeManifest, PrefetchPlanRequest, PrefixCacheArtifact,
-    PrefixCacheLookupRequest, QueryResult, VectorIndexKind, VectorIndexObject,
+    LingquBlockPayloadRef, LingquDfsPath, LingquMemoryDurableStore, LingquMemoryError,
+    LingquMemoryService, MemoryCatalogSnapshot, MemoryChunk, MemoryContentType,
+    MemoryCorpusCatalog, MemoryPiiState, MemoryQuery, MemoryRecord, MemoryRecordState,
+    MemoryRetentionPolicy, MemoryScope, MemorySecurityLabel, MemorySourceKind, MemoryTrustLevel,
+    MemoryVisibility, PaperEngramEvalReportManifest, PaperEngramGateManifest,
+    PaperEngramHashConfigManifest, PaperEngramModuleManifest, PaperEngramQualityClaim,
+    PaperEngramRuntimeArtifacts, PaperEngramTableRowBlockRequest,
+    PaperEngramTableRowPrefetchRequest, PaperEngramTableShardManifest,
+    PaperEngramTokenizerProjectionManifest, PaperEngramTrainingRecipeManifest, PrefetchPlanRequest,
+    PrefixCacheArtifact, PrefixCacheLookupRequest, QueryResult, VectorIndexKind, VectorIndexObject,
 };
 use sim_models::qwen3_dense_reference::{
     build_tokenizer_projection_from_tokenizer_path, token_piece_bytes_from_tokenizer_path,
@@ -9125,6 +9125,7 @@ struct W5MemoryDecisionBundle {
     prefetch_artifacts: Vec<sim_memory::ExecutionArtifactObject>,
     prefix_cache: Option<sim_memory::PrefixCacheReusePlan>,
     prefix_cache_artifact: Option<sim_memory::PrefixCacheArtifact>,
+    prefix_cache_kv_artifacts: Vec<W5MemoryShortpathKvArtifact>,
 }
 
 fn w5_shortpath_decision_needs_boundary_hidden_ref(
@@ -9144,6 +9145,8 @@ struct W5MemoryDecisionArtifactPublication {
     shortpath_kv_stream_path: Option<PathBuf>,
     prefetch_refs: Vec<W5MemoryPublishedArtifactRef>,
     prefix_cache_ref: Option<W5MemoryPublishedArtifactRef>,
+    prefix_cache_kv_refs: Vec<W5MemoryPublishedKvArtifactRef>,
+    prefix_cache_kv_stream_path: Option<PathBuf>,
     object_registry_dir: PathBuf,
     object_service_snapshot_path: Option<PathBuf>,
 }
@@ -9454,7 +9457,7 @@ fn load_w5_memory_decisions_from_store_with_prefix_lookup(
             .as_ref()
             .map(|plan| !plan.planned_artifact_ids.is_empty())
             .unwrap_or(false);
-    let execution_artifacts = if needs_execution_artifacts {
+    let mut execution_artifacts = if needs_execution_artifacts {
         durable_store
             .load_execution_artifact_manifest()
             .with_context(|| {
@@ -9629,6 +9632,93 @@ fn load_w5_memory_decisions_from_store_with_prefix_lookup(
     } else {
         None
     };
+    let mut prefix_cache_kv_artifacts = Vec::new();
+    if let (Some(plan), Some(prefix_artifact)) = (&prefix_cache, &prefix_cache_artifact) {
+        if matches!(plan.action, sim_memory::PrefixCacheReuseAction::Reuse) {
+            if !prefix_artifact.kv_artifact_ids.is_empty() && execution_artifacts.is_empty() {
+                execution_artifacts =
+                    durable_store
+                        .load_execution_artifact_manifest()
+                        .with_context(|| {
+                            format!(
+                                "load Memory Service execution artifacts from {} for prefix-cache artifact {}",
+                                config.store_path.display(),
+                                prefix_artifact.artifact_id
+                            )
+                        })?;
+            }
+            let mut prefix_kv_by_target =
+                std::collections::BTreeMap::<(u64, u64, u32, u32, u32), (String, u64)>::new();
+            for kv_artifact_id in &prefix_artifact.kv_artifact_ids {
+                let kv_artifact = w5_find_verified_execution_artifact(
+                    &execution_artifacts,
+                    kv_artifact_id,
+                    "prefix-cache artifact",
+                )?;
+                if kv_artifact.kind != sim_memory::ExecutionArtifactKind::KvCache {
+                    anyhow::bail!(
+                        "prefix-cache artifact {} references non-KV execution artifact: {}",
+                        prefix_artifact.artifact_id,
+                        kv_artifact.artifact_id
+                    );
+                }
+                if kv_artifact.producer_boundary.step_index != 0 {
+                    anyhow::bail!(
+                        "prefix-cache artifact {} references non-prefix KV artifact {} step={}",
+                        prefix_artifact.artifact_id,
+                        kv_artifact.artifact_id,
+                        kv_artifact.producer_boundary.step_index
+                    );
+                }
+                validate_lingqu_execution_artifact_payloads(
+                    &mut durable_store,
+                    &kv_artifact,
+                    "prefix-cache kv materialization",
+                )?;
+                let identity = (
+                    kv_artifact.producer_boundary.step_index,
+                    kv_artifact.producer_boundary.position,
+                    kv_artifact.producer_boundary.node_index,
+                    kv_artifact.producer_boundary.layer_start,
+                    kv_artifact.producer_boundary.layer_end,
+                );
+                if let Some((existing_artifact_id, existing_checksum)) =
+                    prefix_kv_by_target.get(&identity)
+                {
+                    if existing_artifact_id != &kv_artifact.artifact_id
+                        || *existing_checksum != kv_artifact.checksum
+                    {
+                        anyhow::bail!(
+                            "ambiguous prefix-cache KV artifacts for step={} position={} target_node={} layers=[{},{}) existing={} checksum={:#x} duplicate={} checksum={:#x}",
+                            identity.0,
+                            identity.1,
+                            identity.2,
+                            identity.3,
+                            identity.4,
+                            existing_artifact_id,
+                            existing_checksum,
+                            kv_artifact.artifact_id,
+                            kv_artifact.checksum
+                        );
+                    }
+                    continue;
+                }
+                prefix_kv_by_target.insert(
+                    identity,
+                    (kv_artifact.artifact_id.clone(), kv_artifact.checksum),
+                );
+                prefix_cache_kv_artifacts.push(W5MemoryShortpathKvArtifact {
+                    step_index: kv_artifact.producer_boundary.step_index,
+                    producer_position: kv_artifact.producer_boundary.position,
+                    producer_layer_end: kv_artifact.producer_boundary.layer_end,
+                    target_node_index: kv_artifact.producer_boundary.node_index,
+                    target_layer_start: kv_artifact.producer_boundary.layer_start,
+                    target_layer_end: kv_artifact.producer_boundary.layer_end,
+                    artifact: kv_artifact,
+                });
+            }
+        }
+    }
     Ok(W5MemoryDecisionBundle {
         shortpath,
         shortpath_artifact,
@@ -9639,6 +9729,7 @@ fn load_w5_memory_decisions_from_store_with_prefix_lookup(
         prefetch_artifacts,
         prefix_cache,
         prefix_cache_artifact,
+        prefix_cache_kv_artifacts,
     })
 }
 
@@ -10836,6 +10927,54 @@ fn publish_w5_memory_decision_artifact_refs(
     } else {
         None
     };
+    let mut prefix_cache_kv_refs = Vec::new();
+    let mut published_prefix_kv_by_artifact_id =
+        std::collections::BTreeMap::<String, W5MemoryPublishedArtifactRef>::new();
+    for kv in &bundle.prefix_cache_kv_artifacts {
+        if !published_prefix_kv_by_artifact_id.contains_key(&kv.artifact.artifact_id) {
+            let published = publish_w5_execution_artifact_ref(
+                &mut artifact_durable_store,
+                &mut object_service,
+                &kv.artifact,
+                config.owner_entity,
+                config.producer_entity,
+                "prefix-cache-kv",
+            )?;
+            published_prefix_kv_by_artifact_id.insert(kv.artifact.artifact_id.clone(), published);
+        }
+        let published = published_prefix_kv_by_artifact_id
+            .get(&kv.artifact.artifact_id)
+            .expect("published prefix-cache KV artifact ref");
+        prefix_cache_kv_refs.push(W5MemoryPublishedKvArtifactRef {
+            step_index: kv.step_index,
+            producer_position: kv.producer_position,
+            producer_layer_end: kv.producer_layer_end,
+            target_node_index: kv.target_node_index,
+            target_layer_start: kv.target_layer_start,
+            target_layer_end: kv.target_layer_end,
+            artifact_id: published.artifact_id.clone(),
+            ref_hex: published.ref_hex.clone(),
+            payload_bytes: published.payload_bytes,
+            payload_checksum: published.payload_checksum,
+        });
+    }
+    let prefix_cache_kv_stream = w5_memory_shortpath_kv_stream_env_from_refs(&prefix_cache_kv_refs);
+    let prefix_cache_kv_stream_path = if prefix_cache_kv_stream.is_empty() {
+        None
+    } else {
+        fs::create_dir_all(&config.registry_dir).with_context(|| {
+            format!(
+                "create W5 Memory Service registry dir {}",
+                config.registry_dir.display()
+            )
+        })?;
+        let path = config
+            .registry_dir
+            .join("w5_memory_prefix_cache_kv_stream.txt");
+        fs::write(&path, prefix_cache_kv_stream.join("\n"))
+            .with_context(|| format!("write W5 prefix-cache KV stream {}", path.display()))?;
+        Some(path)
+    };
 
     save_lingqu_object_service_snapshot(
         &config.object_store_path,
@@ -10853,6 +10992,8 @@ fn publish_w5_memory_decision_artifact_refs(
         shortpath_kv_stream_path,
         prefetch_refs,
         prefix_cache_ref,
+        prefix_cache_kv_refs,
+        prefix_cache_kv_stream_path,
         object_registry_dir: config.registry_dir.clone(),
         object_service_snapshot_path: Some(config.object_store_path.clone()),
     })
@@ -11453,6 +11594,22 @@ fn w5_memory_decision_env_vars(
                 "SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF".to_string(),
                 published.ref_hex.clone(),
             ));
+        }
+        if let Some(published) = publication {
+            let kv_stream =
+                w5_memory_shortpath_kv_stream_env_from_refs(&published.prefix_cache_kv_refs);
+            if !kv_stream.is_empty() {
+                vars.push((
+                    "SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_COUNT".to_string(),
+                    kv_stream.len().to_string(),
+                ));
+                if let Some(path) = published.prefix_cache_kv_stream_path.as_ref() {
+                    vars.push((
+                        "SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH".to_string(),
+                        path.display().to_string(),
+                    ));
+                }
+            }
         }
     }
     if let Some(prefix_cache_service_addr) = &config.prefix_cache_service_addr {
@@ -14317,10 +14474,28 @@ fn record_w5_runtime_boundary_observations_from_summary(
         .collect::<Vec<_>>();
     let mut durable_store = load_lingqu_memory_durable_store(store_path)?;
     let mut memory_service = LingquMemoryService::new();
+    match memory_service.rebuild_boundary_observations_from_dfs(&mut durable_store) {
+        Ok(_) => {}
+        Err(LingquMemoryError::MissingDfsPath(_)) => {}
+        Err(err) => {
+            return Err(err).context("rebuild existing W5 runtime boundary observation DFS audit");
+        }
+    }
+    let mut new_observation_count = 0usize;
     for observation in observations {
+        if memory_service
+            .boundary_observation(&observation.observation_id)
+            .is_some()
+        {
+            continue;
+        }
         memory_service
             .register_boundary_observation(observation)
             .context("register W5 runtime boundary observation")?;
+        new_observation_count += 1;
+    }
+    if new_observation_count == 0 {
+        return Ok(observation_ids);
     }
     memory_service
         .persist_boundary_observations_to_dfs(&mut durable_store)
@@ -17982,6 +18157,7 @@ mod tests {
             prefetch_artifacts: Vec::new(),
             prefix_cache: None,
             prefix_cache_artifact: None,
+            prefix_cache_kv_artifacts: Vec::new(),
         };
         let err = validate_w5_memory_decision_bundle_for_run(
             &config,
@@ -18060,6 +18236,7 @@ mod tests {
                 last_used_at_us: 12,
                 use_count: 1,
             }),
+            prefix_cache_kv_artifacts: Vec::new(),
         };
         let prefix_config = W5MemoryDecisionConfig {
             store_path: PathBuf::from("/tmp/lingqu-memory-store.json"),
@@ -18308,6 +18485,7 @@ mod tests {
             prefetch_artifacts: Vec::new(),
             prefix_cache: None,
             prefix_cache_artifact: None,
+            prefix_cache_kv_artifacts: Vec::new(),
         };
         let engram = Qwen3EngramConfig {
             enabled: true,
@@ -18418,6 +18596,7 @@ mod tests {
             prefetch_artifacts: Vec::new(),
             prefix_cache: None,
             prefix_cache_artifact: None,
+            prefix_cache_kv_artifacts: Vec::new(),
         };
         let publication = W5MemoryDecisionArtifactPublication {
             shortpath_ref: None,
@@ -18448,6 +18627,8 @@ mod tests {
             shortpath_kv_stream_path: None,
             prefetch_refs: Vec::new(),
             prefix_cache_ref: None,
+            prefix_cache_kv_refs: Vec::new(),
+            prefix_cache_kv_stream_path: None,
             object_registry_dir: PathBuf::new(),
             object_service_snapshot_path: None,
         };
@@ -18579,6 +18760,7 @@ mod tests {
             prefetch_artifacts: Vec::new(),
             prefix_cache: None,
             prefix_cache_artifact: None,
+            prefix_cache_kv_artifacts: Vec::new(),
         };
 
         let err = validate_w5_memory_decision_bundle_for_run(
@@ -18700,6 +18882,7 @@ mod tests {
                 prefetch_artifacts: Vec::new(),
                 prefix_cache: None,
                 prefix_cache_artifact: None,
+                prefix_cache_kv_artifacts: Vec::new(),
             }
         }
 
@@ -19015,6 +19198,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             prefetch_artifacts: Vec::new(),
             prefix_cache: None,
             prefix_cache_artifact: None,
+            prefix_cache_kv_artifacts: Vec::new(),
         };
 
         assert_eq!(
@@ -24983,6 +25167,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             prefetch_artifacts: Vec::new(),
             prefix_cache: None,
             prefix_cache_artifact: None,
+            prefix_cache_kv_artifacts: Vec::new(),
         };
 
         let publication = publish_w5_memory_decision_artifact_refs(
@@ -26876,7 +27061,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             terminal_logits_metadata: None,
         };
         durable_store
-            .persist_execution_artifact_manifest(vec![artifact])
+            .persist_execution_artifact_manifest(vec![artifact.clone()])
             .expect("persist runtime execution artifacts");
         durable_store
             .persist_object_service_checkpoint(&object_service)
@@ -26924,13 +27109,39 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
                 online_boundary_lookup: false,
                 prefetch: None,
                 prefetch_artifacts: Vec::new(),
-                prefix_cache: None,
+                prefix_cache: Some(sim_memory::PrefixCacheReusePlan {
+                    plan_id: "prefix-cache-reuse/runtime-test".to_string(),
+                    request_id: "prefix-cache-lookup/runtime-test".to_string(),
+                    action: sim_memory::PrefixCacheReuseAction::Reuse,
+                    artifact_id: Some(prefix_artifacts[0].artifact_id.clone()),
+                    matched_prefix_token_count: prefix_artifacts[0].key.prefix_token_count,
+                    layer_start: prefix_artifacts[0].key.layer_start,
+                    layer_end: prefix_artifacts[0].key.layer_end,
+                    position_start: prefix_artifacts[0].key.position_start,
+                    position_end: prefix_artifacts[0].key.position_end,
+                    confidence_milli: 1000,
+                    verify_required: false,
+                    proof_checksum: 0xace0,
+                    reason: "runtime-test".to_string(),
+                    created_at_us: 20,
+                    version: 1,
+                }),
                 prefix_cache_artifact: Some(prefix_artifacts[0].clone()),
+                prefix_cache_kv_artifacts: vec![W5MemoryShortpathKvArtifact {
+                    step_index: artifact.producer_boundary.step_index,
+                    producer_position: artifact.producer_boundary.position,
+                    producer_layer_end: artifact.producer_boundary.layer_end,
+                    target_node_index: artifact.producer_boundary.node_index,
+                    target_layer_start: artifact.producer_boundary.layer_start,
+                    target_layer_end: artifact.producer_boundary.layer_end,
+                    artifact,
+                }],
             },
         )
         .expect("publish hot-only runtime prefix cache artifact ref");
         let prefix_ref = publication
             .prefix_cache_ref
+            .as_ref()
             .expect("published prefix cache artifact ref");
         assert_eq!(prefix_ref.ref_hex.len(), 128);
         assert_eq!(prefix_ref.payload_bytes, kv_payload.len());
@@ -26938,6 +27149,66 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             prefix_ref.payload_checksum,
             lingqu_object_payload_checksum(&kv_payload)
         );
+        assert_eq!(publication.prefix_cache_kv_refs.len(), 1);
+        assert!(publication.prefix_cache_kv_stream_path.is_some());
+        let env_vars = w5_memory_decision_env_vars(
+            &W5MemoryDecisionConfig {
+                store_path: store_path.clone(),
+                artifact_object_store_path: None,
+                boundary_request_path: None,
+                boundary_observation_id: None,
+                boundary_observation_ids: Vec::new(),
+                boundary_observation_run_id: None,
+                shortpath_decision_id: None,
+                shortpath_decision_ids: Vec::new(),
+                online_boundary_lookup: false,
+                shortpath_execute: true,
+                shortpath_match_mode: "exact".to_string(),
+                min_match_score_milli: 850,
+                min_terminal_margin_milli: 500,
+                approximate_requires_verify: true,
+                min_source_confidence_milli: 900,
+                prefetch_plan_id: None,
+                prefix_cache_lookup: false,
+                prefix_cache_reuse_plan_id: Some("prefix-cache-reuse/runtime-test".to_string()),
+                prefix_cache_service_addr: None,
+            },
+            &W5MemoryDecisionBundle {
+                shortpath: None,
+                shortpath_artifact: None,
+                shortpath_entries: Vec::new(),
+                shortpath_kv_artifacts: Vec::new(),
+                online_boundary_lookup: false,
+                prefetch: None,
+                prefetch_artifacts: Vec::new(),
+                prefix_cache: Some(sim_memory::PrefixCacheReusePlan {
+                    plan_id: "prefix-cache-reuse/runtime-test".to_string(),
+                    request_id: "prefix-cache-lookup/runtime-test".to_string(),
+                    action: sim_memory::PrefixCacheReuseAction::Reuse,
+                    artifact_id: Some(prefix_artifacts[0].artifact_id.clone()),
+                    matched_prefix_token_count: prefix_artifacts[0].key.prefix_token_count,
+                    layer_start: prefix_artifacts[0].key.layer_start,
+                    layer_end: prefix_artifacts[0].key.layer_end,
+                    position_start: prefix_artifacts[0].key.position_start,
+                    position_end: prefix_artifacts[0].key.position_end,
+                    confidence_milli: 1000,
+                    verify_required: false,
+                    proof_checksum: 0xace0,
+                    reason: "runtime-test".to_string(),
+                    created_at_us: 20,
+                    version: 1,
+                }),
+                prefix_cache_artifact: Some(prefix_artifacts[0].clone()),
+                prefix_cache_kv_artifacts: Vec::new(),
+            },
+            Some(&publication),
+        );
+        assert!(env_vars.iter().any(|(key, value)| {
+            key == "SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_COUNT" && value == "1"
+        }));
+        assert!(env_vars.iter().any(|(key, value)| {
+            key == "SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH" && !value.is_empty()
+        }));
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -27093,6 +27364,22 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             cli_bytes_checksum(br#"{"model":{"vocab":{}}}"#)
         );
         assert_eq!(observations[1].hidden_state.bytes, 2048);
+        let recorded_again = record_w5_runtime_boundary_observations_from_summary(
+            &store_path,
+            &summary_path,
+            &runtime,
+            2,
+            4,
+            200,
+        )
+        .expect("record duplicate runtime observations idempotently");
+        assert_eq!(recorded_again, recorded);
+        let mut durable =
+            load_lingqu_memory_durable_store(&store_path).expect("reload idempotent store");
+        let observations = durable
+            .load_boundary_observation_manifest()
+            .expect("load idempotent runtime observation audit");
+        assert_eq!(observations.len(), 2);
         let report = run_w5_runtime_boundary_lookups(
             &store_path,
             &recorded,
