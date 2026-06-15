@@ -4333,6 +4333,65 @@ fn qwen3_hot_ref_from_obmm_metadata(
     }
 }
 
+fn qwen3_w5_gsva_kv_enabled() -> bool {
+    std::env::var("SIM_W5_MEMORY_GSVA_KV").as_deref() == Ok("1")
+}
+
+fn qwen3_w5_gsva_kv_segment_ref(
+    run_id: &str,
+    key: &str,
+    node_index: u32,
+    layer_start: u32,
+    layer_end: u32,
+    position: u64,
+    object_ref: LingquObmmObjectRefWire,
+) -> sim_memory::GsvaSegmentObjectRef {
+    let aperture_base = std::env::var("GVA_MANAGER_APERTURE_BASE")
+        .ok()
+        .and_then(|value| {
+            u64::from_str_radix(value.trim_start_matches("0x"), 16)
+                .ok()
+                .or_else(|| value.parse::<u64>().ok())
+        })
+        .unwrap_or(0x0000_8000_0000_0000);
+    let segment_base = aperture_base
+        .saturating_add((node_index as u64).saturating_mul(0x0100_0000))
+        .saturating_add((layer_start as u64).saturating_mul(0x0010_0000))
+        .saturating_add(position.saturating_mul(0x1000));
+    let token = qwen3_lingqu_object_payload_checksum(
+        format!(
+            "gsva-token:{run_id}:{key}:{}:{}:{}:{:x}",
+            node_index, layer_start, layer_end, object_ref.payload_checksum
+        )
+        .as_bytes(),
+    )
+    .max(1);
+    sim_memory::GsvaSegmentObjectRef {
+        segment_id: format!(
+            "gsva/{run_id}/node{}/layers{}-{}-pos{}",
+            node_index + 1,
+            layer_start,
+            layer_end,
+            position
+        ),
+        backend: sim_memory::GsvaObjectBackend::Gsva,
+        base: segment_base,
+        bytes: object_ref.payload_bytes,
+        token,
+        epoch: std::env::var("GVA_MANAGER_GENERATION")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(1)
+            .max(1),
+        retired: false,
+        checksum: object_ref.payload_checksum,
+        home_node: node_index + 1,
+        access_flags: "read,write".to_string(),
+        cache_policy: std::env::var("GVA_MANAGER_CACHE_POLICY")
+            .unwrap_or_else(|_| "coherent".to_string()),
+    }
+}
+
 fn qwen3_w5_terminal_logits_payload(
     descriptor: &Qwen3DenseReferenceLogitsDescriptor,
 ) -> Result<Vec<u8>, String> {
@@ -4629,6 +4688,19 @@ fn qwen3_commit_w5_memory_runtime_artifacts(
         .map_err(|err| format!("qwen3_w5_boundary_observation_persist_failed:{err}"))?;
 
     let kv_hot_ref = qwen3_hot_ref_from_obmm(&refs.kv_key, refs.kv_ref);
+    let kv_gsva_ref = if qwen3_w5_gsva_kv_enabled() {
+        Some(qwen3_w5_gsva_kv_segment_ref(
+            &run_id,
+            &refs.kv_key,
+            contract.node,
+            contract.layer_start,
+            contract.layer_end,
+            refs.position,
+            refs.kv_ref,
+        ))
+    } else {
+        None
+    };
     let kv_artifact_id = format!(
         "artifact/kv/{}/step{}/{}",
         run_id, refs.decode_step, producer_node
@@ -4662,6 +4734,7 @@ fn qwen3_commit_w5_memory_runtime_artifacts(
         shape: vec![refs.kv_ref.payload_bytes],
         durable_payload_ref: None,
         hot_object_ref: Some(kv_hot_ref),
+        gsva_segment_ref: kv_gsva_ref.clone(),
         source_query_result_id: None,
         source_engram_state_id: None,
         confidence_milli: 980,
@@ -4675,6 +4748,23 @@ fn qwen3_commit_w5_memory_runtime_artifacts(
     memory_service
         .register_execution_artifact(kv_artifact)
         .map_err(|err| format!("qwen3_w5_kv_artifact_register_failed:{err}"))?;
+    if let Some(gsva_ref) = &kv_gsva_ref {
+        println!(
+            "[w4_guest] stage qwen3_w5_memory_gsva_kv_writeback node={} step={} position={} layers=[{},{}) backend=gsva segment_id={} base=0x{:016x} bytes={} token=0x{:016x} epoch={} retired={} checksum=0x{:016x} status=ok",
+            contract.node + 1,
+            refs.decode_step,
+            refs.position,
+            contract.layer_start,
+            contract.layer_end,
+            gsva_ref.segment_id,
+            gsva_ref.base,
+            gsva_ref.bytes,
+            gsva_ref.token,
+            gsva_ref.epoch,
+            if gsva_ref.retired { 1 } else { 0 },
+            gsva_ref.checksum
+        );
+    }
 
     if let (Some(descriptor), Some(logits_hot_ref)) = (logits_descriptor, logits_hot_ref.clone()) {
         let logits_artifact_id = format!(
@@ -4715,6 +4805,7 @@ fn qwen3_commit_w5_memory_runtime_artifacts(
             shape: vec![logits_hot_ref.bytes],
             durable_payload_ref: None,
             hot_object_ref: Some(logits_hot_ref.clone()),
+            gsva_segment_ref: None,
             source_query_result_id: None,
             source_engram_state_id: None,
             confidence_milli: 980,
@@ -4847,6 +4938,7 @@ fn qwen3_register_w5_runtime_terminal_support_artifacts(
             shape: vec![logits_hot_ref.bytes],
             durable_payload_ref: None,
             hot_object_ref: Some(logits_hot_ref.clone()),
+            gsva_segment_ref: None,
             source_query_result_id: None,
             source_engram_state_id: None,
             confidence_milli: 980,

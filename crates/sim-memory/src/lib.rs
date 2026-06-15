@@ -5381,6 +5381,49 @@ pub enum HotObjectBackend {
     ObmmShmem,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GsvaObjectBackend {
+    Gsva,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GsvaSegmentObjectRef {
+    pub segment_id: String,
+    pub backend: GsvaObjectBackend,
+    pub base: u64,
+    pub bytes: u64,
+    pub token: u64,
+    pub epoch: u64,
+    pub retired: bool,
+    pub checksum: u64,
+    pub home_node: u32,
+    pub access_flags: String,
+    pub cache_policy: String,
+}
+
+impl GsvaSegmentObjectRef {
+    pub fn validate(&self, field: &'static str) -> MemoryResult<()> {
+        required_str(&self.segment_id, field)?;
+        nonzero(self.bytes, field)?;
+        nonzero(self.token, field)?;
+        nonzero(self.epoch, field)?;
+        nonzero(self.checksum, field)?;
+        required_str(&self.access_flags, field)?;
+        required_str(&self.cache_policy, field)?;
+        if self.retired {
+            return Err(LingquMemoryError::InvalidValue {
+                field,
+                reason: "GSVA segment must be active for execution artifact reuse",
+            });
+        }
+        Ok(())
+    }
+
+    pub fn matches_payload(&self, bytes: u64, checksum: u64) -> bool {
+        self.bytes == bytes && self.checksum == checksum
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HotTensorObjectRef {
     pub object_key: String,
@@ -5767,6 +5810,8 @@ pub struct ExecutionArtifactObject {
     pub shape: Vec<u64>,
     pub durable_payload_ref: Option<LingquBlockPayloadRef>,
     pub hot_object_ref: Option<HotTensorObjectRef>,
+    #[serde(default)]
+    pub gsva_segment_ref: Option<GsvaSegmentObjectRef>,
     pub source_query_result_id: Option<String>,
     pub source_engram_state_id: Option<String>,
     pub confidence_milli: u32,
@@ -5799,7 +5844,10 @@ impl ExecutionArtifactObject {
         for dim in &self.shape {
             nonzero(*dim, "execution_artifact.shape")?;
         }
-        if self.durable_payload_ref.is_none() && self.hot_object_ref.is_none() {
+        if self.durable_payload_ref.is_none()
+            && self.hot_object_ref.is_none()
+            && self.gsva_segment_ref.is_none()
+        {
             return Err(LingquMemoryError::MissingField(
                 "execution_artifact.payload_ref",
             ));
@@ -5813,6 +5861,31 @@ impl ExecutionArtifactObject {
                 return Err(LingquMemoryError::InvalidValue {
                     field: "execution_artifact.hot_object_ref",
                     reason: "hot object dtype/shape must match artifact metadata",
+                });
+            }
+        }
+        if let Some(gsva_ref) = &self.gsva_segment_ref {
+            gsva_ref.validate("execution_artifact.gsva_segment_ref")?;
+            if let Some(payload_ref) = &self.durable_payload_ref {
+                if !gsva_ref.matches_payload(payload_ref.bytes, payload_ref.checksum) {
+                    return Err(LingquMemoryError::InvalidValue {
+                        field: "execution_artifact.gsva_segment_ref",
+                        reason: "GSVA segment bytes/checksum must match durable payload",
+                    });
+                }
+            }
+            if let Some(hot_ref) = &self.hot_object_ref {
+                if !gsva_ref.matches_payload(hot_ref.bytes, hot_ref.checksum) {
+                    return Err(LingquMemoryError::InvalidValue {
+                        field: "execution_artifact.gsva_segment_ref",
+                        reason: "GSVA segment bytes/checksum must match hot object payload",
+                    });
+                }
+            }
+            if self.shape.len() == 1 && self.shape[0] != gsva_ref.bytes {
+                return Err(LingquMemoryError::InvalidValue {
+                    field: "execution_artifact.gsva_segment_ref",
+                    reason: "GSVA segment bytes must match opaque artifact shape",
                 });
             }
         }
@@ -11293,6 +11366,7 @@ mod tests {
             shape: vec![1, 1024],
             durable_payload_ref: None,
             hot_object_ref: None,
+            gsva_segment_ref: None,
             source_query_result_id: None,
             source_engram_state_id: None,
             confidence_milli: 900,
@@ -11310,6 +11384,70 @@ mod tests {
                 "execution_artifact.payload_ref"
             ))
         );
+    }
+
+    #[test]
+    fn execution_artifact_gsva_segment_ref_fails_closed() {
+        let mut artifact = sample_logits_execution_artifact("artifact/logits/gsva");
+        let hot_ref = artifact.hot_object_ref.as_ref().expect("hot ref").clone();
+        artifact.gsva_segment_ref = Some(GsvaSegmentObjectRef {
+            segment_id: "gsva/test/node1/kv".to_string(),
+            backend: GsvaObjectBackend::Gsva,
+            base: 0x8000_0000,
+            bytes: hot_ref.bytes,
+            token: 0x1111,
+            epoch: 1,
+            retired: false,
+            checksum: hot_ref.checksum,
+            home_node: 1,
+            access_flags: "read,write".to_string(),
+            cache_policy: "coherent".to_string(),
+        });
+        artifact.validate().expect("active GSVA ref validates");
+
+        let mut revoked = artifact.clone();
+        revoked.gsva_segment_ref.as_mut().unwrap().token = 0;
+        assert!(matches!(
+            revoked.validate(),
+            Err(LingquMemoryError::InvalidValue {
+                field: "execution_artifact.gsva_segment_ref",
+                ..
+            })
+        ));
+
+        let mut epoch_mismatch = artifact.clone();
+        epoch_mismatch.gsva_segment_ref.as_mut().unwrap().epoch = 0;
+        assert!(matches!(
+            epoch_mismatch.validate(),
+            Err(LingquMemoryError::InvalidValue {
+                field: "execution_artifact.gsva_segment_ref",
+                ..
+            })
+        ));
+
+        let mut retired = artifact.clone();
+        retired.gsva_segment_ref.as_mut().unwrap().retired = true;
+        assert!(matches!(
+            retired.validate(),
+            Err(LingquMemoryError::InvalidValue {
+                field: "execution_artifact.gsva_segment_ref",
+                ..
+            })
+        ));
+
+        let mut checksum_mismatch = artifact;
+        checksum_mismatch
+            .gsva_segment_ref
+            .as_mut()
+            .unwrap()
+            .checksum ^= 1;
+        assert!(matches!(
+            checksum_mismatch.validate(),
+            Err(LingquMemoryError::InvalidValue {
+                field: "execution_artifact.gsva_segment_ref",
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -11679,6 +11817,7 @@ mod tests {
             shape: vec![1, 4],
             durable_payload_ref: None,
             hot_object_ref: Some(logits_ref),
+            gsva_segment_ref: None,
             source_query_result_id: None,
             source_engram_state_id: None,
             confidence_milli: 980,
@@ -14005,6 +14144,7 @@ mod tests {
                 shape: vec![1, 4],
                 durable_payload_ref: None,
                 hot_object_ref: Some(logits_ref),
+                gsva_segment_ref: None,
                 source_query_result_id: None,
                 source_engram_state_id: None,
                 confidence_milli: 980,
@@ -14083,6 +14223,7 @@ mod tests {
                 shape: vec![1, 4],
                 durable_payload_ref: None,
                 hot_object_ref: Some(logits_ref),
+                gsva_segment_ref: None,
                 source_query_result_id: None,
                 source_engram_state_id: None,
                 confidence_milli: 980,
@@ -14498,6 +14639,7 @@ mod tests {
                 0x1111,
             )),
             hot_object_ref: None,
+            gsva_segment_ref: None,
             source_query_result_id: None,
             source_engram_state_id: None,
             confidence_milli: 980,
@@ -16031,6 +16173,7 @@ mod tests {
                 dtype: TensorDType::F32,
                 shape: vec![1, 128],
             }),
+            gsva_segment_ref: None,
             source_query_result_id: None,
             source_engram_state_id: None,
             confidence_milli: 980,

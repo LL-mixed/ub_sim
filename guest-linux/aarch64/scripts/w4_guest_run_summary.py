@@ -1207,6 +1207,16 @@ def emit_memory_service_summary(memory_records, expected_steps, output):
         for record in memory_records
         if record["stage"] == "qwen3_w5_memory_prefix_cache_kv_loaded"
     ]
+    gsva_kv_reads = [
+        record
+        for record in memory_records
+        if record["stage"] == "qwen3_w5_memory_gsva_kv_loaded"
+    ]
+    gsva_kv_writebacks = [
+        record
+        for record in memory_records
+        if record["stage"] == "qwen3_w5_memory_gsva_kv_writeback"
+    ]
     output.append(
         "memory_service_summary: "
         "service=lingqu_memory_service "
@@ -1222,6 +1232,10 @@ def emit_memory_service_summary(memory_records, expected_steps, output):
         f"prefix_cache_actions={csv_or_none(record.get('prefix_cache_action') for record in memory_records)} "
         f"prefix_cache_kv_hits={len(prefix_cache_kv_hits)} "
         f"prefix_cache_kv_nodes={csv_or_none_ordered(record.get('node') for record in prefix_cache_kv_hits)} "
+        f"gsva_kv_refs={len(gsva_kv_reads) + len(gsva_kv_writebacks)} "
+        f"gsva_reads={len(gsva_kv_reads)} "
+        f"gsva_writebacks={len(gsva_kv_writebacks)} "
+        f"gsva_kv_nodes={csv_or_none_ordered(record.get('node') for record in gsva_kv_reads + gsva_kv_writebacks)} "
         f"lookup_hits={len(lookup_hits)} "
         f"hit_registry_indexes={csv_or_none_ordered(record.get('registry_index') for record in lookup_hits)} "
         f"hit_registry_steps={csv_or_none_ordered(lookup_hit_registry_step(record) for record in lookup_hits)} "

@@ -568,6 +568,8 @@ class W4GuestRunSummaryTest(unittest.TestCase):
             "artifact_kinds=logits prefetch_ids=none prefix_cache_ids=none "
             "prefix_cache_actions=none prefix_cache_kv_hits=0 "
             "prefix_cache_kv_nodes=none "
+            "gsva_kv_refs=0 gsva_reads=0 gsva_writebacks=0 "
+            "gsva_kv_nodes=none "
             "lookup_hits=1 hit_registry_indexes=7 hit_registry_steps=1 "
             "hit_positions=4",
             result.stdout,
@@ -581,6 +583,45 @@ class W4GuestRunSummaryTest(unittest.TestCase):
             "hit_positions=4",
             result.stdout,
         )
+
+    def test_memory_service_summary_reports_gsva_kv_activity(self):
+        script = Path(__file__).resolve().parents[1] / "scripts" / "w4_guest_run_summary.py"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "nodeA_guest.log").write_text(
+                "\n".join(
+                    [
+                        (
+                            "[w4_guest] stage qwen3_w5_memory_gsva_kv_writeback "
+                            "node=1 step=0 position=4 layers=[0,4) backend=gsva "
+                            "segment_id=gsva/run/node1 base=0x80000000 bytes=2048 "
+                            "token=0x1234 epoch=1 retired=0 checksum=0xdef status=ok"
+                        ),
+                        (
+                            "[w4_guest] stage qwen3_w5_memory_gsva_kv_loaded "
+                            "node=1 step=1 previous_step=0 backend=gsva "
+                            "segment_id=gsva/run/node1 base=0x80000000 bytes=2048 "
+                            "token=0x1234 epoch=1 retired=0 checksum=0xdef "
+                            "source=prefix_cache target=uapi_object_ref status=ok"
+                        ),
+                        "[w4_guest] pass",
+                    ]
+                )
+                + "\n"
+            )
+
+            result = subprocess.run(
+                [sys.executable, str(script), str(run_dir), "1", "nodeA"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertIn("gsva_kv_refs=2", result.stdout)
+        self.assertIn("gsva_reads=1", result.stdout)
+        self.assertIn("gsva_writebacks=1", result.stdout)
+        self.assertIn("gsva_kv_nodes=1", result.stdout)
 
     def test_idle_engram_timing_does_not_count_terminal_wait_as_range_pipeline(self):
         script = Path(__file__).resolve().parents[1] / "scripts" / "w4_guest_run_summary.py"

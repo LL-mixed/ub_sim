@@ -7348,6 +7348,7 @@ fn run_lingqu_memory_register_terminal_logits_artifact_from_w5_summary_cli(
         shape: vec![W5_TERMINAL_LOGITS_HEADER_BYTES as u64 + W5_TERMINAL_LOGITS_ENTRY_BYTES as u64],
         durable_payload_ref: Some(payload_ref),
         hot_object_ref: None,
+        gsva_segment_ref: None,
         source_query_result_id: None,
         source_engram_state_id: None,
         confidence_milli: confidence_milli as u32,
@@ -7560,6 +7561,7 @@ fn run_lingqu_memory_promote_terminal_shortpath_artifacts_from_w5_summary_cli(
             ],
             durable_payload_ref: Some(payload_ref),
             hot_object_ref: None,
+            gsva_segment_ref: None,
             source_query_result_id: None,
             source_engram_state_id: None,
             confidence_milli: confidence_milli as u32,
@@ -7634,6 +7636,7 @@ fn run_lingqu_memory_promote_terminal_shortpath_artifacts_from_w5_summary_cli(
             shape: vec![export.total_bytes],
             durable_payload_ref: payload_ref,
             hot_object_ref: export.hot_object_ref.clone(),
+            gsva_segment_ref: None,
             source_query_result_id: None,
             source_engram_state_id: None,
             confidence_milli: confidence_milli as u32,
@@ -9171,6 +9174,7 @@ struct W5MemoryPublishedKvArtifactRef {
     ref_hex: String,
     payload_bytes: usize,
     payload_checksum: u64,
+    gsva_segment_ref: Option<sim_memory::GsvaSegmentObjectRef>,
 }
 
 #[cfg(test)]
@@ -10886,6 +10890,7 @@ fn publish_w5_memory_decision_artifact_refs(
             ref_hex: published.ref_hex.clone(),
             payload_bytes: published.payload_bytes,
             payload_checksum: published.payload_checksum,
+            gsva_segment_ref: kv.artifact.gsva_segment_ref.clone(),
         });
     }
     let shortpath_kv_stream = w5_memory_shortpath_kv_stream_env_from_refs(&shortpath_kv_refs);
@@ -10956,6 +10961,7 @@ fn publish_w5_memory_decision_artifact_refs(
             ref_hex: published.ref_hex.clone(),
             payload_bytes: published.payload_bytes,
             payload_checksum: published.payload_checksum,
+            gsva_segment_ref: kv.artifact.gsva_segment_ref.clone(),
         });
     }
     let prefix_cache_kv_stream = w5_memory_shortpath_kv_stream_env_from_refs(&prefix_cache_kv_refs);
@@ -11805,7 +11811,7 @@ fn w5_memory_shortpath_kv_stream_env_from_refs(
     });
     refs.into_iter()
         .map(|published| {
-            format!(
+            let base = format!(
                 "{}:{}:{}:{}:{}:{}:{}:{}:{}",
                 published.step_index,
                 published.producer_position,
@@ -11816,7 +11822,23 @@ fn w5_memory_shortpath_kv_stream_env_from_refs(
                 published.ref_hex,
                 published.payload_bytes,
                 published.payload_checksum
-            )
+            );
+            if let Some(gsva_ref) = &published.gsva_segment_ref {
+                format!(
+                    "{}:gsva:{}:{}:{}:{}:{}:{}:{}:{}",
+                    base,
+                    gsva_ref.segment_id,
+                    gsva_ref.base,
+                    gsva_ref.bytes,
+                    gsva_ref.token,
+                    gsva_ref.epoch,
+                    if gsva_ref.retired { 1 } else { 0 },
+                    gsva_ref.checksum,
+                    gsva_ref.home_node
+                )
+            } else {
+                base
+            }
         })
         .collect()
 }
@@ -18113,6 +18135,7 @@ mod tests {
                 0x5555,
             )),
             hot_object_ref: None,
+            gsva_segment_ref: None,
             source_query_result_id: None,
             source_engram_state_id: None,
             confidence_milli: 990,
@@ -18366,6 +18389,7 @@ mod tests {
                 0x5555,
             )),
             hot_object_ref: None,
+            gsva_segment_ref: None,
             source_query_result_id: None,
             source_engram_state_id: None,
             confidence_milli: 990,
@@ -18550,6 +18574,7 @@ mod tests {
                         checksum,
                     )),
                     hot_object_ref: None,
+                    gsva_segment_ref: None,
                     source_query_result_id: None,
                     source_engram_state_id: None,
                     confidence_milli: 990,
@@ -18674,6 +18699,7 @@ mod tests {
                 ref_hex: "a".repeat(128),
                 payload_bytes: 4096,
                 payload_checksum: 0xabc,
+                gsva_segment_ref: None,
             },
             W5MemoryPublishedKvArtifactRef {
                 step_index: 0,
@@ -18686,6 +18712,7 @@ mod tests {
                 ref_hex: "b".repeat(128),
                 payload_bytes: 2048,
                 payload_checksum: 0xdef,
+                gsva_segment_ref: None,
             },
         ];
         let stream = w5_memory_shortpath_kv_stream_env_from_refs(&refs);
@@ -18696,6 +18723,46 @@ mod tests {
         assert!(stream[1].starts_with("0:20:4:3:4:8:"));
         assert!(stream.iter().all(|entry| !entry.contains("artifact/kv/")));
         assert!(stream.iter().all(|entry| !entry.contains("step0")));
+    }
+
+    #[test]
+    fn w5_memory_shortpath_kv_stream_carries_gsva_segment_refs() {
+        let refs = vec![W5MemoryPublishedKvArtifactRef {
+            step_index: 0,
+            producer_position: 20,
+            producer_layer_end: 4,
+            target_node_index: 2,
+            target_layer_start: 0,
+            target_layer_end: 4,
+            artifact_id: "artifact/kv/run0/step0/node2".to_string(),
+            ref_hex: "b".repeat(128),
+            payload_bytes: 2048,
+            payload_checksum: 0xdef,
+            gsva_segment_ref: Some(sim_memory::GsvaSegmentObjectRef {
+                segment_id: "gsva/run0/node2/layers0-4-pos20".to_string(),
+                backend: sim_memory::GsvaObjectBackend::Gsva,
+                base: 0x8000_2000,
+                bytes: 2048,
+                token: 0x1234,
+                epoch: 7,
+                retired: false,
+                checksum: 0xdef,
+                home_node: 2,
+                access_flags: "read,write".to_string(),
+                cache_policy: "coherent".to_string(),
+            }),
+        }];
+        let stream = w5_memory_shortpath_kv_stream_env_from_refs(&refs);
+
+        assert_eq!(stream.len(), 1);
+        let fields = stream[0].split(':').collect::<Vec<_>>();
+        assert_eq!(fields.len(), 18);
+        assert_eq!(fields[9], "gsva");
+        assert_eq!(fields[10], "gsva/run0/node2/layers0-4-pos20");
+        assert_eq!(fields[13], "4660");
+        assert_eq!(fields[14], "7");
+        assert_eq!(fields[15], "0");
+        assert_eq!(fields[16], "3567");
     }
 
     #[test]
@@ -18823,6 +18890,7 @@ mod tests {
                 shape: vec![1, 4],
                 durable_payload_ref: None,
                 hot_object_ref: None,
+                gsva_segment_ref: None,
                 source_query_result_id: None,
                 source_engram_state_id: None,
                 confidence_milli: 990,
@@ -19095,6 +19163,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                     0x5555 + step_index + u64::from(node_index),
                 )),
                 hot_object_ref: None,
+                gsva_segment_ref: None,
                 source_query_result_id: None,
                 source_engram_state_id: None,
                 confidence_milli: 990,
@@ -24150,6 +24219,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             shape: vec![1, 4],
             durable_payload_ref: Some(logits_payload_ref),
             hot_object_ref: None,
+            gsva_segment_ref: None,
             source_query_result_id: None,
             source_engram_state_id: None,
             confidence_milli: 980,
@@ -24193,6 +24263,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                     .expect("write second logits payload"),
             ),
             hot_object_ref: None,
+            gsva_segment_ref: None,
             source_query_result_id: None,
             source_engram_state_id: None,
             confidence_milli: 970,
@@ -24230,6 +24301,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             shape: vec![1, 4],
             durable_payload_ref: Some(kv_payload_ref),
             hot_object_ref: None,
+            gsva_segment_ref: None,
             source_query_result_id: None,
             source_engram_state_id: None,
             confidence_milli: 940,
@@ -25123,6 +25195,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             shape: vec![artifact_payload.len() as u64],
             durable_payload_ref: None,
             hot_object_ref: Some(hot_ref),
+            gsva_segment_ref: None,
             source_query_result_id: None,
             source_engram_state_id: None,
             confidence_milli: 990,
@@ -25262,6 +25335,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             shape: vec![128],
             durable_payload_ref: None,
             hot_object_ref: Some(hot_ref),
+            gsva_segment_ref: None,
             source_query_result_id: None,
             source_engram_state_id: None,
             confidence_milli: 980,
@@ -26596,6 +26670,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
                 0x5555,
             )),
             hot_object_ref: None,
+            gsva_segment_ref: None,
             source_query_result_id: None,
             source_engram_state_id: None,
             confidence_milli: 980,
@@ -27050,6 +27125,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
                 dtype: sim_core::TensorDType::Opaque,
                 shape: vec![kv_payload.len() as u64],
             }),
+            gsva_segment_ref: None,
             source_query_result_id: None,
             source_engram_state_id: None,
             confidence_milli: 980,
@@ -28878,6 +28954,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
                 dtype: sim_core::TensorDType::F32,
                 shape: hot_shape,
             }),
+            gsva_segment_ref: None,
             source_query_result_id: None,
             source_engram_state_id: None,
             confidence_milli,
@@ -29445,6 +29522,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
                 dtype: sim_core::TensorDType::F32,
                 shape: vec![3],
             }),
+            gsva_segment_ref: None,
             source_query_result_id: None,
             source_engram_state_id: None,
             confidence_milli: 800,

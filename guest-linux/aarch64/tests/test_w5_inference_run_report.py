@@ -174,15 +174,17 @@ class W5InferenceRunReportTest(unittest.TestCase):
                         "decode_output: token_ids=[81378, 374]",
                         (
                             "memory_service_summary: service=lingqu_memory_service "
-                            "records=10 steps=2/2 "
+                            "records=11 steps=2/2 "
                             "stages=qwen3_w5_memory_decision_contract:8,"
+                            "qwen3_w5_memory_gsva_kv_loaded:1,"
                             "qwen3_w5_memory_prefix_cache_kv_loaded:1,"
                             "qwen3_w5_memory_prefix_cache_kv_stream_loaded:1 "
                             "shortpath_ids=none support_ids=none actions=none "
                             "artifact_kinds=none prefetch_ids=none "
                             "prefix_cache_ids=prefix-cache-reuse/runtime-test "
                             "prefix_cache_actions=reuse prefix_cache_kv_hits=1 "
-                            "prefix_cache_kv_nodes=1 lookup_hits=0 "
+                            "prefix_cache_kv_nodes=1 gsva_kv_refs=1 gsva_reads=1 "
+                            "gsva_writebacks=0 gsva_kv_nodes=1 lookup_hits=0 "
                             "hit_registry_indexes=none hit_registry_steps=none "
                             "hit_positions=none"
                         ),
@@ -201,6 +203,7 @@ class W5InferenceRunReportTest(unittest.TestCase):
 
         self.assertIn("w5_run_report: status=pass run_id=run", result.stdout)
         self.assertIn("artifact: label=prefix_cache_kv_stream bytes=10", result.stdout)
+        self.assertIn("gsva: kv_refs=1 reads=1 writebacks=0 kv_nodes=1", result.stdout)
         self.assertNotIn("issue:", result.stdout)
 
     def test_reports_passed_prefix_cache_miss_fallback_run(self):
