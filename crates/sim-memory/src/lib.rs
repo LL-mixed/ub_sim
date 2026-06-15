@@ -3713,6 +3713,42 @@ impl LingquMemoryDurableStore {
         Ok(LingquPrefixCacheManifest::from_json_bytes(&bytes)?.artifacts)
     }
 
+    pub fn restore_prefix_cache_from_ssd_backend(
+        &mut self,
+    ) -> MemoryResult<PrefixCacheSsdRestoreReport> {
+        let artifacts = self.load_prefix_cache_manifest()?;
+        let mut ssd_backed_artifacts = 0u64;
+        let mut durable_payload_refs = 0u64;
+        let mut durable_payload_bytes = 0u64;
+        let mut payload_proof_checksum = 0u64;
+
+        for artifact in &artifacts {
+            artifact.validate()?;
+            if !artifact.durable_payload_refs.is_empty() {
+                ssd_backed_artifacts += 1;
+            }
+            for payload_ref in &artifact.durable_payload_refs {
+                let payload = self.read_block_payload(payload_ref)?;
+                durable_payload_refs += 1;
+                durable_payload_bytes = durable_payload_bytes.saturating_add(payload.len() as u64);
+                payload_proof_checksum ^= payload_ref
+                    .checksum
+                    .rotate_left((payload_ref.bytes % 63) as u32)
+                    ^ payload_ref.bytes;
+            }
+        }
+
+        Ok(PrefixCacheSsdRestoreReport {
+            backend: "ub_ssd_host_file".to_string(),
+            manifest_path: LINGQU_PREFIX_CACHE_MANIFEST_PATH.to_string(),
+            artifacts: artifacts.len() as u64,
+            ssd_backed_artifacts,
+            durable_payload_refs,
+            durable_payload_bytes,
+            payload_proof_checksum,
+        })
+    }
+
     pub fn persist_paper_engram_tokenizer_projection_manifest(
         &mut self,
         manifests: Vec<PaperEngramTokenizerProjectionManifest>,
@@ -6065,6 +6101,17 @@ impl PrefixCacheArtifact {
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrefixCacheSsdRestoreReport {
+    pub backend: String,
+    pub manifest_path: String,
+    pub artifacts: u64,
+    pub ssd_backed_artifacts: u64,
+    pub durable_payload_refs: u64,
+    pub durable_payload_bytes: u64,
+    pub payload_proof_checksum: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -14612,6 +14659,88 @@ mod tests {
 
         assert_eq!(restored_catalog.catalog.catalog_id, "corpus/0");
         assert_eq!(restored_block, b"snapshot payload");
+    }
+
+    #[test]
+    fn durable_store_restores_prefix_cache_from_ssd_backed_payloads() {
+        let mut durable = LingquMemoryDurableStore::new();
+        let payload_ref = durable
+            .write_block_payload("block/prefix/ssd/restart/8", vec![0x5a; 64])
+            .expect("write prefix payload");
+        let prefix_artifact = PrefixCacheArtifact {
+            artifact_id: "prefix-cache/ssd/restart/8".to_string(),
+            key: sample_prefix_cache_key(8, 0x7070),
+            kv_artifact_ids: Vec::new(),
+            durable_payload_refs: vec![payload_ref],
+            hot_object_refs: Vec::new(),
+            dtype: TensorDType::F32,
+            shape: vec![8, 4],
+            confidence_milli: 950,
+            state: ExecutionArtifactState::Verified,
+            checksum: 0x8080,
+            version: 1,
+            created_at_us: 10,
+            expires_at_us: Some(100),
+            last_used_at_us: 10,
+            use_count: 1,
+        };
+        durable
+            .persist_prefix_cache_manifest(vec![prefix_artifact])
+            .expect("persist prefix cache manifest");
+        let snapshot = durable
+            .export_durable_sim_snapshot()
+            .expect("export durable snapshot");
+        let mut restored =
+            LingquMemoryDurableStore::import_durable_sim_snapshot(snapshot).expect("import store");
+
+        let report = restored
+            .restore_prefix_cache_from_ssd_backend()
+            .expect("restore prefix cache from SSD backend");
+
+        assert_eq!(report.backend, "ub_ssd_host_file");
+        assert_eq!(report.artifacts, 1);
+        assert_eq!(report.ssd_backed_artifacts, 1);
+        assert_eq!(report.durable_payload_refs, 1);
+        assert_eq!(report.durable_payload_bytes, 64);
+        assert_ne!(report.payload_proof_checksum, 0);
+    }
+
+    #[test]
+    fn durable_store_rejects_corrupt_prefix_cache_ssd_payload_ref() {
+        let mut durable = LingquMemoryDurableStore::new();
+        let mut payload_ref = durable
+            .write_block_payload("block/prefix/ssd/corrupt/8", vec![0x33; 64])
+            .expect("write prefix payload");
+        payload_ref.checksum ^= 1;
+        let prefix_artifact = PrefixCacheArtifact {
+            artifact_id: "prefix-cache/ssd/corrupt/8".to_string(),
+            key: sample_prefix_cache_key(8, 0x7171),
+            kv_artifact_ids: Vec::new(),
+            durable_payload_refs: vec![payload_ref],
+            hot_object_refs: Vec::new(),
+            dtype: TensorDType::F32,
+            shape: vec![8, 4],
+            confidence_milli: 950,
+            state: ExecutionArtifactState::Verified,
+            checksum: 0x8181,
+            version: 1,
+            created_at_us: 10,
+            expires_at_us: Some(100),
+            last_used_at_us: 10,
+            use_count: 1,
+        };
+        durable
+            .persist_prefix_cache_manifest(vec![prefix_artifact])
+            .expect("persist prefix cache manifest");
+
+        let err = durable
+            .restore_prefix_cache_from_ssd_backend()
+            .expect_err("corrupt prefix payload ref must fail restore");
+
+        assert!(matches!(
+            err,
+            LingquMemoryError::PayloadChecksumMismatch { .. }
+        ));
     }
 
     #[test]

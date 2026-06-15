@@ -318,6 +318,27 @@ Acceptance:
 - Corrupt snapshot/import is rejected.
 - Store size and restore time are reported.
 
+Progress as of 2026-06-15:
+
+- Host-file SSD mode is represented by the durable store JSON plus external
+  block sidecar (`<store>.bin`) produced by
+  `save_lingqu_memory_durable_store_to_path` when block payloads exceed the
+  externalization threshold.
+- Simulator crash/restart boundary: prefix-cache manifest metadata lives in
+  durable DFS JSON; W5 KV/prefix payload bytes live in durable block records
+  and may be hydrated from the host-file sidecar after a new process loads the
+  same store path. Removing or corrupting either file is treated as import
+  failure, not a cache miss.
+- Restore/report CLI:
+
+```text
+sim-cli lingqu-memory restore-prefix-cache-ssd --store <store.json> --report <report.json>
+```
+
+- Restore reports `backend=ub_ssd_host_file`, artifact counts, durable payload
+  ref count, durable payload bytes, store JSON bytes, sidecar bytes, restore
+  time, and a payload proof checksum.
+
 ### P2.2 UB NPU as GSVA Tensor Consumer
 
 Use NPU first for a small W5 tensor operation, not a full performance model.

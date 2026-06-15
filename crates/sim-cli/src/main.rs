@@ -111,6 +111,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Instant;
 
 mod qwen3_simpler;
 
@@ -2390,6 +2391,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
             run_lingqu_memory_register_terminal_logits_artifact_from_w5_summary_cli(&args)
         }
         "register-prefix-cache" => run_lingqu_memory_register_prefix_cache_cli(&args),
+        "restore-prefix-cache-ssd" => run_lingqu_memory_restore_prefix_cache_ssd_cli(&args),
         "update-record-state" => run_lingqu_memory_update_record_state_cli(&args),
         "validate-service-path" => run_lingqu_memory_validate_service_path(),
         "validate-durable-store" => run_lingqu_memory_validate_durable_store(),
@@ -2416,6 +2418,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
             rpc-server, rpc-client, prefix-cache-service, \
             boundary-lookup-from-observation, boundary-request-from-w5-summary, \
             record-boundary-observations-from-w5-summary, plan-prefetch, register-prefix-cache, \
+            restore-prefix-cache-ssd, \
             lookup-prefix-cache, materialize-hot-state, materialize-engram-state, \
             publish-w5-engram-state-ref, validate-service-path, validate-durable-store, \
             validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
@@ -7758,6 +7761,88 @@ fn run_lingqu_memory_register_prefix_cache_cli(args: &[String]) -> anyhow::Resul
     );
     println!("  confidence_milli: {}", artifact.confidence_milli);
     println!("  registry_artifacts: {}", registry.artifacts.len());
+    Ok(())
+}
+
+fn run_lingqu_memory_restore_prefix_cache_ssd_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let report_path = optional_cli_arg(args, "--report")?.map(PathBuf::from);
+    let store_json_bytes = fs::metadata(&store_path)
+        .with_context(|| format!("stat durable store {}", store_path.display()))?
+        .len();
+    let store_sidecar_path = store_path.with_extension("bin");
+    let store_sidecar_bytes = fs::metadata(&store_sidecar_path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+
+    let restore_started = Instant::now();
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let report = durable_store
+        .restore_prefix_cache_from_ssd_backend()
+        .context("restore prefix cache from UB SSD host-file backend")?;
+    let restore_ms = restore_started.elapsed().as_millis() as u64;
+
+    let json_report = serde_json::json!({
+        "backend": report.backend,
+        "manifest_path": report.manifest_path,
+        "store_path": store_path.display().to_string(),
+        "store_json_bytes": store_json_bytes,
+        "store_sidecar_bytes": store_sidecar_bytes,
+        "restore_ms": restore_ms,
+        "artifacts": report.artifacts,
+        "ssd_backed_artifacts": report.ssd_backed_artifacts,
+        "durable_payload_refs": report.durable_payload_refs,
+        "durable_payload_bytes": report.durable_payload_bytes,
+        "payload_proof_checksum": report.payload_proof_checksum,
+        "status": "ok",
+    });
+    if let Some(report_path) = report_path {
+        if let Some(parent) = report_path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create restore report dir {}", parent.display()))?;
+        }
+        fs::write(
+            &report_path,
+            serde_json::to_vec_pretty(&json_report).context("encode restore report")?,
+        )
+        .with_context(|| format!("write restore report {}", report_path.display()))?;
+    }
+
+    println!("lingqu_memory_service");
+    println!("  mode: restore-prefix-cache-ssd");
+    println!(
+        "  backend: {}",
+        json_report["backend"].as_str().unwrap_or("")
+    );
+    println!("  store_path: {}", store_path.display());
+    println!(
+        "  manifest_path: {}",
+        sim_memory::LINGQU_PREFIX_CACHE_MANIFEST_PATH
+    );
+    println!("  store_json_bytes: {store_json_bytes}");
+    println!("  store_sidecar_bytes: {store_sidecar_bytes}");
+    println!("  restore_ms: {restore_ms}");
+    println!(
+        "  artifacts: {}",
+        json_report["artifacts"].as_u64().unwrap_or(0)
+    );
+    println!(
+        "  ssd_backed_artifacts: {}",
+        json_report["ssd_backed_artifacts"].as_u64().unwrap_or(0)
+    );
+    println!(
+        "  durable_payload_refs: {}",
+        json_report["durable_payload_refs"].as_u64().unwrap_or(0)
+    );
+    println!(
+        "  durable_payload_bytes: {}",
+        json_report["durable_payload_bytes"].as_u64().unwrap_or(0)
+    );
+    println!(
+        "  payload_proof_checksum: {:#x}",
+        json_report["payload_proof_checksum"].as_u64().unwrap_or(0)
+    );
+    println!("  status: ok");
     Ok(())
 }
 
@@ -16276,6 +16361,7 @@ mod tests {
         run_lingqu_memory_register_terminal_logits_artifact_from_w5_summary_cli,
         run_lingqu_memory_resolve_paper_engram_runtime_cli,
         run_lingqu_memory_resolve_paper_engram_table_row_blocks_cli,
+        run_lingqu_memory_restore_prefix_cache_ssd_cli,
         run_lingqu_memory_seed_paper_engram_fixture_cli, run_lingqu_memory_update_record_state_cli,
         run_lingqu_memory_validate_durable_store, run_lingqu_memory_validate_flat_materialize,
         run_lingqu_memory_validate_flat_query,
@@ -16332,6 +16418,7 @@ mod tests {
     use std::env;
     use std::ffi::OsString;
     use std::fs;
+    use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
 
@@ -25557,6 +25644,107 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 .read_block_payload(&payload_ref)
                 .expect("read hydrated payload"),
             payload
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lingqu_memory_restores_prefix_cache_from_ssd_sidecar_and_rejects_corruption() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_lingqu_memory_prefix_cache_ssd_restore_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let store = root.join("store.json");
+        let report_path = root.join("restore_report.json");
+        let payload = vec![0x42; 8 * 1024 * 1024 + 1];
+        let mut seed_store = LingquMemoryDurableStore::new();
+        let prefix_payload_ref = seed_store
+            .write_block_payload("block/prefix/ssd/8", payload.clone())
+            .expect("write prefix cache payload");
+        let key = sim_memory::PrefixCacheKey {
+            model: sim_memory::InferenceModelBinding {
+                model_id: "qwen3-test".to_string(),
+                model_key: "qwen3-test-key".to_string(),
+                tokenizer_hash: 0x1001,
+                profile_hash: 0x2002,
+            },
+            namespace: "tenant/project/session".to_string(),
+            chat_template_hash: 0x3003,
+            prefix_token_hash: 0x4004,
+            prefix_token_count: 8,
+            rope_config_hash: 0x5005,
+            kv_layout_hash: 0x6006,
+            layer_start: 0,
+            layer_end: 28,
+            position_start: 0,
+            position_end: 8,
+            security_label: sim_memory::MemorySecurityLabel::Internal,
+        };
+        let artifact = sim_memory::PrefixCacheArtifact {
+            artifact_id: "prefix-cache/ssd/8".to_string(),
+            key,
+            kv_artifact_ids: Vec::new(),
+            durable_payload_refs: vec![prefix_payload_ref],
+            hot_object_refs: Vec::new(),
+            dtype: sim_core::TensorDType::F32,
+            shape: vec![8, 4],
+            confidence_milli: 950,
+            state: sim_memory::ExecutionArtifactState::Verified,
+            checksum: 0x2222_3333,
+            version: 1,
+            created_at_us: 10,
+            expires_at_us: Some(100),
+            last_used_at_us: 10,
+            use_count: 1,
+        };
+        seed_store
+            .persist_prefix_cache_manifest(vec![artifact])
+            .expect("persist prefix cache manifest");
+        save_lingqu_memory_durable_store(&store, &seed_store)
+            .expect("save SSD-backed durable store");
+
+        run_lingqu_memory_restore_prefix_cache_ssd_cli(&[
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--report".to_string(),
+            report_path.to_string_lossy().into_owned(),
+        ])
+        .expect("restore prefix cache from SSD-backed store");
+        let report_value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&report_path).expect("read restore report"))
+                .expect("decode restore report");
+        assert_eq!(report_value["backend"], "ub_ssd_host_file");
+        assert_eq!(report_value["status"], "ok");
+        assert_eq!(report_value["artifacts"], 1);
+        assert_eq!(report_value["ssd_backed_artifacts"], 1);
+        assert_eq!(report_value["durable_payload_refs"], 1);
+        assert_eq!(report_value["durable_payload_bytes"], payload.len() as u64);
+        assert!(report_value["store_json_bytes"].as_u64().unwrap() < 1024 * 1024);
+        assert_eq!(
+            report_value["store_sidecar_bytes"].as_u64().unwrap(),
+            payload.len() as u64
+        );
+
+        let sidecar_path = store.with_extension("bin");
+        let mut sidecar = fs::OpenOptions::new()
+            .write(true)
+            .open(&sidecar_path)
+            .expect("open durable sidecar for corruption");
+        sidecar
+            .write_all(&[0x99])
+            .expect("corrupt durable sidecar payload");
+        let err = run_lingqu_memory_restore_prefix_cache_ssd_cli(&[
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+        ])
+        .expect_err("corrupt SSD-backed store must be rejected");
+        let err_text = format!("{err:#}");
+        assert!(
+            err_text.contains("checksum mismatch")
+                || err_text.contains("ChecksumMismatch")
+                || err_text.contains("restore prefix cache")
         );
         let _ = fs::remove_dir_all(&root);
     }
