@@ -422,6 +422,7 @@ def parse_summary(summary_path):
         "shortpath": {},
         "timing_steps": [],
         "timing_nodes": [],
+        "gsva_timing": {},
         "engram_steps": [],
         "context_summaries": {},
         "decode_output": [],
@@ -443,6 +444,8 @@ def parse_summary(summary_path):
             parsed["timing_steps"].append(parse_pairs(line))
         elif line.startswith("timing_node: "):
             parsed["timing_nodes"].append(parse_pairs(line))
+        elif line.startswith("gsva_timing: "):
+            parsed["gsva_timing"] = parse_pairs(line)
         elif line.startswith("engram_timing_step: "):
             parsed["engram_steps"].append(parse_pairs(line))
         else:
@@ -542,16 +545,24 @@ def validate(parsed, paths, output_guard=None, context_guard=None):
     if prefix_cache_run:
         stages = memory.get("stages", "")
         prefix_cache_actions = memory.get("prefix_cache_actions")
+        prefix_cache_gsva_rejections = parse_int(
+            memory.get("prefix_cache_gsva_rejections")
+        )
         if prefix_cache_actions not in ("reuse", "miss", "require-verify"):
             issues.append(
                 f"unexpected prefix_cache_actions value={prefix_cache_actions or ''}"
             )
-        if prefix_cache_actions == "reuse" and parse_int(memory.get("prefix_cache_kv_hits")) <= 0:
+        if (
+            prefix_cache_actions == "reuse"
+            and parse_int(memory.get("prefix_cache_kv_hits")) <= 0
+            and prefix_cache_gsva_rejections <= 0
+        ):
             issues.append(
                 f"prefix_cache_kv_hits missing value={memory.get('prefix_cache_kv_hits', '')}"
             )
         if (
             prefix_cache_actions == "reuse"
+            and prefix_cache_gsva_rejections <= 0
             and "qwen3_w5_memory_prefix_cache_kv_loaded:" not in stages
         ):
             issues.append("missing prefix-cache kv loaded stage")
@@ -561,6 +572,10 @@ def validate(parsed, paths, output_guard=None, context_guard=None):
             and parse_int(memory.get("gsva_reads")) <= 0
         ):
             issues.append("GSVA prefix-cache run has GSVA refs but no GSVA reads")
+        if prefix_cache_gsva_rejections > 0 and not memory.get(
+            "prefix_cache_gsva_rejection_reasons"
+        ):
+            issues.append("GSVA prefix-cache rejection is missing reason")
 
     for marker in sorted(set(parsed["bad_markers"])):
         issues.append(f"bad marker present: {marker}")
@@ -708,12 +723,24 @@ def build_report(summary_path, output_guard=None, context_guard=None):
             "actions": memory.get("prefix_cache_actions", ""),
             "kv_hits": parse_int(memory.get("prefix_cache_kv_hits")),
             "kv_nodes": memory.get("prefix_cache_kv_nodes", ""),
+            "gsva_rejections": parse_int(memory.get("prefix_cache_gsva_rejections")),
+            "gsva_rejection_reasons": memory.get(
+                "prefix_cache_gsva_rejection_reasons", ""
+            ),
         },
         "gsva": {
             "kv_refs": parse_int(memory.get("gsva_kv_refs")),
             "reads": parse_int(memory.get("gsva_reads")),
             "writebacks": parse_int(memory.get("gsva_writebacks")),
             "kv_nodes": memory.get("gsva_kv_nodes", ""),
+            "timing": {
+                "records": parse_int(parsed["gsva_timing"].get("records")),
+                "lookup_ms": parse_int(parsed["gsva_timing"].get("lookup_ms")),
+                "map_read_ms": parse_int(parsed["gsva_timing"].get("map_read_ms")),
+                "avoided_compute_ms": parse_int(
+                    parsed["gsva_timing"].get("avoided_compute_ms")
+                ),
+            },
         },
         "timing": timing_report(parsed),
         "context": context_report(parsed),
@@ -769,13 +796,23 @@ def print_text_report(report):
     print(
         "prefix_cache: "
         f"ids={prefix_cache['ids']} action={prefix_cache['actions']} "
-        f"kv_hits={prefix_cache['kv_hits']} kv_nodes={prefix_cache['kv_nodes']}"
+        f"kv_hits={prefix_cache['kv_hits']} kv_nodes={prefix_cache['kv_nodes']} "
+        f"gsva_rejections={prefix_cache['gsva_rejections']} "
+        f"gsva_rejection_reasons={prefix_cache['gsva_rejection_reasons']}"
     )
     gsva = report["gsva"]
     print(
         "gsva: "
         f"kv_refs={gsva['kv_refs']} reads={gsva['reads']} "
         f"writebacks={gsva['writebacks']} kv_nodes={gsva['kv_nodes']}"
+    )
+    gsva_timing = gsva["timing"]
+    print(
+        "gsva_timing: "
+        f"records={gsva_timing['records']} "
+        f"lookup_ms={gsva_timing['lookup_ms']} "
+        f"map_read_ms={gsva_timing['map_read_ms']} "
+        f"avoided_compute_ms={gsva_timing['avoided_compute_ms']}"
     )
     timing = report["timing"]
     print(

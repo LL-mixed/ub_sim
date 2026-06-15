@@ -31,6 +31,10 @@ def handoff_timing(
     dispatch_ms,
     publish_ms,
     source=None,
+    kv_backend="obmm",
+    gsva_lookup_ms=0,
+    gsva_map_read_ms=0,
+    prefix_cache_avoided_compute_ms=0,
 ):
     if source is None:
         source = max(node_index - 1, 0)
@@ -53,7 +57,11 @@ def handoff_timing(
         "input_metadata_ms=1 input_wait_attempts=1 "
         f"input_found_to_handoff_ms={found_to_handoff_ms} "
         f"input_loaded_to_handoff_ms={max(found_to_handoff_ms - 10, 0)} "
-        "kv_resolve_ms=2 kv_load_ms=1 compute_window_ms=30 submit_ms=7 "
+        "kv_resolve_ms=2 kv_load_ms=1 "
+        f"kv_backend={kv_backend} gsva_lookup_ms={gsva_lookup_ms} "
+        f"gsva_map_read_ms={gsva_map_read_ms} "
+        f"prefix_cache_avoided_compute_ms={prefix_cache_avoided_compute_ms} "
+        "compute_window_ms=30 submit_ms=7 "
         f"dispatch_ms={dispatch_ms} completion_decode_ms=0 verify_dispatch_ms=3 "
         f"range_publish_ms={publish_ms} terminal_publish_ms=0 compute_done_to_handoff_ms=30 "
         "round_done_publish_ms=1 status=ok"
@@ -568,6 +576,8 @@ class W4GuestRunSummaryTest(unittest.TestCase):
             "artifact_kinds=logits prefetch_ids=none prefix_cache_ids=none "
             "prefix_cache_actions=none prefix_cache_kv_hits=0 "
             "prefix_cache_kv_nodes=none "
+            "prefix_cache_gsva_rejections=0 "
+            "prefix_cache_gsva_rejection_reasons=none "
             "gsva_kv_refs=0 gsva_reads=0 gsva_writebacks=0 "
             "gsva_kv_nodes=none "
             "lookup_hits=1 hit_registry_indexes=7 hit_registry_steps=1 "
@@ -593,12 +603,6 @@ class W4GuestRunSummaryTest(unittest.TestCase):
                 "\n".join(
                     [
                         (
-                            "[w4_guest] stage qwen3_w5_memory_gsva_kv_writeback "
-                            "node=1 step=0 position=4 layers=[0,4) backend=gsva "
-                            "segment_id=gsva/run/node1 base=0x80000000 bytes=2048 "
-                            "token=0x1234 epoch=1 retired=0 checksum=0xdef status=ok"
-                        ),
-                        (
                             "[w4_guest] stage qwen3_w5_memory_gsva_kv_loaded "
                             "node=1 step=1 previous_step=0 backend=gsva "
                             "segment_id=gsva/run/node1 base=0x80000000 bytes=2048 "
@@ -609,6 +613,15 @@ class W4GuestRunSummaryTest(unittest.TestCase):
                     ]
                 )
                 + "\n"
+            )
+            (run_dir / "nodeA_qemu.log").write_text(
+                (
+                    "[w4_guest] stage qwen3_w5_memory_gsva_kv_writeback "
+                    "node=1 step=0 position=4 layers=[0,4) backend=gsva "
+                    "segment_id=gsva/run/node1 base=0x80000000 bytes=2048 "
+                    "token=0x1234 epoch=1 retired=0 checksum=0xdef status=ok\n"
+                ),
+                encoding="utf-8",
             )
 
             result = subprocess.run(
@@ -622,6 +635,54 @@ class W4GuestRunSummaryTest(unittest.TestCase):
         self.assertIn("gsva_reads=1", result.stdout)
         self.assertIn("gsva_writebacks=1", result.stdout)
         self.assertIn("gsva_kv_nodes=1", result.stdout)
+
+    def test_memory_service_summary_reports_gsva_rejection_and_timing(self):
+        script = Path(__file__).resolve().parents[1] / "scripts" / "w4_guest_run_summary.py"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "nodeA_guest.log").write_text(
+                "\n".join(
+                    [
+                        (
+                            "[w4_guest] stage qwen3_w5_memory_prefix_cache_gsva_rejected "
+                            "entry_index=0 accepted_index=0 node=1 step=1 previous_step=0 "
+                            "backend=gsva segment_id=gsva/run/node1 bytes=2048 gsva_bytes=2048 "
+                            "token=0x1234 epoch=1 expected_epoch=2 retired=0 "
+                            "checksum=0xdef expected_checksum=0xdef reason=epoch_mismatch "
+                            "source=prefix_cache target=runtime_fallback status=rejected"
+                        ),
+                        handoff_timing(
+                            "nodeA",
+                            1,
+                            1,
+                            40,
+                            5,
+                            3,
+                            kv_backend="gsva",
+                            gsva_lookup_ms=2,
+                            gsva_map_read_ms=1,
+                        ),
+                        "[w4_guest] pass",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [sys.executable, str(script), str(run_dir), "1", "nodeA"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertIn("prefix_cache_gsva_rejections=1", result.stdout)
+        self.assertIn("prefix_cache_gsva_rejection_reasons=epoch_mismatch", result.stdout)
+        self.assertIn(
+            "gsva_timing: records=1 lookup_ms=2 map_read_ms=1 avoided_compute_ms=0",
+            result.stdout,
+        )
 
     def test_idle_engram_timing_does_not_count_terminal_wait_as_range_pipeline(self):
         script = Path(__file__).resolve().parents[1] / "scripts" / "w4_guest_run_summary.py"

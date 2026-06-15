@@ -206,7 +206,8 @@ Progress as of 2026-06-15:
 - Guest prefix-cache KV consumption validates GSVA token, epoch, retire state,
   bytes, and checksum before accepting the object ref.
 - W5 summary/report now surfaces `gsva_kv_refs`, `gsva_reads`, and
-  `gsva_writebacks`.
+  `gsva_writebacks`; summary scans both guest serial logs and per-node QEMU
+  logs so host-side GSVA writebacks are auditable.
 - Evidence run:
   - seed: `2026-06-15_w5_p1_gsva_seed`
   - reuse: `2026-06-15_w5_p1_gsva_reuse3`
@@ -219,11 +220,10 @@ Progress as of 2026-06-15:
   - KV stream evidence:
     `guest-linux/aarch64/out/w5_memory_registry.2026-06-15_w5_p1_gsva_reuse3/w5_memory_prefix_cache_kv_stream.txt`
 
-Remaining gap:
+Follow-up:
 
-- `gsva_writebacks` are visible in QEMU logs for the seed run, but not yet
-  folded into the guest summary because those events are emitted by the host
-  runtime path rather than guest serial logs.
+- The current evidence proves the GSVA-backed KV audit/use path, not a
+  performance benefit.
 
 ### P1.2 GSVA Token/Epoch/Retire Guard for W5 Cache
 
@@ -246,10 +246,24 @@ Progress as of 2026-06-15:
 
 - Schema/unit tests reject zero token, zero epoch, retired segment, and checksum
   mismatch.
-- Guest parser rejects stale GSVA prefix-cache stream entries fail-closed.
-- Remaining work: convert stale GSVA prefix-cache entries from fatal rejection
-  into an auditable miss/fallback path so an E2E decode can complete while the
-  summary records the rejection reason.
+- Guest parser rejects stale GSVA prefix-cache stream entries fail-closed but
+  no longer aborts the decode for cache-staleness cases. It records
+  `qwen3_w5_memory_prefix_cache_gsva_rejected`, skips the stale KV entry, and
+  lets runtime KV fallback complete the decode.
+- Summary/report surface `prefix_cache_gsva_rejections` and
+  `prefix_cache_gsva_rejection_reasons`.
+- `SIM_W5_MEMORY_GSVA_EXPECTED_EPOCH` provides an explicit negative-test gate
+  for epoch mismatch without changing default runs.
+- Full Qwen3-14B stale-GSVA negative control:
+  - run: `2026-06-15_w5_p1_gsva_stale_epoch`
+  - summary:
+    `guest-linux/aarch64/out/eight_node_w5_inference_cluster_summary.2026-06-15_w5_p1_gsva_stale_epoch.txt`
+  - report status: `pass`
+  - output tokens: `[264, 8453, 67926, 5440]`
+  - prefix cache: `action=reuse`, `prefix_cache_kv_hits=0`
+  - rejection: `prefix_cache_gsva_rejections=64`,
+    `prefix_cache_gsva_rejection_reasons=epoch_mismatch`
+  - fallback evidence: `worker_timing_records=32`, `range_forwards=32`
 
 ### P1.3 GSVA-backed Prefix Cache Plan
 
@@ -276,8 +290,12 @@ Acceptance:
 Progress as of 2026-06-15:
 
 - Prefix-cache hit can now consume KV refs with `backend=gsva` metadata.
-- Current timing only reports the existing KV resolve/load timing. It does not
-  yet split GSVA lookup/map/read overhead from avoided compute.
+- Handoff timing now emits `kv_backend`, `gsva_lookup_ms`,
+  `gsva_map_read_ms`, and `prefix_cache_avoided_compute_ms`.
+- Summary/report emit `gsva_timing`.
+- Current `prefix_cache_avoided_compute_ms` remains conservative and may be
+  zero until the prefix-cache planner can attribute skipped prefix compute
+  directly.
 
 ## P2: Device-backed W5 Payloads
 

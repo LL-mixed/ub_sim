@@ -183,11 +183,14 @@ class W5InferenceRunReportTest(unittest.TestCase):
                             "artifact_kinds=none prefetch_ids=none "
                             "prefix_cache_ids=prefix-cache-reuse/runtime-test "
                             "prefix_cache_actions=reuse prefix_cache_kv_hits=1 "
-                            "prefix_cache_kv_nodes=1 gsva_kv_refs=1 gsva_reads=1 "
+                            "prefix_cache_kv_nodes=1 prefix_cache_gsva_rejections=0 "
+                            "prefix_cache_gsva_rejection_reasons=none "
+                            "gsva_kv_refs=1 gsva_reads=1 "
                             "gsva_writebacks=0 gsva_kv_nodes=1 lookup_hits=0 "
                             "hit_registry_indexes=none hit_registry_steps=none "
                             "hit_positions=none"
                         ),
+                        "gsva_timing: records=1 lookup_ms=2 map_read_ms=1 avoided_compute_ms=0",
                     ]
                 )
                 + "\n",
@@ -204,6 +207,10 @@ class W5InferenceRunReportTest(unittest.TestCase):
         self.assertIn("w5_run_report: status=pass run_id=run", result.stdout)
         self.assertIn("artifact: label=prefix_cache_kv_stream bytes=10", result.stdout)
         self.assertIn("gsva: kv_refs=1 reads=1 writebacks=0 kv_nodes=1", result.stdout)
+        self.assertIn(
+            "gsva_timing: records=1 lookup_ms=2 map_read_ms=1 avoided_compute_ms=0",
+            result.stdout,
+        )
         self.assertNotIn("issue:", result.stdout)
 
     def test_reports_passed_prefix_cache_miss_fallback_run(self):
@@ -256,6 +263,73 @@ class W5InferenceRunReportTest(unittest.TestCase):
             )
 
         self.assertIn("w5_run_report: status=pass run_id=run", result.stdout)
+        self.assertNotIn("issue:", result.stdout)
+
+    def test_reports_passed_prefix_cache_gsva_stale_fallback_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            logs_dir = Path(tmp) / "logs" / "run_headless8"
+            out_dir.mkdir()
+            logs_dir.mkdir(parents=True)
+            (logs_dir / "nodeA_guest.log").write_text("log\n", encoding="utf-8")
+            run_id = "run"
+            write_artifacts(out_dir, run_id)
+            registry = out_dir / f"w5_memory_registry.{run_id}"
+            (registry / "w5_memory_prefix_cache_kv_stream.txt").write_text(
+                "stale-prefix-kv\n", encoding="utf-8"
+            )
+            summary = out_dir / f"eight_node_w5_inference_cluster_summary.{run_id}.txt"
+            summary.write_text(
+                "\n".join(
+                    [
+                        f"summary: run_dir={logs_dir}",
+                        (
+                            "summary: decode_steps_expected=2 decode_steps_observed=2 "
+                            "worker_timing_records=16 passed_nodes=8/8 "
+                            "handoff_timing_records=8 idle_timing_records=0 "
+                            "engram_timing_records=0 engram_context_records=0 "
+                            "paper_engram_context_records=0 "
+                            "fused_simt_context_records=0 "
+                            "fused_simt_vendor_context_records=0"
+                        ),
+                        "decode_output: token_ids=[81378, 374]",
+                        (
+                            "memory_service_summary: service=lingqu_memory_service "
+                            "records=10 steps=2/2 "
+                            "stages=qwen3_w5_memory_decision_contract:8,"
+                            "qwen3_w5_memory_prefix_cache_gsva_rejected:1,"
+                            "qwen3_w5_memory_prefix_cache_kv_stream_loaded:1 "
+                            "shortpath_ids=none support_ids=none actions=none "
+                            "artifact_kinds=none prefetch_ids=none "
+                            "prefix_cache_ids=prefix-cache-reuse/runtime-stale "
+                            "prefix_cache_actions=reuse prefix_cache_kv_hits=0 "
+                            "prefix_cache_kv_nodes=none prefix_cache_gsva_rejections=1 "
+                            "prefix_cache_gsva_rejection_reasons=epoch_mismatch "
+                            "gsva_kv_refs=0 gsva_reads=0 gsva_writebacks=0 "
+                            "gsva_kv_nodes=none lookup_hits=0 "
+                            "hit_registry_indexes=none hit_registry_steps=none "
+                            "hit_positions=none"
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), str(summary)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertIn("w5_run_report: status=pass run_id=run", result.stdout)
+        self.assertIn(
+            "prefix_cache: ids=prefix-cache-reuse/runtime-stale action=reuse "
+            "kv_hits=0 kv_nodes=none gsva_rejections=1 "
+            "gsva_rejection_reasons=epoch_mismatch",
+            result.stdout,
+        )
         self.assertNotIn("issue:", result.stdout)
 
     def test_compares_prefix_cache_baseline_reuse_and_miss(self):

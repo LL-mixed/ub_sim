@@ -2013,6 +2013,9 @@ struct w4_qwen3_memory_decision_config {
     char prefix_cache_proof_checksum[64];
     uint64_t prefix_cache_kv_stream_expected_count;
     uint64_t prefix_cache_kv_stream_count;
+    uint64_t prefix_cache_kv_stream_raw_count;
+    uint64_t prefix_cache_gsva_rejected_count;
+    uint64_t gsva_expected_epoch;
     struct w4_qwen3_shortpath_kv_stream_entry
         prefix_cache_kv_stream_entries[W4_QWEN3_W5_SHORTPATH_KV_STREAM_MAX];
 };
@@ -6112,6 +6115,7 @@ static int qwen3_read_w5_shortpath_kv_stream_file(
 static int parse_qwen3_w5_prefix_cache_kv_stream_entry(
     struct w4_qwen3_memory_decision_config *config,
     const char *entry_text,
+    uint64_t raw_index,
     uint64_t *count)
 {
     char entry_copy[W4_QWEN3_W5_SHORTPATH_KV_STREAM_LINE_BYTES];
@@ -6191,42 +6195,88 @@ static int parse_qwen3_w5_prefix_cache_kv_stream_entry(
     snprintf(parsed.backend, sizeof(parsed.backend), "%s", "obmm");
     if (field_count == 18U) {
         uint64_t retired = 0;
+        const char *reject_reason = NULL;
 
-        if (strcmp(fields[9], "gsva") != 0 ||
-            strlen(fields[10]) >= sizeof(parsed.gsva_segment_id) ||
-            parse_u64_field("prefix_cache_kv_stream_gsva_base",
-                            fields[11],
-                            &parsed.gsva_base) != 0 ||
-            parse_u64_field("prefix_cache_kv_stream_gsva_bytes",
-                            fields[12],
-                            &parsed.gsva_bytes) != 0 ||
-            parse_u64_field("prefix_cache_kv_stream_gsva_token",
-                            fields[13],
-                            &parsed.gsva_token) != 0 ||
-            parse_u64_field("prefix_cache_kv_stream_gsva_epoch",
-                            fields[14],
-                            &parsed.gsva_epoch) != 0 ||
-            parse_u64_field("prefix_cache_kv_stream_gsva_retired",
-                            fields[15],
-                            &retired) != 0 ||
-            parse_u64_field("prefix_cache_kv_stream_gsva_checksum",
-                            fields[16],
-                            &parsed.gsva_checksum) != 0 ||
-            parse_u32_field("prefix_cache_kv_stream_gsva_home_node",
-                            fields[17],
-                            &parsed.gsva_home_node) != 0 ||
-            parsed.gsva_bytes != parsed.kv_bytes ||
-            parsed.gsva_checksum != parsed.kv_checksum ||
-            parsed.gsva_token == 0 ||
-            parsed.gsva_epoch == 0 ||
-            retired > 1 ||
-            retired == 1 ||
-            parsed.gsva_home_node == 0) {
-            fprintf(stderr,
-                    "[w4_guest] fail qwen3 w5 prefix-cache gsva kv stream"
-                    " contract invalid entry_index=%" PRIu64 "\n",
-                    *count);
-            return -1;
+        if (strcmp(fields[9], "gsva") != 0) {
+            reject_reason = "backend_mismatch";
+        } else if (fields[10][0] == '\0' ||
+                   strlen(fields[10]) >= sizeof(parsed.gsva_segment_id)) {
+            reject_reason = "segment_invalid";
+        } else if (parse_u64_field("prefix_cache_kv_stream_gsva_base",
+                                   fields[11],
+                                   &parsed.gsva_base) != 0 ||
+                   parse_u64_field("prefix_cache_kv_stream_gsva_bytes",
+                                   fields[12],
+                                   &parsed.gsva_bytes) != 0 ||
+                   parse_u64_field("prefix_cache_kv_stream_gsva_token",
+                                   fields[13],
+                                   &parsed.gsva_token) != 0 ||
+                   parse_u64_field("prefix_cache_kv_stream_gsva_epoch",
+                                   fields[14],
+                                   &parsed.gsva_epoch) != 0 ||
+                   parse_u64_field("prefix_cache_kv_stream_gsva_retired",
+                                   fields[15],
+                                   &retired) != 0 ||
+                   parse_u64_field("prefix_cache_kv_stream_gsva_checksum",
+                                   fields[16],
+                                   &parsed.gsva_checksum) != 0 ||
+                   parse_u32_field("prefix_cache_kv_stream_gsva_home_node",
+                                   fields[17],
+                                   &parsed.gsva_home_node) != 0) {
+            reject_reason = "metadata_invalid";
+        } else if (parsed.gsva_bytes != parsed.kv_bytes) {
+            reject_reason = "bytes_mismatch";
+        } else if (parsed.gsva_checksum != parsed.kv_checksum) {
+            reject_reason = "checksum_mismatch";
+        } else if (parsed.gsva_token == 0) {
+            reject_reason = "token_revoked";
+        } else if (parsed.gsva_epoch == 0) {
+            reject_reason = "epoch_invalid";
+        } else if (config->gsva_expected_epoch != 0 &&
+                   parsed.gsva_epoch != config->gsva_expected_epoch) {
+            reject_reason = "epoch_mismatch";
+        } else if (retired > 1) {
+            reject_reason = "retired_invalid";
+        } else if (retired == 1) {
+            reject_reason = "retired";
+        } else if (parsed.gsva_home_node == 0) {
+            reject_reason = "home_node_invalid";
+        }
+        if (reject_reason) {
+            config->prefix_cache_gsva_rejected_count++;
+            printf("[w4_guest] stage qwen3_w5_memory_prefix_cache_gsva_rejected"
+                   " entry_index=%" PRIu64
+                   " accepted_index=%" PRIu64
+                   " node=%u step=%" PRIu64
+                   " previous_step=%" PRIu64
+                   " backend=%s segment_id=%s"
+                   " bytes=%" PRIu64
+                   " gsva_bytes=%" PRIu64
+                   " token=0x%016" PRIx64
+                   " epoch=%" PRIu64
+                   " expected_epoch=%" PRIu64
+                   " retired=%" PRIu64
+                   " checksum=0x%016" PRIx64
+                   " expected_checksum=0x%016" PRIx64
+                   " reason=%s source=prefix_cache"
+                   " target=runtime_fallback status=rejected\n",
+                   raw_index,
+                   *count,
+                   parsed.target_node,
+                   parsed.step_index + 1U,
+                   parsed.step_index,
+                   fields[9],
+                   fields[10][0] == '\0' ? "unset" : fields[10],
+                   parsed.kv_bytes,
+                   parsed.gsva_bytes,
+                   parsed.gsva_token,
+                   parsed.gsva_epoch,
+                   config->gsva_expected_epoch,
+                   retired,
+                   parsed.gsva_checksum,
+                   parsed.kv_checksum,
+                   reject_reason);
+            return 0;
         }
         snprintf(parsed.backend, sizeof(parsed.backend), "%s", fields[9]);
         snprintf(parsed.gsva_segment_id,
@@ -6249,6 +6299,7 @@ static int qwen3_read_w5_prefix_cache_kv_stream_file(
     FILE *fp;
     char line[W4_QWEN3_W5_SHORTPATH_KV_STREAM_LINE_BYTES];
     uint64_t count = 0;
+    uint64_t raw_count = 0;
 
     if (!str_nonempty(path)) {
         return 0;
@@ -6274,10 +6325,14 @@ static int qwen3_read_w5_prefix_cache_kv_stream_file(
         if (line[0] == '\0') {
             continue;
         }
-        if (parse_qwen3_w5_prefix_cache_kv_stream_entry(config, line, &count) != 0) {
+        if (parse_qwen3_w5_prefix_cache_kv_stream_entry(config,
+                                                        line,
+                                                        raw_count,
+                                                        &count) != 0) {
             fclose(fp);
             return -1;
         }
+        raw_count++;
     }
     if (ferror(fp)) {
         fprintf(stderr,
@@ -6289,14 +6344,18 @@ static int qwen3_read_w5_prefix_cache_kv_stream_file(
     }
     fclose(fp);
     if (config->prefix_cache_kv_stream_expected_count != 0 &&
-        count != config->prefix_cache_kv_stream_expected_count) {
+        raw_count != config->prefix_cache_kv_stream_expected_count) {
         fprintf(stderr,
                 "[w4_guest] fail qwen3 w5 prefix-cache kv stream count mismatch"
-                " parsed=%" PRIu64 " expected=%" PRIu64 "\n",
+                " raw=%" PRIu64 " accepted=%" PRIu64 " rejected=%" PRIu64
+                " expected=%" PRIu64 "\n",
+                raw_count,
                 count,
+                config->prefix_cache_gsva_rejected_count,
                 config->prefix_cache_kv_stream_expected_count);
         return -1;
     }
+    config->prefix_cache_kv_stream_raw_count = raw_count;
     config->prefix_cache_kv_stream_count = count;
     return 0;
 }
@@ -6317,6 +6376,7 @@ static int parse_qwen3_w5_memory_decision_config(
     char boundary_registry_count_text[32];
     char shortpath_kv_stream_count_text[32];
     char prefix_cache_kv_stream_count_text[32];
+    char gsva_expected_epoch_text[32];
     char shortpath_boundary_hidden_bytes_text[32];
     char shortpath_boundary_hidden_checksum_text[32];
     char shortpath_stream_path[512];
@@ -6332,6 +6392,7 @@ static int parse_qwen3_w5_memory_decision_config(
     memset(prefix_cache_kv_stream_count_text,
            0,
            sizeof(prefix_cache_kv_stream_count_text));
+    memset(gsva_expected_epoch_text, 0, sizeof(gsva_expected_epoch_text));
     memset(shortpath_boundary_hidden_bytes_text,
            0,
            sizeof(shortpath_boundary_hidden_bytes_text));
@@ -6437,6 +6498,9 @@ static int parse_qwen3_w5_memory_decision_config(
     env_copy_or_empty("SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH",
                       prefix_cache_kv_stream_path,
                       sizeof(prefix_cache_kv_stream_path));
+    env_copy_or_empty("SIM_W5_MEMORY_GSVA_EXPECTED_EPOCH",
+                      gsva_expected_epoch_text,
+                      sizeof(gsva_expected_epoch_text));
     if (str_nonempty(shortpath_stream_count_text) &&
         parse_u64_field("shortpath_stream_count",
                         shortpath_stream_count_text,
@@ -6459,6 +6523,12 @@ static int parse_qwen3_w5_memory_decision_config(
         parse_u64_field("prefix_cache_kv_stream_count",
                         prefix_cache_kv_stream_count_text,
                         &config->prefix_cache_kv_stream_expected_count) != 0) {
+        return -1;
+    }
+    if (str_nonempty(gsva_expected_epoch_text) &&
+        parse_u64_field("w5_memory_gsva_expected_epoch",
+                        gsva_expected_epoch_text,
+                        &config->gsva_expected_epoch) != 0) {
         return -1;
     }
     if (str_nonempty(shortpath_boundary_hidden_bytes_text) ||
@@ -6536,10 +6606,16 @@ static int parse_qwen3_w5_memory_decision_config(
                " entries=%" PRIu64 " source=file status=ok\n",
                config->shortpath_kv_stream_count);
     }
-    if (config->prefix_cache_kv_stream_count > 0) {
+    if (config->prefix_cache_kv_stream_count > 0 ||
+        config->prefix_cache_gsva_rejected_count > 0) {
         printf("[w4_guest] stage qwen3_w5_memory_prefix_cache_kv_stream_loaded"
-               " entries=%" PRIu64 " source=file status=ok\n",
-               config->prefix_cache_kv_stream_count);
+               " entries=%" PRIu64
+               " raw_entries=%" PRIu64
+               " rejected=%" PRIu64
+               " source=file status=ok\n",
+               config->prefix_cache_kv_stream_count,
+               config->prefix_cache_kv_stream_raw_count,
+               config->prefix_cache_gsva_rejected_count);
     }
     env_copy_or_empty("SIM_W5_MEMORY_PREFETCH_PLAN_ID",
                       config->prefetch_plan_id,
@@ -6956,13 +7032,17 @@ static int qwen3_memory_prefix_cache_kv_ref(
     uint32_t layer_start,
     uint32_t layer_end,
     uint64_t decode_step,
-    struct lingqu_obmm_object_ref_wire *ref_out)
+    struct lingqu_obmm_object_ref_wire *ref_out,
+    bool *gsva_backed_out)
 {
     const struct w4_qwen3_shortpath_kv_stream_entry *entry = NULL;
 
     if (!config || !config->enabled || !ref_out ||
         strcmp(config->prefix_cache_action, "reuse") != 0) {
         return 0;
+    }
+    if (gsva_backed_out) {
+        *gsva_backed_out = false;
     }
     for (uint64_t i = 0; i < config->prefix_cache_kv_stream_count; ++i) {
         const struct w4_qwen3_shortpath_kv_stream_entry *candidate =
@@ -7003,6 +7083,9 @@ static int qwen3_memory_prefix_cache_kv_ref(
         return -1;
     }
     if (strcmp(entry->backend, "gsva") == 0) {
+        if (gsva_backed_out) {
+            *gsva_backed_out = true;
+        }
         printf("[w4_guest] stage qwen3_w5_memory_gsva_kv_loaded"
                " node=%u step=%" PRIu64
                " previous_step=%" PRIu64
@@ -9091,6 +9174,8 @@ int main(void)
     uint64_t kv_resolve_start_ms = 0;
     uint64_t kv_resolved_ms = 0;
     uint64_t kv_loaded_ms = 0;
+    bool kv_loaded_from_gsva = false;
+    uint64_t prefix_cache_avoided_compute_ms = 0;
     uint64_t compute_start_ms = 0;
     uint64_t compute_done_ms = 0;
     uint64_t publish_start_ms = 0;
@@ -10616,6 +10701,8 @@ decode_round_start:
     kv_resolve_start_ms = 0;
     kv_resolved_ms = 0;
     kv_loaded_ms = 0;
+    kv_loaded_from_gsva = false;
+    prefix_cache_avoided_compute_ms = 0;
     compute_start_ms = 0;
     compute_done_ms = 0;
     publish_start_ms = 0;
@@ -11545,7 +11632,8 @@ decode_round_start:
                                                  layer_start,
                                                  layer_end,
                                                  kv_source_step,
-                                                 &prefix_cache_kv_ref);
+                                                 &prefix_cache_kv_ref,
+                                                 &kv_loaded_from_gsva);
             if (prefix_cache_kv_ref_state < 0) {
                 goto out;
             }
@@ -12445,6 +12533,8 @@ qwen3_after_service_coverage:
                     0;
             uint64_t kv_load_ms =
                 kv_loaded_ms > kv_resolved_ms ? kv_loaded_ms - kv_resolved_ms : 0;
+            uint64_t gsva_lookup_ms = kv_loaded_from_gsva ? kv_resolve_ms : 0;
+            uint64_t gsva_map_read_ms = kv_loaded_from_gsva ? kv_load_ms : 0;
             uint64_t verify_dispatch_ms =
                 verify_done_ms > publish_start_ms ? verify_done_ms - publish_start_ms : 0;
             uint64_t compute_done_to_handoff_ms =
@@ -12487,9 +12577,13 @@ qwen3_after_service_coverage:
                    " input_wait_attempts=%u"
                    " input_found_to_handoff_ms=%" PRIu64
                    " input_loaded_to_handoff_ms=%" PRIu64
-                   " kv_resolve_ms=%" PRIu64
-                   " kv_load_ms=%" PRIu64
-                   " compute_window_ms=%" PRIu64
+	                   " kv_resolve_ms=%" PRIu64
+	                   " kv_load_ms=%" PRIu64
+	                   " kv_backend=%s"
+	                   " gsva_lookup_ms=%" PRIu64
+	                   " gsva_map_read_ms=%" PRIu64
+	                   " prefix_cache_avoided_compute_ms=%" PRIu64
+	                   " compute_window_ms=%" PRIu64
                    " submit_ms=%" PRIu64
                    " dispatch_ms=%" PRIu64
                    " completion_decode_ms=%" PRIu64
@@ -12535,9 +12629,13 @@ qwen3_after_service_coverage:
                    input_wait_attempts,
                    input_found_to_handoff_ms,
                    input_loaded_to_handoff_ms,
-                   kv_resolve_ms,
-                   kv_load_ms,
-                   compute_window_ms,
+	                   kv_resolve_ms,
+	                   kv_load_ms,
+	                   kv_loaded_from_gsva ? "gsva" : "obmm",
+	                   gsva_lookup_ms,
+	                   gsva_map_read_ms,
+	                   prefix_cache_avoided_compute_ms,
+	                   compute_window_ms,
                    submit_ms,
                    dispatch_wait_ms,
                    completion_decode_ms,

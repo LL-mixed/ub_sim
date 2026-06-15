@@ -223,6 +223,7 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                             "step": step,
                             "local": fields.get("local", node_id),
                             "layers": fields.get("layers", ""),
+                            "kv_backend": fields.get("kv_backend", ""),
                         }
                         for key in (
                             "node",
@@ -307,6 +308,9 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                             "input_loaded_to_handoff_ms",
                             "kv_resolve_ms",
                             "kv_load_ms",
+                            "gsva_lookup_ms",
+                            "gsva_map_read_ms",
+                            "prefix_cache_avoided_compute_ms",
                             "compute_window_ms",
                             "submit_ms",
                             "dispatch_ms",
@@ -408,6 +412,16 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
             with open(qemu_log_path, "r", encoding="utf-8", errors="replace") as qemu_log_file:
                 for raw_line in qemu_log_file:
                     clean_line = raw_line.rstrip("\n").rstrip("\r")
+                    if "qwen3_w5_memory_" in clean_line:
+                        fields = parse_pairs(clean_line)
+                        stage = ""
+                        if "stage " in clean_line:
+                            stage = clean_line.split("stage ", 1)[1].split(" ", 1)[0]
+                        record = dict(fields)
+                        record["_log_node"] = node_id
+                        record["stage"] = stage
+                        record["step"] = parse_int(fields.get("step"), -1)
+                        memory_records.append(record)
                     if "qwen3-engram-context:" not in clean_line:
                         continue
                     fields = parse_pairs(clean_line)
@@ -836,6 +850,13 @@ def emit_handoff_timing_summary(handoff_timings, idle_timings, expected_steps, n
             )
 
     edge_records = [record for record in handoff_timings if is_range_handoff_edge(record)]
+    gsva_records = [
+        record
+        for record in handoff_timings
+        if record.get("kv_backend") == "gsva"
+        or record.get("gsva_lookup_ms", 0) > 0
+        or record.get("gsva_map_read_ms", 0) > 0
+    ]
     if handoff_timings:
         max_handoff_record = max(
             handoff_timings,
@@ -867,6 +888,22 @@ def emit_handoff_timing_summary(handoff_timings, idle_timings, expected_steps, n
             f"node={max_publish_record['_log_node']} "
             f"range_publish_ms={max_publish_record['range_publish_ms']} "
             f"terminal_publish_ms={max_publish_record['terminal_publish_ms']}"
+        )
+    if gsva_records:
+        max_lookup_record = max(gsva_records, key=lambda item: item["gsva_lookup_ms"])
+        max_map_read_record = max(gsva_records, key=lambda item: item["gsva_map_read_ms"])
+        output.append(
+            "gsva_timing: "
+            f"records={len(gsva_records)} "
+            f"lookup_ms={sum(record['gsva_lookup_ms'] for record in gsva_records)} "
+            f"map_read_ms={sum(record['gsva_map_read_ms'] for record in gsva_records)} "
+            f"avoided_compute_ms={sum(record['prefix_cache_avoided_compute_ms'] for record in gsva_records)} "
+            f"max_lookup_step={max_lookup_record['step']} "
+            f"max_lookup_node={max_lookup_record['_log_node']} "
+            f"max_lookup_ms={max_lookup_record['gsva_lookup_ms']} "
+            f"max_map_read_step={max_map_read_record['step']} "
+            f"max_map_read_node={max_map_read_record['_log_node']} "
+            f"max_map_read_ms={max_map_read_record['gsva_map_read_ms']}"
         )
     if edge_records:
         max_edge_record = max(edge_records, key=lambda item: item["producer_to_input_found_mono_ms"])
@@ -1217,6 +1254,11 @@ def emit_memory_service_summary(memory_records, expected_steps, output):
         for record in memory_records
         if record["stage"] == "qwen3_w5_memory_gsva_kv_writeback"
     ]
+    prefix_cache_gsva_rejections = [
+        record
+        for record in memory_records
+        if record["stage"] == "qwen3_w5_memory_prefix_cache_gsva_rejected"
+    ]
     output.append(
         "memory_service_summary: "
         "service=lingqu_memory_service "
@@ -1232,6 +1274,8 @@ def emit_memory_service_summary(memory_records, expected_steps, output):
         f"prefix_cache_actions={csv_or_none(record.get('prefix_cache_action') for record in memory_records)} "
         f"prefix_cache_kv_hits={len(prefix_cache_kv_hits)} "
         f"prefix_cache_kv_nodes={csv_or_none_ordered(record.get('node') for record in prefix_cache_kv_hits)} "
+        f"prefix_cache_gsva_rejections={len(prefix_cache_gsva_rejections)} "
+        f"prefix_cache_gsva_rejection_reasons={csv_or_none(record.get('reason') for record in prefix_cache_gsva_rejections)} "
         f"gsva_kv_refs={len(gsva_kv_reads) + len(gsva_kv_writebacks)} "
         f"gsva_reads={len(gsva_kv_reads)} "
         f"gsva_writebacks={len(gsva_kv_writebacks)} "
