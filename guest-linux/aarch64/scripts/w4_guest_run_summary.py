@@ -551,7 +551,7 @@ def emit_summary(run_dir, expected_steps, node_ids, output):
     emit_fused_simt_vendor_context_summary(
         fused_simt_vendor_context_records, expected_steps, output
     )
-    emit_memory_service_summary(memory_records, expected_steps, output)
+    emit_memory_service_summary(memory_records, worker_events, expected_steps, output)
     emit_w5_device_summary(device_records, output)
     emit_worker_shortpath_summary(memory_records, worker_events, expected_steps, node_ids, output)
     emit_boundary_observation_summary(
@@ -1233,7 +1233,7 @@ def emit_context_record_summary(context_records, expected_steps, output, prefix)
         )
 
 
-def emit_memory_service_summary(memory_records, expected_steps, output):
+def emit_memory_service_summary(memory_records, worker_events, expected_steps, output):
     if not memory_records:
         return
 
@@ -1273,6 +1273,19 @@ def emit_memory_service_summary(memory_records, expected_steps, output):
         for record in memory_records
         if record["stage"] == "qwen3_w5_memory_prefix_cache_gsva_rejected"
     ]
+    prefix_cache_recompute_range_forwards = (
+        worker_events["range_forwards"] if prefix_cache_gsva_rejections else 0
+    )
+    prefix_cache_reject_policy = (
+        "cache_reject_then_recompute" if prefix_cache_gsva_rejections else "none"
+    )
+    prefix_cache_reject_then_recompute = (
+        1
+        if prefix_cache_gsva_rejections
+        and not gsva_kv_reads
+        and prefix_cache_recompute_range_forwards > 0
+        else 0
+    )
     output.append(
         "memory_service_summary: "
         "service=lingqu_memory_service "
@@ -1297,7 +1310,10 @@ def emit_memory_service_summary(memory_records, expected_steps, output):
         f"lookup_hits={len(lookup_hits)} "
         f"hit_registry_indexes={csv_or_none_ordered(record.get('registry_index') for record in lookup_hits)} "
         f"hit_registry_steps={csv_or_none_ordered(lookup_hit_registry_step(record) for record in lookup_hits)} "
-        f"hit_positions={csv_or_none_ordered(record.get('position') for record in lookup_hits)}"
+        f"hit_positions={csv_or_none_ordered(record.get('position') for record in lookup_hits)} "
+        f"prefix_cache_reject_policy={prefix_cache_reject_policy} "
+        f"prefix_cache_recompute_range_forwards={prefix_cache_recompute_range_forwards} "
+        f"prefix_cache_reject_then_recompute={prefix_cache_reject_then_recompute}"
     )
 
     if boundary_records:

@@ -6259,7 +6259,7 @@ static int parse_qwen3_w5_prefix_cache_kv_stream_entry(
                    " checksum=0x%016" PRIx64
                    " expected_checksum=0x%016" PRIx64
                    " reason=%s source=prefix_cache"
-                   " target=runtime_fallback status=rejected\n",
+                   " target=runtime_recompute status=rejected\n",
                    raw_index,
                    *count,
                    parsed.target_node,

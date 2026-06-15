@@ -650,7 +650,11 @@ class W4GuestRunSummaryTest(unittest.TestCase):
                             "backend=gsva segment_id=gsva/run/node1 bytes=2048 gsva_bytes=2048 "
                             "token=0x1234 epoch=1 expected_epoch=2 retired=0 "
                             "checksum=0xdef expected_checksum=0xdef reason=epoch_mismatch "
-                            "source=prefix_cache target=runtime_fallback status=rejected"
+                            "source=prefix_cache target=runtime_recompute status=rejected"
+                        ),
+                        (
+                            "[w4_guest] stage uapi_qwen3_range_runtime_forward "
+                            "local=nodeA step=1 node=1 status=ok"
                         ),
                         handoff_timing(
                             "nodeA",
@@ -679,6 +683,9 @@ class W4GuestRunSummaryTest(unittest.TestCase):
 
         self.assertIn("prefix_cache_gsva_rejections=1", result.stdout)
         self.assertIn("prefix_cache_gsva_rejection_reasons=epoch_mismatch", result.stdout)
+        self.assertIn("prefix_cache_reject_policy=cache_reject_then_recompute", result.stdout)
+        self.assertIn("prefix_cache_recompute_range_forwards=1", result.stdout)
+        self.assertIn("prefix_cache_reject_then_recompute=1", result.stdout)
         self.assertIn(
             "gsva_timing: records=1 lookup_ms=2 map_read_ms=1 avoided_compute_ms=0",
             result.stdout,

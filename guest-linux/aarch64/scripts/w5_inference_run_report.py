@@ -558,6 +558,13 @@ def validate(
         prefix_cache_gsva_rejections = parse_int(
             memory.get("prefix_cache_gsva_rejections")
         )
+        prefix_cache_reject_policy = memory.get("prefix_cache_reject_policy", "")
+        prefix_cache_recompute_range_forwards = parse_int(
+            memory.get("prefix_cache_recompute_range_forwards")
+        )
+        prefix_cache_reject_then_recompute = parse_int(
+            memory.get("prefix_cache_reject_then_recompute")
+        )
         if prefix_cache_actions not in ("reuse", "miss", "require-verify"):
             issues.append(
                 f"unexpected prefix_cache_actions value={prefix_cache_actions or ''}"
@@ -582,10 +589,28 @@ def validate(
             and parse_int(memory.get("gsva_reads")) <= 0
         ):
             issues.append("GSVA prefix-cache run has GSVA refs but no GSVA reads")
-        if prefix_cache_gsva_rejections > 0 and not memory.get(
+        if prefix_cache_gsva_rejections > 0 and memory.get(
             "prefix_cache_gsva_rejection_reasons"
-        ):
+        ) in ("", None, "none"):
             issues.append("GSVA prefix-cache rejection is missing reason")
+        if prefix_cache_gsva_rejections > 0:
+            if prefix_cache_reject_policy != "cache_reject_then_recompute":
+                issues.append(
+                    "GSVA prefix-cache rejection missing cache_reject_then_recompute policy"
+                )
+            if prefix_cache_recompute_range_forwards <= 0:
+                issues.append(
+                    "GSVA prefix-cache rejection missing range-forward recompute evidence"
+                )
+            if parse_int(memory.get("prefix_cache_kv_hits")) <= 0:
+                if parse_int(memory.get("gsva_reads")) != 0:
+                    issues.append(
+                        "stale GSVA prefix-cache rejection still consumed GSVA reads"
+                    )
+                if prefix_cache_reject_then_recompute != 1:
+                    issues.append(
+                        "stale GSVA prefix-cache rejection missing reject-then-recompute marker"
+                    )
 
     if require_device_gsva:
         if not device:
@@ -781,6 +806,13 @@ def build_report(
             "gsva_rejection_reasons": memory.get(
                 "prefix_cache_gsva_rejection_reasons", ""
             ),
+            "reject_policy": memory.get("prefix_cache_reject_policy", ""),
+            "recompute_range_forwards": parse_int(
+                memory.get("prefix_cache_recompute_range_forwards")
+            ),
+            "reject_then_recompute": parse_int(
+                memory.get("prefix_cache_reject_then_recompute")
+            ),
         },
         "gsva": {
             "kv_refs": parse_int(memory.get("gsva_kv_refs")),
@@ -867,7 +899,10 @@ def print_text_report(report):
         f"ids={prefix_cache['ids']} action={prefix_cache['actions']} "
         f"kv_hits={prefix_cache['kv_hits']} kv_nodes={prefix_cache['kv_nodes']} "
         f"gsva_rejections={prefix_cache['gsva_rejections']} "
-        f"gsva_rejection_reasons={prefix_cache['gsva_rejection_reasons']}"
+        f"gsva_rejection_reasons={prefix_cache['gsva_rejection_reasons']} "
+        f"reject_policy={prefix_cache['reject_policy']} "
+        f"recompute_range_forwards={prefix_cache['recompute_range_forwards']} "
+        f"reject_then_recompute={prefix_cache['reject_then_recompute']}"
     )
     gsva = report["gsva"]
     print(
@@ -1062,7 +1097,7 @@ def main(argv):
         nargs=3,
         metavar=("BASELINE", "PREFIX", "MISMATCH"),
         type=Path,
-        help="Compare no-prefix baseline, prefix-cache reuse, and mismatched-prefix fallback summaries.",
+        help="Compare no-prefix baseline, prefix-cache reuse, and mismatched-prefix recompute summaries.",
     )
     parser.add_argument("--json", action="store_true", dest="json_output")
     parser.add_argument(

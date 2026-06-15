@@ -168,7 +168,7 @@ Acceptance:
 
 - Same-output run pair: no-prefix-cache versus prefix-cache, same prompt.
 - Negative control: prefix-cache enabled but intentionally mismatched prompt
-  produces miss and correct fallback.
+  produces a miss and correct runtime recompute.
 - Summary/report tooling surfaces the difference without manually reading logs.
 
 ## P1: Connect GSVA to W5 Through KV/Prefix Cache First
@@ -235,7 +235,7 @@ Required negative tests:
 - epoch mismatch -> reuse rejected;
 - retired segment -> reuse rejected;
 - checksum mismatch -> reuse rejected;
-- fallback path still completes decode.
+- cache rejection records `cache_reject_then_recompute` and completes decode.
 
 Acceptance:
 
@@ -249,9 +249,13 @@ Progress as of 2026-06-15:
 - Guest parser rejects stale GSVA prefix-cache stream entries fail-closed but
   no longer aborts the decode for cache-staleness cases. It records
   `qwen3_w5_memory_prefix_cache_gsva_rejected`, skips the stale KV entry, and
-  lets runtime KV fallback complete the decode.
+  forces the normal range-forward runtime recompute path to complete the decode.
 - Summary/report surface `prefix_cache_gsva_rejections` and
   `prefix_cache_gsva_rejection_reasons`.
+- Summary/report also require the stale-cache recompute triplet:
+  `prefix_cache_reject_policy=cache_reject_then_recompute`,
+  `prefix_cache_recompute_range_forwards>0`, and
+  `prefix_cache_reject_then_recompute=1`.
 - `SIM_W5_MEMORY_GSVA_EXPECTED_EPOCH` provides an explicit negative-test gate
   for epoch mismatch without changing default runs.
 - Full Qwen3-14B stale-GSVA negative control:
@@ -263,7 +267,10 @@ Progress as of 2026-06-15:
   - prefix cache: `action=reuse`, `prefix_cache_kv_hits=0`
   - rejection: `prefix_cache_gsva_rejections=64`,
     `prefix_cache_gsva_rejection_reasons=epoch_mismatch`
-  - fallback evidence: `worker_timing_records=32`, `range_forwards=32`
+  - reject/recompute evidence:
+    `prefix_cache_reject_policy=cache_reject_then_recompute`,
+    `prefix_cache_recompute_range_forwards=32`,
+    `prefix_cache_reject_then_recompute=1`, `gsva_reads=0`
 
 ### P1.3 GSVA-backed Prefix Cache Plan
 
@@ -278,7 +285,7 @@ Plan record should include:
 - token and epoch;
 - producer run id;
 - checksum and payload shape;
-- fallback object ref if compatibility is needed.
+- compatibility object ref if old consumers still need object-registry lookup.
 
 Acceptance:
 
@@ -353,7 +360,7 @@ Work items:
 Acceptance:
 
 - Device path appears in W5 summary.
-- CPU fallback produces the same output checksum.
+- CPU reference produces the same output checksum.
 - Rejected token/epoch/retire cases are tested.
 
 Progress as of 2026-06-15:
@@ -362,7 +369,7 @@ Progress as of 2026-06-15:
   `NPU_OP_VECTOR_ADD_U32` consumer:
   - NPU reads GSVA input tensors A/B;
   - NPU writes GSVA output tensor C;
-  - guest validates elementwise CPU fallback and emits CPU/device checksum
+  - guest validates elementwise CPU reference parity and emits CPU/device checksum
     parity plus output shape.
 - `npu_gsva_test` emits W5 device rejection records for token, stale epoch,
   and retired segment guards.
@@ -451,6 +458,6 @@ showing:
 ```text
 no-prefix-cache baseline: pass
 prefix-cache reuse: pass, prefix_cache_ids != none
-prefix-cache mismatch: pass with miss/fallback
+prefix-cache mismatch: pass with miss/recompute
 timing: emitted and attributable to prefix cache, not shortpath
 ```
