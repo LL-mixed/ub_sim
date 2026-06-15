@@ -108,6 +108,7 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
     engram_timings = []
     engram_context_records = []
     memory_records = []
+    device_records = []
     boundary_observations = []
     worker_events = collections.Counter()
     barriers = {}
@@ -154,6 +155,15 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                     record["stage"] = stage
                     record["step"] = parse_int(fields.get("step"), -1)
                     memory_records.append(record)
+
+                if "stage qwen3_w5_device_" in clean_line:
+                    fields = parse_pairs(clean_line)
+                    stage = clean_line.split("stage ", 1)[1].split(" ", 1)[0]
+                    record = dict(fields)
+                    record["_log_node"] = node_id
+                    record["stage"] = stage
+                    record["step"] = parse_int(fields.get("step"), -1)
+                    device_records.append(record)
 
                 if "stage uapi_qwen3_range_runtime_forward " in clean_line:
                     worker_events["range_forwards"] += 1
@@ -460,6 +470,7 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
         engram_timings,
         engram_context_records,
         memory_records,
+        device_records,
         boundary_observations,
         worker_events,
         barriers,
@@ -486,6 +497,7 @@ def emit_summary(run_dir, expected_steps, node_ids, output):
         engram_timings,
         engram_context_records,
         memory_records,
+        device_records,
         boundary_observations,
         worker_events,
         barriers,
@@ -540,6 +552,7 @@ def emit_summary(run_dir, expected_steps, node_ids, output):
         fused_simt_vendor_context_records, expected_steps, output
     )
     emit_memory_service_summary(memory_records, expected_steps, output)
+    emit_w5_device_summary(device_records, output)
     emit_worker_shortpath_summary(memory_records, worker_events, expected_steps, node_ids, output)
     emit_boundary_observation_summary(
         boundary_observations,
@@ -566,6 +579,7 @@ def emit_progress(run_dir, expected_steps, elapsed_s, node_ids, output):
         _engram_timings,
         _engram_context_records,
         _memory_records,
+        _device_records,
         _boundary_observations,
         _worker_events,
         _barriers,
@@ -1312,6 +1326,59 @@ def emit_memory_service_summary(memory_records, expected_steps, output):
                 f"hit_registry_steps={csv_or_none_ordered(lookup_hit_registry_step(record) for record in step_hits)} "
                 f"hit_positions={csv_or_none_ordered(record.get('position') for record in step_hits)}"
             )
+
+
+def emit_w5_device_summary(device_records, output):
+    if not device_records:
+        return
+
+    tensor_consumers = [
+        record
+        for record in device_records
+        if record["stage"] == "qwen3_w5_device_gsva_tensor_consumer"
+    ]
+    rejected = [
+        record
+        for record in device_records
+        if record["stage"] == "qwen3_w5_device_gsva_tensor_rejected"
+    ]
+    checksum_matches = [
+        record
+        for record in tensor_consumers
+        if parse_int(record.get("cpu_checksum")) != 0
+        and parse_int(record.get("cpu_checksum")) == parse_int(record.get("device_checksum"))
+    ]
+    shape_verified = [
+        record
+        for record in tensor_consumers
+        if parse_int(record.get("output_shape")) > 0
+        and parse_int(record.get("output_bytes")) > 0
+    ]
+    if not tensor_consumers:
+        status = "no_consumer"
+    elif len(checksum_matches) == len(tensor_consumers) and len(shape_verified) == len(
+        tensor_consumers
+    ):
+        status = "ok"
+    else:
+        status = "mismatch"
+
+    output.append(
+        "w5_device_summary: "
+        f"records={len(device_records)} "
+        f"tensor_consumers={len(tensor_consumers)} "
+        f"devices={csv_or_none_ordered(record.get('device') for record in device_records)} "
+        f"backends={csv_or_none_ordered(record.get('backend') for record in device_records)} "
+        f"ops={csv_or_none_ordered(record.get('op') for record in tensor_consumers)} "
+        f"nodes={csv_or_none_ordered(record.get('node') for record in device_records)} "
+        f"output_shapes={csv_or_none_ordered(record.get('output_shape') for record in tensor_consumers)} "
+        f"checksum_matches={len(checksum_matches)} "
+        f"shape_verified={len(shape_verified)} "
+        f"rejections={len(rejected)} "
+        f"rejection_guards={csv_or_none_ordered(record.get('guard') for record in rejected)} "
+        f"rejection_reasons={csv_or_none_ordered(record.get('reason') for record in rejected)} "
+        f"status={status}"
+    )
 
 
 def emit_worker_shortpath_summary(memory_records, worker_events, expected_steps, node_ids, output):

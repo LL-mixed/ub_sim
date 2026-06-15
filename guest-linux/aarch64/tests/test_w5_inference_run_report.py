@@ -39,6 +39,7 @@ def write_summary(
     token_ids="[11, 22]",
     token_pieces='", ok"',
     context_lines=(),
+    device_lines=(),
 ):
     lines = [
         f"summary: run_dir={run_dir}",
@@ -101,6 +102,7 @@ def write_summary(
         ),
     ]
     lines.extend(context_lines)
+    lines.extend(device_lines)
     if bad_marker:
         lines.append(bad_marker)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -143,6 +145,83 @@ class W5InferenceRunReportTest(unittest.TestCase):
         )
         self.assertIn("artifact: label=object_store_bin bytes=6", result.stdout)
         self.assertNotIn("issue:", result.stdout)
+
+    def test_requires_device_gsva_tensor_consumer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            logs_dir = Path(tmp) / "logs" / "run_headless8"
+            out_dir.mkdir()
+            logs_dir.mkdir(parents=True)
+            (logs_dir / "nodeA_guest.log").write_text("log\n", encoding="utf-8")
+            run_id = "run"
+            write_artifacts(out_dir, run_id)
+            summary = out_dir / f"eight_node_w5_inference_cluster_summary.{run_id}.txt"
+            write_summary(
+                summary,
+                logs_dir,
+                device_lines=(
+                    (
+                        "w5_device_summary: records=4 tensor_consumers=1 devices=npu "
+                        "backends=gsva ops=vector_add_u32 nodes=0 output_shapes=16 "
+                        "checksum_matches=1 shape_verified=1 rejections=3 "
+                        "rejection_guards=token,epoch,retire "
+                        "rejection_reasons=token_denied,stale_epoch,segment_retired "
+                        "status=ok"
+                    ),
+                ),
+            )
+
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), str(summary), "--require-device-gsva"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertIn(
+            "device: records=4 tensor_consumers=1 devices=npu backends=gsva "
+            "ops=vector_add_u32 nodes=0 output_shapes=16 checksum_matches=1 "
+            "shape_verified=1 rejections=3 rejection_guards=token,epoch,retire "
+            "status=ok",
+            result.stdout,
+        )
+        self.assertNotIn("issue:", result.stdout)
+
+    def test_require_device_gsva_rejects_missing_guards(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            logs_dir = Path(tmp) / "logs" / "run_headless8"
+            out_dir.mkdir()
+            logs_dir.mkdir(parents=True)
+            (logs_dir / "nodeA_guest.log").write_text("log\n", encoding="utf-8")
+            run_id = "run"
+            write_artifacts(out_dir, run_id)
+            summary = out_dir / f"eight_node_w5_inference_cluster_summary.{run_id}.txt"
+            write_summary(
+                summary,
+                logs_dir,
+                device_lines=(
+                    (
+                        "w5_device_summary: records=2 tensor_consumers=1 devices=npu "
+                        "backends=gsva ops=vector_add_u32 nodes=0 output_shapes=16 "
+                        "checksum_matches=1 shape_verified=1 rejections=1 "
+                        "rejection_guards=token rejection_reasons=token_denied "
+                        "status=ok"
+                    ),
+                ),
+            )
+
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), str(summary), "--require-device-gsva"],
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "issue: device GSVA rejection guards missing value=epoch,retire",
+            result.stdout,
+        )
 
     def test_reports_passed_prefix_cache_only_run(self):
         with tempfile.TemporaryDirectory() as tmp:

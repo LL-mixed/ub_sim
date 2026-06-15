@@ -356,6 +356,22 @@ Acceptance:
 - CPU fallback produces the same output checksum.
 - Rejected token/epoch/retire cases are tested.
 
+Progress as of 2026-06-15:
+
+- `npu_gsva_test` emits W5 device tensor records for a GSVA-backed
+  `NPU_OP_VECTOR_ADD_U32` consumer:
+  - NPU reads GSVA input tensors A/B;
+  - NPU writes GSVA output tensor C;
+  - guest validates elementwise CPU fallback and emits CPU/device checksum
+    parity plus output shape.
+- `npu_gsva_test` emits W5 device rejection records for token, stale epoch,
+  and retired segment guards.
+- `w4_guest_run_summary.py` emits `w5_device_summary` with device/backend/op,
+  checksum parity, shape verification, rejection guard/reason, and status.
+- `w5_inference_run_report.py --require-device-gsva` fails unless a W5 summary
+  contains NPU+GSVA tensor consumer evidence, checksum/shape parity, and
+  token/epoch/retire rejection evidence.
+
 ## Acceptance Gates
 
 ### Gate A: Prefix Cache Main Path

@@ -420,6 +420,7 @@ def parse_summary(summary_path):
         "summary": {},
         "memory_service": {},
         "shortpath": {},
+        "device": {},
         "timing_steps": [],
         "timing_nodes": [],
         "gsva_timing": {},
@@ -440,6 +441,8 @@ def parse_summary(summary_path):
             parsed["memory_service"] = parse_pairs(line)
         elif line.startswith("guest_worker_shortpath_summary: "):
             parsed["shortpath"] = parse_pairs(line)
+        elif line.startswith("w5_device_summary: "):
+            parsed["device"] = parse_pairs(line)
         elif line.startswith("timing_step: "):
             parsed["timing_steps"].append(parse_pairs(line))
         elif line.startswith("timing_node: "):
@@ -460,11 +463,18 @@ def parse_summary(summary_path):
     return parsed
 
 
-def validate(parsed, paths, output_guard=None, context_guard=None):
+def validate(
+    parsed,
+    paths,
+    output_guard=None,
+    context_guard=None,
+    require_device_gsva=False,
+):
     issues = []
     summary = parsed["summary"]
     shortpath = parsed["shortpath"]
     memory = parsed["memory_service"]
+    device = parsed["device"]
 
     expected = parse_int(summary.get("decode_steps_expected"))
     observed = parse_int(summary.get("decode_steps_observed"))
@@ -577,6 +587,45 @@ def validate(parsed, paths, output_guard=None, context_guard=None):
         ):
             issues.append("GSVA prefix-cache rejection is missing reason")
 
+    if require_device_gsva:
+        if not device:
+            issues.append("missing w5_device_summary")
+        else:
+            guards = {
+                guard
+                for guard in device.get("rejection_guards", "").split(",")
+                if guard and guard != "none"
+            }
+            missing_guards = {"token", "epoch", "retire"} - guards
+            tensor_consumers = parse_int(device.get("tensor_consumers"))
+            if "npu" not in device.get("devices", "").split(","):
+                issues.append(f"device summary missing npu device={device.get('devices', '')}")
+            if "gsva" not in device.get("backends", "").split(","):
+                issues.append(
+                    f"device summary missing gsva backend={device.get('backends', '')}"
+                )
+            if tensor_consumers <= 0:
+                issues.append("device summary has no tensor consumer")
+            if parse_int(device.get("checksum_matches")) != tensor_consumers:
+                issues.append(
+                    "device checksum parity mismatch "
+                    f"matches={device.get('checksum_matches', '')} "
+                    f"consumers={device.get('tensor_consumers', '')}"
+                )
+            if parse_int(device.get("shape_verified")) != tensor_consumers:
+                issues.append(
+                    "device shape verification mismatch "
+                    f"verified={device.get('shape_verified', '')} "
+                    f"consumers={device.get('tensor_consumers', '')}"
+                )
+            if missing_guards:
+                issues.append(
+                    "device GSVA rejection guards missing "
+                    f"value={','.join(sorted(missing_guards))}"
+                )
+            if device.get("status") != "ok":
+                issues.append(f"device summary status={device.get('status', '')}")
+
     for marker in sorted(set(parsed["bad_markers"])):
         issues.append(f"bad marker present: {marker}")
 
@@ -686,12 +735,17 @@ def context_report(parsed):
     return result
 
 
-def build_report(summary_path, output_guard=None, context_guard=None):
+def build_report(
+    summary_path,
+    output_guard=None,
+    context_guard=None,
+    require_device_gsva=False,
+):
     run_id = infer_run_id(summary_path)
     parsed = parse_summary(summary_path)
     paths = artifact_paths(summary_path, run_id, parsed["run_dir"])
     issues, artifact_sizes, output_guard_result, context_guard_result = validate(
-        parsed, paths, output_guard, context_guard
+        parsed, paths, output_guard, context_guard, require_device_gsva
     )
     summary = parsed["summary"]
     memory = parsed["memory_service"]
@@ -741,6 +795,21 @@ def build_report(summary_path, output_guard=None, context_guard=None):
                     parsed["gsva_timing"].get("avoided_compute_ms")
                 ),
             },
+        },
+        "device": {
+            "records": parse_int(parsed["device"].get("records")),
+            "tensor_consumers": parse_int(parsed["device"].get("tensor_consumers")),
+            "devices": parsed["device"].get("devices", ""),
+            "backends": parsed["device"].get("backends", ""),
+            "ops": parsed["device"].get("ops", ""),
+            "nodes": parsed["device"].get("nodes", ""),
+            "output_shapes": parsed["device"].get("output_shapes", ""),
+            "checksum_matches": parse_int(parsed["device"].get("checksum_matches")),
+            "shape_verified": parse_int(parsed["device"].get("shape_verified")),
+            "rejections": parse_int(parsed["device"].get("rejections")),
+            "rejection_guards": parsed["device"].get("rejection_guards", ""),
+            "rejection_reasons": parsed["device"].get("rejection_reasons", ""),
+            "status": parsed["device"].get("status", ""),
         },
         "timing": timing_report(parsed),
         "context": context_report(parsed),
@@ -813,6 +882,19 @@ def print_text_report(report):
         f"lookup_ms={gsva_timing['lookup_ms']} "
         f"map_read_ms={gsva_timing['map_read_ms']} "
         f"avoided_compute_ms={gsva_timing['avoided_compute_ms']}"
+    )
+    device = report["device"]
+    print(
+        "device: "
+        f"records={device['records']} tensor_consumers={device['tensor_consumers']} "
+        f"devices={device['devices']} backends={device['backends']} "
+        f"ops={device['ops']} nodes={device['nodes']} "
+        f"output_shapes={device['output_shapes']} "
+        f"checksum_matches={device['checksum_matches']} "
+        f"shape_verified={device['shape_verified']} "
+        f"rejections={device['rejections']} "
+        f"rejection_guards={device['rejection_guards']} "
+        f"status={device['status']}"
     )
     timing = report["timing"]
     print(
@@ -1008,6 +1090,11 @@ def main(argv):
         default=[],
         help="Require a context summary with at least one record. Repeatable.",
     )
+    parser.add_argument(
+        "--require-device-gsva",
+        action="store_true",
+        help="Require a W5 NPU GSVA tensor consumer with checksum/shape parity and token/epoch/retire rejections.",
+    )
     args = parser.parse_args(argv)
 
     if args.compare_prefix_cache:
@@ -1037,6 +1124,7 @@ def main(argv):
         args.summary,
         output_guard_from_args(args),
         context_guard_from_args(args),
+        args.require_device_gsva,
     )
     if args.json_output:
         print(json.dumps(report, indent=2, sort_keys=True))

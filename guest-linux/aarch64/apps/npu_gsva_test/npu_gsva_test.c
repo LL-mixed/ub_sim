@@ -415,6 +415,8 @@ static int test_vector_add_u32_gsva(void)
     struct ub_npu_cmd_v1 cmd = {0};
     struct ub_npu_cpl_v1 cpl = {0};
     uint32_t *a, *b, *c;
+    uint64_t cpu_checksum = 0;
+    uint64_t npu_checksum = 0;
     int i;
     size_t vector_bytes = VECTOR_ELEMENT_COUNT * sizeof(uint32_t);
 
@@ -453,6 +455,8 @@ static int test_vector_add_u32_gsva(void)
     for (i = 0; i < VECTOR_ELEMENT_COUNT; i++) {
         uint32_t want = a[i] + b[i];
 
+        cpu_checksum += want;
+        npu_checksum += c[i];
         if (c[i] != want) {
             fprintf(stderr, TAG "  FAIL: vector[%d]=%#x want %#x (a=%#x b=%#x)\n",
                     i, c[i], want, a[i], b[i]);
@@ -460,6 +464,15 @@ static int test_vector_add_u32_gsva(void)
         }
     }
 
+    printf("[w4_guest] stage qwen3_w5_device_gsva_tensor_consumer device=npu backend=gsva op=vector_add_u32 node=%d peer=%d dtype=u32 input_shape=%d output_shape=%d input_bytes=%zu output_bytes=%zu cpu_checksum=%#llx device_checksum=%#llx status=ok\n",
+           node_idx,
+           current_peer_node_idx,
+           VECTOR_ELEMENT_COUNT,
+           VECTOR_ELEMENT_COUNT,
+           vector_bytes * 2,
+           vector_bytes,
+           (unsigned long long)cpu_checksum,
+           (unsigned long long)npu_checksum);
     printf(TAG "  PASS: vector add %d u32 elements, bytes=%u\n",
            VECTOR_ELEMENT_COUNT, (unsigned int)cpl.bytes_written);
     return 0;
@@ -535,6 +548,8 @@ static int test_bad_token(void)
         return -1;
     }
 
+    printf("[w4_guest] stage qwen3_w5_device_gsva_tensor_rejected device=npu backend=gsva guard=token reason=token_denied node=%d peer=%d status=rejected\n",
+           node_idx, current_peer_node_idx);
     printf(TAG "  PASS: rejected with TOKEN_DENIED\n");
     return 0;
 }
@@ -604,6 +619,8 @@ static int test_stale_epoch_denied(void)
         return -1;
     }
 
+    printf("[w4_guest] stage qwen3_w5_device_gsva_tensor_rejected device=npu backend=gsva guard=epoch reason=stale_epoch node=%d peer=%d status=rejected\n",
+           node_idx, current_peer_node_idx);
     printf(TAG "  PASS: rejected with STALE_EPOCH\n");
     return 0;
 }
@@ -749,6 +766,8 @@ static int test_retired_segment_denied(void)
         return -1;
     }
 
+    printf("[w4_guest] stage qwen3_w5_device_gsva_tensor_rejected device=npu backend=gsva guard=retire reason=segment_retired node=%d peer=%d status=rejected\n",
+           node_idx, current_peer_node_idx);
     printf(TAG "  PASS: rejected with SEGMENT_RETIRED\n");
     return 0;
 }

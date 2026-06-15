@@ -684,6 +684,59 @@ class W4GuestRunSummaryTest(unittest.TestCase):
             result.stdout,
         )
 
+    def test_w5_device_summary_reports_npu_gsva_tensor_consumer(self):
+        script = Path(__file__).resolve().parents[1] / "scripts" / "w4_guest_run_summary.py"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "nodeA_guest.log").write_text(
+                "\n".join(
+                    [
+                        (
+                            "[w4_guest] stage qwen3_w5_device_gsva_tensor_consumer "
+                            "device=npu backend=gsva op=vector_add_u32 node=0 peer=1 "
+                            "dtype=u32 input_shape=16 output_shape=16 "
+                            "input_bytes=128 output_bytes=64 "
+                            "cpu_checksum=0x310 device_checksum=0x310 status=ok"
+                        ),
+                        (
+                            "[w4_guest] stage qwen3_w5_device_gsva_tensor_rejected "
+                            "device=npu backend=gsva guard=token reason=token_denied "
+                            "node=0 peer=1 status=rejected"
+                        ),
+                        (
+                            "[w4_guest] stage qwen3_w5_device_gsva_tensor_rejected "
+                            "device=npu backend=gsva guard=epoch reason=stale_epoch "
+                            "node=0 peer=1 status=rejected"
+                        ),
+                        (
+                            "[w4_guest] stage qwen3_w5_device_gsva_tensor_rejected "
+                            "device=npu backend=gsva guard=retire reason=segment_retired "
+                            "node=0 peer=1 status=rejected"
+                        ),
+                        "[w4_guest] pass",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [sys.executable, str(script), str(run_dir), "1", "nodeA"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertIn(
+            "w5_device_summary: records=4 tensor_consumers=1 devices=npu "
+            "backends=gsva ops=vector_add_u32 nodes=0 output_shapes=16 "
+            "checksum_matches=1 shape_verified=1 rejections=3 "
+            "rejection_guards=token,epoch,retire "
+            "rejection_reasons=token_denied,stale_epoch,segment_retired status=ok",
+            result.stdout,
+        )
+
     def test_idle_engram_timing_does_not_count_terminal_wait_as_range_pipeline(self):
         script = Path(__file__).resolve().parents[1] / "scripts" / "w4_guest_run_summary.py"
 
