@@ -90,7 +90,7 @@ start_node() {
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
       -initrd "$INITRAMFS_IMAGE" \
-      -append "console=ttyAMA0 rdinit=/bin/run_demo gva_direct_demo linqu_urma_dp_role=${role} linqu_node_idx=${node_idx} gva_direct_mode=${GVA_DIRECT_MODE} gva_direct_local_va=${GVA_DIRECT_LOCAL_VA} gva_direct_home_va=${GVA_DIRECT_HOME_VA} gva_direct_size=${GVA_DIRECT_SIZE} ${APPEND_EXTRA}" \
+      -append "console=ttyAMA0 rdinit=/bin/run_demo gva_direct linqu_urma_dp_role=${role} linqu_node_idx=${node_idx} gva_direct_mode=${GVA_DIRECT_MODE} gva_direct_local_va=${GVA_DIRECT_LOCAL_VA} gva_direct_home_va=${GVA_DIRECT_HOME_VA} gva_direct_size=${GVA_DIRECT_SIZE} ${APPEND_EXTRA}" \
       >"$qemu_log" 2>&1 &
   echo $! > "$pid_file"
 }
@@ -137,13 +137,13 @@ validate_gva_direct_logs() {
   local_hex="$(printf '%x' "$((GVA_DIRECT_LOCAL_VA))")"
   home_hex="$(printf '%x' "$((GVA_DIRECT_HOME_VA))")"
 
-  if ! grep -q "\[gva_direct_demo\] result=done mode=${GVA_DIRECT_MODE} role=home" "$NODEA_GUEST_LOG" ||
-     ! grep -q "\[gva_direct_demo\] result=done mode=${GVA_DIRECT_MODE} role=peer" "$NODEB_GUEST_LOG"; then
+  if ! grep -q "\[gva_direct\] result=done mode=${GVA_DIRECT_MODE} role=home" "$NODEA_GUEST_LOG" ||
+     ! grep -q "\[gva_direct\] result=done mode=${GVA_DIRECT_MODE} role=peer" "$NODEB_GUEST_LOG"; then
     echo "[gva-direct] FAIL: demo did not complete on both roles" >&2
     return 1
   fi
   if [[ "$GVA_DIRECT_MODE" == "invalid-cache" ]]; then
-    if ! grep -q '\[gva_direct_demo\] result=done mode=invalid-cache role=peer bad_cache_policy=0xffffffff' "$NODEB_GUEST_LOG"; then
+    if ! grep -q '\[gva_direct\] result=done mode=invalid-cache role=peer bad_cache_policy=0xffffffff' "$NODEB_GUEST_LOG"; then
       echo "[gva-direct] FAIL: invalid-cache mode did not report rejected cache policy" >&2
       return 1
     fi
@@ -159,7 +159,7 @@ validate_gva_direct_logs() {
     return 0
   fi
   if [[ "$GVA_DIRECT_MODE" == "overlap" ]]; then
-    if ! grep -q '\[gva_direct_demo\] result=done mode=overlap role=peer' "$NODEB_GUEST_LOG"; then
+    if ! grep -q '\[gva_direct\] result=done mode=overlap role=peer' "$NODEB_GUEST_LOG"; then
       echo "[gva-direct] FAIL: overlap mode did not report rejected second import" >&2
       return 1
     fi
@@ -175,7 +175,7 @@ validate_gva_direct_logs() {
     return 0
   fi
   if [[ "$GVA_DIRECT_MODE" == "route-overlap" ]]; then
-    if ! grep -q '\[gva_direct_demo\] result=done mode=route-overlap role=peer' "$NODEB_GUEST_LOG"; then
+    if ! grep -q '\[gva_direct\] result=done mode=route-overlap role=peer' "$NODEB_GUEST_LOG"; then
       echo "[gva-direct] FAIL: route-overlap mode did not report rejected second route" >&2
       return 1
     fi
@@ -196,7 +196,7 @@ validate_gva_direct_logs() {
     return 0
   fi
   if [[ "$GVA_DIRECT_MODE" == "mrsw-conflict" ]]; then
-    if ! grep -q '\[gva_direct_demo\] result=done mode=mrsw-conflict role=peer' "$NODEB_GUEST_LOG"; then
+    if ! grep -q '\[gva_direct\] result=done mode=mrsw-conflict role=peer' "$NODEB_GUEST_LOG"; then
       echo "[gva-direct] FAIL: mrsw-conflict mode did not report rejected writer" >&2
       return 1
     fi
@@ -215,7 +215,7 @@ validate_gva_direct_logs() {
     return 0
   fi
   if [[ "$GVA_DIRECT_MODE" == "mrsw-read-share" ]]; then
-    if ! grep -q '\[gva_direct_demo\] result=done mode=mrsw-read-share role=peer' "$NODEB_GUEST_LOG"; then
+    if ! grep -q '\[gva_direct\] result=done mode=mrsw-read-share role=peer' "$NODEB_GUEST_LOG"; then
       echo "[gva-direct] FAIL: mrsw-read-share mode did not report accepted readers" >&2
       return 1
     fi
@@ -234,7 +234,7 @@ validate_gva_direct_logs() {
     return 0
   fi
   if [[ "$GVA_DIRECT_MODE" == "mrsw-writer-conflict" ]]; then
-    if ! grep -q '\[gva_direct_demo\] result=done mode=mrsw-writer-conflict role=peer' "$NODEB_GUEST_LOG"; then
+    if ! grep -q '\[gva_direct\] result=done mode=mrsw-writer-conflict role=peer' "$NODEB_GUEST_LOG"; then
       echo "[gva-direct] FAIL: mrsw-writer-conflict mode did not report rejected second writer" >&2
       return 1
     fi
@@ -249,7 +249,7 @@ validate_gva_direct_logs() {
     return 0
   fi
   if [[ "$GVA_DIRECT_MODE" == "read-cache-write-fault" ]]; then
-    if ! grep -q '\[gva_direct_demo\] result=done mode=read-cache-write-fault role=peer fault_injected=1' "$NODEB_GUEST_LOG"; then
+    if ! grep -q '\[gva_direct\] result=done mode=read-cache-write-fault role=peer fault_injected=1' "$NODEB_GUEST_LOG"; then
       echo "[gva-direct] FAIL: read-cache-write-fault mode did not report write fault injection" >&2
       return 1
     fi
@@ -268,7 +268,7 @@ validate_gva_direct_logs() {
     return 0
   fi
   if [[ "$GVA_DIRECT_MODE" == "write-back-no-sync" ]]; then
-    if ! grep -q '\[gva_direct_demo\] result=done mode=write-back-no-sync role=peer cache_policy=0x3 access_flags=0' "$NODEB_GUEST_LOG"; then
+    if ! grep -q '\[gva_direct\] result=done mode=write-back-no-sync role=peer cache_policy=0x3 access_flags=0' "$NODEB_GUEST_LOG"; then
       echo "[gva-direct] FAIL: write-back-no-sync mode did not report rejected import" >&2
       return 1
     fi
@@ -284,7 +284,7 @@ validate_gva_direct_logs() {
     return 0
   fi
   if [[ "$GVA_DIRECT_MODE" == "invalid-ptag" ]]; then
-    if ! grep -q '\[gva_direct_demo\] result=done mode=invalid-ptag role=peer fault_injected=1' "$NODEB_GUEST_LOG"; then
+    if ! grep -q '\[gva_direct\] result=done mode=invalid-ptag role=peer fault_injected=1' "$NODEB_GUEST_LOG"; then
       echo "[gva-direct] FAIL: invalid-ptag mode did not report access fault injection" >&2
       return 1
     fi
@@ -299,7 +299,7 @@ validate_gva_direct_logs() {
     return 0
   fi
   if [[ "$GVA_DIRECT_MODE" == "invalid-dcna" ]]; then
-    if ! grep -q '\[gva_direct_demo\] result=done mode=invalid-dcna role=peer fault_injected=1' "$NODEB_GUEST_LOG"; then
+    if ! grep -q '\[gva_direct\] result=done mode=invalid-dcna role=peer fault_injected=1' "$NODEB_GUEST_LOG"; then
       echo "[gva-direct] FAIL: invalid-dcna mode did not report access fault injection" >&2
       return 1
     fi
@@ -314,7 +314,7 @@ validate_gva_direct_logs() {
     return 0
   fi
   if [[ "$GVA_DIRECT_MODE" == "token-mismatch" ]]; then
-    if ! grep -q '\[gva_direct_demo\] result=done mode=token-mismatch role=peer fault_injected=1' "$NODEB_GUEST_LOG"; then
+    if ! grep -q '\[gva_direct\] result=done mode=token-mismatch role=peer fault_injected=1' "$NODEB_GUEST_LOG"; then
       echo "[gva-direct] FAIL: token-mismatch mode did not report access fault injection" >&2
       return 1
     fi
@@ -329,7 +329,7 @@ validate_gva_direct_logs() {
     return 0
   fi
   if [[ "$GVA_DIRECT_MODE" == "invalid-upi" ]]; then
-    if ! grep -q '\[gva_direct_demo\] result=done mode=invalid-upi role=peer fault_injected=1' "$NODEB_GUEST_LOG"; then
+    if ! grep -q '\[gva_direct\] result=done mode=invalid-upi role=peer fault_injected=1' "$NODEB_GUEST_LOG"; then
       echo "[gva-direct] FAIL: invalid-upi mode did not report access fault injection" >&2
       return 1
     fi
@@ -432,13 +432,13 @@ validate_gva_direct_logs() {
   fi
 	case "$GVA_DIRECT_MODE" in
 	sync)
-		if ! grep -q '\[gva_direct_demo\] sync -> ok' "$NODEB_GUEST_LOG"; then
+		if ! grep -q '\[gva_direct\] sync -> ok' "$NODEB_GUEST_LOG"; then
         echo "[gva-direct] FAIL: sync mode did not report sync success" >&2
         return 1
 		fi
 		;;
 	write-back-sync)
-		if ! grep -q '\[gva_direct_demo\] sync -> ok' "$NODEB_GUEST_LOG"; then
+		if ! grep -q '\[gva_direct\] sync -> ok' "$NODEB_GUEST_LOG"; then
 			echo "[gva-direct] FAIL: write-back-sync mode did not report sync success" >&2
 			return 1
 		fi
@@ -460,7 +460,7 @@ validate_gva_direct_logs() {
 		fi
 		;;
 	unmap-fault)
-		if ! grep -q '\[gva_direct_demo\] unmap fault -> ok' "$NODEB_GUEST_LOG"; then
+		if ! grep -q '\[gva_direct\] unmap fault -> ok' "$NODEB_GUEST_LOG"; then
         echo "[gva-direct] FAIL: unmap-fault mode did not observe expected fault" >&2
         return 1
       fi
@@ -471,11 +471,11 @@ validate_gva_direct_logs() {
       fi
       ;;
     dump)
-      if ! grep -Eq "\\[gva_direct_demo\\] guest_route_dump .*map_source=2 .*address_profile=1 .*local_va=${GVA_DIRECT_LOCAL_VA} .*home_va=${GVA_DIRECT_HOME_VA} .*pte_offset=0x[1-9a-f][0-9a-f]*" "$NODEB_GUEST_LOG"; then
+      if ! grep -Eq "\\[gva_direct\\] guest_route_dump .*map_source=2 .*address_profile=1 .*local_va=${GVA_DIRECT_LOCAL_VA} .*home_va=${GVA_DIRECT_HOME_VA} .*pte_offset=0x[1-9a-f][0-9a-f]*" "$NODEB_GUEST_LOG"; then
         echo "[gva-direct] FAIL: dump mode did not emit guest route metadata" >&2
         return 1
       fi
-      if ! grep -Eq "\\[gva_direct_demo\\] guest_proc_route_dump [0-9a-f]+ active 0 1 2 1 0 0 [0-9a-f]+ [0-9a-f]+ ${local_hex} ${home_hex} [0-9a-f]+ [1-9a-f][0-9a-f]*" "$NODEB_GUEST_LOG"; then
+      if ! grep -Eq "\\[gva_direct\\] guest_proc_route_dump [0-9a-f]+ active 0 1 2 1 0 0 [0-9a-f]+ [0-9a-f]+ ${local_hex} ${home_hex} [0-9a-f]+ [1-9a-f][0-9a-f]*" "$NODEB_GUEST_LOG"; then
         echo "[gva-direct] FAIL: dump mode did not emit proc GVA route metadata" >&2
         return 1
       fi
@@ -499,17 +499,17 @@ echo "[gva-direct] FM links ready"
 echo "[gva-direct] waiting for demo completion (timeout ${RUN_SECS}s)..."
 deadline=$((SECONDS + RUN_SECS))
 while (( SECONDS < deadline )); do
-  if [[ -f "$NODEA_GUEST_LOG" ]] && grep -qE '\[gva_direct_demo\] result=done' "$NODEA_GUEST_LOG" && \
-     [[ -f "$NODEB_GUEST_LOG" ]] && grep -qE '\[gva_direct_demo\] result=done' "$NODEB_GUEST_LOG"; then
+  if [[ -f "$NODEA_GUEST_LOG" ]] && grep -qE '\[gva_direct\] result=done' "$NODEA_GUEST_LOG" && \
+     [[ -f "$NODEB_GUEST_LOG" ]] && grep -qE '\[gva_direct\] result=done' "$NODEB_GUEST_LOG"; then
     validate_gva_direct_logs
     echo "[gva-direct] PASS: both nodes completed"
     echo "[gva-direct] nodeA:"
-    grep '\[gva_direct_demo\]' "$NODEA_GUEST_LOG" | tail -8
+    grep '\[gva_direct\]' "$NODEA_GUEST_LOG" | tail -8
     echo "[gva-direct] nodeB:"
-    grep '\[gva_direct_demo\]' "$NODEB_GUEST_LOG" | tail -8
+    grep '\[gva_direct\]' "$NODEB_GUEST_LOG" | tail -8
     exit 0
   fi
-  if grep -qE '\[gva_direct_demo\] result=fail|\[run_demo\] linqu_gva_direct_demo failed' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
+  if grep -qE '\[gva_direct\] result=fail|\[run_demo\] linqu_gva_direct failed' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
     echo "[gva-direct] FAIL: demo reported failure" >&2
     exit 1
   fi

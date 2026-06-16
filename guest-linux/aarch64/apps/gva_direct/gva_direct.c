@@ -14,7 +14,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#define TAG "[gva_direct_demo]"
+#define TAG "[gva_direct]"
 #define GVA_DIRECT_DEFAULT_SIZE (4UL * 1024UL * 1024UL)
 #define GVA_DIRECT_LOCAL_VA 0x710000000000ULL
 #define GVA_DIRECT_HOME_VA  0x720000000000ULL
@@ -713,7 +713,7 @@ int main(int argc, char **argv)
     int ret = 1;
 
     if (!parse_args(argc, argv, &cfg)) {
-        fprintf(stderr, "usage: gva_direct_demo --mode write-read|sync|write-back-sync|unmap-fault|dump|invalid-cache|read-cache-write-fault|write-back-no-sync|overlap|route-overlap|invalid-ptag|invalid-dcna|token-mismatch|invalid-upi|mrsw-read-share|mrsw-conflict|mrsw-writer-conflict "
+        fprintf(stderr, "usage: gva_direct --mode write-read|sync|write-back-sync|unmap-fault|dump|invalid-cache|read-cache-write-fault|write-back-no-sync|overlap|route-overlap|invalid-ptag|invalid-dcna|token-mismatch|invalid-upi|mrsw-read-share|mrsw-conflict|mrsw-writer-conflict "
                 "[--size S] [--local-va A] [--home-va A]\n");
         return 2;
     }

@@ -94,3 +94,17 @@ def test_obmm_gsva_uses_canonical_app_source():
     assert (app_dir / "obmm_gsva.c").exists()
     assert (app_dir / "Makefile").exists()
     assert not (ROOT / "apps" / "obmm_gsva_demo").exists()
+
+
+def test_gva_direct_uses_canonical_app_source():
+    build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
+    run_demo = (ROOT / "initramfs" / "run_demo").read_text()
+    app_dir = ROOT / "apps" / "gva_direct"
+
+    assert 'GVA_DIRECT_SRC="$ROOT_DIR/apps/gva_direct/gva_direct.c"' in build_script
+    assert 'GVA_DIRECT_BIN="$OUT_DIR/linqu_gva_direct"' in build_script
+    assert "linqu_gva_direct_demo" not in build_script
+    assert "linqu_gva_direct=1" in run_demo
+    assert (app_dir / "gva_direct.c").exists()
+    assert (app_dir / "Makefile").exists()
+    assert not (ROOT / "apps" / "gva_direct_demo").exists()

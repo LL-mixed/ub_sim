@@ -400,7 +400,7 @@ run_obmm_gsva() {
   run_binary "linqu_ub_obmm_gsva" /bin/linqu_ub_obmm_gsva $args
 }
 
-run_gva_direct_demo() {
+run_gva_direct() {
   local args=""
   local token=""
 
@@ -423,7 +423,7 @@ run_gva_direct_demo() {
   done
 
   # Values come from kernel cmdline key=value tokens, so word splitting is intentional.
-  run_binary "linqu_gva_direct_demo" /bin/linqu_gva_direct_demo $args
+  run_binary "linqu_gva_direct" /bin/linqu_gva_direct $args
 }
 
 run_default_actions() {
@@ -475,8 +475,8 @@ run_default_actions() {
     ran_any="1"
   fi
 
-  if has_flag "linqu_gva_direct_demo=1"; then
-    run_gva_direct_demo || rc=$?
+  if has_flag "linqu_gva_direct=1" || has_flag "linqu_gva_direct_demo=1"; then
+    run_gva_direct || rc=$?
     ran_any="1"
   fi
 
@@ -537,8 +537,8 @@ run_single_action() {
     gva_manager_segment_cli)
       run_gva_manager_segment_cli
       ;;
-    gva_direct_demo)
-      run_gva_direct_demo
+    gva_direct|gva_direct_demo)
+      run_gva_direct
       ;;
     obmm_gsva|obmm_gsva_demo)
       run_obmm_gsva
