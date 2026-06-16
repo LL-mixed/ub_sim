@@ -21,7 +21,7 @@ RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_obmm_queue_${RANDOM}}"
 OBMM_POOL_EXPORT_SIZE_MB="${OBMM_POOL_EXPORT_SIZE_MB:-512}"
 OBMM_QUEUE_DEPTH="${OBMM_QUEUE_DEPTH:-1024}"
 OBMM_BOOTSTRAP="${OBMM_BOOTSTRAP:-fm}"
-OBMM_DEMO_MODE="${OBMM_DEMO_MODE:-fullmesh}"
+OBMM_QUEUE_MODE="${OBMM_QUEUE_MODE:-${OBMM_DEMO_MODE:-fullmesh}}"
 OBMM_IMPORT_CACHE_MODE="${OBMM_IMPORT_CACHE_MODE:-auto}"
 OBMM_QUEUE_ALL_IPS="${OBMM_QUEUE_ALL_IPS:-10.0.0.1,10.0.0.2}"
 
@@ -101,7 +101,7 @@ start_node() {
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
       -initrd "$INITRAMFS_IMAGE" \
-      -append "console=ttyAMA0 rdinit=/bin/run_demo obmm_queue linqu_urma_dp_role=${role} linqu_node_idx=${node_idx} obmm_queue_local_ip=${local_ip} obmm_queue_all_ips=${OBMM_QUEUE_ALL_IPS} obmm_queue_node_count=2 obmm_queue_export_size_mb=${OBMM_POOL_EXPORT_SIZE_MB} obmm_queue_depth=${OBMM_QUEUE_DEPTH} obmm_queue_bootstrap=${OBMM_BOOTSTRAP} obmm_queue_bootstrap_session=${RUN_ID} obmm_queue_mode=${OBMM_DEMO_MODE} obmm_queue_import_cache_mode=${OBMM_IMPORT_CACHE_MODE} ${APPEND_EXTRA}" \
+      -append "console=ttyAMA0 rdinit=/bin/run_demo obmm_queue linqu_urma_dp_role=${role} linqu_node_idx=${node_idx} obmm_queue_local_ip=${local_ip} obmm_queue_all_ips=${OBMM_QUEUE_ALL_IPS} obmm_queue_node_count=2 obmm_queue_export_size_mb=${OBMM_POOL_EXPORT_SIZE_MB} obmm_queue_depth=${OBMM_QUEUE_DEPTH} obmm_queue_bootstrap=${OBMM_BOOTSTRAP} obmm_queue_bootstrap_session=${RUN_ID} obmm_queue_mode=${OBMM_QUEUE_MODE} obmm_queue_import_cache_mode=${OBMM_IMPORT_CACHE_MODE} ${APPEND_EXTRA}" \
       >"$qemu_log" 2>&1 &
   echo $! > "$pid_file"
 }
@@ -192,7 +192,7 @@ validate_node_log() {
   assert_log_absent "$log_file" "Call trace:" "$node_name call trace" || return 1
 }
 
-echo "[obmm-queue] run_id=$RUN_ID export_size_mb=$OBMM_POOL_EXPORT_SIZE_MB queue_depth=$OBMM_QUEUE_DEPTH bootstrap=$OBMM_BOOTSTRAP mode=$OBMM_DEMO_MODE"
+echo "[obmm-queue] run_id=$RUN_ID export_size_mb=$OBMM_POOL_EXPORT_SIZE_MB queue_depth=$OBMM_QUEUE_DEPTH bootstrap=$OBMM_BOOTSTRAP mode=$OBMM_QUEUE_MODE"
 echo "[obmm-queue] starting nodeA and nodeB..."
 
 start_node nodeA nodeA 0 "$NODEA_GUEST_LOG" "$NODEA_QEMU_LOG" "$NODEA_PID_FILE"

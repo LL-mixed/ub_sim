@@ -125,6 +125,10 @@ def test_obmm_queue_uses_canonical_app_source():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     run_demo = (ROOT / "initramfs" / "run_demo").read_text()
     dual_runner = (ROOT / "scripts" / "run_ub_dual_node_obmm_queue.sh").read_text()
+    four_runner = (ROOT / "scripts" / "run_ub_four_node_obmm_queue.sh").read_text()
+    eight_runner = (ROOT / "scripts" / "run_ub_eight_node_obmm_queue.sh").read_text()
+    legacy_four_runner = (ROOT / "scripts" / "run_ub_four_node_obmm_queue_demo.sh").read_text()
+    legacy_eight_runner = (ROOT / "scripts" / "run_ub_eight_node_obmm_queue_demo.sh").read_text()
     app_dir = ROOT / "apps" / "obmm_queue"
 
     assert 'OBMM_QUEUE_SRC="$ROOT_DIR/apps/obmm_queue/obmm_queue.c"' in build_script
@@ -132,6 +136,13 @@ def test_obmm_queue_uses_canonical_app_source():
     assert "linqu_ub_obmm_queue_demo" not in build_script
     assert "linqu_obmm_queue=1" in run_demo
     assert "run linqu_ub_obmm_queue" in dual_runner
+    assert "OBMM_QUEUE_MODE" in dual_runner
+    assert "run_queue_app" in four_runner
+    assert "[obmm-queue4]" in four_runner
+    assert "run_queue_app" in eight_runner
+    assert "[obmm-queue8]" in eight_runner
+    assert "run_ub_four_node_obmm_queue.sh" in legacy_four_runner
+    assert "run_ub_eight_node_obmm_queue.sh" in legacy_eight_runner
     assert (app_dir / "obmm_queue.c").exists()
     assert (app_dir / "obmm_pool_helpers.h").exists()
     assert (app_dir / "Makefile").exists()
