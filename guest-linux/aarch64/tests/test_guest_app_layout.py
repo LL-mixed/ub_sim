@@ -36,3 +36,21 @@ def test_obmm_dataplane_microbench_has_independent_app_build():
     )
     assert (app_dir / "obmm_dataplane_microbench.c").exists()
     assert (app_dir / "Makefile").exists()
+
+
+def test_npu_gsva_test_has_independent_app_build():
+    build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
+    app_dir = ROOT / "apps" / "npu_gsva_test"
+
+    assert 'NPU_GSVA_TEST_SRC="$ROOT_DIR/apps/npu_gsva_test/npu_gsva_test.c"' in build_script
+    assert (app_dir / "npu_gsva_test.c").exists()
+    assert (app_dir / "Makefile").exists()
+
+
+def test_ssd_gsva_test_has_independent_app_build():
+    build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
+    app_dir = ROOT / "apps" / "ssd_gsva_test"
+
+    assert 'SSD_GSVA_TEST_SRC="$ROOT_DIR/apps/ssd_gsva_test/ssd_gsva_test.c"' in build_script
+    assert (app_dir / "ssd_gsva_test.c").exists()
+    assert (app_dir / "Makefile").exists()
