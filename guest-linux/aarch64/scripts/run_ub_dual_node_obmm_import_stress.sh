@@ -44,6 +44,8 @@ STRESS_GVA_ID="${STRESS_GVA_ID:-0}"
 STRESS_GVA_USER_VA="${STRESS_GVA_USER_VA:-}"
 STRESS_GVA_HOME_VA="${STRESS_GVA_HOME_VA:-}"
 STRESS_GVA_PTE_OFFSET="${STRESS_GVA_PTE_OFFSET:-}"
+STRESS_GSVA_BASE="${STRESS_GSVA_BASE:-0x700000000000}"
+STRESS_GSVA_GENERATION="${STRESS_GSVA_GENERATION:-0x535456410101}"
 STRESS_DIRECTORY_MESI_ACCEPTANCE="${STRESS_DIRECTORY_MESI_ACCEPTANCE:-0}"
 STRESS_REQUIRE_COHERENCE_LOGS="${STRESS_REQUIRE_COHERENCE_LOGS:-$STRESS_DIRECTORY_MESI_ACCEPTANCE}"
 if [[ "$STRESS_DIRECTORY_MESI_ACCEPTANCE" == "1" ]]; then
@@ -81,6 +83,10 @@ if [[ -n "$STRESS_GVA_HOME_VA" ]]; then
 fi
 if [[ -n "$STRESS_GVA_PTE_OFFSET" ]]; then
   STRESS_APPEND="${STRESS_APPEND} obmm_stress_gva_pte_offset=${STRESS_GVA_PTE_OFFSET}"
+fi
+if [[ "$STRESS_GVA_MODE" == "gsva" ]]; then
+  STRESS_APPEND="${STRESS_APPEND} obmm_stress_gsva_base=${STRESS_GSVA_BASE}"
+  STRESS_APPEND="${STRESS_APPEND} obmm_stress_gsva_generation=${STRESS_GSVA_GENERATION}"
 fi
 if [[ "$STRESS_VERIFY" == "1" ]]; then
   STRESS_APPEND="${STRESS_APPEND} obmm_stress_verify=1"
@@ -242,6 +248,33 @@ validate_gva_logs() {
     return 0
   fi
 
+  if [[ "$STRESS_GVA_MODE" == "gsva" ]]; then
+    if ! grep -Eq 'GSVA_MAP: map_id=[0-9]+ .*source=2 profile=1' "$NODEA_QEMU_LOG" ||
+       ! grep -Eq 'GSVA_MAP: map_id=[0-9]+ .*source=2 profile=1' "$NODEB_QEMU_LOG" ||
+       ! grep -Eq 'GSVA_MAP: cpu_window registered at pa=.*size=[0-9a-f]+' "$NODEA_QEMU_LOG" ||
+       ! grep -Eq 'GSVA_MAP: cpu_window registered at pa=.*size=[0-9a-f]+' "$NODEB_QEMU_LOG"; then
+      echo "[stress] FAIL: GSVA mode completed without GSVA_MAP/cpu-window evidence" >&2
+      return 1
+    fi
+
+    if ! grep -q 'GSVA_TLB: lookup' "$NODEA_QEMU_LOG" ||
+       ! grep -q 'GSVA_TLB: lookup' "$NODEB_QEMU_LOG" ||
+       ! grep -q 'GSVA_COH:' "$NODEA_QEMU_LOG" ||
+       ! grep -q 'GSVA_COH:' "$NODEB_QEMU_LOG"; then
+      echo "[stress] FAIL: GSVA mode completed without TLB/coherence data-path evidence" >&2
+      return 1
+    fi
+
+    if ! grep -Eq 'SIM_DEC_STATS .*remote_reads=[1-9][0-9]* .*remote_writes=[1-9][0-9]*' "$NODEA_QEMU_LOG" ||
+       ! grep -Eq 'SIM_DEC_STATS .*remote_reads=[1-9][0-9]* .*remote_writes=[1-9][0-9]*' "$NODEB_QEMU_LOG" ||
+       ! grep -Eq 'GVA_STATS .*remote_reads=[1-9][0-9]* .*remote_writes=[1-9][0-9]*' "$NODEA_QEMU_LOG" ||
+       ! grep -Eq 'GVA_STATS .*remote_reads=[1-9][0-9]* .*remote_writes=[1-9][0-9]*' "$NODEB_QEMU_LOG"; then
+      echo "[stress] FAIL: GSVA mode completed without nonzero remote read/write stats" >&2
+      return 1
+    fi
+    return 0
+  fi
+
   if ! grep -q 'SIM_DEC: GVA_MAP success' "$NODEA_QEMU_LOG" ||
      ! grep -q 'SIM_DEC: GVA_MAP success' "$NODEB_QEMU_LOG" ||
      ! grep -q 'GVA_S3_MAP' "$NODEA_QEMU_LOG" ||
@@ -269,16 +302,6 @@ validate_gva_logs() {
      ! grep -Eq 'SIM_DEC_STATS .*gva_cpu_reads=[1-9][0-9]* .*gva_cpu_writes=[1-9][0-9]* .*cpu_reads=[1-9][0-9]* .*cpu_writes=[1-9][0-9]*' "$NODEB_QEMU_LOG"; then
     echo "[stress] FAIL: GVA mode completed without nonzero SIM_DEC_STATS read/write evidence" >&2
     return 1
-  fi
-
-  if [[ "$STRESS_GVA_MODE" == "gsva" ]]; then
-    if ! grep -Eq 'SIM_DEC: GVA_MAP success .*address_profile=2 .*pte_offset=0' "$NODEA_QEMU_LOG" ||
-       ! grep -Eq 'SIM_DEC: GVA_MAP success .*address_profile=2 .*pte_offset=0' "$NODEB_QEMU_LOG" ||
-       ! grep -Eq 'GVA_S3_MAP .*local_va=[0-9a-f]+ .*home_va=[0-9a-f]+ .*pte_offset=0 .*uba=[0-9a-f]+ .*address_profile=2' "$NODEA_QEMU_LOG" ||
-       ! grep -Eq 'GVA_S3_MAP .*local_va=[0-9a-f]+ .*home_va=[0-9a-f]+ .*pte_offset=0 .*uba=[0-9a-f]+ .*address_profile=2' "$NODEB_QEMU_LOG"; then
-      echo "[stress] FAIL: GSVA mode completed without identity GVA_MAP evidence" >&2
-      return 1
-    fi
   fi
 
   if [[ "$STRESS_GVA_CACHE_POLICY" == "directory-mesi" ||

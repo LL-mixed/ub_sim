@@ -37,6 +37,8 @@
 #define STRESS_DEFAULT_ITERATIONS  1000
 #define STRESS_DEFAULT_CHUNK_SIZE  8
 #define STRESS_DEFAULT_SEED        42
+#define STRESS_DEFAULT_GSVA_BASE   0x700000000000ULL
+#define STRESS_DEFAULT_GSVA_GENERATION 0x535456410101ULL
 
 enum stress_pattern {
     PATTERN_SEQ,
@@ -82,6 +84,8 @@ struct stress_config {
     uint64_t local_va;
     uint64_t home_va;
     uint64_t pte_offset;
+    uint64_t gsva_base;
+    uint64_t gsva_generation;
     bool gva_home_va_set;
     bool gva_local_va_set;
     bool gva_pte_offset_set;
@@ -250,7 +254,8 @@ static bool stress_run(struct stress_config *cfg,
         }
     }
 
-    if (ok && cfg->flush == FLUSH_NONE && !cfg->read_only) {
+    if (ok && cfg->flush == FLUSH_NONE && !cfg->read_only &&
+        cfg->gva_mode != STRESS_GVA_MODE_GSVA) {
         if (!stress_do_flush(shmdev_fd, 0, cfg->size)) {
             ok = false;
         } else {
@@ -407,9 +412,63 @@ static void stress_init_gva_defaults(struct stress_config *cfg)
     cfg->local_va = 0;
     cfg->home_va = 0;
     cfg->pte_offset = 0;
+    cfg->gsva_base = STRESS_DEFAULT_GSVA_BASE;
+    cfg->gsva_generation = STRESS_DEFAULT_GSVA_GENERATION;
     cfg->gva_local_va_set = false;
     cfg->gva_home_va_set = false;
     cfg->gva_pte_offset_set = false;
+}
+
+static bool stress_register_gsva_aperture(int obmm_fd,
+                                          const struct stress_config *cfg,
+                                          int local_idx, int node_count)
+{
+    struct obmm_cmd_gsva_aperture req = { 0 };
+    struct obmm_cmd_gsva_aperture query = { 0 };
+    uint64_t aperture_size = cfg->size * (uint64_t)node_count;
+
+    req.base = cfg->gsva_base;
+    req.size = aperture_size;
+    req.generation = cfg->gsva_generation;
+    req.flags = OBMM_GSVA_APERTURE_F_ACTIVE;
+    req.node_id = (uint32_t)local_idx;
+    req.node_count = (uint32_t)node_count;
+    if (ioctl(obmm_fd, OBMM_CMD_GSVA_APERTURE_REGISTER, &req) != 0) {
+        stress_log("GSVA aperture register failed base=%" PRIx64
+                   " size=%" PRIx64 " generation=%" PRIx64 " errno=%d",
+                   req.base, req.size, req.generation, errno);
+        return false;
+    }
+    if (ioctl(obmm_fd, OBMM_CMD_GSVA_APERTURE_QUERY, &query) != 0) {
+        stress_log("GSVA aperture query failed errno=%d", errno);
+        return false;
+    }
+    if (query.base != req.base || query.size != req.size ||
+        query.generation != req.generation ||
+        !(query.flags & OBMM_GSVA_APERTURE_F_ACTIVE)) {
+        stress_log("GSVA aperture query mismatch base=%" PRIx64
+                   " size=%" PRIx64 " generation=%" PRIx64 " flags=%" PRIx64,
+                   query.base, query.size, query.generation, query.flags);
+        return false;
+    }
+    stress_log("GSVA aperture registered base=%" PRIx64 " size=%" PRIx64
+               " generation=%" PRIx64 " node=%d/%d",
+               req.base, req.size, req.generation, local_idx, node_count);
+    return true;
+}
+
+static void stress_clear_gsva_aperture(int obmm_fd, uint64_t generation)
+{
+    struct obmm_cmd_gsva_aperture req = { 0 };
+
+    if (obmm_fd < 0) {
+        return;
+    }
+    req.generation = generation;
+    if (ioctl(obmm_fd, OBMM_CMD_GSVA_APERTURE_CLEAR, &req) != 0) {
+        stress_log("GSVA aperture clear failed generation=%" PRIx64
+                   " errno=%d", generation, errno);
+    }
 }
 
 static bool stress_finalize_gva_config(struct stress_config *cfg,
@@ -626,6 +685,16 @@ static bool stress_parse_args(int argc, char **argv, struct stress_config *cfg)
                 return false;
             }
             cfg->gva_pte_offset_set = true;
+        } else if (strcmp(argv[i], "--gsva-base") == 0 && i + 1 < argc) {
+            if (!parse_u64_arg(argv[++i], &cfg->gsva_base)) {
+                fprintf(stderr, "invalid --gsva-base %s\n", argv[i]);
+                return false;
+            }
+        } else if (strcmp(argv[i], "--gsva-generation") == 0 && i + 1 < argc) {
+            if (!parse_u64_arg(argv[++i], &cfg->gsva_generation)) {
+                fprintf(stderr, "invalid --gsva-generation %s\n", argv[i]);
+                return false;
+            }
         } else {
             fprintf(stderr, "unknown option %s\n", argv[i]);
             return false;
@@ -637,6 +706,15 @@ static bool stress_parse_args(int argc, char **argv, struct stress_config *cfg)
     }
     if (cfg->read_only && cfg->write_only) {
         fprintf(stderr, "cannot use both --read-only and --write-only\n");
+        return false;
+    }
+    if (cfg->gva_mode == STRESS_GVA_MODE_GSVA && cfg->flush != FLUSH_NONE) {
+        fprintf(stderr, "GSVA mode only supports --flush-mode none\n");
+        return false;
+    }
+    if (cfg->gva_mode == STRESS_GVA_MODE_GSVA &&
+        cfg->size > UINT64_MAX / OBMM_POOL_HELPERS_MAX_NODES) {
+        fprintf(stderr, "GSVA aperture size overflow\n");
         return false;
     }
     return true;
@@ -668,7 +746,9 @@ static void stress_usage(const char *prog)
            "  --gva-id <n>\n"
            "  --gva-user-va <addr>\n"
            "  --gva-home-va <addr>\n"
-           "  --gva-pte-offset <n>\n",
+           "  --gva-pte-offset <n>\n"
+           "  --gsva-base <addr>\n"
+           "  --gsva-generation <n>\n",
            prog, STRESS_DEFAULT_SIZE, STRESS_DEFAULT_ITERATIONS,
            STRESS_DEFAULT_CHUNK_SIZE, STRESS_DEFAULT_SEED);
 }
@@ -709,6 +789,7 @@ int main(int argc, char **argv)
     uint64_t local_pas[OBMM_POOL_HELPERS_MAX_NODES] = { 0 };
     uint64_t export_mem_id = 0;
     uint64_t import_mem_id = 0;
+    bool gsva_aperture_registered = false;
     void *exported_va = NULL; /* unused; kept for cleanup symmetry */
     void *imported_va = NULL;
     int ret = 1;
@@ -761,8 +842,25 @@ int main(int argc, char **argv)
     }
     stress_log("local_idx=%d node_count=%d", local_idx, node_count);
 
+    if (cfg.gva_mode == STRESS_GVA_MODE_GSVA) {
+        if (!stress_register_gsva_aperture(obmm_fd, &cfg, local_idx,
+                                           node_count)) {
+            goto cleanup;
+        }
+        gsva_aperture_registered = true;
+    }
+
     local_meta.export_cna = (uint32_t)local_cna;
-    if (obmm_do_export(obmm_fd, &local_meta, cfg.size) != 0) {
+    if (cfg.gva_mode == STRESS_GVA_MODE_GSVA) {
+        uint64_t local_gsva = cfg.gsva_base + (uint64_t)local_idx * cfg.size;
+
+        if (obmm_do_export_fixed_uba(obmm_fd, &local_meta, cfg.size,
+                                     local_gsva) != 0) {
+            stress_log("fixed GSVA export failed: size=%" PRIu64
+                       " uba=%" PRIx64, cfg.size, local_gsva);
+            goto cleanup;
+        }
+    } else if (obmm_do_export(obmm_fd, &local_meta, cfg.size) != 0) {
         stress_log("export failed: size=%" PRIu64, cfg.size);
         goto cleanup;
     }
@@ -791,6 +889,9 @@ int main(int argc, char **argv)
     if (!stress_finalize_gva_config(&cfg, remote_metas[local_idx ^ 1].remote_uba)) {
         stress_log("invalid gva config");
         goto cleanup;
+    }
+    if (cfg.gva_mode == STRESS_GVA_MODE_GSVA && cfg.gva_id == 0) {
+        cfg.gva_id = (uint64_t)(local_idx ^ 1) + 1;
     }
     stress_log("using gva config mode=%d map_source=%u address_profile=%u cache_policy=%u vmid=%u asid=%u tid=%u p_tag=%u access_flags=%u token_value=%u "
                "local_va=%" PRIx64 " home_va=%" PRIx64 " pte_offset=%" PRIx64,
@@ -870,6 +971,8 @@ cleanup:
         obmm_do_unimport(obmm_fd, import_mem_id);
     if (export_mem_id && obmm_fd >= 0)
         obmm_do_unexport(obmm_fd, export_mem_id);
+    if (gsva_aperture_registered)
+        stress_clear_gsva_aperture(obmm_fd, cfg.gsva_generation);
     if (shmdev_fd >= 0)
         close(shmdev_fd);
     if (obmm_fd >= 0)
