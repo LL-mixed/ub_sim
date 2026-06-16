@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * OBMM pool helper functions -- extracted from ub_obmm_pool_demo.c.
+ * OBMM pool helper functions -- extracted from the UB OBMM pool app.
  *
  * This header provides OBMM export/import, memory mapping, network setup,
  * and UDP transport utilities.  All functions are static to allow
- * single-file compilation (matching the existing demo pattern).
+ * single-file compilation for initramfs guest apps.
  *
  * Includes are the caller's responsibility except for the ones that
  * this file itself needs.

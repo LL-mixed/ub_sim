@@ -2,7 +2,7 @@ CC = aarch64-linux-gnu-gcc
 CFLAGS = -static -O2 -Wall -Wextra \
          -I../../kernel_ub/include/uapi \
          -I../../common \
-         -I../obmm_queue_demo
+         -I../obmm_queue
 
 TARGET = obmm_import_stress
 

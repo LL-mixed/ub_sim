@@ -108,3 +108,20 @@ def test_gva_direct_uses_canonical_app_source():
     assert (app_dir / "gva_direct.c").exists()
     assert (app_dir / "Makefile").exists()
     assert not (ROOT / "apps" / "gva_direct_demo").exists()
+
+
+def test_obmm_queue_uses_canonical_app_source():
+    build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
+    run_demo = (ROOT / "initramfs" / "run_demo").read_text()
+    dual_runner = (ROOT / "scripts" / "run_ub_dual_node_obmm_queue.sh").read_text()
+    app_dir = ROOT / "apps" / "obmm_queue"
+
+    assert 'OBMM_QUEUE_SRC="$ROOT_DIR/apps/obmm_queue/obmm_queue.c"' in build_script
+    assert 'OBMM_QUEUE_BIN="$OUT_DIR/linqu_ub_obmm_queue"' in build_script
+    assert "linqu_ub_obmm_queue_demo" not in build_script
+    assert "linqu_obmm_queue=1" in run_demo
+    assert "run linqu_ub_obmm_queue" in dual_runner
+    assert (app_dir / "obmm_queue.c").exists()
+    assert (app_dir / "obmm_pool_helpers.h").exists()
+    assert (app_dir / "Makefile").exists()
+    assert not (ROOT / "apps" / "obmm_queue_demo").exists()

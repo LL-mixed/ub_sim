@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * OBMM lockless queue demo -- four-node full mesh.
+ * OBMM lockless queue app -- multi-node full mesh.
  *
  * Builds on top of the OBMM shared memory pool.  Each node exports one
  * region, imports peer regions, and communicates through SPSC ingress
@@ -32,7 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define TAG "[obmm_queue_demo]"
+#define TAG "[obmm_queue]"
 #define MAX_NODES  OBMM_POOL_HELPERS_MAX_NODES
 #define RUN_TIMEOUT_S 120
 #define ARENA_PAYLOAD_SIZE 256

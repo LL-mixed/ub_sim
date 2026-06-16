@@ -6,8 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
-REPORT_FILE="${REPORT_FILE:-$OUT_DIR/four_node_obmm_queue_demo.latest.txt}"
-TRACE_FILE="${TRACE_FILE:-$OUT_DIR/four_node_obmm_queue_demo.trace.latest.txt}"
+REPORT_FILE="${REPORT_FILE:-$OUT_DIR/four_node_obmm_queue.latest.txt}"
+TRACE_FILE="${TRACE_FILE:-$OUT_DIR/four_node_obmm_queue.trace.latest.txt}"
 RUN_ID_BASE="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_obmmqueue4_${RANDOM}}"
 RUN_DIR="$LOG_DIR/${RUN_ID_BASE}_headless4"
 BOOT_WAIT_SECS="${BOOT_WAIT_SECS:-180}"
@@ -154,7 +154,7 @@ cleanup_headless_env() {
   fi
 }
 
-send_obmm_queue_demo_cmd() {
+send_obmm_queue_cmd() {
   local local_ip="$1"
   local serial_port="$2"
   local start_marker="$3"
@@ -169,7 +169,7 @@ send_obmm_queue_demo_cmd() {
   payload+=$'export OBMM_BOOTSTRAP_SESSION='"${RUN_ID_BASE}"$'\n'
   payload+=$'export OBMM_IMPORT_CACHE_MODE='"${OBMM_IMPORT_CACHE_MODE:-auto}"$'\n'
   payload+=$'echo '"${start_marker}"$'\n'
-  payload+=$'/bin/linqu_ub_obmm_queue_demo\n'
+  payload+=$'/bin/linqu_ub_obmm_queue\n'
 
   send_serial_block "$serial_port" "$payload"
 }
@@ -211,20 +211,20 @@ validate_node_log() {
 
   owner_idx="$(node_index "$node_id")"
 
-  assert_log_has "$log_file" "\\[obmm_queue_demo\\] export -> ok" \
+  assert_log_has "$log_file" "\\[obmm_queue\\] export -> ok" \
     "$node_id export" || return 1
-  assert_log_has "$log_file" "\\[obmm_queue_demo\\] export layout -> ok" \
+  assert_log_has "$log_file" "\\[obmm_queue\\] export layout -> ok" \
     "$node_id layout" || return 1
-  assert_log_has "$log_file" "\\[obmm_queue_demo\\] bootstrap ${OBMM_BOOTSTRAP} -> ok count=4" \
+  assert_log_has "$log_file" "\\[obmm_queue\\] bootstrap ${OBMM_BOOTSTRAP} -> ok count=4" \
     "$node_id bootstrap exchange" || return 1
-  assert_log_has "$log_file" "\\[obmm_queue_demo\\] pool ready -> ok nodes=4" \
+  assert_log_has "$log_file" "\\[obmm_queue\\] pool ready -> ok nodes=4" \
     "$node_id pool ready" || return 1
-  assert_log_has "$log_file" "\\[obmm_queue_demo\\] rounds -> ok count=4" \
+  assert_log_has "$log_file" "\\[obmm_queue\\] rounds -> ok count=4" \
     "$node_id rounds done" || return 1
-  assert_log_has "$log_file" "\\[obmm_queue_demo\\] queue stress -> ok passes=2 depth=${OBMM_QUEUE_DEPTH}" \
+  assert_log_has "$log_file" "\\[obmm_queue\\] queue stress -> ok passes=2 depth=${OBMM_QUEUE_DEPTH}" \
     "$node_id queue stress" || return 1
-  assert_log_has "$log_file" "\\[obmm_queue_demo\\] pass" "$node_id pass" || return 1
-  assert_log_absent "$log_file" "\\[obmm_queue_demo\\] .*fail" "$node_id fail" || return 1
+  assert_log_has "$log_file" "\\[obmm_queue\\] pass" "$node_id pass" || return 1
+  assert_log_absent "$log_file" "\\[obmm_queue\\] .*fail" "$node_id fail" || return 1
   assert_log_absent "$log_file" "WARNING: CPU:" "$node_id kernel warning" || return 1
   assert_log_absent "$log_file" "Call trace:" "$node_id call trace" || return 1
   assert_log_absent "$log_file" "Kernel panic - not syncing" "$node_id kernel panic" || return 1
@@ -246,14 +246,14 @@ run_queue_demo() {
     serial_port="$(node_serial_port "$node_id" "$PORT_BASE")"
     start_marker="OBMM_QUEUE_${node_id}_START"
     trace "start queue demo on $node_id serial=$serial_port"
-    send_obmm_queue_demo_cmd "$(node_ip "$node_id")" "$serial_port" "$start_marker"
+    send_obmm_queue_cmd "$(node_ip "$node_id")" "$serial_port" "$start_marker"
   done
 
   for node_id in "${NODE_IDS[@]}"; do
     guest_log="$RUN_DIR/${node_id}_guest.log"
     rc=0
     wait_for_log_pass_or_fail_since "$guest_log" "${START_LINES[$node_id]}" \
-      "\\[obmm_queue_demo\\] pass" "\\[obmm_queue_demo\\] .*fail" "$DEMO_WAIT_SECS" || rc=$?
+      "\\[obmm_queue\\] pass" "\\[obmm_queue\\] .*fail" "$DEMO_WAIT_SECS" || rc=$?
     if [[ "$rc" -ne 0 ]]; then
       trace "FAIL: queue demo did not pass on $node_id rc=$rc"
       return 1
