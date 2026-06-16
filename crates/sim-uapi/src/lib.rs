@@ -4131,17 +4131,32 @@ fn qwen3_range_forward_hidden_tensor_metadata(
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn qwen3_register_range_forward_objects(
     contract: Qwen3GuestRangeComputeContract,
     _guest_input: &[u8],
     summary: &Qwen3DenseReferenceRangeForwardSummary,
+) -> Result<Option<Qwen3RangeForwardObjectRefs>, String> {
+    if qwen3_object_service_snapshot_path().is_none()
+        && qwen3_object_registry_explicit_dir().is_none()
+    {
+        return Ok(None);
+    }
+    let model_key = qwen3_dense_runtime_model_key();
+    let decode_step = qwen3_range_forward_registry_decode_step(&model_key, contract);
+    qwen3_register_range_forward_objects_for_step(contract, summary, decode_step)
+}
+
+fn qwen3_register_range_forward_objects_for_step(
+    contract: Qwen3GuestRangeComputeContract,
+    summary: &Qwen3DenseReferenceRangeForwardSummary,
+    decode_step: u64,
 ) -> Result<Option<Qwen3RangeForwardObjectRefs>, String> {
     let object_service_snapshot = qwen3_object_service_snapshot_path();
     if object_service_snapshot.is_none() && qwen3_object_registry_explicit_dir().is_none() {
         return Ok(None);
     }
     let model_key = qwen3_dense_runtime_model_key();
-    let decode_step = qwen3_range_forward_registry_decode_step(&model_key, contract);
     let position = qwen3_guest_prompt_base_token_count().saturating_add(decode_step);
     let terminal_range = contract.layer_end >= contract.total_layers;
     let target_node = if terminal_range {
@@ -5476,9 +5491,14 @@ fn run_qwen3_dense_profile_runtime(
             )
         );
     }
+    let model_key = qwen3_dense_runtime_model_key();
+    let decode_step = qwen3_range_forward_registry_decode_step(&model_key, contract);
     let started = Instant::now();
-    let range_forward_object_refs =
-        qwen3_register_range_forward_objects(contract, guest_input, &range_forward_summary)?;
+    let range_forward_object_refs = qwen3_register_range_forward_objects_for_step(
+        contract,
+        &range_forward_summary,
+        decode_step,
+    )?;
     register_objects_ms = qwen3_elapsed_ms(started);
     let terminal_owner = contract.node + 1 == contract.pipeline_nodes;
     let started = Instant::now();
@@ -5492,10 +5512,6 @@ fn run_qwen3_dense_profile_runtime(
         None
     };
     terminal_summary_ms = qwen3_elapsed_ms(started);
-    let decode_step = range_forward_object_refs
-        .as_ref()
-        .map(|refs| refs.decode_step)
-        .unwrap_or_else(|| qwen3_dense_runtime_decode_step_from_guest_input(guest_input));
     let started = Instant::now();
     let logits_descriptors = if terminal_owner {
         qwen3_dense_profile_logits_descriptors(
@@ -6435,7 +6451,7 @@ fn qwen3_dense_profile_logits_descriptors(
             0,
         );
         let text_checksum = qwen3_dense_reference_sample_text_checksum(
-            tile_id,
+            step_index,
             sampled_token,
             text_byte_offset,
             None,
@@ -6469,7 +6485,7 @@ fn qwen3_dense_profile_logits_descriptors(
             real_path_digest: 0,
             text_checksum,
             text_byte_offset,
-            step_index: tile_id,
+            step_index,
         });
         text_byte_offset += piece.byte_len;
     }
@@ -15322,6 +15338,7 @@ fn run_qwen3_dense_reference_prefill_runtime(
                 guest_input,
                 None,
                 Some(&range_forward_summary),
+                qwen3_dense_runtime_decode_step_from_guest_input(guest_input),
                 runtime_weight_objects.as_deref_mut(),
                 terminal_range_owner,
             )?;
@@ -17298,6 +17315,7 @@ fn run_qwen3_dense_reference_prefill_runtime(
         guest_input,
         real_logits_candidate_summary.as_ref(),
         range_forward_summary.as_ref(),
+        0,
         runtime_weight_objects,
         runtime_full_vocab_enabled,
     )?;
@@ -18025,6 +18043,7 @@ fn qwen3_dense_reference_logits_descriptors(
     guest_input: &[u8],
     real_logits_candidate_summary: Option<&Qwen3DenseReferenceLogitsReferenceSummary>,
     range_forward_summary: Option<&Qwen3DenseReferenceRangeForwardSummary>,
+    step_index_base: u64,
     mut runtime_weight_objects: Option<&mut LingquObjectServiceStub>,
     runtime_full_vocab_enabled: bool,
 ) -> Result<Vec<Qwen3DenseReferenceLogitsDescriptor>, String> {
@@ -18086,6 +18105,7 @@ fn qwen3_dense_reference_logits_descriptors(
         None
     };
     for (step_index, (shard, _output, segment, checksum)) in round1_outputs.iter().enumerate() {
+        let descriptor_step_index = step_index_base + step_index as u64;
         let tile_id = shard.kv_block_start / 2;
         let kvcache_read_digest = kvcache_read_digest_by_tile
             .get(&tile_id)
@@ -18182,7 +18202,7 @@ fn qwen3_dense_reference_logits_descriptors(
             .or_else(|| {
                 qwen3_dense_reference_real_logits_selection(
                     real_logits_candidate_summary,
-                    step_index as u64,
+                    descriptor_step_index,
                 )
                 .map(|(sampled, runner, margin, top_checksum, runner_checksum)| {
                     (
@@ -18250,7 +18270,7 @@ fn qwen3_dense_reference_logits_descriptors(
             let candidate_piece = qwen3_dense_reference_token_piece(token, tokenizer_path)?;
 
             candidate_text_checksums[candidate_index] = qwen3_dense_reference_sample_text_checksum(
-                step_index as u64,
+                descriptor_step_index,
                 token,
                 text_byte_offset,
                 tokenizer_path,
@@ -18261,7 +18281,7 @@ fn qwen3_dense_reference_logits_descriptors(
         }
         let piece = qwen3_dense_reference_token_piece(sampled_token, tokenizer_path)?;
         let text_checksum = qwen3_dense_reference_sample_text_checksum(
-            step_index as u64,
+            descriptor_step_index,
             sampled_token,
             text_byte_offset,
             tokenizer_path,
@@ -18294,7 +18314,7 @@ fn qwen3_dense_reference_logits_descriptors(
             real_path_digest,
             text_checksum,
             text_byte_offset,
-            step_index: step_index as u64,
+            step_index: descriptor_step_index,
         });
         text_byte_offset += piece.byte_len;
     }
@@ -23693,7 +23713,7 @@ fn runtime_task_for_descriptor(desc: &UapiDescriptor) -> Option<TaskKey> {
 #[cfg(test)]
 mod tests {
     use super::{
-        bytes_to_f32s, f32s_to_bytes, kvcache_input_b_payload,
+        bytes_to_f32s, f32s_to_bytes, find_u64_marker, kvcache_input_b_payload,
         qwen3_dense_profile_previous_kv_cache_from_guest_payload,
         qwen3_dense_profile_range_kv_payload_from_cache,
         qwen3_dense_reference_apply_engram_context_to_terminal_sequence,
@@ -23714,7 +23734,7 @@ mod tests {
         qwen3_dense_reference_final_hidden_from_round1_outputs, qwen3_dense_reference_half_at,
         qwen3_dense_reference_hidden_layer_owner_node,
         qwen3_dense_reference_kvcache_tile_payload_from_projection,
-        qwen3_dense_reference_logits_checksum,
+        qwen3_dense_reference_logits_checksum, qwen3_dense_reference_logits_descriptors,
         qwen3_dense_reference_mlp_activation_tile_from_attention_context,
         qwen3_dense_reference_object_metadata, qwen3_dense_reference_object_payload_words,
         qwen3_dense_reference_object_placement, qwen3_dense_reference_object_service_profile,
@@ -23803,7 +23823,7 @@ mod tests {
     use sim_config::ScenarioConfig;
     use sim_core::{
         BlockHash, CompletionStatus, HierarchyCoord, IoOpcode, IoSubmitReq, LogicalSystemId,
-        SimError, TaskKey,
+        SegmentHandle, SimError, TaskKey,
     };
     use sim_models::engram_context::{
         run_engram_context_reference, run_paper_engram_context_reference, EngramContextOp,
@@ -26736,6 +26756,63 @@ mod tests {
                     read_u64_le_at(&output, entry_base + 120),
                     DECODE_HIDDEN_BYTES_14B
                 );
+            },
+        );
+    }
+
+    #[test]
+    fn qwen3_dense_profile_runtime_logits_steps_advance_without_object_registry() {
+        run_simpler_native_test_isolated(
+            "qwen3_dense_profile_runtime_logits_steps_advance_without_object_registry",
+            || {
+                const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
+                const MARKER_LOGITS_TABLE: u64 = 0x713377346c6f6730;
+
+                std::env::set_var("SIM_UAPI_W4_CHIPBACKEND_PROFILE", "qwen3_dense");
+                std::env::set_var(
+                    "SIM_QWEN3_DENSE_MODEL_KEY",
+                    "qwen3-runtime-step-counter-test",
+                );
+                std::env::set_var("SIM_QWEN3_DENSE_TP_NODES", "8");
+                std::env::set_var("SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS", "40");
+                std::env::set_var("SIM_QWEN3_DENSE_HIDDEN_SIZE", "5120");
+                std::env::set_var("SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES", "1310720");
+                std::env::set_var("SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES", "10240");
+                std::env::set_var("SIM_QWEN3_DENSE_DECODE_TOKENS", "1");
+                std::env::set_var("SIM_QWEN3_DENSE_NUM_KEY_VALUE_HEADS", "8");
+                std::env::set_var("SIM_QWEN3_DENSE_HEAD_DIM", "128");
+                std::env::remove_var("SIM_QWEN3_DENSE_WEIGHTS_PATH");
+                std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT);
+                std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR);
+
+                let topology = test_topology();
+                let task = TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord {
+                        levels: [RANGE_TASK_MAGIC, 7, 35, 40, 0, 8, 40, 10_240],
+                    },
+                    scope_depth: 8,
+                    task_id: 14_002,
+                };
+                let read_logits_steps = |output: &[u8]| -> (u64, u64) {
+                    let table_header =
+                        find_u64_marker(output, MARKER_LOGITS_TABLE).expect("logits table marker");
+                    let entry_words = read_u64_le_at(output, table_header + 16);
+                    let entry_bytes = usize::try_from(entry_words * 8)
+                        .expect("logits entry bytes should fit usize");
+                    (
+                        read_u64_le_at(output, table_header + 64 + 72),
+                        read_u64_le_at(output, table_header + 64 + entry_bytes + 72),
+                    )
+                };
+
+                let step0 = crate::run_w4_chipbackend(&topology, &task, &[0; 1024])
+                    .expect("first qwen3 dense runtime dispatch");
+                assert_eq!(read_logits_steps(&step0), (0, 0));
+
+                let step1 = crate::run_w4_chipbackend(&topology, &task, &[0; 1024])
+                    .expect("second qwen3 dense runtime dispatch");
+                assert_eq!(read_logits_steps(&step1), (1, 1));
             },
         );
     }
@@ -30958,6 +31035,121 @@ mod tests {
         out[40..48].copy_from_slice(&object_ref.payload_offset.to_le_bytes());
         out[48..56].copy_from_slice(&object_ref.payload_bytes.to_le_bytes());
         out[56..64].copy_from_slice(&object_ref.payload_checksum.to_le_bytes());
+    }
+
+    #[test]
+    fn qwen3_range_only_logits_tables_preserve_decode_step() {
+        const MARKER_LOGITS_TABLE: u64 = 0x713377346c6f6730;
+        const MARKER_TOKEN_TEXT_TABLE: u64 = 0x7133773474787430;
+        const LOGITS_ENTRY_BYTES: usize = 45 * std::mem::size_of::<u64>();
+
+        let decode_step = 3u64;
+        let hidden_size = QWEN3_DENSE_REFERENCE_PROFILE.hidden_size as usize;
+        let mut hidden = Vec::with_capacity(hidden_size * std::mem::size_of::<f32>());
+        for elem in 0..hidden_size {
+            hidden.extend_from_slice(&(1.0f32 + (elem as f32 * 0.0001)).to_le_bytes());
+        }
+        let shard = Qwen3DenseReferenceShard {
+            shard_id: 0,
+            owner_node: 7,
+            target_node: 7,
+            head_start: 0,
+            head_end: 0,
+            kv_block_start: 0,
+            kv_block_end: 1,
+        };
+        let round1_outputs = vec![(shard, hidden, SegmentHandle(900_000), 0x1234_5678_9abc_def0)];
+        let logits_descriptors = qwen3_dense_reference_logits_descriptors(
+            &round1_outputs,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            QWEN3_DENSE_REFERENCE_PROFILE.vocab_size,
+            QWEN3_DENSE_REFERENCE_PROFILE.vocab_size,
+            None,
+            &[],
+            None,
+            None,
+            decode_step,
+            None,
+            false,
+        )
+        .expect("range-only logits descriptors");
+
+        assert_eq!(logits_descriptors.len(), 1);
+        assert_eq!(logits_descriptors[0].step_index, decode_step);
+        assert_eq!(
+            logits_descriptors[0].text_checksum,
+            qwen3_dense_reference_sample_text_checksum(
+                decode_step,
+                logits_descriptors[0].sampled_token,
+                0,
+                None,
+            )
+            .expect("decode-step text checksum")
+        );
+
+        let output_len = qwen3_dense_reference_service_flow_output_len(
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &logits_descriptors,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            None,
+        )
+        .expect("range-only service-flow output len");
+        let mut output = vec![0u8; output_len];
+        qwen3_dense_reference_write_service_flow_markers(
+            &mut output,
+            0,
+            0,
+            0,
+            0,
+            0,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &logits_descriptors,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            None,
+        )
+        .expect("write range-only service-flow markers");
+
+        let logits_header =
+            find_u64_marker(&output, MARKER_LOGITS_TABLE).expect("logits table marker");
+        assert_eq!(read_u64_le_at(&output, logits_header + 8), 1);
+        assert_eq!(read_u64_le_at(&output, logits_header + 16), 45);
+        assert_eq!(
+            read_u64_le_at(&output, logits_header + 24),
+            LOGITS_ENTRY_BYTES as u64
+        );
+        assert_eq!(
+            read_u64_le_at(&output, logits_header + 64 + 72),
+            decode_step
+        );
+
+        let token_text_header =
+            find_u64_marker(&output, MARKER_TOKEN_TEXT_TABLE).expect("token text table marker");
+        assert_eq!(read_u64_le_at(&output, token_text_header + 8), 1);
+        assert_eq!(read_u64_le_at(&output, token_text_header + 64), decode_step);
     }
 
     #[test]
