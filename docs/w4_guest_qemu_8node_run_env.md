@@ -68,7 +68,7 @@ Qwen3 14B 使用同一个入口，把权重目录换成 `SIM_QWEN3_DENSE_WEIGHTS
 | guest 运行时导出 | `LINQU_UB_NODE_COUNT` | `8` | 节点总数 | `run_ub_eight_node_w4_guest.sh` |
 | guest 运行时导出 | `LINQU_W4_DB_CLUSTER` | `1` | W4 DB cluster 启用 | `run_ub_eight_node_w4_guest.sh` |
 | guest 运行时导出 | `LINQU_W4_REQUIRE_UAPI_RESOURCE` | `1` | 强制 resource-backed 运行路径 | `run_ub_eight_node_w4_guest.sh` |
-| guest 运行时导出 | `SIM_W4_DB_LAZY_REMOTE_ACTIVATION` | `1` | 远端对象 lazy 激活 | `run_ub_eight_node_w4_guest.sh` |
+| guest 运行时导出 | `SIM_W4_DB_LAZY_REMOTE_ACTIVATION` | `0` | 默认 eager 激活远端对象，满足 explicit OBMM cluster runtime bootstrap gate；调用方可显式覆盖 | `run_ub_eight_node_w4_guest.sh` |
 
 ## 推荐最小配置（功能跑通）
 
