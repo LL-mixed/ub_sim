@@ -1877,7 +1877,7 @@ static bool qwen3_logits_table_candidate_matches_step(volatile uint8_t *ep_mmio,
     entry_bytes = entry_words * 8ULL;
     base = header + 64ULL;
     for (i = 0; i < count; ++i) {
-        if (read_segment_u64(ep_mmio, base + i * entry_bytes) != expected_step) {
+        if (read_segment_u64(ep_mmio, base + i * entry_bytes + 72ULL) != expected_step) {
             return false;
         }
     }

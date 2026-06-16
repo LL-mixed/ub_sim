@@ -516,6 +516,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_MAGIC", guest_source)
         self.assertIn("qwen3_find_logits_table_by_scan_for_step", guest_source)
         self.assertIn("qwen3_logits_table_candidate_matches_step", guest_source)
+        self.assertIn("base + i * entry_bytes + 72ULL", guest_source)
         self.assertIn("w4_db_obmm_service_v0_ensure_cluster_runtime", guest_source)
         self.assertIn("obmm_cluster_runtime_bootstrap", db_service_source)
         self.assertIn("w4_db_cluster_runtime_require", db_service_source)
