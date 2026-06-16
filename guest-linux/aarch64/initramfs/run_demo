@@ -128,6 +128,12 @@ run_obmm_import_stress() {
       obmm_stress_gva_pte_offset=*)
         args="$args --gva-pte-offset ${token#*=}"
         ;;
+      obmm_stress_gsva_base=*)
+        args="$args --gsva-base ${token#*=}"
+        ;;
+      obmm_stress_gsva_generation=*)
+        args="$args --gsva-generation ${token#*=}"
+        ;;
       obmm_stress_verify=1)
         args="$args --verify"
         ;;
@@ -142,6 +148,44 @@ run_obmm_import_stress() {
 
   # Values come from kernel cmdline key=value tokens, so word splitting is intentional.
   run_binary "linqu_ub_obmm_import_stress" /bin/linqu_ub_obmm_import_stress $args
+}
+
+run_obmm_dataplane_microbench() {
+  local args=""
+  local token=""
+
+  read_cmdline
+  for token in $cmdline; do
+    case "$token" in
+      obmm_dp_mode=*)
+        args="$args --mode ${token#*=}"
+        ;;
+      obmm_dp_size=*)
+        args="$args --size ${token#*=}"
+        ;;
+      obmm_dp_iters=*)
+        args="$args --iterations ${token#*=}"
+        ;;
+      obmm_dp_chunk_size=*)
+        args="$args --chunk-size ${token#*=}"
+        ;;
+      obmm_dp_generic_pte_offset=*)
+        args="$args --generic-pte-offset ${token#*=}"
+        ;;
+      obmm_dp_gsva_base=*)
+        args="$args --gsva-base ${token#*=}"
+        ;;
+      obmm_dp_gsva_generation=*)
+        args="$args --gsva-generation ${token#*=}"
+        ;;
+      obmm_dp_verify=1)
+        args="$args --verify"
+        ;;
+    esac
+  done
+
+  # Values come from kernel cmdline key=value tokens, so word splitting is intentional.
+  run_binary "linqu_ub_obmm_dataplane_microbench" /bin/linqu_ub_obmm_dataplane_microbench $args
 }
 
 run_obmm_coh_test() {
@@ -477,6 +521,9 @@ run_single_action() {
       ;;
     obmm_import_stress)
       run_obmm_import_stress
+      ;;
+    obmm_dataplane_microbench)
+      run_obmm_dataplane_microbench
       ;;
     obmm_coh_test)
       run_obmm_coh_test
