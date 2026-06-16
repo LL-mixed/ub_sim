@@ -23,8 +23,8 @@ TCP_EACH_SERVER_SRC="$ROOT_DIR/apps/ub_tcp_each_server/ub_tcp_each_server.c"
 TCP_EACH_SERVER_BIN="$OUT_DIR/linqu_ub_tcp_each_server"
 UDMA_SRC="$ROOT_DIR/apps/ub_udma/ub_udma.c"
 UDMA_BIN="$OUT_DIR/linqu_ub_udma"
-OBMM_SRC="$ROOT_DIR/apps/ub_obmm_pool_demo/ub_obmm_pool_demo.c"
-OBMM_BIN="$OUT_DIR/linqu_ub_obmm_demo"
+OBMM_POOL_SRC="$ROOT_DIR/apps/ub_obmm_pool/ub_obmm_pool.c"
+OBMM_POOL_BIN="$OUT_DIR/linqu_ub_obmm_pool"
 OBMM_QUEUE_SRC="$ROOT_DIR/apps/obmm_queue/obmm_queue.c"
 OBMM_QUEUE_BIN="$OUT_DIR/linqu_ub_obmm_queue"
 OBMM_IMPORT_STRESS_SRC="$ROOT_DIR/apps/obmm_import_stress/obmm_import_stress.c"
@@ -140,7 +140,7 @@ current_initramfs_signature() {
   write_signature_line "rpc_src" "$RPC_SRC"
   write_signature_line "tcp_each_server_src" "$TCP_EACH_SERVER_SRC"
   write_signature_line "udma_src" "$UDMA_SRC"
-  write_signature_line "obmm_src" "$OBMM_SRC"
+  write_signature_line "obmm_pool_src" "$OBMM_POOL_SRC"
   write_signature_line "obmm_queue_src" "$OBMM_QUEUE_SRC"
   write_signature_line "obmm_import_stress_src" "$OBMM_IMPORT_STRESS_SRC"
   write_signature_line "obmm_dataplane_microbench_src" "$OBMM_DATAPLANE_MICROBENCH_SRC"
@@ -375,7 +375,7 @@ fi
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$RPC_SRC" -o "$RPC_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$TCP_EACH_SERVER_SRC" -o "$TCP_EACH_SERVER_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR" -I"$ROOT_DIR/.." "$UDMA_SRC" -o "$UDMA_BIN"
-"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR" -I"$ROOT_DIR/.." "$OBMM_SRC" -o "$OBMM_BIN"
+"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR" -I"$ROOT_DIR/.." "$OBMM_POOL_SRC" -o "$OBMM_POOL_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/libs/obmm_queue" -I"$ROOT_DIR/apps/obmm_queue" "$OBMM_QUEUE_SRC" -o "$OBMM_QUEUE_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/kernel_ub/include/uapi" -I"$ROOT_DIR/common" -I"$ROOT_DIR/apps/obmm_queue" "$OBMM_IMPORT_STRESS_SRC" -o "$OBMM_IMPORT_STRESS_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/kernel_ub/include/uapi" -I"$ROOT_DIR/common" "$OBMM_DATAPLANE_MICROBENCH_SRC" -o "$OBMM_DATAPLANE_MICROBENCH_BIN"
@@ -409,7 +409,7 @@ cp "$CHAT_BIN" "$INITRAMFS_DIR/bin/linqu_ub_chat"
 cp "$RPC_BIN" "$INITRAMFS_DIR/bin/linqu_ub_rpc"
 cp "$TCP_EACH_SERVER_BIN" "$INITRAMFS_DIR/bin/linqu_ub_tcp_each_server"
 cp "$UDMA_BIN" "$INITRAMFS_DIR/bin/linqu_ub_udma"
-cp "$OBMM_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_demo"
+cp "$OBMM_POOL_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_pool"
 cp "$OBMM_QUEUE_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_queue"
 cp "$OBMM_IMPORT_STRESS_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_import_stress"
 cp "$OBMM_DATAPLANE_MICROBENCH_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_dataplane_microbench"
@@ -433,7 +433,7 @@ chmod +x \
   "$INITRAMFS_DIR/bin/linqu_ub_rpc" \
   "$INITRAMFS_DIR/bin/linqu_ub_tcp_each_server" \
   "$INITRAMFS_DIR/bin/linqu_ub_udma" \
-  "$INITRAMFS_DIR/bin/linqu_ub_obmm_demo" \
+  "$INITRAMFS_DIR/bin/linqu_ub_obmm_pool" \
   "$INITRAMFS_DIR/bin/linqu_ub_obmm_queue" \
   "$INITRAMFS_DIR/bin/linqu_ub_obmm_dataplane_microbench" \
   "$INITRAMFS_DIR/bin/linqu_gva_direct" \

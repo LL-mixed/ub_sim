@@ -439,6 +439,39 @@ run_obmm_queue() {
   run_binary "linqu_ub_obmm_queue" /bin/linqu_ub_obmm_queue
 }
 
+run_obmm_pool() {
+  local token=""
+
+  read_cmdline
+  for token in $cmdline; do
+    case "$token" in
+      obmm_pool_local_ip=*)
+        export LINQU_UB_LOCAL_IP="${token#*=}"
+        ;;
+      obmm_pool_all_ips=*)
+        export LINQU_UB_ALL_IPS="${token#*=}"
+        ;;
+      obmm_pool_node_count=*)
+        export LINQU_UB_NODE_COUNT="${token#*=}"
+        ;;
+      obmm_pool_export_size_mb=*)
+        export OBMM_POOL_EXPORT_SIZE_MB="${token#*=}"
+        ;;
+      obmm_pool_import_cache_mode=*)
+        export OBMM_IMPORT_CACHE_MODE="${token#*=}"
+        ;;
+      obmm_pool_stress_iters=*)
+        export OBMM_POOL_STRESS_ITERS="${token#*=}"
+        ;;
+      obmm_pool_round_timeout_ms=*)
+        export OBMM_POOL_ROUND_TIMEOUT_MS="${token#*=}"
+        ;;
+    esac
+  done
+
+  run_binary "linqu_ub_obmm_pool" /bin/linqu_ub_obmm_pool
+}
+
 run_gva_direct() {
   local args=""
   local token=""
@@ -494,8 +527,8 @@ run_default_actions() {
     ran_any="1"
   fi
 
-  if has_flag "linqu_obmm_demo=1"; then
-    run_binary "linqu_ub_obmm_demo" /bin/linqu_ub_obmm_demo || rc=$?
+  if has_flag "linqu_obmm_pool=1" || has_flag "linqu_obmm_demo=1"; then
+    run_obmm_pool || rc=$?
     ran_any="1"
   fi
 
@@ -552,8 +585,8 @@ run_single_action() {
     udma)
       run_binary "linqu_ub_udma" /bin/linqu_ub_udma
       ;;
-    obmm)
-      run_binary "linqu_ub_obmm_demo" /bin/linqu_ub_obmm_demo
+    obmm|obmm_pool|obmm_demo)
+      run_obmm_pool
       ;;
     obmm_queue|obmm_queue_demo)
       run_obmm_queue

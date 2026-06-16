@@ -185,9 +185,10 @@ static bool should_run_ub_tcp_each_server_demo(void)
     return cmdline_has_option("linqu_ub_tcp_each_server_demo=1");
 }
 
-static bool should_run_obmm_demo(void)
+static bool should_run_obmm_pool(void)
 {
-    return cmdline_has_option("linqu_obmm_demo=1");
+    return cmdline_has_option("linqu_obmm_pool=1") ||
+           cmdline_has_option("linqu_obmm_demo=1");
 }
 
 static bool should_enter_demo_boot_flow(void)
@@ -1043,7 +1044,7 @@ static void run_ub_tcp_each_server_demo_probe(void)
     }
 }
 
-static void run_obmm_demo_probe(void)
+static void run_obmm_pool_probe(void)
 {
     pid_t pid;
     int status = 0;
@@ -1053,17 +1054,17 @@ static void run_obmm_demo_probe(void)
 
     if (!wait_for_path("/dev/obmm", 50, 100) &&
         !wait_for_path("/sys/module/obmm", 50, 100)) {
-        fprintf(stderr, "[init] obmm interfaces not ready before demo start\n");
+        fprintf(stderr, "[init] obmm interfaces not ready before pool app start\n");
     }
 
     pid = fork();
     if (pid < 0) {
-        fprintf(stderr, "[init] fork for ub_obmm_demo failed: %s\n", strerror(errno));
+        fprintf(stderr, "[init] fork for ub_obmm_pool failed: %s\n", strerror(errno));
         return;
     }
     if (pid == 0) {
-        execl("/bin/linqu_ub_obmm_demo", "/bin/linqu_ub_obmm_demo", (char *)NULL);
-        fprintf(stderr, "[init] exec /bin/linqu_ub_obmm_demo failed: %s\n",
+        execl("/bin/linqu_ub_obmm_pool", "/bin/linqu_ub_obmm_pool", (char *)NULL);
+        fprintf(stderr, "[init] exec /bin/linqu_ub_obmm_pool failed: %s\n",
                 strerror(errno));
         _exit(127);
     }
@@ -1074,12 +1075,12 @@ static void run_obmm_demo_probe(void)
             break;
         }
         if (wait_ret < 0) {
-            fprintf(stderr, "[init] waitpid ub_obmm_demo failed: %s\n",
+            fprintf(stderr, "[init] waitpid ub_obmm_pool failed: %s\n",
                     strerror(errno));
             return;
         }
         if (waited_ms >= 60000) {
-            fprintf(stderr, "[init] ub obmm demo timeout, killing pid=%d\n", pid);
+            fprintf(stderr, "[init] ub obmm pool app timeout, killing pid=%d\n", pid);
             kill(pid, SIGKILL);
             waitpid(pid, &status, 0);
             timed_out = true;
@@ -1090,16 +1091,16 @@ static void run_obmm_demo_probe(void)
     }
 
     if (!timed_out && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-        fprintf(stderr, "[init] ub obmm demo pass\n");
+        fprintf(stderr, "[init] ub obmm pool app pass\n");
         return;
     }
 
     if (timed_out) {
-        fprintf(stderr, "[init] ub obmm demo fail timeout\n");
+        fprintf(stderr, "[init] ub obmm pool app fail timeout\n");
     } else if (WIFEXITED(status)) {
-        fprintf(stderr, "[init] ub obmm demo fail exit=%d\n", WEXITSTATUS(status));
+        fprintf(stderr, "[init] ub obmm pool app fail exit=%d\n", WEXITSTATUS(status));
     } else if (WIFSIGNALED(status)) {
-        fprintf(stderr, "[init] ub obmm demo fail signal=%d\n", WTERMSIG(status));
+        fprintf(stderr, "[init] ub obmm pool app fail signal=%d\n", WTERMSIG(status));
     }
 }
 
@@ -1481,9 +1482,9 @@ int main(int argc, char *argv[])
         wait_for_ipourma_interface(30);
         run_ub_udma_probe();
     }
-    if (should_run_obmm_demo()) {
+    if (should_run_obmm_pool()) {
         wait_for_ipourma_interface(30);
-        run_obmm_demo_probe();
+        run_obmm_pool_probe();
     }
     if (should_run_linqu_probe()) {
         run_probe();

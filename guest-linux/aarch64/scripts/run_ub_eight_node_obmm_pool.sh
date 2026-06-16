@@ -187,7 +187,7 @@ send_obmm_pool_cmd() {
   payload+=$'export LINQU_UB_ALL_IPS='"${ALL_IPS_CSV}"$'\n'
   payload+=$'export LINQU_UB_NODE_COUNT=8\n'
   payload+=$'echo '"${start_marker}"$'\n'
-  payload+=$'/bin/linqu_ub_obmm_demo\n'
+  payload+=$'/bin/linqu_ub_obmm_pool\n'
 
   send_serial_block "$serial_endpoint" "$payload"
 }

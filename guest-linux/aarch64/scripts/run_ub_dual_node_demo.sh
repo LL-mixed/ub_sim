@@ -594,7 +594,7 @@ run_iteration() {
   if [[ "$APPEND_EXTRA" == *"linqu_ub_udma=1"* || "$APPEND_EXTRA" == *"linqu_ub_udma_demo=1"* ]]; then
     udma_enabled=1
   fi
-  if [[ "$APPEND_EXTRA" == *"linqu_obmm_demo=1"* ]]; then
+  if [[ "$APPEND_EXTRA" == *"linqu_obmm_pool=1"* || "$APPEND_EXTRA" == *"linqu_obmm_demo=1"* ]]; then
     obmm_enabled=1
   fi
 
@@ -771,28 +771,28 @@ run_iteration() {
   fi
 
   if [[ "$obmm_enabled" -eq 1 ]]; then
-    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub obmm demo pass" "\\[init\\] ub obmm demo fail" "$RUN_SECS"
+    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub obmm pool app pass" "\\[init\\] ub obmm pool app fail" "$RUN_SECS"
     case "$?" in
       0) ;;
       1)
-        echo "iteration ${iter}: nodeA obmm demo reported failure" >&2
+        echo "iteration ${iter}: nodeA obmm pool app reported failure" >&2
         return 16
         ;;
       *)
-        echo "iteration ${iter}: nodeA obmm demo did not finish within ${RUN_SECS}s" >&2
+        echo "iteration ${iter}: nodeA obmm pool app did not finish within ${RUN_SECS}s" >&2
         return 16
         ;;
     esac
 
-    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub obmm demo pass" "\\[init\\] ub obmm demo fail" "$RUN_SECS"
+    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub obmm pool app pass" "\\[init\\] ub obmm pool app fail" "$RUN_SECS"
     case "$?" in
       0) ;;
       1)
-        echo "iteration ${iter}: nodeB obmm demo reported failure" >&2
+        echo "iteration ${iter}: nodeB obmm pool app reported failure" >&2
         return 16
         ;;
       *)
-        echo "iteration ${iter}: nodeB obmm demo did not finish within ${RUN_SECS}s" >&2
+        echo "iteration ${iter}: nodeB obmm pool app did not finish within ${RUN_SECS}s" >&2
         return 16
         ;;
     esac
@@ -827,7 +827,7 @@ run_iteration() {
     validate_udma_log "nodeA" "$nodea_guest_log" || return 1
     validate_udma_log "nodeB" "$nodeb_guest_log" || return 1
   fi
-  if [[ "$APPEND_EXTRA" == *"linqu_obmm_demo=1"* ]]; then
+  if [[ "$APPEND_EXTRA" == *"linqu_obmm_pool=1"* || "$APPEND_EXTRA" == *"linqu_obmm_demo=1"* ]]; then
     validate_obmm_log "nodeA" "$nodea_guest_log" || return 1
     validate_obmm_log "nodeB" "$nodeb_guest_log" || return 1
   fi

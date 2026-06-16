@@ -173,7 +173,7 @@ send_obmm_pool_cmd() {
   payload+=$'export OBMM_IMPORT_CACHE_MODE='"${OBMM_IMPORT_CACHE_MODE}"$'\n'
   payload+=$'export OBMM_POOL_STRESS_ITERS='"${OBMM_POOL_STRESS_ITERS}"$'\n'
   payload+=$'echo '"${start_marker}"$'\n'
-  payload+=$'/bin/linqu_ub_obmm_demo\n'
+  payload+=$'/bin/linqu_ub_obmm_pool\n'
 
   send_serial_block "$serial_port" "$payload"
 }

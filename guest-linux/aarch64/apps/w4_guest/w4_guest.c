@@ -8782,8 +8782,8 @@ static int run_obmm_backing_stage(void)
     }
 
     if (pid == 0) {
-        execl("/bin/linqu_ub_obmm_demo", "/bin/linqu_ub_obmm_demo", (char *)NULL);
-        fprintf(stderr, "[w4_guest] exec /bin/linqu_ub_obmm_demo failed: %s\n",
+        execl("/bin/linqu_ub_obmm_pool", "/bin/linqu_ub_obmm_pool", (char *)NULL);
+        fprintf(stderr, "[w4_guest] exec /bin/linqu_ub_obmm_pool failed: %s\n",
                 strerror(errno));
         _exit(127);
     }
