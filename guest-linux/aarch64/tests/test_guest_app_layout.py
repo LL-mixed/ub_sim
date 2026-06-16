@@ -169,3 +169,12 @@ def test_ub_obmm_pool_uses_canonical_app_source():
     assert (app_dir / "ub_obmm_pool.c").exists()
     assert (app_dir / "Makefile").exists()
     assert not (ROOT / "apps" / "ub_obmm_pool_demo").exists()
+
+
+def test_entity_runtime_inject_uses_canonical_cli_entrypoint():
+    script = (ROOT / "scripts" / "run_ub_entity_runtime_inject.sh").read_text()
+    legacy_script = (ROOT / "scripts" / "run_ub_entity_runtime_inject_demo.sh").read_text()
+
+    assert "entity runtime injection guide" in script
+    assert "演示" not in script
+    assert "run_ub_entity_runtime_inject.sh" in legacy_script
