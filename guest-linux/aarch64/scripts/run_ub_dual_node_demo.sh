@@ -15,7 +15,7 @@ ITERATIONS="${ITERATIONS:-1}"
 START_GAP_SECS="${START_GAP_SECS:-3}"
 LINK_WAIT_SECS="${LINK_WAIT_SECS:-45}"
 QEMU_KEEP_ALIVE_ON_POWEROFF="${QEMU_KEEP_ALIVE_ON_POWEROFF:-0}"
-APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1 linqu_ub_chat=1 linqu_ub_rpc_demo=1 linqu_ub_tcp_each_server_demo=1}"
+APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1 linqu_ub_chat=1 linqu_ub_rpc=1 linqu_ub_tcp_each_server_demo=1}"
 ENTITY_PLAN_FILE="${UB_FM_ENTITY_PLAN_FILE:-$WORKSPACE_ROOT/vendor/ub_topology_two_node_v2_entity.ini}"
 ENTITY_COUNT="${UB_SIM_ENTITY_COUNT:-2}"
 OUT_DIR="$ROOT_DIR/out"
@@ -585,7 +585,7 @@ run_iteration() {
   if [[ "$APPEND_EXTRA" == *"linqu_ub_chat=1"* ]]; then
     chat_enabled=1
   fi
-  if [[ "$APPEND_EXTRA" == *"linqu_ub_rpc_demo=1"* ]]; then
+  if [[ "$APPEND_EXTRA" == *"linqu_ub_rpc=1"* || "$APPEND_EXTRA" == *"linqu_ub_rpc_demo=1"* ]]; then
     rpc_enabled=1
   fi
   if [[ "$APPEND_EXTRA" == *"linqu_ub_tcp_each_server_demo=1"* ]]; then
@@ -687,28 +687,28 @@ run_iteration() {
   fi
 
   if [[ "$rpc_enabled" -eq 1 ]]; then
-    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub rpc demo pass" "\\[init\\] ub rpc demo fail" "$RUN_SECS"
+    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub rpc (app|demo) pass" "\\[init\\] ub rpc (app|demo) fail" "$RUN_SECS"
     case "$?" in
       0) ;;
       1)
-        echo "iteration ${iter}: nodeA rpc demo reported failure" >&2
+        echo "iteration ${iter}: nodeA rpc app reported failure" >&2
         return 13
         ;;
       *)
-        echo "iteration ${iter}: nodeA rpc demo did not pass within ${RUN_SECS}s" >&2
+        echo "iteration ${iter}: nodeA rpc app did not pass within ${RUN_SECS}s" >&2
         return 13
         ;;
     esac
 
-    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub rpc demo pass" "\\[init\\] ub rpc demo fail" "$RUN_SECS"
+    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub rpc (app|demo) pass" "\\[init\\] ub rpc (app|demo) fail" "$RUN_SECS"
     case "$?" in
       0) ;;
       1)
-        echo "iteration ${iter}: nodeB rpc demo reported failure" >&2
+        echo "iteration ${iter}: nodeB rpc app reported failure" >&2
         return 13
         ;;
       *)
-        echo "iteration ${iter}: nodeB rpc demo did not pass within ${RUN_SECS}s" >&2
+        echo "iteration ${iter}: nodeB rpc app did not pass within ${RUN_SECS}s" >&2
         return 13
         ;;
     esac

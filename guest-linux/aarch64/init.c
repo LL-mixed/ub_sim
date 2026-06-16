@@ -195,9 +195,10 @@ static bool should_enter_demo_boot_flow(void)
     return flag != NULL && strcmp(flag, "1") == 0;
 }
 
-static bool should_run_ub_rpc_demo(void)
+static bool should_run_ub_rpc(void)
 {
-    return cmdline_has_option("linqu_ub_rpc_demo=1");
+    return cmdline_has_option("linqu_ub_rpc=1") ||
+           cmdline_has_option("linqu_ub_rpc_demo=1");
 }
 
 static bool read_interrupt_count(const char *name, uint64_t *count_out)
@@ -969,7 +970,7 @@ static void run_ub_udma_demo_probe(void)
     }
 }
 
-static void run_ub_rpc_demo_probe(void)
+static void run_ub_rpc_probe(void)
 {
     pid_t pid;
     int status = 0;
@@ -991,14 +992,14 @@ static void run_ub_rpc_demo_probe(void)
     }
 
     if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-        fprintf(stderr, "[init] ub rpc demo pass\n");
+        fprintf(stderr, "[init] ub rpc app pass\n");
         return;
     }
 
     if (WIFEXITED(status)) {
-        fprintf(stderr, "[init] ub rpc demo fail exit=%d\n", WEXITSTATUS(status));
+        fprintf(stderr, "[init] ub rpc app fail exit=%d\n", WEXITSTATUS(status));
     } else if (WIFSIGNALED(status)) {
-        fprintf(stderr, "[init] ub rpc demo fail signal=%d\n", WTERMSIG(status));
+        fprintf(stderr, "[init] ub rpc app fail signal=%d\n", WTERMSIG(status));
     }
 }
 
@@ -1467,9 +1468,9 @@ int main(int argc, char *argv[])
         wait_for_ipourma_interface(30);
         run_ub_chat_probe();
     }
-    if (should_run_ub_rpc_demo()) {
+    if (should_run_ub_rpc()) {
         wait_for_ipourma_interface(30);
-        run_ub_rpc_demo_probe();
+        run_ub_rpc_probe();
     }
     if (should_run_ub_tcp_each_server_demo()) {
         wait_for_ipourma_interface(30);

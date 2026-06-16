@@ -13,6 +13,18 @@ def test_ub_chat_is_packaged_from_app_directory():
     assert (ROOT / "apps" / "ub_chat" / "Makefile").exists()
 
 
+def test_ub_rpc_uses_canonical_app_source():
+    build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
+    run_demo = (ROOT / "initramfs" / "run_demo").read_text()
+    app_dir = ROOT / "apps" / "ub_rpc"
+
+    assert 'RPC_SRC="$ROOT_DIR/apps/ub_rpc/ub_rpc.c"' in build_script
+    assert "linqu_ub_rpc=1" in run_demo
+    assert (app_dir / "ub_rpc.c").exists()
+    assert (app_dir / "Makefile").exists()
+    assert not (ROOT / "apps" / "ub_rpc_demo").exists()
+
+
 def test_ub_tcp_each_server_uses_canonical_app_source():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     app_dir = ROOT / "apps" / "ub_tcp_each_server"
