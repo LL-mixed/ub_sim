@@ -178,3 +178,17 @@ def test_entity_runtime_inject_uses_canonical_cli_entrypoint():
     assert "entity runtime injection guide" in script
     assert "演示" not in script
     assert "run_ub_entity_runtime_inject.sh" in legacy_script
+
+
+def test_dual_node_apps_uses_canonical_cli_entrypoint():
+    script = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
+    legacy_script = (ROOT / "scripts" / "run_ub_dual_node_demo.sh").read_text()
+    w4_runner = (ROOT / "scripts" / "run_ub_dual_node_w4_guest.sh").read_text()
+
+    assert 'REPORT_FILE="${REPORT_FILE:-$OUT_DIR/apps_report.latest.txt}"' in script
+    assert "scenario=dual-node-apps" in script
+    assert "dual-node apps validation passed" in script
+    assert "ub_nodeA.apps." in script
+    assert "run_ub_dual_node_apps.sh" in legacy_script
+    assert "run_ub_dual_node_apps.sh" in w4_runner
+    assert "run_ub_dual_node_demo.sh" not in w4_runner
