@@ -85,12 +85,23 @@ def test_ssd_gsva_test_has_independent_app_build():
 def test_obmm_gsva_uses_canonical_app_source():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     run_demo = (ROOT / "initramfs" / "run_demo").read_text()
+    dual_runner = (ROOT / "scripts" / "run_ub_dual_node_obmm_gsva.sh").read_text()
+    multi_runner = (ROOT / "scripts" / "run_ub_multi_node_obmm_gsva_matrix.sh").read_text()
+    legacy_dual_runner = (ROOT / "scripts" / "run_ub_dual_node_gsva_demo.sh").read_text()
+    legacy_matrix_runner = (ROOT / "scripts" / "run_ub_four_node_gsva_matrix_demo.sh").read_text()
     app_dir = ROOT / "apps" / "obmm_gsva"
 
     assert 'OBMM_GSVA_SRC="$ROOT_DIR/apps/obmm_gsva/obmm_gsva.c"' in build_script
     assert 'OBMM_GSVA_BIN="$OUT_DIR/linqu_ub_obmm_gsva"' in build_script
     assert "linqu_ub_obmm_gsva_demo" not in build_script
     assert "linqu_obmm_gsva=1" in run_demo
+    assert "rdinit=/bin/run_demo obmm_gsva" in dual_runner
+    assert "OBMM_GSVA_MODE" in dual_runner
+    assert "[obmm-gsva]" in dual_runner
+    assert "rdinit=/bin/run_demo obmm_gsva" in multi_runner
+    assert "OBMM_GSVA_MATRIX_NODE_COUNT" in multi_runner
+    assert "run_ub_dual_node_obmm_gsva.sh" in legacy_dual_runner
+    assert "run_ub_multi_node_obmm_gsva_matrix.sh" in legacy_matrix_runner
     assert (app_dir / "obmm_gsva.c").exists()
     assert (app_dir / "Makefile").exists()
     assert not (ROOT / "apps" / "obmm_gsva_demo").exists()
