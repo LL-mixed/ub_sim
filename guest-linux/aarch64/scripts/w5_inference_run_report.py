@@ -586,6 +586,7 @@ def validate(
         if (
             prefix_cache_actions == "reuse"
             and parse_int(memory.get("gsva_kv_refs")) > 0
+            and prefix_cache_gsva_rejections <= 0
             and parse_int(memory.get("gsva_reads")) <= 0
         ):
             issues.append("GSVA prefix-cache run has GSVA refs but no GSVA reads")

@@ -11441,87 +11441,91 @@ fn w5_memory_decision_env_vars(
                 && publication
                     .and_then(|published| published.shortpath_ref.as_ref())
                     .is_some();
-            vars.extend([
-                (
-                    "SIM_W5_MEMORY_SHORTPATH_DECISION_ID".to_string(),
-                    decision.decision_id.clone(),
-                ),
-                (
-                    "SIM_W5_MEMORY_SHORTPATH_SUPPORT_ID".to_string(),
-                    decision.support_id.clone().unwrap_or_default(),
-                ),
-                (
-                    "SIM_W5_MEMORY_SHORTPATH_ACTION".to_string(),
-                    w5_shortpath_action_name(decision.action).to_string(),
-                ),
-                (
-                    "SIM_W5_MEMORY_SHORTPATH_ARTIFACT_ID".to_string(),
-                    decision.artifact_id.clone().unwrap_or_default(),
-                ),
-                (
-                    "SIM_W5_MEMORY_SHORTPATH_TARGET_LAYER_START".to_string(),
-                    decision
-                        .target_layer_start
-                        .map(|value| value.to_string())
-                        .unwrap_or_default(),
-                ),
-                (
-                    "SIM_W5_MEMORY_SHORTPATH_TARGET_LAYER_END".to_string(),
-                    decision
-                        .target_layer_end
-                        .map(|value| value.to_string())
-                        .unwrap_or_default(),
-                ),
-                (
-                    "SIM_W5_MEMORY_SHORTPATH_PROOF_CHECKSUM".to_string(),
-                    format!("{:#x}", decision.proof_checksum),
-                ),
-            ]);
             if shortpath_executable {
+                vars.extend([
+                    (
+                        "SIM_W5_MEMORY_SHORTPATH_DECISION_ID".to_string(),
+                        decision.decision_id.clone(),
+                    ),
+                    (
+                        "SIM_W5_MEMORY_SHORTPATH_SUPPORT_ID".to_string(),
+                        decision.support_id.clone().unwrap_or_default(),
+                    ),
+                    (
+                        "SIM_W5_MEMORY_SHORTPATH_ACTION".to_string(),
+                        w5_shortpath_action_name(decision.action).to_string(),
+                    ),
+                    (
+                        "SIM_W5_MEMORY_SHORTPATH_ARTIFACT_ID".to_string(),
+                        decision.artifact_id.clone().unwrap_or_default(),
+                    ),
+                    (
+                        "SIM_W5_MEMORY_SHORTPATH_TARGET_LAYER_START".to_string(),
+                        decision
+                            .target_layer_start
+                            .map(|value| value.to_string())
+                            .unwrap_or_default(),
+                    ),
+                    (
+                        "SIM_W5_MEMORY_SHORTPATH_TARGET_LAYER_END".to_string(),
+                        decision
+                            .target_layer_end
+                            .map(|value| value.to_string())
+                            .unwrap_or_default(),
+                    ),
+                    (
+                        "SIM_W5_MEMORY_SHORTPATH_PROOF_CHECKSUM".to_string(),
+                        format!("{:#x}", decision.proof_checksum),
+                    ),
+                ]);
                 vars.push((
                     "SIM_W5_MEMORY_SHORTPATH_EXECUTE".to_string(),
                     "1".to_string(),
                 ));
             }
-            if let Some(artifact) = &bundle.shortpath_artifact {
-                vars.extend([
-                    (
-                        "SIM_W5_MEMORY_SHORTPATH_ARTIFACT_KIND".to_string(),
-                        w5_execution_artifact_kind_name(artifact.kind).to_string(),
-                    ),
-                    (
-                        "SIM_W5_MEMORY_SHORTPATH_ARTIFACT_CHECKSUM".to_string(),
-                        format!("{:#x}", artifact.checksum),
-                    ),
-                    (
-                        "SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_START".to_string(),
-                        artifact.producer_boundary.layer_start.to_string(),
-                    ),
-                    (
-                        "SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_END".to_string(),
-                        artifact.producer_boundary.layer_end.to_string(),
-                    ),
-                    (
-                        "SIM_W5_MEMORY_SHORTPATH_PRODUCER_POSITION".to_string(),
-                        artifact.producer_boundary.position.to_string(),
-                    ),
-                    (
-                        "SIM_W5_MEMORY_SHORTPATH_BOUNDARY_HIDDEN_BYTES".to_string(),
-                        artifact.boundary_hidden_fingerprint.bytes.to_string(),
-                    ),
-                    (
-                        "SIM_W5_MEMORY_SHORTPATH_BOUNDARY_HIDDEN_CHECKSUM".to_string(),
-                        artifact.boundary_hidden_fingerprint.checksum.to_string(),
-                    ),
-                ]);
+            if shortpath_executable {
+                if let Some(artifact) = &bundle.shortpath_artifact {
+                    vars.extend([
+                        (
+                            "SIM_W5_MEMORY_SHORTPATH_ARTIFACT_KIND".to_string(),
+                            w5_execution_artifact_kind_name(artifact.kind).to_string(),
+                        ),
+                        (
+                            "SIM_W5_MEMORY_SHORTPATH_ARTIFACT_CHECKSUM".to_string(),
+                            format!("{:#x}", artifact.checksum),
+                        ),
+                        (
+                            "SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_START".to_string(),
+                            artifact.producer_boundary.layer_start.to_string(),
+                        ),
+                        (
+                            "SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_END".to_string(),
+                            artifact.producer_boundary.layer_end.to_string(),
+                        ),
+                        (
+                            "SIM_W5_MEMORY_SHORTPATH_PRODUCER_POSITION".to_string(),
+                            artifact.producer_boundary.position.to_string(),
+                        ),
+                        (
+                            "SIM_W5_MEMORY_SHORTPATH_BOUNDARY_HIDDEN_BYTES".to_string(),
+                            artifact.boundary_hidden_fingerprint.bytes.to_string(),
+                        ),
+                        (
+                            "SIM_W5_MEMORY_SHORTPATH_BOUNDARY_HIDDEN_CHECKSUM".to_string(),
+                            artifact.boundary_hidden_fingerprint.checksum.to_string(),
+                        ),
+                    ]);
+                }
             }
-            if let Some(published) =
-                publication.and_then(|published| published.shortpath_ref.as_ref())
-            {
-                vars.push((
-                    "SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF".to_string(),
-                    published.ref_hex.clone(),
-                ));
+            if shortpath_executable {
+                if let Some(published) =
+                    publication.and_then(|published| published.shortpath_ref.as_ref())
+                {
+                    vars.push((
+                        "SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF".to_string(),
+                        published.ref_hex.clone(),
+                    ));
+                }
             }
         }
     }
@@ -11536,20 +11540,20 @@ fn w5_memory_decision_env_vars(
                 snapshot_path.display().to_string(),
             ));
         }
-        if let Some(registry_ref) = published.shortpath_registry_ref.as_ref() {
-            vars.push((
-                "SIM_W5_MEMORY_BOUNDARY_REGISTRY_REF".to_string(),
-                registry_ref.ref_hex.clone(),
-            ));
-            vars.push((
-                "SIM_W5_MEMORY_BOUNDARY_REGISTRY_COUNT".to_string(),
-                bundle.shortpath_entries.len().to_string(),
-            ));
-            vars.push((
-                "SIM_W5_MEMORY_SHORTPATH_ACTION".to_string(),
-                "jump-to-terminal".to_string(),
-            ));
-            if config.shortpath_execute {
+        if config.shortpath_execute {
+            if let Some(registry_ref) = published.shortpath_registry_ref.as_ref() {
+                vars.push((
+                    "SIM_W5_MEMORY_BOUNDARY_REGISTRY_REF".to_string(),
+                    registry_ref.ref_hex.clone(),
+                ));
+                vars.push((
+                    "SIM_W5_MEMORY_BOUNDARY_REGISTRY_COUNT".to_string(),
+                    bundle.shortpath_entries.len().to_string(),
+                ));
+                vars.push((
+                    "SIM_W5_MEMORY_SHORTPATH_ACTION".to_string(),
+                    "jump-to-terminal".to_string(),
+                ));
                 vars.push((
                     "SIM_W5_MEMORY_SHORTPATH_EXECUTE".to_string(),
                     "1".to_string(),
@@ -11557,7 +11561,10 @@ fn w5_memory_decision_env_vars(
             }
         }
         let stream = w5_memory_shortpath_stream_env(bundle, published);
-        if !stream.is_empty() && published.shortpath_registry_ref.is_none() {
+        if config.shortpath_execute
+            && !stream.is_empty()
+            && published.shortpath_registry_ref.is_none()
+        {
             vars.push((
                 "SIM_W5_MEMORY_SHORTPATH_STREAM_COUNT".to_string(),
                 stream.len().to_string(),
@@ -11577,15 +11584,13 @@ fn w5_memory_decision_env_vars(
                 "SIM_W5_MEMORY_SHORTPATH_ACTION".to_string(),
                 "jump-to-terminal".to_string(),
             ));
-            if config.shortpath_execute {
-                vars.push((
-                    "SIM_W5_MEMORY_SHORTPATH_EXECUTE".to_string(),
-                    "1".to_string(),
-                ));
-            }
+            vars.push((
+                "SIM_W5_MEMORY_SHORTPATH_EXECUTE".to_string(),
+                "1".to_string(),
+            ));
         }
         let kv_stream = w5_memory_shortpath_kv_stream_env_from_refs(&published.shortpath_kv_refs);
-        if !kv_stream.is_empty() {
+        if config.shortpath_execute && !kv_stream.is_empty() {
             vars.push((
                 "SIM_W5_MEMORY_SHORTPATH_KV_STREAM_COUNT".to_string(),
                 kv_stream.len().to_string(),
