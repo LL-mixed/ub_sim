@@ -33,8 +33,8 @@ OBMM_DATAPLANE_MICROBENCH_SRC="$ROOT_DIR/apps/obmm_dataplane_microbench/obmm_dat
 OBMM_DATAPLANE_MICROBENCH_BIN="$OUT_DIR/linqu_ub_obmm_dataplane_microbench"
 GVA_DIRECT_DEMO_SRC="$ROOT_DIR/apps/gva_direct_demo/gva_direct_demo.c"
 GVA_DIRECT_DEMO_BIN="$OUT_DIR/linqu_gva_direct_demo"
-OBMM_GSVA_DEMO_SRC="$ROOT_DIR/apps/obmm_gsva_demo/obmm_gsva_demo.c"
-OBMM_GSVA_DEMO_BIN="$OUT_DIR/linqu_ub_obmm_gsva_demo"
+OBMM_GSVA_SRC="$ROOT_DIR/apps/obmm_gsva/obmm_gsva.c"
+OBMM_GSVA_BIN="$OUT_DIR/linqu_ub_obmm_gsva"
 GVA_MANAGER_SRC="$ROOT_DIR/apps/gva_manager/gva_manager.c"
 GVA_MANAGER_BIN="$OUT_DIR/linqu_gva_manager"
 OBMM_COH_TEST_SRC="$ROOT_DIR/apps/obmm_coh_test/obmm_coh_test.c"
@@ -146,7 +146,7 @@ current_initramfs_signature() {
   write_signature_line "obmm_dataplane_microbench_src" "$OBMM_DATAPLANE_MICROBENCH_SRC"
   write_signature_line "gva_direct_demo_src" "$GVA_DIRECT_DEMO_SRC"
   write_signature_line "obmm_coh_test_src" "$OBMM_COH_TEST_SRC"
-  write_signature_line "obmm_gsva_demo_src" "$OBMM_GSVA_DEMO_SRC"
+  write_signature_line "obmm_gsva_src" "$OBMM_GSVA_SRC"
   write_signature_line "gva_manager_src" "$GVA_MANAGER_SRC"
   write_signature_line "gsva_query_src" "$GSVA_QUERY_SRC"
   write_signature_line "gsva_coh_test_src" "$GSVA_COH_TEST_SRC"
@@ -380,7 +380,7 @@ fi
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/kernel_ub/include/uapi" -I"$ROOT_DIR/common" -I"$ROOT_DIR/apps/obmm_queue_demo" "$OBMM_IMPORT_STRESS_SRC" -o "$OBMM_IMPORT_STRESS_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/kernel_ub/include/uapi" -I"$ROOT_DIR/common" "$OBMM_DATAPLANE_MICROBENCH_SRC" -o "$OBMM_DATAPLANE_MICROBENCH_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/common" "$GVA_DIRECT_DEMO_SRC" -o "$GVA_DIRECT_DEMO_BIN"
-"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/common" "$OBMM_GSVA_DEMO_SRC" -o "$OBMM_GSVA_DEMO_BIN"
+"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/common" "$OBMM_GSVA_SRC" -o "$OBMM_GSVA_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/kernel_ub/include/uapi" -I"$ROOT_DIR/common" -I"$ROOT_DIR/libs/obmm_queue" "$GVA_MANAGER_SRC" -o "$GVA_MANAGER_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/common" "$OBMM_COH_TEST_SRC" -o "$OBMM_COH_TEST_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/kernel_ub/include/uapi" -I"$ROOT_DIR/common" "$GSVA_QUERY_SRC" -o "$GSVA_QUERY_BIN"
@@ -414,7 +414,7 @@ cp "$OBMM_QUEUE_DEMO_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_queue_demo"
 cp "$OBMM_IMPORT_STRESS_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_import_stress"
 cp "$OBMM_DATAPLANE_MICROBENCH_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_dataplane_microbench"
 cp "$GVA_DIRECT_DEMO_BIN" "$INITRAMFS_DIR/bin/linqu_gva_direct_demo"
-cp "$OBMM_GSVA_DEMO_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_gsva_demo"
+cp "$OBMM_GSVA_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_gsva"
 cp "$GVA_MANAGER_BIN" "$INITRAMFS_DIR/bin/linqu_gva_manager"
 cp "$OBMM_COH_TEST_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_coh_test"
 cp "$GSVA_QUERY_BIN" "$INITRAMFS_DIR/bin/linqu_ub_gsva_query"
@@ -437,7 +437,7 @@ chmod +x \
   "$INITRAMFS_DIR/bin/linqu_ub_obmm_queue_demo" \
   "$INITRAMFS_DIR/bin/linqu_ub_obmm_dataplane_microbench" \
   "$INITRAMFS_DIR/bin/linqu_gva_direct_demo" \
-  "$INITRAMFS_DIR/bin/linqu_ub_obmm_gsva_demo" \
+  "$INITRAMFS_DIR/bin/linqu_ub_obmm_gsva" \
   "$INITRAMFS_DIR/bin/linqu_gva_manager" \
   "$INITRAMFS_DIR/bin/linqu_ub_obmm_coh_test" \
   "$INITRAMFS_DIR/bin/linqu_ub_gsva_query" \

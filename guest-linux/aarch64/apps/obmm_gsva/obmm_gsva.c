@@ -14,7 +14,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#define TAG "[obmm_gsva_demo]"
+#define TAG "[obmm_gsva]"
 #define GSVA_DEMO_DEFAULT_SIZE (4UL * 1024UL * 1024UL)
 #define GSVA_DEMO_DEFAULT_BASE 0x700000000000ULL
 #define GSVA_DEMO_GENERATION 0x475356410101ULL
@@ -992,7 +992,7 @@ int main(int argc, char **argv)
     int ret = 1;
 
     if (!parse_args(argc, argv, &cfg)) {
-        fprintf(stderr, "usage: obmm_gsva_demo --mode identity|conflict|stale-generation|invalid-offset|matrix|mmap-mode|outside-aperture|outside-import|anonymous-collision "
+        fprintf(stderr, "usage: obmm_gsva --mode identity|conflict|stale-generation|invalid-offset|matrix|mmap-mode|outside-aperture|outside-import|anonymous-collision "
                 "[--base A] [--size S] [--node-count N]\n");
         return 2;
     }

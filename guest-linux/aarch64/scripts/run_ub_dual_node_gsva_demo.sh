@@ -92,7 +92,7 @@ start_node() {
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
       -initrd "$INITRAMFS_IMAGE" \
-      -append "console=ttyAMA0 rdinit=/bin/run_demo obmm_gsva_demo linqu_urma_dp_role=${role} linqu_node_idx=${node_idx} obmm_gsva_mode=${GSVA_DEMO_MODE} obmm_gsva_base=${GSVA_DEMO_BASE} obmm_gsva_size=${GSVA_DEMO_SIZE} obmm_gsva_node_count=${GSVA_DEMO_NODE_COUNT} ${APPEND_EXTRA}" \
+      -append "console=ttyAMA0 rdinit=/bin/run_demo obmm_gsva linqu_urma_dp_role=${role} linqu_node_idx=${node_idx} obmm_gsva_mode=${GSVA_DEMO_MODE} obmm_gsva_base=${GSVA_DEMO_BASE} obmm_gsva_size=${GSVA_DEMO_SIZE} obmm_gsva_node_count=${GSVA_DEMO_NODE_COUNT} ${APPEND_EXTRA}" \
       >"$qemu_log" 2>&1 &
   echo $! > "$pid_file"
 }
@@ -133,12 +133,12 @@ wait_for_fm_links_ready() {
 }
 
 validate_identity_logs() {
-  if ! grep -q '\[obmm_gsva_demo\] kernel aperture registry -> ok' "$NODEA_GUEST_LOG" ||
-     ! grep -q '\[obmm_gsva_demo\] kernel aperture registry -> ok' "$NODEB_GUEST_LOG"; then
+  if ! grep -q '\[obmm_gsva\] kernel aperture registry -> ok' "$NODEA_GUEST_LOG" ||
+     ! grep -q '\[obmm_gsva\] kernel aperture registry -> ok' "$NODEB_GUEST_LOG"; then
     echo "[gsva-demo] FAIL: missing kernel aperture registry evidence" >&2
     return 1
   fi
-  if ! grep -q '\[obmm_gsva_demo\] fixed export -> ok' "$NODEA_GUEST_LOG"; then
+  if ! grep -q '\[obmm_gsva\] fixed export -> ok' "$NODEA_GUEST_LOG"; then
     echo "[gsva-demo] FAIL: home did not create fixed-UBA export" >&2
     return 1
   fi
@@ -146,8 +146,8 @@ validate_identity_logs() {
     echo "[gsva-demo] FAIL: kernel did not map fixed UBA on home node" >&2
     return 1
   fi
-  if ! grep -q '\[obmm_gsva_demo\] result=done mode=identity role=home' "$NODEA_GUEST_LOG" ||
-     ! grep -q '\[obmm_gsva_demo\] result=done mode=identity role=peer' "$NODEB_GUEST_LOG"; then
+  if ! grep -q '\[obmm_gsva\] result=done mode=identity role=home' "$NODEA_GUEST_LOG" ||
+     ! grep -q '\[obmm_gsva\] result=done mode=identity role=peer' "$NODEB_GUEST_LOG"; then
     echo "[gsva-demo] FAIL: identity demo did not complete on both roles" >&2
     return 1
   fi
@@ -181,8 +181,8 @@ validate_identity_logs() {
 }
 
 validate_conflict_logs() {
-  if ! grep -q '\[obmm_gsva_demo\] result=done mode=conflict role=home reason=normal-obmm-mmap-rejected' "$NODEA_GUEST_LOG" ||
-     ! grep -q '\[obmm_gsva_demo\] result=done mode=conflict role=peer reason=normal-obmm-mmap-rejected' "$NODEB_GUEST_LOG"; then
+  if ! grep -q '\[obmm_gsva\] result=done mode=conflict role=home reason=normal-obmm-mmap-rejected' "$NODEA_GUEST_LOG" ||
+     ! grep -q '\[obmm_gsva\] result=done mode=conflict role=peer reason=normal-obmm-mmap-rejected' "$NODEB_GUEST_LOG"; then
     echo "[gsva-demo] FAIL: conflict mode did not reject normal OBMM mmap on both nodes" >&2
     return 1
   fi
@@ -194,8 +194,8 @@ validate_conflict_logs() {
 }
 
 validate_stale_generation_logs() {
-  if ! grep -q '\[obmm_gsva_demo\] result=done mode=stale-generation role=home' "$NODEA_GUEST_LOG" ||
-     ! grep -q '\[obmm_gsva_demo\] result=done mode=stale-generation role=peer' "$NODEB_GUEST_LOG"; then
+  if ! grep -q '\[obmm_gsva\] result=done mode=stale-generation role=home' "$NODEA_GUEST_LOG" ||
+     ! grep -q '\[obmm_gsva\] result=done mode=stale-generation role=peer' "$NODEB_GUEST_LOG"; then
     echo "[gsva-demo] FAIL: stale-generation mode did not complete on both nodes" >&2
     return 1
   fi
@@ -207,16 +207,16 @@ validate_stale_generation_logs() {
 }
 
 validate_kernel_aperture_proc_logs() {
-  if ! grep -q '\[obmm_gsva_demo\] kernel aperture proc -> 1 ' "$NODEA_GUEST_LOG" ||
-     ! grep -q '\[obmm_gsva_demo\] kernel aperture proc -> 1 ' "$NODEB_GUEST_LOG"; then
+  if ! grep -q '\[obmm_gsva\] kernel aperture proc -> 1 ' "$NODEA_GUEST_LOG" ||
+     ! grep -q '\[obmm_gsva\] kernel aperture proc -> 1 ' "$NODEB_GUEST_LOG"; then
     echo "[gsva-demo] FAIL: missing /proc/obmm/gsva_aperture active evidence" >&2
     return 1
   fi
 }
 
 validate_invalid_offset_logs() {
-  if ! grep -q '\[obmm_gsva_demo\] result=done mode=invalid-offset role=home' "$NODEA_GUEST_LOG" ||
-     ! grep -q '\[obmm_gsva_demo\] result=done mode=invalid-offset role=peer bad_pte_offset=0x1000' "$NODEB_GUEST_LOG"; then
+  if ! grep -q '\[obmm_gsva\] result=done mode=invalid-offset role=home' "$NODEA_GUEST_LOG" ||
+     ! grep -q '\[obmm_gsva\] result=done mode=invalid-offset role=peer bad_pte_offset=0x1000' "$NODEB_GUEST_LOG"; then
     echo "[gsva-demo] FAIL: invalid-offset mode did not reject GSVA pte_offset on both roles" >&2
     return 1
   fi
@@ -231,13 +231,13 @@ validate_invalid_offset_logs() {
 }
 
 validate_matrix_logs() {
-  if ! grep -q '\[obmm_gsva_demo\] kernel aperture registry -> ok' "$NODEA_GUEST_LOG" ||
-     ! grep -q '\[obmm_gsva_demo\] kernel aperture registry -> ok' "$NODEB_GUEST_LOG"; then
+  if ! grep -q '\[obmm_gsva\] kernel aperture registry -> ok' "$NODEA_GUEST_LOG" ||
+     ! grep -q '\[obmm_gsva\] kernel aperture registry -> ok' "$NODEB_GUEST_LOG"; then
     echo "[gsva-demo] FAIL: matrix mode lacks kernel aperture registry evidence" >&2
     return 1
   fi
-  if ! grep -q '\[obmm_gsva_demo\] result=done mode=matrix node=0 node_count=2' "$NODEA_GUEST_LOG" ||
-     ! grep -q '\[obmm_gsva_demo\] result=done mode=matrix node=1 node_count=2' "$NODEB_GUEST_LOG"; then
+  if ! grep -q '\[obmm_gsva\] result=done mode=matrix node=0 node_count=2' "$NODEA_GUEST_LOG" ||
+     ! grep -q '\[obmm_gsva\] result=done mode=matrix node=1 node_count=2' "$NODEB_GUEST_LOG"; then
     echo "[gsva-demo] FAIL: matrix mode did not complete on both nodes" >&2
     return 1
   fi
@@ -258,18 +258,18 @@ validate_matrix_logs() {
 }
 
 validate_mmap_mode_logs() {
-  if ! grep -q '\[obmm_gsva_demo\] mmap-mode MAP_GSVA segment -> ok' "$NODEA_GUEST_LOG" ||
-     ! grep -q '\[obmm_gsva_demo\] mmap-mode MAP_GSVA segment -> ok' "$NODEB_GUEST_LOG"; then
+  if ! grep -q '\[obmm_gsva\] mmap-mode MAP_GSVA segment -> ok' "$NODEA_GUEST_LOG" ||
+     ! grep -q '\[obmm_gsva\] mmap-mode MAP_GSVA segment -> ok' "$NODEB_GUEST_LOG"; then
     echo "[gsva-demo] FAIL: mmap-mode lacks MAP_GSVA segment mmap success evidence" >&2
     return 1
   fi
-  if ! grep -q '\[obmm_gsva_demo\] mmap-mode MAP_GSVA non-gsva reject -> ok' "$NODEA_GUEST_LOG" ||
-     ! grep -q '\[obmm_gsva_demo\] mmap-mode MAP_GSVA non-gsva reject -> ok' "$NODEB_GUEST_LOG"; then
+  if ! grep -q '\[obmm_gsva\] mmap-mode MAP_GSVA non-gsva reject -> ok' "$NODEA_GUEST_LOG" ||
+     ! grep -q '\[obmm_gsva\] mmap-mode MAP_GSVA non-gsva reject -> ok' "$NODEB_GUEST_LOG"; then
     echo "[gsva-demo] FAIL: mmap-mode lacks MAP_GSVA non-GSVA rejection evidence" >&2
     return 1
   fi
-  if ! grep -q '\[obmm_gsva_demo\] result=done mode=mmap-mode role=home' "$NODEA_GUEST_LOG" ||
-     ! grep -q '\[obmm_gsva_demo\] result=done mode=mmap-mode role=peer' "$NODEB_GUEST_LOG"; then
+  if ! grep -q '\[obmm_gsva\] result=done mode=mmap-mode role=home' "$NODEA_GUEST_LOG" ||
+     ! grep -q '\[obmm_gsva\] result=done mode=mmap-mode role=peer' "$NODEB_GUEST_LOG"; then
     echo "[gsva-demo] FAIL: mmap-mode did not complete on both nodes" >&2
     return 1
   fi
@@ -281,21 +281,21 @@ validate_mmap_mode_logs() {
 }
 
 validate_anonymous_collision_logs() {
-  if ! grep -q '\[obmm_gsva_demo\] anonymous mmap rejected by kernel gsva reserve -> ok errno=17' "$NODEA_GUEST_LOG" ||
-     ! grep -q '\[obmm_gsva_demo\] anonymous mmap rejected by kernel gsva reserve -> ok errno=17' "$NODEB_GUEST_LOG"; then
+  if ! grep -q '\[obmm_gsva\] anonymous mmap rejected by kernel gsva reserve -> ok errno=17' "$NODEA_GUEST_LOG" ||
+     ! grep -q '\[obmm_gsva\] anonymous mmap rejected by kernel gsva reserve -> ok errno=17' "$NODEB_GUEST_LOG"; then
     echo "[gsva-demo] FAIL: anonymous-collision lacks kernel mmap reserve rejection evidence" >&2
     return 1
   fi
-  if ! grep -q '\[obmm_gsva_demo\] result=done mode=anonymous-collision role=home' "$NODEA_GUEST_LOG" ||
-     ! grep -q '\[obmm_gsva_demo\] result=done mode=anonymous-collision role=peer' "$NODEB_GUEST_LOG"; then
+  if ! grep -q '\[obmm_gsva\] result=done mode=anonymous-collision role=home' "$NODEA_GUEST_LOG" ||
+     ! grep -q '\[obmm_gsva\] result=done mode=anonymous-collision role=peer' "$NODEB_GUEST_LOG"; then
     echo "[gsva-demo] FAIL: anonymous-collision did not complete on both nodes" >&2
     return 1
   fi
 }
 
 validate_outside_aperture_logs() {
-  if ! grep -q '\[obmm_gsva_demo\] result=done mode=outside-aperture role=home' "$NODEA_GUEST_LOG" ||
-     ! grep -q '\[obmm_gsva_demo\] result=done mode=outside-aperture role=peer' "$NODEB_GUEST_LOG"; then
+  if ! grep -q '\[obmm_gsva\] result=done mode=outside-aperture role=home' "$NODEA_GUEST_LOG" ||
+     ! grep -q '\[obmm_gsva\] result=done mode=outside-aperture role=peer' "$NODEB_GUEST_LOG"; then
     echo "[gsva-demo] FAIL: outside-aperture mode did not reject fixed UBA on both nodes" >&2
     return 1
   fi
@@ -307,8 +307,8 @@ validate_outside_aperture_logs() {
 }
 
 validate_outside_import_logs() {
-  if ! grep -q '\[obmm_gsva_demo\] result=done mode=outside-import role=home' "$NODEA_GUEST_LOG" ||
-     ! grep -q '\[obmm_gsva_demo\] result=done mode=outside-import role=peer' "$NODEB_GUEST_LOG"; then
+  if ! grep -q '\[obmm_gsva\] result=done mode=outside-import role=home' "$NODEA_GUEST_LOG" ||
+     ! grep -q '\[obmm_gsva\] result=done mode=outside-import role=peer' "$NODEB_GUEST_LOG"; then
     echo "[gsva-demo] FAIL: outside-import mode did not reject GSVA import on both roles" >&2
     return 1
   fi
@@ -338,8 +338,8 @@ echo "[gsva-demo] FM links ready"
 echo "[gsva-demo] waiting for demo completion (timeout ${RUN_SECS}s)..."
 deadline=$((SECONDS + RUN_SECS))
 while (( SECONDS < deadline )); do
-  if [[ -f "$NODEA_GUEST_LOG" ]] && grep -qE '\[obmm_gsva_demo\] result=done' "$NODEA_GUEST_LOG" && \
-     [[ -f "$NODEB_GUEST_LOG" ]] && grep -qE '\[obmm_gsva_demo\] result=done' "$NODEB_GUEST_LOG"; then
+  if [[ -f "$NODEA_GUEST_LOG" ]] && grep -qE '\[obmm_gsva\] result=done' "$NODEA_GUEST_LOG" && \
+     [[ -f "$NODEB_GUEST_LOG" ]] && grep -qE '\[obmm_gsva\] result=done' "$NODEB_GUEST_LOG"; then
     sleep 1
     validate_kernel_aperture_proc_logs
     case "$GSVA_DEMO_MODE" in
@@ -373,12 +373,12 @@ while (( SECONDS < deadline )); do
     esac
     echo "[gsva-demo] PASS: both nodes completed"
     echo "[gsva-demo] nodeA:"
-    grep '\[obmm_gsva_demo\]' "$NODEA_GUEST_LOG" | tail -8
+    grep '\[obmm_gsva\]' "$NODEA_GUEST_LOG" | tail -8
     echo "[gsva-demo] nodeB:"
-    grep '\[obmm_gsva_demo\]' "$NODEB_GUEST_LOG" | tail -8
+    grep '\[obmm_gsva\]' "$NODEB_GUEST_LOG" | tail -8
     exit 0
   fi
-  if grep -qE '\[obmm_gsva_demo\] result=fail|\[run_demo\] linqu_ub_obmm_gsva_demo failed' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
+  if grep -qE '\[obmm_gsva\] result=fail|\[run_demo\] linqu_ub_obmm_gsva failed' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
     echo "[gsva-demo] FAIL: demo reported failure" >&2
     exit 1
   fi

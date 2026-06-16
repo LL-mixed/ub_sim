@@ -122,7 +122,7 @@ start_node() {
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
       -initrd "$INITRAMFS_IMAGE" \
-      -append "console=ttyAMA0 rdinit=/bin/run_demo obmm_gsva_demo linqu_urma_dp_role=${node_name} linqu_node_idx=${node_idx} linqu_cna=${node_cna} obmm_gsva_mode=matrix obmm_gsva_base=${GSVA_MATRIX_BASE} obmm_gsva_size=${GSVA_MATRIX_SLICE_SIZE} obmm_gsva_node_count=${GSVA_MATRIX_NODE_COUNT} ${APPEND_EXTRA}" \
+      -append "console=ttyAMA0 rdinit=/bin/run_demo obmm_gsva linqu_urma_dp_role=${node_name} linqu_node_idx=${node_idx} linqu_cna=${node_cna} obmm_gsva_mode=matrix obmm_gsva_base=${GSVA_MATRIX_BASE} obmm_gsva_size=${GSVA_MATRIX_SLICE_SIZE} obmm_gsva_node_count=${GSVA_MATRIX_NODE_COUNT} ${APPEND_EXTRA}" \
       >"$(qemu_log_for "$node_name")" 2>&1 &
   echo $! > "$(pid_file_for "$node_name")"
 }
@@ -254,11 +254,11 @@ validate_node_logs() {
     expected_node0="$(matrix_value 0 "$node_idx")"
     expected_last="$(matrix_value "$((GSVA_MATRIX_NODE_COUNT - 1))" "$node_idx")"
 
-    if ! grep -q '\[obmm_gsva_demo\] kernel aperture registry -> ok' "$guest_log"; then
+    if ! grep -q '\[obmm_gsva\] kernel aperture registry -> ok' "$guest_log"; then
       echo "$LOG_PREFIX FAIL: $node_name lacks kernel aperture evidence" >&2
       return 1
     fi
-    if ! grep -q "\[obmm_gsva_demo\] result=done mode=matrix node=${node_idx} node_count=${GSVA_MATRIX_NODE_COUNT}" "$guest_log"; then
+    if ! grep -q "\[obmm_gsva\] result=done mode=matrix node=${node_idx} node_count=${GSVA_MATRIX_NODE_COUNT}" "$guest_log"; then
       echo "$LOG_PREFIX FAIL: $node_name did not complete matrix mode" >&2
       return 1
     fi
@@ -289,7 +289,7 @@ validate_node_logs() {
         return 1
       fi
     fi
-    if grep -qE '\[obmm_gsva_demo\] result=fail|Kernel panic - not syncing|Call trace:' "$guest_log"; then
+    if grep -qE '\[obmm_gsva\] result=fail|Kernel panic - not syncing|Call trace:' "$guest_log"; then
       echo "$LOG_PREFIX FAIL: $node_name has failure markers" >&2
       return 1
     fi
@@ -301,7 +301,7 @@ validate_node_logs() {
 print_node_summary() {
   local node_name="$1"
   echo "$LOG_PREFIX ${node_name}:"
-  grep '\[obmm_gsva_demo\]' "$(guest_log_for "$node_name")" | tail -6
+  grep '\[obmm_gsva\]' "$(guest_log_for "$node_name")" | tail -6
 }
 
 echo "$LOG_PREFIX run_id=$RUN_ID base=$GSVA_MATRIX_BASE slice_size=$GSVA_MATRIX_SLICE_SIZE"
@@ -331,11 +331,11 @@ while (( SECONDS < deadline )); do
   fail_count=0
   for node_name in "${NODE_NAMES[@]}"; do
     if [[ -f "$(guest_log_for "$node_name")" ]] &&
-       grep -qE '\[obmm_gsva_demo\] result=done mode=matrix' "$(guest_log_for "$node_name")"; then
+       grep -qE '\[obmm_gsva\] result=done mode=matrix' "$(guest_log_for "$node_name")"; then
       done_count=$((done_count + 1))
     fi
     if [[ -f "$(guest_log_for "$node_name")" ]] &&
-       grep -qE '\[obmm_gsva_demo\] result=fail|\[run_demo\] linqu_ub_obmm_gsva_demo failed|Kernel panic - not syncing' "$(guest_log_for "$node_name")"; then
+       grep -qE '\[obmm_gsva\] result=fail|\[run_demo\] linqu_ub_obmm_gsva failed|Kernel panic - not syncing' "$(guest_log_for "$node_name")"; then
       fail_count=$((fail_count + 1))
     fi
   done
