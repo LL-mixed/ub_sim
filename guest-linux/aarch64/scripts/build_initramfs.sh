@@ -54,7 +54,7 @@ NPU_GSVA_TEST_BIN="$OUT_DIR/npu_gsva_test"
 SSD_GSVA_TEST_SRC="$ROOT_DIR/apps/ssd_gsva_test/ssd_gsva_test.c"
 SSD_GSVA_TEST_BIN="$OUT_DIR/ssd_gsva_test"
 W4_GUEST_SRC="$ROOT_DIR/w4_guest_qemu_demo.c"
-W4_DB_SERVICE_SRC="$ROOT_DIR/w4_kvcache_db_service.c"
+W4_DB_SERVICE_SRC="$ROOT_DIR/components/w5_mem_service/w4_kvcache_db_service.c"
 W4_GUEST_BIN="$OUT_DIR/linqu_w4_guest"
 RUN_DEMO_SRC="$ROOT_DIR/initramfs/run_demo"
 RUN_DEMO_BIN="$INITRAMFS_DIR/bin/run_demo"
@@ -390,7 +390,7 @@ fi
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$SSD_TEST_SRC" -o "$SSD_TEST_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/common" "$NPU_GSVA_TEST_SRC" -o "$NPU_GSVA_TEST_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/common" "$SSD_GSVA_TEST_SRC" -o "$SSD_GSVA_TEST_BIN"
-"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/libs/obmm_queue" -I"$ROOT_DIR/apps/obmm_queue_demo" "$W4_GUEST_SRC" "$W4_DB_SERVICE_SRC" -lm -o "$W4_GUEST_BIN"
+"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR" -I"$ROOT_DIR/.." -I"$ROOT_DIR/libs/obmm_queue" -I"$ROOT_DIR/apps/obmm_queue_demo" "$W4_GUEST_SRC" "$W4_DB_SERVICE_SRC" -lm -o "$W4_GUEST_BIN"
 
 if [[ -f "$INIT_SCRIPT_SRC" ]]; then
   cp "$INIT_SCRIPT_SRC" "$INIT_SCRIPT_BIN"

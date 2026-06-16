@@ -485,10 +485,16 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             Path(__file__).resolve().parents[1] / "w4_guest_qemu_demo.c"
         ).read_text(encoding="utf-8")
         db_service_source = (
-            Path(__file__).resolve().parents[1] / "w4_kvcache_db_service.c"
+            Path(__file__).resolve().parents[1]
+            / "components"
+            / "w5_mem_service"
+            / "w4_kvcache_db_service.c"
         ).read_text(encoding="utf-8")
         db_service_header = (
-            Path(__file__).resolve().parents[1] / "w4_kvcache_db_service.h"
+            Path(__file__).resolve().parents[1]
+            / "components"
+            / "w5_mem_service"
+            / "w4_kvcache_db_service.h"
         ).read_text(encoding="utf-8")
         cli_source = (
             Path(__file__).resolve().parents[3] / "crates" / "sim-cli" / "src" / "main.rs"

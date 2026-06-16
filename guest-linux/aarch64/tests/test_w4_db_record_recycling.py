@@ -4,8 +4,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SERVICE_C = ROOT / "w4_kvcache_db_service.c"
-SERVICE_H = ROOT / "w4_kvcache_db_service.h"
+SERVICE_DIR = ROOT / "components" / "w5_mem_service"
+SERVICE_C = SERVICE_DIR / "w4_kvcache_db_service.c"
+SERVICE_H = SERVICE_DIR / "w4_kvcache_db_service.h"
 GUEST_C = ROOT / "w4_guest_qemu_demo.c"
 
 

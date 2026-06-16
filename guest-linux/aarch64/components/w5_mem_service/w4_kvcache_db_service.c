@@ -23,7 +23,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "../kernel_ub/include/uapi/ub/obmm.h"
+#include "kernel_ub/include/uapi/ub/obmm.h"
 #include "common/obmm_common.h"
 #include "libs/obmm_queue/obmm_queue_types.h"
 #include "libs/obmm_queue/obmm_spsc_queue.h"

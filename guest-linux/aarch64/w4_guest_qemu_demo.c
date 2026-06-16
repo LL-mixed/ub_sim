@@ -21,7 +21,7 @@
 
 #include "../kernel_ub/include/uapi/ub/cdma/cdma_abi.h"
 #include "uburma_cmd_user_compat.h"
-#include "w4_kvcache_db_service.h"
+#include "components/w5_mem_service/w4_kvcache_db_service.h"
 
 #define DT_ROOT "/proc/device-tree"
 #define UBC_RESOURCE_BASE_FALLBACK 0x18000000000ULL
