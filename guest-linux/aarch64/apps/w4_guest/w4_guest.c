@@ -1858,6 +1858,53 @@ static bool qwen3_find_logits_table_by_scan(volatile uint8_t *ep_mmio,
     return false;
 }
 
+static bool qwen3_logits_table_candidate_matches_step(volatile uint8_t *ep_mmio,
+                                                      uint64_t header,
+                                                      bool allow_compact,
+                                                      uint64_t expected_step)
+{
+    uint64_t count;
+    uint64_t entry_words;
+    uint64_t entry_bytes;
+    uint64_t base;
+    uint64_t i;
+
+    if (!qwen3_logits_table_candidate_is_valid(ep_mmio, header, allow_compact)) {
+        return false;
+    }
+    count = read_segment_u64(ep_mmio, header + 8);
+    entry_words = read_segment_u64(ep_mmio, header + 16);
+    entry_bytes = entry_words * 8ULL;
+    base = header + 64ULL;
+    for (i = 0; i < count; ++i) {
+        if (read_segment_u64(ep_mmio, base + i * entry_bytes) != expected_step) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool qwen3_find_logits_table_by_scan_for_step(volatile uint8_t *ep_mmio,
+                                                     bool allow_compact,
+                                                     uint64_t expected_step,
+                                                     uint64_t *table_header)
+{
+    uint64_t cursor;
+    uint64_t scan_limit = qwen3_output_scan_limit(ep_mmio);
+
+    for (cursor = 0; cursor + 64ULL <= scan_limit; cursor += 8ULL) {
+        if (qwen3_logits_table_candidate_matches_step(ep_mmio,
+                                                      cursor,
+                                                      allow_compact,
+                                                      expected_step)) {
+            *table_header = cursor;
+            return true;
+        }
+    }
+
+    return false;
+}
+
 struct w4_qwen3_terminal_token_record {
     uint64_t sampled_token;
     uint64_t runner_up_token;
@@ -4907,10 +4954,14 @@ qwen3_logits_tables:
         } else {
             uint64_t expected_logits_entry_words = W4_QWEN3_LOGITS_TABLE_ENTRY_WORDS;
 
-            if (range_only_flow && !qwen3_find_logits_table_by_scan(ep_mmio,
-                                                                    true,
-                                                                    &logits_table_header)) {
-                fprintf(stderr, "[w4_guest] qwen3 logits table missing range_only=1\n");
+            if (range_only_flow &&
+                !qwen3_find_logits_table_by_scan_for_step(ep_mmio,
+                                                          true,
+                                                          decode_step,
+                                                          &logits_table_header)) {
+                fprintf(stderr,
+                        "[w4_guest] qwen3 logits table missing range_only=1 step=%" PRIu64 "\n",
+                        decode_step);
                 return -1;
             }
             logits_table_base = logits_table_header + 64ULL;
