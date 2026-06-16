@@ -450,8 +450,8 @@ run_default_actions() {
     ran_any="1"
   fi
 
-  if has_flag "linqu_ub_udma_demo=1"; then
-    run_binary "linqu_ub_udma_demo" /bin/linqu_ub_udma_demo || rc=$?
+  if has_flag "linqu_ub_udma=1" || has_flag "linqu_ub_udma_demo=1"; then
+    run_binary "linqu_ub_udma" /bin/linqu_ub_udma || rc=$?
     ran_any="1"
   fi
 
@@ -511,7 +511,7 @@ run_single_action() {
       run_binary "linqu_ub_tcp_each_server" /bin/linqu_ub_tcp_each_server
       ;;
     udma)
-      run_binary "linqu_ub_udma_demo" /bin/linqu_ub_udma_demo
+      run_binary "linqu_ub_udma" /bin/linqu_ub_udma
       ;;
     obmm)
       run_binary "linqu_ub_obmm_demo" /bin/linqu_ub_obmm_demo

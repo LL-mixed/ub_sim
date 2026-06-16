@@ -25,6 +25,20 @@ def test_ub_rpc_uses_canonical_app_source():
     assert not (ROOT / "apps" / "ub_rpc_demo").exists()
 
 
+def test_ub_udma_uses_canonical_app_source():
+    build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
+    run_demo = (ROOT / "initramfs" / "run_demo").read_text()
+    app_dir = ROOT / "apps" / "ub_udma"
+
+    assert 'UDMA_SRC="$ROOT_DIR/apps/ub_udma/ub_udma.c"' in build_script
+    assert 'UDMA_BIN="$OUT_DIR/linqu_ub_udma"' in build_script
+    assert "linqu_ub_udma_demo" not in build_script
+    assert "linqu_ub_udma=1" in run_demo
+    assert (app_dir / "ub_udma.c").exists()
+    assert (app_dir / "Makefile").exists()
+    assert not (ROOT / "apps" / "ub_udma_demo").exists()
+
+
 def test_ub_tcp_each_server_uses_canonical_app_source():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     app_dir = ROOT / "apps" / "ub_tcp_each_server"

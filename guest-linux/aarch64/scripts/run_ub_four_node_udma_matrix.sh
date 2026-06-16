@@ -192,7 +192,7 @@ send_udma_cmd() {
   payload+=$'echo '"${start_marker}"$'\n'
   payload+=$'/bin/insmod /lib/modules/uburma.ko 2>/dev/null || true\n'
   payload+=$'i=0; while [ ! -d /sys/class/uburma ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done\n'
-  payload+=$'/bin/linqu_ub_udma_demo\n'
+  payload+=$'/bin/linqu_ub_udma\n'
 
   send_serial_block "$serial_port" "$payload"
 }

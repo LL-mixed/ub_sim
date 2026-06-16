@@ -433,7 +433,7 @@ Success criteria:
 Run on `nodeB` first, then `nodeA`:
 
 ```sh
-/bin/linqu_ub_udma_demo
+/bin/linqu_ub_udma
 ```
 
 Success criteria:

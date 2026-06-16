@@ -9034,8 +9034,8 @@ static int probe_uburma_dispatch_candidate(const char *role, bool *seg_ready)
     if (pid == 0) {
         setenv("LINQU_UB_ROLE", role, 1);
         setenv(mode_env, "1", 1);
-        execl("/bin/linqu_ub_udma_demo", "/bin/linqu_ub_udma_demo", (char *)NULL);
-        fprintf(stderr, "[w4_guest] exec /bin/linqu_ub_udma_demo failed: %s\n",
+        execl("/bin/linqu_ub_udma", "/bin/linqu_ub_udma", (char *)NULL);
+        fprintf(stderr, "[w4_guest] exec /bin/linqu_ub_udma failed: %s\n",
                 strerror(errno));
         _exit(127);
     }
@@ -9075,8 +9075,8 @@ static int probe_real_dispatch_candidate(const char *role)
         setenv("LINQU_UB_ROLE", role, 1);
         unsetenv("LINQU_UB_UDMA_STOP_AFTER_CTX");
         unsetenv("LINQU_UB_UDMA_STOP_AFTER_SEG");
-        execl("/bin/linqu_ub_udma_demo", "/bin/linqu_ub_udma_demo", (char *)NULL);
-        fprintf(stderr, "[w4_guest] exec /bin/linqu_ub_udma_demo failed: %s\n",
+        execl("/bin/linqu_ub_udma", "/bin/linqu_ub_udma", (char *)NULL);
+        fprintf(stderr, "[w4_guest] exec /bin/linqu_ub_udma failed: %s\n",
                 strerror(errno));
         _exit(127);
     }
@@ -9093,7 +9093,7 @@ static int probe_real_dispatch_candidate(const char *role)
         return -1;
     }
 
-    printf("[w4_guest] stage dispatch_candidate=uburma_udma_ready role=%s path=/bin/linqu_ub_udma_demo\n",
+    printf("[w4_guest] stage dispatch_candidate=uburma_udma_ready role=%s path=/bin/linqu_ub_udma\n",
            role);
     return 0;
 }
@@ -10211,7 +10211,7 @@ int main(void)
             const char *remote_role = (strcmp(role, "nodeA") == 0) ? "nodeC" : "nodeD";
             dispatch_candidate = "uburma_udma_ready";
             block_candidate = "uburma_data_path_ready";
-            printf("[w4_guest] stage block_candidate=uburma_data_path_ready path=/bin/linqu_ub_udma_demo\n");
+            printf("[w4_guest] stage block_candidate=uburma_data_path_ready path=/bin/linqu_ub_udma\n");
             printf("[w4_guest] stage db_dfs_foundation=shmem_urma_ready\n");
             db_block_ctx.placement_node = placement_node;
             db_block_ctx.placement_level = 2U;

@@ -21,8 +21,8 @@ RPC_SRC="$ROOT_DIR/apps/ub_rpc/ub_rpc.c"
 RPC_BIN="$OUT_DIR/linqu_ub_rpc"
 TCP_EACH_SERVER_SRC="$ROOT_DIR/apps/ub_tcp_each_server/ub_tcp_each_server.c"
 TCP_EACH_SERVER_BIN="$OUT_DIR/linqu_ub_tcp_each_server"
-UDMA_SRC="$ROOT_DIR/apps/ub_udma_demo/ub_udma_demo.c"
-UDMA_BIN="$OUT_DIR/linqu_ub_udma_demo"
+UDMA_SRC="$ROOT_DIR/apps/ub_udma/ub_udma.c"
+UDMA_BIN="$OUT_DIR/linqu_ub_udma"
 OBMM_SRC="$ROOT_DIR/apps/ub_obmm_pool_demo/ub_obmm_pool_demo.c"
 OBMM_BIN="$OUT_DIR/linqu_ub_obmm_demo"
 OBMM_QUEUE_DEMO_SRC="$ROOT_DIR/apps/obmm_queue_demo/obmm_queue_demo.c"
@@ -408,7 +408,7 @@ cp "$INSMOD_BIN" "$INITRAMFS_DIR/bin/insmod"
 cp "$CHAT_BIN" "$INITRAMFS_DIR/bin/linqu_ub_chat"
 cp "$RPC_BIN" "$INITRAMFS_DIR/bin/linqu_ub_rpc"
 cp "$TCP_EACH_SERVER_BIN" "$INITRAMFS_DIR/bin/linqu_ub_tcp_each_server"
-cp "$UDMA_BIN" "$INITRAMFS_DIR/bin/linqu_ub_udma_demo"
+cp "$UDMA_BIN" "$INITRAMFS_DIR/bin/linqu_ub_udma"
 cp "$OBMM_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_demo"
 cp "$OBMM_QUEUE_DEMO_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_queue_demo"
 cp "$OBMM_IMPORT_STRESS_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_import_stress"
@@ -432,7 +432,7 @@ chmod +x \
   "$INITRAMFS_DIR/bin/linqu_ub_chat" \
   "$INITRAMFS_DIR/bin/linqu_ub_rpc" \
   "$INITRAMFS_DIR/bin/linqu_ub_tcp_each_server" \
-  "$INITRAMFS_DIR/bin/linqu_ub_udma_demo" \
+  "$INITRAMFS_DIR/bin/linqu_ub_udma" \
   "$INITRAMFS_DIR/bin/linqu_ub_obmm_demo" \
   "$INITRAMFS_DIR/bin/linqu_ub_obmm_queue_demo" \
   "$INITRAMFS_DIR/bin/linqu_ub_obmm_dataplane_microbench" \
