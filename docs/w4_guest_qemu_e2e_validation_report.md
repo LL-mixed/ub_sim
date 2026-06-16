@@ -381,10 +381,10 @@ test result: ok. 1 passed; 0 failed
 
 该 gate 覆盖 `qwen3_dense_0_6b` profile 的 host-side artifact path：每个 shard 都经过 HostMatmul / HostBuildGraph artifact path，输出长度为 `8 * 128 * 128` 个 `f32`，并验证各 shard 输出不是同一 fixed HostMatmul word。它是 profile/artifact 准入基线，不等价于 guest decode-loop。
 
-Qwen3 Dense 0.6B guest decode-loop 的完整准入 gate 是下面的 4-node / 8-node guest/QEMU W4 harness。harness 在 guest 内执行 `/bin/linqu_w4_guest`，该 binary 由 `guest-linux/aarch64/w4_guest_qemu_demo.c` 和 `guest-linux/aarch64/components/w5_mem_service/w4_kvcache_db_service.c` 构建：
+Qwen3 Dense 0.6B guest decode-loop 的完整准入 gate 是下面的 4-node / 8-node guest/QEMU W4 harness。harness 在 guest 内执行 `/bin/linqu_w4_guest`，该 binary 由 `guest-linux/aarch64/apps/w4_guest/w4_guest.c` 和 `guest-linux/aarch64/components/w5_mem_service/w4_kvcache_db_service.c` 构建：
 
 ```text
-w4_guest_qemu_demo.c + components/w5_mem_service/w4_kvcache_db_service.c -> /bin/linqu_w4_guest
+apps/w4_guest/w4_guest.c + components/w5_mem_service/w4_kvcache_db_service.c -> /bin/linqu_w4_guest
 ```
 
 因此，本轮没有把 W4 验证降级为 HostMatmul smoke。host-side qwen3 dispatch gate 与 guest/QEMU 8-node 16-step decode-loop run 一起构成当前验证口径。

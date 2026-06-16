@@ -25,7 +25,7 @@ Current repo usage is overloaded:
 
 1. **Engram decode policy**
    - Implemented in `crates/sim-cli/src/main.rs` and
-     `guest-linux/aarch64/w4_guest_qemu_demo.c`.
+     `guest-linux/aarch64/apps/w4_guest/w4_guest.c`.
    - Applies no-repeat ngram and repetition penalty during candidate token
      selection.
    - Does not implement paper Engram.

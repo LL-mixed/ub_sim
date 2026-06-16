@@ -87,7 +87,7 @@ W5 runtime artifact registration and ObjectRef conversion:
 
 Guest boundary registry and commit path:
 
-- `guest-linux/aarch64/w4_guest_qemu_demo.c`
+- `guest-linux/aarch64/apps/w4_guest/w4_guest.c`
   - `qwen3_memory_shortpath_stream_entry_for_boundary`
   - `qwen3_memory_shortpath_validate_stream_boundary_fingerprint`
   - `qwen3_memory_shortpath_validate_single_boundary_fingerprint`

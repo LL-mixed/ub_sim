@@ -135,7 +135,7 @@ value = learned parameter row
 位置：
 
 - `crates/sim-cli/src/main.rs`
-- `guest-linux/aarch64/w4_guest_qemu_demo.c`
+- `guest-linux/aarch64/apps/w4_guest/w4_guest.c`
 
 功能：
 

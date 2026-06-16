@@ -19,7 +19,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "../kernel_ub/include/uapi/ub/cdma/cdma_abi.h"
+#include "kernel_ub/include/uapi/ub/cdma/cdma_abi.h"
 #include "uburma_cmd_user_compat.h"
 #include "components/w5_mem_service/w4_kvcache_db_service.h"
 

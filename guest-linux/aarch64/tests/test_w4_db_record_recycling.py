@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SERVICE_DIR = ROOT / "components" / "w5_mem_service"
 SERVICE_C = SERVICE_DIR / "w4_kvcache_db_service.c"
 SERVICE_H = SERVICE_DIR / "w4_kvcache_db_service.h"
-GUEST_C = ROOT / "w4_guest_qemu_demo.c"
+GUEST_C = ROOT / "apps" / "w4_guest" / "w4_guest.c"
 
 
 class W4DbRecordRecyclingTests(unittest.TestCase):

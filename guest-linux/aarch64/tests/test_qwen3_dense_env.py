@@ -482,7 +482,10 @@ class Qwen3DenseEnvTest(unittest.TestCase):
 
     def test_guest_consumes_w5_prefix_cache_reuse_as_kv_object_ref(self):
         guest_source = (
-            Path(__file__).resolve().parents[1] / "w4_guest_qemu_demo.c"
+            Path(__file__).resolve().parents[1]
+            / "apps"
+            / "w4_guest"
+            / "w4_guest.c"
         ).read_text(encoding="utf-8")
         db_service_source = (
             Path(__file__).resolve().parents[1]
