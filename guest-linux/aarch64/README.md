@@ -141,7 +141,7 @@ Inside guest, you can run:
 `obmm` now runs the pool-based validation path. It is no longer the old
 pairwise exporter/importer demo. The current guest binary behind this entry is
 `/bin/linqu_ub_obmm_demo`, built from
-`[ub_obmm_pool_demo.c](ub_obmm_pool_demo.c)`.
+[apps/ub_obmm_pool_demo/ub_obmm_pool_demo.c](apps/ub_obmm_pool_demo/ub_obmm_pool_demo.c).
 For `N=2` it validates the dual-node pool case; for `N=4` and `N=8` it validates
 that every node exports one slot, imports all remote slots, and completes the
 round-based pool touch/update barrier.

@@ -21,7 +21,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "../kernel_ub/include/uapi/ub/obmm.h"
+#include "kernel_ub/include/uapi/ub/obmm.h"
 
 #define OBMM_PORT 18560
 #define RUN_TIMEOUT_S 300

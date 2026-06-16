@@ -44,7 +44,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "../kernel_ub/include/uapi/linux/ummu_core.h"
+#include "kernel_ub/include/uapi/linux/ummu_core.h"
 #include "uburma_cmd_user_compat.h"
 
 /* ---------- constants ---------- */
