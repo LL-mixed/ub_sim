@@ -80,3 +80,17 @@ def test_ssd_gsva_test_has_independent_app_build():
     assert 'SSD_GSVA_TEST_SRC="$ROOT_DIR/apps/ssd_gsva_test/ssd_gsva_test.c"' in build_script
     assert (app_dir / "ssd_gsva_test.c").exists()
     assert (app_dir / "Makefile").exists()
+
+
+def test_obmm_gsva_uses_canonical_app_source():
+    build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
+    run_demo = (ROOT / "initramfs" / "run_demo").read_text()
+    app_dir = ROOT / "apps" / "obmm_gsva"
+
+    assert 'OBMM_GSVA_SRC="$ROOT_DIR/apps/obmm_gsva/obmm_gsva.c"' in build_script
+    assert 'OBMM_GSVA_BIN="$OUT_DIR/linqu_ub_obmm_gsva"' in build_script
+    assert "linqu_ub_obmm_gsva_demo" not in build_script
+    assert "linqu_obmm_gsva=1" in run_demo
+    assert (app_dir / "obmm_gsva.c").exists()
+    assert (app_dir / "Makefile").exists()
+    assert not (ROOT / "apps" / "obmm_gsva_demo").exists()
