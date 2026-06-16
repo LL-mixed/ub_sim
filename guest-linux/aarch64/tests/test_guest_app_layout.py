@@ -153,6 +153,8 @@ def test_ub_obmm_pool_uses_canonical_app_source():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     run_demo = (ROOT / "initramfs" / "run_demo").read_text()
     dual_runner = (ROOT / "scripts" / "run_ub_dual_node_obmm_pool.sh").read_text()
+    four_runner = (ROOT / "scripts" / "run_ub_four_node_obmm_pool.sh").read_text()
+    eight_runner = (ROOT / "scripts" / "run_ub_eight_node_obmm_pool.sh").read_text()
     app_dir = ROOT / "apps" / "ub_obmm_pool"
 
     assert 'OBMM_POOL_SRC="$ROOT_DIR/apps/ub_obmm_pool/ub_obmm_pool.c"' in build_script
@@ -160,6 +162,10 @@ def test_ub_obmm_pool_uses_canonical_app_source():
     assert "linqu_ub_obmm_demo" not in build_script
     assert "linqu_obmm_pool=1" in run_demo
     assert "run linqu_ub_obmm_pool" in dual_runner
+    assert "run_pool_app" in four_runner
+    assert "[obmm-pool4]" in four_runner
+    assert "run_pool_app" in eight_runner
+    assert "[obmm-pool8]" in eight_runner
     assert (app_dir / "ub_obmm_pool.c").exists()
     assert (app_dir / "Makefile").exists()
     assert not (ROOT / "apps" / "ub_obmm_pool_demo").exists()

@@ -8,10 +8,10 @@ OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
 REPORT_FILE="${REPORT_FILE:-$OUT_DIR/eight_node_obmm_pool.latest.txt}"
 TRACE_FILE="${TRACE_FILE:-$OUT_DIR/eight_node_obmm_pool.trace.latest.txt}"
-RUN_ID_BASE="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_obmmpool8_${RANDOM}}"
+RUN_ID_BASE="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_obmm_pool8_${RANDOM}}"
 RUN_DIR="$LOG_DIR/${RUN_ID_BASE}_headless8"
 BOOT_WAIT_SECS="${BOOT_WAIT_SECS:-180}"
-DEMO_WAIT_SECS="${DEMO_WAIT_SECS:-180}"
+APP_WAIT_SECS="${APP_WAIT_SECS:-${DEMO_WAIT_SECS:-180}}"
 START_GAP_SECS="${START_GAP_SECS:-1}"
 APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1 pmd_mapping=100% obmm.mempool_size=0}"
 QEMU_MEM="${QEMU_MEM:-8G}"
@@ -25,7 +25,7 @@ ALL_IPS_CSV="${(j:,:)NODE_IPS}"
 
 trace() {
   local msg="$1"
-  printf '[obmmpool8] %s\n' "$msg" | tee -a "$TRACE_FILE" >&2
+  printf '[obmm-pool8] %s\n' "$msg" | tee -a "$TRACE_FILE" >&2
 }
 
 wait_for_log_pattern() {
@@ -264,7 +264,7 @@ validate_node_log() {
   assert_log_absent "$log_file" "Kernel panic - not syncing" "$node_id kernel panic" || return 1
 }
 
-run_pool_demo() {
+run_pool_app() {
   local node_id
   local guest_log
   local serial_endpoint
@@ -279,7 +279,7 @@ run_pool_demo() {
     START_LINES[$node_id]="$start_line"
     serial_endpoint="$(node_serial_endpoint "$node_id" "$PORT_BASE")"
     start_marker="OBMM_POOL_${node_id}_START"
-    trace "start pool demo on $node_id serial=$serial_endpoint"
+    trace "start pool app on $node_id serial=$serial_endpoint"
     send_obmm_pool_cmd "$(node_ip "$node_id")" "$serial_endpoint" "$start_marker"
     sleep "$START_GAP_SECS"
   done
@@ -288,9 +288,9 @@ run_pool_demo() {
     guest_log="$RUN_DIR/${node_id}_guest.log"
     rc=0
     wait_for_log_pass_or_fail_since "$guest_log" "${START_LINES[$node_id]}" \
-      "\\[ub_obmm_pool\\] pass" "\\[ub_obmm_pool\\] fail" "$DEMO_WAIT_SECS" || rc=$?
+      "\\[ub_obmm_pool\\] pass" "\\[ub_obmm_pool\\] fail" "$APP_WAIT_SECS" || rc=$?
     if [[ "$rc" -ne 0 ]]; then
-      trace "FAIL: pool demo did not pass on $node_id rc=$rc"
+      trace "FAIL: pool app did not pass on $node_id rc=$rc"
       return 1
     fi
   done
@@ -311,7 +311,7 @@ main() {
 
   if prepare_environment; then
     cleanup_script="$CLEANUP_SCRIPT"
-    if run_pool_demo; then
+    if run_pool_app; then
       result="PASS"
     fi
   fi
