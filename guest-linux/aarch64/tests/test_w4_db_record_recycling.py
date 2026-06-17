@@ -8,6 +8,8 @@ SERVICE_DIR = ROOT / "components" / "w5_mem_service"
 SERVICE_C = SERVICE_DIR / "w4_kvcache_db_service.c"
 SERVICE_H = SERVICE_DIR / "w4_kvcache_db_service.h"
 GUEST_C = ROOT / "apps" / "w4_guest" / "w4_guest.c"
+FOUR_NODE_W4_RUNNER = ROOT / "scripts" / "run_ub_four_node_w4_guest.sh"
+EIGHT_NODE_W4_RUNNER = ROOT / "scripts" / "run_ub_eight_node_w4_guest.sh"
 
 
 class W4DbRecordRecyclingTests(unittest.TestCase):
@@ -86,12 +88,17 @@ class W4DbRecordRecyclingTests(unittest.TestCase):
         self.assertIn("qwen3 range kv payload reserve failed", source)
 
     def test_w4_guest_legacy_kvcache_payload_is_not_demo_named(self):
-        source = GUEST_C.read_text()
+        sources = [
+            GUEST_C.read_text(),
+            FOUR_NODE_W4_RUNNER.read_text(),
+            EIGHT_NODE_W4_RUNNER.read_text(),
+        ]
+        combined = "\n".join(sources)
 
-        self.assertIn("W4_LEGACY_KVCACHE_PAYLOAD_BYTES", source)
-        self.assertIn("legacy_kvcache_payload", source)
-        self.assertNotIn("W4_DEMO_KVCACHE_PAYLOAD_BYTES", source)
-        self.assertNotIn("legacy_demo_payload", source)
+        self.assertIn("W4_LEGACY_KVCACHE_PAYLOAD_BYTES", combined)
+        self.assertIn("legacy_kvcache_payload", combined)
+        self.assertNotIn("W4_DEMO_KVCACHE_PAYLOAD_BYTES", combined)
+        self.assertNotIn("legacy_demo_payload", combined)
 
 
 if __name__ == "__main__":
