@@ -165,7 +165,7 @@ pub struct EventSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UapiDemoReport {
+pub struct UapiAppReport {
     pub hosts_count: usize,
     pub ubpus_count: usize,
     pub entities_count: usize,
@@ -182,7 +182,7 @@ pub struct UapiDemoReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QemuBackendDemoReport {
+pub struct QemuBackendAppReport {
     pub hosts_count: usize,
     pub ubpus_count: usize,
     pub entities_count: usize,
@@ -239,8 +239,8 @@ pub struct WorkloadRunReport {
 pub struct AuxiliaryDebugReport {
     pub runtime_summary: EventSummary,
     pub runtime_events: Vec<SimEvent>,
-    pub uapi_report: UapiDemoReport,
-    pub qemu_backend_report: QemuBackendDemoReport,
+    pub uapi_report: UapiAppReport,
+    pub qemu_backend_report: QemuBackendAppReport,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -56,8 +56,8 @@ use sim_qemu::{
 };
 use sim_report::{
     AuxiliaryDebugReport, CliReport, CompletionSourceStats, CompletionStatusStats, DecoderReport,
-    DomainReport, EntityReport, EventSummary, HostReport, QemuBackendDemoReport, RouteReport,
-    TopologyReport, UapiDemoReport, UbcReport, UbpuReport, UmmuReport,
+    DomainReport, EntityReport, EventSummary, HostReport, QemuBackendAppReport, RouteReport,
+    TopologyReport, UapiAppReport, UbcReport, UbpuReport, UmmuReport,
 };
 use sim_runtime::{
     EventSink, EvictionPlan, InMemoryBlockStore, LocalRuntimeEngine, PromotionPlan,
@@ -158,11 +158,12 @@ fn main() -> anyhow::Result<()> {
         run_minimal_workload(&config, &topology).context("failed to run minimal workload")?;
     workload_report.summary = summarize_events(&workload_report.events);
     let auxiliary = if include_auxiliary_debug() {
-        let runtime_events =
-            run_demo(&config, &topology).context("failed to run route/store/event demo")?;
-        let uapi_report = run_uapi_demo(&topology).context("failed to run local uapi demo")?;
-        let qemu_backend_report =
-            run_qemu_backend_demo(&topology).context("failed to run qemu backend demo")?;
+        let runtime_events = run_auxiliary_runtime_diagnostic(&config, &topology)
+            .context("failed to run route/store/event diagnostic")?;
+        let uapi_report = run_uapi_app_diagnostic(&topology)
+            .context("failed to run local uapi app diagnostic")?;
+        let qemu_backend_report = run_qemu_backend_app_diagnostic(&topology)
+            .context("failed to run qemu backend app diagnostic")?;
         Some(AuxiliaryDebugReport {
             runtime_summary: summarize_events(&runtime_events),
             runtime_events,
@@ -33827,14 +33828,17 @@ fn include_auxiliary_debug() -> bool {
     matches!(env::var("SIM_CLI_INCLUDE_AUX").as_deref(), Ok("1"))
 }
 
-fn run_demo(config: &ScenarioConfig, topology: &SimTopology) -> anyhow::Result<Vec<SimEvent>> {
+fn run_auxiliary_runtime_diagnostic(
+    config: &ScenarioConfig,
+    topology: &SimTopology,
+) -> anyhow::Result<Vec<SimEvent>> {
     let task = TaskKey {
         logical_system: LogicalSystemId(1),
         coord: HierarchyCoord { levels: [0; 8] },
         scope_depth: 0,
         task_id: 1,
     };
-    let block = BlockHash("demo-block-0".to_string());
+    let block = BlockHash("diagnostic-block-0".to_string());
 
     let planner = RecursiveRoutePlanner::from_config(config);
     let mut store = InMemoryBlockStore::from_config(config);
@@ -33901,7 +33905,7 @@ fn run_demo(config: &ScenarioConfig, topology: &SimTopology) -> anyhow::Result<V
             DispatchRequest {
                 task: task.clone(),
                 function: FunctionLabel {
-                    name: "runtime_demo_dispatch".into(),
+                    name: "runtime_diagnostic_dispatch".into(),
                     level: PlLevel::L4,
                 },
                 backend_spec: None,
@@ -33938,7 +33942,7 @@ fn run_demo(config: &ScenarioConfig, topology: &SimTopology) -> anyhow::Result<V
             DispatchRequest {
                 task: task.clone(),
                 function: FunctionLabel {
-                    name: "runtime_demo_timeout".into(),
+                    name: "runtime_diagnostic_timeout".into(),
                     level: PlLevel::L4,
                 },
                 backend_spec: None,
@@ -33956,7 +33960,7 @@ fn run_demo(config: &ScenarioConfig, topology: &SimTopology) -> anyhow::Result<V
     Ok(sink.into_events())
 }
 
-fn run_uapi_demo(topology: &SimTopology) -> anyhow::Result<UapiDemoReport> {
+fn run_uapi_app_diagnostic(topology: &SimTopology) -> anyhow::Result<UapiAppReport> {
     let mut surface = LocalGuestUapiSurface::new(topology.clone());
     let topo = match surface
         .execute(UapiCommand::QueryTopology)
@@ -34131,7 +34135,7 @@ fn run_uapi_demo(topology: &SimTopology) -> anyhow::Result<UapiDemoReport> {
             owner: 0,
             desc: UapiDescriptor::DfsWrite(DfsWriteReq {
                 task: None,
-                path: "/weights/uapi-demo.bin".into(),
+                path: "/weights/uapi-app-diagnostic.bin".into(),
                 bytes: 4096,
             }),
         })
@@ -34147,7 +34151,7 @@ fn run_uapi_demo(topology: &SimTopology) -> anyhow::Result<UapiDemoReport> {
             owner: 0,
             desc: UapiDescriptor::DfsRead(DfsReadReq {
                 task: None,
-                path: "/weights/uapi-demo.bin".into(),
+                path: "/weights/uapi-app-diagnostic.bin".into(),
             }),
         })
         .context("enqueue dfs read failed")?
@@ -34256,7 +34260,7 @@ fn run_uapi_demo(topology: &SimTopology) -> anyhow::Result<UapiDemoReport> {
     let _ = write_op;
     let _ = read_op;
 
-    Ok(UapiDemoReport {
+    Ok(UapiAppReport {
         hosts_count: topo.hosts,
         ubpus_count: topo.ubpus,
         entities_count: topo.entities,
@@ -34273,7 +34277,7 @@ fn run_uapi_demo(topology: &SimTopology) -> anyhow::Result<UapiDemoReport> {
     })
 }
 
-fn run_qemu_backend_demo(topology: &SimTopology) -> anyhow::Result<QemuBackendDemoReport> {
+fn run_qemu_backend_app_diagnostic(topology: &SimTopology) -> anyhow::Result<QemuBackendAppReport> {
     let mut handler = QemuMmioHandler::new(LinquDeviceModel::new(topology.clone()));
     let mmio = handler.device().mmio();
     let topo = handler
@@ -34353,7 +34357,7 @@ fn run_qemu_backend_demo(topology: &SimTopology) -> anyhow::Result<QemuBackendDe
             4,
             GuestDescriptor::Service(GuestServiceDescriptor::DfsWrite(DfsWriteReq {
                 task: None,
-                path: "/weights/qemu-demo.bin".into(),
+                path: "/weights/qemu-backend-app-diagnostic.bin".into(),
                 bytes: 4096,
             })),
         )
@@ -34365,7 +34369,7 @@ fn run_qemu_backend_demo(topology: &SimTopology) -> anyhow::Result<QemuBackendDe
             5,
             GuestDescriptor::Service(GuestServiceDescriptor::DfsRead(DfsReadReq {
                 task: None,
-                path: "/weights/qemu-demo.bin".into(),
+                path: "/weights/qemu-backend-app-diagnostic.bin".into(),
             })),
         )
         .context("write qemu dfs read descriptor failed")?;
@@ -34457,7 +34461,7 @@ fn run_qemu_backend_demo(topology: &SimTopology) -> anyhow::Result<QemuBackendDe
         .read(mmio.irq_status_addr(endpoint))
         .context("read qemu backend irq status after ack failed")?;
 
-    Ok(QemuBackendDemoReport {
+    Ok(QemuBackendAppReport {
         hosts_count: topo.hosts,
         ubpus_count: topo.ubpus,
         entities_count: topo.entities,
@@ -34663,7 +34667,7 @@ fn print_report(report: &CliReport) {
 
     if let Some(aux) = &report.auxiliary {
         println!();
-        println!("runtime_demo_events:");
+        println!("runtime_diagnostic_events:");
         println!(
             "  summary: completions={} chip={} success={} fatal={} retried={} failed={}",
             aux.runtime_summary.completions_total,
@@ -34678,7 +34682,7 @@ fn print_report(report: &CliReport) {
         }
 
         println!();
-        println!("uapi_demo:");
+        println!("uapi_app_diagnostic:");
         println!(
             "  snapshot => hosts={} ubpus={} entities={} domains={}",
             aux.uapi_report.hosts_count,
@@ -34713,7 +34717,7 @@ fn print_report(report: &CliReport) {
         }
 
         println!();
-        println!("qemu_backend_demo:");
+        println!("qemu_backend_app_diagnostic:");
         println!(
             "  snapshot => hosts={} ubpus={} entities={} domains={}",
             aux.qemu_backend_report.hosts_count,
