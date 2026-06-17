@@ -444,7 +444,7 @@ Success criteria:
 
 ### obmm
 
-`obmm` now uses the pool-style demo entrypoint even in dual-node mode.
+`obmm` now uses the pool-style app entrypoint even in dual-node mode.
 With `N=2`, the same binary degenerates into a two-slot pool:
 
 - each node exports one region

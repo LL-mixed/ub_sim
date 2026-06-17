@@ -123,8 +123,6 @@ def test_obmm_gsva_uses_canonical_app_source():
             (ROOT / "scripts" / "run_ub_eight_node_gsva_arm_mmu_acceptance.sh").read_text(),
         ]
     )
-    legacy_dual_runner = (ROOT / "scripts" / "run_ub_dual_node_gsva_demo.sh").read_text()
-    legacy_matrix_runner = (ROOT / "scripts" / "run_ub_four_node_gsva_matrix_demo.sh").read_text()
     app_dir = ROOT / "apps" / "obmm_gsva"
     app_source = (app_dir / "obmm_gsva.c").read_text()
 
@@ -141,8 +139,6 @@ def test_obmm_gsva_uses_canonical_app_source():
     assert "[obmm-gsva]" in dual_runner
     assert "rdinit=/bin/run_demo obmm_gsva" in multi_runner
     assert "OBMM_GSVA_MATRIX_NODE_COUNT" in multi_runner
-    assert "run_ub_dual_node_obmm_gsva.sh" in legacy_dual_runner
-    assert "run_ub_multi_node_obmm_gsva_matrix.sh" in legacy_matrix_runner
     assert "enum gsva_app_mode" in app_source
     assert "struct gsva_app_config" in app_source
     assert "GSVA_DEMO" not in app_source
@@ -150,6 +146,8 @@ def test_obmm_gsva_uses_canonical_app_source():
     assert (app_dir / "obmm_gsva.c").exists()
     assert (app_dir / "Makefile").exists()
     assert not (ROOT / "apps" / "obmm_gsva_demo").exists()
+    assert not (ROOT / "scripts" / "run_ub_dual_node_gsva_demo.sh").exists()
+    assert not (ROOT / "scripts" / "run_ub_four_node_gsva_matrix_demo.sh").exists()
 
 
 def test_gva_direct_uses_canonical_app_source():
@@ -174,8 +172,6 @@ def test_obmm_queue_uses_canonical_app_source():
     dual_runner = (ROOT / "scripts" / "run_ub_dual_node_obmm_queue.sh").read_text()
     four_runner = (ROOT / "scripts" / "run_ub_four_node_obmm_queue.sh").read_text()
     eight_runner = (ROOT / "scripts" / "run_ub_eight_node_obmm_queue.sh").read_text()
-    legacy_four_runner = (ROOT / "scripts" / "run_ub_four_node_obmm_queue_demo.sh").read_text()
-    legacy_eight_runner = (ROOT / "scripts" / "run_ub_eight_node_obmm_queue_demo.sh").read_text()
     app_dir = ROOT / "apps" / "obmm_queue"
     app_source = (app_dir / "obmm_queue.c").read_text()
 
@@ -195,8 +191,6 @@ def test_obmm_queue_uses_canonical_app_source():
     assert "export OBMM_QUEUE_MODE=" in eight_runner
     assert "OBMM_DEMO_MODE" not in eight_runner
     assert "OBMM_DEMO_MODE" not in run_demo
-    assert "run_ub_four_node_obmm_queue.sh" in legacy_four_runner
-    assert "run_ub_eight_node_obmm_queue.sh" in legacy_eight_runner
     assert "enum queue_mode" in app_source
     assert "parse_queue_mode" in app_source
     assert "OBMM_QUEUE_MODE" in app_source
@@ -206,6 +200,8 @@ def test_obmm_queue_uses_canonical_app_source():
     assert (app_dir / "obmm_pool_helpers.h").exists()
     assert (app_dir / "Makefile").exists()
     assert not (ROOT / "apps" / "obmm_queue_demo").exists()
+    assert not (ROOT / "scripts" / "run_ub_four_node_obmm_queue_demo.sh").exists()
+    assert not (ROOT / "scripts" / "run_ub_eight_node_obmm_queue_demo.sh").exists()
 
 
 def test_ub_obmm_pool_uses_canonical_app_source():
@@ -242,18 +238,16 @@ def test_ub_obmm_pool_uses_canonical_app_source():
 
 def test_entity_runtime_inject_uses_canonical_cli_entrypoint():
     script = (ROOT / "scripts" / "run_ub_entity_runtime_inject.sh").read_text()
-    legacy_script = (ROOT / "scripts" / "run_ub_entity_runtime_inject_demo.sh").read_text()
 
     assert "entity runtime injection guide" in script
     assert "演示" not in script
-    assert "run_ub_entity_runtime_inject.sh" in legacy_script
+    assert not (ROOT / "scripts" / "run_ub_entity_runtime_inject_demo.sh").exists()
 
 
 def test_dual_node_apps_uses_canonical_cli_entrypoint():
     script = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
     init_source = (ROOT / "init.c").read_text()
     run_demo = (ROOT / "initramfs" / "run_demo").read_text()
-    legacy_script = (ROOT / "scripts" / "run_ub_dual_node_demo.sh").read_text()
     w4_runner = (ROOT / "scripts" / "run_ub_dual_node_w4_guest.sh").read_text()
     w4_eight_runner = (ROOT / "scripts" / "run_ub_eight_node_w4_guest.sh").read_text()
 
@@ -273,6 +267,6 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     assert "should_enter_app_boot_flow" in init_source
     assert "should_enter_demo_boot_flow" not in init_source
     assert "no demo flags matched" not in run_demo
-    assert "run_ub_dual_node_apps.sh" in legacy_script
     assert "run_ub_dual_node_apps.sh" in w4_runner
     assert "run_ub_dual_node_demo.sh" not in w4_runner
+    assert not (ROOT / "scripts" / "run_ub_dual_node_demo.sh").exists()

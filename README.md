@@ -327,20 +327,20 @@ tmux attach -t <session-name>
 - log 路径
 - cleanup 脚本路径
 
-### 5.3 双节点 headless demo 验证
+### 5.3 双节点 headless app 验证
 
-如果你要直接跑双节点 demo 验证，而不是先手动进 shell，使用无交互/headless harness：
+如果你要直接跑双节点 app 验证，而不是先手动进 shell，使用无交互/headless harness：
 
 ```bash
 cd guest-linux/aarch64
 AARCH64_LINUX_CC="$AARCH64_LINUX_CC" \
 BUSYBOX="$BUSYBOX" \
-./scripts/run_ub_dual_node_demo.sh
+./scripts/run_ub_dual_node_apps.sh
 ```
 
 输出会写到：
 
-- `out/demo_report.latest.txt`
+- `out/apps_report.latest.txt`
 - `logs/`
 
 ## 6. 四节点
