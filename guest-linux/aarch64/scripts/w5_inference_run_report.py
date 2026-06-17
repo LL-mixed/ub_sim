@@ -123,6 +123,13 @@ def context_guard_from_args(args):
     return guard
 
 
+def prefix_cache_guard_from_args(args):
+    return bool(
+        os.environ.get("SIM_W5_REQUIRE_PREFIX_CACHE") in ("1", "true", "TRUE", "yes", "YES")
+        or args.require_prefix_cache
+    )
+
+
 def parse_pairs(line):
     return dict(PAIR_RE.findall(line))
 
@@ -353,6 +360,52 @@ def evaluate_context_guard(parsed, context_guard):
     return result
 
 
+def evaluate_prefix_cache_guard(parsed, require_prefix_cache=False):
+    memory = parsed["memory_service"]
+    result = {
+        "enabled": bool(require_prefix_cache),
+        "required": bool(require_prefix_cache),
+        "status": "disabled",
+        "issues": [],
+    }
+    if not require_prefix_cache:
+        return result
+
+    if not memory:
+        result["issues"].append(
+            "required prefix-cache evidence missing: memory_service_summary"
+        )
+        result["status"] = "fail"
+        return result
+
+    prefix_cache_ids = memory.get("prefix_cache_ids", "")
+    prefix_cache_actions = memory.get("prefix_cache_actions", "")
+    prefix_cache_kv_hits = parse_int(memory.get("prefix_cache_kv_hits"))
+    prefix_cache_gsva_rejections = parse_int(memory.get("prefix_cache_gsva_rejections"))
+
+    if not prefix_cache_ids or prefix_cache_ids == "none":
+        result["issues"].append(
+            "required prefix-cache evidence missing: prefix_cache_ids=none"
+        )
+    if prefix_cache_actions != "reuse":
+        result["issues"].append(
+            f"required prefix-cache action mismatch: {prefix_cache_actions or ''}"
+        )
+    if prefix_cache_kv_hits <= 0:
+        result["issues"].append(
+            "required prefix-cache reuse has no KV hits: "
+            f"prefix_cache_kv_hits={prefix_cache_kv_hits}"
+        )
+    if prefix_cache_gsva_rejections > 0:
+        result["issues"].append(
+            "required prefix-cache reuse was rejected by GSVA: "
+            f"rejections={prefix_cache_gsva_rejections}"
+        )
+
+    result["status"] = "fail" if result["issues"] else "pass"
+    return result
+
+
 def infer_run_id(summary_path):
     match = RUN_SUMMARY_RE.match(summary_path.name)
     if not match:
@@ -469,6 +522,7 @@ def validate(
     output_guard=None,
     context_guard=None,
     require_device_gsva=False,
+    require_prefix_cache=False,
 ):
     issues = []
     summary = parsed["summary"]
@@ -661,6 +715,11 @@ def validate(
     context_guard_result = evaluate_context_guard(parsed, context_guard)
     for issue in context_guard_result["issues"]:
         issues.append(f"context guard: {issue}")
+    prefix_cache_guard_result = evaluate_prefix_cache_guard(
+        parsed, require_prefix_cache=require_prefix_cache
+    )
+    for issue in prefix_cache_guard_result["issues"]:
+        issues.append(f"prefix-cache guard: {issue}")
 
     artifact_sizes = {}
     for label, limit in ARTIFACT_LIMITS.items():
@@ -700,7 +759,13 @@ def validate(
             "max_bytes": None,
         }
 
-    return issues, artifact_sizes, output_guard_result, context_guard_result
+    return (
+        issues,
+        artifact_sizes,
+        output_guard_result,
+        context_guard_result,
+        prefix_cache_guard_result,
+    )
 
 
 def timing_report(parsed):
@@ -766,12 +831,24 @@ def build_report(
     output_guard=None,
     context_guard=None,
     require_device_gsva=False,
+    require_prefix_cache=False,
 ):
     run_id = infer_run_id(summary_path)
     parsed = parse_summary(summary_path)
     paths = artifact_paths(summary_path, run_id, parsed["run_dir"])
-    issues, artifact_sizes, output_guard_result, context_guard_result = validate(
-        parsed, paths, output_guard, context_guard, require_device_gsva
+    (
+        issues,
+        artifact_sizes,
+        output_guard_result,
+        context_guard_result,
+        prefix_cache_guard_result,
+    ) = validate(
+        parsed,
+        paths,
+        output_guard,
+        context_guard,
+        require_device_gsva,
+        require_prefix_cache,
     )
     summary = parsed["summary"]
     memory = parsed["memory_service"]
@@ -849,6 +926,7 @@ def build_report(
         "artifacts": artifact_sizes,
         "output_guard": output_guard_result,
         "context_guard": context_guard_result,
+        "prefix_cache_guard": prefix_cache_guard_result,
     }
 
 
@@ -881,6 +959,13 @@ def print_text_report(report):
             "context_guard: "
             f"status={context_guard['status']} "
             f"required_contexts={json.dumps(context_guard['required_contexts'])}"
+        )
+    prefix_cache_guard = report["prefix_cache_guard"]
+    if prefix_cache_guard["enabled"]:
+        print(
+            "prefix_cache_guard: "
+            f"status={prefix_cache_guard['status']} "
+            f"required={str(prefix_cache_guard['required']).lower()}"
         )
     shortpath = report["shortpath"]
     print(
@@ -1131,6 +1216,11 @@ def main(argv):
         action="store_true",
         help="Require a W5 NPU GSVA tensor consumer with checksum/shape parity and token/epoch/retire rejections.",
     )
+    parser.add_argument(
+        "--require-prefix-cache",
+        action="store_true",
+        help="Require prefix-cache reuse hit and evidence.",
+    )
     args = parser.parse_args(argv)
 
     if args.compare_prefix_cache:
@@ -1161,6 +1251,7 @@ def main(argv):
         output_guard_from_args(args),
         context_guard_from_args(args),
         args.require_device_gsva,
+        prefix_cache_guard_from_args(args),
     )
     if args.json_output:
         print(json.dumps(report, indent=2, sort_keys=True))

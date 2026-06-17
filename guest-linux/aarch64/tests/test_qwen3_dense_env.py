@@ -704,6 +704,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-1", runner_text)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP", runner_text)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP:-1", runner_text)
+        self.assertIn("SIM_W5_REQUIRE_PREFIX_CACHE", runner_text)
+        self.assertIn("SIM_W5_REQUIRE_PREFIX_CACHE:-0", runner_text)
         self.assertIn("SIM_W5_MEMORY_POST_RUN_PROMOTE", runner_text)
         self.assertIn("SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP", runner_text)
         self.assertIn("SIM_W5_MEMORY_OBSERVATION_STORE", runner_text)
@@ -772,6 +774,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-1", config_runner_text)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP", config_runner_text)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP:-1", config_runner_text)
+        self.assertIn("SIM_W5_REQUIRE_PREFIX_CACHE", config_runner_text)
         self.assertIn("SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP", config_runner_text)
         self.assertIn("SIM_W5_MEMORY_OBSERVATION_STORE", config_runner_text)
         self.assertIn("SIM_W5_VALIDATE_ONLY", config_runner_text)
@@ -862,6 +865,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "SIM_W5_HEALTH_MAX_PRUNE_CANDIDATES=0",
                 "SIM_W5_HEALTH_MAX_PRUNE_BYTES=0",
                 "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context",
+                "SIM_W5_REQUIRE_PREFIX_CACHE=0",
                 "SIM_ENGRAM_SIMT_ARTIFACT_DIR=/tmp/engram-simt",
                 "SIM_ENGRAM_SIMT_SELECTED_SYMBOL=engram_context_dim8_b1",
                 "SIM_ENGRAM_SIMT_SELECTED_CASE=dim8_batch1",
@@ -1738,6 +1742,37 @@ class Qwen3DenseEnvTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 2)
         self.assertIn("W5 cluster config requires SIM_QWEN3_DENSE_WEIGHTS_PATH", result.stderr)
+
+    def test_w5_cluster_config_runner_validate_only_rejects_require_prefix_cache_without_prefix_cache_lookup(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        config_runner = script_dir / "run_w5_cluster_config.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            weights_path = tmp_path / "qwen3"
+            weights_path.mkdir()
+            config_path = tmp_path / "w5.env"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
+                        "SIM_QWEN3_GUEST_DECODE_STEPS=2",
+                        f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
+                        "SIM_W5_REQUIRE_PREFIX_CACHE=1",
+                        "SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP=0",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(config_runner), "--validate-only", str(config_path)],
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("SIM_W5_REQUIRE_PREFIX_CACHE requires SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP=1", result.stderr)
 
     def test_w5_cluster_config_runner_validate_only_rejects_decision_store_without_selector(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"

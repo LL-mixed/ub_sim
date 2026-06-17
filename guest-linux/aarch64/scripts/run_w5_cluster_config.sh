@@ -25,6 +25,7 @@ VALIDATE_ONLY=0
 CONFIG_PATH=""
 STEPS_OVERRIDE=""
 KEEP_LATEST_OVERRIDE=""
+SIM_W5_REQUIRE_PREFIX_CACHE="${SIM_W5_REQUIRE_PREFIX_CACHE:-0}"
 
 while (( $# > 0 )); do
   case "$1" in
@@ -178,6 +179,7 @@ validate_w5_cluster_config() {
   local memory_runtime_lookup=0
   local memory_online_lookup=0
   local memory_prefix_cache_lookup=1
+  local memory_require_prefix_cache=0
   local keep_latest="${SIM_W5_ARTIFACT_KEEP_LATEST:-3}"
   local max_prune_candidates="${SIM_W5_HEALTH_MAX_PRUNE_CANDIDATES:-0}"
   local max_prune_bytes="${SIM_W5_HEALTH_MAX_PRUNE_BYTES:-0}"
@@ -230,6 +232,11 @@ validate_w5_cluster_config() {
       memory_prefix_cache_lookup=0
       ;;
   esac
+  case "${SIM_W5_REQUIRE_PREFIX_CACHE:-0}" in
+    1|true|TRUE|yes|YES)
+      memory_require_prefix_cache=1
+      ;;
+  esac
   if [[ -n "${SIM_W5_MEMORY_DECISION_OBJECT_STORE:-}" && -z "${SIM_W5_MEMORY_DECISION_STORE:-}" ]]; then
     echo "SIM_W5_MEMORY_DECISION_OBJECT_STORE requires SIM_W5_MEMORY_DECISION_STORE" >&2
     return 2
@@ -242,13 +249,17 @@ validate_w5_cluster_config() {
           -z "${SIM_W5_MEMORY_SHORTPATH_DECISION_IDS:-}" &&
           "$memory_online_lookup" == "0" &&
           "$memory_prefix_cache_lookup" == "0" &&
-          -z "${SIM_W5_MEMORY_PREFETCH_PLAN_ID:-}" &&
-          -z "${SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID:-}" &&
-          -z "${SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT:-}" &&
-          -z "${SIM_W5_MEMORY_SHORTPATH_STREAM_PATH:-}" ]]; then
+           -z "${SIM_W5_MEMORY_PREFETCH_PLAN_ID:-}" &&
+           -z "${SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID:-}" &&
+           -z "${SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT:-}" &&
+           -z "${SIM_W5_MEMORY_SHORTPATH_STREAM_PATH:-}" ]]; then
       echo "SIM_W5_MEMORY_DECISION_STORE requires a boundary observation/decision selector or enabled prefix-cache lookup for live Memory Service reuse" >&2
       return 2
     fi
+  fi
+  if (( memory_require_prefix_cache )) && (( memory_prefix_cache_lookup == 0 )); then
+    echo "SIM_W5_REQUIRE_PREFIX_CACHE requires SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP=1" >&2
+    return 2
   fi
   if (( memory_runtime_lookup )) && [[ -n "${SIM_W5_MEMORY_SHORTPATH_DECISION_ID:-}${SIM_W5_MEMORY_SHORTPATH_DECISION_IDS:-}" ]]; then
     echo "SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP cannot be combined with explicit shortpath decision ids" >&2
@@ -347,6 +358,7 @@ if (( PRINT_ENV )); then
   printf 'SIM_W5_HEALTH_MAX_PRUNE_CANDIDATES=%s\n' "${SIM_W5_HEALTH_MAX_PRUNE_CANDIDATES:-0}"
   printf 'SIM_W5_HEALTH_MAX_PRUNE_BYTES=%s\n' "${SIM_W5_HEALTH_MAX_PRUNE_BYTES:-0}"
   printf 'SIM_W5_REQUIRE_CONTEXT=%s\n' "${SIM_W5_REQUIRE_CONTEXT:-}"
+  printf 'SIM_W5_REQUIRE_PREFIX_CACHE=%s\n' "${SIM_W5_REQUIRE_PREFIX_CACHE:-0}"
   printf 'SIM_ENGRAM_SIMT_ARTIFACT_DIR=%s\n' "${SIM_ENGRAM_SIMT_ARTIFACT_DIR:-}"
   printf 'SIM_ENGRAM_SIMT_SELECTED_SYMBOL=%s\n' "${SIM_ENGRAM_SIMT_SELECTED_SYMBOL:-}"
   printf 'SIM_ENGRAM_SIMT_SELECTED_CASE=%s\n' "${SIM_ENGRAM_SIMT_SELECTED_CASE:-}"

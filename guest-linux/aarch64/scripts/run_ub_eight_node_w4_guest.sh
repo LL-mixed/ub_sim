@@ -112,6 +112,7 @@ SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_END="${SIM_W5_MEMORY_SHORTPATH_PRODUCER_L
 SIM_W5_MEMORY_SHORTPATH_PRODUCER_POSITION="${SIM_W5_MEMORY_SHORTPATH_PRODUCER_POSITION:-}"
 SIM_W5_MEMORY_SHORTPATH_PROOF_CHECKSUM="${SIM_W5_MEMORY_SHORTPATH_PROOF_CHECKSUM:-}"
 SIM_W5_MEMORY_SHORTPATH_EXECUTE="${SIM_W5_MEMORY_SHORTPATH_EXECUTE:-}"
+SIM_W5_REQUIRE_PREFIX_CACHE="${SIM_W5_REQUIRE_PREFIX_CACHE:-0}"
 SIM_W5_MEMORY_SHORTPATH_STREAM_COUNT="${SIM_W5_MEMORY_SHORTPATH_STREAM_COUNT:-}"
 SIM_W5_MEMORY_SHORTPATH_STREAM="${SIM_W5_MEMORY_SHORTPATH_STREAM:-}"
 SIM_W5_MEMORY_SHORTPATH_STREAM_PATH="${SIM_W5_MEMORY_SHORTPATH_STREAM_PATH:-}"
@@ -1042,6 +1043,7 @@ validate_w5_artifact_sizes() {
 
 emit_w5_inference_run_report() {
   local line
+  local -a report_flags=()
   local report_parser="$SCRIPT_DIR/w5_inference_run_report.py"
 
   if [[ -z "$SIM_UAPI_W5_PROFILE" ]]; then
@@ -1055,7 +1057,12 @@ emit_w5_inference_run_report() {
     trace "FAIL: W5 inference run report summary missing path=$RUN_SUMMARY_FILE"
     return 1
   fi
-  if ! python3 "$report_parser" "$RUN_SUMMARY_FILE" | while IFS= read -r line; do
+  case "${SIM_W5_REQUIRE_PREFIX_CACHE}" in
+    1|true|TRUE|yes|YES)
+      report_flags+=(--require-prefix-cache)
+      ;;
+  esac
+  if ! python3 "$report_parser" "${report_flags[@]}" "$RUN_SUMMARY_FILE" | while IFS= read -r line; do
     trace "$line"
   done; then
     trace "FAIL: W5 inference run report validation failed path=$RUN_SUMMARY_FILE"
