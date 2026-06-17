@@ -87,6 +87,16 @@ def test_obmm_gsva_uses_canonical_app_source():
     run_demo = (ROOT / "initramfs" / "run_demo").read_text()
     dual_runner = (ROOT / "scripts" / "run_ub_dual_node_obmm_gsva.sh").read_text()
     multi_runner = (ROOT / "scripts" / "run_ub_multi_node_obmm_gsva_matrix.sh").read_text()
+    wrapper_runners = "\n".join(
+        [
+            (ROOT / "scripts" / "run_ub_two_node_gsva_identity_test.sh").read_text(),
+            (ROOT / "scripts" / "run_ub_two_node_gsva_arm_mmu_acceptance.sh").read_text(),
+            (ROOT / "scripts" / "run_ub_four_node_gsva_identity_test.sh").read_text(),
+            (ROOT / "scripts" / "run_ub_four_node_gsva_arm_mmu_acceptance.sh").read_text(),
+            (ROOT / "scripts" / "run_ub_eight_node_gsva_identity_test.sh").read_text(),
+            (ROOT / "scripts" / "run_ub_eight_node_gsva_arm_mmu_acceptance.sh").read_text(),
+        ]
+    )
     legacy_dual_runner = (ROOT / "scripts" / "run_ub_dual_node_gsva_demo.sh").read_text()
     legacy_matrix_runner = (ROOT / "scripts" / "run_ub_four_node_gsva_matrix_demo.sh").read_text()
     app_dir = ROOT / "apps" / "obmm_gsva"
@@ -98,6 +108,8 @@ def test_obmm_gsva_uses_canonical_app_source():
     assert "linqu_obmm_gsva=1" in run_demo
     assert "rdinit=/bin/run_demo obmm_gsva" in dual_runner
     assert "OBMM_GSVA_MODE" in dual_runner
+    assert "GSVA_DEMO_" not in dual_runner
+    assert "GSVA_DEMO_" not in wrapper_runners
     assert "[obmm-gsva]" in dual_runner
     assert "rdinit=/bin/run_demo obmm_gsva" in multi_runner
     assert "OBMM_GSVA_MATRIX_NODE_COUNT" in multi_runner
