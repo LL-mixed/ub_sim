@@ -60,7 +60,7 @@
 #define MAX_SLOTS 16U
 #define W4_DEFAULT_TIMEOUT_MS 300000
 #define W4_DOORBELL_BATCH_SLOTS 4U
-#define W4_DEMO_KVCACHE_PAYLOAD_BYTES 8192U
+#define W4_LEGACY_KVCACHE_PAYLOAD_BYTES 8192U
 #define W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES 8192U
 #define W4_DISPATCH_INPUT_WORD 0x0000000000000000ULL
 #define W4_DISPATCH_RESULT_WORD 0x41a0000041a00000ULL
@@ -1597,7 +1597,7 @@ static uint64_t read_qwen3_prompt_tokens(volatile uint8_t *ep_mmio,
 static int seed_kvcache_payload(volatile uint8_t *ep_mmio, uint64_t segment)
 {
     uint64_t checksum = 0;
-    size_t words = W4_DEMO_KVCACHE_PAYLOAD_BYTES / sizeof(uint64_t);
+    size_t words = W4_LEGACY_KVCACHE_PAYLOAD_BYTES / sizeof(uint64_t);
     static const size_t boundary_offsets[] = {
         0U,
         248U,
@@ -1638,8 +1638,8 @@ static int seed_kvcache_payload(volatile uint8_t *ep_mmio, uint64_t segment)
             return -1;
         }
     }
-    printf("[w4_guest] stage uapi_kvcache_payload_seeded segment=%" PRIu64 " bytes=%u checksum=0x%016" PRIx64 " role=legacy_demo_payload\n",
-           segment, W4_DEMO_KVCACHE_PAYLOAD_BYTES, checksum);
+    printf("[w4_guest] stage uapi_kvcache_payload_seeded segment=%" PRIu64 " bytes=%u checksum=0x%016" PRIx64 " role=legacy_kvcache_payload\n",
+           segment, W4_LEGACY_KVCACHE_PAYLOAD_BYTES, checksum);
     printf("[w4_guest] stage uapi_kvcache_payload_boundaries segment=%" PRIu64 " offsets=0,248,256,4088,4096,4104 status=ok\n",
            segment);
     if (seed_qwen3_prompt_tokens_from_env(ep_mmio) != 0) {
@@ -11271,10 +11271,10 @@ decode_round_start:
            default_segment);
     build_shmem_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 3, default_segment, 128);
     build_shmem_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 4, default_segment, 128);
-    printf("[w4_guest] stage uapi_kvcache_shmem_descriptor segment=%" PRIu64 " bytes=%u puts=1 gets=1 role=legacy_demo_payload\n",
-           default_segment, W4_DEMO_KVCACHE_PAYLOAD_BYTES);
-    build_shmem_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 3, default_segment, W4_DEMO_KVCACHE_PAYLOAD_BYTES);
-    build_shmem_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 4, default_segment, W4_DEMO_KVCACHE_PAYLOAD_BYTES);
+    printf("[w4_guest] stage uapi_kvcache_shmem_descriptor segment=%" PRIu64 " bytes=%u puts=1 gets=1 role=legacy_kvcache_payload\n",
+           default_segment, W4_LEGACY_KVCACHE_PAYLOAD_BYTES);
+    build_shmem_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 3, default_segment, W4_LEGACY_KVCACHE_PAYLOAD_BYTES);
+    build_shmem_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), 4, default_segment, W4_LEGACY_KVCACHE_PAYLOAD_BYTES);
     printf("[w4_guest] stage uapi_kvcache_db_descriptor key=%s bytes=%" PRIu64 "\n",
            key, kvcache_db_bytes);
     build_dbput_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++), key, kvcache_db_bytes);
@@ -12402,8 +12402,8 @@ qwen3_after_compute_publish:
            counts.success, counts.retryable, counts.fatal);
     printf("[w4_guest] stage uapi_kvcache_shmem_completion segment=%" PRIu64 " bytes=128 puts=1 gets=1 source=shmem_service role=hot_shared\n",
            default_segment);
-    printf("[w4_guest] stage uapi_kvcache_shmem_completion segment=%" PRIu64 " bytes=%u puts=1 gets=1 source=shmem_service role=legacy_demo_payload\n",
-           default_segment, W4_DEMO_KVCACHE_PAYLOAD_BYTES);
+    printf("[w4_guest] stage uapi_kvcache_shmem_completion segment=%" PRIu64 " bytes=%u puts=1 gets=1 source=shmem_service role=legacy_kvcache_payload\n",
+           default_segment, W4_LEGACY_KVCACHE_PAYLOAD_BYTES);
     printf("[w4_guest] stage uapi_kvcache_block_completion block=%s writes=1 reads=1 source=block_service\n",
            block);
     printf("[w4_guest] stage uapi_kvcache_block_completion block=%s writes=1 reads=1 source=block_service role=aux_block_boundary\n",

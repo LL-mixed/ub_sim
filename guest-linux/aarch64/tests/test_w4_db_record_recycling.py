@@ -85,6 +85,14 @@ class W4DbRecordRecyclingTests(unittest.TestCase):
         self.assertIn("qwen3_range_runtime_forward_reserve_kv", source)
         self.assertIn("qwen3 range kv payload reserve failed", source)
 
+    def test_w4_guest_legacy_kvcache_payload_is_not_demo_named(self):
+        source = GUEST_C.read_text()
+
+        self.assertIn("W4_LEGACY_KVCACHE_PAYLOAD_BYTES", source)
+        self.assertIn("legacy_kvcache_payload", source)
+        self.assertNotIn("W4_DEMO_KVCACHE_PAYLOAD_BYTES", source)
+        self.assertNotIn("legacy_demo_payload", source)
+
 
 if __name__ == "__main__":
     unittest.main()
