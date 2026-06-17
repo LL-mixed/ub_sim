@@ -180,9 +180,9 @@ static bool should_run_ub_udma(void)
            cmdline_has_option("linqu_ub_udma_demo=1");
 }
 
-static bool should_run_ub_tcp_each_server_demo(void)
+static bool should_run_ub_tcp_each_server(void)
 {
-    return cmdline_has_option("linqu_ub_tcp_each_server_demo=1");
+    return cmdline_has_option("linqu_ub_tcp_each_server=1");
 }
 
 static bool should_run_obmm_pool(void)
@@ -1005,7 +1005,7 @@ static void run_ub_rpc_probe(void)
     }
 }
 
-static void run_ub_tcp_each_server_demo_probe(void)
+static void run_ub_tcp_each_server_probe(void)
 {
     pid_t pid;
     int status = 0;
@@ -1031,15 +1031,15 @@ static void run_ub_tcp_each_server_demo_probe(void)
     }
 
     if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-        fprintf(stderr, "[init] ub tcp each server demo pass\n");
+        fprintf(stderr, "[init] ub tcp each server app pass\n");
         return;
     }
 
     if (WIFEXITED(status)) {
-        fprintf(stderr, "[init] ub tcp each server demo fail exit=%d\n",
+        fprintf(stderr, "[init] ub tcp each server app fail exit=%d\n",
                 WEXITSTATUS(status));
     } else if (WIFSIGNALED(status)) {
-        fprintf(stderr, "[init] ub tcp each server demo fail signal=%d\n",
+        fprintf(stderr, "[init] ub tcp each server app fail signal=%d\n",
                 WTERMSIG(status));
     }
 }
@@ -1474,9 +1474,9 @@ int main(int argc, char *argv[])
         wait_for_ipourma_interface(30);
         run_ub_rpc_probe();
     }
-    if (should_run_ub_tcp_each_server_demo()) {
+    if (should_run_ub_tcp_each_server()) {
         wait_for_ipourma_interface(30);
-        run_ub_tcp_each_server_demo_probe();
+        run_ub_tcp_each_server_probe();
     }
     if (should_run_ub_udma()) {
         wait_for_ipourma_interface(30);

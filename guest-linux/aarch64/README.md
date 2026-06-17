@@ -254,7 +254,7 @@ Default behavior:
 - guest kernel cmdline uses `rdinit=/bin/run_demo`
 - `run_demo` first enters `/bin/linqu_init` to complete bootstrap/readiness
 - after bootstrap it drops into a busybox shell (`~ #`)
-- no demo is auto-started unless explicit demo flags are passed
+- no app is auto-started unless explicit app flags are passed
 
 tmux windows:
 
@@ -277,7 +277,7 @@ TMUX_SESSION_NAME=ub-dev guest-linux/aarch64/scripts/launch_ub_dual_node_tmux.sh
 
 # boot guest directly into run_demo instead of shell
 RDINIT=/bin/run_demo \
-APPEND_EXTRA="linqu_probe_skip=1 linqu_probe_load_helper=1 linqu_ub_chat=1 linqu_ub_rpc=1 linqu_ub_tcp_each_server_demo=1" \
+APPEND_EXTRA="linqu_probe_skip=1 linqu_probe_load_helper=1 linqu_ub_chat=1 linqu_ub_rpc=1 linqu_ub_tcp_each_server=1" \
 guest-linux/aarch64/scripts/launch_ub_dual_node_tmux.sh
 
 # force legacy /init dispatch into probe mode

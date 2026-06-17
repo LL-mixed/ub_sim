@@ -15,7 +15,12 @@ ITERATIONS="${ITERATIONS:-1}"
 START_GAP_SECS="${START_GAP_SECS:-3}"
 LINK_WAIT_SECS="${LINK_WAIT_SECS:-45}"
 QEMU_KEEP_ALIVE_ON_POWEROFF="${QEMU_KEEP_ALIVE_ON_POWEROFF:-0}"
-APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1 linqu_ub_chat=1 linqu_ub_rpc=1 linqu_ub_tcp_each_server_demo=1}"
+APP_SELECTION="${APP_SELECTION:-}"
+APPEND_EXTRA_WAS_SET=0
+if [[ -n "${APPEND_EXTRA+x}" ]]; then
+  APPEND_EXTRA_WAS_SET=1
+fi
+APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 ENTITY_PLAN_FILE="${UB_FM_ENTITY_PLAN_FILE:-$WORKSPACE_ROOT/vendor/ub_topology_two_node_v2_entity.ini}"
 ENTITY_COUNT="${UB_SIM_ENTITY_COUNT:-2}"
 OUT_DIR="$ROOT_DIR/out"
@@ -26,6 +31,148 @@ REPORT_FILE="${REPORT_FILE:-$OUT_DIR/apps_report.latest.txt}"
 MAX_RUNTIME="${MAX_RUNTIME:-300}"
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_${RANDOM}}"
 MAIN_PID=$$
+
+usage() {
+  cat <<'USAGE'
+Usage: run_ub_dual_node_apps.sh [options]
+
+Options:
+  --app NAME          App to validate. Repeat or pass comma-separated names.
+                      Names: chat, rpc, tcp_each_server, udma, obmm_pool.
+                      Default: chat,rpc,tcp_each_server.
+  --run-id ID        Stable run id used for log/report names.
+  --run-secs SECS    Per-app pass/fail wait timeout.
+  --iterations N     Number of dual-node iterations.
+  --max-runtime SECS Global watchdog timeout.
+  --append-extra STR Extra kernel cmdline tokens to append.
+  -h, --help         Show this help.
+USAGE
+}
+
+append_app_selection() {
+  local app="$1"
+  local flag=""
+
+  case "$app" in
+    chat)
+      flag="linqu_ub_chat=1"
+      ;;
+    rpc)
+      flag="linqu_ub_rpc=1"
+      ;;
+    tcp|tcp_each_server)
+      flag="linqu_ub_tcp_each_server=1"
+      ;;
+    udma)
+      flag="linqu_ub_udma=1"
+      ;;
+    obmm|obmm_pool)
+      flag="linqu_obmm_pool=1"
+      ;;
+    "")
+      return 0
+      ;;
+    *)
+      echo "unknown app selection: $app" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+
+  if [[ " $APPEND_EXTRA " != *" $flag "* ]]; then
+    APPEND_EXTRA="${APPEND_EXTRA} ${flag}"
+  fi
+}
+
+apply_app_selection() {
+  local selection="$1"
+  local app=""
+
+  if [[ -z "$selection" ]]; then
+    if [[ "$APPEND_EXTRA_WAS_SET" -eq 1 ]]; then
+      return 0
+    fi
+    selection="chat,rpc,tcp_each_server"
+  fi
+
+  for app in ${(s:,:)selection}; do
+    append_app_selection "$app"
+  done
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --app|--apps)
+      if [[ $# -lt 2 ]]; then
+        echo "$1 requires a value" >&2
+        usage >&2
+        exit 2
+      fi
+      if [[ -z "$APP_SELECTION" ]]; then
+        APP_SELECTION="$2"
+      else
+        APP_SELECTION="${APP_SELECTION},$2"
+      fi
+      shift 2
+      ;;
+    --run-id)
+      if [[ $# -lt 2 ]]; then
+        echo "--run-id requires a value" >&2
+        usage >&2
+        exit 2
+      fi
+      RUN_ID="$2"
+      shift 2
+      ;;
+    --run-secs)
+      if [[ $# -lt 2 ]]; then
+        echo "--run-secs requires a value" >&2
+        usage >&2
+        exit 2
+      fi
+      RUN_SECS="$2"
+      shift 2
+      ;;
+    --iterations)
+      if [[ $# -lt 2 ]]; then
+        echo "--iterations requires a value" >&2
+        usage >&2
+        exit 2
+      fi
+      ITERATIONS="$2"
+      shift 2
+      ;;
+    --max-runtime)
+      if [[ $# -lt 2 ]]; then
+        echo "--max-runtime requires a value" >&2
+        usage >&2
+        exit 2
+      fi
+      MAX_RUNTIME="$2"
+      shift 2
+      ;;
+    --append-extra)
+      if [[ $# -lt 2 ]]; then
+        echo "--append-extra requires a value" >&2
+        usage >&2
+        exit 2
+      fi
+      APPEND_EXTRA="${APPEND_EXTRA} $2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+apply_app_selection "$APP_SELECTION"
 
 source "$SCRIPT_DIR/qemu_ub_common.sh"
 APPEND_EXTRA="$(ensure_sim_kernel_append_defaults "$APPEND_EXTRA")"
@@ -588,7 +735,7 @@ run_iteration() {
   if [[ "$APPEND_EXTRA" == *"linqu_ub_rpc=1"* ]]; then
     rpc_enabled=1
   fi
-  if [[ "$APPEND_EXTRA" == *"linqu_ub_tcp_each_server_demo=1"* ]]; then
+  if [[ "$APPEND_EXTRA" == *"linqu_ub_tcp_each_server=1"* ]]; then
     tcp_enabled=1
   fi
   if [[ "$APPEND_EXTRA" == *"linqu_ub_udma=1"* ]]; then
@@ -715,7 +862,7 @@ run_iteration() {
   fi
 
   if [[ "$tcp_enabled" -eq 1 ]]; then
-    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub tcp each server demo pass" "\\[init\\] ub tcp each server demo fail" "$RUN_SECS"
+    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub tcp each server app pass" "\\[init\\] ub tcp each server app fail" "$RUN_SECS"
     case "$?" in
       0) ;;
       1)
@@ -728,7 +875,7 @@ run_iteration() {
         ;;
     esac
 
-    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub tcp each server demo pass" "\\[init\\] ub tcp each server demo fail" "$RUN_SECS"
+    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub tcp each server app pass" "\\[init\\] ub tcp each server app fail" "$RUN_SECS"
     case "$?" in
       0) ;;
       1)

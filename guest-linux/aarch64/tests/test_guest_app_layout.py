@@ -49,12 +49,24 @@ def test_ub_udma_uses_canonical_app_source():
 
 def test_ub_tcp_each_server_uses_canonical_app_source():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
+    init_source = (ROOT / "init.c").read_text()
+    run_demo = (ROOT / "initramfs" / "run_demo").read_text()
+    dual_runner = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
     app_dir = ROOT / "apps" / "ub_tcp_each_server"
 
     assert (
         'TCP_EACH_SERVER_SRC="$ROOT_DIR/apps/ub_tcp_each_server/ub_tcp_each_server.c"'
         in build_script
     )
+    assert "linqu_ub_tcp_each_server=1" in run_demo
+    assert "linqu_ub_tcp_each_server=1" in init_source
+    assert "[init] ub tcp each server app pass" in init_source
+    assert "run_ub_tcp_each_server_demo_probe" not in init_source
+    assert "linqu_ub_tcp_each_server_demo" not in run_demo
+    assert "linqu_ub_tcp_each_server_demo" not in init_source
+    assert "linqu_ub_tcp_each_server_demo" not in dual_runner
+    assert "ub tcp each server demo" not in dual_runner
+    assert "ub tcp each server demo" not in init_source
     assert (app_dir / "ub_tcp_each_server.c").exists()
     assert not (app_dir / "ub_tcp_each_server_demo.c").exists()
     assert (app_dir / "Makefile").exists()
@@ -237,6 +249,9 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     assert "scenario=dual-node-apps" in script
     assert "dual-node apps validation passed" in script
     assert "ub_nodeA.apps." in script
+    assert "--app NAME" in script
+    assert "APP_SELECTION" in script
+    assert 'flag="linqu_ub_tcp_each_server=1"' in script
     assert "run_ub_dual_node_apps.sh" in legacy_script
     assert "run_ub_dual_node_apps.sh" in w4_runner
     assert "run_ub_dual_node_demo.sh" not in w4_runner
