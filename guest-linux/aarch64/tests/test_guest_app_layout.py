@@ -372,7 +372,7 @@ def test_gva_direct_uses_canonical_app_source():
 
 def test_gva_direct_runner_uses_app_flag_entrypoint():
     runner = (ROOT / "scripts" / "run_ub_dual_node_gva_direct_test.sh").read_text()
-    assert "rdinit=/bin/run_demo linqu_gva_direct=1" in runner
+    assert "rdinit=/bin/run_app linqu_gva_direct=1" in runner
     assert "linqu_gva_direct=1" in runner
     assert "rdinit=/bin/run_demo gva_direct " not in runner
 
