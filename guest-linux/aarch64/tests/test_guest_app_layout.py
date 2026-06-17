@@ -34,6 +34,7 @@ def test_ub_rpc_uses_canonical_app_source():
 
 def test_ub_udma_uses_canonical_app_source():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
+    init_source = (ROOT / "init.c").read_text()
     run_demo = (ROOT / "initramfs" / "run_demo").read_text()
     dual_runner = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
     app_dir = ROOT / "apps" / "ub_udma"
@@ -41,7 +42,9 @@ def test_ub_udma_uses_canonical_app_source():
     assert 'UDMA_SRC="$ROOT_DIR/apps/ub_udma/ub_udma.c"' in build_script
     assert 'UDMA_BIN="$OUT_DIR/linqu_ub_udma"' in build_script
     assert "linqu_ub_udma_demo" not in build_script
+    assert "linqu_ub_udma=1" in init_source
     assert "linqu_ub_udma=1" in run_demo
+    assert "linqu_ub_udma_demo" not in init_source
     assert "linqu_ub_udma_demo" not in run_demo
     assert "linqu_ub_udma_demo" not in dual_runner
     assert "ub udma (app|demo)" not in dual_runner

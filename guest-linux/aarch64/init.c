@@ -176,8 +176,7 @@ static bool should_run_ub_chat(void)
 
 static bool should_run_ub_udma(void)
 {
-    return cmdline_has_option("linqu_ub_udma=1") ||
-           cmdline_has_option("linqu_ub_udma_demo=1");
+    return cmdline_has_option("linqu_ub_udma=1");
 }
 
 static bool should_run_ub_tcp_each_server(void)
