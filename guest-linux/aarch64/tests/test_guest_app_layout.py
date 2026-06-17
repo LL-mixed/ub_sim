@@ -144,6 +144,25 @@ def test_npu_gsva_test_has_independent_app_build():
     assert (app_dir / "Makefile").exists()
 
 
+def test_gsva_query_has_independent_app_build():
+    build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
+    app_dir = ROOT / "apps" / "gsva_query"
+
+    assert 'GSVA_QUERY_SRC="$ROOT_DIR/apps/gsva_query/gsva_query.c"' in build_script
+    assert (app_dir / "gsva_query.c").exists()
+    assert (app_dir / "Makefile").exists()
+
+
+def test_npu_test_has_independent_app_build():
+    build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
+    app_dir = ROOT / "apps" / "npu_test"
+
+    assert 'NPU_TEST_SRC="$ROOT_DIR/apps/npu_test/npu_test.c"' in build_script
+    assert 'NPU_TEST_BIN="$OUT_DIR/npu_test"' in build_script
+    assert (app_dir / "npu_test.c").exists()
+    assert (app_dir / "Makefile").exists()
+
+
 def test_ssd_gsva_test_has_independent_app_build():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     app_dir = ROOT / "apps" / "ssd_gsva_test"
@@ -223,6 +242,51 @@ def test_obmm_gsva_has_independent_dual_node_bootflow():
     assert "should_run_obmm_gsva" in init_source
     assert "run_obmm_gsva_probe" in init_source
     assert "append_cmdline_if_missing \"obmm_gsva_mode=${OBMM_GSVA_MODE}\"" in script
+
+
+def test_gva_direct_has_independent_dual_node_bootflow():
+    script = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
+    init_source = (ROOT / "init.c").read_text()
+
+    assert "linqu_gva_direct=1" in script
+    assert "gva_direct_mode=${GVA_DIRECT_MODE}" in script
+    assert "gva_direct_size=${GVA_DIRECT_SIZE}" in script
+    assert "gva_direct_local_va=${GVA_DIRECT_LOCAL_VA}" in script
+    assert "gva_direct_home_va=${GVA_DIRECT_HOME_VA}" in script
+    assert "should_run_gva_direct" in init_source
+    assert "run_gva_direct_probe" in init_source
+    assert "gva_direct_enabled" in script
+    assert "validate_gva_direct_log" in script
+
+
+def test_gsva_query_has_independent_dual_node_bootflow():
+    script = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
+    init_source = (ROOT / "init.c").read_text()
+
+    assert "linqu_gsva_query=1" in script
+    assert "should_run_gsva_query" in init_source
+    assert "run_gsva_query_probe" in init_source
+    assert "gsva_query_enabled" in script
+    assert "validate_gsva_query_log" in script
+
+
+def test_npu_test_has_independent_dual_node_bootflow():
+    script = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
+    init_source = (ROOT / "init.c").read_text()
+
+    assert "linqu_npu_test=1" in script
+    assert "should_run_npu_test" in init_source
+    assert "run_npu_test_probe" in init_source
+    assert "npu_test_enabled" in script
+    assert "validate_npu_test_log" in script
+
+
+def test_gsva_query_uses_canonical_app_source():
+    run_demo = (ROOT / "initramfs" / "run_demo").read_text()
+
+    assert "linqu_gsva_query=1" in run_demo
+    assert "run_gsva_query" in run_demo
+    assert "gsva_query_demo" not in run_demo
 
 
 def test_gva_direct_uses_canonical_app_source():
