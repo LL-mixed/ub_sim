@@ -13113,7 +13113,7 @@ fn run_host_vector_chipbackend(
 ) -> Result<Vec<u8>, String> {
     let manifest_path = simpler_manifest_path()?;
     let scenario_config = scenario_config_for_chipbackend()?;
-    let elems = W4_DEMO_KVCACHE_PAYLOAD_BYTES / std::mem::size_of::<f32>();
+    let elems = W4_LEGACY_KVCACHE_PAYLOAD_BYTES / std::mem::size_of::<f32>();
     let size_bytes = elems * std::mem::size_of::<f32>();
     let kvcache_layout = KvCachePayloadLayout::new(elems, size_bytes)?;
     let segment_base = 10_000 + task.task_id.saturating_mul(10);
@@ -13311,7 +13311,7 @@ fn run_host_vector_chipbackend(
     Ok(produced)
 }
 
-const W4_DEMO_KVCACHE_PAYLOAD_BYTES: usize = 8192;
+const W4_LEGACY_KVCACHE_PAYLOAD_BYTES: usize = 8192;
 const W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES: usize = 8192;
 const W4_KVCACHE_BLOCKS: usize = 4;
 const W4_KVCACHE_PREFIX_GROUPS: usize = 2;
@@ -13373,8 +13373,8 @@ struct KvCachePayloadRowGroup {
 
 impl KvCachePayloadLayout {
     fn new(elems: usize, size_bytes: usize) -> Result<Self, String> {
-        if size_bytes != W4_DEMO_KVCACHE_PAYLOAD_BYTES {
-            return Err(format!("invalid_demo_kvcache_payload_bytes:{size_bytes}"));
+        if size_bytes != W4_LEGACY_KVCACHE_PAYLOAD_BYTES {
+            return Err(format!("invalid_legacy_kvcache_payload_bytes:{size_bytes}"));
         }
         if size_bytes % std::mem::size_of::<f32>() != 0
             || elems * std::mem::size_of::<f32>() != size_bytes
@@ -23815,7 +23815,7 @@ mod tests {
         SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF, SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF,
         SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION,
         SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
-        W4_DEMO_KVCACHE_PAYLOAD_BYTES, W4_KVCACHE_BLOCKS, W4_KVCACHE_PREFIX_GROUPS,
+        W4_KVCACHE_BLOCKS, W4_KVCACHE_PREFIX_GROUPS, W4_LEGACY_KVCACHE_PAYLOAD_BYTES,
         W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES, W5_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES,
         W5_OBJECT_SERVICE_PAYLOAD_INDEX_MAGIC, W5_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES,
         W5_OBJECT_SERVICE_PAYLOAD_INDEX_VERSION,
@@ -26279,8 +26279,8 @@ mod tests {
 
     #[test]
     fn kvcache_payload_layout_explicitly_maps_blocks_tiles_and_row_groups() {
-        let elems = W4_DEMO_KVCACHE_PAYLOAD_BYTES / std::mem::size_of::<f32>();
-        let layout = KvCachePayloadLayout::new(elems, W4_DEMO_KVCACHE_PAYLOAD_BYTES).unwrap();
+        let elems = W4_LEGACY_KVCACHE_PAYLOAD_BYTES / std::mem::size_of::<f32>();
+        let layout = KvCachePayloadLayout::new(elems, W4_LEGACY_KVCACHE_PAYLOAD_BYTES).unwrap();
 
         assert_eq!(layout.blocks.len(), W4_KVCACHE_BLOCKS);
         assert_eq!(layout.blocks[0].prefix_group_id, 0);
@@ -26301,8 +26301,8 @@ mod tests {
 
     #[test]
     fn kvcache_input_b_encodes_prefix_block_tile_and_row_group_bias() {
-        let elems = W4_DEMO_KVCACHE_PAYLOAD_BYTES / std::mem::size_of::<f32>();
-        let layout = KvCachePayloadLayout::new(elems, W4_DEMO_KVCACHE_PAYLOAD_BYTES).unwrap();
+        let elems = W4_LEGACY_KVCACHE_PAYLOAD_BYTES / std::mem::size_of::<f32>();
+        let layout = KvCachePayloadLayout::new(elems, W4_LEGACY_KVCACHE_PAYLOAD_BYTES).unwrap();
         let values = bytes_to_f32s(&kvcache_input_b_payload(&layout));
 
         assert_eq!(values.len(), elems);

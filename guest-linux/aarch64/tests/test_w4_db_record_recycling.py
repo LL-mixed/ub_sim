@@ -4,12 +4,14 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = ROOT.parents[1]
 SERVICE_DIR = ROOT / "components" / "w5_mem_service"
 SERVICE_C = SERVICE_DIR / "w4_kvcache_db_service.c"
 SERVICE_H = SERVICE_DIR / "w4_kvcache_db_service.h"
 GUEST_C = ROOT / "apps" / "w4_guest" / "w4_guest.c"
 FOUR_NODE_W4_RUNNER = ROOT / "scripts" / "run_ub_four_node_w4_guest.sh"
 EIGHT_NODE_W4_RUNNER = ROOT / "scripts" / "run_ub_eight_node_w4_guest.sh"
+SIM_UAPI_RS = REPO_ROOT / "crates" / "sim-uapi" / "src" / "lib.rs"
 
 
 class W4DbRecordRecyclingTests(unittest.TestCase):
@@ -88,16 +90,20 @@ class W4DbRecordRecyclingTests(unittest.TestCase):
         self.assertIn("qwen3 range kv payload reserve failed", source)
 
     def test_w4_guest_legacy_kvcache_payload_is_not_demo_named(self):
+        sim_uapi_source = SIM_UAPI_RS.read_text()
         sources = [
             GUEST_C.read_text(),
             FOUR_NODE_W4_RUNNER.read_text(),
             EIGHT_NODE_W4_RUNNER.read_text(),
+            sim_uapi_source,
         ]
         combined = "\n".join(sources)
 
         self.assertIn("W4_LEGACY_KVCACHE_PAYLOAD_BYTES", combined)
+        self.assertIn("W4_LEGACY_KVCACHE_PAYLOAD_BYTES", sim_uapi_source)
         self.assertIn("legacy_kvcache_payload", combined)
         self.assertNotIn("W4_DEMO_KVCACHE_PAYLOAD_BYTES", combined)
+        self.assertNotIn("invalid_demo_kvcache_payload_bytes", combined)
         self.assertNotIn("legacy_demo_payload", combined)
 
 
