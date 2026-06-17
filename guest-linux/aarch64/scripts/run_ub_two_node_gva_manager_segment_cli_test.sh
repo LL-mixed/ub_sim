@@ -91,7 +91,7 @@ start_node() {
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
       -initrd "$INITRAMFS_IMAGE" \
-      -append "console=ttyAMA0 rdinit=/bin/run_demo gva_manager_segment_cli linqu_urma_dp_role=${role} gva_manager_node_id=${node_idx} gva_manager_node_count=2 gva_manager_home_node=${node_idx} gva_manager_aperture_base=${GVA_MANAGER_APERTURE_BASE} gva_manager_aperture_size=${GVA_MANAGER_APERTURE_SIZE} gva_manager_segment_size=${GVA_MANAGER_SEGMENT_SIZE} gva_manager_segment_alignment=${GVA_MANAGER_SEGMENT_ALIGNMENT} gva_manager_cache_policy=${GVA_MANAGER_CACHE_POLICY} gva_manager_access_flags=${GVA_MANAGER_ACCESS_FLAGS} ${APPEND_EXTRA}" \
+      -append "console=ttyAMA0 rdinit=/bin/run_demo linqu_gva_manager=1 gva_manager_mode=segment_cli linqu_urma_dp_role=${role} gva_manager_node_id=${node_idx} gva_manager_node_count=2 gva_manager_home_node=${node_idx} gva_manager_aperture_base=${GVA_MANAGER_APERTURE_BASE} gva_manager_aperture_size=${GVA_MANAGER_APERTURE_SIZE} gva_manager_segment_size=${GVA_MANAGER_SEGMENT_SIZE} gva_manager_segment_alignment=${GVA_MANAGER_SEGMENT_ALIGNMENT} gva_manager_cache_policy=${GVA_MANAGER_CACHE_POLICY} gva_manager_access_flags=${GVA_MANAGER_ACCESS_FLAGS} ${APPEND_EXTRA}" \
       >"$qemu_log" 2>&1 &
   echo $! > "$pid_file"
 }
@@ -133,14 +133,16 @@ validate_segment_cli_logs() {
   local guest_log
 
   for guest_log in "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG"; do
-    if ! grep -q '\[gva_manager_segment_cli\] verdict=PASS' "$guest_log"; then
-      echo "[gva-mgr-segcli] FAIL: missing segment CLI PASS in $guest_log" >&2
-      return 1
-    fi
     if ! grep -q 'result=done action=gsva-segment-alloc' "$guest_log" ||
        ! grep -q 'result=done action=gsva-segment-query' "$guest_log" ||
        ! grep -q 'result=done action=gsva-segment-retire' "$guest_log"; then
-      echo "[gva-mgr-segcli] FAIL: missing alloc/query/retire CLI evidence in $guest_log" >&2
+      echo "[gva-mgr-segcli] FAIL: missing segment CLI completion in $guest_log" >&2
+      return 1
+    fi
+    if ! grep -q 'result=done action=gsva-segment-alloc segment_id=0x' "$guest_log" ||
+       ! grep -q 'result=done action=gsva-segment-query' "$guest_log" ||
+       ! grep -q 'result=done action=gsva-segment-retire' "$guest_log"; then
+      echo "[gva-mgr-segcli] FAIL: missing segment CLI ABI evidence in $guest_log" >&2
       return 1
     fi
     if ! grep -q 'GSVA segment allocated:' "$guest_log" ||
@@ -167,15 +169,15 @@ echo "[gva-mgr-segcli] FM links ready"
 echo "[gva-mgr-segcli] waiting for test completion (timeout ${RUN_SECS}s)..."
 deadline=$((SECONDS + RUN_SECS))
 while (( SECONDS < deadline )); do
-  if [[ -f "$NODEA_GUEST_LOG" ]] && grep -q '\[gva_manager_segment_cli\] verdict=PASS' "$NODEA_GUEST_LOG" && \
-     [[ -f "$NODEB_GUEST_LOG" ]] && grep -q '\[gva_manager_segment_cli\] verdict=PASS' "$NODEB_GUEST_LOG"; then
+  if [[ -f "$NODEA_GUEST_LOG" ]] && grep -q 'result=done action=gsva-segment-alloc' "$NODEA_GUEST_LOG" && \
+     [[ -f "$NODEB_GUEST_LOG" ]] && grep -q 'result=done action=gsva-segment-alloc' "$NODEB_GUEST_LOG"; then
     cleanup
     sleep 0.5
     validate_segment_cli_logs
     echo "[gva-mgr-segcli] PASS: both nodes completed"
     exit 0
   fi
-  if grep -qE '\[gva_manager_segment_cli\] verdict=FAIL|\[gva_manager\] result=fail|Kernel panic - not syncing|Call trace:' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
+  if grep -qE '\[gva_manager\] result=fail|Kernel panic - not syncing|Call trace:|result=fail action=gsva-segment-(alloc|query|retire)' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
     echo "[gva-mgr-segcli] FAIL: guest reported failure" >&2
     exit 1
   fi

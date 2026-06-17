@@ -170,7 +170,7 @@ start_node() {
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
       -initrd "$INITRAMFS_IMAGE" \
-      -append "console=ttyAMA0 rdinit=/bin/run_demo gva_manager_bootstrap linqu_urma_dp_role=${node_name} linqu_cna=${node_cna} gva_manager_node_id=${node_idx} gva_manager_node_count=${GVA_MANAGER_NODE_COUNT} gva_manager_generation=${GVA_MANAGER_GENERATION} gva_manager_aperture_base=${GVA_MANAGER_APERTURE_BASE} gva_manager_aperture_size=${GVA_MANAGER_APERTURE_SIZE} ${segment_append} ${conflict_append} ${APPEND_EXTRA}" \
+      -append "console=ttyAMA0 rdinit=/bin/run_demo linqu_gva_manager=1 gva_manager_mode=bootstrap linqu_urma_dp_role=${node_name} linqu_cna=${node_cna} gva_manager_node_id=${node_idx} gva_manager_node_count=${GVA_MANAGER_NODE_COUNT} gva_manager_generation=${GVA_MANAGER_GENERATION} gva_manager_aperture_base=${GVA_MANAGER_APERTURE_BASE} gva_manager_aperture_size=${GVA_MANAGER_APERTURE_SIZE} ${segment_append} ${conflict_append} ${APPEND_EXTRA}" \
       >"$qemu_log" 2>&1 &
   echo $! > "$pid_file"
 }
@@ -442,7 +442,7 @@ validate_expected_failure() {
 
 node_has_failure() {
   local log_file="$1"
-  grep -qE '\[gva_manager\] result=fail|\[run_demo\] linqu_gva_manager failed|\[run_demo\] action failed: gva_manager_bootstrap|Kernel panic - not syncing' "$log_file"
+  grep -qE '\[gva_manager\] result=fail|\[run_demo\] linqu_gva_manager failed|Kernel panic - not syncing' "$log_file"
 }
 
 print_node_summary() {

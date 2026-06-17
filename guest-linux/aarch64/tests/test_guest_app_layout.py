@@ -305,6 +305,38 @@ def test_gva_direct_uses_canonical_app_source():
     assert not (ROOT / "apps" / "gva_direct_demo").exists()
 
 
+def test_gva_manager_bootstrap_runner_uses_unified_app_entrypoint():
+    run_demo = (ROOT / "initramfs" / "run_demo").read_text()
+    dual_runner = (ROOT / "scripts" / "run_ub_dual_node_gsva_manager_bootstrap.sh").read_text()
+    four_runner = (ROOT / "scripts" / "run_ub_four_node_gsva_manager_bootstrap.sh").read_text()
+
+    assert "linqu_gva_manager=1" in dual_runner
+    assert "gva_manager_mode=bootstrap" in dual_runner
+    assert "gva_manager_bootstrap" not in dual_runner
+    assert "gva_manager=" in dual_runner
+    assert "run_gva_manager" in run_demo
+    assert "gva_manager_bootstrap)" not in run_demo
+    assert "gva_manager_dump_routes)" not in run_demo
+    assert "gva_manager_segment_cli)" not in run_demo
+
+    assert "linqu_gva_manager=1" in four_runner
+    assert "gva_manager_mode=bootstrap" in four_runner
+    assert "gva_manager_bootstrap" not in four_runner
+
+
+def test_gva_manager_segment_cli_runner_uses_unified_app_entrypoint():
+    run_demo = (ROOT / "initramfs" / "run_demo").read_text()
+    segment_cli_runner = (ROOT / "scripts" / "run_ub_two_node_gva_manager_segment_cli_test.sh").read_text()
+
+    assert "linqu_gva_manager=1" in segment_cli_runner
+    assert "gva_manager_mode=segment_cli" in segment_cli_runner
+    assert "result=done action=gsva-segment-alloc" in segment_cli_runner
+    assert "result=done action=gsva-segment-query" in segment_cli_runner
+    assert "result=done action=gsva-segment-retire" in segment_cli_runner
+    assert "gva_manager_segment_cli" not in segment_cli_runner
+    assert "run_gva_manager_segment_cli" in run_demo
+
+
 def test_obmm_queue_uses_canonical_app_source():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     run_demo = (ROOT / "initramfs" / "run_demo").read_text()

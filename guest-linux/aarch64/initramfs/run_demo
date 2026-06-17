@@ -292,6 +292,36 @@ run_gva_manager_dump_routes() {
   run_binary "linqu_gva_manager" /bin/linqu_gva_manager --dump-routes
 }
 
+run_gva_manager() {
+  local mode="bootstrap"
+  local token=""
+
+  read_cmdline
+  for token in $cmdline; do
+    case "$token" in
+      gva_manager_mode=*)
+        mode="${token#*=}"
+        ;;
+    esac
+  done
+
+  case "$mode" in
+    ""|bootstrap)
+      run_gva_manager_bootstrap
+      ;;
+    dump_routes|dump-routes)
+      run_gva_manager_dump_routes
+      ;;
+    segment_cli|segment-cli)
+      run_gva_manager_segment_cli
+      ;;
+    *)
+      log "unknown gva_manager mode: $mode"
+      return 1
+      ;;
+  esac
+}
+
 run_gva_manager_segment_cli() {
   local node_id="0"
   local node_count="2"
@@ -343,14 +373,14 @@ run_gva_manager_segment_cli() {
   local rc=$?
   /bin/busybox cat "$alloc_log"
   if [ "$rc" -ne 0 ]; then
-    echo "[gva_manager_segment_cli] verdict=FAIL stage=alloc rc=$rc"
+    log "gva_manager segment_cli alloc failed rc=$rc"
     return "$rc"
   fi
 
   segment_id="$(/bin/busybox sed -n 's/.*result=done action=gsva-segment-alloc segment_id=\([^ ]*\).*/\1/p' "$alloc_log" | /bin/busybox tail -1)"
   epoch="$(/bin/busybox sed -n 's/.*result=done action=gsva-segment-alloc .* epoch=\([^ ]*\).*/\1/p' "$alloc_log" | /bin/busybox tail -1)"
   if [ -z "$segment_id" ] || [ -z "$epoch" ]; then
-    echo "[gva_manager_segment_cli] verdict=FAIL stage=parse"
+    log "gva_manager segment_cli alloc parse failed"
     return 1
   fi
 
@@ -358,7 +388,7 @@ run_gva_manager_segment_cli() {
   rc=$?
   /bin/busybox cat "$query_log"
   if [ "$rc" -ne 0 ]; then
-    echo "[gva_manager_segment_cli] verdict=FAIL stage=query rc=$rc segment_id=$segment_id"
+    log "gva_manager segment_cli query failed rc=$rc segment_id=$segment_id"
     return "$rc"
   fi
 
@@ -366,11 +396,9 @@ run_gva_manager_segment_cli() {
   rc=$?
   /bin/busybox cat "$retire_log"
   if [ "$rc" -ne 0 ]; then
-    echo "[gva_manager_segment_cli] verdict=FAIL stage=retire rc=$rc segment_id=$segment_id epoch=$epoch"
+    log "gva_manager segment_cli retire failed rc=$rc segment_id=$segment_id epoch=$epoch"
     return "$rc"
   fi
-
-  echo "[gva_manager_segment_cli] verdict=PASS segment_id=$segment_id epoch=$epoch"
   return 0
 }
 
@@ -571,12 +599,7 @@ run_default_actions() {
   fi
 
   if has_flag "linqu_gva_manager=1"; then
-    run_gva_manager_bootstrap || rc=$?
-    ran_any="1"
-  fi
-
-  if has_flag "linqu_gva_dump_routes=1"; then
-    run_gva_manager_dump_routes || rc=$?
+    run_gva_manager || rc=$?
     ran_any="1"
   fi
 
@@ -638,14 +661,8 @@ run_single_action() {
     obmm_coh_test)
       run_obmm_coh_test
       ;;
-    gva_manager_bootstrap)
-      run_gva_manager_bootstrap
-      ;;
-    gva_manager_dump_routes)
-      run_gva_manager_dump_routes
-      ;;
-    gva_manager_segment_cli)
-      run_gva_manager_segment_cli
+    gva_manager)
+      run_gva_manager
       ;;
     gva_direct)
       run_gva_direct
