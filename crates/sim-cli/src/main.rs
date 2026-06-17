@@ -1934,7 +1934,7 @@ fn run_lingqu_object_service_cli() -> anyhow::Result<()> {
     )?;
     publish_lingqu_object_cli_sample(
         &mut service,
-        "qwen3/session/demo/kv/layer/00/tile/0/position/00000001/k",
+        "qwen3/session/diagnostic/kv/layer/00/tile/0/position/00000001/k",
         LingquObjectKind::KvCacheBlock,
         LingquPayloadBackend::Shmem,
         2048,
@@ -1943,7 +1943,7 @@ fn run_lingqu_object_service_cli() -> anyhow::Result<()> {
     )?;
     publish_lingqu_object_cli_sample(
         &mut service,
-        "qwen3/session/demo/hidden/boundary/node/0/to/1/step/0",
+        "qwen3/session/diagnostic/hidden/boundary/node/0/to/1/step/0",
         LingquObjectKind::RuntimeTensor,
         LingquPayloadBackend::Shmem,
         2048,
@@ -1958,13 +1958,13 @@ fn run_lingqu_object_service_cli() -> anyhow::Result<()> {
     )?;
     resolve_lingqu_object_cli_sample(
         &mut service,
-        "qwen3/session/demo/kv/layer/00/tile/0/position/00000001/k",
+        "qwen3/session/diagnostic/kv/layer/00/tile/0/position/00000001/k",
         &[LingquPayloadBackend::Shmem],
         4,
     )?;
     resolve_lingqu_object_cli_sample(
         &mut service,
-        "qwen3/session/demo/hidden/boundary/node/0/to/1/step/0",
+        "qwen3/session/diagnostic/hidden/boundary/node/0/to/1/step/0",
         &[LingquPayloadBackend::Shmem],
         5,
     )?;
