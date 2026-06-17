@@ -186,8 +186,7 @@ static bool should_run_ub_tcp_each_server(void)
 
 static bool should_run_obmm_pool(void)
 {
-    return cmdline_has_option("linqu_obmm_pool=1") ||
-           cmdline_has_option("linqu_obmm_demo=1");
+    return cmdline_has_option("linqu_obmm_pool=1");
 }
 
 static bool should_enter_demo_boot_flow(void)

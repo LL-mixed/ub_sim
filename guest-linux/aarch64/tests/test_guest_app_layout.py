@@ -210,6 +210,7 @@ def test_obmm_queue_uses_canonical_app_source():
 
 def test_ub_obmm_pool_uses_canonical_app_source():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
+    init_source = (ROOT / "init.c").read_text()
     run_demo = (ROOT / "initramfs" / "run_demo").read_text()
     dual_runner = (ROOT / "scripts" / "run_ub_dual_node_obmm_pool.sh").read_text()
     four_runner = (ROOT / "scripts" / "run_ub_four_node_obmm_pool.sh").read_text()
@@ -220,7 +221,9 @@ def test_ub_obmm_pool_uses_canonical_app_source():
     assert 'OBMM_POOL_SRC="$ROOT_DIR/apps/ub_obmm_pool/ub_obmm_pool.c"' in build_script
     assert 'OBMM_POOL_BIN="$OUT_DIR/linqu_ub_obmm_pool"' in build_script
     assert "linqu_ub_obmm_demo" not in build_script
+    assert "linqu_obmm_pool=1" in init_source
     assert "linqu_obmm_pool=1" in run_demo
+    assert "linqu_obmm_demo" not in init_source
     assert "linqu_obmm_demo" not in run_demo
     assert "obmm|obmm_pool|obmm_demo" not in run_demo
     assert "obmm_demo" not in run_demo
