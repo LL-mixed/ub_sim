@@ -130,6 +130,7 @@ def test_obmm_queue_uses_canonical_app_source():
     legacy_four_runner = (ROOT / "scripts" / "run_ub_four_node_obmm_queue_demo.sh").read_text()
     legacy_eight_runner = (ROOT / "scripts" / "run_ub_eight_node_obmm_queue_demo.sh").read_text()
     app_dir = ROOT / "apps" / "obmm_queue"
+    app_source = (app_dir / "obmm_queue.c").read_text()
 
     assert 'OBMM_QUEUE_SRC="$ROOT_DIR/apps/obmm_queue/obmm_queue.c"' in build_script
     assert 'OBMM_QUEUE_BIN="$OUT_DIR/linqu_ub_obmm_queue"' in build_script
@@ -141,8 +142,13 @@ def test_obmm_queue_uses_canonical_app_source():
     assert "[obmm-queue4]" in four_runner
     assert "run_queue_app" in eight_runner
     assert "[obmm-queue8]" in eight_runner
+    assert "export OBMM_QUEUE_MODE=" in eight_runner
     assert "run_ub_four_node_obmm_queue.sh" in legacy_four_runner
     assert "run_ub_eight_node_obmm_queue.sh" in legacy_eight_runner
+    assert "enum queue_mode" in app_source
+    assert "parse_queue_mode" in app_source
+    assert "OBMM_QUEUE_MODE" in app_source
+    assert "DEMO_MODE_" not in app_source
     assert (app_dir / "obmm_queue.c").exists()
     assert (app_dir / "obmm_pool_helpers.h").exists()
     assert (app_dir / "Makefile").exists()

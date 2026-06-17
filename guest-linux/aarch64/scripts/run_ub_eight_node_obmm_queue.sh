@@ -198,7 +198,7 @@ send_obmm_queue_cmd() {
   payload+=$'export OBMM_QUEUE_DEPTH='"${OBMM_QUEUE_DEPTH}"$'\n'
   payload+=$'export OBMM_BOOTSTRAP='"${OBMM_BOOTSTRAP}"$'\n'
   payload+=$'export OBMM_BOOTSTRAP_SESSION='"${RUN_ID_BASE}"$'\n'
-  payload+=$'export OBMM_DEMO_MODE='"${OBMM_QUEUE_MODE}"$'\n'
+  payload+=$'export OBMM_QUEUE_MODE='"${OBMM_QUEUE_MODE}"$'\n'
   payload+=$'export OBMM_SPMC_PROVIDER='"${OBMM_SPMC_PROVIDER}"$'\n'
   payload+=$'export OBMM_SPMC_BATCH_COUNT='"${OBMM_SPMC_BATCH_COUNT}"$'\n'
   payload+=$'export OBMM_MPSC_CONSUMER='"${OBMM_MPSC_CONSUMER}"$'\n'

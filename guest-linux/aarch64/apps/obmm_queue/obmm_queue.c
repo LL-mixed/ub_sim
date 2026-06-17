@@ -42,11 +42,11 @@
 #define MPSC_BATCH_COUNT_DEFAULT 1000
 #define MPMC_BATCH_COUNT_DEFAULT 500
 
-enum demo_mode {
-    DEMO_MODE_FULLMESH = 0,
-    DEMO_MODE_SPMC     = 1,
-    DEMO_MODE_COMBINED = 2,
-    DEMO_MODE_MPMC     = 3,
+enum queue_mode {
+    QUEUE_MODE_FULLMESH = 0,
+    QUEUE_MODE_SPMC     = 1,
+    QUEUE_MODE_COMBINED = 2,
+    QUEUE_MODE_MPMC     = 3,
 };
 
 /* ------------------------------------------------------------------ */
@@ -73,7 +73,7 @@ struct node_slot {
 static volatile sig_atomic_t g_alarm_fired;
 static uint64_t g_export_size;
 static uint32_t g_queue_depth;
-static enum demo_mode g_demo_mode;
+static enum queue_mode g_queue_mode;
 static uint32_t g_spmc_depth;
 static uint32_t g_spmc_provider;
 static uint32_t g_spmc_batch_count;
@@ -110,19 +110,25 @@ static uint32_t parse_queue_depth(void)
     return (uint32_t)value;
 }
 
-static enum demo_mode parse_demo_mode(void)
+static enum queue_mode parse_queue_mode(void)
 {
-    const char *env = getenv("OBMM_DEMO_MODE");
+    const char *env = getenv("OBMM_QUEUE_MODE");
+    const char *env_name = "OBMM_QUEUE_MODE";
+
+    if (!env || env[0] == '\0') {
+        env = getenv("OBMM_DEMO_MODE");
+        env_name = "OBMM_DEMO_MODE";
+    }
     if (!env || env[0] == '\0' || strcmp(env, "fullmesh") == 0)
-        return DEMO_MODE_FULLMESH;
+        return QUEUE_MODE_FULLMESH;
     if (strcmp(env, "spmc") == 0)
-        return DEMO_MODE_SPMC;
+        return QUEUE_MODE_SPMC;
     if (strcmp(env, "combined") == 0)
-        return DEMO_MODE_COMBINED;
+        return QUEUE_MODE_COMBINED;
     if (strcmp(env, "mpmc") == 0)
-        return DEMO_MODE_MPMC;
-    fprintf(stderr, TAG " warn: unknown OBMM_DEMO_MODE=%s, using fullmesh\n", env);
-    return DEMO_MODE_FULLMESH;
+        return QUEUE_MODE_MPMC;
+    fprintf(stderr, TAG " warn: unknown %s=%s, using fullmesh\n", env_name, env);
+    return QUEUE_MODE_FULLMESH;
 }
 
 static uint32_t parse_spmc_depth(void)
@@ -160,7 +166,7 @@ static uint32_t parse_env_u32(const char *name, uint32_t default_val)
 
 static bool g_spmc_enabled(void)
 {
-    return g_demo_mode == DEMO_MODE_SPMC || g_demo_mode == DEMO_MODE_COMBINED;
+    return g_queue_mode == QUEUE_MODE_SPMC || g_queue_mode == QUEUE_MODE_COMBINED;
 }
 
 static bool checked_add_u64(uint64_t a, uint64_t b, uint64_t *out)
@@ -1067,10 +1073,10 @@ static int do_queue_stress(int node_count, int local_idx,
 }
 
 /* ------------------------------------------------------------------ */
-/* SPMC demo protocol                                                  */
+/* SPMC queue protocol                                                 */
 /* ------------------------------------------------------------------ */
 
-static int do_spmc_demo(int node_count, int local_idx,
+static int do_spmc_queue(int node_count, int local_idx,
                         struct node_slot slots[MAX_NODES])
 {
     uint32_t provider = g_spmc_provider;
@@ -1264,10 +1270,10 @@ static int do_spmc_demo(int node_count, int local_idx,
 }
 
 /* ------------------------------------------------------------------ */
-/* MPSC demo protocol                                                  */
+/* MPSC queue protocol                                                  */
 /* ------------------------------------------------------------------ */
 
-static int do_mpsc_demo(int node_count, int local_idx,
+static int do_mpsc_queue(int node_count, int local_idx,
                         struct node_slot slots[MAX_NODES])
 {
     uint32_t consumer = g_mpsc_consumer;
@@ -1499,10 +1505,10 @@ static int do_mpsc_demo(int node_count, int local_idx,
 }
 
 /* ------------------------------------------------------------------ */
-/* MPMC demo protocol                                                  */
+/* MPMC queue protocol                                                  */
 /* ------------------------------------------------------------------ */
 
-static int do_mpmc_demo(int node_count, int local_idx,
+static int do_mpmc_queue(int node_count, int local_idx,
                         struct node_slot slots[MAX_NODES])
 {
     uint32_t batch_count = g_mpmc_batch_count;
@@ -1816,7 +1822,7 @@ int main(void)
     alarm(RUN_TIMEOUT_S);
     g_export_size = obmm_parse_export_size();
     g_queue_depth = parse_queue_depth();
-    g_demo_mode = parse_demo_mode();
+    g_queue_mode = parse_queue_mode();
     g_spmc_depth = parse_spmc_depth();
     g_spmc_provider = parse_env_u32("OBMM_SPMC_PROVIDER", 0);
     g_spmc_batch_count = parse_env_u32("OBMM_SPMC_BATCH_COUNT", SPMC_BATCH_COUNT_DEFAULT);
@@ -1827,11 +1833,11 @@ int main(void)
     bootstrap_generation = parse_bootstrap_generation();
 
     fprintf(stderr, TAG " start export_size=%" PRIu64
-            "MB queue_depth=%u demo=%s bootstrap=%s session=%" PRIx64 "\n",
+            "MB queue_depth=%u mode=%s bootstrap=%s session=%" PRIx64 "\n",
             g_export_size >> 20, g_queue_depth,
-            g_demo_mode == DEMO_MODE_SPMC ? "spmc" :
-            g_demo_mode == DEMO_MODE_COMBINED ? "combined" :
-            g_demo_mode == DEMO_MODE_MPMC ? "mpmc" : "fullmesh",
+            g_queue_mode == QUEUE_MODE_SPMC ? "spmc" :
+            g_queue_mode == QUEUE_MODE_COMBINED ? "combined" :
+            g_queue_mode == QUEUE_MODE_MPMC ? "mpmc" : "fullmesh",
             bootstrap_mode == BOOTSTRAP_FM ? "fm" : "udp",
             bootstrap_generation);
 
@@ -2022,31 +2028,31 @@ int main(void)
     usleep(500000);
 
     /* ---- Phase 5: Queue-based rounds ---- */
-    switch (g_demo_mode) {
-    case DEMO_MODE_FULLMESH:
+    switch (g_queue_mode) {
+    case QUEUE_MODE_FULLMESH:
         if (do_rounds(node_count, local_idx, slots) != 0)
             goto out;
         if (do_queue_stress(node_count, local_idx, slots) != 0)
             goto out;
         break;
-    case DEMO_MODE_SPMC:
-        if (do_spmc_demo(node_count, local_idx, slots) != 0)
+    case QUEUE_MODE_SPMC:
+        if (do_spmc_queue(node_count, local_idx, slots) != 0)
             goto out;
         break;
-    case DEMO_MODE_COMBINED:
+    case QUEUE_MODE_COMBINED:
         if (do_rounds(node_count, local_idx, slots) != 0)
             goto out;
         if (do_queue_stress(node_count, local_idx, slots) != 0)
             goto out;
-        if (do_spmc_demo(node_count, local_idx, slots) != 0)
+        if (do_spmc_queue(node_count, local_idx, slots) != 0)
             goto out;
-        if (do_mpsc_demo(node_count, local_idx, slots) != 0)
+        if (do_mpsc_queue(node_count, local_idx, slots) != 0)
             goto out;
-        if (do_mpmc_demo(node_count, local_idx, slots) != 0)
+        if (do_mpmc_queue(node_count, local_idx, slots) != 0)
             goto out;
         break;
-    case DEMO_MODE_MPMC:
-        if (do_mpmc_demo(node_count, local_idx, slots) != 0)
+    case QUEUE_MODE_MPMC:
+        if (do_mpmc_queue(node_count, local_idx, slots) != 0)
             goto out;
         break;
     }
