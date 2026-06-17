@@ -522,7 +522,7 @@ run_default_actions() {
     ran_any="1"
   fi
 
-  if has_flag "linqu_ub_udma=1" || has_flag "linqu_ub_udma_demo=1"; then
+  if has_flag "linqu_ub_udma=1"; then
     run_binary "linqu_ub_udma" /bin/linqu_ub_udma || rc=$?
     ran_any="1"
   fi

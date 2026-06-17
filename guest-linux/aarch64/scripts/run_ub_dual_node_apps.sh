@@ -591,7 +591,7 @@ run_iteration() {
   if [[ "$APPEND_EXTRA" == *"linqu_ub_tcp_each_server_demo=1"* ]]; then
     tcp_enabled=1
   fi
-  if [[ "$APPEND_EXTRA" == *"linqu_ub_udma=1"* || "$APPEND_EXTRA" == *"linqu_ub_udma_demo=1"* ]]; then
+  if [[ "$APPEND_EXTRA" == *"linqu_ub_udma=1"* ]]; then
     udma_enabled=1
   fi
   if [[ "$APPEND_EXTRA" == *"linqu_obmm_pool=1"* ]]; then
@@ -743,7 +743,7 @@ run_iteration() {
   fi
 
   if [[ "$udma_enabled" -eq 1 ]]; then
-    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub udma (app|demo) pass" "\\[init\\] ub udma (app|demo) fail" "$RUN_SECS"
+    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub udma app pass" "\\[init\\] ub udma app fail" "$RUN_SECS"
     case "$?" in
       0) ;;
       1)
@@ -756,7 +756,7 @@ run_iteration() {
         ;;
     esac
 
-    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub udma (app|demo) pass" "\\[init\\] ub udma (app|demo) fail" "$RUN_SECS"
+    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub udma app pass" "\\[init\\] ub udma app fail" "$RUN_SECS"
     case "$?" in
       0) ;;
       1)
@@ -823,7 +823,7 @@ run_iteration() {
     validate_tcp_each_server_log "nodeA" "$nodea_guest_log" || return 1
     validate_tcp_each_server_log "nodeB" "$nodeb_guest_log" || return 1
   fi
-  if [[ "$APPEND_EXTRA" == *"linqu_ub_udma=1"* || "$APPEND_EXTRA" == *"linqu_ub_udma_demo=1"* ]]; then
+  if [[ "$APPEND_EXTRA" == *"linqu_ub_udma=1"* ]]; then
     validate_udma_log "nodeA" "$nodea_guest_log" || return 1
     validate_udma_log "nodeB" "$nodeb_guest_log" || return 1
   fi
