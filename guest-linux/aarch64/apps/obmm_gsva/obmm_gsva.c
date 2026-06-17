@@ -15,35 +15,35 @@
 #include <unistd.h>
 
 #define TAG "[obmm_gsva]"
-#define GSVA_DEMO_DEFAULT_SIZE (4UL * 1024UL * 1024UL)
-#define GSVA_DEMO_DEFAULT_BASE 0x700000000000ULL
-#define GSVA_DEMO_GENERATION 0x475356410101ULL
-#define GSVA_DEMO_MAGIC 0x4753564144454d4fULL
-#define GSVA_DEMO_A 0x1111222233334444ULL
-#define GSVA_DEMO_B 0xaaaabbbbccccddddULL
-#define GSVA_DEMO_MATRIX_VALUE_BASE 0x4753564d00000000ULL
-#define GSVA_DEMO_TIMEOUT_MS 90000
+#define GSVA_APP_DEFAULT_SIZE (4UL * 1024UL * 1024UL)
+#define GSVA_APP_DEFAULT_BASE 0x700000000000ULL
+#define GSVA_APP_GENERATION 0x475356410101ULL
+#define GSVA_APP_MAGIC 0x4753564144454d4fULL
+#define GSVA_APP_A 0x1111222233334444ULL
+#define GSVA_APP_B 0xaaaabbbbccccddddULL
+#define GSVA_APP_MATRIX_VALUE_BASE 0x4753564d00000000ULL
+#define GSVA_APP_TIMEOUT_MS 90000
 
-enum gsva_demo_mode {
-    GSVA_DEMO_IDENTITY,
-    GSVA_DEMO_CONFLICT,
-    GSVA_DEMO_STALE_GENERATION,
-    GSVA_DEMO_INVALID_OFFSET,
-    GSVA_DEMO_MATRIX,
-    GSVA_DEMO_MMAP_MODE,
-    GSVA_DEMO_OUTSIDE_APERTURE,
-    GSVA_DEMO_OUTSIDE_IMPORT,
-    GSVA_DEMO_ANONYMOUS_COLLISION,
+enum gsva_app_mode {
+    GSVA_APP_IDENTITY,
+    GSVA_APP_CONFLICT,
+    GSVA_APP_STALE_GENERATION,
+    GSVA_APP_INVALID_OFFSET,
+    GSVA_APP_MATRIX,
+    GSVA_APP_MMAP_MODE,
+    GSVA_APP_OUTSIDE_APERTURE,
+    GSVA_APP_OUTSIDE_IMPORT,
+    GSVA_APP_ANONYMOUS_COLLISION,
 };
 
-struct gsva_demo_config {
-    enum gsva_demo_mode mode;
+struct gsva_app_config {
+    enum gsva_app_mode mode;
     uint64_t base;
     uint64_t size;
     int node_count;
 };
 
-struct gsva_demo_payload {
+struct gsva_app_payload {
     volatile uint64_t magic;
     volatile uint64_t phase;
     volatile uint64_t value;
@@ -85,36 +85,36 @@ static bool parse_u64(const char *s, uint64_t *out)
     return true;
 }
 
-static bool parse_args(int argc, char **argv, struct gsva_demo_config *cfg)
+static bool parse_args(int argc, char **argv, struct gsva_app_config *cfg)
 {
     int i;
 
-    cfg->mode = GSVA_DEMO_IDENTITY;
-    cfg->base = GSVA_DEMO_DEFAULT_BASE;
-    cfg->size = GSVA_DEMO_DEFAULT_SIZE;
+    cfg->mode = GSVA_APP_IDENTITY;
+    cfg->base = GSVA_APP_DEFAULT_BASE;
+    cfg->size = GSVA_APP_DEFAULT_SIZE;
     cfg->node_count = 2;
 
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--mode") == 0 && i + 1 < argc) {
             const char *mode = argv[++i];
             if (strcmp(mode, "identity") == 0) {
-                cfg->mode = GSVA_DEMO_IDENTITY;
+                cfg->mode = GSVA_APP_IDENTITY;
             } else if (strcmp(mode, "conflict") == 0) {
-                cfg->mode = GSVA_DEMO_CONFLICT;
+                cfg->mode = GSVA_APP_CONFLICT;
             } else if (strcmp(mode, "stale-generation") == 0) {
-                cfg->mode = GSVA_DEMO_STALE_GENERATION;
+                cfg->mode = GSVA_APP_STALE_GENERATION;
             } else if (strcmp(mode, "invalid-offset") == 0) {
-                cfg->mode = GSVA_DEMO_INVALID_OFFSET;
+                cfg->mode = GSVA_APP_INVALID_OFFSET;
             } else if (strcmp(mode, "matrix") == 0) {
-                cfg->mode = GSVA_DEMO_MATRIX;
+                cfg->mode = GSVA_APP_MATRIX;
             } else if (strcmp(mode, "mmap-mode") == 0) {
-                cfg->mode = GSVA_DEMO_MMAP_MODE;
+                cfg->mode = GSVA_APP_MMAP_MODE;
             } else if (strcmp(mode, "outside-aperture") == 0) {
-                cfg->mode = GSVA_DEMO_OUTSIDE_APERTURE;
+                cfg->mode = GSVA_APP_OUTSIDE_APERTURE;
             } else if (strcmp(mode, "outside-import") == 0) {
-                cfg->mode = GSVA_DEMO_OUTSIDE_IMPORT;
+                cfg->mode = GSVA_APP_OUTSIDE_IMPORT;
             } else if (strcmp(mode, "anonymous-collision") == 0) {
-                cfg->mode = GSVA_DEMO_ANONYMOUS_COLLISION;
+                cfg->mode = GSVA_APP_ANONYMOUS_COLLISION;
             } else {
                 return false;
             }
@@ -136,7 +136,7 @@ static bool parse_args(int argc, char **argv, struct gsva_demo_config *cfg)
         }
     }
 
-    if (cfg->mode != GSVA_DEMO_MATRIX)
+    if (cfg->mode != GSVA_APP_MATRIX)
         cfg->node_count = 2;
 
     return cfg->base != 0 &&
@@ -198,19 +198,19 @@ static void log_kernel_aperture_proc(void)
     log_msg("kernel aperture proc -> %s", value);
 }
 
-static int register_aperture(int obmm_fd, const struct gsva_demo_config *cfg,
+static int register_aperture(int obmm_fd, const struct gsva_app_config *cfg,
                              int local_idx)
 {
     struct obmm_cmd_gsva_aperture req = {0};
     struct obmm_cmd_gsva_aperture query = {0};
     uint64_t aperture_size = cfg->size;
 
-    if (cfg->mode == GSVA_DEMO_MATRIX)
+    if (cfg->mode == GSVA_APP_MATRIX)
         aperture_size *= (uint64_t)cfg->node_count;
 
     req.base = cfg->base;
     req.size = aperture_size;
-    req.generation = GSVA_DEMO_GENERATION;
+    req.generation = GSVA_APP_GENERATION;
     req.flags = OBMM_GSVA_APERTURE_F_ACTIVE;
     req.node_id = (uint32_t)local_idx;
     req.node_count = (uint32_t)cfg->node_count;
@@ -219,7 +219,7 @@ static int register_aperture(int obmm_fd, const struct gsva_demo_config *cfg,
     if (ioctl(obmm_fd, OBMM_CMD_GSVA_APERTURE_QUERY, &query) != 0)
         return -1;
     if (query.base != cfg->base || query.size != aperture_size ||
-        query.generation != GSVA_DEMO_GENERATION ||
+        query.generation != GSVA_APP_GENERATION ||
         !(query.flags & OBMM_GSVA_APERTURE_F_ACTIVE)) {
         errno = EINVAL;
         return -1;
@@ -238,7 +238,7 @@ static int clear_aperture(int obmm_fd, uint64_t generation)
 
 static int wait_phase(volatile uint64_t *phase, uint64_t expect)
 {
-    long deadline = obmm_now_ms() + GSVA_DEMO_TIMEOUT_MS;
+    long deadline = obmm_now_ms() + GSVA_APP_TIMEOUT_MS;
 
     while (obmm_now_ms() < deadline) {
         if (*phase == expect)
@@ -249,14 +249,14 @@ static int wait_phase(volatile uint64_t *phase, uint64_t expect)
     return -1;
 }
 
-static uint64_t matrix_slot_base(const struct gsva_demo_config *cfg, int node_idx)
+static uint64_t matrix_slot_base(const struct gsva_app_config *cfg, int node_idx)
 {
     return cfg->base + (uint64_t)node_idx * cfg->size;
 }
 
 static uint64_t matrix_value(int writer_idx, int owner_idx)
 {
-    return GSVA_DEMO_MATRIX_VALUE_BASE |
+    return GSVA_APP_MATRIX_VALUE_BASE |
            ((uint64_t)(uint32_t)writer_idx << 8) |
            (uint64_t)(uint32_t)owner_idx;
 }
@@ -264,11 +264,11 @@ static uint64_t matrix_value(int writer_idx, int owner_idx)
 static int wait_matrix_ready(struct gsva_matrix_payload *payload, int owner,
                              int node_count, uint64_t ptr)
 {
-    long deadline = obmm_now_ms() + GSVA_DEMO_TIMEOUT_MS;
+    long deadline = obmm_now_ms() + GSVA_APP_TIMEOUT_MS;
 
     while (obmm_now_ms() < deadline) {
         if (payload->phase >= 1 &&
-            payload->magic == GSVA_DEMO_MAGIC &&
+            payload->magic == GSVA_APP_MAGIC &&
             payload->owner_node == (uint64_t)owner &&
             payload->node_count == (uint64_t)node_count &&
             payload->ptr == ptr)
@@ -281,7 +281,7 @@ static int wait_matrix_ready(struct gsva_matrix_payload *payload, int owner,
 
 static int wait_matrix_done(struct gsva_matrix_payload *payload)
 {
-    long deadline = obmm_now_ms() + GSVA_DEMO_TIMEOUT_MS;
+    long deadline = obmm_now_ms() + GSVA_APP_TIMEOUT_MS;
 
     while (obmm_now_ms() < deadline) {
         if (payload->phase >= 2)
@@ -293,7 +293,7 @@ static int wait_matrix_done(struct gsva_matrix_payload *payload)
 }
 
 static int run_matrix(int obmm_fd, uint32_t local_cna,
-                      const struct gsva_demo_config *cfg, int local_idx,
+                      const struct gsva_app_config *cfg, int local_idx,
                       struct obmm_helpers_meta *local_meta)
 {
     struct obmm_helpers_meta metas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
@@ -325,7 +325,7 @@ static int run_matrix(int obmm_fd, uint32_t local_cna,
         goto out_unexport;
     }
     if (obmm_bootstrap_publish(obmm_fd, local_idx, cfg->node_count,
-                               GSVA_DEMO_GENERATION, local_meta) != 0)
+                               GSVA_APP_GENERATION, local_meta) != 0)
         goto out_unexport;
     if (obmm_map_gsva_region_at(local_meta->export_mem_id,
                                 (void *)(uintptr_t)local_base, cfg->size,
@@ -334,7 +334,7 @@ static int run_matrix(int obmm_fd, uint32_t local_cna,
     payloads[local_idx] =
         (struct gsva_matrix_payload *)regions[local_idx].addr;
     memset(payloads[local_idx], 0, sizeof(*payloads[local_idx]));
-    payloads[local_idx]->magic = GSVA_DEMO_MAGIC;
+    payloads[local_idx]->magic = GSVA_APP_MAGIC;
     payloads[local_idx]->owner_node = (uint64_t)local_idx;
     payloads[local_idx]->node_count = (uint64_t)cfg->node_count;
     payloads[local_idx]->ptr = local_base;
@@ -342,7 +342,7 @@ static int run_matrix(int obmm_fd, uint32_t local_cna,
     payloads[local_idx]->phase = 1;
 
     if (obmm_bootstrap_lookup(obmm_fd, local_cna, cfg->node_count,
-                              GSVA_DEMO_GENERATION, metas, got) != 0)
+                              GSVA_APP_GENERATION, metas, got) != 0)
         goto out_cleanup;
 
     if (!obmm_alloc_import_pas(import_count, cfg->size, import_pas,
@@ -392,7 +392,7 @@ static int run_matrix(int obmm_fd, uint32_t local_cna,
 
     for (owner = 0; owner < cfg->node_count; owner++) {
         for (writer = 0; writer < cfg->node_count; writer++) {
-            long deadline = obmm_now_ms() + GSVA_DEMO_TIMEOUT_MS;
+            long deadline = obmm_now_ms() + GSVA_APP_TIMEOUT_MS;
             uint64_t expect = matrix_value(writer, owner);
 
             while (obmm_now_ms() < deadline &&
@@ -439,11 +439,11 @@ out_unexport:
 }
 
 static int run_identity_home(int obmm_fd, uint32_t local_cna,
-                             const struct gsva_demo_config *cfg,
+                             const struct gsva_app_config *cfg,
                              struct obmm_helpers_meta *local_meta)
 {
     struct obmm_helpers_region region = {0};
-    struct gsva_demo_payload *payload;
+    struct gsva_app_payload *payload;
     int ret = -1;
 
     local_meta->export_cna = local_cna;
@@ -460,7 +460,7 @@ static int run_identity_home(int obmm_fd, uint32_t local_cna,
             " token=%u", local_meta->export_mem_id, local_meta->remote_uba,
             local_meta->token_id);
 
-    if (obmm_bootstrap_publish(obmm_fd, 0, 2, GSVA_DEMO_GENERATION,
+    if (obmm_bootstrap_publish(obmm_fd, 0, 2, GSVA_APP_GENERATION,
                                local_meta) != 0)
         goto out_unexport;
 
@@ -473,19 +473,19 @@ static int run_identity_home(int obmm_fd, uint32_t local_cna,
         goto out_unmap;
     }
 
-    payload = (struct gsva_demo_payload *)region.addr;
+    payload = (struct gsva_app_payload *)region.addr;
     memset(payload, 0, sizeof(*payload));
-    payload->magic = GSVA_DEMO_MAGIC;
-    payload->value = GSVA_DEMO_A;
+    payload->magic = GSVA_APP_MAGIC;
+    payload->value = GSVA_APP_A;
     payload->home_ptr = cfg->base;
     __sync_synchronize();
     payload->phase = 1;
     log_msg("home wrote value=%#" PRIx64 " ptr=%#" PRIx64,
-            (uint64_t)GSVA_DEMO_A, cfg->base);
+            (uint64_t)GSVA_APP_A, cfg->base);
 
     if (wait_phase(&payload->phase, 2) != 0)
         goto out_unmap;
-    if (payload->value != GSVA_DEMO_B || payload->peer_ptr != cfg->base) {
+    if (payload->value != GSVA_APP_B || payload->peer_ptr != cfg->base) {
         log_msg("home verify failed value=%#" PRIx64 " peer_ptr=%#" PRIx64,
                 (uint64_t)payload->value, (uint64_t)payload->peer_ptr);
         errno = EIO;
@@ -507,7 +507,7 @@ out_unexport:
 }
 
 static int run_identity_peer(int obmm_fd, uint32_t local_cna,
-                             const struct gsva_demo_config *cfg,
+                             const struct gsva_app_config *cfg,
                              struct obmm_helpers_meta *local_meta)
 {
     struct obmm_helpers_meta metas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
@@ -516,16 +516,16 @@ static int run_identity_peer(int obmm_fd, uint32_t local_cna,
     bool import_osync[OBMM_POOL_HELPERS_MAX_NODES] = {false};
     uint64_t import_mem_id = 0;
     struct obmm_helpers_region region = {0};
-    struct gsva_demo_payload *payload;
+    struct gsva_app_payload *payload;
     int ret = -1;
 
     local_meta->export_cna = local_cna;
     if (obmm_do_export(obmm_fd, local_meta, cfg->size) != 0)
         return -1;
-    if (obmm_bootstrap_publish(obmm_fd, 1, 2, GSVA_DEMO_GENERATION,
+    if (obmm_bootstrap_publish(obmm_fd, 1, 2, GSVA_APP_GENERATION,
                                local_meta) != 0)
         goto out_unexport;
-    if (obmm_bootstrap_lookup(obmm_fd, local_cna, 2, GSVA_DEMO_GENERATION,
+    if (obmm_bootstrap_lookup(obmm_fd, local_cna, 2, GSVA_APP_GENERATION,
                               metas, got) != 0)
         goto out_unexport;
     if (!got[0] || metas[0].remote_uba != cfg->base) {
@@ -551,10 +551,10 @@ static int run_identity_peer(int obmm_fd, uint32_t local_cna,
         goto out_unmap;
     }
 
-    payload = (struct gsva_demo_payload *)region.addr;
+    payload = (struct gsva_app_payload *)region.addr;
     if (wait_phase(&payload->phase, 1) != 0)
         goto out_unmap;
-    if (payload->magic != GSVA_DEMO_MAGIC || payload->value != GSVA_DEMO_A ||
+    if (payload->magic != GSVA_APP_MAGIC || payload->value != GSVA_APP_A ||
         payload->home_ptr != cfg->base) {
         log_msg("peer verify A failed magic=%#" PRIx64 " value=%#" PRIx64
                 " home_ptr=%#" PRIx64,
@@ -564,14 +564,14 @@ static int run_identity_peer(int obmm_fd, uint32_t local_cna,
         goto out_unmap;
     }
 
-    payload->value = GSVA_DEMO_B;
+    payload->value = GSVA_APP_B;
     payload->peer_ptr = cfg->base;
     __sync_synchronize();
     payload->phase = 2;
     log_msg("result=done mode=identity role=peer ptr=%#" PRIx64
             " user_va=%#" PRIx64 " uba=%#" PRIx64 " value=%#" PRIx64,
             cfg->base, cfg->base, metas[0].remote_uba,
-            (uint64_t)GSVA_DEMO_B);
+            (uint64_t)GSVA_APP_B);
     ret = 0;
 
 out_unmap:
@@ -585,7 +585,7 @@ out_unexport:
     return ret;
 }
 
-static int run_conflict(int obmm_fd, const struct gsva_demo_config *cfg,
+static int run_conflict(int obmm_fd, const struct gsva_app_config *cfg,
                         int local_idx)
 {
     struct obmm_helpers_meta meta = {0};
@@ -602,7 +602,7 @@ static int run_conflict(int obmm_fd, const struct gsva_demo_config *cfg,
                            cfg->size, false, &region) == 0) {
         obmm_unmap_region(&region);
         (void)obmm_do_unexport(obmm_fd, meta.export_mem_id);
-        (void)clear_aperture(obmm_fd, GSVA_DEMO_GENERATION);
+        (void)clear_aperture(obmm_fd, GSVA_APP_GENERATION);
         log_msg("result=fail mode=conflict reason=normal-obmm-mmap-entered-gsva-aperture");
         errno = EINVAL;
         return -1;
@@ -610,13 +610,13 @@ static int run_conflict(int obmm_fd, const struct gsva_demo_config *cfg,
 
     saved_errno = errno;
     (void)obmm_do_unexport(obmm_fd, meta.export_mem_id);
-    (void)clear_aperture(obmm_fd, GSVA_DEMO_GENERATION);
+    (void)clear_aperture(obmm_fd, GSVA_APP_GENERATION);
     log_msg("result=done mode=conflict role=%s reason=normal-obmm-mmap-rejected errno=%d",
             local_idx == 0 ? "home" : "peer", saved_errno);
     return 0;
 }
 
-static int run_mmap_mode(int obmm_fd, const struct gsva_demo_config *cfg,
+static int run_mmap_mode(int obmm_fd, const struct gsva_app_config *cfg,
                          int local_idx)
 {
     struct obmm_helpers_meta gsva_meta = {0};
@@ -705,7 +705,7 @@ out_gsva:
 }
 
 static int run_anonymous_collision(int obmm_fd,
-                                   const struct gsva_demo_config *cfg,
+                                   const struct gsva_app_config *cfg,
                                    int local_idx)
 {
     void *ptr;
@@ -718,7 +718,7 @@ static int run_anonymous_collision(int obmm_fd,
                MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
     if (ptr != MAP_FAILED) {
         (void)munmap(ptr, 4096);
-        (void)clear_aperture(obmm_fd, GSVA_DEMO_GENERATION);
+        (void)clear_aperture(obmm_fd, GSVA_APP_GENERATION);
         log_msg("result=fail mode=anonymous-collision role=%s reason=anonymous-mmap-entered-gsva-aperture",
                 local_idx == 0 ? "home" : "peer");
         errno = EINVAL;
@@ -727,7 +727,7 @@ static int run_anonymous_collision(int obmm_fd,
 
     saved_errno = errno;
     if (saved_errno != EEXIST) {
-        (void)clear_aperture(obmm_fd, GSVA_DEMO_GENERATION);
+        (void)clear_aperture(obmm_fd, GSVA_APP_GENERATION);
         log_msg("anonymous mmap rejected with unexpected errno=%d",
                 saved_errno);
         errno = saved_errno;
@@ -736,13 +736,13 @@ static int run_anonymous_collision(int obmm_fd,
 
     log_msg("anonymous mmap rejected by kernel gsva reserve -> ok errno=%d",
             saved_errno);
-    (void)clear_aperture(obmm_fd, GSVA_DEMO_GENERATION);
+    (void)clear_aperture(obmm_fd, GSVA_APP_GENERATION);
     log_msg("result=done mode=anonymous-collision role=%s errno=%d",
             local_idx == 0 ? "home" : "peer", saved_errno);
     return 0;
 }
 
-static int run_outside_aperture(int obmm_fd, const struct gsva_demo_config *cfg,
+static int run_outside_aperture(int obmm_fd, const struct gsva_app_config *cfg,
                                 int local_idx)
 {
     struct obmm_helpers_meta meta = {0};
@@ -752,7 +752,7 @@ static int run_outside_aperture(int obmm_fd, const struct gsva_demo_config *cfg,
     if (register_aperture(obmm_fd, cfg, local_idx) != 0)
         return -1;
     if (UINT64_MAX - cfg->base < cfg->size) {
-        (void)clear_aperture(obmm_fd, GSVA_DEMO_GENERATION);
+        (void)clear_aperture(obmm_fd, GSVA_APP_GENERATION);
         errno = EOVERFLOW;
         return -1;
     }
@@ -761,7 +761,7 @@ static int run_outside_aperture(int obmm_fd, const struct gsva_demo_config *cfg,
     if (obmm_do_export_fixed_uba(obmm_fd, &meta, cfg->size,
                                  outside_base) == 0) {
         (void)obmm_do_unexport(obmm_fd, meta.export_mem_id);
-        (void)clear_aperture(obmm_fd, GSVA_DEMO_GENERATION);
+        (void)clear_aperture(obmm_fd, GSVA_APP_GENERATION);
         log_msg("result=fail mode=outside-aperture role=%s reason=fixed-export-accepted uba=%#"
                 PRIx64,
                 local_idx == 0 ? "home" : "peer", outside_base);
@@ -770,18 +770,18 @@ static int run_outside_aperture(int obmm_fd, const struct gsva_demo_config *cfg,
     }
 
     saved_errno = errno;
-    (void)clear_aperture(obmm_fd, GSVA_DEMO_GENERATION);
+    (void)clear_aperture(obmm_fd, GSVA_APP_GENERATION);
     log_msg("result=done mode=outside-aperture role=%s rejected_uba=%#"
             PRIx64 " errno=%d",
             local_idx == 0 ? "home" : "peer", outside_base, saved_errno);
     return 0;
 }
 
-static int run_stale_generation(int obmm_fd, const struct gsva_demo_config *cfg,
+static int run_stale_generation(int obmm_fd, const struct gsva_app_config *cfg,
                                 int local_idx)
 {
     struct obmm_cmd_gsva_aperture query = {0};
-    uint64_t stale_generation = GSVA_DEMO_GENERATION + 1;
+    uint64_t stale_generation = GSVA_APP_GENERATION + 1;
     int saved_errno;
 
     if (register_aperture(obmm_fd, cfg, local_idx) != 0)
@@ -797,14 +797,14 @@ static int run_stale_generation(int obmm_fd, const struct gsva_demo_config *cfg,
     if (ioctl(obmm_fd, OBMM_CMD_GSVA_APERTURE_QUERY, &query) != 0)
         return -1;
     if (query.base != cfg->base || query.size != cfg->size ||
-        query.generation != GSVA_DEMO_GENERATION ||
+        query.generation != GSVA_APP_GENERATION ||
         !(query.flags & OBMM_GSVA_APERTURE_F_ACTIVE)) {
         log_msg("result=fail mode=stale-generation reason=aperture-mutated");
         errno = EINVAL;
         return -1;
     }
 
-    (void)clear_aperture(obmm_fd, GSVA_DEMO_GENERATION);
+    (void)clear_aperture(obmm_fd, GSVA_APP_GENERATION);
     log_msg("result=done mode=stale-generation role=%s stale_generation=%#"
             PRIx64 " errno=%d",
             local_idx == 0 ? "home" : "peer", stale_generation, saved_errno);
@@ -812,7 +812,7 @@ static int run_stale_generation(int obmm_fd, const struct gsva_demo_config *cfg,
 }
 
 static int run_invalid_offset_home(int obmm_fd, uint32_t local_cna,
-                                   const struct gsva_demo_config *cfg,
+                                   const struct gsva_app_config *cfg,
                                    struct obmm_helpers_meta *local_meta)
 {
     int ret = -1;
@@ -825,7 +825,7 @@ static int run_invalid_offset_home(int obmm_fd, uint32_t local_cna,
         errno = EINVAL;
         goto out_unexport;
     }
-    if (obmm_bootstrap_publish(obmm_fd, 0, 2, GSVA_DEMO_GENERATION,
+    if (obmm_bootstrap_publish(obmm_fd, 0, 2, GSVA_APP_GENERATION,
                                local_meta) != 0)
         goto out_unexport;
 
@@ -841,7 +841,7 @@ out_unexport:
 }
 
 static int run_invalid_offset_peer(int obmm_fd, uint32_t local_cna,
-                                   const struct gsva_demo_config *cfg,
+                                   const struct gsva_app_config *cfg,
                                    struct obmm_helpers_meta *local_meta)
 {
     struct obmm_helpers_meta metas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
@@ -856,10 +856,10 @@ static int run_invalid_offset_peer(int obmm_fd, uint32_t local_cna,
     local_meta->export_cna = local_cna;
     if (obmm_do_export(obmm_fd, local_meta, cfg->size) != 0)
         return -1;
-    if (obmm_bootstrap_publish(obmm_fd, 1, 2, GSVA_DEMO_GENERATION,
+    if (obmm_bootstrap_publish(obmm_fd, 1, 2, GSVA_APP_GENERATION,
                                local_meta) != 0)
         goto out_unexport;
-    if (obmm_bootstrap_lookup(obmm_fd, local_cna, 2, GSVA_DEMO_GENERATION,
+    if (obmm_bootstrap_lookup(obmm_fd, local_cna, 2, GSVA_APP_GENERATION,
                               metas, got) != 0)
         goto out_unexport;
     if (!got[0] || metas[0].remote_uba != cfg->base) {
@@ -895,7 +895,7 @@ out_unexport:
 }
 
 static int run_outside_import_home(int obmm_fd, uint32_t local_cna,
-                                   const struct gsva_demo_config *cfg,
+                                   const struct gsva_app_config *cfg,
                                    struct obmm_helpers_meta *local_meta)
 {
     int ret = -1;
@@ -903,7 +903,7 @@ static int run_outside_import_home(int obmm_fd, uint32_t local_cna,
     local_meta->export_cna = local_cna;
     if (obmm_do_export(obmm_fd, local_meta, cfg->size) != 0)
         return -1;
-    if (obmm_bootstrap_publish(obmm_fd, 0, 2, GSVA_DEMO_GENERATION,
+    if (obmm_bootstrap_publish(obmm_fd, 0, 2, GSVA_APP_GENERATION,
                                local_meta) != 0)
         goto out_unexport;
 
@@ -919,7 +919,7 @@ out_unexport:
 }
 
 static int run_outside_import_peer(int obmm_fd, uint32_t local_cna,
-                                   const struct gsva_demo_config *cfg,
+                                   const struct gsva_app_config *cfg,
                                    struct obmm_helpers_meta *local_meta)
 {
     struct obmm_helpers_meta metas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
@@ -941,10 +941,10 @@ static int run_outside_import_peer(int obmm_fd, uint32_t local_cna,
     local_meta->export_cna = local_cna;
     if (obmm_do_export(obmm_fd, local_meta, cfg->size) != 0)
         return -1;
-    if (obmm_bootstrap_publish(obmm_fd, 1, 2, GSVA_DEMO_GENERATION,
+    if (obmm_bootstrap_publish(obmm_fd, 1, 2, GSVA_APP_GENERATION,
                                local_meta) != 0)
         goto out_unexport;
-    if (obmm_bootstrap_lookup(obmm_fd, local_cna, 2, GSVA_DEMO_GENERATION,
+    if (obmm_bootstrap_lookup(obmm_fd, local_cna, 2, GSVA_APP_GENERATION,
                               metas, got) != 0)
         goto out_unexport;
     if (!got[0]) {
@@ -984,7 +984,7 @@ out_unexport:
 
 int main(int argc, char **argv)
 {
-    struct gsva_demo_config cfg;
+    struct gsva_app_config cfg;
     struct obmm_helpers_meta local_meta = {0};
     uint32_t local_cna = 0;
     int local_idx = -1;
@@ -1009,11 +1009,11 @@ int main(int argc, char **argv)
             " size=%#" PRIx64, cfg.mode, local_idx, cfg.node_count,
             local_cna, cfg.base, cfg.size);
 
-    if (cfg.mode == GSVA_DEMO_CONFLICT) {
+    if (cfg.mode == GSVA_APP_CONFLICT) {
         ret = run_conflict(obmm_fd, &cfg, local_idx) == 0 ? 0 : 1;
         goto out;
     }
-    if (cfg.mode == GSVA_DEMO_MMAP_MODE) {
+    if (cfg.mode == GSVA_APP_MMAP_MODE) {
         if (register_aperture(obmm_fd, &cfg, local_idx) != 0) {
             log_msg("aperture register failed errno=%d", errno);
             goto out;
@@ -1023,19 +1023,19 @@ int main(int argc, char **argv)
         ret = run_mmap_mode(obmm_fd, &cfg, local_idx) == 0 ? 0 : 1;
         goto out;
     }
-    if (cfg.mode == GSVA_DEMO_ANONYMOUS_COLLISION) {
+    if (cfg.mode == GSVA_APP_ANONYMOUS_COLLISION) {
         ret = run_anonymous_collision(obmm_fd, &cfg, local_idx) == 0 ? 0 : 1;
         goto out;
     }
-    if (cfg.mode == GSVA_DEMO_OUTSIDE_APERTURE) {
+    if (cfg.mode == GSVA_APP_OUTSIDE_APERTURE) {
         ret = run_outside_aperture(obmm_fd, &cfg, local_idx) == 0 ? 0 : 1;
         goto out;
     }
-    if (cfg.mode == GSVA_DEMO_STALE_GENERATION) {
+    if (cfg.mode == GSVA_APP_STALE_GENERATION) {
         ret = run_stale_generation(obmm_fd, &cfg, local_idx) == 0 ? 0 : 1;
         goto out;
     }
-    if (cfg.mode == GSVA_DEMO_INVALID_OFFSET) {
+    if (cfg.mode == GSVA_APP_INVALID_OFFSET) {
         if (register_aperture(obmm_fd, &cfg, local_idx) != 0) {
             log_msg("aperture register failed errno=%d", errno);
             goto out;
@@ -1048,7 +1048,7 @@ int main(int argc, char **argv)
         ret = ret == 0 ? 0 : 1;
         goto out;
     }
-    if (cfg.mode == GSVA_DEMO_OUTSIDE_IMPORT) {
+    if (cfg.mode == GSVA_APP_OUTSIDE_IMPORT) {
         if (register_aperture(obmm_fd, &cfg, local_idx) != 0) {
             log_msg("aperture register failed errno=%d", errno);
             goto out;
@@ -1068,10 +1068,10 @@ int main(int argc, char **argv)
     }
     log_msg("kernel aperture registry -> ok base=%#" PRIx64 " size=%#"
             PRIx64, cfg.base,
-            cfg.mode == GSVA_DEMO_MATRIX ?
+            cfg.mode == GSVA_APP_MATRIX ?
             cfg.size * (uint64_t)cfg.node_count : cfg.size);
 
-    if (cfg.mode == GSVA_DEMO_MATRIX) {
+    if (cfg.mode == GSVA_APP_MATRIX) {
         ret = run_matrix(obmm_fd, local_cna, &cfg, local_idx,
                          &local_meta) == 0 ? 0 : 1;
         goto out;

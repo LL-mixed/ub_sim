@@ -90,6 +90,7 @@ def test_obmm_gsva_uses_canonical_app_source():
     legacy_dual_runner = (ROOT / "scripts" / "run_ub_dual_node_gsva_demo.sh").read_text()
     legacy_matrix_runner = (ROOT / "scripts" / "run_ub_four_node_gsva_matrix_demo.sh").read_text()
     app_dir = ROOT / "apps" / "obmm_gsva"
+    app_source = (app_dir / "obmm_gsva.c").read_text()
 
     assert 'OBMM_GSVA_SRC="$ROOT_DIR/apps/obmm_gsva/obmm_gsva.c"' in build_script
     assert 'OBMM_GSVA_BIN="$OUT_DIR/linqu_ub_obmm_gsva"' in build_script
@@ -102,6 +103,10 @@ def test_obmm_gsva_uses_canonical_app_source():
     assert "OBMM_GSVA_MATRIX_NODE_COUNT" in multi_runner
     assert "run_ub_dual_node_obmm_gsva.sh" in legacy_dual_runner
     assert "run_ub_multi_node_obmm_gsva_matrix.sh" in legacy_matrix_runner
+    assert "enum gsva_app_mode" in app_source
+    assert "struct gsva_app_config" in app_source
+    assert "GSVA_DEMO" not in app_source
+    assert "gsva_demo" not in app_source
     assert (app_dir / "obmm_gsva.c").exists()
     assert (app_dir / "Makefile").exists()
     assert not (ROOT / "apps" / "obmm_gsva_demo").exists()
