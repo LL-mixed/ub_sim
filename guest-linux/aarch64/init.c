@@ -194,6 +194,11 @@ static bool should_run_obmm_dataplane_microbench(void)
     return cmdline_has_option("linqu_obmm_dataplane_microbench=1");
 }
 
+static bool should_run_obmm_import_stress(void)
+{
+    return cmdline_has_option("linqu_obmm_import_stress=1");
+}
+
 static bool should_enter_app_boot_flow(void)
 {
     const char *flag = getenv("UB_RUN_APP_FROM_INIT");
@@ -1220,6 +1225,205 @@ static void run_obmm_dataplane_microbench_probe(void)
     }
 }
 
+static void run_obmm_import_stress_probe(void)
+{
+    pid_t pid;
+    int status = 0;
+    int waited_ms = 0;
+    bool timed_out = false;
+    pid_t wait_ret;
+    char stress_size[64] = "";
+    char stress_pattern[64] = "";
+    char stress_iters[64] = "";
+    char stress_flush[64] = "";
+    char stress_period[64] = "";
+    char stress_chunk_size[64] = "";
+    char stress_seed[64] = "";
+    char stress_gva_mode[64] = "";
+    char stress_gva_map_source[64] = "";
+    char stress_gva_address_profile[64] = "";
+    char stress_gva_cache_policy[64] = "";
+    char stress_gva_vmid[64] = "";
+    char stress_gva_asid[64] = "";
+    char stress_gva_tid[64] = "";
+    char stress_gva_p_tag[64] = "";
+    char stress_gva_access_flags[64] = "";
+    char stress_gva_token_value[64] = "";
+    char stress_gva_id[64] = "";
+    char stress_gva_user_va[64] = "";
+    char stress_gva_home_va[64] = "";
+    char stress_gva_pte_offset[64] = "";
+    char stress_gsva_base[64] = "";
+    char stress_gsva_generation[64] = "";
+    char *argv[48];
+    int argc = 0;
+
+    argv[argc++] = "/bin/linqu_ub_obmm_import_stress";
+    if (cmdline_get_value("obmm_stress_size", stress_size, sizeof(stress_size))) {
+        argv[argc++] = "--size";
+        argv[argc++] = stress_size;
+    }
+    if (cmdline_get_value("obmm_stress_pattern", stress_pattern, sizeof(stress_pattern))) {
+        argv[argc++] = "--pattern";
+        argv[argc++] = stress_pattern;
+    }
+    if (cmdline_get_value("obmm_stress_iters", stress_iters, sizeof(stress_iters))) {
+        argv[argc++] = "--iterations";
+        argv[argc++] = stress_iters;
+    }
+    if (cmdline_get_value("obmm_stress_flush", stress_flush, sizeof(stress_flush))) {
+        argv[argc++] = "--flush-mode";
+        argv[argc++] = stress_flush;
+    }
+    if (cmdline_get_value("obmm_stress_period", stress_period, sizeof(stress_period))) {
+        argv[argc++] = "--period";
+        argv[argc++] = stress_period;
+    }
+    if (cmdline_get_value("obmm_stress_chunk_size", stress_chunk_size,
+                          sizeof(stress_chunk_size))) {
+        argv[argc++] = "--chunk-size";
+        argv[argc++] = stress_chunk_size;
+    }
+    if (cmdline_get_value("obmm_stress_seed", stress_seed, sizeof(stress_seed))) {
+        argv[argc++] = "--seed";
+        argv[argc++] = stress_seed;
+    }
+    if (cmdline_get_value("obmm_stress_gva_mode", stress_gva_mode, sizeof(stress_gva_mode))) {
+        argv[argc++] = "--gva-mode";
+        argv[argc++] = stress_gva_mode;
+    }
+    if (cmdline_get_value("obmm_stress_gva_map_source", stress_gva_map_source,
+                          sizeof(stress_gva_map_source))) {
+        argv[argc++] = "--gva-map-source";
+        argv[argc++] = stress_gva_map_source;
+    }
+    if (cmdline_get_value("obmm_stress_gva_address_profile",
+                          stress_gva_address_profile,
+                          sizeof(stress_gva_address_profile))) {
+        argv[argc++] = "--gva-address-profile";
+        argv[argc++] = stress_gva_address_profile;
+    }
+    if (cmdline_get_value("obmm_stress_gva_cache_policy", stress_gva_cache_policy,
+                          sizeof(stress_gva_cache_policy))) {
+        argv[argc++] = "--gva-cache-policy";
+        argv[argc++] = stress_gva_cache_policy;
+    }
+    if (cmdline_get_value("obmm_stress_gva_vmid", stress_gva_vmid, sizeof(stress_gva_vmid))) {
+        argv[argc++] = "--gva-vmid";
+        argv[argc++] = stress_gva_vmid;
+    }
+    if (cmdline_get_value("obmm_stress_gva_asid", stress_gva_asid, sizeof(stress_gva_asid))) {
+        argv[argc++] = "--gva-asid";
+        argv[argc++] = stress_gva_asid;
+    }
+    if (cmdline_get_value("obmm_stress_gva_tid", stress_gva_tid, sizeof(stress_gva_tid))) {
+        argv[argc++] = "--gva-tid";
+        argv[argc++] = stress_gva_tid;
+    }
+    if (cmdline_get_value("obmm_stress_gva_p_tag", stress_gva_p_tag, sizeof(stress_gva_p_tag))) {
+        argv[argc++] = "--gva-p-tag";
+        argv[argc++] = stress_gva_p_tag;
+    }
+    if (cmdline_get_value("obmm_stress_gva_access_flags", stress_gva_access_flags,
+                          sizeof(stress_gva_access_flags))) {
+        argv[argc++] = "--gva-access-flags";
+        argv[argc++] = stress_gva_access_flags;
+    }
+    if (cmdline_get_value("obmm_stress_gva_token_value", stress_gva_token_value,
+                          sizeof(stress_gva_token_value))) {
+        argv[argc++] = "--gva-token-value";
+        argv[argc++] = stress_gva_token_value;
+    }
+    if (cmdline_get_value("obmm_stress_gva_id", stress_gva_id, sizeof(stress_gva_id))) {
+        argv[argc++] = "--gva-id";
+        argv[argc++] = stress_gva_id;
+    }
+    if (cmdline_get_value("obmm_stress_gva_user_va", stress_gva_user_va,
+                          sizeof(stress_gva_user_va))) {
+        argv[argc++] = "--gva-user-va";
+        argv[argc++] = stress_gva_user_va;
+    }
+    if (cmdline_get_value("obmm_stress_gva_home_va", stress_gva_home_va,
+                          sizeof(stress_gva_home_va))) {
+        argv[argc++] = "--gva-home-va";
+        argv[argc++] = stress_gva_home_va;
+    }
+    if (cmdline_get_value("obmm_stress_gva_pte_offset", stress_gva_pte_offset,
+                          sizeof(stress_gva_pte_offset))) {
+        argv[argc++] = "--gva-pte-offset";
+        argv[argc++] = stress_gva_pte_offset;
+    }
+    if (cmdline_get_value("obmm_stress_gsva_base", stress_gsva_base, sizeof(stress_gsva_base))) {
+        argv[argc++] = "--gsva-base";
+        argv[argc++] = stress_gsva_base;
+    }
+    if (cmdline_get_value("obmm_stress_gsva_generation", stress_gsva_generation,
+                          sizeof(stress_gsva_generation))) {
+        argv[argc++] = "--gsva-generation";
+        argv[argc++] = stress_gsva_generation;
+    }
+    if (cmdline_has_option("obmm_stress_verify=1")) {
+        argv[argc++] = "--verify";
+    }
+    if (cmdline_has_option("obmm_stress_read_only=1")) {
+        argv[argc++] = "--read-only";
+    }
+    if (cmdline_has_option("obmm_stress_write_only=1")) {
+        argv[argc++] = "--write-only";
+    }
+    argv[argc] = NULL;
+
+    pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "[init] fork for obmm import stress failed: %s\n",
+                strerror(errno));
+        return;
+    }
+    if (pid == 0) {
+        execv("/bin/linqu_ub_obmm_import_stress", argv);
+        fprintf(stderr, "[init] exec /bin/linqu_ub_obmm_import_stress failed: %s\n",
+                strerror(errno));
+        _exit(127);
+    }
+
+    for (;;) {
+        wait_ret = waitpid(pid, &status, WNOHANG);
+        if (wait_ret == pid) {
+            break;
+        }
+        if (wait_ret < 0) {
+            fprintf(stderr, "[init] waitpid obmm import stress failed: %s\n", strerror(errno));
+            return;
+        }
+        if (waited_ms >= 180000) {
+            fprintf(stderr,
+                    "[init] ub obmm import stress app timeout, killing pid=%d\n",
+                    pid);
+            kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
+            timed_out = true;
+            break;
+        }
+        usleep(100000);
+        waited_ms += 100;
+    }
+
+    if (!timed_out && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        fprintf(stderr, "[init] ub obmm import stress app pass\n");
+        return;
+    }
+
+    if (timed_out) {
+        fprintf(stderr, "[init] ub obmm import stress app fail timeout\n");
+    } else if (WIFEXITED(status)) {
+        fprintf(stderr, "[init] ub obmm import stress app fail exit=%d\n",
+                WEXITSTATUS(status));
+    } else if (WIFSIGNALED(status)) {
+        fprintf(stderr, "[init] ub obmm import stress app fail signal=%d\n",
+                WTERMSIG(status));
+    }
+}
+
 static void dump_dir_entries(const char *path)
 {
     DIR *dir;
@@ -1605,6 +1809,10 @@ int main(int argc, char *argv[])
     if (should_run_obmm_dataplane_microbench()) {
         wait_for_ipourma_interface(30);
         run_obmm_dataplane_microbench_probe();
+    }
+    if (should_run_obmm_import_stress()) {
+        wait_for_ipourma_interface(30);
+        run_obmm_import_stress_probe();
     }
     if (should_run_linqu_probe()) {
         run_probe();

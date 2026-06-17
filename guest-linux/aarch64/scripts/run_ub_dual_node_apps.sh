@@ -39,7 +39,7 @@ Usage: run_ub_dual_node_apps.sh [options]
 Options:
   --app NAME          App to validate. Repeat or pass comma-separated names.
                       Names: chat, rpc, tcp_each_server, udma, obmm_pool,
-                      obmm_dataplane_microbench.
+                      obmm_dataplane_microbench, obmm_import_stress.
                       Default: chat,rpc,tcp_each_server.
   --run-id ID        Stable run id used for log/report names.
   --run-secs SECS    Per-app pass/fail wait timeout.
@@ -72,6 +72,9 @@ append_app_selection() {
       ;;
     obmm_dataplane_microbench)
       flag="linqu_obmm_dataplane_microbench=1"
+      ;;
+    obmm_import_stress)
+      flag="linqu_obmm_import_stress=1"
       ;;
     "")
       return 0
@@ -445,6 +448,17 @@ validate_obmm_dataplane_microbench_log() {
     "${node_name} obmm dataplane microbench failure" || return 1
 }
 
+validate_obmm_import_stress_log() {
+  local node_name="$1"
+  local log_file="$2"
+  assert_log_has "$log_file" "\\[obmm_import_stress\\] result=done" \
+    "${node_name} obmm import stress result" || return 1
+  assert_log_absent "$log_file" "\\[obmm_import_stress\\] stress_run failed" \
+    "${node_name} obmm import stress failure" || return 1
+  assert_log_absent "$log_file" "\\[obmm_import_stress\\] verify failure" \
+    "${node_name} obmm import stress verify failure" || return 1
+}
+
 validate_kernel_health_log() {
   local node_name="$1"
   local log_file="$2"
@@ -741,6 +755,7 @@ run_iteration() {
   local udma_enabled=0
   local obmm_enabled=0
   local obmm_dataplane_microbench_enabled=0
+  local obmm_import_stress_enabled=0
   local stale_files=()
 
   if [[ "$APPEND_EXTRA" == *"linqu_ub_chat=1"* ]]; then
@@ -760,6 +775,9 @@ run_iteration() {
   fi
   if [[ "$APPEND_EXTRA" == *"linqu_obmm_dataplane_microbench=1"* ]]; then
     obmm_dataplane_microbench_enabled=1
+  fi
+  if [[ "$APPEND_EXTRA" == *"linqu_obmm_import_stress=1"* ]]; then
+    obmm_import_stress_enabled=1
   fi
 
   rm -f /tmp/ub-qemu/ub-bus-instance-*.lock
@@ -990,6 +1008,36 @@ run_iteration() {
     esac
   fi
 
+  if [[ "$obmm_import_stress_enabled" -eq 1 ]]; then
+    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[obmm_import_stress\\] result=done" \
+      "\\[obmm_import_stress\\] stress_run failed" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeA obmm import stress app reported failure" >&2
+        return 19
+        ;;
+      *)
+        echo "iteration ${iter}: nodeA obmm import stress app did not finish within ${RUN_SECS}s" >&2
+        return 19
+        ;;
+    esac
+
+    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[obmm_import_stress\\] result=done" \
+      "\\[obmm_import_stress\\] stress_run failed" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeB obmm import stress app reported failure" >&2
+        return 19
+        ;;
+      *)
+        echo "iteration ${iter}: nodeB obmm import stress app did not finish within ${RUN_SECS}s" >&2
+        return 19
+        ;;
+    esac
+  fi
+
   sleep 1
   cleanup_pid "$nodea_pid_file"
   cleanup_pid "$nodeb_pid_file"
@@ -1026,6 +1074,10 @@ run_iteration() {
   if [[ "$APPEND_EXTRA" == *"linqu_obmm_dataplane_microbench=1"* ]]; then
     validate_obmm_dataplane_microbench_log "nodeA" "$nodea_guest_log" || return 1
     validate_obmm_dataplane_microbench_log "nodeB" "$nodeb_guest_log" || return 1
+  fi
+  if [[ "$APPEND_EXTRA" == *"linqu_obmm_import_stress=1"* ]]; then
+    validate_obmm_import_stress_log "nodeA" "$nodea_guest_log" || return 1
+    validate_obmm_import_stress_log "nodeB" "$nodeb_guest_log" || return 1
   fi
   validate_kernel_health_log "nodeA" "$nodea_guest_log" || return 1
   validate_kernel_health_log "nodeB" "$nodeb_guest_log" || return 1

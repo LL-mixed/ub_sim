@@ -100,6 +100,28 @@ def test_obmm_dataplane_microbench_has_integration_entrypoints():
     assert "run_obmm_dataplane_microbench_probe" in init_source
 
 
+def test_obmm_import_stress_has_independent_app_build():
+    build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
+    app_dir = ROOT / "apps" / "obmm_import_stress"
+
+    assert (
+        'OBMM_IMPORT_STRESS_SRC="$ROOT_DIR/apps/obmm_import_stress/obmm_import_stress.c"'
+        in build_script
+    )
+    assert (app_dir / "obmm_import_stress.c").exists()
+    assert (app_dir / "Makefile").exists()
+
+
+def test_obmm_import_stress_has_integration_entrypoints():
+    script = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
+    init_source = (ROOT / "init.c").read_text()
+
+    assert "linqu_obmm_import_stress=1" in script
+    assert "obmm_import_stress" in script
+    assert "should_run_obmm_import_stress" in init_source
+    assert "run_obmm_import_stress_probe" in init_source
+
+
 def test_npu_gsva_test_has_independent_app_build():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     app_dir = ROOT / "apps" / "npu_gsva_test"
