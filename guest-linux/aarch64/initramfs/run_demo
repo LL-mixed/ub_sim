@@ -512,7 +512,7 @@ run_default_actions() {
     ran_any="1"
   fi
 
-  if has_flag "linqu_ub_rpc=1" || has_flag "linqu_ub_rpc_demo=1"; then
+  if has_flag "linqu_ub_rpc=1"; then
     run_binary "linqu_ub_rpc" /bin/linqu_ub_rpc || rc=$?
     ran_any="1"
   fi

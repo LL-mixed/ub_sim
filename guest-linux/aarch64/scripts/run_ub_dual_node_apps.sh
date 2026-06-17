@@ -585,7 +585,7 @@ run_iteration() {
   if [[ "$APPEND_EXTRA" == *"linqu_ub_chat=1"* ]]; then
     chat_enabled=1
   fi
-  if [[ "$APPEND_EXTRA" == *"linqu_ub_rpc=1"* || "$APPEND_EXTRA" == *"linqu_ub_rpc_demo=1"* ]]; then
+  if [[ "$APPEND_EXTRA" == *"linqu_ub_rpc=1"* ]]; then
     rpc_enabled=1
   fi
   if [[ "$APPEND_EXTRA" == *"linqu_ub_tcp_each_server_demo=1"* ]]; then
@@ -687,7 +687,7 @@ run_iteration() {
   fi
 
   if [[ "$rpc_enabled" -eq 1 ]]; then
-    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub rpc (app|demo) pass" "\\[init\\] ub rpc (app|demo) fail" "$RUN_SECS"
+    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub rpc app pass" "\\[init\\] ub rpc app fail" "$RUN_SECS"
     case "$?" in
       0) ;;
       1)
@@ -700,7 +700,7 @@ run_iteration() {
         ;;
     esac
 
-    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub rpc (app|demo) pass" "\\[init\\] ub rpc (app|demo) fail" "$RUN_SECS"
+    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub rpc app pass" "\\[init\\] ub rpc app fail" "$RUN_SECS"
     case "$?" in
       0) ;;
       1)
