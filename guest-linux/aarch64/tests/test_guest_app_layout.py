@@ -157,6 +157,8 @@ def test_obmm_queue_uses_canonical_app_source():
     assert 'OBMM_QUEUE_BIN="$OUT_DIR/linqu_ub_obmm_queue"' in build_script
     assert "linqu_ub_obmm_queue_demo" not in build_script
     assert "linqu_obmm_queue=1" in run_demo
+    assert "linqu_obmm_queue_demo" not in run_demo
+    assert "obmm_queue_demo" not in run_demo
     assert "run linqu_ub_obmm_queue" in dual_runner
     assert "OBMM_QUEUE_MODE" in dual_runner
     assert "OBMM_DEMO_MODE" not in dual_runner

@@ -532,7 +532,7 @@ run_default_actions() {
     ran_any="1"
   fi
 
-  if has_flag "linqu_obmm_queue=1" || has_flag "linqu_obmm_queue_demo=1"; then
+  if has_flag "linqu_obmm_queue=1"; then
     run_obmm_queue || rc=$?
     ran_any="1"
   fi
@@ -588,7 +588,7 @@ run_single_action() {
     obmm|obmm_pool|obmm_demo)
       run_obmm_pool
       ;;
-    obmm_queue|obmm_queue_demo)
+    obmm_queue)
       run_obmm_queue
       ;;
     obmm_import_stress)
