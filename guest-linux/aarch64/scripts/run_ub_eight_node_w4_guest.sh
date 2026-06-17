@@ -610,10 +610,10 @@ node_role_from_ip() {
 
 bootstrap_fs
 
-if [ "\${UB_RUN_DEMO_FROM_INIT:-0}" != "1" ] && [ "\${1-}" != "--resume" ]; then
+if [ "\${UB_RUN_APP_FROM_INIT:-0}" != "1" ] && [ "\${1-}" != "--resume" ]; then
   log "bootstrap phase: launching /bin/linqu_init"
-  UB_RUN_DEMO_FROM_INIT=1
-  export UB_RUN_DEMO_FROM_INIT
+  UB_RUN_APP_FROM_INIT=1
+  export UB_RUN_APP_FROM_INIT
   exec /bin/linqu_init "\$@"
 fi
 

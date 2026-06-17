@@ -52,7 +52,7 @@ static bool read_file_line(const char *path, char *buf, size_t buf_size)
     return true;
 }
 
-static bool should_enter_demo_boot_flow(void);
+static bool should_enter_app_boot_flow(void);
 
 static void dump_raw_ubc_port1_state(void)
 {
@@ -189,9 +189,9 @@ static bool should_run_obmm_pool(void)
     return cmdline_has_option("linqu_obmm_pool=1");
 }
 
-static bool should_enter_demo_boot_flow(void)
+static bool should_enter_app_boot_flow(void)
 {
-    const char *flag = getenv("UB_RUN_DEMO_FROM_INIT");
+    const char *flag = getenv("UB_RUN_APP_FROM_INIT");
     return flag != NULL && strcmp(flag, "1") == 0;
 }
 
@@ -1490,10 +1490,10 @@ int main(int argc, char *argv[])
     }
     dump_ub_state();
 
-    if (should_enter_demo_boot_flow() && access("/bin/run_demo", X_OK) == 0) {
+    if (should_enter_app_boot_flow() && access("/bin/run_demo", X_OK) == 0) {
         int i;
         char **new_argv = malloc(sizeof(char *) * (argc + 2));
-        fprintf(stderr, "[init] switching to /bin/run_demo boot flow\n");
+        fprintf(stderr, "[init] switching to /bin/run_demo app boot flow\n");
         new_argv[0] = "/bin/run_demo";
         new_argv[1] = "--resume";
         for (i = 1; i < argc; i++) {

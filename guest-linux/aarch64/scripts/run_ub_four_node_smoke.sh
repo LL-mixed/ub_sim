@@ -55,7 +55,7 @@ validate_guest_log() {
 
   assert_log_has "$guest_log" "\\[init\\] ipourma bootstrap iface=ipourma0 ifindex=[0-9]+ local=${local_ip} peer=\\(none\\)" \
     "${node_id} ipourma bootstrap" || return 1
-  assert_log_has "$guest_log" "\\[init\\] switching to /bin/run_demo boot flow" \
+  assert_log_has "$guest_log" "\\[init\\] switching to /bin/run_demo app boot flow" \
     "${node_id} enter run_demo" || return 1
   assert_log_has "$guest_log" "\\[run_demo\\] boot flow completed, dropping to shell" \
     "${node_id} shell reached" || return 1

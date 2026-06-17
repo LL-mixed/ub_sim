@@ -251,8 +251,11 @@ def test_entity_runtime_inject_uses_canonical_cli_entrypoint():
 
 def test_dual_node_apps_uses_canonical_cli_entrypoint():
     script = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
+    init_source = (ROOT / "init.c").read_text()
+    run_demo = (ROOT / "initramfs" / "run_demo").read_text()
     legacy_script = (ROOT / "scripts" / "run_ub_dual_node_demo.sh").read_text()
     w4_runner = (ROOT / "scripts" / "run_ub_dual_node_w4_guest.sh").read_text()
+    w4_eight_runner = (ROOT / "scripts" / "run_ub_eight_node_w4_guest.sh").read_text()
 
     assert 'REPORT_FILE="${REPORT_FILE:-$OUT_DIR/apps_report.latest.txt}"' in script
     assert "scenario=dual-node-apps" in script
@@ -261,6 +264,15 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     assert "--app NAME" in script
     assert "APP_SELECTION" in script
     assert 'flag="linqu_ub_tcp_each_server=1"' in script
+    assert "UB_RUN_APP_FROM_INIT" in init_source
+    assert "UB_RUN_APP_FROM_INIT" in run_demo
+    assert "UB_RUN_APP_FROM_INIT" in w4_eight_runner
+    assert "UB_RUN_DEMO_FROM_INIT" not in init_source
+    assert "UB_RUN_DEMO_FROM_INIT" not in run_demo
+    assert "UB_RUN_DEMO_FROM_INIT" not in w4_eight_runner
+    assert "should_enter_app_boot_flow" in init_source
+    assert "should_enter_demo_boot_flow" not in init_source
+    assert "no demo flags matched" not in run_demo
     assert "run_ub_dual_node_apps.sh" in legacy_script
     assert "run_ub_dual_node_apps.sh" in w4_runner
     assert "run_ub_dual_node_demo.sh" not in w4_runner
