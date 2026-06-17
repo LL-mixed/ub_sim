@@ -283,5 +283,6 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     assert "should_enter_demo_boot_flow" not in init_source
     assert "no demo flags matched" not in run_demo
     assert "run_ub_dual_node_apps.sh" in w4_runner
+    assert "linqu_w4_demo" not in w4_runner
     assert "run_ub_dual_node_demo.sh" not in w4_runner
     assert not (ROOT / "scripts" / "run_ub_dual_node_demo.sh").exists()
