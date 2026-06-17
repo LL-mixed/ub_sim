@@ -41,7 +41,7 @@
 #define W4_DB_QWEN3_RUNTIME_RANGE_WAIT_MS 600000L
 #define W4_DB_CLUSTER_IMPORT_ALIGN (2ULL * 1024ULL * 1024ULL)
 #define W4_DB_CLUSTER_MAX_WINDOWS 16
-#define W4_DB_OBMM_DEMO_OBJECT_BYTES 8192ULL
+#define W4_DB_OBMM_SERVICE_OBJECT_BYTES 8192ULL
 #define W4_DB_OBMM_WEIGHT_OFFSET 0x10000ULL
 #define W4_DB_OBMM_KVCACHE_OFFSET 0x14000ULL
 #define W4_DB_OBMM_HIDDEN_RANGE_INPUT_OFFSET 0x18000ULL
@@ -4500,11 +4500,11 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
         return -1;
     }
     w4_db_fill_obmm_object_payload(base + W4_DB_OBMM_WEIGHT_OFFSET,
-                                   W4_DB_OBMM_DEMO_OBJECT_BYTES,
+                                   W4_DB_OBMM_SERVICE_OBJECT_BYTES,
                                    local_node,
                                    W4_DB_OBMM_KIND_WEIGHT_TILE);
     w4_db_fill_obmm_object_payload(base + W4_DB_OBMM_KVCACHE_OFFSET,
-                                   W4_DB_OBMM_DEMO_OBJECT_BYTES,
+                                   W4_DB_OBMM_SERVICE_OBJECT_BYTES,
                                    local_node,
                                    W4_DB_OBMM_KIND_KVCACHE_BLOCK);
     w4_db_fill_obmm_object_payload(base + local_hidden_input_offset,
@@ -4516,9 +4516,9 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
                                    local_node,
                                    W4_DB_OBMM_KIND_HIDDEN_RANGE_OUTPUT);
     weight_checksum = w4_db_checksum_bytes(base + W4_DB_OBMM_WEIGHT_OFFSET,
-                                           W4_DB_OBMM_DEMO_OBJECT_BYTES);
+                                           W4_DB_OBMM_SERVICE_OBJECT_BYTES);
     kvcache_checksum = w4_db_checksum_bytes(base + W4_DB_OBMM_KVCACHE_OFFSET,
-                                            W4_DB_OBMM_DEMO_OBJECT_BYTES);
+                                            W4_DB_OBMM_SERVICE_OBJECT_BYTES);
     hidden_input_checksum =
         w4_db_checksum_bytes(base + local_hidden_input_offset,
                              hidden_range_bytes);
@@ -4527,11 +4527,11 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
                              hidden_range_bytes);
     if (w4_db_update_region_range_at(local_slot,
                                      W4_DB_OBMM_WEIGHT_OFFSET,
-                                     W4_DB_OBMM_DEMO_OBJECT_BYTES,
+                                     W4_DB_OBMM_SERVICE_OBJECT_BYTES,
                                      true) != 0 ||
         w4_db_update_region_range_at(local_slot,
                                      W4_DB_OBMM_KVCACHE_OFFSET,
-                                     W4_DB_OBMM_DEMO_OBJECT_BYTES,
+                                     W4_DB_OBMM_SERVICE_OBJECT_BYTES,
                                      true) != 0 ||
         w4_db_update_region_range_at(local_slot,
                                      local_hidden_input_offset,
@@ -4544,8 +4544,8 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
         printf("[w4_guest] gap obmm_service_v0=local_payload_publish_failed\n");
         return -1;
     }
-    (void)msync(base + W4_DB_OBMM_WEIGHT_OFFSET, W4_DB_OBMM_DEMO_OBJECT_BYTES, MS_SYNC);
-    (void)msync(base + W4_DB_OBMM_KVCACHE_OFFSET, W4_DB_OBMM_DEMO_OBJECT_BYTES, MS_SYNC);
+    (void)msync(base + W4_DB_OBMM_WEIGHT_OFFSET, W4_DB_OBMM_SERVICE_OBJECT_BYTES, MS_SYNC);
+    (void)msync(base + W4_DB_OBMM_KVCACHE_OFFSET, W4_DB_OBMM_SERVICE_OBJECT_BYTES, MS_SYNC);
     (void)msync(base + local_hidden_input_offset,
                 hidden_range_bytes,
                 MS_SYNC);
@@ -4559,7 +4559,7 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
                                      local_node,
                                      W4_DB_OBMM_KIND_WEIGHT_TILE,
                                      W4_DB_OBMM_WEIGHT_OFFSET,
-                                     W4_DB_OBMM_DEMO_OBJECT_BYTES,
+                                     W4_DB_OBMM_SERVICE_OBJECT_BYTES,
                                      weight_checksum,
                                      &local_weight) != 0 ||
         w4_db_put_obmm_object_record(svc,
@@ -4568,7 +4568,7 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
                                      local_node,
                                      W4_DB_OBMM_KIND_KVCACHE_BLOCK,
                                      W4_DB_OBMM_KVCACHE_OFFSET,
-                                     W4_DB_OBMM_DEMO_OBJECT_BYTES,
+                                     W4_DB_OBMM_SERVICE_OBJECT_BYTES,
                                      kvcache_checksum,
                                      &local_kvcache) != 0 ||
         w4_db_put_obmm_object_record(svc,
@@ -4755,8 +4755,8 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
         remote_kvcache.kind != W4_DB_RECORD_KVCACHE_OBJECT ||
         remote_hidden_input.kind != W4_DB_RECORD_HIDDEN_RANGE_INPUT ||
         remote_hidden_output.kind != W4_DB_RECORD_HIDDEN_RANGE_OUTPUT ||
-        remote_weight.object_backing_len != W4_DB_OBMM_DEMO_OBJECT_BYTES ||
-        remote_kvcache.object_backing_len != W4_DB_OBMM_DEMO_OBJECT_BYTES ||
+        remote_weight.object_backing_len != W4_DB_OBMM_SERVICE_OBJECT_BYTES ||
+        remote_kvcache.object_backing_len != W4_DB_OBMM_SERVICE_OBJECT_BYTES ||
         remote_hidden_input.object_backing_len != hidden_range_bytes ||
         remote_hidden_output.object_backing_len != hidden_range_bytes) {
         printf("[w4_guest] gap obmm_service_v0=remote_metadata_incoherent remote=node%u\n",
@@ -4895,7 +4895,7 @@ int w4_db_obmm_service_v0_publish_resolve(struct w4_db_service *svc,
     printf("[w4_guest] stage obmm_service_v0=payload_backing_resolved local=node%u remote=node%u objects=4 bytes=%" PRIu64 " hidden_bytes=%" PRIu64 " hidden_input_offset=0x%016" PRIx64 " hidden_output_offset=0x%016" PRIx64 " backing=obmm_pool allocator=linear_payload_arena metadata=db status=ok\n",
            local_node + 1U,
            remote_node + 1U,
-           (uint64_t)W4_DB_OBMM_DEMO_OBJECT_BYTES,
+           (uint64_t)W4_DB_OBMM_SERVICE_OBJECT_BYTES,
            hidden_range_bytes,
            local_hidden_input_offset,
            local_hidden_output_offset);

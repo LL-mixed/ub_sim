@@ -69,6 +69,12 @@ class W4DbRecordRecyclingTests(unittest.TestCase):
         self.assertIn("reserved_bytes = block_count * block_bytes", source)
         self.assertNotIn("kv_payload_len > W4_DB_OBMM_QWEN3_KV_STATE_SLOT_BYTES", source)
 
+    def test_obmm_service_object_bytes_are_not_demo_named(self):
+        source = SERVICE_C.read_text()
+
+        self.assertIn("W4_DB_OBMM_SERVICE_OBJECT_BYTES", source)
+        self.assertNotIn("W4_DB_OBMM_DEMO_OBJECT_BYTES", source)
+
     def test_qwen3_guest_runtime_kv_payload_grows_past_fixed_guard(self):
         source = GUEST_C.read_text()
 
