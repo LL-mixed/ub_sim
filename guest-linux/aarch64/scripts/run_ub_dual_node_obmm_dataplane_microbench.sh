@@ -111,7 +111,7 @@ start_node() {
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
       -initrd "$INITRAMFS_IMAGE" \
-      -append "console=ttyAMA0 rdinit=/bin/run_demo obmm_dataplane_microbench linqu_urma_dp_role=${role} ${DP_APPEND} ${APPEND_EXTRA}" \
+      -append "console=ttyAMA0 rdinit=/bin/run_demo linqu_obmm_dataplane_microbench=1 linqu_urma_dp_role=${role} ${DP_APPEND} ${APPEND_EXTRA}" \
       >"$qemu_log" 2>&1 &
   echo $! > "$pid_file"
 }

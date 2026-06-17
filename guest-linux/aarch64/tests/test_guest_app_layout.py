@@ -100,6 +100,13 @@ def test_obmm_dataplane_microbench_has_integration_entrypoints():
     assert "run_obmm_dataplane_microbench_probe" in init_source
 
 
+def test_obmm_dataplane_microbench_runner_uses_app_flag_entrypoint():
+    runner = (ROOT / "scripts" / "run_ub_dual_node_obmm_dataplane_microbench.sh").read_text()
+
+    assert "rdinit=/bin/run_demo linqu_obmm_dataplane_microbench=1" in runner
+    assert "rdinit=/bin/run_demo obmm_dataplane_microbench " not in runner
+
+
 def test_obmm_import_stress_has_independent_app_build():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     app_dir = ROOT / "apps" / "obmm_import_stress"
@@ -122,6 +129,13 @@ def test_obmm_import_stress_has_integration_entrypoints():
     assert "run_obmm_import_stress_probe" in init_source
 
 
+def test_obmm_import_stress_runner_uses_app_flag_entrypoint():
+    runner = (ROOT / "scripts" / "run_ub_dual_node_obmm_import_stress.sh").read_text()
+
+    assert "rdinit=/bin/run_demo linqu_obmm_import_stress=1" in runner
+    assert "rdinit=/bin/run_demo obmm_import_stress " not in runner
+
+
 def test_obmm_coh_test_has_independent_dual_node_bootflow():
     script = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
     init_source = (ROOT / "init.c").read_text()
@@ -133,6 +147,13 @@ def test_obmm_coh_test_has_independent_dual_node_bootflow():
     assert "should_run_obmm_coh_test" in init_source
     assert "run_obmm_coh_test_probe" in init_source
     assert "nodea_obmm_coh_test_append" in script
+
+
+def test_obmm_coh_test_runner_uses_app_flag_entrypoint():
+    runner = (ROOT / "scripts" / "run_ub_dual_node_obmm_coh_test.sh").read_text()
+
+    assert "rdinit=/bin/run_demo linqu_obmm_coh_test=1" in runner
+    assert "rdinit=/bin/run_demo obmm_coh_test " not in runner
 
 
 def test_npu_gsva_test_has_independent_app_build():
@@ -214,12 +235,14 @@ def test_obmm_gsva_uses_canonical_app_source():
     assert "obmm_gsva_demo" not in run_demo
     assert "linqu_obmm_gsva=1" in dual_apps_runner
     assert "obmm_gsva" in dual_apps_runner
-    assert "rdinit=/bin/run_demo obmm_gsva" in dual_runner
+    assert "rdinit=/bin/run_demo linqu_obmm_gsva=1" in dual_runner
     assert "OBMM_GSVA_MODE" in dual_runner
+    assert "rdinit=/bin/run_demo obmm_gsva " not in dual_runner
     assert "GSVA_DEMO_" not in dual_runner
     assert "GSVA_DEMO_" not in wrapper_runners
     assert "[obmm-gsva]" in dual_runner
-    assert "rdinit=/bin/run_demo obmm_gsva" in multi_runner
+    assert "rdinit=/bin/run_demo linqu_obmm_gsva=1" in multi_runner
+    assert "rdinit=/bin/run_demo obmm_gsva " not in multi_runner
     assert "OBMM_GSVA_MATRIX_NODE_COUNT" in multi_runner
     assert "enum gsva_app_mode" in app_source
     assert "struct gsva_app_config" in app_source
@@ -281,12 +304,54 @@ def test_npu_test_has_independent_dual_node_bootflow():
     assert "validate_npu_test_log" in script
 
 
+def test_gsva_query_runner_uses_app_flag_entrypoint():
+    runner = (ROOT / "scripts" / "run_ub_gsva_query_caps_test.sh").read_text()
+
+    assert "rdinit=/bin/run_demo linqu_gsva_query=1" in runner
+    assert "rdinit=/bin/run_demo gsva_query " not in runner
+
+
 def test_gsva_query_uses_canonical_app_source():
     run_demo = (ROOT / "initramfs" / "run_demo").read_text()
 
     assert "linqu_gsva_query=1" in run_demo
     assert "run_gsva_query" in run_demo
     assert "gsva_query_demo" not in run_demo
+
+
+def test_gsva_coh_and_lifecycle_runner_uses_app_flag_entrypoint():
+    runners = {
+        (ROOT / "scripts" / "run_ub_two_node_gsva_coh_test.sh").read_text():
+            "linqu_gsva_coh_test=1",
+        (ROOT / "scripts" / "run_ub_four_node_gsva_coh_test.sh").read_text():
+            "linqu_gsva_coh_test=1",
+        (ROOT / "scripts" / "run_ub_eight_node_gsva_coh_test.sh").read_text():
+            "linqu_gsva_coh_test=1",
+        (ROOT / "scripts" / "run_ub_two_node_gsva_lifecycle_test.sh").read_text():
+            "linqu_gsva_lifecycle_test=1",
+        (ROOT / "scripts" / "run_ub_four_node_gsva_lifecycle_test.sh").read_text():
+            "linqu_gsva_lifecycle_test=1",
+        (ROOT / "scripts" / "run_ub_eight_node_gsva_lifecycle_test.sh").read_text():
+            "linqu_gsva_lifecycle_test=1",
+    }
+
+    for runner, token in runners.items():
+        assert f"rdinit=/bin/run_demo {token}" in runner
+
+
+def test_npu_ssd_gsva_runner_uses_app_flag_entrypoint():
+    for path, token in {
+        ROOT / "scripts" / "run_ub_two_node_npu_gsva_test.sh": "linqu_npu_gsva_test=1",
+        ROOT / "scripts" / "run_ub_four_node_npu_gsva_test.sh": "linqu_npu_gsva_test=1",
+        ROOT / "scripts" / "run_ub_eight_node_npu_gsva_test.sh": "linqu_npu_gsva_test=1",
+        ROOT / "scripts" / "run_ub_two_node_ssd_gsva_test.sh": "linqu_ssd_gsva_test=1",
+        ROOT / "scripts" / "run_ub_four_node_ssd_gsva_test.sh": "linqu_ssd_gsva_test=1",
+        ROOT / "scripts" / "run_ub_eight_node_ssd_gsva_test.sh": "linqu_ssd_gsva_test=1",
+        ROOT / "scripts" / "run_ub_two_node_ssd_test.sh": "linqu_ssd_test=1",
+        ROOT / "scripts" / "run_ub_two_node_npu_test.sh": "linqu_npu_test=1",
+    }.items():
+        runner = path.read_text()
+        assert f"rdinit=/bin/run_demo {token}" in runner
 
 
 def test_gva_direct_uses_canonical_app_source():
@@ -303,6 +368,13 @@ def test_gva_direct_uses_canonical_app_source():
     assert (app_dir / "gva_direct.c").exists()
     assert (app_dir / "Makefile").exists()
     assert not (ROOT / "apps" / "gva_direct_demo").exists()
+
+
+def test_gva_direct_runner_uses_app_flag_entrypoint():
+    runner = (ROOT / "scripts" / "run_ub_dual_node_gva_direct_test.sh").read_text()
+    assert "rdinit=/bin/run_demo linqu_gva_direct=1" in runner
+    assert "linqu_gva_direct=1" in runner
+    assert "rdinit=/bin/run_demo gva_direct " not in runner
 
 
 def test_gva_manager_bootstrap_runner_uses_unified_app_entrypoint():
@@ -352,7 +424,8 @@ def test_obmm_queue_uses_canonical_app_source():
     assert "linqu_obmm_queue=1" in run_demo
     assert "linqu_obmm_queue_demo" not in run_demo
     assert "obmm_queue_demo" not in run_demo
-    assert "run linqu_ub_obmm_queue" in dual_runner
+    assert "rdinit=/bin/run_demo linqu_obmm_queue=1" in dual_runner
+    assert "rdinit=/bin/run_demo obmm_queue " not in dual_runner
     assert "OBMM_QUEUE_MODE" in dual_runner
     assert "OBMM_DEMO_MODE" not in dual_runner
     assert "run_queue_app" in four_runner
@@ -395,7 +468,8 @@ def test_ub_obmm_pool_uses_canonical_app_source():
     assert "obmm|obmm_pool|obmm_demo" not in run_demo
     assert "obmm_demo" not in run_demo
     assert "linqu_obmm_demo=1" not in dual_runner
-    assert "run linqu_ub_obmm_pool" in dual_runner
+    assert "rdinit=/bin/run_demo linqu_obmm_pool=1" in dual_runner
+    assert "rdinit=/bin/run_demo obmm_pool " not in dual_runner
     assert "run_pool_app" in four_runner
     assert "[obmm-pool4]" in four_runner
     assert "run_pool_app" in eight_runner

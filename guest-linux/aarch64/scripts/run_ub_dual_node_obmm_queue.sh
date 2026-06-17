@@ -101,7 +101,7 @@ start_node() {
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
       -initrd "$INITRAMFS_IMAGE" \
-      -append "console=ttyAMA0 rdinit=/bin/run_demo obmm_queue linqu_urma_dp_role=${role} linqu_node_idx=${node_idx} obmm_queue_local_ip=${local_ip} obmm_queue_all_ips=${OBMM_QUEUE_ALL_IPS} obmm_queue_node_count=2 obmm_queue_export_size_mb=${OBMM_POOL_EXPORT_SIZE_MB} obmm_queue_depth=${OBMM_QUEUE_DEPTH} obmm_queue_bootstrap=${OBMM_BOOTSTRAP} obmm_queue_bootstrap_session=${RUN_ID} obmm_queue_mode=${OBMM_QUEUE_MODE} obmm_queue_import_cache_mode=${OBMM_IMPORT_CACHE_MODE} ${APPEND_EXTRA}" \
+      -append "console=ttyAMA0 rdinit=/bin/run_demo linqu_obmm_queue=1 obmm_queue_local_ip=${local_ip} obmm_queue_all_ips=${OBMM_QUEUE_ALL_IPS} obmm_queue_node_count=2 obmm_queue_export_size_mb=${OBMM_POOL_EXPORT_SIZE_MB} obmm_queue_depth=${OBMM_QUEUE_DEPTH} obmm_queue_bootstrap=${OBMM_BOOTSTRAP} obmm_queue_bootstrap_session=${RUN_ID} obmm_queue_mode=${OBMM_QUEUE_MODE} obmm_queue_import_cache_mode=${OBMM_IMPORT_CACHE_MODE} linqu_urma_dp_role=${role} linqu_node_idx=${node_idx} ${APPEND_EXTRA}" \
       >"$qemu_log" 2>&1 &
   echo $! > "$pid_file"
 }
@@ -179,7 +179,7 @@ validate_node_log() {
   local node_name="$1"
   local log_file="$2"
 
-  assert_log_has "$log_file" "\\[run_demo\\] run linqu_ub_obmm_queue" "$node_name binary" || return 1
+  assert_log_has "$log_file" "\\[run_demo\\] run linqu_ub_obmm_queue|\\[init\\] ub obmm queue app pass" "$node_name binary" || return 1
   assert_log_has "$log_file" "\\[obmm_queue\\] export -> ok" "$node_name export" || return 1
   assert_log_has "$log_file" "\\[obmm_queue\\] export layout -> ok" "$node_name layout" || return 1
   assert_log_has "$log_file" "\\[obmm_queue\\] bootstrap ${OBMM_BOOTSTRAP} -> ok count=2" "$node_name bootstrap" || return 1
@@ -219,7 +219,7 @@ while (( SECONDS < deadline )); do
     grep '\[obmm_queue\]' "$NODEB_GUEST_LOG" | tail -8
     exit 0
   fi
-  if grep -qE '\[obmm_queue\] .*fail|\[run_demo\] linqu_ub_obmm_queue failed|Kernel panic - not syncing|Call trace:' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
+  if grep -qE '\[obmm_queue\] .*fail|\[run_demo\] linqu_ub_obmm_queue failed|\[init\] ub obmm queue app fail|Kernel panic - not syncing|Call trace:' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
     echo "[obmm-queue] FAIL: app or kernel reported failure" >&2
     exit 1
   fi

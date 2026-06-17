@@ -93,7 +93,7 @@ start_node() {
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
       -initrd "$INITRAMFS_IMAGE" \
-      -append "console=ttyAMA0 rdinit=/bin/run_demo obmm_gsva linqu_urma_dp_role=${role} linqu_node_idx=${node_idx} obmm_gsva_mode=${OBMM_GSVA_MODE} obmm_gsva_base=${OBMM_GSVA_BASE} obmm_gsva_size=${OBMM_GSVA_SIZE} obmm_gsva_node_count=${OBMM_GSVA_NODE_COUNT} ${APPEND_EXTRA}" \
+      -append "console=ttyAMA0 rdinit=/bin/run_demo linqu_obmm_gsva=1 linqu_urma_dp_role=${role} linqu_node_idx=${node_idx} obmm_gsva_mode=${OBMM_GSVA_MODE} obmm_gsva_base=${OBMM_GSVA_BASE} obmm_gsva_size=${OBMM_GSVA_SIZE} obmm_gsva_node_count=${OBMM_GSVA_NODE_COUNT} ${APPEND_EXTRA}" \
       >"$qemu_log" 2>&1 &
   echo $! > "$pid_file"
 }

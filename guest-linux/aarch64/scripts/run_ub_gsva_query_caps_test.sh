@@ -57,7 +57,7 @@ env \
     -serial file:"$GUEST_LOG" \
     -kernel "$KERNEL_IMAGE" \
     -initrd "$INITRAMFS_IMAGE" \
-    -append "console=ttyAMA0 rdinit=/bin/run_demo gsva_query gsva_query_mode=caps ${APPEND_EXTRA}" \
+    -append "console=ttyAMA0 rdinit=/bin/run_demo linqu_gsva_query=1 gsva_query_mode=caps ${APPEND_EXTRA}" \
     >"$QEMU_LOG" 2>&1 &
 echo $! > "$PID_FILE"
 

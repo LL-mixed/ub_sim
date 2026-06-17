@@ -90,7 +90,7 @@ start_node() {
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
       -initrd "$INITRAMFS_IMAGE" \
-      -append "console=ttyAMA0 rdinit=/bin/run_demo gva_direct linqu_urma_dp_role=${role} linqu_node_idx=${node_idx} gva_direct_mode=${GVA_DIRECT_MODE} gva_direct_local_va=${GVA_DIRECT_LOCAL_VA} gva_direct_home_va=${GVA_DIRECT_HOME_VA} gva_direct_size=${GVA_DIRECT_SIZE} ${APPEND_EXTRA}" \
+      -append "console=ttyAMA0 rdinit=/bin/run_demo linqu_gva_direct=1 gva_direct_mode=${GVA_DIRECT_MODE} gva_direct_local_va=${GVA_DIRECT_LOCAL_VA} gva_direct_home_va=${GVA_DIRECT_HOME_VA} gva_direct_size=${GVA_DIRECT_SIZE} linqu_urma_dp_role=${role} linqu_node_idx=${node_idx} ${APPEND_EXTRA}" \
       >"$qemu_log" 2>&1 &
   echo $! > "$pid_file"
 }
