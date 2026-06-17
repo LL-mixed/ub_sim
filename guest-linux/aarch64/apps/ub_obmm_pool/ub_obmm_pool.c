@@ -62,7 +62,7 @@ struct obmm_sim_dec_import_priv_v1_user {
     uint32_t flags;
 };
 
-struct obmm_demo_meta {
+struct obmm_pool_meta {
     uint64_t export_mem_id;
     uint64_t remote_uba;
     uint64_t size;
@@ -103,7 +103,7 @@ struct pool_msg {
     uint16_t dst_idx;
     uint16_t round_idx;
     uint16_t slot_count;
-    struct obmm_demo_meta meta;
+    struct obmm_pool_meta meta;
 };
 
 struct pool_slot_record {
@@ -752,7 +752,7 @@ static void unmap_region_device(struct mapped_region *region)
     }
 }
 
-static int do_export_region(int obmm_fd, struct obmm_demo_meta *meta)
+static int do_export_region(int obmm_fd, struct obmm_pool_meta *meta)
 {
     struct obmm_cmd_export cmd;
     memset(&cmd, 0, sizeof(cmd));
@@ -792,7 +792,7 @@ static int do_unexport_region(int obmm_fd, uint64_t mem_id)
     return 0;
 }
 
-static int do_import_region(int obmm_fd, const struct obmm_demo_meta *meta,
+static int do_import_region(int obmm_fd, const struct obmm_pool_meta *meta,
                             int owner_idx, uint32_t local_cna, uint64_t local_pa,
                             uint64_t *import_mem_id)
 {
@@ -927,8 +927,8 @@ static int wait_for_slot_payload(const struct pool_slot *slot, int owner_idx, in
 static int broadcast_hello_until_all(int sockfd,
                                      struct sockaddr_in peers[MAX_NODES],
                                      int node_count, int local_idx,
-                                     const struct obmm_demo_meta *local_meta,
-                                     struct obmm_demo_meta metas[MAX_NODES],
+                                     const struct obmm_pool_meta *local_meta,
+                                     struct obmm_pool_meta metas[MAX_NODES],
                                      bool got_meta[MAX_NODES])
 {
     struct pool_msg msg;
@@ -980,7 +980,7 @@ static int broadcast_hello_until_all(int sockfd,
 
 static int import_all_peers(int obmm_fd, uint32_t local_cna,
                             int node_count, int local_idx,
-                            const struct obmm_demo_meta metas[MAX_NODES],
+                            const struct obmm_pool_meta metas[MAX_NODES],
                             struct pool_slot slots[MAX_NODES])
 {
     uint64_t import_pas[MAX_NODES];
@@ -1421,10 +1421,10 @@ int main(void)
     int node_count = 0;
     int local_idx = -1;
     struct sockaddr_in peers[MAX_NODES];
-    struct obmm_demo_meta metas[MAX_NODES];
+    struct obmm_pool_meta metas[MAX_NODES];
     bool got_meta[MAX_NODES] = { false };
     struct pool_slot slots[MAX_NODES];
-    struct obmm_demo_meta local_meta;
+    struct obmm_pool_meta local_meta;
     struct in_addr local_addr;
     int sockfd = -1;
     int obmm_fd = -1;
