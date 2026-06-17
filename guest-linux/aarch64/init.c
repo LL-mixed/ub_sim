@@ -199,8 +199,7 @@ static bool should_enter_demo_boot_flow(void)
 
 static bool should_run_ub_rpc(void)
 {
-    return cmdline_has_option("linqu_ub_rpc=1") ||
-           cmdline_has_option("linqu_ub_rpc_demo=1");
+    return cmdline_has_option("linqu_ub_rpc=1");
 }
 
 static bool read_interrupt_count(const char *name, uint64_t *count_out)
