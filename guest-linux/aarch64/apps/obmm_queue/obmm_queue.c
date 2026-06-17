@@ -113,12 +113,7 @@ static uint32_t parse_queue_depth(void)
 static enum queue_mode parse_queue_mode(void)
 {
     const char *env = getenv("OBMM_QUEUE_MODE");
-    const char *env_name = "OBMM_QUEUE_MODE";
 
-    if (!env || env[0] == '\0') {
-        env = getenv("OBMM_DEMO_MODE");
-        env_name = "OBMM_DEMO_MODE";
-    }
     if (!env || env[0] == '\0' || strcmp(env, "fullmesh") == 0)
         return QUEUE_MODE_FULLMESH;
     if (strcmp(env, "spmc") == 0)
@@ -127,7 +122,7 @@ static enum queue_mode parse_queue_mode(void)
         return QUEUE_MODE_COMBINED;
     if (strcmp(env, "mpmc") == 0)
         return QUEUE_MODE_MPMC;
-    fprintf(stderr, TAG " warn: unknown %s=%s, using fullmesh\n", env_name, env);
+    fprintf(stderr, TAG " warn: unknown OBMM_QUEUE_MODE=%s, using fullmesh\n", env);
     return QUEUE_MODE_FULLMESH;
 }
 

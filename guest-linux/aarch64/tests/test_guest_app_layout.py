@@ -143,16 +143,20 @@ def test_obmm_queue_uses_canonical_app_source():
     assert "linqu_obmm_queue=1" in run_demo
     assert "run linqu_ub_obmm_queue" in dual_runner
     assert "OBMM_QUEUE_MODE" in dual_runner
+    assert "OBMM_DEMO_MODE" not in dual_runner
     assert "run_queue_app" in four_runner
     assert "[obmm-queue4]" in four_runner
     assert "run_queue_app" in eight_runner
     assert "[obmm-queue8]" in eight_runner
     assert "export OBMM_QUEUE_MODE=" in eight_runner
+    assert "OBMM_DEMO_MODE" not in eight_runner
+    assert "OBMM_DEMO_MODE" not in run_demo
     assert "run_ub_four_node_obmm_queue.sh" in legacy_four_runner
     assert "run_ub_eight_node_obmm_queue.sh" in legacy_eight_runner
     assert "enum queue_mode" in app_source
     assert "parse_queue_mode" in app_source
     assert "OBMM_QUEUE_MODE" in app_source
+    assert "OBMM_DEMO_MODE" not in app_source
     assert "DEMO_MODE_" not in app_source
     assert (app_dir / "obmm_queue.c").exists()
     assert (app_dir / "obmm_pool_helpers.h").exists()

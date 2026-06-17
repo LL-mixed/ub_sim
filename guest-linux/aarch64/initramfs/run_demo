@@ -428,7 +428,7 @@ run_obmm_queue() {
         export OBMM_BOOTSTRAP_SESSION="${token#*=}"
         ;;
       obmm_queue_mode=*)
-        export OBMM_DEMO_MODE="${token#*=}"
+        export OBMM_QUEUE_MODE="${token#*=}"
         ;;
       obmm_queue_import_cache_mode=*)
         export OBMM_IMPORT_CACHE_MODE="${token#*=}"
