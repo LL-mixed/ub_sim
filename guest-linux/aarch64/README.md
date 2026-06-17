@@ -133,13 +133,12 @@ Inside guest, you can run:
 /bin/run_demo chat
 /bin/run_demo rpc
 /bin/run_demo udma
-/bin/run_demo obmm
+/bin/run_demo obmm_pool
 /bin/run_demo all
 /bin/run_demo shell
 ```
 
-`obmm` now runs the pool-based validation path. It is no longer the old
-pairwise exporter/importer demo. The current guest binary behind this entry is
+`obmm_pool` runs the pool-based validation path. The current guest binary behind this entry is
 `/bin/linqu_ub_obmm_pool`, built from
 [apps/ub_obmm_pool/ub_obmm_pool.c](apps/ub_obmm_pool/ub_obmm_pool.c).
 For `N=2` it validates the dual-node pool case; for `N=4` and `N=8` it validates
@@ -497,12 +496,12 @@ Instead of calling the binaries directly, you can also use:
 /bin/run_demo rpc
 /bin/run_demo tcp
 /bin/run_demo udma
-/bin/run_demo obmm
+/bin/run_demo obmm_pool
 /bin/run_demo all
 ```
 
 `run_demo all` is less precise for interactive debugging.
-For bring-up and issue isolation, prefer invoking the single demo binaries in
+For bring-up and issue isolation, prefer invoking the single app entries in
 the order listed above.
 
 ## Initramfs Entry Model

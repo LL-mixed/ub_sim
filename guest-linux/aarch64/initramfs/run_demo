@@ -527,7 +527,7 @@ run_default_actions() {
     ran_any="1"
   fi
 
-  if has_flag "linqu_obmm_pool=1" || has_flag "linqu_obmm_demo=1"; then
+  if has_flag "linqu_obmm_pool=1"; then
     run_obmm_pool || rc=$?
     ran_any="1"
   fi
@@ -585,7 +585,7 @@ run_single_action() {
     udma)
       run_binary "linqu_ub_udma" /bin/linqu_ub_udma
       ;;
-    obmm|obmm_pool|obmm_demo)
+    obmm_pool)
       run_obmm_pool
       ;;
     obmm_queue)

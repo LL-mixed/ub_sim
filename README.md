@@ -310,7 +310,7 @@ tmux 里你会看到：
 /bin/run_demo chat
 /bin/run_demo rpc
 /bin/run_demo udma
-/bin/run_demo obmm
+/bin/run_demo obmm_pool
 /bin/run_demo all
 /bin/run_demo shell
 ```
@@ -372,7 +372,7 @@ BUSYBOX="$BUSYBOX" \
 /bin/run_demo chat
 /bin/run_demo rpc
 /bin/run_demo udma
-/bin/run_demo obmm
+/bin/run_demo obmm_pool
 /bin/run_demo shell
 ```
 

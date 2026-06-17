@@ -195,6 +195,10 @@ def test_ub_obmm_pool_uses_canonical_app_source():
     assert 'OBMM_POOL_BIN="$OUT_DIR/linqu_ub_obmm_pool"' in build_script
     assert "linqu_ub_obmm_demo" not in build_script
     assert "linqu_obmm_pool=1" in run_demo
+    assert "linqu_obmm_demo" not in run_demo
+    assert "obmm|obmm_pool|obmm_demo" not in run_demo
+    assert "obmm_demo" not in run_demo
+    assert "linqu_obmm_demo=1" not in dual_runner
     assert "run linqu_ub_obmm_pool" in dual_runner
     assert "run_pool_app" in four_runner
     assert "[obmm-pool4]" in four_runner

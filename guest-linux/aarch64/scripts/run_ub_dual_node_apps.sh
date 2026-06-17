@@ -594,7 +594,7 @@ run_iteration() {
   if [[ "$APPEND_EXTRA" == *"linqu_ub_udma=1"* || "$APPEND_EXTRA" == *"linqu_ub_udma_demo=1"* ]]; then
     udma_enabled=1
   fi
-  if [[ "$APPEND_EXTRA" == *"linqu_obmm_pool=1"* || "$APPEND_EXTRA" == *"linqu_obmm_demo=1"* ]]; then
+  if [[ "$APPEND_EXTRA" == *"linqu_obmm_pool=1"* ]]; then
     obmm_enabled=1
   fi
 
@@ -827,7 +827,7 @@ run_iteration() {
     validate_udma_log "nodeA" "$nodea_guest_log" || return 1
     validate_udma_log "nodeB" "$nodeb_guest_log" || return 1
   fi
-  if [[ "$APPEND_EXTRA" == *"linqu_obmm_pool=1"* || "$APPEND_EXTRA" == *"linqu_obmm_demo=1"* ]]; then
+  if [[ "$APPEND_EXTRA" == *"linqu_obmm_pool=1"* ]]; then
     validate_obmm_log "nodeA" "$nodea_guest_log" || return 1
     validate_obmm_log "nodeB" "$nodeb_guest_log" || return 1
   fi
