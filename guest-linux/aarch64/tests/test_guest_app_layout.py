@@ -106,6 +106,8 @@ def test_obmm_gsva_uses_canonical_app_source():
     assert 'OBMM_GSVA_BIN="$OUT_DIR/linqu_ub_obmm_gsva"' in build_script
     assert "linqu_ub_obmm_gsva_demo" not in build_script
     assert "linqu_obmm_gsva=1" in run_demo
+    assert "linqu_obmm_gsva_demo" not in run_demo
+    assert "obmm_gsva_demo" not in run_demo
     assert "rdinit=/bin/run_demo obmm_gsva" in dual_runner
     assert "OBMM_GSVA_MODE" in dual_runner
     assert "GSVA_DEMO_" not in dual_runner

@@ -552,7 +552,7 @@ run_default_actions() {
     ran_any="1"
   fi
 
-  if has_flag "linqu_obmm_gsva=1" || has_flag "linqu_obmm_gsva_demo=1"; then
+  if has_flag "linqu_obmm_gsva=1"; then
     run_obmm_gsva || rc=$?
     ran_any="1"
   fi
@@ -612,7 +612,7 @@ run_single_action() {
     gva_direct)
       run_gva_direct
       ;;
-    obmm_gsva|obmm_gsva_demo)
+    obmm_gsva)
       run_obmm_gsva
       ;;
     npu_test)
