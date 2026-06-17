@@ -90,6 +90,16 @@ def test_obmm_dataplane_microbench_has_independent_app_build():
     assert (app_dir / "Makefile").exists()
 
 
+def test_obmm_dataplane_microbench_has_integration_entrypoints():
+    script = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
+    init_source = (ROOT / "init.c").read_text()
+
+    assert "linqu_obmm_dataplane_microbench=1" in script
+    assert "obmm_dataplane_microbench" in script
+    assert "should_run_obmm_dataplane_microbench" in init_source
+    assert "run_obmm_dataplane_microbench_probe" in init_source
+
+
 def test_npu_gsva_test_has_independent_app_build():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     app_dir = ROOT / "apps" / "npu_gsva_test"
@@ -268,6 +278,7 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
 
     assert 'REPORT_FILE="${REPORT_FILE:-$OUT_DIR/apps_report.latest.txt}"' in script
     assert "scenario=dual-node-apps" in script
+    assert "obmm_dataplane_microbench" in script
     assert "dual-node apps validation passed" in script
     assert "ub_nodeA.apps." in script
     assert "--app NAME" in script

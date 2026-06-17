@@ -189,6 +189,11 @@ static bool should_run_obmm_pool(void)
     return cmdline_has_option("linqu_obmm_pool=1");
 }
 
+static bool should_run_obmm_dataplane_microbench(void)
+{
+    return cmdline_has_option("linqu_obmm_dataplane_microbench=1");
+}
+
 static bool should_enter_app_boot_flow(void)
 {
     const char *flag = getenv("UB_RUN_APP_FROM_INIT");
@@ -1101,6 +1106,120 @@ static void run_obmm_pool_probe(void)
     }
 }
 
+static void run_obmm_dataplane_microbench_probe(void)
+{
+    pid_t pid;
+    int status = 0;
+    int waited_ms = 0;
+    bool timed_out = false;
+    pid_t wait_ret;
+    char dp_mode[64] = "";
+    char dp_size[64] = "";
+    char dp_iters[64] = "";
+    char dp_chunk_size[64] = "";
+    char dp_generic_pte_offset[64] = "";
+    char dp_gsva_base[64] = "";
+    char dp_gsva_generation[64] = "";
+    char *argv[20];
+    int argc = 0;
+
+    argv[argc++] = "/bin/linqu_ub_obmm_dataplane_microbench";
+    if (cmdline_get_value("obmm_dp_mode", dp_mode, sizeof(dp_mode))) {
+        argv[argc++] = "--mode";
+        argv[argc++] = dp_mode;
+    }
+    if (cmdline_get_value("obmm_dp_size", dp_size, sizeof(dp_size))) {
+        argv[argc++] = "--size";
+        argv[argc++] = dp_size;
+    }
+    if (cmdline_get_value("obmm_dp_iters", dp_iters, sizeof(dp_iters))) {
+        argv[argc++] = "--iterations";
+        argv[argc++] = dp_iters;
+    }
+    if (cmdline_get_value("obmm_dp_chunk_size", dp_chunk_size,
+                          sizeof(dp_chunk_size))) {
+        argv[argc++] = "--chunk-size";
+        argv[argc++] = dp_chunk_size;
+    }
+    if (cmdline_get_value("obmm_dp_generic_pte_offset",
+                          dp_generic_pte_offset,
+                          sizeof(dp_generic_pte_offset))) {
+        argv[argc++] = "--generic-pte-offset";
+        argv[argc++] = dp_generic_pte_offset;
+    }
+    if (cmdline_get_value("obmm_dp_gsva_base", dp_gsva_base,
+                          sizeof(dp_gsva_base))) {
+        argv[argc++] = "--gsva-base";
+        argv[argc++] = dp_gsva_base;
+    }
+    if (cmdline_get_value("obmm_dp_gsva_generation",
+                          dp_gsva_generation,
+                          sizeof(dp_gsva_generation))) {
+        argv[argc++] = "--gsva-generation";
+        argv[argc++] = dp_gsva_generation;
+    }
+    if (cmdline_has_option("obmm_dp_verify=1")) {
+        argv[argc++] = "--verify";
+    }
+    argv[argc] = NULL;
+
+    pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "[init] fork for obmm dataplane microbench failed: %s\n",
+                strerror(errno));
+        return;
+    }
+    if (pid == 0) {
+        execv("/bin/linqu_ub_obmm_dataplane_microbench", argv);
+        fprintf(stderr,
+                "[init] exec /bin/linqu_ub_obmm_dataplane_microbench failed: %s\n",
+                strerror(errno));
+        _exit(127);
+    }
+
+    for (;;) {
+        wait_ret = waitpid(pid, &status, WNOHANG);
+        if (wait_ret == pid) {
+            break;
+        }
+        if (wait_ret < 0) {
+            fprintf(stderr,
+                    "[init] waitpid obmm dataplane microbench failed: %s\n",
+                    strerror(errno));
+            return;
+        }
+        if (waited_ms >= 120000) {
+            fprintf(stderr,
+                    "[init] ub obmm dataplane microbench app timeout, killing pid=%d\n",
+                    pid);
+            kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
+            timed_out = true;
+            break;
+        }
+        usleep(100000);
+        waited_ms += 100;
+    }
+
+    if (!timed_out && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        fprintf(stderr,
+                "[init] ub obmm dataplane microbench app pass\n");
+        return;
+    }
+
+    if (timed_out) {
+        fprintf(stderr,
+                "[init] ub obmm dataplane microbench app fail timeout\n");
+    } else if (WIFEXITED(status)) {
+        fprintf(stderr, "[init] ub obmm dataplane microbench app fail exit=%d\n",
+                WEXITSTATUS(status));
+    } else if (WIFSIGNALED(status)) {
+        fprintf(stderr,
+                "[init] ub obmm dataplane microbench app fail signal=%d\n",
+                WTERMSIG(status));
+    }
+}
+
 static void dump_dir_entries(const char *path)
 {
     DIR *dir;
@@ -1482,6 +1601,10 @@ int main(int argc, char *argv[])
     if (should_run_obmm_pool()) {
         wait_for_ipourma_interface(30);
         run_obmm_pool_probe();
+    }
+    if (should_run_obmm_dataplane_microbench()) {
+        wait_for_ipourma_interface(30);
+        run_obmm_dataplane_microbench_probe();
     }
     if (should_run_linqu_probe()) {
         run_probe();
