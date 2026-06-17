@@ -33,6 +33,10 @@ COH_TEST_ITERS="${COH_TEST_ITERS:-1}"
 COH_TEST_TOKEN_VALUE="${COH_TEST_TOKEN_VALUE:-0}"
 COH_TEST_GENERATION="${COH_TEST_GENERATION:-1}"
 COH_TEST_VERBOSE="${COH_TEST_VERBOSE:-1}"
+GVA_DIRECT_MODE="${GVA_DIRECT_MODE:-write-read}"
+GVA_DIRECT_LOCAL_VA="${GVA_DIRECT_LOCAL_VA:-0x710000000000}"
+GVA_DIRECT_HOME_VA="${GVA_DIRECT_HOME_VA:-0x720000000000}"
+GVA_DIRECT_SIZE="${GVA_DIRECT_SIZE:-0x400000}"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
 QMP_DIR="${UB_FM_SHARED_DIR:-/tmp/ub-qemu-links-dual}/qmp"
@@ -50,7 +54,7 @@ Options:
   --app NAME          App to validate. Repeat or pass comma-separated names.
                       Names: chat, rpc, tcp_each_server, udma, obmm_pool,
                       obmm_dataplane_microbench, obmm_import_stress, obmm_gsva,
-                      obmm_coh_test.
+                      obmm_coh_test, gva_direct, gsva_query, npu_test.
                       Default: chat,rpc,tcp_each_server.
   --run-id ID        Stable run id used for log/report names.
   --run-secs SECS    Per-app pass/fail wait timeout.
@@ -92,6 +96,15 @@ append_app_selection() {
       ;;
     obmm_coh_test)
       flag="linqu_obmm_coh_test=1"
+      ;;
+    gva_direct)
+      flag="linqu_gva_direct=1"
+      ;;
+    gsva_query)
+      flag="linqu_gsva_query=1"
+      ;;
+    npu_test)
+      flag="linqu_npu_test=1"
       ;;
     "")
       return 0
@@ -505,6 +518,46 @@ validate_obmm_coh_test_log() {
     "${node_name} obmm coh test binary pass" || return 1
 }
 
+validate_gva_direct_log() {
+  local node_name="$1"
+  local log_file="$2"
+  assert_log_has "$log_file" "\\[init\\] ub gva direct app pass" \
+    "${node_name} gva direct app pass" || return 1
+  assert_log_absent "$log_file" "\\[init\\] ub gva direct app fail" \
+    "${node_name} gva direct app fail" || return 1
+  if [[ "$node_name" == "nodeA" ]]; then
+    assert_log_has "$log_file" "\\[gva_direct\\] result=done mode=${GVA_DIRECT_MODE} role=home" \
+      "${node_name} gva_direct home result" || return 1
+  else
+    assert_log_has "$log_file" "\\[gva_direct\\] result=done mode=${GVA_DIRECT_MODE} role=peer" \
+      "${node_name} gva_direct peer result" || return 1
+  fi
+}
+
+validate_gsva_query_log() {
+  local node_name="$1"
+  local log_file="$2"
+  assert_log_has "$log_file" "\\[init\\] ub gsva query app pass" \
+    "${node_name} gsva query app pass" || return 1
+  assert_log_absent "$log_file" "\\[init\\] ub gsva query app fail" \
+    "${node_name} gsva query app fail" || return 1
+  assert_log_has "$log_file" "\\[gsva_query\\] GSVA_QUERY_" \
+    "${node_name} gsva query result" || return 1
+  assert_log_has "$log_file" "verdict=PASS" \
+    "${node_name} gsva query verdict" || return 1
+}
+
+validate_npu_test_log() {
+  local node_name="$1"
+  local log_file="$2"
+  assert_log_has "$log_file" "\\[init\\] ub npu test app pass" \
+    "${node_name} npu test app pass" || return 1
+  assert_log_has "$log_file" "\\[npu_test\\] NPU test suite" \
+    "${node_name} npu test suite started" || return 1
+  assert_log_has "$log_file" "\\[npu_test\\] verdict=(PASS|SKIP)" \
+    "${node_name} npu test verdict" || return 1
+}
+
 validate_kernel_health_log() {
   local node_name="$1"
   local log_file="$2"
@@ -808,6 +861,9 @@ run_iteration() {
   local obmm_import_stress_enabled=0
   local obmm_gsva_enabled=0
   local obmm_coh_test_enabled=0
+  local gva_direct_enabled=0
+  local gsva_query_enabled=0
+  local npu_test_enabled=0
   local nodea_obmm_coh_test_append=""
   local nodeb_obmm_coh_test_append=""
   local stale_files=()
@@ -839,6 +895,15 @@ run_iteration() {
   if [[ "$APPEND_EXTRA" == *"linqu_obmm_coh_test=1"* ]]; then
     obmm_coh_test_enabled=1
   fi
+  if [[ "$APPEND_EXTRA" == *"linqu_gva_direct=1"* ]]; then
+    gva_direct_enabled=1
+  fi
+  if [[ "$APPEND_EXTRA" == *"linqu_gsva_query=1"* ]]; then
+    gsva_query_enabled=1
+  fi
+  if [[ "$APPEND_EXTRA" == *"linqu_npu_test=1"* ]]; then
+    npu_test_enabled=1
+  fi
 
   if [[ "$obmm_gsva_enabled" -eq 1 ]]; then
     append_cmdline_if_missing "obmm_gsva_mode=${OBMM_GSVA_MODE}"
@@ -860,6 +925,12 @@ run_iteration() {
     append_cmdline_if_missing "obmm_coh_test_verbose=${COH_TEST_VERBOSE}"
     nodea_obmm_coh_test_append="obmm_coh_test_node_id=0 obmm_coh_test_exporter=1"
     nodeb_obmm_coh_test_append="obmm_coh_test_node_id=1"
+  fi
+  if [[ "$gva_direct_enabled" -eq 1 ]]; then
+    append_cmdline_if_missing "gva_direct_mode=${GVA_DIRECT_MODE}"
+    append_cmdline_if_missing "gva_direct_size=${GVA_DIRECT_SIZE}"
+    append_cmdline_if_missing "gva_direct_local_va=${GVA_DIRECT_LOCAL_VA}"
+    append_cmdline_if_missing "gva_direct_home_va=${GVA_DIRECT_HOME_VA}"
   fi
 
   rm -f /tmp/ub-qemu/ub-bus-instance-*.lock
@@ -1182,6 +1253,96 @@ run_iteration() {
     esac
   fi
 
+  if [[ "$gva_direct_enabled" -eq 1 ]]; then
+    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub gva direct app pass" \
+      "\\[init\\] ub gva direct app fail" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeA gva direct app reported failure" >&2
+        return 22
+        ;;
+      *)
+        echo "iteration ${iter}: nodeA gva direct app did not finish within ${RUN_SECS}s" >&2
+        return 22
+        ;;
+    esac
+
+    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub gva direct app pass" \
+      "\\[init\\] ub gva direct app fail" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeB gva direct app reported failure" >&2
+        return 22
+        ;;
+      *)
+        echo "iteration ${iter}: nodeB gva direct app did not finish within ${RUN_SECS}s" >&2
+        return 22
+        ;;
+    esac
+  fi
+
+  if [[ "$gsva_query_enabled" -eq 1 ]]; then
+    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub gsva query app pass" \
+      "\\[init\\] ub gsva query app fail" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeA gsva query app reported failure" >&2
+        return 24
+        ;;
+      *)
+        echo "iteration ${iter}: nodeA gsva query app did not finish within ${RUN_SECS}s" >&2
+        return 24
+        ;;
+    esac
+
+    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub gsva query app pass" \
+      "\\[init\\] ub gsva query app fail" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeB gsva query app reported failure" >&2
+        return 24
+        ;;
+      *)
+        echo "iteration ${iter}: nodeB gsva query app did not finish within ${RUN_SECS}s" >&2
+        return 24
+        ;;
+    esac
+  fi
+
+  if [[ "$npu_test_enabled" -eq 1 ]]; then
+    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub npu test app pass" \
+      "\\[init\\] ub npu test app fail" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeA npu test app reported failure" >&2
+        return 23
+        ;;
+      *)
+        echo "iteration ${iter}: nodeA npu test app did not finish within ${RUN_SECS}s" >&2
+        return 23
+        ;;
+    esac
+
+    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub npu test app pass" \
+      "\\[init\\] ub npu test app fail" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeB npu test app reported failure" >&2
+        return 23
+        ;;
+      *)
+        echo "iteration ${iter}: nodeB npu test app did not finish within ${RUN_SECS}s" >&2
+        return 23
+        ;;
+    esac
+  fi
+
   sleep 1
   cleanup_pid "$nodea_pid_file"
   cleanup_pid "$nodeb_pid_file"
@@ -1230,6 +1391,18 @@ run_iteration() {
   if [[ "$APPEND_EXTRA" == *"linqu_obmm_coh_test=1"* ]]; then
     validate_obmm_coh_test_log "nodeA" "$nodea_guest_log" || return 1
     validate_obmm_coh_test_log "nodeB" "$nodeb_guest_log" || return 1
+  fi
+  if [[ "$APPEND_EXTRA" == *"linqu_gva_direct=1"* ]]; then
+    validate_gva_direct_log "nodeA" "$nodea_guest_log" || return 1
+    validate_gva_direct_log "nodeB" "$nodeb_guest_log" || return 1
+  fi
+  if [[ "$APPEND_EXTRA" == *"linqu_gsva_query=1"* ]]; then
+    validate_gsva_query_log "nodeA" "$nodea_guest_log" || return 1
+    validate_gsva_query_log "nodeB" "$nodeb_guest_log" || return 1
+  fi
+  if [[ "$APPEND_EXTRA" == *"linqu_npu_test=1"* ]]; then
+    validate_npu_test_log "nodeA" "$nodea_guest_log" || return 1
+    validate_npu_test_log "nodeB" "$nodeb_guest_log" || return 1
   fi
   validate_kernel_health_log "nodeA" "$nodea_guest_log" || return 1
   validate_kernel_health_log "nodeB" "$nodeb_guest_log" || return 1

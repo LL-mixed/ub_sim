@@ -498,6 +498,39 @@ run_gva_direct() {
   run_binary "linqu_gva_direct" /bin/linqu_gva_direct $args
 }
 
+run_gsva_query() {
+  local args=""
+  local token=""
+  local mode="--caps"
+  local segment_id=""
+
+  read_cmdline
+  for token in $cmdline; do
+    case "$token" in
+      gsva_query_mode=--*)
+        mode="${token#*=}"
+        ;;
+      gsva_query_mode=*)
+        mode="--${token#*=}"
+        ;;
+      segment-id=*)
+        segment_id="${token#*=}"
+        ;;
+      gsva_query_segment_id=*)
+        segment_id="${token#*=}"
+        ;;
+    esac
+  done
+
+  args="$mode"
+  if [ -n "$segment_id" ]; then
+    args="$args --segment-id $segment_id"
+  fi
+
+  # Values come from kernel cmdline key=value tokens, so word splitting is intentional.
+  run_binary "linqu_ub_gsva_query" /bin/linqu_ub_gsva_query $args
+}
+
 run_default_actions() {
   local ran_any="0"
   local rc=0
@@ -549,6 +582,11 @@ run_default_actions() {
 
   if has_flag "linqu_gva_direct=1"; then
     run_gva_direct || rc=$?
+    ran_any="1"
+  fi
+
+  if has_flag "linqu_gsva_query=1"; then
+    run_gsva_query || rc=$?
     ran_any="1"
   fi
 
@@ -614,6 +652,9 @@ run_single_action() {
       ;;
     obmm_gsva)
       run_obmm_gsva
+      ;;
+    gsva_query)
+      run_gsva_query
       ;;
     npu_test)
       run_binary "npu_test" /bin/npu_test

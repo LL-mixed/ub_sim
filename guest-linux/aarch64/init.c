@@ -204,6 +204,26 @@ static bool should_run_obmm_gsva(void)
     return cmdline_has_option("linqu_obmm_gsva=1");
 }
 
+static bool should_run_obmm_coh_test(void)
+{
+    return cmdline_has_option("linqu_obmm_coh_test=1");
+}
+
+static bool should_run_gsva_query(void)
+{
+    return cmdline_has_option("linqu_gsva_query=1");
+}
+
+static bool should_run_npu_test(void)
+{
+    return cmdline_has_option("linqu_npu_test=1");
+}
+
+static bool should_run_gva_direct(void)
+{
+    return cmdline_has_option("linqu_gva_direct=1");
+}
+
 static bool should_enter_app_boot_flow(void)
 {
     const char *flag = getenv("UB_RUN_APP_FROM_INIT");
@@ -1530,6 +1550,340 @@ static void run_obmm_gsva_probe(void)
     }
 }
 
+static void run_npu_test_probe(void)
+{
+    pid_t pid;
+    int status = 0;
+    int waited_ms = 0;
+    bool timed_out = false;
+    pid_t wait_ret;
+    char *argv[2];
+    int argc = 0;
+
+    argv[argc++] = "/bin/npu_test";
+    argv[argc] = NULL;
+
+    pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "[init] fork for npu test app failed: %s\n", strerror(errno));
+        return;
+    }
+    if (pid == 0) {
+        execv("/bin/npu_test", argv);
+        fprintf(stderr,
+                "[init] exec /bin/npu_test failed: %s\n",
+                strerror(errno));
+        _exit(127);
+    }
+
+    for (;;) {
+        wait_ret = waitpid(pid, &status, WNOHANG);
+        if (wait_ret == pid) {
+            break;
+        }
+        if (wait_ret < 0) {
+            fprintf(stderr, "[init] waitpid npu test app failed: %s\n", strerror(errno));
+            return;
+        }
+        if (waited_ms >= 120000) {
+            fprintf(stderr, "[init] ub npu test app timeout, killing pid=%d\n", pid);
+            kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
+            timed_out = true;
+            break;
+        }
+        usleep(100000);
+        waited_ms += 100;
+    }
+
+    if (!timed_out && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        fprintf(stderr, "[init] ub npu test app pass\n");
+        return;
+    }
+
+    if (timed_out) {
+        fprintf(stderr, "[init] ub npu test app fail timeout\n");
+    } else if (WIFEXITED(status)) {
+        fprintf(stderr, "[init] ub npu test app fail exit=%d\n", WEXITSTATUS(status));
+    } else if (WIFSIGNALED(status)) {
+        fprintf(stderr, "[init] ub npu test app fail signal=%d\n", WTERMSIG(status));
+    }
+}
+
+static void run_gsva_query_probe(void)
+{
+    pid_t pid;
+    int status = 0;
+    int waited_ms = 0;
+    bool timed_out = false;
+    pid_t wait_ret;
+    char gsva_query_mode[64] = "caps";
+    char gsva_query_segment_id[64] = "";
+    char gsva_query_mode_opt[80] = "";
+    char *argv[8];
+    int argc = 0;
+    char *mode_ptr;
+
+    if (cmdline_get_value("gsva_query_mode", gsva_query_mode, sizeof(gsva_query_mode))) {
+        mode_ptr = gsva_query_mode;
+    } else {
+        mode_ptr = "caps";
+    }
+
+    if (strncmp(mode_ptr, "--", 2) == 0) {
+        snprintf(gsva_query_mode_opt, sizeof(gsva_query_mode_opt), "%s", mode_ptr);
+    } else {
+        snprintf(gsva_query_mode_opt, sizeof(gsva_query_mode_opt), "--%s", mode_ptr);
+    }
+
+    if (cmdline_get_value("segment-id", gsva_query_segment_id, sizeof(gsva_query_segment_id))) {
+        /* no-op */
+    } else if (cmdline_get_value("gsva_query_segment_id",
+                                 gsva_query_segment_id,
+                                 sizeof(gsva_query_segment_id))) {
+        /* no-op */
+    }
+
+    argv[argc++] = "/bin/linqu_ub_gsva_query";
+    argv[argc++] = gsva_query_mode_opt;
+    if (strlen(gsva_query_segment_id) > 0) {
+        argv[argc++] = "--segment-id";
+        argv[argc++] = gsva_query_segment_id;
+    }
+    argv[argc] = NULL;
+
+    pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "[init] fork for gsva query app failed: %s\n", strerror(errno));
+        return;
+    }
+    if (pid == 0) {
+        execv("/bin/linqu_ub_gsva_query", argv);
+        fprintf(stderr,
+                "[init] exec /bin/linqu_ub_gsva_query failed: %s\n",
+                strerror(errno));
+        _exit(127);
+    }
+
+    for (;;) {
+        wait_ret = waitpid(pid, &status, WNOHANG);
+        if (wait_ret == pid) {
+            break;
+        }
+        if (wait_ret < 0) {
+            fprintf(stderr, "[init] waitpid gsva query app failed: %s\n", strerror(errno));
+            return;
+        }
+        if (waited_ms >= 120000) {
+            fprintf(stderr, "[init] ub gsva query app fail timeout\n");
+            kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
+            timed_out = true;
+            break;
+        }
+        usleep(100000);
+        waited_ms += 100;
+    }
+
+    if (!timed_out && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        fprintf(stderr, "[init] ub gsva query app pass\n");
+        return;
+    }
+
+    if (timed_out) {
+        fprintf(stderr, "[init] ub gsva query app fail timeout\n");
+    } else if (WIFEXITED(status)) {
+        fprintf(stderr, "[init] ub gsva query app fail exit=%d\n", WEXITSTATUS(status));
+    } else if (WIFSIGNALED(status)) {
+        fprintf(stderr, "[init] ub gsva query app fail signal=%d\n", WTERMSIG(status));
+    }
+}
+
+static void run_gva_direct_probe(void)
+{
+    pid_t pid;
+    int status = 0;
+    int waited_ms = 0;
+    bool timed_out = false;
+    pid_t wait_ret;
+    char gva_direct_mode[64] = "";
+    char gva_direct_size[64] = "";
+    char gva_direct_local_va[64] = "";
+    char gva_direct_home_va[64] = "";
+    char *argv[16];
+    int argc = 0;
+
+    argv[argc++] = "/bin/linqu_gva_direct";
+    if (cmdline_get_value("gva_direct_mode", gva_direct_mode, sizeof(gva_direct_mode))) {
+        argv[argc++] = "--mode";
+        argv[argc++] = gva_direct_mode;
+    }
+    if (cmdline_get_value("gva_direct_size", gva_direct_size, sizeof(gva_direct_size))) {
+        argv[argc++] = "--size";
+        argv[argc++] = gva_direct_size;
+    }
+    if (cmdline_get_value("gva_direct_local_va",
+                          gva_direct_local_va,
+                          sizeof(gva_direct_local_va))) {
+        argv[argc++] = "--local-va";
+        argv[argc++] = gva_direct_local_va;
+    }
+    if (cmdline_get_value("gva_direct_home_va", gva_direct_home_va, sizeof(gva_direct_home_va))) {
+        argv[argc++] = "--home-va";
+        argv[argc++] = gva_direct_home_va;
+    }
+    argv[argc] = NULL;
+
+    pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "[init] fork for gva direct app failed: %s\n", strerror(errno));
+        return;
+    }
+    if (pid == 0) {
+        execv("/bin/linqu_gva_direct", argv);
+        fprintf(stderr, "[init] exec /bin/linqu_gva_direct failed: %s\n",
+                strerror(errno));
+        _exit(127);
+    }
+
+    for (;;) {
+        wait_ret = waitpid(pid, &status, WNOHANG);
+        if (wait_ret == pid) {
+            break;
+        }
+        if (wait_ret < 0) {
+            fprintf(stderr, "[init] waitpid gva direct app failed: %s\n", strerror(errno));
+            return;
+        }
+        if (waited_ms >= 120000) {
+            fprintf(stderr, "[init] ub gva direct app timeout, killing pid=%d\n", pid);
+            kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
+            timed_out = true;
+            break;
+        }
+        usleep(100000);
+        waited_ms += 100;
+    }
+
+    if (!timed_out && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        fprintf(stderr, "[init] ub gva direct app pass\n");
+        return;
+    }
+
+    if (timed_out) {
+        fprintf(stderr, "[init] ub gva direct app fail timeout\n");
+    } else if (WIFEXITED(status)) {
+        fprintf(stderr, "[init] ub gva direct app fail exit=%d\n", WEXITSTATUS(status));
+    } else if (WIFSIGNALED(status)) {
+        fprintf(stderr, "[init] ub gva direct app fail signal=%d\n", WTERMSIG(status));
+    }
+}
+
+static void run_obmm_coh_test_probe(void)
+{
+    pid_t pid;
+    int status = 0;
+    int waited_ms = 0;
+    bool timed_out = false;
+    pid_t wait_ret;
+    char coh_mode[64] = "";
+    char coh_size[64] = "";
+    char coh_iters[64] = "";
+    char coh_node_id[64] = "";
+    char coh_node_count[64] = "";
+    char coh_token_value[64] = "";
+    char coh_generation[64] = "";
+    char *argv[24];
+    int argc = 0;
+
+    argv[argc++] = "/bin/linqu_ub_obmm_coh_test";
+    if (cmdline_get_value("obmm_coh_test_mode", coh_mode, sizeof(coh_mode))) {
+        argv[argc++] = "--mode";
+        argv[argc++] = coh_mode;
+    }
+    if (cmdline_get_value("obmm_coh_test_size", coh_size, sizeof(coh_size))) {
+        argv[argc++] = "--size";
+        argv[argc++] = coh_size;
+    }
+    if (cmdline_get_value("obmm_coh_test_iters", coh_iters, sizeof(coh_iters))) {
+        argv[argc++] = "--iterations";
+        argv[argc++] = coh_iters;
+    }
+    if (cmdline_get_value("obmm_coh_test_node_id", coh_node_id, sizeof(coh_node_id))) {
+        argv[argc++] = "--node-id";
+        argv[argc++] = coh_node_id;
+    }
+    if (cmdline_get_value("obmm_coh_test_node_count", coh_node_count,
+                          sizeof(coh_node_count))) {
+        argv[argc++] = "--node-count";
+        argv[argc++] = coh_node_count;
+    }
+    if (cmdline_get_value("obmm_coh_test_token_value", coh_token_value,
+                          sizeof(coh_token_value))) {
+        argv[argc++] = "--token-value";
+        argv[argc++] = coh_token_value;
+    }
+    if (cmdline_get_value("obmm_coh_test_generation", coh_generation,
+                          sizeof(coh_generation))) {
+        argv[argc++] = "--generation";
+        argv[argc++] = coh_generation;
+    }
+    if (cmdline_has_option("obmm_coh_test_exporter=1")) {
+        argv[argc++] = "--is-exporter";
+    }
+    if (cmdline_has_option("obmm_coh_test_verbose=1")) {
+        argv[argc++] = "--verbose";
+    }
+    argv[argc] = NULL;
+
+    pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "[init] fork for obmm coh test failed: %s\n", strerror(errno));
+        return;
+    }
+    if (pid == 0) {
+        execv("/bin/linqu_ub_obmm_coh_test", argv);
+        fprintf(stderr, "[init] exec /bin/linqu_ub_obmm_coh_test failed: %s\n",
+                strerror(errno));
+        _exit(127);
+    }
+
+    for (;;) {
+        wait_ret = waitpid(pid, &status, WNOHANG);
+        if (wait_ret == pid) {
+            break;
+        }
+        if (wait_ret < 0) {
+            fprintf(stderr, "[init] waitpid obmm coh test failed: %s\n", strerror(errno));
+            return;
+        }
+        if (waited_ms >= 120000) {
+            fprintf(stderr, "[init] ub obmm coh test app timeout, killing pid=%d\n",
+                    pid);
+            kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
+            timed_out = true;
+            break;
+        }
+        usleep(100000);
+        waited_ms += 100;
+    }
+
+    if (!timed_out && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        fprintf(stderr, "[init] ub obmm coh test app pass\n");
+        return;
+    }
+
+    if (timed_out) {
+        fprintf(stderr, "[init] ub obmm coh test app fail timeout\n");
+    } else if (WIFEXITED(status)) {
+        fprintf(stderr, "[init] ub obmm coh test app fail exit=%d\n", WEXITSTATUS(status));
+    } else if (WIFSIGNALED(status)) {
+        fprintf(stderr, "[init] ub obmm coh test app fail signal=%d\n", WTERMSIG(status));
+    }
+}
+
 static void dump_dir_entries(const char *path)
 {
     DIR *dir;
@@ -1923,6 +2277,22 @@ int main(int argc, char *argv[])
     if (should_run_obmm_gsva()) {
         wait_for_ipourma_interface(30);
         run_obmm_gsva_probe();
+    }
+    if (should_run_gsva_query()) {
+        wait_for_ipourma_interface(30);
+        run_gsva_query_probe();
+    }
+    if (should_run_npu_test()) {
+        wait_for_ipourma_interface(30);
+        run_npu_test_probe();
+    }
+    if (should_run_gva_direct()) {
+        wait_for_ipourma_interface(30);
+        run_gva_direct_probe();
+    }
+    if (should_run_obmm_coh_test()) {
+        wait_for_ipourma_interface(30);
+        run_obmm_coh_test_probe();
     }
     if (should_run_linqu_probe()) {
         run_probe();
