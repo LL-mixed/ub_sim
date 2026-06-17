@@ -27,6 +27,12 @@ OBMM_GSVA_MODE="${OBMM_GSVA_MODE:-identity}"
 OBMM_GSVA_BASE="${OBMM_GSVA_BASE:-0x700000000000}"
 OBMM_GSVA_SIZE="${OBMM_GSVA_SIZE:-0x400000}"
 OBMM_GSVA_NODE_COUNT="${OBMM_GSVA_NODE_COUNT:-2}"
+COH_TEST_MODE="${COH_TEST_MODE:-write_read}"
+COH_TEST_SIZE="${COH_TEST_SIZE:-2097152}"
+COH_TEST_ITERS="${COH_TEST_ITERS:-1}"
+COH_TEST_TOKEN_VALUE="${COH_TEST_TOKEN_VALUE:-0}"
+COH_TEST_GENERATION="${COH_TEST_GENERATION:-1}"
+COH_TEST_VERBOSE="${COH_TEST_VERBOSE:-1}"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
 QMP_DIR="${UB_FM_SHARED_DIR:-/tmp/ub-qemu-links-dual}/qmp"
@@ -43,7 +49,8 @@ Usage: run_ub_dual_node_apps.sh [options]
 Options:
   --app NAME          App to validate. Repeat or pass comma-separated names.
                       Names: chat, rpc, tcp_each_server, udma, obmm_pool,
-                      obmm_dataplane_microbench, obmm_import_stress, obmm_gsva.
+                      obmm_dataplane_microbench, obmm_import_stress, obmm_gsva,
+                      obmm_coh_test.
                       Default: chat,rpc,tcp_each_server.
   --run-id ID        Stable run id used for log/report names.
   --run-secs SECS    Per-app pass/fail wait timeout.
@@ -82,6 +89,9 @@ append_app_selection() {
       ;;
     obmm_gsva)
       flag="linqu_obmm_gsva=1"
+      ;;
+    obmm_coh_test)
+      flag="linqu_obmm_coh_test=1"
       ;;
     "")
       return 0
@@ -484,6 +494,17 @@ validate_obmm_gsva_log() {
     "${node_name} obmm gsva failure" || return 1
 }
 
+validate_obmm_coh_test_log() {
+  local node_name="$1"
+  local log_file="$2"
+  assert_log_has "$log_file" "\\[init\\] ub obmm coh test app pass" \
+    "${node_name} obmm coh test app pass" || return 1
+  assert_log_absent "$log_file" "\\[init\\] ub obmm coh test app fail" \
+    "${node_name} obmm coh test app fail" || return 1
+  assert_log_has "$log_file" "obmm_coh_test: PASS" \
+    "${node_name} obmm coh test binary pass" || return 1
+}
+
 validate_kernel_health_log() {
   local node_name="$1"
   local log_file="$2"
@@ -513,6 +534,7 @@ start_node() {
   local qemu_log="$4"
   local pid_file="$5"
   local qmp_socket="$6"
+  local app_append_extra="${7-}"
   local qemu_extra=()
   local node_append_extra="$APPEND_EXTRA"
   local ipourma_args=""
@@ -524,6 +546,9 @@ start_node() {
   ipourma_args="$(ipourma_ipv4_args_for_role "$role")"
   if [[ -n "$ipourma_args" ]]; then
     node_append_extra="${node_append_extra} ${ipourma_args}"
+  fi
+  if [[ -n "${app_append_extra}" ]]; then
+    node_append_extra="${node_append_extra} ${app_append_extra}"
   fi
 
   mkdir -p "$(dirname "$qmp_socket")"
@@ -782,6 +807,9 @@ run_iteration() {
   local obmm_dataplane_microbench_enabled=0
   local obmm_import_stress_enabled=0
   local obmm_gsva_enabled=0
+  local obmm_coh_test_enabled=0
+  local nodea_obmm_coh_test_append=""
+  local nodeb_obmm_coh_test_append=""
   local stale_files=()
 
   if [[ "$APPEND_EXTRA" == *"linqu_ub_chat=1"* ]]; then
@@ -808,6 +836,9 @@ run_iteration() {
   if [[ "$APPEND_EXTRA" == *"linqu_obmm_gsva=1"* ]]; then
     obmm_gsva_enabled=1
   fi
+  if [[ "$APPEND_EXTRA" == *"linqu_obmm_coh_test=1"* ]]; then
+    obmm_coh_test_enabled=1
+  fi
 
   if [[ "$obmm_gsva_enabled" -eq 1 ]]; then
     append_cmdline_if_missing "obmm_gsva_mode=${OBMM_GSVA_MODE}"
@@ -818,6 +849,17 @@ run_iteration() {
     append_cmdline_if_missing "OBMM_GSVA_BASE=${OBMM_GSVA_BASE}"
     append_cmdline_if_missing "OBMM_GSVA_SIZE=${OBMM_GSVA_SIZE}"
     append_cmdline_if_missing "OBMM_GSVA_NODE_COUNT=${OBMM_GSVA_NODE_COUNT}"
+  fi
+  if [[ "$obmm_coh_test_enabled" -eq 1 ]]; then
+    append_cmdline_if_missing "obmm_coh_test_mode=${COH_TEST_MODE}"
+    append_cmdline_if_missing "obmm_coh_test_size=${COH_TEST_SIZE}"
+    append_cmdline_if_missing "obmm_coh_test_iters=${COH_TEST_ITERS}"
+    append_cmdline_if_missing "obmm_coh_test_node_count=2"
+    append_cmdline_if_missing "obmm_coh_test_token_value=${COH_TEST_TOKEN_VALUE}"
+    append_cmdline_if_missing "obmm_coh_test_generation=${COH_TEST_GENERATION}"
+    append_cmdline_if_missing "obmm_coh_test_verbose=${COH_TEST_VERBOSE}"
+    nodea_obmm_coh_test_append="obmm_coh_test_node_id=0 obmm_coh_test_exporter=1"
+    nodeb_obmm_coh_test_append="obmm_coh_test_node_id=1"
   fi
 
   rm -f /tmp/ub-qemu/ub-bus-instance-*.lock
@@ -841,10 +883,12 @@ run_iteration() {
   echo "iteration ${iter} logs: $iter_log_dir"
 
   echo "Starting nodeA (paused)..."
-  start_node "nodeA" "nodeA" "$nodea_guest_log" "$nodea_qemu_log" "$nodea_pid_file" "$nodea_qmp"
+  start_node "nodeA" "nodeA" "$nodea_guest_log" "$nodea_qemu_log" \
+    "$nodea_pid_file" "$nodea_qmp" "$nodea_obmm_coh_test_append"
   sleep 0.5
   echo "Starting nodeB (paused)..."
-  start_node "nodeB" "nodeB" "$nodeb_guest_log" "$nodeb_qemu_log" "$nodeb_pid_file" "$nodeb_qmp"
+  start_node "nodeB" "nodeB" "$nodeb_guest_log" "$nodeb_qemu_log" \
+    "$nodeb_pid_file" "$nodeb_qmp" "$nodeb_obmm_coh_test_append"
 
   if ! check_link_early_or_fail "$nodea_qemu_log" "$nodeb_qemu_log" 10; then
     echo "iteration ${iter}: early link failure detected" >&2
@@ -1108,6 +1152,36 @@ run_iteration() {
     esac
   fi
 
+  if [[ "$obmm_coh_test_enabled" -eq 1 ]]; then
+    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub obmm coh test app pass" \
+      "\\[init\\] ub obmm coh test app fail" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeA obmm coh test app reported failure" >&2
+        return 21
+        ;;
+      *)
+        echo "iteration ${iter}: nodeA obmm coh test app did not finish within ${RUN_SECS}s" >&2
+        return 21
+        ;;
+    esac
+
+    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub obmm coh test app pass" \
+      "\\[init\\] ub obmm coh test app fail" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeB obmm coh test app reported failure" >&2
+        return 21
+        ;;
+      *)
+        echo "iteration ${iter}: nodeB obmm coh test app did not finish within ${RUN_SECS}s" >&2
+        return 21
+        ;;
+    esac
+  fi
+
   sleep 1
   cleanup_pid "$nodea_pid_file"
   cleanup_pid "$nodeb_pid_file"
@@ -1152,6 +1226,10 @@ run_iteration() {
   if [[ "$APPEND_EXTRA" == *"linqu_obmm_gsva=1"* ]]; then
     validate_obmm_gsva_log "nodeA" "$nodea_guest_log" || return 1
     validate_obmm_gsva_log "nodeB" "$nodeb_guest_log" || return 1
+  fi
+  if [[ "$APPEND_EXTRA" == *"linqu_obmm_coh_test=1"* ]]; then
+    validate_obmm_coh_test_log "nodeA" "$nodea_guest_log" || return 1
+    validate_obmm_coh_test_log "nodeB" "$nodeb_guest_log" || return 1
   fi
   validate_kernel_health_log "nodeA" "$nodea_guest_log" || return 1
   validate_kernel_health_log "nodeB" "$nodeb_guest_log" || return 1

@@ -122,6 +122,19 @@ def test_obmm_import_stress_has_integration_entrypoints():
     assert "run_obmm_import_stress_probe" in init_source
 
 
+def test_obmm_coh_test_has_independent_dual_node_bootflow():
+    script = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
+    init_source = (ROOT / "init.c").read_text()
+
+    assert "obmm_coh_test" in script
+    assert "linqu_obmm_coh_test=1" in script
+    assert "COH_TEST_MODE" in script
+    assert "COH_TEST_ITERS" in script
+    assert "should_run_obmm_coh_test" in init_source
+    assert "run_obmm_coh_test_probe" in init_source
+    assert "nodea_obmm_coh_test_append" in script
+
+
 def test_npu_gsva_test_has_independent_app_build():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     app_dir = ROOT / "apps" / "npu_gsva_test"
