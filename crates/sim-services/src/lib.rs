@@ -1723,6 +1723,12 @@ pub mod durable {
                 .map_err(|err| LingquDurableError::SnapshotCodec(err.to_string()))
         }
 
+        pub fn to_compact_json_bytes(&self) -> LingquDurableResult<Vec<u8>> {
+            self.validate()?;
+            serde_json::to_vec(self)
+                .map_err(|err| LingquDurableError::SnapshotCodec(err.to_string()))
+        }
+
         pub fn from_json_bytes(bytes: &[u8]) -> LingquDurableResult<Self> {
             let snapshot = serde_json::from_slice::<Self>(bytes)
                 .map_err(|err| LingquDurableError::SnapshotCodec(err.to_string()))?;

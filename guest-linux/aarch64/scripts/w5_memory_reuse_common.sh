@@ -85,9 +85,9 @@ w5_resolve_memory_reuse_config() {
 
   if [[ "$reuse_run_id" == "latest" ]]; then
     local -a candidates
-    candidates=("$reuse_out_dir"/w5_memory_object_store.*_w5_${profile}_*.json(N.om))
+    candidates=("$reuse_out_dir"/w5_memory_runtime_boundary_lookup.*_w5_${profile}_*.json(N.om))
     if (( ${#candidates[@]} == 0 )); then
-      candidates=("$reuse_out_dir"/w5_memory_runtime_boundary_lookup.*_w5_${profile}_*.json(N.om))
+      candidates=("$reuse_out_dir"/w5_memory_object_store.*_w5_${profile}_*.json(N.om))
     fi
     if (( ${#candidates[@]} == 0 )); then
       if (( reuse_optional )); then

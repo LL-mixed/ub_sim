@@ -2311,6 +2311,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "build-index" => run_lingqu_memory_build_index_cli(&args),
         "ingest" => run_lingqu_memory_ingest_cli(&args),
         "list-artifact-access" => run_lingqu_memory_list_artifact_access_cli(&args),
+        "list-execution-artifacts" => run_lingqu_memory_list_execution_artifacts_cli(&args),
         "list-prefetch-plans" => run_lingqu_memory_list_prefetch_plans_cli(&args),
         "list-prefix-cache-reuse" => run_lingqu_memory_list_prefix_cache_reuse_cli(&args),
         "list-query-results" => run_lingqu_memory_list_query_results_cli(&args),
@@ -2402,7 +2403,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         _ => anyhow::bail!(
             "unknown lingqu-memory mode `{mode}`; expected \
             ingest, build-index, build-tokenizer-projection, build-engram-hash-config, query, \
-            list-query-results, list-artifact-access, list-boundary-observations, \
+            list-query-results, list-artifact-access, list-execution-artifacts, list-boundary-observations, \
             list-record-lifecycle, list-shortpath-supports, list-shortpath-decisions, \
             list-prefetch-plans, list-prefix-cache-reuse, list-paper-engram-modules, \
             validate-paper-engram-module, resolve-paper-engram-runtime, resolve-paper-engram-table-row-blocks, \
@@ -8599,6 +8600,106 @@ fn run_lingqu_memory_list_boundary_observations_cli(args: &[String]) -> anyhow::
     Ok(())
 }
 
+fn run_lingqu_memory_list_execution_artifacts_cli(args: &[String]) -> anyhow::Result<()> {
+    let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
+    let artifact_id_filter = optional_cli_arg(args, "--artifact-id")?;
+    let kind_filter = optional_cli_arg(args, "--kind")?
+        .map(|kind| parse_execution_artifact_kind_filter("--kind", &kind))
+        .transpose()?;
+
+    let mut durable_store = load_lingqu_memory_durable_store(&store_path)?;
+    let artifacts = durable_store
+        .load_execution_artifact_manifest()
+        .context("load execution artifact manifest")?;
+    let filtered_artifacts = artifacts
+        .iter()
+        .filter(|artifact| {
+            artifact_id_filter
+                .as_ref()
+                .map(|artifact_id| artifact.artifact_id == *artifact_id)
+                .unwrap_or(true)
+        })
+        .filter(|artifact| {
+            kind_filter
+                .map(|kind| artifact.kind == kind)
+                .unwrap_or(true)
+        })
+        .collect::<Vec<_>>();
+    if let Some(artifact_id) = artifact_id_filter.as_ref() {
+        if filtered_artifacts.is_empty() {
+            anyhow::bail!("execution artifact `{artifact_id}` not found in manifest");
+        }
+    }
+
+    let logits = filtered_artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == sim_memory::ExecutionArtifactKind::Logits)
+        .count();
+    let kv_cache = filtered_artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == sim_memory::ExecutionArtifactKind::KvCache)
+        .count();
+    let hidden_state = filtered_artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == sim_memory::ExecutionArtifactKind::HiddenState)
+        .count();
+
+    println!("lingqu_memory_service");
+    println!("  mode: list-execution-artifacts");
+    println!("  store_path: {}", store_path.display());
+    println!(
+        "  manifest_path: {}",
+        sim_memory::LINGQU_EXECUTION_ARTIFACT_MANIFEST_PATH
+    );
+    println!("  artifacts: {}", filtered_artifacts.len());
+    println!("  logits: {logits}");
+    println!("  kv_cache: {kv_cache}");
+    println!("  hidden_state: {hidden_state}");
+    for artifact in filtered_artifacts {
+        let payload_bytes = artifact
+            .durable_payload_ref
+            .as_ref()
+            .map(|payload_ref| payload_ref.bytes)
+            .or_else(|| {
+                artifact
+                    .hot_object_ref
+                    .as_ref()
+                    .map(|hot_ref| hot_ref.bytes)
+            })
+            .or_else(|| {
+                artifact
+                    .gsva_segment_ref
+                    .as_ref()
+                    .map(|gsva_ref| gsva_ref.bytes)
+            })
+            .unwrap_or(0);
+        let payload_ref = if artifact.durable_payload_ref.is_some() {
+            "durable"
+        } else if artifact.hot_object_ref.is_some() {
+            "hot-object"
+        } else if artifact.gsva_segment_ref.is_some() {
+            "gsva"
+        } else {
+            "none"
+        };
+        println!(
+            "  artifact id={} kind={} state={:?} step={} position={} node={} layers=[{},{}) payload_ref={} payload_bytes={} checksum={:#x}",
+            artifact.artifact_id,
+            w5_execution_artifact_kind_name(artifact.kind),
+            artifact.state,
+            artifact.producer_boundary.step_index,
+            artifact.producer_boundary.position,
+            artifact.producer_boundary.node_index,
+            artifact.producer_boundary.layer_start,
+            artifact.producer_boundary.layer_end,
+            payload_ref,
+            payload_bytes,
+            artifact.checksum
+        );
+    }
+    Ok(())
+}
+
 fn run_lingqu_memory_list_artifact_access_cli(args: &[String]) -> anyhow::Result<()> {
     let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
     let event_id_filter = optional_cli_arg(args, "--event-id")?;
@@ -9859,11 +9960,8 @@ fn run_w5_prefix_cache_lookup_for_decision(
     }
 
     let mut memory_service = LingquMemoryService::new();
-    match memory_service.rebuild_prefix_cache_artifacts_from_dfs(durable_store) {
-        Ok(_) => {}
-        Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => {}
-        Err(err) => return Err(err).context("rebuild prefix cache artifacts for W5 lookup"),
-    }
+    rebuild_lingqu_memory_prefix_cache_registry_artifacts(&mut memory_service, durable_store)
+        .context("rebuild prefix cache artifacts for W5 lookup")?;
     rebuild_lingqu_memory_prefix_cache_reuse_plans(&mut memory_service, durable_store)
         .context("rebuild prefix cache reuse audit for W5 lookup")?;
     let response = memory_service
@@ -11965,6 +12063,20 @@ fn w5_execution_artifact_kind_name(kind: sim_memory::ExecutionArtifactKind) -> &
         sim_memory::ExecutionArtifactKind::HiddenState => "hidden-state",
         sim_memory::ExecutionArtifactKind::KvCache => "kv-cache",
         sim_memory::ExecutionArtifactKind::Logits => "logits",
+    }
+}
+
+fn parse_execution_artifact_kind_filter(
+    field: &str,
+    value: &str,
+) -> anyhow::Result<sim_memory::ExecutionArtifactKind> {
+    match value {
+        "hidden" | "hidden-state" => Ok(sim_memory::ExecutionArtifactKind::HiddenState),
+        "kv" | "kv-cache" => Ok(sim_memory::ExecutionArtifactKind::KvCache),
+        "logits" => Ok(sim_memory::ExecutionArtifactKind::Logits),
+        _ => {
+            anyhow::bail!("{field} must be one of hidden-state, kv-cache, or logits; got `{value}`")
+        }
     }
 }
 
@@ -15033,6 +15145,8 @@ fn rebuild_lingqu_memory_prefix_cache_registry_artifacts(
     memory_service: &mut LingquMemoryService,
     store: &mut LingquMemoryDurableStore,
 ) -> anyhow::Result<LingquMemoryPrefixCacheRegistry> {
+    rebuild_lingqu_memory_execution_registry_artifacts(memory_service, store)
+        .context("rebuild execution artifacts for prefix cache registry")?;
     match memory_service.rebuild_prefix_cache_artifacts_from_dfs(store) {
         Ok(artifacts) => Ok(LingquMemoryPrefixCacheRegistry { artifacts }),
         Err(sim_memory::LingquMemoryError::MissingDfsPath(_)) => {
@@ -15046,6 +15160,8 @@ fn load_required_lingqu_memory_prefix_cache_registry_artifacts(
     memory_service: &mut LingquMemoryService,
     store: &mut LingquMemoryDurableStore,
 ) -> anyhow::Result<LingquMemoryPrefixCacheRegistry> {
+    rebuild_lingqu_memory_execution_registry_artifacts(memory_service, store)
+        .context("rebuild execution artifacts for required prefix cache registry")?;
     let artifacts = memory_service
         .rebuild_prefix_cache_artifacts_from_dfs(store)
         .context("rebuild prefix cache registry from durable DFS manifest")?;
@@ -16340,6 +16456,7 @@ mod tests {
         run_lingqu_memory_import_paper_engram_module_cli, run_lingqu_memory_ingest_cli,
         run_lingqu_memory_list_artifact_access_cli,
         run_lingqu_memory_list_boundary_observations_cli,
+        run_lingqu_memory_list_execution_artifacts_cli,
         run_lingqu_memory_list_paper_engram_modules_cli, run_lingqu_memory_list_prefetch_plans_cli,
         run_lingqu_memory_list_prefix_cache_reuse_cli, run_lingqu_memory_list_query_results_cli,
         run_lingqu_memory_list_record_lifecycle_cli,
@@ -24915,6 +25032,15 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             "prefetch-plan/prefetch/step3/node4".to_string(),
         ])
         .expect("list prefetch plan audit");
+        run_lingqu_memory_list_execution_artifacts_cli(&[
+            "--store".to_string(),
+            store.to_string_lossy().into_owned(),
+            "--kind".to_string(),
+            "kv-cache".to_string(),
+            "--artifact-id".to_string(),
+            "artifact/kv/step4/node4".to_string(),
+        ])
+        .expect("list KV execution artifact manifest");
 
         let boundary_response_bytes =
             fs::read(&boundary_response_path).expect("read boundary response");
@@ -26948,15 +27074,59 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
         let prefix_payload_ref = seed_store
             .write_block_payload("block/prefix/test/8", vec![0x18; 64])
             .expect("write prefix cache payload");
+        let kv_payload_ref = seed_store
+            .write_block_payload("block/kv/prefix-test/step0/node1", vec![0x42; 16])
+            .expect("write prefix KV payload");
+        let model = sim_memory::InferenceModelBinding {
+            model_id: "qwen3-test".to_string(),
+            model_key: "qwen3-test-key".to_string(),
+            tokenizer_hash: 0x1001,
+            profile_hash: 0x2002,
+        };
+        let kv_artifact_id = "artifact/kv/prefix-test/step0/node1".to_string();
+        let kv_artifact = sim_memory::ExecutionArtifactObject {
+            artifact_id: kv_artifact_id.clone(),
+            kind: sim_memory::ExecutionArtifactKind::KvCache,
+            model: model.clone(),
+            producer_boundary: sim_memory::RangeBoundary {
+                phase: sim_memory::RangeBoundaryPhase::RangeExit,
+                step_index: 0,
+                node_index: 1,
+                layer_start: 0,
+                layer_end: 28,
+                next_node_index: None,
+                position: 8,
+            },
+            boundary_hidden_fingerprint: sim_memory::BoundaryTensorFingerprint {
+                bytes: 16,
+                checksum: 0x4242,
+                dtype: sim_core::TensorDType::F32,
+                shape: vec![4],
+            },
+            target_layer_start: 0,
+            target_layer_end: 28,
+            dtype: sim_core::TensorDType::F32,
+            shape: vec![16],
+            durable_payload_ref: Some(kv_payload_ref),
+            hot_object_ref: None,
+            gsva_segment_ref: None,
+            source_query_result_id: None,
+            source_engram_state_id: None,
+            confidence_milli: 950,
+            state: sim_memory::ExecutionArtifactState::Verified,
+            checksum: 0x5151_5151,
+            version: 1,
+            created_at_us: 10,
+            expires_at_us: Some(100),
+            terminal_logits_metadata: None,
+        };
+        seed_store
+            .persist_execution_artifact_manifest(vec![kv_artifact])
+            .expect("persist prefix KV execution artifact");
         save_lingqu_memory_durable_store(&store, &seed_store)
             .expect("save seeded prefix cache payload");
         let key = sim_memory::PrefixCacheKey {
-            model: sim_memory::InferenceModelBinding {
-                model_id: "qwen3-test".to_string(),
-                model_key: "qwen3-test-key".to_string(),
-                tokenizer_hash: 0x1001,
-                profile_hash: 0x2002,
-            },
+            model,
             namespace: "tenant/project/session".to_string(),
             chat_template_hash: 0x3003,
             prefix_token_hash: 0x4004,
@@ -26972,7 +27142,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
         let artifact = sim_memory::PrefixCacheArtifact {
             artifact_id: "prefix-cache/test/8".to_string(),
             key: key.clone(),
-            kv_artifact_ids: Vec::new(),
+            kv_artifact_ids: vec![kv_artifact_id.clone()],
             durable_payload_refs: vec![prefix_payload_ref],
             hot_object_refs: Vec::new(),
             dtype: sim_core::TensorDType::F32,
@@ -27103,6 +27273,11 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
                 .expect("prefix-cache artifact")
                 .artifact_id,
             "prefix-cache/test/8"
+        );
+        assert_eq!(bundle.prefix_cache_kv_artifacts.len(), 1);
+        assert_eq!(
+            bundle.prefix_cache_kv_artifacts[0].artifact.artifact_id,
+            kv_artifact_id
         );
         let publication = publish_w5_memory_decision_artifact_refs(
             &W5MemoryBootstrapConfig {
@@ -31002,30 +31177,6 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     if let Some(store_path) = w5_boundary_observation_store_path(args) {
         qwen3_flush_w5_memory_runtime_commits()
             .map_err(|err| anyhow::anyhow!("flush W5 runtime Memory Service commits: {err}"))?;
-        let prefix_cache_store_path = args
-            .memory_bootstrap
-            .as_ref()
-            .map(|bootstrap| bootstrap.store_path.as_path())
-            .unwrap_or(store_path);
-        let prefix_cache_artifact_id = register_w5_runtime_prefix_cache_artifact(
-            prefix_cache_store_path,
-            &runtime,
-            &prompt_history_tokens,
-            cli_now_us(),
-        )
-        .context("register W5 runtime prefix cache artifact")?;
-        if let Some(artifact_id) = prefix_cache_artifact_id {
-            println!(
-                "  memory_runtime_prefix_cache_artifact: store={} artifact={} status=registered",
-                prefix_cache_store_path.display(),
-                artifact_id
-            );
-        } else {
-            println!(
-                "  memory_runtime_prefix_cache_artifact: store={} status=skipped reason=no_verified_step0_kv_artifacts",
-                prefix_cache_store_path.display()
-            );
-        }
         let summary_path =
             qwen3_guest_summary_file_from_script_output(&combined).ok_or_else(|| {
                 anyhow::anyhow!(
@@ -31093,6 +31244,25 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
                 "  memory_runtime_shortpath_artifacts_promoted: store={} summary={} promoted=0 status=skipped reason=post_run_promote_disabled",
                 store_path.display(),
                 summary_path.display()
+            );
+        }
+        let prefix_cache_artifact_id = register_w5_runtime_prefix_cache_artifact(
+            store_path,
+            &runtime,
+            &prompt_history_tokens,
+            cli_now_us(),
+        )
+        .context("register W5 runtime prefix cache artifact")?;
+        if let Some(artifact_id) = prefix_cache_artifact_id {
+            println!(
+                "  memory_runtime_prefix_cache_artifact: store={} artifact={} status=registered",
+                store_path.display(),
+                artifact_id
+            );
+        } else {
+            println!(
+                "  memory_runtime_prefix_cache_artifact: store={} status=skipped reason=no_verified_step0_kv_artifacts",
+                store_path.display()
             );
         }
         let object_service = if let Some(bootstrap) = &args.memory_bootstrap {

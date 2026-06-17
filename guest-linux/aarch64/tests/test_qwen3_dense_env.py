@@ -1247,7 +1247,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn(f"SIM_W5_MEMORY_DECISION_OBJECT_STORE={out_dir}/w5_object_service_store.{new_run}.json", result.stdout)
         self.assertIn(f"SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID={new_run}", result.stdout)
 
-    def test_w5_cluster_config_runner_prefers_runtime_memory_object_store_for_latest_reuse(self):
+    def test_w5_cluster_config_runner_prefers_runtime_boundary_store_for_latest_reuse(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
         config_runner = script_dir / "run_w5_cluster_config.sh"
 
@@ -1283,7 +1283,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 text=True,
             )
 
-        self.assertIn(f"SIM_W5_MEMORY_DECISION_STORE={out_dir}/w5_memory_object_store.{run_id}.json", result.stdout)
+        self.assertIn(f"SIM_W5_MEMORY_DECISION_STORE={out_dir}/w5_memory_runtime_boundary_lookup.{run_id}.json", result.stdout)
         self.assertIn(f"SIM_W5_MEMORY_DECISION_OBJECT_STORE={out_dir}/w5_object_service_store.{run_id}.json", result.stdout)
         self.assertIn(f"SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID={run_id}", result.stdout)
 
@@ -1447,7 +1447,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 text=True,
             )
 
-        self.assertIn(f"SIM_W5_MEMORY_DECISION_STORE={out_dir}/w5_memory_object_store.{run_id}.json", result.stdout)
+        self.assertIn(f"SIM_W5_MEMORY_DECISION_STORE={out_dir}/w5_memory_runtime_boundary_lookup.{run_id}.json", result.stdout)
         self.assertIn(f"SIM_W5_MEMORY_DECISION_OBJECT_STORE={out_dir}/w5_object_service_store.{run_id}.json", result.stdout)
         self.assertIn(f"SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID={run_id}", result.stdout)
 

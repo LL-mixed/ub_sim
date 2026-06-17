@@ -4752,22 +4752,29 @@ pub fn save_lingqu_memory_durable_store_to_path(
         fs::create_dir_all(parent)
             .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?;
     }
-    let total_block_bytes = snapshot
+    let estimated_block_json_bytes = estimated_lingqu_durable_block_json_payload_bytes(&snapshot);
+    let bytes = if estimated_block_json_bytes > LINGQU_DURABLE_EXTERNAL_BLOCK_THRESHOLD_BYTES {
+        externalize_lingqu_durable_blocks(path, &mut snapshot)?;
+        serde_json::to_vec(&snapshot)
+            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?
+    } else {
+        snapshot
+            .to_compact_json_bytes()
+            .map_err(memory_error_from_durable)?
+    };
+    fs::write(path, bytes).map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))
+}
+
+fn estimated_lingqu_durable_block_json_payload_bytes(
+    snapshot: &durable_sim::LingquDurableSimSnapshot,
+) -> u64 {
+    snapshot
         .block
         .blocks
         .iter()
         .map(|record| record.bytes.len() as u64)
-        .sum::<u64>();
-    let bytes = if total_block_bytes > LINGQU_DURABLE_EXTERNAL_BLOCK_THRESHOLD_BYTES {
-        externalize_lingqu_durable_blocks(path, &mut snapshot)?;
-        serde_json::to_vec_pretty(&snapshot)
-            .map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))?
-    } else {
-        snapshot
-            .to_json_bytes()
-            .map_err(memory_error_from_durable)?
-    };
-    fs::write(path, bytes).map_err(|err| LingquMemoryError::SnapshotCodec(err.to_string()))
+        .sum::<u64>()
+        .saturating_mul(4)
 }
 
 fn lingqu_durable_block_sidecar_path(path: &Path) -> PathBuf {
@@ -14633,6 +14640,102 @@ mod tests {
         ));
         assert_eq!(durable.stats().block_payload_writes, 1);
         assert_eq!(durable.stats().block_payload_reads, 2);
+    }
+
+    #[test]
+    fn durable_store_save_externalized_blocks_as_compact_json() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_lingqu_memory_compact_store_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock before unix epoch")
+                .as_nanos()
+        ));
+        let store_path = root.join("store.json");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create compact store temp dir");
+
+        let mut durable = LingquMemoryDurableStore::new();
+        let payload = vec![0x42; LINGQU_DURABLE_EXTERNAL_BLOCK_THRESHOLD_BYTES as usize + 1];
+        let payload_ref = durable
+            .write_block_payload("block/large/compact", payload.clone())
+            .expect("write large payload");
+
+        save_lingqu_memory_durable_store_to_path(&store_path, &durable)
+            .expect("save compact durable store");
+
+        let json_bytes = fs::read(&store_path).expect("read compact store json");
+        assert!(
+            !json_bytes.contains(&b'\n'),
+            "durable store JSON should be compact"
+        );
+        assert!(
+            json_bytes.len() < 1024 * 1024,
+            "compact durable store JSON should stay small, got {} bytes",
+            json_bytes.len()
+        );
+        assert!(lingqu_durable_block_sidecar_path(&store_path).exists());
+
+        let mut restored = load_lingqu_memory_durable_store_from_path(&store_path)
+            .expect("load compact durable store");
+        let restored_payload = restored
+            .read_block_payload(&payload_ref)
+            .expect("read externalized payload");
+
+        assert_eq!(restored_payload.len(), payload.len());
+        assert_eq!(checksum64(&restored_payload), checksum64(&payload));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn durable_store_externalizes_medium_blocks_when_json_would_bloat() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_lingqu_memory_medium_blocks_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock before unix epoch")
+                .as_nanos()
+        ));
+        let store_path = root.join("store.json");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create medium block temp dir");
+
+        let mut durable = LingquMemoryDurableStore::new();
+        let mut refs = Vec::new();
+        for index in 0..40u8 {
+            let payload = vec![index; 64 * 1024];
+            refs.push((
+                durable
+                    .write_block_payload(format!("block/medium/{index}"), payload.clone())
+                    .expect("write medium payload"),
+                payload,
+            ));
+        }
+
+        save_lingqu_memory_durable_store_to_path(&store_path, &durable)
+            .expect("save medium block durable store");
+
+        let json_bytes = fs::read(&store_path).expect("read medium block store json");
+        assert!(
+            json_bytes.len() < 1024 * 1024,
+            "medium block durable store JSON should externalize payloads, got {} bytes",
+            json_bytes.len()
+        );
+        assert!(lingqu_durable_block_sidecar_path(&store_path).exists());
+
+        let mut restored = load_lingqu_memory_durable_store_from_path(&store_path)
+            .expect("load medium block durable store");
+        for (payload_ref, payload) in refs {
+            let restored_payload = restored
+                .read_block_payload(&payload_ref)
+                .expect("read externalized medium payload");
+            assert_eq!(restored_payload, payload);
+        }
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
