@@ -139,7 +139,7 @@ validate_gva_direct_logs() {
 
   if ! grep -q "\[gva_direct\] result=done mode=${GVA_DIRECT_MODE} role=home" "$NODEA_GUEST_LOG" ||
      ! grep -q "\[gva_direct\] result=done mode=${GVA_DIRECT_MODE} role=peer" "$NODEB_GUEST_LOG"; then
-    echo "[gva-direct] FAIL: demo did not complete on both roles" >&2
+    echo "[gva-direct] FAIL: app did not complete on both roles" >&2
     return 1
   fi
   if [[ "$GVA_DIRECT_MODE" == "invalid-cache" ]]; then
@@ -496,7 +496,7 @@ if ! wait_for_fm_links_ready "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG" "$LINK_WAIT_SEC
 fi
 echo "[gva-direct] FM links ready"
 
-echo "[gva-direct] waiting for demo completion (timeout ${RUN_SECS}s)..."
+echo "[gva-direct] waiting for app completion (timeout ${RUN_SECS}s)..."
 deadline=$((SECONDS + RUN_SECS))
 while (( SECONDS < deadline )); do
   if [[ -f "$NODEA_GUEST_LOG" ]] && grep -qE '\[gva_direct\] result=done' "$NODEA_GUEST_LOG" && \
@@ -510,7 +510,7 @@ while (( SECONDS < deadline )); do
     exit 0
   fi
   if grep -qE '\[gva_direct\] result=fail|\[run_demo\] linqu_gva_direct failed' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
-    echo "[gva-direct] FAIL: demo reported failure" >&2
+    echo "[gva-direct] FAIL: app reported failure" >&2
     exit 1
   fi
   sleep 0.5

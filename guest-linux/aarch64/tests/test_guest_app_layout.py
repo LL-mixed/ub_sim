@@ -133,6 +133,8 @@ def test_gva_direct_uses_canonical_app_source():
     assert 'GVA_DIRECT_BIN="$OUT_DIR/linqu_gva_direct"' in build_script
     assert "linqu_gva_direct_demo" not in build_script
     assert "linqu_gva_direct=1" in run_demo
+    assert "linqu_gva_direct_demo" not in run_demo
+    assert "gva_direct_demo" not in run_demo
     assert (app_dir / "gva_direct.c").exists()
     assert (app_dir / "Makefile").exists()
     assert not (ROOT / "apps" / "gva_direct_demo").exists()

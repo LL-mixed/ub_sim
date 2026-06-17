@@ -547,7 +547,7 @@ run_default_actions() {
     ran_any="1"
   fi
 
-  if has_flag "linqu_gva_direct=1" || has_flag "linqu_gva_direct_demo=1"; then
+  if has_flag "linqu_gva_direct=1"; then
     run_gva_direct || rc=$?
     ran_any="1"
   fi
@@ -609,7 +609,7 @@ run_single_action() {
     gva_manager_segment_cli)
       run_gva_manager_segment_cli
       ;;
-    gva_direct|gva_direct_demo)
+    gva_direct)
       run_gva_direct
       ;;
     obmm_gsva|obmm_gsva_demo)
