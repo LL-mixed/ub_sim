@@ -199,6 +199,11 @@ static bool should_run_obmm_import_stress(void)
     return cmdline_has_option("linqu_obmm_import_stress=1");
 }
 
+static bool should_run_obmm_gsva(void)
+{
+    return cmdline_has_option("linqu_obmm_gsva=1");
+}
+
 static bool should_enter_app_boot_flow(void)
 {
     const char *flag = getenv("UB_RUN_APP_FROM_INIT");
@@ -1424,6 +1429,107 @@ static void run_obmm_import_stress_probe(void)
     }
 }
 
+static void run_obmm_gsva_probe(void)
+{
+    pid_t pid;
+    int status = 0;
+    int waited_ms = 0;
+    bool timed_out = false;
+    pid_t wait_ret;
+    char gsva_mode[64] = "";
+    char gsva_base[64] = "";
+    char gsva_size[64] = "";
+    char gsva_node_count[64] = "";
+    char *argv[12];
+    int argc = 0;
+
+    argv[argc++] = "/bin/linqu_ub_obmm_gsva";
+    if (!cmdline_get_value("obmm_gsva_mode", gsva_mode, sizeof(gsva_mode)) &&
+        !cmdline_get_value("OBMM_GSVA_MODE", gsva_mode, sizeof(gsva_mode))) {
+        gsva_mode[0] = '\0';
+    } else {
+        argv[argc++] = "--mode";
+        argv[argc++] = gsva_mode;
+    }
+
+    if (!cmdline_get_value("obmm_gsva_base", gsva_base, sizeof(gsva_base)) &&
+        !cmdline_get_value("OBMM_GSVA_BASE", gsva_base, sizeof(gsva_base))) {
+        gsva_base[0] = '\0';
+    } else {
+        argv[argc++] = "--base";
+        argv[argc++] = gsva_base;
+    }
+
+    if (!cmdline_get_value("obmm_gsva_size", gsva_size, sizeof(gsva_size)) &&
+        !cmdline_get_value("OBMM_GSVA_SIZE", gsva_size, sizeof(gsva_size))) {
+        gsva_size[0] = '\0';
+    } else {
+        argv[argc++] = "--size";
+        argv[argc++] = gsva_size;
+    }
+
+    if (!cmdline_get_value("obmm_gsva_node_count", gsva_node_count,
+                          sizeof(gsva_node_count)) &&
+        !cmdline_get_value("OBMM_GSVA_NODE_COUNT", gsva_node_count,
+                          sizeof(gsva_node_count))) {
+        gsva_node_count[0] = '\0';
+    } else {
+        argv[argc++] = "--node-count";
+        argv[argc++] = gsva_node_count;
+    }
+
+    argv[argc] = NULL;
+
+    pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "[init] fork for obmm gsva failed: %s\n",
+                strerror(errno));
+        return;
+    }
+    if (pid == 0) {
+        execv("/bin/linqu_ub_obmm_gsva", argv);
+        fprintf(stderr,
+                "[init] exec /bin/linqu_ub_obmm_gsva failed: %s\n",
+                strerror(errno));
+        _exit(127);
+    }
+
+    for (;;) {
+        wait_ret = waitpid(pid, &status, WNOHANG);
+        if (wait_ret == pid) {
+            break;
+        }
+        if (wait_ret < 0) {
+            fprintf(stderr, "[init] waitpid obmm gsva failed: %s\n", strerror(errno));
+            return;
+        }
+        if (waited_ms >= 120000) {
+            fprintf(stderr,
+                    "[init] ub obmm gsva app timeout, killing pid=%d\n",
+                    pid);
+            kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
+            timed_out = true;
+            break;
+        }
+        usleep(100000);
+        waited_ms += 100;
+    }
+
+    if (!timed_out && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        fprintf(stderr, "[init] ub obmm gsva app pass\n");
+        return;
+    }
+
+    if (timed_out) {
+        fprintf(stderr, "[init] ub obmm gsva app fail timeout\n");
+    } else if (WIFEXITED(status)) {
+        fprintf(stderr, "[init] ub obmm gsva app fail exit=%d\n", WEXITSTATUS(status));
+    } else if (WIFSIGNALED(status)) {
+        fprintf(stderr, "[init] ub obmm gsva app fail signal=%d\n", WTERMSIG(status));
+    }
+}
+
 static void dump_dir_entries(const char *path)
 {
     DIR *dir;
@@ -1813,6 +1919,10 @@ int main(int argc, char *argv[])
     if (should_run_obmm_import_stress()) {
         wait_for_ipourma_interface(30);
         run_obmm_import_stress_probe();
+    }
+    if (should_run_obmm_gsva()) {
+        wait_for_ipourma_interface(30);
+        run_obmm_gsva_probe();
     }
     if (should_run_linqu_probe()) {
         run_probe();

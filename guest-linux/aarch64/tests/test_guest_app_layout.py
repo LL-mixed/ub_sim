@@ -159,6 +159,7 @@ def test_obmm_gsva_uses_canonical_app_source():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     run_demo = (ROOT / "initramfs" / "run_demo").read_text()
     dual_runner = (ROOT / "scripts" / "run_ub_dual_node_obmm_gsva.sh").read_text()
+    dual_apps_runner = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
     multi_runner = (ROOT / "scripts" / "run_ub_multi_node_obmm_gsva_matrix.sh").read_text()
     wrapper_runners = "\n".join(
         [
@@ -179,6 +180,8 @@ def test_obmm_gsva_uses_canonical_app_source():
     assert "linqu_obmm_gsva=1" in run_demo
     assert "linqu_obmm_gsva_demo" not in run_demo
     assert "obmm_gsva_demo" not in run_demo
+    assert "linqu_obmm_gsva=1" in dual_apps_runner
+    assert "obmm_gsva" in dual_apps_runner
     assert "rdinit=/bin/run_demo obmm_gsva" in dual_runner
     assert "OBMM_GSVA_MODE" in dual_runner
     assert "GSVA_DEMO_" not in dual_runner
@@ -195,6 +198,18 @@ def test_obmm_gsva_uses_canonical_app_source():
     assert not (ROOT / "apps" / "obmm_gsva_demo").exists()
     assert not (ROOT / "scripts" / "run_ub_dual_node_gsva_demo.sh").exists()
     assert not (ROOT / "scripts" / "run_ub_four_node_gsva_matrix_demo.sh").exists()
+
+
+def test_obmm_gsva_has_independent_dual_node_bootflow():
+    script = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
+    init_source = (ROOT / "init.c").read_text()
+
+    assert "linqu_obmm_gsva=1" in script
+    assert "obmm_gsva_mode=${OBMM_GSVA_MODE}" in script
+    assert "obmm_gsva_node_count=${OBMM_GSVA_NODE_COUNT}" in script
+    assert "should_run_obmm_gsva" in init_source
+    assert "run_obmm_gsva_probe" in init_source
+    assert "append_cmdline_if_missing \"obmm_gsva_mode=${OBMM_GSVA_MODE}\"" in script
 
 
 def test_gva_direct_uses_canonical_app_source():

@@ -23,6 +23,10 @@ fi
 APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 ENTITY_PLAN_FILE="${UB_FM_ENTITY_PLAN_FILE:-$WORKSPACE_ROOT/vendor/ub_topology_two_node_v2_entity.ini}"
 ENTITY_COUNT="${UB_SIM_ENTITY_COUNT:-2}"
+OBMM_GSVA_MODE="${OBMM_GSVA_MODE:-identity}"
+OBMM_GSVA_BASE="${OBMM_GSVA_BASE:-0x700000000000}"
+OBMM_GSVA_SIZE="${OBMM_GSVA_SIZE:-0x400000}"
+OBMM_GSVA_NODE_COUNT="${OBMM_GSVA_NODE_COUNT:-2}"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
 QMP_DIR="${UB_FM_SHARED_DIR:-/tmp/ub-qemu-links-dual}/qmp"
@@ -39,7 +43,7 @@ Usage: run_ub_dual_node_apps.sh [options]
 Options:
   --app NAME          App to validate. Repeat or pass comma-separated names.
                       Names: chat, rpc, tcp_each_server, udma, obmm_pool,
-                      obmm_dataplane_microbench, obmm_import_stress.
+                      obmm_dataplane_microbench, obmm_import_stress, obmm_gsva.
                       Default: chat,rpc,tcp_each_server.
   --run-id ID        Stable run id used for log/report names.
   --run-secs SECS    Per-app pass/fail wait timeout.
@@ -76,6 +80,9 @@ append_app_selection() {
     obmm_import_stress)
       flag="linqu_obmm_import_stress=1"
       ;;
+    obmm_gsva)
+      flag="linqu_obmm_gsva=1"
+      ;;
     "")
       return 0
       ;;
@@ -88,6 +95,15 @@ append_app_selection() {
 
   if [[ " $APPEND_EXTRA " != *" $flag "* ]]; then
     APPEND_EXTRA="${APPEND_EXTRA} ${flag}"
+  fi
+}
+
+append_cmdline_if_missing() {
+  local token="$1"
+
+  if [[ "$APPEND_EXTRA" != *" $token "* ]] && [[ "$APPEND_EXTRA" != "$token "* ]] &&
+    [[ "$APPEND_EXTRA" != *" $token" ]]; then
+    APPEND_EXTRA="${APPEND_EXTRA} ${token}"
   fi
 }
 
@@ -459,6 +475,15 @@ validate_obmm_import_stress_log() {
     "${node_name} obmm import stress verify failure" || return 1
 }
 
+validate_obmm_gsva_log() {
+  local node_name="$1"
+  local log_file="$2"
+  assert_log_has "$log_file" "\\[obmm_gsva\\] result=done" \
+    "${node_name} obmm gsva done" || return 1
+  assert_log_absent "$log_file" "\\[obmm_gsva\\] result=fail" \
+    "${node_name} obmm gsva failure" || return 1
+}
+
 validate_kernel_health_log() {
   local node_name="$1"
   local log_file="$2"
@@ -756,6 +781,7 @@ run_iteration() {
   local obmm_enabled=0
   local obmm_dataplane_microbench_enabled=0
   local obmm_import_stress_enabled=0
+  local obmm_gsva_enabled=0
   local stale_files=()
 
   if [[ "$APPEND_EXTRA" == *"linqu_ub_chat=1"* ]]; then
@@ -778,6 +804,20 @@ run_iteration() {
   fi
   if [[ "$APPEND_EXTRA" == *"linqu_obmm_import_stress=1"* ]]; then
     obmm_import_stress_enabled=1
+  fi
+  if [[ "$APPEND_EXTRA" == *"linqu_obmm_gsva=1"* ]]; then
+    obmm_gsva_enabled=1
+  fi
+
+  if [[ "$obmm_gsva_enabled" -eq 1 ]]; then
+    append_cmdline_if_missing "obmm_gsva_mode=${OBMM_GSVA_MODE}"
+    append_cmdline_if_missing "obmm_gsva_base=${OBMM_GSVA_BASE}"
+    append_cmdline_if_missing "obmm_gsva_size=${OBMM_GSVA_SIZE}"
+    append_cmdline_if_missing "obmm_gsva_node_count=${OBMM_GSVA_NODE_COUNT}"
+    append_cmdline_if_missing "OBMM_GSVA_MODE=${OBMM_GSVA_MODE}"
+    append_cmdline_if_missing "OBMM_GSVA_BASE=${OBMM_GSVA_BASE}"
+    append_cmdline_if_missing "OBMM_GSVA_SIZE=${OBMM_GSVA_SIZE}"
+    append_cmdline_if_missing "OBMM_GSVA_NODE_COUNT=${OBMM_GSVA_NODE_COUNT}"
   fi
 
   rm -f /tmp/ub-qemu/ub-bus-instance-*.lock
@@ -1038,6 +1078,36 @@ run_iteration() {
     esac
   fi
 
+  if [[ "$obmm_gsva_enabled" -eq 1 ]]; then
+    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub obmm gsva app pass" \
+      "\\[init\\] ub obmm gsva app fail" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeA obmm gsva app reported failure" >&2
+        return 20
+        ;;
+      *)
+        echo "iteration ${iter}: nodeA obmm gsva app did not finish within ${RUN_SECS}s" >&2
+        return 20
+        ;;
+    esac
+
+    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub obmm gsva app pass" \
+      "\\[init\\] ub obmm gsva app fail" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeB obmm gsva app reported failure" >&2
+        return 20
+        ;;
+      *)
+        echo "iteration ${iter}: nodeB obmm gsva app did not finish within ${RUN_SECS}s" >&2
+        return 20
+        ;;
+    esac
+  fi
+
   sleep 1
   cleanup_pid "$nodea_pid_file"
   cleanup_pid "$nodeb_pid_file"
@@ -1078,6 +1148,10 @@ run_iteration() {
   if [[ "$APPEND_EXTRA" == *"linqu_obmm_import_stress=1"* ]]; then
     validate_obmm_import_stress_log "nodeA" "$nodea_guest_log" || return 1
     validate_obmm_import_stress_log "nodeB" "$nodeb_guest_log" || return 1
+  fi
+  if [[ "$APPEND_EXTRA" == *"linqu_obmm_gsva=1"* ]]; then
+    validate_obmm_gsva_log "nodeA" "$nodea_guest_log" || return 1
+    validate_obmm_gsva_log "nodeB" "$nodeb_guest_log" || return 1
   fi
   validate_kernel_health_log "nodeA" "$nodea_guest_log" || return 1
   validate_kernel_health_log "nodeB" "$nodeb_guest_log" || return 1
