@@ -56,6 +56,8 @@ SSD_GSVA_TEST_BIN="$OUT_DIR/ssd_gsva_test"
 W4_GUEST_SRC="$ROOT_DIR/apps/w4_guest/w4_guest.c"
 W4_DB_SERVICE_SRC="$ROOT_DIR/components/w5_mem_service/w4_kvcache_db_service.c"
 W4_GUEST_BIN="$OUT_DIR/linqu_w4_guest"
+RUN_APP_SRC="$ROOT_DIR/initramfs/run_app"
+RUN_APP_BIN="$INITRAMFS_DIR/bin/run_app"
 RUN_DEMO_SRC="$ROOT_DIR/initramfs/run_demo"
 RUN_DEMO_BIN="$INITRAMFS_DIR/bin/run_demo"
 INIT_SCRIPT_SRC="$ROOT_DIR/initramfs/init"
@@ -157,6 +159,7 @@ current_initramfs_signature() {
   write_signature_line "ssd_gsva_test_src" "$SSD_GSVA_TEST_SRC"
   write_signature_line "w4_guest_src" "$W4_GUEST_SRC"
   write_signature_line "w4_db_service_src" "$W4_DB_SERVICE_SRC"
+  write_signature_line "run_app_src" "$RUN_APP_SRC"
   write_signature_line "run_demo_src" "$RUN_DEMO_SRC"
   write_signature_line "init_script_src" "$INIT_SCRIPT_SRC"
   write_signature_line "rdinit_interactive_src" "$RDINIT_INTERACTIVE_SRC"
@@ -470,6 +473,13 @@ link_busybox_applet ip
 link_busybox_applet arp
 link_busybox_applet ping
 link_busybox_applet ping6
+
+if [[ -f "$RUN_APP_SRC" ]]; then
+  cp "$RUN_APP_SRC" "$RUN_APP_BIN"
+  chmod +x "$RUN_APP_BIN"
+else
+  echo "[build_initramfs] warn: missing run_app script template: $RUN_APP_SRC" >&2
+fi
 
 if [[ -f "$RUN_DEMO_SRC" ]]; then
   cp "$RUN_DEMO_SRC" "$RUN_DEMO_BIN"

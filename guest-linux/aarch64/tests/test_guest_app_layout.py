@@ -16,7 +16,7 @@ def test_ub_chat_is_packaged_from_app_directory():
 def test_ub_rpc_uses_canonical_app_source():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     init_source = (ROOT / "init.c").read_text()
-    run_demo = (ROOT / "initramfs" / "run_demo").read_text()
+    run_demo = (ROOT / "initramfs" / "run_app").read_text()
     dual_runner = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
     app_dir = ROOT / "apps" / "ub_rpc"
 
@@ -35,7 +35,7 @@ def test_ub_rpc_uses_canonical_app_source():
 def test_ub_udma_uses_canonical_app_source():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     init_source = (ROOT / "init.c").read_text()
-    run_demo = (ROOT / "initramfs" / "run_demo").read_text()
+    run_demo = (ROOT / "initramfs" / "run_app").read_text()
     dual_runner = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
     app_dir = ROOT / "apps" / "ub_udma"
 
@@ -56,7 +56,7 @@ def test_ub_udma_uses_canonical_app_source():
 def test_ub_tcp_each_server_uses_canonical_app_source():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     init_source = (ROOT / "init.c").read_text()
-    run_demo = (ROOT / "initramfs" / "run_demo").read_text()
+    run_demo = (ROOT / "initramfs" / "run_app").read_text()
     dual_runner = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
     app_dir = ROOT / "apps" / "ub_tcp_each_server"
 
@@ -103,7 +103,7 @@ def test_obmm_dataplane_microbench_has_integration_entrypoints():
 def test_obmm_dataplane_microbench_runner_uses_app_flag_entrypoint():
     runner = (ROOT / "scripts" / "run_ub_dual_node_obmm_dataplane_microbench.sh").read_text()
 
-    assert "rdinit=/bin/run_demo linqu_obmm_dataplane_microbench=1" in runner
+    assert "rdinit=/bin/run_app linqu_obmm_dataplane_microbench=1" in runner
     assert "rdinit=/bin/run_demo obmm_dataplane_microbench " not in runner
 
 
@@ -210,7 +210,7 @@ def test_w5_mem_service_is_link_time_component():
 
 def test_obmm_gsva_uses_canonical_app_source():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
-    run_demo = (ROOT / "initramfs" / "run_demo").read_text()
+    run_demo = (ROOT / "initramfs" / "run_app").read_text()
     dual_runner = (ROOT / "scripts" / "run_ub_dual_node_obmm_gsva.sh").read_text()
     dual_apps_runner = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
     multi_runner = (ROOT / "scripts" / "run_ub_multi_node_obmm_gsva_matrix.sh").read_text()
@@ -312,7 +312,7 @@ def test_gsva_query_runner_uses_app_flag_entrypoint():
 
 
 def test_gsva_query_uses_canonical_app_source():
-    run_demo = (ROOT / "initramfs" / "run_demo").read_text()
+    run_demo = (ROOT / "initramfs" / "run_app").read_text()
 
     assert "linqu_gsva_query=1" in run_demo
     assert "run_gsva_query" in run_demo
@@ -356,7 +356,7 @@ def test_npu_ssd_gsva_runner_uses_app_flag_entrypoint():
 
 def test_gva_direct_uses_canonical_app_source():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
-    run_demo = (ROOT / "initramfs" / "run_demo").read_text()
+    run_demo = (ROOT / "initramfs" / "run_app").read_text()
     app_dir = ROOT / "apps" / "gva_direct"
 
     assert 'GVA_DIRECT_SRC="$ROOT_DIR/apps/gva_direct/gva_direct.c"' in build_script
@@ -378,7 +378,7 @@ def test_gva_direct_runner_uses_app_flag_entrypoint():
 
 
 def test_gva_manager_bootstrap_runner_uses_unified_app_entrypoint():
-    run_demo = (ROOT / "initramfs" / "run_demo").read_text()
+    run_demo = (ROOT / "initramfs" / "run_app").read_text()
     dual_runner = (ROOT / "scripts" / "run_ub_dual_node_gsva_manager_bootstrap.sh").read_text()
     four_runner = (ROOT / "scripts" / "run_ub_four_node_gsva_manager_bootstrap.sh").read_text()
 
@@ -397,7 +397,7 @@ def test_gva_manager_bootstrap_runner_uses_unified_app_entrypoint():
 
 
 def test_gva_manager_segment_cli_runner_uses_unified_app_entrypoint():
-    run_demo = (ROOT / "initramfs" / "run_demo").read_text()
+    run_demo = (ROOT / "initramfs" / "run_app").read_text()
     segment_cli_runner = (ROOT / "scripts" / "run_ub_two_node_gva_manager_segment_cli_test.sh").read_text()
 
     assert "linqu_gva_manager=1" in segment_cli_runner
@@ -411,7 +411,7 @@ def test_gva_manager_segment_cli_runner_uses_unified_app_entrypoint():
 
 def test_obmm_queue_uses_canonical_app_source():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
-    run_demo = (ROOT / "initramfs" / "run_demo").read_text()
+    run_demo = (ROOT / "initramfs" / "run_app").read_text()
     dual_runner = (ROOT / "scripts" / "run_ub_dual_node_obmm_queue.sh").read_text()
     four_runner = (ROOT / "scripts" / "run_ub_four_node_obmm_queue.sh").read_text()
     eight_runner = (ROOT / "scripts" / "run_ub_eight_node_obmm_queue.sh").read_text()
@@ -451,7 +451,7 @@ def test_obmm_queue_uses_canonical_app_source():
 def test_ub_obmm_pool_uses_canonical_app_source():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     init_source = (ROOT / "init.c").read_text()
-    run_demo = (ROOT / "initramfs" / "run_demo").read_text()
+    run_demo = (ROOT / "initramfs" / "run_app").read_text()
     dual_runner = (ROOT / "scripts" / "run_ub_dual_node_obmm_pool.sh").read_text()
     four_runner = (ROOT / "scripts" / "run_ub_four_node_obmm_pool.sh").read_text()
     eight_runner = (ROOT / "scripts" / "run_ub_eight_node_obmm_pool.sh").read_text()
@@ -493,6 +493,8 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     script = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
     init_source = (ROOT / "init.c").read_text()
     run_demo = (ROOT / "initramfs" / "run_demo").read_text()
+    run_app = (ROOT / "initramfs" / "run_app").read_text()
+    build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     w4_runner = (ROOT / "scripts" / "run_ub_dual_node_w4_guest.sh").read_text()
     w4_eight_runner = (ROOT / "scripts" / "run_ub_eight_node_w4_guest.sh").read_text()
 
@@ -503,16 +505,25 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     assert "ub_nodeA.apps." in script
     assert "--app NAME" in script
     assert "APP_SELECTION" in script
+    assert 'RDINIT="${RDINIT:-/bin/run_app}"' in script
     assert 'flag="linqu_ub_tcp_each_server=1"' in script
+    assert 'RUN_APP_SRC="$ROOT_DIR/initramfs/run_app"' in build_script
+    assert 'RUN_APP_BIN="$INITRAMFS_DIR/bin/run_app"' in build_script
+    assert "write_signature_line \"run_app_src\"" in build_script
+    assert "run_app|run_demo)" in (ROOT / "initramfs" / "init").read_text()
+    assert "exec /bin/run_app" in run_demo
+    assert "[run_app]" in run_app
     assert "UB_RUN_APP_FROM_INIT" in init_source
-    assert "UB_RUN_APP_FROM_INIT" in run_demo
+    assert "UB_RUN_APP_FROM_INIT" in run_app
     assert "UB_RUN_APP_FROM_INIT" in w4_eight_runner
+    assert "switching to /bin/run_app app boot flow" in init_source
+    assert "execv(\"/bin/run_app\"" in init_source
     assert "UB_RUN_DEMO_FROM_INIT" not in init_source
     assert "UB_RUN_DEMO_FROM_INIT" not in run_demo
     assert "UB_RUN_DEMO_FROM_INIT" not in w4_eight_runner
     assert "should_enter_app_boot_flow" in init_source
     assert "should_enter_demo_boot_flow" not in init_source
-    assert "no demo flags matched" not in run_demo
+    assert "no demo flags matched" not in run_app
     assert "run_ub_dual_node_apps.sh" in w4_runner
     assert "linqu_w4_demo" not in w4_runner
     assert "run_ub_dual_node_demo.sh" not in w4_runner

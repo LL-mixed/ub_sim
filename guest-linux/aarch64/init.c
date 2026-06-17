@@ -2794,18 +2794,18 @@ int main(int argc, char *argv[])
     }
     dump_ub_state();
 
-    if (should_enter_app_boot_flow() && access("/bin/run_demo", X_OK) == 0) {
+    if (should_enter_app_boot_flow() && access("/bin/run_app", X_OK) == 0) {
         int i;
         char **new_argv = malloc(sizeof(char *) * (argc + 2));
-        fprintf(stderr, "[init] switching to /bin/run_demo app boot flow\n");
-        new_argv[0] = "/bin/run_demo";
+        fprintf(stderr, "[init] switching to /bin/run_app app boot flow\n");
+        new_argv[0] = "/bin/run_app";
         new_argv[1] = "--resume";
         for (i = 1; i < argc; i++) {
             new_argv[i + 1] = argv[i];
         }
         new_argv[argc + 1] = NULL;
-        execv("/bin/run_demo", new_argv);
-        fprintf(stderr, "[init] exec /bin/run_demo failed: %s\n", strerror(errno));
+        execv("/bin/run_app", new_argv);
+        fprintf(stderr, "[init] exec /bin/run_app failed: %s\n", strerror(errno));
         free(new_argv);
     }
 

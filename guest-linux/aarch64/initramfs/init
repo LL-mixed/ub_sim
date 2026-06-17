@@ -49,11 +49,14 @@ action="$(get_cmdline_value linqu_init_action || true)"
 echo "[init] linqu_init_action=${action:-shell}"
 
 case "${action:-shell}" in
-  run_demo)
+  run_app|run_demo)
+    if [ -x /bin/run_app ]; then
+      exec /bin/run_app "$@"
+    fi
     if [ -x /bin/run_demo ]; then
       exec /bin/run_demo "$@"
     fi
-    echo "[init] /bin/run_demo missing"
+    echo "[init] /bin/run_app missing"
     enter_shell
     ;;
   probe)

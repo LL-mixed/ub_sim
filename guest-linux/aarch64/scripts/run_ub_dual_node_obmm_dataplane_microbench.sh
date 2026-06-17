@@ -111,7 +111,7 @@ start_node() {
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
       -initrd "$INITRAMFS_IMAGE" \
-      -append "console=ttyAMA0 rdinit=/bin/run_demo linqu_obmm_dataplane_microbench=1 linqu_urma_dp_role=${role} ${DP_APPEND} ${APPEND_EXTRA}" \
+      -append "console=ttyAMA0 rdinit=/bin/run_app linqu_obmm_dataplane_microbench=1 linqu_urma_dp_role=${role} ${DP_APPEND} ${APPEND_EXTRA}" \
       >"$qemu_log" 2>&1 &
   echo $! > "$pid_file"
 }
@@ -297,7 +297,7 @@ while (( SECONDS < deadline )); do
     grep '\[obmm_dataplane_microbench\]' "$NODEB_GUEST_LOG" | tail -6
     exit 0
   fi
-  if grep -qE '\[obmm_dataplane_microbench\] bench failed|\[obmm_dataplane_microbench\] .*import failed|\[obmm_dataplane_microbench\] .*export failed|\[obmm_dataplane_microbench\] MAP_GSVA failed|\[run_demo\] action failed|Kernel panic - not syncing' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
+  if grep -qE '\[obmm_dataplane_microbench\] bench failed|\[obmm_dataplane_microbench\] .*import failed|\[obmm_dataplane_microbench\] .*export failed|\[obmm_dataplane_microbench\] MAP_GSVA failed|\[run_(app|demo)\] action failed|Kernel panic - not syncing' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
     echo "[dp_microbench] FAIL: guest reported benchmark/import/export/action failure" >&2
     exit 1
   fi
