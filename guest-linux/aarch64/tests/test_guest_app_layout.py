@@ -151,9 +151,12 @@ def test_obmm_coh_test_has_independent_dual_node_bootflow():
 
 def test_obmm_coh_test_runner_uses_app_flag_entrypoint():
     runner = (ROOT / "scripts" / "run_ub_dual_node_obmm_coh_test.sh").read_text()
+    four_runner = (ROOT / "scripts" / "run_ub_four_node_obmm_coh_test.sh").read_text()
 
     assert "rdinit=/bin/run_app linqu_obmm_coh_test=1" in runner
     assert "rdinit=/bin/run_demo obmm_coh_test " not in runner
+    assert "rdinit=/bin/run_app linqu_obmm_coh_test=1" in four_runner
+    assert "rdinit=/bin/run_demo obmm_coh_test " not in four_runner
 
 
 def test_npu_gsva_test_has_independent_app_build():
