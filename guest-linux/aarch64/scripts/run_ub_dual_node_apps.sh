@@ -54,7 +54,8 @@ Options:
   --app NAME          App to validate. Repeat or pass comma-separated names.
                       Names: chat, rpc, tcp_each_server, udma, obmm_pool,
                       obmm_dataplane_microbench, obmm_import_stress, obmm_gsva,
-                      obmm_coh_test, gva_direct, gsva_query, npu_test.
+                      obmm_coh_test, gva_direct, gsva_query, npu_test, ssd_test,
+                      ssd_gsva_test.
                       Default: chat,rpc,tcp_each_server.
   --run-id ID        Stable run id used for log/report names.
   --run-secs SECS    Per-app pass/fail wait timeout.
@@ -105,6 +106,12 @@ append_app_selection() {
       ;;
     npu_test)
       flag="linqu_npu_test=1"
+      ;;
+    ssd_test)
+      flag="linqu_ssd_test=1"
+      ;;
+    ssd_gsva_test)
+      flag="linqu_ssd_gsva_test=1"
       ;;
     "")
       return 0
@@ -552,6 +559,28 @@ validate_npu_test_log() {
     "${node_name} npu test verdict" || return 1
 }
 
+validate_ssd_test_log() {
+  local node_name="$1"
+  local log_file="$2"
+  assert_log_absent "$log_file" "\\[ssd_test\\] verdict=FAIL" \
+    "${node_name} ssd test failure" || return 1
+  assert_log_has "$log_file" "\\[ssd_test\\] SSD test suite" \
+    "${node_name} ssd test suite started" || return 1
+  assert_log_has "$log_file" "\\[ssd_test\\] verdict=PASS" \
+    "${node_name} ssd test verdict" || return 1
+}
+
+validate_ssd_gsva_test_log() {
+  local node_name="$1"
+  local log_file="$2"
+  assert_log_absent "$log_file" "\\[ssd_gsva_test\\]verdict=FAIL" \
+    "${node_name} ssd gsva test failure" || return 1
+  assert_log_has "$log_file" "\\[ssd_gsva_test\\]SSD GSVA data test suite" \
+    "${node_name} ssd gsva test suite started" || return 1
+  assert_log_has "$log_file" "\\[ssd_gsva_test\\]verdict=PASS" \
+    "${node_name} ssd gsva test verdict" || return 1
+}
+
 validate_kernel_health_log() {
   local node_name="$1"
   local log_file="$2"
@@ -858,8 +887,14 @@ run_iteration() {
   local gva_direct_enabled=0
   local gsva_query_enabled=0
   local npu_test_enabled=0
+  local ssd_test_enabled=0
+  local ssd_gsva_test_enabled=0
   local nodea_obmm_coh_test_append=""
   local nodeb_obmm_coh_test_append=""
+  local nodea_ssd_gsva_test_append=""
+  local nodeb_ssd_gsva_test_append=""
+  local nodea_app_append=""
+  local nodeb_app_append=""
   local stale_files=()
 
   if [[ "$APPEND_EXTRA" == *"linqu_ub_chat=1"* ]]; then
@@ -898,6 +933,12 @@ run_iteration() {
   if [[ "$APPEND_EXTRA" == *"linqu_npu_test=1"* ]]; then
     npu_test_enabled=1
   fi
+  if [[ "$APPEND_EXTRA" == *"linqu_ssd_test=1"* ]]; then
+    ssd_test_enabled=1
+  fi
+  if [[ "$APPEND_EXTRA" == *"linqu_ssd_gsva_test=1"* ]]; then
+    ssd_gsva_test_enabled=1
+  fi
 
   if [[ "$obmm_gsva_enabled" -eq 1 ]]; then
     append_cmdline_if_missing "obmm_gsva_mode=${OBMM_GSVA_MODE}"
@@ -926,6 +967,16 @@ run_iteration() {
     append_cmdline_if_missing "gva_direct_local_va=${GVA_DIRECT_LOCAL_VA}"
     append_cmdline_if_missing "gva_direct_home_va=${GVA_DIRECT_HOME_VA}"
   fi
+  if [[ "$ssd_gsva_test_enabled" -eq 1 ]]; then
+    nodea_ssd_gsva_test_append="linqu_node_idx=0 linqu_node_count=2"
+    nodeb_ssd_gsva_test_append="linqu_node_idx=1 linqu_node_count=2"
+  fi
+  nodea_app_append="${nodea_obmm_coh_test_append} ${nodea_ssd_gsva_test_append}"
+  nodea_app_append="${nodea_app_append#"${nodea_app_append%%[![:space:]]*}"}"
+  nodea_app_append="${nodea_app_append%"${nodea_app_append##*[![:space:]]}"}"
+  nodeb_app_append="${nodeb_obmm_coh_test_append} ${nodeb_ssd_gsva_test_append}"
+  nodeb_app_append="${nodeb_app_append#"${nodeb_app_append%%[![:space:]]*}"}"
+  nodeb_app_append="${nodeb_app_append%"${nodeb_app_append##*[![:space:]]}"}"
 
   rm -f /tmp/ub-qemu/ub-bus-instance-*.lock
   cleanup_pid "$nodea_pid_file"
@@ -949,11 +1000,11 @@ run_iteration() {
 
   echo "Starting nodeA (paused)..."
   start_node "nodeA" "nodeA" "$nodea_guest_log" "$nodea_qemu_log" \
-    "$nodea_pid_file" "$nodea_qmp" "$nodea_obmm_coh_test_append"
+    "$nodea_pid_file" "$nodea_qmp" "$nodea_app_append"
   sleep 0.5
   echo "Starting nodeB (paused)..."
   start_node "nodeB" "nodeB" "$nodeb_guest_log" "$nodeb_qemu_log" \
-    "$nodeb_pid_file" "$nodeb_qmp" "$nodeb_obmm_coh_test_append"
+    "$nodeb_pid_file" "$nodeb_qmp" "$nodeb_app_append"
 
   if ! check_link_early_or_fail "$nodea_qemu_log" "$nodeb_qemu_log" 10; then
     echo "iteration ${iter}: early link failure detected" >&2
@@ -1339,6 +1390,66 @@ run_iteration() {
     esac
   fi
 
+  if [[ "$ssd_test_enabled" -eq 1 ]]; then
+    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[ssd_test\\] verdict=PASS" \
+      "\\[ssd_test\\] verdict=FAIL" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeA ssd test app reported failure" >&2
+        return 25
+        ;;
+      *)
+        echo "iteration ${iter}: nodeA ssd test app did not finish within ${RUN_SECS}s" >&2
+        return 25
+        ;;
+    esac
+
+    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[ssd_test\\] verdict=PASS" \
+      "\\[ssd_test\\] verdict=FAIL" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeB ssd test app reported failure" >&2
+        return 25
+        ;;
+      *)
+        echo "iteration ${iter}: nodeB ssd test app did not finish within ${RUN_SECS}s" >&2
+        return 25
+        ;;
+    esac
+  fi
+
+  if [[ "$ssd_gsva_test_enabled" -eq 1 ]]; then
+    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[ssd_gsva_test\\]verdict=PASS" \
+      "\\[ssd_gsva_test\\]verdict=FAIL" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeA ssd gsva test app reported failure" >&2
+        return 26
+        ;;
+      *)
+        echo "iteration ${iter}: nodeA ssd gsva test app did not finish within ${RUN_SECS}s" >&2
+        return 26
+        ;;
+    esac
+
+    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[ssd_gsva_test\\]verdict=PASS" \
+      "\\[ssd_gsva_test\\]verdict=FAIL" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeB ssd gsva test app reported failure" >&2
+        return 26
+        ;;
+      *)
+        echo "iteration ${iter}: nodeB ssd gsva test app did not finish within ${RUN_SECS}s" >&2
+        return 26
+        ;;
+    esac
+  fi
+
   sleep 1
   cleanup_pid "$nodea_pid_file"
   cleanup_pid "$nodeb_pid_file"
@@ -1399,6 +1510,14 @@ run_iteration() {
   if [[ "$APPEND_EXTRA" == *"linqu_npu_test=1"* ]]; then
     validate_npu_test_log "nodeA" "$nodea_guest_log" || return 1
     validate_npu_test_log "nodeB" "$nodeb_guest_log" || return 1
+  fi
+  if [[ "$APPEND_EXTRA" == *"linqu_ssd_test=1"* ]]; then
+    validate_ssd_test_log "nodeA" "$nodea_guest_log" || return 1
+    validate_ssd_test_log "nodeB" "$nodeb_guest_log" || return 1
+  fi
+  if [[ "$APPEND_EXTRA" == *"linqu_ssd_gsva_test=1"* ]]; then
+    validate_ssd_gsva_test_log "nodeA" "$nodea_guest_log" || return 1
+    validate_ssd_gsva_test_log "nodeB" "$nodeb_guest_log" || return 1
   fi
   validate_kernel_health_log "nodeA" "$nodea_guest_log" || return 1
   validate_kernel_health_log "nodeB" "$nodeb_guest_log" || return 1

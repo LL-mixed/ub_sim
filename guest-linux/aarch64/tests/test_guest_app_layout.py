@@ -608,6 +608,15 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     assert "APP_SELECTION" in script
     assert 'RDINIT="${RDINIT:-/bin/run_app}"' in script
     assert 'flag="linqu_ub_tcp_each_server=1"' in script
+    assert 'flag="linqu_ssd_test=1"' in script
+    assert 'flag="linqu_ssd_gsva_test=1"' in script
+    assert "validate_ssd_test_log" in script
+    assert "validate_ssd_gsva_test_log" in script
+    assert "\\\\[ssd_test\\\\] verdict=PASS" in script
+    assert "\\\\[ssd_gsva_test\\\\]verdict=PASS" in script
+    assert "\\\\[ssd_gsva_test\\\\]SSD GSVA data test suite" in script
+    assert "linqu_node_idx=0 linqu_node_count=2" in script
+    assert "linqu_node_idx=1 linqu_node_count=2" in script
     assert 'RUN_APP_SRC="$ROOT_DIR/initramfs/run_app"' in build_script
     assert 'RUN_APP_BIN="$INITRAMFS_DIR/bin/run_app"' in build_script
     assert "write_signature_line \"run_app_src\"" in build_script
