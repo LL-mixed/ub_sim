@@ -73,7 +73,7 @@ git submodule update --init vendor/qemu_8.2.0_ub guest-linux/kernel_ub vendor/si
 
 自动化运行约定：
 
-- autotest、demo validation、matrix harness、CI 回归都必须使用 headless 启动/控制路径。
+- autotest、app validation、matrix harness、CI 回归都必须使用 headless 启动/控制路径。
 - `tmux` launcher 只用于人工交互、串口观察和临时 debug，不作为 harness control plane。
 - 如果某个验证脚本仍依赖 tmux，它应先迁移到 headless，再纳入自动化回归。
 
@@ -401,7 +401,7 @@ cd guest-linux/aarch64
 
 ## 7. 八节点
 
-当前仓库里八节点主路径是 headless，不是 tmux 交互优先。八节点 autotest、demo validation
+当前仓库里八节点主路径是 headless，不是 tmux 交互优先。八节点 autotest、app validation
 和 matrix harness 都必须保持 headless。
 
 ### 7.1 启动八节点 headless 环境

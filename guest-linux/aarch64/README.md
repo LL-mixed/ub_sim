@@ -168,10 +168,10 @@ Current freshness rules:
   - refreshes stale `out/Image` automatically instead of silently reusing it
   - on Linux, uses native cross build with `aarch64-*-gnu-gcc` when local artifacts are stale
   - builds the guest kernel for `arm64`
-  - uses `openeuler_defconfig` as the default guest kernel defconfig, then enables the UB demo/harness config options
+  - uses `openeuler_defconfig` as the default guest kernel defconfig, then enables the UB app/harness config options
 - `scripts/build_initramfs.sh`
   - records an initramfs input signature
-  - rebuilds only when guest demo/script/header/module/busybox inputs changed
+  - rebuilds only when guest app/script/header/module/busybox inputs changed
 
 This means:
 
@@ -233,7 +233,7 @@ guest-linux/aarch64/scripts/run_ub_dual_node_ubcore_urma_e2e.sh
 
 ## Automation Mode
 
-Autotest, demo validation, matrix harness, and CI-style regression runs must use
+Autotest, app validation, matrix harness, and CI-style regression runs must use
 the headless control path. Do not use tmux as the automation control plane.
 
 Use tmux launchers only for manual interaction and debugging, where a human
@@ -242,7 +242,7 @@ needs QEMU monitor windows or live guest serial consoles.
 ## Dual-Node Interactive tmux Session
 
 Use the tmux wrapper when you want both nodes booted into an interactive guest
-shell instead of auto-running the demo harness.
+shell instead of auto-running the app harness.
 
 Example:
 
@@ -349,7 +349,7 @@ Cleanup:
 ## Manual Demo Order In tmux
 
 After `guest-linux/aarch64/scripts/launch_ub_dual_node_tmux.sh` boots both guests
-into interactive shells, `run_demo` bootstrap has already completed. Use these windows:
+into interactive shells, `run_app` bootstrap has already completed. Use these windows:
 
 - `3:nodeA-guest`
 - `4:nodeB-guest`
@@ -376,7 +376,7 @@ Expected minimum signs:
 
 IPv4 bootstrap:
 
-- `linqu_init` now configures `ipourma0` during bootstrap instead of leaving IPv4 setup to each demo.
+- `linqu_init` now configures `ipourma0` during bootstrap instead of leaving IPv4 setup to each app.
 - Preferred cmdline knobs are `linqu_ipourma_ipv4=<local>` and `linqu_ipourma_peer_ipv4=<peer>`.
 - If those are omitted, `linqu_urma_dp_role=nodeA|nodeB` still falls back to `10.0.0.1/10.0.0.2`.
 
