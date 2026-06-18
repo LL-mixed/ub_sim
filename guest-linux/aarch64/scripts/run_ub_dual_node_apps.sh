@@ -521,10 +521,8 @@ validate_obmm_coh_test_log() {
 validate_gva_direct_log() {
   local node_name="$1"
   local log_file="$2"
-  assert_log_has "$log_file" "\\[init\\] ub gva direct app pass" \
-    "${node_name} gva direct app pass" || return 1
-  assert_log_absent "$log_file" "\\[init\\] ub gva direct app fail" \
-    "${node_name} gva direct app fail" || return 1
+  assert_log_absent "$log_file" "\\[gva_direct\\] result=fail" \
+    "${node_name} gva_direct failure" || return 1
   if [[ "$node_name" == "nodeA" ]]; then
     assert_log_has "$log_file" "\\[gva_direct\\] result=done mode=${GVA_DIRECT_MODE} role=home" \
       "${node_name} gva_direct home result" || return 1
@@ -1256,8 +1254,8 @@ run_iteration() {
   fi
 
   if [[ "$gva_direct_enabled" -eq 1 ]]; then
-    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub gva direct app pass" \
-      "\\[init\\] ub gva direct app fail" "$RUN_SECS"
+    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[gva_direct\\] result=done" \
+      "\\[gva_direct\\] result=fail" "$RUN_SECS"
     case "$?" in
       0) ;;
       1)
@@ -1270,8 +1268,8 @@ run_iteration() {
         ;;
     esac
 
-    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub gva direct app pass" \
-      "\\[init\\] ub gva direct app fail" "$RUN_SECS"
+    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[gva_direct\\] result=done" \
+      "\\[gva_direct\\] result=fail" "$RUN_SECS"
     case "$?" in
       0) ;;
       1)

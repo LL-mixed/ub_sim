@@ -282,6 +282,8 @@ def test_gva_direct_has_independent_dual_node_bootflow():
     assert "gva_direct_size=${GVA_DIRECT_SIZE}" in script
     assert "gva_direct_local_va=${GVA_DIRECT_LOCAL_VA}" in script
     assert "gva_direct_home_va=${GVA_DIRECT_HOME_VA}" in script
+    assert "\\\\[gva_direct\\\\] result=done" in script
+    assert "\\[init\\] ub gva direct app pass" not in script
     assert "should_run_gva_direct" in init_source
     assert "run_gva_direct_probe" in init_source
     assert "gva_direct_enabled" in script
