@@ -52,7 +52,7 @@ APP_VALIDATION_COMMANDS = {
     ],
     "gva_manager": [
         "scripts/run_ub_dual_node_gsva_manager_bootstrap.sh",
-        "scripts/run_ub_four_node_gsva_manager_bootstrap.sh",
+        "scripts/run_ub_eight_node_gsva_manager_bootstrap.sh",
     ],
     "gsva_query": [
         "scripts/run_ub_gsva_query_caps_test.sh",
@@ -622,6 +622,7 @@ def test_gva_manager_bootstrap_runner_uses_unified_app_entrypoint():
     run_app = (ROOT / "initramfs" / "run_app").read_text()
     dual_runner = (ROOT / "scripts" / "run_ub_dual_node_gsva_manager_bootstrap.sh").read_text()
     four_runner = (ROOT / "scripts" / "run_ub_four_node_gsva_manager_bootstrap.sh").read_text()
+    eight_runner = (ROOT / "scripts" / "run_ub_eight_node_gsva_manager_bootstrap.sh").read_text()
 
     assert "linqu_gva_manager=1" in dual_runner
     assert "gva_manager_mode=bootstrap" in dual_runner
@@ -639,8 +640,16 @@ def test_gva_manager_bootstrap_runner_uses_unified_app_entrypoint():
     assert "rdinit=/bin/run_app linqu_gva_manager=1" in four_runner
     assert "rdinit=/bin/run_demo gva_manager " not in four_runner
     assert "SHARED_DIR=\"${UB_FM_SHARED_DIR:-$ROOT_DIR/out/gsva_manager${GVA_MANAGER_NODE_COUNT}_links_${RANDOM}}\"" in four_runner
+    assert "nodeA nodeB nodeC nodeD nodeE nodeF nodeG nodeH" in four_runner
+    assert "gva_manager_node_count=${GVA_MANAGER_NODE_COUNT}" in four_runner
+    assert "bootstrap hello -> ok peers=$((GVA_MANAGER_NODE_COUNT - 1))" in four_runner
     assert "-qmp unix:" not in four_runner
     assert "gva_manager_bootstrap" not in four_runner
+    assert 'GVA_MANAGER_NODE_COUNT="${GVA_MANAGER_NODE_COUNT:-8}"' in eight_runner
+    assert "ub_topology_eight_node_full_mesh.ini" in eight_runner
+    assert 'UB_SIM_PORT_NUM="${UB_SIM_PORT_NUM:-7}"' in eight_runner
+    assert 'exec "$SCRIPT_DIR/run_ub_four_node_gsva_manager_bootstrap.sh" "$@"' in eight_runner
+    assert "rdinit=/bin/run_demo gva_manager " not in eight_runner
 
 
 def test_gva_manager_segment_cli_runner_uses_unified_app_entrypoint():
