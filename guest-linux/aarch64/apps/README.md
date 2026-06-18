@@ -21,6 +21,9 @@ Conventions:
 Each app must have a reusable CLI validation path. Use stable script entrypoints
 instead of env-prefixed one-off shell commands.
 
+Use `scripts/run_ub_app_build_matrix.sh` for app-local compile validation. It
+builds every `apps/<app>/Makefile` and cleans successful outputs by default.
+
 The full matrix can be listed or executed through
 `scripts/run_ub_app_validation_matrix.sh`; use `--dry-run` to inspect the exact
 commands before launching QEMU-backed validation.

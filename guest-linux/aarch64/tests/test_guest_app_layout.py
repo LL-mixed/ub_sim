@@ -97,6 +97,7 @@ def test_apps_readme_lists_reusable_validation_command_for_each_app():
     assert app_dirs == sorted(APP_VALIDATION_COMMANDS)
     assert "/bin/run_demo" not in readme
     assert "DEMO_" not in readme
+    assert "scripts/run_ub_app_build_matrix.sh" in readme
     assert "scripts/run_ub_app_validation_matrix.sh" in readme
     assert "scripts/run_w5_cluster_config.sh" in readme
     assert "components/w5_mem_service" in readme
@@ -123,6 +124,23 @@ def test_app_validation_matrix_runner_matches_readme_commands():
     assert "/bin/run_demo" not in runner
     for app, commands in APP_VALIDATION_COMMANDS.items():
         assert f"\"{app}|{commands[0]}|{commands[1]}\"" in runner
+
+
+def test_app_build_matrix_runner_matches_app_inventory():
+    runner_path = ROOT / "scripts" / "run_ub_app_build_matrix.sh"
+    runner = runner_path.read_text()
+
+    assert runner_path.exists()
+    assert runner_path.stat().st_mode & 0o111
+    assert "--dry-run" in runner
+    assert "--from APP" in runner
+    assert "--only APP" in runner
+    assert "--continue-on-fail" in runner
+    assert "--keep-artifacts" in runner
+    assert "make -C \"$app_dir\"" in runner
+    assert "make -C \"$app_dir\" clean" in runner
+    for app in APP_VALIDATION_COMMANDS:
+        assert f"  {app}\n" in runner
 
 
 def test_app_validation_matrix_runner_dry_run_executes_without_qemu():
@@ -184,6 +202,32 @@ def test_app_validation_matrix_runner_dry_run_executes_without_qemu():
     assert "SKIP app=ub_chat scope=2-node status=PASS" in resume_result.stdout
     assert "SKIP app=ub_chat scope=8-node status=PASS" in resume_result.stdout
     assert "RUN app=ub_chat" not in resume_result.stdout
+
+
+def test_app_build_matrix_runner_dry_run_executes_without_building():
+    runner = ROOT / "scripts" / "run_ub_app_build_matrix.sh"
+
+    list_result = subprocess.run(
+        [str(runner), "--list"],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    dry_run_result = subprocess.run(
+        [str(runner), "--dry-run", "--only", "ub_chat"],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert "ub_chat makefile=apps/ub_chat/Makefile" in list_result.stdout
+    assert "w4_guest makefile=apps/w4_guest/Makefile" in list_result.stdout
+    assert "RUN app=ub_chat cmd=make -C apps/ub_chat" in dry_run_result.stdout
+    assert "RUN app=ub_chat cmd=make -C apps/ub_chat clean" in dry_run_result.stdout
+    assert "PASS" in dry_run_result.stdout
+    assert not (ROOT / "apps" / "ub_chat" / "ub_chat").exists()
 
 
 def test_primary_dual_node_app_wrappers_are_stable_cli_entrypoints():
