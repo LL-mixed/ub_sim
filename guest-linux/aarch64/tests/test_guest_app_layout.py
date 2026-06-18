@@ -264,6 +264,8 @@ def test_obmm_gsva_has_independent_dual_node_bootflow():
     init_source = (ROOT / "init.c").read_text()
 
     assert "linqu_obmm_gsva=1" in script
+    assert "\\\\[obmm_gsva\\\\] result=done" in script
+    assert "\\[init\\] ub obmm gsva app pass" not in script
     assert "obmm_gsva_mode=${OBMM_GSVA_MODE}" in script
     assert "obmm_gsva_node_count=${OBMM_GSVA_NODE_COUNT}" in script
     assert "should_run_obmm_gsva" in init_source
