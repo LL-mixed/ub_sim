@@ -11,6 +11,7 @@ setopt null_glob
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORKSPACE_ROOT="$(cd "$ROOT_DIR/../.." && pwd)"
+SCRIPT_NAME="$(basename "$0")"
 
 # ------------------------------------------------------------------
 # Defaults
@@ -42,7 +43,7 @@ source "$SCRIPT_DIR/qemu_ub_common.sh"
 # ------------------------------------------------------------------
 usage() {
     cat <<EOF
-Usage: $(basename "$0") --disk PATH [OPTIONS]
+Usage: $SCRIPT_NAME --disk PATH [OPTIONS]
 
 Launch a simulated super-node where each QEMU node boots openEuler.
 
@@ -56,15 +57,14 @@ Options:
   --smp N              QEMU SMP per node (default: 4)
   --app-dir DIR        Directory with apps to deploy into each node
   --app-mode MODE      App mode hint (e.g. gva_direct, gsva_matrix, obmm_coh)
-  --demo MODE          Deprecated alias for --app-mode
   --out-dir DIR        Output directory for node artifacts (default: out/openEuler-super-node)
   --run-id ID          Custom run-id prefix
   --append-extra STR   Extra kernel append string
   -h, --help           Show this help
 
 Examples:
-  $(basename "$0") --disk ~/vms/openEuler-2403/disk.qcow2 --nodes 8 --memory 8G --smp 4
-  $(basename "$0") --disk ~/vms/openEuler-2403/disk.qcow2 --nodes 4 --app-dir ./my_apps --app-mode gsva_identity
+  $SCRIPT_NAME --disk ~/vms/openEuler-2403/disk.qcow2 --nodes 8 --memory 8G --smp 4
+  $SCRIPT_NAME --disk ~/vms/openEuler-2403/disk.qcow2 --nodes 4 --app-dir ./my_apps --app-mode gsva_identity
 EOF
 }
 
@@ -98,10 +98,6 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --app-mode)
-            APP_MODE="$2"
-            shift 2
-            ;;
-        --demo)
             APP_MODE="$2"
             shift 2
             ;;

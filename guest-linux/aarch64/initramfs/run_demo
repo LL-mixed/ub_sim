@@ -1,9 +1,0 @@
-#!/bin/busybox sh
-set -u
-
-if [ -x /bin/run_app ]; then
-  exec /bin/run_app "$@"
-fi
-
-echo "[run_demo] /bin/run_app missing"
-exit 1

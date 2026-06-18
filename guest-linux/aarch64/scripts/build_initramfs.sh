@@ -58,8 +58,6 @@ W4_DB_SERVICE_SRC="$ROOT_DIR/components/w5_mem_service/w4_kvcache_db_service.c"
 W4_GUEST_BIN="$OUT_DIR/linqu_w4_guest"
 RUN_APP_SRC="$ROOT_DIR/initramfs/run_app"
 RUN_APP_BIN="$INITRAMFS_DIR/bin/run_app"
-RUN_DEMO_SRC="$ROOT_DIR/initramfs/run_demo"
-RUN_DEMO_BIN="$INITRAMFS_DIR/bin/run_demo"
 INIT_SCRIPT_SRC="$ROOT_DIR/initramfs/init"
 INIT_SCRIPT_BIN="$INITRAMFS_DIR/init"
 LINQU_INIT_BIN="$INITRAMFS_DIR/bin/linqu_init"
@@ -160,7 +158,6 @@ current_initramfs_signature() {
   write_signature_line "w4_guest_src" "$W4_GUEST_SRC"
   write_signature_line "w4_db_service_src" "$W4_DB_SERVICE_SRC"
   write_signature_line "run_app_src" "$RUN_APP_SRC"
-  write_signature_line "run_demo_src" "$RUN_DEMO_SRC"
   write_signature_line "init_script_src" "$INIT_SCRIPT_SRC"
   write_signature_line "rdinit_interactive_src" "$RDINIT_INTERACTIVE_SRC"
   for applet in "$ROOT_DIR"/*.h(N); do
@@ -479,13 +476,6 @@ if [[ -f "$RUN_APP_SRC" ]]; then
   chmod +x "$RUN_APP_BIN"
 else
   echo "[build_initramfs] warn: missing run_app script template: $RUN_APP_SRC" >&2
-fi
-
-if [[ -f "$RUN_DEMO_SRC" ]]; then
-  cp "$RUN_DEMO_SRC" "$RUN_DEMO_BIN"
-  chmod +x "$RUN_DEMO_BIN"
-else
-  echo "[build_initramfs] warn: missing run_demo script template: $RUN_DEMO_SRC" >&2
 fi
 
 if [[ -f "$RDINIT_INTERACTIVE_SRC" ]]; then

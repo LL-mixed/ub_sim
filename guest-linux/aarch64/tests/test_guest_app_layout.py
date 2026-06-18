@@ -568,7 +568,9 @@ def test_openeuler_super_node_uses_app_mode_cli():
     assert "APP_MODE" in script
     assert "DEMO_MODE" not in script
     assert "--app-mode MODE" in script
-    assert "Deprecated alias for --app-mode" in script
+    assert "--demo MODE" not in script
+    assert "--demo)" not in script
+    assert "Deprecated alias for --app-mode" not in script
     assert "--app-mode gsva_identity" in script
     assert "app_mode=$APP_MODE" in script
     assert "--app-mode gsva_identity" in readme
@@ -578,7 +580,6 @@ def test_openeuler_super_node_uses_app_mode_cli():
 def test_dual_node_apps_uses_canonical_cli_entrypoint():
     script = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
     init_source = (ROOT / "init.c").read_text()
-    run_demo = (ROOT / "initramfs" / "run_demo").read_text()
     run_app = (ROOT / "initramfs" / "run_app").read_text()
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     w4_runner = (ROOT / "scripts" / "run_ub_dual_node_w4_guest.sh").read_text()
@@ -609,8 +610,12 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     assert 'RUN_APP_SRC="$ROOT_DIR/initramfs/run_app"' in build_script
     assert 'RUN_APP_BIN="$INITRAMFS_DIR/bin/run_app"' in build_script
     assert "write_signature_line \"run_app_src\"" in build_script
-    assert "run_app|run_demo)" in (ROOT / "initramfs" / "init").read_text()
-    assert "exec /bin/run_app" in run_demo
+    assert 'RUN_DEMO_SRC="$ROOT_DIR/initramfs/run_demo"' not in build_script
+    assert 'RUN_DEMO_BIN="$INITRAMFS_DIR/bin/run_demo"' not in build_script
+    assert "write_signature_line \"run_demo_src\"" not in build_script
+    assert not (ROOT / "initramfs" / "run_demo").exists()
+    assert "run_app|run_demo)" not in (ROOT / "initramfs" / "init").read_text()
+    assert "run_demo)" not in (ROOT / "initramfs" / "init").read_text()
     assert "[run_app]" in run_app
     assert "UB_RUN_APP_FROM_INIT" in init_source
     assert "UB_RUN_APP_FROM_INIT" in run_app
@@ -631,7 +636,6 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     assert "!defer_app_boot_flow && should_run_gva_direct()" in init_source
     assert "!defer_app_boot_flow && should_run_obmm_queue()" in init_source
     assert "UB_RUN_DEMO_FROM_INIT" not in init_source
-    assert "UB_RUN_DEMO_FROM_INIT" not in run_demo
     assert "UB_RUN_DEMO_FROM_INIT" not in w4_eight_runner
     assert 'local runner="$RUN_INITRAMFS_DIR/bin/run_app"' in w4_eight_runner
     assert 'RDINIT="/bin/run_app"' in w4_eight_runner
@@ -665,6 +669,8 @@ def test_guest_scripts_wait_for_run_app_ready_marker():
 
     assert "[run_demo] boot flow completed, dropping to shell" not in scripts
     assert "\\[run_demo\\] boot flow completed, dropping to shell" not in scripts
+    assert "/bin/run_demo" not in scripts
+    assert "run_demo_src" not in scripts
     assert "[run_app] entering interactive shell" in scripts
 
 
