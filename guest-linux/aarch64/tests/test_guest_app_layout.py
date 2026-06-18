@@ -244,8 +244,9 @@ def test_obmm_gsva_uses_canonical_app_source():
     assert "GSVA_DEMO_" not in dual_runner
     assert "GSVA_DEMO_" not in wrapper_runners
     assert "[obmm-gsva]" in dual_runner
-    assert "rdinit=/bin/run_demo linqu_obmm_gsva=1" in multi_runner
+    assert "rdinit=/bin/run_app linqu_obmm_gsva=1" in multi_runner
     assert "rdinit=/bin/run_demo obmm_gsva " not in multi_runner
+    assert "-qmp unix:" not in multi_runner
     assert "OBMM_GSVA_MATRIX_NODE_COUNT" in multi_runner
     assert "enum gsva_app_mode" in app_source
     assert "struct gsva_app_config" in app_source
