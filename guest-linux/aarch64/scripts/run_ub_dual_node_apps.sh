@@ -990,7 +990,7 @@ run_iteration() {
   fi
 
   if [[ "$chat_enabled" -eq 1 ]]; then
-    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub chat pass" "\\[init\\] ub chat fail" "$RUN_SECS"
+    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[ub_chat\\] pass" "\\[ub_chat\\] fail" "$RUN_SECS"
     case "$?" in
       0) ;;
       1)
@@ -1003,7 +1003,7 @@ run_iteration() {
         ;;
     esac
 
-    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub chat pass" "\\[init\\] ub chat fail" "$RUN_SECS"
+    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[ub_chat\\] pass" "\\[ub_chat\\] fail" "$RUN_SECS"
     case "$?" in
       0) ;;
       1)
