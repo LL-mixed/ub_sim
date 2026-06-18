@@ -13,7 +13,7 @@
 ## 目录说明
 
 - `guest-linux/aarch64/`
-  guest 启动、initramfs、demo、QEMU 启动脚本都在这里
+  guest 启动、initramfs、app、QEMU 启动脚本都在这里
 - `vendor/qemu_8.2.0_ub/`
   QEMU submodule，脚本会按需构建 `qemu-system-aarch64`
 - `guest-linux/kernel_ub/`
@@ -176,7 +176,7 @@ BUSYBOX=$PWD/busybox-aarch64 \
 - 先复用本地新鲜的 `out/` 产物
 - 本地产物过期时，优先导入 `LOCAL_KERNEL_IMAGE` / `LOCAL_MODULES_DIR`
 - 如果当前环境是 Linux 且有 `aarch64-*-gnu-gcc`，走本机 native cross build
-- native guest kernel 目标架构是 `arm64`，默认使用 `openeuler_defconfig` 作为 defconfig，再叠加 UB demo/harness 需要的 kernel config
+- native guest kernel 目标架构是 `arm64`，默认使用 `openeuler_defconfig` 作为 defconfig，再叠加 UB app/harness 需要的 kernel config
 - 没有本地导入参数且无法 native cross build 时失败并提示；不会自动访问 remote Linux build host
 
 ### 3.3 准备 simpler HostBuildGraph Artifact
@@ -378,7 +378,7 @@ BUSYBOX="$BUSYBOX" \
 
 ### 6.3 四节点验证脚本
 
-四节点 autotest/demo/matrix 验证应走 headless harness，不应通过
+四节点 autotest/app/matrix 验证应走 headless harness，不应通过
 `launch_ub_four_node_tmux.sh` 作为控制平面。tmux 仅用于上一节的人工交互环境。
 
 四节点常用脚本：

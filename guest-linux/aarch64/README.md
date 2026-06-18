@@ -297,7 +297,7 @@ Cleanup:
 Use the four-node tmux wrapper when you want a full-mesh `nodeA/nodeB/nodeC/nodeD`
 interactive environment instead of auto-running a matrix harness.
 
-Do not use this launcher from autotest/demo/harness code. Four-node automated
+Do not use this launcher from autotest/app/harness code. Four-node automated
 validation should launch a headless environment and drive guest serial ports/logs
 directly.
 
