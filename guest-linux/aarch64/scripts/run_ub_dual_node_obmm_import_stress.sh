@@ -175,7 +175,7 @@ start_node() {
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
       -initrd "$INITRAMFS_IMAGE" \
-      -append "console=ttyAMA0 rdinit=/bin/run_demo linqu_obmm_import_stress=1 linqu_urma_dp_role=${role} ${STRESS_APPEND} ${APPEND_EXTRA}" \
+      -append "console=ttyAMA0 rdinit=/bin/run_app linqu_obmm_import_stress=1 linqu_urma_dp_role=${role} ${STRESS_APPEND} ${APPEND_EXTRA}" \
       >"$qemu_log" 2>&1 &
   echo $! > "$pid_file"
 }
@@ -399,7 +399,7 @@ while (( SECONDS < deadline )); do
     echo "[stress] FAIL: stress_run failed" >&2
     exit 1
   fi
-  if grep -qE '\[obmm_import_stress\] import failed|\[obmm_import_stress\] export failed|\[run_demo\] action failed|Kernel panic - not syncing' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
+  if grep -qE '\[obmm_import_stress\] import failed|\[obmm_import_stress\] export failed|\[run_(app|demo)\] action failed|Kernel panic - not syncing' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
     echo "[stress] FAIL: guest reported import/export/action failure" >&2
     exit 1
   fi

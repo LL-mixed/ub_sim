@@ -132,7 +132,7 @@ def test_obmm_import_stress_has_integration_entrypoints():
 def test_obmm_import_stress_runner_uses_app_flag_entrypoint():
     runner = (ROOT / "scripts" / "run_ub_dual_node_obmm_import_stress.sh").read_text()
 
-    assert "rdinit=/bin/run_demo linqu_obmm_import_stress=1" in runner
+    assert "rdinit=/bin/run_app linqu_obmm_import_stress=1" in runner
     assert "rdinit=/bin/run_demo obmm_import_stress " not in runner
 
 
