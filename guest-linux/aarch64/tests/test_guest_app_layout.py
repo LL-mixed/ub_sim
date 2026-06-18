@@ -40,7 +40,7 @@ APP_VALIDATION_COMMANDS = {
     ],
     "obmm_gsva": [
         "scripts/run_ub_dual_node_obmm_gsva.sh",
-        "scripts/run_ub_multi_node_obmm_gsva_matrix.sh",
+        "scripts/run_ub_eight_node_obmm_gsva_matrix.sh",
     ],
     "obmm_coh_test": [
         "scripts/run_ub_dual_node_obmm_coh_test.sh",
@@ -402,6 +402,9 @@ def test_obmm_gsva_uses_canonical_app_source():
     dual_runner = (ROOT / "scripts" / "run_ub_dual_node_obmm_gsva.sh").read_text()
     dual_apps_runner = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
     multi_runner = (ROOT / "scripts" / "run_ub_multi_node_obmm_gsva_matrix.sh").read_text()
+    eight_node_wrapper = (
+        ROOT / "scripts" / "run_ub_eight_node_obmm_gsva_matrix.sh"
+    ).read_text()
     wrapper_runners = "\n".join(
         [
             (ROOT / "scripts" / "run_ub_two_node_gsva_identity_test.sh").read_text(),
@@ -433,6 +436,8 @@ def test_obmm_gsva_uses_canonical_app_source():
     assert "rdinit=/bin/run_demo obmm_gsva " not in multi_runner
     assert "-qmp unix:" not in multi_runner
     assert "OBMM_GSVA_MATRIX_NODE_COUNT" in multi_runner
+    assert "export OBMM_GSVA_MATRIX_NODE_COUNT=8" in eight_node_wrapper
+    assert 'exec "$SCRIPT_DIR/run_ub_multi_node_obmm_gsva_matrix.sh" "$@"' in eight_node_wrapper
     assert "enum gsva_app_mode" in app_source
     assert "struct gsva_app_config" in app_source
     assert "GSVA_DEMO" not in app_source
