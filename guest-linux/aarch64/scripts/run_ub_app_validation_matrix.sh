@@ -20,7 +20,7 @@ APP_ENTRIES=(
   "obmm_coh_test|scripts/run_ub_dual_node_obmm_coh_test.sh|scripts/run_ub_eight_node_obmm_coh_test.sh"
   "gva_direct|scripts/run_ub_dual_node_gva_direct_test.sh|scripts/run_ub_eight_node_gva_direct_test.sh"
   "gva_manager|scripts/run_ub_dual_node_gsva_manager_bootstrap.sh|scripts/run_ub_eight_node_gsva_manager_bootstrap.sh"
-  "gsva_query|scripts/run_ub_gsva_query_caps_test.sh|scripts/run_ub_eight_node_gsva_query_caps.sh"
+  "gsva_query|scripts/run_ub_dual_node_gsva_query.sh|scripts/run_ub_eight_node_gsva_query_caps.sh"
   "gsva_coh_test|scripts/run_ub_two_node_gsva_coh_test.sh|scripts/run_ub_eight_node_gsva_coh_test.sh"
   "gsva_lifecycle_test|scripts/run_ub_two_node_gsva_lifecycle_test.sh|scripts/run_ub_eight_node_gsva_lifecycle_test.sh"
   "npu_test|scripts/run_ub_two_node_npu_test.sh|scripts/run_ub_eight_node_npu_test.sh"

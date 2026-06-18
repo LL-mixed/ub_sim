@@ -56,7 +56,7 @@ APP_VALIDATION_COMMANDS = {
         "scripts/run_ub_eight_node_gsva_manager_bootstrap.sh",
     ],
     "gsva_query": [
-        "scripts/run_ub_gsva_query_caps_test.sh",
+        "scripts/run_ub_dual_node_gsva_query.sh",
         "scripts/run_ub_eight_node_gsva_query_caps.sh",
     ],
     "gsva_coh_test": [
@@ -703,11 +703,17 @@ def test_npu_test_has_independent_dual_node_bootflow():
 
 
 def test_gsva_query_runner_uses_app_flag_entrypoint():
-    runner = (ROOT / "scripts" / "run_ub_gsva_query_caps_test.sh").read_text()
+    runner = (ROOT / "scripts" / "run_ub_dual_node_gsva_query.sh").read_text()
+    caps_runner = (ROOT / "scripts" / "run_ub_gsva_query_caps_test.sh").read_text()
     eight_runner = (ROOT / "scripts" / "run_ub_eight_node_gsva_query_caps.sh").read_text()
 
-    assert "rdinit=/bin/run_app linqu_gsva_query=1" in runner
+    assert "start_node nodeA nodeA" in runner
+    assert "start_node nodeB nodeB" in runner
+    assert "linqu_gsva_query=1 gsva_query_mode=caps" in runner
+    assert "-qmp" not in runner
+    assert "rdinit=/bin/run_app linqu_gsva_query=1" in caps_runner
     assert "rdinit=/bin/run_demo gsva_query " not in runner
+    assert "rdinit=/bin/run_demo gsva_query " not in caps_runner
     assert "/bin/linqu_ub_gsva_query --caps" in eight_runner
     assert "\\\\[gsva_query\\\\] GSVA_QUERY_CAPS" in eight_runner
     assert "caps:.*STRICT_ADDRESS_IDENTITY" in eight_runner
