@@ -145,7 +145,7 @@ start_node() {
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
       -initrd "$INITRAMFS_IMAGE" \
-      -append "console=ttyAMA0 rdinit=/bin/run_demo linqu_obmm_coh_test=1 linqu_urma_dp_role=${role} obmm_coh_test_mode=${COH_TEST_MODE} obmm_coh_test_size=${COH_TEST_SIZE} obmm_coh_test_iters=${COH_TEST_ITERS} obmm_coh_test_node_id=${coh_node_id} obmm_coh_test_node_count=2 obmm_coh_test_token_value=${COH_TEST_TOKEN_VALUE} obmm_coh_test_generation=${COH_TEST_GENERATION} obmm_coh_test_verbose=${COH_TEST_VERBOSE} ${exporter_arg} ${APPEND_EXTRA}" \
+      -append "console=ttyAMA0 rdinit=/bin/run_app linqu_obmm_coh_test=1 linqu_urma_dp_role=${role} obmm_coh_test_mode=${COH_TEST_MODE} obmm_coh_test_size=${COH_TEST_SIZE} obmm_coh_test_iters=${COH_TEST_ITERS} obmm_coh_test_node_id=${coh_node_id} obmm_coh_test_node_count=2 obmm_coh_test_token_value=${COH_TEST_TOKEN_VALUE} obmm_coh_test_generation=${COH_TEST_GENERATION} obmm_coh_test_verbose=${COH_TEST_VERBOSE} ${exporter_arg} ${APPEND_EXTRA}" \
       >"$qemu_log" 2>&1 &
   echo $! > "$pid_file"
 }
@@ -257,7 +257,7 @@ while (( SECONDS < deadline )); do
     echo "[coh_test] PASS: both nodes completed"
     exit 0
   fi
-  if grep -qE 'obmm_coh_test: FAIL|\[run_demo\] linqu_ub_obmm_coh_test failed|Kernel panic - not syncing|Call trace:' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
+  if grep -qE 'obmm_coh_test: FAIL|\[run_(app|demo)\] linqu_ub_obmm_coh_test failed|Kernel panic - not syncing|Call trace:' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
     echo "[coh_test] FAIL: guest reported coherence test failure" >&2
     exit 1
   fi
