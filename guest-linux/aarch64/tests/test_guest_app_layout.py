@@ -384,6 +384,8 @@ def test_gva_manager_bootstrap_runner_uses_unified_app_entrypoint():
 
     assert "linqu_gva_manager=1" in dual_runner
     assert "gva_manager_mode=bootstrap" in dual_runner
+    assert "rdinit=/bin/run_app linqu_gva_manager=1" in dual_runner
+    assert "rdinit=/bin/run_demo gva_manager " not in dual_runner
     assert "gva_manager_bootstrap" not in dual_runner
     assert "gva_manager=" in dual_runner
     assert "run_gva_manager" in run_demo
