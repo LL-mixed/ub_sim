@@ -170,7 +170,7 @@ validate_node_log() {
     *) return 1 ;;
   esac
 
-  assert_log_has "$log_file" "\\[run_app\\] run linqu_ub_obmm_pool|\\[init\\] ub obmm pool app pass" "$node_name binary" || return 1
+  assert_log_has "$log_file" "\\[run_app\\] run linqu_ub_obmm_pool" "$node_name binary" || return 1
   assert_log_has "$log_file" "\\[ub_obmm_pool\\] export -> ok mem_id=[0-9]+ uba=0x[0-9a-f]+ token=[0-9]+" "$node_name export" || return 1
   assert_log_has "$log_file" "\\[ub_obmm_pool\\] metadata exchange -> ok count=2" "$node_name metadata" || return 1
   assert_log_has "$log_file" "\\[ub_obmm_pool\\] import_all -> ok remote_slots=1" "$node_name import" || return 1
@@ -213,7 +213,7 @@ while (( SECONDS < deadline )); do
     grep '\[ub_obmm_pool\]' "$NODEB_GUEST_LOG" | tail -8
     exit 0
   fi
-  if grep -qE '\[ub_obmm_pool\] fail|\[run_app\] linqu_ub_obmm_pool failed|\[init\] ub obmm pool app fail|Kernel panic - not syncing|Call trace:' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
+  if grep -qE '\[ub_obmm_pool\] fail|\[run_app\] linqu_ub_obmm_pool failed|Kernel panic - not syncing|Call trace:' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
     echo "[obmm-pool] FAIL: app or kernel reported failure" >&2
     exit 1
   fi
