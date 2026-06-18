@@ -260,6 +260,10 @@ def test_ub_chat_is_packaged_from_app_directory():
     assert 'CHAT_SRC="$ROOT_DIR/apps/ub_chat/ub_chat.c"' in build_script
     assert "\\\\[ub_chat\\\\] pass" in dual_runner
     assert "\\\\[ub_chat\\\\] fail" in dual_runner
+    assert 'USE_QMP="${USE_QMP:-0}"' in dual_runner
+    assert "--use-qmp" in dual_runner
+    assert "qemu_control_args=(-S -qmp" in dual_runner
+    assert "Operation not permitted" not in dual_runner
     assert "\\[init\\] ub chat pass" not in dual_runner
     assert not (ROOT / "ub_chat.c").exists()
     assert (ROOT / "apps" / "ub_chat" / "ub_chat.c").exists()

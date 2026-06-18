@@ -15,6 +15,7 @@ ITERATIONS="${ITERATIONS:-1}"
 START_GAP_SECS="${START_GAP_SECS:-3}"
 LINK_WAIT_SECS="${LINK_WAIT_SECS:-45}"
 QEMU_KEEP_ALIVE_ON_POWEROFF="${QEMU_KEEP_ALIVE_ON_POWEROFF:-0}"
+USE_QMP="${USE_QMP:-0}"
 APP_SELECTION="${APP_SELECTION:-}"
 APPEND_EXTRA_WAS_SET=0
 if [[ -n "${APPEND_EXTRA+x}" ]]; then
@@ -62,6 +63,7 @@ Options:
   --iterations N     Number of dual-node iterations.
   --max-runtime SECS Global watchdog timeout.
   --append-extra STR Extra kernel cmdline tokens to append.
+  --use-qmp          Start guests paused and resume them through QMP.
   -h, --help         Show this help.
 USAGE
 }
@@ -212,6 +214,10 @@ while [[ $# -gt 0 ]]; do
       fi
       APPEND_EXTRA="${APPEND_EXTRA} $2"
       shift 2
+      ;;
+    --use-qmp)
+      USE_QMP=1
+      shift
       ;;
     -h|--help)
       usage
@@ -612,6 +618,7 @@ start_node() {
   local qmp_socket="$6"
   local app_append_extra="${7-}"
   local qemu_extra=()
+  local qemu_control_args=()
   local node_append_extra="$APPEND_EXTRA"
   local ipourma_args=""
 
@@ -627,7 +634,10 @@ start_node() {
     node_append_extra="${node_append_extra} ${app_append_extra}"
   fi
 
-  mkdir -p "$(dirname "$qmp_socket")"
+  if [[ "$USE_QMP" == "1" ]]; then
+    mkdir -p "$(dirname "$qmp_socket")"
+    qemu_control_args=(-S -qmp unix:"$qmp_socket",server=on,wait=off)
+  fi
   mkdir -p "$(dirname "$guest_log")"
   mkdir -p "$(dirname "$qemu_log")"
 
@@ -638,13 +648,12 @@ start_node() {
     UB_SIM_ENTITY_COUNT="$ENTITY_COUNT" \
     UB_FM_ENTITY_PLAN_FILE="$ENTITY_PLAN_FILE" \
     "$QEMU_BIN" \
-      -S \
+      "${qemu_control_args[@]}" \
       -M virt,gic-version=3,its=on,ummu=on,ub-cluster-mode=on \
       -cpu cortex-a57 \
       -m 8G \
       -nodefaults \
       -nographic \
-      -qmp unix:"$qmp_socket",server=on,wait=off \
       -serial file:"$guest_log" \
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
@@ -833,7 +842,7 @@ check_link_early_or_fail() {
   local nodeb_log="$2"
   local timeout_s="$3"
   local deadline=$((SECONDS + timeout_s))
-  local fail_pat="ub_link: server listen failed|ub_link: failed to connect remote server|bizmsg roundtrip fail: remote linkup not ready|\\[init\\] ub sysfs wait timed out|Failed to bind socket|Failed to bind|failed to create listener|Address already in use|Operation not permitted"
+  local fail_pat="ub_link: server listen failed|ub_link: failed to connect remote server|bizmsg roundtrip fail: remote linkup not ready|\\[init\\] ub sysfs wait timed out|Failed to bind socket|Failed to bind|failed to create listener|Address already in use"
   local ok_pat="ub_link: connected to remote server|ub_link: accepted connection|remote snapshot load done|remote cfg notify done"
 
   while (( SECONDS < deadline )); do
@@ -986,7 +995,9 @@ run_iteration() {
   mkdir -p "$LOG_DIR"
   mkdir -p "$iter_log_dir"
   mkdir -p "$SHARED_DIR"
-  mkdir -p "$QMP_DIR"
+  if [[ "$USE_QMP" == "1" ]]; then
+    mkdir -p "$QMP_DIR"
+  fi
   stale_files=("$SHARED_DIR"/*.ini "$SHARED_DIR"/*.kick "$SHARED_DIR"/*.lock)
   if (( ${#stale_files[@]} )); then
     rm -f "${stale_files[@]}"
@@ -998,11 +1009,19 @@ run_iteration() {
   ln -sfn "$nodeb_qemu_log" "$nodeb_qemu_log_link"
   echo "iteration ${iter} logs: $iter_log_dir"
 
-  echo "Starting nodeA (paused)..."
+  if [[ "$USE_QMP" == "1" ]]; then
+    echo "Starting nodeA (paused)..."
+  else
+    echo "Starting nodeA..."
+  fi
   start_node "nodeA" "nodeA" "$nodea_guest_log" "$nodea_qemu_log" \
     "$nodea_pid_file" "$nodea_qmp" "$nodea_app_append"
   sleep 0.5
-  echo "Starting nodeB (paused)..."
+  if [[ "$USE_QMP" == "1" ]]; then
+    echo "Starting nodeB (paused)..."
+  else
+    echo "Starting nodeB..."
+  fi
   start_node "nodeB" "nodeB" "$nodeb_guest_log" "$nodeb_qemu_log" \
     "$nodeb_pid_file" "$nodeb_qmp" "$nodeb_app_append"
 
@@ -1011,8 +1030,10 @@ run_iteration() {
     return 11
   fi
 
-  cont_qemu "$nodea_qmp" "nodeA"
-  cont_qemu "$nodeb_qmp" "nodeB"
+  if [[ "$USE_QMP" == "1" ]]; then
+    cont_qemu "$nodea_qmp" "nodeA"
+    cont_qemu "$nodeb_qmp" "nodeB"
+  fi
 
   if ! wait_for_fm_links_ready "$nodea_qemu_log" "$nodeb_qemu_log" 30; then
     echo "iteration ${iter}: FM links failed to reach READY state within timeout" >&2
