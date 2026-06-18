@@ -102,6 +102,7 @@ def test_apps_readme_lists_reusable_validation_command_for_each_app():
     assert "components/w5_mem_service" in readme
     for app, commands in APP_VALIDATION_COMMANDS.items():
         assert f"`{app}`" in readme
+        assert (ROOT / "apps" / app / "Makefile").exists()
         for command in commands:
             script = command.split()[0]
             assert command in readme
