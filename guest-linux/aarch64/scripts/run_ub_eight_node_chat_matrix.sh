@@ -150,22 +150,43 @@ node_serial_port() {
   echo $((port_base + 31 + idx))
 }
 
+node_serial_endpoint() {
+  local node_id="$1"
+  local port_base="$2"
+  case "$node_id" in
+    nodeA) echo "${NODEA_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    nodeB) echo "${NODEB_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    nodeC) echo "${NODEC_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    nodeD) echo "${NODED_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    nodeE) echo "${NODEE_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    nodeF) echo "${NODEF_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    nodeG) echo "${NODEG_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    nodeH) echo "${NODEH_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    *) return 1 ;;
+  esac
+}
+
 send_serial_line() {
-  local port="$1"
+  local endpoint="$1"
   local line="$2"
-  python3 - "$port" "$line" <<'PY'
+  python3 - "$endpoint" "$line" <<'PY'
 import socket
 import sys
 import time
-port = int(sys.argv[1])
+endpoint = sys.argv[1]
 line = sys.argv[2]
 deadline = time.time() + 20.0
 last_err = None
 while time.time() < deadline:
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if endpoint.startswith("/"):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connect_arg = endpoint
+    else:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        connect_arg = ("127.0.0.1", int(endpoint))
     s.settimeout(3)
     try:
-        s.connect(("127.0.0.1", port))
+        s.connect(connect_arg)
         s.sendall(line.encode("utf-8") + b"\n")
         time.sleep(0.2)
         s.close()
@@ -182,21 +203,26 @@ PY
 }
 
 send_serial_block() {
-  local port="$1"
+  local endpoint="$1"
   local payload="$2"
-  python3 - "$port" "$payload" <<'PY'
+  python3 - "$endpoint" "$payload" <<'PY'
 import socket
 import sys
 import time
-port = int(sys.argv[1])
+endpoint = sys.argv[1]
 payload = sys.argv[2]
 deadline = time.time() + 20.0
 last_err = None
 while time.time() < deadline:
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if endpoint.startswith("/"):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connect_arg = endpoint
+    else:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        connect_arg = ("127.0.0.1", int(endpoint))
     s.settimeout(5)
     try:
-        s.connect(("127.0.0.1", port))
+        s.connect(connect_arg)
         s.sendall(payload.encode("utf-8"))
         time.sleep(0.2)
         s.close()
@@ -248,7 +274,7 @@ send_chat_cmd() {
   local role="$1"
   local local_ip="$2"
   local peer_ip="$3"
-  local serial_port="$4"
+  local serial_endpoint="$4"
   local start_marker="$5"
   local payload
 
@@ -260,7 +286,7 @@ send_chat_cmd() {
   payload+=$'echo '"${start_marker}"$'\n'
   payload+=$'/bin/linqu_ub_chat\n'
 
-  send_serial_block "$serial_port" "$payload" || return 1
+  send_serial_block "$serial_endpoint" "$payload" || return 1
 }
 
 wait_for_chat_bind_ready() {
@@ -271,15 +297,15 @@ wait_for_chat_bind_ready() {
 
 capture_guest_diag() {
   local node_id="$1"
-  local serial_port="$2"
+  local serial_endpoint="$2"
 
-  send_serial_line "$serial_port" "echo DIAG_${node_id}_START" || true
+  send_serial_line "$serial_endpoint" "echo DIAG_${node_id}_START" || true
   sleep 0.2
-  send_serial_line "$serial_port" "cat /sys/class/net/ipourma0/query_ipourma_stats" || true
+  send_serial_line "$serial_endpoint" "cat /sys/class/net/ipourma0/query_ipourma_stats" || true
   sleep 0.2
-  send_serial_line "$serial_port" "ifconfig ipourma0" || true
+  send_serial_line "$serial_endpoint" "ifconfig ipourma0" || true
   sleep 0.2
-  send_serial_line "$serial_port" "echo DIAG_${node_id}_END" || true
+  send_serial_line "$serial_endpoint" "echo DIAG_${node_id}_END" || true
 }
 
 slice_log_since() {
@@ -334,15 +360,15 @@ run_pair_iteration() {
   local responder_slice="$OUT_DIR/eight_node_chat_${initiator}_${responder}_responder.slice.log"
   local rc=0
   local initiator_ip responder_ip
-  local initiator_serial_port responder_serial_port
+  local initiator_serial_endpoint responder_serial_endpoint
   local initiator_start_line=0
   local responder_start_line=0
   local initiator_start_marker responder_start_marker
 
   initiator_ip="$(node_ip "$initiator")"
   responder_ip="$(node_ip "$responder")"
-  initiator_serial_port="$(node_serial_port "$initiator" "$PORT_BASE")"
-  responder_serial_port="$(node_serial_port "$responder" "$PORT_BASE")"
+  initiator_serial_endpoint="$(node_serial_endpoint "$initiator" "$PORT_BASE")"
+  responder_serial_endpoint="$(node_serial_endpoint "$responder" "$PORT_BASE")"
   initiator_start_marker="CHAT_CMD_INITIATOR_START_${pair_idx}"
   responder_start_marker="CHAT_CMD_RESPONDER_START_${pair_idx}"
   trace "pair ${initiator}-${responder}: start"
@@ -351,7 +377,7 @@ run_pair_iteration() {
   [[ -f "$responder_log" ]] && responder_start_line="$(wc -l < "$responder_log")"
 
   trace "pair ${initiator}-${responder}: send responder cmd"
-  if ! send_chat_cmd responder "$responder_ip" "$initiator_ip" "$responder_serial_port" "$responder_start_marker"; then
+  if ! send_chat_cmd responder "$responder_ip" "$initiator_ip" "$responder_serial_endpoint" "$responder_start_marker"; then
     trace "pair ${initiator}-${responder}: responder cmd send failed"
     echo "$initiator-$responder: failed to send responder chat command" >&2
     return 1
@@ -370,7 +396,7 @@ run_pair_iteration() {
   fi
   sleep "$START_GAP_SECS"
   trace "pair ${initiator}-${responder}: send initiator cmd"
-  if ! send_chat_cmd initiator "$initiator_ip" "$responder_ip" "$initiator_serial_port" "$initiator_start_marker"; then
+  if ! send_chat_cmd initiator "$initiator_ip" "$responder_ip" "$initiator_serial_endpoint" "$initiator_start_marker"; then
     trace "pair ${initiator}-${responder}: initiator cmd send failed"
     echo "$initiator-$responder: failed to send initiator chat command" >&2
     return 1
@@ -387,8 +413,8 @@ run_pair_iteration() {
   wait_for_log_pass_or_fail_since "$initiator_log" "$initiator_start_line" "\\[ub_chat\\] pass" "\\[ub_chat\\] fail" "$PAIR_WAIT_SECS" || rc=$?
   if [[ "$rc" -ne 0 ]]; then
     trace "pair ${initiator}-${responder}: initiator pass wait failed rc=$rc"
-    capture_guest_diag "$initiator" "$initiator_serial_port"
-    capture_guest_diag "$responder" "$responder_serial_port"
+    capture_guest_diag "$initiator" "$initiator_serial_endpoint"
+    capture_guest_diag "$responder" "$responder_serial_endpoint"
     sleep 2
     echo "$initiator-$responder: initiator chat did not pass" >&2
     return 1
@@ -399,8 +425,8 @@ run_pair_iteration() {
   wait_for_log_pass_or_fail_since "$responder_log" "$responder_start_line" "\\[ub_chat\\] pass" "\\[ub_chat\\] fail" "$PAIR_WAIT_SECS" || rc=$?
   if [[ "$rc" -ne 0 ]]; then
     trace "pair ${initiator}-${responder}: responder pass wait failed rc=$rc"
-    capture_guest_diag "$initiator" "$initiator_serial_port"
-    capture_guest_diag "$responder" "$responder_serial_port"
+    capture_guest_diag "$initiator" "$initiator_serial_endpoint"
+    capture_guest_diag "$responder" "$responder_serial_endpoint"
     sleep 2
     echo "$initiator-$responder: responder chat did not pass" >&2
     return 1

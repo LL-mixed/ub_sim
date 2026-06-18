@@ -674,6 +674,25 @@ def test_guest_scripts_wait_for_run_app_ready_marker():
     assert "[run_app] entering interactive shell" in scripts
 
 
+def test_eight_node_matrix_runners_use_headless_serial_sockets():
+    runner_names = [
+        "run_ub_eight_node_chat_matrix.sh",
+        "run_ub_eight_node_rpc_matrix.sh",
+        "run_ub_eight_node_udma_matrix.sh",
+        "run_ub_eight_node_obmm_pool.sh",
+        "run_ub_eight_node_obmm_queue.sh",
+    ]
+
+    for runner_name in runner_names:
+        runner = (ROOT / "scripts" / runner_name).read_text()
+
+        assert "node_serial_endpoint()" in runner
+        assert "NODEA_SERIAL_SOCKET" in runner
+        assert "socket.AF_UNIX" in runner
+        assert "connect_arg = endpoint" in runner
+        assert 's.connect(("127.0.0.1"' not in runner
+
+
 def test_shared_obmm_helpers_use_app_language():
     common = (ROOT / "common" / "obmm_common.h").read_text()
     queue = (ROOT / "libs" / "obmm_queue" / "obmm_spsc_queue.h").read_text()

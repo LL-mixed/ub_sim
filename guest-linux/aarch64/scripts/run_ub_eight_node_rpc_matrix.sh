@@ -161,22 +161,43 @@ node_serial_port() {
   echo $((port_base + 31 + idx))
 }
 
+node_serial_endpoint() {
+  local node_id="$1"
+  local port_base="$2"
+  case "$node_id" in
+    nodeA) echo "${NODEA_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    nodeB) echo "${NODEB_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    nodeC) echo "${NODEC_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    nodeD) echo "${NODED_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    nodeE) echo "${NODEE_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    nodeF) echo "${NODEF_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    nodeG) echo "${NODEG_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    nodeH) echo "${NODEH_SERIAL_SOCKET:-$(node_serial_port "$node_id" "$port_base")}" ;;
+    *) return 1 ;;
+  esac
+}
+
 send_serial_block() {
-  local port="$1"
+  local endpoint="$1"
   local payload="$2"
-  python3 - "$port" "$payload" <<'PY'
+  python3 - "$endpoint" "$payload" <<'PY'
 import socket
 import sys
 import time
-port = int(sys.argv[1])
+endpoint = sys.argv[1]
 payload = sys.argv[2]
 deadline = time.time() + 20.0
 last_err = None
 while time.time() < deadline:
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if endpoint.startswith("/"):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connect_arg = endpoint
+    else:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        connect_arg = ("127.0.0.1", int(endpoint))
     s.settimeout(5)
     try:
-        s.connect(("127.0.0.1", port))
+        s.connect(connect_arg)
         s.sendall(payload.encode("utf-8"))
         time.sleep(0.2)
         s.close()
@@ -218,7 +239,7 @@ cleanup_headless_env() {
 
 send_rpc_server_cmd() {
   local local_ip="$1"
-  local serial_port="$2"
+  local serial_endpoint="$2"
   local start_marker="$3"
   local expected_calls="$4"
   local payload
@@ -229,13 +250,13 @@ send_rpc_server_cmd() {
   payload+=$'echo '"${start_marker}"$'\n'
   payload+=$'/bin/linqu_ub_rpc &\n'
 
-  send_serial_block "$serial_port" "$payload"
+  send_serial_block "$serial_endpoint" "$payload"
 }
 
 send_rpc_client_cmd() {
   local local_ip="$1"
   local peer_ip="$2"
-  local serial_port="$3"
+  local serial_endpoint="$3"
   local start_marker="$4"
   local payload
 
@@ -245,13 +266,13 @@ send_rpc_client_cmd() {
   payload+=$'echo '"${start_marker}"$'\n'
   payload+=$'/bin/linqu_ub_rpc\n'
 
-  send_serial_block "$serial_port" "$payload"
+  send_serial_block "$serial_endpoint" "$payload"
 }
 
 capture_guest_diag() {
   local node_id="$1"
-  local serial_port="$2"
-  send_serial_block "$serial_port" $'echo DIAG_'"${node_id}"$'_START\nifconfig ipourma0\nps\n'
+  local serial_endpoint="$2"
+  send_serial_block "$serial_endpoint" $'echo DIAG_'"${node_id}"$'_START\nifconfig ipourma0\nps\n'
 }
 
 prepare_single_environment() {
@@ -283,7 +304,7 @@ prepare_single_environment() {
 }
 
 start_all_servers() {
-  local node_id node_ip_addr serial_port guest_log start_marker expected_calls
+  local node_id node_ip_addr serial_endpoint guest_log start_marker expected_calls
 
   for node_id in "${NODE_IDS[@]}"; do
     expected_calls="${SERVER_EXPECT_COUNTS[$node_id]}"
@@ -292,11 +313,11 @@ start_all_servers() {
       continue
     fi
     node_ip_addr="$(node_ip "$node_id")"
-    serial_port="$(node_serial_port "$node_id" "$PORT_BASE")"
+    serial_endpoint="$(node_serial_endpoint "$node_id" "$PORT_BASE")"
     guest_log="$RUN_DIR/${node_id}_guest.log"
     start_marker="RPC_SERVER_START_${node_id}"
     trace "server ${node_id}: launch expected_calls=${expected_calls}"
-    send_rpc_server_cmd "$node_ip_addr" "$serial_port" "$start_marker" "$expected_calls"
+    send_rpc_server_cmd "$node_ip_addr" "$serial_endpoint" "$start_marker" "$expected_calls"
     if ! wait_for_log_pattern "$guest_log" "$start_marker" 20; then
       echo "server start marker missing for $node_id" >&2
       return 1
@@ -342,13 +363,13 @@ run_directed_call() {
   local call_idx="$1"
   local src="$2"
   local dst="$3"
-  local src_ip dst_ip src_serial src_log dst_log
+  local src_ip dst_ip src_serial_endpoint src_log dst_log
   local src_start_line=0 dst_start_line=0
   local src_marker client_slice server_slice rc=0
 
   src_ip="$(node_ip "$src")"
   dst_ip="$(node_ip "$dst")"
-  src_serial="$(node_serial_port "$src" "$PORT_BASE")"
+  src_serial_endpoint="$(node_serial_endpoint "$src" "$PORT_BASE")"
   src_log="$RUN_DIR/${src}_guest.log"
   dst_log="$RUN_DIR/${dst}_guest.log"
   src_marker="RPC_CLIENT_START_${call_idx}_${src}_${dst}"
@@ -359,7 +380,7 @@ run_directed_call() {
   [[ -f "$dst_log" ]] && dst_start_line="$(wc -l < "$dst_log")"
 
   trace "call ${src}->${dst}: launch client"
-  if ! send_rpc_client_cmd "$src_ip" "$dst_ip" "$src_serial" "$src_marker"; then
+  if ! send_rpc_client_cmd "$src_ip" "$dst_ip" "$src_serial_endpoint" "$src_marker"; then
     echo "$src->$dst: failed to send client command" >&2
     return 1
   fi
@@ -371,7 +392,7 @@ run_directed_call() {
   rc=0
   wait_for_log_pass_or_fail_since "$src_log" "$src_start_line" "\\[ub_rpc\\] pass" "\\[ub_rpc\\] fail" "$CALL_WAIT_SECS" || rc=$?
   if [[ "$rc" -ne 0 ]]; then
-    capture_guest_diag "$src" "$src_serial"
+    capture_guest_diag "$src" "$src_serial_endpoint"
     echo "$src->$dst: client did not pass" >&2
     return 1
   fi
