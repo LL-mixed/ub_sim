@@ -468,7 +468,7 @@ def test_ub_obmm_pool_uses_canonical_app_source():
     assert "obmm|obmm_pool|obmm_demo" not in run_demo
     assert "obmm_demo" not in run_demo
     assert "linqu_obmm_demo=1" not in dual_runner
-    assert "rdinit=/bin/run_demo linqu_obmm_pool=1" in dual_runner
+    assert "rdinit=/bin/run_app linqu_obmm_pool=1" in dual_runner
     assert "rdinit=/bin/run_demo obmm_pool " not in dual_runner
     assert "run_pool_app" in four_runner
     assert "[obmm-pool4]" in four_runner

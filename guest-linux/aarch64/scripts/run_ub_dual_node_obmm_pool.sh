@@ -99,7 +99,7 @@ start_node() {
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
       -initrd "$INITRAMFS_IMAGE" \
-      -append "console=ttyAMA0 rdinit=/bin/run_demo linqu_obmm_pool=1 obmm_pool_local_ip=${local_ip} obmm_pool_all_ips=${OBMM_POOL_ALL_IPS} obmm_pool_node_count=2 obmm_pool_export_size_mb=${OBMM_POOL_EXPORT_SIZE_MB} obmm_pool_import_cache_mode=${OBMM_IMPORT_CACHE_MODE} obmm_pool_stress_iters=${OBMM_POOL_STRESS_ITERS} linqu_urma_dp_role=${role} linqu_node_idx=${node_idx} ${APPEND_EXTRA}" \
+      -append "console=ttyAMA0 rdinit=/bin/run_app linqu_obmm_pool=1 obmm_pool_local_ip=${local_ip} obmm_pool_all_ips=${OBMM_POOL_ALL_IPS} obmm_pool_node_count=2 obmm_pool_export_size_mb=${OBMM_POOL_EXPORT_SIZE_MB} obmm_pool_import_cache_mode=${OBMM_IMPORT_CACHE_MODE} obmm_pool_stress_iters=${OBMM_POOL_STRESS_ITERS} linqu_urma_dp_role=${role} linqu_node_idx=${node_idx} ${APPEND_EXTRA}" \
       >"$qemu_log" 2>&1 &
   echo $! > "$pid_file"
 }
@@ -170,7 +170,7 @@ validate_node_log() {
     *) return 1 ;;
   esac
 
-  assert_log_has "$log_file" "\\[run_demo\\] run linqu_ub_obmm_pool|\\[init\\] ub obmm pool app pass" "$node_name binary" || return 1
+  assert_log_has "$log_file" "\\[run_(app|demo)\\] run linqu_ub_obmm_pool|\\[init\\] ub obmm pool app pass" "$node_name binary" || return 1
   assert_log_has "$log_file" "\\[ub_obmm_pool\\] export -> ok mem_id=[0-9]+ uba=0x[0-9a-f]+ token=[0-9]+" "$node_name export" || return 1
   assert_log_has "$log_file" "\\[ub_obmm_pool\\] metadata exchange -> ok count=2" "$node_name metadata" || return 1
   assert_log_has "$log_file" "\\[ub_obmm_pool\\] import_all -> ok remote_slots=1" "$node_name import" || return 1
@@ -213,7 +213,7 @@ while (( SECONDS < deadline )); do
     grep '\[ub_obmm_pool\]' "$NODEB_GUEST_LOG" | tail -8
     exit 0
   fi
-  if grep -qE '\[ub_obmm_pool\] fail|\[run_demo\] linqu_ub_obmm_pool failed|\[init\] ub obmm pool app fail|Kernel panic - not syncing|Call trace:' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
+  if grep -qE '\[ub_obmm_pool\] fail|\[run_(app|demo)\] linqu_ub_obmm_pool failed|\[init\] ub obmm pool app fail|Kernel panic - not syncing|Call trace:' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
     echo "[obmm-pool] FAIL: app or kernel reported failure" >&2
     exit 1
   fi
