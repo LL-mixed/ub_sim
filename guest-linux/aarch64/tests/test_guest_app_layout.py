@@ -27,6 +27,9 @@ def test_ub_rpc_uses_canonical_app_source():
     assert 'RPC_SRC="$ROOT_DIR/apps/ub_rpc/ub_rpc.c"' in build_script
     assert "linqu_ub_rpc=1" in init_source
     assert "linqu_ub_rpc=1" in run_app
+    assert "\\\\[ub_rpc\\\\] pass" in dual_runner
+    assert "\\\\[ub_rpc\\\\] fail" in dual_runner
+    assert "\\[init\\] ub rpc app pass" not in dual_runner
     assert "linqu_ub_rpc_demo" not in init_source
     assert "linqu_ub_rpc_demo" not in run_app
     assert "linqu_ub_rpc_demo" not in dual_runner
