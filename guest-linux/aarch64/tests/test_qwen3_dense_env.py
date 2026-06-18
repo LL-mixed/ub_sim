@@ -1718,6 +1718,76 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("load W5 execution decisions", result.stderr)
 
+    def test_w5_cluster_config_runner_validate_only_rejects_missing_memory_decision_store(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        config_runner = script_dir / "run_w5_cluster_config.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            weights_path = tmp_path / "qwen3-14b"
+            self.write_qwen3_14b_stub_weights(weights_path)
+            decision_store = tmp_path / "missing-w5-decision-store.json"
+            object_store = tmp_path / "w5-object-store.json"
+            object_store.write_text("{}", encoding="utf-8")
+            config_path = tmp_path / "w5.env"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
+                        "SIM_QWEN3_GUEST_DECODE_STEPS=2",
+                        f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
+                        f"SIM_W5_MEMORY_DECISION_STORE={decision_store}",
+                        f"SIM_W5_MEMORY_DECISION_OBJECT_STORE={object_store}",
+                        "SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID=missing-run",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(config_runner), "--validate-only", str(config_path)],
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("W5 Memory Service decision store is missing", result.stderr)
+
+    def test_w5_cluster_config_runner_validate_only_rejects_missing_memory_decision_object_store(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        config_runner = script_dir / "run_w5_cluster_config.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            weights_path = tmp_path / "qwen3-14b"
+            self.write_qwen3_14b_stub_weights(weights_path)
+            decision_store = tmp_path / "w5-decision-store.json"
+            object_store = tmp_path / "missing-w5-object-store.json"
+            decision_store.write_text("{}", encoding="utf-8")
+            config_path = tmp_path / "w5.env"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
+                        "SIM_QWEN3_GUEST_DECODE_STEPS=2",
+                        f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
+                        f"SIM_W5_MEMORY_DECISION_STORE={decision_store}",
+                        f"SIM_W5_MEMORY_DECISION_OBJECT_STORE={object_store}",
+                        "SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID=missing-run",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(config_runner), "--validate-only", str(config_path)],
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("W5 Memory Service decision object store is missing", result.stderr)
+
     def test_w5_cluster_config_runner_validate_only_rejects_missing_weights_path(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
         config_runner = script_dir / "run_w5_cluster_config.sh"

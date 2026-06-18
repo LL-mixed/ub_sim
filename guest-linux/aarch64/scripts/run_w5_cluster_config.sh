@@ -256,6 +256,16 @@ validate_w5_cluster_config() {
       echo "SIM_W5_MEMORY_DECISION_STORE requires a boundary observation/decision selector or enabled prefix-cache lookup for live Memory Service reuse" >&2
       return 2
     fi
+    if [[ ! -f "$SIM_W5_MEMORY_DECISION_STORE" ]]; then
+      echo "W5 Memory Service decision store is missing: $SIM_W5_MEMORY_DECISION_STORE" >&2
+      return 2
+    fi
+  fi
+  if [[ -n "${SIM_W5_MEMORY_DECISION_OBJECT_STORE:-}" ]]; then
+    if [[ ! -f "$SIM_W5_MEMORY_DECISION_OBJECT_STORE" ]]; then
+      echo "W5 Memory Service decision object store is missing: $SIM_W5_MEMORY_DECISION_OBJECT_STORE" >&2
+      return 2
+    fi
   fi
   if (( memory_require_prefix_cache )) && (( memory_prefix_cache_lookup == 0 )); then
     echo "SIM_W5_REQUIRE_PREFIX_CACHE requires SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP=1" >&2
