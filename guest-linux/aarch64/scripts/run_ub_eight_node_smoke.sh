@@ -65,7 +65,7 @@ validate_guest_log() {
 
   assert_log_has "$guest_log" "\\[init\\] ipourma bootstrap iface=ipourma0 ifindex=[0-9]+ local=${local_ip} peer=\\(none\\)" \
     "${node_id} ipourma bootstrap" || return 1
-  assert_log_has "$guest_log" "\\[run_demo\\] boot flow completed, dropping to shell" \
+  assert_log_has "$guest_log" "\\[run_app\\] entering interactive shell" \
     "${node_id} shell reached" || return 1
   assert_log_absent "$guest_log" "Kernel panic - not syncing" "${node_id} kernel panic" || return 1
   assert_log_absent "$guest_log" "WARNING: CPU:" "${node_id} kernel warning" || return 1
@@ -147,7 +147,7 @@ main() {
   for idx in {1..8}; do
     node_id="${NODE_IDS[$idx]}"
     guest_log="$run_dir/${node_id}_guest.log"
-    if ! wait_for_log_pattern "$guest_log" "\\[run_demo\\] boot flow completed, dropping to shell" "$BOOT_WAIT_SECS"; then
+    if ! wait_for_log_pattern "$guest_log" "\\[run_app\\] entering interactive shell" "$BOOT_WAIT_SECS"; then
       echo "shell gate timeout: $node_id" >&2
       result=1
       break

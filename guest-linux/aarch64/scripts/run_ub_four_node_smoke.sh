@@ -56,8 +56,8 @@ validate_guest_log() {
   assert_log_has "$guest_log" "\\[init\\] ipourma bootstrap iface=ipourma0 ifindex=[0-9]+ local=${local_ip} peer=\\(none\\)" \
     "${node_id} ipourma bootstrap" || return 1
   assert_log_has "$guest_log" "\\[init\\] switching to /bin/run_demo app boot flow" \
-    "${node_id} enter run_demo" || return 1
-  assert_log_has "$guest_log" "\\[run_demo\\] boot flow completed, dropping to shell" \
+    "${node_id} enter run_app" || return 1
+  assert_log_has "$guest_log" "\\[run_app\\] entering interactive shell" \
     "${node_id} shell reached" || return 1
   assert_log_absent "$guest_log" "Kernel panic - not syncing" \
     "${node_id} kernel panic" || return 1
@@ -97,7 +97,7 @@ run_iteration() {
 
   for idx in {1..4}; do
     local guest_log="$run_dir/${NODE_IDS[$idx]}_guest.log"
-    if ! wait_for_log_pattern "$guest_log" "\\[run_demo\\] boot flow completed, dropping to shell" "$BOOT_WAIT_SECS"; then
+    if ! wait_for_log_pattern "$guest_log" "\\[run_app\\] entering interactive shell" "$BOOT_WAIT_SECS"; then
       echo "iteration ${iter}: ${NODE_IDS[$idx]} did not reach shell within ${BOOT_WAIT_SECS}s" >&2
       result=1
       break

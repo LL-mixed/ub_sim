@@ -595,3 +595,12 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     assert "linqu_w4_demo" not in w4_runner
     assert "run_ub_dual_node_demo.sh" not in w4_runner
     assert not (ROOT / "scripts" / "run_ub_dual_node_demo.sh").exists()
+
+
+def test_guest_scripts_wait_for_run_app_ready_marker():
+    scripts_dir = ROOT / "scripts"
+    scripts = "\n".join(path.read_text() for path in sorted(scripts_dir.glob("*.sh")))
+
+    assert "[run_demo] boot flow completed, dropping to shell" not in scripts
+    assert "\\[run_demo\\] boot flow completed, dropping to shell" not in scripts
+    assert "[run_app] entering interactive shell" in scripts

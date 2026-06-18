@@ -157,7 +157,7 @@ PY
 wait_for_guest_shell() {
   local file="$1"
   local timeout_s="$2"
-  wait_for_log_pattern "$file" "\\[run_demo\\] boot flow completed, dropping to shell" "$timeout_s"
+  wait_for_log_pattern "$file" "\\[run_app\\] entering interactive shell" "$timeout_s"
 }
 
 slice_log_since() {

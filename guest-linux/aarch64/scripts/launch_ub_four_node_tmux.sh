@@ -144,7 +144,7 @@ guest_log = pathlib.Path(sys.argv[1])
 node_id = sys.argv[2]
 timeout_s = int(sys.argv[3])
 deadline = time.time() + timeout_s
-ok_marker = "[run_demo] boot flow completed, dropping to shell"
+ok_marker = "[run_app] entering interactive shell"
 bad_markers = ("Kernel panic", "No working init found", "TIMEOUT")
 
 while time.time() < deadline:
