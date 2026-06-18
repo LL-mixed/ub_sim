@@ -32,7 +32,7 @@ instead of env-prefixed one-off shell commands.
 | `obmm_dataplane_microbench` | `scripts/run_ub_dual_node_obmm_dataplane_microbench.sh` | `scripts/run_ub_eight_node_obmm_dataplane_microbench.sh` |
 | `obmm_import_stress` | `scripts/run_ub_dual_node_obmm_import_stress.sh` | `scripts/run_ub_eight_node_obmm_import_stress.sh` |
 | `obmm_gsva` | `scripts/run_ub_dual_node_obmm_gsva.sh` | `scripts/run_ub_multi_node_obmm_gsva_matrix.sh` |
-| `obmm_coh_test` | `scripts/run_ub_dual_node_obmm_coh_test.sh` | `scripts/run_ub_four_node_obmm_coh_test.sh` |
+| `obmm_coh_test` | `scripts/run_ub_dual_node_obmm_coh_test.sh` | `scripts/run_ub_eight_node_obmm_coh_test.sh` |
 | `gva_direct` | `scripts/run_ub_dual_node_gva_direct_test.sh` | `scripts/run_ub_dual_node_gva_direct_matrix.sh` |
 | `gva_manager` | `scripts/run_ub_dual_node_gsva_manager_bootstrap.sh` | `scripts/run_ub_four_node_gsva_manager_bootstrap.sh` |
 | `gsva_query` | `scripts/run_ub_gsva_query_caps_test.sh` | `scripts/run_ub_dual_node_apps.sh --app gsva_query` |

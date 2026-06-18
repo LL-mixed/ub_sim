@@ -44,7 +44,7 @@ APP_VALIDATION_COMMANDS = {
     ],
     "obmm_coh_test": [
         "scripts/run_ub_dual_node_obmm_coh_test.sh",
-        "scripts/run_ub_four_node_obmm_coh_test.sh",
+        "scripts/run_ub_eight_node_obmm_coh_test.sh",
     ],
     "gva_direct": [
         "scripts/run_ub_dual_node_gva_direct_test.sh",
@@ -313,11 +313,18 @@ def test_obmm_coh_test_has_independent_dual_node_bootflow():
 def test_obmm_coh_test_runner_uses_app_flag_entrypoint():
     runner = (ROOT / "scripts" / "run_ub_dual_node_obmm_coh_test.sh").read_text()
     four_runner = (ROOT / "scripts" / "run_ub_four_node_obmm_coh_test.sh").read_text()
+    eight_runner = (ROOT / "scripts" / "run_ub_eight_node_obmm_coh_test.sh").read_text()
 
     assert "rdinit=/bin/run_app linqu_obmm_coh_test=1" in runner
     assert "rdinit=/bin/run_demo obmm_coh_test " not in runner
     assert "rdinit=/bin/run_app linqu_obmm_coh_test=1" in four_runner
     assert "rdinit=/bin/run_demo obmm_coh_test " not in four_runner
+    assert 'COH_NODE_COUNT="${COH_NODE_COUNT:-8}"' in eight_runner
+    assert "ub_topology_eight_node_full_mesh.ini" in eight_runner
+    assert 'UB_SIM_PORT_NUM="${UB_SIM_PORT_NUM:-7}"' in eight_runner
+    assert 'exec "$SCRIPT_DIR/run_ub_four_node_obmm_coh_test.sh" "$@"' in eight_runner
+    assert 'pass_count == COH_NODE_COUNT' in four_runner
+    assert 'obmm_coh_test_node_count=${COH_NODE_COUNT}' in four_runner
 
 
 def test_npu_gsva_test_has_independent_app_build():
