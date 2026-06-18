@@ -13,6 +13,8 @@
  *   --write-only          Only write stress
  *   --chunk-size <bytes>  Access chunk size (default 8)
  *   --seed <n>            RNG seed (default 42)
+ *   --node-count <n>      Participating nodes (default 2)
+ *   --peer-index <n>      Peer node to import, 0-based (default next node)
  */
 
 #define _GNU_SOURCE
@@ -86,6 +88,8 @@ struct stress_config {
     uint64_t pte_offset;
     uint64_t gsva_base;
     uint64_t gsva_generation;
+    int node_count;
+    int peer_index;
     bool gva_home_va_set;
     bool gva_local_va_set;
     bool gva_pte_offset_set;
@@ -471,6 +475,48 @@ static void stress_clear_gsva_aperture(int obmm_fd, uint64_t generation)
     }
 }
 
+static int stress_got_count(const bool got[OBMM_POOL_HELPERS_MAX_NODES],
+                            int node_count)
+{
+    int count = 0;
+    int i;
+
+    for (i = 0; i < node_count; i++) {
+        if (got[i])
+            count++;
+    }
+    return count;
+}
+
+static int stress_default_peer_index(int local_idx, int node_count)
+{
+    return (local_idx + 1) % node_count;
+}
+
+static bool stress_parse_local_ipv4_index(int node_count, int *local_idx)
+{
+    char local_ip[INET_ADDRSTRLEN];
+    char *end = NULL;
+    long octet;
+
+    if (!obmm_env_or_cmdline("LINQU_UB_LOCAL_IP", "linqu_ipourma_ipv4",
+                             local_ip, sizeof(local_ip))) {
+        return false;
+    }
+    end = strrchr(local_ip, '.');
+    if (!end || end[1] == '\0') {
+        return false;
+    }
+    errno = 0;
+    octet = strtol(end + 1, &end, 10);
+    if (errno != 0 || !end || *end != '\0' || octet < 1 ||
+        octet > node_count) {
+        return false;
+    }
+    *local_idx = (int)octet - 1;
+    return true;
+}
+
 static bool stress_finalize_gva_config(struct stress_config *cfg,
                                       uint64_t remote_uba)
 {
@@ -579,6 +625,8 @@ static bool stress_parse_args(int argc, char **argv, struct stress_config *cfg)
         .write_only = false,
         .chunk_size = STRESS_DEFAULT_CHUNK_SIZE,
         .seed = STRESS_DEFAULT_SEED,
+        .node_count = 2,
+        .peer_index = -1,
     };
     stress_init_gva_defaults(cfg);
 
@@ -612,6 +660,22 @@ static bool stress_parse_args(int argc, char **argv, struct stress_config *cfg)
             cfg->chunk_size = strtoull(argv[++i], NULL, 0);
         } else if (strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
             cfg->seed = strtoul(argv[++i], NULL, 0);
+        } else if (strcmp(argv[i], "--node-count") == 0 && i + 1 < argc) {
+            uint32_t node_count;
+            if (!parse_u32_arg(argv[++i], &node_count) ||
+                node_count < 2 || node_count > OBMM_POOL_HELPERS_MAX_NODES) {
+                fprintf(stderr, "invalid --node-count %s\n", argv[i]);
+                return false;
+            }
+            cfg->node_count = (int)node_count;
+        } else if (strcmp(argv[i], "--peer-index") == 0 && i + 1 < argc) {
+            uint32_t peer_index;
+            if (!parse_u32_arg(argv[++i], &peer_index) ||
+                peer_index >= OBMM_POOL_HELPERS_MAX_NODES) {
+                fprintf(stderr, "invalid --peer-index %s\n", argv[i]);
+                return false;
+            }
+            cfg->peer_index = (int)peer_index;
         } else if (strcmp(argv[i], "--gva-mode") == 0 && i + 1 < argc) {
             if (!parse_stress_gva_mode(argv[++i], &cfg->gva_mode)) {
                 fprintf(stderr, "unknown --gva-mode %s\n", argv[i]);
@@ -708,6 +772,10 @@ static bool stress_parse_args(int argc, char **argv, struct stress_config *cfg)
         fprintf(stderr, "cannot use both --read-only and --write-only\n");
         return false;
     }
+    if (cfg->peer_index >= cfg->node_count) {
+        fprintf(stderr, "--peer-index must be less than --node-count\n");
+        return false;
+    }
     if (cfg->gva_mode == STRESS_GVA_MODE_GSVA && cfg->flush != FLUSH_NONE) {
         fprintf(stderr, "GSVA mode only supports --flush-mode none\n");
         return false;
@@ -733,6 +801,8 @@ static void stress_usage(const char *prog)
            "  --write-only          Write stress only\n"
            "  --chunk-size <bytes>  (default %d)\n"
            "  --seed <n>            RNG seed (default %d)\n"
+           "  --node-count <n>      Participating nodes, 2..%d (default 2)\n"
+           "  --peer-index <n>      Peer node to import, 0-based\n"
            "  --gva-mode <legacy|generic|gsva>\n"
            "  --gva-map-source <legacy|legacy-obmm|gva|gva-manager>\n"
            "  --gva-address-profile <generic|gsva>\n"
@@ -750,7 +820,8 @@ static void stress_usage(const char *prog)
            "  --gsva-base <addr>\n"
            "  --gsva-generation <n>\n",
            prog, STRESS_DEFAULT_SIZE, STRESS_DEFAULT_ITERATIONS,
-           STRESS_DEFAULT_CHUNK_SIZE, STRESS_DEFAULT_SEED);
+           STRESS_DEFAULT_CHUNK_SIZE, STRESS_DEFAULT_SEED,
+           OBMM_POOL_HELPERS_MAX_NODES);
 }
 
 static bool stress_import_region(int obmm_fd, const struct stress_config *cfg,
@@ -782,7 +853,8 @@ int main(int argc, char **argv)
     int shmdev_fd = -1;
     uint64_t local_cna = 0;
     int local_idx = -1;
-    int node_count = 2;
+    int node_count = 0;
+    int peer_idx = -1;
     struct obmm_helpers_meta local_meta = { 0 };
     struct obmm_helpers_meta remote_metas[OBMM_POOL_HELPERS_MAX_NODES] = { 0 };
     bool got[OBMM_POOL_HELPERS_MAX_NODES] = { false };
@@ -825,8 +897,11 @@ int main(int argc, char **argv)
         local_cna = (uint32_t)cna_u64;
         stress_log("cna from sysfs=%#x", (uint32_t)local_cna);
     }
+    node_count = cfg.node_count;
     if (obmm_cmdline_get("linqu_node_idx", cmdline_val, sizeof(cmdline_val))) {
         local_idx = (int)strtol(cmdline_val, NULL, 0);
+    } else if (stress_parse_local_ipv4_index(node_count, &local_idx)) {
+        stress_log("local_idx from ip=%d", local_idx);
     } else {
         char role[32] = {0};
         if (obmm_cmdline_get("linqu_urma_dp_role", role, sizeof(role))) {
@@ -840,7 +915,20 @@ int main(int argc, char **argv)
             local_idx = 0;
         }
     }
-    stress_log("local_idx=%d node_count=%d", local_idx, node_count);
+    if (local_idx < 0 || local_idx >= node_count) {
+        stress_log("invalid local_idx=%d node_count=%d", local_idx, node_count);
+        goto cleanup;
+    }
+    peer_idx = cfg.peer_index >= 0
+        ? cfg.peer_index
+        : stress_default_peer_index(local_idx, node_count);
+    if (peer_idx < 0 || peer_idx >= node_count || peer_idx == local_idx) {
+        stress_log("invalid peer_idx=%d local_idx=%d node_count=%d",
+                   peer_idx, local_idx, node_count);
+        goto cleanup;
+    }
+    stress_log("local_idx=%d peer_idx=%d node_count=%d",
+               local_idx, peer_idx, node_count);
 
     if (cfg.gva_mode == STRESS_GVA_MODE_GSVA) {
         if (!stress_register_gsva_aperture(obmm_fd, &cfg, local_idx,
@@ -880,18 +968,19 @@ int main(int argc, char **argv)
         stress_log("bootstrap lookup failed errno=%d", errno);
         goto cleanup;
     }
-    stress_log("bootstrap lookup ok got[0]=%d got[1]=%d", got[0], got[1]);
+    stress_log("bootstrap lookup ok got_count=%d node_count=%d peer_got=%d",
+               stress_got_count(got, node_count), node_count, got[peer_idx]);
 
-    if (!got[local_idx ^ 1]) {
+    if (!got[peer_idx]) {
         stress_log("remote node not found in bootstrap");
         goto cleanup;
     }
-    if (!stress_finalize_gva_config(&cfg, remote_metas[local_idx ^ 1].remote_uba)) {
+    if (!stress_finalize_gva_config(&cfg, remote_metas[peer_idx].remote_uba)) {
         stress_log("invalid gva config");
         goto cleanup;
     }
     if (cfg.gva_mode == STRESS_GVA_MODE_GSVA && cfg.gva_id == 0) {
-        cfg.gva_id = (uint64_t)(local_idx ^ 1) + 1;
+        cfg.gva_id = (uint64_t)peer_idx + 1;
     }
     stress_log("using gva config mode=%d map_source=%u address_profile=%u cache_policy=%u vmid=%u asid=%u tid=%u p_tag=%u access_flags=%u token_value=%u "
                "local_va=%" PRIx64 " home_va=%" PRIx64 " pte_offset=%" PRIx64,
@@ -911,7 +1000,7 @@ int main(int argc, char **argv)
     }
     stress_log("alloc_pas ok pa=%" PRIx64, local_pas[0]);
     if (!stress_import_region(
-            obmm_fd, &cfg, &remote_metas[local_idx ^ 1], (uint32_t)local_cna,
+            obmm_fd, &cfg, &remote_metas[peer_idx], (uint32_t)local_cna,
             local_pas[0], &import_mem_id)) {
         stress_log("import failed errno=%d", errno);
         goto cleanup;

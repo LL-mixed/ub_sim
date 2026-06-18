@@ -36,7 +36,7 @@ APP_VALIDATION_COMMANDS = {
     ],
     "obmm_import_stress": [
         "scripts/run_ub_dual_node_obmm_import_stress.sh",
-        "scripts/run_ub_dual_node_apps.sh --app obmm_import_stress",
+        "scripts/run_ub_eight_node_obmm_import_stress.sh",
     ],
     "obmm_gsva": [
         "scripts/run_ub_dual_node_obmm_gsva.sh",
@@ -246,9 +246,21 @@ def test_obmm_import_stress_has_integration_entrypoints():
 
 def test_obmm_import_stress_runner_uses_app_flag_entrypoint():
     runner = (ROOT / "scripts" / "run_ub_dual_node_obmm_import_stress.sh").read_text()
+    eight_runner = (ROOT / "scripts" / "run_ub_eight_node_obmm_import_stress.sh").read_text()
+    app_source = (ROOT / "apps" / "obmm_import_stress" / "obmm_import_stress.c").read_text()
 
     assert "rdinit=/bin/run_app linqu_obmm_import_stress=1" in runner
     assert "rdinit=/bin/run_demo obmm_import_stress " not in runner
+    assert "/bin/linqu_ub_obmm_import_stress" in eight_runner
+    assert "--node-count 8 --peer-index" in eight_runner
+    assert "\\\\[obmm_import_stress\\\\] local_idx=${local_idx} peer_idx=${peer_idx} node_count=8" in eight_runner
+    assert "\\\\[obmm_import_stress\\\\] bootstrap lookup ok got_count=8 node_count=8 peer_got=1" in eight_runner
+    assert "\\\\[obmm_import_stress\\\\] result=done " in eight_runner
+    assert "rdinit=/bin/run_demo obmm_import_stress " not in eight_runner
+    assert "--node-count" in app_source
+    assert "--peer-index" in app_source
+    assert "stress_default_peer_index" in app_source
+    assert "remote_metas[peer_idx]" in app_source
 
 
 def test_obmm_coh_test_has_independent_dual_node_bootflow():
@@ -821,6 +833,7 @@ def test_eight_node_matrix_runners_use_headless_serial_sockets():
         "run_ub_eight_node_udma_matrix.sh",
         "run_ub_eight_node_obmm_pool.sh",
         "run_ub_eight_node_obmm_queue.sh",
+        "run_ub_eight_node_obmm_import_stress.sh",
     ]
 
     for runner_name in runner_names:
