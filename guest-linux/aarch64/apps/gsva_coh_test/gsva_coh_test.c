@@ -188,7 +188,7 @@ static void test_retire_while_shared(int obmm_fd, uint32_t local_cna,
     TEST("GSVA event retire while segment is shared");
     struct obmm_helpers_meta metas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
     bool got[OBMM_POOL_HELPERS_MAX_NODES] = {false};
-    uint64_t base = GSVA_BASE + 0x800000ULL;
+    uint64_t base = GSVA_BASE + 0x1000000ULL;
     uint64_t my_base = base + (uint64_t)node_idx * GSVA_SIZE;
     uint64_t import_pas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
     bool import_osync[OBMM_POOL_HELPERS_MAX_NODES] = {false};
