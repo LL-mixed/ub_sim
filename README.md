@@ -302,17 +302,17 @@ tmux 里你会看到：
 
 ### 5.2 在双节点 guest 中交互
 
-启动完成后，guest 默认会先走 `/bin/run_demo` bootstrap，然后进入 shell。
+启动完成后，guest 默认会先走 `/bin/run_app` bootstrap，然后进入 shell。
 
 在 guest 里常用命令：
 
 ```bash
-/bin/run_demo chat
-/bin/run_demo rpc
-/bin/run_demo udma
-/bin/run_demo obmm_pool
-/bin/run_demo all
-/bin/run_demo shell
+/bin/run_app chat
+/bin/run_app rpc
+/bin/run_app udma
+/bin/run_app obmm_pool
+/bin/run_app all
+/bin/run_app shell
 ```
 
 如果你已经退回宿主机，可以重新进入 tmux：
@@ -360,7 +360,7 @@ BUSYBOX="$BUSYBOX" \
 - UAPI scenario: `scenarios/mvp_4host_single_domain.yaml`
 - 节点：`nodeA/nodeB/nodeC/nodeD`
 
-和双节点不同的是，四节点脚本会等所有 guest 都完成 `/bin/run_demo` bootstrap，再报告 shell ready。
+和双节点不同的是，四节点脚本会等所有 guest 都完成 `/bin/run_app` bootstrap，再报告 shell ready。
 
 ### 6.2 在四节点环境里交互
 
@@ -369,11 +369,11 @@ BUSYBOX="$BUSYBOX" \
 常用命令仍然是：
 
 ```bash
-/bin/run_demo chat
-/bin/run_demo rpc
-/bin/run_demo udma
-/bin/run_demo obmm_pool
-/bin/run_demo shell
+/bin/run_app chat
+/bin/run_app rpc
+/bin/run_app udma
+/bin/run_app obmm_pool
+/bin/run_app shell
 ```
 
 ### 6.3 四节点验证脚本
@@ -568,7 +568,7 @@ export BUSYBOX=$PWD/busybox-aarch64
 ## 10. 进一步文档
 
 - [guest-linux/aarch64/README.md](guest-linux/aarch64/README.md)
-  更细的 guest harness、run_demo、tmux 细节
+  更细的 guest harness、run_app、tmux 细节
 - [docs/README.md](docs/README.md)
   设计说明和验证报告入口
 - [scenarios/README.md](scenarios/README.md)

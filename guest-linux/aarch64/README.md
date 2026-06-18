@@ -30,7 +30,8 @@ environment variables:
 - `BUSYBOX`
   - optional path to a static ARM64 busybox binary
   - if provided, the initramfs becomes a small userspace image with a shell
-  - `run_demo` is copied to `/bin/run_demo` and can be used as `rdinit`
+  - `run_app` is copied to `/bin/run_app` and is the canonical app `rdinit`
+  - `run_demo` is copied only as a compatibility wrapper to `/bin/run_app`
   - if not provided, `scripts/build_initramfs.sh` first reuses local
     `guest-linux/aarch64/busybox-aarch64` when present
   - if no local binary exists, `scripts/build_initramfs.sh` will try to build
@@ -130,12 +131,12 @@ and cache `busybox-aarch64` automatically.
 Inside guest, you can run:
 
 ```sh
-/bin/run_demo chat
-/bin/run_demo rpc
-/bin/run_demo udma
-/bin/run_demo obmm_pool
-/bin/run_demo all
-/bin/run_demo shell
+/bin/run_app chat
+/bin/run_app rpc
+/bin/run_app udma
+/bin/run_app obmm_pool
+/bin/run_app all
+/bin/run_app shell
 ```
 
 `obmm_pool` runs the pool-based validation path. The current guest binary behind this entry is
@@ -145,9 +146,9 @@ For `N=2` it validates the dual-node pool case; for `N=4` and `N=8` it validates
 that every node exports one slot, imports all remote slots, and completes the
 round-based pool touch/update barrier.
 
-`run_demo` can also be used as `rdinit` (`rdinit=/bin/run_demo`) so the guest
-enters this entrypoint immediately after boot and keeps dropping to an interactive
-shell after startup tasks.
+`run_app` can also be used as `rdinit` (`rdinit=/bin/run_app`) so the guest
+enters this entrypoint immediately after boot and keeps dropping to an
+interactive shell after startup tasks.
 
 ## Artifact Freshness
 
@@ -217,12 +218,12 @@ export LINQU_UB_GUEST_MODULE=$PWD/guest-linux/aarch64/out/modules/linqu_ub_drv.k
 guest-linux/aarch64/scripts/build_initramfs.sh
 
 # 3) Run minimal ubcore/urma end-to-end send/recv
-export RDINIT=/bin/run_demo
+export RDINIT=/bin/run_app
 guest-linux/aarch64/scripts/run_ub_dual_node_ubcore_urma_e2e.sh
 ```
 
-`RDINIT` is also optional override; by default the dual-node scripts use
-`/bin/run_demo` when the image contains that script.
+`RDINIT` is also an optional override; by default the dual-node scripts use
+`/bin/run_app`.
 
 `scripts/run_ub_dual_node_ubcore_urma_e2e.sh` validates:
 - `Register ubcore client success.`
@@ -251,8 +252,8 @@ guest-linux/aarch64/scripts/launch_ub_dual_node_tmux.sh
 
 Default behavior:
 
-- guest kernel cmdline uses `rdinit=/bin/run_demo`
-- `run_demo` first enters `/bin/linqu_init` to complete bootstrap/readiness
+- guest kernel cmdline uses `rdinit=/bin/run_app`
+- `run_app` first enters `/bin/linqu_init` to complete bootstrap/readiness
 - after bootstrap it drops into a busybox shell (`~ #`)
 - no app is auto-started unless explicit app flags are passed
 
@@ -275,8 +276,8 @@ Useful overrides:
 # custom session name
 TMUX_SESSION_NAME=ub-dev guest-linux/aarch64/scripts/launch_ub_dual_node_tmux.sh
 
-# boot guest directly into run_demo instead of shell
-RDINIT=/bin/run_demo \
+# boot guest directly into run_app with explicit app flags
+RDINIT=/bin/run_app \
 APPEND_EXTRA="linqu_probe_skip=1 linqu_probe_load_helper=1 linqu_ub_chat=1 linqu_ub_rpc=1 linqu_ub_tcp_each_server=1" \
 guest-linux/aarch64/scripts/launch_ub_dual_node_tmux.sh
 
@@ -309,10 +310,10 @@ guest-linux/aarch64/scripts/launch_ub_four_node_tmux.sh
 Default behavior:
 
 - topology: `vendor/ub_topology_four_node_full_mesh.ini`
-- guest kernel cmdline uses `rdinit=/bin/run_demo`
-- each guest completes `/bin/run_demo` bootstrap first
+- guest kernel cmdline uses `rdinit=/bin/run_app`
+- each guest completes `/bin/run_app` bootstrap first
 - the control window waits until all four guest logs reach
-  `[run_demo] boot flow completed, dropping to shell`
+  `[run_app] entering interactive shell`
 - only after that does the session report the interactive shells as ready
 
 Useful overrides:
@@ -487,20 +488,20 @@ OBMM pool allocation failure seen with smaller guest memory settings such as
 `4G` plus `pmd_mapping=25%` or `50%`. Both values remain overridable through
 `QEMU_MEM` and `APPEND_EXTRA`.
 
-### run_demo wrapper
+### run_app launcher
 
 Instead of calling the binaries directly, you can also use:
 
 ```sh
-/bin/run_demo chat
-/bin/run_demo rpc
-/bin/run_demo tcp
-/bin/run_demo udma
-/bin/run_demo obmm_pool
-/bin/run_demo all
+/bin/run_app chat
+/bin/run_app rpc
+/bin/run_app tcp
+/bin/run_app udma
+/bin/run_app obmm_pool
+/bin/run_app all
 ```
 
-`run_demo all` is less precise for interactive debugging.
+`run_app all` is less precise for interactive debugging.
 For bring-up and issue isolation, prefer invoking the single app entries in
 the order listed above.
 
@@ -514,14 +515,16 @@ Current initramfs entrypoints are intentionally separated:
   - dispatches only by `linqu_init_action=...`
 - `/bin/linqu_init`
   - compiled bootstrap/orchestration binary from `init.c`
-  - handles driver bootstrap, readiness waits, and demo/probe execution
-- `/bin/run_demo`
-  - demo-oriented entrypoint
-  - can be used as `rdinit=/bin/run_demo`
+  - handles driver bootstrap, readiness waits, and app/probe execution
+- `/bin/run_app`
+  - app-oriented entrypoint
+  - can be used as `rdinit=/bin/run_app`
   - invokes `/bin/linqu_init` when bootstrap is needed
+- `/bin/run_demo`
+  - compatibility wrapper that execs `/bin/run_app`
 
 Recommended usage:
 
-- automated validation: `rdinit=/bin/run_demo`
-- interactive shell bring-up: `rdinit=/bin/run_demo`
+- automated validation: `rdinit=/bin/run_app`
+- interactive shell bring-up: `rdinit=/bin/run_app`
 - legacy probe-only path: `rdinit=/init linqu_init_action=probe`
