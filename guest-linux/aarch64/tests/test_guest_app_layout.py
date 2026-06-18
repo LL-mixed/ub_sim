@@ -121,6 +121,8 @@ def test_app_validation_matrix_runner_matches_readme_commands():
     assert "--status-file PATH" in runner
     assert "STATUS_FILE=" in runner
     assert "status_has_pass" in runner
+    assert "local status=" not in runner
+    assert "status_value" in runner
     assert "/bin/run_demo" not in runner
     for app, commands in APP_VALIDATION_COMMANDS.items():
         assert f"\"{app}|{commands[0]}|{commands[1]}\"" in runner

@@ -77,11 +77,11 @@ script_abs_path() {
 record_status() {
   local app="$1"
   local scope="$2"
-  local status="$3"
+  local status_value="$3"
   local rc="$4"
   local rel_path="$5"
 
-  printf '%s|%s|%s|%s|%s\n' "$app" "$scope" "$status" "$rc" "$rel_path" >> "$STATUS_FILE"
+  printf '%s|%s|%s|%s|%s\n' "$app" "$scope" "$status_value" "$rc" "$rel_path" >> "$STATUS_FILE"
 }
 
 status_has_pass() {
