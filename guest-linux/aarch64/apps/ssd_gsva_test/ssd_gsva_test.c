@@ -29,6 +29,7 @@
 #define SNAPSHOT_OFFSET  0x4000ULL
 #define SNAPSHOT_SIZE    0x10000ULL
 #define TIMEOUT_OFFSET   0x15000ULL
+#define TIMEOUT_OUTPUT_OFFSET 0x18000ULL
 
 static int obmm_fd = -1;
 static int ssd_fd = -1;
@@ -42,6 +43,8 @@ static struct obmm_helpers_meta peer_metas[OBMM_POOL_HELPERS_MAX_NODES];
 static bool peer_got[OBMM_POOL_HELPERS_MAX_NODES];
 static int peer_ids[OBMM_POOL_HELPERS_MAX_NODES];
 static int peer_count = 0;
+static int selected_peer_node_idx = -1;
+static bool matrix_suite = false;
 static uint64_t import_mem_id = 0;
 static struct obmm_helpers_region peer_region;
 static uint64_t peer_gsva_base = 0;
@@ -1070,7 +1073,7 @@ static int test_coh_timeout_injection(void)
     struct ub_ssd_cmd_v1 cmd = {0};
     struct ub_ssd_cpl_v1 cpl = {0};
     uint8_t *src = peer_ptr(TIMEOUT_OFFSET);
-    uint8_t *dst = peer_ptr(TEST_DATA_SIZE * 3);
+    uint8_t *dst = peer_ptr(TIMEOUT_OUTPUT_OFFSET);
 
     printf(TAG "TEST: coherence timeout injection\n");
 
@@ -1096,6 +1099,12 @@ static int test_coh_timeout_injection(void)
     }
 
     memset(dst, 0xA5, TEST_DATA_SIZE);
+    for (int i = 0; i < TEST_DATA_SIZE; i++) {
+        if (dst[i] != 0xA5) {
+            fprintf(stderr, TAG "  FAIL: timeout output sentinel setup byte %d\n", i);
+            return -1;
+        }
+    }
     memset(&cmd, 0, sizeof(cmd));
     memset(&cpl, 0, sizeof(cpl));
     cmd.version = 1;
@@ -1106,7 +1115,7 @@ static int test_coh_timeout_injection(void)
     cmd.block_ref.block_lo = peer_block_lo(0x0B);
     cmd.block_ref.version = 0;
     cmd.block_ref.bytes = TEST_DATA_SIZE;
-    fill_buffer_desc(&cmd.buffer, TEST_DATA_SIZE * 3, TEST_DATA_SIZE,
+    fill_buffer_desc(&cmd.buffer, TIMEOUT_OUTPUT_OFFSET, TEST_DATA_SIZE,
                      g_token_value);
 
     if (ssd_submit_and_wait(&cmd, &cpl) < 0)
@@ -1190,9 +1199,23 @@ static int parse_node_info(void)
     } else {
         local_cna = (uint32_t)node_idx;
     }
+    if (obmm_env_or_cmdline("LINQU_SSD_GSVA_PEER_NODE_IDX",
+                            "linqu_ssd_gsva_peer_node_idx",
+                            buf, sizeof(buf))) {
+        selected_peer_node_idx = atoi(buf);
+    }
+    if (obmm_env_or_cmdline("LINQU_SSD_GSVA_SUITE",
+                            "linqu_ssd_gsva_suite",
+                            buf, sizeof(buf))) {
+        matrix_suite = strcmp(buf, "matrix") == 0 ||
+                       strcmp(buf, "matrix_safe") == 0;
+    }
 
     printf(TAG "node_idx=%d node_count=%d local_cna=%#x\n",
            node_idx, node_count, local_cna);
+    if (selected_peer_node_idx >= 0)
+        printf(TAG "peer_selection=node_idx=%d\n", selected_peer_node_idx);
+    printf(TAG "suite=%s\n", matrix_suite ? "matrix" : "full");
     return 0;
 }
 
@@ -1281,6 +1304,17 @@ static int setup_gsva(void)
     return 0;
 }
 
+static int find_peer_order_by_node_idx(int peer_node_idx)
+{
+    int i;
+
+    for (i = 0; i < peer_count; i++) {
+        if (peer_ids[i] == peer_node_idx)
+            return i;
+    }
+    return -1;
+}
+
 static int setup_peer_context(int peer_idx_order)
 {
     struct obmm_cmd_gsva_query_segment_v1 query = {0};
@@ -1315,7 +1349,7 @@ static int setup_peer_context(int peer_idx_order)
     peer_gsva_base = peer_desc.home_va;
     peer_slot_base = (uint64_t)node_idx * TEST_SLOT_STRIDE;
 
-    if (peer_desc.size < peer_offset(TIMEOUT_OFFSET + TEST_DATA_SIZE)) {
+    if (peer_desc.size < peer_offset(TIMEOUT_OUTPUT_OFFSET + TEST_DATA_SIZE)) {
         fprintf(stderr, TAG "peer=%d segment too small for SSD test slot\n",
                 peer_meta_idx);
         return -1;
@@ -1377,6 +1411,8 @@ static int skip_code(void)
 int main(int argc, char *argv[])
 {
     int pass = 0, fail = 0;
+    int first_peer_order = 0;
+    int peer_limit;
 
     (void)argc;
     (void)argv;
@@ -1410,11 +1446,28 @@ int main(int argc, char *argv[])
         return skip_code();
     }
 
-    for (int i = 0; i < peer_count; i++) {
+    peer_limit = peer_count;
+    if (selected_peer_node_idx >= 0) {
+        first_peer_order = find_peer_order_by_node_idx(selected_peer_node_idx);
+        if (first_peer_order < 0) {
+            fprintf(stderr, TAG "selected peer node_idx=%d not discovered\n",
+                    selected_peer_node_idx);
+            cleanup_gsva();
+            close(ssd_fd);
+            printf(TAG "verdict=FAIL\n");
+            return 1;
+        }
+        peer_limit = first_peer_order + 1;
+    }
+
+    for (int i = first_peer_order; i < peer_limit; i++) {
         int peer_meta_idx = peer_ids[i];
+        int peer_ordinal = selected_peer_node_idx >= 0 ? 1 : i + 1;
+        int peer_total = selected_peer_node_idx >= 0 ? 1 : peer_count;
+        bool run_once_tests = selected_peer_node_idx >= 0 || i == 0;
 
         printf(TAG "Testing peer %d/%d node_idx=%d segment_id=%llu\n",
-               i + 1, peer_count, peer_meta_idx,
+               peer_ordinal, peer_total, peer_meta_idx,
                (unsigned long long)peer_metas[peer_meta_idx].export_mem_id);
 
         if (setup_peer_context(i) != 0) {
@@ -1427,14 +1480,14 @@ int main(int argc, char *argv[])
         if (test_seal_rejects_overwrite() == 0) pass++; else fail++;
         if (test_bad_token() == 0) pass++; else fail++;
         if (test_bad_token_id() == 0) pass++; else fail++;
-        if (i == 0) {
+        if (run_once_tests) {
             if (test_flush_stat_gsva() == 0) pass++; else fail++;
         }
         if (test_version_conflict() == 0) pass++; else fail++;
         if (test_missing_block_rejects_read() == 0) pass++; else fail++;
         if (test_tombstone_rejects_read_write() == 0) pass++; else fail++;
         if (test_checksum_mismatch_denied() == 0) pass++; else fail++;
-        if (i == 0) {
+        if (run_once_tests && !matrix_suite) {
             if (test_snapshot_export_import() == 0) pass++; else fail++;
         }
         if (test_dfs_manifest_refs_block_payload() == 0) pass++; else fail++;

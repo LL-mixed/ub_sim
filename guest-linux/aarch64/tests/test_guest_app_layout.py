@@ -207,10 +207,15 @@ def test_npu_test_has_independent_app_build():
 def test_ssd_gsva_test_has_independent_app_build():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     app_dir = ROOT / "apps" / "ssd_gsva_test"
+    app_source = (app_dir / "ssd_gsva_test.c").read_text()
 
     assert 'SSD_GSVA_TEST_SRC="$ROOT_DIR/apps/ssd_gsva_test/ssd_gsva_test.c"' in build_script
     assert (app_dir / "ssd_gsva_test.c").exists()
     assert (app_dir / "Makefile").exists()
+    assert "LINQU_SSD_GSVA_PEER_NODE_IDX" in app_source
+    assert "linqu_ssd_gsva_peer_node_idx" in app_source
+    assert "LINQU_SSD_GSVA_SUITE" in app_source
+    assert "linqu_ssd_gsva_suite" in app_source
 
 
 def test_w5_mem_service_is_link_time_component():
@@ -408,6 +413,11 @@ def test_npu_ssd_gsva_runner_uses_app_flag_entrypoint():
     assert "rdinit=/bin/run_app linqu_npu_gsva_test=1" in eight_node_npu_gsva_runner
     assert "rdinit=/bin/run_demo npu_gsva_test " not in eight_node_npu_gsva_runner
     assert "rdinit=/bin/run_app linqu_ssd_gsva_test=1" in eight_node_ssd_gsva_runner
+    assert "linqu_ssd_gsva_peer_node_idx=${peer_node_idx}" in eight_node_ssd_gsva_runner
+    assert "linqu_ssd_gsva_suite=matrix" in eight_node_ssd_gsva_runner
+    assert "suite=matrix" in eight_node_ssd_gsva_runner
+    assert "validate_ub_gsva_peer_matrix" not in eight_node_ssd_gsva_runner
+    assert "Testing peer 1/1 node_idx=${peer_node_idx}" in eight_node_ssd_gsva_runner
     assert "rdinit=/bin/run_demo ssd_gsva_test " not in eight_node_ssd_gsva_runner
 
 

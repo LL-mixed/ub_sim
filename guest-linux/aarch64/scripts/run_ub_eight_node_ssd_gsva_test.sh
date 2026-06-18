@@ -38,7 +38,7 @@ ensure_ub_guest_artifacts "$ROOT_DIR" "$KERNEL_IMAGE" "$INITRAMFS_IMAGE"
 
 mkdir -p "$LOG_DIR/${RUN_ID}"
 NODES=(A B C D E F G H)
-declare -A GUEST_LOGS QEMU_LOGS PID_FILES
+declare -A GUEST_LOGS QEMU_LOGS PID_FILES PEER_NODE_IDXS
 for node_suffix in "${NODES[@]}"; do
   GUEST_LOGS[$node_suffix]="$LOG_DIR/${RUN_ID}/node${node_suffix}_guest.log"
   QEMU_LOGS[$node_suffix]="$LOG_DIR/${RUN_ID}/node${node_suffix}_qemu.log"
@@ -73,6 +73,7 @@ start_node() {
   local guest_log="$4"
   local qemu_log="$5"
   local pid_file="$6"
+  local peer_node_idx="$7"
   local qemu_extra=()
 
   if [[ "$QEMU_KEEP_ALIVE_ON_POWEROFF" == "1" ]]; then
@@ -96,7 +97,7 @@ start_node() {
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
       -initrd "$INITRAMFS_IMAGE" \
-      -append "console=ttyAMA0 rdinit=/bin/run_app linqu_ssd_gsva_test=1 linqu_urma_dp_role=${role} linqu_node_idx=${node_idx} linqu_node_count=8 ${APPEND_EXTRA}" \
+      -append "console=ttyAMA0 rdinit=/bin/run_app linqu_ssd_gsva_test=1 linqu_urma_dp_role=${role} linqu_node_idx=${node_idx} linqu_node_count=8 linqu_ssd_gsva_peer_node_idx=${peer_node_idx} linqu_ssd_gsva_suite=matrix ${APPEND_EXTRA}" \
       >"$qemu_log" 2>&1 &
   echo $! > "$pid_file"
 }
@@ -136,12 +137,21 @@ validate_ssd_gsva_logs() {
   local node_suffix
   local rc=0
   local node_idx=0
+  local peer_node_idx
 
   for node_suffix in "${NODES[@]}"; do
+    peer_node_idx="${PEER_NODE_IDXS[$node_suffix]}"
     validate_ub_gsva_trace_logs "[ssd_gsva_test_8]" ssd "node${node_suffix}" \
       "${QEMU_LOGS[$node_suffix]}" "${GUEST_LOGS[$node_suffix]}" || rc=1
-    validate_ub_gsva_peer_matrix "[ssd_gsva_test_8]" "node${node_suffix}" \
-      "${GUEST_LOGS[$node_suffix]}" "$node_idx" "${#NODES[@]}" || rc=1
+    ub_gsva_trace_require "[ssd_gsva_test_8]" "${GUEST_LOGS[$node_suffix]}" \
+      "peer_selection=node_idx=${peer_node_idx}" \
+      "selected SSD GSVA peer on node${node_suffix}" || rc=1
+    ub_gsva_trace_require "[ssd_gsva_test_8]" "${GUEST_LOGS[$node_suffix]}" \
+      "suite=matrix" \
+      "SSD GSVA matrix suite on node${node_suffix}" || rc=1
+    ub_gsva_trace_require "[ssd_gsva_test_8]" "${GUEST_LOGS[$node_suffix]}" \
+      "Testing peer 1/1 node_idx=${peer_node_idx}[[:space:]]" \
+      "single SSD GSVA peer execution on node${node_suffix}" || rc=1
     node_idx=$((node_idx + 1))
   done
   return $rc
@@ -152,9 +162,11 @@ echo "[ssd_gsva_test_8] starting 8 nodes..."
 
 idx=0
 for node_suffix in "${NODES[@]}"; do
+  peer_idx=$(( (idx + 1) % ${#NODES[@]} ))
+  PEER_NODE_IDXS[$node_suffix]="$peer_idx"
   start_node "node${node_suffix}" "node${node_suffix}" "$idx" \
     "${GUEST_LOGS[$node_suffix]}" "${QEMU_LOGS[$node_suffix]}" \
-    "${PID_FILES[$node_suffix]}"
+    "${PID_FILES[$node_suffix]}" "$peer_idx"
   idx=$((idx + 1))
 done
 
