@@ -1,4 +1,5 @@
 import subprocess
+import tempfile
 from pathlib import Path
 
 
@@ -114,6 +115,10 @@ def test_app_validation_matrix_runner_matches_readme_commands():
     assert "--scope 2-node|8-node|all|w5|all-with-w5" in runner
     assert "--dry-run" in runner
     assert "--from APP" in runner
+    assert "--resume" in runner
+    assert "--status-file PATH" in runner
+    assert "STATUS_FILE=" in runner
+    assert "status_has_pass" in runner
     assert "/bin/run_demo" not in runner
     for app, commands in APP_VALIDATION_COMMANDS.items():
         assert f"\"{app}|{commands[0]}|{commands[1]}\"" in runner
@@ -150,6 +155,34 @@ def test_app_validation_matrix_runner_dry_run_executes_without_qemu():
     assert "cmd=scripts/run_ub_eight_node_chat_matrix.sh" in dry_run_result.stdout
     assert "cmd=scripts/run_w5_cluster_config.sh" in w5_result.stdout
     assert "QEMU" not in dry_run_result.stderr
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        status_file = Path(tmpdir) / "app_matrix.status"
+        status_file.write_text(
+            "ub_chat|2-node|PASS|0|scripts/run_ub_dual_node_chat.sh\n"
+            "ub_chat|8-node|PASS|0|scripts/run_ub_eight_node_chat_matrix.sh\n"
+        )
+        resume_result = subprocess.run(
+            [
+                str(runner),
+                "--scope",
+                "all",
+                "--dry-run",
+                "--only",
+                "ub_chat",
+                "--resume",
+                "--status-file",
+                str(status_file),
+            ],
+            cwd=ROOT,
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+
+    assert "SKIP app=ub_chat scope=2-node status=PASS" in resume_result.stdout
+    assert "SKIP app=ub_chat scope=8-node status=PASS" in resume_result.stdout
+    assert "RUN app=ub_chat" not in resume_result.stdout
 
 
 def test_primary_dual_node_app_wrappers_are_stable_cli_entrypoints():

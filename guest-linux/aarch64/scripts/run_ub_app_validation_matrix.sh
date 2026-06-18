@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUT_DIR="$ROOT_DIR/out"
 REPORT_FILE="${REPORT_FILE:-$OUT_DIR/app_validation_matrix.latest.txt}"
+STATUS_FILE="${STATUS_FILE:-$OUT_DIR/app_validation_matrix.status.latest.txt}"
 
 APP_ENTRIES=(
   "ub_chat|scripts/run_ub_dual_node_chat.sh|scripts/run_ub_eight_node_chat_matrix.sh"
@@ -32,7 +33,7 @@ W5_ENTRY="w5_inference_cluster|scripts/run_w5_cluster_config.sh"
 
 usage() {
   cat <<'EOF'
-Usage: run_ub_app_validation_matrix.sh [--scope 2-node|8-node|all|w5|all-with-w5] [--dry-run] [--from APP] [--only APP] [--continue-on-fail]
+Usage: run_ub_app_validation_matrix.sh [--scope 2-node|8-node|all|w5|all-with-w5] [--dry-run] [--from APP] [--only APP] [--continue-on-fail] [--resume]
 
 Runs stable app validation entrypoints from guest-linux/aarch64/apps/README.md.
 
@@ -42,6 +43,8 @@ Options:
   --from APP           Skip entries before APP.
   --only APP           Run only one app entry.
   --continue-on-fail   Continue after failures and report them at the end.
+  --resume             Skip app/scope pairs already recorded as PASS in the status file.
+  --status-file PATH   PASS/FAIL status file. Default: guest-linux/aarch64/out/app_validation_matrix.status.latest.txt.
   --list               Print known app entries and exit.
   -h, --help           Show this help.
 EOF
@@ -71,22 +74,53 @@ script_abs_path() {
   echo "$ROOT_DIR/$rel_path"
 }
 
+record_status() {
+  local app="$1"
+  local scope="$2"
+  local status="$3"
+  local rc="$4"
+  local rel_path="$5"
+
+  printf '%s|%s|%s|%s|%s\n' "$app" "$scope" "$status" "$rc" "$rel_path" >> "$STATUS_FILE"
+}
+
+status_has_pass() {
+  local app="$1"
+  local scope="$2"
+
+  [[ -f "$STATUS_FILE" ]] || return 1
+  awk -F'|' -v app="$app" -v scope="$scope" \
+    '$1 == app && $2 == scope && $3 == "PASS" { found = 1 } END { exit found ? 0 : 1 }' \
+    "$STATUS_FILE"
+}
+
 run_step() {
   local app="$1"
   local scope="$2"
   local rel_path="$3"
   local abs_path
+  local rc=0
 
   abs_path="$(script_abs_path "$rel_path")"
   if [[ ! -x "$abs_path" ]]; then
     echo "[app-matrix] FAIL: missing executable for $app $scope: $rel_path" >&2
     return 127
   fi
+  if [[ "$RESUME" == "1" ]] && status_has_pass "$app" "$scope"; then
+    printf '[app-matrix] SKIP app=%s scope=%s status=PASS cmd=%s\n' "$app" "$scope" "$rel_path" | tee -a "$REPORT_FILE"
+    return 0
+  fi
   printf '[app-matrix] RUN app=%s scope=%s cmd=%s\n' "$app" "$scope" "$rel_path" | tee -a "$REPORT_FILE"
   if [[ "$DRY_RUN" == "1" ]]; then
     return 0
   fi
-  "$abs_path"
+  "$abs_path" || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    record_status "$app" "$scope" "PASS" "$rc" "$rel_path"
+  else
+    record_status "$app" "$scope" "FAIL" "$rc" "$rel_path"
+  fi
+  return "$rc"
 }
 
 should_include_app() {
@@ -179,6 +213,7 @@ FROM_APP=""
 FROM_APP_SEEN=0
 ONLY_APP=""
 CONTINUE_ON_FAIL=0
+RESUME=0
 
 while (( $# > 0 )); do
   case "$1" in
@@ -214,6 +249,18 @@ while (( $# > 0 )); do
       CONTINUE_ON_FAIL=1
       shift
       ;;
+    --resume)
+      RESUME=1
+      shift
+      ;;
+    --status-file)
+      if (( $# < 2 )); then
+        echo "--status-file requires a path" >&2
+        exit 2
+      fi
+      STATUS_FILE="$2"
+      shift 2
+      ;;
     --list)
       print_entries
       exit 0
@@ -241,17 +288,33 @@ case "$SCOPE" in
 esac
 
 mkdir -p "$OUT_DIR"
+mkdir -p "${REPORT_FILE:h}"
+mkdir -p "${STATUS_FILE:h}"
 : > "$REPORT_FILE"
-printf '[app-matrix] scope=%s dry_run=%s from=%s only=%s continue_on_fail=%s\n' \
-  "$SCOPE" "$DRY_RUN" "$FROM_APP" "$ONLY_APP" "$CONTINUE_ON_FAIL" | tee -a "$REPORT_FILE"
+if [[ "$DRY_RUN" != "1" && "$RESUME" != "1" ]]; then
+  : > "$STATUS_FILE"
+fi
+if [[ "$RESUME" == "1" ]]; then
+  touch "$STATUS_FILE"
+fi
+printf '[app-matrix] scope=%s dry_run=%s from=%s only=%s continue_on_fail=%s resume=%s status_file=%s\n' \
+  "$SCOPE" "$DRY_RUN" "$FROM_APP" "$ONLY_APP" "$CONTINUE_ON_FAIL" "$RESUME" "$STATUS_FILE" | tee -a "$REPORT_FILE"
 
 case "$SCOPE" in
   w5)
     run_w5_entry
     ;;
   all-with-w5)
-    run_app_entries
-    run_w5_entry
+    app_rc=0
+    w5_rc=0
+    run_app_entries || app_rc=$?
+    if [[ "$app_rc" -eq 0 || "$CONTINUE_ON_FAIL" == "1" ]]; then
+      run_w5_entry || w5_rc=$?
+    fi
+    if [[ "$app_rc" -ne 0 ]]; then
+      exit "$app_rc"
+    fi
+    exit "$w5_rc"
     ;;
   *)
     run_app_entries
