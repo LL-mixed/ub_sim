@@ -142,6 +142,9 @@ def test_obmm_coh_test_has_independent_dual_node_bootflow():
 
     assert "obmm_coh_test" in script
     assert "linqu_obmm_coh_test=1" in script
+    assert "obmm_coh_test: PASS" in script
+    assert "obmm_coh_test: FAIL" in script
+    assert "\\[init\\] ub obmm coh test app pass" not in script
     assert "COH_TEST_MODE" in script
     assert "COH_TEST_ITERS" in script
     assert "should_run_obmm_coh_test" in init_source

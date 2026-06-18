@@ -510,10 +510,8 @@ validate_obmm_gsva_log() {
 validate_obmm_coh_test_log() {
   local node_name="$1"
   local log_file="$2"
-  assert_log_has "$log_file" "\\[init\\] ub obmm coh test app pass" \
-    "${node_name} obmm coh test app pass" || return 1
-  assert_log_absent "$log_file" "\\[init\\] ub obmm coh test app fail" \
-    "${node_name} obmm coh test app fail" || return 1
+  assert_log_absent "$log_file" "obmm_coh_test: FAIL" \
+    "${node_name} obmm coh test failure" || return 1
   assert_log_has "$log_file" "obmm_coh_test: PASS" \
     "${node_name} obmm coh test binary pass" || return 1
 }
@@ -1222,8 +1220,8 @@ run_iteration() {
   fi
 
   if [[ "$obmm_coh_test_enabled" -eq 1 ]]; then
-    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub obmm coh test app pass" \
-      "\\[init\\] ub obmm coh test app fail" "$RUN_SECS"
+    wait_for_log_pass_or_fail "$nodea_guest_log" "obmm_coh_test: PASS" \
+      "obmm_coh_test: FAIL" "$RUN_SECS"
     case "$?" in
       0) ;;
       1)
@@ -1236,8 +1234,8 @@ run_iteration() {
         ;;
     esac
 
-    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub obmm coh test app pass" \
-      "\\[init\\] ub obmm coh test app fail" "$RUN_SECS"
+    wait_for_log_pass_or_fail "$nodeb_guest_log" "obmm_coh_test: PASS" \
+      "obmm_coh_test: FAIL" "$RUN_SECS"
     case "$?" in
       0) ;;
       1)
