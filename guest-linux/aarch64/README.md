@@ -31,7 +31,6 @@ environment variables:
   - optional path to a static ARM64 busybox binary
   - if provided, the initramfs becomes a small userspace image with a shell
   - `run_app` is copied to `/bin/run_app` and is the canonical app `rdinit`
-  - `run_demo` is copied only as a compatibility wrapper to `/bin/run_app`
   - if not provided, `scripts/build_initramfs.sh` first reuses local
     `guest-linux/aarch64/busybox-aarch64` when present
   - if no local binary exists, `scripts/build_initramfs.sh` will try to build
@@ -520,8 +519,6 @@ Current initramfs entrypoints are intentionally separated:
   - app-oriented entrypoint
   - can be used as `rdinit=/bin/run_app`
   - invokes `/bin/linqu_init` when bootstrap is needed
-- `/bin/run_demo`
-  - compatibility wrapper that execs `/bin/run_app`
 
 Recommended usage:
 

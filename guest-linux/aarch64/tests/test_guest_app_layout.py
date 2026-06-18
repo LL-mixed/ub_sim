@@ -579,6 +579,7 @@ def test_openeuler_super_node_uses_app_mode_cli():
 
 
 def test_dual_node_apps_uses_canonical_cli_entrypoint():
+    readme = (ROOT / "README.md").read_text()
     script = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
     init_source = (ROOT / "init.c").read_text()
     run_app = (ROOT / "initramfs" / "run_app").read_text()
@@ -647,6 +648,9 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     assert "!defer_app_boot_flow && should_run_obmm_queue()" in init_source
     assert "UB_RUN_DEMO_FROM_INIT" not in init_source
     assert "UB_RUN_DEMO_FROM_INIT" not in w4_eight_runner
+    assert "`run_app` is copied to `/bin/run_app`" in readme
+    assert "`run_demo` is copied only as a compatibility wrapper" not in readme
+    assert "/bin/run_demo" not in readme
     assert 'local runner="$RUN_INITRAMFS_DIR/bin/run_app"' in w4_eight_runner
     assert 'RDINIT="/bin/run_app"' in w4_eight_runner
     assert 'RDINIT="${RDINIT:-/bin/run_app}"' in launcher_scripts
