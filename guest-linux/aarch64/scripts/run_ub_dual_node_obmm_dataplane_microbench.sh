@@ -27,6 +27,110 @@ DP_VERIFY="${DP_VERIFY:-0}"
 DP_GENERIC_PTE_OFFSET="${DP_GENERIC_PTE_OFFSET:-0x1000}"
 DP_GSVA_BASE="${DP_GSVA_BASE:-0x700000000000}"
 DP_GSVA_GENERATION="${DP_GSVA_GENERATION:-0x44504d424701}"
+
+usage() {
+  cat <<'EOF'
+Usage: run_ub_dual_node_obmm_dataplane_microbench.sh [--mode legacy-pa|generic-gva|gsva] [options]
+
+Runs the OBMM dataplane microbench app on a 2-node QEMU setup.
+
+Options:
+  --mode MODE          Dataplane mode. Default: legacy-pa.
+  --size BYTES         Benchmark buffer size. Default: 2097152.
+  --iters N            Benchmark iterations. Default: 32768.
+  --chunk-size BYTES   Per-iteration chunk size. Default: 64.
+  --verify             Enable data verification.
+  --run-secs N         Completion timeout. Default: 180.
+  --link-wait-secs N   FM link wait timeout. Default: 45.
+  -h, --help           Show this help.
+EOF
+}
+
+while (( $# > 0 )); do
+  case "$1" in
+    --mode)
+      if (( $# < 2 )); then
+        echo "--mode requires a value" >&2
+        exit 2
+      fi
+      DP_MODE="$2"
+      shift 2
+      ;;
+    --size)
+      if (( $# < 2 )); then
+        echo "--size requires a value" >&2
+        exit 2
+      fi
+      DP_SIZE="$2"
+      shift 2
+      ;;
+    --iters)
+      if (( $# < 2 )); then
+        echo "--iters requires a value" >&2
+        exit 2
+      fi
+      DP_ITERS="$2"
+      shift 2
+      ;;
+    --chunk-size)
+      if (( $# < 2 )); then
+        echo "--chunk-size requires a value" >&2
+        exit 2
+      fi
+      DP_CHUNK_SIZE="$2"
+      shift 2
+      ;;
+    --verify)
+      DP_VERIFY=1
+      shift
+      ;;
+    --run-secs)
+      if (( $# < 2 )); then
+        echo "--run-secs requires a value" >&2
+        exit 2
+      fi
+      RUN_SECS="$2"
+      shift 2
+      ;;
+    --link-wait-secs)
+      if (( $# < 2 )); then
+        echo "--link-wait-secs requires a value" >&2
+        exit 2
+      fi
+      LINK_WAIT_SECS="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unexpected argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+case "$DP_MODE" in
+  legacy|legacy-pa|generic|generic-gva|gva|gsva)
+    ;;
+  *)
+    echo "unsupported --mode: $DP_MODE" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
+
+if [[ ! "$DP_SIZE" =~ '^[0-9]+$' ]]; then
+  echo "--size must be a decimal byte count: $DP_SIZE" >&2
+  exit 2
+fi
+if (( DP_SIZE % 2097152 != 0 )); then
+  echo "--size must be aligned to 2097152 bytes: $DP_SIZE" >&2
+  exit 2
+fi
+
 DP_APPEND="obmm_dp_mode=${DP_MODE} obmm_dp_size=${DP_SIZE} obmm_dp_iters=${DP_ITERS} obmm_dp_chunk_size=${DP_CHUNK_SIZE}"
 DP_APPEND="${DP_APPEND} obmm_dp_generic_pte_offset=${DP_GENERIC_PTE_OFFSET}"
 DP_APPEND="${DP_APPEND} obmm_dp_gsva_base=${DP_GSVA_BASE} obmm_dp_gsva_generation=${DP_GSVA_GENERATION}"

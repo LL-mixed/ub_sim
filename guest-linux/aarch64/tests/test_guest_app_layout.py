@@ -390,6 +390,13 @@ def test_obmm_dataplane_microbench_runner_uses_app_flag_entrypoint():
 
     assert "rdinit=/bin/run_app linqu_obmm_dataplane_microbench=1" in runner
     assert "rdinit=/bin/run_demo obmm_dataplane_microbench " not in runner
+    assert "--mode MODE" in runner
+    assert "DP_MODE=\"$2\"" in runner
+    assert "unsupported --mode" in runner
+    assert "--size must be aligned to 2097152 bytes" in runner
+    assert "legacy|legacy-pa)" in runner
+    assert "generic|generic-gva|gva)" in runner
+    assert "gsva)" in runner
     assert "/bin/linqu_ub_obmm_dataplane_microbench" in eight_runner
     assert "DP_MODES=(${=DP_MODES_OVERRIDE:-legacy-pa generic-gva gsva})" in eight_runner
     assert "--node-count 8 --peer-index" in eight_runner
