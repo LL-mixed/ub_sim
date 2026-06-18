@@ -423,6 +423,10 @@ def test_gva_manager_bootstrap_runner_uses_unified_app_entrypoint():
 
     assert "linqu_gva_manager=1" in four_runner
     assert "gva_manager_mode=bootstrap" in four_runner
+    assert "rdinit=/bin/run_app linqu_gva_manager=1" in four_runner
+    assert "rdinit=/bin/run_demo gva_manager " not in four_runner
+    assert "SHARED_DIR=\"${UB_FM_SHARED_DIR:-$ROOT_DIR/out/gsva_manager${GVA_MANAGER_NODE_COUNT}_links_${RANDOM}}\"" in four_runner
+    assert "-qmp unix:" not in four_runner
     assert "gva_manager_bootstrap" not in four_runner
 
 

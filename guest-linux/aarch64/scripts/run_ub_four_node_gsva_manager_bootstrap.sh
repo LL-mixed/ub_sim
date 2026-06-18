@@ -30,8 +30,7 @@ TOPOLOGY_FILE="${TOPOLOGY_FILE:-$DEFAULT_TOPOLOGY_FILE}"
 ENTITY_PLAN_FILE="${UB_FM_ENTITY_PLAN_FILE:-$WORKSPACE_ROOT/vendor/ub_topology_two_node_v2_entity.ini}"
 ENTITY_COUNT="${UB_SIM_ENTITY_COUNT:-2}"
 PORT_NUM="${UB_SIM_PORT_NUM:-$((GVA_MANAGER_NODE_COUNT - 1))}"
-SHARED_DIR="${UB_FM_SHARED_DIR:-/tmp/ub-qemu-links-gsva-manager${GVA_MANAGER_NODE_COUNT}}"
-QMP_DIR="$SHARED_DIR/qmp"
+SHARED_DIR="${UB_FM_SHARED_DIR:-$ROOT_DIR/out/gsva_manager${GVA_MANAGER_NODE_COUNT}_links_${RANDOM}}"
 RUN_SECS="${RUN_SECS:-180}"
 QEMU_KEEP_ALIVE_ON_POWEROFF="${QEMU_KEEP_ALIVE_ON_POWEROFF:-0}"
 QEMU_MEM="${QEMU_MEM:-8G}"
@@ -72,7 +71,7 @@ fi
 
 mkdir -p "$LOG_DIR/${RUN_ID}"
 rm -rf "$SHARED_DIR"
-mkdir -p "$SHARED_DIR" "$QMP_DIR"
+mkdir -p "$SHARED_DIR"
 
 guest_log_for() {
   echo "$LOG_DIR/${RUN_ID}/$1_guest.log"
@@ -80,10 +79,6 @@ guest_log_for() {
 
 qemu_log_for() {
   echo "$LOG_DIR/${RUN_ID}/$1_qemu.log"
-}
-
-qmp_socket_for() {
-  echo "$QMP_DIR/$1.qmp"
 }
 
 pid_file_for() {
@@ -117,13 +112,11 @@ start_node() {
   local qemu_log="$4"
   local pid_file="$5"
   local node_cna
-  local qmp_socket
   local qemu_extra=()
   local conflict_append=""
   local segment_append=""
 
   node_cna="$(node_cna_for "$node_idx")"
-  qmp_socket="$(qmp_socket_for "$node_name")"
   if [[ "$QEMU_KEEP_ALIVE_ON_POWEROFF" == "1" ]]; then
     qemu_extra=(-no-shutdown)
   fi
@@ -158,19 +151,17 @@ start_node() {
     UB_SIM_PORT_NUM="$PORT_NUM" \
     UB_FM_ENTITY_PLAN_FILE="$ENTITY_PLAN_FILE" \
     "$QEMU_BIN" \
-      -S \
       -M virt,gic-version=3,its=on,ummu=on,ub-cluster-mode=on \
       -cpu cortex-a57 \
       -smp "$QEMU_SMP" \
       -m "$QEMU_MEM" \
       -nodefaults \
       -nographic \
-      -qmp unix:"$qmp_socket",server=on,wait=off \
       -serial file:"$guest_log" \
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
       -initrd "$INITRAMFS_IMAGE" \
-      -append "console=ttyAMA0 rdinit=/bin/run_demo linqu_gva_manager=1 gva_manager_mode=bootstrap linqu_urma_dp_role=${node_name} linqu_cna=${node_cna} gva_manager_node_id=${node_idx} gva_manager_node_count=${GVA_MANAGER_NODE_COUNT} gva_manager_generation=${GVA_MANAGER_GENERATION} gva_manager_aperture_base=${GVA_MANAGER_APERTURE_BASE} gva_manager_aperture_size=${GVA_MANAGER_APERTURE_SIZE} ${segment_append} ${conflict_append} ${APPEND_EXTRA}" \
+      -append "console=ttyAMA0 rdinit=/bin/run_app linqu_gva_manager=1 gva_manager_mode=bootstrap linqu_urma_dp_role=${node_name} linqu_cna=${node_cna} gva_manager_node_id=${node_idx} gva_manager_node_count=${GVA_MANAGER_NODE_COUNT} gva_manager_generation=${GVA_MANAGER_GENERATION} gva_manager_aperture_base=${GVA_MANAGER_APERTURE_BASE} gva_manager_aperture_size=${GVA_MANAGER_APERTURE_SIZE} ${segment_append} ${conflict_append} ${APPEND_EXTRA}" \
       >"$qemu_log" 2>&1 &
   echo $! > "$pid_file"
 }
@@ -178,23 +169,6 @@ start_node() {
 node_cna_for() {
   local node_idx="$1"
   printf '0x%x' "$((0xc4c2 + node_idx * 0x10))"
-}
-
-wait_for_qmp_socket() {
-  local node_name="$1"
-  local qmp_socket="$2"
-  local timeout_s="${3:-30}"
-  local deadline=$((SECONDS + timeout_s))
-
-  while (( SECONDS < deadline )); do
-    if [[ -S "$qmp_socket" ]]; then
-      return 0
-    fi
-    sleep 0.1
-  done
-
-  echo "$LOG_PREFIX FAIL: QMP socket not ready for $node_name: $qmp_socket" >&2
-  return 1
 }
 
 wait_for_fm_endpoints() {
@@ -214,25 +188,6 @@ wait_for_fm_endpoints() {
   endpoint_files=("$SHARED_DIR"/node*_ubcdev0__*.ini(N))
   echo "$LOG_PREFIX FAIL: FM endpoints not ready: have=${#endpoint_files[@]} expected=$expected" >&2
   return 1
-}
-
-cont_qemu() {
-  local qmp_socket="$1"
-  python3 - "$qmp_socket" <<'PY'
-import socket
-import sys
-
-path = sys.argv[1]
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.settimeout(5)
-s.connect(path)
-s.recv(4096)
-s.sendall(b'{"execute":"qmp_capabilities"}\r\n')
-s.recv(4096)
-s.sendall(b'{"execute":"cont"}\r\n')
-s.recv(4096)
-s.close()
-PY
 }
 
 extract_aperture() {
@@ -462,14 +417,8 @@ for node_name in "${NODE_NAMES[@]}"; do
   sleep 0.2
 done
 
-echo "$LOG_PREFIX waiting for QMP sockets and FM endpoint files..."
-for node_name in "${NODE_NAMES[@]}"; do
-  wait_for_qmp_socket "$node_name" "$(qmp_socket_for "$node_name")" 30
-done
+echo "$LOG_PREFIX waiting for FM endpoint files..."
 wait_for_fm_endpoints 30
-for node_name in "${NODE_NAMES[@]}"; do
-  cont_qemu "$(qmp_socket_for "$node_name")"
-done
 
 echo "$LOG_PREFIX waiting for manager completion (timeout ${RUN_SECS}s)..."
 deadline=$((SECONDS + RUN_SECS))
