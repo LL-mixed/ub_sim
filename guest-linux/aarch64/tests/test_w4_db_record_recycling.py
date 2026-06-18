@@ -9,12 +9,33 @@ SERVICE_DIR = ROOT / "components" / "w5_mem_service"
 SERVICE_C = SERVICE_DIR / "w4_kvcache_db_service.c"
 SERVICE_H = SERVICE_DIR / "w4_kvcache_db_service.h"
 GUEST_C = ROOT / "apps" / "w4_guest" / "w4_guest.c"
+BUILD_INITRAMFS = ROOT / "scripts" / "build_initramfs.sh"
+RUN_APP = ROOT / "initramfs" / "run_app"
+COMPONENTS_README = ROOT / "components" / "README.md"
 FOUR_NODE_W4_RUNNER = ROOT / "scripts" / "run_ub_four_node_w4_guest.sh"
 EIGHT_NODE_W4_RUNNER = ROOT / "scripts" / "run_ub_eight_node_w4_guest.sh"
 SIM_UAPI_RS = REPO_ROOT / "crates" / "sim-uapi" / "src" / "lib.rs"
 
 
 class W4DbRecordRecyclingTests(unittest.TestCase):
+    def test_w5_mem_service_is_not_packaged_as_demo_or_app(self):
+        build_script = BUILD_INITRAMFS.read_text()
+        run_app = RUN_APP.read_text()
+        components_readme = COMPONENTS_README.read_text()
+
+        self.assertIn("Components do not install guest binaries directly", components_readme)
+        self.assertIn(
+            'W4_DB_SERVICE_SRC="$ROOT_DIR/components/w5_mem_service/w4_kvcache_db_service.c"',
+            build_script,
+        )
+        self.assertIn('"$W4_GUEST_SRC" "$W4_DB_SERVICE_SRC" -lm -o "$W4_GUEST_BIN"', build_script)
+        self.assertNotIn("W5_MEM_SERVICE_BIN=", build_script)
+        self.assertNotIn("linqu_w5_mem_service", build_script)
+        self.assertNotIn("linqu_w5_mem_service", run_app)
+        self.assertNotIn("linqu_w5_mem_service=1", run_app)
+        self.assertFalse((ROOT / "apps" / "w5_mem_service").exists())
+        self.assertFalse((ROOT / "apps" / "w5_mem_service_demo").exists())
+
     def test_record_caps_support_long_decode_runs(self):
         header = SERVICE_H.read_text()
         source = SERVICE_C.read_text()

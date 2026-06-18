@@ -223,13 +223,22 @@ def test_ssd_gsva_test_has_independent_app_build():
 
 def test_w5_mem_service_is_link_time_component():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
+    run_app = (ROOT / "initramfs" / "run_app").read_text()
+    components_readme = (ROOT / "components" / "README.md").read_text()
     component_dir = ROOT / "components" / "w5_mem_service"
     readme = (component_dir / "README.md").read_text()
 
     assert 'W4_DB_SERVICE_SRC="$ROOT_DIR/components/w5_mem_service/w4_kvcache_db_service.c"' in build_script
     assert '"$W4_GUEST_SRC" "$W4_DB_SERVICE_SRC" -lm -o "$W4_GUEST_BIN"' in build_script
+    assert "Components do not install guest binaries directly" in components_readme
     assert "not a standalone app" in readme
     assert "standalone demo" not in readme
+    assert 'W5_MEM_SERVICE_BIN=' not in build_script
+    assert "linqu_w5_mem_service" not in build_script
+    assert "linqu_w5_mem_service" not in run_app
+    assert "linqu_w5_mem_service=1" not in run_app
+    assert not (ROOT / "apps" / "w5_mem_service").exists()
+    assert not (ROOT / "apps" / "w5_mem_service_demo").exists()
     assert "test_w4_db_record_recycling.py" in readme
     assert (component_dir / "w4_kvcache_db_service.c").exists()
     assert (component_dir / "w4_kvcache_db_service.h").exists()
