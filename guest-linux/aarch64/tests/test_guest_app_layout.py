@@ -972,6 +972,11 @@ def test_shared_obmm_helpers_use_app_language():
 def test_source_tree_does_not_track_app_build_outputs_or_demo_ignores():
     repo_root = ROOT.parents[1]
     gitignore = (repo_root / ".gitignore").read_text()
+    docs_files = [
+        str(path.relative_to(repo_root))
+        for path in sorted((repo_root / "docs").rglob("*"))
+        if path.is_file()
+    ]
     tracked_apps = subprocess.run(
         ["git", "ls-files", "guest-linux/aarch64/apps"],
         cwd=repo_root,
@@ -998,6 +1003,7 @@ def test_source_tree_does_not_track_app_build_outputs_or_demo_ignores():
     ).stdout.splitlines()
 
     assert "obmm_queue_demo" not in gitignore
+    assert [path for path in docs_files if "demo" in path.lower()] == []
     assert "guest-linux/aarch64/apps/obmm_coh_test/obmm_coh_test" not in tracked_apps
     assert [path for path in tracked_runtime_source if "demo" in path.lower()] == []
     assert [
