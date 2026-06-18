@@ -359,6 +359,7 @@ def test_npu_ssd_gsva_runner_uses_app_flag_entrypoint():
     two_node_ssd_runner = (ROOT / "scripts" / "run_ub_two_node_ssd_test.sh").read_text()
     two_node_ssd_gsva_runner = (ROOT / "scripts" / "run_ub_two_node_ssd_gsva_test.sh").read_text()
     four_node_npu_gsva_runner = (ROOT / "scripts" / "run_ub_four_node_npu_gsva_test.sh").read_text()
+    four_node_ssd_gsva_runner = (ROOT / "scripts" / "run_ub_four_node_ssd_gsva_test.sh").read_text()
 
     assert "rdinit=/bin/run_app linqu_npu_test=1" in two_node_npu_runner
     assert "rdinit=/bin/run_demo npu_test " not in two_node_npu_runner
@@ -370,10 +371,11 @@ def test_npu_ssd_gsva_runner_uses_app_flag_entrypoint():
     assert "rdinit=/bin/run_demo ssd_gsva_test " not in two_node_ssd_gsva_runner
     assert "rdinit=/bin/run_app linqu_npu_gsva_test=1" in four_node_npu_gsva_runner
     assert "rdinit=/bin/run_demo npu_gsva_test " not in four_node_npu_gsva_runner
+    assert "rdinit=/bin/run_app linqu_ssd_gsva_test=1" in four_node_ssd_gsva_runner
+    assert "rdinit=/bin/run_demo ssd_gsva_test " not in four_node_ssd_gsva_runner
 
     for path, token in {
         ROOT / "scripts" / "run_ub_eight_node_npu_gsva_test.sh": "linqu_npu_gsva_test=1",
-        ROOT / "scripts" / "run_ub_four_node_ssd_gsva_test.sh": "linqu_ssd_gsva_test=1",
         ROOT / "scripts" / "run_ub_eight_node_ssd_gsva_test.sh": "linqu_ssd_gsva_test=1",
     }.items():
         runner = path.read_text()
