@@ -5,7 +5,7 @@ ROOT := ../..
 all: gsva_query
 
 gsva_query: gsva_query.c
-	$(CC) $(CFLAGS) -I$(ROOT)/kernel_ub/include $< -o $@
+	$(CC) $(CFLAGS) -I$(ROOT)/kernel_ub/include -I$(ROOT)/common $< -o $@
 
 clean:
 	rm -f gsva_query

@@ -304,6 +304,15 @@ def test_ub_tcp_each_server_uses_canonical_app_source():
     assert (app_dir / "Makefile").exists()
 
 
+def test_app_local_makefiles_use_cross_compile_inputs():
+    obmm_queue_makefile = (ROOT / "apps" / "obmm_queue" / "Makefile").read_text()
+    gsva_query_makefile = (ROOT / "apps" / "gsva_query" / "Makefile").read_text()
+
+    assert "TARGET_CC ?= aarch64-linux-gnu-gcc" in obmm_queue_makefile
+    assert "-I$(ROOT)/kernel_ub/include/uapi" in obmm_queue_makefile
+    assert "-I$(ROOT)/common" in gsva_query_makefile
+
+
 def test_obmm_dataplane_microbench_has_independent_app_build():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     app_dir = ROOT / "apps" / "obmm_dataplane_microbench"
