@@ -56,6 +56,7 @@ static struct obmm_helpers_meta peer_metas[OBMM_POOL_HELPERS_MAX_NODES];
 static bool peer_got[OBMM_POOL_HELPERS_MAX_NODES];
 static int peer_ids[OBMM_POOL_HELPERS_MAX_NODES];
 static int peer_count = 0;
+static int selected_peer_node_idx = -1;
 static uint64_t import_mem_id = 0;
 static struct obmm_helpers_region peer_region;
 static uint64_t peer_gsva_base = 0;
@@ -866,9 +867,16 @@ static int parse_node_info(void)
     } else {
         local_cna = (uint32_t)node_idx;
     }
+    if (obmm_env_or_cmdline("LINQU_NPU_GSVA_PEER_NODE_IDX",
+                            "linqu_npu_gsva_peer_node_idx",
+                            buf, sizeof(buf))) {
+        selected_peer_node_idx = atoi(buf);
+    }
 
     printf(TAG "node_idx=%d node_count=%d local_cna=%#x\n",
            node_idx, node_count, local_cna);
+    if (selected_peer_node_idx >= 0)
+        printf(TAG "peer_selection=node_idx=%d\n", selected_peer_node_idx);
     return 0;
 }
 
@@ -957,6 +965,17 @@ static int setup_gsva(void)
     return 0;
 }
 
+static int find_peer_order_by_node_idx(int peer_node_idx)
+{
+    int i;
+
+    for (i = 0; i < peer_count; i++) {
+        if (peer_ids[i] == peer_node_idx)
+            return i;
+    }
+    return -1;
+}
+
 static int setup_peer_context(int peer_idx_order)
 {
     struct obmm_cmd_gsva_query_segment_v1 query = {0};
@@ -991,7 +1010,7 @@ static int setup_peer_context(int peer_idx_order)
     peer_gsva_base = peer_desc.home_va;
     peer_slot_base = (uint64_t)node_idx * TEST_SLOT_STRIDE;
 
-    if (peer_desc.size < peer_offset(OFF_TRUNC_OUT + TEST_DATA_SIZE)) {
+    if (peer_desc.size < peer_offset(OFF_TIMEOUT_OUT + TEST_DATA_SIZE)) {
         fprintf(stderr, TAG "peer=%d segment too small for vector test\n", peer_meta_idx);
         return -1;
     }
@@ -1052,6 +1071,8 @@ static int skip_code(void)
 int main(int argc, char *argv[])
 {
     int pass = 0, fail = 0;
+    int first_peer_order = 0;
+    int peer_limit;
 
     (void)argc;
     (void)argv;
@@ -1085,11 +1106,28 @@ int main(int argc, char *argv[])
         return skip_code();
     }
 
-    for (int i = 0; i < peer_count; i++) {
+    peer_limit = peer_count;
+    if (selected_peer_node_idx >= 0) {
+        first_peer_order = find_peer_order_by_node_idx(selected_peer_node_idx);
+        if (first_peer_order < 0) {
+            fprintf(stderr, TAG "selected peer node_idx=%d not discovered\n",
+                    selected_peer_node_idx);
+            cleanup_gsva();
+            close(npu_fd);
+            printf(TAG "verdict=FAIL\n");
+            return 1;
+        }
+        peer_limit = first_peer_order + 1;
+    }
+
+    for (int i = first_peer_order; i < peer_limit; i++) {
         int peer_meta_idx = peer_ids[i];
+        int peer_ordinal = selected_peer_node_idx >= 0 ? 1 : i + 1;
+        int peer_total = selected_peer_node_idx >= 0 ? 1 : peer_count;
+        bool run_once_tests = selected_peer_node_idx >= 0 || i == 0;
 
         printf(TAG "Testing peer %d/%d node_idx=%d segment_id=%llu\n",
-               i + 1, peer_count, peer_meta_idx,
+               peer_ordinal, peer_total, peer_meta_idx,
                (unsigned long long)peer_metas[peer_meta_idx].export_mem_id);
 
         if (setup_peer_context(i) != 0) {
@@ -1098,7 +1136,7 @@ int main(int argc, char *argv[])
             continue;
         }
 
-        if (i == 0) {
+        if (run_once_tests) {
             if (test_noop_control_path() == 0) pass++; else fail++;
         }
         if (test_memcopy_gsva() == 0) pass++; else fail++;
