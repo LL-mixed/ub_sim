@@ -336,12 +336,13 @@ def test_gsva_coh_and_lifecycle_runner_uses_app_flag_entrypoint():
     runners = {
         (ROOT / "scripts" / "run_ub_eight_node_gsva_coh_test.sh").read_text():
             "linqu_gsva_coh_test=1",
-        (ROOT / "scripts" / "run_ub_eight_node_gsva_lifecycle_test.sh").read_text():
-            "linqu_gsva_lifecycle_test=1",
     }
     four_node_coh_runner = (ROOT / "scripts" / "run_ub_four_node_gsva_coh_test.sh").read_text()
     four_node_lifecycle_runner = (
         ROOT / "scripts" / "run_ub_four_node_gsva_lifecycle_test.sh"
+    ).read_text()
+    eight_node_lifecycle_runner = (
+        ROOT / "scripts" / "run_ub_eight_node_gsva_lifecycle_test.sh"
     ).read_text()
 
     assert "rdinit=/bin/run_app linqu_gsva_coh_test=1" in two_node_coh_runner
@@ -352,6 +353,8 @@ def test_gsva_coh_and_lifecycle_runner_uses_app_flag_entrypoint():
     assert "rdinit=/bin/run_demo gsva_lifecycle_test " not in two_node_lifecycle_runner
     assert "rdinit=/bin/run_app linqu_gsva_lifecycle_test=1" in four_node_lifecycle_runner
     assert "rdinit=/bin/run_demo gsva_lifecycle_test " not in four_node_lifecycle_runner
+    assert "rdinit=/bin/run_app linqu_gsva_lifecycle_test=1" in eight_node_lifecycle_runner
+    assert "rdinit=/bin/run_demo gsva_lifecycle_test " not in eight_node_lifecycle_runner
 
     for runner, token in runners.items():
         assert f"rdinit=/bin/run_demo {token}" in runner
