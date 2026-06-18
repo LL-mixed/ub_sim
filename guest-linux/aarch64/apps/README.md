@@ -53,7 +53,7 @@ validation ledger.
 | `npu_gsva_test` | `scripts/run_ub_two_node_npu_gsva_test.sh` | `scripts/run_ub_eight_node_npu_gsva_test.sh` |
 | `ssd_test` | `scripts/run_ub_two_node_ssd_test.sh` | `scripts/run_ub_eight_node_ssd_test.sh` |
 | `ssd_gsva_test` | `scripts/run_ub_two_node_ssd_gsva_test.sh` | `scripts/run_ub_eight_node_ssd_gsva_test.sh` |
-| `w4_guest` | `scripts/run_ub_dual_node_w4_guest.sh` | `scripts/run_ub_eight_node_w4_guest.sh` |
+| `w4_guest` | `scripts/run_ub_dual_node_w4_guest.sh` | `scripts/run_ub_eight_node_w4_guest_qwen3_0_6b_2step.sh` |
 
 `w5_mem_service` is not an app. It is a link-time component under
 `components/w5_mem_service`; W5 validation uses

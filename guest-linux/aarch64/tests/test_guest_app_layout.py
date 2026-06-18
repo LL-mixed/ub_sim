@@ -85,7 +85,7 @@ APP_VALIDATION_COMMANDS = {
     ],
     "w4_guest": [
         "scripts/run_ub_dual_node_w4_guest.sh",
-        "scripts/run_ub_eight_node_w4_guest.sh",
+        "scripts/run_ub_eight_node_w4_guest_qwen3_0_6b_2step.sh",
     ],
 }
 
