@@ -405,6 +405,7 @@ def test_obmm_dataplane_microbench_runner_uses_app_flag_entrypoint():
     assert "gsva)" in runner
     assert matrix_runner_path.stat().st_mode & 0o111
     assert "MODES=(legacy-pa generic-gva gsva)" in matrix_runner
+    assert "RUNNER_ARGS=(--iters 4096 --chunk-size 64)" in matrix_runner
     assert '"$BASE_RUNNER" --mode "$mode" "${RUNNER_ARGS[@]}"' in matrix_runner
     assert "run_ub_dual_node_obmm_dataplane_microbench.sh" in matrix_runner
     assert "DP_MODE=" not in matrix_runner

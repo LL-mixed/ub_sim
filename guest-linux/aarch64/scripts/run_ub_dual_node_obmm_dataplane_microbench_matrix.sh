@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BASE_RUNNER="$SCRIPT_DIR/run_ub_dual_node_obmm_dataplane_microbench.sh"
 MODES=(legacy-pa generic-gva gsva)
-RUNNER_ARGS=()
+RUNNER_ARGS=(--iters 4096 --chunk-size 64)
 
 usage() {
   cat <<'EOF'
@@ -14,8 +14,8 @@ Runs the 2-node OBMM dataplane microbench app across legacy PA, generic GVA,
 and GSVA modes using the reusable app runner.
 
 Options:
-  --iters N            Benchmark iterations passed to each mode.
-  --chunk-size BYTES   Per-iteration chunk size passed to each mode.
+  --iters N            Benchmark iterations passed to each mode. Default: 4096.
+  --chunk-size BYTES   Per-iteration chunk size passed to each mode. Default: 64.
   --run-secs N         Completion timeout passed to each mode.
   --link-wait-secs N   FM link wait timeout passed to each mode.
   --verify             Enable data verification in each mode.
