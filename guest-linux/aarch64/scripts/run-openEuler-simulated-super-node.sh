@@ -24,7 +24,7 @@ PORT_NUM=1
 MEMORY="4G"
 SMP=4
 APP_DIR=""
-DEMO_MODE=""
+APP_MODE=""
 OUT_DIR="$ROOT_DIR/out/openEuler-super-node"
 RUN_ID=""
 KERNEL_IMAGE="$ROOT_DIR/out/Image"
@@ -54,8 +54,9 @@ Options:
   --topology FILE      Topology ini file (default: vendor/ub_topology_two_node_v0.ini)
   --memory SIZE        QEMU memory per node, e.g. 4G (default: 4G)
   --smp N              QEMU SMP per node (default: 4)
-  --app-dir DIR        Directory with apps/demos to deploy into each node
-  --demo MODE          Demo mode hint (e.g. gva_direct, gsva_matrix, obmm_coh)
+  --app-dir DIR        Directory with apps to deploy into each node
+  --app-mode MODE      App mode hint (e.g. gva_direct, gsva_matrix, obmm_coh)
+  --demo MODE          Deprecated alias for --app-mode
   --out-dir DIR        Output directory for node artifacts (default: out/openEuler-super-node)
   --run-id ID          Custom run-id prefix
   --append-extra STR   Extra kernel append string
@@ -63,7 +64,7 @@ Options:
 
 Examples:
   $(basename "$0") --disk ~/vms/openEuler-2403/disk.qcow2 --nodes 8 --memory 8G --smp 4
-  $(basename "$0") --disk ~/vms/openEuler-2403/disk.qcow2 --nodes 4 --app-dir ./my_apps --demo gsva_identity
+  $(basename "$0") --disk ~/vms/openEuler-2403/disk.qcow2 --nodes 4 --app-dir ./my_apps --app-mode gsva_identity
 EOF
 }
 
@@ -96,8 +97,12 @@ while [[ $# -gt 0 ]]; do
             APP_DIR="$2"
             shift 2
             ;;
+        --app-mode)
+            APP_MODE="$2"
+            shift 2
+            ;;
         --demo)
-            DEMO_MODE="$2"
+            APP_MODE="$2"
             shift 2
             ;;
         --out-dir)
@@ -483,8 +488,8 @@ log "out_dir=$OUT_DIR"
 if [[ -n "$APP_DIR" ]]; then
     log "app_dir=$APP_DIR"
 fi
-if [[ -n "$DEMO_MODE" ]]; then
-    log "demo_mode=$DEMO_MODE"
+if [[ -n "$APP_MODE" ]]; then
+    log "app_mode=$APP_MODE"
 fi
 
 # Extract LVM2 tools (one-time)
@@ -577,7 +582,7 @@ ${LOG_PREFIX} Cleanup: $CLEANUP_SCRIPT
 
 EOF
 
-# If demo mode was specified, optionally wait and report
-if [[ -n "$DEMO_MODE" ]]; then
-    log "demo_mode=$DEMO_MODE: nodes are running, use cleanup script when done"
+# If an app mode was specified, optionally wait and report
+if [[ -n "$APP_MODE" ]]; then
+    log "app_mode=$APP_MODE: nodes are running, use cleanup script when done"
 fi

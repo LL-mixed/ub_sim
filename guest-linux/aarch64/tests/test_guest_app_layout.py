@@ -529,6 +529,20 @@ def test_entity_runtime_inject_uses_canonical_cli_entrypoint():
     assert not (ROOT / "scripts" / "run_ub_entity_runtime_inject_demo.sh").exists()
 
 
+def test_openeuler_super_node_uses_app_mode_cli():
+    script = (ROOT / "scripts" / "run-openEuler-simulated-super-node.sh").read_text()
+    readme = (ROOT.parents[1] / "README.md").read_text()
+
+    assert "APP_MODE" in script
+    assert "DEMO_MODE" not in script
+    assert "--app-mode MODE" in script
+    assert "Deprecated alias for --app-mode" in script
+    assert "--app-mode gsva_identity" in script
+    assert "app_mode=$APP_MODE" in script
+    assert "--app-mode gsva_identity" in readme
+    assert "`--app-mode MODE`" in readme
+
+
 def test_dual_node_apps_uses_canonical_cli_entrypoint():
     script = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
     init_source = (ROOT / "init.c").read_text()

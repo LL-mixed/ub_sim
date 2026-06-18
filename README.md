@@ -515,7 +515,7 @@ export BUSYBOX=$PWD/busybox-aarch64
   --memory 8G \
   --smp 4 \
   --app-dir ./my_apps \
-  --demo gsva_identity
+  --app-mode gsva_identity
 ```
 
 ### 8.4 常用参数
@@ -528,7 +528,7 @@ export BUSYBOX=$PWD/busybox-aarch64
 | `--memory SIZE` | 每节点内存，默认 4G |
 | `--smp N` | 每节点 vCPU 数，默认 4 |
 | `--app-dir DIR` | 要部署到每个节点 `/opt/ub_sim/` 的应用目录 |
-| `--demo MODE` | demo 模式提示 |
+| `--app-mode MODE` | app 模式提示 |
 | `--out-dir DIR` | 输出目录，默认 `out/openEuler-super-node` |
 | `--run-id ID` | 自定义 run-id |
 
