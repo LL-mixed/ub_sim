@@ -2179,6 +2179,7 @@ static void run_gva_direct_probe(void)
     char gva_direct_size[64] = "";
     char gva_direct_local_va[64] = "";
     char gva_direct_home_va[64] = "";
+    char gva_direct_node_count[64] = "";
     char *argv[16];
     int argc = 0;
 
@@ -2200,6 +2201,12 @@ static void run_gva_direct_probe(void)
     if (cmdline_get_value("gva_direct_home_va", gva_direct_home_va, sizeof(gva_direct_home_va))) {
         argv[argc++] = "--home-va";
         argv[argc++] = gva_direct_home_va;
+    }
+    if (cmdline_get_value("gva_direct_node_count",
+                          gva_direct_node_count,
+                          sizeof(gva_direct_node_count))) {
+        argv[argc++] = "--node-count";
+        argv[argc++] = gva_direct_node_count;
     }
     argv[argc] = NULL;
 

@@ -23,6 +23,7 @@
 #define GVA_DIRECT_A 0x13579bdf2468ace0ULL
 #define GVA_DIRECT_B 0xfdb97531eca86420ULL
 #define GVA_DIRECT_TIMEOUT_MS 90000
+#define GVA_DIRECT_SLOT_STRIDE 4096ULL
 
 enum gva_direct_mode {
     GVA_DIRECT_WRITE_READ,
@@ -49,6 +50,8 @@ struct gva_direct_config {
     uint64_t size;
     uint64_t local_va;
     uint64_t home_va;
+    int node_count;
+    int node_idx;
 };
 
 struct gva_direct_payload {
@@ -93,6 +96,8 @@ static bool parse_args(int argc, char **argv, struct gva_direct_config *cfg)
     cfg->size = GVA_DIRECT_DEFAULT_SIZE;
     cfg->local_va = GVA_DIRECT_LOCAL_VA;
     cfg->home_va = GVA_DIRECT_HOME_VA;
+    cfg->node_count = 2;
+    cfg->node_idx = -1;
 
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--mode") == 0 && i + 1 < argc) {
@@ -143,12 +148,28 @@ static bool parse_args(int argc, char **argv, struct gva_direct_config *cfg)
         } else if (strcmp(argv[i], "--home-va") == 0 && i + 1 < argc) {
             if (!parse_u64(argv[++i], &cfg->home_va))
                 return false;
+        } else if (strcmp(argv[i], "--node-count") == 0 && i + 1 < argc) {
+            uint64_t node_count;
+            if (!parse_u64(argv[++i], &node_count) ||
+                node_count < 2 || node_count > OBMM_POOL_HELPERS_MAX_NODES)
+                return false;
+            cfg->node_count = (int)node_count;
+        } else if (strcmp(argv[i], "--node-idx") == 0 && i + 1 < argc) {
+            uint64_t node_idx;
+            if (!parse_u64(argv[++i], &node_idx) ||
+                node_idx >= OBMM_POOL_HELPERS_MAX_NODES)
+                return false;
+            cfg->node_idx = (int)node_idx;
         } else {
             return false;
         }
     }
 
+    if (cfg->node_count > 2 && cfg->mode != GVA_DIRECT_WRITE_READ)
+        return false;
+
     return cfg->size >= sizeof(struct gva_direct_payload) &&
+           cfg->size >= (uint64_t)cfg->node_count * GVA_DIRECT_SLOT_STRIDE &&
            (cfg->size & 4095ULL) == 0 &&
            (cfg->local_va & 4095ULL) == 0 &&
            (cfg->home_va & 4095ULL) == 0 &&
@@ -363,6 +384,78 @@ out_unexport:
     return ret;
 }
 
+static int run_home_multi_peer(int obmm_fd, uint32_t local_cna,
+                               const struct gva_direct_config *cfg,
+                               struct obmm_helpers_meta *local_meta)
+{
+    struct obmm_helpers_region region = {0};
+    int ret = -1;
+    int peer_idx;
+
+    local_meta->export_cna = local_cna;
+    if (obmm_do_export(obmm_fd, local_meta, cfg->size) != 0)
+        return -1;
+    if (obmm_bootstrap_publish(obmm_fd, 0, cfg->node_count,
+                               GVA_DIRECT_GENERATION, local_meta) != 0)
+        goto out_unexport;
+
+    if (obmm_map_region_at(local_meta->export_mem_id,
+                           (void *)(uintptr_t)cfg->home_va,
+                           cfg->size, false, &region) != 0)
+        goto out_unexport;
+    if ((uint64_t)(uintptr_t)region.addr != cfg->home_va) {
+        errno = EINVAL;
+        goto out_unmap;
+    }
+
+    memset(region.addr, 0, cfg->size);
+    for (peer_idx = 1; peer_idx < cfg->node_count; peer_idx++) {
+        struct gva_direct_payload *payload =
+            (struct gva_direct_payload *)((char *)region.addr +
+                                          (uint64_t)peer_idx * GVA_DIRECT_SLOT_STRIDE);
+
+        payload->magic = GVA_DIRECT_MAGIC;
+        payload->value = GVA_DIRECT_A + (uint64_t)peer_idx;
+        payload->home_ptr = cfg->home_va + (uint64_t)peer_idx * GVA_DIRECT_SLOT_STRIDE;
+        __sync_synchronize();
+        payload->phase = 1;
+    }
+
+    for (peer_idx = 1; peer_idx < cfg->node_count; peer_idx++) {
+        struct gva_direct_payload *payload =
+            (struct gva_direct_payload *)((char *)region.addr +
+                                          (uint64_t)peer_idx * GVA_DIRECT_SLOT_STRIDE);
+        uint64_t expected_value = GVA_DIRECT_B + (uint64_t)peer_idx;
+        uint64_t expected_peer_ptr =
+            cfg->local_va + (uint64_t)peer_idx * GVA_DIRECT_SLOT_STRIDE;
+
+        if (wait_phase(&payload->phase, 2) != 0)
+            goto out_unmap;
+        if (payload->value != expected_value ||
+            payload->peer_ptr != expected_peer_ptr) {
+            log_msg("matrix home verify failed peer=%d value=%#" PRIx64
+                    " peer_ptr=%#" PRIx64,
+                    peer_idx, (uint64_t)payload->value,
+                    (uint64_t)payload->peer_ptr);
+            errno = EIO;
+            goto out_unmap;
+        }
+    }
+
+    log_msg("result=done mode=%s role=home node_count=%d peers=%d"
+            " local_va=%#" PRIx64 " home_va=%#" PRIx64 " uba=%#" PRIx64,
+            mode_name(cfg->mode), cfg->node_count, cfg->node_count - 1,
+            cfg->local_va, cfg->home_va, local_meta->remote_uba);
+    ret = 0;
+
+out_unmap:
+    obmm_unmap_region(&region);
+out_unexport:
+    if (local_meta->export_mem_id)
+        (void)obmm_do_unexport(obmm_fd, local_meta->export_mem_id);
+    return ret;
+}
+
 static int publish_peer_dummy(int obmm_fd, uint32_t local_cna,
                               const struct gva_direct_config *cfg,
                               struct obmm_helpers_meta *local_meta)
@@ -372,6 +465,18 @@ static int publish_peer_dummy(int obmm_fd, uint32_t local_cna,
         return -1;
     return obmm_bootstrap_publish(obmm_fd, 1, 2, GVA_DIRECT_GENERATION,
                                   local_meta);
+}
+
+static int publish_peer_dummy_at(int obmm_fd, uint32_t local_cna,
+                                 int local_idx,
+                                 const struct gva_direct_config *cfg,
+                                 struct obmm_helpers_meta *local_meta)
+{
+    local_meta->export_cna = local_cna;
+    if (obmm_do_export(obmm_fd, local_meta, cfg->size) != 0)
+        return -1;
+    return obmm_bootstrap_publish(obmm_fd, local_idx, cfg->node_count,
+                                  GVA_DIRECT_GENERATION, local_meta);
 }
 
 static int run_peer_unmap_fault(int obmm_fd, uint64_t import_mem_id,
@@ -703,6 +808,92 @@ out_unexport:
     return ret;
 }
 
+static int run_peer_multi_peer(int obmm_fd, uint32_t local_cna, int local_idx,
+                               const struct gva_direct_config *cfg,
+                               struct obmm_helpers_meta *local_meta)
+{
+    struct obmm_helpers_meta metas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
+    bool got[OBMM_POOL_HELPERS_MAX_NODES] = {false};
+    uint64_t import_pas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
+    bool import_osync[OBMM_POOL_HELPERS_MAX_NODES] = {false};
+    uint64_t import_mem_id = 0;
+    struct obmm_helpers_region region = {0};
+    struct gva_direct_payload *payload;
+    uint64_t slot_offset = (uint64_t)local_idx * GVA_DIRECT_SLOT_STRIDE;
+    uint64_t pte_offset;
+    int ret = -1;
+
+    if (local_idx <= 0 || local_idx >= cfg->node_count) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (publish_peer_dummy_at(obmm_fd, local_cna, local_idx, cfg,
+                              local_meta) != 0)
+        return -1;
+    if (obmm_bootstrap_lookup(obmm_fd, local_cna, cfg->node_count,
+                              GVA_DIRECT_GENERATION, metas, got) != 0)
+        goto out_unexport;
+    if (!got[0] || metas[0].size < cfg->size) {
+        errno = EINVAL;
+        goto out_unexport;
+    }
+    if (!obmm_alloc_import_pas(1, cfg->size, import_pas, import_osync,
+                               obmm_parse_import_cache_mode()))
+        goto out_unexport;
+
+    pte_offset = metas[0].remote_uba - cfg->local_va;
+    if (obmm_do_import_v2(obmm_fd, &metas[0], local_cna, import_pas[0], 0,
+                          OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER,
+                          OBMM_SIM_DEC_ADDRESS_PROFILE_GENERIC_GVA,
+                          OBMM_SIM_DEC_CACHE_POLICY_WRITE_THROUGH,
+                          0, (uint64_t)local_idx, 0, 0, 0,
+                          (uint64_t)local_idx + 1, cfg->local_va,
+                          cfg->home_va, pte_offset, &import_mem_id) != 0)
+        goto out_unexport;
+    if (obmm_map_region_at(import_mem_id, (void *)(uintptr_t)cfg->local_va,
+                           cfg->size, import_osync[0], &region) != 0)
+        goto out_unimport;
+
+    payload = (struct gva_direct_payload *)((char *)region.addr + slot_offset);
+    if (wait_phase(&payload->phase, 1) != 0)
+        goto out_unmap;
+    if (payload->magic != GVA_DIRECT_MAGIC ||
+        payload->value != GVA_DIRECT_A + (uint64_t)local_idx ||
+        payload->home_ptr != cfg->home_va + slot_offset) {
+        log_msg("matrix peer verify failed node=%d magic=%#" PRIx64
+                " value=%#" PRIx64 " home_ptr=%#" PRIx64,
+                local_idx, (uint64_t)payload->magic,
+                (uint64_t)payload->value, (uint64_t)payload->home_ptr);
+        errno = EIO;
+        goto out_unmap;
+    }
+
+    payload->value = GVA_DIRECT_B + (uint64_t)local_idx;
+    payload->peer_ptr = cfg->local_va + slot_offset;
+    __sync_synchronize();
+    payload->phase = 2;
+
+    log_msg("result=done mode=%s role=peer node=%d node_count=%d"
+            " local_va=%#" PRIx64 " home_va=%#" PRIx64 " uba=%#" PRIx64
+            " pte_offset=%#" PRIx64 " value=%#" PRIx64,
+            mode_name(cfg->mode), local_idx, cfg->node_count,
+            cfg->local_va + slot_offset, cfg->home_va + slot_offset,
+            metas[0].remote_uba + slot_offset, pte_offset,
+            (uint64_t)payload->value);
+    ret = 0;
+
+out_unmap:
+    obmm_unmap_region(&region);
+out_unimport:
+    if (import_mem_id)
+        (void)obmm_do_unimport(obmm_fd, import_mem_id);
+out_unexport:
+    if (local_meta->export_mem_id)
+        (void)obmm_do_unexport(obmm_fd, local_meta->export_mem_id);
+    return ret;
+}
+
 int main(int argc, char **argv)
 {
     struct gva_direct_config cfg;
@@ -714,7 +905,8 @@ int main(int argc, char **argv)
 
     if (!parse_args(argc, argv, &cfg)) {
         fprintf(stderr, "usage: gva_direct --mode write-read|sync|write-back-sync|unmap-fault|dump|invalid-cache|read-cache-write-fault|write-back-no-sync|overlap|route-overlap|invalid-ptag|invalid-dcna|token-mismatch|invalid-upi|mrsw-read-share|mrsw-conflict|mrsw-writer-conflict "
-                "[--size S] [--local-va A] [--home-va A]\n");
+                "[--size S] [--local-va A] [--home-va A] "
+                "[--node-count N] [--node-idx I]\n");
         return 2;
     }
 
@@ -727,16 +919,32 @@ int main(int argc, char **argv)
         log_msg("resolve local identity failed");
         goto out;
     }
+    if (cfg.node_idx >= 0)
+        local_idx = cfg.node_idx;
+    if (local_idx < 0 || local_idx >= cfg.node_count) {
+        log_msg("invalid local node index node=%d node_count=%d",
+                local_idx, cfg.node_count);
+        goto out;
+    }
 
     log_msg("start mode=%s node=%d cna=%#x local_va=%#" PRIx64
-            " home_va=%#" PRIx64 " size=%#" PRIx64,
+            " home_va=%#" PRIx64 " size=%#" PRIx64 " node_count=%d",
             mode_name(cfg.mode), local_idx, local_cna, cfg.local_va,
-            cfg.home_va, cfg.size);
+            cfg.home_va, cfg.size, cfg.node_count);
 
-    if (local_idx == 0)
+    if (cfg.node_count > 2) {
+        if (local_idx == 0) {
+            ret = run_home_multi_peer(obmm_fd, local_cna, &cfg,
+                                      &local_meta) == 0 ? 0 : 1;
+        } else {
+            ret = run_peer_multi_peer(obmm_fd, local_cna, local_idx, &cfg,
+                                      &local_meta) == 0 ? 0 : 1;
+        }
+    } else if (local_idx == 0) {
         ret = run_home(obmm_fd, local_cna, &cfg, &local_meta) == 0 ? 0 : 1;
-    else
+    } else {
         ret = run_peer(obmm_fd, local_cna, &cfg, &local_meta) == 0 ? 0 : 1;
+    }
 
 out:
     close(obmm_fd);

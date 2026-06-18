@@ -48,7 +48,7 @@ APP_VALIDATION_COMMANDS = {
     ],
     "gva_direct": [
         "scripts/run_ub_dual_node_gva_direct_test.sh",
-        "scripts/run_ub_dual_node_gva_direct_matrix.sh",
+        "scripts/run_ub_eight_node_gva_direct_test.sh",
     ],
     "gva_manager": [
         "scripts/run_ub_dual_node_gsva_manager_bootstrap.sh",
@@ -466,16 +466,25 @@ def test_obmm_gsva_has_independent_dual_node_bootflow():
 def test_gva_direct_has_independent_dual_node_bootflow():
     script = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
     init_source = (ROOT / "init.c").read_text()
+    eight_node_runner = (ROOT / "scripts" / "run_ub_eight_node_gva_direct_test.sh").read_text()
 
     assert "linqu_gva_direct=1" in script
     assert "gva_direct_mode=${GVA_DIRECT_MODE}" in script
     assert "gva_direct_size=${GVA_DIRECT_SIZE}" in script
     assert "gva_direct_local_va=${GVA_DIRECT_LOCAL_VA}" in script
     assert "gva_direct_home_va=${GVA_DIRECT_HOME_VA}" in script
+    assert "/bin/linqu_gva_direct --mode ${GVA_DIRECT_MODE}" in eight_node_runner
+    assert "--node-count ${GVA_DIRECT_NODE_COUNT}" in eight_node_runner
+    assert "--node-idx ${node_idx}" in eight_node_runner
+    assert "GVA_DIRECT_NODE_COUNT=8" in eight_node_runner
+    assert "launch_ub_eight_node_headless.sh" in eight_node_runner
+    assert "GVA_S3_MAP" in eight_node_runner
+    assert "GVA_PATH" in eight_node_runner
     assert "\\\\[gva_direct\\\\] result=done" in script
     assert "\\[init\\] ub gva direct app pass" not in script
     assert "should_run_gva_direct" in init_source
     assert "run_gva_direct_probe" in init_source
+    assert "gva_direct_node_count" in init_source
     assert "gva_direct_enabled" in script
     assert "validate_gva_direct_log" in script
 
@@ -618,6 +627,7 @@ def test_gva_direct_uses_canonical_app_source():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     run_app = (ROOT / "initramfs" / "run_app").read_text()
     app_dir = ROOT / "apps" / "gva_direct"
+    app_source = (app_dir / "gva_direct.c").read_text()
 
     assert 'GVA_DIRECT_SRC="$ROOT_DIR/apps/gva_direct/gva_direct.c"' in build_script
     assert 'GVA_DIRECT_BIN="$OUT_DIR/linqu_gva_direct"' in build_script
@@ -625,6 +635,11 @@ def test_gva_direct_uses_canonical_app_source():
     assert "linqu_gva_direct=1" in run_app
     assert "linqu_gva_direct_demo" not in run_app
     assert "gva_direct_demo" not in run_app
+    assert "--node-count" in app_source
+    assert "--node-idx" in app_source
+    assert "run_home_multi_peer" in app_source
+    assert "run_peer_multi_peer" in app_source
+    assert "GVA_DIRECT_SLOT_STRIDE" in app_source
     assert (app_dir / "gva_direct.c").exists()
     assert (app_dir / "Makefile").exists()
     assert not (ROOT / "apps" / "gva_direct_demo").exists()
@@ -911,6 +926,7 @@ def test_eight_node_matrix_runners_use_headless_serial_sockets():
         "run_ub_eight_node_obmm_queue.sh",
         "run_ub_eight_node_obmm_import_stress.sh",
         "run_ub_eight_node_gsva_query_caps.sh",
+        "run_ub_eight_node_gva_direct_test.sh",
         "run_ub_eight_node_npu_test.sh",
         "run_ub_eight_node_ssd_test.sh",
     ]
