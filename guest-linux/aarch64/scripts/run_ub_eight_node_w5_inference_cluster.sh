@@ -9,11 +9,6 @@ source "$SCRIPT_DIR/w5_memory_reuse_common.sh"
 
 SIM_UAPI_W5_PROFILE="${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}"
 
-if [[ -n "${DEMO_WAIT_SECS:-}" ]]; then
-  echo "DEMO_WAIT_SECS was renamed to APP_WAIT_SECS for W5 app boot flows" >&2
-  exit 2
-fi
-
 case "$SIM_UAPI_W5_PROFILE" in
   qwen3_0_6b_decode|qwen3_14b_decode|qwen3_0_6b_engram_decode|qwen3_14b_engram_decode)
     ;;

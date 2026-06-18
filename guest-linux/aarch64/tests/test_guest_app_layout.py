@@ -930,6 +930,7 @@ def test_guest_scripts_wait_for_run_app_ready_marker():
     assert "/bin/run_demo" not in scripts
     assert "run_demo_src" not in scripts
     assert "[run_app] entering interactive shell" in scripts
+    assert "DEMO_WAIT_SECS" not in scripts
 
 
 def test_eight_node_matrix_runners_use_headless_serial_sockets():

@@ -742,7 +742,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode", runner_text)
         self.assertIn("SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP", runner_text)
         self.assertIn("SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-1", runner_text)
-        self.assertIn("DEMO_WAIT_SECS was renamed to APP_WAIT_SECS", runner_text)
+        self.assertNotIn("DEMO_WAIT_SECS", runner_text)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP", runner_text)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP:-1", runner_text)
         self.assertIn("SIM_W5_REQUIRE_PREFIX_CACHE", runner_text)
@@ -804,7 +804,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("--validate-only", config_runner_text)
         self.assertIn("STEPS_OVERRIDE", config_runner_text)
         self.assertIn("validate_w5_cluster_config", config_runner_text)
-        self.assertIn("DEMO_WAIT_SECS was renamed to APP_WAIT_SECS", config_runner_text)
+        self.assertNotIn("DEMO_WAIT_SECS", config_runner_text)
         self.assertIn("W5 cluster config requires SIM_QWEN3_DENSE_WEIGHTS_PATH", config_runner_text)
         self.assertIn("W5 cluster config weights path is missing", config_runner_text)
         self.assertIn("SIM_W5_MEMORY_DECISION_OBJECT_STORE requires SIM_W5_MEMORY_DECISION_STORE", config_runner_text)
@@ -1710,7 +1710,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             result.stderr,
         )
 
-    def test_w5_cluster_config_runner_rejects_legacy_demo_wait_secs_name(self):
+    def test_w5_cluster_config_runner_uses_app_wait_secs_name(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
         config_runner = script_dir / "run_w5_cluster_config.sh"
 
@@ -1722,7 +1722,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3-14b",
-                        "DEMO_WAIT_SECS=900",
+                        "APP_WAIT_SECS=900",
                     ]
                 )
                 + "\n",
@@ -1734,24 +1734,16 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 text=True,
             )
 
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("DEMO_WAIT_SECS was renamed to APP_WAIT_SECS", result.stderr)
+        self.assertEqual(result.returncode, 0)
+        self.assertNotIn("DEMO_WAIT_SECS", result.stdout)
+        self.assertNotIn("DEMO_WAIT_SECS", result.stderr)
 
-    def test_w5_inference_cluster_runner_rejects_legacy_demo_wait_secs_name(self):
+    def test_w5_inference_cluster_runner_does_not_reference_legacy_demo_wait_secs_name(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
         runner = script_dir / "run_ub_eight_node_w5_inference_cluster.sh"
-        env = os.environ.copy()
-        env["DEMO_WAIT_SECS"] = "900"
+        runner_text = runner.read_text(encoding="utf-8")
 
-        result = subprocess.run(
-            [str(runner)],
-            env=env,
-            capture_output=True,
-            text=True,
-        )
-
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("DEMO_WAIT_SECS was renamed to APP_WAIT_SECS", result.stderr)
+        self.assertNotIn("DEMO_WAIT_SECS", runner_text)
 
     def test_w5_cluster_config_runner_rejects_fixed_run_id_for_real_runs(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"

@@ -118,11 +118,6 @@ if [[ -n "${SIM_W5_MEMORY_REUSE_RUN_ID:-}" ]]; then
   echo "SIM_W5_MEMORY_REUSE_RUN_ID was renamed to SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG; normal W5 runs auto-discover reusable Memory Service stores without this variable" >&2
   exit 2
 fi
-if [[ -n "${DEMO_WAIT_SECS:-}" ]]; then
-  echo "DEMO_WAIT_SECS was renamed to APP_WAIT_SECS for W5 app boot flows" >&2
-  exit 2
-fi
-
 if [[ -n "$STEPS_OVERRIDE" ]]; then
   if [[ ! "$STEPS_OVERRIDE" =~ '^[0-9]+$' || "$STEPS_OVERRIDE" == "0" ]]; then
     echo "--steps must be a positive integer: $STEPS_OVERRIDE" >&2
