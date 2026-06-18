@@ -16,15 +16,15 @@ def test_ub_chat_is_packaged_from_app_directory():
 def test_ub_rpc_uses_canonical_app_source():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     init_source = (ROOT / "init.c").read_text()
-    run_demo = (ROOT / "initramfs" / "run_app").read_text()
+    run_app = (ROOT / "initramfs" / "run_app").read_text()
     dual_runner = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
     app_dir = ROOT / "apps" / "ub_rpc"
 
     assert 'RPC_SRC="$ROOT_DIR/apps/ub_rpc/ub_rpc.c"' in build_script
     assert "linqu_ub_rpc=1" in init_source
-    assert "linqu_ub_rpc=1" in run_demo
+    assert "linqu_ub_rpc=1" in run_app
     assert "linqu_ub_rpc_demo" not in init_source
-    assert "linqu_ub_rpc_demo" not in run_demo
+    assert "linqu_ub_rpc_demo" not in run_app
     assert "linqu_ub_rpc_demo" not in dual_runner
     assert "ub rpc (app|demo)" not in dual_runner
     assert (app_dir / "ub_rpc.c").exists()
@@ -35,7 +35,7 @@ def test_ub_rpc_uses_canonical_app_source():
 def test_ub_udma_uses_canonical_app_source():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     init_source = (ROOT / "init.c").read_text()
-    run_demo = (ROOT / "initramfs" / "run_app").read_text()
+    run_app = (ROOT / "initramfs" / "run_app").read_text()
     dual_runner = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
     app_dir = ROOT / "apps" / "ub_udma"
 
@@ -43,9 +43,9 @@ def test_ub_udma_uses_canonical_app_source():
     assert 'UDMA_BIN="$OUT_DIR/linqu_ub_udma"' in build_script
     assert "linqu_ub_udma_demo" not in build_script
     assert "linqu_ub_udma=1" in init_source
-    assert "linqu_ub_udma=1" in run_demo
+    assert "linqu_ub_udma=1" in run_app
     assert "linqu_ub_udma_demo" not in init_source
-    assert "linqu_ub_udma_demo" not in run_demo
+    assert "linqu_ub_udma_demo" not in run_app
     assert "linqu_ub_udma_demo" not in dual_runner
     assert "ub udma (app|demo)" not in dual_runner
     assert (app_dir / "ub_udma.c").exists()
@@ -56,7 +56,7 @@ def test_ub_udma_uses_canonical_app_source():
 def test_ub_tcp_each_server_uses_canonical_app_source():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     init_source = (ROOT / "init.c").read_text()
-    run_demo = (ROOT / "initramfs" / "run_app").read_text()
+    run_app = (ROOT / "initramfs" / "run_app").read_text()
     dual_runner = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
     app_dir = ROOT / "apps" / "ub_tcp_each_server"
 
@@ -64,11 +64,11 @@ def test_ub_tcp_each_server_uses_canonical_app_source():
         'TCP_EACH_SERVER_SRC="$ROOT_DIR/apps/ub_tcp_each_server/ub_tcp_each_server.c"'
         in build_script
     )
-    assert "linqu_ub_tcp_each_server=1" in run_demo
+    assert "linqu_ub_tcp_each_server=1" in run_app
     assert "linqu_ub_tcp_each_server=1" in init_source
     assert "[init] ub tcp each server app pass" in init_source
     assert "run_ub_tcp_each_server_demo_probe" not in init_source
-    assert "linqu_ub_tcp_each_server_demo" not in run_demo
+    assert "linqu_ub_tcp_each_server_demo" not in run_app
     assert "linqu_ub_tcp_each_server_demo" not in init_source
     assert "linqu_ub_tcp_each_server_demo" not in dual_runner
     assert "ub tcp each server demo" not in dual_runner
@@ -213,7 +213,7 @@ def test_w5_mem_service_is_link_time_component():
 
 def test_obmm_gsva_uses_canonical_app_source():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
-    run_demo = (ROOT / "initramfs" / "run_app").read_text()
+    run_app = (ROOT / "initramfs" / "run_app").read_text()
     dual_runner = (ROOT / "scripts" / "run_ub_dual_node_obmm_gsva.sh").read_text()
     dual_apps_runner = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
     multi_runner = (ROOT / "scripts" / "run_ub_multi_node_obmm_gsva_matrix.sh").read_text()
@@ -233,9 +233,9 @@ def test_obmm_gsva_uses_canonical_app_source():
     assert 'OBMM_GSVA_SRC="$ROOT_DIR/apps/obmm_gsva/obmm_gsva.c"' in build_script
     assert 'OBMM_GSVA_BIN="$OUT_DIR/linqu_ub_obmm_gsva"' in build_script
     assert "linqu_ub_obmm_gsva_demo" not in build_script
-    assert "linqu_obmm_gsva=1" in run_demo
-    assert "linqu_obmm_gsva_demo" not in run_demo
-    assert "obmm_gsva_demo" not in run_demo
+    assert "linqu_obmm_gsva=1" in run_app
+    assert "linqu_obmm_gsva_demo" not in run_app
+    assert "obmm_gsva_demo" not in run_app
     assert "linqu_obmm_gsva=1" in dual_apps_runner
     assert "obmm_gsva" in dual_apps_runner
     assert "rdinit=/bin/run_app linqu_obmm_gsva=1" in dual_runner
@@ -316,11 +316,11 @@ def test_gsva_query_runner_uses_app_flag_entrypoint():
 
 
 def test_gsva_query_uses_canonical_app_source():
-    run_demo = (ROOT / "initramfs" / "run_app").read_text()
+    run_app = (ROOT / "initramfs" / "run_app").read_text()
 
-    assert "linqu_gsva_query=1" in run_demo
-    assert "run_gsva_query" in run_demo
-    assert "gsva_query_demo" not in run_demo
+    assert "linqu_gsva_query=1" in run_app
+    assert "run_gsva_query" in run_app
+    assert "gsva_query_demo" not in run_app
 
 
 def test_gsva_coh_all_mode_keeps_test_blocks_disjoint():
@@ -386,15 +386,15 @@ def test_npu_ssd_gsva_runner_uses_app_flag_entrypoint():
 
 def test_gva_direct_uses_canonical_app_source():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
-    run_demo = (ROOT / "initramfs" / "run_app").read_text()
+    run_app = (ROOT / "initramfs" / "run_app").read_text()
     app_dir = ROOT / "apps" / "gva_direct"
 
     assert 'GVA_DIRECT_SRC="$ROOT_DIR/apps/gva_direct/gva_direct.c"' in build_script
     assert 'GVA_DIRECT_BIN="$OUT_DIR/linqu_gva_direct"' in build_script
     assert "linqu_gva_direct_demo" not in build_script
-    assert "linqu_gva_direct=1" in run_demo
-    assert "linqu_gva_direct_demo" not in run_demo
-    assert "gva_direct_demo" not in run_demo
+    assert "linqu_gva_direct=1" in run_app
+    assert "linqu_gva_direct_demo" not in run_app
+    assert "gva_direct_demo" not in run_app
     assert (app_dir / "gva_direct.c").exists()
     assert (app_dir / "Makefile").exists()
     assert not (ROOT / "apps" / "gva_direct_demo").exists()
@@ -408,7 +408,7 @@ def test_gva_direct_runner_uses_app_flag_entrypoint():
 
 
 def test_gva_manager_bootstrap_runner_uses_unified_app_entrypoint():
-    run_demo = (ROOT / "initramfs" / "run_app").read_text()
+    run_app = (ROOT / "initramfs" / "run_app").read_text()
     dual_runner = (ROOT / "scripts" / "run_ub_dual_node_gsva_manager_bootstrap.sh").read_text()
     four_runner = (ROOT / "scripts" / "run_ub_four_node_gsva_manager_bootstrap.sh").read_text()
 
@@ -418,10 +418,10 @@ def test_gva_manager_bootstrap_runner_uses_unified_app_entrypoint():
     assert "rdinit=/bin/run_demo gva_manager " not in dual_runner
     assert "gva_manager_bootstrap" not in dual_runner
     assert "gva_manager=" in dual_runner
-    assert "run_gva_manager" in run_demo
-    assert "gva_manager_bootstrap)" not in run_demo
-    assert "gva_manager_dump_routes)" not in run_demo
-    assert "gva_manager_segment_cli)" not in run_demo
+    assert "run_gva_manager" in run_app
+    assert "gva_manager_bootstrap)" not in run_app
+    assert "gva_manager_dump_routes)" not in run_app
+    assert "gva_manager_segment_cli)" not in run_app
 
     assert "linqu_gva_manager=1" in four_runner
     assert "gva_manager_mode=bootstrap" in four_runner
@@ -433,7 +433,7 @@ def test_gva_manager_bootstrap_runner_uses_unified_app_entrypoint():
 
 
 def test_gva_manager_segment_cli_runner_uses_unified_app_entrypoint():
-    run_demo = (ROOT / "initramfs" / "run_app").read_text()
+    run_app = (ROOT / "initramfs" / "run_app").read_text()
     segment_cli_runner = (ROOT / "scripts" / "run_ub_two_node_gva_manager_segment_cli_test.sh").read_text()
 
     assert "linqu_gva_manager=1" in segment_cli_runner
@@ -444,14 +444,14 @@ def test_gva_manager_segment_cli_runner_uses_unified_app_entrypoint():
     assert "result=done action=gsva-segment-query" in segment_cli_runner
     assert "result=done action=gsva-segment-retire" in segment_cli_runner
     assert "gva_manager_segment_cli" not in segment_cli_runner
-    assert "run_gva_manager_segment_cli" in run_demo
-    assert "run linqu_gva_manager segment_cli" in run_demo
-    assert "linqu_gva_manager segment_cli done" in run_demo
+    assert "run_gva_manager_segment_cli" in run_app
+    assert "run linqu_gva_manager segment_cli" in run_app
+    assert "linqu_gva_manager segment_cli done" in run_app
 
 
 def test_obmm_queue_uses_canonical_app_source():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
-    run_demo = (ROOT / "initramfs" / "run_app").read_text()
+    run_app = (ROOT / "initramfs" / "run_app").read_text()
     dual_runner = (ROOT / "scripts" / "run_ub_dual_node_obmm_queue.sh").read_text()
     four_runner = (ROOT / "scripts" / "run_ub_four_node_obmm_queue.sh").read_text()
     eight_runner = (ROOT / "scripts" / "run_ub_eight_node_obmm_queue.sh").read_text()
@@ -461,9 +461,9 @@ def test_obmm_queue_uses_canonical_app_source():
     assert 'OBMM_QUEUE_SRC="$ROOT_DIR/apps/obmm_queue/obmm_queue.c"' in build_script
     assert 'OBMM_QUEUE_BIN="$OUT_DIR/linqu_ub_obmm_queue"' in build_script
     assert "linqu_ub_obmm_queue_demo" not in build_script
-    assert "linqu_obmm_queue=1" in run_demo
-    assert "linqu_obmm_queue_demo" not in run_demo
-    assert "obmm_queue_demo" not in run_demo
+    assert "linqu_obmm_queue=1" in run_app
+    assert "linqu_obmm_queue_demo" not in run_app
+    assert "obmm_queue_demo" not in run_app
     assert "rdinit=/bin/run_app linqu_obmm_queue=1" in dual_runner
     assert "rdinit=/bin/run_demo obmm_queue " not in dual_runner
     assert "OBMM_QUEUE_MODE" in dual_runner
@@ -474,7 +474,7 @@ def test_obmm_queue_uses_canonical_app_source():
     assert "[obmm-queue8]" in eight_runner
     assert "export OBMM_QUEUE_MODE=" in eight_runner
     assert "OBMM_DEMO_MODE" not in eight_runner
-    assert "OBMM_DEMO_MODE" not in run_demo
+    assert "OBMM_DEMO_MODE" not in run_app
     assert "enum queue_mode" in app_source
     assert "parse_queue_mode" in app_source
     assert "OBMM_QUEUE_MODE" in app_source
@@ -491,7 +491,7 @@ def test_obmm_queue_uses_canonical_app_source():
 def test_ub_obmm_pool_uses_canonical_app_source():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     init_source = (ROOT / "init.c").read_text()
-    run_demo = (ROOT / "initramfs" / "run_app").read_text()
+    run_app = (ROOT / "initramfs" / "run_app").read_text()
     dual_runner = (ROOT / "scripts" / "run_ub_dual_node_obmm_pool.sh").read_text()
     four_runner = (ROOT / "scripts" / "run_ub_four_node_obmm_pool.sh").read_text()
     eight_runner = (ROOT / "scripts" / "run_ub_eight_node_obmm_pool.sh").read_text()
@@ -502,11 +502,11 @@ def test_ub_obmm_pool_uses_canonical_app_source():
     assert 'OBMM_POOL_BIN="$OUT_DIR/linqu_ub_obmm_pool"' in build_script
     assert "linqu_ub_obmm_demo" not in build_script
     assert "linqu_obmm_pool=1" in init_source
-    assert "linqu_obmm_pool=1" in run_demo
+    assert "linqu_obmm_pool=1" in run_app
     assert "linqu_obmm_demo" not in init_source
-    assert "linqu_obmm_demo" not in run_demo
-    assert "obmm|obmm_pool|obmm_demo" not in run_demo
-    assert "obmm_demo" not in run_demo
+    assert "linqu_obmm_demo" not in run_app
+    assert "obmm|obmm_pool|obmm_demo" not in run_app
+    assert "obmm_demo" not in run_app
     assert "linqu_obmm_demo=1" not in dual_runner
     assert "rdinit=/bin/run_app linqu_obmm_pool=1" in dual_runner
     assert "rdinit=/bin/run_demo obmm_pool " not in dual_runner

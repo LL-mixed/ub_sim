@@ -10,7 +10,8 @@ Conventions:
   in `guest-linux/aarch64/common/` or `guest-linux/aarch64/libs/`.
 - `scripts/build_initramfs.sh` is the authoritative build and packaging entry for
   initramfs apps.
-- `/bin/run_demo <action>` is the guest-side app launcher when an app needs an
-  interactive or kernel-cmdline action.
+- `/bin/run_app <action>` is the guest-side app launcher when an app needs an
+  interactive action. Automated runners should prefer `rdinit=/bin/run_app`
+  plus an app-specific `linqu_*` kernel-cmdline flag.
 - Multi-node validation belongs in a dedicated `scripts/run_ub_*_<app>.sh`
   runner when the app has observable 2-node, 4-node, or 8-node behavior.
