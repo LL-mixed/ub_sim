@@ -535,10 +535,8 @@ validate_gva_direct_log() {
 validate_gsva_query_log() {
   local node_name="$1"
   local log_file="$2"
-  assert_log_has "$log_file" "\\[init\\] ub gsva query app pass" \
-    "${node_name} gsva query app pass" || return 1
-  assert_log_absent "$log_file" "\\[init\\] ub gsva query app fail" \
-    "${node_name} gsva query app fail" || return 1
+  assert_log_absent "$log_file" "verdict=FAIL" \
+    "${node_name} gsva query failure" || return 1
   assert_log_has "$log_file" "\\[gsva_query\\] GSVA_QUERY_" \
     "${node_name} gsva query result" || return 1
   assert_log_has "$log_file" "verdict=PASS" \
@@ -1284,8 +1282,8 @@ run_iteration() {
   fi
 
   if [[ "$gsva_query_enabled" -eq 1 ]]; then
-    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub gsva query app pass" \
-      "\\[init\\] ub gsva query app fail" "$RUN_SECS"
+    wait_for_log_pass_or_fail "$nodea_guest_log" "verdict=PASS" \
+      "verdict=FAIL" "$RUN_SECS"
     case "$?" in
       0) ;;
       1)
@@ -1298,8 +1296,8 @@ run_iteration() {
         ;;
     esac
 
-    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub gsva query app pass" \
-      "\\[init\\] ub gsva query app fail" "$RUN_SECS"
+    wait_for_log_pass_or_fail "$nodeb_guest_log" "verdict=PASS" \
+      "verdict=FAIL" "$RUN_SECS"
     case "$?" in
       0) ;;
       1)

@@ -295,6 +295,9 @@ def test_gsva_query_has_independent_dual_node_bootflow():
     init_source = (ROOT / "init.c").read_text()
 
     assert "linqu_gsva_query=1" in script
+    assert "verdict=PASS" in script
+    assert "verdict=FAIL" in script
+    assert "\\[init\\] ub gsva query app pass" not in script
     assert "should_run_gsva_query" in init_source
     assert "run_gsva_query_probe" in init_source
     assert "gsva_query_enabled" in script
