@@ -21,6 +21,10 @@ Conventions:
 Each app must have a reusable CLI validation path. Use stable script entrypoints
 instead of env-prefixed one-off shell commands.
 
+The full matrix can be listed or executed through
+`scripts/run_ub_app_validation_matrix.sh`; use `--dry-run` to inspect the exact
+commands before launching QEMU-backed validation.
+
 | App | 2-node validation | Wider validation |
 | --- | --- | --- |
 | `ub_chat` | `scripts/run_ub_dual_node_chat.sh` | `scripts/run_ub_eight_node_chat_matrix.sh` |

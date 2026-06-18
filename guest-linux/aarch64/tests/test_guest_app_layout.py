@@ -96,6 +96,7 @@ def test_apps_readme_lists_reusable_validation_command_for_each_app():
     assert app_dirs == sorted(APP_VALIDATION_COMMANDS)
     assert "/bin/run_demo" not in readme
     assert "DEMO_" not in readme
+    assert "scripts/run_ub_app_validation_matrix.sh" in readme
     assert "scripts/run_w5_cluster_config.sh" in readme
     assert "components/w5_mem_service" in readme
     for app, commands in APP_VALIDATION_COMMANDS.items():
@@ -104,6 +105,18 @@ def test_apps_readme_lists_reusable_validation_command_for_each_app():
             script = command.split()[0]
             assert command in readme
             assert (ROOT / script).exists()
+
+
+def test_app_validation_matrix_runner_matches_readme_commands():
+    runner = (ROOT / "scripts" / "run_ub_app_validation_matrix.sh").read_text()
+
+    assert "W5_ENTRY=\"w5_inference_cluster|scripts/run_w5_cluster_config.sh\"" in runner
+    assert "--scope 2-node|8-node|all|w5|all-with-w5" in runner
+    assert "--dry-run" in runner
+    assert "--from APP" in runner
+    assert "/bin/run_demo" not in runner
+    for app, commands in APP_VALIDATION_COMMANDS.items():
+        assert f"\"{app}|{commands[0]}|{commands[1]}\"" in runner
 
 
 def test_primary_dual_node_app_wrappers_are_stable_cli_entrypoints():
