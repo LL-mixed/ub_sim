@@ -7,23 +7,23 @@ ROOT = Path(__file__).resolve().parents[1]
 
 APP_VALIDATION_COMMANDS = {
     "ub_chat": [
-        "scripts/run_ub_dual_node_apps.sh --app chat",
+        "scripts/run_ub_dual_node_chat.sh",
         "scripts/run_ub_eight_node_chat_matrix.sh",
     ],
     "ub_rpc": [
-        "scripts/run_ub_dual_node_apps.sh --app rpc",
+        "scripts/run_ub_dual_node_rpc.sh",
         "scripts/run_ub_eight_node_rpc_matrix.sh",
     ],
     "ub_tcp_each_server": [
-        "scripts/run_ub_dual_node_apps.sh --app tcp_each_server",
+        "scripts/run_ub_dual_node_tcp_each_server.sh",
         "scripts/run_ub_eight_node_tcp_each_server_matrix.sh",
     ],
     "ub_udma": [
-        "scripts/run_ub_dual_node_apps.sh --app udma",
+        "scripts/run_ub_dual_node_udma.sh",
         "scripts/run_ub_eight_node_udma_matrix.sh",
     ],
     "ub_obmm_pool": [
-        "scripts/run_ub_dual_node_apps.sh --app obmm_pool",
+        "scripts/run_ub_dual_node_obmm_pool.sh",
         "scripts/run_ub_eight_node_obmm_pool.sh",
     ],
     "obmm_queue": [
@@ -104,6 +104,23 @@ def test_apps_readme_lists_reusable_validation_command_for_each_app():
             script = command.split()[0]
             assert command in readme
             assert (ROOT / script).exists()
+
+
+def test_primary_dual_node_app_wrappers_are_stable_cli_entrypoints():
+    wrappers = {
+        "run_ub_dual_node_chat.sh": "chat",
+        "run_ub_dual_node_rpc.sh": "rpc",
+        "run_ub_dual_node_tcp_each_server.sh": "tcp_each_server",
+        "run_ub_dual_node_udma.sh": "udma",
+    }
+
+    for runner_name, app_name in wrappers.items():
+        runner = (ROOT / "scripts" / runner_name).read_text()
+
+        assert 'exec "$SCRIPT_DIR/run_ub_dual_node_apps.sh"' in runner
+        assert f"--app {app_name}" in runner
+        assert ' "$@"' in runner
+        assert "/bin/run_demo" not in runner
 
 
 def test_ub_chat_is_packaged_from_app_directory():
