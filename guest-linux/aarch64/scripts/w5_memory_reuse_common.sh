@@ -4,6 +4,7 @@ w5_memory_reuse_summary_completed() {
   local reuse_out_dir="$1"
   local run_id="$2"
   local expected_steps="$3"
+  local store_kind="${4:-runtime_boundary}"
   local summary_path="$reuse_out_dir/eight_node_w5_inference_cluster_summary.$run_id.txt"
   W5_MEMORY_REUSE_MISSING_REASON=""
   if [[ ! "$expected_steps" =~ '^[0-9]+$' || "$expected_steps" == "0" ]]; then
@@ -18,18 +19,37 @@ w5_memory_reuse_summary_completed() {
     W5_MEMORY_REUSE_MISSING_REASON="missing passed_nodes=8/8 completion evidence"
     return 1
   fi
-  local expected_records=$(( expected_steps * 7 ))
-  if ! grep -q "memory_boundary_observation_summary: .*records=$expected_records .*steps=$expected_steps/$expected_steps .*nodes=node1,node2,node3,node4,node5,node6,node7" "$summary_path"; then
-    W5_MEMORY_REUSE_MISSING_REASON="missing boundary coverage summary for steps=$expected_steps records=$expected_records"
-    return 1
-  fi
   local step=0
   local node=1
+  if [[ "$store_kind" == "runtime_boundary" ]]; then
+    local expected_records=$(( expected_steps * 7 ))
+    if ! grep -q "memory_boundary_observation_summary: .*records=$expected_records .*steps=$expected_steps/$expected_steps .*nodes=node1,node2,node3,node4,node5,node6,node7" "$summary_path"; then
+      W5_MEMORY_REUSE_MISSING_REASON="missing boundary coverage summary for steps=$expected_steps records=$expected_records"
+      return 1
+    fi
+    while (( step < expected_steps )); do
+      node=1
+      while (( node <= 7 )); do
+        if ! grep -q "memory_boundary_observation: .* step=$step node=node$node .* status=ok" "$summary_path"; then
+          W5_MEMORY_REUSE_MISSING_REASON="missing boundary observation for step=$step node=node$node"
+          return 1
+        fi
+        (( node += 1 ))
+      done
+      (( step += 1 ))
+    done
+  fi
+  local expected_service_hits=$(( expected_steps * 7 ))
+  if ! grep -q "memory_service_summary: .*steps=$expected_steps/$expected_steps .*actions=jump-to-terminal .*lookup_hits=$expected_service_hits" "$summary_path"; then
+    W5_MEMORY_REUSE_MISSING_REASON="missing executable jump-to-terminal Memory Service summary for steps=$expected_steps"
+    return 1
+  fi
+  step=0
   while (( step < expected_steps )); do
     node=1
     while (( node <= 7 )); do
-      if ! grep -q "memory_boundary_observation: .* step=$step node=node$node .* status=ok" "$summary_path"; then
-        W5_MEMORY_REUSE_MISSING_REASON="missing boundary observation for step=$step node=node$node"
+      if ! grep -q "memory_service_step: step=$step .*nodes=[^ ]*node$node.*actions=jump-to-terminal" "$summary_path"; then
+        W5_MEMORY_REUSE_MISSING_REASON="missing executable jump-to-terminal Memory Service step coverage for step=$step node=node$node"
         return 1
       fi
       (( node += 1 ))
@@ -80,15 +100,15 @@ w5_resolve_memory_reuse_config() {
 
   local reuse_out_dir="${SIM_W5_MEMORY_REUSE_OUT_DIR:-$default_reuse_out_dir}"
   local decision_store=""
+  local selected_store_kind=""
   local selected_run_id="$reuse_run_id"
   local object_store=""
 
   if [[ "$reuse_run_id" == "latest" ]]; then
-    local -a candidates
-    candidates=("$reuse_out_dir"/w5_memory_runtime_boundary_lookup.*_w5_${profile}_*.json(N.om))
-    if (( ${#candidates[@]} == 0 )); then
-      candidates=("$reuse_out_dir"/w5_memory_object_store.*_w5_${profile}_*.json(N.om))
-    fi
+    local -a candidates runtime_candidates object_candidates
+    runtime_candidates=("$reuse_out_dir"/w5_memory_runtime_boundary_lookup.*_w5_${profile}_*.json(N.om))
+    object_candidates=("$reuse_out_dir"/w5_memory_object_store.*_w5_${profile}_*.json(N.om))
+    candidates=("${runtime_candidates[@]}" "${object_candidates[@]}")
     if (( ${#candidates[@]} == 0 )); then
       if (( reuse_optional )); then
         if (( ! reuse_auto )); then
@@ -101,17 +121,21 @@ w5_resolve_memory_reuse_config() {
     fi
     local candidate=""
     local base=""
+    local candidate_store_kind=""
     for candidate in "${candidates[@]}"; do
       base="${candidate:t}"
       selected_run_id="${base#w5_memory_object_store.}"
+      candidate_store_kind="object_store"
       if [[ "$selected_run_id" == "$base" ]]; then
         selected_run_id="${base#w5_memory_runtime_boundary_lookup.}"
+        candidate_store_kind="runtime_boundary"
       fi
       selected_run_id="${selected_run_id%.json}"
       object_store="$reuse_out_dir/w5_object_service_store.$selected_run_id.json"
       if [[ -f "$object_store" ]] &&
-          w5_memory_reuse_summary_completed "$reuse_out_dir" "$selected_run_id" "$expected_steps"; then
+          w5_memory_reuse_summary_completed "$reuse_out_dir" "$selected_run_id" "$expected_steps" "$candidate_store_kind"; then
         decision_store="$candidate"
+        selected_store_kind="$candidate_store_kind"
         break
       fi
     done
@@ -131,8 +155,10 @@ w5_resolve_memory_reuse_config() {
       return 2
     fi
     decision_store="$reuse_out_dir/w5_memory_object_store.$selected_run_id.json"
+    selected_store_kind="object_store"
     if [[ ! -f "$decision_store" ]]; then
       decision_store="$reuse_out_dir/w5_memory_runtime_boundary_lookup.$selected_run_id.json"
+      selected_store_kind="runtime_boundary"
     fi
   fi
 
@@ -145,7 +171,7 @@ w5_resolve_memory_reuse_config() {
     echo "W5 Memory Service reuse object store is missing: $object_store" >&2
     return 2
   fi
-  if ! w5_memory_reuse_summary_completed "$reuse_out_dir" "$selected_run_id" "$expected_steps"; then
+  if ! w5_memory_reuse_summary_completed "$reuse_out_dir" "$selected_run_id" "$expected_steps" "$selected_store_kind"; then
     echo "W5 Memory Service reuse summary is missing completion/coverage evidence for run_id=$selected_run_id: $W5_MEMORY_REUSE_MISSING_REASON" >&2
     return 2
   fi
