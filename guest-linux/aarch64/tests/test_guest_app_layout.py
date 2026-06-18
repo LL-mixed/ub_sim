@@ -424,7 +424,7 @@ def test_obmm_queue_uses_canonical_app_source():
     assert "linqu_obmm_queue=1" in run_demo
     assert "linqu_obmm_queue_demo" not in run_demo
     assert "obmm_queue_demo" not in run_demo
-    assert "rdinit=/bin/run_demo linqu_obmm_queue=1" in dual_runner
+    assert "rdinit=/bin/run_app linqu_obmm_queue=1" in dual_runner
     assert "rdinit=/bin/run_demo obmm_queue " not in dual_runner
     assert "OBMM_QUEUE_MODE" in dual_runner
     assert "OBMM_DEMO_MODE" not in dual_runner
