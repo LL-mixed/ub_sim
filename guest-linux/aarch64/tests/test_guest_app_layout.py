@@ -327,17 +327,14 @@ def test_gsva_coh_all_mode_keeps_test_blocks_disjoint():
     source = (ROOT / "apps" / "gsva_coh_test" / "gsva_coh_test.c").read_text()
 
     assert "uint64_t base = GSVA_BASE + 0x800000ULL;" not in source
-    assert "uint64_t base = GSVA_BASE + 0x1000000ULL;" in source
+    assert "uint64_t base = GSVA_BASE + 0x2000000ULL;" in source
 
 
 def test_gsva_coh_and_lifecycle_runner_uses_app_flag_entrypoint():
     two_node_coh_runner = (ROOT / "scripts" / "run_ub_two_node_gsva_coh_test.sh").read_text()
     two_node_lifecycle_runner = (ROOT / "scripts" / "run_ub_two_node_gsva_lifecycle_test.sh").read_text()
-    runners = {
-        (ROOT / "scripts" / "run_ub_eight_node_gsva_coh_test.sh").read_text():
-            "linqu_gsva_coh_test=1",
-    }
     four_node_coh_runner = (ROOT / "scripts" / "run_ub_four_node_gsva_coh_test.sh").read_text()
+    eight_node_coh_runner = (ROOT / "scripts" / "run_ub_eight_node_gsva_coh_test.sh").read_text()
     four_node_lifecycle_runner = (
         ROOT / "scripts" / "run_ub_four_node_gsva_lifecycle_test.sh"
     ).read_text()
@@ -349,15 +346,14 @@ def test_gsva_coh_and_lifecycle_runner_uses_app_flag_entrypoint():
     assert "rdinit=/bin/run_demo gsva_coh_test " not in two_node_coh_runner
     assert "rdinit=/bin/run_app linqu_gsva_coh_test=1" in four_node_coh_runner
     assert "rdinit=/bin/run_demo gsva_coh_test " not in four_node_coh_runner
+    assert "rdinit=/bin/run_app linqu_gsva_coh_test=1" in eight_node_coh_runner
+    assert "rdinit=/bin/run_demo gsva_coh_test " not in eight_node_coh_runner
     assert "rdinit=/bin/run_app linqu_gsva_lifecycle_test=1" in two_node_lifecycle_runner
     assert "rdinit=/bin/run_demo gsva_lifecycle_test " not in two_node_lifecycle_runner
     assert "rdinit=/bin/run_app linqu_gsva_lifecycle_test=1" in four_node_lifecycle_runner
     assert "rdinit=/bin/run_demo gsva_lifecycle_test " not in four_node_lifecycle_runner
     assert "rdinit=/bin/run_app linqu_gsva_lifecycle_test=1" in eight_node_lifecycle_runner
     assert "rdinit=/bin/run_demo gsva_lifecycle_test " not in eight_node_lifecycle_runner
-
-    for runner, token in runners.items():
-        assert f"rdinit=/bin/run_demo {token}" in runner
 
 
 def test_npu_ssd_gsva_runner_uses_app_flag_entrypoint():

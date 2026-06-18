@@ -103,7 +103,7 @@ start_node() {
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
       -initrd "$INITRAMFS_IMAGE" \
-      -append "console=ttyAMA0 rdinit=/bin/run_demo linqu_gsva_coh_test=1 linqu_urma_dp_role=${role} linqu_node_idx=${node_idx} linqu_node_count=8 gsva_test_mode=${GSVA_TEST_MODE} ${APPEND_EXTRA}" \
+      -append "console=ttyAMA0 rdinit=/bin/run_app linqu_gsva_coh_test=1 linqu_urma_dp_role=${role} linqu_node_idx=${node_idx} linqu_node_count=8 gsva_test_mode=${GSVA_TEST_MODE} ${APPEND_EXTRA}" \
       >"$qemu_log" 2>&1 &
   echo $! > "$pid_file"
 }
