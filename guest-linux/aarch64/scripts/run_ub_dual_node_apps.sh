@@ -1074,7 +1074,7 @@ run_iteration() {
   fi
 
   if [[ "$udma_enabled" -eq 1 ]]; then
-    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub udma app pass" "\\[init\\] ub udma app fail" "$RUN_SECS"
+    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[ub_udma\\] pass" "\\[ub_udma\\] fail" "$RUN_SECS"
     case "$?" in
       0) ;;
       1)
@@ -1087,7 +1087,7 @@ run_iteration() {
         ;;
     esac
 
-    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub udma app pass" "\\[init\\] ub udma app fail" "$RUN_SECS"
+    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[ub_udma\\] pass" "\\[ub_udma\\] fail" "$RUN_SECS"
     case "$?" in
       0) ;;
       1)

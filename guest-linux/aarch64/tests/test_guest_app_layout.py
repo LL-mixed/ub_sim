@@ -51,6 +51,9 @@ def test_ub_udma_uses_canonical_app_source():
     assert "linqu_ub_udma_demo" not in build_script
     assert "linqu_ub_udma=1" in init_source
     assert "linqu_ub_udma=1" in run_app
+    assert "\\\\[ub_udma\\\\] pass" in dual_runner
+    assert "\\\\[ub_udma\\\\] fail" in dual_runner
+    assert "\\[init\\] ub udma app pass" not in dual_runner
     assert "linqu_ub_udma_demo" not in init_source
     assert "linqu_ub_udma_demo" not in run_app
     assert "linqu_ub_udma_demo" not in dual_runner
