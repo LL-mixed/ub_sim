@@ -717,6 +717,7 @@ def test_gsva_query_runner_uses_app_flag_entrypoint():
     runner = (ROOT / "scripts" / "run_ub_dual_node_gsva_query.sh").read_text()
     caps_runner = (ROOT / "scripts" / "run_ub_gsva_query_caps_test.sh").read_text()
     eight_runner = (ROOT / "scripts" / "run_ub_eight_node_gsva_query_caps.sh").read_text()
+    app_source = (ROOT / "apps" / "gsva_query" / "gsva_query.c").read_text()
 
     assert "start_node nodeA nodeA" in runner
     assert "start_node nodeB nodeB" in runner
@@ -729,6 +730,8 @@ def test_gsva_query_runner_uses_app_flag_entrypoint():
     assert "\\\\[gsva_query\\\\] GSVA_QUERY_CAPS" in eight_runner
     assert "caps:.*STRICT_ADDRESS_IDENTITY" in eight_runner
     assert "verdict=PASS" in eight_runner
+    assert "struct gsva_query_resp" in app_source
+    assert "struct gsva_caps_resp *caps = (struct gsva_caps_resp *)resp->data" in app_source
     assert "NODE_IDS=(nodeA nodeB nodeC nodeD nodeE nodeF nodeG nodeH)" in eight_runner
     assert "launch_ub_eight_node_headless.sh" in eight_runner
     assert "rdinit=/bin/run_demo gsva_query " not in eight_runner

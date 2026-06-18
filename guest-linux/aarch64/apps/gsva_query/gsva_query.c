@@ -50,6 +50,12 @@ struct gsva_caps_resp {
 	uint32_t reserved;
 };
 
+struct gsva_query_resp {
+	uint32_t version;
+	int32_t error;
+	uint8_t data[240];
+};
+
 static void usage(const char *prog)
 {
 	fprintf(stderr,
@@ -78,9 +84,15 @@ static int do_query_caps(int obmm_fd)
 		return 1;
 	}
 
-	struct gsva_caps_resp *caps = (struct gsva_caps_resp *)cmd.resp_data;
+	struct gsva_query_resp *resp = (struct gsva_query_resp *)cmd.resp_data;
+	struct gsva_caps_resp *caps = (struct gsva_caps_resp *)resp->data;
 
 	printf("%s GSVA_QUERY_CAPS\n", TAG);
+	if (resp->error != GSVA_OK) {
+		printf("  error:                %d\n", resp->error);
+		printf("  verdict=FAIL\n");
+		return 1;
+	}
 	printf("  version:              %u\n", caps->version);
 	printf("  flags:                0x%x\n", caps->flags);
 
