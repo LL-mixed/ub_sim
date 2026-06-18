@@ -723,6 +723,30 @@ def test_source_tree_does_not_track_app_build_outputs_or_demo_ignores():
         text=True,
         capture_output=True,
     ).stdout.splitlines()
+    tracked_runtime_source = subprocess.run(
+        [
+            "git",
+            "ls-files",
+            ".gitignore",
+            "guest-linux/aarch64/apps",
+            "guest-linux/aarch64/common",
+            "guest-linux/aarch64/components",
+            "guest-linux/aarch64/initramfs",
+            "guest-linux/aarch64/libs",
+            "guest-linux/aarch64/scripts",
+        ],
+        cwd=repo_root,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.splitlines()
 
     assert "obmm_queue_demo" not in gitignore
     assert "guest-linux/aarch64/apps/obmm_coh_test/obmm_coh_test" not in tracked_apps
+    assert [path for path in tracked_runtime_source if "demo" in path.lower()] == []
+    assert [
+        path
+        for path in tracked_apps
+        if Path(path).name != "Makefile"
+        and Path(path).suffix not in {".c", ".h", ".md"}
+    ] == []
