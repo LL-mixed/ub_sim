@@ -56,7 +56,7 @@ APP_VALIDATION_COMMANDS = {
     ],
     "gsva_query": [
         "scripts/run_ub_gsva_query_caps_test.sh",
-        "scripts/run_ub_dual_node_apps.sh --app gsva_query",
+        "scripts/run_ub_eight_node_gsva_query_caps.sh",
     ],
     "gsva_coh_test": [
         "scripts/run_ub_two_node_gsva_coh_test.sh",
@@ -505,9 +505,17 @@ def test_npu_test_has_independent_dual_node_bootflow():
 
 def test_gsva_query_runner_uses_app_flag_entrypoint():
     runner = (ROOT / "scripts" / "run_ub_gsva_query_caps_test.sh").read_text()
+    eight_runner = (ROOT / "scripts" / "run_ub_eight_node_gsva_query_caps.sh").read_text()
 
     assert "rdinit=/bin/run_app linqu_gsva_query=1" in runner
     assert "rdinit=/bin/run_demo gsva_query " not in runner
+    assert "/bin/linqu_ub_gsva_query --caps" in eight_runner
+    assert "\\\\[gsva_query\\\\] GSVA_QUERY_CAPS" in eight_runner
+    assert "caps:.*STRICT_ADDRESS_IDENTITY" in eight_runner
+    assert "verdict=PASS" in eight_runner
+    assert "NODE_IDS=(nodeA nodeB nodeC nodeD nodeE nodeF nodeG nodeH)" in eight_runner
+    assert "launch_ub_eight_node_headless.sh" in eight_runner
+    assert "rdinit=/bin/run_demo gsva_query " not in eight_runner
 
 
 def test_gsva_query_uses_canonical_app_source():
@@ -874,6 +882,7 @@ def test_eight_node_matrix_runners_use_headless_serial_sockets():
         "run_ub_eight_node_obmm_pool.sh",
         "run_ub_eight_node_obmm_queue.sh",
         "run_ub_eight_node_obmm_import_stress.sh",
+        "run_ub_eight_node_gsva_query_caps.sh",
     ]
 
     for runner_name in runner_names:
