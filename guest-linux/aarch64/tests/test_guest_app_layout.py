@@ -404,11 +404,15 @@ def test_gva_manager_segment_cli_runner_uses_unified_app_entrypoint():
 
     assert "linqu_gva_manager=1" in segment_cli_runner
     assert "gva_manager_mode=segment_cli" in segment_cli_runner
+    assert "rdinit=/bin/run_app linqu_gva_manager=1" in segment_cli_runner
+    assert "rdinit=/bin/run_demo gva_manager " not in segment_cli_runner
     assert "result=done action=gsva-segment-alloc" in segment_cli_runner
     assert "result=done action=gsva-segment-query" in segment_cli_runner
     assert "result=done action=gsva-segment-retire" in segment_cli_runner
     assert "gva_manager_segment_cli" not in segment_cli_runner
     assert "run_gva_manager_segment_cli" in run_demo
+    assert "run linqu_gva_manager segment_cli" in run_demo
+    assert "linqu_gva_manager segment_cli done" in run_demo
 
 
 def test_obmm_queue_uses_canonical_app_source():

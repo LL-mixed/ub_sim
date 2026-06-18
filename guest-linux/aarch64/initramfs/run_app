@@ -340,6 +340,7 @@ run_gva_manager_segment_cli() {
   local segment_id=""
   local epoch=""
 
+  log "run linqu_gva_manager segment_cli"
   read_cmdline
   for token in $cmdline; do
     case "$token" in
@@ -399,6 +400,7 @@ run_gva_manager_segment_cli() {
     log "gva_manager segment_cli retire failed rc=$rc segment_id=$segment_id epoch=$epoch"
     return "$rc"
   fi
+  log "linqu_gva_manager segment_cli done"
   return 0
 }
 
