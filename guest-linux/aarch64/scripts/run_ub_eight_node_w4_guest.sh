@@ -547,7 +547,7 @@ trace_run_artifact_paths() {
 }
 
 write_w4_initramfs_runner() {
-  local runner="$RUN_INITRAMFS_DIR/bin/run_demo"
+  local runner="$RUN_INITRAMFS_DIR/bin/run_app"
 
   cat > "$runner" <<EOF
 #!/bin/busybox sh
@@ -1334,7 +1334,7 @@ prepare_environment() {
   build_w4_initramfs
   trace "prepare: launch headless env run_id=$RUN_ID_BASE"
   ENV_FILE="$env_file" RUN_ID="$RUN_ID_BASE" APPEND_EXTRA="$APPEND_BASE" QEMU_MEM="$QEMU_MEM" UB_SIM_PORT_NUM="$PORT_NUM" \
-    INITRAMFS_IMAGE="$RUN_INITRAMFS_IMAGE" RDINIT="/bin/run_demo" \
+    INITRAMFS_IMAGE="$RUN_INITRAMFS_IMAGE" RDINIT="/bin/run_app" \
     UB_FM_SHARED_DIR="$UB_FM_SHARED_DIR" \
     SIMPLER_HOST_MATMUL_MANIFEST="$SIMPLER_HOST_MATMUL_MANIFEST" \
     SIMPLER_HOST_ENGRAM_CONTEXT_MANIFEST="$SIMPLER_HOST_ENGRAM_CONTEXT_MANIFEST" \

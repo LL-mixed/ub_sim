@@ -537,6 +537,15 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     w4_runner = (ROOT / "scripts" / "run_ub_dual_node_w4_guest.sh").read_text()
     w4_eight_runner = (ROOT / "scripts" / "run_ub_eight_node_w4_guest.sh").read_text()
+    launcher_scripts = "\n".join(
+        [
+            (ROOT / "scripts" / "launch_ub_dual_node_tmux.sh").read_text(),
+            (ROOT / "scripts" / "launch_ub_four_node_tmux.sh").read_text(),
+            (ROOT / "scripts" / "launch_ub_four_node_headless.sh").read_text(),
+            (ROOT / "scripts" / "launch_ub_eight_node_headless.sh").read_text(),
+            (ROOT / "scripts" / "run_ub_dual_node_urma_dataplane_workload_test.sh").read_text(),
+        ]
+    )
 
     assert 'REPORT_FILE="${REPORT_FILE:-$OUT_DIR/apps_report.latest.txt}"' in script
     assert "scenario=dual-node-apps" in script
@@ -574,6 +583,11 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     assert "UB_RUN_DEMO_FROM_INIT" not in init_source
     assert "UB_RUN_DEMO_FROM_INIT" not in run_demo
     assert "UB_RUN_DEMO_FROM_INIT" not in w4_eight_runner
+    assert 'local runner="$RUN_INITRAMFS_DIR/bin/run_app"' in w4_eight_runner
+    assert 'RDINIT="/bin/run_app"' in w4_eight_runner
+    assert 'RDINIT="${RDINIT:-/bin/run_app}"' in launcher_scripts
+    assert "/bin/run_demo bootstrap" not in launcher_scripts
+    assert 'RDINIT="${RDINIT:-/bin/run_demo}"' not in launcher_scripts
     assert "should_enter_app_boot_flow" in init_source
     assert "should_enter_demo_boot_flow" not in init_source
     assert "no demo flags matched" not in run_app

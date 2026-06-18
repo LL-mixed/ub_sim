@@ -7,7 +7,7 @@ WORKSPACE_ROOT="$(cd "$ROOT_DIR/../.." && pwd)"
 
 KERNEL_IMAGE="${KERNEL_IMAGE:-$ROOT_DIR/out/Image}"
 INITRAMFS_IMAGE="${INITRAMFS_IMAGE:-$ROOT_DIR/out/initramfs.cpio.gz}"
-RDINIT="${RDINIT:-/bin/run_demo}"
+RDINIT="${RDINIT:-/bin/run_app}"
 TOPOLOGY_FILE="${TOPOLOGY_FILE:-$WORKSPACE_ROOT/vendor/ub_topology_four_node_full_mesh.ini}"
 ENTITY_PLAN_FILE="${UB_FM_ENTITY_PLAN_FILE:-$WORKSPACE_ROOT/vendor/ub_topology_two_node_v2_entity.ini}"
 ENTITY_COUNT="${UB_SIM_ENTITY_COUNT:-2}"
@@ -287,7 +287,7 @@ for node_id in "${NODE_IDS[@]}"; do
 done
 
 log "cleanup=$CLEANUP_SCRIPT"
-log "interactive shells ready after /bin/run_demo bootstrap"
+log "interactive shells ready after /bin/run_app bootstrap"
 
 exec ${SHELL:-/bin/zsh} -i
 EOC
