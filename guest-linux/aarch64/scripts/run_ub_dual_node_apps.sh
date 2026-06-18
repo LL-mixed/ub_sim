@@ -38,6 +38,11 @@ GVA_DIRECT_MODE="${GVA_DIRECT_MODE:-write-read}"
 GVA_DIRECT_LOCAL_VA="${GVA_DIRECT_LOCAL_VA:-0x710000000000}"
 GVA_DIRECT_HOME_VA="${GVA_DIRECT_HOME_VA:-0x720000000000}"
 GVA_DIRECT_SIZE="${GVA_DIRECT_SIZE:-0x400000}"
+SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-host_matmul}"
+SIM_QWEN3_GUEST_DECODE_STEPS="${SIM_QWEN3_GUEST_DECODE_STEPS:-1}"
+SIMPLER_HOST_VECTOR_MANIFEST="${SIMPLER_HOST_VECTOR_MANIFEST:-/tmp/simpler-host-vector-artifacts/host_vector_manifest.json}"
+SIMPLER_HOST_MATMUL_MANIFEST="${SIMPLER_HOST_MATMUL_MANIFEST:-/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json}"
+SIM_UAPI_SCENARIO_CONFIG="${SIM_UAPI_SCENARIO_CONFIG:-$WORKSPACE_ROOT/scenarios/mvp_4host_single_domain.yaml}"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
 QMP_DIR="${UB_FM_SHARED_DIR:-/tmp/ub-qemu-links-dual}/qmp"
@@ -56,7 +61,7 @@ Options:
                       Names: chat, rpc, tcp_each_server, udma, obmm_pool,
                       obmm_dataplane_microbench, obmm_import_stress, obmm_gsva,
                       obmm_coh_test, gva_direct, gsva_query, npu_test, ssd_test,
-                      ssd_gsva_test.
+                      ssd_gsva_test, w4_guest.
                       Default: chat,rpc,tcp_each_server.
   --run-id ID        Stable run id used for log/report names.
   --run-secs SECS    Per-app pass/fail wait timeout.
@@ -114,6 +119,9 @@ append_app_selection() {
       ;;
     ssd_gsva_test)
       flag="linqu_ssd_gsva_test=1"
+      ;;
+    w4_guest)
+      flag="linqu_w4_guest=1"
       ;;
     "")
       return 0
@@ -237,6 +245,12 @@ source "$SCRIPT_DIR/qemu_ub_common.sh"
 APPEND_EXTRA="$(ensure_sim_kernel_append_defaults "$APPEND_EXTRA")"
 QEMU_BIN="$(ensure_qemu_ub_binary "$WORKSPACE_ROOT")"
 ensure_ub_guest_artifacts "$ROOT_DIR" "$KERNEL_IMAGE" "$INITRAMFS_IMAGE"
+
+if [[ "$APPEND_EXTRA" == *"linqu_w4_guest=1"* ]]; then
+  append_cmdline_if_missing "pmd_mapping=100%"
+  append_cmdline_if_missing "w4_db_region_size_mb=512"
+  append_cmdline_if_missing "obmm.mempool_size=512M"
+fi
 
 # Reserve 25% of guest RAM for the kernel pfn_range contiguous memory pool.
 # OBMM needs large contiguous physical allocations (2MB per segment). Without
@@ -587,6 +601,24 @@ validate_ssd_gsva_test_log() {
     "${node_name} ssd gsva test verdict" || return 1
 }
 
+validate_w4_guest_log() {
+  local node_name="$1"
+  local log_file="$2"
+
+  assert_log_absent "$log_file" "\\[w4_guest\\] fail" \
+    "${node_name} w4 guest failure" || return 1
+  assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_kvcache_path=ready" \
+    "${node_name} w4 obmm kvcache backing" || return 1
+  assert_log_has "$log_file" "\\[w4_guest\\] stage db_cluster_mode=resource_backed_uapi" \
+    "${node_name} w4 resource-backed db cluster" || return 1
+  assert_log_has "$log_file" "\\[w4_guest\\] assessment service_coverage=5/5 .* complete=true" \
+    "${node_name} w4 service coverage" || return 1
+  assert_log_has "$log_file" "\\[w4_guest\\] dispatch path=ubc_entity_chipbackend" \
+    "${node_name} w4 chipbackend dispatch" || return 1
+  assert_log_has "$log_file" "\\[w4_guest\\] pass" \
+    "${node_name} w4 pass" || return 1
+}
+
 validate_kernel_health_log() {
   local node_name="$1"
   local log_file="$2"
@@ -647,6 +679,10 @@ start_node() {
     UB_FM_SHARED_DIR="$SHARED_DIR" \
     UB_SIM_ENTITY_COUNT="$ENTITY_COUNT" \
     UB_FM_ENTITY_PLAN_FILE="$ENTITY_PLAN_FILE" \
+    SIMPLER_HOST_VECTOR_MANIFEST="$SIMPLER_HOST_VECTOR_MANIFEST" \
+    SIMPLER_HOST_MATMUL_MANIFEST="$SIMPLER_HOST_MATMUL_MANIFEST" \
+    SIM_UAPI_W4_CHIPBACKEND_PROFILE="$SIM_UAPI_W4_CHIPBACKEND_PROFILE" \
+    SIM_UAPI_SCENARIO_CONFIG="$SIM_UAPI_SCENARIO_CONFIG" \
     "$QEMU_BIN" \
       "${qemu_control_args[@]}" \
       -M virt,gic-version=3,its=on,ummu=on,ub-cluster-mode=on \
@@ -898,10 +934,13 @@ run_iteration() {
   local npu_test_enabled=0
   local ssd_test_enabled=0
   local ssd_gsva_test_enabled=0
+  local w4_guest_enabled=0
   local nodea_obmm_coh_test_append=""
   local nodeb_obmm_coh_test_append=""
   local nodea_ssd_gsva_test_append=""
   local nodeb_ssd_gsva_test_append=""
+  local nodea_w4_guest_append=""
+  local nodeb_w4_guest_append=""
   local nodea_app_append=""
   local nodeb_app_append=""
   local stale_files=()
@@ -948,6 +987,9 @@ run_iteration() {
   if [[ "$APPEND_EXTRA" == *"linqu_ssd_gsva_test=1"* ]]; then
     ssd_gsva_test_enabled=1
   fi
+  if [[ "$APPEND_EXTRA" == *"linqu_w4_guest=1"* ]]; then
+    w4_guest_enabled=1
+  fi
 
   if [[ "$obmm_gsva_enabled" -eq 1 ]]; then
     append_cmdline_if_missing "obmm_gsva_mode=${OBMM_GSVA_MODE}"
@@ -980,10 +1022,21 @@ run_iteration() {
     nodea_ssd_gsva_test_append="linqu_node_idx=0 linqu_node_count=2"
     nodeb_ssd_gsva_test_append="linqu_node_idx=1 linqu_node_count=2"
   fi
-  nodea_app_append="${nodea_obmm_coh_test_append} ${nodea_ssd_gsva_test_append}"
+  if [[ "$w4_guest_enabled" -eq 1 ]]; then
+    if [[ ! -f "$SIMPLER_HOST_MATMUL_MANIFEST" ]]; then
+      SIMPLER_HOST_MATMUL_MANIFEST="$(ensure_simpler_host_manifest "$SCRIPT_DIR" "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" "$SIMPLER_HOST_MATMUL_MANIFEST")"
+    fi
+    append_cmdline_if_missing "linqu_w4_node_count=2"
+    append_cmdline_if_missing "linqu_w4_all_ips=10.0.0.1,10.0.0.2"
+    append_cmdline_if_missing "sim_uapi_w4_chipbackend_profile=${SIM_UAPI_W4_CHIPBACKEND_PROFILE}"
+    append_cmdline_if_missing "sim_qwen3_guest_decode_steps=${SIM_QWEN3_GUEST_DECODE_STEPS}"
+    nodea_w4_guest_append="linqu_w4_role=nodeA linqu_w4_local_ip=10.0.0.1"
+    nodeb_w4_guest_append="linqu_w4_role=nodeB linqu_w4_local_ip=10.0.0.2"
+  fi
+  nodea_app_append="${nodea_obmm_coh_test_append} ${nodea_ssd_gsva_test_append} ${nodea_w4_guest_append}"
   nodea_app_append="${nodea_app_append#"${nodea_app_append%%[![:space:]]*}"}"
   nodea_app_append="${nodea_app_append%"${nodea_app_append##*[![:space:]]}"}"
-  nodeb_app_append="${nodeb_obmm_coh_test_append} ${nodeb_ssd_gsva_test_append}"
+  nodeb_app_append="${nodeb_obmm_coh_test_append} ${nodeb_ssd_gsva_test_append} ${nodeb_w4_guest_append}"
   nodeb_app_append="${nodeb_app_append#"${nodeb_app_append%%[![:space:]]*}"}"
   nodeb_app_append="${nodeb_app_append%"${nodeb_app_append##*[![:space:]]}"}"
 
@@ -1471,6 +1524,36 @@ run_iteration() {
     esac
   fi
 
+  if [[ "$w4_guest_enabled" -eq 1 ]]; then
+    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[w4_guest\\] pass" \
+      "\\[w4_guest\\] fail" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeA w4 guest app reported failure" >&2
+        return 27
+        ;;
+      *)
+        echo "iteration ${iter}: nodeA w4 guest app did not finish within ${RUN_SECS}s" >&2
+        return 27
+        ;;
+    esac
+
+    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[w4_guest\\] pass" \
+      "\\[w4_guest\\] fail" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeB w4 guest app reported failure" >&2
+        return 27
+        ;;
+      *)
+        echo "iteration ${iter}: nodeB w4 guest app did not finish within ${RUN_SECS}s" >&2
+        return 27
+        ;;
+    esac
+  fi
+
   sleep 1
   cleanup_pid "$nodea_pid_file"
   cleanup_pid "$nodeb_pid_file"
@@ -1539,6 +1622,10 @@ run_iteration() {
   if [[ "$APPEND_EXTRA" == *"linqu_ssd_gsva_test=1"* ]]; then
     validate_ssd_gsva_test_log "nodeA" "$nodea_guest_log" || return 1
     validate_ssd_gsva_test_log "nodeB" "$nodeb_guest_log" || return 1
+  fi
+  if [[ "$APPEND_EXTRA" == *"linqu_w4_guest=1"* ]]; then
+    validate_w4_guest_log "nodeA" "$nodea_guest_log" || return 1
+    validate_w4_guest_log "nodeB" "$nodeb_guest_log" || return 1
   fi
   validate_kernel_health_log "nodeA" "$nodea_guest_log" || return 1
   validate_kernel_health_log "nodeB" "$nodeb_guest_log" || return 1

@@ -1041,13 +1041,24 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     assert 'flag="linqu_ub_tcp_each_server=1"' in script
     assert 'flag="linqu_ssd_test=1"' in script
     assert 'flag="linqu_ssd_gsva_test=1"' in script
+    assert 'flag="linqu_w4_guest=1"' in script
     assert "validate_ssd_test_log" in script
     assert "validate_ssd_gsva_test_log" in script
+    assert "validate_w4_guest_log" in script
     assert "\\\\[ssd_test\\\\] verdict=PASS" in script
     assert "\\\\[ssd_gsva_test\\\\]verdict=PASS" in script
+    assert "\\\\[w4_guest\\\\] pass" in script
     assert "\\\\[ssd_gsva_test\\\\]SSD GSVA data test suite" in script
     assert "linqu_node_idx=0 linqu_node_count=2" in script
     assert "linqu_node_idx=1 linqu_node_count=2" in script
+    assert "linqu_w4_node_count=2" in script
+    assert "sim_uapi_w4_chipbackend_profile=${SIM_UAPI_W4_CHIPBACKEND_PROFILE}" in script
+    assert "SIMPLER_HOST_MATMUL_MANIFEST" in script
+    assert "SIM_UAPI_SCENARIO_CONFIG" in script
+    assert "ensure_simpler_host_manifest" in script
+    assert 'append_cmdline_if_missing "pmd_mapping=100%"' in script
+    assert 'append_cmdline_if_missing "w4_db_region_size_mb=512"' in script
+    assert 'append_cmdline_if_missing "obmm.mempool_size=512M"' in script
     assert 'RUN_APP_SRC="$ROOT_DIR/initramfs/run_app"' in build_script
     assert 'RUN_APP_BIN="$INITRAMFS_DIR/bin/run_app"' in build_script
     assert "write_signature_line \"run_app_src\"" in build_script
@@ -1070,6 +1081,10 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     assert "linqu_gsva_lifecycle_test=1" in run_app
     assert "linqu_npu_gsva_test=1" in run_app
     assert "linqu_ssd_gsva_test=1" in run_app
+    assert "linqu_w4_guest=1" in run_app
+    assert "run_w4_guest" in run_app
+    assert "LINQU_W4_DB_CLUSTER=1" in run_app
+    assert "SIM_UAPI_W4_CHIPBACKEND_PROFILE" in run_app
     assert "switching to /bin/run_app app boot flow" in init_source
     assert "execv(\"/bin/run_app\"" in init_source
     assert "bool defer_app_boot_flow = should_enter_app_boot_flow()" in init_source
@@ -1083,6 +1098,11 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     assert "/bin/run_demo" not in readme
     assert 'local runner="$RUN_INITRAMFS_DIR/bin/run_app"' in w4_eight_runner
     assert 'RDINIT="/bin/run_app"' in w4_eight_runner
+    assert 'exec "$SCRIPT_DIR/run_ub_dual_node_apps.sh" --app w4_guest "$@"' in w4_runner
+    assert 'RUN_SECS="${RUN_SECS:-300}"' in w4_runner
+    assert "w4_db_region_size_mb=512" in w4_runner
+    assert "obmm.mempool_size=512M" in w4_runner
+    assert "linqu_w4_guest=1" in w4_runner or "--app w4_guest" in w4_runner
     assert 'RDINIT="${RDINIT:-/bin/run_app}"' in launcher_scripts
     assert "/bin/run_demo bootstrap" not in launcher_scripts
     assert 'RDINIT="${RDINIT:-/bin/run_demo}"' not in launcher_scripts

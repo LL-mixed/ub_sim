@@ -53,6 +53,34 @@ cmdline_value() {
   echo "$default_value"
 }
 
+run_w4_guest() {
+  local role=""
+  local local_ip=""
+  local node_count=""
+  local all_ips=""
+  local chipbackend_profile=""
+  local decode_steps=""
+
+  role="$(cmdline_value linqu_w4_role "$(cmdline_value linqu_urma_dp_role nodeA)")"
+  local_ip="$(cmdline_value linqu_w4_local_ip "$(cmdline_value linqu_ipourma_ipv4 "")")"
+  node_count="$(cmdline_value linqu_w4_node_count "$(cmdline_value linqu_node_count 2)")"
+  all_ips="$(cmdline_value linqu_w4_all_ips 10.0.0.1,10.0.0.2)"
+  chipbackend_profile="$(cmdline_value sim_uapi_w4_chipbackend_profile host_matmul)"
+  decode_steps="$(cmdline_value sim_qwen3_guest_decode_steps 1)"
+
+  export LINQU_UB_ROLE="$role"
+  export LINQU_UB_LOCAL_IP="$local_ip"
+  export LINQU_UB_NODE_COUNT="$node_count"
+  export LINQU_UB_ALL_IPS="$all_ips"
+  export LINQU_W4_DB_CLUSTER=1
+  export LINQU_W4_REQUIRE_UAPI_RESOURCE=1
+  export SIM_UAPI_W4_CHIPBACKEND_PROFILE="$chipbackend_profile"
+  export SIM_QWEN3_GUEST_DECODE_STEP=0
+  export SIM_QWEN3_GUEST_DECODE_STEPS="$decode_steps"
+
+  run_binary "linqu_w4_guest" /bin/linqu_w4_guest
+}
+
 run_binary() {
   local name="$1"
   local path="$2"
@@ -684,6 +712,11 @@ run_default_actions() {
     ran_any="1"
   fi
 
+  if has_flag "linqu_w4_guest=1"; then
+    run_w4_guest || rc=$?
+    ran_any="1"
+  fi
+
   if [ "$rc" -ne 0 ]; then
     return "$rc"
   fi
@@ -750,6 +783,9 @@ run_single_action() {
       ;;
     ssd_gsva_test)
       run_binary "ssd_gsva_test" /bin/ssd_gsva_test
+      ;;
+    w4_guest)
+      run_w4_guest
       ;;
     gsva_coh_test)
       gsva_test_mode=""
