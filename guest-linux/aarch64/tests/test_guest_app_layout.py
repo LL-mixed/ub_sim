@@ -73,6 +73,9 @@ def test_ub_tcp_each_server_uses_canonical_app_source():
     )
     assert "linqu_ub_tcp_each_server=1" in run_app
     assert "linqu_ub_tcp_each_server=1" in init_source
+    assert "\\\\[ub_tcp_each_server\\\\] pass" in dual_runner
+    assert "\\\\[ub_tcp_each_server\\\\] fail" in dual_runner
+    assert "\\[init\\] ub tcp each server app pass" not in dual_runner
     assert "[init] ub tcp each server app pass" in init_source
     assert "run_ub_tcp_each_server_demo_probe" not in init_source
     assert "linqu_ub_tcp_each_server_demo" not in run_app
