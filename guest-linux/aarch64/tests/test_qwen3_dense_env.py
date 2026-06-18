@@ -727,6 +727,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         runner = script_dir / "run_ub_eight_node_w5_inference_cluster.sh"
         generic = script_dir / "run_ub_w5_inference_cluster.sh"
         config_runner = script_dir / "run_w5_cluster_config.sh"
+        stable_w5_runner = script_dir / "run_w5_cluster_qwen3_0_6b_2step.sh"
         summary = script_dir / "w5_inference_cluster_summary.py"
         launcher = script_dir / "launch_ub_eight_node_headless.sh"
 
@@ -742,6 +743,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         runner_text = runner.read_text(encoding="utf-8")
         generic_text = generic.read_text(encoding="utf-8")
         config_runner_text = config_runner.read_text(encoding="utf-8")
+        stable_w5_runner_text = stable_w5_runner.read_text(encoding="utf-8")
         legacy_runner_text = (script_dir / "run_ub_eight_node_w4_guest.sh").read_text(encoding="utf-8")
         launcher_text = launcher.read_text(encoding="utf-8")
         summary_text = summary.read_text(encoding="utf-8")
@@ -824,6 +826,9 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP", config_runner_text)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP:-1", config_runner_text)
         self.assertIn("SIM_W5_REQUIRE_PREFIX_CACHE", config_runner_text)
+        self.assertIn("SIM_W5_MEMORY_POST_RUN_PROMOTE=1", stable_w5_runner_text)
+        self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP=1", stable_w5_runner_text)
+        self.assertIn('exec "$SCRIPT_DIR/run_w5_cluster_config.sh" "$CONFIG_PATH"', stable_w5_runner_text)
         self.assertIn("SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP", config_runner_text)
         self.assertIn("SIM_W5_MEMORY_OBSERVATION_STORE", config_runner_text)
         self.assertIn("SIM_W5_VALIDATE_ONLY", config_runner_text)

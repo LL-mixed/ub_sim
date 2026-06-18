@@ -1,0 +1,30 @@
+#!/bin/zsh
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+OUT_DIR="$ROOT_DIR/out"
+
+SIM_QWEN3_DENSE_WEIGHTS_PATH="${SIM_QWEN3_DENSE_WEIGHTS_PATH:-${SIM_QWEN3_0_6B_WEIGHTS_PATH:-/Volumes/repos/qwen3_mlx_run/Qwen3-0.6B}}"
+CONFIG_PATH="${CONFIG_PATH:-$OUT_DIR/w5_cluster_qwen3_0_6b_2step.matrix.env}"
+
+mkdir -p "$OUT_DIR"
+{
+  printf 'SIM_UAPI_W5_PROFILE=qwen3_0_6b_decode\n'
+  printf 'SIM_QWEN3_DENSE_WEIGHTS_PATH=%s\n' "$SIM_QWEN3_DENSE_WEIGHTS_PATH"
+  printf 'SIM_QWEN3_GUEST_DECODE_STEPS=%s\n' "${SIM_QWEN3_GUEST_DECODE_STEPS:-2}"
+  printf 'SIM_QWEN3_SAMPLER_TOP_K=%s\n' "${SIM_QWEN3_SAMPLER_TOP_K:-1}"
+  printf 'SIM_QWEN3_SAMPLER_TOP_P_MILLI=%s\n' "${SIM_QWEN3_SAMPLER_TOP_P_MILLI:-1000}"
+  printf 'SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI=%s\n' "${SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI:-1000}"
+  printf 'SIM_QWEN3_SAMPLER_SEED=%s\n' "${SIM_QWEN3_SAMPLER_SEED:-0}"
+  printf 'SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP=1\n'
+  printf 'SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP=1\n'
+  printf 'SIM_W5_MEMORY_POST_RUN_PROMOTE=1\n'
+  printf 'SIM_W5_MEMORY_SHORTPATH_EXECUTE=1\n'
+  printf 'SIM_W5_MEMORY_SERVICE=lingqu_memory_service\n'
+  printf 'QEMU_MEM=%s\n' "${QEMU_MEM:-8G}"
+  printf 'QEMU_SMP=%s\n' "${QEMU_SMP:-2}"
+  printf 'W4_GUEST_PROGRESS_INTERVAL_SECS=%s\n' "${W4_GUEST_PROGRESS_INTERVAL_SECS:-60}"
+} > "$CONFIG_PATH"
+
+exec "$SCRIPT_DIR/run_w5_cluster_config.sh" "$CONFIG_PATH"

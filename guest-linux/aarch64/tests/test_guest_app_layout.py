@@ -113,7 +113,7 @@ def test_apps_readme_lists_reusable_validation_command_for_each_app():
 def test_app_validation_matrix_runner_matches_readme_commands():
     runner = (ROOT / "scripts" / "run_ub_app_validation_matrix.sh").read_text()
 
-    assert "W5_ENTRY=\"w5_inference_cluster|scripts/run_w5_cluster_config.sh\"" in runner
+    assert "W5_ENTRY=\"w5_inference_cluster|scripts/run_w5_cluster_qwen3_0_6b_2step.sh\"" in runner
     assert "--scope 2-node|8-node|all|w5|all-with-w5" in runner
     assert "--dry-run" in runner
     assert "--from APP" in runner
@@ -175,10 +175,10 @@ def test_app_validation_matrix_runner_dry_run_executes_without_qemu():
     )
 
     assert "ub_chat 2-node=scripts/run_ub_dual_node_chat.sh" in list_result.stdout
-    assert "w5_inference_cluster 8-node=scripts/run_w5_cluster_config.sh" in list_result.stdout
+    assert "w5_inference_cluster 8-node=scripts/run_w5_cluster_qwen3_0_6b_2step.sh" in list_result.stdout
     assert "cmd=scripts/run_ub_dual_node_chat.sh" in dry_run_result.stdout
     assert "cmd=scripts/run_ub_eight_node_chat_matrix.sh" in dry_run_result.stdout
-    assert "cmd=scripts/run_w5_cluster_config.sh" in w5_result.stdout
+    assert "cmd=scripts/run_w5_cluster_qwen3_0_6b_2step.sh" in w5_result.stdout
     assert "QEMU" not in dry_run_result.stderr
 
     with tempfile.TemporaryDirectory() as tmpdir:
