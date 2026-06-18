@@ -38,7 +38,7 @@ instead of env-prefixed one-off shell commands.
 | `gsva_query` | `scripts/run_ub_gsva_query_caps_test.sh` | `scripts/run_ub_eight_node_gsva_query_caps.sh` |
 | `gsva_coh_test` | `scripts/run_ub_two_node_gsva_coh_test.sh` | `scripts/run_ub_eight_node_gsva_coh_test.sh` |
 | `gsva_lifecycle_test` | `scripts/run_ub_two_node_gsva_lifecycle_test.sh` | `scripts/run_ub_eight_node_gsva_lifecycle_test.sh` |
-| `npu_test` | `scripts/run_ub_two_node_npu_test.sh` | `scripts/run_ub_dual_node_apps.sh --app npu_test` |
+| `npu_test` | `scripts/run_ub_two_node_npu_test.sh` | `scripts/run_ub_eight_node_npu_test.sh` |
 | `npu_gsva_test` | `scripts/run_ub_two_node_npu_gsva_test.sh` | `scripts/run_ub_eight_node_npu_gsva_test.sh` |
 | `ssd_test` | `scripts/run_ub_two_node_ssd_test.sh` | `scripts/run_ub_eight_node_ssd_test.sh` |
 | `ssd_gsva_test` | `scripts/run_ub_two_node_ssd_gsva_test.sh` | `scripts/run_ub_eight_node_ssd_gsva_test.sh` |

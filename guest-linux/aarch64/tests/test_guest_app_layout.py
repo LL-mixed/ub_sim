@@ -68,7 +68,7 @@ APP_VALIDATION_COMMANDS = {
     ],
     "npu_test": [
         "scripts/run_ub_two_node_npu_test.sh",
-        "scripts/run_ub_dual_node_apps.sh --app npu_test",
+        "scripts/run_ub_eight_node_npu_test.sh",
     ],
     "npu_gsva_test": [
         "scripts/run_ub_two_node_npu_gsva_test.sh",
@@ -562,6 +562,7 @@ def test_gsva_coh_and_lifecycle_runner_uses_app_flag_entrypoint():
 def test_npu_ssd_gsva_runner_uses_app_flag_entrypoint():
     two_node_npu_runner = (ROOT / "scripts" / "run_ub_two_node_npu_test.sh").read_text()
     two_node_npu_gsva_runner = (ROOT / "scripts" / "run_ub_two_node_npu_gsva_test.sh").read_text()
+    eight_node_npu_runner = (ROOT / "scripts" / "run_ub_eight_node_npu_test.sh").read_text()
     two_node_ssd_runner = (ROOT / "scripts" / "run_ub_two_node_ssd_test.sh").read_text()
     two_node_ssd_gsva_runner = (ROOT / "scripts" / "run_ub_two_node_ssd_gsva_test.sh").read_text()
     eight_node_ssd_runner = (ROOT / "scripts" / "run_ub_eight_node_ssd_test.sh").read_text()
@@ -572,6 +573,12 @@ def test_npu_ssd_gsva_runner_uses_app_flag_entrypoint():
 
     assert "rdinit=/bin/run_app linqu_npu_test=1" in two_node_npu_runner
     assert "rdinit=/bin/run_demo npu_test " not in two_node_npu_runner
+    assert "/bin/npu_test" in eight_node_npu_runner
+    assert "NODE_IDS=(nodeA nodeB nodeC nodeD nodeE nodeF nodeG nodeH)" in eight_node_npu_runner
+    assert "launch_ub_eight_node_headless.sh" in eight_node_npu_runner
+    assert "UB_NPU: created" in eight_node_npu_runner
+    assert "\\\\[npu_test\\\\] verdict=PASS" in eight_node_npu_runner
+    assert "rdinit=/bin/run_demo npu_test " not in eight_node_npu_runner
     assert "rdinit=/bin/run_app linqu_npu_gsva_test=1" in two_node_npu_gsva_runner
     assert "rdinit=/bin/run_demo npu_gsva_test " not in two_node_npu_gsva_runner
     assert "rdinit=/bin/run_app linqu_ssd_test=1" in two_node_ssd_runner
@@ -899,6 +906,7 @@ def test_eight_node_matrix_runners_use_headless_serial_sockets():
         "run_ub_eight_node_obmm_queue.sh",
         "run_ub_eight_node_obmm_import_stress.sh",
         "run_ub_eight_node_gsva_query_caps.sh",
+        "run_ub_eight_node_npu_test.sh",
         "run_ub_eight_node_ssd_test.sh",
     ]
 
