@@ -118,8 +118,12 @@ def test_app_validation_matrix_runner_matches_readme_commands():
     assert "--dry-run" in runner
     assert "--from APP" in runner
     assert "--resume" in runner
+    assert "--reset-status" in runner
     assert "--status-file PATH" in runner
     assert "STATUS_FILE=" in runner
+    assert "RESET_STATUS=0" in runner
+    assert 'RESET_STATUS" == "1"' in runner
+    assert 'RESUME" != "1"' not in runner
     assert "status_has_pass" in runner
     assert "local status=" not in runner
     assert "status_value" in runner
@@ -758,6 +762,10 @@ def test_gsva_coh_and_lifecycle_runner_uses_app_flag_entrypoint():
     assert "rdinit=/bin/run_demo gsva_coh_test " not in eight_node_coh_runner
     assert "rdinit=/bin/run_app linqu_gsva_lifecycle_test=1" in two_node_lifecycle_runner
     assert "rdinit=/bin/run_demo gsva_lifecycle_test " not in two_node_lifecycle_runner
+    assert 'GSVA_MODE="${GSVA_MODE:-arm_mmu}"' in two_node_lifecycle_runner
+    assert "GSVA_MODE=\"$GSVA_MODE\"" in two_node_lifecycle_runner
+    assert "GSVA_TLB: lookup" in two_node_lifecycle_runner
+    assert "GVA_TCG_TRANSLATE" in two_node_lifecycle_runner
     assert "rdinit=/bin/run_app linqu_gsva_lifecycle_test=1" in four_node_lifecycle_runner
     assert "rdinit=/bin/run_demo gsva_lifecycle_test " not in four_node_lifecycle_runner
     assert "rdinit=/bin/run_app linqu_gsva_lifecycle_test=1" in eight_node_lifecycle_runner

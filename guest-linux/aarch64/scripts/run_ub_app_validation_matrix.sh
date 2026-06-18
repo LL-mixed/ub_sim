@@ -33,7 +33,7 @@ W5_ENTRY="w5_inference_cluster|scripts/run_w5_cluster_config.sh"
 
 usage() {
   cat <<'EOF'
-Usage: run_ub_app_validation_matrix.sh [--scope 2-node|8-node|all|w5|all-with-w5] [--dry-run] [--from APP] [--only APP] [--continue-on-fail] [--resume]
+Usage: run_ub_app_validation_matrix.sh [--scope 2-node|8-node|all|w5|all-with-w5] [--dry-run] [--from APP] [--only APP] [--continue-on-fail] [--resume] [--reset-status]
 
 Runs stable app validation entrypoints from guest-linux/aarch64/apps/README.md.
 
@@ -44,7 +44,8 @@ Options:
   --only APP           Run only one app entry.
   --continue-on-fail   Continue after failures and report them at the end.
   --resume             Skip app/scope pairs already recorded as PASS in the status file.
-  --status-file PATH   PASS/FAIL status file. Default: guest-linux/aarch64/out/app_validation_matrix.status.latest.txt.
+  --reset-status       Clear the status file before running. Without this, status is cumulative.
+  --status-file PATH   Cumulative PASS/FAIL status file. Default: guest-linux/aarch64/out/app_validation_matrix.status.latest.txt.
   --list               Print known app entries and exit.
   -h, --help           Show this help.
 EOF
@@ -214,6 +215,7 @@ FROM_APP_SEEN=0
 ONLY_APP=""
 CONTINUE_ON_FAIL=0
 RESUME=0
+RESET_STATUS=0
 
 while (( $# > 0 )); do
   case "$1" in
@@ -251,6 +253,10 @@ while (( $# > 0 )); do
       ;;
     --resume)
       RESUME=1
+      shift
+      ;;
+    --reset-status)
+      RESET_STATUS=1
       shift
       ;;
     --status-file)
@@ -291,14 +297,14 @@ mkdir -p "$OUT_DIR"
 mkdir -p "${REPORT_FILE:h}"
 mkdir -p "${STATUS_FILE:h}"
 : > "$REPORT_FILE"
-if [[ "$DRY_RUN" != "1" && "$RESUME" != "1" ]]; then
+if [[ "$DRY_RUN" != "1" && "$RESET_STATUS" == "1" ]]; then
   : > "$STATUS_FILE"
 fi
-if [[ "$RESUME" == "1" ]]; then
+if [[ "$DRY_RUN" != "1" ]]; then
   touch "$STATUS_FILE"
 fi
-printf '[app-matrix] scope=%s dry_run=%s from=%s only=%s continue_on_fail=%s resume=%s status_file=%s\n' \
-  "$SCOPE" "$DRY_RUN" "$FROM_APP" "$ONLY_APP" "$CONTINUE_ON_FAIL" "$RESUME" "$STATUS_FILE" | tee -a "$REPORT_FILE"
+printf '[app-matrix] scope=%s dry_run=%s from=%s only=%s continue_on_fail=%s resume=%s reset_status=%s status_file=%s\n' \
+  "$SCOPE" "$DRY_RUN" "$FROM_APP" "$ONLY_APP" "$CONTINUE_ON_FAIL" "$RESUME" "$RESET_STATUS" "$STATUS_FILE" | tee -a "$REPORT_FILE"
 
 case "$SCOPE" in
   w5)

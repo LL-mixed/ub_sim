@@ -23,6 +23,7 @@ LOG_DIR="$ROOT_DIR/logs"
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_gsva_lc_${RANDOM}}"
 
 GSVA_TEST_MODE="${GSVA_TEST_MODE:-all}"
+GSVA_MODE="${GSVA_MODE:-arm_mmu}"
 APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 
 source "$SCRIPT_DIR/qemu_ub_common.sh"
@@ -81,6 +82,7 @@ start_node() {
     UB_FM_SHARED_DIR="$SHARED_DIR" \
     UB_SIM_ENTITY_COUNT="$ENTITY_COUNT" \
     UB_FM_ENTITY_PLAN_FILE="$ENTITY_PLAN_FILE" \
+    GSVA_MODE="$GSVA_MODE" \
     "$QEMU_BIN" \
       -M virt,gic-version=3,its=on,ummu=on,ub-cluster-mode=on \
       -cpu cortex-a57 \
@@ -130,8 +132,27 @@ wait_for_fm_links_ready() {
 }
 
 validate_lifecycle_logs() {
-  if ! grep -Eq 'OBMM import mapped|OBMM.*fixed UBA|gsva' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
-    echo "[gsva_lc] WARNING: no GSVA activity evidence in QEMU logs (guest tests may still pass)" >&2
+  if [[ "$GSVA_MODE" == "arm_mmu" ]]; then
+    if ! grep -q 'GSVA_MODE arm_mmu: ARM tlb_fill will use GSVA route/coherence' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
+      echo "[gsva_lc] FAIL: ARM MMU GSVA route mode was not enabled" >&2
+      return 1
+    fi
+    if ! grep -q 'GSVA_MAP:' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
+      echo "[gsva_lc] FAIL: no GSVA_MAP evidence in QEMU logs" >&2
+      return 1
+    fi
+    if ! grep -q 'GSVA_TLB: lookup' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
+      echo "[gsva_lc] FAIL: no GSVA_TLB lookup evidence in QEMU logs" >&2
+      return 1
+    fi
+    if ! grep -q 'GSVA_COH:' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
+      echo "[gsva_lc] FAIL: no GSVA_COH evidence in QEMU logs" >&2
+      return 1
+    fi
+    if grep -q 'GVA_TCG_TRANSLATE' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then
+      echo "[gsva_lc] FAIL: ARM MMU lifecycle fell back to GVA_TCG_TRANSLATE" >&2
+      return 1
+    fi
   fi
 }
 

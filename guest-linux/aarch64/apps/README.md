@@ -28,7 +28,9 @@ The full matrix can be listed or executed through
 `scripts/run_ub_app_validation_matrix.sh`; use `--dry-run` to inspect the exact
 commands before launching QEMU-backed validation.
 For long runs, use `--resume` with the default or an explicit `--status-file`
-to skip app/scope pairs that have already recorded `PASS`.
+to skip app/scope pairs that have already recorded `PASS`. The status file is a
+cumulative ledger; pass `--reset-status` only when intentionally starting a new
+validation ledger.
 
 | App | 2-node validation | Wider validation |
 | --- | --- | --- |
