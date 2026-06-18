@@ -492,6 +492,22 @@ def test_w5_mem_service_is_link_time_component():
     assert (component_dir / "w4_lingqu_object_service.h").exists()
 
 
+def test_w4_guest_has_app_local_build_entrypoint():
+    app_dir = ROOT / "apps" / "w4_guest"
+    makefile = (app_dir / "Makefile").read_text()
+    readme = (app_dir / "README.md").read_text()
+
+    assert (app_dir / "w4_guest.c").exists()
+    assert (app_dir / "Makefile").exists()
+    assert "all: linqu_w4_guest" in makefile
+    assert "components/w5_mem_service/w4_kvcache_db_service.c" in makefile
+    assert "-I$(ROOT)/libs/obmm_queue" in makefile
+    assert "-I$(ROOT)/apps/obmm_queue" in makefile
+    assert "$^ -lm -o $@" in makefile
+    assert "app-local `Makefile`" in readme
+    assert "scripts/build_initramfs.sh" in readme
+
+
 def test_obmm_gsva_uses_canonical_app_source():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     run_app = (ROOT / "initramfs" / "run_app").read_text()

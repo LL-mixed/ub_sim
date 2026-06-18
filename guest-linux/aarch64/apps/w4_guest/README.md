@@ -6,3 +6,6 @@ Qwen3 harnesses.
 The app owns the guest orchestration logic. Shared memory/object metadata lives
 in `components/w5_mem_service/` and is linked into this app by
 `scripts/build_initramfs.sh`.
+
+The app-local `Makefile` builds the same `linqu_w4_guest` binary for focused
+compile checks. Initramfs packaging still goes through `scripts/build_initramfs.sh`.
