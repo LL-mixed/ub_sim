@@ -307,7 +307,7 @@ def test_npu_test_has_independent_dual_node_bootflow():
 def test_gsva_query_runner_uses_app_flag_entrypoint():
     runner = (ROOT / "scripts" / "run_ub_gsva_query_caps_test.sh").read_text()
 
-    assert "rdinit=/bin/run_demo linqu_gsva_query=1" in runner
+    assert "rdinit=/bin/run_app linqu_gsva_query=1" in runner
     assert "rdinit=/bin/run_demo gsva_query " not in runner
 
 
