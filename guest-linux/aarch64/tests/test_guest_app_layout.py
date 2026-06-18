@@ -320,9 +320,8 @@ def test_gsva_query_uses_canonical_app_source():
 
 
 def test_gsva_coh_and_lifecycle_runner_uses_app_flag_entrypoint():
+    two_node_coh_runner = (ROOT / "scripts" / "run_ub_two_node_gsva_coh_test.sh").read_text()
     runners = {
-        (ROOT / "scripts" / "run_ub_two_node_gsva_coh_test.sh").read_text():
-            "linqu_gsva_coh_test=1",
         (ROOT / "scripts" / "run_ub_four_node_gsva_coh_test.sh").read_text():
             "linqu_gsva_coh_test=1",
         (ROOT / "scripts" / "run_ub_eight_node_gsva_coh_test.sh").read_text():
@@ -334,6 +333,9 @@ def test_gsva_coh_and_lifecycle_runner_uses_app_flag_entrypoint():
         (ROOT / "scripts" / "run_ub_eight_node_gsva_lifecycle_test.sh").read_text():
             "linqu_gsva_lifecycle_test=1",
     }
+
+    assert "rdinit=/bin/run_app linqu_gsva_coh_test=1" in two_node_coh_runner
+    assert "rdinit=/bin/run_demo gsva_coh_test " not in two_node_coh_runner
 
     for runner, token in runners.items():
         assert f"rdinit=/bin/run_demo {token}" in runner
@@ -524,6 +526,13 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     assert "UB_RUN_APP_FROM_INIT" in w4_eight_runner
     assert "boot flow completed, dropping to shell" not in run_app
     assert "run_default_actions" in run_app
+    assert "linqu_obmm_dataplane_microbench=1" in run_app
+    assert "linqu_obmm_import_stress=1" in run_app
+    assert "linqu_obmm_coh_test=1" in run_app
+    assert "linqu_gsva_coh_test=1" in run_app
+    assert "linqu_gsva_lifecycle_test=1" in run_app
+    assert "linqu_npu_gsva_test=1" in run_app
+    assert "linqu_ssd_gsva_test=1" in run_app
     assert "switching to /bin/run_app app boot flow" in init_source
     assert "execv(\"/bin/run_app\"" in init_source
     assert "bool defer_app_boot_flow = should_enter_app_boot_flow()" in init_source

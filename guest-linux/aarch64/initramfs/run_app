@@ -36,6 +36,23 @@ has_flag() {
   esac
 }
 
+cmdline_value() {
+  local key="$1"
+  local default_value="$2"
+  local token=""
+
+  read_cmdline
+  for token in $cmdline; do
+    case "$token" in
+      "$key"=*)
+        echo "${token#*=}"
+        return 0
+        ;;
+    esac
+  done
+  echo "$default_value"
+}
+
 run_binary() {
   local name="$1"
   local path="$2"
@@ -600,6 +617,21 @@ run_default_actions() {
     ran_any="1"
   fi
 
+  if has_flag "linqu_obmm_dataplane_microbench=1"; then
+    run_obmm_dataplane_microbench || rc=$?
+    ran_any="1"
+  fi
+
+  if has_flag "linqu_obmm_import_stress=1"; then
+    run_obmm_import_stress || rc=$?
+    ran_any="1"
+  fi
+
+  if has_flag "linqu_obmm_coh_test=1"; then
+    run_obmm_coh_test || rc=$?
+    ran_any="1"
+  fi
+
   if has_flag "linqu_gva_manager=1"; then
     run_gva_manager || rc=$?
     ran_any="1"
@@ -617,6 +649,38 @@ run_default_actions() {
 
   if has_flag "linqu_obmm_gsva=1"; then
     run_obmm_gsva || rc=$?
+    ran_any="1"
+  fi
+
+  if has_flag "linqu_gsva_coh_test=1"; then
+    run_binary "linqu_ub_gsva_coh_test" /bin/linqu_ub_gsva_coh_test \
+      --mode "$(cmdline_value gsva_test_mode all)" || rc=$?
+    ran_any="1"
+  fi
+
+  if has_flag "linqu_gsva_lifecycle_test=1"; then
+    run_binary "linqu_ub_gsva_lifecycle_test" /bin/linqu_ub_gsva_lifecycle_test \
+      --mode "$(cmdline_value gsva_test_mode all)" || rc=$?
+    ran_any="1"
+  fi
+
+  if has_flag "linqu_npu_gsva_test=1"; then
+    run_binary "npu_gsva_test" /bin/npu_gsva_test || rc=$?
+    ran_any="1"
+  fi
+
+  if has_flag "linqu_npu_test=1"; then
+    run_binary "npu_test" /bin/npu_test || rc=$?
+    ran_any="1"
+  fi
+
+  if has_flag "linqu_ssd_gsva_test=1"; then
+    run_binary "ssd_gsva_test" /bin/ssd_gsva_test || rc=$?
+    ran_any="1"
+  fi
+
+  if has_flag "linqu_ssd_test=1"; then
+    run_binary "ssd_test" /bin/ssd_test || rc=$?
     ran_any="1"
   fi
 
