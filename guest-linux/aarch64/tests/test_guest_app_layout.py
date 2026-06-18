@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 
@@ -701,3 +702,18 @@ def test_shared_obmm_helpers_use_app_language():
     assert "shared across demos" not in combined
     assert "demo-specific" not in combined
     assert "user-space demo" not in combined
+
+
+def test_source_tree_does_not_track_app_build_outputs_or_demo_ignores():
+    repo_root = ROOT.parents[1]
+    gitignore = (repo_root / ".gitignore").read_text()
+    tracked_apps = subprocess.run(
+        ["git", "ls-files", "guest-linux/aarch64/apps"],
+        cwd=repo_root,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.splitlines()
+
+    assert "obmm_queue_demo" not in gitignore
+    assert "guest-linux/aarch64/apps/obmm_coh_test/obmm_coh_test" not in tracked_apps
