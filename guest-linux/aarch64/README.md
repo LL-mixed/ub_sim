@@ -345,7 +345,7 @@ Cleanup:
 - the launcher prints a per-run cleanup script under `out/`
 - running that script stops all four QEMU processes and removes the per-run QMP sockets
 
-## Manual Demo Order In tmux
+## Manual App Order In tmux
 
 After `guest-linux/aarch64/scripts/launch_ub_dual_node_tmux.sh` boots both guests
 into interactive shells, `run_app` bootstrap has already completed. Use these windows:
