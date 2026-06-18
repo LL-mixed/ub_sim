@@ -202,15 +202,22 @@ class Qwen3DenseEnvTest(unittest.TestCase):
     def test_qwen3_dense_two_step_wrapper_has_stable_defaults(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
         wrapper = script_dir / "run_ub_eight_node_w4_guest_qwen3_dense_2step.sh"
+        qwen3_0_6b_wrapper = script_dir / "run_ub_eight_node_w4_guest_qwen3_0_6b_2step.sh"
 
         self.assertTrue(wrapper.exists())
         self.assertTrue(wrapper.stat().st_mode & 0o111)
+        self.assertTrue(qwen3_0_6b_wrapper.exists())
+        self.assertTrue(qwen3_0_6b_wrapper.stat().st_mode & 0o111)
 
         text = wrapper.read_text(encoding="utf-8")
+        qwen3_0_6b_text = qwen3_0_6b_wrapper.read_text(encoding="utf-8")
         self.assertIn("SIM_UAPI_W4_CHIPBACKEND_PROFILE:-qwen3_dense}", text)
         self.assertIn("SIM_QWEN3_GUEST_DECODE_STEPS:-2", text)
         self.assertIn("SIM_QWEN3_DENSE_WEIGHTS_PATH:-", text)
         self.assertIn('exec "$SCRIPT_DIR/run_ub_eight_node_w4_guest.sh"', text)
+        self.assertIn("SIM_QWEN3_0_6B_WEIGHTS_PATH:-/Volumes/repos/qwen3_mlx_run/Qwen3-0.6B", qwen3_0_6b_text)
+        self.assertIn("SIM_QWEN3_GUEST_DECODE_STEPS:-2", qwen3_0_6b_text)
+        self.assertIn('exec "$SCRIPT_DIR/run_ub_eight_node_w4_guest.sh"', qwen3_0_6b_text)
 
     def test_eight_node_runner_passes_decode_round_barrier_timeout(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"

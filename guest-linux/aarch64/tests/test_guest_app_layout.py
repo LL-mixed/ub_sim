@@ -1023,6 +1023,7 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     w4_runner = (ROOT / "scripts" / "run_ub_dual_node_w4_guest.sh").read_text()
     w4_four_runner = (ROOT / "scripts" / "run_ub_four_node_w4_guest.sh").read_text()
     w4_eight_runner = (ROOT / "scripts" / "run_ub_eight_node_w4_guest.sh").read_text()
+    app_matrix = (ROOT / "scripts" / "run_ub_app_validation_matrix.sh").read_text()
     four_node_smoke = (ROOT / "scripts" / "run_ub_four_node_smoke.sh").read_text()
     launcher_scripts = "\n".join(
         [
@@ -1116,6 +1117,7 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     assert "should_enter_demo_boot_flow" not in init_source
     assert "no demo flags matched" not in run_app
     assert "run_ub_dual_node_apps.sh" in w4_runner
+    assert "run_ub_eight_node_w4_guest_qwen3_0_6b_2step.sh" in app_matrix
     assert "run_w4_app" in w4_four_runner
     assert "run_w4_demo" not in w4_four_runner
     assert "run_w4_app" in w4_eight_runner
