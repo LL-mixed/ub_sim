@@ -179,7 +179,7 @@ validate_node_log() {
   local node_name="$1"
   local log_file="$2"
 
-  assert_log_has "$log_file" "\\[run_(app|demo)\\] run linqu_ub_obmm_queue|\\[init\\] ub obmm queue app pass" "$node_name binary" || return 1
+  assert_log_has "$log_file" "\\[run_app\\] run linqu_ub_obmm_queue|\\[init\\] ub obmm queue app pass" "$node_name binary" || return 1
   assert_log_has "$log_file" "\\[obmm_queue\\] export -> ok" "$node_name export" || return 1
   assert_log_has "$log_file" "\\[obmm_queue\\] export layout -> ok" "$node_name layout" || return 1
   assert_log_has "$log_file" "\\[obmm_queue\\] bootstrap ${OBMM_BOOTSTRAP} -> ok count=2" "$node_name bootstrap" || return 1
@@ -219,7 +219,7 @@ while (( SECONDS < deadline )); do
     grep '\[obmm_queue\]' "$NODEB_GUEST_LOG" | tail -8
     exit 0
   fi
-  if grep -qE '\[obmm_queue\] .*fail|\[run_(app|demo)\] linqu_ub_obmm_queue failed|\[init\] ub obmm queue app fail|Kernel panic - not syncing|Call trace:' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
+  if grep -qE '\[obmm_queue\] .*fail|\[run_app\] linqu_ub_obmm_queue failed|\[init\] ub obmm queue app fail|Kernel panic - not syncing|Call trace:' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
     echo "[obmm-queue] FAIL: app or kernel reported failure" >&2
     exit 1
   fi

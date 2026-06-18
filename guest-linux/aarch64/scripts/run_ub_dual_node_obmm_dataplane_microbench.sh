@@ -297,7 +297,7 @@ while (( SECONDS < deadline )); do
     grep '\[obmm_dataplane_microbench\]' "$NODEB_GUEST_LOG" | tail -6
     exit 0
   fi
-  if grep -qE '\[obmm_dataplane_microbench\] bench failed|\[obmm_dataplane_microbench\] .*import failed|\[obmm_dataplane_microbench\] .*export failed|\[obmm_dataplane_microbench\] MAP_GSVA failed|\[run_(app|demo)\] action failed|Kernel panic - not syncing' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
+  if grep -qE '\[obmm_dataplane_microbench\] bench failed|\[obmm_dataplane_microbench\] .*import failed|\[obmm_dataplane_microbench\] .*export failed|\[obmm_dataplane_microbench\] MAP_GSVA failed|\[run_app\] action failed|Kernel panic - not syncing' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
     echo "[dp_microbench] FAIL: guest reported benchmark/import/export/action failure" >&2
     exit 1
   fi

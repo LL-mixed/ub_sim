@@ -257,7 +257,7 @@ while (( SECONDS < deadline )); do
     echo "[coh_test] PASS: both nodes completed"
     exit 0
   fi
-  if grep -qE 'obmm_coh_test: FAIL|\[run_(app|demo)\] linqu_ub_obmm_coh_test failed|Kernel panic - not syncing|Call trace:' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
+  if grep -qE 'obmm_coh_test: FAIL|\[run_app\] linqu_ub_obmm_coh_test failed|Kernel panic - not syncing|Call trace:' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
     echo "[coh_test] FAIL: guest reported coherence test failure" >&2
     exit 1
   fi

@@ -255,7 +255,7 @@ while (( SECONDS < deadline )); do
     if [[ -f "$guest_log" ]] && rg -q 'obmm_coh_test: PASS' "$guest_log"; then
       pass_count=$((pass_count + 1))
     fi
-    if [[ -f "$guest_log" ]] && rg -q 'obmm_coh_test: FAIL|\[run_demo\] linqu_ub_obmm_coh_test failed|Kernel panic - not syncing|Call trace:' "$guest_log"; then
+    if [[ -f "$guest_log" ]] && rg -q 'obmm_coh_test: FAIL|\[run_app\] linqu_ub_obmm_coh_test failed|Kernel panic - not syncing|Call trace:' "$guest_log"; then
       fail=true
     fi
   done

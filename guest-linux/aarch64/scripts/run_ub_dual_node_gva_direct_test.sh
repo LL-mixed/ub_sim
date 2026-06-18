@@ -509,7 +509,7 @@ while (( SECONDS < deadline )); do
     grep '\[gva_direct\]' "$NODEB_GUEST_LOG" | tail -8
     exit 0
   fi
-  if grep -qE '\[gva_direct\] result=fail|\[run_(app|demo)\] linqu_gva_direct failed' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
+  if grep -qE '\[gva_direct\] result=fail|\[run_app\] linqu_gva_direct failed' "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG" 2>/dev/null; then
     echo "[gva-direct] FAIL: app reported failure" >&2
     exit 1
   fi

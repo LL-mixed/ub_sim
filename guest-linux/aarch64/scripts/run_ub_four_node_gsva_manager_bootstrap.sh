@@ -397,7 +397,7 @@ validate_expected_failure() {
 
 node_has_failure() {
   local log_file="$1"
-  grep -qE '\[gva_manager\] result=fail|\[run_demo\] linqu_gva_manager failed|Kernel panic - not syncing' "$log_file"
+  grep -qE '\[gva_manager\] result=fail|\[run_app\] linqu_gva_manager failed|Kernel panic - not syncing' "$log_file"
 }
 
 print_node_summary() {
