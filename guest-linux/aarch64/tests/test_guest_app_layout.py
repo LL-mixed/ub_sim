@@ -119,6 +119,39 @@ def test_app_validation_matrix_runner_matches_readme_commands():
         assert f"\"{app}|{commands[0]}|{commands[1]}\"" in runner
 
 
+def test_app_validation_matrix_runner_dry_run_executes_without_qemu():
+    runner = ROOT / "scripts" / "run_ub_app_validation_matrix.sh"
+
+    list_result = subprocess.run(
+        [str(runner), "--list"],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    dry_run_result = subprocess.run(
+        [str(runner), "--scope", "all", "--dry-run", "--only", "ub_chat"],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    w5_result = subprocess.run(
+        [str(runner), "--scope", "w5", "--dry-run"],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert "ub_chat 2-node=scripts/run_ub_dual_node_chat.sh" in list_result.stdout
+    assert "w5_inference_cluster 8-node=scripts/run_w5_cluster_config.sh" in list_result.stdout
+    assert "cmd=scripts/run_ub_dual_node_chat.sh" in dry_run_result.stdout
+    assert "cmd=scripts/run_ub_eight_node_chat_matrix.sh" in dry_run_result.stdout
+    assert "cmd=scripts/run_w5_cluster_config.sh" in w5_result.stdout
+    assert "QEMU" not in dry_run_result.stderr
+
+
 def test_primary_dual_node_app_wrappers_are_stable_cli_entrypoints():
     wrappers = {
         "run_ub_dual_node_chat.sh": "chat",
