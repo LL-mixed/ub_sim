@@ -544,8 +544,8 @@ validate_gsva_query_log() {
 validate_npu_test_log() {
   local node_name="$1"
   local log_file="$2"
-  assert_log_has "$log_file" "\\[init\\] ub npu test app pass" \
-    "${node_name} npu test app pass" || return 1
+  assert_log_absent "$log_file" "\\[npu_test\\] verdict=FAIL" \
+    "${node_name} npu test failure" || return 1
   assert_log_has "$log_file" "\\[npu_test\\] NPU test suite" \
     "${node_name} npu test suite started" || return 1
   assert_log_has "$log_file" "\\[npu_test\\] verdict=(PASS|SKIP)" \
@@ -1310,8 +1310,8 @@ run_iteration() {
   fi
 
   if [[ "$npu_test_enabled" -eq 1 ]]; then
-    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub npu test app pass" \
-      "\\[init\\] ub npu test app fail" "$RUN_SECS"
+    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[npu_test\\] verdict=(PASS|SKIP)" \
+      "\\[npu_test\\] verdict=FAIL" "$RUN_SECS"
     case "$?" in
       0) ;;
       1)
@@ -1324,8 +1324,8 @@ run_iteration() {
         ;;
     esac
 
-    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub npu test app pass" \
-      "\\[init\\] ub npu test app fail" "$RUN_SECS"
+    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[npu_test\\] verdict=(PASS|SKIP)" \
+      "\\[npu_test\\] verdict=FAIL" "$RUN_SECS"
     case "$?" in
       0) ;;
       1)

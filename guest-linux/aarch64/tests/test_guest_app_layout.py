@@ -312,6 +312,9 @@ def test_npu_test_has_independent_dual_node_bootflow():
     init_source = (ROOT / "init.c").read_text()
 
     assert "linqu_npu_test=1" in script
+    assert "\\\\[npu_test\\\\] verdict=(PASS|SKIP)" in script
+    assert "\\\\[npu_test\\\\] verdict=FAIL" in script
+    assert "\\[init\\] ub npu test app pass" not in script
     assert "should_run_npu_test" in init_source
     assert "run_npu_test_probe" in init_source
     assert "npu_test_enabled" in script
