@@ -460,6 +460,9 @@ def test_obmm_import_stress_runner_uses_app_flag_entrypoint():
     assert "rdinit=/bin/run_app linqu_obmm_import_stress=1" in runner
     assert "rdinit=/bin/run_demo obmm_import_stress " not in runner
     assert "/bin/linqu_ub_obmm_import_stress" in eight_runner
+    assert 'OBMM_MEMSEG_SIZE=2097152' in eight_runner
+    assert 'STRESS_SIZE="${STRESS_SIZE:-$OBMM_MEMSEG_SIZE}"' in eight_runner
+    assert "STRESS_SIZE must be aligned to ${OBMM_MEMSEG_SIZE} bytes" in eight_runner
     assert "--node-count 8 --peer-index" in eight_runner
     assert "\\\\[obmm_import_stress\\\\] local_idx=${local_idx} peer_idx=${peer_idx} node_count=8" in eight_runner
     assert "\\\\[obmm_import_stress\\\\] bootstrap lookup ok got_count=8 node_count=8 peer_got=1" in eight_runner
