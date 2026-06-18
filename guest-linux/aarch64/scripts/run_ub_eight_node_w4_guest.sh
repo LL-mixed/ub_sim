@@ -55,7 +55,7 @@ RUN_INITRAMFS_IMAGE="$OUT_DIR/initramfs.${RUN_ID_BASE}.cpio.gz"
 _SHORT_SHARED_SUFFIX="$(printf '%s' "$RUN_ID_BASE" | cksum | cut -d' ' -f1)_${RANDOM}"
 UB_FM_SHARED_DIR="${UB_FM_SHARED_DIR:-/tmp/ubqe_${_SHORT_SHARED_SUFFIX}}"
 BOOT_WAIT_SECS="${BOOT_WAIT_SECS:-180}"
-DEMO_WAIT_SECS="${DEMO_WAIT_SECS:-600}"
+APP_WAIT_SECS="${APP_WAIT_SECS:-${DEMO_WAIT_SECS:-600}}"
 W4_GUEST_PROGRESS_INTERVAL_SECS="${W4_GUEST_PROGRESS_INTERVAL_SECS:-180}"
 APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 QEMU_MEM="${QEMU_MEM:-8G}"
@@ -1263,7 +1263,7 @@ run_w4_app() {
 
   rc=0
   wait_for_all_logs_pass_or_fail_since "^\\[w4_guest\\] pass\\r?$" "$FATAL_GUEST_PATTERN" \
-    "$((DEMO_WAIT_SECS * SIM_QWEN3_GUEST_DECODE_STEPS))" \
+    "$((APP_WAIT_SECS * SIM_QWEN3_GUEST_DECODE_STEPS))" \
     "$SIM_QWEN3_GUEST_DECODE_STEPS" || rc=$?
   if [[ "$rc" != "0" ]]; then
     trace "FAIL: w4 guest did not pass on all nodes rc=$rc"
@@ -1322,10 +1322,10 @@ prepare_environment() {
   validate_qwen3_engram_context_refs || return 1
   if is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
     if [[ -z "$SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS" ]]; then
-      SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS="$((DEMO_WAIT_SECS * 1000))"
+      SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS="$((APP_WAIT_SECS * 1000))"
     fi
     if [[ -z "$SIM_QWEN3_RUNTIME_RANGE_WAIT_MS" ]]; then
-      SIM_QWEN3_RUNTIME_RANGE_WAIT_MS="$((DEMO_WAIT_SECS * SIM_QWEN3_GUEST_DECODE_STEPS * 1000))"
+      SIM_QWEN3_RUNTIME_RANGE_WAIT_MS="$((APP_WAIT_SECS * SIM_QWEN3_GUEST_DECODE_STEPS * 1000))"
     fi
     trace "prepare: qwen3 dense profile=$SIM_UAPI_W4_CHIPBACKEND_PROFILE model_id=${SIM_QWEN3_DENSE_MODEL_ID:-} model_key=${SIM_QWEN3_DENSE_MODEL_KEY:-} layers=${SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS:-} hidden_range_bytes=${SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES:-} decode_hidden_bytes=${SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES:-}"
     trace "prepare: qwen3 decode round barrier timeout ms=$SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS"

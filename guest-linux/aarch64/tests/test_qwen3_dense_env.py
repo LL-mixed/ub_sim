@@ -185,10 +185,10 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("w5_profile_default_w4_backend", runner_text)
         self.assertIn("validate_w5_profile_runtime", runner_text)
         self.assertIn("SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS", runner_text)
-        self.assertIn("DEMO_WAIT_SECS * 1000", runner_text)
+        self.assertIn("APP_WAIT_SECS * 1000", runner_text)
         self.assertIn("SIM_QWEN3_RUNTIME_RANGE_WAIT_MS", runner_text)
         self.assertIn(
-            "DEMO_WAIT_SECS * SIM_QWEN3_GUEST_DECODE_STEPS * 1000",
+            "APP_WAIT_SECS * SIM_QWEN3_GUEST_DECODE_STEPS * 1000",
             runner_text,
         )
         self.assertIn("SIM_UAPI_W5_PROFILE", launcher_text)

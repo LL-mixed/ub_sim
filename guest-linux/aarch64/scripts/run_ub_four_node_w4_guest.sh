@@ -10,7 +10,7 @@ TRACE_FILE="${TRACE_FILE:-$OUT_DIR/four_node_w4_guest.trace.latest.txt}"
 RUN_ID_BASE="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_w4guest4_${RANDOM}}"
 RUN_DIR="$LOG_DIR/${RUN_ID_BASE}_headless4"
 BOOT_WAIT_SECS="${BOOT_WAIT_SECS:-180}"
-DEMO_WAIT_SECS="${DEMO_WAIT_SECS:-300}"
+APP_WAIT_SECS="${APP_WAIT_SECS:-${DEMO_WAIT_SECS:-300}}"
 APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1 pmd_mapping=100% w4_db_region_size_mb=512 obmm.mempool_size=512M}"
 PORT_BASE_START="${PORT_BASE_START:-$((54100 + (RANDOM % 300)))}"
 PORT_BASE="$PORT_BASE_START"
@@ -266,7 +266,7 @@ run_w4_app() {
   for node_id in "${NODE_IDS[@]}"; do
     guest_log="$RUN_DIR/${node_id}_guest.log"
     wait_for_log_pass_or_fail_since "$guest_log" "${START_LINES[$node_id]}" \
-      "\\[w4_guest\\] pass" "\\[w4_guest\\] fail" "$DEMO_WAIT_SECS" || rc=$?
+      "\\[w4_guest\\] pass" "\\[w4_guest\\] fail" "$APP_WAIT_SECS" || rc=$?
     rc="${rc:-0}"
     if [[ "$rc" != "0" ]]; then
       trace "FAIL: w4 guest did not pass on $node_id rc=$rc"
