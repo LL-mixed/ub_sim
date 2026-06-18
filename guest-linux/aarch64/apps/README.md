@@ -29,7 +29,7 @@ instead of env-prefixed one-off shell commands.
 | `ub_udma` | `scripts/run_ub_dual_node_apps.sh --app udma` | `scripts/run_ub_eight_node_udma_matrix.sh` |
 | `ub_obmm_pool` | `scripts/run_ub_dual_node_apps.sh --app obmm_pool` | `scripts/run_ub_eight_node_obmm_pool.sh` |
 | `obmm_queue` | `scripts/run_ub_dual_node_obmm_queue.sh` | `scripts/run_ub_eight_node_obmm_queue.sh` |
-| `obmm_dataplane_microbench` | `scripts/run_ub_dual_node_obmm_dataplane_microbench.sh` | `scripts/run_ub_dual_node_apps.sh --app obmm_dataplane_microbench` |
+| `obmm_dataplane_microbench` | `scripts/run_ub_dual_node_obmm_dataplane_microbench.sh` | `scripts/run_ub_eight_node_obmm_dataplane_microbench.sh` |
 | `obmm_import_stress` | `scripts/run_ub_dual_node_obmm_import_stress.sh` | `scripts/run_ub_eight_node_obmm_import_stress.sh` |
 | `obmm_gsva` | `scripts/run_ub_dual_node_obmm_gsva.sh` | `scripts/run_ub_multi_node_obmm_gsva_matrix.sh` |
 | `obmm_coh_test` | `scripts/run_ub_dual_node_obmm_coh_test.sh` | `scripts/run_ub_four_node_obmm_coh_test.sh` |

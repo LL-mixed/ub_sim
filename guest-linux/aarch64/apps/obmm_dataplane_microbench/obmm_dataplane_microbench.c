@@ -29,7 +29,6 @@
 #define DP_DEFAULT_GSVA_BASE   0x700000000000ULL
 #define DP_DEFAULT_GSVA_GENERATION 0x44504d424701ULL
 #define DP_BOOTSTRAP_GENERATION 0x44504d424101ULL
-#define DP_MAX_NODES          2
 
 enum dp_mode {
     DP_MODE_LEGACY_PA = 0,
@@ -45,6 +44,8 @@ struct dp_config {
     uint64_t generic_pte_offset;
     uint64_t gsva_base;
     uint64_t gsva_generation;
+    int node_count;
+    int peer_index;
     bool verify;
 };
 
@@ -149,6 +150,8 @@ static void init_config(struct dp_config *cfg)
     cfg->generic_pte_offset = 0x1000;
     cfg->gsva_base = DP_DEFAULT_GSVA_BASE;
     cfg->gsva_generation = DP_DEFAULT_GSVA_GENERATION;
+    cfg->node_count = 2;
+    cfg->peer_index = -1;
 }
 
 static void usage(const char *prog)
@@ -160,6 +163,8 @@ static void usage(const char *prog)
             "  --iterations <n>\n"
             "  --chunk-size <bytes>\n"
             "  --verify\n"
+            "  --node-count <n>\n"
+            "  --peer-index <n>\n"
             "  --generic-pte-offset <n>\n"
             "  --gsva-base <addr>\n"
             "  --gsva-generation <n>\n",
@@ -194,6 +199,24 @@ static bool parse_args(int argc, char **argv, struct dp_config *cfg)
             }
         } else if (strcmp(argv[i], "--verify") == 0) {
             cfg->verify = true;
+        } else if (strcmp(argv[i], "--node-count") == 0 && i + 1 < argc) {
+            uint64_t node_count;
+
+            if (!parse_u64_arg(argv[++i], &node_count) ||
+                node_count < 2 || node_count > OBMM_POOL_HELPERS_MAX_NODES) {
+                fprintf(stderr, "invalid --node-count %s\n", argv[i]);
+                return false;
+            }
+            cfg->node_count = (int)node_count;
+        } else if (strcmp(argv[i], "--peer-index") == 0 && i + 1 < argc) {
+            uint64_t peer_index;
+
+            if (!parse_u64_arg(argv[++i], &peer_index) ||
+                peer_index >= OBMM_POOL_HELPERS_MAX_NODES) {
+                fprintf(stderr, "invalid --peer-index %s\n", argv[i]);
+                return false;
+            }
+            cfg->peer_index = (int)peer_index;
         } else if (strcmp(argv[i], "--generic-pte-offset") == 0 &&
                    i + 1 < argc) {
             if (!parse_u64_arg(argv[++i], &cfg->generic_pte_offset)) {
@@ -231,15 +254,63 @@ static bool parse_args(int argc, char **argv, struct dp_config *cfg)
         fprintf(stderr, "generic-gva requires nonzero --generic-pte-offset\n");
         return false;
     }
+    if (cfg->peer_index >= cfg->node_count) {
+        fprintf(stderr, "--peer-index must be less than --node-count\n");
+        return false;
+    }
     if (cfg->mode == DP_MODE_GSVA &&
-        cfg->size > UINT64_MAX / DP_MAX_NODES) {
+        cfg->size > UINT64_MAX / (uint64_t)cfg->node_count) {
         fprintf(stderr, "GSVA aperture size overflow\n");
         return false;
     }
     return true;
 }
 
-static bool resolve_local_identity(uint64_t *local_cna, int *local_idx)
+static int default_peer_index(int local_idx, int node_count)
+{
+    return (local_idx + 1) % node_count;
+}
+
+static int got_count(const bool got[OBMM_POOL_HELPERS_MAX_NODES],
+                     int node_count)
+{
+    int count = 0;
+    int i;
+
+    for (i = 0; i < node_count; i++) {
+        if (got[i]) {
+            count++;
+        }
+    }
+    return count;
+}
+
+static bool parse_local_ipv4_index(int node_count, int *local_idx)
+{
+    char local_ip[INET_ADDRSTRLEN];
+    char *end = NULL;
+    long octet;
+
+    if (!obmm_env_or_cmdline("LINQU_UB_LOCAL_IP", "linqu_ipourma_ipv4",
+                             local_ip, sizeof(local_ip))) {
+        return false;
+    }
+    end = strrchr(local_ip, '.');
+    if (!end || end[1] == '\0') {
+        return false;
+    }
+    errno = 0;
+    octet = strtol(end + 1, &end, 10);
+    if (errno != 0 || !end || *end != '\0' || octet < 1 ||
+        octet > node_count) {
+        return false;
+    }
+    *local_idx = (int)octet - 1;
+    return true;
+}
+
+static bool resolve_local_identity(uint64_t *local_cna, int *local_idx,
+                                   int node_count)
 {
     char value[64];
 
@@ -260,6 +331,8 @@ static bool resolve_local_identity(uint64_t *local_cna, int *local_idx)
 
     if (obmm_cmdline_get("linqu_node_idx", value, sizeof(value))) {
         *local_idx = (int)strtol(value, NULL, 0);
+    } else if (parse_local_ipv4_index(node_count, local_idx)) {
+        dp_log("local_idx from ip=%d", *local_idx);
     } else {
         char role[32] = { 0 };
 
@@ -272,11 +345,10 @@ static bool resolve_local_identity(uint64_t *local_cna, int *local_idx)
             *local_idx = 0;
         }
     }
-    if (*local_idx < 0 || *local_idx >= DP_MAX_NODES) {
+    if (*local_idx < 0 || *local_idx >= node_count) {
         dp_log("invalid local_idx=%d", *local_idx);
         return false;
     }
-    dp_log("local_idx=%d node_count=%d", *local_idx, DP_MAX_NODES);
     return true;
 }
 
@@ -287,11 +359,11 @@ static bool register_gsva_aperture(int obmm_fd, const struct dp_config *cfg,
     struct obmm_cmd_gsva_aperture query = { 0 };
 
     req.base = cfg->gsva_base;
-    req.size = cfg->size * DP_MAX_NODES;
+    req.size = cfg->size * (uint64_t)cfg->node_count;
     req.generation = cfg->gsva_generation;
     req.flags = OBMM_GSVA_APERTURE_F_ACTIVE;
     req.node_id = (uint32_t)local_idx;
-    req.node_count = DP_MAX_NODES;
+    req.node_count = (uint32_t)cfg->node_count;
     if (ioctl(obmm_fd, OBMM_CMD_GSVA_APERTURE_REGISTER, &req) != 0) {
         dp_log("GSVA aperture register failed base=%" PRIx64
                " size=%" PRIx64 " errno=%d", req.base, req.size, errno);
@@ -311,7 +383,7 @@ static bool register_gsva_aperture(int obmm_fd, const struct dp_config *cfg,
     }
     dp_log("GSVA aperture registered base=%" PRIx64 " size=%" PRIx64
            " generation=%" PRIx64 " node=%d/%d",
-           req.base, req.size, req.generation, local_idx, DP_MAX_NODES);
+           req.base, req.size, req.generation, local_idx, cfg->node_count);
     return true;
 }
 
@@ -376,25 +448,27 @@ static bool run_bench(const struct dp_config *cfg, uint8_t *imported_va,
 }
 
 static bool completion_barrier(int obmm_fd, int local_idx, uint32_t local_cna,
+                               int node_count,
                                const struct obmm_helpers_meta *local_meta)
 {
     struct obmm_helpers_meta metas[OBMM_POOL_HELPERS_MAX_NODES] = { 0 };
     bool got[OBMM_POOL_HELPERS_MAX_NODES] = { false };
     uint64_t generation = DP_BOOTSTRAP_GENERATION + 1;
 
-    if (obmm_bootstrap_publish(obmm_fd, local_idx, DP_MAX_NODES, generation,
+    if (obmm_bootstrap_publish(obmm_fd, local_idx, node_count, generation,
                                local_meta) != 0) {
         dp_log("completion publish failed generation=%" PRIu64
                " errno=%d", generation, errno);
         return false;
     }
-    if (obmm_bootstrap_lookup(obmm_fd, local_cna, DP_MAX_NODES, generation,
+    if (obmm_bootstrap_lookup(obmm_fd, local_cna, node_count, generation,
                               metas, got) != 0) {
         dp_log("completion barrier failed generation=%" PRIu64
                " errno=%d", generation, errno);
         return false;
     }
-    dp_log("completion barrier ok generation=%" PRIu64, generation);
+    dp_log("completion barrier ok generation=%" PRIu64 " got_count=%d node_count=%d",
+           generation, got_count(got, node_count), node_count);
     return true;
 }
 
@@ -431,6 +505,8 @@ int main(int argc, char **argv)
     int shmdev_fd = -1;
     uint64_t local_cna = 0;
     int local_idx = -1;
+    int node_count = 0;
+    int peer_idx = -1;
     struct obmm_helpers_meta local_meta = { 0 };
     struct obmm_helpers_meta remote_metas[OBMM_POOL_HELPERS_MAX_NODES] = { 0 };
     bool got[OBMM_POOL_HELPERS_MAX_NODES] = { false };
@@ -462,9 +538,20 @@ int main(int argc, char **argv)
         dp_log("open /dev/obmm failed errno=%d", errno);
         goto cleanup;
     }
-    if (!resolve_local_identity(&local_cna, &local_idx)) {
+    node_count = cfg.node_count;
+    if (!resolve_local_identity(&local_cna, &local_idx, node_count)) {
         goto cleanup;
     }
+    peer_idx = cfg.peer_index >= 0
+        ? cfg.peer_index
+        : default_peer_index(local_idx, node_count);
+    if (peer_idx < 0 || peer_idx >= node_count || peer_idx == local_idx) {
+        dp_log("invalid peer_idx=%d local_idx=%d node_count=%d",
+               peer_idx, local_idx, node_count);
+        goto cleanup;
+    }
+    dp_log("local_idx=%d peer_idx=%d node_count=%d",
+           local_idx, peer_idx, node_count);
 
     if (cfg.mode == DP_MODE_GSVA) {
         if (!register_gsva_aperture(obmm_fd, &cfg, local_idx)) {
@@ -491,18 +578,20 @@ int main(int argc, char **argv)
     dp_log("export ok mem_id=%" PRIx64 " uba=%" PRIx64 " token=%u",
            export_mem_id, local_meta.remote_uba, local_meta.token_id);
 
-    if (obmm_bootstrap_publish(obmm_fd, local_idx, DP_MAX_NODES,
+    if (obmm_bootstrap_publish(obmm_fd, local_idx, node_count,
                                DP_BOOTSTRAP_GENERATION, &local_meta) != 0) {
         dp_log("bootstrap publish failed errno=%d", errno);
         goto cleanup;
     }
-    if (obmm_bootstrap_lookup(obmm_fd, (uint32_t)local_cna, DP_MAX_NODES,
+    if (obmm_bootstrap_lookup(obmm_fd, (uint32_t)local_cna, node_count,
                               DP_BOOTSTRAP_GENERATION, remote_metas,
                               got) != 0) {
         dp_log("bootstrap lookup failed errno=%d", errno);
         goto cleanup;
     }
-    if (!got[local_idx ^ 1]) {
+    dp_log("bootstrap lookup ok got_count=%d node_count=%d peer_got=%d",
+           got_count(got, node_count), node_count, got[peer_idx]);
+    if (!got[peer_idx]) {
         dp_log("remote peer not found");
         goto cleanup;
     }
@@ -514,26 +603,26 @@ int main(int argc, char **argv)
     }
 
     if (cfg.mode == DP_MODE_LEGACY_PA) {
-        if (obmm_do_import(obmm_fd, &remote_metas[local_idx ^ 1],
+        if (obmm_do_import(obmm_fd, &remote_metas[peer_idx],
                            (uint32_t)local_cna, local_pas[0],
-                           remote_metas[local_idx ^ 1].token_id,
+                           remote_metas[peer_idx].token_id,
                            &import_mem_id) != 0) {
             dp_log("legacy import failed errno=%d", errno);
             goto cleanup;
         }
     } else if (cfg.mode == DP_MODE_GENERIC_GVA) {
         pte_offset = cfg.generic_pte_offset;
-        if (remote_metas[local_idx ^ 1].remote_uba < pte_offset) {
+        if (remote_metas[peer_idx].remote_uba < pte_offset) {
             dp_log("generic GVA local_va underflow remote_uba=%" PRIx64
                    " pte_offset=%" PRIx64,
-                   remote_metas[local_idx ^ 1].remote_uba, pte_offset);
+                   remote_metas[peer_idx].remote_uba, pte_offset);
             goto cleanup;
         }
-        local_va = remote_metas[local_idx ^ 1].remote_uba - pte_offset;
+        local_va = remote_metas[peer_idx].remote_uba - pte_offset;
         home_va = local_va;
-        if (obmm_do_import_v2(obmm_fd, &remote_metas[local_idx ^ 1],
+        if (obmm_do_import_v2(obmm_fd, &remote_metas[peer_idx],
                               (uint32_t)local_cna, local_pas[0],
-                              remote_metas[local_idx ^ 1].token_id,
+                              remote_metas[peer_idx].token_id,
                               OBMM_SIM_DEC_MAP_SOURCE_LEGACY_OBMM,
                               OBMM_SIM_DEC_ADDRESS_PROFILE_GENERIC_GVA,
                               OBMM_SIM_DEC_CACHE_POLICY_WRITE_THROUGH,
@@ -545,12 +634,12 @@ int main(int argc, char **argv)
         }
         target_va = (void *)(uintptr_t)local_va;
     } else {
-        local_va = remote_metas[local_idx ^ 1].remote_uba;
+        local_va = remote_metas[peer_idx].remote_uba;
         home_va = local_va;
-        gva_id = (uint64_t)(local_idx ^ 1) + 1;
-        if (obmm_do_import_v2(obmm_fd, &remote_metas[local_idx ^ 1],
+        gva_id = (uint64_t)peer_idx + 1;
+        if (obmm_do_import_v2(obmm_fd, &remote_metas[peer_idx],
                               (uint32_t)local_cna, local_pas[0],
-                              remote_metas[local_idx ^ 1].token_id,
+                              remote_metas[peer_idx].token_id,
                               OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER,
                               OBMM_SIM_DEC_ADDRESS_PROFILE_GSVA_IDENTITY,
                               OBMM_SIM_DEC_CACHE_POLICY_WRITE_THROUGH,
@@ -588,7 +677,7 @@ int main(int argc, char **argv)
         goto cleanup;
     }
     if (!completion_barrier(obmm_fd, local_idx, (uint32_t)local_cna,
-                            &local_meta)) {
+                            node_count, &local_meta)) {
         goto cleanup;
     }
     print_result(&cfg, &stats, import_mem_id, local_va, home_va, pte_offset,
