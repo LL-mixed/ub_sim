@@ -249,7 +249,7 @@ validate_node_log() {
   return 0
 }
 
-run_w4_demo() {
+run_w4_app() {
   local node_id guest_log start_line serial_port local_ip rc
   typeset -A START_LINES
 
@@ -319,7 +319,7 @@ main() {
     exit 1
   fi
 
-  if run_w4_demo; then
+  if run_w4_app; then
     exit_code=0
     trace "PASS: four-node w4 guest resource-backed uapi/chipbackend service coverage validated"
     echo "four-node w4 guest validation passed"

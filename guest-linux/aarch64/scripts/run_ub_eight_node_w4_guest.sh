@@ -1250,7 +1250,7 @@ validate_node_log() {
   return 0
 }
 
-run_w4_demo() {
+run_w4_app() {
   local decode_step="$1"
   local node_id guest_log rc
   typeset -A START_LINES
@@ -1458,7 +1458,7 @@ main() {
     exit 1
   fi
 
-  if ! run_w4_demo 0; then
+  if ! run_w4_app 0; then
     if [[ -n "$SIM_UAPI_W5_PROFILE" ]]; then
       trace "FAIL: eight-node w5 inference cluster validation failed profile=$SIM_UAPI_W5_PROFILE"
     else

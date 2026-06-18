@@ -536,7 +536,9 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     run_app = (ROOT / "initramfs" / "run_app").read_text()
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     w4_runner = (ROOT / "scripts" / "run_ub_dual_node_w4_guest.sh").read_text()
+    w4_four_runner = (ROOT / "scripts" / "run_ub_four_node_w4_guest.sh").read_text()
     w4_eight_runner = (ROOT / "scripts" / "run_ub_eight_node_w4_guest.sh").read_text()
+    four_node_smoke = (ROOT / "scripts" / "run_ub_four_node_smoke.sh").read_text()
     launcher_scripts = "\n".join(
         [
             (ROOT / "scripts" / "launch_ub_dual_node_tmux.sh").read_text(),
@@ -592,6 +594,12 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     assert "should_enter_demo_boot_flow" not in init_source
     assert "no demo flags matched" not in run_app
     assert "run_ub_dual_node_apps.sh" in w4_runner
+    assert "run_w4_app" in w4_four_runner
+    assert "run_w4_demo" not in w4_four_runner
+    assert "run_w4_app" in w4_eight_runner
+    assert "run_w4_demo" not in w4_eight_runner
+    assert "switching to /bin/run_app app boot flow" in four_node_smoke
+    assert "switching to /bin/run_demo app boot flow" not in four_node_smoke
     assert "linqu_w4_demo" not in w4_runner
     assert "run_ub_dual_node_demo.sh" not in w4_runner
     assert not (ROOT / "scripts" / "run_ub_dual_node_demo.sh").exists()
