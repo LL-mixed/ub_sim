@@ -1041,8 +1041,9 @@ def test_eight_node_matrix_runners_use_headless_serial_sockets():
 def test_shared_obmm_helpers_use_app_language():
     common = (ROOT / "common" / "obmm_common.h").read_text()
     queue = (ROOT / "libs" / "obmm_queue" / "obmm_spsc_queue.h").read_text()
+    uburma_compat = (ROOT / "uburma_cmd_user_compat.h").read_text()
 
-    combined = common + "\n" + queue
+    combined = common + "\n" + queue + "\n" + uburma_compat
     assert "shared across demos" not in combined
     assert "demo-specific" not in combined
     assert "user-space demo" not in combined

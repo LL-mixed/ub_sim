@@ -5,7 +5,7 @@
  *         simulator/guest-linux/kernel_ub/include/ub/urma/ubcore_types.h
  *
  * This header copies struct definitions from the kernel's uburma_cmd.h
- * for use in user-space demo applications. All struct layouts (field order,
+ * for use in user-space apps. All struct layouts (field order,
  * types, padding) must remain identical to the kernel versions.
  *
  * Kernel types are mapped as follows:
@@ -49,7 +49,7 @@ enum ubcore_transport_mode_user {
     UBCORE_TP_RM_USER = 0x1,
     UBCORE_TP_RC_USER = 0x1 << 1,
     UBCORE_TP_UM_USER = 0x1 << 2,
-    /* Keep legacy alias used by demo code. */
+    /* Keep legacy alias used by app code. */
     UBCORE_TRANSPORT_UB_USER = UBCORE_TP_RM_USER,
 };
 
