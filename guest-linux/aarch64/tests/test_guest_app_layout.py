@@ -567,6 +567,8 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     assert "scenario=dual-node-apps" in script
     assert "obmm_dataplane_microbench" in script
     assert "dual-node apps validation passed" in script
+    assert "\\\\[obmm_dataplane_microbench\\\\] result=done" in script
+    assert "\\[init\\] ub obmm dataplane microbench app pass" not in script
     assert "ub_nodeA.apps." in script
     assert "--app NAME" in script
     assert "APP_SELECTION" in script

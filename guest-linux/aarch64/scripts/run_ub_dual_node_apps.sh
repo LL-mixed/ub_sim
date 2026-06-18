@@ -1136,7 +1136,8 @@ run_iteration() {
   fi
 
   if [[ "$obmm_dataplane_microbench_enabled" -eq 1 ]]; then
-    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[init\\] ub obmm dataplane microbench app pass" "\\[init\\] ub obmm dataplane microbench app fail" "$RUN_SECS"
+    wait_for_log_pass_or_fail "$nodea_guest_log" "\\[obmm_dataplane_microbench\\] result=done" \
+      "\\[obmm_dataplane_microbench\\].*(result=fail|bench failed|verify_failures=[1-9])" "$RUN_SECS"
     case "$?" in
       0) ;;
       1)
@@ -1149,7 +1150,8 @@ run_iteration() {
         ;;
     esac
 
-    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[init\\] ub obmm dataplane microbench app pass" "\\[init\\] ub obmm dataplane microbench app fail" "$RUN_SECS"
+    wait_for_log_pass_or_fail "$nodeb_guest_log" "\\[obmm_dataplane_microbench\\] result=done" \
+      "\\[obmm_dataplane_microbench\\].*(result=fail|bench failed|verify_failures=[1-9])" "$RUN_SECS"
     case "$?" in
       0) ;;
       1)
