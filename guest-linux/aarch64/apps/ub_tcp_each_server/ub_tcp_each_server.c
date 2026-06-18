@@ -81,6 +81,18 @@ static bool cmdline_get_value(const char *key, char *out, size_t out_len)
     return false;
 }
 
+static bool env_or_cmdline_value(const char *env_key, const char *cmd_key,
+                                 char *out, size_t out_len)
+{
+    const char *env = getenv(env_key);
+
+    if (env && env[0] != '\0') {
+        snprintf(out, out_len, "%s", env);
+        return true;
+    }
+    return cmdline_get_value(cmd_key, out, out_len);
+}
+
 static bool role_default_ipv4_pair(const char *role, char *local, size_t local_len,
                                    char *peer, size_t peer_len)
 {
@@ -100,8 +112,12 @@ static bool role_default_ipv4_pair(const char *role, char *local, size_t local_l
 static bool resolve_ipv4_pair(const char *role, char *local, size_t local_len,
                               char *peer, size_t peer_len)
 {
-    bool have_local = cmdline_get_value("linqu_ipourma_ipv4", local, local_len);
-    bool have_peer = cmdline_get_value("linqu_ipourma_peer_ipv4", peer, peer_len);
+    bool have_local = env_or_cmdline_value("LINQU_UB_LOCAL_IP",
+                                           "linqu_ipourma_ipv4",
+                                           local, local_len);
+    bool have_peer = env_or_cmdline_value("LINQU_UB_PEER_IP",
+                                          "linqu_ipourma_peer_ipv4",
+                                          peer, peer_len);
 
     if (!have_local || !have_peer) {
         char default_local[INET_ADDRSTRLEN];
@@ -683,7 +699,8 @@ int main(void)
     setvbuf(stdout, NULL, _IOLBF, 0);
     setvbuf(stderr, NULL, _IOLBF, 0);
 
-    if (!cmdline_get_value("linqu_urma_dp_role", role, sizeof(role))) {
+    if (!env_or_cmdline_value("LINQU_URMA_DP_ROLE", "linqu_urma_dp_role",
+                              role, sizeof(role))) {
         fprintf(stderr, "[ub_tcp_each_server] fail: missing linqu_urma_dp_role\n");
         return 1;
     }

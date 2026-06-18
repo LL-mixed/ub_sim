@@ -25,7 +25,7 @@ instead of env-prefixed one-off shell commands.
 | --- | --- | --- |
 | `ub_chat` | `scripts/run_ub_dual_node_apps.sh --app chat` | `scripts/run_ub_eight_node_chat_matrix.sh` |
 | `ub_rpc` | `scripts/run_ub_dual_node_apps.sh --app rpc` | `scripts/run_ub_eight_node_rpc_matrix.sh` |
-| `ub_tcp_each_server` | `scripts/run_ub_dual_node_apps.sh --app tcp_each_server` | `scripts/run_ub_four_node_smoke.sh` |
+| `ub_tcp_each_server` | `scripts/run_ub_dual_node_apps.sh --app tcp_each_server` | `scripts/run_ub_eight_node_tcp_each_server_matrix.sh` |
 | `ub_udma` | `scripts/run_ub_dual_node_apps.sh --app udma` | `scripts/run_ub_eight_node_udma_matrix.sh` |
 | `ub_obmm_pool` | `scripts/run_ub_dual_node_apps.sh --app obmm_pool` | `scripts/run_ub_eight_node_obmm_pool.sh` |
 | `obmm_queue` | `scripts/run_ub_dual_node_obmm_queue.sh` | `scripts/run_ub_eight_node_obmm_queue.sh` |

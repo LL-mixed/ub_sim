@@ -16,7 +16,7 @@ APP_VALIDATION_COMMANDS = {
     ],
     "ub_tcp_each_server": [
         "scripts/run_ub_dual_node_apps.sh --app tcp_each_server",
-        "scripts/run_ub_four_node_smoke.sh",
+        "scripts/run_ub_eight_node_tcp_each_server_matrix.sh",
     ],
     "ub_udma": [
         "scripts/run_ub_dual_node_apps.sh --app udma",
@@ -170,7 +170,9 @@ def test_ub_tcp_each_server_uses_canonical_app_source():
     init_source = (ROOT / "init.c").read_text()
     run_app = (ROOT / "initramfs" / "run_app").read_text()
     dual_runner = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
+    eight_runner = (ROOT / "scripts" / "run_ub_eight_node_tcp_each_server_matrix.sh").read_text()
     app_dir = ROOT / "apps" / "ub_tcp_each_server"
+    app_source = (app_dir / "ub_tcp_each_server.c").read_text()
 
     assert (
         'TCP_EACH_SERVER_SRC="$ROOT_DIR/apps/ub_tcp_each_server/ub_tcp_each_server.c"'
@@ -180,6 +182,18 @@ def test_ub_tcp_each_server_uses_canonical_app_source():
     assert "linqu_ub_tcp_each_server=1" in init_source
     assert "\\\\[ub_tcp_each_server\\\\] pass" in dual_runner
     assert "\\\\[ub_tcp_each_server\\\\] fail" in dual_runner
+    assert "/bin/linqu_ub_tcp_each_server" in eight_runner
+    assert "LINQU_URMA_DP_ROLE" in eight_runner
+    assert "LINQU_UB_LOCAL_IP" in eight_runner
+    assert "LINQU_UB_PEER_IP" in eight_runner
+    assert "nodeA nodeH" in eight_runner
+    assert "nodeG nodeH" in eight_runner
+    assert "\\\\[ub_tcp_each_server\\\\] start role=${role}" in eight_runner
+    assert "\\\\[ub_tcp_each_server\\\\] pass" in eight_runner
+    assert "rdinit=/bin/run_demo ub_tcp_each_server " not in eight_runner
+    assert "env_or_cmdline_value(\"LINQU_URMA_DP_ROLE\"" in app_source
+    assert "env_or_cmdline_value(\"LINQU_UB_LOCAL_IP\"" in app_source
+    assert "env_or_cmdline_value(\"LINQU_UB_PEER_IP\"" in app_source
     assert "\\[init\\] ub tcp each server app pass" not in dual_runner
     assert "[init] ub tcp each server app pass" in init_source
     assert "run_ub_tcp_each_server_demo_probe" not in init_source
@@ -831,6 +845,7 @@ def test_eight_node_matrix_runners_use_headless_serial_sockets():
         "run_ub_eight_node_chat_matrix.sh",
         "run_ub_eight_node_rpc_matrix.sh",
         "run_ub_eight_node_udma_matrix.sh",
+        "run_ub_eight_node_tcp_each_server_matrix.sh",
         "run_ub_eight_node_obmm_pool.sh",
         "run_ub_eight_node_obmm_queue.sh",
         "run_ub_eight_node_obmm_import_stress.sh",
