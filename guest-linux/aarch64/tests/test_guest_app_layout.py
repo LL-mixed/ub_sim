@@ -32,7 +32,7 @@ APP_VALIDATION_COMMANDS = {
         "scripts/run_ub_eight_node_obmm_queue.sh",
     ],
     "obmm_dataplane_microbench": [
-        "scripts/run_ub_dual_node_obmm_dataplane_microbench.sh",
+        "scripts/run_ub_dual_node_obmm_dataplane_microbench_matrix.sh",
         "scripts/run_ub_eight_node_obmm_dataplane_microbench.sh",
     ],
     "obmm_import_stress": [
@@ -381,6 +381,10 @@ def test_obmm_dataplane_microbench_has_integration_entrypoints():
 
 def test_obmm_dataplane_microbench_runner_uses_app_flag_entrypoint():
     runner = (ROOT / "scripts" / "run_ub_dual_node_obmm_dataplane_microbench.sh").read_text()
+    matrix_runner_path = (
+        ROOT / "scripts" / "run_ub_dual_node_obmm_dataplane_microbench_matrix.sh"
+    )
+    matrix_runner = matrix_runner_path.read_text()
     eight_runner = (
         ROOT / "scripts" / "run_ub_eight_node_obmm_dataplane_microbench.sh"
     ).read_text()
@@ -397,6 +401,11 @@ def test_obmm_dataplane_microbench_runner_uses_app_flag_entrypoint():
     assert "legacy|legacy-pa)" in runner
     assert "generic|generic-gva|gva)" in runner
     assert "gsva)" in runner
+    assert matrix_runner_path.stat().st_mode & 0o111
+    assert "MODES=(legacy-pa generic-gva gsva)" in matrix_runner
+    assert '"$BASE_RUNNER" --mode "$mode" "${RUNNER_ARGS[@]}"' in matrix_runner
+    assert "run_ub_dual_node_obmm_dataplane_microbench.sh" in matrix_runner
+    assert "DP_MODE=" not in matrix_runner
     assert "/bin/linqu_ub_obmm_dataplane_microbench" in eight_runner
     assert "DP_MODES=(${=DP_MODES_OVERRIDE:-legacy-pa generic-gva gsva})" in eight_runner
     assert "--node-count 8 --peer-index" in eight_runner
