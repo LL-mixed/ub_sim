@@ -2710,80 +2710,82 @@ int main(int argc, char *argv[])
     force_bind_ubase_for_qemu();
     dump_ub_state();
     (void)configure_ipourma_network(30);
-    if (should_run_urma_dp_verify()) {
+    bool defer_app_boot_flow = should_enter_app_boot_flow() &&
+                               access("/bin/run_app", X_OK) == 0;
+    if (!defer_app_boot_flow && should_run_urma_dp_verify()) {
         /* Wait up to 30 seconds for asynchronous device registration to complete */
         wait_for_ipourma_interface(30);
         run_urma_dp_probe();
     }
-    if (should_run_ub_chat()) {
+    if (!defer_app_boot_flow && should_run_ub_chat()) {
         wait_for_ipourma_interface(30);
         run_ub_chat_probe();
     }
-    if (should_run_ub_rpc()) {
+    if (!defer_app_boot_flow && should_run_ub_rpc()) {
         wait_for_ipourma_interface(30);
         run_ub_rpc_probe();
     }
-    if (should_run_ub_tcp_each_server()) {
+    if (!defer_app_boot_flow && should_run_ub_tcp_each_server()) {
         wait_for_ipourma_interface(30);
         run_ub_tcp_each_server_probe();
     }
-    if (should_run_ub_udma()) {
+    if (!defer_app_boot_flow && should_run_ub_udma()) {
         wait_for_ipourma_interface(30);
         run_ub_udma_probe();
     }
-    if (should_run_obmm_pool()) {
+    if (!defer_app_boot_flow && should_run_obmm_pool()) {
         wait_for_ipourma_interface(30);
         run_obmm_pool_probe();
     }
-    if (should_run_obmm_queue()) {
+    if (!defer_app_boot_flow && should_run_obmm_queue()) {
         wait_for_ipourma_interface(30);
         run_obmm_queue_probe();
     }
-    if (should_run_obmm_dataplane_microbench()) {
+    if (!defer_app_boot_flow && should_run_obmm_dataplane_microbench()) {
         wait_for_ipourma_interface(30);
         run_obmm_dataplane_microbench_probe();
     }
-    if (should_run_obmm_import_stress()) {
+    if (!defer_app_boot_flow && should_run_obmm_import_stress()) {
         wait_for_ipourma_interface(30);
         run_obmm_import_stress_probe();
     }
-    if (should_run_obmm_gsva()) {
+    if (!defer_app_boot_flow && should_run_obmm_gsva()) {
         wait_for_ipourma_interface(30);
         run_obmm_gsva_probe();
     }
-    if (should_run_gsva_query()) {
+    if (!defer_app_boot_flow && should_run_gsva_query()) {
         wait_for_ipourma_interface(30);
         run_gsva_query_probe();
     }
-    if (should_run_gsva_coh_test()) {
+    if (!defer_app_boot_flow && should_run_gsva_coh_test()) {
         wait_for_ipourma_interface(30);
         run_gsva_coh_test_probe();
     }
-    if (should_run_gsva_lifecycle_test()) {
+    if (!defer_app_boot_flow && should_run_gsva_lifecycle_test()) {
         wait_for_ipourma_interface(30);
         run_gsva_lifecycle_test_probe();
     }
-    if (should_run_npu_gsva_test()) {
+    if (!defer_app_boot_flow && should_run_npu_gsva_test()) {
         wait_for_ipourma_interface(30);
         run_npu_gsva_test_probe();
     }
-    if (should_run_npu_test()) {
+    if (!defer_app_boot_flow && should_run_npu_test()) {
         wait_for_ipourma_interface(30);
         run_npu_test_probe();
     }
-    if (should_run_ssd_gsva_test()) {
+    if (!defer_app_boot_flow && should_run_ssd_gsva_test()) {
         wait_for_ipourma_interface(30);
         run_ssd_gsva_test_probe();
     }
-    if (should_run_ssd_test()) {
+    if (!defer_app_boot_flow && should_run_ssd_test()) {
         wait_for_ipourma_interface(30);
         run_ssd_test_probe();
     }
-    if (should_run_gva_direct()) {
+    if (!defer_app_boot_flow && should_run_gva_direct()) {
         wait_for_ipourma_interface(30);
         run_gva_direct_probe();
     }
-    if (should_run_obmm_coh_test()) {
+    if (!defer_app_boot_flow && should_run_obmm_coh_test()) {
         wait_for_ipourma_interface(30);
         run_obmm_coh_test_probe();
     }
@@ -2794,7 +2796,7 @@ int main(int argc, char *argv[])
     }
     dump_ub_state();
 
-    if (should_enter_app_boot_flow() && access("/bin/run_app", X_OK) == 0) {
+    if (defer_app_boot_flow) {
         int i;
         char **new_argv = malloc(sizeof(char *) * (argc + 2));
         fprintf(stderr, "[init] switching to /bin/run_app app boot flow\n");

@@ -235,7 +235,7 @@ def test_obmm_gsva_uses_canonical_app_source():
     assert "obmm_gsva_demo" not in run_demo
     assert "linqu_obmm_gsva=1" in dual_apps_runner
     assert "obmm_gsva" in dual_apps_runner
-    assert "rdinit=/bin/run_demo linqu_obmm_gsva=1" in dual_runner
+    assert "rdinit=/bin/run_app linqu_obmm_gsva=1" in dual_runner
     assert "OBMM_GSVA_MODE" in dual_runner
     assert "rdinit=/bin/run_demo obmm_gsva " not in dual_runner
     assert "GSVA_DEMO_" not in dual_runner
@@ -516,8 +516,14 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     assert "UB_RUN_APP_FROM_INIT" in init_source
     assert "UB_RUN_APP_FROM_INIT" in run_app
     assert "UB_RUN_APP_FROM_INIT" in w4_eight_runner
+    assert "boot flow completed, dropping to shell" not in run_app
+    assert "run_default_actions" in run_app
     assert "switching to /bin/run_app app boot flow" in init_source
     assert "execv(\"/bin/run_app\"" in init_source
+    assert "bool defer_app_boot_flow = should_enter_app_boot_flow()" in init_source
+    assert "!defer_app_boot_flow && should_run_obmm_gsva()" in init_source
+    assert "!defer_app_boot_flow && should_run_gva_direct()" in init_source
+    assert "!defer_app_boot_flow && should_run_obmm_queue()" in init_source
     assert "UB_RUN_DEMO_FROM_INIT" not in init_source
     assert "UB_RUN_DEMO_FROM_INIT" not in run_demo
     assert "UB_RUN_DEMO_FROM_INIT" not in w4_eight_runner

@@ -763,11 +763,6 @@ if [ "$shift_args" = "1" ]; then
   shift
 fi
 
-if [ "${UB_RUN_APP_FROM_INIT:-0}" = "1" ] && [ "$#" -eq 0 ]; then
-  log "boot flow completed, dropping to shell"
-  enter_shell
-fi
-
 if [ "$#" -gt 0 ]; then
   for action in "$@"; do
     if ! run_single_action "$action"; then
