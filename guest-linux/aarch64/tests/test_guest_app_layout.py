@@ -666,3 +666,13 @@ def test_guest_scripts_wait_for_run_app_ready_marker():
     assert "[run_demo] boot flow completed, dropping to shell" not in scripts
     assert "\\[run_demo\\] boot flow completed, dropping to shell" not in scripts
     assert "[run_app] entering interactive shell" in scripts
+
+
+def test_shared_obmm_helpers_use_app_language():
+    common = (ROOT / "common" / "obmm_common.h").read_text()
+    queue = (ROOT / "libs" / "obmm_queue" / "obmm_spsc_queue.h").read_text()
+
+    combined = common + "\n" + queue
+    assert "shared across demos" not in combined
+    assert "demo-specific" not in combined
+    assert "user-space demo" not in combined

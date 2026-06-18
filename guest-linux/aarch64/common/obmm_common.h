@@ -1,19 +1,19 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * OBMM common helper functions -- shared across demos and tests.
+ * OBMM common helper functions -- shared across apps and tests.
  *
  * This header provides OBMM export/import, memory mapping, network setup,
  * and sysfs parsing utilities.  All functions are static to allow
  * single-file compilation (matching the existing project convention).
  *
  * Functions excluded from this header (remain in app-specific helpers):
- *   - obmm_resolve_nodes, obmm_parse_ip_list  (demo-specific env/cmdline)
- *   - obmm_parse_export_size                   (demo-specific env var)
+ *   - obmm_resolve_nodes, obmm_parse_ip_list  (app-specific env/cmdline)
+ *   - obmm_parse_export_size                   (app-specific env var)
  *   - obmm_create_udp, obmm_send_udp, obmm_recv_udp, obmm_init_pool_msg
  *                                               (UDP transport)
  *   - obmm_helpers_pool_msg, OBMM_MSG_HELLO, OBMM_MSG_READY
- *                                               (demo-specific messages)
- *   - OBMM_POOL_HELPERS_PORT                   (demo-specific constant)
+ *                                               (app-specific messages)
+ *   - OBMM_POOL_HELPERS_PORT                   (app-specific constant)
  */
 
 #ifndef OBMM_COMMON_H

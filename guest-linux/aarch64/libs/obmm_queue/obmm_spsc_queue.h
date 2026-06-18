@@ -150,7 +150,7 @@ static inline uint32_t obmm_spsc_available(const struct obmm_spsc_queue *q)
 
 /*
  * These stubs wrap the visibility boundary between local cacheable
- * writes and remote NC reads.  For the first user-space demo they are
+ * writes and remote NC reads.  For the first user-space queue app they are
  * release fences.  If validation fails, these become the place to add
  * cache maintenance or a driver operation.
  */
