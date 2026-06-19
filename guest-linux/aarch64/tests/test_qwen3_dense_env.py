@@ -616,7 +616,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         )
         self.assertIn("qwen3_decode_position_resolved", guest_source)
         self.assertIn(
-            "qwen3_w5_memory_service_lookup_boundary(\n"
+            "qwen3_memory_service_lookup_boundary(\n"
             "        memory_config,\n"
             "        dispatch_node,\n"
             "        cluster_node_count,\n"
@@ -639,7 +639,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("qwen3_memory_service_boundary_lookup_request", guest_source)
         self.assertIn("qwen3_memory_service_boundary_lookup_response", guest_source)
         self.assertIn("SIM_W5_MEMORY_BOUNDARY_REGISTRY_REF", guest_source)
-        self.assertIn("qwen3_read_w5_boundary_registry_object", guest_source)
+        self.assertIn("qwen3_read_memory_boundary_registry_object", guest_source)
         self.assertIn("qwen3_w5_memory_boundary_registry_loaded", guest_source)
         self.assertIn("artifact_ref=%s", guest_source)
         self.assertIn("runtime_service_catalog", guest_source)

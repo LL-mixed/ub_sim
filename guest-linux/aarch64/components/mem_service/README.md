@@ -6,11 +6,15 @@ inference guest harnesses.
 It is primarily a link-time component and also has a standalone smoke/inspect
 CLI:
 
-- `mem_service.c` implements the DB/object service and OBMM-backed
-  runtime metadata paths.
+- `mem_service.c` implements the DB/object service and OBMM-backed runtime
+  metadata paths.
+- `mem_service_records.inc` contains the internal record-table allocation,
+  lookup, member, and recycling helpers compiled into `mem_service.c`.
 - `mem_service_qwen3.c` is the private adapter from mem_service placement/KV
   semantics to the model-neutral `llm_infer` Qwen3 topology helpers.
 - `mem_service.h` exposes the service API consumed by guest apps.
+- `mem_service_qwen3.h` exposes the Qwen3 runtime range/KV/engram adapter API
+  to guest inference code that opts into that model path.
 - `lingqu_object_service.h` defines the object-service payload contract.
 
 Build and validation entrypoints:

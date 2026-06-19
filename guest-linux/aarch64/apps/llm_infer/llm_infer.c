@@ -23,6 +23,7 @@
 #include "uburma_cmd_user_compat.h"
 #include "components/llm_infer/llm_infer.h"
 #include "components/mem_service/mem_service.h"
+#include "components/mem_service/mem_service_qwen3.h"
 
 #define DT_ROOT "/proc/device-tree"
 #define UBC_RESOURCE_BASE_FALLBACK 0x18000000000ULL
@@ -118,10 +119,10 @@
 #define W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_VERSION 1U
 #define W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES 32ULL
 #define W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES 48ULL
-#define W4_QWEN3_W5_BOUNDARY_REGISTRY_MARKER 0x7735627265673030ULL
-#define W4_QWEN3_W5_BOUNDARY_REGISTRY_VERSION 1U
-#define W4_QWEN3_W5_BOUNDARY_REGISTRY_HEADER_BYTES 32ULL
-#define W4_QWEN3_W5_BOUNDARY_REGISTRY_ENTRY_BYTES 128ULL
+#define QWEN3_MEMORY_BOUNDARY_REGISTRY_MARKER 0x7735627265673030ULL
+#define QWEN3_MEMORY_BOUNDARY_REGISTRY_VERSION 1U
+#define QWEN3_MEMORY_BOUNDARY_REGISTRY_HEADER_BYTES 32ULL
+#define QWEN3_MEMORY_BOUNDARY_REGISTRY_ENTRY_BYTES 128ULL
 #define W4_QWEN3_EXPECTED_SHARDS 8ULL
 #define W4_QWEN3_TILES_PER_SHARD 2ULL
 #define W4_QWEN3_EXPECTED_TILES \
@@ -1889,11 +1890,11 @@ struct w4_qwen3_sampler_config {
     uint64_t seed;
 };
 
-#define W4_QWEN3_W5_SHORTPATH_STREAM_MAX 256U
-#define W4_QWEN3_W5_SHORTPATH_STREAM_BYTES 65536U
-#define W4_QWEN3_W5_SHORTPATH_STREAM_LINE_BYTES 512U
-#define W4_QWEN3_W5_SHORTPATH_KV_STREAM_MAX 2048U
-#define W4_QWEN3_W5_SHORTPATH_KV_STREAM_LINE_BYTES 512U
+#define QWEN3_MEMORY_SHORTPATH_STREAM_MAX 256U
+#define QWEN3_MEMORY_SHORTPATH_STREAM_BYTES 65536U
+#define QWEN3_MEMORY_SHORTPATH_STREAM_LINE_BYTES 512U
+#define QWEN3_MEMORY_SHORTPATH_KV_STREAM_MAX 2048U
+#define QWEN3_MEMORY_SHORTPATH_KV_STREAM_LINE_BYTES 512U
 
 struct w4_qwen3_shortpath_stream_entry {
     bool valid;
@@ -1960,17 +1961,17 @@ struct w4_qwen3_memory_decision_config {
     bool shortpath_boundary_hidden_fingerprint_present;
     char shortpath_proof_checksum[64];
     bool shortpath_execute;
-    char shortpath_stream[W4_QWEN3_W5_SHORTPATH_STREAM_BYTES];
+    char shortpath_stream[QWEN3_MEMORY_SHORTPATH_STREAM_BYTES];
     uint64_t shortpath_stream_expected_count;
     uint64_t shortpath_stream_count;
     struct w4_qwen3_shortpath_stream_entry
-        shortpath_stream_entries[W4_QWEN3_W5_SHORTPATH_STREAM_MAX];
+        shortpath_stream_entries[QWEN3_MEMORY_SHORTPATH_STREAM_MAX];
     uint64_t boundary_registry_expected_count;
     bool boundary_registry_loaded;
     uint64_t shortpath_kv_stream_expected_count;
     uint64_t shortpath_kv_stream_count;
     struct w4_qwen3_shortpath_kv_stream_entry
-        shortpath_kv_stream_entries[W4_QWEN3_W5_SHORTPATH_KV_STREAM_MAX];
+        shortpath_kv_stream_entries[QWEN3_MEMORY_SHORTPATH_KV_STREAM_MAX];
     char prefetch_plan_id[256];
     char prefetch_scope[64];
     char prefetch_target_step_index[64];
@@ -1990,7 +1991,7 @@ struct w4_qwen3_memory_decision_config {
     uint64_t prefix_cache_gsva_rejected_count;
     uint64_t gsva_expected_epoch;
     struct w4_qwen3_shortpath_kv_stream_entry
-        prefix_cache_kv_stream_entries[W4_QWEN3_W5_SHORTPATH_KV_STREAM_MAX];
+        prefix_cache_kv_stream_entries[QWEN3_MEMORY_SHORTPATH_KV_STREAM_MAX];
 };
 
 struct w4_qwen3_memory_boundary_lookup_result {
@@ -5725,12 +5726,12 @@ static bool qwen3_stream_ref_hex_syntax_ok(const char *value)
     return true;
 }
 
-static int parse_qwen3_w5_shortpath_stream_entry(
+static int parse_qwen3_memory_shortpath_stream_entry(
     struct w4_qwen3_memory_decision_config *config,
     const char *entry_text,
     uint64_t *count)
 {
-    char entry_copy[W4_QWEN3_W5_SHORTPATH_STREAM_LINE_BYTES];
+    char entry_copy[QWEN3_MEMORY_SHORTPATH_STREAM_LINE_BYTES];
     char *fields[13];
     char *save_field = NULL;
     char *field = NULL;
@@ -5740,10 +5741,10 @@ static int parse_qwen3_w5_shortpath_stream_entry(
     if (!config || !entry_text || !count || entry_text[0] == '\0') {
         return 0;
     }
-    if (*count >= W4_QWEN3_W5_SHORTPATH_STREAM_MAX) {
+    if (*count >= QWEN3_MEMORY_SHORTPATH_STREAM_MAX) {
         fprintf(stderr,
                 "[w4_guest] fail qwen3 w5 shortpath stream too many entries max=%u\n",
-                (unsigned)W4_QWEN3_W5_SHORTPATH_STREAM_MAX);
+                (unsigned)QWEN3_MEMORY_SHORTPATH_STREAM_MAX);
         return -1;
     }
     if (strlen(entry_text) >= sizeof(entry_copy)) {
@@ -5845,7 +5846,7 @@ static int parse_qwen3_w5_shortpath_stream_entry(
     return 0;
 }
 
-static int parse_qwen3_w5_shortpath_stream_env(
+static int parse_qwen3_memory_shortpath_stream_env(
     struct w4_qwen3_memory_decision_config *config)
 {
     char stream_copy[sizeof(config->shortpath_stream)];
@@ -5859,7 +5860,7 @@ static int parse_qwen3_w5_shortpath_stream_env(
     snprintf(stream_copy, sizeof(stream_copy), "%s", config->shortpath_stream);
     entry_text = strtok_r(stream_copy, ";\n\r", &save_entry);
     while (entry_text) {
-        if (parse_qwen3_w5_shortpath_stream_entry(config, entry_text, &count) != 0) {
+        if (parse_qwen3_memory_shortpath_stream_entry(config, entry_text, &count) != 0) {
             return -1;
         }
         entry_text = strtok_r(NULL, ";\n\r", &save_entry);
@@ -5877,12 +5878,12 @@ static int parse_qwen3_w5_shortpath_stream_env(
     return 0;
 }
 
-static int qwen3_read_w5_shortpath_stream_file(
+static int qwen3_read_memory_shortpath_stream_file(
     const char *path,
     struct w4_qwen3_memory_decision_config *config)
 {
     FILE *fp;
-    char line[W4_QWEN3_W5_SHORTPATH_STREAM_LINE_BYTES];
+    char line[QWEN3_MEMORY_SHORTPATH_STREAM_LINE_BYTES];
     uint64_t count = 0;
 
     if (!str_nonempty(path)) {
@@ -5919,7 +5920,7 @@ static int qwen3_read_w5_shortpath_stream_file(
         if (line[0] == '\0') {
             continue;
         }
-        if (parse_qwen3_w5_shortpath_stream_entry(config, line, &count) != 0) {
+        if (parse_qwen3_memory_shortpath_stream_entry(config, line, &count) != 0) {
             fclose(fp);
             return -1;
         }
@@ -5946,12 +5947,12 @@ static int qwen3_read_w5_shortpath_stream_file(
     return 0;
 }
 
-static int parse_qwen3_w5_shortpath_kv_stream_entry(
+static int parse_qwen3_memory_shortpath_kv_stream_entry(
     struct w4_qwen3_memory_decision_config *config,
     const char *entry_text,
     uint64_t *count)
 {
-    char entry_copy[W4_QWEN3_W5_SHORTPATH_KV_STREAM_LINE_BYTES];
+    char entry_copy[QWEN3_MEMORY_SHORTPATH_KV_STREAM_LINE_BYTES];
     char *fields[9];
     char *save_field = NULL;
     char *field = NULL;
@@ -5961,10 +5962,10 @@ static int parse_qwen3_w5_shortpath_kv_stream_entry(
     if (!config || !entry_text || !count || entry_text[0] == '\0') {
         return 0;
     }
-    if (*count >= W4_QWEN3_W5_SHORTPATH_KV_STREAM_MAX) {
+    if (*count >= QWEN3_MEMORY_SHORTPATH_KV_STREAM_MAX) {
         fprintf(stderr,
                 "[w4_guest] fail qwen3 w5 shortpath kv stream too many entries max=%u\n",
-                (unsigned)W4_QWEN3_W5_SHORTPATH_KV_STREAM_MAX);
+                (unsigned)QWEN3_MEMORY_SHORTPATH_KV_STREAM_MAX);
         return -1;
     }
     if (strlen(entry_text) >= sizeof(entry_copy)) {
@@ -6032,12 +6033,12 @@ static int parse_qwen3_w5_shortpath_kv_stream_entry(
     return 0;
 }
 
-static int qwen3_read_w5_shortpath_kv_stream_file(
+static int qwen3_read_memory_shortpath_kv_stream_file(
     const char *path,
     struct w4_qwen3_memory_decision_config *config)
 {
     FILE *fp;
-    char line[W4_QWEN3_W5_SHORTPATH_KV_STREAM_LINE_BYTES];
+    char line[QWEN3_MEMORY_SHORTPATH_KV_STREAM_LINE_BYTES];
     uint64_t count = 0;
 
     if (!str_nonempty(path)) {
@@ -6064,7 +6065,7 @@ static int qwen3_read_w5_shortpath_kv_stream_file(
         if (line[0] == '\0') {
             continue;
         }
-        if (parse_qwen3_w5_shortpath_kv_stream_entry(config, line, &count) != 0) {
+        if (parse_qwen3_memory_shortpath_kv_stream_entry(config, line, &count) != 0) {
             fclose(fp);
             return -1;
         }
@@ -6091,13 +6092,13 @@ static int qwen3_read_w5_shortpath_kv_stream_file(
     return 0;
 }
 
-static int parse_qwen3_w5_prefix_cache_kv_stream_entry(
+static int parse_qwen3_memory_prefix_cache_kv_stream_entry(
     struct w4_qwen3_memory_decision_config *config,
     const char *entry_text,
     uint64_t raw_index,
     uint64_t *count)
 {
-    char entry_copy[W4_QWEN3_W5_SHORTPATH_KV_STREAM_LINE_BYTES];
+    char entry_copy[QWEN3_MEMORY_SHORTPATH_KV_STREAM_LINE_BYTES];
     char *fields[18];
     char *save_field = NULL;
     char *field = NULL;
@@ -6107,10 +6108,10 @@ static int parse_qwen3_w5_prefix_cache_kv_stream_entry(
     if (!config || !entry_text || !count || entry_text[0] == '\0') {
         return 0;
     }
-    if (*count >= W4_QWEN3_W5_SHORTPATH_KV_STREAM_MAX) {
+    if (*count >= QWEN3_MEMORY_SHORTPATH_KV_STREAM_MAX) {
         fprintf(stderr,
                 "[w4_guest] fail qwen3 w5 prefix-cache kv stream too many entries max=%u\n",
-                (unsigned)W4_QWEN3_W5_SHORTPATH_KV_STREAM_MAX);
+                (unsigned)QWEN3_MEMORY_SHORTPATH_KV_STREAM_MAX);
         return -1;
     }
     if (strlen(entry_text) >= sizeof(entry_copy)) {
@@ -6271,12 +6272,12 @@ static int parse_qwen3_w5_prefix_cache_kv_stream_entry(
     return 0;
 }
 
-static int qwen3_read_w5_prefix_cache_kv_stream_file(
+static int qwen3_read_memory_prefix_cache_kv_stream_file(
     const char *path,
     struct w4_qwen3_memory_decision_config *config)
 {
     FILE *fp;
-    char line[W4_QWEN3_W5_SHORTPATH_KV_STREAM_LINE_BYTES];
+    char line[QWEN3_MEMORY_SHORTPATH_KV_STREAM_LINE_BYTES];
     uint64_t count = 0;
     uint64_t raw_count = 0;
 
@@ -6304,7 +6305,7 @@ static int qwen3_read_w5_prefix_cache_kv_stream_file(
         if (line[0] == '\0') {
             continue;
         }
-        if (parse_qwen3_w5_prefix_cache_kv_stream_entry(config,
+        if (parse_qwen3_memory_prefix_cache_kv_stream_entry(config,
                                                         line,
                                                         raw_count,
                                                         &count) != 0) {
@@ -6339,10 +6340,10 @@ static int qwen3_read_w5_prefix_cache_kv_stream_file(
     return 0;
 }
 
-static int qwen3_read_w5_boundary_registry_object(
+static int qwen3_read_memory_boundary_registry_object(
     struct w4_qwen3_memory_decision_config *config);
 
-static int parse_qwen3_w5_memory_decision_config(
+static int parse_qwen3_memory_decision_config(
     struct w4_qwen3_memory_decision_config *config)
 {
     bool has_shortpath;
@@ -6549,23 +6550,23 @@ static int parse_qwen3_w5_memory_decision_config(
     env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_STREAM",
                       config->shortpath_stream,
                       sizeof(config->shortpath_stream));
-    if (qwen3_read_w5_boundary_registry_object(config) != 0) {
+    if (qwen3_read_memory_boundary_registry_object(config) != 0) {
         return -1;
     }
     if (!config->boundary_registry_loaded &&
         str_nonempty(config->shortpath_stream) &&
-        parse_qwen3_w5_shortpath_stream_env(config) != 0) {
+        parse_qwen3_memory_shortpath_stream_env(config) != 0) {
         return -1;
     }
     if (!config->boundary_registry_loaded &&
         !str_nonempty(config->shortpath_stream) &&
-        qwen3_read_w5_shortpath_stream_file(shortpath_stream_path, config) != 0) {
+        qwen3_read_memory_shortpath_stream_file(shortpath_stream_path, config) != 0) {
         return -1;
     }
-    if (qwen3_read_w5_shortpath_kv_stream_file(shortpath_kv_stream_path, config) != 0) {
+    if (qwen3_read_memory_shortpath_kv_stream_file(shortpath_kv_stream_path, config) != 0) {
         return -1;
     }
-    if (qwen3_read_w5_prefix_cache_kv_stream_file(prefix_cache_kv_stream_path, config) != 0) {
+    if (qwen3_read_memory_prefix_cache_kv_stream_file(prefix_cache_kv_stream_path, config) != 0) {
         return -1;
     }
     if (config->shortpath_stream_count > 0) {
@@ -7521,7 +7522,7 @@ static void qwen3_bytes_to_hex(const uint8_t *bytes,
     out[bytes_len * 2U] = '\0';
 }
 
-static int qwen3_read_w5_boundary_registry_object(
+static int qwen3_read_memory_boundary_registry_object(
     struct w4_qwen3_memory_decision_config *config)
 {
     struct lingqu_obmm_object_ref_wire registry_ref;
@@ -7545,7 +7546,7 @@ static int qwen3_read_w5_boundary_registry_object(
     if (qwen3_read_object_ref_payload(&registry_ref, &payload, &payload_len) != 0) {
         return -1;
     }
-    if (payload_len < W4_QWEN3_W5_BOUNDARY_REGISTRY_HEADER_BYTES) {
+    if (payload_len < QWEN3_MEMORY_BOUNDARY_REGISTRY_HEADER_BYTES) {
         fprintf(stderr,
                 "[w4_guest] fail qwen3 w5 boundary registry payload truncated"
                 " bytes=%" PRIu64 "\n",
@@ -7558,12 +7559,12 @@ static int qwen3_read_w5_boundary_registry_object(
     header_bytes = qwen3_ref_read_u32_le(payload, 12);
     entry_bytes = qwen3_ref_read_u32_le(payload, 16);
     count = qwen3_ref_read_u64_le(payload, 24);
-    if (marker != W4_QWEN3_W5_BOUNDARY_REGISTRY_MARKER ||
-        version != W4_QWEN3_W5_BOUNDARY_REGISTRY_VERSION ||
-        header_bytes != W4_QWEN3_W5_BOUNDARY_REGISTRY_HEADER_BYTES ||
-        entry_bytes != W4_QWEN3_W5_BOUNDARY_REGISTRY_ENTRY_BYTES ||
+    if (marker != QWEN3_MEMORY_BOUNDARY_REGISTRY_MARKER ||
+        version != QWEN3_MEMORY_BOUNDARY_REGISTRY_VERSION ||
+        header_bytes != QWEN3_MEMORY_BOUNDARY_REGISTRY_HEADER_BYTES ||
+        entry_bytes != QWEN3_MEMORY_BOUNDARY_REGISTRY_ENTRY_BYTES ||
         count == 0 ||
-        count > W4_QWEN3_W5_SHORTPATH_STREAM_MAX ||
+        count > QWEN3_MEMORY_SHORTPATH_STREAM_MAX ||
         payload_len != header_bytes + count * entry_bytes ||
         (config->boundary_registry_expected_count != 0 &&
          count != config->boundary_registry_expected_count)) {
@@ -8144,7 +8145,7 @@ static int qwen3_memory_shortpath_validate_single_boundary_fingerprint(
     return 1;
 }
 
-static int qwen3_w5_memory_service_lookup_boundary(
+static int qwen3_memory_service_lookup_boundary(
     const struct w4_qwen3_memory_decision_config *config,
     uint32_t local_node,
     uint32_t cluster_node_count,
@@ -8425,7 +8426,7 @@ static int qwen3_boundary_controller_resolve_work_item(
            layer_end,
            runtime_forward->payload_bytes,
            runtime_forward->payload_checksum);
-    lookup_state = qwen3_w5_memory_service_lookup_boundary(
+    lookup_state = qwen3_memory_service_lookup_boundary(
         memory_config,
         dispatch_node,
         cluster_node_count,
@@ -9398,7 +9399,7 @@ int main(void)
             return 1;
         }
     }
-    if (parse_qwen3_w5_memory_decision_config(&qwen3_memory_decision_config) != 0) {
+    if (parse_qwen3_memory_decision_config(&qwen3_memory_decision_config) != 0) {
         return 1;
     }
     uapi_completion_timeout_ms = env_u64_or_default("SIM_W4_UAPI_COMPLETION_TIMEOUT_MS",

@@ -8,6 +8,8 @@ REPO_ROOT = ROOT.parents[1]
 SERVICE_DIR = ROOT / "components" / "mem_service"
 SERVICE_C = SERVICE_DIR / "mem_service.c"
 SERVICE_H = SERVICE_DIR / "mem_service.h"
+SERVICE_QWEN3_H = SERVICE_DIR / "mem_service_qwen3.h"
+SERVICE_RECORDS_INC = SERVICE_DIR / "mem_service_records.inc"
 GUEST_C = ROOT / "apps" / "llm_infer" / "llm_infer.c"
 BUILD_INITRAMFS = ROOT / "scripts" / "build_initramfs.sh"
 RUN_APP = ROOT / "initramfs" / "run_app"
@@ -65,7 +67,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertGreaterEqual(int(cluster_records.group(1)), 1024)
 
     def test_full_record_table_recycles_old_qwen3_runtime_records(self):
-        source = SERVICE_C.read_text()
+        source = SERVICE_C.read_text() + "\n" + SERVICE_RECORDS_INC.read_text()
 
         self.assertIn("MEM_SERVICE_QWEN3_RECORD_RETAIN_STEPS", source)
         self.assertIn("mem_service_recycle_qwen3_runtime_record", source)
@@ -73,6 +75,46 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn('strstr(key, "/step/")', source)
         self.assertIn("rec = mem_service_alloc_record(svc);", source)
         self.assertIn("rec = mem_service_recycle_qwen3_runtime_record(svc, key);", source)
+
+    def test_record_table_helpers_are_split_from_main_service_translation_unit(self):
+        source = SERVICE_C.read_text()
+        records = SERVICE_RECORDS_INC.read_text()
+
+        self.assertIn('#include "mem_service_records.inc"', source)
+        self.assertIn("mem_service_alloc_record", records)
+        self.assertIn("mem_service_find_record", records)
+        self.assertIn("mem_service_recycle_qwen3_runtime_record", records)
+        self.assertNotRegex(
+            source,
+            r"static struct mem_service_record \*mem_service_alloc_record"
+            r"\(struct mem_service \*svc\)\s*\{",
+        )
+
+    def test_qwen3_runtime_api_is_exposed_by_qwen3_adapter_header(self):
+        generic_header = SERVICE_H.read_text()
+        qwen3_header = SERVICE_QWEN3_H.read_text()
+        guest_source = GUEST_C.read_text()
+
+        self.assertIn('#include "components/mem_service/mem_service_qwen3.h"', guest_source)
+        self.assertNotIn("mem_service_obmm_service_v0_wait_runtime_range_input", generic_header)
+        self.assertNotIn("mem_service_obmm_service_v0_publish_runtime_range_output", generic_header)
+        self.assertNotIn("mem_service_obmm_service_v0_wait_engram", generic_header)
+        self.assertNotIn("MEM_SERVICE_OBMM_KIND_QWEN3_TOKEN_RESULT", generic_header)
+        self.assertIn("mem_service_obmm_service_v0_wait_runtime_range_input", qwen3_header)
+        self.assertIn("mem_service_obmm_service_v0_publish_runtime_range_output", qwen3_header)
+        self.assertIn("mem_service_obmm_service_v0_wait_engram", qwen3_header)
+        self.assertIn("MEM_SERVICE_OBMM_KIND_QWEN3_TOKEN_RESULT", qwen3_header)
+
+    def test_llm_infer_internal_memory_symbols_are_not_w5_named(self):
+        source = GUEST_C.read_text()
+
+        self.assertNotIn("W4_QWEN3_W5_", source)
+        self.assertNotIn("parse_qwen3_w5_", source)
+        self.assertNotIn("qwen3_read_w5_", source)
+        self.assertNotIn("qwen3_w5_memory_service_lookup_boundary", source)
+        self.assertIn("QWEN3_MEMORY_SHORTPATH_STREAM_MAX", source)
+        self.assertIn("parse_qwen3_memory_decision_config", source)
+        self.assertIn("qwen3_memory_service_lookup_boundary", source)
 
     def test_qwen3_kv_state_uses_tiered_block_spans(self):
         source = SERVICE_C.read_text()
