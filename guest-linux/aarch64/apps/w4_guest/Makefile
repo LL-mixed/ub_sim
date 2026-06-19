@@ -1,7 +1,7 @@
 CC = aarch64-linux-gnu-gcc
 CFLAGS ?= -O2 -Wall -Wextra -static
 ROOT := ../..
-MEM_SERVICE := $(ROOT)/components/mem_service/w4_kvcache_db_service.c
+MEM_SERVICE := $(ROOT)/components/mem_service/mem_service.c
 LLM_INFER := $(ROOT)/components/llm_infer/llm_infer.c
 
 all: linqu_w4_guest

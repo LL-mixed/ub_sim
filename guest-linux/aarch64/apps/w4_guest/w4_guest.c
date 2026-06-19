@@ -22,7 +22,7 @@
 #include "kernel_ub/include/uapi/ub/cdma/cdma_abi.h"
 #include "uburma_cmd_user_compat.h"
 #include "components/llm_infer/llm_infer.h"
-#include "components/mem_service/w4_kvcache_db_service.h"
+#include "components/mem_service/mem_service.h"
 
 #define DT_ROOT "/proc/device-tree"
 #define UBC_RESOURCE_BASE_FALLBACK 0x18000000000ULL
@@ -804,8 +804,8 @@ static uint64_t w4_hash_string(const char *value)
 }
 
 static int w4_guest_compute_roundtrip(const char *role,
-                                      const struct w4_db_block_ctx *ctx,
-                                      const struct w4_db_record *block_meta,
+                                      const struct mem_service_block_ctx *ctx,
+                                      const struct mem_service_record *block_meta,
                                       struct w4_compute_roundtrip *out)
 {
     uint64_t role_hash;
@@ -842,22 +842,22 @@ static int w4_guest_compute_roundtrip(const char *role,
 
 static int w4_resource_backed_db_cluster_assertions(const char *role, uint32_t cluster_node_count)
 {
-    struct w4_db_service svc;
-    struct w4_db_block_ctx primary_ctx;
-    struct w4_db_block_ctx aux_ctx;
-    struct w4_db_record primary;
-    struct w4_db_record aux;
-    struct w4_db_record prefix;
-    struct w4_db_record prefix_aux;
-    struct w4_db_record group;
-    struct w4_db_record remote_block;
-    struct w4_db_record remote_aux;
-    struct w4_db_record remote_prefix;
-    struct w4_db_record remote_prefix_aux;
-    struct w4_db_record remote_group;
-    struct w4_db_cluster_summary initial_summary;
-    struct w4_db_cluster_summary update_summary;
-    struct w4_db_cluster_summary handoff_summary;
+    struct mem_service svc;
+    struct mem_service_block_ctx primary_ctx;
+    struct mem_service_block_ctx aux_ctx;
+    struct mem_service_record primary;
+    struct mem_service_record aux;
+    struct mem_service_record prefix;
+    struct mem_service_record prefix_aux;
+    struct mem_service_record group;
+    struct mem_service_record remote_block;
+    struct mem_service_record remote_aux;
+    struct mem_service_record remote_prefix;
+    struct mem_service_record remote_prefix_aux;
+    struct mem_service_record remote_group;
+    struct mem_service_cluster_summary initial_summary;
+    struct mem_service_cluster_summary update_summary;
+    struct mem_service_cluster_summary handoff_summary;
     struct w4_compute_roundtrip roundtrip;
     char remote_request_id[64];
     char remote_block_hash[96];
@@ -933,41 +933,41 @@ static int w4_resource_backed_db_cluster_assertions(const char *role, uint32_t c
     snprintf(remote_prefix_group_id, sizeof(remote_prefix_group_id), "%s-prefix-0", remote_role);
     snprintf(remote_prefix_group_aux_id, sizeof(remote_prefix_group_aux_id), "%s-prefix-0-aux", remote_role);
     snprintf(remote_group_id, sizeof(remote_group_id), "%s-group-0", remote_role);
-    w4_db_build_block_key_from_hash(remote_block_hash, remote_block_key, sizeof(remote_block_key));
-    w4_db_build_block_key_from_hash(remote_block_hash_aux, remote_block_key_aux, sizeof(remote_block_key_aux));
-    w4_db_build_prefix_key_from_parts(remote_request_id,
+    mem_service_build_block_key_from_hash(remote_block_hash, remote_block_key, sizeof(remote_block_key));
+    mem_service_build_block_key_from_hash(remote_block_hash_aux, remote_block_key_aux, sizeof(remote_block_key_aux));
+    mem_service_build_prefix_key_from_parts(remote_request_id,
                                       remote_prefix_group_id,
                                       remote_prefix_key,
                                       sizeof(remote_prefix_key));
-    w4_db_build_prefix_key_from_parts(remote_request_id,
+    mem_service_build_prefix_key_from_parts(remote_request_id,
                                       remote_prefix_group_aux_id,
                                       remote_prefix_key_aux,
                                       sizeof(remote_prefix_key_aux));
-    w4_db_build_group_key_from_parts(remote_request_id,
+    mem_service_build_group_key_from_parts(remote_request_id,
                                      remote_group_id,
                                      remote_group_key,
                                      sizeof(remote_group_key));
 
-    if (w4_db_service_init(&svc, true, true, true) != 0 ||
-        w4_db_bootstrap_kvcache(&svc, &primary_ctx, &primary) != 0 ||
-        w4_db_bootstrap_kvcache(&svc, &aux_ctx, &aux) != 0 ||
-        w4_db_apply_block_result(&svc,
+    if (mem_service_init(&svc, true, true, true) != 0 ||
+        mem_service_bootstrap_kvcache(&svc, &primary_ctx, &primary) != 0 ||
+        mem_service_bootstrap_kvcache(&svc, &aux_ctx, &aux) != 0 ||
+        mem_service_apply_block_result(&svc,
                                  &aux_ctx,
                                  aux.last_result_segment + 0x40ULL,
-                                 W4_KVCACHE_STATE_RELOADED,
+                                 MEM_SERVICE_KVCACHE_STATE_RELOADED,
                                  &aux) != 0 ||
-        w4_db_update_prefix_metadata(&svc, &aux_ctx, &aux, &prefix_aux) != 0 ||
-        w4_db_get_prefix_group_metadata(&svc, &primary_ctx, &group) != 0) {
+        mem_service_update_prefix_metadata(&svc, &aux_ctx, &aux, &prefix_aux) != 0 ||
+        mem_service_get_prefix_group_metadata(&svc, &primary_ctx, &group) != 0) {
         printf("[w4_guest] gap guest_db_service_cluster=resource_backed_bootstrap_failed\n");
         return -1;
     }
-    if (w4_db_obmm_service_v0_ensure_cluster_runtime(placement_node,
+    if (mem_service_obmm_service_v0_ensure_cluster_runtime(placement_node,
                                                      cluster_node_count) != 0) {
         printf("[w4_guest] gap guest_db_service_cluster=resource_backed_runtime_bootstrap_failed\n");
         return -1;
     }
 
-    if (w4_db_publish_observe_cluster(&svc, &primary, &initial_summary) != 0 ||
+    if (mem_service_publish_observe_cluster(&svc, &primary, &initial_summary) != 0 ||
         !initial_summary.ready ||
         initial_summary.peer_block_count_floor < 2 ||
         initial_summary.peer_prefix_count_floor < 1 ||
@@ -977,13 +977,13 @@ static int w4_resource_backed_db_cluster_assertions(const char *role, uint32_t c
     }
 
     if (w4_guest_compute_roundtrip(role, &primary_ctx, &primary, &roundtrip) != 0 ||
-        w4_db_apply_block_result(&svc,
+        mem_service_apply_block_result(&svc,
                                  &primary_ctx,
                                  roundtrip.output_segment,
-                                 W4_KVCACHE_STATE_RELOADED,
+                                 MEM_SERVICE_KVCACHE_STATE_RELOADED,
                                  &primary) != 0 ||
-        w4_db_update_prefix_metadata(&svc, &primary_ctx, &primary, &prefix) != 0 ||
-        w4_db_publish_observe_cluster(&svc, &primary, &update_summary) != 0 ||
+        mem_service_update_prefix_metadata(&svc, &primary_ctx, &primary, &prefix) != 0 ||
+        mem_service_publish_observe_cluster(&svc, &primary, &update_summary) != 0 ||
         !update_summary.ready ||
         !update_summary.placement_coherent ||
         !update_summary.state_coherent ||
@@ -1000,14 +1000,14 @@ static int w4_resource_backed_db_cluster_assertions(const char *role, uint32_t c
         return -1;
     }
 
-    if (w4_db_handoff_block_owner(&svc,
+    if (mem_service_handoff_block_owner(&svc,
                                   &primary_ctx,
                                   w4_cluster_next_owner(primary.placement_node, cluster_node_count),
                                   primary.placement_level,
                                   w4_cluster_handoff_hot(primary.hot_segment_id),
                                   &primary) != 0 ||
-        w4_db_update_prefix_metadata(&svc, &primary_ctx, &primary, &prefix) != 0 ||
-        w4_db_publish_observe_cluster(&svc, &primary, &handoff_summary) != 0 ||
+        mem_service_update_prefix_metadata(&svc, &primary_ctx, &primary, &prefix) != 0 ||
+        mem_service_publish_observe_cluster(&svc, &primary, &handoff_summary) != 0 ||
         !handoff_summary.ready ||
         !handoff_summary.placement_coherent ||
         !handoff_summary.state_coherent ||
@@ -1024,22 +1024,22 @@ static int w4_resource_backed_db_cluster_assertions(const char *role, uint32_t c
         return -1;
     }
 
-    if (w4_db_cluster_fetch_record(&svc, remote_block_key, &remote_block) != 0 ||
-        w4_db_cluster_fetch_record(&svc, remote_block_key_aux, &remote_aux) != 0 ||
-        w4_db_cluster_fetch_record(&svc, remote_prefix_key, &remote_prefix) != 0 ||
-        w4_db_cluster_fetch_record(&svc, remote_prefix_key_aux, &remote_prefix_aux) != 0 ||
-        w4_db_cluster_fetch_record(&svc, remote_group_key, &remote_group) != 0 ||
-        remote_block.state != W4_KVCACHE_STATE_RELOADED ||
-        remote_aux.state != W4_KVCACHE_STATE_RELOADED ||
-        !w4_db_prefix_matches_block_meta(&remote_prefix, &remote_block) ||
-        !w4_db_prefix_matches_block_meta(&remote_prefix_aux, &remote_aux) ||
-        !w4_db_group_covers_blocks(&remote_group, &remote_block, &remote_aux)) {
+    if (mem_service_cluster_fetch_record(&svc, remote_block_key, &remote_block) != 0 ||
+        mem_service_cluster_fetch_record(&svc, remote_block_key_aux, &remote_aux) != 0 ||
+        mem_service_cluster_fetch_record(&svc, remote_prefix_key, &remote_prefix) != 0 ||
+        mem_service_cluster_fetch_record(&svc, remote_prefix_key_aux, &remote_prefix_aux) != 0 ||
+        mem_service_cluster_fetch_record(&svc, remote_group_key, &remote_group) != 0 ||
+        remote_block.state != MEM_SERVICE_KVCACHE_STATE_RELOADED ||
+        remote_aux.state != MEM_SERVICE_KVCACHE_STATE_RELOADED ||
+        !mem_service_prefix_matches_block_meta(&remote_prefix, &remote_block) ||
+        !mem_service_prefix_matches_block_meta(&remote_prefix_aux, &remote_aux) ||
+        !mem_service_group_covers_blocks(&remote_group, &remote_block, &remote_aux)) {
         printf("[w4_guest] gap guest_db_service_cluster=resource_backed_remote_fetch_incoherent remote=%s\n",
                remote_role);
         return -1;
     }
 
-    if (w4_db_obmm_service_v0_publish_resolve(&svc,
+    if (mem_service_obmm_service_v0_publish_resolve(&svc,
                                               placement_node,
                                               cluster_node_count) != 0) {
         printf("[w4_guest] gap guest_obmm_service_v0=payload_backing_resolve_failed remote=%s\n",
@@ -3377,7 +3377,7 @@ static uint64_t qwen3_terminal_token_candidate_text_checksum(
 }
 
 static int qwen3_engram_select_and_publish_step(
-    struct w4_db_service *db_service,
+    struct mem_service *db_service,
     const struct w4_qwen3_engram_config *config,
     uint32_t local_node,
     uint32_t cluster_node_count,
@@ -3409,7 +3409,7 @@ static int qwen3_engram_select_and_publish_step(
         memset(timing, 0, sizeof(*timing));
     }
     stage_start_ms = monotonic_ms();
-    if (w4_db_obmm_service_v0_wait_engram_candidates(
+    if (mem_service_obmm_service_v0_wait_engram_candidates(
             db_service,
             decode_step,
             600000,
@@ -3501,7 +3501,7 @@ static int qwen3_engram_select_and_publish_step(
            config->history_window,
            resolved_candidate_checksum);
     stage_start_ms = monotonic_ms();
-    if (w4_db_obmm_service_v0_publish_engram_step(
+    if (mem_service_obmm_service_v0_publish_engram_step(
             db_service,
             local_node,
             cluster_node_count,
@@ -4203,7 +4203,7 @@ static int verify_dispatch_payload(volatile uint8_t *ep_mmio,
 
         resolve_role(role, sizeof(role));
         if (!w4_cluster_role_index(role, cluster_node_count, &dispatch_node) ||
-            w4_db_qwen3_layer_range_for_node(dispatch_node,
+            mem_service_qwen3_layer_range_for_node(dispatch_node,
                                              cluster_node_count,
                                              &layer_start,
                                              &layer_end,
@@ -8566,7 +8566,7 @@ qwen3_memory_shortpath_kv_entry_for_local_range(
 }
 
 static int qwen3_memory_shortpath_materialize_local_kv_state(
-    struct w4_db_service *db_service,
+    struct mem_service *db_service,
     const struct w4_qwen3_memory_decision_config *config,
     uint32_t local_node,
     uint32_t cluster_node_count,
@@ -8629,7 +8629,7 @@ static int qwen3_memory_shortpath_materialize_local_kv_state(
         free(payload);
         return -1;
     }
-    rc = w4_db_obmm_service_v0_publish_runtime_range_kv_state(db_service,
+    rc = mem_service_obmm_service_v0_publish_runtime_range_kv_state(db_service,
                                                               local_node,
                                                               cluster_node_count,
                                                               decode_step,
@@ -9065,22 +9065,22 @@ int main(void)
     char cdma_path[128];
     const char *block_candidate = "missing";
     const char *dispatch_candidate = "missing";
-    struct w4_db_service db_service;
-    struct w4_db_record resolved_block_meta;
-    struct w4_db_record resolved_block_meta_aux;
-    struct w4_db_record resolved_prefix_meta;
-    struct w4_db_record resolved_prefix_meta_aux;
-    struct w4_db_record resolved_prefix_group;
-    struct w4_db_record remote_block_meta;
-    struct w4_db_record remote_block_meta_aux;
-    struct w4_db_record remote_prefix_meta;
-    struct w4_db_record remote_prefix_meta_aux;
-    struct w4_db_record remote_prefix_group;
-    struct w4_db_block_ctx db_block_ctx;
-    struct w4_db_block_ctx db_block_ctx_aux;
-    struct w4_db_cluster_summary db_cluster_summary;
-    struct w4_db_cluster_summary db_cluster_update_summary;
-    struct w4_db_cluster_summary db_cluster_handoff_summary;
+    struct mem_service db_service;
+    struct mem_service_record resolved_block_meta;
+    struct mem_service_record resolved_block_meta_aux;
+    struct mem_service_record resolved_prefix_meta;
+    struct mem_service_record resolved_prefix_meta_aux;
+    struct mem_service_record resolved_prefix_group;
+    struct mem_service_record remote_block_meta;
+    struct mem_service_record remote_block_meta_aux;
+    struct mem_service_record remote_prefix_meta;
+    struct mem_service_record remote_prefix_meta_aux;
+    struct mem_service_record remote_prefix_group;
+    struct mem_service_block_ctx db_block_ctx;
+    struct mem_service_block_ctx db_block_ctx_aux;
+    struct mem_service_cluster_summary db_cluster_summary;
+    struct mem_service_cluster_summary db_cluster_update_summary;
+    struct mem_service_cluster_summary db_cluster_handoff_summary;
     struct w4_compute_roundtrip compute_roundtrip;
     struct w4_qwen3_range_runtime_forward runtime_forward = {0};
     char remote_block_key[96];
@@ -9108,7 +9108,7 @@ int main(void)
     size_t ri;
     bool require_uapi_resource = false;
     bool enable_db_cluster = false;
-    uint64_t kvcache_db_bytes = (uint64_t)sizeof(struct w4_db_record);
+    uint64_t kvcache_db_bytes = (uint64_t)sizeof(struct mem_service_record);
     uint64_t guest_decode_step = 0;
     uint64_t guest_decode_steps = 1;
     uint64_t guest_decode_step_limit = 1;
@@ -9198,7 +9198,7 @@ int main(void)
     bool qwen3_step_terminal_observed = false;
     bool qwen3_shortpath_terminal_committed = false;
     bool qwen3_pre_resolved_range_input = false;
-    struct w4_db_object_payload_view qwen3_pre_resolved_range_input_view;
+    struct mem_service_object_payload_view qwen3_pre_resolved_range_input_view;
     struct w4_guest_supernode_clock supernode_clock;
     struct w4_qwen3_memory_decision_config qwen3_memory_decision_config;
     struct w4_qwen3_sampler_config qwen3_sampler_config;
@@ -9217,7 +9217,7 @@ int main(void)
     memset(&qwen3_engram_config, 0, sizeof(qwen3_engram_config));
     cluster_observer_mode = env_bool_is_one("LINQU_W4_ALLOW_OBSERVER_ONLY");
     require_uapi_resource = env_bool_is_one("LINQU_W4_REQUIRE_UAPI_RESOURCE");
-    enable_db_cluster = env_bool_is_one("LINQU_W4_DB_CLUSTER");
+    enable_db_cluster = env_bool_is_one("LINQU_MEM_SERVICE_CLUSTER");
     resource_assertions_enabled = env_bool_is_one("SIM_W4_RESOURCE_ASSERTIONS");
     guest_decode_step = env_u64_or_default("SIM_QWEN3_GUEST_DECODE_STEP", 0);
     guest_decode_steps = env_u64_or_default("SIM_QWEN3_GUEST_DECODE_STEPS", 1);
@@ -9570,8 +9570,8 @@ int main(void)
     snprintf(path, sizeof(path), "/w4/%s/tail-block-0", role);
     snprintf(block, sizeof(block), "w4-%s-block-0", role);
     snprintf(block_aux, sizeof(block_aux), "w4-%s-block-1", role);
-    w4_db_build_block_key_from_hash(block, key, sizeof(key));
-    w4_db_build_block_key_from_hash(block_aux, key_aux, sizeof(key_aux));
+    mem_service_build_block_key_from_hash(block, key, sizeof(key));
+    mem_service_build_block_key_from_hash(block_aux, key_aux, sizeof(key_aux));
     if (key[0] == '\0' || key_aux[0] == '\0') {
         fprintf(stderr, "[w4_guest] fail db_block_key_overflow role=%s\n", role);
         return 1;
@@ -9692,16 +9692,16 @@ int main(void)
             snprintf(remote_prefix_group_id, sizeof(remote_prefix_group_id), "%s-prefix-0", remote_role);
             snprintf(remote_prefix_group_aux_id, sizeof(remote_prefix_group_aux_id), "%s-prefix-0-aux", remote_role);
             snprintf(remote_group_id, sizeof(remote_group_id), "%s-group-0", remote_role);
-            w4_db_build_block_key_from_hash(remote_block_hash, remote_block_key, sizeof(remote_block_key));
-            w4_db_build_prefix_key_from_parts(remote_request_id,
+            mem_service_build_block_key_from_hash(remote_block_hash, remote_block_key, sizeof(remote_block_key));
+            mem_service_build_prefix_key_from_parts(remote_request_id,
                                               remote_prefix_group_id,
                                               remote_prefix_key,
                                               sizeof(remote_prefix_key));
-            w4_db_build_prefix_key_from_parts(remote_request_id,
+            mem_service_build_prefix_key_from_parts(remote_request_id,
                                               remote_prefix_group_aux_id,
                                               remote_prefix_key_aux,
                                               sizeof(remote_prefix_key_aux));
-            w4_db_build_group_key_from_parts(remote_request_id,
+            mem_service_build_group_key_from_parts(remote_request_id,
                                              remote_group_id,
                                              remote_group_key,
                                              sizeof(remote_group_key));
@@ -9713,16 +9713,16 @@ int main(void)
             db_block_ctx_aux.placement_level = 2U;
             db_block_ctx_aux.hot_segment_id = db_block_ctx.hot_segment_id + 0x100ULL;
             db_block_ctx_aux.result_segment_id = db_block_ctx_aux.hot_segment_id + 0x80ULL;
-            if (w4_db_service_init(&db_service, true, true, true) == 0 &&
-                w4_db_bootstrap_kvcache(&db_service, &db_block_ctx, &resolved_block_meta) == 0 &&
-                w4_db_bootstrap_kvcache(&db_service, &db_block_ctx_aux, &resolved_block_meta_aux) == 0 &&
-                w4_db_apply_block_result(&db_service,
+            if (mem_service_init(&db_service, true, true, true) == 0 &&
+                mem_service_bootstrap_kvcache(&db_service, &db_block_ctx, &resolved_block_meta) == 0 &&
+                mem_service_bootstrap_kvcache(&db_service, &db_block_ctx_aux, &resolved_block_meta_aux) == 0 &&
+                mem_service_apply_block_result(&db_service,
                                          &db_block_ctx_aux,
                                          resolved_block_meta_aux.last_result_segment + 0x40ULL,
-                                         W4_KVCACHE_STATE_RELOADED,
+                                         MEM_SERVICE_KVCACHE_STATE_RELOADED,
                                          &resolved_block_meta_aux) == 0) {
                 db_service_ready = true;
-                if (w4_db_update_prefix_metadata(&db_service,
+                if (mem_service_update_prefix_metadata(&db_service,
                                                  &db_block_ctx_aux,
                                                  &resolved_block_meta_aux,
                                                  &resolved_prefix_meta_aux) != 0) {
@@ -9733,12 +9733,12 @@ int main(void)
                            resolved_prefix_meta_aux.key,
                            resolved_prefix_meta_aux.block_hash,
                            resolved_prefix_meta_aux.hot_segment_id,
-                           w4_kvcache_state_name(resolved_prefix_meta_aux.state),
+                           mem_service_kvcache_state_name(resolved_prefix_meta_aux.state),
                            resolved_prefix_meta_aux.version,
                            resolved_prefix_meta_aux.last_result_segment);
                 }
                 if (db_service_ready &&
-                    w4_db_get_prefix_group_metadata(&db_service,
+                    mem_service_get_prefix_group_metadata(&db_service,
                                                     &db_block_ctx,
                                                     &resolved_prefix_group) != 0) {
                     printf("[w4_guest] gap guest_db_service_group=metadata_group_lookup_failed\n");
@@ -9761,7 +9761,7 @@ int main(void)
                        resolved_block_meta.placement_node,
                        resolved_block_meta.placement_level,
                        resolved_block_meta.hot_segment_id,
-                       w4_kvcache_state_name(resolved_block_meta.state),
+                       mem_service_kvcache_state_name(resolved_block_meta.state),
                        resolved_block_meta.version,
                        resolved_block_meta.last_result_segment);
                 printf("[w4_guest] stage db_service_lookup_aux key=%s request=%s prefix=%s block=%s placement_node=%u placement_level=%u hot_segment=0x%016" PRIx64 " state=%s version=%" PRIu64 " last_result_segment=0x%016" PRIx64 "\n",
@@ -9772,10 +9772,10 @@ int main(void)
                        resolved_block_meta_aux.placement_node,
                        resolved_block_meta_aux.placement_level,
                        resolved_block_meta_aux.hot_segment_id,
-                       w4_kvcache_state_name(resolved_block_meta_aux.state),
+                       mem_service_kvcache_state_name(resolved_block_meta_aux.state),
                        resolved_block_meta_aux.version,
                        resolved_block_meta_aux.last_result_segment);
-                if (w4_db_publish_observe_cluster(&db_service,
+                if (mem_service_publish_observe_cluster(&db_service,
                                                   &resolved_block_meta,
                                                   &db_cluster_summary) != 0) {
                     printf("[w4_guest] gap guest_db_service_cluster=metadata_publish_failed\n");
@@ -9786,10 +9786,10 @@ int main(void)
                                                        &compute_roundtrip) != 0) {
                     printf("[w4_guest] gap guest_compute_roundtrip=payload_invalid\n");
                     db_service_ready = false;
-                } else if (w4_db_apply_block_result(&db_service,
+                } else if (mem_service_apply_block_result(&db_service,
                                                     &db_block_ctx,
                                                     compute_roundtrip.output_segment,
-                                                    W4_KVCACHE_STATE_RELOADED,
+                                                    MEM_SERVICE_KVCACHE_STATE_RELOADED,
                                                     &resolved_block_meta) != 0) {
                     printf("[w4_guest] gap guest_db_service_update=metadata_result_update_failed\n");
                     db_service_ready = false;
@@ -9798,10 +9798,10 @@ int main(void)
                            resolved_block_meta.key,
                            compute_roundtrip.output_segment,
                            compute_roundtrip.output_checksum);
-                    int stale_rc = w4_db_apply_block_result(&db_service,
+                    int stale_rc = mem_service_apply_block_result(&db_service,
                                                             &db_block_ctx,
                                                             resolved_block_meta.last_result_segment - 0x40ULL,
-                                                            W4_KVCACHE_STATE_HOT,
+                                                            MEM_SERVICE_KVCACHE_STATE_HOT,
                                                             &resolved_block_meta_aux);
                     if (stale_rc != 1) {
                         printf("[w4_guest] gap guest_db_service_update=stale_result_accepted\n");
@@ -9816,10 +9816,10 @@ int main(void)
                 if (db_service_ready) {
                     printf("[w4_guest] stage db_service_update_ok key=%s state=%s version=%" PRIu64 " last_result_segment=0x%016" PRIx64 "\n",
                            resolved_block_meta.key,
-                           w4_kvcache_state_name(resolved_block_meta.state),
+                           mem_service_kvcache_state_name(resolved_block_meta.state),
                            resolved_block_meta.version,
                            resolved_block_meta.last_result_segment);
-                    if (db_service_ready && w4_db_update_prefix_metadata(&db_service,
+                    if (db_service_ready && mem_service_update_prefix_metadata(&db_service,
                                                                          &db_block_ctx,
                                                                          &resolved_block_meta,
                                                                          &resolved_prefix_meta) != 0) {
@@ -9830,16 +9830,16 @@ int main(void)
                                resolved_prefix_meta.key,
                                resolved_prefix_meta.block_hash,
                                resolved_prefix_meta.hot_segment_id,
-                               w4_kvcache_state_name(resolved_prefix_meta.state),
+                               mem_service_kvcache_state_name(resolved_prefix_meta.state),
                                resolved_prefix_meta.version,
                                resolved_prefix_meta.last_result_segment);
                         {
-                            struct w4_db_record stale_prefix_source = resolved_block_meta;
+                            struct mem_service_record stale_prefix_source = resolved_block_meta;
                             int stale_prefix_rc;
 
                             stale_prefix_source.last_result_segment -= 0x40ULL;
-                            stale_prefix_source.state = W4_KVCACHE_STATE_HOT;
-                            stale_prefix_rc = w4_db_update_prefix_metadata(&db_service,
+                            stale_prefix_source.state = MEM_SERVICE_KVCACHE_STATE_HOT;
+                            stale_prefix_rc = mem_service_update_prefix_metadata(&db_service,
                                                                            &db_block_ctx,
                                                                            &stale_prefix_source,
                                                                            &resolved_prefix_meta);
@@ -9854,7 +9854,7 @@ int main(void)
                             }
                         }
                     }
-                    if (db_service_ready && w4_db_publish_observe_cluster(&db_service,
+                    if (db_service_ready && mem_service_publish_observe_cluster(&db_service,
                                                       &resolved_block_meta,
                                                       &db_cluster_update_summary) != 0) {
                         printf("[w4_guest] gap guest_db_service_cluster=metadata_update_failed\n");
@@ -9867,7 +9867,7 @@ int main(void)
                                db_cluster_update_summary.peer_block_count_floor >= 2) {
                         cluster_coherent = true;
                         printf("[w4_guest] stage db_service_cluster=metadata_coherent state=%s version=%" PRIu64 " peer_version_floor=%" PRIu64 " peer_result_floor=0x%016" PRIx64 " peer_prefix_version_floor=%" PRIu64 " peer_prefix_result_floor=0x%016" PRIx64 " peer_block_count_floor=%u peer_prefix_count_floor=%u peer_group_count_floor=%u placement=%s state_match=%s peers=%u\n",
-                               w4_kvcache_state_name(resolved_block_meta.state),
+                               mem_service_kvcache_state_name(resolved_block_meta.state),
                                resolved_block_meta.version,
                                db_cluster_update_summary.peer_version_floor,
                                db_cluster_update_summary.peer_result_floor,
@@ -9884,7 +9884,7 @@ int main(void)
                         db_service_ready = false;
                     }
                     if (db_service_ready && cluster_coherent) {
-                        if (w4_db_rebind_block_view(&db_service,
+                        if (mem_service_rebind_block_view(&db_service,
                                                     &db_block_ctx,
                                                     resolved_block_meta.hot_segment_id + 0x200ULL,
                                                     resolved_block_meta.placement_level,
@@ -9898,7 +9898,7 @@ int main(void)
                                    resolved_block_meta.placement_level,
                                    resolved_block_meta.version);
                         }
-                        if (db_service_ready && w4_db_update_prefix_metadata(&db_service,
+                        if (db_service_ready && mem_service_update_prefix_metadata(&db_service,
                                                                              &db_block_ctx,
                                                                              &resolved_block_meta,
                                                                              &resolved_prefix_meta) != 0) {
@@ -9909,11 +9909,11 @@ int main(void)
                                    resolved_prefix_meta.key,
                                    resolved_prefix_meta.block_hash,
                                    resolved_prefix_meta.hot_segment_id,
-                                   w4_kvcache_state_name(resolved_prefix_meta.state),
+                                   mem_service_kvcache_state_name(resolved_prefix_meta.state),
                                    resolved_prefix_meta.version);
                         }
                         if (db_service_ready &&
-                            w4_db_handoff_block_owner(&db_service,
+                            mem_service_handoff_block_owner(&db_service,
                                                       &db_block_ctx,
                                                       w4_cluster_next_owner(db_block_ctx.placement_node,
                                                                             cluster_node_count),
@@ -9930,7 +9930,7 @@ int main(void)
                                    resolved_block_meta.hot_segment_id,
                                    resolved_block_meta.version);
                         }
-                        if (db_service_ready && w4_db_update_prefix_metadata(&db_service,
+                        if (db_service_ready && mem_service_update_prefix_metadata(&db_service,
                                                                              &db_block_ctx,
                                                                              &resolved_block_meta,
                                                                              &resolved_prefix_meta) != 0) {
@@ -9941,10 +9941,10 @@ int main(void)
                                    resolved_prefix_meta.key,
                                    resolved_prefix_meta.block_hash,
                                    resolved_prefix_meta.hot_segment_id,
-                                   w4_kvcache_state_name(resolved_prefix_meta.state),
+                                   mem_service_kvcache_state_name(resolved_prefix_meta.state),
                                    resolved_prefix_meta.version);
                         }
-                        if (db_service_ready && w4_db_publish_observe_cluster(&db_service,
+                        if (db_service_ready && mem_service_publish_observe_cluster(&db_service,
                                                                               &resolved_block_meta,
                                                                               &db_cluster_handoff_summary) != 0) {
                             printf("[w4_guest] gap guest_db_service_handoff=metadata_cluster_failed\n");
@@ -9969,10 +9969,10 @@ int main(void)
                             db_service_ready = false;
                         }
                         if (db_service_ready) {
-                            int stale_owner_rc = w4_db_apply_block_result(&db_service,
+                            int stale_owner_rc = mem_service_apply_block_result(&db_service,
                                                                           &db_block_ctx,
                                                                           resolved_block_meta.last_result_segment + 0x40ULL,
-                                                                          W4_KVCACHE_STATE_RELOADED,
+                                                                          MEM_SERVICE_KVCACHE_STATE_RELOADED,
                                                                           &resolved_block_meta_aux);
                             if (stale_owner_rc != 2) {
                                 printf("[w4_guest] gap guest_db_service_handoff=stale_owner_accepted\n");
@@ -9983,35 +9983,35 @@ int main(void)
                                        resolved_block_meta.version);
                             }
                         }
-                        if (db_service_ready && w4_db_cluster_fetch_record(&db_service,
+                        if (db_service_ready && mem_service_cluster_fetch_record(&db_service,
                                                                           remote_block_key,
                                                                           &remote_block_meta) != 0) {
                             printf("[w4_guest] gap guest_db_service_remote=metadata_fetch_failed key=%s\n",
                                    remote_block_key);
                             db_service_ready = false;
-                        } else if (db_service_ready && w4_db_cluster_fetch_record(&db_service,
+                        } else if (db_service_ready && mem_service_cluster_fetch_record(&db_service,
                                                                                   remote_prefix_key,
                                                                                   &remote_prefix_meta) != 0) {
                             printf("[w4_guest] gap guest_db_service_remote=metadata_fetch_failed key=%s\n",
                                    remote_prefix_key);
                             db_service_ready = false;
-                        } else if (db_service_ready && w4_db_cluster_fetch_record(&db_service,
+                        } else if (db_service_ready && mem_service_cluster_fetch_record(&db_service,
                                                                                   remote_prefix_key_aux,
                                                                                   &remote_prefix_meta_aux) != 0) {
                             printf("[w4_guest] gap guest_db_service_remote=metadata_fetch_failed key=%s\n",
                                    remote_prefix_key_aux);
                             db_service_ready = false;
-                        } else if (db_service_ready && w4_db_cluster_fetch_record(&db_service,
+                        } else if (db_service_ready && mem_service_cluster_fetch_record(&db_service,
                                                                                   remote_group_key,
                                                                                   &remote_prefix_group) != 0) {
                             printf("[w4_guest] gap guest_db_service_remote=metadata_fetch_failed key=%s\n",
                                    remote_group_key);
                             db_service_ready = false;
                         } else {
-                            w4_db_build_block_key_from_hash(remote_prefix_meta_aux.block_hash,
+                            mem_service_build_block_key_from_hash(remote_prefix_meta_aux.block_hash,
                                                             remote_block_key_aux,
                                                             sizeof(remote_block_key_aux));
-                            if (w4_db_cluster_fetch_record(&db_service,
+                            if (mem_service_cluster_fetch_record(&db_service,
                                                            remote_block_key_aux,
                                                            &remote_block_meta_aux) != 0) {
                                 printf("[w4_guest] gap guest_db_service_remote=metadata_fetch_failed key=%s\n",
@@ -10021,15 +10021,15 @@ int main(void)
                         }
                         if (db_service_ready &&
                             (strncmp(remote_block_meta.key, remote_block_key, sizeof(remote_block_meta.key)) != 0 ||
-                             remote_block_meta.state != W4_KVCACHE_STATE_RELOADED ||
+                             remote_block_meta.state != MEM_SERVICE_KVCACHE_STATE_RELOADED ||
                              remote_block_meta.hot_segment_id == 0 ||
                              remote_block_meta.last_result_segment == 0 ||
                              strncmp(remote_prefix_meta.key, remote_prefix_key, sizeof(remote_prefix_meta.key)) != 0 ||
-                             !w4_db_prefix_matches_block_meta(&remote_prefix_meta, &remote_block_meta) ||
+                             !mem_service_prefix_matches_block_meta(&remote_prefix_meta, &remote_block_meta) ||
                              strncmp(remote_prefix_meta_aux.key, remote_prefix_key_aux, sizeof(remote_prefix_meta_aux.key)) != 0 ||
-                             !w4_db_prefix_matches_block_meta(&remote_prefix_meta_aux, &remote_block_meta_aux) ||
+                             !mem_service_prefix_matches_block_meta(&remote_prefix_meta_aux, &remote_block_meta_aux) ||
                              strncmp(remote_prefix_group.key, remote_group_key, sizeof(remote_prefix_group.key)) != 0 ||
-                             !w4_db_group_covers_blocks(&remote_prefix_group,
+                             !mem_service_group_covers_blocks(&remote_prefix_group,
                                                         &remote_block_meta,
                                                         &remote_block_meta_aux))) {
                             printf("[w4_guest] gap guest_db_service_remote=metadata_incoherent key=%s prefix=%s\n",
@@ -10040,7 +10040,7 @@ int main(void)
                             remote_metadata_ready = true;
                             printf("[w4_guest] stage db_service_remote_lookup key=%s state=%s version=%" PRIu64 " placement_node=%u hot_segment=0x%016" PRIx64 " last_result_segment=0x%016" PRIx64 "\n",
                                    remote_block_meta.key,
-                                   w4_kvcache_state_name(remote_block_meta.state),
+                                   mem_service_kvcache_state_name(remote_block_meta.state),
                                    remote_block_meta.version,
                                    remote_block_meta.placement_node,
                                    remote_block_meta.hot_segment_id,
@@ -10049,17 +10049,17 @@ int main(void)
                                    remote_prefix_meta.key,
                                    remote_prefix_meta.block_hash,
                                    remote_prefix_meta.hot_segment_id,
-                                   w4_kvcache_state_name(remote_prefix_meta.state),
+                                   mem_service_kvcache_state_name(remote_prefix_meta.state),
                                    remote_prefix_meta.version);
                             printf("[w4_guest] stage db_service_remote_prefix_aux_lookup key=%s block=%s hot_segment=0x%016" PRIx64 " state=%s version=%" PRIu64 "\n",
                                    remote_prefix_meta_aux.key,
                                    remote_prefix_meta_aux.block_hash,
                                    remote_prefix_meta_aux.hot_segment_id,
-                                   w4_kvcache_state_name(remote_prefix_meta_aux.state),
+                                   mem_service_kvcache_state_name(remote_prefix_meta_aux.state),
                                    remote_prefix_meta_aux.version);
                             printf("[w4_guest] stage db_service_remote_lookup_aux key=%s state=%s version=%" PRIu64 " placement_node=%u hot_segment=0x%016" PRIx64 " last_result_segment=0x%016" PRIx64 "\n",
                                    remote_block_meta_aux.key,
-                                   w4_kvcache_state_name(remote_block_meta_aux.state),
+                                   mem_service_kvcache_state_name(remote_block_meta_aux.state),
                                    remote_block_meta_aux.version,
                                    remote_block_meta_aux.placement_node,
                                    remote_block_meta_aux.hot_segment_id,
@@ -10155,29 +10155,29 @@ int main(void)
             snprintf(remote_prefix_group_id, sizeof(remote_prefix_group_id), "%s-prefix-0", remote_role);
             snprintf(remote_prefix_group_aux_id, sizeof(remote_prefix_group_aux_id), "%s-prefix-0-aux", remote_role);
             snprintf(remote_group_id, sizeof(remote_group_id), "%s-group-0", remote_role);
-            w4_db_build_block_key_from_hash(remote_block_hash, remote_block_key, sizeof(remote_block_key));
-            w4_db_build_prefix_key_from_parts(remote_request_id,
+            mem_service_build_block_key_from_hash(remote_block_hash, remote_block_key, sizeof(remote_block_key));
+            mem_service_build_prefix_key_from_parts(remote_request_id,
                                               remote_prefix_group_id,
                                               remote_prefix_key,
                                               sizeof(remote_prefix_key));
-            w4_db_build_prefix_key_from_parts(remote_request_id,
+            mem_service_build_prefix_key_from_parts(remote_request_id,
                                               remote_prefix_group_aux_id,
                                               remote_prefix_key_aux,
                                               sizeof(remote_prefix_key_aux));
-            w4_db_build_group_key_from_parts(remote_request_id,
+            mem_service_build_group_key_from_parts(remote_request_id,
                                              remote_group_id,
                                              remote_group_key,
                                              sizeof(remote_group_key));
-            if (w4_db_service_init(&db_service, true, true, true) == 0 &&
-                w4_db_bootstrap_kvcache(&db_service, &db_block_ctx, &resolved_block_meta) == 0 &&
-                w4_db_bootstrap_kvcache(&db_service, &db_block_ctx_aux, &resolved_block_meta_aux) == 0 &&
-                w4_db_apply_block_result(&db_service,
+            if (mem_service_init(&db_service, true, true, true) == 0 &&
+                mem_service_bootstrap_kvcache(&db_service, &db_block_ctx, &resolved_block_meta) == 0 &&
+                mem_service_bootstrap_kvcache(&db_service, &db_block_ctx_aux, &resolved_block_meta_aux) == 0 &&
+                mem_service_apply_block_result(&db_service,
                                          &db_block_ctx_aux,
                                          resolved_block_meta_aux.last_result_segment + 0x40ULL,
-                                         W4_KVCACHE_STATE_RELOADED,
+                                         MEM_SERVICE_KVCACHE_STATE_RELOADED,
                                          &resolved_block_meta_aux) == 0) {
                 db_service_ready = true;
-                if (w4_db_update_prefix_metadata(&db_service,
+                if (mem_service_update_prefix_metadata(&db_service,
                                                  &db_block_ctx_aux,
                                                  &resolved_block_meta_aux,
                                                  &resolved_prefix_meta_aux) != 0) {
@@ -10188,12 +10188,12 @@ int main(void)
                            resolved_prefix_meta_aux.key,
                            resolved_prefix_meta_aux.block_hash,
                            resolved_prefix_meta_aux.hot_segment_id,
-                           w4_kvcache_state_name(resolved_prefix_meta_aux.state),
+                           mem_service_kvcache_state_name(resolved_prefix_meta_aux.state),
                            resolved_prefix_meta_aux.version,
                            resolved_prefix_meta_aux.last_result_segment);
                 }
                 if (db_service_ready &&
-                    w4_db_get_prefix_group_metadata(&db_service,
+                    mem_service_get_prefix_group_metadata(&db_service,
                                                     &db_block_ctx,
                                                     &resolved_prefix_group) != 0) {
                     printf("[w4_guest] gap guest_db_service_group=metadata_group_lookup_failed\n");
@@ -10216,7 +10216,7 @@ int main(void)
                        resolved_block_meta.placement_node,
                        resolved_block_meta.placement_level,
                        resolved_block_meta.hot_segment_id,
-                       w4_kvcache_state_name(resolved_block_meta.state),
+                       mem_service_kvcache_state_name(resolved_block_meta.state),
                        resolved_block_meta.version,
                        resolved_block_meta.last_result_segment);
                 printf("[w4_guest] stage db_service_lookup_aux key=%s request=%s prefix=%s block=%s placement_node=%u placement_level=%u hot_segment=0x%016" PRIx64 " state=%s version=%" PRIu64 " last_result_segment=0x%016" PRIx64 "\n",
@@ -10227,10 +10227,10 @@ int main(void)
                        resolved_block_meta_aux.placement_node,
                        resolved_block_meta_aux.placement_level,
                        resolved_block_meta_aux.hot_segment_id,
-                       w4_kvcache_state_name(resolved_block_meta_aux.state),
+                       mem_service_kvcache_state_name(resolved_block_meta_aux.state),
                        resolved_block_meta_aux.version,
                        resolved_block_meta_aux.last_result_segment);
-                if (w4_db_publish_observe_cluster(&db_service,
+                if (mem_service_publish_observe_cluster(&db_service,
                                                   &resolved_block_meta,
                                                   &db_cluster_summary) != 0) {
                     printf("[w4_guest] gap guest_db_service_cluster=metadata_publish_failed\n");
@@ -10241,10 +10241,10 @@ int main(void)
                                                        &compute_roundtrip) != 0) {
                     printf("[w4_guest] gap guest_compute_roundtrip=payload_invalid\n");
                     db_service_ready = false;
-                } else if (w4_db_apply_block_result(&db_service,
+                } else if (mem_service_apply_block_result(&db_service,
                                                     &db_block_ctx,
                                                     compute_roundtrip.output_segment,
-                                                    W4_KVCACHE_STATE_RELOADED,
+                                                    MEM_SERVICE_KVCACHE_STATE_RELOADED,
                                                     &resolved_block_meta) != 0) {
                     printf("[w4_guest] gap guest_db_service_update=metadata_result_update_failed\n");
                     db_service_ready = false;
@@ -10253,10 +10253,10 @@ int main(void)
                            resolved_block_meta.key,
                            compute_roundtrip.output_segment,
                            compute_roundtrip.output_checksum);
-                    int stale_rc = w4_db_apply_block_result(&db_service,
+                    int stale_rc = mem_service_apply_block_result(&db_service,
                                                             &db_block_ctx,
                                                             resolved_block_meta.last_result_segment - 0x40ULL,
-                                                            W4_KVCACHE_STATE_HOT,
+                                                            MEM_SERVICE_KVCACHE_STATE_HOT,
                                                             &resolved_block_meta_aux);
                     if (stale_rc != 1) {
                         printf("[w4_guest] gap guest_db_service_update=stale_result_accepted\n");
@@ -10271,10 +10271,10 @@ int main(void)
                 if (db_service_ready) {
                     printf("[w4_guest] stage db_service_update_ok key=%s state=%s version=%" PRIu64 " last_result_segment=0x%016" PRIx64 "\n",
                            resolved_block_meta.key,
-                           w4_kvcache_state_name(resolved_block_meta.state),
+                           mem_service_kvcache_state_name(resolved_block_meta.state),
                            resolved_block_meta.version,
                            resolved_block_meta.last_result_segment);
-                    if (db_service_ready && w4_db_update_prefix_metadata(&db_service,
+                    if (db_service_ready && mem_service_update_prefix_metadata(&db_service,
                                                                          &db_block_ctx,
                                                                          &resolved_block_meta,
                                                                          &resolved_prefix_meta) != 0) {
@@ -10285,16 +10285,16 @@ int main(void)
                                resolved_prefix_meta.key,
                                resolved_prefix_meta.block_hash,
                                resolved_prefix_meta.hot_segment_id,
-                               w4_kvcache_state_name(resolved_prefix_meta.state),
+                               mem_service_kvcache_state_name(resolved_prefix_meta.state),
                                resolved_prefix_meta.version,
                                resolved_prefix_meta.last_result_segment);
                         {
-                            struct w4_db_record stale_prefix_source = resolved_block_meta;
+                            struct mem_service_record stale_prefix_source = resolved_block_meta;
                             int stale_prefix_rc;
 
                             stale_prefix_source.last_result_segment -= 0x40ULL;
-                            stale_prefix_source.state = W4_KVCACHE_STATE_HOT;
-                            stale_prefix_rc = w4_db_update_prefix_metadata(&db_service,
+                            stale_prefix_source.state = MEM_SERVICE_KVCACHE_STATE_HOT;
+                            stale_prefix_rc = mem_service_update_prefix_metadata(&db_service,
                                                                            &db_block_ctx,
                                                                            &stale_prefix_source,
                                                                            &resolved_prefix_meta);
@@ -10309,7 +10309,7 @@ int main(void)
                             }
                         }
                     }
-                    if (db_service_ready && w4_db_publish_observe_cluster(&db_service,
+                    if (db_service_ready && mem_service_publish_observe_cluster(&db_service,
                                                       &resolved_block_meta,
                                                       &db_cluster_update_summary) != 0) {
                         printf("[w4_guest] gap guest_db_service_cluster=metadata_update_failed\n");
@@ -10322,7 +10322,7 @@ int main(void)
                                db_cluster_update_summary.peer_block_count_floor >= 2) {
                         cluster_coherent = true;
                         printf("[w4_guest] stage db_service_cluster=metadata_coherent state=%s version=%" PRIu64 " peer_version_floor=%" PRIu64 " peer_result_floor=0x%016" PRIx64 " peer_prefix_version_floor=%" PRIu64 " peer_prefix_result_floor=0x%016" PRIx64 " peer_block_count_floor=%u peer_prefix_count_floor=%u peer_group_count_floor=%u placement=%s state_match=%s peers=%u\n",
-                               w4_kvcache_state_name(resolved_block_meta.state),
+                               mem_service_kvcache_state_name(resolved_block_meta.state),
                                resolved_block_meta.version,
                                db_cluster_update_summary.peer_version_floor,
                                db_cluster_update_summary.peer_result_floor,
@@ -10339,7 +10339,7 @@ int main(void)
                         db_service_ready = false;
                     }
                     if (db_service_ready && cluster_coherent) {
-                        if (w4_db_rebind_block_view(&db_service,
+                        if (mem_service_rebind_block_view(&db_service,
                                                     &db_block_ctx,
                                                     resolved_block_meta.hot_segment_id + 0x200ULL,
                                                     resolved_block_meta.placement_level,
@@ -10353,7 +10353,7 @@ int main(void)
                                    resolved_block_meta.placement_level,
                                    resolved_block_meta.version);
                         }
-                        if (db_service_ready && w4_db_update_prefix_metadata(&db_service,
+                        if (db_service_ready && mem_service_update_prefix_metadata(&db_service,
                                                                              &db_block_ctx,
                                                                              &resolved_block_meta,
                                                                              &resolved_prefix_meta) != 0) {
@@ -10364,11 +10364,11 @@ int main(void)
                                    resolved_prefix_meta.key,
                                    resolved_prefix_meta.block_hash,
                                    resolved_prefix_meta.hot_segment_id,
-                                   w4_kvcache_state_name(resolved_prefix_meta.state),
+                                   mem_service_kvcache_state_name(resolved_prefix_meta.state),
                                    resolved_prefix_meta.version);
                         }
                         if (db_service_ready &&
-                            w4_db_handoff_block_owner(&db_service,
+                            mem_service_handoff_block_owner(&db_service,
                                                       &db_block_ctx,
                                                       w4_cluster_next_owner(db_block_ctx.placement_node,
                                                                             cluster_node_count),
@@ -10385,7 +10385,7 @@ int main(void)
                                    resolved_block_meta.hot_segment_id,
                                    resolved_block_meta.version);
                         }
-                        if (db_service_ready && w4_db_update_prefix_metadata(&db_service,
+                        if (db_service_ready && mem_service_update_prefix_metadata(&db_service,
                                                                              &db_block_ctx,
                                                                              &resolved_block_meta,
                                                                              &resolved_prefix_meta) != 0) {
@@ -10396,10 +10396,10 @@ int main(void)
                                    resolved_prefix_meta.key,
                                    resolved_prefix_meta.block_hash,
                                    resolved_prefix_meta.hot_segment_id,
-                                   w4_kvcache_state_name(resolved_prefix_meta.state),
+                                   mem_service_kvcache_state_name(resolved_prefix_meta.state),
                                    resolved_prefix_meta.version);
                         }
-                        if (db_service_ready && w4_db_publish_observe_cluster(&db_service,
+                        if (db_service_ready && mem_service_publish_observe_cluster(&db_service,
                                                                               &resolved_block_meta,
                                                                               &db_cluster_handoff_summary) != 0) {
                             printf("[w4_guest] gap guest_db_service_handoff=metadata_cluster_failed\n");
@@ -10424,10 +10424,10 @@ int main(void)
                             db_service_ready = false;
                         }
                         if (db_service_ready) {
-                            int stale_owner_rc = w4_db_apply_block_result(&db_service,
+                            int stale_owner_rc = mem_service_apply_block_result(&db_service,
                                                                           &db_block_ctx,
                                                                           resolved_block_meta.last_result_segment + 0x40ULL,
-                                                                          W4_KVCACHE_STATE_RELOADED,
+                                                                          MEM_SERVICE_KVCACHE_STATE_RELOADED,
                                                                           &resolved_block_meta_aux);
                             if (stale_owner_rc != 2) {
                                 printf("[w4_guest] gap guest_db_service_handoff=stale_owner_accepted\n");
@@ -10438,35 +10438,35 @@ int main(void)
                                        resolved_block_meta.version);
                             }
                         }
-                        if (db_service_ready && w4_db_cluster_fetch_record(&db_service,
+                        if (db_service_ready && mem_service_cluster_fetch_record(&db_service,
                                                                           remote_block_key,
                                                                           &remote_block_meta) != 0) {
                             printf("[w4_guest] gap guest_db_service_remote=metadata_fetch_failed key=%s\n",
                                    remote_block_key);
                             db_service_ready = false;
-                        } else if (db_service_ready && w4_db_cluster_fetch_record(&db_service,
+                        } else if (db_service_ready && mem_service_cluster_fetch_record(&db_service,
                                                                                   remote_prefix_key,
                                                                                   &remote_prefix_meta) != 0) {
                             printf("[w4_guest] gap guest_db_service_remote=metadata_fetch_failed key=%s\n",
                                    remote_prefix_key);
                             db_service_ready = false;
-                        } else if (db_service_ready && w4_db_cluster_fetch_record(&db_service,
+                        } else if (db_service_ready && mem_service_cluster_fetch_record(&db_service,
                                                                                   remote_prefix_key_aux,
                                                                                   &remote_prefix_meta_aux) != 0) {
                             printf("[w4_guest] gap guest_db_service_remote=metadata_fetch_failed key=%s\n",
                                    remote_prefix_key_aux);
                             db_service_ready = false;
-                        } else if (db_service_ready && w4_db_cluster_fetch_record(&db_service,
+                        } else if (db_service_ready && mem_service_cluster_fetch_record(&db_service,
                                                                                   remote_group_key,
                                                                                   &remote_prefix_group) != 0) {
                             printf("[w4_guest] gap guest_db_service_remote=metadata_fetch_failed key=%s\n",
                                    remote_group_key);
                             db_service_ready = false;
                         } else {
-                            w4_db_build_block_key_from_hash(remote_prefix_meta_aux.block_hash,
+                            mem_service_build_block_key_from_hash(remote_prefix_meta_aux.block_hash,
                                                             remote_block_key_aux,
                                                             sizeof(remote_block_key_aux));
-                            if (w4_db_cluster_fetch_record(&db_service,
+                            if (mem_service_cluster_fetch_record(&db_service,
                                                            remote_block_key_aux,
                                                            &remote_block_meta_aux) != 0) {
                                 printf("[w4_guest] gap guest_db_service_remote=metadata_fetch_failed key=%s\n",
@@ -10476,15 +10476,15 @@ int main(void)
                         }
                         if (db_service_ready &&
                             (strncmp(remote_block_meta.key, remote_block_key, sizeof(remote_block_meta.key)) != 0 ||
-                             remote_block_meta.state != W4_KVCACHE_STATE_RELOADED ||
+                             remote_block_meta.state != MEM_SERVICE_KVCACHE_STATE_RELOADED ||
                              remote_block_meta.hot_segment_id == 0 ||
                              remote_block_meta.last_result_segment == 0 ||
                              strncmp(remote_prefix_meta.key, remote_prefix_key, sizeof(remote_prefix_meta.key)) != 0 ||
-                             !w4_db_prefix_matches_block_meta(&remote_prefix_meta, &remote_block_meta) ||
+                             !mem_service_prefix_matches_block_meta(&remote_prefix_meta, &remote_block_meta) ||
                              strncmp(remote_prefix_meta_aux.key, remote_prefix_key_aux, sizeof(remote_prefix_meta_aux.key)) != 0 ||
-                             !w4_db_prefix_matches_block_meta(&remote_prefix_meta_aux, &remote_block_meta_aux) ||
+                             !mem_service_prefix_matches_block_meta(&remote_prefix_meta_aux, &remote_block_meta_aux) ||
                              strncmp(remote_prefix_group.key, remote_group_key, sizeof(remote_prefix_group.key)) != 0 ||
-                             !w4_db_group_covers_blocks(&remote_prefix_group,
+                             !mem_service_group_covers_blocks(&remote_prefix_group,
                                                         &remote_block_meta,
                                                         &remote_block_meta_aux))) {
                             printf("[w4_guest] gap guest_db_service_remote=metadata_incoherent key=%s prefix=%s\n",
@@ -10495,7 +10495,7 @@ int main(void)
                             remote_metadata_ready = true;
                             printf("[w4_guest] stage db_service_remote_lookup key=%s state=%s version=%" PRIu64 " placement_node=%u hot_segment=0x%016" PRIx64 " last_result_segment=0x%016" PRIx64 "\n",
                                    remote_block_meta.key,
-                                   w4_kvcache_state_name(remote_block_meta.state),
+                                   mem_service_kvcache_state_name(remote_block_meta.state),
                                    remote_block_meta.version,
                                    remote_block_meta.placement_node,
                                    remote_block_meta.hot_segment_id,
@@ -10504,17 +10504,17 @@ int main(void)
                                    remote_prefix_meta.key,
                                    remote_prefix_meta.block_hash,
                                    remote_prefix_meta.hot_segment_id,
-                                   w4_kvcache_state_name(remote_prefix_meta.state),
+                                   mem_service_kvcache_state_name(remote_prefix_meta.state),
                                    remote_prefix_meta.version);
                             printf("[w4_guest] stage db_service_remote_prefix_aux_lookup key=%s block=%s hot_segment=0x%016" PRIx64 " state=%s version=%" PRIu64 "\n",
                                    remote_prefix_meta_aux.key,
                                    remote_prefix_meta_aux.block_hash,
                                    remote_prefix_meta_aux.hot_segment_id,
-                                   w4_kvcache_state_name(remote_prefix_meta_aux.state),
+                                   mem_service_kvcache_state_name(remote_prefix_meta_aux.state),
                                    remote_prefix_meta_aux.version);
                             printf("[w4_guest] stage db_service_remote_lookup_aux key=%s state=%s version=%" PRIu64 " placement_node=%u hot_segment=0x%016" PRIx64 " last_result_segment=0x%016" PRIx64 "\n",
                                    remote_block_meta_aux.key,
-                                   w4_kvcache_state_name(remote_block_meta_aux.state),
+                                   mem_service_kvcache_state_name(remote_block_meta_aux.state),
                                    remote_block_meta_aux.version,
                                    remote_block_meta_aux.placement_node,
                                    remote_block_meta_aux.hot_segment_id,
@@ -10775,7 +10775,7 @@ decode_round_start:
             } else {
                 uint64_t engram_stage_start_ms = monotonic_ms();
 
-                if (w4_db_obmm_service_v0_wait_engram_history(
+                if (mem_service_obmm_service_v0_wait_engram_history(
                         &db_service,
                         guest_decode_step - 1,
                         600000,
@@ -10793,7 +10793,7 @@ decode_round_start:
                 if (qwen3_terminal_token_count < guest_decode_step) {
                     qwen3_terminal_token_count = guest_decode_step;
                 }
-                if (w4_db_obmm_service_v0_wait_engram_state(
+                if (mem_service_obmm_service_v0_wait_engram_state(
                         &db_service,
                         guest_decode_step - 1,
                         600000,
@@ -10846,7 +10846,7 @@ decode_round_start:
         printf("[w4_guest] stage db_cluster_mode=resource_backed_uapi\n");
         stage_start_ms = monotonic_ms();
         if (!db_service_ready &&
-            w4_db_service_init(&db_service, true, true, true) == 0) {
+            mem_service_init(&db_service, true, true, true) == 0) {
             db_service_ready = true;
             printf("[w4_guest] stage db_service_cluster=init_ok nodes=%u decode_step=%" PRIu64 "\n",
                    cluster_node_count, guest_decode_step);
@@ -10868,7 +10868,7 @@ decode_round_start:
         }
         if (cluster_node_count == 8U &&
             guest_decode_step == 0 &&
-            w4_db_obmm_service_v0_ensure_cluster_runtime(cluster_runtime_node,
+            mem_service_obmm_service_v0_ensure_cluster_runtime(cluster_runtime_node,
                                                          cluster_node_count) != 0) {
             fprintf(stderr,
                     "[w4_guest] fail obmm cluster runtime bootstrap failed node=%u\n",
@@ -10890,7 +10890,7 @@ decode_round_start:
         uint32_t next_node = 0U;
 
         if (!w4_cluster_role_index(role, cluster_node_count, &dispatch_node) ||
-            w4_db_qwen3_layer_range_for_node(dispatch_node,
+            mem_service_qwen3_layer_range_for_node(dispatch_node,
                                              cluster_node_count,
                                              &layer_start,
                                              &layer_end,
@@ -10907,7 +10907,7 @@ decode_round_start:
         round_next_node = next_node;
         if (layer_start > 0U) {
             uint64_t scheduler_wait_start_ms = monotonic_ms();
-            struct w4_db_scheduler_work_item scheduler_item;
+            struct mem_service_scheduler_work_item scheduler_item;
 
             input_wait_start_ms = scheduler_wait_start_ms;
             printf("[w4_guest] stage qwen3_work_item_scheduler_wait"
@@ -10919,12 +10919,12 @@ decode_round_start:
                    layer_start,
                    layer_end);
             memset(&scheduler_item, 0, sizeof(scheduler_item));
-            if (w4_db_obmm_service_v0_wait_scheduler_work_item(
+            if (mem_service_obmm_service_v0_wait_scheduler_work_item(
                     dispatch_node,
                     cluster_node_count,
                     guest_decode_step,
                     &scheduler_item) != 0 ||
-                scheduler_item.kind == W4_DB_SCHEDULER_WORK_ITEM_NONE) {
+                scheduler_item.kind == MEM_SERVICE_SCHEDULER_WORK_ITEM_NONE) {
                 fprintf(stderr,
                         "[w4_guest] fail qwen3 work item scheduler input resolve failed node=%u layers=[%u,%u)\n",
                         dispatch_node + 1U,
@@ -10932,7 +10932,7 @@ decode_round_start:
                         layer_end);
                 goto out;
             }
-            if (scheduler_item.kind == W4_DB_SCHEDULER_WORK_ITEM_NO_DISPATCH) {
+            if (scheduler_item.kind == MEM_SERVICE_SCHEDULER_WORK_ITEM_NO_DISPATCH) {
                 input_found_ms =
                     scheduler_item.found_monotonic_ms != 0 ?
                         scheduler_item.found_monotonic_ms :
@@ -10978,7 +10978,7 @@ decode_round_start:
                        scheduler_item.terminal_token);
                 goto qwen3_no_work_item_service_coverage;
             }
-            if (scheduler_item.kind != W4_DB_SCHEDULER_WORK_ITEM_RANGE_FORWARD ||
+            if (scheduler_item.kind != MEM_SERVICE_SCHEDULER_WORK_ITEM_RANGE_FORWARD ||
                 !scheduler_item.range_input.data) {
                 fprintf(stderr,
                         "[w4_guest] fail qwen3 scheduler work item invalid node=%u kind=%d\n",
@@ -11131,7 +11131,7 @@ decode_round_start:
         uint64_t previous_token = 0;
 
         if (!db_service_ready ||
-            w4_db_obmm_service_v0_wait_terminal_token_result(
+            mem_service_obmm_service_v0_wait_terminal_token_result(
                 &db_service,
                 guest_decode_step - 1U,
                 600000,
@@ -11228,7 +11228,7 @@ decode_round_start:
         uint32_t next_node = 0U;
 
         if (!w4_cluster_role_index(role, cluster_node_count, &dispatch_node) ||
-            w4_db_qwen3_layer_range_for_node(dispatch_node,
+            mem_service_qwen3_layer_range_for_node(dispatch_node,
                                              cluster_node_count,
                                              &layer_start,
                                              &layer_end,
@@ -11388,7 +11388,7 @@ decode_round_start:
         uint32_t object_ref_write_index = 0U;
 
         if (!w4_cluster_role_index(role, cluster_node_count, &dispatch_node) ||
-            w4_db_qwen3_layer_range_for_node(dispatch_node,
+            mem_service_qwen3_layer_range_for_node(dispatch_node,
                                              cluster_node_count,
                                              &layer_start,
                                              &layer_end,
@@ -11403,7 +11403,7 @@ decode_round_start:
             uint64_t hidden_range_bytes =
                 llm_infer_qwen3_handoff_hidden_bytes(guest_decode_step);
             uint64_t range_input_checksum = 0;
-            struct w4_db_object_payload_view range_input_view;
+            struct mem_service_object_payload_view range_input_view;
             uint64_t stage_start_ms = monotonic_ms();
 
             input_wait_start_ms = stage_start_ms;
@@ -11473,7 +11473,7 @@ decode_round_start:
 
                     if (qwen3_pre_resolved_range_input) {
                         range_input_view = qwen3_pre_resolved_range_input_view;
-                    } else if (w4_db_obmm_service_v0_wait_runtime_range_input_view(
+                    } else if (mem_service_obmm_service_v0_wait_runtime_range_input_view(
                                    dispatch_node,
                                    cluster_node_count,
                                    guest_decode_step,
@@ -11489,9 +11489,9 @@ decode_round_start:
                     token_result_input =
                         layer_start == 0U && guest_decode_step > 0 &&
                         range_input_view.payload_kind ==
-                            W4_DB_OBMM_KIND_QWEN3_TOKEN_RESULT &&
+                            MEM_SERVICE_OBMM_KIND_QWEN3_TOKEN_RESULT &&
                         range_input_view.len ==
-                            W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES;
+                            MEM_SERVICE_OBMM_QWEN3_TOKEN_RESULT_BYTES;
                     hidden_range_input =
                         range_input_view.payload_kind ==
                             W4_QWEN3_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT &&
@@ -11515,7 +11515,7 @@ decode_round_start:
 
                         memcpy(token_words,
                                range_input_view.token_result_words,
-                               W4_DB_OBMM_QWEN3_TOKEN_RESULT_BYTES);
+                               MEM_SERVICE_OBMM_QWEN3_TOKEN_RESULT_BYTES);
                         previous_step = token_words[0];
                         previous_token = token_words[1];
                         if (previous_step != guest_decode_step - 1U) {
@@ -11597,7 +11597,7 @@ decode_round_start:
         }
         if (guest_decode_step > 0) {
             struct lingqu_obmm_object_ref_wire prefix_cache_kv_ref;
-            struct w4_db_object_payload_view previous_kv_view;
+            struct mem_service_object_payload_view previous_kv_view;
             uint64_t kv_source_step = guest_decode_step - 1U;
             uint64_t requested_kv_source_step = kv_source_step;
             int prefix_cache_kv_ref_state;
@@ -11645,7 +11645,7 @@ decode_round_start:
                        prefix_cache_kv_ref.object_version);
             } else {
                 previous_kv_state =
-                    w4_db_obmm_service_v0_try_resolve_range_kv_state_view(
+                    mem_service_obmm_service_v0_try_resolve_range_kv_state_view(
                         &db_service,
                         dispatch_node,
                         cluster_node_count,
@@ -11673,7 +11673,7 @@ decode_round_start:
                     }
                     memset(&previous_kv_view, 0, sizeof(previous_kv_view));
                     previous_kv_state =
-                        w4_db_obmm_service_v0_try_resolve_range_kv_state_view(
+                        mem_service_obmm_service_v0_try_resolve_range_kv_state_view(
                             &db_service,
                             dispatch_node,
                             cluster_node_count,
@@ -11906,7 +11906,7 @@ decode_round_start:
         bool memory_shortpath_engram_owner_selected = false;
 
         if (!db_service_ready &&
-            w4_db_service_init(&db_service, true, true, true) == 0) {
+            mem_service_init(&db_service, true, true, true) == 0) {
             db_service_ready = true;
         }
         if (!w4_cluster_role_index(role, cluster_node_count, &dispatch_node) ||
@@ -11960,7 +11960,7 @@ decode_round_start:
                     goto qwen3_shortpath_publish_runtime_range;
                 }
                 range_publish_start_ms = monotonic_ms();
-                if (w4_db_obmm_service_v0_publish_runtime_range_kv_state(
+                if (mem_service_obmm_service_v0_publish_runtime_range_kv_state(
                         &db_service,
                         dispatch_node,
                         cluster_node_count,
@@ -12049,7 +12049,7 @@ decode_round_start:
                            qwen3_engram_config.history_window,
                            boundary_result.lookup.terminal_logits_record.logits_checksum);
                     engram_stage_start_ms = monotonic_ms();
-                    if (w4_db_obmm_service_v0_publish_engram_step(
+                    if (mem_service_obmm_service_v0_publish_engram_step(
                             &db_service,
                             dispatch_node,
                             cluster_node_count,
@@ -12099,7 +12099,7 @@ decode_round_start:
                     guest_decode_step,
                     &boundary_result.lookup.terminal_logits_record,
                     "terminal_logits_artifact");
-                if (w4_db_obmm_service_v0_publish_shortpath_terminal_token_result(
+                if (mem_service_obmm_service_v0_publish_shortpath_terminal_token_result(
                         &db_service,
                         dispatch_node,
                         cluster_node_count,
@@ -12145,7 +12145,7 @@ decode_round_start:
 qwen3_shortpath_publish_runtime_range:
         if (!qwen3_shortpath_terminal_committed) {
             range_publish_start_ms = monotonic_ms();
-            if (w4_db_obmm_service_v0_publish_runtime_range_output(
+            if (mem_service_obmm_service_v0_publish_runtime_range_output(
                     &db_service,
                     dispatch_node,
                     cluster_node_count,
@@ -12219,7 +12219,7 @@ qwen3_shortpath_publish_runtime_range:
                 uint64_t engram_stage_start_ms;
 
                 engram_stage_start_ms = monotonic_ms();
-                if (w4_db_obmm_service_v0_publish_engram_candidates(
+                if (mem_service_obmm_service_v0_publish_engram_candidates(
                         &db_service,
                         dispatch_node,
                         cluster_node_count,
@@ -12259,7 +12259,7 @@ qwen3_shortpath_publish_runtime_range:
                     engram_decision_publish_ms += terminal_engram_timing.decision_publish_ms;
                 }
                 engram_stage_start_ms = monotonic_ms();
-                if (w4_db_obmm_service_v0_wait_engram_selected_token(
+                if (mem_service_obmm_service_v0_wait_engram_selected_token(
                         &db_service,
                         decode_step,
                         600000,
@@ -12293,7 +12293,7 @@ qwen3_shortpath_publish_runtime_range:
                                                   decode_step,
                                                   &terminal_token,
                                                   "uapi_real_logits");
-            if (w4_db_obmm_service_v0_publish_terminal_token_result(
+            if (mem_service_obmm_service_v0_publish_terminal_token_result(
                     &db_service,
                     dispatch_node,
                     cluster_node_count,
@@ -12380,12 +12380,12 @@ qwen3_after_service_coverage:
 
         round_done_start_ms = stage_start_ms;
         if (!db_service_ready &&
-            w4_db_service_init(&db_service, true, true, true) == 0) {
+            mem_service_init(&db_service, true, true, true) == 0) {
             db_service_ready = true;
         }
         if (!w4_cluster_role_index(role, cluster_node_count, &dispatch_node) ||
             !db_service_ready ||
-            w4_db_obmm_service_v0_publish_decode_round_done(&db_service,
+            mem_service_obmm_service_v0_publish_decode_round_done(&db_service,
                                                             dispatch_node,
                                                             cluster_node_count,
                                                             guest_decode_step,
@@ -12683,7 +12683,7 @@ qwen3_after_service_coverage:
             uint64_t stage_start_ms = monotonic_ms();
 
             if (is_qwen3_profile() && enable_db_cluster && cluster_node_count == 8U &&
-                w4_db_obmm_service_v0_wait_all_decode_round_done(&db_service,
+                mem_service_obmm_service_v0_wait_all_decode_round_done(&db_service,
                                                                  cluster_node_count,
                                                                  guest_decode_step,
                                                                  decode_round_scope_hash,

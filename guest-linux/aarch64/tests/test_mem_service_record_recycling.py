@@ -6,8 +6,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = ROOT.parents[1]
 SERVICE_DIR = ROOT / "components" / "mem_service"
-SERVICE_C = SERVICE_DIR / "w4_kvcache_db_service.c"
-SERVICE_H = SERVICE_DIR / "w4_kvcache_db_service.h"
+SERVICE_C = SERVICE_DIR / "mem_service.c"
+SERVICE_H = SERVICE_DIR / "mem_service.h"
 GUEST_C = ROOT / "apps" / "w4_guest" / "w4_guest.c"
 BUILD_INITRAMFS = ROOT / "scripts" / "build_initramfs.sh"
 RUN_APP = ROOT / "initramfs" / "run_app"
@@ -25,11 +25,11 @@ class W4DbRecordRecyclingTests(unittest.TestCase):
 
         self.assertIn("Components do not install guest binaries directly", components_readme)
         self.assertIn(
-            'W4_DB_SERVICE_SRC="$ROOT_DIR/components/mem_service/w4_kvcache_db_service.c"',
+            'MEM_SERVICE_SRC="$ROOT_DIR/components/mem_service/mem_service.c"',
             build_script,
         )
         self.assertIn(
-            '"$W4_GUEST_SRC" "$W4_DB_SERVICE_SRC" "$LLM_INFER_SRC" -lm -o "$W4_GUEST_BIN"',
+            '"$W4_GUEST_SRC" "$MEM_SERVICE_SRC" "$LLM_INFER_SRC" -lm -o "$W4_GUEST_BIN"',
             build_script,
         )
         self.assertNotIn("MEM_SERVICE_BIN=", build_script)
@@ -43,8 +43,8 @@ class W4DbRecordRecyclingTests(unittest.TestCase):
         header = SERVICE_H.read_text()
         source = SERVICE_C.read_text()
 
-        max_records = re.search(r"#define W4_DB_MAX_RECORDS\s+(\d+)U", header)
-        cluster_records = re.search(r"#define W4_DB_CLUSTER_MAX_RECORDS\s+(\d+)", source)
+        max_records = re.search(r"#define MEM_SERVICE_MAX_RECORDS\s+(\d+)U", header)
+        cluster_records = re.search(r"#define MEM_SERVICE_CLUSTER_MAX_RECORDS\s+(\d+)", source)
 
         self.assertIsNotNone(max_records)
         self.assertIsNotNone(cluster_records)
@@ -54,21 +54,21 @@ class W4DbRecordRecyclingTests(unittest.TestCase):
     def test_full_record_table_recycles_old_qwen3_runtime_records(self):
         source = SERVICE_C.read_text()
 
-        self.assertIn("W4_DB_QWEN3_RECORD_RETAIN_STEPS", source)
-        self.assertIn("w4_db_recycle_qwen3_runtime_record", source)
+        self.assertIn("MEM_SERVICE_QWEN3_RECORD_RETAIN_STEPS", source)
+        self.assertIn("mem_service_recycle_qwen3_runtime_record", source)
         self.assertIn('strstr(key, "decode-step")', source)
         self.assertIn('strstr(key, "/step/")', source)
-        self.assertIn("rec = w4_db_alloc_record(svc);", source)
-        self.assertIn("rec = w4_db_recycle_qwen3_runtime_record(svc, key);", source)
+        self.assertIn("rec = mem_service_alloc_record(svc);", source)
+        self.assertIn("rec = mem_service_recycle_qwen3_runtime_record(svc, key);", source)
 
     def test_qwen3_kv_state_uses_tiered_block_spans(self):
         source = SERVICE_C.read_text()
 
         tier_names = [
-            "W4_DB_OBMM_QWEN3_KV_STATE_BLOCK_TIER0_BYTES",
-            "W4_DB_OBMM_QWEN3_KV_STATE_BLOCK_TIER1_BYTES",
-            "W4_DB_OBMM_QWEN3_KV_STATE_BLOCK_TIER2_BYTES",
-            "W4_DB_OBMM_QWEN3_KV_STATE_BLOCK_TIER3_BYTES",
+            "MEM_SERVICE_OBMM_QWEN3_KV_STATE_BLOCK_TIER0_BYTES",
+            "MEM_SERVICE_OBMM_QWEN3_KV_STATE_BLOCK_TIER1_BYTES",
+            "MEM_SERVICE_OBMM_QWEN3_KV_STATE_BLOCK_TIER2_BYTES",
+            "MEM_SERVICE_OBMM_QWEN3_KV_STATE_BLOCK_TIER3_BYTES",
         ]
         tier_values = []
 
@@ -79,7 +79,7 @@ class W4DbRecordRecyclingTests(unittest.TestCase):
                 tier_values.append(int(match.group(1), 16))
 
         slot_bytes = re.search(
-            r"#define W4_DB_OBMM_QWEN3_KV_STATE_SLOT_BYTES\s+0x([0-9a-fA-F]+)ULL",
+            r"#define MEM_SERVICE_OBMM_QWEN3_KV_STATE_SLOT_BYTES\s+0x([0-9a-fA-F]+)ULL",
             source,
         )
         self.assertIsNotNone(slot_bytes)
@@ -91,17 +91,17 @@ class W4DbRecordRecyclingTests(unittest.TestCase):
             (over_max_payload_bytes + max_block_bytes - 1) // max_block_bytes,
             2,
         )
-        self.assertIn("w4_db_qwen3_kv_state_block_span", source)
-        self.assertIn("w4_db_qwen3_kv_state_alloc", source)
+        self.assertIn("mem_service_qwen3_kv_state_block_span", source)
+        self.assertIn("mem_service_qwen3_kv_state_alloc", source)
         self.assertIn("block_count =", source)
         self.assertIn("reserved_bytes = block_count * block_bytes", source)
-        self.assertNotIn("kv_payload_len > W4_DB_OBMM_QWEN3_KV_STATE_SLOT_BYTES", source)
+        self.assertNotIn("kv_payload_len > MEM_SERVICE_OBMM_QWEN3_KV_STATE_SLOT_BYTES", source)
 
     def test_obmm_service_object_bytes_are_not_demo_named(self):
         source = SERVICE_C.read_text()
 
-        self.assertIn("W4_DB_OBMM_SERVICE_OBJECT_BYTES", source)
-        self.assertNotIn("W4_DB_OBMM_DEMO_OBJECT_BYTES", source)
+        self.assertIn("MEM_SERVICE_OBMM_SERVICE_OBJECT_BYTES", source)
+        self.assertNotIn("MEM_SERVICE_OBMM_DEMO_OBJECT_BYTES", source)
 
     def test_qwen3_guest_runtime_kv_payload_grows_past_fixed_guard(self):
         source = GUEST_C.read_text()

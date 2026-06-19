@@ -248,7 +248,7 @@ ensure_ub_guest_artifacts "$ROOT_DIR" "$KERNEL_IMAGE" "$INITRAMFS_IMAGE"
 
 if [[ "$APPEND_EXTRA" == *"linqu_w4_guest=1"* ]]; then
   append_cmdline_if_missing "pmd_mapping=100%"
-  append_cmdline_if_missing "w4_db_region_size_mb=512"
+  append_cmdline_if_missing "mem_service_region_size_mb=512"
   append_cmdline_if_missing "obmm.mempool_size=512M"
 fi
 

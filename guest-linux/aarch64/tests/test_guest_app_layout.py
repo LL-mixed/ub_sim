@@ -559,8 +559,8 @@ def test_mem_service_is_link_time_component():
     component_dir = ROOT / "components" / "mem_service"
     readme = (component_dir / "README.md").read_text()
 
-    assert 'W4_DB_SERVICE_SRC="$ROOT_DIR/components/mem_service/w4_kvcache_db_service.c"' in build_script
-    assert '"$W4_GUEST_SRC" "$W4_DB_SERVICE_SRC" "$LLM_INFER_SRC" -lm -o "$W4_GUEST_BIN"' in build_script
+    assert 'MEM_SERVICE_SRC="$ROOT_DIR/components/mem_service/mem_service.c"' in build_script
+    assert '"$W4_GUEST_SRC" "$MEM_SERVICE_SRC" "$LLM_INFER_SRC" -lm -o "$W4_GUEST_BIN"' in build_script
     assert "Components do not install guest binaries directly" in components_readme
     assert "not a standalone app" in readme
     assert "standalone demo" not in readme
@@ -570,10 +570,10 @@ def test_mem_service_is_link_time_component():
     assert "linqu_mem_service=1" not in run_app
     assert not (ROOT / "apps" / "mem_service").exists()
     assert not (ROOT / "apps" / "mem_service_demo").exists()
-    assert "test_w4_db_record_recycling.py" in readme
-    assert (component_dir / "w4_kvcache_db_service.c").exists()
-    assert (component_dir / "w4_kvcache_db_service.h").exists()
-    assert (component_dir / "w4_lingqu_object_service.h").exists()
+    assert "test_mem_service_record_recycling.py" in readme
+    assert (component_dir / "mem_service.c").exists()
+    assert (component_dir / "mem_service.h").exists()
+    assert (component_dir / "lingqu_object_service.h").exists()
 
 
 def test_w4_guest_has_app_local_build_entrypoint():
@@ -584,7 +584,7 @@ def test_w4_guest_has_app_local_build_entrypoint():
     assert (app_dir / "w4_guest.c").exists()
     assert (app_dir / "Makefile").exists()
     assert "all: linqu_w4_guest" in makefile
-    assert "components/mem_service/w4_kvcache_db_service.c" in makefile
+    assert "components/mem_service/mem_service.c" in makefile
     assert "components/llm_infer/llm_infer.c" in makefile
     assert "-I$(ROOT)/libs/obmm_queue" in makefile
     assert "-I$(ROOT)/apps/obmm_queue" in makefile
@@ -1094,7 +1094,7 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     assert "SIM_UAPI_SCENARIO_CONFIG" in script
     assert "ensure_simpler_host_manifest" in script
     assert 'append_cmdline_if_missing "pmd_mapping=100%"' in script
-    assert 'append_cmdline_if_missing "w4_db_region_size_mb=512"' in script
+    assert 'append_cmdline_if_missing "mem_service_region_size_mb=512"' in script
     assert 'append_cmdline_if_missing "obmm.mempool_size=512M"' in script
     assert 'RUN_APP_SRC="$ROOT_DIR/initramfs/run_app"' in build_script
     assert 'RUN_APP_BIN="$INITRAMFS_DIR/bin/run_app"' in build_script
@@ -1120,7 +1120,7 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     assert "linqu_ssd_gsva_test=1" in run_app
     assert "linqu_w4_guest=1" in run_app
     assert "run_w4_guest" in run_app
-    assert "LINQU_W4_DB_CLUSTER=1" in run_app
+    assert "LINQU_MEM_SERVICE_CLUSTER=1" in run_app
     assert "SIM_UAPI_W4_CHIPBACKEND_PROFILE" in run_app
     assert "switching to /bin/run_app app boot flow" in init_source
     assert "execv(\"/bin/run_app\"" in init_source
@@ -1137,7 +1137,7 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     assert 'RDINIT="/bin/run_app"' in w4_eight_runner
     assert 'exec "$SCRIPT_DIR/run_ub_dual_node_apps.sh" --app w4_guest "$@"' in w4_runner
     assert 'RUN_SECS="${RUN_SECS:-300}"' in w4_runner
-    assert "w4_db_region_size_mb=512" in w4_runner
+    assert "mem_service_region_size_mb=512" in w4_runner
     assert "obmm.mempool_size=512M" in w4_runner
     assert "linqu_w4_guest=1" in w4_runner or "--app w4_guest" in w4_runner
     assert 'RDINIT="${RDINIT:-/bin/run_app}"' in launcher_scripts

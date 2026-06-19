@@ -538,13 +538,13 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             Path(__file__).resolve().parents[1]
             / "components"
             / "mem_service"
-            / "w4_kvcache_db_service.c"
+            / "mem_service.c"
         ).read_text(encoding="utf-8")
         db_service_header = (
             Path(__file__).resolve().parents[1]
             / "components"
             / "mem_service"
-            / "w4_kvcache_db_service.h"
+            / "mem_service.h"
         ).read_text(encoding="utf-8")
         cli_source = (
             Path(__file__).resolve().parents[3] / "crates" / "sim-cli" / "src" / "main.rs"
@@ -564,9 +564,9 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("qwen3_find_logits_table_by_scan_for_step", guest_source)
         self.assertIn("qwen3_logits_table_candidate_matches_step", guest_source)
         self.assertIn("base + i * entry_bytes + 72ULL", guest_source)
-        self.assertIn("w4_db_obmm_service_v0_ensure_cluster_runtime", guest_source)
+        self.assertIn("mem_service_obmm_service_v0_ensure_cluster_runtime", guest_source)
         self.assertIn("obmm_cluster_runtime_bootstrap", db_service_source)
-        self.assertIn("w4_db_cluster_runtime_require", db_service_source)
+        self.assertIn("mem_service_cluster_runtime_require", db_service_source)
         self.assertIn("lazy_activation_forbidden", db_service_source)
         self.assertIn("peer_not_bootstrapped", db_service_source)
         self.assertIn("after=obmm_cluster_runtime_bootstrap", guest_source)
@@ -576,11 +576,11 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         )
         self.assertNotIn("local_decode_node == 0U ||", guest_source)
         self.assertNotIn("local_decode_node + 1U == cluster_node_count ||", guest_source)
-        self.assertIn("w4_db_take_pending_qwen3_object_desc", db_service_source)
-        self.assertIn("w4_db_take_pending_qwen3_object_kind_len_desc", db_service_source)
+        self.assertIn("mem_service_take_pending_qwen3_object_desc", db_service_source)
+        self.assertIn("mem_service_take_pending_qwen3_object_kind_len_desc", db_service_source)
         self.assertIn("qwen3_w5_memory_terminal_logits_loaded", guest_source)
         self.assertIn(
-            "w4_db_obmm_service_v0_publish_shortpath_terminal_token_result",
+            "mem_service_obmm_service_v0_publish_shortpath_terminal_token_result",
             guest_source,
         )
         self.assertIn("entry->target_node == local_node + 1U", guest_source)
@@ -626,16 +626,16 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             "        position,",
             guest_source,
         )
-        self.assertIn("w4_db_obmm_service_v0_publish_runtime_range_kv_state", guest_source)
+        self.assertIn("mem_service_obmm_service_v0_publish_runtime_range_kv_state", guest_source)
         self.assertIn("qwen3_decode_round_scheduler_no_dispatch", guest_source)
         self.assertIn("work_item=none", guest_source)
         self.assertIn("dispatch=skipped status=no_dispatch", guest_source)
         self.assertIn("qwen3_work_item_scheduler_wait", guest_source)
         self.assertIn("qwen3_work_item_scheduler_dispatch", guest_source)
-        self.assertIn("w4_db_obmm_service_v0_wait_scheduler_work_item", guest_source)
-        self.assertIn("struct w4_db_scheduler_work_item", db_service_header)
-        self.assertIn("W4_DB_SCHEDULER_WORK_ITEM_RANGE_FORWARD", db_service_header)
-        self.assertIn("W4_DB_SCHEDULER_WORK_ITEM_NO_DISPATCH", db_service_header)
+        self.assertIn("mem_service_obmm_service_v0_wait_scheduler_work_item", guest_source)
+        self.assertIn("struct mem_service_scheduler_work_item", db_service_header)
+        self.assertIn("MEM_SERVICE_SCHEDULER_WORK_ITEM_RANGE_FORWARD", db_service_header)
+        self.assertIn("MEM_SERVICE_SCHEDULER_WORK_ITEM_NO_DISPATCH", db_service_header)
         self.assertIn("qwen3_memory_service_boundary_lookup_request", guest_source)
         self.assertIn("qwen3_memory_service_boundary_lookup_response", guest_source)
         self.assertIn("SIM_W5_MEMORY_BOUNDARY_REGISTRY_REF", guest_source)
@@ -673,7 +673,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             db_service_source,
         )
         self.assertIn("broadcast_targets=%u", db_service_source)
-        self.assertIn("w4_db_take_pending_qwen3_token_result_desc", db_service_source)
+        self.assertIn("mem_service_take_pending_qwen3_token_result_desc", db_service_source)
         self.assertIn("receive=descriptor", db_service_source)
         self.assertIn("target=decode_round_scheduler receive=descriptor", db_service_source)
         self.assertIn(
@@ -702,7 +702,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             '" node=%u consumer_step=%" PRIu64 " kv_step=%" PRIu64',
             guest_source,
         )
-        self.assertIn("w4_db_obmm_service_v0_try_resolve_range_kv_state_view", guest_source)
+        self.assertIn("mem_service_obmm_service_v0_try_resolve_range_kv_state_view", guest_source)
         self.assertNotIn("while (candidate > 0U)", guest_source)
         self.assertIn("qwen3_decode_round_idle_timing", guest_source)
         self.assertIn('engram_range_work_item ? "ok" : "idle"', guest_source)
@@ -845,8 +845,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("unset SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG", config_runner_text)
         self.assertIn('exec "$SCRIPT_DIR/run_ub_eight_node_w5_inference_cluster.sh"', config_runner_text)
         self.assertIn("explicit obmm cluster runtime bootstrap", legacy_runner_text)
-        self.assertIn('SIM_W4_DB_LAZY_REMOTE_ACTIVATION:-0', legacy_runner_text)
-        self.assertNotIn('SIM_W4_DB_LAZY_REMOTE_ACTIVATION:-1', legacy_runner_text)
+        self.assertIn('SIM_MEM_SERVICE_LAZY_REMOTE_ACTIVATION:-0', legacy_runner_text)
+        self.assertNotIn('SIM_MEM_SERVICE_LAZY_REMOTE_ACTIVATION:-1', legacy_runner_text)
         self.assertIn("idx == SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE", legacy_runner_text)
         self.assertIn("source=runtime_token_input target=uapi_segment", legacy_runner_text)
         self.assertIn("w4_guest_run_summary.py", summary_text)

@@ -11,7 +11,7 @@ RUN_ID_BASE="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_w4guest4_${RANDOM}}"
 RUN_DIR="$LOG_DIR/${RUN_ID_BASE}_headless4"
 BOOT_WAIT_SECS="${BOOT_WAIT_SECS:-180}"
 APP_WAIT_SECS="${APP_WAIT_SECS:-300}"
-APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1 pmd_mapping=100% w4_db_region_size_mb=512 obmm.mempool_size=512M}"
+APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1 pmd_mapping=100% mem_service_region_size_mb=512 obmm.mempool_size=512M}"
 PORT_BASE_START="${PORT_BASE_START:-$((54100 + (RANDOM % 300)))}"
 PORT_BASE="$PORT_BASE_START"
 SIMPLER_HOST_MATMUL_MANIFEST="${SIMPLER_HOST_MATMUL_MANIFEST:-/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json}"
@@ -174,7 +174,7 @@ send_w4_cmd() {
   payload+=$'export LINQU_UB_LOCAL_IP='"${local_ip}"$'\n'
   payload+=$'export LINQU_UB_ALL_IPS='"${ALL_IPS_CSV}"$'\n'
   payload+=$'export LINQU_UB_NODE_COUNT=4\n'
-  payload+=$'export LINQU_W4_DB_CLUSTER=1\n'
+  payload+=$'export LINQU_MEM_SERVICE_CLUSTER=1\n'
   payload+=$'export LINQU_W4_REQUIRE_UAPI_RESOURCE=1\n'
   payload+=$'export SIM_UAPI_W4_CHIPBACKEND_PROFILE='"${SIM_UAPI_W4_CHIPBACKEND_PROFILE}"$'\n'
   payload+=$'echo '"${start_marker}"$'\n'

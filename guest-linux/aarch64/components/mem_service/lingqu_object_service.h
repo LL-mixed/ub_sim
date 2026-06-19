@@ -1,5 +1,5 @@
-#ifndef W4_LINGQU_OBJECT_SERVICE_H
-#define W4_LINGQU_OBJECT_SERVICE_H
+#ifndef LINGQU_OBJECT_SERVICE_H
+#define LINGQU_OBJECT_SERVICE_H
 
 #include <stdint.h>
 
