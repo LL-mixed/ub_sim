@@ -537,13 +537,13 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         db_service_source = (
             Path(__file__).resolve().parents[1]
             / "components"
-            / "w5_mem_service"
+            / "mem_service"
             / "w4_kvcache_db_service.c"
         ).read_text(encoding="utf-8")
         db_service_header = (
             Path(__file__).resolve().parents[1]
             / "components"
-            / "w5_mem_service"
+            / "mem_service"
             / "w4_kvcache_db_service.h"
         ).read_text(encoding="utf-8")
         cli_source = (
@@ -1884,7 +1884,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             )
 
         self.assertEqual(result.returncode, 2)
-        self.assertIn("W5 Memory Service decision store is missing", result.stderr)
+        self.assertIn("Memory Service decision store is missing", result.stderr)
 
     def test_w5_cluster_config_runner_validate_only_rejects_missing_memory_decision_object_store(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
@@ -1919,7 +1919,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             )
 
         self.assertEqual(result.returncode, 2)
-        self.assertIn("W5 Memory Service decision object store is missing", result.stderr)
+        self.assertIn("Memory Service decision object store is missing", result.stderr)
 
     def test_w5_cluster_config_runner_validate_only_rejects_missing_weights_path(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"

@@ -164,15 +164,15 @@ w5_resolve_memory_reuse_config() {
 
   object_store="$reuse_out_dir/w5_object_service_store.$selected_run_id.json"
   if [[ ! -f "$decision_store" ]]; then
-    echo "W5 Memory Service reuse decision store is missing: $decision_store" >&2
+    echo "Memory Service reuse decision store is missing: $decision_store" >&2
     return 2
   fi
   if [[ ! -f "$object_store" ]]; then
-    echo "W5 Memory Service reuse object store is missing: $object_store" >&2
+    echo "Memory Service reuse object store is missing: $object_store" >&2
     return 2
   fi
   if ! w5_memory_reuse_summary_completed "$reuse_out_dir" "$selected_run_id" "$expected_steps" "$selected_store_kind"; then
-    echo "W5 Memory Service reuse summary is missing completion/coverage evidence for run_id=$selected_run_id: $W5_MEMORY_REUSE_MISSING_REASON" >&2
+    echo "Memory Service reuse summary is missing completion/coverage evidence for run_id=$selected_run_id: $W5_MEMORY_REUSE_MISSING_REASON" >&2
     return 2
   fi
 

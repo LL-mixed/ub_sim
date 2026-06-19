@@ -256,13 +256,13 @@ validate_w5_cluster_config() {
       return 2
     fi
     if [[ ! -f "$SIM_W5_MEMORY_DECISION_STORE" ]]; then
-      echo "W5 Memory Service decision store is missing: $SIM_W5_MEMORY_DECISION_STORE" >&2
+      echo "Memory Service decision store is missing: $SIM_W5_MEMORY_DECISION_STORE" >&2
       return 2
     fi
   fi
   if [[ -n "${SIM_W5_MEMORY_DECISION_OBJECT_STORE:-}" ]]; then
     if [[ ! -f "$SIM_W5_MEMORY_DECISION_OBJECT_STORE" ]]; then
-      echo "W5 Memory Service decision object store is missing: $SIM_W5_MEMORY_DECISION_OBJECT_STORE" >&2
+      echo "Memory Service decision object store is missing: $SIM_W5_MEMORY_DECISION_OBJECT_STORE" >&2
       return 2
     fi
   fi

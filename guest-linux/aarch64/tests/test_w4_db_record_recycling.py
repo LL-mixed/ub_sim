@@ -5,7 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = ROOT.parents[1]
-SERVICE_DIR = ROOT / "components" / "w5_mem_service"
+SERVICE_DIR = ROOT / "components" / "mem_service"
 SERVICE_C = SERVICE_DIR / "w4_kvcache_db_service.c"
 SERVICE_H = SERVICE_DIR / "w4_kvcache_db_service.h"
 GUEST_C = ROOT / "apps" / "w4_guest" / "w4_guest.c"
@@ -18,23 +18,23 @@ SIM_UAPI_RS = REPO_ROOT / "crates" / "sim-uapi" / "src" / "lib.rs"
 
 
 class W4DbRecordRecyclingTests(unittest.TestCase):
-    def test_w5_mem_service_is_not_packaged_as_demo_or_app(self):
+    def test_mem_service_is_not_packaged_as_demo_or_app(self):
         build_script = BUILD_INITRAMFS.read_text()
         run_app = RUN_APP.read_text()
         components_readme = COMPONENTS_README.read_text()
 
         self.assertIn("Components do not install guest binaries directly", components_readme)
         self.assertIn(
-            'W4_DB_SERVICE_SRC="$ROOT_DIR/components/w5_mem_service/w4_kvcache_db_service.c"',
+            'W4_DB_SERVICE_SRC="$ROOT_DIR/components/mem_service/w4_kvcache_db_service.c"',
             build_script,
         )
         self.assertIn('"$W4_GUEST_SRC" "$W4_DB_SERVICE_SRC" -lm -o "$W4_GUEST_BIN"', build_script)
-        self.assertNotIn("W5_MEM_SERVICE_BIN=", build_script)
-        self.assertNotIn("linqu_w5_mem_service", build_script)
-        self.assertNotIn("linqu_w5_mem_service", run_app)
-        self.assertNotIn("linqu_w5_mem_service=1", run_app)
-        self.assertFalse((ROOT / "apps" / "w5_mem_service").exists())
-        self.assertFalse((ROOT / "apps" / "w5_mem_service_demo").exists())
+        self.assertNotIn("MEM_SERVICE_BIN=", build_script)
+        self.assertNotIn("linqu_mem_service", build_script)
+        self.assertNotIn("linqu_mem_service", run_app)
+        self.assertNotIn("linqu_mem_service=1", run_app)
+        self.assertFalse((ROOT / "apps" / "mem_service").exists())
+        self.assertFalse((ROOT / "apps" / "mem_service_demo").exists())
 
     def test_record_caps_support_long_decode_runs(self):
         header = SERVICE_H.read_text()

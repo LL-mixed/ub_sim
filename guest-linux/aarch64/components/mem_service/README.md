@@ -1,6 +1,6 @@
-# W5 Memory Service Component
+# Memory Service Component
 
-`w5_mem_service` owns the guest-side memory/object metadata service used by the
+`mem_service` owns the guest-side memory/object metadata service used by the
 W4/W5 Qwen3 guest harness.
 
 It is a link-time component, not a standalone app:

@@ -175,7 +175,7 @@ if [[ -n "$SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF" && -z "$SIM_QWEN3_GUEST_ENGR
   exit 2
 fi
 if (( explicit_engram_state_ref && (memory_runtime_lookup || memory_decision_reuse) )); then
-  echo "SIM_QWEN3_GUEST_ENGRAM_STATE_REF cannot be combined with W5 Memory Service bootstrap/reuse" >&2
+  echo "SIM_QWEN3_GUEST_ENGRAM_STATE_REF cannot be combined with Memory Service bootstrap/reuse" >&2
   echo "hint: use either explicit paper ENGRAM_STATE object refs, or let Memory Service publish/materialize the state ref" >&2
   exit 2
 fi
