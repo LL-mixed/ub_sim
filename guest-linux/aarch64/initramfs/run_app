@@ -712,6 +712,11 @@ run_default_actions() {
     ran_any="1"
   fi
 
+  if has_flag "linqu_mem_service=1"; then
+    run_binary "linqu_mem_service" /bin/linqu_mem_service --smoke || rc=$?
+    ran_any="1"
+  fi
+
   if has_flag "linqu_w4_guest=1"; then
     run_w4_guest || rc=$?
     ran_any="1"
@@ -783,6 +788,12 @@ run_single_action() {
       ;;
     ssd_gsva_test)
       run_binary "ssd_gsva_test" /bin/ssd_gsva_test
+      ;;
+    mem_service)
+      run_binary "linqu_mem_service" /bin/linqu_mem_service --smoke
+      ;;
+    mem_service_qwen3)
+      run_binary "linqu_mem_service" /bin/linqu_mem_service --inspect-qwen3
       ;;
     w4_guest)
       run_w4_guest

@@ -18,13 +18,16 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#ifdef __linux__
 #include <sys/sysmacros.h>
+#endif
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "kernel_ub/include/uapi/ub/obmm.h"
 #include "common/obmm_common.h"
+#include "mem_service_qwen3.h"
 #include "libs/obmm_queue/obmm_queue_types.h"
 #include "libs/obmm_queue/obmm_spsc_queue.h"
 
@@ -95,12 +98,13 @@
 #define MEM_SERVICE_OBMM_KIND_QWEN3_ENGRAM_CANDIDATES 9U
 #define MEM_SERVICE_OBMM_KIND_QWEN3_ENGRAM_SELECTED 10U
 #define MEM_SERVICE_OBMM_KIND_QWEN3_ENGRAM_STATE 11U
-#define MEM_SERVICE_QWEN3_LAYER_COUNT 28U
-#define MEM_SERVICE_QWEN3_RANGE_NODES 8U
-#define MEM_SERVICE_QWEN3_KV_HEADS 8ULL
-#define MEM_SERVICE_QWEN3_HEAD_DIM 128ULL
-#define MEM_SERVICE_QWEN3_KV_STREAMS 2ULL
-#define MEM_SERVICE_QWEN3_KV_ELEM_BYTES 4ULL
+
+#ifndef major
+#define major(dev) ((unsigned int)(((uint64_t)(dev) >> 24) & 0xffU))
+#endif
+#ifndef minor
+#define minor(dev) ((unsigned int)((uint64_t)(dev) & 0xffffffU))
+#endif
 
 struct mem_service_cluster_meta {
     uint64_t export_mem_id;
@@ -577,13 +581,13 @@ static int mem_service_write_cluster_payload(struct mem_service *svc,
         memcpy(&probe_040, bytes + 0x40, sizeof(probe_040));
         memcpy(&probe_048, bytes + 0x48, sizeof(probe_048));
         memcpy(&probe_050, bytes + 0x50, sizeof(probe_050));
-        printf("[w4_guest] stage db_service_cluster_debug owner=node%d step=write_local_payload probe040=%#" PRIx64 " probe048=%#" PRIx64 " probe050=%#" PRIx64 "\n",
+        printf("[mem_service] stage db_service_cluster_debug owner=node%d step=write_local_payload probe040=%#" PRIx64 " probe048=%#" PRIx64 " probe050=%#" PRIx64 "\n",
                slot->owner_idx + 1,
                probe_040,
                probe_048,
                probe_050);
     }
-    printf("[w4_guest] stage db_service_cluster_debug owner=node%d step=write_local_done seq=%u done=%u count=%u\n",
+    printf("[mem_service] stage db_service_cluster_debug owner=node%d step=write_local_done seq=%u done=%u count=%u\n",
            slot->owner_idx + 1,
            ((const struct mem_service_cluster_payload *)slot->region.addr)->publish_seq,
            ((const struct mem_service_cluster_payload *)slot->region.addr)->publish_done_seq,
@@ -721,7 +725,7 @@ static int mem_service_payload_arena_alloc(struct mem_service_cluster_runtime *r
     if (end < offset ||
         !rt->slots[rt->local_idx].region.addr ||
         end > rt->slots[rt->local_idx].region.len) {
-        printf("[w4_guest] gap obmm_pool_allocator=exhausted local=node%d offset=0x%016" PRIx64
+        printf("[mem_service] gap obmm_pool_allocator=exhausted local=node%d offset=0x%016" PRIx64
                " bytes=%" PRIu64 " payload_bytes=%zu arena_base=0x%016" PRIx64 "\n",
                rt->local_idx + 1,
                offset,
@@ -826,7 +830,7 @@ static void mem_service_report_obmm_pool_layout_once(struct mem_service_cluster_
     if (!local_slot->region.addr) {
         return;
     }
-    printf("[w4_guest] stage qwen3_obmm_pool_layout local=node%d nodes=%d per_node_region_bytes=%" PRIu64
+    printf("[mem_service] stage qwen3_obmm_pool_layout local=node%d nodes=%d per_node_region_bytes=%" PRIu64
            " cluster_region_bytes=%" PRIu64 " payload_offset=%" PRIu64
            " payload_bytes=%zu arena_base=0x%016" PRIx64
            " allocator=linear_payload_arena status=ok\n",
@@ -861,7 +865,7 @@ static void mem_service_report_obmm_pool_usage(struct mem_service_cluster_runtim
             rt->payload_arena_high_water - rt->payload_arena_base :
             0;
     payload_used = rt->payload_arena_high_water;
-    printf("[w4_guest] stage qwen3_obmm_pool_usage local=node%u step=%" PRIu64
+    printf("[mem_service] stage qwen3_obmm_pool_usage local=node%u step=%" PRIu64
            " per_node_region_bytes=%" PRIu64 " cluster_region_bytes=%" PRIu64
            " payload_bytes=%zu payload_high_water_bytes=%" PRIu64
            " payload_used_pct_milli=%" PRIu64 " arena_base=0x%016" PRIx64
@@ -984,111 +988,6 @@ static void mem_service_qwen3_engram_state_key(uint64_t decode_step,
              decode_step);
 }
 
-static uint64_t mem_service_env_u64_or(const char *name, uint64_t fallback)
-{
-    const char *value = getenv(name);
-    char *end = NULL;
-    unsigned long long parsed;
-
-    if (!value || value[0] == '\0') {
-        return fallback;
-    }
-    errno = 0;
-    parsed = strtoull(value, &end, 10);
-    if (errno != 0 || end == value || *end != '\0') {
-        return fallback;
-    }
-    return (uint64_t)parsed;
-}
-
-static uint32_t mem_service_qwen3_layer_count(void)
-{
-    uint64_t value = mem_service_env_u64_or("SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS",
-                                      MEM_SERVICE_QWEN3_LAYER_COUNT);
-
-    return value > UINT32_MAX ? MEM_SERVICE_QWEN3_LAYER_COUNT : (uint32_t)value;
-}
-
-static uint64_t mem_service_qwen3_hidden_range_bytes(void)
-{
-    return mem_service_env_u64_or("SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES",
-                            MEM_SERVICE_OBMM_HIDDEN_RANGE_BYTES);
-}
-
-static uint64_t mem_service_qwen3_decode_hidden_bytes(void)
-{
-    uint64_t hidden_size = mem_service_env_u64_or("SIM_QWEN3_DENSE_HIDDEN_SIZE", 1024ULL);
-    uint64_t decode_tokens = mem_service_env_u64_or("SIM_QWEN3_DENSE_DECODE_TOKENS", 1ULL);
-
-    return mem_service_env_u64_or("SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES",
-                            hidden_size * decode_tokens * 2ULL);
-}
-
-static uint64_t mem_service_qwen3_handoff_hidden_bytes(uint64_t decode_step)
-{
-    return decode_step > 0 ? mem_service_qwen3_decode_hidden_bytes() :
-                             mem_service_qwen3_hidden_range_bytes();
-}
-
-static uint64_t mem_service_qwen3_kv_heads(void)
-{
-    return mem_service_env_u64_or("SIM_QWEN3_DENSE_NUM_KEY_VALUE_HEADS",
-                            MEM_SERVICE_QWEN3_KV_HEADS);
-}
-
-static uint64_t mem_service_qwen3_head_dim(void)
-{
-    return mem_service_env_u64_or("SIM_QWEN3_DENSE_HEAD_DIM",
-                            MEM_SERVICE_QWEN3_HEAD_DIM);
-}
-
-static const char *mem_service_qwen3_model_key(void)
-{
-    const char *model_key = getenv("SIM_QWEN3_DENSE_MODEL_KEY");
-
-    return model_key && model_key[0] != '\0' ? model_key : "qwen3-0.6b";
-}
-
-static uint64_t mem_service_qwen3_range_kv_state_bytes(uint32_t layer_start,
-                                                 uint32_t layer_end,
-                                                 uint64_t token_count)
-{
-    uint64_t layer_count;
-    uint64_t bytes_per_token_per_layer;
-
-    if (layer_end <= layer_start || layer_end > mem_service_qwen3_layer_count()) {
-        return 0;
-    }
-    layer_count = (uint64_t)(layer_end - layer_start);
-    bytes_per_token_per_layer = mem_service_qwen3_kv_heads() *
-                                mem_service_qwen3_head_dim() *
-                                MEM_SERVICE_QWEN3_KV_STREAMS *
-                                MEM_SERVICE_QWEN3_KV_ELEM_BYTES;
-    return layer_count * token_count * bytes_per_token_per_layer;
-}
-
-static void mem_service_qwen3_node_range(uint32_t node,
-                                   uint32_t node_count,
-                                   uint32_t *start_out,
-                                   uint32_t *end_out)
-{
-    uint32_t layer_count = mem_service_qwen3_layer_count();
-    uint32_t base = layer_count / node_count;
-    uint32_t rem = layer_count % node_count;
-    uint32_t start = 0;
-    uint32_t i;
-
-    for (i = 0; i < node; ++i) {
-        start += base + (i < rem ? 1U : 0U);
-    }
-    if (start_out) {
-        *start_out = start;
-    }
-    if (end_out) {
-        *end_out = start + base + (node < rem ? 1U : 0U);
-    }
-}
-
 static uint64_t mem_service_qwen3_placement_checksum(uint32_t owner,
                                                uint32_t start,
                                                uint32_t end,
@@ -1121,31 +1020,12 @@ static void mem_service_qwen3_placement_key(uint32_t owner_node,
              owner_node + 1U);
 }
 
-int mem_service_qwen3_layer_range_for_node(uint32_t local_node,
-                                     uint32_t cluster_node_count,
-                                     uint32_t *layer_start_out,
-                                     uint32_t *layer_end_out,
-                                     uint32_t *next_node_out)
-{
-    if (cluster_node_count != MEM_SERVICE_QWEN3_RANGE_NODES ||
-        local_node >= cluster_node_count || !layer_start_out ||
-        !layer_end_out || !next_node_out) {
-        return -1;
-    }
-    mem_service_qwen3_node_range(local_node,
-                           cluster_node_count,
-                           layer_start_out,
-                           layer_end_out);
-    *next_node_out = (local_node + 1U) % cluster_node_count;
-    return 0;
-}
-
 static int mem_service_qwen3_decode_entry_node(uint32_t cluster_node_count,
                                          uint32_t *node_out)
 {
     uint32_t i;
 
-    if (!node_out || cluster_node_count != MEM_SERVICE_QWEN3_RANGE_NODES) {
+    if (!node_out || cluster_node_count != mem_service_qwen3_range_nodes()) {
         return -1;
     }
     for (i = 0; i < cluster_node_count; ++i) {
@@ -1213,7 +1093,7 @@ static int mem_service_publish_qwen3_layer_range_placements(
 {
     uint32_t i;
 
-    if (!svc || node_count != MEM_SERVICE_QWEN3_RANGE_NODES) {
+    if (!svc || node_count != mem_service_qwen3_range_nodes()) {
         return -1;
     }
     for (i = 0; i < node_count; ++i) {
@@ -1278,7 +1158,7 @@ static bool mem_service_find_qwen3_layer_range_predecessor(
     if (!svc || !placement) {
         return false;
     }
-    for (i = 0; i < MEM_SERVICE_QWEN3_RANGE_NODES; ++i) {
+    for (i = 0; i < mem_service_qwen3_range_nodes(); ++i) {
         struct mem_service_qwen3_layer_range_placement candidate;
 
         if (!mem_service_read_qwen3_layer_range_placement(svc, i, &candidate)) {
@@ -1447,7 +1327,7 @@ static bool mem_service_try_read_stable_payload_region(const struct mem_service_
     if (slot->region.fd < 0) {
         return false;
     }
-    printf("[w4_guest] stage db_service_cluster_debug owner=node%d reader=node%d step=read_header_begin mem_id=%" PRIu64 " map_osync=%d addr=%p\n",
+    printf("[mem_service] stage db_service_cluster_debug owner=node%d reader=node%d step=read_header_begin mem_id=%" PRIu64 " map_osync=%d addr=%p\n",
            slot->owner_idx + 1,
            g_mem_service_cluster_runtime.local_idx + 1,
            slot->mem_id,
@@ -1455,7 +1335,7 @@ static bool mem_service_try_read_stable_payload_region(const struct mem_service_
            slot->region.addr);
     fflush(stdout);
     mem_service_copy_from_mapped_volatile(&header, mapped_bytes, sizeof(header));
-    printf("[w4_guest] stage db_service_cluster_debug owner=node%d step=read_header_done seq=%u done=%u count=%u\n",
+    printf("[mem_service] stage db_service_cluster_debug owner=node%d step=read_header_done seq=%u done=%u count=%u\n",
            slot->owner_idx + 1,
            header.publish_seq,
            header.publish_done_seq,
@@ -1482,7 +1362,7 @@ static bool mem_service_try_read_stable_payload_region(const struct mem_service_
     for (i = 0; i < header.record_count; ++i) {
         size_t record_off = offsetof(struct mem_service_cluster_payload, records) +
                             ((size_t)i * sizeof(snapshot->records[0]));
-        printf("[w4_guest] stage db_service_cluster_debug owner=node%d reader=node%d step=record_copy_begin record=%u offset=%zu bytes=%zu\n",
+        printf("[mem_service] stage db_service_cluster_debug owner=node%d reader=node%d step=record_copy_begin record=%u offset=%zu bytes=%zu\n",
                slot->owner_idx + 1,
                g_mem_service_cluster_runtime.local_idx + 1,
                i,
@@ -1492,7 +1372,7 @@ static bool mem_service_try_read_stable_payload_region(const struct mem_service_
         mem_service_copy_from_mapped_volatile(&snapshot->records[i],
                                         mapped_bytes + record_off,
                                         sizeof(snapshot->records[i]));
-        printf("[w4_guest] stage db_service_cluster_debug owner=node%d reader=node%d step=record_copy_done record=%u offset=%zu bytes=%zu\n",
+        printf("[mem_service] stage db_service_cluster_debug owner=node%d reader=node%d step=record_copy_done record=%u offset=%zu bytes=%zu\n",
                slot->owner_idx + 1,
                g_mem_service_cluster_runtime.local_idx + 1,
                i,
@@ -1501,12 +1381,12 @@ static bool mem_service_try_read_stable_payload_region(const struct mem_service_
         fflush(stdout);
     }
     __sync_synchronize();
-    printf("[w4_guest] stage db_service_cluster_debug owner=node%d reader=node%d step=confirm_header_begin\n",
+    printf("[mem_service] stage db_service_cluster_debug owner=node%d reader=node%d step=confirm_header_begin\n",
            slot->owner_idx + 1,
            g_mem_service_cluster_runtime.local_idx + 1);
     fflush(stdout);
     mem_service_copy_from_mapped_volatile(&confirm, mapped_bytes, sizeof(confirm));
-    printf("[w4_guest] stage db_service_cluster_debug owner=node%d reader=node%d step=confirm_header_done seq=%u done=%u count=%u\n",
+    printf("[mem_service] stage db_service_cluster_debug owner=node%d reader=node%d step=confirm_header_done seq=%u done=%u count=%u\n",
            slot->owner_idx + 1,
            g_mem_service_cluster_runtime.local_idx + 1,
            confirm.publish_seq,
@@ -2075,7 +1955,7 @@ static int mem_service_init_export_layout(struct mem_service_cluster_runtime *rt
         de = (struct obmm_region_dirent *)((uint8_t *)base + dir_offset) + peer_idx;
         memset(de, 0, 32);
         de->region_id = (uint32_t)peer_idx;
-        de->kind = OBMM_REGION_W4_PAYLOAD;
+        de->kind = OBMM_REGION_MEM_SERVICE_PAYLOAD;
         de->peer_node_id = (uint16_t)rt->local_idx;
         de->offset = payload_offset;
         de->size = rt->region_size - payload_offset;
@@ -2131,7 +2011,7 @@ static bool mem_service_pending_object_desc_matches(const struct obmm_desc *desc
 {
     uint32_t checksum_cookie;
 
-    if (!desc || !record || desc->type != OBMM_DESC_W4_OBJECT_PUT ||
+    if (!desc || !record || desc->type != OBMM_DESC_MEM_SERVICE_OBJECT_PUT ||
         (uint16_t)(desc->seq >> 48) != epoch || desc->flags != kind ||
         desc->payload_offset != record->object_backing_offset ||
         desc->payload_len != record->object_backing_len) {
@@ -2148,7 +2028,7 @@ static bool mem_service_runtime_range_input_desc_matches(const struct obmm_desc 
     uint64_t decode_step = epoch > 0 ? (uint64_t)epoch - 1ULL : 0ULL;
     uint64_t expected_len = mem_service_qwen3_handoff_hidden_bytes(decode_step);
 
-    if (!desc || desc->type != OBMM_DESC_W4_OBJECT_PUT ||
+    if (!desc || desc->type != OBMM_DESC_MEM_SERVICE_OBJECT_PUT ||
         desc->flags != MEM_SERVICE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT ||
         desc->payload_len != expected_len) {
         return false;
@@ -2159,7 +2039,7 @@ static bool mem_service_runtime_range_input_desc_matches(const struct obmm_desc 
 static bool mem_service_qwen3_token_result_desc_matches(const struct obmm_desc *desc,
                                                   uint16_t epoch)
 {
-    if (!desc || desc->type != OBMM_DESC_W4_OBJECT_PUT ||
+    if (!desc || desc->type != OBMM_DESC_MEM_SERVICE_OBJECT_PUT ||
         desc->flags != MEM_SERVICE_OBMM_KIND_QWEN3_TOKEN_RESULT ||
         desc->payload_len != MEM_SERVICE_OBMM_QWEN3_TOKEN_RESULT_BYTES) {
         return false;
@@ -2173,7 +2053,7 @@ static bool mem_service_qwen3_object_desc_matches(const struct obmm_desc *desc,
                                             uint64_t min_payload_len,
                                             uint64_t max_payload_len)
 {
-    if (!desc || desc->type != OBMM_DESC_W4_OBJECT_PUT ||
+    if (!desc || desc->type != OBMM_DESC_MEM_SERVICE_OBJECT_PUT ||
         desc->flags != payload_kind ||
         desc->payload_len < min_payload_len ||
         desc->payload_len > max_payload_len) {
@@ -2188,7 +2068,7 @@ static bool mem_service_qwen3_object_desc_kind_len_matches(
     uint64_t min_payload_len,
     uint64_t max_payload_len)
 {
-    return desc && desc->type == OBMM_DESC_W4_OBJECT_PUT &&
+    return desc && desc->type == OBMM_DESC_MEM_SERVICE_OBJECT_PUT &&
            desc->flags == payload_kind &&
            desc->payload_len >= min_payload_len &&
            desc->payload_len <= max_payload_len;
@@ -2458,7 +2338,7 @@ static int mem_service_push_obmm_object_descs(struct mem_service_cluster_runtime
     }
 
     memset(&desc, 0, sizeof(desc));
-    desc.type = OBMM_DESC_W4_OBJECT_PUT;
+    desc.type = OBMM_DESC_MEM_SERVICE_OBJECT_PUT;
     desc.flags = (uint16_t)payload_kind;
     desc.seq = ((uint64_t)epoch << 48) |
                ((uint64_t)(rt->local_idx + 1) << 32) |
@@ -2511,7 +2391,7 @@ static int mem_service_push_obmm_object_desc_to(struct mem_service_cluster_runti
     }
 
     memset(&desc, 0, sizeof(desc));
-    desc.type = OBMM_DESC_W4_OBJECT_PUT;
+    desc.type = OBMM_DESC_MEM_SERVICE_OBJECT_PUT;
     desc.flags = (uint16_t)payload_kind;
     desc.seq = ((uint64_t)epoch << 48) |
                ((uint64_t)(rt->local_idx + 1) << 32) |
@@ -2598,7 +2478,7 @@ static int mem_service_wait_remote_obmm_object_descs(struct mem_service_cluster_
         while (obmm_spsc_pop(q, &desc) == 0) {
             bool matched = false;
             drained = true;
-            if (desc.type != OBMM_DESC_W4_OBJECT_PUT ||
+            if (desc.type != OBMM_DESC_MEM_SERVICE_OBJECT_PUT ||
                 (uint16_t)(desc.seq >> 48) != epoch) {
                 mem_service_stash_pending_desc(rt, (int)owner_node, &desc);
                 continue;
@@ -2647,7 +2527,7 @@ static int mem_service_wait_remote_obmm_object_descs(struct mem_service_cluster_
         }
     }
 
-    printf("[w4_guest] gap obmm_service_v0=object_desc_timeout remote=node%u weight=%u kvcache=%u hidden_input=%u hidden_output=%u epoch=%u\n",
+    printf("[mem_service] gap obmm_service_v0=object_desc_timeout remote=node%u weight=%u kvcache=%u hidden_input=%u hidden_output=%u epoch=%u\n",
            owner_node + 1U,
            saw_weight ? 1U : 0U,
            saw_kvcache ? 1U : 0U,
@@ -2696,7 +2576,7 @@ static int mem_service_activate_remote_slot(struct mem_service_cluster_runtime *
     slot = &rt->slots[owner_idx];
     if (!slot->map_osync) {
         fprintf(stderr,
-                "[w4_guest] invariant violation remote_slot_map_osync_true_expected node=%d map_osync=%d\n",
+                "[mem_service] invariant violation remote_slot_map_osync_true_expected node=%d map_osync=%d\n",
                 owner_idx + 1,
                 slot->map_osync ? 1 : 0);
         slot->map_osync = true;
@@ -2807,7 +2687,7 @@ static int mem_service_cluster_runtime_require(struct mem_service_cluster_runtim
     if (!rt || !rt->active || rt->local_idx < 0 || rt->node_count <= 0 ||
         rt->local_idx >= rt->node_count ||
         !rt->slots[rt->local_idx].region.addr) {
-        printf("[w4_guest] gap db_service_cluster_stage=runtime_not_bootstrapped\n");
+        printf("[mem_service] gap db_service_cluster_stage=runtime_not_bootstrapped\n");
         return -1;
     }
     return 0;
@@ -2889,14 +2769,14 @@ static int mem_service_cluster_runtime_init(struct mem_service_cluster_runtime *
                         rt->region_size,
                         false,
                         (struct obmm_helpers_region *)&rt->slots[rt->local_idx].region) != 0) {
-        printf("[w4_guest] gap db_service_cluster_stage=map_local_failed mem_id=%" PRIu64 "\n",
+        printf("[mem_service] gap db_service_cluster_stage=map_local_failed mem_id=%" PRIu64 "\n",
                local_meta.export_mem_id);
         goto fail;
     }
 
     /* Initialize export layout with queues and payload region */
     if (mem_service_init_export_layout(rt, rt->slots[rt->local_idx].region.addr) != 0) {
-        printf("[w4_guest] gap db_service_cluster_stage=export_layout_failed\n");
+        printf("[mem_service] gap db_service_cluster_stage=export_layout_failed\n");
         goto fail;
     }
 
@@ -2907,14 +2787,14 @@ static int mem_service_cluster_runtime_init(struct mem_service_cluster_runtime *
         struct obmm_region_dirent *dir = (struct obmm_region_dirent *)
             ((uint8_t *)rt->slots[rt->local_idx].region.addr + hdr->directory_offset);
         for (i = 0; (uint32_t)i < hdr->directory_count; i++) {
-            if (dir[i].kind == OBMM_REGION_W4_PAYLOAD) {
+            if (dir[i].kind == OBMM_REGION_MEM_SERVICE_PAYLOAD) {
                 payload_offset = dir[i].offset;
                 break;
             }
         }
     }
     if (payload_offset == 0) {
-        printf("[w4_guest] gap db_service_cluster_stage=no_payload_entry\n");
+        printf("[mem_service] gap db_service_cluster_stage=no_payload_entry\n");
         goto fail;
     }
 
@@ -2922,7 +2802,7 @@ static int mem_service_cluster_runtime_init(struct mem_service_cluster_runtime *
                                      0,
                                      payload_offset,
                                      true) != 0) {
-        printf("[w4_guest] gap db_service_cluster_stage=publish_pool_layout_failed\n");
+        printf("[mem_service] gap db_service_cluster_stage=publish_pool_layout_failed\n");
         goto fail;
     }
     (void)msync(rt->slots[rt->local_idx].region.addr,
@@ -2942,7 +2822,7 @@ static int mem_service_cluster_runtime_init(struct mem_service_cluster_runtime *
 
     /* FM bootstrap for peer discovery */
     if (mem_service_exchange_cluster_meta(rt, &local_meta) != 0) {
-        printf("[w4_guest] gap db_service_cluster_stage=hello_timeout\n");
+        printf("[mem_service] gap db_service_cluster_stage=hello_timeout\n");
         goto fail;
     }
 
@@ -2950,7 +2830,7 @@ static int mem_service_cluster_runtime_init(struct mem_service_cluster_runtime *
     import_count = rt->node_count - 1;
     if (!obmm_alloc_import_pas(import_count, rt->region_size, import_pas, import_osync,
                                obmm_parse_import_cache_mode())) {
-        printf("[w4_guest] gap db_service_cluster_stage=import_alloc_failed count=%d\n",
+        printf("[mem_service] gap db_service_cluster_stage=import_alloc_failed count=%d\n",
                import_count);
         goto fail;
     }
@@ -2965,7 +2845,7 @@ static int mem_service_cluster_runtime_init(struct mem_service_cluster_runtime *
         rt->slots[i].local_pa = import_pas[import_idx];
         rt->slots[i].map_osync = true;
         fprintf(stderr,
-                "[w4_guest] remote_slot_map_osync_forced node=%d map_osync=%d\n",
+                "[mem_service] remote_slot_map_osync_forced node=%d map_osync=%d\n",
                 i + 1,
                 rt->slots[i].map_osync ? 1 : 0);
         rt->slots[i].export_cna = rt->metas[i].export_cna;
@@ -2978,7 +2858,7 @@ static int mem_service_cluster_runtime_init(struct mem_service_cluster_runtime *
             /* Import, map, and resolve egress queue for this peer now so that
              * SPSC queue barriers can push descriptors immediately. */
             if (mem_service_activate_remote_slot(rt, i) != 0) {
-                printf("[w4_guest] gap db_service_cluster_stage=activate_remote_failed owner=node%d\n",
+                printf("[mem_service] gap db_service_cluster_stage=activate_remote_failed owner=node%d\n",
                        i + 1);
                 goto fail;
             }
@@ -2987,7 +2867,7 @@ static int mem_service_cluster_runtime_init(struct mem_service_cluster_runtime *
 
     rt->active = true;
     if (rt->lazy_remote_activation) {
-        printf("[w4_guest] stage db_service_cluster=local_pool_ready node=%d peers=%d activation=lazy backing=obmm_pool queue=obmm_spsc status=ok\n",
+        printf("[mem_service] stage db_service_cluster=local_pool_ready node=%d peers=%d activation=lazy backing=obmm_pool queue=obmm_spsc status=ok\n",
                rt->local_idx + 1,
                rt->node_count - 1);
     }
@@ -3109,7 +2989,7 @@ static struct mem_service_record *mem_service_recycle_qwen3_runtime_record(
         }
     }
     if (candidate) {
-        printf("[w4_guest] stage db_service_record_recycle key=%s old_step=%" PRIu64
+        printf("[mem_service] stage db_service_record_recycle key=%s old_step=%" PRIu64
                " incoming_step=%" PRIu64 " retain_steps=%" PRIu64
                " record_count=%zu status=ok\n",
                candidate->key,
@@ -3663,7 +3543,7 @@ int mem_service_bootstrap_kvcache(struct mem_service *svc,
                                  ctx->block_hash) != 0) {
         return -1;
     }
-    printf("[w4_guest] stage db_service_bootstrap=request_prefix_ok key=%s request=%s prefix=%s block=%s\n",
+    printf("[mem_service] stage db_service_bootstrap=request_prefix_ok key=%s request=%s prefix=%s block=%s\n",
            prefix_key,
            ctx->request_id,
            ctx->prefix_group,
@@ -3681,7 +3561,7 @@ int mem_service_bootstrap_kvcache(struct mem_service *svc,
                              MEM_SERVICE_KVCACHE_STATE_FILLED) != 0) {
         return -1;
     }
-    printf("[w4_guest] stage db_service_bootstrap=block_meta_ok key=%s placement_node=%u placement_level=%u hot_segment=0x%016" PRIx64 " state=%s\n",
+    printf("[mem_service] stage db_service_bootstrap=block_meta_ok key=%s placement_node=%u placement_level=%u hot_segment=0x%016" PRIx64 " state=%s\n",
            block_key,
            ctx->placement_node,
            ctx->placement_level,
@@ -3700,7 +3580,7 @@ int mem_service_bootstrap_kvcache(struct mem_service *svc,
     if (mem_service_update_prefix_group_from_block(svc, ctx, resolved_out) != 0) {
         return -1;
     }
-    printf("[w4_guest] stage db_service_bootstrap=result_update_ok key=%s result_segment=0x%016" PRIx64 " state=%s\n",
+    printf("[mem_service] stage db_service_bootstrap=result_update_ok key=%s result_segment=0x%016" PRIx64 " state=%s\n",
            block_key,
            ctx->result_segment_id,
            mem_service_kvcache_state_name(MEM_SERVICE_KVCACHE_STATE_HOT));
@@ -3711,7 +3591,7 @@ int mem_service_bootstrap_kvcache(struct mem_service *svc,
                                    resolved_out) != 0) {
         return -1;
     }
-    printf("[w4_guest] stage db_service_bootstrap=prefix_result_ok key=%s block=%s hot_segment=0x%016" PRIx64 " state=%s result_segment=0x%016" PRIx64 " version=%" PRIu64 "\n",
+    printf("[mem_service] stage db_service_bootstrap=prefix_result_ok key=%s block=%s hot_segment=0x%016" PRIx64 " state=%s result_segment=0x%016" PRIx64 " version=%" PRIu64 "\n",
            prefix_key,
            resolved_out->block_hash,
            resolved_out->hot_segment_id,
@@ -3902,7 +3782,7 @@ int mem_service_cluster_fetch_record(struct mem_service *svc,
         return -1;
     }
     if (mem_service_write_cluster_payload(svc, &rt->slots[rt->local_idx]) != 0) {
-        printf("[w4_guest] gap db_service_cluster_stage=write_local_payload_failed\n");
+        printf("[mem_service] gap db_service_cluster_stage=write_local_payload_failed\n");
         return -1;
     }
     mem_service_reset_remote_slots_for_publish(rt);
@@ -3929,7 +3809,7 @@ int mem_service_cluster_fetch_record(struct mem_service *svc,
         usleep(10000);
     }
     if (rc != 0) {
-        printf("[w4_guest] gap db_service_cluster_stage=key_not_found key=%s\n", key);
+        printf("[mem_service] gap db_service_cluster_stage=key_not_found key=%s\n", key);
     }
     return rc;
 }
@@ -3940,7 +3820,7 @@ int mem_service_obmm_service_v0_ensure_cluster_runtime(uint32_t local_node,
     struct mem_service_cluster_runtime *rt = &g_mem_service_cluster_runtime;
     uint32_t i;
 
-    if (cluster_node_count != MEM_SERVICE_QWEN3_RANGE_NODES ||
+    if (cluster_node_count != mem_service_qwen3_range_nodes() ||
         local_node >= cluster_node_count) {
         return -1;
     }
@@ -3953,7 +3833,7 @@ int mem_service_obmm_service_v0_ensure_cluster_runtime(uint32_t local_node,
         return -1;
     }
     if (rt->lazy_remote_activation) {
-        printf("[w4_guest] gap db_service_cluster_stage=lazy_activation_forbidden local=node%u\n",
+        printf("[mem_service] gap db_service_cluster_stage=lazy_activation_forbidden local=node%u\n",
                local_node + 1U);
         return -1;
     }
@@ -3961,13 +3841,13 @@ int mem_service_obmm_service_v0_ensure_cluster_runtime(uint32_t local_node,
         if (!rt->slots[i].region.addr ||
             (i != local_node &&
              (!rt->egress_queues[i] || !rt->ingress_queues[i]))) {
-            printf("[w4_guest] gap db_service_cluster_stage=peer_not_bootstrapped local=node%u peer=node%u\n",
+            printf("[mem_service] gap db_service_cluster_stage=peer_not_bootstrapped local=node%u peer=node%u\n",
                    local_node + 1U,
                    i + 1U);
             return -1;
         }
     }
-    printf("[w4_guest] stage obmm_cluster_runtime_bootstrap local=node%u nodes=%u backing=obmm_pool metadata=lingqu_object_service queue=obmm_spsc status=ok\n",
+    printf("[mem_service] stage obmm_cluster_runtime_bootstrap local=node%u nodes=%u backing=obmm_pool metadata=lingqu_object_service queue=obmm_spsc status=ok\n",
            local_node + 1U,
            cluster_node_count);
     return 0;
@@ -4018,23 +3898,23 @@ int mem_service_publish_observe_cluster(struct mem_service *svc,
     summary->peer_group_count_floor = 0;
 
     if (mem_service_write_cluster_payload(svc, &rt->slots[rt->local_idx]) != 0) {
-        printf("[w4_guest] gap db_service_cluster_stage=write_local_payload_failed\n");
+        printf("[mem_service] gap db_service_cluster_stage=write_local_payload_failed\n");
         goto out;
     }
     mem_service_reset_remote_slots_for_publish(rt);
-    printf("[w4_guest] stage db_service_cluster_debug owner=node%d step=remote_slots_reset seq=%u\n",
+    printf("[mem_service] stage db_service_cluster_debug owner=node%d step=remote_slots_reset seq=%u\n",
            rt->local_idx + 1,
            rt->publish_seq);
     if (!mem_service_try_read_stable_payload_region(&rt->slots[rt->local_idx],
                                               &peer_snapshots[rt->local_idx],
                                               NULL)) {
-        printf("[w4_guest] gap db_service_cluster_stage=read_local_payload_failed\n");
+        printf("[mem_service] gap db_service_cluster_stage=read_local_payload_failed\n");
         goto out;
     }
     mem_service_build_compact_summary(peer_snapshots[rt->local_idx].records,
                                 peer_snapshots[rt->local_idx].record_count,
                                 &peer_compact[rt->local_idx]);
-    printf("[w4_guest] stage db_service_cluster_debug owner=node%d step=read_local_payload_ok seq=%u\n",
+    printf("[mem_service] stage db_service_cluster_debug owner=node%d step=read_local_payload_ok seq=%u\n",
            rt->local_idx + 1,
            rt->publish_seq);
     peer_ready[rt->local_idx] = true;
@@ -4046,14 +3926,14 @@ int mem_service_publish_observe_cluster(struct mem_service *svc,
     if (rt->observe_epoch == 0) {
         rt->observe_epoch = 1;
     }
-    if (mem_service_queue_barrier(rt, OBMM_DESC_W4_READY,
+    if (mem_service_queue_barrier(rt, OBMM_DESC_MEM_SERVICE_READY,
                             rt->observe_epoch,
                             local_publish_seq) != 0) {
-        printf("[w4_guest] gap db_service_cluster_stage=payload_ready_timeout epoch=%u\n",
+        printf("[mem_service] gap db_service_cluster_stage=payload_ready_timeout epoch=%u\n",
                rt->observe_epoch);
         goto out;
     }
-    printf("[w4_guest] stage db_service_cluster_debug owner=node%d step=ready_barrier_ok epoch=%u seq=%u\n",
+    printf("[mem_service] stage db_service_cluster_debug owner=node%d step=ready_barrier_ok epoch=%u seq=%u\n",
            rt->local_idx + 1,
            rt->observe_epoch,
            local_publish_seq);
@@ -4066,12 +3946,12 @@ int mem_service_publish_observe_cluster(struct mem_service *svc,
             continue;
         }
         if (mem_service_activate_remote_slot(rt, i) != 0) {
-            printf("[w4_guest] gap db_service_cluster_stage=activate_remote_failed owner=node%d reader=node%d\n",
+            printf("[mem_service] gap db_service_cluster_stage=activate_remote_failed owner=node%d reader=node%d\n",
                    i + 1,
                    rt->local_idx + 1);
             goto out;
         }
-        printf("[w4_guest] stage db_service_cluster_debug owner=node%d reader=node%d step=remote_payload_read_wait expect_seq=%u mem_id=%" PRIu64 " map_osync=%d addr=%p\n",
+        printf("[mem_service] stage db_service_cluster_debug owner=node%d reader=node%d step=remote_payload_read_wait expect_seq=%u mem_id=%" PRIu64 " map_osync=%d addr=%p\n",
                i + 1,
                rt->local_idx + 1,
                owner_publish_seq,
@@ -4090,7 +3970,7 @@ int mem_service_publish_observe_cluster(struct mem_service *svc,
                                                            &peer_compact[i],
                                                            &seen_header)) {
             } else {
-                printf("[w4_guest] gap db_service_cluster_stage=payload_not_ready owner=node%d reader=node%d expect_seq=%u seen_seq=%u seen_done=%u magic=0x%08x version=%u count=%u\n",
+                printf("[mem_service] gap db_service_cluster_stage=payload_not_ready owner=node%d reader=node%d expect_seq=%u seen_seq=%u seen_done=%u magic=0x%08x version=%u count=%u\n",
                        i + 1,
                        rt->local_idx + 1,
                        owner_publish_seq,
@@ -4099,13 +3979,13 @@ int mem_service_publish_observe_cluster(struct mem_service *svc,
                        seen_header.magic,
                        seen_header.version,
                        seen_header.record_count);
-                printf("[w4_guest] gap db_service_cluster_stage=payload_not_ready owner=node%d reader=node%d\n",
+                printf("[mem_service] gap db_service_cluster_stage=payload_not_ready owner=node%d reader=node%d\n",
                        i + 1,
                        rt->local_idx + 1);
                 goto out;
             }
         }
-        printf("[w4_guest] stage db_service_cluster_debug owner=node%d reader=node%d step=remote_payload_read_ok seq=%u expect_seq=%u\n",
+        printf("[mem_service] stage db_service_cluster_debug owner=node%d reader=node%d step=remote_payload_read_ok seq=%u expect_seq=%u\n",
                i + 1,
                rt->local_idx + 1,
                seen_header.publish_done_seq,
@@ -4119,14 +3999,14 @@ int mem_service_publish_observe_cluster(struct mem_service *svc,
     if (rt->observe_epoch == 0) {
         rt->observe_epoch = 1;
     }
-    printf("[w4_guest] stage db_service_cluster_debug owner=node%d step=observe_announce_begin epoch=%u seq=%u\n",
+    printf("[mem_service] stage db_service_cluster_debug owner=node%d step=observe_announce_begin epoch=%u seq=%u\n",
            rt->local_idx + 1,
            rt->observe_epoch,
            observed_seq);
     fflush(stdout);
-    (void)mem_service_queue_barrier(rt, OBMM_DESC_W4_OBSERVED,
+    (void)mem_service_queue_barrier(rt, OBMM_DESC_MEM_SERVICE_OBSERVED,
                               rt->observe_epoch, observed_seq);
-    printf("[w4_guest] stage db_service_cluster_debug owner=node%d step=observe_announce_done epoch=%u seq=%u\n",
+    printf("[mem_service] stage db_service_cluster_debug owner=node%d step=observe_announce_done epoch=%u seq=%u\n",
            rt->local_idx + 1,
            rt->observe_epoch,
            observed_seq);
@@ -4137,12 +4017,12 @@ int mem_service_publish_observe_cluster(struct mem_service *svc,
         struct mem_service_cluster_payload_compact_summary compact = peer_compact[i];
 
         if (!peer_ready[i]) {
-            printf("[w4_guest] gap db_service_cluster_stage=payload_not_ready owner=node%d\n",
+            printf("[mem_service] gap db_service_cluster_stage=payload_not_ready owner=node%d\n",
                    i + 1);
             goto out;
         }
         if (compact.record_count == 0 || compact.record_count > MEM_SERVICE_CLUSTER_MAX_RECORDS) {
-            printf("[w4_guest] gap db_service_cluster_stage=compact_summary_invalid owner=node%d count=%u\n",
+            printf("[mem_service] gap db_service_cluster_stage=compact_summary_invalid owner=node%d count=%u\n",
                    i + 1,
                    compact.record_count);
             goto out;
@@ -4190,7 +4070,7 @@ int mem_service_publish_observe_cluster(struct mem_service *svc,
             compact.group_count < summary->peer_group_count_floor) {
             summary->peer_group_count_floor = compact.group_count;
         }
-        printf("[w4_guest] stage db_service_cluster_observe_compact owner=node%d records=%u prefixes=%u blocks=%u groups=%u weight_tiles=%u kvcache_objects=%u block_version_floor=%" PRIu64 " prefix_version_floor=%" PRIu64 "\n",
+        printf("[mem_service] stage db_service_cluster_observe_compact owner=node%d records=%u prefixes=%u blocks=%u groups=%u weight_tiles=%u kvcache_objects=%u block_version_floor=%" PRIu64 " prefix_version_floor=%" PRIu64 "\n",
                i + 1,
                compact.record_count,
                compact.prefix_count,
@@ -4210,12 +4090,12 @@ int mem_service_publish_observe_cluster(struct mem_service *svc,
                 goto out;
             }
             if (rec->kind == MEM_SERVICE_RECORD_REQUEST_PREFIX) {
-                printf("[w4_guest] stage db_service_cluster_observe owner=node%d kind=request_prefix key=%s version=%" PRIu64 "\n",
+                printf("[mem_service] stage db_service_cluster_observe owner=node%d kind=request_prefix key=%s version=%" PRIu64 "\n",
                        i + 1,
                        rec->key,
                        rec->version);
             } else if (rec->kind == MEM_SERVICE_RECORD_PREFIX_GROUP) {
-                printf("[w4_guest] stage db_service_cluster_observe owner=node%d kind=prefix_group key=%s group=%s members=%u state=%s version=%" PRIu64 " last_result_segment=0x%016" PRIx64 "\n",
+                printf("[mem_service] stage db_service_cluster_observe owner=node%d kind=prefix_group key=%s group=%s members=%u state=%s version=%" PRIu64 " last_result_segment=0x%016" PRIx64 "\n",
                        i + 1,
                        rec->key,
                        rec->group_id,
@@ -4234,7 +4114,7 @@ int mem_service_publish_observe_cluster(struct mem_service *svc,
                     rec->state != local_record->state) {
                     summary->state_coherent = false;
                 }
-                printf("[w4_guest] stage db_service_cluster_observe owner=node%d kind=block_meta key=%s state=%s version=%" PRIu64 " last_result_segment=0x%016" PRIx64 "\n",
+                printf("[mem_service] stage db_service_cluster_observe owner=node%d kind=block_meta key=%s state=%s version=%" PRIu64 " last_result_segment=0x%016" PRIx64 "\n",
                        i + 1,
                        rec->key,
                        mem_service_kvcache_state_name(rec->state),
@@ -4249,7 +4129,7 @@ int mem_service_publish_observe_cluster(struct mem_service *svc,
                        rec->kind == MEM_SERVICE_RECORD_QWEN3_ENGRAM_CANDIDATES ||
                        rec->kind == MEM_SERVICE_RECORD_QWEN3_ENGRAM_SELECTED ||
                        rec->kind == MEM_SERVICE_RECORD_QWEN3_ENGRAM_STATE) {
-                printf("[w4_guest] stage db_service_cluster_observe owner=node%d kind=%s key=%s offset=0x%016" PRIx64 " bytes=%" PRIu64 " checksum=0x%016" PRIx64 " version=%" PRIu64 "\n",
+                printf("[mem_service] stage db_service_cluster_observe owner=node%d kind=%s key=%s offset=0x%016" PRIx64 " bytes=%" PRIu64 " checksum=0x%016" PRIx64 " version=%" PRIu64 "\n",
                        i + 1,
                        mem_service_object_kind_name(rec->object_payload_kind),
                        rec->key,
@@ -4258,7 +4138,7 @@ int mem_service_publish_observe_cluster(struct mem_service *svc,
                        rec->object_payload_checksum,
                        rec->version);
             } else if (rec->kind == MEM_SERVICE_RECORD_LAYER_RANGE_PLACEMENT) {
-                printf("[w4_guest] stage db_service_cluster_observe owner=node%d kind=layer_range_placement key=%s owner_node=node%u layers=[%" PRIu64 ",%" PRIu64 ") count=%" PRIu64 " next=node%u checksum=0x%016" PRIx64 " version=%" PRIu64 "\n",
+                printf("[mem_service] stage db_service_cluster_observe owner=node%d kind=layer_range_placement key=%s owner_node=node%u layers=[%" PRIu64 ",%" PRIu64 ") count=%" PRIu64 " next=node%u checksum=0x%016" PRIx64 " version=%" PRIu64 "\n",
                        i + 1,
                        rec->key,
                        rec->placement_node + 1U,
@@ -4276,7 +4156,7 @@ int mem_service_publish_observe_cluster(struct mem_service *svc,
 
     summary->ready = (summary->peers_observed == (uint32_t)(rt->node_count - 1));
     if (summary->ready) {
-        printf("[w4_guest] stage db_service_cluster=metadata_visible nodes=%u peers=%u local_version=%" PRIu64 " peer_version_floor=%" PRIu64 " peer_prefix_version_floor=%" PRIu64 " peer_prefix_result_floor=0x%016" PRIx64 " peer_record_count_floor=%u peer_prefix_count_floor=%u peer_block_count_floor=%u peer_group_count_floor=%u prefix_state_ready=%s prefix_view_ready=%s\n",
+        printf("[mem_service] stage db_service_cluster=metadata_visible nodes=%u peers=%u local_version=%" PRIu64 " peer_version_floor=%" PRIu64 " peer_prefix_version_floor=%" PRIu64 " peer_prefix_result_floor=0x%016" PRIx64 " peer_record_count_floor=%u peer_prefix_count_floor=%u peer_block_count_floor=%u peer_group_count_floor=%u prefix_state_ready=%s prefix_view_ready=%s\n",
                summary->node_count,
                summary->peers_observed,
                summary->local_version,
@@ -4383,7 +4263,7 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
         return -1;
     }
     if ((uint32_t)rt->local_idx != local_node) {
-        printf("[w4_guest] gap obmm_service_v0=local_node_mismatch expected=%u actual=%d\n",
+        printf("[mem_service] gap obmm_service_v0=local_node_mismatch expected=%u actual=%d\n",
                local_node + 1U,
                rt->local_idx + 1);
         return -1;
@@ -4392,14 +4272,14 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
     if (!local_slot->region.addr ||
         local_slot->region.len <
             MEM_SERVICE_OBMM_HIDDEN_RANGE_RUNTIME_OUTPUT_OFFSET + hidden_range_bytes) {
-        printf("[w4_guest] gap obmm_service_v0=local_region_too_small len=%zu\n",
+        printf("[mem_service] gap obmm_service_v0=local_region_too_small len=%zu\n",
                local_slot->region.len);
         return -1;
     }
-    if (cluster_node_count != MEM_SERVICE_QWEN3_RANGE_NODES) {
-        printf("[w4_guest] gap qwen3_range_forward=node_count_mismatch nodes=%u expected=%u\n",
+    if (cluster_node_count != mem_service_qwen3_range_nodes()) {
+        printf("[mem_service] gap qwen3_range_forward=node_count_mismatch nodes=%u expected=%u\n",
                cluster_node_count,
-               MEM_SERVICE_QWEN3_RANGE_NODES);
+               mem_service_qwen3_range_nodes());
         return -1;
     }
     if (mem_service_publish_qwen3_layer_range_placements(svc,
@@ -4407,7 +4287,7 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
         !mem_service_read_qwen3_layer_range_placement(svc,
                                                 local_node,
                                                 &local_placement)) {
-        printf("[w4_guest] gap qwen3_range_forward=placement_metadata_missing local=node%u nodes=%u\n",
+        printf("[mem_service] gap qwen3_range_forward=placement_metadata_missing local=node%u nodes=%u\n",
                local_node + 1U,
                cluster_node_count);
         return -1;
@@ -4417,7 +4297,7 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
         !mem_service_read_qwen3_layer_range_placement(svc,
                                                 remote_node,
                                                 &remote_placement)) {
-        printf("[w4_guest] gap qwen3_range_forward=next_placement_metadata_missing local=node%u next=node%u nodes=%u\n",
+        printf("[mem_service] gap qwen3_range_forward=next_placement_metadata_missing local=node%u next=node%u nodes=%u\n",
                local_node + 1U,
                remote_node + 1U,
                cluster_node_count);
@@ -4435,7 +4315,7 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
         hidden_input_seed_owner = prev_node;
         hidden_input_seed_kind = MEM_SERVICE_OBMM_KIND_HIDDEN_RANGE_OUTPUT;
     } else {
-        printf("[w4_guest] gap qwen3_range_forward=predecessor_placement_missing local=node%u layers=[%u,%u)\n",
+        printf("[mem_service] gap qwen3_range_forward=predecessor_placement_missing local=node%u layers=[%u,%u)\n",
                local_node + 1U,
                local_placement.layer_start,
                local_placement.layer_end);
@@ -4494,7 +4374,7 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
                                   hidden_range_bytes,
                                   64,
                                   &local_hidden_output_offset) != 0) {
-        printf("[w4_guest] gap obmm_service_v0=hidden_range_arena_alloc_failed local=node%u bytes=%" PRIu64 "\n",
+        printf("[mem_service] gap obmm_service_v0=hidden_range_arena_alloc_failed local=node%u bytes=%" PRIu64 "\n",
                local_node + 1U,
                hidden_range_bytes);
         return -1;
@@ -4541,7 +4421,7 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
                                      local_hidden_output_offset,
                                      hidden_range_bytes,
                                      true) != 0) {
-        printf("[w4_guest] gap obmm_service_v0=local_payload_publish_failed\n");
+        printf("[mem_service] gap obmm_service_v0=local_payload_publish_failed\n");
         return -1;
     }
     (void)msync(base + MEM_SERVICE_OBMM_WEIGHT_OFFSET, MEM_SERVICE_OBMM_SERVICE_OBJECT_BYTES, MS_SYNC);
@@ -4589,22 +4469,22 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
                                      hidden_range_bytes,
                                      hidden_output_checksum,
                                      &local_hidden_output) != 0) {
-        printf("[w4_guest] gap obmm_service_v0=metadata_put_failed\n");
+        printf("[mem_service] gap obmm_service_v0=metadata_put_failed\n");
         return -1;
     }
-    printf("[w4_guest] stage obmm_service_v0_publish kind=weight_tile key=%s owner=node%u offset=0x%016" PRIx64 " bytes=%" PRIu64 " checksum=0x%016" PRIx64 " backing=obmm_pool metadata=db status=ok\n",
+    printf("[mem_service] stage obmm_service_v0_publish kind=weight_tile key=%s owner=node%u offset=0x%016" PRIx64 " bytes=%" PRIu64 " checksum=0x%016" PRIx64 " backing=obmm_pool metadata=db status=ok\n",
            local_weight.key,
            local_node + 1U,
            local_weight.object_backing_offset,
            local_weight.object_backing_len,
            local_weight.object_payload_checksum);
-    printf("[w4_guest] stage obmm_service_v0_publish kind=kvcache_block key=%s owner=node%u offset=0x%016" PRIx64 " bytes=%" PRIu64 " checksum=0x%016" PRIx64 " backing=obmm_pool metadata=db status=ok\n",
+    printf("[mem_service] stage obmm_service_v0_publish kind=kvcache_block key=%s owner=node%u offset=0x%016" PRIx64 " bytes=%" PRIu64 " checksum=0x%016" PRIx64 " backing=obmm_pool metadata=db status=ok\n",
            local_kvcache.key,
            local_node + 1U,
            local_kvcache.object_backing_offset,
            local_kvcache.object_backing_len,
            local_kvcache.object_payload_checksum);
-    printf("[w4_guest] stage qwen3_range_forward_placement local=node%u key=placement/%s/layer-range/node%u layers=[%u,%u) count=%u next=node%u predecessor=node%u terminal=%s source=db_metadata strategy=%s status=ok\n",
+    printf("[mem_service] stage qwen3_range_forward_placement local=node%u key=placement/%s/layer-range/node%u layers=[%u,%u) count=%u next=node%u predecessor=node%u terminal=%s source=db_metadata strategy=%s status=ok\n",
            local_node + 1U,
            qwen3_model_key,
            local_node + 1U,
@@ -4615,7 +4495,7 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
            prev_node + 1U,
            local_placement.terminal ? "true" : "false",
            "balanced_layers");
-    printf("[w4_guest] stage obmm_service_v0_publish kind=hidden_range_input key=%s owner=node%u layers=[%u,%u) count=%u offset=0x%016" PRIx64 " bytes=%" PRIu64 " checksum=0x%016" PRIx64 " backing=obmm_pool metadata=db status=ok\n",
+    printf("[mem_service] stage obmm_service_v0_publish kind=hidden_range_input key=%s owner=node%u layers=[%u,%u) count=%u offset=0x%016" PRIx64 " bytes=%" PRIu64 " checksum=0x%016" PRIx64 " backing=obmm_pool metadata=db status=ok\n",
            local_hidden_input.key,
            local_node + 1U,
            local_range_start,
@@ -4624,7 +4504,7 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
            local_hidden_input.object_backing_offset,
            local_hidden_input.object_backing_len,
            local_hidden_input.object_payload_checksum);
-    printf("[w4_guest] stage obmm_service_v0_publish kind=hidden_range_output key=%s owner=node%u layers=[%u,%u) count=%u offset=0x%016" PRIx64 " bytes=%" PRIu64 " checksum=0x%016" PRIx64 " backing=obmm_pool metadata=db status=ok\n",
+    printf("[mem_service] stage obmm_service_v0_publish kind=hidden_range_output key=%s owner=node%u layers=[%u,%u) count=%u offset=0x%016" PRIx64 " bytes=%" PRIu64 " checksum=0x%016" PRIx64 " backing=obmm_pool metadata=db status=ok\n",
            local_hidden_output.key,
            local_node + 1U,
            local_range_start,
@@ -4633,7 +4513,7 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
            local_hidden_output.object_backing_offset,
            local_hidden_output.object_backing_len,
            local_hidden_output.object_payload_checksum);
-    printf("[w4_guest] stage qwen3_range_forward_contract local=node%u layers=[%u,%u) count=%u next=node%u pipeline_nodes=%u total_layers=%u min_layers=%u max_layers=%u balanced=true placement_source=db_metadata input_key=%s output_key=%s kv_state_bytes_per_token=%" PRIu64 " backing=obmm_pool metadata=db status=ok\n",
+    printf("[mem_service] stage qwen3_range_forward_contract local=node%u layers=[%u,%u) count=%u next=node%u pipeline_nodes=%u total_layers=%u min_layers=%u max_layers=%u balanced=true placement_source=db_metadata input_key=%s output_key=%s kv_state_bytes_per_token=%" PRIu64 " backing=obmm_pool metadata=db status=ok\n",
            local_node + 1U,
            local_range_start,
            local_range_end,
@@ -4648,7 +4528,7 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
            mem_service_qwen3_range_kv_state_bytes(local_range_start, local_range_end, 1));
 
     if (mem_service_write_cluster_payload(svc, local_slot) != 0) {
-        printf("[w4_guest] gap obmm_service_v0=metadata_publish_failed\n");
+        printf("[mem_service] gap obmm_service_v0=metadata_publish_failed\n");
         return -1;
     }
     local_publish_seq = (uint16_t)(rt->publish_seq & 0xffffu);
@@ -4660,9 +4540,9 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
         rt->observe_epoch = 1;
     }
     object_epoch = rt->observe_epoch;
-    (void)mem_service_queue_barrier(rt, OBMM_DESC_W4_READY,
+    (void)mem_service_queue_barrier(rt, OBMM_DESC_MEM_SERVICE_READY,
                               object_epoch, local_publish_seq);
-    printf("[w4_guest] stage obmm_service_v0_local_ready_announced local=node%u epoch=%u seq=%u\n",
+    printf("[mem_service] stage obmm_service_v0_local_ready_announced local=node%u epoch=%u seq=%u\n",
            local_node + 1U,
            object_epoch,
            local_publish_seq);
@@ -4690,16 +4570,16 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
                                      local_hidden_output.object_backing_len,
                                      local_hidden_output.object_payload_checksum,
                                      object_epoch) != 0) {
-        printf("[w4_guest] gap obmm_service_v0=object_desc_publish_failed local=node%u epoch=%u\n",
+        printf("[mem_service] gap obmm_service_v0=object_desc_publish_failed local=node%u epoch=%u\n",
                local_node + 1U,
                object_epoch);
         return -1;
     }
-    printf("[w4_guest] stage obmm_service_v0_object_desc_put local=node%u objects=4 queue=obmm_spsc epoch=%u status=ok\n",
+    printf("[mem_service] stage obmm_service_v0_object_desc_put local=node%u objects=4 queue=obmm_spsc epoch=%u status=ok\n",
            local_node + 1U,
            object_epoch);
     if (mem_service_activate_remote_slot(rt, (int)remote_node) != 0) {
-        printf("[w4_guest] gap obmm_service_v0=remote_slot_import_failed remote=node%u\n",
+        printf("[mem_service] gap obmm_service_v0=remote_slot_import_failed remote=node%u\n",
                remote_node + 1U);
         return -1;
     }
@@ -4739,7 +4619,7 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
         remote_kvcache.kind != MEM_SERVICE_RECORD_KVCACHE_OBJECT ||
         remote_hidden_input.kind != MEM_SERVICE_RECORD_HIDDEN_RANGE_INPUT ||
         remote_hidden_output.kind != MEM_SERVICE_RECORD_HIDDEN_RANGE_OUTPUT) {
-        printf("[w4_guest] gap obmm_service_v0=remote_metadata_resolve_failed remote=node%u snapshot=%u seq=%u done=%u count=%u weight=%u kvcache=%u hidden_input=%u hidden_output=%u\n",
+        printf("[mem_service] gap obmm_service_v0=remote_metadata_resolve_failed remote=node%u snapshot=%u seq=%u done=%u count=%u weight=%u kvcache=%u hidden_input=%u hidden_output=%u\n",
                remote_node + 1U,
                saw_remote_snapshot ? 1U : 0U,
                last_seen_seq,
@@ -4759,7 +4639,7 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
         remote_kvcache.object_backing_len != MEM_SERVICE_OBMM_SERVICE_OBJECT_BYTES ||
         remote_hidden_input.object_backing_len != hidden_range_bytes ||
         remote_hidden_output.object_backing_len != hidden_range_bytes) {
-        printf("[w4_guest] gap obmm_service_v0=remote_metadata_incoherent remote=node%u\n",
+        printf("[mem_service] gap obmm_service_v0=remote_metadata_incoherent remote=node%u\n",
                remote_node + 1U);
         return -1;
     }
@@ -4772,7 +4652,7 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
                                            &remote_hidden_output) != 0) {
         return -1;
     }
-    printf("[w4_guest] stage obmm_service_v0_object_desc_get remote=node%u reader=node%u objects=4 queue=obmm_spsc epoch=%u status=ok\n",
+    printf("[mem_service] stage obmm_service_v0_object_desc_get remote=node%u reader=node%u objects=4 queue=obmm_spsc epoch=%u status=ok\n",
            remote_node + 1U,
            local_node + 1U,
            object_epoch);
@@ -4781,7 +4661,7 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
         remote_kvcache.object_backing_offset + remote_kvcache.object_backing_len > remote_slot->region.len ||
         remote_hidden_input.object_backing_offset + remote_hidden_input.object_backing_len > remote_slot->region.len ||
         remote_hidden_output.object_backing_offset + remote_hidden_output.object_backing_len > remote_slot->region.len) {
-        printf("[w4_guest] gap obmm_service_v0=remote_region_too_small remote=node%u\n",
+        printf("[mem_service] gap obmm_service_v0=remote_region_too_small remote=node%u\n",
                remote_node + 1U);
         return -1;
     }
@@ -4814,7 +4694,7 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
         mem_service_cpu_relax_wait(&relax_attempt);
     } while (obmm_now_ms() < deadline);
     if (!remote_payload_checksums_match) {
-        printf("[w4_guest] gap obmm_service_v0=remote_payload_checksum_mismatch remote=node%u weight=0x%016" PRIx64 "/0x%016" PRIx64 " kvcache=0x%016" PRIx64 "/0x%016" PRIx64 " hidden_input=0x%016" PRIx64 "/0x%016" PRIx64 " hidden_output=0x%016" PRIx64 "/0x%016" PRIx64 "\n",
+        printf("[mem_service] gap obmm_service_v0=remote_payload_checksum_mismatch remote=node%u weight=0x%016" PRIx64 "/0x%016" PRIx64 " kvcache=0x%016" PRIx64 "/0x%016" PRIx64 " hidden_input=0x%016" PRIx64 "/0x%016" PRIx64 " hidden_output=0x%016" PRIx64 "/0x%016" PRIx64 "\n",
                remote_node + 1U,
                remote_weight_checksum,
                remote_weight.object_payload_checksum,
@@ -4826,21 +4706,21 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
                remote_hidden_output.object_payload_checksum);
         return -1;
     }
-    printf("[w4_guest] stage obmm_service_v0_resolve kind=weight_tile key=%s owner=node%u reader=node%u offset=0x%016" PRIx64 " bytes=%" PRIu64 " checksum=0x%016" PRIx64 " backing=obmm_pool metadata=db status=ok\n",
+    printf("[mem_service] stage obmm_service_v0_resolve kind=weight_tile key=%s owner=node%u reader=node%u offset=0x%016" PRIx64 " bytes=%" PRIu64 " checksum=0x%016" PRIx64 " backing=obmm_pool metadata=db status=ok\n",
            remote_weight.key,
            remote_node + 1U,
            local_node + 1U,
            remote_weight.object_backing_offset,
            remote_weight.object_backing_len,
            remote_weight_checksum);
-    printf("[w4_guest] stage obmm_service_v0_resolve kind=kvcache_block key=%s owner=node%u reader=node%u offset=0x%016" PRIx64 " bytes=%" PRIu64 " checksum=0x%016" PRIx64 " backing=obmm_pool metadata=db status=ok\n",
+    printf("[mem_service] stage obmm_service_v0_resolve kind=kvcache_block key=%s owner=node%u reader=node%u offset=0x%016" PRIx64 " bytes=%" PRIu64 " checksum=0x%016" PRIx64 " backing=obmm_pool metadata=db status=ok\n",
            remote_kvcache.key,
            remote_node + 1U,
            local_node + 1U,
            remote_kvcache.object_backing_offset,
            remote_kvcache.object_backing_len,
            remote_kvcache_checksum);
-    printf("[w4_guest] stage obmm_service_v0_resolve kind=hidden_range_input key=%s owner=node%u reader=node%u layers=[%u,%u) count=%u offset=0x%016" PRIx64 " bytes=%" PRIu64 " checksum=0x%016" PRIx64 " backing=obmm_pool metadata=db status=ok\n",
+    printf("[mem_service] stage obmm_service_v0_resolve kind=hidden_range_input key=%s owner=node%u reader=node%u layers=[%u,%u) count=%u offset=0x%016" PRIx64 " bytes=%" PRIu64 " checksum=0x%016" PRIx64 " backing=obmm_pool metadata=db status=ok\n",
            remote_hidden_input.key,
            remote_node + 1U,
            local_node + 1U,
@@ -4850,7 +4730,7 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
            remote_hidden_input.object_backing_offset,
            remote_hidden_input.object_backing_len,
            remote_hidden_input_checksum);
-    printf("[w4_guest] stage obmm_service_v0_resolve kind=hidden_range_output key=%s owner=node%u reader=node%u layers=[%u,%u) count=%u offset=0x%016" PRIx64 " bytes=%" PRIu64 " checksum=0x%016" PRIx64 " backing=obmm_pool metadata=db status=ok\n",
+    printf("[mem_service] stage obmm_service_v0_resolve kind=hidden_range_output key=%s owner=node%u reader=node%u layers=[%u,%u) count=%u offset=0x%016" PRIx64 " bytes=%" PRIu64 " checksum=0x%016" PRIx64 " backing=obmm_pool metadata=db status=ok\n",
            remote_hidden_output.key,
            remote_node + 1U,
            local_node + 1U,
@@ -4862,14 +4742,14 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
            remote_hidden_output_checksum);
     if (!local_placement.terminal &&
         remote_hidden_input_checksum != hidden_output_checksum) {
-        printf("[w4_guest] gap qwen3_range_forward=next_input_checksum_mismatch local=node%u next=node%u output=0x%016" PRIx64 " next_input=0x%016" PRIx64 "\n",
+        printf("[mem_service] gap qwen3_range_forward=next_input_checksum_mismatch local=node%u next=node%u output=0x%016" PRIx64 " next_input=0x%016" PRIx64 "\n",
                local_node + 1U,
                remote_node + 1U,
                hidden_output_checksum,
                remote_hidden_input_checksum);
         return -1;
     }
-    printf("[w4_guest] stage qwen3_range_forward_handoff local=node%u next=node%u local_layers=[%u,%u) local_count=%u next_layers=[%u,%u) next_count=%u local_output_checksum=0x%016" PRIx64 " next_input_checksum=0x%016" PRIx64 " terminal=%s placement_source=db_metadata backing=obmm_pool metadata=db queue=obmm_spsc status=ok\n",
+    printf("[mem_service] stage qwen3_range_forward_handoff local=node%u next=node%u local_layers=[%u,%u) local_count=%u next_layers=[%u,%u) next_count=%u local_output_checksum=0x%016" PRIx64 " next_input_checksum=0x%016" PRIx64 " terminal=%s placement_source=db_metadata backing=obmm_pool metadata=db queue=obmm_spsc status=ok\n",
            local_node + 1U,
            remote_node + 1U,
            local_range_start,
@@ -4881,7 +4761,7 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
            hidden_output_checksum,
            remote_hidden_input_checksum,
            local_placement.terminal ? "true" : "false");
-    printf("[w4_guest] stage qwen3_range_forward_summary local=node%u nodes=%u layers=%u assigned_layers=[%u,%u) assigned_count=%u next=node%u hidden_bytes=%" PRIu64 " objects=2 min_layers=%u max_layers=%u balanced=true placement_source=db_metadata backing=obmm_pool metadata=db status=ok\n",
+    printf("[mem_service] stage qwen3_range_forward_summary local=node%u nodes=%u layers=%u assigned_layers=[%u,%u) assigned_count=%u next=node%u hidden_bytes=%" PRIu64 " objects=2 min_layers=%u max_layers=%u balanced=true placement_source=db_metadata backing=obmm_pool metadata=db status=ok\n",
            local_node + 1U,
            cluster_node_count,
            total_layers,
@@ -4892,7 +4772,7 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
            hidden_range_bytes,
            min_layers,
            max_layers);
-    printf("[w4_guest] stage obmm_service_v0=payload_backing_resolved local=node%u remote=node%u objects=4 bytes=%" PRIu64 " hidden_bytes=%" PRIu64 " hidden_input_offset=0x%016" PRIx64 " hidden_output_offset=0x%016" PRIx64 " backing=obmm_pool allocator=linear_payload_arena metadata=db status=ok\n",
+    printf("[mem_service] stage obmm_service_v0=payload_backing_resolved local=node%u remote=node%u objects=4 bytes=%" PRIu64 " hidden_bytes=%" PRIu64 " hidden_input_offset=0x%016" PRIx64 " hidden_output_offset=0x%016" PRIx64 " backing=obmm_pool allocator=linear_payload_arena metadata=db status=ok\n",
            local_node + 1U,
            remote_node + 1U,
            (uint64_t)MEM_SERVICE_OBMM_SERVICE_OBJECT_BYTES,
@@ -4941,7 +4821,7 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
     bool terminal_desc_found = false;
 
     if (!view_out ||
-        cluster_node_count != MEM_SERVICE_QWEN3_RANGE_NODES ||
+        cluster_node_count != mem_service_qwen3_range_nodes() ||
         local_node >= cluster_node_count) {
         return -1;
     }
@@ -5071,7 +4951,7 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
                 token_record.object_backing_offset > owner_slot->region.len ||
                 token_record.object_backing_len >
                     owner_slot->region.len - token_record.object_backing_offset) {
-                printf("[w4_guest] gap qwen3_range_forward=runtime_token_input_invalid local=node%u source=node%u key=%s\n",
+                printf("[mem_service] gap qwen3_range_forward=runtime_token_input_invalid local=node%u source=node%u key=%s\n",
                        local_node + 1U,
                        source_node + 1U,
                        token_result_key);
@@ -5084,7 +4964,7 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
                    payload_view,
                    MEM_SERVICE_OBMM_QWEN3_TOKEN_RESULT_BYTES);
             if (payload_words[0] != decode_step - 1U) {
-                printf("[w4_guest] gap qwen3_range_forward=runtime_token_input_step_mismatch local=node%u source=node%u key=%s got=%" PRIu64 " expected=%" PRIu64 "\n",
+                printf("[mem_service] gap qwen3_range_forward=runtime_token_input_step_mismatch local=node%u source=node%u key=%s got=%" PRIu64 " expected=%" PRIu64 "\n",
                        local_node + 1U,
                        source_node + 1U,
                        token_result_key,
@@ -5103,7 +4983,7 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
             break;
         }
         if (!token_input_found) {
-            printf("[w4_guest] gap qwen3_range_forward=runtime_token_input_wait_failed local=node%u source=%s step=%" PRIu64 " epoch=%u attempts=%u desc_found=%u\n",
+            printf("[mem_service] gap qwen3_range_forward=runtime_token_input_wait_failed local=node%u source=%s step=%" PRIu64 " epoch=%u attempts=%u desc_found=%u\n",
                    local_node + 1U,
                    source_node == UINT32_MAX ? "none" : "descriptor",
                    decode_step - 1U,
@@ -5158,7 +5038,7 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
         view_out->wait_attempts = attempts;
         view_out->activate_ms = activate_ms;
         view_out->metadata_ms = metadata_ms;
-        printf("[w4_guest] stage qwen3_range_forward_runtime_input_resolve local=node%u source=node%u key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) input_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " token=%" PRIu64 " wait_enter_to_found_ms=%ld producer_publish_ms=%ld producer_publish_mono_ms=%ld producer_clock_offset_ms=%ld producer_to_found_ms=%ld producer_to_found_mono_ms=%ld attempts=%u activate_ms=%" PRIu64 " metadata_ms=%" PRIu64 " copy_ms=0 checksum_ms=0 validation=object_desc_backing queue=obmm_spsc receive=descriptor metadata=lingqu_object_service backing=obmm_shmem source=terminal_token_result target=mapped_view status=ok\n",
+        printf("[mem_service] stage qwen3_range_forward_runtime_input_resolve local=node%u source=node%u key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) input_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " token=%" PRIu64 " wait_enter_to_found_ms=%ld producer_publish_ms=%ld producer_publish_mono_ms=%ld producer_clock_offset_ms=%ld producer_to_found_ms=%ld producer_to_found_mono_ms=%ld attempts=%u activate_ms=%" PRIu64 " metadata_ms=%" PRIu64 " copy_ms=0 checksum_ms=0 validation=object_desc_backing queue=obmm_spsc receive=descriptor metadata=lingqu_object_service backing=obmm_shmem source=terminal_token_result target=mapped_view status=ok\n",
                local_node + 1U,
                source_node + 1U,
                token_result_key,
@@ -5384,7 +5264,7 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
                 view_out->wait_attempts = attempts;
                 view_out->activate_ms = activate_ms;
                 view_out->metadata_ms = metadata_ms;
-                printf("[w4_guest] stage qwen3_decode_round_terminal_committed"
+                printf("[mem_service] stage qwen3_decode_round_terminal_committed"
                        " local=node%u source=node%u step=%" PRIu64
                        " token=%" PRIu64 " object_key=%s"
                        " checksum=0x%016" PRIx64
@@ -5492,7 +5372,7 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
                 view_out->wait_attempts = attempts;
                 view_out->activate_ms = activate_ms;
                 view_out->metadata_ms = metadata_ms;
-                printf("[w4_guest] stage qwen3_decode_round_terminal_committed"
+                printf("[mem_service] stage qwen3_decode_round_terminal_committed"
                        " local=node%u source=node%d step=%" PRIu64
                        " token=%" PRIu64 " object_key=%s"
                        " checksum=0x%016" PRIx64
@@ -5521,14 +5401,14 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
             }
             mem_service_stash_pending_desc(rt, (int)source_node, &rx);
         }
-        if (handoff_desc.type == OBMM_DESC_W4_OBJECT_PUT) {
+        if (handoff_desc.type == OBMM_DESC_MEM_SERVICE_OBJECT_PUT) {
             break;
         }
         mem_service_cpu_relax_wait(&relax_attempt);
     }
     if (!mem_service_runtime_range_input_desc_matches(&handoff_desc,
                                                 expected_epoch)) {
-        printf("[w4_guest] gap qwen3_range_forward=runtime_ingress_desc_wait_failed local=node%u source=node%u step=%" PRIu64 " attempts=%u\n",
+        printf("[mem_service] gap qwen3_range_forward=runtime_ingress_desc_wait_failed local=node%u source=node%u step=%" PRIu64 " attempts=%u\n",
                local_node + 1U,
                source_node + 1U,
                decode_step,
@@ -5574,7 +5454,7 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
             mem_service_cpu_relax_wait(&relax_attempt);
         }
         if (!metadata_found) {
-            printf("[w4_guest] gap qwen3_range_forward=runtime_ingress_metadata_wait_failed local=node%u source=node%u step=%" PRIu64 " attempts=%u offset=0x%016" PRIx64 " bytes=%" PRIu64 "\n",
+            printf("[mem_service] gap qwen3_range_forward=runtime_ingress_metadata_wait_failed local=node%u source=node%u step=%" PRIu64 " attempts=%u offset=0x%016" PRIx64 " bytes=%" PRIu64 "\n",
                    local_node + 1U,
                    source_node + 1U,
                    decode_step,
@@ -5600,7 +5480,7 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
         !source_slot->region.addr ||
         remote_hidden_output.object_backing_offset + remote_hidden_output.object_backing_len >
             source_slot->region.len) {
-        printf("[w4_guest] gap qwen3_range_forward=runtime_ingress_wait_failed local=node%u source=node%u step=%" PRIu64 " key=%s\n",
+        printf("[mem_service] gap qwen3_range_forward=runtime_ingress_wait_failed local=node%u source=node%u step=%" PRIu64 " key=%s\n",
                local_node + 1U,
                source_node + 1U,
                decode_step,
@@ -5653,7 +5533,7 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
     view_out->wait_attempts = attempts;
     view_out->activate_ms = activate_ms;
     view_out->metadata_ms = metadata_ms;
-    printf("[w4_guest] stage qwen3_range_forward_runtime_input_resolve local=node%u source=node%u key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) input_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " wait_enter_to_found_ms=%ld producer_publish_ms=%ld producer_publish_mono_ms=%ld producer_clock_offset_ms=%ld producer_to_found_ms=%ld producer_to_found_mono_ms=%ld attempts=%u activate_ms=%" PRIu64 " metadata_ms=%" PRIu64 " copy_ms=0 checksum_ms=%ld validation=object_desc_backing queue=obmm_spsc receive=descriptor metadata=lingqu_object_service backing=obmm_shmem target=mapped_view status=ok\n",
+    printf("[mem_service] stage qwen3_range_forward_runtime_input_resolve local=node%u source=node%u key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) input_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " wait_enter_to_found_ms=%ld producer_publish_ms=%ld producer_publish_mono_ms=%ld producer_clock_offset_ms=%ld producer_to_found_ms=%ld producer_to_found_mono_ms=%ld attempts=%u activate_ms=%" PRIu64 " metadata_ms=%" PRIu64 " copy_ms=0 checksum_ms=%ld validation=object_desc_backing queue=obmm_spsc receive=descriptor metadata=lingqu_object_service backing=obmm_shmem target=mapped_view status=ok\n",
            local_node + 1U,
            source_node + 1U,
            ingress_key,
@@ -5700,7 +5580,7 @@ int mem_service_obmm_service_v0_wait_scheduler_work_item(
     struct mem_service_object_payload_view view;
 
     if (!item_out ||
-        cluster_node_count != MEM_SERVICE_QWEN3_RANGE_NODES ||
+        cluster_node_count != mem_service_qwen3_range_nodes() ||
         local_node >= cluster_node_count) {
         return -1;
     }
@@ -5749,7 +5629,7 @@ int mem_service_obmm_service_v0_wait_scheduler_work_item(
                view.token_result_words,
                MEM_SERVICE_OBMM_QWEN3_TOKEN_RESULT_BYTES);
         if (token_words[0] != decode_step) {
-            printf("[w4_guest] gap qwen3_scheduler_work_item=terminal_step_mismatch local=node%u got=%" PRIu64 " expected=%" PRIu64 "\n",
+            printf("[mem_service] gap qwen3_scheduler_work_item=terminal_step_mismatch local=node%u got=%" PRIu64 " expected=%" PRIu64 "\n",
                    local_node + 1U,
                    token_words[0],
                    decode_step);
@@ -5778,7 +5658,7 @@ int mem_service_obmm_service_v0_wait_scheduler_work_item(
         return 0;
     }
     if (view.payload_kind != MEM_SERVICE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT) {
-        printf("[w4_guest] gap qwen3_scheduler_work_item=input_kind_invalid local=node%u kind=%u bytes=%" PRIu64 "\n",
+        printf("[mem_service] gap qwen3_scheduler_work_item=input_kind_invalid local=node%u kind=%u bytes=%" PRIu64 "\n",
                local_node + 1U,
                view.payload_kind,
                view.len);
@@ -5854,13 +5734,13 @@ int mem_service_obmm_service_v0_publish_runtime_range_output(struct mem_service 
 
     if (!svc || !payload || payload_len != hidden_range_bytes ||
         !kv_payload || kv_payload_len == 0 ||
-        cluster_node_count != MEM_SERVICE_QWEN3_RANGE_NODES ||
+        cluster_node_count != mem_service_qwen3_range_nodes() ||
         local_node >= cluster_node_count) {
         return -1;
     }
     checksum = mem_service_qwen3_hidden_payload_checksum(payload, payload_len);
     if (checksum != expected_checksum) {
-        printf("[w4_guest] gap qwen3_range_forward=runtime_output_checksum_mismatch local=node%u checksum=0x%016" PRIx64 " expected=0x%016" PRIx64 "\n",
+        printf("[mem_service] gap qwen3_range_forward=runtime_output_checksum_mismatch local=node%u checksum=0x%016" PRIx64 " expected=0x%016" PRIx64 "\n",
                local_node + 1U,
                checksum,
                expected_checksum);
@@ -5868,7 +5748,7 @@ int mem_service_obmm_service_v0_publish_runtime_range_output(struct mem_service 
     }
     kv_checksum = mem_service_qwen3_hidden_payload_checksum(kv_payload, kv_payload_len);
     if (kv_checksum != expected_kv_checksum) {
-        printf("[w4_guest] gap qwen3_range_forward=runtime_kv_checksum_mismatch local=node%u checksum=0x%016" PRIx64 " expected=0x%016" PRIx64 " bytes=%" PRIu64 "\n",
+        printf("[mem_service] gap qwen3_range_forward=runtime_kv_checksum_mismatch local=node%u checksum=0x%016" PRIx64 " expected=0x%016" PRIx64 " bytes=%" PRIu64 "\n",
                local_node + 1U,
                kv_checksum,
                expected_kv_checksum,
@@ -5898,7 +5778,7 @@ int mem_service_obmm_service_v0_publish_runtime_range_output(struct mem_service 
                                    &kv_state_block_bytes,
                                    &kv_state_block_count,
                                    &kv_state_reserved_bytes) != 0) {
-        printf("[w4_guest] gap qwen3_range_forward=runtime_kv_block_span_alloc_failed local=node%u step=%" PRIu64 " bytes=%" PRIu64 " block_bytes=%" PRIu64 " blocks=%" PRIu64 " reserved_bytes=%" PRIu64 " region_len=%zu\n",
+        printf("[mem_service] gap qwen3_range_forward=runtime_kv_block_span_alloc_failed local=node%u step=%" PRIu64 " bytes=%" PRIu64 " block_bytes=%" PRIu64 " blocks=%" PRIu64 " reserved_bytes=%" PRIu64 " region_len=%zu\n",
                local_node + 1U,
                decode_step,
                kv_payload_len,
@@ -6052,7 +5932,7 @@ int mem_service_obmm_service_v0_publish_runtime_range_output(struct mem_service 
         return -1;
     }
     if (!terminal_range && boundary_observation_id[0] != '\0') {
-        printf("[w4_guest] stage qwen3_range_forward_runtime_ingress_publish local=node%u target=node%u observation_id=%s step=%" PRIu64 " key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) count=%u checksum=0x%016" PRIx64 " bytes=%" PRIu64 " producer_publish_ms=%ld producer_publish_mono_ms=%ld producer_clock_offset_ms=%ld epoch=%u seq=%u backing=obmm_shmem metadata=lingqu_object_service queue=obmm_spsc status=ok\n",
+        printf("[mem_service] stage qwen3_range_forward_runtime_ingress_publish local=node%u target=node%u observation_id=%s step=%" PRIu64 " key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) count=%u checksum=0x%016" PRIx64 " bytes=%" PRIu64 " producer_publish_ms=%ld producer_publish_mono_ms=%ld producer_clock_offset_ms=%ld epoch=%u seq=%u backing=obmm_shmem metadata=lingqu_object_service queue=obmm_spsc status=ok\n",
                local_node + 1U,
                target_node + 1U,
                boundary_observation_id,
@@ -6071,7 +5951,7 @@ int mem_service_obmm_service_v0_publish_runtime_range_output(struct mem_service 
                object_epoch,
                local_publish_seq);
     } else if (!terminal_range) {
-        printf("[w4_guest] stage qwen3_range_forward_runtime_ingress_publish local=node%u target=node%u step=%" PRIu64 " key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) count=%u checksum=0x%016" PRIx64 " bytes=%" PRIu64 " producer_publish_ms=%ld producer_publish_mono_ms=%ld producer_clock_offset_ms=%ld epoch=%u seq=%u backing=obmm_shmem metadata=lingqu_object_service queue=obmm_spsc status=ok\n",
+        printf("[mem_service] stage qwen3_range_forward_runtime_ingress_publish local=node%u target=node%u step=%" PRIu64 " key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) count=%u checksum=0x%016" PRIx64 " bytes=%" PRIu64 " producer_publish_ms=%ld producer_publish_mono_ms=%ld producer_clock_offset_ms=%ld epoch=%u seq=%u backing=obmm_shmem metadata=lingqu_object_service queue=obmm_spsc status=ok\n",
                local_node + 1U,
                target_node + 1U,
                decode_step,
@@ -6089,7 +5969,7 @@ int mem_service_obmm_service_v0_publish_runtime_range_output(struct mem_service 
                object_epoch,
                local_publish_seq);
     }
-    printf("[w4_guest] stage qwen3_range_forward_runtime_output_publish local=node%u step=%" PRIu64 " key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) count=%u output_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " producer_publish_ms=%ld producer_publish_mono_ms=%ld producer_clock_offset_ms=%ld epoch=%u seq=%u backing=obmm_shmem metadata=lingqu_object_service queue=obmm_spsc status=ok\n",
+    printf("[mem_service] stage qwen3_range_forward_runtime_output_publish local=node%u step=%" PRIu64 " key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) count=%u output_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " producer_publish_ms=%ld producer_publish_mono_ms=%ld producer_clock_offset_ms=%ld epoch=%u seq=%u backing=obmm_shmem metadata=lingqu_object_service queue=obmm_spsc status=ok\n",
            local_node + 1U,
            decode_step,
            hidden_ref.key_hash,
@@ -6104,7 +5984,7 @@ int mem_service_obmm_service_v0_publish_runtime_range_output(struct mem_service 
            producer_clock_offset_ms,
            object_epoch,
            local_publish_seq);
-    printf("[w4_guest] stage qwen3_range_kv_state_publish local=node%u step=%" PRIu64 " key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) count=%u kv_bytes=%" PRIu64 " kv_checksum=0x%016" PRIx64 " offset=0x%016" PRIx64 " slot_bytes=%" PRIu64 " block_bytes=%" PRIu64 " blocks=%" PRIu64 " reserved_bytes=%" PRIu64 " producer_publish_ms=%ld epoch=%u seq=%u backing=obmm_shmem metadata=lingqu_object_service status=ok\n",
+    printf("[mem_service] stage qwen3_range_kv_state_publish local=node%u step=%" PRIu64 " key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) count=%u kv_bytes=%" PRIu64 " kv_checksum=0x%016" PRIx64 " offset=0x%016" PRIx64 " slot_bytes=%" PRIu64 " block_bytes=%" PRIu64 " blocks=%" PRIu64 " reserved_bytes=%" PRIu64 " producer_publish_ms=%ld epoch=%u seq=%u backing=obmm_shmem metadata=lingqu_object_service status=ok\n",
            local_node + 1U,
            decode_step,
            local_kv_state_key,
@@ -6154,13 +6034,13 @@ int mem_service_obmm_service_v0_publish_runtime_range_kv_state(
     struct lingqu_obmm_object_ref_wire kv_ref;
 
     if (!svc || !kv_payload || kv_payload_len == 0 ||
-        cluster_node_count != MEM_SERVICE_QWEN3_RANGE_NODES ||
+        cluster_node_count != mem_service_qwen3_range_nodes() ||
         local_node >= cluster_node_count) {
         return -1;
     }
     kv_checksum = mem_service_qwen3_hidden_payload_checksum(kv_payload, kv_payload_len);
     if (kv_checksum != expected_kv_checksum) {
-        printf("[w4_guest] gap qwen3_range_forward=runtime_kv_checksum_mismatch local=node%u checksum=0x%016" PRIx64 " expected=0x%016" PRIx64 " bytes=%" PRIu64 "\n",
+        printf("[mem_service] gap qwen3_range_forward=runtime_kv_checksum_mismatch local=node%u checksum=0x%016" PRIx64 " expected=0x%016" PRIx64 " bytes=%" PRIu64 "\n",
                local_node + 1U,
                kv_checksum,
                expected_kv_checksum,
@@ -6251,7 +6131,7 @@ int mem_service_obmm_service_v0_publish_runtime_range_kv_state(
     if (object_epoch == 0) {
         object_epoch = 1;
     }
-    printf("[w4_guest] stage qwen3_range_kv_state_publish local=node%u step=%" PRIu64 " key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) count=%u kv_bytes=%" PRIu64 " kv_checksum=0x%016" PRIx64 " offset=0x%016" PRIx64 " slot_bytes=%" PRIu64 " block_bytes=%" PRIu64 " blocks=%" PRIu64 " reserved_bytes=%" PRIu64 " producer_publish_ms=%ld epoch=%u seq=%u backing=obmm_shmem metadata=lingqu_object_service status=ok\n",
+    printf("[mem_service] stage qwen3_range_kv_state_publish local=node%u step=%" PRIu64 " key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) count=%u kv_bytes=%" PRIu64 " kv_checksum=0x%016" PRIx64 " offset=0x%016" PRIx64 " slot_bytes=%" PRIu64 " block_bytes=%" PRIu64 " blocks=%" PRIu64 " reserved_bytes=%" PRIu64 " producer_publish_ms=%ld epoch=%u seq=%u backing=obmm_shmem metadata=lingqu_object_service status=ok\n",
            local_node + 1U,
            decode_step,
            local_kv_state_key,
@@ -6292,7 +6172,7 @@ int mem_service_obmm_service_v0_try_resolve_range_kv_state_view(
     }
     memset(view_out, 0, sizeof(*view_out));
     if (!svc ||
-        cluster_node_count != MEM_SERVICE_QWEN3_RANGE_NODES ||
+        cluster_node_count != mem_service_qwen3_range_nodes() ||
         local_node >= cluster_node_count) {
         return -1;
     }
@@ -6328,7 +6208,7 @@ int mem_service_obmm_service_v0_try_resolve_range_kv_state_view(
         kv_state.object_backing_len == 0 ||
         kv_state.object_backing_offset + kv_state.object_backing_len >
             local_slot->region.len) {
-        printf("[w4_guest] stage qwen3_range_kv_state_resolve_missing local=node%u kv_step=%" PRIu64 " key=%s status=miss\n",
+        printf("[mem_service] stage qwen3_range_kv_state_resolve_missing local=node%u kv_step=%" PRIu64 " key=%s status=miss\n",
                local_node + 1U,
                kv_step,
                kv_state_key);
@@ -6345,7 +6225,7 @@ int mem_service_obmm_service_v0_try_resolve_range_kv_state_view(
     if (mem_service_record_to_lingqu_obmm_ref(&kv_state, &view_out->object_ref) != 0) {
         return -1;
     }
-    printf("[w4_guest] stage qwen3_range_kv_state_resolve local=node%u kv_step=%" PRIu64 " key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) count=%u kv_bytes=%" PRIu64 " kv_checksum=0x%016" PRIx64 " offset=0x%016" PRIx64 " validation=object_ref_metadata source=obmm_object_view backing=obmm_shmem metadata=lingqu_object_service target=mapped_view status=ok\n",
+    printf("[mem_service] stage qwen3_range_kv_state_resolve local=node%u kv_step=%" PRIu64 " key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) count=%u kv_bytes=%" PRIu64 " kv_checksum=0x%016" PRIx64 " offset=0x%016" PRIx64 " validation=object_ref_metadata source=obmm_object_view backing=obmm_shmem metadata=lingqu_object_service target=mapped_view status=ok\n",
            local_node + 1U,
            kv_step,
            kv_state_key,
@@ -6383,7 +6263,7 @@ int mem_service_obmm_service_v0_resolve_previous_range_kv_state_view(
         decode_step - 1U,
         view_out);
     if (rc > 0) {
-        printf("[w4_guest] gap qwen3_range_kv_state_resolve=missing local=node%u step=%" PRIu64 " previous_step=%" PRIu64 "\n",
+        printf("[mem_service] gap qwen3_range_kv_state_resolve=missing local=node%u step=%" PRIu64 " previous_step=%" PRIu64 "\n",
                local_node + 1U,
                decode_step,
                decode_step - 1U);
@@ -6423,7 +6303,7 @@ int mem_service_obmm_service_v0_resolve_previous_range_kv_state(struct mem_servi
         return 0;
     }
     if (view.len > payload_capacity) {
-        printf("[w4_guest] gap qwen3_range_kv_state_resolve=payload_too_large local=node%u step=%" PRIu64 " bytes=%" PRIu64 " capacity=%" PRIu64 "\n",
+        printf("[mem_service] gap qwen3_range_kv_state_resolve=payload_too_large local=node%u step=%" PRIu64 " bytes=%" PRIu64 " capacity=%" PRIu64 "\n",
                local_node + 1U,
                decode_step,
                view.len,
@@ -6466,7 +6346,7 @@ static int mem_service_obmm_service_v0_publish_terminal_token_result_from_node(
     long producer_clock_offset_ms;
     uint8_t *base;
 
-    if (!svc || cluster_node_count != MEM_SERVICE_QWEN3_RANGE_NODES ||
+    if (!svc || cluster_node_count != mem_service_qwen3_range_nodes() ||
         local_node >= cluster_node_count) {
         return -1;
     }
@@ -6580,7 +6460,7 @@ static int mem_service_obmm_service_v0_publish_terminal_token_result_from_node(
                     return -1;
                 }
                 memset(&desc, 0, sizeof(desc));
-                desc.type = OBMM_DESC_W4_OBJECT_PUT;
+                desc.type = OBMM_DESC_MEM_SERVICE_OBJECT_PUT;
                 desc.flags = MEM_SERVICE_OBMM_KIND_QWEN3_TOKEN_RESULT;
                 desc.seq = ((uint64_t)object_epoch << 48) |
                            ((uint64_t)(rt->local_idx + 1) << 32) |
@@ -6614,7 +6494,7 @@ static int mem_service_obmm_service_v0_publish_terminal_token_result_from_node(
             return -1;
         }
         memset(&desc, 0, sizeof(desc));
-        desc.type = OBMM_DESC_W4_OBJECT_PUT;
+        desc.type = OBMM_DESC_MEM_SERVICE_OBJECT_PUT;
         desc.flags = MEM_SERVICE_OBMM_KIND_QWEN3_TOKEN_RESULT;
         desc.seq = ((uint64_t)object_epoch << 48) |
                    ((uint64_t)(rt->local_idx + 1) << 32) |
@@ -6636,7 +6516,7 @@ static int mem_service_obmm_service_v0_publish_terminal_token_result_from_node(
                    object_epoch) != 0) {
         return -1;
     }
-    printf("[w4_guest] stage qwen3_terminal_token_result_publish local=node%u target=node%u step=%" PRIu64 " token=%" PRIu64 " runner_up=%" PRIu64 " margin_milli=%" PRIu64 " logits_checksum=0x%016" PRIx64 " text_checksum=0x%016" PRIx64 " piece_word0=0x%016" PRIx64 " piece_word1=0x%016" PRIx64 " object_key=%s offset=0x%016" PRIx64 " bytes=%" PRIu64 " checksum=0x%016" PRIx64 " epoch=%u seq=%u backing=obmm_pool metadata=db queue=%s status=ok publisher=%s broadcast_targets=%u\n",
+    printf("[mem_service] stage qwen3_terminal_token_result_publish local=node%u target=node%u step=%" PRIu64 " token=%" PRIu64 " runner_up=%" PRIu64 " margin_milli=%" PRIu64 " logits_checksum=0x%016" PRIx64 " text_checksum=0x%016" PRIx64 " piece_word0=0x%016" PRIx64 " piece_word1=0x%016" PRIx64 " object_key=%s offset=0x%016" PRIx64 " bytes=%" PRIu64 " checksum=0x%016" PRIx64 " epoch=%u seq=%u backing=obmm_pool metadata=db queue=%s status=ok publisher=%s broadcast_targets=%u\n",
            local_node + 1U,
            target_node + 1U,
            decode_step,
@@ -6777,7 +6657,7 @@ int mem_service_obmm_service_v0_publish_engram_candidates(struct mem_service *sv
     uint16_t object_epoch;
     uint8_t *base;
 
-    if (!svc || cluster_node_count != MEM_SERVICE_QWEN3_RANGE_NODES ||
+    if (!svc || cluster_node_count != mem_service_qwen3_range_nodes() ||
         local_node >= cluster_node_count || !candidate_tokens || candidate_count == 0) {
         return -1;
     }
@@ -6851,7 +6731,7 @@ int mem_service_obmm_service_v0_publish_engram_candidates(struct mem_service *sv
         return -1;
     }
 
-    printf("[w4_guest] stage qwen3_engram_candidates_publish local=node%u step=%" PRIu64
+    printf("[mem_service] stage qwen3_engram_candidates_publish local=node%u step=%" PRIu64
            " candidate_count=%" PRIu64
            " candidates_key=%s candidates_version=%" PRIu64
            " candidates_checksum=0x%016" PRIx64
@@ -6910,7 +6790,7 @@ int mem_service_obmm_service_v0_publish_engram_step(struct mem_service *svc,
     int owner_idx;
     uint8_t *base;
 
-    if (!svc || cluster_node_count != MEM_SERVICE_QWEN3_RANGE_NODES ||
+    if (!svc || cluster_node_count != mem_service_qwen3_range_nodes() ||
         local_node >= cluster_node_count || !history_tokens ||
         history_token_count > 1024U) {
         return -1;
@@ -7043,7 +6923,7 @@ int mem_service_obmm_service_v0_publish_engram_step(struct mem_service *svc,
         }
     }
 
-    printf("[w4_guest] stage qwen3_engram_decision_publish local=node%u step=%" PRIu64
+    printf("[mem_service] stage qwen3_engram_decision_publish local=node%u step=%" PRIu64
            " objects=3 history_tokens=%" PRIu64 " selected_token=%" PRIu64
            " raw_token=%" PRIu64 " runner_up=%" PRIu64
            " fallback=%" PRIu64 " blocked=%" PRIu64
@@ -7147,7 +7027,7 @@ int mem_service_obmm_service_v0_wait_terminal_token_result(struct mem_service *s
                         if (sampled_token_out) {
                             *sampled_token_out = payload_words[1];
                         }
-                        printf("[w4_guest] stage qwen3_terminal_token_result_wait step=%" PRIu64
+                        printf("[mem_service] stage qwen3_terminal_token_result_wait step=%" PRIu64
                                " object_key=%s owner=node%d offset=0x%016" PRIx64
                                " bytes=%" PRIu64
                                " token=%" PRIu64 " checksum=0x%016" PRIx64
@@ -7170,7 +7050,7 @@ int mem_service_obmm_service_v0_wait_terminal_token_result(struct mem_service *s
         usleep(10000);
     }
     if (timeout_ms != 0) {
-        printf("[w4_guest] gap qwen3_terminal_token_result_wait=timeout step=%" PRIu64
+        printf("[mem_service] gap qwen3_terminal_token_result_wait=timeout step=%" PRIu64
                " object_key=%s\n",
                decode_step,
                token_result_key);
@@ -7256,7 +7136,7 @@ int mem_service_obmm_service_v0_wait_engram_candidates(struct mem_service *svc,
                             mem_service_stash_pending_desc(rt, node_idx, &rx);
                         }
                     }
-                    if (candidates_desc.type != OBMM_DESC_W4_OBJECT_PUT) {
+                    if (candidates_desc.type != OBMM_DESC_MEM_SERVICE_OBJECT_PUT) {
                         continue;
                     }
                     if (!terminal_slot->region.addr &&
@@ -7349,7 +7229,7 @@ int mem_service_obmm_service_v0_wait_engram_candidates(struct mem_service *svc,
                 if (candidate_checksum_out) {
                     *candidate_checksum_out = candidates_checksum;
                 }
-                printf("[w4_guest] stage qwen3_engram_candidates_wait step=%" PRIu64
+                printf("[mem_service] stage qwen3_engram_candidates_wait step=%" PRIu64
                        " object_key=%s owner=node%d version=%" PRIu64
                        " candidate_count=%" PRIu64 " bytes=%" PRIu64
                        " checksum=0x%016" PRIx64
@@ -7366,7 +7246,7 @@ int mem_service_obmm_service_v0_wait_engram_candidates(struct mem_service *svc,
         }
         usleep(10000);
     }
-    printf("[w4_guest] gap qwen3_engram_candidates_wait=timeout step=%" PRIu64
+    printf("[mem_service] gap qwen3_engram_candidates_wait=timeout step=%" PRIu64
            " object_key=%s\n",
            decode_step,
            candidates_key);
@@ -7381,7 +7261,7 @@ int mem_service_obmm_service_v0_wait_engram_selected_token(struct mem_service *s
     struct mem_service_cluster_runtime *rt = &g_mem_service_cluster_runtime;
     char selected_key[96];
     long deadline;
-    int owner_idx = mem_service_qwen3_engram_owner_index(MEM_SERVICE_QWEN3_RANGE_NODES);
+    int owner_idx = mem_service_qwen3_engram_owner_index(mem_service_qwen3_range_nodes());
 
     if (!svc) {
         return -1;
@@ -7439,7 +7319,7 @@ int mem_service_obmm_service_v0_wait_engram_selected_token(struct mem_service *s
                         mem_service_stash_pending_desc(rt, owner_idx, &rx);
                     }
                 }
-                if (selected_desc.type != OBMM_DESC_W4_OBJECT_PUT) {
+                if (selected_desc.type != OBMM_DESC_MEM_SERVICE_OBJECT_PUT) {
                     usleep(10000);
                     continue;
                 }
@@ -7484,7 +7364,7 @@ int mem_service_obmm_service_v0_wait_engram_selected_token(struct mem_service *s
                 if (selected_token_out) {
                     *selected_token_out = payload_words[1];
                 }
-                printf("[w4_guest] stage qwen3_engram_selected_token_wait step=%" PRIu64
+                printf("[mem_service] stage qwen3_engram_selected_token_wait step=%" PRIu64
                        " object_key=%s owner=node%d version=%" PRIu64
                        " bytes=%" PRIu64 " token=%" PRIu64
                        " checksum=0x%016" PRIx64
@@ -7501,7 +7381,7 @@ int mem_service_obmm_service_v0_wait_engram_selected_token(struct mem_service *s
         }
         usleep(10000);
     }
-    printf("[w4_guest] gap qwen3_engram_selected_token_wait=timeout step=%" PRIu64
+    printf("[mem_service] gap qwen3_engram_selected_token_wait=timeout step=%" PRIu64
            " object_key=%s\n",
            decode_step,
            selected_key);
@@ -7519,7 +7399,7 @@ int mem_service_obmm_service_v0_wait_engram_history(struct mem_service *svc,
     struct mem_service_cluster_runtime *rt = &g_mem_service_cluster_runtime;
     char history_key[96];
     long deadline;
-    int owner_idx = mem_service_qwen3_engram_owner_index(MEM_SERVICE_QWEN3_RANGE_NODES);
+    int owner_idx = mem_service_qwen3_engram_owner_index(mem_service_qwen3_range_nodes());
     uint64_t expected_version = decode_step + 1U;
 
     if (!svc || !history_tokens_out || history_token_capacity == 0 ||
@@ -7585,7 +7465,7 @@ int mem_service_obmm_service_v0_wait_engram_history(struct mem_service *svc,
                         mem_service_stash_pending_desc(rt, owner_idx, &rx);
                     }
                 }
-                if (history_desc.type != OBMM_DESC_W4_OBJECT_PUT) {
+                if (history_desc.type != OBMM_DESC_MEM_SERVICE_OBJECT_PUT) {
                     usleep(10000);
                     continue;
                 }
@@ -7642,7 +7522,7 @@ int mem_service_obmm_service_v0_wait_engram_history(struct mem_service *svc,
                 if (history_checksum_out) {
                     *history_checksum_out = checksum;
                 }
-                printf("[w4_guest] stage qwen3_engram_history_wait step=%" PRIu64
+                printf("[mem_service] stage qwen3_engram_history_wait step=%" PRIu64
                        " object_key=%s owner=node%d version=%" PRIu64
                        " history_tokens=%" PRIu64 " bytes=%" PRIu64
                        " checksum=0x%016" PRIx64
@@ -7659,7 +7539,7 @@ int mem_service_obmm_service_v0_wait_engram_history(struct mem_service *svc,
         }
         usleep(10000);
     }
-    printf("[w4_guest] gap qwen3_engram_history_wait=timeout step=%" PRIu64
+    printf("[mem_service] gap qwen3_engram_history_wait=timeout step=%" PRIu64
            " object_key=%s expected_version=%" PRIu64 "\n",
            decode_step,
            history_key,
@@ -7680,7 +7560,7 @@ int mem_service_obmm_service_v0_wait_engram_state(struct mem_service *svc,
     struct mem_service_cluster_runtime *rt = &g_mem_service_cluster_runtime;
     char state_key[96];
     long deadline;
-    int owner_idx = mem_service_qwen3_engram_owner_index(MEM_SERVICE_QWEN3_RANGE_NODES);
+    int owner_idx = mem_service_qwen3_engram_owner_index(mem_service_qwen3_range_nodes());
 
     if (!svc || expected_history_token_count == 0) {
         return -1;
@@ -7741,7 +7621,7 @@ int mem_service_obmm_service_v0_wait_engram_state(struct mem_service *svc,
                         mem_service_stash_pending_desc(rt, owner_idx, &rx);
                     }
                 }
-                if (state_desc.type != OBMM_DESC_W4_OBJECT_PUT) {
+                if (state_desc.type != OBMM_DESC_MEM_SERVICE_OBJECT_PUT) {
                     usleep(10000);
                     continue;
                 }
@@ -7796,7 +7676,7 @@ int mem_service_obmm_service_v0_wait_engram_state(struct mem_service *svc,
                 if (state_checksum_out) {
                     *state_checksum_out = state_checksum;
                 }
-                printf("[w4_guest] stage qwen3_engram_state_wait step=%" PRIu64
+                printf("[mem_service] stage qwen3_engram_state_wait step=%" PRIu64
                        " object_key=%s owner=node%d version=%" PRIu64
                        " history_tokens=%" PRIu64 " selected_token=%" PRIu64
                        " history_checksum=0x%016" PRIx64
@@ -7833,7 +7713,7 @@ int mem_service_obmm_service_v0_wait_engram_state(struct mem_service *svc,
         }
         usleep(10000);
     }
-    printf("[w4_guest] gap qwen3_engram_state_wait=timeout step=%" PRIu64
+    printf("[mem_service] gap qwen3_engram_state_wait=timeout step=%" PRIu64
            " object_key=%s expected_history_tokens=%" PRIu64
            " expected_selected_token=%" PRIu64
            " expected_history_checksum=0x%016" PRIx64 "\n",
@@ -7859,7 +7739,7 @@ int mem_service_obmm_service_v0_publish_decode_round_done(struct mem_service *sv
     uint64_t slot_offset;
     uint8_t *base;
 
-    if (!svc || cluster_node_count != MEM_SERVICE_QWEN3_RANGE_NODES ||
+    if (!svc || cluster_node_count != mem_service_qwen3_range_nodes() ||
         local_node >= cluster_node_count ||
         mem_service_cluster_runtime_require(rt) != 0) {
         return -1;
@@ -7896,7 +7776,7 @@ int mem_service_obmm_service_v0_publish_decode_round_done(struct mem_service *sv
         return -1;
     }
     (void)msync(base + slot_offset, MEM_SERVICE_OBMM_QWEN3_ROUND_DONE_BYTES, MS_SYNC);
-    printf("[w4_guest] stage qwen3_decode_round_done_publish local=node%u step=%" PRIu64
+    printf("[mem_service] stage qwen3_decode_round_done_publish local=node%u step=%" PRIu64
            " offset=0x%016" PRIx64 " slot=%" PRIu64
            " bytes=%" PRIu64 " scope_hash=0x%016" PRIx64
            " checksum=0x%016" PRIx64
@@ -7925,7 +7805,7 @@ int mem_service_obmm_service_v0_wait_all_decode_round_done(struct mem_service *s
     uint64_t slot_index;
     uint64_t slot_offset;
 
-    if (!svc || cluster_node_count != MEM_SERVICE_QWEN3_RANGE_NODES ||
+    if (!svc || cluster_node_count != mem_service_qwen3_range_nodes() ||
         mem_service_cluster_runtime_require(rt) != 0) {
         return -1;
     }
@@ -7967,7 +7847,7 @@ int mem_service_obmm_service_v0_wait_all_decode_round_done(struct mem_service *s
             }
         }
         if (ready_mask == expected_mask) {
-            printf("[w4_guest] stage qwen3_decode_round_barrier step=%" PRIu64
+            printf("[mem_service] stage qwen3_decode_round_barrier step=%" PRIu64
                    " nodes=%u ready_mask=0x%02x slot=%" PRIu64
                    " scope_hash=0x%016" PRIx64 " status=ok\n",
                    decode_step,
@@ -7979,7 +7859,7 @@ int mem_service_obmm_service_v0_wait_all_decode_round_done(struct mem_service *s
         }
         usleep(10000);
     }
-    printf("[w4_guest] gap qwen3_decode_round_barrier=timeout step=%" PRIu64
+    printf("[mem_service] gap qwen3_decode_round_barrier=timeout step=%" PRIu64
            " nodes=%u ready_mask=0x%02x expected_mask=0x%02x"
            " slot=%" PRIu64 " scope_hash=0x%016" PRIx64 "\n",
            decode_step,

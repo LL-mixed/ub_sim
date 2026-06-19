@@ -83,6 +83,10 @@ APP_VALIDATION_COMMANDS = {
         "scripts/run_ub_two_node_ssd_gsva_test.sh",
         "scripts/run_ub_eight_node_ssd_gsva_test.sh",
     ],
+    "mem_service": [
+        "scripts/run_ub_dual_node_mem_service.sh",
+        "scripts/run_ub_eight_node_mem_service.sh",
+    ],
     "w4_guest": [
         "scripts/run_ub_dual_node_w4_guest.sh",
         "scripts/run_ub_eight_node_w4_guest_qwen3_0_6b_2step.sh",
@@ -552,27 +556,33 @@ def test_ssd_gsva_test_has_independent_app_build():
     assert "linqu_ssd_gsva_suite" in app_source
 
 
-def test_mem_service_is_link_time_component():
+def test_mem_service_has_component_and_cli_entrypoints():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     run_app = (ROOT / "initramfs" / "run_app").read_text()
     components_readme = (ROOT / "components" / "README.md").read_text()
     component_dir = ROOT / "components" / "mem_service"
+    app_dir = ROOT / "apps" / "mem_service"
     readme = (component_dir / "README.md").read_text()
 
     assert 'MEM_SERVICE_SRC="$ROOT_DIR/components/mem_service/mem_service.c"' in build_script
-    assert '"$W4_GUEST_SRC" "$MEM_SERVICE_SRC" "$LLM_INFER_SRC" -lm -o "$W4_GUEST_BIN"' in build_script
+    assert 'MEM_SERVICE_QWEN3_SRC="$ROOT_DIR/components/mem_service/mem_service_qwen3.c"' in build_script
+    assert 'MEM_SERVICE_CLI_SRC="$ROOT_DIR/apps/mem_service/mem_service.c"' in build_script
+    assert 'MEM_SERVICE_CLI_BIN="$OUT_DIR/linqu_mem_service"' in build_script
+    assert '"$W4_GUEST_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$W4_GUEST_BIN"' in build_script
+    assert '"$MEM_SERVICE_CLI_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$MEM_SERVICE_CLI_BIN"' in build_script
     assert "Components do not install guest binaries directly" in components_readme
-    assert "not a standalone app" in readme
     assert "standalone demo" not in readme
-    assert 'MEM_SERVICE_BIN=' not in build_script
-    assert "linqu_mem_service" not in build_script
-    assert "linqu_mem_service" not in run_app
-    assert "linqu_mem_service=1" not in run_app
-    assert not (ROOT / "apps" / "mem_service").exists()
+    assert "linqu_mem_service" in build_script
+    assert "linqu_mem_service" in run_app
+    assert "linqu_mem_service=1" in run_app
+    assert (app_dir / "mem_service.c").exists()
+    assert (app_dir / "Makefile").exists()
     assert not (ROOT / "apps" / "mem_service_demo").exists()
     assert "test_mem_service_record_recycling.py" in readme
     assert (component_dir / "mem_service.c").exists()
     assert (component_dir / "mem_service.h").exists()
+    assert (component_dir / "mem_service_qwen3.c").exists()
+    assert (component_dir / "mem_service_qwen3.h").exists()
     assert (component_dir / "lingqu_object_service.h").exists()
 
 

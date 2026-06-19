@@ -12,13 +12,14 @@ GUEST_C = ROOT / "apps" / "w4_guest" / "w4_guest.c"
 BUILD_INITRAMFS = ROOT / "scripts" / "build_initramfs.sh"
 RUN_APP = ROOT / "initramfs" / "run_app"
 COMPONENTS_README = ROOT / "components" / "README.md"
+CLI_DIR = ROOT / "apps" / "mem_service"
 FOUR_NODE_W4_RUNNER = ROOT / "scripts" / "run_ub_four_node_w4_guest.sh"
 EIGHT_NODE_W4_RUNNER = ROOT / "scripts" / "run_ub_eight_node_w4_guest.sh"
 SIM_UAPI_RS = REPO_ROOT / "crates" / "sim-uapi" / "src" / "lib.rs"
 
 
-class W4DbRecordRecyclingTests(unittest.TestCase):
-    def test_mem_service_is_not_packaged_as_demo_or_app(self):
+class MemServiceRecordRecyclingTests(unittest.TestCase):
+    def test_mem_service_has_cli_without_demo_naming(self):
         build_script = BUILD_INITRAMFS.read_text()
         run_app = RUN_APP.read_text()
         components_readme = COMPONENTS_README.read_text()
@@ -29,14 +30,26 @@ class W4DbRecordRecyclingTests(unittest.TestCase):
             build_script,
         )
         self.assertIn(
-            '"$W4_GUEST_SRC" "$MEM_SERVICE_SRC" "$LLM_INFER_SRC" -lm -o "$W4_GUEST_BIN"',
+            'MEM_SERVICE_QWEN3_SRC="$ROOT_DIR/components/mem_service/mem_service_qwen3.c"',
             build_script,
         )
-        self.assertNotIn("MEM_SERVICE_BIN=", build_script)
-        self.assertNotIn("linqu_mem_service", build_script)
-        self.assertNotIn("linqu_mem_service", run_app)
-        self.assertNotIn("linqu_mem_service=1", run_app)
-        self.assertFalse((ROOT / "apps" / "mem_service").exists())
+        self.assertIn(
+            'MEM_SERVICE_CLI_SRC="$ROOT_DIR/apps/mem_service/mem_service.c"',
+            build_script,
+        )
+        self.assertIn('MEM_SERVICE_CLI_BIN="$OUT_DIR/linqu_mem_service"', build_script)
+        self.assertIn(
+            '"$W4_GUEST_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$W4_GUEST_BIN"',
+            build_script,
+        )
+        self.assertIn("linqu_mem_service", build_script)
+        self.assertIn("linqu_mem_service", run_app)
+        self.assertIn("linqu_mem_service=1", run_app)
+        self.assertIn("run_binary \"linqu_mem_service\" /bin/linqu_mem_service --smoke", run_app)
+        self.assertTrue((CLI_DIR / "mem_service.c").exists())
+        self.assertTrue((CLI_DIR / "Makefile").exists())
+        self.assertTrue((SERVICE_DIR / "mem_service_qwen3.c").exists())
+        self.assertTrue((SERVICE_DIR / "mem_service_qwen3.h").exists())
         self.assertFalse((ROOT / "apps" / "mem_service_demo").exists())
 
     def test_record_caps_support_long_decode_runs(self):

@@ -61,7 +61,7 @@ Options:
                       Names: chat, rpc, tcp_each_server, udma, obmm_pool,
                       obmm_dataplane_microbench, obmm_import_stress, obmm_gsva,
                       obmm_coh_test, gva_direct, gsva_query, npu_test, ssd_test,
-                      ssd_gsva_test, w4_guest.
+                      ssd_gsva_test, mem_service, w4_guest.
                       Default: chat,rpc,tcp_each_server.
   --run-id ID        Stable run id used for log/report names.
   --run-secs SECS    Per-app pass/fail wait timeout.
@@ -119,6 +119,9 @@ append_app_selection() {
       ;;
     ssd_gsva_test)
       flag="linqu_ssd_gsva_test=1"
+      ;;
+    mem_service)
+      flag="linqu_mem_service=1"
       ;;
     w4_guest)
       flag="linqu_w4_guest=1"
@@ -619,6 +622,16 @@ validate_w4_guest_log() {
     "${node_name} w4 pass" || return 1
 }
 
+validate_mem_service_log() {
+  local node_name="$1"
+  local log_file="$2"
+
+  assert_log_absent "$log_file" "mem_service smoke: .* failed" \
+    "${node_name} mem_service smoke failure" || return 1
+  assert_log_has "$log_file" "mem_service smoke: status=ok records=[0-9]+ block_key=block/cli-block-hash state=reloaded group_members=2" \
+    "${node_name} mem_service smoke pass" || return 1
+}
+
 validate_kernel_health_log() {
   local node_name="$1"
   local log_file="$2"
@@ -934,6 +947,7 @@ run_iteration() {
   local npu_test_enabled=0
   local ssd_test_enabled=0
   local ssd_gsva_test_enabled=0
+  local mem_service_enabled=0
   local w4_guest_enabled=0
   local nodea_obmm_coh_test_append=""
   local nodeb_obmm_coh_test_append=""
@@ -986,6 +1000,9 @@ run_iteration() {
   fi
   if [[ "$APPEND_EXTRA" == *"linqu_ssd_gsva_test=1"* ]]; then
     ssd_gsva_test_enabled=1
+  fi
+  if [[ "$APPEND_EXTRA" == *"linqu_mem_service=1"* ]]; then
+    mem_service_enabled=1
   fi
   if [[ "$APPEND_EXTRA" == *"linqu_w4_guest=1"* ]]; then
     w4_guest_enabled=1
@@ -1524,6 +1541,36 @@ run_iteration() {
     esac
   fi
 
+  if [[ "$mem_service_enabled" -eq 1 ]]; then
+    wait_for_log_pass_or_fail "$nodea_guest_log" "mem_service smoke: status=ok" \
+      "mem_service smoke: .* failed" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeA mem_service smoke reported failure" >&2
+        return 27
+        ;;
+      *)
+        echo "iteration ${iter}: nodeA mem_service smoke did not finish within ${RUN_SECS}s" >&2
+        return 27
+        ;;
+    esac
+
+    wait_for_log_pass_or_fail "$nodeb_guest_log" "mem_service smoke: status=ok" \
+      "mem_service smoke: .* failed" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeB mem_service smoke reported failure" >&2
+        return 27
+        ;;
+      *)
+        echo "iteration ${iter}: nodeB mem_service smoke did not finish within ${RUN_SECS}s" >&2
+        return 27
+        ;;
+    esac
+  fi
+
   if [[ "$w4_guest_enabled" -eq 1 ]]; then
     wait_for_log_pass_or_fail "$nodea_guest_log" "\\[w4_guest\\] pass" \
       "\\[w4_guest\\] fail" "$RUN_SECS"
@@ -1531,11 +1578,11 @@ run_iteration() {
       0) ;;
       1)
         echo "iteration ${iter}: nodeA w4 guest app reported failure" >&2
-        return 27
+        return 28
         ;;
       *)
         echo "iteration ${iter}: nodeA w4 guest app did not finish within ${RUN_SECS}s" >&2
-        return 27
+        return 28
         ;;
     esac
 
@@ -1545,11 +1592,11 @@ run_iteration() {
       0) ;;
       1)
         echo "iteration ${iter}: nodeB w4 guest app reported failure" >&2
-        return 27
+        return 28
         ;;
       *)
         echo "iteration ${iter}: nodeB w4 guest app did not finish within ${RUN_SECS}s" >&2
-        return 27
+        return 28
         ;;
     esac
   fi
@@ -1622,6 +1669,10 @@ run_iteration() {
   if [[ "$APPEND_EXTRA" == *"linqu_ssd_gsva_test=1"* ]]; then
     validate_ssd_gsva_test_log "nodeA" "$nodea_guest_log" || return 1
     validate_ssd_gsva_test_log "nodeB" "$nodeb_guest_log" || return 1
+  fi
+  if [[ "$APPEND_EXTRA" == *"linqu_mem_service=1"* ]]; then
+    validate_mem_service_log "nodeA" "$nodea_guest_log" || return 1
+    validate_mem_service_log "nodeB" "$nodeb_guest_log" || return 1
   fi
   if [[ "$APPEND_EXTRA" == *"linqu_w4_guest=1"* ]]; then
     validate_w4_guest_log "nodeA" "$nodea_guest_log" || return 1

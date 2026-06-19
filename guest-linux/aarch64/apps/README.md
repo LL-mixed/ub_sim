@@ -53,8 +53,9 @@ validation ledger.
 | `npu_gsva_test` | `scripts/run_ub_two_node_npu_gsva_test.sh` | `scripts/run_ub_eight_node_npu_gsva_test.sh` |
 | `ssd_test` | `scripts/run_ub_two_node_ssd_test.sh` | `scripts/run_ub_eight_node_ssd_test.sh` |
 | `ssd_gsva_test` | `scripts/run_ub_two_node_ssd_gsva_test.sh` | `scripts/run_ub_eight_node_ssd_gsva_test.sh` |
+| `mem_service` | `scripts/run_ub_dual_node_mem_service.sh` | `scripts/run_ub_eight_node_mem_service.sh` |
 | `w4_guest` | `scripts/run_ub_dual_node_w4_guest.sh` | `scripts/run_ub_eight_node_w4_guest_qwen3_0_6b_2step.sh` |
 
-`mem_service` is not an app. It is a link-time component under
-`components/mem_service`; W5 validation uses
-`scripts/run_w5_cluster_config.sh` as the stable entrypoint.
+`mem_service` is primarily a link-time component under `components/mem_service`.
+Its app entrypoint is a standalone smoke/inspect CLI for metadata and packaging
+validation; W5 end-to-end validation still uses `scripts/run_w5_cluster_config.sh`.

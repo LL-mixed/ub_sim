@@ -24,6 +24,7 @@ APP_NAMES=(
   npu_gsva_test
   ssd_test
   ssd_gsva_test
+  mem_service
   w4_guest
 )
 

@@ -46,12 +46,14 @@ enum obmm_pool_state {
 /* ------------------------------------------------------------------ */
 
 enum obmm_region_kind {
-    OBMM_REGION_QUEUE       = 1,
-    OBMM_REGION_RX_ARENA    = 2,
-    OBMM_REGION_TX_ARENA    = 3,
-    OBMM_REGION_DATA_SLAB   = 4,
-    OBMM_REGION_W4_PAYLOAD  = 5,
-    OBMM_REGION_SPMC_STREAM = 6,
+    OBMM_REGION_QUEUE               = 1,
+    OBMM_REGION_RX_ARENA            = 2,
+    OBMM_REGION_TX_ARENA            = 3,
+    OBMM_REGION_DATA_SLAB           = 4,
+    OBMM_REGION_MEM_SERVICE_PAYLOAD = 5,
+    OBMM_REGION_SPMC_STREAM         = 6,
+
+    OBMM_REGION_W4_PAYLOAD = OBMM_REGION_MEM_SERVICE_PAYLOAD,
 };
 
 /* ------------------------------------------------------------------ */
@@ -59,15 +61,20 @@ enum obmm_region_kind {
 /* ------------------------------------------------------------------ */
 
 enum obmm_desc_type {
-    OBMM_DESC_DATA         = 1, /* data payload descriptor */
-    OBMM_DESC_ACK          = 2, /* consumer acknowledgment */
-    OBMM_DESC_COMMIT       = 3, /* owner round commit */
-    OBMM_DESC_STRESS       = 4, /* queue fill/drain visibility probe */
-    OBMM_DESC_STRESS_ACK   = 5, /* stress batch completion */
-    OBMM_DESC_W4_READY     = 6, /* w4_db: payload published */
-    OBMM_DESC_W4_OBSERVED  = 7, /* w4_db: payload consumed */
-    OBMM_DESC_W4_OBJECT_PUT = 8, /* w4_db: object payload put */
-    OBMM_DESC_W4_OBJECT_GET = 9, /* w4_db: object payload observed */
+    OBMM_DESC_DATA                = 1, /* data payload descriptor */
+    OBMM_DESC_ACK                 = 2, /* consumer acknowledgment */
+    OBMM_DESC_COMMIT              = 3, /* owner round commit */
+    OBMM_DESC_STRESS              = 4, /* queue fill/drain visibility probe */
+    OBMM_DESC_STRESS_ACK          = 5, /* stress batch completion */
+    OBMM_DESC_MEM_SERVICE_READY   = 6, /* mem_service: payload published */
+    OBMM_DESC_MEM_SERVICE_OBSERVED = 7, /* mem_service: payload consumed */
+    OBMM_DESC_MEM_SERVICE_OBJECT_PUT = 8, /* mem_service: object payload put */
+    OBMM_DESC_MEM_SERVICE_OBJECT_GET = 9, /* mem_service: object payload observed */
+
+    OBMM_DESC_W4_READY = OBMM_DESC_MEM_SERVICE_READY,
+    OBMM_DESC_W4_OBSERVED = OBMM_DESC_MEM_SERVICE_OBSERVED,
+    OBMM_DESC_W4_OBJECT_PUT = OBMM_DESC_MEM_SERVICE_OBJECT_PUT,
+    OBMM_DESC_W4_OBJECT_GET = OBMM_DESC_MEM_SERVICE_OBJECT_GET,
 };
 
 /* ------------------------------------------------------------------ */

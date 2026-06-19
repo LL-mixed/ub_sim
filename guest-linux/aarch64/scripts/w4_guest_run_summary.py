@@ -132,6 +132,8 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                     "[w4_guest] step="
                 ):
                     latest_status[node_id] = clean_line[len("[w4_guest] ") :]
+                if clean_line.startswith("[mem_service] stage "):
+                    latest_status[node_id] = clean_line[len("[mem_service] ") :]
 
                 if "qwen3_terminal_token_result_publish" in clean_line:
                     fields = parse_pairs(clean_line)
