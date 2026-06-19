@@ -61,7 +61,7 @@ Options:
                       Names: chat, rpc, tcp_each_server, udma, obmm_pool,
                       obmm_dataplane_microbench, obmm_import_stress, obmm_gsva,
                       obmm_coh_test, gva_direct, gsva_query, npu_test, ssd_test,
-                      ssd_gsva_test, mem_service, w4_guest.
+                      ssd_gsva_test, mem_service, llm_infer.
                       Default: chat,rpc,tcp_each_server.
   --run-id ID        Stable run id used for log/report names.
   --run-secs SECS    Per-app pass/fail wait timeout.
@@ -123,8 +123,8 @@ append_app_selection() {
     mem_service)
       flag="linqu_mem_service=1"
       ;;
-    w4_guest)
-      flag="linqu_w4_guest=1"
+    llm_infer)
+      flag="linqu_llm_infer=1"
       ;;
     "")
       return 0
@@ -249,7 +249,7 @@ APPEND_EXTRA="$(ensure_sim_kernel_append_defaults "$APPEND_EXTRA")"
 QEMU_BIN="$(ensure_qemu_ub_binary "$WORKSPACE_ROOT")"
 ensure_ub_guest_artifacts "$ROOT_DIR" "$KERNEL_IMAGE" "$INITRAMFS_IMAGE"
 
-if [[ "$APPEND_EXTRA" == *"linqu_w4_guest=1"* ]]; then
+if [[ "$APPEND_EXTRA" == *"linqu_llm_infer=1"* ]]; then
   append_cmdline_if_missing "pmd_mapping=100%"
   append_cmdline_if_missing "mem_service_region_size_mb=512"
   append_cmdline_if_missing "obmm.mempool_size=512M"
@@ -1004,7 +1004,7 @@ run_iteration() {
   if [[ "$APPEND_EXTRA" == *"linqu_mem_service=1"* ]]; then
     mem_service_enabled=1
   fi
-  if [[ "$APPEND_EXTRA" == *"linqu_w4_guest=1"* ]]; then
+  if [[ "$APPEND_EXTRA" == *"linqu_llm_infer=1"* ]]; then
     w4_guest_enabled=1
   fi
 
@@ -1674,7 +1674,7 @@ run_iteration() {
     validate_mem_service_log "nodeA" "$nodea_guest_log" || return 1
     validate_mem_service_log "nodeB" "$nodeb_guest_log" || return 1
   fi
-  if [[ "$APPEND_EXTRA" == *"linqu_w4_guest=1"* ]]; then
+  if [[ "$APPEND_EXTRA" == *"linqu_llm_infer=1"* ]]; then
     validate_w4_guest_log "nodeA" "$nodea_guest_log" || return 1
     validate_w4_guest_log "nodeB" "$nodeb_guest_log" || return 1
   fi

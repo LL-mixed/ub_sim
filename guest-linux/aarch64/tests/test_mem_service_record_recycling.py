@@ -8,7 +8,7 @@ REPO_ROOT = ROOT.parents[1]
 SERVICE_DIR = ROOT / "components" / "mem_service"
 SERVICE_C = SERVICE_DIR / "mem_service.c"
 SERVICE_H = SERVICE_DIR / "mem_service.h"
-GUEST_C = ROOT / "apps" / "w4_guest" / "w4_guest.c"
+GUEST_C = ROOT / "apps" / "llm_infer" / "llm_infer.c"
 BUILD_INITRAMFS = ROOT / "scripts" / "build_initramfs.sh"
 RUN_APP = ROOT / "initramfs" / "run_app"
 COMPONENTS_README = ROOT / "components" / "README.md"
@@ -39,7 +39,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn('MEM_SERVICE_CLI_BIN="$OUT_DIR/linqu_mem_service"', build_script)
         self.assertIn(
-            '"$W4_GUEST_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$W4_GUEST_BIN"',
+            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
             build_script,
         )
         self.assertIn("linqu_mem_service", build_script)

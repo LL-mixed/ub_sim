@@ -531,8 +531,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         guest_source = (
             Path(__file__).resolve().parents[1]
             / "apps"
-            / "w4_guest"
-            / "w4_guest.c"
+            / "llm_infer"
+            / "llm_infer.c"
         ).read_text(encoding="utf-8")
         db_service_source = (
             Path(__file__).resolve().parents[1]

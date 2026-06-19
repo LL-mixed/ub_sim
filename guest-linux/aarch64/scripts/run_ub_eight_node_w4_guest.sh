@@ -734,11 +734,11 @@ export SIM_W4_UAPI_COMPLETION_TIMEOUT_MS="$SIM_W4_UAPI_COMPLETION_TIMEOUT_MS"
 export SIM_W4_RESOURCE_ASSERTIONS="$SIM_W4_RESOURCE_ASSERTIONS"
 
 log "start step=0 \$LINQU_UB_ROLE local_ip=\$LINQU_UB_LOCAL_IP"
-if /bin/linqu_w4_guest; then
-  log "linqu_w4_guest completed \$LINQU_UB_ROLE"
+if /bin/linqu_llm_infer; then
+  log "linqu_llm_infer completed \$LINQU_UB_ROLE"
 else
   rc=\$?
-  log "FAIL: linqu_w4_guest failed \$LINQU_UB_ROLE rc=\$rc"
+  log "FAIL: linqu_llm_infer failed \$LINQU_UB_ROLE rc=\$rc"
 fi
 
 log "entering shell after w4 guest runner"

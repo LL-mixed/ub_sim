@@ -178,7 +178,7 @@ send_w4_cmd() {
   payload+=$'export LINQU_W4_REQUIRE_UAPI_RESOURCE=1\n'
   payload+=$'export SIM_UAPI_W4_CHIPBACKEND_PROFILE='"${SIM_UAPI_W4_CHIPBACKEND_PROFILE}"$'\n'
   payload+=$'echo '"${start_marker}"$'\n'
-  payload+=$'/bin/linqu_w4_guest\n'
+  payload+=$'/bin/linqu_llm_infer\n'
 
   send_serial_block "$serial_port" "$payload"
 }

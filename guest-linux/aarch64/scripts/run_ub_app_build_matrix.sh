@@ -25,7 +25,7 @@ APP_NAMES=(
   ssd_test
   ssd_gsva_test
   mem_service
-  w4_guest
+  llm_infer
 )
 
 usage() {

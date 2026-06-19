@@ -87,7 +87,7 @@ APP_VALIDATION_COMMANDS = {
         "scripts/run_ub_dual_node_mem_service.sh",
         "scripts/run_ub_eight_node_mem_service.sh",
     ],
-    "w4_guest": [
+    "llm_infer": [
         "scripts/run_ub_dual_node_w4_guest.sh",
         "scripts/run_ub_eight_node_w4_guest_qwen3_0_6b_2step.sh",
     ],
@@ -99,6 +99,7 @@ def test_apps_readme_lists_reusable_validation_command_for_each_app():
     app_dirs = sorted(path.name for path in (ROOT / "apps").iterdir() if path.is_dir())
 
     assert app_dirs == sorted(APP_VALIDATION_COMMANDS)
+    assert not any("w4" in app or "w5" in app for app in app_dirs)
     assert "/bin/run_demo" not in readme
     assert "DEMO_" not in readme
     assert "scripts/run_ub_app_build_matrix.sh" in readme
@@ -233,7 +234,7 @@ def test_app_build_matrix_runner_dry_run_executes_without_building():
     )
 
     assert "ub_chat makefile=apps/ub_chat/Makefile" in list_result.stdout
-    assert "w4_guest makefile=apps/w4_guest/Makefile" in list_result.stdout
+    assert "llm_infer makefile=apps/llm_infer/Makefile" in list_result.stdout
     assert "RUN app=ub_chat cmd=make -C apps/ub_chat" in dry_run_result.stdout
     assert "RUN app=ub_chat cmd=make -C apps/ub_chat clean" in dry_run_result.stdout
     assert "PASS" in dry_run_result.stdout
@@ -568,7 +569,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert 'MEM_SERVICE_QWEN3_SRC="$ROOT_DIR/components/mem_service/mem_service_qwen3.c"' in build_script
     assert 'MEM_SERVICE_CLI_SRC="$ROOT_DIR/apps/mem_service/mem_service.c"' in build_script
     assert 'MEM_SERVICE_CLI_BIN="$OUT_DIR/linqu_mem_service"' in build_script
-    assert '"$W4_GUEST_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$W4_GUEST_BIN"' in build_script
+    assert '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"' in build_script
     assert '"$MEM_SERVICE_CLI_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$MEM_SERVICE_CLI_BIN"' in build_script
     assert "Components do not install guest binaries directly" in components_readme
     assert "standalone demo" not in readme
@@ -586,14 +587,14 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert (component_dir / "lingqu_object_service.h").exists()
 
 
-def test_w4_guest_has_app_local_build_entrypoint():
-    app_dir = ROOT / "apps" / "w4_guest"
+def test_llm_infer_has_app_local_build_entrypoint():
+    app_dir = ROOT / "apps" / "llm_infer"
     makefile = (app_dir / "Makefile").read_text()
     readme = (app_dir / "README.md").read_text()
 
-    assert (app_dir / "w4_guest.c").exists()
+    assert (app_dir / "llm_infer.c").exists()
     assert (app_dir / "Makefile").exists()
-    assert "all: linqu_w4_guest" in makefile
+    assert "all: linqu_llm_infer" in makefile
     assert "components/mem_service/mem_service.c" in makefile
     assert "components/llm_infer/llm_infer.c" in makefile
     assert "-I$(ROOT)/libs/obmm_queue" in makefile
@@ -604,9 +605,9 @@ def test_w4_guest_has_app_local_build_entrypoint():
     assert "scripts/build_initramfs.sh" in readme
 
 
-def test_llm_infer_is_guest_component_consumed_by_w4_guest():
+def test_llm_infer_is_guest_component_consumed_by_llm_infer_app():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
-    w4_guest_source = (ROOT / "apps" / "w4_guest" / "w4_guest.c").read_text()
+    llm_infer_app_source = (ROOT / "apps" / "llm_infer" / "llm_infer.c").read_text()
     component_dir = ROOT / "components" / "llm_infer"
     component_source = (component_dir / "llm_infer.c").read_text()
     component_header = (component_dir / "llm_infer.h").read_text()
@@ -616,20 +617,20 @@ def test_llm_infer_is_guest_component_consumed_by_w4_guest():
     assert (component_dir / "llm_infer.h").exists()
     assert (component_dir / "README.md").exists()
     assert "LLM_INFER_SRC=" in build_script
-    assert '"$LLM_INFER_SRC" -lm -o "$W4_GUEST_BIN"' in build_script
+    assert '"$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"' in build_script
     assert "write_signature_line \"llm_infer_src\"" in build_script
-    assert '#include "components/llm_infer/llm_infer.h"' in w4_guest_source
-    assert "static uint64_t qwen3_pipeline_nodes" not in w4_guest_source
-    assert "static uint64_t qwen3_total_layers" not in w4_guest_source
-    assert "static uint64_t qwen3_vocab_size" not in w4_guest_source
-    assert "static const char *qwen3_model_id" not in w4_guest_source
-    assert "static bool is_qwen3_profile_name" not in w4_guest_source
-    assert "llm_infer_qwen3_pipeline_nodes" in w4_guest_source
+    assert '#include "components/llm_infer/llm_infer.h"' in llm_infer_app_source
+    assert "static uint64_t qwen3_pipeline_nodes" not in llm_infer_app_source
+    assert "static uint64_t qwen3_total_layers" not in llm_infer_app_source
+    assert "static uint64_t qwen3_vocab_size" not in llm_infer_app_source
+    assert "static const char *qwen3_model_id" not in llm_infer_app_source
+    assert "static bool is_qwen3_profile_name" not in llm_infer_app_source
+    assert "llm_infer_qwen3_pipeline_nodes" in llm_infer_app_source
     assert "llm_infer_qwen3_total_layers" in component_header
     assert "llm_infer_qwen3_vocab_size" in component_source
     assert "current model option is" in component_readme
     assert "Qwen3" in component_readme
-    assert not (ROOT / "apps" / "llm_infer").exists()
+    assert not (ROOT / "apps" / "w4_guest").exists()
 
 
 def test_obmm_gsva_uses_canonical_app_source():
@@ -1088,7 +1089,7 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     assert 'flag="linqu_ub_tcp_each_server=1"' in script
     assert 'flag="linqu_ssd_test=1"' in script
     assert 'flag="linqu_ssd_gsva_test=1"' in script
-    assert 'flag="linqu_w4_guest=1"' in script
+    assert 'flag="linqu_llm_infer=1"' in script
     assert "validate_ssd_test_log" in script
     assert "validate_ssd_gsva_test_log" in script
     assert "validate_w4_guest_log" in script
@@ -1128,8 +1129,8 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     assert "linqu_gsva_lifecycle_test=1" in run_app
     assert "linqu_npu_gsva_test=1" in run_app
     assert "linqu_ssd_gsva_test=1" in run_app
-    assert "linqu_w4_guest=1" in run_app
-    assert "run_w4_guest" in run_app
+    assert "linqu_llm_infer=1" in run_app
+    assert "run_llm_infer" in run_app
     assert "LINQU_MEM_SERVICE_CLUSTER=1" in run_app
     assert "SIM_UAPI_W4_CHIPBACKEND_PROFILE" in run_app
     assert "switching to /bin/run_app app boot flow" in init_source
@@ -1145,11 +1146,11 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     assert "/bin/run_demo" not in readme
     assert 'local runner="$RUN_INITRAMFS_DIR/bin/run_app"' in w4_eight_runner
     assert 'RDINIT="/bin/run_app"' in w4_eight_runner
-    assert 'exec "$SCRIPT_DIR/run_ub_dual_node_apps.sh" --app w4_guest "$@"' in w4_runner
+    assert 'exec "$SCRIPT_DIR/run_ub_dual_node_apps.sh" --app llm_infer "$@"' in w4_runner
     assert 'RUN_SECS="${RUN_SECS:-300}"' in w4_runner
     assert "mem_service_region_size_mb=512" in w4_runner
     assert "obmm.mempool_size=512M" in w4_runner
-    assert "linqu_w4_guest=1" in w4_runner or "--app w4_guest" in w4_runner
+    assert "linqu_llm_infer=1" in w4_runner or "--app llm_infer" in w4_runner
     assert 'RDINIT="${RDINIT:-/bin/run_app}"' in launcher_scripts
     assert "/bin/run_demo bootstrap" not in launcher_scripts
     assert 'RDINIT="${RDINIT:-/bin/run_demo}"' not in launcher_scripts

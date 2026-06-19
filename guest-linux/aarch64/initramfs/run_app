@@ -53,7 +53,7 @@ cmdline_value() {
   echo "$default_value"
 }
 
-run_w4_guest() {
+run_llm_infer() {
   local role=""
   local local_ip=""
   local node_count=""
@@ -78,7 +78,7 @@ run_w4_guest() {
   export SIM_QWEN3_GUEST_DECODE_STEP=0
   export SIM_QWEN3_GUEST_DECODE_STEPS="$decode_steps"
 
-  run_binary "linqu_w4_guest" /bin/linqu_w4_guest
+  run_binary "linqu_llm_infer" /bin/linqu_llm_infer
 }
 
 run_binary() {
@@ -717,8 +717,8 @@ run_default_actions() {
     ran_any="1"
   fi
 
-  if has_flag "linqu_w4_guest=1"; then
-    run_w4_guest || rc=$?
+  if has_flag "linqu_llm_infer=1"; then
+    run_llm_infer || rc=$?
     ran_any="1"
   fi
 
@@ -795,8 +795,8 @@ run_single_action() {
     mem_service_qwen3)
       run_binary "linqu_mem_service" /bin/linqu_mem_service --inspect-qwen3
       ;;
-    w4_guest)
-      run_w4_guest
+    llm_infer)
+      run_llm_infer
       ;;
     gsva_coh_test)
       gsva_test_mode=""

@@ -54,7 +54,7 @@ validation ledger.
 | `ssd_test` | `scripts/run_ub_two_node_ssd_test.sh` | `scripts/run_ub_eight_node_ssd_test.sh` |
 | `ssd_gsva_test` | `scripts/run_ub_two_node_ssd_gsva_test.sh` | `scripts/run_ub_eight_node_ssd_gsva_test.sh` |
 | `mem_service` | `scripts/run_ub_dual_node_mem_service.sh` | `scripts/run_ub_eight_node_mem_service.sh` |
-| `w4_guest` | `scripts/run_ub_dual_node_w4_guest.sh` | `scripts/run_ub_eight_node_w4_guest_qwen3_0_6b_2step.sh` |
+| `llm_infer` | `scripts/run_ub_dual_node_w4_guest.sh` | `scripts/run_ub_eight_node_w4_guest_qwen3_0_6b_2step.sh` |
 
 `mem_service` is primarily a link-time component under `components/mem_service`.
 Its app entrypoint is a standalone smoke/inspect CLI for metadata and packaging

@@ -10,4 +10,4 @@ export APPEND_EXTRA
 export RUN_SECS
 export MAX_RUNTIME
 
-exec "$SCRIPT_DIR/run_ub_dual_node_apps.sh" --app w4_guest "$@"
+exec "$SCRIPT_DIR/run_ub_dual_node_apps.sh" --app llm_infer "$@"

@@ -54,12 +54,12 @@ NPU_GSVA_TEST_BIN="$OUT_DIR/npu_gsva_test"
 SSD_GSVA_TEST_SRC="$ROOT_DIR/apps/ssd_gsva_test/ssd_gsva_test.c"
 SSD_GSVA_TEST_BIN="$OUT_DIR/ssd_gsva_test"
 MEM_SERVICE_CLI_SRC="$ROOT_DIR/apps/mem_service/mem_service.c"
-W4_GUEST_SRC="$ROOT_DIR/apps/w4_guest/w4_guest.c"
+LLM_INFER_APP_SRC="$ROOT_DIR/apps/llm_infer/llm_infer.c"
 MEM_SERVICE_SRC="$ROOT_DIR/components/mem_service/mem_service.c"
 MEM_SERVICE_QWEN3_SRC="$ROOT_DIR/components/mem_service/mem_service_qwen3.c"
 LLM_INFER_SRC="$ROOT_DIR/components/llm_infer/llm_infer.c"
 MEM_SERVICE_CLI_BIN="$OUT_DIR/linqu_mem_service"
-W4_GUEST_BIN="$OUT_DIR/linqu_w4_guest"
+LLM_INFER_APP_BIN="$OUT_DIR/linqu_llm_infer"
 RUN_APP_SRC="$ROOT_DIR/initramfs/run_app"
 RUN_APP_BIN="$INITRAMFS_DIR/bin/run_app"
 INIT_SCRIPT_SRC="$ROOT_DIR/initramfs/init"
@@ -160,7 +160,7 @@ current_initramfs_signature() {
   write_signature_line "npu_gsva_test_src" "$NPU_GSVA_TEST_SRC"
   write_signature_line "ssd_gsva_test_src" "$SSD_GSVA_TEST_SRC"
   write_signature_line "mem_service_cli_src" "$MEM_SERVICE_CLI_SRC"
-  write_signature_line "w4_guest_src" "$W4_GUEST_SRC"
+  write_signature_line "llm_infer_app_src" "$LLM_INFER_APP_SRC"
   write_signature_line "mem_service_src" "$MEM_SERVICE_SRC"
   write_signature_line "mem_service_qwen3_src" "$MEM_SERVICE_QWEN3_SRC"
   write_signature_line "llm_infer_src" "$LLM_INFER_SRC"
@@ -398,7 +398,7 @@ fi
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/common" "$NPU_GSVA_TEST_SRC" -o "$NPU_GSVA_TEST_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/common" "$SSD_GSVA_TEST_SRC" -o "$SSD_GSVA_TEST_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR" -I"$ROOT_DIR/.." -I"$ROOT_DIR/libs/obmm_queue" -I"$ROOT_DIR/apps/obmm_queue" "$MEM_SERVICE_CLI_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$MEM_SERVICE_CLI_BIN"
-"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR" -I"$ROOT_DIR/.." -I"$ROOT_DIR/libs/obmm_queue" -I"$ROOT_DIR/apps/obmm_queue" "$W4_GUEST_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$W4_GUEST_BIN"
+"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR" -I"$ROOT_DIR/.." -I"$ROOT_DIR/libs/obmm_queue" -I"$ROOT_DIR/apps/obmm_queue" "$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"
 
 if [[ -f "$INIT_SCRIPT_SRC" ]]; then
   cp "$INIT_SCRIPT_SRC" "$INIT_SCRIPT_BIN"
@@ -433,7 +433,7 @@ cp "$SSD_TEST_BIN" "$INITRAMFS_DIR/bin/ssd_test"
 cp "$NPU_GSVA_TEST_BIN" "$INITRAMFS_DIR/bin/npu_gsva_test"
 cp "$SSD_GSVA_TEST_BIN" "$INITRAMFS_DIR/bin/ssd_gsva_test"
 cp "$MEM_SERVICE_CLI_BIN" "$INITRAMFS_DIR/bin/linqu_mem_service"
-cp "$W4_GUEST_BIN" "$INITRAMFS_DIR/bin/linqu_w4_guest"
+cp "$LLM_INFER_APP_BIN" "$INITRAMFS_DIR/bin/linqu_llm_infer"
 chmod +x \
   "$INITRAMFS_DIR/bin/linqu_probe" \
   "$INITRAMFS_DIR/bin/linqu_urma_dp" \
@@ -453,7 +453,7 @@ chmod +x \
   "$INITRAMFS_DIR/bin/linqu_ub_gsva_coh_test" \
   "$INITRAMFS_DIR/bin/linqu_ub_gsva_lifecycle_test" \
   "$INITRAMFS_DIR/bin/linqu_mem_service" \
-  "$INITRAMFS_DIR/bin/linqu_w4_guest" \
+  "$INITRAMFS_DIR/bin/linqu_llm_infer" \
   "$INITRAMFS_DIR/bin/npu_test" \
   "$INITRAMFS_DIR/bin/ssd_test" \
   "$INITRAMFS_DIR/bin/npu_gsva_test" \
