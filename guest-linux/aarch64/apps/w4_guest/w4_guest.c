@@ -21,6 +21,7 @@
 
 #include "kernel_ub/include/uapi/ub/cdma/cdma_abi.h"
 #include "uburma_cmd_user_compat.h"
+#include "components/llm_infer/llm_infer.h"
 #include "components/mem_service/w4_kvcache_db_service.h"
 
 #define DT_ROOT "/proc/device-tree"
@@ -537,81 +538,6 @@ static void write_u8_le(uint8_t *buf, size_t *off, uint8_t value)
 {
     buf[*off] = value;
     *off += 1;
-}
-
-static uint64_t env_u64_or(const char *name, uint64_t fallback)
-{
-    const char *value = getenv(name);
-    char *end = NULL;
-    unsigned long long parsed;
-
-    if (!value || value[0] == '\0') {
-        return fallback;
-    }
-    errno = 0;
-    parsed = strtoull(value, &end, 10);
-    if (errno != 0 || end == value || *end != '\0') {
-        return fallback;
-    }
-    return (uint64_t)parsed;
-}
-
-static uint64_t qwen3_pipeline_nodes(void)
-{
-    return env_u64_or("SIM_QWEN3_DENSE_TP_NODES", W4_QWEN3_EXPECTED_SHARDS);
-}
-
-static uint64_t qwen3_total_layers(void)
-{
-    return env_u64_or("SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS",
-                      W4_QWEN3_KVCACHE_LAYERS);
-}
-
-static uint64_t qwen3_vocab_size(void)
-{
-    return env_u64_or("SIM_QWEN3_DENSE_VOCAB_SIZE", W4_QWEN3_VOCAB_SIZE);
-}
-
-static const char *qwen3_model_id(void)
-{
-    const char *model_id = getenv("SIM_QWEN3_DENSE_MODEL_ID");
-
-    return model_id && model_id[0] != '\0' ? model_id : W4_QWEN3_TOKENIZER_MODEL_ID;
-}
-
-static uint64_t qwen3_hidden_range_bytes(void)
-{
-    return env_u64_or("SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES",
-                      W4_QWEN3_HIDDEN_RANGE_BYTES);
-}
-
-static uint64_t qwen3_decode_hidden_bytes(void)
-{
-    uint64_t hidden_size = env_u64_or("SIM_QWEN3_DENSE_HIDDEN_SIZE", 1024ULL);
-    uint64_t decode_tokens = env_u64_or("SIM_QWEN3_DENSE_DECODE_TOKENS", 1ULL);
-
-    return env_u64_or("SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES",
-                      hidden_size * decode_tokens * 2ULL);
-}
-
-static uint64_t qwen3_handoff_hidden_bytes(uint64_t decode_step)
-{
-    return decode_step > 0 ? qwen3_decode_hidden_bytes() : qwen3_hidden_range_bytes();
-}
-
-static bool is_qwen3_profile_name(const char *profile)
-{
-    return profile &&
-           (strcmp(profile, "qwen3_dense_reference") == 0 ||
-            strcmp(profile, "qwen3_dense") == 0);
-}
-
-static bool qwen3_real_tokenizer_required(void)
-{
-    const char *profile = getenv("SIM_UAPI_W4_CHIPBACKEND_PROFILE");
-    const char *weights_path = getenv("SIM_QWEN3_DENSE_WEIGHTS_PATH");
-
-    return is_qwen3_profile_name(profile) && weights_path && weights_path[0] != '\0';
 }
 
 static void write_u32_le(uint8_t *buf, size_t *off, uint32_t value)
@@ -1296,8 +1222,8 @@ static void build_qwen3_range_dispatch_descriptor(uint8_t *slot,
     write_u32_le(slot, &off, layer_start);
     write_u32_le(slot, &off, layer_end);
     write_u32_le(slot, &off, next_node);
-    write_u32_le(slot, &off, (uint32_t)qwen3_pipeline_nodes());
-    write_u32_le(slot, &off, (uint32_t)qwen3_total_layers());
+    write_u32_le(slot, &off, (uint32_t)llm_infer_qwen3_pipeline_nodes());
+    write_u32_le(slot, &off, (uint32_t)llm_infer_qwen3_total_layers());
     write_u32_le(slot, &off, (uint32_t)hidden_bytes);
     write_u32_le(slot, &off, object_ref_table_offset);
     write_u32_le(slot, &off, object_ref_count);
@@ -1412,7 +1338,7 @@ static int seed_qwen3_prompt_tokens_from_env(volatile uint8_t *ep_mmio)
 
     const char *profile = getenv("SIM_UAPI_W4_CHIPBACKEND_PROFILE");
 
-    if (!is_qwen3_profile_name(profile) || !csv || csv[0] == '\0') {
+    if (!llm_infer_is_qwen3_profile_name(profile) || !csv || csv[0] == '\0') {
         return 0;
     }
 
@@ -1661,7 +1587,7 @@ static uint64_t expected_dispatch_result_word(void)
 static bool is_qwen3_profile(void)
 {
     const char *profile = getenv("SIM_UAPI_W4_CHIPBACKEND_PROFILE");
-    return is_qwen3_profile_name(profile);
+    return llm_infer_is_qwen3_profile_name(profile);
 }
 
 static void resolve_role(char *role, size_t role_len);
@@ -3664,7 +3590,7 @@ static uint64_t qwen3_rol64(uint64_t value, unsigned int bits)
 
 static uint64_t qwen3_sampled_token(uint64_t round1_checksum, uint64_t tile_id)
 {
-    return (round1_checksum ^ (tile_id * 0x9e3779b97f4a7c15ULL)) % qwen3_vocab_size();
+    return (round1_checksum ^ (tile_id * 0x9e3779b97f4a7c15ULL)) % llm_infer_qwen3_vocab_size();
 }
 
 static uint64_t qwen3_logits_checksum(uint64_t round1_checksum,
@@ -3707,12 +3633,13 @@ static uint64_t qwen3_tokenizer_policy_hash(void)
     uint64_t value;
     uint8_t zero = 0;
 
-    acc = qwen3_fnv1a_bytes(acc, qwen3_model_id(), strlen(qwen3_model_id()));
+    acc = qwen3_fnv1a_bytes(acc, llm_infer_qwen3_model_id(),
+                            strlen(llm_infer_qwen3_model_id()));
     acc = qwen3_fnv1a_bytes(acc, &zero, sizeof(zero));
     acc = qwen3_fnv1a_bytes(acc, W4_QWEN3_TOKENIZER_FAMILY,
                             strlen(W4_QWEN3_TOKENIZER_FAMILY));
     acc = qwen3_fnv1a_bytes(acc, &zero, sizeof(zero));
-    value = qwen3_vocab_size();
+    value = llm_infer_qwen3_vocab_size();
     acc = qwen3_fnv1a_bytes(acc, &value, sizeof(value));
     acc = qwen3_fnv1a_bytes(acc, W4_QWEN3_TOKENIZER_PIECE_PREFIX,
                             strlen(W4_QWEN3_TOKENIZER_PIECE_PREFIX));
@@ -3774,7 +3701,7 @@ static int verify_qwen3_range_completion_contract(const uint8_t *cq,
                                                   uint32_t cluster_node_count,
                                                   uint64_t expected_hidden_bytes)
 {
-    const uint64_t expected_total_layers = qwen3_total_layers();
+    const uint64_t expected_total_layers = llm_infer_qwen3_total_layers();
 
     for (size_t i = 0; i < slot_count; ++i) {
         const uint8_t *slot = cq + (i * CMDQ_SLOT_BYTES);
@@ -3926,7 +3853,7 @@ static int verify_qwen3_range_forward_table(volatile uint8_t *ep_mmio,
     uint64_t kv_payload_bytes;
     uint64_t kv_payload_checksum = 0;
     uint64_t scan_limit = qwen3_output_scan_limit(ep_mmio);
-    uint64_t expected_total_layers = qwen3_total_layers();
+    uint64_t expected_total_layers = llm_infer_qwen3_total_layers();
     uint64_t explicit_table_header =
         read_segment_u64(ep_mmio,
                          W4_QWEN3_RESULT_BLOCK_TABLE_HEADER +
@@ -5037,7 +4964,7 @@ qwen3_logits_tables:
                      (kvcache_read_digest & 0x0fULL) +
                      ((qkv_reference_digest >> 4) & 0x0fULL) +
                      ((real_path_digest >> 8) & 0x0fULL)) %
-                    qwen3_vocab_size();
+                    llm_infer_qwen3_vocab_size();
                 uint64_t expected_margin = 1000ULL + entry * 7ULL + expected_shard;
                 uint64_t expected_logits_checksum =
                     qwen3_logits_checksum(round1_checksum,
@@ -5053,7 +4980,7 @@ qwen3_logits_tables:
                 uint64_t expected_text_checksum =
                     qwen3_sample_text_checksum(entry, expected_sampled_token);
                 bool real_logits =
-                    full_vocab_checked_token_count == qwen3_vocab_size() &&
+                    full_vocab_checked_token_count == llm_infer_qwen3_vocab_size() &&
                     full_vocab_logits_checksum != 0 &&
                     top_logit_bits != 0 &&
                     runner_up_logit_bits != 0;
@@ -5063,7 +4990,7 @@ qwen3_logits_tables:
                 if (entry_shard != expected_shard ||
                     entry_tile != entry ||
                     entry_segment == 0 ||
-                    entry_logits_count != qwen3_vocab_size() ||
+                    entry_logits_count != llm_infer_qwen3_vocab_size() ||
                     entry_step != expected_entry_step) {
                     fprintf(stderr,
                             "[w4_guest] qwen3 logits table mismatch entry=%" PRIu64
@@ -5089,11 +5016,11 @@ qwen3_logits_tables:
                         runtime_forward_final_hidden_checksum != 0 ||
                         runtime_forward_checksum != 0;
                     bool runtime_forward_invalid =
-                        runtime_forward_layer_count != qwen3_total_layers() ||
+                        runtime_forward_layer_count != llm_infer_qwen3_total_layers() ||
                         runtime_forward_final_hidden_checksum == 0 ||
                         runtime_forward_checksum == 0;
-                    if (entry_sampled_token >= qwen3_vocab_size() ||
-                        entry_runner_up_token >= qwen3_vocab_size() ||
+                    if (entry_sampled_token >= llm_infer_qwen3_vocab_size() ||
+                        entry_runner_up_token >= llm_infer_qwen3_vocab_size() ||
                         entry_sampled_token == entry_runner_up_token ||
                         entry_margin_milli == 0 ||
                         entry_logits_checksum == 0 ||
@@ -5184,7 +5111,7 @@ qwen3_logits_tables:
                    " real_logits=%" PRIu64
                    " status=ok\n",
                    logits_count, logits_entry_words, logits_table_bytes,
-                   qwen3_vocab_size(), sampled_distinct,
+                   llm_infer_qwen3_vocab_size(), sampled_distinct,
                    logits_checksum_nonzero, text_checksum_nonzero,
                    real_logits_count);
         }
@@ -5202,7 +5129,8 @@ qwen3_logits_tables:
             token_text_total_bytes = read_segment_u64(ep_mmio, token_text_table_header + 32);
             token_text_policy_hash = read_segment_u64(ep_mmio, token_text_table_header + 40);
             token_text_policy_kind = read_segment_u64(ep_mmio, token_text_table_header + 48);
-            const bool real_tokenizer_required = qwen3_real_tokenizer_required();
+            const bool real_tokenizer_required =
+                llm_infer_qwen3_real_tokenizer_required();
             if (token_text_marker != W4_QWEN3_MARKER_TOKEN_TEXT_TABLE ||
                 token_text_count != (range_only_flow ? logits_count : W4_QWEN3_TOKEN_TEXT_ENTRIES) ||
                 token_text_entry_words != W4_QWEN3_TOKEN_TEXT_TABLE_ENTRY_WORDS ||
@@ -7834,8 +7762,8 @@ static int qwen3_terminal_token_record_from_logits_payload(
             return -1;
         }
     }
-    if (record->sampled_token >= qwen3_vocab_size() ||
-        record->runner_up_token >= qwen3_vocab_size() ||
+    if (record->sampled_token >= llm_infer_qwen3_vocab_size() ||
+        record->runner_up_token >= llm_infer_qwen3_vocab_size() ||
         record->logits_checksum == 0 ||
         record->text_checksum == 0 ||
         (record->piece_word0 == 0 && record->piece_word1 == 0)) {
@@ -11425,7 +11353,7 @@ decode_round_start:
                                                   layer_start,
                                                   layer_end,
                                                   next_node,
-                                                  qwen3_handoff_hidden_bytes(guest_decode_step),
+                                                  llm_infer_qwen3_handoff_hidden_bytes(guest_decode_step),
                                                   (uint32_t)W4_QWEN3_OBJECT_REF_TABLE_OFFSET,
                                                   object_ref_count);
         }
@@ -11472,7 +11400,8 @@ decode_round_start:
             goto out;
         }
         if (layer_start > 0U || guest_decode_step > 0) {
-            uint64_t hidden_range_bytes = qwen3_handoff_hidden_bytes(guest_decode_step);
+            uint64_t hidden_range_bytes =
+                llm_infer_qwen3_handoff_hidden_bytes(guest_decode_step);
             uint64_t range_input_checksum = 0;
             struct w4_db_object_payload_view range_input_view;
             uint64_t stage_start_ms = monotonic_ms();
@@ -11963,13 +11892,14 @@ decode_round_start:
                                 slot,
                                 default_segment,
                                 guest_decode_step,
-                                qwen3_handoff_hidden_bytes(guest_decode_step),
+                                llm_infer_qwen3_handoff_hidden_bytes(guest_decode_step),
                                 &runtime_forward) != 0) {
         goto out;
     }
     qwen3_runtime_forward_ready =
         is_qwen3_profile() &&
-        runtime_forward.payload_bytes == qwen3_handoff_hidden_bytes(guest_decode_step);
+        runtime_forward.payload_bytes ==
+            llm_infer_qwen3_handoff_hidden_bytes(guest_decode_step);
     verify_done_ms = monotonic_ms();
     if (qwen3_runtime_forward_ready && enable_db_cluster && cluster_node_count == 8U) {
         uint32_t dispatch_node = 0U;

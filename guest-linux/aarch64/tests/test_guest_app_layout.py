@@ -560,7 +560,7 @@ def test_mem_service_is_link_time_component():
     readme = (component_dir / "README.md").read_text()
 
     assert 'W4_DB_SERVICE_SRC="$ROOT_DIR/components/mem_service/w4_kvcache_db_service.c"' in build_script
-    assert '"$W4_GUEST_SRC" "$W4_DB_SERVICE_SRC" -lm -o "$W4_GUEST_BIN"' in build_script
+    assert '"$W4_GUEST_SRC" "$W4_DB_SERVICE_SRC" "$LLM_INFER_SRC" -lm -o "$W4_GUEST_BIN"' in build_script
     assert "Components do not install guest binaries directly" in components_readme
     assert "not a standalone app" in readme
     assert "standalone demo" not in readme
@@ -585,11 +585,41 @@ def test_w4_guest_has_app_local_build_entrypoint():
     assert (app_dir / "Makefile").exists()
     assert "all: linqu_w4_guest" in makefile
     assert "components/mem_service/w4_kvcache_db_service.c" in makefile
+    assert "components/llm_infer/llm_infer.c" in makefile
     assert "-I$(ROOT)/libs/obmm_queue" in makefile
     assert "-I$(ROOT)/apps/obmm_queue" in makefile
     assert "$^ -lm -o $@" in makefile
+    assert "components/llm_infer/" in readme
     assert "app-local `Makefile`" in readme
     assert "scripts/build_initramfs.sh" in readme
+
+
+def test_llm_infer_is_guest_component_consumed_by_w4_guest():
+    build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
+    w4_guest_source = (ROOT / "apps" / "w4_guest" / "w4_guest.c").read_text()
+    component_dir = ROOT / "components" / "llm_infer"
+    component_source = (component_dir / "llm_infer.c").read_text()
+    component_header = (component_dir / "llm_infer.h").read_text()
+    component_readme = (component_dir / "README.md").read_text()
+
+    assert (component_dir / "llm_infer.c").exists()
+    assert (component_dir / "llm_infer.h").exists()
+    assert (component_dir / "README.md").exists()
+    assert "LLM_INFER_SRC=" in build_script
+    assert '"$LLM_INFER_SRC" -lm -o "$W4_GUEST_BIN"' in build_script
+    assert "write_signature_line \"llm_infer_src\"" in build_script
+    assert '#include "components/llm_infer/llm_infer.h"' in w4_guest_source
+    assert "static uint64_t qwen3_pipeline_nodes" not in w4_guest_source
+    assert "static uint64_t qwen3_total_layers" not in w4_guest_source
+    assert "static uint64_t qwen3_vocab_size" not in w4_guest_source
+    assert "static const char *qwen3_model_id" not in w4_guest_source
+    assert "static bool is_qwen3_profile_name" not in w4_guest_source
+    assert "llm_infer_qwen3_pipeline_nodes" in w4_guest_source
+    assert "llm_infer_qwen3_total_layers" in component_header
+    assert "llm_infer_qwen3_vocab_size" in component_source
+    assert "current model option is" in component_readme
+    assert "Qwen3" in component_readme
+    assert not (ROOT / "apps" / "llm_infer").exists()
 
 
 def test_obmm_gsva_uses_canonical_app_source():

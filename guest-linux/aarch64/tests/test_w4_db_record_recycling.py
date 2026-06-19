@@ -28,7 +28,10 @@ class W4DbRecordRecyclingTests(unittest.TestCase):
             'W4_DB_SERVICE_SRC="$ROOT_DIR/components/mem_service/w4_kvcache_db_service.c"',
             build_script,
         )
-        self.assertIn('"$W4_GUEST_SRC" "$W4_DB_SERVICE_SRC" -lm -o "$W4_GUEST_BIN"', build_script)
+        self.assertIn(
+            '"$W4_GUEST_SRC" "$W4_DB_SERVICE_SRC" "$LLM_INFER_SRC" -lm -o "$W4_GUEST_BIN"',
+            build_script,
+        )
         self.assertNotIn("MEM_SERVICE_BIN=", build_script)
         self.assertNotIn("linqu_mem_service", build_script)
         self.assertNotIn("linqu_mem_service", run_app)
