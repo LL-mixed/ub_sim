@@ -16,6 +16,9 @@ SERVICE_QWEN3_KV_STATE_FLOW_INC = SERVICE_DIR / "mem_service_qwen3_kv_state_flow
 SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_INC = (
     SERVICE_DIR / "mem_service_qwen3_terminal_token_flow.inc"
 )
+SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_INC = (
+    SERVICE_DIR / "mem_service_qwen3_engram_publish_flow.inc"
+)
 SERVICE_QWEN3_DECODE_BARRIER_INC = SERVICE_DIR / "mem_service_qwen3_decode_barrier.inc"
 SERVICE_KEYS_INC = SERVICE_DIR / "mem_service_keys.inc"
 SERVICE_OBJECT_REFS_INC = SERVICE_DIR / "mem_service_object_refs.inc"
@@ -382,6 +385,30 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertNotRegex(
             source,
             r"int mem_service_obmm_service_v0_wait_terminal_token_result"
+            r"\s*\(\s*struct mem_service \*svc,",
+        )
+
+    def test_qwen3_engram_publish_flow_is_split_from_runtime_main(self):
+        source = SERVICE_C.read_text()
+        engram_publish_flow = SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_INC.read_text()
+        readme = (SERVICE_DIR / "README.md").read_text()
+
+        self.assertIn('#include "mem_service_qwen3_engram_publish_flow.inc"', source)
+        self.assertIn("mem_service_pack_qwen3_engram_candidates", engram_publish_flow)
+        self.assertIn(
+            "mem_service_obmm_service_v0_publish_engram_candidates",
+            engram_publish_flow,
+        )
+        self.assertIn("mem_service_obmm_service_v0_publish_engram_step", engram_publish_flow)
+        self.assertIn("Qwen3 engram candidate", readme)
+        self.assertNotRegex(
+            source,
+            r"static uint64_t mem_service_pack_qwen3_engram_candidates"
+            r"\s*\(\s*uint64_t decode_step,",
+        )
+        self.assertNotRegex(
+            source,
+            r"int mem_service_obmm_service_v0_publish_engram_step"
             r"\s*\(\s*struct mem_service \*svc,",
         )
 
