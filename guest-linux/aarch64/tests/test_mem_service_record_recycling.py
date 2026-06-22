@@ -24,6 +24,8 @@ SERVICE_QWEN3_RECORDS_H = SERVICE_DIR / "mem_service_qwen3_records.h"
 SERVICE_RECORDS_C = SERVICE_DIR / "mem_service_records.c"
 SERVICE_KEYS_C = SERVICE_DIR / "mem_service_keys.c"
 SERVICE_KEYS_H = SERVICE_DIR / "mem_service_keys.h"
+SERVICE_OBJECT_REFS_C = SERVICE_DIR / "mem_service_object_refs.c"
+SERVICE_OBJECT_REFS_H = SERVICE_DIR / "mem_service_object_refs.h"
 SERVICE_QWEN3_RECORDS_INC = SERVICE_DIR / "mem_service_qwen3_records.inc"
 SERVICE_QWEN3_RUNTIME_INC = SERVICE_DIR / "mem_service_qwen3_runtime.inc"
 SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_INC = (
@@ -41,7 +43,6 @@ SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_INC = (
 )
 SERVICE_QWEN3_ENGRAM_WAIT_FLOW_INC = SERVICE_DIR / "mem_service_qwen3_engram_wait_flow.inc"
 SERVICE_QWEN3_DECODE_BARRIER_INC = SERVICE_DIR / "mem_service_qwen3_decode_barrier.inc"
-SERVICE_OBJECT_REFS_INC = SERVICE_DIR / "mem_service_object_refs.inc"
 SERVICE_OBMM_OBJECTS_INC = SERVICE_DIR / "mem_service_obmm_objects.inc"
 SERVICE_METADATA_INC = SERVICE_DIR / "mem_service_metadata.inc"
 SERVICE_CLUSTER_PAYLOAD_INC = SERVICE_DIR / "mem_service_cluster_payload.inc"
@@ -77,6 +78,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             build_script,
         )
         self.assertIn(
+            'MEM_SERVICE_OBJECT_REFS_SRC="$ROOT_DIR/components/mem_service/mem_service_object_refs.c"',
+            build_script,
+        )
+        self.assertIn(
             'MEM_SERVICE_RECORDS_SRC="$ROOT_DIR/components/mem_service/mem_service_records.c"',
             build_script,
         )
@@ -90,7 +95,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn('MEM_SERVICE_CLI_BIN="$OUT_DIR/linqu_mem_service"', build_script)
         self.assertIn(
-            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
+            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
             build_script,
         )
         self.assertIn("linqu_mem_service", build_script)
@@ -405,19 +410,27 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
 
     def test_object_ref_helpers_are_split_for_host_guest_core_reuse(self):
         source = SERVICE_C.read_text()
-        object_refs = SERVICE_OBJECT_REFS_INC.read_text()
+        object_refs = SERVICE_OBJECT_REFS_C.read_text()
+        object_refs_contract = SERVICE_OBJECT_REFS_H.read_text()
         readme = (SERVICE_DIR / "README.md").read_text()
 
-        self.assertIn('#include "mem_service_object_refs.inc"', source)
-        self.assertIn('#include "mem_service.h"', object_refs)
+        self.assertNotIn('#include "mem_service_object_refs.inc"', source)
+        self.assertIn('#include "mem_service_object_refs.h"', source)
+        self.assertIn('#include "mem_service_object_refs.h"', object_refs)
+        self.assertIn('#include "mem_service.h"', object_refs_contract)
         self.assertIn("#include <stdint.h>", object_refs)
         self.assertIn("#include <string.h>", object_refs)
         self.assertIn("mem_service_checksum_bytes", object_refs)
+        self.assertIn("mem_service_checksum_bytes", object_refs_contract)
         self.assertIn("mem_service_record_to_lingqu_obmm_ref", object_refs)
         self.assertIn("object-reference projection", readme)
-        self.assertIn("service/object-ref contract", readme)
+        self.assertIn("private checksum/object-reference", readme)
+        self.assertIn("standalone core", readme)
         self.assertNotIn("mem_service_internal.h", object_refs)
         self.assertNotIn("mem_service_guest_runtime.h", object_refs)
+        self.assertNotIn("mem_service_internal.h", object_refs_contract)
+        self.assertNotIn("mem_service_guest_runtime.h", object_refs_contract)
+        self.assertFalse((SERVICE_DIR / "mem_service_object_refs.inc").exists())
         self.assertNotRegex(
             source,
             r"int mem_service_record_to_lingqu_obmm_ref"

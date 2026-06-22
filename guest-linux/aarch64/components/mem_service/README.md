@@ -58,9 +58,11 @@ CLI:
   deployments.
 - `mem_service_keys.h` contains the private key construction helper contract
   used by the prefix/KV metadata core.
-- `mem_service_object_refs.inc` contains device-independent checksum and Lingqu
-  OBMM object-ref projection helpers that explicitly depend only on the public
-  service/object-ref contract.
+- `mem_service_object_refs.c` contains device-independent checksum and Lingqu
+  OBMM object-reference projection helpers compiled as a standalone core
+  translation unit for guest and host service deployments.
+- `mem_service_object_refs.h` contains the private checksum/object-reference
+  helper contract used by OBMM and Qwen3 data-flow code.
 - `mem_service_obmm_objects.inc` contains OBMM object payload generation, kind
   naming, payload arena allocation, and object record publication helpers.
 - `mem_service_metadata.inc` contains the prefix/KV metadata state machine used
@@ -90,7 +92,8 @@ CLI:
 Build and validation entrypoints:
 
 - `scripts/build_initramfs.sh` links `mem_service.c`, `mem_service_keys.c`,
-  `mem_service_records.c`, and `mem_service_qwen3.c` into the guest app binary.
+  `mem_service_object_refs.c`, `mem_service_records.c`, and
+  `mem_service_qwen3.c` into the guest app binary.
 - `apps/mem_service` builds `/bin/linqu_mem_service` for direct smoke and
   Qwen3 topology inspection.
 - Guest app runners provide the CLI surface that exercises the component.
