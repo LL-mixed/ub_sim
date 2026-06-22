@@ -20,6 +20,8 @@ CLI:
   publish, shortpath publish, and wait helpers.
 - `mem_service_qwen3_engram_publish_flow.inc` contains Qwen3 engram candidate
   publish and decision-state publish helpers.
+- `mem_service_qwen3_engram_wait_flow.inc` contains Qwen3 engram candidate,
+  selected-token, history, and state wait helpers.
 - `mem_service_qwen3_decode_barrier.inc` contains Qwen3 decode-round publish
   and all-node wait barrier helpers.
 - `mem_service_keys.inc` contains device-independent key construction helpers
