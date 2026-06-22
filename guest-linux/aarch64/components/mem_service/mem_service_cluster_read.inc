@@ -1,3 +1,5 @@
+#include "mem_service_compiler.h"
+
 static bool mem_service_try_read_stable_payload(const struct mem_service_cluster_payload *payload,
                                           struct mem_service_cluster_payload *snapshot)
 {

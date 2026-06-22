@@ -1,3 +1,5 @@
+#include "mem_service_compiler.h"
+
 static long mem_service_wallclock_ms(void)
 {
     struct timespec ts;

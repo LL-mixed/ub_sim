@@ -29,14 +29,13 @@
 #include <unistd.h>
 
 #include "mem_service_cluster_payload_contract.h"
+#include "mem_service_compiler.h"
 #include "mem_service_guest_runtime.h"
 #include "mem_service_object_contract.h"
 #include "mem_service_qwen3_placement.h"
+#include "mem_service_qwen3_record_policy.h"
 #include "mem_service_qwen3.h"
 #include "mem_service_runtime_config.h"
-
-#define MEM_SERVICE_MAYBE_UNUSED __attribute__((unused))
-#define MEM_SERVICE_QWEN3_RECORD_RETAIN_STEPS 16ULL
 
 #ifndef major
 #define major(dev) ((unsigned int)(((uint64_t)(dev) >> 24) & 0xffU))
