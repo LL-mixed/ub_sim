@@ -9,6 +9,7 @@ SERVICE_DIR = ROOT / "components" / "mem_service"
 SERVICE_C = SERVICE_DIR / "mem_service.c"
 SERVICE_H = SERVICE_DIR / "mem_service.h"
 SERVICE_QWEN3_H = SERVICE_DIR / "mem_service_qwen3.h"
+SERVICE_INTERNAL_H = SERVICE_DIR / "mem_service_internal.h"
 SERVICE_RECORDS_INC = SERVICE_DIR / "mem_service_records.inc"
 SERVICE_QWEN3_RECORDS_INC = SERVICE_DIR / "mem_service_qwen3_records.inc"
 SERVICE_QWEN3_RUNTIME_INC = SERVICE_DIR / "mem_service_qwen3_runtime.inc"
@@ -84,15 +85,45 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
 
     def test_record_caps_support_long_decode_runs(self):
         header = SERVICE_H.read_text()
-        source = SERVICE_C.read_text()
+        internal_header = SERVICE_INTERNAL_H.read_text()
 
         max_records = re.search(r"#define MEM_SERVICE_MAX_RECORDS\s+(\d+)U", header)
-        cluster_records = re.search(r"#define MEM_SERVICE_CLUSTER_MAX_RECORDS\s+(\d+)", source)
+        cluster_records = re.search(
+            r"#define MEM_SERVICE_CLUSTER_MAX_RECORDS\s+(\d+)",
+            internal_header,
+        )
 
         self.assertIsNotNone(max_records)
         self.assertIsNotNone(cluster_records)
         self.assertGreaterEqual(int(max_records.group(1)), 1024)
         self.assertGreaterEqual(int(cluster_records.group(1)), 1024)
+
+    def test_internal_runtime_contract_is_split_from_service_main(self):
+        source = SERVICE_C.read_text()
+        internal_header = SERVICE_INTERNAL_H.read_text()
+        readme = (SERVICE_DIR / "README.md").read_text()
+
+        self.assertIn('#include "mem_service_internal.h"', source)
+        self.assertIn("MEM_SERVICE_CLUSTER_MAX_RECORDS", internal_header)
+        self.assertIn("MEM_SERVICE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT", internal_header)
+        self.assertIn("struct mem_service_cluster_runtime", internal_header)
+        self.assertIn("struct mem_service_qwen3_layer_range_placement", internal_header)
+        self.assertIn("mem_service_qwen3_runtime_range_wait_ms", internal_header)
+        self.assertIn("private runtime constants", readme)
+        self.assertIn("payload structs", readme)
+        self.assertNotRegex(
+            source,
+            r"#define MEM_SERVICE_CLUSTER_MAX_RECORDS\s+\d+",
+        )
+        self.assertNotRegex(
+            source,
+            r"struct mem_service_cluster_runtime\s*\{",
+        )
+        self.assertNotRegex(
+            source,
+            r"static long mem_service_env_wait_ms_or_default"
+            r"\s*\(",
+        )
 
     def test_full_record_table_recycles_old_qwen3_runtime_records(self):
         source = (
@@ -502,11 +533,13 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
 
     def test_mem_service_uses_neutral_run_id_env_with_w5_compatibility(self):
         source = SERVICE_C.read_text()
+        internal_header = SERVICE_INTERNAL_H.read_text()
         range_publish_flow = SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_INC.read_text()
 
-        self.assertIn("mem_service_run_id_from_env", source)
-        self.assertIn('"MEM_SERVICE_RUN_ID"', source)
-        self.assertIn('"SIM_W5_RUN_ID"', source)
+        self.assertIn('#include "mem_service_internal.h"', source)
+        self.assertIn("mem_service_run_id_from_env", internal_header)
+        self.assertIn('"MEM_SERVICE_RUN_ID"', internal_header)
+        self.assertIn('"SIM_W5_RUN_ID"', internal_header)
         self.assertIn(
             "const char *service_run_id = mem_service_run_id_from_env();",
             range_publish_flow,
@@ -540,7 +573,13 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("qwen3_memory_service_lookup_boundary", source)
 
     def test_qwen3_kv_state_uses_tiered_block_spans(self):
-        source = SERVICE_C.read_text() + "\n" + SERVICE_QWEN3_RUNTIME_INC.read_text()
+        source = (
+            SERVICE_INTERNAL_H.read_text()
+            + "\n"
+            + SERVICE_C.read_text()
+            + "\n"
+            + SERVICE_QWEN3_RUNTIME_INC.read_text()
+        )
 
         tier_names = [
             "MEM_SERVICE_OBMM_QWEN3_KV_STATE_BLOCK_TIER0_BYTES",
@@ -576,7 +615,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertNotIn("kv_payload_len > MEM_SERVICE_OBMM_QWEN3_KV_STATE_SLOT_BYTES", source)
 
     def test_obmm_service_object_bytes_are_not_demo_named(self):
-        source = SERVICE_C.read_text()
+        source = SERVICE_INTERNAL_H.read_text()
 
         self.assertIn("MEM_SERVICE_OBMM_SERVICE_OBJECT_BYTES", source)
         self.assertNotIn("MEM_SERVICE_OBMM_DEMO_OBJECT_BYTES", source)
