@@ -14,6 +14,8 @@ CLI:
   recycling policy; it must stay out of the generic record core.
 - `mem_service_qwen3_runtime.inc` contains Qwen3 runtime payload checksum, KV
   span allocation, engram object keys, and layer-range placement helpers.
+- `mem_service_qwen3_decode_barrier.inc` contains Qwen3 decode-round publish
+  and all-node wait barrier helpers.
 - `mem_service_keys.inc` contains device-independent key construction helpers
   that must stay reusable by guest and host service deployments.
 - `mem_service_object_refs.inc` contains device-independent checksum and Lingqu

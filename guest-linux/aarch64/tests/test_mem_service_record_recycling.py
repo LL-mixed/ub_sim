@@ -12,6 +12,7 @@ SERVICE_QWEN3_H = SERVICE_DIR / "mem_service_qwen3.h"
 SERVICE_RECORDS_INC = SERVICE_DIR / "mem_service_records.inc"
 SERVICE_QWEN3_RECORDS_INC = SERVICE_DIR / "mem_service_qwen3_records.inc"
 SERVICE_QWEN3_RUNTIME_INC = SERVICE_DIR / "mem_service_qwen3_runtime.inc"
+SERVICE_QWEN3_DECODE_BARRIER_INC = SERVICE_DIR / "mem_service_qwen3_decode_barrier.inc"
 SERVICE_KEYS_INC = SERVICE_DIR / "mem_service_keys.inc"
 SERVICE_OBJECT_REFS_INC = SERVICE_DIR / "mem_service_object_refs.inc"
 SERVICE_OBMM_OBJECTS_INC = SERVICE_DIR / "mem_service_obmm_objects.inc"
@@ -319,6 +320,22 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             source,
             r"static int mem_service_qwen3_kv_state_block_span"
             r"\(uint64_t payload_len,",
+        )
+
+    def test_qwen3_decode_barrier_is_split_from_runtime_main(self):
+        source = SERVICE_C.read_text()
+        decode_barrier = SERVICE_QWEN3_DECODE_BARRIER_INC.read_text()
+        readme = (SERVICE_DIR / "README.md").read_text()
+
+        self.assertIn('#include "mem_service_qwen3_decode_barrier.inc"', source)
+        self.assertIn("mem_service_obmm_service_v0_publish_decode_round_done", decode_barrier)
+        self.assertIn("mem_service_obmm_service_v0_wait_all_decode_round_done", decode_barrier)
+        self.assertIn("qwen3_decode_round_barrier", decode_barrier)
+        self.assertIn("Qwen3 decode-round publish", readme)
+        self.assertNotRegex(
+            source,
+            r"int mem_service_obmm_service_v0_publish_decode_round_done"
+            r"\(struct mem_service \*svc,",
         )
 
     def test_mem_service_uses_neutral_run_id_env_with_w5_compatibility(self):
