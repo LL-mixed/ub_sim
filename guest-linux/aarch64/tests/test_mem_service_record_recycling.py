@@ -14,6 +14,7 @@ SERVICE_QWEN3_RECORDS_INC = SERVICE_DIR / "mem_service_qwen3_records.inc"
 SERVICE_QWEN3_RUNTIME_INC = SERVICE_DIR / "mem_service_qwen3_runtime.inc"
 SERVICE_KEYS_INC = SERVICE_DIR / "mem_service_keys.inc"
 SERVICE_OBJECT_REFS_INC = SERVICE_DIR / "mem_service_object_refs.inc"
+SERVICE_OBMM_OBJECTS_INC = SERVICE_DIR / "mem_service_obmm_objects.inc"
 SERVICE_METADATA_INC = SERVICE_DIR / "mem_service_metadata.inc"
 SERVICE_CLUSTER_PAYLOAD_INC = SERVICE_DIR / "mem_service_cluster_payload.inc"
 SERVICE_CLUSTER_READ_INC = SERVICE_DIR / "mem_service_cluster_read.inc"
@@ -79,7 +80,13 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertGreaterEqual(int(cluster_records.group(1)), 1024)
 
     def test_full_record_table_recycles_old_qwen3_runtime_records(self):
-        source = SERVICE_C.read_text() + "\n" + SERVICE_QWEN3_RECORDS_INC.read_text()
+        source = (
+            SERVICE_C.read_text()
+            + "\n"
+            + SERVICE_QWEN3_RECORDS_INC.read_text()
+            + "\n"
+            + SERVICE_OBMM_OBJECTS_INC.read_text()
+        )
 
         self.assertIn("MEM_SERVICE_QWEN3_RECORD_RETAIN_STEPS", source)
         self.assertIn("mem_service_recycle_qwen3_runtime_record", source)
@@ -138,6 +145,23 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             source,
             r"int mem_service_record_to_lingqu_obmm_ref"
             r"\(const struct mem_service_record \*record,",
+        )
+
+    def test_obmm_object_helpers_are_split_from_runtime_main(self):
+        source = SERVICE_C.read_text()
+        obmm_objects = SERVICE_OBMM_OBJECTS_INC.read_text()
+        readme = (SERVICE_DIR / "README.md").read_text()
+
+        self.assertIn('#include "mem_service_obmm_objects.inc"', source)
+        self.assertIn("mem_service_fill_obmm_object_payload", obmm_objects)
+        self.assertIn("mem_service_object_kind_name", obmm_objects)
+        self.assertIn("mem_service_payload_arena_alloc", obmm_objects)
+        self.assertIn("mem_service_put_obmm_object_record", obmm_objects)
+        self.assertIn("OBMM object payload generation", readme)
+        self.assertNotRegex(
+            source,
+            r"static int mem_service_payload_arena_alloc"
+            r"\(struct mem_service_cluster_runtime \*rt,",
         )
 
     def test_prefix_kv_metadata_state_machine_is_split_for_host_guest_core_reuse(self):

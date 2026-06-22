@@ -18,6 +18,8 @@ CLI:
   that must stay reusable by guest and host service deployments.
 - `mem_service_object_refs.inc` contains device-independent checksum and Lingqu
   OBMM object-ref projection helpers.
+- `mem_service_obmm_objects.inc` contains OBMM object payload generation, kind
+  naming, payload arena allocation, and object record publication helpers.
 - `mem_service_metadata.inc` contains the prefix/KV metadata state machine used
   by both local metadata APIs and runtime-backed publication paths.
 - `mem_service_cluster_payload.inc` contains the cluster metadata payload
