@@ -1,12 +1,9 @@
 #include "mem_service_internal.h"
+#include "mem_service_qwen3_records.h"
+#include "mem_service_record_table.h"
 
 static struct mem_service_cluster_runtime g_mem_service_cluster_runtime;
 
-static struct mem_service_record *mem_service_alloc_record(struct mem_service *svc);
-static struct mem_service_record *mem_service_find_record(struct mem_service *svc, const char *key);
-static struct mem_service_record *mem_service_recycle_qwen3_runtime_record(
-    struct mem_service *svc,
-    const char *incoming_key);
 static int mem_service_activate_remote_slot(struct mem_service_cluster_runtime *rt, int owner_idx);
 
 #include "mem_service_cluster_utils.inc"

@@ -1,3 +1,5 @@
+#include "mem_service_record_table.h"
+
 int mem_service_obmm_service_v0_publish_runtime_range_output(struct mem_service *svc,
                                                        uint32_t local_node,
                                                        uint32_t cluster_node_count,

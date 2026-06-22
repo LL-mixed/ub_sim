@@ -1,4 +1,5 @@
 #include "mem_service.h"
+#include "mem_service_record_table.h"
 
 #include <stdbool.h>
 #include <stdio.h>

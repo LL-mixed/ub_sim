@@ -1,3 +1,6 @@
+#include "mem_service_qwen3_records.h"
+#include "mem_service_record_table.h"
+
 static void mem_service_fill_obmm_object_payload(uint8_t *dst,
                                            uint64_t len,
                                            uint32_t owner_node,

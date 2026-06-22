@@ -19,6 +19,8 @@ SERVICE_OBJECT_CONTRACT_H = SERVICE_DIR / "mem_service_object_contract.h"
 SERVICE_QWEN3_PLACEMENT_H = SERVICE_DIR / "mem_service_qwen3_placement.h"
 SERVICE_QWEN3_RECORD_POLICY_H = SERVICE_DIR / "mem_service_qwen3_record_policy.h"
 SERVICE_RUNTIME_CONFIG_H = SERVICE_DIR / "mem_service_runtime_config.h"
+SERVICE_RECORD_TABLE_H = SERVICE_DIR / "mem_service_record_table.h"
+SERVICE_QWEN3_RECORDS_H = SERVICE_DIR / "mem_service_qwen3_records.h"
 SERVICE_RECORDS_INC = SERVICE_DIR / "mem_service_records.inc"
 SERVICE_QWEN3_RECORDS_INC = SERVICE_DIR / "mem_service_qwen3_records.inc"
 SERVICE_QWEN3_RUNTIME_INC = SERVICE_DIR / "mem_service_qwen3_runtime.inc"
@@ -174,11 +176,13 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         internal_header = SERVICE_INTERNAL_H.read_text()
         qwen3_policy = SERVICE_QWEN3_RECORD_POLICY_H.read_text()
         qwen3_records = SERVICE_QWEN3_RECORDS_INC.read_text()
+        qwen3_record_contract = SERVICE_QWEN3_RECORDS_H.read_text()
         readme = (SERVICE_DIR / "README.md").read_text()
 
         self.assertIn('#include "mem_service_qwen3_record_policy.h"', internal_header)
         self.assertIn("MEM_SERVICE_QWEN3_RECORD_RETAIN_STEPS", qwen3_policy)
-        self.assertIn('#include "mem_service_qwen3_record_policy.h"', qwen3_records)
+        self.assertIn('#include "mem_service_qwen3_records.h"', qwen3_records)
+        self.assertIn('#include "mem_service_qwen3_record_policy.h"', qwen3_record_contract)
         self.assertIn("Qwen3 runtime record retention", readme)
         self.assertIn("model adapter record policy", readme)
         self.assertNotRegex(
@@ -305,22 +309,50 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
 
     def test_record_table_helpers_are_split_from_main_service_translation_unit(self):
         source = SERVICE_C.read_text()
+        record_table = SERVICE_RECORD_TABLE_H.read_text()
         records = SERVICE_RECORDS_INC.read_text()
         qwen3_records = SERVICE_QWEN3_RECORDS_INC.read_text()
+        qwen3_record_contract = SERVICE_QWEN3_RECORDS_H.read_text()
+        metadata = SERVICE_METADATA_INC.read_text()
+        obmm_objects = SERVICE_OBMM_OBJECTS_INC.read_text()
+        qwen3_runtime = SERVICE_QWEN3_RUNTIME_INC.read_text()
         readme = (SERVICE_DIR / "README.md").read_text()
 
+        self.assertIn('#include "mem_service_record_table.h"', source)
         self.assertIn('#include "mem_service_records.inc"', source)
         self.assertIn('#include "mem_service_qwen3_records.inc"', source)
+        self.assertIn('#include "mem_service.h"', record_table)
         self.assertIn("mem_service_alloc_record", records)
         self.assertIn("mem_service_find_record", records)
+        self.assertIn("mem_service_alloc_record", record_table)
+        self.assertIn("mem_service_find_record", record_table)
+        self.assertIn("mem_service_add_member", record_table)
+        self.assertIn('#include "mem_service_record_table.h"', records)
+        self.assertIn('#include "mem_service_record_table.h"', metadata)
+        self.assertIn('#include "mem_service_record_table.h"', obmm_objects)
+        self.assertIn('#include "mem_service_record_table.h"', qwen3_runtime)
+        self.assertIn('#include "mem_service_qwen3_records.h"', source)
+        self.assertIn('#include "mem_service_qwen3_records.h"', qwen3_records)
+        self.assertIn("mem_service_recycle_qwen3_runtime_record", qwen3_record_contract)
         self.assertIn("mem_service_recycle_qwen3_runtime_record", qwen3_records)
         self.assertIn("mem_service_qwen3_key_decode_step", qwen3_records)
         self.assertNotIn("mem_service_recycle_qwen3_runtime_record", records)
         self.assertIn("Qwen3 streaming runtime record", readme)
+        self.assertIn("private core record-table helper\n  contract", readme)
+        self.assertIn("private Qwen3 record recycling\n  helper contract", readme)
         self.assertNotRegex(
             source,
             r"static struct mem_service_record \*mem_service_alloc_record"
             r"\(struct mem_service \*svc\)\s*\{",
+        )
+        self.assertNotRegex(
+            source,
+            r"static struct mem_service_record \*mem_service_alloc_record"
+            r"\(struct mem_service \*svc\);",
+        )
+        self.assertNotRegex(
+            source,
+            r"static struct mem_service_record \*mem_service_recycle_qwen3_runtime_record",
         )
 
     def test_key_construction_helpers_are_split_for_host_guest_core_reuse(self):

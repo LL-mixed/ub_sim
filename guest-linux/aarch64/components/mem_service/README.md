@@ -24,8 +24,14 @@ CLI:
   guest and host service deployments.
 - `mem_service_records.inc` contains the internal record-table allocation,
   lookup, and member helpers compiled into `mem_service.c`.
+- `mem_service_record_table.h` contains the private core record-table helper
+  contract used by generic metadata and model/transport split units; it keeps
+  record allocation and lookup dependencies explicit while the core moves
+  toward a host-buildable library boundary.
 - `mem_service_qwen3_records.inc` contains Qwen3 streaming runtime record
   recycling policy; it must stay out of the generic record core.
+- `mem_service_qwen3_records.h` contains the private Qwen3 record recycling
+  helper contract used by the model adapter and OBMM object publication path.
 - `mem_service_qwen3_record_policy.h` contains Qwen3 runtime record retention
   constants used by the model adapter record policy.
 - `mem_service_qwen3_runtime.inc` contains Qwen3 runtime payload checksum, KV

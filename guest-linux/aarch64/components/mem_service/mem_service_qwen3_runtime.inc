@@ -1,3 +1,5 @@
+#include "mem_service_record_table.h"
+
 static uint64_t mem_service_qwen3_hidden_payload_checksum(const uint8_t *bytes,
                                                     uint64_t len)
 {

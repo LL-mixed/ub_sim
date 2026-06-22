@@ -1,3 +1,5 @@
+#include "mem_service_record_table.h"
+
 static int mem_service_obmm_service_v0_publish_terminal_token_result_from_node(
     struct mem_service *svc,
     uint32_t local_node,

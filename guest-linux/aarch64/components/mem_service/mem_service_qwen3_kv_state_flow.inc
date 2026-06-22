@@ -1,3 +1,5 @@
+#include "mem_service_record_table.h"
+
 int mem_service_obmm_service_v0_publish_runtime_range_kv_state(
     struct mem_service *svc,
     uint32_t local_node,

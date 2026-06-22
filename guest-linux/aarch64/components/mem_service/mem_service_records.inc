@@ -1,3 +1,9 @@
+#include "mem_service_record_table.h"
+
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+
 static struct mem_service_record *mem_service_alloc_record(struct mem_service *svc)
 {
     size_t i;

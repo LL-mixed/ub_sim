@@ -1,4 +1,4 @@
-#include "mem_service_qwen3_record_policy.h"
+#include "mem_service_qwen3_records.h"
 
 static bool mem_service_qwen3_record_kind_recyclable(enum mem_service_record_kind kind)
 {
