@@ -12,6 +12,9 @@ SERVICE_QWEN3_H = SERVICE_DIR / "mem_service_qwen3.h"
 SERVICE_RECORDS_INC = SERVICE_DIR / "mem_service_records.inc"
 SERVICE_QWEN3_RECORDS_INC = SERVICE_DIR / "mem_service_qwen3_records.inc"
 SERVICE_QWEN3_RUNTIME_INC = SERVICE_DIR / "mem_service_qwen3_runtime.inc"
+SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_INC = (
+    SERVICE_DIR / "mem_service_qwen3_runtime_range_wait_flow.inc"
+)
 SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_INC = (
     SERVICE_DIR / "mem_service_qwen3_runtime_range_publish_flow.inc"
 )
@@ -347,6 +350,40 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             source,
             r"int mem_service_obmm_service_v0_publish_decode_round_done"
             r"\(struct mem_service \*svc,",
+        )
+
+    def test_qwen3_runtime_range_wait_flow_is_split_from_runtime_main(self):
+        source = SERVICE_C.read_text()
+        range_wait_flow = SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_INC.read_text()
+        readme = (SERVICE_DIR / "README.md").read_text()
+
+        self.assertIn(
+            '#include "mem_service_qwen3_runtime_range_wait_flow.inc"',
+            source,
+        )
+        self.assertIn(
+            "mem_service_obmm_service_v0_wait_runtime_range_input_view_internal",
+            range_wait_flow,
+        )
+        self.assertIn(
+            "mem_service_obmm_service_v0_wait_scheduler_work_item",
+            range_wait_flow,
+        )
+        self.assertIn(
+            "mem_service_obmm_service_v0_wait_runtime_range_input",
+            range_wait_flow,
+        )
+        self.assertIn("Qwen3 runtime range", readme)
+        self.assertIn("scheduler work-item resolution", readme)
+        self.assertNotRegex(
+            source,
+            r"static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal"
+            r"\s*\(",
+        )
+        self.assertNotRegex(
+            source,
+            r"int mem_service_obmm_service_v0_wait_scheduler_work_item"
+            r"\s*\(",
         )
 
     def test_qwen3_runtime_range_publish_flow_is_split_from_runtime_main(self):
