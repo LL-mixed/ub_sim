@@ -9,8 +9,13 @@ CLI:
 - `mem_service.c` implements the DB/object service and OBMM-backed runtime
   metadata paths.
 - `mem_service_internal.h` contains the private runtime constants, cluster
-  payload structs, and wait/runtime helper contract shared by the split
-  implementation units.
+  wait helpers, and Qwen3 placement helpers shared by the split implementation
+  units.
+- `mem_service_cluster_payload_contract.h` contains the device-independent
+  cluster metadata payload wire format shared by guest and host service
+  deployments.
+- `mem_service_guest_runtime.h` contains guest OBMM cluster runtime state,
+  mapped slots, queue descriptors, and region layout constants.
 - `mem_service_object_contract.h` contains device-independent OBMM object
   kinds, fixed payload sizes, and layout constants that must stay reusable by
   guest and host service deployments.

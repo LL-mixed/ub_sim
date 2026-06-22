@@ -28,26 +28,16 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "kernel_ub/include/uapi/ub/obmm.h"
-#include "common/obmm_common.h"
+#include "mem_service_cluster_payload_contract.h"
+#include "mem_service_guest_runtime.h"
 #include "mem_service_object_contract.h"
 #include "mem_service_qwen3.h"
-#include "libs/obmm_queue/obmm_queue_types.h"
-#include "libs/obmm_queue/obmm_spsc_queue.h"
 
-#define MEM_SERVICE_CLUSTER_MAX_NODES 8
-#define MEM_SERVICE_CLUSTER_MAX_RECORDS 1024
 #define MEM_SERVICE_MAYBE_UNUSED __attribute__((unused))
 #define MEM_SERVICE_QWEN3_RECORD_RETAIN_STEPS 16ULL
-#define MEM_SERVICE_DEFAULT_REGION_SIZE_MB 512
-#define MEM_SERVICE_CMDLINE_REGION_SIZE "mem_service_region_size_mb"
-#define MEM_SERVICE_CLUSTER_QUEUE_DEPTH 512
-#define MEM_SERVICE_CLUSTER_PENDING_DESC_DEPTH 16
 #define MEM_SERVICE_CLUSTER_WAIT_MS 300000L
 #define MEM_SERVICE_OBMM_SERVICE_WAIT_MS 300000L
 #define MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_MS 600000L
-#define MEM_SERVICE_CLUSTER_IMPORT_ALIGN (2ULL * 1024ULL * 1024ULL)
-#define MEM_SERVICE_CLUSTER_MAX_WINDOWS 16
 
 #ifndef major
 #define major(dev) ((unsigned int)(((uint64_t)(dev) >> 24) & 0xffU))
@@ -55,24 +45,6 @@
 #ifndef minor
 #define minor(dev) ((unsigned int)((uint64_t)(dev) & 0xffffffU))
 #endif
-
-struct mem_service_cluster_meta {
-    uint64_t export_mem_id;
-    uint64_t remote_uba;
-    uint64_t size;
-    uint32_t token_id;
-    uint32_t export_cna;
-};
-
-struct mem_service_cluster_payload {
-    uint32_t magic;
-    uint16_t version;
-    uint16_t record_count;
-    uint32_t publish_seq;
-    uint32_t publish_done_seq;
-    uint8_t record_pad[48];
-    struct mem_service_record records[MEM_SERVICE_CLUSTER_MAX_RECORDS];
-};
 
 static long mem_service_env_wait_ms_or_default(const char *name, long fallback)
 {
@@ -119,29 +91,6 @@ static long mem_service_qwen3_runtime_range_wait_ms(void)
         MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_MS;
 }
 
-struct mem_service_cluster_payload_header {
-    uint32_t magic;
-    uint16_t version;
-    uint16_t record_count;
-    uint32_t publish_seq;
-    uint32_t publish_done_seq;
-};
-
-struct mem_service_cluster_payload_compact_summary {
-    uint16_t record_count;
-    uint16_t prefix_count;
-    uint16_t block_count;
-    uint16_t group_count;
-    uint16_t weight_tile_count;
-    uint16_t kvcache_object_count;
-    uint16_t flags;
-    uint16_t hidden_range_count;
-    uint64_t block_version_floor;
-    uint64_t block_result_floor;
-    uint64_t prefix_version_floor;
-    uint64_t prefix_result_floor;
-};
-
 struct mem_service_qwen3_layer_range_placement {
     uint32_t owner_node;
     uint32_t layer_start;
@@ -150,53 +99,5 @@ struct mem_service_qwen3_layer_range_placement {
     uint32_t layer_count;
     bool terminal;
 };
-
-#define MEM_SERVICE_COMPACT_PREFIX_STATE_READY 0x0001U
-#define MEM_SERVICE_COMPACT_PREFIX_VIEW_READY 0x0002U
-
-struct mem_service_mapped_region {
-    int fd;
-    void *addr;
-    size_t len;
-    uint64_t mem_id;
-};
-
-struct mem_service_cluster_slot {
-    int owner_idx;
-    bool is_local;
-    bool map_osync;
-    uint32_t export_cna;
-    uint64_t mem_id;
-    uint64_t local_pa;
-    struct mem_service_mapped_region region;
-};
-
-struct mem_service_cluster_runtime {
-    bool active;
-    bool lazy_remote_activation;
-    int node_count;
-    int local_idx;
-    int obmm_fd;
-    uint32_t local_cna;
-    uint32_t publish_seq;
-    uint16_t observe_epoch;
-    uint64_t region_size;
-    uint64_t payload_offset;
-    uint64_t payload_arena_base;
-    uint64_t payload_arena_next;
-    uint64_t payload_arena_high_water;
-    bool pool_layout_reported;
-    struct mem_service_cluster_meta metas[MEM_SERVICE_CLUSTER_MAX_NODES];
-    struct mem_service_cluster_slot slots[MEM_SERVICE_CLUSTER_MAX_NODES];
-    struct obmm_spsc_queue *ingress_queues[MEM_SERVICE_CLUSTER_MAX_NODES];
-    void *ingress_queue_base;
-    struct obmm_spsc_queue *egress_queues[MEM_SERVICE_CLUSTER_MAX_NODES];
-    struct obmm_helpers_region egress_import[MEM_SERVICE_CLUSTER_MAX_NODES];
-    struct obmm_desc pending_descs[MEM_SERVICE_CLUSTER_MAX_NODES][MEM_SERVICE_CLUSTER_PENDING_DESC_DEPTH];
-    uint8_t pending_desc_count[MEM_SERVICE_CLUSTER_MAX_NODES];
-};
-
-#define MEM_SERVICE_CLUSTER_PAYLOAD_MAGIC 0x57344450U
-#define MEM_SERVICE_CLUSTER_PAYLOAD_VERSION 1U
 
 #endif

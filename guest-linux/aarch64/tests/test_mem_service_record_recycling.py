@@ -10,6 +10,10 @@ SERVICE_C = SERVICE_DIR / "mem_service.c"
 SERVICE_H = SERVICE_DIR / "mem_service.h"
 SERVICE_QWEN3_H = SERVICE_DIR / "mem_service_qwen3.h"
 SERVICE_INTERNAL_H = SERVICE_DIR / "mem_service_internal.h"
+SERVICE_CLUSTER_PAYLOAD_CONTRACT_H = (
+    SERVICE_DIR / "mem_service_cluster_payload_contract.h"
+)
+SERVICE_GUEST_RUNTIME_H = SERVICE_DIR / "mem_service_guest_runtime.h"
 SERVICE_OBJECT_CONTRACT_H = SERVICE_DIR / "mem_service_object_contract.h"
 SERVICE_RECORDS_INC = SERVICE_DIR / "mem_service_records.inc"
 SERVICE_QWEN3_RECORDS_INC = SERVICE_DIR / "mem_service_qwen3_records.inc"
@@ -86,12 +90,12 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
 
     def test_record_caps_support_long_decode_runs(self):
         header = SERVICE_H.read_text()
-        internal_header = SERVICE_INTERNAL_H.read_text()
+        cluster_payload_contract = SERVICE_CLUSTER_PAYLOAD_CONTRACT_H.read_text()
 
         max_records = re.search(r"#define MEM_SERVICE_MAX_RECORDS\s+(\d+)U", header)
         cluster_records = re.search(
             r"#define MEM_SERVICE_CLUSTER_MAX_RECORDS\s+(\d+)",
-            internal_header,
+            cluster_payload_contract,
         )
 
         self.assertIsNotNone(max_records)
@@ -105,13 +109,13 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         readme = (SERVICE_DIR / "README.md").read_text()
 
         self.assertIn('#include "mem_service_internal.h"', source)
-        self.assertIn("MEM_SERVICE_CLUSTER_MAX_RECORDS", internal_header)
+        self.assertIn('#include "mem_service_cluster_payload_contract.h"', internal_header)
+        self.assertIn('#include "mem_service_guest_runtime.h"', internal_header)
         self.assertIn('#include "mem_service_object_contract.h"', internal_header)
-        self.assertIn("struct mem_service_cluster_runtime", internal_header)
         self.assertIn("struct mem_service_qwen3_layer_range_placement", internal_header)
         self.assertIn("mem_service_qwen3_runtime_range_wait_ms", internal_header)
         self.assertIn("private runtime constants", readme)
-        self.assertIn("payload structs", readme)
+        self.assertIn("wait helpers", readme)
         self.assertNotRegex(
             source,
             r"#define MEM_SERVICE_CLUSTER_MAX_RECORDS\s+\d+",
@@ -124,6 +128,52 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             source,
             r"static long mem_service_env_wait_ms_or_default"
             r"\s*\(",
+        )
+
+    def test_cluster_payload_contract_is_split_for_host_guest_reuse(self):
+        internal_header = SERVICE_INTERNAL_H.read_text()
+        cluster_payload_contract = SERVICE_CLUSTER_PAYLOAD_CONTRACT_H.read_text()
+        readme = (SERVICE_DIR / "README.md").read_text()
+
+        self.assertIn('#include "mem_service_cluster_payload_contract.h"', internal_header)
+        self.assertIn("MEM_SERVICE_CLUSTER_MAX_RECORDS", cluster_payload_contract)
+        self.assertIn("MEM_SERVICE_CLUSTER_PAYLOAD_MAGIC", cluster_payload_contract)
+        self.assertIn("struct mem_service_cluster_payload", cluster_payload_contract)
+        self.assertIn(
+            "struct mem_service_cluster_payload_compact_summary",
+            cluster_payload_contract,
+        )
+        self.assertIn("cluster metadata payload wire format", readme)
+        self.assertIn("guest and host service deployments", readme)
+        self.assertNotRegex(
+            internal_header,
+            r"struct mem_service_cluster_payload\s*\{",
+        )
+        self.assertNotRegex(
+            internal_header,
+            r"#define MEM_SERVICE_CLUSTER_PAYLOAD_MAGIC\s+0x",
+        )
+
+    def test_guest_runtime_contract_is_split_from_internal_contract(self):
+        internal_header = SERVICE_INTERNAL_H.read_text()
+        guest_runtime = SERVICE_GUEST_RUNTIME_H.read_text()
+        readme = (SERVICE_DIR / "README.md").read_text()
+
+        self.assertIn('#include "mem_service_guest_runtime.h"', internal_header)
+        self.assertIn("MEM_SERVICE_CLUSTER_MAX_NODES", guest_runtime)
+        self.assertIn("MEM_SERVICE_CLUSTER_QUEUE_DEPTH", guest_runtime)
+        self.assertIn("struct mem_service_cluster_runtime", guest_runtime)
+        self.assertIn("struct mem_service_cluster_slot", guest_runtime)
+        self.assertIn("struct obmm_spsc_queue *ingress_queues", guest_runtime)
+        self.assertIn("guest OBMM cluster runtime state", readme)
+        self.assertIn("mapped slots, queue descriptors", readme)
+        self.assertNotRegex(
+            internal_header,
+            r"struct mem_service_cluster_runtime\s*\{",
+        )
+        self.assertNotRegex(
+            internal_header,
+            r"#define MEM_SERVICE_CLUSTER_QUEUE_DEPTH\s+\d+",
         )
 
     def test_obmm_object_contract_is_split_for_host_guest_reuse(self):
