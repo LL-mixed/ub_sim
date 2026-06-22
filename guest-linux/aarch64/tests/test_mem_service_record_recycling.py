@@ -26,6 +26,8 @@ SERVICE_KEYS_C = SERVICE_DIR / "mem_service_keys.c"
 SERVICE_KEYS_H = SERVICE_DIR / "mem_service_keys.h"
 SERVICE_OBJECT_REFS_C = SERVICE_DIR / "mem_service_object_refs.c"
 SERVICE_OBJECT_REFS_H = SERVICE_DIR / "mem_service_object_refs.h"
+SERVICE_OBMM_OBJECTS_C = SERVICE_DIR / "mem_service_obmm_objects.c"
+SERVICE_OBMM_OBJECTS_H = SERVICE_DIR / "mem_service_obmm_objects.h"
 SERVICE_QWEN3_RECORDS_INC = SERVICE_DIR / "mem_service_qwen3_records.inc"
 SERVICE_QWEN3_RUNTIME_INC = SERVICE_DIR / "mem_service_qwen3_runtime.inc"
 SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_INC = (
@@ -43,7 +45,6 @@ SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_INC = (
 )
 SERVICE_QWEN3_ENGRAM_WAIT_FLOW_INC = SERVICE_DIR / "mem_service_qwen3_engram_wait_flow.inc"
 SERVICE_QWEN3_DECODE_BARRIER_INC = SERVICE_DIR / "mem_service_qwen3_decode_barrier.inc"
-SERVICE_OBMM_OBJECTS_INC = SERVICE_DIR / "mem_service_obmm_objects.inc"
 SERVICE_METADATA_INC = SERVICE_DIR / "mem_service_metadata.inc"
 SERVICE_CLUSTER_PAYLOAD_INC = SERVICE_DIR / "mem_service_cluster_payload.inc"
 SERVICE_CLUSTER_READ_INC = SERVICE_DIR / "mem_service_cluster_read.inc"
@@ -82,6 +83,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             build_script,
         )
         self.assertIn(
+            'MEM_SERVICE_OBMM_OBJECTS_SRC="$ROOT_DIR/components/mem_service/mem_service_obmm_objects.c"',
+            build_script,
+        )
+        self.assertIn(
             'MEM_SERVICE_RECORDS_SRC="$ROOT_DIR/components/mem_service/mem_service_records.c"',
             build_script,
         )
@@ -95,7 +100,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn('MEM_SERVICE_CLI_BIN="$OUT_DIR/linqu_mem_service"', build_script)
         self.assertIn(
-            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
+            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
             build_script,
         )
         self.assertIn("linqu_mem_service", build_script)
@@ -311,7 +316,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             + "\n"
             + SERVICE_QWEN3_RECORDS_INC.read_text()
             + "\n"
-            + SERVICE_OBMM_OBJECTS_INC.read_text()
+            + SERVICE_OBMM_OBJECTS_C.read_text()
         )
 
         self.assertIn("MEM_SERVICE_QWEN3_RECORD_RETAIN_STEPS", source)
@@ -328,7 +333,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         qwen3_records = SERVICE_QWEN3_RECORDS_INC.read_text()
         qwen3_record_contract = SERVICE_QWEN3_RECORDS_H.read_text()
         metadata = SERVICE_METADATA_INC.read_text()
-        obmm_objects = SERVICE_OBMM_OBJECTS_INC.read_text()
+        obmm_objects = SERVICE_OBMM_OBJECTS_C.read_text()
         qwen3_runtime = SERVICE_QWEN3_RUNTIME_INC.read_text()
         readme = (SERVICE_DIR / "README.md").read_text()
 
@@ -439,15 +444,34 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
 
     def test_obmm_object_helpers_are_split_from_runtime_main(self):
         source = SERVICE_C.read_text()
-        obmm_objects = SERVICE_OBMM_OBJECTS_INC.read_text()
+        obmm_objects = SERVICE_OBMM_OBJECTS_C.read_text()
+        obmm_objects_contract = SERVICE_OBMM_OBJECTS_H.read_text()
+        qwen3_records = SERVICE_QWEN3_RECORDS_INC.read_text()
+        qwen3_records_contract = SERVICE_QWEN3_RECORDS_H.read_text()
         readme = (SERVICE_DIR / "README.md").read_text()
 
-        self.assertIn('#include "mem_service_obmm_objects.inc"', source)
+        self.assertNotIn('#include "mem_service_obmm_objects.inc"', source)
+        self.assertIn('#include "mem_service_obmm_objects.h"', source)
+        self.assertIn('#include "mem_service_obmm_objects.h"', obmm_objects)
+        self.assertIn('#include "mem_service_guest_runtime.h"', obmm_objects)
+        self.assertIn('#include "mem_service_object_contract.h"', obmm_objects)
+        self.assertNotIn('#include "mem_service_internal.h"', obmm_objects)
+        self.assertIn('#include "mem_service.h"', obmm_objects_contract)
+        self.assertIn("struct mem_service_cluster_runtime;", obmm_objects_contract)
         self.assertIn("mem_service_fill_obmm_object_payload", obmm_objects)
         self.assertIn("mem_service_object_kind_name", obmm_objects)
         self.assertIn("mem_service_payload_arena_alloc", obmm_objects)
         self.assertIn("mem_service_put_obmm_object_record", obmm_objects)
         self.assertIn("OBMM object payload generation", readme)
+        self.assertIn("runtime-adjacent translation unit", readme)
+        self.assertIn("private OBMM object helper contract", readme)
+        self.assertIn("mem_service_recycle_qwen3_runtime_record", qwen3_records)
+        self.assertIn("mem_service_recycle_qwen3_runtime_record", qwen3_records_contract)
+        self.assertNotIn(
+            "static struct mem_service_record *mem_service_recycle_qwen3_runtime_record",
+            qwen3_records,
+        )
+        self.assertFalse((SERVICE_DIR / "mem_service_obmm_objects.inc").exists())
         self.assertNotRegex(
             source,
             r"static int mem_service_payload_arena_alloc"

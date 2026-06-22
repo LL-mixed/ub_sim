@@ -1,4 +1,5 @@
 #include "mem_service_internal.h"
+#include "mem_service_obmm_objects.h"
 #include "mem_service_object_refs.h"
 #include "mem_service_qwen3_records.h"
 #include "mem_service_record_table.h"
@@ -10,8 +11,6 @@ static int mem_service_activate_remote_slot(struct mem_service_cluster_runtime *
 #include "mem_service_cluster_utils.inc"
 
 #include "mem_service_cluster_payload.inc"
-
-#include "mem_service_obmm_objects.inc"
 
 #include "mem_service_qwen3_runtime.inc"
 

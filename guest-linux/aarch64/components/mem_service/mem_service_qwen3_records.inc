@@ -1,6 +1,6 @@
 #include "mem_service_qwen3_records.h"
 
-static bool mem_service_qwen3_record_kind_recyclable(enum mem_service_record_kind kind)
+bool mem_service_qwen3_record_kind_recyclable(enum mem_service_record_kind kind)
 {
     switch (kind) {
     case MEM_SERVICE_RECORD_HIDDEN_RANGE_INPUT:
@@ -16,7 +16,7 @@ static bool mem_service_qwen3_record_kind_recyclable(enum mem_service_record_kin
     }
 }
 
-static bool mem_service_qwen3_key_decode_step(const char *key, uint64_t *step_out)
+bool mem_service_qwen3_key_decode_step(const char *key, uint64_t *step_out)
 {
     const char *needle;
     char *end = NULL;
@@ -47,7 +47,7 @@ static bool mem_service_qwen3_key_decode_step(const char *key, uint64_t *step_ou
     return true;
 }
 
-static struct mem_service_record *mem_service_recycle_qwen3_runtime_record(
+struct mem_service_record *mem_service_recycle_qwen3_runtime_record(
     struct mem_service *svc,
     const char *incoming_key)
 {

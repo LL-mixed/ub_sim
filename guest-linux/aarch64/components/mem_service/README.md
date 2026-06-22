@@ -63,8 +63,11 @@ CLI:
   translation unit for guest and host service deployments.
 - `mem_service_object_refs.h` contains the private checksum/object-reference
   helper contract used by OBMM and Qwen3 data-flow code.
-- `mem_service_obmm_objects.inc` contains OBMM object payload generation, kind
-  naming, payload arena allocation, and object record publication helpers.
+- `mem_service_obmm_objects.c` contains OBMM object payload generation, kind
+  naming, payload arena allocation, and object record publication helpers
+  compiled as a standalone runtime-adjacent translation unit.
+- `mem_service_obmm_objects.h` contains the private OBMM object helper contract
+  used by guest runtime and Qwen3 data-flow code.
 - `mem_service_metadata.inc` contains the prefix/KV metadata state machine used
   by both local metadata APIs and runtime-backed publication paths; it
   explicitly depends only on the public service contract plus record helpers.
@@ -92,8 +95,8 @@ CLI:
 Build and validation entrypoints:
 
 - `scripts/build_initramfs.sh` links `mem_service.c`, `mem_service_keys.c`,
-  `mem_service_object_refs.c`, `mem_service_records.c`, and
-  `mem_service_qwen3.c` into the guest app binary.
+  `mem_service_object_refs.c`, `mem_service_obmm_objects.c`,
+  `mem_service_records.c`, and `mem_service_qwen3.c` into the guest app binary.
 - `apps/mem_service` builds `/bin/linqu_mem_service` for direct smoke and
   Qwen3 topology inspection.
 - Guest app runners provide the CLI surface that exercises the component.
