@@ -566,11 +566,12 @@ def test_mem_service_has_component_and_cli_entrypoints():
     readme = (component_dir / "README.md").read_text()
 
     assert 'MEM_SERVICE_SRC="$ROOT_DIR/components/mem_service/mem_service.c"' in build_script
+    assert 'MEM_SERVICE_RECORDS_SRC="$ROOT_DIR/components/mem_service/mem_service_records.c"' in build_script
     assert 'MEM_SERVICE_QWEN3_SRC="$ROOT_DIR/components/mem_service/mem_service_qwen3.c"' in build_script
     assert 'MEM_SERVICE_CLI_SRC="$ROOT_DIR/apps/mem_service/mem_service.c"' in build_script
     assert 'MEM_SERVICE_CLI_BIN="$OUT_DIR/linqu_mem_service"' in build_script
-    assert '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"' in build_script
-    assert '"$MEM_SERVICE_CLI_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$MEM_SERVICE_CLI_BIN"' in build_script
+    assert '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"' in build_script
+    assert '"$MEM_SERVICE_CLI_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$MEM_SERVICE_CLI_BIN"' in build_script
     assert "Components do not install guest binaries directly" in components_readme
     assert "standalone demo" not in readme
     assert "linqu_mem_service" in build_script
@@ -596,6 +597,7 @@ def test_llm_infer_has_app_local_build_entrypoint():
     assert (app_dir / "Makefile").exists()
     assert "all: linqu_llm_infer" in makefile
     assert "components/mem_service/mem_service.c" in makefile
+    assert "components/mem_service/mem_service_records.c" in makefile
     assert "components/llm_infer/llm_infer.c" in makefile
     assert "-I$(ROOT)/libs/obmm_queue" in makefile
     assert "-I$(ROOT)/apps/obmm_queue" in makefile

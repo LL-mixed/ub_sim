@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
-static struct mem_service_record *mem_service_alloc_record(struct mem_service *svc)
+struct mem_service_record *mem_service_alloc_record(struct mem_service *svc)
 {
     size_t i;
 
@@ -21,7 +21,7 @@ static struct mem_service_record *mem_service_alloc_record(struct mem_service *s
     return NULL;
 }
 
-static struct mem_service_record *mem_service_find_record(struct mem_service *svc, const char *key)
+struct mem_service_record *mem_service_find_record(struct mem_service *svc, const char *key)
 {
     size_t i;
 
@@ -39,26 +39,30 @@ static struct mem_service_record *mem_service_find_record(struct mem_service *sv
     return NULL;
 }
 
-static bool mem_service_record_has_member(const struct mem_service_record *rec, const char *block_hash)
+bool mem_service_record_has_member(const struct mem_service_record *rec, const char *block_hash)
 {
     uint32_t i;
+
     if (!rec || !block_hash) {
         return false;
     }
     for (i = 0; i < rec->member_count && i < MEM_SERVICE_MAX_GROUP_MEMBERS; ++i) {
-        if (strncmp(rec->member_block_hashes[i], block_hash, sizeof(rec->member_block_hashes[i])) == 0) {
+        if (strncmp(rec->member_block_hashes[i],
+                    block_hash,
+                    sizeof(rec->member_block_hashes[i])) == 0) {
             return true;
         }
     }
     return false;
 }
 
-bool mem_service_record_has_member_block(const struct mem_service_record *rec, const char *block_hash)
+bool mem_service_record_has_member_block(const struct mem_service_record *rec,
+                                         const char *block_hash)
 {
     return mem_service_record_has_member(rec, block_hash);
 }
 
-static int mem_service_add_member(struct mem_service_record *rec, const char *block_hash)
+int mem_service_add_member(struct mem_service_record *rec, const char *block_hash)
 {
     if (!rec || !block_hash) {
         return -1;

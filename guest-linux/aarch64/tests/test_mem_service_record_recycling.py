@@ -21,7 +21,7 @@ SERVICE_QWEN3_RECORD_POLICY_H = SERVICE_DIR / "mem_service_qwen3_record_policy.h
 SERVICE_RUNTIME_CONFIG_H = SERVICE_DIR / "mem_service_runtime_config.h"
 SERVICE_RECORD_TABLE_H = SERVICE_DIR / "mem_service_record_table.h"
 SERVICE_QWEN3_RECORDS_H = SERVICE_DIR / "mem_service_qwen3_records.h"
-SERVICE_RECORDS_INC = SERVICE_DIR / "mem_service_records.inc"
+SERVICE_RECORDS_C = SERVICE_DIR / "mem_service_records.c"
 SERVICE_QWEN3_RECORDS_INC = SERVICE_DIR / "mem_service_qwen3_records.inc"
 SERVICE_QWEN3_RUNTIME_INC = SERVICE_DIR / "mem_service_qwen3_runtime.inc"
 SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_INC = (
@@ -72,6 +72,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             build_script,
         )
         self.assertIn(
+            'MEM_SERVICE_RECORDS_SRC="$ROOT_DIR/components/mem_service/mem_service_records.c"',
+            build_script,
+        )
+        self.assertIn(
             'MEM_SERVICE_QWEN3_SRC="$ROOT_DIR/components/mem_service/mem_service_qwen3.c"',
             build_script,
         )
@@ -81,7 +85,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn('MEM_SERVICE_CLI_BIN="$OUT_DIR/linqu_mem_service"', build_script)
         self.assertIn(
-            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
+            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
             build_script,
         )
         self.assertIn("linqu_mem_service", build_script)
@@ -310,7 +314,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
     def test_record_table_helpers_are_split_from_main_service_translation_unit(self):
         source = SERVICE_C.read_text()
         record_table = SERVICE_RECORD_TABLE_H.read_text()
-        records = SERVICE_RECORDS_INC.read_text()
+        records = SERVICE_RECORDS_C.read_text()
         qwen3_records = SERVICE_QWEN3_RECORDS_INC.read_text()
         qwen3_record_contract = SERVICE_QWEN3_RECORDS_H.read_text()
         metadata = SERVICE_METADATA_INC.read_text()
@@ -319,7 +323,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         readme = (SERVICE_DIR / "README.md").read_text()
 
         self.assertIn('#include "mem_service_record_table.h"', source)
-        self.assertIn('#include "mem_service_records.inc"', source)
+        self.assertNotIn('#include "mem_service_records.inc"', source)
         self.assertIn('#include "mem_service_qwen3_records.inc"', source)
         self.assertIn('#include "mem_service.h"', record_table)
         self.assertIn("mem_service_alloc_record", records)
@@ -328,6 +332,8 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("mem_service_find_record", record_table)
         self.assertIn("mem_service_add_member", record_table)
         self.assertIn('#include "mem_service_record_table.h"', records)
+        self.assertNotIn("static struct mem_service_record *mem_service_alloc_record", record_table)
+        self.assertNotIn("static struct mem_service_record *mem_service_find_record", record_table)
         self.assertIn('#include "mem_service_record_table.h"', metadata)
         self.assertIn('#include "mem_service_record_table.h"', obmm_objects)
         self.assertIn('#include "mem_service_record_table.h"', qwen3_runtime)
@@ -337,6 +343,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("mem_service_recycle_qwen3_runtime_record", qwen3_records)
         self.assertIn("mem_service_qwen3_key_decode_step", qwen3_records)
         self.assertNotIn("mem_service_recycle_qwen3_runtime_record", records)
+        self.assertIn("standalone core translation unit", readme)
         self.assertIn("Qwen3 streaming runtime record", readme)
         self.assertIn("private core record-table helper\n  contract", readme)
         self.assertIn("private Qwen3 record recycling\n  helper contract", readme)

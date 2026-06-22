@@ -22,8 +22,8 @@ CLI:
 - `mem_service_object_contract.h` contains device-independent OBMM object
   kinds, fixed payload sizes, and layout constants that must stay reusable by
   guest and host service deployments.
-- `mem_service_records.inc` contains the internal record-table allocation,
-  lookup, and member helpers compiled into `mem_service.c`.
+- `mem_service_records.c` contains the internal record-table allocation,
+  lookup, and member helpers compiled as a standalone core translation unit.
 - `mem_service_record_table.h` contains the private core record-table helper
   contract used by generic metadata and model/transport split units; it keeps
   record allocation and lookup dependencies explicit while the core moves
@@ -87,8 +87,8 @@ CLI:
 
 Build and validation entrypoints:
 
-- `scripts/build_initramfs.sh` links `mem_service.c` and `mem_service_qwen3.c`
-  into the guest app binary.
+- `scripts/build_initramfs.sh` links `mem_service.c`, `mem_service_records.c`,
+  and `mem_service_qwen3.c` into the guest app binary.
 - `apps/mem_service` builds `/bin/linqu_mem_service` for direct smoke and
   Qwen3 topology inspection.
 - Guest app runners provide the CLI surface that exercises the component.
