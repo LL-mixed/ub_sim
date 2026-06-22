@@ -12,6 +12,7 @@ SERVICE_QWEN3_H = SERVICE_DIR / "mem_service_qwen3.h"
 SERVICE_RECORDS_INC = SERVICE_DIR / "mem_service_records.inc"
 SERVICE_QWEN3_RECORDS_INC = SERVICE_DIR / "mem_service_qwen3_records.inc"
 SERVICE_QWEN3_RUNTIME_INC = SERVICE_DIR / "mem_service_qwen3_runtime.inc"
+SERVICE_QWEN3_KV_STATE_FLOW_INC = SERVICE_DIR / "mem_service_qwen3_kv_state_flow.inc"
 SERVICE_QWEN3_DECODE_BARRIER_INC = SERVICE_DIR / "mem_service_qwen3_decode_barrier.inc"
 SERVICE_KEYS_INC = SERVICE_DIR / "mem_service_keys.inc"
 SERVICE_OBJECT_REFS_INC = SERVICE_DIR / "mem_service_object_refs.inc"
@@ -336,6 +337,22 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             source,
             r"int mem_service_obmm_service_v0_publish_decode_round_done"
             r"\(struct mem_service \*svc,",
+        )
+
+    def test_qwen3_kv_state_flow_is_split_from_runtime_main(self):
+        source = SERVICE_C.read_text()
+        kv_state_flow = SERVICE_QWEN3_KV_STATE_FLOW_INC.read_text()
+        readme = (SERVICE_DIR / "README.md").read_text()
+
+        self.assertIn('#include "mem_service_qwen3_kv_state_flow.inc"', source)
+        self.assertIn("mem_service_obmm_service_v0_publish_runtime_range_kv_state", kv_state_flow)
+        self.assertIn("mem_service_obmm_service_v0_try_resolve_range_kv_state_view", kv_state_flow)
+        self.assertIn("mem_service_obmm_service_v0_resolve_previous_range_kv_state", kv_state_flow)
+        self.assertIn("Qwen3 runtime range KV-state", readme)
+        self.assertNotRegex(
+            source,
+            r"int mem_service_obmm_service_v0_publish_runtime_range_kv_state"
+            r"\s*\(\s*struct mem_service \*svc,",
         )
 
     def test_mem_service_uses_neutral_run_id_env_with_w5_compatibility(self):
