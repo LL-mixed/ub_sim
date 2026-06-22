@@ -15,6 +15,8 @@ SERVICE_CLUSTER_PAYLOAD_CONTRACT_H = (
 )
 SERVICE_GUEST_RUNTIME_H = SERVICE_DIR / "mem_service_guest_runtime.h"
 SERVICE_OBJECT_CONTRACT_H = SERVICE_DIR / "mem_service_object_contract.h"
+SERVICE_QWEN3_PLACEMENT_H = SERVICE_DIR / "mem_service_qwen3_placement.h"
+SERVICE_RUNTIME_CONFIG_H = SERVICE_DIR / "mem_service_runtime_config.h"
 SERVICE_RECORDS_INC = SERVICE_DIR / "mem_service_records.inc"
 SERVICE_QWEN3_RECORDS_INC = SERVICE_DIR / "mem_service_qwen3_records.inc"
 SERVICE_QWEN3_RUNTIME_INC = SERVICE_DIR / "mem_service_qwen3_runtime.inc"
@@ -112,10 +114,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn('#include "mem_service_cluster_payload_contract.h"', internal_header)
         self.assertIn('#include "mem_service_guest_runtime.h"', internal_header)
         self.assertIn('#include "mem_service_object_contract.h"', internal_header)
-        self.assertIn("struct mem_service_qwen3_layer_range_placement", internal_header)
-        self.assertIn("mem_service_qwen3_runtime_range_wait_ms", internal_header)
-        self.assertIn("private runtime constants", readme)
-        self.assertIn("wait helpers", readme)
+        self.assertIn('#include "mem_service_qwen3_placement.h"', internal_header)
+        self.assertIn('#include "mem_service_runtime_config.h"', internal_header)
+        self.assertIn("private include aggregate", readme)
+        self.assertIn("private macros", readme)
         self.assertNotRegex(
             source,
             r"#define MEM_SERVICE_CLUSTER_MAX_RECORDS\s+\d+",
@@ -128,6 +130,49 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             source,
             r"static long mem_service_env_wait_ms_or_default"
             r"\s*\(",
+        )
+        self.assertNotRegex(
+            internal_header,
+            r"static long mem_service_env_wait_ms_or_default"
+            r"\s*\(",
+        )
+        self.assertNotRegex(
+            internal_header,
+            r"struct mem_service_qwen3_layer_range_placement\s*\{",
+        )
+
+    def test_runtime_config_contract_is_split_from_internal_contract(self):
+        internal_header = SERVICE_INTERNAL_H.read_text()
+        runtime_config = SERVICE_RUNTIME_CONFIG_H.read_text()
+        readme = (SERVICE_DIR / "README.md").read_text()
+
+        self.assertIn('#include "mem_service_runtime_config.h"', internal_header)
+        self.assertIn("MEM_SERVICE_CLUSTER_WAIT_MS", runtime_config)
+        self.assertIn("MEM_SERVICE_OBMM_SERVICE_WAIT_MS", runtime_config)
+        self.assertIn("mem_service_env_wait_ms_or_default", runtime_config)
+        self.assertIn("mem_service_run_id_from_env", runtime_config)
+        self.assertIn("mem_service_qwen3_runtime_range_wait_ms", runtime_config)
+        self.assertIn("runtime wait defaults", readme)
+        self.assertIn("neutral run-id resolution", readme)
+        self.assertNotRegex(
+            internal_header,
+            r"#define MEM_SERVICE_CLUSTER_WAIT_MS\s+\d+L",
+        )
+
+    def test_qwen3_placement_contract_is_split_from_internal_contract(self):
+        internal_header = SERVICE_INTERNAL_H.read_text()
+        qwen3_placement = SERVICE_QWEN3_PLACEMENT_H.read_text()
+        readme = (SERVICE_DIR / "README.md").read_text()
+
+        self.assertIn('#include "mem_service_qwen3_placement.h"', internal_header)
+        self.assertIn("struct mem_service_qwen3_layer_range_placement", qwen3_placement)
+        self.assertIn("uint32_t owner_node", qwen3_placement)
+        self.assertIn("bool terminal", qwen3_placement)
+        self.assertIn("Qwen3 layer-range placement", readme)
+        self.assertIn("runtime range, KV, and object handoff flows", readme)
+        self.assertNotRegex(
+            internal_header,
+            r"struct mem_service_qwen3_layer_range_placement\s*\{",
         )
 
     def test_cluster_payload_contract_is_split_for_host_guest_reuse(self):
@@ -605,13 +650,13 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
 
     def test_mem_service_uses_neutral_run_id_env_with_w5_compatibility(self):
         source = SERVICE_C.read_text()
-        internal_header = SERVICE_INTERNAL_H.read_text()
+        runtime_config = SERVICE_RUNTIME_CONFIG_H.read_text()
         range_publish_flow = SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_INC.read_text()
 
         self.assertIn('#include "mem_service_internal.h"', source)
-        self.assertIn("mem_service_run_id_from_env", internal_header)
-        self.assertIn('"MEM_SERVICE_RUN_ID"', internal_header)
-        self.assertIn('"SIM_W5_RUN_ID"', internal_header)
+        self.assertIn("mem_service_run_id_from_env", runtime_config)
+        self.assertIn('"MEM_SERVICE_RUN_ID"', runtime_config)
+        self.assertIn('"SIM_W5_RUN_ID"', runtime_config)
         self.assertIn(
             "const char *service_run_id = mem_service_run_id_from_env();",
             range_publish_flow,

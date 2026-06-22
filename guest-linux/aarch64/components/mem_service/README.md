@@ -8,9 +8,10 @@ CLI:
 
 - `mem_service.c` implements the DB/object service and OBMM-backed runtime
   metadata paths.
-- `mem_service_internal.h` contains the private runtime constants, cluster
-  wait helpers, and Qwen3 placement helpers shared by the split implementation
-  units.
+- `mem_service_internal.h` contains the private include aggregate and service
+  private macros shared by the split implementation units.
+- `mem_service_runtime_config.h` contains runtime wait defaults, environment
+  parsing, and neutral run-id resolution.
 - `mem_service_cluster_payload_contract.h` contains the device-independent
   cluster metadata payload wire format shared by guest and host service
   deployments.
@@ -25,6 +26,8 @@ CLI:
   recycling policy; it must stay out of the generic record core.
 - `mem_service_qwen3_runtime.inc` contains Qwen3 runtime payload checksum, KV
   span allocation, engram object keys, and layer-range placement helpers.
+- `mem_service_qwen3_placement.h` contains the Qwen3 layer-range placement
+  contract used by the runtime range, KV, and object handoff flows.
 - `mem_service_qwen3_runtime_range_wait_flow.inc` contains Qwen3 runtime range
   input wait, scheduler work-item resolution, and mapped payload view helpers.
 - `mem_service_qwen3_runtime_range_publish_flow.inc` contains Qwen3 runtime
