@@ -12,6 +12,9 @@ SERVICE_QWEN3_H = SERVICE_DIR / "mem_service_qwen3.h"
 SERVICE_RECORDS_INC = SERVICE_DIR / "mem_service_records.inc"
 SERVICE_QWEN3_RECORDS_INC = SERVICE_DIR / "mem_service_qwen3_records.inc"
 SERVICE_QWEN3_RUNTIME_INC = SERVICE_DIR / "mem_service_qwen3_runtime.inc"
+SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_INC = (
+    SERVICE_DIR / "mem_service_qwen3_runtime_range_publish_flow.inc"
+)
 SERVICE_QWEN3_KV_STATE_FLOW_INC = SERVICE_DIR / "mem_service_qwen3_kv_state_flow.inc"
 SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_INC = (
     SERVICE_DIR / "mem_service_qwen3_terminal_token_flow.inc"
@@ -346,6 +349,30 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             r"\(struct mem_service \*svc,",
         )
 
+    def test_qwen3_runtime_range_publish_flow_is_split_from_runtime_main(self):
+        source = SERVICE_C.read_text()
+        range_publish_flow = SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_INC.read_text()
+        readme = (SERVICE_DIR / "README.md").read_text()
+
+        self.assertIn(
+            '#include "mem_service_qwen3_runtime_range_publish_flow.inc"',
+            source,
+        )
+        self.assertIn(
+            "mem_service_obmm_service_v0_publish_runtime_range_output",
+            range_publish_flow,
+        )
+        self.assertIn("mem_service_qwen3_kv_state_alloc", range_publish_flow)
+        self.assertIn("mem_service_push_obmm_object_desc_to", range_publish_flow)
+        self.assertIn("Qwen3 runtime", readme)
+        self.assertIn("range output", readme)
+        self.assertIn("KV-state object publication", readme)
+        self.assertNotRegex(
+            source,
+            r"int mem_service_obmm_service_v0_publish_runtime_range_output"
+            r"\s*\(\s*struct mem_service \*svc,",
+        )
+
     def test_qwen3_kv_state_flow_is_split_from_runtime_main(self):
         source = SERVICE_C.read_text()
         kv_state_flow = SERVICE_QWEN3_KV_STATE_FLOW_INC.read_text()
@@ -438,11 +465,15 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
 
     def test_mem_service_uses_neutral_run_id_env_with_w5_compatibility(self):
         source = SERVICE_C.read_text()
+        range_publish_flow = SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_INC.read_text()
 
         self.assertIn("mem_service_run_id_from_env", source)
         self.assertIn('"MEM_SERVICE_RUN_ID"', source)
         self.assertIn('"SIM_W5_RUN_ID"', source)
-        self.assertIn("const char *service_run_id = mem_service_run_id_from_env();", source)
+        self.assertIn(
+            "const char *service_run_id = mem_service_run_id_from_env();",
+            range_publish_flow,
+        )
         self.assertNotIn("w5_run_id", source)
 
     def test_qwen3_runtime_api_is_exposed_by_qwen3_adapter_header(self):

@@ -14,6 +14,9 @@ CLI:
   recycling policy; it must stay out of the generic record core.
 - `mem_service_qwen3_runtime.inc` contains Qwen3 runtime payload checksum, KV
   span allocation, engram object keys, and layer-range placement helpers.
+- `mem_service_qwen3_runtime_range_publish_flow.inc` contains Qwen3 runtime
+  range output, KV-state object publication, and downstream descriptor publish
+  helpers.
 - `mem_service_qwen3_kv_state_flow.inc` contains Qwen3 runtime range KV-state
   publish and previous-step resolve helpers.
 - `mem_service_qwen3_terminal_token_flow.inc` contains Qwen3 terminal token
