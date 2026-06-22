@@ -10,6 +10,7 @@ SERVICE_C = SERVICE_DIR / "mem_service.c"
 SERVICE_H = SERVICE_DIR / "mem_service.h"
 SERVICE_QWEN3_H = SERVICE_DIR / "mem_service_qwen3.h"
 SERVICE_INTERNAL_H = SERVICE_DIR / "mem_service_internal.h"
+SERVICE_OBJECT_CONTRACT_H = SERVICE_DIR / "mem_service_object_contract.h"
 SERVICE_RECORDS_INC = SERVICE_DIR / "mem_service_records.inc"
 SERVICE_QWEN3_RECORDS_INC = SERVICE_DIR / "mem_service_qwen3_records.inc"
 SERVICE_QWEN3_RUNTIME_INC = SERVICE_DIR / "mem_service_qwen3_runtime.inc"
@@ -105,7 +106,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
 
         self.assertIn('#include "mem_service_internal.h"', source)
         self.assertIn("MEM_SERVICE_CLUSTER_MAX_RECORDS", internal_header)
-        self.assertIn("MEM_SERVICE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT", internal_header)
+        self.assertIn('#include "mem_service_object_contract.h"', internal_header)
         self.assertIn("struct mem_service_cluster_runtime", internal_header)
         self.assertIn("struct mem_service_qwen3_layer_range_placement", internal_header)
         self.assertIn("mem_service_qwen3_runtime_range_wait_ms", internal_header)
@@ -123,6 +124,27 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             source,
             r"static long mem_service_env_wait_ms_or_default"
             r"\s*\(",
+        )
+
+    def test_obmm_object_contract_is_split_for_host_guest_reuse(self):
+        internal_header = SERVICE_INTERNAL_H.read_text()
+        object_contract = SERVICE_OBJECT_CONTRACT_H.read_text()
+        readme = (SERVICE_DIR / "README.md").read_text()
+
+        self.assertIn('#include "mem_service_object_contract.h"', internal_header)
+        self.assertIn("MEM_SERVICE_OBMM_KIND_WEIGHT_TILE", object_contract)
+        self.assertIn("MEM_SERVICE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT", object_contract)
+        self.assertIn("MEM_SERVICE_OBMM_QWEN3_KV_STATE_SLOT_BYTES", object_contract)
+        self.assertIn("MEM_SERVICE_OBMM_QWEN3_ENGRAM_STATE_BYTES", object_contract)
+        self.assertIn("device-independent OBMM object", readme)
+        self.assertIn("guest and host service deployments", readme)
+        self.assertNotRegex(
+            internal_header,
+            r"#define MEM_SERVICE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT\s+\d+U",
+        )
+        self.assertNotRegex(
+            internal_header,
+            r"#define MEM_SERVICE_OBMM_QWEN3_KV_STATE_SLOT_BYTES\s+0x",
         )
 
     def test_full_record_table_recycles_old_qwen3_runtime_records(self):
@@ -574,7 +596,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
 
     def test_qwen3_kv_state_uses_tiered_block_spans(self):
         source = (
-            SERVICE_INTERNAL_H.read_text()
+            SERVICE_OBJECT_CONTRACT_H.read_text()
+            + "\n"
+            + SERVICE_INTERNAL_H.read_text()
             + "\n"
             + SERVICE_C.read_text()
             + "\n"
@@ -615,7 +639,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertNotIn("kv_payload_len > MEM_SERVICE_OBMM_QWEN3_KV_STATE_SLOT_BYTES", source)
 
     def test_obmm_service_object_bytes_are_not_demo_named(self):
-        source = SERVICE_INTERNAL_H.read_text()
+        source = SERVICE_OBJECT_CONTRACT_H.read_text()
 
         self.assertIn("MEM_SERVICE_OBMM_SERVICE_OBJECT_BYTES", source)
         self.assertNotIn("MEM_SERVICE_OBMM_DEMO_OBJECT_BYTES", source)

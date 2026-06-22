@@ -9,8 +9,11 @@ CLI:
 - `mem_service.c` implements the DB/object service and OBMM-backed runtime
   metadata paths.
 - `mem_service_internal.h` contains the private runtime constants, cluster
-  payload structs, OBMM service object kinds, and wait/runtime helper contract
-  shared by the split implementation units.
+  payload structs, and wait/runtime helper contract shared by the split
+  implementation units.
+- `mem_service_object_contract.h` contains device-independent OBMM object
+  kinds, fixed payload sizes, and layout constants that must stay reusable by
+  guest and host service deployments.
 - `mem_service_records.inc` contains the internal record-table allocation,
   lookup, and member helpers compiled into `mem_service.c`.
 - `mem_service_qwen3_records.inc` contains Qwen3 streaming runtime record
