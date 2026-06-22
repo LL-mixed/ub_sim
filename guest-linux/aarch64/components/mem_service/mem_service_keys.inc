@@ -1,3 +1,8 @@
+#include "mem_service.h"
+
+#include <stdint.h>
+#include <string.h>
+
 static int mem_service_build_two_part_key(const char *prefix,
                                     const char *first,
                                     const char *middle,

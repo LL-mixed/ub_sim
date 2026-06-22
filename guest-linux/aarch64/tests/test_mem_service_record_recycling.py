@@ -329,11 +329,17 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         readme = (SERVICE_DIR / "README.md").read_text()
 
         self.assertIn('#include "mem_service_keys.inc"', source)
+        self.assertIn('#include "mem_service.h"', keys)
+        self.assertIn("#include <stdint.h>", keys)
+        self.assertIn("#include <string.h>", keys)
         self.assertIn("mem_service_build_two_part_key", keys)
         self.assertIn("mem_service_build_prefix_key_from_parts_checked", keys)
         self.assertIn("mem_service_build_block_key_from_hash_checked", keys)
         self.assertIn("Productization Split Contract", readme)
         self.assertIn("guest component and as a host-side service", readme)
+        self.assertIn("explicitly depend only on the public service contract", readme)
+        self.assertNotIn("mem_service_internal.h", keys)
+        self.assertNotIn("mem_service_guest_runtime.h", keys)
         self.assertNotRegex(
             source,
             r"static int mem_service_build_two_part_key"
@@ -346,9 +352,15 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         readme = (SERVICE_DIR / "README.md").read_text()
 
         self.assertIn('#include "mem_service_object_refs.inc"', source)
+        self.assertIn('#include "mem_service.h"', object_refs)
+        self.assertIn("#include <stdint.h>", object_refs)
+        self.assertIn("#include <string.h>", object_refs)
         self.assertIn("mem_service_checksum_bytes", object_refs)
         self.assertIn("mem_service_record_to_lingqu_obmm_ref", object_refs)
         self.assertIn("object-reference projection", readme)
+        self.assertIn("service/object-ref contract", readme)
+        self.assertNotIn("mem_service_internal.h", object_refs)
+        self.assertNotIn("mem_service_guest_runtime.h", object_refs)
         self.assertNotRegex(
             source,
             r"int mem_service_record_to_lingqu_obmm_ref"
@@ -378,11 +390,18 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         readme = (SERVICE_DIR / "README.md").read_text()
 
         self.assertIn('#include "mem_service_metadata.inc"', source)
+        self.assertIn('#include "mem_service.h"', metadata)
+        self.assertIn("#include <stdbool.h>", metadata)
+        self.assertIn("#include <stdio.h>", metadata)
+        self.assertIn("#include <string.h>", metadata)
         self.assertIn("mem_service_bootstrap_kvcache", metadata)
         self.assertIn("mem_service_apply_block_result", metadata)
         self.assertIn("mem_service_rebind_block_view", metadata)
         self.assertIn("mem_service_handoff_block_owner", metadata)
         self.assertIn("prefix/KV metadata state machine", readme)
+        self.assertIn("public service contract plus record helpers", readme)
+        self.assertNotIn("mem_service_internal.h", metadata)
+        self.assertNotIn("mem_service_guest_runtime.h", metadata)
         self.assertNotRegex(
             source,
             r"int mem_service_bootstrap_kvcache"

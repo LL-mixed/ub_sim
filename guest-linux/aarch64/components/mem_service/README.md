@@ -48,13 +48,16 @@ CLI:
 - `mem_service_qwen3_decode_barrier.inc` contains Qwen3 decode-round publish
   and all-node wait barrier helpers.
 - `mem_service_keys.inc` contains device-independent key construction helpers
-  that must stay reusable by guest and host service deployments.
+  that explicitly depend only on the public service contract and must stay
+  reusable by guest and host service deployments.
 - `mem_service_object_refs.inc` contains device-independent checksum and Lingqu
-  OBMM object-ref projection helpers.
+  OBMM object-ref projection helpers that explicitly depend only on the public
+  service/object-ref contract.
 - `mem_service_obmm_objects.inc` contains OBMM object payload generation, kind
   naming, payload arena allocation, and object record publication helpers.
 - `mem_service_metadata.inc` contains the prefix/KV metadata state machine used
-  by both local metadata APIs and runtime-backed publication paths.
+  by both local metadata APIs and runtime-backed publication paths; it
+  explicitly depends only on the public service contract plus record helpers.
 - `mem_service_cluster_payload.inc` contains the cluster metadata payload
   snapshot, compact summary, and local publish helpers.
 - `mem_service_cluster_read.inc` contains stable cluster payload read, compact

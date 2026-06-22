@@ -1,3 +1,8 @@
+#include "mem_service.h"
+
+#include <stdint.h>
+#include <string.h>
+
 static uint64_t mem_service_checksum_bytes(const uint8_t *bytes, uint64_t len)
 {
     uint64_t hash = 1469598103934665603ULL;

@@ -1,3 +1,9 @@
+#include "mem_service.h"
+
+#include <stdbool.h>
+#include <stdio.h>
+#include <string.h>
+
 static int mem_service_put_request_prefix(struct mem_service *svc,
                                     const char *key,
                                     const char *request_id,
