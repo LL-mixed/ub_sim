@@ -534,12 +534,15 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             / "llm_infer"
             / "llm_infer.c"
         ).read_text(encoding="utf-8")
-        db_service_source = (
+        db_service_dir = (
             Path(__file__).resolve().parents[1]
             / "components"
             / "mem_service"
-            / "mem_service.c"
-        ).read_text(encoding="utf-8")
+        )
+        db_service_source = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in [db_service_dir / "mem_service.c", *sorted(db_service_dir.glob("mem_service_*.inc"))]
+        )
         db_service_header = (
             Path(__file__).resolve().parents[1]
             / "components"

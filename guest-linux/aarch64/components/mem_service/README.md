@@ -9,7 +9,29 @@ CLI:
 - `mem_service.c` implements the DB/object service and OBMM-backed runtime
   metadata paths.
 - `mem_service_records.inc` contains the internal record-table allocation,
-  lookup, member, and recycling helpers compiled into `mem_service.c`.
+  lookup, and member helpers compiled into `mem_service.c`.
+- `mem_service_qwen3_records.inc` contains Qwen3 streaming runtime record
+  recycling policy; it must stay out of the generic record core.
+- `mem_service_qwen3_runtime.inc` contains Qwen3 runtime payload checksum, KV
+  span allocation, engram object keys, and layer-range placement helpers.
+- `mem_service_keys.inc` contains device-independent key construction helpers
+  that must stay reusable by guest and host service deployments.
+- `mem_service_object_refs.inc` contains device-independent checksum and Lingqu
+  OBMM object-ref projection helpers.
+- `mem_service_metadata.inc` contains the prefix/KV metadata state machine used
+  by both local metadata APIs and runtime-backed publication paths.
+- `mem_service_cluster_payload.inc` contains the cluster metadata payload
+  snapshot, compact summary, and local publish helpers.
+- `mem_service_cluster_read.inc` contains stable cluster payload read, compact
+  summary read, and slot record lookup helpers.
+- `mem_service_cluster_runtime.inc` contains guest OBMM cluster bootstrap,
+  export/import slot activation, and pool layout helpers.
+- `mem_service_cluster_queue.inc` contains guest OBMM SPSC queue barriers,
+  object descriptor publish/wait helpers, and pending descriptor matching.
+- `mem_service_cluster_observe.inc` contains cluster metadata fetch, observe,
+  and readiness summarization across local and remote payload snapshots.
+- `mem_service_obmm_object_flow.inc` contains the guest OBMM object publish,
+  descriptor exchange, remote resolve, and Qwen3 range handoff validation flow.
 - `mem_service_qwen3.c` is the private adapter from mem_service placement/KV
   semantics to the model-neutral `llm_infer` Qwen3 topology helpers.
 - `mem_service.h` exposes the service API consumed by guest apps.
@@ -27,3 +49,28 @@ Build and validation entrypoints:
 - `run_app mem_service` runs the standalone metadata smoke path.
 - `tests/test_mem_service_record_recycling.py` validates record capacity, recycling,
   KV payload sizing, and object-ref naming contracts.
+
+## Productization Split Contract
+
+`mem_service` is being split toward a product-grade Lingqu data service that can
+run as a guest component and as a host-side service for streaming LLM inference
+and LLM pre-training data paths.
+
+Keep the implementation layers separated:
+
+- Core metadata: key construction, record tables, prefix/KV metadata state,
+  object-reference projection, and validation. This layer must not depend on
+  QEMU, OBMM device files, or Qwen3-specific topology.
+- Transport/runtime: OBMM pool mapping, queue descriptors, cluster bootstrap,
+  and guest handoff timing. This layer can depend on guest runtime facilities.
+- Model adapters: Qwen3 range/KV/engram placement and payload sizing. New model
+  families must be added as adapters rather than renaming or specializing the
+  service core. Model-specific retention and recycling policies belong here.
+- Deployment apps: guest CLI/app entrypoints and future host daemon entrypoints.
+  They should consume the same core APIs and expose explicit command-line
+  validation surfaces.
+
+New code should move device-independent logic out of `mem_service.c` first,
+then split transport and model adapters behind explicit headers. Do not add new
+W4/W5-named public APIs to `mem_service`; W5 is a workload family, not the
+service boundary.
