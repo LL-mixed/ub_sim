@@ -53,9 +53,11 @@ CLI:
   selected-token, history, and state wait helpers.
 - `mem_service_qwen3_decode_barrier.inc` contains Qwen3 decode-round publish
   and all-node wait barrier helpers.
-- `mem_service_keys.inc` contains device-independent key construction helpers
-  that explicitly depend only on the public service contract and must stay
-  reusable by guest and host service deployments.
+- `mem_service_keys.c` contains device-independent key construction helpers
+  compiled as a standalone core translation unit for guest and host service
+  deployments.
+- `mem_service_keys.h` contains the private key construction helper contract
+  used by the prefix/KV metadata core.
 - `mem_service_object_refs.inc` contains device-independent checksum and Lingqu
   OBMM object-ref projection helpers that explicitly depend only on the public
   service/object-ref contract.
@@ -87,8 +89,8 @@ CLI:
 
 Build and validation entrypoints:
 
-- `scripts/build_initramfs.sh` links `mem_service.c`, `mem_service_records.c`,
-  and `mem_service_qwen3.c` into the guest app binary.
+- `scripts/build_initramfs.sh` links `mem_service.c`, `mem_service_keys.c`,
+  `mem_service_records.c`, and `mem_service_qwen3.c` into the guest app binary.
 - `apps/mem_service` builds `/bin/linqu_mem_service` for direct smoke and
   Qwen3 topology inspection.
 - Guest app runners provide the CLI surface that exercises the component.

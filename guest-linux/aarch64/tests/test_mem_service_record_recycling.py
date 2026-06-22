@@ -22,6 +22,8 @@ SERVICE_RUNTIME_CONFIG_H = SERVICE_DIR / "mem_service_runtime_config.h"
 SERVICE_RECORD_TABLE_H = SERVICE_DIR / "mem_service_record_table.h"
 SERVICE_QWEN3_RECORDS_H = SERVICE_DIR / "mem_service_qwen3_records.h"
 SERVICE_RECORDS_C = SERVICE_DIR / "mem_service_records.c"
+SERVICE_KEYS_C = SERVICE_DIR / "mem_service_keys.c"
+SERVICE_KEYS_H = SERVICE_DIR / "mem_service_keys.h"
 SERVICE_QWEN3_RECORDS_INC = SERVICE_DIR / "mem_service_qwen3_records.inc"
 SERVICE_QWEN3_RUNTIME_INC = SERVICE_DIR / "mem_service_qwen3_runtime.inc"
 SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_INC = (
@@ -39,7 +41,6 @@ SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_INC = (
 )
 SERVICE_QWEN3_ENGRAM_WAIT_FLOW_INC = SERVICE_DIR / "mem_service_qwen3_engram_wait_flow.inc"
 SERVICE_QWEN3_DECODE_BARRIER_INC = SERVICE_DIR / "mem_service_qwen3_decode_barrier.inc"
-SERVICE_KEYS_INC = SERVICE_DIR / "mem_service_keys.inc"
 SERVICE_OBJECT_REFS_INC = SERVICE_DIR / "mem_service_object_refs.inc"
 SERVICE_OBMM_OBJECTS_INC = SERVICE_DIR / "mem_service_obmm_objects.inc"
 SERVICE_METADATA_INC = SERVICE_DIR / "mem_service_metadata.inc"
@@ -72,6 +73,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             build_script,
         )
         self.assertIn(
+            'MEM_SERVICE_KEYS_SRC="$ROOT_DIR/components/mem_service/mem_service_keys.c"',
+            build_script,
+        )
+        self.assertIn(
             'MEM_SERVICE_RECORDS_SRC="$ROOT_DIR/components/mem_service/mem_service_records.c"',
             build_script,
         )
@@ -85,7 +90,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn('MEM_SERVICE_CLI_BIN="$OUT_DIR/linqu_mem_service"', build_script)
         self.assertIn(
-            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
+            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
             build_script,
         )
         self.assertIn("linqu_mem_service", build_script)
@@ -364,25 +369,38 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
 
     def test_key_construction_helpers_are_split_for_host_guest_core_reuse(self):
         source = SERVICE_C.read_text()
-        keys = SERVICE_KEYS_INC.read_text()
+        keys = SERVICE_KEYS_C.read_text()
+        keys_contract = SERVICE_KEYS_H.read_text()
+        metadata = SERVICE_METADATA_INC.read_text()
         readme = (SERVICE_DIR / "README.md").read_text()
 
-        self.assertIn('#include "mem_service_keys.inc"', source)
-        self.assertIn('#include "mem_service.h"', keys)
+        self.assertNotIn('#include "mem_service_keys.inc"', source)
+        self.assertIn('#include "mem_service_keys.h"', keys)
+        self.assertIn('#include "mem_service.h"', keys_contract)
         self.assertIn("#include <stdint.h>", keys)
         self.assertIn("#include <string.h>", keys)
         self.assertIn("mem_service_build_two_part_key", keys)
         self.assertIn("mem_service_build_prefix_key_from_parts_checked", keys)
         self.assertIn("mem_service_build_block_key_from_hash_checked", keys)
+        self.assertIn("mem_service_build_prefix_key", keys_contract)
+        self.assertIn("mem_service_build_group_key", keys_contract)
+        self.assertIn("mem_service_build_block_key", keys_contract)
+        self.assertIn('#include "mem_service_keys.h"', metadata)
         self.assertIn("Productization Split Contract", readme)
         self.assertIn("guest component and as a host-side service", readme)
-        self.assertIn("explicitly depend only on the public service contract", readme)
+        self.assertIn("standalone core translation unit", readme)
+        self.assertIn("private key construction helper contract", readme)
         self.assertNotIn("mem_service_internal.h", keys)
         self.assertNotIn("mem_service_guest_runtime.h", keys)
+        self.assertFalse((SERVICE_DIR / "mem_service_keys.inc").exists())
         self.assertNotRegex(
             source,
             r"static int mem_service_build_two_part_key"
             r"\(const char \*prefix,",
+        )
+        self.assertNotRegex(
+            keys_contract,
+            r"static int mem_service_build_two_part_key",
         )
 
     def test_object_ref_helpers_are_split_for_host_guest_core_reuse(self):

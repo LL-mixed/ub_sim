@@ -1,14 +1,14 @@
-#include "mem_service.h"
+#include "mem_service_keys.h"
 
 #include <stdint.h>
 #include <string.h>
 
-static int mem_service_build_two_part_key(const char *prefix,
-                                    const char *first,
-                                    const char *middle,
-                                    const char *second,
-                                    char *out,
-                                    size_t out_len)
+int mem_service_build_two_part_key(const char *prefix,
+                                   const char *first,
+                                   const char *middle,
+                                   const char *second,
+                                   char *out,
+                                   size_t out_len)
 {
     size_t prefix_len;
     size_t first_len;
@@ -48,10 +48,10 @@ static int mem_service_build_two_part_key(const char *prefix,
     return 0;
 }
 
-static int mem_service_build_prefix_key_from_parts_checked(const char *request_id,
-                                                     const char *prefix_group,
-                                                     char *out,
-                                                     size_t out_len)
+int mem_service_build_prefix_key_from_parts_checked(const char *request_id,
+                                                    const char *prefix_group,
+                                                    char *out,
+                                                    size_t out_len)
 {
     return mem_service_build_two_part_key("request/",
                                     request_id,
@@ -61,10 +61,10 @@ static int mem_service_build_prefix_key_from_parts_checked(const char *request_i
                                     out_len);
 }
 
-static int mem_service_build_group_key_from_parts_checked(const char *request_id,
-                                                    const char *group_id,
-                                                    char *out,
-                                                    size_t out_len)
+int mem_service_build_group_key_from_parts_checked(const char *request_id,
+                                                   const char *group_id,
+                                                   char *out,
+                                                   size_t out_len)
 {
     return mem_service_build_two_part_key("request/",
                                     request_id,
@@ -74,9 +74,9 @@ static int mem_service_build_group_key_from_parts_checked(const char *request_id
                                     out_len);
 }
 
-static int mem_service_build_block_key_from_hash_checked(const char *block_hash,
-                                                   char *out,
-                                                   size_t out_len)
+int mem_service_build_block_key_from_hash_checked(const char *block_hash,
+                                                  char *out,
+                                                  size_t out_len)
 {
     return mem_service_build_two_part_key("block/",
                                     block_hash,
@@ -86,9 +86,9 @@ static int mem_service_build_block_key_from_hash_checked(const char *block_hash,
                                     out_len);
 }
 
-static int mem_service_build_group_key(const struct mem_service_block_ctx *ctx,
-                                 char *out,
-                                 size_t out_len)
+int mem_service_build_group_key(const struct mem_service_block_ctx *ctx,
+                                char *out,
+                                size_t out_len)
 {
     if (!ctx) {
         return -1;
@@ -99,9 +99,9 @@ static int mem_service_build_group_key(const struct mem_service_block_ctx *ctx,
                                                     out_len);
 }
 
-static int mem_service_build_prefix_key(const struct mem_service_block_ctx *ctx,
-                                  char *out,
-                                  size_t out_len)
+int mem_service_build_prefix_key(const struct mem_service_block_ctx *ctx,
+                                 char *out,
+                                 size_t out_len)
 {
     if (!ctx) {
         return -1;
@@ -112,9 +112,9 @@ static int mem_service_build_prefix_key(const struct mem_service_block_ctx *ctx,
                                                     out_len);
 }
 
-static int mem_service_build_block_key(const struct mem_service_block_ctx *ctx,
-                                 char *out,
-                                 size_t out_len)
+int mem_service_build_block_key(const struct mem_service_block_ctx *ctx,
+                                char *out,
+                                size_t out_len)
 {
     if (!ctx) {
         return -1;
