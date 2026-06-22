@@ -17,6 +17,7 @@ SERVICE_OBJECT_REFS_INC = SERVICE_DIR / "mem_service_object_refs.inc"
 SERVICE_METADATA_INC = SERVICE_DIR / "mem_service_metadata.inc"
 SERVICE_CLUSTER_PAYLOAD_INC = SERVICE_DIR / "mem_service_cluster_payload.inc"
 SERVICE_CLUSTER_READ_INC = SERVICE_DIR / "mem_service_cluster_read.inc"
+SERVICE_CLUSTER_UTILS_INC = SERVICE_DIR / "mem_service_cluster_utils.inc"
 SERVICE_CLUSTER_RUNTIME_INC = SERVICE_DIR / "mem_service_cluster_runtime.inc"
 SERVICE_CLUSTER_QUEUE_INC = SERVICE_DIR / "mem_service_cluster_queue.inc"
 SERVICE_CLUSTER_OBSERVE_INC = SERVICE_DIR / "mem_service_cluster_observe.inc"
@@ -186,6 +187,22 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             source,
             r"static bool mem_service_try_read_stable_payload_region"
             r"\(const struct mem_service_cluster_slot \*slot,",
+        )
+
+    def test_cluster_env_region_utils_are_split_from_runtime_main(self):
+        source = SERVICE_C.read_text()
+        cluster_utils = SERVICE_CLUSTER_UTILS_INC.read_text()
+        readme = (SERVICE_DIR / "README.md").read_text()
+
+        self.assertIn('#include "mem_service_cluster_utils.inc"', source)
+        self.assertIn("mem_service_resolve_cluster_nodes", cluster_utils)
+        self.assertIn("mem_service_update_region_range_at", cluster_utils)
+        self.assertIn("mem_service_sync_remote_range", cluster_utils)
+        self.assertIn("cluster environment parsing", readme)
+        self.assertNotRegex(
+            source,
+            r"static bool mem_service_resolve_cluster_nodes"
+            r"\(char local_ip",
         )
 
     def test_cluster_bootstrap_runtime_helpers_are_split_from_runtime_main(self):

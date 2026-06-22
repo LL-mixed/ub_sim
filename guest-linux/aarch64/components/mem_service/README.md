@@ -24,6 +24,8 @@ CLI:
   snapshot, compact summary, and local publish helpers.
 - `mem_service_cluster_read.inc` contains stable cluster payload read, compact
   summary read, and slot record lookup helpers.
+- `mem_service_cluster_utils.inc` contains cluster environment parsing, wait
+  throttling, and OBMM region range update/sync helpers.
 - `mem_service_cluster_runtime.inc` contains guest OBMM cluster bootstrap,
   export/import slot activation, and pool layout helpers.
 - `mem_service_cluster_queue.inc` contains guest OBMM SPSC queue barriers,
