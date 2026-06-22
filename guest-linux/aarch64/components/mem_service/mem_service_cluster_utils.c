@@ -1,6 +1,28 @@
+#include "mem_service_cluster_utils.h"
+
 #include "mem_service_compiler.h"
 
-static long mem_service_wallclock_ms(void)
+#include <errno.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <sys/stat.h>
+#ifdef __linux__
+#include <sys/sysmacros.h>
+#endif
+#include <time.h>
+#include <unistd.h>
+
+#ifndef major
+#define major(dev) ((unsigned int)(((uint64_t)(dev) >> 24) & 0xffU))
+#endif
+#ifndef minor
+#define minor(dev) ((unsigned int)((uint64_t)(dev) & 0xffffffU))
+#endif
+
+long mem_service_wallclock_ms(void)
 {
     struct timespec ts;
 
@@ -10,7 +32,7 @@ static long mem_service_wallclock_ms(void)
     return (long)(ts.tv_sec * 1000L + ts.tv_nsec / 1000000L);
 }
 
-static void mem_service_cpu_relax_wait(unsigned int *attempt)
+void mem_service_cpu_relax_wait(unsigned int *attempt)
 {
     struct timespec ts;
     unsigned int step = attempt ? *attempt : 0;
@@ -32,9 +54,9 @@ static void mem_service_cpu_relax_wait(unsigned int *attempt)
     }
 }
 
-static bool mem_service_parse_ip_list(const char *csv,
-                                char ips[MEM_SERVICE_CLUSTER_MAX_NODES][INET_ADDRSTRLEN],
-                                int *count_out)
+bool mem_service_parse_ip_list(const char *csv,
+                               char ips[MEM_SERVICE_CLUSTER_MAX_NODES][INET_ADDRSTRLEN],
+                               int *count_out)
 {
     char copy[256];
     char *saveptr = NULL;
@@ -58,10 +80,10 @@ static bool mem_service_parse_ip_list(const char *csv,
     return true;
 }
 
-static bool mem_service_resolve_cluster_nodes(char local_ip[INET_ADDRSTRLEN],
-                                        char ips[MEM_SERVICE_CLUSTER_MAX_NODES][INET_ADDRSTRLEN],
-                                        int *node_count,
-                                        int *local_idx)
+bool mem_service_resolve_cluster_nodes(char local_ip[INET_ADDRSTRLEN],
+                                       char ips[MEM_SERVICE_CLUSTER_MAX_NODES][INET_ADDRSTRLEN],
+                                       int *node_count,
+                                       int *local_idx)
 {
     const char *env_local = getenv("LINQU_UB_LOCAL_IP");
     const char *env_all = getenv("LINQU_UB_ALL_IPS");
@@ -83,7 +105,7 @@ static bool mem_service_resolve_cluster_nodes(char local_ip[INET_ADDRSTRLEN],
     return false;
 }
 
-static bool mem_service_parse_hex_file_u64(const char *path, uint64_t *value)
+bool mem_service_parse_hex_file_u64(const char *path, uint64_t *value)
 {
     char buf[256];
     char *end = NULL;
@@ -107,10 +129,10 @@ static bool mem_service_parse_hex_file_u64(const char *path, uint64_t *value)
     return true;
 }
 
-static int mem_service_update_region_range_at(const struct mem_service_cluster_slot *slot,
-                                        uint64_t offset,
-                                        uint64_t length,
-                                        bool for_write)
+int mem_service_update_region_range_at(const struct mem_service_cluster_slot *slot,
+                                       uint64_t offset,
+                                       uint64_t length,
+                                       bool for_write)
 {
     struct obmm_cmd_update_range cmd;
     uintptr_t start;
@@ -148,15 +170,14 @@ static int mem_service_update_region_range_at(const struct mem_service_cluster_s
     return -1;
 }
 
-static int mem_service_update_region_range(const struct mem_service_cluster_slot *slot, bool for_write)
+int mem_service_update_region_range(const struct mem_service_cluster_slot *slot, bool for_write)
 {
     return mem_service_update_region_range_at(slot, 0, sizeof(struct mem_service_cluster_payload), for_write);
 }
 
-static int MEM_SERVICE_MAYBE_UNUSED mem_service_sync_remote_range(
-    const struct mem_service_cluster_slot *slot,
-    uint64_t offset,
-    uint64_t length)
+int mem_service_sync_remote_range(const struct mem_service_cluster_slot *slot,
+                                  uint64_t offset,
+                                  uint64_t length)
 {
     obmm_cmd_sync_remote_range cmd;
     struct stat st;

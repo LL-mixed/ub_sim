@@ -19,6 +19,11 @@ CLI:
   deployments.
 - `mem_service_guest_runtime.h` contains guest OBMM cluster runtime state,
   mapped slots, queue descriptors, and region layout constants.
+- `mem_service_cluster_utils.c` contains cluster environment parsing, wait
+  throttling, and OBMM region range update/sync helpers compiled as a
+  standalone guest runtime utility translation unit.
+- `mem_service_cluster_utils.h` contains the private guest cluster utility
+  contract used by runtime, payload, and model data-flow split units.
 - `mem_service_object_contract.h` contains device-independent OBMM object
   kinds, fixed payload sizes, and layout constants that must stay reusable by
   guest and host service deployments.
@@ -75,8 +80,6 @@ CLI:
   snapshot, compact summary, and local publish helpers.
 - `mem_service_cluster_read.inc` contains stable cluster payload read, compact
   summary read, and slot record lookup helpers.
-- `mem_service_cluster_utils.inc` contains cluster environment parsing, wait
-  throttling, and OBMM region range update/sync helpers.
 - `mem_service_cluster_runtime.inc` contains guest OBMM cluster bootstrap,
   export/import slot activation, and pool layout helpers.
 - `mem_service_cluster_queue.inc` contains guest OBMM SPSC queue barriers,
@@ -95,8 +98,9 @@ CLI:
 Build and validation entrypoints:
 
 - `scripts/build_initramfs.sh` links `mem_service.c`, `mem_service_keys.c`,
-  `mem_service_object_refs.c`, `mem_service_obmm_objects.c`,
-  `mem_service_records.c`, and `mem_service_qwen3.c` into the guest app binary.
+  `mem_service_cluster_utils.c`, `mem_service_object_refs.c`,
+  `mem_service_obmm_objects.c`, `mem_service_records.c`, and
+  `mem_service_qwen3.c` into the guest app binary.
 - `apps/mem_service` builds `/bin/linqu_mem_service` for direct smoke and
   Qwen3 topology inspection.
 - Guest app runners provide the CLI surface that exercises the component.

@@ -48,7 +48,8 @@ SERVICE_QWEN3_DECODE_BARRIER_INC = SERVICE_DIR / "mem_service_qwen3_decode_barri
 SERVICE_METADATA_INC = SERVICE_DIR / "mem_service_metadata.inc"
 SERVICE_CLUSTER_PAYLOAD_INC = SERVICE_DIR / "mem_service_cluster_payload.inc"
 SERVICE_CLUSTER_READ_INC = SERVICE_DIR / "mem_service_cluster_read.inc"
-SERVICE_CLUSTER_UTILS_INC = SERVICE_DIR / "mem_service_cluster_utils.inc"
+SERVICE_CLUSTER_UTILS_C = SERVICE_DIR / "mem_service_cluster_utils.c"
+SERVICE_CLUSTER_UTILS_H = SERVICE_DIR / "mem_service_cluster_utils.h"
 SERVICE_CLUSTER_RUNTIME_INC = SERVICE_DIR / "mem_service_cluster_runtime.inc"
 SERVICE_CLUSTER_QUEUE_INC = SERVICE_DIR / "mem_service_cluster_queue.inc"
 SERVICE_CLUSTER_OBSERVE_INC = SERVICE_DIR / "mem_service_cluster_observe.inc"
@@ -72,6 +73,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("Components do not install guest binaries directly", components_readme)
         self.assertIn(
             'MEM_SERVICE_SRC="$ROOT_DIR/components/mem_service/mem_service.c"',
+            build_script,
+        )
+        self.assertIn(
+            'MEM_SERVICE_CLUSTER_UTILS_SRC="$ROOT_DIR/components/mem_service/mem_service_cluster_utils.c"',
             build_script,
         )
         self.assertIn(
@@ -100,7 +105,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn('MEM_SERVICE_CLI_BIN="$OUT_DIR/linqu_mem_service"', build_script)
         self.assertIn(
-            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
+            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
             build_script,
         )
         self.assertIn("linqu_mem_service", build_script)
@@ -178,7 +183,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         internal_header = SERVICE_INTERNAL_H.read_text()
         compiler_header = SERVICE_COMPILER_H.read_text()
         cluster_read = SERVICE_CLUSTER_READ_INC.read_text()
-        cluster_utils = SERVICE_CLUSTER_UTILS_INC.read_text()
+        cluster_utils = SERVICE_CLUSTER_UTILS_C.read_text()
         readme = (SERVICE_DIR / "README.md").read_text()
 
         self.assertIn('#include "mem_service_compiler.h"', internal_header)
@@ -536,14 +541,23 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
 
     def test_cluster_env_region_utils_are_split_from_runtime_main(self):
         source = SERVICE_C.read_text()
-        cluster_utils = SERVICE_CLUSTER_UTILS_INC.read_text()
+        cluster_utils = SERVICE_CLUSTER_UTILS_C.read_text()
+        cluster_utils_contract = SERVICE_CLUSTER_UTILS_H.read_text()
         readme = (SERVICE_DIR / "README.md").read_text()
 
-        self.assertIn('#include "mem_service_cluster_utils.inc"', source)
+        self.assertNotIn('#include "mem_service_cluster_utils.inc"', source)
+        self.assertIn('#include "mem_service_cluster_utils.h"', source)
+        self.assertIn('#include "mem_service_cluster_utils.h"', cluster_utils)
         self.assertIn("mem_service_resolve_cluster_nodes", cluster_utils)
         self.assertIn("mem_service_update_region_range_at", cluster_utils)
         self.assertIn("mem_service_sync_remote_range", cluster_utils)
+        self.assertIn("mem_service_resolve_cluster_nodes", cluster_utils_contract)
+        self.assertIn("mem_service_update_region_range_at", cluster_utils_contract)
+        self.assertIn("mem_service_sync_remote_range", cluster_utils_contract)
+        self.assertIn("standalone guest runtime utility translation unit", readme)
+        self.assertIn("private guest cluster utility\n  contract", readme)
         self.assertIn("cluster environment parsing", readme)
+        self.assertFalse((SERVICE_DIR / "mem_service_cluster_utils.inc").exists())
         self.assertNotRegex(
             source,
             r"static bool mem_service_resolve_cluster_nodes"
