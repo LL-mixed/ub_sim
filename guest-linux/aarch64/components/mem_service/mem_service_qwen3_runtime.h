@@ -33,5 +33,16 @@ void mem_service_report_obmm_pool_layout_once(struct mem_service_cluster_runtime
 void mem_service_report_obmm_pool_usage(struct mem_service_cluster_runtime *rt,
                                         uint32_t local_node,
                                         uint64_t decode_step);
+int mem_service_qwen3_engram_owner_index(uint32_t cluster_node_count);
+void mem_service_qwen3_engram_history_key(char *out, size_t out_len);
+void mem_service_qwen3_engram_candidates_key(uint64_t decode_step,
+                                             char *out,
+                                             size_t out_len);
+void mem_service_qwen3_engram_selected_key(uint64_t decode_step,
+                                           char *out,
+                                           size_t out_len);
+void mem_service_qwen3_engram_state_key(uint64_t decode_step,
+                                        char *out,
+                                        size_t out_len);
 
 #endif

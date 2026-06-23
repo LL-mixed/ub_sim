@@ -23,6 +23,4 @@ struct mem_service_cluster_runtime *mem_service_cluster_runtime_current(void)
 
 #include "mem_service_qwen3_runtime_range_wait_flow.inc"
 
-#include "mem_service_qwen3_engram_publish_flow.inc"
-
 #include "mem_service_qwen3_engram_wait_flow.inc"

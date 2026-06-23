@@ -1,3 +1,15 @@
+#include "mem_service_internal.h"
+
+#include "mem_service_cluster_payload.h"
+#include "mem_service_cluster_queue.h"
+#include "mem_service_cluster_runtime.h"
+#include "mem_service_cluster_utils.h"
+#include "mem_service_obmm_objects.h"
+#include "mem_service_object_refs.h"
+#include "mem_service_qwen3.h"
+#include "mem_service_qwen3_runtime.h"
+#include "mem_service_record_table.h"
+
 static uint64_t mem_service_pack_qwen3_engram_candidates(uint64_t decode_step,
                                                    const uint64_t *candidate_tokens,
                                                    const uint64_t *candidate_logit_bits,
@@ -48,7 +60,7 @@ int mem_service_obmm_service_v0_publish_engram_candidates(struct mem_service *sv
                                                     const uint64_t *candidate_piece_word1,
                                                     uint64_t candidate_count)
 {
-    struct mem_service_cluster_runtime *rt = &g_mem_service_cluster_runtime;
+    struct mem_service_cluster_runtime *rt = mem_service_cluster_runtime_current();
     struct mem_service_cluster_slot *local_slot;
     struct mem_service_record candidates_record;
     char candidates_key[96];
@@ -170,7 +182,7 @@ int mem_service_obmm_service_v0_publish_engram_step(struct mem_service *svc,
                                               uint64_t logits_checksum,
                                               uint64_t text_checksum)
 {
-    struct mem_service_cluster_runtime *rt = &g_mem_service_cluster_runtime;
+    struct mem_service_cluster_runtime *rt = mem_service_cluster_runtime_current();
     struct mem_service_cluster_slot *local_slot;
     struct mem_service_record records[3];
     char history_key[96];

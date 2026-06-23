@@ -157,7 +157,7 @@ void mem_service_report_obmm_pool_usage(struct mem_service_cluster_runtime *rt,
            rt->payload_arena_next);
 }
 
-static int mem_service_qwen3_engram_owner_index(uint32_t cluster_node_count)
+int mem_service_qwen3_engram_owner_index(uint32_t cluster_node_count)
 {
     const char *env = getenv("SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE");
     char *end = NULL;
@@ -209,7 +209,7 @@ static void mem_service_qwen3_engram_session_id(char *out, size_t out_len)
     snprintf(out, out_len, "%s", env);
 }
 
-static void mem_service_qwen3_engram_history_key(char *out, size_t out_len)
+void mem_service_qwen3_engram_history_key(char *out, size_t out_len)
 {
     char session[32];
 
@@ -217,7 +217,7 @@ static void mem_service_qwen3_engram_history_key(char *out, size_t out_len)
     snprintf(out, out_len, "qwen3/session/%s/tokens/history", session);
 }
 
-static void mem_service_qwen3_engram_candidates_key(uint64_t decode_step,
+void mem_service_qwen3_engram_candidates_key(uint64_t decode_step,
                                               char *out,
                                               size_t out_len)
 {
@@ -231,7 +231,7 @@ static void mem_service_qwen3_engram_candidates_key(uint64_t decode_step,
              decode_step);
 }
 
-static void mem_service_qwen3_engram_selected_key(uint64_t decode_step,
+void mem_service_qwen3_engram_selected_key(uint64_t decode_step,
                                             char *out,
                                             size_t out_len)
 {
@@ -245,7 +245,7 @@ static void mem_service_qwen3_engram_selected_key(uint64_t decode_step,
              decode_step);
 }
 
-static void mem_service_qwen3_engram_state_key(uint64_t decode_step,
+void mem_service_qwen3_engram_state_key(uint64_t decode_step,
                                          char *out,
                                          size_t out_len)
 {
