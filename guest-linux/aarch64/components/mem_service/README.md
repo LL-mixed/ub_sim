@@ -63,9 +63,9 @@ CLI:
   contract used by the runtime range, KV, and object handoff flows.
 - `mem_service_qwen3_runtime_range_wait_flow.inc` contains Qwen3 runtime range
   input wait, scheduler work-item resolution, and mapped payload view helpers.
-- `mem_service_qwen3_runtime_range_publish_flow.inc` contains Qwen3 runtime
+- `mem_service_qwen3_runtime_range_publish_flow.c` contains Qwen3 runtime
   range output, KV-state object publication, and downstream descriptor publish
-  helpers.
+  helpers compiled as a standalone model data-flow translation unit.
 - `mem_service_qwen3_kv_state_flow.c` contains Qwen3 runtime range KV-state
   publish and previous-step resolve helpers compiled as a standalone model
   data-flow translation unit.

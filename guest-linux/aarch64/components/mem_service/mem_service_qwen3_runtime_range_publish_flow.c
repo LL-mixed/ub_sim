@@ -1,3 +1,13 @@
+#include "mem_service_internal.h"
+
+#include "mem_service_cluster_payload.h"
+#include "mem_service_cluster_queue.h"
+#include "mem_service_cluster_runtime.h"
+#include "mem_service_cluster_utils.h"
+#include "mem_service_obmm_objects.h"
+#include "mem_service_object_refs.h"
+#include "mem_service_qwen3.h"
+#include "mem_service_qwen3_runtime.h"
 #include "mem_service_record_table.h"
 
 int mem_service_obmm_service_v0_publish_runtime_range_output(struct mem_service *svc,
@@ -11,7 +21,7 @@ int mem_service_obmm_service_v0_publish_runtime_range_output(struct mem_service 
                                                        uint64_t kv_payload_len,
                                                        uint64_t expected_kv_checksum)
 {
-    struct mem_service_cluster_runtime *rt = &g_mem_service_cluster_runtime;
+    struct mem_service_cluster_runtime *rt = mem_service_cluster_runtime_current();
     struct mem_service_cluster_slot *local_slot;
     struct mem_service_record local_hidden_output;
     struct mem_service_record local_kv_state;
