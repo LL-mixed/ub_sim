@@ -18,7 +18,6 @@ static int mem_service_activate_remote_slot(struct mem_service_cluster_runtime *
 #include "mem_service_cluster_queue.inc"
 
 #include "mem_service_qwen3_records.inc"
-#include "mem_service_metadata.inc"
 
 #include "mem_service_cluster_observe.inc"
 

@@ -45,7 +45,7 @@ SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_INC = (
 )
 SERVICE_QWEN3_ENGRAM_WAIT_FLOW_INC = SERVICE_DIR / "mem_service_qwen3_engram_wait_flow.inc"
 SERVICE_QWEN3_DECODE_BARRIER_INC = SERVICE_DIR / "mem_service_qwen3_decode_barrier.inc"
-SERVICE_METADATA_INC = SERVICE_DIR / "mem_service_metadata.inc"
+SERVICE_METADATA_C = SERVICE_DIR / "mem_service_metadata.c"
 SERVICE_CLUSTER_PAYLOAD_C = SERVICE_DIR / "mem_service_cluster_payload.c"
 SERVICE_CLUSTER_PAYLOAD_H = SERVICE_DIR / "mem_service_cluster_payload.h"
 SERVICE_CLUSTER_READ_C = SERVICE_DIR / "mem_service_cluster_read.c"
@@ -90,6 +90,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             build_script,
         )
         self.assertIn(
+            'MEM_SERVICE_METADATA_SRC="$ROOT_DIR/components/mem_service/mem_service_metadata.c"',
+            build_script,
+        )
+        self.assertIn(
             'MEM_SERVICE_KEYS_SRC="$ROOT_DIR/components/mem_service/mem_service_keys.c"',
             build_script,
         )
@@ -115,7 +119,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn('MEM_SERVICE_CLI_BIN="$OUT_DIR/linqu_mem_service"', build_script)
         self.assertIn(
-            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
+            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
             build_script,
         )
         self.assertIn("linqu_mem_service", build_script)
@@ -347,7 +351,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         records = SERVICE_RECORDS_C.read_text()
         qwen3_records = SERVICE_QWEN3_RECORDS_INC.read_text()
         qwen3_record_contract = SERVICE_QWEN3_RECORDS_H.read_text()
-        metadata = SERVICE_METADATA_INC.read_text()
+        metadata = SERVICE_METADATA_C.read_text()
         obmm_objects = SERVICE_OBMM_OBJECTS_C.read_text()
         qwen3_runtime = SERVICE_QWEN3_RUNTIME_INC.read_text()
         readme = (SERVICE_DIR / "README.md").read_text()
@@ -396,7 +400,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         source = SERVICE_C.read_text()
         keys = SERVICE_KEYS_C.read_text()
         keys_contract = SERVICE_KEYS_H.read_text()
-        metadata = SERVICE_METADATA_INC.read_text()
+        metadata = SERVICE_METADATA_C.read_text()
         readme = (SERVICE_DIR / "README.md").read_text()
 
         self.assertNotIn('#include "mem_service_keys.inc"', source)
@@ -495,10 +499,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
 
     def test_prefix_kv_metadata_state_machine_is_split_for_host_guest_core_reuse(self):
         source = SERVICE_C.read_text()
-        metadata = SERVICE_METADATA_INC.read_text()
+        metadata = SERVICE_METADATA_C.read_text()
         readme = (SERVICE_DIR / "README.md").read_text()
 
-        self.assertIn('#include "mem_service_metadata.inc"', source)
+        self.assertNotIn('#include "mem_service_metadata.inc"', source)
         self.assertIn('#include "mem_service.h"', metadata)
         self.assertIn("#include <stdbool.h>", metadata)
         self.assertIn("#include <stdio.h>", metadata)
@@ -508,7 +512,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("mem_service_rebind_block_view", metadata)
         self.assertIn("mem_service_handoff_block_owner", metadata)
         self.assertIn("prefix/KV metadata state machine", readme)
+        self.assertIn("standalone core translation unit", readme)
         self.assertIn("public service contract plus record helpers", readme)
+        self.assertFalse((SERVICE_DIR / "mem_service_metadata.inc").exists())
         self.assertNotIn("mem_service_internal.h", metadata)
         self.assertNotIn("mem_service_guest_runtime.h", metadata)
         self.assertNotRegex(

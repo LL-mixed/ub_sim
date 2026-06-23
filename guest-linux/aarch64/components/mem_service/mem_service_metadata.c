@@ -3,6 +3,7 @@
 #include "mem_service_record_table.h"
 
 #include <stdbool.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 
