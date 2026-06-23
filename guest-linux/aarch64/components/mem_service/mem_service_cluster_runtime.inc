@@ -141,7 +141,7 @@ static void mem_service_cleanup_cluster_slots(struct mem_service_cluster_runtime
     }
 }
 
-static int mem_service_activate_remote_slot(struct mem_service_cluster_runtime *rt, int owner_idx)
+int mem_service_activate_remote_slot(struct mem_service_cluster_runtime *rt, int owner_idx)
 {
     struct mem_service_cluster_slot *slot;
 
@@ -258,7 +258,7 @@ static void mem_service_cluster_runtime_reset(struct mem_service_cluster_runtime
     rt->pool_layout_reported = false;
 }
 
-static int mem_service_cluster_runtime_require(struct mem_service_cluster_runtime *rt)
+int mem_service_cluster_runtime_require(struct mem_service_cluster_runtime *rt)
 {
     if (!rt || !rt->active || rt->local_idx < 0 || rt->node_count <= 0 ||
         rt->local_idx >= rt->node_count ||

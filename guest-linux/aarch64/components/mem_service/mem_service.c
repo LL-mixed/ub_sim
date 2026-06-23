@@ -1,15 +1,20 @@
 #include "mem_service_internal.h"
 #include "mem_service_cluster_payload.h"
 #include "mem_service_cluster_read.h"
+#include "mem_service_cluster_runtime.h"
 #include "mem_service_cluster_utils.h"
 #include "mem_service_obmm_objects.h"
 #include "mem_service_object_refs.h"
 #include "mem_service_qwen3_records.h"
+#include "mem_service_qwen3_runtime.h"
 #include "mem_service_record_table.h"
 
 static struct mem_service_cluster_runtime g_mem_service_cluster_runtime;
 
-static int mem_service_activate_remote_slot(struct mem_service_cluster_runtime *rt, int owner_idx);
+struct mem_service_cluster_runtime *mem_service_cluster_runtime_current(void)
+{
+    return &g_mem_service_cluster_runtime;
+}
 
 #include "mem_service_qwen3_runtime.inc"
 
@@ -32,5 +37,3 @@ static int mem_service_activate_remote_slot(struct mem_service_cluster_runtime *
 #include "mem_service_qwen3_engram_publish_flow.inc"
 
 #include "mem_service_qwen3_engram_wait_flow.inc"
-
-#include "mem_service_qwen3_decode_barrier.inc"

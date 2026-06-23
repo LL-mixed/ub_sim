@@ -115,9 +115,9 @@ static void mem_service_report_obmm_pool_layout_once(struct mem_service_cluster_
     rt->pool_layout_reported = true;
 }
 
-static void mem_service_report_obmm_pool_usage(struct mem_service_cluster_runtime *rt,
-                                         uint32_t local_node,
-                                         uint64_t decode_step)
+void mem_service_report_obmm_pool_usage(struct mem_service_cluster_runtime *rt,
+                                        uint32_t local_node,
+                                        uint64_t decode_step)
 {
     struct mem_service_cluster_slot *local_slot;
     uint64_t arena_used;

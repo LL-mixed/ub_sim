@@ -29,6 +29,8 @@ CLI:
   contract used by observe and Qwen3 data-flow split units.
 - `mem_service_guest_runtime.h` contains guest OBMM cluster runtime state,
   mapped slots, queue descriptors, and region layout constants.
+- `mem_service_cluster_runtime.h` contains the private guest cluster runtime
+  accessor and activation contract used by split transport/model units.
 - `mem_service_cluster_utils.c` contains cluster environment parsing, wait
   throttling, and OBMM region range update/sync helpers compiled as a
   standalone guest runtime utility translation unit.
@@ -50,6 +52,8 @@ CLI:
   helper contract used by the model adapter and OBMM object publication path.
 - `mem_service_qwen3_record_policy.h` contains Qwen3 runtime record retention
   constants used by the model adapter record policy.
+- `mem_service_qwen3_runtime.h` contains the private Qwen3 runtime helper
+  contract shared by split Qwen3 data-flow units.
 - `mem_service_qwen3_runtime.inc` contains Qwen3 runtime payload checksum, KV
   span allocation, engram object keys, and layer-range placement helpers.
 - `mem_service_qwen3_placement.h` contains the Qwen3 layer-range placement
@@ -67,8 +71,9 @@ CLI:
   publish and decision-state publish helpers.
 - `mem_service_qwen3_engram_wait_flow.inc` contains Qwen3 engram candidate,
   selected-token, history, and state wait helpers.
-- `mem_service_qwen3_decode_barrier.inc` contains Qwen3 decode-round publish
-  and all-node wait barrier helpers.
+- `mem_service_qwen3_decode_barrier.c` contains Qwen3 decode-round publish
+  and all-node wait barrier helpers compiled as a standalone model data-flow
+  translation unit.
 - `mem_service_keys.c` contains device-independent key construction helpers
   compiled as a standalone core translation unit for guest and host service
   deployments.
@@ -109,8 +114,9 @@ Build and validation entrypoints:
   `mem_service_cluster_utils.c`, `mem_service_cluster_payload.c`,
   `mem_service_cluster_read.c`, `mem_service_metadata.c`, `mem_service_keys.c`,
   `mem_service_object_refs.c`, `mem_service_obmm_objects.c`,
-  `mem_service_records.c`, `mem_service_qwen3_records.c`, and
-  `mem_service_qwen3.c` into the guest app binary.
+  `mem_service_records.c`, `mem_service_qwen3_records.c`,
+  `mem_service_qwen3_decode_barrier.c`, and `mem_service_qwen3.c` into the
+  guest app binary.
 - `apps/mem_service` builds `/bin/linqu_mem_service` for direct smoke and
   Qwen3 topology inspection.
 - Guest app runners provide the CLI surface that exercises the component.

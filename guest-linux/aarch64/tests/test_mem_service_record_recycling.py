@@ -44,7 +44,7 @@ SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_INC = (
     SERVICE_DIR / "mem_service_qwen3_engram_publish_flow.inc"
 )
 SERVICE_QWEN3_ENGRAM_WAIT_FLOW_INC = SERVICE_DIR / "mem_service_qwen3_engram_wait_flow.inc"
-SERVICE_QWEN3_DECODE_BARRIER_INC = SERVICE_DIR / "mem_service_qwen3_decode_barrier.inc"
+SERVICE_QWEN3_DECODE_BARRIER_C = SERVICE_DIR / "mem_service_qwen3_decode_barrier.c"
 SERVICE_METADATA_C = SERVICE_DIR / "mem_service_metadata.c"
 SERVICE_CLUSTER_PAYLOAD_C = SERVICE_DIR / "mem_service_cluster_payload.c"
 SERVICE_CLUSTER_PAYLOAD_H = SERVICE_DIR / "mem_service_cluster_payload.h"
@@ -114,6 +114,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             build_script,
         )
         self.assertIn(
+            'MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC="$ROOT_DIR/components/mem_service/mem_service_qwen3_decode_barrier.c"',
+            build_script,
+        )
+        self.assertIn(
             'MEM_SERVICE_QWEN3_SRC="$ROOT_DIR/components/mem_service/mem_service_qwen3.c"',
             build_script,
         )
@@ -123,7 +127,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn('MEM_SERVICE_CLI_BIN="$OUT_DIR/linqu_mem_service"', build_script)
         self.assertIn(
-            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
+            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
             build_script,
         )
         self.assertIn("linqu_mem_service", build_script)
@@ -701,14 +705,21 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
 
     def test_qwen3_decode_barrier_is_split_from_runtime_main(self):
         source = SERVICE_C.read_text()
-        decode_barrier = SERVICE_QWEN3_DECODE_BARRIER_INC.read_text()
+        decode_barrier = SERVICE_QWEN3_DECODE_BARRIER_C.read_text()
         readme = (SERVICE_DIR / "README.md").read_text()
 
-        self.assertIn('#include "mem_service_qwen3_decode_barrier.inc"', source)
+        self.assertNotIn('#include "mem_service_qwen3_decode_barrier.inc"', source)
+        self.assertIn('#include "mem_service_cluster_runtime.h"', source)
+        self.assertIn('#include "mem_service_qwen3_runtime.h"', source)
+        self.assertIn('#include "mem_service_cluster_runtime.h"', decode_barrier)
+        self.assertIn('#include "mem_service_qwen3_runtime.h"', decode_barrier)
         self.assertIn("mem_service_obmm_service_v0_publish_decode_round_done", decode_barrier)
         self.assertIn("mem_service_obmm_service_v0_wait_all_decode_round_done", decode_barrier)
         self.assertIn("qwen3_decode_round_barrier", decode_barrier)
         self.assertIn("Qwen3 decode-round publish", readme)
+        self.assertIn("standalone model data-flow", readme)
+        self.assertIn("translation unit", readme)
+        self.assertFalse((SERVICE_DIR / "mem_service_qwen3_decode_barrier.inc").exists())
         self.assertNotRegex(
             source,
             r"int mem_service_obmm_service_v0_publish_decode_round_done"

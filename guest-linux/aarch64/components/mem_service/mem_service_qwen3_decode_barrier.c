@@ -1,10 +1,17 @@
+#include "mem_service_internal.h"
+
+#include "mem_service_cluster_runtime.h"
+#include "mem_service_cluster_utils.h"
+#include "mem_service_object_refs.h"
+#include "mem_service_qwen3_runtime.h"
+
 int mem_service_obmm_service_v0_publish_decode_round_done(struct mem_service *svc,
                                                     uint32_t local_node,
                                                     uint32_t cluster_node_count,
                                                     uint64_t decode_step,
                                                     uint64_t round_scope_hash)
 {
-    struct mem_service_cluster_runtime *rt = &g_mem_service_cluster_runtime;
+    struct mem_service_cluster_runtime *rt = mem_service_cluster_runtime_current();
     struct mem_service_cluster_slot *local_slot;
     uint64_t payload_words[8];
     uint64_t checksum;
@@ -71,7 +78,7 @@ int mem_service_obmm_service_v0_wait_all_decode_round_done(struct mem_service *s
                                                      uint64_t round_scope_hash,
                                                      uint64_t timeout_ms)
 {
-    struct mem_service_cluster_runtime *rt = &g_mem_service_cluster_runtime;
+    struct mem_service_cluster_runtime *rt = mem_service_cluster_runtime_current();
     long deadline;
     uint32_t ready_mask = 0;
     uint32_t expected_mask;
