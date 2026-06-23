@@ -16,6 +16,11 @@ START_GAP_SECS="${START_GAP_SECS:-0}"
 APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 QEMU_MEM="${QEMU_MEM:-8G}"
 QEMU_SMP="${QEMU_SMP:-4}"
+TCP_BENCHMARK="${TCP_BENCHMARK:-0}"
+TCP_BENCH_SIZE="${TCP_BENCH_SIZE:-2097152}"
+TCP_BENCH_ITERATIONS="${TCP_BENCH_ITERATIONS:-8192}"
+TCP_BENCH_CHUNK_SIZE="${TCP_BENCH_CHUNK_SIZE:-64}"
+TCP_BENCH_VERIFY="${TCP_BENCH_VERIFY:-0}"
 PORT_BASE_START="${PORT_BASE_START:-$((53600 + (RANDOM % 300)))}"
 PORT_BASE="$PORT_BASE_START"
 
@@ -214,6 +219,11 @@ send_tcp_cmd() {
   payload=$'export LINQU_URMA_DP_ROLE='"${role}"$'\n'
   payload+=$'export LINQU_UB_LOCAL_IP='"${local_ip}"$'\n'
   payload+=$'export LINQU_UB_PEER_IP='"${peer_ip}"$'\n'
+  payload+=$'export TCP_BENCHMARK='"${TCP_BENCHMARK}"$'\n'
+  payload+=$'export TCP_BENCH_SIZE='"${TCP_BENCH_SIZE}"$'\n'
+  payload+=$'export TCP_BENCH_ITERATIONS='"${TCP_BENCH_ITERATIONS}"$'\n'
+  payload+=$'export TCP_BENCH_CHUNK_SIZE='"${TCP_BENCH_CHUNK_SIZE}"$'\n'
+  payload+=$'export TCP_BENCH_VERIFY='"${TCP_BENCH_VERIFY}"$'\n'
   payload+=$'echo '"${start_marker}"$'\n'
   payload+=$'/bin/linqu_ub_tcp_each_server\n'
 
@@ -267,14 +277,23 @@ validate_pair_node_log() {
 
   assert_log_has_since "$log_file" "$start_line" "\\[ub_tcp_each_server\\] start role=${role} .* local=${local_ip} peer=${peer_ip} port=18620" \
     "$node_id start" || return 1
-  assert_log_has_since "$log_file" "$start_line" "\\[TCP_EACH_SERVER\\] ${role} client sent=\"tcp hello from ${role} client\"" \
-    "$node_id client send" || return 1
-  assert_log_has_since "$log_file" "$start_line" "\\[TCP_EACH_SERVER\\] ${role} server received=\"tcp hello from ${peer_role} client\"" \
-    "$node_id server receive" || return 1
-  assert_log_has_since "$log_file" "$start_line" "\\[TCP_EACH_SERVER\\] ${role} server ack=\"tcp ack from ${role} server\"" \
-    "$node_id server ack" || return 1
-  assert_log_has_since "$log_file" "$start_line" "\\[TCP_EACH_SERVER\\] ${role} client received_ack=\"tcp ack from ${peer_role} server\"" \
-    "$node_id client ack" || return 1
+  if [[ "$TCP_BENCHMARK" == "1" ]]; then
+    assert_log_has_since "$log_file" "$start_line" "\\[TCP_EACH_SERVER\\] ${role} benchmark client complete iterations=${TCP_BENCH_ITERATIONS}" \
+      "$node_id benchmark client complete" || return 1
+    assert_log_has_since "$log_file" "$start_line" "\\[ub_tcp_each_server\\] benchmark_server role=${role} iterations=${TCP_BENCH_ITERATIONS} .*verify_failures=0" \
+      "$node_id benchmark server" || return 1
+    assert_log_has_since "$log_file" "$start_line" "\\[ub_tcp_each_server\\] benchmark_result=done role=${role} .*verify_failures=0" \
+      "$node_id benchmark result" || return 1
+  else
+    assert_log_has_since "$log_file" "$start_line" "\\[TCP_EACH_SERVER\\] ${role} client sent=\"tcp hello from ${role} client\"" \
+      "$node_id client send" || return 1
+    assert_log_has_since "$log_file" "$start_line" "\\[TCP_EACH_SERVER\\] ${role} server received=\"tcp hello from ${peer_role} client\"" \
+      "$node_id server receive" || return 1
+    assert_log_has_since "$log_file" "$start_line" "\\[TCP_EACH_SERVER\\] ${role} server ack=\"tcp ack from ${role} server\"" \
+      "$node_id server ack" || return 1
+    assert_log_has_since "$log_file" "$start_line" "\\[TCP_EACH_SERVER\\] ${role} client received_ack=\"tcp ack from ${peer_role} server\"" \
+      "$node_id client ack" || return 1
+  fi
   assert_log_has_since "$log_file" "$start_line" "\\[ub_tcp_each_server\\] summary role=${role} local=${local_ip} peer=${peer_ip} port=18620" \
     "$node_id summary" || return 1
   assert_log_has_since "$log_file" "$start_line" "\\[ub_tcp_each_server\\] pass" \
@@ -365,6 +384,10 @@ main() {
     echo "result=$result"
     echo "run_dir=$RUN_DIR"
     echo "pair_count=${#PAIR_LIST[@]}"
+    echo "tcp_benchmark=$TCP_BENCHMARK"
+    echo "tcp_bench_size=$TCP_BENCH_SIZE"
+    echo "tcp_bench_iterations=$TCP_BENCH_ITERATIONS"
+    echo "tcp_bench_chunk_size=$TCP_BENCH_CHUNK_SIZE"
     [[ -n "$cleanup_script" ]] && echo "cleanup_script=$cleanup_script"
   } | tee "$REPORT_FILE"
 

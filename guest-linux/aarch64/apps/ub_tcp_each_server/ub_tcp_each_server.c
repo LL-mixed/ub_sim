@@ -2,6 +2,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <net/if.h>
 #include <net/if_arp.h>
@@ -25,6 +26,26 @@
 #define IO_TIMEOUT_S         5
 #define WAIT_IFACE_MS        90000
 #define RETRY_DELAY_US       200000
+#define TCP_BENCH_DEFAULT_SIZE       (2UL * 1024UL * 1024UL)
+#define TCP_BENCH_DEFAULT_ITERATIONS 32768ULL
+#define TCP_BENCH_DEFAULT_CHUNK_SIZE 64ULL
+
+struct tcp_bench_config {
+    bool enabled;
+    bool verify;
+    uint64_t size;
+    uint64_t iterations;
+    uint64_t chunk_size;
+};
+
+struct tcp_bench_stats {
+    uint64_t reads;
+    uint64_t writes;
+    uint64_t read_bytes;
+    uint64_t write_bytes;
+    uint64_t verify_failures;
+    long duration_ms;
+};
 
 static long now_ms(void)
 {
@@ -91,6 +112,78 @@ static bool env_or_cmdline_value(const char *env_key, const char *cmd_key,
         return true;
     }
     return cmdline_get_value(cmd_key, out, out_len);
+}
+
+static bool env_flag_enabled(const char *key)
+{
+    const char *value = getenv(key);
+
+    if (!value || value[0] == '\0') {
+        return false;
+    }
+    return strcmp(value, "0") != 0 && strcmp(value, "false") != 0 &&
+           strcmp(value, "FALSE") != 0 && strcmp(value, "no") != 0 &&
+           strcmp(value, "NO") != 0;
+}
+
+static uint64_t env_u64_or_default(const char *key, uint64_t fallback)
+{
+    const char *value = getenv(key);
+    char *end = NULL;
+    uint64_t parsed;
+
+    if (!value || value[0] == '\0') {
+        return fallback;
+    }
+    errno = 0;
+    parsed = strtoull(value, &end, 0);
+    if (errno != 0 || end == NULL || *end != '\0') {
+        return fallback;
+    }
+    return parsed;
+}
+
+static void tcp_bench_init_config(struct tcp_bench_config *cfg)
+{
+    cfg->enabled = env_flag_enabled("TCP_BENCHMARK") ||
+                   env_flag_enabled("LINQU_TCP_BENCHMARK");
+    cfg->verify = env_flag_enabled("TCP_BENCH_VERIFY") ||
+                  env_flag_enabled("LINQU_TCP_BENCH_VERIFY");
+    cfg->size = env_u64_or_default("TCP_BENCH_SIZE", TCP_BENCH_DEFAULT_SIZE);
+    cfg->iterations = env_u64_or_default("TCP_BENCH_ITERATIONS",
+                                         TCP_BENCH_DEFAULT_ITERATIONS);
+    cfg->chunk_size = env_u64_or_default("TCP_BENCH_CHUNK_SIZE",
+                                         TCP_BENCH_DEFAULT_CHUNK_SIZE);
+    if (cfg->size == 0) {
+        cfg->size = TCP_BENCH_DEFAULT_SIZE;
+    }
+    if (cfg->iterations == 0) {
+        cfg->iterations = TCP_BENCH_DEFAULT_ITERATIONS;
+    }
+    if (cfg->chunk_size == 0 || cfg->chunk_size > cfg->size) {
+        cfg->chunk_size = TCP_BENCH_DEFAULT_CHUNK_SIZE;
+    }
+}
+
+static void tcp_bench_fill_pattern(uint8_t *buf, uint64_t len, uint64_t seed)
+{
+    uint64_t i;
+
+    for (i = 0; i < len; i++) {
+        buf[i] = (uint8_t)((seed + i) * 0x9e3779b9 + 0x85ebca77);
+    }
+}
+
+static bool tcp_bench_verify_pattern(const uint8_t *buf, uint64_t len, uint64_t seed)
+{
+    uint64_t i;
+
+    for (i = 0; i < len; i++) {
+        if (buf[i] != (uint8_t)((seed + i) * 0x9e3779b9 + 0x85ebca77)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 static bool role_default_ipv4_pair(const char *role, char *local, size_t local_len,
@@ -540,12 +633,13 @@ static int connect_to_peer_retry(const char *ifname, const char *local_ip,
     return -1;
 }
 
-static bool send_all(int fd, const char *buf, size_t len)
+static bool send_all(int fd, const void *buf, size_t len)
 {
+    const uint8_t *bytes = buf;
     size_t off = 0;
 
     while (off < len) {
-        ssize_t n = send(fd, buf + off, len - off, 0);
+        ssize_t n = send(fd, bytes + off, len - off, 0);
 
         if (n > 0) {
             off += (size_t)n;
@@ -555,6 +649,32 @@ static bool send_all(int fd, const char *buf, size_t len)
             continue;
         }
         fprintf(stderr, "[ub_tcp_each_server] fail: send: %s\n", strerror(errno));
+        return false;
+    }
+
+    return true;
+}
+
+static bool recv_all(int fd, void *buf, size_t len)
+{
+    uint8_t *bytes = buf;
+    size_t off = 0;
+
+    while (off < len) {
+        ssize_t n = recv(fd, bytes + off, len - off, 0);
+
+        if (n > 0) {
+            off += (size_t)n;
+            continue;
+        }
+        if (n == 0) {
+            fprintf(stderr, "[ub_tcp_each_server] fail: unexpected EOF\n");
+            return false;
+        }
+        if (errno == EINTR) {
+            continue;
+        }
+        fprintf(stderr, "[ub_tcp_each_server] fail: recv: %s\n", strerror(errno));
         return false;
     }
 
@@ -666,6 +786,127 @@ static int run_server_child(const char *role, int listener_fd,
     return 0;
 }
 
+static int run_benchmark_server_child(const char *role, int listener_fd,
+                                      const struct tcp_bench_config *cfg)
+{
+    uint8_t *buf;
+    uint64_t iter;
+    int accepted_fd;
+    uint64_t verify_failures = 0;
+
+    accepted_fd = wait_for_accept(listener_fd, now_ms() + RUN_TIMEOUT_S * 1000L);
+    if (accepted_fd < 0) {
+        return 1;
+    }
+
+    buf = malloc((size_t)cfg->chunk_size);
+    if (!buf) {
+        fprintf(stderr, "[ub_tcp_each_server] fail: benchmark server alloc\n");
+        close(accepted_fd);
+        return 1;
+    }
+
+    for (iter = 0; iter < cfg->iterations; iter++) {
+        uint64_t offset = (iter * cfg->chunk_size) % cfg->size;
+        uint64_t seed = offset ^ iter;
+
+        if (!recv_all(accepted_fd, buf, (size_t)cfg->chunk_size)) {
+            free(buf);
+            close(accepted_fd);
+            return 1;
+        }
+        if (cfg->verify &&
+            !tcp_bench_verify_pattern(buf, cfg->chunk_size, seed)) {
+            verify_failures++;
+        }
+        if (!send_all(accepted_fd, buf, (size_t)cfg->chunk_size)) {
+            free(buf);
+            close(accepted_fd);
+            return 1;
+        }
+    }
+
+    printf("[ub_tcp_each_server] benchmark_server role=%s iterations=%" PRIu64
+           " chunk_size=%" PRIu64 " verify_failures=%" PRIu64 "\n",
+           role, cfg->iterations, cfg->chunk_size, verify_failures);
+    free(buf);
+    close(accepted_fd);
+    return verify_failures == 0 ? 0 : 1;
+}
+
+static bool run_benchmark_client(int fd, const char *role,
+                                 const struct tcp_bench_config *cfg,
+                                 struct tcp_bench_stats *stats)
+{
+    uint8_t *tmp_write;
+    uint8_t *tmp_read;
+    uint64_t iter;
+    long t0;
+
+    memset(stats, 0, sizeof(*stats));
+    tmp_write = malloc((size_t)cfg->chunk_size);
+    tmp_read = malloc((size_t)cfg->chunk_size);
+    if (!tmp_write || !tmp_read) {
+        fprintf(stderr, "[ub_tcp_each_server] fail: benchmark client alloc\n");
+        free(tmp_write);
+        free(tmp_read);
+        return false;
+    }
+
+    t0 = now_ms();
+    for (iter = 0; iter < cfg->iterations; iter++) {
+        uint64_t offset = (iter * cfg->chunk_size) % cfg->size;
+        uint64_t seed = offset ^ iter;
+
+        tcp_bench_fill_pattern(tmp_write, cfg->chunk_size, seed);
+        if (!send_all(fd, tmp_write, (size_t)cfg->chunk_size)) {
+            free(tmp_write);
+            free(tmp_read);
+            return false;
+        }
+        stats->writes++;
+        stats->write_bytes += cfg->chunk_size;
+
+        if (!recv_all(fd, tmp_read, (size_t)cfg->chunk_size)) {
+            free(tmp_write);
+            free(tmp_read);
+            return false;
+        }
+        stats->reads++;
+        stats->read_bytes += cfg->chunk_size;
+        if (cfg->verify &&
+            !tcp_bench_verify_pattern(tmp_read, cfg->chunk_size, seed)) {
+            stats->verify_failures++;
+        }
+    }
+    stats->duration_ms = now_ms() - t0;
+
+    printf("[TCP_EACH_SERVER] %s benchmark client complete iterations=%" PRIu64 "\n",
+           role, cfg->iterations);
+    free(tmp_write);
+    free(tmp_read);
+    return true;
+}
+
+static void print_benchmark_result(const char *role,
+                                   const struct tcp_bench_config *cfg,
+                                   const struct tcp_bench_stats *stats)
+{
+    double dur_s = stats->duration_ms > 0 ? stats->duration_ms / 1000.0 : 0.001;
+    double rmb = stats->read_bytes / (1024.0 * 1024.0);
+    double wmb = stats->write_bytes / (1024.0 * 1024.0);
+
+    printf("[ub_tcp_each_server] benchmark_result=done role=%s size=%" PRIu64
+           " iterations=%" PRIu64 " chunk_size=%" PRIu64
+           " reads=%" PRIu64 " writes=%" PRIu64
+           " read_bytes=%" PRIu64 " write_bytes=%" PRIu64
+           " verify_failures=%" PRIu64 " duration_ms=%ld"
+           " read_mbps=%.3f write_mbps=%.3f\n",
+           role, cfg->size, cfg->iterations, cfg->chunk_size,
+           stats->reads, stats->writes, stats->read_bytes, stats->write_bytes,
+           stats->verify_failures, stats->duration_ms, rmb / dur_s, wmb / dur_s);
+}
+
 static void cleanup_child(pid_t child_pid)
 {
     if (child_pid <= 0) {
@@ -695,9 +936,12 @@ int main(void)
     int status = 0;
     pid_t child_pid = -1;
     char recv_buf[256];
+    struct tcp_bench_config bench_cfg;
+    struct tcp_bench_stats bench_stats;
 
     setvbuf(stdout, NULL, _IOLBF, 0);
     setvbuf(stderr, NULL, _IOLBF, 0);
+    tcp_bench_init_config(&bench_cfg);
 
     if (!env_or_cmdline_value("LINQU_URMA_DP_ROLE", "linqu_urma_dp_role",
                               role, sizeof(role))) {
@@ -736,8 +980,10 @@ int main(void)
 
     install_static_arp(ifname, &peer_addr);
 
-    printf("[ub_tcp_each_server] start role=%s iface=%s ifindex=%u local=%s peer=%s port=%d\n",
-           role, ifname, ifindex, local_ip, peer_ip, TCP_EACH_SERVER_PORT);
+    printf("[ub_tcp_each_server] start role=%s iface=%s ifindex=%u local=%s peer=%s port=%d"
+           " benchmark=%d\n",
+           role, ifname, ifindex, local_ip, peer_ip, TCP_EACH_SERVER_PORT,
+           bench_cfg.enabled ? 1 : 0);
 
     listener_fd = create_listener(ifname, local_ip);
     if (listener_fd < 0) {
@@ -753,7 +999,11 @@ int main(void)
     }
 
     if (child_pid == 0) {
-        status = run_server_child(role, listener_fd, expected_server_msg, server_ack);
+        if (bench_cfg.enabled) {
+            status = run_benchmark_server_child(role, listener_fd, &bench_cfg);
+        } else {
+            status = run_server_child(role, listener_fd, expected_server_msg, server_ack);
+        }
         close(listener_fd);
         _exit(status);
     }
@@ -768,27 +1018,35 @@ int main(void)
         return 1;
     }
 
-    if (!send_line(client_fd, client_msg)) {
-        close(client_fd);
-        cleanup_child(child_pid);
-        return 1;
-    }
-    printf("[TCP_EACH_SERVER] %s client sent=\"%s\"\n", role, client_msg);
+    if (bench_cfg.enabled) {
+        if (!run_benchmark_client(client_fd, role, &bench_cfg, &bench_stats)) {
+            close(client_fd);
+            cleanup_child(child_pid);
+            return 1;
+        }
+    } else {
+        if (!send_line(client_fd, client_msg)) {
+            close(client_fd);
+            cleanup_child(child_pid);
+            return 1;
+        }
+        printf("[TCP_EACH_SERVER] %s client sent=\"%s\"\n", role, client_msg);
 
-    if (!recv_line(client_fd, recv_buf, sizeof(recv_buf))) {
-        close(client_fd);
-        cleanup_child(child_pid);
-        return 1;
-    }
+        if (!recv_line(client_fd, recv_buf, sizeof(recv_buf))) {
+            close(client_fd);
+            cleanup_child(child_pid);
+            return 1;
+        }
 
-    if (strcmp(recv_buf, expected_client_ack) != 0) {
-        fprintf(stderr, "[ub_tcp_each_server] fail: role=%s unexpected client ack=\"%s\" expected=\"%s\"\n",
-                role, recv_buf, expected_client_ack);
-        close(client_fd);
-        cleanup_child(child_pid);
-        return 1;
+        if (strcmp(recv_buf, expected_client_ack) != 0) {
+            fprintf(stderr, "[ub_tcp_each_server] fail: role=%s unexpected client ack=\"%s\" expected=\"%s\"\n",
+                    role, recv_buf, expected_client_ack);
+            close(client_fd);
+            cleanup_child(child_pid);
+            return 1;
+        }
+        printf("[TCP_EACH_SERVER] %s client received_ack=\"%s\"\n", role, recv_buf);
     }
-    printf("[TCP_EACH_SERVER] %s client received_ack=\"%s\"\n", role, recv_buf);
     close(client_fd);
 
     if (waitpid(child_pid, &status, 0) < 0) {
@@ -801,8 +1059,18 @@ int main(void)
         return 1;
     }
 
-    printf("[ub_tcp_each_server] summary role=%s local=%s peer=%s port=%d\n",
-           role, local_ip, peer_ip, TCP_EACH_SERVER_PORT);
+    if (bench_cfg.enabled) {
+        print_benchmark_result(role, &bench_cfg, &bench_stats);
+        if (bench_stats.verify_failures != 0) {
+            fprintf(stderr, "[ub_tcp_each_server] fail: benchmark verify_failures=%" PRIu64 "\n",
+                    bench_stats.verify_failures);
+            return 1;
+        }
+    }
+
+    printf("[ub_tcp_each_server] summary role=%s local=%s peer=%s port=%d benchmark=%d\n",
+           role, local_ip, peer_ip, TCP_EACH_SERVER_PORT,
+           bench_cfg.enabled ? 1 : 0);
     printf("[ub_tcp_each_server] pass\n");
     return 0;
 }

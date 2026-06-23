@@ -215,6 +215,22 @@ def test_app_validation_matrix_runner_dry_run_executes_without_qemu():
     assert "RUN app=ub_chat" not in resume_result.stdout
 
 
+def test_tcp_each_server_matrix_supports_dataplane_benchmark_mode():
+    runner = (ROOT / "scripts" / "run_ub_eight_node_tcp_each_server_matrix.sh").read_text()
+    app_source = (ROOT / "apps" / "ub_tcp_each_server" / "ub_tcp_each_server.c").read_text()
+    report_script = ROOT / "scripts" / "transport_perf_report.py"
+
+    assert "TCP_BENCHMARK=" in runner
+    assert "TCP_BENCH_SIZE=" in runner
+    assert "TCP_BENCH_ITERATIONS=" in runner
+    assert "benchmark_result=done" in runner
+    assert "benchmark_result=done" in app_source
+    assert "run_benchmark_client" in app_source
+    assert "run_benchmark_server_child" in app_source
+    assert report_script.exists()
+    assert report_script.stat().st_mode & 0o111
+
+
 def test_app_build_matrix_runner_dry_run_executes_without_building():
     runner = ROOT / "scripts" / "run_ub_app_build_matrix.sh"
 
