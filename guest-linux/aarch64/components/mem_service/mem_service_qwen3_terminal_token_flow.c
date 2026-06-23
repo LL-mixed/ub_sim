@@ -1,3 +1,13 @@
+#include "mem_service_internal.h"
+
+#include "mem_service_cluster_payload.h"
+#include "mem_service_cluster_queue.h"
+#include "mem_service_cluster_read.h"
+#include "mem_service_cluster_runtime.h"
+#include "mem_service_cluster_utils.h"
+#include "mem_service_obmm_objects.h"
+#include "mem_service_qwen3.h"
+#include "mem_service_qwen3_runtime.h"
 #include "mem_service_record_table.h"
 
 static int mem_service_obmm_service_v0_publish_terminal_token_result_from_node(
@@ -14,7 +24,7 @@ static int mem_service_obmm_service_v0_publish_terminal_token_result_from_node(
     uint64_t piece_word1,
     bool require_terminal_node)
 {
-    struct mem_service_cluster_runtime *rt = &g_mem_service_cluster_runtime;
+    struct mem_service_cluster_runtime *rt = mem_service_cluster_runtime_current();
     struct mem_service_cluster_slot *local_slot;
     struct mem_service_record local_token_result;
     struct mem_service_qwen3_layer_range_placement local_placement;
@@ -283,7 +293,7 @@ int mem_service_obmm_service_v0_wait_terminal_token_result(struct mem_service *s
                                                      uint64_t timeout_ms,
                                                      uint64_t *sampled_token_out)
 {
-    struct mem_service_cluster_runtime *rt = &g_mem_service_cluster_runtime;
+    struct mem_service_cluster_runtime *rt = mem_service_cluster_runtime_current();
     char token_result_key[96];
     long deadline;
     bool first_scan = true;

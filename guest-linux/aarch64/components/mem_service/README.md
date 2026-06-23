@@ -69,8 +69,9 @@ CLI:
 - `mem_service_qwen3_kv_state_flow.c` contains Qwen3 runtime range KV-state
   publish and previous-step resolve helpers compiled as a standalone model
   data-flow translation unit.
-- `mem_service_qwen3_terminal_token_flow.inc` contains Qwen3 terminal token
-  publish, shortpath publish, and wait helpers.
+- `mem_service_qwen3_terminal_token_flow.c` contains Qwen3 terminal token
+  publish, shortpath publish, and wait helpers compiled as a standalone model
+  data-flow translation unit.
 - `mem_service_qwen3_engram_publish_flow.inc` contains Qwen3 engram candidate
   publish and decision-state publish helpers.
 - `mem_service_qwen3_engram_wait_flow.inc` contains Qwen3 engram candidate,

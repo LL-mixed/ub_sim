@@ -291,8 +291,8 @@ static void mem_service_qwen3_placement_key(uint32_t owner_node,
              owner_node + 1U);
 }
 
-static int mem_service_qwen3_decode_entry_node(uint32_t cluster_node_count,
-                                         uint32_t *node_out)
+int mem_service_qwen3_decode_entry_node(uint32_t cluster_node_count,
+                                        uint32_t *node_out)
 {
     uint32_t i;
 

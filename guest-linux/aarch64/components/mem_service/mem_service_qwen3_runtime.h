@@ -16,6 +16,8 @@ int mem_service_qwen3_kv_state_alloc(struct mem_service_cluster_runtime *rt,
                                      uint64_t *block_bytes_out,
                                      uint64_t *block_count_out,
                                      uint64_t *reserved_bytes_out);
+int mem_service_qwen3_decode_entry_node(uint32_t cluster_node_count,
+                                        uint32_t *node_out);
 int mem_service_publish_qwen3_layer_range_placements(
     struct mem_service *svc,
     uint32_t node_count);
