@@ -113,9 +113,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
+mod dataplane_microbench;
 mod qwen3_simpler;
 
 fn main() -> anyhow::Result<()> {
+    if let Some(args) = dataplane_microbench::args_from_env()? {
+        return dataplane_microbench::run_cli(&args);
+    }
     if lingqu_durable_args() {
         return run_lingqu_durable_cli();
     }
