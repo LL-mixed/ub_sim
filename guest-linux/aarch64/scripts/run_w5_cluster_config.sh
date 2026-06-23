@@ -8,7 +8,7 @@ source "$SCRIPT_DIR/w5_memory_reuse_common.sh"
 
 usage() {
   cat >&2 <<'USAGE'
-usage: run_w5_cluster_config.sh [--print-env] [--validate-only] [--post-run-prune] [--post-run-health] [--keep-latest N] [--steps N] [config.env]
+usage: run_w5_cluster_config.sh [--print-env] [--validate-only] [--gsva-kv] [--post-run-prune] [--post-run-health] [--keep-latest N] [--steps N] [config.env]
 
 Loads a W5 inference cluster env file and then runs the stable W5 cluster
 entrypoint. This keeps approval prefixes stable: callers execute this script,
@@ -25,6 +25,7 @@ VALIDATE_ONLY=0
 CONFIG_PATH=""
 STEPS_OVERRIDE=""
 KEEP_LATEST_OVERRIDE=""
+GSVA_KV_OVERRIDE=0
 SIM_W5_REQUIRE_PREFIX_CACHE="${SIM_W5_REQUIRE_PREFIX_CACHE:-0}"
 
 while (( $# > 0 )); do
@@ -35,6 +36,10 @@ while (( $# > 0 )); do
       ;;
     --validate-only)
       VALIDATE_ONLY=1
+      shift
+      ;;
+    --gsva-kv)
+      GSVA_KV_OVERRIDE=1
       shift
       ;;
     --post-run-prune)
@@ -131,6 +136,9 @@ if [[ -n "$KEEP_LATEST_OVERRIDE" ]]; then
     exit 2
   fi
   export SIM_W5_ARTIFACT_KEEP_LATEST="$KEEP_LATEST_OVERRIDE"
+fi
+if (( GSVA_KV_OVERRIDE )); then
+  export SIM_W5_MEMORY_GSVA_KV=1
 fi
 
 case "${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" in
@@ -352,6 +360,7 @@ if (( PRINT_ENV )); then
   printf 'SIM_W5_MEMORY_SHORTPATH_EXECUTE=%s\n' "${SIM_W5_MEMORY_SHORTPATH_EXECUTE:-}"
   printf 'SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP=%s\n' "${SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-1}"
   printf 'SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP=%s\n' "${SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP:-1}"
+  printf 'SIM_W5_MEMORY_GSVA_KV=%s\n' "${SIM_W5_MEMORY_GSVA_KV:-}"
   printf 'SIM_W5_MEMORY_POST_RUN_PROMOTE=%s\n' "${SIM_W5_MEMORY_POST_RUN_PROMOTE:-}"
   printf 'SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP=%s\n' "${SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP:-}"
   printf 'SIM_W5_MEMORY_OBSERVATION_STORE=%s\n' "${SIM_W5_MEMORY_OBSERVATION_STORE:-}"

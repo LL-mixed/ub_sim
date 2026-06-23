@@ -7037,6 +7037,7 @@ struct W5KvArtifactExport {
     checksum: u64,
     hot_object_ref: Option<sim_memory::HotTensorObjectRef>,
     payload_ref: Option<LingquBlockPayloadRef>,
+    gsva_segment_ref: Option<sim_memory::GsvaSegmentObjectRef>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -7595,8 +7596,12 @@ fn run_lingqu_memory_promote_terminal_shortpath_artifacts_from_w5_summary_cli(
         promoted_tokens.push(terminal.sampled_token);
     }
     let mut promoted_kv_artifact_ids = Vec::new();
+    let mut promoted_kv_gsva_refs = 0usize;
     for export in &kv_exports {
         let artifact_id = format!("artifact/kv/{}/step{}/{}", run_id, export.step, export.node);
+        if export.gsva_segment_ref.is_some() {
+            promoted_kv_gsva_refs += 1;
+        }
         let payload_ref = if export.hot_object_ref.is_some() {
             None
         } else if let Some(payload_ref) = &export.payload_ref {
@@ -7641,7 +7646,7 @@ fn run_lingqu_memory_promote_terminal_shortpath_artifacts_from_w5_summary_cli(
             shape: vec![export.total_bytes],
             durable_payload_ref: payload_ref,
             hot_object_ref: export.hot_object_ref.clone(),
-            gsva_segment_ref: None,
+            gsva_segment_ref: export.gsva_segment_ref.clone(),
             source_query_result_id: None,
             source_engram_state_id: None,
             confidence_milli: confidence_milli as u32,
@@ -7699,6 +7704,7 @@ fn run_lingqu_memory_promote_terminal_shortpath_artifacts_from_w5_summary_cli(
     println!("  observations: {}", selected_observations.len());
     println!("  artifacts: {}", promoted_artifact_ids.len());
     println!("  kv_artifacts: {}", promoted_kv_artifact_ids.len());
+    println!("  kv_gsva_refs: {promoted_kv_gsva_refs}");
     println!("  decisions: {}", decision_ids.len());
     println!("  artifact_ids: {}", promoted_artifact_ids.join(","));
     println!("  kv_artifact_ids: {}", promoted_kv_artifact_ids.join(","));
@@ -8643,6 +8649,13 @@ fn run_lingqu_memory_list_execution_artifacts_cli(args: &[String]) -> anyhow::Re
         .iter()
         .filter(|artifact| artifact.kind == sim_memory::ExecutionArtifactKind::HiddenState)
         .count();
+    let kv_gsva_refs = filtered_artifacts
+        .iter()
+        .filter(|artifact| {
+            artifact.kind == sim_memory::ExecutionArtifactKind::KvCache
+                && artifact.gsva_segment_ref.is_some()
+        })
+        .count();
 
     println!("lingqu_memory_service");
     println!("  mode: list-execution-artifacts");
@@ -8654,6 +8667,7 @@ fn run_lingqu_memory_list_execution_artifacts_cli(args: &[String]) -> anyhow::Re
     println!("  artifacts: {}", filtered_artifacts.len());
     println!("  logits: {logits}");
     println!("  kv_cache: {kv_cache}");
+    println!("  kv_gsva_refs: {kv_gsva_refs}");
     println!("  hidden_state: {hidden_state}");
     for artifact in filtered_artifacts {
         let payload_bytes = artifact
@@ -8682,8 +8696,16 @@ fn run_lingqu_memory_list_execution_artifacts_cli(args: &[String]) -> anyhow::Re
         } else {
             "none"
         };
+        let gsva_suffix = if let Some(gsva_ref) = artifact.gsva_segment_ref.as_ref() {
+            format!(
+                " gsva_segment_id={} gsva_bytes={} gsva_checksum={:#x}",
+                gsva_ref.segment_id, gsva_ref.bytes, gsva_ref.checksum
+            )
+        } else {
+            String::new()
+        };
         println!(
-            "  artifact id={} kind={} state={:?} step={} position={} node={} layers=[{},{}) payload_ref={} payload_bytes={} checksum={:#x}",
+            "  artifact id={} kind={} state={:?} step={} position={} node={} layers=[{},{}) payload_ref={} payload_bytes={} checksum={:#x}{}",
             artifact.artifact_id,
             w5_execution_artifact_kind_name(artifact.kind),
             artifact.state,
@@ -8694,7 +8716,8 @@ fn run_lingqu_memory_list_execution_artifacts_cli(args: &[String]) -> anyhow::Re
             artifact.producer_boundary.layer_end,
             payload_ref,
             payload_bytes,
-            artifact.checksum
+            artifact.checksum,
+            gsva_suffix
         );
     }
     Ok(())
@@ -11148,7 +11171,8 @@ fn publish_w5_memory_decision_artifact_refs(
             gsva_segment_ref: kv.artifact.gsva_segment_ref.clone(),
         });
     }
-    let prefix_cache_kv_stream = w5_memory_shortpath_kv_stream_env_from_refs(&prefix_cache_kv_refs);
+    let prefix_cache_kv_stream =
+        w5_memory_prefix_cache_kv_stream_env_from_refs(&prefix_cache_kv_refs);
     let prefix_cache_kv_stream_path = if prefix_cache_kv_stream.is_empty() {
         None
     } else {
@@ -11792,7 +11816,7 @@ fn w5_memory_decision_env_vars(
         }
         if let Some(published) = publication {
             let kv_stream =
-                w5_memory_shortpath_kv_stream_env_from_refs(&published.prefix_cache_kv_refs);
+                w5_memory_prefix_cache_kv_stream_env_from_refs(&published.prefix_cache_kv_refs);
             if !kv_stream.is_empty() {
                 vars.push((
                     "SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_COUNT".to_string(),
@@ -11987,6 +12011,19 @@ fn w5_memory_shortpath_stream_env_from_refs(
 fn w5_memory_shortpath_kv_stream_env_from_refs(
     kv_refs: &[W5MemoryPublishedKvArtifactRef],
 ) -> Vec<String> {
+    w5_memory_kv_stream_env_from_refs(kv_refs, false)
+}
+
+fn w5_memory_prefix_cache_kv_stream_env_from_refs(
+    kv_refs: &[W5MemoryPublishedKvArtifactRef],
+) -> Vec<String> {
+    w5_memory_kv_stream_env_from_refs(kv_refs, true)
+}
+
+fn w5_memory_kv_stream_env_from_refs(
+    kv_refs: &[W5MemoryPublishedKvArtifactRef],
+    include_gsva_segment_ref: bool,
+) -> Vec<String> {
     let mut refs = kv_refs.iter().collect::<Vec<_>>();
     refs.sort_by_key(|published| {
         (
@@ -12012,22 +12049,23 @@ fn w5_memory_shortpath_kv_stream_env_from_refs(
                 published.payload_bytes,
                 published.payload_checksum
             );
-            if let Some(gsva_ref) = &published.gsva_segment_ref {
-                format!(
-                    "{}:gsva:{}:{}:{}:{}:{}:{}:{}:{}",
-                    base,
-                    gsva_ref.segment_id,
-                    gsva_ref.base,
-                    gsva_ref.bytes,
-                    gsva_ref.token,
-                    gsva_ref.epoch,
-                    if gsva_ref.retired { 1 } else { 0 },
-                    gsva_ref.checksum,
-                    gsva_ref.home_node
-                )
-            } else {
-                base
+            if include_gsva_segment_ref {
+                if let Some(gsva_ref) = &published.gsva_segment_ref {
+                    return format!(
+                        "{}:gsva:{}:{}:{}:{}:{}:{}:{}:{}",
+                        base,
+                        gsva_ref.segment_id,
+                        gsva_ref.base,
+                        gsva_ref.bytes,
+                        gsva_ref.token,
+                        gsva_ref.epoch,
+                        if gsva_ref.retired { 1 } else { 0 },
+                        gsva_ref.checksum,
+                        gsva_ref.home_node
+                    );
+                }
             }
+            base
         })
         .collect()
 }
@@ -13836,9 +13874,7 @@ fn parse_u64_csv_text(value: &str, label: &'static str) -> anyhow::Result<Vec<u6
 }
 
 fn parse_node_index(value: &str) -> anyhow::Result<u32> {
-    let raw = value
-        .strip_prefix("node")
-        .ok_or_else(|| anyhow::anyhow!("node must use nodeN form, got `{value}`"))?;
+    let raw = value.strip_prefix("node").unwrap_or(value);
     let parsed = raw
         .parse::<u32>()
         .with_context(|| format!("parse node index from {value}"))?;
@@ -14223,6 +14259,8 @@ fn w5_kv_artifact_exports_from_summary(
     let run_dir = w5_run_dir_from_summary(summary)
         .ok_or_else(|| anyhow::anyhow!("missing W5 run_dir in summary"))?;
     let mut exports = std::collections::BTreeMap::<(u64, u32, u32, u32), W5KvArtifactExport>::new();
+    let mut gsva_refs =
+        std::collections::BTreeMap::<(u64, u32, u32, u32), sim_memory::GsvaSegmentObjectRef>::new();
     let boundary_fingerprints = w5_boundary_fingerprints_from_summary(summary)?;
     let boundary_input_fingerprints = w5_boundary_input_fingerprints_from_summary(summary)?;
     let object_service = object_store_path
@@ -14243,13 +14281,53 @@ fn w5_kv_artifact_exports_from_summary(
         let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
             continue;
         };
-        if !name.ends_with("_guest.log") {
+        let is_guest_log = name.ends_with("_guest.log");
+        let is_qemu_log = name.ends_with("_qemu.log");
+        if !is_guest_log && !is_qemu_log {
             continue;
         }
         let log = fs::read_to_string(&path)
             .with_context(|| format!("read W5 guest log {}", path.display()))?;
         for line in log.lines() {
-            if object_service.is_some() || object_registry_dir.is_some() {
+            if line.contains("stage qwen3_w5_memory_gsva_kv_writeback ") {
+                let fields = parse_summary_fields(line);
+                if required_summary_field(&fields, "backend")? != "gsva" {
+                    anyhow::bail!("GSVA KV writeback line has non-GSVA backend");
+                }
+                let step = required_summary_u64(&fields, "step")?;
+                if step_filter.is_some_and(|steps| !steps.contains(&step)) {
+                    continue;
+                }
+                let node_index = parse_node_index(required_summary_field(&fields, "node")?)?;
+                let (layer_start, layer_end) =
+                    parse_w5_layer_range(required_summary_field(&fields, "layers")?)?;
+                let gsva_ref = sim_memory::GsvaSegmentObjectRef {
+                    segment_id: required_summary_field(&fields, "segment_id")?.to_string(),
+                    backend: sim_memory::GsvaObjectBackend::Gsva,
+                    base: required_summary_u64_auto(&fields, "base")?,
+                    bytes: required_summary_u64(&fields, "bytes")?,
+                    token: required_summary_u64_auto(&fields, "token")?,
+                    epoch: required_summary_u64(&fields, "epoch")?,
+                    retired: required_summary_u64(&fields, "retired")? != 0,
+                    checksum: required_summary_u64_auto(&fields, "checksum")?,
+                    home_node: node_index,
+                    access_flags: "read,write".to_string(),
+                    cache_policy: "coherent".to_string(),
+                };
+                let key = (step, node_index, layer_start, layer_end);
+                if let Some(previous) = gsva_refs.insert(key, gsva_ref.clone()) {
+                    if previous != gsva_ref {
+                        anyhow::bail!(
+                            "conflicting GSVA KV writeback refs step={step} node={node_index} layers=[{layer_start},{layer_end})"
+                        );
+                    }
+                }
+                if let Some(export) = exports.get_mut(&key) {
+                    export.gsva_segment_ref = Some(gsva_ref);
+                }
+                continue;
+            }
+            if is_guest_log && (object_service.is_some() || object_registry_dir.is_some()) {
                 if line.contains("stage qwen3_range_kv_state_publish ") {
                     let fields = parse_summary_fields(line);
                     let step = required_summary_u64(&fields, "step")?;
@@ -14319,6 +14397,7 @@ fn w5_kv_artifact_exports_from_summary(
                         None
                     };
                     let key = (step, node_index, layer_start, layer_end);
+                    let gsva_segment_ref = gsva_refs.get(&key).cloned();
                     let previous = exports.insert(
                         key,
                         W5KvArtifactExport {
@@ -14334,6 +14413,7 @@ fn w5_kv_artifact_exports_from_summary(
                             checksum,
                             hot_object_ref,
                             payload_ref,
+                            gsva_segment_ref,
                         },
                     );
                     if previous.is_some() {
@@ -14369,6 +14449,15 @@ fn w5_kv_artifact_exports_from_summary(
                 export.step,
                 export.node
             );
+        }
+        if let Some(gsva_ref) = &export.gsva_segment_ref {
+            if !gsva_ref.matches_payload(export.total_bytes, export.checksum) {
+                anyhow::bail!(
+                    "KV export GSVA ref mismatch step={} node={}",
+                    export.step,
+                    export.node
+                );
+            }
         }
     }
     Ok(exports.into_values().collect())
@@ -16502,6 +16591,7 @@ mod tests {
         w5_inference_profile_spec, w5_kv_hot_object_ref_from_object_service,
         w5_memory_boundary_observations_recorded_line, w5_memory_decision_env_vars,
         w5_memory_decision_publication_object_service_profile,
+        w5_memory_prefix_cache_kv_stream_env_from_refs,
         w5_memory_shortpath_kv_stream_env_from_refs, w5_memory_shortpath_stream_env,
         w5_memory_should_publish_engram_state, w5_object_service_payload_index_path,
         w5_paper_engram_eval_evidence_from_summary, w5_runtime_tensor_payload_checksum,
@@ -16759,6 +16849,19 @@ mod tests {
         format!(
             "[w4_guest] stage qwen3_range_kv_state_publish local=node{node} step={step} layers=[{layer_start},{layer_end}) key={key} version={version} offset=0 kv_bytes={} kv_checksum={checksum:#018x} status=ok\n",
             payload.len()
+        )
+    }
+
+    fn sample_w5_gsva_kv_writeback_log_line(
+        step: u64,
+        node: u32,
+        layer_start: u32,
+        layer_end: u32,
+        bytes: u64,
+        checksum: u64,
+    ) -> String {
+        format!(
+            "[w4_guest] stage qwen3_w5_memory_gsva_kv_writeback node={node} step={step} position=20 layers=[{layer_start},{layer_end}) backend=gsva segment_id=gsva/run0/node{node}/layers{layer_start}-{layer_end}-pos20 base=0x0000000080000000 bytes={bytes} token=0x0000000000001234 epoch=7 retired=0 checksum={checksum:#018x} status=ok\n"
         )
     }
 
@@ -18936,7 +19039,7 @@ mod tests {
     }
 
     #[test]
-    fn w5_memory_shortpath_kv_stream_carries_gsva_segment_refs() {
+    fn w5_memory_prefix_cache_kv_stream_carries_gsva_segment_refs() {
         let refs = vec![W5MemoryPublishedKvArtifactRef {
             step_index: 0,
             producer_position: 20,
@@ -18962,7 +19065,7 @@ mod tests {
                 cache_policy: "coherent".to_string(),
             }),
         }];
-        let stream = w5_memory_shortpath_kv_stream_env_from_refs(&refs);
+        let stream = w5_memory_prefix_cache_kv_stream_env_from_refs(&refs);
 
         assert_eq!(stream.len(), 1);
         let fields = stream[0].split(':').collect::<Vec<_>>();
@@ -26598,6 +26701,11 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             "direct Object Service KV fixture must not carry inline log payload"
         );
         fs::write(run_dir.join("nodeH_guest.log"), guest_log).expect("write guest log");
+        fs::write(
+            run_dir.join("nodeC_qemu.log"),
+            sample_w5_gsva_kv_writeback_log_line(0, 3, 4, 8, kv_payload.len() as u64, kv_checksum),
+        )
+        .expect("write qemu GSVA log");
 
         run_lingqu_memory_promote_terminal_shortpath_artifacts_from_w5_summary_cli(&[
             "--store".to_string(),
@@ -26646,6 +26754,14 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
         assert_eq!(hot_ref.object_key, key);
         assert_eq!(hot_ref.bytes, kv_payload.len() as u64);
         assert_eq!(hot_ref.checksum, object_ref.payload_checksum);
+        let gsva_ref = kv_artifact
+            .gsva_segment_ref
+            .as_ref()
+            .expect("promoted GSVA KV ref");
+        assert_eq!(gsva_ref.segment_id, "gsva/run0/node3/layers4-8-pos20");
+        assert_eq!(gsva_ref.bytes, kv_payload.len() as u64);
+        assert_eq!(gsva_ref.checksum, kv_checksum);
+        assert_eq!(gsva_ref.home_node, 3);
 
         let object_snapshot = load_lingqu_object_service_snapshot_file(&object_store)
             .expect("load object snapshot")
@@ -27494,7 +27610,19 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
                 dtype: sim_core::TensorDType::Opaque,
                 shape: vec![kv_payload.len() as u64],
             }),
-            gsva_segment_ref: None,
+            gsva_segment_ref: Some(sim_memory::GsvaSegmentObjectRef {
+                segment_id: "gsva/run0/node1/layers0-28-pos3".to_string(),
+                backend: sim_memory::GsvaObjectBackend::Gsva,
+                base: 0x8000_0000,
+                bytes: kv_payload.len() as u64,
+                token: 0x1234,
+                epoch: 7,
+                retired: false,
+                checksum: kv_checksum,
+                home_node: 1,
+                access_flags: "read,write".to_string(),
+                cache_policy: "coherent".to_string(),
+            }),
             source_query_result_id: None,
             source_engram_state_id: None,
             confidence_milli: 980,
@@ -27595,7 +27723,24 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             lingqu_object_payload_checksum(&kv_payload)
         );
         assert_eq!(publication.prefix_cache_kv_refs.len(), 1);
+        assert!(publication.prefix_cache_kv_refs[0]
+            .gsva_segment_ref
+            .is_some());
         assert!(publication.prefix_cache_kv_stream_path.is_some());
+        let prefix_cache_kv_stream = fs::read_to_string(
+            publication
+                .prefix_cache_kv_stream_path
+                .as_ref()
+                .expect("prefix cache KV stream path"),
+        )
+        .expect("read prefix-cache KV stream");
+        let prefix_cache_kv_fields = prefix_cache_kv_stream.trim().split(':').collect::<Vec<_>>();
+        assert_eq!(prefix_cache_kv_fields.len(), 18);
+        assert_eq!(prefix_cache_kv_fields[9], "gsva");
+        assert_eq!(
+            prefix_cache_kv_fields[10],
+            "gsva/run0/node1/layers0-28-pos3"
+        );
         let env_vars = w5_memory_decision_env_vars(
             &W5MemoryDecisionConfig {
                 store_path: store_path.clone(),

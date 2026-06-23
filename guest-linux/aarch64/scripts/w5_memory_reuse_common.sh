@@ -1,5 +1,19 @@
 W5_MEMORY_REUSE_MISSING_REASON=""
 
+w5_memory_reuse_require_prefix_cache() {
+  case "${SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP:-1}" in
+    0|false|FALSE|no|NO)
+      return 1
+      ;;
+  esac
+  case "${SIM_W5_REQUIRE_PREFIX_CACHE:-0}" in
+    1|true|TRUE|yes|YES)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 w5_memory_reuse_summary_completed() {
   local reuse_out_dir="$1"
   local run_id="$2"
@@ -40,6 +54,9 @@ w5_memory_reuse_summary_completed() {
     done
   fi
   local expected_service_hits=$(( expected_steps * 7 ))
+  if [[ "$store_kind" == "runtime_boundary" ]] && w5_memory_reuse_require_prefix_cache; then
+    return 0
+  fi
   if ! grep -q "memory_service_summary: .*steps=$expected_steps/$expected_steps .*actions=jump-to-terminal .*lookup_hits=$expected_service_hits" "$summary_path"; then
     W5_MEMORY_REUSE_MISSING_REASON="missing executable jump-to-terminal Memory Service summary for steps=$expected_steps"
     return 1
@@ -110,6 +127,10 @@ w5_resolve_memory_reuse_config() {
     object_candidates=("$reuse_out_dir"/w5_memory_object_store.*_w5_${profile}_*.json(N.om))
     candidates=("${runtime_candidates[@]}" "${object_candidates[@]}")
     if (( ${#candidates[@]} == 0 )); then
+      if w5_memory_reuse_require_prefix_cache; then
+        echo "SIM_W5_REQUIRE_PREFIX_CACHE requires a reusable Memory Service decision store; found none for profile=$profile in $reuse_out_dir" >&2
+        return 2
+      fi
       if (( reuse_optional )); then
         if (( ! reuse_auto )); then
           echo "SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG=latest found no reusable decision store; continuing without Memory Service reuse" >&2
@@ -140,6 +161,13 @@ w5_resolve_memory_reuse_config() {
       fi
     done
     if [[ -z "$decision_store" ]]; then
+      if w5_memory_reuse_require_prefix_cache; then
+        echo "SIM_W5_REQUIRE_PREFIX_CACHE requires a completed reusable Memory Service decision store covering steps=$expected_steps for profile=$profile in $reuse_out_dir" >&2
+        if [[ -n "$W5_MEMORY_REUSE_MISSING_REASON" ]]; then
+          echo "last rejected reuse candidate: $W5_MEMORY_REUSE_MISSING_REASON" >&2
+        fi
+        return 2
+      fi
       if (( reuse_optional )); then
         if (( ! reuse_auto )); then
           echo "SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG=latest found no completed reusable run covering steps=$expected_steps; continuing without Memory Service reuse" >&2
