@@ -1,3 +1,8 @@
+#include "mem_service_internal.h"
+
+#include "mem_service_cluster_queue.h"
+#include "mem_service_cluster_runtime.h"
+
 static bool mem_service_desc_matches_barrier(const struct obmm_desc *desc,
                                        uint16_t desc_type,
                                        uint16_t epoch)
@@ -51,7 +56,7 @@ static bool mem_service_pending_object_desc_matches(const struct obmm_desc *desc
     return desc->cookie == checksum_cookie;
 }
 
-static bool mem_service_runtime_range_input_desc_matches(const struct obmm_desc *desc,
+bool mem_service_runtime_range_input_desc_matches(const struct obmm_desc *desc,
                                                   uint16_t epoch)
 {
     uint64_t decode_step = epoch > 0 ? (uint64_t)epoch - 1ULL : 0ULL;
@@ -65,8 +70,8 @@ static bool mem_service_runtime_range_input_desc_matches(const struct obmm_desc 
     return (uint16_t)(desc->seq >> 48) == epoch;
 }
 
-static bool mem_service_qwen3_token_result_desc_matches(const struct obmm_desc *desc,
-                                                  uint16_t epoch)
+bool mem_service_qwen3_token_result_desc_matches(const struct obmm_desc *desc,
+                                                 uint16_t epoch)
 {
     if (!desc || desc->type != OBMM_DESC_MEM_SERVICE_OBJECT_PUT ||
         desc->flags != MEM_SERVICE_OBMM_KIND_QWEN3_TOKEN_RESULT ||
@@ -76,11 +81,11 @@ static bool mem_service_qwen3_token_result_desc_matches(const struct obmm_desc *
     return (uint16_t)(desc->seq >> 48) == epoch;
 }
 
-static bool mem_service_qwen3_object_desc_matches(const struct obmm_desc *desc,
-                                            uint16_t epoch,
-                                            uint32_t payload_kind,
-                                            uint64_t min_payload_len,
-                                            uint64_t max_payload_len)
+bool mem_service_qwen3_object_desc_matches(const struct obmm_desc *desc,
+                                           uint16_t epoch,
+                                           uint32_t payload_kind,
+                                           uint64_t min_payload_len,
+                                           uint64_t max_payload_len)
 {
     if (!desc || desc->type != OBMM_DESC_MEM_SERVICE_OBJECT_PUT ||
         desc->flags != payload_kind ||
@@ -91,7 +96,7 @@ static bool mem_service_qwen3_object_desc_matches(const struct obmm_desc *desc,
     return (uint16_t)(desc->seq >> 48) == epoch;
 }
 
-static bool mem_service_qwen3_object_desc_kind_len_matches(
+bool mem_service_qwen3_object_desc_kind_len_matches(
     const struct obmm_desc *desc,
     uint32_t payload_kind,
     uint64_t min_payload_len,
@@ -103,7 +108,7 @@ static bool mem_service_qwen3_object_desc_kind_len_matches(
            desc->payload_len <= max_payload_len;
 }
 
-static bool mem_service_take_pending_runtime_range_input_desc(
+bool mem_service_take_pending_runtime_range_input_desc(
     struct mem_service_cluster_runtime *rt,
     int owner_idx,
     uint16_t epoch,
@@ -134,7 +139,7 @@ static bool mem_service_take_pending_runtime_range_input_desc(
     return false;
 }
 
-static bool mem_service_take_pending_qwen3_token_result_desc(
+bool mem_service_take_pending_qwen3_token_result_desc(
     struct mem_service_cluster_runtime *rt,
     int owner_idx,
     uint16_t epoch,
@@ -165,7 +170,7 @@ static bool mem_service_take_pending_qwen3_token_result_desc(
     return false;
 }
 
-static bool mem_service_take_pending_qwen3_object_desc(
+bool mem_service_take_pending_qwen3_object_desc(
     struct mem_service_cluster_runtime *rt,
     int owner_idx,
     uint16_t epoch,
@@ -202,7 +207,7 @@ static bool mem_service_take_pending_qwen3_object_desc(
     return false;
 }
 
-static bool mem_service_take_pending_qwen3_object_kind_len_desc(
+bool mem_service_take_pending_qwen3_object_kind_len_desc(
     struct mem_service_cluster_runtime *rt,
     int owner_idx,
     uint32_t payload_kind,
@@ -268,9 +273,9 @@ static bool mem_service_take_pending_object_desc(struct mem_service_cluster_runt
     return false;
 }
 
-static void mem_service_stash_pending_desc(struct mem_service_cluster_runtime *rt,
-                                     int owner_idx,
-                                     const struct obmm_desc *desc)
+void mem_service_stash_pending_desc(struct mem_service_cluster_runtime *rt,
+                                    int owner_idx,
+                                    const struct obmm_desc *desc)
 {
     uint8_t count;
 
@@ -290,10 +295,10 @@ static void mem_service_stash_pending_desc(struct mem_service_cluster_runtime *r
     rt->pending_desc_count[owner_idx] = (uint8_t)(count + 1);
 }
 
-static int mem_service_queue_barrier(struct mem_service_cluster_runtime *rt,
-                               uint16_t desc_type,
-                               uint16_t epoch,
-                               uint32_t publish_seq)
+int mem_service_queue_barrier(struct mem_service_cluster_runtime *rt,
+                              uint16_t desc_type,
+                              uint16_t epoch,
+                              uint32_t publish_seq)
 {
     long deadline = obmm_now_ms() + MEM_SERVICE_CLUSTER_WAIT_MS;
     bool got[MEM_SERVICE_CLUSTER_MAX_NODES];
@@ -351,12 +356,12 @@ static int mem_service_queue_barrier(struct mem_service_cluster_runtime *rt,
     return -1;
 }
 
-static int mem_service_push_obmm_object_descs(struct mem_service_cluster_runtime *rt,
-                                        uint32_t payload_kind,
-                                        uint64_t payload_offset,
-                                        uint64_t payload_len,
-                                        uint64_t checksum,
-                                        uint16_t epoch)
+int mem_service_push_obmm_object_descs(struct mem_service_cluster_runtime *rt,
+                                       uint32_t payload_kind,
+                                       uint64_t payload_offset,
+                                       uint64_t payload_len,
+                                       uint64_t checksum,
+                                       uint16_t epoch)
 {
     long deadline = obmm_now_ms() + MEM_SERVICE_CLUSTER_WAIT_MS;
     struct obmm_desc desc;
@@ -395,13 +400,13 @@ static int mem_service_push_obmm_object_descs(struct mem_service_cluster_runtime
     return 0;
 }
 
-static int mem_service_push_obmm_object_desc_to(struct mem_service_cluster_runtime *rt,
-                                          uint32_t target_node,
-                                          uint32_t payload_kind,
-                                          uint64_t payload_offset,
-                                          uint64_t payload_len,
-                                          uint64_t checksum,
-                                          uint16_t epoch)
+int mem_service_push_obmm_object_desc_to(struct mem_service_cluster_runtime *rt,
+                                         uint32_t target_node,
+                                         uint32_t payload_kind,
+                                         uint64_t payload_offset,
+                                         uint64_t payload_len,
+                                         uint64_t checksum,
+                                         uint16_t epoch)
 {
     long deadline = obmm_now_ms() + MEM_SERVICE_CLUSTER_WAIT_MS;
     struct obmm_desc desc;
@@ -444,13 +449,13 @@ static int mem_service_push_obmm_object_desc_to(struct mem_service_cluster_runti
     return 0;
 }
 
-static int mem_service_wait_remote_obmm_object_descs(struct mem_service_cluster_runtime *rt,
-                                              uint32_t owner_node,
-                                              uint16_t epoch,
-                                              const struct mem_service_record *weight,
-                                              const struct mem_service_record *kvcache,
-                                              const struct mem_service_record *hidden_input,
-                                              const struct mem_service_record *hidden_output)
+int mem_service_wait_remote_obmm_object_descs(struct mem_service_cluster_runtime *rt,
+                                             uint32_t owner_node,
+                                             uint16_t epoch,
+                                             const struct mem_service_record *weight,
+                                             const struct mem_service_record *kvcache,
+                                             const struct mem_service_record *hidden_input,
+                                             const struct mem_service_record *hidden_output)
 {
     long deadline = obmm_now_ms() + MEM_SERVICE_OBMM_SERVICE_WAIT_MS;
     bool saw_weight = false;

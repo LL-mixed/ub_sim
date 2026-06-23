@@ -96,8 +96,11 @@ CLI:
   by both local metadata APIs and runtime-backed publication paths; it is
   compiled as a standalone core translation unit and explicitly depends only on
   the public service contract plus record helpers.
-- `mem_service_cluster_queue.inc` contains guest OBMM SPSC queue barriers,
-  object descriptor publish/wait helpers, and pending descriptor matching.
+- `mem_service_cluster_queue.c` contains guest OBMM SPSC queue barriers,
+  object descriptor publish/wait helpers, and pending descriptor matching
+  compiled as a standalone transport queue translation unit.
+- `mem_service_cluster_queue.h` contains the private transport queue helper
+  contract used by runtime-backed Qwen3 and object publication flows.
 - `mem_service_cluster_observe.inc` contains cluster metadata fetch, observe,
   and readiness summarization across local and remote payload snapshots.
 - `mem_service_obmm_object_flow.inc` contains the guest OBMM object publish,
@@ -114,7 +117,8 @@ Build and validation entrypoints:
 - `scripts/build_initramfs.sh` links `mem_service.c`,
   `mem_service_cluster_utils.c`, `mem_service_cluster_payload.c`,
   `mem_service_cluster_read.c`, `mem_service_cluster_runtime.c`,
-  `mem_service_metadata.c`, `mem_service_keys.c`, `mem_service_object_refs.c`,
+  `mem_service_cluster_queue.c`, `mem_service_metadata.c`,
+  `mem_service_keys.c`, `mem_service_object_refs.c`,
   `mem_service_obmm_objects.c`, `mem_service_records.c`,
   `mem_service_qwen3_records.c`, `mem_service_qwen3_decode_barrier.c`, and
   `mem_service_qwen3.c` into the guest app binary.

@@ -54,7 +54,8 @@ SERVICE_CLUSTER_UTILS_C = SERVICE_DIR / "mem_service_cluster_utils.c"
 SERVICE_CLUSTER_UTILS_H = SERVICE_DIR / "mem_service_cluster_utils.h"
 SERVICE_CLUSTER_RUNTIME_C = SERVICE_DIR / "mem_service_cluster_runtime.c"
 SERVICE_CLUSTER_RUNTIME_H = SERVICE_DIR / "mem_service_cluster_runtime.h"
-SERVICE_CLUSTER_QUEUE_INC = SERVICE_DIR / "mem_service_cluster_queue.inc"
+SERVICE_CLUSTER_QUEUE_C = SERVICE_DIR / "mem_service_cluster_queue.c"
+SERVICE_CLUSTER_QUEUE_H = SERVICE_DIR / "mem_service_cluster_queue.h"
 SERVICE_CLUSTER_OBSERVE_INC = SERVICE_DIR / "mem_service_cluster_observe.inc"
 SERVICE_OBMM_OBJECT_FLOW_INC = SERVICE_DIR / "mem_service_obmm_object_flow.inc"
 GUEST_C = ROOT / "apps" / "llm_infer" / "llm_infer.c"
@@ -95,6 +96,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             build_script,
         )
         self.assertIn(
+            'MEM_SERVICE_CLUSTER_QUEUE_SRC="$ROOT_DIR/components/mem_service/mem_service_cluster_queue.c"',
+            build_script,
+        )
+        self.assertIn(
             'MEM_SERVICE_METADATA_SRC="$ROOT_DIR/components/mem_service/mem_service_metadata.c"',
             build_script,
         )
@@ -132,7 +137,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn('MEM_SERVICE_CLI_BIN="$OUT_DIR/linqu_mem_service"', build_script)
         self.assertIn(
-            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
+            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
             build_script,
         )
         self.assertIn("linqu_mem_service", build_script)
@@ -642,14 +647,24 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
 
     def test_cluster_queue_descriptor_helpers_are_split_from_runtime_main(self):
         source = SERVICE_C.read_text()
-        cluster_queue = SERVICE_CLUSTER_QUEUE_INC.read_text()
+        cluster_queue = SERVICE_CLUSTER_QUEUE_C.read_text()
+        cluster_queue_contract = SERVICE_CLUSTER_QUEUE_H.read_text()
         readme = (SERVICE_DIR / "README.md").read_text()
 
-        self.assertIn('#include "mem_service_cluster_queue.inc"', source)
+        self.assertNotIn('#include "mem_service_cluster_queue.inc"', source)
+        self.assertIn('#include "mem_service_cluster_queue.h"', source)
+        self.assertIn('#include "mem_service_cluster_queue.h"', cluster_queue)
         self.assertIn("mem_service_queue_barrier", cluster_queue)
         self.assertIn("mem_service_push_obmm_object_descs", cluster_queue)
         self.assertIn("mem_service_wait_remote_obmm_object_descs", cluster_queue)
+        self.assertIn("mem_service_runtime_range_input_desc_matches", cluster_queue)
+        self.assertIn("mem_service_queue_barrier", cluster_queue_contract)
+        self.assertIn("mem_service_push_obmm_object_descs", cluster_queue_contract)
+        self.assertIn("mem_service_wait_remote_obmm_object_descs", cluster_queue_contract)
+        self.assertIn("mem_service_runtime_range_input_desc_matches", cluster_queue_contract)
         self.assertIn("guest OBMM SPSC queue barriers", readme)
+        self.assertIn("standalone transport queue translation unit", readme)
+        self.assertFalse((SERVICE_DIR / "mem_service_cluster_queue.inc").exists())
         self.assertNotRegex(
             source,
             r"static int mem_service_queue_barrier"

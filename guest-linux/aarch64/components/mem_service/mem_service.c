@@ -1,5 +1,6 @@
 #include "mem_service_internal.h"
 #include "mem_service_cluster_payload.h"
+#include "mem_service_cluster_queue.h"
 #include "mem_service_cluster_read.h"
 #include "mem_service_cluster_runtime.h"
 #include "mem_service_cluster_utils.h"
@@ -17,8 +18,6 @@ struct mem_service_cluster_runtime *mem_service_cluster_runtime_current(void)
 }
 
 #include "mem_service_qwen3_runtime.inc"
-
-#include "mem_service_cluster_queue.inc"
 
 #include "mem_service_cluster_observe.inc"
 
