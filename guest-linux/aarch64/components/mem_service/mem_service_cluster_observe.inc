@@ -18,7 +18,7 @@ int mem_service_cluster_fetch_record(struct mem_service *svc,
     if (mem_service_cluster_runtime_require(rt) != 0) {
         return -1;
     }
-    if (mem_service_write_cluster_payload(svc, &rt->slots[rt->local_idx]) != 0) {
+    if (mem_service_write_cluster_payload(rt, svc, &rt->slots[rt->local_idx]) != 0) {
         printf("[mem_service] gap db_service_cluster_stage=write_local_payload_failed\n");
         return -1;
     }
@@ -134,7 +134,7 @@ int mem_service_publish_observe_cluster(struct mem_service *svc,
     summary->peer_block_count_floor = 0;
     summary->peer_group_count_floor = 0;
 
-    if (mem_service_write_cluster_payload(svc, &rt->slots[rt->local_idx]) != 0) {
+    if (mem_service_write_cluster_payload(rt, svc, &rt->slots[rt->local_idx]) != 0) {
         printf("[mem_service] gap db_service_cluster_stage=write_local_payload_failed\n");
         goto out;
     }

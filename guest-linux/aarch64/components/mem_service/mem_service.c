@@ -1,4 +1,5 @@
 #include "mem_service_internal.h"
+#include "mem_service_cluster_payload.h"
 #include "mem_service_cluster_utils.h"
 #include "mem_service_obmm_objects.h"
 #include "mem_service_object_refs.h"
@@ -8,8 +9,6 @@
 static struct mem_service_cluster_runtime g_mem_service_cluster_runtime;
 
 static int mem_service_activate_remote_slot(struct mem_service_cluster_runtime *rt, int owner_idx);
-
-#include "mem_service_cluster_payload.inc"
 
 #include "mem_service_qwen3_runtime.inc"
 

@@ -348,7 +348,7 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
            local_hidden_output.key,
            mem_service_qwen3_range_kv_state_bytes(local_range_start, local_range_end, 1));
 
-    if (mem_service_write_cluster_payload(svc, local_slot) != 0) {
+    if (mem_service_write_cluster_payload(rt, svc, local_slot) != 0) {
         printf("[mem_service] gap obmm_service_v0=metadata_publish_failed\n");
         return -1;
     }

@@ -1,6 +1,16 @@
+#include "mem_service_cluster_payload.h"
+
+#include "mem_service_cluster_utils.h"
+
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+
 static uint16_t mem_service_snapshot_metadata_records(struct mem_service *svc,
-                                                struct mem_service_record *out,
-                                                uint16_t max_records)
+                                                      struct mem_service_record *out,
+                                                      uint16_t max_records)
 {
     uint16_t count = 0;
     size_t i;
@@ -17,9 +27,10 @@ static uint16_t mem_service_snapshot_metadata_records(struct mem_service *svc,
     return count;
 }
 
-static void mem_service_build_compact_summary(const struct mem_service_record *records,
-                                        uint16_t record_count,
-                                        struct mem_service_cluster_payload_compact_summary *summary)
+void mem_service_build_compact_summary(
+    const struct mem_service_record *records,
+    uint16_t record_count,
+    struct mem_service_cluster_payload_compact_summary *summary)
 {
     uint16_t i;
 
@@ -78,16 +89,16 @@ static void mem_service_build_compact_summary(const struct mem_service_record *r
     }
 }
 
-static int mem_service_write_cluster_payload(struct mem_service *svc,
-                                       struct mem_service_cluster_slot *slot)
+int mem_service_write_cluster_payload(struct mem_service_cluster_runtime *rt,
+                                      struct mem_service *svc,
+                                      struct mem_service_cluster_slot *slot)
 {
     struct mem_service_cluster_payload *payload;
     struct mem_service_cluster_payload_compact_summary compact;
-    struct mem_service_cluster_runtime *rt = &g_mem_service_cluster_runtime;
     uint32_t seq;
     int rc = -1;
 
-    if (!svc || !slot || !slot->region.addr) {
+    if (!rt || !svc || !slot || !slot->region.addr) {
         return -1;
     }
     payload = calloc(1, sizeof(*payload));
@@ -101,8 +112,8 @@ static int mem_service_write_cluster_payload(struct mem_service *svc,
     payload->magic = MEM_SERVICE_CLUSTER_PAYLOAD_MAGIC;
     payload->version = MEM_SERVICE_CLUSTER_PAYLOAD_VERSION;
     payload->record_count = mem_service_snapshot_metadata_records(svc,
-                                                            payload->records,
-                                                            MEM_SERVICE_CLUSTER_MAX_RECORDS);
+                                                                  payload->records,
+                                                                  MEM_SERVICE_CLUSTER_MAX_RECORDS);
     mem_service_build_compact_summary(payload->records, payload->record_count, &compact);
     memcpy(payload->record_pad, &compact, sizeof(compact));
     payload->publish_seq = seq;

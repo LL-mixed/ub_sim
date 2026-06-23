@@ -114,7 +114,7 @@ int mem_service_obmm_service_v0_publish_engram_candidates(struct mem_service *sv
                                      candidates_bytes,
                                      candidates_checksum,
                                      &candidates_record) != 0 ||
-        mem_service_write_cluster_payload(svc, local_slot) != 0) {
+        mem_service_write_cluster_payload(rt, svc, local_slot) != 0) {
         return -1;
     }
     local_publish_seq = (uint16_t)(rt->publish_seq & 0xffffu);
@@ -304,7 +304,7 @@ int mem_service_obmm_service_v0_publish_engram_step(struct mem_service *svc,
                                      state_bytes,
                                      state_checksum,
                                      &records[2]) != 0 ||
-        mem_service_write_cluster_payload(svc, local_slot) != 0) {
+        mem_service_write_cluster_payload(rt, svc, local_slot) != 0) {
         return -1;
     }
     local_publish_seq = (uint16_t)(rt->publish_seq & 0xffffu);

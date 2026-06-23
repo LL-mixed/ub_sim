@@ -199,7 +199,7 @@ int mem_service_obmm_service_v0_publish_runtime_range_output(struct mem_service 
         local_kv_state.object_publish_supernode_offset_ms =
             published_record->object_publish_supernode_offset_ms;
     }
-    if (mem_service_write_cluster_payload(svc, local_slot) != 0) {
+    if (mem_service_write_cluster_payload(rt, svc, local_slot) != 0) {
         return -1;
     }
     if (mem_service_record_to_lingqu_obmm_ref(&local_hidden_output, &hidden_ref) != 0 ||

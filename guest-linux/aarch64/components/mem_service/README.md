@@ -17,6 +17,11 @@ CLI:
 - `mem_service_cluster_payload_contract.h` contains the device-independent
   cluster metadata payload wire format shared by guest and host service
   deployments.
+- `mem_service_cluster_payload.c` contains the cluster metadata payload
+  snapshot, compact summary, and local publish helpers compiled as a
+  standalone guest runtime translation unit.
+- `mem_service_cluster_payload.h` contains the private cluster payload helper
+  contract used by observe and Qwen3 data-flow split units.
 - `mem_service_guest_runtime.h` contains guest OBMM cluster runtime state,
   mapped slots, queue descriptors, and region layout constants.
 - `mem_service_cluster_utils.c` contains cluster environment parsing, wait
@@ -76,8 +81,6 @@ CLI:
 - `mem_service_metadata.inc` contains the prefix/KV metadata state machine used
   by both local metadata APIs and runtime-backed publication paths; it
   explicitly depends only on the public service contract plus record helpers.
-- `mem_service_cluster_payload.inc` contains the cluster metadata payload
-  snapshot, compact summary, and local publish helpers.
 - `mem_service_cluster_read.inc` contains stable cluster payload read, compact
   summary read, and slot record lookup helpers.
 - `mem_service_cluster_runtime.inc` contains guest OBMM cluster bootstrap,
@@ -97,8 +100,9 @@ CLI:
 
 Build and validation entrypoints:
 
-- `scripts/build_initramfs.sh` links `mem_service.c`, `mem_service_keys.c`,
-  `mem_service_cluster_utils.c`, `mem_service_object_refs.c`,
+- `scripts/build_initramfs.sh` links `mem_service.c`,
+  `mem_service_cluster_utils.c`, `mem_service_cluster_payload.c`,
+  `mem_service_keys.c`, `mem_service_object_refs.c`,
   `mem_service_obmm_objects.c`, `mem_service_records.c`, and
   `mem_service_qwen3.c` into the guest app binary.
 - `apps/mem_service` builds `/bin/linqu_mem_service` for direct smoke and

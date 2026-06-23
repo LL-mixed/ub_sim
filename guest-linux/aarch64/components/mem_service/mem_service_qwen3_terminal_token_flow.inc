@@ -118,7 +118,7 @@ static int mem_service_obmm_service_v0_publish_terminal_token_result_from_node(
         local_token_result.object_publish_supernode_offset_ms =
             published_record->object_publish_supernode_offset_ms;
     }
-    if (mem_service_write_cluster_payload(svc, local_slot) != 0) {
+    if (mem_service_write_cluster_payload(rt, svc, local_slot) != 0) {
         return -1;
     }
     local_publish_seq = (uint16_t)(rt->publish_seq & 0xffffu);
