@@ -61,8 +61,9 @@ CLI:
   span allocation, engram object keys, and layer-range placement helpers.
 - `mem_service_qwen3_placement.h` contains the Qwen3 layer-range placement
   contract used by the runtime range, KV, and object handoff flows.
-- `mem_service_qwen3_runtime_range_wait_flow.inc` contains Qwen3 runtime range
-  input wait, scheduler work-item resolution, and mapped payload view helpers.
+- `mem_service_qwen3_runtime_range_wait_flow.c` contains Qwen3 runtime range
+  input wait, scheduler work-item resolution, and mapped payload view helpers
+  compiled as a standalone model data-flow translation unit.
 - `mem_service_qwen3_runtime_range_publish_flow.c` contains Qwen3 runtime
   range output, KV-state object publication, and downstream descriptor publish
   helpers compiled as a standalone model data-flow translation unit.

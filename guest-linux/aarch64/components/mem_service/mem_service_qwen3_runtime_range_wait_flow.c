@@ -1,3 +1,16 @@
+#include "mem_service_internal.h"
+
+#include "mem_service_cluster_payload.h"
+#include "mem_service_cluster_queue.h"
+#include "mem_service_cluster_read.h"
+#include "mem_service_cluster_runtime.h"
+#include "mem_service_cluster_utils.h"
+#include "mem_service_obmm_objects.h"
+#include "mem_service_object_refs.h"
+#include "mem_service_qwen3.h"
+#include "mem_service_qwen3_runtime.h"
+#include "mem_service_record_table.h"
+
 static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
     uint32_t local_node,
     uint32_t cluster_node_count,
@@ -5,7 +18,7 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
     bool allow_terminal_commit,
     struct mem_service_object_payload_view *view_out)
 {
-    struct mem_service_cluster_runtime *rt = &g_mem_service_cluster_runtime;
+    struct mem_service_cluster_runtime *rt = mem_service_cluster_runtime_current();
     struct mem_service_qwen3_layer_range_placement local_placement;
     struct mem_service_qwen3_layer_range_placement source_placement;
     struct mem_service_cluster_slot *source_slot = NULL;

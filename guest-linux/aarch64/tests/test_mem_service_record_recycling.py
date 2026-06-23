@@ -30,8 +30,8 @@ SERVICE_OBMM_OBJECTS_C = SERVICE_DIR / "mem_service_obmm_objects.c"
 SERVICE_OBMM_OBJECTS_H = SERVICE_DIR / "mem_service_obmm_objects.h"
 SERVICE_QWEN3_RECORDS_C = SERVICE_DIR / "mem_service_qwen3_records.c"
 SERVICE_QWEN3_RUNTIME_INC = SERVICE_DIR / "mem_service_qwen3_runtime.inc"
-SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_INC = (
-    SERVICE_DIR / "mem_service_qwen3_runtime_range_wait_flow.inc"
+SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_C = (
+    SERVICE_DIR / "mem_service_qwen3_runtime_range_wait_flow.c"
 )
 SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_C = (
     SERVICE_DIR / "mem_service_qwen3_runtime_range_publish_flow.c"
@@ -146,6 +146,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             build_script,
         )
         self.assertIn(
+            'MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC="$ROOT_DIR/components/mem_service/mem_service_qwen3_runtime_range_wait_flow.c"',
+            build_script,
+        )
+        self.assertIn(
             'MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC="$ROOT_DIR/components/mem_service/mem_service_qwen3_runtime_range_publish_flow.c"',
             build_script,
         )
@@ -167,7 +171,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn('MEM_SERVICE_CLI_BIN="$OUT_DIR/linqu_mem_service"', build_script)
         self.assertIn(
-            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
+            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
             build_script,
         )
         self.assertIn("linqu_mem_service", build_script)
@@ -802,13 +806,14 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
 
     def test_qwen3_runtime_range_wait_flow_is_split_from_runtime_main(self):
         source = SERVICE_C.read_text()
-        range_wait_flow = SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_INC.read_text()
+        range_wait_flow = SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_C.read_text()
         readme = (SERVICE_DIR / "README.md").read_text()
 
-        self.assertIn(
+        self.assertNotIn(
             '#include "mem_service_qwen3_runtime_range_wait_flow.inc"',
             source,
         )
+        self.assertIn('#include "mem_service_internal.h"', range_wait_flow)
         self.assertIn(
             "mem_service_obmm_service_v0_wait_runtime_range_input_view_internal",
             range_wait_flow,
@@ -821,8 +826,13 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "mem_service_obmm_service_v0_wait_runtime_range_input",
             range_wait_flow,
         )
+        self.assertIn("mem_service_cluster_runtime_current", range_wait_flow)
         self.assertIn("Qwen3 runtime range", readme)
         self.assertIn("scheduler work-item resolution", readme)
+        self.assertIn("standalone model data-flow", readme)
+        self.assertFalse(
+            (SERVICE_DIR / "mem_service_qwen3_runtime_range_wait_flow.inc").exists()
+        )
         self.assertNotRegex(
             source,
             r"static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal"
