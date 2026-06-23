@@ -1,3 +1,15 @@
+#include "mem_service_internal.h"
+
+#include "mem_service_cluster_payload.h"
+#include "mem_service_cluster_queue.h"
+#include "mem_service_cluster_read.h"
+#include "mem_service_cluster_runtime.h"
+#include "mem_service_obmm_objects.h"
+#include "mem_service_object_refs.h"
+#include "mem_service_qwen3.h"
+#include "mem_service_qwen3_runtime.h"
+#include "mem_service_record_table.h"
+
 int mem_service_obmm_service_v0_wait_engram_candidates(struct mem_service *svc,
                                                  uint64_t decode_step,
                                                  uint64_t timeout_ms,
@@ -11,7 +23,7 @@ int mem_service_obmm_service_v0_wait_engram_candidates(struct mem_service *svc,
                                                  uint64_t *candidate_count_out,
                                                  uint64_t *candidate_checksum_out)
 {
-    struct mem_service_cluster_runtime *rt = &g_mem_service_cluster_runtime;
+    struct mem_service_cluster_runtime *rt = mem_service_cluster_runtime_current();
     char candidates_key[96];
     long deadline;
     int candidate_owner_idx = -1;
@@ -198,7 +210,7 @@ int mem_service_obmm_service_v0_wait_engram_selected_token(struct mem_service *s
                                                      uint64_t timeout_ms,
                                                      uint64_t *selected_token_out)
 {
-    struct mem_service_cluster_runtime *rt = &g_mem_service_cluster_runtime;
+    struct mem_service_cluster_runtime *rt = mem_service_cluster_runtime_current();
     char selected_key[96];
     long deadline;
     int owner_idx = mem_service_qwen3_engram_owner_index(mem_service_qwen3_range_nodes());
@@ -336,7 +348,7 @@ int mem_service_obmm_service_v0_wait_engram_history(struct mem_service *svc,
                                               uint64_t *history_token_count_out,
                                               uint64_t *history_checksum_out)
 {
-    struct mem_service_cluster_runtime *rt = &g_mem_service_cluster_runtime;
+    struct mem_service_cluster_runtime *rt = mem_service_cluster_runtime_current();
     char history_key[96];
     long deadline;
     int owner_idx = mem_service_qwen3_engram_owner_index(mem_service_qwen3_range_nodes());
@@ -497,7 +509,7 @@ int mem_service_obmm_service_v0_wait_engram_state(struct mem_service *svc,
                                             uint64_t repetition_penalty_milli,
                                             uint64_t *state_checksum_out)
 {
-    struct mem_service_cluster_runtime *rt = &g_mem_service_cluster_runtime;
+    struct mem_service_cluster_runtime *rt = mem_service_cluster_runtime_current();
     char state_key[96];
     long deadline;
     int owner_idx = mem_service_qwen3_engram_owner_index(mem_service_qwen3_range_nodes());
