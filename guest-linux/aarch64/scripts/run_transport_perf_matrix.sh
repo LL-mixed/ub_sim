@@ -10,6 +10,7 @@ SIZE=2097152
 ITERATIONS=8192
 CHUNK_SIZE=64
 VERIFY=0
+TCP_PAIR_WAIT_SECS=300
 RUN_DATAPLANE=1
 RUN_TCP=1
 DRY_RUN=0
@@ -34,6 +35,7 @@ Options:
   --size BYTES         Payload working-set size. Default: 2097152.
   --iterations N       Benchmark iterations. Default: 8192.
   --chunk-size BYTES   Bytes per benchmark operation. Default: 64.
+  --tcp-pair-timeout S Seconds to wait for each TCP pair. Default: 300.
   --verify             Enable payload verification.
   --no-verify          Disable payload verification. Default.
   --dataplane-only     Run only legacy-pa/generic-gva/gsva dataplane cases.
@@ -133,6 +135,11 @@ while (( $# > 0 )); do
       CHUNK_SIZE="$2"
       shift 2
       ;;
+    --tcp-pair-timeout)
+      need_value "$1" "${2:-}"
+      TCP_PAIR_WAIT_SECS="$2"
+      shift 2
+      ;;
     --verify)
       VERIFY=1
       shift
@@ -165,7 +172,7 @@ while (( $# > 0 )); do
       shift 2
       ;;
     --quick)
-      SIZE=262144
+      SIZE=2097152
       ITERATIONS=1024
       CHUNK_SIZE=64
       if [[ -z "$TCP_PAIR_LIST_OVERRIDE" ]]; then
@@ -190,6 +197,7 @@ done
 validate_positive_int "--size" "$SIZE"
 validate_positive_int "--iterations" "$ITERATIONS"
 validate_positive_int "--chunk-size" "$CHUNK_SIZE"
+validate_positive_int "--tcp-pair-timeout" "$TCP_PAIR_WAIT_SECS"
 [[ "$VERIFY" == "0" || "$VERIFY" == "1" ]] || die "--verify state must be 0 or 1"
 (( RUN_DATAPLANE || RUN_TCP )) || die "at least one case must be enabled"
 
@@ -212,6 +220,7 @@ echo "transport_perf_matrix: run_id=$RUN_ID"
 echo "transport_perf_matrix: report_dir=$REPORT_DIR"
 echo "transport_perf_matrix: size=$SIZE iterations=$ITERATIONS chunk_size=$CHUNK_SIZE verify=$VERIFY"
 echo "transport_perf_matrix: dataplane=$RUN_DATAPLANE tcp=$RUN_TCP"
+echo "transport_perf_matrix: tcp_pair_wait_secs=$TCP_PAIR_WAIT_SECS"
 if [[ -n "$TCP_PAIR_LIST_OVERRIDE" ]]; then
   echo "transport_perf_matrix: tcp_pairs=custom"
 else
@@ -253,6 +262,7 @@ if (( RUN_TCP )); then
     "TCP_BENCH_ITERATIONS=$ITERATIONS"
     "TCP_BENCH_CHUNK_SIZE=$CHUNK_SIZE"
     "TCP_BENCH_VERIFY=$VERIFY"
+    "PAIR_WAIT_SECS=$TCP_PAIR_WAIT_SECS"
   )
   if [[ -n "$TCP_PAIR_LIST_OVERRIDE" ]]; then
     tcp_cmd+=("PAIR_LIST_OVERRIDE=$TCP_PAIR_LIST_OVERRIDE")

@@ -24,13 +24,15 @@ def test_transport_perf_matrix_runner_has_stable_dry_run_cli():
     )
 
     assert "transport_perf_matrix: run_id=unit_transport_perf" in result.stdout
-    assert "transport_perf_matrix: size=262144 iterations=1024 chunk_size=64 verify=0" in result.stdout
+    assert "transport_perf_matrix: size=2097152 iterations=1024 chunk_size=64 verify=0" in result.stdout
+    assert "transport_perf_matrix: tcp_pair_wait_secs=300" in result.stdout
     assert "dry_run: case=dataplane command=" in result.stdout
     assert "run_ub_eight_node_obmm_dataplane_microbench.sh" in result.stdout
     assert "DP_MODES_OVERRIDE=legacy-pa\\ generic-gva\\ gsva" in result.stdout
     assert "dry_run: case=tcp command=" in result.stdout
     assert "run_ub_eight_node_tcp_each_server_matrix.sh" in result.stdout
     assert "TCP_BENCHMARK=1" in result.stdout
+    assert "PAIR_WAIT_SECS=300" in result.stdout
     assert "PAIR_LIST_OVERRIDE=nodeA\\ nodeB" in result.stdout
     assert "dry_run: summary_command=" in result.stdout
     assert "transport_perf_report.py" in result.stdout
