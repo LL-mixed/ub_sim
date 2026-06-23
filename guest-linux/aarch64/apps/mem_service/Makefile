@@ -8,6 +8,7 @@ MEM_SERVICE_CLUSTER_PAYLOAD := $(ROOT)/components/mem_service/mem_service_cluste
 MEM_SERVICE_CLUSTER_READ := $(ROOT)/components/mem_service/mem_service_cluster_read.c
 MEM_SERVICE_CLUSTER_RUNTIME := $(ROOT)/components/mem_service/mem_service_cluster_runtime.c
 MEM_SERVICE_CLUSTER_QUEUE := $(ROOT)/components/mem_service/mem_service_cluster_queue.c
+MEM_SERVICE_CLUSTER_OBSERVE := $(ROOT)/components/mem_service/mem_service_cluster_observe.c
 MEM_SERVICE_METADATA := $(ROOT)/components/mem_service/mem_service_metadata.c
 MEM_SERVICE_KEYS := $(ROOT)/components/mem_service/mem_service_keys.c
 MEM_SERVICE_OBJECT_REFS := $(ROOT)/components/mem_service/mem_service_object_refs.c
@@ -20,7 +21,7 @@ LLM_INFER := $(ROOT)/components/llm_infer/llm_infer.c
 
 all: linqu_mem_service
 
-linqu_mem_service: mem_service.c $(MEM_SERVICE) $(MEM_SERVICE_CLUSTER_UTILS) $(MEM_SERVICE_CLUSTER_PAYLOAD) $(MEM_SERVICE_CLUSTER_READ) $(MEM_SERVICE_CLUSTER_RUNTIME) $(MEM_SERVICE_CLUSTER_QUEUE) $(MEM_SERVICE_METADATA) $(MEM_SERVICE_KEYS) $(MEM_SERVICE_OBJECT_REFS) $(MEM_SERVICE_OBMM_OBJECTS) $(MEM_SERVICE_RECORDS) $(MEM_SERVICE_QWEN3_RECORDS) $(MEM_SERVICE_QWEN3_DECODE_BARRIER) $(MEM_SERVICE_QWEN3) $(LLM_INFER)
+linqu_mem_service: mem_service.c $(MEM_SERVICE) $(MEM_SERVICE_CLUSTER_UTILS) $(MEM_SERVICE_CLUSTER_PAYLOAD) $(MEM_SERVICE_CLUSTER_READ) $(MEM_SERVICE_CLUSTER_RUNTIME) $(MEM_SERVICE_CLUSTER_QUEUE) $(MEM_SERVICE_CLUSTER_OBSERVE) $(MEM_SERVICE_METADATA) $(MEM_SERVICE_KEYS) $(MEM_SERVICE_OBJECT_REFS) $(MEM_SERVICE_OBMM_OBJECTS) $(MEM_SERVICE_RECORDS) $(MEM_SERVICE_QWEN3_RECORDS) $(MEM_SERVICE_QWEN3_DECODE_BARRIER) $(MEM_SERVICE_QWEN3) $(LLM_INFER)
 	$(CC) $(CFLAGS) -I$(ROOT) -I$(ROOT)/.. -I$(ROOT)/libs/obmm_queue -I$(ROOT)/apps/obmm_queue $^ -lm -o $@
 
 clean:

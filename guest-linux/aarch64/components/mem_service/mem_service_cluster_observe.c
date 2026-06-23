@@ -1,3 +1,12 @@
+#include "mem_service_internal.h"
+
+#include "mem_service_cluster_observe.h"
+#include "mem_service_cluster_payload.h"
+#include "mem_service_cluster_queue.h"
+#include "mem_service_cluster_read.h"
+#include "mem_service_cluster_runtime.h"
+#include "mem_service_obmm_objects.h"
+
 static void mem_service_reset_remote_slots_for_publish(struct mem_service_cluster_runtime *rt)
 {
     (void)rt;
@@ -7,7 +16,7 @@ int mem_service_cluster_fetch_record(struct mem_service *svc,
                                const char *key,
                                struct mem_service_record *resolved_out)
 {
-    struct mem_service_cluster_runtime *rt = &g_mem_service_cluster_runtime;
+    struct mem_service_cluster_runtime *rt = mem_service_cluster_runtime_current();
     long deadline;
     int i;
     int rc = -1;
@@ -54,7 +63,7 @@ int mem_service_cluster_fetch_record(struct mem_service *svc,
 int mem_service_obmm_service_v0_ensure_cluster_runtime(uint32_t local_node,
                                                  uint32_t cluster_node_count)
 {
-    struct mem_service_cluster_runtime *rt = &g_mem_service_cluster_runtime;
+    struct mem_service_cluster_runtime *rt = mem_service_cluster_runtime_current();
     uint32_t i;
 
     if (cluster_node_count != mem_service_qwen3_range_nodes() ||
@@ -94,7 +103,7 @@ int mem_service_publish_observe_cluster(struct mem_service *svc,
                                   const struct mem_service_record *local_record,
                                   struct mem_service_cluster_summary *summary)
 {
-    struct mem_service_cluster_runtime *rt = &g_mem_service_cluster_runtime;
+    struct mem_service_cluster_runtime *rt = mem_service_cluster_runtime_current();
     struct mem_service_cluster_payload *peer_snapshots = NULL;
     struct mem_service_cluster_payload_compact_summary peer_compact[MEM_SERVICE_CLUSTER_MAX_NODES];
     struct mem_service_cluster_payload_header seen_header;

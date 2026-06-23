@@ -56,7 +56,8 @@ SERVICE_CLUSTER_RUNTIME_C = SERVICE_DIR / "mem_service_cluster_runtime.c"
 SERVICE_CLUSTER_RUNTIME_H = SERVICE_DIR / "mem_service_cluster_runtime.h"
 SERVICE_CLUSTER_QUEUE_C = SERVICE_DIR / "mem_service_cluster_queue.c"
 SERVICE_CLUSTER_QUEUE_H = SERVICE_DIR / "mem_service_cluster_queue.h"
-SERVICE_CLUSTER_OBSERVE_INC = SERVICE_DIR / "mem_service_cluster_observe.inc"
+SERVICE_CLUSTER_OBSERVE_C = SERVICE_DIR / "mem_service_cluster_observe.c"
+SERVICE_CLUSTER_OBSERVE_H = SERVICE_DIR / "mem_service_cluster_observe.h"
 SERVICE_OBMM_OBJECT_FLOW_INC = SERVICE_DIR / "mem_service_obmm_object_flow.inc"
 GUEST_C = ROOT / "apps" / "llm_infer" / "llm_infer.c"
 BUILD_INITRAMFS = ROOT / "scripts" / "build_initramfs.sh"
@@ -100,6 +101,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             build_script,
         )
         self.assertIn(
+            'MEM_SERVICE_CLUSTER_OBSERVE_SRC="$ROOT_DIR/components/mem_service/mem_service_cluster_observe.c"',
+            build_script,
+        )
+        self.assertIn(
             'MEM_SERVICE_METADATA_SRC="$ROOT_DIR/components/mem_service/mem_service_metadata.c"',
             build_script,
         )
@@ -137,7 +142,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn('MEM_SERVICE_CLI_BIN="$OUT_DIR/linqu_mem_service"', build_script)
         self.assertIn(
-            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
+            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
             build_script,
         )
         self.assertIn("linqu_mem_service", build_script)
@@ -546,7 +551,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
 
     def test_cluster_payload_publish_helpers_are_split_from_runtime_main(self):
         source = SERVICE_C.read_text()
-        cluster_observe = SERVICE_CLUSTER_OBSERVE_INC.read_text()
+        cluster_observe = SERVICE_CLUSTER_OBSERVE_C.read_text()
         cluster_payload = SERVICE_CLUSTER_PAYLOAD_C.read_text()
         cluster_payload_contract = SERVICE_CLUSTER_PAYLOAD_H.read_text()
         readme = (SERVICE_DIR / "README.md").read_text()
@@ -673,14 +678,23 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
 
     def test_cluster_observe_helpers_are_split_from_runtime_main(self):
         source = SERVICE_C.read_text()
-        cluster_observe = SERVICE_CLUSTER_OBSERVE_INC.read_text()
+        cluster_observe = SERVICE_CLUSTER_OBSERVE_C.read_text()
+        cluster_observe_contract = SERVICE_CLUSTER_OBSERVE_H.read_text()
         readme = (SERVICE_DIR / "README.md").read_text()
 
-        self.assertIn('#include "mem_service_cluster_observe.inc"', source)
+        self.assertNotIn('#include "mem_service_cluster_observe.inc"', source)
+        self.assertIn('#include "mem_service_cluster_observe.h"', source)
+        self.assertIn('#include "mem_service_cluster_observe.h"', cluster_observe)
         self.assertIn("mem_service_cluster_fetch_record", cluster_observe)
         self.assertIn("mem_service_publish_observe_cluster", cluster_observe)
         self.assertIn("mem_service_obmm_service_v0_ensure_cluster_runtime", cluster_observe)
+        self.assertIn("mem_service_cluster_runtime_current", cluster_observe)
+        self.assertIn("mem_service_cluster_fetch_record", cluster_observe_contract)
+        self.assertIn("mem_service_publish_observe_cluster", cluster_observe_contract)
+        self.assertIn("mem_service_obmm_service_v0_ensure_cluster_runtime", cluster_observe_contract)
         self.assertIn("cluster metadata fetch, observe", readme)
+        self.assertIn("standalone transport observe translation unit", readme)
+        self.assertFalse((SERVICE_DIR / "mem_service_cluster_observe.inc").exists())
         self.assertNotRegex(
             source,
             r"int mem_service_publish_observe_cluster"
