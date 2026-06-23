@@ -57,8 +57,9 @@ CLI:
   constants used by the model adapter record policy.
 - `mem_service_qwen3_runtime.h` contains the private Qwen3 runtime helper
   contract shared by split Qwen3 data-flow units.
-- `mem_service_qwen3_runtime.inc` contains Qwen3 runtime payload checksum, KV
-  span allocation, engram object keys, and layer-range placement helpers.
+- `mem_service_qwen3_runtime.c` contains Qwen3 runtime payload checksum, KV
+  span allocation, engram object keys, and layer-range placement helpers
+  compiled as a standalone model helper translation unit.
 - `mem_service_qwen3_placement.h` contains the Qwen3 layer-range placement
   contract used by the runtime range, KV, and object handoff flows.
 - `mem_service_qwen3_runtime_range_wait_flow.c` contains Qwen3 runtime range

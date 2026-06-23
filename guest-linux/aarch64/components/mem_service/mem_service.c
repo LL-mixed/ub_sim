@@ -18,5 +18,3 @@ struct mem_service_cluster_runtime *mem_service_cluster_runtime_current(void)
 {
     return &g_mem_service_cluster_runtime;
 }
-
-#include "mem_service_qwen3_runtime.inc"

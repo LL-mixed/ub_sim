@@ -1,3 +1,8 @@
+#include "mem_service_internal.h"
+
+#include "mem_service_obmm_objects.h"
+#include "mem_service_qwen3.h"
+#include "mem_service_qwen3_runtime.h"
 #include "mem_service_record_table.h"
 
 uint64_t mem_service_qwen3_hidden_payload_checksum(const uint8_t *bytes,
