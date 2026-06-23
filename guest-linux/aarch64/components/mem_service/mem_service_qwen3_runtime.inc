@@ -89,7 +89,7 @@ static int mem_service_qwen3_kv_state_alloc(struct mem_service_cluster_runtime *
                                      offset_out);
 }
 
-static void mem_service_report_obmm_pool_layout_once(struct mem_service_cluster_runtime *rt)
+void mem_service_report_obmm_pool_layout_once(struct mem_service_cluster_runtime *rt)
 {
     struct mem_service_cluster_slot *local_slot;
 

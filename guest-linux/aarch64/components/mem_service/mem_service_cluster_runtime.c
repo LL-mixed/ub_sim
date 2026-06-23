@@ -1,3 +1,9 @@
+#include "mem_service_internal.h"
+
+#include "mem_service_cluster_runtime.h"
+#include "mem_service_cluster_utils.h"
+#include "mem_service_qwen3_runtime.h"
+
 static int mem_service_read_primary_cna(uint32_t *local_cna_out)
 {
     uint64_t local_cna_u64 = 0;
@@ -269,7 +275,7 @@ int mem_service_cluster_runtime_require(struct mem_service_cluster_runtime *rt)
     return 0;
 }
 
-static int mem_service_cluster_runtime_init(struct mem_service_cluster_runtime *rt)
+int mem_service_cluster_runtime_init(struct mem_service_cluster_runtime *rt)
 {
     char local_ip[INET_ADDRSTRLEN];
     char ips[MEM_SERVICE_CLUSTER_MAX_NODES][INET_ADDRSTRLEN];
