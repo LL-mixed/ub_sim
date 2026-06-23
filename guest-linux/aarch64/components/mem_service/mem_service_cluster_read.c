@@ -1,4 +1,13 @@
+#include "mem_service_cluster_read.h"
+
+#include "mem_service_cluster_utils.h"
 #include "mem_service_compiler.h"
+
+#include <inttypes.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
 
 static bool mem_service_try_read_stable_payload(const struct mem_service_cluster_payload *payload,
                                           struct mem_service_cluster_payload *snapshot)
@@ -76,9 +85,9 @@ static void mem_service_copy_from_mapped_volatile(void *dst,
     }
 }
 
-static bool mem_service_try_read_stable_payload_region(const struct mem_service_cluster_slot *slot,
-                                                 struct mem_service_cluster_payload *snapshot,
-                                                 struct mem_service_cluster_payload_header *seen_out)
+bool mem_service_try_read_stable_payload_region(const struct mem_service_cluster_slot *slot,
+                                                struct mem_service_cluster_payload *snapshot,
+                                                struct mem_service_cluster_payload_header *seen_out)
 {
     struct mem_service_cluster_payload_header header;
     struct mem_service_cluster_payload_header confirm;
@@ -107,7 +116,7 @@ static bool mem_service_try_read_stable_payload_region(const struct mem_service_
     }
     printf("[mem_service] stage db_service_cluster_debug owner=node%d reader=node%d step=read_header_begin mem_id=%" PRIu64 " map_osync=%d addr=%p\n",
            slot->owner_idx + 1,
-           g_mem_service_cluster_runtime.local_idx + 1,
+           slot->reader_idx + 1,
            slot->mem_id,
            slot->map_osync ? 1 : 0,
            slot->region.addr);
@@ -142,7 +151,7 @@ static bool mem_service_try_read_stable_payload_region(const struct mem_service_
                             ((size_t)i * sizeof(snapshot->records[0]));
         printf("[mem_service] stage db_service_cluster_debug owner=node%d reader=node%d step=record_copy_begin record=%u offset=%zu bytes=%zu\n",
                slot->owner_idx + 1,
-               g_mem_service_cluster_runtime.local_idx + 1,
+               slot->reader_idx + 1,
                i,
                record_off,
                sizeof(snapshot->records[i]));
@@ -152,7 +161,7 @@ static bool mem_service_try_read_stable_payload_region(const struct mem_service_
                                         sizeof(snapshot->records[i]));
         printf("[mem_service] stage db_service_cluster_debug owner=node%d reader=node%d step=record_copy_done record=%u offset=%zu bytes=%zu\n",
                slot->owner_idx + 1,
-               g_mem_service_cluster_runtime.local_idx + 1,
+               slot->reader_idx + 1,
                i,
                record_off,
                sizeof(snapshot->records[i]));
@@ -161,12 +170,12 @@ static bool mem_service_try_read_stable_payload_region(const struct mem_service_
     __sync_synchronize();
     printf("[mem_service] stage db_service_cluster_debug owner=node%d reader=node%d step=confirm_header_begin\n",
            slot->owner_idx + 1,
-           g_mem_service_cluster_runtime.local_idx + 1);
+           slot->reader_idx + 1);
     fflush(stdout);
     mem_service_copy_from_mapped_volatile(&confirm, mapped_bytes, sizeof(confirm));
     printf("[mem_service] stage db_service_cluster_debug owner=node%d reader=node%d step=confirm_header_done seq=%u done=%u count=%u\n",
            slot->owner_idx + 1,
-           g_mem_service_cluster_runtime.local_idx + 1,
+           slot->reader_idx + 1,
            confirm.publish_seq,
            confirm.publish_done_seq,
            confirm.record_count);
@@ -181,7 +190,7 @@ static bool mem_service_try_read_stable_payload_region(const struct mem_service_
     return true;
 }
 
-static bool mem_service_try_read_stable_compact_summary_region(
+bool mem_service_try_read_stable_compact_summary_region(
     const struct mem_service_cluster_slot *slot,
     struct mem_service_cluster_payload_compact_summary *summary,
     struct mem_service_cluster_payload_header *seen_out)
@@ -243,7 +252,7 @@ static bool mem_service_try_read_stable_compact_summary_region(
     return true;
 }
 
-static bool mem_service_wait_compact_summary_region_at_least(
+bool mem_service_wait_compact_summary_region_at_least(
     const struct mem_service_cluster_slot *slot,
     uint32_t min_publish_done_seq,
     long timeout_ms,
@@ -377,9 +386,9 @@ static bool MEM_SERVICE_MAYBE_UNUSED mem_service_payload_snapshot_find_record(
     return false;
 }
 
-static bool mem_service_slot_find_record(const struct mem_service_cluster_slot *slot,
-                                   const char *key,
-                                   struct mem_service_record *resolved_out)
+bool mem_service_slot_find_record(const struct mem_service_cluster_slot *slot,
+                                  const char *key,
+                                  struct mem_service_record *resolved_out)
 {
     struct mem_service_cluster_payload_header header;
     struct mem_service_cluster_payload_header confirm;
@@ -495,7 +504,7 @@ static bool mem_service_record_matches_obmm_object_backing(
     return record_cookie == checksum_cookie;
 }
 
-static bool mem_service_slot_find_record_by_obmm_object_backing(
+bool mem_service_slot_find_record_by_obmm_object_backing(
     const struct mem_service_cluster_slot *slot,
     enum mem_service_record_kind record_kind,
     uint32_t payload_kind,

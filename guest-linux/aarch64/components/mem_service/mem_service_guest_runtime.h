@@ -36,6 +36,7 @@ struct mem_service_mapped_region {
 
 struct mem_service_cluster_slot {
     int owner_idx;
+    int reader_idx;
     bool is_local;
     bool map_osync;
     uint32_t export_cna;

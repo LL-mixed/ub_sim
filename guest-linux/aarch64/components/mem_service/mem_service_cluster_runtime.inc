@@ -338,6 +338,7 @@ static int mem_service_cluster_runtime_init(struct mem_service_cluster_runtime *
     local_meta.export_cna = export_meta.export_cna;
 
     rt->slots[rt->local_idx].owner_idx = rt->local_idx;
+    rt->slots[rt->local_idx].reader_idx = rt->local_idx;
     rt->slots[rt->local_idx].is_local = true;
     rt->slots[rt->local_idx].mem_id = local_meta.export_mem_id;
     rt->slots[rt->local_idx].export_cna = rt->local_cna;
@@ -417,6 +418,7 @@ static int mem_service_cluster_runtime_init(struct mem_service_cluster_runtime *
             continue;
         }
         rt->slots[i].owner_idx = i;
+        rt->slots[i].reader_idx = rt->local_idx;
         rt->slots[i].is_local = false;
         rt->slots[i].local_pa = import_pas[import_idx];
         rt->slots[i].map_osync = true;

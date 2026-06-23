@@ -48,7 +48,8 @@ SERVICE_QWEN3_DECODE_BARRIER_INC = SERVICE_DIR / "mem_service_qwen3_decode_barri
 SERVICE_METADATA_INC = SERVICE_DIR / "mem_service_metadata.inc"
 SERVICE_CLUSTER_PAYLOAD_C = SERVICE_DIR / "mem_service_cluster_payload.c"
 SERVICE_CLUSTER_PAYLOAD_H = SERVICE_DIR / "mem_service_cluster_payload.h"
-SERVICE_CLUSTER_READ_INC = SERVICE_DIR / "mem_service_cluster_read.inc"
+SERVICE_CLUSTER_READ_C = SERVICE_DIR / "mem_service_cluster_read.c"
+SERVICE_CLUSTER_READ_H = SERVICE_DIR / "mem_service_cluster_read.h"
 SERVICE_CLUSTER_UTILS_C = SERVICE_DIR / "mem_service_cluster_utils.c"
 SERVICE_CLUSTER_UTILS_H = SERVICE_DIR / "mem_service_cluster_utils.h"
 SERVICE_CLUSTER_RUNTIME_INC = SERVICE_DIR / "mem_service_cluster_runtime.inc"
@@ -85,6 +86,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             build_script,
         )
         self.assertIn(
+            'MEM_SERVICE_CLUSTER_READ_SRC="$ROOT_DIR/components/mem_service/mem_service_cluster_read.c"',
+            build_script,
+        )
+        self.assertIn(
             'MEM_SERVICE_KEYS_SRC="$ROOT_DIR/components/mem_service/mem_service_keys.c"',
             build_script,
         )
@@ -110,7 +115,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn('MEM_SERVICE_CLI_BIN="$OUT_DIR/linqu_mem_service"', build_script)
         self.assertIn(
-            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
+            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
             build_script,
         )
         self.assertIn("linqu_mem_service", build_script)
@@ -187,7 +192,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
     def test_compiler_annotations_are_split_from_internal_contract(self):
         internal_header = SERVICE_INTERNAL_H.read_text()
         compiler_header = SERVICE_COMPILER_H.read_text()
-        cluster_read = SERVICE_CLUSTER_READ_INC.read_text()
+        cluster_read = SERVICE_CLUSTER_READ_C.read_text()
         cluster_utils = SERVICE_CLUSTER_UTILS_C.read_text()
         readme = (SERVICE_DIR / "README.md").read_text()
 
@@ -541,14 +546,23 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
 
     def test_cluster_payload_read_helpers_are_split_from_runtime_main(self):
         source = SERVICE_C.read_text()
-        cluster_read = SERVICE_CLUSTER_READ_INC.read_text()
+        cluster_read = SERVICE_CLUSTER_READ_C.read_text()
+        cluster_read_contract = SERVICE_CLUSTER_READ_H.read_text()
         readme = (SERVICE_DIR / "README.md").read_text()
 
-        self.assertIn('#include "mem_service_cluster_read.inc"', source)
+        self.assertNotIn('#include "mem_service_cluster_read.inc"', source)
+        self.assertIn('#include "mem_service_cluster_read.h"', source)
+        self.assertIn('#include "mem_service_cluster_read.h"', cluster_read)
         self.assertIn("mem_service_try_read_stable_payload_region", cluster_read)
         self.assertIn("mem_service_wait_compact_summary_region_at_least", cluster_read)
         self.assertIn("mem_service_slot_find_record", cluster_read)
+        self.assertIn("mem_service_try_read_stable_payload_region", cluster_read_contract)
+        self.assertIn("mem_service_wait_compact_summary_region_at_least", cluster_read_contract)
+        self.assertIn("mem_service_slot_find_record", cluster_read_contract)
         self.assertIn("stable cluster payload read", readme)
+        self.assertIn("standalone guest\n  runtime read-side translation unit", readme)
+        self.assertIn("private cluster read helper\n  contract", readme)
+        self.assertFalse((SERVICE_DIR / "mem_service_cluster_read.inc").exists())
         self.assertNotRegex(
             source,
             r"static bool mem_service_try_read_stable_payload_region"
