@@ -173,8 +173,9 @@ def build_deltas(cases):
         return deltas
     base_duration = baseline["duration_ms_median"]
     base_write = baseline["write_MBps_avg"]
-    for case, summary in cases.items():
-        if case == "legacy-pa":
+    for case in ("generic-gva", "gsva"):
+        summary = cases.get(case)
+        if not summary:
             continue
         deltas[case] = {
             "duration_speedup_vs_legacy_pa": ratio(base_duration, summary["duration_ms_median"]),
@@ -183,8 +184,11 @@ def build_deltas(cases):
     return deltas
 
 
-def print_text(summary):
-    print("transport_perf_report: status=pass")
+def print_text(summary, missing):
+    if missing:
+        print(f"transport_perf_report: status=fail reason=no_samples reports={','.join(missing)}")
+    else:
+        print("transport_perf_report: status=pass")
     for run in summary["runs"]:
         print(
             "transport_run: "
@@ -226,15 +230,12 @@ def main(argv):
 
     runs = [collect_run(path) for path in args.reports]
     summary = summarize_runs(runs)
+    missing = [str(run["report"]) for run in runs if not run["samples"]]
     if args.json_output:
         print(json.dumps(summary, indent=2, sort_keys=True))
     else:
-        print_text(summary)
-    missing = [str(run["report"]) for run in runs if not run["samples"]]
-    if missing:
-        print(f"transport_perf_report: status=fail reason=no_samples reports={','.join(missing)}", file=sys.stderr)
-        return 1
-    return 0
+        print_text(summary, missing)
+    return 1 if missing else 0
 
 
 if __name__ == "__main__":

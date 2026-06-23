@@ -29,13 +29,16 @@
 #define TCP_BENCH_DEFAULT_SIZE       (2UL * 1024UL * 1024UL)
 #define TCP_BENCH_DEFAULT_ITERATIONS 32768ULL
 #define TCP_BENCH_DEFAULT_CHUNK_SIZE 64ULL
+#define TCP_BENCH_DEFAULT_PROGRESS_INTERVAL 64ULL
 
 struct tcp_bench_config {
     bool enabled;
     bool verify;
+    bool one_way;
     uint64_t size;
     uint64_t iterations;
     uint64_t chunk_size;
+    uint64_t progress_interval;
 };
 
 struct tcp_bench_stats {
@@ -149,11 +152,15 @@ static void tcp_bench_init_config(struct tcp_bench_config *cfg)
                    env_flag_enabled("LINQU_TCP_BENCHMARK");
     cfg->verify = env_flag_enabled("TCP_BENCH_VERIFY") ||
                   env_flag_enabled("LINQU_TCP_BENCH_VERIFY");
+    cfg->one_way = env_flag_enabled("TCP_BENCH_ONE_WAY") ||
+                   env_flag_enabled("LINQU_TCP_BENCH_ONE_WAY");
     cfg->size = env_u64_or_default("TCP_BENCH_SIZE", TCP_BENCH_DEFAULT_SIZE);
     cfg->iterations = env_u64_or_default("TCP_BENCH_ITERATIONS",
                                          TCP_BENCH_DEFAULT_ITERATIONS);
     cfg->chunk_size = env_u64_or_default("TCP_BENCH_CHUNK_SIZE",
                                          TCP_BENCH_DEFAULT_CHUNK_SIZE);
+    cfg->progress_interval = env_u64_or_default("TCP_BENCH_PROGRESS_INTERVAL",
+                                                TCP_BENCH_DEFAULT_PROGRESS_INTERVAL);
     if (cfg->size == 0) {
         cfg->size = TCP_BENCH_DEFAULT_SIZE;
     }
@@ -163,6 +170,17 @@ static void tcp_bench_init_config(struct tcp_bench_config *cfg)
     if (cfg->chunk_size == 0 || cfg->chunk_size > cfg->size) {
         cfg->chunk_size = TCP_BENCH_DEFAULT_CHUNK_SIZE;
     }
+}
+
+static bool tcp_bench_should_report_progress(const struct tcp_bench_config *cfg,
+                                             uint64_t iter)
+{
+    uint64_t done = iter + 1;
+
+    if (cfg->progress_interval == 0) {
+        return false;
+    }
+    return done == cfg->iterations || done % cfg->progress_interval == 0;
 }
 
 static void tcp_bench_fill_pattern(uint8_t *buf, uint64_t len, uint64_t seed)
@@ -751,6 +769,16 @@ static bool role_messages(const char *role,
     return false;
 }
 
+static bool tcp_bench_one_way_server_role(const char *role)
+{
+    return strcmp(role, "nodeA") == 0;
+}
+
+static bool tcp_bench_one_way_client_role(const char *role)
+{
+    return strcmp(role, "nodeB") == 0;
+}
+
 static int run_server_child(const char *role, int listener_fd,
                             const char *expected_server_msg,
                             const char *server_ack)
@@ -798,6 +826,7 @@ static int run_benchmark_server_child(const char *role, int listener_fd,
     if (accepted_fd < 0) {
         return 1;
     }
+    printf("[ub_tcp_each_server] benchmark_server_accepted role=%s\n", role);
 
     buf = malloc((size_t)cfg->chunk_size);
     if (!buf) {
@@ -823,6 +852,11 @@ static int run_benchmark_server_child(const char *role, int listener_fd,
             free(buf);
             close(accepted_fd);
             return 1;
+        }
+        if (tcp_bench_should_report_progress(cfg, iter)) {
+            printf("[ub_tcp_each_server] benchmark_server_progress role=%s"
+                   " iterations_done=%" PRIu64 " bytes=%" PRIu64 "\n",
+                   role, iter + 1, (iter + 1) * cfg->chunk_size);
         }
     }
 
@@ -878,6 +912,12 @@ static bool run_benchmark_client(int fd, const char *role,
             !tcp_bench_verify_pattern(tmp_read, cfg->chunk_size, seed)) {
             stats->verify_failures++;
         }
+        if (tcp_bench_should_report_progress(cfg, iter)) {
+            printf("[ub_tcp_each_server] benchmark_client_progress role=%s"
+                   " iterations_done=%" PRIu64 " read_bytes=%" PRIu64
+                   " write_bytes=%" PRIu64 "\n",
+                   role, iter + 1, stats->read_bytes, stats->write_bytes);
+        }
     }
     stats->duration_ms = now_ms() - t0;
 
@@ -905,6 +945,17 @@ static void print_benchmark_result(const char *role,
            role, cfg->size, cfg->iterations, cfg->chunk_size,
            stats->reads, stats->writes, stats->read_bytes, stats->write_bytes,
            stats->verify_failures, stats->duration_ms, rmb / dur_s, wmb / dur_s);
+}
+
+static void print_summary_pass(const char *role, const char *local_ip,
+                               const char *peer_ip,
+                               const struct tcp_bench_config *cfg)
+{
+    printf("[ub_tcp_each_server] summary role=%s local=%s peer=%s port=%d benchmark=%d"
+           " one_way=%d\n",
+           role, local_ip, peer_ip, TCP_EACH_SERVER_PORT,
+           cfg->enabled ? 1 : 0, cfg->one_way ? 1 : 0);
+    printf("[ub_tcp_each_server] pass\n");
 }
 
 static void cleanup_child(pid_t child_pid)
@@ -981,13 +1032,50 @@ int main(void)
     install_static_arp(ifname, &peer_addr);
 
     printf("[ub_tcp_each_server] start role=%s iface=%s ifindex=%u local=%s peer=%s port=%d"
-           " benchmark=%d\n",
+           " benchmark=%d one_way=%d\n",
            role, ifname, ifindex, local_ip, peer_ip, TCP_EACH_SERVER_PORT,
-           bench_cfg.enabled ? 1 : 0);
+           bench_cfg.enabled ? 1 : 0, bench_cfg.one_way ? 1 : 0);
+
+    if (bench_cfg.enabled && bench_cfg.one_way &&
+        tcp_bench_one_way_client_role(role)) {
+        printf("[ub_tcp_each_server] benchmark_client_connect_start role=%s peer=%s\n",
+               role, peer_ip);
+        client_fd = connect_to_peer_retry(ifname, local_ip, peer_ip,
+                                          now_ms() + RUN_TIMEOUT_S * 1000L);
+        if (client_fd < 0) {
+            return 1;
+        }
+        printf("[ub_tcp_each_server] benchmark_client_connected role=%s peer=%s\n",
+               role, peer_ip);
+        if (!run_benchmark_client(client_fd, role, &bench_cfg, &bench_stats)) {
+            close(client_fd);
+            return 1;
+        }
+        close(client_fd);
+        print_benchmark_result(role, &bench_cfg, &bench_stats);
+        if (bench_stats.verify_failures != 0) {
+            fprintf(stderr, "[ub_tcp_each_server] fail: benchmark verify_failures=%" PRIu64 "\n",
+                    bench_stats.verify_failures);
+            return 1;
+        }
+        print_summary_pass(role, local_ip, peer_ip, &bench_cfg);
+        return 0;
+    }
 
     listener_fd = create_listener(ifname, local_ip);
     if (listener_fd < 0) {
         return 1;
+    }
+
+    if (bench_cfg.enabled && bench_cfg.one_way &&
+        tcp_bench_one_way_server_role(role)) {
+        status = run_benchmark_server_child(role, listener_fd, &bench_cfg);
+        close(listener_fd);
+        if (status != 0) {
+            return status;
+        }
+        print_summary_pass(role, local_ip, peer_ip, &bench_cfg);
+        return 0;
     }
 
     fflush(NULL);
@@ -1068,9 +1156,6 @@ int main(void)
         }
     }
 
-    printf("[ub_tcp_each_server] summary role=%s local=%s peer=%s port=%d benchmark=%d\n",
-           role, local_ip, peer_ip, TCP_EACH_SERVER_PORT,
-           bench_cfg.enabled ? 1 : 0);
-    printf("[ub_tcp_each_server] pass\n");
+    print_summary_pass(role, local_ip, peer_ip, &bench_cfg);
     return 0;
 }

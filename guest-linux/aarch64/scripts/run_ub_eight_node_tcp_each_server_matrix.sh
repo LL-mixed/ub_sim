@@ -21,6 +21,8 @@ TCP_BENCH_SIZE="${TCP_BENCH_SIZE:-2097152}"
 TCP_BENCH_ITERATIONS="${TCP_BENCH_ITERATIONS:-8192}"
 TCP_BENCH_CHUNK_SIZE="${TCP_BENCH_CHUNK_SIZE:-64}"
 TCP_BENCH_VERIFY="${TCP_BENCH_VERIFY:-0}"
+TCP_BENCH_ONE_WAY="${TCP_BENCH_ONE_WAY:-0}"
+TCP_BENCH_PROGRESS_INTERVAL="${TCP_BENCH_PROGRESS_INTERVAL:-64}"
 PORT_BASE_START="${PORT_BASE_START:-$((53600 + (RANDOM % 300)))}"
 PORT_BASE="$PORT_BASE_START"
 
@@ -224,6 +226,8 @@ send_tcp_cmd() {
   payload+=$'export TCP_BENCH_ITERATIONS='"${TCP_BENCH_ITERATIONS}"$'\n'
   payload+=$'export TCP_BENCH_CHUNK_SIZE='"${TCP_BENCH_CHUNK_SIZE}"$'\n'
   payload+=$'export TCP_BENCH_VERIFY='"${TCP_BENCH_VERIFY}"$'\n'
+  payload+=$'export TCP_BENCH_ONE_WAY='"${TCP_BENCH_ONE_WAY}"$'\n'
+  payload+=$'export TCP_BENCH_PROGRESS_INTERVAL='"${TCP_BENCH_PROGRESS_INTERVAL}"$'\n'
   payload+=$'echo '"${start_marker}"$'\n'
   payload+=$'/bin/linqu_ub_tcp_each_server\n'
 
@@ -278,12 +282,26 @@ validate_pair_node_log() {
   assert_log_has_since "$log_file" "$start_line" "\\[ub_tcp_each_server\\] start role=${role} .* local=${local_ip} peer=${peer_ip} port=18620" \
     "$node_id start" || return 1
   if [[ "$TCP_BENCHMARK" == "1" ]]; then
-    assert_log_has_since "$log_file" "$start_line" "\\[TCP_EACH_SERVER\\] ${role} benchmark client complete iterations=${TCP_BENCH_ITERATIONS}" \
-      "$node_id benchmark client complete" || return 1
-    assert_log_has_since "$log_file" "$start_line" "\\[ub_tcp_each_server\\] benchmark_server role=${role} iterations=${TCP_BENCH_ITERATIONS} .*verify_failures=0" \
-      "$node_id benchmark server" || return 1
-    assert_log_has_since "$log_file" "$start_line" "\\[ub_tcp_each_server\\] benchmark_result=done role=${role} .*verify_failures=0" \
-      "$node_id benchmark result" || return 1
+    if [[ "$TCP_BENCH_ONE_WAY" == "1" && "$role" == "nodeA" ]]; then
+      assert_log_has_since "$log_file" "$start_line" "\\[ub_tcp_each_server\\] benchmark_server_accepted role=${role}" \
+        "$node_id benchmark server accepted" || return 1
+      assert_log_has_since "$log_file" "$start_line" "\\[ub_tcp_each_server\\] benchmark_server role=${role} iterations=${TCP_BENCH_ITERATIONS} .*verify_failures=0" \
+        "$node_id benchmark server" || return 1
+    elif [[ "$TCP_BENCH_ONE_WAY" == "1" && "$role" == "nodeB" ]]; then
+      assert_log_has_since "$log_file" "$start_line" "\\[ub_tcp_each_server\\] benchmark_client_connected role=${role}" \
+        "$node_id benchmark client connected" || return 1
+      assert_log_has_since "$log_file" "$start_line" "\\[TCP_EACH_SERVER\\] ${role} benchmark client complete iterations=${TCP_BENCH_ITERATIONS}" \
+        "$node_id benchmark client complete" || return 1
+      assert_log_has_since "$log_file" "$start_line" "\\[ub_tcp_each_server\\] benchmark_result=done role=${role} .*verify_failures=0" \
+        "$node_id benchmark result" || return 1
+    else
+      assert_log_has_since "$log_file" "$start_line" "\\[TCP_EACH_SERVER\\] ${role} benchmark client complete iterations=${TCP_BENCH_ITERATIONS}" \
+        "$node_id benchmark client complete" || return 1
+      assert_log_has_since "$log_file" "$start_line" "\\[ub_tcp_each_server\\] benchmark_server role=${role} iterations=${TCP_BENCH_ITERATIONS} .*verify_failures=0" \
+        "$node_id benchmark server" || return 1
+      assert_log_has_since "$log_file" "$start_line" "\\[ub_tcp_each_server\\] benchmark_result=done role=${role} .*verify_failures=0" \
+        "$node_id benchmark result" || return 1
+    fi
   else
     assert_log_has_since "$log_file" "$start_line" "\\[TCP_EACH_SERVER\\] ${role} client sent=\"tcp hello from ${role} client\"" \
       "$node_id client send" || return 1
@@ -388,6 +406,8 @@ main() {
     echo "tcp_bench_size=$TCP_BENCH_SIZE"
     echo "tcp_bench_iterations=$TCP_BENCH_ITERATIONS"
     echo "tcp_bench_chunk_size=$TCP_BENCH_CHUNK_SIZE"
+    echo "tcp_bench_one_way=$TCP_BENCH_ONE_WAY"
+    echo "tcp_bench_progress_interval=$TCP_BENCH_PROGRESS_INTERVAL"
     [[ -n "$cleanup_script" ]] && echo "cleanup_script=$cleanup_script"
   } | tee "$REPORT_FILE"
 

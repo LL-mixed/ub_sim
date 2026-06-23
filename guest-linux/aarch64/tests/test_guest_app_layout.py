@@ -223,8 +223,14 @@ def test_tcp_each_server_matrix_supports_dataplane_benchmark_mode():
     assert "TCP_BENCHMARK=" in runner
     assert "TCP_BENCH_SIZE=" in runner
     assert "TCP_BENCH_ITERATIONS=" in runner
+    assert "TCP_BENCH_ONE_WAY=" in runner
+    assert "TCP_BENCH_PROGRESS_INTERVAL=" in runner
     assert "benchmark_result=done" in runner
     assert "benchmark_result=done" in app_source
+    assert "benchmark_server_accepted" in app_source
+    assert "benchmark_client_progress" in app_source
+    assert "benchmark_server_progress" in app_source
+    assert "tcp_bench_one_way_client_role" in app_source
     assert "run_benchmark_client" in app_source
     assert "run_benchmark_server_child" in app_source
     assert report_script.exists()

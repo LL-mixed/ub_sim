@@ -57,6 +57,7 @@ def test_transport_perf_report_summarizes_dataplane_and_tcp_logs():
     assert "transport_case: name=tcp samples=1 duration_ms_median=40.000" in result.stdout
     assert "transport_delta: case=generic-gva baseline=legacy-pa duration_speedup=2.000" in result.stdout
     assert "transport_delta: case=gsva baseline=legacy-pa duration_speedup=2.500" in result.stdout
+    assert "transport_delta: case=tcp" not in result.stdout
 
 
 def test_transport_perf_report_json_output_contains_cases():
@@ -80,3 +81,42 @@ def test_transport_perf_report_json_output_contains_cases():
     parsed = json.loads(result.stdout)
     assert parsed["cases"]["legacy-pa"]["samples"] == 1
     assert parsed["runs"][0]["run_id"] == "dp"
+
+
+def test_transport_perf_report_reports_no_samples_as_single_failure_status():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        run_dir = root / "empty_headless8"
+        run_dir.mkdir()
+        write_report(root / "empty.txt", "empty", run_dir)
+
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), str(root / "empty.txt")],
+            text=True,
+            capture_output=True,
+        )
+
+    assert result.returncode == 1
+    assert "transport_perf_report: status=fail reason=no_samples" in result.stdout
+    assert "transport_perf_report: status=pass" not in result.stdout
+    assert result.stderr == ""
+
+
+def test_transport_perf_report_json_still_emits_summary_on_no_samples():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        run_dir = root / "empty_headless8"
+        run_dir.mkdir()
+        write_report(root / "empty.txt", "empty", run_dir)
+
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--json", str(root / "empty.txt")],
+            text=True,
+            capture_output=True,
+        )
+
+    assert result.returncode == 1
+    parsed = json.loads(result.stdout)
+    assert parsed["runs"][0]["run_id"] == "empty"
+    assert parsed["cases"] == {}
+    assert result.stderr == ""
