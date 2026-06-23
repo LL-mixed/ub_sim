@@ -43,8 +43,9 @@ CLI:
   contract used by generic metadata and model/transport split units; it keeps
   record allocation and lookup dependencies explicit while the core moves
   toward a host-buildable library boundary.
-- `mem_service_qwen3_records.inc` contains Qwen3 streaming runtime record
-  recycling policy; it must stay out of the generic record core.
+- `mem_service_qwen3_records.c` contains Qwen3 streaming runtime record
+  recycling policy compiled as a standalone model-adapter translation unit; it
+  must stay out of the generic record core.
 - `mem_service_qwen3_records.h` contains the private Qwen3 record recycling
   helper contract used by the model adapter and OBMM object publication path.
 - `mem_service_qwen3_record_policy.h` contains Qwen3 runtime record retention
@@ -107,7 +108,8 @@ Build and validation entrypoints:
 - `scripts/build_initramfs.sh` links `mem_service.c`,
   `mem_service_cluster_utils.c`, `mem_service_cluster_payload.c`,
   `mem_service_cluster_read.c`, `mem_service_metadata.c`, `mem_service_keys.c`,
-  `mem_service_object_refs.c`, `mem_service_obmm_objects.c`, `mem_service_records.c`, and
+  `mem_service_object_refs.c`, `mem_service_obmm_objects.c`,
+  `mem_service_records.c`, `mem_service_qwen3_records.c`, and
   `mem_service_qwen3.c` into the guest app binary.
 - `apps/mem_service` builds `/bin/linqu_mem_service` for direct smoke and
   Qwen3 topology inspection.

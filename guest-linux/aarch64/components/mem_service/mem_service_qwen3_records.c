@@ -1,5 +1,11 @@
 #include "mem_service_qwen3_records.h"
 
+#include <errno.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
 bool mem_service_qwen3_record_kind_recyclable(enum mem_service_record_kind kind)
 {
     switch (kind) {
