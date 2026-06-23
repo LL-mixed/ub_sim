@@ -58,7 +58,8 @@ SERVICE_CLUSTER_QUEUE_C = SERVICE_DIR / "mem_service_cluster_queue.c"
 SERVICE_CLUSTER_QUEUE_H = SERVICE_DIR / "mem_service_cluster_queue.h"
 SERVICE_CLUSTER_OBSERVE_C = SERVICE_DIR / "mem_service_cluster_observe.c"
 SERVICE_CLUSTER_OBSERVE_H = SERVICE_DIR / "mem_service_cluster_observe.h"
-SERVICE_OBMM_OBJECT_FLOW_INC = SERVICE_DIR / "mem_service_obmm_object_flow.inc"
+SERVICE_OBMM_OBJECT_FLOW_C = SERVICE_DIR / "mem_service_obmm_object_flow.c"
+SERVICE_OBMM_OBJECT_FLOW_H = SERVICE_DIR / "mem_service_obmm_object_flow.h"
 GUEST_C = ROOT / "apps" / "llm_infer" / "llm_infer.c"
 BUILD_INITRAMFS = ROOT / "scripts" / "build_initramfs.sh"
 RUN_APP = ROOT / "initramfs" / "run_app"
@@ -105,6 +106,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             build_script,
         )
         self.assertIn(
+            'MEM_SERVICE_OBMM_OBJECT_FLOW_SRC="$ROOT_DIR/components/mem_service/mem_service_obmm_object_flow.c"',
+            build_script,
+        )
+        self.assertIn(
             'MEM_SERVICE_METADATA_SRC="$ROOT_DIR/components/mem_service/mem_service_metadata.c"',
             build_script,
         )
@@ -142,7 +147,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn('MEM_SERVICE_CLI_BIN="$OUT_DIR/linqu_mem_service"', build_script)
         self.assertIn(
-            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
+            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
             build_script,
         )
         self.assertIn("linqu_mem_service", build_script)
@@ -708,15 +713,22 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
 
     def test_obmm_object_flow_is_split_from_runtime_main(self):
         source = SERVICE_C.read_text()
-        object_flow = SERVICE_OBMM_OBJECT_FLOW_INC.read_text()
+        object_flow = SERVICE_OBMM_OBJECT_FLOW_C.read_text()
+        object_flow_contract = SERVICE_OBMM_OBJECT_FLOW_H.read_text()
         readme = (SERVICE_DIR / "README.md").read_text()
 
-        self.assertIn('#include "mem_service_obmm_object_flow.inc"', source)
+        self.assertNotIn('#include "mem_service_obmm_object_flow.inc"', source)
+        self.assertIn('#include "mem_service_obmm_object_flow.h"', source)
+        self.assertIn('#include "mem_service_obmm_object_flow.h"', object_flow)
         self.assertIn("mem_service_obmm_service_v0_publish_resolve", object_flow)
         self.assertIn("obmm_service_v0_object_desc_put", object_flow)
         self.assertIn("obmm_service_v0_object_desc_get", object_flow)
         self.assertIn("qwen3_range_forward_handoff", object_flow)
+        self.assertIn("mem_service_cluster_runtime_current", object_flow)
+        self.assertIn("mem_service_obmm_service_v0_publish_resolve", object_flow_contract)
         self.assertIn("guest OBMM object publish", readme)
+        self.assertIn("standalone transport object-flow translation unit", readme)
+        self.assertFalse((SERVICE_DIR / "mem_service_obmm_object_flow.inc").exists())
         self.assertNotRegex(
             source,
             r"int mem_service_obmm_service_v0_publish_resolve"

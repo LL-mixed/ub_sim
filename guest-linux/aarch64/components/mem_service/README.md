@@ -106,8 +106,11 @@ CLI:
   compiled as a standalone transport observe translation unit.
 - `mem_service_cluster_observe.h` contains the private cluster observe helper
   contract shared by the guest service core and validation tests.
-- `mem_service_obmm_object_flow.inc` contains the guest OBMM object publish,
-  descriptor exchange, remote resolve, and Qwen3 range handoff validation flow.
+- `mem_service_obmm_object_flow.c` contains the guest OBMM object publish,
+  descriptor exchange, remote resolve, and Qwen3 range handoff validation flow
+  compiled as a standalone transport object-flow translation unit.
+- `mem_service_obmm_object_flow.h` contains the private object-flow helper
+  contract used by the guest service core.
 - `mem_service_qwen3.c` is the private adapter from mem_service placement/KV
   semantics to the model-neutral `llm_infer` Qwen3 topology helpers.
 - `mem_service.h` exposes the service API consumed by guest apps.
@@ -121,7 +124,8 @@ Build and validation entrypoints:
   `mem_service_cluster_utils.c`, `mem_service_cluster_payload.c`,
   `mem_service_cluster_read.c`, `mem_service_cluster_runtime.c`,
   `mem_service_cluster_queue.c`, `mem_service_cluster_observe.c`,
-  `mem_service_metadata.c`, `mem_service_keys.c`, `mem_service_object_refs.c`,
+  `mem_service_obmm_object_flow.c`, `mem_service_metadata.c`,
+  `mem_service_keys.c`, `mem_service_object_refs.c`,
   `mem_service_obmm_objects.c`, `mem_service_records.c`,
   `mem_service_qwen3_records.c`, `mem_service_qwen3_decode_barrier.c`, and
   `mem_service_qwen3.c` into the guest app binary.

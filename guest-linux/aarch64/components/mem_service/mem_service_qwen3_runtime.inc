@@ -358,7 +358,7 @@ static int mem_service_put_qwen3_layer_range_placement(
     return 0;
 }
 
-static int mem_service_publish_qwen3_layer_range_placements(
+int mem_service_publish_qwen3_layer_range_placements(
     struct mem_service *svc,
     uint32_t node_count)
 {
@@ -386,7 +386,7 @@ static int mem_service_publish_qwen3_layer_range_placements(
     return 0;
 }
 
-static bool mem_service_read_qwen3_layer_range_placement(
+bool mem_service_read_qwen3_layer_range_placement(
     struct mem_service *svc,
     uint32_t owner_node,
     struct mem_service_qwen3_layer_range_placement *placement)
@@ -419,7 +419,7 @@ static bool mem_service_read_qwen3_layer_range_placement(
                                           placement->terminal);
 }
 
-static bool mem_service_find_qwen3_layer_range_predecessor(
+bool mem_service_find_qwen3_layer_range_predecessor(
     struct mem_service *svc,
     uint32_t owner_node,
     struct mem_service_qwen3_layer_range_placement *placement)

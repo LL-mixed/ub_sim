@@ -5,6 +5,7 @@
 #include "mem_service_cluster_read.h"
 #include "mem_service_cluster_runtime.h"
 #include "mem_service_cluster_utils.h"
+#include "mem_service_obmm_object_flow.h"
 #include "mem_service_obmm_objects.h"
 #include "mem_service_object_refs.h"
 #include "mem_service_qwen3_records.h"
@@ -19,8 +20,6 @@ struct mem_service_cluster_runtime *mem_service_cluster_runtime_current(void)
 }
 
 #include "mem_service_qwen3_runtime.inc"
-
-#include "mem_service_obmm_object_flow.inc"
 
 #include "mem_service_qwen3_runtime_range_wait_flow.inc"
 

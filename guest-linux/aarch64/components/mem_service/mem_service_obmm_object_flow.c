@@ -1,8 +1,21 @@
+#include "mem_service_internal.h"
+
+#include "mem_service_obmm_object_flow.h"
+#include "mem_service_cluster_payload.h"
+#include "mem_service_cluster_queue.h"
+#include "mem_service_cluster_read.h"
+#include "mem_service_cluster_runtime.h"
+#include "mem_service_cluster_utils.h"
+#include "mem_service_obmm_objects.h"
+#include "mem_service_object_refs.h"
+#include "mem_service_qwen3.h"
+#include "mem_service_qwen3_runtime.h"
+
 int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
-                                          uint32_t local_node,
-                                          uint32_t cluster_node_count)
+                                                uint32_t local_node,
+                                                uint32_t cluster_node_count)
 {
-    struct mem_service_cluster_runtime *rt = &g_mem_service_cluster_runtime;
+    struct mem_service_cluster_runtime *rt = mem_service_cluster_runtime_current();
     struct mem_service_record local_weight;
     struct mem_service_record local_kvcache;
     struct mem_service_record local_hidden_input;
