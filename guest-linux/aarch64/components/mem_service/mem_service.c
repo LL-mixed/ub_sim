@@ -25,8 +25,6 @@ struct mem_service_cluster_runtime *mem_service_cluster_runtime_current(void)
 
 #include "mem_service_qwen3_runtime_range_publish_flow.inc"
 
-#include "mem_service_qwen3_kv_state_flow.inc"
-
 #include "mem_service_qwen3_terminal_token_flow.inc"
 
 #include "mem_service_qwen3_engram_publish_flow.inc"

@@ -1,7 +1,7 @@
 #include "mem_service_record_table.h"
 
-static uint64_t mem_service_qwen3_hidden_payload_checksum(const uint8_t *bytes,
-                                                    uint64_t len)
+uint64_t mem_service_qwen3_hidden_payload_checksum(const uint8_t *bytes,
+                                                   uint64_t len)
 {
     uint64_t acc = 0xcbf29ce484222325ULL;
     uint64_t index;
@@ -56,12 +56,12 @@ static int mem_service_qwen3_kv_state_block_span(uint64_t payload_len,
     return 0;
 }
 
-static int mem_service_qwen3_kv_state_alloc(struct mem_service_cluster_runtime *rt,
-                                      uint64_t payload_len,
-                                      uint64_t *offset_out,
-                                      uint64_t *block_bytes_out,
-                                      uint64_t *block_count_out,
-                                      uint64_t *reserved_bytes_out)
+int mem_service_qwen3_kv_state_alloc(struct mem_service_cluster_runtime *rt,
+                                     uint64_t payload_len,
+                                     uint64_t *offset_out,
+                                     uint64_t *block_bytes_out,
+                                     uint64_t *block_count_out,
+                                     uint64_t *reserved_bytes_out)
 {
     uint64_t block_bytes = 0;
     uint64_t block_count = 0;

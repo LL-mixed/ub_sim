@@ -66,8 +66,9 @@ CLI:
 - `mem_service_qwen3_runtime_range_publish_flow.inc` contains Qwen3 runtime
   range output, KV-state object publication, and downstream descriptor publish
   helpers.
-- `mem_service_qwen3_kv_state_flow.inc` contains Qwen3 runtime range KV-state
-  publish and previous-step resolve helpers.
+- `mem_service_qwen3_kv_state_flow.c` contains Qwen3 runtime range KV-state
+  publish and previous-step resolve helpers compiled as a standalone model
+  data-flow translation unit.
 - `mem_service_qwen3_terminal_token_flow.inc` contains Qwen3 terminal token
   publish, shortpath publish, and wait helpers.
 - `mem_service_qwen3_engram_publish_flow.inc` contains Qwen3 engram candidate
@@ -127,8 +128,9 @@ Build and validation entrypoints:
   `mem_service_obmm_object_flow.c`, `mem_service_metadata.c`,
   `mem_service_keys.c`, `mem_service_object_refs.c`,
   `mem_service_obmm_objects.c`, `mem_service_records.c`,
-  `mem_service_qwen3_records.c`, `mem_service_qwen3_decode_barrier.c`, and
-  `mem_service_qwen3.c` into the guest app binary.
+  `mem_service_qwen3_records.c`, `mem_service_qwen3_decode_barrier.c`,
+  `mem_service_qwen3_kv_state_flow.c`, and `mem_service_qwen3.c` into the
+  guest app binary.
 - `apps/mem_service` builds `/bin/linqu_mem_service` for direct smoke and
   Qwen3 topology inspection.
 - Guest app runners provide the CLI surface that exercises the component.
