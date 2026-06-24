@@ -33,7 +33,11 @@ pub struct DataplaneMicrobenchArgs {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DataplaneMode {
-    LegacyPa,
+    #[serde(rename = "legacy-pa-linear")]
+    LegacyPaLinear,
+    LegacyPaDirect,
+    LegacyPaIndexed,
+    LegacyPaCached,
     GenericGva,
     Gsva,
 }
@@ -55,7 +59,7 @@ struct DataplaneCaseReport {
     mixed_ns_per_op: f64,
     resolve_only_ns_per_op: f64,
     copy_only_ns_per_op: f64,
-    speedup_vs_legacy_pa: Option<f64>,
+    speedup_vs_legacy_pa_linear: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -81,6 +85,8 @@ struct LegacyMapEntry {
 #[derive(Clone, Debug)]
 struct LegacyPaResolver {
     entries: Vec<LegacyMapEntry>,
+    segment_bytes: usize,
+    cached_entry_index: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -130,7 +136,10 @@ fn parse_args(args: &[String]) -> anyhow::Result<DataplaneMicrobenchArgs> {
         warmup_iterations: DEFAULT_WARMUP,
         legacy_map_count: DEFAULT_LEGACY_MAP_COUNT,
         modes: vec![
-            DataplaneMode::LegacyPa,
+            DataplaneMode::LegacyPaLinear,
+            DataplaneMode::LegacyPaDirect,
+            DataplaneMode::LegacyPaIndexed,
+            DataplaneMode::LegacyPaCached,
             DataplaneMode::GenericGva,
             DataplaneMode::Gsva,
         ],
@@ -249,7 +258,12 @@ fn parse_modes(value: &str) -> anyhow::Result<Vec<DataplaneMode>> {
 
 fn parse_mode(value: &str) -> anyhow::Result<DataplaneMode> {
     match value {
-        "legacy-pa" | "legacy" => Ok(DataplaneMode::LegacyPa),
+        "legacy-pa" | "legacy" | "legacy-pa-linear" | "legacy-linear" => {
+            Ok(DataplaneMode::LegacyPaLinear)
+        }
+        "legacy-pa-direct" | "legacy-direct" => Ok(DataplaneMode::LegacyPaDirect),
+        "legacy-pa-indexed" | "legacy-indexed" => Ok(DataplaneMode::LegacyPaIndexed),
+        "legacy-pa-cached" | "legacy-cached" => Ok(DataplaneMode::LegacyPaCached),
         "generic-gva" | "generic" | "gva" => Ok(DataplaneMode::GenericGva),
         "gsva" => Ok(DataplaneMode::Gsva),
         other => anyhow::bail!("unsupported dataplane mode `{other}`"),
@@ -308,7 +322,7 @@ pub fn run_cli(args: &DataplaneMicrobenchArgs) -> anyhow::Result<()> {
 
 fn print_usage() {
     println!(
-        "usage: sim-cli dataplane-microbench [--size BYTES] [--iterations N] [--chunk-size BYTES] [--legacy-map-count N] [--modes legacy-pa,generic-gva,gsva] [--verify] [--json PATH]"
+        "usage: sim-cli dataplane-microbench [--size BYTES] [--iterations N] [--chunk-size BYTES] [--legacy-map-count N] [--modes legacy-pa-linear,legacy-pa-direct,legacy-pa-indexed,legacy-pa-cached,generic-gva,gsva] [--verify] [--json PATH]"
     );
 }
 
@@ -320,12 +334,12 @@ fn run_report(args: &DataplaneMicrobenchArgs) -> anyhow::Result<DataplaneMicrobe
     }
     let legacy_ns_per_op = cases
         .iter()
-        .find(|case| case.mode == DataplaneMode::LegacyPa)
+        .find(|case| case.mode == DataplaneMode::LegacyPaLinear)
         .map(|case| case.mixed_ns_per_op);
     if let Some(legacy) = legacy_ns_per_op {
         for case in &mut cases {
-            if case.mode != DataplaneMode::LegacyPa {
-                case.speedup_vs_legacy_pa = Some(legacy / case.mixed_ns_per_op);
+            if case.mode != DataplaneMode::LegacyPaLinear {
+                case.speedup_vs_legacy_pa_linear = Some(legacy / case.mixed_ns_per_op);
             }
         }
     }
@@ -392,7 +406,7 @@ fn run_case(
         mixed_ns_per_op: ns_per_op(mixed_ns, operations),
         resolve_only_ns_per_op: ns_per_op(resolve_only_ns, operations),
         copy_only_ns_per_op: ns_per_op(copy_only_ns, operations),
-        speedup_vs_legacy_pa: None,
+        speedup_vs_legacy_pa_linear: None,
     })
 }
 
@@ -426,9 +440,9 @@ fn print_report(report: &DataplaneMicrobenchReport) {
         );
     }
     for case in &report.cases {
-        if let Some(speedup) = case.speedup_vs_legacy_pa {
+        if let Some(speedup) = case.speedup_vs_legacy_pa_linear {
             println!(
-                "dataplane_delta: case={} baseline=legacy-pa mixed_speedup={:.3}",
+                "dataplane_delta: case={} baseline=legacy-pa-linear mixed_speedup={:.3}",
                 case.name, speedup
             );
         }
@@ -446,7 +460,10 @@ fn ns_per_op(ns: u64, operations: u64) -> f64 {
 impl DataplaneMode {
     fn name(self) -> &'static str {
         match self {
-            DataplaneMode::LegacyPa => "legacy-pa",
+            DataplaneMode::LegacyPaLinear => "legacy-pa-linear",
+            DataplaneMode::LegacyPaDirect => "legacy-pa-direct",
+            DataplaneMode::LegacyPaIndexed => "legacy-pa-indexed",
+            DataplaneMode::LegacyPaCached => "legacy-pa-cached",
             DataplaneMode::GenericGva => "generic-gva",
             DataplaneMode::Gsva => "gsva",
         }
@@ -468,28 +485,113 @@ impl LegacyPaResolver {
                 token: DEFAULT_TOKEN ^ (index as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15),
             });
         }
-        Ok(Self { entries })
+        Ok(Self {
+            entries,
+            segment_bytes,
+            cached_entry_index: None,
+        })
     }
 
-    fn resolve(&self, local_pa: u64, len: usize) -> anyhow::Result<ResolvedAccess> {
+    fn resolve_linear(&self, local_pa: u64, len: usize) -> anyhow::Result<ResolvedAccess> {
         let local_pa = black_box(local_pa);
         let len_u64 = len as u64;
-        for entry in &self.entries {
-            let start = entry.local_pa_start;
-            let end = start + entry.bytes as u64;
-            if local_pa < start || local_pa + len_u64 > end {
+        for index in 0..self.entries.len() {
+            if !self.entry_contains(index, local_pa, len_u64) {
                 continue;
             }
-            let remote_offset = (local_pa - start) as usize
-                + (entry.remote_uba_start - DEFAULT_REMOTE_UBA_BASE) as usize;
-            let token = validate_legacy_token(entry.token, local_pa, len);
-            return Ok(ResolvedAccess {
-                remote_offset,
-                remote_uba: entry.remote_uba_start + (local_pa - start),
-                token,
-            });
+            return self.resolve_entry(index, local_pa, len);
         }
         anyhow::bail!("legacy PA resolve miss pa={local_pa:#x} len={len}")
+    }
+
+    fn resolve_direct(&self, local_pa: u64, len: usize) -> anyhow::Result<ResolvedAccess> {
+        let local_pa = black_box(local_pa);
+        let len_u64 = len as u64;
+        let first = self
+            .entries
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("legacy direct resolver has no entries"))?;
+        let total_bytes = self.total_bytes() as u64;
+        if local_pa < DEFAULT_LOCAL_PA_BASE
+            || local_pa + len_u64 > DEFAULT_LOCAL_PA_BASE + total_bytes
+        {
+            anyhow::bail!("legacy direct PA resolve miss pa={local_pa:#x} len={len}");
+        }
+        let remote_offset = (local_pa - DEFAULT_LOCAL_PA_BASE) as usize;
+        let token = validate_legacy_token(first.token, local_pa, len);
+        Ok(ResolvedAccess {
+            remote_offset,
+            remote_uba: DEFAULT_REMOTE_UBA_BASE + remote_offset as u64,
+            token,
+        })
+    }
+
+    fn resolve_indexed(&self, local_pa: u64, len: usize) -> anyhow::Result<ResolvedAccess> {
+        let local_pa = black_box(local_pa);
+        let index = self.index_for_pa(local_pa, len)?;
+        self.resolve_entry(index, local_pa, len)
+    }
+
+    fn resolve_cached(&mut self, local_pa: u64, len: usize) -> anyhow::Result<ResolvedAccess> {
+        let local_pa = black_box(local_pa);
+        let len_u64 = len as u64;
+        if let Some(index) = self.cached_entry_index {
+            if self.entry_contains(index, local_pa, len_u64) {
+                return self.resolve_entry(index, local_pa, len);
+            }
+        }
+        let index = self.index_for_pa(local_pa, len)?;
+        self.cached_entry_index = Some(index);
+        self.resolve_entry(index, local_pa, len)
+    }
+
+    fn entry_contains(&self, index: usize, local_pa: u64, len_u64: u64) -> bool {
+        let Some(entry) = self.entries.get(index) else {
+            return false;
+        };
+        let start = entry.local_pa_start;
+        let end = start + entry.bytes as u64;
+        local_pa >= start && local_pa + len_u64 <= end
+    }
+
+    fn index_for_pa(&self, local_pa: u64, len: usize) -> anyhow::Result<usize> {
+        let len_u64 = len as u64;
+        let total_bytes = self.total_bytes() as u64;
+        if local_pa < DEFAULT_LOCAL_PA_BASE
+            || local_pa + len_u64 > DEFAULT_LOCAL_PA_BASE + total_bytes
+        {
+            anyhow::bail!("legacy indexed PA resolve miss pa={local_pa:#x} len={len}");
+        }
+        let offset = (local_pa - DEFAULT_LOCAL_PA_BASE) as usize;
+        let index = offset / self.segment_bytes;
+        if !self.entry_contains(index, local_pa, len_u64) {
+            anyhow::bail!("legacy indexed PA resolve crosses segment pa={local_pa:#x} len={len}");
+        }
+        Ok(index)
+    }
+
+    fn resolve_entry(
+        &self,
+        index: usize,
+        local_pa: u64,
+        len: usize,
+    ) -> anyhow::Result<ResolvedAccess> {
+        let entry = self
+            .entries
+            .get(index)
+            .ok_or_else(|| anyhow::anyhow!("legacy PA entry index out of range: {index}"))?;
+        let remote_offset = (local_pa - entry.local_pa_start) as usize
+            + (entry.remote_uba_start - DEFAULT_REMOTE_UBA_BASE) as usize;
+        let token = validate_legacy_token(entry.token, local_pa, len);
+        Ok(ResolvedAccess {
+            remote_offset,
+            remote_uba: entry.remote_uba_start + (local_pa - entry.local_pa_start),
+            token,
+        })
+    }
+
+    fn total_bytes(&self) -> usize {
+        self.segment_bytes * self.entries.len()
     }
 }
 
@@ -658,11 +760,20 @@ impl BenchState {
         Ok(black_box(checksum))
     }
 
-    fn resolve(&self, offset: usize) -> anyhow::Result<ResolvedAccess> {
+    fn resolve(&mut self, offset: usize) -> anyhow::Result<ResolvedAccess> {
         match self.mode {
-            DataplaneMode::LegacyPa => self
+            DataplaneMode::LegacyPaLinear => self
                 .legacy
-                .resolve(DEFAULT_LOCAL_PA_BASE + offset as u64, self.chunk_size),
+                .resolve_linear(DEFAULT_LOCAL_PA_BASE + offset as u64, self.chunk_size),
+            DataplaneMode::LegacyPaDirect => self
+                .legacy
+                .resolve_direct(DEFAULT_LOCAL_PA_BASE + offset as u64, self.chunk_size),
+            DataplaneMode::LegacyPaIndexed => self
+                .legacy
+                .resolve_indexed(DEFAULT_LOCAL_PA_BASE + offset as u64, self.chunk_size),
+            DataplaneMode::LegacyPaCached => self
+                .legacy
+                .resolve_cached(DEFAULT_LOCAL_PA_BASE + offset as u64, self.chunk_size),
             DataplaneMode::GenericGva => self
                 .generic
                 .resolve_generic(DEFAULT_GVA_BASE + offset as u64, self.chunk_size),
@@ -712,7 +823,7 @@ mod tests {
             "--legacy-map-count",
             "8",
             "--modes",
-            "legacy-pa,gva,gsva",
+            "legacy-pa-linear,legacy-pa-direct,legacy-pa-indexed,legacy-pa-cached,gva,gsva",
         ]))
         .expect("parse")
         .expect("args");
@@ -724,7 +835,10 @@ mod tests {
         assert_eq!(
             parsed.modes,
             vec![
-                DataplaneMode::LegacyPa,
+                DataplaneMode::LegacyPaLinear,
+                DataplaneMode::LegacyPaDirect,
+                DataplaneMode::LegacyPaIndexed,
+                DataplaneMode::LegacyPaCached,
                 DataplaneMode::GenericGva,
                 DataplaneMode::Gsva
             ]
@@ -765,7 +879,7 @@ mod tests {
         let report = run_report(&args).expect("run report");
 
         assert_eq!(report.status, "pass");
-        assert_eq!(report.cases.len(), 3);
+        assert_eq!(report.cases.len(), 6);
         for case in &report.cases {
             assert_eq!(case.operations, 512);
             assert_eq!(case.read_bytes, 16_384);
@@ -779,13 +893,63 @@ mod tests {
             .cases
             .iter()
             .find(|case| case.mode == DataplaneMode::GenericGva)
-            .and_then(|case| case.speedup_vs_legacy_pa)
+            .and_then(|case| case.speedup_vs_legacy_pa_linear)
             .is_some());
         assert!(report
             .cases
             .iter()
             .find(|case| case.mode == DataplaneMode::Gsva)
-            .and_then(|case| case.speedup_vs_legacy_pa)
+            .and_then(|case| case.speedup_vs_legacy_pa_linear)
             .is_some());
+    }
+
+    #[test]
+    fn dataplane_microbench_legacy_aliases_select_linear_mode() {
+        let parsed =
+            parse_args(&strings(&["--modes", "legacy-pa,legacy"])).expect("parse legacy aliases");
+
+        assert_eq!(parsed.modes, vec![DataplaneMode::LegacyPaLinear]);
+    }
+
+    #[test]
+    fn dataplane_microbench_report_covers_legacy_baseline_modes() {
+        let args = parse_args(&strings(&[
+            "--iterations",
+            "128",
+            "--warmup",
+            "8",
+            "--size",
+            "4096",
+            "--chunk-size",
+            "64",
+            "--legacy-map-count",
+            "8",
+            "--modes",
+            "legacy-pa-linear,legacy-pa-direct,legacy-pa-indexed,legacy-pa-cached",
+            "--verify",
+        ]))
+        .expect("parse");
+        let report = run_report(&args).expect("run report");
+        let modes = report
+            .cases
+            .iter()
+            .map(|case| case.mode)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            modes,
+            vec![
+                DataplaneMode::LegacyPaLinear,
+                DataplaneMode::LegacyPaDirect,
+                DataplaneMode::LegacyPaIndexed,
+                DataplaneMode::LegacyPaCached,
+            ]
+        );
+        for case in &report.cases {
+            assert_eq!(case.verify_failures, 0);
+            assert!(case.mixed_ns > 0);
+            assert!(case.resolve_only_ns > 0);
+            assert!(case.copy_only_ns > 0);
+        }
     }
 }

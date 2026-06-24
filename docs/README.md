@@ -19,6 +19,8 @@ Current validation entry points:
 - [sim_gsva_shared_virtual_address_design.md](sim_gsva_shared_virtual_address_design.md)
   - design for a GSVA mode where OBMM shmem ranges use identical user VA, public UBA, and home VA across nodes
   - includes bootstrap dependency on existing OBMM bootstrap and manager queue bootstrap flow
+- [2026-06-24-w5-gva-gsva-dataplane-benefit-report.md](2026-06-24-w5-gva-gsva-dataplane-benefit-report.md)
+  - host-core dataplane microbenchmark benefit report for W5 GVA/GSVA, including expanded legacy PA-to-UBA resolver baselines (`linear`, `direct`, `indexed`, `cached`)
 - [lingqu_db_object_service_design.md](lingqu_db_object_service_design.md)
   - detailed design for a general Lingqu DB/Object Service that manages Qwen3 weights, KV cache, hidden boundaries, runtime tensors, versions, and shmem/block payload placement before 8-node range forward
 - [drafts/qwen3_0_6b_engram_obmm_simpler_8node_design.md](drafts/qwen3_0_6b_engram_obmm_simpler_8node_design.md)
